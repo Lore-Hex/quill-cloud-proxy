@@ -1,0 +1,58 @@
+[project]
+name = "quill-parent"
+version = "0.1.0"
+description = "Quill Cloud — code that runs on the EC2 host outside the enclave."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "boto3>=1.36",          # DynamoDB UpdateItem, S3 GetObject for sealed blob
+  "structlog>=24",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.6",
+]
+
+[dependency-groups]
+dev = [
+  "mypy>=1.13",
+  "ruff>=0.7",
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "boto3-stubs[dynamodb,s3]>=1.36",
+  "moto[dynamodb,s3]>=5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quill_parent"]
+
+[tool.mypy]
+strict = true
+disallow_any_generics = true
+warn_return_any = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+namespace_packages = true
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = ["moto.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ANN", "RUF", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN201"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

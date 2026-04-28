@@ -1,0 +1,126 @@
+"""Parent process FastAPI app.
+
+Three endpoints:
+  POST /v1/chat/completions  → relay client bytes to the enclave verbatim,
+                               stream the response back. Parent never
+                               inspects the body.
+  GET  /admin/usage          → operator-auth (basic, separate secret),
+                               returns aggregate counters from DynamoDB
+                               + in-flight from the enclave.
+  GET  /trust                → public, server-rendered HTML showing the
+                               attestation status, git commit, image
+                               digest, schema, retention policy.
+  GET  /health               → 200 if the enclave socket accepts a
+                               connect (no body inspection).
+
+We do NOT terminate TLS in FastAPI here — the ALB does. From the ALB the
+parent listens HTTP on :8443 inside the VPC; the ALB-to-parent hop is
+in-VPC.
+
+Note on file structure: the relay path is intentionally a dumb byte pump.
+We do not parse the request to make any auth decisions; the enclave
+handles auth. This keeps the parent's view of payload bytes opaque.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+
+from quill_parent.config import Settings, get_settings
+from quill_parent.heartbeat import Heartbeat, emit_startup
+from quill_parent.logging import configure_logging
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    configure_logging()
+    settings = get_settings()
+    emit_startup(version="0.1.0", git_commit=settings.git_commit)
+
+    heartbeat = Heartbeat(interval_seconds=settings.heartbeat_interval_seconds)
+    import asyncio
+
+    # Hold a strong ref to the heartbeat task so it isn't GC'd.
+    app.state.heartbeat = heartbeat
+    app.state.heartbeat_task = asyncio.create_task(heartbeat.run())
+    try:
+        yield
+    finally:
+        app.state.heartbeat_task.cancel()
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title="quill-cloud-proxy (parent)",
+        description="Outside-the-enclave host process. Open source.",
+        lifespan=lifespan,
+    )
+    app.include_router(_make_router())
+    return app
+
+
+def _make_router() -> APIRouter:
+    router = APIRouter()
+
+    @router.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @router.post("/v1/chat/completions")
+    async def chat_completions(
+        request: Request,
+        settings: Annotated[Settings, Depends(get_settings)],
+    ) -> StreamingResponse:
+        # The parent does NOT parse, validate, or inspect the body. It opens
+        # a socket to the enclave, forwards request bytes verbatim, and
+        # streams the response bytes back to the client. Auth happens
+        # inside the enclave.
+        from quill_parent.relay import relay_to_enclave
+
+        body = await request.body()
+        bearer = request.headers.get("authorization", "")
+        # Forward only the bearer header + body to the enclave (it builds
+        # its own response). The enclave doesn't need any other header.
+        out_iter = relay_to_enclave(
+            body=body, bearer=bearer, settings=settings, heartbeat=request.app.state.heartbeat
+        )
+        return StreamingResponse(
+            out_iter,
+            media_type="text/event-stream",
+            headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+        )
+
+    @router.get("/admin/usage")
+    async def admin_usage(
+        request: Request,
+        settings: Annotated[Settings, Depends(get_settings)],
+    ) -> JSONResponse:
+        from quill_parent.admin import build_usage_report, check_admin_auth
+
+        if not check_admin_auth(request, settings):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="admin auth required",
+                headers={"WWW-Authenticate": 'Basic realm="quill-admin"'},
+            )
+        report = await build_usage_report(settings)
+        return JSONResponse(report)
+
+    @router.get("/trust", response_class=HTMLResponse)
+    async def trust_page(
+        settings: Annotated[Settings, Depends(get_settings)],
+    ) -> HTMLResponse:
+        from quill_parent.trust import render_trust_page
+
+        html = render_trust_page(settings)
+        return HTMLResponse(html, headers={"cache-control": "max-age=60"})
+
+    return router
+
+
+app = create_app()

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Quill Cloud — trust</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif;
+           max-width: 50rem; margin: 2rem auto; padding: 1rem; color: #222; }
+    h1   { margin: 0 0 0.5rem; }
+    h2   { margin-top: 2rem; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+    th, td { text-align: left; padding: 0.4rem 0.6rem;
+             border-bottom: 1px solid #ddd; font-family: ui-monospace, monospace; }
+    th   { font-weight: 600; color: #555; width: 14rem; }
+    code { background: #f5f5f5; padding: 0.1rem 0.3rem; border-radius: 3px; }
+    .ok  { color: #186; font-weight: 600; }
+    .pre { font-family: ui-monospace, monospace; font-size: 0.95rem; white-space: pre; overflow-x: auto;
+           background: #f5f5f5; padding: 0.6rem; border-radius: 4px; }
+    a    { color: #036; }
+  </style>
+</head>
+<body>
+  <h1>Quill Cloud — trust</h1>
+  <p>
+    The Quill Cloud prompt path runs inside an
+    <a href="https://docs.aws.amazon.com/enclaves/">AWS Nitro Enclave</a>.
+    The KMS keys it needs to reach Bedrock are released by AWS only when
+    the enclave's PCR0 measurement matches the published value below.
+    That binds the running binary to this open-source code at this commit.
+  </p>
+
+  <h2>Identity</h2>
+  <table>
+    <tr><th>Source code</th>     <td><a href="https://github.com/Lore-Hex/quill-cloud-proxy">github.com/Lore-Hex/quill-cloud-proxy</a></td></tr>
+    <tr><th>Infrastructure</th>  <td><a href="https://github.com/Lore-Hex/quill-cloud-infra">github.com/Lore-Hex/quill-cloud-infra</a></td></tr>
+    <tr><th>License</th>         <td>Apache 2.0</td></tr>
+    <tr><th>Region</th>          <td>us-east-1</td></tr>
+  </table>
+
+  <h2>Current build</h2>
+  <p>
+    See <a href="/pcr0.txt"><code>/pcr0.txt</code></a> for the live PCR0 value.
+    It is updated atomically with each release. Compare to the output of
+    <code>./tools/verify-pcr0.sh</code> on a clean clone.
+  </p>
+
+  <h2>What is retained</h2>
+  <table>
+    <tr><th>Prompt content</th>           <td class="ok">No</td></tr>
+    <tr><th>Completion content</th>       <td class="ok">No</td></tr>
+    <tr><th>Bearer tokens</th>            <td class="ok">No</td></tr>
+    <tr><th>Per-request timestamps</th>   <td class="ok">No</td></tr>
+    <tr><th>Client IPs</th>               <td class="ok">No (ALB log TTL ≤ 24h)</td></tr>
+    <tr><th>Per-device daily aggregate counts (req, tokens, errors), 90-day TTL</th>
+        <td>Yes — for accountability + billing</td></tr>
+    <tr><th>Hourly across-all-devices request count</th>
+        <td>Yes — heartbeat</td></tr>
+  </table>
+
+  <h2>How to verify</h2>
+  <pre class="pre">git clone https://github.com/Lore-Hex/quill-cloud-proxy
+cd quill-cloud-proxy
+./tools/verify-pcr0.sh
+# the script prints the PCR0 of the local rebuild and compares
+# to the published value at /pcr0.txt</pre>
+
+  <h2>What enforces zero retention</h2>
+  <ul>
+    <li><a href="https://github.com/Lore-Hex/quill-cloud-proxy/blob/main/enclave/tests/test_no_io.py">
+        <code>enclave/tests/test_no_io.py</code></a> — AST scan that fails CI
+        if any I/O identifier (<code>print</code>, <code>open</code>, <code>logging</code>, etc.) appears
+        in the enclave production source.</li>
+    <li><a href="https://github.com/Lore-Hex/quill-cloud-proxy/blob/main/parent/tests/test_no_content_in_logs.py">
+        <code>parent/tests/test_no_content_in_logs.py</code></a> — AST scan
+        that fails CI if a parent log call has any prompt-content kwarg.</li>
+    <li><a href="https://github.com/Lore-Hex/quill-cloud-proxy/blob/main/parent/src/quill_parent/relay.py">
+        <code>parent/src/quill_parent/relay.py</code></a> — the byte pump
+        between the ALB and the enclave; never decodes the body.</li>
+    <li><a href="https://github.com/Lore-Hex/quill-cloud-infra/blob/main/modules/kms/main.tf">
+        <code>quill-cloud-infra/modules/kms/main.tf</code></a> — KMS condition
+        policy that binds Bedrock-credential decrypt to the published PCR0.</li>
+  </ul>
+
+  <p style="color:#888;font-size:0.85rem;margin-top:3rem">
+    No JavaScript. No analytics. No cookies. Hosted as static files on S3
+    with a 60-second cache header.
+  </p>
+</body>
+</html>

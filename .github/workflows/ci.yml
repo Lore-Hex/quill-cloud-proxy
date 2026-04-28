@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  enclave:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: enclave
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - name: Sync
+        run: uv sync --frozen
+      - name: Lint
+        run: uv run ruff check src tests
+      - name: Format
+        run: uv run ruff format --check src tests
+      - name: Typecheck (mypy --strict, py3.11)
+        run: uv run mypy --strict --python-version 3.11 src tests
+      - name: Test
+        run: uv run pytest -v
+
+  parent:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: parent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - name: Sync
+        run: uv sync --frozen
+      - name: Lint
+        run: uv run ruff check src tests
+      - name: Format
+        run: uv run ruff format --check src tests
+      - name: Typecheck (mypy --strict, py3.11)
+        run: uv run mypy --strict --python-version 3.11 src tests
+      - name: Test
+        run: uv run pytest -v
+
+  trust-page-validation:
+    # Catches accidental script tags / external font fetches / etc. on
+    # the static trust page before publish.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert trust page contains no <script> tags
+        run: |
+          if grep -qi '<script' trust-page/index.html; then
+            echo "trust page must not contain <script>" >&2
+            exit 1
+          fi
+      - name: Assert trust page contains no third-party fetches
+        run: |
+          # Allow github.com links (source code references) and aws.amazon.com docs.
+          # Reject any other external URL in href/src.
+          if grep -E 'href="https?://[^/]*\.(?!github\.com|amazon\.com|amazonaws\.com|aws\.amazon\.com)' trust-page/index.html > /tmp/violations.txt; then
+            cat /tmp/violations.txt
+            echo "trust page contains unexpected external URL" >&2
+            exit 1
+          fi

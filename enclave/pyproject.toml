@@ -1,0 +1,49 @@
+[project]
+name = "quill-enclave"
+version = "0.1.0"
+description = "Quill Cloud — code that runs INSIDE a Nitro Enclave."
+requires-python = ">=3.11"
+dependencies = [
+  # Deliberately minimal: every import expands the PCR0 measurement surface.
+  # No fastapi, no boto3 — we hand-roll HTTP parsing and SigV4.
+  "httpx>=0.27",            # only for tests + dev mock; production code uses raw vsock+TLS
+]
+
+[dependency-groups]
+dev = [
+  "mypy>=1.13",
+  "ruff>=0.7",
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quill_enclave"]
+
+[tool.mypy]
+strict = true
+disallow_any_generics = true
+warn_return_any = true
+warn_unreachable = true
+mypy_path = "src"
+namespace_packages = true
+explicit_package_bases = true
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# ANN bans implicit Any in signatures; the enclave's hard rule is no Any anywhere.
+select = ["E", "F", "I", "B", "UP", "ANN", "RUF", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN201"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

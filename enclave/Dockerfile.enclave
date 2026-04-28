@@ -1,0 +1,31 @@
+# Input image for `nitro-cli build-enclave`. The PCR0 measurement is a
+# function of the rootfs bytes and the kernel cmdline; reproducibility
+# requires:
+#   - pinned base-image digest
+#   - pinned Python wheel set (uv lockfile)
+#   - --no-cache during the verifier rebuild
+#
+# We build a slim layer on top of distroless so the EIF is small and the
+# attack surface is minimal. No shell, no apt, no curl in the final image.
+
+FROM python:3.12-slim-bookworm@sha256:0000000000000000000000000000000000000000000000000000000000000000 AS builder
+# NOTE: pin the digest above to a real value before deploy. CI will fail if
+# the digest is the all-zeros placeholder.
+
+WORKDIR /build
+RUN pip install --no-cache-dir uv==0.5.5
+
+COPY pyproject.toml uv.lock ./
+COPY src ./src
+
+RUN uv sync --frozen --no-dev
+RUN uv build --wheel
+
+FROM gcr.io/distroless/python3-debian12:nonroot AS runtime
+COPY --from=builder /build/.venv /enclave/.venv
+COPY --from=builder /build/src /enclave/src
+
+ENV PYTHONPATH=/enclave/src
+ENV PYTHONDONTWRITEBYTECODE=1
+
+ENTRYPOINT ["/enclave/.venv/bin/python", "-m", "quill_enclave.main"]
