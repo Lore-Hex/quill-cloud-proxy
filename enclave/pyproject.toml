@@ -4,9 +4,9 @@ version = "0.1.0"
 description = "Quill Cloud — code that runs INSIDE a Nitro Enclave."
 requires-python = ">=3.11"
 dependencies = [
-  # Deliberately minimal: every import expands the PCR0 measurement surface.
-  # No fastapi, no boto3 — we hand-roll HTTP parsing and SigV4.
-  "httpx>=0.27",            # only for tests + dev mock; production code uses raw vsock+TLS
+  "aws-nsm-interface>=1.0.0",
+  "boto3>=1.34",
+  "httpx>=0.27",
 ]
 
 [dependency-groups]

@@ -16,19 +16,32 @@ shape of the calls is stable.
 
 from __future__ import annotations
 
+import base64
+from typing import cast
+
+import aws_nsm_interface  # type: ignore[import-untyped]
+import boto3  # type: ignore[import-untyped]
+
 from quill_enclave.attest import AttestationProvider
 
 
 class RealAttestationProvider(AttestationProvider):
     def attestation_document(self) -> bytes:
-        raise NotImplementedError(
-            "Real NSM attestation requires running inside a Nitro Enclave. "
-            "Implement via /dev/nsm IOCTL (NSM_REQUEST_ATTESTATION_DOC). "
-            "Unblock for V1 deployment by adding aws-nitro-enclaves-sdk-py."
-        )
+        fd = aws_nsm_interface.open_nsm_device()
+        try:
+            doc = aws_nsm_interface.get_attestation_doc(fd)
+            return cast(bytes, doc)
+        finally:
+            aws_nsm_interface.close_nsm_device(fd)
 
     def kms_decrypt(self, ciphertext: bytes, attestation_doc: bytes) -> bytes:
-        raise NotImplementedError(
-            "Real KMS-attested decrypt requires the SDK's signed Decrypt call. "
-            "Unblock for V1 deployment by adding aws-nitro-enclaves-sdk-py."
+        client = boto3.client("kms", region_name="us-east-1")
+        b64_doc = base64.b64encode(attestation_doc).decode("utf-8")
+        response = client.decrypt(
+            CiphertextBlob=ciphertext,
+            Recipient={
+                "KeyEncryptionAlgorithm": "RSAES_OAEP_SHA_256",
+                "AttestationDocument": b64_doc,
+            },
         )
+        return cast(bytes, response["Plaintext"])
