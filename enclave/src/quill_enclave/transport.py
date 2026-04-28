@@ -20,8 +20,9 @@ from typing import Final
 AF_VSOCK: Final[int] = 40
 
 # CIDs (vsock equivalent of IP). CID 3 is the parent (host) from the
-# enclave's perspective; CID -1 (0xFFFFFFFF) is the local listening CID.
+# enclave's perspective; CID -1 (0xFFFFFFFF) is "any" / the local listening CID.
 CID_PARENT: Final[int] = 3
+VMADDR_CID_ANY: Final[int] = 0xFFFFFFFF
 PORT_PARENT_RELAY: Final[int] = 8001  # parent listens here, relays to TCP
 PORT_PARENT_USAGE: Final[int] = 8002  # parent listens here, accepts CounterDelta JSONs
 
@@ -47,7 +48,9 @@ def listen_inbound(port: int) -> socket.socket:
         s.listen(8)
         return s
     s = socket.socket(AF_VSOCK, socket.SOCK_STREAM)
-    s.bind((socket.VMADDR_CID_ANY, port))
+    # VMADDR_CID_ANY = 0xFFFFFFFF; not exposed on every Python typeshed,
+    # so use the literal so mypy works on both Python 3.11 and 3.12.
+    s.bind((VMADDR_CID_ANY, port))
     s.listen(8)
     return s
 
