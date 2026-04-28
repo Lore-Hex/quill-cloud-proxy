@@ -47,7 +47,7 @@ def listen_inbound(port: int) -> socket.socket:
         s.listen(8)
         return s
     s = socket.socket(AF_VSOCK, socket.SOCK_STREAM)
-    s.bind((socket.VMADDR_CID_ANY, port))  # type: ignore[attr-defined]
+    s.bind((socket.VMADDR_CID_ANY, port))
     s.listen(8)
     return s
 

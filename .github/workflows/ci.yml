@@ -63,10 +63,13 @@ jobs:
           fi
       - name: Assert trust page contains no third-party fetches
         run: |
-          # Allow github.com links (source code references) and aws.amazon.com docs.
-          # Reject any other external URL in href/src.
-          if grep -E 'href="https?://[^/]*\.(?!github\.com|amazon\.com|amazonaws\.com|aws\.amazon\.com)' trust-page/index.html > /tmp/violations.txt; then
-            cat /tmp/violations.txt
-            echo "trust page contains unexpected external URL" >&2
+          # Allow only github.com + aws docs subdomains. Reject anything else.
+          # We extract every https URL, then filter by the allowlist; if any URL
+          # remains, fail.
+          grep -oE 'https?://[^"[:space:])]+' trust-page/index.html | sort -u > /tmp/urls.txt
+          grep -vE '^https?://(github\.com|aws\.amazon\.com|docs\.aws\.amazon\.com|[a-z0-9.-]+\.amazonaws\.com)(/|$)' /tmp/urls.txt > /tmp/violations.txt || true
+          if [ -s /tmp/violations.txt ]; then
+            echo "trust page contains disallowed external URLs:" >&2
+            cat /tmp/violations.txt >&2
             exit 1
           fi
