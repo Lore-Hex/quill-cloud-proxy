@@ -29,6 +29,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bedrock"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bootstrap"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"github.com/aws/smithy-go"
 	"github.com/mdlayher/vsock"
@@ -52,11 +53,34 @@ func main() {
 	registry := auth.New(boot.Devices)
 	br := bedrock.New(boot)
 
-	// 3. Listen on vsock for inbound HTTP from the parent's relay.
-	listener, err := vsock.Listen(EnclaveListenPort, nil)
+	// 3. Listen on vsock. When QUILL_ENCLAVE_TLS=true, wrap the listener
+	// with an enclave-generated self-signed cert so TLS is terminated INSIDE
+	// the attested binary — i.e. the parent never sees plaintext, and the
+	// PCR0-measured code is the first thing to handle the prompt bytes.
+	//
+	// Phase 1: feature-flagged. The parent's relay still ships HTTP-over-
+	// vsock by default; flipping the flag without flipping the parent will
+	// break the chain (the parent won't speak TLS). Phase 2 swaps the
+	// parent to a raw TCP pump so this flag becomes the default.
+	rawListener, err := vsock.Listen(EnclaveListenPort, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vsock listen failed: %v\n", err)
 		os.Exit(1)
+	}
+	var listener net.Listener = rawListener
+
+	if os.Getenv("QUILL_ENCLAVE_TLS") == "true" {
+		srv, err := enclavetls.NewSelfSigned("api.quill.lorehex.co")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "enclavetls cert failed: %v\n", err)
+			os.Exit(1)
+		}
+		// The fingerprint is the only identity bytes we want clients to
+		// see. Emit to stderr so it lands in the host's cloud-init log
+		// (debug-mode console). Phase 3 will surface it via /attestation
+		// instead so external clients can fetch it without operator help.
+		fmt.Fprintf(os.Stderr, "enclavetls.cert_fingerprint sha256=%s\n", srv.LeafFingerprint)
+		listener = srv.Wrap(rawListener)
 	}
 
 	for {
