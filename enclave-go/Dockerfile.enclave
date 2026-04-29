@@ -37,4 +37,11 @@ RUN go build -trimpath -ldflags='-s -w -extldflags=-static' \
 FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /out/quill-enclave /quill-enclave
+
+# TLS termination INSIDE the enclave — no plaintext prompt content ever
+# exists outside this attested binary. With this ENV the enclave wraps its
+# vsock listener with crypto/tls; the parent's TCP pump must be paired
+# (QUILL_TCP_PUMP=true on parent + NLB doing TCP passthrough at :443).
+ENV QUILL_ENCLAVE_TLS=true
+
 ENTRYPOINT ["/quill-enclave"]
