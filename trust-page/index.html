@@ -24,10 +24,13 @@
   <h1>Quill Cloud — trust</h1>
   <p>
     The Quill Cloud prompt path runs inside an
-    <a href="https://docs.aws.amazon.com/enclaves/">AWS Nitro Enclave</a>.
-    The KMS keys it needs to reach Bedrock are released by AWS only when
-    the enclave's PCR0 measurement matches the published value below.
-    That binds the running binary to this open-source code at this commit.
+    <a href="https://docs.aws.amazon.com/enclaves/">AWS Nitro Enclave</a>
+    that <strong>terminates TLS internally</strong>. AWS infrastructure (the
+    NLB, the parent host) only ever sees ciphertext; the only code that
+    decrypts your prompt is the binary measured by the PCR0 below. The KMS
+    keys the enclave needs to reach Bedrock are released by AWS only when
+    that PCR0 matches the published value, binding the running binary to
+    this open-source code at this commit.
   </p>
 
   <h2>Identity</h2>
@@ -65,17 +68,17 @@
     parent host) never holds plaintext prompt content. To verify a live
     session, fetch the attestation document from the running enclave:
   </p>
-  <pre class="pre">curl -s https://api.quill.lorehex.co/attestation \
-  --cacert &lt;(echo | openssl s_client -connect api.quill.lorehex.co:443 \
-                       2&gt;/dev/null | openssl x509) \
-  -o attestation.cbor
+  <pre class="pre">curl -kSs https://api.quill.lorehex.co/attestation -o attestation.cbor
 
 # Decode + verify with AWS Nitro's root CA, then check:
-#   1. PCR0 matches /pcr0.txt above
-#   2. PublicKey matches the cert your TLS handshake just received
-#   3. The COSE signature chains to AWS Nitro Attestation PKI
-python tools/verify-attestation.py attestation.cbor \
-       --expected-pcr0 "$(curl -s https://trust.quill.lorehex.co/pcr0.txt)"</pre>
+#   1. COSE_Sign1 chains to AWS Nitro Attestation PKI
+#   2. PCR0 matches /pcr0.txt above
+#   3. public_key field matches the cert your TLS handshake received
+#   4. user_data[:32] matches the hash of that cert
+uv run --with cbor2 --with cryptography python3 \
+       tools/verify-attestation.py attestation.cbor \
+       --expected-pcr0 "$(curl -sS https://trust.quill.lorehex.co/pcr0.txt)" \
+       --api-host api.quill.lorehex.co</pre>
   <p>
     The attestation document binds <em>this exact build</em> (PCR0) to the
     public key of the TLS cert presented in your handshake. If the cert
@@ -110,6 +113,33 @@ cd quill-cloud-proxy
 ./tools/verify-pcr0.sh
 # the script prints the PCR0 of the local rebuild and compares
 # to the published value at /pcr0.txt</pre>
+
+  <h2>Code transparency</h2>
+  <p>
+    Every release of <code>pcr0.txt</code> is signed by the GitHub Actions
+    OIDC identity for <code>Lore-Hex/quill-cloud-proxy</code> and recorded
+    in <a href="https://www.sigstore.dev/">Sigstore Rekor</a>, a public
+    append-only transparency log. The signature + cert + Rekor inclusion
+    proof are bundled at
+    <a href="/pcr0.txt.bundle"><code>/pcr0.txt.bundle</code></a>. Anyone
+    can verify the binding without trusting this server:
+  </p>
+  <pre class="pre">curl -sS -o pcr0.txt        https://trust.quill.lorehex.co/pcr0.txt
+curl -sS -o pcr0.txt.bundle https://trust.quill.lorehex.co/pcr0.txt.bundle
+
+cosign verify-blob \
+  --bundle pcr0.txt.bundle \
+  --certificate-identity-regexp '^https://github.com/Lore-Hex/quill-cloud-proxy/.*' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  pcr0.txt</pre>
+  <p>
+    A successful verify proves: this PCR0 was signed by the GitHub
+    Actions identity for this repo, at the timestamp Rekor recorded,
+    against a Fulcio-issued ephemeral certificate whose subject claims
+    matched the repo's CI run. A silent rebuild of the cloud binary
+    can't forge this — Rekor is append-only and the OIDC token is
+    short-lived.
+  </p>
 
   <h2>What enforces zero retention</h2>
   <ul>
