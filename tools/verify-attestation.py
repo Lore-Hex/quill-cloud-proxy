@@ -36,6 +36,7 @@ from pathlib import Path
 import cbor2
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -68,6 +69,9 @@ def verify_signature(blob: bytes) -> None:
     cert_der = payload["certificate"]
     cabundle_der = payload.get("cabundle", []) or []
     leaf = x509.load_der_x509_certificate(cert_der)
+    # AWS publishes cabundle root-first: cabundle[0] is at/near the root,
+    # cabundle[-1] is the leaf's direct issuer. We walk leaf → cabundle[-1]
+    # → cabundle[-2] → ... → cabundle[0] → AWS root.
     intermediates = [x509.load_der_x509_certificate(c) for c in cabundle_der]
     root = x509.load_pem_x509_certificate(AWS_NITRO_ROOT_PEM)
 
@@ -78,18 +82,19 @@ def verify_signature(blob: bytes) -> None:
     # Convert raw r||s back into DER for the cryptography API.
     r = int.from_bytes(signature[: len(signature) // 2], "big")
     s = int.from_bytes(signature[len(signature) // 2 :], "big")
-    der_sig = ec.encode_dss_signature(r, s)
+    der_sig = encode_dss_signature(r, s)
     public_key.verify(der_sig, sig_structure, ec.ECDSA(hashes.SHA384()))
 
-    # Walk the chain. Each cert in cabundle is signed by the next (root last).
-    chain = [leaf, *intermediates]
-    for child, parent in zip(chain, chain[1:] + [root]):
+    # Chain order: leaf is signed by intermediates[-1]; intermediates[-1] by
+    # intermediates[-2]; ...; intermediates[0] by root.
+    issuers = list(reversed(intermediates)) + [root]
+    children = [leaf] + list(reversed(intermediates))
+    for child, parent in zip(children, issuers):
         parent.public_key().verify(  # type: ignore[union-attr]
             child.signature,
             child.tbs_certificate_bytes,
             ec.ECDSA(child.signature_hash_algorithm),
         )
-    # Anchor: the last intermediate must be signed by the root.
     print("[ok] COSE_Sign1 chain validates to AWS Nitro root")
 
 

@@ -57,6 +57,30 @@ jobs:
             --push \
             parent
 
+      # Code transparency: sign pcr0.txt with cosign keyless mode using the
+      # GitHub Actions OIDC identity for this repo, and push the signature +
+      # certificate + Rekor inclusion proof into a bundle. Anyone can later
+      # verify "this PCR0 was signed by the GitHub identity for
+      # Lore-Hex/quill-cloud-proxy at this exact timestamp" by querying the
+      # Rekor public transparency log — detects silent rebuilds and proves
+      # the binding was made at the time the code claims.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
+
+      - name: Sign pcr0.txt with cosign (keyless, Rekor-recorded)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign-blob \
+            --bundle trust-page/pcr0.txt.bundle \
+            trust-page/pcr0.txt
+          # The .bundle file contains the signature, ephemeral cert, and the
+          # Rekor inclusion proof. Verifiers don't need to talk to Rekor at
+          # verify time; the bundle is self-contained.
+          ls -lh trust-page/pcr0.txt.bundle
+
       # Trust page: redeploy in case index.html changed. PCR0 update is a
       # separate step driven from the host (build-eif → captured PCR0 →
       # `make deploy-trust QUILL_PCR0=...`).
@@ -69,3 +93,6 @@ jobs:
           aws s3 cp trust-page/pcr0.txt s3://trust.quill.lorehex.co/pcr0.txt \
             --cache-control "max-age=60, public" \
             --content-type "text/plain; charset=utf-8"
+          aws s3 cp trust-page/pcr0.txt.bundle s3://trust.quill.lorehex.co/pcr0.txt.bundle \
+            --cache-control "max-age=60, public" \
+            --content-type "application/json"
