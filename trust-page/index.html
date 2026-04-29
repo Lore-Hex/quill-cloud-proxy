@@ -2,8 +2,24 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Quill Cloud — trust</title>
+  <title>Quill Cloud — verifiable zero-retention AI proxy</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A verifiable zero-retention proxy to Claude. TLS terminates inside an AWS Nitro Enclave; the binary is signed, measured (PCR0), recorded in Sigstore Rekor, and the keys to reach Claude are released only to that exact build.">
+
+  <!-- Open Graph + Twitter / X share metadata. Image is the same hero
+       used at top of body, so a shared link previews identically to the
+       lorehex.co/quill marketing page. -->
+  <meta property="og:type"        content="website">
+  <meta property="og:url"         content="https://trust.quill.lorehex.co/">
+  <meta property="og:title"       content="Quill Cloud — verifiable zero-retention AI proxy">
+  <meta property="og:description" content="The signed binary is the boundary. TLS terminates inside an AWS Nitro Enclave; the keys to reach Claude are released only to a PCR0 measurement that's published, attested, and signed in Sigstore Rekor. Audit the chain or just buy the box.">
+  <meta property="og:image"       content="https://lorehex.co/quill-og.png">
+  <meta property="og:image:alt"   content="Quill — your AI in a box, with verifiable zero-retention cloud">
+
+  <meta name="twitter:card"        content="summary_large_image">
+  <meta name="twitter:title"       content="Quill Cloud — verifiable zero-retention AI proxy">
+  <meta name="twitter:description" content="The signed binary is the boundary. TLS terminates inside an AWS Nitro Enclave; the keys to reach Claude are released only to a PCR0 measurement that's published, attested, and signed in Sigstore Rekor.">
+  <meta name="twitter:image"       content="https://lorehex.co/quill-og.png">
   <style>
     body { font-family: ui-sans-serif, system-ui, sans-serif;
            max-width: 50rem; margin: 2rem auto; padding: 1rem; color: #222; }
