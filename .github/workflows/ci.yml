@@ -62,13 +62,14 @@ jobs:
           # Allowlist:
           #  - github.com (source links)
           #  - aws.amazon.com / *.amazonaws.com (Nitro + KMS docs)
-          #  - *.lorehex.co (our own API + trust page in curl recipes)
+          #  - lorehex.co + *.lorehex.co (our own pages + curl recipes;
+          #    bare lorehex.co covers the marketing CTA at the top)
           #  - sigstore.dev / *.sigstore.dev (transparency-log docs)
           #  - token.actions.githubusercontent.com (Fulcio OIDC issuer
           #    referenced in the cosign verify recipe — required arg, not
           #    a fetch the page makes)
           grep -oE 'https?://[^"[:space:])]+' trust-page/index.html | sort -u > /tmp/urls.txt
-          grep -vE "^https?://(github\.com|aws\.amazon\.com|docs\.aws\.amazon\.com|[a-z0-9.-]+\.amazonaws\.com|[a-z0-9.-]+\.lorehex\.co|sigstore\.dev|[a-z0-9.-]+\.sigstore\.dev|token\.actions\.githubusercontent\.com)(/|$|')" /tmp/urls.txt > /tmp/violations.txt || true
+          grep -vE "^https?://(github\.com|aws\.amazon\.com|docs\.aws\.amazon\.com|[a-z0-9.-]+\.amazonaws\.com|lorehex\.co|[a-z0-9.-]+\.lorehex\.co|sigstore\.dev|[a-z0-9.-]+\.sigstore\.dev|token\.actions\.githubusercontent\.com)(/|$|')" /tmp/urls.txt > /tmp/violations.txt || true
           if [ -s /tmp/violations.txt ]; then
             echo "trust page contains disallowed external URLs:" >&2
             cat /tmp/violations.txt >&2
