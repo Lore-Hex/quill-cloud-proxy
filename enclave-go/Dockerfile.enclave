@@ -4,8 +4,13 @@
 #   - runtime: scratch — single binary, no shell, no libc, no /etc/*
 # The EIF measurement is a function of the rootfs bytes, so the runtime
 # being literally one binary is what makes the PCR0 small + auditable.
-
-FROM golang:1.24-bookworm AS builder
+#
+# REPRODUCIBILITY: the base image is pinned by sha256 digest, not just by
+# tag. `golang:1.24-bookworm` is mutable (Docker reuses the tag every
+# minor release); the digest pin makes PCR0 stable across rebuilds. To
+# update: `docker manifest inspect golang:1.24-bookworm` for the new
+# arm64 digest, replace below, expect PCR0 to change, re-publish.
+FROM golang:1.24-bookworm@sha256:ca0741815eee3625da09eddf15cc8ff678efa16520fcbcdbeb2ae0b0c519c82c AS builder
 
 # ca-certificates: Go's crypto/tls reads /etc/ssl/certs/ca-certificates.crt at
 # runtime to verify TLS peers (Bedrock in our case). The scratch base has no

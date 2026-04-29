@@ -31,6 +31,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bedrock"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bootstrap"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/entropy"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"github.com/aws/smithy-go"
 	"github.com/mdlayher/vsock"
@@ -42,6 +43,19 @@ const EnclaveListenPort uint32 = 8001
 func main() {
 	ctx := context.Background()
 
+	// 0. Seed the kernel's CSPRNG from the NSM hardware RNG before any
+	// crypto/rand consumer (TLS keypair, request IDs, x509 serials) reads
+	// it. Linux's /dev/urandom is starved at boot inside an enclave —
+	// without seeding, an early TLS keypair could be generated from
+	// dangerously low entropy. NSM-sourced bytes come from the Nitro
+	// hypervisor's hardware RNG, distinct from the guest kernel's pool.
+	// Skipped outside enclaves (no /dev/nsm); not fatal if seeding fails
+	// — the kernel will still hit a real entropy source eventually, but
+	// the trust story prefers we shout if it doesn't.
+	if err := entropy.Seed(); err != nil {
+		fmt.Fprintf(os.Stderr, "entropy.seed_failed: %v (continuing)\n", err)
+	}
+
 	// 1. Fetch bootstrap data from parent.
 	boot, err := bootstrap.Fetch(ctx)
 	if err != nil {
@@ -50,9 +64,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2. Build registries.
+	// 2. Build registries. Capture a canonical hash of the device list
+	// so /attestation can include it in the document's UserData — clients
+	// learn the exact set of bearer tokens currently authorized, and any
+	// silent rotation produces a new attestation.
 	registry := auth.New(boot.Devices)
 	br := bedrock.New(boot)
+
+	deviceBlob, _ := json.Marshal(boot.Devices)
 
 	// 3. Listen on vsock. When QUILL_ENCLAVE_TLS=true, wrap the listener
 	// with an enclave-generated self-signed cert so TLS is terminated INSIDE
@@ -91,11 +110,11 @@ func main() {
 		if err != nil {
 			continue
 		}
-		go serveOne(ctx, conn, registry, br, leafDER)
+		go serveOne(ctx, conn, registry, br, leafDER, deviceBlob)
 	}
 }
 
-func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br *bedrock.Client, leafDER []byte) {
+func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br *bedrock.Client, leafDER, deviceBlob []byte) {
 	defer conn.Close()
 
 	method, path, bearer, body, err := readRequest(conn)
@@ -109,7 +128,7 @@ func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br *bedroc
 	// Trust binding still holds — the doc commits to the live TLS cert,
 	// which only this enclave can speak.
 	if method == "GET" && path == "/attestation" {
-		serveAttestation(conn, leafDER)
+		serveAttestation(conn, leafDER, deviceBlob)
 		return
 	}
 
@@ -278,12 +297,12 @@ func readRequest(r net.Conn) (method, path, bearer string, body []byte, err erro
 //
 // nonce: ?nonce=<hex> in the query string. Optional but recommended —
 // a client-supplied freshness token so the doc is provably not a replay.
-func serveAttestation(conn io.Writer, leafDER []byte) {
+func serveAttestation(conn io.Writer, leafDER, deviceBlob []byte) {
 	if leafDER == nil {
 		writeError(conn, 503, "TLS not enabled in this enclave; attestation requires a bound cert")
 		return
 	}
-	doc, err := attestation.Get(leafDER, nil)
+	doc, err := attestation.Get(leafDER, deviceBlob, nil)
 	if err != nil {
 		writeError(conn, 500, "attestation: "+err.Error())
 		return

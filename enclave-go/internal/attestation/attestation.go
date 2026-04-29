@@ -33,12 +33,23 @@ import (
 	"github.com/hf/nsm/response"
 )
 
-// Get returns a fresh attestation document binding the given leaf cert
-// (and an optional client-supplied nonce) into the NSM-signed COSE blob.
+// Get returns a fresh attestation document binding the live cryptographic
+// state of the enclave into a single NSM-signed COSE blob.
 //
-// `nonce` may be nil; it's a freshness signal supplied by the caller so
-// they know the document was generated for *their* request, not replayed.
-func Get(leafDER []byte, nonce []byte) ([]byte, error) {
+// PublicKey: the TLS leaf cert's SubjectPublicKeyInfo. Lets the client
+//   verify "the cert in this TLS handshake is the cert this PCR0 attests
+//   to."
+//
+// UserData: a 64-byte structure encoding additional layer-7 commitments —
+//   { sha256(leaf cert) || sha256(device-key blob) }. The device-key hash
+//   binds the attestation to the exact set of authorized bearer tokens
+//   currently loaded in memory; rotating the device blob produces a new
+//   attestation, so a recipient can be sure their bearer token isn't
+//   silently being honoured by a stale cached set.
+//
+// Nonce: caller-supplied freshness — the doc was generated for *their*
+//   request, not replayed.
+func Get(leafDER []byte, deviceBlob []byte, nonce []byte) ([]byte, error) {
 	leaf, err := x509.ParseCertificate(leafDER)
 	if err != nil {
 		return nil, fmt.Errorf("attestation: parse leaf: %w", err)
@@ -51,9 +62,15 @@ func Get(leafDER []byte, nonce []byte) ([]byte, error) {
 		return nil, fmt.Errorf("attestation: marshal public key: %w", err)
 	}
 
-	// SHA-256 of the cert (DER) — also embedded so a hash-only client
-	// doesn't have to do ASN.1 parsing.
-	fp := sha256.Sum256(leafDER)
+	// 64 bytes: cert fingerprint || device-blob fingerprint.
+	certFP := sha256.Sum256(leafDER)
+	var blobFP [32]byte
+	if deviceBlob != nil {
+		blobFP = sha256.Sum256(deviceBlob)
+	}
+	userData := make([]byte, 0, 64)
+	userData = append(userData, certFP[:]...)
+	userData = append(userData, blobFP[:]...)
 
 	sess, err := nsm.OpenDefaultSession()
 	if err != nil {
@@ -63,7 +80,7 @@ func Get(leafDER []byte, nonce []byte) ([]byte, error) {
 
 	resp, err := sess.Send(&request.Attestation{
 		Nonce:     nonce,
-		UserData:  fp[:],
+		UserData:  userData,
 		PublicKey: spki,
 	})
 	if err != nil {

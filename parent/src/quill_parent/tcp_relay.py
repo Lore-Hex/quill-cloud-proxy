@@ -25,6 +25,7 @@ during the cutover.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import socket
 from typing import Final
@@ -52,9 +53,7 @@ async def _open_vsock_pair(
         )
     raw = socket.socket(AF_VSOCK, socket.SOCK_STREAM)
     raw.setblocking(False)
-    await asyncio.get_event_loop().sock_connect(
-        raw, (ENCLAVE_CID, settings.enclave_relay_port)
-    )
+    await asyncio.get_event_loop().sock_connect(raw, (ENCLAVE_CID, settings.enclave_relay_port))
     return await asyncio.open_connection(sock=raw)
 
 
@@ -72,10 +71,8 @@ async def _pump(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
         # because the parent never sees per-request payload data.
         pass
     finally:
-        try:
+        with contextlib.suppress(OSError, RuntimeError):
             dst.write_eof()
-        except (OSError, RuntimeError):
-            pass
 
 
 async def _handle_client(
@@ -93,17 +90,13 @@ async def _handle_client(
     try:
         c2e = asyncio.create_task(_pump(client_reader, enclave_writer))
         e2c = asyncio.create_task(_pump(enclave_reader, client_writer))
-        _, pending = await asyncio.wait(
-            {c2e, e2c}, return_when=asyncio.FIRST_COMPLETED
-        )
+        _, pending = await asyncio.wait({c2e, e2c}, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
     finally:
         for w in (client_writer, enclave_writer):
-            try:
+            with contextlib.suppress(OSError, RuntimeError):
                 w.close()
-            except (OSError, RuntimeError):
-                pass
 
 
 async def serve_forever(settings: Settings) -> None:
