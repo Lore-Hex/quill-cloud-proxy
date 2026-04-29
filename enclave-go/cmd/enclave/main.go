@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/attestation"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bedrock"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bootstrap"
@@ -69,17 +70,19 @@ func main() {
 	}
 	var listener net.Listener = rawListener
 
+	// leafDER is non-nil only when TLS is enabled; the /attestation handler
+	// uses it to bind the live cert into the NSM-signed document. Empty
+	// = /attestation responds 503 (we have no cert to attest).
+	var leafDER []byte
+
 	if os.Getenv("QUILL_ENCLAVE_TLS") == "true" {
 		srv, err := enclavetls.NewSelfSigned("api.quill.lorehex.co")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclavetls cert failed: %v\n", err)
 			os.Exit(1)
 		}
-		// The fingerprint is the only identity bytes we want clients to
-		// see. Emit to stderr so it lands in the host's cloud-init log
-		// (debug-mode console). Phase 3 will surface it via /attestation
-		// instead so external clients can fetch it without operator help.
 		fmt.Fprintf(os.Stderr, "enclavetls.cert_fingerprint sha256=%s\n", srv.LeafFingerprint)
+		leafDER = srv.Certificate.Certificate[0]
 		listener = srv.Wrap(rawListener)
 	}
 
@@ -88,16 +91,25 @@ func main() {
 		if err != nil {
 			continue
 		}
-		go serveOne(ctx, conn, registry, br)
+		go serveOne(ctx, conn, registry, br, leafDER)
 	}
 }
 
-func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br *bedrock.Client) {
+func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br *bedrock.Client, leafDER []byte) {
 	defer conn.Close()
 
-	bearer, body, err := readRequest(conn)
+	method, path, bearer, body, err := readRequest(conn)
 	if err != nil {
 		writeError(conn, 400, "could not read request")
+		return
+	}
+
+	// /attestation is the only path that's anonymous: clients call it
+	// BEFORE pinning, so requiring a bearer would defeat the purpose.
+	// Trust binding still holds — the doc commits to the live TLS cert,
+	// which only this enclave can speak.
+	if method == "GET" && path == "/attestation" {
+		serveAttestation(conn, leafDER)
 		return
 	}
 
@@ -211,19 +223,26 @@ func asAdapterErr(err error, target **adapter.AdapterError) bool {
 }
 
 // readRequest reads a minimal HTTP/1.1 request: status line + headers + body.
-// Looks only for Authorization (Bearer) and Content-Length. Everything else
-// is ignored.
-func readRequest(r net.Conn) (bearer string, body []byte, err error) {
+// Returns method + path + bearer + body. We don't validate Host or any
+// other field; the dispatch happens by path in serveOne.
+func readRequest(r net.Conn) (method, path, bearer string, body []byte, err error) {
 	br := bufio.NewReader(r)
-	// Status line
-	if _, err := br.ReadString('\n'); err != nil {
-		return "", nil, err
+	statusLine, err := br.ReadString('\n')
+	if err != nil {
+		return "", "", "", nil, err
 	}
+	// "GET /path HTTP/1.1\r\n" — split into 3 fields
+	parts := strings.Fields(statusLine)
+	if len(parts) >= 2 {
+		method = parts[0]
+		path = parts[1]
+	}
+
 	contentLength := 0
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
-			return "", nil, err
+			return "", "", "", nil, err
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
@@ -243,10 +262,36 @@ func readRequest(r net.Conn) (bearer string, body []byte, err error) {
 		}
 	}
 	body = make([]byte, contentLength)
-	if _, err := io.ReadFull(br, body); err != nil {
-		return "", nil, err
+	if contentLength > 0 {
+		if _, err := io.ReadFull(br, body); err != nil {
+			return "", "", "", nil, err
+		}
 	}
-	return bearer, body, nil
+	return method, path, bearer, body, nil
+}
+
+// serveAttestation answers GET /attestation with the NSM-signed CBOR
+// document binding the live TLS cert's public key. Clients fetch this
+// before sending prompts; verify against AWS's NSM root + check PCR0
+// matches the trust page's published value + check the cert presented in
+// their TLS handshake matches the doc's PublicKey field.
+//
+// nonce: ?nonce=<hex> in the query string. Optional but recommended —
+// a client-supplied freshness token so the doc is provably not a replay.
+func serveAttestation(conn io.Writer, leafDER []byte) {
+	if leafDER == nil {
+		writeError(conn, 503, "TLS not enabled in this enclave; attestation requires a bound cert")
+		return
+	}
+	doc, err := attestation.Get(leafDER, nil)
+	if err != nil {
+		writeError(conn, 500, "attestation: "+err.Error())
+		return
+	}
+	fmt.Fprintf(conn,
+		"HTTP/1.1 200 OK\r\nContent-Type: application/cbor\r\nContent-Length: %d\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+		len(doc))
+	conn.Write(doc)
 }
 
 func writeError(w io.Writer, status int, message string) {

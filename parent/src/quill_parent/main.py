@@ -31,7 +31,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from quill_parent import bootstrap_server
+from quill_parent import bootstrap_server, tcp_relay
 from quill_parent.config import Settings, get_settings
 from quill_parent.heartbeat import Heartbeat, emit_startup
 from quill_parent.logging import configure_logging
@@ -64,12 +64,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
         )
         app.state.bootstrap_task = bootstrap_task
+
+    # Phase 2 of TLS-inside: raw TCP pump from the NLB to the enclave's
+    # vsock listener. Off by default until the enclave's QUILL_ENCLAVE_TLS
+    # is also flipped on. Both can run simultaneously while the load-
+    # balancer side is being switched from ALB → NLB.
+    tcp_pump_task: asyncio.Task[None] | None = None
+    if tcp_relay.is_enabled():
+        tcp_pump_task = asyncio.create_task(tcp_relay.serve_forever(settings))
+        app.state.tcp_pump_task = tcp_pump_task
+
     try:
         yield
     finally:
         app.state.heartbeat_task.cancel()
         if bootstrap_task is not None:
             bootstrap_task.cancel()
+        if tcp_pump_task is not None:
+            tcp_pump_task.cancel()
 
 
 def create_app() -> FastAPI:
