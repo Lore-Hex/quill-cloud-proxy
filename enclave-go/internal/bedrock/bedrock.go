@@ -27,10 +27,12 @@ type Client struct {
 // into the Bedrock model ID for us-east-1. Confirm against
 // `aws bedrock list-foundation-models --region us-east-1` before launch.
 var modelIDMap = map[string]string{
-	// IDs confirmed against `aws bedrock list-foundation-models --region us-east-1`.
-	"claude-opus-4-7":           "anthropic.claude-opus-4-7",
-	"claude-sonnet-4-6":         "anthropic.claude-sonnet-4-6",
-	"claude-haiku-4-5-20251001": "anthropic.claude-haiku-4-5-20251001-v1:0",
+	// Claude 4 models require cross-region inference profiles ("us." prefix)
+	// for on-demand invocation in us-east-1. Confirmed via
+	// `aws bedrock list-inference-profiles --region us-east-1`.
+	"claude-opus-4-7":           "us.anthropic.claude-opus-4-7",
+	"claude-sonnet-4-6":         "us.anthropic.claude-sonnet-4-6",
+	"claude-haiku-4-5-20251001": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 }
 
 // MapModel returns the Bedrock model ID for an OpenAI-friendly name.
