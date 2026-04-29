@@ -32,17 +32,63 @@
 
   <h2>Identity</h2>
   <table>
-    <tr><th>Source code</th>     <td><a href="https://github.com/Lore-Hex/quill-cloud-proxy">github.com/Lore-Hex/quill-cloud-proxy</a></td></tr>
-    <tr><th>Infrastructure</th>  <td><a href="https://github.com/Lore-Hex/quill-cloud-infra">github.com/Lore-Hex/quill-cloud-infra</a></td></tr>
-    <tr><th>License</th>         <td>Apache 2.0</td></tr>
+    <tr><th>Cloud proxy (this attested binary)</th>
+        <td><a href="https://github.com/Lore-Hex/quill-cloud-proxy">github.com/Lore-Hex/quill-cloud-proxy</a></td></tr>
+    <tr><th>Cloud infrastructure</th>
+        <td><a href="https://github.com/Lore-Hex/quill-cloud-infra">github.com/Lore-Hex/quill-cloud-infra</a></td></tr>
+    <tr><th>Device (Pi) firmware + UI</th>
+        <td><a href="https://github.com/Lore-Hex/quill">github.com/Lore-Hex/quill</a></td></tr>
+    <tr><th>Mac / iOS / visionOS client</th>
+        <td><a href="https://github.com/Lore-Hex/quill-chat">github.com/Lore-Hex/quill-chat</a></td></tr>
+    <tr><th>OllamaKit fork (cert pinning)</th>
+        <td><a href="https://github.com/Lore-Hex/OllamaKit">github.com/Lore-Hex/OllamaKit</a></td></tr>
+    <tr><th>License</th>         <td>Apache 2.0 (cloud) / Apache 2.0 (chat client) / MIT (OllamaKit)</td></tr>
     <tr><th>Region</th>          <td>us-east-1</td></tr>
   </table>
+
+  <p style="font-size:0.95rem;color:#444">
+    Every layer between you and Anthropic is in those repos. Audit any
+    of them at any commit; the published PCR0 below pins the cloud
+    binary to a specific commit of <code>quill-cloud-proxy</code>.
+  </p>
 
   <h2>Current build</h2>
   <p>
     See <a href="/pcr0.txt"><code>/pcr0.txt</code></a> for the live PCR0 value.
     It is updated atomically with each release. Compare to the output of
     <code>./tools/verify-pcr0.sh</code> on a clean clone.
+  </p>
+
+  <h2>Live attestation</h2>
+  <p>
+    The enclave terminates TLS internally — AWS infrastructure (ALB, NLB,
+    parent host) never holds plaintext prompt content. To verify a live
+    session, fetch the attestation document from the running enclave:
+  </p>
+  <pre class="pre">curl -s https://api.quill.lorehex.co/attestation \
+  --cacert &lt;(echo | openssl s_client -connect api.quill.lorehex.co:443 \
+                       2&gt;/dev/null | openssl x509) \
+  -o attestation.cbor
+
+# Decode + verify with AWS Nitro's root CA, then check:
+#   1. PCR0 matches /pcr0.txt above
+#   2. PublicKey matches the cert your TLS handshake just received
+#   3. The COSE signature chains to AWS Nitro Attestation PKI
+python tools/verify-attestation.py attestation.cbor \
+       --expected-pcr0 "$(curl -s https://trust.quill.lorehex.co/pcr0.txt)"</pre>
+  <p>
+    The attestation document binds <em>this exact build</em> (PCR0) to the
+    public key of the TLS cert presented in your handshake. If the cert
+    rotates (new enclave boot), refetch <code>/attestation</code> and
+    repin. The cert-private-key never touches disk and never leaves the
+    enclave's memory.
+  </p>
+  <p>
+    The check is the same shape Brave's
+    <a href="https://github.com/brave/nitriding-daemon">nitriding-daemon</a>
+    uses; all four bindings (PCR0 → attestation doc → cert public key →
+    live TLS session) chain to "the bytes I'm sending are encrypted to a
+    specific build of code measured against this repo."
   </p>
 
   <h2>What is retained</h2>
