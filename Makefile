@@ -17,6 +17,9 @@ enclave-go-test:
 enclave-go-vet:
 	cd $(ENCLAVE_DIR) && go vet ./...
 
+enclave-go-lint:
+	cd $(ENCLAVE_DIR) && golangci-lint run
+
 # ---- Python parent --------------------------------------------------------
 
 sync:
@@ -37,7 +40,7 @@ typecheck:
 test:
 	cd $(PARENT_DIR) && uv run pytest
 
-check: lint format-check typecheck test enclave-go-build enclave-go-vet enclave-go-test
+check: lint format-check typecheck test enclave-go-build enclave-go-lint enclave-go-test
 
 run-mock:
 	cd $(PARENT_DIR) && QUILL_TRANSPORT=unix-socket uv run uvicorn quill_parent.main:app --host 127.0.0.1 --port 8443

@@ -25,9 +25,13 @@ const DefaultMaxTokens = 4096
 type AdapterError struct {
 	Status  int
 	Message string
+	Context string
 }
 
 func (e *AdapterError) Error() string {
+	if e.Context != "" {
+		return fmt.Sprintf("adapter: %s [%s] (status %d)", e.Message, e.Context, e.Status)
+	}
 	return fmt.Sprintf("adapter: %s (status %d)", e.Message, e.Status)
 }
 
@@ -38,7 +42,7 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 	}
 	var systemParts []string
 	var msgs []types.AnthropicMessage
-	for _, m := range req.Messages {
+	for i, m := range req.Messages {
 		if m.Content == "" {
 			continue
 		}
@@ -48,7 +52,11 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 		case "user", "assistant":
 			msgs = append(msgs, types.AnthropicMessage{Role: m.Role, Content: m.Content})
 		default:
-			return nil, &AdapterError{Status: 400, Message: "unsupported role: " + m.Role}
+			return nil, &AdapterError{
+				Status:  400,
+				Message: "unsupported role",
+				Context: fmt.Sprintf("message[%d].role=%q", i, m.Role),
+			}
 		}
 	}
 	if len(msgs) == 0 {
