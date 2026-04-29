@@ -12,17 +12,27 @@ jobs:
     defaults:
       run:
         working-directory: enclave-go
+    strategy:
+      matrix:
+        # The same source tree builds two distinct cloud-targeted binaries.
+        # `aws` (default) → AWS Nitro Enclaves with Bedrock; `gcp` → GCP
+        # Confidential Space with Vertex AI. CI exercises both so a change
+        # that breaks one cloud's build fails fast.
+        target: [aws, gcp]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
-      - name: Build
-        run: go build ./...
-      - name: Vet
-        run: go vet ./...
-      - name: Test
-        run: go test ./...
+      - name: Build (${{ matrix.target }})
+        run: go build -tags ${{ matrix.target }} ./...
+      - name: Vet (${{ matrix.target }})
+        run: go vet -tags ${{ matrix.target }} ./...
+      - name: Test (${{ matrix.target }})
+        # Tests under build tags run only when their tag is set, so the
+        # AWS-specific bedrock_test.go runs only on the aws matrix slot
+        # and the (future) GCP equivalent runs on gcp.
+        run: go test -tags ${{ matrix.target }} ./...
 
   parent:
     runs-on: ubuntu-latest

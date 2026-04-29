@@ -28,10 +28,10 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/attestation"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bedrock"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bootstrap"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/entropy"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"github.com/aws/smithy-go"
 	"github.com/mdlayher/vsock"
@@ -69,7 +69,7 @@ func main() {
 	// learn the exact set of bearer tokens currently authorized, and any
 	// silent rotation produces a new attestation.
 	registry := auth.New(boot.Devices)
-	br := bedrock.New(boot)
+	br := llm.New(boot) // build-tag-gated: AWS Bedrock by default, GCP Vertex with -tags gcp
 
 	deviceBlob, _ := json.Marshal(boot.Devices)
 
@@ -114,7 +114,7 @@ func main() {
 	}
 }
 
-func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br *bedrock.Client, leafDER, deviceBlob []byte) {
+func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br llm.Client, leafDER, deviceBlob []byte) {
 	defer conn.Close()
 
 	method, path, bearer, body, err := readRequest(conn)
@@ -154,12 +154,6 @@ func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br *bedroc
 		writeError(conn, 500, "adapter error")
 		return
 	}
-	bedrockModelID, ok := bedrock.MapModel(req.Model)
-	if !ok {
-		writeError(conn, 400, "unknown model: "+req.Model)
-		return
-	}
-
 	requestID := newRequestID()
 	if err := writeResponseHead(conn, 200); err != nil {
 		return
@@ -171,7 +165,10 @@ func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br *bedroc
 	pr, pw := io.Pipe()
 	go func() {
 		defer pw.Close()
-		if err := br.InvokeStreaming(ctx, bedrockModelID, anthropicReq, pw); err != nil {
+		// llm.Client decides what model-name translation (if any) to do
+		// internally — Bedrock maps to inference profile IDs; Vertex
+		// passes through unchanged.
+		if err := br.InvokeStreaming(ctx, req.Model, anthropicReq, pw); err != nil {
 			emitErrorAsAnthropicSSE(pw, err)
 		}
 	}()
