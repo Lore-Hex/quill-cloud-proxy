@@ -34,7 +34,7 @@ from quill_parent.logging import get_logger
 
 log = get_logger(__name__)
 
-BOOTSTRAP_PORT: Final[int] = 9000
+BOOTSTRAP_PORT: Final[int] = 9100  # nitro-cli reserves vsock 9000 for boot heartbeat
 AF_VSOCK: Final[int] = 40
 VMADDR_CID_ANY: Final[int] = 0xFFFFFFFF
 

@@ -1,9 +1,13 @@
 // Package bootstrap fetches the BootstrapData from the parent over vsock.
 //
-// At enclave startup the parent listens on (CID 3, port 9000) and emits one
+// At enclave startup the parent listens on (CID 3, port 9100) and emits one
 // JSON-encoded BootstrapData per accepted connection. The enclave dials,
 // reads, then closes. Any subsequent device-list refresh uses the same
 // channel.
+//
+// NB: vsock port 9000 is reserved by `nitro-cli run-enclave` for the boot
+// heartbeat between the host and the enclave. We pick 9100 to avoid that
+// collision (E36 "vsock bind error").
 //
 // V1 trust caveat: parent fetches the device-key blob from S3 and KMS-decrypts
 // it (parent has the IAM perms for both), then ships plaintext over vsock.
@@ -26,7 +30,7 @@ import (
 // listens on for bootstrap RPC.
 const (
 	ParentCID     uint32 = 3
-	BootstrapPort uint32 = 9000
+	BootstrapPort uint32 = 9100
 )
 
 // Fetch dials the parent and reads one BootstrapData. Retries with backoff
