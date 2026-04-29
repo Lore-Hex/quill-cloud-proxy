@@ -1,9 +1,10 @@
-.PHONY: sync lint format format-check typecheck test check run-mock clean docker-build docker-push
+.PHONY: sync lint format format-check typecheck test check run-mock clean docker-build docker-push deploy-trust
 
 ENCLAVE_DIR := enclave
 PARENT_DIR  := parent
 REGISTRY    := 330422590279.dkr.ecr.us-east-1.amazonaws.com
 REPO        := quill-cloud-proxy
+TRUST_BUCKET := trust.quill.lorehex.co
 
 sync:
 	cd $(ENCLAVE_DIR) && uv sync
@@ -43,6 +44,9 @@ docker-push:
 	aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $(REGISTRY)
 	docker push $(REGISTRY)/$(REPO):enclave-latest
 	docker push $(REGISTRY)/$(REPO):parent-latest
+
+deploy-trust:
+	aws s3 sync trust-page/ s3://$(TRUST_BUCKET)/ --delete
 
 clean:
 	find . -type d \( -name __pycache__ -o -name .mypy_cache -o -name .ruff_cache -o -name .pytest_cache \) -exec rm -rf {} +
