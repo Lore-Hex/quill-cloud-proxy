@@ -14,8 +14,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -28,8 +30,8 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bedrock"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bootstrap"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/aws/smithy-go"
 	"github.com/mdlayher/vsock"
-	"crypto/rand"
 )
 
 // EnclaveListenPort is the vsock port the parent's relay forwards to.
@@ -115,9 +117,7 @@ func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br *bedroc
 	go func() {
 		defer pw.Close()
 		if err := br.InvokeStreaming(ctx, bedrockModelID, anthropicReq, pw); err != nil {
-			// Last-ditch: write an SSE-shaped error and end. We deliberately
-			// don't include the prompt or completion in this message.
-			fmt.Fprintf(pw, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+			emitErrorAsAnthropicSSE(pw, err)
 		}
 	}()
 
@@ -126,6 +126,46 @@ func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br *bedroc
 		return
 	}
 	_ = device // device_id can be reported via a counter-flush vsock RPC in V1.1
+}
+
+// emitErrorAsAnthropicSSE turns a Bedrock-call failure into a small Anthropic-
+// shaped SSE conversation: a content_block_delta carrying the API error text,
+// followed by message_stop. The adapter then translates these to OpenAI chunks
+// so the client sees `[bedrock: <code>: <message>]` as the assistant's reply.
+//
+// Trust note: AWS API error responses contain only the error code/message
+// (e.g. "ValidationException: max_tokens must be > 0"). They never echo back
+// the user's prompt or any completion text, so emitting them verbatim keeps
+// our zero-prompt-retention property intact.
+func emitErrorAsAnthropicSSE(w io.Writer, err error) {
+	code, msg := classifyAWSError(err)
+	text := fmt.Sprintf("[bedrock: %s: %s]", code, msg)
+
+	delta := map[string]any{
+		"type":  "content_block_delta",
+		"index": 0,
+		"delta": map[string]any{"type": "text_delta", "text": text},
+	}
+	deltaJSON, _ := json.Marshal(delta)
+	fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", deltaJSON)
+
+	stopDelta := map[string]any{
+		"type":  "message_delta",
+		"delta": map[string]any{"stop_reason": "end_turn"},
+	}
+	stopJSON, _ := json.Marshal(stopDelta)
+	fmt.Fprintf(w, "event: message_delta\ndata: %s\n\n", stopJSON)
+	fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+}
+
+// classifyAWSError extracts the AWS API error code + message when the SDK
+// reports one, or falls back to the raw error string.
+func classifyAWSError(err error) (string, string) {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode(), apiErr.ErrorMessage()
+	}
+	return "InternalError", err.Error()
 }
 
 // asAdapterErr is the local errors.As substitute (no extra imports).
