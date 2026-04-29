@@ -37,7 +37,7 @@ jobs:
       # from scratch base for a small, auditable EIF.
       - name: Build + push Go enclave image (arm64)
         env:
-          ECR: ${{ steps.login-ecr.registry }}/quill-cloud-proxy
+          ECR: ${{ steps.login-ecr.outputs.registry }}/quill-cloud-proxy
         run: |
           docker buildx build \
             --platform linux/arm64 \
@@ -48,7 +48,7 @@ jobs:
 
       - name: Build + push parent image (arm64)
         env:
-          ECR: ${{ steps.login-ecr.registry }}/quill-cloud-proxy
+          ECR: ${{ steps.login-ecr.outputs.registry }}/quill-cloud-proxy
         run: |
           docker buildx build \
             --platform linux/arm64 \
