@@ -1,0 +1,21 @@
+module github.com/Lore-Hex/quill-cloud-proxy/enclave-go
+
+go 1.24
+
+require (
+	github.com/aws/aws-sdk-go-v2 v1.41.6
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.15
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.5
+	github.com/mdlayher/vsock v1.2.1
+)
+
+require (
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.9 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.22 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.22 // indirect
+	github.com/aws/smithy-go v1.25.0 // indirect
+	github.com/mdlayher/socket v0.4.1 // indirect
+	golang.org/x/net v0.9.0 // indirect
+	golang.org/x/sync v0.1.0 // indirect
+	golang.org/x/sys v0.7.0 // indirect
+)

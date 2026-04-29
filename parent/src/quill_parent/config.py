@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     # AWS region (used by both DynamoDB and S3 clients).
     aws_region: str = "us-east-1"
 
+    # Where the bootstrap RPC tells the enclave to find Bedrock over vsock.
+    # Format: "<cid>:<port>", e.g. "3:8003". The user-data sets up
+    # vsock-proxy listening on this CID/port forwarding to bedrock-runtime.
+    bedrock_vsock_proxy: str = "3:8003"
+
     # Operator credential for /admin/usage. Stored as a Terraform-issued
     # htpasswd-style hash in /etc/quill/admin-htpasswd. NEVER a device key.
     admin_htpasswd_path: Path = Path("/etc/quill/admin-htpasswd")

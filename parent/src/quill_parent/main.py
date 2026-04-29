@@ -31,6 +31,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+from quill_parent import bootstrap_server
 from quill_parent.config import Settings, get_settings
 from quill_parent.heartbeat import Heartbeat, emit_startup
 from quill_parent.logging import configure_logging
@@ -48,10 +49,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Hold a strong ref to the heartbeat task so it isn't GC'd.
     app.state.heartbeat = heartbeat
     app.state.heartbeat_task = asyncio.create_task(heartbeat.run())
+
+    # Bootstrap RPC: serve BootstrapData to the Go enclave on vsock 9000.
+    # Only enabled in production (QUILL_BOOTSTRAP_SERVER=true); skipped for
+    # tests + local dev where AF_VSOCK isn't available anyway.
+    bootstrap_task: asyncio.Task[None] | None = None
+    if bootstrap_server.is_enabled():
+        bootstrap_task = asyncio.create_task(
+            bootstrap_server.serve_forever(
+                bucket=settings.device_keys_bucket,
+                object_key=settings.device_keys_object_key,
+                region=settings.aws_region,
+                bedrock_vsock_proxy=settings.bedrock_vsock_proxy,
+            )
+        )
+        app.state.bootstrap_task = bootstrap_task
     try:
         yield
     finally:
         app.state.heartbeat_task.cancel()
+        if bootstrap_task is not None:
+            bootstrap_task.cancel()
 
 
 def create_app() -> FastAPI:

@@ -3,9 +3,10 @@ name: Deploy
 on:
   push:
     branches: [main]
+  workflow_dispatch: {}
 
 permissions:
-  id-token: write # Required for OIDC
+  id-token: write   # for OIDC into AWS
   contents: read
 
 jobs:
@@ -24,24 +25,47 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and Push Enclave
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.registry }}
-          ECR_REPOSITORY: quill-cloud-proxy
-          IMAGE_TAG: enclave-latest
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f enclave/Dockerfile.enclave enclave/
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+      - name: Set up QEMU (for arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
-      - name: Build and Push Parent
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.registry }}
-          ECR_REPOSITORY: quill-cloud-proxy
-          IMAGE_TAG: parent-latest
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f parent/Dockerfile.parent parent/
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Deploy Trust Page
+      # The Go enclave is the prompt-handling boundary. Built statically
+      # from scratch base for a small, auditable EIF.
+      - name: Build + push Go enclave image (arm64)
+        env:
+          ECR: ${{ steps.login-ecr.registry }}/quill-cloud-proxy
         run: |
-          make deploy-trust
+          docker buildx build \
+            --platform linux/arm64 \
+            --file enclave-go/Dockerfile.enclave \
+            --tag "$ECR:enclave-latest" \
+            --push \
+            enclave-go
+
+      - name: Build + push parent image (arm64)
+        env:
+          ECR: ${{ steps.login-ecr.registry }}/quill-cloud-proxy
+        run: |
+          docker buildx build \
+            --platform linux/arm64 \
+            --file parent/Dockerfile.parent \
+            --tag "$ECR:parent-latest" \
+            --push \
+            parent
+
+      # Trust page: redeploy in case index.html changed. PCR0 update is a
+      # separate step driven from the host (build-eif → captured PCR0 →
+      # `make deploy-trust QUILL_PCR0=...`).
+      - name: Sync static trust page to S3
+        run: |
+          aws s3 sync trust-page/ s3://trust.quill.lorehex.co/ \
+            --exclude "build.sh" \
+            --cache-control "max-age=60, public" \
+            --content-type "text/html; charset=utf-8"
+          aws s3 cp trust-page/pcr0.txt s3://trust.quill.lorehex.co/pcr0.txt \
+            --cache-control "max-age=60, public" \
+            --content-type "text/plain; charset=utf-8"

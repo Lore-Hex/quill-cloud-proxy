@@ -1,0 +1,26 @@
+# Build container for the Go enclave EIF.
+# Two stages:
+#   - builder: pinned golang base, builds a static-PIE binary
+#   - runtime: scratch — single binary, no shell, no libc, no /etc/*
+# The EIF measurement is a function of the rootfs bytes, so the runtime
+# being literally one binary is what makes the PCR0 small + auditable.
+
+FROM golang:1.24-bookworm AS builder
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Statically linked Linux/arm64 (matches the Pi 5 host architecture and
+# the AL2023 Graviton EC2 we run on). Stripping symbols + disabling cgo
+# gives a single static binary with no runtime deps.
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=arm64
+RUN go build -trimpath -ldflags='-s -w -extldflags=-static' \
+      -o /out/quill-enclave ./cmd/enclave
+
+# scratch keeps the EIF tiny and the PCR0 surface minimal.
+FROM scratch
+COPY --from=builder /out/quill-enclave /quill-enclave
+ENTRYPOINT ["/quill-enclave"]

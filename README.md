@@ -5,14 +5,15 @@ Open source. Zero data retention. The signed binary is the boundary.
 
 ## What this repo is
 
-Two Python packages that ship together:
+Two binaries that ship together:
 
-| Package    | Where it runs                | What it does                                                |
-|------------|------------------------------|-------------------------------------------------------------|
-| `enclave/` | inside the Nitro Enclave     | Receives HTTP, hashes the bearer, calls Bedrock, streams back. No disk, no logging, no network except a vsock. |
-| `parent/`  | on the EC2 host (outside)    | HTTPS listener on `:8443`, byte-pump relay between client TLS and the enclave, hourly heartbeat, DynamoDB usage flush, operator `/admin/usage`. |
+| Package        | Language | Where it runs                | What it does                                                |
+|----------------|----------|------------------------------|-------------------------------------------------------------|
+| `enclave-go/`  | Go       | inside the Nitro Enclave     | Receives HTTP over vsock, hashes the bearer, calls Bedrock via a vsock-tunneled HTTPS client (TLS terminates inside the enclave), streams OpenAI-format chunks back. No disk, no logging, no network except vsock. Static-PIE binary on a `scratch` base image so the EIF/PCR0 surface is one auditable file. |
+| `parent/`      | Python   | on the EC2 host (outside)    | HTTPS listener on `:8443`, byte-pump relay between client TLS and the enclave, hourly heartbeat, DynamoDB usage flush, operator `/admin/usage`, and the bootstrap-RPC vsock server (port 9000) that hands the enclave the device-key list + AWS credentials at startup. |
 
-Plus operator tools (`tools/`) and a static trust page (`trust-page/`).
+Plus operator tools (`tools/`), a static trust page (`trust-page/`), and an
+archived prior Python enclave (`enclave-python-archived/`) for reference.
 
 ## Trust property
 

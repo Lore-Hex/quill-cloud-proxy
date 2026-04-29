@@ -7,26 +7,22 @@ on:
     branches: [main]
 
 jobs:
-  enclave:
+  enclave-go:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: enclave
+        working-directory: enclave-go
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/setup-go@v5
         with:
-          version: "latest"
-      - name: Sync
-        run: uv sync --frozen
-      - name: Lint
-        run: uv run ruff check src tests
-      - name: Format
-        run: uv run ruff format --check src tests
-      - name: Typecheck (mypy --strict, py3.11)
-        run: uv run mypy --strict --python-version 3.11 src tests
+          go-version: "1.24"
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
       - name: Test
-        run: uv run pytest -v
+        run: go test ./...
 
   parent:
     runs-on: ubuntu-latest
