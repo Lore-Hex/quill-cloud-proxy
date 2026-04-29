@@ -1,0 +1,35 @@
+linters-settings:
+  govet:
+    check-shadowing: true
+  revive:
+    min-confidence: 0.8
+  gosec:
+    excludes:
+      - G104 # duplicate of errcheck
+  staticcheck:
+    checks: ["all"]
+
+linters:
+  enable:
+    - gofmt
+    - govet
+    - revive
+    - errcheck
+    - staticcheck
+    - gosec
+    - bodyclose
+    - unconvert
+    - unparam
+    - misspell
+    - dogsled
+    - nakedret
+    - prealloc
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+run:
+  timeout: 5m
+  tests: true
