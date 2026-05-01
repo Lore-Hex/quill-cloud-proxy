@@ -35,14 +35,35 @@ jobs:
 
       # The Go enclave is the prompt-handling boundary. Built statically
       # from scratch base for a small, auditable EIF.
-      - name: Build + push Go enclave image (arm64)
+      #
+      # Three image tags pushed per deploy, one per LLM-provider target:
+      #   enclave-aws-latest         → Bedrock        (default trust tier)
+      #   enclave-openrouter-latest  → OpenRouter ZDR (contractual ZDR)
+      #   enclave-gcp-latest         → Vertex AI      (different runtime)
+      # `enclave-latest` is aliased to whichever target the production
+      # deploy is currently running, so flipping providers is a single
+      # `docker tag … enclave-latest` away. Keeping the AWS image as the
+      # default `enclave-latest` for backward compat with existing infra.
+      - name: Build + push Go enclave image (AWS / arm64)
         env:
           ECR: ${{ steps.login-ecr.outputs.registry }}/quill-cloud-proxy
         run: |
           docker buildx build \
             --platform linux/arm64 \
             --file enclave-go/Dockerfile.enclave \
+            --tag "$ECR:enclave-aws-latest" \
             --tag "$ECR:enclave-latest" \
+            --push \
+            enclave-go
+
+      - name: Build + push Go enclave image (OpenRouter / arm64)
+        env:
+          ECR: ${{ steps.login-ecr.outputs.registry }}/quill-cloud-proxy
+        run: |
+          docker buildx build \
+            --platform linux/arm64 \
+            --file enclave-go/Dockerfile.enclave.openrouter \
+            --tag "$ECR:enclave-openrouter-latest" \
             --push \
             enclave-go
 

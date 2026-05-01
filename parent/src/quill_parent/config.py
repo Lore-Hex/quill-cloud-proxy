@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +27,24 @@ class Settings(BaseSettings):
     # Format: "<cid>:<port>", e.g. "3:8003". The user-data sets up
     # vsock-proxy listening on this CID/port forwarding to bedrock-runtime.
     bedrock_vsock_proxy: str = "3:8003"
+
+    # OpenRouter ZDR provider (only used by the openrouter-target enclave
+    # build). When set, the parent ships the API key in BootstrapData and
+    # runs a vsock-proxy on this CID/port forwarding to openrouter.ai:443.
+    # The API key itself is fetched from the same KMS-sealed config as the
+    # device-key blob — the parent only sees plaintext for ~ms at boot.
+    openrouter_secret_id: str | None = None
+    openrouter_vsock_proxy: str = "3:8004"
+
+    @field_validator("openrouter_secret_id", mode="before")
+    @classmethod
+    def _empty_string_is_none(cls, v: object) -> object:
+        # Terraform user-data always sets the env var (with "" when no
+        # OpenRouter deploy is configured). Treat empty as unset so the
+        # bootstrap path stays AWS-only by default.
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     # Operator credential for /admin/usage. Stored as a Terraform-issued
     # htpasswd-style hash in /etc/quill/admin-htpasswd. NEVER a device key.

@@ -21,6 +21,13 @@ type BootstrapData struct {
 	BedrockSessionTok  string         `json:"bedrock_session_token,omitempty"` // present if creds are short-lived
 	Region             string         `json:"region"`
 	BedrockVsockProxy  string         `json:"bedrock_vsock_proxy"` // e.g. "3:8003"
+
+	// OpenRouter (only populated for the openrouter build target). The
+	// API key is pulled from KMS-sealed config alongside the device-key
+	// blob; same trust posture as the Bedrock creds (parent decrypts and
+	// hands plaintext over vsock).
+	OpenRouterAPIKey     string `json:"openrouter_api_key,omitempty"`
+	OpenRouterVsockProxy string `json:"openrouter_vsock_proxy,omitempty"` // e.g. "3:8004"
 }
 
 // OpenAIChatMessage is one message in an inbound /v1/chat/completions request.
