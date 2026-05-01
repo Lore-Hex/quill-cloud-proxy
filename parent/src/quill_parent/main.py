@@ -61,6 +61,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 object_key=settings.device_keys_object_key,
                 region=settings.aws_region,
                 bedrock_vsock_proxy=settings.bedrock_vsock_proxy,
+                openrouter_secret_id=settings.openrouter_secret_id,
+                openrouter_vsock_proxy=settings.openrouter_vsock_proxy,
             )
         )
         app.state.bootstrap_task = bootstrap_task

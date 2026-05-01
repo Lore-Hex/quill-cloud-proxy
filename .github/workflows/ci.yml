@@ -14,11 +14,13 @@ jobs:
         working-directory: enclave-go
     strategy:
       matrix:
-        # The same source tree builds two distinct cloud-targeted binaries.
-        # `aws` (default) → AWS Nitro Enclaves with Bedrock; `gcp` → GCP
-        # Confidential Space with Vertex AI. CI exercises both so a change
-        # that breaks one cloud's build fails fast.
-        target: [aws, gcp]
+        # The same source tree builds three distinct provider-targeted
+        # binaries:
+        #   - `aws` (default)  → AWS Nitro Enclaves with Bedrock
+        #   - `gcp`            → GCP Confidential Space with Vertex AI
+        #   - `openrouter`     → AWS Nitro Enclaves with OpenRouter ZDR
+        # CI exercises all three so a change that breaks one fails fast.
+        target: [aws, gcp, openrouter]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

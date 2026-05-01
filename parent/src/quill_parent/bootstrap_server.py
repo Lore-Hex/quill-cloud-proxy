@@ -44,6 +44,8 @@ async def _build_bootstrap_data(
     object_key: str,
     region: str,
     bedrock_vsock_proxy: str,
+    openrouter_secret_id: str | None = None,
+    openrouter_vsock_proxy: str = "3:8004",
 ) -> dict[str, object]:
     """Fetch + decrypt device-key blob; pull IMDS creds. Returns the JSON
     payload the Go enclave expects (matching internal/types.BootstrapData).
@@ -72,7 +74,7 @@ async def _build_bootstrap_data(
     if not isinstance(devices, list):
         raise RuntimeError("decrypted device blob is not a JSON array")
 
-    return {
+    payload: dict[str, object] = {
         "devices": devices,
         "bedrock_access_key": creds.access_key,
         "bedrock_secret_key": creds.secret_key,
@@ -80,6 +82,22 @@ async def _build_bootstrap_data(
         "region": region,
         "bedrock_vsock_proxy": bedrock_vsock_proxy,
     }
+
+    # OpenRouter API key — only when this deploy is wired for the
+    # openrouter-target enclave. Stored as a Secrets Manager secret because
+    # rotation cadence differs from the device-key blob's; the parent
+    # decrypts at boot using the same KMS-condition policy as the device
+    # blob (PCR0-bound).
+    if openrouter_secret_id:
+        sm = boto3.client("secretsmanager", region_name=region)
+        secret = sm.get_secret_value(SecretId=openrouter_secret_id)
+        api_key = secret.get("SecretString", "")
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise RuntimeError("openrouter secret is empty or non-string")
+        payload["openrouter_api_key"] = api_key.strip()
+        payload["openrouter_vsock_proxy"] = openrouter_vsock_proxy
+
+    return payload
 
 
 async def _serve_one(client: socket.socket, payload: bytes) -> None:
@@ -97,6 +115,8 @@ async def serve_forever(
     object_key: str,
     region: str,
     bedrock_vsock_proxy: str,
+    openrouter_secret_id: str | None = None,
+    openrouter_vsock_proxy: str = "3:8004",
 ) -> None:
     """Serve BootstrapData on vsock CID-ANY:9000 forever.
 
@@ -109,7 +129,14 @@ async def serve_forever(
     async def refresh() -> None:
         nonlocal cached_payload
         try:
-            data = await _build_bootstrap_data(bucket, object_key, region, bedrock_vsock_proxy)
+            data = await _build_bootstrap_data(
+                bucket,
+                object_key,
+                region,
+                bedrock_vsock_proxy,
+                openrouter_secret_id=openrouter_secret_id,
+                openrouter_vsock_proxy=openrouter_vsock_proxy,
+            )
             async with payload_lock:
                 cached_payload = json.dumps(data).encode("utf-8")
             devices_field = data["devices"]

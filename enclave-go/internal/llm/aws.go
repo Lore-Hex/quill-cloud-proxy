@@ -1,6 +1,7 @@
-//go:build !gcp
+//go:build !gcp && !openrouter
 
-// AWS Bedrock provider. Compiled by default; opt out with `-tags gcp`.
+// AWS Bedrock provider. Compiled by default; opt out with `-tags gcp`
+// or `-tags openrouter`.
 //
 // Thin wrapper over internal/bedrock so the existing AWS-specific
 // implementation (SigV4 auth, vsock-tunneled HTTP transport, cross-region
