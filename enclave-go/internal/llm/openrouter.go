@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -63,8 +64,34 @@ var modelIDMap = map[string]string{
 }
 
 type openRouterClient struct {
-	apiKey string
-	httpc  *http.Client
+	apiKey    string
+	httpc     *http.Client
+	providers []string // pinned upstream-provider list; ZDR contract holds for any of these
+}
+
+// defaultProviderPin is "Google Vertex" — Anthropic Claude served through
+// OpenRouter's Vertex backend with `data_collection: deny` for ZDR. This
+// is what we ship by default until our own Vertex quota lifts. Override
+// at boot via QUILL_OPENROUTER_PROVIDERS=Provider1,Provider2 (comma-
+// separated), e.g. "Anthropic" for Anthropic-direct or "Anthropic,Amazon
+// Bedrock,Google Vertex" to let OpenRouter pick from any of three.
+const defaultProviderPin = "Google Vertex"
+
+func parseProvidersEnv() []string {
+	raw := os.Getenv("QUILL_OPENROUTER_PROVIDERS")
+	if strings.TrimSpace(raw) == "" {
+		return []string{defaultProviderPin}
+	}
+	out := make([]string, 0, 4)
+	for _, p := range strings.Split(raw, ",") {
+		if s := strings.TrimSpace(p); s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return []string{defaultProviderPin}
+	}
+	return out
 }
 
 func New(boot *qtypes.BootstrapData) Client {
@@ -78,8 +105,9 @@ func New(boot *qtypes.BootstrapData) Client {
 	httpc := vsockhttp.NewClient(tunnels)
 	httpc.Timeout = 10 * time.Minute // long-running streams
 	return &openRouterClient{
-		apiKey: boot.OpenRouterAPIKey,
-		httpc:  httpc,
+		apiKey:    boot.OpenRouterAPIKey,
+		httpc:     httpc,
+		providers: parseProvidersEnv(),
 	}
 }
 
@@ -102,11 +130,17 @@ type openRouterMsg struct {
 	Content string `json:"content"`
 }
 
-// providerRouting pins OpenRouter to a Anthropic-direct ZDR-only path.
-// `data_collection: "deny"` filters to providers that contractually don't
-// log; `only` further narrows to Anthropic-direct so we don't end up
-// round-tripping through Bedrock-via-OR (which would be a circular and
-// trust-degraded routing).
+// providerRouting pins OpenRouter's upstream-provider choice + enforces
+// ZDR. `data_collection: "deny"` filters to providers that contractually
+// don't log; `only` further narrows to a configured list (default
+// ["Google Vertex"], overridable via QUILL_OPENROUTER_PROVIDERS).
+//
+// Trust note: OR's pool for Anthropic Claude includes "Anthropic",
+// "Amazon Bedrock", and "Google Vertex" — all of which can be filtered
+// to ZDR-compliant. Picking a different element here is operational
+// (capacity, region, latency), not a stronger trust property: we're not
+// the AWS or GCP account holder via OpenRouter, so the PCR0-attested
+// KMS / Workload-Identity gates don't apply on this path.
 type providerRouting struct {
 	DataCollection string   `json:"data_collection"`
 	Only           []string `json:"only,omitempty"`
@@ -140,7 +174,7 @@ func (c *openRouterClient) InvokeStreaming(
 		TopP:        body.TopP,
 		Provider: &providerRouting{
 			DataCollection: "deny",
-			Only:           []string{"Anthropic"},
+			Only:           c.providers,
 		},
 	}
 	bodyBytes, err := json.Marshal(reqBody)

@@ -71,3 +71,27 @@ func TestUnknownModelRejected(t *testing.T) {
 		t.Errorf("expected unknown-model error, got %v", err)
 	}
 }
+
+func TestParseProvidersEnv(t *testing.T) {
+	cases := map[string][]string{
+		"":                                         {"Google Vertex"},
+		"   ":                                      {"Google Vertex"},
+		"Anthropic":                                {"Anthropic"},
+		"Anthropic, Google Vertex":                 {"Anthropic", "Google Vertex"},
+		"Anthropic , Amazon Bedrock,Google Vertex": {"Anthropic", "Amazon Bedrock", "Google Vertex"},
+		",,,":                                      {"Google Vertex"}, // all-empty falls back to default
+	}
+	for in, want := range cases {
+		t.Setenv("QUILL_OPENROUTER_PROVIDERS", in)
+		got := parseProvidersEnv()
+		if len(got) != len(want) {
+			t.Errorf("parseProvidersEnv(%q) = %v, want %v", in, got, want)
+			continue
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Errorf("parseProvidersEnv(%q)[%d] = %q, want %q", in, i, got[i], want[i])
+			}
+		}
+	}
+}
