@@ -69,13 +69,20 @@ type openRouterClient struct {
 	providers []string // pinned upstream-provider list; ZDR contract holds for any of these
 }
 
-// defaultProviderPin is "Google Vertex" — Anthropic Claude served through
+// defaultProviderPin is "google-vertex" — Anthropic Claude served through
 // OpenRouter's Vertex backend with `data_collection: deny` for ZDR. This
-// is what we ship by default until our own Vertex quota lifts. Override
-// at boot via QUILL_OPENROUTER_PROVIDERS=Provider1,Provider2 (comma-
-// separated), e.g. "Anthropic" for Anthropic-direct or "Anthropic,Amazon
-// Bedrock,Google Vertex" to let OpenRouter pick from any of three.
-const defaultProviderPin = "Google Vertex"
+// is what we ship by default until our own Vertex quota lifts.
+//
+// OpenRouter expects the provider slug here, not the display name —
+// available slugs (queried from a 404 response):
+// "google-vertex", "amazon-bedrock", "anthropic". Title-cased
+// "Google Vertex" gives a 404 "No allowed providers are available."
+//
+// Override at boot via QUILL_OPENROUTER_PROVIDERS=slug1,slug2 (comma-
+// separated), e.g. "anthropic" for Anthropic-direct or
+// "anthropic,amazon-bedrock,google-vertex" to let OpenRouter pick from
+// any of three.
+const defaultProviderPin = "google-vertex"
 
 func parseProvidersEnv() []string {
 	raw := os.Getenv("QUILL_OPENROUTER_PROVIDERS")

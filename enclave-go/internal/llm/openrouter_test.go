@@ -74,12 +74,12 @@ func TestUnknownModelRejected(t *testing.T) {
 
 func TestParseProvidersEnv(t *testing.T) {
 	cases := map[string][]string{
-		"":                                         {"Google Vertex"},
-		"   ":                                      {"Google Vertex"},
-		"Anthropic":                                {"Anthropic"},
-		"Anthropic, Google Vertex":                 {"Anthropic", "Google Vertex"},
-		"Anthropic , Amazon Bedrock,Google Vertex": {"Anthropic", "Amazon Bedrock", "Google Vertex"},
-		",,,":                                      {"Google Vertex"}, // all-empty falls back to default
+		"":          {"google-vertex"},
+		"   ":       {"google-vertex"},
+		"anthropic": {"anthropic"},
+		"anthropic, google-vertex":                 {"anthropic", "google-vertex"},
+		"anthropic , amazon-bedrock,google-vertex": {"anthropic", "amazon-bedrock", "google-vertex"},
+		",,,":                                      {"google-vertex"}, // all-empty falls back to default
 	}
 	for in, want := range cases {
 		t.Setenv("QUILL_OPENROUTER_PROVIDERS", in)
