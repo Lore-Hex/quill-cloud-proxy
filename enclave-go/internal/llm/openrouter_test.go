@@ -1,4 +1,4 @@
-//go:build openrouter
+//go:build llm_openrouter
 
 package llm
 

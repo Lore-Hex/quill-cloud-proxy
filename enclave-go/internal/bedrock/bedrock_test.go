@@ -1,3 +1,5 @@
+//go:build cloud_aws
+
 package bedrock
 
 import (

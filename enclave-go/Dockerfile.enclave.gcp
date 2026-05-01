@@ -1,5 +1,5 @@
 # Build container for the GCP Confidential Space target.
-# Mirrors Dockerfile.enclave but builds with `-tags gcp` to swap the LLM
+# Mirrors Dockerfile.enclave but builds with `-tags 'cloud_gcp,llm_vertex'` to swap the LLM
 # provider from AWS Bedrock to Google Vertex AI. The runtime is still
 # `FROM scratch` so the workload-image measurement (the OCI digest that
 # Confidential Space's vTPM attests) covers exactly one binary + the CA
@@ -23,7 +23,7 @@ RUN go mod download
 COPY . .
 
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
-RUN go build -trimpath -tags gcp -ldflags='-s -w -extldflags=-static' \
+RUN go build -trimpath -tags 'cloud_gcp,llm_vertex' -ldflags='-s -w -extldflags=-static' \
       -o /out/quill-enclave ./cmd/enclave
 
 FROM scratch

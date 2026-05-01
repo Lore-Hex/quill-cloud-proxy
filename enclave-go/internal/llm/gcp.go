@@ -1,4 +1,4 @@
-//go:build gcp
+//go:build llm_vertex
 
 // Google Vertex AI provider — hand-rolled minimal client.
 //

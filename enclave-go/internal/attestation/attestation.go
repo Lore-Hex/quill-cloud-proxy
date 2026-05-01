@@ -1,3 +1,5 @@
+//go:build cloud_aws
+
 // Package attestation talks to the Nitro Security Module via /dev/nsm.
 //
 // The NSM produces an attestation document — a CBOR-encoded, COSE-signed

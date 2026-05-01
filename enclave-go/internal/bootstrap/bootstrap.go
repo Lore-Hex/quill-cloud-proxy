@@ -1,3 +1,5 @@
+//go:build cloud_aws
+
 // Package bootstrap fetches the BootstrapData from the parent over vsock.
 //
 // At enclave startup the parent listens on (CID 3, port 9100) and emits one

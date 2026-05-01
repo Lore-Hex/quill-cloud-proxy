@@ -1,0 +1,42 @@
+# Build container for the GCP Confidential Space target running with the
+# OpenRouter ZDR backend. Same x86_64/scratch shape as Dockerfile.enclave.gcp
+# (which targets Vertex direct), but built with `-tags
+# 'cloud_gcp,llm_openrouter'` so the workload talks to OpenRouter via direct
+# egress instead of Vertex via Workload Identity.
+#
+# Why this exists:
+#   Anthropic-on-Vertex quota for new GCP accounts takes weeks to lift. The
+#   OpenRouter route reaches Claude on day zero through a contractual ZDR
+#   path (`provider.data_collection: "deny"` + `provider.only:
+#   ["google-vertex"]`). Once direct Vertex quota arrives, swap to
+#   Dockerfile.enclave.gcp (the llm_vertex variant) — same workload shape,
+#   same image-digest trust property, just a different LLM backend.
+
+FROM golang:1.24-bookworm@sha256:ca0741815eee3625da09eddf15cc8ff678efa16520fcbcdbeb2ae0b0c519c82c AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# amd64 because Confidential Space runs on AMD SEV-SNP / Intel TDX hosts.
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+RUN go build -trimpath -tags 'cloud_gcp,llm_openrouter' \
+      -ldflags='-s -w -extldflags=-static' \
+      -o /out/quill-enclave ./cmd/enclave
+
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /out/quill-enclave /quill-enclave
+
+# TLS termination INSIDE the workload — same property the AWS target has,
+# because Confidential Space VMs don't decrypt either; the workload owns
+# the TLS handshake.
+ENV QUILL_ENCLAVE_TLS=true
+
+ENTRYPOINT ["/quill-enclave"]

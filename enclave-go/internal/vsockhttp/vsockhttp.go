@@ -1,3 +1,5 @@
+//go:build cloud_aws
+
 // Package vsockhttp wires net/http (and therefore aws-sdk-go-v2) to talk
 // to AWS endpoints over a vsock tunnel.
 //

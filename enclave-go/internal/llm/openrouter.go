@@ -1,4 +1,4 @@
-//go:build openrouter
+//go:build llm_openrouter
 
 // OpenRouter (ZDR) provider — hand-rolled minimal client.
 //
@@ -42,10 +42,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/vsockhttp"
 )
 
 const (
@@ -101,19 +99,13 @@ func parseProvidersEnv() []string {
 	return out
 }
 
+// newOpenRouterHTTPClient is provided by openrouter_transport_aws.go (vsock
+// tunnel through the parent) or openrouter_transport_gcp.go (direct egress,
+// since CSP VMs reach the internet without a proxy).
 func New(boot *qtypes.BootstrapData) Client {
-	tunnels := []vsockhttp.Tunnel{
-		{
-			Host: openRouterHost,
-			CID:  parseProxyCID(boot.OpenRouterVsockProxy),
-			Port: parseProxyPort(boot.OpenRouterVsockProxy),
-		},
-	}
-	httpc := vsockhttp.NewClient(tunnels)
-	httpc.Timeout = 10 * time.Minute // long-running streams
 	return &openRouterClient{
 		apiKey:    boot.OpenRouterAPIKey,
-		httpc:     httpc,
+		httpc:     newOpenRouterHTTPClient(boot),
 		providers: parseProvidersEnv(),
 	}
 }
@@ -315,26 +307,3 @@ func mapOpenAIFinishReason(reason string) string {
 	}
 }
 
-// parseProxyCID / parseProxyPort split a "<cid>:<port>" string. Defaults
-// (3, 8004) match the OpenRouter vsock-proxy port the parent's user-data
-// installs.
-func parseProxyCID(s string) uint32 {
-	cid, _ := splitCIDPort(s, 3, 8004)
-	return cid
-}
-
-func parseProxyPort(s string) uint32 {
-	_, port := splitCIDPort(s, 3, 8004)
-	return port
-}
-
-func splitCIDPort(s string, defaultCID, defaultPort uint32) (uint32, uint32) {
-	if s == "" {
-		return defaultCID, defaultPort
-	}
-	var cid, port uint32
-	if _, err := fmt.Sscanf(s, "%d:%d", &cid, &port); err != nil {
-		return defaultCID, defaultPort
-	}
-	return cid, port
-}

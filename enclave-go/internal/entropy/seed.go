@@ -1,3 +1,5 @@
+//go:build cloud_aws
+
 // Package entropy seeds the enclave's CSPRNG from the Nitro Security
 // Module before any cryptographic operation runs.
 //

@@ -17,7 +17,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -33,12 +32,10 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/entropy"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
-	"github.com/aws/smithy-go"
-	"github.com/mdlayher/vsock"
 )
 
-// EnclaveListenPort is the vsock port the parent's relay forwards to.
-const EnclaveListenPort uint32 = 8001
+// EnclaveListenPort + newRawListener are provided by listener_aws.go
+// (vsock CID-LOCAL) or listener_gcp.go (plain TCP).
 
 func main() {
 	ctx := context.Background()
@@ -82,9 +79,9 @@ func main() {
 	// vsock by default; flipping the flag without flipping the parent will
 	// break the chain (the parent won't speak TLS). Phase 2 swaps the
 	// parent to a raw TCP pump so this flag becomes the default.
-	rawListener, err := vsock.Listen(EnclaveListenPort, nil)
+	rawListener, err := newRawListener()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "vsock listen failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "raw listener failed: %v\n", err)
 		os.Exit(1)
 	}
 	var listener net.Listener = rawListener
@@ -180,18 +177,23 @@ func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br llm.Cli
 	_ = device // device_id can be reported via a counter-flush vsock RPC in V1.1
 }
 
-// emitErrorAsAnthropicSSE turns a Bedrock-call failure into a small Anthropic-
-// shaped SSE conversation: a content_block_delta carrying the API error text,
-// followed by message_stop. The adapter then translates these to OpenAI chunks
-// so the client sees `[bedrock: <code>: <message>]` as the assistant's reply.
+// emitErrorAsAnthropicSSE turns an upstream-LLM failure into a small
+// Anthropic-shaped SSE conversation: a content_block_delta carrying the
+// API error text, followed by message_stop. The adapter then translates
+// these to OpenAI chunks so the client sees `[upstream: <code>: <message>]`
+// as the assistant's reply.
 //
-// Trust note: AWS API error responses contain only the error code/message
-// (e.g. "ValidationException: max_tokens must be > 0"). They never echo back
-// the user's prompt or any completion text, so emitting them verbatim keeps
-// our zero-prompt-retention property intact.
+// Trust note: upstream API error responses contain only the error
+// code/message (e.g. "ValidationException: max_tokens must be > 0",
+// "Insufficient credits", etc.). They never echo back the user's prompt
+// or any completion text, so emitting them verbatim keeps our
+// zero-prompt-retention property intact.
+//
+// classifyUpstreamError is provided per-cloud (smithy unwrap on AWS,
+// plain error.Error() on GCP) so this file stays cloud-agnostic.
 func emitErrorAsAnthropicSSE(w io.Writer, err error) {
-	code, msg := classifyAWSError(err)
-	text := fmt.Sprintf("[bedrock: %s: %s]", code, msg)
+	code, msg := classifyUpstreamError(err)
+	text := fmt.Sprintf("[upstream: %s: %s]", code, msg)
 
 	delta := map[string]any{
 		"type":  "content_block_delta",
@@ -208,16 +210,6 @@ func emitErrorAsAnthropicSSE(w io.Writer, err error) {
 	stopJSON, _ := json.Marshal(stopDelta)
 	fmt.Fprintf(w, "event: message_delta\ndata: %s\n\n", stopJSON)
 	fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
-}
-
-// classifyAWSError extracts the AWS API error code + message when the SDK
-// reports one, or falls back to the raw error string.
-func classifyAWSError(err error) (string, string) {
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
-		return apiErr.ErrorCode(), apiErr.ErrorMessage()
-	}
-	return "InternalError", err.Error()
 }
 
 // asAdapterErr is the local errors.As substitute (no extra imports).

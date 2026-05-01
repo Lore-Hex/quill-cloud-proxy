@@ -1,3 +1,5 @@
+//go:build cloud_aws
+
 // Package bedrock invokes Bedrock InvokeModelWithResponseStream and
 // re-emits the AWS event-stream payloads as native Anthropic SSE bytes
 // for the adapter to translate into OpenAI ChatCompletion chunks.
