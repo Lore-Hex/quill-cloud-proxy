@@ -34,15 +34,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 )
 
-// attestationTokenSocket is the local launcher endpoint that mints the
-// JWT. CSP routes localhost:80 to a Unix socket inside the container;
-// we don't need to know which socket — `http://localhost/v1/token` works.
-const attestationTokenURL = "http://localhost/v1/token"
+// teeserverSocket is the Unix socket the Confidential Space launcher
+// exposes inside the workload container for on-demand attestation
+// tokens. URL goes through `http://teeserver/...` — the host portion
+// is ignored since the http.Client below uses a custom DialContext
+// that always dials the Unix socket.
+//
+// Earlier draft used `http://localhost/v1/token` which gave a connect
+// refused because there's nothing on TCP localhost:80; CSP exposes the
+// launcher API only via this Unix socket.
+const teeserverSocketPath = "/run/container_launcher/teeserver.sock"
+const attestationTokenURL = "http://teeserver/v1/token"
 
 // Get returns the raw JWT bytes for the cmd/enclave handler to forward
 // as Content-Type: application/jwt. Signature matches the AWS variant
@@ -79,7 +87,17 @@ func Get(leafDER []byte, deviceBlob []byte, nonce []byte) ([]byte, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	// Custom transport: always dial the launcher's Unix socket.
+	httpc := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", teeserverSocketPath)
+			},
+		},
+	}
+	resp, err := httpc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("attestation/gcp: token: %w", err)
 	}
