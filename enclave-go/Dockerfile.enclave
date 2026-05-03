@@ -1,0 +1,48 @@
+# Build container for the Go enclave EIF.
+# Two stages:
+#   - builder: pinned golang base, builds a static-PIE binary
+#   - runtime: scratch — single binary, no shell, no libc, no /etc/*
+# The EIF measurement is a function of the rootfs bytes, so the runtime
+# being literally one binary is what makes the PCR0 small + auditable.
+#
+# REPRODUCIBILITY: the base image is pinned by sha256 digest, not just by
+# tag. `golang:1.24-bookworm` is mutable (Docker reuses the tag every
+# minor release); the digest pin makes PCR0 stable across rebuilds. To
+# update: `docker manifest inspect golang:1.24-bookworm` for the new
+# arm64 digest, replace below, expect PCR0 to change, re-publish.
+FROM golang:1.24-bookworm@sha256:ca0741815eee3625da09eddf15cc8ff678efa16520fcbcdbeb2ae0b0c519c82c AS builder
+
+# ca-certificates: Go's crypto/tls reads /etc/ssl/certs/ca-certificates.crt at
+# runtime to verify TLS peers (Bedrock in our case). The scratch base has no
+# trust store, so without this the enclave fails every outbound HTTPS dial
+# with "x509: certificate signed by unknown authority".
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Statically linked Linux/arm64 (matches the Pi 5 host architecture and
+# the AL2023 Graviton EC2 we run on). Stripping symbols + disabling cgo
+# gives a single static binary with no runtime deps.
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=arm64
+RUN go build -trimpath -tags 'cloud_aws,llm_bedrock' \
+      -ldflags='-s -w -extldflags=-static' \
+      -o /out/quill-enclave ./cmd/enclave
+
+# scratch keeps the EIF tiny and the PCR0 surface minimal.
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /out/quill-enclave /quill-enclave
+
+# TLS termination INSIDE the enclave — no plaintext prompt content ever
+# exists outside this attested binary. With this ENV the enclave wraps its
+# vsock listener with crypto/tls; the parent's TCP pump must be paired
+# (QUILL_TCP_PUMP=true on parent + NLB doing TCP passthrough at :443).
+ENV QUILL_ENCLAVE_TLS=true
+
+ENTRYPOINT ["/quill-enclave"]

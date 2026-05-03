@@ -1,0 +1,134 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write   # for OIDC into AWS
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up QEMU (for arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # The Go enclave is the prompt-handling boundary. Built statically
+      # from scratch base for a small, auditable EIF.
+      #
+      # Three image tags pushed per deploy, one per LLM-provider target:
+      #   enclave-aws-latest         → Bedrock        (default trust tier)
+      #   enclave-openrouter-latest  → OpenRouter ZDR (contractual ZDR)
+      #   enclave-gcp-latest         → Vertex AI      (different runtime)
+      # `enclave-latest` is aliased to whichever target the production
+      # deploy is currently running, so flipping providers is a single
+      # `docker tag … enclave-latest` away. Keeping the AWS image as the
+      # default `enclave-latest` for backward compat with existing infra.
+      - name: Build + push Go enclave image (AWS / arm64)
+        env:
+          ECR: ${{ steps.login-ecr.outputs.registry }}/quill-cloud-proxy
+        run: |
+          docker buildx build \
+            --platform linux/arm64 \
+            --file enclave-go/Dockerfile.enclave \
+            --tag "$ECR:enclave-aws-latest" \
+            --tag "$ECR:enclave-latest" \
+            --push \
+            enclave-go
+
+      - name: Build + push Go enclave image (OpenRouter / arm64)
+        env:
+          ECR: ${{ steps.login-ecr.outputs.registry }}/quill-cloud-proxy
+        run: |
+          docker buildx build \
+            --platform linux/arm64 \
+            --file enclave-go/Dockerfile.enclave.openrouter \
+            --tag "$ECR:enclave-openrouter-latest" \
+            --push \
+            enclave-go
+
+      - name: Build + push parent image (arm64)
+        env:
+          ECR: ${{ steps.login-ecr.outputs.registry }}/quill-cloud-proxy
+        run: |
+          docker buildx build \
+            --platform linux/arm64 \
+            --file parent/Dockerfile.parent \
+            --tag "$ECR:parent-latest" \
+            --push \
+            parent
+
+      # Code transparency: sign trust files with cosign keyless mode using the
+      # GitHub Actions OIDC identity for this repo, and push the signature +
+      # certificate + Rekor inclusion proof into a bundle. Anyone can later
+      # verify "this measurement was signed by the GitHub identity for
+      # Lore-Hex/quill-cloud-proxy at this exact timestamp" by querying the
+      # Rekor public transparency log — detects silent rebuilds and proves
+      # the binding was made at the time the code claims.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
+
+      - name: Sign trust files with cosign (keyless, Rekor-recorded)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          for f in \
+            trust-page/pcr0.txt \
+            trust-page/image-digest-gcp.txt \
+            trust-page/image-reference-gcp.txt \
+            trust-page/gcp-release.json
+          do
+            cosign sign-blob --bundle "$f.bundle" "$f"
+          done
+          # Each .bundle file contains the signature, ephemeral cert, and
+          # Rekor inclusion proof. Verifiers don't need to talk to Rekor at
+          # verify time; the bundle is self-contained.
+          ls -lh trust-page/*.bundle
+
+      # Trust page: redeploy in case index.html changed. PCR0 update is a
+      # separate step driven from the host (build-eif → captured PCR0 →
+      # `make deploy-trust QUILL_PCR0=...`).
+      - name: Sync static trust page to S3
+        run: |
+          aws s3 sync trust-page/ s3://trust.quill.lorehex.co/ \
+            --exclude "build.sh" \
+            --cache-control "max-age=60, public" \
+            --content-type "text/html; charset=utf-8"
+          aws s3 cp trust-page/pcr0.txt s3://trust.quill.lorehex.co/pcr0.txt \
+            --cache-control "max-age=60, public" \
+            --content-type "text/plain; charset=utf-8"
+          for f in image-digest-gcp.txt image-reference-gcp.txt; do
+            aws s3 cp "trust-page/$f" "s3://trust.quill.lorehex.co/$f" \
+              --cache-control "max-age=60, public" \
+              --content-type "text/plain; charset=utf-8"
+          done
+          aws s3 cp trust-page/gcp-release.json s3://trust.quill.lorehex.co/gcp-release.json \
+            --cache-control "max-age=60, public" \
+            --content-type "application/json"
+          for f in trust-page/*.bundle; do
+            aws s3 cp "$f" "s3://trust.quill.lorehex.co/$(basename "$f")" \
+              --cache-control "max-age=60, public" \
+              --content-type "application/json"
+          done

@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  enclave-go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: enclave-go
+    strategy:
+      matrix:
+        # The same source tree builds four distinct provider-targeted
+        # binaries via two independent build-tag axes:
+        #
+        #   cloud_aws + llm_bedrock     → AWS Nitro Enclaves with Bedrock
+        #   cloud_aws + llm_openrouter  → AWS Nitro Enclaves with OpenRouter ZDR
+        #   cloud_gcp + llm_vertex      → GCP Confidential Space with Vertex AI
+        #   cloud_gcp + llm_openrouter  → GCP Confidential Space with OpenRouter ZDR
+        #
+        # CI exercises all four so a change that breaks one fails fast.
+        tags:
+          - "cloud_aws,llm_bedrock"
+          - "cloud_aws,llm_openrouter"
+          - "cloud_gcp,llm_vertex"
+          - "cloud_gcp,llm_openrouter"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Build (${{ matrix.tags }})
+        run: go build -tags '${{ matrix.tags }}' ./...
+      - name: Vet (${{ matrix.tags }})
+        run: go vet -tags '${{ matrix.tags }}' ./...
+      - name: Lint (${{ matrix.tags }})
+        run: go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8 run --build-tags '${{ matrix.tags }}'
+      - name: Test (${{ matrix.tags }})
+        # Tests under build tags run only when their tag is set, so each
+        # matrix slot exercises just the code its tag combination
+        # actually compiles in.
+        run: go test -tags '${{ matrix.tags }}' ./...
+
+  parent:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: parent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - name: Sync
+        run: uv sync --frozen
+      - name: Lint
+        run: uv run ruff check src tests
+      - name: Format
+        run: uv run ruff format --check src tests
+      - name: Typecheck (mypy --strict, py3.11)
+        run: uv run mypy --strict --python-version 3.11 src tests
+      - name: Test
+        run: uv run pytest -v
+
+  trust-page-validation:
+    # Catches accidental script tags / external font fetches / etc. on
+    # the static trust page before publish.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert trust page contains no <script> tags
+        run: |
+          if grep -qi '<script' trust-page/index.html; then
+            echo "trust page must not contain <script>" >&2
+            exit 1
+          fi
+      - name: Assert trust page contains no third-party fetches
+        run: |
+          # Allowlist:
+          #  - github.com (source links)
+          #  - aws.amazon.com / *.amazonaws.com (Nitro + KMS docs)
+          #  - cloud.google.com / confidentialcomputing.googleapis.com
+          #    / www.googleapis.com (Confidential Space docs + OIDC discovery)
+          #  - lorehex.co + *.lorehex.co (our own pages + curl recipes;
+          #    bare lorehex.co covers the marketing CTA at the top)
+          #  - quillrouter.com + *.quillrouter.com (our API endpoint)
+          #  - sigstore.dev / *.sigstore.dev (transparency-log docs)
+          #  - token.actions.githubusercontent.com (Fulcio OIDC issuer
+          #    referenced in the cosign verify recipe — required arg, not
+          #    a fetch the page makes)
+          grep -oE 'https?://[^"[:space:])]+' trust-page/index.html | sort -u > /tmp/urls.txt
+          grep -vE "^https?://(github\.com|aws\.amazon\.com|docs\.aws\.amazon\.com|[a-z0-9.-]+\.amazonaws\.com|cloud\.google\.com|confidentialcomputing\.googleapis\.com|www\.googleapis\.com|lorehex\.co|[a-z0-9.-]+\.lorehex\.co|quillrouter\.com|[a-z0-9.-]+\.quillrouter\.com|sigstore\.dev|[a-z0-9.-]+\.sigstore\.dev|token\.actions\.githubusercontent\.com)(:[0-9]+)?(/|$|')" /tmp/urls.txt > /tmp/violations.txt || true
+          if [ -s /tmp/violations.txt ]; then
+            echo "trust page contains disallowed external URLs:" >&2
+            cat /tmp/violations.txt >&2
+            exit 1
+          fi

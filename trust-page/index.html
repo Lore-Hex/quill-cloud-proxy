@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Quill Cloud — verifiable zero-retention AI proxy</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A verifiable zero-retention proxy to Claude. TLS terminates inside an attested AWS Nitro Enclave or GCP Confidential Space workload; the prompt path is pinned to the published PCR0 or image digest.">
+
+  <!-- Open Graph + Twitter / X share metadata. Image is the same hero
+       used at top of body, so a shared link previews identically to the
+       lorehex.co/quill marketing page. -->
+  <meta property="og:type"        content="website">
+  <meta property="og:url"         content="https://trust.quill.lorehex.co/">
+  <meta property="og:title"       content="Quill Cloud — verifiable zero-retention AI proxy">
+  <meta property="og:description" content="The signed workload is the boundary. TLS terminates inside an attested AWS Nitro Enclave or GCP Confidential Space image whose measurement is published and signed. Audit the chain or just buy the box.">
+  <meta property="og:image"       content="https://lorehex.co/quill-og.png">
+  <meta property="og:image:alt"   content="Quill — your AI in a box, with verifiable zero-retention cloud">
+
+  <meta name="twitter:card"        content="summary_large_image">
+  <meta name="twitter:title"       content="Quill Cloud — verifiable zero-retention AI proxy">
+  <meta name="twitter:description" content="The signed workload is the boundary. TLS terminates inside an attested AWS Nitro Enclave or GCP Confidential Space image whose measurement is published and signed.">
+  <meta name="twitter:image"       content="https://lorehex.co/quill-og.png">
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif;
+           max-width: 50rem; margin: 2rem auto; padding: 1rem; color: #222; }
+    h1   { margin: 0 0 0.5rem; }
+    h2   { margin-top: 2rem; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+    th, td { text-align: left; padding: 0.4rem 0.6rem;
+             border-bottom: 1px solid #ddd; font-family: ui-monospace, monospace; }
+    th   { font-weight: 600; color: #555; width: 14rem; }
+    code { background: #f5f5f5; padding: 0.1rem 0.3rem; border-radius: 3px; }
+    .ok  { color: #186; font-weight: 600; }
+    .pre { font-family: ui-monospace, monospace; font-size: 0.95rem; white-space: pre; overflow-x: auto;
+           background: #f5f5f5; padding: 0.6rem; border-radius: 4px; }
+    a    { color: #036; }
+    .hero { display: block; width: 100%; height: auto;
+            border-radius: 8px; margin-bottom: 1.5rem; }
+    .cta { display: flex; gap: 0.75rem; flex-wrap: wrap;
+           margin: 1.25rem 0 2rem; }
+    .cta a { display: inline-block; padding: 0.65rem 1rem;
+             border: 1px solid #036; border-radius: 6px;
+             text-decoration: none; font-weight: 600;
+             background: #036; color: #fff; }
+    .cta a.secondary { background: #fff; color: #036; }
+    .cta a:hover { filter: brightness(0.92); }
+  </style>
+</head>
+<body>
+  <img class="hero"
+       src="https://lorehex.co/quill-og.png"
+       alt="Quill — your AI in a box, with verifiable zero-retention cloud">
+
+  <h1>Quill Cloud — trust</h1>
+
+  <div class="cta">
+    <a href="https://lorehex.co/quill">Buy a Quill Alpha Tester to connect to this today</a>
+    <a class="secondary" href="https://lorehex.co/quill">Pre-order a Quill One</a>
+  </div>
+
+  <p>
+    The Quill Cloud prompt path runs inside an attested workload that
+    <strong>terminates TLS internally</strong>. The current production
+    endpoint is a <a href="https://cloud.google.com/confidential-computing/confidential-space">
+    GCP Confidential Space</a> workload; the AWS Nitro Enclave path remains
+    documented below for the Bedrock deployment. In both cases, the only code
+    that decrypts your prompt is the workload whose published measurement is
+    checked against live attestation evidence.
+  </p>
+
+  <h2>Identity</h2>
+  <table>
+    <tr><th>Cloud proxy (this attested binary)</th>
+        <td><a href="https://github.com/Lore-Hex/quill-cloud-proxy">github.com/Lore-Hex/quill-cloud-proxy</a></td></tr>
+    <tr><th>Cloud infrastructure</th>
+        <td><a href="https://github.com/Lore-Hex/quill-cloud-infra">github.com/Lore-Hex/quill-cloud-infra</a></td></tr>
+    <tr><th>Device (Pi) firmware + UI</th>
+        <td><a href="https://github.com/Lore-Hex/quill">github.com/Lore-Hex/quill</a></td></tr>
+    <tr><th>Mac / iOS / visionOS client</th>
+        <td><a href="https://github.com/Lore-Hex/quill-chat">github.com/Lore-Hex/quill-chat</a></td></tr>
+    <tr><th>OllamaKit fork (cert pinning)</th>
+        <td><a href="https://github.com/Lore-Hex/OllamaKit">github.com/Lore-Hex/OllamaKit</a></td></tr>
+    <tr><th>License</th>         <td>Apache 2.0 (cloud) / Apache 2.0 (chat client) / MIT (OllamaKit)</td></tr>
+    <tr><th>Current production endpoint</th>
+        <td><code>api.quillrouter.com</code></td></tr>
+    <tr><th>GCP region</th>      <td>us-central1</td></tr>
+    <tr><th>AWS region</th>      <td>us-east-1 (legacy Bedrock path)</td></tr>
+  </table>
+
+  <p style="font-size:0.95rem;color:#444">
+    Every layer between you and Anthropic is in those repos. Audit any
+    of them at any commit; the published PCR0 below pins the cloud
+    binary to a specific commit of <code>quill-cloud-proxy</code>.
+  </p>
+
+  <h2>Current build</h2>
+  <p>
+    Current GCP production is pinned by an OCI image reference and immutable
+    digest:
+  </p>
+  <table>
+    <tr><th>GCP image reference</th>
+        <td><a href="/image-reference-gcp.txt"><code>/image-reference-gcp.txt</code></a></td></tr>
+    <tr><th>GCP image digest</th>
+        <td><a href="/image-digest-gcp.txt"><code>/image-digest-gcp.txt</code></a></td></tr>
+    <tr><th>GCP release manifest</th>
+        <td><a href="/gcp-release.json"><code>/gcp-release.json</code></a></td></tr>
+    <tr><th>AWS Nitro PCR0</th>
+        <td><a href="/pcr0.txt"><code>/pcr0.txt</code></a></td></tr>
+  </table>
+
+  <h2>Live attestation</h2>
+  <p>
+    The GCP workload returns a Google-signed Confidential Space JWT. The
+    device verifies it before sending prompt traffic: JWT signature, audience,
+    issuer, caller nonce, live TLS cert fingerprint in <code>eat_nonce</code>,
+    and <code>submods.container.image_digest</code> matching
+    <code>/image-digest-gcp.txt</code>.
+  </p>
+  <pre class="pre">NONCE="$(openssl rand -hex 16)"
+curl -kSs "https://api.quillrouter.com/attestation?nonce=$NONCE" -o attestation.jwt
+
+# The JWT issuer discovery document is:
+# https://confidentialcomputing.googleapis.com/.well-known/openid-configuration
+# Check:
+#   1. RS256 signature chains to Google's Confidential Space JWKS
+#   2. aud == quill-cloud and iss == https://confidentialcomputing.googleapis.com
+#   3. eat_nonce contains $NONCE and the live TLS cert SHA-256
+#   4. submods.container.image_digest matches /image-digest-gcp.txt</pre>
+
+  <p>
+    The AWS Nitro path returns a COSE_Sign1 CBOR document. For the AWS
+    deployment, verify it with:
+  </p>
+  <pre class="pre">curl -kSs https://api.quillrouter.com/attestation -o attestation.cbor
+
+# Decode + verify with AWS Nitro's root CA, then check:
+#   1. COSE_Sign1 chains to AWS Nitro Attestation PKI
+#   2. PCR0 matches /pcr0.txt above
+#   3. public_key field matches the cert your TLS handshake received
+#   4. user_data[:32] matches the hash of that cert
+uv run --with cbor2 --with cryptography python3 \
+       tools/verify-attestation.py attestation.cbor \
+       --expected-pcr0 "$(curl -sS https://trust.quill.lorehex.co/pcr0.txt)" \
+       --api-host api.quillrouter.com</pre>
+  <p>
+    Each attestation document binds <em>this exact build</em> (GCP image
+    digest or AWS PCR0) to the TLS cert presented in your handshake. If the
+    cert rotates on a new workload boot, the device refetches attestation and
+    pins the newly verified cert. The cert-private-key never touches disk and
+    never leaves workload memory.
+  </p>
+  <p>
+    The check is the same shape Brave's
+    <a href="https://github.com/brave/nitriding-daemon">nitriding-daemon</a>
+    uses; the bindings (PCR0/image digest → attestation document → cert
+    public key/fingerprint → live TLS session) chain to "the bytes I'm
+    sending are encrypted to a specific build of code measured against this
+    repo."
+  </p>
+
+  <h2>What is retained</h2>
+  <table>
+    <tr><th>Prompt content</th>           <td class="ok">No</td></tr>
+    <tr><th>Completion content</th>       <td class="ok">No</td></tr>
+    <tr><th>Bearer tokens</th>            <td class="ok">No</td></tr>
+    <tr><th>Per-request timestamps</th>   <td class="ok">No</td></tr>
+    <tr><th>Client IPs</th>               <td class="ok">No (ALB log TTL ≤ 24h)</td></tr>
+    <tr><th>Per-device daily aggregate counts (req, tokens, errors), 90-day TTL</th>
+        <td>Yes — for accountability + billing</td></tr>
+    <tr><th>Hourly across-all-devices request count</th>
+        <td>Yes — heartbeat</td></tr>
+  </table>
+
+  <h2>How to verify</h2>
+  <pre class="pre">git clone https://github.com/Lore-Hex/quill-cloud-proxy
+cd quill-cloud-proxy
+./tools/verify-pcr0.sh
+# the script prints the PCR0 of the local rebuild and compares
+# to the published value at /pcr0.txt</pre>
+
+  <h2>Code transparency</h2>
+  <p>
+    Every release of the trust files is signed by the GitHub Actions OIDC
+    identity for <code>Lore-Hex/quill-cloud-proxy</code> and recorded
+    in <a href="https://www.sigstore.dev/">Sigstore Rekor</a>, a public
+    append-only transparency log. The signature + cert + Rekor inclusion proof
+    are published next to each file as <code>.bundle</code>. Anyone can verify
+    the GCP digest binding without trusting this server:
+  </p>
+  <pre class="pre">curl -sS -o image-digest-gcp.txt        https://trust.quill.lorehex.co/image-digest-gcp.txt
+curl -sS -o image-digest-gcp.txt.bundle https://trust.quill.lorehex.co/image-digest-gcp.txt.bundle
+
+cosign verify-blob \
+  --bundle image-digest-gcp.txt.bundle \
+  --certificate-identity-regexp '^https://github.com/Lore-Hex/quill-cloud-proxy/.*' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  image-digest-gcp.txt</pre>
+  <p>
+    A successful verify proves: this digest was signed by the GitHub
+    Actions identity for this repo, at the timestamp Rekor recorded,
+    against a Fulcio-issued ephemeral certificate whose subject claims
+    matched the repo's CI run. A silent rebuild of the cloud binary
+    can't forge this — Rekor is append-only and the OIDC token is
+    short-lived.
+  </p>
+
+  <h2>What enforces zero retention</h2>
+  <ul>
+    <li><a href="https://github.com/Lore-Hex/quill-cloud-proxy/blob/main/enclave-go/cmd/enclave/main.go">
+        <code>enclave-go/cmd/enclave/main.go</code></a> — the workload prompt path,
+        bearer authentication, request-size cap, and attestation endpoint.</li>
+    <li><a href="https://github.com/Lore-Hex/quill-cloud-proxy/blob/main/parent/tests/test_no_content_in_logs.py">
+        <code>parent/tests/test_no_content_in_logs.py</code></a> — AST scan
+        that fails CI if a parent log call has any prompt-content kwarg.</li>
+    <li><a href="https://github.com/Lore-Hex/quill-cloud-proxy/blob/main/parent/src/quill_parent/relay.py">
+        <code>parent/src/quill_parent/relay.py</code></a> — the byte pump
+        between the ALB and the enclave; never decodes the body.</li>
+    <li><a href="https://github.com/Lore-Hex/quill-cloud-infra/blob/main/modules/kms/main.tf">
+        <code>quill-cloud-infra/modules/kms/main.tf</code></a> — KMS condition
+        policy that binds Bedrock-credential decrypt to the published PCR0.</li>
+  </ul>
+
+  <p style="color:#888;font-size:0.85rem;margin-top:3rem">
+    No JavaScript. No analytics. No cookies. Hosted as static files on S3
+    with a 60-second cache header.
+  </p>
+</body>
+</html>

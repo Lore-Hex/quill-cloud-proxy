@@ -1,0 +1,38 @@
+# Build container for the GCP Confidential Space target.
+# Mirrors Dockerfile.enclave but builds with `-tags 'cloud_gcp,llm_vertex'` to swap the LLM
+# provider from AWS Bedrock to Google Vertex AI. The runtime is still
+# `FROM scratch` so the workload-image measurement (the OCI digest that
+# Confidential Space's vTPM attests) covers exactly one binary + the CA
+# bundle.
+#
+# Architecture is amd64 here — Confidential Space VMs use AMD SEV-SNP
+# (and Intel TDX) on x86_64 hosts; AMD-on-ARM Confidential Computing
+# isn't a thing yet on GCP. AWS Nitro on Graviton stays arm64; GCP CSP
+# stays amd64.
+
+FROM golang:1.24-bookworm@sha256:ca0741815eee3625da09eddf15cc8ff678efa16520fcbcdbeb2ae0b0c519c82c AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+RUN go build -trimpath -tags 'cloud_gcp,llm_vertex' -ldflags='-s -w -extldflags=-static' \
+      -o /out/quill-enclave ./cmd/enclave
+
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /out/quill-enclave /quill-enclave
+
+# TLS termination INSIDE the workload — same property the AWS target has,
+# because Confidential Space VMs don't decrypt either; the workload owns
+# the TLS handshake.
+ENV QUILL_ENCLAVE_TLS=true
+
+ENTRYPOINT ["/quill-enclave"]
