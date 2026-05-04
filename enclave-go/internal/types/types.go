@@ -28,6 +28,12 @@ type BootstrapData struct {
 	// hands plaintext over vsock).
 	OpenRouterAPIKey     string `json:"openrouter_api_key,omitempty"`
 	OpenRouterVsockProxy string `json:"openrouter_vsock_proxy,omitempty"` // e.g. "3:8004"
+
+	// TrustedRouter control-plane metadata API. The internal token is fetched
+	// from Secret Manager inside the attested GCP workload, not injected as
+	// plaintext VM metadata.
+	TrustedRouterBaseURL       string `json:"trustedrouter_base_url,omitempty"`
+	TrustedRouterInternalToken string `json:"trustedrouter_internal_token,omitempty"`
 }
 
 // OpenAIChatMessage is one message in an inbound /v1/chat/completions request.

@@ -38,6 +38,27 @@ func NewFromEnv() *Client {
 	}
 }
 
+func NewFromBootstrap(boot *qtypes.BootstrapData) *Client {
+	baseURL := strings.TrimRight(os.Getenv("TR_CONTROL_PLANE_BASE_URL"), "/")
+	if baseURL == "" && boot != nil {
+		baseURL = strings.TrimRight(boot.TrustedRouterBaseURL, "/")
+	}
+	internalToken := os.Getenv("TR_INTERNAL_GATEWAY_TOKEN")
+	if internalToken == "" && boot != nil {
+		internalToken = boot.TrustedRouterInternalToken
+	}
+	region := os.Getenv("TR_REGION")
+	if region == "" && boot != nil {
+		region = boot.Region
+	}
+	return &Client{
+		baseURL:       baseURL,
+		internalToken: strings.TrimSpace(internalToken),
+		region:        region,
+		httpc:         &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
 func New(baseURL, internalToken string, httpc *http.Client) *Client {
 	if httpc == nil {
 		httpc = &http.Client{Timeout: 30 * time.Second}

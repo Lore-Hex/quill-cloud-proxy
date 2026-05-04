@@ -53,7 +53,7 @@ EXPOSE 443
 # overridden on this image; allowed envs to be overridden: []".
 # These names are only POINTERS to secrets / project / region — never
 # secrets themselves, so override-from-metadata is fine.
-LABEL "tee.launch_policy.allow_env_override"="QUILL_GCP_PROJECT_ID,QUILL_GCP_REGION,QUILL_DEVICE_KEYS_SECRET,QUILL_OPENROUTER_SECRET,QUILL_API_HOST,QUILL_TLS_MODE,QUILL_ACME_EMAIL,QUILL_ACME_CACHE_DIR,QUILL_ACME_DIRECTORY_URL"
+LABEL "tee.launch_policy.allow_env_override"="QUILL_GCP_PROJECT_ID,QUILL_GCP_REGION,QUILL_DEVICE_KEYS_SECRET,QUILL_OPENROUTER_SECRET,QUILL_TRUSTEDROUTER_INTERNAL_SECRET,TR_CONTROL_PLANE_BASE_URL,TR_REGION,QUILL_API_HOST,QUILL_TLS_MODE,QUILL_ACME_EMAIL,QUILL_ACME_CACHE_DIR,QUILL_ACME_DIRECTORY_URL"
 # Allow the workload to bind :443 directly.
 LABEL "tee.launch_policy.log_redirect"="always"
 

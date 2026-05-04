@@ -36,6 +36,7 @@
 //	QUILL_GCP_PROJECT_ID         e.g. "quill-cloud-proxy"
 //	QUILL_DEVICE_KEYS_SECRET     name of the secret holding the device-key JSON
 //	QUILL_OPENROUTER_SECRET      name of the secret holding the OpenRouter API key
+//	QUILL_TRUSTEDROUTER_INTERNAL_SECRET optional Secret Manager secret name
 package bootstrap
 
 import (
@@ -46,6 +47,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -94,11 +96,21 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap/gcp: openrouter key: %w", err)
 	}
+	var internalGatewayToken string
+	if internalSecret := os.Getenv("QUILL_TRUSTEDROUTER_INTERNAL_SECRET"); internalSecret != "" {
+		value, err := fetchSecret(ctx, httpc, token, project, internalSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: trustedrouter internal token: %w", err)
+		}
+		internalGatewayToken = string(value)
+	}
 
 	return &types.BootstrapData{
-		Devices:          devices,
-		Region:           os.Getenv("QUILL_GCP_REGION"),
-		OpenRouterAPIKey: string(openrouterKey),
+		Devices:                    devices,
+		Region:                     os.Getenv("QUILL_GCP_REGION"),
+		OpenRouterAPIKey:           string(openrouterKey),
+		TrustedRouterBaseURL:       os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
+		TrustedRouterInternalToken: strings.TrimSpace(internalGatewayToken),
 		// BedrockVsockProxy / OpenRouterVsockProxy unused on GCP — direct egress.
 	}, nil
 }

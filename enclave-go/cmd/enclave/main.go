@@ -78,7 +78,7 @@ func main() {
 	// silent rotation produces a new attestation.
 	registry := auth.New(boot.Devices)
 	br := llm.New(boot) // build-tag-gated: AWS Bedrock by default, GCP Vertex with -tags gcp
-	trGateway := trustedrouter.NewFromEnv()
+	trGateway := trustedrouter.NewFromBootstrap(boot)
 	var byokSecrets *byokcache.Cache
 	if trGateway.Enabled() {
 		byokSecrets = byokcache.New(byokcache.Options{
