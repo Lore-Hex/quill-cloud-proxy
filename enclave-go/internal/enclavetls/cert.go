@@ -113,10 +113,17 @@ func NewSelfSigned(dnsName string) (*Server, error) {
 // NewACME configures a TLS listener that obtains a public certificate inside
 // the enclave using TLS-ALPN-01 on port 443. By default, ACME account and
 // certificate private keys stay in process memory; cacheDir may be set when
-// the deployment has a sealed enclave-local cache.
-func NewACME(dnsName, email, cacheDir, directoryURL string) (*Server, error) {
+// the deployment has a sealed enclave-local cache. If gcsCacheBucket is
+// non-empty, the cache is backed by GCS instead — required for multi-replica
+// MIGs since LE's TLS-ALPN-01 validation can land on any backend the L4 LB
+// chose, and only a shared cache lets every replica answer with the same
+// challenge token.
+func NewACME(dnsName, email, cacheDir, directoryURL, gcsCacheBucket string) (*Server, error) {
 	var cache autocert.Cache = newMemoryACMECache()
-	if cacheDir != "" && cacheDir != "memory" {
+	switch {
+	case gcsCacheBucket != "":
+		cache = NewGCSCache(gcsCacheBucket)
+	case cacheDir != "" && cacheDir != "memory":
 		if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 			return nil, fmt.Errorf("enclavetls: create acme cache: %w", err)
 		}
@@ -138,6 +145,14 @@ func NewACME(dnsName, email, cacheDir, directoryURL string) (*Server, error) {
 	managerGetCertificate := tlsConfig.GetCertificate
 	tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		cert, err := managerGetCertificate(hello)
+		if err != nil {
+			// Operationally critical: without this line autocert failures
+			// surface only as TLS alert 80 to the client; the enclave logs
+			// nothing. SNI is not prompt content (it's the public hostname
+			// the client requested) so logging it doesn't violate the
+			// no-prompt-logging policy.
+			fmt.Fprintf(os.Stderr, "enclavetls.acme_get_certificate_failed sni=%q err=%v\n", hello.ServerName, err)
+		}
 		if err == nil && cert != nil && len(cert.Certificate) > 0 && !supportsProto(hello.SupportedProtos, acme.ALPNProto) {
 			srv.setLeafDER(cert.Certificate[0])
 		}

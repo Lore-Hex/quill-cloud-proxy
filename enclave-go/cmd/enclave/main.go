@@ -119,6 +119,7 @@ func main() {
 				os.Getenv("QUILL_ACME_EMAIL"),
 				os.Getenv("QUILL_ACME_CACHE_DIR"),
 				os.Getenv("QUILL_ACME_DIRECTORY_URL"),
+				os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET"),
 			)
 		} else {
 			tlsServer, err = enclavetls.NewSelfSigned(apiHost)

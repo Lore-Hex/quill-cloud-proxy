@@ -64,7 +64,7 @@ func TestNewSelfSigned_ValidCert(t *testing.T) {
 }
 
 func TestNewACME_ConfiguresTLSALPNInMemory(t *testing.T) {
-	srv, err := NewACME("api.quillrouter.com", "", "", "")
+	srv, err := NewACME("api.quillrouter.com", "", "", "", "")
 	if err != nil {
 		t.Fatalf("NewACME: %v", err)
 	}
