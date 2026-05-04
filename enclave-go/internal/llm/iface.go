@@ -35,7 +35,15 @@ type Client interface {
 		req *qtypes.OpenAIChatRequest,
 		body *qtypes.AnthropicMessagesRequest,
 		out io.Writer,
+		options ...InvokeOptions,
 	) error
+}
+
+type InvokeOptions struct {
+	ProviderAPIKey string
+	Provider       string
+	EndpointID     string
+	UsageType      string
 }
 
 // New builds the right Client for the build target. Defined exactly once

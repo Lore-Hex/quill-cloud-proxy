@@ -26,14 +26,17 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/attestation"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bootstrap"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/entropy"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -75,6 +78,13 @@ func main() {
 	// silent rotation produces a new attestation.
 	registry := auth.New(boot.Devices)
 	br := llm.New(boot) // build-tag-gated: AWS Bedrock by default, GCP Vertex with -tags gcp
+	trGateway := trustedrouter.NewFromEnv()
+	var byokSecrets *byokcache.Cache
+	if trGateway.Enabled() {
+		byokSecrets = byokcache.New(byokcache.Options{
+			Unwrapper: &byokcache.GoogleKMSUnwrapper{},
+		})
+	}
 
 	deviceBlob, _ := json.Marshal(boot.Devices)
 
@@ -126,11 +136,20 @@ func main() {
 		if err != nil {
 			continue
 		}
-		go serveOne(ctx, conn, registry, br, tlsServer, deviceBlob)
+		go serveOne(ctx, conn, registry, br, tlsServer, deviceBlob, trGateway, byokSecrets)
 	}
 }
 
-func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br llm.Client, tlsServer *enclavetls.Server, deviceBlob []byte) {
+func serveOne(
+	ctx context.Context,
+	conn net.Conn,
+	reg *auth.Registry,
+	br llm.Client,
+	tlsServer *enclavetls.Server,
+	deviceBlob []byte,
+	trGateway *trustedrouter.Client,
+	byokSecrets *byokcache.Cache,
+) {
 	defer conn.Close()
 
 	method, path, bearer, body, err := readRequest(conn)
@@ -157,8 +176,15 @@ func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br llm.Cli
 		return
 	}
 
-	device := reg.Lookup(bearer)
-	if device == nil {
+	trEnabled := trGateway != nil && trGateway.Enabled()
+	if !trEnabled {
+		device := reg.Lookup(bearer)
+		if device == nil {
+			writeError(conn, 401, "Invalid API key")
+			return
+		}
+		_ = device // device_id can be reported via a counter-flush vsock RPC in V1.1
+	} else if bearer == "" {
 		writeError(conn, 401, "Invalid API key")
 		return
 	}
@@ -179,6 +205,32 @@ func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br llm.Cli
 		writeError(conn, 500, "adapter error")
 		return
 	}
+	var authorization *trustedrouter.Authorization
+	var invokeOptions []llm.InvokeOptions
+	requestStarted := time.Now()
+	if trEnabled {
+		authorization, err = trGateway.Authorize(ctx, bearer, &req)
+		if err != nil {
+			writeError(conn, statusFromControlPlaneError(err), "gateway authorization failed")
+			return
+		}
+		req.Model = authorization.Model
+		req.Models = nil
+		providerKey, keyErr := providerAPIKey(ctx, byokSecrets, authorization)
+		if keyErr != nil {
+			_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds())
+			writeError(conn, 502, "BYOK provider key unavailable")
+			return
+		}
+		if providerKey != "" {
+			invokeOptions = append(invokeOptions, llm.InvokeOptions{
+				ProviderAPIKey: providerKey,
+				Provider:       authorization.Provider,
+				EndpointID:     authorization.EndpointID,
+				UsageType:      authorization.UsageType,
+			})
+		}
+	}
 	requestID := newRequestID()
 	if err := writeResponseHead(conn, 200); err != nil {
 		return
@@ -186,23 +238,39 @@ func serveOne(ctx context.Context, conn net.Conn, reg *auth.Registry, br llm.Cli
 
 	chunkW := newChunkedWriter(conn)
 	defer chunkW.Close()
+	statsW := newStreamStatsWriter(chunkW)
 
 	pr, pw := io.Pipe()
 	go func() {
-		defer pw.Close()
 		// llm.Client decides what model-name translation (if any) to do
 		// internally — Bedrock maps to inference profile IDs; Vertex
 		// passes through unchanged.
-		if err := br.InvokeStreaming(ctx, &req, anthropicReq, pw); err != nil {
+		if err := br.InvokeStreaming(ctx, &req, anthropicReq, pw, invokeOptions...); err != nil {
+			if trEnabled {
+				_ = pw.CloseWithError(err)
+				return
+			}
 			emitErrorAsAnthropicSSE(pw, err)
 		}
+		_ = pw.Close()
 	}()
 
-	if err := adapter.TransformStream(pr, chunkW, requestID, req.Model); err != nil {
-		// nothing to do — connection breakage gets surfaced to parent.
+	if err := adapter.TransformStream(pr, statsW, requestID, req.Model); err != nil {
+		if trEnabled {
+			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds())
+		}
 		return
 	}
-	_ = device // device_id can be reported via a counter-flush vsock RPC in V1.1
+	if trEnabled {
+		_ = trGateway.Settle(ctx, authorization, trustedrouter.Usage{
+			RequestID:         requestID,
+			InputTokens:       trustedrouter.EstimateInputTokens(&req),
+			OutputTokens:      trustedrouter.EstimateOutputTokensFromBytes(statsW.BytesWritten()),
+			ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
+			FirstTokenSeconds: statsW.FirstWriteSeconds(requestStarted),
+			UsageEstimated:    true,
+		})
+	}
 }
 
 func getenv(name, fallback string) string {
@@ -210,6 +278,88 @@ func getenv(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func providerAPIKey(
+	ctx context.Context,
+	cache *byokcache.Cache,
+	authorization *trustedrouter.Authorization,
+) (string, error) {
+	if authorization == nil || !strings.EqualFold(authorization.UsageType, "BYOK") {
+		return "", nil
+	}
+	if authorization.BYOKEncryptedSecret != nil {
+		if cache == nil {
+			return "", fmt.Errorf("byok cache is not configured")
+		}
+		secret, _, err := cache.Resolve(
+			ctx,
+			authorization.WorkspaceID,
+			authorization.Provider,
+			authorization.BYOKCacheKey,
+			*authorization.BYOKEncryptedSecret,
+		)
+		return secret, err
+	}
+	if strings.HasPrefix(authorization.BYOKSecretRef, "env://") {
+		name := strings.TrimPrefix(authorization.BYOKSecretRef, "env://")
+		if value := os.Getenv(name); value != "" {
+			return value, nil
+		}
+		return "", fmt.Errorf("BYOK env ref %s is unset", name)
+	}
+	if strings.HasPrefix(authorization.BYOKSecretRef, "byok://") {
+		return "", fmt.Errorf("BYOK envelope is missing for %s", authorization.BYOKSecretRef)
+	}
+	return "", nil
+}
+
+func statusFromControlPlaneError(err error) int {
+	message := err.Error()
+	for _, status := range []int{400, 401, 402, 403, 404, 429} {
+		if strings.Contains(message, fmt.Sprintf("http %d", status)) {
+			return status
+		}
+	}
+	return 502
+}
+
+type streamStatsWriter struct {
+	w         io.Writer
+	bytes     int
+	firstByte time.Time
+}
+
+func newStreamStatsWriter(w io.Writer) *streamStatsWriter {
+	return &streamStatsWriter{w: w}
+}
+
+func (w *streamStatsWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 && w.firstByte.IsZero() {
+		w.firstByte = time.Now()
+	}
+	n, err := w.w.Write(p)
+	w.bytes += n
+	return n, err
+}
+
+func (w *streamStatsWriter) BytesWritten() int {
+	return w.bytes
+}
+
+func (w *streamStatsWriter) FirstWriteSeconds(start time.Time) float64 {
+	if w.firstByte.IsZero() {
+		return 0
+	}
+	return maxDurationSeconds(w.firstByte.Sub(start), 0.001)
+}
+
+func maxDurationSeconds(duration time.Duration, floor float64) float64 {
+	seconds := duration.Seconds()
+	if seconds < floor {
+		return floor
+	}
+	return seconds
 }
 
 // emitErrorAsAnthropicSSE turns an upstream-LLM failure into a small

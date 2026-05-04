@@ -30,7 +30,11 @@ func (c *awsClient) InvokeStreaming(
 	req *qtypes.OpenAIChatRequest,
 	body *qtypes.AnthropicMessagesRequest,
 	out io.Writer,
+	options ...InvokeOptions,
 ) error {
+	if handled, err := invokeBYOKStreaming(ctx, req, body, out, firstOptions(options)); handled {
+		return err
+	}
 	id, ok := bedrock.MapModel(req.Model)
 	if !ok {
 		return fmt.Errorf("llm/aws: unknown model: %s", req.Model)

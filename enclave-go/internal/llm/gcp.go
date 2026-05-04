@@ -117,7 +117,11 @@ func (c *gcpClient) InvokeStreaming(
 	req *qtypes.OpenAIChatRequest,
 	body *qtypes.AnthropicMessagesRequest,
 	out io.Writer,
+	options ...InvokeOptions,
 ) error {
+	if handled, err := invokeBYOKStreaming(ctx, req, body, out, firstOptions(options)); handled {
+		return err
+	}
 	token, err := c.fetchToken(ctx)
 	if err != nil {
 		return err

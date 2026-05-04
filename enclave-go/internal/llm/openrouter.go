@@ -37,7 +37,6 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -172,21 +171,16 @@ type providerRouting struct {
 	MaxPrice          map[string]any `json:"max_price,omitempty"`
 }
 
-type upstreamHTTPError struct {
-	status int
-	body   string
-}
-
-func (e *upstreamHTTPError) Error() string {
-	return fmt.Sprintf("llm/openrouter: http %d: %s", e.status, e.body)
-}
-
 func (c *openRouterClient) InvokeStreaming(
 	ctx context.Context,
 	req *qtypes.OpenAIChatRequest,
 	body *qtypes.AnthropicMessagesRequest,
 	out io.Writer,
+	options ...InvokeOptions,
 ) error {
+	if handled, err := invokeBYOKStreaming(ctx, req, body, out, firstOptions(options)); handled {
+		return err
+	}
 	candidates, err := routeCandidates(req)
 	if err != nil {
 		return err
@@ -396,108 +390,5 @@ func normalizeProvider(provider string) string {
 		return slug
 	default:
 		return slug
-	}
-}
-
-// translateOpenAIStreamToAnthropic reads OpenAI Chat Completions SSE chunks
-// from `r` and writes Anthropic-native SSE events to `w` in the minimal
-// shape adapter.TransformStream knows how to consume:
-//
-//   - For each text delta: content_block_delta with text_delta
-//   - On finish: message_delta carrying stop_reason, then message_stop
-//
-// OpenAI SSE format (one chunk per `\n\n`-terminated block):
-//
-//	data: {"id":"...","choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
-//	...
-//	data: {"id":"...","choices":[{"delta":{},"finish_reason":"stop"}]}
-//	data: [DONE]
-func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-
-	stopReason := "end_turn"
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		payload := line[len("data: "):]
-		if payload == "[DONE]" {
-			break
-		}
-
-		var chunk struct {
-			Choices []struct {
-				Delta struct {
-					Content string `json:"content"`
-				} `json:"delta"`
-				FinishReason *string `json:"finish_reason"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			continue
-		}
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-		choice := chunk.Choices[0]
-
-		if choice.Delta.Content != "" {
-			if err := writeAnthropicTextDelta(w, choice.Delta.Content); err != nil {
-				return err
-			}
-		}
-		if choice.FinishReason != nil && *choice.FinishReason != "" {
-			stopReason = mapOpenAIFinishReason(*choice.FinishReason)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("llm/openrouter: stream scan: %w", err)
-	}
-
-	return writeAnthropicStop(w, stopReason)
-}
-
-func writeAnthropicTextDelta(w io.Writer, text string) error {
-	payload := map[string]any{
-		"type":  "content_block_delta",
-		"index": 0,
-		"delta": map[string]any{"type": "text_delta", "text": text},
-	}
-	body, _ := json.Marshal(payload)
-	_, err := fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", body)
-	return err
-}
-
-func writeAnthropicStop(w io.Writer, stopReason string) error {
-	mDelta := map[string]any{
-		"type":  "message_delta",
-		"delta": map[string]any{"stop_reason": stopReason},
-	}
-	body, _ := json.Marshal(mDelta)
-	if _, err := fmt.Fprintf(w, "event: message_delta\ndata: %s\n\n", body); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
-	return err
-}
-
-// mapOpenAIFinishReason translates OpenAI's finish_reason into the
-// Anthropic stop_reason that adapter.mapStopReason already knows how to
-// translate back to OpenAI again. The double-trip is fine and lets us
-// reuse the existing pipeline.
-func mapOpenAIFinishReason(reason string) string {
-	switch reason {
-	case "stop":
-		return "end_turn"
-	case "length":
-		return "max_tokens"
-	case "tool_calls":
-		return "tool_use"
-	case "content_filter":
-		return "end_turn"
-	default:
-		return "end_turn"
 	}
 }

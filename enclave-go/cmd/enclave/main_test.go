@@ -12,10 +12,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -59,8 +62,9 @@ func TestReadRequestRejectsOversizedBodyBeforeAllocation(t *testing.T) {
 }
 
 type fakeStreamingLLM struct {
-	model string
-	body  *types.AnthropicMessagesRequest
+	model   string
+	body    *types.AnthropicMessagesRequest
+	options []llm.InvokeOptions
 }
 
 func (f *fakeStreamingLLM) InvokeStreaming(
@@ -68,9 +72,11 @@ func (f *fakeStreamingLLM) InvokeStreaming(
 	req *types.OpenAIChatRequest,
 	body *types.AnthropicMessagesRequest,
 	out io.Writer,
+	options ...llm.InvokeOptions,
 ) error {
 	f.model = req.Model
 	f.body = body
+	f.options = options
 	_, err := fmt.Fprint(out, `event: message_start
 data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"claude","stop_reason":null,"usage":{"input_tokens":2,"output_tokens":0}}}
 
@@ -90,6 +96,80 @@ data: {"type":"message_stop"}
 	return err
 }
 
+func TestServeOneTrustedRouterGatewayAuthorizesBYOKAndSettles(t *testing.T) {
+	t.Setenv("CEREBRAS_TEST_KEY", "csk-live-from-env")
+	bearer := "sk-tr-v1-user-secret"
+	var authorizeBody string
+	var settleBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-trustedrouter-internal-token") != "internal-token" {
+			t.Fatalf("missing internal token")
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			authorizeBody = string(body)
+			if strings.Contains(authorizeBody, bearer) || strings.Contains(authorizeBody, "private prompt") {
+				t.Fatalf("authorize leaked secret material: %s", authorizeBody)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_1","workspace_id":"ws_1","api_key_hash":"key_1","model":"cerebras/llama3.1-8b","endpoint_id":"cerebras/llama3.1-8b@cerebras/byok","provider":"cerebras","usage_type":"BYOK","limit_usage_type":"BYOK","byok_secret_ref":"env://CEREBRAS_TEST_KEY","byok_cache_key":null,"byok_encrypted_secret":null,"route_candidates":[]}}`)
+		case "/internal/gateway/settle":
+			settleBody = string(body)
+			if strings.Contains(settleBody, "Hello") || strings.Contains(settleBody, "private prompt") {
+				t.Fatalf("settle leaked content: %s", settleBody)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"settled":true}}`)
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	reg := auth.New(nil)
+	streamer := &fakeStreamingLLM{}
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	serverConn, client := net.Pipe()
+	defer client.Close()
+
+	go serveOne(context.Background(), serverConn, reg, streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"cerebras/llama3.1-8b","stream":true,"messages":[{"role":"user","content":"private prompt"}],"max_tokens":32}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	_, _ = io.ReadAll(resp.Body)
+
+	if !strings.Contains(authorizeBody, `"api_key_lookup_hash"`) {
+		t.Fatalf("authorize did not use lookup hash: %s", authorizeBody)
+	}
+	if !strings.Contains(settleBody, `"selected_endpoint":"cerebras/llama3.1-8b@cerebras/byok"`) {
+		t.Fatalf("settle did not include selected endpoint: %s", settleBody)
+	}
+	if len(streamer.options) != 1 || streamer.options[0].ProviderAPIKey != "csk-live-from-env" {
+		t.Fatalf("provider key option = %#v", streamer.options)
+	}
+}
+
 func TestServeOneStreamsChunkedOpenAISSEFromInsideEnclave(t *testing.T) {
 	bearer := "test-bearer"
 	digest := sha256.Sum256([]byte(bearer))
@@ -102,7 +182,7 @@ func TestServeOneStreamsChunkedOpenAISSEFromInsideEnclave(t *testing.T) {
 	server, client := net.Pipe()
 	defer client.Close()
 
-	go serveOne(context.Background(), server, reg, llm, nil, nil)
+	go serveOne(context.Background(), server, reg, llm, nil, nil, nil, nil)
 
 	requestBody := []byte(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"system","content":"private system"},{"role":"user","content":"private prompt"}],"max_tokens":32}`)
 	_, err := fmt.Fprintf(
