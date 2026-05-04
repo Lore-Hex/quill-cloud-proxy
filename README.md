@@ -13,6 +13,13 @@ Two binaries that ship together:
 | `enclave-go/`  | Go       | inside Nitro/CSP workload    | Authenticates bearer hashes, calls the configured LLM provider, terminates workload TLS, serves `/attestation`, and streams OpenAI-format chunks back. AWS builds use vsock; GCP builds use Confidential Space ingress/egress. |
 | `parent/`      | Python   | on the EC2 host (AWS only)   | Operator/admin HTTP endpoints, legacy HTTP-over-vsock relay, raw TCP pump for enclave-terminated TLS, heartbeat, DynamoDB usage, and bootstrap-RPC vsock server. |
 
+`enclave-go/internal/byokcache` decrypts TrustedRouter BYOK envelopes inside
+the attested gateway. It unwraps each per-secret DEK with Cloud KMS, decrypts
+the provider key with AES-256-GCM, and keeps the plaintext provider key only in
+short-lived process memory keyed by the control plane's non-secret
+`byok_cache_key`. BYOK rotation changes that key; BYOK delete stops returning an
+envelope from authorization and stale cache entries expire by TTL.
+
 Plus operator tools (`tools/`) and a static trust page (`trust-page/`).
 
 ## Trust property
