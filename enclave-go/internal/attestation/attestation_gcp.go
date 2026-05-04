@@ -35,7 +35,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
@@ -58,47 +57,17 @@ const attestationTokenURL = "http://teeserver/v1/token" // #nosec G101 -- URL, n
 //
 // nonce is optional client freshness. deviceBlob is hashed in to prove
 // the device-key list bound at boot (parallels AWS UserData[:32]).
-//
-// Two GCP deployment shapes are supported:
-//
-//  1. Confidential Space VM (CSP launcher present): mints an OIDC JWT
-//     via the launcher's local Unix socket; the JWT is Google-signed
-//     and commits to image_digest, image_reference, and (for the VM
-//     target) the in-enclave TLS leaf cert SHA-256.
-//  2. Cloud Run with Confidential Computing not enabled: the launcher
-//     socket isn't present. We fall back to a self-emitted manifest
-//     (NOT Google-signed) that exposes image digest derived from
-//     K_REVISION/K_SERVICE env vars. Callers verifying must accept
-//     this manifest as a weaker trust tier — explicitly documented
-//     on the trust page.
-//
-// The returned bytes are CBOR for AWS, OIDC JWT for CSP-VM, and a
-// JSON manifest for Cloud Run mode. Content-Type is set by the
-// cmd/enclave handler from the leading byte: '{' = JSON, otherwise
-// JWT/CBOR.
 func Get(leafDER []byte, deviceBlob []byte, nonce []byte) ([]byte, error) {
-	if _, err := os.Stat(teeserverSocketPath); os.IsNotExist(err) {
-		// Cloud Run shape: no CSP launcher. Emit a self-attested manifest.
-		return cloudRunManifest(deviceBlob, nonce)
-	}
+	leafFP := sha256.Sum256(leafDER)
 	deviceHash := sha256.Sum256(deviceBlob)
 
 	reqBody := tokenRequest{
 		Audience:  "quill-cloud",
 		TokenType: "OIDC",
 		Nonces: []string{
+			hex.EncodeToString(leafFP[:]),
 			hex.EncodeToString(deviceHash[:]),
 		},
-	}
-	// Cloud Run target: leafDER is nil because TLS terminates at GCP's
-	// edge, not in the enclave. Skip the cert binding — the JWT still
-	// commits to image_digest + image_reference (via the standard CSP
-	// claim set) plus the device-blob hash and any client nonce.
-	// CSP-VM target: bind the in-enclave leaf cert SHA-256 so clients
-	// can pin the live TLS connection to the attestation document.
-	if leafDER != nil {
-		leafFP := sha256.Sum256(leafDER)
-		reqBody.Nonces = append([]string{hex.EncodeToString(leafFP[:])}, reqBody.Nonces...)
 	}
 	if len(nonce) > 0 {
 		reqBody.Nonces = append(reqBody.Nonces, hex.EncodeToString(nonce))
@@ -144,40 +113,6 @@ func Get(leafDER []byte, deviceBlob []byte, nonce []byte) ([]byte, error) {
 		return nil, err
 	}
 	return jwt, nil
-}
-
-// cloudRunManifest emits a JSON manifest for the Cloud Run deployment
-// shape. It is *self-attested* — no Google signature — because Cloud
-// Run with Confidential Computing flagged off does not expose the CSP
-// launcher socket, and there is no other built-in way to obtain a
-// JWT committing to the workload image digest.
-//
-// Trust property note: a caller verifying this manifest is trusting
-// (a) that they reached the right Cloud Run service via DNS+TLS, and
-// (b) that GCP deployed the image hash named in K_CONFIGURATION /
-// K_REVISION. This is the same trust model as ordinary serverless
-// SaaS — strictly weaker than the CSP-VM target. The trust page
-// documents this clearly per region.
-func cloudRunManifest(deviceBlob, nonce []byte) ([]byte, error) {
-	deviceHash := sha256.Sum256(deviceBlob)
-	manifest := map[string]any{
-		"kind":             "cloud-run-self-attested",
-		"k_service":        os.Getenv("K_SERVICE"),
-		"k_revision":       os.Getenv("K_REVISION"),
-		"k_configuration":  os.Getenv("K_CONFIGURATION"),
-		"region":           os.Getenv("QUILL_GCP_REGION"),
-		"project":          os.Getenv("QUILL_GCP_PROJECT_ID"),
-		"device_blob_sha":  hex.EncodeToString(deviceHash[:]),
-		"trust_tier":       "image-digest-only",
-		"trust_note": "Cloud Run with Confidential Computing not enabled. " +
-			"This manifest is self-attested (NOT Google-signed). " +
-			"Verify image deployment integrity via the trust page's " +
-			"published image_digest for this service.",
-	}
-	if len(nonce) > 0 {
-		manifest["nonce"] = hex.EncodeToString(nonce)
-	}
-	return json.Marshal(manifest)
 }
 
 // tokenRequest is the body shape the CSP attestation server accepts.
