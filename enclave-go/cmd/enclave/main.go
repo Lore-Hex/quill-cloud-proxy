@@ -348,13 +348,16 @@ func parseRequestTarget(rawPath string) (string, []byte, error) {
 // nonce: ?nonce=<hex> in the query string. Optional but recommended —
 // a client-supplied freshness token so the doc is provably not a replay.
 func serveAttestation(conn io.Writer, tlsServer *enclavetls.Server, deviceBlob, nonce []byte) {
+	// In CSP-VM mode the enclave owns the TLS cert and binds it into
+	// the attestation document via leafDER. In Cloud Run mode TLS is
+	// terminated at GCP's edge and we have no cert to bind — the JWT
+	// commits to image_digest + nonce + device-blob hash only, and
+	// callers verifying are expected to trust the GCP-managed cert
+	// chain through the standard CA path. Pass nil leafDER and let
+	// attestation.Get omit the cert nonce.
 	var leafDER []byte
 	if tlsServer != nil {
 		leafDER = tlsServer.CurrentLeafDER()
-	}
-	if leafDER == nil {
-		writeError(conn, 503, "TLS not enabled in this enclave; attestation requires a bound cert")
-		return
 	}
 	doc, err := attestation.Get(leafDER, deviceBlob, nonce)
 	if err != nil {
