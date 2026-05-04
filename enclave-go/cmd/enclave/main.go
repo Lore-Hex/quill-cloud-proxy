@@ -247,6 +247,15 @@ func serveOne(
 		// internally — Bedrock maps to inference profile IDs; Vertex
 		// passes through unchanged.
 		if err := br.InvokeStreaming(ctx, &req, anthropicReq, pw, invokeOptions...); err != nil {
+			// Diagnostic: log the type+message of upstream errors so we can
+			// distinguish network from quota from auth from JSON-shape bugs.
+			// Model id is from the request body and isn't itself prompt
+			// content; the err string from llm.Client never includes prompt
+			// or completion bytes (it's HTTP status / endpoint errors only).
+			fmt.Fprintf(os.Stderr, "enclave.invoke_streaming_failed model=%q endpoint=%q err=%v\n",
+				req.Model,
+				func() string { if authorization != nil { return authorization.EndpointID }; return "" }(),
+				err)
 			if trEnabled {
 				_ = pw.CloseWithError(err)
 				return
@@ -257,6 +266,7 @@ func serveOne(
 	}()
 
 	if err := adapter.TransformStream(pr, statsW, requestID, req.Model); err != nil {
+		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
 		if trEnabled {
 			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds())
 		}
