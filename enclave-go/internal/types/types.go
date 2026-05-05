@@ -39,6 +39,13 @@ type BootstrapData struct {
 	// Same trust posture as the OpenRouter key — pulled from Secret Manager
 	// inside the attested workload.
 	AnthropicAPIKey string `json:"anthropic_api_key,omitempty"`
+
+	// Additional OpenAI-compatible providers wired into the llm_multi build.
+	// Each is independently optional — only the providers compiled in for
+	// the running image read these. Same Secret-Manager-fetched-in-workload
+	// trust posture as the rest of these credentials.
+	KimiAPIKey string `json:"kimi_api_key,omitempty"`
+	ZAIAPIKey  string `json:"zai_api_key,omitempty"`
 }
 
 // OpenAIChatMessage is one message in an inbound /v1/chat/completions request.
@@ -49,18 +56,19 @@ type OpenAIChatMessage struct {
 
 // OpenAIChatRequest is the inbound shape we accept.
 type OpenAIChatRequest struct {
-	Model       string              `json:"model"`
-	Models      []string            `json:"models,omitempty"`
-	Messages    []OpenAIChatMessage `json:"messages"`
-	Stream      bool                `json:"stream,omitempty"`
-	Temperature *float64            `json:"temperature,omitempty"`
-	TopP        *float64            `json:"top_p,omitempty"`
-	MaxTokens   *int                `json:"max_tokens,omitempty"`
-	Provider    *ProviderRouting    `json:"provider,omitempty"`
-	Metadata    map[string]any      `json:"metadata,omitempty"`
-	Trace       map[string]any      `json:"trace,omitempty"`
-	User        string              `json:"user,omitempty"`
-	SessionID   string              `json:"session_id,omitempty"`
+	Model       string               `json:"model"`
+	Models      []string             `json:"models,omitempty"`
+	Messages    []OpenAIChatMessage  `json:"messages"`
+	Stream      bool                 `json:"stream,omitempty"`
+	Temperature *float64             `json:"temperature,omitempty"`
+	TopP        *float64             `json:"top_p,omitempty"`
+	MaxTokens   *int                 `json:"max_tokens,omitempty"`
+	Provider    *ProviderRouting     `json:"provider,omitempty"`
+	Metadata    map[string]any       `json:"metadata,omitempty"`
+	Trace       map[string]any       `json:"trace,omitempty"`
+	User        string               `json:"user,omitempty"`
+	SessionID   string               `json:"session_id,omitempty"`
+	Response    *ResponseRequestMeta `json:"-"`
 }
 
 // ResponsesInputItem is the text-only subset of the OpenAI Responses input
@@ -78,24 +86,65 @@ type ResponsesContent struct {
 	Text string `json:"text,omitempty"`
 }
 
-// OpenAIResponsesRequest is the text-only /v1/responses shape accepted by the
-// attested gateway. Advanced fields are rejected before this struct is used.
+// OpenAIResponsesRequest is the stateless text-only /v1/responses shape
+// accepted by the attested gateway. Advanced fields are validated before this
+// struct is used so callers get stable compatibility errors instead of silent
+// no-ops.
 type OpenAIResponsesRequest struct {
-	Model           string           `json:"model"`
-	Models          []string         `json:"models,omitempty"`
-	Input           any              `json:"input"`
-	Instructions    string           `json:"instructions,omitempty"`
-	Stream          bool             `json:"stream,omitempty"`
-	Temperature     *float64         `json:"temperature,omitempty"`
-	TopP            *float64         `json:"top_p,omitempty"`
-	MaxOutputTokens *int             `json:"max_output_tokens,omitempty"`
-	MaxTokens       *int             `json:"max_tokens,omitempty"`
-	Provider        *ProviderRouting `json:"provider,omitempty"`
-	Metadata        map[string]any   `json:"metadata,omitempty"`
-	Trace           map[string]any   `json:"trace,omitempty"`
-	User            string           `json:"user,omitempty"`
-	SessionID       string           `json:"session_id,omitempty"`
-	Store           *bool            `json:"store,omitempty"`
+	Model                string           `json:"model"`
+	Models               []string         `json:"models,omitempty"`
+	Input                any              `json:"input"`
+	Instructions         string           `json:"instructions,omitempty"`
+	Stream               bool             `json:"stream,omitempty"`
+	Temperature          *float64         `json:"temperature,omitempty"`
+	TopP                 *float64         `json:"top_p,omitempty"`
+	MaxOutputTokens      *int             `json:"max_output_tokens,omitempty"`
+	MaxTokens            *int             `json:"max_tokens,omitempty"`
+	Provider             *ProviderRouting `json:"provider,omitempty"`
+	Metadata             map[string]any   `json:"metadata,omitempty"`
+	Trace                map[string]any   `json:"trace,omitempty"`
+	User                 string           `json:"user,omitempty"`
+	SessionID            string           `json:"session_id,omitempty"`
+	Store                *bool            `json:"store,omitempty"`
+	Background           *bool            `json:"background,omitempty"`
+	Conversation         any              `json:"conversation,omitempty"`
+	Include              []string         `json:"include,omitempty"`
+	MaxToolCalls         *int             `json:"max_tool_calls,omitempty"`
+	Modalities           []string         `json:"modalities,omitempty"`
+	ParallelToolCalls    *bool            `json:"parallel_tool_calls,omitempty"`
+	PreviousResponseID   string           `json:"previous_response_id,omitempty"`
+	Prompt               any              `json:"prompt,omitempty"`
+	PromptCacheKey       string           `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string           `json:"prompt_cache_retention,omitempty"`
+	Reasoning            any              `json:"reasoning,omitempty"`
+	SafetyIdentifier     string           `json:"safety_identifier,omitempty"`
+	ServiceTier          string           `json:"service_tier,omitempty"`
+	StreamOptions        map[string]any   `json:"stream_options,omitempty"`
+	Text                 map[string]any   `json:"text,omitempty"`
+	ToolChoice           any              `json:"tool_choice,omitempty"`
+	Tools                []any            `json:"tools,omitempty"`
+	TopLogprobs          *int             `json:"top_logprobs,omitempty"`
+	Truncation           string           `json:"truncation,omitempty"`
+}
+
+type ResponseRequestMeta struct {
+	Include              []string
+	Modalities           []string
+	ParallelToolCalls    *bool
+	PromptCacheKey       string
+	SafetyIdentifier     string
+	ServiceTier          string
+	StreamOptions        map[string]any
+	Text                 map[string]any
+	ToolChoice           any
+	Tools                []any
+	TopLogprobs          *int
+	Truncation           string
+	MaxOutputTokens      *int
+	MaxToolCalls         *int
+	PromptCacheRetention string
+	Reasoning            any
+	Store                bool
 }
 
 // ProviderRouting mirrors the OpenRouter provider-routing object closely

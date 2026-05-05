@@ -34,7 +34,7 @@ func invokeBYOKStreaming(
 	switch provider {
 	case "anthropic":
 		return true, invokeAnthropicBYOKStreaming(ctx, req, body, out, options.ProviderAPIKey)
-	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini":
+	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai":
 		return true, invokeOpenAICompatibleBYOKStreaming(ctx, provider, req, body, out, options.ProviderAPIKey)
 	default:
 		return true, fmt.Errorf("llm/byok: unsupported provider %q", options.Provider)
@@ -63,6 +63,32 @@ func invokeOpenAICompatibleBYOKStreaming(
 	out io.Writer,
 	apiKey string,
 ) error {
+	return InvokeOpenAICompatibleStreaming(ctx, provider, directBaseURL(provider), apiKey, req, body, out)
+}
+
+// InvokeOpenAICompatibleStreaming is the shared OpenAI-compatible upstream
+// streaming helper used by both the BYOK path (per-user API key) and the
+// credit-flow path (Quill-managed API key fetched from Secret Manager).
+// Reads upstream OpenAI ChatCompletion SSE chunks, translates to native
+// Anthropic SSE so the rest of the gateway pipeline keeps its current
+// Anthropic-shaped contract.
+//
+// Provider must be the normalized slug ("kimi", "zai", "openai", etc.).
+// baseURL should not have a trailing slash; "/chat/completions" is
+// appended. apiKey is sent as a Bearer token.
+func InvokeOpenAICompatibleStreaming(
+	ctx context.Context,
+	provider, baseURL, apiKey string,
+	req *qtypes.OpenAIChatRequest,
+	body *qtypes.AnthropicMessagesRequest,
+	out io.Writer,
+) error {
+	if strings.TrimSpace(apiKey) == "" {
+		return fmt.Errorf("llm/%s: missing api key", provider)
+	}
+	if strings.TrimSpace(baseURL) == "" {
+		return fmt.Errorf("llm/%s: missing base URL", provider)
+	}
 	msgs := openAICompatibleMessages(body)
 	reqBody := openAICompatibleRequest{
 		Model:       directModelID(provider, req.Model),
@@ -74,9 +100,9 @@ func invokeOpenAICompatibleBYOKStreaming(
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return fmt.Errorf("llm/byok: marshal openai-compatible body: %w", err)
+		return fmt.Errorf("llm/%s: marshal body: %w", provider, err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, directBaseURL(provider)+"/chat/completions", bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(bodyBytes))
 	if err != nil {
 		return err
 	}
@@ -86,13 +112,13 @@ func invokeOpenAICompatibleBYOKStreaming(
 
 	resp, err := defaultHTTPClient().Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("llm/byok: %s invoke: %w", provider, err)
+		return fmt.Errorf("llm/%s: invoke: %w", provider, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
-			return fmt.Errorf("llm/byok: read %s error body: %w", provider, readErr)
+			return fmt.Errorf("llm/%s: read error body: %w", provider, readErr)
 		}
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
@@ -177,6 +203,11 @@ func directBaseURL(provider string) string {
 		return "https://api.moonshot.ai/v1"
 	case "gemini":
 		return "https://generativelanguage.googleapis.com/v1beta/openai"
+	case "zai":
+		// Z.AI's open OpenAI-compatible endpoint. The legacy
+		// open.bigmodel.cn host serves the same surface but is being
+		// deprecated; new keys are issued under api.z.ai.
+		return "https://api.z.ai/api/paas/v4"
 	default:
 		return ""
 	}
@@ -210,10 +241,12 @@ func normalizeDirectProvider(provider string) string {
 	switch slug {
 	case "google", "google-ai", "gemini":
 		return "gemini"
-	case "moonshot", "moonshot-ai", "kimi":
+	case "moonshot", "moonshot-ai", "moonshotai", "kimi":
 		return "kimi"
-	case "mistral-ai", "mistral":
+	case "mistral-ai", "mistralai", "mistral":
 		return "mistral"
+	case "z-ai", "zhipu", "zhipuai", "zai":
+		return "zai"
 	default:
 		return slug
 	}

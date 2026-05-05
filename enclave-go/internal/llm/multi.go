@@ -21,7 +21,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -32,12 +31,16 @@ func New(boot *qtypes.BootstrapData) Client {
 	return &multiClient{
 		anthropic: newAnthropic(boot),
 		vertex:    newVertex(boot),
+		kimi:      newKimi(boot),
+		zai:       newZAI(boot),
 	}
 }
 
 type multiClient struct {
 	anthropic *anthropicClient
 	vertex    *gcpClient
+	kimi      *kimiClient
+	zai       *zaiClient
 }
 
 func (m *multiClient) InvokeStreaming(
@@ -50,7 +53,7 @@ func (m *multiClient) InvokeStreaming(
 	if handled, err := invokeBYOKStreaming(ctx, req, body, out, firstOptions(options)); handled {
 		return err
 	}
-	provider := strings.ToLower(firstOptions(options).Provider)
+	provider := normalizeDirectProvider(firstOptions(options).Provider)
 	switch provider {
 	case "anthropic", "":
 		// Empty provider falls through to anthropic for backward compatibility
@@ -59,7 +62,11 @@ func (m *multiClient) InvokeStreaming(
 		return m.anthropic.InvokeStreaming(ctx, req, body, out, options...)
 	case "vertex", "google", "google-vertex":
 		return m.vertex.InvokeStreaming(ctx, req, body, out, options...)
+	case "kimi":
+		return m.kimi.InvokeStreaming(ctx, req, body, out, options...)
+	case "zai":
+		return m.zai.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, kimi, zai)", provider)
 	}
 }

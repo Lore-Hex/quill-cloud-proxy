@@ -72,14 +72,16 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	if devicesSecret == "" {
 		return nil, fmt.Errorf("bootstrap/gcp: QUILL_DEVICE_KEYS_SECRET not set")
 	}
-	// Each build target needs exactly ONE provider secret, but bootstrap doesn't
-	// know which build it's serving — so fetch whichever env var is set and
-	// fail loud if neither is. The llm.New constructor for the build target
-	// validates that the right field is populated.
+	// Each build target needs at least one provider secret set, but bootstrap
+	// doesn't know which build it's serving — so we fetch whatever env vars
+	// happen to be set. multi builds can set multiple at once; single-backend
+	// builds set exactly one. Failing loud below if literally none are set.
 	openrouterSecret := os.Getenv("QUILL_OPENROUTER_SECRET")
 	anthropicSecret := os.Getenv("QUILL_ANTHROPIC_SECRET")
-	if openrouterSecret == "" && anthropicSecret == "" {
-		return nil, fmt.Errorf("bootstrap/gcp: one of QUILL_OPENROUTER_SECRET or QUILL_ANTHROPIC_SECRET must be set")
+	kimiSecret := os.Getenv("QUILL_KIMI_SECRET")
+	zaiSecret := os.Getenv("QUILL_ZAI_SECRET")
+	if openrouterSecret == "" && anthropicSecret == "" && kimiSecret == "" && zaiSecret == "" {
+		return nil, fmt.Errorf("bootstrap/gcp: at least one of QUILL_{OPENROUTER,ANTHROPIC,KIMI,ZAI}_SECRET must be set")
 	}
 
 	httpc := &http.Client{Timeout: 10 * time.Second}
@@ -112,6 +114,20 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: anthropic key: %w", err)
 		}
 	}
+	var kimiKey []byte
+	if kimiSecret != "" {
+		kimiKey, err = fetchSecret(ctx, httpc, token, project, kimiSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: kimi key: %w", err)
+		}
+	}
+	var zaiKey []byte
+	if zaiSecret != "" {
+		zaiKey, err = fetchSecret(ctx, httpc, token, project, zaiSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: zai key: %w", err)
+		}
+	}
 	var internalGatewayToken string
 	if internalSecret := os.Getenv("QUILL_TRUSTEDROUTER_INTERNAL_SECRET"); internalSecret != "" {
 		value, err := fetchSecret(ctx, httpc, token, project, internalSecret)
@@ -126,6 +142,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		Region:                     os.Getenv("QUILL_GCP_REGION"),
 		OpenRouterAPIKey:           strings.TrimSpace(string(openrouterKey)),
 		AnthropicAPIKey:            strings.TrimSpace(string(anthropicKey)),
+		KimiAPIKey:                 strings.TrimSpace(string(kimiKey)),
+		ZAIAPIKey:                  strings.TrimSpace(string(zaiKey)),
 		TrustedRouterBaseURL:       os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken: strings.TrimSpace(internalGatewayToken),
 		// BedrockVsockProxy / OpenRouterVsockProxy unused on GCP — direct egress.
