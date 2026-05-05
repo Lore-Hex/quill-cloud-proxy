@@ -329,31 +329,27 @@ func serveResponsesNonStreaming(
 		writeError(conn, 500, "responses encoding error")
 		return
 	}
+	usage := trustedrouter.Usage{
+		RequestID:         requestID,
+		InputTokens:       inputTokens,
+		OutputTokens:      outputTokens,
+		ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
+		FirstTokenSeconds: 0,
+		UsageEstimated:    true,
+		FinishReason:      result.FinishReason,
+		Streamed:          false,
+		RouteType:         "responses",
+		User:              req.User,
+		SessionID:         req.SessionID,
+		Trace:             req.Trace,
+		Metadata:          req.Metadata,
+	}
+	if _, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text); err != nil {
+		fmt.Fprintf(os.Stderr, "enclave.responses_settle_failed model=%q err=%v\n", req.Model, err)
+		writeError(conn, 502, "settlement failed")
+		return
+	}
 	writeJSONResponse(conn, 200, body.Bytes())
-	settleAndBroadcast(
-		ctx,
-		trGateway,
-		authorization,
-		secretCache,
-		trustedrouter.Usage{
-			RequestID:         requestID,
-			InputTokens:       inputTokens,
-			OutputTokens:      outputTokens,
-			ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
-			FirstTokenSeconds: 0,
-			UsageEstimated:    true,
-			FinishReason:      result.FinishReason,
-			Streamed:          false,
-			RouteType:         "responses",
-			User:              req.User,
-			SessionID:         req.SessionID,
-			Trace:             req.Trace,
-			Metadata:          req.Metadata,
-		},
-		req,
-		originalInput,
-		result.Text,
-	)
 }
 
 func serveStreaming(
@@ -397,12 +393,12 @@ func serveStreaming(
 		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds())
 		}
-		if statsW.BytesWritten() == 0 {
+		if routeType == "responses" || statsW.BytesWritten() == 0 {
 			_ = writeStreamingProviderError(statsW, routeType, requestID, req.Model)
 		}
 		return
 	}
-	settleAndBroadcast(
+	if _, err := settleAndBroadcast(
 		ctx,
 		trGateway,
 		authorization,
@@ -425,7 +421,9 @@ func serveStreaming(
 		req,
 		originalInput,
 		result.Text,
-	)
+	); err != nil {
+		fmt.Fprintf(os.Stderr, "enclave.stream_settle_failed model=%q route_type=%q err=%v\n", req.Model, routeType, err)
+	}
 }
 
 func invokeProviderStream(
@@ -466,13 +464,13 @@ func settleAndBroadcast(
 	req *types.OpenAIChatRequest,
 	originalInput any,
 	output string,
-) {
+) (*trustedrouter.SettleResult, error) {
 	if trGateway == nil || !trGateway.Enabled() || authorization == nil {
-		return
+		return nil, nil
 	}
 	result, err := trGateway.Settle(ctx, authorization, usage)
 	if err != nil {
-		return
+		return nil, err
 	}
 	go broadcast.DeliverContent(
 		context.Background(),
@@ -503,6 +501,7 @@ func settleAndBroadcast(
 		originalInput,
 		output,
 	)
+	return result, nil
 }
 
 func writeStreamingProviderError(w io.Writer, routeType, requestID, model string) error {

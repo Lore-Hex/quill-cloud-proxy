@@ -13,22 +13,8 @@ import (
 )
 
 func RejectUnsupportedResponsesFields(raw map[string]json.RawMessage) error {
-	unsupported := []string{
-		"tools",
-		"tool_choice",
-		"previous_response_id",
-		"attachments",
-		"files",
-		"file",
-		"background",
-		"plugins",
-		"parallel_tool_calls",
-		"reasoning",
-		"reasoning_effort",
-		"web_search_options",
-	}
-	for _, key := range unsupported {
-		if presentNonNull(raw[key]) {
+	for key, value := range raw {
+		if _, ok := supportedResponsesFields[key]; !ok && presentNonNull(value) {
 			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: key}
 		}
 	}
@@ -40,11 +26,12 @@ func RejectUnsupportedResponsesFields(raw map[string]json.RawMessage) error {
 	}
 	if value, ok := raw["modalities"]; ok {
 		var modalities []string
-		if err := json.Unmarshal(value, &modalities); err == nil {
-			for _, modality := range modalities {
-				if modality != "text" {
-					return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "modalities"}
-				}
+		if err := json.Unmarshal(value, &modalities); err != nil && presentNonNull(value) {
+			return &AdapterError{Status: 400, Message: "modalities must be an array", Context: "modalities"}
+		}
+		for _, modality := range modalities {
+			if modality != "text" {
+				return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "modalities"}
 			}
 		}
 	}
@@ -52,6 +39,25 @@ func RejectUnsupportedResponsesFields(raw map[string]json.RawMessage) error {
 		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "input"}
 	}
 	return nil
+}
+
+var supportedResponsesFields = map[string]struct{}{
+	"model":             {},
+	"models":            {},
+	"input":             {},
+	"instructions":      {},
+	"stream":            {},
+	"temperature":       {},
+	"top_p":             {},
+	"max_output_tokens": {},
+	"max_tokens":        {},
+	"provider":          {},
+	"metadata":          {},
+	"trace":             {},
+	"user":              {},
+	"session_id":        {},
+	"store":             {},
+	"modalities":        {},
 }
 
 func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatRequest, error) {

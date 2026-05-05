@@ -220,3 +220,74 @@ data: {"type":"message_stop"}
 		t.Errorf("finish_reason mismatch: got %v, want %q", lastFinishReason, "stop")
 	}
 }
+
+func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
+	var supported map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(`{
+		"model":"openai/gpt-4o-mini",
+		"models":["openai/gpt-4o-mini"],
+		"input":"hi",
+		"instructions":"brief",
+		"stream":true,
+		"temperature":0.2,
+		"top_p":0.9,
+		"max_output_tokens":16,
+		"max_tokens":16,
+		"provider":{"only":["openai"]},
+		"metadata":{"app":"test"},
+		"trace":{"trace_id":"trace-1"},
+		"user":"user-1",
+		"session_id":"session-1",
+		"store":false,
+		"modalities":["text"]
+	}`), &supported); err != nil {
+		t.Fatalf("unmarshal supported request: %v", err)
+	}
+	if err := RejectUnsupportedResponsesFields(supported); err != nil {
+		t.Fatalf("supported alpha fields rejected: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name        string
+		body        string
+		wantContext string
+		wantStatus  int
+	}{
+		{
+			name:        "unknown formatting field",
+			body:        `{"model":"m","input":"hi","text":{"format":{"type":"json_object"}}}`,
+			wantContext: "text",
+			wantStatus:  501,
+		},
+		{
+			name:        "store true",
+			body:        `{"model":"m","input":"hi","store":true}`,
+			wantContext: "store=true",
+			wantStatus:  501,
+		},
+		{
+			name:        "non-text modality",
+			body:        `{"model":"m","input":"hi","modalities":["text","audio"]}`,
+			wantContext: "modalities",
+			wantStatus:  501,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(tc.body), &raw); err != nil {
+				t.Fatalf("unmarshal request: %v", err)
+			}
+			err := RejectUnsupportedResponsesFields(raw)
+			if err == nil {
+				t.Fatal("expected unsupported responses field error")
+			}
+			aerr, ok := err.(*AdapterError)
+			if !ok {
+				t.Fatalf("error type = %T, want *AdapterError", err)
+			}
+			if aerr.Status != tc.wantStatus || aerr.Context != tc.wantContext {
+				t.Fatalf("adapter error = status %d context %q, want status %d context %q", aerr.Status, aerr.Context, tc.wantStatus, tc.wantContext)
+			}
+		})
+	}
+}
