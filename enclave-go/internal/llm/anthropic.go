@@ -51,18 +51,21 @@ const (
 )
 
 // modelIDMap turns the Quill-public model name into Anthropic's official
-// model id (Anthropic uses the form "claude-3-5-sonnet-20241022").
+// model id. Anthropic's id scheme uses dashes everywhere ("claude-opus-4-7",
+// not "claude-opus-4.7"); the catalog ids in trusted-router use dots for
+// human-readable versioning. We translate at the boundary.
 //
 // Update this list when Anthropic releases or deprecates models. Sending
-// an unknown id to api.anthropic.com returns a 404.
+// an unknown id to api.anthropic.com returns a 404 with a "Did you mean..."
+// hint that you can paste in here.
 var modelIDMap = map[string]string{
-	"anthropic/claude-opus-4.7":   "claude-opus-4.7",
-	"anthropic/claude-sonnet-4.6": "claude-sonnet-4.6",
-	"anthropic/claude-haiku-4.5":  "claude-haiku-4.5",
+	"anthropic/claude-opus-4.7":   "claude-opus-4-7",
+	"anthropic/claude-sonnet-4.6": "claude-sonnet-4-6",
+	"anthropic/claude-haiku-4.5":  "claude-haiku-4-5",
 	"anthropic/claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
-	"claude-opus-4-7":             "claude-opus-4.7",
-	"claude-sonnet-4-6":           "claude-sonnet-4.6",
-	"claude-haiku-4-5":            "claude-haiku-4.5",
+	"claude-opus-4-7":             "claude-opus-4-7",
+	"claude-sonnet-4-6":           "claude-sonnet-4-6",
+	"claude-haiku-4-5":            "claude-haiku-4-5",
 }
 
 type anthropicClient struct {
