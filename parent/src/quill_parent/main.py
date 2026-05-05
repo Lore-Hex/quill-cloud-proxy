@@ -119,10 +119,11 @@ def _make_router() -> APIRouter:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @router.post("/v1/chat/completions")
-    async def chat_completions(
+    async def relay_inference(
         request: Request,
-        settings: Annotated[Settings, Depends(get_settings)],
+        settings: Settings,
+        *,
+        route_path: str,
     ) -> StreamingResponse:
         # The parent does NOT parse, validate, or inspect the body. It opens
         # a socket to the enclave, forwards request bytes verbatim, and
@@ -132,18 +133,35 @@ def _make_router() -> APIRouter:
 
         body = await read_limited_body(request, settings.max_request_body_bytes)
         bearer = request.headers.get("authorization", "")
-        # Forward only the bearer header + body to the enclave (it builds
-        # its own response). The enclave doesn't need any other header.
+        # Forward only the bearer header + original API path + body to the
+        # enclave. The body remains opaque in the parent process.
         relay = await relay_to_enclave_response(
-            body=body, bearer=bearer, settings=settings, heartbeat=request.app.state.heartbeat
+            body=body,
+            bearer=bearer,
+            settings=settings,
+            heartbeat=request.app.state.heartbeat,
+            route_path=route_path,
         )
-        media_type = "text/event-stream" if relay.status_code == 200 else "application/json"
         return StreamingResponse(
             relay.chunks,
             status_code=relay.status_code,
-            media_type=media_type,
+            media_type=relay.content_type,
             headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
         )
+
+    @router.post("/v1/chat/completions")
+    async def chat_completions(
+        request: Request,
+        settings: Annotated[Settings, Depends(get_settings)],
+    ) -> StreamingResponse:
+        return await relay_inference(request, settings, route_path="/v1/chat/completions")
+
+    @router.post("/v1/responses")
+    async def responses(
+        request: Request,
+        settings: Annotated[Settings, Depends(get_settings)],
+    ) -> StreamingResponse:
+        return await relay_inference(request, settings, route_path="/v1/responses")
 
     @router.get("/admin/usage")
     async def admin_usage(

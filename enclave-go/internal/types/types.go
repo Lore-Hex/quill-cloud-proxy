@@ -57,6 +57,45 @@ type OpenAIChatRequest struct {
 	TopP        *float64            `json:"top_p,omitempty"`
 	MaxTokens   *int                `json:"max_tokens,omitempty"`
 	Provider    *ProviderRouting    `json:"provider,omitempty"`
+	Metadata    map[string]any      `json:"metadata,omitempty"`
+	Trace       map[string]any      `json:"trace,omitempty"`
+	User        string              `json:"user,omitempty"`
+	SessionID   string              `json:"session_id,omitempty"`
+}
+
+// ResponsesInputItem is the text-only subset of the OpenAI Responses input
+// item shape that V1 supports.
+type ResponsesInputItem struct {
+	Role    string             `json:"role,omitempty"`
+	Content []ResponsesContent `json:"content,omitempty"`
+	Text    string             `json:"text,omitempty"`
+	Type    string             `json:"type,omitempty"`
+}
+
+// ResponsesContent is one text content part in a Responses input item.
+type ResponsesContent struct {
+	Type string `json:"type,omitempty"`
+	Text string `json:"text,omitempty"`
+}
+
+// OpenAIResponsesRequest is the text-only /v1/responses shape accepted by the
+// attested gateway. Advanced fields are rejected before this struct is used.
+type OpenAIResponsesRequest struct {
+	Model           string           `json:"model"`
+	Models          []string         `json:"models,omitempty"`
+	Input           any              `json:"input"`
+	Instructions    string           `json:"instructions,omitempty"`
+	Stream          bool             `json:"stream,omitempty"`
+	Temperature     *float64         `json:"temperature,omitempty"`
+	TopP            *float64         `json:"top_p,omitempty"`
+	MaxOutputTokens *int             `json:"max_output_tokens,omitempty"`
+	MaxTokens       *int             `json:"max_tokens,omitempty"`
+	Provider        *ProviderRouting `json:"provider,omitempty"`
+	Metadata        map[string]any   `json:"metadata,omitempty"`
+	Trace           map[string]any   `json:"trace,omitempty"`
+	User            string           `json:"user,omitempty"`
+	SessionID       string           `json:"session_id,omitempty"`
+	Store           *bool            `json:"store,omitempty"`
 }
 
 // ProviderRouting mirrors the OpenRouter provider-routing object closely

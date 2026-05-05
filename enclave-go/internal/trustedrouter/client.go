@@ -75,18 +75,19 @@ func (c *Client) Enabled() bool {
 }
 
 type Authorization struct {
-	AuthorizationID     string                             `json:"authorization_id"`
-	WorkspaceID         string                             `json:"workspace_id"`
-	APIKeyHash          string                             `json:"api_key_hash"`
-	Model               string                             `json:"model"`
-	EndpointID          string                             `json:"endpoint_id"`
-	Provider            string                             `json:"provider"`
-	UsageType           string                             `json:"usage_type"`
-	LimitUsageType      string                             `json:"limit_usage_type"`
-	BYOKSecretRef       string                             `json:"byok_secret_ref"`
-	BYOKEncryptedSecret *byokcache.EncryptedSecretEnvelope `json:"byok_encrypted_secret"`
-	BYOKCacheKey        string                             `json:"byok_cache_key"`
-	RouteCandidates     []RouteCandidate                   `json:"route_candidates"`
+	AuthorizationID       string                             `json:"authorization_id"`
+	WorkspaceID           string                             `json:"workspace_id"`
+	APIKeyHash            string                             `json:"api_key_hash"`
+	Model                 string                             `json:"model"`
+	EndpointID            string                             `json:"endpoint_id"`
+	Provider              string                             `json:"provider"`
+	UsageType             string                             `json:"usage_type"`
+	LimitUsageType        string                             `json:"limit_usage_type"`
+	BYOKSecretRef         string                             `json:"byok_secret_ref"`
+	BYOKEncryptedSecret   *byokcache.EncryptedSecretEnvelope `json:"byok_encrypted_secret"`
+	BYOKCacheKey          string                             `json:"byok_cache_key"`
+	RouteCandidates       []RouteCandidate                   `json:"route_candidates"`
+	BroadcastDestinations []BroadcastDestination             `json:"broadcast_destinations"`
 }
 
 type RouteCandidate struct {
@@ -99,6 +100,18 @@ type RouteCandidate struct {
 	BYOKCacheKey        string                             `json:"byok_cache_key"`
 }
 
+type BroadcastDestination struct {
+	ID               string                             `json:"id"`
+	Type             string                             `json:"type"`
+	Endpoint         string                             `json:"endpoint"`
+	Method           string                             `json:"method"`
+	IncludeContent   bool                               `json:"include_content"`
+	APIKeyContext    string                             `json:"api_key_context"`
+	HeadersContext   string                             `json:"headers_context"`
+	EncryptedAPIKey  *byokcache.EncryptedSecretEnvelope `json:"encrypted_api_key"`
+	EncryptedHeaders *byokcache.EncryptedSecretEnvelope `json:"encrypted_headers"`
+}
+
 type Usage struct {
 	RequestID         string
 	InputTokens       int
@@ -106,9 +119,20 @@ type Usage struct {
 	ElapsedSeconds    float64
 	FirstTokenSeconds float64
 	UsageEstimated    bool
+	FinishReason      string
+	Streamed          bool
+	RouteType         string
+	User              string
+	SessionID         string
+	Trace             map[string]any
+	Metadata          map[string]any
 }
 
 func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest) (*Authorization, error) {
+	return c.AuthorizeWithRoute(ctx, bearer, req, "chat.completions")
+}
+
+func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest, routeType string) (*Authorization, error) {
 	body := map[string]any{
 		"api_key_lookup_hash":    lookupHash(bearer),
 		"model":                  req.Model,
@@ -116,12 +140,25 @@ func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenA
 		"max_output_tokens":      outputTokenEstimate(req),
 		"max_tokens":             req.MaxTokens,
 		"region":                 c.region,
+		"route_type":             routeType,
 	}
 	if len(req.Models) > 0 {
 		body["models"] = req.Models
 	}
 	if req.Provider != nil {
 		body["provider"] = req.Provider
+	}
+	if req.User != "" {
+		body["user"] = req.User
+	}
+	if req.SessionID != "" {
+		body["session_id"] = req.SessionID
+	}
+	if req.Trace != nil {
+		body["trace"] = req.Trace
+	}
+	if req.Metadata != nil {
+		body["metadata"] = req.Metadata
 	}
 	var decoded struct {
 		Data Authorization `json:"data"`
@@ -132,29 +169,63 @@ func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenA
 	return &decoded.Data, nil
 }
 
-func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) error {
+type SettleResult struct {
+	GenerationID     string  `json:"generation_id"`
+	CostMicrodollars int     `json:"cost_microdollars"`
+	Cost             float64 `json:"cost"`
+	UsageType        string  `json:"usage_type"`
+	Model            string  `json:"model"`
+	Provider         string  `json:"provider"`
+	Region           string  `json:"region"`
+}
+
+func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (*SettleResult, error) {
 	if auth == nil {
-		return fmt.Errorf("trustedrouter: nil authorization")
+		return nil, fmt.Errorf("trustedrouter: nil authorization")
+	}
+	finishReason := usage.FinishReason
+	if finishReason == "" {
+		finishReason = "stop"
 	}
 	body := map[string]any{
 		"authorization_id":     auth.AuthorizationID,
 		"actual_input_tokens":  usage.InputTokens,
 		"actual_output_tokens": usage.OutputTokens,
 		"request_id":           usage.RequestID,
-		"finish_reason":        "stop",
+		"finish_reason":        finishReason,
 		"status":               "success",
-		"streamed":             true,
+		"streamed":             usage.Streamed,
 		"usage_estimated":      usage.UsageEstimated,
 		"elapsed_seconds":      usage.ElapsedSeconds,
 		"selected_model":       auth.Model,
 		"selected_endpoint":    auth.EndpointID,
 		"app":                  "attested-gateway",
 	}
+	if usage.RouteType != "" {
+		body["route_type"] = usage.RouteType
+	}
+	if usage.User != "" {
+		body["user"] = usage.User
+	}
+	if usage.SessionID != "" {
+		body["session_id"] = usage.SessionID
+	}
+	if usage.Trace != nil {
+		body["trace"] = usage.Trace
+	}
+	if usage.Metadata != nil {
+		body["metadata"] = usage.Metadata
+	}
 	if usage.FirstTokenSeconds > 0 {
 		body["first_token_seconds"] = usage.FirstTokenSeconds
 	}
-	var decoded map[string]any
-	return c.postJSON(ctx, "/internal/gateway/settle", body, &decoded)
+	var decoded struct {
+		Data SettleResult `json:"data"`
+	}
+	if err := c.postJSON(ctx, "/internal/gateway/settle", body, &decoded); err != nil {
+		return nil, err
+	}
+	return &decoded.Data, nil
 }
 
 func (c *Client) Refund(ctx context.Context, auth *Authorization, status int, errorType string, elapsedSeconds float64) error {

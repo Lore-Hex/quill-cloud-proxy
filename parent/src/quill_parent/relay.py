@@ -1,7 +1,7 @@
 """Vsock relay: parent → enclave → parent.
 
-The parent reconstructs a minimal HTTP request (POST /v1/chat/completions
-with the original body and bearer), sends it over a vsock connection to
+The parent reconstructs a minimal HTTP request with the original route path,
+body, and bearer, sends it over a vsock connection to
 the enclave, and streams back the chunked response bytes verbatim. The
 parent does NOT decode the request body or the response body; it's purely
 a protocol bridge.
@@ -22,10 +22,10 @@ from quill_parent.config import Settings
 from quill_parent.heartbeat import Heartbeat
 
 
-def _build_http_request(body: bytes, bearer: str) -> bytes:
+def _build_http_request(body: bytes, bearer: str, route_path: str) -> bytes:
     """Wrap (body, bearer) in a minimal HTTP/1.1 POST. Bytes only — no inspection."""
     head = (
-        f"POST /v1/chat/completions HTTP/1.1\r\n"
+        f"POST {route_path} HTTP/1.1\r\n"
         f"Host: enclave\r\n"
         f"Authorization: {bearer}\r\n"
         f"Content-Type: application/json\r\n"
@@ -37,6 +37,7 @@ def _build_http_request(body: bytes, bearer: str) -> bytes:
 
 class RelayResponse(NamedTuple):
     status_code: int
+    content_type: str
     chunks: AsyncIterator[bytes]
 
 
@@ -53,6 +54,15 @@ def _parse_status_code(head: bytes) -> int:
         return int(parts[1])
     except ValueError:
         return 502
+
+
+def _parse_content_type(head: bytes) -> str:
+    for raw in head.split(b"\r\n")[1:]:
+        name, sep, value = raw.partition(b":")
+        if sep and name.lower() == b"content-type":
+            parsed = value.strip().decode("ascii", errors="replace")
+            return parsed or "application/json"
+    return "application/json"
 
 
 async def _connect_enclave(settings: Settings) -> socket.socket:
@@ -80,18 +90,18 @@ async def _connect_enclave(settings: Settings) -> socket.socket:
 
 
 async def relay_to_enclave(
-    *, body: bytes, bearer: str, settings: Settings, heartbeat: Heartbeat
+    *, body: bytes, bearer: str, settings: Settings, heartbeat: Heartbeat, route_path: str
 ) -> AsyncIterator[bytes]:
     """Send the HTTP-wrapped request, stream the response, never inspect bytes."""
     response = await relay_to_enclave_response(
-        body=body, bearer=bearer, settings=settings, heartbeat=heartbeat
+        body=body, bearer=bearer, settings=settings, heartbeat=heartbeat, route_path=route_path
     )
     async for chunk in response.chunks:
         yield chunk
 
 
 async def relay_to_enclave_response(
-    *, body: bytes, bearer: str, settings: Settings, heartbeat: Heartbeat
+    *, body: bytes, bearer: str, settings: Settings, heartbeat: Heartbeat, route_path: str
 ) -> RelayResponse:
     """Open the enclave relay and return its HTTP status plus body stream.
 
@@ -103,7 +113,7 @@ async def relay_to_enclave_response(
     sock.setblocking(False)
     loop = asyncio.get_event_loop()
     try:
-        await loop.sock_sendall(sock, _build_http_request(body, bearer))
+        await loop.sock_sendall(sock, _build_http_request(body, bearer, route_path))
         # Read until the connection closes. Skip the response status line +
         # headers in a single linear pass without any field-level parsing
         # beyond `\r\n\r\n` boundary.
@@ -115,6 +125,7 @@ async def relay_to_enclave_response(
                 sock.close()
                 return RelayResponse(
                     502,
+                    "application/json",
                     _single_chunk(
                         b'{"error":{"status":502,"message":"enclave closed before headers"}}'
                     ),
@@ -122,6 +133,7 @@ async def relay_to_enclave_response(
             head_buf.extend(chunk)
         head, _, leftover = bytes(head_buf).partition(b"\r\n\r\n")
         status_code = _parse_status_code(head)
+        content_type = _parse_content_type(head)
 
         async def iter_body() -> AsyncIterator[bytes]:
             try:
@@ -139,7 +151,7 @@ async def relay_to_enclave_response(
                 except OSError:
                     return
 
-        return RelayResponse(status_code, iter_body())
+        return RelayResponse(status_code, content_type, iter_body())
     except Exception:
         sock.close()
         raise

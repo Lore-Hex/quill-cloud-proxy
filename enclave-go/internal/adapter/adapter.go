@@ -85,9 +85,20 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 //
 // Input is the unwrapped stream of `event: ...\ndata: {...}\n\n` framings.
 func TransformStream(r io.Reader, w io.Writer, requestID, model string) error {
+	_, err := TransformStreamCapture(r, w, requestID, model)
+	return err
+}
+
+type StreamResult struct {
+	Text         string
+	FinishReason string
+}
+
+func TransformStreamCapture(r io.Reader, w io.Writer, requestID, model string) (StreamResult, error) {
 	created := time.Now().Unix()
 	finishReason := "stop"
 	roleSent := false
+	var captured strings.Builder
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
@@ -105,18 +116,19 @@ func TransformStream(r io.Reader, w io.Writer, requestID, model string) error {
 			if delta == nil || getString(delta, "type") != "text_delta" {
 				continue
 			}
-			text := getString(delta, "text")
-			if text == "" {
+			deltaText := getString(delta, "text")
+			if deltaText == "" {
 				continue
 			}
+			_, _ = captured.WriteString(deltaText)
 			if !roleSent {
 				if err := writeChunk(w, requestID, model, created, map[string]string{"role": "assistant", "content": ""}, ""); err != nil {
-					return err
+					return StreamResult{}, err
 				}
 				roleSent = true
 			}
-			if err := writeChunk(w, requestID, model, created, map[string]string{"content": text}, ""); err != nil {
-				return err
+			if err := writeChunk(w, requestID, model, created, map[string]string{"content": deltaText}, ""); err != nil {
+				return StreamResult{}, err
 			}
 		case "message_delta":
 			delta := getMap(dataJSON, "delta")
@@ -127,20 +139,20 @@ func TransformStream(r io.Reader, w io.Writer, requestID, model string) error {
 			}
 		case "message_stop":
 			if err := writeChunk(w, requestID, model, created, map[string]string{}, finishReason); err != nil {
-				return err
+				return StreamResult{}, err
 			}
 			_, err := w.Write([]byte("data: [DONE]\n\n"))
-			return err
+			return StreamResult{Text: captured.String(), FinishReason: finishReason}, err
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return err
+		return StreamResult{}, err
 	}
 	if err := writeChunk(w, requestID, model, created, map[string]string{}, finishReason); err != nil {
-		return err
+		return StreamResult{}, err
 	}
 	_, err := w.Write([]byte("data: [DONE]\n\n"))
-	return err
+	return StreamResult{Text: captured.String(), FinishReason: finishReason}, err
 }
 
 // splitDoubleNewline is a bufio.Scanner SplitFunc that emits each "\n\n"-terminated block.

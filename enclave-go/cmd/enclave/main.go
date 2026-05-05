@@ -14,6 +14,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -32,6 +33,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/attestation"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bootstrap"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/broadcast"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/entropy"
@@ -191,8 +193,40 @@ func serveOne(
 	}
 
 	var req types.OpenAIChatRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeError(conn, 400, "invalid JSON")
+	routeType := "chat.completions"
+	originalInput := any(nil)
+	if routePath == "/v1/responses" {
+		routeType = "responses"
+		responsesReq, err := parseResponsesRequest(body)
+		if err != nil {
+			var aerr *adapter.AdapterError
+			if asAdapterErr(err, &aerr) {
+				writeError(conn, aerr.Status, aerr.Message)
+				return
+			}
+			writeError(conn, 400, "invalid JSON")
+			return
+		}
+		chatReq, err := adapter.ResponsesToChat(responsesReq)
+		if err != nil {
+			var aerr *adapter.AdapterError
+			if asAdapterErr(err, &aerr) {
+				writeError(conn, aerr.Status, aerr.Message)
+				return
+			}
+			writeError(conn, 400, "invalid responses request")
+			return
+		}
+		req = *chatReq
+		originalInput = responsesReq.Input
+	} else if routePath == "/v1/chat/completions" {
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeError(conn, 400, "invalid JSON")
+			return
+		}
+		originalInput = req.Messages
+	} else {
+		writeError(conn, 404, "route not found")
 		return
 	}
 
@@ -210,7 +244,7 @@ func serveOne(
 	var invokeOptions []llm.InvokeOptions
 	requestStarted := time.Now()
 	if trEnabled {
-		authorization, err = trGateway.Authorize(ctx, bearer, &req)
+		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, &req, routeType)
 		if err != nil {
 			writeError(conn, statusFromControlPlaneError(err), "gateway authorization failed")
 			return
@@ -234,8 +268,113 @@ func serveOne(
 			UsageType:      authorization.UsageType,
 		})
 	}
+	if routeType == "responses" && !req.Stream {
+		serveResponsesNonStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput)
+		return
+	}
+	serveStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput, routeType)
+}
+
+func getenv(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func parseResponsesRequest(body []byte) (*types.OpenAIResponsesRequest, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	if err := adapter.RejectUnsupportedResponsesFields(raw); err != nil {
+		return nil, err
+	}
+	var req types.OpenAIResponsesRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+func serveResponsesNonStreaming(
+	ctx context.Context,
+	conn io.Writer,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	anthropicReq *types.AnthropicMessagesRequest,
+	invokeOptions []llm.InvokeOptions,
+	trGateway *trustedrouter.Client,
+	authorization *trustedrouter.Authorization,
+	secretCache *byokcache.Cache,
+	requestStarted time.Time,
+	originalInput any,
+) {
+	requestID := newResponseID()
+	pr, pw := io.Pipe()
+	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization)
+	result, err := adapter.CollectAnthropicText(pr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "enclave.responses_collect_failed model=%q err=%v\n", req.Model, err)
+		if trGateway != nil && trGateway.Enabled() {
+			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds())
+		}
+		writeError(conn, 502, "provider error")
+		return
+	}
+	inputTokens := trustedrouter.EstimateInputTokens(req)
+	outputTokens := trustedrouter.EstimateOutputTokensFromBytes(len(result.Text))
+	var body bytes.Buffer
+	if err := adapter.WriteResponsesResponse(&body, requestID, req.Model, result.Text, inputTokens, outputTokens, time.Now().Unix()); err != nil {
+		writeError(conn, 500, "responses encoding error")
+		return
+	}
+	writeJSONResponse(conn, 200, body.Bytes())
+	settleAndBroadcast(
+		ctx,
+		trGateway,
+		authorization,
+		secretCache,
+		trustedrouter.Usage{
+			RequestID:         requestID,
+			InputTokens:       inputTokens,
+			OutputTokens:      outputTokens,
+			ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
+			FirstTokenSeconds: 0,
+			UsageEstimated:    true,
+			FinishReason:      result.FinishReason,
+			Streamed:          false,
+			RouteType:         "responses",
+			User:              req.User,
+			SessionID:         req.SessionID,
+			Trace:             req.Trace,
+			Metadata:          req.Metadata,
+		},
+		req,
+		originalInput,
+		result.Text,
+	)
+}
+
+func serveStreaming(
+	ctx context.Context,
+	conn io.Writer,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	anthropicReq *types.AnthropicMessagesRequest,
+	invokeOptions []llm.InvokeOptions,
+	trGateway *trustedrouter.Client,
+	authorization *trustedrouter.Authorization,
+	secretCache *byokcache.Cache,
+	requestStarted time.Time,
+	originalInput any,
+	routeType string,
+) {
 	requestID := newRequestID()
-	if err := writeResponseHead(conn, 200); err != nil {
+	if routeType == "responses" {
+		requestID = newResponseID()
+	}
+	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
 		return
 	}
 
@@ -244,53 +383,123 @@ func serveOne(
 	statsW := newStreamStatsWriter(chunkW)
 
 	pr, pw := io.Pipe()
-	go func() {
-		// llm.Client decides what model-name translation (if any) to do
-		// internally — Bedrock maps to inference profile IDs; Vertex
-		// passes through unchanged.
-		if err := br.InvokeStreaming(ctx, &req, anthropicReq, pw, invokeOptions...); err != nil {
-			// Diagnostic: log the type+message of upstream errors so we can
-			// distinguish network from quota from auth from JSON-shape bugs.
-			// Model id is from the request body and isn't itself prompt
-			// content; the err string from llm.Client never includes prompt
-			// or completion bytes (it's HTTP status / endpoint errors only).
-			fmt.Fprintf(os.Stderr, "enclave.invoke_streaming_failed model=%q endpoint=%q err=%v\n",
-				req.Model,
-				func() string { if authorization != nil { return authorization.EndpointID }; return "" }(),
-				err)
-			if trEnabled {
-				_ = pw.CloseWithError(err)
-				return
-			}
-			emitErrorAsAnthropicSSE(pw, err)
-		}
-		_ = pw.Close()
-	}()
+	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization)
 
-	if err := adapter.TransformStream(pr, statsW, requestID, req.Model); err != nil {
+	var result adapter.StreamResult
+	var err error
+	if routeType == "responses" {
+		result, err = adapter.TransformResponsesStream(pr, statsW, requestID, req.Model, trustedrouter.EstimateInputTokens(req))
+	} else {
+		result, err = adapter.TransformStreamCapture(pr, statsW, requestID, req.Model)
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
-		if trEnabled {
+		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds())
 		}
 		return
 	}
-	if trEnabled {
-		_ = trGateway.Settle(ctx, authorization, trustedrouter.Usage{
+	settleAndBroadcast(
+		ctx,
+		trGateway,
+		authorization,
+		secretCache,
+		trustedrouter.Usage{
 			RequestID:         requestID,
-			InputTokens:       trustedrouter.EstimateInputTokens(&req),
-			OutputTokens:      trustedrouter.EstimateOutputTokensFromBytes(statsW.BytesWritten()),
+			InputTokens:       trustedrouter.EstimateInputTokens(req),
+			OutputTokens:      trustedrouter.EstimateOutputTokensFromBytes(len(result.Text)),
 			ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
 			FirstTokenSeconds: statsW.FirstWriteSeconds(requestStarted),
 			UsageEstimated:    true,
-		})
-	}
+			FinishReason:      result.FinishReason,
+			Streamed:          true,
+			RouteType:         routeType,
+			User:              req.User,
+			SessionID:         req.SessionID,
+			Trace:             req.Trace,
+			Metadata:          req.Metadata,
+		},
+		req,
+		originalInput,
+		result.Text,
+	)
 }
 
-func getenv(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
+func invokeProviderStream(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	anthropicReq *types.AnthropicMessagesRequest,
+	pw *io.PipeWriter,
+	invokeOptions []llm.InvokeOptions,
+	trEnabled bool,
+	authorization *trustedrouter.Authorization,
+) {
+	if err := br.InvokeStreaming(ctx, req, anthropicReq, pw, invokeOptions...); err != nil {
+		fmt.Fprintf(os.Stderr, "enclave.invoke_streaming_failed model=%q endpoint=%q err=%v\n",
+			req.Model,
+			func() string {
+				if authorization != nil {
+					return authorization.EndpointID
+				}
+				return ""
+			}(),
+			err)
+		if trEnabled {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		emitErrorAsAnthropicSSE(pw, err)
 	}
-	return fallback
+	_ = pw.Close()
+}
+
+func settleAndBroadcast(
+	ctx context.Context,
+	trGateway *trustedrouter.Client,
+	authorization *trustedrouter.Authorization,
+	secretCache *byokcache.Cache,
+	usage trustedrouter.Usage,
+	req *types.OpenAIChatRequest,
+	originalInput any,
+	output string,
+) {
+	if trGateway == nil || !trGateway.Enabled() || authorization == nil {
+		return
+	}
+	result, err := trGateway.Settle(ctx, authorization, usage)
+	if err != nil {
+		return
+	}
+	go broadcast.DeliverContent(
+		context.Background(),
+		nil,
+		secretCache,
+		authorization.BroadcastDestinations,
+		broadcast.Generation{
+			ID:                result.GenerationID,
+			WorkspaceID:       authorization.WorkspaceID,
+			APIKeyHash:        authorization.APIKeyHash,
+			Model:             result.Model,
+			Provider:          result.Provider,
+			Region:            result.Region,
+			RouteType:         usage.RouteType,
+			RequestID:         usage.RequestID,
+			InputTokens:       usage.InputTokens,
+			OutputTokens:      usage.OutputTokens,
+			ElapsedSeconds:    usage.ElapsedSeconds,
+			FirstTokenSeconds: usage.FirstTokenSeconds,
+			Streamed:          usage.Streamed,
+			FinishReason:      usage.FinishReason,
+			CostMicrodollars:  result.CostMicrodollars,
+			User:              req.User,
+			SessionID:         req.SessionID,
+			Trace:             req.Trace,
+			Metadata:          req.Metadata,
+		},
+		originalInput,
+		output,
+	)
 }
 
 func providerAPIKey(
@@ -539,10 +748,19 @@ func writeError(w io.Writer, status int, message string) {
 	w.Write(body)
 }
 
-func writeResponseHead(w io.Writer, status int) error {
+func writeJSONResponse(w io.Writer, status int, body []byte) {
+	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+		status, statusText(status), len(body))
+	w.Write(body)
+}
+
+func writeResponseHead(w io.Writer, status int, contentType string) error {
+	if contentType == "" {
+		contentType = "text/event-stream"
+	}
 	_, err := fmt.Fprintf(w,
-		"HTTP/1.1 %d %s\r\nTransfer-Encoding: chunked\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nConnection: close\r\n\r\n",
-		status, statusText(status))
+		"HTTP/1.1 %d %s\r\nTransfer-Encoding: chunked\r\nContent-Type: %s\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nConnection: close\r\n\r\n",
+		status, statusText(status), contentType)
 	return err
 }
 
@@ -556,6 +774,10 @@ func statusText(status int) string {
 		return "Unauthorized"
 	case 413:
 		return "Payload Too Large"
+	case 404:
+		return "Not Found"
+	case 501:
+		return "Not Implemented"
 	case 502:
 		return "Bad Gateway"
 	case 503:
@@ -601,4 +823,10 @@ func newRequestID() string {
 	var buf [16]byte
 	_, _ = rand.Read(buf[:])
 	return "chatcmpl-" + hex.EncodeToString(buf[:])
+}
+
+func newResponseID() string {
+	var buf [16]byte
+	_, _ = rand.Read(buf[:])
+	return "resp_" + hex.EncodeToString(buf[:])
 }

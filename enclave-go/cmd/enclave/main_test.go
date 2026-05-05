@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
@@ -32,6 +33,183 @@ func TestParseRequestTargetNonce(t *testing.T) {
 	}
 	if !bytes.Equal(nonce, []byte{0x00, 0x11, 0x22}) {
 		t.Fatalf("nonce = %x, want 001122", nonce)
+	}
+}
+
+func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
+	bearer := "sk-tr-v1-user-secret"
+	var authorizeBody string
+	var settleBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			authorizeBody = string(body)
+			if strings.Contains(authorizeBody, bearer) || strings.Contains(authorizeBody, "private response input") {
+				t.Fatalf("authorize leaked sensitive material: %s", authorizeBody)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_resp","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+		case "/internal/gateway/settle":
+			settleBody = string(body)
+			if strings.Contains(settleBody, "Hello") || strings.Contains(settleBody, "private response input") {
+				t.Fatalf("settle leaked content: %s", settleBody)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"gen_resp","cost_microdollars":12,"model":"openai/gpt-4o-mini","provider":"openai","region":"us-central1"}}`)
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fakeStreamingLLM{}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"openai/gpt-4o-mini","input":"private response input","instructions":"be brief","max_output_tokens":32}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", got)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(bodyBytes, &decoded); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, bodyBytes)
+	}
+	if decoded["object"] != "response" || decoded["status"] != "completed" {
+		t.Fatalf("bad response envelope: %#v", decoded)
+	}
+	if !strings.Contains(string(bodyBytes), "Hello world") {
+		t.Fatalf("missing output text: %s", bodyBytes)
+	}
+	deadline := time.Now().Add(time.Second)
+	for settleBody == "" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(settleBody, `"route_type":"responses"`) || !strings.Contains(settleBody, `"streamed":false`) {
+		t.Fatalf("settle body missing responses metadata: %s", settleBody)
+	}
+	if streamer.body == nil || streamer.body.System != "be brief" {
+		serialized, _ := json.Marshal(streamer.body)
+		t.Fatalf("bad transformed responses body: %s", serialized)
+	}
+}
+
+func TestServeOneResponsesStreamingUsesResponsesEvents(t *testing.T) {
+	bearer := "test-bearer"
+	digest := sha256.Sum256([]byte(bearer))
+	reg := auth.New([]types.DeviceConfig{{
+		KeyHash:  hex.EncodeToString(digest[:]),
+		Owner:    "test",
+		DeviceID: "device-1",
+	}})
+	server, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), server, reg, &fakeStreamingLLM{}, nil, nil, nil, nil)
+
+	requestBody := []byte(`{"model":"claude-sonnet-4-6","input":"private response input","stream":true,"max_output_tokens":32}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	for _, eventName := range []string{
+		"response.created",
+		"response.output_item.added",
+		"response.content_part.added",
+		"response.output_text.delta",
+		"response.output_text.done",
+		"response.output_item.done",
+		"response.completed",
+	} {
+		if !strings.Contains(body, "event: "+eventName) {
+			t.Fatalf("missing %s in stream: %s", eventName, body)
+		}
+	}
+	if !strings.Contains(body, "data: [DONE]\n\n") {
+		t.Fatalf("missing done marker: %s", body)
+	}
+	if strings.Contains(body, "private response input") {
+		t.Fatalf("response leaked input: %s", body)
+	}
+}
+
+func TestServeOneResponsesRejectsUnsupportedTools(t *testing.T) {
+	bearer := "test-bearer"
+	digest := sha256.Sum256([]byte(bearer))
+	reg := auth.New([]types.DeviceConfig{{
+		KeyHash:  hex.EncodeToString(digest[:]),
+		Owner:    "test",
+		DeviceID: "device-1",
+	}})
+	server, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), server, reg, &fakeStreamingLLM{}, nil, nil, nil, nil)
+
+	requestBody := []byte(`{"model":"claude-sonnet-4-6","input":"hi","tools":[{"type":"web_search"}]}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 501 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	if !strings.Contains(string(bodyBytes), "not_supported_in_alpha") {
+		t.Fatalf("missing alpha error: %s", bodyBytes)
 	}
 }
 
