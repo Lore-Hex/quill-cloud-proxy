@@ -57,6 +57,8 @@ BES_NAME="quill-enclave-bes-${REGION_SHORT}"
 FR_NAME="quill-enclave-fr-${REGION_SHORT}"
 LB_IP_NAME="quill-lb-ip-${REGION_SHORT}"
 TARGET_SIZE="${TARGET_SIZE:-2}"
+MAX_SURGE="${MAX_SURGE:-3}"
+MAX_UNAVAILABLE="${MAX_UNAVAILABLE:-0}"
 
 IMAGE_REF="${IMAGE_REF:?set IMAGE_REF=us-central1-docker.pkg.dev/.../enclave-anthropic:gcp-release-XXX}"
 API_HOST="${API_HOST:?set API_HOST=api.quillrouter.com (or api-${REGION}.quillrouter.com)}"
@@ -138,12 +140,13 @@ if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/
   log "updating MIG $MIG_NAME -> template $TEMPLATE"
   gc compute instance-groups managed set-instance-template "$MIG_NAME" \
     --region="$REGION" --template="$TEMPLATE" >/dev/null
-  # max-unavailable=N for regional MIGs must be >= zone count (3); --max-surge=0
-  # forces in-place replace rather than over-provisioning.
+  # Prefer a surge rollout so the regional gateway keeps serving while the
+  # new attested image boots and passes health checks. Regional MIGs span
+  # three zones, so the fixed surge default is 3.
   gc compute instance-groups managed rolling-action replace "$MIG_NAME" \
     --region="$REGION" \
-    --max-unavailable=3 \
-    --max-surge=0 >/dev/null
+    --max-unavailable="$MAX_UNAVAILABLE" \
+    --max-surge="$MAX_SURGE" >/dev/null
 else
   log "creating MIG $MIG_NAME (size=$TARGET_SIZE)"
   gc compute instance-groups managed create "$MIG_NAME" \
