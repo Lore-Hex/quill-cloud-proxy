@@ -223,14 +223,16 @@ func serveOne(
 			writeError(conn, 502, "BYOK provider key unavailable")
 			return
 		}
-		if providerKey != "" {
-			invokeOptions = append(invokeOptions, llm.InvokeOptions{
-				ProviderAPIKey: providerKey,
-				Provider:       authorization.Provider,
-				EndpointID:     authorization.EndpointID,
-				UsageType:      authorization.UsageType,
-			})
-		}
+		// Always populate InvokeOptions so the llm Client knows which
+		// upstream the control plane authorized. Multi-backend builds
+		// dispatch on this field; single-backend builds ignore Provider
+		// and just need ProviderAPIKey when usage_type==BYOK.
+		invokeOptions = append(invokeOptions, llm.InvokeOptions{
+			ProviderAPIKey: providerKey,
+			Provider:       authorization.Provider,
+			EndpointID:     authorization.EndpointID,
+			UsageType:      authorization.UsageType,
+		})
 	}
 	requestID := newRequestID()
 	if err := writeResponseHead(conn, 200); err != nil {

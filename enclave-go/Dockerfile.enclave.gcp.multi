@@ -1,0 +1,46 @@
+# Multi-provider GCP Confidential Space build. Compiles BOTH the direct
+# Anthropic client and the Vertex-direct client into the same enclave
+# binary. At request time, the dispatcher (internal/llm/multi.go) picks
+# one based on the provider the trustedrouter control plane assigned —
+# so a Quill user can pin `provider.only=["vertex"]` in their request
+# and get Vertex inference, vs the default Anthropic path.
+#
+# Trade-off vs the single-backend builds (llm_anthropic, llm_vertex):
+#   + Product flexibility: users pick the upstream
+#   + One image to operate (instead of N regional fleets per backend)
+#   - Larger PCR0/image_digest surface
+#   - Both providers' egress targets must be in the firewall
+
+FROM golang:1.24-bookworm@sha256:ca0741815eee3625da09eddf15cc8ff678efa16520fcbcdbeb2ae0b0c519c82c AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+RUN go build -trimpath -tags 'cloud_gcp,llm_multi' \
+      -ldflags='-s -w -extldflags=-static' \
+      -o /out/quill-enclave ./cmd/enclave
+
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /out/quill-enclave /quill-enclave
+
+ENV QUILL_ENCLAVE_TLS=true
+ENV QUILL_TLS_MODE=acme
+
+EXPOSE 443
+
+# All env names the multi build legitimately reads. Includes both the
+# Anthropic-secret pointer and the Vertex-region pointer so a single
+# image can serve any region/provider mix.
+LABEL "tee.launch_policy.allow_env_override"="QUILL_GCP_PROJECT_ID,QUILL_GCP_REGION,QUILL_DEVICE_KEYS_SECRET,QUILL_ANTHROPIC_SECRET,QUILL_TRUSTEDROUTER_INTERNAL_SECRET,TR_CONTROL_PLANE_BASE_URL,TR_REGION,QUILL_API_HOST,QUILL_TLS_MODE,QUILL_ACME_EMAIL,QUILL_ACME_CACHE_DIR,QUILL_ACME_DIRECTORY_URL,QUILL_ACME_CACHE_GCS_BUCKET"
+LABEL "tee.launch_policy.log_redirect"="always"
+
+ENTRYPOINT ["/quill-enclave"]

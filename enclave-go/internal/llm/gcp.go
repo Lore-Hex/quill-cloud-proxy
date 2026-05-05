@@ -1,4 +1,4 @@
-//go:build llm_vertex
+//go:build llm_vertex || llm_multi
 
 // Google Vertex AI provider — hand-rolled minimal client.
 //
@@ -182,7 +182,10 @@ func (c *gcpClient) InvokeStreaming(
 	return err
 }
 
-func New(boot *qtypes.BootstrapData) Client {
+// newVertex constructs the Vertex-direct client. Used as THE Client in
+// single-backend builds (register_vertex.go) and as ONE OF the available
+// clients in multi-backend builds (multi.go).
+func newVertex(boot *qtypes.BootstrapData) *gcpClient {
 	projectID := os.Getenv("QUILL_GCP_PROJECT_ID")
 	region := os.Getenv("QUILL_GCP_REGION")
 	if region == "" {

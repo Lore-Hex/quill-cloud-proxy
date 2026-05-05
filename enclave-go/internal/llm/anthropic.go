@@ -1,4 +1,4 @@
-//go:build llm_anthropic
+//go:build llm_anthropic || llm_multi
 
 // Direct Anthropic provider — hand-rolled minimal client.
 //
@@ -73,10 +73,10 @@ type anthropicClient struct {
 	httpc   *http.Client
 }
 
-// New is called by the enclave at boot. The api key is plumbed through
-// BootstrapData (fetched from Secret Manager) — never read from a plain
-// env var, so it's not visible in VM metadata.
-func New(boot *qtypes.BootstrapData) Client {
+// newAnthropic constructs the Anthropic-direct client. Used as THE Client
+// in single-backend builds (see register_anthropic.go) and as ONE OF the
+// available clients in multi-backend builds (see multi.go).
+func newAnthropic(boot *qtypes.BootstrapData) *anthropicClient {
 	return &anthropicClient{
 		apiKey: strings.TrimSpace(boot.AnthropicAPIKey),
 		httpc: &http.Client{
