@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+# Deploy (or refresh) one regional gateway MIG + L4 TCP-passthrough LB.
+#
+# What this script provisions, idempotently, in $REGION:
+#
+#   - quill-enclave-tpl-${REGION}-NNN     instance template (n2d SEV-SNP,
+#                                          confidential-space-debug image,
+#                                          metadata wired to the Anthropic
+#                                          variant of the workload)
+#   - quill-enclave-tcp-443-${REGION}      regional TCP health check on :443
+#   - quill-enclave-mig-${REGION}          regional MIG, autohealing,
+#                                          target size 2 (HA across zones)
+#   - quill-lb-ip-${REGION}                static external IP for the LB
+#   - quill-enclave-bes-${REGION}          regional backend service
+#                                          (TCP, EXTERNAL, attaches the MIG)
+#   - quill-enclave-fr-${REGION}           forwarding rule on :443 binding
+#                                          the static IP to the backend
+#
+# The trust property: the LB is pure TCP passthrough — it forwards the raw
+# byte stream to whichever backend handles the connection. TLS terminates
+# *inside* the attested workload (autocert on :443), with the ACME cache
+# shared across replicas via gs://quill-acme-cache so any replica can
+# answer Let's Encrypt's TLS-ALPN-01 challenge for the same hostname.
+#
+# DNS for api{,-${REGION}}.quillrouter.com is set out of band (Cloudflare,
+# DNS-only / grey-cloud) to point at the static IP this script reserves.
+# The deploy script does NOT modify DNS.
+#
+# Usage:
+#   IMAGE_REF=us-central1-docker.pkg.dev/.../enclave-anthropic:gcp-release-XXX \
+#   API_HOST=api.quillrouter.com \
+#     ./tools/deploy-gcp-mig.sh us-central1
+#
+#   IMAGE_REF=... API_HOST=api-europe-west4.quillrouter.com \
+#     ./tools/deploy-gcp-mig.sh europe-west4
+
+set -euo pipefail
+
+REGION="${1:-}"
+if [ -z "$REGION" ]; then
+  echo "usage: $0 <region>" >&2
+  exit 1
+fi
+PROJECT_ID="${PROJECT_ID:-quill-cloud-proxy}"
+NETWORK="${NETWORK:-default}"
+SUBNET="${SUBNET:-default}"
+TEMPLATE_PREFIX="${TEMPLATE_PREFIX:-quill-enclave-tpl-${REGION}}"
+MIG_NAME="${MIG_NAME:-quill-enclave-mig-${REGION//-/}}" # gcloud rejects hyphens in some contexts
+HC_NAME="quill-enclave-tcp-443-${REGION//-/}"
+BES_NAME="quill-enclave-bes-${REGION//-/}"
+FR_NAME="quill-enclave-fr-${REGION//-/}"
+LB_IP_NAME="quill-lb-ip-${REGION//-/}"
+TARGET_SIZE="${TARGET_SIZE:-2}"
+
+IMAGE_REF="${IMAGE_REF:?set IMAGE_REF=us-central1-docker.pkg.dev/.../enclave-anthropic:gcp-release-XXX}"
+API_HOST="${API_HOST:?set API_HOST=api.quillrouter.com (or api-${REGION}.quillrouter.com)}"
+
+# Per-build env vars wired into VM metadata.
+# QUILL_ANTHROPIC_SECRET names the Secret Manager secret that holds the
+# api.anthropic.com api key — the value is fetched inside the workload,
+# never injected as plaintext metadata.
+QUILL_ANTHROPIC_SECRET="${QUILL_ANTHROPIC_SECRET:-trustedrouter-anthropic-api-key}"
+QUILL_DEVICE_KEYS_SECRET="${QUILL_DEVICE_KEYS_SECRET:-quill-device-keys}"
+QUILL_TRUSTEDROUTER_INTERNAL_SECRET="${QUILL_TRUSTEDROUTER_INTERNAL_SECRET:-trustedrouter-internal-gateway-token}"
+QUILL_ACME_CACHE_GCS_BUCKET="${QUILL_ACME_CACHE_GCS_BUCKET:-quill-acme-cache}"
+TR_CONTROL_PLANE_BASE_URL="${TR_CONTROL_PLANE_BASE_URL:-https://trustedrouter.com}"
+WORKLOAD_SA="${WORKLOAD_SA:-quill-workload@${PROJECT_ID}.iam.gserviceaccount.com}"
+MACHINE_TYPE="${MACHINE_TYPE:-n2d-standard-2}"
+CSP_IMAGE_FAMILY="${CSP_IMAGE_FAMILY:-confidential-space-debug}"
+CSP_IMAGE_PROJECT="${CSP_IMAGE_PROJECT:-confidential-space-images}"
+
+log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
+gc() { gcloud --project "$PROJECT_ID" "$@"; }
+
+# Pick the next template suffix by listing existing templates with our prefix.
+next_template_name() {
+  local existing
+  existing=$(gc compute instance-templates list --filter="name~^${TEMPLATE_PREFIX}-[0-9]+\$" --format="value(name)" 2>/dev/null | sort | tail -1 || true)
+  if [ -z "$existing" ]; then
+    printf '%s-001' "$TEMPLATE_PREFIX"
+  else
+    local suffix=${existing##*-}
+    # strip leading zeros and increment, then pad
+    local n=$((10#$suffix + 1))
+    printf '%s-%03d' "$TEMPLATE_PREFIX" "$n"
+  fi
+}
+
+# 1. Reserve the static IP if it doesn't exist.
+log "ensuring static IP $LB_IP_NAME"
+if ! gc compute addresses describe "$LB_IP_NAME" --region="$REGION" >/dev/null 2>&1; then
+  gc compute addresses create "$LB_IP_NAME" \
+    --region="$REGION" \
+    --network-tier=PREMIUM \
+    --description="External IP for quill-enclave L4 TCP passthrough LB ($REGION)"
+fi
+LB_IP=$(gc compute addresses describe "$LB_IP_NAME" --region="$REGION" --format='value(address)')
+log "  $LB_IP"
+
+# 2. Health check (TCP:443 — see comment above).
+if ! gc compute health-checks describe "$HC_NAME" --region="$REGION" >/dev/null 2>&1; then
+  log "creating health check $HC_NAME"
+  gc compute health-checks create tcp "$HC_NAME" \
+    --region="$REGION" \
+    --port=443 \
+    --check-interval=10s --timeout=5s \
+    --unhealthy-threshold=3 --healthy-threshold=2 \
+    --description="TCP probe of in-enclave TLS listener; bare TCP because cert SAN is the public hostname not the LB IP."
+fi
+
+# 3. Instance template (always create new; rolling-replace handles the swap).
+TEMPLATE=$(next_template_name)
+log "creating instance template $TEMPLATE"
+gc compute instance-templates create "$TEMPLATE" \
+  --machine-type="$MACHINE_TYPE" \
+  --image-family="$CSP_IMAGE_FAMILY" \
+  --image-project="$CSP_IMAGE_PROJECT" \
+  --boot-disk-size=11GB --boot-disk-type=pd-balanced \
+  --network="$NETWORK" --subnet="$SUBNET" --region="$REGION" \
+  --service-account="$WORKLOAD_SA" \
+  --scopes=cloud-platform \
+  --tags=quill-enclave \
+  --confidential-compute-type=SEV_SNP \
+  --maintenance-policy=TERMINATE \
+  --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring \
+  --metadata="^|^tee-container-log-redirect=true|tee-env-QUILL_API_HOST=${API_HOST}|tee-env-QUILL_DEVICE_KEYS_SECRET=${QUILL_DEVICE_KEYS_SECRET}|tee-env-QUILL_GCP_PROJECT_ID=${PROJECT_ID}|tee-env-QUILL_GCP_REGION=${REGION}|tee-env-QUILL_ANTHROPIC_SECRET=${QUILL_ANTHROPIC_SECRET}|tee-env-QUILL_ACME_CACHE_GCS_BUCKET=${QUILL_ACME_CACHE_GCS_BUCKET}|tee-env-QUILL_TRUSTEDROUTER_INTERNAL_SECRET=${QUILL_TRUSTEDROUTER_INTERNAL_SECRET}|tee-env-TR_CONTROL_PLANE_BASE_URL=${TR_CONTROL_PLANE_BASE_URL}|tee-image-reference=${IMAGE_REF}|tee-restart-policy=Always" \
+  >/dev/null
+
+# 4. Create or update the MIG.
+HC_URI="projects/${PROJECT_ID}/regions/${REGION}/healthChecks/${HC_NAME}"
+if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/dev/null 2>&1; then
+  log "updating MIG $MIG_NAME -> template $TEMPLATE"
+  gc compute instance-groups managed set-instance-template "$MIG_NAME" \
+    --region="$REGION" --template="$TEMPLATE" >/dev/null
+  # max-unavailable=N for regional MIGs must be >= zone count (3); --max-surge=0
+  # forces in-place replace rather than over-provisioning.
+  gc compute instance-groups managed rolling-action replace "$MIG_NAME" \
+    --region="$REGION" \
+    --max-unavailable=3 \
+    --max-surge=0 >/dev/null
+else
+  log "creating MIG $MIG_NAME (size=$TARGET_SIZE)"
+  gc compute instance-groups managed create "$MIG_NAME" \
+    --base-instance-name="$MIG_NAME" \
+    --template="$TEMPLATE" \
+    --size="$TARGET_SIZE" \
+    --region="$REGION" \
+    --health-check="$HC_URI" \
+    --initial-delay=300 \
+    --description="Autohealing MIG for quill enclave gateway in $REGION." >/dev/null
+fi
+
+# 5. Backend service (regional EXTERNAL TCP passthrough) attaching the MIG.
+if ! gc compute backend-services describe "$BES_NAME" --region="$REGION" >/dev/null 2>&1; then
+  log "creating backend service $BES_NAME"
+  gc compute backend-services create "$BES_NAME" \
+    --region="$REGION" \
+    --load-balancing-scheme=EXTERNAL \
+    --protocol=TCP \
+    --health-checks="$HC_NAME" \
+    --health-checks-region="$REGION" \
+    --connection-draining-timeout=30 \
+    --description="Regional external TCP passthrough backend for quill enclave gateway in $REGION."
+  gc compute backend-services add-backend "$BES_NAME" \
+    --region="$REGION" \
+    --instance-group="$MIG_NAME" \
+    --instance-group-region="$REGION" >/dev/null
+fi
+
+# 6. Forwarding rule on :443 binding the static IP to the backend service.
+if ! gc compute forwarding-rules describe "$FR_NAME" --region="$REGION" >/dev/null 2>&1; then
+  log "creating forwarding rule $FR_NAME"
+  gc compute forwarding-rules create "$FR_NAME" \
+    --region="$REGION" \
+    --load-balancing-scheme=EXTERNAL \
+    --address="$LB_IP_NAME" \
+    --ip-protocol=TCP \
+    --ports=443 \
+    --backend-service="$BES_NAME" \
+    --backend-service-region="$REGION" \
+    --description="External TCP:443 passthrough to MIG; TLS terminates in-enclave."
+fi
+
+cat <<EOF
+
+quill-enclave gateway in $REGION is provisioned.
+
+  static IP:        $LB_IP   (point Cloudflare A record at this, DNS-only)
+  hostname (SNI):   $API_HOST
+  template:         $TEMPLATE
+  image:            $IMAGE_REF
+  MIG size:         $TARGET_SIZE
+
+EOF
