@@ -82,26 +82,11 @@ func deliverOne(
 	input any,
 	output string,
 ) error {
-	switch destination.Type {
-	case "posthog":
-		apiKey, err := resolveSecret(ctx, cache, generation.WorkspaceID, destination.APIKeyContext, destination.EncryptedAPIKey)
-		if err != nil {
-			return err
-		}
-		return postJSON(ctx, httpc, posthogURL(destination.Endpoint), nil, posthogPayload(apiKey, generation, input, output))
-	case "webhook":
-		headers, err := resolveHeaders(ctx, cache, generation.WorkspaceID, destination)
-		if err != nil {
-			return err
-		}
-		method := destination.Method
-		if method == "" {
-			method = http.MethodPost
-		}
-		return sendJSON(ctx, httpc, method, destination.Endpoint, headers, otlpPayload(generation, true, input, output))
-	default:
-		return fmt.Errorf("unsupported destination type %q", destination.Type)
+	adapter, ok := adapterFor(destination.Type)
+	if !ok {
+		return unsupportedDestinationError(destination.Type)
 	}
+	return adapter.Deliver(ctx, httpc, cache, destination, generation, input, output)
 }
 
 func posthogPayload(apiKey string, generation Generation, input any, output string) map[string]any {

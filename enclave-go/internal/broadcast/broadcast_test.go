@@ -29,6 +29,21 @@ func testGeneration() Generation {
 	}
 }
 
+func TestDestinationAdaptersRegistered(t *testing.T) {
+	for _, destinationType := range []string{"posthog", "webhook"} {
+		adapter, ok := adapterFor(destinationType)
+		if !ok {
+			t.Fatalf("missing adapter for %s", destinationType)
+		}
+		if adapter.Type() != destinationType {
+			t.Fatalf("adapter type = %s, want %s", adapter.Type(), destinationType)
+		}
+	}
+	if _, ok := adapterFor("missing"); ok {
+		t.Fatal("unexpected adapter for unsupported destination type")
+	}
+}
+
 func TestPostHogPayloadUsesAIGenerationAndContentFields(t *testing.T) {
 	payload := posthogPayload(
 		"phc_token",
