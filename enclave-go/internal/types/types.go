@@ -34,6 +34,11 @@ type BootstrapData struct {
 	// plaintext VM metadata.
 	TrustedRouterBaseURL       string `json:"trustedrouter_base_url,omitempty"`
 	TrustedRouterInternalToken string `json:"trustedrouter_internal_token,omitempty"`
+
+	// Anthropic direct (only populated for the llm_anthropic build target).
+	// Same trust posture as the OpenRouter key — pulled from Secret Manager
+	// inside the attested workload.
+	AnthropicAPIKey string `json:"anthropic_api_key,omitempty"`
 }
 
 // OpenAIChatMessage is one message in an inbound /v1/chat/completions request.

@@ -1,0 +1,51 @@
+# Build container for the GCP Confidential Space target with the DIRECT
+# Anthropic backend (api.anthropic.com). Same x86_64/scratch shape as the
+# OpenRouter and Vertex variants but built with `-tags
+# 'cloud_gcp,llm_anthropic'` so the workload egresses to Anthropic's
+# global API directly — no OpenRouter middlebox, no Vertex wrapping, no
+# project-region quota dance.
+#
+# Trust posture: Anthropic-the-company's TLS endpoint sees prompt bytes
+# (intrinsic for any LLM provider). The Anthropic API key is fetched
+# inside the attested workload from Secret Manager (same pattern as the
+# OpenRouter key on the openrouter variant) — never injected as plaintext
+# VM metadata.
+
+FROM golang:1.24-bookworm@sha256:ca0741815eee3625da09eddf15cc8ff678efa16520fcbcdbeb2ae0b0c519c82c AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# amd64 because Confidential Space runs on AMD SEV-SNP / Intel TDX hosts.
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+RUN go build -trimpath -tags 'cloud_gcp,llm_anthropic' \
+      -ldflags='-s -w -extldflags=-static' \
+      -o /out/quill-enclave ./cmd/enclave
+
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /out/quill-enclave /quill-enclave
+
+# TLS termination INSIDE the workload — same property the AWS target has,
+# because Confidential Space VMs don't decrypt either; the workload owns
+# the TLS handshake.
+ENV QUILL_ENCLAVE_TLS=true
+ENV QUILL_TLS_MODE=acme
+
+# Publish the listener port. Without this, the Confidential Space
+# launcher doesn't forward ingress to the container.
+EXPOSE 443
+
+# Allow override of these names only. QUILL_ANTHROPIC_SECRET is the
+# Secret Manager secret NAME, not the api key itself.
+LABEL "tee.launch_policy.allow_env_override"="QUILL_GCP_PROJECT_ID,QUILL_GCP_REGION,QUILL_DEVICE_KEYS_SECRET,QUILL_ANTHROPIC_SECRET,QUILL_TRUSTEDROUTER_INTERNAL_SECRET,TR_CONTROL_PLANE_BASE_URL,TR_REGION,QUILL_API_HOST,QUILL_TLS_MODE,QUILL_ACME_EMAIL,QUILL_ACME_CACHE_DIR,QUILL_ACME_DIRECTORY_URL,QUILL_ACME_CACHE_GCS_BUCKET"
+LABEL "tee.launch_policy.log_redirect"="always"
+
+ENTRYPOINT ["/quill-enclave"]

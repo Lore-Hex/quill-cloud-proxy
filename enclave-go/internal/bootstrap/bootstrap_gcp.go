@@ -35,7 +35,8 @@
 //
 //	QUILL_GCP_PROJECT_ID         e.g. "quill-cloud-proxy"
 //	QUILL_DEVICE_KEYS_SECRET     name of the secret holding the device-key JSON
-//	QUILL_OPENROUTER_SECRET      name of the secret holding the OpenRouter API key
+//	QUILL_OPENROUTER_SECRET      name of the secret holding the OpenRouter API key (llm_openrouter builds)
+//	QUILL_ANTHROPIC_SECRET       name of the secret holding the direct Anthropic API key (llm_anthropic builds)
 //	QUILL_TRUSTEDROUTER_INTERNAL_SECRET optional Secret Manager secret name
 package bootstrap
 
@@ -71,9 +72,14 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	if devicesSecret == "" {
 		return nil, fmt.Errorf("bootstrap/gcp: QUILL_DEVICE_KEYS_SECRET not set")
 	}
+	// Each build target needs exactly ONE provider secret, but bootstrap doesn't
+	// know which build it's serving — so fetch whichever env var is set and
+	// fail loud if neither is. The llm.New constructor for the build target
+	// validates that the right field is populated.
 	openrouterSecret := os.Getenv("QUILL_OPENROUTER_SECRET")
-	if openrouterSecret == "" {
-		return nil, fmt.Errorf("bootstrap/gcp: QUILL_OPENROUTER_SECRET not set")
+	anthropicSecret := os.Getenv("QUILL_ANTHROPIC_SECRET")
+	if openrouterSecret == "" && anthropicSecret == "" {
+		return nil, fmt.Errorf("bootstrap/gcp: one of QUILL_OPENROUTER_SECRET or QUILL_ANTHROPIC_SECRET must be set")
 	}
 
 	httpc := &http.Client{Timeout: 10 * time.Second}
@@ -92,9 +98,19 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		return nil, fmt.Errorf("bootstrap/gcp: parse device-keys JSON: %w", err)
 	}
 
-	openrouterKey, err := fetchSecret(ctx, httpc, token, project, openrouterSecret)
-	if err != nil {
-		return nil, fmt.Errorf("bootstrap/gcp: openrouter key: %w", err)
+	var openrouterKey []byte
+	if openrouterSecret != "" {
+		openrouterKey, err = fetchSecret(ctx, httpc, token, project, openrouterSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: openrouter key: %w", err)
+		}
+	}
+	var anthropicKey []byte
+	if anthropicSecret != "" {
+		anthropicKey, err = fetchSecret(ctx, httpc, token, project, anthropicSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: anthropic key: %w", err)
+		}
 	}
 	var internalGatewayToken string
 	if internalSecret := os.Getenv("QUILL_TRUSTEDROUTER_INTERNAL_SECRET"); internalSecret != "" {
@@ -108,7 +124,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	return &types.BootstrapData{
 		Devices:                    devices,
 		Region:                     os.Getenv("QUILL_GCP_REGION"),
-		OpenRouterAPIKey:           string(openrouterKey),
+		OpenRouterAPIKey:           strings.TrimSpace(string(openrouterKey)),
+		AnthropicAPIKey:            strings.TrimSpace(string(anthropicKey)),
 		TrustedRouterBaseURL:       os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken: strings.TrimSpace(internalGatewayToken),
 		// BedrockVsockProxy / OpenRouterVsockProxy unused on GCP — direct egress.
