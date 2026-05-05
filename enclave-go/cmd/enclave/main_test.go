@@ -348,6 +348,78 @@ func TestServeOneTrustedRouterGatewayAuthorizesBYOKAndSettles(t *testing.T) {
 	}
 }
 
+func TestServeOneTrustedRouterProviderErrorDoesNotReturnEmptyStream(t *testing.T) {
+	bearer := "sk-tr-v1-user-secret"
+	var refundBody string
+	var settleCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_fail","workspace_id":"ws_1","api_key_hash":"key_1","model":"anthropic/claude-3-5-sonnet","endpoint_id":"anthropic/claude-3-5-sonnet@anthropic/prepaid","provider":"anthropic","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+		case "/internal/gateway/refund":
+			refundBody = string(body)
+			_, _ = fmt.Fprint(w, `{"data":{"refunded":true}}`)
+		case "/internal/gateway/settle":
+			settleCalled = true
+			t.Fatalf("settle should not be called after provider failure: %s", body)
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), &failingStreamingLLM{}, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"anthropic/claude-3-5-sonnet","stream":true,"messages":[{"role":"user","content":"private prompt"}],"max_tokens":32}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, `"type":"provider_error"`) || !strings.Contains(body, "data: [DONE]\n\n") {
+		t.Fatalf("stream did not expose stable provider error: %s", body)
+	}
+	if strings.Contains(body, "private prompt") {
+		t.Fatalf("stream leaked prompt: %s", body)
+	}
+	deadline := time.Now().Add(time.Second)
+	for refundBody == "" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if refundBody == "" {
+		t.Fatal("expected provider failure to refund authorization")
+	}
+	if settleCalled {
+		t.Fatal("settle was called after provider failure")
+	}
+}
+
 func TestServeOneStreamsChunkedOpenAISSEFromInsideEnclave(t *testing.T) {
 	bearer := "test-bearer"
 	digest := sha256.Sum256([]byte(bearer))
@@ -410,4 +482,16 @@ func TestServeOneStreamsChunkedOpenAISSEFromInsideEnclave(t *testing.T) {
 		serialized, _ := json.Marshal(llm.body)
 		t.Fatalf("bad transformed body: %s", serialized)
 	}
+}
+
+type failingStreamingLLM struct{}
+
+func (f *failingStreamingLLM) InvokeStreaming(
+	_ context.Context,
+	_ *types.OpenAIChatRequest,
+	_ *types.AnthropicMessagesRequest,
+	_ io.Writer,
+	_ ...llm.InvokeOptions,
+) error {
+	return errors.New("provider exploded")
 }

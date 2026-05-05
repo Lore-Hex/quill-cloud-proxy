@@ -397,6 +397,9 @@ func serveStreaming(
 		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds())
 		}
+		if statsW.BytesWritten() == 0 {
+			_ = writeStreamingProviderError(statsW, routeType, requestID, req.Model)
+		}
 		return
 	}
 	settleAndBroadcast(
@@ -500,6 +503,45 @@ func settleAndBroadcast(
 		originalInput,
 		output,
 	)
+}
+
+func writeStreamingProviderError(w io.Writer, routeType, requestID, model string) error {
+	errBody := map[string]any{
+		"message": "provider error",
+		"type":    "provider_error",
+	}
+	if routeType == "responses" {
+		payload := map[string]any{
+			"type": "response.failed",
+			"response": map[string]any{
+				"id":         requestID,
+				"object":     "response",
+				"created_at": time.Now().Unix(),
+				"model":      model,
+				"status":     "failed",
+				"error":      errBody,
+			},
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "event: response.failed\ndata: %s\n\n", encoded); err != nil {
+			return err
+		}
+		_, err = io.WriteString(w, "data: [DONE]\n\n")
+		return err
+	}
+	payload := map[string]any{"error": errBody}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", encoded); err != nil {
+		return err
+	}
+	_, err = io.WriteString(w, "data: [DONE]\n\n")
+	return err
 }
 
 func providerAPIKey(
