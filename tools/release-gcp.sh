@@ -19,6 +19,7 @@ PROJECT_ID="${PROJECT_ID:-quill-cloud-proxy}"
 REGION="${REGION:-us-central1}"
 ARTIFACT_REPO="${ARTIFACT_REPO:-quill}"
 IMAGE_NAME="${IMAGE_NAME:-enclave-openrouter}"
+DOCKERFILE="${DOCKERFILE:-Dockerfile.enclave.gcp.openrouter}"
 COMMIT="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 IMAGE_TAG="${IMAGE_TAG:-gcp-release-$COMMIT}"
 TRUST_BUCKET="${TRUST_BUCKET:-trust.quill.lorehex.co}"
@@ -40,7 +41,7 @@ else
     cd "$REPO_ROOT/enclave-go"
     docker buildx build \
       --platform linux/amd64 \
-      --file Dockerfile.enclave.gcp.openrouter \
+      --file "$DOCKERFILE" \
       --tag "$IMAGE_REF" \
       --push \
       .

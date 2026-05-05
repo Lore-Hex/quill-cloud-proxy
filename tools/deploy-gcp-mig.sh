@@ -44,12 +44,18 @@ fi
 PROJECT_ID="${PROJECT_ID:-quill-cloud-proxy}"
 NETWORK="${NETWORK:-default}"
 SUBNET="${SUBNET:-default}"
-TEMPLATE_PREFIX="${TEMPLATE_PREFIX:-quill-enclave-tpl-${REGION}}"
-MIG_NAME="${MIG_NAME:-quill-enclave-mig-${REGION//-/}}" # gcloud rejects hyphens in some contexts
-HC_NAME="quill-enclave-tcp-443-${REGION//-/}"
-BES_NAME="quill-enclave-bes-${REGION//-/}"
-FR_NAME="quill-enclave-fr-${REGION//-/}"
-LB_IP_NAME="quill-lb-ip-${REGION//-/}"
+# REGION_SHORT lets you keep names stable when GCP region names shift (and
+# avoids the ugly `uscentral1` if you'd rather have `us`). Defaults to the
+# dashes-stripped region — override per-region to match existing live
+# resources, e.g. REGION_SHORT=us for us-central1, REGION_SHORT=eu for
+# europe-west4.
+REGION_SHORT="${REGION_SHORT:-${REGION//-/}}"
+TEMPLATE_PREFIX="${TEMPLATE_PREFIX:-quill-enclave-tpl-${REGION_SHORT}}"
+MIG_NAME="${MIG_NAME:-quill-enclave-mig-${REGION_SHORT}}"
+HC_NAME="quill-enclave-tcp-443-${REGION_SHORT}"
+BES_NAME="quill-enclave-bes-${REGION_SHORT}"
+FR_NAME="quill-enclave-fr-${REGION_SHORT}"
+LB_IP_NAME="quill-lb-ip-${REGION_SHORT}"
 TARGET_SIZE="${TARGET_SIZE:-2}"
 
 IMAGE_REF="${IMAGE_REF:?set IMAGE_REF=us-central1-docker.pkg.dev/.../enclave-anthropic:gcp-release-XXX}"
