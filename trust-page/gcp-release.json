@@ -1,9 +1,9 @@
 {
   "platform": "gcp-confidential-space",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
-  "source_commit": "401d807",
-  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-401d807",
-  "image_digest": "sha256:2d2bf6d994bb15c9c64529ce789a929ddf63b31623c5b4800f2e4ce0b607d8de",
+  "source_commit": "a6d8ec9",
+  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-a6d8ec9",
+  "image_digest": "sha256:c479b35a2834db907570e363d7e48992ed52cafab96cf8fbd50634a71d01ff49",
   "attestation_issuer": "https://confidentialcomputing.googleapis.com",
   "attestation_audience": "quill-cloud"
 }
