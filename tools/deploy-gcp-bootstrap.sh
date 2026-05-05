@@ -47,6 +47,13 @@ BIGTABLE_EU_CLUSTER="${BIGTABLE_EU_CLUSTER:-trusted-router-logs-eu}"
 BIGTABLE_EU_ZONE="${BIGTABLE_EU_ZONE:-europe-west4-a}"
 WORKLOAD_SA="${WORKLOAD_SA:-quill-workload@${PROJECT_ID}.iam.gserviceaccount.com}"
 ANTHROPIC_SECRET="${ANTHROPIC_SECRET:-trustedrouter-anthropic-api-key}"
+OPENAI_SECRET="${OPENAI_SECRET:-trustedrouter-openai-api-key}"
+GEMINI_SECRET="${GEMINI_SECRET:-trustedrouter-gemini-api-key}"
+CEREBRAS_SECRET="${CEREBRAS_SECRET:-trustedrouter-cerebras-api-key}"
+DEEPSEEK_SECRET="${DEEPSEEK_SECRET:-trustedrouter-deepseek-api-key}"
+MISTRAL_SECRET="${MISTRAL_SECRET:-trustedrouter-mistral-api-key}"
+KIMI_SECRET="${KIMI_SECRET:-trustedrouter-kimi-api-key}"
+ZAI_SECRET="${ZAI_SECRET:-trustedrouter-zai-api-key}"
 INTERNAL_GATEWAY_SECRET="${INTERNAL_GATEWAY_SECRET:-trustedrouter-internal-gateway-token}"
 DEVICE_KEYS_SECRET="${DEVICE_KEYS_SECRET:-quill-device-keys}"
 
@@ -111,7 +118,17 @@ if [ -z "$CURRENT_ROUTING" ]; then
 fi
 
 # 4. IAM bindings on the secrets the workload reads at boot.
-for secret in "$ANTHROPIC_SECRET" "$INTERNAL_GATEWAY_SECRET" "$DEVICE_KEYS_SECRET"; do
+for secret in \
+  "$ANTHROPIC_SECRET" \
+  "$OPENAI_SECRET" \
+  "$GEMINI_SECRET" \
+  "$CEREBRAS_SECRET" \
+  "$DEEPSEEK_SECRET" \
+  "$MISTRAL_SECRET" \
+  "$KIMI_SECRET" \
+  "$ZAI_SECRET" \
+  "$INTERNAL_GATEWAY_SECRET" \
+  "$DEVICE_KEYS_SECRET"; do
   if gc secrets describe "$secret" >/dev/null 2>&1; then
     log "ensuring workload SA can access secret $secret"
     gc secrets add-iam-policy-binding "$secret" \
