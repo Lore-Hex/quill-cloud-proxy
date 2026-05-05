@@ -38,5 +38,5 @@ func (c *zaiClient) InvokeStreaming(
 	if handled, err := invokeBYOKStreaming(ctx, req, body, out, firstOptions(options)); handled {
 		return err
 	}
-	return InvokeOpenAICompatibleStreaming(ctx, "zai", directBaseURL("zai"), c.apiKey, req, body, out)
+	return InvokeOpenAICompatibleStreaming(ctx, "zai", directBaseURL("zai"), c.apiKey, req, body, out, firstOptions(options).UpstreamModel)
 }

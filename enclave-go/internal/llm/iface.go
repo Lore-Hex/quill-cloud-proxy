@@ -40,6 +40,8 @@ type Client interface {
 }
 
 type InvokeOptions struct {
+	Model          string
+	UpstreamModel  string
 	ProviderAPIKey string
 	Provider       string
 	EndpointID     string

@@ -46,8 +46,8 @@ import (
 )
 
 const (
-	anthropicURL            = "https://api.anthropic.com/v1/messages"
-	anthropicVersionHeader  = "2023-06-01" // stable; bump only when Anthropic deprecates this version
+	anthropicURL           = "https://api.anthropic.com/v1/messages"
+	anthropicVersionHeader = "2023-06-01" // stable; bump only when Anthropic deprecates this version
 )
 
 // modelIDMap turns the Quill-public model name into Anthropic's official
@@ -69,8 +69,8 @@ var modelIDMap = map[string]string{
 }
 
 type anthropicClient struct {
-	apiKey  string
-	httpc   *http.Client
+	apiKey string
+	httpc  *http.Client
 }
 
 // newAnthropic constructs the Anthropic-direct client. Used as THE Client
@@ -98,9 +98,16 @@ func (c *anthropicClient) InvokeStreaming(
 	if c.apiKey == "" {
 		return fmt.Errorf("llm/anthropic: no api key (set QUILL_ANTHROPIC_SECRET)")
 	}
-	model := mapModelID(req.Model)
+	model := directModelID("anthropic", req.Model, firstOptions(options).UpstreamModel)
+	if mapped := mapModelID(model); mapped != "" {
+		model = mapped
+	}
 	if model == "" {
 		return fmt.Errorf("llm/anthropic: unmapped model %q", req.Model)
+	}
+	messages, err := anthropicMessagesWithFetchedImages(ctx, body)
+	if err != nil {
+		return err
 	}
 
 	// Build the Anthropic Messages API body. Same shape as `body` but with
@@ -115,7 +122,7 @@ func (c *anthropicClient) InvokeStreaming(
 		Stream      bool                      `json:"stream"`
 	}{
 		Model:       model,
-		Messages:    body.Messages,
+		Messages:    messages,
 		System:      body.System,
 		MaxTokens:   body.MaxTokens,
 		Temperature: body.Temperature,
@@ -156,13 +163,19 @@ func (c *anthropicClient) InvokeStreaming(
 }
 
 func mapModelID(quillModel string) string {
+	quillModel = strings.TrimSpace(quillModel)
 	if mapped, ok := modelIDMap[quillModel]; ok {
 		return mapped
 	}
+	if strings.HasPrefix(quillModel, "anthropic/") {
+		return mapModelID(strings.TrimPrefix(quillModel, "anthropic/"))
+	}
 	// Fall through: maybe the caller already passed a raw Anthropic id like
-	// "claude-3-5-sonnet-20241022". Trust them.
+	// "claude-3-5-sonnet-20241022". Normalize catalog-style dotted Claude
+	// names at the boundary because Anthropic's API uses dash-separated
+	// version ids.
 	if strings.HasPrefix(quillModel, "claude-") {
-		return quillModel
+		return strings.ReplaceAll(quillModel, ".", "-")
 	}
 	return ""
 }

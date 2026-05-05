@@ -7,8 +7,8 @@
 // authorization → InvokeOptions.Provider field).
 //
 // Adding a new provider here is two lines:
-//   1. add a *yourClient to multiClient
-//   2. add a case in the switch on opts.Provider
+//  1. add a *yourClient to multiClient
+//  2. add a case in the switch on opts.Provider
 //
 // The build tag system keeps single-backend builds (llm_anthropic,
 // llm_vertex) untouched — those keep their smaller binaries and tighter
@@ -31,6 +31,11 @@ func New(boot *qtypes.BootstrapData) Client {
 	return &multiClient{
 		anthropic: newAnthropic(boot),
 		vertex:    newVertex(boot),
+		openai:    newOpenAICompatible("openai", boot.OpenAIAPIKey),
+		gemini:    newOpenAICompatible("gemini", boot.GeminiAPIKey),
+		cerebras:  newOpenAICompatible("cerebras", boot.CerebrasAPIKey),
+		deepseek:  newOpenAICompatible("deepseek", boot.DeepSeekAPIKey),
+		mistral:   newOpenAICompatible("mistral", boot.MistralAPIKey),
 		kimi:      newKimi(boot),
 		zai:       newZAI(boot),
 	}
@@ -39,6 +44,11 @@ func New(boot *qtypes.BootstrapData) Client {
 type multiClient struct {
 	anthropic *anthropicClient
 	vertex    *gcpClient
+	openai    *openAICompatibleClient
+	gemini    *openAICompatibleClient
+	cerebras  *openAICompatibleClient
+	deepseek  *openAICompatibleClient
+	mistral   *openAICompatibleClient
 	kimi      *kimiClient
 	zai       *zaiClient
 }
@@ -62,11 +72,21 @@ func (m *multiClient) InvokeStreaming(
 		return m.anthropic.InvokeStreaming(ctx, req, body, out, options...)
 	case "vertex", "google", "google-vertex":
 		return m.vertex.InvokeStreaming(ctx, req, body, out, options...)
+	case "openai":
+		return m.openai.InvokeStreaming(ctx, req, body, out, options...)
+	case "gemini":
+		return m.gemini.InvokeStreaming(ctx, req, body, out, options...)
+	case "cerebras":
+		return m.cerebras.InvokeStreaming(ctx, req, body, out, options...)
+	case "deepseek":
+		return m.deepseek.InvokeStreaming(ctx, req, body, out, options...)
+	case "mistral":
+		return m.mistral.InvokeStreaming(ctx, req, body, out, options...)
 	case "kimi":
 		return m.kimi.InvokeStreaming(ctx, req, body, out, options...)
 	case "zai":
 		return m.zai.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, kimi, zai)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai)", provider)
 	}
 }

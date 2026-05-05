@@ -37,6 +37,11 @@
 //	QUILL_DEVICE_KEYS_SECRET     name of the secret holding the device-key JSON
 //	QUILL_OPENROUTER_SECRET      name of the secret holding the OpenRouter API key (llm_openrouter builds)
 //	QUILL_ANTHROPIC_SECRET       name of the secret holding the direct Anthropic API key (llm_anthropic builds)
+//	QUILL_OPENAI_SECRET          name of the secret holding the OpenAI API key (llm_multi builds)
+//	QUILL_GEMINI_SECRET          name of the secret holding the Gemini API key (llm_multi builds)
+//	QUILL_CEREBRAS_SECRET        name of the secret holding the Cerebras API key (llm_multi builds)
+//	QUILL_DEEPSEEK_SECRET        name of the secret holding the DeepSeek API key (llm_multi builds)
+//	QUILL_MISTRAL_SECRET         name of the secret holding the Mistral API key (llm_multi builds)
 //	QUILL_TRUSTEDROUTER_INTERNAL_SECRET optional Secret Manager secret name
 package bootstrap
 
@@ -78,10 +83,25 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	// builds set exactly one. Failing loud below if literally none are set.
 	openrouterSecret := os.Getenv("QUILL_OPENROUTER_SECRET")
 	anthropicSecret := os.Getenv("QUILL_ANTHROPIC_SECRET")
+	openaiSecret := os.Getenv("QUILL_OPENAI_SECRET")
+	geminiSecret := os.Getenv("QUILL_GEMINI_SECRET")
+	cerebrasSecret := os.Getenv("QUILL_CEREBRAS_SECRET")
+	deepseekSecret := os.Getenv("QUILL_DEEPSEEK_SECRET")
+	mistralSecret := os.Getenv("QUILL_MISTRAL_SECRET")
 	kimiSecret := os.Getenv("QUILL_KIMI_SECRET")
 	zaiSecret := os.Getenv("QUILL_ZAI_SECRET")
-	if openrouterSecret == "" && anthropicSecret == "" && kimiSecret == "" && zaiSecret == "" {
-		return nil, fmt.Errorf("bootstrap/gcp: at least one of QUILL_{OPENROUTER,ANTHROPIC,KIMI,ZAI}_SECRET must be set")
+	if !anySet(
+		openrouterSecret,
+		anthropicSecret,
+		openaiSecret,
+		geminiSecret,
+		cerebrasSecret,
+		deepseekSecret,
+		mistralSecret,
+		kimiSecret,
+		zaiSecret,
+	) {
+		return nil, fmt.Errorf("bootstrap/gcp: at least one provider secret env must be set")
 	}
 
 	httpc := &http.Client{Timeout: 10 * time.Second}
@@ -114,6 +134,41 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: anthropic key: %w", err)
 		}
 	}
+	var openaiKey []byte
+	if openaiSecret != "" {
+		openaiKey, err = fetchSecret(ctx, httpc, token, project, openaiSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: openai key: %w", err)
+		}
+	}
+	var geminiKey []byte
+	if geminiSecret != "" {
+		geminiKey, err = fetchSecret(ctx, httpc, token, project, geminiSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: gemini key: %w", err)
+		}
+	}
+	var cerebrasKey []byte
+	if cerebrasSecret != "" {
+		cerebrasKey, err = fetchSecret(ctx, httpc, token, project, cerebrasSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: cerebras key: %w", err)
+		}
+	}
+	var deepseekKey []byte
+	if deepseekSecret != "" {
+		deepseekKey, err = fetchSecret(ctx, httpc, token, project, deepseekSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: deepseek key: %w", err)
+		}
+	}
+	var mistralKey []byte
+	if mistralSecret != "" {
+		mistralKey, err = fetchSecret(ctx, httpc, token, project, mistralSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: mistral key: %w", err)
+		}
+	}
 	var kimiKey []byte
 	if kimiSecret != "" {
 		kimiKey, err = fetchSecret(ctx, httpc, token, project, kimiSecret)
@@ -142,12 +197,26 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		Region:                     os.Getenv("QUILL_GCP_REGION"),
 		OpenRouterAPIKey:           strings.TrimSpace(string(openrouterKey)),
 		AnthropicAPIKey:            strings.TrimSpace(string(anthropicKey)),
+		OpenAIAPIKey:               strings.TrimSpace(string(openaiKey)),
+		GeminiAPIKey:               strings.TrimSpace(string(geminiKey)),
+		CerebrasAPIKey:             strings.TrimSpace(string(cerebrasKey)),
+		DeepSeekAPIKey:             strings.TrimSpace(string(deepseekKey)),
+		MistralAPIKey:              strings.TrimSpace(string(mistralKey)),
 		KimiAPIKey:                 strings.TrimSpace(string(kimiKey)),
 		ZAIAPIKey:                  strings.TrimSpace(string(zaiKey)),
 		TrustedRouterBaseURL:       os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken: strings.TrimSpace(internalGatewayToken),
 		// BedrockVsockProxy / OpenRouterVsockProxy unused on GCP — direct egress.
 	}, nil
+}
+
+func anySet(values ...string) bool {
+	for _, value := range values {
+		if value != "" {
+			return true
+		}
+	}
+	return false
 }
 
 type tokenResponse struct {

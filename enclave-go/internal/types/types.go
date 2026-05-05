@@ -44,14 +44,19 @@ type BootstrapData struct {
 	// Each is independently optional — only the providers compiled in for
 	// the running image read these. Same Secret-Manager-fetched-in-workload
 	// trust posture as the rest of these credentials.
-	KimiAPIKey string `json:"kimi_api_key,omitempty"`
-	ZAIAPIKey  string `json:"zai_api_key,omitempty"`
+	OpenAIAPIKey   string `json:"openai_api_key,omitempty"`
+	GeminiAPIKey   string `json:"gemini_api_key,omitempty"`
+	CerebrasAPIKey string `json:"cerebras_api_key,omitempty"`
+	DeepSeekAPIKey string `json:"deepseek_api_key,omitempty"`
+	MistralAPIKey  string `json:"mistral_api_key,omitempty"`
+	KimiAPIKey     string `json:"kimi_api_key,omitempty"`
+	ZAIAPIKey      string `json:"zai_api_key,omitempty"`
 }
 
 // OpenAIChatMessage is one message in an inbound /v1/chat/completions request.
 type OpenAIChatMessage struct {
 	Role    string `json:"role"` // "system" | "user" | "assistant"
-	Content string `json:"content"`
+	Content any    `json:"content"`
 }
 
 // OpenAIChatRequest is the inbound shape we accept.
@@ -86,10 +91,25 @@ type ResponsesContent struct {
 	Text string `json:"text,omitempty"`
 }
 
-// OpenAIResponsesRequest is the stateless text-only /v1/responses shape
-// accepted by the attested gateway. Advanced fields are validated before this
-// struct is used so callers get stable compatibility errors instead of silent
-// no-ops.
+// ChatContentPart is the canonical multimodal content-part shape carried
+// inside the enclave. OpenAI-compatible providers can receive it directly;
+// Anthropic-family providers convert image_url parts to base64 inside the
+// attested runtime immediately before the upstream request.
+type ChatContentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *ChatImageURL `json:"image_url,omitempty"`
+}
+
+type ChatImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// OpenAIResponsesRequest is the stateless /v1/responses shape accepted by
+// the attested gateway. Text and image inputs are supported; stateful and
+// hosted-tool fields are validated before this struct is used so callers get
+// stable compatibility errors instead of silent no-ops.
 type OpenAIResponsesRequest struct {
 	Model                string           `json:"model"`
 	Models               []string         `json:"models,omitempty"`
@@ -130,6 +150,7 @@ type OpenAIResponsesRequest struct {
 type ResponseRequestMeta struct {
 	Include              []string
 	Modalities           []string
+	InputModalities      []string
 	ParallelToolCalls    *bool
 	PromptCacheKey       string
 	SafetyIdentifier     string
@@ -166,7 +187,7 @@ type ProviderRouting struct {
 // AnthropicMessage is one user/assistant turn for Bedrock's Anthropic body.
 type AnthropicMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
 }
 
 // AnthropicMessagesRequest is the body we POST to Bedrock's

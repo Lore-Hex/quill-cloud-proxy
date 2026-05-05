@@ -72,9 +72,14 @@ QUILL_ANTHROPIC_SECRET="${QUILL_ANTHROPIC_SECRET:-trustedrouter-anthropic-api-ke
 # optional — leaving the Secret Manager name blank skips fetching it; the
 # corresponding case in the multi dispatcher will fail with "missing api
 # key" if a request actually reaches that backend without one configured.
-# Default to empty (operator opts in) for providers whose Secret Manager
-# secret may or may not exist in a given project. Z.AI's secret is created
-# alongside the trusted-router setup so its default is the canonical name.
+# Default to the canonical Secret Manager names created by the
+# trusted-router setup. Override with an empty value only for a deliberately
+# disabled provider; the catalog publishes prepaid routes for these.
+QUILL_OPENAI_SECRET="${QUILL_OPENAI_SECRET:-trustedrouter-openai-api-key}"
+QUILL_GEMINI_SECRET="${QUILL_GEMINI_SECRET:-trustedrouter-gemini-api-key}"
+QUILL_CEREBRAS_SECRET="${QUILL_CEREBRAS_SECRET:-trustedrouter-cerebras-api-key}"
+QUILL_DEEPSEEK_SECRET="${QUILL_DEEPSEEK_SECRET:-trustedrouter-deepseek-api-key}"
+QUILL_MISTRAL_SECRET="${QUILL_MISTRAL_SECRET:-trustedrouter-mistral-api-key}"
 QUILL_KIMI_SECRET="${QUILL_KIMI_SECRET:-trustedrouter-kimi-api-key}"
 QUILL_ZAI_SECRET="${QUILL_ZAI_SECRET:-trustedrouter-zai-api-key}"
 QUILL_DEVICE_KEYS_SECRET="${QUILL_DEVICE_KEYS_SECRET:-quill-device-keys}"
@@ -140,7 +145,7 @@ gc compute instance-templates create "$TEMPLATE" \
   --confidential-compute-type=SEV_SNP \
   --maintenance-policy=TERMINATE \
   --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring \
-  --metadata="^|^tee-container-log-redirect=true|tee-env-QUILL_API_HOST=${API_HOST}|tee-env-QUILL_DEVICE_KEYS_SECRET=${QUILL_DEVICE_KEYS_SECRET}|tee-env-QUILL_GCP_PROJECT_ID=${PROJECT_ID}|tee-env-QUILL_GCP_REGION=${REGION}|tee-env-QUILL_ANTHROPIC_SECRET=${QUILL_ANTHROPIC_SECRET}|tee-env-QUILL_KIMI_SECRET=${QUILL_KIMI_SECRET}|tee-env-QUILL_ZAI_SECRET=${QUILL_ZAI_SECRET}|tee-env-QUILL_ACME_CACHE_GCS_BUCKET=${QUILL_ACME_CACHE_GCS_BUCKET}|tee-env-QUILL_TRUSTEDROUTER_INTERNAL_SECRET=${QUILL_TRUSTEDROUTER_INTERNAL_SECRET}|tee-env-TR_CONTROL_PLANE_BASE_URL=${TR_CONTROL_PLANE_BASE_URL}|tee-image-reference=${IMAGE_REF}|tee-restart-policy=Always" \
+  --metadata="^|^tee-container-log-redirect=true|tee-env-QUILL_API_HOST=${API_HOST}|tee-env-QUILL_DEVICE_KEYS_SECRET=${QUILL_DEVICE_KEYS_SECRET}|tee-env-QUILL_GCP_PROJECT_ID=${PROJECT_ID}|tee-env-QUILL_GCP_REGION=${REGION}|tee-env-QUILL_ANTHROPIC_SECRET=${QUILL_ANTHROPIC_SECRET}|tee-env-QUILL_OPENAI_SECRET=${QUILL_OPENAI_SECRET}|tee-env-QUILL_GEMINI_SECRET=${QUILL_GEMINI_SECRET}|tee-env-QUILL_CEREBRAS_SECRET=${QUILL_CEREBRAS_SECRET}|tee-env-QUILL_DEEPSEEK_SECRET=${QUILL_DEEPSEEK_SECRET}|tee-env-QUILL_MISTRAL_SECRET=${QUILL_MISTRAL_SECRET}|tee-env-QUILL_KIMI_SECRET=${QUILL_KIMI_SECRET}|tee-env-QUILL_ZAI_SECRET=${QUILL_ZAI_SECRET}|tee-env-QUILL_ACME_CACHE_GCS_BUCKET=${QUILL_ACME_CACHE_GCS_BUCKET}|tee-env-QUILL_TRUSTEDROUTER_INTERNAL_SECRET=${QUILL_TRUSTEDROUTER_INTERNAL_SECRET}|tee-env-TR_CONTROL_PLANE_BASE_URL=${TR_CONTROL_PLANE_BASE_URL}|tee-image-reference=${IMAGE_REF}|tee-restart-policy=Always" \
   >/dev/null
 
 # 4. Create or update the MIG.

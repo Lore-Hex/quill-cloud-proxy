@@ -79,6 +79,7 @@ type Authorization struct {
 	WorkspaceID           string                             `json:"workspace_id"`
 	APIKeyHash            string                             `json:"api_key_hash"`
 	Model                 string                             `json:"model"`
+	UpstreamModel         string                             `json:"upstream_model"`
 	EndpointID            string                             `json:"endpoint_id"`
 	Provider              string                             `json:"provider"`
 	UsageType             string                             `json:"usage_type"`
@@ -93,6 +94,7 @@ type Authorization struct {
 type RouteCandidate struct {
 	EndpointID          string                             `json:"endpoint_id"`
 	Model               string                             `json:"model"`
+	UpstreamModel       string                             `json:"upstream_model"`
 	Provider            string                             `json:"provider"`
 	UsageType           string                             `json:"usage_type"`
 	BYOKSecretRef       string                             `json:"byok_secret_ref"`
@@ -122,6 +124,8 @@ type Usage struct {
 	FinishReason      string
 	Streamed          bool
 	RouteType         string
+	SelectedModel     string
+	SelectedEndpoint  string
 	User              string
 	SessionID         string
 	Trace             map[string]any
@@ -158,6 +162,9 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	}
 	if req.Provider != nil {
 		body["provider"] = req.Provider
+	}
+	if modalities := qtypes.RequestInputModalities(req); len(modalities) > 0 {
+		body["input_modalities"] = modalities
 	}
 	if req.User != "" {
 		body["user"] = req.User
@@ -198,6 +205,14 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	if finishReason == "" {
 		finishReason = "stop"
 	}
+	selectedModel := strings.TrimSpace(usage.SelectedModel)
+	if selectedModel == "" {
+		selectedModel = auth.Model
+	}
+	selectedEndpoint := strings.TrimSpace(usage.SelectedEndpoint)
+	if selectedEndpoint == "" {
+		selectedEndpoint = auth.EndpointID
+	}
 	body := map[string]any{
 		"authorization_id":     auth.AuthorizationID,
 		"actual_input_tokens":  usage.InputTokens,
@@ -208,8 +223,8 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 		"streamed":             usage.Streamed,
 		"usage_estimated":      usage.UsageEstimated,
 		"elapsed_seconds":      usage.ElapsedSeconds,
-		"selected_model":       auth.Model,
-		"selected_endpoint":    auth.EndpointID,
+		"selected_model":       selectedModel,
+		"selected_endpoint":    selectedEndpoint,
 		"app":                  "attested-gateway",
 	}
 	if usage.RouteType != "" {
@@ -301,7 +316,7 @@ func lookupHash(raw string) string {
 func EstimateInputTokens(req *qtypes.OpenAIChatRequest) int {
 	total := 0
 	for _, message := range req.Messages {
-		total += len(message.Content)/4 + 4
+		total += qtypes.ContentTokenEstimate(message.Content) + 4
 	}
 	if total < 1 {
 		return 1

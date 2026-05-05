@@ -39,7 +39,11 @@ func (c *awsClient) InvokeStreaming(
 	if !ok {
 		return fmt.Errorf("llm/aws: unknown model: %s", req.Model)
 	}
-	return c.br.InvokeStreaming(ctx, id, body, out)
+	converted, err := anthropicBodyWithFetchedImages(ctx, body)
+	if err != nil {
+		return err
+	}
+	return c.br.InvokeStreaming(ctx, id, converted, out)
 }
 
 func New(boot *qtypes.BootstrapData) Client {

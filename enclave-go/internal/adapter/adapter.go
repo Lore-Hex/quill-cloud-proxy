@@ -43,12 +43,19 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 	var systemParts []string
 	var msgs []types.AnthropicMessage
 	for i, m := range req.Messages {
-		if m.Content == "" {
+		if types.ContentEmpty(m.Content) {
 			continue
 		}
 		switch m.Role {
 		case "system":
-			systemParts = append(systemParts, m.Content)
+			if types.ContentImageCount(m.Content) > 0 {
+				return nil, &AdapterError{
+					Status:  400,
+					Message: "system messages cannot contain images",
+					Context: fmt.Sprintf("message[%d].content", i),
+				}
+			}
+			systemParts = append(systemParts, types.ContentText(m.Content))
 		case "user", "assistant":
 			msgs = append(msgs, types.AnthropicMessage{Role: m.Role, Content: m.Content})
 		default:

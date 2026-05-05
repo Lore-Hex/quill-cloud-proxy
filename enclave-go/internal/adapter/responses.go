@@ -106,8 +106,10 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 			return err
 		}
 	}
-	if value, ok := raw["input"]; ok && containsUnsupportedInput(value) {
-		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "input"}
+	if value, ok := raw["input"]; ok {
+		if err := validateResponsesInput(value); err != nil {
+			return err
+		}
 	}
 	if value, ok := raw["text"]; ok {
 		if err := validateTextConfig(value); err != nil {
@@ -182,6 +184,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 			ServiceTier:          req.ServiceTier,
 			StreamOptions:        req.StreamOptions,
 			Text:                 req.Text,
+			InputModalities:      types.RequestInputModalities(&types.OpenAIChatRequest{Messages: messages}),
 			ToolChoice:           req.ToolChoice,
 			Tools:                req.Tools,
 			TopLogprobs:          req.TopLogprobs,
@@ -245,17 +248,17 @@ func responseInputMessage(item any, index int) (types.OpenAIChatMessage, error) 
 	if role != "system" && role != "user" && role != "assistant" {
 		return types.OpenAIChatMessage{}, &AdapterError{Status: 400, Message: "unsupported input role"}
 	}
-	content, err := textContent(m)
+	content, err := responseContent(m)
 	if err != nil {
 		return types.OpenAIChatMessage{}, err
 	}
-	if strings.TrimSpace(content) == "" {
-		return types.OpenAIChatMessage{}, &AdapterError{Status: 400, Message: "input item must contain text"}
+	if types.ContentEmpty(content) {
+		return types.OpenAIChatMessage{}, &AdapterError{Status: 400, Message: "input item must contain text or image"}
 	}
 	return types.OpenAIChatMessage{Role: role, Content: content}, nil
 }
 
-func textContent(m map[string]any) (string, error) {
+func responseContent(m map[string]any) (any, error) {
 	if text := stringValue(m["text"]); text != "" {
 		return text, nil
 	}
@@ -263,23 +266,93 @@ func textContent(m map[string]any) (string, error) {
 	case string:
 		return content, nil
 	case []any:
-		parts := make([]string, 0, len(content))
+		parts := make([]types.ChatContentPart, 0, len(content))
+		onlyText := true
 		for _, item := range content {
 			part, ok := item.(map[string]any)
 			if !ok {
 				return "", &AdapterError{Status: 400, Message: "content part must be text object"}
 			}
 			partType := stringValue(part["type"])
-			if partType != "" && partType != "text" && partType != "input_text" {
+			switch partType {
+			case "", "text", "input_text":
+				if text := stringValue(part["text"]); text != "" {
+					parts = append(parts, types.ChatContentPart{Type: "text", Text: text})
+				}
+			case "input_image", "image_url":
+				imagePart, err := imageContentPart(part)
+				if err != nil {
+					return "", err
+				}
+				parts = append(parts, imagePart)
+				onlyText = false
+			case "input_file", "file", "input_audio", "audio", "input_video", "video":
+				return "", &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: partType}
+			default:
 				return "", &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "content"}
 			}
-			if text := stringValue(part["text"]); text != "" {
-				parts = append(parts, text)
-			}
 		}
-		return strings.Join(parts, "\n"), nil
+		if onlyText {
+			textParts := make([]string, 0, len(parts))
+			for _, part := range parts {
+				if part.Text != "" {
+					textParts = append(textParts, part.Text)
+				}
+			}
+			return strings.Join(textParts, "\n"), nil
+		}
+		return parts, nil
 	default:
-		return "", &AdapterError{Status: 400, Message: "input item must contain text"}
+		return "", &AdapterError{Status: 400, Message: "input item must contain text or image"}
+	}
+}
+
+func imageContentPart(part map[string]any) (types.ChatContentPart, error) {
+	if fileID := stringValue(part["file_id"]); fileID != "" {
+		return types.ChatContentPart{}, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "input_image.file_id"}
+	}
+	imageURL, detail := imageURLAndDetail(part)
+	if strings.TrimSpace(imageURL) == "" {
+		return types.ChatContentPart{}, &AdapterError{Status: 400, Message: "input_image.image_url is required", Context: "input_image.image_url"}
+	}
+	detail, err := normalizeImageDetail(detail)
+	if err != nil {
+		return types.ChatContentPart{}, err
+	}
+	return types.ChatContentPart{
+		Type: "image_url",
+		ImageURL: &types.ChatImageURL{
+			URL:    imageURL,
+			Detail: detail,
+		},
+	}, nil
+}
+
+func imageURLAndDetail(part map[string]any) (string, string) {
+	detail := stringValue(part["detail"])
+	switch value := part["image_url"].(type) {
+	case string:
+		return value, detail
+	case map[string]any:
+		if detail == "" {
+			detail = stringValue(value["detail"])
+		}
+		return stringValue(value["url"]), detail
+	default:
+		return "", detail
+	}
+}
+
+func normalizeImageDetail(detail string) (string, error) {
+	detail = strings.ToLower(strings.TrimSpace(detail))
+	if detail == "" {
+		return "auto", nil
+	}
+	switch detail {
+	case "auto", "low", "high", "original":
+		return detail, nil
+	default:
+		return "", &AdapterError{Status: 400, Message: "invalid image detail", Context: "input_image.detail"}
 	}
 }
 
@@ -685,31 +758,37 @@ func validateTruncation(value json.RawMessage) error {
 	return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "truncation"}
 }
 
-func containsUnsupportedInput(raw json.RawMessage) bool {
+func validateResponsesInput(raw json.RawMessage) error {
 	var parsed any
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return false
+		return nil
 	}
-	return containsUnsupportedInputValue(parsed)
+	return validateResponsesInputValue(parsed)
 }
 
-func containsUnsupportedInputValue(value any) bool {
+func validateResponsesInputValue(value any) error {
 	switch v := value.(type) {
 	case map[string]any:
-		if t := stringValue(v["type"]); strings.Contains(t, "image") || strings.Contains(t, "file") {
-			return true
+		t := stringValue(v["type"])
+		switch {
+		case strings.Contains(t, "file"):
+			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "file"}
+		case strings.Contains(t, "audio"):
+			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "audio"}
+		case strings.Contains(t, "video"):
+			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "video"}
 		}
 		for _, child := range v {
-			if containsUnsupportedInputValue(child) {
-				return true
+			if err := validateResponsesInputValue(child); err != nil {
+				return err
 			}
 		}
 	case []any:
 		for _, child := range v {
-			if containsUnsupportedInputValue(child) {
-				return true
+			if err := validateResponsesInputValue(child); err != nil {
+				return err
 			}
 		}
 	}
-	return false
+	return nil
 }

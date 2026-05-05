@@ -126,6 +126,10 @@ func (c *gcpClient) InvokeStreaming(
 	if err != nil {
 		return err
 	}
+	messages, err := anthropicMessagesWithFetchedImages(ctx, body)
+	if err != nil {
+		return err
+	}
 
 	// Build the Vertex-shaped request body. Identical to Anthropic's
 	// Messages API except `anthropic_version` is in the body and `model`
@@ -140,7 +144,7 @@ func (c *gcpClient) InvokeStreaming(
 		Stream           bool                      `json:"stream"`
 	}{
 		AnthropicVersion: vertexAnthropicVersion,
-		Messages:         body.Messages,
+		Messages:         messages,
 		System:           body.System,
 		MaxTokens:        body.MaxTokens,
 		Temperature:      body.Temperature,
@@ -154,7 +158,7 @@ func (c *gcpClient) InvokeStreaming(
 
 	url := fmt.Sprintf(
 		"https://%s/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:streamRawPredict",
-		c.vertexHost(), c.projectID, c.region, req.Model,
+		c.vertexHost(), c.projectID, c.region, directModelID("vertex", req.Model, firstOptions(options).UpstreamModel),
 	)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
 	if err != nil {

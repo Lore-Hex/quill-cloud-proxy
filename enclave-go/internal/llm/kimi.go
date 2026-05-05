@@ -5,9 +5,10 @@
 // from BootstrapData.KimiAPIKey instead of a per-user BYOK key.
 //
 // Wire path:
-//   enclave → api.moonshot.ai/v1/chat/completions (TLS terminated at
-//   Moonshot, prompts visible to the Moonshot service — same intrinsic
-//   property any LLM provider has)
+//
+//	enclave → api.moonshot.ai/v1/chat/completions (TLS terminated at
+//	Moonshot, prompts visible to the Moonshot service — same intrinsic
+//	property any LLM provider has)
 //
 // The translateOpenAIStreamToAnthropic helper (see stream_translate.go)
 // converts the upstream OpenAI ChatCompletion SSE into native Anthropic
@@ -50,5 +51,5 @@ func (c *kimiClient) InvokeStreaming(
 	if handled, err := invokeBYOKStreaming(ctx, req, body, out, firstOptions(options)); handled {
 		return err
 	}
-	return InvokeOpenAICompatibleStreaming(ctx, "kimi", directBaseURL("kimi"), c.apiKey, req, body, out)
+	return InvokeOpenAICompatibleStreaming(ctx, "kimi", directBaseURL("kimi"), c.apiKey, req, body, out, firstOptions(options).UpstreamModel)
 }

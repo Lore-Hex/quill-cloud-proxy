@@ -27,6 +27,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
@@ -282,24 +283,18 @@ func serveOne(
 			writeError(conn, statusFromControlPlaneError(err), "gateway authorization failed")
 			return
 		}
-		req.Model = authorization.Model
 		req.Models = nil
-		providerKey, keyErr := providerAPIKey(ctx, byokSecrets, authorization)
-		if keyErr != nil {
+		invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)
+		if err != nil {
 			_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds())
 			writeError(conn, 502, "BYOK provider key unavailable")
 			return
 		}
-		// Always populate InvokeOptions so the llm Client knows which
-		// upstream the control plane authorized. Multi-backend builds
-		// dispatch on this field; single-backend builds ignore Provider
-		// and just need ProviderAPIKey when usage_type==BYOK.
-		invokeOptions = append(invokeOptions, llm.InvokeOptions{
-			ProviderAPIKey: providerKey,
-			Provider:       authorization.Provider,
-			EndpointID:     authorization.EndpointID,
-			UsageType:      authorization.UsageType,
-		})
+		if len(invokeOptions) > 0 && invokeOptions[0].Model != "" {
+			req.Model = invokeOptions[0].Model
+		} else {
+			req.Model = authorization.Model
+		}
 	}
 	if !req.Stream {
 		if routeType == "responses" {
@@ -410,7 +405,8 @@ func serveResponsesNonStreaming(
 ) {
 	requestID := newResponseID()
 	pr, pw := io.Pipe()
-	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization)
+	selectedRoute := newSelectedRouteTracker()
+	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute)
 	result, err := adapter.CollectAnthropicText(pr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_collect_failed model=%q err=%v\n", req.Model, err)
@@ -422,6 +418,11 @@ func serveResponsesNonStreaming(
 	}
 	inputTokens := trustedrouter.EstimateInputTokens(req)
 	outputTokens := trustedrouter.EstimateOutputTokensFromBytes(len(result.Text))
+	selectedModel := selectedRoute.Model(req.Model, authorization)
+	selectedEndpoint := selectedRoute.Endpoint("", authorization)
+	if selectedModel != "" {
+		req.Model = selectedModel
+	}
 	var body bytes.Buffer
 	if err := adapter.WriteResponsesResponse(&body, requestID, req.Model, result.Text, inputTokens, outputTokens, time.Now().Unix()); err != nil {
 		writeError(conn, 500, "responses encoding error")
@@ -437,6 +438,8 @@ func serveResponsesNonStreaming(
 		FinishReason:      result.FinishReason,
 		Streamed:          false,
 		RouteType:         "responses",
+		SelectedModel:     selectedModel,
+		SelectedEndpoint:  selectedEndpoint,
 		User:              req.User,
 		SessionID:         req.SessionID,
 		Trace:             req.Trace,
@@ -465,7 +468,8 @@ func serveChatNonStreaming(
 ) {
 	requestID := newRequestID()
 	pr, pw := io.Pipe()
-	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization)
+	selectedRoute := newSelectedRouteTracker()
+	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute)
 	result, err := adapter.CollectAnthropicText(pr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_collect_failed model=%q err=%v\n", req.Model, err)
@@ -477,6 +481,11 @@ func serveChatNonStreaming(
 	}
 	inputTokens := trustedrouter.EstimateInputTokens(req)
 	outputTokens := trustedrouter.EstimateOutputTokensFromBytes(len(result.Text))
+	selectedModel := selectedRoute.Model(req.Model, authorization)
+	selectedEndpoint := selectedRoute.Endpoint("", authorization)
+	if selectedModel != "" {
+		req.Model = selectedModel
+	}
 	var body bytes.Buffer
 	if err := adapter.WriteChatCompletionResponse(&body, requestID, req.Model, result.Text, inputTokens, outputTokens, time.Now().Unix(), result.FinishReason); err != nil {
 		writeError(conn, 500, "chat completion encoding error")
@@ -492,6 +501,8 @@ func serveChatNonStreaming(
 		FinishReason:      result.FinishReason,
 		Streamed:          false,
 		RouteType:         "chat.completions",
+		SelectedModel:     selectedModel,
+		SelectedEndpoint:  selectedEndpoint,
 		User:              req.User,
 		SessionID:         req.SessionID,
 		Trace:             req.Trace,
@@ -523,16 +534,33 @@ func serveStreaming(
 	if routeType == "responses" {
 		requestID = newResponseID()
 	}
+	pr, pw := io.Pipe()
+	selectedRoute := newSelectedRouteTracker()
+	providerDone := make(chan struct{})
+	go func() {
+		defer close(providerDone)
+		invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute)
+	}()
+	if trGateway != nil && trGateway.Enabled() && len(invokeOptions) > 1 {
+		select {
+		case <-selectedRoute.Ready():
+		case <-providerDone:
+		}
+	} else if len(invokeOptions) > 0 {
+		selectedRoute.Select(invokeOptions[0])
+	}
+	streamModel := selectedRoute.Model(req.Model, authorization)
+	if streamModel != "" {
+		req.Model = streamModel
+	}
 	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
+		_ = pr.Close()
 		return
 	}
 
 	chunkW := newChunkedWriter(conn)
 	defer chunkW.Close()
 	statsW := newStreamStatsWriter(chunkW)
-
-	pr, pw := io.Pipe()
-	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization)
 
 	var result adapter.StreamResult
 	var err error
@@ -566,6 +594,8 @@ func serveStreaming(
 			FinishReason:      result.FinishReason,
 			Streamed:          true,
 			RouteType:         routeType,
+			SelectedModel:     selectedRoute.Model(req.Model, authorization),
+			SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
 			User:              req.User,
 			SessionID:         req.SessionID,
 			Trace:             req.Trace,
@@ -588,24 +618,166 @@ func invokeProviderStream(
 	invokeOptions []llm.InvokeOptions,
 	trEnabled bool,
 	authorization *trustedrouter.Authorization,
+	selectedRoute *selectedRouteTracker,
 ) {
-	if err := br.InvokeStreaming(ctx, req, anthropicReq, pw, invokeOptions...); err != nil {
-		fmt.Fprintf(os.Stderr, "enclave.invoke_streaming_failed model=%q endpoint=%q err=%v\n",
-			req.Model,
-			func() string {
-				if authorization != nil {
-					return authorization.EndpointID
-				}
-				return ""
-			}(),
-			err)
-		if trEnabled {
-			_ = pw.CloseWithError(err)
+	options := invokeOptions
+	if len(options) == 0 {
+		options = []llm.InvokeOptions{{Model: req.Model}}
+	}
+	var lastErr error
+	for i, option := range options {
+		if option.Model == "" {
+			option.Model = req.Model
+		}
+		req.Model = option.Model
+		candidateWriter := &routeSelectingWriter{
+			w:       pw,
+			tracker: selectedRoute,
+			option:  option,
+		}
+		err := br.InvokeStreaming(ctx, req, anthropicReq, candidateWriter, option)
+		if err == nil {
+			if candidateWriter.BytesWritten() == 0 {
+				selectedRoute.Select(option)
+			}
+			_ = pw.Close()
 			return
 		}
-		emitErrorAsAnthropicSSE(pw, err)
+		lastErr = err
+		fmt.Fprintf(os.Stderr, "enclave.invoke_streaming_failed model=%q endpoint=%q provider=%q attempt=%d/%d err=%v\n",
+			option.Model,
+			option.EndpointID,
+			option.Provider,
+			i+1,
+			len(options),
+			err)
+		if !trEnabled || candidateWriter.BytesWritten() > 0 || i == len(options)-1 || !retryableInvokeError(err) {
+			if trEnabled {
+				_ = pw.CloseWithError(err)
+				return
+			}
+			emitErrorAsAnthropicSSE(pw, err)
+			_ = pw.Close()
+			return
+		}
+	}
+	if lastErr != nil {
+		_ = pw.CloseWithError(lastErr)
+		return
 	}
 	_ = pw.Close()
+}
+
+type selectedRouteTracker struct {
+	mu       sync.Mutex
+	once     sync.Once
+	ready    chan struct{}
+	model    string
+	endpoint string
+}
+
+func newSelectedRouteTracker() *selectedRouteTracker {
+	return &selectedRouteTracker{ready: make(chan struct{})}
+}
+
+func (t *selectedRouteTracker) Select(option llm.InvokeOptions) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.model == "" && option.Model != "" {
+		t.model = option.Model
+	}
+	if t.endpoint == "" && option.EndpointID != "" {
+		t.endpoint = option.EndpointID
+	}
+	t.mu.Unlock()
+	t.once.Do(func() {
+		close(t.ready)
+	})
+}
+
+func (t *selectedRouteTracker) Ready() <-chan struct{} {
+	if t == nil {
+		ready := make(chan struct{})
+		close(ready)
+		return ready
+	}
+	return t.ready
+}
+
+func (t *selectedRouteTracker) Model(fallback string, authorization *trustedrouter.Authorization) string {
+	if t != nil {
+		t.mu.Lock()
+		model := t.model
+		t.mu.Unlock()
+		if model != "" {
+			return model
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	if authorization != nil {
+		return authorization.Model
+	}
+	return ""
+}
+
+func (t *selectedRouteTracker) Endpoint(fallback string, authorization *trustedrouter.Authorization) string {
+	if t != nil {
+		t.mu.Lock()
+		endpoint := t.endpoint
+		t.mu.Unlock()
+		if endpoint != "" {
+			return endpoint
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	if authorization != nil {
+		return authorization.EndpointID
+	}
+	return ""
+}
+
+type routeSelectingWriter struct {
+	w       io.Writer
+	tracker *selectedRouteTracker
+	option  llm.InvokeOptions
+	bytes   int
+}
+
+func (w *routeSelectingWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		w.tracker.Select(w.option)
+	}
+	n, err := w.w.Write(p)
+	w.bytes += n
+	return n, err
+}
+
+func (w *routeSelectingWriter) BytesWritten() int {
+	if w == nil {
+		return 0
+	}
+	return w.bytes
+}
+
+func retryableInvokeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "http 429") ||
+		strings.Contains(message, "status 429") ||
+		strings.Contains(message, "too many requests") ||
+		strings.Contains(message, "rate limit") ||
+		strings.Contains(message, "http 5") ||
+		strings.Contains(message, "status 5") ||
+		strings.Contains(message, "timeout") ||
+		strings.Contains(message, "temporary")
 }
 
 func settleAndBroadcast(
@@ -696,38 +868,98 @@ func writeStreamingProviderError(w io.Writer, routeType, requestID, model string
 	return err
 }
 
-func providerAPIKey(
+func invokeOptionsForAuthorization(
 	ctx context.Context,
 	cache *byokcache.Cache,
 	authorization *trustedrouter.Authorization,
+) ([]llm.InvokeOptions, error) {
+	if authorization == nil {
+		return nil, nil
+	}
+	candidates := authorization.RouteCandidates
+	if len(candidates) == 0 {
+		candidates = []trustedrouter.RouteCandidate{{
+			EndpointID:          authorization.EndpointID,
+			Model:               authorization.Model,
+			UpstreamModel:       authorization.UpstreamModel,
+			Provider:            authorization.Provider,
+			UsageType:           authorization.UsageType,
+			BYOKSecretRef:       authorization.BYOKSecretRef,
+			BYOKEncryptedSecret: authorization.BYOKEncryptedSecret,
+			BYOKCacheKey:        authorization.BYOKCacheKey,
+		}}
+	}
+	options := make([]llm.InvokeOptions, 0, len(candidates))
+	var unavailable []string
+	for _, candidate := range candidates {
+		if candidate.Model == "" {
+			candidate.Model = authorization.Model
+		}
+		if candidate.UpstreamModel == "" {
+			candidate.UpstreamModel = candidate.Model
+		}
+		if candidate.EndpointID == "" {
+			candidate.EndpointID = authorization.EndpointID
+		}
+		if candidate.Provider == "" {
+			candidate.Provider = authorization.Provider
+		}
+		if candidate.UsageType == "" {
+			candidate.UsageType = authorization.UsageType
+		}
+		providerKey, err := providerAPIKeyForRoute(ctx, cache, authorization.WorkspaceID, candidate)
+		if err != nil {
+			unavailable = append(unavailable, fmt.Sprintf("%s: %v", candidate.EndpointID, err))
+			continue
+		}
+		options = append(options, llm.InvokeOptions{
+			Model:          candidate.Model,
+			UpstreamModel:  candidate.UpstreamModel,
+			ProviderAPIKey: providerKey,
+			Provider:       candidate.Provider,
+			EndpointID:     candidate.EndpointID,
+			UsageType:      candidate.UsageType,
+		})
+	}
+	if len(options) == 0 && len(unavailable) > 0 {
+		return nil, fmt.Errorf("no authorized route candidate has an available provider key: %s", strings.Join(unavailable, "; "))
+	}
+	return options, nil
+}
+
+func providerAPIKeyForRoute(
+	ctx context.Context,
+	cache *byokcache.Cache,
+	workspaceID string,
+	candidate trustedrouter.RouteCandidate,
 ) (string, error) {
-	if authorization == nil || !strings.EqualFold(authorization.UsageType, "BYOK") {
+	if !strings.EqualFold(candidate.UsageType, "BYOK") {
 		return "", nil
 	}
-	if authorization.BYOKEncryptedSecret != nil {
+	if candidate.BYOKEncryptedSecret != nil {
 		if cache == nil {
 			return "", fmt.Errorf("byok cache is not configured")
 		}
 		secret, _, err := cache.Resolve(
 			ctx,
-			authorization.WorkspaceID,
-			authorization.Provider,
-			authorization.BYOKCacheKey,
-			*authorization.BYOKEncryptedSecret,
+			workspaceID,
+			candidate.Provider,
+			candidate.BYOKCacheKey,
+			*candidate.BYOKEncryptedSecret,
 		)
 		return secret, err
 	}
-	if strings.HasPrefix(authorization.BYOKSecretRef, "env://") {
-		name := strings.TrimPrefix(authorization.BYOKSecretRef, "env://")
+	if strings.HasPrefix(candidate.BYOKSecretRef, "env://") {
+		name := strings.TrimPrefix(candidate.BYOKSecretRef, "env://")
 		if value := os.Getenv(name); value != "" {
 			return value, nil
 		}
 		return "", fmt.Errorf("BYOK env ref %s is unset", name)
 	}
-	if strings.HasPrefix(authorization.BYOKSecretRef, "byok://") {
-		return "", fmt.Errorf("BYOK envelope is missing for %s", authorization.BYOKSecretRef)
+	if strings.HasPrefix(candidate.BYOKSecretRef, "byok://") {
+		return "", fmt.Errorf("BYOK envelope is missing for %s", candidate.BYOKSecretRef)
 	}
-	return "", nil
+	return "", fmt.Errorf("BYOK provider key reference is missing")
 }
 
 func statusFromControlPlaneError(err error) int {

@@ -120,6 +120,75 @@ func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
 	}
 }
 
+func TestServeOneResponsesImageInputSendsOnlyModalitiesToControlPlane(t *testing.T) {
+	bearer := "test-user-bearer"
+	privateImageURL := "https://example.com/private-image.png"
+	var authorizeBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			authorizeBody = string(body)
+			if strings.Contains(authorizeBody, bearer) || strings.Contains(authorizeBody, privateImageURL) || strings.Contains(authorizeBody, "describe this") {
+				t.Fatalf("authorize leaked request content: %s", authorizeBody)
+			}
+			if !strings.Contains(authorizeBody, `"input_modalities":["text","image"]`) {
+				t.Fatalf("authorize did not include image modality: %s", authorizeBody)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_resp_img","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+		case "/internal/gateway/settle":
+			if strings.Contains(string(body), privateImageURL) || strings.Contains(string(body), "describe this") {
+				t.Fatalf("settle leaked request content: %s", body)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"gen_resp_img","cost_microdollars":12,"model":"openai/gpt-4o-mini","provider":"openai","region":"us-central1"}}`)
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fakeStreamingLLM{}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/auto","input":[{"role":"user","content":[{"type":"input_text","text":"describe this"},{"type":"input_image","image_url":"https://example.com/private-image.png","detail":"low"}]}],"max_output_tokens":32}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	if streamer.body == nil || len(streamer.body.Messages) != 1 {
+		t.Fatalf("bad transformed body: %#v", streamer.body)
+	}
+	parts, ok := streamer.body.Messages[0].Content.([]types.ChatContentPart)
+	if !ok || len(parts) != 2 || parts[1].ImageURL == nil || parts[1].ImageURL.URL != privateImageURL {
+		t.Fatalf("image content was not preserved for provider path: %#v", streamer.body.Messages[0].Content)
+	}
+}
+
 func TestServeOneChatNonStreamingReturnsJSONAndSettles(t *testing.T) {
 	bearer := "test-user-bearer"
 	var settleBody string
@@ -195,6 +264,78 @@ func TestServeOneChatNonStreamingReturnsJSONAndSettles(t *testing.T) {
 	}
 	if !strings.Contains(settleBody, `"route_type":"chat.completions"`) || !strings.Contains(settleBody, `"streamed":false`) {
 		t.Fatalf("settle body missing chat metadata: %s", settleBody)
+	}
+}
+
+func TestServeOneTrustedRouterRetriesFallbackCandidatesAndSettlesSelectedRoute(t *testing.T) {
+	bearer := "test-user-bearer"
+	var settleBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			if strings.Contains(string(body), bearer) || strings.Contains(string(body), "private prompt") {
+				t.Fatalf("authorize leaked sensitive material: %s", body)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_auto","workspace_id":"ws_1","api_key_hash":"key_1","model":"anthropic/claude-3-5-sonnet","endpoint_id":"anthropic/claude-3-5-sonnet@anthropic/prepaid","provider":"anthropic","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[{"model":"anthropic/claude-3-5-sonnet","endpoint_id":"anthropic/claude-3-5-sonnet@anthropic/prepaid","provider":"anthropic","usage_type":"Credits"},{"model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits"}]}}`)
+		case "/internal/gateway/settle":
+			settleBody = string(body)
+			if strings.Contains(settleBody, "private prompt") {
+				t.Fatalf("settle leaked prompt: %s", settleBody)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"gen_auto","cost_microdollars":12,"model":"openai/gpt-4o-mini","provider":"openai","region":"us-central1"}}`)
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fallbackStreamingLLM{}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/auto","stream":false,"messages":[{"role":"user","content":"private prompt"}],"max_tokens":32}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if len(streamer.attempts) != 2 {
+		t.Fatalf("attempts = %#v, want two route candidates", streamer.attempts)
+	}
+	if streamer.attempts[0].Model != "anthropic/claude-3-5-sonnet" || streamer.attempts[1].Model != "openai/gpt-4o-mini" {
+		t.Fatalf("bad fallback order: %#v", streamer.attempts)
+	}
+	if !strings.Contains(body, `"model":"openai/gpt-4o-mini"`) {
+		t.Fatalf("response did not use selected fallback model: %s", body)
+	}
+	if !strings.Contains(settleBody, `"selected_model":"openai/gpt-4o-mini"`) ||
+		!strings.Contains(settleBody, `"selected_endpoint":"openai/gpt-4o-mini@openai/prepaid"`) {
+		t.Fatalf("settle did not bill selected fallback route: %s", settleBody)
 	}
 }
 
@@ -613,6 +754,54 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 
 event: content_block_delta
 data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`)
+	return err
+}
+
+type fallbackAttempt struct {
+	Model    string
+	Provider string
+	Endpoint string
+}
+
+type fallbackStreamingLLM struct {
+	attempts []fallbackAttempt
+}
+
+func (f *fallbackStreamingLLM) InvokeStreaming(
+	_ context.Context,
+	req *types.OpenAIChatRequest,
+	_ *types.AnthropicMessagesRequest,
+	out io.Writer,
+	options ...llm.InvokeOptions,
+) error {
+	option := llm.InvokeOptions{Model: req.Model}
+	if len(options) > 0 {
+		option = options[0]
+	}
+	f.attempts = append(f.attempts, fallbackAttempt{
+		Model:    req.Model,
+		Provider: option.Provider,
+		Endpoint: option.EndpointID,
+	})
+	if len(f.attempts) == 1 {
+		return errors.New("llm/upstream: http 429: rate limited")
+	}
+	_, err := fmt.Fprint(out, `event: message_start
+data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"claude","stop_reason":null,"usage":{"input_tokens":2,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Fallback"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" success"}}
 
 event: message_delta
 data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}

@@ -327,6 +327,67 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 	}
 }
 
+func TestResponsesToChatPreservesInputImages(t *testing.T) {
+	req := &types.OpenAIResponsesRequest{
+		Model: "openai/gpt-4o-mini",
+		Input: []any{map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{"type": "input_text", "text": "describe this"},
+				map[string]any{
+					"type":      "input_image",
+					"image_url": "https://example.com/private-image.png",
+					"detail":    "low",
+				},
+			},
+		}},
+	}
+
+	chat, err := ResponsesToChat(req)
+	if err != nil {
+		t.Fatalf("ResponsesToChat: %v", err)
+	}
+	if len(chat.Messages) != 1 {
+		t.Fatalf("messages = %d, want 1", len(chat.Messages))
+	}
+	parts, ok := chat.Messages[0].Content.([]types.ChatContentPart)
+	if !ok {
+		t.Fatalf("content type = %T, want []ChatContentPart", chat.Messages[0].Content)
+	}
+	if len(parts) != 2 || parts[0].Text != "describe this" {
+		t.Fatalf("bad content parts: %#v", parts)
+	}
+	if parts[1].ImageURL == nil || parts[1].ImageURL.URL != "https://example.com/private-image.png" || parts[1].ImageURL.Detail != "low" {
+		t.Fatalf("bad image part: %#v", parts[1])
+	}
+	if got := types.RequestInputModalities(chat); strings.Join(got, ",") != "text,image" {
+		t.Fatalf("input modalities = %#v, want text,image", got)
+	}
+}
+
+func TestResponsesToChatRejectsStatefulImageFileID(t *testing.T) {
+	req := &types.OpenAIResponsesRequest{
+		Model: "openai/gpt-4o-mini",
+		Input: []any{map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{"type": "input_image", "file_id": "file_123"},
+			},
+		}},
+	}
+
+	errCtx := ""
+	_, err := ResponsesToChat(req)
+	if err != nil {
+		if aerr, ok := err.(*AdapterError); ok {
+			errCtx = aerr.Context
+		}
+	}
+	if errCtx != "input_image.file_id" {
+		t.Fatalf("error = %v context=%q, want input_image.file_id", err, errCtx)
+	}
+}
+
 func TestRejectUnsupportedResponsesInputTokenFields(t *testing.T) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(`{

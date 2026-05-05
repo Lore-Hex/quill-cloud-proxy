@@ -33,9 +33,9 @@ func invokeBYOKStreaming(
 	provider := normalizeDirectProvider(options.Provider)
 	switch provider {
 	case "anthropic":
-		return true, invokeAnthropicBYOKStreaming(ctx, req, body, out, options.ProviderAPIKey)
+		return true, invokeAnthropicBYOKStreaming(ctx, req, body, out, options.ProviderAPIKey, options.UpstreamModel)
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai":
-		return true, invokeOpenAICompatibleBYOKStreaming(ctx, provider, req, body, out, options.ProviderAPIKey)
+		return true, invokeOpenAICompatibleBYOKStreaming(ctx, provider, req, body, out, options.ProviderAPIKey, options.UpstreamModel)
 	default:
 		return true, fmt.Errorf("llm/byok: unsupported provider %q", options.Provider)
 	}
@@ -52,7 +52,7 @@ type openAICompatibleRequest struct {
 
 type chatMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
 }
 
 func invokeOpenAICompatibleBYOKStreaming(
@@ -62,8 +62,9 @@ func invokeOpenAICompatibleBYOKStreaming(
 	body *qtypes.AnthropicMessagesRequest,
 	out io.Writer,
 	apiKey string,
+	upstreamModel string,
 ) error {
-	return InvokeOpenAICompatibleStreaming(ctx, provider, directBaseURL(provider), apiKey, req, body, out)
+	return InvokeOpenAICompatibleStreaming(ctx, provider, directBaseURL(provider), apiKey, req, body, out, upstreamModel)
 }
 
 // InvokeOpenAICompatibleStreaming is the shared OpenAI-compatible upstream
@@ -82,6 +83,29 @@ func InvokeOpenAICompatibleStreaming(
 	req *qtypes.OpenAIChatRequest,
 	body *qtypes.AnthropicMessagesRequest,
 	out io.Writer,
+	upstreamModel string,
+) error {
+	return invokeOpenAICompatibleStreamingWithClient(
+		ctx,
+		defaultHTTPClient(),
+		provider,
+		baseURL,
+		apiKey,
+		req,
+		body,
+		out,
+		upstreamModel,
+	)
+}
+
+func invokeOpenAICompatibleStreamingWithClient(
+	ctx context.Context,
+	httpc *http.Client,
+	provider, baseURL, apiKey string,
+	req *qtypes.OpenAIChatRequest,
+	body *qtypes.AnthropicMessagesRequest,
+	out io.Writer,
+	upstreamModel string,
 ) error {
 	if strings.TrimSpace(apiKey) == "" {
 		return fmt.Errorf("llm/%s: missing api key", provider)
@@ -91,7 +115,7 @@ func InvokeOpenAICompatibleStreaming(
 	}
 	msgs := openAICompatibleMessages(body)
 	reqBody := openAICompatibleRequest{
-		Model:       directModelID(provider, req.Model),
+		Model:       directModelID(provider, req.Model, upstreamModel),
 		Messages:    msgs,
 		Stream:      true,
 		MaxTokens:   body.MaxTokens,
@@ -110,7 +134,10 @@ func InvokeOpenAICompatibleStreaming(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	resp, err := defaultHTTPClient().Do(httpReq)
+	if httpc == nil {
+		httpc = defaultHTTPClient()
+	}
+	resp, err := httpc.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("llm/%s: invoke: %w", provider, err)
 	}
@@ -131,7 +158,12 @@ func invokeAnthropicBYOKStreaming(
 	body *qtypes.AnthropicMessagesRequest,
 	out io.Writer,
 	apiKey string,
+	upstreamModel string,
 ) error {
+	messages, err := anthropicMessagesWithFetchedImages(ctx, body)
+	if err != nil {
+		return err
+	}
 	reqBody := struct {
 		Model       string                    `json:"model"`
 		Messages    []qtypes.AnthropicMessage `json:"messages"`
@@ -141,8 +173,8 @@ func invokeAnthropicBYOKStreaming(
 		TopP        *float64                  `json:"top_p,omitempty"`
 		Stream      bool                      `json:"stream"`
 	}{
-		Model:       directModelID("anthropic", req.Model),
-		Messages:    body.Messages,
+		Model:       directModelID("anthropic", req.Model, upstreamModel),
+		Messages:    messages,
 		System:      body.System,
 		MaxTokens:   body.MaxTokens,
 		Temperature: body.Temperature,
@@ -213,21 +245,49 @@ func directBaseURL(provider string) string {
 	}
 }
 
-func directModelID(provider, model string) string {
+func directModelID(provider, model, upstreamModel string) string {
+	resolved := model
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if upstreamModel != "" {
+		prefix := provider + "/"
+		if strings.HasPrefix(upstreamModel, prefix) {
+			resolved = strings.TrimPrefix(upstreamModel, prefix)
+			return stripOpenRouterModelVariant(resolved)
+		}
+		if idx := strings.Index(upstreamModel, "/"); idx >= 0 && idx+1 < len(upstreamModel) {
+			resolved = upstreamModel[idx+1:]
+			return stripOpenRouterModelVariant(resolved)
+		}
+		return stripOpenRouterModelVariant(upstreamModel)
+	}
 	if mapped, ok := directModelMap[model]; ok {
-		return mapped
+		return stripOpenRouterModelVariant(mapped)
 	}
 	prefix := provider + "/"
 	if strings.HasPrefix(model, prefix) {
-		return strings.TrimPrefix(model, prefix)
+		resolved = strings.TrimPrefix(model, prefix)
+		return stripOpenRouterModelVariant(resolved)
 	}
 	if idx := strings.Index(model, "/"); idx >= 0 && idx+1 < len(model) {
-		return model[idx+1:]
+		resolved = model[idx+1:]
+		return stripOpenRouterModelVariant(resolved)
+	}
+	return stripOpenRouterModelVariant(resolved)
+}
+
+func stripOpenRouterModelVariant(model string) string {
+	for _, suffix := range []string{":free", ":floor", ":nitro"} {
+		if strings.HasSuffix(model, suffix) {
+			return strings.TrimSuffix(model, suffix)
+		}
 	}
 	return model
 }
 
 var directModelMap = map[string]string{
+	"anthropic/claude-opus-4.7":   "claude-opus-4-7",
+	"anthropic/claude-sonnet-4.6": "claude-sonnet-4-6",
+	"anthropic/claude-haiku-4.5":  "claude-haiku-4-5",
 	"anthropic/claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
 	"openai/gpt-4o-mini":          "gpt-4o-mini",
 	"google/gemini-1.5-flash":     "gemini-1.5-flash",
