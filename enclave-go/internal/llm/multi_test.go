@@ -23,7 +23,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 	}{
 		{"openai", "openai/gpt-4o-mini", "openai/gpt-4o-mini", "gpt-4o-mini"},
 		{"gemini", "google/gemini-2.5-flash", "google/gemini-2.5-flash", "gemini-2.5-flash"},
-		{"cerebras", "meta-llama/llama-3.1-8b-instruct", "meta-llama/llama-3.1-8b-instruct", "llama-3.1-8b-instruct"},
+		{"cerebras", "meta-llama/llama-3.1-8b-instruct", "meta-llama/llama-3.1-8b-instruct", "llama3.1-8b"},
 		{"deepseek", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash", "deepseek-v4-flash"},
 		{"mistral", "mistralai/mistral-small-2603", "mistralai/mistral-small-2603", "mistral-small-2603"},
 		{"gemini", "google/gemma-3-27b-it:free", "google/gemma-3-27b-it:free", "gemma-3-27b-it"},
@@ -38,6 +38,9 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				}
 				if r.Header.Get("Authorization") != "Bearer operator-key" {
 					t.Fatalf("authorization header = %q", r.Header.Get("Authorization"))
+				}
+				if r.Header.Get("User-Agent") != "TrustedRouter/1.0" {
+					t.Fatalf("user-agent = %q", r.Header.Get("User-Agent"))
 				}
 				body, err := io.ReadAll(r.Body)
 				if err != nil {

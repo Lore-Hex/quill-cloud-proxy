@@ -133,6 +133,7 @@ func invokeOpenAICompatibleStreamingWithClient(
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
 
 	if httpc == nil {
 		httpc = defaultHTTPClient()
@@ -249,13 +250,22 @@ func directModelID(provider, model, upstreamModel string) string {
 	resolved := model
 	upstreamModel = strings.TrimSpace(upstreamModel)
 	if upstreamModel != "" {
+		if mapped, ok := directModelMap[upstreamModel]; ok {
+			return stripOpenRouterModelVariant(mapped)
+		}
 		prefix := provider + "/"
 		if strings.HasPrefix(upstreamModel, prefix) {
 			resolved = strings.TrimPrefix(upstreamModel, prefix)
+			if mapped, ok := directModelMap[resolved]; ok {
+				return stripOpenRouterModelVariant(mapped)
+			}
 			return stripOpenRouterModelVariant(resolved)
 		}
 		if idx := strings.Index(upstreamModel, "/"); idx >= 0 && idx+1 < len(upstreamModel) {
 			resolved = upstreamModel[idx+1:]
+			if mapped, ok := directModelMap[resolved]; ok {
+				return stripOpenRouterModelVariant(mapped)
+			}
 			return stripOpenRouterModelVariant(resolved)
 		}
 		return stripOpenRouterModelVariant(upstreamModel)
@@ -285,13 +295,18 @@ func stripOpenRouterModelVariant(model string) string {
 }
 
 var directModelMap = map[string]string{
-	"anthropic/claude-opus-4.7":   "claude-opus-4-7",
-	"anthropic/claude-sonnet-4.6": "claude-sonnet-4-6",
-	"anthropic/claude-haiku-4.5":  "claude-haiku-4-5",
-	"anthropic/claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
-	"openai/gpt-4o-mini":          "gpt-4o-mini",
-	"google/gemini-1.5-flash":     "gemini-1.5-flash",
-	"vertex/gemini-2.5-flash":     "gemini-2.5-flash",
+	"anthropic/claude-opus-4.7":        "claude-opus-4-7",
+	"anthropic/claude-sonnet-4.6":      "claude-sonnet-4-6",
+	"anthropic/claude-haiku-4.5":       "claude-haiku-4-5",
+	"anthropic/claude-3-5-sonnet":      "claude-3-5-sonnet-20241022",
+	"meta-llama/llama-3.1-8b-instruct": "llama3.1-8b",
+	"llama-3.1-8b-instruct":            "llama3.1-8b",
+	"openai/gpt-oss-120b":              "gpt-oss-120b",
+	"qwen/qwen3-235b-a22b-2507":        "qwen-3-235b-a22b-instruct-2507",
+	"z-ai/glm-4.7":                     "zai-glm-4.7",
+	"openai/gpt-4o-mini":               "gpt-4o-mini",
+	"google/gemini-1.5-flash":          "gemini-1.5-flash",
+	"vertex/gemini-2.5-flash":          "gemini-2.5-flash",
 }
 
 func normalizeDirectProvider(provider string) string {
