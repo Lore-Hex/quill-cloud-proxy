@@ -75,7 +75,7 @@ QUILL_ANTHROPIC_SECRET="${QUILL_ANTHROPIC_SECRET:-trustedrouter-anthropic-api-ke
 # Default to empty (operator opts in) for providers whose Secret Manager
 # secret may or may not exist in a given project. Z.AI's secret is created
 # alongside the trusted-router setup so its default is the canonical name.
-QUILL_KIMI_SECRET="${QUILL_KIMI_SECRET:-}"
+QUILL_KIMI_SECRET="${QUILL_KIMI_SECRET:-trustedrouter-kimi-api-key}"
 QUILL_ZAI_SECRET="${QUILL_ZAI_SECRET:-trustedrouter-zai-api-key}"
 QUILL_DEVICE_KEYS_SECRET="${QUILL_DEVICE_KEYS_SECRET:-quill-device-keys}"
 QUILL_TRUSTEDROUTER_INTERNAL_SECRET="${QUILL_TRUSTEDROUTER_INTERNAL_SECRET:-trustedrouter-internal-gateway-token}"

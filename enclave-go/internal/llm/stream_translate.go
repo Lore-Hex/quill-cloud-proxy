@@ -38,6 +38,17 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 			Choices []struct {
 				Delta struct {
 					Content string `json:"content"`
+					// Several Chinese OpenAI-compatible providers (Z.AI/Zhipu,
+					// Moonshot in some configs) emit chain-of-thought tokens
+					// in `reasoning_content` and only fill `content` for the
+					// final answer. If we ignore reasoning_content, requests
+					// that hit the max_tokens limit BEFORE the model finishes
+					// thinking come back with empty `content` — the user sees
+					// nothing. Forward reasoning_content as text so the
+					// stream is never silently empty. (Tradeoff: clients see
+					// the chain-of-thought inline; that's strictly more
+					// information than the empty-string alternative.)
+					ReasoningContent string `json:"reasoning_content"`
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
@@ -52,6 +63,10 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 
 		if choice.Delta.Content != "" {
 			if err := writeAnthropicTextDelta(w, choice.Delta.Content); err != nil {
+				return err
+			}
+		} else if choice.Delta.ReasoningContent != "" {
+			if err := writeAnthropicTextDelta(w, choice.Delta.ReasoningContent); err != nil {
 				return err
 			}
 		}
