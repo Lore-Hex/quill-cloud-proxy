@@ -13,51 +13,128 @@ import (
 )
 
 func RejectUnsupportedResponsesFields(raw map[string]json.RawMessage) error {
+	return validateResponsesFields(raw, supportedResponsesCreateFields)
+}
+
+func RejectUnsupportedResponsesInputTokenFields(raw map[string]json.RawMessage) error {
+	return validateResponsesFields(raw, supportedResponsesInputTokenFields)
+}
+
+var supportedResponsesCreateFields = map[string]struct{}{
+	"background":             {},
+	"conversation":           {},
+	"include":                {},
+	"input":                  {},
+	"instructions":           {},
+	"max_output_tokens":      {},
+	"max_tokens":             {},
+	"max_tool_calls":         {},
+	"metadata":               {},
+	"modalities":             {},
+	"model":                  {},
+	"models":                 {},
+	"parallel_tool_calls":    {},
+	"previous_response_id":   {},
+	"prompt":                 {},
+	"prompt_cache_key":       {},
+	"prompt_cache_retention": {},
+	"provider":               {},
+	"reasoning":              {},
+	"safety_identifier":      {},
+	"service_tier":           {},
+	"session_id":             {},
+	"store":                  {},
+	"stream":                 {},
+	"stream_options":         {},
+	"temperature":            {},
+	"text":                   {},
+	"tool_choice":            {},
+	"tools":                  {},
+	"top_logprobs":           {},
+	"top_p":                  {},
+	"trace":                  {},
+	"truncation":             {},
+	"user":                   {},
+}
+
+var supportedResponsesInputTokenFields = map[string]struct{}{
+	"conversation":           {},
+	"input":                  {},
+	"instructions":           {},
+	"model":                  {},
+	"models":                 {},
+	"parallel_tool_calls":    {},
+	"previous_response_id":   {},
+	"prompt":                 {},
+	"prompt_cache_key":       {},
+	"prompt_cache_retention": {},
+	"reasoning":              {},
+	"text":                   {},
+	"tool_choice":            {},
+	"tools":                  {},
+	"truncation":             {},
+}
+
+func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]struct{}) error {
 	for key, value := range raw {
-		if _, ok := supportedResponsesFields[key]; !ok && presentNonNull(value) {
+		if _, ok := allowed[key]; !ok && presentNonNull(value) {
 			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: key}
 		}
 	}
-	if value, ok := raw["store"]; ok {
-		var store bool
-		if err := json.Unmarshal(value, &store); err == nil && store {
-			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "store=true"}
+	for _, field := range []string{"conversation", "previous_response_id", "prompt"} {
+		if value, ok := raw[field]; ok && presentNonNull(value) {
+			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: field}
 		}
 	}
+	if boolField(raw, "store") {
+		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "store=true"}
+	}
+	if boolField(raw, "background") {
+		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "background=true"}
+	}
+	if value, ok := raw["prompt_cache_retention"]; ok && presentNonNull(value) {
+		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "prompt_cache_retention"}
+	}
+	if value, ok := raw["reasoning"]; ok && presentNonNull(value) {
+		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "reasoning"}
+	}
+	if value, ok := raw["include"]; ok && containsAny(value) {
+		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "include"}
+	}
 	if value, ok := raw["modalities"]; ok {
-		var modalities []string
-		if err := json.Unmarshal(value, &modalities); err != nil && presentNonNull(value) {
-			return &AdapterError{Status: 400, Message: "modalities must be an array", Context: "modalities"}
-		}
-		for _, modality := range modalities {
-			if modality != "text" {
-				return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "modalities"}
-			}
+		if err := validateTextModalities(value); err != nil {
+			return err
 		}
 	}
 	if value, ok := raw["input"]; ok && containsUnsupportedInput(value) {
 		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "input"}
 	}
+	if value, ok := raw["text"]; ok {
+		if err := validateTextConfig(value); err != nil {
+			return err
+		}
+	}
+	if value, ok := raw["tools"]; ok && containsAny(value) {
+		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools"}
+	}
+	if value, ok := raw["tool_choice"]; ok && !isDefaultToolChoice(value) {
+		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tool_choice"}
+	}
+	if value, ok := raw["top_logprobs"]; ok && presentNonNull(value) {
+		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "top_logprobs"}
+	}
+	if value, ok := raw["truncation"]; ok {
+		if err := validateTruncation(value); err != nil {
+			return err
+		}
+	}
+	if value, ok := raw["stream_options"]; ok {
+		var options map[string]any
+		if err := json.Unmarshal(value, &options); err != nil && presentNonNull(value) {
+			return &AdapterError{Status: 400, Message: "stream_options must be an object", Context: "stream_options"}
+		}
+	}
 	return nil
-}
-
-var supportedResponsesFields = map[string]struct{}{
-	"model":             {},
-	"models":            {},
-	"input":             {},
-	"instructions":      {},
-	"stream":            {},
-	"temperature":       {},
-	"top_p":             {},
-	"max_output_tokens": {},
-	"max_tokens":        {},
-	"provider":          {},
-	"metadata":          {},
-	"trace":             {},
-	"user":              {},
-	"session_id":        {},
-	"store":             {},
-	"modalities":        {},
 }
 
 func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatRequest, error) {
@@ -96,6 +173,25 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 		Trace:       req.Trace,
 		User:        req.User,
 		SessionID:   req.SessionID,
+		Response: &types.ResponseRequestMeta{
+			Include:              req.Include,
+			Modalities:           req.Modalities,
+			ParallelToolCalls:    req.ParallelToolCalls,
+			PromptCacheKey:       req.PromptCacheKey,
+			SafetyIdentifier:     req.SafetyIdentifier,
+			ServiceTier:          req.ServiceTier,
+			StreamOptions:        req.StreamOptions,
+			Text:                 req.Text,
+			ToolChoice:           req.ToolChoice,
+			Tools:                req.Tools,
+			TopLogprobs:          req.TopLogprobs,
+			Truncation:           req.Truncation,
+			MaxOutputTokens:      req.MaxOutputTokens,
+			MaxToolCalls:         req.MaxToolCalls,
+			PromptCacheRetention: req.PromptCacheRetention,
+			Reasoning:            req.Reasoning,
+			Store:                false,
+		},
 	}, nil
 }
 
@@ -229,7 +325,20 @@ func WriteResponsesResponse(
 	outputTokens int,
 	created int64,
 ) error {
-	payload := responsesObject(responseID, model, text, inputTokens, outputTokens, created)
+	payload := responsesObject(responseID, model, text, inputTokens, outputTokens, created, "completed")
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(body)
+	return err
+}
+
+func WriteResponsesInputTokens(w io.Writer, inputTokens int) error {
+	payload := map[string]any{
+		"object":       "response.input_tokens",
+		"input_tokens": inputTokens,
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -249,13 +358,20 @@ func TransformResponsesStream(
 	messageID := "msg_" + strings.TrimPrefix(responseID, "resp_")
 	finishReason := "stop"
 	var captured strings.Builder
-	if err := writeResponseEvent(w, "response.created", map[string]any{
+	seq := 0
+	if err := writeResponseEventSeq(w, &seq, "response.created", map[string]any{
 		"type":     "response.created",
-		"response": responsesObject(responseID, model, "", inputTokens, 0, created),
+		"response": responsesObject(responseID, model, "", inputTokens, 0, created, "in_progress"),
 	}); err != nil {
 		return StreamResult{}, err
 	}
-	if err := writeResponseEvent(w, "response.output_item.added", map[string]any{
+	if err := writeResponseEventSeq(w, &seq, "response.in_progress", map[string]any{
+		"type":     "response.in_progress",
+		"response": responsesObject(responseID, model, "", inputTokens, 0, created, "in_progress"),
+	}); err != nil {
+		return StreamResult{}, err
+	}
+	if err := writeResponseEventSeq(w, &seq, "response.output_item.added", map[string]any{
 		"type":         "response.output_item.added",
 		"output_index": 0,
 		"item": map[string]any{
@@ -268,7 +384,7 @@ func TransformResponsesStream(
 	}); err != nil {
 		return StreamResult{}, err
 	}
-	if err := writeResponseEvent(w, "response.content_part.added", map[string]any{
+	if err := writeResponseEventSeq(w, &seq, "response.content_part.added", map[string]any{
 		"type":          "response.content_part.added",
 		"item_id":       messageID,
 		"output_index":  0,
@@ -297,7 +413,7 @@ func TransformResponsesStream(
 				continue
 			}
 			captured.WriteString(deltaText)
-			if err := writeResponseEvent(w, "response.output_text.delta", map[string]any{
+			if err := writeResponseEventSeq(w, &seq, "response.output_text.delta", map[string]any{
 				"type":          "response.output_text.delta",
 				"item_id":       messageID,
 				"output_index":  0,
@@ -313,17 +429,18 @@ func TransformResponsesStream(
 				}
 			}
 		case "message_stop":
-			return finishResponsesStream(w, responseID, messageID, model, captured.String(), inputTokens, created, finishReason)
+			return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), inputTokens, created, finishReason)
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return StreamResult{}, err
 	}
-	return finishResponsesStream(w, responseID, messageID, model, captured.String(), inputTokens, created, finishReason)
+	return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), inputTokens, created, finishReason)
 }
 
 func finishResponsesStream(
 	w io.Writer,
+	seq *int,
 	responseID string,
 	messageID string,
 	model string,
@@ -344,6 +461,13 @@ func finishResponsesStream(
 			"content_index": 0,
 			"text":          text,
 		}},
+		{"response.content_part.done", map[string]any{
+			"type":          "response.content_part.done",
+			"item_id":       messageID,
+			"output_index":  0,
+			"content_index": 0,
+			"part":          map[string]any{"type": "output_text", "text": text, "annotations": []any{}},
+		}},
 		{"response.output_item.done", map[string]any{
 			"type":         "response.output_item.done",
 			"output_index": 0,
@@ -357,11 +481,11 @@ func finishResponsesStream(
 		}},
 		{"response.completed", map[string]any{
 			"type":     "response.completed",
-			"response": responsesObject(responseID, model, text, inputTokens, outputTokens, created),
+			"response": responsesObject(responseID, model, text, inputTokens, outputTokens, created, "completed"),
 		}},
 	}
 	for _, event := range events {
-		if err := writeResponseEvent(w, event.name, event.body); err != nil {
+		if err := writeResponseEventSeq(w, seq, event.name, event.body); err != nil {
 			return StreamResult{}, err
 		}
 	}
@@ -369,16 +493,13 @@ func finishResponsesStream(
 	return StreamResult{Text: text, FinishReason: finishReason}, err
 }
 
-func responsesObject(responseID, model, text string, inputTokens, outputTokens int, created int64) map[string]any {
+func responsesObject(responseID, model, text string, inputTokens, outputTokens int, created int64, status string) map[string]any {
 	messageID := "msg_" + strings.TrimPrefix(responseID, "resp_")
-	return map[string]any{
-		"id":         responseID,
-		"object":     "response",
-		"created_at": created,
-		"status":     "completed",
-		"error":      nil,
-		"model":      model,
-		"output": []map[string]any{{
+	output := []map[string]any{}
+	usage := any(nil)
+	completedAt := any(nil)
+	if status == "completed" {
+		output = []map[string]any{{
 			"id":     messageID,
 			"type":   "message",
 			"status": "completed",
@@ -388,16 +509,60 @@ func responsesObject(responseID, model, text string, inputTokens, outputTokens i
 				"text":        text,
 				"annotations": []any{},
 			}},
-		}},
-		"usage": map[string]any{
-			"input_tokens":  inputTokens,
+		}}
+		completedAt = created
+		usage = map[string]any{
+			"input_tokens": inputTokens,
+			"input_tokens_details": map[string]any{
+				"cached_tokens": 0,
+			},
 			"output_tokens": outputTokens,
-			"total_tokens":  inputTokens + outputTokens,
+			"output_tokens_details": map[string]any{
+				"reasoning_tokens": 0,
+			},
+			"total_tokens": inputTokens + outputTokens,
+		}
+	}
+	return map[string]any{
+		"id":                   responseID,
+		"object":               "response",
+		"created_at":           created,
+		"completed_at":         completedAt,
+		"status":               status,
+		"error":                nil,
+		"incomplete_details":   nil,
+		"instructions":         nil,
+		"max_output_tokens":    nil,
+		"model":                model,
+		"output":               output,
+		"parallel_tool_calls":  true,
+		"previous_response_id": nil,
+		"reasoning": map[string]any{
+			"effort":  nil,
+			"summary": nil,
 		},
+		"store":       false,
+		"temperature": 1,
+		"text": map[string]any{
+			"format": map[string]any{"type": "text"},
+		},
+		"tool_choice": "auto",
+		"tools":       []any{},
+		"top_p":       1,
+		"truncation":  "disabled",
+		"usage":       usage,
 	}
 }
 
 func writeResponseEvent(w io.Writer, eventName string, payload map[string]any) error {
+	return writeResponseEventSeq(w, nil, eventName, payload)
+}
+
+func writeResponseEventSeq(w io.Writer, seq *int, eventName string, payload map[string]any) error {
+	if seq != nil {
+		(*seq)++
+		payload["sequence_number"] = *seq
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -437,6 +602,87 @@ func presentNonNull(value json.RawMessage) bool {
 	}
 	trimmed := strings.TrimSpace(string(value))
 	return trimmed != "" && trimmed != "null" && trimmed != "[]" && trimmed != "{}"
+}
+
+func boolField(raw map[string]json.RawMessage, key string) bool {
+	value, ok := raw[key]
+	if !ok {
+		return false
+	}
+	var out bool
+	return json.Unmarshal(value, &out) == nil && out
+}
+
+func containsAny(value json.RawMessage) bool {
+	if !presentNonNull(value) {
+		return false
+	}
+	var items []any
+	if err := json.Unmarshal(value, &items); err == nil {
+		return len(items) > 0
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(value, &obj); err == nil {
+		return len(obj) > 0
+	}
+	return true
+}
+
+func validateTextModalities(value json.RawMessage) error {
+	var modalities []string
+	if err := json.Unmarshal(value, &modalities); err != nil && presentNonNull(value) {
+		return &AdapterError{Status: 400, Message: "modalities must be an array", Context: "modalities"}
+	}
+	for _, modality := range modalities {
+		if modality != "text" {
+			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "modalities"}
+		}
+	}
+	return nil
+}
+
+func validateTextConfig(value json.RawMessage) error {
+	if !presentNonNull(value) {
+		return nil
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(value, &parsed); err != nil {
+		return &AdapterError{Status: 400, Message: "text must be an object", Context: "text"}
+	}
+	format, ok := parsed["format"].(map[string]any)
+	if !ok || len(format) == 0 {
+		return nil
+	}
+	formatType := stringValue(format["type"])
+	if formatType == "" || formatType == "text" {
+		return nil
+	}
+	return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "text.format"}
+}
+
+func isDefaultToolChoice(value json.RawMessage) bool {
+	if !presentNonNull(value) {
+		return true
+	}
+	var choice string
+	if err := json.Unmarshal(value, &choice); err == nil {
+		return choice == "" || choice == "auto" || choice == "none"
+	}
+	return false
+}
+
+func validateTruncation(value json.RawMessage) error {
+	if !presentNonNull(value) {
+		return nil
+	}
+	var truncation string
+	if err := json.Unmarshal(value, &truncation); err != nil {
+		return &AdapterError{Status: 400, Message: "truncation must be a string", Context: "truncation"}
+	}
+	if truncation == "" || truncation == "disabled" {
+		return nil
+	}
+	return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "truncation"}
 }
 
 func containsUnsupportedInput(raw json.RawMessage) bool {

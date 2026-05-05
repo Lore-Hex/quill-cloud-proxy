@@ -37,7 +37,7 @@ func TestParseRequestTargetNonce(t *testing.T) {
 }
 
 func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
-	bearer := "sk-tr-v1-user-secret"
+	bearer := "test-user-bearer"
 	var authorizeBody string
 	var settleBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -120,8 +120,86 @@ func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
 	}
 }
 
+func TestServeOneChatNonStreamingReturnsJSONAndSettles(t *testing.T) {
+	bearer := "test-user-bearer"
+	var settleBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			if strings.Contains(string(body), bearer) || strings.Contains(string(body), "private prompt") {
+				t.Fatalf("authorize leaked sensitive material: %s", body)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_chat","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+		case "/internal/gateway/settle":
+			settleBody = string(body)
+			if strings.Contains(settleBody, "Hello") || strings.Contains(settleBody, "private prompt") {
+				t.Fatalf("settle leaked content: %s", settleBody)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"gen_chat","cost_microdollars":12,"model":"openai/gpt-4o-mini","provider":"openai","region":"us-central1"}}`)
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fakeStreamingLLM{}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"openai/gpt-4o-mini","stream":false,"messages":[{"role":"user","content":"private prompt"}],"max_tokens":32}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", got)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(bodyBytes, &decoded); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, bodyBytes)
+	}
+	if decoded["object"] != "chat.completion" {
+		t.Fatalf("bad chat envelope: %#v", decoded)
+	}
+	if !strings.Contains(string(bodyBytes), "Hello world") {
+		t.Fatalf("missing output text: %s", bodyBytes)
+	}
+	deadline := time.Now().Add(time.Second)
+	for settleBody == "" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(settleBody, `"route_type":"chat.completions"`) || !strings.Contains(settleBody, `"streamed":false`) {
+		t.Fatalf("settle body missing chat metadata: %s", settleBody)
+	}
+}
+
 func TestServeOneResponsesNonStreamingFailsClosedWhenSettleFails(t *testing.T) {
-	bearer := "sk-tr-v1-user-secret"
+	bearer := "test-user-bearer"
 	var settleCalled bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -211,16 +289,21 @@ func TestServeOneResponsesStreamingUsesResponsesEvents(t *testing.T) {
 	body := string(bodyBytes)
 	for _, eventName := range []string{
 		"response.created",
+		"response.in_progress",
 		"response.output_item.added",
 		"response.content_part.added",
 		"response.output_text.delta",
 		"response.output_text.done",
+		"response.content_part.done",
 		"response.output_item.done",
 		"response.completed",
 	} {
 		if !strings.Contains(body, "event: "+eventName) {
 			t.Fatalf("missing %s in stream: %s", eventName, body)
 		}
+	}
+	if !strings.Contains(body, `"sequence_number":`) {
+		t.Fatalf("missing response sequence numbers: %s", body)
 	}
 	if !strings.Contains(body, "data: [DONE]\n\n") {
 		t.Fatalf("missing done marker: %s", body)
@@ -265,6 +348,218 @@ func TestServeOneResponsesRejectsUnsupportedTools(t *testing.T) {
 	}
 	if !strings.Contains(string(bodyBytes), "not_supported_in_alpha") {
 		t.Fatalf("missing alpha error: %s", bodyBytes)
+	}
+}
+
+func TestServeOneResponsesInputTokensCountsLocally(t *testing.T) {
+	bearer := "test-bearer"
+	digest := sha256.Sum256([]byte(bearer))
+	reg := auth.New([]types.DeviceConfig{{
+		KeyHash:  hex.EncodeToString(digest[:]),
+		Owner:    "test",
+		DeviceID: "device-1",
+	}})
+	server, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), server, reg, &panicStreamingLLM{t: t}, nil, nil, nil, nil)
+
+	requestBody := []byte(`{"model":"claude-sonnet-4-6","input":"private response input","instructions":"brief"}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/responses/input_tokens HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, `"object":"response.input_tokens"`) || !strings.Contains(body, `"input_tokens":`) {
+		t.Fatalf("bad input token response: %s", body)
+	}
+	if strings.Contains(body, "private response input") {
+		t.Fatalf("input token response leaked input: %s", body)
+	}
+}
+
+func TestServeOneResponsesInputTokensValidatesGatewayKeyWithoutContent(t *testing.T) {
+	bearer := "test-user-bearer"
+	var validateBody string
+	var authorizeCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/validate":
+			validateBody = string(body)
+			if strings.Contains(validateBody, bearer) || strings.Contains(validateBody, "private response input") {
+				t.Fatalf("validate leaked sensitive material: %s", validateBody)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"workspace_id":"ws_1","api_key_hash":"key_1","route_type":"responses.input_tokens"}}`)
+		case "/internal/gateway/authorize":
+			authorizeCalled = true
+			t.Fatalf("input token count should not reserve credits: %s", body)
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), &panicStreamingLLM{t: t}, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"claude-sonnet-4-6","input":"private response input"}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/responses/input_tokens HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	if !strings.Contains(validateBody, `"route_type":"responses.input_tokens"`) {
+		t.Fatalf("validate did not include route type: %s", validateBody)
+	}
+	if authorizeCalled {
+		t.Fatal("authorize was called")
+	}
+}
+
+func TestServeOneResponsesStatefulEndpointsAreExplicitStubs(t *testing.T) {
+	bearer := "test-bearer"
+	digest := sha256.Sum256([]byte(bearer))
+	reg := auth.New([]types.DeviceConfig{{
+		KeyHash:  hex.EncodeToString(digest[:]),
+		Owner:    "test",
+		DeviceID: "device-1",
+	}})
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{"retrieve", "GET", "/v1/responses/resp_123", ""},
+		{"delete", "DELETE", "/v1/responses/resp_123", ""},
+		{"cancel", "POST", "/v1/responses/resp_123/cancel", ""},
+		{"compact", "POST", "/v1/responses/compact", `{"input":"private response input"}`},
+		{"input_items", "GET", "/v1/responses/resp_123/input_items?limit=1", ""},
+		{"conversations", "POST", "/v1/conversations", `{"metadata":{"prompt":"private response input"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, client := net.Pipe()
+			defer client.Close()
+			go serveOne(context.Background(), server, reg, &panicStreamingLLM{t: t}, nil, nil, nil, nil)
+
+			_, err := fmt.Fprintf(
+				client,
+				"%s %s HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+				tc.method,
+				tc.path,
+				bearer,
+				len(tc.body),
+				tc.body,
+			)
+			if err != nil {
+				t.Fatalf("write request: %v", err)
+			}
+			resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			defer resp.Body.Close()
+			bodyBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			body := string(bodyBytes)
+			if resp.StatusCode != 501 {
+				t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+			}
+			if !strings.Contains(body, `"code":"not_supported_in_alpha"`) {
+				t.Fatalf("missing stable unsupported code: %s", body)
+			}
+			if strings.Contains(body, "private response input") {
+				t.Fatalf("stub leaked request content: %s", body)
+			}
+		})
+	}
+}
+
+func TestServeOneResponsesStatefulCreateFieldsFailBeforeProvider(t *testing.T) {
+	bearer := "test-bearer"
+	digest := sha256.Sum256([]byte(bearer))
+	reg := auth.New([]types.DeviceConfig{{
+		KeyHash:  hex.EncodeToString(digest[:]),
+		Owner:    "test",
+		DeviceID: "device-1",
+	}})
+	for _, requestBody := range [][]byte{
+		[]byte(`{"model":"claude-sonnet-4-6","input":"private response input","store":true}`),
+		[]byte(`{"model":"claude-sonnet-4-6","input":"private response input","background":true}`),
+		[]byte(`{"model":"claude-sonnet-4-6","input":"private response input","previous_response_id":"resp_old"}`),
+	} {
+		server, client := net.Pipe()
+		go serveOne(context.Background(), server, reg, &panicStreamingLLM{t: t}, nil, nil, nil, nil)
+		_, err := fmt.Fprintf(
+			client,
+			"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+			bearer,
+			len(requestBody),
+			requestBody,
+		)
+		if err != nil {
+			t.Fatalf("write request: %v", err)
+		}
+		resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+		if err != nil {
+			t.Fatalf("read response: %v", err)
+		}
+		bodyBytes, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		_ = client.Close()
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		body := string(bodyBytes)
+		if resp.StatusCode != 501 {
+			t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+		}
+		if !strings.Contains(body, "not_supported_in_alpha") || strings.Contains(body, "private response input") {
+			t.Fatalf("bad stateful field response: %s", body)
+		}
 	}
 }
 
@@ -329,9 +624,25 @@ data: {"type":"message_stop"}
 	return err
 }
 
+type panicStreamingLLM struct {
+	t *testing.T
+}
+
+func (p *panicStreamingLLM) InvokeStreaming(
+	_ context.Context,
+	_ *types.OpenAIChatRequest,
+	_ *types.AnthropicMessagesRequest,
+	_ io.Writer,
+	_ ...llm.InvokeOptions,
+) error {
+	p.t.Helper()
+	p.t.Fatal("provider should not be called")
+	return nil
+}
+
 func TestServeOneTrustedRouterGatewayAuthorizesBYOKAndSettles(t *testing.T) {
 	t.Setenv("CEREBRAS_TEST_KEY", "csk-live-from-env")
-	bearer := "sk-tr-v1-user-secret"
+	bearer := "test-user-bearer"
 	var authorizeBody string
 	var settleBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -404,7 +715,7 @@ func TestServeOneTrustedRouterGatewayAuthorizesBYOKAndSettles(t *testing.T) {
 }
 
 func TestServeOneTrustedRouterProviderErrorDoesNotReturnEmptyStream(t *testing.T) {
-	bearer := "sk-tr-v1-user-secret"
+	bearer := "test-user-bearer"
 	var refundBody string
 	var settleCalled bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -476,7 +787,7 @@ func TestServeOneTrustedRouterProviderErrorDoesNotReturnEmptyStream(t *testing.T
 }
 
 func TestServeOneResponsesProviderErrorClosesPartialStream(t *testing.T) {
-	bearer := "sk-tr-v1-user-secret"
+	bearer := "test-user-bearer"
 	var refundBody string
 	var settleCalled bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

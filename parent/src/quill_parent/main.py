@@ -124,6 +124,7 @@ def _make_router() -> APIRouter:
         settings: Settings,
         *,
         route_path: str,
+        method: str | None = None,
     ) -> StreamingResponse:
         # The parent does NOT parse, validate, or inspect the body. It opens
         # a socket to the enclave, forwards request bytes verbatim, and
@@ -141,6 +142,7 @@ def _make_router() -> APIRouter:
             settings=settings,
             heartbeat=request.app.state.heartbeat,
             route_path=route_path,
+            method=method or request.method,
         )
         return StreamingResponse(
             relay.chunks,
@@ -156,12 +158,43 @@ def _make_router() -> APIRouter:
     ) -> StreamingResponse:
         return await relay_inference(request, settings, route_path="/v1/chat/completions")
 
-    @router.post("/v1/responses")
+    def enclave_route_path(request: Request) -> str:
+        path = request.url.path
+        if request.url.query:
+            path = f"{path}?{request.url.query}"
+        return path
+
+    @router.api_route("/v1/responses", methods=["POST"])
     async def responses(
         request: Request,
         settings: Annotated[Settings, Depends(get_settings)],
     ) -> StreamingResponse:
-        return await relay_inference(request, settings, route_path="/v1/responses")
+        return await relay_inference(request, settings, route_path=enclave_route_path(request))
+
+    @router.api_route(
+        "/v1/responses/{response_path:path}",
+        methods=["GET", "POST", "DELETE"],
+    )
+    async def responses_subroutes(
+        request: Request,
+        settings: Annotated[Settings, Depends(get_settings)],
+        response_path: str,
+    ) -> StreamingResponse:
+        _ = response_path
+        return await relay_inference(request, settings, route_path=enclave_route_path(request))
+
+    @router.api_route("/v1/conversations", methods=["GET", "POST", "PATCH", "DELETE"])
+    @router.api_route(
+        "/v1/conversations/{conversation_path:path}",
+        methods=["GET", "POST", "PATCH", "DELETE"],
+    )
+    async def conversations_subroutes(
+        request: Request,
+        settings: Annotated[Settings, Depends(get_settings)],
+        conversation_path: str = "",
+    ) -> StreamingResponse:
+        _ = conversation_path
+        return await relay_inference(request, settings, route_path=enclave_route_path(request))
 
     @router.get("/admin/usage")
     async def admin_usage(

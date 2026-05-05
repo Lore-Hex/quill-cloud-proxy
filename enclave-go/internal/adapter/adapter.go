@@ -94,6 +94,48 @@ type StreamResult struct {
 	FinishReason string
 }
 
+func WriteChatCompletionResponse(
+	w io.Writer,
+	requestID string,
+	model string,
+	text string,
+	inputTokens int,
+	outputTokens int,
+	created int64,
+	finishReason string,
+) error {
+	if finishReason == "" {
+		finishReason = "stop"
+	}
+	payload := map[string]any{
+		"id":      requestID,
+		"object":  "chat.completion",
+		"created": created,
+		"model":   model,
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"message": map[string]string{
+					"role":    "assistant",
+					"content": text,
+				},
+				"finish_reason": finishReason,
+			},
+		},
+		"usage": map[string]int{
+			"prompt_tokens":     inputTokens,
+			"completion_tokens": outputTokens,
+			"total_tokens":      inputTokens + outputTokens,
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(body)
+	return err
+}
+
 func TransformStreamCapture(r io.Reader, w io.Writer, requestID, model string) (StreamResult, error) {
 	created := time.Now().Unix()
 	finishReason := "stop"

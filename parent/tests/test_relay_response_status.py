@@ -24,3 +24,14 @@ def test_build_http_request_preserves_route_path_and_body_bytes() -> None:
     assert wrapped.startswith(b"POST /v1/responses HTTP/1.1\r\n")
     assert wrapped.endswith(body)
     assert b"Authorization: Bearer sk-test\r\n" in wrapped
+
+
+def test_build_http_request_preserves_method_for_responses_subroutes() -> None:
+    wrapped = _build_http_request(
+        b"",
+        "Bearer sk-test",
+        "/v1/responses/resp_123/input_items?limit=1",
+        method="GET",
+    )
+    assert wrapped.startswith(b"GET /v1/responses/resp_123/input_items?limit=1 HTTP/1.1\r\n")
+    assert b"Content-Length: 0\r\n" in wrapped

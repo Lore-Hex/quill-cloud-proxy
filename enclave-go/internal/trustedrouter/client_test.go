@@ -58,3 +58,36 @@ func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 		t.Fatalf("max_output_tokens = %v", payload["max_output_tokens"])
 	}
 }
+
+func TestValidateKeySendsLookupHashAndRouteOnly(t *testing.T) {
+	rawKey := "test-user-bearer"
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/gateway/validate" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if strings.Contains(string(body), rawKey) || strings.Contains(string(body), "private input") {
+			t.Fatalf("validate leaked sensitive material: %s", body)
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		_, _ = io.WriteString(w, `{"data":{"workspace_id":"ws_1","api_key_hash":"key_1","route_type":"responses.input_tokens"}}`)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "internal", server.Client())
+	if err := client.ValidateKey(t.Context(), rawKey, "responses.input_tokens"); err != nil {
+		t.Fatalf("ValidateKey: %v", err)
+	}
+	if payload["api_key_lookup_hash"] != lookupHash(rawKey) {
+		t.Fatalf("lookup hash = %v", payload["api_key_lookup_hash"])
+	}
+	if payload["route_type"] != "responses.input_tokens" {
+		t.Fatalf("route_type = %v", payload["route_type"])
+	}
+}

@@ -43,7 +43,7 @@ import (
 const (
 	gcsAPIBase    = "https://storage.googleapis.com/storage/v1"
 	gcsUploadBase = "https://storage.googleapis.com/upload/storage/v1"
-	metadataToken = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+	metadataToken = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" // #nosec G101 -- metadata endpoint URL, not a secret.
 )
 
 // NewGCSCache returns an autocert.Cache backed by GCS. Callers should pass

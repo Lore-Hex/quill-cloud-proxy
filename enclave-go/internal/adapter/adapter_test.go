@@ -237,9 +237,20 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 		"metadata":{"app":"test"},
 		"trace":{"trace_id":"trace-1"},
 		"user":"user-1",
+		"safety_identifier":"user-hash",
 		"session_id":"session-1",
 		"store":false,
-		"modalities":["text"]
+		"background":false,
+		"include":[],
+		"modalities":["text"],
+		"parallel_tool_calls":true,
+		"prompt_cache_key":"cache-bucket",
+		"service_tier":"auto",
+		"stream_options":{"include_usage":true},
+		"text":{"format":{"type":"text"}},
+		"tool_choice":"auto",
+		"tools":[],
+		"truncation":"disabled"
 	}`), &supported); err != nil {
 		t.Fatalf("unmarshal supported request: %v", err)
 	}
@@ -256,7 +267,7 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 		{
 			name:        "unknown formatting field",
 			body:        `{"model":"m","input":"hi","text":{"format":{"type":"json_object"}}}`,
-			wantContext: "text",
+			wantContext: "text.format",
 			wantStatus:  501,
 		},
 		{
@@ -269,6 +280,30 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 			name:        "non-text modality",
 			body:        `{"model":"m","input":"hi","modalities":["text","audio"]}`,
 			wantContext: "modalities",
+			wantStatus:  501,
+		},
+		{
+			name:        "stateful previous response",
+			body:        `{"model":"m","input":"hi","previous_response_id":"resp_old"}`,
+			wantContext: "previous_response_id",
+			wantStatus:  501,
+		},
+		{
+			name:        "background mode",
+			body:        `{"model":"m","input":"hi","background":true}`,
+			wantContext: "background=true",
+			wantStatus:  501,
+		},
+		{
+			name:        "reasoning controls",
+			body:        `{"model":"m","input":"hi","reasoning":{"effort":"high"}}`,
+			wantContext: "reasoning",
+			wantStatus:  501,
+		},
+		{
+			name:        "function tools are explicitly stubbed",
+			body:        `{"model":"m","input":"hi","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`,
+			wantContext: "tools",
 			wantStatus:  501,
 		},
 	} {
@@ -289,5 +324,91 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 				t.Fatalf("adapter error = status %d context %q, want status %d context %q", aerr.Status, aerr.Context, tc.wantStatus, tc.wantContext)
 			}
 		})
+	}
+}
+
+func TestRejectUnsupportedResponsesInputTokenFields(t *testing.T) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(`{
+		"model":"openai/gpt-4o-mini",
+		"input":"hi",
+		"instructions":"brief",
+		"text":{"format":{"type":"text"}},
+		"parallel_tool_calls":true,
+		"truncation":"disabled"
+	}`), &raw); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if err := RejectUnsupportedResponsesInputTokenFields(raw); err != nil {
+		t.Fatalf("input token request rejected: %v", err)
+	}
+
+	var stateful map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(`{"model":"m","input":"hi","conversation":"conv_123"}`), &stateful); err != nil {
+		t.Fatalf("unmarshal stateful request: %v", err)
+	}
+	err := RejectUnsupportedResponsesInputTokenFields(stateful)
+	if err == nil {
+		t.Fatal("expected stateful input token request to be rejected")
+	}
+	aerr, ok := err.(*AdapterError)
+	if !ok || aerr.Status != 501 || aerr.Context != "conversation" {
+		t.Fatalf("error = %#v, want 501 conversation", err)
+	}
+}
+
+func TestResponsesCoverageClassifiesOfficialSurface(t *testing.T) {
+	wantRoutes := map[string]bool{
+		"POST /v1/responses":                                         false,
+		"POST /v1/responses/input_tokens":                            false,
+		"GET /v1/responses/{response_id}":                            false,
+		"DELETE /v1/responses/{response_id}":                         false,
+		"POST /v1/responses/{response_id}/cancel":                    false,
+		"POST /v1/responses/compact":                                 false,
+		"GET /v1/responses/{response_id}/input_items":                false,
+		"POST /v1/conversations":                                     false,
+		"GET /v1/conversations/{conversation_id}":                    false,
+		"PATCH /v1/conversations/{conversation_id}":                  false,
+		"DELETE /v1/conversations/{conversation_id}":                 false,
+		"POST /v1/conversations/{conversation_id}/items":             false,
+		"GET /v1/conversations/{conversation_id}/items":              false,
+		"GET /v1/conversations/{conversation_id}/items/{item_id}":    false,
+		"DELETE /v1/conversations/{conversation_id}/items/{item_id}": false,
+	}
+	for _, item := range ResponsesCoverage {
+		key := item.Method + " " + item.Path
+		if _, ok := wantRoutes[key]; ok {
+			wantRoutes[key] = true
+		}
+		if item.Kind != "stateless-real" && item.Kind != "explicit-stub" {
+			t.Fatalf("route %s has invalid classification %q", key, item.Kind)
+		}
+	}
+	for key, seen := range wantRoutes {
+		if !seen {
+			t.Fatalf("missing Responses coverage route %s", key)
+		}
+	}
+
+	for _, field := range []string{
+		"background", "conversation", "include", "input", "instructions",
+		"max_output_tokens", "max_tool_calls", "metadata", "modalities",
+		"parallel_tool_calls", "previous_response_id", "prompt",
+		"prompt_cache_key", "prompt_cache_retention", "reasoning",
+		"safety_identifier", "service_tier", "stream_options", "text",
+		"tool_choice", "tools", "top_logprobs", "truncation",
+	} {
+		found := false
+		for _, item := range ResponsesCreateFieldCoverage {
+			if item.Path == field {
+				found = true
+				if item.Kind != "stateless-real" && item.Kind != "explicit-stub" {
+					t.Fatalf("field %s has invalid classification %q", field, item.Kind)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("missing Responses create field coverage for %s", field)
+		}
 	}
 }

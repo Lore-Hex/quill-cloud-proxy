@@ -195,31 +195,64 @@ func serveOne(
 	var req types.OpenAIChatRequest
 	routeType := "chat.completions"
 	originalInput := any(nil)
+	if strings.HasPrefix(routePath, "/v1/conversations") {
+		if !validateMetadataRoute(ctx, conn, trGateway, bearer, "conversations") {
+			return
+		}
+		writeOpenAIError(conn, 501, "not_supported_in_alpha", "not_supported_in_alpha", "not_supported_in_alpha", "conversations")
+		return
+	}
+	if routePath == "/v1/responses/input_tokens" {
+		if method != "POST" {
+			writeOpenAIError(conn, 404, "route not found", "invalid_request_error", "not_found", "")
+			return
+		}
+		if !validateMetadataRoute(ctx, conn, trGateway, bearer, "responses.input_tokens") {
+			return
+		}
+		serveResponsesInputTokens(conn, body)
+		return
+	}
+	if isUnsupportedResponsesEndpoint(method, routePath) {
+		if !validateMetadataRoute(ctx, conn, trGateway, bearer, "responses.stub") {
+			return
+		}
+		writeOpenAIError(conn, 501, "not_supported_in_alpha", "not_supported_in_alpha", "not_supported_in_alpha", routePath)
+		return
+	}
 	if routePath == "/v1/responses" {
+		if method != "POST" {
+			writeOpenAIError(conn, 404, "route not found", "invalid_request_error", "not_found", "")
+			return
+		}
 		routeType = "responses"
 		responsesReq, err := parseResponsesRequest(body)
 		if err != nil {
 			var aerr *adapter.AdapterError
 			if asAdapterErr(err, &aerr) {
-				writeError(conn, aerr.Status, aerr.Message)
+				writeAdapterOpenAIError(conn, aerr)
 				return
 			}
-			writeError(conn, 400, "invalid JSON")
+			writeOpenAIError(conn, 400, "invalid JSON", "invalid_request_error", "bad_request", "")
 			return
 		}
 		chatReq, err := adapter.ResponsesToChat(responsesReq)
 		if err != nil {
 			var aerr *adapter.AdapterError
 			if asAdapterErr(err, &aerr) {
-				writeError(conn, aerr.Status, aerr.Message)
+				writeAdapterOpenAIError(conn, aerr)
 				return
 			}
-			writeError(conn, 400, "invalid responses request")
+			writeOpenAIError(conn, 400, "invalid responses request", "invalid_request_error", "bad_request", "")
 			return
 		}
 		req = *chatReq
 		originalInput = responsesReq.Input
 	} else if routePath == "/v1/chat/completions" {
+		if method != "POST" {
+			writeError(conn, 404, "route not found")
+			return
+		}
 		if err := json.Unmarshal(body, &req); err != nil {
 			writeError(conn, 400, "invalid JSON")
 			return
@@ -268,8 +301,12 @@ func serveOne(
 			UsageType:      authorization.UsageType,
 		})
 	}
-	if routeType == "responses" && !req.Stream {
-		serveResponsesNonStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput)
+	if !req.Stream {
+		if routeType == "responses" {
+			serveResponsesNonStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput)
+			return
+		}
+		serveChatNonStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput)
 		return
 	}
 	serveStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput, routeType)
@@ -295,6 +332,67 @@ func parseResponsesRequest(body []byte) (*types.OpenAIResponsesRequest, error) {
 		return nil, err
 	}
 	return &req, nil
+}
+
+func validateMetadataRoute(
+	ctx context.Context,
+	conn io.Writer,
+	trGateway *trustedrouter.Client,
+	bearer string,
+	routeType string,
+) bool {
+	if trGateway == nil || !trGateway.Enabled() {
+		return true
+	}
+	if err := trGateway.ValidateKey(ctx, bearer, routeType); err != nil {
+		writeError(conn, statusFromControlPlaneError(err), "gateway authorization failed")
+		return false
+	}
+	return true
+}
+
+func parseResponsesInputTokensRequest(body []byte) (*types.OpenAIResponsesRequest, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	if err := adapter.RejectUnsupportedResponsesInputTokenFields(raw); err != nil {
+		return nil, err
+	}
+	var req types.OpenAIResponsesRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+func serveResponsesInputTokens(conn io.Writer, body []byte) {
+	responsesReq, err := parseResponsesInputTokensRequest(body)
+	if err != nil {
+		var aerr *adapter.AdapterError
+		if asAdapterErr(err, &aerr) {
+			writeAdapterOpenAIError(conn, aerr)
+			return
+		}
+		writeOpenAIError(conn, 400, "invalid JSON", "invalid_request_error", "bad_request", "")
+		return
+	}
+	chatReq, err := adapter.ResponsesToChat(responsesReq)
+	if err != nil {
+		var aerr *adapter.AdapterError
+		if asAdapterErr(err, &aerr) {
+			writeAdapterOpenAIError(conn, aerr)
+			return
+		}
+		writeOpenAIError(conn, 400, "invalid responses request", "invalid_request_error", "bad_request", "")
+		return
+	}
+	var out bytes.Buffer
+	if err := adapter.WriteResponsesInputTokens(&out, trustedrouter.EstimateInputTokens(chatReq)); err != nil {
+		writeOpenAIError(conn, 500, "responses encoding error", "server_error", "internal_error", "")
+		return
+	}
+	writeJSONResponse(conn, 200, out.Bytes())
 }
 
 func serveResponsesNonStreaming(
@@ -346,6 +444,61 @@ func serveResponsesNonStreaming(
 	}
 	if _, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text); err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_settle_failed model=%q err=%v\n", req.Model, err)
+		writeError(conn, 502, "settlement failed")
+		return
+	}
+	writeJSONResponse(conn, 200, body.Bytes())
+}
+
+func serveChatNonStreaming(
+	ctx context.Context,
+	conn io.Writer,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	anthropicReq *types.AnthropicMessagesRequest,
+	invokeOptions []llm.InvokeOptions,
+	trGateway *trustedrouter.Client,
+	authorization *trustedrouter.Authorization,
+	secretCache *byokcache.Cache,
+	requestStarted time.Time,
+	originalInput any,
+) {
+	requestID := newRequestID()
+	pr, pw := io.Pipe()
+	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization)
+	result, err := adapter.CollectAnthropicText(pr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "enclave.chat_collect_failed model=%q err=%v\n", req.Model, err)
+		if trGateway != nil && trGateway.Enabled() {
+			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds())
+		}
+		writeError(conn, 502, "provider error")
+		return
+	}
+	inputTokens := trustedrouter.EstimateInputTokens(req)
+	outputTokens := trustedrouter.EstimateOutputTokensFromBytes(len(result.Text))
+	var body bytes.Buffer
+	if err := adapter.WriteChatCompletionResponse(&body, requestID, req.Model, result.Text, inputTokens, outputTokens, time.Now().Unix(), result.FinishReason); err != nil {
+		writeError(conn, 500, "chat completion encoding error")
+		return
+	}
+	usage := trustedrouter.Usage{
+		RequestID:         requestID,
+		InputTokens:       inputTokens,
+		OutputTokens:      outputTokens,
+		ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
+		FirstTokenSeconds: 0,
+		UsageEstimated:    true,
+		FinishReason:      result.FinishReason,
+		Streamed:          false,
+		RouteType:         "chat.completions",
+		User:              req.User,
+		SessionID:         req.SessionID,
+		Trace:             req.Trace,
+		Metadata:          req.Metadata,
+	}
+	if _, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text); err != nil {
+		fmt.Fprintf(os.Stderr, "enclave.chat_settle_failed model=%q err=%v\n", req.Model, err)
 		writeError(conn, 502, "settlement failed")
 		return
 	}
@@ -752,6 +905,28 @@ func parseRequestTarget(rawPath string) (string, []byte, error) {
 	return u.Path, nonce, nil
 }
 
+func isUnsupportedResponsesEndpoint(method, routePath string) bool {
+	if !strings.HasPrefix(routePath, "/v1/responses/") {
+		return false
+	}
+	if method == "GET" && strings.HasSuffix(routePath, "/input_items") {
+		return true
+	}
+	if method == "POST" && strings.HasSuffix(routePath, "/cancel") {
+		return true
+	}
+	if method == "POST" && routePath == "/v1/responses/compact" {
+		return true
+	}
+	if method == "GET" && strings.Count(strings.TrimPrefix(routePath, "/v1/responses/"), "/") == 0 {
+		return true
+	}
+	if method == "DELETE" && strings.Count(strings.TrimPrefix(routePath, "/v1/responses/"), "/") == 0 {
+		return true
+	}
+	return false
+}
+
 // serveAttestation answers GET /attestation with the NSM-signed CBOR
 // document binding the live TLS cert's public key. Clients fetch this
 // before sending prompts; verify against AWS's NSM root + check PCR0
@@ -787,6 +962,43 @@ func writeError(w io.Writer, status int, message string) {
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
 		status, statusText(status), len(body))
 	w.Write(body)
+}
+
+func writeAdapterOpenAIError(w io.Writer, err *adapter.AdapterError) {
+	errType := "invalid_request_error"
+	code := "bad_request"
+	if err.Status == 501 {
+		errType = "not_supported_in_alpha"
+		code = "not_supported_in_alpha"
+	}
+	writeOpenAIError(w, err.Status, err.Message, errType, code, err.Context)
+}
+
+func writeOpenAIError(w io.Writer, status int, message, errType, code, param string) {
+	if errType == "" {
+		errType = "invalid_request_error"
+	}
+	if code == "" {
+		code = errType
+	}
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    errType,
+			"param":   orNilString(param),
+			"code":    code,
+		},
+	})
+	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+		status, statusText(status), len(body))
+	w.Write(body)
+}
+
+func orNilString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func writeJSONResponse(w io.Writer, status int, body []byte) {

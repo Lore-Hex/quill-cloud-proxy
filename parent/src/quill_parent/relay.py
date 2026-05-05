@@ -22,10 +22,11 @@ from quill_parent.config import Settings
 from quill_parent.heartbeat import Heartbeat
 
 
-def _build_http_request(body: bytes, bearer: str, route_path: str) -> bytes:
-    """Wrap (body, bearer) in a minimal HTTP/1.1 POST. Bytes only — no inspection."""
+def _build_http_request(body: bytes, bearer: str, route_path: str, method: str = "POST") -> bytes:
+    """Wrap (body, bearer) in a minimal HTTP/1.1 request. Bytes only — no inspection."""
+    method = method.upper()
     head = (
-        f"POST {route_path} HTTP/1.1\r\n"
+        f"{method} {route_path} HTTP/1.1\r\n"
         f"Host: enclave\r\n"
         f"Authorization: {bearer}\r\n"
         f"Content-Type: application/json\r\n"
@@ -90,18 +91,35 @@ async def _connect_enclave(settings: Settings) -> socket.socket:
 
 
 async def relay_to_enclave(
-    *, body: bytes, bearer: str, settings: Settings, heartbeat: Heartbeat, route_path: str
+    *,
+    body: bytes,
+    bearer: str,
+    settings: Settings,
+    heartbeat: Heartbeat,
+    route_path: str,
+    method: str = "POST",
 ) -> AsyncIterator[bytes]:
     """Send the HTTP-wrapped request, stream the response, never inspect bytes."""
     response = await relay_to_enclave_response(
-        body=body, bearer=bearer, settings=settings, heartbeat=heartbeat, route_path=route_path
+        body=body,
+        bearer=bearer,
+        settings=settings,
+        heartbeat=heartbeat,
+        route_path=route_path,
+        method=method,
     )
     async for chunk in response.chunks:
         yield chunk
 
 
 async def relay_to_enclave_response(
-    *, body: bytes, bearer: str, settings: Settings, heartbeat: Heartbeat, route_path: str
+    *,
+    body: bytes,
+    bearer: str,
+    settings: Settings,
+    heartbeat: Heartbeat,
+    route_path: str,
+    method: str = "POST",
 ) -> RelayResponse:
     """Open the enclave relay and return its HTTP status plus body stream.
 
@@ -113,7 +131,7 @@ async def relay_to_enclave_response(
     sock.setblocking(False)
     loop = asyncio.get_event_loop()
     try:
-        await loop.sock_sendall(sock, _build_http_request(body, bearer, route_path))
+        await loop.sock_sendall(sock, _build_http_request(body, bearer, route_path, method=method))
         # Read until the connection closes. Skip the response status line +
         # headers in a single linear pass without any field-level parsing
         # beyond `\r\n\r\n` boundary.

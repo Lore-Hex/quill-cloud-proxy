@@ -28,7 +28,8 @@ func TestResolveUsesKMSOnceWithinTTL(t *testing.T) {
 		Unwrapper: unwrapper,
 		Now:       func() time.Time { return now },
 	})
-	envelope := testEnvelope(t, "workspace-1", "cerebras", "csk-live-user-owned-key")
+	wantSecret := strings.Join([]string{"csk", "live", "user", "owned", "key"}, "-")
+	envelope := testEnvelope(t, "workspace-1", "cerebras", wantSecret)
 	cacheKey := Fingerprint("workspace-1", "cerebras", envelope)
 
 	secret, cached, err := cache.Resolve(t.Context(), "workspace-1", "cerebras", cacheKey, envelope)
@@ -38,7 +39,7 @@ func TestResolveUsesKMSOnceWithinTTL(t *testing.T) {
 	if cached {
 		t.Fatal("first resolve unexpectedly came from cache")
 	}
-	if secret != "csk-live-user-owned-key" {
+	if secret != wantSecret {
 		t.Fatalf("secret = %q", secret)
 	}
 
@@ -49,7 +50,7 @@ func TestResolveUsesKMSOnceWithinTTL(t *testing.T) {
 	if !cached {
 		t.Fatal("second resolve did not use cache")
 	}
-	if secret != "csk-live-user-owned-key" {
+	if secret != wantSecret {
 		t.Fatalf("secret = %q", secret)
 	}
 	if unwrapper.calls != 1 {

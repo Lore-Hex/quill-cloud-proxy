@@ -132,6 +132,17 @@ func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenA
 	return c.AuthorizeWithRoute(ctx, bearer, req, "chat.completions")
 }
 
+func (c *Client) ValidateKey(ctx context.Context, bearer string, routeType string) error {
+	body := map[string]any{
+		"api_key_lookup_hash": lookupHash(bearer),
+	}
+	if routeType != "" {
+		body["route_type"] = routeType
+	}
+	var decoded map[string]any
+	return c.postJSON(ctx, "/internal/gateway/validate", body, &decoded)
+}
+
 func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest, routeType string) (*Authorization, error) {
 	body := map[string]any{
 		"api_key_lookup_hash":    lookupHash(bearer),
