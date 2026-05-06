@@ -417,7 +417,7 @@ func serveResponsesNonStreaming(
 		return
 	}
 	inputTokens := trustedrouter.EstimateInputTokens(req)
-	outputTokens := trustedrouter.EstimateOutputTokensFromBytes(len(result.Text))
+	outputTokens := trustedrouter.EstimateOutputTokens(result.Text)
 	selectedModel := selectedRoute.Model(req.Model, authorization)
 	selectedEndpoint := selectedRoute.Endpoint("", authorization)
 	if selectedModel != "" {
@@ -480,7 +480,7 @@ func serveChatNonStreaming(
 		return
 	}
 	inputTokens := trustedrouter.EstimateInputTokens(req)
-	outputTokens := trustedrouter.EstimateOutputTokensFromBytes(len(result.Text))
+	outputTokens := trustedrouter.EstimateOutputTokens(result.Text)
 	selectedModel := selectedRoute.Model(req.Model, authorization)
 	selectedEndpoint := selectedRoute.Endpoint("", authorization)
 	if selectedModel != "" {
@@ -587,7 +587,7 @@ func serveStreaming(
 		trustedrouter.Usage{
 			RequestID:         requestID,
 			InputTokens:       trustedrouter.EstimateInputTokens(req),
-			OutputTokens:      trustedrouter.EstimateOutputTokensFromBytes(len(result.Text)),
+			OutputTokens:      trustedrouter.EstimateOutputTokens(result.Text),
 			ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
 			FirstTokenSeconds: statsW.FirstWriteSeconds(requestStarted),
 			UsageEstimated:    true,

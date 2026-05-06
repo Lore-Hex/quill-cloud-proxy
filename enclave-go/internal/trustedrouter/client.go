@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +22,10 @@ import (
 )
 
 const internalTokenHeader = "x-trustedrouter-internal-token"
+
+const imageOutputTokenEstimate = 1290
+
+var imageDataURLPattern = regexp.MustCompile(`data:image/[^;"\s]+;base64,[A-Za-z0-9+/=_-]+`)
 
 type Client struct {
 	baseURL       string
@@ -336,6 +341,16 @@ func EstimateOutputTokensFromBytes(n int) int {
 		return 1
 	}
 	tokens := n / 4
+	if tokens < 1 {
+		return 1
+	}
+	return tokens
+}
+
+func EstimateOutputTokens(text string) int {
+	imageCount := len(imageDataURLPattern.FindAllStringIndex(text, -1))
+	textOnly := imageDataURLPattern.ReplaceAllString(text, "")
+	tokens := len(textOnly)/4 + imageCount*imageOutputTokenEstimate
 	if tokens < 1 {
 		return 1
 	}
