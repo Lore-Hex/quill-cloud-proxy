@@ -7,7 +7,7 @@ REPO         := quill-cloud-proxy
 TRUST_BUCKET := trust.quill.lorehex.co
 GOLANGCI_LINT_VERSION := v1.64.8
 GOLANGCI_LINT_MODULE := github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-GO_TAGS := cloud_aws,llm_bedrock cloud_aws,llm_openrouter cloud_gcp,llm_vertex cloud_gcp,llm_openrouter
+GO_TAGS := cloud_aws,llm_bedrock cloud_aws,llm_openrouter cloud_gcp,llm_vertex cloud_gcp,llm_openrouter cloud_gcp,llm_multi
 
 # ---- Go enclave -----------------------------------------------------------
 

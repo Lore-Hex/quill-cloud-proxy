@@ -32,7 +32,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		anthropic: newAnthropic(boot),
 		vertex:    newVertex(boot),
 		openai:    newOpenAICompatible("openai", boot.OpenAIAPIKey),
-		gemini:    newOpenAICompatible("gemini", boot.GeminiAPIKey),
+		gemini:    newVertexGemini(boot),
 		cerebras:  newOpenAICompatible("cerebras", boot.CerebrasAPIKey),
 		deepseek:  newOpenAICompatible("deepseek", boot.DeepSeekAPIKey),
 		mistral:   newOpenAICompatible("mistral", boot.MistralAPIKey),
@@ -45,7 +45,7 @@ type multiClient struct {
 	anthropic *anthropicClient
 	vertex    *gcpClient
 	openai    *openAICompatibleClient
-	gemini    *openAICompatibleClient
+	gemini    *vertexGeminiClient
 	cerebras  *openAICompatibleClient
 	deepseek  *openAICompatibleClient
 	mistral   *openAICompatibleClient

@@ -61,19 +61,20 @@ type OpenAIChatMessage struct {
 
 // OpenAIChatRequest is the inbound shape we accept.
 type OpenAIChatRequest struct {
-	Model       string               `json:"model"`
-	Models      []string             `json:"models,omitempty"`
-	Messages    []OpenAIChatMessage  `json:"messages"`
-	Stream      bool                 `json:"stream,omitempty"`
-	Temperature *float64             `json:"temperature,omitempty"`
-	TopP        *float64             `json:"top_p,omitempty"`
-	MaxTokens   *int                 `json:"max_tokens,omitempty"`
-	Provider    *ProviderRouting     `json:"provider,omitempty"`
-	Metadata    map[string]any       `json:"metadata,omitempty"`
-	Trace       map[string]any       `json:"trace,omitempty"`
-	User        string               `json:"user,omitempty"`
-	SessionID   string               `json:"session_id,omitempty"`
-	Response    *ResponseRequestMeta `json:"-"`
+	Model          string               `json:"model"`
+	Models         []string             `json:"models,omitempty"`
+	Messages       []OpenAIChatMessage  `json:"messages"`
+	Stream         bool                 `json:"stream,omitempty"`
+	Temperature    *float64             `json:"temperature,omitempty"`
+	TopP           *float64             `json:"top_p,omitempty"`
+	MaxTokens      *int                 `json:"max_tokens,omitempty"`
+	Provider       *ProviderRouting     `json:"provider,omitempty"`
+	Metadata       map[string]any       `json:"metadata,omitempty"`
+	Trace          map[string]any       `json:"trace,omitempty"`
+	User           string               `json:"user,omitempty"`
+	SessionID      string               `json:"session_id,omitempty"`
+	ResponseFormat map[string]any       `json:"response_format,omitempty"`
+	Response       *ResponseRequestMeta `json:"-"`
 }
 
 // ResponsesInputItem is the text-only subset of the OpenAI Responses input

@@ -360,7 +360,7 @@ func CollectAnthropicText(r io.Reader) (StreamResult, error) {
 	finishReason := "stop"
 	var captured strings.Builder
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
 	scanner.Split(splitDoubleNewline)
 	for scanner.Scan() {
 		eventName, dataJSON := parseSSEBlock(scanner.Bytes())
@@ -468,7 +468,7 @@ func TransformResponsesStream(
 	}
 
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
 	scanner.Split(splitDoubleNewline)
 	for scanner.Scan() {
 		eventName, dataJSON := parseSSEBlock(scanner.Bytes())

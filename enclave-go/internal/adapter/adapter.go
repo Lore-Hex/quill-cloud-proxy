@@ -21,6 +21,8 @@ import (
 // max_tokens, so we always provide a value.
 const DefaultMaxTokens = 4096
 
+const maxSSEBlockBytes = 64 << 20
+
 // AdapterError signals a 4xx-class translation failure.
 type AdapterError struct {
 	Status  int
@@ -150,7 +152,7 @@ func TransformStreamCapture(r io.Reader, w io.Writer, requestID, model string) (
 	var captured strings.Builder
 
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
 	scanner.Split(splitDoubleNewline)
 
 	for scanner.Scan() {
