@@ -1,6 +1,6 @@
 {
-  "commit": "936b061",
-  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-936b061",
-  "image_digest": "sha256:0228be0e0d2da0511c9317a04d73e55cfd946936f1c1e92e317da5bc551492ac",
+  "commit": "4824128",
+  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-4824128",
+  "image_digest": "sha256:e6f537783f5ccc53b18ee553f4a8cdb3fa1316d90b4e88de0e6878cb3beafe46",
   "released_by": "github-actions:deploy-enclave-gcp"
 }
