@@ -82,13 +82,13 @@ func testPNG(t *testing.T) []byte {
 	return out.Bytes()
 }
 
-func pngHeaderWithDimensions(t *testing.T, width, height int) []byte {
+func pngHeaderWithDimensions(t *testing.T, width, height uint32) []byte {
 	t.Helper()
 	var out bytes.Buffer
 	out.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
 	ihdr := make([]byte, 13)
-	binary.BigEndian.PutUint32(ihdr[0:4], uint32(width))
-	binary.BigEndian.PutUint32(ihdr[4:8], uint32(height))
+	binary.BigEndian.PutUint32(ihdr[0:4], width)
+	binary.BigEndian.PutUint32(ihdr[4:8], height)
 	ihdr[8] = 8
 	ihdr[9] = 2
 	writePNGChunk(t, &out, "IHDR", ihdr)
@@ -99,7 +99,7 @@ func pngHeaderWithDimensions(t *testing.T, width, height int) []byte {
 func writePNGChunk(t *testing.T, out *bytes.Buffer, kind string, data []byte) {
 	t.Helper()
 	var length [4]byte
-	binary.BigEndian.PutUint32(length[:], uint32(len(data)))
+	binary.BigEndian.PutUint32(length[:], uint32(len(data))) //nolint:gosec // Test PNG chunks are fixed tiny fixtures.
 	out.Write(length[:])
 	out.WriteString(kind)
 	out.Write(data)
