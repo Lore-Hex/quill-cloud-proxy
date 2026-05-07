@@ -209,6 +209,11 @@ jobs:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
           API_HOST: api.quillrouter.com
+          # REGION_SHORT must match the existing prod MIG suffix —
+          # `quill-enclave-mig-us`, not `quill-enclave-mig-uscentral1`.
+          # Defaulting to dashes-stripped region created a parallel
+          # orphan MIG that wasn't bound to the LB serving real traffic.
+          REGION_SHORT: us
         run: bash tools/deploy-gcp-mig.sh us-central1
 
       - name: Roll the GCP MIG (europe-west4)
@@ -216,6 +221,7 @@ jobs:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
           API_HOST: api-europe-west4.quillrouter.com
+          REGION_SHORT: eu
         run: bash tools/deploy-gcp-mig.sh europe-west4
 
       - name: Smoke test enclave inference
