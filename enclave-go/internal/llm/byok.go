@@ -254,6 +254,22 @@ func directBaseURL(provider string) string {
 func directModelID(provider, model, upstreamModel string) string {
 	resolved := model
 	upstreamModel = strings.TrimSpace(upstreamModel)
+	// Provider-specific overrides (consulted first). Together hosts
+	// open-weight models under their own catalog naming
+	// (`Llama-3.3-70B-Instruct-Turbo` etc.) rather than the
+	// OpenRouter-canonical lowercase. Without this, every Together-
+	// routed request 404s. Maintained as a static table because
+	// runtime discovery would mean an extra Together API call at
+	// boot — net more code in the auditable enclave surface.
+	if provider == "together" {
+		key := upstreamModel
+		if key == "" {
+			key = model
+		}
+		if mapped, ok := togetherModelMap[stripOpenRouterModelVariant(key)]; ok {
+			return mapped
+		}
+	}
 	if upstreamModel != "" {
 		if mapped, ok := directModelMap[upstreamModel]; ok {
 			return stripOpenRouterModelVariant(mapped)
@@ -297,6 +313,37 @@ func stripOpenRouterModelVariant(model string) string {
 		}
 	}
 	return model
+}
+
+// togetherModelMap translates the OpenRouter-canonical model id (what
+// the TR control plane sends in the request body) to Together's own
+// catalog id. Built once by querying Together's /v1/models against the
+// set of Together-served models in src/trusted_router/data/openrouter_snapshot.json
+// and refreshed by hand when new Together-hosted models are added.
+//
+// Anything Together-routed and not in this map falls through to the
+// global directModelMap and then to the raw model id — which will 404
+// if Together's catalog uses different casing/naming. Backfill on
+// demand.
+var togetherModelMap = map[string]string{
+	"deepcogito/cogito-v2.1-671b":       "deepcogito/cogito-v2-1-671b",
+	"deepseek/deepseek-v4-pro":          "deepseek-ai/DeepSeek-V4-Pro",
+	"google/gemma-3n-e4b-it":            "google/gemma-3n-E4B-it",
+	"google/gemma-4-31b-it":             "google/gemma-4-31B-it",
+	"liquid/lfm-2-24b-a2b":              "LiquidAI/LFM2-24B-A2B",
+	"meta-llama/llama-3-8b-instruct":    "meta-llama/Meta-Llama-3-8B-Instruct-Lite",
+	"meta-llama/llama-3.3-70b-instruct": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+	"meta-llama/llama-guard-4-12b":      "meta-llama/Llama-Guard-4-12B",
+	"minimax/minimax-m2.7":              "MiniMaxAI/MiniMax-M2.7",
+	"moonshotai/kimi-k2.5":              "moonshotai/Kimi-K2.5",
+	"moonshotai/kimi-k2.6":              "moonshotai/Kimi-K2.6",
+	"qwen/qwen-2.5-7b-instruct":         "Qwen/Qwen2.5-7B-Instruct-Turbo",
+	"qwen/qwen3-coder":                  "Qwen/Qwen3-Coder-Next-FP8",
+	"qwen/qwen3-coder-next":             "Qwen/Qwen3-Coder-Next-FP8",
+	"qwen/qwen3.5-397b-a17b":            "Qwen/Qwen3.5-397B-A17B",
+	"qwen/qwen3.5-9b":                   "Qwen/Qwen3.5-9B",
+	"z-ai/glm-5":                        "zai-org/GLM-5",
+	"z-ai/glm-5.1":                      "zai-org/GLM-5.1",
 }
 
 var directModelMap = map[string]string{
