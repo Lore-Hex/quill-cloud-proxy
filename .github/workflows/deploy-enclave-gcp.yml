@@ -43,8 +43,6 @@ concurrency:
 permissions:
   id-token: write   # for Workload Identity Federation
   contents: write   # to commit trust-page/ artifacts back to main
-  pages: write      # to deploy trust page
-  pull-requests: read
 
 env:
   PROJECT_ID: quill-cloud-proxy
@@ -184,18 +182,23 @@ jobs:
         run: bash tools/deploy-gcp-mig.sh
 
       - name: Smoke test enclave inference
-        # Optional: skipped when SMOKE_TEST_API_KEY isn't configured so a
-        # missing secret doesn't block the deploy. Once the secret is
-        # added in repo Settings → Secrets, the test runs automatically.
-        if: ${{ secrets.SMOKE_TEST_API_KEY != '' }}
+        # GHA quirk: secrets aren't available in a top-level `if:`
+        # expression, so we gate via an env var set from the secret. If
+        # SMOKE_TEST_API_KEY isn't configured, the step is a no-op.
+        env:
+          SMOKE_KEY: ${{ secrets.SMOKE_TEST_API_KEY }}
         run: |
+          if [ -z "${SMOKE_KEY}" ]; then
+            echo "smoke skipped: SMOKE_TEST_API_KEY not set"
+            exit 0
+          fi
           set -e
           # Wait briefly for MIG rollout to settle.
           sleep 30
           # Pick a Together-served model — proves both Together provider
           # wiring AND attested-routing are functional end-to-end.
           response=$(curl -sw "\n%{http_code}" \
-            -H "authorization: Bearer ${{ secrets.SMOKE_TEST_API_KEY }}" \
+            -H "authorization: Bearer ${SMOKE_KEY}" \
             -H "content-type: application/json" \
             -d '{"model":"meta-llama/llama-3.3-70b-instruct","messages":[{"role":"user","content":"reply with PONG"}],"max_tokens":10}' \
             https://api.quillrouter.com/v1/chat/completions)
@@ -204,24 +207,7 @@ jobs:
           echo "HTTP $code"
           [[ "$code" == "200" ]] || { echo "smoke failed: $body"; exit 1; }
 
-  publish-trust-page:
-    needs: [build-and-release, rollout]
-    runs-on: ubuntu-latest
-    # Skipped automatically when GitHub Pages isn't configured for the
-    # repo — the configure-pages action fails closed in that case. Once
-    # Pages is enabled (Settings → Pages → Source: GitHub Actions) the
-    # job runs successfully on the next deploy.
-    continue-on-error: true
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main   # pull the auto-commit with new digest
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: trust-page/
-      - id: deployment
-        uses: actions/deploy-pages@v4
+  # publish-trust-page job removed for now — re-add once GitHub Pages is
+  # enabled on this repo (Settings → Pages → Source: GitHub Actions).
+  # The auto-commit step above keeps trust-page/* in sync with the
+  # running enclave digest meanwhile; serving via S3 still works.
