@@ -1,0 +1,209 @@
+# Auto-deploy the GCP enclave (the attested workload) on push to main.
+#
+# This is the trust-critical workflow. Customers verifying
+# https://trust.trustedrouter.com/ are reading artifacts produced by THIS
+# job. Each release:
+#   1. Builds the enclave image via Cloud Build (no human in the build path)
+#   2. Resolves the immutable OCI digest from Artifact Registry
+#   3. Writes that digest into trust-page/{image-digest-gcp.txt,
+#      image-reference-gcp.txt, gcp-release.json}
+#   4. Auto-commits those trust artifacts back to main, attributed to
+#      this workflow run by SHA + run-id
+#   5. Rolls the GCP MIG so the running workload matches the new digest
+#   6. Smoke-tests an inference call against the rolled workload
+#   7. Publishes trust-page/ to GitHub Pages — which serves
+#      https://trust.trustedrouter.com/. Verifiers can diff the GitHub
+#      tree against the live page byte-for-byte.
+#
+# The trust story this enables: any auditor can pick a commit, find the
+# GHA run that built it, see the public workflow definition, see the
+# resolved digest, and verify the running enclave matches. No human in
+# the build path. No "Joseph's MacBook" trust dependency.
+
+name: Deploy GCP enclave (attested workload)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "enclave-go/**"
+      - "tools/release-gcp.sh"
+      - "tools/deploy-gcp-mig.sh"
+      - ".github/workflows/deploy-enclave-gcp.yml"
+      # Note: trust-page/** is intentionally NOT in this list. Trust
+      # artifacts are *output* of this workflow, not input — listing them
+      # would create an infinite-loop trigger when the workflow auto-
+      # commits its own digest update.
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-enclave-gcp
+  cancel-in-progress: false
+
+permissions:
+  id-token: write   # for Workload Identity Federation
+  contents: write   # to commit trust-page/ artifacts back to main
+  pages: write      # to deploy trust page
+  pull-requests: read
+
+env:
+  PROJECT_ID: quill-cloud-proxy
+  REGION: us-central1
+  ARTIFACT_REPO: quill
+  IMAGE_NAME: enclave-multi
+  DOCKERFILE: Dockerfile.enclave.gcp.multi
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: enclave-go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: go test -tags 'cloud_gcp,llm_multi' ./...
+
+  build-and-release:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.set-vars.outputs.image_ref }}
+      image_digest: ${{ steps.resolve-digest.outputs.image_digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history for the auto-commit + push back
+
+      - id: set-vars
+        run: |
+          SHA="$(git rev-parse --short HEAD)"
+          IMAGE_TAG="gcp-release-${SHA}"
+          IMAGE_REF="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPO}/${IMAGE_NAME}:${IMAGE_TAG}"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+          echo "SHA=${SHA}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "IMAGE_REF=${IMAGE_REF}" >> "$GITHUB_ENV"
+
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure docker auth (for image describe)
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build enclave image via Cloud Build
+        working-directory: enclave-go
+        run: |
+          gcloud builds submit \
+            --tag "${IMAGE_REF}" \
+            --config=- <<EOF
+          steps:
+            - name: gcr.io/cloud-builders/docker
+              args: ['buildx', 'build', '--platform=linux/amd64', '--file=${DOCKERFILE}', '--tag=${IMAGE_REF}', '--push', '.']
+          options:
+            machineType: E2_HIGHCPU_8
+          EOF
+
+      - id: resolve-digest
+        name: Resolve image digest
+        run: |
+          DIGEST=$(gcloud artifacts docker images describe "${IMAGE_REF}" \
+            --format='value(image_summary.digest)')
+          [[ -n "${DIGEST}" ]] || { echo "could not resolve digest"; exit 1; }
+          echo "image_digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "DIGEST=${DIGEST}" >> "$GITHUB_ENV"
+
+      - name: Write trust-page artifacts
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${DIGEST}" > trust-page/image-digest-gcp.txt
+          printf '%s\n' "${IMAGE_REF}" > trust-page/image-reference-gcp.txt
+          python3 - trust-page/gcp-release.json "${SHA}" "${IMAGE_REF}" "${DIGEST}" <<'PY'
+          import json, sys
+          path, sha, ref, digest = sys.argv[1:]
+          json.dump(
+              {
+                  "commit": sha,
+                  "image_reference": ref,
+                  "image_digest": digest,
+                  "released_by": "github-actions:deploy-enclave-gcp",
+              },
+              open(path, "w"),
+              indent=2,
+          )
+          open(path, "a").write("\n")
+          PY
+
+      - name: Commit trust artifacts back to main
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/gcp-release.json
+          if git diff --cached --quiet; then
+            echo "trust-page artifacts unchanged; nothing to commit"
+          else
+            git commit -m "[bot] enclave release ${SHA}: digest ${DIGEST}"
+            git push origin HEAD:main
+          fi
+
+  rollout:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main   # pull the auto-commit just made
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Roll the GCP MIG
+        env:
+          IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
+          IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
+        run: bash tools/deploy-gcp-mig.sh
+
+      - name: Smoke test enclave inference
+        run: |
+          set -e
+          # Wait briefly for MIG rollout to settle.
+          sleep 30
+          # Pick a Together-served model — proves both Together provider
+          # wiring AND attested-routing are functional end-to-end.
+          response=$(curl -sw "\n%{http_code}" \
+            -H "authorization: Bearer ${{ secrets.SMOKE_TEST_API_KEY }}" \
+            -H "content-type: application/json" \
+            -d '{"model":"meta-llama/llama-3.3-70b-instruct","messages":[{"role":"user","content":"reply with PONG"}],"max_tokens":10}' \
+            https://api.quillrouter.com/v1/chat/completions)
+          code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n-1)
+          echo "HTTP $code"
+          [[ "$code" == "200" ]] || { echo "smoke failed: $body"; exit 1; }
+
+  publish-trust-page:
+    needs: [build-and-release, rollout]
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main   # pull the auto-commit with new digest
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: trust-page/
+      - id: deployment
+        uses: actions/deploy-pages@v4
