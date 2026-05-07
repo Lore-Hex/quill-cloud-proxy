@@ -43,6 +43,7 @@ concurrency:
 permissions:
   id-token: write   # for Workload Identity Federation
   contents: write   # to commit trust-page/ artifacts back to main
+  pages: write      # for the publish-trust-page job
 
 env:
   PROJECT_ID: quill-cloud-proxy
@@ -258,7 +259,24 @@ jobs:
           echo "smoke didn't observe a 200 within ~10 min; rollout may still be converging"
           # exit 0 — non-blocking
 
-  # publish-trust-page job removed for now — re-add once GitHub Pages is
-  # enabled on this repo (Settings → Pages → Source: GitHub Actions).
-  # The auto-commit step above keeps trust-page/* in sync with the
-  # running enclave digest meanwhile; serving via S3 still works.
+  # Publish trust-page/ to GitHub Pages. Pages serves
+  # https://trust.trustedrouter.com once you add a CNAME at your DNS
+  # provider: `trust.trustedrouter.com → lore-hex.github.io`. Until DNS
+  # is in place, the page is reachable at
+  # https://lore-hex.github.io/quill-cloud-proxy/.
+  publish-trust-page:
+    needs: [build-and-release, rollout]
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main   # pull the auto-commit with the new digest
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: trust-page/
+      - id: deployment
+        uses: actions/deploy-pages@v4
