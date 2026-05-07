@@ -204,11 +204,17 @@ jobs:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
       - uses: google-github-actions/setup-gcloud@v2
-      - name: Roll the GCP MIG
+      - name: Roll the GCP MIG (us-central1)
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-        run: bash tools/deploy-gcp-mig.sh
+        run: bash tools/deploy-gcp-mig.sh us-central1
+
+      - name: Roll the GCP MIG (europe-west4)
+        env:
+          IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
+          IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
+        run: bash tools/deploy-gcp-mig.sh europe-west4
 
       - name: Smoke test enclave inference
         # GHA quirk: secrets aren't available in a top-level `if:`
