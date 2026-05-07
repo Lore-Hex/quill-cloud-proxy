@@ -100,18 +100,31 @@ jobs:
 
       - name: Build enclave image via Cloud Build
         working-directory: enclave-go
-        # Cloud Build's --tag mode looks for ./Dockerfile only, but the
-        # enclave has multiple Dockerfile.* variants. Use a config with
-        # explicit --file to pick the multi target. --async to avoid
-        # the project-Viewer requirement of log streaming.
+        # The Dockerfile pins its golang:1.24-bookworm base image to a
+        # single-arch digest (arm64, since it was originally generated on
+        # a Mac). Cloud Build runners are amd64. Without QEMU + buildx,
+        # docker can't pull/run the arm64 builder. Steps below install
+        # QEMU emulators, set up a buildx builder, then cross-build the
+        # final amd64 image — matches what local docker-buildx-on-Mac
+        # has been producing.
         run: |
           set -euo pipefail
           cat > /tmp/cloudbuild-enclave.yaml <<'EOF'
           steps:
             - name: gcr.io/cloud-builders/docker
-              args: ['build', '--platform=linux/amd64', '--file=${_DOCKERFILE}', '--tag=${_IMAGE}', '.']
-            - name: gcr.io/cloud-builders/docker
-              args: ['push', '${_IMAGE}']
+              entrypoint: bash
+              args:
+                - -c
+                - |
+                  set -e
+                  docker run --privileged --rm tonistiigi/binfmt --install arm64,amd64
+                  docker buildx create --use --name=enclave-builder
+                  docker buildx inspect --bootstrap
+                  docker buildx build --platform=linux/amd64 \
+                    --file=${_DOCKERFILE} \
+                    --tag=${_IMAGE} \
+                    --push \
+                    .
           options:
             machineType: E2_HIGHCPU_8
           EOF
