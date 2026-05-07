@@ -88,12 +88,14 @@ jobs:
           #  - lorehex.co + *.lorehex.co (our own pages + curl recipes;
           #    bare lorehex.co covers the marketing CTA at the top)
           #  - quillrouter.com + *.quillrouter.com (our API endpoint)
+          #  - trustedrouter.com + *.trustedrouter.com (our public
+          #    console/status/trust domains)
           #  - sigstore.dev / *.sigstore.dev (transparency-log docs)
           #  - token.actions.githubusercontent.com (Fulcio OIDC issuer
           #    referenced in the cosign verify recipe — required arg, not
           #    a fetch the page makes)
-          grep -oE 'https?://[^"[:space:])]+' trust-page/index.html | sort -u > /tmp/urls.txt
-          grep -vE "^https?://(github\.com|aws\.amazon\.com|docs\.aws\.amazon\.com|[a-z0-9.-]+\.amazonaws\.com|cloud\.google\.com|confidentialcomputing\.googleapis\.com|www\.googleapis\.com|lorehex\.co|[a-z0-9.-]+\.lorehex\.co|quillrouter\.com|[a-z0-9.-]+\.quillrouter\.com|sigstore\.dev|[a-z0-9.-]+\.sigstore\.dev|token\.actions\.githubusercontent\.com)(:[0-9]+)?(/|$|')" /tmp/urls.txt > /tmp/violations.txt || true
+          grep -oE 'https?://[^"[:space:])<&]+' trust-page/index.html | sort -u > /tmp/urls.txt
+          grep -vE "^https?://(github\.com|aws\.amazon\.com|docs\.aws\.amazon\.com|[a-z0-9.-]+\.amazonaws\.com|cloud\.google\.com|confidentialcomputing\.googleapis\.com|www\.googleapis\.com|lorehex\.co|[a-z0-9.-]+\.lorehex\.co|quillrouter\.com|[a-z0-9.-]+\.quillrouter\.com|trustedrouter\.com|[a-z0-9.-]+\.trustedrouter\.com|sigstore\.dev|[a-z0-9.-]+\.sigstore\.dev|token\.actions\.githubusercontent\.com)(:[0-9]+)?(/|$)" /tmp/urls.txt > /tmp/violations.txt || true
           if [ -s /tmp/violations.txt ]; then
             echo "trust page contains disallowed external URLs:" >&2
             cat /tmp/violations.txt >&2
