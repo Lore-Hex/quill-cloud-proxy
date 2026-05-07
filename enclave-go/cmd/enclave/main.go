@@ -624,61 +624,99 @@ func invokeProviderStream(
 	if len(options) == 0 {
 		options = []llm.InvokeOptions{{Model: req.Model}}
 	}
+	overallStart := time.Now()
+	requestID := authorizationRequestID(authorization)
 	var lastErr error
+	var winningProvider, winningModel, winningEndpoint string
+	var winningBytes int
+	var winningTTFBms, winningTotalMs int64
 	for i, option := range options {
 		if option.Model == "" {
 			option.Model = req.Model
 		}
 		req.Model = option.Model
-		// Per-attempt time-to-first-byte deadline. If the upstream
-		// provider doesn't deliver a single byte within
-		// firstByteBudget, cancel this attempt and fall through to
-		// the next candidate. The cancel is *disarmed* the moment
-		// the candidateWriter sees its first byte, so once streaming
-		// starts the call can run as long as the underlying HTTP
-		// client allows (~10 min). Without this, a hung upstream
-		// blocks the whole 10-min budget before the next candidate
-		// gets a chance.
+		// Per-attempt time-to-first-byte deadline (see firstByteBudget).
 		attemptCtx, cancelAttempt := context.WithCancel(ctx)
 		var ttfbFired bool
 		ttfbTimer := time.AfterFunc(firstByteBudget, func() {
 			ttfbFired = true
 			cancelAttempt()
 		})
+		attemptStart := time.Now()
+		var ttfb time.Duration
+		var ttfbCaptured bool
 		candidateWriter := &routeSelectingWriter{
 			w:       pw,
 			tracker: selectedRoute,
 			option:  option,
 			onFirstByte: func() {
-				// First byte arrived from upstream; disarm the TTFB cancel.
+				// First byte arrived from upstream; disarm the TTFB cancel
+				// and record the latency so we can log it.
+				ttfb = time.Since(attemptStart)
+				ttfbCaptured = true
 				ttfbTimer.Stop()
 			},
 		}
 		err := br.InvokeStreaming(attemptCtx, req, anthropicReq, candidateWriter, option)
+		attemptDuration := time.Since(attemptStart)
 		ttfbTimer.Stop()
 		cancelAttempt()
 		if ttfbFired && err != nil {
-			// Surface a recognizable error so retryableInvokeError below
-			// classifies it correctly; the upstream's own ctx-canceled
-			// error wrappers vary across clients.
 			err = fmt.Errorf("llm/upstream: time-to-first-byte exceeded %s: %w", firstByteBudget, err)
 		}
+
+		// Per-attempt structured log. One line, key=value, no prompt
+		// or response content — just the metadata an operator needs
+		// to attribute hangs/failures to a specific provider.
+		ttfbMs := int64(-1)
+		if ttfbCaptured {
+			ttfbMs = ttfb.Milliseconds()
+		}
+		outcome := "ok"
+		errStr := ""
+		if err != nil {
+			outcome = "fail"
+			errStr = errorClass(err)
+		}
+		fmt.Fprintf(os.Stderr,
+			"enclave.invoke_attempt request_id=%q attempt=%d/%d model=%q provider=%q endpoint=%q outcome=%s ttfb_ms=%d total_ms=%d bytes=%d err=%q\n",
+			requestID,
+			i+1, len(options),
+			option.Model, option.Provider, option.EndpointID,
+			outcome,
+			ttfbMs,
+			attemptDuration.Milliseconds(),
+			candidateWriter.BytesWritten(),
+			errStr,
+		)
+
 		if err == nil {
 			if candidateWriter.BytesWritten() == 0 {
 				selectedRoute.Select(option)
 			}
+			winningProvider, winningModel, winningEndpoint = option.Provider, option.Model, option.EndpointID
+			winningBytes = candidateWriter.BytesWritten()
+			winningTTFBms = ttfbMs
+			winningTotalMs = attemptDuration.Milliseconds()
+			fmt.Fprintf(os.Stderr,
+				"enclave.invoke_complete request_id=%q outcome=ok provider_used=%q model=%q endpoint=%q attempts=%d fallbacks=%d ttfb_ms=%d upstream_ms=%d total_ms=%d bytes=%d\n",
+				requestID,
+				winningProvider, winningModel, winningEndpoint,
+				i+1, i,
+				winningTTFBms,
+				winningTotalMs,
+				time.Since(overallStart).Milliseconds(),
+				winningBytes,
+			)
 			_ = pw.Close()
 			return
 		}
 		lastErr = err
-		fmt.Fprintf(os.Stderr, "enclave.invoke_streaming_failed model=%q endpoint=%q provider=%q attempt=%d/%d err=%v\n",
-			option.Model,
-			option.EndpointID,
-			option.Provider,
-			i+1,
-			len(options),
-			err)
 		if !trEnabled || candidateWriter.BytesWritten() > 0 || i == len(options)-1 || !retryableInvokeError(err) {
+			fmt.Fprintf(os.Stderr,
+				"enclave.invoke_complete request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
+				requestID, i+1, i, time.Since(overallStart).Milliseconds(), errorClass(err),
+			)
 			if trEnabled {
 				_ = pw.CloseWithError(err)
 				return
@@ -689,10 +727,56 @@ func invokeProviderStream(
 		}
 	}
 	if lastErr != nil {
+		fmt.Fprintf(os.Stderr,
+			"enclave.invoke_complete request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
+			requestID, len(options), len(options)-1, time.Since(overallStart).Milliseconds(), errorClass(lastErr),
+		)
 		_ = pw.CloseWithError(lastErr)
 		return
 	}
 	_ = pw.Close()
+}
+
+// authorizationRequestID returns a stable correlation id for log
+// lines. Falls back to "anon" so lines remain greppable even on
+// pre-trustedrouter paths (legacy direct-Anthropic, etc.).
+func authorizationRequestID(authorization *trustedrouter.Authorization) string {
+	if authorization == nil {
+		return "anon"
+	}
+	if id := authorization.AuthorizationID; id != "" {
+		return id
+	}
+	return "anon"
+}
+
+// errorClass collapses an error to a short label suitable for log
+// aggregation. We strip path/host fragments that vary per-request so
+// "top errors of the hour" becomes a meaningful query.
+func errorClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "time-to-first-byte exceeded"):
+		return "ttfb_exceeded"
+	case strings.Contains(msg, "context canceled"):
+		return "ctx_canceled"
+	case strings.Contains(msg, "context deadline exceeded"):
+		return "ctx_deadline"
+	case strings.Contains(strings.ToLower(msg), "http 5"):
+		return "upstream_5xx"
+	case strings.Contains(strings.ToLower(msg), "http 429"), strings.Contains(strings.ToLower(msg), "rate limit"):
+		return "rate_limited"
+	case strings.Contains(strings.ToLower(msg), "http 4"):
+		return "upstream_4xx"
+	}
+	// Last resort: first 80 chars, no newlines.
+	if len(msg) > 80 {
+		msg = msg[:80]
+	}
+	return strings.ReplaceAll(msg, "\n", " ")
 }
 
 type selectedRouteTracker struct {

@@ -68,7 +68,34 @@ which monitor region**. Patterns to look for:
 | `error_type=ReadTimeout` clustered on `chat_completions` probes | TR routed to a slow/dead upstream; check `selected_provider` |
 | `error_type=ConnectTimeout` | TLS or LB dropped before the request reached the workload |
 
-## Step 2 — Cross-reference Cloud Logging at the workload
+## Step 2a — Per-request structured log
+
+The enclave logs one `enclave.invoke_attempt` line per provider attempt
+and one `enclave.invoke_complete` line per request. Format:
+
+```
+enclave.invoke_attempt request_id="..." attempt=1/3 model="..." provider="anthropic"
+  endpoint="..." outcome=ok|fail ttfb_ms=234 total_ms=5678 bytes=12345 err="..."
+enclave.invoke_complete request_id="..." outcome=ok|fail provider_used="..." model="..."
+  endpoint="..." attempts=2 fallbacks=1 ttfb_ms=234 upstream_ms=5678 total_ms=6234 bytes=12345
+```
+
+This is the most direct signal for "was a specific upstream slow?" —
+filter on `outcome=fail` or `err="ttfb_exceeded"` for the bad window:
+
+```bash
+gcloud logging read 'logName=~"confidential-space-launcher" AND textPayload:"enclave.invoke_attempt" AND textPayload:"outcome=fail" AND timestamp>="2026-05-06T03:00:00Z" AND timestamp<="2026-05-06T04:00:00Z"' \
+  --project=quill-cloud-proxy --limit=500 \
+  --format='value(textPayload)' \
+  | grep -oE 'provider="[^"]+"|err="[^"]+"' | sort | uniq -c | sort -rn
+```
+
+`request_id` matches the TR control plane's authorization id, so you
+can join with TR's gateway logs for end-to-end traces.
+
+No prompt or response content is ever logged — only metadata.
+
+## Step 2b — Cross-reference Cloud Logging at the workload
 
 Use [tools/dx/enclave-logs.sh](../../tools/dx/enclave-logs.sh)
 against the same hour AND against a healthy hour. Diff the top
@@ -167,10 +194,8 @@ this incident exposed.**
 
 When a real incident reveals a missing signal, file the gap here:
 
-- [ ] **Per-request enclave log** — one line per inference call
-  including provider, upstream latency, status. Without it,
-  upstream-caused incidents (probably the most common kind) are
-  diagnosed by elimination, not direct observation.
+- [x] **Per-request enclave log** — `enclave.invoke_attempt` and
+  `enclave.invoke_complete` (added after the 5/6 outage; see Step 2a).
 - [ ] **Failed-probe routing-decision capture** — the synthetic monitor
   records `selected_provider=None` when a probe times out, because the
   enclave never returned. A separate probe that calls the authorize
