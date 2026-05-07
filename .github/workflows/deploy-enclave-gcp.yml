@@ -208,12 +208,14 @@ jobs:
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
+          API_HOST: api.quillrouter.com
         run: bash tools/deploy-gcp-mig.sh us-central1
 
       - name: Roll the GCP MIG (europe-west4)
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
+          API_HOST: api-europe-west4.quillrouter.com
         run: bash tools/deploy-gcp-mig.sh europe-west4
 
       - name: Smoke test enclave inference
