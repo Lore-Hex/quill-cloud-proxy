@@ -630,12 +630,39 @@ func invokeProviderStream(
 			option.Model = req.Model
 		}
 		req.Model = option.Model
+		// Per-attempt time-to-first-byte deadline. If the upstream
+		// provider doesn't deliver a single byte within
+		// firstByteBudget, cancel this attempt and fall through to
+		// the next candidate. The cancel is *disarmed* the moment
+		// the candidateWriter sees its first byte, so once streaming
+		// starts the call can run as long as the underlying HTTP
+		// client allows (~10 min). Without this, a hung upstream
+		// blocks the whole 10-min budget before the next candidate
+		// gets a chance.
+		attemptCtx, cancelAttempt := context.WithCancel(ctx)
+		var ttfbFired bool
+		ttfbTimer := time.AfterFunc(firstByteBudget, func() {
+			ttfbFired = true
+			cancelAttempt()
+		})
 		candidateWriter := &routeSelectingWriter{
 			w:       pw,
 			tracker: selectedRoute,
 			option:  option,
+			onFirstByte: func() {
+				// First byte arrived from upstream; disarm the TTFB cancel.
+				ttfbTimer.Stop()
+			},
 		}
-		err := br.InvokeStreaming(ctx, req, anthropicReq, candidateWriter, option)
+		err := br.InvokeStreaming(attemptCtx, req, anthropicReq, candidateWriter, option)
+		ttfbTimer.Stop()
+		cancelAttempt()
+		if ttfbFired && err != nil {
+			// Surface a recognizable error so retryableInvokeError below
+			// classifies it correctly; the upstream's own ctx-canceled
+			// error wrappers vary across clients.
+			err = fmt.Errorf("llm/upstream: time-to-first-byte exceeded %s: %w", firstByteBudget, err)
+		}
 		if err == nil {
 			if candidateWriter.BytesWritten() == 0 {
 				selectedRoute.Select(option)
@@ -742,16 +769,37 @@ func (t *selectedRouteTracker) Endpoint(fallback string, authorization *trustedr
 	return ""
 }
 
+// firstByteBudget caps how long a single provider attempt may take
+// before delivering its first byte. With a typical 3-candidate
+// fallback chain this means a hung provider costs ~8s of the
+// customer's budget, not the underlying HTTP client's 10-min total
+// timeout. Override at boot via QUILL_FIRST_BYTE_TIMEOUT_SECONDS.
+var firstByteBudget = func() time.Duration {
+	raw := os.Getenv("QUILL_FIRST_BYTE_TIMEOUT_SECONDS")
+	if raw == "" {
+		return 8 * time.Second
+	}
+	if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return 8 * time.Second
+}()
+
 type routeSelectingWriter struct {
-	w       io.Writer
-	tracker *selectedRouteTracker
-	option  llm.InvokeOptions
-	bytes   int
+	w           io.Writer
+	tracker     *selectedRouteTracker
+	option      llm.InvokeOptions
+	bytes       int
+	onFirstByte func() // optional: invoked exactly once when the first byte arrives
+	firstByte   sync.Once
 }
 
 func (w *routeSelectingWriter) Write(p []byte) (int, error) {
 	if len(p) > 0 {
 		w.tracker.Select(w.option)
+		if w.onFirstByte != nil {
+			w.firstByte.Do(w.onFirstByte)
+		}
 	}
 	n, err := w.w.Write(p)
 	w.bytes += n
@@ -777,7 +825,13 @@ func retryableInvokeError(err error) bool {
 		strings.Contains(message, "http 5") ||
 		strings.Contains(message, "status 5") ||
 		strings.Contains(message, "timeout") ||
-		strings.Contains(message, "temporary")
+		strings.Contains(message, "temporary") ||
+		// TTFB-canceled attempts: the upstream didn't return a single
+		// byte within firstByteBudget. Always retryable — the next
+		// candidate may be healthy.
+		strings.Contains(message, "time-to-first-byte exceeded") ||
+		strings.Contains(message, "context canceled") ||
+		strings.Contains(message, "context deadline exceeded")
 }
 
 func settleAndBroadcast(
