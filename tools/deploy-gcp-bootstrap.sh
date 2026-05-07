@@ -54,6 +54,7 @@ DEEPSEEK_SECRET="${DEEPSEEK_SECRET:-trustedrouter-deepseek-api-key}"
 MISTRAL_SECRET="${MISTRAL_SECRET:-trustedrouter-mistral-api-key}"
 KIMI_SECRET="${KIMI_SECRET:-trustedrouter-kimi-api-key}"
 ZAI_SECRET="${ZAI_SECRET:-trustedrouter-zai-api-key}"
+TOGETHER_SECRET="${TOGETHER_SECRET:-trustedrouter-together-api-key}"
 INTERNAL_GATEWAY_SECRET="${INTERNAL_GATEWAY_SECRET:-trustedrouter-internal-gateway-token}"
 DEVICE_KEYS_SECRET="${DEVICE_KEYS_SECRET:-quill-device-keys}"
 
@@ -127,6 +128,7 @@ for secret in \
   "$MISTRAL_SECRET" \
   "$KIMI_SECRET" \
   "$ZAI_SECRET" \
+  "$TOGETHER_SECRET" \
   "$INTERNAL_GATEWAY_SECRET" \
   "$DEVICE_KEYS_SECRET"; do
   if gc secrets describe "$secret" >/dev/null 2>&1; then

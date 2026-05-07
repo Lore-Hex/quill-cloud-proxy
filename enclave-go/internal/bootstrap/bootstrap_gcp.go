@@ -90,6 +90,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	mistralSecret := os.Getenv("QUILL_MISTRAL_SECRET")
 	kimiSecret := os.Getenv("QUILL_KIMI_SECRET")
 	zaiSecret := os.Getenv("QUILL_ZAI_SECRET")
+	togetherSecret := os.Getenv("QUILL_TOGETHER_SECRET")
 	if !anySet(
 		openrouterSecret,
 		anthropicSecret,
@@ -100,6 +101,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		mistralSecret,
 		kimiSecret,
 		zaiSecret,
+		togetherSecret,
 	) {
 		return nil, fmt.Errorf("bootstrap/gcp: at least one provider secret env must be set")
 	}
@@ -183,6 +185,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: zai key: %w", err)
 		}
 	}
+	var togetherKey []byte
+	if togetherSecret != "" {
+		togetherKey, err = fetchSecret(ctx, httpc, token, project, togetherSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: together key: %w", err)
+		}
+	}
 	var internalGatewayToken string
 	if internalSecret := os.Getenv("QUILL_TRUSTEDROUTER_INTERNAL_SECRET"); internalSecret != "" {
 		value, err := fetchSecret(ctx, httpc, token, project, internalSecret)
@@ -204,6 +213,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		MistralAPIKey:              strings.TrimSpace(string(mistralKey)),
 		KimiAPIKey:                 strings.TrimSpace(string(kimiKey)),
 		ZAIAPIKey:                  strings.TrimSpace(string(zaiKey)),
+		TogetherAPIKey:             strings.TrimSpace(string(togetherKey)),
 		TrustedRouterBaseURL:       os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken: strings.TrimSpace(internalGatewayToken),
 		// BedrockVsockProxy / OpenRouterVsockProxy unused on GCP — direct egress.

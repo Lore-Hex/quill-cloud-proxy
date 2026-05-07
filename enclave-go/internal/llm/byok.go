@@ -241,6 +241,11 @@ func directBaseURL(provider string) string {
 		// open.bigmodel.cn host serves the same surface but is being
 		// deprecated; new keys are issued under api.z.ai.
 		return "https://api.z.ai/api/paas/v4"
+	case "together":
+		// Together AI hosts the open-weight catalog (Llama, DeepSeek
+		// incl. DeepSeek-OCR, Qwen, Mixtral) plus image gen + embeddings.
+		// OpenAI-compatible chat completions at api.together.xyz/v1.
+		return "https://api.together.xyz/v1"
 	default:
 		return ""
 	}

@@ -51,6 +51,7 @@ type BootstrapData struct {
 	MistralAPIKey  string `json:"mistral_api_key,omitempty"`
 	KimiAPIKey     string `json:"kimi_api_key,omitempty"`
 	ZAIAPIKey      string `json:"zai_api_key,omitempty"`
+	TogetherAPIKey string `json:"together_api_key,omitempty"`
 }
 
 // OpenAIChatMessage is one message in an inbound /v1/chat/completions request.

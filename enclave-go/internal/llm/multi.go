@@ -38,6 +38,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		mistral:   newOpenAICompatible("mistral", boot.MistralAPIKey),
 		kimi:      newKimi(boot),
 		zai:       newZAI(boot),
+		together:  newOpenAICompatible("together", boot.TogetherAPIKey),
 	}
 }
 
@@ -51,6 +52,7 @@ type multiClient struct {
 	mistral   *openAICompatibleClient
 	kimi      *kimiClient
 	zai       *zaiClient
+	together  *openAICompatibleClient
 }
 
 func (m *multiClient) InvokeStreaming(
@@ -86,7 +88,9 @@ func (m *multiClient) InvokeStreaming(
 		return m.kimi.InvokeStreaming(ctx, req, body, out, options...)
 	case "zai":
 		return m.zai.InvokeStreaming(ctx, req, body, out, options...)
+	case "together":
+		return m.together.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together)", provider)
 	}
 }
