@@ -224,6 +224,11 @@ jobs:
             echo "  pre-rollout ${region}: ${tmpl_short:-<none>}"
           done
 
+      # Staged regional rollout. Roll us-central1 first, gate on a
+      # 3-min single-region synthetic watch; only proceed to
+      # europe-west4 if us-central1 stays up. A bad image reaches at
+      # most one region before the gate catches it.
+
       - name: Roll the GCP MIG (us-central1)
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
@@ -231,10 +236,33 @@ jobs:
           API_HOST: api.quillrouter.com
           # REGION_SHORT must match the existing prod MIG suffix —
           # `quill-enclave-mig-us`, not `quill-enclave-mig-uscentral1`.
-          # Defaulting to dashes-stripped region created a parallel
-          # orphan MIG that wasn't bound to the LB serving real traffic.
           REGION_SHORT: us
         run: bash tools/deploy-gcp-mig.sh us-central1
+
+      - name: Canary gate — watch us-central1 only (3 min)
+        id: canary_us
+        continue-on-error: true
+        run: python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 2
+
+      - name: Rollback us-central1 MIG + abort (canary tripped)
+        if: ${{ steps.canary_us.outcome == 'failure' && steps.canary_us.outputs.rollback_regions != '' }}
+        env:
+          PREV_US: ${{ steps.prev.outputs.us_central1_template }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PREV_US}" ]; then
+            echo "no prior us-central1 template recorded; cannot rollback"
+            exit 1
+          fi
+          echo "us-central1 canary failed; pointing MIG back at ${PREV_US}"
+          gcloud compute instance-groups managed set-instance-template quill-enclave-mig-us \
+            --region=us-central1 --project=quill-cloud-proxy \
+            --template="${PREV_US}" --quiet
+          gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-us \
+            --region=us-central1 --project=quill-cloud-proxy \
+            --max-unavailable=0 --max-surge=3 --quiet
+          echo "europe-west4 NEVER received the bad image; safe."
+          exit 1
 
       - name: Roll the GCP MIG (europe-west4)
         env:
@@ -244,7 +272,32 @@ jobs:
           REGION_SHORT: eu
         run: bash tools/deploy-gcp-mig.sh europe-west4
 
-      - name: Post-rollout watchdog (per-region synthetic monitor)
+      - name: Canary gate — watch europe-west4 only (3 min)
+        id: canary_eu
+        continue-on-error: true
+        run: python3 tools/watchdog.py --regions europe-west4 --duration-min 3 --rollback-after 2
+
+      - name: Rollback europe-west4 MIG + abort (canary tripped)
+        if: ${{ steps.canary_eu.outcome == 'failure' && steps.canary_eu.outputs.rollback_regions != '' }}
+        env:
+          PREV_EU: ${{ steps.prev.outputs.europe_west4_template }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PREV_EU}" ]; then
+            echo "no prior europe-west4 template recorded; cannot rollback"
+            exit 1
+          fi
+          echo "europe-west4 canary failed; pointing MIG back at ${PREV_EU}"
+          gcloud compute instance-groups managed set-instance-template quill-enclave-mig-eu \
+            --region=europe-west4 --project=quill-cloud-proxy \
+            --template="${PREV_EU}" --quiet
+          gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-eu \
+            --region=europe-west4 --project=quill-cloud-proxy \
+            --max-unavailable=0 --max-surge=3 --quiet
+          echo "us-central1 keeps the new release."
+          exit 1
+
+      - name: Final watchdog — both regions (10 min)
         # Polls https://trustedrouter.com/status.json per `target_region`.
         # If a region reads "down" for 3 consecutive minutes, that
         # region is added to the rollback set; healthy regions are
