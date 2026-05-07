@@ -1,0 +1,60 @@
+name: Publish trust page
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "trust-page/**"
+      - ".github/workflows/publish-trust-page.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: publish-trust-page
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate static trust page
+        run: |
+          set -euo pipefail
+          test -f trust-page/index.html
+          test -f trust-page/trust/gcp-release.json
+          test -f trust-page/trust/image-digest-gcp.txt
+          test -f trust-page/trust/image-reference-gcp.txt
+          if grep -Rqi '<script' trust-page; then
+            echo "trust page must not contain <script>" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          release = json.loads(Path("trust-page/trust/gcp-release.json").read_text())
+          assert release["platform"] == "gcp-confidential-space"
+          assert release["data_policy"]["prompt_output_storage"] is False
+          assert release["data_policy"]["control_plane_prompt_access"] is False
+          assert release["tls"]["hostname"] == "api.quillrouter.com"
+          assert release["source_repositories"]["control_plane"].endswith("/quill-router")
+          assert release["source_repositories"]["attested_gateway"].endswith("/quill-cloud-proxy")
+          assert release["image_digest"].startswith("sha256:")
+          assert release["source_commit"]
+          assert Path("trust-page/trust/image-digest-gcp.txt").read_text().strip() == release["image_digest"]
+          assert Path("trust-page/trust/image-reference-gcp.txt").read_text().strip() == release["image_reference"]
+          PY
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: trust-page/
+      - id: deployment
+        uses: actions/deploy-pages@v4

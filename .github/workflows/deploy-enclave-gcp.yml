@@ -162,29 +162,17 @@ jobs:
       - name: Write trust-page artifacts
         run: |
           set -euo pipefail
-          printf '%s\n' "${DIGEST}" > trust-page/image-digest-gcp.txt
-          printf '%s\n' "${IMAGE_REF}" > trust-page/image-reference-gcp.txt
-          python3 - trust-page/gcp-release.json "${SHA}" "${IMAGE_REF}" "${DIGEST}" <<'PY'
-          import json, sys
-          path, sha, ref, digest = sys.argv[1:]
-          json.dump(
-              {
-                  "commit": sha,
-                  "image_reference": ref,
-                  "image_digest": digest,
-                  "released_by": "github-actions:deploy-enclave-gcp",
-              },
-              open(path, "w"),
-              indent=2,
-          )
-          open(path, "a").write("\n")
-          PY
+          python3 tools/write-trust-artifacts.py \
+            --out-dir trust-page \
+            --commit "${SHA}" \
+            --image-reference "${IMAGE_REF}" \
+            --image-digest "${DIGEST}"
 
       - name: Commit trust artifacts back to main
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/gcp-release.json
+          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust
           if git diff --cached --quiet; then
             echo "trust-page artifacts unchanged; nothing to commit"
           else

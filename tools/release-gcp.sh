@@ -54,33 +54,11 @@ if [[ -z "$IMAGE_DIGEST" ]]; then
   exit 1
 fi
 
-printf '%s\n' "$IMAGE_DIGEST" > "$REPO_ROOT/trust-page/image-digest-gcp.txt"
-printf '%s\n' "$IMAGE_REF" > "$REPO_ROOT/trust-page/image-reference-gcp.txt"
-python3 - "$REPO_ROOT/trust-page/gcp-release.json" "$COMMIT" "$IMAGE_REF" "$IMAGE_DIGEST" <<'PY'
-from __future__ import annotations
-
-import json
-import sys
-from pathlib import Path
-
-out, commit, image_ref, image_digest = sys.argv[1:]
-Path(out).write_text(
-    json.dumps(
-        {
-            "platform": "gcp-confidential-space",
-            "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
-            "source_commit": commit,
-            "image_reference": image_ref,
-            "image_digest": image_digest,
-            "attestation_issuer": "https://confidentialcomputing.googleapis.com",
-            "attestation_audience": "quill-cloud",
-        },
-        indent=2,
-    )
-    + "\n",
-    encoding="utf-8",
-)
-PY
+python3 "$REPO_ROOT/tools/write-trust-artifacts.py" \
+  --out-dir "$REPO_ROOT/trust-page" \
+  --commit "$COMMIT" \
+  --image-reference "$IMAGE_REF" \
+  --image-digest "$IMAGE_DIGEST"
 
 if [[ "${PUBLISH_TRUST:-0}" == "1" ]]; then
   log "publishing GCP trust files to s3://$TRUST_BUCKET"
@@ -93,6 +71,8 @@ if [[ "${PUBLISH_TRUST:-0}" == "1" ]]; then
   aws s3 cp "$REPO_ROOT/trust-page/gcp-release.json" "s3://$TRUST_BUCKET/gcp-release.json" \
     --cache-control "max-age=60, public" \
     --content-type "application/json"
+  aws s3 sync "$REPO_ROOT/trust-page/trust/" "s3://$TRUST_BUCKET/trust/" \
+    --cache-control "max-age=60, public"
 fi
 
 cat <<EOF

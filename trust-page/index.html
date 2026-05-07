@@ -2,228 +2,146 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Quill Cloud — verifiable zero-retention AI proxy</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="A verifiable zero-retention proxy to Claude. TLS terminates inside an attested AWS Nitro Enclave or GCP Confidential Space workload; the prompt path is pinned to the published PCR0 or image digest.">
-
-  <!-- Open Graph + Twitter / X share metadata. Image is the same hero
-       used at top of body, so a shared link previews identically to the
-       lorehex.co/quill marketing page. -->
-  <meta property="og:type"        content="website">
-  <meta property="og:url"         content="https://trust.quill.lorehex.co/">
-  <meta property="og:title"       content="Quill Cloud — verifiable zero-retention AI proxy">
-  <meta property="og:description" content="The signed workload is the boundary. TLS terminates inside an attested AWS Nitro Enclave or GCP Confidential Space image whose measurement is published and signed. Audit the chain or just buy the box.">
-  <meta property="og:image"       content="https://lorehex.co/quill-og.png">
-  <meta property="og:image:alt"   content="Quill — your AI in a box, with verifiable zero-retention cloud">
-
-  <meta name="twitter:card"        content="summary_large_image">
-  <meta name="twitter:title"       content="Quill Cloud — verifiable zero-retention AI proxy">
-  <meta name="twitter:description" content="The signed workload is the boundary. TLS terminates inside an attested AWS Nitro Enclave or GCP Confidential Space image whose measurement is published and signed.">
-  <meta name="twitter:image"       content="https://lorehex.co/quill-og.png">
+  <title>TrustedRouter Trust</title>
+  <meta name="description" content="Verify that api.quillrouter.com runs the published open-source attested workload.">
   <style>
-    body { font-family: ui-sans-serif, system-ui, sans-serif;
-           max-width: 50rem; margin: 2rem auto; padding: 1rem; color: #222; }
-    h1   { margin: 0 0 0.5rem; }
-    h2   { margin-top: 2rem; }
-    table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
-    th, td { text-align: left; padding: 0.4rem 0.6rem;
-             border-bottom: 1px solid #ddd; font-family: ui-monospace, monospace; }
-    th   { font-weight: 600; color: #555; width: 14rem; }
-    code { background: #f5f5f5; padding: 0.1rem 0.3rem; border-radius: 3px; }
-    .ok  { color: #186; font-weight: 600; }
-    .pre { font-family: ui-monospace, monospace; font-size: 0.95rem; white-space: pre; overflow-x: auto;
-           background: #f5f5f5; padding: 0.6rem; border-radius: 4px; }
-    a    { color: #036; }
-    .hero { display: block; width: 100%; height: auto;
-            border-radius: 8px; margin-bottom: 1.5rem; }
-    .cta { display: flex; gap: 0.75rem; flex-wrap: wrap;
-           margin: 1.25rem 0 2rem; }
-    .cta a { display: inline-block; padding: 0.65rem 1rem;
-             border: 1px solid #036; border-radius: 6px;
-             text-decoration: none; font-weight: 600;
-             background: #036; color: #fff; }
-    .cta a.secondary { background: #fff; color: #036; }
-    .cta a:hover { filter: brightness(0.92); }
+    :root {
+      color-scheme: light;
+      --ink:#172027; --muted:#5c6974; --line:#d8e1e8; --bg:#f6f8fa;
+      --panel:#ffffff; --green:#11724c; --blue:#2355a6; --nav:#101820;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
+    header { border-bottom:1px solid var(--line); background:#fff; position:sticky; top:0; z-index:3; }
+    nav { max-width:1120px; margin:0 auto; padding:14px 22px; display:flex; align-items:center; justify-content:space-between; gap:16px; }
+    a { color:var(--blue); text-decoration:none; }
+    .brand { font-weight:800; color:var(--ink); display:flex; align-items:center; gap:10px; }
+    .mark { width:30px; height:30px; border-radius:7px; background:linear-gradient(135deg,#2c6ecb,#19a06d); display:grid; place-items:center; font-size:13px; color:#fff; }
+    .links { display:flex; gap:14px; flex-wrap:wrap; font-size:14px; }
+    .wrap { max-width:1120px; margin:0 auto; padding:34px 22px 56px; display:grid; gap:18px; }
+    .hero { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(300px,.85fr); gap:20px; align-items:start; }
+    h1 { font-size:42px; line-height:1.08; margin:0 0 12px; letter-spacing:0; }
+    h2 { font-size:17px; margin:0 0 12px; letter-spacing:0; }
+    p { color:var(--muted); line-height:1.55; margin:0 0 14px; }
+    code { background:#edf2f6; border:1px solid #d7e0e7; border-radius:6px; padding:2px 6px; font-size:.92em; overflow-wrap:anywhere; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px; min-width:0; }
+    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+    .status { display:inline-flex; align-items:center; gap:8px; font-weight:700; color:var(--green); }
+    .dot { width:9px; height:9px; border-radius:50%; background:var(--green); }
+    .kv { display:grid; gap:12px; margin-top:8px; }
+    .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:0; margin-bottom:3px; }
+    .value { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:13px; overflow-wrap:anywhere; }
+    .repo-list { display:grid; gap:12px; margin:0; }
+    .repo-list p { margin:3px 0 0; }
+    .checks { list-style:none; padding:0; margin:0; display:grid; gap:10px; }
+    .checks li { display:flex; gap:10px; color:#2d3742; line-height:1.4; }
+    .check { color:var(--green); font-weight:800; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#101820; color:#eef6ff; border-radius:8px; padding:16px; margin:0; font-size:13px; line-height:1.45; }
+    .warn { border-color:#ead49b; background:#fff8e4; color:#5a3b00; }
+    .warn p { color:#5a3b00; }
+    @media (max-width:850px) {
+      .hero, .grid { grid-template-columns:1fr; }
+      nav { align-items:flex-start; flex-direction:column; }
+      h1 { font-size:31px; }
+    }
   </style>
 </head>
 <body>
-  <img class="hero"
-       src="https://lorehex.co/quill-og.png"
-       alt="Quill — your AI in a box, with verifiable zero-retention cloud">
-
-  <h1>Quill Cloud — trust</h1>
-
-  <div class="cta">
-    <a href="https://lorehex.co/quill">Buy a Quill Alpha Tester to connect to this today</a>
-    <a class="secondary" href="https://lorehex.co/quill">Pre-order a Quill One</a>
-  </div>
-
-  <p>
-    The Quill Cloud prompt path runs inside an attested workload that
-    <strong>terminates TLS internally</strong>. The current production
-    endpoint is a <a href="https://cloud.google.com/confidential-computing/confidential-space">
-    GCP Confidential Space</a> workload; the AWS Nitro Enclave path remains
-    documented below for the Bedrock deployment. In both cases, the only code
-    that decrypts your prompt is the workload whose published measurement is
-    checked against live attestation evidence.
-  </p>
-
-  <h2>Identity</h2>
-  <table>
-    <tr><th>Cloud proxy (this attested binary)</th>
-        <td><a href="https://github.com/Lore-Hex/quill-cloud-proxy">github.com/Lore-Hex/quill-cloud-proxy</a></td></tr>
-    <tr><th>Cloud infrastructure</th>
-        <td><a href="https://github.com/Lore-Hex/quill-cloud-infra">github.com/Lore-Hex/quill-cloud-infra</a></td></tr>
-    <tr><th>Device (Pi) firmware + UI</th>
-        <td><a href="https://github.com/Lore-Hex/quill">github.com/Lore-Hex/quill</a></td></tr>
-    <tr><th>Mac / iOS / visionOS client</th>
-        <td><a href="https://github.com/Lore-Hex/quill-chat">github.com/Lore-Hex/quill-chat</a></td></tr>
-    <tr><th>OllamaKit fork (cert pinning)</th>
-        <td><a href="https://github.com/Lore-Hex/OllamaKit">github.com/Lore-Hex/OllamaKit</a></td></tr>
-    <tr><th>License</th>         <td>Apache 2.0 (cloud) / Apache 2.0 (chat client) / MIT (OllamaKit)</td></tr>
-    <tr><th>Current production endpoint</th>
-        <td><code>api.quillrouter.com</code></td></tr>
-    <tr><th>GCP region</th>      <td>us-central1</td></tr>
-    <tr><th>AWS region</th>      <td>us-east-1 (legacy Bedrock path)</td></tr>
-  </table>
-
-  <p style="font-size:0.95rem;color:#444">
-    Every layer between you and Anthropic is in those repos. Audit any
-    of them at any commit; the published PCR0 below pins the cloud
-    binary to a specific commit of <code>quill-cloud-proxy</code>.
-  </p>
-
-  <h2>Current build</h2>
-  <p>
-    Current GCP production is pinned by an OCI image reference and immutable
-    digest:
-  </p>
-  <table>
-    <tr><th>GCP image reference</th>
-        <td><a href="/image-reference-gcp.txt"><code>/image-reference-gcp.txt</code></a></td></tr>
-    <tr><th>GCP image digest</th>
-        <td><a href="/image-digest-gcp.txt"><code>/image-digest-gcp.txt</code></a></td></tr>
-    <tr><th>GCP release manifest</th>
-        <td><a href="/gcp-release.json"><code>/gcp-release.json</code></a></td></tr>
-    <tr><th>AWS Nitro PCR0</th>
-        <td><a href="/pcr0.txt"><code>/pcr0.txt</code></a></td></tr>
-  </table>
-
-  <h2>Live attestation</h2>
-  <p>
-    The GCP workload returns a Google-signed Confidential Space JWT. The
-    device verifies it before sending prompt traffic: JWT signature, audience,
-    issuer, caller nonce, live TLS cert fingerprint in <code>eat_nonce</code>,
-    and <code>submods.container.image_digest</code> matching
-    <code>/image-digest-gcp.txt</code>.
-  </p>
-  <pre class="pre">NONCE="$(openssl rand -hex 16)"
-curl -kSs "https://api.quillrouter.com/attestation?nonce=$NONCE" -o attestation.jwt
-
-# The JWT issuer discovery document is:
-# https://confidentialcomputing.googleapis.com/.well-known/openid-configuration
-# Check:
-#   1. RS256 signature chains to Google's Confidential Space JWKS
-#   2. aud == quill-cloud and iss == https://confidentialcomputing.googleapis.com
-#   3. eat_nonce contains $NONCE and the live TLS cert SHA-256
-#   4. submods.container.image_digest matches /image-digest-gcp.txt</pre>
-
-  <p>
-    The AWS Nitro path returns a COSE_Sign1 CBOR document. For the AWS
-    deployment, verify it with:
-  </p>
-  <pre class="pre">curl -kSs https://api.quillrouter.com/attestation -o attestation.cbor
-
-# Decode + verify with AWS Nitro's root CA, then check:
-#   1. COSE_Sign1 chains to AWS Nitro Attestation PKI
-#   2. PCR0 matches /pcr0.txt above
-#   3. public_key field matches the cert your TLS handshake received
-#   4. user_data[:32] matches the hash of that cert
-uv run --with cbor2 --with cryptography python3 \
-       tools/verify-attestation.py attestation.cbor \
-       --expected-pcr0 "$(curl -sS https://trust.quill.lorehex.co/pcr0.txt)" \
-       --api-host api.quillrouter.com</pre>
-  <p>
-    Each attestation document binds <em>this exact build</em> (GCP image
-    digest or AWS PCR0) to the TLS cert presented in your handshake. If the
-    cert rotates on a new workload boot, the device refetches attestation and
-    pins the newly verified cert. The cert-private-key never touches disk and
-    never leaves workload memory.
-  </p>
-  <p>
-    The check is the same shape Brave's
-    <a href="https://github.com/brave/nitriding-daemon">nitriding-daemon</a>
-    uses; the bindings (PCR0/image digest → attestation document → cert
-    public key/fingerprint → live TLS session) chain to "the bytes I'm
-    sending are encrypted to a specific build of code measured against this
-    repo."
-  </p>
-
-  <h2>What is retained</h2>
-  <table>
-    <tr><th>Prompt content</th>           <td class="ok">No</td></tr>
-    <tr><th>Completion content</th>       <td class="ok">No</td></tr>
-    <tr><th>Bearer tokens</th>            <td class="ok">No</td></tr>
-    <tr><th>Per-request timestamps</th>   <td class="ok">No</td></tr>
-    <tr><th>Client IPs</th>               <td class="ok">No (ALB log TTL ≤ 24h)</td></tr>
-    <tr><th>Per-device daily aggregate counts (req, tokens, errors), 90-day TTL</th>
-        <td>Yes — for accountability + billing</td></tr>
-    <tr><th>Hourly across-all-devices request count</th>
-        <td>Yes — heartbeat</td></tr>
-  </table>
-
-  <h2>How to verify</h2>
-  <pre class="pre">git clone https://github.com/Lore-Hex/quill-cloud-proxy
-cd quill-cloud-proxy
-./tools/verify-pcr0.sh
-# the script prints the PCR0 of the local rebuild and compares
-# to the published value at /pcr0.txt</pre>
-
-  <h2>Code transparency</h2>
-  <p>
-    Every release of the trust files is signed by the GitHub Actions OIDC
-    identity for <code>Lore-Hex/quill-cloud-proxy</code> and recorded
-    in <a href="https://www.sigstore.dev/">Sigstore Rekor</a>, a public
-    append-only transparency log. The signature + cert + Rekor inclusion proof
-    are published next to each file as <code>.bundle</code>. Anyone can verify
-    the GCP digest binding without trusting this server:
-  </p>
-  <pre class="pre">curl -sS -o image-digest-gcp.txt        https://trust.quill.lorehex.co/image-digest-gcp.txt
-curl -sS -o image-digest-gcp.txt.bundle https://trust.quill.lorehex.co/image-digest-gcp.txt.bundle
-
-cosign verify-blob \
-  --bundle image-digest-gcp.txt.bundle \
-  --certificate-identity-regexp '^https://github.com/Lore-Hex/quill-cloud-proxy/.*' \
-  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  image-digest-gcp.txt</pre>
-  <p>
-    A successful verify proves: this digest was signed by the GitHub
-    Actions identity for this repo, at the timestamp Rekor recorded,
-    against a Fulcio-issued ephemeral certificate whose subject claims
-    matched the repo's CI run. A silent rebuild of the cloud binary
-    can't forge this — Rekor is append-only and the OIDC token is
-    short-lived.
-  </p>
-
-  <h2>What enforces zero retention</h2>
-  <ul>
-    <li><a href="https://github.com/Lore-Hex/quill-cloud-proxy/blob/main/enclave-go/cmd/enclave/main.go">
-        <code>enclave-go/cmd/enclave/main.go</code></a> — the workload prompt path,
-        bearer authentication, request-size cap, and attestation endpoint.</li>
-    <li><a href="https://github.com/Lore-Hex/quill-cloud-proxy/blob/main/parent/tests/test_no_content_in_logs.py">
-        <code>parent/tests/test_no_content_in_logs.py</code></a> — AST scan
-        that fails CI if a parent log call has any prompt-content kwarg.</li>
-    <li><a href="https://github.com/Lore-Hex/quill-cloud-proxy/blob/main/parent/src/quill_parent/relay.py">
-        <code>parent/src/quill_parent/relay.py</code></a> — the byte pump
-        between the ALB and the enclave; never decodes the body.</li>
-    <li><a href="https://github.com/Lore-Hex/quill-cloud-infra/blob/main/modules/kms/main.tf">
-        <code>quill-cloud-infra/modules/kms/main.tf</code></a> — KMS condition
-        policy that binds Bedrock-credential decrypt to the published PCR0.</li>
-  </ul>
-
-  <p style="color:#888;font-size:0.85rem;margin-top:3rem">
-    No JavaScript. No analytics. No cookies. Hosted as static files on S3
-    with a 60-second cache header.
-  </p>
+  <header>
+    <nav>
+      <a class="brand" href="https://trustedrouter.com"><span class="mark">TR</span><span>TrustedRouter</span></a>
+      <div class="links"><a href="https://github.com/Lore-Hex/quill-router">Control repo</a><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Gateway repo</a><a href="https://github.com/Lore-Hex/quill-cloud-infra">Infra repo</a><a href="https://github.com/Lore-Hex/quill">Quill repo</a><a href="/trust/gcp-release.json">gcp-release.json</a><a href="https://api.quillrouter.com/v1">API</a><a href="https://trustedrouter.com">Console</a></div>
+    </nav>
+  </header>
+  <main class="wrap">
+    <section class="hero">
+      <div class="panel">
+        <p class="status"><span class="dot"></span>Trust boundary</p>
+        <h1>Verify that the hosted API runs the published open-source workload.</h1>
+        <p><code>api.quillrouter.com</code> is the prompt path. Public TLS terminates inside the measured GCP Confidential Space workload. The TrustedRouter control plane does not serve production inference routes and does not receive prompt or output bodies.</p>
+        <p>Clients can fetch live attestation, verify issuer/audience/digest, and compare the measured image digest with the release data published here.</p>
+      </div>
+      <aside class="panel">
+        <h2>Current GCP Workload</h2>
+        <div class="kv">
+          <div><div class="label">Source commit</div><div class="value">0f7d1c4</div></div>
+          <div><div class="label">Image</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-0f7d1c4</div></div>
+          <div><div class="label">Digest</div><div class="value">sha256:b882ccbe03455307b20b7c838de57b42f54f4af7c8962ec0412ca547292d1d56</div></div>
+          <div><div class="label">Attested gateway repo</div><div class="value"><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Lore-Hex/quill-cloud-proxy</a></div></div>
+          <div><div class="label">API base</div><div class="value">https://api.quillrouter.com/v1</div></div>
+        </div>
+      </aside>
+    </section>
+    <section class="grid" aria-label="Verification checklist">
+      <div class="panel">
+        <h2>Client Verification</h2>
+        <ul class="checks">
+          <li><span class="check">OK</span><span>Fetch <code>https://api.quillrouter.com/attestation</code> over normal public TLS.</span></li>
+          <li><span class="check">OK</span><span>Verify the JWT issuer is <code>https://confidentialcomputing.googleapis.com</code>.</span></li>
+          <li><span class="check">OK</span><span>Verify the audience is <code>quill-cloud</code>.</span></li>
+          <li><span class="check">OK</span><span>Compare the attested image digest with this page.</span></li>
+          <li><span class="check">OK</span><span>Check the TLS certificate fingerprint is bound into the attestation nonce.</span></li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h2>Published Files</h2>
+        <p><a href="/trust/image-digest-gcp.txt">image-digest-gcp.txt</a></p>
+        <p><a href="/trust/image-reference-gcp.txt">image-reference-gcp.txt</a></p>
+        <p><a href="/trust/gcp-release.json">gcp-release.json</a></p>
+      </div>
+      <div class="panel warn">
+        <h2>DNS Requirement</h2>
+        <p><code>api.quillrouter.com</code> must remain DNS-only or TCP-passthrough. TLS termination by a CDN would break the hosted-code trust claim because the prompt path certificate key must remain inside the measured workload.</p>
+      </div>
+    </section>
+    <section class="grid">
+      <div class="panel"><h2>No Prompt Logs</h2><p>Prompt/output storage is disabled. Generation content endpoint returns a compatible <code>content_not_stored</code> response.</p></div>
+      <div class="panel">
+        <h2>Hosted Open Source</h2>
+        <div class="repo-list">
+          <div><a href="https://github.com/Lore-Hex/quill-router">Lore-Hex/quill-router</a><p>Control plane, billing, keys, compatibility routes, dashboard, and trust page.</p></div>
+          <div><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Lore-Hex/quill-cloud-proxy</a><p>Attested prompt gateway, release digest, and Confidential Space verification path.</p></div>
+          <div><a href="https://github.com/Lore-Hex/quill-cloud-infra">Lore-Hex/quill-cloud-infra</a><p>Cloud deployment scripts, measured workload bringup, and trust publication flow.</p></div>
+          <div><a href="https://github.com/Lore-Hex/quill">Lore-Hex/quill</a><p>Open-source Quill client, device, bootstrap, and attestation-facing code.</p></div>
+          <div><a href="https://github.com/Lore-Hex/trusted-router-py">Lore-Hex/trusted-router-py</a><p>Python SDK repository for attestation-aware client helpers.</p></div>
+          <div><a href="https://github.com/Lore-Hex/trusted-router-js">Lore-Hex/trusted-router-js</a><p>JavaScript SDK repository for browser and Node integrations.</p></div>
+        </div>
+      </div>
+      <div class="panel"><h2>Fail Closed</h2><p>If attestation, billing authorization, or the gateway contract is unavailable, the prompt path should fail rather than silently downgrade to a non-attested route.</p></div>
+    </section>
+    <section class="panel">
+      <h2>Machine-readable release</h2>
+      <pre>{
+  &quot;api_base_url&quot;: &quot;https://api.quillrouter.com/v1&quot;,
+  &quot;attestation_audience&quot;: &quot;quill-cloud&quot;,
+  &quot;attestation_issuer&quot;: &quot;https://confidentialcomputing.googleapis.com&quot;,
+  &quot;commit&quot;: &quot;0f7d1c4&quot;,
+  &quot;data_policy&quot;: {
+    &quot;control_plane_prompt_access&quot;: false,
+    &quot;prompt_output_storage&quot;: false
+  },
+  &quot;image_digest&quot;: &quot;sha256:b882ccbe03455307b20b7c838de57b42f54f4af7c8962ec0412ca547292d1d56&quot;,
+  &quot;image_reference&quot;: &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-0f7d1c4&quot;,
+  &quot;platform&quot;: &quot;gcp-confidential-space&quot;,
+  &quot;released_by&quot;: &quot;github-actions:deploy-enclave-gcp&quot;,
+  &quot;source_commit&quot;: &quot;0f7d1c4&quot;,
+  &quot;source_repo&quot;: &quot;https://github.com/Lore-Hex/quill-cloud-proxy&quot;,
+  &quot;source_repositories&quot;: {
+    &quot;attested_gateway&quot;: &quot;https://github.com/Lore-Hex/quill-cloud-proxy&quot;,
+    &quot;cloud_infra&quot;: &quot;https://github.com/Lore-Hex/quill-cloud-infra&quot;,
+    &quot;control_plane&quot;: &quot;https://github.com/Lore-Hex/quill-router&quot;,
+    &quot;javascript_sdk&quot;: &quot;https://github.com/Lore-Hex/trusted-router-js&quot;,
+    &quot;python_sdk&quot;: &quot;https://github.com/Lore-Hex/trusted-router-py&quot;,
+    &quot;quill&quot;: &quot;https://github.com/Lore-Hex/quill&quot;
+  },
+  &quot;tls&quot;: {
+    &quot;hostname&quot;: &quot;api.quillrouter.com&quot;,
+    &quot;mode&quot;: &quot;acme-inside-confidential-space&quot;
+  }
+}
+</pre>
+    </section>
+  </main>
 </body>
 </html>
