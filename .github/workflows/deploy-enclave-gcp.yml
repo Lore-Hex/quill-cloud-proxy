@@ -244,27 +244,30 @@ jobs:
           REGION_SHORT: eu
         run: bash tools/deploy-gcp-mig.sh europe-west4
 
-      - name: Post-rollout watchdog (synthetic monitor)
-        # Polls https://trustedrouter.com/status.json. If overall_status
-        # is "down" for 3 consecutive minutes, the watchdog exits
-        # non-zero and the rollback step swaps both regional MIGs back
-        # to the pre-rollout instance template.
+      - name: Post-rollout watchdog (per-region synthetic monitor)
+        # Polls https://trustedrouter.com/status.json per `target_region`.
+        # If a region reads "down" for 3 consecutive minutes, that
+        # region is added to the rollback set; healthy regions are
+        # left alone. Writes `rollback_regions=...` to $GITHUB_OUTPUT.
         id: watchdog
         continue-on-error: true
         run: python3 tools/watchdog.py --duration-min 10 --rollback-after 3
 
-      - name: Rollback MIGs (if watchdog tripped)
-        if: ${{ steps.watchdog.outcome == 'failure' }}
+      - name: Rollback MIGs (per-region, only failing ones)
+        if: ${{ steps.watchdog.outcome == 'failure' && steps.watchdog.outputs.rollback_regions != '' }}
         env:
+          ROLLBACK_REGIONS: ${{ steps.watchdog.outputs.rollback_regions }}
           PREV_US: ${{ steps.prev.outputs.us_central1_template }}
           PREV_EU: ${{ steps.prev.outputs.europe_west4_template }}
         run: |
           set -euo pipefail
-          for pair in "us-central1:quill-enclave-mig-us:${PREV_US}" "europe-west4:quill-enclave-mig-eu:${PREV_EU}"; do
-            region="${pair%%:*}"
-            rest="${pair#*:}"
-            mig="${rest%%:*}"
-            prev="${rest##*:}"
+          IFS=',' read -ra REGIONS <<< "${ROLLBACK_REGIONS}"
+          for region in "${REGIONS[@]}"; do
+            case "$region" in
+              us-central1) mig="quill-enclave-mig-us"; prev="${PREV_US}" ;;
+              europe-west4) mig="quill-enclave-mig-eu"; prev="${PREV_EU}" ;;
+              *) echo "  ${region}: no rollback handle; skipping"; continue ;;
+            esac
             if [ -z "$prev" ]; then
               echo "  ${region}: no prior template recorded; skipping"
               continue
@@ -278,7 +281,7 @@ jobs:
               --region="$region" --project=quill-cloud-proxy \
               --max-unavailable=0 --max-surge=3 --quiet
           done
-          echo "rollback initiated; failing job so the bad release shows up red in GHA"
+          echo "rollback initiated for: ${ROLLBACK_REGIONS}; failing job so the bad release shows red in GHA"
           exit 1
 
       - name: Smoke test enclave inference (non-blocking)
