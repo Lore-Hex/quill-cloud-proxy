@@ -11,7 +11,8 @@ start with [incident-response.md](./incident-response.md).
 
 | Runbook | When to use |
 |---|---|
-| [incident-response.md](./incident-response.md) | Status page goes red. First response. |
+| [incident-response.md](./incident-response.md) | Status page is red right now. First response. |
+| [historical-outage-investigation.md](./historical-outage-investigation.md) | Status-page bucket > 1h ago is red and you need to figure out why. |
 | [enclave-deploy-debugging.md](./enclave-deploy-debugging.md) | A GHA enclave deploy failed or rolled back. |
 | [provider-onboarding.md](./provider-onboarding.md) | Adding a new upstream LLM provider (Together, Fireworks, …). |
 

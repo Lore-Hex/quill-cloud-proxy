@@ -87,12 +87,14 @@ Common patterns and their meanings:
 
 | Log substring | Diagnosis |
 |---|---|
-| `acme_get_certificate_failed sni=""` | TLS handshake without SNI. Probe or LB config dropped SNI. Check what's hitting the LB at the IP. |
-| `acme_get_certificate_failed ... HostWhitelist` | Probe hit raw IP instead of `api.quillrouter.com`. Same fix as above. |
+| `acme_get_certificate_failed sni=""` | **Background noise.** Health-check probes hit the LB IP without SNI all the time; ~50/hour every hour, on healthy and unhealthy hours alike. **NOT** evidence of an outage on its own. Compare the count against another hour using `tools/dx/enclave-logs.sh --since <healthy-hour>` before chasing this. |
+| `acme_get_certificate_failed ... HostWhitelist` | Same — probe hit raw IP instead of `api.quillrouter.com`. Background noise. |
 | `bootstrap/gcp: ... key: secret fetch http 403` | Workload SA missing `roles/secretmanager.secretAccessor` on the named secret. Re-run `tools/deploy-gcp-bootstrap.sh` or grant the binding directly. |
 | `env var ... is not allowed to be overridden on this image` | Confidential Space launch policy `allow_env_override` doesn't include the env name. Add it to the Dockerfile LABEL and rebuild. |
 | `provider error` http 502 | Upstream provider failing OR enclave provider client misrouting. Check upstream's status page; if down, route customer requests via `provider.only=[]` to a healthy provider. |
 | `attestation through TPM quote` (info, frequent) | Normal — every health check probe records this. |
+
+> **Don't post-hoc the first scary string you see.** Run `tools/dx/enclave-logs.sh --since <healthy-hour> --top` for a known-good hour and diff against the bad hour. If the error counts are similar, the error isn't your culprit.
 
 ## Attestation chain
 
