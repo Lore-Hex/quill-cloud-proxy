@@ -55,6 +55,8 @@ const (
 	openRouterURL  = "https://openrouter.ai/api/v1/chat/completions"
 )
 
+var fallbackOpenRouterHTTPClient = pooledHTTPClient(defaultStreamingHTTPTimeout)
+
 // modelIDMap turns the Quill-public model name into OpenRouter's slug.
 // We use the explicit slug (no `:zdr` variant suffix) because we also pass
 // `provider.data_collection: "deny"` + `provider.only: ["Anthropic"]` in
@@ -270,7 +272,7 @@ func (c *openRouterClient) client() *http.Client {
 	if c.httpc != nil {
 		return c.httpc
 	}
-	return &http.Client{}
+	return fallbackOpenRouterHTTPClient
 }
 
 func (c *openRouterClient) providerRouting(req *qtypes.OpenAIChatRequest) *providerRouting {

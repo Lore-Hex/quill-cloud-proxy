@@ -198,8 +198,6 @@ func newVertex(boot *qtypes.BootstrapData) *gcpClient {
 	return &gcpClient{
 		projectID: projectID,
 		region:    region,
-		httpc: &http.Client{
-			Timeout: 10 * time.Minute, // long-running streams
-		},
+		httpc:     pooledHTTPClient(defaultStreamingHTTPTimeout),
 	}
 }

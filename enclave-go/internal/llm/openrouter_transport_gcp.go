@@ -8,13 +8,10 @@ package llm
 
 import (
 	"net/http"
-	"time"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 func newOpenRouterHTTPClient(_ *qtypes.BootstrapData) *http.Client {
-	return &http.Client{
-		Timeout: 10 * time.Minute, // long-running streams
-	}
+	return pooledHTTPClient(defaultStreamingHTTPTimeout)
 }

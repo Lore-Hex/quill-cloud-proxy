@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -24,7 +23,7 @@ type zaiClient struct {
 func newZAI(boot *qtypes.BootstrapData) *zaiClient {
 	return &zaiClient{
 		apiKey: strings.TrimSpace(boot.ZAIAPIKey),
-		httpc:  &http.Client{Timeout: 10 * time.Minute},
+		httpc:  pooledHTTPClient(defaultStreamingHTTPTimeout),
 	}
 }
 

@@ -21,7 +21,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -37,7 +36,7 @@ type kimiClient struct {
 func newKimi(boot *qtypes.BootstrapData) *kimiClient {
 	return &kimiClient{
 		apiKey: strings.TrimSpace(boot.KimiAPIKey),
-		httpc:  &http.Client{Timeout: 10 * time.Minute},
+		httpc:  pooledHTTPClient(defaultStreamingHTTPTimeout),
 	}
 }
 

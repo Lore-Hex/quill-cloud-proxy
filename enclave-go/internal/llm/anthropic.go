@@ -40,7 +40,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -79,9 +78,7 @@ type anthropicClient struct {
 func newAnthropic(boot *qtypes.BootstrapData) *anthropicClient {
 	return &anthropicClient{
 		apiKey: strings.TrimSpace(boot.AnthropicAPIKey),
-		httpc: &http.Client{
-			Timeout: 10 * time.Minute, // long-running streams; per-request request handler enforces tighter ones
-		},
+		httpc:  pooledHTTPClient(defaultStreamingHTTPTimeout),
 	}
 }
 

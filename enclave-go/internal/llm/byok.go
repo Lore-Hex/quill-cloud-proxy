@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -380,5 +379,5 @@ func normalizeDirectProvider(provider string) string {
 }
 
 func defaultHTTPClient() *http.Client {
-	return &http.Client{Timeout: 10 * time.Minute}
+	return pooledHTTPClient(defaultStreamingHTTPTimeout)
 }
