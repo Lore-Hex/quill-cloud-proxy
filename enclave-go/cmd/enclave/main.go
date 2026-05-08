@@ -150,19 +150,27 @@ func serveOne(
 	trGateway *trustedrouter.Client,
 	byokSecrets *byokcache.Cache,
 ) {
+	statsConn := &responseStatsConn{Conn: conn}
+	conn = statsConn
 	defer conn.Close()
 
 	requestLogID := newRequestLogID()
 	requestStartedAt := time.Now()
 	requestMethod := "unknown"
 	requestRoute := "unknown"
+	requestBodyBytes := 0
 	fmt.Fprintf(os.Stderr, "enclave.request_accept request_log_id=%q\n", requestLogID)
 	defer func() {
+		status, responseBytes := statsConn.Snapshot()
 		fmt.Fprintf(os.Stderr,
-			"enclave.request_end request_log_id=%q method=%q route=%q elapsed_ms=%d\n",
+			"enclave.request_end request_log_id=%q method=%q route=%q status=%d outcome=%q body_bytes=%d response_bytes=%d elapsed_ms=%d\n",
 			requestLogID,
 			requestMethod,
 			requestRoute,
+			status,
+			outcomeForStatus(status),
+			requestBodyBytes,
+			responseBytes,
 			time.Since(requestStartedAt).Milliseconds(),
 		)
 	}()
@@ -177,6 +185,7 @@ func serveOne(
 		writeError(conn, 400, "could not read request")
 		return
 	}
+	requestBodyBytes = len(body)
 	routePath, nonce, err := parseRequestTarget(path)
 	requestRoute = routePath
 	if err != nil {
@@ -1154,6 +1163,62 @@ func statusFromControlPlaneError(err error) int {
 		}
 	}
 	return 502
+}
+
+type responseStatsConn struct {
+	net.Conn
+	mu            sync.Mutex
+	status        int
+	responseBytes int
+}
+
+func (c *responseStatsConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.status == 0 {
+		c.status = parseHTTPStatus(p)
+	}
+	c.responseBytes += n
+	return n, err
+}
+
+func (c *responseStatsConn) Snapshot() (status int, responseBytes int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.status, c.responseBytes
+}
+
+func parseHTTPStatus(p []byte) int {
+	if !bytes.HasPrefix(p, []byte("HTTP/")) {
+		return 0
+	}
+	line := p
+	if i := bytes.IndexByte(p, '\n'); i >= 0 {
+		line = p[:i]
+	}
+	fields := strings.Fields(string(line))
+	if len(fields) < 2 {
+		return 0
+	}
+	status, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0
+	}
+	return status
+}
+
+func outcomeForStatus(status int) string {
+	switch {
+	case status >= 200 && status < 400:
+		return "ok"
+	case status >= 400 && status < 500:
+		return "client_error"
+	case status >= 500:
+		return "server_error"
+	default:
+		return "no_response"
+	}
 }
 
 type streamStatsWriter struct {

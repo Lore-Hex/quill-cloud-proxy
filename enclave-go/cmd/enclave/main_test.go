@@ -110,6 +110,47 @@ func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
 	}
 }
 
+func TestResponseStatsConnCapturesStatusBytesAndOutcome(t *testing.T) {
+	server, client := net.Pipe()
+	stats := &responseStatsConn{Conn: server}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = io.Copy(io.Discard, client)
+		_ = client.Close()
+	}()
+
+	writeError(stats, 429, "slow down")
+	_ = stats.Close()
+	<-done
+
+	status, responseBytes := stats.Snapshot()
+	if status != 429 {
+		t.Fatalf("status = %d, want 429", status)
+	}
+	if responseBytes == 0 {
+		t.Fatal("response bytes were not counted")
+	}
+	if got := outcomeForStatus(status); got != "client_error" {
+		t.Fatalf("outcome = %q, want client_error", got)
+	}
+}
+
+func TestParseHTTPStatusAndOutcomeFallbacks(t *testing.T) {
+	if got := parseHTTPStatus([]byte("HTTP/1.1 503 Bad Gateway\r\nContent-Length: 0\r\n\r\n")); got != 503 {
+		t.Fatalf("status = %d, want 503", got)
+	}
+	if got := parseHTTPStatus([]byte("not http")); got != 0 {
+		t.Fatalf("status = %d, want 0", got)
+	}
+	if got := outcomeForStatus(0); got != "no_response" {
+		t.Fatalf("outcome = %q, want no_response", got)
+	}
+	if got := outcomeForStatus(503); got != "server_error" {
+		t.Fatalf("outcome = %q, want server_error", got)
+	}
+}
+
 func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
 	bearer := "test-user-bearer"
 	var authorizeBody string
