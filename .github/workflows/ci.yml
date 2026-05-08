@@ -21,13 +21,16 @@ jobs:
         #   cloud_aws + llm_openrouter  → AWS Nitro Enclaves with OpenRouter ZDR
         #   cloud_gcp + llm_vertex      → GCP Confidential Space with Vertex AI
         #   cloud_gcp + llm_openrouter  → GCP Confidential Space with OpenRouter ZDR
+        #   cloud_gcp + llm_multi       → GCP production multi-provider gateway
         #
-        # CI exercises all four so a change that breaks one fails fast.
+        # CI exercises every shipped build target so a change that breaks
+        # one fails fast.
         tags:
           - "cloud_aws,llm_bedrock"
           - "cloud_aws,llm_openrouter"
           - "cloud_gcp,llm_vertex"
           - "cloud_gcp,llm_openrouter"
+          - "cloud_gcp,llm_multi"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

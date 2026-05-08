@@ -95,11 +95,6 @@ func main() {
 	// with an enclave-owned cert so TLS is terminated INSIDE the attested
 	// binary — i.e. the parent never sees plaintext, and the PCR0-measured
 	// code is the first thing to handle the prompt bytes.
-	//
-	// Phase 1: feature-flagged. The parent's relay still ships HTTP-over-
-	// vsock by default; flipping the flag without flipping the parent will
-	// break the chain (the parent won't speak TLS). Phase 2 swaps the
-	// parent to a raw TCP pump so this flag becomes the default.
 	rawListener, err := newRawListener()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "raw listener failed: %v\n", err)

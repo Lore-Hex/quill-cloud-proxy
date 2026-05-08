@@ -1,9 +1,7 @@
 """Raw TCP pump from the NLB to the enclave's vsock listener.
 
-Phase 2 of TLS-inside. Where the FastAPI relay path (relay.py) takes a
-parsed HTTP body + bearer and re-wraps them as HTTP for the enclave, this
-module accepts a raw TCP connection from the NLB and pumps bytes
-bidirectionally to the enclave over vsock — no parsing, no header rewrite,
+This module accepts a raw TCP connection from the NLB and pumps bytes
+bidirectionally to the enclave over vsock: no parsing, no header rewrite,
 no auth check. The enclave terminates TLS on its side; everything in
 between is opaque ciphertext.
 
@@ -12,14 +10,12 @@ Where it sits:
                           ─► parent:8444 (this module)
                               ─► vsock :8001 to enclave (TLS terminator)
 
-The FastAPI listener (main.py) keeps running on :8443 for /admin/usage,
-/trust, /health — those are HTTP endpoints, ALB-fronted, and don't see
-prompt content.
+The FastAPI listener (main.py) keeps running for /admin/usage, /trust,
+/health only; it has no inference routes and does not see prompt content.
 
-Cutover: both paths exist. Flag QUILL_TCP_PUMP=true on the parent to
-start this listener; the FastAPI /v1/chat/completions endpoint stays
-available so the chain works whether the load-balancer side is ALB-or-NLB
-during the cutover.
+Set QUILL_TCP_PUMP=true on the parent to start this listener. Production
+prompt traffic must point at this TCP pump so TLS terminates inside the
+enclave.
 """
 
 from __future__ import annotations
@@ -35,11 +31,11 @@ from quill_parent.logging import get_logger
 
 log = get_logger(__name__)
 
-# Different from the FastAPI port (8443) so both can run side-by-side
-# during Phase 2 cutover.
+# Separate from the FastAPI admin/trust listener. This port receives only
+# raw TLS bytes destined for the enclave.
 TCP_PUMP_PORT: Final[int] = 8444
 AF_VSOCK: Final[int] = 40
-ENCLAVE_CID: Final[int] = 16  # same convention as relay.py
+ENCLAVE_CID: Final[int] = 16
 
 
 async def _open_vsock_pair(
@@ -118,6 +114,5 @@ async def serve_forever(settings: Settings) -> None:
 
 
 def is_enabled() -> bool:
-    """Phase 2 cutover flag. Off by default; set on the parent before
-    flipping QUILL_ENCLAVE_TLS=true on the enclave side."""
+    """Whether to run the production inference TCP pump."""
     return os.environ.get("QUILL_TCP_PUMP", "false").lower() == "true"

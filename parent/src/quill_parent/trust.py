@@ -79,7 +79,7 @@ def render_trust_page(settings: Settings) -> str:
     <tr><th>Completion content</th><td class="ok">No</td></tr>
     <tr><th>Bearer tokens</th><td class="ok">No</td></tr>
     <tr><th>Per-request timestamps</th><td class="ok">No</td></tr>
-    <tr><th>Client IPs</th><td class="ok">No (ALB log TTL ≤ 24h)</td></tr>
+    <tr><th>Client IPs</th><td class="ok">No prompt-path client IP persistence</td></tr>
     <tr><th>Per-device daily aggregate counts (req, tokens, errors), 90-day TTL</th>
         <td>Yes — for accountability + billing</td></tr>
     <tr><th>Hourly across-all-devices request count</th><td>Yes — heartbeat</td></tr>
@@ -104,17 +104,14 @@ git checkout {commit}
   <ul>
     <li><a href="{_link(commit, "enclave-go/cmd/enclave/main.go")}">
         enclave-go/cmd/enclave/main.go</a> — the prompt path inside the workload</li>
-    <li><a href="{_link(commit, "parent/src/quill_parent/relay.py")}">
-        parent/src/quill_parent/relay.py</a> — the HTTP-over-vsock byte pump</li>
     <li><a href="{_link(commit, "parent/src/quill_parent/tcp_relay.py")}">
-        parent/src/quill_parent/tcp_relay.py</a> — the TLS-passthrough TCP pump</li>
+        parent/src/quill_parent/tcp_relay.py</a> — the TCP passthrough pump;
+        TLS terminates inside the enclave</li>
     <li><a href="{_link(commit, "parent/src/quill_parent/usage.py")}">
         parent/src/quill_parent/usage.py</a> — the only DynamoDB write path</li>
     <li><a href="{_link(commit, "parent/tests/test_no_content_in_logs.py")}">
         parent/tests/test_no_content_in_logs.py</a> —
         AST guard against content-bearing log fields</li>
-    <li><a href="{_link(commit, "parent/tests/test_relay_no_inspect.py")}">
-        parent/tests/test_relay_no_inspect.py</a> — static guard for the relay path</li>
   </ul>
 
   <p style="color:#888;font-size:0.85rem;margin-top:3rem">

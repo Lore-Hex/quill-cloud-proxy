@@ -2,22 +2,16 @@
 // presents to inbound connections, and wraps a net.Listener so that every
 // accepted connection is TLS-terminated inside the enclave.
 //
-// Why this exists: the V1 chain terminates TLS at the ALB, which means
-// AWS infrastructure (and, for ~milliseconds in transit, the parent
-// process) sees prompt content in plaintext. Phase 1 of "TLS-inside" puts
-// the TLS endpoint inside the attested binary so the byte stream from the
-// client is opaque until it reaches code measured by PCR0.
+// Why this exists: production prompt traffic must never terminate TLS in
+// the parent process or a load balancer. The TLS endpoint lives inside the
+// attested binary, so the byte stream from the client is opaque until it
+// reaches code measured by PCR0.
 //
 // Cert provisioning: the cert is generated freshly at enclave startup
 // using crypto/rand for the private key. The key never touches disk and
-// never leaves the enclave's memory. The price is that the cert rotates
-// on every enclave restart — clients can't statically pin a hash. Phase 3
-// will surface the current fingerprint via an attestation endpoint so
-// clients can fetch + verify before trusting the prompt path.
-//
-// For the Phase 1 smoke test we expose the cert via a startup log line
-// (and the parent's bootstrap-RPC response so the smoke harness can pin
-// it for the lifetime of one boot).
+// never leaves the enclave's memory. The public-certificate path uses ACME
+// inside the enclave so normal SDK clients can validate TLS while the
+// private key remains enclave-local.
 package enclavetls
 
 import (
