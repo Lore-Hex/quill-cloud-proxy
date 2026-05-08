@@ -36,6 +36,80 @@ func TestParseRequestTargetNonce(t *testing.T) {
 	}
 }
 
+func TestSettlementRetryQueueDropsOldestWhenFull(t *testing.T) {
+	q := &settlementRetryQueue{
+		jobs:        make(chan settlementRetryJob, 1),
+		maxAttempts: 2,
+		baseDelay:   time.Millisecond,
+		maxDelay:    time.Millisecond,
+	}
+	if !q.Enqueue(settlementRetryJob{usage: trustedrouter.Usage{RequestID: "req_old"}}) {
+		t.Fatal("first enqueue failed")
+	}
+	if !q.Enqueue(settlementRetryJob{usage: trustedrouter.Usage{RequestID: "req_new"}}) {
+		t.Fatal("second enqueue failed")
+	}
+	got := <-q.jobs
+	if got.usage.RequestID != "req_new" {
+		t.Fatalf("queue kept %q, want newest request", got.usage.RequestID)
+	}
+}
+
+func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
+	var settleCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/gateway/settle" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		settleCalls++
+		if settleCalls == 1 {
+			http.Error(w, "temporarily down", http.StatusBadGateway)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"data":{"generation_id":"gen_retry","cost_microdollars":2,"cost":0.000002,"usage_type":"Credits","model":"openai/gpt-4o-mini","provider":"openai","region":"us-central1"}}`)
+	}))
+	defer server.Close()
+
+	q := &settlementRetryQueue{
+		jobs:        make(chan settlementRetryJob, 4),
+		maxAttempts: 2,
+		baseDelay:   time.Millisecond,
+		maxDelay:    time.Millisecond,
+	}
+	authz := &trustedrouter.Authorization{
+		AuthorizationID: "auth_retry",
+		WorkspaceID:     "ws_1",
+		APIKeyHash:      "key_hash",
+		Model:           "openai/gpt-4o-mini",
+		EndpointID:      "openai/gpt-4o-mini@openai/prepaid",
+		Provider:        "openai",
+		UsageType:       "Credits",
+	}
+	job := settlementRetryJob{
+		trGateway:     trustedrouter.New(server.URL, "internal", server.Client()),
+		authorization: authz,
+		usage: trustedrouter.Usage{
+			RequestID:      "chatcmpl_retry",
+			InputTokens:    1,
+			OutputTokens:   1,
+			ElapsedSeconds: 0.01,
+			FinishReason:   "stop",
+			Streamed:       true,
+			RouteType:      "chat.completions",
+		},
+		req: &types.OpenAIChatRequest{Model: "openai/gpt-4o-mini"},
+	}
+	q.process(context.Background(), job)
+	retry := <-q.jobs
+	if retry.attempt != 2 {
+		t.Fatalf("retry attempt = %d, want 2", retry.attempt)
+	}
+	q.process(context.Background(), retry)
+	if settleCalls != 2 {
+		t.Fatalf("settle calls = %d, want 2", settleCalls)
+	}
+}
+
 func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
 	bearer := "test-user-bearer"
 	var authorizeBody string

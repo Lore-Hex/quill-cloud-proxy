@@ -87,6 +87,7 @@ func main() {
 		byokSecrets = byokcache.New(byokcache.Options{
 			Unwrapper: &byokcache.GoogleKMSUnwrapper{},
 		})
+		settlementRetries.Start(ctx)
 	}
 
 	deviceBlob, _ := json.Marshal(boot.Devices)
@@ -151,7 +152,23 @@ func serveOne(
 ) {
 	defer conn.Close()
 
+	requestLogID := newRequestLogID()
+	requestStartedAt := time.Now()
+	requestMethod := "unknown"
+	requestRoute := "unknown"
+	fmt.Fprintf(os.Stderr, "enclave.request_accept request_log_id=%q\n", requestLogID)
+	defer func() {
+		fmt.Fprintf(os.Stderr,
+			"enclave.request_end request_log_id=%q method=%q route=%q elapsed_ms=%d\n",
+			requestLogID,
+			requestMethod,
+			requestRoute,
+			time.Since(requestStartedAt).Milliseconds(),
+		)
+	}()
+
 	method, path, bearer, body, err := readRequest(conn)
+	requestMethod = method
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
 			writeError(conn, 413, "request body too large")
@@ -161,10 +178,18 @@ func serveOne(
 		return
 	}
 	routePath, nonce, err := parseRequestTarget(path)
+	requestRoute = routePath
 	if err != nil {
 		writeError(conn, 400, err.Error())
 		return
 	}
+	fmt.Fprintf(os.Stderr,
+		"enclave.request_start request_log_id=%q method=%q route=%q body_bytes=%d\n",
+		requestLogID,
+		method,
+		routePath,
+		len(body),
+	)
 
 	// /attestation is the only path that's anonymous: clients call it
 	// BEFORE pinning, so requiring a bearer would defeat the purpose.
@@ -293,13 +318,13 @@ func serveOne(
 	}
 	if !req.Stream {
 		if routeType == "responses" {
-			serveResponsesNonStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput)
+			serveResponsesNonStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput, requestLogID)
 			return
 		}
-		serveChatNonStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput)
+		serveChatNonStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput, requestLogID)
 		return
 	}
-	serveStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput, routeType)
+	serveStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput, routeType, requestLogID)
 }
 
 func getenv(name, fallback string) string {
@@ -397,11 +422,12 @@ func serveResponsesNonStreaming(
 	secretCache *byokcache.Cache,
 	requestStarted time.Time,
 	originalInput any,
+	requestLogID string,
 ) {
 	requestID := newResponseID()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
-	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute)
+	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID)
 	result, err := adapter.CollectAnthropicText(pr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_collect_failed model=%q err=%v\n", req.Model, err)
@@ -460,11 +486,12 @@ func serveChatNonStreaming(
 	secretCache *byokcache.Cache,
 	requestStarted time.Time,
 	originalInput any,
+	requestLogID string,
 ) {
 	requestID := newRequestID()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
-	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute)
+	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID)
 	result, err := adapter.CollectAnthropicText(pr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_collect_failed model=%q err=%v\n", req.Model, err)
@@ -524,6 +551,7 @@ func serveStreaming(
 	requestStarted time.Time,
 	originalInput any,
 	routeType string,
+	requestLogID string,
 ) {
 	requestID := newRequestID()
 	if routeType == "responses" {
@@ -534,7 +562,7 @@ func serveStreaming(
 	providerDone := make(chan struct{})
 	go func() {
 		defer close(providerDone)
-		invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute)
+		invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID)
 	}()
 	if trGateway != nil && trGateway.Enabled() && len(invokeOptions) > 1 {
 		select {
@@ -574,33 +602,51 @@ func serveStreaming(
 		}
 		return
 	}
+	usage := trustedrouter.Usage{
+		RequestID:         requestID,
+		InputTokens:       trustedrouter.EstimateInputTokens(req),
+		OutputTokens:      trustedrouter.EstimateOutputTokens(result.Text),
+		ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
+		FirstTokenSeconds: statsW.FirstWriteSeconds(requestStarted),
+		UsageEstimated:    true,
+		FinishReason:      result.FinishReason,
+		Streamed:          true,
+		RouteType:         routeType,
+		SelectedModel:     selectedRoute.Model(req.Model, authorization),
+		SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
+		User:              req.User,
+		SessionID:         req.SessionID,
+		Trace:             req.Trace,
+		Metadata:          req.Metadata,
+	}
 	if _, err := settleAndBroadcast(
 		ctx,
 		trGateway,
 		authorization,
 		secretCache,
-		trustedrouter.Usage{
-			RequestID:         requestID,
-			InputTokens:       trustedrouter.EstimateInputTokens(req),
-			OutputTokens:      trustedrouter.EstimateOutputTokens(result.Text),
-			ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
-			FirstTokenSeconds: statsW.FirstWriteSeconds(requestStarted),
-			UsageEstimated:    true,
-			FinishReason:      result.FinishReason,
-			Streamed:          true,
-			RouteType:         routeType,
-			SelectedModel:     selectedRoute.Model(req.Model, authorization),
-			SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
-			User:              req.User,
-			SessionID:         req.SessionID,
-			Trace:             req.Trace,
-			Metadata:          req.Metadata,
-		},
+		usage,
 		req,
 		originalInput,
 		result.Text,
 	); err != nil {
-		fmt.Fprintf(os.Stderr, "enclave.stream_settle_failed model=%q route_type=%q err=%v\n", req.Model, routeType, err)
+		fmt.Fprintf(os.Stderr,
+			"enclave.stream_settle_failed request_log_id=%q request_id=%q model=%q route_type=%q err=%v\n",
+			requestLogID,
+			requestID,
+			req.Model,
+			routeType,
+			err,
+		)
+		settlementRetries.Enqueue(settlementRetryJob{
+			trGateway:     trGateway,
+			authorization: authorization,
+			secretCache:   secretCache,
+			usage:         usage,
+			req:           req,
+			originalInput: originalInput,
+			output:        result.Text,
+			requestLogID:  requestLogID,
+		})
 	}
 }
 
@@ -614,6 +660,7 @@ func invokeProviderStream(
 	trEnabled bool,
 	authorization *trustedrouter.Authorization,
 	selectedRoute *selectedRouteTracker,
+	requestLogID string,
 ) {
 	options := invokeOptions
 	if len(options) == 0 {
@@ -674,7 +721,8 @@ func invokeProviderStream(
 			errStr = errorClass(err)
 		}
 		fmt.Fprintf(os.Stderr,
-			"enclave.invoke_attempt request_id=%q attempt=%d/%d model=%q provider=%q endpoint=%q outcome=%s ttfb_ms=%d total_ms=%d bytes=%d err=%q\n",
+			"enclave.invoke_attempt request_log_id=%q request_id=%q attempt=%d/%d model=%q provider=%q endpoint=%q outcome=%s ttfb_ms=%d total_ms=%d bytes=%d err=%q\n",
+			requestLogID,
 			requestID,
 			i+1, len(options),
 			option.Model, option.Provider, option.EndpointID,
@@ -694,7 +742,8 @@ func invokeProviderStream(
 			winningTTFBms = ttfbMs
 			winningTotalMs = attemptDuration.Milliseconds()
 			fmt.Fprintf(os.Stderr,
-				"enclave.invoke_complete request_id=%q outcome=ok provider_used=%q model=%q endpoint=%q attempts=%d fallbacks=%d ttfb_ms=%d upstream_ms=%d total_ms=%d bytes=%d\n",
+				"enclave.invoke_complete request_log_id=%q request_id=%q outcome=ok provider_used=%q model=%q endpoint=%q attempts=%d fallbacks=%d ttfb_ms=%d upstream_ms=%d total_ms=%d bytes=%d\n",
+				requestLogID,
 				requestID,
 				winningProvider, winningModel, winningEndpoint,
 				i+1, i,
@@ -709,8 +758,8 @@ func invokeProviderStream(
 		lastErr = err
 		if !trEnabled || candidateWriter.BytesWritten() > 0 || i == len(options)-1 || !retryableInvokeError(err) {
 			fmt.Fprintf(os.Stderr,
-				"enclave.invoke_complete request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
-				requestID, i+1, i, time.Since(overallStart).Milliseconds(), errorClass(err),
+				"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
+				requestLogID, requestID, i+1, i, time.Since(overallStart).Milliseconds(), errorClass(err),
 			)
 			if trEnabled {
 				_ = pw.CloseWithError(err)
@@ -723,8 +772,8 @@ func invokeProviderStream(
 	}
 	if lastErr != nil {
 		fmt.Fprintf(os.Stderr,
-			"enclave.invoke_complete request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
-			requestID, len(options), len(options)-1, time.Since(overallStart).Milliseconds(), errorClass(lastErr),
+			"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
+			requestLogID, requestID, len(options), len(options)-1, time.Since(overallStart).Milliseconds(), errorClass(lastErr),
 		)
 		_ = pw.CloseWithError(lastErr)
 		return
@@ -863,6 +912,8 @@ var firstByteBudget = func() time.Duration {
 	}
 	return 8 * time.Second
 }()
+
+var settlementRetries = newSettlementRetryQueueFromEnv()
 
 type routeSelectingWriter struct {
 	w           io.Writer
@@ -1447,4 +1498,10 @@ func newResponseID() string {
 	var buf [16]byte
 	_, _ = rand.Read(buf[:])
 	return "resp_" + hex.EncodeToString(buf[:])
+}
+
+func newRequestLogID() string {
+	var buf [16]byte
+	_, _ = rand.Read(buf[:])
+	return "rlog_" + hex.EncodeToString(buf[:])
 }
