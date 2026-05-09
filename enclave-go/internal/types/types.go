@@ -52,6 +52,16 @@ type BootstrapData struct {
 	KimiAPIKey     string `json:"kimi_api_key,omitempty"`
 	ZAIAPIKey      string `json:"zai_api_key,omitempty"`
 	TogetherAPIKey string `json:"together_api_key,omitempty"`
+
+	// 2026-05 — six new backend providers, all OpenAI-compatible.
+	// Phala / Tinfoil are TEE-attested; Phala/Tinfoil/Venice are
+	// privacy-aligned and reinforce TR's no-logs trust story.
+	GrokAPIKey        string `json:"grok_api_key,omitempty"`
+	NovitaAPIKey      string `json:"novita_api_key,omitempty"`
+	PhalaAPIKey       string `json:"phala_api_key,omitempty"`
+	SiliconFlowAPIKey string `json:"siliconflow_api_key,omitempty"`
+	TinfoilAPIKey     string `json:"tinfoil_api_key,omitempty"`
+	VeniceAPIKey      string `json:"venice_api_key,omitempty"`
 }
 
 // OpenAIChatMessage is one message in an inbound /v1/chat/completions request.

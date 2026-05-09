@@ -30,13 +30,22 @@ func invokeBYOKStreaming(
 		return false, nil
 	}
 	provider := normalizeDirectProvider(options.Provider)
-	switch provider {
-	case "anthropic":
+	switch {
+	case provider == "anthropic":
 		return true, invokeAnthropicBYOKStreaming(ctx, req, body, out, options.ProviderAPIKey, options.UpstreamModel)
-	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai":
+	case isOpenAICompatibleBYOKProvider(provider):
 		return true, invokeOpenAICompatibleBYOKStreaming(ctx, provider, req, body, out, options.ProviderAPIKey, options.UpstreamModel)
 	default:
 		return true, fmt.Errorf("llm/byok: unsupported provider %q", options.Provider)
+	}
+}
+
+func isOpenAICompatibleBYOKProvider(provider string) bool {
+	switch provider {
+	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai", "together":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -245,6 +254,30 @@ func directBaseURL(provider string) string {
 		// incl. DeepSeek-OCR, Qwen, Mixtral) plus image gen + embeddings.
 		// OpenAI-compatible chat completions at api.together.xyz/v1.
 		return "https://api.together.xyz/v1"
+	case "grok":
+		// xAI Grok. OpenAI-compatible chat completions.
+		return "https://api.x.ai/v1"
+	case "novita":
+		// Novita AI multi-vendor serverless inference.
+		return "https://api.novita.ai/v3/openai"
+	case "phala":
+		// Phala (RedPill) confidential AI — Intel TDX + NVIDIA CC TEEs.
+		// On-brand for TR's trust story; attestation handled by Phala
+		// itself per response.
+		return "https://api.red-pill.ai/v1"
+	case "siliconflow":
+		// SiliconFlow Chinese serverless inference (200+ open-weight
+		// models). The .com endpoint is the international one; .cn is
+		// the China-only mirror.
+		return "https://api.siliconflow.com/v1"
+	case "tinfoil":
+		// Tinfoil TEE-attested confidential inference. The base URL is
+		// served from inside an Intel SGX/TDX enclave with attestation
+		// document fetchable via the same hostname.
+		return "https://inference.tinfoil.sh/v1"
+	case "venice":
+		// Venice.AI privacy-focused gateway. /api/v1 base path quirk.
+		return "https://api.venice.ai/api/v1"
 	default:
 		return ""
 	}
@@ -373,6 +406,18 @@ func normalizeDirectProvider(provider string) string {
 		return "mistral"
 	case "z-ai", "zhipu", "zhipuai", "zai":
 		return "zai"
+	case "x-ai", "xai", "grok":
+		return "grok"
+	case "novita", "novita-ai":
+		return "novita"
+	case "phala", "redpill", "red-pill":
+		return "phala"
+	case "silicon-flow", "siliconflow":
+		return "siliconflow"
+	case "tinfoil", "tinfoil-sh":
+		return "tinfoil"
+	case "venice", "venice-ai":
+		return "venice"
 	default:
 		return slug
 	}

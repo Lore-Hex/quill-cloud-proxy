@@ -55,6 +55,12 @@ MISTRAL_SECRET="${MISTRAL_SECRET:-trustedrouter-mistral-api-key}"
 KIMI_SECRET="${KIMI_SECRET:-trustedrouter-kimi-api-key}"
 ZAI_SECRET="${ZAI_SECRET:-trustedrouter-zai-api-key}"
 TOGETHER_SECRET="${TOGETHER_SECRET:-trustedrouter-together-api-key}"
+GROK_SECRET="${GROK_SECRET:-trustedrouter-grok-api-key}"
+NOVITA_SECRET="${NOVITA_SECRET:-trustedrouter-novita-api-key}"
+PHALA_SECRET="${PHALA_SECRET:-trustedrouter-phala-api-key}"
+SILICONFLOW_SECRET="${SILICONFLOW_SECRET:-trustedrouter-siliconflow-api-key}"
+TINFOIL_SECRET="${TINFOIL_SECRET:-trustedrouter-tinfoil-api-key}"
+VENICE_SECRET="${VENICE_SECRET:-trustedrouter-venice-api-key}"
 INTERNAL_GATEWAY_SECRET="${INTERNAL_GATEWAY_SECRET:-trustedrouter-internal-gateway-token}"
 DEVICE_KEYS_SECRET="${DEVICE_KEYS_SECRET:-quill-device-keys}"
 
@@ -129,6 +135,12 @@ for secret in \
   "$KIMI_SECRET" \
   "$ZAI_SECRET" \
   "$TOGETHER_SECRET" \
+  "$GROK_SECRET" \
+  "$NOVITA_SECRET" \
+  "$PHALA_SECRET" \
+  "$SILICONFLOW_SECRET" \
+  "$TINFOIL_SECRET" \
+  "$VENICE_SECRET" \
   "$INTERNAL_GATEWAY_SECRET" \
   "$DEVICE_KEYS_SECRET"; do
   if gc secrets describe "$secret" >/dev/null 2>&1; then

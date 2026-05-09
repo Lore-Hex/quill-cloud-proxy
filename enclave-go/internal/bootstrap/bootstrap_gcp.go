@@ -91,6 +91,12 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	kimiSecret := os.Getenv("QUILL_KIMI_SECRET")
 	zaiSecret := os.Getenv("QUILL_ZAI_SECRET")
 	togetherSecret := os.Getenv("QUILL_TOGETHER_SECRET")
+	grokSecret := os.Getenv("QUILL_GROK_SECRET")
+	novitaSecret := os.Getenv("QUILL_NOVITA_SECRET")
+	phalaSecret := os.Getenv("QUILL_PHALA_SECRET")
+	siliconflowSecret := os.Getenv("QUILL_SILICONFLOW_SECRET")
+	tinfoilSecret := os.Getenv("QUILL_TINFOIL_SECRET")
+	veniceSecret := os.Getenv("QUILL_VENICE_SECRET")
 	if !anySet(
 		openrouterSecret,
 		anthropicSecret,
@@ -102,6 +108,12 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		kimiSecret,
 		zaiSecret,
 		togetherSecret,
+		grokSecret,
+		novitaSecret,
+		phalaSecret,
+		siliconflowSecret,
+		tinfoilSecret,
+		veniceSecret,
 	) {
 		return nil, fmt.Errorf("bootstrap/gcp: at least one provider secret env must be set")
 	}
@@ -192,6 +204,48 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: together key: %w", err)
 		}
 	}
+	var grokKey []byte
+	if grokSecret != "" {
+		grokKey, err = fetchSecret(ctx, httpc, token, project, grokSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: grok key: %w", err)
+		}
+	}
+	var novitaKey []byte
+	if novitaSecret != "" {
+		novitaKey, err = fetchSecret(ctx, httpc, token, project, novitaSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: novita key: %w", err)
+		}
+	}
+	var phalaKey []byte
+	if phalaSecret != "" {
+		phalaKey, err = fetchSecret(ctx, httpc, token, project, phalaSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: phala key: %w", err)
+		}
+	}
+	var siliconflowKey []byte
+	if siliconflowSecret != "" {
+		siliconflowKey, err = fetchSecret(ctx, httpc, token, project, siliconflowSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: siliconflow key: %w", err)
+		}
+	}
+	var tinfoilKey []byte
+	if tinfoilSecret != "" {
+		tinfoilKey, err = fetchSecret(ctx, httpc, token, project, tinfoilSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: tinfoil key: %w", err)
+		}
+	}
+	var veniceKey []byte
+	if veniceSecret != "" {
+		veniceKey, err = fetchSecret(ctx, httpc, token, project, veniceSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: venice key: %w", err)
+		}
+	}
 	var internalGatewayToken string
 	if internalSecret := os.Getenv("QUILL_TRUSTEDROUTER_INTERNAL_SECRET"); internalSecret != "" {
 		value, err := fetchSecret(ctx, httpc, token, project, internalSecret)
@@ -214,6 +268,12 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		KimiAPIKey:                 strings.TrimSpace(string(kimiKey)),
 		ZAIAPIKey:                  strings.TrimSpace(string(zaiKey)),
 		TogetherAPIKey:             strings.TrimSpace(string(togetherKey)),
+		GrokAPIKey:                 strings.TrimSpace(string(grokKey)),
+		NovitaAPIKey:               strings.TrimSpace(string(novitaKey)),
+		PhalaAPIKey:                strings.TrimSpace(string(phalaKey)),
+		SiliconFlowAPIKey:          strings.TrimSpace(string(siliconflowKey)),
+		TinfoilAPIKey:              strings.TrimSpace(string(tinfoilKey)),
+		VeniceAPIKey:               strings.TrimSpace(string(veniceKey)),
 		TrustedRouterBaseURL:       os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken: strings.TrimSpace(internalGatewayToken),
 		// BedrockVsockProxy / OpenRouterVsockProxy unused on GCP — direct egress.
