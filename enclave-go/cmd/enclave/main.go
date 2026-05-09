@@ -1635,6 +1635,13 @@ func maybeStartAttestSidecar() {
 		fmt.Fprintf(os.Stderr, "attest_sidecar.start_failed err=%q\n", err.Error())
 		return
 	}
+	// Pin the unix-dialer to ONLY accept connections whose peer PID is
+	// this freshly-spawned child. Defends against an attacker who races
+	// us to bind @tinfoil-attest (abstract sockets have no filesystem
+	// permission bits, so this PID check is the lightest authentication
+	// signal we can layer on). See SetExpectedSidecarPID + peerPID in
+	// internal/llm.
+	llm.SetExpectedSidecarPID(cmd.Process.Pid)
 	fmt.Fprintf(os.Stderr, "attest_sidecar.started pid=%d path=%q\n", cmd.Process.Pid, sidecarPath)
 	// Reap the child if it ever exits so it doesn't become a zombie.
 	// We don't restart it — if the sidecar is sick, we serve in

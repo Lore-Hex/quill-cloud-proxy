@@ -70,6 +70,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -112,6 +113,29 @@ func init() {
 		tinfoilSidecarSocket = v
 	}
 }
+
+// expectedSidecarPID is the PID the main enclave fork-exec'd for the
+// attest-sidecar at boot. Set via SetExpectedSidecarPID before any
+// tinfoil request can race in. Zero means "not set" — the unix dialer
+// then accepts any peer (used for local dev where peer-cred lookups
+// aren't available, see peercred_other.go).
+//
+// The unix dialer enforces this via SO_PEERCRED: a connection whose
+// peer PID isn't this exact value gets dropped with errSidecarPIDMismatch.
+// Defends against an attacker who somehow binds @tinfoil-attest before
+// our child sidecar does — abstract sockets have no filesystem
+// permission bits, so PID-pinning is the cheapest way to authenticate
+// "I'm talking to the binary I just spawned, not someone impersonating it."
+var expectedSidecarPID atomic.Int32
+
+// SetExpectedSidecarPID is called by cmd/enclave once it's fork-exec'd
+// /attest-sidecar; the resulting PID becomes the only acceptable peer
+// for unix-socket connections to @tinfoil-attest.
+func SetExpectedSidecarPID(pid int) {
+	expectedSidecarPID.Store(int32(pid))
+}
+
+var errSidecarPIDMismatch = errors.New("attest sidecar peer PID mismatch")
 
 // fetchExpectedTLSPubkeyFP fetches Tinfoil's attestation document and
 // extracts the SHA-256 fingerprint of the TLS public key the enclave
@@ -187,12 +211,36 @@ type sidecarPayload struct {
 }
 
 // unixSocketHTTPClient builds an http.Client that talks HTTP over the
-// given Unix socket (path-based or @-prefixed abstract). A fresh client
-// per call is fine — these requests are infrequent (cached for ~30s
-// behind the first-use lazy load on tinfoilCachedClient).
+// given Unix socket (path-based or @-prefixed abstract). The dialer
+// enforces SO_PEERCRED PID-pinning: if SetExpectedSidecarPID has been
+// called, the connection is dropped unless the peer process PID
+// matches. A fresh client per call is fine — these requests are
+// infrequent (cached for ~30s behind the first-use lazy load on
+// tinfoilCachedClient).
 func unixSocketHTTPClient(socket string) *http.Client {
 	dialer := func(_ context.Context, _, _ string) (net.Conn, error) {
-		return net.DialTimeout("unix", socket, 2*time.Second)
+		c, err := net.DialTimeout("unix", socket, 2*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		if expected := int(expectedSidecarPID.Load()); expected != 0 {
+			pid, perr := peerPID(c)
+			if perr != nil {
+				// On non-Linux dev hosts peerPID returns "not
+				// supported"; we accept the connection rather than
+				// hard-fail, since the Linux-specific check is the
+				// production-only hardening. On Linux a real failure
+				// is exotic enough that closing the conn is safer.
+				if !strings.Contains(perr.Error(), "only supported on Linux") {
+					_ = c.Close()
+					return nil, fmt.Errorf("peercred lookup failed: %w", perr)
+				}
+			} else if pid != expected {
+				_ = c.Close()
+				return nil, fmt.Errorf("%w: got pid=%d expected=%d", errSidecarPIDMismatch, pid, expected)
+			}
+		}
+		return c, nil
 	}
 	return &http.Client{
 		Timeout: 5 * time.Second,

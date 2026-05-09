@@ -259,11 +259,11 @@ func main() {
 	if !strings.HasPrefix(socket, "@") {
 		_ = os.Remove(socket)
 	}
-	listener, err := net.Listen("unix", socket)
+	rawListener, err := net.Listen("unix", socket)
 	if err != nil {
 		log.Fatalf("listen unix %s: %v", socket, err)
 	}
-	defer listener.Close()
+	defer rawListener.Close()
 	if !strings.HasPrefix(socket, "@") {
 		// 0600: only the same UID (the main enclave runs as the same
 		// uid as this sidecar in the Confidential Space VM) can read.
@@ -271,7 +271,18 @@ func main() {
 			log.Printf("warn: chmod %s: %v", socket, err)
 		}
 	}
-	log.Printf("serving on unix:%s", socket)
+	// Wrap with a SO_PEERCRED-checking accept loop. Any peer whose UID
+	// doesn't match our own gets dropped before http.Server even sees
+	// the connection. With path-based sockets this is belt-and-
+	// suspenders (the 0600 already enforces UID); with abstract
+	// sockets (the default) it's the only filesystem-independent UID
+	// enforcement we get, since abstract sockets bypass the
+	// permission-bit check.
+	listener := &uidEnforcingListener{
+		Listener: rawListener,
+		expected: os.Getuid(),
+	}
+	log.Printf("serving on unix:%s (uid_check=%d)", socket, listener.expected)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -303,4 +314,54 @@ func main() {
 		log.Fatalf("serve: %v", err)
 	}
 	log.Println("exited")
+}
+
+// uidEnforcingListener wraps a Unix socket listener and rejects any
+// accepted connection whose peer process UID (read via SO_PEERCRED)
+// doesn't match `expected`. Connections that fail the check are
+// closed immediately, before any HTTP byte is read.
+//
+// Why: the abstract-socket bind path (`@tinfoil-attest`) doesn't have
+// filesystem permission bits, so anyone in the same network namespace
+// could connect. Inside Confidential Space the trust boundary is the
+// whole VM and this is paranoia. Outside Confidential Space (e.g.
+// shared-host development scenarios) it cuts off a real attack
+// surface for free.
+//
+// On non-Linux builds (peerUID always errors), accepted connections
+// are passed through unchanged — see peercred_other.go.
+type uidEnforcingListener struct {
+	net.Listener
+	expected int
+}
+
+func (l *uidEnforcingListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		uid, err := peerUID(c)
+		if err != nil {
+			// On non-Linux dev hosts we let everything through.
+			// On Linux a real getsockopt error is exotic enough that
+			// erring loudly + dropping the conn is the safer move.
+			if isUnsupportedPeercred(err) {
+				return c, nil
+			}
+			log.Printf("rejected connection: peercred lookup failed: %v", err)
+			_ = c.Close()
+			continue
+		}
+		if uid != l.expected {
+			log.Printf("rejected connection: peer uid=%d expected=%d", uid, l.expected)
+			_ = c.Close()
+			continue
+		}
+		return c, nil
+	}
+}
+
+func isUnsupportedPeercred(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "only supported on Linux")
 }
