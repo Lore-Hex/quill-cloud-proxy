@@ -41,6 +41,7 @@ AWS_REGION="${AWS_REGION:-us-west-2}"
 PROJECT_TAG="${PROJECT_TAG:-quill-enclave}"
 ECR_REPO_NAME="${ECR_REPO_NAME:-quill-enclave}"
 PARENT_ECR_REPO_NAME="${PARENT_ECR_REPO_NAME:-quill-parent}"
+PARENT_PUMP_ECR_REPO_NAME="${PARENT_PUMP_ECR_REPO_NAME:-quill-parent-pump}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-m5n.xlarge}"
 ASG_MIN="${ASG_MIN:-1}"
 ASG_MAX="${ASG_MAX:-50}"
@@ -388,6 +389,24 @@ phase_compute() {
   fi
   log "  parent image:  ${parent_repo_url}:${parent_tag}"
 
+  # The parent-pump is the Go replacement for the Python TCP pump on
+  # the data path. It runs as a separate small (~3.5 MB) container on
+  # the host alongside the Python parent. The Python parent handles
+  # /admin, /trust, /health, and the bootstrap RPC server (all off the
+  # data path). The Go binary handles the TCP-to-vsock pump where
+  # latency matters.
+  local parent_pump_repo_url="${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PARENT_PUMP_ECR_REPO_NAME}"
+  local parent_pump_tag
+  parent_pump_tag=$(aws ecr describe-images \
+    --repository-name "$PARENT_PUMP_ECR_REPO_NAME" --region "$AWS_REGION" \
+    --query "sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]" \
+    --output text 2>/dev/null || echo "None")
+  if [ "$parent_pump_tag" = "None" ] || [ -z "$parent_pump_tag" ]; then
+    log "  ERROR: no parent-pump image in ECR ${PARENT_PUMP_ECR_REPO_NAME}; build via deploy-parent-pump-aws.yml"
+    return 1
+  fi
+  log "  pump image:    ${parent_pump_repo_url}:${parent_pump_tag}"
+
   local sg_id
   sg_id=$(aws ec2 describe-security-groups --region "$AWS_REGION" \
     --filters "Name=group-name,Values=${PROJECT_TAG}-sg" \
@@ -455,17 +474,30 @@ systemctl enable --now nitro-enclaves-allocator.service
 aws ecr get-login-password --region ${AWS_REGION} \\
   | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
-# 4. Parent container — FastAPI on :8443 + TCP pump on :8444 + bootstrap RPC on vsock 9000.
+# 4a. Parent container (Python) — FastAPI on :8443 (/health, /admin/usage,
+# /trust) + bootstrap RPC server on vsock 9000. NOT the data-path pump.
 docker pull ${parent_repo_url}:${parent_tag}
 docker run -d --restart=always --name=quill-parent \\
   --network=host \\
   --device=/dev/vsock \\
-  -e QUILL_TCP_PUMP=true \\
   -e QUILL_BOOTSTRAP_SERVER=true \\
   -e AWS_REGION=${AWS_REGION} \\
   -e QUILL_GCP_SA_SECRET_ID=quill/trustedrouter-aws-cross-cloud-sa-key \\
   -e QUILL_KMS_CMK_ALIAS=alias/${PROJECT_TAG}-cmk \\
   ${parent_repo_url}:${parent_tag}
+
+# 4b. Parent-pump container (Go) — listens on TCP :8444 and forwards
+# to the enclave's vsock listener (CID 16, port 8001). Replaces the
+# Python tcp_relay.py on the data path: io.Copy between two net.Conns
+# instead of asyncio buffer-copy + GIL overhead. Tiny scratch image.
+docker pull ${parent_pump_repo_url}:${parent_pump_tag}
+docker run -d --restart=always --name=quill-parent-pump \\
+  --network=host \\
+  --device=/dev/vsock \\
+  -e QUILL_PUMP_LISTEN_ADDR=:8444 \\
+  -e QUILL_PUMP_ENCLAVE_CID=16 \\
+  -e QUILL_PUMP_ENCLAVE_PORT=8001 \\
+  ${parent_pump_repo_url}:${parent_pump_tag}
 
 # 5. Enclave image → .eif → run-enclave
 mkdir -p /opt/quill

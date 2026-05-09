@@ -1,0 +1,43 @@
+# Tiny Docker image for the parent-side TCP→vsock pump (the data-path
+# replacement for parent/src/quill_parent/tcp_relay.py).
+#
+# This binary runs on the Nitro EC2 host (NOT inside the enclave) and
+# pumps raw TCP bytes from the NLB's :443 passthrough into the
+# enclave's vsock listener (CID 16, port 8001). The Python parent
+# (parent/Dockerfile.parent) keeps running for /admin, /trust,
+# /health, and the bootstrap RPC over vsock 9000 — those aren't on
+# the data path so Python's overhead is fine there.
+#
+# Why a separate image and not bundled with the enclave: the pump
+# runs OUTSIDE the enclave (on the host) and has no need for the
+# enclave's measurement guarantees. Keeping it in its own image keeps
+# the enclave PCR0 small — every byte added to the EIF rootfs counts
+# toward the attested measurement, and the pump binary is irrelevant
+# to that trust story.
+#
+# Multi-stage build → scratch runtime: ~3.5 MB image, single static
+# binary, no shell, no libc.
+FROM golang:1.24-bookworm@sha256:ca0741815eee3625da09eddf15cc8ff678efa16520fcbcdbeb2ae0b0c519c82c AS builder
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# linux/amd64 because the parent host is an m5n.xlarge (x86_64, AMD
+# EPYC). The pump never goes inside the enclave so it doesn't need to
+# match the EIF arch — but it does need to match the host arch.
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+RUN go build -trimpath \
+      -ldflags='-s -w -extldflags=-static' \
+      -o /out/parent-pump ./cmd/parent-pump
+
+FROM scratch
+COPY --from=builder /out/parent-pump /parent-pump
+
+# The pump listens on :8444 by default. Override via env vars
+# (QUILL_PUMP_LISTEN_ADDR, QUILL_PUMP_ENCLAVE_CID, QUILL_PUMP_ENCLAVE_PORT).
+EXPOSE 8444
+
+ENTRYPOINT ["/parent-pump"]
