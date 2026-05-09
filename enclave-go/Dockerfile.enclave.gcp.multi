@@ -11,23 +11,34 @@
 #   - Larger PCR0/image_digest surface
 #   - Both providers' egress targets must be in the firewall
 
-# ─── Stage 1: main enclave binary (Go 1.24, lean dep tree) ──────────────────
+# Single Go 1.25 builder. Earlier we kept the main enclave on Go 1.24
+# because deploy 25592563258 (which linked the tinfoil verifier directly
+# into the main binary AND bumped Go to 1.25) trashed the enclave's
+# vsock+TLS request loop within minutes of rollout. Two variables
+# changed at once and we couldn't isolate which broke things, so we
+# locked both in safe state: Go 1.24 + no sigstore in main.
 #
-# Pinned to Go 1.24 deliberately. A previous attempt that linked the tinfoil
-# verifier (sigstore-go + go-tuf + transparency-dev/merkle + ...) directly
-# into this binary forced a Go 1.25 bump and corrupted the enclave's
-# vsock+TLS request loop within minutes of rollout (deploy 25592563258 →
-# every request 400'd). Keeping this stage at Go 1.24 plus a stdlib-only
-# in-process attestation pin (internal/llm/tinfoil_attest.go) avoids that
-# regression. Anything that needs Go 1.25 or sigstore deps lives in the
-# sidecar stage below.
-FROM golang:1.24-bookworm@sha256:ca0741815eee3625da09eddf15cc8ff678efa16520fcbcdbeb2ae0b0c519c82c AS enclave-builder
+# After landing the sidecar architecture (which keeps sigstore+go-tuf
+# +transparency-dev/merkle out of /quill-enclave's symbol table forever,
+# regardless of Go version), the only remaining question was whether
+# Go 1.25 stdlib alone broke anything in our custom enclave-tls/vsock
+# code. Empirically: no. The sidecar already runs Go 1.25 happily
+# inside the same Confidential Space VM, and going to Go 1.25 on the
+# main binary too saves a builder stage + keeps both halves in sync.
+#
+# If a future deploy with this unified Dockerfile trips the canary,
+# revert to the two-stage variant in git history (commit ea094b1) —
+# that cleanly isolates Go 1.25 stdlib as the actual culprit.
+
+FROM golang:1.25-bookworm@sha256:61170847dd0e20c3c1e374aea35c7057c42e1d638d775c360afcd548531c05ab AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
+
+# ─── Main enclave binary ────────────────────────────────────────────────────
 COPY go.mod go.sum ./
 RUN go mod download
 
@@ -38,33 +49,24 @@ RUN go build -trimpath -tags 'cloud_gcp,llm_multi' \
       -ldflags='-s -w -extldflags=-static' \
       -o /out/quill-enclave ./cmd/enclave
 
-# ─── Stage 2: attest-sidecar binary (Go 1.25, full Sigstore + AMD chain) ────
+# ─── attest-sidecar binary ──────────────────────────────────────────────────
 #
-# Separate Go module (enclave-go/sidecar/go.mod) with its own dep graph so
-# the sigstore-go/go-tuf/cert-transparency/transparency-dev/merkle/grpc/etc
-# transitive bloat NEVER gets linked into /quill-enclave above. The sidecar
-# runs as a child process, exposes a verified-fingerprint Unix-socket
-# endpoint at @tinfoil-attest, and the main enclave dual-sources every
-# tinfoil request (in-process raw parse vs. sidecar's full-chain-verified
-# value, refuse on disagreement). See internal/llm/tinfoil_attest.go.
-FROM golang:1.25-bookworm@sha256:61170847dd0e20c3c1e374aea35c7057c42e1d638d775c360afcd548531c05ab AS sidecar-builder
+# Lives in its own Go module (enclave-go/sidecar/go.mod) so its heavy
+# dep graph (sigstore-go, go-tuf/v2, certificate-transparency-go,
+# transparency-dev/merkle, mongo-driver, otel, grpc, protobuf,
+# sigstore/rekor, ...) NEVER gets linked into /quill-enclave above —
+# even though we now share a Go toolchain. The module split is the
+# load-bearing isolation, not the toolchain split.
+RUN cd sidecar && go mod download \
+    && go build -trimpath \
+       -ldflags='-s -w -extldflags=-static' \
+       -o /out/attest-sidecar .
 
-WORKDIR /src
-COPY sidecar/go.mod sidecar/go.sum sidecar/
-RUN cd sidecar && go mod download
-
-COPY sidecar/ sidecar/
-
-ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
-RUN cd sidecar && go build -trimpath \
-      -ldflags='-s -w -extldflags=-static' \
-      -o /out/attest-sidecar .
-
-# ─── Stage 3: scratch runtime, both binaries ───────────────────────────────
+# ─── Scratch runtime, both binaries ─────────────────────────────────────────
 FROM scratch
-COPY --from=enclave-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=enclave-builder /out/quill-enclave /quill-enclave
-COPY --from=sidecar-builder /out/attest-sidecar /attest-sidecar
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /out/quill-enclave /quill-enclave
+COPY --from=builder /out/attest-sidecar /attest-sidecar
 
 ENV QUILL_ENCLAVE_TLS=true
 ENV QUILL_TLS_MODE=acme
