@@ -64,8 +64,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -88,6 +91,26 @@ const (
 type tinfoilAttestation struct {
 	Format string `json:"format"`
 	Body   string `json:"body"`
+}
+
+// tinfoilSidecarSocket is where the attest-sidecar (a separate binary
+// living at enclave-go/sidecar/) listens for cross-check queries. When
+// the socket exists and answers, the main enclave dual-sources the
+// expected TLS fingerprint: stdlib-only parse here (rawFP) AND
+// full-Sigstore-+-AMD-VCEK-chain-verified (verifiedFP) from the sidecar.
+// Disagreement = refuse the request. Sidecar unreachable = log loudly
+// and fall through to rawFP-only (the pin still holds).
+//
+// "@tinfoil-attest" is a Linux abstract socket — no filesystem entry,
+// works even when the runtime image is FROM scratch and /run is read
+// only. Override via TINFOIL_ATTEST_SOCKET if you want to point it at
+// a path-based socket (e.g. for local development).
+var tinfoilSidecarSocket = "@tinfoil-attest"
+
+func init() {
+	if v := os.Getenv("TINFOIL_ATTEST_SOCKET"); v != "" {
+		tinfoilSidecarSocket = v
+	}
 }
 
 // fetchExpectedTLSPubkeyFP fetches Tinfoil's attestation document and
@@ -149,6 +172,140 @@ func fetchExpectedTLSPubkeyFP(ctx context.Context) (string, error) {
 	return hex.EncodeToString(reportData[:32]), nil
 }
 
+// sidecarPayload mirrors the wire shape attest-sidecar's /verified-fp
+// endpoint returns. We only consume the FP field today; the others
+// (CodeDigest, ExpiresAt, ...) are kept here for future allowlist
+// pinning ("only accept code_digest == X").
+type sidecarPayload struct {
+	FP              string    `json:"fp"`
+	HPKEPubkey      string    `json:"hpke_pubkey"`
+	CodeDigest      string    `json:"code_digest"`
+	CodeFingerprint string    `json:"code_fp"`
+	EnclaveFP       string    `json:"enclave_fp"`
+	VerifiedAt      time.Time `json:"verified_at"`
+	ExpiresAt       time.Time `json:"expires_at"`
+}
+
+// unixSocketHTTPClient builds an http.Client that talks HTTP over the
+// given Unix socket (path-based or @-prefixed abstract). A fresh client
+// per call is fine — these requests are infrequent (cached for ~30s
+// behind the first-use lazy load on tinfoilCachedClient).
+func unixSocketHTTPClient(socket string) *http.Client {
+	dialer := func(_ context.Context, _, _ string) (net.Conn, error) {
+		return net.DialTimeout("unix", socket, 2*time.Second)
+	}
+	return &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext:           dialer,
+			DisableKeepAlives:     true,
+			ResponseHeaderTimeout: 3 * time.Second,
+		},
+	}
+}
+
+// fetchSidecarVerifiedFP queries the attest-sidecar over its Unix socket
+// and returns the verified fingerprint plus the rest of the payload.
+// On any failure (sidecar not running, socket unreachable, sidecar
+// returned 5xx because verify chain itself is broken) returns an error.
+//
+// The caller (resolveExpectedFP) treats this error as "sidecar
+// unavailable" and falls back to rawFP-only mode with a loud warning.
+// We deliberately do NOT silently substitute rawFP for the sidecar's
+// answer — that would let an attacker who can break the sidecar but
+// not the in-process fetch downgrade us silently to a single-source
+// pin.
+func fetchSidecarVerifiedFP(ctx context.Context) (*sidecarPayload, error) {
+	socket := strings.TrimSpace(tinfoilSidecarSocket)
+	if socket == "" {
+		return nil, errors.New("sidecar socket empty")
+	}
+	client := unixSocketHTTPClient(socket)
+	// host part is ignored by the unix dialer but Go's URL parser
+	// requires something.
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://attest-sidecar/verified-fp", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sidecar dial: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("sidecar HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var v sidecarPayload
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<14)).Decode(&v); err != nil {
+		return nil, fmt.Errorf("sidecar decode: %w", err)
+	}
+	if v.FP == "" {
+		return nil, errors.New("sidecar returned empty fp")
+	}
+	if !v.ExpiresAt.IsZero() && time.Now().After(v.ExpiresAt) {
+		return nil, fmt.Errorf("sidecar fp expired at %s", v.ExpiresAt.Format(time.RFC3339))
+	}
+	return &v, nil
+}
+
+// resolveExpectedFP returns the TLS-pubkey fingerprint we should pin
+// to for tinfoil traffic, dual-sourced where possible:
+//
+//   1. rawFP      — stdlib-only parse of /.well-known/tinfoil-attestation
+//                   (fetched directly from this process)
+//   2. verifiedFP — full-Sigstore-+-AMD-VCEK-chain-verified value
+//                   from the attest-sidecar (a separate process)
+//
+// Decision matrix:
+//
+//   * Both succeed and agree   → return verifiedFP (safer; full chain).
+//   * Both succeed and DISAGREE → REFUSE. Either tinfoil is rotating
+//                                 mid-flight (next attempt resolves)
+//                                 or one network leg is being MITM'd.
+//                                 Either way we don't pick a side.
+//   * Only raw succeeds         → return rawFP, log "sidecar
+//                                 unreachable; raw-only mode" loudly.
+//                                 The pin still holds; it just lacks
+//                                 the AMD signature attestation.
+//   * Only sidecar succeeds     → return verifiedFP, log similarly
+//                                 (raw fetch failed, e.g. tinfoil's
+//                                 .well-known briefly 503'd).
+//   * Neither succeeds          → return error. Tinfoil requests fail
+//                                 closed.
+//
+// log lines use the structured key=value format the rest of the
+// enclave already uses, so they show up cleanly in the regional
+// log dataset.
+func resolveExpectedFP(ctx context.Context) (string, error) {
+	rawFP, rawErr := fetchExpectedTLSPubkeyFP(ctx)
+	verified, sidecarErr := fetchSidecarVerifiedFP(ctx)
+
+	switch {
+	case rawErr == nil && sidecarErr == nil:
+		if rawFP != verified.FP {
+			log.Printf("tinfoil.attest.cross_check_disagreement raw_fp=%s verified_fp=%s code_digest=%s",
+				rawFP, verified.FP, verified.CodeDigest)
+			return "", fmt.Errorf("tinfoil attestation cross-check disagreement: raw=%s verified=%s",
+				rawFP, verified.FP)
+		}
+		log.Printf("tinfoil.attest.cross_check_ok fp=%s code_digest=%s code_fp=%s",
+			verified.FP, verified.CodeDigest, verified.CodeFingerprint)
+		return verified.FP, nil
+	case rawErr == nil && sidecarErr != nil:
+		log.Printf("tinfoil.attest.sidecar_unreachable err=%q raw_fp=%s mode=raw_only",
+			sidecarErr.Error(), rawFP)
+		return rawFP, nil
+	case rawErr != nil && sidecarErr == nil:
+		log.Printf("tinfoil.attest.raw_fetch_failed err=%q verified_fp=%s mode=verified_only",
+			rawErr.Error(), verified.FP)
+		return verified.FP, nil
+	default:
+		return "", fmt.Errorf("tinfoil attestation unavailable: raw=%v sidecar=%v",
+			rawErr, sidecarErr)
+	}
+}
+
 // pinnedTLSDial returns a DialTLSContext callback that completes the TLS
 // handshake to the given addr and then verifies the leaf certificate's
 // public-key fingerprint matches expectedFP. Mismatch closes the
@@ -207,7 +364,7 @@ type attestedRoundTripper struct {
 }
 
 func newAttestedRoundTripper(ctx context.Context) (*attestedRoundTripper, error) {
-	fp, err := fetchExpectedTLSPubkeyFP(ctx)
+	fp, err := resolveExpectedFP(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +407,7 @@ func (r *attestedRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 }
 
 func (r *attestedRoundTripper) refresh(ctx context.Context) error {
-	fp, err := fetchExpectedTLSPubkeyFP(ctx)
+	fp, err := resolveExpectedFP(ctx)
 	if err != nil {
 		return err
 	}

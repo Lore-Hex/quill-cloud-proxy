@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,6 +67,31 @@ func main() {
 	if err := entropy.Seed(); err != nil {
 		fmt.Fprintf(os.Stderr, "entropy.seed_failed: %v (continuing)\n", err)
 	}
+
+	// 0b. Fork-exec the attest-sidecar (a separate Go binary built
+	// from enclave-go/sidecar/) so its full Sigstore + AMD VCEK
+	// verification chain runs in its own process, isolated from the
+	// main enclave's symbol table. The sidecar listens on the abstract
+	// Unix socket "@tinfoil-attest"; tinfoil_attest.go in the llm
+	// package picks it up and dual-sources the expected TLS public-key
+	// fingerprint (in-process stdlib parse vs. sidecar's verified
+	// value) on every tinfoil request — disagreement = refuse.
+	//
+	// Why not link the verifier into the main binary directly: the
+	// transitive deps (sigstore-go, go-tuf/v2, certificate-transparency,
+	// transparency-dev/merkle, mongo-driver, otel, grpc, protobuf)
+	// corrupted the main enclave's vsock+TLS request loop on a previous
+	// attempt — every request started returning HTTP 400 within minutes
+	// of rollout (deploy 25592563258), tripping the canary at 2-min
+	// consecutive-down. Sidecar isolation keeps that dep tree out of
+	// the main enclave entirely.
+	//
+	// Sidecar failure is intentionally non-fatal here: the in-process
+	// stdlib pin still holds even with no sidecar, so tinfoil traffic
+	// continues to be TLS-bound to the public key in REPORT_DATA;
+	// only the AMD-signature attestation is missing in that mode and
+	// we log it loudly so it's visible in dashboards.
+	maybeStartAttestSidecar()
 
 	// 1. Fetch bootstrap data from parent.
 	boot, err := bootstrap.Fetch(ctx)
@@ -1569,4 +1595,56 @@ func newRequestLogID() string {
 	var buf [16]byte
 	_, _ = rand.Read(buf[:])
 	return "rlog_" + hex.EncodeToString(buf[:])
+}
+
+// maybeStartAttestSidecar fork-execs the attest-sidecar binary if it
+// exists at the conventional install path inside the enclave image
+// (/attest-sidecar). If the binary isn't present (e.g., local dev
+// builds, or a build configuration that doesn't ship the sidecar)
+// this is a no-op — the main enclave still runs the in-process
+// stdlib pin in tinfoil_attest.go, just without the cross-check.
+//
+// We pipe the sidecar's stdout/stderr into our own so its log lines
+// show up in the same destination as the rest of the enclave logs
+// (Cloud Logging + Axiom). The child inherits SIGTERM via process
+// group; we don't bother explicitly tracking it because the Cloud
+// Run / Confidential Space launcher kills the whole container.
+func maybeStartAttestSidecar() {
+	const sidecarPath = "/attest-sidecar"
+	if os.Getenv("QUILL_DISABLE_ATTEST_SIDECAR") == "1" {
+		fmt.Fprintln(os.Stderr, "attest_sidecar.skipped reason=disabled_env")
+		return
+	}
+	info, err := os.Stat(sidecarPath)
+	if err != nil {
+		// Not packaged — log and continue. tinfoil_attest.go will see
+		// the sidecar socket as unreachable and run in raw-only mode.
+		fmt.Fprintf(os.Stderr, "attest_sidecar.skipped reason=binary_missing path=%q err=%q\n", sidecarPath, err.Error())
+		return
+	}
+	if info.Mode()&0o111 == 0 {
+		fmt.Fprintf(os.Stderr, "attest_sidecar.skipped reason=binary_not_executable path=%q mode=%v\n", sidecarPath, info.Mode())
+		return
+	}
+	cmd := exec.Command(sidecarPath)
+	// Inherit stdout/stderr so the sidecar's logs land where the main
+	// enclave's logs already go (Cloud Logging via container stdout).
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "attest_sidecar.start_failed err=%q\n", err.Error())
+		return
+	}
+	fmt.Fprintf(os.Stderr, "attest_sidecar.started pid=%d path=%q\n", cmd.Process.Pid, sidecarPath)
+	// Reap the child if it ever exits so it doesn't become a zombie.
+	// We don't restart it — if the sidecar is sick, we serve in
+	// raw-only mode rather than thrash, and a future deploy will
+	// rebuild the image.
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			fmt.Fprintf(os.Stderr, "attest_sidecar.exited err=%q pid=%d\n", err.Error(), cmd.Process.Pid)
+		} else {
+			fmt.Fprintf(os.Stderr, "attest_sidecar.exited ok pid=%d\n", cmd.Process.Pid)
+		}
+	}()
 }

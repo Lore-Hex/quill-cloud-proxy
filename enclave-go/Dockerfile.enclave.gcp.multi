@@ -11,7 +11,17 @@
 #   - Larger PCR0/image_digest surface
 #   - Both providers' egress targets must be in the firewall
 
-FROM golang:1.24-bookworm@sha256:ca0741815eee3625da09eddf15cc8ff678efa16520fcbcdbeb2ae0b0c519c82c AS builder
+# ─── Stage 1: main enclave binary (Go 1.24, lean dep tree) ──────────────────
+#
+# Pinned to Go 1.24 deliberately. A previous attempt that linked the tinfoil
+# verifier (sigstore-go + go-tuf + transparency-dev/merkle + ...) directly
+# into this binary forced a Go 1.25 bump and corrupted the enclave's
+# vsock+TLS request loop within minutes of rollout (deploy 25592563258 →
+# every request 400'd). Keeping this stage at Go 1.24 plus a stdlib-only
+# in-process attestation pin (internal/llm/tinfoil_attest.go) avoids that
+# regression. Anything that needs Go 1.25 or sigstore deps lives in the
+# sidecar stage below.
+FROM golang:1.24-bookworm@sha256:ca0741815eee3625da09eddf15cc8ff678efa16520fcbcdbeb2ae0b0c519c82c AS enclave-builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
@@ -28,9 +38,33 @@ RUN go build -trimpath -tags 'cloud_gcp,llm_multi' \
       -ldflags='-s -w -extldflags=-static' \
       -o /out/quill-enclave ./cmd/enclave
 
+# ─── Stage 2: attest-sidecar binary (Go 1.25, full Sigstore + AMD chain) ────
+#
+# Separate Go module (enclave-go/sidecar/go.mod) with its own dep graph so
+# the sigstore-go/go-tuf/cert-transparency/transparency-dev/merkle/grpc/etc
+# transitive bloat NEVER gets linked into /quill-enclave above. The sidecar
+# runs as a child process, exposes a verified-fingerprint Unix-socket
+# endpoint at @tinfoil-attest, and the main enclave dual-sources every
+# tinfoil request (in-process raw parse vs. sidecar's full-chain-verified
+# value, refuse on disagreement). See internal/llm/tinfoil_attest.go.
+FROM golang:1.25-bookworm@sha256:61170847dd0e20c3c1e374aea35c7057c42e1d638d775c360afcd548531c05ab AS sidecar-builder
+
+WORKDIR /src
+COPY sidecar/go.mod sidecar/go.sum sidecar/
+RUN cd sidecar && go mod download
+
+COPY sidecar/ sidecar/
+
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+RUN cd sidecar && go build -trimpath \
+      -ldflags='-s -w -extldflags=-static' \
+      -o /out/attest-sidecar .
+
+# ─── Stage 3: scratch runtime, both binaries ───────────────────────────────
 FROM scratch
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=builder /out/quill-enclave /quill-enclave
+COPY --from=enclave-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=enclave-builder /out/quill-enclave /quill-enclave
+COPY --from=sidecar-builder /out/attest-sidecar /attest-sidecar
 
 ENV QUILL_ENCLAVE_TLS=true
 ENV QUILL_TLS_MODE=acme
