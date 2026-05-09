@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -27,6 +28,36 @@ const imageOutputTokenEstimate = 1290
 
 var imageDataURLPattern = regexp.MustCompile(`data:image/[^;"\s]+;base64,[A-Za-z0-9+/=_-]+`)
 
+// defaultHTTPClient returns a properly-pooled http.Client for the
+// TR control-plane round-trips. The zero-value http.Client uses
+// http.DefaultTransport which caps `MaxIdleConnsPerHost` at 2 — under
+// just 6 parallel inference requests this serializes the per-request
+// authorize + settle round-trips behind 2 reusable connections, with
+// every request beyond the second paying a fresh TLS handshake to
+// api.quillrouter.com. We size MaxIdleConnsPerHost generously (128)
+// to match the LLM client and keep the path fully concurrent.
+func defaultHTTPClient(timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          1024,
+			MaxIdleConnsPerHost:   128,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
+}
+
 type Client struct {
 	baseURL       string
 	internalToken string
@@ -39,7 +70,7 @@ func NewFromEnv() *Client {
 		baseURL:       strings.TrimRight(os.Getenv("TR_CONTROL_PLANE_BASE_URL"), "/"),
 		internalToken: os.Getenv("TR_INTERNAL_GATEWAY_TOKEN"),
 		region:        os.Getenv("TR_REGION"),
-		httpc:         &http.Client{Timeout: 30 * time.Second},
+		httpc:         defaultHTTPClient(30 * time.Second),
 	}
 }
 
@@ -60,13 +91,13 @@ func NewFromBootstrap(boot *qtypes.BootstrapData) *Client {
 		baseURL:       baseURL,
 		internalToken: strings.TrimSpace(internalToken),
 		region:        region,
-		httpc:         &http.Client{Timeout: 30 * time.Second},
+		httpc:         defaultHTTPClient(30 * time.Second),
 	}
 }
 
 func New(baseURL, internalToken string, httpc *http.Client) *Client {
 	if httpc == nil {
-		httpc = &http.Client{Timeout: 30 * time.Second}
+		httpc = defaultHTTPClient(30 * time.Second)
 	}
 	return &Client{
 		baseURL:       strings.TrimRight(baseURL, "/"),
