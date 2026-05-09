@@ -42,19 +42,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.heartbeat = heartbeat
     app.state.heartbeat_task = asyncio.create_task(heartbeat.run())
 
-    # Bootstrap RPC: serve BootstrapData to the Go enclave on vsock 9000.
-    # Only enabled in production (QUILL_BOOTSTRAP_SERVER=true); skipped for
-    # tests + local dev where AF_VSOCK isn't available anyway.
+    # Bootstrap RPC: serve BootstrapData to the Go enclave on vsock 9100.
+    # Only enabled in production (QUILL_BOOTSTRAP_SERVER=true); skipped
+    # for tests + local dev where AF_VSOCK isn't available anyway.
+    #
+    # The new signature reflects the multi-provider direct-API path —
+    # all provider keys come from AWS Secrets Manager at well-known
+    # paths under `settings.secret_prefix` (default "quill/"), and the
+    # cross-cloud GCP SA key is KMS-unwrapped via the alias in
+    # `settings.gcp_sa_kms_alias`. No more bucket/object_key/bedrock
+    # arguments — those are dead architecture (see V1.1 trust roadmap).
     bootstrap_task: asyncio.Task[None] | None = None
     if bootstrap_server.is_enabled():
         bootstrap_task = asyncio.create_task(
             bootstrap_server.serve_forever(
-                bucket=settings.device_keys_bucket,
-                object_key=settings.device_keys_object_key,
                 region=settings.aws_region,
-                bedrock_vsock_proxy=settings.bedrock_vsock_proxy,
-                openrouter_secret_id=settings.openrouter_secret_id,
-                openrouter_vsock_proxy=settings.openrouter_vsock_proxy,
+                secret_prefix=settings.secret_prefix,
+                gcp_sa_kms_alias=settings.gcp_sa_kms_alias,
+                tr_control_plane_base_url=settings.tr_control_plane_base_url,
             )
         )
         app.state.bootstrap_task = bootstrap_task

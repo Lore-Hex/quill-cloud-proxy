@@ -1,29 +1,50 @@
-"""Bootstrap RPC: parent → enclave handshake.
+"""Bootstrap RPC: parent → enclave handshake (AWS multi-provider variant).
 
-The Go enclave dials vsock://(host_cid):9000 at startup and reads one
-JSON-encoded BootstrapData blob. We pre-load the data at parent startup:
+The Go enclave dials vsock://(host_cid):9100 at startup and reads one
+JSON-encoded BootstrapData blob (matches `enclave-go/internal/types/types.go::BootstrapData`).
 
-  1. Fetch the sealed device-key blob from S3.
-  2. KMS-decrypt it (parent has the IAM perm; the KMS condition uses the
-     enclave's published PCR0 only when an attestation document is
-     supplied. The parent is only authorized to perform Decrypt-on-behalf-
-     of-attested-enclave; for V1 we simplify by also allowing parent-side
-     Decrypt for bootstrap. V1.1 will switch to the strict attested flow.).
-  3. Pull short-lived AWS credentials from IMDS (the parent's instance
-     role has bedrock:Invoke* permission scoped to the Bedrock VPCE).
-  4. Compose BootstrapData with the device list + creds + region +
-     vsock-proxy port.
+We pre-load the data at parent startup:
 
-V1 trust caveat (also called out in the trust page): the parent therefore
-*sees* both the device-key list (in plaintext, for ~milliseconds at boot)
-and the Bedrock credentials. The trust property is preserved at the
-prompt-content level (parent never sees prompts), but rotation/separation
-of duties for the credential plane lands in V1.1.
+  1. Pull every provider API key from AWS Secrets Manager. Keys live at
+     `quill/trustedrouter-{anthropic,openai,gemini,...}-api-key`,
+     mirrored from GCP Secret Manager by `tools/sync-secrets-to-aws.sh`.
+     `secretsmanager.GetSecretValue` returns the raw key string — no
+     extra wrapping, AWS Secrets Manager handles its own at-rest
+     encryption.
+
+  2. Pull the cross-cloud GCP service-account key from
+     `quill/trustedrouter-aws-cross-cloud-sa-key`. This one IS
+     KMS-wrapped on top of Secrets Manager because the trust posture
+     calls for the CMK's key policy to gate decrypt on the enclave's
+     attestation document (V1.1 work — V1 simplifies to parent-side
+     decrypt). The stored secret value is base64(KMS_ciphertext);
+     we GetSecretValue → base64-decode → kms.Decrypt → raw JSON.
+
+  3. Pull the TrustedRouter internal token (used by the enclave for
+     control-plane callbacks like /v1/internal/keys/lookup) from
+     `quill/trustedrouter-tr-api-key-for-self-heal`.
+
+  4. Compose BootstrapData JSON, cache it, serve on vsock 9100. Refresh
+     every 30 min so a key rotation in AWS Secrets Manager flows to
+     the enclave on its next bootstrap (the enclave fetches once per
+     boot; rotation requires a rolling restart of enclave instances).
+
+V1 trust caveat (also called out on the trust page): the parent
+therefore *sees* every provider API key + the GCP SA key in plaintext
+for ~ms at boot. The trust property is preserved at the prompt-content
+level (parent never sees prompts), but credential-plane separation of
+duties lands in V1.1 via attestation-gated KMS Decrypt.
+
+Why not run this directly from the enclave (skipping the parent):
+The Nitro enclave has no network interface — no IMDS, no
+`secretsmanager.amazonaws.com` egress. Every byte in or out goes via
+vsock to the parent. So the parent has to do the AWS API calls.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import os
@@ -34,68 +55,168 @@ from quill_parent.logging import get_logger
 
 log = get_logger(__name__)
 
-BOOTSTRAP_PORT: Final[int] = 9100  # nitro-cli reserves vsock 9000 for boot heartbeat
+# vsock port the enclave dials. nitro-cli reserves 9000 for the boot
+# heartbeat between host and enclave so we use 9100. This MUST stay in
+# sync with `BootstrapPort` in enclave-go/internal/bootstrap/bootstrap.go.
+BOOTSTRAP_PORT: Final[int] = 9100
 AF_VSOCK: Final[int] = 40
 VMADDR_CID_ANY: Final[int] = 0xFFFFFFFF
 
+# Refresh interval. Long enough to amortize the AWS API round-trip cost
+# (16+ secrets per refresh), short enough that a key rotation in
+# Secrets Manager reaches the enclave within ~30 min on a rolling
+# restart.
+REFRESH_SECONDS: Final[int] = 1800
 
-async def _build_bootstrap_data(
-    bucket: str,
-    object_key: str,
+# Provider key catalog: each entry is (BootstrapData field name, AWS
+# Secrets Manager secret name suffix). The full secret path is
+# `${secret_prefix}${suffix}`. This list MUST stay in sync with:
+#   - tools/sync-secrets-to-aws.sh SECRETS array (mirror source)
+#   - enclave-go/internal/types/types.go BootstrapData fields
+#   - enclave-go/internal/bootstrap/bootstrap_gcp.go (sibling)
+#
+# An entry is optional iff the secret is missing in AWS Secrets Manager
+# (skip and leave the BootstrapData field empty); the enclave's
+# build-tag-gated provider clients ignore empty keys.
+_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
+    ("anthropic_api_key", "trustedrouter-anthropic-api-key"),
+    ("openai_api_key", "trustedrouter-openai-api-key"),
+    ("gemini_api_key", "trustedrouter-gemini-api-key"),
+    ("cerebras_api_key", "trustedrouter-cerebras-api-key"),
+    ("deepseek_api_key", "trustedrouter-deepseek-api-key"),
+    ("mistral_api_key", "trustedrouter-mistral-api-key"),
+    ("kimi_api_key", "trustedrouter-kimi-api-key"),
+    ("zai_api_key", "trustedrouter-zai-api-key"),
+    ("together_api_key", "trustedrouter-together-api-key"),
+    ("grok_api_key", "trustedrouter-grok-api-key"),
+    ("novita_api_key", "trustedrouter-novita-api-key"),
+    ("phala_api_key", "trustedrouter-phala-api-key"),
+    ("siliconflow_api_key", "trustedrouter-siliconflow-api-key"),
+    ("tinfoil_api_key", "trustedrouter-tinfoil-api-key"),
+    ("venice_api_key", "trustedrouter-venice-api-key"),
+)
+
+_GCP_SA_KEY_SECRET_SUFFIX: Final[str] = "trustedrouter-aws-cross-cloud-sa-key"
+_TR_INTERNAL_TOKEN_SECRET_SUFFIX: Final[str] = "trustedrouter-tr-api-key-for-self-heal"
+
+
+def _read_one_secret(sm_client: object, secret_id: str) -> str | None:
+    """Fetch one Secrets Manager secret as a string. Returns None if the
+    secret doesn't exist (so missing-provider keys don't crash the
+    bootstrap), re-raises any other error so a misconfigured deploy
+    fails loudly."""
+    try:
+        # boto3 stub-friendly call signature.
+        resp = sm_client.get_secret_value(SecretId=secret_id)  # type: ignore[attr-defined]
+    except Exception as exc:
+        # Botocore raises ClientError with response['Error']['Code']
+        # == 'ResourceNotFoundException' for missing secrets. Anything
+        # else is a real error (auth failure, throttle, etc.).
+        code = getattr(getattr(exc, "response", {}), "get", lambda _k: None)("Error")
+        if isinstance(code, dict) and code.get("Code") == "ResourceNotFoundException":
+            log.warning("bootstrap.secret_missing", id=secret_id)
+            return None
+        raise
+    value = resp.get("SecretString")
+    if value is None:
+        # Some secrets are stored as binary; we don't use that pattern
+        # for provider keys but handle it gracefully.
+        binary = resp.get("SecretBinary")
+        if binary is None:
+            return None
+        if isinstance(binary, (bytes, bytearray)):
+            return binary.decode("utf-8")
+        return str(binary)
+    return value if isinstance(value, str) else str(value)
+
+
+def _unwrap_gcp_sa_key(sm_client: object, kms_client: object, secret_id: str) -> str:
+    """Fetch the wrapped GCP SA key from Secrets Manager, base64-decode
+    the ciphertext, and KMS Decrypt to JSON bytes. Returns the JSON
+    string the enclave drops at GOOGLE_APPLICATION_CREDENTIALS.
+
+    The wrapped value was placed in Secrets Manager by
+    `tools/deploy-aws-nitro.sh phase_cross_cloud_key`:
+        aws kms encrypt --output text --query CiphertextBlob > b64
+        aws secretsmanager create-secret --secret-string file://b64
+    so the SecretString IS the base64-encoded KMS ciphertext.
+    """
+    raw = _read_one_secret(sm_client, secret_id)
+    if not raw:
+        raise RuntimeError(f"bootstrap: cross-cloud GCP SA key secret missing: {secret_id}")
+    try:
+        ciphertext = base64.b64decode(raw)
+    except Exception as exc:
+        raise RuntimeError(f"bootstrap: SA key secret value is not valid base64: {exc}") from exc
+    resp = kms_client.decrypt(CiphertextBlob=ciphertext)  # type: ignore[attr-defined]
+    plaintext = resp.get("Plaintext")
+    if not plaintext:
+        raise RuntimeError("bootstrap: KMS Decrypt returned empty plaintext")
+    if isinstance(plaintext, (bytes, bytearray)):
+        return plaintext.decode("utf-8")
+    return str(plaintext)
+
+
+def _build_bootstrap_data(
+    *,
     region: str,
-    bedrock_vsock_proxy: str,
-    openrouter_secret_id: str | None = None,
-    openrouter_vsock_proxy: str = "3:8004",
+    secret_prefix: str,
+    gcp_sa_kms_alias: str,
+    tr_control_plane_base_url: str | None,
+    sm_client_factory: object | None = None,
+    kms_client_factory: object | None = None,
 ) -> dict[str, object]:
-    """Fetch + decrypt device-key blob; pull IMDS creds. Returns the JSON
-    payload the Go enclave expects (matching internal/types.BootstrapData).
+    """Synchronously build the BootstrapData payload. Run inside an
+    asyncio executor to avoid blocking the event loop on AWS API
+    round-trips (each provider key is one GetSecretValue, ~30-100ms
+    each, ~2-3s total for 16 keys).
+
+    `sm_client_factory` and `kms_client_factory` are escape hatches
+    for tests — production passes None and we build real boto3
+    clients. The factories are zero-arg callables returning a client.
     """
     import boto3
 
-    s3 = boto3.client("s3", region_name=region)
-    obj = s3.get_object(Bucket=bucket, Key=object_key)
-    ciphertext = obj["Body"].read()
-
-    kms = boto3.client("kms", region_name=region)
-    plaintext = kms.decrypt(CiphertextBlob=ciphertext)["Plaintext"]
-    devices = json.loads(plaintext)
-
-    # IMDS for short-lived creds (the parent's instance role).
-    sts = boto3.client("sts", region_name=region)
-    caller = sts.get_caller_identity()
-    log.info("bootstrap.assume_role_for_enclave", account=caller.get("Account"))
-
-    session = boto3.Session(region_name=region)
-    raw_creds = session.get_credentials()
-    if raw_creds is None:
-        raise RuntimeError("no AWS credentials available on the parent's instance role")
-    creds = raw_creds.get_frozen_credentials()
-
-    if not isinstance(devices, list):
-        raise RuntimeError("decrypted device blob is not a JSON array")
+    sm_client = sm_client_factory() if sm_client_factory else boto3.client("secretsmanager", region_name=region)  # type: ignore[operator]
+    kms_client = kms_client_factory() if kms_client_factory else boto3.client("kms", region_name=region)  # type: ignore[operator]
+    # mention to keep mypy happy without changing types in the production path
+    assert sm_client is not None
+    assert kms_client is not None
 
     payload: dict[str, object] = {
-        "devices": devices,
-        "bedrock_access_key": creds.access_key,
-        "bedrock_secret_key": creds.secret_key,
-        "bedrock_session_token": creds.token or "",
         "region": region,
-        "bedrock_vsock_proxy": bedrock_vsock_proxy,
+        # Devices is required by the enclave's BootstrapData but we no
+        # longer use sealed device blobs on the AWS path — the trust
+        # boundary is the attested-gateway-issued API keys, not a
+        # parent-injected device list. Empty array satisfies the JSON
+        # schema without claiming devices we can't enumerate.
+        "devices": [],
     }
 
-    # OpenRouter API key — only when this deploy is wired for the
-    # openrouter-target enclave. Stored as a Secrets Manager secret because
-    # rotation cadence differs from the device-key blob's; the parent
-    # decrypts at boot using the same KMS-condition policy as the device
-    # blob (PCR0-bound).
-    if openrouter_secret_id:
-        sm = boto3.client("secretsmanager", region_name=region)
-        secret = sm.get_secret_value(SecretId=openrouter_secret_id)
-        api_key = secret.get("SecretString", "")
-        if not isinstance(api_key, str) or not api_key.strip():
-            raise RuntimeError("openrouter secret is empty or non-string")
-        payload["openrouter_api_key"] = api_key.strip()
-        payload["openrouter_vsock_proxy"] = openrouter_vsock_proxy
+    # 1. Provider keys.
+    found = 0
+    for field, suffix in _PROVIDER_KEYS:
+        value = _read_one_secret(sm_client, f"{secret_prefix}{suffix}")
+        if value:
+            payload[field] = value.strip()
+            found += 1
+    log.info("bootstrap.provider_keys", found=found, total=len(_PROVIDER_KEYS))
+
+    # 2. GCP SA key (KMS-unwrapped).
+    sa_secret_id = f"{secret_prefix}{_GCP_SA_KEY_SECRET_SUFFIX}"
+    payload["gcp_service_account_key_json"] = _unwrap_gcp_sa_key(
+        sm_client, kms_client, sa_secret_id
+    )
+    log.info("bootstrap.gcp_sa_key_unwrapped", kms_alias=gcp_sa_kms_alias)
+
+    # 3. TrustedRouter internal token (no KMS wrapping; just a Secrets
+    # Manager string). Optional — only the multi-region control-plane
+    # callbacks need it.
+    tr_token = _read_one_secret(sm_client, f"{secret_prefix}{_TR_INTERNAL_TOKEN_SECRET_SUFFIX}")
+    if tr_token:
+        payload["trustedrouter_internal_token"] = tr_token.strip()
+    if tr_control_plane_base_url:
+        payload["trustedrouter_base_url"] = tr_control_plane_base_url
 
     return payload
 
@@ -111,51 +232,75 @@ async def _serve_one(client: socket.socket, payload: bytes) -> None:
 
 async def serve_forever(
     *,
-    bucket: str,
-    object_key: str,
     region: str,
-    bedrock_vsock_proxy: str,
-    openrouter_secret_id: str | None = None,
-    openrouter_vsock_proxy: str = "3:8004",
+    secret_prefix: str = "quill/",
+    gcp_sa_kms_alias: str = "alias/quill-enclave-cmk",
+    tr_control_plane_base_url: str | None = None,
 ) -> None:
-    """Serve BootstrapData on vsock CID-ANY:9000 forever.
+    """Serve BootstrapData on vsock CID-ANY:BOOTSTRAP_PORT forever.
 
-    Refreshes the payload (incl. IMDS creds) every 30 minutes so that
-    expiring temporary credentials don't trap the enclave.
+    Refreshes the payload every REFRESH_SECONDS so a key rotation in
+    AWS Secrets Manager (e.g. via tools/sync-secrets-to-aws.sh after a
+    GCP-side rotation) flows to the enclave on its next boot. Existing
+    enclave processes are unaffected — they fetched at startup and
+    cache the keys for the lifetime of the process.
+
+    Arguments:
+      region: AWS region (e.g. "us-west-2") for the Secrets Manager
+        and KMS clients. The CMK lives in the same region as the
+        secrets, so a single region applies to both.
+      secret_prefix: prepended to every provider/SA-key suffix to form
+        the full Secrets Manager SecretId. Defaults to "quill/" which
+        matches `tools/sync-secrets-to-aws.sh`'s AWS_SECRET_PREFIX.
+      gcp_sa_kms_alias: the KMS CMK alias used to wrap the cross-cloud
+        GCP SA key. The alias is informational here (KMS Decrypt
+        infers the key from the ciphertext header); we log it so a
+        misrouted decrypt is debuggable from the parent's stdout.
+      tr_control_plane_base_url: when set, propagated to the enclave
+        as `trustedrouter_base_url` so it knows which region's API
+        endpoint to call for control-plane operations.
     """
     payload_lock = asyncio.Lock()
     cached_payload = b""
 
+    def _build_sync() -> dict[str, object]:
+        return _build_bootstrap_data(
+            region=region,
+            secret_prefix=secret_prefix,
+            gcp_sa_kms_alias=gcp_sa_kms_alias,
+            tr_control_plane_base_url=tr_control_plane_base_url,
+        )
+
     async def refresh() -> None:
         nonlocal cached_payload
+        loop = asyncio.get_event_loop()
         try:
-            data = await _build_bootstrap_data(
-                bucket,
-                object_key,
-                region,
-                bedrock_vsock_proxy,
-                openrouter_secret_id=openrouter_secret_id,
-                openrouter_vsock_proxy=openrouter_vsock_proxy,
-            )
+            data = await loop.run_in_executor(None, _build_sync)
             async with payload_lock:
                 cached_payload = json.dumps(data).encode("utf-8")
-            devices_field = data["devices"]
-            n = len(devices_field) if isinstance(devices_field, list) else 0
-            log.info("bootstrap.refresh", devices=n)
+            log.info(
+                "bootstrap.refresh",
+                # don't log the actual key values; just a count of
+                # which provider fields ended up populated
+                providers_loaded=sum(
+                    1 for field, _suffix in _PROVIDER_KEYS if data.get(field)
+                ),
+            )
         except Exception as exc:
             log.exception("bootstrap.refresh_failed", err=type(exc).__name__)
 
     async def refresh_loop() -> None:
         while True:
             await refresh()
-            await asyncio.sleep(1800)
+            await asyncio.sleep(REFRESH_SECONDS)
 
-    # Strong refs so the periodic refresh + per-conn responders aren't GC'd.
     bg_tasks: set[asyncio.Task[None]] = set()
     refresh_task = asyncio.create_task(refresh_loop())
     bg_tasks.add(refresh_task)
 
-    # Wait for the first refresh to complete before accepting connections.
+    # Wait for the first refresh to land before accepting connections.
+    # Otherwise a fast-booting enclave can dial the parent's listener
+    # before the payload exists and get an empty response.
     while not cached_payload:
         await asyncio.sleep(0.1)
 
@@ -176,7 +321,7 @@ async def serve_forever(
 
 
 def is_enabled() -> bool:
-    """Bootstrap server is only active when explicitly opted in. Local dev
-    (without a real Nitro host) leaves it off so the unit tests don't try
-    to bind AF_VSOCK."""
+    """Bootstrap server is only active when explicitly opted in. Local
+    dev (without a real Nitro host) leaves it off so unit tests don't
+    try to bind AF_VSOCK."""
     return os.environ.get("QUILL_BOOTSTRAP_SERVER", "false").lower() == "true"

@@ -62,6 +62,26 @@ type BootstrapData struct {
 	SiliconFlowAPIKey string `json:"siliconflow_api_key,omitempty"`
 	TinfoilAPIKey     string `json:"tinfoil_api_key,omitempty"`
 	VeniceAPIKey      string `json:"venice_api_key,omitempty"`
+
+	// Cross-cloud GCP service-account key (JSON, plaintext).
+	//
+	// Populated only on the AWS-side enclave path: the parent fetches the
+	// AWS-KMS-wrapped ciphertext from `quill/trustedrouter-aws-cross-cloud-sa-key`
+	// in AWS Secrets Manager, decrypts via `alias/quill-enclave-cmk`, and
+	// ships the plaintext JSON over vsock to the enclave. The enclave
+	// writes this to a tmpfs path and points GOOGLE_APPLICATION_CREDENTIALS
+	// at it so the GCP client libraries (Spanner, Bigtable, KMS, Secret
+	// Manager) authenticate cross-cloud without us mirroring those
+	// resources to AWS.
+	//
+	// V1 trust caveat (parallel to BedrockAccessKey): the parent sees
+	// plaintext for ~ms at boot. V1.1 will switch to attestation-gated
+	// KMS Decrypt where the parent only forwards still-encrypted bytes
+	// and the enclave does the unwrap inside the measured boundary.
+	//
+	// On GCP-side enclaves this stays empty — Confidential Space uses
+	// metadata-server tokens, not an SA key.
+	GCPServiceAccountKeyJSON string `json:"gcp_service_account_key_json,omitempty"`
 }
 
 // OpenAIChatMessage is one message in an inbound /v1/chat/completions request.

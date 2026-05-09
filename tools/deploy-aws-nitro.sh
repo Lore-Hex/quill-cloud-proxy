@@ -490,15 +490,24 @@ aws ecr get-login-password --region ${AWS_REGION} \\
   | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
 # 4a. Parent container (Python) — FastAPI on :8443 (/health, /admin/usage,
-# /trust) + bootstrap RPC server on vsock 9000. NOT the data-path pump.
+# /trust) + bootstrap RPC server on vsock 9100. NOT the data-path pump.
+#
+# Env vars consumed by quill_parent.config.Settings (env_prefix=QUILL_):
+#   QUILL_AWS_REGION             — Secrets Manager + KMS region (us-west-2)
+#   QUILL_BOOTSTRAP_SERVER=true  — opt-in flag; off in dev/tests
+#   QUILL_SECRET_PREFIX          — defaults to "quill/" (matches sync-secrets-to-aws.sh)
+#   QUILL_GCP_SA_KMS_ALIAS       — wraps the cross-cloud SA key
+#   QUILL_TR_CONTROL_PLANE_BASE_URL — empty here; only set when this
+#                                    region serves control-plane callbacks
 docker pull ${parent_repo_url}:${parent_tag}
 docker run -d --restart=always --name=quill-parent \\
   --network=host \\
   --device=/dev/vsock \\
   -e QUILL_BOOTSTRAP_SERVER=true \\
-  -e AWS_REGION=${AWS_REGION} \\
-  -e QUILL_GCP_SA_SECRET_ID=quill/trustedrouter-aws-cross-cloud-sa-key \\
-  -e QUILL_KMS_CMK_ALIAS=alias/${PROJECT_TAG}-cmk \\
+  -e QUILL_AWS_REGION=${AWS_REGION} \\
+  -e QUILL_SECRET_PREFIX=quill/ \\
+  -e QUILL_GCP_SA_KMS_ALIAS=alias/${PROJECT_TAG}-cmk \\
+  -e QUILL_TR_CONTROL_PLANE_BASE_URL= \\
   ${parent_repo_url}:${parent_tag}
 
 # 4b. Parent-pump container (Go) — listens on TCP :8444 and forwards
