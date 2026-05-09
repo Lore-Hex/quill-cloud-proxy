@@ -14,7 +14,7 @@
 #   - quill-enclave-asg                  AutoScalingGroup (min=1, max=50)
 #   - quill-enclave-nlb                  Network Load Balancer (TLS passthrough)
 #   - quill-enclave-tg                   target group on :443
-#   - service-quota request for m5n.xlarge instance limit
+#   - service-quota request for m5.xlarge instance limit
 #
 # The script is idempotent: every step checks for existing resources
 # and skips creation if found. Re-running is safe.
@@ -31,7 +31,7 @@
 #   network    VPC + subnets + security group
 #   ecr        ECR repo for the enclave image
 #   compute    Launch template + Auto Scaling Group + NLB + target group
-#   quotas     Submit Service Quotas request for m5n.xlarge
+#   quotas     Submit Service Quotas request for m5.xlarge
 #   cross-cloud-key  Create GCP SA, mint a key, wrap with AWS KMS, store in
 #                    AWS Secrets Manager. Re-running rotates the key.
 
@@ -42,10 +42,25 @@ PROJECT_TAG="${PROJECT_TAG:-quill-enclave}"
 ECR_REPO_NAME="${ECR_REPO_NAME:-quill-enclave}"
 PARENT_ECR_REPO_NAME="${PARENT_ECR_REPO_NAME:-quill-parent}"
 PARENT_PUMP_ECR_REPO_NAME="${PARENT_PUMP_ECR_REPO_NAME:-quill-parent-pump}"
-INSTANCE_TYPE="${INSTANCE_TYPE:-m5n.xlarge}"
-ASG_MIN="${ASG_MIN:-1}"
+# Nitro Enclaves require ≥2 vCPU for the enclave + ≥2 for the host, so
+# *.xlarge (4 vCPU) is the practical floor; *.large (2 vCPU) can't run
+# enclaves at all. Default is m5.xlarge — 4 vCPU + 16 GB at ~$138/mo,
+# down from m5n.xlarge's ~$171/mo. The "n" variant gives 25 Gbps
+# networking vs 10 Gbps; we don't need that for the LLM-proxy workload
+# where the bottleneck is upstream provider RTT, not bandwidth.
+# c6i.xlarge would shave another ~$16/mo but only has 8 GB RAM, which
+# gets tight when the host runs parent Python + parent-pump Go +
+# Docker + Nitro allocator after carving out 4 GB for the enclave.
+INSTANCE_TYPE="${INSTANCE_TYPE:-m5.xlarge}"
+ASG_MIN="${ASG_MIN:-0}"
 ASG_MAX="${ASG_MAX:-50}"
-ASG_DESIRED="${ASG_DESIRED:-1}"
+# desired=0 lets the infra (launch template, ASG, NLB, target group)
+# land WITHOUT spinning a real instance. Once the bootstrap script is
+# observed working on a manually-launched test instance, bump to 1 for
+# the steady-state warmup pattern (1% Cloudflare-LB trickle keeps the
+# AWS path warmed under real traffic so its bugs surface in metrics
+# rather than during an outage).
+ASG_DESIRED="${ASG_DESIRED:-0}"
 
 DRY_RUN=1
 PHASE="all"
@@ -360,7 +375,7 @@ phase_compute() {
   log "  prerequisites: ECR has the cloud_aws,llm_multi enclave image"
   log "  prerequisites: ECR has the parent image (parent/Dockerfile.parent)"
   log "  prerequisites: IAM role + KMS CMK + security group provisioned"
-  log "  prerequisites: Service Quotas approved m5n.xlarge to >= ASG_MAX"
+  log "  prerequisites: Service Quotas approved m5.xlarge to >= ASG_MAX"
 
   # Resolve everything we need from earlier phases. Each lookup fails
   # the run early if a prereq is missing — better than producing a
@@ -463,7 +478,7 @@ usermod -aG ne ec2-user
 usermod -aG docker ec2-user
 
 # 2. Allocator: 2 vCPU + 4 GB for the enclave; rest stays with the host.
-# m5n.xlarge has 4 vCPU + 16 GiB so the host gets 2 vCPU + ~12 GiB.
+# m5.xlarge has 4 vCPU + 16 GiB so the host gets 2 vCPU + ~12 GiB.
 sed -i 's/^cpu_count: .*/cpu_count: 2/' /etc/nitro_enclaves/allocator.yaml
 sed -i 's/^memory_mib: .*/memory_mib: 4096/' /etc/nitro_enclaves/allocator.yaml
 
@@ -696,10 +711,10 @@ EOJ
 phase_quotas() {
   log "=== phase: quotas ==="
   # Default account quota for "Running On-Demand m5n instances" in
-  # us-west-2 is small (often 0 or 5 vCPUs). m5n.xlarge = 4 vCPUs;
+  # us-west-2 is small (often 0 or 5 vCPUs). m5.xlarge = 4 vCPUs;
   # ASG_MAX=50 needs 200 vCPUs of quota. Submit a request.
   local quota_code="L-1216C47A"   # Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances
-  local desired_value=$((ASG_MAX * 4))   # m5n.xlarge has 4 vCPUs
+  local desired_value=$((ASG_MAX * 4))   # m5.xlarge has 4 vCPUs
 
   log "  current quota:"
   if [ $DRY_RUN -eq 0 ]; then
