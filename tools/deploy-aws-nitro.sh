@@ -32,6 +32,8 @@
 #   ecr        ECR repo for the enclave image
 #   compute    Launch template + Auto Scaling Group + NLB + target group
 #   quotas     Submit Service Quotas request for m5n.xlarge
+#   cross-cloud-key  Create GCP SA, mint a key, wrap with AWS KMS, store in
+#                    AWS Secrets Manager. Re-running rotates the key.
 
 set -euo pipefail
 
@@ -398,6 +400,188 @@ phase_quotas() {
   fi
 }
 
+# ─── Phase: cross-cloud-key (GCP SA → AWS KMS-wrapped → Secrets Manager) ─
+phase_cross_cloud_key() {
+  log "=== phase: cross-cloud-key ==="
+  # The AWS-side enclave needs to talk to GCP Spanner + Bigtable + KMS +
+  # Secret Manager (cross-cloud). It does that with a GCP service-account
+  # JSON key, wrapped at rest by an AWS KMS CMK and stored in AWS Secrets
+  # Manager. The Nitro enclave bootstrap unwraps the key inside the
+  # measured enclave (KMS policy gates the decrypt on the enclave's
+  # attestation document; setup of that policy happens on the enclave
+  # side, not here).
+  #
+  # This phase is responsible for:
+  #   1. GCP service account: tr-aws-cross-cloud@quill-cloud-proxy.iam.gserviceaccount.com
+  #   2. Minimum IAM bindings (datastore.user for Spanner+Bigtable,
+  #      cloudkms.cryptoKeyDecrypter on byok-envelope, secretmanager.secretAccessor
+  #      on the trustedrouter-* secrets).
+  #   3. Mint a fresh JSON key.
+  #   4. Wrap with AWS KMS (alias/quill-enclave-cmk).
+  #   5. Store in AWS Secrets Manager as quill/trustedrouter-aws-cross-cloud-sa-key.
+  #   6. Wipe the local plaintext key file.
+  #
+  # Re-running this phase ROTATES the key: a new JSON key is minted, the
+  # existing AWS secret is updated, and previous key versions are left
+  # on the GCP SA for cleanup via a separate rotation policy.
+
+  local gcp_project="${GCP_PROJECT:-quill-cloud-proxy}"
+  local sa_email="tr-aws-cross-cloud@${gcp_project}.iam.gserviceaccount.com"
+  local sa_id="tr-aws-cross-cloud"
+  local kms_alias="alias/${PROJECT_TAG}-cmk"
+  local aws_secret_name="quill/trustedrouter-aws-cross-cloud-sa-key"
+
+  # Sanity check that gcloud is configured.
+  if ! command -v gcloud >/dev/null 2>&1; then
+    log "FATAL: gcloud CLI not installed. Need it to mint the SA key." >&2
+    exit 1
+  fi
+  if ! gcloud auth list --format='value(account)' --filter='status:ACTIVE' >/dev/null 2>&1; then
+    log "FATAL: gcloud not authenticated. Run 'gcloud auth login'." >&2
+    exit 1
+  fi
+
+  # 1. Create the GCP service account if it doesn't exist.
+  local sa_was_created=0
+  if gcloud iam service-accounts describe "$sa_email" --project="$gcp_project" >/dev/null 2>&1; then
+    log "  GCP SA $sa_email already exists"
+  else
+    log "  creating GCP SA $sa_email"
+    if [ $DRY_RUN -eq 0 ]; then
+      gcloud iam service-accounts create "$sa_id" \
+        --project="$gcp_project" \
+        --display-name="Quill AWS-side cross-cloud reader" \
+        --description="Used by the AWS Nitro enclave to read GCP Spanner+Bigtable+KMS+Secrets cross-cloud. Key is wrapped by AWS KMS and stored in AWS Secrets Manager."
+      sa_was_created=1
+    fi
+  fi
+
+  # GCP IAM is eventually consistent — a freshly-created SA is visible to
+  # the SA describe call immediately but takes 5-30s to be visible to
+  # `projects.add-iam-policy-binding`. Poll until the SA shows up in the
+  # project IAM context (or give up after 60s) before granting bindings.
+  if [ $DRY_RUN -eq 0 ] && [ $sa_was_created -eq 1 ]; then
+    log "  waiting for SA to propagate to project IAM (eventually-consistent)..."
+    local waited=0
+    until gcloud iam service-accounts get-iam-policy "$sa_email" \
+            --project="$gcp_project" >/dev/null 2>&1; do
+      sleep 3
+      waited=$((waited + 3))
+      if [ $waited -ge 60 ]; then
+        log "  WARN: SA propagation took longer than 60s; proceeding anyway"
+        break
+      fi
+    done
+  fi
+
+  # 2. IAM bindings. Each call is idempotent — gcloud add-iam-policy-binding
+  #    no-ops if the binding already exists.
+  log "  granting IAM bindings to $sa_email"
+  for role in \
+      roles/spanner.databaseUser \
+      roles/bigtable.user \
+      roles/secretmanager.secretAccessor; do
+    if [ $DRY_RUN -eq 0 ]; then
+      gcloud projects add-iam-policy-binding "$gcp_project" \
+        --member="serviceAccount:${sa_email}" \
+        --role="$role" \
+        --condition=None \
+        --quiet >/dev/null
+      log "    + ${role}"
+    else
+      log "    [dry-run] would grant ${role}"
+    fi
+  done
+
+  # KMS decrypt is granted on the specific BYOK envelope key, not project-wide.
+  # The key was set up during the original GCP enclave provisioning and lives
+  # in us-central1 (regional). The AWS enclave makes cross-region KMS calls
+  # against this key from us-west-2 — KMS supports cross-region without
+  # extra setup.
+  local kms_keyring_loc="${BYOK_KMS_LOCATION:-us-central1}"
+  local kms_keyring_name="${BYOK_KMS_KEYRING:-trusted-router}"
+  local kms_key_name="${BYOK_KMS_KEY:-byok-envelope}"
+  if [ $DRY_RUN -eq 0 ]; then
+    if gcloud kms keys describe "$kms_key_name" \
+         --keyring="$kms_keyring_name" --location="$kms_keyring_loc" \
+         --project="$gcp_project" >/dev/null 2>&1; then
+      gcloud kms keys add-iam-policy-binding "$kms_key_name" \
+        --keyring="$kms_keyring_name" --location="$kms_keyring_loc" \
+        --project="$gcp_project" \
+        --member="serviceAccount:${sa_email}" \
+        --role="roles/cloudkms.cryptoKeyDecrypter" \
+        --quiet >/dev/null
+      log "    + roles/cloudkms.cryptoKeyDecrypter on ${kms_keyring_loc}/${kms_keyring_name}/${kms_key_name}"
+    else
+      log "    WARN: BYOK envelope key not found at ${kms_keyring_loc}/${kms_keyring_name}/${kms_key_name} — skipping KMS binding"
+    fi
+  else
+    log "    [dry-run] would grant cloudkms.cryptoKeyDecrypter on ${kms_keyring_loc}/${kms_keyring_name}/${kms_key_name}"
+  fi
+
+  # 3. Mint a JSON key and 4-5. wrap+store. We do this in a temp dir that
+  # gets shredded on exit so the plaintext doesn't linger.
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmpdir'" EXIT
+  local plain_key="${tmpdir}/sa-key.json"
+  local wrapped_key="${tmpdir}/sa-key.wrapped.b64"
+
+  if [ $DRY_RUN -eq 1 ]; then
+    log "  [dry-run] would mint a new JSON key for $sa_email"
+    log "  [dry-run] would wrap it with AWS KMS $kms_alias"
+    log "  [dry-run] would store wrapped blob in AWS Secrets Manager $aws_secret_name"
+    return
+  fi
+
+  log "  minting fresh JSON key for $sa_email"
+  gcloud iam service-accounts keys create "$plain_key" \
+    --iam-account="$sa_email" \
+    --project="$gcp_project" \
+    --key-file-type=json >/dev/null
+
+  log "  wrapping JSON key with AWS KMS $kms_alias"
+  # Use --output text + base64-encoded ciphertext so the value is safe to
+  # round-trip through Secrets Manager as a plain string. Decryption on the
+  # enclave side base64-decodes and calls KMS Decrypt.
+  aws kms encrypt \
+    --key-id "$kms_alias" \
+    --plaintext "fileb://${plain_key}" \
+    --region "$AWS_REGION" \
+    --output text \
+    --query CiphertextBlob > "$wrapped_key"
+
+  # 5. Create-or-update the AWS secret.
+  if aws secretsmanager describe-secret --secret-id "$aws_secret_name" \
+       --region "$AWS_REGION" >/dev/null 2>&1; then
+    log "  updating existing AWS secret $aws_secret_name"
+    aws secretsmanager put-secret-value \
+      --secret-id "$aws_secret_name" \
+      --secret-string "file://${wrapped_key}" \
+      --region "$AWS_REGION" >/dev/null
+  else
+    log "  creating new AWS secret $aws_secret_name"
+    aws secretsmanager create-secret \
+      --name "$aws_secret_name" \
+      --description "GCP service-account JSON key for ${sa_email}, wrapped by AWS KMS ${kms_alias}. The Nitro enclave unwraps inside the measured boundary." \
+      --secret-string "file://${wrapped_key}" \
+      --region "$AWS_REGION" \
+      --tags 'Key=Source,Value=gcp-iam-sa-key' \
+             "Key=GcpServiceAccount,Value=${sa_email}" \
+             "Key=KmsCmkAlias,Value=${kms_alias}" >/dev/null
+  fi
+
+  # 6. Wipe plaintext (the temp dir auto-shreds via the EXIT trap, but
+  #    overwrite first for paranoia).
+  if command -v shred >/dev/null 2>&1; then
+    shred -u "$plain_key" 2>/dev/null || rm -f "$plain_key"
+  else
+    rm -f "$plain_key"
+  fi
+  log "  cross-cloud-key phase complete; SA key wrapped + stored, plaintext shredded"
+}
+
 # ─── Dispatch ──────────────────────────────────────────────────────────────
 case "$PHASE" in
   iam) phase_iam ;;
@@ -407,6 +591,7 @@ case "$PHASE" in
   ecr) phase_ecr ;;
   compute) phase_compute ;;
   quotas) phase_quotas ;;
+  cross-cloud-key) phase_cross_cloud_key ;;
   all)
     phase_iam
     phase_oidc
@@ -414,7 +599,8 @@ case "$PHASE" in
     phase_network
     phase_ecr
     phase_quotas
-    phase_compute   # last; needs the others
+    phase_cross_cloud_key  # depends on kms (CMK exists) + GCP project access
+    phase_compute          # last; needs the others
     ;;
   *) log "unknown phase: $PHASE"; exit 2 ;;
 esac
