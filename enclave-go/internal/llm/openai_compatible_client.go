@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -14,6 +15,12 @@ type openAICompatibleClient struct {
 	baseURL  string
 	apiKey   string
 	httpc    *http.Client
+	// httpcGetter, when non-nil, is consulted instead of the static httpc
+	// field on every InvokeStreaming call. Used by the tinfoil path so the
+	// per-request client comes from the attested-and-pinned cache and
+	// gets rebuilt automatically after cert rotation. nil for every
+	// other provider (which use the static pooled httpc).
+	httpcGetter func() (*http.Client, error)
 }
 
 func newOpenAICompatible(provider string, apiKey string) *openAICompatibleClient {
@@ -24,6 +31,33 @@ func newOpenAICompatible(provider string, apiKey string) *openAICompatibleClient
 		apiKey:   strings.TrimSpace(apiKey),
 		httpc:    defaultHTTPClient(),
 	}
+}
+
+// newTinfoilAttested mirrors newOpenAICompatible but routes every request
+// through the attested, TLS-pinned transport built in tinfoil_attest.go.
+// On TLS-pin or attestation-verify failure the request hard-fails — there
+// is no fall-through to a plain HTTP client, because that would silently
+// defeat the confidential-compute guarantee tinfoil's whole product
+// promises.
+func newTinfoilAttested(apiKey string) *openAICompatibleClient {
+	return &openAICompatibleClient{
+		provider:    "tinfoil",
+		baseURL:     directBaseURL("tinfoil"),
+		apiKey:      strings.TrimSpace(apiKey),
+		httpc:       nil, // resolved lazily via tinfoilAttestedHTTPClient
+		httpcGetter: tinfoilHTTPClientGetter,
+	}
+}
+
+func tinfoilHTTPClientGetter() (*http.Client, error) {
+	return tinfoilAttestedHTTPClient(defaultStreamingHTTPTimeout)
+}
+
+func (c *openAICompatibleClient) resolveHTTPClient() (*http.Client, error) {
+	if c.httpcGetter != nil {
+		return c.httpcGetter()
+	}
+	return c.httpc, nil
 }
 
 func (c *openAICompatibleClient) InvokeStreaming(
@@ -41,9 +75,13 @@ func (c *openAICompatibleClient) InvokeStreaming(
 	if option.Provider != "" {
 		provider = normalizeDirectProvider(option.Provider)
 	}
+	httpc, err := c.resolveHTTPClient()
+	if err != nil {
+		return fmt.Errorf("llm/%s: http client unavailable: %w", c.provider, err)
+	}
 	return invokeOpenAICompatibleStreamingWithClient(
 		ctx,
-		c.httpc,
+		httpc,
 		provider,
 		c.baseURL,
 		c.apiKey,
