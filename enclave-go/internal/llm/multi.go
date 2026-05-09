@@ -43,7 +43,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		novita:      newOpenAICompatible("novita", boot.NovitaAPIKey),
 		phala:       newOpenAICompatible("phala", boot.PhalaAPIKey),
 		siliconflow: newOpenAICompatible("siliconflow", boot.SiliconFlowAPIKey),
-		tinfoil:     newTinfoilAttested(boot.TinfoilAPIKey),
+		tinfoil:     newOpenAICompatible("tinfoil", boot.TinfoilAPIKey),
 		venice:      newOpenAICompatible("venice", boot.VeniceAPIKey),
 	}
 }
