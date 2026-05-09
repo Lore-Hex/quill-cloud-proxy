@@ -25,7 +25,8 @@
 #   bash tools/deploy-aws-nitro.sh --apply --phase iam              # apply one phase
 #
 # Phases (run in order; each is idempotent):
-#   iam        IAM role + policies + instance profile
+#   iam        IAM role + policies + instance profile (for EC2 hosts)
+#   oidc       GitHub Actions OIDC identity provider + deployer role
 #   kms        KMS CMK for GCP-SA-key + BYOK envelope wrapping
 #   network    VPC + subnets + security group
 #   ecr        ECR repo for the enclave image
@@ -140,6 +141,123 @@ EOF
       aws iam create-instance-profile --instance-profile-name "$profile_name"
       aws iam add-role-to-instance-profile --instance-profile-name "$profile_name" --role-name "$role_name"
     fi
+  fi
+}
+
+# ─── Phase: OIDC (GitHub Actions deployer role) ────────────────────────────
+# Lets .github/workflows/deploy-enclave-aws.yml authenticate to AWS via
+# OIDC (no static keys checked into the repo / GHA secrets). Sets up:
+#   1. The IAM OIDC identity provider for token.actions.githubusercontent.com
+#   2. The role quill-enclave-github-deployer with a trust policy that
+#      restricts AssumeRole to the Lore-Hex/quill-cloud-proxy repo on main.
+#   3. An attached policy granting ECR push + ASG instance-refresh
+#      (the workflow's only AWS responsibilities for now).
+phase_oidc() {
+  log "=== phase: oidc ==="
+  local oidc_url="token.actions.githubusercontent.com"
+  local oidc_provider_arn="arn:aws:iam::${AWS_ACCOUNT}:oidc-provider/${oidc_url}"
+  local role_name="${PROJECT_TAG}-github-deployer"
+  local repo_path="${GITHUB_REPO_PATH:-Lore-Hex/quill-cloud-proxy}"
+
+  # 1. OIDC identity provider
+  if aws iam get-open-id-connect-provider --open-id-connect-provider-arn "$oidc_provider_arn" \
+       >/dev/null 2>&1; then
+    log "  OIDC provider already exists"
+  else
+    log "  creating OIDC provider for $oidc_url"
+    if [ $DRY_RUN -eq 0 ]; then
+      # Thumbprint is GitHub's well-known cert thumbprint as of 2024.
+      # If GitHub rotates, this needs updating; aws-actions/configure-aws-credentials
+      # documents the current thumbprint.
+      aws iam create-open-id-connect-provider \
+        --url "https://${oidc_url}" \
+        --client-id-list "sts.amazonaws.com" \
+        --thumbprint-list "6938fd4d98bab03faadb97b34396831e3780aea1" \
+                         "1c58a3a8518e8759bf075b76b750d4f2df264fcd"
+    fi
+  fi
+
+  # 2. Role with GitHub-specific trust policy
+  local trust_doc
+  trust_doc=$(cat <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {"Federated": "${oidc_provider_arn}"},
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "${oidc_url}:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "${oidc_url}:sub": "repo:${repo_path}:ref:refs/heads/main"
+        }
+      }
+    }
+  ]
+}
+EOF
+)
+
+  # 3. Tight policy: only the operations the build+push workflow needs
+  local policy_doc
+  policy_doc=$(cat <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ECRPush",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:PutImage",
+        "ecr:DescribeImages"
+      ],
+      "Resource": [
+        "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT}:repository/${ECR_REPO_NAME}",
+        "*"
+      ]
+    },
+    {
+      "Sid": "ASGRefresh",
+      "Effect": "Allow",
+      "Action": [
+        "autoscaling:StartInstanceRefresh",
+        "autoscaling:DescribeAutoScalingGroups",
+        "autoscaling:DescribeInstanceRefreshes"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+)
+
+  if aws iam get-role --role-name "$role_name" >/dev/null 2>&1; then
+    log "  role $role_name already exists; refreshing trust + policy"
+    if [ $DRY_RUN -eq 0 ]; then
+      aws iam update-assume-role-policy --role-name "$role_name" \
+        --policy-document "$trust_doc"
+    fi
+  else
+    log "  creating role $role_name"
+    if [ $DRY_RUN -eq 0 ]; then
+      aws iam create-role --role-name "$role_name" \
+        --assume-role-policy-document "$trust_doc" \
+        --description "GitHub Actions deployer for the AWS Nitro enclave (OIDC-authenticated, restricted to ${repo_path}@main)"
+    fi
+  fi
+  if [ $DRY_RUN -eq 0 ]; then
+    aws iam put-role-policy --role-name "$role_name" \
+      --policy-name "${PROJECT_TAG}-github-deployer-policy" \
+      --policy-document "$policy_doc"
+    log "  role ARN: arn:aws:iam::${AWS_ACCOUNT}:role/${role_name}"
   fi
 }
 
@@ -283,6 +401,7 @@ phase_quotas() {
 # ─── Dispatch ──────────────────────────────────────────────────────────────
 case "$PHASE" in
   iam) phase_iam ;;
+  oidc) phase_oidc ;;
   kms) phase_kms ;;
   network) phase_network ;;
   ecr) phase_ecr ;;
@@ -290,6 +409,7 @@ case "$PHASE" in
   quotas) phase_quotas ;;
   all)
     phase_iam
+    phase_oidc
     phase_kms
     phase_network
     phase_ecr
