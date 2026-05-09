@@ -91,6 +91,54 @@
 //
 // Empirically: tinfoil US TTFT pre-attestation 779 ms avg →
 // post-attestation 805 ms avg. Delta is run-to-run noise.
+//
+// Threat model
+// ============
+//
+// What this design DOES catch:
+//
+//   * Network MITM on either the in-process raw fetch path or the
+//     sidecar's Verify chain — caught by cross-check disagreement.
+//   * A swapped/lying sidecar binary (e.g. someone replaces
+//     /attest-sidecar on disk) — the in-process rawFP is still
+//     computed by Go code in this package, untouched by the swap,
+//     so disagreement triggers refuse.
+//   * Tinfoil rotating their cert mid-flight — re-fetch + retry once
+//     handles it transparently.
+//
+// What this design ASSUMES does NOT happen (out of scope):
+//
+//   The cross-check provides defense-in-depth against compromise of
+//   any SINGLE leg (sidecar binary, our machine's network leg, GitHub-
+//   served Sigstore bundles, tinfoil's .well-known endpoint). It does
+//   NOT defend against an attacker who simultaneously controls
+//   MULTIPLE independent organizations' infrastructure on a coordinated
+//   timeline — specifically:
+//
+//     (a) gain code-execution / disk-write on our enclave VM (so they
+//         can replace /attest-sidecar with a binary that lies about
+//         verifiedFP), AND at the same time
+//     (b) modify the data GitHub serves for tinfoilsh/confidential-
+//         model-router release attestations (so the lie matches what
+//         a legitimate Verify chain would have produced), AND also
+//     (c) make either inference.tinfoil.sh's .well-known endpoint or
+//         our network leg to it serve a matching forged SEV-SNP report
+//
+//   Pulling all three off in concert means breaching multiple
+//   organizations (us, GitHub, and either tinfoil or AMD) at the same
+//   time. That's a sophisticated multi-target attack well outside the
+//   threat surface this design is sized for. With ANY single leg of
+//   the three intact, the cross-check refuses the request.
+//
+//   AMD's signing key is the hard floor: forging an SEV-SNP report
+//   requires it (it lives inside AMD's CPUs). Without it, no forged
+//   report validates against the AMD VCEK chain inside the sidecar's
+//   Verify, so even the combined "machine + GitHub" attack still has
+//   to also separately compromise tinfoil's enclave deployment to
+//   make the .well-known endpoint serve a SEV-SNP report attesting
+//   to the attacker's TLS key. At that point the attacker IS tinfoil
+//   from the protocol's perspective, and we've left the regime any
+//   client of inference.tinfoil.sh can defend against.
 package llm
 
 import (

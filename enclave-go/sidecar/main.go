@@ -77,6 +77,25 @@
 //     same threat model as the main enclave being compromised; the
 //     cross-check doesn't help, but Confidential Space's hardware
 //     attestation does (a different layer).
+//
+// What this design assumes does NOT happen
+// ========================================
+//
+// The cross-check is single-leg defense-in-depth. It does NOT defend
+// against an attacker who simultaneously breaches MULTIPLE independent
+// organizations' infrastructure — specifically, gains write-access to
+// our enclave VM (so they can replace this sidecar binary) AND modifies
+// what GitHub serves for tinfoilsh/confidential-model-router release
+// Sigstore bundles (so a Verify chain run against the forged GitHub
+// data still produces a "valid" signature) AND fixes up either
+// inference.tinfoil.sh's .well-known endpoint or our network leg to it
+// to serve a matching forged SEV-SNP report. That combined attack
+// requires coordinated breaches of three independent organizations
+// (us, GitHub, and tinfoil/AMD) on a single timeline — out of scope
+// for this design. AMD's signing key remains the hard floor: forging a
+// SEV-SNP report at all requires it, and AMD-CPU-resident keys are not
+// extractable. See enclave-go/internal/llm/tinfoil_attest.go for the
+// full threat-model write-up on the consumer side.
 package main
 
 import (
