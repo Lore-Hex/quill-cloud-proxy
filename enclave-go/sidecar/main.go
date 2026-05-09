@@ -83,19 +83,33 @@
 //
 // The cross-check is single-leg defense-in-depth. It does NOT defend
 // against an attacker who simultaneously breaches MULTIPLE independent
-// organizations' infrastructure — specifically, gains write-access to
-// our enclave VM (so they can replace this sidecar binary) AND modifies
-// what GitHub serves for tinfoilsh/confidential-model-router release
-// Sigstore bundles (so a Verify chain run against the forged GitHub
-// data still produces a "valid" signature) AND fixes up either
-// inference.tinfoil.sh's .well-known endpoint or our network leg to it
-// to serve a matching forged SEV-SNP report. That combined attack
-// requires coordinated breaches of three independent organizations
-// (us, GitHub, and tinfoil/AMD) on a single timeline — out of scope
-// for this design. AMD's signing key remains the hard floor: forging a
-// SEV-SNP report at all requires it, and AMD-CPU-resident keys are not
-// extractable. See enclave-go/internal/llm/tinfoil_attest.go for the
-// full threat-model write-up on the consumer side.
+// organizations' infrastructure on a coordinated timeline:
+//
+//   (a) ships a malicious version of THIS binary in our published
+//       enclave image (= compromise our build pipeline / Artifact
+//       Registry), AND
+//   (b) modifies the data GitHub serves for tinfoilsh/confidential-
+//       model-router release Sigstore bundles, so a Verify chain run
+//       against the forged data still produces a valid signature, AND
+//   (c) makes either inference.tinfoil.sh's .well-known endpoint or
+//       our network leg to it serve a matching forged SEV-SNP report
+//
+// That requires coordinated breaches of us, GitHub, and tinfoil/AMD
+// at once — out of scope for this design. AMD's signing key is the
+// hard floor: forging a SEV-SNP report requires it, and CPU-resident
+// keys are not extractable.
+//
+// Note that the "malicious sidecar binary" leg above is specifically
+// a SUPPLY-CHAIN attack on our build, not a runtime disk-write. The
+// running /attest-sidecar binary is part of our Confidential Space
+// container image, so its bytes are sealed into the same SEV-SNP
+// measurement that anyone calling our enclave's /attestation
+// endpoint already verifies. A runtime swap inside the enclave VM
+// is blocked by the TEE; a supply-chain swap shows up as a measured-
+// boot mismatch that downstream attestation verifiers (including
+// tinfoil's own clients of US, if they do dual-source on us) catch.
+// See enclave-go/internal/llm/tinfoil_attest.go for the full
+// threat-model write-up on the consumer side.
 package main
 
 import (

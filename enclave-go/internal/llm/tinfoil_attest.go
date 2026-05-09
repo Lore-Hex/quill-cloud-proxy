@@ -99,46 +99,75 @@
 //
 //   * Network MITM on either the in-process raw fetch path or the
 //     sidecar's Verify chain — caught by cross-check disagreement.
-//   * A swapped/lying sidecar binary (e.g. someone replaces
-//     /attest-sidecar on disk) — the in-process rawFP is still
-//     computed by Go code in this package, untouched by the swap,
-//     so disagreement triggers refuse.
+//   * A lying sidecar process (e.g. an in-VM race where some other
+//     process binds @tinfoil-attest before our fork-exec'd child
+//     and answers with a forged FP) — the in-process rawFP is still
+//     computed by Go code in this package, untouched by the
+//     impostor, so disagreement triggers refuse. Belt-and-suspenders
+//     SO_PEERCRED + PID-pin (peercred_linux.go) catches the bind
+//     race even before the cross-check fires.
 //   * Tinfoil rotating their cert mid-flight — re-fetch + retry once
 //     handles it transparently.
+//
+// Note that "swap the /attest-sidecar binary on disk" is NOT a
+// distinct attack we have to defend against here, because it's
+// already caught one layer up: the sidecar binary is part of our
+// Confidential Space container image, so its bytes are hashed into
+// the same SEV-SNP measurement that anyone calling our enclave's
+// /attestation endpoint verifies. Modifying the sidecar on disk
+// changes the image_digest, changes the AMD-signed report, and any
+// client doing real attestation verification sees a measurement
+// mismatch. The transitive chain is: our binary identity is
+// attested → the sidecar binary identity is attested through it →
+// the sidecar's verifiedFP value is signed-and-verified by Sigstore
+// + AMD VCEK → tinfoil's TLS pubkey is bound to that.
 //
 // What this design ASSUMES does NOT happen (out of scope):
 //
 //   The cross-check provides defense-in-depth against compromise of
-//   any SINGLE leg (sidecar binary, our machine's network leg, GitHub-
-//   served Sigstore bundles, tinfoil's .well-known endpoint). It does
-//   NOT defend against an attacker who simultaneously controls
-//   MULTIPLE independent organizations' infrastructure on a coordinated
-//   timeline — specifically:
+//   any SINGLE leg (a lying sidecar process, our machine's network
+//   leg, GitHub-served Sigstore bundles, tinfoil's .well-known
+//   endpoint). It does NOT defend against an attacker who
+//   simultaneously controls MULTIPLE independent organizations'
+//   infrastructure on a coordinated timeline — specifically:
 //
-//     (a) gain code-execution / disk-write on our enclave VM (so they
-//         can replace /attest-sidecar with a binary that lies about
-//         verifiedFP), AND at the same time
+//     (a) ship a malicious /attest-sidecar binary in our published
+//         enclave image (= compromise our build pipeline / Artifact
+//         Registry; would change the image_digest visible to anyone
+//         verifying our attestation), AND at the same time
 //     (b) modify the data GitHub serves for tinfoilsh/confidential-
-//         model-router release attestations (so the lie matches what
-//         a legitimate Verify chain would have produced), AND also
+//         model-router release attestations (so the malicious
+//         sidecar's lie matches what a legitimate Verify chain would
+//         have produced), AND also
 //     (c) make either inference.tinfoil.sh's .well-known endpoint or
 //         our network leg to it serve a matching forged SEV-SNP report
 //
 //   Pulling all three off in concert means breaching multiple
-//   organizations (us, GitHub, and either tinfoil or AMD) at the same
-//   time. That's a sophisticated multi-target attack well outside the
+//   organizations on a single timeline (us — specifically our build
+//   chain, since runtime disk-write inside Confidential Space is
+//   already blocked by the TEE — plus GitHub, plus tinfoil/AMD).
+//   That's a sophisticated multi-target attack well outside the
 //   threat surface this design is sized for. With ANY single leg of
 //   the three intact, the cross-check refuses the request.
 //
 //   AMD's signing key is the hard floor: forging an SEV-SNP report
-//   requires it (it lives inside AMD's CPUs). Without it, no forged
-//   report validates against the AMD VCEK chain inside the sidecar's
-//   Verify, so even the combined "machine + GitHub" attack still has
-//   to also separately compromise tinfoil's enclave deployment to
-//   make the .well-known endpoint serve a SEV-SNP report attesting
-//   to the attacker's TLS key. At that point the attacker IS tinfoil
-//   from the protocol's perspective, and we've left the regime any
-//   client of inference.tinfoil.sh can defend against.
+//   requires it (it lives inside AMD's CPUs and is not extractable).
+//   Without it, no forged report validates against the AMD VCEK
+//   chain inside the sidecar's Verify, so even the combined "build
+//   chain + GitHub" attack still has to also separately compromise
+//   tinfoil's enclave deployment to make the .well-known endpoint
+//   serve a SEV-SNP report attesting to the attacker's TLS key. At
+//   that point the attacker IS tinfoil from the protocol's
+//   perspective, and we've left the regime any client of
+//   inference.tinfoil.sh can defend against.
+//
+//   Note specifically that "swap /attest-sidecar at runtime inside
+//   the enclave VM" is NOT in this list because it's blocked one
+//   layer down: Confidential Space's TEE memory protection prevents
+//   in-VM disk writes from outside the workload itself, AND the
+//   image_digest covers both binaries, so any binary swap that DID
+//   somehow happen (e.g. supply-chain attack on our build) would
+//   surface as a measurement mismatch on our /attestation endpoint.
 package llm
 
 import (
