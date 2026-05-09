@@ -92,6 +92,23 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
+      # Enable QEMU emulation so we can run Dockerfile.enclave's
+      # digest-pinned base image regardless of which arch its manifest
+      # selects. The base `FROM golang:1.24-bookworm@sha256:...` line
+      # is pinned to a specific platform's digest (currently arm64,
+      # matching the Mac dev path). On GCP, Cloud Build runs QEMU
+      # implicitly so this Just Works. GitHub-hosted runners are
+      # amd64-native with no QEMU by default, so without this step the
+      # build fails with "exec /bin/sh: exec format error" the moment
+      # the first RUN layer fires.
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - id: build
         name: Build + push enclave image to ECR
         working-directory: enclave-go
@@ -99,11 +116,12 @@ jobs:
           set -euo pipefail
           IMAGE_REF="${{ steps.vars.outputs.image_ref }}"
 
-          # GitHub-hosted runners are linux/amd64. No QEMU needed —
-          # the GCP variant uses QEMU because Cloud Build needs to
-          # cover the Mac-laptop case; this workflow always runs on
-          # an amd64 runner, so a plain `docker build` works.
-          docker buildx create --use --name=aws-enclave-builder
+          # `--platform=linux/amd64` is what we deploy to AWS Nitro
+          # (m5n.xlarge is x86_64). Combined with QEMU above, buildx
+          # selects the linux/amd64 variant of the digest-pinned base
+          # image (or emulates if the digest is arch-specific). The
+          # final image we push is linux/amd64 native — Nitro doesn't
+          # tolerate emulation in the runtime guest.
           docker buildx build \
             --platform=linux/amd64 \
             --file="${DOCKERFILE}" \
