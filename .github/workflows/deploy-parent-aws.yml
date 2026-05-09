@@ -1,0 +1,125 @@
+# Auto-build the parent-host container image on push to main and push
+# it to ECR (us-west-2). Mirrors deploy-enclave-aws.yml but for the
+# parent FastAPI app at parent/Dockerfile.parent.
+#
+# What the parent does on the EC2 host (NOT inside the enclave):
+#   - Runs FastAPI on :8443 for /health, /admin/usage, /trust
+#   - Runs the TCP pump on :8444 (QUILL_TCP_PUMP=true) — accepts raw
+#     TCP from the NLB and forwards bytes 1:1 to the enclave's vsock
+#     listener (CID 16, port 8001). No prompt inspection on the parent.
+#   - Runs the bootstrap RPC server on vsock 9000 (QUILL_BOOTSTRAP_SERVER=true)
+#     — serves device keys + provider URL config to the enclave at boot.
+#
+# Image is pushed to ECR `330422590279.dkr.ecr.us-west-2.amazonaws.com/quill-parent`
+# with tag `parent-aws-release-<sha>`. Phase 4's launch template
+# user-data pulls this image and runs it with `--network host` so it
+# can bind 8443/8444 directly and reach AF_VSOCK without bridge-NAT.
+#
+# Auth: same OIDC role as the enclave workflow
+# (`quill-enclave-github-deployer`).
+
+name: Deploy AWS parent (Nitro host)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "parent/**"
+      - ".github/workflows/deploy-parent-aws.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-parent-aws
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-west-2
+  AWS_ACCOUNT_ID: "330422590279"
+  ECR_REPO: quill-parent
+  DOCKERFILE: Dockerfile.parent
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: parent
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: pip install --no-cache-dir uv==0.5.5
+      - name: Sync dev deps
+        run: uv sync --frozen
+      - name: Run tests
+        run: uv run pytest -x
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.build.outputs.image_ref }}
+      image_digest: ${{ steps.build.outputs.image_digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: vars
+        run: |
+          SHA="$(git rev-parse --short HEAD)"
+          IMAGE_TAG="parent-aws-release-${SHA}"
+          IMAGE_REF="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/quill-enclave-github-deployer
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # The parent's base image (python:3.12-slim-bookworm) is pinned by
+      # digest. Same QEMU + buildx setup as the enclave workflow so the
+      # base manifest's platform doesn't fight the runner.
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - id: build
+        name: Build + push parent image to ECR
+        working-directory: parent
+        run: |
+          set -euo pipefail
+          IMAGE_REF="${{ steps.vars.outputs.image_ref }}"
+
+          # m5n.xlarge is amd64. Build amd64-native to avoid runtime
+          # emulation cost on the host (the parent's TCP pump path is
+          # latency-sensitive — every prompt's bytes flow through it).
+          docker buildx build \
+            --platform=linux/amd64 \
+            --file="${DOCKERFILE}" \
+            --tag="${IMAGE_REF}" \
+            --push \
+            .
+
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "${ECR_REPO}" \
+            --image-ids "imageTag=${{ steps.vars.outputs.image_tag }}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+          echo "image_digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Pushed: ${IMAGE_REF}@${DIGEST}"
