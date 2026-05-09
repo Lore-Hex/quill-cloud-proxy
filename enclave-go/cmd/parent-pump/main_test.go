@@ -140,4 +140,20 @@ func TestEnvHelpers_DefaultsAndOverride(t *testing.T) {
 	if got := envIntOrDefault("TEST_ENV_INT_UNSET", 7); got != 7 {
 		t.Errorf("envInt default: got %d", got)
 	}
+	// envUint32OrDefault: vsock CID/port path
+	t.Setenv("TEST_ENV_U32_OK", "16")
+	if got := envUint32OrDefault("TEST_ENV_U32_OK", 7); got != 16 {
+		t.Errorf("envUint32 override: got %d", got)
+	}
+	t.Setenv("TEST_ENV_U32_NEG", "-1")
+	if got := envUint32OrDefault("TEST_ENV_U32_NEG", 7); got != 7 {
+		t.Errorf("envUint32 negative fallback: got %d", got)
+	}
+	t.Setenv("TEST_ENV_U32_HUGE", "5000000000") // > 2^32
+	if got := envUint32OrDefault("TEST_ENV_U32_HUGE", 7); got != 7 {
+		t.Errorf("envUint32 over-2^32 fallback: got %d", got)
+	}
+	if got := envUint32OrDefault("TEST_ENV_U32_UNSET", 7); got != 7 {
+		t.Errorf("envUint32 default: got %d", got)
+	}
 }

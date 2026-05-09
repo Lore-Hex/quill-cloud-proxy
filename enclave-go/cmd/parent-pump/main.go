@@ -60,8 +60,12 @@ const (
 
 func main() {
 	listenAddr := envOrDefault("QUILL_PUMP_LISTEN_ADDR", defaultListen)
-	enclaveCID := envIntOrDefault("QUILL_PUMP_ENCLAVE_CID", defaultEnclaveCID)
-	enclavePort := envIntOrDefault("QUILL_PUMP_ENCLAVE_PORT", defaultEnclavePort)
+	// CID + port are uint32 in the vsock kernel API. Read them as
+	// uint32 directly so the gosec G115 (int→uint32 overflow) check
+	// passes and so a negative env-var value is rejected at startup
+	// rather than wrapping silently into a giant CID.
+	enclaveCID := envUint32OrDefault("QUILL_PUMP_ENCLAVE_CID", defaultEnclaveCID)
+	enclavePort := envUint32OrDefault("QUILL_PUMP_ENCLAVE_PORT", defaultEnclavePort)
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -105,7 +109,7 @@ func main() {
 			continue
 		}
 
-		go handle(client, uint32(enclaveCID), uint32(enclavePort), log)
+		go handle(client, enclaveCID, enclavePort, log)
 	}
 }
 
@@ -191,6 +195,23 @@ func envIntOrDefault(name string, def int) int {
 			return def
 		}
 		return n
+	}
+	return def
+}
+
+// envUint32OrDefault parses the env var as an unsigned 32-bit int.
+// CID + port in the vsock API are uint32; using uint32 here avoids
+// the int→uint32 cast that gosec G115 flags as a possible overflow.
+// Negative or out-of-range values fall back to the default with a
+// stderr warning (same behavior as envIntOrDefault for parse errors).
+func envUint32OrDefault(name string, def uint32) uint32 {
+	if v := os.Getenv(name); v != "" {
+		n, err := strconv.ParseUint(v, 10, 32)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warn: invalid %s=%q, using default %d\n", name, v, def)
+			return def
+		}
+		return uint32(n)
 	}
 	return def
 }
