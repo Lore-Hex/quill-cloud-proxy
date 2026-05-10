@@ -597,6 +597,9 @@ allowlist:
   - {address: spanner.googleapis.com,        port: 443}
   - {address: bigtable.googleapis.com,       port: 443}
   - {address: bigtableadmin.googleapis.com,  port: 443}
+  # TR control plane (key lookup, settle, byok unwrap). Matches the
+  # tunnel list in enclave-go/internal/trustedrouter/http_client_aws.go.
+  - {address: trustedrouter.com,             port: 443}
 YAML
 
 # Start one vsock-proxy process per upstream port. Each listens on
@@ -657,6 +660,8 @@ write_vsock_unit 8030 oauth2.googleapis.com
 write_vsock_unit 8031 spanner.googleapis.com
 write_vsock_unit 8032 bigtable.googleapis.com
 write_vsock_unit 8033 bigtableadmin.googleapis.com
+# TR control plane (must match internal/trustedrouter/http_client_aws.go)
+write_vsock_unit 8040 trustedrouter.com
 
 systemctl daemon-reload
 
@@ -683,7 +688,7 @@ docker run -d --restart=always --name=quill-parent \\
   -e QUILL_AWS_REGION=${AWS_REGION} \\
   -e QUILL_SECRET_PREFIX=quill/ \\
   -e QUILL_GCP_SA_KMS_ALIAS=alias/${PROJECT_TAG}-cmk \\
-  -e QUILL_TR_CONTROL_PLANE_BASE_URL= \\
+  -e QUILL_TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com/v1 \\
   ${parent_repo_url}:${parent_tag}
 
 # 4b. Parent-pump container (Go) — listens on TCP :8444 and forwards

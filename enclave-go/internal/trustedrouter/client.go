@@ -15,7 +15,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -39,7 +38,7 @@ func NewFromEnv() *Client {
 		baseURL:       strings.TrimRight(os.Getenv("TR_CONTROL_PLANE_BASE_URL"), "/"),
 		internalToken: os.Getenv("TR_INTERNAL_GATEWAY_TOKEN"),
 		region:        os.Getenv("TR_REGION"),
-		httpc:         &http.Client{Timeout: 30 * time.Second},
+		httpc:         newControlPlaneHTTPClient(),
 	}
 }
 
@@ -60,13 +59,13 @@ func NewFromBootstrap(boot *qtypes.BootstrapData) *Client {
 		baseURL:       baseURL,
 		internalToken: strings.TrimSpace(internalToken),
 		region:        region,
-		httpc:         &http.Client{Timeout: 30 * time.Second},
+		httpc:         newControlPlaneHTTPClient(),
 	}
 }
 
 func New(baseURL, internalToken string, httpc *http.Client) *Client {
 	if httpc == nil {
-		httpc = &http.Client{Timeout: 30 * time.Second}
+		httpc = newControlPlaneHTTPClient()
 	}
 	return &Client{
 		baseURL:       strings.TrimRight(baseURL, "/"),
