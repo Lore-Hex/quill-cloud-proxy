@@ -99,6 +99,31 @@ phase_iam() {
   # Permissions: read provider secrets + decrypt KMS-wrapped GCP SA key
   # + pull ECR image. Tight scope; the EC2 host (parent of the Nitro
   # enclave) needs these to bootstrap the enclave.
+  #
+  # The cross-cloud GCP SA key is wrapped with our CMK and then stored
+  # in Secrets Manager. The bootstrap_server unwraps via direct
+  # kms:Decrypt — NOT through Secrets Manager's auto-decrypt path.
+  # IAM resource ARNs for KMS must reference the key by its UUID, not
+  # by alias; resolve the CMK ID from the alias at apply time so the
+  # policy stays scoped to the specific key rather than wildcarding
+  # the whole region.
+  local cmk_alias="alias/${PROJECT_TAG}-cmk"
+  local cmk_arn
+  cmk_arn=$(aws kms list-aliases --region "$AWS_REGION" \
+    --query "Aliases[?AliasName=='${cmk_alias}'].TargetKeyId" \
+    --output text 2>/dev/null || echo "")
+  if [ -n "$cmk_arn" ] && [ "$cmk_arn" != "None" ]; then
+    cmk_arn="arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT}:key/${cmk_arn}"
+  else
+    # CMK doesn't exist yet (first-time bootstrap, phase_kms hasn't
+    # run). Fall back to a wildcard scoped to this account+region —
+    # phase_kms creates exactly one CMK so this is bounded. The next
+    # apply (after phase_kms lands) will tighten the resource to the
+    # specific key.
+    cmk_arn="arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT}:key/*"
+    log "  WARN: ${cmk_alias} not yet provisioned; using wildcard for kms direct-decrypt"
+  fi
+
   local policy_doc
   policy_doc=$(cat <<EOF
 {
@@ -111,11 +136,17 @@ phase_iam() {
       "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/*"
     },
     {
-      "Sid": "DecryptKMS",
+      "Sid": "DecryptKMSViaSecretsManager",
       "Effect": "Allow",
       "Action": ["kms:Decrypt", "kms:DescribeKey"],
       "Resource": "arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT}:key/*",
       "Condition": {"StringEquals": {"kms:ViaService": "secretsmanager.${AWS_REGION}.amazonaws.com"}}
+    },
+    {
+      "Sid": "DecryptCrossCloudSAKeyDirect",
+      "Effect": "Allow",
+      "Action": ["kms:Decrypt", "kms:DescribeKey"],
+      "Resource": "${cmk_arn}"
     },
     {
       "Sid": "PullECR",
@@ -160,6 +191,18 @@ EOF
       aws iam create-instance-profile --instance-profile-name "$profile_name"
       aws iam add-role-to-instance-profile --instance-profile-name "$profile_name" --role-name "$role_name"
     fi
+  fi
+
+  # Attach AmazonSSMManagedInstanceCore so SSM Session Manager + Run
+  # Command work on the bootstrapped instances. Without this the SSM
+  # agent (preinstalled on AL2023) can't register with the SSM
+  # endpoint, and we can't tail /var/log/quill-bootstrap.log without
+  # a key pair / EC2 Instance Connect dance. attach-role-policy is
+  # idempotent; AWS no-ops if the policy is already attached.
+  log "  attaching AmazonSSMManagedInstanceCore for SSM access"
+  if [ $DRY_RUN -eq 0 ]; then
+    aws iam attach-role-policy --role-name "$role_name" \
+      --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore >/dev/null
   fi
 }
 
@@ -347,6 +390,37 @@ phase_network() {
         --protocol tcp --port 443 --cidr 0.0.0.0/0 >/dev/null
       log "  created $sg_id"
     fi
+  fi
+
+  # NLB sends both health checks and (in instance-target mode with
+  # preserve_client_ip=false) data-plane traffic FROM IPs in the VPC
+  # CIDR. The TG health check probes :8443 (parent's FastAPI /health)
+  # and the listener forwards :443 → :8444 (parent-pump's TCP→vsock
+  # forwarder). Both ports have to be reachable from VPC CIDR or the
+  # NLB sees the instance as unhealthy and drops it.
+  #
+  # We deliberately do NOT open these to 0.0.0.0/0 — the NLB is the
+  # only thing that should ever speak to :8443/:8444 directly. Public
+  # traffic terminates TLS inside the enclave via :443 → :8444 →
+  # vsock, so opening :8444 publicly would skip TLS entirely.
+  if [ -n "$sg_id" ] && [ "$sg_id" != "None" ] && [ $DRY_RUN -eq 0 ]; then
+    local vpc_cidr
+    vpc_cidr=$(aws ec2 describe-vpcs --region "$AWS_REGION" \
+      --vpc-ids "$vpc_id" --query "Vpcs[0].CidrBlock" --output text)
+    for port in 8443 8444; do
+      if aws ec2 describe-security-groups --region "$AWS_REGION" \
+           --group-ids "$sg_id" \
+           --query "SecurityGroups[0].IpPermissions[?FromPort==\`$port\`].IpRanges[?CidrIp=='$vpc_cidr']" \
+           --output text 2>/dev/null | grep -q "$vpc_cidr"; then
+        log "  $sg_name already allows :$port from $vpc_cidr"
+      else
+        log "  authorizing :$port from $vpc_cidr (NLB health check + data plane)"
+        aws ec2 authorize-security-group-ingress --region "$AWS_REGION" \
+          --group-id "$sg_id" \
+          --protocol tcp --port "$port" --cidr "$vpc_cidr" >/dev/null \
+          || log "    (rule may already exist; non-fatal)"
+      fi
+    done
   fi
 }
 
@@ -662,6 +736,23 @@ EOJ
     fi
   else
     log "  target group $tg_name already exists ($tg_arn)"
+  fi
+
+  # Disable preserve_client_ip on the TG so the NLB rewrites the
+  # source IP to its own private IP (in the VPC CIDR). With preserve
+  # enabled (the NLB default for instance-target mode), data-plane
+  # traffic arrives at the instance with the public client's IP as
+  # the source — which the SG would only allow if we opened :8444
+  # to 0.0.0.0/0, defeating the SG's purpose. With preserve disabled,
+  # the SG's existing VPC-CIDR ingress rule is sufficient.
+  #
+  # Idempotent — modify-target-group-attributes upserts. The Reason
+  # column on healthy targets stays empty either way.
+  if [ -n "$tg_arn" ] && [ "$tg_arn" != "None" ] && [ $DRY_RUN -eq 0 ]; then
+    aws elbv2 modify-target-group-attributes --region "$AWS_REGION" \
+      --target-group-arn "$tg_arn" \
+      --attributes Key=preserve_client_ip.enabled,Value=false >/dev/null
+    log "  preserve_client_ip disabled (NLB rewrites source IP to VPC range)"
   fi
 
   # NLB listener :443 → target group port 8444 (TCP passthrough — TLS
