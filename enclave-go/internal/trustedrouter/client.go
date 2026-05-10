@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -280,6 +281,44 @@ func (c *Client) Refund(ctx context.Context, auth *Authorization, status int, er
 	}
 	var decoded map[string]any
 	return c.postJSON(ctx, "/internal/gateway/refund", body, &decoded)
+}
+
+// FetchImage asks the control plane to fetch a remote image URL on the
+// enclave's behalf. Used on AWS Nitro builds where the enclave has NO
+// network stack of its own — the parent's vsock-proxy daemon only
+// knows about a small allowlist of pre-provisioned upstream hosts
+// (api.anthropic.com etc., plus this client's own trustedrouter.com
+// tunnel on port 8040). User-supplied image URLs go through the
+// control plane, which does the DNS resolve + SSRF check + HTTP fetch
+// + size cap server-side and returns base64+media_type back over the
+// existing TLS-passthrough vsock tunnel.
+//
+// On GCP confidential VMs the enclave has direct network access, so
+// llm/multimodal_direct.go handles fetches inline and this method is
+// not used. Both paths share the same Anthropic image-source shape
+// downstream of llm.normalizeImageBytes.
+func (c *Client) FetchImage(ctx context.Context, url string) (string, []byte, error) {
+	if !c.Enabled() {
+		return "", nil, fmt.Errorf("trustedrouter: control plane not configured")
+	}
+	body := map[string]any{"url": url}
+	var decoded struct {
+		Data struct {
+			MediaType  string `json:"media_type"`
+			DataBase64 string `json:"data_base64"`
+		} `json:"data"`
+	}
+	if err := c.postJSON(ctx, "/internal/gateway/fetch-image", body, &decoded); err != nil {
+		return "", nil, err
+	}
+	if decoded.Data.MediaType == "" || decoded.Data.DataBase64 == "" {
+		return "", nil, fmt.Errorf("trustedrouter: empty fetch-image response")
+	}
+	data, err := base64.StdEncoding.DecodeString(decoded.Data.DataBase64)
+	if err != nil {
+		return "", nil, fmt.Errorf("trustedrouter: decode fetch-image data: %w", err)
+	}
+	return decoded.Data.MediaType, data, nil
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, payload any, out any) error {

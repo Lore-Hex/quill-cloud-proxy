@@ -4,19 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
-	"io"
 	"mime"
-	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
-	"time"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -152,6 +147,18 @@ func loadAnthropicImageSource(ctx context.Context, raw string) (map[string]any, 
 	}, nil
 }
 
+// loadImageBytes resolves an image reference to (media_type, raw bytes).
+//
+//   - data: URLs are decoded inline (no network).
+//   - http(s): URLs delegate to fetchHTTPImage which is build-tag-split:
+//     direct DNS+TCP on GCP (multimodal_direct.go), control-plane proxy
+//     on AWS Nitro (multimodal_aws.go) where the enclave has no
+//     network stack to do its own DNS.
+//
+// SSRF protection (private/loopback/link-local IP rejection) lives in
+// each fetchHTTPImage variant: the GCP variant rejects locally;
+// the AWS variant delegates to the TR control plane which performs the
+// same checks server-side.
 func loadImageBytes(ctx context.Context, raw string) (string, []byte, error) {
 	raw = strings.TrimSpace(raw)
 	if strings.HasPrefix(raw, "data:") {
@@ -164,29 +171,7 @@ func loadImageBytes(ctx context.Context, raw string) (string, []byte, error) {
 	if u.Scheme != "https" && u.Scheme != "http" {
 		return "", nil, fmt.Errorf("llm/image: unsupported image URL scheme")
 	}
-	httpc := safeImageHTTPClient()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return "", nil, fmt.Errorf("llm/image: build image request: %w", err)
-	}
-	req.Header.Set("Accept", "image/png,image/jpeg")
-	resp, err := httpc.Do(req)
-	if err != nil {
-		return "", nil, fmt.Errorf("llm/image: fetch failed")
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("llm/image: fetch http %d", resp.StatusCode)
-	}
-	mediaType := contentTypeMedia(resp.Header.Get("Content-Type"))
-	data, err := readLimited(resp.Body)
-	if err != nil {
-		return "", nil, err
-	}
-	if mediaType == "" {
-		mediaType = contentTypeMedia(http.DetectContentType(data))
-	}
-	return mediaType, data, nil
+	return fetchHTTPImage(ctx, u.String())
 }
 
 func imageBytesFromDataURL(raw string) (string, []byte, error) {
@@ -266,71 +251,6 @@ func validateImageConfig(data []byte) error {
 		return fmt.Errorf("llm/image: image dimensions too large")
 	}
 	return nil
-}
-
-func safeImageHTTPClient() *http.Client {
-	transport := &http.Transport{
-		DialContext: safeImageDialContext,
-	}
-	return &http.Client{
-		Timeout:   15 * time.Second,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= maxImageRedirect {
-				return errors.New("llm/image: too many redirects")
-			}
-			if req.URL.Scheme != "https" && req.URL.Scheme != "http" {
-				return errors.New("llm/image: unsupported redirect scheme")
-			}
-			return nil
-		},
-	}
-}
-
-func safeImageDialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return nil, fmt.Errorf("llm/image: invalid address")
-	}
-	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-	if err != nil {
-		return nil, fmt.Errorf("llm/image: resolve failed")
-	}
-	for _, ip := range ips {
-		if !allowedImageIP(ip) {
-			continue
-		}
-		var dialer net.Dialer
-		return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-	}
-	return nil, fmt.Errorf("llm/image: image host resolves to a private address")
-}
-
-func allowedImageIP(ip netip.Addr) bool {
-	if !ip.IsValid() {
-		return false
-	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
-		return false
-	}
-	if ip.Is4() {
-		as4 := ip.As4()
-		if as4[0] == 169 && as4[1] == 254 {
-			return false
-		}
-	}
-	return true
-}
-
-func readLimited(r io.Reader) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(r, maxImageBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("llm/image: read failed")
-	}
-	if len(data) > maxImageBytes {
-		return nil, fmt.Errorf("llm/image: image too large")
-	}
-	return data, nil
 }
 
 func contentTypeMedia(value string) string {
