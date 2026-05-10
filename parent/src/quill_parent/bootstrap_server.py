@@ -177,8 +177,14 @@ def _build_bootstrap_data(
     """
     import boto3
 
-    sm_client = sm_client_factory() if sm_client_factory else boto3.client("secretsmanager", region_name=region)  # type: ignore[operator]
-    kms_client = kms_client_factory() if kms_client_factory else boto3.client("kms", region_name=region)  # type: ignore[operator]
+    if sm_client_factory:
+        sm_client = sm_client_factory()  # type: ignore[operator]
+    else:
+        sm_client = boto3.client("secretsmanager", region_name=region)
+    if kms_client_factory:
+        kms_client = kms_client_factory()  # type: ignore[operator]
+    else:
+        kms_client = boto3.client("kms", region_name=region)
     # mention to keep mypy happy without changing types in the production path
     assert sm_client is not None
     assert kms_client is not None
