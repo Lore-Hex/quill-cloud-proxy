@@ -288,9 +288,7 @@ async def serve_forever(
                 "bootstrap.refresh",
                 # don't log the actual key values; just a count of
                 # which provider fields ended up populated
-                providers_loaded=sum(
-                    1 for field, _suffix in _PROVIDER_KEYS if data.get(field)
-                ),
+                providers_loaded=sum(1 for field, _suffix in _PROVIDER_KEYS if data.get(field)),
             )
         except Exception as exc:
             log.exception("bootstrap.refresh_failed", err=type(exc).__name__)

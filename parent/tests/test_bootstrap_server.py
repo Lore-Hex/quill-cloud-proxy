@@ -138,9 +138,7 @@ def test_build_payload_propagates_tr_control_plane_url() -> None:
     )
     kms = _StubKMS({_FAKE_KMS_CIPHERTEXT: _FAKE_SA_KEY.encode("utf-8")})
 
-    payload = _build_payload(
-        sm=sm, kms=kms, tr_url="https://api-us-central1.quillrouter.com/v1"
-    )
+    payload = _build_payload(sm=sm, kms=kms, tr_url="https://api-us-central1.quillrouter.com/v1")
     assert payload["trustedrouter_base_url"] == "https://api-us-central1.quillrouter.com/v1"
     assert payload["trustedrouter_internal_token"] == "tr_internal_token_FAKE"
 
