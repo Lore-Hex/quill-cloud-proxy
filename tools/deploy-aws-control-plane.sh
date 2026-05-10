@@ -217,11 +217,33 @@ ensure "IAM role $ROLE_TASK" \
 if [ "$DRY_RUN" = "0" ]; then
   aws_q iam put-role-policy --role-name "$ROLE_TASK" \
     --policy-name aws-runtime \
-    --policy-document "$(cat <<'JSON'
+    --policy-document "$(cat <<JSON
 {
   "Version": "2012-10-17",
   "Statement": [
-    {"Effect": "Allow", "Action": ["ses:SendEmail", "ses:SendRawEmail"], "Resource": "*"}
+    {"Effect": "Allow", "Action": ["ses:SendEmail", "ses:SendRawEmail"], "Resource": "*"},
+    {
+      "Sid": "DecryptCrossCloudSAKey",
+      "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "kms:EncryptionContext:secret-id": "quill/trustedrouter-aws-cross-cloud-sa-key"
+        }
+      }
+    },
+    {
+      "Sid": "DecryptViaSecretsManagerKey",
+      "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "kms:ViaService": "secretsmanager.${AWS_REGION}.amazonaws.com"
+        }
+      }
+    }
   ]
 }
 JSON
@@ -304,7 +326,7 @@ ensure "ALB $ALB_NAME" \
 
 ensure "Target group $TG_NAME" \
   "aws_q elbv2 describe-target-groups --names '$TG_NAME'" \
-  "aws_q elbv2 create-target-group --name '$TG_NAME' --protocol HTTP --port 8080 --vpc-id '$VPC_ID' --target-type ip --health-check-path /health --health-check-interval-seconds 30 --healthy-threshold-count 2 --unhealthy-threshold-count 3 --matcher HttpCode=200,401"
+  "aws_q elbv2 create-target-group --name '$TG_NAME' --protocol HTTP --port 8080 --vpc-id '$VPC_ID' --target-type ip --health-check-path /health --health-check-interval-seconds 30 --healthy-threshold-count 2 --unhealthy-threshold-count 3 --matcher 'HttpCode=\"200,401\"'"
 
 if [ "$DRY_RUN" = "0" ]; then
   ALB_ARN=$(aws_q elbv2 describe-load-balancers --names "$ALB_NAME" --query 'LoadBalancers[0].LoadBalancerArn' --output text | head -1)
@@ -348,6 +370,35 @@ ensure "ECS cluster $CLUSTER_NAME" \
 
 # ─── Step 9. Task definition ───────────────────────────────────────────────
 say "=== task definition ==="
+
+# ECS task definitions need the FULL Secrets Manager ARN (with the random
+# 6-char suffix Secrets Manager appends) — partial-ARN form
+# `arn:...secret:friendly-name` (no suffix) returns ResourceNotFoundException
+# at task-start time, and bare friendly names get interpreted as SSM
+# Parameter Store paths. Resolve every secret ARN once here into a flat
+# variable so the heredoc expansion gets the right value.
+# (bash 3.2-compatible — macOS ships with that, no associative arrays.)
+SECRET_ARN_MAP=""
+if [ "$DRY_RUN" = "0" ]; then
+  SECRET_ARN_MAP=$(aws_q secretsmanager list-secrets \
+    --query 'SecretList[?starts_with(Name, `quill/trustedrouter`)].[Name,ARN]' \
+    --output text)
+  say "  resolved $(echo "$SECRET_ARN_MAP" | wc -l | tr -d ' ') secret ARNs (with suffix)"
+fi
+
+# Helper: print the full ARN for a friendly-name lookup. Falls back to the
+# partial-ARN form on dry-run / missing secret.
+sec() {
+  local key="$1"
+  local arn=""
+  if [ -n "$SECRET_ARN_MAP" ]; then
+    arn=$(echo "$SECRET_ARN_MAP" | awk -v k="quill/$key" '$1 == k { print $2; exit }')
+  fi
+  if [ -z "$arn" ]; then
+    arn="arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/$key"
+  fi
+  printf '%s' "$arn"
+}
 
 # Construct the env vars + secrets refs for the task. Mirror everything from
 # Cloud Run's env, swap the secret backend from GCP Secret Manager to AWS
@@ -403,35 +454,35 @@ cat > "$TASK_DEF_FILE" <<JSON
         {"name": "AXIOM_URL", "value": "https://api.axiom.co"}
       ],
       "secrets": [
-        {"name": "TR_SENTRY_DSN",                  "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-sentry-dsn"},
-        {"name": "TR_STRIPE_SECRET_KEY",           "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-stripe-secret-key"},
-        {"name": "TR_STRIPE_WEBHOOK_SECRET",       "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-stripe-webhook-secret"},
-        {"name": "TR_INTERNAL_GATEWAY_TOKEN",      "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-internal-gateway-token"},
-        {"name": "ANTHROPIC_API_KEY",              "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-anthropic-api-key"},
-        {"name": "OPENAI_API_KEY",                 "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-openai-api-key"},
-        {"name": "GEMINI_API_KEY",                 "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-gemini-api-key"},
-        {"name": "CEREBRAS_API_KEY",               "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-cerebras-api-key"},
-        {"name": "DEEPSEEK_API_KEY",               "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-deepseek-api-key"},
-        {"name": "MISTRAL_API_KEY",                "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-mistral-api-key"},
-        {"name": "KIMI_API_KEY",                   "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-kimi-api-key"},
-        {"name": "ZAI_API_KEY",                    "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-zai-api-key"},
-        {"name": "TOGETHER_API_KEY",               "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-together-api-key"},
-        {"name": "GROK_API_KEY",                   "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-grok-api-key"},
-        {"name": "NOVITA_API_KEY",                 "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-novita-api-key"},
-        {"name": "PHALA_API_KEY",                  "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-phala-api-key"},
-        {"name": "SILICON_FLOW_API_KEY",           "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-siliconflow-api-key"},
-        {"name": "TINFOIL_API_KEY",                "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-tinfoil-api-key"},
-        {"name": "VENICE_API_KEY",                 "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-venice-api-key"},
-        {"name": "TR_GOOGLE_CLIENT_ID",            "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-google-client-id"},
-        {"name": "TR_GOOGLE_CLIENT_SECRET",        "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-google-client-secret"},
-        {"name": "TR_GITHUB_CLIENT_ID",            "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-github-client-id"},
-        {"name": "TR_GITHUB_CLIENT_SECRET",        "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-github-client-secret"},
-        {"name": "TR_SYNTHETIC_MONITOR_API_KEY",   "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-synthetic-monitor-api-key"},
-        {"name": "AXIOM_API_TOKEN",                "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-axiom-api-token"},
-        {"name": "TR_PAYPAL_CLIENT_ID",            "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-paypal-client-id"},
-        {"name": "TR_PAYPAL_CLIENT_SECRET",        "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-paypal-client-secret"},
-        {"name": "TR_PAYPAL_WEBHOOK_ID",           "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-paypal-webhook-id"},
-        {"name": "GCP_SERVICE_ACCOUNT_KEY_JSON",   "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/trustedrouter-aws-cross-cloud-sa-key"}
+        {"name": "TR_SENTRY_DSN",                  "valueFrom": "$(sec trustedrouter-sentry-dsn)"},
+        {"name": "TR_STRIPE_SECRET_KEY",           "valueFrom": "$(sec trustedrouter-stripe-secret-key)"},
+        {"name": "TR_STRIPE_WEBHOOK_SECRET",       "valueFrom": "$(sec trustedrouter-stripe-webhook-secret)"},
+        {"name": "TR_INTERNAL_GATEWAY_TOKEN",      "valueFrom": "$(sec trustedrouter-internal-gateway-token)"},
+        {"name": "ANTHROPIC_API_KEY",              "valueFrom": "$(sec trustedrouter-anthropic-api-key)"},
+        {"name": "OPENAI_API_KEY",                 "valueFrom": "$(sec trustedrouter-openai-api-key)"},
+        {"name": "GEMINI_API_KEY",                 "valueFrom": "$(sec trustedrouter-gemini-api-key)"},
+        {"name": "CEREBRAS_API_KEY",               "valueFrom": "$(sec trustedrouter-cerebras-api-key)"},
+        {"name": "DEEPSEEK_API_KEY",               "valueFrom": "$(sec trustedrouter-deepseek-api-key)"},
+        {"name": "MISTRAL_API_KEY",                "valueFrom": "$(sec trustedrouter-mistral-api-key)"},
+        {"name": "KIMI_API_KEY",                   "valueFrom": "$(sec trustedrouter-kimi-api-key)"},
+        {"name": "ZAI_API_KEY",                    "valueFrom": "$(sec trustedrouter-zai-api-key)"},
+        {"name": "TOGETHER_API_KEY",               "valueFrom": "$(sec trustedrouter-together-api-key)"},
+        {"name": "GROK_API_KEY",                   "valueFrom": "$(sec trustedrouter-grok-api-key)"},
+        {"name": "NOVITA_API_KEY",                 "valueFrom": "$(sec trustedrouter-novita-api-key)"},
+        {"name": "PHALA_API_KEY",                  "valueFrom": "$(sec trustedrouter-phala-api-key)"},
+        {"name": "SILICON_FLOW_API_KEY",           "valueFrom": "$(sec trustedrouter-siliconflow-api-key)"},
+        {"name": "TINFOIL_API_KEY",                "valueFrom": "$(sec trustedrouter-tinfoil-api-key)"},
+        {"name": "VENICE_API_KEY",                 "valueFrom": "$(sec trustedrouter-venice-api-key)"},
+        {"name": "TR_GOOGLE_CLIENT_ID",            "valueFrom": "$(sec trustedrouter-google-client-id)"},
+        {"name": "TR_GOOGLE_CLIENT_SECRET",        "valueFrom": "$(sec trustedrouter-google-client-secret)"},
+        {"name": "TR_GITHUB_CLIENT_ID",            "valueFrom": "$(sec trustedrouter-github-client-id)"},
+        {"name": "TR_GITHUB_CLIENT_SECRET",        "valueFrom": "$(sec trustedrouter-github-client-secret)"},
+        {"name": "TR_SYNTHETIC_MONITOR_API_KEY",   "valueFrom": "$(sec trustedrouter-synthetic-monitor-api-key)"},
+        {"name": "AXIOM_API_TOKEN",                "valueFrom": "$(sec trustedrouter-axiom-api-token)"},
+        {"name": "TR_PAYPAL_CLIENT_ID",            "valueFrom": "$(sec trustedrouter-paypal-client-id)"},
+        {"name": "TR_PAYPAL_CLIENT_SECRET",        "valueFrom": "$(sec trustedrouter-paypal-client-secret)"},
+        {"name": "TR_PAYPAL_WEBHOOK_ID",           "valueFrom": "$(sec trustedrouter-paypal-webhook-id)"},
+        {"name": "GCP_SA_KEY_KMS_WRAPPED",         "valueFrom": "$(sec trustedrouter-aws-cross-cloud-sa-key)"}
       ]
     }
   ]
