@@ -9,23 +9,23 @@
 // Two independent fetches of the SEV-SNP attestation produce two
 // fingerprints; we refuse the request unless they agree.
 //
-//   rawFP      ← in-process stdlib parse here
-//                  fetchExpectedTLSPubkeyFP() below: GET
-//                  /.well-known/tinfoil-attestation, gunzip + base64-
-//                  decode the body, read REPORT_DATA[0:32] (= SHA-256
-//                  of the enclave's TLS PKIX-DER public key per
-//                  Tinfoil's convention).
+//	rawFP      ← in-process stdlib parse here
+//	               fetchExpectedTLSPubkeyFP() below: GET
+//	               /.well-known/tinfoil-attestation, gunzip + base64-
+//	               decode the body, read REPORT_DATA[0:32] (= SHA-256
+//	               of the enclave's TLS PKIX-DER public key per
+//	               Tinfoil's convention).
 //
-//   verifiedFP ← /attest-sidecar over Unix socket
-//                  enclave-go/sidecar/ is a SEPARATE Go module that
-//                  imports tinfoilsh/tinfoil-go/verifier/client and
-//                  runs the full chain: Sigstore-signed code-measurement
-//                  bundle from the GitHub release of
-//                  tinfoilsh/confidential-model-router, AMD VCEK chain
-//                  on the SEV-SNP report, and only THEN extracts the
-//                  TLS pubkey FP. cmd/enclave/main.go fork-execs
-//                  /attest-sidecar at startup; we read its result
-//                  via fetchSidecarVerifiedFP().
+//	verifiedFP ← /attest-sidecar over Unix socket
+//	               enclave-go/sidecar/ is a SEPARATE Go module that
+//	               imports tinfoilsh/tinfoil-go/verifier/client and
+//	               runs the full chain: Sigstore-signed code-measurement
+//	               bundle from the GitHub release of
+//	               tinfoilsh/confidential-model-router, AMD VCEK chain
+//	               on the SEV-SNP report, and only THEN extracts the
+//	               TLS pubkey FP. cmd/enclave/main.go fork-execs
+//	               /attest-sidecar at startup; we read its result
+//	               via fetchSidecarVerifiedFP().
 //
 // Why the sidecar lives in its own module: linking
 // tinfoilsh/tinfoil-go/verifier/client into the main enclave binary
@@ -42,13 +42,13 @@
 // Cross-check decision matrix (resolveExpectedFP below)
 // =====================================================
 //
-//   both ok + agree    → use verifiedFP (the safer of the two)
-//   both ok + disagree → REFUSE — either tinfoil is rotating mid-
-//                        fetch (next attempt resolves) or one
-//                        network leg is being MITM'd
-//   raw ok, sidecar dn → raw-only mode, log "sidecar unreachable"
-//   sidecar ok, raw dn → sidecar-only mode, log "raw fetch failed"
-//   neither ok         → hard error; tinfoil requests fail closed
+//	both ok + agree    → use verifiedFP (the safer of the two)
+//	both ok + disagree → REFUSE — either tinfoil is rotating mid-
+//	                     fetch (next attempt resolves) or one
+//	                     network leg is being MITM'd
+//	raw ok, sidecar dn → raw-only mode, log "sidecar unreachable"
+//	sidecar ok, raw dn → sidecar-only mode, log "raw fetch failed"
+//	neither ok         → hard error; tinfoil requests fail closed
 //
 // Per-request enforcement
 // =======================
@@ -63,10 +63,10 @@
 // Trust hooks layered around the Unix socket
 // ==========================================
 //
-//   * Sidecar side (sidecar/main.go::uidEnforcingListener): each
+//   - Sidecar side (sidecar/main.go::uidEnforcingListener): each
 //     accepted connection's peer UID is checked via SO_PEERCRED;
 //     mismatch = drop. Closes off random other-uid processes.
-//   * Main enclave side (unixSocketHTTPClient below): the dialer
+//   - Main enclave side (unixSocketHTTPClient below): the dialer
 //     uses SO_PEERCRED to verify the peer process PID matches the
 //     fork-exec'd child whose PID we recorded via
 //     SetExpectedSidecarPID. Closes off the abstract-socket
@@ -80,13 +80,13 @@
 // =========================
 //
 // First-tinfoil-request only:
-//   * Stdlib raw fetch: 1 HTTPS roundtrip + gzip + sha256 (~tens of ms)
-//   * Sidecar query: ~ms over Unix socket (sidecar caches Verify
+//   - Stdlib raw fetch: 1 HTTPS roundtrip + gzip + sha256 (~tens of ms)
+//   - Sidecar query: ~ms over Unix socket (sidecar caches Verify
 //     result for 10 min, so its response is in-memory)
-//   * String compare on the two FPs.
+//   - String compare on the two FPs.
 //
 // Every subsequent request:
-//   * One SHA-256 of the peer cert's DER pubkey + one string compare,
+//   - One SHA-256 of the peer cert's DER pubkey + one string compare,
 //     both inside the existing TLS handshake. Microseconds.
 //
 // Empirically: tinfoil US TTFT pre-attestation 779 ms avg →
@@ -97,16 +97,16 @@
 //
 // What this design DOES catch:
 //
-//   * Network MITM on either the in-process raw fetch path or the
+//   - Network MITM on either the in-process raw fetch path or the
 //     sidecar's Verify chain — caught by cross-check disagreement.
-//   * A lying sidecar process (e.g. an in-VM race where some other
+//   - A lying sidecar process (e.g. an in-VM race where some other
 //     process binds @tinfoil-attest before our fork-exec'd child
 //     and answers with a forged FP) — the in-process rawFP is still
 //     computed by Go code in this package, untouched by the
 //     impostor, so disagreement triggers refuse. Belt-and-suspenders
 //     SO_PEERCRED + PID-pin (peercred_linux.go) catches the bind
 //     race even before the cross-check fires.
-//   * Tinfoil rotating their cert mid-flight — re-fetch + retry once
+//   - Tinfoil rotating their cert mid-flight — re-fetch + retry once
 //     handles it transparently.
 //
 // Note that "swap the /attest-sidecar binary on disk" is NOT a
@@ -124,50 +124,50 @@
 //
 // What this design ASSUMES does NOT happen (out of scope):
 //
-//   The cross-check provides defense-in-depth against compromise of
-//   any SINGLE leg (a lying sidecar process, our machine's network
-//   leg, GitHub-served Sigstore bundles, tinfoil's .well-known
-//   endpoint). It does NOT defend against an attacker who
-//   simultaneously controls MULTIPLE independent organizations'
-//   infrastructure on a coordinated timeline — specifically:
+//	The cross-check provides defense-in-depth against compromise of
+//	any SINGLE leg (a lying sidecar process, our machine's network
+//	leg, GitHub-served Sigstore bundles, tinfoil's .well-known
+//	endpoint). It does NOT defend against an attacker who
+//	simultaneously controls MULTIPLE independent organizations'
+//	infrastructure on a coordinated timeline — specifically:
 //
-//     (a) ship a malicious /attest-sidecar binary in our published
-//         enclave image (= compromise our build pipeline / Artifact
-//         Registry; would change the image_digest visible to anyone
-//         verifying our attestation), AND at the same time
-//     (b) modify the data GitHub serves for tinfoilsh/confidential-
-//         model-router release attestations (so the malicious
-//         sidecar's lie matches what a legitimate Verify chain would
-//         have produced), AND also
-//     (c) make either inference.tinfoil.sh's .well-known endpoint or
-//         our network leg to it serve a matching forged SEV-SNP report
+//	  (a) ship a malicious /attest-sidecar binary in our published
+//	      enclave image (= compromise our build pipeline / Artifact
+//	      Registry; would change the image_digest visible to anyone
+//	      verifying our attestation), AND at the same time
+//	  (b) modify the data GitHub serves for tinfoilsh/confidential-
+//	      model-router release attestations (so the malicious
+//	      sidecar's lie matches what a legitimate Verify chain would
+//	      have produced), AND also
+//	  (c) make either inference.tinfoil.sh's .well-known endpoint or
+//	      our network leg to it serve a matching forged SEV-SNP report
 //
-//   Pulling all three off in concert means breaching multiple
-//   organizations on a single timeline (us — specifically our build
-//   chain, since runtime disk-write inside Confidential Space is
-//   already blocked by the TEE — plus GitHub, plus tinfoil/AMD).
-//   That's a sophisticated multi-target attack well outside the
-//   threat surface this design is sized for. With ANY single leg of
-//   the three intact, the cross-check refuses the request.
+//	Pulling all three off in concert means breaching multiple
+//	organizations on a single timeline (us — specifically our build
+//	chain, since runtime disk-write inside Confidential Space is
+//	already blocked by the TEE — plus GitHub, plus tinfoil/AMD).
+//	That's a sophisticated multi-target attack well outside the
+//	threat surface this design is sized for. With ANY single leg of
+//	the three intact, the cross-check refuses the request.
 //
-//   AMD's signing key is the hard floor: forging an SEV-SNP report
-//   requires it (it lives inside AMD's CPUs and is not extractable).
-//   Without it, no forged report validates against the AMD VCEK
-//   chain inside the sidecar's Verify, so even the combined "build
-//   chain + GitHub" attack still has to also separately compromise
-//   tinfoil's enclave deployment to make the .well-known endpoint
-//   serve a SEV-SNP report attesting to the attacker's TLS key. At
-//   that point the attacker IS tinfoil from the protocol's
-//   perspective, and we've left the regime any client of
-//   inference.tinfoil.sh can defend against.
+//	AMD's signing key is the hard floor: forging an SEV-SNP report
+//	requires it (it lives inside AMD's CPUs and is not extractable).
+//	Without it, no forged report validates against the AMD VCEK
+//	chain inside the sidecar's Verify, so even the combined "build
+//	chain + GitHub" attack still has to also separately compromise
+//	tinfoil's enclave deployment to make the .well-known endpoint
+//	serve a SEV-SNP report attesting to the attacker's TLS key. At
+//	that point the attacker IS tinfoil from the protocol's
+//	perspective, and we've left the regime any client of
+//	inference.tinfoil.sh can defend against.
 //
-//   Note specifically that "swap /attest-sidecar at runtime inside
-//   the enclave VM" is NOT in this list because it's blocked one
-//   layer down: Confidential Space's TEE memory protection prevents
-//   in-VM disk writes from outside the workload itself, AND the
-//   image_digest covers both binaries, so any binary swap that DID
-//   somehow happen (e.g. supply-chain attack on our build) would
-//   surface as a measurement mismatch on our /attestation endpoint.
+//	Note specifically that "swap /attest-sidecar at runtime inside
+//	the enclave VM" is NOT in this list because it's blocked one
+//	layer down: Confidential Space's TEE memory protection prevents
+//	in-VM disk writes from outside the workload itself, AND the
+//	image_digest covers both binaries, so any binary swap that DID
+//	somehow happen (e.g. supply-chain attack on our build) would
+//	surface as a measurement mismatch on our /attestation endpoint.
 package llm
 
 import (
@@ -254,7 +254,9 @@ var expectedSidecarPID atomic.Int32
 // /attest-sidecar; the resulting PID becomes the only acceptable peer
 // for unix-socket connections to @tinfoil-attest.
 func SetExpectedSidecarPID(pid int) {
-	expectedSidecarPID.Store(int32(pid))
+	// Linux PID_MAX_LIMIT is 2^22 (4_194_304); always fits in int32.
+	// gosec G115 doesn't know that statically — annotate inline.
+	expectedSidecarPID.Store(int32(pid)) // #nosec G115 -- Linux PIDs fit in int32 by PID_MAX_LIMIT.
 }
 
 var errSidecarPIDMismatch = errors.New("attest sidecar peer PID mismatch")
@@ -426,27 +428,27 @@ func fetchSidecarVerifiedFP(ctx context.Context) (*sidecarPayload, error) {
 // resolveExpectedFP returns the TLS-pubkey fingerprint we should pin
 // to for tinfoil traffic, dual-sourced where possible:
 //
-//   1. rawFP      — stdlib-only parse of /.well-known/tinfoil-attestation
-//                   (fetched directly from this process)
-//   2. verifiedFP — full-Sigstore-+-AMD-VCEK-chain-verified value
-//                   from the attest-sidecar (a separate process)
+//  1. rawFP      — stdlib-only parse of /.well-known/tinfoil-attestation
+//     (fetched directly from this process)
+//  2. verifiedFP — full-Sigstore-+-AMD-VCEK-chain-verified value
+//     from the attest-sidecar (a separate process)
 //
 // Decision matrix:
 //
-//   * Both succeed and agree   → return verifiedFP (safer; full chain).
-//   * Both succeed and DISAGREE → REFUSE. Either tinfoil is rotating
-//                                 mid-flight (next attempt resolves)
-//                                 or one network leg is being MITM'd.
-//                                 Either way we don't pick a side.
-//   * Only raw succeeds         → return rawFP, log "sidecar
-//                                 unreachable; raw-only mode" loudly.
-//                                 The pin still holds; it just lacks
-//                                 the AMD signature attestation.
-//   * Only sidecar succeeds     → return verifiedFP, log similarly
-//                                 (raw fetch failed, e.g. tinfoil's
-//                                 .well-known briefly 503'd).
-//   * Neither succeeds          → return error. Tinfoil requests fail
-//                                 closed.
+//   - Both succeed and agree   → return verifiedFP (safer; full chain).
+//   - Both succeed and DISAGREE → REFUSE. Either tinfoil is rotating
+//     mid-flight (next attempt resolves)
+//     or one network leg is being MITM'd.
+//     Either way we don't pick a side.
+//   - Only raw succeeds         → return rawFP, log "sidecar
+//     unreachable; raw-only mode" loudly.
+//     The pin still holds; it just lacks
+//     the AMD signature attestation.
+//   - Only sidecar succeeds     → return verifiedFP, log similarly
+//     (raw fetch failed, e.g. tinfoil's
+//     .well-known briefly 503'd).
+//   - Neither succeeds          → return error. Tinfoil requests fail
+//     closed.
 //
 // log lines use the structured key=value format the rest of the
 // enclave already uses, so they show up cleanly in the regional
@@ -531,9 +533,9 @@ var errCertFingerprintMismatch = errors.New("tinfoil: cert fingerprint mismatch"
 // On second consecutive mismatch the request returns an error to the
 // caller — we never silently fall back to a non-pinned client.
 type attestedRoundTripper struct {
-	mu        sync.RWMutex
-	transport *http.Transport
-	expected  string
+	mu         sync.RWMutex
+	transport  *http.Transport
+	expected   string
 	verifiedAt time.Time
 }
 
@@ -602,8 +604,8 @@ func (r *attestedRoundTripper) refresh(ctx context.Context) error {
 // rather than fall through to a plain http.Client (we never silently
 // drop the pin).
 var (
-	tinfoilCachedRT *attestedRoundTripper
-	tinfoilCacheMu  sync.Mutex
+	tinfoilCachedRT     *attestedRoundTripper
+	tinfoilCacheMu      sync.Mutex
 	tinfoilCachedClient *http.Client
 )
 

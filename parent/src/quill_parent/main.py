@@ -23,7 +23,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from quill_parent import bootstrap_server, tcp_relay
+from quill_parent import bootstrap_server
 from quill_parent.config import Settings, get_settings
 from quill_parent.heartbeat import Heartbeat, emit_startup
 from quill_parent.logging import configure_logging
@@ -64,12 +64,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         app.state.bootstrap_task = bootstrap_task
 
-    # Raw TCP pump from the NLB to the enclave's vsock listener. This is
-    # the only inference path; FastAPI serves admin/trust/health only.
-    tcp_pump_task: asyncio.Task[None] | None = None
-    if tcp_relay.is_enabled():
-        tcp_pump_task = asyncio.create_task(tcp_relay.serve_forever(settings))
-        app.state.tcp_pump_task = tcp_pump_task
+    # The TCP pump (NLB :8444 → enclave vsock 16:8001) used to live in
+    # this process as `tcp_relay.serve_forever()`. It's now a dedicated
+    # Go binary — enclave-go/cmd/parent-pump — running in a separate
+    # container on the host. The Python parent only handles the control
+    # plane (/admin/usage, /trust, /health) and the bootstrap RPC
+    # server. The pump's data path is latency-sensitive enough to be
+    # worth a Go rewrite (no GIL, io.Copy between two net.Conns).
 
     try:
         yield
@@ -77,8 +78,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.heartbeat_task.cancel()
         if bootstrap_task is not None:
             bootstrap_task.cancel()
-        if tcp_pump_task is not None:
-            tcp_pump_task.cancel()
 
 
 def create_app() -> FastAPI:
