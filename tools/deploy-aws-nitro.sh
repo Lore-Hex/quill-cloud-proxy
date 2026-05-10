@@ -503,6 +503,7 @@ docker pull ${parent_repo_url}:${parent_tag}
 docker run -d --restart=always --name=quill-parent \\
   --network=host \\
   --device=/dev/vsock \\
+  --security-opt seccomp=unconfined \\
   -e QUILL_BOOTSTRAP_SERVER=true \\
   -e QUILL_AWS_REGION=${AWS_REGION} \\
   -e QUILL_SECRET_PREFIX=quill/ \\
@@ -515,9 +516,17 @@ docker run -d --restart=always --name=quill-parent \\
 # Python tcp_relay.py on the data path: io.Copy between two net.Conns
 # instead of asyncio buffer-copy + GIL overhead. Tiny scratch image.
 docker pull ${parent_pump_repo_url}:${parent_pump_tag}
+# --security-opt seccomp=unconfined is required for the Go vsock
+# library: Docker's default seccomp profile rejects socket(AF_VSOCK)
+# with EPERM in scratch-based images. (Python/glibc images get the
+# same family allowed via libc internals, which is why the parent
+# container — same default seccomp — binds vsock fine on the bootstrap
+# server side.) Confirmed by stripping seccomp on a live instance:
+# vsock.Dial then succeeded.
 docker run -d --restart=always --name=quill-parent-pump \\
   --network=host \\
   --device=/dev/vsock \\
+  --security-opt seccomp=unconfined \\
   -e QUILL_PUMP_LISTEN_ADDR=:8444 \\
   -e QUILL_PUMP_ENCLAVE_CID=16 \\
   -e QUILL_PUMP_ENCLAVE_PORT=8001 \\
