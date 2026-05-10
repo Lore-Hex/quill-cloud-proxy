@@ -34,9 +34,13 @@ type kimiClient struct {
 // clients in multi-backend builds; in a single-backend llm_kimi build,
 // register_kimi.go wires it as THE Client.
 func newKimi(boot *qtypes.BootstrapData) *kimiClient {
+	// Route through defaultHTTPClient() so cloud_aws builds get the
+	// vsock-tunneled transport. Same pattern as newAnthropic.
+	httpc := defaultHTTPClient()
+	httpc.Timeout = defaultStreamingHTTPTimeout
 	return &kimiClient{
 		apiKey: strings.TrimSpace(boot.KimiAPIKey),
-		httpc:  pooledHTTPClient(defaultStreamingHTTPTimeout),
+		httpc:  httpc,
 	}
 }
 

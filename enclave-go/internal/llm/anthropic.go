@@ -76,9 +76,17 @@ type anthropicClient struct {
 // in single-backend builds (see register_anthropic.go) and as ONE OF the
 // available clients in multi-backend builds (see multi.go).
 func newAnthropic(boot *qtypes.BootstrapData) *anthropicClient {
+	// Route through defaultHTTPClient() so the cloud_aws build picks
+	// up the vsock-tunneled transport (api.anthropic.com → vsock-proxy
+	// 8003 → upstream). Direct pooledHTTPClient() would use net.Dialer
+	// and fail in Nitro with "lookup api.anthropic.com on [::1]:53".
+	// Override Timeout to match the streaming default this client used
+	// to set inline.
+	httpc := defaultHTTPClient()
+	httpc.Timeout = defaultStreamingHTTPTimeout
 	return &anthropicClient{
 		apiKey: strings.TrimSpace(boot.AnthropicAPIKey),
-		httpc:  pooledHTTPClient(defaultStreamingHTTPTimeout),
+		httpc:  httpc,
 	}
 }
 

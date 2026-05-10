@@ -21,9 +21,14 @@ type zaiClient struct {
 }
 
 func newZAI(boot *qtypes.BootstrapData) *zaiClient {
+	// Route through defaultHTTPClient() so cloud_aws builds get the
+	// vsock-tunneled transport. Same pattern as newAnthropic — a
+	// direct pooledHTTPClient would fail in Nitro with DNS errors.
+	httpc := defaultHTTPClient()
+	httpc.Timeout = defaultStreamingHTTPTimeout
 	return &zaiClient{
 		apiKey: strings.TrimSpace(boot.ZAIAPIKey),
-		httpc:  pooledHTTPClient(defaultStreamingHTTPTimeout),
+		httpc:  httpc,
 	}
 }
 
