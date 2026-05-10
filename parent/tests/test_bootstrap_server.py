@@ -133,7 +133,7 @@ def test_build_payload_propagates_tr_control_plane_url() -> None:
             "quill/trustedrouter-aws-cross-cloud-sa-key": base64.b64encode(
                 _FAKE_KMS_CIPHERTEXT
             ).decode("ascii"),
-            "quill/trustedrouter-tr-api-key-for-self-heal": "tr_internal_token_FAKE",
+            "quill/trustedrouter-internal-gateway-token": "tr_internal_token_FAKE",
         }
     )
     kms = _StubKMS({_FAKE_KMS_CIPHERTEXT: _FAKE_SA_KEY.encode("utf-8")})

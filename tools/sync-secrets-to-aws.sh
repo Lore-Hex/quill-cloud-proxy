@@ -54,6 +54,11 @@ SECRETS=(
   trustedrouter-tinfoil-api-key
   trustedrouter-venice-api-key
   trustedrouter-tr-api-key-for-self-heal
+  # The internal gateway token authenticates enclave→TR control-plane
+  # calls (x-trustedrouter-internal-token header on /v1/internal/*).
+  # Distinct from tr-api-key-for-self-heal which is a customer-facing
+  # API key used by TR's self-heal flow as a customer of itself.
+  trustedrouter-internal-gateway-token
   # Cross-cloud GCP service-account key. The AWS enclave uses this to
   # authenticate to GCP Spanner + Bigtable + KMS + Secret Manager.
   # Granted only the minimum permissions needed (datastore.user,

@@ -97,7 +97,17 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
 )
 
 _GCP_SA_KEY_SECRET_SUFFIX: Final[str] = "trustedrouter-aws-cross-cloud-sa-key"
-_TR_INTERNAL_TOKEN_SECRET_SUFFIX: Final[str] = "trustedrouter-tr-api-key-for-self-heal"
+# The TR internal gateway token authenticates enclave → TR control
+# plane calls (sent as the `x-trustedrouter-internal-token` header on
+# /v1/internal/* endpoints). Distinct from
+# `trustedrouter-tr-api-key-for-self-heal`, which is a customer-facing
+# API key used by TR's self-heal flow when TR calls itself as a
+# customer. Initial wiring used the wrong secret here — confirmed by a
+# 45s "gateway authorization failed" 401 with the customer key — so we
+# point at the same Secret Manager value Cloud Run consumes via the
+# `TR_INTERNAL_GATEWAY_TOKEN` env var. Mirrored to AWS Secrets Manager
+# by tools/sync-secrets-to-aws.sh.
+_TR_INTERNAL_TOKEN_SECRET_SUFFIX: Final[str] = "trustedrouter-internal-gateway-token"
 
 
 def _read_one_secret(sm_client: object, secret_id: str) -> str | None:
