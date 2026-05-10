@@ -423,6 +423,19 @@ func normalizeDirectProvider(provider string) string {
 	}
 }
 
-func defaultHTTPClient() *http.Client {
-	return pooledHTTPClient(defaultStreamingHTTPTimeout)
-}
+// defaultHTTPClient returns the default outbound HTTP client used by
+// every LLM-provider client (anthropic, openai-compatible, etc.).
+//
+// On GCP-side enclaves this dials directly over the network — the
+// Confidential Space VM has plain internet egress.
+//
+// On AWS-side enclaves (cloud_aws build tag), the Nitro Enclave has
+// no network at all; outbound HTTPS must travel via vsock to the
+// parent host's `vsock-proxy` daemon. The cloud_aws variant of this
+// function (in http_client_aws.go) returns a vsockhttp-backed client
+// with a Tunnel per upstream hostname.
+//
+// See:
+//   - http_client_direct.go     (!cloud_aws — net.Dialer)
+//   - http_client_aws.go        (cloud_aws — vsockhttp tunnel map)
+//   - parent's vsock-proxy.yaml (matching CID:port allowlist)

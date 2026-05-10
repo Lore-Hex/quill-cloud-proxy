@@ -559,6 +559,107 @@ sed -i 's/^memory_mib: .*/memory_mib: 4096/' /etc/nitro_enclaves/allocator.yaml
 systemctl enable --now docker
 systemctl enable --now nitro-enclaves-allocator.service
 
+# 2b. vsock-proxy daemon — provides outbound network for the enclave.
+# Nitro Enclaves have no NIC; every outbound HTTPS call from inside
+# the enclave must travel via vsock to a parent-side proxy that does
+# the real DNS+TCP. AWS ships `vsock-proxy` with aws-nitro-enclaves-cli
+# (already installed above). It reads /etc/nitro_enclaves/vsock-proxy.yaml
+# for the host allowlist; we need an entry per upstream the enclave
+# dials.
+#
+# This list MUST stay in lockstep with awsProviderTunnels in
+# enclave-go/internal/llm/http_client_aws.go. Adding a provider is
+# a 2-line edit there + a 1-line yaml entry here. The enclave's
+# vsockhttp.Transport fails closed for unlisted hosts, so a missing
+# yaml entry surfaces as UnconfiguredHostError on the first request
+# rather than a cryptic timeout.
+cat > /etc/nitro_enclaves/vsock-proxy.yaml <<'YAML'
+allowlist:
+  # LLM provider direct-API endpoints (port assignments match
+  # http_client_aws.go::awsProviderTunnels)
+  - {address: api.anthropic.com,             port: 443}
+  - {address: api.openai.com,                port: 443}
+  - {address: api.cerebras.ai,               port: 443}
+  - {address: api.deepseek.com,              port: 443}
+  - {address: api.mistral.ai,                port: 443}
+  - {address: api.moonshot.ai,               port: 443}
+  - {address: generativelanguage.googleapis.com, port: 443}
+  - {address: api.z.ai,                      port: 443}
+  - {address: api.together.xyz,              port: 443}
+  - {address: api.x.ai,                      port: 443}
+  - {address: api.novita.ai,                 port: 443}
+  - {address: api.red-pill.ai,               port: 443}
+  - {address: api.siliconflow.com,           port: 443}
+  - {address: inference.tinfoil.sh,          port: 443}
+  - {address: api.venice.ai,                 port: 443}
+  # GCP cross-cloud APIs — auth + Spanner + Bigtable
+  - {address: oauth2.googleapis.com,         port: 443}
+  - {address: spanner.googleapis.com,        port: 443}
+  - {address: bigtable.googleapis.com,       port: 443}
+  - {address: bigtableadmin.googleapis.com,  port: 443}
+YAML
+
+# Start one vsock-proxy process per upstream port. Each listens on
+# (CID 3, vsock_port) and forwards to (host, 443). We use a systemd
+# template unit instance-per-port so each is independently restarted
+# if it dies. Port assignments mirror awsProviderTunnels.
+mkdir -p /etc/systemd/system
+
+# Generate one static systemd unit per (port, host) pair so each is
+# independently restartable. We avoid `@.service` template units
+# because their ExecStart can't easily encode a per-instance
+# upstream host without shell-parsing the instance name; static
+# units keep the systemd journal output readable too.
+write_vsock_unit() {
+  local port="\$1"
+  local host="\$2"
+  local svc="quill-vsock-proxy-\${port}.service"
+  cat > "/etc/systemd/system/\${svc}" <<UNIT
+[Unit]
+Description=Quill Nitro vsock-proxy: vsock CID-LOCAL:\${port} -> \${host}:443
+After=nitro-enclaves-allocator.service network-online.target
+Wants=nitro-enclaves-allocator.service network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/vsock-proxy \${port} \${host} 443 --config /etc/nitro_enclaves/vsock-proxy.yaml
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl enable --now "\${svc}" || echo "  WARN: failed to start \${svc} (continuing)"
+}
+
+systemctl daemon-reload
+
+# Pairs MUST match http_client_aws.go::awsProviderTunnels exactly.
+# Adding a provider = 1 line here + 1 line in awsProviderTunnels.
+write_vsock_unit 8003 api.anthropic.com
+write_vsock_unit 8004 api.openai.com
+write_vsock_unit 8005 api.cerebras.ai
+write_vsock_unit 8006 api.deepseek.com
+write_vsock_unit 8007 api.mistral.ai
+write_vsock_unit 8008 api.moonshot.ai
+write_vsock_unit 8009 generativelanguage.googleapis.com
+write_vsock_unit 8010 api.z.ai
+write_vsock_unit 8011 api.together.xyz
+write_vsock_unit 8012 api.x.ai
+write_vsock_unit 8013 api.novita.ai
+write_vsock_unit 8014 api.red-pill.ai
+write_vsock_unit 8015 api.siliconflow.com
+write_vsock_unit 8016 inference.tinfoil.sh
+write_vsock_unit 8017 api.venice.ai
+write_vsock_unit 8030 oauth2.googleapis.com
+write_vsock_unit 8031 spanner.googleapis.com
+write_vsock_unit 8032 bigtable.googleapis.com
+write_vsock_unit 8033 bigtableadmin.googleapis.com
+
+systemctl daemon-reload
+
 # 3. ECR login (uses the instance profile's IAM permissions)
 aws ecr get-login-password --region ${AWS_REGION} \\
   | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com
