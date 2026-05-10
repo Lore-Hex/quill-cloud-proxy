@@ -26,11 +26,19 @@ RUN go mod download
 
 COPY . .
 
-# Statically linked Linux/arm64 (matches the Pi 5 host architecture and
-# the AL2023 Graviton EC2 we run on). Stripping symbols + disabling cgo
-# gives a single static binary with no runtime deps.
-ENV CGO_ENABLED=0 GOOS=linux GOARCH=arm64
-RUN go build -trimpath -tags 'cloud_aws,llm_bedrock' \
+# `--platform=linux/<arch>` from `docker buildx build` populates
+# TARGETARCH automatically. Default `amd64` so a plain `docker build`
+# (no buildx, no --platform) still works for local dev.
+#
+# AWS deploy: --platform=linux/amd64  (m5.xlarge is x86_64) → amd64
+# GCP deploy: --platform=linux/arm64  (Graviton C2 / Pi 5 dev)  → arm64
+#
+# BUILD_TAGS picks the cloud + provider variant. AWS production uses
+# `cloud_aws,llm_multi`. GCP production uses `cloud_gcp,llm_multi`.
+ARG TARGETARCH=amd64
+ARG BUILD_TAGS=cloud_aws,llm_bedrock
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH}
+RUN go build -trimpath -tags "${BUILD_TAGS}" \
       -ldflags='-s -w -extldflags=-static' \
       -o /out/quill-enclave ./cmd/enclave
 

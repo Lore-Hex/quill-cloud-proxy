@@ -524,7 +524,13 @@ docker run -d --restart=always --name=quill-parent-pump \\
   ${parent_pump_repo_url}:${parent_pump_tag}
 
 # 5. Enclave image → .eif → run-enclave
-mkdir -p /opt/quill
+#
+# nitro-cli build-enclave fails with "[E51] Artifacts path environment
+# variable not set" when run from cloud-init under root with no HOME-
+# based config. Set NITRO_CLI_ARTIFACTS explicitly so the build can
+# write its intermediate artifacts (typically a .img + manifest).
+export NITRO_CLI_ARTIFACTS=/var/cache/nitro_enclaves
+mkdir -p "\$NITRO_CLI_ARTIFACTS" /opt/quill
 docker pull ${enclave_repo_url}:${enclave_tag}
 nitro-cli build-enclave \\
   --docker-uri ${enclave_repo_url}:${enclave_tag} \\
