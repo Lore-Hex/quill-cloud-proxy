@@ -82,6 +82,28 @@ type BootstrapData struct {
 	// On GCP-side enclaves this stays empty — Confidential Space uses
 	// metadata-server tokens, not an SA key.
 	GCPServiceAccountKeyJSON string `json:"gcp_service_account_key_json,omitempty"`
+
+	// Cloudflare DNS API token for the DNS-01 ACME fallback path
+	// (enclavetls/dns01.go). Scoped to `Zone:DNS:Edit` on the
+	// quillrouter.com zone so the renewer can add/remove the
+	// `_acme-challenge.api.quillrouter.com` TXT record during a
+	// renewal that can't go through TLS-ALPN-01 (e.g., sustained
+	// GCP outage that takes the shared-cache validation path down).
+	//
+	// Populated on AWS-side and GCP-side both — DNS-01 works the
+	// same way regardless of cloud, and having it on GCP gives
+	// belt-and-suspenders renewal in case Cloudflare's edge
+	// validation route ever has its own issues. Empty disables
+	// the renewer goroutine.
+	CloudflareAPIToken string `json:"cloudflare_api_token,omitempty"`
+
+	// Cloudflare Zone ID for the DNS-01 ACME fallback. The CF API's
+	// DNS-record endpoints are zone-scoped. The zone for
+	// quillrouter.com is currently eba5653b08f4483d9c496c41c3a7393b
+	// — the parent's bootstrap server reads it from a separate
+	// Secret Manager entry (or env) so it can be rotated without
+	// re-baking the enclave image.
+	CloudflareZoneID string `json:"cloudflare_zone_id,omitempty"`
 }
 
 // OpenAIChatMessage is one message in an inbound /v1/chat/completions request.

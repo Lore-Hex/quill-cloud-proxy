@@ -65,6 +65,29 @@ SECRETS=(
   # cloudkms.cryptoKeyDecrypter on byok-envelope, secretmanager.secretAccessor
   # on the trustedrouter-* secrets). See deploy-aws-nitro.sh for IAM setup.
   trustedrouter-aws-cross-cloud-sa-key
+  # Stage 4D — control-plane secrets the FastAPI app needs on AWS ECS.
+  # These weren't in scope for the enclave-only sync but are required
+  # once trustedrouter.com runs on Fargate behind ALB. Without them the
+  # task can't pull execution-role secrets and never starts.
+  trustedrouter-sentry-dsn
+  trustedrouter-stripe-secret-key
+  trustedrouter-stripe-webhook-secret
+  trustedrouter-google-client-id
+  trustedrouter-google-client-secret
+  trustedrouter-github-client-id
+  trustedrouter-github-client-secret
+  trustedrouter-axiom-api-token
+  trustedrouter-paypal-client-id
+  trustedrouter-paypal-client-secret
+  trustedrouter-paypal-webhook-id
+  trustedrouter-synthetic-monitor-api-key
+  # DNS-01 ACME fallback (enclave-go/internal/enclavetls/dns01.go).
+  # The token is Cloudflare's Zone:DNS:Edit scoped to quillrouter.com;
+  # the zone id is a stable 32-char hex string. Both are optional —
+  # if either is missing, the DNS-01 renewer no-ops and TLS-ALPN-01
+  # via the shared GCS cache remains the only renewal path.
+  cloudflare-api-token
+  cloudflare-zone-id
 )
 
 DRY_RUN=1

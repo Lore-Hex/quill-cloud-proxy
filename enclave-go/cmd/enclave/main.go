@@ -195,6 +195,32 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr, "enclavetls.mode=%s host=%s cert_fingerprint=%s\n", mode, apiHost, tlsServer.CurrentFingerprint())
 		listener = tlsServer.Wrap(rawListener)
+
+		// DNS-01 defense-in-depth: if a CF token is bootstrapped,
+		// run a background renewer that uses Cloudflare DNS-01
+		// instead of TLS-ALPN-01. Defends against the cases where
+		// LE's TLS-ALPN-01 validation can't reach the enclave (e.g.,
+		// sustained GCP-side outage that takes shared-cache
+		// validation routing with it). The renewer runs alongside
+		// autocert; both write to the same GCS cache, so whichever
+		// produces a fresh cert first wins.
+		if mode == "acme" &&
+			strings.TrimSpace(boot.CloudflareAPIToken) != "" &&
+			strings.TrimSpace(boot.CloudflareZoneID) != "" &&
+			strings.TrimSpace(os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET")) != "" {
+			enclavetls.SetDNS01Stderr(os.Stderr)
+			enclavetls.StartDNS01Renewer(ctx, enclavetls.DNS01Config{
+				DNSName:            apiHost,
+				Email:              os.Getenv("QUILL_ACME_EMAIL"),
+				DirectoryURL:       os.Getenv("QUILL_ACME_DIRECTORY_URL"),
+				Cache:              enclavetls.NewGCSCache(os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET")),
+				CloudflareAPIToken: boot.CloudflareAPIToken,
+				CloudflareZoneID:   boot.CloudflareZoneID,
+				HTTPClient:         enclavetls.NewDNS01HTTPClient(),
+			})
+			fmt.Fprintf(os.Stderr, "enclavetls.dns01_renewer_started host=%s zone=%s\n",
+				apiHost, boot.CloudflareZoneID)
+		}
 	}
 
 	for {

@@ -22,3 +22,10 @@ func newCacheHTTPClient() *http.Client {
 func newTokenHTTPClient() *http.Client {
 	return &http.Client{Timeout: 10 * time.Second}
 }
+
+// NewDNS01HTTPClient returns a stdlib client on non-AWS builds.
+// The AWS variant (gcscache_http_aws.go) returns a vsock-tunneled
+// client with the api.cloudflare.com + LE ACME endpoints in scope.
+func NewDNS01HTTPClient() *http.Client {
+	return &http.Client{Timeout: 60 * time.Second}
+}

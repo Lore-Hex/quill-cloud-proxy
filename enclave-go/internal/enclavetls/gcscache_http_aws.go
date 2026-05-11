@@ -31,6 +31,17 @@ var gcsCacheTunnels = []vsockhttp.Tunnel{
 	{Host: "storage.googleapis.com", CID: 3, Port: 8034},
 }
 
+// dns01Tunnels is the DNS-01 renewer's outbound set. acme-v02 calls
+// land on `acme-v02.api.letsencrypt.org` (and staging on
+// `acme-staging-v02.api.letsencrypt.org`); the Cloudflare DNS API
+// lives at `api.cloudflare.com`. We tunnel all three through the
+// parent's vsock-proxy daemon (ports 8036 / 8037 / 8038).
+var dns01Tunnels = []vsockhttp.Tunnel{
+	{Host: "api.cloudflare.com", CID: 3, Port: 8036},
+	{Host: "acme-v02.api.letsencrypt.org", CID: 3, Port: 8037},
+	{Host: "acme-staging-v02.api.letsencrypt.org", CID: 3, Port: 8038},
+}
+
 func newCacheHTTPClient() *http.Client {
 	c := vsockhttp.NewClient(gcsCacheTunnels)
 	c.Timeout = 30 * time.Second
@@ -40,5 +51,15 @@ func newCacheHTTPClient() *http.Client {
 func newTokenHTTPClient() *http.Client {
 	c := vsockhttp.NewClient(gcsCacheTunnels)
 	c.Timeout = 10 * time.Second
+	return c
+}
+
+// NewDNS01HTTPClient returns the vsock-tunneled client the DNS-01
+// renewer uses for both Cloudflare's DNS API and LE's ACME
+// directory. On non-AWS builds (kms_http_gcp.go) the equivalent
+// function returns a stdlib client.
+func NewDNS01HTTPClient() *http.Client {
+	c := vsockhttp.NewClient(dns01Tunnels)
+	c.Timeout = 60 * time.Second
 	return c
 }

@@ -109,6 +109,14 @@ _GCP_SA_KEY_SECRET_SUFFIX: Final[str] = "trustedrouter-aws-cross-cloud-sa-key"
 # by tools/sync-secrets-to-aws.sh.
 _TR_INTERNAL_TOKEN_SECRET_SUFFIX: Final[str] = "trustedrouter-internal-gateway-token"
 
+# DNS-01 ACME fallback path (enclave-go/internal/enclavetls/dns01.go).
+# Token is scoped Zone:DNS:Edit on quillrouter.com. Zone ID is a
+# stable 32-char hex string; we store it as a separate secret rather
+# than env-var so it's rotatable + auditable + survives a parent
+# container redeploy without changes elsewhere.
+_CLOUDFLARE_API_TOKEN_SECRET_SUFFIX: Final[str] = "cloudflare-api-token"
+_CLOUDFLARE_ZONE_ID_SECRET_SUFFIX: Final[str] = "cloudflare-zone-id"
+
 
 def _read_one_secret(sm_client: object, secret_id: str) -> str | None:
     """Fetch one Secrets Manager secret as a string. Returns None if the
@@ -233,6 +241,18 @@ def _build_bootstrap_data(
         payload["trustedrouter_internal_token"] = tr_token.strip()
     if tr_control_plane_base_url:
         payload["trustedrouter_base_url"] = tr_control_plane_base_url
+
+    # 4. Cloudflare credentials for the DNS-01 ACME fallback. Both
+    # are optional — if either is missing, the enclave's DNS-01
+    # renewer goroutine no-ops (TLS-ALPN-01 still works via the
+    # shared GCS cache, this is defense-in-depth). Token must be
+    # scoped `Zone:DNS:Edit` on the quillrouter.com zone.
+    cf_token = _read_one_secret(sm_client, f"{secret_prefix}{_CLOUDFLARE_API_TOKEN_SECRET_SUFFIX}")
+    if cf_token:
+        payload["cloudflare_api_token"] = cf_token.strip()
+    cf_zone = _read_one_secret(sm_client, f"{secret_prefix}{_CLOUDFLARE_ZONE_ID_SECRET_SUFFIX}")
+    if cf_zone:
+        payload["cloudflare_zone_id"] = cf_zone.strip()
 
     return payload
 

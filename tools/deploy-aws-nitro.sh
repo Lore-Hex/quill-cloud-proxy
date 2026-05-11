@@ -601,6 +601,13 @@ allowlist:
   - {address: bigtableadmin.googleapis.com,  port: 443}
   - {address: storage.googleapis.com,        port: 443}
   - {address: cloudkms.googleapis.com,       port: 443}
+  # DNS-01 ACME fallback path. Cloudflare DNS API for TXT record
+  # add/remove + Let's Encrypt ACME directories for the order flow.
+  # Defense-in-depth: TLS-ALPN-01 via shared GCS cache is the primary,
+  # DNS-01 is the fallback for sustained-outage edge cases.
+  - {address: api.cloudflare.com,                 port: 443}
+  - {address: acme-v02.api.letsencrypt.org,       port: 443}
+  - {address: acme-staging-v02.api.letsencrypt.org, port: 443}
   # TR control plane (key lookup, settle, byok unwrap). Matches the
   # tunnel list in enclave-go/internal/trustedrouter/http_client_aws.go.
   - {address: trustedrouter.com,             port: 443}
@@ -666,6 +673,9 @@ write_vsock_unit 8032 bigtable.googleapis.com
 write_vsock_unit 8033 bigtableadmin.googleapis.com
 write_vsock_unit 8034 storage.googleapis.com
 write_vsock_unit 8035 cloudkms.googleapis.com
+write_vsock_unit 8036 api.cloudflare.com
+write_vsock_unit 8037 acme-v02.api.letsencrypt.org
+write_vsock_unit 8038 acme-staging-v02.api.letsencrypt.org
 # TR control plane (must match internal/trustedrouter/http_client_aws.go)
 write_vsock_unit 8040 trustedrouter.com
 
