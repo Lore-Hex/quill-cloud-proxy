@@ -352,64 +352,23 @@ func directModelID(provider, model, upstreamModel string) string {
 	// routed request 404s. Maintained as a static table because
 	// runtime discovery would mean an extra Together API call at
 	// boot — net more code in the auditable enclave surface.
-	if provider == "together" {
+	// Per-provider native-id overrides (consulted first). Each
+	// second-source provider — Together, Lightning, GMI, DeepInfra,
+	// Parasail, Tinfoil — hosts upstream-author models under its own
+	// catalog naming (e.g. `Llama-3.3-70B-Instruct-Turbo` on Together,
+	// `lightning-ai/gemma-4-31B-it` on Lightning, `kimi-k2-6` on
+	// Tinfoil). Without an explicit map, the generic fall-through
+	// below strips the OR-canonical author prefix and ships a bare
+	// model id that 404s on the provider's API. The per-provider
+	// maps are kept in lock-step with the pricing scrapers at
+	// `quill-router/scripts/pricing/providers/<slug>.py`, which are
+	// the source of truth for which native ids actually exist today.
+	if perProvider, ok := providerNativeModelMaps[provider]; ok {
 		key := upstreamModel
 		if key == "" {
 			key = model
 		}
-		if mapped, ok := togetherModelMap[stripOpenRouterModelVariant(key)]; ok {
-			return mapped
-		}
-	}
-	// Lightning AI hosts gemma-4 + similar open-weight models under a
-	// `lightning-ai/...` author prefix rather than the upstream
-	// `google/...` we get from the OR snapshot. Without this map,
-	// dispatch strips the `google/` prefix and Lightning replies
-	// "failed to find the model: gemma-4-31b-it" (HTTP 400).
-	if provider == "lightning" {
-		key := upstreamModel
-		if key == "" {
-			key = model
-		}
-		if mapped, ok := lightningModelMap[stripOpenRouterModelVariant(key)]; ok {
-			return mapped
-		}
-	}
-	// Parasail uses its own `parasail-*` slugs as the canonical request
-	// id (even though their dashboard also accepts `google/...` for
-	// some models, the OpenAI-compat dispatch needs the parasail-slug
-	// form to hit the right billing tier).
-	if provider == "parasail" {
-		key := upstreamModel
-		if key == "" {
-			key = model
-		}
-		if mapped, ok := parasailModelMap[stripOpenRouterModelVariant(key)]; ok {
-			return mapped
-		}
-	}
-	// DeepInfra mostly uses `google/Gemma-4-31B-it`-style author paths
-	// where the model-size suffix is upper-case. The lower-case form
-	// we use as the OR canonical id 404s on their API.
-	if provider == "deepinfra" {
-		key := upstreamModel
-		if key == "" {
-			key = model
-		}
-		if mapped, ok := deepinfraModelMap[stripOpenRouterModelVariant(key)]; ok {
-			return mapped
-		}
-	}
-	// GMI Cloud expects the full author-prefixed OR-canonical id
-	// (`google/gemma-4-31b-it`). Without this branch the generic
-	// fall-through below strips `google/` and GMI 404s on the
-	// bare `gemma-4-31b-it`.
-	if provider == "gmi" {
-		key := upstreamModel
-		if key == "" {
-			key = model
-		}
-		if mapped, ok := gmiModelMap[stripOpenRouterModelVariant(key)]; ok {
+		if mapped, ok := perProvider[stripOpenRouterModelVariant(key)]; ok {
 			return mapped
 		}
 	}
@@ -468,67 +427,136 @@ func stripOpenRouterModelVariant(model string) string {
 // global directModelMap and then to the raw model id — which will 404
 // if Together's catalog uses different casing/naming. Backfill on
 // demand.
+// providerNativeModelMaps is the per-provider OR-canonical →
+// provider-native lookup consulted by `directModelID`. Add a new
+// provider here when its scraper at
+// `quill-router/scripts/pricing/providers/<slug>.py` introduces a
+// `_NATIVE_TO_OR_ID` map (i.e. when native ids diverge from OR
+// canonical for that provider). Providers absent from this table
+// fall through to the generic strip-author logic — fine for any
+// upstream whose API accepts the OR-canonical id verbatim.
+var providerNativeModelMaps = map[string]map[string]string{
+	"together":  togetherModelMap,
+	"lightning": lightningModelMap,
+	"parasail":  parasailModelMap,
+	"deepinfra": deepinfraModelMap,
+	"gmi":       gmiModelMap,
+	"tinfoil":   tinfoilModelMap,
+}
+
+// togetherModelMap translates OR-canonical model id → Together's own
+// catalog id. Together serves open-weight models under their own
+// naming (`Llama-3.3-70B-Instruct-Turbo`, `Qwen2.5-7B-Instruct-Turbo`,
+// etc.). Kept in lock-step with
+// `quill-router/scripts/pricing/providers/together.py`.
 var togetherModelMap = map[string]string{
-	"deepcogito/cogito-v2.1-671b":       "deepcogito/cogito-v2-1-671b",
-	"deepseek/deepseek-v4-pro":          "deepseek-ai/DeepSeek-V4-Pro",
-	"google/gemma-3n-e4b-it":            "google/gemma-3n-E4B-it",
-	"google/gemma-4-31b-it":             "google/gemma-4-31B-it",
-	"liquid/lfm-2-24b-a2b":              "LiquidAI/LFM2-24B-A2B",
-	"meta-llama/llama-3-8b-instruct":    "meta-llama/Meta-Llama-3-8B-Instruct-Lite",
-	"meta-llama/llama-3.3-70b-instruct": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-	"meta-llama/llama-guard-4-12b":      "meta-llama/Llama-Guard-4-12B",
-	"minimax/minimax-m2.7":              "MiniMaxAI/MiniMax-M2.7",
-	"moonshotai/kimi-k2.5":              "moonshotai/Kimi-K2.5",
-	"moonshotai/kimi-k2.6":              "moonshotai/Kimi-K2.6",
-	"qwen/qwen-2.5-7b-instruct":         "Qwen/Qwen2.5-7B-Instruct-Turbo",
-	"qwen/qwen3-coder":                  "Qwen/Qwen3-Coder-Next-FP8",
-	"qwen/qwen3-coder-next":             "Qwen/Qwen3-Coder-Next-FP8",
-	"qwen/qwen3.5-397b-a17b":            "Qwen/Qwen3.5-397B-A17B",
-	"qwen/qwen3.5-9b":                   "Qwen/Qwen3.5-9B",
-	"z-ai/glm-5":                        "zai-org/GLM-5",
-	"z-ai/glm-5.1":                      "zai-org/GLM-5.1",
+	"deepcogito/cogito-v2.1-671b":        "deepcogito/cogito-v2-1-671b",
+	"deepseek/deepseek-v3":               "deepseek-ai/DeepSeek-V3",
+	"deepseek/deepseek-v3-ocr":           "deepseek-ai/DeepSeek-V3-OCR",
+	"deepseek/deepseek-v4-pro":           "deepseek-ai/DeepSeek-V4-Pro",
+	"google/gemma-3n-e4b-it":             "google/gemma-3n-E4B-it",
+	"google/gemma-4-31b-it":              "google/gemma-4-31B-it",
+	"liquid/lfm-2-24b-a2b":               "LiquidAI/LFM2-24B-A2B",
+	"meta-llama/llama-3-8b-chat":         "meta-llama/Llama-3-8b-chat-hf",
+	"meta-llama/llama-3-8b-instruct":     "meta-llama/Meta-Llama-3-8B-Instruct-Lite",
+	"meta-llama/llama-3.1-8b-instruct":   "meta-llama/Llama-3.1-8B-Instruct-Turbo",
+	"meta-llama/llama-3.1-70b-instruct":  "meta-llama/Llama-3.1-70B-Instruct-Turbo",
+	"meta-llama/llama-3.3-70b-instruct":  "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+	"meta-llama/llama-guard-4-12b":       "meta-llama/Llama-Guard-4-12B",
+	"minimax/minimax-m2.7":               "MiniMaxAI/MiniMax-M2.7",
+	"mistralai/mixtral-8x7b-instruct":    "mistralai/Mixtral-8x7B-Instruct-v0.1",
+	"moonshotai/kimi-k2-instruct":        "moonshotai/Kimi-K2-Instruct",
+	"moonshotai/kimi-k2.5":               "moonshotai/Kimi-K2.5",
+	"moonshotai/kimi-k2.6":               "moonshotai/Kimi-K2.6",
+	"qwen/qwen-2.5-7b-instruct":          "Qwen/Qwen2.5-7B-Instruct-Turbo",
+	"qwen/qwen-2.5-72b-instruct":         "Qwen/Qwen2.5-72B-Instruct-Turbo",
+	"qwen/qwen3-coder":                   "Qwen/Qwen3-Coder-Next-FP8",
+	"qwen/qwen3-coder-next":              "Qwen/Qwen3-Coder-Next-FP8",
+	"qwen/qwen3.5-397b-a17b":             "Qwen/Qwen3.5-397B-A17B",
+	"qwen/qwen3.5-9b":                    "Qwen/Qwen3.5-9B",
+	"z-ai/glm-5":                         "zai-org/GLM-5",
+	"z-ai/glm-5.1":                       "zai-org/GLM-5.1",
 }
 
-// lightningModelMap maps OR-canonical model id → Lightning AI's
-// native id. Lightning serves open-weight models under a
-// `lightning-ai/...` author prefix and preserves the upstream
-// model-size casing (`31B`, `26B-A4B`). Refresh by hand when we
-// add new Lightning-hosted models; the scraper at
-// `quill-router/scripts/pricing/providers/lightning.py` is the
-// source of truth for which native ids actually exist today.
+// lightningModelMap maps OR-canonical → Lightning AI native.
+// Lightning serves models under a `lightning-ai/...` author prefix
+// (regardless of upstream author) and preserves upstream caps
+// (`31B`, `26B-A4B`). Source:
+// `quill-router/scripts/pricing/providers/lightning.py`.
 var lightningModelMap = map[string]string{
-	"google/gemma-4-31b-it":     "lightning-ai/gemma-4-31B-it",
-	"google/gemma-4-26b-a4b-it": "lightning-ai/gemma-4-26B-A4B-it",
+	"google/gemma-4-31b-it":             "lightning-ai/gemma-4-31B-it",
+	"google/gemma-4-26b-a4b-it":         "lightning-ai/gemma-4-26B-A4B-it",
+	"meta-llama/llama-3.3-70b-instruct": "lightning-ai/llama-3.3-70b",
+	"deepseek/deepseek-v3.1":            "lightning-ai/DeepSeek-V3.1",
 }
 
-// parasailModelMap maps OR-canonical model id → Parasail's native
-// slug. Parasail prefixes the model name with `parasail-` and
-// uses lower-case sizes. Source: their dashboard model list +
-// `quill-router/scripts/pricing/providers/parasail.py`.
+// parasailModelMap maps OR-canonical → Parasail native. Parasail
+// publishes parallel aliases (`parasail-gemma-4-31b-it` AND
+// `google/gemma-4-31B-it`); we pick the `parasail-*` slug as
+// primary because it pins billing to Parasail's own tier.
+// Source: `quill-router/scripts/pricing/providers/parasail.py`.
 var parasailModelMap = map[string]string{
-	"google/gemma-4-31b-it":     "parasail-gemma-4-31b-it",
-	"google/gemma-4-26b-a4b-it": "parasail-gemma-4-26b-a4b-it",
+	"google/gemma-4-31b-it":             "parasail-gemma-4-31b-it",
+	"google/gemma-4-26b-a4b-it":         "parasail-gemma-4-26b-a4b-it",
+	"google/gemma-3-27b-it":             "parasail-gemma3-27b-it",
+	"meta-llama/llama-3.3-70b-instruct": "parasail-llama-33-70b-fp8",
+	"qwen/qwen2.5-vl-72b-instruct":      "parasail-qwen25-vl-72b-instruct",
 }
 
 // deepinfraModelMap maps OR-canonical → DeepInfra native. DeepInfra
-// keeps the upstream-author path (`google/...`) but capitalizes
-// the model-size suffix (`Gemma-4-31B-it`, `Gemma-4-26B-A4B-it`).
-// Source: `quill-router/scripts/pricing/providers/deepinfra.py`.
+// keeps the upstream-author path but capitalizes model-size suffixes
+// (`Gemma-4-31B`, `Llama-3.3-70B`) and re-prefixes DeepSeek/Qwen
+// under their own org names (`deepseek-ai/`, `Qwen/`). Source:
+// `quill-router/scripts/pricing/providers/deepinfra.py`.
 var deepinfraModelMap = map[string]string{
-	"google/gemma-4-31b-it":     "google/gemma-4-31B-it",
-	"google/gemma-4-26b-a4b-it": "google/gemma-4-26B-A4B-it",
+	"google/gemma-4-31b-it":             "google/gemma-4-31B-it",
+	"google/gemma-4-26b-a4b-it":         "google/gemma-4-26B-A4B-it",
+	"google/gemma-3-27b-it":             "google/gemma-3-27b-it",
+	"google/gemma-3-12b-it":             "google/gemma-3-12b-it",
+	"google/gemma-3-4b-it":              "google/gemma-3-4b-it",
+	"meta-llama/llama-3.1-70b-instruct": "meta-llama/Meta-Llama-3.1-70B-Instruct",
+	"meta-llama/llama-3.3-70b-instruct": "meta-llama/Llama-3.3-70B-Instruct",
+	"deepseek/deepseek-v3.1":            "deepseek-ai/DeepSeek-V3.1",
+	"qwen/qwen3.5-27b":                  "Qwen/Qwen3.5-27B",
 }
 
-// gmiModelMap maps OR-canonical → GMI Cloud native. GMI uses the
-// upstream-author path verbatim (`google/gemma-4-31b-it`), but the
-// generic `directModelID` fall-through strips the author prefix
-// down to `gemma-4-31b-it` which GMI rejects with a 404. This
-// map's purpose is to short-circuit that strip and preserve the
-// full canonical id. Source:
-// `quill-router/scripts/pricing/providers/gmi.py`.
+// gmiModelMap maps OR-canonical → GMI Cloud native. Two patterns:
+// (a) gemma-4 / OpenAI / Anthropic models keep the full
+// `<author>/<model>` path verbatim, but the generic
+// `directModelID` fall-through would strip the author prefix
+// down to a bare slug and 404. (b) DeepSeek and z-ai are
+// re-prefixed under their org names (`deepseek-ai/`, `zai-org/`).
+// Source: `quill-router/scripts/pricing/providers/gmi.py`.
 var gmiModelMap = map[string]string{
 	"google/gemma-4-31b-it":     "google/gemma-4-31b-it",
 	"google/gemma-4-26b-a4b-it": "google/gemma-4-26b-a4b-it",
+	"deepseek/deepseek-v4-pro":  "deepseek-ai/DeepSeek-V4-Pro",
+	"deepseek/deepseek-v3.1":    "deepseek-ai/DeepSeek-V3.1",
+	"z-ai/glm-5":                "zai-org/GLM-5-FP8",
+	"z-ai/glm-5.1":              "zai-org/GLM-5.1-FP8",
+	"anthropic/claude-opus-4.7": "anthropic/claude-opus-4.7",
+	"openai/gpt-5.4-nano":       "openai/gpt-5.4-nano",
+	"openai/gpt-5.5":            "openai/gpt-5.5",
+}
+
+// tinfoilModelMap maps OR-canonical → Tinfoil native. Tinfoil
+// flattens everything to a bare slug and replaces dots with
+// dashes (`kimi-k2.6` → `kimi-k2-6`, `glm-5.1` → `glm-5-1`).
+// Without this map, every Tinfoil-routed request for a model
+// containing a dot in its version silently 404s. Source:
+// `quill-router/scripts/pricing/providers/tinfoil.py`.
+var tinfoilModelMap = map[string]string{
+	"moonshotai/kimi-k2.6":              "kimi-k2-6",
+	"z-ai/glm-5.1":                      "glm-5-1",
+	"deepseek/deepseek-v4-pro":          "deepseek-v4-pro",
+	"google/gemma-4-31b":                "gemma4-31b",
+	"qwen/qwen3-vl-30b":                 "qwen3-vl-30b",
+	"meta-llama/llama-3.3-70b-instruct": "llama3-3-70b",
+	"openai/gpt-oss-120b":               "gpt-oss-120b",
+	"mistralai/voxtral-small-24b":       "voxtral-small-24b",
+	"openai/whisper-large-v3-turbo":     "whisper-large-v3-turbo",
+	"qwen/qwen3-tts":                    "qwen3-tts",
+	"nomic-ai/nomic-embed-text":         "nomic-embed-text",
 }
 
 var directModelMap = map[string]string{

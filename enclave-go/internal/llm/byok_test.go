@@ -57,3 +57,47 @@ func TestGemma4DispatchMaps(t *testing.T) {
 		}
 	}
 }
+
+// TestPerProviderNativeMaps covers the broader audit — every entry
+// in `providerNativeModelMaps` should resolve to its mapped native
+// id when dispatched against that provider. The non-gemma-4
+// regressions caught during the 2026-05-11 audit (tinfoil's
+// `kimi-k2-6`, together's backfilled `Llama-3.1-70B-Instruct-Turbo`,
+// deepinfra's `Meta-Llama-3.1-70B-Instruct`, etc.) all live here
+// so future strip-author refactors fail loudly.
+func TestPerProviderNativeMaps(t *testing.T) {
+	cases := []struct {
+		provider, orID, want string
+	}{
+		// tinfoil — every model has a dot→dash or strip-author transform
+		{"tinfoil", "moonshotai/kimi-k2.6", "kimi-k2-6"},
+		{"tinfoil", "z-ai/glm-5.1", "glm-5-1"},
+		{"tinfoil", "meta-llama/llama-3.3-70b-instruct", "llama3-3-70b"},
+		{"tinfoil", "openai/gpt-oss-120b", "gpt-oss-120b"},
+		{"tinfoil", "nomic-ai/nomic-embed-text", "nomic-embed-text"},
+		// together — newly backfilled
+		{"together", "meta-llama/llama-3.1-70b-instruct", "meta-llama/Llama-3.1-70B-Instruct-Turbo"},
+		{"together", "mistralai/mixtral-8x7b-instruct", "mistralai/Mixtral-8x7B-Instruct-v0.1"},
+		{"together", "deepseek/deepseek-v3-ocr", "deepseek-ai/DeepSeek-V3-OCR"},
+		// lightning — non-gemma
+		{"lightning", "meta-llama/llama-3.3-70b-instruct", "lightning-ai/llama-3.3-70b"},
+		{"lightning", "deepseek/deepseek-v3.1", "lightning-ai/DeepSeek-V3.1"},
+		// parasail — non-gemma
+		{"parasail", "meta-llama/llama-3.3-70b-instruct", "parasail-llama-33-70b-fp8"},
+		{"parasail", "qwen/qwen2.5-vl-72b-instruct", "parasail-qwen25-vl-72b-instruct"},
+		// deepinfra — non-gemma
+		{"deepinfra", "meta-llama/llama-3.3-70b-instruct", "meta-llama/Llama-3.3-70B-Instruct"},
+		{"deepinfra", "deepseek/deepseek-v3.1", "deepseek-ai/DeepSeek-V3.1"},
+		{"deepinfra", "qwen/qwen3.5-27b", "Qwen/Qwen3.5-27B"},
+		// gmi — non-gemma
+		{"gmi", "deepseek/deepseek-v4-pro", "deepseek-ai/DeepSeek-V4-Pro"},
+		{"gmi", "z-ai/glm-5.1", "zai-org/GLM-5.1-FP8"},
+		{"gmi", "openai/gpt-5.5", "openai/gpt-5.5"},
+	}
+	for _, tc := range cases {
+		got := directModelID(tc.provider, tc.orID, tc.orID)
+		if got != tc.want {
+			t.Errorf("directModelID(%q, %q) = %q, want %q", tc.provider, tc.orID, got, tc.want)
+		}
+	}
+}
