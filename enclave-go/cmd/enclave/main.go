@@ -101,6 +101,38 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 1b. Cross-cloud GCP credentials (AWS-side enclave path).
+	//
+	// The parent's bootstrap server pulls the AWS-KMS-wrapped GCP
+	// service-account key from `quill/trustedrouter-aws-cross-cloud-sa-key`,
+	// unwraps via the per-instance enclave CMK, and ships the plaintext
+	// JSON in `boot.GCPServiceAccountKeyJSON`. The enclave writes it to a
+	// tmpfs file and points GOOGLE_APPLICATION_CREDENTIALS at the path so
+	// every downstream client library (gcscache's SA-key token path, the
+	// AWS-side LLM provider transports that read GCP secrets, the BYOK
+	// KMS unwrapper) finds the credential without each module repeating
+	// the bootstrap-RPC + parse dance.
+	//
+	// tmpfs (/tmp inside the enclave is a memfs) keeps the key out of any
+	// persistent storage. It lives only for the enclave's lifetime, gets
+	// re-fetched on every cold start. Permissions 0600.
+	//
+	// On GCP-side enclaves boot.GCPServiceAccountKeyJSON is empty (the
+	// metadata service is used instead) and this block no-ops, so the
+	// same enclave binary handles both clouds.
+	if strings.TrimSpace(boot.GCPServiceAccountKeyJSON) != "" {
+		credPath := "/tmp/gcp-sa.json"
+		if err := os.WriteFile(credPath, []byte(boot.GCPServiceAccountKeyJSON), 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "write GCP SA key tmpfs failed: %v\n", err)
+			os.Exit(1)
+		}
+		if err := os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credPath); err != nil {
+			fmt.Fprintf(os.Stderr, "setenv GOOGLE_APPLICATION_CREDENTIALS failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "cross-cloud SA key wired: GOOGLE_APPLICATION_CREDENTIALS=%s\n", credPath)
+	}
+
 	// 2. Build registries. Capture a canonical hash of the device list
 	// so /attestation can include it in the document's UserData — clients
 	// learn the exact set of bearer tokens currently authorized, and any
