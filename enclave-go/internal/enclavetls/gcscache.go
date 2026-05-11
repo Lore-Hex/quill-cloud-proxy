@@ -62,11 +62,19 @@ const (
 // hold storage.objectAdmin on the bucket, and the bucket should have CMEK
 // encryption configured at rest — handled by infra (deploy script /
 // terraform), not by this code.
+//
+// HTTP clients come from newCacheHTTPClient / newTokenHTTPClient which
+// are build-tag-specialized:
+//   - GCP / dev: stdlib http.Client (default DNS + TCP).
+//   - AWS Nitro: vsockhttp.NewClient with the gcsCacheTunnels list
+//     (oauth2.googleapis.com + storage.googleapis.com — see
+//     gcscache_http_aws.go). Nitro has no NIC; without this the
+//     GCS read would block forever / fail DNS.
 func NewGCSCache(bucket string) autocert.Cache {
 	return &gcsCache{
 		bucket:     bucket,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-		tokens:     &gcpTokenSource{httpClient: &http.Client{Timeout: 5 * time.Second}},
+		httpClient: newCacheHTTPClient(),
+		tokens:     &gcpTokenSource{httpClient: newTokenHTTPClient()},
 	}
 }
 
