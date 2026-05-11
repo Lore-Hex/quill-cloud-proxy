@@ -93,6 +93,10 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		{"gmi", "deepseek/deepseek-v4-pro", "deepseek-ai/DeepSeek-V4-Pro"},
 		{"gmi", "z-ai/glm-5.1", "zai-org/GLM-5.1-FP8"},
 		{"gmi", "openai/gpt-5.5", "openai/gpt-5.5"},
+		// novita — confirmed via live 2026-05-11 audit (no scraper
+		// map, but strip-author still 404s on gemma-4)
+		{"novita", "google/gemma-4-31b-it", "google/gemma-4-31b-it"},
+		{"novita", "google/gemma-4-26b-a4b-it", "google/gemma-4-26b-a4b-it"},
 	}
 	for _, tc := range cases {
 		got := directModelID(tc.provider, tc.orID, tc.orID)

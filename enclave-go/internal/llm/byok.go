@@ -442,6 +442,7 @@ var providerNativeModelMaps = map[string]map[string]string{
 	"deepinfra": deepinfraModelMap,
 	"gmi":       gmiModelMap,
 	"tinfoil":   tinfoilModelMap,
+	"novita":    novitaModelMap,
 }
 
 // togetherModelMap translates OR-canonical model id → Together's own
@@ -537,6 +538,22 @@ var gmiModelMap = map[string]string{
 	"anthropic/claude-opus-4.7": "anthropic/claude-opus-4.7",
 	"openai/gpt-5.4-nano":       "openai/gpt-5.4-nano",
 	"openai/gpt-5.5":            "openai/gpt-5.5",
+}
+
+// novitaModelMap maps OR-canonical → Novita native. Novita's
+// pricing scraper at quill-router/scripts/pricing/providers/
+// novita.py has no _NATIVE_TO_OR_ID map (their /v1/models
+// historically returned OR-canonical ids verbatim), but the
+// chat-completions endpoint enforces full author-prefixed ids
+// for gemma-4 — calls with the stripped `gemma-4-31b-it` 404
+// with `model gemma-4-31b-it not found`. Confirmed live in the
+// 2026-05-11 audit via enclave logs. The novita endpoint
+// snapshot field `tag: novita/bf16` hints at a quantization
+// variant, but the canonical id ships fine; this map's job
+// is purely to short-circuit the strip-author fall-through.
+var novitaModelMap = map[string]string{
+	"google/gemma-4-31b-it":     "google/gemma-4-31b-it",
+	"google/gemma-4-26b-a4b-it": "google/gemma-4-26b-a4b-it",
 }
 
 // tinfoilModelMap maps OR-canonical → Tinfoil native. Tinfoil
