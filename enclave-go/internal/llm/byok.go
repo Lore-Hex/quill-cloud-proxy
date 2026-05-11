@@ -361,6 +361,58 @@ func directModelID(provider, model, upstreamModel string) string {
 			return mapped
 		}
 	}
+	// Lightning AI hosts gemma-4 + similar open-weight models under a
+	// `lightning-ai/...` author prefix rather than the upstream
+	// `google/...` we get from the OR snapshot. Without this map,
+	// dispatch strips the `google/` prefix and Lightning replies
+	// "failed to find the model: gemma-4-31b-it" (HTTP 400).
+	if provider == "lightning" {
+		key := upstreamModel
+		if key == "" {
+			key = model
+		}
+		if mapped, ok := lightningModelMap[stripOpenRouterModelVariant(key)]; ok {
+			return mapped
+		}
+	}
+	// Parasail uses its own `parasail-*` slugs as the canonical request
+	// id (even though their dashboard also accepts `google/...` for
+	// some models, the OpenAI-compat dispatch needs the parasail-slug
+	// form to hit the right billing tier).
+	if provider == "parasail" {
+		key := upstreamModel
+		if key == "" {
+			key = model
+		}
+		if mapped, ok := parasailModelMap[stripOpenRouterModelVariant(key)]; ok {
+			return mapped
+		}
+	}
+	// DeepInfra mostly uses `google/Gemma-4-31B-it`-style author paths
+	// where the model-size suffix is upper-case. The lower-case form
+	// we use as the OR canonical id 404s on their API.
+	if provider == "deepinfra" {
+		key := upstreamModel
+		if key == "" {
+			key = model
+		}
+		if mapped, ok := deepinfraModelMap[stripOpenRouterModelVariant(key)]; ok {
+			return mapped
+		}
+	}
+	// GMI Cloud expects the full author-prefixed OR-canonical id
+	// (`google/gemma-4-31b-it`). Without this branch the generic
+	// fall-through below strips `google/` and GMI 404s on the
+	// bare `gemma-4-31b-it`.
+	if provider == "gmi" {
+		key := upstreamModel
+		if key == "" {
+			key = model
+		}
+		if mapped, ok := gmiModelMap[stripOpenRouterModelVariant(key)]; ok {
+			return mapped
+		}
+	}
 	if upstreamModel != "" {
 		if mapped, ok := directModelMap[upstreamModel]; ok {
 			return stripOpenRouterModelVariant(mapped)
@@ -435,6 +487,48 @@ var togetherModelMap = map[string]string{
 	"qwen/qwen3.5-9b":                   "Qwen/Qwen3.5-9B",
 	"z-ai/glm-5":                        "zai-org/GLM-5",
 	"z-ai/glm-5.1":                      "zai-org/GLM-5.1",
+}
+
+// lightningModelMap maps OR-canonical model id → Lightning AI's
+// native id. Lightning serves open-weight models under a
+// `lightning-ai/...` author prefix and preserves the upstream
+// model-size casing (`31B`, `26B-A4B`). Refresh by hand when we
+// add new Lightning-hosted models; the scraper at
+// `quill-router/scripts/pricing/providers/lightning.py` is the
+// source of truth for which native ids actually exist today.
+var lightningModelMap = map[string]string{
+	"google/gemma-4-31b-it":     "lightning-ai/gemma-4-31B-it",
+	"google/gemma-4-26b-a4b-it": "lightning-ai/gemma-4-26B-A4B-it",
+}
+
+// parasailModelMap maps OR-canonical model id → Parasail's native
+// slug. Parasail prefixes the model name with `parasail-` and
+// uses lower-case sizes. Source: their dashboard model list +
+// `quill-router/scripts/pricing/providers/parasail.py`.
+var parasailModelMap = map[string]string{
+	"google/gemma-4-31b-it":     "parasail-gemma-4-31b-it",
+	"google/gemma-4-26b-a4b-it": "parasail-gemma-4-26b-a4b-it",
+}
+
+// deepinfraModelMap maps OR-canonical → DeepInfra native. DeepInfra
+// keeps the upstream-author path (`google/...`) but capitalizes
+// the model-size suffix (`Gemma-4-31B-it`, `Gemma-4-26B-A4B-it`).
+// Source: `quill-router/scripts/pricing/providers/deepinfra.py`.
+var deepinfraModelMap = map[string]string{
+	"google/gemma-4-31b-it":     "google/gemma-4-31B-it",
+	"google/gemma-4-26b-a4b-it": "google/gemma-4-26B-A4B-it",
+}
+
+// gmiModelMap maps OR-canonical → GMI Cloud native. GMI uses the
+// upstream-author path verbatim (`google/gemma-4-31b-it`), but the
+// generic `directModelID` fall-through strips the author prefix
+// down to `gemma-4-31b-it` which GMI rejects with a 404. This
+// map's purpose is to short-circuit that strip and preserve the
+// full canonical id. Source:
+// `quill-router/scripts/pricing/providers/gmi.py`.
+var gmiModelMap = map[string]string{
+	"google/gemma-4-31b-it":     "google/gemma-4-31b-it",
+	"google/gemma-4-26b-a4b-it": "google/gemma-4-26b-a4b-it",
 }
 
 var directModelMap = map[string]string{
