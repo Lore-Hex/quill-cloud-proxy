@@ -45,6 +45,9 @@ func New(boot *qtypes.BootstrapData) Client {
 		siliconflow: newOpenAICompatible("siliconflow", boot.SiliconFlowAPIKey),
 		tinfoil:     newTinfoilAttested(boot.TinfoilAPIKey),
 		venice:      newOpenAICompatible("venice", boot.VeniceAPIKey),
+		parasail:    newOpenAICompatible("parasail", boot.ParasailAPIKey),
+		lightning:   newOpenAICompatible("lightning", boot.LightningAPIKey),
+		gmi:         newOpenAICompatible("gmi", boot.GMIAPIKey),
 	}
 }
 
@@ -65,6 +68,9 @@ type multiClient struct {
 	siliconflow *openAICompatibleClient
 	tinfoil     *openAICompatibleClient
 	venice      *openAICompatibleClient
+	parasail    *openAICompatibleClient
+	lightning   *openAICompatibleClient
+	gmi         *openAICompatibleClient
 }
 
 func (m *multiClient) InvokeStreaming(
@@ -118,7 +124,13 @@ func (m *multiClient) InvokeStreaming(
 		return m.tinfoil.InvokeStreaming(ctx, req, body, out, options...)
 	case "venice":
 		return m.venice.InvokeStreaming(ctx, req, body, out, options...)
+	case "parasail":
+		return m.parasail.InvokeStreaming(ctx, req, body, out, options...)
+	case "lightning":
+		return m.lightning.InvokeStreaming(ctx, req, body, out, options...)
+	case "gmi":
+		return m.gmi.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, grok, novita, phala, siliconflow, tinfoil, venice)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi)", provider)
 	}
 }

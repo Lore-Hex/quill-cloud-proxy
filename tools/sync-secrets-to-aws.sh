@@ -53,6 +53,10 @@ SECRETS=(
   trustedrouter-siliconflow-api-key
   trustedrouter-tinfoil-api-key
   trustedrouter-venice-api-key
+  # 2026-05-11 batch.
+  trustedrouter-parasail-api-key
+  trustedrouter-lightning-api-key
+  trustedrouter-gmi-api-key
   trustedrouter-tr-api-key-for-self-heal
   # The internal gateway token authenticates enclave→TR control-plane
   # calls (x-trustedrouter-internal-token header on /v1/internal/*).

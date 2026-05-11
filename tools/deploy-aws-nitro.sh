@@ -592,6 +592,10 @@ allowlist:
   - {address: api.siliconflow.com,           port: 443}
   - {address: inference.tinfoil.sh,          port: 443}
   - {address: api.venice.ai,                 port: 443}
+  # 2026-05-11 batch (parasail / lightning / gmi). All OpenAI-compatible.
+  - {address: api.parasail.io,               port: 443}
+  - {address: lightning.ai,                  port: 443}
+  - {address: api.gmi-serving.com,           port: 443}
   # GCP cross-cloud APIs — auth + Spanner + Bigtable + GCS (ACME cache)
   # + KMS (BYOK envelope-unwrap when an AWS-side request lands with a
   # customer-provided GCP-KMS-wrapped envelope).
@@ -667,6 +671,9 @@ write_vsock_unit 8014 api.red-pill.ai
 write_vsock_unit 8015 api.siliconflow.com
 write_vsock_unit 8016 inference.tinfoil.sh
 write_vsock_unit 8017 api.venice.ai
+write_vsock_unit 8018 api.parasail.io
+write_vsock_unit 8019 lightning.ai
+write_vsock_unit 8020 api.gmi-serving.com
 write_vsock_unit 8030 oauth2.googleapis.com
 write_vsock_unit 8031 spanner.googleapis.com
 write_vsock_unit 8032 bigtable.googleapis.com

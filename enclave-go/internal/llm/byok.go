@@ -322,6 +322,16 @@ func directBaseURL(provider string) string {
 	case "venice":
 		// Venice.AI privacy-focused gateway. /api/v1 base path quirk.
 		return "https://api.venice.ai/api/v1"
+	case "parasail":
+		// Parasail serverless inference. OpenAI-compatible.
+		return "https://api.parasail.io/v1"
+	case "lightning":
+		// Lightning AI hosted inference. OpenAI-compatible at the
+		// non-standard `/api/v1` path.
+		return "https://lightning.ai/api/v1"
+	case "gmi":
+		// GMI Cloud confidential-GPU inference. OpenAI-compatible.
+		return "https://api.gmi-serving.com/v1"
 	default:
 		return ""
 	}
@@ -462,6 +472,12 @@ func normalizeDirectProvider(provider string) string {
 		return "tinfoil"
 	case "venice", "venice-ai":
 		return "venice"
+	case "parasail", "parasail-ai", "parasail-io":
+		return "parasail"
+	case "lightning", "lightning-ai":
+		return "lightning"
+	case "gmi", "gmi-cloud", "gmicloud":
+		return "gmi"
 	default:
 		return slug
 	}

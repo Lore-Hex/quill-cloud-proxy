@@ -65,6 +65,10 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "api.siliconflow.com", CID: 3, Port: 8015},
 	{Host: "inference.tinfoil.sh", CID: 3, Port: 8016},
 	{Host: "api.venice.ai", CID: 3, Port: 8017},
+	// 2026-05-11 batch (3 new providers; all OpenAI-compatible).
+	{Host: "api.parasail.io", CID: 3, Port: 8018},
+	{Host: "lightning.ai", CID: 3, Port: 8019},
+	{Host: "api.gmi-serving.com", CID: 3, Port: 8020},
 
 	// GCP cross-cloud APIs. The AWS-side enclave authenticates with
 	// the cross-cloud SA key (received in BootstrapData) and reads

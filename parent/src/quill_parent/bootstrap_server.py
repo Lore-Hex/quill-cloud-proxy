@@ -94,6 +94,11 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("siliconflow_api_key", "trustedrouter-siliconflow-api-key"),
     ("tinfoil_api_key", "trustedrouter-tinfoil-api-key"),
     ("venice_api_key", "trustedrouter-venice-api-key"),
+    # 2026-05-11 batch — three new OpenAI-compatible providers, all
+    # hosting google/gemma-4-31b-it among other open-weight models.
+    ("parasail_api_key", "trustedrouter-parasail-api-key"),
+    ("lightning_api_key", "trustedrouter-lightning-api-key"),
+    ("gmi_api_key", "trustedrouter-gmi-api-key"),
 )
 
 _GCP_SA_KEY_SECRET_SUFFIX: Final[str] = "trustedrouter-aws-cross-cloud-sa-key"

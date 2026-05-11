@@ -63,6 +63,15 @@ type BootstrapData struct {
 	TinfoilAPIKey     string `json:"tinfoil_api_key,omitempty"`
 	VeniceAPIKey      string `json:"venice_api_key,omitempty"`
 
+	// 2026-05-11 batch — all three serve google/gemma-4 family
+	// alongside an open-weight catalog. OpenAI-compatible base URLs:
+	//   parasail:  api.parasail.io/v1
+	//   lightning: lightning.ai/api/v1
+	//   gmi:       api.gmi-serving.com/v1
+	ParasailAPIKey  string `json:"parasail_api_key,omitempty"`
+	LightningAPIKey string `json:"lightning_api_key,omitempty"`
+	GMIAPIKey       string `json:"gmi_api_key,omitempty"`
+
 	// Cross-cloud GCP service-account key (JSON, plaintext).
 	//
 	// Populated only on the AWS-side enclave path: the parent fetches the
