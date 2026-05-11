@@ -50,12 +50,45 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 }
 
 type openAICompatibleRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Stream      bool          `json:"stream"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Temperature *float64      `json:"temperature,omitempty"`
-	TopP        *float64      `json:"top_p,omitempty"`
+	Model    string        `json:"model"`
+	Messages []chatMessage `json:"messages"`
+	Stream   bool          `json:"stream"`
+	// max_tokens vs max_completion_tokens: OpenAI's gpt-5.x family
+	// (gpt-5, gpt-5.1, ..., gpt-5.4, gpt-5.4-mini, gpt-5.4-nano,
+	// gpt-5.5, ...) REQUIRES `max_completion_tokens` and returns
+	// 400 `unsupported_parameter: max_tokens` if you send the older
+	// name. Pre-5.x models still accept `max_tokens`. Some other
+	// openai-compatible providers (zai, kimi, novita, etc.) only
+	// know `max_tokens`. So this client emits ONE or the OTHER per
+	// request — see buildOpenAICompatibleRequest below.
+	MaxTokens           int      `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int      `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64 `json:"temperature,omitempty"`
+	TopP                *float64 `json:"top_p,omitempty"`
+}
+
+// requiresMaxCompletionTokens returns true for OpenAI models that
+// reject the legacy `max_tokens` parameter. Currently the gpt-5.x
+// family (and the o-series via the same Responses-style param naming
+// — though we mostly route those through the Responses API). Match
+// is intentionally loose: any model id that starts with `gpt-5`,
+// `o1`, `o3`, or `o4` (with optional vendor prefix) flips the
+// parameter name. Add more as OpenAI ships new families.
+func requiresMaxCompletionTokens(provider, modelID string) bool {
+	if provider != "openai" {
+		return false
+	}
+	m := strings.ToLower(modelID)
+	// Strip vendor prefix if present (e.g. "openai/gpt-5.4-mini" -> "gpt-5.4-mini").
+	if i := strings.Index(m, "/"); i >= 0 {
+		m = m[i+1:]
+	}
+	for _, prefix := range []string{"gpt-5", "o1", "o3", "o4"} {
+		if strings.HasPrefix(m, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 type chatMessage struct {
@@ -122,13 +155,24 @@ func invokeOpenAICompatibleStreamingWithClient(
 		return fmt.Errorf("llm/%s: missing base URL", provider)
 	}
 	msgs := openAICompatibleMessages(body)
+	upstreamID := directModelID(provider, req.Model, upstreamModel)
 	reqBody := openAICompatibleRequest{
-		Model:       directModelID(provider, req.Model, upstreamModel),
+		Model:       upstreamID,
 		Messages:    msgs,
 		Stream:      true,
-		MaxTokens:   body.MaxTokens,
 		Temperature: body.Temperature,
 		TopP:        body.TopP,
+	}
+	// Per-model parameter rename: openai gpt-5.x rejects max_tokens
+	// and requires max_completion_tokens. Every other openai-compatible
+	// provider (and pre-5.x openai models) still wants max_tokens.
+	// Emit exactly one of the two so the upstream parser doesn't
+	// complain about the absent-but-listed-in-struct field (omitempty
+	// hides ints == 0).
+	if requiresMaxCompletionTokens(provider, upstreamID) {
+		reqBody.MaxCompletionTokens = body.MaxTokens
+	} else {
+		reqBody.MaxTokens = body.MaxTokens
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
