@@ -97,6 +97,11 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	siliconflowSecret := os.Getenv("QUILL_SILICONFLOW_SECRET")
 	tinfoilSecret := os.Getenv("QUILL_TINFOIL_SECRET")
 	veniceSecret := os.Getenv("QUILL_VENICE_SECRET")
+	// 2026-05-11 batch: parasail / lightning / gmi / deepinfra
+	parasailSecret := os.Getenv("QUILL_PARASAIL_SECRET")
+	lightningSecret := os.Getenv("QUILL_LIGHTNING_SECRET")
+	gmiSecret := os.Getenv("QUILL_GMI_SECRET")
+	deepinfraSecret := os.Getenv("QUILL_DEEPINFRA_SECRET")
 	if !anySet(
 		openrouterSecret,
 		anthropicSecret,
@@ -114,6 +119,10 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		siliconflowSecret,
 		tinfoilSecret,
 		veniceSecret,
+		parasailSecret,
+		lightningSecret,
+		gmiSecret,
+		deepinfraSecret,
 	) {
 		return nil, fmt.Errorf("bootstrap/gcp: at least one provider secret env must be set")
 	}
@@ -246,6 +255,34 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: venice key: %w", err)
 		}
 	}
+	var parasailKey []byte
+	if parasailSecret != "" {
+		parasailKey, err = fetchSecret(ctx, httpc, token, project, parasailSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: parasail key: %w", err)
+		}
+	}
+	var lightningKey []byte
+	if lightningSecret != "" {
+		lightningKey, err = fetchSecret(ctx, httpc, token, project, lightningSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: lightning key: %w", err)
+		}
+	}
+	var gmiKey []byte
+	if gmiSecret != "" {
+		gmiKey, err = fetchSecret(ctx, httpc, token, project, gmiSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: gmi key: %w", err)
+		}
+	}
+	var deepinfraKey []byte
+	if deepinfraSecret != "" {
+		deepinfraKey, err = fetchSecret(ctx, httpc, token, project, deepinfraSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: deepinfra key: %w", err)
+		}
+	}
 	var internalGatewayToken string
 	if internalSecret := os.Getenv("QUILL_TRUSTEDROUTER_INTERNAL_SECRET"); internalSecret != "" {
 		value, err := fetchSecret(ctx, httpc, token, project, internalSecret)
@@ -274,6 +311,10 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		SiliconFlowAPIKey:          strings.TrimSpace(string(siliconflowKey)),
 		TinfoilAPIKey:              strings.TrimSpace(string(tinfoilKey)),
 		VeniceAPIKey:               strings.TrimSpace(string(veniceKey)),
+		ParasailAPIKey:             strings.TrimSpace(string(parasailKey)),
+		LightningAPIKey:            strings.TrimSpace(string(lightningKey)),
+		GMIAPIKey:                  strings.TrimSpace(string(gmiKey)),
+		DeepInfraAPIKey:            strings.TrimSpace(string(deepinfraKey)),
 		TrustedRouterBaseURL:       os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken: strings.TrimSpace(internalGatewayToken),
 		// BedrockVsockProxy / OpenRouterVsockProxy unused on GCP — direct egress.
