@@ -2,6 +2,11 @@
 
 // Package bootstrap: GCP Confidential Space variant.
 //
+// See bootstrap_aws.go for the per-cloud-file layout pattern this
+// package follows. Each cloud has its own bootstrap_<cloud>.go with a
+// matching `//go:build` tag; the linker picks one at compile time
+// based on the `-tags cloud_<cloud>` build flag.
+//
 // Trust posture differs from the AWS variant in an important way:
 //
 // AWS:
