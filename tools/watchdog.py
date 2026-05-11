@@ -112,16 +112,62 @@ def main() -> int:
         "--status-url",
         default="https://trustedrouter.com/status.json",
     )
+    parser.add_argument(
+        "--baseline-grace-sec",
+        type=int,
+        default=30,
+        help=(
+            "Wait this long before the first poll, then capture a "
+            "baseline of regions that are ALREADY 'down' before the "
+            "deploy is the suspect. Pre-existing flap (e.g. a flaky "
+            "upstream provider that's broken globally) is held "
+            "constant: a region whose status was 'down' in the "
+            "baseline doesn't accrue 'consecutive_down' counts. "
+            "Only NEW downs (regions that flipped from up/degraded "
+            "to down after the canary) count toward rollback. This "
+            "lets us keep an aggressive --rollback-after of 1 (block "
+            "any deploy-introduced regression) without false-positive "
+            "rollbacks when the underlying probe is already failing."
+        ),
+    )
+    parser.add_argument(
+        "--skip-baseline",
+        action="store_true",
+        help=(
+            "Hotfix flag: skip baseline and use raw 'down' counting. "
+            "Used by the emergency-fix workflow path that must ship "
+            "regardless of pre-existing badness."
+        ),
+    )
     args = parser.parse_args()
 
     regions = [r.strip() for r in args.regions.split(",") if r.strip()]
     consecutive_down = {region: 0 for region in regions}
     rollback_set: set[str] = set()
 
+    # Baseline: regions ALREADY 'down' before the deploy. These are
+    # excluded from rollback accounting — the canary watchdog is
+    # interested in whether the NEW image broke something, not
+    # whether some unrelated upstream has been red all morning.
+    # Mirrors the same fix in quill-router's
+    # scripts/deploy/watchdog.py.
+    baseline_down: set[str] = set()
+    if not args.skip_baseline:
+        if args.baseline_grace_sec > 0:
+            time.sleep(args.baseline_grace_sec)
+        baseline_snapshot = fetch_per_region(args.status_url, regions)
+        baseline_down = {r for r, s in baseline_snapshot.items() if s == "down"}
+        if baseline_down:
+            print(
+                f"watchdog: baseline 'down' regions (not blamed on deploy): "
+                f"{sorted(baseline_down)}",
+                flush=True,
+            )
+
     print(
         f"watchdog: polling {args.status_url} every 60s for {args.duration_min} min; "
-        f"per-region rollback if 'down' for {args.rollback_after} consecutive minutes; "
-        f"regions={regions}",
+        f"per-region rollback if 'down' for {args.rollback_after} consecutive minutes "
+        f"AND not already 'down' before the deploy; regions={regions}",
         flush=True,
     )
     for minute in range(1, args.duration_min + 1):
@@ -133,15 +179,19 @@ def main() -> int:
             if region in rollback_set:
                 line += f"  {region}=ROLLED_BACK"
                 continue
-            if status == "down":
+            if status == "down" and region not in baseline_down:
                 consecutive_down[region] += 1
             else:
                 consecutive_down[region] = 0
-            line += f"  {region}={status}({consecutive_down[region]})"
+            tag = f"{status}({consecutive_down[region]})"
+            if region in baseline_down:
+                tag += "[baseline]"
+            line += f"  {region}={tag}"
             if consecutive_down[region] >= args.rollback_after:
                 rollback_set.add(region)
                 print(
-                    f"  watchdog: ROLLBACK {region} — 'down' for {consecutive_down[region]} consecutive minutes",
+                    f"  watchdog: ROLLBACK {region} — 'down' for {consecutive_down[region]} consecutive minutes "
+                    f"(was {'down' if region in baseline_down else 'healthy'} pre-deploy)",
                     flush=True,
                 )
         print(line, flush=True)
