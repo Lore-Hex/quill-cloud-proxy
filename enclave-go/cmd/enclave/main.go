@@ -142,8 +142,16 @@ func main() {
 	trGateway := trustedrouter.NewFromBootstrap(boot)
 	var byokSecrets *byokcache.Cache
 	if trGateway.Enabled() {
+		// On AWS, NewVsockKMSClient routes oauth2 + cloudkms over the
+		// parent's vsock-proxy. On GCP it returns a stdlib client.
+		// The TokenSource is shared from the same client so the JWT
+		// exchange leg of the SA-key flow also tunnels correctly.
+		kmsHTTP := byokcache.NewVsockKMSClient()
 		byokSecrets = byokcache.New(byokcache.Options{
-			Unwrapper: &byokcache.GoogleKMSUnwrapper{},
+			Unwrapper: &byokcache.GoogleKMSUnwrapper{
+				HTTPClient:  kmsHTTP,
+				TokenSource: byokcache.NewMetadataTokenSource(kmsHTTP),
+			},
 		})
 		settlementRetries.Start(ctx)
 	}

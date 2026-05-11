@@ -593,11 +593,14 @@ allowlist:
   - {address: inference.tinfoil.sh,          port: 443}
   - {address: api.venice.ai,                 port: 443}
   # GCP cross-cloud APIs — auth + Spanner + Bigtable + GCS (ACME cache)
+  # + KMS (BYOK envelope-unwrap when an AWS-side request lands with a
+  # customer-provided GCP-KMS-wrapped envelope).
   - {address: oauth2.googleapis.com,         port: 443}
   - {address: spanner.googleapis.com,        port: 443}
   - {address: bigtable.googleapis.com,       port: 443}
   - {address: bigtableadmin.googleapis.com,  port: 443}
   - {address: storage.googleapis.com,        port: 443}
+  - {address: cloudkms.googleapis.com,       port: 443}
   # TR control plane (key lookup, settle, byok unwrap). Matches the
   # tunnel list in enclave-go/internal/trustedrouter/http_client_aws.go.
   - {address: trustedrouter.com,             port: 443}
@@ -662,6 +665,7 @@ write_vsock_unit 8031 spanner.googleapis.com
 write_vsock_unit 8032 bigtable.googleapis.com
 write_vsock_unit 8033 bigtableadmin.googleapis.com
 write_vsock_unit 8034 storage.googleapis.com
+write_vsock_unit 8035 cloudkms.googleapis.com
 # TR control plane (must match internal/trustedrouter/http_client_aws.go)
 write_vsock_unit 8040 trustedrouter.com
 

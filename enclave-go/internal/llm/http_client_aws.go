@@ -75,6 +75,13 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "spanner.googleapis.com", CID: 3, Port: 8031},
 	{Host: "bigtable.googleapis.com", CID: 3, Port: 8032},
 	{Host: "bigtableadmin.googleapis.com", CID: 3, Port: 8033},
+	// storage.googleapis.com (port 8034) is added in enclavetls's own
+	// tunnel list (gcscache_http_aws.go); not used by the LLM clients
+	// so we deliberately leave it off here.
+	// cloudkms.googleapis.com (port 8035) is reached only by BYOK
+	// envelope-unwrap; byokcache builds its own client. Listed here
+	// for documentation of the parent's expected vsock-proxy port
+	// map but unused in this file.
 }
 
 // defaultHTTPClient returns an http.Client that dials each upstream
