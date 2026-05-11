@@ -332,6 +332,11 @@ func directBaseURL(provider string) string {
 	case "gmi":
 		// GMI Cloud confidential-GPU inference. OpenAI-compatible.
 		return "https://api.gmi-serving.com/v1"
+	case "deepinfra":
+		// DeepInfra OpenAI-compatible chat completions. Note the
+		// `/v1/openai` path (not `/v1`) — DeepInfra namespaces the
+		// OpenAI-shape endpoints separately from their native /v1.
+		return "https://api.deepinfra.com/v1/openai"
 	default:
 		return ""
 	}
@@ -478,6 +483,8 @@ func normalizeDirectProvider(provider string) string {
 		return "lightning"
 	case "gmi", "gmi-cloud", "gmicloud":
 		return "gmi"
+	case "deepinfra", "deep-infra", "deep_infra":
+		return "deepinfra"
 	default:
 		return slug
 	}

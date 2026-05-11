@@ -71,6 +71,7 @@ type BootstrapData struct {
 	ParasailAPIKey  string `json:"parasail_api_key,omitempty"`
 	LightningAPIKey string `json:"lightning_api_key,omitempty"`
 	GMIAPIKey       string `json:"gmi_api_key,omitempty"`
+	DeepInfraAPIKey string `json:"deepinfra_api_key,omitempty"`
 
 	// Cross-cloud GCP service-account key (JSON, plaintext).
 	//

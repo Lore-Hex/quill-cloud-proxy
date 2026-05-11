@@ -99,6 +99,7 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("parasail_api_key", "trustedrouter-parasail-api-key"),
     ("lightning_api_key", "trustedrouter-lightning-api-key"),
     ("gmi_api_key", "trustedrouter-gmi-api-key"),
+    ("deepinfra_api_key", "trustedrouter-deepinfra-api-key"),
 )
 
 _GCP_SA_KEY_SECRET_SUFFIX: Final[str] = "trustedrouter-aws-cross-cloud-sa-key"
