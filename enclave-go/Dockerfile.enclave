@@ -53,4 +53,34 @@ COPY --from=builder /out/quill-enclave /quill-enclave
 # (QUILL_TCP_PUMP=true on parent + NLB doing TCP passthrough at :443).
 ENV QUILL_ENCLAVE_TLS=true
 
+# ACME / Let's Encrypt config. Without these the enclave defaults to a
+# self-signed cert (CN=api.quillrouter.com, issuer=self) which TLS
+# clients reject when CF LB routes them directly to the AWS NLB. Baked
+# into the image because:
+#   - the AWS image is built specifically for the AWS Nitro deployment
+#   - the cert config doesn't vary at runtime
+#   - baking puts the config inside the PCR0-measured surface so the
+#     attestation document covers it
+#
+# QUILL_API_HOST is the hostname autocert requests a cert for. Must
+# match the hostname the client uses in SNI (api.quillrouter.com — same
+# as the public LB host).
+#
+# QUILL_ACME_CACHE_GCS_BUCKET points the cache at the shared GCS bucket
+# every Quill enclave uses. The AWS enclave reads via the cross-cloud
+# SA-key path (see internal/enclavetls/gcscache.go's tokenFromSAKey).
+#
+# QUILL_ACME_EMAIL is per-region so LE's "5 failed validations per
+# account per hostname per hour" rate limit is isolated. AWS us-west-2
+# gets its own ACME account; a stuck region doesn't poison budget for
+# the others.
+#
+# QUILL_ACME_DIRECTORY_URL is LE production. Leave commented to use
+# autocert's default (also LE production) or set explicitly to the LE
+# staging endpoint for testing.
+ENV QUILL_TLS_MODE=acme \
+    QUILL_API_HOST=api.quillrouter.com \
+    QUILL_ACME_CACHE_GCS_BUCKET=quill-acme-cache \
+    QUILL_ACME_EMAIL=acme-aws-us-west-2@trustedrouter.com
+
 ENTRYPOINT ["/quill-enclave"]
