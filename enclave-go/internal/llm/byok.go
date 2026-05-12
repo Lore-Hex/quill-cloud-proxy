@@ -443,6 +443,7 @@ var providerNativeModelMaps = map[string]map[string]string{
 	"gmi":       gmiModelMap,
 	"tinfoil":   tinfoilModelMap,
 	"novita":    novitaModelMap,
+	"phala":     phalaModelMap,
 }
 
 // togetherModelMap translates OR-canonical model id → Together's own
@@ -491,17 +492,61 @@ var lightningModelMap = map[string]string{
 	"deepseek/deepseek-v3.1":            "lightning-ai/DeepSeek-V3.1",
 }
 
-// parasailModelMap maps OR-canonical → Parasail native. Parasail
-// publishes parallel aliases (`parasail-gemma-4-31b-it` AND
-// `google/gemma-4-31B-it`); we pick the `parasail-*` slug as
-// primary because it pins billing to Parasail's own tier.
-// Source: `quill-router/scripts/pricing/providers/parasail.py`.
+// parasailModelMap maps OR-canonical → Parasail native. Parasail's
+// /v1/models exposes BOTH a `parasail-*` slug AND the upstream-
+// author form for each model; we always pick the `parasail-*`
+// slug because (a) it pins billing to Parasail's own tier and
+// (b) it's case-stable (the upstream-author form Parasail accepts
+// is mixed-case like `meta-llama/Llama-3.3-70B-Instruct`, which
+// doesn't match our lowercase OR canonical and would still need
+// translation).
+//
+// Source of truth: live probe of https://api.parasail.io/v1/models
+// on 2026-05-12 + dashboard pricing pasted by operator. Kept in
+// lock-step with `quill-router/scripts/pricing/providers/parasail.py`.
+// When a model is added there, mirror the entry here.
 var parasailModelMap = map[string]string{
-	"google/gemma-4-31b-it":             "parasail-gemma-4-31b-it",
-	"google/gemma-4-26b-a4b-it":         "parasail-gemma-4-26b-a4b-it",
-	"google/gemma-3-27b-it":             "parasail-gemma3-27b-it",
+	// gemma
+	"google/gemma-4-31b-it":     "parasail-gemma-4-31b-it",
+	"google/gemma-4-26b-a4b-it": "parasail-gemma-4-26b-a4b-it",
+	"google/gemma-3-27b-it":     "parasail-gemma3-27b-it",
+	// llama
 	"meta-llama/llama-3.3-70b-instruct": "parasail-llama-33-70b-fp8",
+	"meta-llama/llama-4-maverick":       "parasail-llama-4-maverick-instruct-fp8",
+	// qwen
 	"qwen/qwen2.5-vl-72b-instruct":      "parasail-qwen25-vl-72b-instruct",
+	"qwen/qwen3-vl-235b-a22b-instruct":  "parasail-qwen3-vl-235b-a22b-instruct",
+	"qwen/qwen3-vl-8b-instruct":         "parasail-qwen3vl-8b-instruct",
+	"qwen/qwen3-235b-a22b-2507":         "parasail-qwen3-235b-a22b-instruct-2507",
+	"qwen/qwen3-coder-next":             "parasail-qwen3-coder-next",
+	"qwen/qwen3.5-397b-a17b":            "parasail-qwen35-397b-a17b",
+	"qwen/qwen3.5-35b-a3b":              "parasail-qwen3p5-35b-a3b",
+	"qwen/qwen3.6-35b-a3b":              "parasail-qwen3p6-35b-a3b",
+	"qwen/qwen3-next-80b-a3b-instruct":  "parasail-qwen-3-next-80b-instruct",
+	// deepseek
+	"deepseek/deepseek-v3.2":      "parasail-deepseek-v32",
+	"deepseek/deepseek-v4-flash":  "parasail-deepseek-v4-flash",
+	"deepseek/deepseek-v4-pro":    "parasail-deepseek-v4-pro",
+	// z-ai / glm
+	"z-ai/glm-5":   "parasail-glm-5",
+	"z-ai/glm-5.1": "parasail-glm-51",
+	"z-ai/glm-4.7": "parasail-glm47",
+	// moonshot
+	"moonshotai/kimi-k2.5": "parasail-kimi-k25",
+	"moonshotai/kimi-k2.6": "parasail-kimi-k26",
+	// minimax
+	"minimax/minimax-m2.5": "parasail-minimax-m25",
+	// gpt-oss
+	"openai/gpt-oss-120b": "parasail-gpt-oss-120b",
+	"openai/gpt-oss-20b":  "parasail-gpt-oss-20b",
+	// mistral
+	"mistralai/mistral-small-3.2-24b-instruct": "parasail-mistral-small-32-24b",
+	// thedrummer / arcee / stepfun / bytedance
+	"thedrummer/cydonia-24b-v4.1":     "parasail-cydonia-24-v41",
+	"thedrummer/skyfall-36b-v2":       "parasail-skyfall-36b-v2-fp8",
+	"stepfun/step-3.5-flash":          "parasail-stepfun35-flash",
+	"arcee-ai/trinity-large-thinking": "parasail-trinity-large-thinking",
+	"bytedance/ui-tars-1.5-7b":        "parasail-ui-tars-1p5-7b",
 }
 
 // deepinfraModelMap maps OR-canonical → DeepInfra native. DeepInfra
@@ -554,6 +599,64 @@ var gmiModelMap = map[string]string{
 var novitaModelMap = map[string]string{
 	"google/gemma-4-31b-it":     "google/gemma-4-31b-it",
 	"google/gemma-4-26b-a4b-it": "google/gemma-4-26b-a4b-it",
+}
+
+// phalaModelMap maps OR-canonical → Phala (RedPill) native.
+// Phala's /v1/models exposes models under the upstream-author
+// path (`openai/gpt-5.5`, `anthropic/claude-haiku-4.5`,
+// `z-ai/glm-5`, etc.) — they accept the FULL canonical id, not
+// the bare slug. Many models ALSO have a `phala/<bare>` alias
+// (e.g. `phala/deepseek-v3.2`) but we don't need those: the
+// upstream-author form works for every Phala-served model.
+//
+// This map's job is to short-circuit the generic `directModelID`
+// strip-author logic: without it, dispatch sends bare `gpt-5.5`
+// to Phala and 404s. Like the gmi case, it's identity for every
+// entry — the entries exist purely so the per-provider branch
+// fires and the OR canonical id ships verbatim.
+//
+// Source: live probe of https://api.red-pill.ai/v1/models on
+// 2026-05-12. Re-run when Phala adds new models to their
+// /v1/models response. Phala was temporarily disabled on
+// 2026-05-11 after a key-rotation security incident; once the
+// new key is in Secret Manager and `GATEWAY_PREPAID_PROVIDER_SLUGS`
+// re-includes phala, dispatch through this map again.
+var phalaModelMap = map[string]string{
+	"google/gemma-3-27b-it":             "google/gemma-3-27b-it",
+	"minimax/minimax-m2.5":              "minimax/minimax-m2.5",
+	"moonshotai/kimi-k2.5":              "moonshotai/kimi-k2.5",
+	"moonshotai/kimi-k2.6":              "moonshotai/kimi-k2.6",
+	"openai/gpt-oss-120b":               "openai/gpt-oss-120b",
+	"openai/gpt-oss-20b":                "openai/gpt-oss-20b",
+	"qwen/qwen-2.5-7b-instruct":         "qwen/qwen-2.5-7b-instruct",
+	"qwen/qwen3-vl-30b-a3b-instruct":    "qwen/qwen3-vl-30b-a3b-instruct",
+	"qwen/qwen3.5-27b":                  "qwen/qwen3.5-27b",
+	"qwen/qwen3.5-397b-a17b":            "qwen/qwen3.5-397b-a17b",
+	"z-ai/glm-4.7":                      "z-ai/glm-4.7",
+	"z-ai/glm-4.7-flash":                "z-ai/glm-4.7-flash",
+	"z-ai/glm-5":                        "z-ai/glm-5",
+	"z-ai/glm-5.1":                      "z-ai/glm-5.1",
+	"deepseek/deepseek-v3.2":            "deepseek/deepseek-v3.2",
+	"deepseek/deepseek-chat-v3.1":       "deepseek/deepseek-chat-v3.1",
+	"meta-llama/llama-3.3-70b-instruct": "meta-llama/llama-3.3-70b-instruct",
+	"qwen/qwen3-coder-next":             "qwen/qwen3-coder-next",
+	"qwen/qwen3-coder-480b-a35b-instruct": "qwen/qwen3-coder-480b-a35b-instruct",
+	"qwen/qwen3-30b-a3b-instruct-2507":  "qwen/qwen3-30b-a3b-instruct-2507",
+	"xiaomi/mimo-v2-flash":              "xiaomi/mimo-v2-flash",
+	// Anthropic / OpenAI / Google / x-ai are also served by Phala
+	// per their /v1/models response; entries kept so dispatch to
+	// phala for these models retains the full author prefix.
+	"anthropic/claude-haiku-4.5":  "anthropic/claude-haiku-4.5",
+	"anthropic/claude-sonnet-4.6": "anthropic/claude-sonnet-4.6",
+	"anthropic/claude-opus-4.7":   "anthropic/claude-opus-4.7",
+	"openai/gpt-5.5":              "openai/gpt-5.5",
+	"openai/gpt-5.4":              "openai/gpt-5.4",
+	"openai/gpt-5.4-mini":         "openai/gpt-5.4-mini",
+	"openai/gpt-5.4-nano":         "openai/gpt-5.4-nano",
+	"google/gemini-2.5-flash":     "google/gemini-2.5-flash",
+	"google/gemini-2.5-pro":       "google/gemini-2.5-pro",
+	"x-ai/grok-4":                 "x-ai/grok-4",
+	"x-ai/grok-4.1-fast":          "x-ai/grok-4.1-fast",
 }
 
 // tinfoilModelMap maps OR-canonical → Tinfoil native. Tinfoil

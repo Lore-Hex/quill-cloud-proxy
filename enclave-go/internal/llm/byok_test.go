@@ -97,6 +97,25 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		// map, but strip-author still 404s on gemma-4)
 		{"novita", "google/gemma-4-31b-it", "google/gemma-4-31b-it"},
 		{"novita", "google/gemma-4-26b-a4b-it", "google/gemma-4-26b-a4b-it"},
+		// parasail — 2026-05-12 expansion to 31 models; sample
+		// covers each native-id pattern: parasail-* slug, mixed-
+		// case proprietary author paths, dot-versioned models.
+		{"parasail", "deepseek/deepseek-v4-pro", "parasail-deepseek-v4-pro"},
+		{"parasail", "z-ai/glm-5.1", "parasail-glm-51"},
+		{"parasail", "moonshotai/kimi-k2.6", "parasail-kimi-k26"},
+		{"parasail", "openai/gpt-oss-120b", "parasail-gpt-oss-120b"},
+		{"parasail", "thedrummer/cydonia-24b-v4.1", "parasail-cydonia-24-v41"},
+		{"parasail", "arcee-ai/trinity-large-thinking", "parasail-trinity-large-thinking"},
+		{"parasail", "bytedance/ui-tars-1.5-7b", "parasail-ui-tars-1p5-7b"},
+		{"parasail", "qwen/qwen3-next-80b-a3b-instruct", "parasail-qwen-3-next-80b-instruct"},
+		// phala — 2026-05-12 revive after key rotation. Pattern
+		// is prefix retention: send `openai/gpt-5.5` (not bare
+		// `gpt-5.5`) to Phala's API since their /v1/models lists
+		// the full author path.
+		{"phala", "openai/gpt-5.5", "openai/gpt-5.5"},
+		{"phala", "anthropic/claude-haiku-4.5", "anthropic/claude-haiku-4.5"},
+		{"phala", "z-ai/glm-5", "z-ai/glm-5"},
+		{"phala", "deepseek/deepseek-v3.2", "deepseek/deepseek-v3.2"},
 	}
 	for _, tc := range cases {
 		got := directModelID(tc.provider, tc.orID, tc.orID)
