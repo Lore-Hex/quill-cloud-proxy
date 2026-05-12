@@ -259,7 +259,7 @@ jobs:
             --template="${PREV_US}" --quiet
           gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-us \
             --region=us-central1 --project=quill-cloud-proxy \
-            --max-unavailable=0 --max-surge=3 --min-ready=120s --quiet
+            --max-unavailable=0 --max-surge=3 --quiet
           echo "europe-west4 NEVER received the bad image; safe."
           exit 1
 
@@ -301,7 +301,7 @@ jobs:
             --template="${PREV_EU}" --quiet
           gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-eu \
             --region=europe-west4 --project=quill-cloud-proxy \
-            --max-unavailable=0 --max-surge=3 --min-ready=120s --quiet
+            --max-unavailable=0 --max-surge=3 --quiet
           echo "us-central1 keeps the new release."
           exit 1
 
