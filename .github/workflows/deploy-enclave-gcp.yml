@@ -227,7 +227,18 @@ jobs:
           REGION_SHORT: us
         run: bash tools/deploy-gcp-mig.sh us-central1
 
-      - name: Canary gate — watch us-central1 only (3 min)
+      - name: Wait for us-central1 MIG to be stable
+        # Block until the rolling-replace finishes draining the old
+        # instances. We *want* the canary below to measure post-roll
+        # steady state, not the mid-roll drain window where probes
+        # naturally flap as instances cycle. Timeout caps a stuck
+        # rollout — 15 min is generous; a healthy roll is 5-10 min.
+        timeout-minutes: 15
+        run: |
+          gcloud compute instance-groups managed wait-until quill-enclave-mig-us \
+            --region=us-central1 --project=quill-cloud-proxy --stable
+
+      - name: Canary gate — watch us-central1 only (3 min, post-stable)
         id: canary_us
         continue-on-error: true
         run: python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 2
@@ -248,7 +259,7 @@ jobs:
             --template="${PREV_US}" --quiet
           gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-us \
             --region=us-central1 --project=quill-cloud-proxy \
-            --max-unavailable=0 --max-surge=3 --quiet
+            --max-unavailable=0 --max-surge=3 --min-ready=120s --quiet
           echo "europe-west4 NEVER received the bad image; safe."
           exit 1
 
@@ -260,7 +271,16 @@ jobs:
           REGION_SHORT: eu
         run: bash tools/deploy-gcp-mig.sh europe-west4
 
-      - name: Canary gate — watch europe-west4 only (3 min)
+      - name: Wait for europe-west4 MIG to be stable
+        # See us-central1 wait step — same rationale. eu is where this
+        # mattered most: prior runs had the cross-region final watchdog
+        # firing mid-drain on eu and rolling it back every time.
+        timeout-minutes: 15
+        run: |
+          gcloud compute instance-groups managed wait-until quill-enclave-mig-eu \
+            --region=europe-west4 --project=quill-cloud-proxy --stable
+
+      - name: Canary gate — watch europe-west4 only (3 min, post-stable)
         id: canary_eu
         continue-on-error: true
         run: python3 tools/watchdog.py --regions europe-west4 --duration-min 3 --rollback-after 2
@@ -281,49 +301,24 @@ jobs:
             --template="${PREV_EU}" --quiet
           gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-eu \
             --region=europe-west4 --project=quill-cloud-proxy \
-            --max-unavailable=0 --max-surge=3 --quiet
+            --max-unavailable=0 --max-surge=3 --min-ready=120s --quiet
           echo "us-central1 keeps the new release."
           exit 1
 
-      - name: Final watchdog — both regions (10 min)
-        # Polls https://trustedrouter.com/status.json per `target_region`.
-        # If a region reads "down" for 3 consecutive minutes, that
-        # region is added to the rollback set; healthy regions are
-        # left alone. Writes `rollback_regions=...` to $GITHUB_OUTPUT.
-        id: watchdog
-        continue-on-error: true
-        run: python3 tools/watchdog.py --duration-min 10 --rollback-after 3
-
-      - name: Rollback MIGs (per-region, only failing ones)
-        if: ${{ steps.watchdog.outcome == 'failure' && steps.watchdog.outputs.rollback_regions != '' }}
-        env:
-          ROLLBACK_REGIONS: ${{ steps.watchdog.outputs.rollback_regions }}
-          PREV_US: ${{ steps.prev.outputs.us_central1_template }}
-          PREV_EU: ${{ steps.prev.outputs.europe_west4_template }}
-        run: |
-          set -euo pipefail
-          IFS=',' read -ra REGIONS <<< "${ROLLBACK_REGIONS}"
-          for region in "${REGIONS[@]}"; do
-            case "$region" in
-              us-central1) mig="quill-enclave-mig-us"; prev="${PREV_US}" ;;
-              europe-west4) mig="quill-enclave-mig-eu"; prev="${PREV_EU}" ;;
-              *) echo "  ${region}: no rollback handle; skipping"; continue ;;
-            esac
-            if [ -z "$prev" ]; then
-              echo "  ${region}: no prior template recorded; skipping"
-              continue
-            fi
-            echo "  ${region}: pointing ${mig} back at ${prev}"
-            gcloud compute instance-groups managed set-instance-template "$mig" \
-              --region="$region" --project=quill-cloud-proxy \
-              --template="$prev" --quiet
-            echo "  ${region}: triggering rolling-action replace to swap instances onto ${prev}"
-            gcloud compute instance-groups managed rolling-action replace "$mig" \
-              --region="$region" --project=quill-cloud-proxy \
-              --max-unavailable=0 --max-surge=3 --quiet
-          done
-          echo "rollback initiated for: ${ROLLBACK_REGIONS}; failing job so the bad release shows red in GHA"
-          exit 1
+      # No cross-region "final watchdog" step. Each region's health is
+      # gated by its own per-region canary above (us-central1 canary
+      # watches only us-central1 probes; europe-west4 canary watches
+      # only europe-west4 probes), and each canary runs AFTER its
+      # region's MIG has reached stable state (via `wait-until --stable`)
+      # so the probe set is steady-state — not mid-roll where probes
+      # naturally flap on TCP-ready-but-TLS-warming-up instances.
+      #
+      # The prior cross-region 10-min watchdog at this point was the
+      # cause of the recurring eu-rollback pattern in 2026-05: it
+      # always ran while eu was still mid-drain on the rolling-action
+      # (us deploys first, then eu, so the final watchdog window
+      # overlaps eu's drain phase by construction). The per-region
+      # canary alone is the right gate.
 
       - name: Smoke test enclave inference (non-blocking)
         # Non-blocking: regional MIGs roll over with maxUnavailable=0

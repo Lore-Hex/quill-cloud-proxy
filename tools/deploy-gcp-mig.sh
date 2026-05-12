@@ -69,6 +69,19 @@ LB_IP_NAME="quill-lb-ip-${REGION_SHORT}"
 TARGET_SIZE="${TARGET_SIZE:-2}"
 MAX_SURGE="${MAX_SURGE:-3}"
 MAX_UNAVAILABLE="${MAX_UNAVAILABLE:-0}"
+# How long a newly-replaced instance must be running and healthy
+# before the MIG treats it as "stable" and starts draining the next
+# old one. The default `0s` means "as soon as the TCP:443 health
+# check passes" — but TCP:443 only confirms the port is open, NOT
+# that TLS+ACME-cached cert has finished loading. Hitting an instance
+# in that 30–90s window between TCP-open and TLS-stable produces
+# connection resets that the synthetic monitor scores as "down".
+# With only 2 backends per region, a single such blip = 50% probe
+# failure for one minute, and three of those in a row (the
+# rollback-after threshold) flips the watchdog. 120s is the
+# conservative end of the cert-load + warm-up envelope observed in
+# practice on confidential-space-debug.
+MIN_READY_SEC="${MIN_READY_SEC:-120s}"
 
 IMAGE_REF="${IMAGE_REF:?set IMAGE_REF=us-central1-docker.pkg.dev/.../enclave-anthropic:gcp-release-XXX}"
 API_HOST="${API_HOST:?set API_HOST=api.quillrouter.com (or api-${REGION}.quillrouter.com)}"
@@ -182,16 +195,31 @@ gc compute instance-templates create "$TEMPLATE" \
 # 4. Create or update the MIG.
 HC_URI="projects/${PROJECT_ID}/regions/${REGION}/healthChecks/${HC_NAME}"
 if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/dev/null 2>&1; then
-  log "updating MIG $MIG_NAME -> template $TEMPLATE"
+  log "updating MIG $MIG_NAME -> template $TEMPLATE (target size $TARGET_SIZE)"
   gc compute instance-groups managed set-instance-template "$MIG_NAME" \
     --region="$REGION" --template="$TEMPLATE" >/dev/null
+  # Reconcile size on every deploy — lets us raise TARGET_SIZE for a
+  # region (e.g. eu went 2→3 to absorb the 2026-05-11 watchdog-flap
+  # pattern) without a one-shot operator step.
+  current_size=$(gc compute instance-groups managed describe "$MIG_NAME" \
+    --region="$REGION" --format='value(targetSize)' 2>/dev/null || echo "")
+  if [ "$current_size" != "$TARGET_SIZE" ]; then
+    log "resizing MIG $MIG_NAME: ${current_size:-?} -> $TARGET_SIZE"
+    gc compute instance-groups managed resize "$MIG_NAME" \
+      --region="$REGION" --size="$TARGET_SIZE" >/dev/null
+  fi
   # Prefer a surge rollout so the regional gateway keeps serving while the
   # new attested image boots and passes health checks. Regional MIGs span
   # three zones, so the fixed surge default is 3.
+  # --min-ready forces a soak window between "TCP:443 healthy" and
+  # "MIG considers this instance stable enough to start draining the
+  # next old one" — prevents the TLS-not-yet-warm window from being
+  # the moment the LB cuts over.
   gc compute instance-groups managed rolling-action replace "$MIG_NAME" \
     --region="$REGION" \
     --max-unavailable="$MAX_UNAVAILABLE" \
-    --max-surge="$MAX_SURGE" >/dev/null
+    --max-surge="$MAX_SURGE" \
+    --min-ready="$MIN_READY_SEC" >/dev/null
 else
   log "creating MIG $MIG_NAME (size=$TARGET_SIZE)"
   gc compute instance-groups managed create "$MIG_NAME" \
