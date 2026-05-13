@@ -50,6 +50,13 @@ SECRETS=(
   trustedrouter-grok-api-key
   trustedrouter-novita-api-key
   trustedrouter-phala-api-key
+  # Phala's GPU-TEE-attested confidential AI tier (cloud.phala.com
+  # dashboard issues this key, distinct from the upstream redpill
+  # tier). This is the key the enclave actually uses since
+  # 2026-05-13 — model ids ship as `phala/<bare>` per
+  # docs.phala.com/phala-cloud/confidential-ai. Mirrored so the
+  # AWS Nitro enclave's parent bootstrap can fetch the same key.
+  trustedrouter-phala-confidential-api-key
   trustedrouter-siliconflow-api-key
   trustedrouter-tinfoil-api-key
   trustedrouter-venice-api-key
