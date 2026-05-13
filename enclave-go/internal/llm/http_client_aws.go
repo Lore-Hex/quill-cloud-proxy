@@ -61,7 +61,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "api.together.xyz", CID: 3, Port: 8011},
 	{Host: "api.x.ai", CID: 3, Port: 8012}, // grok
 	{Host: "api.novita.ai", CID: 3, Port: 8013},
-	{Host: "api.red-pill.ai", CID: 3, Port: 8014}, // phala
+	{Host: "api.redpill.ai", CID: 3, Port: 8014}, // phala
 	{Host: "api.siliconflow.com", CID: 3, Port: 8015},
 	{Host: "inference.tinfoil.sh", CID: 3, Port: 8016},
 	{Host: "api.venice.ai", CID: 3, Port: 8017},

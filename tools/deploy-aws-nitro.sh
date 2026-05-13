@@ -588,7 +588,7 @@ allowlist:
   - {address: api.together.xyz,              port: 443}
   - {address: api.x.ai,                      port: 443}
   - {address: api.novita.ai,                 port: 443}
-  - {address: api.red-pill.ai,               port: 443}
+  - {address: api.redpill.ai,                port: 443}
   - {address: api.siliconflow.com,           port: 443}
   - {address: inference.tinfoil.sh,          port: 443}
   - {address: api.venice.ai,                 port: 443}
@@ -668,7 +668,7 @@ write_vsock_unit 8010 api.z.ai
 write_vsock_unit 8011 api.together.xyz
 write_vsock_unit 8012 api.x.ai
 write_vsock_unit 8013 api.novita.ai
-write_vsock_unit 8014 api.red-pill.ai
+write_vsock_unit 8014 api.redpill.ai
 write_vsock_unit 8015 api.siliconflow.com
 write_vsock_unit 8016 inference.tinfoil.sh
 write_vsock_unit 8017 api.venice.ai
