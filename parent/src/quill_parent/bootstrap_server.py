@@ -90,7 +90,14 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("together_api_key", "trustedrouter-together-api-key"),
     ("grok_api_key", "trustedrouter-grok-api-key"),
     ("novita_api_key", "trustedrouter-novita-api-key"),
-    ("phala_api_key", "trustedrouter-phala-api-key"),
+    # phala_api_key now points at the GPU-TEE-attested confidential
+    # AI tier (Phala Cloud), not the upstream-pass-through redpill
+    # tier. Same api.redpill.ai host, but the key issued from
+    # cloud.phala.com / dashboard is what gates GPU TEE inference.
+    # Model id format must be `phala/<bare>` per
+    # docs.phala.com/phala-cloud/confidential-ai (enforced by the
+    # enclave's phalaModelMap).
+    ("phala_api_key", "trustedrouter-phala-confidential-api-key"),
     ("siliconflow_api_key", "trustedrouter-siliconflow-api-key"),
     ("tinfoil_api_key", "trustedrouter-tinfoil-api-key"),
     ("venice_api_key", "trustedrouter-venice-api-key"),

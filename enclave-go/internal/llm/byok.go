@@ -601,62 +601,47 @@ var novitaModelMap = map[string]string{
 	"google/gemma-4-26b-a4b-it": "google/gemma-4-26b-a4b-it",
 }
 
-// phalaModelMap maps OR-canonical → Phala (RedPill) native.
-// Phala's /v1/models exposes models under the upstream-author
-// path (`openai/gpt-5.5`, `anthropic/claude-haiku-4.5`,
-// `z-ai/glm-5`, etc.) — they accept the FULL canonical id, not
-// the bare slug. Many models ALSO have a `phala/<bare>` alias
-// (e.g. `phala/deepseek-v3.2`) but we don't need those: the
-// upstream-author form works for every Phala-served model.
+// phalaModelMap maps OR-canonical → Phala native.
 //
-// This map's job is to short-circuit the generic `directModelID`
-// strip-author logic: without it, dispatch sends bare `gpt-5.5`
-// to Phala and 404s. Like the gmi case, it's identity for every
-// entry — the entries exist purely so the per-provider branch
-// fires and the OR canonical id ships verbatim.
+// The 2026-05-12 first attempt routed Phala via the
+// upstream-author form (`openai/gpt-5.5`, `anthropic/claude-haiku-4.5`,
+// etc.) because /v1/models lists both forms. That returned
+// `{"error":{"message":"Invalid API key provided"}}` on every chat
+// request even though /v1/models worked with the same key.
 //
-// Source: live probe of https://api.red-pill.ai/v1/models on
-// 2026-05-12. Re-run when Phala adds new models to their
-// /v1/models response. Phala was temporarily disabled on
-// 2026-05-11 after a key-rotation security incident; once the
-// new key is in Secret Manager and `GATEWAY_PREPAID_PROVIDER_SLUGS`
-// re-includes phala, dispatch through this map again.
+// Root cause uncovered from Phala's docs at
+// https://docs.phala.com/phala-cloud/confidential-ai/confidential-model/confidential-ai-api :
+// their example uses `"model": "phala/deepseek-chat-v3-0324"`. The
+// `phala/` prefix selects the GPU-TEE-attested confidential tier
+// (which our key is entitled to); the upstream-author forms in
+// /v1/models go to a non-TEE pass-through tier that our key is
+// NOT entitled to, hence 401. Confidential AI keys + TEE
+// inference is the entire product reason we use Phala — match it.
+//
+// Source: live probe of api.redpill.ai/v1/models + Phala
+// confidential-ai-api docs on 2026-05-13. Add new entries when
+// Phala adds new `phala/...` model aliases.
 var phalaModelMap = map[string]string{
-	"google/gemma-3-27b-it":             "google/gemma-3-27b-it",
-	"minimax/minimax-m2.5":              "minimax/minimax-m2.5",
-	"moonshotai/kimi-k2.5":              "moonshotai/kimi-k2.5",
-	"moonshotai/kimi-k2.6":              "moonshotai/kimi-k2.6",
-	"openai/gpt-oss-120b":               "openai/gpt-oss-120b",
-	"openai/gpt-oss-20b":                "openai/gpt-oss-20b",
-	"qwen/qwen-2.5-7b-instruct":         "qwen/qwen-2.5-7b-instruct",
-	"qwen/qwen3-vl-30b-a3b-instruct":    "qwen/qwen3-vl-30b-a3b-instruct",
-	"qwen/qwen3.5-27b":                  "qwen/qwen3.5-27b",
-	"qwen/qwen3.5-397b-a17b":            "qwen/qwen3.5-397b-a17b",
-	"z-ai/glm-4.7":                      "z-ai/glm-4.7",
-	"z-ai/glm-4.7-flash":                "z-ai/glm-4.7-flash",
-	"z-ai/glm-5":                        "z-ai/glm-5",
-	"z-ai/glm-5.1":                      "z-ai/glm-5.1",
-	"deepseek/deepseek-v3.2":            "deepseek/deepseek-v3.2",
-	"deepseek/deepseek-chat-v3.1":       "deepseek/deepseek-chat-v3.1",
-	"meta-llama/llama-3.3-70b-instruct": "meta-llama/llama-3.3-70b-instruct",
-	"qwen/qwen3-coder-next":             "qwen/qwen3-coder-next",
-	"qwen/qwen3-coder-480b-a35b-instruct": "qwen/qwen3-coder-480b-a35b-instruct",
-	"qwen/qwen3-30b-a3b-instruct-2507":  "qwen/qwen3-30b-a3b-instruct-2507",
-	"xiaomi/mimo-v2-flash":              "xiaomi/mimo-v2-flash",
-	// Anthropic / OpenAI / Google / x-ai are also served by Phala
-	// per their /v1/models response; entries kept so dispatch to
-	// phala for these models retains the full author prefix.
-	"anthropic/claude-haiku-4.5":  "anthropic/claude-haiku-4.5",
-	"anthropic/claude-sonnet-4.6": "anthropic/claude-sonnet-4.6",
-	"anthropic/claude-opus-4.7":   "anthropic/claude-opus-4.7",
-	"openai/gpt-5.5":              "openai/gpt-5.5",
-	"openai/gpt-5.4":              "openai/gpt-5.4",
-	"openai/gpt-5.4-mini":         "openai/gpt-5.4-mini",
-	"openai/gpt-5.4-nano":         "openai/gpt-5.4-nano",
-	"google/gemini-2.5-flash":     "google/gemini-2.5-flash",
-	"google/gemini-2.5-pro":       "google/gemini-2.5-pro",
-	"x-ai/grok-4":                 "x-ai/grok-4",
-	"x-ai/grok-4.1-fast":          "x-ai/grok-4.1-fast",
+	"google/gemma-3-27b-it":               "phala/gemma-3-27b-it",
+	"minimax/minimax-m2.5":                "phala/minimax-m2.5",
+	"moonshotai/kimi-k2.5":                "phala/kimi-k2.5",
+	"moonshotai/kimi-k2.6":                "phala/kimi-k2.6",
+	"openai/gpt-oss-120b":                 "phala/gpt-oss-120b",
+	"openai/gpt-oss-20b":                  "phala/gpt-oss-20b",
+	"qwen/qwen-2.5-7b-instruct":           "phala/qwen-2.5-7b-instruct",
+	"qwen/qwen2.5-vl-72b-instruct":        "phala/qwen2.5-vl-72b-instruct",
+	"qwen/qwen3-vl-30b-a3b-instruct":      "phala/qwen3-vl-30b-a3b-instruct",
+	"qwen/qwen3.5-27b":                    "phala/qwen3.5-27b",
+	"qwen/qwen3.5-397b-a17b":              "phala/qwen3.5-397b-a17b",
+	"qwen/qwen3-coder-next":               "phala/qwen3-coder-next",
+	"qwen/qwen3-30b-a3b-instruct-2507":    "phala/qwen3-30b-a3b-instruct-2507",
+	"z-ai/glm-4.7":                        "phala/glm-4.7",
+	"z-ai/glm-4.7-flash":                  "phala/glm-4.7-flash",
+	"z-ai/glm-5":                          "phala/glm-5",
+	"z-ai/glm-5.1":                        "phala/glm-5.1",
+	"deepseek/deepseek-v3.2":              "phala/deepseek-v3.2",
+	"deepseek/deepseek-chat-v3.1":         "phala/deepseek-chat-v3.1",
+	"xiaomi/mimo-v2-flash":                "phala/mimo-v2-flash",
 }
 
 // tinfoilModelMap maps OR-canonical → Tinfoil native. Tinfoil

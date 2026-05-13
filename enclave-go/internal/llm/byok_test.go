@@ -108,14 +108,18 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		{"parasail", "arcee-ai/trinity-large-thinking", "parasail-trinity-large-thinking"},
 		{"parasail", "bytedance/ui-tars-1.5-7b", "parasail-ui-tars-1p5-7b"},
 		{"parasail", "qwen/qwen3-next-80b-a3b-instruct", "parasail-qwen-3-next-80b-instruct"},
-		// phala — 2026-05-12 revive after key rotation. Pattern
-		// is prefix retention: send `openai/gpt-5.5` (not bare
-		// `gpt-5.5`) to Phala's API since their /v1/models lists
-		// the full author path.
-		{"phala", "openai/gpt-5.5", "openai/gpt-5.5"},
-		{"phala", "anthropic/claude-haiku-4.5", "anthropic/claude-haiku-4.5"},
-		{"phala", "z-ai/glm-5", "z-ai/glm-5"},
-		{"phala", "deepseek/deepseek-v3.2", "deepseek/deepseek-v3.2"},
+		// phala — 2026-05-13 fix after the 2026-05-12 re-enable
+		// returned 401 on every chat. Phala's TEE confidential-AI
+		// product uses `phala/<bare>` as the model id (per their
+		// docs at docs.phala.com/phala-cloud/confidential-ai/...);
+		// the upstream-author form (`openai/gpt-5.5`,
+		// `anthropic/claude-haiku-4.5`) hits a non-TEE
+		// pass-through tier the key isn't entitled to.
+		{"phala", "openai/gpt-oss-120b", "phala/gpt-oss-120b"},
+		{"phala", "z-ai/glm-5", "phala/glm-5"},
+		{"phala", "deepseek/deepseek-v3.2", "phala/deepseek-v3.2"},
+		{"phala", "moonshotai/kimi-k2.6", "phala/kimi-k2.6"},
+		{"phala", "google/gemma-3-27b-it", "phala/gemma-3-27b-it"},
 	}
 	for _, tc := range cases {
 		got := directModelID(tc.provider, tc.orID, tc.orID)
