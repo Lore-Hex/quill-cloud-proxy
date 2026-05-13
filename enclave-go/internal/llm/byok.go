@@ -305,9 +305,23 @@ func directBaseURL(provider string) string {
 		// Novita AI multi-vendor serverless inference.
 		return "https://api.novita.ai/v3/openai"
 	case "phala":
-		// Phala (RedPill) confidential AI — Intel TDX + NVIDIA CC TEEs.
-		// On-brand for TR's trust story; attestation handled by Phala
-		// itself per response.
+		// Phala confidential AI — Intel TDX + NVIDIA CC TEEs.
+		// Per Yan @ Phala (2026-05-13 email confirmation):
+		// `api.redpill.ai` and `api.red-pill.ai` are aliases for the
+		// same endpoint; both resolve to 66.220.6.122 + serve identical
+		// nginx responses. We use the hyphenated form here because
+		// the AWS-side vsock-proxy + parent bootstrap allowlist
+		// (http_client_aws.go, deploy-aws-nitro.sh, bootstrap_server.py)
+		// were originally provisioned against it. The pricing scraper
+		// at quill-router/scripts/pricing/providers/phala.py uses the
+		// non-hyphen form to match Phala's official docs. Either is
+		// fine; don't churn one to match the other without also
+		// re-rolling AWS infra.
+		//
+		// We route exclusively to the GPU-TEE-attested tier via the
+		// `phala/<bare>` model id form (see phalaModelMap below).
+		// The upstream-pass-through tier uses a different (redpill)
+		// key TR doesn't have.
 		return "https://api.red-pill.ai/v1"
 	case "siliconflow":
 		// SiliconFlow Chinese serverless inference (200+ open-weight
