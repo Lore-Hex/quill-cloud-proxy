@@ -63,6 +63,24 @@ func TestNewSelfSigned_ValidCert(t *testing.T) {
 	}
 }
 
+func TestNewSelfSigned_AllowsMultipleDNSNames(t *testing.T) {
+	srv, err := NewSelfSigned("api.quillrouter.com, api-us-central1.quillrouter.com,api.quillrouter.com")
+	if err != nil {
+		t.Fatalf("NewSelfSigned: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(srv.Certificate.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse leaf: %v", err)
+	}
+	if leaf.Subject.CommonName != "api.quillrouter.com" {
+		t.Errorf("CN = %q, want first configured host", leaf.Subject.CommonName)
+	}
+	want := []string{"api.quillrouter.com", "api-us-central1.quillrouter.com"}
+	if strings.Join(leaf.DNSNames, ",") != strings.Join(want, ",") {
+		t.Fatalf("DNSNames = %v, want %v", leaf.DNSNames, want)
+	}
+}
+
 func TestNewACME_ConfiguresTLSALPNInMemory(t *testing.T) {
 	srv, err := NewACME("api.quillrouter.com", "", "", "", "")
 	if err != nil {
@@ -79,6 +97,17 @@ func TestNewACME_ConfiguresTLSALPNInMemory(t *testing.T) {
 	}
 	if srv.CurrentLeafDER() != nil {
 		t.Fatal("ACME leaf should be empty until the first non-challenge handshake")
+	}
+}
+
+func TestNewACME_RejectsUnlistedSNIForMultiHostConfig(t *testing.T) {
+	srv, err := NewACME("api.quillrouter.com,api-us-central1.quillrouter.com", "", "", "", "")
+	if err != nil {
+		t.Fatalf("NewACME: %v", err)
+	}
+	_, err = srv.tlsConfig.GetCertificate(&tls.ClientHelloInfo{ServerName: "not-api.quillrouter.com"})
+	if err == nil {
+		t.Fatal("expected unlisted SNI to fail HostPolicy")
 	}
 }
 

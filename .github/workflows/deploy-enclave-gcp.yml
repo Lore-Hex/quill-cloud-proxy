@@ -221,7 +221,12 @@ jobs:
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          API_HOST: api.quillrouter.com
+          # us-central1 serves both the canonical global convenience
+          # hostname and the explicit regional SDK retry hostname. The
+          # enclave ACME manager whitelists both SNI values and issues
+          # separate cached certs as needed; TLS still terminates only
+          # inside the attested workload.
+          API_HOST: api.quillrouter.com,api-us-central1.quillrouter.com
           # REGION_SHORT must match the existing prod MIG suffix —
           # `quill-enclave-mig-us`, not `quill-enclave-mig-uscentral1`.
           REGION_SHORT: us

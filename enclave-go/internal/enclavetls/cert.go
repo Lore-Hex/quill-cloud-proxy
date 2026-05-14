@@ -28,6 +28,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,10 +46,17 @@ type Server struct {
 }
 
 // NewSelfSigned generates an ECDSA P-256 keypair + a self-signed cert with
-// `dnsName` as the only Subject Alternative Name. The cert is valid for one
+// `dnsName` as Subject Alternative Name. dnsName may be a comma-separated
+// list when one regional gateway must serve both canonical and regional SNI.
+// The cert is valid for one
 // year — well within Nitro instance lifetimes; clients shouldn't be pinning
 // long-lived certs anyway since each enclave boot rotates.
 func NewSelfSigned(dnsName string) (*Server, error) {
+	dnsNames := splitDNSNames(dnsName)
+	if len(dnsNames) == 0 {
+		return nil, fmt.Errorf("enclavetls: dns name required")
+	}
+
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("enclavetls: generate key: %w", err)
@@ -63,7 +71,7 @@ func NewSelfSigned(dnsName string) (*Server, error) {
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName:   dnsName,
+			CommonName:   dnsNames[0],
 			Organization: []string{"Quill Cloud (attested enclave)"},
 		},
 		NotBefore:             now.Add(-1 * time.Hour),
@@ -72,7 +80,7 @@ func NewSelfSigned(dnsName string) (*Server, error) {
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 		IsCA:                  false,
-		DNSNames:              []string{dnsName},
+		DNSNames:              dnsNames,
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
@@ -113,6 +121,11 @@ func NewSelfSigned(dnsName string) (*Server, error) {
 // chose, and only a shared cache lets every replica answer with the same
 // challenge token.
 func NewACME(dnsName, email, cacheDir, directoryURL, gcsCacheBucket string) (*Server, error) {
+	dnsNames := splitDNSNames(dnsName)
+	if len(dnsNames) == 0 {
+		return nil, fmt.Errorf("enclavetls: dns name required")
+	}
+
 	var cache autocert.Cache = newMemoryACMECache()
 	switch {
 	case gcsCacheBucket != "":
@@ -126,7 +139,7 @@ func NewACME(dnsName, email, cacheDir, directoryURL, gcsCacheBucket string) (*Se
 
 	manager := &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
-		HostPolicy: autocert.HostWhitelist(dnsName),
+		HostPolicy: autocert.HostWhitelist(dnsNames...),
 		Cache:      cache,
 		Email:      email,
 	}
@@ -156,6 +169,23 @@ func NewACME(dnsName, email, cacheDir, directoryURL, gcsCacheBucket string) (*Se
 	tlsConfig.NextProtos = []string{"http/1.1", acme.ALPNProto}
 	srv.tlsConfig = tlsConfig
 	return srv, nil
+}
+
+func splitDNSNames(value string) []string {
+	seen := make(map[string]struct{})
+	names := make([]string, 0, 1)
+	for _, part := range strings.Split(value, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names
 }
 
 // Wrap turns a plaintext listener (e.g. vsock) into one whose accepted

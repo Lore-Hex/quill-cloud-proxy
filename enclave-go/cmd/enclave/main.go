@@ -201,17 +201,23 @@ func main() {
 			strings.TrimSpace(boot.CloudflareZoneID) != "" &&
 			strings.TrimSpace(os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET")) != "" {
 			enclavetls.SetDNS01Stderr(os.Stderr)
-			enclavetls.StartDNS01Renewer(ctx, enclavetls.DNS01Config{
-				DNSName:            apiHost,
-				Email:              os.Getenv("QUILL_ACME_EMAIL"),
-				DirectoryURL:       os.Getenv("QUILL_ACME_DIRECTORY_URL"),
-				Cache:              enclavetls.NewGCSCache(os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET")),
-				CloudflareAPIToken: boot.CloudflareAPIToken,
-				CloudflareZoneID:   boot.CloudflareZoneID,
-				HTTPClient:         enclavetls.NewDNS01HTTPClient(),
-			})
-			fmt.Fprintf(os.Stderr, "enclavetls.dns01_renewer_started host=%s zone=%s\n",
-				apiHost, boot.CloudflareZoneID)
+			for _, dnsName := range strings.Split(apiHost, ",") {
+				dnsName = strings.TrimSpace(dnsName)
+				if dnsName == "" {
+					continue
+				}
+				enclavetls.StartDNS01Renewer(ctx, enclavetls.DNS01Config{
+					DNSName:            dnsName,
+					Email:              os.Getenv("QUILL_ACME_EMAIL"),
+					DirectoryURL:       os.Getenv("QUILL_ACME_DIRECTORY_URL"),
+					Cache:              enclavetls.NewGCSCache(os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET")),
+					CloudflareAPIToken: boot.CloudflareAPIToken,
+					CloudflareZoneID:   boot.CloudflareZoneID,
+					HTTPClient:         enclavetls.NewDNS01HTTPClient(),
+				})
+				fmt.Fprintf(os.Stderr, "enclavetls.dns01_renewer_started host=%s zone=%s\n",
+					dnsName, boot.CloudflareZoneID)
+			}
 		}
 	}
 
