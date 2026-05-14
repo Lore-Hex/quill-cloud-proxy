@@ -38,9 +38,10 @@ func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 	client := New(server.URL, "internal", server.Client())
 	maxTokens := 7
 	auth, err := client.Authorize(t.Context(), rawKey, &qtypes.OpenAIChatRequest{
-		Model:     "openai/gpt-4o-mini",
-		MaxTokens: &maxTokens,
-		Messages:  []qtypes.OpenAIChatMessage{{Role: "user", Content: "secret prompt"}},
+		Model:          "openai/gpt-4o-mini",
+		MaxTokens:      &maxTokens,
+		Messages:       []qtypes.OpenAIChatMessage{{Role: "user", Content: "secret prompt"}},
+		IdempotencyKey: "idem-123",
 	})
 	if err != nil {
 		t.Fatalf("Authorize: %v", err)
@@ -56,6 +57,9 @@ func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 	}
 	if payload["max_output_tokens"] != float64(maxTokens) {
 		t.Fatalf("max_output_tokens = %v", payload["max_output_tokens"])
+	}
+	if payload["idempotency_key"] != "idem-123" {
+		t.Fatalf("idempotency_key = %v", payload["idempotency_key"])
 	}
 }
 

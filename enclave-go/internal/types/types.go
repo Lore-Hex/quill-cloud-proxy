@@ -138,6 +138,7 @@ type OpenAIChatRequest struct {
 	SessionID      string               `json:"session_id,omitempty"`
 	ResponseFormat map[string]any       `json:"response_format,omitempty"`
 	Response       *ResponseRequestMeta `json:"-"`
+	IdempotencyKey string               `json:"-"`
 }
 
 // ResponsesInputItem is the text-only subset of the OpenAI Responses input

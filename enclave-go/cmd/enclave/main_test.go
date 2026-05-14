@@ -839,7 +839,7 @@ func TestReadRequestRejectsOversizedBodyBeforeAllocation(t *testing.T) {
 		)
 	}()
 
-	_, _, _, _, err := readRequest(server)
+	_, _, _, _, _, err := readRequest(server)
 	if !errors.Is(err, errBodyTooLarge) {
 		t.Fatalf("err = %v, want errBodyTooLarge", err)
 	}

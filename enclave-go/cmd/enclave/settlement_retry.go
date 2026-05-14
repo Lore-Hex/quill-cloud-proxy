@@ -19,6 +19,8 @@ const (
 	defaultSettlementRetryMaxDelay  = 15 * time.Second
 )
 
+var settlementRetries = newSettlementRetryQueueFromEnv()
+
 type settlementRetryJob struct {
 	trGateway     *trustedrouter.Client
 	authorization *trustedrouter.Authorization

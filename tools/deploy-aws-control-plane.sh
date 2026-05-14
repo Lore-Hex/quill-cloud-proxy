@@ -226,12 +226,7 @@ if [ "$DRY_RUN" = "0" ]; then
       "Sid": "DecryptCrossCloudSAKey",
       "Effect": "Allow",
       "Action": "kms:Decrypt",
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "kms:EncryptionContext:secret-id": "quill/trustedrouter-aws-cross-cloud-sa-key"
-        }
-      }
+      "Resource": "arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT}:key/f5d9e558-308b-46bf-9176-ff53d9be8633"
     },
     {
       "Sid": "DecryptViaSecretsManagerKey",

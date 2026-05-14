@@ -162,6 +162,9 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 		"region":                 c.region,
 		"route_type":             routeType,
 	}
+	if req.IdempotencyKey != "" {
+		body["idempotency_key"] = req.IdempotencyKey
+	}
 	if len(req.Models) > 0 {
 		body["models"] = req.Models
 	}
