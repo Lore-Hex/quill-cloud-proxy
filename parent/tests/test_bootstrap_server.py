@@ -183,7 +183,7 @@ def test_build_payload_raises_when_gcp_sa_secret_value_is_not_base64() -> None:
 
 
 def test_build_payload_iterates_all_known_providers() -> None:
-    """All 15 provider key suffixes from sync-secrets-to-aws.sh map to
+    """All provider key suffixes from sync-secrets-to-aws.sh map to
     a BootstrapData field that the enclave knows about. This test is
     a regression guard: if someone adds a provider to the AWS sync
     script but forgets the bootstrap_server _PROVIDER_KEYS entry, the
@@ -204,6 +204,10 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "siliconflow_api_key",
         "tinfoil_api_key",
         "venice_api_key",
+        "parasail_api_key",
+        "lightning_api_key",
+        "gmi_api_key",
+        "deepinfra_api_key",
     }
     actual_fields = {field for field, _suffix in bootstrap_server._PROVIDER_KEYS}
     assert actual_fields == expected_fields, (
