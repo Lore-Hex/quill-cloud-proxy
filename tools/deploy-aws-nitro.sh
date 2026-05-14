@@ -81,6 +81,31 @@ run() {
   fi
 }
 
+latest_ecr_tag() {
+  local repo="$1"
+  local prefix="$2"
+  aws ecr describe-images \
+    --repository-name "$repo" --region "$AWS_REGION" \
+    --output json 2>/dev/null | python3 -c '
+import json
+import sys
+
+prefix = sys.argv[1]
+payload = json.load(sys.stdin)
+candidates = []
+for image in payload.get("imageDetails", []):
+    pushed_at = image.get("imagePushedAt") or ""
+    for tag in image.get("imageTags") or []:
+        if tag.startswith(prefix):
+            candidates.append((pushed_at, tag))
+if not candidates:
+    print("None")
+else:
+    candidates.sort(key=lambda item: item[0])
+    print(candidates[-1][1])
+' "$prefix"
+}
+
 if ! aws sts get-caller-identity --region "$AWS_REGION" >/dev/null 2>&1; then
   log "FATAL: aws CLI not authenticated. Run 'aws configure' or set AWS_PROFILE." >&2
   exit 1
@@ -458,20 +483,14 @@ phase_compute() {
   local parent_repo_url="${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PARENT_ECR_REPO_NAME}"
   local enclave_tag parent_tag
 
-  enclave_tag=$(aws ecr describe-images \
-    --repository-name "$ECR_REPO_NAME" --region "$AWS_REGION" \
-    --query "sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]" \
-    --output text 2>/dev/null || echo "None")
+  enclave_tag=$(latest_ecr_tag "$ECR_REPO_NAME" "aws-release-" || echo "None")
   if [ "$enclave_tag" = "None" ] || [ -z "$enclave_tag" ]; then
     log "  ERROR: no enclave image found in ECR ${ECR_REPO_NAME}; build via deploy-enclave-aws.yml"
     return 1
   fi
   log "  enclave image: ${enclave_repo_url}:${enclave_tag}"
 
-  parent_tag=$(aws ecr describe-images \
-    --repository-name "$PARENT_ECR_REPO_NAME" --region "$AWS_REGION" \
-    --query "sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]" \
-    --output text 2>/dev/null || echo "None")
+  parent_tag=$(latest_ecr_tag "$PARENT_ECR_REPO_NAME" "parent-aws-release-" || echo "None")
   if [ "$parent_tag" = "None" ] || [ -z "$parent_tag" ]; then
     log "  ERROR: no parent image found in ECR ${PARENT_ECR_REPO_NAME}; build via deploy-parent-aws.yml"
     return 1
@@ -486,10 +505,7 @@ phase_compute() {
   # latency matters.
   local parent_pump_repo_url="${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PARENT_PUMP_ECR_REPO_NAME}"
   local parent_pump_tag
-  parent_pump_tag=$(aws ecr describe-images \
-    --repository-name "$PARENT_PUMP_ECR_REPO_NAME" --region "$AWS_REGION" \
-    --query "sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]" \
-    --output text 2>/dev/null || echo "None")
+  parent_pump_tag=$(latest_ecr_tag "$PARENT_PUMP_ECR_REPO_NAME" "parent-pump-aws-release-" || echo "None")
   if [ "$parent_pump_tag" = "None" ] || [ -z "$parent_pump_tag" ]; then
     log "  ERROR: no parent-pump image in ECR ${PARENT_PUMP_ECR_REPO_NAME}; build via deploy-parent-pump-aws.yml"
     return 1
