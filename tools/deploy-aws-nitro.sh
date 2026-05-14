@@ -634,7 +634,7 @@ systemctl enable --now nitro-enclaves-allocator.service
 # 2b. vsock-proxy daemon — provides outbound network for the enclave.
 # Nitro Enclaves have no NIC; every outbound HTTPS call from inside
 # the enclave must travel via vsock to a parent-side proxy that does
-# the real DNS+TCP. AWS ships `vsock-proxy` with aws-nitro-enclaves-cli
+# the real DNS+TCP. AWS ships vsock-proxy with aws-nitro-enclaves-cli
 # (already installed above). It reads /etc/nitro_enclaves/vsock-proxy.yaml
 # for the host allowlist; we need an entry per upstream the enclave
 # dials.
@@ -697,7 +697,7 @@ YAML
 mkdir -p /etc/systemd/system
 
 # Generate one static systemd unit per (port, host) pair so each is
-# independently restartable. We avoid `@.service` template units
+# independently restartable. We avoid @.service template units
 # because their ExecStart can't easily encode a per-instance
 # upstream host without shell-parsing the instance name; static
 # units keep the systemd journal output readable too.
@@ -833,7 +833,7 @@ nitro-cli run-enclave \\
 EOS
 )
   local user_data_b64
-  user_data_b64=$(printf '%s' "$user_data" | base64)
+  user_data_b64=$(printf '%s' "$user_data" | base64 | tr -d '\n')
 
   # Launch template
   local lt_name="${PROJECT_TAG}-lt"
