@@ -13,13 +13,17 @@
 #      with tag `aws-release-<sha>`.
 #
 # What this workflow does NOT do (yet):
-#   - Trigger an ASG instance refresh. The compute phase of
-#     tools/deploy-aws-nitro.sh isn't wired in production yet (waiting
-#     for the AWS m5n vCPU quota approval). Once compute lands, add an
-#     `instance-refresh` step here so each new image auto-rolls the
-#     ASG.
 #   - Update Cloudflare LB pool. The 99/1 weighted DNS pool config
 #     points at a stable NLB IP that doesn't change per release.
+#
+# Rollout: a third job (`rollout`) runs `deploy-aws-nitro.sh --apply
+# --phase compute` after build-and-push lands the new image in ECR.
+# That creates a new launch template version and triggers an ASG
+# instance refresh with `MinHealthyPercentage=50` so the ASG keeps
+# serving at least half its capacity throughout the swap. The job
+# polls `describe-instance-refreshes` until completion (`Successful`
+# or `Failed`/`Cancelled`) — typically 8-12 min for an m5n.xlarge
+# refresh including Nitro init + cold-start ACME.
 #
 # AWS auth: GitHub OIDC → IAM role `quill-enclave-github-deployer`
 # (one-time setup, see the "OIDC role setup" section in
@@ -140,3 +144,120 @@ jobs:
             --output text)
           echo "image_digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "Pushed: ${IMAGE_REF}@${DIGEST}"
+
+  rollout:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/quill-enclave-github-deployer
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Capture pre-rollout launch template version (for rollback)
+        id: prev
+        run: |
+          set -euo pipefail
+          PREV_VERSION=$(aws ec2 describe-launch-templates \
+            --launch-template-names quill-enclave-lt \
+            --region ${AWS_REGION} \
+            --query 'LaunchTemplates[0].LatestVersionNumber' --output text 2>/dev/null || echo "")
+          echo "prev_version=${PREV_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "  pre-rollout launch template version: ${PREV_VERSION:-<none>}"
+
+      - name: Roll new launch template (compute phase)
+        # deploy-aws-nitro.sh --phase compute creates a new launch
+        # template version that bakes the latest ECR image tag into
+        # the cloud-init user-data. Idempotent: re-running with no
+        # ECR change is a near-no-op (still creates a new LT version
+        # though, since user-data string-compare detection isn't worth
+        # the complexity for an infrequent path).
+        run: |
+          set -euo pipefail
+          bash tools/deploy-aws-nitro.sh --apply --phase compute
+
+      - name: Start ASG instance refresh
+        # MinHealthyPercentage=50 keeps half the fleet serving while
+        # the other half rolls. InstanceWarmup=300 gives each new
+        # instance 5 min for Nitro init + ACME cert + bootstrap fetch
+        # before considering it healthy for the next rotation step.
+        # For backup-region (1% traffic) this is plenty; if AWS ever
+        # takes primary traffic, consider bumping to 75% min healthy.
+        id: refresh
+        run: |
+          set -euo pipefail
+          REFRESH_ID=$(aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name quill-enclave-asg \
+            --region ${AWS_REGION} \
+            --preferences MinHealthyPercentage=50,InstanceWarmup=300,SkipMatching=false \
+            --query 'InstanceRefreshId' --output text)
+          echo "refresh_id=${REFRESH_ID}" >> "$GITHUB_OUTPUT"
+          echo "  refresh: ${REFRESH_ID}"
+
+      - name: Wait for instance refresh to complete
+        # Polls every 30s up to ~20 min. Exits 0 on Successful, 1 on
+        # Failed/Cancelled, continues otherwise. Default failure
+        # behavior: ASG auto-cancels and reverts (per AWS docs:
+        # "if InstanceRefresh fails, the ASG keeps running on its
+        # current launch template version").
+        run: |
+          set -euo pipefail
+          REFRESH_ID="${{ steps.refresh.outputs.refresh_id }}"
+          for attempt in $(seq 1 40); do
+            STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name quill-enclave-asg \
+              --instance-refresh-ids "${REFRESH_ID}" \
+              --region ${AWS_REGION} \
+              --query 'InstanceRefreshes[0].Status' --output text)
+            PCT=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name quill-enclave-asg \
+              --instance-refresh-ids "${REFRESH_ID}" \
+              --region ${AWS_REGION} \
+              --query 'InstanceRefreshes[0].PercentageComplete' --output text)
+            echo "  attempt ${attempt}: status=${STATUS} pct=${PCT}%"
+            case "${STATUS}" in
+              Successful) echo "  refresh complete"; exit 0 ;;
+              Failed|Cancelled|RollbackSuccessful|RollbackFailed)
+                echo "  refresh terminal-fail (${STATUS})"
+                exit 1
+                ;;
+            esac
+            sleep 30
+          done
+          echo "  refresh timed out after 20 min; AWS will continue rolling, manually check via console"
+          exit 1
+
+      - name: Smoke test enclave inference (non-blocking)
+        # Hits the NLB's /v1/models endpoint. Non-blocking — the ASG
+        # health check has already gated the rollout, this is purely
+        # informational. Auth: pulls synthetic-monitor-api-key from
+        # AWS Secrets Manager mirror.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          NLB_DNS=$(aws elbv2 describe-load-balancers \
+            --names quill-enclave-nlb --region ${AWS_REGION} \
+            --query 'LoadBalancers[0].DNSName' --output text)
+          KEY=$(aws secretsmanager get-secret-value \
+            --secret-id quill/trustedrouter-synthetic-monitor-api-key \
+            --region ${AWS_REGION} \
+            --query SecretString --output text)
+          echo "  smoking https://${NLB_DNS}/v1/models"
+          for attempt in 1 2 3; do
+            code=$(curl -sS -o /tmp/smoke.json -w "%{http_code}" \
+              --max-time 15 \
+              -H "Authorization: Bearer ${KEY}" \
+              "https://${NLB_DNS}/v1/models" || echo "000")
+            if [ "${code}" = "200" ]; then
+              MODELS=$(python3 -c "import json; print(len(json.load(open('/tmp/smoke.json')).get('data', [])))")
+              echo "  smoke ok: HTTP 200, ${MODELS} models"
+              exit 0
+            fi
+            echo "  attempt ${attempt}: HTTP ${code}; retry in 30s"
+            sleep 30
+          done
+          echo "  smoke didn't get a 200 in 3 tries; NOT failing the workflow (informational only)"
