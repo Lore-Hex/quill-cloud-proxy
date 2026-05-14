@@ -326,37 +326,42 @@ jobs:
       # canary alone is the right gate.
 
       - name: Smoke test enclave inference (non-blocking)
-        # Non-blocking: regional MIGs roll over with maxUnavailable=0
-        # which means the rolling update is gradual (5–10 min for the
-        # full converge). The smoke test polls for ~10 min looking for
-        # a single 200 — if we get one, great; if we don't, log a
-        # warning but DO NOT fail the workflow. The MIG's own health
-        # checks gate the rollout; this test is informational.
+        # Non-blocking: MIG health checks gate the rollout. This smoke
+        # confirms the public SDK path with the dedicated synthetic
+        # monitor key/model, and every request is bounded so a slow
+        # provider cannot pin the deploy job indefinitely.
         # GHA quirk: secrets can't be used in a top-level `if:`
-        # expression, so we gate via env var.
+        # expression, so we gate via env var and fall back to Secret
+        # Manager when the GitHub secret is not configured.
         env:
           SMOKE_KEY: ${{ secrets.SMOKE_TEST_API_KEY }}
         continue-on-error: true
         run: |
           if [ -z "${SMOKE_KEY}" ]; then
-            echo "smoke skipped: SMOKE_TEST_API_KEY not set"
+            SMOKE_KEY="$(gcloud secrets versions access latest \
+              --secret=trustedrouter-synthetic-monitor-api-key \
+              --project=quill-cloud-proxy 2>/dev/null || true)"
+          fi
+          if [ -z "${SMOKE_KEY}" ]; then
+            echo "smoke skipped: no SMOKE_TEST_API_KEY or synthetic monitor secret"
             exit 0
           fi
-          for attempt in $(seq 1 20); do
+          for attempt in $(seq 1 8); do
             response=$(curl -sw "\n%{http_code}" \
+              --silent --show-error --max-time 45 \
               -H "authorization: Bearer ${SMOKE_KEY}" \
               -H "content-type: application/json" \
-              -d '{"model":"meta-llama/llama-3.3-70b-instruct","messages":[{"role":"user","content":"reply with PONG"}],"max_tokens":10}' \
-              https://api.quillrouter.com/v1/chat/completions)
+              -d '{"model":"trustedrouter/monitor","messages":[{"role":"user","content":"reply exactly PONG"}],"max_tokens":8}' \
+              https://api.quillrouter.com/v1/chat/completions || true)
             code=$(echo "$response" | tail -n1)
             echo "attempt ${attempt}: HTTP ${code}"
             if [ "$code" = "200" ]; then
-              echo "smoke ok — Together routing live on prod"
+              echo "smoke ok — synthetic monitor route live on prod"
               exit 0
             fi
-            sleep 30
+            sleep 15
           done
-          echo "smoke didn't observe a 200 within ~10 min; rollout may still be converging"
+          echo "smoke didn't observe a 200 within bounded retry window"
           # exit 0 — non-blocking
 
   # Publish trust-page/ to GitHub Pages. Pages serves
