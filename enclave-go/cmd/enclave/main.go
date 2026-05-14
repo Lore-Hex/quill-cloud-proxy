@@ -113,7 +113,7 @@ func main() {
 	// metadata service is used instead) and this block no-ops, so the
 	// same enclave binary handles both clouds.
 	if strings.TrimSpace(boot.GCPServiceAccountKeyJSON) != "" {
-		credPath := "/tmp/gcp-sa.json"
+		credPath := "/tmp/gcp-sa.json" // #nosec G101 -- tmpfs path for bootstrap-provided service account JSON, not a credential.
 		if err := os.WriteFile(credPath, []byte(boot.GCPServiceAccountKeyJSON), 0600); err != nil {
 			fmt.Fprintf(os.Stderr, "write GCP SA key tmpfs failed: %v\n", err)
 			os.Exit(1)

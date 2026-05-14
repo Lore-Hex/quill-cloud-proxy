@@ -53,7 +53,7 @@ const (
 	gcsAPIBase    = "https://storage.googleapis.com/storage/v1"
 	gcsUploadBase = "https://storage.googleapis.com/upload/storage/v1"
 	metadataToken = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" // #nosec G101 -- metadata endpoint URL, not a secret.
-	gcpTokenURL   = "https://oauth2.googleapis.com/token"
+	gcpTokenURL   = "https://oauth2.googleapis.com/token"                                                        // #nosec G101 -- public OAuth token endpoint, not a credential.
 	gcsScope      = "https://www.googleapis.com/auth/devstorage.read_write"
 )
 
@@ -162,18 +162,18 @@ func (c *gcsCache) Delete(ctx context.Context, key string) error {
 // gcpTokenSource mints access tokens for storage.googleapis.com via
 // one of two paths:
 //
-//   1. GCE-native: GET metadata.google.internal — works on the
-//      GCP-side enclaves (Confidential Space VMs have a metadata
-//      service the workload SA can read).
+//  1. GCE-native: GET metadata.google.internal — works on the
+//     GCP-side enclaves (Confidential Space VMs have a metadata
+//     service the workload SA can read).
 //
-//   2. Cross-cloud SA key (AWS-side enclave): read
-//      GOOGLE_APPLICATION_CREDENTIALS (a path written by the
-//      bootstrap RPC to a tmpfs file), parse the SA JSON, sign a
-//      short-lived RS256 JWT, exchange it at oauth2.googleapis.com
-//      for an access token. This is the same flow Google's own
-//      client libraries use internally; we re-implement it here
-//      rather than dragging in google.golang.org/api (huge dep,
-//      pulls gRPC) just for one token.
+//  2. Cross-cloud SA key (AWS-side enclave): read
+//     GOOGLE_APPLICATION_CREDENTIALS (a path written by the
+//     bootstrap RPC to a tmpfs file), parse the SA JSON, sign a
+//     short-lived RS256 JWT, exchange it at oauth2.googleapis.com
+//     for an access token. This is the same flow Google's own
+//     client libraries use internally; we re-implement it here
+//     rather than dragging in google.golang.org/api (huge dep,
+//     pulls gRPC) just for one token.
 //
 // On AWS the metadata.google.internal name doesn't resolve, so the
 // GCE-native path errors out and we fall through to the SA-key

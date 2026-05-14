@@ -25,29 +25,29 @@
 // What this binary does
 // =====================
 //
-//   1. On startup and every reverifyInterval (10m by default), runs
-//      tinfoil-go's full Verify() chain:
-//        * Fetches the latest GitHub release digest of
-//          tinfoilsh/confidential-model-router.
-//        * Pulls the Sigstore-signed code-measurement bundle from
-//          the GitHub release attestation.
-//        * Verifies the bundle against the embedded Sigstore trusted
-//          root.
-//        * Fetches the live SEV-SNP guest report from
-//          inference.tinfoil.sh/.well-known/tinfoil-attestation.
-//        * Recreates the AMD VCEK chain, verifies the SEV-SNP
-//          signature against AMD's root, and confirms the report's
-//          measurement matches the Sigstore-attested code measurement.
-//        * Extracts the TLS public-key fingerprint from the verified
-//          report's REPORT_DATA.
+//  1. On startup and every reverifyInterval (10m by default), runs
+//     tinfoil-go's full Verify() chain:
+//     * Fetches the latest GitHub release digest of
+//     tinfoilsh/confidential-model-router.
+//     * Pulls the Sigstore-signed code-measurement bundle from
+//     the GitHub release attestation.
+//     * Verifies the bundle against the embedded Sigstore trusted
+//     root.
+//     * Fetches the live SEV-SNP guest report from
+//     inference.tinfoil.sh/.well-known/tinfoil-attestation.
+//     * Recreates the AMD VCEK chain, verifies the SEV-SNP
+//     signature against AMD's root, and confirms the report's
+//     measurement matches the Sigstore-attested code measurement.
+//     * Extracts the TLS public-key fingerprint from the verified
+//     report's REPORT_DATA.
 //
-//   2. Caches the verified fingerprint and serves it over a Unix
-//      socket (default /run/tinfoil-attest.sock; can also use Linux
-//      abstract sockets via @-prefix paths if /run is read-only).
+//  2. Caches the verified fingerprint and serves it over a Unix
+//     socket (default /run/tinfoil-attest.sock; can also use Linux
+//     abstract sockets via @-prefix paths if /run is read-only).
 //
-//   3. Exponential-backoff retry on Verify failures. Old verified
-//      values are NOT served past their ExpiresAt — better to hard-fail
-//      a request than to serve a stale-and-rotated FP.
+//  3. Exponential-backoff retry on Verify failures. Old verified
+//     values are NOT served past their ExpiresAt — better to hard-fail
+//     a request than to serve a stale-and-rotated FP.
 //
 // How the main enclave uses it
 // ============================
@@ -55,8 +55,8 @@
 // internal/llm/tinfoil_attest.go (in the main enclave) does TWO
 // independent fetches of the attestation document:
 //
-//   * rawFP      — its own stdlib-only parse of /.well-known/...
-//   * verifiedFP — this sidecar's full-chain-verified value
+//   - rawFP      — its own stdlib-only parse of /.well-known/...
+//   - verifiedFP — this sidecar's full-chain-verified value
 //
 // and refuses any tinfoil request where rawFP != verifiedFP. The
 // cross-check defends against an attacker who owns one network leg
@@ -66,14 +66,14 @@
 // Trust properties summary
 // ========================
 //
-//   * MITM on either path alone → caught (the other path disagrees).
-//   * Compromised sidecar that returns wrong FP → caught (rawFP from
+//   - MITM on either path alone → caught (the other path disagrees).
+//   - Compromised sidecar that returns wrong FP → caught (rawFP from
 //     in-process disagrees).
-//   * Compromised sidecar that fails-open by returning the rawFP →
+//   - Compromised sidecar that fails-open by returning the rawFP →
 //     this binary doesn't see rawFP, so it can't pretend to have
 //     verified what it didn't. Best the attacker can do is downgrade
 //     to "sidecar unavailable" (which the main enclave logs loudly).
-//   * Compromised process running this sidecar's code in-place →
+//   - Compromised process running this sidecar's code in-place →
 //     same threat model as the main enclave being compromised; the
 //     cross-check doesn't help, but Confidential Space's hardware
 //     attestation does (a different layer).
@@ -85,14 +85,14 @@
 // against an attacker who simultaneously breaches MULTIPLE independent
 // organizations' infrastructure on a coordinated timeline:
 //
-//   (a) ships a malicious version of THIS binary in our published
-//       enclave image (= compromise our build pipeline / Artifact
-//       Registry), AND
-//   (b) modifies the data GitHub serves for tinfoilsh/confidential-
-//       model-router release Sigstore bundles, so a Verify chain run
-//       against the forged data still produces a valid signature, AND
-//   (c) makes either inference.tinfoil.sh's .well-known endpoint or
-//       our network leg to it serve a matching forged SEV-SNP report
+//	(a) ships a malicious version of THIS binary in our published
+//	    enclave image (= compromise our build pipeline / Artifact
+//	    Registry), AND
+//	(b) modifies the data GitHub serves for tinfoilsh/confidential-
+//	    model-router release Sigstore bundles, so a Verify chain run
+//	    against the forged data still produces a valid signature, AND
+//	(c) makes either inference.tinfoil.sh's .well-known endpoint or
+//	    our network leg to it serve a matching forged SEV-SNP report
 //
 // That requires coordinated breaches of us, GitHub, and tinfoil/AMD
 // at once — out of scope for this design. AMD's signing key is the
@@ -160,11 +160,11 @@ const (
 )
 
 type verifiedPayload struct {
-	FP              string    `json:"fp"`               // hex sha256 of TLS pubkey DER
-	HPKEPubkey      string    `json:"hpke_pubkey"`      // hex, REPORT_DATA[32:64]
-	CodeDigest      string    `json:"code_digest"`      // GitHub release digest
-	CodeFingerprint string    `json:"code_fp"`          // tinfoil CodeFingerprint
-	EnclaveFP       string    `json:"enclave_fp"`       // tinfoil EnclaveFingerprint
+	FP              string    `json:"fp"`          // hex sha256 of TLS pubkey DER
+	HPKEPubkey      string    `json:"hpke_pubkey"` // hex, REPORT_DATA[32:64]
+	CodeDigest      string    `json:"code_digest"` // GitHub release digest
+	CodeFingerprint string    `json:"code_fp"`     // tinfoil CodeFingerprint
+	EnclaveFP       string    `json:"enclave_fp"`  // tinfoil EnclaveFingerprint
 	VerifiedAt      time.Time `json:"verified_at"`
 	ExpiresAt       time.Time `json:"expires_at"`
 }

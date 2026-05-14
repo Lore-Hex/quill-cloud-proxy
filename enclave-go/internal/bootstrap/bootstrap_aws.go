@@ -15,13 +15,13 @@
 // resolves the symbol at compile time based on the tag.
 //
 // When adding a new cloud:
-//   1. Create `bootstrap_<cloud>.go` with the matching `//go:build`
-//      constraint and a `Fetch()` that produces the same BootstrapData.
-//   2. Wire any new `*APIKey` fields in `internal/types/types.go` if
-//      the cloud has its own secret-store conventions to read.
-//   3. Update the build tooling (Dockerfile + deploy script) to set
-//      `-tags cloud_<cloud>` and pass the necessary tee-env / boot-time
-//      knobs the new adapter reads from os.Getenv.
+//  1. Create `bootstrap_<cloud>.go` with the matching `//go:build`
+//     constraint and a `Fetch()` that produces the same BootstrapData.
+//  2. Wire any new `*APIKey` fields in `internal/types/types.go` if
+//     the cloud has its own secret-store conventions to read.
+//  3. Update the build tooling (Dockerfile + deploy script) to set
+//     `-tags cloud_<cloud>` and pass the necessary tee-env / boot-time
+//     knobs the new adapter reads from os.Getenv.
 //
 // AWS variant — this file
 // =======================

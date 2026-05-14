@@ -5,16 +5,16 @@
 //
 // Architecture:
 //
-//   periodic renewer goroutine
-//     └─ load existing cert from autocert.Cache (GCS, shared)
-//     └─ if cert expires within --dns01-renew-window-days (default 30):
-//          ├─ acme.Client.AuthorizeOrder()  → DNS-01 challenge token
-//          ├─ Cloudflare API: TXT _acme-challenge.<domain> = <token>
-//          ├─ poll public resolvers until TXT is visible
-//          ├─ acme.Client.Accept(challenge)  → LE validates
-//          ├─ acme.Client.CreateOrderCert()  → cert returned
-//          ├─ write cert+privkey to autocert.Cache (GCS, CMEK-encrypted)
-//          └─ Cloudflare API: TXT _acme-challenge.<domain> delete
+//	periodic renewer goroutine
+//	  └─ load existing cert from autocert.Cache (GCS, shared)
+//	  └─ if cert expires within --dns01-renew-window-days (default 30):
+//	       ├─ acme.Client.AuthorizeOrder()  → DNS-01 challenge token
+//	       ├─ Cloudflare API: TXT _acme-challenge.<domain> = <token>
+//	       ├─ poll public resolvers until TXT is visible
+//	       ├─ acme.Client.Accept(challenge)  → LE validates
+//	       ├─ acme.Client.CreateOrderCert()  → cert returned
+//	       ├─ write cert+privkey to autocert.Cache (GCS, CMEK-encrypted)
+//	       └─ Cloudflare API: TXT _acme-challenge.<domain> delete
 //
 // The renewer runs ALONGSIDE the autocert.Manager that already handles
 // TLS-ALPN-01. autocert serves certs from the same Cache. So:

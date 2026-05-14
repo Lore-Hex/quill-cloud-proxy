@@ -25,7 +25,7 @@ import (
 const (
 	defaultKMSEndpoint           = "https://cloudkms.googleapis.com"
 	defaultMetadataTokenEndpoint = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" // #nosec G101 -- metadata URL, not a secret.
-	gcpJWTTokenEndpoint          = "https://oauth2.googleapis.com/token"
+	gcpJWTTokenEndpoint          = "https://oauth2.googleapis.com/token"                                                        // #nosec G101 -- public OAuth token endpoint, not a credential.
 	gcpKMSScope                  = "https://www.googleapis.com/auth/cloudkms"
 )
 
