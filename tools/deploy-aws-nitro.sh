@@ -324,6 +324,7 @@ EOF
       "Effect": "Allow",
       "Action": [
         "ec2:DescribeLaunchTemplates",
+        "ec2:DescribeLaunchTemplateVersions",
         "ec2:DescribeSecurityGroups",
         "ec2:DescribeVpcs",
         "ec2:DescribeSubnets",
@@ -343,6 +344,7 @@ EOF
         "ec2:CreateLaunchTemplate",
         "ec2:CreateLaunchTemplateVersion",
         "ec2:ModifyLaunchTemplate",
+        "ec2:RunInstances",
         "ec2:CreateTags"
       ],
       "Resource": "*"
