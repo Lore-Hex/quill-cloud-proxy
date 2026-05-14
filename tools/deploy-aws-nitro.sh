@@ -288,7 +288,12 @@ phase_oidc() {
 EOF
 )
 
-  # 3. Tight policy: only the operations the build+push workflow needs
+  # 3. Tight policy: only the operations the build+push + rollout workflow needs.
+  # The rollout job runs phase_compute, which creates a new launch-template
+  # version and keeps the NLB/TG/ASG wiring idempotently current before
+  # starting the instance refresh. Keep this scoped to the one project tag's
+  # resources where AWS supports resource-level permissions; Describe APIs and
+  # CreateLaunchTemplateVersion still require "*".
   local policy_doc
   policy_doc=$(cat <<EOF
 {
@@ -309,13 +314,64 @@ EOF
       ],
       "Resource": [
         "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT}:repository/${ECR_REPO_NAME}",
+        "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT}:repository/${PARENT_ECR_REPO_NAME}",
+        "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT}:repository/${PARENT_PUMP_ECR_REPO_NAME}",
         "*"
       ]
+    },
+    {
+      "Sid": "ComputeRead",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeLaunchTemplates",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeImages",
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "elasticloadbalancing:DescribeTargetGroups",
+        "elasticloadbalancing:DescribeListeners",
+        "ssm:GetParameter",
+        "iam:GetInstanceProfile"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "LaunchTemplateRollout",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateLaunchTemplate",
+        "ec2:CreateLaunchTemplateVersion",
+        "ec2:ModifyLaunchTemplate",
+        "ec2:CreateTags"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassEnclaveInstanceRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::${AWS_ACCOUNT}:role/${PROJECT_TAG}-role",
+      "Condition": {"StringEquals": {"iam:PassedToService": "ec2.amazonaws.com"}}
+    },
+    {
+      "Sid": "LoadBalancerRollout",
+      "Effect": "Allow",
+      "Action": [
+        "elasticloadbalancing:CreateLoadBalancer",
+        "elasticloadbalancing:CreateTargetGroup",
+        "elasticloadbalancing:ModifyTargetGroupAttributes",
+        "elasticloadbalancing:CreateListener",
+        "elasticloadbalancing:AddTags"
+      ],
+      "Resource": "*"
     },
     {
       "Sid": "ASGRefresh",
       "Effect": "Allow",
       "Action": [
+        "autoscaling:CreateAutoScalingGroup",
+        "autoscaling:UpdateAutoScalingGroup",
         "autoscaling:StartInstanceRefresh",
         "autoscaling:DescribeAutoScalingGroups",
         "autoscaling:DescribeInstanceRefreshes"
