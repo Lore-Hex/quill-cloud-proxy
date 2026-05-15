@@ -173,10 +173,12 @@ func invokeOpenAICompatibleStreamingWithClient(
 		Stream:            true,
 		Temperature:       body.Temperature,
 		TopP:              body.TopP,
-		ResponseFormat:    req.ResponseFormat,
 		Tools:             req.Tools,
 		ToolChoice:        req.ToolChoice,
 		ParallelToolCalls: req.ParallelTools,
+	}
+	if len(req.ResponseFormat) > 0 {
+		reqBody.ResponseFormat = req.ResponseFormat
 	}
 	if kimiToolsNeedThinkingDisabled(provider, upstreamID, req.Tools) {
 		reqBody.Thinking = map[string]string{"type": "disabled"}

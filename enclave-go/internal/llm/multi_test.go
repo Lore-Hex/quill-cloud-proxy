@@ -100,6 +100,9 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 			if captured["model"] != tt.wantModel {
 				t.Fatalf("upstream model = %#v, want %q; payload=%#v", captured["model"], tt.wantModel, captured)
 			}
+			if _, ok := captured["response_format"]; ok {
+				t.Fatalf("nil response_format leaked into upstream payload: %#v", captured)
+			}
 			if !strings.Contains(out.String(), "content_block_delta") {
 				t.Fatalf("stream was not translated to Anthropic SSE: %s", out.String())
 			}
