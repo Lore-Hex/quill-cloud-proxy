@@ -49,6 +49,8 @@ func New(boot *qtypes.BootstrapData) Client {
 		lightning:   newOpenAICompatible("lightning", boot.LightningAPIKey),
 		gmi:         newOpenAICompatible("gmi", boot.GMIAPIKey),
 		deepinfra:   newOpenAICompatible("deepinfra", boot.DeepInfraAPIKey),
+		nebius:      newOpenAICompatible("nebius", boot.NebiusAPIKey),
+		minimax:     newOpenAICompatible("minimax", boot.MiniMaxAPIKey),
 	}
 }
 
@@ -73,6 +75,8 @@ type multiClient struct {
 	lightning   *openAICompatibleClient
 	gmi         *openAICompatibleClient
 	deepinfra   *openAICompatibleClient
+	nebius      *openAICompatibleClient
+	minimax     *openAICompatibleClient
 }
 
 func (m *multiClient) InvokeStreaming(
@@ -134,7 +138,11 @@ func (m *multiClient) InvokeStreaming(
 		return m.gmi.InvokeStreaming(ctx, req, body, out, options...)
 	case "deepinfra":
 		return m.deepinfra.InvokeStreaming(ctx, req, body, out, options...)
+	case "nebius":
+		return m.nebius.InvokeStreaming(ctx, req, body, out, options...)
+	case "minimax":
+		return m.minimax.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, nebius, minimax)", provider)
 	}
 }

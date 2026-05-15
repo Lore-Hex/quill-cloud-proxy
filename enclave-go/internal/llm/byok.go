@@ -43,7 +43,9 @@ func invokeBYOKStreaming(
 
 func isOpenAICompatibleBYOKProvider(provider string) bool {
 	switch provider {
-	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai", "together":
+	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai", "together",
+		"grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
+		"parasail", "lightning", "gmi", "deepinfra", "nebius", "minimax":
 		return true
 	default:
 		return false
@@ -448,6 +450,14 @@ func directBaseURL(provider string) string {
 		// `/v1/openai` path (not `/v1`) — DeepInfra namespaces the
 		// OpenAI-shape endpoints separately from their native /v1.
 		return "https://api.deepinfra.com/v1/openai"
+	case "nebius":
+		// Nebius Token Factory OpenAI-compatible shared inference.
+		return "https://api.tokenfactory.nebius.com/v1"
+	case "minimax":
+		// MiniMax first-party international endpoint. The minimaxi.com
+		// host is for China-region keys; this project key is scoped to
+		// the international api.minimax.io endpoint.
+		return "https://api.minimax.io/v1"
 	default:
 		return ""
 	}
@@ -530,7 +540,7 @@ func directModelID(provider, model, upstreamModel string) string {
 
 func providerPreservesAuthorModelID(provider string) bool {
 	switch provider {
-	case "novita":
+	case "novita", "nebius":
 		return true
 	default:
 		return false
@@ -573,6 +583,17 @@ var providerNativeModelMaps = map[string]map[string]string{
 	"tinfoil":   tinfoilModelMap,
 	"novita":    novitaModelMap,
 	"phala":     phalaModelMap,
+	"minimax":   minimaxModelMap,
+}
+
+var minimaxModelMap = map[string]string{
+	"minimax/minimax-m2.7":           "MiniMax-M2.7",
+	"minimax/minimax-m2.7-highspeed": "MiniMax-M2.7-highspeed",
+	"minimax/minimax-m2.5":           "MiniMax-M2.5",
+	"minimax/minimax-m2.5-highspeed": "MiniMax-M2.5-highspeed",
+	"minimax/minimax-m2.1":           "MiniMax-M2.1",
+	"minimax/minimax-m2.1-highspeed": "MiniMax-M2.1-highspeed",
+	"minimax/minimax-m2":             "MiniMax-M2",
 }
 
 // togetherModelMap translates OR-canonical model id → Together's own
@@ -837,6 +858,10 @@ func normalizeDirectProvider(provider string) string {
 		return "gmi"
 	case "deepinfra", "deep-infra", "deep_infra":
 		return "deepinfra"
+	case "nebius", "nebius-ai", "nebius-ai-studio", "tokenfactory", "token-factory":
+		return "nebius"
+	case "minimax", "mini-max", "minimax-ai", "minimaxai":
+		return "minimax"
 	default:
 		return slug
 	}

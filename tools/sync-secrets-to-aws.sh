@@ -65,6 +65,8 @@ SECRETS=(
   trustedrouter-lightning-api-key
   trustedrouter-gmi-api-key
   trustedrouter-deepinfra-api-key
+  trustedrouter-nebius-api-key
+  trustedrouter-minimax-api-key
   trustedrouter-tr-api-key-for-self-heal
   # The internal gateway token authenticates enclave→TR control-plane
   # calls (x-trustedrouter-internal-token header on /v1/internal/*).

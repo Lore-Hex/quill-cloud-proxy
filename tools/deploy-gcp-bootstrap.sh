@@ -61,6 +61,12 @@ PHALA_SECRET="${PHALA_SECRET:-trustedrouter-phala-api-key}"
 SILICONFLOW_SECRET="${SILICONFLOW_SECRET:-trustedrouter-siliconflow-api-key}"
 TINFOIL_SECRET="${TINFOIL_SECRET:-trustedrouter-tinfoil-api-key}"
 VENICE_SECRET="${VENICE_SECRET:-trustedrouter-venice-api-key}"
+PARASAIL_SECRET="${PARASAIL_SECRET:-trustedrouter-parasail-api-key}"
+LIGHTNING_SECRET="${LIGHTNING_SECRET:-trustedrouter-lightning-api-key}"
+GMI_SECRET="${GMI_SECRET:-trustedrouter-gmi-api-key}"
+DEEPINFRA_SECRET="${DEEPINFRA_SECRET:-trustedrouter-deepinfra-api-key}"
+NEBIUS_SECRET="${NEBIUS_SECRET:-trustedrouter-nebius-api-key}"
+MINIMAX_SECRET="${MINIMAX_SECRET:-trustedrouter-minimax-api-key}"
 INTERNAL_GATEWAY_SECRET="${INTERNAL_GATEWAY_SECRET:-trustedrouter-internal-gateway-token}"
 DEVICE_KEYS_SECRET="${DEVICE_KEYS_SECRET:-quill-device-keys}"
 
@@ -141,6 +147,12 @@ for secret in \
   "$SILICONFLOW_SECRET" \
   "$TINFOIL_SECRET" \
   "$VENICE_SECRET" \
+  "$PARASAIL_SECRET" \
+  "$LIGHTNING_SECRET" \
+  "$GMI_SECRET" \
+  "$DEEPINFRA_SECRET" \
+  "$NEBIUS_SECRET" \
+  "$MINIMAX_SECRET" \
   "$INTERNAL_GATEWAY_SECRET" \
   "$DEVICE_KEYS_SECRET"; do
   if gc secrets describe "$secret" >/dev/null 2>&1; then

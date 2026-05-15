@@ -107,6 +107,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	lightningSecret := os.Getenv("QUILL_LIGHTNING_SECRET")
 	gmiSecret := os.Getenv("QUILL_GMI_SECRET")
 	deepinfraSecret := os.Getenv("QUILL_DEEPINFRA_SECRET")
+	nebiusSecret := os.Getenv("QUILL_NEBIUS_SECRET")
+	minimaxSecret := os.Getenv("QUILL_MINIMAX_SECRET")
 	if !anySet(
 		openrouterSecret,
 		anthropicSecret,
@@ -128,6 +130,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		lightningSecret,
 		gmiSecret,
 		deepinfraSecret,
+		nebiusSecret,
+		minimaxSecret,
 	) {
 		return nil, fmt.Errorf("bootstrap/gcp: at least one provider secret env must be set")
 	}
@@ -288,6 +292,20 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: deepinfra key: %w", err)
 		}
 	}
+	var nebiusKey []byte
+	if nebiusSecret != "" {
+		nebiusKey, err = fetchSecret(ctx, httpc, token, project, nebiusSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: nebius key: %w", err)
+		}
+	}
+	var minimaxKey []byte
+	if minimaxSecret != "" {
+		minimaxKey, err = fetchSecret(ctx, httpc, token, project, minimaxSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: minimax key: %w", err)
+		}
+	}
 	var internalGatewayToken string
 	if internalSecret := os.Getenv("QUILL_TRUSTEDROUTER_INTERNAL_SECRET"); internalSecret != "" {
 		value, err := fetchSecret(ctx, httpc, token, project, internalSecret)
@@ -320,6 +338,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		LightningAPIKey:            strings.TrimSpace(string(lightningKey)),
 		GMIAPIKey:                  strings.TrimSpace(string(gmiKey)),
 		DeepInfraAPIKey:            strings.TrimSpace(string(deepinfraKey)),
+		NebiusAPIKey:               strings.TrimSpace(string(nebiusKey)),
+		MiniMaxAPIKey:              strings.TrimSpace(string(minimaxKey)),
 		TrustedRouterBaseURL:       os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken: strings.TrimSpace(internalGatewayToken),
 		// BedrockVsockProxy / OpenRouterVsockProxy unused on GCP — direct egress.

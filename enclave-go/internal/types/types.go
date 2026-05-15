@@ -72,6 +72,8 @@ type BootstrapData struct {
 	LightningAPIKey string `json:"lightning_api_key,omitempty"`
 	GMIAPIKey       string `json:"gmi_api_key,omitempty"`
 	DeepInfraAPIKey string `json:"deepinfra_api_key,omitempty"`
+	NebiusAPIKey    string `json:"nebius_api_key,omitempty"`
+	MiniMaxAPIKey   string `json:"minimax_api_key,omitempty"`
 
 	// Cross-cloud GCP service-account key (JSON, plaintext).
 	//

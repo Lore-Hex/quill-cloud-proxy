@@ -25,6 +25,8 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"cerebras", "meta-llama/llama-3.1-8b-instruct", "meta-llama/llama-3.1-8b-instruct", "llama3.1-8b"},
 		{"deepseek", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash", "deepseek-v4-flash"},
 		{"mistral", "mistralai/mistral-small-2603", "mistralai/mistral-small-2603", "mistral-small-2603"},
+		{"nebius", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B"},
+		{"minimax", "minimax/minimax-m2.7", "MiniMax-M2.7", "MiniMax-M2.7"},
 	}
 
 	for _, tt := range tests {
@@ -70,6 +72,8 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				cerebras: client,
 				deepseek: client,
 				mistral:  client,
+				nebius:   client,
+				minimax:  client,
 			}
 			req := &qtypes.OpenAIChatRequest{Model: tt.publicModel}
 			body := &qtypes.AnthropicMessagesRequest{

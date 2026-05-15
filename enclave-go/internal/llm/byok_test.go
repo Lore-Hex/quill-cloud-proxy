@@ -12,6 +12,18 @@ func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 		"gemini",
 		"zai",
 		"together",
+		"grok",
+		"novita",
+		"phala",
+		"siliconflow",
+		"tinfoil",
+		"venice",
+		"parasail",
+		"lightning",
+		"gmi",
+		"deepinfra",
+		"nebius",
+		"minimax",
 	} {
 		if !isOpenAICompatibleBYOKProvider(provider) {
 			t.Fatalf("%s should be an OpenAI-compatible BYOK provider", provider)
@@ -101,6 +113,10 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		{"novita", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash"},
 		{"novita", "qwen/qwen3.5-27b", "qwen/qwen3.5-27b"},
 		{"novita", "Sao10K/L3-8B-Stheno-v3.2", "Sao10K/L3-8B-Stheno-v3.2"},
+		{"nebius", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B"},
+		{"nebius", "deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Pro"},
+		{"minimax", "minimax/minimax-m2.7", "MiniMax-M2.7"},
+		{"minimax", "minimax/minimax-m2.7-highspeed", "MiniMax-M2.7-highspeed"},
 		// parasail — 2026-05-12 expansion to 31 models; sample
 		// covers each native-id pattern: parasail-* slug, mixed-
 		// case proprietary author paths, dot-versioned models.

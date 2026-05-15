@@ -671,6 +671,8 @@ allowlist:
   - {address: lightning.ai,                  port: 443}
   - {address: api.gmi-serving.com,           port: 443}
   - {address: api.deepinfra.com,             port: 443}
+  - {address: api.tokenfactory.nebius.com,   port: 443}
+  - {address: api.minimax.io,                port: 443}
   # GCP cross-cloud APIs — auth + Spanner + Bigtable + GCS (ACME cache)
   # + KMS (BYOK envelope-unwrap when an AWS-side request lands with a
   # customer-provided GCP-KMS-wrapped envelope).
@@ -750,6 +752,8 @@ write_vsock_unit 8018 api.parasail.io
 write_vsock_unit 8019 lightning.ai
 write_vsock_unit 8020 api.gmi-serving.com
 write_vsock_unit 8021 api.deepinfra.com
+write_vsock_unit 8022 api.tokenfactory.nebius.com
+write_vsock_unit 8023 api.minimax.io
 write_vsock_unit 8030 oauth2.googleapis.com
 write_vsock_unit 8031 spanner.googleapis.com
 write_vsock_unit 8032 bigtable.googleapis.com

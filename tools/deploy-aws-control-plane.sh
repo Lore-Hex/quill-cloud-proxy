@@ -468,6 +468,8 @@ cat > "$TASK_DEF_FILE" <<JSON
         {"name": "SILICON_FLOW_API_KEY",           "valueFrom": "$(sec trustedrouter-siliconflow-api-key)"},
         {"name": "TINFOIL_API_KEY",                "valueFrom": "$(sec trustedrouter-tinfoil-api-key)"},
         {"name": "VENICE_API_KEY",                 "valueFrom": "$(sec trustedrouter-venice-api-key)"},
+        {"name": "NEBIUS_API_KEY",                 "valueFrom": "$(sec trustedrouter-nebius-api-key)"},
+        {"name": "MINIMAX_API_KEY",                "valueFrom": "$(sec trustedrouter-minimax-api-key)"},
         {"name": "TR_GOOGLE_CLIENT_ID",            "valueFrom": "$(sec trustedrouter-google-client-id)"},
         {"name": "TR_GOOGLE_CLIENT_SECRET",        "valueFrom": "$(sec trustedrouter-google-client-secret)"},
         {"name": "TR_GITHUB_CLIENT_ID",            "valueFrom": "$(sec trustedrouter-github-client-id)"},
