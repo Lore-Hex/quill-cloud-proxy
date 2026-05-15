@@ -97,6 +97,10 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		// map, but strip-author still 404s on gemma-4)
 		{"novita", "google/gemma-4-31b-it", "google/gemma-4-31b-it"},
 		{"novita", "google/gemma-4-26b-a4b-it", "google/gemma-4-26b-a4b-it"},
+		{"novita", "moonshotai/kimi-k2.6", "moonshotai/kimi-k2.6"},
+		{"novita", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash"},
+		{"novita", "qwen/qwen3.5-27b", "qwen/qwen3.5-27b"},
+		{"novita", "Sao10K/L3-8B-Stheno-v3.2", "Sao10K/L3-8B-Stheno-v3.2"},
 		// parasail — 2026-05-12 expansion to 31 models; sample
 		// covers each native-id pattern: parasail-* slug, mixed-
 		// case proprietary author paths, dot-versioned models.
