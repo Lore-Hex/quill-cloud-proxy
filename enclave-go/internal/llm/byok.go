@@ -67,6 +67,9 @@ type openAICompatibleRequest struct {
 	Temperature         *float64 `json:"temperature,omitempty"`
 	TopP                *float64 `json:"top_p,omitempty"`
 	ResponseFormat      any      `json:"response_format,omitempty"`
+	Tools               []any    `json:"tools,omitempty"`
+	ToolChoice          any      `json:"tool_choice,omitempty"`
+	ParallelToolCalls   *bool    `json:"parallel_tool_calls,omitempty"`
 }
 
 // requiresMaxCompletionTokens returns true for OpenAI models that
@@ -162,12 +165,15 @@ func invokeOpenAICompatibleStreamingWithClient(
 	}
 	upstreamID := directModelID(provider, req.Model, upstreamModel)
 	reqBody := openAICompatibleRequest{
-		Model:          upstreamID,
-		Messages:       msgs,
-		Stream:         true,
-		Temperature:    body.Temperature,
-		TopP:           body.TopP,
-		ResponseFormat: req.ResponseFormat,
+		Model:             upstreamID,
+		Messages:          msgs,
+		Stream:            true,
+		Temperature:       body.Temperature,
+		TopP:              body.TopP,
+		ResponseFormat:    req.ResponseFormat,
+		Tools:             req.Tools,
+		ToolChoice:        req.ToolChoice,
+		ParallelToolCalls: req.ParallelTools,
 	}
 	// Per-model parameter rename: openai gpt-5.x rejects max_tokens
 	// and requires max_completion_tokens. Every other openai-compatible
@@ -224,13 +230,15 @@ func invokeAnthropicBYOKStreaming(
 		return err
 	}
 	reqBody := struct {
-		Model       string                    `json:"model"`
-		Messages    []qtypes.AnthropicMessage `json:"messages"`
-		System      string                    `json:"system,omitempty"`
-		MaxTokens   int                       `json:"max_tokens"`
-		Temperature *float64                  `json:"temperature,omitempty"`
-		TopP        *float64                  `json:"top_p,omitempty"`
-		Stream      bool                      `json:"stream"`
+		Model       string                      `json:"model"`
+		Messages    []qtypes.AnthropicMessage   `json:"messages"`
+		System      string                      `json:"system,omitempty"`
+		MaxTokens   int                         `json:"max_tokens"`
+		Temperature *float64                    `json:"temperature,omitempty"`
+		TopP        *float64                    `json:"top_p,omitempty"`
+		Tools       []qtypes.AnthropicTool      `json:"tools,omitempty"`
+		ToolChoice  *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
+		Stream      bool                        `json:"stream"`
 	}{
 		Model:       directModelID("anthropic", req.Model, upstreamModel),
 		Messages:    messages,
@@ -238,6 +246,8 @@ func invokeAnthropicBYOKStreaming(
 		MaxTokens:   body.MaxTokens,
 		Temperature: body.Temperature,
 		TopP:        body.TopP,
+		Tools:       body.Tools,
+		ToolChoice:  body.ToolChoice,
 		Stream:      true,
 	}
 	bodyBytes, err := json.Marshal(reqBody)

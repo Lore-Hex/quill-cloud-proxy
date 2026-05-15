@@ -89,6 +89,15 @@ func TestOpenAICompatibleRequestFetchesImagesInsideEnclave(t *testing.T) {
 			},
 		}},
 		ResponseFormat: map[string]any{"type": "json_object"},
+		Tools: []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":       "get_weather",
+				"parameters": map[string]any{"type": "object"},
+			},
+		}},
+		ToolChoice:    map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}},
+		ParallelTools: func() *bool { v := false; return &v }(),
 	}
 	anthropicReq := &qtypes.AnthropicMessagesRequest{
 		Messages: []qtypes.AnthropicMessage{{
@@ -130,8 +139,45 @@ func TestOpenAICompatibleRequestFetchesImagesInsideEnclave(t *testing.T) {
 	if responseFormat["type"] != "json_object" {
 		t.Fatalf("response_format = %#v, want json_object", responseFormat)
 	}
+	tools := captured["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one tool", tools)
+	}
+	choice := captured["tool_choice"].(map[string]any)
+	if choice["type"] != "function" {
+		t.Fatalf("tool_choice = %#v, want forced function", choice)
+	}
+	if captured["parallel_tool_calls"] != false {
+		t.Fatalf("parallel_tool_calls = %#v, want false", captured["parallel_tool_calls"])
+	}
 	if !strings.Contains(out.String(), "content_block_delta") {
 		t.Fatalf("stream was not translated: %s", out.String())
+	}
+}
+
+func TestOpenAICompatibleStreamTranslatesToolCalls(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"location\""}}]},"finish_reason":null}]}`,
+		``,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"Paris\"}"}}]},"finish_reason":null}]}`,
+		``,
+		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n"))
+	var out bytes.Buffer
+	if err := translateOpenAIStreamToAnthropic(stream, &out); err != nil {
+		t.Fatalf("translateOpenAIStreamToAnthropic: %v", err)
+	}
+	body := out.String()
+	for _, want := range []string{"content_block_start", "input_json_delta", "content_block_stop", `"stop_reason":"tool_use"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("translated stream missing %s: %s", want, body)
+		}
+	}
+	if !strings.Contains(body, `get_weather`) || !strings.Contains(body, `Paris`) {
+		t.Fatalf("tool call details missing: %s", body)
 	}
 }
 

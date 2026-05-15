@@ -143,6 +143,8 @@ type openRouterRequest struct {
 	Temperature *float64         `json:"temperature,omitempty"`
 	TopP        *float64         `json:"top_p,omitempty"`
 	Provider    *providerRouting `json:"provider,omitempty"`
+	Tools       []any            `json:"tools,omitempty"`
+	ToolChoice  any              `json:"tool_choice,omitempty"`
 }
 
 type openRouterMsg struct {
@@ -228,6 +230,8 @@ func (c *openRouterClient) invokeOne(
 		Temperature: body.Temperature,
 		TopP:        body.TopP,
 		Provider:    c.providerRouting(req),
+		Tools:       req.Tools,
+		ToolChoice:  req.ToolChoice,
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

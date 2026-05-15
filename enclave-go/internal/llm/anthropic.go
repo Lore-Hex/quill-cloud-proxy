@@ -118,13 +118,15 @@ func (c *anthropicClient) InvokeStreaming(
 	// Build the Anthropic Messages API body. Same shape as `body` but with
 	// the resolved upstream model id and `stream: true`.
 	reqBody := struct {
-		Model       string                    `json:"model"`
-		Messages    []qtypes.AnthropicMessage `json:"messages"`
-		System      string                    `json:"system,omitempty"`
-		MaxTokens   int                       `json:"max_tokens"`
-		Temperature *float64                  `json:"temperature,omitempty"`
-		TopP        *float64                  `json:"top_p,omitempty"`
-		Stream      bool                      `json:"stream"`
+		Model       string                      `json:"model"`
+		Messages    []qtypes.AnthropicMessage   `json:"messages"`
+		System      string                      `json:"system,omitempty"`
+		MaxTokens   int                         `json:"max_tokens"`
+		Temperature *float64                    `json:"temperature,omitempty"`
+		TopP        *float64                    `json:"top_p,omitempty"`
+		Tools       []qtypes.AnthropicTool      `json:"tools,omitempty"`
+		ToolChoice  *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
+		Stream      bool                        `json:"stream"`
 	}{
 		Model:       model,
 		Messages:    messages,
@@ -132,6 +134,8 @@ func (c *anthropicClient) InvokeStreaming(
 		MaxTokens:   body.MaxTokens,
 		Temperature: body.Temperature,
 		TopP:        body.TopP,
+		Tools:       body.Tools,
+		ToolChoice:  body.ToolChoice,
 		Stream:      true,
 	}
 	bodyBytes, err := json.Marshal(reqBody)

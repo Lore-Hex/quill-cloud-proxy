@@ -135,13 +135,15 @@ func (c *gcpClient) InvokeStreaming(
 	// Messages API except `anthropic_version` is in the body and `model`
 	// goes into the URL.
 	reqBody := struct {
-		AnthropicVersion string                    `json:"anthropic_version"`
-		Messages         []qtypes.AnthropicMessage `json:"messages"`
-		System           string                    `json:"system,omitempty"`
-		MaxTokens        int                       `json:"max_tokens"`
-		Temperature      *float64                  `json:"temperature,omitempty"`
-		TopP             *float64                  `json:"top_p,omitempty"`
-		Stream           bool                      `json:"stream"`
+		AnthropicVersion string                      `json:"anthropic_version"`
+		Messages         []qtypes.AnthropicMessage   `json:"messages"`
+		System           string                      `json:"system,omitempty"`
+		MaxTokens        int                         `json:"max_tokens"`
+		Temperature      *float64                    `json:"temperature,omitempty"`
+		TopP             *float64                    `json:"top_p,omitempty"`
+		Tools            []qtypes.AnthropicTool      `json:"tools,omitempty"`
+		ToolChoice       *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
+		Stream           bool                        `json:"stream"`
 	}{
 		AnthropicVersion: vertexAnthropicVersion,
 		Messages:         messages,
@@ -149,6 +151,8 @@ func (c *gcpClient) InvokeStreaming(
 		MaxTokens:        body.MaxTokens,
 		Temperature:      body.Temperature,
 		TopP:             body.TopP,
+		Tools:            body.Tools,
+		ToolChoice:       body.ToolChoice,
 		Stream:           true,
 	}
 	bodyBytes, err := json.Marshal(reqBody)

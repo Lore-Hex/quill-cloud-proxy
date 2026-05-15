@@ -24,6 +24,8 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 
 	stopReason := "end_turn"
+	toolCalls := map[int]*openAIToolCallAccumulator{}
+	var toolOrder []int
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -49,6 +51,15 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 					// the chain-of-thought inline; that's strictly more
 					// information than the empty-string alternative.)
 					ReasoningContent string `json:"reasoning_content"`
+					ToolCalls        []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
@@ -70,6 +81,30 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 				return err
 			}
 		}
+		for _, delta := range choice.Delta.ToolCalls {
+			call := toolCalls[delta.Index]
+			if call == nil {
+				id := delta.ID
+				if id == "" {
+					id = fmt.Sprintf("call_%d", delta.Index)
+				}
+				call = &openAIToolCallAccumulator{ID: id, Name: delta.Function.Name}
+				toolCalls[delta.Index] = call
+				toolOrder = append(toolOrder, delta.Index)
+				if err := writeAnthropicToolStart(w, delta.Index, call.ID, call.Name); err != nil {
+					return err
+				}
+			}
+			if call.Name == "" && delta.Function.Name != "" {
+				call.Name = delta.Function.Name
+			}
+			if delta.Function.Arguments != "" {
+				call.Arguments += delta.Function.Arguments
+				if err := writeAnthropicToolDelta(w, delta.Index, delta.Function.Arguments); err != nil {
+					return err
+				}
+			}
+		}
 		if choice.FinishReason != nil && *choice.FinishReason != "" {
 			stopReason = mapOpenAIFinishReason(*choice.FinishReason)
 		}
@@ -78,7 +113,18 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 		return fmt.Errorf("llm/openai-stream: scan: %w", err)
 	}
 
+	for _, index := range toolOrder {
+		if err := writeAnthropicToolStop(w, index); err != nil {
+			return err
+		}
+	}
 	return writeAnthropicStop(w, stopReason)
+}
+
+type openAIToolCallAccumulator struct {
+	ID        string
+	Name      string
+	Arguments string
 }
 
 func writeAnthropicTextDelta(w io.Writer, text string) error {
@@ -89,6 +135,46 @@ func writeAnthropicTextDelta(w io.Writer, text string) error {
 	}
 	body, _ := json.Marshal(payload)
 	_, err := fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", body)
+	return err
+}
+
+func writeAnthropicToolStart(w io.Writer, index int, id string, name string) error {
+	payload := map[string]any{
+		"type":  "content_block_start",
+		"index": index,
+		"content_block": map[string]any{
+			"type":  "tool_use",
+			"id":    id,
+			"name":  name,
+			"input": map[string]any{},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	_, err := fmt.Fprintf(w, "event: content_block_start\ndata: %s\n\n", body)
+	return err
+}
+
+func writeAnthropicToolDelta(w io.Writer, index int, partialJSON string) error {
+	payload := map[string]any{
+		"type":  "content_block_delta",
+		"index": index,
+		"delta": map[string]any{
+			"type":         "input_json_delta",
+			"partial_json": partialJSON,
+		},
+	}
+	body, _ := json.Marshal(payload)
+	_, err := fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", body)
+	return err
+}
+
+func writeAnthropicToolStop(w io.Writer, index int) error {
+	payload := map[string]any{
+		"type":  "content_block_stop",
+		"index": index,
+	}
+	body, _ := json.Marshal(payload)
+	_, err := fmt.Fprintf(w, "event: content_block_stop\ndata: %s\n\n", body)
 	return err
 }
 

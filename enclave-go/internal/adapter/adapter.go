@@ -85,8 +85,86 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 	if len(systemParts) > 0 {
 		out.System = strings.Join(systemParts, "\n\n")
 	}
+	tools, err := AnthropicToolsFromChatTools(req.Tools)
+	if err != nil {
+		return nil, err
+	}
+	out.Tools = tools
+	toolChoice, err := AnthropicToolChoiceFromChat(req.ToolChoice)
+	if err != nil {
+		return nil, err
+	}
+	out.ToolChoice = toolChoice
 	_ = defaultModel // model is only used for response chunks, not the body
 	return out, nil
+}
+
+func AnthropicToolsFromChatTools(tools []any) ([]types.AnthropicTool, error) {
+	if len(tools) == 0 {
+		return nil, nil
+	}
+	out := make([]types.AnthropicTool, 0, len(tools))
+	for _, tool := range tools {
+		m, ok := tool.(map[string]any)
+		if !ok {
+			return nil, &AdapterError{Status: 400, Message: "tool must be an object", Context: "tools"}
+		}
+		if stringValue(m["type"]) != "function" {
+			return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools"}
+		}
+		fn, ok := m["function"].(map[string]any)
+		if !ok {
+			return nil, &AdapterError{Status: 400, Message: "function tool is missing function object", Context: "tools.function"}
+		}
+		name := strings.TrimSpace(stringValue(fn["name"]))
+		if name == "" {
+			return nil, &AdapterError{Status: 400, Message: "function tool name is required", Context: "tools.function.name"}
+		}
+		schema, ok := fn["parameters"].(map[string]any)
+		if !ok || len(schema) == 0 {
+			schema = map[string]any{"type": "object", "properties": map[string]any{}}
+		}
+		out = append(out, types.AnthropicTool{
+			Name:        name,
+			Description: stringValue(fn["description"]),
+			InputSchema: schema,
+		})
+	}
+	return out, nil
+}
+
+func AnthropicToolChoiceFromChat(choice any) (*types.AnthropicToolChoice, error) {
+	switch value := choice.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		switch value {
+		case "", "auto":
+			return &types.AnthropicToolChoice{Type: "auto"}, nil
+		case "none":
+			return nil, nil
+		case "required":
+			return &types.AnthropicToolChoice{Type: "any"}, nil
+		default:
+			return nil, &AdapterError{Status: 400, Message: "invalid tool_choice", Context: "tool_choice"}
+		}
+	case map[string]any:
+		if stringValue(value["type"]) != "function" {
+			return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tool_choice"}
+		}
+		name := stringValue(value["name"])
+		if name == "" {
+			if fn, ok := value["function"].(map[string]any); ok {
+				name = stringValue(fn["name"])
+			}
+		}
+		if strings.TrimSpace(name) == "" {
+			return nil, &AdapterError{Status: 400, Message: "function tool_choice name is required", Context: "tool_choice.name"}
+		}
+		return &types.AnthropicToolChoice{Type: "tool", Name: name}, nil
+	default:
+		return nil, &AdapterError{Status: 400, Message: "invalid tool_choice", Context: "tool_choice"}
+	}
 }
 
 // TransformStream reads native-Anthropic SSE events from `r` and writes
@@ -101,6 +179,7 @@ func TransformStream(r io.Reader, w io.Writer, requestID, model string) error {
 type StreamResult struct {
 	Text         string
 	FinishReason string
+	ToolCalls    []types.ToolCall
 }
 
 func WriteChatCompletionResponse(
@@ -251,6 +330,21 @@ func getString(m map[string]any, key string) string {
 	}
 	s, _ := v.(string)
 	return s
+}
+
+func getInt(m map[string]any, key string) int {
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch value := v.(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	default:
+		return 0
+	}
 }
 
 func mapStopReason(reason string) string {

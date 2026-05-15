@@ -545,33 +545,36 @@ func serveResponsesNonStreaming(
 		writeError(conn, 502, "provider error")
 		return
 	}
-	if normalized, err := adapter.NormalizeResponsesStructuredOutput(result.Text, responseTextConfig(req)); err != nil {
-		var aerr *adapter.AdapterError
-		if asAdapterErr(err, &aerr) {
-			fmt.Fprintf(os.Stderr, "enclave.responses_structured_output_failed model=%q context=%q\n", req.Model, aerr.Context)
-			if trGateway != nil && trGateway.Enabled() {
-				_ = trGateway.Refund(ctx, authorization, aerr.Status, "provider_structured_output_error", time.Since(requestStarted).Seconds())
+	if len(result.ToolCalls) == 0 {
+		if normalized, err := adapter.NormalizeResponsesStructuredOutput(result.Text, responseTextConfig(req)); err != nil {
+			var aerr *adapter.AdapterError
+			if asAdapterErr(err, &aerr) {
+				fmt.Fprintf(os.Stderr, "enclave.responses_structured_output_failed model=%q context=%q\n", req.Model, aerr.Context)
+				if trGateway != nil && trGateway.Enabled() {
+					_ = trGateway.Refund(ctx, authorization, aerr.Status, "provider_structured_output_error", time.Since(requestStarted).Seconds())
+				}
+				writeAdapterOpenAIError(conn, aerr)
+				return
 			}
-			writeAdapterOpenAIError(conn, aerr)
+			if trGateway != nil && trGateway.Enabled() {
+				_ = trGateway.Refund(ctx, authorization, 502, "provider_structured_output_error", time.Since(requestStarted).Seconds())
+			}
+			writeError(conn, 502, "provider structured output error")
 			return
+		} else {
+			result.Text = normalized
 		}
-		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, 502, "provider_structured_output_error", time.Since(requestStarted).Seconds())
-		}
-		writeError(conn, 502, "provider structured output error")
-		return
-	} else {
-		result.Text = normalized
 	}
 	inputTokens := trustedrouter.EstimateInputTokens(req)
-	outputTokens := trustedrouter.EstimateOutputTokens(result.Text)
+	outputForUsage := adapter.ResponsesOutputForUsage(result)
+	outputTokens := trustedrouter.EstimateOutputTokens(outputForUsage)
 	selectedModel := selectedRoute.Model(req.Model, authorization)
 	selectedEndpoint := selectedRoute.Endpoint("", authorization)
 	if selectedModel != "" {
 		req.Model = selectedModel
 	}
 	var body bytes.Buffer
-	if err := adapter.WriteResponsesResponse(&body, requestID, req.Model, result.Text, inputTokens, outputTokens, time.Now().Unix(), responseTextConfig(req)); err != nil {
+	if err := adapter.WriteResponsesResponse(&body, requestID, req.Model, result.Text, result.ToolCalls, inputTokens, outputTokens, time.Now().Unix(), responseTextConfig(req), req.Response); err != nil {
 		writeError(conn, 500, "responses encoding error")
 		return
 	}
@@ -592,7 +595,7 @@ func serveResponsesNonStreaming(
 		Trace:             req.Trace,
 		Metadata:          req.Metadata,
 	}
-	if _, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text); err != nil {
+	if _, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, outputForUsage); err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_settle_failed model=%q err=%v\n", req.Model, err)
 		writeError(conn, 502, "settlement failed")
 		return
@@ -714,7 +717,7 @@ func serveStreaming(
 	var result adapter.StreamResult
 	var err error
 	if routeType == "responses" {
-		result, err = adapter.TransformResponsesStream(pr, statsW, requestID, req.Model, trustedrouter.EstimateInputTokens(req), responseTextConfig(req))
+		result, err = adapter.TransformResponsesStream(pr, statsW, requestID, req.Model, trustedrouter.EstimateInputTokens(req), responseTextConfig(req), req.Response)
 	} else {
 		result, err = adapter.TransformStreamCapture(pr, statsW, requestID, req.Model)
 	}
@@ -731,7 +734,7 @@ func serveStreaming(
 	usage := trustedrouter.Usage{
 		RequestID:         requestID,
 		InputTokens:       trustedrouter.EstimateInputTokens(req),
-		OutputTokens:      trustedrouter.EstimateOutputTokens(result.Text),
+		OutputTokens:      trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
 		ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
 		FirstTokenSeconds: statsW.FirstWriteSeconds(requestStarted),
 		UsageEstimated:    true,
@@ -753,7 +756,7 @@ func serveStreaming(
 		usage,
 		req,
 		originalInput,
-		result.Text,
+		adapter.ResponsesOutputForUsage(result),
 	); err != nil {
 		fmt.Fprintf(os.Stderr,
 			"enclave.stream_settle_failed request_log_id=%q request_id=%q model=%q route_type=%q err=%v\n",
@@ -770,7 +773,7 @@ func serveStreaming(
 			usage:         usage,
 			req:           req,
 			originalInput: originalInput,
-			output:        result.Text,
+			output:        adapter.ResponsesOutputForUsage(result),
 			requestLogID:  requestLogID,
 		})
 	}

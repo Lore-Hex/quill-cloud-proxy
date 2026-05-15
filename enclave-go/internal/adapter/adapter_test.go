@@ -301,8 +301,8 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 			wantStatus:  501,
 		},
 		{
-			name:        "function tools are explicitly stubbed",
-			body:        `{"model":"m","input":"hi","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`,
+			name:        "hosted tools are explicitly stubbed",
+			body:        `{"model":"m","input":"hi","tools":[{"type":"web_search_preview"}]}`,
 			wantContext: "tools",
 			wantStatus:  501,
 		},
@@ -324,6 +324,171 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 				t.Fatalf("adapter error = status %d context %q, want status %d context %q", aerr.Status, aerr.Context, tc.wantStatus, tc.wantContext)
 			}
 		})
+	}
+}
+
+func TestResponsesToChatMapsFunctionTools(t *testing.T) {
+	req := &types.OpenAIResponsesRequest{
+		Model: "moonshotai/kimi-k2.6",
+		Input: "Check the weather in Paris.",
+		Tools: []any{map[string]any{
+			"type":        "function",
+			"name":        "get_weather",
+			"description": "Get weather.",
+			"parameters": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"location": map[string]any{"type": "string"},
+				},
+				"required": []any{"location"},
+			},
+			"strict": true,
+		}},
+		ToolChoice: map[string]any{"type": "function", "name": "get_weather"},
+	}
+
+	chat, err := ResponsesToChat(req)
+	if err != nil {
+		t.Fatalf("ResponsesToChat: %v", err)
+	}
+	if len(chat.Tools) != 1 {
+		t.Fatalf("tools = %d, want 1", len(chat.Tools))
+	}
+	tool := chat.Tools[0].(map[string]any)
+	fn := tool["function"].(map[string]any)
+	if tool["type"] != "function" || fn["name"] != "get_weather" || fn["strict"] != true {
+		t.Fatalf("bad chat tool: %#v", tool)
+	}
+	choice := chat.ToolChoice.(map[string]any)
+	choiceFn := choice["function"].(map[string]any)
+	if choice["type"] != "function" || choiceFn["name"] != "get_weather" {
+		t.Fatalf("bad tool choice: %#v", choice)
+	}
+}
+
+func TestCollectAnthropicTextCapturesToolUse(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_1","name":"get_weather","input":{}}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"location\""}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\"Paris\"}"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n"))
+
+	result, err := CollectAnthropicText(stream)
+	if err != nil {
+		t.Fatalf("CollectAnthropicText: %v", err)
+	}
+	if result.FinishReason != "tool_calls" {
+		t.Fatalf("finish reason = %q, want tool_calls", result.FinishReason)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v, want one", result.ToolCalls)
+	}
+	call := result.ToolCalls[0]
+	if call.ID != "call_1" || call.Name != "get_weather" || call.Arguments != `{"location":"Paris"}` {
+		t.Fatalf("tool call = %#v", call)
+	}
+}
+
+func TestWriteResponsesResponseIncludesFunctionCallOutput(t *testing.T) {
+	var out bytes.Buffer
+	meta := &types.ResponseRequestMeta{
+		Tools: []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":       "get_weather",
+				"parameters": map[string]any{"type": "object"},
+			},
+		}},
+		ToolChoice: "auto",
+	}
+	err := WriteResponsesResponse(
+		&out,
+		"resp_test",
+		"moonshotai/kimi-k2.6",
+		"",
+		[]types.ToolCall{{ID: "call_1", CallID: "call_1", Name: "get_weather", Arguments: `{"location":"Paris"}`}},
+		12,
+		8,
+		123,
+		nil,
+		meta,
+	)
+	if err != nil {
+		t.Fatalf("WriteResponsesResponse: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	output := payload["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("output = %#v, want one function_call", output)
+	}
+	call := output[0].(map[string]any)
+	if call["type"] != "function_call" || call["name"] != "get_weather" || call["arguments"] != `{"location":"Paris"}` {
+		t.Fatalf("bad function_call output: %#v", call)
+	}
+	if len(payload["tools"].([]any)) != 1 {
+		t.Fatalf("tools not echoed: %#v", payload["tools"])
+	}
+}
+
+func TestTransformResponsesStreamEmitsFunctionCallEvents(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_1","name":"get_weather","input":{}}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"location\":\"Paris\"}"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n"))
+	var out bytes.Buffer
+	result, err := TransformResponsesStream(stream, &out, "resp_test", "moonshotai/kimi-k2.6", 10, nil, nil)
+	if err != nil {
+		t.Fatalf("TransformResponsesStream: %v", err)
+	}
+	body := out.String()
+	for _, want := range []string{
+		"response.output_item.added",
+		"response.function_call_arguments.delta",
+		"response.function_call_arguments.done",
+		"response.output_item.done",
+		"response.completed",
+		"data: [DONE]",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream missing %s: %s", want, body)
+		}
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].Name != "get_weather" {
+		t.Fatalf("result tool calls = %#v", result.ToolCalls)
+	}
+	if strings.Contains(body, "response.output_text.delta") {
+		t.Fatalf("tool-only stream should not emit empty text deltas: %s", body)
 	}
 }
 

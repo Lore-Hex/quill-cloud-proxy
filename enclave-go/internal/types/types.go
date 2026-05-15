@@ -137,6 +137,9 @@ type OpenAIChatRequest struct {
 	User           string               `json:"user,omitempty"`
 	SessionID      string               `json:"session_id,omitempty"`
 	ResponseFormat map[string]any       `json:"response_format,omitempty"`
+	Tools          []any                `json:"tools,omitempty"`
+	ToolChoice     any                  `json:"tool_choice,omitempty"`
+	ParallelTools  *bool                `json:"parallel_tool_calls,omitempty"`
 	Response       *ResponseRequestMeta `json:"-"`
 	IdempotencyKey string               `json:"-"`
 }
@@ -233,6 +236,13 @@ type ResponseRequestMeta struct {
 	Store                bool
 }
 
+type ToolCall struct {
+	ID        string
+	CallID    string
+	Name      string
+	Arguments string
+}
+
 // ProviderRouting mirrors the OpenRouter provider-routing object closely
 // enough to preserve caller intent without committing the gateway to every
 // future OpenRouter knob. Unknown fields are intentionally ignored at the
@@ -259,10 +269,23 @@ type AnthropicMessage struct {
 // InvokeModelWithResponseStream endpoint. Bedrock's body is identical to
 // native Anthropic; we just include the bedrock-specific anthropic_version.
 type AnthropicMessagesRequest struct {
-	AnthropicVersion string             `json:"anthropic_version"`
-	System           string             `json:"system,omitempty"`
-	Messages         []AnthropicMessage `json:"messages"`
-	MaxTokens        int                `json:"max_tokens"`
-	Temperature      *float64           `json:"temperature,omitempty"`
-	TopP             *float64           `json:"top_p,omitempty"`
+	AnthropicVersion string               `json:"anthropic_version"`
+	System           string               `json:"system,omitempty"`
+	Messages         []AnthropicMessage   `json:"messages"`
+	MaxTokens        int                  `json:"max_tokens"`
+	Temperature      *float64             `json:"temperature,omitempty"`
+	TopP             *float64             `json:"top_p,omitempty"`
+	Tools            []AnthropicTool      `json:"tools,omitempty"`
+	ToolChoice       *AnthropicToolChoice `json:"tool_choice,omitempty"`
+}
+
+type AnthropicTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"input_schema"`
+}
+
+type AnthropicToolChoice struct {
+	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
 }
