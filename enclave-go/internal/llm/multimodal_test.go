@@ -150,6 +150,10 @@ func TestOpenAICompatibleRequestFetchesImagesInsideEnclave(t *testing.T) {
 	if captured["parallel_tool_calls"] != false {
 		t.Fatalf("parallel_tool_calls = %#v, want false", captured["parallel_tool_calls"])
 	}
+	thinking := captured["thinking"].(map[string]any)
+	if thinking["type"] != "disabled" {
+		t.Fatalf("thinking = %#v, want disabled for Kimi tool calls", thinking)
+	}
 	if !strings.Contains(out.String(), "content_block_delta") {
 		t.Fatalf("stream was not translated: %s", out.String())
 	}

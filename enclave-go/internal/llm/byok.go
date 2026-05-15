@@ -70,6 +70,7 @@ type openAICompatibleRequest struct {
 	Tools               []any    `json:"tools,omitempty"`
 	ToolChoice          any      `json:"tool_choice,omitempty"`
 	ParallelToolCalls   *bool    `json:"parallel_tool_calls,omitempty"`
+	Thinking            any      `json:"thinking,omitempty"`
 }
 
 // requiresMaxCompletionTokens returns true for OpenAI models that
@@ -175,6 +176,9 @@ func invokeOpenAICompatibleStreamingWithClient(
 		ToolChoice:        req.ToolChoice,
 		ParallelToolCalls: req.ParallelTools,
 	}
+	if kimiToolsNeedThinkingDisabled(provider, upstreamID, req.Tools) {
+		reqBody.Thinking = map[string]string{"type": "disabled"}
+	}
 	// Per-model parameter rename: openai gpt-5.x rejects max_tokens
 	// and requires max_completion_tokens. Every other openai-compatible
 	// provider (and pre-5.x openai models) still wants max_tokens.
@@ -215,6 +219,14 @@ func invokeOpenAICompatibleStreamingWithClient(
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
 	return translateOpenAIStreamToAnthropic(resp.Body, out)
+}
+
+func kimiToolsNeedThinkingDisabled(provider, modelID string, tools []any) bool {
+	if provider != "kimi" || len(tools) == 0 {
+		return false
+	}
+	model := strings.ToLower(modelID)
+	return strings.Contains(model, "k2.6") || strings.Contains(model, "k2.5")
 }
 
 func invokeAnthropicBYOKStreaming(
