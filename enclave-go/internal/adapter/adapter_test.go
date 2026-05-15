@@ -265,8 +265,8 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 		wantStatus  int
 	}{
 		{
-			name:        "unknown formatting field",
-			body:        `{"model":"m","input":"hi","text":{"format":{"type":"json_object"}}}`,
+			name:        "unsupported formatting field",
+			body:        `{"model":"m","input":"hi","text":{"format":{"type":"xml"}}}`,
 			wantContext: "text.format",
 			wantStatus:  501,
 		},
@@ -324,6 +324,59 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 				t.Fatalf("adapter error = status %d context %q, want status %d context %q", aerr.Status, aerr.Context, tc.wantStatus, tc.wantContext)
 			}
 		})
+	}
+}
+
+func TestResponsesToChatMapsStructuredTextFormat(t *testing.T) {
+	req := &types.OpenAIResponsesRequest{
+		Model: "moonshotai/kimi-k2.6",
+		Input: "Return JSON only.",
+		Text: map[string]any{
+			"format": map[string]any{
+				"type":   "json_schema",
+				"name":   "order_status",
+				"strict": true,
+				"schema": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"status": map[string]any{"type": "string"},
+					},
+					"required": []any{"status"},
+				},
+			},
+		},
+	}
+
+	chat, err := ResponsesToChat(req)
+	if err != nil {
+		t.Fatalf("ResponsesToChat: %v", err)
+	}
+	if chat.ResponseFormat["type"] != "json_schema" {
+		t.Fatalf("response_format type = %#v, want json_schema", chat.ResponseFormat)
+	}
+	jsonSchema := chat.ResponseFormat["json_schema"].(map[string]any)
+	if jsonSchema["name"] != "order_status" || jsonSchema["strict"] != true {
+		t.Fatalf("json_schema metadata = %#v", jsonSchema)
+	}
+	schema := jsonSchema["schema"].(map[string]any)
+	if schema["type"] != "object" {
+		t.Fatalf("schema = %#v", schema)
+	}
+}
+
+func TestResponsesToChatMapsJSONObjectFormat(t *testing.T) {
+	req := &types.OpenAIResponsesRequest{
+		Model: "moonshotai/kimi-k2.6",
+		Input: "Return JSON only.",
+		Text:  map[string]any{"format": map[string]any{"type": "json_object"}},
+	}
+
+	chat, err := ResponsesToChat(req)
+	if err != nil {
+		t.Fatalf("ResponsesToChat: %v", err)
+	}
+	if chat.ResponseFormat["type"] != "json_object" {
+		t.Fatalf("response_format = %#v, want json_object", chat.ResponseFormat)
 	}
 }
 

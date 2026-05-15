@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -49,6 +53,85 @@ func TestAnthropicMessagesFetchesDataURLImagesInsideEnclave(t *testing.T) {
 	}
 	if strings.Contains(source["data"].(string), "data:image") {
 		t.Fatalf("source leaked raw data URL: %#v", source)
+	}
+}
+
+func TestOpenAICompatibleRequestFetchesImagesInsideEnclave(t *testing.T) {
+	imageURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(testPNG(t))
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		if err := json.Unmarshal(body, &captured); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`,
+			``,
+			`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			``,
+			`data: [DONE]`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	req := &qtypes.OpenAIChatRequest{
+		Model: "moonshotai/kimi-k2.6",
+		Messages: []qtypes.OpenAIChatMessage{{
+			Role: "user",
+			Content: []qtypes.ChatContentPart{
+				{Type: "text", Text: "describe"},
+				{Type: "image_url", ImageURL: &qtypes.ChatImageURL{URL: imageURL, Detail: "low"}},
+			},
+		}},
+		ResponseFormat: map[string]any{"type": "json_object"},
+	}
+	anthropicReq := &qtypes.AnthropicMessagesRequest{
+		Messages: []qtypes.AnthropicMessage{{
+			Role:    "user",
+			Content: req.Messages[0].Content,
+		}},
+		MaxTokens: 16,
+	}
+	var out bytes.Buffer
+	if err := invokeOpenAICompatibleStreamingWithClient(
+		t.Context(),
+		server.Client(),
+		"kimi",
+		server.URL,
+		"operator-key",
+		req,
+		anthropicReq,
+		&out,
+		"moonshotai/kimi-k2.6",
+	); err != nil {
+		t.Fatalf("invokeOpenAICompatibleStreamingWithClient: %v", err)
+	}
+
+	messages := captured["messages"].([]any)
+	content := messages[0].(map[string]any)["content"].([]any)
+	imagePart := content[1].(map[string]any)
+	imageURLBlock := imagePart["image_url"].(map[string]any)
+	gotURL := imageURLBlock["url"].(string)
+	if !strings.HasPrefix(gotURL, "data:image/png;base64,") {
+		t.Fatalf("image URL = %.32q, want normalized data URL", gotURL)
+	}
+	if strings.Contains(gotURL, "example.com") {
+		t.Fatalf("raw remote image URL leaked upstream: %s", gotURL)
+	}
+	if imageURLBlock["detail"] != "low" {
+		t.Fatalf("image detail = %#v, want low", imageURLBlock["detail"])
+	}
+	responseFormat := captured["response_format"].(map[string]any)
+	if responseFormat["type"] != "json_object" {
+		t.Fatalf("response_format = %#v, want json_object", responseFormat)
+	}
+	if !strings.Contains(out.String(), "content_block_delta") {
+		t.Fatalf("stream was not translated: %s", out.String())
 	}
 }
 

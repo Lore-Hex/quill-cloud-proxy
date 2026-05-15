@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -65,6 +66,7 @@ type openAICompatibleRequest struct {
 	MaxCompletionTokens int      `json:"max_completion_tokens,omitempty"`
 	Temperature         *float64 `json:"temperature,omitempty"`
 	TopP                *float64 `json:"top_p,omitempty"`
+	ResponseFormat      any      `json:"response_format,omitempty"`
 }
 
 // requiresMaxCompletionTokens returns true for OpenAI models that
@@ -154,14 +156,18 @@ func invokeOpenAICompatibleStreamingWithClient(
 	if strings.TrimSpace(baseURL) == "" {
 		return fmt.Errorf("llm/%s: missing base URL", provider)
 	}
-	msgs := openAICompatibleMessages(body)
+	msgs, err := openAICompatibleMessagesWithFetchedImages(ctx, body)
+	if err != nil {
+		return err
+	}
 	upstreamID := directModelID(provider, req.Model, upstreamModel)
 	reqBody := openAICompatibleRequest{
-		Model:       upstreamID,
-		Messages:    msgs,
-		Stream:      true,
-		Temperature: body.Temperature,
-		TopP:        body.TopP,
+		Model:          upstreamID,
+		Messages:       msgs,
+		Stream:         true,
+		Temperature:    body.Temperature,
+		TopP:           body.TopP,
+		ResponseFormat: req.ResponseFormat,
 	}
 	// Per-model parameter rename: openai gpt-5.x rejects max_tokens
 	// and requires max_completion_tokens. Every other openai-compatible
@@ -263,15 +269,89 @@ func invokeAnthropicBYOKStreaming(
 	return err
 }
 
-func openAICompatibleMessages(body *qtypes.AnthropicMessagesRequest) []chatMessage {
+func openAICompatibleMessagesWithFetchedImages(
+	ctx context.Context,
+	body *qtypes.AnthropicMessagesRequest,
+) ([]chatMessage, error) {
 	msgs := make([]chatMessage, 0, len(body.Messages)+1)
 	if body.System != "" {
 		msgs = append(msgs, chatMessage{Role: "system", Content: body.System})
 	}
 	for _, message := range body.Messages {
-		msgs = append(msgs, chatMessage{Role: message.Role, Content: message.Content})
+		content, err := openAICompatibleContentWithFetchedImages(ctx, message.Content)
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, chatMessage{Role: message.Role, Content: content})
 	}
-	return msgs
+	return msgs, nil
+}
+
+func openAICompatibleContentWithFetchedImages(ctx context.Context, content any) (any, error) {
+	switch value := content.(type) {
+	case string:
+		return value, nil
+	case []qtypes.ChatContentPart:
+		return openAICompatiblePartsWithFetchedImages(ctx, value)
+	case []any:
+		parts := make([]qtypes.ChatContentPart, 0, len(value))
+		for _, item := range value {
+			part, err := chatPartFromAny(item)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, part)
+		}
+		return openAICompatiblePartsWithFetchedImages(ctx, parts)
+	default:
+		return content, nil
+	}
+}
+
+func openAICompatiblePartsWithFetchedImages(
+	ctx context.Context,
+	parts []qtypes.ChatContentPart,
+) ([]map[string]any, error) {
+	out := make([]map[string]any, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case "", "text", "input_text":
+			if strings.TrimSpace(part.Text) != "" {
+				out = append(out, map[string]any{"type": "text", "text": part.Text})
+			}
+		case "image_url", "input_image":
+			if part.ImageURL == nil || strings.TrimSpace(part.ImageURL.URL) == "" {
+				return nil, fmt.Errorf("llm/image: image_url is required")
+			}
+			dataURL, err := openAICompatibleImageDataURL(ctx, part.ImageURL.URL)
+			if err != nil {
+				return nil, err
+			}
+			imageURL := map[string]any{"url": dataURL}
+			if strings.TrimSpace(part.ImageURL.Detail) != "" {
+				imageURL["detail"] = part.ImageURL.Detail
+			}
+			out = append(out, map[string]any{
+				"type":      "image_url",
+				"image_url": imageURL,
+			})
+		default:
+			return nil, fmt.Errorf("llm/image: unsupported content part %q", part.Type)
+		}
+	}
+	return out, nil
+}
+
+func openAICompatibleImageDataURL(ctx context.Context, raw string) (string, error) {
+	mediaType, data, err := loadImageBytes(ctx, raw)
+	if err != nil {
+		return "", err
+	}
+	normalizedType, normalizedData, err := normalizeImageBytes(mediaType, data)
+	if err != nil {
+		return "", err
+	}
+	return "data:" + normalizedType + ";base64," + base64.StdEncoding.EncodeToString(normalizedData), nil
 }
 
 func directBaseURL(provider string) string {

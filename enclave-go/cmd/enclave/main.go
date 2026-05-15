@@ -511,6 +511,13 @@ func serveResponsesInputTokens(conn io.Writer, body []byte) {
 	writeJSONResponse(conn, 200, out.Bytes())
 }
 
+func responseTextConfig(req *types.OpenAIChatRequest) map[string]any {
+	if req == nil || req.Response == nil {
+		return nil
+	}
+	return req.Response.Text
+}
+
 func serveResponsesNonStreaming(
 	ctx context.Context,
 	conn io.Writer,
@@ -546,7 +553,7 @@ func serveResponsesNonStreaming(
 		req.Model = selectedModel
 	}
 	var body bytes.Buffer
-	if err := adapter.WriteResponsesResponse(&body, requestID, req.Model, result.Text, inputTokens, outputTokens, time.Now().Unix()); err != nil {
+	if err := adapter.WriteResponsesResponse(&body, requestID, req.Model, result.Text, inputTokens, outputTokens, time.Now().Unix(), responseTextConfig(req)); err != nil {
 		writeError(conn, 500, "responses encoding error")
 		return
 	}
@@ -689,7 +696,7 @@ func serveStreaming(
 	var result adapter.StreamResult
 	var err error
 	if routeType == "responses" {
-		result, err = adapter.TransformResponsesStream(pr, statsW, requestID, req.Model, trustedrouter.EstimateInputTokens(req))
+		result, err = adapter.TransformResponsesStream(pr, statsW, requestID, req.Model, trustedrouter.EstimateInputTokens(req), responseTextConfig(req))
 	} else {
 		result, err = adapter.TransformStreamCapture(pr, statsW, requestID, req.Model)
 	}

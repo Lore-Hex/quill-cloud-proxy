@@ -143,6 +143,10 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 	if strings.TrimSpace(req.Model) == "" {
 		return nil, &AdapterError{Status: 400, Message: "model is required"}
 	}
+	responseFormat, err := chatResponseFormatFromResponsesText(req.Text)
+	if err != nil {
+		return nil, err
+	}
 	messages := make([]types.OpenAIChatMessage, 0, 4)
 	if strings.TrimSpace(req.Instructions) != "" {
 		messages = append(messages, types.OpenAIChatMessage{
@@ -163,18 +167,19 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 		maxTokens = req.MaxTokens
 	}
 	return &types.OpenAIChatRequest{
-		Model:       req.Model,
-		Models:      req.Models,
-		Messages:    messages,
-		Stream:      req.Stream,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		MaxTokens:   maxTokens,
-		Provider:    req.Provider,
-		Metadata:    req.Metadata,
-		Trace:       req.Trace,
-		User:        req.User,
-		SessionID:   req.SessionID,
+		Model:          req.Model,
+		Models:         req.Models,
+		Messages:       messages,
+		Stream:         req.Stream,
+		Temperature:    req.Temperature,
+		TopP:           req.TopP,
+		MaxTokens:      maxTokens,
+		Provider:       req.Provider,
+		Metadata:       req.Metadata,
+		Trace:          req.Trace,
+		User:           req.User,
+		SessionID:      req.SessionID,
+		ResponseFormat: responseFormat,
 		Response: &types.ResponseRequestMeta{
 			Include:              req.Include,
 			Modalities:           req.Modalities,
@@ -397,8 +402,9 @@ func WriteResponsesResponse(
 	inputTokens int,
 	outputTokens int,
 	created int64,
+	textConfig map[string]any,
 ) error {
-	payload := responsesObject(responseID, model, text, inputTokens, outputTokens, created, "completed")
+	payload := responsesObject(responseID, model, text, inputTokens, outputTokens, created, "completed", textConfig)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -426,6 +432,7 @@ func TransformResponsesStream(
 	responseID string,
 	model string,
 	inputTokens int,
+	textConfig map[string]any,
 ) (StreamResult, error) {
 	created := time.Now().Unix()
 	messageID := "msg_" + strings.TrimPrefix(responseID, "resp_")
@@ -434,13 +441,13 @@ func TransformResponsesStream(
 	seq := 0
 	if err := writeResponseEventSeq(w, &seq, "response.created", map[string]any{
 		"type":     "response.created",
-		"response": responsesObject(responseID, model, "", inputTokens, 0, created, "in_progress"),
+		"response": responsesObject(responseID, model, "", inputTokens, 0, created, "in_progress", textConfig),
 	}); err != nil {
 		return StreamResult{}, err
 	}
 	if err := writeResponseEventSeq(w, &seq, "response.in_progress", map[string]any{
 		"type":     "response.in_progress",
-		"response": responsesObject(responseID, model, "", inputTokens, 0, created, "in_progress"),
+		"response": responsesObject(responseID, model, "", inputTokens, 0, created, "in_progress", textConfig),
 	}); err != nil {
 		return StreamResult{}, err
 	}
@@ -502,13 +509,13 @@ func TransformResponsesStream(
 				}
 			}
 		case "message_stop":
-			return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), inputTokens, created, finishReason)
+			return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), inputTokens, created, finishReason, textConfig)
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return StreamResult{}, err
 	}
-	return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), inputTokens, created, finishReason)
+	return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), inputTokens, created, finishReason, textConfig)
 }
 
 func finishResponsesStream(
@@ -521,6 +528,7 @@ func finishResponsesStream(
 	inputTokens int,
 	created int64,
 	finishReason string,
+	textConfig map[string]any,
 ) (StreamResult, error) {
 	outputTokens := estimateTextTokens(text)
 	events := []struct {
@@ -554,7 +562,7 @@ func finishResponsesStream(
 		}},
 		{"response.completed", map[string]any{
 			"type":     "response.completed",
-			"response": responsesObject(responseID, model, text, inputTokens, outputTokens, created, "completed"),
+			"response": responsesObject(responseID, model, text, inputTokens, outputTokens, created, "completed", textConfig),
 		}},
 	}
 	for _, event := range events {
@@ -566,7 +574,7 @@ func finishResponsesStream(
 	return StreamResult{Text: text, FinishReason: finishReason}, err
 }
 
-func responsesObject(responseID, model, text string, inputTokens, outputTokens int, created int64, status string) map[string]any {
+func responsesObject(responseID, model, text string, inputTokens, outputTokens int, created int64, status string, textConfig map[string]any) map[string]any {
 	messageID := "msg_" + strings.TrimPrefix(responseID, "resp_")
 	output := []map[string]any{}
 	usage := any(nil)
@@ -616,9 +624,7 @@ func responsesObject(responseID, model, text string, inputTokens, outputTokens i
 		},
 		"store":       false,
 		"temperature": 1,
-		"text": map[string]any{
-			"format": map[string]any{"type": "text"},
-		},
+		"text":        responseTextConfig(textConfig),
 		"tool_choice": "auto",
 		"tools":       []any{},
 		"top_p":       1,
@@ -722,15 +728,58 @@ func validateTextConfig(value json.RawMessage) error {
 	if err := json.Unmarshal(value, &parsed); err != nil {
 		return &AdapterError{Status: 400, Message: "text must be an object", Context: "text"}
 	}
-	format, ok := parsed["format"].(map[string]any)
+	_, err := chatResponseFormatFromResponsesText(parsed)
+	return err
+}
+
+func chatResponseFormatFromResponsesText(textConfig map[string]any) (map[string]any, error) {
+	if len(textConfig) == 0 {
+		return nil, nil
+	}
+	format, ok := textConfig["format"].(map[string]any)
 	if !ok || len(format) == 0 {
-		return nil
+		return nil, nil
 	}
-	formatType := stringValue(format["type"])
-	if formatType == "" || formatType == "text" {
-		return nil
+	formatType := strings.TrimSpace(stringValue(format["type"]))
+	switch formatType {
+	case "", "text":
+		return nil, nil
+	case "json_object":
+		return map[string]any{"type": "json_object"}, nil
+	case "json_schema":
+		if nested, ok := format["json_schema"].(map[string]any); ok && len(nested) > 0 {
+			return map[string]any{"type": "json_schema", "json_schema": nested}, nil
+		}
+		schema, ok := format["schema"].(map[string]any)
+		if !ok || len(schema) == 0 {
+			return nil, &AdapterError{Status: 400, Message: "json_schema format requires schema", Context: "text.format.schema"}
+		}
+		jsonSchema := map[string]any{"schema": schema}
+		if name := stringValue(format["name"]); name != "" {
+			jsonSchema["name"] = name
+		} else {
+			jsonSchema["name"] = "response"
+		}
+		if description := stringValue(format["description"]); description != "" {
+			jsonSchema["description"] = description
+		}
+		if strict, ok := format["strict"].(bool); ok {
+			jsonSchema["strict"] = strict
+		}
+		return map[string]any{"type": "json_schema", "json_schema": jsonSchema}, nil
+	default:
+		return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "text.format"}
 	}
-	return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "text.format"}
+}
+
+func responseTextConfig(textConfig map[string]any) map[string]any {
+	if len(textConfig) == 0 {
+		return map[string]any{"format": map[string]any{"type": "text"}}
+	}
+	if _, ok := textConfig["format"]; ok {
+		return textConfig
+	}
+	return map[string]any{"format": map[string]any{"type": "text"}}
 }
 
 func isDefaultToolChoice(value json.RawMessage) bool {
