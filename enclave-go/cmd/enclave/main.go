@@ -545,6 +545,24 @@ func serveResponsesNonStreaming(
 		writeError(conn, 502, "provider error")
 		return
 	}
+	if normalized, err := adapter.NormalizeResponsesStructuredOutput(result.Text, responseTextConfig(req)); err != nil {
+		var aerr *adapter.AdapterError
+		if asAdapterErr(err, &aerr) {
+			fmt.Fprintf(os.Stderr, "enclave.responses_structured_output_failed model=%q context=%q\n", req.Model, aerr.Context)
+			if trGateway != nil && trGateway.Enabled() {
+				_ = trGateway.Refund(ctx, authorization, aerr.Status, "provider_structured_output_error", time.Since(requestStarted).Seconds())
+			}
+			writeAdapterOpenAIError(conn, aerr)
+			return
+		}
+		if trGateway != nil && trGateway.Enabled() {
+			_ = trGateway.Refund(ctx, authorization, 502, "provider_structured_output_error", time.Since(requestStarted).Seconds())
+		}
+		writeError(conn, 502, "provider structured output error")
+		return
+	} else {
+		result.Text = normalized
+	}
 	inputTokens := trustedrouter.EstimateInputTokens(req)
 	outputTokens := trustedrouter.EstimateOutputTokens(result.Text)
 	selectedModel := selectedRoute.Model(req.Model, authorization)

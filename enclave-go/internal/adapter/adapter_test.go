@@ -380,6 +380,35 @@ func TestResponsesToChatMapsJSONObjectFormat(t *testing.T) {
 	}
 }
 
+func TestNormalizeResponsesStructuredOutputExtractsEmbeddedJSON(t *testing.T) {
+	textConfig := map[string]any{"format": map[string]any{"type": "json_object"}}
+	got, err := NormalizeResponsesStructuredOutput(
+		"The answer is:\n{\"status\":\"ok\",\"provider\":\"kimi\"}\nDone.",
+		textConfig,
+	)
+	if err != nil {
+		t.Fatalf("NormalizeResponsesStructuredOutput: %v", err)
+	}
+	if got != `{"provider":"kimi","status":"ok"}` {
+		t.Fatalf("normalized JSON = %q", got)
+	}
+}
+
+func TestNormalizeResponsesStructuredOutputRejectsMissingJSON(t *testing.T) {
+	textConfig := map[string]any{"format": map[string]any{"type": "json_schema"}}
+	_, err := NormalizeResponsesStructuredOutput("status is ok", textConfig)
+	if err == nil {
+		t.Fatal("expected structured output error")
+	}
+	aerr, ok := err.(*AdapterError)
+	if !ok {
+		t.Fatalf("error type = %T, want *AdapterError", err)
+	}
+	if aerr.Status != 502 || aerr.Context != "text.format" {
+		t.Fatalf("adapter error = status %d context %q, want 502 text.format", aerr.Status, aerr.Context)
+	}
+}
+
 func TestResponsesToChatPreservesInputImages(t *testing.T) {
 	req := &types.OpenAIResponsesRequest{
 		Model: "openai/gpt-4o-mini",

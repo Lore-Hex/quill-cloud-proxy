@@ -426,6 +426,22 @@ func WriteResponsesInputTokens(w io.Writer, inputTokens int) error {
 	return err
 }
 
+func NormalizeResponsesStructuredOutput(text string, textConfig map[string]any) (string, error) {
+	formatType := responsesTextFormatType(textConfig)
+	if formatType != "json_object" && formatType != "json_schema" {
+		return text, nil
+	}
+	normalized, ok := normalizeJSONString(strings.TrimSpace(text), formatType)
+	if ok {
+		return normalized, nil
+	}
+	extracted, ok := extractFirstJSONValue(text, formatType)
+	if ok {
+		return extracted, nil
+	}
+	return "", &AdapterError{Status: 502, Message: "provider did not return valid JSON", Context: "text.format"}
+}
+
 func TransformResponsesStream(
 	r io.Reader,
 	w io.Writer,
@@ -673,6 +689,68 @@ func estimateTextTokens(text string) int {
 func stringValue(value any) string {
 	out, _ := value.(string)
 	return out
+}
+
+func responsesTextFormatType(textConfig map[string]any) string {
+	if len(textConfig) == 0 {
+		return ""
+	}
+	format, ok := textConfig["format"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(stringValue(format["type"]))
+}
+
+func normalizeJSONString(candidate string, formatType string) (string, bool) {
+	if candidate == "" {
+		return "", false
+	}
+	var decoded any
+	decoder := json.NewDecoder(strings.NewReader(candidate))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		return "", false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return "", false
+	}
+	if formatType == "json_object" {
+		if _, ok := decoded.(map[string]any); !ok {
+			return "", false
+		}
+	}
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
+func extractFirstJSONValue(text string, formatType string) (string, bool) {
+	for i, ch := range text {
+		if ch != '{' && ch != '[' {
+			continue
+		}
+		decoder := json.NewDecoder(strings.NewReader(text[i:]))
+		decoder.UseNumber()
+		var decoded any
+		if err := decoder.Decode(&decoded); err != nil {
+			continue
+		}
+		if formatType == "json_object" {
+			if _, ok := decoded.(map[string]any); !ok {
+				continue
+			}
+		}
+		encoded, err := json.Marshal(decoded)
+		if err != nil {
+			continue
+		}
+		return string(encoded), true
+	}
+	return "", false
 }
 
 func presentNonNull(value json.RawMessage) bool {
