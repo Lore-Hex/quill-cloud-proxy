@@ -29,11 +29,10 @@ import (
 
 func fetchHTTPImage(ctx context.Context, rawURL string) (string, []byte, error) {
 	httpc := safeImageHTTPClient()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req, err := newImageFetchRequest(ctx, rawURL)
 	if err != nil {
 		return "", nil, fmt.Errorf("llm/image: build image request: %w", err)
 	}
-	req.Header.Set("Accept", "image/png,image/jpeg")
 	resp, err := httpc.Do(req)
 	if err != nil {
 		return "", nil, fmt.Errorf("llm/image: fetch failed")
@@ -51,6 +50,16 @@ func fetchHTTPImage(ctx context.Context, rawURL string) (string, []byte, error) 
 		mediaType = contentTypeMedia(http.DetectContentType(data))
 	}
 	return mediaType, data, nil
+}
+
+func newImageFetchRequest(ctx context.Context, rawURL string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "image/png,image/jpeg")
+	req.Header.Set("User-Agent", "TrustedRouter-ImageFetcher/1.0 (+https://trustedrouter.com)")
+	return req, nil
 }
 
 func safeImageHTTPClient() *http.Client {
