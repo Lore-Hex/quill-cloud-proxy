@@ -72,6 +72,35 @@ gcloud dns record-sets transaction add \
   --name="www.trustedrouter.com." --type=CNAME --ttl=300 \
   "trustedrouter.com."
 
+# 4. Apex NS list: list ALL 6 nameservers so a resolver hitting
+#    Cloud DNS learns about Cloudflare's NS too and can rotate to
+#    them when Cloud DNS is down. Phase 2 of the multi-vendor DNS
+#    repair plan.
+#
+# Cloudflare-side NS-list update is NOT done here — Cloudflare free/
+# pro tier doesn't let you replace the auto-injected NS records at
+# the zone apex (would need their Enterprise "Secondary DNS"
+# feature). The asymmetric setup is acceptable: Cloud-DNS-cached
+# resolvers learn about both vendors; Cloudflare-cached resolvers
+# only learn about Cloudflare, but Cloudflare answers correctly so
+# they don't need the fallback.
+gcloud dns record-sets transaction remove \
+  --zone="$ZONE" --project="$PROJECT" \
+  --name="trustedrouter.com." --type=NS --ttl=21600 \
+  "ns-cloud-b1.googledomains.com." \
+  "ns-cloud-b2.googledomains.com." \
+  "ns-cloud-b3.googledomains.com." \
+  "ns-cloud-b4.googledomains.com."
+gcloud dns record-sets transaction add \
+  --zone="$ZONE" --project="$PROJECT" \
+  --name="trustedrouter.com." --type=NS --ttl=21600 \
+  "ns-cloud-b1.googledomains.com." \
+  "ns-cloud-b2.googledomains.com." \
+  "ns-cloud-b3.googledomains.com." \
+  "ns-cloud-b4.googledomains.com." \
+  "dom.ns.cloudflare.com." \
+  "harmony.ns.cloudflare.com."
+
 echo "[$(date +%H:%M:%S)] transaction file:"
 cat transaction.yaml
 echo
