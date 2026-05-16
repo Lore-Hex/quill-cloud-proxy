@@ -1,0 +1,15 @@
+# Terraform state — contains the full DNS record set + import history,
+# treated as sensitive (it leaks zone-internal record IDs and any
+# computed values). The state is currently local-only; when we move to
+# the GCS backend (see README's Followups section), this file can be
+# deleted because state will live in the bucket.
+terraform.tfstate
+terraform.tfstate.backup
+terraform.tfstate.*.backup
+
+# Provider plugins / lock-file cache — large binaries; .terraform.lock.hcl
+# IS committed so all collaborators use the same provider versions.
+.terraform/
+
+# Plan output files (created via -out).
+*.tfplan

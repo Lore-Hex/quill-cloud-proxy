@@ -115,8 +115,12 @@ locals {
   // back to the nearest warm region via the global LB).
   quill_cold_region_aliases = [
     "us-central1",
+    "us-west1",
     "asia-northeast1",
     "asia-southeast1",
+    "australia-southeast1",
+    "europe-west2",
+    "northamerica-northeast1",
     "southamerica-east1",
   ]
 
@@ -137,7 +141,9 @@ locals {
 
 resource "cloudflare_record" "apex_a" {
   zone_id = var.cloudflare_zone_id
-  name    = "@"
+  name    = "trustedrouter.com" // Cloudflare accepts "@" too but the
+                                // imported state uses the FQDN; matching
+                                // it avoids a destroy-recreate cycle.
   type    = "A"
   content = local.apex_ip
   ttl     = 1 // 1 = Cloudflare "Auto" (proxy-managed TTL)
@@ -147,7 +153,7 @@ resource "cloudflare_record" "apex_a" {
 
 resource "cloudflare_record" "apex_txt_verify" {
   zone_id = var.cloudflare_zone_id
-  name    = "@"
+  name    = "trustedrouter.com"
   type    = "TXT"
   content = local.google_site_verification
   ttl     = 1
@@ -173,6 +179,16 @@ resource "cloudflare_record" "www_cname" {
   ttl     = 1
   proxied = true
   comment = "www redirect — terraformed"
+}
+
+resource "cloudflare_record" "status_a" {
+  zone_id = var.cloudflare_zone_id
+  name    = "status"
+  type    = "A"
+  content = local.apex_ip
+  ttl     = 1
+  proxied = false // status page on Cloud Run; bypass Cloudflare proxy
+  comment = "Status page (status.trustedrouter.com) — terraformed"
 }
 
 // NOTE: Cloudflare's apex NS records can't be set declaratively on free/
@@ -214,15 +230,15 @@ resource "google_dns_record_set" "www_cname" {
   rrdatas      = ["trustedrouter.com."]
 }
 
-resource "google_dns_record_set" "status_cname" {
-  // status.trustedrouter.com isn't on Cloudflare (only the marketing
-  // pages are). Cloud DNS keeps it pointing at the apex via CNAME so it
-  // hits whatever the apex resolves to today (Cloud Run global LB).
+resource "google_dns_record_set" "status_a" {
+  // Status page hosted on TR Cloud Run; both vendors keep this as
+  // an A record pointing at the same global LB as the apex. (The
+  // Cloud Run service dispatches by Host header.)
   name         = "status.trustedrouter.com."
-  type         = "CNAME"
+  type         = "A"
   ttl          = 300
   managed_zone = local.cloud_dns_zone
-  rrdatas      = ["trustedrouter.com."]
+  rrdatas      = [local.apex_ip]
 }
 
 // Apex NS record listing ALL 6 NS — what resolvers caching Cloud DNS
@@ -237,18 +253,19 @@ resource "google_dns_record_set" "apex_ns" {
 }
 
 // ─── quillrouter.com — Cloudflare ───────────────────────────────────────
-// Cloudflare already has the full record set. These blocks are for
+// Cloudflare already has the regional record set. These blocks are for
 // import-only; no record drift on Cloudflare's side today.
-
-resource "cloudflare_record" "quill_api_a" {
-  zone_id = var.cloudflare_zone_id_quillrouter
-  name    = "api"
-  type    = "A"
-  content = local.quill_canonical_api_ip
-  ttl     = 1
-  proxied = false // attested-TLS enclave — Cloudflare can't terminate
-  comment = "Canonical inference endpoint (us-central1 enclave) — terraformed"
-}
+//
+// NOTE: `api.quillrouter.com` is NOT a DNS record in Cloudflare — it's
+// a Cloudflare Load Balancer (Stage 4f multi-cloud failover, pools
+// GCP us-central1 + AWS us-west-2). That LB synthesizes the A record
+// dynamically based on origin-pool health. Managing it requires a
+// `cloudflare_load_balancer` resource which depends on the
+// `cloudflare_load_balancer_pool` + `cloudflare_load_balancer_monitor`
+// resources upstream — out of scope for this initial import. For now
+// the LB stays unmanaged (an operator-only surface in the Cloudflare
+// dashboard); Cloud DNS keeps a static A → us-central1-IP for
+// resolvers caching Cloud DNS NS.
 
 resource "cloudflare_record" "quill_api_eu_a" {
   zone_id = var.cloudflare_zone_id_quillrouter
