@@ -78,16 +78,19 @@ variable "cloudflare_zone_id" {
   description = "Cloudflare zone ID for trustedrouter.com (visible in the zone's Overview page)."
 }
 
+variable "cloudflare_zone_id_quillrouter" {
+  type        = string
+  description = "Cloudflare zone ID for quillrouter.com (the API/inference domain)."
+}
+
 locals {
-  // Source-of-truth values. Update once, both vendors get the change.
+  // ─── trustedrouter.com ─────────────────────────────────────────────
   apex_ip                     = "35.241.14.18" // TR Cloud Run global LB
   google_site_verification    = "google-site-verification=n2y7GA2FN8RxHA1aO7r_JueOsymAgBjhqWgwRn7G8cU"
   trust_page_origin           = "lore-hex.github.io." // GitHub Pages
   cloud_dns_zone              = "trustedrouter-com"
 
-  // All 6 authoritative nameservers — the registrar lists these and each
-  // vendor's zone should advertise them at the apex NS record so resolvers
-  // learn the full set.
+  // All 6 authoritative nameservers for trustedrouter.com.
   all_nameservers = [
     "ns-cloud-b1.googledomains.com.",
     "ns-cloud-b2.googledomains.com.",
@@ -95,6 +98,38 @@ locals {
     "ns-cloud-b4.googledomains.com.",
     "dom.ns.cloudflare.com.",
     "harmony.ns.cloudflare.com.",
+  ]
+
+  // ─── quillrouter.com ───────────────────────────────────────────────
+  // API/inference domain. Per-region direct endpoints route to each
+  // enclave MIG's regional LB IP (warm regions get an A; cold regions
+  // CNAME back to the canonical api.quillrouter.com so they ride the
+  // global LB to whichever warm enclave is closest).
+  quill_canonical_api_ip      = "34.61.11.3"   // us-central1 enclave LB
+  quill_eu_api_ip             = "34.13.202.2"  // europe-west4 enclave LB
+  quill_us_east4_api_ip       = "34.11.96.117" // us-east4 enclave LB
+  quill_cloud_dns_zone        = "quillrouter-com"
+
+  // Cold regions whose api-<region>.quillrouter.com CNAMEs back to the
+  // canonical (no dedicated enclave MIG there yet — Cloud Run falls
+  // back to the nearest warm region via the global LB).
+  quill_cold_region_aliases = [
+    "us-central1",
+    "asia-northeast1",
+    "asia-southeast1",
+    "southamerica-east1",
+  ]
+
+  // All 6 authoritative nameservers for quillrouter.com (different
+  // Cloudflare assignment than trustedrouter.com — Cloudflare picks
+  // NS pair per zone).
+  quill_all_nameservers = [
+    "ns-cloud-d1.googledomains.com.",
+    "ns-cloud-d2.googledomains.com.",
+    "ns-cloud-d3.googledomains.com.",
+    "ns-cloud-d4.googledomains.com.",
+    "brynne.ns.cloudflare.com.",
+    "keaton.ns.cloudflare.com.",
   ]
 }
 
@@ -201,15 +236,115 @@ resource "google_dns_record_set" "apex_ns" {
   rrdatas      = local.all_nameservers
 }
 
+// ─── quillrouter.com — Cloudflare ───────────────────────────────────────
+// Cloudflare already has the full record set. These blocks are for
+// import-only; no record drift on Cloudflare's side today.
+
+resource "cloudflare_record" "quill_api_a" {
+  zone_id = var.cloudflare_zone_id_quillrouter
+  name    = "api"
+  type    = "A"
+  content = local.quill_canonical_api_ip
+  ttl     = 1
+  proxied = false // attested-TLS enclave — Cloudflare can't terminate
+  comment = "Canonical inference endpoint (us-central1 enclave) — terraformed"
+}
+
+resource "cloudflare_record" "quill_api_eu_a" {
+  zone_id = var.cloudflare_zone_id_quillrouter
+  name    = "api-europe-west4"
+  type    = "A"
+  content = local.quill_eu_api_ip
+  ttl     = 1
+  proxied = false
+  comment = "EU enclave direct — terraformed"
+}
+
+resource "cloudflare_record" "quill_api_us_east4_a" {
+  zone_id = var.cloudflare_zone_id_quillrouter
+  name    = "api-us-east4"
+  type    = "A"
+  content = local.quill_us_east4_api_ip
+  ttl     = 1
+  proxied = false
+  comment = "us-east4 enclave direct — terraformed"
+}
+
+resource "cloudflare_record" "quill_api_cold_alias" {
+  for_each = toset(local.quill_cold_region_aliases)
+  zone_id  = var.cloudflare_zone_id_quillrouter
+  name     = "api-${each.key}"
+  type     = "CNAME"
+  content  = "api.quillrouter.com"
+  ttl      = 1
+  proxied  = false
+  comment  = "Cold-region alias → canonical — terraformed"
+}
+
+// ─── quillrouter.com — Google Cloud DNS ─────────────────────────────────
+// Mirror of the Cloudflare records so resolvers caching Cloud DNS
+// resolve the regional endpoints instead of NXDOMAIN-ing.
+
+resource "google_dns_record_set" "quill_api_a" {
+  name         = "api.quillrouter.com."
+  type         = "A"
+  ttl          = 300
+  managed_zone = local.quill_cloud_dns_zone
+  rrdatas      = [local.quill_canonical_api_ip]
+}
+
+resource "google_dns_record_set" "quill_api_eu_a" {
+  name         = "api-europe-west4.quillrouter.com."
+  type         = "A"
+  ttl          = 300
+  managed_zone = local.quill_cloud_dns_zone
+  rrdatas      = [local.quill_eu_api_ip]
+}
+
+resource "google_dns_record_set" "quill_api_us_east4_a" {
+  name         = "api-us-east4.quillrouter.com."
+  type         = "A"
+  ttl          = 300
+  managed_zone = local.quill_cloud_dns_zone
+  rrdatas      = [local.quill_us_east4_api_ip]
+}
+
+resource "google_dns_record_set" "quill_api_cold_alias" {
+  for_each     = toset(local.quill_cold_region_aliases)
+  name         = "api-${each.key}.quillrouter.com."
+  type         = "CNAME"
+  ttl          = 300
+  managed_zone = local.quill_cloud_dns_zone
+  rrdatas      = ["api.quillrouter.com."]
+}
+
+resource "google_dns_record_set" "quill_apex_ns" {
+  name         = "quillrouter.com."
+  type         = "NS"
+  ttl          = 21600
+  managed_zone = local.quill_cloud_dns_zone
+  rrdatas      = local.quill_all_nameservers
+}
+
 output "verification_commands" {
   description = "After apply, run these and verify both vendors agree on every record."
   value = <<-EOT
+    # trustedrouter.com
     for ns in ns-cloud-b1.googledomains.com dom.ns.cloudflare.com; do
       echo "  via $ns:"
       echo "    apex A → $(dig +short trustedrouter.com @$ns)"
       echo "    trust  → $(dig +short trust.trustedrouter.com @$ns)"
       echo "    www    → $(dig +short www.trustedrouter.com @$ns)"
       echo "    TXT    → $(dig +short TXT trustedrouter.com @$ns | head -1)"
+    done
+
+    # quillrouter.com — regional endpoints + cold-region aliases
+    for ns in ns-cloud-d1.googledomains.com brynne.ns.cloudflare.com; do
+      echo "  via $ns:"
+      for ep in api api-europe-west4 api-us-east4 api-us-central1 \
+                api-asia-northeast1 api-asia-southeast1 api-southamerica-east1; do
+        echo "    $ep.quillrouter.com → $(dig +short "$ep.quillrouter.com" @$ns | head -1)"
+      done
     done
   EOT
 }

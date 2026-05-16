@@ -15,9 +15,10 @@ prompting Cloudflare's "no longer using our nameservers" email).
    `~/.quill_cloud_keys.private` as `CLOUDFLARE_API_TOKEN=...` (the
    secrets.sh + sync-secrets-to-aws.sh already understands this key).
 
-3. **Cloudflare zone ID.** From the trustedrouter.com Overview page
-   in Cloudflare dash, copy the 32-char hex Zone ID. Save as
-   `CLOUDFLARE_ZONE_ID_TRUSTEDROUTER=...` in the same keyfile.
+3. **Cloudflare zone IDs.** From each zone's Overview page in
+   Cloudflare dash, copy the 32-char hex Zone ID. Save both as
+   `CLOUDFLARE_ZONE_ID_TRUSTEDROUTER=...` and
+   `CLOUDFLARE_ZONE_ID_QUILLROUTER=...` in the keyfile.
 
 4. **GCP auth.** Use either Workload Identity (CI) or your personal
    `gcloud auth application-default login`. The SA / user needs
@@ -38,6 +39,7 @@ prompting Cloudflare's "no longer using our nameservers" email).
    ```bash
    export CLOUDFLARE_API_TOKEN=$(grep -E "^CLOUDFLARE_API_TOKEN=" ~/.quill_cloud_keys.private | sed 's/^[^=]*=//')
    export TF_VAR_cloudflare_zone_id=$(grep -E "^CLOUDFLARE_ZONE_ID_TRUSTEDROUTER=" ~/.quill_cloud_keys.private | sed 's/^[^=]*=//')
+   export TF_VAR_cloudflare_zone_id_quillrouter=$(grep -E "^CLOUDFLARE_ZONE_ID_QUILLROUTER=" ~/.quill_cloud_keys.private | sed 's/^[^=]*=//')
    terraform plan
    ```
    Plan output should say "No changes". Anything else means the
@@ -74,6 +76,26 @@ terraform import 'google_dns_record_set.trust_cname'    projects/quill-cloud-pro
 terraform import 'google_dns_record_set.www_cname'      projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/www.trustedrouter.com./CNAME
 terraform import 'google_dns_record_set.status_cname'   projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/status.trustedrouter.com./CNAME
 terraform import 'google_dns_record_set.apex_ns'        projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/trustedrouter.com./NS
+
+# quillrouter.com — Cloudflare side (run after fix-quillrouter-dns.sh
+# has populated Cloud DNS so plan/apply doesn't trigger more churn).
+terraform import 'cloudflare_record.quill_api_a'           "$TF_VAR_cloudflare_zone_id_quillrouter/<record_id>"
+terraform import 'cloudflare_record.quill_api_eu_a'        "$TF_VAR_cloudflare_zone_id_quillrouter/<record_id>"
+terraform import 'cloudflare_record.quill_api_us_east4_a'  "$TF_VAR_cloudflare_zone_id_quillrouter/<record_id>"
+terraform import 'cloudflare_record.quill_api_cold_alias["us-central1"]'         "$TF_VAR_cloudflare_zone_id_quillrouter/<record_id>"
+terraform import 'cloudflare_record.quill_api_cold_alias["asia-northeast1"]'     "$TF_VAR_cloudflare_zone_id_quillrouter/<record_id>"
+terraform import 'cloudflare_record.quill_api_cold_alias["asia-southeast1"]'     "$TF_VAR_cloudflare_zone_id_quillrouter/<record_id>"
+terraform import 'cloudflare_record.quill_api_cold_alias["southamerica-east1"]'  "$TF_VAR_cloudflare_zone_id_quillrouter/<record_id>"
+
+# quillrouter.com — Cloud DNS side
+terraform import 'google_dns_record_set.quill_api_a'          projects/quill-cloud-proxy/managedZones/quillrouter-com/rrsets/api.quillrouter.com./A
+terraform import 'google_dns_record_set.quill_api_eu_a'       projects/quill-cloud-proxy/managedZones/quillrouter-com/rrsets/api-europe-west4.quillrouter.com./A
+terraform import 'google_dns_record_set.quill_api_us_east4_a' projects/quill-cloud-proxy/managedZones/quillrouter-com/rrsets/api-us-east4.quillrouter.com./A
+for region in us-central1 asia-northeast1 asia-southeast1 southamerica-east1; do
+  terraform import "google_dns_record_set.quill_api_cold_alias[\"$region\"]" \
+    "projects/quill-cloud-proxy/managedZones/quillrouter-com/rrsets/api-${region}.quillrouter.com./CNAME"
+done
+terraform import 'google_dns_record_set.quill_apex_ns'  projects/quill-cloud-proxy/managedZones/quillrouter-com/rrsets/quillrouter.com./NS
 ```
 
 ## Don'ts
