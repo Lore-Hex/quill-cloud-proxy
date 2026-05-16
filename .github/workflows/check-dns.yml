@@ -1,0 +1,91 @@
+# Daily NS-drift check for trustedrouter.com + quillrouter.com.
+#
+# Why this exists
+# ───────────────
+# On 2026-05-14 Cloudflare emailed that trustedrouter.com had drifted
+# off their nameservers. Two days later the same thing for
+# quillrouter.com. Investigation showed both zones had been in a
+# partial multi-vendor DNS state for an unknown amount of time —
+# Cloudflare detected the asymmetry but only sent their email well
+# after drift had been live. Some users were getting NXDOMAIN /
+# wrong A records during that window depending on which NS pool
+# their resolver cached.
+#
+# This workflow catches that exact failure mode by directly querying
+# the .com TLD nameservers for the NS records and diffing against
+# the known-expected 6-NS set per zone. Any mismatch = red run =
+# operator notification through the standard GitHub Actions failure
+# email / Slack / whatever's wired up.
+#
+# Cadence: once per day. Drift is slow + rare; 24h detect window is
+# plenty (and still 24x faster than Cloudflare's own crawl
+# heuristic). Offset to 07:07 UTC so it doesn't collide with the
+# top-of-hour price-refresh bot.
+#
+# Fix path on red: see docs/runbook.md "DNS-vendor-split symptoms"
+# in the quill-router repo, plus tools/dns/main.tf in this repo.
+
+name: DNS NS-drift check
+
+on:
+  schedule:
+    - cron: "7 7 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: check-dns
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query authoritative NS for each zone
+        run: |
+          set -euo pipefail
+          # Expected NS sets — what tools/dns/main.tf says should be
+          # at the registrar (the .com TLD parent zone). Sort + join
+          # so the diff is order-insensitive.
+          # If you change the NS list (e.g. add a third vendor),
+          # update both the Terraform module AND these expected
+          # values in lockstep.
+          expected_tr="dom.ns.cloudflare.com.,harmony.ns.cloudflare.com.,ns-cloud-b1.googledomains.com.,ns-cloud-b2.googledomains.com.,ns-cloud-b3.googledomains.com.,ns-cloud-b4.googledomains.com."
+          expected_qr="brynne.ns.cloudflare.com.,keaton.ns.cloudflare.com.,ns-cloud-d1.googledomains.com.,ns-cloud-d2.googledomains.com.,ns-cloud-d3.googledomains.com.,ns-cloud-d4.googledomains.com."
+
+          fail=0
+          for pair in trustedrouter.com:"$expected_tr" quillrouter.com:"$expected_qr"; do
+            d="${pair%%:*}"
+            expected="${pair#*:}"
+            # Query the TLD directly so we get what the REGISTRY has
+            # (not what either vendor's child zone says about itself
+            # — those two views differ, and the registry is the
+            # authoritative one for delegation).
+            actual=$(dig +short NS "$d" @a.gtld-servers.net | sort | tr '\n' ',')
+            if [ "$actual" = "$expected" ]; then
+              echo "$d: ✓ NS list matches expected ($(echo "$expected" | tr ',' '\n' | wc -l | tr -d ' ') records)"
+            else
+              echo "::error::$d NS drift detected"
+              echo "  expected: $expected"
+              echo "  actual:   $actual"
+              fail=1
+            fi
+          done
+
+          # Also sanity-check that each vendor still answers
+          # authoritatively for the zone — a vendor going dark
+          # without a registry update is the OTHER failure mode.
+          # Cheap to verify: one dig per vendor per zone.
+          for pair in trustedrouter.com:dom.ns.cloudflare.com:ns-cloud-b1.googledomains.com quillrouter.com:brynne.ns.cloudflare.com:ns-cloud-d1.googledomains.com; do
+            d="${pair%%:*}"
+            rest="${pair#*:}"
+            cf_ns="${rest%%:*}"
+            gc_ns="${rest##*:}"
+            for ns in "$cf_ns" "$gc_ns"; do
+              if ! dig +short +tries=2 +timeout=5 NS "$d" "@$ns" | grep -q .; then
+                echo "::error::$d not answered by $ns (vendor outage or removed-from-zone)"
+                fail=1
+              fi
+            done
+          done
+
+          exit "$fail"
