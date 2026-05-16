@@ -60,7 +60,13 @@ jobs:
             # (not what either vendor's child zone says about itself
             # — those two views differ, and the registry is the
             # authoritative one for delegation).
-            actual=$(dig +short NS "$d" @a.gtld-servers.net | sort | tr '\n' ',')
+            #
+            # `+short` doesn't print NS records from a parent-zone
+            # response (delegations live in the AUTHORITY section,
+            # not ANSWER); use `+noall +authority` and parse the
+            # NS rows out of the bind-format response.
+            actual=$(dig NS "$d" @a.gtld-servers.net +noall +authority +timeout=5 \
+              | awk '/IN[[:space:]]+NS/ {print $5}' | sort | paste -sd, -)
             if [ "$actual" = "$expected" ]; then
               echo "$d: ✓ NS list matches expected ($(echo "$expected" | tr ',' '\n' | wc -l | tr -d ' ') records)"
             else
