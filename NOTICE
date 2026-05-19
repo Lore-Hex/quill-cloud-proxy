@@ -1,0 +1,12 @@
+Quill Cloud Proxy
+Copyright 2026 Lore-Hex
+
+This product is part of TrustedRouter (https://trustedrouter.com),
+developed by Lore-Hex (https://github.com/Lore-Hex). The
+attested-enclave + parent vsock-proxy + multi-cloud bootstrap code
+in this repository implements the trust surface published at
+https://trust.trustedrouter.com.
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+Redistribution must retain this NOTICE file per Section 4(b) of
+the license.
