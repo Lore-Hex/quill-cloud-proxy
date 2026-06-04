@@ -128,12 +128,14 @@ func TestDirectModelIDStripsOpenRouterVariants(t *testing.T) {
 
 func TestAnthropicCatalogModelsNormalizeToProviderIDs(t *testing.T) {
 	tests := map[string]string{
-		"anthropic/claude-opus-4":     "claude-opus-4",
+		// 4.0 GA models map to their dated snapshot ids (the undated
+		// "claude-opus-4"/"claude-sonnet-4" 404 on Anthropic's API).
+		"anthropic/claude-opus-4":     "claude-opus-4-20250514",
 		"anthropic/claude-opus-4.1":   "claude-opus-4-1",
 		"anthropic/claude-opus-4.5":   "claude-opus-4-5",
 		"anthropic/claude-opus-4.6":   "claude-opus-4-6",
 		"anthropic/claude-opus-4.7":   "claude-opus-4-7",
-		"anthropic/claude-sonnet-4":   "claude-sonnet-4",
+		"anthropic/claude-sonnet-4":   "claude-sonnet-4-20250514",
 		"anthropic/claude-sonnet-4.5": "claude-sonnet-4-5",
 		"anthropic/claude-sonnet-4.6": "claude-sonnet-4-6",
 		"anthropic/claude-haiku-4.5":  "claude-haiku-4-5",

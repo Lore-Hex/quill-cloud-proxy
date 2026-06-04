@@ -179,6 +179,9 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		// id (regression guard: adding zai to providerNativeModelMaps must
 		// not break the models that already worked via strip-author).
 		{"zai", "z-ai/glm-4.5", "z-ai/glm-4.5", "glm-4.5"},
+		// mistral rejects bare "mistral-large" ("Invalid model"); directModelMap
+		// remaps it to the "mistral-large-latest" alias.
+		{"mistral", "mistralai/mistral-large", "mistralai/mistral-large", "mistral-large-latest"},
 	}
 	for _, tc := range cases {
 		got := directModelID(tc.provider, tc.model, tc.upstream)

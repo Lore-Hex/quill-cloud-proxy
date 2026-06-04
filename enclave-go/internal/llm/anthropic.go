@@ -62,6 +62,13 @@ var modelIDMap = map[string]string{
 	"anthropic/claude-sonnet-4.6": "claude-sonnet-4-6",
 	"anthropic/claude-haiku-4.5":  "claude-haiku-4-5",
 	"anthropic/claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
+	// Original Claude 4.0 GA models: Anthropic serves these ONLY under the
+	// dated snapshot id (the undated "claude-opus-4"/"claude-sonnet-4" 404).
+	// 4.5-4.8 use undated ids and resolve via the dot->dash fallback; the
+	// 4.0s need this explicit map. Verified vs api.anthropic.com/v1/models
+	// 2026-06-04.
+	"anthropic/claude-opus-4":     "claude-opus-4-20250514",
+	"anthropic/claude-sonnet-4":   "claude-sonnet-4-20250514",
 	"claude-opus-4-7":             "claude-opus-4-7",
 	"claude-sonnet-4-6":           "claude-sonnet-4-6",
 	"claude-haiku-4-5":            "claude-haiku-4-5",

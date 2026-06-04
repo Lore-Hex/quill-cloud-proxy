@@ -859,6 +859,10 @@ var directModelMap = map[string]string{
 	"openai/gpt-oss-120b":              "gpt-oss-120b",
 	"qwen/qwen3-235b-a22b-2507":        "qwen-3-235b-a22b-instruct-2507",
 	"z-ai/glm-4.7":                     "zai-glm-4.7",
+	// Mistral's API rejects the bare "mistral-large" ("Invalid model");
+	// it serves the alias "mistral-large-latest" (-> mistral-large-2512).
+	// Verified vs api.mistral.ai/v1/models 2026-06-04.
+	"mistralai/mistral-large":          "mistral-large-latest",
 	"openai/gpt-4o-mini":               "gpt-4o-mini",
 	"google/gemini-1.5-flash":          "gemini-1.5-flash",
 	"vertex/gemini-2.5-flash":          "gemini-2.5-flash",
