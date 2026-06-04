@@ -151,6 +151,56 @@ func TestParseHTTPStatusAndOutcomeFallbacks(t *testing.T) {
 	}
 }
 
+func TestRetryableInvokeErrorFailsOverExceptOnBadRequests(t *testing.T) {
+	// Retryable — fail over to the next authorized provider. Includes the
+	// cases the previous allowlist silently missed: 404 (model not on this
+	// provider's account, e.g. Cerebras + Llama), 401/403 (key unwired for
+	// this provider, e.g. Together via the gateway), and connection-level /
+	// timeout errors.
+	retryable := []error{
+		errors.New("llm/upstream: http 502: bad gateway"),
+		errors.New("llm/upstream: http 503: service unavailable"),
+		errors.New("llm/upstream: http 429: rate limited"),
+		errors.New("llm/upstream: http 404: model not found"),
+		errors.New("llm/upstream: http 401: unauthorized"),
+		errors.New("llm/upstream: http 403: forbidden"),
+		errors.New("llm/together: http client unavailable: dial tcp: connection refused"),
+		errors.New("unexpected EOF"),
+		errors.New("context deadline exceeded"),
+	}
+	for _, err := range retryable {
+		if !retryableInvokeError(err) {
+			t.Errorf("retryableInvokeError(%q) = false, want true (should fail over)", err)
+		}
+	}
+	// Non-retryable — a malformed/oversized request every provider rejects the
+	// same way, so failing over is pointless.
+	for _, err := range []error{
+		errors.New("llm/upstream: http 400: bad request"),
+		errors.New("llm/upstream: http 422: unprocessable entity"),
+	} {
+		if retryableInvokeError(err) {
+			t.Errorf("retryableInvokeError(%q) = true, want false (no failover)", err)
+		}
+	}
+	if retryableInvokeError(nil) {
+		t.Error("retryableInvokeError(nil) = true, want false")
+	}
+}
+
+func TestNonRetryableUpstreamStatus(t *testing.T) {
+	for _, s := range []int{400, 413, 422} {
+		if !nonRetryableUpstreamStatus(s) {
+			t.Errorf("nonRetryableUpstreamStatus(%d) = false, want true", s)
+		}
+	}
+	for _, s := range []int{401, 403, 404, 408, 429, 500, 502, 503} {
+		if nonRetryableUpstreamStatus(s) {
+			t.Errorf("nonRetryableUpstreamStatus(%d) = true, want false (retryable)", s)
+		}
+	}
+}
+
 func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
 	bearer := "test-user-bearer"
 	var authorizeBody string
