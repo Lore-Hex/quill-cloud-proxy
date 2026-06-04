@@ -133,6 +133,7 @@ func TestAnthropicCatalogModelsNormalizeToProviderIDs(t *testing.T) {
 		"anthropic/claude-opus-4.5":   "claude-opus-4-5",
 		"anthropic/claude-opus-4.6":   "claude-opus-4-6",
 		"anthropic/claude-opus-4.7":   "claude-opus-4-7",
+		"anthropic/claude-opus-4.8":   "claude-opus-4-8",
 		"anthropic/claude-sonnet-4":   "claude-sonnet-4",
 		"anthropic/claude-sonnet-4.5": "claude-sonnet-4-5",
 		"anthropic/claude-sonnet-4.6": "claude-sonnet-4-6",
