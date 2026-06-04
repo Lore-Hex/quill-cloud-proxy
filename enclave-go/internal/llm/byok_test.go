@@ -182,6 +182,10 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		// mistral rejects bare "mistral-large" ("Invalid model"); directModelMap
 		// remaps it to the "mistral-large-latest" alias.
 		{"mistral", "mistralai/mistral-large", "mistralai/mistral-large", "mistral-large-latest"},
+		// anthropic path calls directModelID FIRST, so claude-4.0's dated-id
+		// remap must resolve here (the bare "claude-opus-4" 404s on Anthropic).
+		{"anthropic", "anthropic/claude-opus-4", "anthropic/claude-opus-4", "claude-opus-4-20250514"},
+		{"anthropic", "anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4", "claude-sonnet-4-20250514"},
 	}
 	for _, tc := range cases {
 		got := directModelID(tc.provider, tc.model, tc.upstream)

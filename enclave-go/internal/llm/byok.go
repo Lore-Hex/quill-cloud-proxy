@@ -854,6 +854,12 @@ var directModelMap = map[string]string{
 	"anthropic/claude-sonnet-4.6":      "claude-sonnet-4-6",
 	"anthropic/claude-haiku-4.5":       "claude-haiku-4-5",
 	"anthropic/claude-3-5-sonnet":      "claude-3-5-sonnet-20241022",
+	// Original Claude 4.0 GA: Anthropic serves these only under the dated
+	// snapshot id. The anthropic path calls directModelID FIRST (this map),
+	// so the remap must live here (not just anthropic.go's modelIDMap, which
+	// only sees the already-stripped id). Verified 2026-06-04.
+	"anthropic/claude-opus-4":          "claude-opus-4-20250514",
+	"anthropic/claude-sonnet-4":        "claude-sonnet-4-20250514",
 	"meta-llama/llama-3.1-8b-instruct": "llama3.1-8b",
 	"llama-3.1-8b-instruct":            "llama3.1-8b",
 	"openai/gpt-oss-120b":              "gpt-oss-120b",
