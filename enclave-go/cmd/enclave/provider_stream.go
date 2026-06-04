@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -292,48 +291,24 @@ func (w *routeSelectingWriter) BytesWritten() int {
 }
 
 // retryableInvokeError reports whether a failed provider attempt should fall
-// over to the next authorized candidate. The default is to FAIL OVER: when no
-// output bytes have been written yet, a different provider is almost always
-// worth trying. We decline ONLY for errors a different provider cannot fix — a
-// malformed or oversized *request* (HTTP 400/413/422), which every provider
-// rejects identically. Everything else routes to the next candidate: upstream
-// 5xx, 429, 408, 404 (model absent on this provider), 401/403 (bad or missing
-// key for this provider), and all transport / timeout / cancellation errors.
+// over to the next authorized candidate. invokeProviderStream consults it ONLY
+// before the first output byte is written, so trying the next provider never
+// duplicates output or double-bills (a rejected attempt streams nothing and
+// bills nothing).
 //
-// This replaced an allowlist of error-string substrings that recognized only
-// 5xx / 429 / timeouts and SILENTLY declined to fail over on anything else — so
-// a provider that 404'd (model not on that account), 401'd (key unwired), or
-// failed at the connection level returned a user-facing 502 even when healthy
-// authorized providers were available to try.
+// We fail over on ANY pre-output error, INCLUDING 4xx. In a large multi-
+// provider catalog the dominant failure mode is "this provider doesn't serve
+// this model on our account" — surfaced inconsistently as 400 "invalid model",
+// 404 "model not found", or 401/403 (key/account not entitled) — and another
+// authorized candidate very often DOES serve it. Declining to fail over on 4xx
+// (the prior behavior) returned a user-facing 502 whenever the top-ranked
+// provider merely lacked the model. The only cost of retrying a genuinely
+// malformed request is that it's tried across candidates before returning its
+// error — rare, and 4xx responses are cheap. (Output already streamed, client
+// cancellation, and TTFB-budget cancellation are handled by the caller's
+// bytes-written / context checks, not here.)
 func retryableInvokeError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if status, ok := llm.HTTPStatusFromError(err); ok {
-		return !nonRetryableUpstreamStatus(status)
-	}
-	// Non-typed errors are transport / timeout / cancellation failures — fail
-	// over. As a guard for any non-typed upstream error string, still decline
-	// on an explicit client-request rejection.
-	message := strings.ToLower(err.Error())
-	if strings.Contains(message, "http 400") || strings.Contains(message, "status 400") ||
-		strings.Contains(message, "http 422") || strings.Contains(message, "status 422") {
-		return false
-	}
-	return true
-}
-
-// nonRetryableUpstreamStatus is true for upstream statuses that signal a bad
-// request every provider would reject the same way, so failing over is
-// pointless. Everything else (incl. 401/403/404/408/429 and all 5xx) is
-// retryable.
-func nonRetryableUpstreamStatus(status int) bool {
-	switch status {
-	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
-		return true
-	default:
-		return false
-	}
+	return err != nil
 }
 
 func writeStreamingProviderError(w io.Writer, routeType, requestID, model string) error {
