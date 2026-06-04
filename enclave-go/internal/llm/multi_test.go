@@ -147,3 +147,21 @@ func TestAnthropicCatalogModelsNormalizeToProviderIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestAnthropicSamplingParamsOmitDeprecatedOpus48Fields(t *testing.T) {
+	temperature := 0.2
+	topP := 0.9
+
+	gotTemperature, gotTopP := anthropicSamplingParams("claude-opus-4-8", &temperature, &topP)
+	if gotTemperature != nil || gotTopP != nil {
+		t.Fatalf("claude-opus-4-8 sampling params = (%v, %v), want nil, nil", gotTemperature, gotTopP)
+	}
+
+	gotTemperature, gotTopP = anthropicSamplingParams("claude-opus-4-7", &temperature, &topP)
+	if gotTemperature == nil || *gotTemperature != temperature {
+		t.Fatalf("claude-opus-4-7 temperature = %v, want %v", gotTemperature, temperature)
+	}
+	if gotTopP == nil || *gotTopP != topP {
+		t.Fatalf("claude-opus-4-7 top_p = %v, want %v", gotTopP, topP)
+	}
+}

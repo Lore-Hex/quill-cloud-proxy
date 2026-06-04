@@ -116,6 +116,7 @@ func (c *anthropicClient) InvokeStreaming(
 	if err != nil {
 		return err
 	}
+	temperature, topP := anthropicSamplingParams(model, body.Temperature, body.TopP)
 
 	// Build the Anthropic Messages API body. Same shape as `body` but with
 	// the resolved upstream model id and `stream: true`.
@@ -134,8 +135,8 @@ func (c *anthropicClient) InvokeStreaming(
 		Messages:    messages,
 		System:      body.System,
 		MaxTokens:   body.MaxTokens,
-		Temperature: body.Temperature,
-		TopP:        body.TopP,
+		Temperature: temperature,
+		TopP:        topP,
 		Tools:       body.Tools,
 		ToolChoice:  body.ToolChoice,
 		Stream:      true,
@@ -171,6 +172,13 @@ func (c *anthropicClient) InvokeStreaming(
 	// adapter — no re-emission needed.
 	_, err = io.Copy(out, resp.Body)
 	return err
+}
+
+func anthropicSamplingParams(model string, temperature, topP *float64) (*float64, *float64) {
+	if strings.TrimSpace(model) == "claude-opus-4-8" {
+		return nil, nil
+	}
+	return temperature, topP
 }
 
 func mapModelID(quillModel string) string {
