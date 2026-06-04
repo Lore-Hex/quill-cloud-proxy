@@ -166,6 +166,19 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		{"together", "moonshotai/kimi-k2.6", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.6"},
 		{"together", "qwen/qwen-2.5-72b-instruct", "Qwen/Qwen2.5-72B-Instruct-Turbo", "Qwen/Qwen2.5-72B-Instruct-Turbo"},
 		{"together", "qwen/qwen-2.5-7b-instruct", "Qwen/Qwen2.5-7B-Instruct-Turbo", "Qwen/Qwen2.5-7B-Instruct-Turbo"},
+		// SiliconFlow native ids verified against api.siliconflow.com/v1/models
+		// (mixed-case, different author prefix — deepseek-ai/*, zai-org/*).
+		{"siliconflow", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash", "deepseek-ai/DeepSeek-V4-Flash"},
+		{"siliconflow", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro", "deepseek-ai/DeepSeek-V4-Pro"},
+		{"siliconflow", "tencent/hunyuan-a13b-instruct", "tencent/hunyuan-a13b-instruct", "tencent/Hunyuan-A13B-Instruct"},
+		{"siliconflow", "z-ai/glm-5", "z-ai/glm-5", "zai-org/GLM-5"},
+		// zai-direct accepts only the bare id; glm-4.7 was mis-mapped to
+		// "zai-glm-4.7" by the global directModelMap.
+		{"zai", "z-ai/glm-4.7", "z-ai/glm-4.7", "glm-4.7"},
+		// zai glm-4.5 has no override — must still strip-prefix to the bare
+		// id (regression guard: adding zai to providerNativeModelMaps must
+		// not break the models that already worked via strip-author).
+		{"zai", "z-ai/glm-4.5", "z-ai/glm-4.5", "glm-4.5"},
 	}
 	for _, tc := range cases {
 		got := directModelID(tc.provider, tc.model, tc.upstream)

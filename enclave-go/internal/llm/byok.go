@@ -586,15 +586,43 @@ func stripOpenRouterModelVariant(model string) string {
 // fall through to the generic strip-author logic — fine for any
 // upstream whose API accepts the OR-canonical id verbatim.
 var providerNativeModelMaps = map[string]map[string]string{
-	"together":  togetherModelMap,
-	"lightning": lightningModelMap,
-	"parasail":  parasailModelMap,
-	"deepinfra": deepinfraModelMap,
-	"gmi":       gmiModelMap,
-	"tinfoil":   tinfoilModelMap,
-	"novita":    novitaModelMap,
-	"phala":     phalaModelMap,
-	"minimax":   minimaxModelMap,
+	"together":    togetherModelMap,
+	"lightning":   lightningModelMap,
+	"parasail":    parasailModelMap,
+	"deepinfra":   deepinfraModelMap,
+	"gmi":         gmiModelMap,
+	"tinfoil":     tinfoilModelMap,
+	"novita":      novitaModelMap,
+	"phala":       phalaModelMap,
+	"minimax":     minimaxModelMap,
+	"siliconflow": siliconflowModelMap,
+	"zai":         zaiModelMap,
+}
+
+// siliconflowModelMap translates OR-canonical → SiliconFlow's native catalog
+// ids. SiliconFlow serves the models verbatim but under mixed-case,
+// different-author ids (verified against api.siliconflow.com/v1/models
+// 2026-06-04): deepseek-ai/* not deepseek/*, zai-org/* not z-ai/*, and
+// title-cased model names. Without this, directModelID's strip-author
+// fallback ships a bare lowercase id and SiliconFlow 4xxs "Model does not
+// exist", which is why every SiliconFlow route was 502ing through the gateway.
+var siliconflowModelMap = map[string]string{
+	"deepseek/deepseek-v4-flash":    "deepseek-ai/DeepSeek-V4-Flash",
+	"deepseek/deepseek-v4-pro":      "deepseek-ai/DeepSeek-V4-Pro",
+	"tencent/hunyuan-a13b-instruct": "tencent/Hunyuan-A13B-Instruct",
+	"tencent/hy3-preview":           "tencent/Hy3-preview",
+	"z-ai/glm-5":                    "zai-org/GLM-5",
+}
+
+// zaiModelMap overrides the global directModelMap for zai-direct. zai's API
+// (api.z.ai) only accepts the BARE model id ("glm-4.7"); glm-4.5/4.6/5 already
+// work via the generic strip-author fallback, but glm-4.7 has an entry in the
+// global directModelMap ("z-ai/glm-4.7" -> "zai-glm-4.7") that other providers
+// (e.g. venice) rely on. Override it here for zai only — verified against
+// api.z.ai/api/paas/v4 2026-06-04 (bare "glm-4.7" OK; "zai-glm-4.7" =>
+// "Unknown Model"). Leaving the global map untouched keeps venice et al. intact.
+var zaiModelMap = map[string]string{
+	"z-ai/glm-4.7": "glm-4.7",
 }
 
 var minimaxModelMap = map[string]string{
