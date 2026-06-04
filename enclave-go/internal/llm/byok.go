@@ -487,12 +487,21 @@ func directModelID(provider, model, upstreamModel string) string {
 	// `quill-router/scripts/pricing/providers/<slug>.py`, which are
 	// the source of truth for which native ids actually exist today.
 	if perProvider, ok := providerNativeModelMaps[provider]; ok {
-		key := upstreamModel
-		if key == "" {
-			key = model
-		}
-		if mapped, ok := perProvider[stripOpenRouterModelVariant(key)]; ok {
-			return mapped
+		// These maps are keyed by the OR-canonical (lowercase) model id.
+		// The control plane sends the canonical id in `model` and the
+		// provider-native catalog id in `upstreamModel` — e.g. Together:
+		// model="moonshotai/kimi-k2.6", upstreamModel="moonshotai/Kimi-K2.6".
+		// Try the canonical `model` FIRST: a mixed-case upstreamModel
+		// ("…/Kimi-K2.6") misses the lowercase map key and would fall
+		// through to the author-strip fallback below, which ships a bare
+		// "Kimi-K2.6" that Together 404s ("Unable to access model …").
+		for _, key := range []string{model, upstreamModel} {
+			if key == "" {
+				continue
+			}
+			if mapped, ok := perProvider[stripOpenRouterModelVariant(key)]; ok {
+				return mapped
+			}
 		}
 	}
 	if providerPreservesAuthorModelID(provider) {

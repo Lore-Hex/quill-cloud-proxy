@@ -148,3 +148,29 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		}
 	}
 }
+
+// Regression for the 2026-06-04 Together outage: in production the control
+// plane sends the OR-canonical id in `model` and the endpoint's
+// provider-native catalog id in `upstreamModel`. For Together that catalog id
+// is MIXED-CASE ("moonshotai/Kimi-K2.6"), which misses the lowercase
+// togetherModelMap key and used to fall through to the author-strip fallback,
+// shipping a bare "Kimi-K2.6" that Together rejects ("Unable to access model
+// Kimi-K2.6"). directModelID must resolve via the canonical `model` key
+// regardless of the upstreamModel casing. (TestPerProviderNativeMaps passes
+// orID as BOTH args, so it never caught this.)
+func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
+	cases := []struct {
+		provider, model, upstream, want string
+	}{
+		// Together native ids verified against api.together.xyz/v1/models.
+		{"together", "moonshotai/kimi-k2.6", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.6"},
+		{"together", "qwen/qwen-2.5-72b-instruct", "Qwen/Qwen2.5-72B-Instruct-Turbo", "Qwen/Qwen2.5-72B-Instruct-Turbo"},
+		{"together", "qwen/qwen-2.5-7b-instruct", "Qwen/Qwen2.5-7B-Instruct-Turbo", "Qwen/Qwen2.5-7B-Instruct-Turbo"},
+	}
+	for _, tc := range cases {
+		got := directModelID(tc.provider, tc.model, tc.upstream)
+		if got != tc.want {
+			t.Errorf("directModelID(%q, %q, %q) = %q, want %q", tc.provider, tc.model, tc.upstream, got, tc.want)
+		}
+	}
+}
