@@ -3,6 +3,7 @@ package llm
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -15,6 +16,19 @@ type upstreamHTTPError struct {
 
 func (e *upstreamHTTPError) Error() string {
 	return fmt.Sprintf("llm/upstream: http %d: %s", e.status, e.body)
+}
+
+// HTTPStatusFromError returns the upstream HTTP status code carried by err when
+// it originated as a non-2xx upstream response, and ok=false otherwise (e.g.
+// transport, timeout, or cancellation errors that never reached an HTTP
+// status). Used by the gateway's provider-failover logic to decide which
+// failures are worth retrying on the next authorized provider.
+func HTTPStatusFromError(err error) (status int, ok bool) {
+	var httpErr *upstreamHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.status, true
+	}
+	return 0, false
 }
 
 // translateOpenAIStreamToAnthropic reads OpenAI Chat Completions SSE chunks

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -290,22 +291,49 @@ func (w *routeSelectingWriter) BytesWritten() int {
 	return w.bytes
 }
 
+// retryableInvokeError reports whether a failed provider attempt should fall
+// over to the next authorized candidate. The default is to FAIL OVER: when no
+// output bytes have been written yet, a different provider is almost always
+// worth trying. We decline ONLY for errors a different provider cannot fix — a
+// malformed or oversized *request* (HTTP 400/413/422), which every provider
+// rejects identically. Everything else routes to the next candidate: upstream
+// 5xx, 429, 408, 404 (model absent on this provider), 401/403 (bad or missing
+// key for this provider), and all transport / timeout / cancellation errors.
+//
+// This replaced an allowlist of error-string substrings that recognized only
+// 5xx / 429 / timeouts and SILENTLY declined to fail over on anything else — so
+// a provider that 404'd (model not on that account), 401'd (key unwired), or
+// failed at the connection level returned a user-facing 502 even when healthy
+// authorized providers were available to try.
 func retryableInvokeError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if status, ok := llm.HTTPStatusFromError(err); ok {
+		return !nonRetryableUpstreamStatus(status)
+	}
+	// Non-typed errors are transport / timeout / cancellation failures — fail
+	// over. As a guard for any non-typed upstream error string, still decline
+	// on an explicit client-request rejection.
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "http 429") ||
-		strings.Contains(message, "status 429") ||
-		strings.Contains(message, "too many requests") ||
-		strings.Contains(message, "rate limit") ||
-		strings.Contains(message, "http 5") ||
-		strings.Contains(message, "status 5") ||
-		strings.Contains(message, "timeout") ||
-		strings.Contains(message, "temporary") ||
-		strings.Contains(message, "time-to-first-byte exceeded") ||
-		strings.Contains(message, "context canceled") ||
-		strings.Contains(message, "context deadline exceeded")
+	if strings.Contains(message, "http 400") || strings.Contains(message, "status 400") ||
+		strings.Contains(message, "http 422") || strings.Contains(message, "status 422") {
+		return false
+	}
+	return true
+}
+
+// nonRetryableUpstreamStatus is true for upstream statuses that signal a bad
+// request every provider would reject the same way, so failing over is
+// pointless. Everything else (incl. 401/403/404/408/429 and all 5xx) is
+// retryable.
+func nonRetryableUpstreamStatus(status int) bool {
+	switch status {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	default:
+		return false
+	}
 }
 
 func writeStreamingProviderError(w io.Writer, routeType, requestID, model string) error {
