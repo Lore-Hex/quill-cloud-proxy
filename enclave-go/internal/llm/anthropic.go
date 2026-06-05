@@ -67,11 +67,11 @@ var modelIDMap = map[string]string{
 	// 4.5-4.8 use undated ids and resolve via the dot->dash fallback; the
 	// 4.0s need this explicit map. Verified vs api.anthropic.com/v1/models
 	// 2026-06-04.
-	"anthropic/claude-opus-4":     "claude-opus-4-20250514",
-	"anthropic/claude-sonnet-4":   "claude-sonnet-4-20250514",
-	"claude-opus-4-7":             "claude-opus-4-7",
-	"claude-sonnet-4-6":           "claude-sonnet-4-6",
-	"claude-haiku-4-5":            "claude-haiku-4-5",
+	"anthropic/claude-opus-4":   "claude-opus-4-20250514",
+	"anthropic/claude-sonnet-4": "claude-sonnet-4-20250514",
+	"claude-opus-4-7":           "claude-opus-4-7",
+	"claude-sonnet-4-6":         "claude-sonnet-4-6",
+	"claude-haiku-4-5":          "claude-haiku-4-5",
 }
 
 type anthropicClient struct {
