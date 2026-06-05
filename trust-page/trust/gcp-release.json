@@ -2,16 +2,16 @@
   "api_base_url": "https://api.quillrouter.com/v1",
   "attestation_audience": "quill-cloud",
   "attestation_issuer": "https://confidentialcomputing.googleapis.com",
-  "commit": "53133b4",
+  "commit": "3d00f97",
   "data_policy": {
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "image_digest": "sha256:1fe197a29c2f04c64cd9fa43e5ccfc017206dbb8c3146360ad15f823dee82ae4",
-  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-openrouter:gcp-release-53133b4",
+  "image_digest": "sha256:bbb7586d414403a452d0ecc763d373c96464ba4b5d3a54ea23a1e6c960fea265",
+  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-openrouter:gcp-release-3d00f97",
   "platform": "gcp-confidential-space",
   "released_by": "github-actions:deploy-enclave-gcp",
-  "source_commit": "53133b4",
+  "source_commit": "3d00f97",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "source_repositories": {
     "attested_gateway": "https://github.com/Lore-Hex/quill-cloud-proxy",

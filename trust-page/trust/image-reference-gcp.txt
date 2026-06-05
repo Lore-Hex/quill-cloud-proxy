@@ -1,1 +1,1 @@
-us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-openrouter:gcp-release-53133b4
+us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-openrouter:gcp-release-3d00f97
