@@ -1079,7 +1079,7 @@ func TestServeOneTrustedRouterProviderErrorDoesNotReturnEmptyStream(t *testing.T
 	defer client.Close()
 	go serveOne(context.Background(), serverConn, auth.New(nil), &failingStreamingLLM{}, nil, nil, trGateway, nil)
 
-	requestBody := []byte(`{"model":"anthropic/claude-3-5-sonnet","stream":true,"messages":[{"role":"user","content":"private prompt"}],"max_tokens":32}`)
+	requestBody := []byte(`{"model":"anthropic/claude-3-5-sonnet","stream":true,"messages":[{"role":"user","content":"private prompt"}],"max_tokens":32,"metadata":{"trustedrouter_synthetic":"true"}}`)
 	_, err := fmt.Fprintf(
 		client,
 		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
@@ -1116,6 +1116,9 @@ func TestServeOneTrustedRouterProviderErrorDoesNotReturnEmptyStream(t *testing.T
 	}
 	if refundBody == "" {
 		t.Fatal("expected provider failure to refund authorization")
+	}
+	if !strings.Contains(refundBody, `"metadata":{"trustedrouter_synthetic":"true"}`) {
+		t.Fatalf("refund missing synthetic metadata: %s", refundBody)
 	}
 	if settleCalled {
 		t.Fatal("settle was called after provider failure")

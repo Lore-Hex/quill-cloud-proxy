@@ -182,8 +182,11 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		// mistral rejects bare "mistral-large" ("Invalid model"); directModelMap
 		// remaps it to the "mistral-large-latest" alias.
 		{"mistral", "mistralai/mistral-large", "mistralai/mistral-large", "mistral-large-latest"},
+		{"mistral", "mistralai/mistral-small-3.2-24b-instruct", "mistralai/mistral-small-3.2-24b-instruct", "mistral-small-2506"},
+		{"mistral", "mistralai/mistral-nemo", "mistralai/mistral-nemo", "open-mistral-nemo"},
 		// anthropic path calls directModelID FIRST, so claude-4.0's dated-id
 		// remap must resolve here (the bare "claude-opus-4" 404s on Anthropic).
+		{"anthropic", "anthropic/claude-opus-4.8", "anthropic/claude-opus-4.8", "claude-opus-4-8"},
 		{"anthropic", "anthropic/claude-opus-4", "anthropic/claude-opus-4", "claude-opus-4-20250514"},
 		{"anthropic", "anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4", "claude-sonnet-4-20250514"},
 	}
@@ -192,5 +195,21 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("directModelID(%q, %q, %q) = %q, want %q", tc.provider, tc.model, tc.upstream, got, tc.want)
 		}
+	}
+}
+
+func TestProviderSpecificTemperatureOmission(t *testing.T) {
+	zero := 0.0
+	if got := openAICompatibleTemperature("kimi", "kimi-k2.6", &zero); got != nil {
+		t.Fatalf("Kimi K2.6 temperature = %v, want omitted", *got)
+	}
+	if got := openAICompatibleTemperature("openai", "gpt-4o-mini", &zero); got == nil || *got != 0 {
+		t.Fatalf("OpenAI temperature = %v, want 0", got)
+	}
+	if got := anthropicTemperature("claude-opus-4-8", &zero); got != nil {
+		t.Fatalf("Claude Opus 4.8 temperature = %v, want omitted", *got)
+	}
+	if got := anthropicTemperature("claude-sonnet-4-6", &zero); got == nil || *got != 0 {
+		t.Fatalf("Claude Sonnet temperature = %v, want 0", got)
 	}
 }

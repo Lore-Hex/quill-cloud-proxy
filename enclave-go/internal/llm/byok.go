@@ -171,7 +171,7 @@ func invokeOpenAICompatibleStreamingWithClient(
 		Model:             upstreamID,
 		Messages:          msgs,
 		Stream:            true,
-		Temperature:       body.Temperature,
+		Temperature:       openAICompatibleTemperature(provider, upstreamID, body.Temperature),
 		TopP:              body.TopP,
 		Tools:             req.Tools,
 		ToolChoice:        req.ToolChoice,
@@ -225,6 +225,13 @@ func invokeOpenAICompatibleStreamingWithClient(
 	return translateOpenAIStreamToAnthropic(resp.Body, out)
 }
 
+func openAICompatibleTemperature(provider, modelID string, temperature *float64) *float64 {
+	if provider == "kimi" && strings.Contains(strings.ToLower(modelID), "kimi-k2.") {
+		return nil
+	}
+	return temperature
+}
+
 func kimiToolsNeedThinkingDisabled(provider, modelID string, tools []any) bool {
 	if provider != "kimi" || len(tools) == 0 {
 		return false
@@ -245,6 +252,7 @@ func invokeAnthropicBYOKStreaming(
 	if err != nil {
 		return err
 	}
+	modelID := directModelID("anthropic", req.Model, upstreamModel)
 	reqBody := struct {
 		Model       string                      `json:"model"`
 		Messages    []qtypes.AnthropicMessage   `json:"messages"`
@@ -256,11 +264,11 @@ func invokeAnthropicBYOKStreaming(
 		ToolChoice  *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
 		Stream      bool                        `json:"stream"`
 	}{
-		Model:       directModelID("anthropic", req.Model, upstreamModel),
+		Model:       modelID,
 		Messages:    messages,
 		System:      body.System,
 		MaxTokens:   body.MaxTokens,
-		Temperature: body.Temperature,
+		Temperature: anthropicTemperature(modelID, body.Temperature),
 		TopP:        body.TopP,
 		Tools:       body.Tools,
 		ToolChoice:  body.ToolChoice,
@@ -293,6 +301,14 @@ func invokeAnthropicBYOKStreaming(
 	}
 	_, err = io.Copy(out, resp.Body)
 	return err
+}
+
+func anthropicTemperature(modelID string, temperature *float64) *float64 {
+	model := strings.ToLower(modelID)
+	if strings.Contains(model, "claude-opus-4-7") || strings.Contains(model, "claude-opus-4-8") {
+		return nil
+	}
+	return temperature
 }
 
 func openAICompatibleMessagesWithFetchedImages(
@@ -850,10 +866,11 @@ var tinfoilModelMap = map[string]string{
 }
 
 var directModelMap = map[string]string{
-	"anthropic/claude-opus-4.7":        "claude-opus-4-7",
-	"anthropic/claude-sonnet-4.6":      "claude-sonnet-4-6",
-	"anthropic/claude-haiku-4.5":       "claude-haiku-4-5",
-	"anthropic/claude-3-5-sonnet":      "claude-3-5-sonnet-20241022",
+	"anthropic/claude-opus-4.8":   "claude-opus-4-8",
+	"anthropic/claude-opus-4.7":   "claude-opus-4-7",
+	"anthropic/claude-sonnet-4.6": "claude-sonnet-4-6",
+	"anthropic/claude-haiku-4.5":  "claude-haiku-4-5",
+	"anthropic/claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
 	// Original Claude 4.0 GA: Anthropic serves these only under the dated
 	// snapshot id. The anthropic path calls directModelID FIRST (this map),
 	// so the remap must live here (not just anthropic.go's modelIDMap, which
@@ -868,10 +885,12 @@ var directModelMap = map[string]string{
 	// Mistral's API rejects the bare "mistral-large" ("Invalid model");
 	// it serves the alias "mistral-large-latest" (-> mistral-large-2512).
 	// Verified vs api.mistral.ai/v1/models 2026-06-04.
-	"mistralai/mistral-large":          "mistral-large-latest",
-	"openai/gpt-4o-mini":               "gpt-4o-mini",
-	"google/gemini-1.5-flash":          "gemini-1.5-flash",
-	"vertex/gemini-2.5-flash":          "gemini-2.5-flash",
+	"mistralai/mistral-large":                  "mistral-large-latest",
+	"mistralai/mistral-small-3.2-24b-instruct": "mistral-small-2506",
+	"mistralai/mistral-nemo":                   "open-mistral-nemo",
+	"openai/gpt-4o-mini":                       "gpt-4o-mini",
+	"google/gemini-1.5-flash":                  "gemini-1.5-flash",
+	"vertex/gemini-2.5-flash":                  "gemini-2.5-flash",
 }
 
 func normalizeDirectProvider(provider string) string {

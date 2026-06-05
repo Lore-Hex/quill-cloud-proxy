@@ -262,7 +262,7 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	return &decoded.Data, nil
 }
 
-func (c *Client) Refund(ctx context.Context, auth *Authorization, status int, errorType string, elapsedSeconds float64) error {
+func (c *Client) Refund(ctx context.Context, auth *Authorization, status int, errorType string, elapsedSeconds float64, metadata map[string]any) error {
 	if auth == nil {
 		return nil
 	}
@@ -281,6 +281,9 @@ func (c *Client) Refund(ctx context.Context, auth *Authorization, status int, er
 		"selected_model":    auth.Model,
 		"selected_endpoint": auth.EndpointID,
 		"app":               "attested-gateway",
+	}
+	if metadata != nil {
+		body["metadata"] = metadata
 	}
 	var decoded map[string]any
 	return c.postJSON(ctx, "/internal/gateway/refund", body, &decoded)

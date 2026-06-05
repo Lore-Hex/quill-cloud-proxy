@@ -407,7 +407,7 @@ func serveOne(
 		req.Models = nil
 		invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)
 		if err != nil {
-			_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds())
+			_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), req.Metadata)
 			writeError(conn, 502, "BYOK provider key unavailable")
 			return
 		}
@@ -540,7 +540,7 @@ func serveResponsesNonStreaming(
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_collect_failed model=%q err=%v\n", req.Model, err)
 		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds())
+			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		writeError(conn, 502, "provider error")
 		return
@@ -551,13 +551,13 @@ func serveResponsesNonStreaming(
 			if asAdapterErr(err, &aerr) {
 				fmt.Fprintf(os.Stderr, "enclave.responses_structured_output_failed model=%q context=%q\n", req.Model, aerr.Context)
 				if trGateway != nil && trGateway.Enabled() {
-					_ = trGateway.Refund(ctx, authorization, aerr.Status, "provider_structured_output_error", time.Since(requestStarted).Seconds())
+					_ = trGateway.Refund(ctx, authorization, aerr.Status, "provider_structured_output_error", time.Since(requestStarted).Seconds(), req.Metadata)
 				}
 				writeAdapterOpenAIError(conn, aerr)
 				return
 			}
 			if trGateway != nil && trGateway.Enabled() {
-				_ = trGateway.Refund(ctx, authorization, 502, "provider_structured_output_error", time.Since(requestStarted).Seconds())
+				_ = trGateway.Refund(ctx, authorization, 502, "provider_structured_output_error", time.Since(requestStarted).Seconds(), req.Metadata)
 			}
 			writeError(conn, 502, "provider structured output error")
 			return
@@ -625,7 +625,7 @@ func serveChatNonStreaming(
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_collect_failed model=%q err=%v\n", req.Model, err)
 		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds())
+			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		writeError(conn, 502, "provider error")
 		return
@@ -724,7 +724,7 @@ func serveStreaming(
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
 		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds())
+			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		if routeType == "responses" || statsW.BytesWritten() == 0 {
 			_ = writeStreamingProviderError(statsW, routeType, requestID, req.Model)
