@@ -19,7 +19,10 @@ PROJECT_ID="${PROJECT_ID:-quill-cloud-proxy}"
 REGION="${REGION:-us-central1}"
 ARTIFACT_REPO="${ARTIFACT_REPO:-quill}"
 IMAGE_NAME="${IMAGE_NAME:-enclave-openrouter}"
-DOCKERFILE="${DOCKERFILE:-Dockerfile.enclave.gcp.openrouter}"
+# GCP production is the direct multi-provider gateway. The older
+# OpenRouter-only Dockerfile remains for compatibility experiments, but it
+# must be selected explicitly with DOCKERFILE=...
+DOCKERFILE="${DOCKERFILE:-Dockerfile.enclave.gcp.multi}"
 COMMIT="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 IMAGE_TAG="${IMAGE_TAG:-gcp-release-$COMMIT}"
 TRUST_BUCKET="${TRUST_BUCKET:-trust.quill.lorehex.co}"
