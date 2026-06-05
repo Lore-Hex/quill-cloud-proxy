@@ -252,15 +252,18 @@ func (t *selectedRouteTracker) Endpoint(fallback string, authorization *trustedr
 }
 
 var firstByteBudget = func() time.Duration {
-	raw := os.Getenv("QUILL_FIRST_BYTE_TIMEOUT_SECONDS")
+	return parseFirstByteBudget(os.Getenv("QUILL_FIRST_BYTE_TIMEOUT_SECONDS"))
+}()
+
+func parseFirstByteBudget(raw string) time.Duration {
 	if raw == "" {
-		return 8 * time.Second
+		return 20 * time.Second
 	}
 	if n, err := strconv.Atoi(raw); err == nil && n > 0 {
 		return time.Duration(n) * time.Second
 	}
-	return 8 * time.Second
-}()
+	return 20 * time.Second
+}
 
 type routeSelectingWriter struct {
 	w           io.Writer

@@ -61,3 +61,14 @@ func TestProviderCircuitKeyIncludesProviderRegionAndFamily(t *testing.T) {
 		t.Fatalf("key = %q, want %q", key, want)
 	}
 }
+
+func TestParseFirstByteBudgetDefaultsToProductionBudget(t *testing.T) {
+	for _, raw := range []string{"", "0", "-1", "not-a-number"} {
+		if got := parseFirstByteBudget(raw); got != 20*time.Second {
+			t.Errorf("parseFirstByteBudget(%q) = %s, want 20s", raw, got)
+		}
+	}
+	if got := parseFirstByteBudget("35"); got != 35*time.Second {
+		t.Fatalf("parseFirstByteBudget(valid) = %s, want 35s", got)
+	}
+}
