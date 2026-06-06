@@ -191,6 +191,25 @@ resource "cloudflare_record" "status_a" {
   comment = "Status page (status.trustedrouter.com) — terraformed"
 }
 
+// api.trustedrouter.com → CNAME → api.quillrouter.com. Consolidates the
+// inference API onto the trustedrouter brand while riding the SAME
+// operator-managed Cloudflare multi-cloud LB (GCP us-central1 + AWS us-west-2
+// health-steered failover) as api.quillrouter.com — identical routing +
+// resilience, no separate LB. DNS-only (proxied=false) so the client connects
+// directly to the attested enclave and verifies the enclave's OWN Let's
+// Encrypt cert; api.trustedrouter.com is whitelisted in the enclave's
+// QUILL_API_HOST (deploy-enclave-gcp.yml) so autocert provisions it via
+// TLS-ALPN-01.
+resource "cloudflare_record" "trustedrouter_api_cname" {
+  zone_id = var.cloudflare_zone_id
+  name    = "api"
+  type    = "CNAME"
+  content = "api.quillrouter.com"
+  ttl     = 1
+  proxied = false
+  comment = "api → api.quillrouter.com LB (attested enclave) — terraformed"
+}
+
 // NOTE: Cloudflare's apex NS records can't be set declaratively on free/
 // pro tier (Cloudflare auto-injects). If we move to Enterprise + use
 // Secondary DNS, add a cloudflare_zone_settings_override or use the
@@ -228,6 +247,14 @@ resource "google_dns_record_set" "www_cname" {
   ttl          = 300
   managed_zone = local.cloud_dns_zone
   rrdatas      = ["trustedrouter.com."]
+}
+
+resource "google_dns_record_set" "trustedrouter_api_cname" {
+  name         = "api.trustedrouter.com."
+  type         = "CNAME"
+  ttl          = 300
+  managed_zone = local.cloud_dns_zone
+  rrdatas      = ["api.quillrouter.com."]
 }
 
 resource "google_dns_record_set" "status_a" {
