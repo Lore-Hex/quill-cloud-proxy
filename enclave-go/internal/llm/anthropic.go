@@ -138,8 +138,11 @@ func (c *anthropicClient) InvokeStreaming(
 		Model:       model,
 		Messages:    messages,
 		System:      body.System,
-		MaxTokens:   body.MaxTokens,
-		Temperature: body.Temperature,
+		MaxTokens: body.MaxTokens,
+		// Credits path was sending temperature raw; opus-4.7/4.8 reject it
+		// (400 "temperature is deprecated"). Route through the same helper the
+		// BYOK path already uses so the omission is consistent across paths.
+		Temperature: anthropicTemperature(model, body.Temperature),
 		TopP:        body.TopP,
 		Tools:       body.Tools,
 		ToolChoice:  body.ToolChoice,

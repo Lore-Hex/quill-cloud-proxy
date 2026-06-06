@@ -211,6 +211,9 @@ func TestProviderSpecificTemperatureOmission(t *testing.T) {
 	if got := anthropicTemperature("claude-opus-4-8", &zero); got != nil {
 		t.Fatalf("Claude Opus 4.8 temperature = %v, want omitted", *got)
 	}
+	if got := anthropicTemperature("claude-opus-4-7", &zero); got != nil {
+		t.Fatalf("Claude Opus 4.7 temperature = %v, want omitted", *got)
+	}
 	if got := anthropicTemperature("claude-sonnet-4-6", &zero); got == nil || *got != 0 {
 		t.Fatalf("Claude Sonnet temperature = %v, want 0", got)
 	}
