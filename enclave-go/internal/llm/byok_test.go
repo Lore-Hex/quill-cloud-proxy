@@ -170,8 +170,10 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		// (mixed-case, different author prefix — deepseek-ai/*, zai-org/*).
 		{"siliconflow", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash", "deepseek-ai/DeepSeek-V4-Flash"},
 		{"siliconflow", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro", "deepseek-ai/DeepSeek-V4-Pro"},
+		{"siliconflow", "minimax/minimax-m3", "minimax/minimax-m3", "MiniMaxAI/MiniMax-M3"},
 		{"siliconflow", "tencent/hunyuan-a13b-instruct", "tencent/hunyuan-a13b-instruct", "tencent/Hunyuan-A13B-Instruct"},
 		{"siliconflow", "z-ai/glm-5", "z-ai/glm-5", "zai-org/GLM-5"},
+		{"siliconflow", "z-ai/glm-5v-turbo", "z-ai/glm-5v-turbo", "zai-org/GLM-5V-Turbo"},
 		// zai-direct accepts only the bare id; glm-4.7 was mis-mapped to
 		// "zai-glm-4.7" by the global directModelMap.
 		{"zai", "z-ai/glm-4.7", "z-ai/glm-4.7", "glm-4.7"},

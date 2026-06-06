@@ -625,9 +625,11 @@ var providerNativeModelMaps = map[string]map[string]string{
 var siliconflowModelMap = map[string]string{
 	"deepseek/deepseek-v4-flash":    "deepseek-ai/DeepSeek-V4-Flash",
 	"deepseek/deepseek-v4-pro":      "deepseek-ai/DeepSeek-V4-Pro",
+	"minimax/minimax-m3":            "MiniMaxAI/MiniMax-M3",
 	"tencent/hunyuan-a13b-instruct": "tencent/Hunyuan-A13B-Instruct",
 	"tencent/hy3-preview":           "tencent/Hy3-preview",
 	"z-ai/glm-5":                    "zai-org/GLM-5",
+	"z-ai/glm-5v-turbo":             "zai-org/GLM-5V-Turbo",
 }
 
 // zaiModelMap overrides the global directModelMap for zai-direct. zai's API
