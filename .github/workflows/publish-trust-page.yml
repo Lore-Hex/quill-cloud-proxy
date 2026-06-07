@@ -44,7 +44,7 @@ jobs:
           assert release["platform"] == "gcp-confidential-space"
           assert release["data_policy"]["prompt_output_storage"] is False
           assert release["data_policy"]["control_plane_prompt_access"] is False
-          assert release["tls"]["hostname"] == "api.quillrouter.com"
+          assert release["tls"]["hostname"] == "api.trustedrouter.com"
           assert release["source_repositories"]["control_plane"].endswith("/quill-router")
           assert release["source_repositories"]["attested_gateway"].endswith("/quill-cloud-proxy")
           assert release["image_digest"].startswith("sha256:")
