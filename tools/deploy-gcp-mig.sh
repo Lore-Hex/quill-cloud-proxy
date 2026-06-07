@@ -106,13 +106,12 @@ QUILL_GMI_SECRET="${QUILL_GMI_SECRET:-trustedrouter-gmi-api-key}"
 QUILL_DEEPINFRA_SECRET="${QUILL_DEEPINFRA_SECRET:-trustedrouter-deepinfra-api-key}"
 QUILL_NEBIUS_SECRET="${QUILL_NEBIUS_SECRET:-trustedrouter-nebius-api-key}"
 QUILL_MINIMAX_SECRET="${QUILL_MINIMAX_SECRET:-trustedrouter-minimax-api-key}"
-# Cohere — embeddings only. OPT-IN (empty default) on purpose: the enclave
-# bootstrap HARD-FAILS if a named secret can't be fetched, so we must NOT
-# point at trustedrouter-cohere-api-key until that secret actually exists in
-# Secret Manager. Until then the enclave boots fine and Cohere embedding
-# requests return a clean "missing api key" error. To enable: create the
-# secret, then deploy with QUILL_COHERE_SECRET=trustedrouter-cohere-api-key.
-QUILL_COHERE_SECRET="${QUILL_COHERE_SECRET:-}"
+# Cohere — embeddings only (native /v2/embed). The secret
+# trustedrouter-cohere-api-key was provisioned in Secret Manager on
+# 2026-06-07, so the enclave can fetch it at boot. NOTE: the bootstrap
+# HARD-FAILS if a named secret can't be fetched — keep this pointed only at
+# a secret that actually exists (set to "" to disable if it's ever removed).
+QUILL_COHERE_SECRET="${QUILL_COHERE_SECRET:-trustedrouter-cohere-api-key}"
 # Optional tee-env segment: only injected when QUILL_COHERE_SECRET is set, so
 # an empty value never produces a malformed/empty metadata entry.
 COHERE_TEE_ENV=""
