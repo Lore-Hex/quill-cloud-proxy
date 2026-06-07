@@ -1,9 +1,9 @@
-# trustedrouter.com multi-vendor DNS — Terraform
+# trustedrouter.com / quillrouter.com DNS — Terraform
 
-Single source of truth for the trustedrouter.com zone. Drives BOTH
-Cloudflare AND Google Cloud DNS from one HCL file so the two
-vendors can't silently drift apart (as they did on 2026-05-14,
-prompting Cloudflare's "no longer using our nameservers" email).
+Single source of truth for the trustedrouter.com and quillrouter.com DNS
+records. The registrar delegation is Google Cloud DNS only; retained
+Cloudflare records are treated as a mirror/operator surface, not part of
+the authoritative parent-zone NS set.
 
 ## First-time setup (one-off, ~10 minutes)
 
@@ -140,7 +140,6 @@ terraform import 'google_dns_record_set.quill_apex_ns'  projects/quill-cloud-pro
   shape there too.
 
 - **Registrar-NS-change alarm**: this Terraform doesn't watch the
-  registrar's NS list (where the original Cloudflare email came
-  from). Add a periodic synthetic monitor (e.g. Cloud Scheduler →
-  Cloud Run Job) that does `dig +trace NS trustedrouter.com` and
-  alerts on diff vs the expected 6-NS set.
+  registrar's NS list. The GitHub `DNS NS-drift check` workflow
+  queries the .com TLD directly and alerts on diff vs the expected
+  Google Cloud DNS-only NS set.

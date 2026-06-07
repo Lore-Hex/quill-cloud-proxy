@@ -2,18 +2,14 @@
 #
 # Why this exists
 # ───────────────
-# On 2026-05-14 Cloudflare emailed that trustedrouter.com had drifted
-# off their nameservers. Two days later the same thing for
-# quillrouter.com. Investigation showed both zones had been in a
-# partial multi-vendor DNS state for an unknown amount of time —
-# Cloudflare detected the asymmetry but only sent their email well
-# after drift had been live. Some users were getting NXDOMAIN /
-# wrong A records during that window depending on which NS pool
-# their resolver cached.
+# trustedrouter.com and quillrouter.com now delegate at the registrar
+# to Google Cloud DNS only. This workflow catches the opposite failure
+# mode: an accidental registrar-side NS change that would make a stale
+# DNS vendor authoritative again.
 #
 # This workflow catches that exact failure mode by directly querying
 # the .com TLD nameservers for the NS records and diffing against
-# the known-expected 6-NS set per zone. Any mismatch = red run =
+# the known-expected Google Cloud DNS NS set per zone. Any mismatch = red run =
 # operator notification through the standard GitHub Actions failure
 # email / Slack / whatever's wired up.
 #
@@ -49,8 +45,8 @@ jobs:
           # If you change the NS list (e.g. add a third vendor),
           # update both the Terraform module AND these expected
           # values in lockstep.
-          expected_tr="dom.ns.cloudflare.com.,harmony.ns.cloudflare.com.,ns-cloud-b1.googledomains.com.,ns-cloud-b2.googledomains.com.,ns-cloud-b3.googledomains.com.,ns-cloud-b4.googledomains.com."
-          expected_qr="brynne.ns.cloudflare.com.,keaton.ns.cloudflare.com.,ns-cloud-d1.googledomains.com.,ns-cloud-d2.googledomains.com.,ns-cloud-d3.googledomains.com.,ns-cloud-d4.googledomains.com."
+          expected_tr="ns-cloud-b1.googledomains.com.,ns-cloud-b2.googledomains.com.,ns-cloud-b3.googledomains.com.,ns-cloud-b4.googledomains.com."
+          expected_qr="ns-cloud-d1.googledomains.com.,ns-cloud-d2.googledomains.com.,ns-cloud-d3.googledomains.com.,ns-cloud-d4.googledomains.com."
 
           fail=0
           for pair in trustedrouter.com:"$expected_tr" quillrouter.com:"$expected_qr"; do
@@ -77,21 +73,16 @@ jobs:
             fi
           done
 
-          # Also sanity-check that each vendor still answers
-          # authoritatively for the zone — a vendor going dark
-          # without a registry update is the OTHER failure mode.
-          # Cheap to verify: one dig per vendor per zone.
-          for pair in trustedrouter.com:dom.ns.cloudflare.com:ns-cloud-b1.googledomains.com quillrouter.com:brynne.ns.cloudflare.com:ns-cloud-d1.googledomains.com; do
+          # Also sanity-check that Google Cloud DNS still answers
+          # authoritatively for each zone. Cheap to verify: one dig
+          # against one delegated nameserver per zone.
+          for pair in trustedrouter.com:ns-cloud-b1.googledomains.com quillrouter.com:ns-cloud-d1.googledomains.com; do
             d="${pair%%:*}"
-            rest="${pair#*:}"
-            cf_ns="${rest%%:*}"
-            gc_ns="${rest##*:}"
-            for ns in "$cf_ns" "$gc_ns"; do
-              if ! dig +short +tries=2 +timeout=5 NS "$d" "@$ns" | grep -q .; then
-                echo "::error::$d not answered by $ns (vendor outage or removed-from-zone)"
-                fail=1
-              fi
-            done
+            ns="${pair#*:}"
+            if ! dig +short +tries=2 +timeout=5 NS "$d" "@$ns" | grep -q .; then
+              echo "::error::$d not answered by $ns (vendor outage or removed-from-zone)"
+              fail=1
+            fi
           done
 
           exit "$fail"

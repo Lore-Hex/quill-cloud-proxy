@@ -1,29 +1,24 @@
-// trustedrouter.com multi-vendor DNS (Cloudflare primary + Google Cloud DNS
-// secondary), driven from a single Terraform source so the two zones can't
-// silently drift.
+// trustedrouter.com / quillrouter.com DNS, driven from a single Terraform
+// source so Cloud DNS records and any retained Cloudflare mirror records do
+// not silently drift.
 //
 // Background: Cloudflare's email on 2026-05-14 ("trustedrouter.com stopped
-// using Cloudflare's nameservers") surfaced a partial multi-vendor setup
-// where Cloud DNS records had drifted from Cloudflare's. The one-shot fix
-// at tools/fix-trustedrouter-dns.sh brought them back in sync; this file
-// is the durable pin. Re-run on every change to either zone to keep both
-// vendors synchronized.
+// using Cloudflare's nameservers") surfaced a partial multi-vendor setup.
+// The current registrar delegation is intentionally Google Cloud DNS only
+// for both trustedrouter.com and quillrouter.com. Cloudflare records may
+// still exist as a retained mirror/operator surface, but they are not part
+// of the parent-zone authoritative NS set.
 //
-// Records mirrored to both vendors:
+// Core trustedrouter.com records in Cloud DNS:
 //   apex A         → 35.241.14.18 (TR control plane, GCP global LB)
 //   apex TXT       → google-site-verification (Search Console ownership)
 //   trust CNAME    → lore-hex.github.io. (GitHub Pages trust page)
 //   www CNAME      → apex (semantic redirect)
 //
-// Cloud DNS-only records (Cloudflare doesn't have these — they're
-// non-marketing endpoints the operator didn't add to Cloudflare):
+// Cloud DNS-only records:
 //   status CNAME   → trustedrouter.com. (status page on Cloud Run)
 //
-// Apex NS records (the "child zone" NS the resolver learns on first
-// hit) explicitly list all 6 nameservers on the Cloud DNS side so a
-// resolver caching Cloud DNS knows about Cloudflare's NS too.
-// Cloudflare-side NS records can't be replaced on free/pro tier (Cloudflare
-// auto-injects its own NS at apex); accepted asymmetry.
+// Apex NS records list the delegated Google Cloud DNS nameservers only.
 //
 // Auth:
 //   - CLOUDFLARE_API_TOKEN env: API token scoped to DNS:Edit on trustedrouter.com.
@@ -85,14 +80,12 @@ locals {
   trust_page_origin           = "lore-hex.github.io." // GitHub Pages
   cloud_dns_zone              = "trustedrouter-com"
 
-  // All 6 authoritative nameservers for trustedrouter.com.
+  // Authoritative nameservers delegated at the registrar for trustedrouter.com.
   all_nameservers = [
     "ns-cloud-b1.googledomains.com.",
     "ns-cloud-b2.googledomains.com.",
     "ns-cloud-b3.googledomains.com.",
     "ns-cloud-b4.googledomains.com.",
-    "dom.ns.cloudflare.com.",
-    "harmony.ns.cloudflare.com.",
   ]
 
   // ─── quillrouter.com ───────────────────────────────────────────────
@@ -119,16 +112,12 @@ locals {
     "southamerica-east1",
   ]
 
-  // All 6 authoritative nameservers for quillrouter.com (different
-  // Cloudflare assignment than trustedrouter.com — Cloudflare picks
-  // NS pair per zone).
+  // Authoritative nameservers delegated at the registrar for quillrouter.com.
   quill_all_nameservers = [
     "ns-cloud-d1.googledomains.com.",
     "ns-cloud-d2.googledomains.com.",
     "ns-cloud-d3.googledomains.com.",
     "ns-cloud-d4.googledomains.com.",
-    "brynne.ns.cloudflare.com.",
-    "keaton.ns.cloudflare.com.",
   ]
 }
 
@@ -193,9 +182,7 @@ resource "google_dns_record_set" "status_a" {
   rrdatas      = [local.apex_ip]
 }
 
-// Apex NS record listing ALL 6 NS — what resolvers caching Cloud DNS
-// learn as the authoritative set. Cloudflare can't mirror this on
-// free/pro (see note above), so this is one-sided multi-vendor advertisement.
+// Apex NS record matching the registrar-delegated Google Cloud DNS set.
 resource "google_dns_record_set" "apex_ns" {
   name         = "trustedrouter.com."
   type         = "NS"
@@ -296,10 +283,10 @@ resource "google_dns_record_set" "quill_apex_ns" {
 }
 
 output "verification_commands" {
-  description = "After apply, run these and verify both vendors agree on every record."
+  description = "After apply, run these and verify delegated Google Cloud DNS nameservers answer expected records."
   value = <<-EOT
     # trustedrouter.com
-    for ns in ns-cloud-b1.googledomains.com dom.ns.cloudflare.com; do
+    for ns in ns-cloud-b1.googledomains.com ns-cloud-b2.googledomains.com; do
       echo "  via $ns:"
       echo "    apex A → $(dig +short trustedrouter.com @$ns)"
       echo "    trust  → $(dig +short trust.trustedrouter.com @$ns)"
@@ -308,7 +295,7 @@ output "verification_commands" {
     done
 
     # quillrouter.com — regional endpoints + cold-region aliases
-    for ns in ns-cloud-d1.googledomains.com brynne.ns.cloudflare.com; do
+    for ns in ns-cloud-d1.googledomains.com ns-cloud-d2.googledomains.com; do
       echo "  via $ns:"
       for ep in api api-europe-west4 api-us-east4 api-us-central1 \
                 api-asia-northeast1 api-asia-southeast1 api-southamerica-east1; do
