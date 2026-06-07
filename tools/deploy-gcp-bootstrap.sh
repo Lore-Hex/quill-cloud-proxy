@@ -55,6 +55,7 @@ MISTRAL_SECRET="${MISTRAL_SECRET:-trustedrouter-mistral-api-key}"
 KIMI_SECRET="${KIMI_SECRET:-trustedrouter-kimi-api-key}"
 ZAI_SECRET="${ZAI_SECRET:-trustedrouter-zai-api-key}"
 TOGETHER_SECRET="${TOGETHER_SECRET:-trustedrouter-together-api-key}"
+COHERE_SECRET="${COHERE_SECRET:-trustedrouter-cohere-api-key}"
 GROK_SECRET="${GROK_SECRET:-trustedrouter-grok-api-key}"
 NOVITA_SECRET="${NOVITA_SECRET:-trustedrouter-novita-api-key}"
 PHALA_SECRET="${PHALA_SECRET:-trustedrouter-phala-api-key}"
@@ -141,6 +142,7 @@ for secret in \
   "$KIMI_SECRET" \
   "$ZAI_SECRET" \
   "$TOGETHER_SECRET" \
+  "$COHERE_SECRET" \
   "$GROK_SECRET" \
   "$NOVITA_SECRET" \
   "$PHALA_SECRET" \
