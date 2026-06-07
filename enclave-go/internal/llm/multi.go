@@ -51,6 +51,9 @@ func New(boot *qtypes.BootstrapData) Client {
 		deepinfra:   newOpenAICompatible("deepinfra", boot.DeepInfraAPIKey),
 		nebius:      newOpenAICompatible("nebius", boot.NebiusAPIKey),
 		minimax:     newOpenAICompatible("minimax", boot.MiniMaxAPIKey),
+		// Cohere — embeddings only (native /v2/embed). Its InvokeStreaming
+		// returns an error; embeddings dispatch is in multi_embeddings.go.
+		cohere: newCohere(boot.CohereAPIKey),
 	}
 }
 
@@ -77,6 +80,7 @@ type multiClient struct {
 	deepinfra   *openAICompatibleClient
 	nebius      *openAICompatibleClient
 	minimax     *openAICompatibleClient
+	cohere      *cohereClient
 }
 
 func (m *multiClient) InvokeStreaming(
@@ -142,7 +146,10 @@ func (m *multiClient) InvokeStreaming(
 		return m.nebius.InvokeStreaming(ctx, req, body, out, options...)
 	case "minimax":
 		return m.minimax.InvokeStreaming(ctx, req, body, out, options...)
+	case "cohere":
+		// Embeddings-only; returns a clear "chat not supported" error.
+		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, nebius, minimax)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, nebius, minimax, cohere)", provider)
 	}
 }

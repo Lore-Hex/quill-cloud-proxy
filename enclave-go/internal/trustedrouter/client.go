@@ -195,6 +195,38 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	return &decoded.Data, nil
 }
 
+// AuthorizeEmbeddings authorizes a POST /v1/embeddings request. Embeddings
+// have no completion phase, so max_output_tokens is the schema minimum (1)
+// and the per-endpoint completion price is 0 — the cost estimate falls out
+// of the input tokens alone. Metadata-only, like AuthorizeWithRoute: model,
+// token count, region — never the input text.
+func (c *Client) AuthorizeEmbeddings(ctx context.Context, bearer string, req *qtypes.EmbeddingRequest, inputTokens int) (*Authorization, error) {
+	if inputTokens < 1 {
+		inputTokens = 1
+	}
+	body := map[string]any{
+		"api_key_lookup_hash":    lookupHash(bearer),
+		"model":                  req.Model,
+		"estimated_input_tokens": inputTokens,
+		"max_output_tokens":      1,
+		"region":                 c.region,
+		"route_type":             "embeddings",
+	}
+	if req.IdempotencyKey != "" {
+		body["idempotency_key"] = req.IdempotencyKey
+	}
+	if req.User != "" {
+		body["user"] = req.User
+	}
+	var decoded struct {
+		Data Authorization `json:"data"`
+	}
+	if err := c.postJSON(ctx, "/internal/gateway/authorize", body, &decoded); err != nil {
+		return nil, err
+	}
+	return &decoded.Data, nil
+}
+
 type SettleResult struct {
 	GenerationID     string  `json:"generation_id"`
 	CostMicrodollars int     `json:"cost_microdollars"`

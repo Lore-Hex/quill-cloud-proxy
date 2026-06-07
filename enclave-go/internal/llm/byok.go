@@ -932,6 +932,8 @@ func normalizeDirectProvider(provider string) string {
 		return "nebius"
 	case "minimax", "mini-max", "minimax-ai", "minimaxai":
 		return "minimax"
+	case "cohere", "cohere-ai":
+		return "cohere"
 	default:
 		return slug
 	}

@@ -312,6 +312,15 @@ func serveOne(
 		return
 	}
 
+	if routePath == "/v1/embeddings" {
+		if method != "POST" {
+			writeError(conn, 404, "route not found")
+			return
+		}
+		serveEmbeddings(ctx, conn, br, body, trGateway, trEnabled, bearer, byokSecrets, idempotencyKey)
+		return
+	}
+
 	var req types.OpenAIChatRequest
 	req.IdempotencyKey = idempotencyKey
 	routeType := "chat.completions"

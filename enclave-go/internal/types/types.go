@@ -53,6 +53,10 @@ type BootstrapData struct {
 	ZAIAPIKey      string `json:"zai_api_key,omitempty"`
 	TogetherAPIKey string `json:"together_api_key,omitempty"`
 
+	// Cohere — embeddings only for now (native /v2/embed). Optional like
+	// every other provider key; only the llm_multi build reads it.
+	CohereAPIKey string `json:"cohere_api_key,omitempty"`
+
 	// 2026-05 — six new backend providers, all OpenAI-compatible.
 	// Phala / Tinfoil are TEE-attested; Phala/Tinfoil/Venice are
 	// privacy-aligned and reinforce TR's no-logs trust story.
