@@ -38,7 +38,6 @@ prompting Cloudflare's "no longer using our nameservers" email).
 7. **Sanity-check.**
    ```bash
    export CLOUDFLARE_API_TOKEN=$(grep -E "^CLOUDFLARE_API_TOKEN=" ~/.quill_cloud_keys.private | sed 's/^[^=]*=//')
-   export TF_VAR_cloudflare_zone_id=$(grep -E "^CLOUDFLARE_ZONE_ID_TRUSTEDROUTER=" ~/.quill_cloud_keys.private | sed 's/^[^=]*=//')
    export TF_VAR_cloudflare_zone_id_quillrouter=$(grep -E "^CLOUDFLARE_ZONE_ID_QUILLROUTER=" ~/.quill_cloud_keys.private | sed 's/^[^=]*=//')
    terraform plan
    ```
@@ -58,24 +57,23 @@ prompting Cloudflare's "no longer using our nameservers" email).
 ## Import block (one-time, paste each line one by one)
 
 ```bash
-# Cloudflare records — get the record IDs from the API:
-#   curl -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-#     "https://api.cloudflare.com/client/v4/zones/$TF_VAR_cloudflare_zone_id/dns_records" \
-#     | jq -r '.result[] | "\(.id)\t\(.type)\t\(.name)"'
-# Then for each record you want under Terraform control:
-terraform import 'cloudflare_record.apex_a'          "$TF_VAR_cloudflare_zone_id/<record_id>"
-terraform import 'cloudflare_record.apex_txt_verify' "$TF_VAR_cloudflare_zone_id/<record_id>"
-terraform import 'cloudflare_record.trust_cname'     "$TF_VAR_cloudflare_zone_id/<record_id>"
-terraform import 'cloudflare_record.www_cname'       "$TF_VAR_cloudflare_zone_id/<record_id>"
+# trustedrouter.com is Google Cloud DNS ONLY (no Cloudflare mirror).
+# Cloud DNS imports use the rrset format:
+#   projects/<proj>/managedZones/<zone>/rrsets/<name>./<type>
+terraform import 'google_dns_record_set.apex_a'                  projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/trustedrouter.com./A
+terraform import 'google_dns_record_set.apex_txt_verify'         projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/trustedrouter.com./TXT
+terraform import 'google_dns_record_set.trust_cname'             projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/trust.trustedrouter.com./CNAME
+terraform import 'google_dns_record_set.www_cname'               projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/www.trustedrouter.com./CNAME
+terraform import 'google_dns_record_set.status_a'                projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/status.trustedrouter.com./A
+terraform import 'google_dns_record_set.trustedrouter_api_cname' projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/api.trustedrouter.com./CNAME
+terraform import 'google_dns_record_set.apex_ns'                 projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/trustedrouter.com./NS
 
-# Cloud DNS imports use the rrset format
-# projects/<proj>/managedZones/<zone>/rrsets/<name>./<type>
-terraform import 'google_dns_record_set.apex_a'         projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/trustedrouter.com./A
-terraform import 'google_dns_record_set.apex_txt_verify' projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/trustedrouter.com./TXT
-terraform import 'google_dns_record_set.trust_cname'    projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/trust.trustedrouter.com./CNAME
-terraform import 'google_dns_record_set.www_cname'      projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/www.trustedrouter.com./CNAME
-terraform import 'google_dns_record_set.status_cname'   projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/status.trustedrouter.com./CNAME
-terraform import 'google_dns_record_set.apex_ns'        projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/trustedrouter.com./NS
+# quillrouter.com Cloudflare records — get record IDs from the API:
+#   curl -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+#     "https://api.cloudflare.com/client/v4/zones/$TF_VAR_cloudflare_zone_id_quillrouter/dns_records" \
+#     | jq -r '.result[] | "\(.id)\t\(.type)\t\(.name)"'
+terraform import 'cloudflare_record.quill_api_eu_a'       "$TF_VAR_cloudflare_zone_id_quillrouter/<record_id>"
+terraform import 'cloudflare_record.quill_api_us_east4_a' "$TF_VAR_cloudflare_zone_id_quillrouter/<record_id>"
 
 # quillrouter.com — Cloudflare side (run after fix-quillrouter-dns.sh
 # has populated Cloud DNS so plan/apply doesn't trigger more churn).

@@ -40,7 +40,7 @@
 //   terraform apply     # applies in lockstep on both vendors
 //
 // Importing existing records (one-time per record):
-//   terraform import 'cloudflare_record.apex_a'   <zone_id>/<record_id>
+//   terraform import 'cloudflare_record.quill_api_eu_a' <zone_id>/<record_id>
 //   terraform import 'google_dns_record_set.apex_a' projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/trustedrouter.com./A
 //   ... (one import per resource block below)
 
@@ -71,11 +71,6 @@ variable "gcp_project" {
   type        = string
   default     = "quill-cloud-proxy"
   description = "GCP project hosting the Cloud DNS managed zones."
-}
-
-variable "cloudflare_zone_id" {
-  type        = string
-  description = "Cloudflare zone ID for trustedrouter.com (visible in the zone's Overview page)."
 }
 
 variable "cloudflare_zone_id_quillrouter" {
@@ -138,82 +133,12 @@ locals {
 }
 
 // ─── Cloudflare records ─────────────────────────────────────────────────
-
-resource "cloudflare_record" "apex_a" {
-  zone_id = var.cloudflare_zone_id
-  name    = "trustedrouter.com" // Cloudflare accepts "@" too but the
-                                // imported state uses the FQDN; matching
-                                // it avoids a destroy-recreate cycle.
-  type    = "A"
-  content = local.apex_ip
-  ttl     = 1 // 1 = Cloudflare "Auto" (proxy-managed TTL)
-  proxied = true
-  comment = "TR control plane — terraformed; do not hand-edit"
-}
-
-resource "cloudflare_record" "apex_txt_verify" {
-  zone_id = var.cloudflare_zone_id
-  name    = "trustedrouter.com"
-  type    = "TXT"
-  content = local.google_site_verification
-  ttl     = 1
-  proxied = false
-  comment = "Google Search Console domain verification — terraformed"
-}
-
-resource "cloudflare_record" "trust_cname" {
-  zone_id = var.cloudflare_zone_id
-  name    = "trust"
-  type    = "CNAME"
-  content = trimsuffix(local.trust_page_origin, ".")
-  ttl     = 1
-  proxied = false // GitHub Pages requires unproxied
-  comment = "Trust page (GitHub Pages) — terraformed"
-}
-
-resource "cloudflare_record" "www_cname" {
-  zone_id = var.cloudflare_zone_id
-  name    = "www"
-  type    = "CNAME"
-  content = "trustedrouter.com"
-  ttl     = 1
-  proxied = true
-  comment = "www redirect — terraformed"
-}
-
-resource "cloudflare_record" "status_a" {
-  zone_id = var.cloudflare_zone_id
-  name    = "status"
-  type    = "A"
-  content = local.apex_ip
-  ttl     = 1
-  proxied = false // status page on Cloud Run; bypass Cloudflare proxy
-  comment = "Status page (status.trustedrouter.com) — terraformed"
-}
-
-// api.trustedrouter.com → CNAME → api.quillrouter.com. Consolidates the
-// inference API onto the trustedrouter brand while riding the SAME
-// operator-managed Cloudflare multi-cloud LB (GCP us-central1 + AWS us-west-2
-// health-steered failover) as api.quillrouter.com — identical routing +
-// resilience, no separate LB. DNS-only (proxied=false) so the client connects
-// directly to the attested enclave and verifies the enclave's OWN Let's
-// Encrypt cert; api.trustedrouter.com is whitelisted in the enclave's
-// QUILL_API_HOST (deploy-enclave-gcp.yml) so autocert provisions it via
-// TLS-ALPN-01.
-resource "cloudflare_record" "trustedrouter_api_cname" {
-  zone_id = var.cloudflare_zone_id
-  name    = "api"
-  type    = "CNAME"
-  content = "api.quillrouter.com"
-  ttl     = 1
-  proxied = false
-  comment = "api → api.quillrouter.com LB (attested enclave) — terraformed"
-}
-
-// NOTE: Cloudflare's apex NS records can't be set declaratively on free/
-// pro tier (Cloudflare auto-injects). If we move to Enterprise + use
-// Secondary DNS, add a cloudflare_zone_settings_override or use the
-// cf-terraforming tool to import the auto-injected NS records here.
+//
+// trustedrouter.com is authoritative on Google Cloud DNS ONLY (its NS moved
+// off Cloudflare on 2026-05-14), so all of its records live in the
+// google_dns_record_set blocks below — there is intentionally no
+// trustedrouter.com Cloudflare mirror. The only Cloudflare records this
+// config manages are the quillrouter.com API/LB set (quillrouter.com section).
 
 // ─── Google Cloud DNS records ───────────────────────────────────────────
 
