@@ -13,6 +13,11 @@ CLOUD_INFRA_REPO = "https://github.com/Lore-Hex/quill-cloud-infra"
 QUILL_REPO = "https://github.com/Lore-Hex/quill"
 PYTHON_SDK_REPO = "https://github.com/Lore-Hex/trusted-router-py"
 JAVASCRIPT_SDK_REPO = "https://github.com/Lore-Hex/trusted-router-js"
+LEGAL_PACKET_URL = "https://trustedrouter.com/legal"
+PROCUREMENT_JSON_URL = "https://trustedrouter.com/legal/procurement.json"
+SOC2_READINESS_URL = "https://trustedrouter.com/legal/soc2-readiness"
+HIPAA_READINESS_URL = "https://trustedrouter.com/legal/hipaa-readiness"
+SUBPROCESSORS_URL = "https://trustedrouter.com/legal/subprocessors"
 
 
 def release_payload(commit: str, image_reference: str, image_digest: str) -> dict[str, Any]:
@@ -41,6 +46,15 @@ def release_payload(commit: str, image_reference: str, image_digest: str) -> dic
         "data_policy": {
             "prompt_output_storage": False,
             "control_plane_prompt_access": False,
+        },
+        "compliance": {
+            "legal_packet": LEGAL_PACKET_URL,
+            "procurement_json": PROCUREMENT_JSON_URL,
+            "soc2_readiness": SOC2_READINESS_URL,
+            "hipaa_readiness": HIPAA_READINESS_URL,
+            "subprocessors": SUBPROCESSORS_URL,
+            "soc2_status": "readiness_documentation_prepared_report_pending",
+            "hipaa_status": "readiness_documentation_prepared_baa_required_for_phi",
         },
         "released_by": "github-actions:deploy-enclave-gcp",
     }
@@ -110,7 +124,7 @@ def trust_html(release: dict[str, Any]) -> str:
   <header>
     <nav>
       <a class="brand" href="https://trustedrouter.com"><span class="mark">TR</span><span>TrustedRouter</span></a>
-      <div class="links"><a href="{CONTROL_PLANE_REPO}">Control repo</a><a href="{ATTESTED_GATEWAY_REPO}">Gateway repo</a><a href="{CLOUD_INFRA_REPO}">Infra repo</a><a href="{QUILL_REPO}">Quill repo</a><a href="/trust/gcp-release.json">gcp-release.json</a><a href="{api}">API</a><a href="https://trustedrouter.com">Console</a></div>
+      <div class="links"><a href="{CONTROL_PLANE_REPO}">Control repo</a><a href="{ATTESTED_GATEWAY_REPO}">Gateway repo</a><a href="{CLOUD_INFRA_REPO}">Infra repo</a><a href="{QUILL_REPO}">Quill repo</a><a href="{LEGAL_PACKET_URL}">Legal</a><a href="/trust/gcp-release.json">gcp-release.json</a><a href="{api}">API</a><a href="https://trustedrouter.com">Console</a></div>
     </nav>
   </header>
   <main class="wrap">
@@ -168,6 +182,11 @@ def trust_html(release: dict[str, Any]) -> str:
         </div>
       </div>
       <div class="panel"><h2>Fail Closed</h2><p>If attestation, billing authorization, or the gateway contract is unavailable, the prompt path should fail rather than silently downgrade to a non-attested route.</p></div>
+    </section>
+    <section class="grid">
+      <div class="panel"><h2>Legal Packet</h2><p>Procurement teams can review the named entity, draft DPA/BAA terms, subprocessors, and machine-readable checkpoint at <a href="{LEGAL_PACKET_URL}">trustedrouter.com/legal</a>.</p></div>
+      <div class="panel"><h2>SOC 2 Readiness</h2><p>Readiness documentation is prepared, but no SOC 2 report has been obtained yet. Review the current packet at <a href="{SOC2_READINESS_URL}">SOC 2 readiness</a>.</p></div>
+      <div class="panel"><h2>HIPAA Readiness</h2><p>PHI workloads require a signed BAA and approved route policy. Review the current packet at <a href="{HIPAA_READINESS_URL}">HIPAA readiness</a>.</p></div>
     </section>
     <section class="panel">
       <h2>Machine-readable release</h2>

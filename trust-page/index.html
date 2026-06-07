@@ -51,7 +51,7 @@
   <header>
     <nav>
       <a class="brand" href="https://trustedrouter.com"><span class="mark">TR</span><span>TrustedRouter</span></a>
-      <div class="links"><a href="https://github.com/Lore-Hex/quill-router">Control repo</a><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Gateway repo</a><a href="https://github.com/Lore-Hex/quill-cloud-infra">Infra repo</a><a href="https://github.com/Lore-Hex/quill">Quill repo</a><a href="/trust/gcp-release.json">gcp-release.json</a><a href="https://api.trustedrouter.com/v1">API</a><a href="https://trustedrouter.com">Console</a></div>
+      <div class="links"><a href="https://github.com/Lore-Hex/quill-router">Control repo</a><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Gateway repo</a><a href="https://github.com/Lore-Hex/quill-cloud-infra">Infra repo</a><a href="https://github.com/Lore-Hex/quill">Quill repo</a><a href="https://trustedrouter.com/legal">Legal</a><a href="/trust/gcp-release.json">gcp-release.json</a><a href="https://api.trustedrouter.com/v1">API</a><a href="https://trustedrouter.com">Console</a></div>
     </nav>
   </header>
   <main class="wrap">
@@ -110,6 +110,11 @@
       </div>
       <div class="panel"><h2>Fail Closed</h2><p>If attestation, billing authorization, or the gateway contract is unavailable, the prompt path should fail rather than silently downgrade to a non-attested route.</p></div>
     </section>
+    <section class="grid">
+      <div class="panel"><h2>Legal Packet</h2><p>Procurement teams can review the named entity, draft DPA/BAA terms, subprocessors, and machine-readable checkpoint at <a href="https://trustedrouter.com/legal">trustedrouter.com/legal</a>.</p></div>
+      <div class="panel"><h2>SOC 2 Readiness</h2><p>Readiness documentation is prepared, but no SOC 2 report has been obtained yet. Review the current packet at <a href="https://trustedrouter.com/legal/soc2-readiness">SOC 2 readiness</a>.</p></div>
+      <div class="panel"><h2>HIPAA Readiness</h2><p>PHI workloads require a signed BAA and approved route policy. Review the current packet at <a href="https://trustedrouter.com/legal/hipaa-readiness">HIPAA readiness</a>.</p></div>
+    </section>
     <section class="panel">
       <h2>Machine-readable release</h2>
       <pre>{
@@ -117,6 +122,15 @@
   &quot;attestation_audience&quot;: &quot;quill-cloud&quot;,
   &quot;attestation_issuer&quot;: &quot;https://confidentialcomputing.googleapis.com&quot;,
   &quot;commit&quot;: &quot;5b5422d&quot;,
+  &quot;compliance&quot;: {
+    &quot;hipaa_readiness&quot;: &quot;https://trustedrouter.com/legal/hipaa-readiness&quot;,
+    &quot;hipaa_status&quot;: &quot;readiness_documentation_prepared_baa_required_for_phi&quot;,
+    &quot;legal_packet&quot;: &quot;https://trustedrouter.com/legal&quot;,
+    &quot;procurement_json&quot;: &quot;https://trustedrouter.com/legal/procurement.json&quot;,
+    &quot;soc2_readiness&quot;: &quot;https://trustedrouter.com/legal/soc2-readiness&quot;,
+    &quot;soc2_status&quot;: &quot;readiness_documentation_prepared_report_pending&quot;,
+    &quot;subprocessors&quot;: &quot;https://trustedrouter.com/legal/subprocessors&quot;
+  },
   &quot;data_policy&quot;: {
     &quot;control_plane_prompt_access&quot;: false,
     &quot;prompt_output_storage&quot;: false
