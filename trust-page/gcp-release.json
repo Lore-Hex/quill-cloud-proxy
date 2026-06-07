@@ -1,5 +1,5 @@
 {
-  "api_base_url": "https://api.quillrouter.com/v1",
+  "api_base_url": "https://api.trustedrouter.com/v1",
   "attestation_audience": "quill-cloud",
   "attestation_issuer": "https://confidentialcomputing.googleapis.com",
   "commit": "7606a77",
@@ -22,7 +22,7 @@
     "quill": "https://github.com/Lore-Hex/quill"
   },
   "tls": {
-    "hostname": "api.quillrouter.com",
+    "hostname": "api.trustedrouter.com",
     "mode": "acme-inside-confidential-space"
   }
 }

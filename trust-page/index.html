@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TrustedRouter Trust</title>
-  <meta name="description" content="Verify that api.quillrouter.com runs the published open-source attested workload.">
+  <meta name="description" content="Verify that api.trustedrouter.com runs the published open-source attested workload.">
   <style>
     :root {
       color-scheme: light;
@@ -51,7 +51,7 @@
   <header>
     <nav>
       <a class="brand" href="https://trustedrouter.com"><span class="mark">TR</span><span>TrustedRouter</span></a>
-      <div class="links"><a href="https://github.com/Lore-Hex/quill-router">Control repo</a><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Gateway repo</a><a href="https://github.com/Lore-Hex/quill-cloud-infra">Infra repo</a><a href="https://github.com/Lore-Hex/quill">Quill repo</a><a href="/trust/gcp-release.json">gcp-release.json</a><a href="https://api.quillrouter.com/v1">API</a><a href="https://trustedrouter.com">Console</a></div>
+      <div class="links"><a href="https://github.com/Lore-Hex/quill-router">Control repo</a><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Gateway repo</a><a href="https://github.com/Lore-Hex/quill-cloud-infra">Infra repo</a><a href="https://github.com/Lore-Hex/quill">Quill repo</a><a href="/trust/gcp-release.json">gcp-release.json</a><a href="https://api.trustedrouter.com/v1">API</a><a href="https://trustedrouter.com">Console</a></div>
     </nav>
   </header>
   <main class="wrap">
@@ -59,7 +59,7 @@
       <div class="panel">
         <p class="status"><span class="dot"></span>Trust boundary</p>
         <h1>Verify that the hosted API runs the published open-source workload.</h1>
-        <p><code>api.quillrouter.com</code> is the prompt path. Public TLS terminates inside the measured GCP Confidential Space workload. The TrustedRouter control plane does not serve production inference routes and does not receive prompt or output bodies.</p>
+        <p><code>api.trustedrouter.com</code> is the prompt path (<code>api.quillrouter.com</code> is a permanent alias to the same attested endpoint). Public TLS terminates inside the measured GCP Confidential Space workload. The TrustedRouter control plane does not serve production inference routes and does not receive prompt or output bodies.</p>
         <p>Clients can fetch live attestation, verify issuer/audience/digest, and compare the measured image digest with the release data published here.</p>
       </div>
       <aside class="panel">
@@ -69,7 +69,7 @@
           <div><div class="label">Image</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-7606a77</div></div>
           <div><div class="label">Digest</div><div class="value">sha256:ee49c696cd1663ff38a7f75c4e1cc4f9d02fbe600d9c77eddd94ae38921fa9d0</div></div>
           <div><div class="label">Attested gateway repo</div><div class="value"><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Lore-Hex/quill-cloud-proxy</a></div></div>
-          <div><div class="label">API base</div><div class="value">https://api.quillrouter.com/v1</div></div>
+          <div><div class="label">API base</div><div class="value">https://api.trustedrouter.com/v1</div></div>
         </div>
       </aside>
     </section>
@@ -77,7 +77,7 @@
       <div class="panel">
         <h2>Client Verification</h2>
         <ul class="checks">
-          <li><span class="check">OK</span><span>Fetch <code>https://api.quillrouter.com/attestation</code> over normal public TLS.</span></li>
+          <li><span class="check">OK</span><span>Fetch <code>https://api.trustedrouter.com/attestation</code> over normal public TLS.</span></li>
           <li><span class="check">OK</span><span>Verify the JWT issuer is <code>https://confidentialcomputing.googleapis.com</code>.</span></li>
           <li><span class="check">OK</span><span>Verify the audience is <code>quill-cloud</code>.</span></li>
           <li><span class="check">OK</span><span>Compare the attested image digest with this page.</span></li>
@@ -92,7 +92,7 @@
       </div>
       <div class="panel warn">
         <h2>DNS Requirement</h2>
-        <p><code>api.quillrouter.com</code> must remain DNS-only or TCP-passthrough. TLS termination by a CDN would break the hosted-code trust claim because the prompt path certificate key must remain inside the measured workload.</p>
+        <p><code>api.trustedrouter.com</code> (and its <code>api.quillrouter.com</code> alias) must remain DNS-only or TCP-passthrough. TLS termination by a CDN would break the hosted-code trust claim because the prompt path certificate key must remain inside the measured workload.</p>
       </div>
     </section>
     <section class="grid">
@@ -113,7 +113,7 @@
     <section class="panel">
       <h2>Machine-readable release</h2>
       <pre>{
-  &quot;api_base_url&quot;: &quot;https://api.quillrouter.com/v1&quot;,
+  &quot;api_base_url&quot;: &quot;https://api.trustedrouter.com/v1&quot;,
   &quot;attestation_audience&quot;: &quot;quill-cloud&quot;,
   &quot;attestation_issuer&quot;: &quot;https://confidentialcomputing.googleapis.com&quot;,
   &quot;commit&quot;: &quot;7606a77&quot;,
@@ -136,7 +136,7 @@
     &quot;quill&quot;: &quot;https://github.com/Lore-Hex/quill&quot;
   },
   &quot;tls&quot;: {
-    &quot;hostname&quot;: &quot;api.quillrouter.com&quot;,
+    &quot;hostname&quot;: &quot;api.trustedrouter.com&quot;,
     &quot;mode&quot;: &quot;acme-inside-confidential-space&quot;
   }
 }

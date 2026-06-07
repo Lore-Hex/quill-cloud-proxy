@@ -33,10 +33,10 @@ def release_payload(commit: str, image_reference: str, image_digest: str) -> dic
         "image_digest": image_digest,
         "attestation_issuer": "https://confidentialcomputing.googleapis.com",
         "attestation_audience": "quill-cloud",
-        "api_base_url": "https://api.quillrouter.com/v1",
+        "api_base_url": "https://api.trustedrouter.com/v1",
         "tls": {
             "mode": "acme-inside-confidential-space",
-            "hostname": "api.quillrouter.com",
+            "hostname": "api.trustedrouter.com",
         },
         "data_policy": {
             "prompt_output_storage": False,
@@ -63,7 +63,7 @@ def trust_html(release: dict[str, Any]) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TrustedRouter Trust</title>
-  <meta name="description" content="Verify that api.quillrouter.com runs the published open-source attested workload.">
+  <meta name="description" content="Verify that api.trustedrouter.com runs the published open-source attested workload.">
   <style>
     :root {{
       color-scheme: light;
@@ -118,7 +118,7 @@ def trust_html(release: dict[str, Any]) -> str:
       <div class="panel">
         <p class="status"><span class="dot"></span>Trust boundary</p>
         <h1>Verify that the hosted API runs the published open-source workload.</h1>
-        <p><code>api.quillrouter.com</code> is the prompt path. Public TLS terminates inside the measured GCP Confidential Space workload. The TrustedRouter control plane does not serve production inference routes and does not receive prompt or output bodies.</p>
+        <p><code>api.trustedrouter.com</code> is the prompt path (<code>api.quillrouter.com</code> is a permanent alias to the same attested endpoint). Public TLS terminates inside the measured GCP Confidential Space workload. The TrustedRouter control plane does not serve production inference routes and does not receive prompt or output bodies.</p>
         <p>Clients can fetch live attestation, verify issuer/audience/digest, and compare the measured image digest with the release data published here.</p>
       </div>
       <aside class="panel">
@@ -136,7 +136,7 @@ def trust_html(release: dict[str, Any]) -> str:
       <div class="panel">
         <h2>Client Verification</h2>
         <ul class="checks">
-          <li><span class="check">OK</span><span>Fetch <code>https://api.quillrouter.com/attestation</code> over normal public TLS.</span></li>
+          <li><span class="check">OK</span><span>Fetch <code>https://api.trustedrouter.com/attestation</code> over normal public TLS.</span></li>
           <li><span class="check">OK</span><span>Verify the JWT issuer is <code>https://confidentialcomputing.googleapis.com</code>.</span></li>
           <li><span class="check">OK</span><span>Verify the audience is <code>quill-cloud</code>.</span></li>
           <li><span class="check">OK</span><span>Compare the attested image digest with this page.</span></li>
@@ -151,7 +151,7 @@ def trust_html(release: dict[str, Any]) -> str:
       </div>
       <div class="panel warn">
         <h2>DNS Requirement</h2>
-        <p><code>api.quillrouter.com</code> must remain DNS-only or TCP-passthrough. TLS termination by a CDN would break the hosted-code trust claim because the prompt path certificate key must remain inside the measured workload.</p>
+        <p><code>api.trustedrouter.com</code> (and its <code>api.quillrouter.com</code> alias) must remain DNS-only or TCP-passthrough. TLS termination by a CDN would break the hosted-code trust claim because the prompt path certificate key must remain inside the measured workload.</p>
       </div>
     </section>
     <section class="grid">
