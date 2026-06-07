@@ -135,9 +135,9 @@ func (c *anthropicClient) InvokeStreaming(
 		ToolChoice  *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
 		Stream      bool                        `json:"stream"`
 	}{
-		Model:       model,
-		Messages:    messages,
-		System:      body.System,
+		Model:     model,
+		Messages:  messages,
+		System:    body.System,
 		MaxTokens: body.MaxTokens,
 		// Credits path was sending temperature raw; opus-4.7/4.8 reject it
 		// (400 "temperature is deprecated"). Route through the same helper the
