@@ -138,6 +138,20 @@ ensure() {
   eval "$create_cmd"
 }
 
+# ─── RETIRED 2026-06-08 ────────────────────────────────────────────────────
+# The AWS control-plane replica is decommissioned. It was an internet-facing
+# standby that was NOT in the prod DNS (trustedrouter.com → GCP), ran a stale
+# release, and held decrypt-only on the byok-envelope KMS key (couldn't
+# register BYOK) — attack surface for no production benefit. Resilience lives
+# in the multi-cloud INFERENCE enclaves (GCP MIG + AWS Nitro), not a hot
+# control-plane replica. Tear down existing resources with
+# tools/teardown-aws-control-plane.sh. To intentionally re-deploy (e.g. a
+# formalized failover with lockstep CI + a restricted front door), set
+# ALLOW_RETIRED_AWS_CONTROL_PLANE=1.
+if [ "$DRY_RUN" = "0" ] && [ "${ALLOW_RETIRED_AWS_CONTROL_PLANE:-}" != "1" ]; then
+  die "RETIRED: the AWS control-plane is decommissioned — re-deploy blocked. Set ALLOW_RETIRED_AWS_CONTROL_PLANE=1 to override, or tear down with tools/teardown-aws-control-plane.sh."
+fi
+
 say "AWS account=$AWS_ACCOUNT region=$AWS_REGION mode=$([ $DRY_RUN -eq 1 ] && echo DRY-RUN || echo APPLY)"
 say "image tag: $IMAGE_TAG"
 
