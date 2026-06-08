@@ -107,6 +107,10 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("lightning_api_key", "trustedrouter-lightning-api-key"),
     ("gmi_api_key", "trustedrouter-gmi-api-key"),
     ("deepinfra_api_key", "trustedrouter-deepinfra-api-key"),
+    # Voyage AI — embeddings only (OpenAI-shaped /v1/embeddings). Optional like
+    # every other key: if trustedrouter-voyage-api-key is absent in AWS Secrets
+    # Manager the parent skips it and the enclave's voyage client stays empty.
+    ("voyage_api_key", "trustedrouter-voyage-api-key"),
 )
 
 _GCP_SA_KEY_SECRET_SUFFIX: Final[str] = "trustedrouter-aws-cross-cloud-sa-key"
