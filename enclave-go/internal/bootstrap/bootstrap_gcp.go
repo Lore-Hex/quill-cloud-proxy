@@ -97,6 +97,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	zaiSecret := os.Getenv("QUILL_ZAI_SECRET")
 	togetherSecret := os.Getenv("QUILL_TOGETHER_SECRET")
 	cohereSecret := os.Getenv("QUILL_COHERE_SECRET")
+	voyageSecret := os.Getenv("QUILL_VOYAGE_SECRET")
 	grokSecret := os.Getenv("QUILL_GROK_SECRET")
 	novitaSecret := os.Getenv("QUILL_NOVITA_SECRET")
 	phalaSecret := os.Getenv("QUILL_PHALA_SECRET")
@@ -122,6 +123,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		zaiSecret,
 		togetherSecret,
 		cohereSecret,
+		voyageSecret,
 		grokSecret,
 		novitaSecret,
 		phalaSecret,
@@ -231,6 +233,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: cohere key: %w", err)
 		}
 	}
+	var voyageKey []byte
+	if voyageSecret != "" {
+		voyageKey, err = fetchSecret(ctx, httpc, token, project, voyageSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: voyage key: %w", err)
+		}
+	}
 	var grokKey []byte
 	if grokSecret != "" {
 		grokKey, err = fetchSecret(ctx, httpc, token, project, grokSecret)
@@ -338,6 +347,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		ZAIAPIKey:                  strings.TrimSpace(string(zaiKey)),
 		TogetherAPIKey:             strings.TrimSpace(string(togetherKey)),
 		CohereAPIKey:               strings.TrimSpace(string(cohereKey)),
+		VoyageAPIKey:               strings.TrimSpace(string(voyageKey)),
 		GrokAPIKey:                 strings.TrimSpace(string(grokKey)),
 		NovitaAPIKey:               strings.TrimSpace(string(novitaKey)),
 		PhalaAPIKey:                strings.TrimSpace(string(phalaKey)),

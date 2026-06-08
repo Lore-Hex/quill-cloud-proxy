@@ -57,6 +57,10 @@ type BootstrapData struct {
 	// every other provider key; only the llm_multi build reads it.
 	CohereAPIKey string `json:"cohere_api_key,omitempty"`
 
+	// Voyage AI — embeddings only (OpenAI-shaped /v1/embeddings). Optional;
+	// only the llm_multi build reads it.
+	VoyageAPIKey string `json:"voyage_api_key,omitempty"`
+
 	// 2026-05 — six new backend providers, all OpenAI-compatible.
 	// Phala / Tinfoil are TEE-attested; Phala/Tinfoil/Venice are
 	// privacy-aligned and reinforce TR's no-logs trust story.

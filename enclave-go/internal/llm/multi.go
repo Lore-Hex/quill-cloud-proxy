@@ -54,6 +54,13 @@ func New(boot *qtypes.BootstrapData) Client {
 		// Cohere — embeddings only (native /v2/embed). Its InvokeStreaming
 		// returns an error; embeddings dispatch is in multi_embeddings.go.
 		cohere: newCohere(boot.CohereAPIKey),
+		// Voyage — embeddings only (OpenAI-shaped /v1/embeddings).
+		voyage: newOpenAICompatible("voyage", boot.VoyageAPIKey),
+		// Gemini embeddings via the OpenAI-compatible generativelanguage
+		// endpoint (directBaseURL("gemini") = .../v1beta/openai). This is
+		// SEPARATE from the chat path (m.gemini = Vertex OAuth); embeddings
+		// reuse the OpenAI-shaped /embeddings with the QUILL_GEMINI_SECRET key.
+		geminiEmbed: newOpenAICompatible("gemini", boot.GeminiAPIKey),
 	}
 }
 
@@ -81,6 +88,8 @@ type multiClient struct {
 	nebius      *openAICompatibleClient
 	minimax     *openAICompatibleClient
 	cohere      *cohereClient
+	voyage      *openAICompatibleClient
+	geminiEmbed *openAICompatibleClient
 }
 
 func (m *multiClient) InvokeStreaming(

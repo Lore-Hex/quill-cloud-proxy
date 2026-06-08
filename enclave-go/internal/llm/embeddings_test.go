@@ -125,14 +125,36 @@ func TestCohereChatNotSupported(t *testing.T) {
 }
 
 func TestMultiInvokeEmbeddingDispatch(t *testing.T) {
-	m := &multiClient{}
-	// Gemini is deferred; unknown providers error. Neither dereferences a
-	// provider client, so a zero-value multiClient is safe here.
-	if _, err := m.InvokeEmbedding(context.Background(), &qtypes.EmbeddingRequest{Model: "google/gemini-embedding-001"}, InvokeOptions{Provider: "gemini"}); err == nil {
-		t.Error("expected gemini embeddings to be unsupported (deferred)")
-	}
-	if _, err := m.InvokeEmbedding(context.Background(), &qtypes.EmbeddingRequest{Model: "x/y"}, InvokeOptions{Provider: "anthropic"}); err == nil {
+	// Error cases hit the default switch arm without dereferencing a (nil)
+	// client, so a zero-value multiClient is safe here.
+	zero := &multiClient{}
+	if _, err := zero.InvokeEmbedding(context.Background(), &qtypes.EmbeddingRequest{Model: "x/y"}, InvokeOptions{Provider: "anthropic"}); err == nil {
 		t.Error("expected non-embedding provider to error")
+	}
+	if _, err := zero.InvokeEmbedding(context.Background(), &qtypes.EmbeddingRequest{Model: "x/y"}, InvokeOptions{Provider: "unknownprov"}); err == nil {
+		t.Error("expected unknown provider to error")
+	}
+
+	// Positive dispatch: voyage, deepinfra (Qwen3), and gemini are now wired to
+	// the OpenAI-compatible embeddings client. Point each at a stub and confirm
+	// the switch routes to it (returns the envelope rather than erroring).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"object":"embedding","embedding":[0.1],"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`)
+	}))
+	defer srv.Close()
+	stub := func(p string) *openAICompatibleClient {
+		return &openAICompatibleClient{provider: p, baseURL: srv.URL, apiKey: "k", httpc: srv.Client()}
+	}
+	m := &multiClient{voyage: stub("voyage"), deepinfra: stub("deepinfra"), geminiEmbed: stub("gemini")}
+	for _, prov := range []string{"voyage", "deepinfra", "gemini"} {
+		resp, err := m.InvokeEmbedding(context.Background(), &qtypes.EmbeddingRequest{Model: "x/y", Input: "hi"}, InvokeOptions{Provider: prov})
+		if err != nil {
+			t.Errorf("%s dispatch: %v", prov, err)
+			continue
+		}
+		if len(resp.Data) != 1 {
+			t.Errorf("%s resp = %+v", prov, resp)
+		}
 	}
 }
 

@@ -27,12 +27,16 @@ func (m *multiClient) InvokeEmbedding(
 		return m.together.InvokeEmbedding(ctx, req, options...)
 	case "cohere":
 		return m.cohere.InvokeEmbedding(ctx, req, options...)
+	case "voyage":
+		return m.voyage.InvokeEmbedding(ctx, req, options...)
+	case "deepinfra":
+		// Qwen3-Embedding-8B etc. — DeepInfra is OpenAI-shaped at
+		// api.deepinfra.com/v1/openai/embeddings; reuses the chat client's key.
+		return m.deepinfra.InvokeEmbedding(ctx, req, options...)
 	case "gemini":
-		// DEFERRED: the enclave's Gemini path runs through Vertex AI (OAuth),
-		// whose embeddings use the Vertex `:predict` endpoint rather than the
-		// OpenAI-shaped `/embeddings`. gemini-embedding-001 stays in the
-		// catalog; this returns a clean error until the Vertex wiring lands.
-		return nil, fmt.Errorf("llm/multi: gemini embeddings not yet supported")
+		// Gemini embeddings via the OpenAI-compatible generativelanguage
+		// endpoint (NOT the Vertex chat path). Uses the QUILL_GEMINI_SECRET key.
+		return m.geminiEmbed.InvokeEmbedding(ctx, req, options...)
 	default:
 		return nil, fmt.Errorf("llm/multi: provider %q does not support embeddings", provider)
 	}

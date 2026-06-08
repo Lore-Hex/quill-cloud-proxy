@@ -420,6 +420,9 @@ func directBaseURL(provider string) string {
 		// incl. DeepSeek-OCR, Qwen, Mixtral) plus image gen + embeddings.
 		// OpenAI-compatible chat completions at api.together.xyz/v1.
 		return "https://api.together.xyz/v1"
+	case "voyage":
+		// Voyage AI retrieval embeddings. OpenAI-shaped /v1/embeddings.
+		return "https://api.voyageai.com/v1"
 	case "grok":
 		// xAI Grok. OpenAI-compatible chat completions.
 		return "https://api.x.ai/v1"
