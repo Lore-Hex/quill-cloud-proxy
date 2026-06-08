@@ -435,6 +435,7 @@ cat > "$TASK_DEF_FILE" <<JSON
         {"name": "TR_BIGTABLE_INSTANCE_ID", "value": "trusted-router-logs"},
         {"name": "TR_BIGTABLE_GENERATION_TABLE", "value": "trustedrouter-generations"},
         {"name": "TR_BYOK_KMS_KEY_NAME", "value": "projects/${GCP_PROJECT}/locations/us-central1/keyRings/trusted-router/cryptoKeys/byok-envelope"},
+        {"name": "TR_BYOK_REGISTRATION_ENABLED", "value": "false"},
         {"name": "TR_REGIONS", "value": "us-central1,europe-west4,us-east4,asia-northeast1,asia-southeast1,southamerica-east1"},
         {"name": "TR_PRIMARY_REGION", "value": "us-central1"},
         {"name": "TR_AWS_REGION", "value": "us-east-1"},
