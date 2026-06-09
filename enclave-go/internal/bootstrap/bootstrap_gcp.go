@@ -111,6 +111,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	deepinfraSecret := os.Getenv("QUILL_DEEPINFRA_SECRET")
 	nebiusSecret := os.Getenv("QUILL_NEBIUS_SECRET")
 	minimaxSecret := os.Getenv("QUILL_MINIMAX_SECRET")
+	xiaomiSecret := os.Getenv("QUILL_XIAOMI_SECRET")
 	if !anySet(
 		openrouterSecret,
 		anthropicSecret,
@@ -136,6 +137,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		deepinfraSecret,
 		nebiusSecret,
 		minimaxSecret,
+		xiaomiSecret,
 	) {
 		return nil, fmt.Errorf("bootstrap/gcp: at least one provider secret env must be set")
 	}
@@ -324,6 +326,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: minimax key: %w", err)
 		}
 	}
+	var xiaomiKey []byte
+	if xiaomiSecret != "" {
+		xiaomiKey, err = fetchSecret(ctx, httpc, token, project, xiaomiSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: xiaomi key: %w", err)
+		}
+	}
 	var internalGatewayToken string
 	if internalSecret := os.Getenv("QUILL_TRUSTEDROUTER_INTERNAL_SECRET"); internalSecret != "" {
 		value, err := fetchSecret(ctx, httpc, token, project, internalSecret)
@@ -360,6 +369,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		DeepInfraAPIKey:            strings.TrimSpace(string(deepinfraKey)),
 		NebiusAPIKey:               strings.TrimSpace(string(nebiusKey)),
 		MiniMaxAPIKey:              strings.TrimSpace(string(minimaxKey)),
+		XiaomiAPIKey:               strings.TrimSpace(string(xiaomiKey)),
 		TrustedRouterBaseURL:       os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken: strings.TrimSpace(internalGatewayToken),
 		// BedrockVsockProxy / OpenRouterVsockProxy unused on GCP — direct egress.

@@ -45,7 +45,7 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 	switch provider {
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai", "together",
 		"grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
-		"parasail", "lightning", "gmi", "deepinfra", "nebius", "minimax":
+		"parasail", "lightning", "gmi", "deepinfra", "nebius", "minimax", "xiaomi":
 		return true
 	default:
 		return false
@@ -423,6 +423,10 @@ func directBaseURL(provider string) string {
 	case "voyage":
 		// Voyage AI retrieval embeddings. OpenAI-shaped /v1/embeddings.
 		return "https://api.voyageai.com/v1"
+	case "xiaomi":
+		// Xiaomi MiMo (MiMo-V2 / V2.5 family). OpenAI-compatible chat
+		// completions at api.xiaomimimo.com/v1 (Bearer auth).
+		return "https://api.xiaomimimo.com/v1"
 	case "grok":
 		// xAI Grok. OpenAI-compatible chat completions.
 		return "https://api.x.ai/v1"

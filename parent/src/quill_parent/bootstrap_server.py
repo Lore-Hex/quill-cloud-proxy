@@ -111,6 +111,8 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     # every other key: if trustedrouter-voyage-api-key is absent in AWS Secrets
     # Manager the parent skips it and the enclave's voyage client stays empty.
     ("voyage_api_key", "trustedrouter-voyage-api-key"),
+    # Xiaomi MiMo — OpenAI-compatible chat (api.xiaomimimo.com/v1).
+    ("xiaomi_api_key", "trustedrouter-xiaomi-api-key"),
 )
 
 _GCP_SA_KEY_SECRET_SUFFIX: Final[str] = "trustedrouter-aws-cross-cloud-sa-key"

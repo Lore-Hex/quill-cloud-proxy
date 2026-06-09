@@ -70,6 +70,8 @@ SECRETS=(
   # Voyage AI — embeddings only (OpenAI-shaped /v1/embeddings). Mirrored so the
   # AWS Nitro enclave's parent bootstrap can fetch the same key as GCP.
   trustedrouter-voyage-api-key
+  # Xiaomi MiMo — OpenAI-compatible chat (api.xiaomimimo.com/v1).
+  trustedrouter-xiaomi-api-key
   trustedrouter-tr-api-key-for-self-heal
   # The internal gateway token authenticates enclave→TR control-plane
   # calls (x-trustedrouter-internal-token header on /v1/internal/*).

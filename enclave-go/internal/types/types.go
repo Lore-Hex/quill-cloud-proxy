@@ -83,6 +83,9 @@ type BootstrapData struct {
 	NebiusAPIKey    string `json:"nebius_api_key,omitempty"`
 	MiniMaxAPIKey   string `json:"minimax_api_key,omitempty"`
 
+	// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
+	XiaomiAPIKey string `json:"xiaomi_api_key,omitempty"`
+
 	// Cross-cloud GCP service-account key (JSON, plaintext).
 	//
 	// Populated only on the AWS-side enclave path: the parent fetches the
