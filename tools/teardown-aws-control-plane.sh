@@ -64,6 +64,10 @@ do_step() {
     # NotFound is fine, but a permission / dependency error needs to be seen.
     say "  ⚠️ FAILED: $(printf '%s' "$out" | tail -1 | cut -c1-200)"
   fi
+  # ALWAYS succeed: a successful command with EMPTY output (e.g. delete-listener)
+  # would otherwise leave $? = 1 (from the `[ -n "$out" ]` test) and `set -e`
+  # would kill the whole teardown mid-loop. do_step is best-effort by design.
+  return 0
 }
 
 say "region=$AWS_REGION mode=$([ $DRY_RUN -eq 1 ] && echo DRY-RUN || echo APPLY) purge=$PURGE"
