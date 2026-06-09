@@ -56,7 +56,14 @@ do_step() {
     return 0
   fi
   say "$label"
-  "$@" || say "  (skipped/failed — likely already gone: $label)"
+  local out
+  if out=$("$@" 2>&1); then
+    [ -n "$out" ] && say "  ok: $(printf '%s' "$out" | head -1 | cut -c1-160)"
+  else
+    # Surface the REAL error (don't mask it as "already gone") — a genuine
+    # NotFound is fine, but a permission / dependency error needs to be seen.
+    say "  ⚠️ FAILED: $(printf '%s' "$out" | tail -1 | cut -c1-200)"
+  fi
 }
 
 say "region=$AWS_REGION mode=$([ $DRY_RUN -eq 1 ] && echo DRY-RUN || echo APPLY) purge=$PURGE"
@@ -135,6 +142,13 @@ if [ "$PURGE" = "1" ]; then
         --query 'PolicyNames[]' --output text 2>/dev/null); do
       do_step "delete inline policy $pol on $role" \
         aws iam delete-role-policy --role-name "$role" --policy-name "$pol"
+    done
+    # MANAGED policies must be DETACHED before the role can be deleted
+    # (e.g. AmazonECSTaskExecutionRolePolicy on the task-exec role).
+    for arn in $(aws_q iam list-attached-role-policies --role-name "$role" \
+        --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+      do_step "detach managed policy $arn from $role" \
+        aws iam detach-role-policy --role-name "$role" --policy-arn "$arn"
     done
     do_step "delete IAM role $role" aws iam delete-role --role-name "$role"
   done
