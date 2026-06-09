@@ -142,6 +142,9 @@ if [ "$PURGE" = "1" ]; then
   do_step "delete log group $LOG_GROUP" \
     aws logs delete-log-group --region "$AWS_REGION" --log-group-name "$LOG_GROUP"
   for role in "$ROLE_TASK_EXEC" "$ROLE_TASK"; do
+    if ! aws iam get-role --role-name "$role" >/dev/null 2>&1; then
+      say "IAM role $role already gone — skip"; continue
+    fi
     for pol in $(aws_q iam list-role-policies --role-name "$role" \
         --query 'PolicyNames[]' --output text 2>/dev/null); do
       do_step "delete inline policy $pol on $role" \
