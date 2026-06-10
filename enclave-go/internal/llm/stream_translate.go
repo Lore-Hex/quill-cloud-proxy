@@ -40,6 +40,7 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 	stopReason := "end_turn"
 	toolCalls := map[int]*openAIToolCallAccumulator{}
 	var toolOrder []int
+	var usage *openAIStreamUsage
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -77,9 +78,17 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
+			// usage arrives on the final stream_options.include_usage chunk
+			// (choices: []) — byok.go requests it from every OpenAI-
+			// compatible upstream. Some providers instead attach usage to
+			// the last content chunk; both shapes land here.
+			Usage *openAIStreamUsage `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue
+		}
+		if chunk.Usage != nil && (chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0) {
+			usage = chunk.Usage
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -132,13 +141,26 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 			return err
 		}
 	}
-	return writeAnthropicStop(w, stopReason)
+	return writeAnthropicStop(w, stopReason, usage)
 }
 
 type openAIToolCallAccumulator struct {
 	ID        string
 	Name      string
 	Arguments string
+}
+
+// openAIStreamUsage is the OpenAI chat-completions stream usage object.
+// Also constructed by the Gemini path from usageMetadata.
+type openAIStreamUsage struct {
+	PromptTokens            int                       `json:"prompt_tokens"`
+	CompletionTokens        int                       `json:"completion_tokens"`
+	TotalTokens             int                       `json:"total_tokens"`
+	CompletionTokensDetails *openAIStreamUsageDetails `json:"completion_tokens_details"`
+}
+
+type openAIStreamUsageDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 func writeAnthropicTextDelta(w io.Writer, text string) error {
@@ -192,10 +214,25 @@ func writeAnthropicToolStop(w io.Writer, index int) error {
 	return err
 }
 
-func writeAnthropicStop(w io.Writer, stopReason string) error {
+func writeAnthropicStop(w io.Writer, stopReason string, usage *openAIStreamUsage) error {
 	mDelta := map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": stopReason},
+	}
+	if usage != nil {
+		// Relay the upstream-reported usage on the synthetic message_delta.
+		// Native Anthropic splits input (message_start) from output
+		// (message_delta) but this event is OUR internal contract with
+		// adapter.TransformStreamCapture/CollectAnthropicText, which read
+		// whichever keys are present.
+		usageBody := map[string]any{
+			"input_tokens":  usage.PromptTokens,
+			"output_tokens": usage.CompletionTokens,
+		}
+		if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens > 0 {
+			usageBody["reasoning_tokens"] = usage.CompletionTokensDetails.ReasoningTokens
+		}
+		mDelta["usage"] = usageBody
 	}
 	body, _ := json.Marshal(mDelta)
 	if _, err := fmt.Fprintf(w, "event: message_delta\ndata: %s\n\n", body); err != nil {

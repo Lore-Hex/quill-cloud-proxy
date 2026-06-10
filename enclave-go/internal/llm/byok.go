@@ -73,6 +73,17 @@ type openAICompatibleRequest struct {
 	ToolChoice          any      `json:"tool_choice,omitempty"`
 	ParallelToolCalls   *bool    `json:"parallel_tool_calls,omitempty"`
 	Thinking            any      `json:"thinking,omitempty"`
+	// StreamOptions asks the upstream for the final usage-bearing chunk
+	// (stream_options.include_usage). Always sent: real token counts feed
+	// settlement (replacing chars/4 estimates that miscounted reasoning
+	// models) and the client-facing include_usage chunk. Standard across
+	// OpenAI, vLLM, and SGLang-backed providers; verified per provider by
+	// the post-deploy smoke matrix.
+	StreamOptions *openAICompatibleStreamOptions `json:"stream_options,omitempty"`
+}
+
+type openAICompatibleStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // requiresMaxCompletionTokens returns true for OpenAI models that
@@ -183,16 +194,24 @@ func invokeOpenAICompatibleStreamingWithClient(
 	if kimiToolsNeedThinkingDisabled(provider, upstreamID, req.Tools) {
 		reqBody.Thinking = map[string]string{"type": "disabled"}
 	}
-	// Per-model parameter rename: openai gpt-5.x rejects max_tokens
-	// and requires max_completion_tokens. Every other openai-compatible
-	// provider (and pre-5.x openai models) still wants max_tokens.
-	// Emit exactly one of the two so the upstream parser doesn't
-	// complain about the absent-but-listed-in-struct field (omitempty
-	// hides ints == 0).
-	if requiresMaxCompletionTokens(provider, upstreamID) {
-		reqBody.MaxCompletionTokens = body.MaxTokens
-	} else {
-		reqBody.MaxTokens = body.MaxTokens
+	reqBody.StreamOptions = &openAICompatibleStreamOptions{IncludeUsage: true}
+	// max_tokens is OPTIONAL on the OpenAI-compatible surface, so only
+	// forward a cap the CLIENT actually set. body.MaxTokens always holds a
+	// value because the Anthropic/Bedrock wire format requires one — but
+	// forwarding that 4096 default here silently truncated reasoning
+	// models mid-think (finish_reason=length, sometimes empty content)
+	// while the same request sent direct ran to the provider's own
+	// model-max default. When the client did set a cap:
+	// per-model parameter rename — openai gpt-5.x rejects max_tokens and
+	// requires max_completion_tokens; every other openai-compatible
+	// provider (and pre-5.x openai models) still wants max_tokens. Emit
+	// exactly one of the two (omitempty hides ints == 0).
+	if body.MaxTokensExplicit {
+		if requiresMaxCompletionTokens(provider, upstreamID) {
+			reqBody.MaxCompletionTokens = body.MaxTokens
+		} else {
+			reqBody.MaxTokens = body.MaxTokens
+		}
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

@@ -79,8 +79,13 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 		AnthropicVersion: "bedrock-2023-05-31",
 		Messages:         msgs,
 		MaxTokens:        maxTokens,
-		Temperature:      req.Temperature,
-		TopP:             req.TopP,
+		// Anthropic/Bedrock require max_tokens, so MaxTokens always has a
+		// value; MaxTokensExplicit lets the OpenAI-compatible path omit the
+		// parameter when the client never asked for a cap (see the field's
+		// comment in types.go).
+		MaxTokensExplicit: req.MaxTokens != nil,
+		Temperature:       req.Temperature,
+		TopP:              req.TopP,
 	}
 	if len(systemParts) > 0 {
 		out.System = strings.Join(systemParts, "\n\n")
@@ -180,6 +185,19 @@ type StreamResult struct {
 	Text         string
 	FinishReason string
 	ToolCalls    []types.ToolCall
+	// Usage carries REAL upstream token counts when the provider reported
+	// them (Anthropic message_start/message_delta usage, or the OpenAI-
+	// compatible stream_options.include_usage final chunk relayed by
+	// llm/stream_translate.go). nil when the upstream never reported usage
+	// — callers fall back to the chars/4 estimates in that case.
+	Usage *StreamUsage
+}
+
+// StreamUsage is the provider-reported token accounting for one stream.
+type StreamUsage struct {
+	InputTokens     int
+	OutputTokens    int
+	ReasoningTokens int // subset of OutputTokens; 0 when not reported
 }
 
 func WriteChatCompletionResponse(
@@ -225,14 +243,39 @@ func WriteChatCompletionResponse(
 }
 
 func TransformStreamCapture(r io.Reader, w io.Writer, requestID, model string) (StreamResult, error) {
+	return TransformStreamCaptureWithOptions(r, w, requestID, model, false)
+}
+
+// TransformStreamCaptureWithOptions is TransformStreamCapture plus the
+// OpenAI stream_options.include_usage behavior: when emitUsageChunk is
+// true and the upstream reported usage, a final chunk with empty
+// `choices` and a populated `usage` object is written after the
+// finish-reason chunk and before `data: [DONE]` — the shape OpenAI SDKs
+// expect. Usage is captured into the StreamResult either way so
+// settlement can bill real token counts instead of chars/4 estimates.
+func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, model string, emitUsageChunk bool) (StreamResult, error) {
 	created := time.Now().Unix()
 	finishReason := "stop"
 	roleSent := false
 	var captured strings.Builder
+	var usage *StreamUsage
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
 	scanner.Split(splitDoubleNewline)
+
+	finish := func() (StreamResult, error) {
+		if err := writeChunk(w, requestID, model, created, map[string]string{}, finishReason); err != nil {
+			return StreamResult{}, err
+		}
+		if emitUsageChunk && usage != nil {
+			if err := writeUsageChunk(w, requestID, model, created, usage); err != nil {
+				return StreamResult{}, err
+			}
+		}
+		_, err := w.Write([]byte("data: [DONE]\n\n"))
+		return StreamResult{Text: captured.String(), FinishReason: finishReason, Usage: usage}, err
+	}
 
 	for scanner.Scan() {
 		block := scanner.Bytes()
@@ -241,6 +284,12 @@ func TransformStreamCapture(r io.Reader, w io.Writer, requestID, model string) (
 			continue
 		}
 		switch eventName {
+		case "message_start":
+			// Native Anthropic streams report input_tokens up front:
+			// {"type":"message_start","message":{...,"usage":{"input_tokens":N,...}}}
+			if message := getMap(dataJSON, "message"); message != nil {
+				mergeUsage(&usage, getMap(message, "usage"))
+			}
 		case "content_block_delta":
 			delta := getMap(dataJSON, "delta")
 			if delta == nil || getString(delta, "type") != "text_delta" {
@@ -267,22 +316,81 @@ func TransformStreamCapture(r io.Reader, w io.Writer, requestID, model string) (
 					finishReason = mapStopReason(reason)
 				}
 			}
+			// Anthropic puts cumulative output_tokens on message_delta;
+			// stream_translate.go's synthetic stop event also carries
+			// input_tokens/reasoning_tokens relayed from OpenAI-compatible
+			// upstreams' include_usage final chunk.
+			mergeUsage(&usage, getMap(dataJSON, "usage"))
 		case "message_stop":
-			if err := writeChunk(w, requestID, model, created, map[string]string{}, finishReason); err != nil {
-				return StreamResult{}, err
-			}
-			_, err := w.Write([]byte("data: [DONE]\n\n"))
-			return StreamResult{Text: captured.String(), FinishReason: finishReason}, err
+			return finish()
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return StreamResult{}, err
 	}
-	if err := writeChunk(w, requestID, model, created, map[string]string{}, finishReason); err != nil {
-		return StreamResult{}, err
+	return finish()
+}
+
+// mergeUsage folds one Anthropic-shaped usage object into the running
+// total, keeping previously seen non-zero fields (input_tokens arrives in
+// message_start, output_tokens in message_delta).
+func mergeUsage(usage **StreamUsage, m map[string]any) {
+	if m == nil {
+		return
 	}
-	_, err := w.Write([]byte("data: [DONE]\n\n"))
-	return StreamResult{Text: captured.String(), FinishReason: finishReason}, err
+	in := getInt(m, "input_tokens")
+	out := getInt(m, "output_tokens")
+	reasoning := getInt(m, "reasoning_tokens")
+	if in == 0 && out == 0 && reasoning == 0 {
+		return
+	}
+	if *usage == nil {
+		*usage = &StreamUsage{}
+	}
+	if in > 0 {
+		(*usage).InputTokens = in
+	}
+	if out > 0 {
+		(*usage).OutputTokens = out
+	}
+	if reasoning > 0 {
+		(*usage).ReasoningTokens = reasoning
+	}
+}
+
+// writeUsageChunk writes the stream_options.include_usage final chunk:
+// empty choices, populated usage — matching OpenAI's documented shape.
+func writeUsageChunk(w io.Writer, id, model string, created int64, usage *StreamUsage) error {
+	usageBody := map[string]any{
+		"prompt_tokens":     usage.InputTokens,
+		"completion_tokens": usage.OutputTokens,
+		"total_tokens":      usage.InputTokens + usage.OutputTokens,
+	}
+	if usage.ReasoningTokens > 0 {
+		usageBody["completion_tokens_details"] = map[string]any{
+			"reasoning_tokens": usage.ReasoningTokens,
+		}
+	}
+	chunk := map[string]any{
+		"id":      id,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []map[string]any{},
+		"usage":   usageBody,
+	}
+	body, err := json.Marshal(chunk)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		return err
+	}
+	if _, err := w.Write(body); err != nil {
+		return err
+	}
+	_, err = w.Write([]byte("\n\n"))
+	return err
 }
 
 // splitDoubleNewline is a bufio.Scanner SplitFunc that emits each "\n\n"-terminated block.

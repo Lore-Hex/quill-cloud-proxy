@@ -32,7 +32,8 @@ func TestToAnthropic(t *testing.T) {
 				Messages: []types.AnthropicMessage{
 					{Role: "user", Content: "hello"},
 				},
-				MaxTokens: 100,
+				MaxTokens:         100,
+				MaxTokensExplicit: true,
 			},
 		},
 		{
@@ -718,5 +719,130 @@ func TestResponsesCoverageClassifiesOfficialSurface(t *testing.T) {
 		if !found {
 			t.Fatalf("missing Responses create field coverage for %s", field)
 		}
+	}
+}
+
+const usageBearingAnthropicStream = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"claude-3","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`
+
+func TestTransformStreamCaptureRecordsUsageWithoutEmitting(t *testing.T) {
+	var out bytes.Buffer
+	result, err := TransformStreamCapture(strings.NewReader(usageBearingAnthropicStream), &out, "id1", "model1")
+	if err != nil {
+		t.Fatalf("TransformStreamCapture: %v", err)
+	}
+	if result.Usage == nil || result.Usage.InputTokens != 10 || result.Usage.OutputTokens != 2 {
+		t.Fatalf("usage = %#v, want input 10 / output 2", result.Usage)
+	}
+	if strings.Contains(out.String(), `"usage"`) {
+		t.Fatalf("usage chunk emitted without include_usage: %s", out.String())
+	}
+}
+
+func TestTransformStreamCaptureWithOptionsEmitsUsageChunk(t *testing.T) {
+	var out bytes.Buffer
+	result, err := TransformStreamCaptureWithOptions(strings.NewReader(usageBearingAnthropicStream), &out, "id1", "model1", true)
+	if err != nil {
+		t.Fatalf("TransformStreamCaptureWithOptions: %v", err)
+	}
+	if result.Usage == nil || result.Usage.InputTokens != 10 || result.Usage.OutputTokens != 2 {
+		t.Fatalf("usage = %#v, want input 10 / output 2", result.Usage)
+	}
+
+	blocks := strings.Split(strings.TrimSpace(out.String()), "\n\n")
+	if len(blocks) < 3 {
+		t.Fatalf("too few stream blocks: %q", out.String())
+	}
+	if blocks[len(blocks)-1] != "data: [DONE]" {
+		t.Fatalf("last block = %q, want data: [DONE]", blocks[len(blocks)-1])
+	}
+	usageBlock := blocks[len(blocks)-2]
+	var chunk map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(usageBlock, "data: ")), &chunk); err != nil {
+		t.Fatalf("unmarshal usage chunk %q: %v", usageBlock, err)
+	}
+	if choices := chunk["choices"].([]any); len(choices) != 0 {
+		t.Fatalf("usage chunk choices = %#v, want empty", choices)
+	}
+	usage := chunk["usage"].(map[string]any)
+	if usage["prompt_tokens"] != float64(10) || usage["completion_tokens"] != float64(2) || usage["total_tokens"] != float64(12) {
+		t.Fatalf("usage chunk = %#v", usage)
+	}
+	// The finish-reason chunk must still precede the usage chunk.
+	var finishChunk map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(blocks[len(blocks)-3], "data: ")), &finishChunk); err != nil {
+		t.Fatalf("unmarshal finish chunk: %v", err)
+	}
+	finishChoice := finishChunk["choices"].([]any)[0].(map[string]any)
+	if finishChoice["finish_reason"] != "stop" {
+		t.Fatalf("finish chunk = %#v, want finish_reason stop", finishChunk)
+	}
+}
+
+func TestTransformStreamCaptureWithOptionsNoUsageNoChunk(t *testing.T) {
+	stream := `event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`
+	var out bytes.Buffer
+	result, err := TransformStreamCaptureWithOptions(strings.NewReader(stream), &out, "id1", "model1", true)
+	if err != nil {
+		t.Fatalf("TransformStreamCaptureWithOptions: %v", err)
+	}
+	if result.Usage != nil {
+		t.Fatalf("usage = %#v, want nil", result.Usage)
+	}
+	if strings.Contains(out.String(), `"usage"`) {
+		t.Fatalf("usage chunk emitted with no upstream usage: %s", out.String())
+	}
+}
+
+func TestTransformStreamCaptureRelayedReasoningTokens(t *testing.T) {
+	// stream_translate.go relays OpenAI-compatible include_usage data on
+	// the synthetic message_delta, including reasoning_tokens.
+	stream := `event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"42"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":7,"output_tokens":900,"reasoning_tokens":850}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`
+	var out bytes.Buffer
+	result, err := TransformStreamCaptureWithOptions(strings.NewReader(stream), &out, "id1", "model1", true)
+	if err != nil {
+		t.Fatalf("TransformStreamCaptureWithOptions: %v", err)
+	}
+	if result.Usage == nil || result.Usage.InputTokens != 7 || result.Usage.OutputTokens != 900 || result.Usage.ReasoningTokens != 850 {
+		t.Fatalf("usage = %#v, want 7/900/850", result.Usage)
+	}
+	if !strings.Contains(out.String(), `"reasoning_tokens":850`) {
+		t.Fatalf("usage chunk missing reasoning detail: %s", out.String())
+	}
+}
+
+func TestCollectAnthropicTextCapturesUsage(t *testing.T) {
+	result, err := CollectAnthropicText(strings.NewReader(usageBearingAnthropicStream))
+	if err != nil {
+		t.Fatalf("CollectAnthropicText: %v", err)
+	}
+	if result.Usage == nil || result.Usage.InputTokens != 10 || result.Usage.OutputTokens != 2 {
+		t.Fatalf("usage = %#v, want input 10 / output 2", result.Usage)
+	}
+	if result.Text != "Hello" {
+		t.Fatalf("text = %q, want Hello", result.Text)
 	}
 }

@@ -296,6 +296,7 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 	scanner.Buffer(make([]byte, 0, 64*1024), 64<<20)
 
 	stopReason := "end_turn"
+	var usage *openAIStreamUsage
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -305,9 +306,12 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 		if payload == "" || payload == "[DONE]" {
 			continue
 		}
-		delta, reason, err := geminiChunkDelta(payload)
+		delta, reason, chunkUsage, err := geminiChunkDelta(payload)
 		if err != nil {
 			continue
+		}
+		if chunkUsage != nil {
+			usage = chunkUsage
 		}
 		if delta != "" {
 			if err := writeAnthropicTextDelta(w, delta); err != nil {
@@ -321,10 +325,10 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("llm/vertex-gemini-stream: scan: %w", err)
 	}
-	return writeAnthropicStop(w, stopReason)
+	return writeAnthropicStop(w, stopReason, usage)
 }
 
-func geminiChunkDelta(payload string) (string, string, error) {
+func geminiChunkDelta(payload string) (string, string, *openAIStreamUsage, error) {
 	var chunk struct {
 		Candidates []struct {
 			Content struct {
@@ -332,12 +336,31 @@ func geminiChunkDelta(payload string) (string, string, error) {
 			} `json:"content"`
 			FinishReason string `json:"finishReason"`
 		} `json:"candidates"`
+		// usageMetadata rides the final chunk. candidatesTokenCount
+		// EXCLUDES thoughts; Vertex bills thoughts as output, so the
+		// relayed output count is candidates+thoughts.
+		UsageMetadata *struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+			ThoughtsTokenCount   int `json:"thoughtsTokenCount"`
+		} `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-		return "", "", err
+		return "", "", nil, err
+	}
+	var usage *openAIStreamUsage
+	if meta := chunk.UsageMetadata; meta != nil && (meta.PromptTokenCount > 0 || meta.CandidatesTokenCount > 0) {
+		usage = &openAIStreamUsage{
+			PromptTokens:     meta.PromptTokenCount,
+			CompletionTokens: meta.CandidatesTokenCount + meta.ThoughtsTokenCount,
+			TotalTokens:      meta.PromptTokenCount + meta.CandidatesTokenCount + meta.ThoughtsTokenCount,
+		}
+		if meta.ThoughtsTokenCount > 0 {
+			usage.CompletionTokensDetails = &openAIStreamUsageDetails{ReasoningTokens: meta.ThoughtsTokenCount}
+		}
 	}
 	if len(chunk.Candidates) == 0 {
-		return "", "", nil
+		return "", "", usage, nil
 	}
 	var text strings.Builder
 	for _, part := range chunk.Candidates[0].Content.Parts {
@@ -354,7 +377,7 @@ func geminiChunkDelta(payload string) (string, string, error) {
 			text.WriteString(dataURL)
 		}
 	}
-	return text.String(), chunk.Candidates[0].FinishReason, nil
+	return text.String(), chunk.Candidates[0].FinishReason, usage, nil
 }
 
 func geminiInlineDataURL(part map[string]any) string {

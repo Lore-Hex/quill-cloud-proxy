@@ -135,12 +135,20 @@ type OpenAIChatMessage struct {
 	Content any    `json:"content"`
 }
 
+// ChatStreamOptions mirrors OpenAI's chat-completions stream_options
+// object. include_usage=true asks for a final usage-bearing chunk
+// (choices: []) right before `data: [DONE]`.
+type ChatStreamOptions struct {
+	IncludeUsage bool `json:"include_usage,omitempty"`
+}
+
 // OpenAIChatRequest is the inbound shape we accept.
 type OpenAIChatRequest struct {
 	Model          string               `json:"model"`
 	Models         []string             `json:"models,omitempty"`
 	Messages       []OpenAIChatMessage  `json:"messages"`
 	Stream         bool                 `json:"stream,omitempty"`
+	StreamOptions  *ChatStreamOptions   `json:"stream_options,omitempty"`
 	Temperature    *float64             `json:"temperature,omitempty"`
 	TopP           *float64             `json:"top_p,omitempty"`
 	MaxTokens      *int                 `json:"max_tokens,omitempty"`
@@ -290,6 +298,17 @@ type AnthropicMessagesRequest struct {
 	TopP             *float64             `json:"top_p,omitempty"`
 	Tools            []AnthropicTool      `json:"tools,omitempty"`
 	ToolChoice       *AnthropicToolChoice `json:"tool_choice,omitempty"`
+
+	// MaxTokensExplicit records whether the CLIENT set max_tokens, or
+	// whether MaxTokens above is adapter.DefaultMaxTokens filled in
+	// because the Anthropic/Bedrock wire format requires the field.
+	// OpenAI-compatible upstreams treat max_tokens as optional, and
+	// silently capping reasoning models at the 4096 default truncated
+	// them mid-think (finish_reason=length) when direct calls with no
+	// max_tokens ran to the model maximum — so the OpenAI-compatible
+	// path OMITS max_tokens entirely unless the client asked for one.
+	// json:"-" keeps the Anthropic/Bedrock wire bodies byte-identical.
+	MaxTokensExplicit bool `json:"-"`
 }
 
 type AnthropicTool struct {
