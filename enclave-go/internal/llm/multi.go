@@ -52,7 +52,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		nebius:      newOpenAICompatible("nebius", boot.NebiusAPIKey),
 		minimax:     newOpenAICompatible("minimax", boot.MiniMaxAPIKey),
 		// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
-		xiaomi:      newOpenAICompatible("xiaomi", boot.XiaomiAPIKey),
+		xiaomi: newOpenAICompatible("xiaomi", boot.XiaomiAPIKey),
 		// Cohere — embeddings only (native /v2/embed). Its InvokeStreaming
 		// returns an error; embeddings dispatch is in multi_embeddings.go.
 		cohere: newCohere(boot.CohereAPIKey),

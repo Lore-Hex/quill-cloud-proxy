@@ -574,9 +574,12 @@ func serveResponsesNonStreaming(
 			result.Text = normalized
 		}
 	}
-	inputTokens := trustedrouter.EstimateInputTokens(req)
 	outputForUsage := adapter.ResponsesOutputForUsage(result)
-	outputTokens := trustedrouter.EstimateOutputTokens(outputForUsage)
+	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+		result,
+		trustedrouter.EstimateInputTokens(req),
+		trustedrouter.EstimateOutputTokens(outputForUsage),
+	)
 	selectedModel := selectedRoute.Model(req.Model, authorization)
 	selectedEndpoint := selectedRoute.Endpoint("", authorization)
 	if selectedModel != "" {
@@ -593,7 +596,7 @@ func serveResponsesNonStreaming(
 		OutputTokens:      outputTokens,
 		ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
 		FirstTokenSeconds: 0,
-		UsageEstimated:    true,
+		UsageEstimated:    usageEstimated,
 		FinishReason:      result.FinishReason,
 		Streamed:          false,
 		RouteType:         "responses",
@@ -639,8 +642,11 @@ func serveChatNonStreaming(
 		writeError(conn, 502, "provider error")
 		return
 	}
-	inputTokens := trustedrouter.EstimateInputTokens(req)
-	outputTokens := trustedrouter.EstimateOutputTokens(result.Text)
+	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+		result,
+		trustedrouter.EstimateInputTokens(req),
+		trustedrouter.EstimateOutputTokens(result.Text),
+	)
 	selectedModel := selectedRoute.Model(req.Model, authorization)
 	selectedEndpoint := selectedRoute.Endpoint("", authorization)
 	if selectedModel != "" {
@@ -657,7 +663,7 @@ func serveChatNonStreaming(
 		OutputTokens:      outputTokens,
 		ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
 		FirstTokenSeconds: 0,
-		UsageEstimated:    true,
+		UsageEstimated:    usageEstimated,
 		FinishReason:      result.FinishReason,
 		Streamed:          false,
 		RouteType:         "chat.completions",
@@ -728,7 +734,7 @@ func serveStreaming(
 	if routeType == "responses" {
 		result, err = adapter.TransformResponsesStream(pr, statsW, requestID, req.Model, trustedrouter.EstimateInputTokens(req), responseTextConfig(req), req.Response)
 	} else {
-		result, err = adapter.TransformStreamCapture(pr, statsW, requestID, req.Model)
+		result, err = adapter.TransformStreamCaptureWithOptions(pr, statsW, requestID, req.Model, chatIncludeUsage(req))
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
@@ -740,13 +746,18 @@ func serveStreaming(
 		}
 		return
 	}
+	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+		result,
+		trustedrouter.EstimateInputTokens(req),
+		trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
+	)
 	usage := trustedrouter.Usage{
 		RequestID:         requestID,
-		InputTokens:       trustedrouter.EstimateInputTokens(req),
-		OutputTokens:      trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
+		InputTokens:       inputTokens,
+		OutputTokens:      outputTokens,
 		ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
 		FirstTokenSeconds: statsW.FirstWriteSeconds(requestStarted),
-		UsageEstimated:    true,
+		UsageEstimated:    usageEstimated,
 		FinishReason:      result.FinishReason,
 		Streamed:          true,
 		RouteType:         routeType,
@@ -786,6 +797,28 @@ func serveStreaming(
 			requestLogID:  requestLogID,
 		})
 	}
+}
+
+// chatIncludeUsage reports whether the client asked for the OpenAI
+// stream_options.include_usage final chunk on a chat-completions stream.
+func chatIncludeUsage(req *types.OpenAIChatRequest) bool {
+	return req != nil && req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+}
+
+// realOrEstimatedTokens prefers the provider-reported usage captured from
+// the stream (adapter.StreamResult.Usage) and falls back to the chars/4
+// estimates the gateway has always used. Returns (input, output,
+// usageEstimated-for-settlement). Output is the signal: providers always
+// report both sides together, but if input is somehow missing we estimate
+// it and still flag the settlement as estimated.
+func realOrEstimatedTokens(result adapter.StreamResult, estimatedInput, estimatedOutput int) (int, int, bool) {
+	if result.Usage == nil || result.Usage.OutputTokens <= 0 {
+		return estimatedInput, estimatedOutput, true
+	}
+	if result.Usage.InputTokens <= 0 {
+		return estimatedInput, result.Usage.OutputTokens, true
+	}
+	return result.Usage.InputTokens, result.Usage.OutputTokens, false
 }
 
 func maybeStartAttestSidecar() {

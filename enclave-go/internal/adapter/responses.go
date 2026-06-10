@@ -382,6 +382,7 @@ func normalizeImageDetail(detail string) (string, error) {
 func CollectAnthropicText(r io.Reader) (StreamResult, error) {
 	finishReason := "stop"
 	var captured strings.Builder
+	var usage *StreamUsage
 	toolCallsByIndex := map[int]*types.ToolCall{}
 	var toolOrder []int
 	scanner := bufio.NewScanner(r)
@@ -393,6 +394,10 @@ func CollectAnthropicText(r io.Reader) (StreamResult, error) {
 			continue
 		}
 		switch eventName {
+		case "message_start":
+			if message := getMap(dataJSON, "message"); message != nil {
+				mergeUsage(&usage, getMap(message, "usage"))
+			}
 		case "content_block_start":
 			block := getMap(dataJSON, "content_block")
 			if block != nil && getString(block, "type") == "tool_use" {
@@ -424,14 +429,15 @@ func CollectAnthropicText(r io.Reader) (StreamResult, error) {
 					finishReason = mapStopReason(reason)
 				}
 			}
+			mergeUsage(&usage, getMap(dataJSON, "usage"))
 		case "message_stop":
-			return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder)}, nil
+			return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Usage: usage}, nil
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return StreamResult{}, err
 	}
-	return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder)}, nil
+	return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Usage: usage}, nil
 }
 
 func WriteResponsesResponse(
