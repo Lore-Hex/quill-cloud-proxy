@@ -208,6 +208,8 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "lightning_api_key",
         "gmi_api_key",
         "deepinfra_api_key",
+        "voyage_api_key",
+        "xiaomi_api_key",
     }
     actual_fields = {field for field, _suffix in bootstrap_server._PROVIDER_KEYS}
     assert actual_fields == expected_fields, (
