@@ -921,6 +921,52 @@ func TestTransformStreamCaptureEmitsToolCallDeltas(t *testing.T) {
 	}
 }
 
+func TestTransformStreamCaptureCachedTokens(t *testing.T) {
+	stream := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_01","usage":{"input_tokens":400,"output_tokens":0,"cache_read_input_tokens":350,"cache_creation_input_tokens":20}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`
+	var out bytes.Buffer
+	result, err := TransformStreamCaptureWithOptions(strings.NewReader(stream), &out, "id1", "model1", true)
+	if err != nil {
+		t.Fatalf("TransformStreamCaptureWithOptions: %v", err)
+	}
+	if result.Usage == nil || result.Usage.CacheReadInputTokens != 350 || result.Usage.CacheCreationInputTokens != 20 {
+		t.Fatalf("cache usage = %#v, want 350/20", result.Usage)
+	}
+	if !strings.Contains(out.String(), `"prompt_tokens_details":{"cached_tokens":350}`) {
+		t.Fatalf("usage chunk missing cached_tokens: %s", out.String())
+	}
+}
+
+func TestWriteMessagesResponseIncludesCacheUsage(t *testing.T) {
+	var out bytes.Buffer
+	err := WriteMessagesResponse(&out, "msg_test", "anthropic/claude-haiku-4.5", StreamResult{
+		Text:         "Hi",
+		FinishReason: "stop",
+		Usage:        &StreamUsage{InputTokens: 400, OutputTokens: 5, CacheReadInputTokens: 350, CacheCreationInputTokens: 20},
+	}, 400, 5)
+	if err != nil {
+		t.Fatalf("WriteMessagesResponse: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	usage := payload["usage"].(map[string]any)
+	if usage["cache_read_input_tokens"] != float64(350) || usage["cache_creation_input_tokens"] != float64(20) {
+		t.Fatalf("envelope cache usage = %#v", usage)
+	}
+}
+
 func TestCollectAnthropicTextCapturesUsage(t *testing.T) {
 	result, err := CollectAnthropicText(strings.NewReader(usageBearingAnthropicStream))
 	if err != nil {

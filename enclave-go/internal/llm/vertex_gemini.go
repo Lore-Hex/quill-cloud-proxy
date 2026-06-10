@@ -340,9 +340,10 @@ func geminiChunkDelta(payload string) (string, string, *openAIStreamUsage, error
 		// EXCLUDES thoughts; Vertex bills thoughts as output, so the
 		// relayed output count is candidates+thoughts.
 		UsageMetadata *struct {
-			PromptTokenCount     int `json:"promptTokenCount"`
-			CandidatesTokenCount int `json:"candidatesTokenCount"`
-			ThoughtsTokenCount   int `json:"thoughtsTokenCount"`
+			PromptTokenCount        int `json:"promptTokenCount"`
+			CandidatesTokenCount    int `json:"candidatesTokenCount"`
+			ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
+			CachedContentTokenCount int `json:"cachedContentTokenCount"`
 		} `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
@@ -357,6 +358,9 @@ func geminiChunkDelta(payload string) (string, string, *openAIStreamUsage, error
 		}
 		if meta.ThoughtsTokenCount > 0 {
 			usage.CompletionTokensDetails = &openAIStreamUsageDetails{ReasoningTokens: meta.ThoughtsTokenCount}
+		}
+		if meta.CachedContentTokenCount > 0 {
+			usage.PromptTokensDetails = &openAIPromptTokenDetails{CachedTokens: meta.CachedContentTokenCount}
 		}
 	}
 	if len(chunk.Candidates) == 0 {

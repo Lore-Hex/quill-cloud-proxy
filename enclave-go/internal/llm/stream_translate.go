@@ -157,10 +157,15 @@ type openAIStreamUsage struct {
 	CompletionTokens        int                       `json:"completion_tokens"`
 	TotalTokens             int                       `json:"total_tokens"`
 	CompletionTokensDetails *openAIStreamUsageDetails `json:"completion_tokens_details"`
+	PromptTokensDetails     *openAIPromptTokenDetails `json:"prompt_tokens_details"`
 }
 
 type openAIStreamUsageDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
+}
+
+type openAIPromptTokenDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }
 
 func writeAnthropicTextDelta(w io.Writer, text string) error {
@@ -231,6 +236,9 @@ func writeAnthropicStop(w io.Writer, stopReason string, usage *openAIStreamUsage
 		}
 		if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens > 0 {
 			usageBody["reasoning_tokens"] = usage.CompletionTokensDetails.ReasoningTokens
+		}
+		if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens > 0 {
+			usageBody["cache_read_input_tokens"] = usage.PromptTokensDetails.CachedTokens
 		}
 		mDelta["usage"] = usageBody
 	}

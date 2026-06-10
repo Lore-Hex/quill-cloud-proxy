@@ -135,6 +135,12 @@ type Usage struct {
 	SessionID         string
 	Trace             map[string]any
 	Metadata          map[string]any
+	// Prompt-cache token counts when the provider reported them. Sent to
+	// settle for visibility (GatewaySettleRequest is extra="allow");
+	// cache-aware pricing is a control-plane follow-up — today cached
+	// input still bills at the full input rate.
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
 }
 
 func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest) (*Authorization, error) {
@@ -284,6 +290,12 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	}
 	if usage.FirstTokenSeconds > 0 {
 		body["first_token_seconds"] = usage.FirstTokenSeconds
+	}
+	if usage.CacheReadInputTokens > 0 {
+		body["cache_read_input_tokens"] = usage.CacheReadInputTokens
+	}
+	if usage.CacheCreationInputTokens > 0 {
+		body["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
 	}
 	var decoded struct {
 		Data SettleResult `json:"data"`

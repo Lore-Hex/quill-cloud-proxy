@@ -56,6 +56,25 @@ func TestTranslateOpenAIStreamRelaysUsage(t *testing.T) {
 	}
 }
 
+// TestTranslateOpenAIStreamRelaysCachedTokens: OpenAI-style automatic
+// prompt caching reports prompt_tokens_details.cached_tokens; it must
+// relay as cache_read_input_tokens on the synthetic message_delta.
+func TestTranslateOpenAIStreamRelaysCachedTokens(t *testing.T) {
+	upstream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}`,
+		`data: {"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":5,"total_tokens":1005,"prompt_tokens_details":{"cached_tokens":900}}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := translateOpenAIStreamToAnthropic(strings.NewReader(upstream), &out); err != nil {
+		t.Fatalf("translateOpenAIStreamToAnthropic: %v", err)
+	}
+	if !strings.Contains(out.String(), `"cache_read_input_tokens":900`) {
+		t.Fatalf("cached_tokens not relayed: %s", out.String())
+	}
+}
+
 // TestTranslateOpenAIStreamNoUsageOmitsUsage: upstreams that never report
 // usage produce a bare message_delta — the adapter then falls back to
 // estimates, same as before this feature.

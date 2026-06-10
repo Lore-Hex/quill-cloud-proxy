@@ -620,6 +620,7 @@ func serveResponsesNonStreaming(
 		Trace:             req.Trace,
 		Metadata:          req.Metadata,
 	}
+	applyCacheUsage(&usage, result)
 	if _, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, outputForUsage); err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_settle_failed model=%q err=%v\n", req.Model, err)
 		writeError(conn, 502, "settlement failed")
@@ -687,6 +688,7 @@ func serveChatNonStreaming(
 		Trace:             req.Trace,
 		Metadata:          req.Metadata,
 	}
+	applyCacheUsage(&usage, result)
 	if _, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text); err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_settle_failed model=%q err=%v\n", req.Model, err)
 		writeError(conn, 502, "settlement failed")
@@ -781,6 +783,7 @@ func serveStreaming(
 		Trace:             req.Trace,
 		Metadata:          req.Metadata,
 	}
+	applyCacheUsage(&usage, result)
 	if _, err := settleAndBroadcast(
 		ctx,
 		trGateway,
@@ -907,6 +910,7 @@ func serveMessages(
 			SelectedEndpoint: selectedEndpoint,
 			Metadata:         req.Metadata,
 		}
+		applyCacheUsage(&usage, result)
 		if _, err := settleAndBroadcast(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text); err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.messages_settle_failed model=%q err=%v\n", req.Model, err)
 			writeAnthropicError(conn, 502, "settlement failed")
@@ -970,6 +974,7 @@ func serveMessages(
 		SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
 		Metadata:          req.Metadata,
 	}
+	applyCacheUsage(&usage, result)
 	if _, err := settleAndBroadcast(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text); err != nil {
 		fmt.Fprintf(os.Stderr,
 			"enclave.messages_stream_settle_failed request_log_id=%q request_id=%q model=%q err=%v\n",
@@ -1000,6 +1005,16 @@ func chatIncludeUsage(req *types.OpenAIChatRequest) bool {
 // usageEstimated-for-settlement). Output is the signal: providers always
 // report both sides together, but if input is somehow missing we estimate
 // it and still flag the settlement as estimated.
+// applyCacheUsage copies provider-reported prompt-cache token counts into
+// the settlement usage record (visibility only — pricing unchanged).
+func applyCacheUsage(usage *trustedrouter.Usage, result adapter.StreamResult) {
+	if result.Usage == nil {
+		return
+	}
+	usage.CacheReadInputTokens = result.Usage.CacheReadInputTokens
+	usage.CacheCreationInputTokens = result.Usage.CacheCreationInputTokens
+}
+
 func realOrEstimatedTokens(result adapter.StreamResult, estimatedInput, estimatedOutput int) (int, int, bool) {
 	if result.Usage == nil || result.Usage.OutputTokens <= 0 {
 		return estimatedInput, estimatedOutput, true

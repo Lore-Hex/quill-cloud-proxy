@@ -198,6 +198,12 @@ type StreamUsage struct {
 	InputTokens     int
 	OutputTokens    int
 	ReasoningTokens int // subset of OutputTokens; 0 when not reported
+	// Prompt-cache accounting. CacheReadInputTokens were served from the
+	// provider's prompt cache (Anthropic cache_read_input_tokens, OpenAI
+	// prompt_tokens_details.cached_tokens, Gemini cachedContentTokenCount);
+	// CacheCreationInputTokens were written to it (Anthropic only).
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
 }
 
 func WriteChatCompletionResponse(
@@ -422,7 +428,9 @@ func mergeUsage(usage **StreamUsage, m map[string]any) {
 	in := getInt(m, "input_tokens")
 	out := getInt(m, "output_tokens")
 	reasoning := getInt(m, "reasoning_tokens")
-	if in == 0 && out == 0 && reasoning == 0 {
+	cacheRead := getInt(m, "cache_read_input_tokens")
+	cacheCreation := getInt(m, "cache_creation_input_tokens")
+	if in == 0 && out == 0 && reasoning == 0 && cacheRead == 0 && cacheCreation == 0 {
 		return
 	}
 	if *usage == nil {
@@ -437,6 +445,12 @@ func mergeUsage(usage **StreamUsage, m map[string]any) {
 	if reasoning > 0 {
 		(*usage).ReasoningTokens = reasoning
 	}
+	if cacheRead > 0 {
+		(*usage).CacheReadInputTokens = cacheRead
+	}
+	if cacheCreation > 0 {
+		(*usage).CacheCreationInputTokens = cacheCreation
+	}
 }
 
 // writeUsageChunk writes the stream_options.include_usage final chunk:
@@ -450,6 +464,11 @@ func writeUsageChunk(w io.Writer, id, model string, created int64, usage *Stream
 	if usage.ReasoningTokens > 0 {
 		usageBody["completion_tokens_details"] = map[string]any{
 			"reasoning_tokens": usage.ReasoningTokens,
+		}
+	}
+	if usage.CacheReadInputTokens > 0 {
+		usageBody["prompt_tokens_details"] = map[string]any{
+			"cached_tokens": usage.CacheReadInputTokens,
 		}
 	}
 	chunk := map[string]any{

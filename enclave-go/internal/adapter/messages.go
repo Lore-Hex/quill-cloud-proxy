@@ -204,6 +204,18 @@ func WriteMessagesResponse(
 			"input": input,
 		})
 	}
+	usageBody := map[string]any{
+		"input_tokens":  inputTokens,
+		"output_tokens": outputTokens,
+	}
+	if result.Usage != nil {
+		if result.Usage.CacheReadInputTokens > 0 {
+			usageBody["cache_read_input_tokens"] = result.Usage.CacheReadInputTokens
+		}
+		if result.Usage.CacheCreationInputTokens > 0 {
+			usageBody["cache_creation_input_tokens"] = result.Usage.CacheCreationInputTokens
+		}
+	}
 	payload := map[string]any{
 		"id":            messageID,
 		"type":          "message",
@@ -212,10 +224,7 @@ func WriteMessagesResponse(
 		"content":       content,
 		"stop_reason":   mapFinishReasonToAnthropic(result.FinishReason),
 		"stop_sequence": nil,
-		"usage": map[string]int{
-			"input_tokens":  inputTokens,
-			"output_tokens": outputTokens,
-		},
+		"usage":         usageBody,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
