@@ -46,6 +46,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: read     # for the CI-green gate (gh run list)
   id-token: write   # for AWS OIDC
   contents: read
 
@@ -57,6 +58,55 @@ env:
   BUILD_TAGS: "cloud_aws,llm_multi"
 
 jobs:
+  # Full-repo CI gate: ci.yml (every build-tag variant + the parent
+  # Python tests + trust-page validation) must conclude SUCCESS for this
+  # exact SHA before any production rollout. The inline `test` job only
+  # covers this build's slice — the parent test job sat red on main
+  # across a week of deploys before this gate existed (fixed 2026-06-10).
+  # Manual workflow_dispatch skips the gate (operator override).
+  gate-on-ci:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for CI green (same commit)
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "::warning::manual dispatch — skipping the CI-green gate."
+            exit 0
+          fi
+          echo "waiting for ci.yml on ${GITHUB_SHA}"
+          deadline=$(( $(date +%s) + 2700 ))   # 45 min, far above CI's normal runtime
+          while true; do
+            run_json=$(gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow ci.yml \
+              --commit "${GITHUB_SHA}" \
+              --json databaseId,status,conclusion \
+              --jq '.[0]' || true)
+            if [ -n "${run_json}" ] && [ "${run_json}" != "null" ]; then
+              status=$(jq -r '.status' <<<"${run_json}")
+              conclusion=$(jq -r '.conclusion' <<<"${run_json}")
+              echo "  ci run $(jq -r '.databaseId' <<<"${run_json}"): status=${status} conclusion=${conclusion:-<pending>}"
+              if [ "${status}" = "completed" ]; then
+                if [ "${conclusion}" = "success" ]; then
+                  echo "CI is green — proceeding."
+                  exit 0
+                fi
+                echo "CI concluded '${conclusion}' for ${GITHUB_SHA} — refusing to deploy a red commit."
+                exit 1
+              fi
+            else
+              echo "  no CI run found yet for ${GITHUB_SHA} (queueing?)"
+            fi
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "timed out after 45 min waiting for CI"
+              exit 1
+            fi
+            sleep 20
+          done
+
   test:
     runs-on: ubuntu-latest
     defaults:
@@ -70,7 +120,7 @@ jobs:
       - run: go test -tags '${{ env.BUILD_TAGS }}' ./...
 
   build-and-push:
-    needs: test
+    needs: [test, gate-on-ci]
     runs-on: ubuntu-latest
     outputs:
       image_ref: ${{ steps.build.outputs.image_ref }}
