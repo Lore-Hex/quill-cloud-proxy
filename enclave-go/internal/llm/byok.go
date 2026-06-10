@@ -259,6 +259,33 @@ func kimiToolsNeedThinkingDisabled(provider, modelID string, tools []any) bool {
 	return strings.Contains(model, "k2.6") || strings.Contains(model, "k2.5")
 }
 
+// anthropicUpstreamMessages returns the message list for an
+// anthropic-direct request body. Native /v1/messages content passes
+// through verbatim — running chatPartFromAny over already-Anthropic
+// blocks (tool_result, image sources, cache_control) would mangle them.
+func anthropicUpstreamMessages(
+	ctx context.Context,
+	body *qtypes.AnthropicMessagesRequest,
+) ([]qtypes.AnthropicMessage, error) {
+	if body.NativeContent {
+		return body.Messages, nil
+	}
+	return anthropicMessagesWithFetchedImages(ctx, body)
+}
+
+// anthropicSystemField prefers the raw native system blocks (preserving
+// cache_control) and falls back to the flattened string. nil keeps
+// `system` off the wire entirely (omitempty only elides nil for `any`).
+func anthropicSystemField(body *qtypes.AnthropicMessagesRequest) any {
+	if body.SystemRaw != nil {
+		return body.SystemRaw
+	}
+	if body.System != "" {
+		return body.System
+	}
+	return nil
+}
+
 func invokeAnthropicBYOKStreaming(
 	ctx context.Context,
 	req *qtypes.OpenAIChatRequest,
@@ -267,31 +294,35 @@ func invokeAnthropicBYOKStreaming(
 	apiKey string,
 	upstreamModel string,
 ) error {
-	messages, err := anthropicMessagesWithFetchedImages(ctx, body)
+	messages, err := anthropicUpstreamMessages(ctx, body)
 	if err != nil {
 		return err
 	}
 	modelID := directModelID("anthropic", req.Model, upstreamModel)
 	reqBody := struct {
-		Model       string                      `json:"model"`
-		Messages    []qtypes.AnthropicMessage   `json:"messages"`
-		System      string                      `json:"system,omitempty"`
-		MaxTokens   int                         `json:"max_tokens"`
-		Temperature *float64                    `json:"temperature,omitempty"`
-		TopP        *float64                    `json:"top_p,omitempty"`
-		Tools       []qtypes.AnthropicTool      `json:"tools,omitempty"`
-		ToolChoice  *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
-		Stream      bool                        `json:"stream"`
+		Model         string                      `json:"model"`
+		Messages      []qtypes.AnthropicMessage   `json:"messages"`
+		System        any                         `json:"system,omitempty"`
+		MaxTokens     int                         `json:"max_tokens"`
+		Temperature   *float64                    `json:"temperature,omitempty"`
+		TopP          *float64                    `json:"top_p,omitempty"`
+		Tools         []qtypes.AnthropicTool      `json:"tools,omitempty"`
+		ToolChoice    *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
+		StopSequences []string                    `json:"stop_sequences,omitempty"`
+		Thinking      any                         `json:"thinking,omitempty"`
+		Stream        bool                        `json:"stream"`
 	}{
-		Model:       modelID,
-		Messages:    messages,
-		System:      body.System,
-		MaxTokens:   body.MaxTokens,
-		Temperature: anthropicTemperature(modelID, body.Temperature),
-		TopP:        body.TopP,
-		Tools:       body.Tools,
-		ToolChoice:  body.ToolChoice,
-		Stream:      true,
+		Model:         modelID,
+		Messages:      messages,
+		System:        anthropicSystemField(body),
+		MaxTokens:     body.MaxTokens,
+		Temperature:   anthropicTemperature(modelID, body.Temperature),
+		TopP:          body.TopP,
+		Tools:         body.Tools,
+		ToolChoice:    body.ToolChoice,
+		StopSequences: body.StopSequences,
+		Thinking:      body.Thinking,
+		Stream:        true,
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

@@ -321,6 +321,19 @@ func serveOne(
 		return
 	}
 
+	// Native Anthropic Messages API. The internal pipeline is already
+	// Anthropic-shaped, so this route passes content through verbatim and
+	// relays the provider's native SSE back out — the surface Claude Code
+	// and the Anthropic SDKs use via ANTHROPIC_BASE_URL.
+	if routePath == "/v1/messages" {
+		if method != "POST" {
+			writeAnthropicError(conn, 404, "route not found")
+			return
+		}
+		serveMessages(ctx, conn, br, body, trGateway, byokSecrets, bearer, idempotencyKey, requestLogID)
+		return
+	}
+
 	var req types.OpenAIChatRequest
 	req.IdempotencyKey = idempotencyKey
 	routeType := "chat.completions"
@@ -794,6 +807,182 @@ func serveStreaming(
 			req:           req,
 			originalInput: originalInput,
 			output:        adapter.ResponsesOutputForUsage(result),
+			requestLogID:  requestLogID,
+		})
+	}
+}
+
+func serveMessages(
+	ctx context.Context,
+	conn io.Writer,
+	br llm.Client,
+	body []byte,
+	trGateway *trustedrouter.Client,
+	byokSecrets *byokcache.Cache,
+	bearer string,
+	idempotencyKey string,
+	requestLogID string,
+) {
+	var native adapter.AnthropicNativeRequest
+	if err := json.Unmarshal(body, &native); err != nil {
+		writeAnthropicError(conn, 400, "invalid JSON")
+		return
+	}
+	anthropicReq, err := adapter.MessagesToAnthropic(&native)
+	if err != nil {
+		var aerr *adapter.AdapterError
+		if asAdapterErr(err, &aerr) {
+			writeAnthropicError(conn, aerr.Status, aerr.Message)
+			return
+		}
+		writeAnthropicError(conn, 400, "invalid messages request")
+		return
+	}
+	req := adapter.MessagesToChatShim(&native)
+	req.IdempotencyKey = idempotencyKey
+
+	requestStarted := time.Now()
+	trEnabled := trGateway != nil && trGateway.Enabled()
+	var authorization *trustedrouter.Authorization
+	var invokeOptions []llm.InvokeOptions
+	if trEnabled {
+		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, req, "messages")
+		if err != nil {
+			writeAnthropicError(conn, statusFromControlPlaneError(err), "gateway authorization failed")
+			return
+		}
+		invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)
+		if err != nil {
+			_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), req.Metadata)
+			writeAnthropicError(conn, 502, "BYOK provider key unavailable")
+			return
+		}
+		if len(invokeOptions) > 0 && invokeOptions[0].Model != "" {
+			req.Model = invokeOptions[0].Model
+		} else {
+			req.Model = authorization.Model
+		}
+	}
+
+	messageID := newMessageID()
+	pr, pw := io.Pipe()
+	selectedRoute := newSelectedRouteTracker()
+
+	if !native.Stream {
+		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID)
+		result, err := adapter.CollectAnthropicText(pr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "enclave.messages_collect_failed model=%q err=%v\n", req.Model, err)
+			if trEnabled {
+				_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
+			}
+			writeAnthropicError(conn, 502, "provider error")
+			return
+		}
+		inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+			result,
+			trustedrouter.EstimateInputTokens(req),
+			trustedrouter.EstimateOutputTokens(result.Text),
+		)
+		selectedModel := selectedRoute.Model(req.Model, authorization)
+		selectedEndpoint := selectedRoute.Endpoint("", authorization)
+		if selectedModel != "" {
+			req.Model = selectedModel
+		}
+		var envelope bytes.Buffer
+		if err := adapter.WriteMessagesResponse(&envelope, messageID, req.Model, result, inputTokens, outputTokens); err != nil {
+			writeAnthropicError(conn, 500, "messages encoding error")
+			return
+		}
+		usage := trustedrouter.Usage{
+			RequestID:        messageID,
+			InputTokens:      inputTokens,
+			OutputTokens:     outputTokens,
+			ElapsedSeconds:   maxDurationSeconds(time.Since(requestStarted), 0.001),
+			UsageEstimated:   usageEstimated,
+			FinishReason:     result.FinishReason,
+			Streamed:         false,
+			RouteType:        "messages",
+			SelectedModel:    selectedModel,
+			SelectedEndpoint: selectedEndpoint,
+			Metadata:         req.Metadata,
+		}
+		if _, err := settleAndBroadcast(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text); err != nil {
+			fmt.Fprintf(os.Stderr, "enclave.messages_settle_failed model=%q err=%v\n", req.Model, err)
+			writeAnthropicError(conn, 502, "settlement failed")
+			return
+		}
+		writeJSONResponse(conn, 200, envelope.Bytes())
+		return
+	}
+
+	providerDone := make(chan struct{})
+	go func() {
+		defer close(providerDone)
+		invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID)
+	}()
+	if trEnabled && len(invokeOptions) > 1 {
+		select {
+		case <-selectedRoute.Ready():
+		case <-providerDone:
+		}
+	} else if len(invokeOptions) > 0 {
+		selectedRoute.Select(invokeOptions[0])
+	}
+	if streamModel := selectedRoute.Model(req.Model, authorization); streamModel != "" {
+		req.Model = streamModel
+	}
+	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
+		_ = pr.Close()
+		return
+	}
+	chunkW := newChunkedWriter(conn)
+	defer chunkW.Close()
+	statsW := newStreamStatsWriter(chunkW)
+
+	result, err := adapter.RelayAnthropicStream(pr, statsW, messageID, req.Model)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "enclave.messages_relay_failed model=%q err=%v\n", req.Model, err)
+		if trEnabled {
+			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
+		}
+		if statsW.BytesWritten() == 0 {
+			_ = writeAnthropicStreamError(statsW, "provider error")
+		}
+		return
+	}
+	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+		result,
+		trustedrouter.EstimateInputTokens(req),
+		trustedrouter.EstimateOutputTokens(result.Text),
+	)
+	usage := trustedrouter.Usage{
+		RequestID:         messageID,
+		InputTokens:       inputTokens,
+		OutputTokens:      outputTokens,
+		ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
+		FirstTokenSeconds: statsW.FirstWriteSeconds(requestStarted),
+		UsageEstimated:    usageEstimated,
+		FinishReason:      result.FinishReason,
+		Streamed:          true,
+		RouteType:         "messages",
+		SelectedModel:     selectedRoute.Model(req.Model, authorization),
+		SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
+		Metadata:          req.Metadata,
+	}
+	if _, err := settleAndBroadcast(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"enclave.messages_stream_settle_failed request_log_id=%q request_id=%q model=%q err=%v\n",
+			requestLogID, messageID, req.Model, err,
+		)
+		settlementRetries.Enqueue(settlementRetryJob{
+			trGateway:     trGateway,
+			authorization: authorization,
+			secretCache:   byokSecrets,
+			usage:         usage,
+			req:           req,
+			originalInput: native.Messages,
+			output:        result.Text,
 			requestLogID:  requestLogID,
 		})
 	}

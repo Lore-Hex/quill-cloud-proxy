@@ -877,6 +877,174 @@ func TestReadRequestRejectsOversizedBodyBeforeAllocation(t *testing.T) {
 	}
 }
 
+func TestServeOneMessagesNonStreamingReturnsEnvelopeAndSettles(t *testing.T) {
+	bearer := "test-user-bearer"
+	var settleBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			if strings.Contains(string(body), bearer) || strings.Contains(string(body), "private prompt") {
+				t.Fatalf("authorize leaked sensitive material: %s", body)
+			}
+			if !strings.Contains(string(body), `"route_type":"messages"`) {
+				t.Fatalf("authorize missing messages route_type: %s", body)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_msg","workspace_id":"ws_1","api_key_hash":"key_1","model":"anthropic/claude-haiku-4.5","endpoint_id":"anthropic/claude-haiku-4.5@anthropic/prepaid","provider":"anthropic","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+		case "/internal/gateway/settle":
+			settleBody = string(body)
+			if strings.Contains(settleBody, "private prompt") || strings.Contains(settleBody, "Hello") {
+				t.Fatalf("settle leaked content: %s", settleBody)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"gen_msg","cost_microdollars":7,"model":"anthropic/claude-haiku-4.5","provider":"anthropic","region":"us-central1"}}`)
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fakeStreamingLLM{}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"anthropic/claude-haiku-4.5","max_tokens":99,"system":[{"type":"text","text":"be brief","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"private prompt","cache_control":{"type":"ephemeral"}}]}]}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(bodyBytes, &decoded); err != nil {
+		t.Fatalf("decode envelope: %v body=%s", err, bodyBytes)
+	}
+	if decoded["type"] != "message" || decoded["role"] != "assistant" || decoded["stop_reason"] != "end_turn" {
+		t.Fatalf("bad messages envelope: %s", bodyBytes)
+	}
+	if !strings.Contains(string(bodyBytes), "Hello world") {
+		t.Fatalf("missing output text: %s", bodyBytes)
+	}
+	usage := decoded["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(2) || usage["output_tokens"] != float64(2) {
+		t.Fatalf("envelope usage = %#v, want real upstream 2/2", usage)
+	}
+
+	// The native body must reach the provider verbatim: NativeContent set,
+	// client max_tokens explicit, cache_control intact, raw system blocks.
+	if streamer.body == nil || !streamer.body.NativeContent || !streamer.body.MaxTokensExplicit {
+		t.Fatalf("provider body flags = %#v", streamer.body)
+	}
+	if streamer.body.MaxTokens != 99 {
+		t.Fatalf("provider max_tokens = %d", streamer.body.MaxTokens)
+	}
+	if streamer.body.SystemRaw == nil {
+		t.Fatalf("system blocks flattened — cache_control lost")
+	}
+	blocks := streamer.body.Messages[0].Content.([]any)
+	if _, ok := blocks[0].(map[string]any)["cache_control"]; !ok {
+		t.Fatalf("cache_control stripped: %#v", blocks[0])
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for settleBody == "" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(settleBody, `"route_type":"messages"`) ||
+		!strings.Contains(settleBody, `"usage_estimated":false`) ||
+		!strings.Contains(settleBody, `"actual_output_tokens":2`) {
+		t.Fatalf("settle body missing messages metadata: %s", settleBody)
+	}
+}
+
+func TestServeOneMessagesStreamingRelaysNativeSSE(t *testing.T) {
+	bearer := "test-user-bearer"
+	var settleBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_msg_s","workspace_id":"ws_1","api_key_hash":"key_1","model":"anthropic/claude-haiku-4.5","endpoint_id":"anthropic/claude-haiku-4.5@anthropic/prepaid","provider":"anthropic","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+		case "/internal/gateway/settle":
+			settleBody = string(body)
+			_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"gen_msg_s","cost_microdollars":7,"model":"anthropic/claude-haiku-4.5","provider":"anthropic","region":"us-central1"}}`)
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), &fakeStreamingLLM{}, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"anthropic/claude-haiku-4.5","max_tokens":99,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read stream: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("content-type = %q", got)
+	}
+	stream := string(bodyBytes)
+	// fakeStreamingLLM emits a native Anthropic stream → verbatim relay.
+	for _, want := range []string{"event: message_start", `"text":"Hello"`, "event: message_delta", "event: message_stop"} {
+		if !strings.Contains(stream, want) {
+			t.Fatalf("stream missing %q: %s", want, stream)
+		}
+	}
+	if strings.Contains(stream, "data: [DONE]") {
+		t.Fatalf("OpenAI [DONE] sentinel leaked into a Messages stream: %s", stream)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for settleBody == "" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(settleBody, `"route_type":"messages"`) || !strings.Contains(settleBody, `"streamed":true`) {
+		t.Fatalf("settle body missing streamed messages metadata: %s", settleBody)
+	}
+}
+
 type fakeStreamingLLM struct {
 	model   string
 	body    *types.AnthropicMessagesRequest

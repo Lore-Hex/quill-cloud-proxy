@@ -362,6 +362,62 @@ func newRequestID() string {
 	return "chatcmpl-" + hex.EncodeToString(buf[:])
 }
 
+func newMessageID() string {
+	var buf [16]byte
+	_, _ = rand.Read(buf[:])
+	return "msg_" + hex.EncodeToString(buf[:])
+}
+
+// writeAnthropicError writes the Anthropic-shaped error envelope the
+// Messages API uses: {"type":"error","error":{"type":...,"message":...}}.
+func writeAnthropicError(w io.Writer, status int, message string) {
+	body, _ := json.Marshal(map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":    anthropicErrorType(status),
+			"message": message,
+		},
+	})
+	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+		status, statusText(status), len(body))
+	w.Write(body)
+}
+
+// writeAnthropicStreamError emits the Messages-API streaming error event.
+func writeAnthropicStreamError(w io.Writer, message string) error {
+	body, err := json.Marshal(map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":    "api_error",
+			"message": message,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "event: error\ndata: %s\n\n", body)
+	return err
+}
+
+func anthropicErrorType(status int) string {
+	switch status {
+	case 400, 413:
+		return "invalid_request_error"
+	case 401:
+		return "authentication_error"
+	case 403:
+		return "permission_error"
+	case 404:
+		return "not_found_error"
+	case 429:
+		return "rate_limit_error"
+	case 529, 503:
+		return "overloaded_error"
+	default:
+		return "api_error"
+	}
+}
+
 func newResponseID() string {
 	var buf [16]byte
 	_, _ = rand.Read(buf[:])

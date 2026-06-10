@@ -298,6 +298,21 @@ type AnthropicMessagesRequest struct {
 	TopP             *float64             `json:"top_p,omitempty"`
 	Tools            []AnthropicTool      `json:"tools,omitempty"`
 	ToolChoice       *AnthropicToolChoice `json:"tool_choice,omitempty"`
+	StopSequences    []string             `json:"stop_sequences,omitempty"`
+	Thinking         any                  `json:"thinking,omitempty"`
+
+	// NativeContent marks a request that arrived on /v1/messages with
+	// already-Anthropic-shaped content. The anthropic-direct path must
+	// NOT run the OpenAI-part transforms over these messages (native
+	// blocks like tool_result / image / cache_control would be mangled
+	// by chatPartFromAny) — it marshals Messages verbatim instead.
+	NativeContent bool `json:"-"`
+	// SystemRaw carries the native `system` field exactly as the client
+	// sent it (string OR content-block array, possibly with
+	// cache_control blocks). When non-nil the anthropic-direct path
+	// sends it verbatim; System above holds the flattened string for
+	// every other consumer (token estimation, OpenAI-compatible paths).
+	SystemRaw any `json:"-"`
 
 	// MaxTokensExplicit records whether the CLIENT set max_tokens, or
 	// whether MaxTokens above is adapter.DefaultMaxTokens filled in
