@@ -259,13 +259,25 @@ func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, mode
 	roleSent := false
 	var captured strings.Builder
 	var usage *StreamUsage
+	toolByBlock := map[int]*streamToolCall{}
+	var toolBlockOrder []int
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
 	scanner.Split(splitDoubleNewline)
 
+	// OpenAI streams open with a role chunk before any delta — text or
+	// tool_calls alike.
+	sendRole := func() error {
+		if roleSent {
+			return nil
+		}
+		roleSent = true
+		return writeChunk(w, requestID, model, created, map[string]any{"role": "assistant", "content": ""}, "")
+	}
+
 	finish := func() (StreamResult, error) {
-		if err := writeChunk(w, requestID, model, created, map[string]string{}, finishReason); err != nil {
+		if err := writeChunk(w, requestID, model, created, map[string]any{}, finishReason); err != nil {
 			return StreamResult{}, err
 		}
 		if emitUsageChunk && usage != nil {
@@ -274,7 +286,17 @@ func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, mode
 			}
 		}
 		_, err := w.Write([]byte("data: [DONE]\n\n"))
-		return StreamResult{Text: captured.String(), FinishReason: finishReason, Usage: usage}, err
+		result := StreamResult{Text: captured.String(), FinishReason: finishReason, Usage: usage}
+		for _, blockIndex := range toolBlockOrder {
+			call := toolByBlock[blockIndex]
+			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
+				ID:        call.id,
+				CallID:    call.id,
+				Name:      call.name,
+				Arguments: call.args.String(),
+			})
+		}
+		return result, err
 	}
 
 	for scanner.Scan() {
@@ -290,24 +312,74 @@ func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, mode
 			if message := getMap(dataJSON, "message"); message != nil {
 				mergeUsage(&usage, getMap(message, "usage"))
 			}
+		case "content_block_start":
+			blockJSON := getMap(dataJSON, "content_block")
+			if blockJSON == nil || getString(blockJSON, "type") != "tool_use" {
+				continue
+			}
+			blockIndex := getInt(dataJSON, "index")
+			if _, ok := toolByBlock[blockIndex]; ok {
+				continue
+			}
+			call := &streamToolCall{
+				openAIIndex: len(toolBlockOrder),
+				id:          getString(blockJSON, "id"),
+				name:        getString(blockJSON, "name"),
+			}
+			toolByBlock[blockIndex] = call
+			toolBlockOrder = append(toolBlockOrder, blockIndex)
+			if err := sendRole(); err != nil {
+				return StreamResult{}, err
+			}
+			if err := writeChunk(w, requestID, model, created, map[string]any{
+				"tool_calls": []map[string]any{{
+					"index": call.openAIIndex,
+					"id":    call.id,
+					"type":  "function",
+					"function": map[string]any{
+						"name":      call.name,
+						"arguments": "",
+					},
+				}},
+			}, ""); err != nil {
+				return StreamResult{}, err
+			}
 		case "content_block_delta":
 			delta := getMap(dataJSON, "delta")
-			if delta == nil || getString(delta, "type") != "text_delta" {
+			if delta == nil {
 				continue
 			}
-			deltaText := getString(delta, "text")
-			if deltaText == "" {
-				continue
-			}
-			_, _ = captured.WriteString(deltaText)
-			if !roleSent {
-				if err := writeChunk(w, requestID, model, created, map[string]string{"role": "assistant", "content": ""}, ""); err != nil {
+			switch getString(delta, "type") {
+			case "text_delta":
+				deltaText := getString(delta, "text")
+				if deltaText == "" {
+					continue
+				}
+				_, _ = captured.WriteString(deltaText)
+				if err := sendRole(); err != nil {
 					return StreamResult{}, err
 				}
-				roleSent = true
-			}
-			if err := writeChunk(w, requestID, model, created, map[string]string{"content": deltaText}, ""); err != nil {
-				return StreamResult{}, err
+				if err := writeChunk(w, requestID, model, created, map[string]any{"content": deltaText}, ""); err != nil {
+					return StreamResult{}, err
+				}
+			case "input_json_delta":
+				call := toolByBlock[getInt(dataJSON, "index")]
+				if call == nil {
+					continue
+				}
+				partial := getString(delta, "partial_json")
+				if partial == "" {
+					continue
+				}
+				call.args.WriteString(partial)
+				if err := writeChunk(w, requestID, model, created, map[string]any{
+					"tool_calls": []map[string]any{{
+						"index":    call.openAIIndex,
+						"function": map[string]any{"arguments": partial},
+					}},
+				}, ""); err != nil {
+					return StreamResult{}, err
+				}
 			}
 		case "message_delta":
 			delta := getMap(dataJSON, "delta")
@@ -329,6 +401,15 @@ func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, mode
 		return StreamResult{}, err
 	}
 	return finish()
+}
+
+// streamToolCall accumulates one tool_use block while its OpenAI-shaped
+// deltas stream out incrementally.
+type streamToolCall struct {
+	openAIIndex int
+	id          string
+	name        string
+	args        strings.Builder
 }
 
 // mergeUsage folds one Anthropic-shaped usage object into the running
@@ -472,7 +553,7 @@ func writeChunk(
 	w io.Writer,
 	id, model string,
 	created int64,
-	delta map[string]string,
+	delta map[string]any,
 	finishReason string,
 ) error {
 	chunk := map[string]any{

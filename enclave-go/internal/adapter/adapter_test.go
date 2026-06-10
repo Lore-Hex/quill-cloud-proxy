@@ -834,6 +834,93 @@ data: {"type":"message_stop"}
 	}
 }
 
+func TestTransformStreamCaptureEmitsToolCallDeltas(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_1","name":"get_weather","input":{}}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"location\""}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\"Paris\"}"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n"))
+
+	var out bytes.Buffer
+	result, err := TransformStreamCapture(stream, &out, "id1", "model1")
+	if err != nil {
+		t.Fatalf("TransformStreamCapture: %v", err)
+	}
+	if result.FinishReason != "tool_calls" {
+		t.Fatalf("finish reason = %q, want tool_calls", result.FinishReason)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v, want one", result.ToolCalls)
+	}
+	if call := result.ToolCalls[0]; call.ID != "call_1" || call.Name != "get_weather" || call.Arguments != `{"location":"Paris"}` {
+		t.Fatalf("tool call = %#v", call)
+	}
+
+	var sawOpen, sawArgs bool
+	var gotArgs strings.Builder
+	roleFirst := false
+	for i, line := range strings.Split(strings.TrimSpace(out.String()), "\n\n") {
+		if line == "data: [DONE]" {
+			continue
+		}
+		var chunk map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &chunk); err != nil {
+			t.Fatalf("unmarshal chunk %q: %v", line, err)
+		}
+		choices := chunk["choices"].([]any)
+		if len(choices) == 0 {
+			continue
+		}
+		delta := choices[0].(map[string]any)["delta"].(map[string]any)
+		if i == 0 && delta["role"] == "assistant" {
+			roleFirst = true
+		}
+		calls, ok := delta["tool_calls"].([]any)
+		if !ok {
+			continue
+		}
+		call := calls[0].(map[string]any)
+		if call["index"] != float64(0) {
+			t.Fatalf("tool call index = %#v, want 0", call["index"])
+		}
+		fn := call["function"].(map[string]any)
+		if id, ok := call["id"]; ok && id == "call_1" {
+			sawOpen = true
+			if fn["name"] != "get_weather" {
+				t.Fatalf("opening delta name = %#v", fn["name"])
+			}
+		}
+		if args, ok := fn["arguments"].(string); ok && args != "" {
+			sawArgs = true
+			gotArgs.WriteString(args)
+		}
+	}
+	if !roleFirst {
+		t.Fatalf("stream did not open with a role chunk: %s", out.String())
+	}
+	if !sawOpen || !sawArgs {
+		t.Fatalf("missing tool_calls deltas (open=%v args=%v): %s", sawOpen, sawArgs, out.String())
+	}
+	if gotArgs.String() != `{"location":"Paris"}` {
+		t.Fatalf("streamed arguments = %q", gotArgs.String())
+	}
+}
+
 func TestCollectAnthropicTextCapturesUsage(t *testing.T) {
 	result, err := CollectAnthropicText(strings.NewReader(usageBearingAnthropicStream))
 	if err != nil {
