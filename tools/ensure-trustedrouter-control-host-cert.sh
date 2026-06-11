@@ -54,7 +54,7 @@ existing="$(
 certs=()
 while IFS= read -r cert; do
   [ -n "$cert" ] && certs+=("$cert")
-done <<< "$existing"
+done < <(printf '%s\n' "$existing" | tr ';' '\n')
 
 found=0
 for cert in "${certs[@]}"; do

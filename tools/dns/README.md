@@ -70,6 +70,9 @@ The account needs `compute.sslCertificates.create` and
 `compute.targetHttpsProxies.update`. The deploy service account used for
 DNS may not have those permissions.
 
+`eu.trustedrouter.com` uses the control-plane global load balancer and must be
+included on the GCP HTTPS proxy certificate.
+
 ## Import block (one-time, paste each line one by one)
 
 ```bash
