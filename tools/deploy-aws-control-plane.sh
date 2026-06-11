@@ -84,6 +84,7 @@ ROLE_TASK="${ROLE_TASK:-quill-control-plane-task}"
 DOMAINS=(
   "trustedrouter.com"
   "www.trustedrouter.com"
+  "eu.trustedrouter.com"
   "trust.trustedrouter.com"
   "status.trustedrouter.com"
 )

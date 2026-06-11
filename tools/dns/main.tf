@@ -14,6 +14,7 @@
 //   apex TXT       → google-site-verification (Search Console ownership)
 //   trust CNAME    → lore-hex.github.io. (GitHub Pages trust page)
 //   www CNAME      → apex (semantic redirect)
+//   eu A           → 35.241.14.18 (EU landing page on same control plane)
 //
 // Cloud DNS-only records:
 //   status CNAME   → trustedrouter.com. (status page on Cloud Run)
@@ -75,10 +76,10 @@ variable "cloudflare_zone_id_quillrouter" {
 
 locals {
   // ─── trustedrouter.com ─────────────────────────────────────────────
-  apex_ip                     = "35.241.14.18" // TR Cloud Run global LB
-  google_site_verification    = "google-site-verification=n2y7GA2FN8RxHA1aO7r_JueOsymAgBjhqWgwRn7G8cU"
-  trust_page_origin           = "lore-hex.github.io." // GitHub Pages
-  cloud_dns_zone              = "trustedrouter-com"
+  apex_ip                  = "35.241.14.18" // TR Cloud Run global LB
+  google_site_verification = "google-site-verification=n2y7GA2FN8RxHA1aO7r_JueOsymAgBjhqWgwRn7G8cU"
+  trust_page_origin        = "lore-hex.github.io." // GitHub Pages
+  cloud_dns_zone           = "trustedrouter-com"
 
   // Authoritative nameservers delegated at the registrar for trustedrouter.com.
   all_nameservers = [
@@ -93,10 +94,10 @@ locals {
   // enclave MIG's regional LB IP (warm regions get an A; cold regions
   // CNAME back to the canonical api.quillrouter.com so they ride the
   // global LB to whichever warm enclave is closest).
-  quill_canonical_api_ip      = "34.61.11.3"   // us-central1 enclave LB
-  quill_eu_api_ip             = "34.13.202.2"  // europe-west4 enclave LB
-  quill_us_east4_api_ip       = "34.11.96.117" // us-east4 enclave LB
-  quill_cloud_dns_zone        = "quillrouter-com"
+  quill_canonical_api_ip = "34.61.11.3"   // us-central1 enclave LB
+  quill_eu_api_ip        = "34.13.202.2"  // europe-west4 enclave LB
+  quill_us_east4_api_ip  = "34.11.96.117" // us-east4 enclave LB
+  quill_cloud_dns_zone   = "quillrouter-com"
 
   // Cold regions whose api-<region>.quillrouter.com CNAMEs back to the
   // canonical (no dedicated enclave MIG there yet — Cloud Run falls
@@ -161,6 +162,17 @@ resource "google_dns_record_set" "www_cname" {
   ttl          = 300
   managed_zone = local.cloud_dns_zone
   rrdatas      = ["trustedrouter.com."]
+}
+
+resource "google_dns_record_set" "eu_a" {
+  // EU landing page hosted on the same control-plane global LB as the
+  // apex. The app dispatches by Host header and renders the EU page at
+  // eu.trustedrouter.com; production cert config must include this host.
+  name         = "eu.trustedrouter.com."
+  type         = "A"
+  ttl          = 300
+  managed_zone = local.cloud_dns_zone
+  rrdatas      = [local.apex_ip]
 }
 
 resource "google_dns_record_set" "trustedrouter_api_cname" {
@@ -284,13 +296,14 @@ resource "google_dns_record_set" "quill_apex_ns" {
 
 output "verification_commands" {
   description = "After apply, run these and verify delegated Google Cloud DNS nameservers answer expected records."
-  value = <<-EOT
+  value       = <<-EOT
     # trustedrouter.com
     for ns in ns-cloud-b1.googledomains.com ns-cloud-b2.googledomains.com; do
       echo "  via $ns:"
       echo "    apex A → $(dig +short trustedrouter.com @$ns)"
       echo "    trust  → $(dig +short trust.trustedrouter.com @$ns)"
       echo "    www    → $(dig +short www.trustedrouter.com @$ns)"
+      echo "    eu     → $(dig +short eu.trustedrouter.com @$ns)"
       echo "    TXT    → $(dig +short TXT trustedrouter.com @$ns | head -1)"
     done
 

@@ -54,6 +54,22 @@ the authoritative parent-zone NS set.
 4. Verify with the dig commands in the `verification_commands`
    output.
 
+### Adding a new control-plane HTTPS hostname
+
+DNS only gets the hostname to the load balancer. The Google-managed
+certificate on `trusted-router-control-https-proxy` must also cover the
+new hostname, or browsers will reject TLS. After adding a record such
+as `eu.trustedrouter.com`, run:
+
+```bash
+GCLOUD_ACCOUNT=<account-with-compute-ssl-permissions> \
+  tools/ensure-trustedrouter-control-host-cert.sh eu.trustedrouter.com
+```
+
+The account needs `compute.sslCertificates.create` and
+`compute.targetHttpsProxies.update`. The deploy service account used for
+DNS may not have those permissions.
+
 ## Import block (one-time, paste each line one by one)
 
 ```bash
@@ -64,6 +80,7 @@ terraform import 'google_dns_record_set.apex_a'                  projects/quill-
 terraform import 'google_dns_record_set.apex_txt_verify'         projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/trustedrouter.com./TXT
 terraform import 'google_dns_record_set.trust_cname'             projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/trust.trustedrouter.com./CNAME
 terraform import 'google_dns_record_set.www_cname'               projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/www.trustedrouter.com./CNAME
+terraform import 'google_dns_record_set.eu_a'                    projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/eu.trustedrouter.com./A
 terraform import 'google_dns_record_set.status_a'                projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/status.trustedrouter.com./A
 terraform import 'google_dns_record_set.trustedrouter_api_cname' projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/api.trustedrouter.com./CNAME
 terraform import 'google_dns_record_set.apex_ns'                 projects/quill-cloud-proxy/managedZones/trustedrouter-com/rrsets/trustedrouter.com./NS
