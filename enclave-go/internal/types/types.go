@@ -159,6 +159,7 @@ type OpenAIChatRequest struct {
 	SessionID      string               `json:"session_id,omitempty"`
 	ResponseFormat map[string]any       `json:"response_format,omitempty"`
 	Tools          []any                `json:"tools,omitempty"`
+	Plugins        []any                `json:"plugins,omitempty"`
 	ToolChoice     any                  `json:"tool_choice,omitempty"`
 	ParallelTools  *bool                `json:"parallel_tool_calls,omitempty"`
 	Response       *ResponseRequestMeta `json:"-"`

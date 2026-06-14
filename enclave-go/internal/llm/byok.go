@@ -690,7 +690,7 @@ var siliconflowModelMap = map[string]string{
 }
 
 // zaiModelMap overrides the global directModelMap for zai-direct. zai's API
-// (api.z.ai) only accepts the BARE model id ("glm-4.7"); glm-4.5/4.6/5 already
+// (api.z.ai) only accepts the BARE model id ("glm-4.7"); glm-4.5/4.6/5/5.2 already
 // work via the generic strip-author fallback, but glm-4.7 has an entry in the
 // global directModelMap ("z-ai/glm-4.7" -> "zai-glm-4.7") that other providers
 // (e.g. venice) rely on. Override it here for zai only — verified against
@@ -698,6 +698,7 @@ var siliconflowModelMap = map[string]string{
 // "Unknown Model"). Leaving the global map untouched keeps venice et al. intact.
 var zaiModelMap = map[string]string{
 	"z-ai/glm-4.7": "glm-4.7",
+	"z-ai/glm-5.2": "glm-5.2",
 }
 
 var minimaxModelMap = map[string]string{
@@ -941,6 +942,7 @@ var directModelMap = map[string]string{
 	"openai/gpt-oss-120b":              "gpt-oss-120b",
 	"qwen/qwen3-235b-a22b-2507":        "qwen-3-235b-a22b-instruct-2507",
 	"z-ai/glm-4.7":                     "zai-glm-4.7",
+	"moonshotai/kimi-k2.7-code":        "moonshotai/Kimi-K2.7-Code",
 	// Mistral's API rejects the bare "mistral-large" ("Invalid model");
 	// it serves the alias "mistral-large-latest" (-> mistral-large-2512).
 	// Verified vs api.mistral.ai/v1/models 2026-06-04.

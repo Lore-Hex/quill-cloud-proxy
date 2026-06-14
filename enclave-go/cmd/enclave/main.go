@@ -407,6 +407,18 @@ func serveOne(
 	}
 	req.IdempotencyKey = idempotencyKey
 
+	if handled, err := maybeServeFusion(ctx, conn, br, &req, trGateway, byokSecrets, bearer, originalInput, requestLogID); handled {
+		if err != nil {
+			var aerr *adapter.AdapterError
+			if asAdapterErr(err, &aerr) {
+				writeError(conn, aerr.Status, aerr.Message)
+				return
+			}
+			writeError(conn, 500, "fusion error")
+		}
+		return
+	}
+
 	anthropicReq, err := adapter.ToAnthropic(&req, "claude-opus-4-7")
 	if err != nil {
 		var aerr *adapter.AdapterError

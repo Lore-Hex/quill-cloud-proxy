@@ -110,6 +110,7 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		{"novita", "google/gemma-4-31b-it", "google/gemma-4-31b-it"},
 		{"novita", "google/gemma-4-26b-a4b-it", "google/gemma-4-26b-a4b-it"},
 		{"novita", "moonshotai/kimi-k2.6", "moonshotai/kimi-k2.6"},
+		{"novita", "moonshotai/kimi-k2.7-code", "moonshotai/kimi-k2.7-code"},
 		{"novita", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash"},
 		{"novita", "qwen/qwen3.5-27b", "qwen/qwen3.5-27b"},
 		{"novita", "Sao10K/L3-8B-Stheno-v3.2", "Sao10K/L3-8B-Stheno-v3.2"},
@@ -177,6 +178,7 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		// zai-direct accepts only the bare id; glm-4.7 was mis-mapped to
 		// "zai-glm-4.7" by the global directModelMap.
 		{"zai", "z-ai/glm-4.7", "z-ai/glm-4.7", "glm-4.7"},
+		{"zai", "z-ai/glm-5.2", "z-ai/glm-5.2", "glm-5.2"},
 		// zai glm-4.5 has no override — must still strip-prefix to the bare
 		// id (regression guard: adding zai to providerNativeModelMaps must
 		// not break the models that already worked via strip-author).
@@ -186,6 +188,7 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		{"mistral", "mistralai/mistral-large", "mistralai/mistral-large", "mistral-large-latest"},
 		{"mistral", "mistralai/mistral-small-3.2-24b-instruct", "mistralai/mistral-small-3.2-24b-instruct", "mistral-small-2506"},
 		{"mistral", "mistralai/mistral-nemo", "mistralai/mistral-nemo", "open-mistral-nemo"},
+		{"kimi", "moonshotai/kimi-k2.7-code", "moonshotai/kimi-k2.7-code", "moonshotai/Kimi-K2.7-Code"},
 		// anthropic path calls directModelID FIRST, so claude-4.0's dated-id
 		// remap must resolve here (the bare "claude-opus-4" 404s on Anthropic).
 		{"anthropic", "anthropic/claude-opus-4.8", "anthropic/claude-opus-4.8", "claude-opus-4-8"},

@@ -486,6 +486,162 @@ func TestServeOneTrustedRouterRetriesFallbackCandidatesAndSettlesSelectedRoute(t
 	}
 }
 
+func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
+	bearer := "test-user-bearer"
+	privatePrompt := "private fusion prompt"
+	var authorizeCalls []map[string]any
+	var settleCalls []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if strings.Contains(string(body), bearer) || strings.Contains(string(body), privatePrompt) {
+			t.Fatalf("control-plane request leaked sensitive material: %s", body)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode authorize payload: %v", err)
+			}
+			authorizeCalls = append(authorizeCalls, payload)
+			model := payload["model"].(string)
+			endpoint := model + "@test/prepaid"
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id":       fmt.Sprintf("auth_fusion_%d", len(authorizeCalls)),
+				"workspace_id":           "ws_1",
+				"api_key_hash":           "key_1",
+				"model":                  model,
+				"endpoint_id":            endpoint,
+				"provider":               "test",
+				"usage_type":             "Credits",
+				"limit_usage_type":       "Credits",
+				"route_candidates":       []any{},
+				"broadcast_destinations": []any{},
+			}})
+		case "/internal/gateway/settle":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode settle payload: %v", err)
+			}
+			settleCalls = append(settleCalls, payload)
+			model, _ := payload["selected_model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"settled":           true,
+				"generation_id":     fmt.Sprintf("gen_fusion_%d", len(settleCalls)),
+				"cost_microdollars": 1,
+				"model":             model,
+				"provider":          "test",
+				"region":            "us-central1",
+			}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fusionEchoLLM{}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["google/gemini-3-flash-preview","moonshotai/kimi-k2.7-code"],"model":"z-ai/glm-5.2","max_completion_tokens":64}}],"max_tokens":32}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, `"model":"z-ai/glm-5.2"`) || !strings.Contains(body, "final answer from z-ai/glm-5.2") {
+		t.Fatalf("fusion response did not use selectable judge/final model: %s", body)
+	}
+	if len(authorizeCalls) != 4 {
+		t.Fatalf("authorize calls = %d, want panel+panel+judge+final", len(authorizeCalls))
+	}
+	wantModels := []string{"google/gemini-3-flash-preview", "moonshotai/kimi-k2.7-code", "z-ai/glm-5.2", "z-ai/glm-5.2"}
+	wantRoutes := []string{"fusion.panel", "fusion.panel", "fusion.judge", "fusion.final"}
+	for i := range wantModels {
+		if authorizeCalls[i]["model"] != wantModels[i] || authorizeCalls[i]["route_type"] != wantRoutes[i] {
+			t.Fatalf("authorize[%d] = %#v, want model=%q route=%q", i, authorizeCalls[i], wantModels[i], wantRoutes[i])
+		}
+	}
+	if len(settleCalls) != 4 {
+		t.Fatalf("settle calls = %d, want 4", len(settleCalls))
+	}
+	if len(streamer.calls) != 4 {
+		t.Fatalf("provider calls = %#v, want 4", streamer.calls)
+	}
+}
+
+func TestServeOneTrustedRouterFusionRejectsUnsupportedExtensionToolNamespaces(t *testing.T) {
+	bearer := "test-user-bearer"
+	for _, toolType := range []string{"openrouter:fusion", "trustedrouter:exa"} {
+		t.Run(toolType, func(t *testing.T) {
+			var authorizeCalled bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				authorizeCalled = true
+				t.Fatalf("control plane should not be called for rejected tool namespace")
+			}))
+			defer server.Close()
+
+			trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+			serverConn, client := net.Pipe()
+			defer client.Close()
+			go serveOne(context.Background(), serverConn, auth.New(nil), &panicStreamingLLM{t: t}, nil, nil, trGateway, nil)
+
+			requestBody := []byte(fmt.Sprintf(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private prompt"}],"tools":[{"type":%q,"parameters":{"analysis_models":["google/gemini-3-flash-preview"]}}]}`, toolType))
+			if _, err := fmt.Fprintf(
+				client,
+				"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+				bearer,
+				len(requestBody),
+				requestBody,
+			); err != nil {
+				t.Fatalf("write request: %v", err)
+			}
+
+			resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			defer resp.Body.Close()
+			bodyBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			body := string(bodyBytes)
+			if resp.StatusCode != 501 {
+				t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+			}
+			if !strings.Contains(body, "not_supported_in_alpha") || strings.Contains(body, "private prompt") {
+				t.Fatalf("bad namespace rejection body: %s", body)
+			}
+			if authorizeCalled {
+				t.Fatal("authorize was called")
+			}
+		})
+	}
+}
+
 func TestServeOneResponsesNonStreamingFailsClosedWhenSettleFails(t *testing.T) {
 	bearer := "test-user-bearer"
 	var settleCalled bool
@@ -1077,6 +1233,52 @@ event: message_stop
 data: {"type":"message_stop"}
 
 `)
+	return err
+}
+
+type fusionEchoCall struct {
+	Model    string
+	Provider string
+	Endpoint string
+}
+
+type fusionEchoLLM struct {
+	calls []fusionEchoCall
+}
+
+func (f *fusionEchoLLM) InvokeStreaming(
+	_ context.Context,
+	req *types.OpenAIChatRequest,
+	_ *types.AnthropicMessagesRequest,
+	out io.Writer,
+	options ...llm.InvokeOptions,
+) error {
+	option := llm.InvokeOptions{Model: req.Model}
+	if len(options) > 0 {
+		option = options[0]
+	}
+	f.calls = append(f.calls, fusionEchoCall{
+		Model:    req.Model,
+		Provider: option.Provider,
+		Endpoint: option.EndpointID,
+	})
+	text := "analysis from " + req.Model
+	if len(req.Messages) > 0 && strings.Contains(types.ContentText(req.Messages[len(req.Messages)-1].Content), "TrustedRouter Fusion analysis JSON follows") {
+		text = "final answer from " + req.Model
+	}
+	_, err := fmt.Fprintf(out, `event: message_start
+data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"%s","stop_reason":null,"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%q}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":4}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`, req.Model, text)
 	return err
 }
 

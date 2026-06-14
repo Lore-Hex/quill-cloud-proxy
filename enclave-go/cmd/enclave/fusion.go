@@ -1,0 +1,745 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+)
+
+const trustedRouterFusionModel = "trustedrouter/fusion"
+const trustedRouterFusionTool = "trustedrouter:fusion"
+
+var fusionQualityPanel = []string{
+	"anthropic/claude-opus-4.8",
+	"openai/gpt-5.5",
+	"google/gemini-3.1-pro-preview",
+}
+
+var fusionBudgetPanel = []string{
+	"google/gemini-3-flash-preview",
+	"moonshotai/kimi-k2.7-code",
+	"deepseek/deepseek-v4-pro",
+}
+
+var fusionModelAliases = map[string]string{
+	"~anthropic/claude-opus-latest": "anthropic/claude-opus-4.8",
+	"~anthropic/claude-latest":      "anthropic/claude-opus-4.8",
+	"~openai/gpt-latest":            "openai/gpt-5.5",
+	"~google/gemini-pro-latest":     "google/gemini-3.1-pro-preview",
+	"~google/gemini-flash-latest":   "google/gemini-3-flash-preview",
+	"~moonshotai/kimi-latest":       "moonshotai/kimi-k2.7-code",
+	"~kimi/latest":                  "moonshotai/kimi-k2.7-code",
+	"~zai/glm-latest":               "z-ai/glm-5.2",
+}
+
+type fusionConfig struct {
+	Enabled             bool
+	AnalysisModels      []string
+	JudgeModel          string
+	MaxToolCalls        int
+	MaxCompletionTokens int
+	Preset              string
+}
+
+type fusionCallResult struct {
+	Result           adapter.StreamResult
+	Model            string
+	Endpoint         string
+	InputTokens      int
+	OutputTokens     int
+	UsageEstimated   bool
+	Authorization    *trustedrouter.Authorization
+	SettlementResult *trustedrouter.SettleResult
+}
+
+func maybeServeFusion(
+	ctx context.Context,
+	conn io.Writer,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	originalInput any,
+	requestLogID string,
+) (bool, error) {
+	config, requested, err := fusionConfigForRequest(req)
+	if err != nil {
+		return true, err
+	}
+	if !requested {
+		return false, nil
+	}
+	if !config.Enabled {
+		if req.Model == trustedRouterFusionModel {
+			return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion cannot be disabled without selecting a concrete model", Context: "plugins.fusion.enabled"}
+		}
+		return false, nil
+	}
+	if trGateway == nil || !trGateway.Enabled() {
+		return true, &adapter.AdapterError{Status: 503, Message: "trustedrouter/fusion requires the TrustedRouter control plane", Context: "trustedrouter/fusion"}
+	}
+	if len(config.AnalysisModels) == 0 {
+		config.AnalysisModels = append([]string(nil), fusionQualityPanel...)
+	}
+	if len(config.AnalysisModels) > 8 {
+		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion analysis_models must contain 1-8 models", Context: "analysis_models"}
+	}
+	if config.MaxToolCalls < 0 || config.MaxToolCalls > 16 {
+		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion max_tool_calls must be between 1 and 16", Context: "max_tool_calls"}
+	}
+	for i, model := range config.AnalysisModels {
+		config.AnalysisModels[i] = resolveFusionModelID(model)
+	}
+	finalModel := req.Model
+	if finalModel == trustedRouterFusionModel {
+		if config.JudgeModel != "" {
+			finalModel = resolveFusionModelID(config.JudgeModel)
+		} else {
+			finalModel = resolveFusionModelID(config.AnalysisModels[0])
+		}
+	}
+	judgeModel := finalModel
+	if config.JudgeModel != "" {
+		judgeModel = resolveFusionModelID(config.JudgeModel)
+	}
+
+	if req.Stream {
+		serveFusionStreaming(ctx, conn, br, req, config, finalModel, judgeModel, trGateway, secretCache, bearer, originalInput, requestLogID)
+	} else {
+		serveFusionNonStreaming(ctx, conn, br, req, config, finalModel, judgeModel, trGateway, secretCache, bearer, originalInput, requestLogID)
+	}
+	return true, nil
+}
+
+func fusionConfigForRequest(req *types.OpenAIChatRequest) (fusionConfig, bool, error) {
+	config := fusionConfig{Enabled: true}
+	requested := req.Model == trustedRouterFusionModel
+
+	if pluginConfig, ok, err := fusionConfigFromPlugins(req.Plugins); err != nil {
+		return fusionConfig{}, true, err
+	} else if ok {
+		config = mergeFusionConfig(config, pluginConfig)
+		requested = true
+	}
+
+	cleanTools, toolConfig, toolRequested, err := fusionConfigFromTools(req.Tools)
+	if err != nil {
+		return fusionConfig{}, true, err
+	}
+	if toolRequested {
+		config = mergeFusionConfig(config, toolConfig)
+		requested = true
+		req.Tools = cleanTools
+	}
+
+	return config, requested, nil
+}
+
+func fusionConfigFromPlugins(plugins []any) (fusionConfig, bool, error) {
+	for _, item := range plugins {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return fusionConfig{}, false, &adapter.AdapterError{Status: 400, Message: "plugin must be an object", Context: "plugins"}
+		}
+		if strings.TrimSpace(stringValue(m["id"])) != "fusion" {
+			continue
+		}
+		config, err := parseFusionParameters(m)
+		return config, true, err
+	}
+	return fusionConfig{}, false, nil
+}
+
+func fusionConfigFromTools(tools []any) ([]any, fusionConfig, bool, error) {
+	if len(tools) == 0 {
+		return tools, fusionConfig{}, false, nil
+	}
+	clean := make([]any, 0, len(tools))
+	config := fusionConfig{Enabled: true}
+	var requested bool
+	for _, item := range tools {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return nil, fusionConfig{}, false, &adapter.AdapterError{Status: 400, Message: "tool must be an object", Context: "tools"}
+		}
+		toolType := strings.TrimSpace(stringValue(m["type"]))
+		if strings.HasPrefix(toolType, "openrouter:") {
+			return nil, fusionConfig{}, true, &adapter.AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools.type"}
+		}
+		if strings.HasPrefix(toolType, "trustedrouter:") && toolType != trustedRouterFusionTool {
+			return nil, fusionConfig{}, true, &adapter.AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools.type"}
+		}
+		if toolType != trustedRouterFusionTool {
+			clean = append(clean, item)
+			continue
+		}
+		params, err := fusionParametersMap(m["parameters"], "tools.parameters")
+		if err != nil {
+			return nil, fusionConfig{}, true, err
+		}
+		parsed, err := parseFusionParameters(params)
+		if err != nil {
+			return nil, fusionConfig{}, true, err
+		}
+		config = mergeFusionConfig(config, parsed)
+		requested = true
+	}
+	return clean, config, requested, nil
+}
+
+func fusionParametersMap(value any, context string) (map[string]any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	m, ok := value.(map[string]any)
+	if !ok {
+		return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion parameters must be an object", Context: context}
+	}
+	return m, nil
+}
+
+func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
+	config := fusionConfig{Enabled: true}
+	if raw == nil {
+		return config, nil
+	}
+	if enabled, ok := raw["enabled"]; ok {
+		value, ok := enabled.(bool)
+		if !ok {
+			return config, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion enabled must be boolean", Context: "enabled"}
+		}
+		config.Enabled = value
+	}
+	if preset := strings.TrimSpace(strings.ToLower(stringValue(raw["preset"]))); preset != "" {
+		switch preset {
+		case "quality":
+			config.AnalysisModels = append([]string(nil), fusionQualityPanel...)
+		case "budget":
+			config.AnalysisModels = append([]string(nil), fusionBudgetPanel...)
+		default:
+			return config, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion preset must be quality or budget", Context: "preset"}
+		}
+		config.Preset = preset
+	}
+	if modelsRaw, ok := raw["analysis_models"]; ok {
+		models, err := stringList(modelsRaw, "analysis_models")
+		if err != nil {
+			return config, err
+		}
+		config.AnalysisModels = models
+	}
+	if model := strings.TrimSpace(stringValue(raw["model"])); model != "" {
+		config.JudgeModel = model
+	}
+	if n, ok, err := intField(raw, "max_tool_calls"); err != nil {
+		return config, err
+	} else if ok {
+		config.MaxToolCalls = n
+	}
+	if n, ok, err := intField(raw, "max_completion_tokens"); err != nil {
+		return config, err
+	} else if ok {
+		config.MaxCompletionTokens = n
+	}
+	return config, nil
+}
+
+func mergeFusionConfig(base, override fusionConfig) fusionConfig {
+	if !override.Enabled {
+		base.Enabled = false
+	}
+	if len(override.AnalysisModels) > 0 {
+		base.AnalysisModels = append([]string(nil), override.AnalysisModels...)
+	}
+	if override.JudgeModel != "" {
+		base.JudgeModel = override.JudgeModel
+	}
+	if override.MaxToolCalls != 0 {
+		base.MaxToolCalls = override.MaxToolCalls
+	}
+	if override.MaxCompletionTokens != 0 {
+		base.MaxCompletionTokens = override.MaxCompletionTokens
+	}
+	if override.Preset != "" {
+		base.Preset = override.Preset
+	}
+	return base
+}
+
+func serveFusionNonStreaming(
+	ctx context.Context,
+	conn io.Writer,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	config fusionConfig,
+	finalModel string,
+	judgeModel string,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	originalInput any,
+	requestLogID string,
+) {
+	requestStarted := time.Now()
+	requestID := newRequestID()
+	panel, judge, err := runFusionPanelAndJudge(ctx, br, req, config, judgeModel, trGateway, secretCache, bearer, requestID, requestLogID)
+	if err != nil {
+		writeFusionError(ctx, conn, trGateway, err)
+		return
+	}
+	finalReq := fusionFinalRequest(req, finalModel, judge.Result.Text)
+	final, err := runFusionCall(ctx, br, finalReq, trGateway, secretCache, bearer, "fusion.final", requestID+":final", requestLogID, originalInput, true)
+	if err != nil {
+		writeFusionError(ctx, conn, trGateway, err)
+		return
+	}
+	totalIn, totalOut := fusionUsageTotals(panel, judge, final)
+	responseModel := final.Model
+	if responseModel == "" {
+		responseModel = finalModel
+	}
+	var body bytes.Buffer
+	if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, final.Result.Text, totalIn, totalOut, time.Now().Unix(), final.Result.FinishReason); err != nil {
+		writeError(conn, 500, "fusion response encoding error")
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"enclave.fusion_complete request_log_id=%q request_id=%q mode=nonstream panel=%d judge_model=%q final_model=%q elapsed_ms=%d\n",
+		requestLogID, requestID, len(panel), judgeModel, responseModel, time.Since(requestStarted).Milliseconds(),
+	)
+	writeJSONResponse(conn, 200, body.Bytes())
+}
+
+func serveFusionStreaming(
+	ctx context.Context,
+	conn io.Writer,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	config fusionConfig,
+	finalModel string,
+	judgeModel string,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	originalInput any,
+	requestLogID string,
+) {
+	requestID := newRequestID()
+	panel, judge, err := runFusionPanelAndJudge(ctx, br, req, config, judgeModel, trGateway, secretCache, bearer, requestID, requestLogID)
+	if err != nil {
+		writeFusionError(ctx, conn, trGateway, err)
+		return
+	}
+	finalReq := fusionFinalRequest(req, finalModel, judge.Result.Text)
+	finalReq.Stream = true
+	authz, options, err := authorizeFusionCall(ctx, finalReq, trGateway, secretCache, bearer, "fusion.final", requestID+":final")
+	if err != nil {
+		writeFusionError(ctx, conn, trGateway, err)
+		return
+	}
+	anthropicReq, err := adapter.ToAnthropic(finalReq, finalReq.Model)
+	if err != nil {
+		writeFusionError(ctx, conn, trGateway, err)
+		return
+	}
+	requestStarted := time.Now()
+	serveStreaming(ctx, conn, br, finalReq, anthropicReq, options, trGateway, authz, secretCache, requestStarted, originalInput, "chat.completions", requestLogID)
+	_, _, _ = panel, judge, requestID
+}
+
+func runFusionPanelAndJudge(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	config fusionConfig,
+	judgeModel string,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+) ([]fusionCallResult, fusionCallResult, error) {
+	panel := make([]fusionCallResult, 0, len(config.AnalysisModels))
+	for i, model := range config.AnalysisModels {
+		panelReq := fusionPanelRequest(req, model, i, config.MaxCompletionTokens)
+		result, err := runFusionCall(ctx, br, panelReq, trGateway, secretCache, bearer, "fusion.panel", fmt.Sprintf("%s:panel:%d", requestID, i), requestLogID, nil, false)
+		if err != nil {
+			return nil, fusionCallResult{}, err
+		}
+		panel = append(panel, result)
+	}
+	judgeReq := fusionJudgeRequest(req, judgeModel, panel, config.MaxCompletionTokens)
+	judge, err := runFusionCall(ctx, br, judgeReq, trGateway, secretCache, bearer, "fusion.judge", requestID+":judge", requestLogID, nil, false)
+	if err != nil {
+		return nil, fusionCallResult{}, err
+	}
+	return panel, judge, nil
+}
+
+func runFusionCall(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	routeType string,
+	idempotencyKey string,
+	requestLogID string,
+	originalInput any,
+	broadcastContent bool,
+) (fusionCallResult, error) {
+	requestStarted := time.Now()
+	authz, options, err := authorizeFusionCall(ctx, req, trGateway, secretCache, bearer, routeType, idempotencyKey)
+	if err != nil {
+		return fusionCallResult{}, err
+	}
+	if len(options) > 0 && options[0].Model != "" {
+		req.Model = options[0].Model
+	}
+	anthropicReq, err := adapter.ToAnthropic(req, req.Model)
+	if err != nil {
+		if trGateway != nil && trGateway.Enabled() {
+			_ = trGateway.Refund(ctx, authz, 400, "fusion_adapter_error", time.Since(requestStarted).Seconds(), req.Metadata)
+		}
+		return fusionCallResult{}, err
+	}
+	pr, pw := io.Pipe()
+	selectedRoute := newSelectedRouteTracker()
+	go invokeProviderStream(ctx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID)
+	result, err := adapter.CollectAnthropicText(pr)
+	if err != nil {
+		if trGateway != nil && trGateway.Enabled() {
+			_ = trGateway.Refund(ctx, authz, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
+		}
+		return fusionCallResult{}, err
+	}
+	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+		result,
+		trustedrouter.EstimateInputTokens(req),
+		trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
+	)
+	selectedModel := selectedRoute.Model(req.Model, authz)
+	selectedEndpoint := selectedRoute.Endpoint("", authz)
+	usage := trustedrouter.Usage{
+		RequestID:        idempotencyKey,
+		InputTokens:      inputTokens,
+		OutputTokens:     outputTokens,
+		ElapsedSeconds:   maxDurationSeconds(time.Since(requestStarted), 0.001),
+		UsageEstimated:   usageEstimated,
+		FinishReason:     result.FinishReason,
+		Streamed:         false,
+		RouteType:        routeType,
+		SelectedModel:    selectedModel,
+		SelectedEndpoint: selectedEndpoint,
+		User:             req.User,
+		SessionID:        req.SessionID,
+		Trace:            req.Trace,
+		Metadata:         req.Metadata,
+	}
+	applyCacheUsage(&usage, result)
+	var inputForBroadcast any
+	var outputForBroadcast string
+	if broadcastContent {
+		inputForBroadcast = originalInput
+		outputForBroadcast = result.Text
+	}
+	settleResult, err := settleAndBroadcast(ctx, trGateway, authz, secretCache, usage, req, inputForBroadcast, outputForBroadcast)
+	if err != nil {
+		return fusionCallResult{}, err
+	}
+	if selectedModel == "" && authz != nil {
+		selectedModel = authz.Model
+	}
+	if selectedEndpoint == "" && authz != nil {
+		selectedEndpoint = authz.EndpointID
+	}
+	return fusionCallResult{
+		Result:           result,
+		Model:            selectedModel,
+		Endpoint:         selectedEndpoint,
+		InputTokens:      inputTokens,
+		OutputTokens:     outputTokens,
+		UsageEstimated:   usageEstimated,
+		Authorization:    authz,
+		SettlementResult: settleResult,
+	}, nil
+}
+
+func authorizeFusionCall(
+	ctx context.Context,
+	req *types.OpenAIChatRequest,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	routeType string,
+	idempotencyKey string,
+) (*trustedrouter.Authorization, []llm.InvokeOptions, error) {
+	subReq := *req
+	subReq.IdempotencyKey = idempotencyKey
+	authz, err := trGateway.AuthorizeWithRoute(ctx, bearer, &subReq, routeType)
+	if err != nil {
+		return nil, nil, err
+	}
+	options, err := invokeOptionsForAuthorization(ctx, secretCache, authz)
+	if err != nil {
+		_ = trGateway.Refund(ctx, authz, 502, "byok_secret_error", 0.001, req.Metadata)
+		return authz, nil, err
+	}
+	return authz, options, nil
+}
+
+func fusionPanelRequest(req *types.OpenAIChatRequest, model string, index int, maxCompletionTokens int) *types.OpenAIChatRequest {
+	out := cloneChatRequest(req)
+	out.Model = model
+	out.Models = nil
+	out.Stream = false
+	out.Tools = nil
+	out.ToolChoice = nil
+	out.Plugins = nil
+	out.ResponseFormat = nil
+	out.MaxTokens = fusionInnerMaxTokens(req, maxCompletionTokens)
+	out.Messages = prependSystem(req.Messages, fmt.Sprintf(
+		"You are TrustedRouter Fusion panel member %d. Answer the user's request independently. Focus on correctness, cite uncertainty, and do not mention Fusion internals.",
+		index+1,
+	))
+	out.Metadata = fusionMetadata(req.Metadata, "panel", model)
+	return out
+}
+
+func fusionJudgeRequest(req *types.OpenAIChatRequest, model string, panel []fusionCallResult, maxCompletionTokens int) *types.OpenAIChatRequest {
+	out := cloneChatRequest(req)
+	out.Model = model
+	out.Models = nil
+	out.Stream = false
+	out.Tools = nil
+	out.ToolChoice = nil
+	out.Plugins = nil
+	out.ResponseFormat = map[string]any{"type": "json_object"}
+	out.MaxTokens = fusionInnerMaxTokens(req, maxCompletionTokens)
+	out.Messages = []types.OpenAIChatMessage{
+		{
+			Role:    "system",
+			Content: "You are the TrustedRouter Fusion judge. Compare panel responses and return compact JSON with keys consensus, contradictions, partial_coverage, unique_insights, blind_spots, and final_guidance. Do not write the final answer.",
+		},
+		{
+			Role:    "user",
+			Content: fusionJudgePrompt(req, panel),
+		},
+	}
+	out.Metadata = fusionMetadata(req.Metadata, "judge", model)
+	return out
+}
+
+func fusionFinalRequest(req *types.OpenAIChatRequest, model string, judgeJSON string) *types.OpenAIChatRequest {
+	out := cloneChatRequest(req)
+	out.Model = model
+	out.Models = nil
+	out.Stream = false
+	out.Plugins = nil
+	out.Tools = stripFusionToolEntries(out.Tools)
+	out.Messages = append([]types.OpenAIChatMessage{}, req.Messages...)
+	out.Messages = append(out.Messages, types.OpenAIChatMessage{
+		Role:    "user",
+		Content: "TrustedRouter Fusion analysis JSON follows. Use it to write the final answer for the original request. Do not mention internal model names unless the user asked for methodology.\n\n" + judgeJSON,
+	})
+	out.Metadata = fusionMetadata(req.Metadata, "final", model)
+	return out
+}
+
+func fusionJudgePrompt(req *types.OpenAIChatRequest, panel []fusionCallResult) string {
+	var b strings.Builder
+	b.WriteString("Original request summary:\n")
+	b.WriteString(chatMessagesText(req.Messages))
+	b.WriteString("\n\nPanel responses:\n")
+	for i, item := range panel {
+		model := item.Model
+		if model == "" && item.Authorization != nil {
+			model = item.Authorization.Model
+		}
+		fmt.Fprintf(&b, "\n[%d] model=%s\n%s\n", i+1, model, item.Result.Text)
+	}
+	return b.String()
+}
+
+func chatMessagesText(messages []types.OpenAIChatMessage) string {
+	var parts []string
+	for _, message := range messages {
+		text := strings.TrimSpace(types.ContentText(message.Content))
+		if text == "" && types.ContentImageCount(message.Content) > 0 {
+			text = "[non-text image content]"
+		}
+		if text == "" {
+			continue
+		}
+		parts = append(parts, strings.ToUpper(message.Role)+": "+text)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func prependSystem(messages []types.OpenAIChatMessage, system string) []types.OpenAIChatMessage {
+	out := make([]types.OpenAIChatMessage, 0, len(messages)+1)
+	out = append(out, types.OpenAIChatMessage{Role: "system", Content: system})
+	out = append(out, messages...)
+	return out
+}
+
+func cloneChatRequest(req *types.OpenAIChatRequest) *types.OpenAIChatRequest {
+	out := *req
+	out.Messages = append([]types.OpenAIChatMessage{}, req.Messages...)
+	out.Models = append([]string{}, req.Models...)
+	out.Tools = append([]any{}, req.Tools...)
+	out.Plugins = append([]any{}, req.Plugins...)
+	if req.Metadata != nil {
+		out.Metadata = map[string]any{}
+		for k, v := range req.Metadata {
+			out.Metadata[k] = v
+		}
+	}
+	if req.Trace != nil {
+		out.Trace = map[string]any{}
+		for k, v := range req.Trace {
+			out.Trace[k] = v
+		}
+	}
+	return &out
+}
+
+func fusionInnerMaxTokens(req *types.OpenAIChatRequest, configured int) *int {
+	if configured > 0 {
+		value := configured
+		return &value
+	}
+	if req.MaxTokens != nil && *req.MaxTokens > 0 {
+		value := *req.MaxTokens
+		if value > 2048 {
+			value = 2048
+		}
+		return &value
+	}
+	value := 1200
+	return &value
+}
+
+func fusionMetadata(input map[string]any, stage string, model string) map[string]any {
+	out := map[string]any{}
+	for k, v := range input {
+		out[k] = v
+	}
+	out["trustedrouter_router"] = "trustedrouter/fusion"
+	out["trustedrouter_fusion_stage"] = stage
+	out["trustedrouter_fusion_model"] = model
+	return out
+}
+
+func fusionUsageTotals(panel []fusionCallResult, judge fusionCallResult, final fusionCallResult) (int, int) {
+	inputs := judge.InputTokens + final.InputTokens
+	outputs := judge.OutputTokens + final.OutputTokens
+	for _, item := range panel {
+		inputs += item.InputTokens
+		outputs += item.OutputTokens
+	}
+	if inputs < 1 {
+		inputs = 1
+	}
+	if outputs < 1 {
+		outputs = 1
+	}
+	return inputs, outputs
+}
+
+func writeFusionError(ctx context.Context, conn io.Writer, trGateway *trustedrouter.Client, err error) {
+	_ = ctx
+	_ = trGateway
+	var aerr *adapter.AdapterError
+	if asAdapterErr(err, &aerr) {
+		writeError(conn, aerr.Status, aerr.Message)
+		return
+	}
+	writeError(conn, statusFromControlPlaneError(err), "fusion failed")
+}
+
+func resolveFusionModelID(model string) string {
+	model = strings.TrimSpace(model)
+	if mapped, ok := fusionModelAliases[strings.ToLower(model)]; ok {
+		return mapped
+	}
+	return strings.TrimPrefix(model, "~")
+}
+
+func stripFusionToolEntries(tools []any) []any {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(tools))
+	for _, item := range tools {
+		m, ok := item.(map[string]any)
+		if !ok || strings.TrimSpace(stringValue(m["type"])) != trustedRouterFusionTool {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func stringValue(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	default:
+		return ""
+	}
+}
+
+func stringList(value any, context string) ([]string, error) {
+	raw, ok := value.([]any)
+	if !ok {
+		return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion list fields must be arrays", Context: context}
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		value := strings.TrimSpace(stringValue(item))
+		if value == "" {
+			return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion model ids must be strings", Context: context}
+		}
+		out = append(out, value)
+	}
+	return out, nil
+}
+
+func intField(raw map[string]any, name string) (int, bool, error) {
+	value, ok := raw[name]
+	if !ok || value == nil {
+		return 0, false, nil
+	}
+	switch v := value.(type) {
+	case float64:
+		if v != float64(int(v)) {
+			return 0, true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion integer field must be an integer", Context: name}
+		}
+		return int(v), true, nil
+	case int:
+		return v, true, nil
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0, true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion integer field must be an integer", Context: name}
+		}
+		return int(n), true, nil
+	default:
+		return 0, true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion integer field must be an integer", Context: name}
+	}
+}
