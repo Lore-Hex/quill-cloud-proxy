@@ -536,7 +536,7 @@ func fusionPanelRequest(req *types.OpenAIChatRequest, model string, index int, m
 	out.ResponseFormat = nil
 	out.MaxTokens = fusionInnerMaxTokens(req, maxCompletionTokens)
 	out.Messages = prependSystem(req.Messages, fmt.Sprintf(
-		"You are TrustedRouter Fusion panel member %d. Answer the user's request independently. Focus on correctness, cite uncertainty, and do not mention Fusion internals.",
+		"You are TrustedRouter Fusion panel member %d. Answer the user's request independently. Focus on correctness, cite uncertainty, and do not mention Fusion internals. Return only the visible answer; do not include chain-of-thought, hidden reasoning, or <think> blocks.",
 		index+1,
 	))
 	out.Metadata = fusionMetadata(req.Metadata, "panel", model)
@@ -556,7 +556,7 @@ func fusionJudgeRequest(req *types.OpenAIChatRequest, model string, panel []fusi
 	out.Messages = []types.OpenAIChatMessage{
 		{
 			Role:    "system",
-			Content: "You are the TrustedRouter Fusion judge. Compare panel responses and return compact JSON with keys consensus, contradictions, partial_coverage, unique_insights, blind_spots, and final_guidance. Do not write the final answer.",
+			Content: "You are the TrustedRouter Fusion judge. Compare panel responses and return compact JSON with keys consensus, contradictions, partial_coverage, unique_insights, blind_spots, and final_guidance. Do not write the final answer. Return only JSON; do not include chain-of-thought, hidden reasoning, or <think> blocks.",
 		},
 		{
 			Role:    "user",
@@ -577,7 +577,7 @@ func fusionFinalRequest(req *types.OpenAIChatRequest, model string, judgeJSON st
 	out.Messages = append([]types.OpenAIChatMessage{}, req.Messages...)
 	out.Messages = append(out.Messages, types.OpenAIChatMessage{
 		Role:    "user",
-		Content: "TrustedRouter Fusion analysis JSON follows. Use it to write the final answer for the original request. Do not mention internal model names unless the user asked for methodology.\n\n" + judgeJSON,
+		Content: "TrustedRouter Fusion analysis JSON follows. Use it to write the final answer for the original request. Return only the final visible answer. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology.\n\n" + judgeJSON,
 	})
 	out.Metadata = fusionMetadata(req.Metadata, "final", model)
 	return out
