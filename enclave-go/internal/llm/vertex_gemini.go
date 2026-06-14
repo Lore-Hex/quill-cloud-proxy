@@ -142,8 +142,8 @@ func vertexGeminiPayload(
 		generationConfig["responseModalities"] = []string{"TEXT", "IMAGE"}
 		generationConfig["candidateCount"] = 1
 	}
-	if vertexGeminiDisableThinking(modelID) {
-		generationConfig["thinkingConfig"] = map[string]any{"thinkingBudget": 0}
+	if thinkingConfig := vertexGeminiThinkingConfig(modelID); thinkingConfig != nil {
+		generationConfig["thinkingConfig"] = thinkingConfig
 	}
 	applyVertexGeminiResponseFormat(generationConfig, req.ResponseFormat)
 	if len(generationConfig) > 0 {
@@ -222,9 +222,15 @@ func vertexGeminiImageModel(modelID string) bool {
 	return strings.Contains(modelID, "image")
 }
 
-func vertexGeminiDisableThinking(modelID string) bool {
+func vertexGeminiThinkingConfig(modelID string) map[string]any {
 	modelID = strings.ToLower(modelID)
-	return strings.HasPrefix(modelID, "gemini-2.5-flash") && !vertexGeminiImageModel(modelID)
+	if !strings.Contains(modelID, "flash") || vertexGeminiImageModel(modelID) {
+		return nil
+	}
+	if strings.HasPrefix(modelID, "gemini-2.5") {
+		return map[string]any{"thinkingBudget": 0}
+	}
+	return map[string]any{"thinkingLevel": "minimal"}
 }
 
 func applyVertexGeminiResponseFormat(config map[string]any, responseFormat map[string]any) {

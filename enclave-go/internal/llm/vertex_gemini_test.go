@@ -95,6 +95,24 @@ func TestVertexGeminiPrepaidUsesVertexGenerateContent(t *testing.T) {
 	}
 }
 
+func TestVertexGeminiUsesMinimalThinkingForFlashTextModels(t *testing.T) {
+	if got := vertexGeminiThinkingConfig("gemini-2.5-flash"); got["thinkingBudget"] != 0 {
+		t.Fatalf("gemini-2.5-flash thinkingConfig = %#v", got)
+	}
+	if got := vertexGeminiThinkingConfig("gemini-3-flash-preview"); got["thinkingLevel"] != "minimal" {
+		t.Fatalf("gemini-3-flash-preview thinkingConfig = %#v", got)
+	}
+	if got := vertexGeminiThinkingConfig("gemini-3.5-flash"); got["thinkingLevel"] != "minimal" {
+		t.Fatalf("gemini-3.5-flash thinkingConfig = %#v", got)
+	}
+	if got := vertexGeminiThinkingConfig("gemini-3.1-pro-preview"); got != nil {
+		t.Fatalf("gemini pro should not change thinking by default: %#v", got)
+	}
+	if got := vertexGeminiThinkingConfig("gemini-3.1-flash-image"); got != nil {
+		t.Fatalf("image models should not change thinking: %#v", got)
+	}
+}
+
 func TestVertexGeminiImageInputAndOutputStayInsideEnclave(t *testing.T) {
 	imageURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(testPNG(t))
 	var capturedBody map[string]any
