@@ -592,6 +592,107 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 	}
 }
 
+func TestServeOneTrustedRouterFusionContinuesAfterOnePanelFails(t *testing.T) {
+	bearer := "test-user-bearer"
+	var authorizeCalls []map[string]any
+	var settleCalls []map[string]any
+	var refundCalls []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode authorize payload: %v", err)
+			}
+			authorizeCalls = append(authorizeCalls, payload)
+			model := payload["model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id":       fmt.Sprintf("auth_fusion_%d", len(authorizeCalls)),
+				"workspace_id":           "ws_1",
+				"api_key_hash":           "key_1",
+				"model":                  model,
+				"endpoint_id":            model + "@test/prepaid",
+				"provider":               "test",
+				"usage_type":             "Credits",
+				"limit_usage_type":       "Credits",
+				"route_candidates":       []any{},
+				"broadcast_destinations": []any{},
+			}})
+		case "/internal/gateway/settle":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode settle payload: %v", err)
+			}
+			settleCalls = append(settleCalls, payload)
+			model, _ := payload["selected_model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"settled":           true,
+				"generation_id":     fmt.Sprintf("gen_fusion_%d", len(settleCalls)),
+				"cost_microdollars": 1,
+				"model":             model,
+				"provider":          "test",
+			}})
+		case "/internal/gateway/refund":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode refund payload: %v", err)
+			}
+			refundCalls = append(refundCalls, payload)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fusionEchoLLM{failModels: map[string]bool{"openai/gpt-5.5": true}}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["openai/gpt-5.5","moonshotai/kimi-k2.7-code"],"model":"z-ai/glm-5.2","max_completion_tokens":64}}],"max_tokens":32}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "final answer from z-ai/glm-5.2") {
+		t.Fatalf("fusion did not continue to judge/final after failed panel: %s", body)
+	}
+	if len(refundCalls) != 1 {
+		t.Fatalf("refund calls = %d, want failed panel refund", len(refundCalls))
+	}
+	if len(settleCalls) != 3 {
+		t.Fatalf("settle calls = %d, want successful panel+judge+final", len(settleCalls))
+	}
+	if len(authorizeCalls) != 4 {
+		t.Fatalf("authorize calls = %d, want failed panel+successful panel+judge+final", len(authorizeCalls))
+	}
+}
+
 func TestServeOneTrustedRouterFusionRejectsUnsupportedExtensionToolNamespaces(t *testing.T) {
 	bearer := "test-user-bearer"
 	for _, toolType := range []string{"openrouter:fusion", "trustedrouter:exa"} {
@@ -1243,7 +1344,8 @@ type fusionEchoCall struct {
 }
 
 type fusionEchoLLM struct {
-	calls []fusionEchoCall
+	calls      []fusionEchoCall
+	failModels map[string]bool
 }
 
 func (f *fusionEchoLLM) InvokeStreaming(
@@ -1262,6 +1364,9 @@ func (f *fusionEchoLLM) InvokeStreaming(
 		Provider: option.Provider,
 		Endpoint: option.EndpointID,
 	})
+	if f.failModels[req.Model] {
+		return errors.New("llm/upstream: http 502: provider error")
+	}
 	text := "analysis from " + req.Model
 	if len(req.Messages) > 0 && strings.Contains(types.ContentText(req.Messages[len(req.Messages)-1].Content), "TrustedRouter Fusion analysis JSON follows") {
 		text = "final answer from " + req.Model

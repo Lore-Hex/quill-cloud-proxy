@@ -372,13 +372,37 @@ func runFusionPanelAndJudge(
 	requestLogID string,
 ) ([]fusionCallResult, fusionCallResult, error) {
 	panel := make([]fusionCallResult, 0, len(config.AnalysisModels))
+	var successCount int
+	var lastErr error
 	for i, model := range config.AnalysisModels {
 		panelReq := fusionPanelRequest(req, model, i, config.MaxCompletionTokens)
 		result, err := runFusionCall(ctx, br, panelReq, trGateway, secretCache, bearer, "fusion.panel", fmt.Sprintf("%s:panel:%d", requestID, i), requestLogID, nil, false)
 		if err != nil {
-			return nil, fusionCallResult{}, err
+			lastErr = err
+			fmt.Fprintf(os.Stderr,
+				"enclave.fusion_panel_failed request_log_id=%q request_id=%q model=%q error=%q\n",
+				requestLogID, requestID, model, err.Error(),
+			)
+			panel = append(panel, fusionCallResult{
+				Result: adapter.StreamResult{
+					Text:         fmt.Sprintf("[panel member %d, model %s failed before producing an answer: %s]", i+1, model, err.Error()),
+					FinishReason: "error",
+				},
+				Model: model,
+			})
+			continue
 		}
+		if strings.TrimSpace(result.Result.Text) == "" {
+			result.Result.Text = fmt.Sprintf("[panel member %d, model %s returned an empty answer; finish_reason=%s]", i+1, model, result.Result.FinishReason)
+		}
+		successCount++
 		panel = append(panel, result)
+	}
+	if successCount == 0 {
+		if lastErr != nil {
+			return nil, fusionCallResult{}, lastErr
+		}
+		return nil, fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion panel produced no successful responses", Context: "fusion.panel"}
 	}
 	judgeReq := fusionJudgeRequest(req, judgeModel, panel, config.MaxCompletionTokens)
 	judge, err := runFusionCall(ctx, br, judgeReq, trGateway, secretCache, bearer, "fusion.judge", requestID+":judge", requestLogID, nil, false)
