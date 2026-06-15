@@ -756,6 +756,41 @@ func TestFusionVisibleAnswerStripsThinkBlocks(t *testing.T) {
 	}
 }
 
+func TestFusionFinalRequestTellsToolModelsToEmitToolCalls(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Model: "trustedrouter/fusion",
+		Messages: []types.OpenAIChatMessage{{
+			Role:    "user",
+			Content: "Use setup() first.",
+		}},
+		Tools: []any{
+			map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "setup",
+					"description": "Learn about the target.",
+					"parameters":  map[string]any{"type": "object"},
+				},
+			},
+			map[string]any{
+				"type": trustedRouterFusionTool,
+				"parameters": map[string]any{
+					"analysis_models": []any{"google/gemini-3-flash-preview"},
+				},
+			},
+		},
+	}
+	final := fusionFinalRequest(req, "anthropic/claude-opus-4.8", `{"final_guidance":"call setup"}`)
+	if len(final.Tools) != 1 {
+		t.Fatalf("final tools = %#v, want only non-fusion tool", final.Tools)
+	}
+	last := final.Messages[len(final.Messages)-1]
+	text := types.ContentText(last.Content)
+	if !strings.Contains(text, "emit the tool call directly") || strings.Contains(text, "write the final answer") {
+		t.Fatalf("bad tool final instruction: %s", text)
+	}
+}
+
 func TestServeOneResponsesNonStreamingFailsClosedWhenSettleFails(t *testing.T) {
 	bearer := "test-user-bearer"
 	var settleCalled bool

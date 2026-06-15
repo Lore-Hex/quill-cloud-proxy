@@ -584,9 +584,13 @@ func fusionFinalRequest(req *types.OpenAIChatRequest, model string, judgeJSON st
 	out.Plugins = nil
 	out.Tools = stripFusionToolEntries(out.Tools)
 	out.Messages = append([]types.OpenAIChatMessage{}, req.Messages...)
+	instruction := "TrustedRouter Fusion analysis JSON follows. Use it to write the final answer for the original request. Return only the final visible answer. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
+	if len(out.Tools) > 0 {
+		instruction = "TrustedRouter Fusion analysis JSON follows. Continue solving the original task using the available tools. If the next correct action is a tool call, emit the tool call directly instead of describing it in text. Return visible text only when no tool call is needed. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
+	}
 	out.Messages = append(out.Messages, types.OpenAIChatMessage{
 		Role:    "user",
-		Content: "TrustedRouter Fusion analysis JSON follows. Use it to write the final answer for the original request. Return only the final visible answer. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology.\n\n" + judgeJSON,
+		Content: instruction + "\n\n" + judgeJSON,
 	})
 	out.Metadata = fusionMetadata(req.Metadata, "final", model)
 	return out
