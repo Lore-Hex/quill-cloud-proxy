@@ -131,8 +131,22 @@ type BootstrapData struct {
 
 // OpenAIChatMessage is one message in an inbound /v1/chat/completions request.
 type OpenAIChatMessage struct {
-	Role    string `json:"role"` // "system" | "user" | "assistant"
-	Content any    `json:"content"`
+	Role       string           `json:"role"` // "system" | "user" | "assistant" | "tool"
+	Content    any              `json:"content"`
+	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Name       string           `json:"name,omitempty"`
+}
+
+type OpenAIToolCall struct {
+	ID       string             `json:"id"`
+	Type     string             `json:"type,omitempty"`
+	Function OpenAIToolFunction `json:"function"`
+}
+
+type OpenAIToolFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // ChatStreamOptions mirrors OpenAI's chat-completions stream_options

@@ -45,7 +45,7 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 	var systemParts []string
 	var msgs []types.AnthropicMessage
 	for i, m := range req.Messages {
-		if types.ContentEmpty(m.Content) {
+		if types.ContentEmpty(m.Content) && len(m.ToolCalls) == 0 && m.Role != "tool" {
 			continue
 		}
 		switch m.Role {
@@ -58,8 +58,12 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 				}
 			}
 			systemParts = append(systemParts, types.ContentText(m.Content))
-		case "user", "assistant":
+		case "user":
 			msgs = append(msgs, types.AnthropicMessage{Role: m.Role, Content: m.Content})
+		case "assistant":
+			msgs = append(msgs, types.AnthropicMessage{Role: "assistant", Content: anthropicAssistantContent(m)})
+		case "tool":
+			msgs = append(msgs, types.AnthropicMessage{Role: "user", Content: anthropicToolResultContent(m)})
 		default:
 			return nil, &AdapterError{
 				Status:  400,
@@ -102,6 +106,60 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 	out.ToolChoice = toolChoice
 	_ = defaultModel // model is only used for response chunks, not the body
 	return out, nil
+}
+
+func anthropicAssistantContent(m types.OpenAIChatMessage) any {
+	if len(m.ToolCalls) == 0 {
+		return m.Content
+	}
+	blocks := make([]map[string]any, 0, 1+len(m.ToolCalls))
+	if text := strings.TrimSpace(types.ContentText(m.Content)); text != "" {
+		blocks = append(blocks, map[string]any{"type": "text", "text": text})
+	}
+	for _, call := range m.ToolCalls {
+		id := strings.TrimSpace(call.ID)
+		if id == "" {
+			id = strings.TrimSpace(call.Function.Name)
+		}
+		blocks = append(blocks, map[string]any{
+			"type":  "tool_use",
+			"id":    id,
+			"name":  call.Function.Name,
+			"input": toolCallInput(call.Function.Arguments),
+		})
+	}
+	return blocks
+}
+
+func anthropicToolResultContent(m types.OpenAIChatMessage) []map[string]any {
+	toolUseID := strings.TrimSpace(m.ToolCallID)
+	if toolUseID == "" {
+		toolUseID = strings.TrimSpace(m.Name)
+	}
+	content := m.Content
+	if types.ContentEmpty(content) {
+		content = ""
+	}
+	return []map[string]any{{
+		"type":        "tool_result",
+		"tool_use_id": toolUseID,
+		"content":     content,
+	}}
+}
+
+func toolCallInput(arguments string) any {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return map[string]any{}
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(arguments), &parsed); err != nil {
+		return map[string]any{"arguments": arguments}
+	}
+	if parsed == nil {
+		return map[string]any{}
+	}
+	return parsed
 }
 
 func AnthropicToolsFromChatTools(tools []any) ([]types.AnthropicTool, error) {

@@ -141,6 +141,50 @@ func TestToAnthropic(t *testing.T) {
 	}
 }
 
+func TestToAnthropicConvertsOpenAIToolMessages(t *testing.T) {
+	got, err := ToAnthropic(&types.OpenAIChatRequest{
+		Messages: []types.OpenAIChatMessage{
+			{Role: "user", Content: "Use setup."},
+			{
+				Role:    "assistant",
+				Content: "",
+				ToolCalls: []types.OpenAIToolCall{{
+					ID:   "call_1",
+					Type: "function",
+					Function: types.OpenAIToolFunction{
+						Name:      "setup",
+						Arguments: `{}`,
+					},
+				}},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: "call_1",
+				Name:       "setup",
+				Content:    `{"workspace":"/tmp/work"}`,
+			},
+			{Role: "assistant", Content: "Next step."},
+		},
+	}, "model-ignored")
+	if err != nil {
+		t.Fatalf("ToAnthropic: %v", err)
+	}
+	if len(got.Messages) != 4 {
+		t.Fatalf("messages = %#v", got.Messages)
+	}
+	assistantBlocks := got.Messages[1].Content.([]map[string]any)
+	if assistantBlocks[0]["type"] != "tool_use" || assistantBlocks[0]["id"] != "call_1" || assistantBlocks[0]["name"] != "setup" {
+		t.Fatalf("assistant tool_use block = %#v", assistantBlocks[0])
+	}
+	if input := assistantBlocks[0]["input"].(map[string]any); len(input) != 0 {
+		t.Fatalf("tool input = %#v, want empty object", input)
+	}
+	resultBlocks := got.Messages[2].Content.([]map[string]any)
+	if resultBlocks[0]["type"] != "tool_result" || resultBlocks[0]["tool_use_id"] != "call_1" || resultBlocks[0]["content"] != `{"workspace":"/tmp/work"}` {
+		t.Fatalf("tool_result block = %#v", resultBlocks[0])
+	}
+}
+
 func TestTransformStream(t *testing.T) {
 	input := `event: message_start
 data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"claude-3","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}
