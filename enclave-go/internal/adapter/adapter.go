@@ -211,6 +211,7 @@ func WriteChatCompletionResponse(
 	requestID string,
 	model string,
 	text string,
+	toolCalls []types.ToolCall,
 	inputTokens int,
 	outputTokens int,
 	created int64,
@@ -219,6 +220,17 @@ func WriteChatCompletionResponse(
 	if finishReason == "" {
 		finishReason = "stop"
 	}
+	message := map[string]any{
+		"role":    "assistant",
+		"content": text,
+	}
+	if len(toolCalls) > 0 {
+		if finishReason == "" || finishReason == "stop" {
+			finishReason = "tool_calls"
+		}
+		message["content"] = nil
+		message["tool_calls"] = chatToolCalls(toolCalls)
+	}
 	payload := map[string]any{
 		"id":      requestID,
 		"object":  "chat.completion",
@@ -226,11 +238,8 @@ func WriteChatCompletionResponse(
 		"model":   model,
 		"choices": []map[string]any{
 			{
-				"index": 0,
-				"message": map[string]string{
-					"role":    "assistant",
-					"content": text,
-				},
+				"index":         0,
+				"message":       message,
 				"finish_reason": finishReason,
 			},
 		},
@@ -246,6 +255,29 @@ func WriteChatCompletionResponse(
 	}
 	_, err = w.Write(body)
 	return err
+}
+
+func chatToolCalls(toolCalls []types.ToolCall) []map[string]any {
+	out := make([]map[string]any, 0, len(toolCalls))
+	for i, call := range toolCalls {
+		id := call.ID
+		if id == "" {
+			id = call.CallID
+		}
+		if id == "" {
+			id = fmt.Sprintf("call_%d", i+1)
+		}
+		out = append(out, map[string]any{
+			"id":    id,
+			"type":  "function",
+			"index": i,
+			"function": map[string]any{
+				"name":      call.Name,
+				"arguments": call.Arguments,
+			},
+		})
+	}
+	return out
 }
 
 func TransformStreamCapture(r io.Reader, w io.Writer, requestID, model string) (StreamResult, error) {

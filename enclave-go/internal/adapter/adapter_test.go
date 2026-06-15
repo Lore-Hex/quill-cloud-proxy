@@ -405,6 +405,45 @@ func TestCollectAnthropicTextCapturesToolUse(t *testing.T) {
 	}
 }
 
+func TestWriteChatCompletionResponseIncludesToolCalls(t *testing.T) {
+	var out bytes.Buffer
+	err := WriteChatCompletionResponse(
+		&out,
+		"chatcmpl_tool",
+		"anthropic/claude-opus-4.8",
+		"",
+		[]types.ToolCall{{ID: "call_1", CallID: "call_1", Name: "setup", Arguments: `{}`}},
+		11,
+		7,
+		123,
+		"tool_calls",
+	)
+	if err != nil {
+		t.Fatalf("WriteChatCompletionResponse: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, out.String())
+	}
+	choice := payload["choices"].([]any)[0].(map[string]any)
+	if choice["finish_reason"] != "tool_calls" {
+		t.Fatalf("finish_reason = %#v", choice["finish_reason"])
+	}
+	message := choice["message"].(map[string]any)
+	if message["content"] != nil {
+		t.Fatalf("content = %#v, want nil when tool_calls are present", message["content"])
+	}
+	calls := message["tool_calls"].([]any)
+	if len(calls) != 1 {
+		t.Fatalf("tool_calls = %#v", calls)
+	}
+	call := calls[0].(map[string]any)
+	fn := call["function"].(map[string]any)
+	if call["id"] != "call_1" || call["type"] != "function" || fn["name"] != "setup" || fn["arguments"] != `{}` {
+		t.Fatalf("bad tool call response: %#v", call)
+	}
+}
+
 func TestWriteResponsesResponseIncludesFunctionCallOutput(t *testing.T) {
 	var out bytes.Buffer
 	meta := &types.ResponseRequestMeta{

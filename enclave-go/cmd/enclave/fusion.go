@@ -49,6 +49,7 @@ type fusionConfig struct {
 	JudgeModel          string
 	MaxToolCalls        int
 	MaxCompletionTokens int
+	SelectionStrategy   string
 	Preset              string
 }
 
@@ -95,6 +96,14 @@ func maybeServeFusion(
 	}
 	if len(config.AnalysisModels) > 8 {
 		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion analysis_models must contain 1-8 models", Context: "analysis_models"}
+	}
+	if config.SelectionStrategy == "" {
+		config.SelectionStrategy = "synthesize"
+	}
+	switch config.SelectionStrategy {
+	case "synthesize", "first_success", "first_non_refusal":
+	default:
+		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion selection_strategy must be synthesize, first_success, or first_non_refusal", Context: "selection_strategy"}
 	}
 	if config.MaxToolCalls < 0 || config.MaxToolCalls > 16 {
 		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion max_tool_calls must be between 1 and 16", Context: "max_tool_calls"}
@@ -253,6 +262,11 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 	} else if ok {
 		config.MaxCompletionTokens = n
 	}
+	if strategy := strings.TrimSpace(strings.ToLower(stringValue(raw["selection_strategy"]))); strategy != "" {
+		config.SelectionStrategy = strategy
+	} else if strategy := strings.TrimSpace(strings.ToLower(stringValue(raw["strategy"]))); strategy != "" {
+		config.SelectionStrategy = strategy
+	}
 	return config, nil
 }
 
@@ -271,6 +285,9 @@ func mergeFusionConfig(base, override fusionConfig) fusionConfig {
 	}
 	if override.MaxCompletionTokens != 0 {
 		base.MaxCompletionTokens = override.MaxCompletionTokens
+	}
+	if override.SelectionStrategy != "" {
+		base.SelectionStrategy = override.SelectionStrategy
 	}
 	if override.Preset != "" {
 		base.Preset = override.Preset
@@ -294,7 +311,35 @@ func serveFusionNonStreaming(
 ) {
 	requestStarted := time.Now()
 	requestID := newRequestID()
-	panel, judge, err := runFusionPanelAndJudge(ctx, br, req, config, judgeModel, trGateway, secretCache, bearer, requestID, requestLogID)
+	panel, err := runFusionPanel(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID)
+	if err != nil {
+		writeFusionError(ctx, conn, trGateway, err)
+		return
+	}
+	if config.SelectionStrategy != "synthesize" {
+		selected, err := selectFusionPanelResult(panel, config.SelectionStrategy)
+		if err != nil {
+			writeFusionError(ctx, conn, trGateway, err)
+			return
+		}
+		totalIn, totalOut := fusionPanelUsageTotals(panel)
+		responseModel := selected.Model
+		if responseModel == "" {
+			responseModel = selectedRouteModel(selected, finalModel)
+		}
+		var body bytes.Buffer
+		if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, selected.Result.Text, selected.Result.ToolCalls, totalIn, totalOut, time.Now().Unix(), selected.Result.FinishReason); err != nil {
+			writeError(conn, 500, "fusion response encoding error")
+			return
+		}
+		fmt.Fprintf(os.Stderr,
+			"enclave.fusion_complete request_log_id=%q request_id=%q mode=nonstream strategy=%q panel=%d selected_model=%q elapsed_ms=%d\n",
+			requestLogID, requestID, config.SelectionStrategy, len(panel), responseModel, time.Since(requestStarted).Milliseconds(),
+		)
+		writeJSONResponse(conn, 200, body.Bytes())
+		return
+	}
+	judge, err := runFusionJudge(ctx, br, req, config, judgeModel, panel, trGateway, secretCache, bearer, requestID, requestLogID)
 	if err != nil {
 		writeFusionError(ctx, conn, trGateway, err)
 		return
@@ -311,7 +356,7 @@ func serveFusionNonStreaming(
 		responseModel = finalModel
 	}
 	var body bytes.Buffer
-	if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, final.Result.Text, totalIn, totalOut, time.Now().Unix(), final.Result.FinishReason); err != nil {
+	if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, final.Result.Text, final.Result.ToolCalls, totalIn, totalOut, time.Now().Unix(), final.Result.FinishReason); err != nil {
 		writeError(conn, 500, "fusion response encoding error")
 		return
 	}
@@ -371,6 +416,28 @@ func runFusionPanelAndJudge(
 	requestID string,
 	requestLogID string,
 ) ([]fusionCallResult, fusionCallResult, error) {
+	panel, err := runFusionPanel(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID)
+	if err != nil {
+		return nil, fusionCallResult{}, err
+	}
+	judge, err := runFusionJudge(ctx, br, req, config, judgeModel, panel, trGateway, secretCache, bearer, requestID, requestLogID)
+	if err != nil {
+		return nil, fusionCallResult{}, err
+	}
+	return panel, judge, nil
+}
+
+func runFusionPanel(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	config fusionConfig,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+) ([]fusionCallResult, error) {
 	panel := make([]fusionCallResult, 0, len(config.AnalysisModels))
 	var successCount int
 	var lastErr error
@@ -400,16 +467,32 @@ func runFusionPanelAndJudge(
 	}
 	if successCount == 0 {
 		if lastErr != nil {
-			return nil, fusionCallResult{}, lastErr
+			return nil, lastErr
 		}
-		return nil, fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion panel produced no successful responses", Context: "fusion.panel"}
+		return nil, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion panel produced no successful responses", Context: "fusion.panel"}
 	}
+	return panel, nil
+}
+
+func runFusionJudge(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	config fusionConfig,
+	judgeModel string,
+	panel []fusionCallResult,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+) (fusionCallResult, error) {
 	judgeReq := fusionJudgeRequest(req, judgeModel, panel, config.MaxCompletionTokens)
 	judge, err := runFusionCall(ctx, br, judgeReq, trGateway, secretCache, bearer, "fusion.judge", requestID+":judge", requestLogID, nil, false)
 	if err != nil {
-		return nil, fusionCallResult{}, err
+		return fusionCallResult{}, err
 	}
-	return panel, judge, nil
+	return judge, nil
 }
 
 func runFusionCall(
@@ -452,7 +535,7 @@ func runFusionCall(
 	}
 	if strings.HasPrefix(routeType, "fusion.") {
 		result.Text = fusionVisibleAnswer(result.Text)
-		if routeType == "fusion.final" && strings.TrimSpace(result.Text) == "" {
+		if routeType == "fusion.final" && strings.TrimSpace(result.Text) == "" && len(result.ToolCalls) == 0 {
 			if trGateway != nil && trGateway.Enabled() {
 				_ = trGateway.Refund(ctx, authz, 502, "empty_output", time.Since(requestStarted).Seconds(), req.Metadata)
 			}
@@ -695,6 +778,85 @@ func fusionUsageTotals(panel []fusionCallResult, judge fusionCallResult, final f
 		outputs = 1
 	}
 	return inputs, outputs
+}
+
+func fusionPanelUsageTotals(panel []fusionCallResult) (int, int) {
+	inputs := 0
+	outputs := 0
+	for _, item := range panel {
+		inputs += item.InputTokens
+		outputs += item.OutputTokens
+	}
+	if inputs < 1 {
+		inputs = 1
+	}
+	if outputs < 1 {
+		outputs = 1
+	}
+	return inputs, outputs
+}
+
+func selectFusionPanelResult(panel []fusionCallResult, strategy string) (fusionCallResult, error) {
+	if len(panel) == 0 {
+		return fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion panel produced no responses", Context: "fusion.panel"}
+	}
+	if strategy == "first_non_refusal" {
+		for _, item := range panel {
+			if fusionPanelResultUsable(item) && !fusionLooksLikeRefusal(item.Result.Text) {
+				return item, nil
+			}
+		}
+	}
+	for _, item := range panel {
+		if fusionPanelResultUsable(item) {
+			return item, nil
+		}
+	}
+	return fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion panel produced no usable response", Context: "fusion.panel"}
+}
+
+func fusionPanelResultUsable(item fusionCallResult) bool {
+	if item.Result.FinishReason == "error" {
+		return false
+	}
+	return strings.TrimSpace(item.Result.Text) != "" || len(item.Result.ToolCalls) > 0
+}
+
+func fusionLooksLikeRefusal(text string) bool {
+	visible := strings.ToLower(fusionVisibleAnswer(text))
+	visible = strings.ReplaceAll(visible, "’", "'")
+	phrases := []string{
+		"i can't",
+		"i cannot",
+		"i won't",
+		"i'm unable",
+		"cannot assist",
+		"can't assist",
+		"cannot help",
+		"can't help",
+		"cannot provide",
+		"can't provide",
+		"not able to provide",
+		"not appropriate to provide",
+		"i'm sorry",
+		"sorry, but i can't",
+	}
+	for _, phrase := range phrases {
+		if strings.Contains(visible, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func selectedRouteModel(item fusionCallResult, fallback string) string {
+	if item.Model != "" {
+		return item.Model
+	}
+	if item.Authorization != nil && item.Authorization.Model != "" {
+		return item.Authorization.Model
+	}
+	return fallback
 }
 
 func writeFusionError(ctx context.Context, conn io.Writer, trGateway *trustedrouter.Client, err error) {

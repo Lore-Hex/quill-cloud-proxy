@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
@@ -753,6 +754,51 @@ func TestFusionVisibleAnswerStripsThinkBlocks(t *testing.T) {
 	}
 	if got := fusionVisibleAnswer("visible <think>unterminated"); got != "visible" {
 		t.Fatalf("unterminated think output = %q, want visible", got)
+	}
+}
+
+func TestSelectFusionPanelResultFirstNonRefusal(t *testing.T) {
+	panel := []fusionCallResult{
+		{
+			Model: "model_refusal",
+			Result: adapter.StreamResult{
+				Text:         "I'm sorry, but I can't help with that.",
+				FinishReason: "stop",
+			},
+		},
+		{
+			Model: "model_answer",
+			Result: adapter.StreamResult{
+				Text:         "Here is a direct answer.",
+				FinishReason: "stop",
+			},
+		},
+	}
+	selected, err := selectFusionPanelResult(panel, "first_non_refusal")
+	if err != nil {
+		t.Fatalf("selectFusionPanelResult: %v", err)
+	}
+	if selected.Model != "model_answer" {
+		t.Fatalf("selected model = %q, want model_answer", selected.Model)
+	}
+}
+
+func TestSelectFusionPanelResultFallsBackWhenAllRefuse(t *testing.T) {
+	panel := []fusionCallResult{
+		{
+			Model: "model_refusal",
+			Result: adapter.StreamResult{
+				Text:         "I cannot provide that.",
+				FinishReason: "stop",
+			},
+		},
+	}
+	selected, err := selectFusionPanelResult(panel, "first_non_refusal")
+	if err != nil {
+		t.Fatalf("selectFusionPanelResult: %v", err)
+	}
+	if selected.Model != "model_refusal" {
+		t.Fatalf("selected model = %q, want model_refusal", selected.Model)
 	}
 }
 
