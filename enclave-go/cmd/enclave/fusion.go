@@ -450,6 +450,15 @@ func runFusionCall(
 		}
 		return fusionCallResult{}, err
 	}
+	if strings.HasPrefix(routeType, "fusion.") {
+		result.Text = fusionVisibleAnswer(result.Text)
+		if routeType == "fusion.final" && strings.TrimSpace(result.Text) == "" {
+			if trGateway != nil && trGateway.Enabled() {
+				_ = trGateway.Refund(ctx, authz, 502, "empty_output", time.Since(requestStarted).Seconds(), req.Metadata)
+			}
+			return fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion final model returned an empty visible answer", Context: "fusion.final"}
+		}
+	}
 	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
 		result,
 		trustedrouter.EstimateInputTokens(req),
@@ -715,6 +724,25 @@ func stripFusionToolEntries(tools []any) []any {
 		}
 	}
 	return out
+}
+
+func fusionVisibleAnswer(text string) string {
+	out := text
+	for {
+		lower := strings.ToLower(out)
+		start := strings.Index(lower, "<think>")
+		if start < 0 {
+			break
+		}
+		endRelative := strings.Index(lower[start:], "</think>")
+		if endRelative < 0 {
+			out = out[:start]
+			break
+		}
+		end := start + endRelative + len("</think>")
+		out = out[:start] + out[end:]
+	}
+	return strings.TrimSpace(out)
 }
 
 func stringValue(value any) string {

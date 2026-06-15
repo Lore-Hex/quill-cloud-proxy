@@ -743,6 +743,19 @@ func TestServeOneTrustedRouterFusionRejectsUnsupportedExtensionToolNamespaces(t 
 	}
 }
 
+func TestFusionVisibleAnswerStripsThinkBlocks(t *testing.T) {
+	got := fusionVisibleAnswer("prefix <think>private reasoning</think> visible <THINK>more</THINK> answer")
+	if got != "prefix  visible  answer" {
+		t.Fatalf("fusionVisibleAnswer = %q", got)
+	}
+	if got := fusionVisibleAnswer("<think>private only</think>"); got != "" {
+		t.Fatalf("think-only output = %q, want empty", got)
+	}
+	if got := fusionVisibleAnswer("visible <think>unterminated"); got != "visible" {
+		t.Fatalf("unterminated think output = %q, want visible", got)
+	}
+}
+
 func TestServeOneResponsesNonStreamingFailsClosedWhenSettleFails(t *testing.T) {
 	bearer := "test-user-bearer"
 	var settleCalled bool
