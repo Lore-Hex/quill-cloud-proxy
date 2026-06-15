@@ -459,8 +459,11 @@ func runFusionPanel(
 			})
 			continue
 		}
-		if strings.TrimSpace(result.Result.Text) == "" {
+		if strings.TrimSpace(result.Result.Text) == "" && len(result.Result.ToolCalls) == 0 {
 			result.Result.Text = fmt.Sprintf("[panel member %d, model %s returned an empty answer; finish_reason=%s]", i+1, model, result.Result.FinishReason)
+			result.Result.FinishReason = "empty"
+			panel = append(panel, result)
+			continue
 		}
 		successCount++
 		panel = append(panel, result)
@@ -816,10 +819,20 @@ func selectFusionPanelResult(panel []fusionCallResult, strategy string) (fusionC
 }
 
 func fusionPanelResultUsable(item fusionCallResult) bool {
-	if item.Result.FinishReason == "error" {
+	if item.Result.FinishReason == "error" || item.Result.FinishReason == "empty" {
+		return false
+	}
+	if fusionPanelPlaceholder(item.Result.Text) {
 		return false
 	}
 	return strings.TrimSpace(item.Result.Text) != "" || len(item.Result.ToolCalls) > 0
+}
+
+func fusionPanelPlaceholder(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, "[panel member ") &&
+		(strings.Contains(trimmed, " failed before producing an answer:") ||
+			strings.Contains(trimmed, " returned an empty answer;"))
 }
 
 func fusionLooksLikeRefusal(text string) bool {

@@ -783,6 +783,32 @@ func TestSelectFusionPanelResultFirstNonRefusal(t *testing.T) {
 	}
 }
 
+func TestSelectFusionPanelResultSkipsEmptyPlaceholders(t *testing.T) {
+	panel := []fusionCallResult{
+		{
+			Model: "model_empty",
+			Result: adapter.StreamResult{
+				Text:         "[panel member 1, model model_empty returned an empty answer; finish_reason=stop]",
+				FinishReason: "empty",
+			},
+		},
+		{
+			Model: "model_answer",
+			Result: adapter.StreamResult{
+				Text:         "Here is a direct answer.",
+				FinishReason: "stop",
+			},
+		},
+	}
+	selected, err := selectFusionPanelResult(panel, "first_non_refusal")
+	if err != nil {
+		t.Fatalf("selectFusionPanelResult: %v", err)
+	}
+	if selected.Model != "model_answer" {
+		t.Fatalf("selected model = %q, want model_answer", selected.Model)
+	}
+}
+
 func TestSelectFusionPanelResultFallsBackWhenAllRefuse(t *testing.T) {
 	panel := []fusionCallResult{
 		{
