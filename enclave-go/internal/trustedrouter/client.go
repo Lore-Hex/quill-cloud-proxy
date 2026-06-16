@@ -119,6 +119,24 @@ type BroadcastDestination struct {
 	EncryptedHeaders *byokcache.EncryptedSecretEnvelope `json:"encrypted_headers"`
 }
 
+type ControlPlaneError struct {
+	Path       string
+	StatusCode int
+	Message    string
+	Type       string
+	Body       string
+}
+
+func (e *ControlPlaneError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message != "" {
+		return fmt.Sprintf("trustedrouter: %s http %d: %s", e.Path, e.StatusCode, e.Message)
+	}
+	return fmt.Sprintf("trustedrouter: %s http %d: %s", e.Path, e.StatusCode, e.Body)
+}
+
 type Usage struct {
 	RequestID         string
 	InputTokens       int
@@ -393,7 +411,22 @@ func (c *Client) postJSON(ctx context.Context, path string, payload any, out any
 		if readErr != nil {
 			return fmt.Errorf("trustedrouter: read %s error body: %w", path, readErr)
 		}
-		return fmt.Errorf("trustedrouter: %s http %d: %s", path, resp.StatusCode, errBody)
+		controlErr := &ControlPlaneError{
+			Path:       path,
+			StatusCode: resp.StatusCode,
+			Body:       string(errBody),
+		}
+		var envelope struct {
+			Error struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(errBody, &envelope) == nil {
+			controlErr.Message = strings.TrimSpace(envelope.Error.Message)
+			controlErr.Type = strings.TrimSpace(envelope.Error.Type)
+		}
+		return controlErr
 	}
 	if out == nil {
 		return nil

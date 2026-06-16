@@ -2,6 +2,12 @@
 // Kept minimal — every type expands the binary's auditable surface.
 package types
 
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+)
+
 // DeviceConfig is one entry in the sealed device-key blob.
 type DeviceConfig struct {
 	KeyHash  string `json:"key_hash"`  // hex sha256 of the bearer
@@ -287,15 +293,50 @@ type ToolCall struct {
 // future OpenRouter knob. Unknown fields are intentionally ignored at the
 // enclave boundary to keep the auditable surface small.
 type ProviderRouting struct {
-	Order             []string       `json:"order,omitempty"`
+	Order             StringList     `json:"order,omitempty"`
 	AllowFallbacks    *bool          `json:"allow_fallbacks,omitempty"`
 	RequireParameters *bool          `json:"require_parameters,omitempty"`
 	DataCollection    string         `json:"data_collection,omitempty"`
-	Only              []string       `json:"only,omitempty"`
-	Ignore            []string       `json:"ignore,omitempty"`
-	Quantizations     []string       `json:"quantizations,omitempty"`
+	Only              StringList     `json:"only,omitempty"`
+	Ignore            StringList     `json:"ignore,omitempty"`
+	Quantizations     StringList     `json:"quantizations,omitempty"`
 	Sort              any            `json:"sort,omitempty"`
 	MaxPrice          map[string]any `json:"max_price,omitempty"`
+}
+
+// StringList accepts either OpenRouter's normal array form or a
+// comma-separated string from hand-written configs. It marshals back as an
+// array before the gateway forwards metadata to the control plane.
+type StringList []string
+
+func (s *StringList) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		*s = nil
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(trimmed, &list); err == nil {
+		*s = cleanStringList(list)
+		return nil
+	}
+	var one string
+	if err := json.Unmarshal(trimmed, &one); err != nil {
+		return err
+	}
+	*s = cleanStringList(strings.Split(one, ","))
+	return nil
+}
+
+func cleanStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		item := strings.TrimSpace(value)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // AnthropicMessage is one user/assistant turn for Bedrock's Anthropic body.

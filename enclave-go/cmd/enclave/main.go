@@ -435,7 +435,7 @@ func serveOne(
 	if trEnabled {
 		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, &req, routeType)
 		if err != nil {
-			writeError(conn, statusFromControlPlaneError(err), "gateway authorization failed")
+			writeError(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"))
 			return
 		}
 		req.Models = nil
@@ -495,7 +495,7 @@ func validateMetadataRoute(
 		return true
 	}
 	if err := trGateway.ValidateKey(ctx, bearer, routeType); err != nil {
-		writeError(conn, statusFromControlPlaneError(err), "gateway authorization failed")
+		writeError(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"))
 		return false
 	}
 	return true
@@ -863,7 +863,7 @@ func serveMessages(
 	if trEnabled {
 		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, req, "messages")
 		if err != nil {
-			writeAnthropicError(conn, statusFromControlPlaneError(err), "gateway authorization failed")
+			writeAnthropicError(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"))
 			return
 		}
 		invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)

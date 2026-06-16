@@ -55,7 +55,7 @@ func serveEmbeddings(
 		var err error
 		authorization, err = trGateway.AuthorizeEmbeddings(ctx, bearer, &req, inputTokens)
 		if err != nil {
-			writeError(conn, statusFromControlPlaneError(err), "gateway authorization failed")
+			writeError(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"))
 			return
 		}
 		invokeOptions, err = invokeOptionsForAuthorization(ctx, secretCache, authorization)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -157,6 +158,10 @@ func providerAPIKeyForRoute(
 }
 
 func statusFromControlPlaneError(err error) int {
+	var controlErr *trustedrouter.ControlPlaneError
+	if errors.As(err, &controlErr) && controlErr.StatusCode > 0 {
+		return controlErr.StatusCode
+	}
 	message := err.Error()
 	for _, status := range []int{400, 401, 402, 403, 404, 429} {
 		if strings.Contains(message, fmt.Sprintf("http %d", status)) {
@@ -164,4 +169,12 @@ func statusFromControlPlaneError(err error) int {
 		}
 	}
 	return 502
+}
+
+func messageFromControlPlaneError(err error, fallback string) string {
+	var controlErr *trustedrouter.ControlPlaneError
+	if errors.As(err, &controlErr) && strings.TrimSpace(controlErr.Message) != "" {
+		return controlErr.Message
+	}
+	return fallback
 }

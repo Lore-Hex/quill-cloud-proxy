@@ -2,6 +2,7 @@ package trustedrouter
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -93,5 +94,32 @@ func TestValidateKeySendsLookupHashAndRouteOnly(t *testing.T) {
 	}
 	if payload["route_type"] != "responses.input_tokens" {
 		t.Fatalf("route_type = %v", payload["route_type"])
+	}
+}
+
+func TestAuthorizeReturnsParsedControlPlaneError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"provider.only cannot contain router name 'openrouter'","type":"bad_request"}}`)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "internal", server.Client())
+	_, err := client.Authorize(t.Context(), "sk-test", &qtypes.OpenAIChatRequest{
+		Model:    "trustedrouter/zdr",
+		Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "private input"}},
+	})
+	if err == nil {
+		t.Fatal("expected control-plane error")
+	}
+	var controlErr *ControlPlaneError
+	if !errors.As(err, &controlErr) {
+		t.Fatalf("error type = %T, want ControlPlaneError", err)
+	}
+	if controlErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d", controlErr.StatusCode)
+	}
+	if controlErr.Message != "provider.only cannot contain router name 'openrouter'" {
+		t.Fatalf("message = %q", controlErr.Message)
 	}
 }
