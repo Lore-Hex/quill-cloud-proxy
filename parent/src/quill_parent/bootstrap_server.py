@@ -88,6 +88,7 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("kimi_api_key", "trustedrouter-kimi-api-key"),
     ("zai_api_key", "trustedrouter-zai-api-key"),
     ("together_api_key", "trustedrouter-together-api-key"),
+    ("fireworks_api_key", "trustedrouter-fireworks-api-key"),
     ("grok_api_key", "trustedrouter-grok-api-key"),
     ("novita_api_key", "trustedrouter-novita-api-key"),
     # phala_api_key now points at the GPU-TEE-attested confidential
@@ -107,6 +108,8 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("lightning_api_key", "trustedrouter-lightning-api-key"),
     ("gmi_api_key", "trustedrouter-gmi-api-key"),
     ("deepinfra_api_key", "trustedrouter-deepinfra-api-key"),
+    ("nebius_api_key", "trustedrouter-nebius-api-key"),
+    ("minimax_api_key", "trustedrouter-minimax-api-key"),
     # Voyage AI — embeddings only (OpenAI-shaped /v1/embeddings). Optional like
     # every other key: if trustedrouter-voyage-api-key is absent in AWS Secrets
     # Manager the parent skips it and the enclave's voyage client stays empty.

@@ -55,6 +55,7 @@ MISTRAL_SECRET="${MISTRAL_SECRET:-trustedrouter-mistral-api-key}"
 KIMI_SECRET="${KIMI_SECRET:-trustedrouter-kimi-api-key}"
 ZAI_SECRET="${ZAI_SECRET:-trustedrouter-zai-api-key}"
 TOGETHER_SECRET="${TOGETHER_SECRET:-trustedrouter-together-api-key}"
+FIREWORKS_SECRET="${FIREWORKS_SECRET:-trustedrouter-fireworks-api-key}"
 COHERE_SECRET="${COHERE_SECRET:-trustedrouter-cohere-api-key}"
 VOYAGE_SECRET="${VOYAGE_SECRET:-trustedrouter-voyage-api-key}"
 GROK_SECRET="${GROK_SECRET:-trustedrouter-grok-api-key}"
@@ -69,6 +70,7 @@ GMI_SECRET="${GMI_SECRET:-trustedrouter-gmi-api-key}"
 DEEPINFRA_SECRET="${DEEPINFRA_SECRET:-trustedrouter-deepinfra-api-key}"
 NEBIUS_SECRET="${NEBIUS_SECRET:-trustedrouter-nebius-api-key}"
 MINIMAX_SECRET="${MINIMAX_SECRET:-trustedrouter-minimax-api-key}"
+XIAOMI_SECRET="${XIAOMI_SECRET:-trustedrouter-xiaomi-api-key}"
 INTERNAL_GATEWAY_SECRET="${INTERNAL_GATEWAY_SECRET:-trustedrouter-internal-gateway-token}"
 DEVICE_KEYS_SECRET="${DEVICE_KEYS_SECRET:-quill-device-keys}"
 
@@ -143,6 +145,7 @@ for secret in \
   "$KIMI_SECRET" \
   "$ZAI_SECRET" \
   "$TOGETHER_SECRET" \
+  "$FIREWORKS_SECRET" \
   "$COHERE_SECRET" \
   "$VOYAGE_SECRET" \
   "$GROK_SECRET" \
@@ -157,6 +160,7 @@ for secret in \
   "$DEEPINFRA_SECRET" \
   "$NEBIUS_SECRET" \
   "$MINIMAX_SECRET" \
+  "$XIAOMI_SECRET" \
   "$INTERNAL_GATEWAY_SECRET" \
   "$DEVICE_KEYS_SECRET"; do
   if gc secrets describe "$secret" >/dev/null 2>&1; then

@@ -44,7 +44,7 @@ func invokeBYOKStreaming(
 func isOpenAICompatibleBYOKProvider(provider string) bool {
 	switch provider {
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai", "together",
-		"grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
+		"fireworks", "grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
 		"parasail", "lightning", "gmi", "deepinfra", "nebius", "minimax", "xiaomi":
 		return true
 	default:
@@ -470,6 +470,10 @@ func directBaseURL(provider string) string {
 		// incl. DeepSeek-OCR, Qwen, Mixtral) plus image gen + embeddings.
 		// OpenAI-compatible chat completions at api.together.xyz/v1.
 		return "https://api.together.xyz/v1"
+	case "fireworks":
+		// Fireworks AI serverless inference. OpenAI-compatible at the
+		// non-standard /inference/v1 base path.
+		return "https://api.fireworks.ai/inference/v1"
 	case "voyage":
 		// Voyage AI retrieval embeddings. OpenAI-shaped /v1/embeddings.
 		return "https://api.voyageai.com/v1"
@@ -624,7 +628,7 @@ func directModelID(provider, model, upstreamModel string) string {
 
 func providerPreservesAuthorModelID(provider string) bool {
 	switch provider {
-	case "novita", "nebius":
+	case "novita", "nebius", "fireworks":
 		return true
 	default:
 		return false
@@ -963,6 +967,8 @@ func normalizeDirectProvider(provider string) string {
 		return "gemini"
 	case "moonshot", "moonshot-ai", "moonshotai", "kimi":
 		return "kimi"
+	case "fireworks", "fireworks-ai":
+		return "fireworks"
 	case "mistral-ai", "mistralai", "mistral":
 		return "mistral"
 	case "z-ai", "zhipu", "zhipuai", "zai":

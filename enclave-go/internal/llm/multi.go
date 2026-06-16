@@ -39,6 +39,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		kimi:        newKimi(boot),
 		zai:         newZAI(boot),
 		together:    newOpenAICompatible("together", boot.TogetherAPIKey),
+		fireworks:   newOpenAICompatible("fireworks", boot.FireworksAPIKey),
 		grok:        newOpenAICompatible("grok", boot.GrokAPIKey),
 		novita:      newOpenAICompatible("novita", boot.NovitaAPIKey),
 		phala:       newOpenAICompatible("phala", boot.PhalaAPIKey),
@@ -77,6 +78,7 @@ type multiClient struct {
 	kimi        *kimiClient
 	zai         *zaiClient
 	together    *openAICompatibleClient
+	fireworks   *openAICompatibleClient
 	grok        *openAICompatibleClient
 	novita      *openAICompatibleClient
 	phala       *openAICompatibleClient
@@ -130,6 +132,8 @@ func (m *multiClient) InvokeStreaming(
 		return m.zai.InvokeStreaming(ctx, req, body, out, options...)
 	case "together":
 		return m.together.InvokeStreaming(ctx, req, body, out, options...)
+	case "fireworks":
+		return m.fireworks.InvokeStreaming(ctx, req, body, out, options...)
 	case "grok":
 		return m.grok.InvokeStreaming(ctx, req, body, out, options...)
 	case "novita":
@@ -164,6 +168,6 @@ func (m *multiClient) InvokeStreaming(
 		// Embeddings-only; returns a clear "chat not supported" error.
 		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, nebius, minimax, xiaomi, cohere)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, nebius, minimax, xiaomi, cohere)", provider)
 	}
 }

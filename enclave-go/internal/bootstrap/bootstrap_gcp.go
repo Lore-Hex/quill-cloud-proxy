@@ -47,6 +47,7 @@
 //	QUILL_CEREBRAS_SECRET        name of the secret holding the Cerebras API key (llm_multi builds)
 //	QUILL_DEEPSEEK_SECRET        name of the secret holding the DeepSeek API key (llm_multi builds)
 //	QUILL_MISTRAL_SECRET         name of the secret holding the Mistral API key (llm_multi builds)
+//	QUILL_FIREWORKS_SECRET       name of the secret holding the Fireworks API key (llm_multi builds)
 //	QUILL_TRUSTEDROUTER_INTERNAL_SECRET optional Secret Manager secret name
 package bootstrap
 
@@ -96,6 +97,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	kimiSecret := os.Getenv("QUILL_KIMI_SECRET")
 	zaiSecret := os.Getenv("QUILL_ZAI_SECRET")
 	togetherSecret := os.Getenv("QUILL_TOGETHER_SECRET")
+	fireworksSecret := os.Getenv("QUILL_FIREWORKS_SECRET")
 	cohereSecret := os.Getenv("QUILL_COHERE_SECRET")
 	voyageSecret := os.Getenv("QUILL_VOYAGE_SECRET")
 	grokSecret := os.Getenv("QUILL_GROK_SECRET")
@@ -123,6 +125,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		kimiSecret,
 		zaiSecret,
 		togetherSecret,
+		fireworksSecret,
 		cohereSecret,
 		voyageSecret,
 		grokSecret,
@@ -226,6 +229,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		togetherKey, err = fetchSecret(ctx, httpc, token, project, togetherSecret)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap/gcp: together key: %w", err)
+		}
+	}
+	var fireworksKey []byte
+	if fireworksSecret != "" {
+		fireworksKey, err = fetchSecret(ctx, httpc, token, project, fireworksSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: fireworks key: %w", err)
 		}
 	}
 	var cohereKey []byte
@@ -355,6 +365,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		KimiAPIKey:                 strings.TrimSpace(string(kimiKey)),
 		ZAIAPIKey:                  strings.TrimSpace(string(zaiKey)),
 		TogetherAPIKey:             strings.TrimSpace(string(togetherKey)),
+		FireworksAPIKey:            strings.TrimSpace(string(fireworksKey)),
 		CohereAPIKey:               strings.TrimSpace(string(cohereKey)),
 		VoyageAPIKey:               strings.TrimSpace(string(voyageKey)),
 		GrokAPIKey:                 strings.TrimSpace(string(grokKey)),

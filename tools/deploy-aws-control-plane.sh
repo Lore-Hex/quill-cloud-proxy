@@ -478,6 +478,7 @@ cat > "$TASK_DEF_FILE" <<JSON
         {"name": "KIMI_API_KEY",                   "valueFrom": "$(sec trustedrouter-kimi-api-key)"},
         {"name": "ZAI_API_KEY",                    "valueFrom": "$(sec trustedrouter-zai-api-key)"},
         {"name": "TOGETHER_API_KEY",               "valueFrom": "$(sec trustedrouter-together-api-key)"},
+        {"name": "FIREWORKS_API_KEY",              "valueFrom": "$(sec trustedrouter-fireworks-api-key)"},
         {"name": "GROK_API_KEY",                   "valueFrom": "$(sec trustedrouter-grok-api-key)"},
         {"name": "NOVITA_API_KEY",                 "valueFrom": "$(sec trustedrouter-novita-api-key)"},
         {"name": "PHALA_API_KEY",                  "valueFrom": "$(sec trustedrouter-phala-api-key)"},

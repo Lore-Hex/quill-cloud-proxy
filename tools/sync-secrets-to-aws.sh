@@ -47,6 +47,7 @@ SECRETS=(
   trustedrouter-kimi-api-key
   trustedrouter-zai-api-key
   trustedrouter-together-api-key
+  trustedrouter-fireworks-api-key
   trustedrouter-grok-api-key
   trustedrouter-novita-api-key
   trustedrouter-phala-api-key

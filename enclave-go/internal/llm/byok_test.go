@@ -12,6 +12,7 @@ func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 		"gemini",
 		"zai",
 		"together",
+		"fireworks",
 		"grok",
 		"novita",
 		"phala",
@@ -200,6 +201,18 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("directModelID(%q, %q, %q) = %q, want %q", tc.provider, tc.model, tc.upstream, got, tc.want)
 		}
+	}
+}
+
+func TestFireworksDirectModelIDPreservesFullUpstreamResource(t *testing.T) {
+	got := directModelID(
+		"fireworks",
+		"openai/gpt-oss-120b",
+		"accounts/fireworks/models/gpt-oss-120b",
+	)
+	want := "accounts/fireworks/models/gpt-oss-120b"
+	if got != want {
+		t.Fatalf("directModelID(fireworks) = %q, want %q", got, want)
 	}
 }
 

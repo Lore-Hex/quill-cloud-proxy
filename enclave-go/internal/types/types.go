@@ -44,14 +44,15 @@ type BootstrapData struct {
 	// Each is independently optional — only the providers compiled in for
 	// the running image read these. Same Secret-Manager-fetched-in-workload
 	// trust posture as the rest of these credentials.
-	OpenAIAPIKey   string `json:"openai_api_key,omitempty"`
-	GeminiAPIKey   string `json:"gemini_api_key,omitempty"`
-	CerebrasAPIKey string `json:"cerebras_api_key,omitempty"`
-	DeepSeekAPIKey string `json:"deepseek_api_key,omitempty"`
-	MistralAPIKey  string `json:"mistral_api_key,omitempty"`
-	KimiAPIKey     string `json:"kimi_api_key,omitempty"`
-	ZAIAPIKey      string `json:"zai_api_key,omitempty"`
-	TogetherAPIKey string `json:"together_api_key,omitempty"`
+	OpenAIAPIKey    string `json:"openai_api_key,omitempty"`
+	GeminiAPIKey    string `json:"gemini_api_key,omitempty"`
+	CerebrasAPIKey  string `json:"cerebras_api_key,omitempty"`
+	DeepSeekAPIKey  string `json:"deepseek_api_key,omitempty"`
+	MistralAPIKey   string `json:"mistral_api_key,omitempty"`
+	KimiAPIKey      string `json:"kimi_api_key,omitempty"`
+	ZAIAPIKey       string `json:"zai_api_key,omitempty"`
+	TogetherAPIKey  string `json:"together_api_key,omitempty"`
+	FireworksAPIKey string `json:"fireworks_api_key,omitempty"`
 
 	// Cohere — embeddings only for now (native /v2/embed). Optional like
 	// every other provider key; only the llm_multi build reads it.

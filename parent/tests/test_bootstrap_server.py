@@ -198,6 +198,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "kimi_api_key",
         "zai_api_key",
         "together_api_key",
+        "fireworks_api_key",
         "grok_api_key",
         "novita_api_key",
         "phala_api_key",
@@ -208,6 +209,8 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "lightning_api_key",
         "gmi_api_key",
         "deepinfra_api_key",
+        "nebius_api_key",
+        "minimax_api_key",
         "voyage_api_key",
         "xiaomi_api_key",
     }

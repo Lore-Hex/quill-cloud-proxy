@@ -660,6 +660,7 @@ allowlist:
   - {address: generativelanguage.googleapis.com, port: 443}
   - {address: api.z.ai,                      port: 443}
   - {address: api.together.xyz,              port: 443}
+  - {address: api.fireworks.ai,              port: 443}
   - {address: api.x.ai,                      port: 443}
   - {address: api.novita.ai,                 port: 443}
   - {address: api.redpill.ai,                port: 443}
@@ -742,18 +743,19 @@ write_vsock_unit 8008 api.moonshot.ai
 write_vsock_unit 8009 generativelanguage.googleapis.com
 write_vsock_unit 8010 api.z.ai
 write_vsock_unit 8011 api.together.xyz
-write_vsock_unit 8012 api.x.ai
-write_vsock_unit 8013 api.novita.ai
-write_vsock_unit 8014 api.redpill.ai
-write_vsock_unit 8015 api.siliconflow.com
-write_vsock_unit 8016 inference.tinfoil.sh
-write_vsock_unit 8017 api.venice.ai
-write_vsock_unit 8018 api.parasail.io
-write_vsock_unit 8019 lightning.ai
-write_vsock_unit 8020 api.gmi-serving.com
-write_vsock_unit 8021 api.deepinfra.com
-write_vsock_unit 8022 api.tokenfactory.nebius.com
-write_vsock_unit 8023 api.minimax.io
+write_vsock_unit 8012 api.fireworks.ai
+write_vsock_unit 8013 api.x.ai
+write_vsock_unit 8014 api.novita.ai
+write_vsock_unit 8015 api.redpill.ai
+write_vsock_unit 8016 api.siliconflow.com
+write_vsock_unit 8017 inference.tinfoil.sh
+write_vsock_unit 8018 api.venice.ai
+write_vsock_unit 8019 api.parasail.io
+write_vsock_unit 8020 lightning.ai
+write_vsock_unit 8021 api.gmi-serving.com
+write_vsock_unit 8022 api.deepinfra.com
+write_vsock_unit 8023 api.tokenfactory.nebius.com
+write_vsock_unit 8024 api.minimax.io
 write_vsock_unit 8030 oauth2.googleapis.com
 write_vsock_unit 8031 spanner.googleapis.com
 write_vsock_unit 8032 bigtable.googleapis.com

@@ -59,19 +59,20 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "generativelanguage.googleapis.com", CID: 3, Port: 8009},
 	{Host: "api.z.ai", CID: 3, Port: 8010},
 	{Host: "api.together.xyz", CID: 3, Port: 8011},
-	{Host: "api.x.ai", CID: 3, Port: 8012}, // grok
-	{Host: "api.novita.ai", CID: 3, Port: 8013},
-	{Host: "api.redpill.ai", CID: 3, Port: 8014}, // phala
-	{Host: "api.siliconflow.com", CID: 3, Port: 8015},
-	{Host: "inference.tinfoil.sh", CID: 3, Port: 8016},
-	{Host: "api.venice.ai", CID: 3, Port: 8017},
+	{Host: "api.fireworks.ai", CID: 3, Port: 8012},
+	{Host: "api.x.ai", CID: 3, Port: 8013}, // grok
+	{Host: "api.novita.ai", CID: 3, Port: 8014},
+	{Host: "api.redpill.ai", CID: 3, Port: 8015}, // phala
+	{Host: "api.siliconflow.com", CID: 3, Port: 8016},
+	{Host: "inference.tinfoil.sh", CID: 3, Port: 8017},
+	{Host: "api.venice.ai", CID: 3, Port: 8018},
 	// 2026-05-11 batch (3 new providers; all OpenAI-compatible).
-	{Host: "api.parasail.io", CID: 3, Port: 8018},
-	{Host: "lightning.ai", CID: 3, Port: 8019},
-	{Host: "api.gmi-serving.com", CID: 3, Port: 8020},
-	{Host: "api.deepinfra.com", CID: 3, Port: 8021},
-	{Host: "api.tokenfactory.nebius.com", CID: 3, Port: 8022},
-	{Host: "api.minimax.io", CID: 3, Port: 8023},
+	{Host: "api.parasail.io", CID: 3, Port: 8019},
+	{Host: "lightning.ai", CID: 3, Port: 8020},
+	{Host: "api.gmi-serving.com", CID: 3, Port: 8021},
+	{Host: "api.deepinfra.com", CID: 3, Port: 8022},
+	{Host: "api.tokenfactory.nebius.com", CID: 3, Port: 8023},
+	{Host: "api.minimax.io", CID: 3, Port: 8024},
 
 	// GCP cross-cloud APIs. The AWS-side enclave authenticates with
 	// the cross-cloud SA key (received in BootstrapData) and reads
