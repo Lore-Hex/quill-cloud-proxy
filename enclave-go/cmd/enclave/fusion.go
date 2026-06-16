@@ -47,6 +47,7 @@ type fusionConfig struct {
 	Enabled             bool
 	AnalysisModels      []string
 	JudgeModel          string
+	JudgeModels         []string
 	MaxToolCalls        int
 	MaxCompletionTokens int
 	SelectionStrategy   string
@@ -101,9 +102,9 @@ func maybeServeFusion(
 		config.SelectionStrategy = "synthesize"
 	}
 	switch config.SelectionStrategy {
-	case "synthesize", "first_success", "first_non_refusal":
+	case "synthesize", "synthesize_non_refusals", "first_success", "first_non_refusal":
 	default:
-		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion selection_strategy must be synthesize, first_success, or first_non_refusal", Context: "selection_strategy"}
+		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion selection_strategy must be synthesize, synthesize_non_refusals, first_success, or first_non_refusal", Context: "selection_strategy"}
 	}
 	if config.MaxToolCalls < 0 || config.MaxToolCalls > 16 {
 		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion max_tool_calls must be between 1 and 16", Context: "max_tool_calls"}
@@ -119,15 +120,15 @@ func maybeServeFusion(
 			finalModel = resolveFusionModelID(config.AnalysisModels[0])
 		}
 	}
-	judgeModel := finalModel
-	if config.JudgeModel != "" {
-		judgeModel = resolveFusionModelID(config.JudgeModel)
+	judgeModels, err := fusionJudgeModels(config, finalModel)
+	if err != nil {
+		return true, err
 	}
 
 	if req.Stream {
-		serveFusionStreaming(ctx, conn, br, req, config, finalModel, judgeModel, trGateway, secretCache, bearer, originalInput, requestLogID)
+		serveFusionStreaming(ctx, conn, br, req, config, finalModel, judgeModels, trGateway, secretCache, bearer, originalInput, requestLogID)
 	} else {
-		serveFusionNonStreaming(ctx, conn, br, req, config, finalModel, judgeModel, trGateway, secretCache, bearer, originalInput, requestLogID)
+		serveFusionNonStreaming(ctx, conn, br, req, config, finalModel, judgeModels, trGateway, secretCache, bearer, originalInput, requestLogID)
 	}
 	return true, nil
 }
@@ -252,6 +253,25 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 	if model := strings.TrimSpace(stringValue(raw["model"])); model != "" {
 		config.JudgeModel = model
 	}
+	if modelsRaw, ok := raw["judge_models"]; ok {
+		models, err := stringList(modelsRaw, "judge_models")
+		if err != nil {
+			return config, err
+		}
+		config.JudgeModels = models
+	} else if modelsRaw, ok := raw["fallback_judges"]; ok {
+		models, err := stringList(modelsRaw, "fallback_judges")
+		if err != nil {
+			return config, err
+		}
+		config.JudgeModels = models
+	} else if modelsRaw, ok := raw["judges"]; ok {
+		models, err := stringList(modelsRaw, "judges")
+		if err != nil {
+			return config, err
+		}
+		config.JudgeModels = models
+	}
 	if n, ok, err := intField(raw, "max_tool_calls"); err != nil {
 		return config, err
 	} else if ok {
@@ -266,6 +286,8 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 		config.SelectionStrategy = strategy
 	} else if strategy := strings.TrimSpace(strings.ToLower(stringValue(raw["strategy"]))); strategy != "" {
 		config.SelectionStrategy = strategy
+	} else if strategy := strings.TrimSpace(strings.ToLower(stringValue(raw["type"]))); strategy != "" {
+		config.SelectionStrategy = strategy
 	}
 	return config, nil
 }
@@ -279,6 +301,9 @@ func mergeFusionConfig(base, override fusionConfig) fusionConfig {
 	}
 	if override.JudgeModel != "" {
 		base.JudgeModel = override.JudgeModel
+	}
+	if len(override.JudgeModels) > 0 {
+		base.JudgeModels = append([]string(nil), override.JudgeModels...)
 	}
 	if override.MaxToolCalls != 0 {
 		base.MaxToolCalls = override.MaxToolCalls
@@ -302,7 +327,7 @@ func serveFusionNonStreaming(
 	req *types.OpenAIChatRequest,
 	config fusionConfig,
 	finalModel string,
-	judgeModel string,
+	judgeModels []string,
 	trGateway *trustedrouter.Client,
 	secretCache *byokcache.Cache,
 	bearer string,
@@ -316,7 +341,7 @@ func serveFusionNonStreaming(
 		writeFusionError(ctx, conn, trGateway, err)
 		return
 	}
-	if config.SelectionStrategy != "synthesize" {
+	if config.SelectionStrategy != "synthesize" && config.SelectionStrategy != "synthesize_non_refusals" {
 		selected, err := selectFusionPanelResult(panel, config.SelectionStrategy)
 		if err != nil {
 			writeFusionError(ctx, conn, trGateway, err)
@@ -339,18 +364,23 @@ func serveFusionNonStreaming(
 		writeJSONResponse(conn, 200, body.Bytes())
 		return
 	}
-	judge, err := runFusionJudge(ctx, br, req, config, judgeModel, panel, trGateway, secretCache, bearer, requestID, requestLogID)
+	synthesisPanel, err := fusionPanelForSynthesis(panel, config.SelectionStrategy)
 	if err != nil {
 		writeFusionError(ctx, conn, trGateway, err)
 		return
 	}
-	finalReq := fusionFinalRequest(req, finalModel, judge.Result.Text, panel)
+	judge, judgeAttempts, err := runFusionJudge(ctx, br, req, config, judgeModels, synthesisPanel, trGateway, secretCache, bearer, requestID, requestLogID)
+	if err != nil {
+		writeFusionError(ctx, conn, trGateway, err)
+		return
+	}
+	finalReq := fusionFinalRequest(req, finalModel, judge.Result.Text, synthesisPanel)
 	final, err := runFusionCall(ctx, br, finalReq, trGateway, secretCache, bearer, "fusion.final", requestID+":final", requestLogID, originalInput, true)
 	if err != nil {
 		writeFusionError(ctx, conn, trGateway, err)
 		return
 	}
-	totalIn, totalOut := fusionUsageTotals(panel, judge, final)
+	totalIn, totalOut := fusionUsageTotals(panel, judgeAttempts, final)
 	responseModel := final.Model
 	if responseModel == "" {
 		responseModel = finalModel
@@ -361,8 +391,8 @@ func serveFusionNonStreaming(
 		return
 	}
 	fmt.Fprintf(os.Stderr,
-		"enclave.fusion_complete request_log_id=%q request_id=%q mode=nonstream panel=%d judge_model=%q final_model=%q elapsed_ms=%d\n",
-		requestLogID, requestID, len(panel), judgeModel, responseModel, time.Since(requestStarted).Milliseconds(),
+		"enclave.fusion_complete request_log_id=%q request_id=%q mode=nonstream panel=%d judge_model=%q judge_attempts=%d final_model=%q elapsed_ms=%d\n",
+		requestLogID, requestID, len(panel), judge.Model, len(judgeAttempts), responseModel, time.Since(requestStarted).Milliseconds(),
 	)
 	writeJSONResponse(conn, 200, body.Bytes())
 }
@@ -374,7 +404,7 @@ func serveFusionStreaming(
 	req *types.OpenAIChatRequest,
 	config fusionConfig,
 	finalModel string,
-	judgeModel string,
+	judgeModels []string,
 	trGateway *trustedrouter.Client,
 	secretCache *byokcache.Cache,
 	bearer string,
@@ -382,7 +412,7 @@ func serveFusionStreaming(
 	requestLogID string,
 ) {
 	requestID := newRequestID()
-	panel, judge, err := runFusionPanelAndJudge(ctx, br, req, config, judgeModel, trGateway, secretCache, bearer, requestID, requestLogID)
+	panel, judge, err := runFusionPanelAndJudge(ctx, br, req, config, judgeModels, trGateway, secretCache, bearer, requestID, requestLogID)
 	if err != nil {
 		writeFusionError(ctx, conn, trGateway, err)
 		return
@@ -409,7 +439,7 @@ func runFusionPanelAndJudge(
 	br llm.Client,
 	req *types.OpenAIChatRequest,
 	config fusionConfig,
-	judgeModel string,
+	judgeModels []string,
 	trGateway *trustedrouter.Client,
 	secretCache *byokcache.Cache,
 	bearer string,
@@ -420,11 +450,15 @@ func runFusionPanelAndJudge(
 	if err != nil {
 		return nil, fusionCallResult{}, err
 	}
-	judge, err := runFusionJudge(ctx, br, req, config, judgeModel, panel, trGateway, secretCache, bearer, requestID, requestLogID)
+	synthesisPanel, err := fusionPanelForSynthesis(panel, config.SelectionStrategy)
 	if err != nil {
 		return nil, fusionCallResult{}, err
 	}
-	return panel, judge, nil
+	judge, _, err := runFusionJudge(ctx, br, req, config, judgeModels, synthesisPanel, trGateway, secretCache, bearer, requestID, requestLogID)
+	if err != nil {
+		return nil, fusionCallResult{}, err
+	}
+	return synthesisPanel, judge, nil
 }
 
 func runFusionPanel(
@@ -482,20 +516,48 @@ func runFusionJudge(
 	br llm.Client,
 	req *types.OpenAIChatRequest,
 	config fusionConfig,
-	judgeModel string,
+	judgeModels []string,
 	panel []fusionCallResult,
 	trGateway *trustedrouter.Client,
 	secretCache *byokcache.Cache,
 	bearer string,
 	requestID string,
 	requestLogID string,
-) (fusionCallResult, error) {
-	judgeReq := fusionJudgeRequest(req, judgeModel, panel, config.MaxCompletionTokens)
-	judge, err := runFusionCall(ctx, br, judgeReq, trGateway, secretCache, bearer, "fusion.judge", requestID+":judge", requestLogID, nil, false)
-	if err != nil {
-		return fusionCallResult{}, err
+) (fusionCallResult, []fusionCallResult, error) {
+	attempts := make([]fusionCallResult, 0, len(judgeModels))
+	var lastErr error
+	for i, judgeModel := range judgeModels {
+		judgeReq := fusionJudgeRequest(req, judgeModel, panel, config.MaxCompletionTokens)
+		judge, err := runFusionCall(ctx, br, judgeReq, trGateway, secretCache, bearer, "fusion.judge", fmt.Sprintf("%s:judge:%d", requestID, i), requestLogID, nil, false)
+		if err != nil {
+			lastErr = err
+			fmt.Fprintf(os.Stderr,
+				"enclave.fusion_judge_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
+				requestLogID, requestID, judgeModel, i+1, err.Error(),
+			)
+			continue
+		}
+		attempts = append(attempts, judge)
+		if !fusionJudgeResultUsable(judge) {
+			fmt.Fprintf(os.Stderr,
+				"enclave.fusion_judge_unusable request_log_id=%q request_id=%q model=%q attempt=%d finish_reason=%q\n",
+				requestLogID, requestID, judgeModel, i+1, judge.Result.FinishReason,
+			)
+			continue
+		}
+		if fusionLooksLikeRefusal(judge.Result.Text) {
+			fmt.Fprintf(os.Stderr,
+				"enclave.fusion_judge_refused request_log_id=%q request_id=%q model=%q attempt=%d\n",
+				requestLogID, requestID, judgeModel, i+1,
+			)
+			continue
+		}
+		return judge, attempts, nil
 	}
-	return judge, nil
+	if lastErr != nil && len(attempts) == 0 {
+		return fusionCallResult{}, attempts, lastErr
+	}
+	return fusionCallResult{}, attempts, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion judges produced no usable non-refusal analysis", Context: "fusion.judge"}
 }
 
 func runFusionCall(
@@ -778,10 +840,14 @@ func fusionMetadata(input map[string]any, stage string, model string) map[string
 	return out
 }
 
-func fusionUsageTotals(panel []fusionCallResult, judge fusionCallResult, final fusionCallResult) (int, int) {
-	inputs := judge.InputTokens + final.InputTokens
-	outputs := judge.OutputTokens + final.OutputTokens
+func fusionUsageTotals(panel []fusionCallResult, judges []fusionCallResult, final fusionCallResult) (int, int) {
+	inputs := final.InputTokens
+	outputs := final.OutputTokens
 	for _, item := range panel {
+		inputs += item.InputTokens
+		outputs += item.OutputTokens
+	}
+	for _, item := range judges {
 		inputs += item.InputTokens
 		outputs += item.OutputTokens
 	}
@@ -829,6 +895,45 @@ func selectFusionPanelResult(panel []fusionCallResult, strategy string) (fusionC
 	return fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion panel produced no usable response", Context: "fusion.panel"}
 }
 
+func fusionPanelForSynthesis(panel []fusionCallResult, strategy string) ([]fusionCallResult, error) {
+	if strategy != "synthesize_non_refusals" {
+		return panel, nil
+	}
+	filtered := make([]fusionCallResult, 0, len(panel))
+	for _, item := range panel {
+		if fusionPanelResultUsable(item) && !fusionLooksLikeRefusal(item.Result.Text) {
+			filtered = append(filtered, item)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion panel produced no non-refusal responses", Context: "fusion.panel"}
+	}
+	return filtered, nil
+}
+
+func fusionJudgeModels(config fusionConfig, fallback string) ([]string, error) {
+	raw := config.JudgeModels
+	if len(raw) == 0 {
+		if config.JudgeModel != "" {
+			raw = []string{config.JudgeModel}
+		} else {
+			raw = []string{fallback}
+		}
+	}
+	if len(raw) == 0 || len(raw) > 8 {
+		return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion judge_models must contain 1-8 models", Context: "judge_models"}
+	}
+	out := make([]string, 0, len(raw))
+	for _, model := range raw {
+		resolved := resolveFusionModelID(model)
+		if resolved == "" {
+			return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion judge_models must contain non-empty model ids", Context: "judge_models"}
+		}
+		out = append(out, resolved)
+	}
+	return out, nil
+}
+
 func fusionPanelResultUsable(item fusionCallResult) bool {
 	if item.Result.FinishReason == "error" || item.Result.FinishReason == "empty" {
 		return false
@@ -837,6 +942,16 @@ func fusionPanelResultUsable(item fusionCallResult) bool {
 		return false
 	}
 	return strings.TrimSpace(item.Result.Text) != "" || len(item.Result.ToolCalls) > 0
+}
+
+func fusionJudgeResultUsable(item fusionCallResult) bool {
+	if item.Result.FinishReason == "error" || item.Result.FinishReason == "empty" {
+		return false
+	}
+	if fusionPanelPlaceholder(item.Result.Text) {
+		return false
+	}
+	return strings.TrimSpace(item.Result.Text) != ""
 }
 
 func fusionPanelPlaceholder(text string) bool {

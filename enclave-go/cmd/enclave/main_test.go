@@ -600,6 +600,234 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 	}
 }
 
+func TestServeOneTrustedRouterFusionSynthesizesOnlyNonRefusals(t *testing.T) {
+	bearer := "test-user-bearer"
+	var authorizeCalls []map[string]any
+	var settleCalls []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode authorize payload: %v", err)
+			}
+			authorizeCalls = append(authorizeCalls, payload)
+			model := payload["model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id":       fmt.Sprintf("auth_fusion_%d", len(authorizeCalls)),
+				"workspace_id":           "ws_1",
+				"api_key_hash":           "key_1",
+				"model":                  model,
+				"endpoint_id":            model + "@test/prepaid",
+				"provider":               "test",
+				"usage_type":             "Credits",
+				"limit_usage_type":       "Credits",
+				"route_candidates":       []any{},
+				"broadcast_destinations": []any{},
+			}})
+		case "/internal/gateway/settle":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode settle payload: %v", err)
+			}
+			settleCalls = append(settleCalls, payload)
+			model, _ := payload["selected_model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"settled":           true,
+				"generation_id":     fmt.Sprintf("gen_fusion_%d", len(settleCalls)),
+				"cost_microdollars": 1,
+				"model":             model,
+				"provider":          "test",
+			}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fusionEchoLLM{refusalModels: map[string]bool{"model/refuses": true}}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["model/refuses","model/answers"],"model":"model/final","type":"synthesize_non_refusals","max_completion_tokens":64}}],"max_tokens":32}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "final answer from model/final") {
+		t.Fatalf("fusion did not synthesize final answer: %s", body)
+	}
+	if len(authorizeCalls) != 4 || len(settleCalls) != 4 {
+		t.Fatalf("calls authorize=%d settle=%d, want panel+panel+judge+final", len(authorizeCalls), len(settleCalls))
+	}
+	if len(streamer.calls) != 4 {
+		t.Fatalf("provider calls = %#v, want 4", streamer.calls)
+	}
+	judgeCall := streamer.calls[2]
+	finalCall := streamer.calls[3]
+	for _, prompt := range []string{judgeCall.LastMessage, finalCall.LastMessage} {
+		if strings.Contains(prompt, "model/refuses") || strings.Contains(prompt, "I'm sorry, but I can't help with that.") {
+			t.Fatalf("synthesis prompt included refusal evidence: %s", prompt)
+		}
+		if !strings.Contains(prompt, "model/answers") || !strings.Contains(prompt, "analysis from model/answers") {
+			t.Fatalf("synthesis prompt omitted non-refusal evidence: %s", prompt)
+		}
+	}
+}
+
+func TestServeOneTrustedRouterFusionFallsBackAcrossJudgeModels(t *testing.T) {
+	bearer := "test-user-bearer"
+	var authorizeCalls []map[string]any
+	var settleCalls []map[string]any
+	var refundCalls []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode authorize payload: %v", err)
+			}
+			authorizeCalls = append(authorizeCalls, payload)
+			model := payload["model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id":       fmt.Sprintf("auth_fusion_%d", len(authorizeCalls)),
+				"workspace_id":           "ws_1",
+				"api_key_hash":           "key_1",
+				"model":                  model,
+				"endpoint_id":            model + "@test/prepaid",
+				"provider":               "test",
+				"usage_type":             "Credits",
+				"limit_usage_type":       "Credits",
+				"route_candidates":       []any{},
+				"broadcast_destinations": []any{},
+			}})
+		case "/internal/gateway/settle":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode settle payload: %v", err)
+			}
+			settleCalls = append(settleCalls, payload)
+			model, _ := payload["selected_model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"settled":           true,
+				"generation_id":     fmt.Sprintf("gen_fusion_%d", len(settleCalls)),
+				"cost_microdollars": 1,
+				"model":             model,
+				"provider":          "test",
+			}})
+		case "/internal/gateway/refund":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode refund payload: %v", err)
+			}
+			refundCalls = append(refundCalls, payload)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fusionEchoLLM{
+		failModels:    map[string]bool{"model/judge-fails": true},
+		refusalModels: map[string]bool{"model/judge-refuses": true},
+	}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["model/panel"],"model":"model/final","fallback_judges":["model/judge-fails","model/judge-refuses","model/judge-good"],"max_completion_tokens":64}}],"max_tokens":32}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "final answer from model/final") {
+		t.Fatalf("fusion did not synthesize final answer: %s", body)
+	}
+	if len(authorizeCalls) != 5 {
+		t.Fatalf("authorize calls = %d, want panel+3 judges+final", len(authorizeCalls))
+	}
+	if len(settleCalls) != 4 {
+		t.Fatalf("settle calls = %d, want panel+refusal judge+good judge+final", len(settleCalls))
+	}
+	if len(refundCalls) != 1 {
+		t.Fatalf("refund calls = %d, want failed judge refund", len(refundCalls))
+	}
+	wantRoutes := []string{"fusion.panel", "fusion.judge", "fusion.judge", "fusion.judge", "fusion.final"}
+	for i, want := range wantRoutes {
+		if got, _ := authorizeCalls[i]["route_type"].(string); got != want {
+			t.Fatalf("authorize[%d].route_type = %q, want %q", i, got, want)
+		}
+	}
+	if len(streamer.calls) != 7 {
+		t.Fatalf("provider calls = %#v, want 7 including upstream retries", streamer.calls)
+	}
+	gotModels := []string{}
+	for _, call := range streamer.calls {
+		gotModels = append(gotModels, call.Model)
+	}
+	wantModels := []string{"model/panel", "model/judge-fails", "model/judge-fails", "model/judge-fails", "model/judge-refuses", "model/judge-good", "model/final"}
+	if strings.Join(gotModels, ",") != strings.Join(wantModels, ",") {
+		t.Fatalf("provider models = %#v, want %#v", gotModels, wantModels)
+	}
+	finalPrompt := streamer.calls[len(streamer.calls)-1].LastMessage
+	if !strings.Contains(finalPrompt, "analysis from model/judge-good") {
+		t.Fatalf("final prompt did not use successful judge analysis: %s", finalPrompt)
+	}
+	if strings.Contains(finalPrompt, "model/judge-refuses") || strings.Contains(finalPrompt, "I'm sorry, but I can't help with that.") {
+		t.Fatalf("final prompt included rejected judge output: %s", finalPrompt)
+	}
+}
+
 func TestServeOneTrustedRouterFusionContinuesAfterOnePanelFails(t *testing.T) {
 	bearer := "test-user-bearer"
 	var authorizeCalls []map[string]any
@@ -832,6 +1060,91 @@ func TestSelectFusionPanelResultFallsBackWhenAllRefuse(t *testing.T) {
 	}
 	if selected.Model != "model_refusal" {
 		t.Fatalf("selected model = %q, want model_refusal", selected.Model)
+	}
+}
+
+func TestFusionPanelForSynthesisFiltersRefusalsAndPlaceholders(t *testing.T) {
+	panel := []fusionCallResult{
+		{
+			Model: "model_refusal",
+			Result: adapter.StreamResult{
+				Text:         "I'm sorry, but I can't help with that.",
+				FinishReason: "stop",
+			},
+		},
+		{
+			Model: "model_empty",
+			Result: adapter.StreamResult{
+				Text:         "[panel member 2, model model_empty returned an empty answer; finish_reason=stop]",
+				FinishReason: "empty",
+			},
+		},
+		{
+			Model: "model_answer",
+			Result: adapter.StreamResult{
+				Text:         "Here is useful evidence.",
+				FinishReason: "stop",
+			},
+		},
+	}
+	filtered, err := fusionPanelForSynthesis(panel, "synthesize_non_refusals")
+	if err != nil {
+		t.Fatalf("fusionPanelForSynthesis: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].Model != "model_answer" {
+		t.Fatalf("filtered panel = %#v, want only model_answer", filtered)
+	}
+}
+
+func TestFusionPanelForSynthesisRejectsAllRefusals(t *testing.T) {
+	panel := []fusionCallResult{
+		{
+			Model: "model_refusal",
+			Result: adapter.StreamResult{
+				Text:         "I cannot provide that.",
+				FinishReason: "stop",
+			},
+		},
+	}
+	_, err := fusionPanelForSynthesis(panel, "synthesize_non_refusals")
+	if err == nil {
+		t.Fatal("fusionPanelForSynthesis returned nil error")
+	}
+	var adapterErr *adapter.AdapterError
+	if !asAdapterErr(err, &adapterErr) || adapterErr.Status != 502 || !strings.Contains(adapterErr.Message, "no non-refusal") {
+		t.Fatalf("error = %#v, want 502 no non-refusal", err)
+	}
+}
+
+func TestFusionJudgeModelsRejectsMoreThanEight(t *testing.T) {
+	_, err := fusionJudgeModels(fusionConfig{
+		JudgeModels: []string{
+			"model/1",
+			"model/2",
+			"model/3",
+			"model/4",
+			"model/5",
+			"model/6",
+			"model/7",
+			"model/8",
+			"model/9",
+		},
+	}, "model/fallback")
+	if err == nil {
+		t.Fatal("fusionJudgeModels returned nil error")
+	}
+	var adapterErr *adapter.AdapterError
+	if !asAdapterErr(err, &adapterErr) || adapterErr.Status != 400 || adapterErr.Context != "judge_models" {
+		t.Fatalf("error = %#v, want 400 judge_models", err)
+	}
+}
+
+func TestFusionJudgeResultRequiresText(t *testing.T) {
+	if fusionJudgeResultUsable(fusionCallResult{Result: adapter.StreamResult{ToolCalls: []types.ToolCall{{ID: "call_1"}}}}) {
+		t.Fatal("tool-only judge result was usable")
+	}
+	if !fusionJudgeResultUsable(fusionCallResult{Result: adapter.StreamResult{Text: `{"final_guidance":"use answer"}`}}) {
+		t.Fatal("text judge result was unusable")
 	}
 }
 
@@ -1472,8 +1785,9 @@ type fusionEchoCall struct {
 }
 
 type fusionEchoLLM struct {
-	calls      []fusionEchoCall
-	failModels map[string]bool
+	calls         []fusionEchoCall
+	failModels    map[string]bool
+	refusalModels map[string]bool
 }
 
 func (f *fusionEchoLLM) InvokeStreaming(
@@ -1499,6 +1813,8 @@ func (f *fusionEchoLLM) InvokeStreaming(
 	text := "analysis from " + req.Model
 	if len(req.Messages) > 0 && strings.Contains(types.ContentText(req.Messages[len(req.Messages)-1].Content), "TrustedRouter Fusion panel answers and judge analysis follow") {
 		text = "final answer from " + req.Model
+	} else if f.refusalModels[req.Model] {
+		text = "I'm sorry, but I can't help with that."
 	}
 	_, err := fmt.Fprintf(out, `event: message_start
 data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"%s","stop_reason":null,"usage":{"input_tokens":3,"output_tokens":0}}}
