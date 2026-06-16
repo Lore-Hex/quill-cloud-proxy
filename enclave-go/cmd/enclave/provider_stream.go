@@ -28,6 +28,7 @@ func invokeProviderStream(
 	authorization *trustedrouter.Authorization,
 	selectedRoute *selectedRouteTracker,
 	requestLogID string,
+	useLongLastCandidateBudget bool,
 ) {
 	options := invokeOptions
 	if len(options) == 0 {
@@ -49,7 +50,7 @@ func invokeProviderStream(
 		// reasoning first bytes.
 		isLast := i == len(options)-1
 		budget := firstByteBudget
-		if isLast {
+		if isLast && useLongLastCandidateBudget {
 			budget = finalCandidateFirstByteBudget
 		}
 
@@ -110,7 +111,7 @@ func invokeProviderStream(
 			// Retry the same provider on a transient pre-output failure, but only on
 			// the LAST candidate — earlier candidates fall over to the next one
 			// instead. Safe: no bytes written yet, so no duplicate output / billing.
-			if err == nil || candidateWriter.BytesWritten() > 0 || !isLast ||
+			if err == nil || candidateWriter.BytesWritten() > 0 || !isLast || !useLongLastCandidateBudget ||
 				tryN >= maxTransientUpstreamRetries || !isTransientUpstreamError(err) {
 				break
 			}

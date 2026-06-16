@@ -569,7 +569,7 @@ func serveResponsesNonStreaming(
 	requestID := newResponseID()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
-	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID)
+	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true)
 	result, err := adapter.CollectAnthropicText(pr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_collect_failed model=%q err=%v\n", req.Model, err)
@@ -658,7 +658,7 @@ func serveChatNonStreaming(
 	requestID := newRequestID()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
-	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID)
+	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true)
 	result, err := adapter.CollectAnthropicText(pr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_collect_failed model=%q err=%v\n", req.Model, err)
@@ -733,7 +733,7 @@ func serveStreaming(
 	providerDone := make(chan struct{})
 	go func() {
 		defer close(providerDone)
-		invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID)
+		invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true)
 	}()
 	if trGateway != nil && trGateway.Enabled() && len(invokeOptions) > 1 {
 		select {
@@ -884,7 +884,7 @@ func serveMessages(
 	selectedRoute := newSelectedRouteTracker()
 
 	if !native.Stream {
-		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID)
+		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID, true)
 		result, err := adapter.CollectAnthropicText(pr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.messages_collect_failed model=%q err=%v\n", req.Model, err)
@@ -935,7 +935,7 @@ func serveMessages(
 	providerDone := make(chan struct{})
 	go func() {
 		defer close(providerDone)
-		invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID)
+		invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID, true)
 	}()
 	if trEnabled && len(invokeOptions) > 1 {
 		select {

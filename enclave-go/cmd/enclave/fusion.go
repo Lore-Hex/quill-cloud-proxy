@@ -48,6 +48,7 @@ type fusionConfig struct {
 	AnalysisModels      []string
 	JudgeModel          string
 	JudgeModels         []string
+	FinalModels         []string
 	MaxToolCalls        int
 	MaxCompletionTokens int
 	SelectionStrategy   string
@@ -112,23 +113,19 @@ func maybeServeFusion(
 	for i, model := range config.AnalysisModels {
 		config.AnalysisModels[i] = resolveFusionModelID(model)
 	}
-	finalModel := req.Model
-	if finalModel == trustedRouterFusionModel {
-		if config.JudgeModel != "" {
-			finalModel = resolveFusionModelID(config.JudgeModel)
-		} else {
-			finalModel = resolveFusionModelID(config.AnalysisModels[0])
-		}
+	finalModels, err := fusionFinalModels(config, req.Model, config.AnalysisModels[0])
+	if err != nil {
+		return true, err
 	}
-	judgeModels, err := fusionJudgeModels(config, finalModel)
+	judgeModels, err := fusionJudgeModels(config, finalModels[0])
 	if err != nil {
 		return true, err
 	}
 
 	if req.Stream {
-		serveFusionStreaming(ctx, conn, br, req, config, finalModel, judgeModels, trGateway, secretCache, bearer, originalInput, requestLogID)
+		serveFusionStreaming(ctx, conn, br, req, config, finalModels, judgeModels, trGateway, secretCache, bearer, originalInput, requestLogID)
 	} else {
-		serveFusionNonStreaming(ctx, conn, br, req, config, finalModel, judgeModels, trGateway, secretCache, bearer, originalInput, requestLogID)
+		serveFusionNonStreaming(ctx, conn, br, req, config, finalModels, judgeModels, trGateway, secretCache, bearer, originalInput, requestLogID)
 	}
 	return true, nil
 }
@@ -272,6 +269,31 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 		}
 		config.JudgeModels = models
 	}
+	if modelsRaw, ok := raw["final_models"]; ok {
+		models, err := stringList(modelsRaw, "final_models")
+		if err != nil {
+			return config, err
+		}
+		config.FinalModels = models
+	} else if modelsRaw, ok := raw["fallback_final_models"]; ok {
+		models, err := stringList(modelsRaw, "fallback_final_models")
+		if err != nil {
+			return config, err
+		}
+		config.FinalModels = models
+	} else if modelsRaw, ok := raw["synthesis_models"]; ok {
+		models, err := stringList(modelsRaw, "synthesis_models")
+		if err != nil {
+			return config, err
+		}
+		config.FinalModels = models
+	} else if modelsRaw, ok := raw["synthesizer_models"]; ok {
+		models, err := stringList(modelsRaw, "synthesizer_models")
+		if err != nil {
+			return config, err
+		}
+		config.FinalModels = models
+	}
 	if n, ok, err := intField(raw, "max_tool_calls"); err != nil {
 		return config, err
 	} else if ok {
@@ -305,6 +327,9 @@ func mergeFusionConfig(base, override fusionConfig) fusionConfig {
 	if len(override.JudgeModels) > 0 {
 		base.JudgeModels = append([]string(nil), override.JudgeModels...)
 	}
+	if len(override.FinalModels) > 0 {
+		base.FinalModels = append([]string(nil), override.FinalModels...)
+	}
 	if override.MaxToolCalls != 0 {
 		base.MaxToolCalls = override.MaxToolCalls
 	}
@@ -326,7 +351,7 @@ func serveFusionNonStreaming(
 	br llm.Client,
 	req *types.OpenAIChatRequest,
 	config fusionConfig,
-	finalModel string,
+	finalModels []string,
 	judgeModels []string,
 	trGateway *trustedrouter.Client,
 	secretCache *byokcache.Cache,
@@ -350,7 +375,7 @@ func serveFusionNonStreaming(
 		totalIn, totalOut := fusionPanelUsageTotals(panel)
 		responseModel := selected.Model
 		if responseModel == "" {
-			responseModel = selectedRouteModel(selected, finalModel)
+			responseModel = selectedRouteModel(selected, finalModels[0])
 		}
 		var body bytes.Buffer
 		if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, selected.Result.Text, selected.Result.ToolCalls, totalIn, totalOut, time.Now().Unix(), selected.Result.FinishReason); err != nil {
@@ -374,16 +399,15 @@ func serveFusionNonStreaming(
 		writeFusionError(ctx, conn, trGateway, err)
 		return
 	}
-	finalReq := fusionFinalRequest(req, finalModel, judge.Result.Text, synthesisPanel)
-	final, err := runFusionCall(ctx, br, finalReq, trGateway, secretCache, bearer, "fusion.final", requestID+":final", requestLogID, originalInput, true)
+	final, finalAttempts, err := runFusionFinal(ctx, br, req, finalModels, judge.Result.Text, synthesisPanel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput)
 	if err != nil {
 		writeFusionError(ctx, conn, trGateway, err)
 		return
 	}
-	totalIn, totalOut := fusionUsageTotals(panel, judgeAttempts, final)
+	totalIn, totalOut := fusionUsageTotals(panel, judgeAttempts, finalAttempts...)
 	responseModel := final.Model
 	if responseModel == "" {
-		responseModel = finalModel
+		responseModel = finalModels[0]
 	}
 	var body bytes.Buffer
 	if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, final.Result.Text, final.Result.ToolCalls, totalIn, totalOut, time.Now().Unix(), final.Result.FinishReason); err != nil {
@@ -403,7 +427,7 @@ func serveFusionStreaming(
 	br llm.Client,
 	req *types.OpenAIChatRequest,
 	config fusionConfig,
-	finalModel string,
+	finalModels []string,
 	judgeModels []string,
 	trGateway *trustedrouter.Client,
 	secretCache *byokcache.Cache,
@@ -417,20 +441,11 @@ func serveFusionStreaming(
 		writeFusionError(ctx, conn, trGateway, err)
 		return
 	}
-	finalReq := fusionFinalRequest(req, finalModel, judge.Result.Text, panel)
-	finalReq.Stream = true
-	authz, options, err := authorizeFusionCall(ctx, finalReq, trGateway, secretCache, bearer, "fusion.final", requestID+":final")
+	err = serveFusionFinalStreaming(ctx, conn, br, req, finalModels, judge.Result.Text, panel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput)
 	if err != nil {
 		writeFusionError(ctx, conn, trGateway, err)
 		return
 	}
-	anthropicReq, err := adapter.ToAnthropic(finalReq, finalReq.Model)
-	if err != nil {
-		writeFusionError(ctx, conn, trGateway, err)
-		return
-	}
-	requestStarted := time.Now()
-	serveStreaming(ctx, conn, br, finalReq, anthropicReq, options, trGateway, authz, secretCache, requestStarted, originalInput, "chat.completions", requestLogID)
 	_, _, _ = panel, judge, requestID
 }
 
@@ -560,6 +575,60 @@ func runFusionJudge(
 	return fusionCallResult{}, attempts, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion judges produced no usable non-refusal analysis", Context: "fusion.judge"}
 }
 
+func runFusionFinal(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	finalModels []string,
+	judgeJSON string,
+	panel []fusionCallResult,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+	originalInput any,
+) (fusionCallResult, []fusionCallResult, error) {
+	attempts := make([]fusionCallResult, 0, len(finalModels))
+	var lastErr error
+	for i, finalModel := range finalModels {
+		finalReq := fusionFinalRequest(req, finalModel, judgeJSON, panel)
+		idempotencyKey := requestID + ":final"
+		if i > 0 {
+			idempotencyKey = fmt.Sprintf("%s:final:%d", requestID, i)
+		}
+		final, err := runFusionCallValidated(
+			ctx,
+			br,
+			finalReq,
+			trGateway,
+			secretCache,
+			bearer,
+			"fusion.final",
+			idempotencyKey,
+			requestLogID,
+			originalInput,
+			true,
+			fusionValidateFinalResult,
+			i == len(finalModels)-1,
+		)
+		if err != nil {
+			lastErr = err
+			fmt.Fprintf(os.Stderr,
+				"enclave.fusion_final_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
+				requestLogID, requestID, finalModel, i+1, err.Error(),
+			)
+			continue
+		}
+		attempts = append(attempts, final)
+		return final, attempts, nil
+	}
+	if lastErr != nil {
+		return fusionCallResult{}, attempts, lastErr
+	}
+	return fusionCallResult{}, attempts, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion final models produced no usable non-refusal answer", Context: "fusion.final"}
+}
+
 func runFusionCall(
 	ctx context.Context,
 	br llm.Client,
@@ -572,6 +641,24 @@ func runFusionCall(
 	requestLogID string,
 	originalInput any,
 	broadcastContent bool,
+) (fusionCallResult, error) {
+	return runFusionCallValidated(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, nil, true)
+}
+
+func runFusionCallValidated(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	routeType string,
+	idempotencyKey string,
+	requestLogID string,
+	originalInput any,
+	broadcastContent bool,
+	validateBeforeSettle func(adapter.StreamResult) error,
+	useLongLastCandidateBudget bool,
 ) (fusionCallResult, error) {
 	requestStarted := time.Now()
 	authz, options, err := authorizeFusionCall(ctx, req, trGateway, secretCache, bearer, routeType, idempotencyKey)
@@ -590,7 +677,7 @@ func runFusionCall(
 	}
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
-	go invokeProviderStream(ctx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID)
+	go invokeProviderStream(ctx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget)
 	result, err := adapter.CollectAnthropicText(pr)
 	if err != nil {
 		if trGateway != nil && trGateway.Enabled() {
@@ -605,6 +692,14 @@ func runFusionCall(
 				_ = trGateway.Refund(ctx, authz, 502, "empty_output", time.Since(requestStarted).Seconds(), req.Metadata)
 			}
 			return fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion final model returned an empty visible answer", Context: "fusion.final"}
+		}
+	}
+	if validateBeforeSettle != nil {
+		if err := validateBeforeSettle(result); err != nil {
+			if trGateway != nil && trGateway.Enabled() {
+				_ = trGateway.Refund(ctx, authz, statusFromControlPlaneError(err), "fusion_validation_error", time.Since(requestStarted).Seconds(), req.Metadata)
+			}
+			return fusionCallResult{}, err
 		}
 	}
 	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
@@ -657,6 +752,168 @@ func runFusionCall(
 		Authorization:    authz,
 		SettlementResult: settleResult,
 	}, nil
+}
+
+func serveFusionFinalStreaming(
+	ctx context.Context,
+	conn io.Writer,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	finalModels []string,
+	judgeJSON string,
+	panel []fusionCallResult,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+	originalInput any,
+) error {
+	var lastErr error
+	for i, finalModel := range finalModels {
+		finalReq := fusionFinalRequest(req, finalModel, judgeJSON, panel)
+		finalReq.Stream = true
+		idempotencyKey := requestID + ":final"
+		if i > 0 {
+			idempotencyKey = fmt.Sprintf("%s:final:%d", requestID, i)
+		}
+		authz, options, err := authorizeFusionCall(ctx, finalReq, trGateway, secretCache, bearer, "fusion.final", idempotencyKey)
+		if err != nil {
+			lastErr = err
+			fmt.Fprintf(os.Stderr,
+				"enclave.fusion_final_stream_authorize_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
+				requestLogID, requestID, finalModel, i+1, err.Error(),
+			)
+			continue
+		}
+		anthropicReq, err := adapter.ToAnthropic(finalReq, finalReq.Model)
+		if err != nil {
+			if trGateway != nil && trGateway.Enabled() {
+				_ = trGateway.Refund(ctx, authz, 400, "fusion_adapter_error", 0.001, finalReq.Metadata)
+			}
+			lastErr = err
+			continue
+		}
+		committed, err := serveFusionFinalStreamingAttempt(ctx, conn, br, finalReq, anthropicReq, options, trGateway, authz, secretCache, time.Now(), originalInput, requestLogID, i == len(finalModels)-1)
+		if committed {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+			fmt.Fprintf(os.Stderr,
+				"enclave.fusion_final_stream_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
+				requestLogID, requestID, finalModel, i+1, err.Error(),
+			)
+			continue
+		}
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion final models produced no streaming answer", Context: "fusion.final"}
+}
+
+func serveFusionFinalStreamingAttempt(
+	ctx context.Context,
+	conn io.Writer,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	anthropicReq *types.AnthropicMessagesRequest,
+	invokeOptions []llm.InvokeOptions,
+	trGateway *trustedrouter.Client,
+	authorization *trustedrouter.Authorization,
+	secretCache *byokcache.Cache,
+	requestStarted time.Time,
+	originalInput any,
+	requestLogID string,
+	useLongLastCandidateBudget bool,
+) (bool, error) {
+	responseID := newRequestID()
+	pr, pw := io.Pipe()
+	selectedRoute := newSelectedRouteTracker()
+	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, useLongLastCandidateBudget)
+
+	first := make([]byte, 4096)
+	var n int
+	var err error
+	for n == 0 && err == nil {
+		n, err = pr.Read(first)
+	}
+	if err != nil {
+		if trGateway != nil && trGateway.Enabled() {
+			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
+		}
+		_ = pr.Close()
+		return false, err
+	}
+	streamModel := selectedRoute.Model(req.Model, authorization)
+	if streamModel != "" {
+		req.Model = streamModel
+	}
+	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
+		_ = pr.Close()
+		return true, err
+	}
+
+	chunkW := newChunkedWriter(conn)
+	defer chunkW.Close()
+	statsW := newStreamStatsWriter(chunkW)
+	reader := io.MultiReader(bytes.NewReader(first[:n]), pr)
+	result, err := adapter.TransformStreamCaptureWithOptions(reader, statsW, responseID, req.Model, chatIncludeUsage(req))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
+		if trGateway != nil && trGateway.Enabled() {
+			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
+		}
+		if statsW.BytesWritten() == 0 {
+			_ = writeStreamingProviderError(statsW, "chat.completions", responseID, req.Model)
+		}
+		return true, err
+	}
+	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+		result,
+		trustedrouter.EstimateInputTokens(req),
+		trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
+	)
+	usage := trustedrouter.Usage{
+		RequestID:         responseID,
+		InputTokens:       inputTokens,
+		OutputTokens:      outputTokens,
+		ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
+		FirstTokenSeconds: statsW.FirstWriteSeconds(requestStarted),
+		UsageEstimated:    usageEstimated,
+		FinishReason:      result.FinishReason,
+		Streamed:          true,
+		RouteType:         "fusion.final",
+		SelectedModel:     selectedRoute.Model(req.Model, authorization),
+		SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
+		User:              req.User,
+		SessionID:         req.SessionID,
+		Trace:             req.Trace,
+		Metadata:          req.Metadata,
+	}
+	applyCacheUsage(&usage, result)
+	if _, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, adapter.ResponsesOutputForUsage(result)); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"enclave.stream_settle_failed request_log_id=%q request_id=%q model=%q route_type=%q err=%v\n",
+			requestLogID,
+			responseID,
+			req.Model,
+			"fusion.final",
+			err,
+		)
+		settlementRetries.Enqueue(settlementRetryJob{
+			trGateway:     trGateway,
+			authorization: authorization,
+			secretCache:   secretCache,
+			usage:         usage,
+			req:           req,
+			originalInput: originalInput,
+			output:        adapter.ResponsesOutputForUsage(result),
+			requestLogID:  requestLogID,
+		})
+	}
+	return true, nil
 }
 
 func authorizeFusionCall(
@@ -840,9 +1097,13 @@ func fusionMetadata(input map[string]any, stage string, model string) map[string
 	return out
 }
 
-func fusionUsageTotals(panel []fusionCallResult, judges []fusionCallResult, final fusionCallResult) (int, int) {
-	inputs := final.InputTokens
-	outputs := final.OutputTokens
+func fusionUsageTotals(panel []fusionCallResult, judges []fusionCallResult, finals ...fusionCallResult) (int, int) {
+	var inputs int
+	var outputs int
+	for _, final := range finals {
+		inputs += final.InputTokens
+		outputs += final.OutputTokens
+	}
 	for _, item := range panel {
 		inputs += item.InputTokens
 		outputs += item.OutputTokens
@@ -911,6 +1172,32 @@ func fusionPanelForSynthesis(panel []fusionCallResult, strategy string) ([]fusio
 	return filtered, nil
 }
 
+func fusionFinalModels(config fusionConfig, requestedModel string, fallback string) ([]string, error) {
+	raw := config.FinalModels
+	if len(raw) == 0 {
+		switch {
+		case config.JudgeModel != "":
+			raw = []string{config.JudgeModel}
+		case requestedModel != "" && requestedModel != trustedRouterFusionModel:
+			raw = []string{requestedModel}
+		default:
+			raw = []string{fallback}
+		}
+	}
+	if len(raw) == 0 || len(raw) > 8 {
+		return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion final_models must contain 1-8 models", Context: "final_models"}
+	}
+	out := make([]string, 0, len(raw))
+	for _, model := range raw {
+		resolved := resolveFusionModelID(model)
+		if resolved == "" {
+			return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion final_models must contain non-empty model ids", Context: "final_models"}
+		}
+		out = append(out, resolved)
+	}
+	return out, nil
+}
+
 func fusionJudgeModels(config fusionConfig, fallback string) ([]string, error) {
 	raw := config.JudgeModels
 	if len(raw) == 0 {
@@ -952,6 +1239,16 @@ func fusionJudgeResultUsable(item fusionCallResult) bool {
 		return false
 	}
 	return strings.TrimSpace(item.Result.Text) != ""
+}
+
+func fusionValidateFinalResult(result adapter.StreamResult) error {
+	if strings.TrimSpace(result.Text) == "" && len(result.ToolCalls) == 0 {
+		return &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion final model returned an empty visible answer", Context: "fusion.final"}
+	}
+	if strings.TrimSpace(result.Text) != "" && fusionLooksLikeRefusal(result.Text) {
+		return &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion final model returned a refusal", Context: "fusion.final"}
+	}
+	return nil
 }
 
 func fusionPanelPlaceholder(text string) bool {
