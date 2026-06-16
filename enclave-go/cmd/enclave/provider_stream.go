@@ -306,11 +306,14 @@ var finalCandidateFirstByteBudget = func() time.Duration {
 const maxTransientUpstreamRetries = 2
 
 func transientUpstreamBackoff(tryN int) time.Duration {
-	d := time.Duration(1<<uint(tryN)) * time.Second // 1s, 2s, 4s, ...
-	if d > 8*time.Second {
-		d = 8 * time.Second
+	switch {
+	case tryN <= 0:
+		return 1 * time.Second
+	case tryN == 1:
+		return 2 * time.Second
+	default:
+		return 4 * time.Second
 	}
-	return d
 }
 
 // isTransientUpstreamError reports whether a pre-output failure is worth retrying
