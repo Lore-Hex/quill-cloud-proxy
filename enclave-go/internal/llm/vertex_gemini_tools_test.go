@@ -4,6 +4,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -111,6 +112,41 @@ func TestVertexGeminiThoughtSignatureRoundTrips(t *testing.T) {
 	fr := contents[2]["parts"].([]map[string]any)[0]["functionResponse"].(map[string]any)
 	if fr["name"] != "web_search" {
 		t.Fatalf("functionResponse name = %v, want web_search (id correlation w/ sig)", fr["name"])
+	}
+}
+
+// TestVertexGeminiPlaceholderSignatureForUnsignedCall covers the Fusion-panel
+// case: a history functionCall that carries NO Gemini thought_signature (its tool
+// id has no geminiSignatureDelimiter, e.g. a run_shell call synthesized by another
+// model) must still get a valid-base64 thoughtSignature, or Gemini 3.x 400s
+// ("Function call is missing a thought_signature"). Real signatures still win.
+func TestVertexGeminiPlaceholderSignatureForUnsignedCall(t *testing.T) {
+	req := &qtypes.OpenAIChatRequest{
+		Messages: []qtypes.OpenAIChatMessage{
+			{Role: "user", Content: "research it"},
+			{Role: "assistant", ToolCalls: []qtypes.OpenAIToolCall{{
+				ID:       "call_xyz", // no delimiter -> no real signature
+				Type:     "function",
+				Function: qtypes.OpenAIToolFunction{Name: "run_shell", Arguments: `{"cmd":"echo hi"}`},
+			}}},
+			{Role: "tool", ToolCallID: "call_xyz", Content: "hi"},
+		},
+	}
+	payload, err := vertexGeminiPayload(context.Background(), req, nil, "gemini-3.1-pro-preview")
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	contents := payload["contents"].([]map[string]any)
+	part := contents[1]["parts"].([]map[string]any)[0]
+	got, ok := part["thoughtSignature"].(string)
+	if !ok || got == "" {
+		t.Fatalf("thoughtSignature missing on unsigned call; Gemini would 400 (got %v)", part["thoughtSignature"])
+	}
+	if got != geminiPlaceholderSignature {
+		t.Fatalf("thoughtSignature = %q, want placeholder %q", got, geminiPlaceholderSignature)
+	}
+	if _, err := base64.StdEncoding.DecodeString(got); err != nil {
+		t.Fatalf("placeholder %q is not valid base64 (Gemini requires TYPE_BYTES): %v", got, err)
 	}
 }
 

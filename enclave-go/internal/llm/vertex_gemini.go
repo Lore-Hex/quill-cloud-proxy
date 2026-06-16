@@ -156,9 +156,14 @@ func vertexGeminiPayload(
 						"args": geminiToolArgs(call.Function.Arguments),
 					},
 				}
-				if signature != "" {
-					part["thoughtSignature"] = signature
+				// Gemini 3.x rejects a history functionCall with no thought_signature.
+				// Echo the real one when we captured it (solo Gemini round-trip); else
+				// attach a valid-base64 placeholder so cross-model histories (Fusion
+				// panels replaying another model's tool calls) are accepted.
+				if signature == "" {
+					signature = geminiPlaceholderSignature
 				}
+				part["thoughtSignature"] = signature
 				parts = append(parts, part)
 			}
 			if len(parts) == 0 {
@@ -521,6 +526,20 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 // otherwise), but OpenAI tool_calls have no field for it. ":" never appears in
 // base64, so this delimiter cannot collide with a real signature.
 const geminiSignatureDelimiter = "::gts::"
+
+// geminiPlaceholderSignature is a valid-base64 sentinel attached to functionCall
+// parts in history that carry NO real Gemini thought_signature. Gemini 3.x hard-
+// rejects a functionCall in history with no thought_signature (400 "Function call
+// is missing a thought_signature"), which broke the Fusion panel: it replays the
+// caller's multi-turn tool history (run_shell calls synthesized by a DIFFERENT
+// model / the fuser) to each Gemini panelist, so those calls never had a Gemini
+// signature to echo. The field is TYPE_BYTES and Gemini validates only that it is
+// syntactically base64 — it does NOT cryptographically verify the bytes on replay.
+// Verified live against gemini-3.1-pro-preview and gemini-3.5-flash: no signature
+// -> 400; non-base64 -> 400; ANY valid base64 ("skip", "AAAA") -> accepted and the
+// model answers normally. Real signatures (solo Gemini path, encoded via
+// geminiSignatureDelimiter in the tool id) always take precedence over this.
+const geminiPlaceholderSignature = "c2tpcA==" // base64("skip")
 
 func geminiSplitToolID(id string) (cleanID string, signature string) {
 	if idx := strings.Index(id, geminiSignatureDelimiter); idx != -1 {
