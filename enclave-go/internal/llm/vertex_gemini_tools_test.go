@@ -114,6 +114,48 @@ func TestVertexGeminiThoughtSignatureRoundTrips(t *testing.T) {
 	}
 }
 
+// TestVertexGeminiGroupsParallelFunctionResponses covers the parallel-call case:
+// N functionCalls in one model turn need their N functionResponses grouped into
+// ONE user content, or Vertex 400s ("number of function response parts [must]
+// equal the number of function call parts").
+func TestVertexGeminiGroupsParallelFunctionResponses(t *testing.T) {
+	req := &qtypes.OpenAIChatRequest{
+		Messages: []qtypes.OpenAIChatMessage{
+			{Role: "user", Content: "search three things"},
+			{Role: "assistant", ToolCalls: []qtypes.OpenAIToolCall{
+				{ID: "c1", Function: qtypes.OpenAIToolFunction{Name: "web_search", Arguments: `{"query":"a"}`}},
+				{ID: "c2", Function: qtypes.OpenAIToolFunction{Name: "web_search", Arguments: `{"query":"b"}`}},
+				{ID: "c3", Function: qtypes.OpenAIToolFunction{Name: "web_search", Arguments: `{"query":"c"}`}},
+			}},
+			{Role: "tool", ToolCallID: "c1", Content: "ra"},
+			{Role: "tool", ToolCallID: "c2", Content: "rb"},
+			{Role: "tool", ToolCallID: "c3", Content: "rc"},
+		},
+	}
+	payload, err := vertexGeminiPayload(context.Background(), req, nil, "gemini-3-flash-preview")
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	contents := payload["contents"].([]map[string]any)
+	// expect: user(text) , model(3 functionCalls) , user(3 functionResponses)
+	if len(contents) != 3 {
+		t.Fatalf("got %d contents, want 3 (parallel responses grouped): %+v", len(contents), contents)
+	}
+	modelParts := contents[1]["parts"].([]map[string]any)
+	if len(modelParts) != 3 {
+		t.Fatalf("model turn has %d functionCall parts, want 3", len(modelParts))
+	}
+	respParts := contents[2]["parts"].([]map[string]any)
+	if len(respParts) != 3 {
+		t.Fatalf("got %d functionResponse parts in one content, want 3 grouped", len(respParts))
+	}
+	for _, p := range respParts {
+		if _, ok := p["functionResponse"]; !ok {
+			t.Errorf("grouped part is not a functionResponse: %+v", p)
+		}
+	}
+}
+
 // TestGeminiChunkDeltaCapturesSignature covers the response side capturing the
 // signature for the round-trip.
 func TestGeminiChunkDeltaCapturesSignature(t *testing.T) {

@@ -122,15 +122,25 @@ func vertexGeminiPayload(
 			if name == "" {
 				name = "tool"
 			}
-			contents = append(contents, map[string]any{
-				"role": "user",
-				"parts": []map[string]any{{
-					"functionResponse": map[string]any{
-						"name":     name,
-						"response": map[string]any{"result": qtypes.ContentText(message.Content)},
-					},
-				}},
-			})
+			frPart := map[string]any{
+				"functionResponse": map[string]any{
+					"name":     name,
+					"response": map[string]any{"result": qtypes.ContentText(message.Content)},
+				},
+			}
+			// Gemini requires the N functionResponses answering a parallel-call
+			// turn (N functionCalls in one model content) to be GROUPED in ONE
+			// user content — else "number of function response parts [must] equal
+			// the number of function call parts" (400). Merge consecutive tool
+			// results into the previous functionResponse content.
+			if n := len(contents); n > 0 && isGeminiFunctionResponseContent(contents[n-1]) {
+				contents[n-1]["parts"] = append(contents[n-1]["parts"].([]map[string]any), frPart)
+			} else {
+				contents = append(contents, map[string]any{
+					"role":  "user",
+					"parts": []map[string]any{frPart},
+				})
+			}
 		case "assistant", "model":
 			// Any text plus assistant tool_calls -> Gemini functionCall parts.
 			parts := make([]map[string]any, 0, 1+len(message.ToolCalls))
@@ -517,6 +527,24 @@ func geminiSplitToolID(id string) (cleanID string, signature string) {
 		return id[:idx], id[idx+len(geminiSignatureDelimiter):]
 	}
 	return id, ""
+}
+
+// isGeminiFunctionResponseContent reports whether a content is a user turn whose
+// parts are all functionResponses (so the next tool result can be merged in).
+func isGeminiFunctionResponseContent(content map[string]any) bool {
+	if content["role"] != "user" {
+		return false
+	}
+	parts, ok := content["parts"].([]map[string]any)
+	if !ok || len(parts) == 0 {
+		return false
+	}
+	for _, part := range parts {
+		if _, has := part["functionResponse"]; !has {
+			return false
+		}
+	}
+	return true
 }
 
 type geminiFunctionCall struct {
