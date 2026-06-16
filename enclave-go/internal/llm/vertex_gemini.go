@@ -114,7 +114,8 @@ func vertexGeminiPayload(
 			// OpenAI tool result -> Gemini functionResponse part. Gemini needs
 			// the function NAME; OpenAI tool messages only carry tool_call_id, so
 			// correlate it from the assistant tool_calls seen earlier.
-			name := toolNameByID[message.ToolCallID]
+			cleanID, _ := geminiSplitToolID(message.ToolCallID)
+			name := toolNameByID[cleanID]
 			if name == "" {
 				name = strings.TrimSpace(message.Name)
 			}
@@ -137,13 +138,18 @@ func vertexGeminiPayload(
 				parts = append(parts, map[string]any{"text": text})
 			}
 			for _, call := range message.ToolCalls {
-				toolNameByID[call.ID] = call.Function.Name
-				parts = append(parts, map[string]any{
+				cleanID, signature := geminiSplitToolID(call.ID)
+				toolNameByID[cleanID] = call.Function.Name
+				part := map[string]any{
 					"functionCall": map[string]any{
 						"name": call.Function.Name,
 						"args": geminiToolArgs(call.Function.Arguments),
 					},
-				})
+				}
+				if signature != "" {
+					part["thoughtSignature"] = signature
+				}
+				parts = append(parts, part)
 			}
 			if len(parts) == 0 {
 				parts = append(parts, map[string]any{"text": ""})
@@ -467,6 +473,10 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 		for _, call := range calls {
 			sawTool = true
 			id := fmt.Sprintf("call_%d", toolIndex)
+			if call.Signature != "" {
+				// Carry the thought_signature back on the next turn via the id.
+				id += geminiSignatureDelimiter + call.Signature
+			}
 			if err := writeAnthropicToolStart(w, toolIndex, id, call.Name); err != nil {
 				return err
 			}
@@ -494,9 +504,25 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 	return writeAnthropicStop(w, stopReason, usage)
 }
 
+// geminiSignatureDelimiter stashes a Gemini-3 functionCall thought_signature
+// inside the OpenAI tool_call id — the only field that survives the
+// Gemini->Anthropic->OpenAI->(client)->Anthropic->Gemini round-trip. Gemini 3
+// requires the signature echoed back on every functionCall in history (a 400
+// otherwise), but OpenAI tool_calls have no field for it. ":" never appears in
+// base64, so this delimiter cannot collide with a real signature.
+const geminiSignatureDelimiter = "::gts::"
+
+func geminiSplitToolID(id string) (cleanID string, signature string) {
+	if idx := strings.Index(id, geminiSignatureDelimiter); idx != -1 {
+		return id[:idx], id[idx+len(geminiSignatureDelimiter):]
+	}
+	return id, ""
+}
+
 type geminiFunctionCall struct {
-	Name string
-	Args map[string]any
+	Name      string
+	Args      map[string]any
+	Signature string
 }
 
 func geminiChunkDelta(payload string) (string, []geminiFunctionCall, string, *openAIStreamUsage, error) {
@@ -558,7 +584,11 @@ func geminiChunkDelta(payload string) (string, []geminiFunctionCall, string, *op
 			if args == nil {
 				args = map[string]any{}
 			}
-			calls = append(calls, geminiFunctionCall{Name: name, Args: args})
+			calls = append(calls, geminiFunctionCall{
+				Name:      name,
+				Args:      args,
+				Signature: stringValue(part["thoughtSignature"]),
+			})
 		}
 	}
 	return text.String(), calls, chunk.Candidates[0].FinishReason, usage, nil

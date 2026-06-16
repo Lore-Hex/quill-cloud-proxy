@@ -82,6 +82,51 @@ func TestVertexGeminiPayloadTranslatesTools(t *testing.T) {
 	}
 }
 
+// TestVertexGeminiThoughtSignatureRoundTrips covers the Gemini-3 thought_signature
+// round-trip: a signature stashed in the tool_call id is re-attached to the
+// functionCall part so Vertex does not 400 on the next turn.
+func TestVertexGeminiThoughtSignatureRoundTrips(t *testing.T) {
+	sig := "AbC123+/sigblob=="
+	req := &qtypes.OpenAIChatRequest{
+		Messages: []qtypes.OpenAIChatMessage{
+			{Role: "user", Content: "find it"},
+			{Role: "assistant", ToolCalls: []qtypes.OpenAIToolCall{{
+				ID:       "call_1" + geminiSignatureDelimiter + sig,
+				Type:     "function",
+				Function: qtypes.OpenAIToolFunction{Name: "web_search", Arguments: `{"query":"x"}`},
+			}}},
+			{Role: "tool", ToolCallID: "call_1" + geminiSignatureDelimiter + sig, Content: "result"},
+		},
+	}
+	payload, err := vertexGeminiPayload(context.Background(), req, nil, "gemini-3-flash-preview")
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	contents := payload["contents"].([]map[string]any)
+	mParts := contents[1]["parts"].([]map[string]any)
+	if got := mParts[0]["thoughtSignature"]; got != sig {
+		t.Fatalf("thoughtSignature = %v, want %q", got, sig)
+	}
+	// tool turn still correlates the function name despite the sig in the id
+	fr := contents[2]["parts"].([]map[string]any)[0]["functionResponse"].(map[string]any)
+	if fr["name"] != "web_search" {
+		t.Fatalf("functionResponse name = %v, want web_search (id correlation w/ sig)", fr["name"])
+	}
+}
+
+// TestGeminiChunkDeltaCapturesSignature covers the response side capturing the
+// signature for the round-trip.
+func TestGeminiChunkDeltaCapturesSignature(t *testing.T) {
+	payload := `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"web_search","args":{"query":"x"}},"thoughtSignature":"SIGBLOB"}]}}]}`
+	_, calls, _, _, err := geminiChunkDelta(payload)
+	if err != nil {
+		t.Fatalf("delta: %v", err)
+	}
+	if len(calls) != 1 || calls[0].Signature != "SIGBLOB" {
+		t.Fatalf("calls = %#v, want signature SIGBLOB", calls)
+	}
+}
+
 // TestGeminiChunkDeltaExtractsFunctionCall covers the response side: a Gemini
 // functionCall part is surfaced so translateGeminiStreamToAnthropic can emit
 // tool_use events.
