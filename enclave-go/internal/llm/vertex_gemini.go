@@ -142,7 +142,7 @@ func vertexGeminiPayload(
 		generationConfig["responseModalities"] = []string{"TEXT", "IMAGE"}
 		generationConfig["candidateCount"] = 1
 	}
-	if thinkingConfig := vertexGeminiThinkingConfig(modelID); thinkingConfig != nil {
+	if thinkingConfig := vertexGeminiThinkingConfig(modelID, req); thinkingConfig != nil {
 		generationConfig["thinkingConfig"] = thinkingConfig
 	}
 	applyVertexGeminiResponseFormat(generationConfig, req.ResponseFormat)
@@ -222,8 +222,19 @@ func vertexGeminiImageModel(modelID string) bool {
 	return strings.Contains(modelID, "image")
 }
 
-func vertexGeminiThinkingConfig(modelID string) map[string]any {
+func vertexGeminiThinkingConfig(modelID string, req *qtypes.OpenAIChatRequest) map[string]any {
 	modelID = strings.ToLower(modelID)
+	if effort := vertexGeminiReasoningEffort(req); effort != "" && !vertexGeminiImageModel(modelID) {
+		switch effort {
+		case "none", "off", "disable", "disabled", "minimal", "low":
+			if strings.HasPrefix(modelID, "gemini-2.5") {
+				return map[string]any{"thinkingBudget": 0}
+			}
+			return map[string]any{"thinkingLevel": "low"}
+		case "high":
+			return map[string]any{"thinkingLevel": "high"}
+		}
+	}
 	if !strings.Contains(modelID, "flash") || vertexGeminiImageModel(modelID) {
 		return nil
 	}
@@ -231,6 +242,21 @@ func vertexGeminiThinkingConfig(modelID string) map[string]any {
 		return map[string]any{"thinkingBudget": 0}
 	}
 	return map[string]any{"thinkingLevel": "minimal"}
+}
+
+func vertexGeminiReasoningEffort(req *qtypes.OpenAIChatRequest) string {
+	if req == nil {
+		return ""
+	}
+	if effort := strings.TrimSpace(strings.ToLower(req.ReasoningEffort)); effort != "" {
+		return effort
+	}
+	reasoning, ok := req.Reasoning.(map[string]any)
+	if !ok {
+		return ""
+	}
+	effort, _ := reasoning["effort"].(string)
+	return strings.TrimSpace(strings.ToLower(effort))
 }
 
 func applyVertexGeminiResponseFormat(config map[string]any, responseFormat map[string]any) {

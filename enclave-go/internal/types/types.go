@@ -158,26 +158,28 @@ type ChatStreamOptions struct {
 
 // OpenAIChatRequest is the inbound shape we accept.
 type OpenAIChatRequest struct {
-	Model          string               `json:"model"`
-	Models         []string             `json:"models,omitempty"`
-	Messages       []OpenAIChatMessage  `json:"messages"`
-	Stream         bool                 `json:"stream,omitempty"`
-	StreamOptions  *ChatStreamOptions   `json:"stream_options,omitempty"`
-	Temperature    *float64             `json:"temperature,omitempty"`
-	TopP           *float64             `json:"top_p,omitempty"`
-	MaxTokens      *int                 `json:"max_tokens,omitempty"`
-	Provider       *ProviderRouting     `json:"provider,omitempty"`
-	Metadata       map[string]any       `json:"metadata,omitempty"`
-	Trace          map[string]any       `json:"trace,omitempty"`
-	User           string               `json:"user,omitempty"`
-	SessionID      string               `json:"session_id,omitempty"`
-	ResponseFormat map[string]any       `json:"response_format,omitempty"`
-	Tools          []any                `json:"tools,omitempty"`
-	Plugins        []any                `json:"plugins,omitempty"`
-	ToolChoice     any                  `json:"tool_choice,omitempty"`
-	ParallelTools  *bool                `json:"parallel_tool_calls,omitempty"`
-	Response       *ResponseRequestMeta `json:"-"`
-	IdempotencyKey string               `json:"-"`
+	Model           string               `json:"model"`
+	Models          []string             `json:"models,omitempty"`
+	Messages        []OpenAIChatMessage  `json:"messages"`
+	Stream          bool                 `json:"stream,omitempty"`
+	StreamOptions   *ChatStreamOptions   `json:"stream_options,omitempty"`
+	Temperature     *float64             `json:"temperature,omitempty"`
+	TopP            *float64             `json:"top_p,omitempty"`
+	MaxTokens       *int                 `json:"max_tokens,omitempty"`
+	Reasoning       any                  `json:"reasoning,omitempty"`
+	ReasoningEffort string               `json:"reasoning_effort,omitempty"`
+	Provider        *ProviderRouting     `json:"provider,omitempty"`
+	Metadata        map[string]any       `json:"metadata,omitempty"`
+	Trace           map[string]any       `json:"trace,omitempty"`
+	User            string               `json:"user,omitempty"`
+	SessionID       string               `json:"session_id,omitempty"`
+	ResponseFormat  map[string]any       `json:"response_format,omitempty"`
+	Tools           []any                `json:"tools,omitempty"`
+	Plugins         []any                `json:"plugins,omitempty"`
+	ToolChoice      any                  `json:"tool_choice,omitempty"`
+	ParallelTools   *bool                `json:"parallel_tool_calls,omitempty"`
+	Response        *ResponseRequestMeta `json:"-"`
+	IdempotencyKey  string               `json:"-"`
 }
 
 // ResponsesInputItem is the text-only subset of the OpenAI Responses input

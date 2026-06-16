@@ -96,20 +96,35 @@ func TestVertexGeminiPrepaidUsesVertexGenerateContent(t *testing.T) {
 }
 
 func TestVertexGeminiUsesMinimalThinkingForFlashTextModels(t *testing.T) {
-	if got := vertexGeminiThinkingConfig("gemini-2.5-flash"); got["thinkingBudget"] != 0 {
+	if got := vertexGeminiThinkingConfig("gemini-2.5-flash", nil); got["thinkingBudget"] != 0 {
 		t.Fatalf("gemini-2.5-flash thinkingConfig = %#v", got)
 	}
-	if got := vertexGeminiThinkingConfig("gemini-3-flash-preview"); got["thinkingLevel"] != "minimal" {
+	if got := vertexGeminiThinkingConfig("gemini-3-flash-preview", nil); got["thinkingLevel"] != "minimal" {
 		t.Fatalf("gemini-3-flash-preview thinkingConfig = %#v", got)
 	}
-	if got := vertexGeminiThinkingConfig("gemini-3.5-flash"); got["thinkingLevel"] != "minimal" {
+	if got := vertexGeminiThinkingConfig("gemini-3.5-flash", nil); got["thinkingLevel"] != "minimal" {
 		t.Fatalf("gemini-3.5-flash thinkingConfig = %#v", got)
 	}
-	if got := vertexGeminiThinkingConfig("gemini-3.1-pro-preview"); got != nil {
+	if got := vertexGeminiThinkingConfig("gemini-3.1-pro-preview", nil); got != nil {
 		t.Fatalf("gemini pro should not change thinking by default: %#v", got)
 	}
-	if got := vertexGeminiThinkingConfig("gemini-3.1-flash-image"); got != nil {
+	if got := vertexGeminiThinkingConfig("gemini-3.1-flash-image", nil); got != nil {
 		t.Fatalf("image models should not change thinking: %#v", got)
+	}
+}
+
+func TestVertexGeminiHonorsExplicitLowReasoningForPro(t *testing.T) {
+	req := &qtypes.OpenAIChatRequest{ReasoningEffort: "low"}
+	if got := vertexGeminiThinkingConfig("gemini-3.1-pro-preview", req); got["thinkingLevel"] != "low" {
+		t.Fatalf("gemini pro explicit low thinkingConfig = %#v", got)
+	}
+	req = &qtypes.OpenAIChatRequest{Reasoning: map[string]any{"effort": "low"}}
+	if got := vertexGeminiThinkingConfig("gemini-3.1-pro-preview", req); got["thinkingLevel"] != "low" {
+		t.Fatalf("gemini pro reasoning object thinkingConfig = %#v", got)
+	}
+	req = &qtypes.OpenAIChatRequest{ReasoningEffort: "low"}
+	if got := vertexGeminiThinkingConfig("gemini-2.5-flash", req); got["thinkingBudget"] != 0 {
+		t.Fatalf("gemini 2.5 explicit low thinkingConfig = %#v", got)
 	}
 }
 
