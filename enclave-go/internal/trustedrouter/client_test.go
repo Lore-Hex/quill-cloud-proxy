@@ -100,7 +100,7 @@ func TestValidateKeySendsLookupHashAndRouteOnly(t *testing.T) {
 func TestAuthorizeReturnsParsedControlPlaneError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, `{"error":{"message":"provider.only cannot contain router name 'openrouter'","type":"bad_request"}}`)
+		_, _ = io.WriteString(w, `{"error":{"message":"Routing filters cannot contain router name 'openrouter'","type":"bad_request"}}`)
 	}))
 	defer server.Close()
 
@@ -119,7 +119,7 @@ func TestAuthorizeReturnsParsedControlPlaneError(t *testing.T) {
 	if controlErr.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d", controlErr.StatusCode)
 	}
-	if controlErr.Message != "provider.only cannot contain router name 'openrouter'" {
+	if controlErr.Message != "Routing filters cannot contain router name 'openrouter'" {
 		t.Fatalf("message = %q", controlErr.Message)
 	}
 }
