@@ -44,55 +44,78 @@ func invokeProviderStream(
 			option.Model = req.Model
 		}
 		req.Model = option.Model
-		attemptCtx, cancelAttempt := context.WithCancel(ctx)
-		var ttfbFired bool
-		ttfbTimer := time.AfterFunc(firstByteBudget, func() {
-			ttfbFired = true
-			cancelAttempt()
-		})
-		attemptStart := time.Now()
-		var ttfb time.Duration
-		var ttfbCaptured bool
-		candidateWriter := &routeSelectingWriter{
-			w:       pw,
-			tracker: selectedRoute,
-			option:  option,
-			onFirstByte: func() {
-				ttfb = time.Since(attemptStart)
-				ttfbCaptured = true
-				ttfbTimer.Stop()
-			},
-		}
-		err := br.InvokeStreaming(attemptCtx, req, anthropicReq, candidateWriter, option)
-		attemptDuration := time.Since(attemptStart)
-		ttfbTimer.Stop()
-		cancelAttempt()
-		if ttfbFired && err != nil {
-			err = fmt.Errorf("llm/upstream: time-to-first-byte exceeded %s: %w", firstByteBudget, err)
+		// The TTFB budget exists to fall over to the next candidate fast; the LAST
+		// candidate has nothing to fall over to, so give it a longer budget for slow
+		// reasoning first bytes.
+		isLast := i == len(options)-1
+		budget := firstByteBudget
+		if isLast {
+			budget = finalCandidateFirstByteBudget
 		}
 
-		ttfbMs := int64(-1)
-		if ttfbCaptured {
-			ttfbMs = ttfb.Milliseconds()
+		var err error
+		var candidateWriter *routeSelectingWriter
+		var attemptDuration time.Duration
+		var ttfbMs int64
+		for tryN := 0; ; tryN++ {
+			attemptCtx, cancelAttempt := context.WithCancel(ctx)
+			var ttfbFired bool
+			ttfbTimer := time.AfterFunc(budget, func() {
+				ttfbFired = true
+				cancelAttempt()
+			})
+			attemptStart := time.Now()
+			var ttfb time.Duration
+			var ttfbCaptured bool
+			candidateWriter = &routeSelectingWriter{
+				w:       pw,
+				tracker: selectedRoute,
+				option:  option,
+				onFirstByte: func() {
+					ttfb = time.Since(attemptStart)
+					ttfbCaptured = true
+					ttfbTimer.Stop()
+				},
+			}
+			err = br.InvokeStreaming(attemptCtx, req, anthropicReq, candidateWriter, option)
+			attemptDuration = time.Since(attemptStart)
+			ttfbTimer.Stop()
+			cancelAttempt()
+			if ttfbFired && err != nil {
+				err = fmt.Errorf("llm/upstream: time-to-first-byte exceeded %s: %w", budget, err)
+			}
+
+			ttfbMs = int64(-1)
+			if ttfbCaptured {
+				ttfbMs = ttfb.Milliseconds()
+			}
+			outcome := "ok"
+			errStr := ""
+			if err != nil {
+				outcome = "fail"
+				errStr = errorClass(err)
+			}
+			fmt.Fprintf(os.Stderr,
+				"enclave.invoke_attempt request_log_id=%q request_id=%q attempt=%d/%d try=%d model=%q provider=%q endpoint=%q outcome=%s ttfb_ms=%d total_ms=%d bytes=%d err=%q\n",
+				requestLogID,
+				requestID,
+				i+1, len(options), tryN,
+				option.Model, option.Provider, option.EndpointID,
+				outcome,
+				ttfbMs,
+				attemptDuration.Milliseconds(),
+				candidateWriter.BytesWritten(),
+				errStr,
+			)
+			// Retry the same provider on a transient pre-output failure, but only on
+			// the LAST candidate — earlier candidates fall over to the next one
+			// instead. Safe: no bytes written yet, so no duplicate output / billing.
+			if err == nil || candidateWriter.BytesWritten() > 0 || !isLast ||
+				tryN >= maxTransientUpstreamRetries || !isTransientUpstreamError(err) {
+				break
+			}
+			time.Sleep(transientUpstreamBackoff(tryN))
 		}
-		outcome := "ok"
-		errStr := ""
-		if err != nil {
-			outcome = "fail"
-			errStr = errorClass(err)
-		}
-		fmt.Fprintf(os.Stderr,
-			"enclave.invoke_attempt request_log_id=%q request_id=%q attempt=%d/%d model=%q provider=%q endpoint=%q outcome=%s ttfb_ms=%d total_ms=%d bytes=%d err=%q\n",
-			requestLogID,
-			requestID,
-			i+1, len(options),
-			option.Model, option.Provider, option.EndpointID,
-			outcome,
-			ttfbMs,
-			attemptDuration.Milliseconds(),
-			candidateWriter.BytesWritten(),
-			errStr,
-		)
 
 		if err == nil {
 			if candidateWriter.BytesWritten() == 0 {
@@ -263,6 +286,46 @@ func parseFirstByteBudget(raw string) time.Duration {
 		return time.Duration(n) * time.Second
 	}
 	return 20 * time.Second
+}
+
+// finalCandidateFirstByteBudget is the time-to-first-byte budget for the LAST/only
+// candidate. The standard 20s budget exists to fall over to another candidate fast;
+// on the last candidate there is nothing to fall over to, and slow reasoning models
+// (gpt-5.x, gemini *-pro) routinely take longer than 20s to emit their first byte
+// at depth / under load — cancelling them there is what produced intermittent 502s.
+var finalCandidateFirstByteBudget = func() time.Duration {
+	if n, err := strconv.Atoi(os.Getenv("QUILL_FINAL_FIRST_BYTE_TIMEOUT_SECONDS")); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return 120 * time.Second
+}()
+
+// maxTransientUpstreamRetries bounds same-candidate retries on transient pre-output
+// errors (rate limit / 5xx / dropped connection). Retrying is only ever done before
+// the first output byte, so it never duplicates output or double-bills.
+const maxTransientUpstreamRetries = 2
+
+func transientUpstreamBackoff(tryN int) time.Duration {
+	d := time.Duration(1<<uint(tryN)) * time.Second // 1s, 2s, 4s, ...
+	if d > 8*time.Second {
+		d = 8 * time.Second
+	}
+	return d
+}
+
+// isTransientUpstreamError reports whether a pre-output failure is worth retrying
+// on the SAME provider (rate limit, 5xx, dropped connection). 4xx (malformed),
+// client cancellation, and ttfb timeouts are not retried here.
+func isTransientUpstreamError(err error) bool {
+	switch errorClass(err) {
+	case "upstream_5xx", "rate_limited":
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection refused")
 }
 
 type routeSelectingWriter struct {

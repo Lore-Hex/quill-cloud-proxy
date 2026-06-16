@@ -1571,6 +1571,55 @@ data: {"type":"message_stop"}
 	return err
 }
 
+// TestServeOneRetriesLastCandidateOnTransientError covers the resilience fix: a
+// single-candidate model (no fallover) that hits a transient upstream error (429)
+// is RETRIED on the same provider instead of immediately 502-ing. This is what
+// made slow reasoning models (gpt-5.x) intermittently 502 under load.
+func TestServeOneRetriesLastCandidateOnTransientError(t *testing.T) {
+	bearer := "test-user-bearer"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			// SINGLE route candidate -> nothing to fall over to.
+			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_auto","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-5.5","endpoint_id":"openai/gpt-5.5@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[{"model":"openai/gpt-5.5","endpoint_id":"openai/gpt-5.5@openai/prepaid","provider":"openai","usage_type":"Credits"}]}}`)
+		case "/internal/gateway/settle":
+			_ = body
+			_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"gen_auto","cost_microdollars":12,"model":"openai/gpt-5.5","provider":"openai","region":"us-central1"}}`)
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fallbackStreamingLLM{} // 429 on first attempt, succeeds on the second
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/auto","stream":false,"messages":[{"role":"user","content":"hi"}],"max_tokens":32}`)
+	_, err := fmt.Fprintf(client, "POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", bearer, len(requestBody), requestBody)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s (transient 429 should have been retried, not 502)", resp.StatusCode, bodyBytes)
+	}
+	if len(streamer.attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2 (same candidate retried once)", len(streamer.attempts))
+	}
+	if streamer.attempts[0].Model != "openai/gpt-5.5" || streamer.attempts[1].Model != "openai/gpt-5.5" {
+		t.Fatalf("expected both attempts on the same single candidate: %#v", streamer.attempts)
+	}
+}
+
 type panicStreamingLLM struct {
 	t *testing.T
 }
