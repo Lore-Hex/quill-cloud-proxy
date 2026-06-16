@@ -67,7 +67,7 @@ func MessagesToAnthropic(req *AnthropicNativeRequest) (*types.AnthropicMessagesR
 		AnthropicVersion:  "bedrock-2023-05-31",
 		System:            systemText,
 		SystemRaw:         systemRaw,
-		Messages:          req.Messages,
+		Messages:          sanitizeAnthropicMessages(req.Messages),
 		MaxTokens:         req.MaxTokens,
 		MaxTokensExplicit: true,
 		Temperature:       req.Temperature,
@@ -79,6 +79,52 @@ func MessagesToAnthropic(req *AnthropicNativeRequest) (*types.AnthropicMessagesR
 		NativeContent:     true,
 	}
 	return out, nil
+}
+
+// sanitizeAnthropicMessages drops empty/whitespace-only text blocks from each
+// message's content before the body is forwarded to Anthropic.
+//
+// Anthropic rejects a text content block whose text is empty or all-whitespace
+// ("text content blocks must be non-empty"), returning a 400 that the gateway
+// surfaces as a generic 502. Multi-turn agentic clients hit this routinely: a
+// model can emit a near-empty turn (e.g. a lone whitespace token, output_tokens
+// ~1), and when that assistant turn is replayed verbatim in the next request —
+// as the Anthropic SDK / Claude Code and other tool-loop clients do — every
+// subsequent call 400s, killing the conversation. An empty text block carries
+// no information, so stripping it is semantically a no-op; tool_use, tool_result,
+// image, thinking, and non-empty text blocks are all preserved untouched. A
+// message left with an empty content list ([]) is accepted by Anthropic, so we
+// leave it rather than dropping the turn (which would desync tool_use/tool_result
+// pairing or user/assistant alternation).
+func sanitizeAnthropicMessages(messages []types.AnthropicMessage) []types.AnthropicMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	out := make([]types.AnthropicMessage, len(messages))
+	for i, m := range messages {
+		out[i] = m
+		blocks, ok := m.Content.([]any)
+		if !ok {
+			continue // string content or unknown shape: leave verbatim
+		}
+		changed := false
+		kept := make([]any, 0, len(blocks))
+		for _, b := range blocks {
+			if bm, ok := b.(map[string]any); ok {
+				if t, _ := bm["type"].(string); t == "text" {
+					if txt, _ := bm["text"].(string); strings.TrimSpace(txt) == "" {
+						changed = true
+						continue // drop empty/whitespace-only text block
+					}
+				}
+			}
+			kept = append(kept, b)
+		}
+		if changed {
+			out[i].Content = kept
+		}
+	}
+	return out
 }
 
 // flattenSystem splits the native system field into (flattened text,

@@ -61,6 +61,63 @@ func TestMessagesToAnthropicValidatesAndPreservesNativeShape(t *testing.T) {
 	}
 }
 
+func TestMessagesToAnthropicStripsEmptyTextBlocks(t *testing.T) {
+	// Repro: a multi-turn tool loop replays a near-empty assistant turn (a lone
+	// whitespace token). Anthropic 400s on empty/whitespace text blocks, which
+	// the gateway surfaced as a 502 and killed the conversation. The sanitizer
+	// must drop the empty text block while keeping tool_use / non-empty text /
+	// cache_control intact.
+	req := &AnthropicNativeRequest{
+		Model:     "anthropic/claude-opus-4.7",
+		MaxTokens: 256,
+		Messages: []types.AnthropicMessage{
+			{Role: "user", Content: "explore the target"},
+			// assistant turn: real reasoning + a tool call (must be preserved)
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "text", "text": "Let me list the dir."},
+				map[string]any{"type": "tool_use", "id": "tu_1", "name": "exec", "input": map[string]any{"cmd": "ls"}},
+			}},
+			{Role: "user", Content: []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "tu_1", "content": "a.js\nb.js"},
+			}},
+			// degenerate near-empty assistant turn: empty text + whitespace text
+			{Role: "assistant", Content: []any{
+				map[string]any{"type": "text", "text": ""},
+				map[string]any{"type": "text", "text": "  \n"},
+			}},
+			{Role: "user", Content: "continue"},
+		},
+	}
+	out, err := MessagesToAnthropic(req)
+	if err != nil {
+		t.Fatalf("MessagesToAnthropic: %v", err)
+	}
+	// assistant turn with real content is untouched (text + tool_use kept).
+	a1 := out.Messages[1].Content.([]any)
+	if len(a1) != 2 {
+		t.Fatalf("real assistant turn altered: %#v", a1)
+	}
+	if a1[1].(map[string]any)["type"] != "tool_use" {
+		t.Fatalf("tool_use dropped: %#v", a1)
+	}
+	// tool_result message untouched.
+	if out.Messages[2].Content.([]any)[0].(map[string]any)["type"] != "tool_result" {
+		t.Fatalf("tool_result dropped: %#v", out.Messages[2].Content)
+	}
+	// degenerate assistant turn: both empty/whitespace text blocks stripped -> [].
+	a2, ok := out.Messages[3].Content.([]any)
+	if !ok {
+		t.Fatalf("degenerate turn content type changed: %#v", out.Messages[3].Content)
+	}
+	if len(a2) != 0 {
+		t.Fatalf("empty text blocks not stripped: %#v", a2)
+	}
+	// the original request must not be mutated (sanitizer works on a copy).
+	if len(req.Messages[3].Content.([]any)) != 2 {
+		t.Fatalf("sanitizer mutated the input request: %#v", req.Messages[3].Content)
+	}
+}
+
 func TestMessagesToChatShimConvertsToolsForOpenAIDispatch(t *testing.T) {
 	req := &AnthropicNativeRequest{
 		Model:     "moonshotai/kimi-k2.6",
