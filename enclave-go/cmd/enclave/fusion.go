@@ -344,7 +344,7 @@ func serveFusionNonStreaming(
 		writeFusionError(ctx, conn, trGateway, err)
 		return
 	}
-	finalReq := fusionFinalRequest(req, finalModel, judge.Result.Text)
+	finalReq := fusionFinalRequest(req, finalModel, judge.Result.Text, panel)
 	final, err := runFusionCall(ctx, br, finalReq, trGateway, secretCache, bearer, "fusion.final", requestID+":final", requestLogID, originalInput, true)
 	if err != nil {
 		writeFusionError(ctx, conn, trGateway, err)
@@ -387,7 +387,7 @@ func serveFusionStreaming(
 		writeFusionError(ctx, conn, trGateway, err)
 		return
 	}
-	finalReq := fusionFinalRequest(req, finalModel, judge.Result.Text)
+	finalReq := fusionFinalRequest(req, finalModel, judge.Result.Text, panel)
 	finalReq.Stream = true
 	authz, options, err := authorizeFusionCall(ctx, finalReq, trGateway, secretCache, bearer, "fusion.final", requestID+":final")
 	if err != nil {
@@ -662,7 +662,7 @@ func fusionJudgeRequest(req *types.OpenAIChatRequest, model string, panel []fusi
 	return out
 }
 
-func fusionFinalRequest(req *types.OpenAIChatRequest, model string, judgeJSON string) *types.OpenAIChatRequest {
+func fusionFinalRequest(req *types.OpenAIChatRequest, model string, judgeJSON string, panel []fusionCallResult) *types.OpenAIChatRequest {
 	out := cloneChatRequest(req)
 	out.Model = model
 	out.Models = nil
@@ -670,16 +670,33 @@ func fusionFinalRequest(req *types.OpenAIChatRequest, model string, judgeJSON st
 	out.Plugins = nil
 	out.Tools = stripFusionToolEntries(out.Tools)
 	out.Messages = append([]types.OpenAIChatMessage{}, req.Messages...)
-	instruction := "TrustedRouter Fusion analysis JSON follows. Use it to write the final answer for the original request. Return only the final visible answer. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
+	instruction := "TrustedRouter Fusion panel answers and judge analysis follow. Use the panel answers as the primary evidence and the judge analysis as guidance to write the final answer for the original request. Return only the final visible answer. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
 	if len(out.Tools) > 0 {
-		instruction = "TrustedRouter Fusion analysis JSON follows. Continue solving the original task using the available tools. If the next correct action is a tool call, emit the tool call directly instead of describing it in text. Return visible text only when no tool call is needed. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
+		instruction = "TrustedRouter Fusion panel answers and judge analysis follow. Continue solving the original task using the panel answers as primary evidence and the judge analysis as guidance. If the next correct action is a tool call, emit the tool call directly instead of describing it in text. Return visible text only when no tool call is needed. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
 	}
 	out.Messages = append(out.Messages, types.OpenAIChatMessage{
 		Role:    "user",
-		Content: instruction + "\n\n" + judgeJSON,
+		Content: instruction + "\n\n" + fusionPanelEvidence(panel) + "\n\nJudge analysis JSON:\n" + judgeJSON,
 	})
 	out.Metadata = fusionMetadata(req.Metadata, "final", model)
 	return out
+}
+
+func fusionPanelEvidence(panel []fusionCallResult) string {
+	var b strings.Builder
+	b.WriteString("Panel answers:\n")
+	for i, item := range panel {
+		model := item.Model
+		if model == "" && item.Authorization != nil {
+			model = item.Authorization.Model
+		}
+		text := strings.TrimSpace(item.Result.Text)
+		if text == "" && len(item.Result.ToolCalls) > 0 {
+			text = "[panel member returned tool calls]"
+		}
+		fmt.Fprintf(&b, "\n[%d] model=%s\n%s\n", i+1, model, text)
+	}
+	return b.String()
 }
 
 func fusionJudgePrompt(req *types.OpenAIChatRequest, panel []fusionCallResult) string {
@@ -687,13 +704,7 @@ func fusionJudgePrompt(req *types.OpenAIChatRequest, panel []fusionCallResult) s
 	b.WriteString("Original request summary:\n")
 	b.WriteString(chatMessagesText(req.Messages))
 	b.WriteString("\n\nPanel responses:\n")
-	for i, item := range panel {
-		model := item.Model
-		if model == "" && item.Authorization != nil {
-			model = item.Authorization.Model
-		}
-		fmt.Fprintf(&b, "\n[%d] model=%s\n%s\n", i+1, model, item.Result.Text)
-	}
+	b.WriteString(strings.TrimPrefix(fusionPanelEvidence(panel), "Panel answers:\n"))
 	return b.String()
 }
 

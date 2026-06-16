@@ -591,6 +591,13 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 	if len(streamer.calls) != 4 {
 		t.Fatalf("provider calls = %#v, want 4", streamer.calls)
 	}
+	finalCall := streamer.calls[len(streamer.calls)-1]
+	if !strings.Contains(finalCall.LastMessage, "Panel answers:") ||
+		!strings.Contains(finalCall.LastMessage, "analysis from google/gemini-3-flash-preview") ||
+		!strings.Contains(finalCall.LastMessage, "analysis from moonshotai/kimi-k2.7-code") ||
+		!strings.Contains(finalCall.LastMessage, "Judge analysis JSON:") {
+		t.Fatalf("final fusion prompt did not include panel evidence and judge analysis: %s", finalCall.LastMessage)
+	}
 }
 
 func TestServeOneTrustedRouterFusionContinuesAfterOnePanelFails(t *testing.T) {
@@ -852,7 +859,7 @@ func TestFusionFinalRequestTellsToolModelsToEmitToolCalls(t *testing.T) {
 			},
 		},
 	}
-	final := fusionFinalRequest(req, "anthropic/claude-opus-4.8", `{"final_guidance":"call setup"}`)
+	final := fusionFinalRequest(req, "anthropic/claude-opus-4.8", `{"final_guidance":"call setup"}`, nil)
 	if len(final.Tools) != 1 {
 		t.Fatalf("final tools = %#v, want only non-fusion tool", final.Tools)
 	}
@@ -1458,9 +1465,10 @@ data: {"type":"message_stop"}
 }
 
 type fusionEchoCall struct {
-	Model    string
-	Provider string
-	Endpoint string
+	Model       string
+	Provider    string
+	Endpoint    string
+	LastMessage string
 }
 
 type fusionEchoLLM struct {
@@ -1480,15 +1488,16 @@ func (f *fusionEchoLLM) InvokeStreaming(
 		option = options[0]
 	}
 	f.calls = append(f.calls, fusionEchoCall{
-		Model:    req.Model,
-		Provider: option.Provider,
-		Endpoint: option.EndpointID,
+		Model:       req.Model,
+		Provider:    option.Provider,
+		Endpoint:    option.EndpointID,
+		LastMessage: lastChatMessageText(req.Messages),
 	})
 	if f.failModels[req.Model] {
 		return errors.New("llm/upstream: http 502: provider error")
 	}
 	text := "analysis from " + req.Model
-	if len(req.Messages) > 0 && strings.Contains(types.ContentText(req.Messages[len(req.Messages)-1].Content), "TrustedRouter Fusion analysis JSON follows") {
+	if len(req.Messages) > 0 && strings.Contains(types.ContentText(req.Messages[len(req.Messages)-1].Content), "TrustedRouter Fusion panel answers and judge analysis follow") {
 		text = "final answer from " + req.Model
 	}
 	_, err := fmt.Fprintf(out, `event: message_start
@@ -1505,6 +1514,13 @@ data: {"type":"message_stop"}
 
 `, req.Model, text)
 	return err
+}
+
+func lastChatMessageText(messages []types.OpenAIChatMessage) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	return types.ContentText(messages[len(messages)-1].Content)
 }
 
 type fallbackAttempt struct {
