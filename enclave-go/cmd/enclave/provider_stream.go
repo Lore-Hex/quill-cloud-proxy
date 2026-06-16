@@ -290,14 +290,24 @@ func parseFirstByteBudget(raw string) time.Duration {
 
 // finalCandidateFirstByteBudget is the time-to-first-byte budget for the LAST/only
 // candidate. The standard 20s budget exists to fall over to another candidate fast;
-// on the last candidate there is nothing to fall over to, and slow reasoning models
-// (gpt-5.x, gemini *-pro) routinely take longer than 20s to emit their first byte
-// at depth / under load — cancelling them there is what produced intermittent 502s.
+// on the last candidate there is NOTHING to fall over to, so this is not a
+// fallover trigger but a HANG DETECTOR — it should sit on a "the upstream is
+// genuinely dead" timescale (minutes), not a "switch providers" one (seconds).
+//
+// The enclave is a raw-TLS server whose request ctx is context.Background() (no
+// deadline, no client-disconnect cancellation), so this budget is the only bound
+// on how long we wait for the first byte. gpt-5.x / o-series reasoning models
+// reason SILENTLY before emitting anything: observed production first-byte times
+// for openai/gpt-5.5 are 60-87s on success, and under concurrent load one run
+// took >120s and got cancelled -> user-facing 502. The previous 120s cap was
+// still inside the legitimate-reasoning band. 300s clears the worst observed
+// first byte (~87s) by >3x while still catching a truly hung upstream. Tunable
+// via QUILL_FINAL_FIRST_BYTE_TIMEOUT_SECONDS.
 var finalCandidateFirstByteBudget = func() time.Duration {
 	if n, err := strconv.Atoi(os.Getenv("QUILL_FINAL_FIRST_BYTE_TIMEOUT_SECONDS")); err == nil && n > 0 {
 		return time.Duration(n) * time.Second
 	}
-	return 120 * time.Second
+	return 300 * time.Second
 }()
 
 // maxTransientUpstreamRetries bounds same-candidate retries on transient pre-output

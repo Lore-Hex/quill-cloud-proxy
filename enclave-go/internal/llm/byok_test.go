@@ -224,6 +224,13 @@ func TestProviderSpecificTemperatureOmission(t *testing.T) {
 	if got := openAICompatibleTemperature("openai", "gpt-4o-mini", &zero); got == nil || *got != 0 {
 		t.Fatalf("OpenAI temperature = %v, want 0", got)
 	}
+	// gpt-5.x / o-series reject temperature != 1; must be omitted (this is what
+	// 400'd the Fusion panel's gpt-5.5 panelist).
+	for _, m := range []string{"gpt-5.5", "openai/gpt-5.5", "gpt-5.4-mini", "o3"} {
+		if got := openAICompatibleTemperature("openai", m, &zero); got != nil {
+			t.Fatalf("OpenAI %s temperature = %v, want omitted", m, *got)
+		}
+	}
 	if got := anthropicTemperature("claude-opus-4-8", &zero); got != nil {
 		t.Fatalf("Claude Opus 4.8 temperature = %v, want omitted", *got)
 	}

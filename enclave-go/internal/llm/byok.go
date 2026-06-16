@@ -250,6 +250,15 @@ func openAICompatibleTemperature(provider, modelID string, temperature *float64)
 	if provider == "kimi" && strings.Contains(strings.ToLower(modelID), "kimi-k2.") {
 		return nil
 	}
+	// OpenAI gpt-5.x / o-series reasoning models reject any temperature other
+	// than the default (1): forwarding temperature=0 returns
+	// `http 400: 'temperature' does not support 0 with this model`. This bit the
+	// internal Fusion panel, which set temperature=0 on its gpt-5.5 panelist and
+	// got a 400 every round. Omit it for those models (same family that needs
+	// max_completion_tokens); the model behaves as if temperature were defaulted.
+	if requiresMaxCompletionTokens(provider, modelID) {
+		return nil
+	}
 	return temperature
 }
 
