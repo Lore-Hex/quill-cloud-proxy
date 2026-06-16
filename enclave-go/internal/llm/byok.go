@@ -111,8 +111,10 @@ func requiresMaxCompletionTokens(provider, modelID string) bool {
 }
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"`
+	Role       string           `json:"role"`
+	Content    any              `json:"content"`
+	ToolCalls  []map[string]any `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
 func invokeOpenAICompatibleBYOKStreaming(
@@ -370,6 +372,10 @@ func openAICompatibleMessagesWithFetchedImages(
 		msgs = append(msgs, chatMessage{Role: "system", Content: body.System})
 	}
 	for _, message := range body.Messages {
+		if converted, ok := openAICompatibleToolMessages(message); ok {
+			msgs = append(msgs, converted...)
+			continue
+		}
 		content, err := openAICompatibleContentWithFetchedImages(ctx, message.Content)
 		if err != nil {
 			return nil, err
@@ -377,6 +383,145 @@ func openAICompatibleMessagesWithFetchedImages(
 		msgs = append(msgs, chatMessage{Role: message.Role, Content: content})
 	}
 	return msgs, nil
+}
+
+// openAICompatibleToolMessages reverses the Anthropic tool_use/tool_result
+// content blocks that adapter.ToAnthropic produced (the request reached us as
+// OpenAI /chat/completions, was normalized to Anthropic, and is now headed back
+// out to an OpenAI-compatible upstream). Without this, the upstream receives
+// Anthropic-shaped {"type":"tool_use"|"tool_result"} blocks it cannot parse, so
+// after a tool turn it loses the tool context and returns an empty answer
+// (observed with DeepSeek; Kimi happened to tolerate the malformed history).
+// Returns (messages, true) when the message carried tool blocks and was
+// translated; (nil, false) to fall through to normal content handling.
+func openAICompatibleToolMessages(message qtypes.AnthropicMessage) ([]chatMessage, bool) {
+	blocks, ok := anthropicContentBlocks(message.Content)
+	if !ok {
+		return nil, false
+	}
+	hasTool := false
+	for _, block := range blocks {
+		switch stringValue(block["type"]) {
+		case "tool_use", "tool_result":
+			hasTool = true
+		}
+	}
+	if !hasTool {
+		return nil, false
+	}
+	if message.Role == "assistant" {
+		var text strings.Builder
+		toolCalls := make([]map[string]any, 0, len(blocks))
+		for _, block := range blocks {
+			switch stringValue(block["type"]) {
+			case "text":
+				text.WriteString(stringValue(block["text"]))
+			case "tool_use":
+				toolCalls = append(toolCalls, map[string]any{
+					"id":   stringValue(block["id"]),
+					"type": "function",
+					"function": map[string]any{
+						"name":      stringValue(block["name"]),
+						"arguments": toolUseArguments(block["input"]),
+					},
+				})
+			}
+		}
+		// content is "" (not nil) for tool-only turns: matches what DeepSeek's
+		// own API accepts and keeps the JSON field present.
+		return []chatMessage{{Role: "assistant", Content: text.String(), ToolCalls: toolCalls}}, true
+	}
+	// A user message carrying tool_result block(s) becomes one role:"tool"
+	// message per result (the OpenAI-compatible shape); any stray text becomes a
+	// trailing user message.
+	out := make([]chatMessage, 0, len(blocks))
+	var leftover strings.Builder
+	for _, block := range blocks {
+		switch stringValue(block["type"]) {
+		case "tool_result":
+			out = append(out, chatMessage{
+				Role:       "tool",
+				ToolCallID: stringValue(block["tool_use_id"]),
+				Content:    anthropicToolResultText(block["content"]),
+			})
+		case "text":
+			leftover.WriteString(stringValue(block["text"]))
+		}
+	}
+	if strings.TrimSpace(leftover.String()) != "" {
+		out = append(out, chatMessage{Role: "user", Content: leftover.String()})
+	}
+	return out, true
+}
+
+// anthropicContentBlocks normalizes an Anthropic message Content into a slice of
+// block maps, accepting both []map[string]any (what ToAnthropic emits) and the
+// generic []any decoded shape.
+func anthropicContentBlocks(content any) ([]map[string]any, bool) {
+	switch value := content.(type) {
+	case []map[string]any:
+		return value, true
+	case []any:
+		blocks := make([]map[string]any, 0, len(value))
+		for _, item := range value {
+			block, ok := item.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			blocks = append(blocks, block)
+		}
+		return blocks, len(blocks) > 0
+	default:
+		return nil, false
+	}
+}
+
+// toolUseArguments renders an Anthropic tool_use input (a decoded object) back
+// into the JSON string OpenAI-compatible APIs expect for
+// tool_calls[].function.arguments.
+func toolUseArguments(input any) string {
+	if input == nil {
+		return "{}"
+	}
+	if s, ok := input.(string); ok {
+		return s
+	}
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
+}
+
+// anthropicToolResultText flattens an Anthropic tool_result content value (a
+// string, or a list of text blocks) into the plain string an OpenAI-compatible
+// tool message carries.
+func anthropicToolResultText(content any) string {
+	switch value := content.(type) {
+	case string:
+		return value
+	case []map[string]any:
+		var b strings.Builder
+		for _, block := range value {
+			b.WriteString(stringValue(block["text"]))
+		}
+		return b.String()
+	case []any:
+		var b strings.Builder
+		for _, item := range value {
+			if block, ok := item.(map[string]any); ok {
+				b.WriteString(stringValue(block["text"]))
+			}
+		}
+		return b.String()
+	case nil:
+		return ""
+	default:
+		if encoded, err := json.Marshal(value); err == nil {
+			return string(encoded)
+		}
+		return ""
+	}
 }
 
 func openAICompatibleContentWithFetchedImages(ctx context.Context, content any) (any, error) {
