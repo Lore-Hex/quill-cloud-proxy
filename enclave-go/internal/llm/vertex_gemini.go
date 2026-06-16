@@ -100,22 +100,62 @@ func vertexGeminiPayload(
 ) (map[string]any, error) {
 	contents := make([]map[string]any, 0, len(req.Messages))
 	systemParts := make([]map[string]any, 0, 1)
+	toolNameByID := map[string]string{}
 	for _, message := range req.Messages {
-		parts, err := vertexGeminiParts(ctx, message.Content)
-		if err != nil {
-			return nil, err
-		}
 		role := strings.TrimSpace(strings.ToLower(message.Role))
 		switch role {
 		case "system", "developer":
+			parts, err := vertexGeminiParts(ctx, message.Content)
+			if err != nil {
+				return nil, err
+			}
 			systemParts = append(systemParts, parts...)
-			continue
+		case "tool", "function":
+			// OpenAI tool result -> Gemini functionResponse part. Gemini needs
+			// the function NAME; OpenAI tool messages only carry tool_call_id, so
+			// correlate it from the assistant tool_calls seen earlier.
+			name := toolNameByID[message.ToolCallID]
+			if name == "" {
+				name = strings.TrimSpace(message.Name)
+			}
+			if name == "" {
+				name = "tool"
+			}
+			contents = append(contents, map[string]any{
+				"role": "user",
+				"parts": []map[string]any{{
+					"functionResponse": map[string]any{
+						"name":     name,
+						"response": map[string]any{"result": qtypes.ContentText(message.Content)},
+					},
+				}},
+			})
 		case "assistant", "model":
-			role = "model"
+			// Any text plus assistant tool_calls -> Gemini functionCall parts.
+			parts := make([]map[string]any, 0, 1+len(message.ToolCalls))
+			if text := qtypes.ContentText(message.Content); strings.TrimSpace(text) != "" {
+				parts = append(parts, map[string]any{"text": text})
+			}
+			for _, call := range message.ToolCalls {
+				toolNameByID[call.ID] = call.Function.Name
+				parts = append(parts, map[string]any{
+					"functionCall": map[string]any{
+						"name": call.Function.Name,
+						"args": geminiToolArgs(call.Function.Arguments),
+					},
+				})
+			}
+			if len(parts) == 0 {
+				parts = append(parts, map[string]any{"text": ""})
+			}
+			contents = append(contents, map[string]any{"role": "model", "parts": parts})
 		default:
-			role = "user"
+			parts, err := vertexGeminiParts(ctx, message.Content)
+			if err != nil {
+				return nil, err
+			}
+			contents = append(contents, map[string]any{"role": "user", "parts": parts})
 		}
-		contents = append(contents, map[string]any{"role": role, "parts": parts})
 	}
 	if len(contents) == 0 {
 		contents = append(contents, map[string]any{"role": "user", "parts": []map[string]any{{"text": ""}}})
@@ -149,7 +189,79 @@ func vertexGeminiPayload(
 	if len(generationConfig) > 0 {
 		payload["generationConfig"] = generationConfig
 	}
+	if toolDecls := geminiToolsFromChat(req.Tools); len(toolDecls) > 0 {
+		payload["tools"] = []map[string]any{{"functionDeclarations": toolDecls}}
+		if toolConfig := geminiToolConfig(req.ToolChoice); toolConfig != nil {
+			payload["toolConfig"] = toolConfig
+		}
+	}
 	return payload, nil
+}
+
+// geminiToolsFromChat converts OpenAI-style function tools into Gemini
+// functionDeclarations. Non-function tool types are skipped.
+func geminiToolsFromChat(tools []any) []map[string]any {
+	out := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		m, ok := tool.(map[string]any)
+		if !ok || stringValue(m["type"]) != "function" {
+			continue
+		}
+		fn, ok := m["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(stringValue(fn["name"]))
+		if name == "" {
+			continue
+		}
+		decl := map[string]any{"name": name}
+		if desc := stringValue(fn["description"]); desc != "" {
+			decl["description"] = desc
+		}
+		if params, ok := fn["parameters"].(map[string]any); ok && len(params) > 0 {
+			decl["parameters"] = sanitizeGeminiSchema(params)
+		}
+		out = append(out, decl)
+	}
+	return out
+}
+
+// geminiToolConfig maps an OpenAI tool_choice string to Gemini's
+// functionCallingConfig mode. Returns nil for unrecognized / absent choices
+// (Gemini defaults to AUTO).
+func geminiToolConfig(toolChoice any) map[string]any {
+	choice, ok := toolChoice.(string)
+	if !ok {
+		return nil
+	}
+	mode := ""
+	switch strings.ToLower(strings.TrimSpace(choice)) {
+	case "none":
+		mode = "NONE"
+	case "required", "any":
+		mode = "ANY"
+	case "auto":
+		mode = "AUTO"
+	}
+	if mode == "" {
+		return nil
+	}
+	return map[string]any{"functionCallingConfig": map[string]any{"mode": mode}}
+}
+
+// geminiToolArgs parses an OpenAI tool_call arguments JSON string into the
+// object Gemini's functionCall.args expects.
+func geminiToolArgs(arguments string) map[string]any {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return map[string]any{}
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(arguments), &parsed); err != nil || parsed == nil {
+		return map[string]any{}
+	}
+	return parsed
 }
 
 func vertexGeminiParts(ctx context.Context, content any) ([]map[string]any, error) {
@@ -329,6 +441,8 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 
 	stopReason := "end_turn"
 	var usage *openAIStreamUsage
+	toolIndex := 1 // index 0 is reserved for the text content block
+	sawTool := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -338,7 +452,7 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 		if payload == "" || payload == "[DONE]" {
 			continue
 		}
-		delta, reason, chunkUsage, err := geminiChunkDelta(payload)
+		delta, calls, reason, chunkUsage, err := geminiChunkDelta(payload)
 		if err != nil {
 			continue
 		}
@@ -350,6 +464,21 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 				return err
 			}
 		}
+		for _, call := range calls {
+			sawTool = true
+			id := fmt.Sprintf("call_%d", toolIndex)
+			if err := writeAnthropicToolStart(w, toolIndex, id, call.Name); err != nil {
+				return err
+			}
+			argsJSON, _ := json.Marshal(call.Args)
+			if err := writeAnthropicToolDelta(w, toolIndex, string(argsJSON)); err != nil {
+				return err
+			}
+			if err := writeAnthropicToolStop(w, toolIndex); err != nil {
+				return err
+			}
+			toolIndex++
+		}
 		if reason != "" {
 			stopReason = mapGeminiFinishReason(reason)
 		}
@@ -357,10 +486,20 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("llm/vertex-gemini-stream: scan: %w", err)
 	}
+	// Gemini reports finishReason STOP even when it emitted a functionCall;
+	// surface tool_use so the client/agentic loop sees the tool calls.
+	if sawTool {
+		stopReason = "tool_use"
+	}
 	return writeAnthropicStop(w, stopReason, usage)
 }
 
-func geminiChunkDelta(payload string) (string, string, *openAIStreamUsage, error) {
+type geminiFunctionCall struct {
+	Name string
+	Args map[string]any
+}
+
+func geminiChunkDelta(payload string) (string, []geminiFunctionCall, string, *openAIStreamUsage, error) {
 	var chunk struct {
 		Candidates []struct {
 			Content struct {
@@ -379,7 +518,7 @@ func geminiChunkDelta(payload string) (string, string, *openAIStreamUsage, error
 		} `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-		return "", "", nil, err
+		return "", nil, "", nil, err
 	}
 	var usage *openAIStreamUsage
 	if meta := chunk.UsageMetadata; meta != nil && (meta.PromptTokenCount > 0 || meta.CandidatesTokenCount > 0) {
@@ -396,9 +535,10 @@ func geminiChunkDelta(payload string) (string, string, *openAIStreamUsage, error
 		}
 	}
 	if len(chunk.Candidates) == 0 {
-		return "", "", usage, nil
+		return "", nil, "", usage, nil
 	}
 	var text strings.Builder
+	var calls []geminiFunctionCall
 	for _, part := range chunk.Candidates[0].Content.Parts {
 		if thought, _ := part["thought"].(bool); thought {
 			continue
@@ -412,8 +552,16 @@ func geminiChunkDelta(payload string) (string, string, *openAIStreamUsage, error
 			}
 			text.WriteString(dataURL)
 		}
+		if fc, ok := part["functionCall"].(map[string]any); ok {
+			name := stringValue(fc["name"])
+			args, _ := fc["args"].(map[string]any)
+			if args == nil {
+				args = map[string]any{}
+			}
+			calls = append(calls, geminiFunctionCall{Name: name, Args: args})
+		}
 	}
-	return text.String(), chunk.Candidates[0].FinishReason, usage, nil
+	return text.String(), calls, chunk.Candidates[0].FinishReason, usage, nil
 }
 
 func geminiInlineDataURL(part map[string]any) string {
