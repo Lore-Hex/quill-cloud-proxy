@@ -449,6 +449,57 @@ func TestCollectAnthropicTextCapturesToolUse(t *testing.T) {
 	}
 }
 
+func TestCollectAnthropicTextCapturesThinking(t *testing.T) {
+	// opus-4.7+ emits a thinking block (text + signature) before tool_use when
+	// output_config.effort is set. The non-streaming reassembly must capture it
+	// — Anthropic requires it replayed verbatim on the next tool-use turn.
+	stream := strings.NewReader(strings.Join([]string{
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me reason"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" carefully."}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-abc123"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_1","name":"exec","input":{}}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":1}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n"))
+	result, err := CollectAnthropicText(stream)
+	if err != nil {
+		t.Fatalf("CollectAnthropicText: %v", err)
+	}
+	if len(result.Thinking) != 1 {
+		t.Fatalf("thinking blocks = %#v, want one", result.Thinking)
+	}
+	if result.Thinking[0].Text != "Let me reason carefully." {
+		t.Fatalf("thinking text = %q", result.Thinking[0].Text)
+	}
+	if result.Thinking[0].Signature != "sig-abc123" {
+		t.Fatalf("thinking signature = %q", result.Thinking[0].Signature)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v, want one (thinking must not clobber tool capture)", result.ToolCalls)
+	}
+}
+
 func TestWriteChatCompletionResponseIncludesToolCalls(t *testing.T) {
 	var out bytes.Buffer
 	err := WriteChatCompletionResponse(

@@ -385,6 +385,8 @@ func CollectAnthropicText(r io.Reader) (StreamResult, error) {
 	var usage *StreamUsage
 	toolCallsByIndex := map[int]*types.ToolCall{}
 	var toolOrder []int
+	thinkingByIndex := map[int]*ThinkingBlock{}
+	var thinkingOrder []int
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
 	scanner.Split(splitDoubleNewline)
@@ -411,6 +413,15 @@ func CollectAnthropicText(r io.Reader) (StreamResult, error) {
 					CallID: id,
 					Name:   getString(block, "name"),
 				}
+			} else if block != nil && getString(block, "type") == "thinking" {
+				index := getInt(dataJSON, "index")
+				if _, ok := thinkingByIndex[index]; !ok {
+					thinkingOrder = append(thinkingOrder, index)
+				}
+				thinkingByIndex[index] = &ThinkingBlock{
+					Text:      getString(block, "thinking"),
+					Signature: getString(block, "signature"),
+				}
 			}
 		case "content_block_delta":
 			delta := getMap(dataJSON, "delta")
@@ -422,6 +433,16 @@ func CollectAnthropicText(r io.Reader) (StreamResult, error) {
 				if call != nil {
 					call.Arguments += getString(delta, "partial_json")
 				}
+			} else if delta != nil && getString(delta, "type") == "thinking_delta" {
+				index := getInt(dataJSON, "index")
+				if tb := thinkingByIndex[index]; tb != nil {
+					tb.Text += getString(delta, "thinking")
+				}
+			} else if delta != nil && getString(delta, "type") == "signature_delta" {
+				index := getInt(dataJSON, "index")
+				if tb := thinkingByIndex[index]; tb != nil {
+					tb.Signature += getString(delta, "signature")
+				}
 			}
 		case "message_delta":
 			if delta := getMap(dataJSON, "delta"); delta != nil {
@@ -431,13 +452,13 @@ func CollectAnthropicText(r io.Reader) (StreamResult, error) {
 			}
 			mergeUsage(&usage, getMap(dataJSON, "usage"))
 		case "message_stop":
-			return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Usage: usage}, nil
+			return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage}, nil
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return StreamResult{}, err
 	}
-	return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Usage: usage}, nil
+	return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage}, nil
 }
 
 func WriteResponsesResponse(
@@ -898,6 +919,19 @@ func orderedToolCalls(byIndex map[int]*types.ToolCall, order []int) []types.Tool
 	for _, index := range order {
 		if call := byIndex[index]; call != nil {
 			out = append(out, *call)
+		}
+	}
+	return out
+}
+
+func orderedThinking(byIndex map[int]*ThinkingBlock, order []int) []ThinkingBlock {
+	if len(byIndex) == 0 {
+		return nil
+	}
+	out := make([]ThinkingBlock, 0, len(byIndex))
+	for _, index := range order {
+		if tb := byIndex[index]; tb != nil {
+			out = append(out, *tb)
 		}
 	}
 	return out

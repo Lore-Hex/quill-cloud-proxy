@@ -236,8 +236,20 @@ func WriteMessagesResponse(
 	inputTokens int,
 	outputTokens int,
 ) error {
-	content := make([]map[string]any, 0, 1+len(result.ToolCalls))
-	if result.Text != "" || len(result.ToolCalls) == 0 {
+	content := make([]map[string]any, 0, len(result.Thinking)+1+len(result.ToolCalls))
+	// Thinking blocks come first (before text/tool_use) and carry their
+	// signature — Anthropic requires them replayed verbatim on the next
+	// tool-use turn when extended thinking is on.
+	for _, th := range result.Thinking {
+		block := map[string]any{"type": "thinking", "thinking": th.Text}
+		if th.Signature != "" {
+			block["signature"] = th.Signature
+		}
+		content = append(content, block)
+	}
+	// Emit a text block when the model produced text, or as the lone block
+	// for a genuinely empty turn (no thinking, no tool calls).
+	if result.Text != "" || (len(result.ToolCalls) == 0 && len(result.Thinking) == 0) {
 		content = append(content, map[string]any{"type": "text", "text": result.Text})
 	}
 	for _, call := range result.ToolCalls {

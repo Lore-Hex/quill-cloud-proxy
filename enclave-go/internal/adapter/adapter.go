@@ -243,12 +243,26 @@ type StreamResult struct {
 	Text         string
 	FinishReason string
 	ToolCalls    []types.ToolCall
+	// Thinking holds extended-thinking blocks (in order, before any text /
+	// tool_use), reassembled from the upstream SSE. opus-4.7+ emits these
+	// when output_config.effort is set; Anthropic requires them replayed
+	// verbatim (with signature) on the next tool-use turn, so the
+	// non-streaming Messages response must surface them — otherwise a
+	// multi-turn agent loop loses its thinking and the next request 400s.
+	Thinking []ThinkingBlock
 	// Usage carries REAL upstream token counts when the provider reported
 	// them (Anthropic message_start/message_delta usage, or the OpenAI-
 	// compatible stream_options.include_usage final chunk relayed by
 	// llm/stream_translate.go). nil when the upstream never reported usage
 	// — callers fall back to the chars/4 estimates in that case.
 	Usage *StreamUsage
+}
+
+// ThinkingBlock is one reassembled extended-thinking block: the thinking
+// text plus the cryptographic signature Anthropic requires on replay.
+type ThinkingBlock struct {
+	Text      string
+	Signature string
 }
 
 // StreamUsage is the provider-reported token accounting for one stream.
