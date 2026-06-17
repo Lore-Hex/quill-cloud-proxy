@@ -17,6 +17,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/attestation"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 )
 
 type responseStatsConn struct {
@@ -41,6 +42,10 @@ func (c *responseStatsConn) Snapshot() (status int, responseBytes int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.status, c.responseBytes
+}
+
+func (c *responseStatsConn) SelectedLeafDER() []byte {
+	return enclavetls.SelectedLeafDER(c.Conn)
 }
 
 func parseHTTPStatus(p []byte) int {

@@ -258,11 +258,11 @@ def flatten_strings(value: Any) -> list[str]:
 
 
 def gcp_nonce_values(payload: dict[str, Any]) -> list[str]:
-	values: list[str] = []
-	for key, value in walk_values(payload):
-		if key in {"eat_nonce", "nonces"}:
-			values.extend(flatten_strings(value))
-	return [v.lower() for v in values]
+    values: list[str] = []
+    for key, value in walk_values(payload):
+        if key in {"eat_nonce", "nonces"}:
+            values.extend(flatten_strings(value))
+    return [v.lower() for v in values]
 
 
 def verify_no_gcp_debug(payload: dict[str, Any]) -> None:

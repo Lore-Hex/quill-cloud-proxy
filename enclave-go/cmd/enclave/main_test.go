@@ -19,6 +19,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -134,6 +135,32 @@ func TestResponseStatsConnCapturesStatusBytesAndOutcome(t *testing.T) {
 	}
 	if got := outcomeForStatus(status); got != "client_error" {
 		t.Fatalf("outcome = %q, want client_error", got)
+	}
+}
+
+type selectedLeafTestConn struct {
+	net.Conn
+	leaf []byte
+}
+
+func (c *selectedLeafTestConn) SelectedLeafDER() []byte {
+	return append([]byte(nil), c.leaf...)
+}
+
+func TestResponseStatsConnDelegatesSelectedLeafDER(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	want := []byte("leaf-der")
+	stats := &responseStatsConn{Conn: &selectedLeafTestConn{Conn: server, leaf: want}}
+	got := enclavetls.SelectedLeafDER(stats)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("SelectedLeafDER = %q, want %q", got, want)
+	}
+	got[0] = 'x'
+	if bytes.Equal(enclavetls.SelectedLeafDER(stats), got) {
+		t.Fatal("SelectedLeafDER returned mutable storage")
 	}
 }
 
