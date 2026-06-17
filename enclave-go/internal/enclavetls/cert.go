@@ -45,6 +45,54 @@ type Server struct {
 	leafDER         []byte
 }
 
+type selectedLeafSetter interface {
+	setSelectedLeafDER([]byte)
+}
+
+type selectedLeafReader interface {
+	SelectedLeafDER() []byte
+}
+
+type selectedLeafConn struct {
+	net.Conn
+	mu      sync.RWMutex
+	leafDER []byte
+}
+
+func (c *selectedLeafConn) setSelectedLeafDER(der []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.leafDER = append(c.leafDER[:0], der...)
+}
+
+func (c *selectedLeafConn) SelectedLeafDER() []byte {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.leafDER) == 0 {
+		return nil
+	}
+	out := make([]byte, len(c.leafDER))
+	copy(out, c.leafDER)
+	return out
+}
+
+type trackedTLSConn struct {
+	*tls.Conn
+	selected *selectedLeafConn
+}
+
+func (c *trackedTLSConn) SelectedLeafDER() []byte {
+	if c == nil || c.selected == nil {
+		return nil
+	}
+	return c.selected.SelectedLeafDER()
+}
+
+type trackingListener struct {
+	net.Listener
+	server *Server
+}
+
 // NewSelfSigned generates an ECDSA P-256 keypair + a self-signed cert with
 // `dnsName` as Subject Alternative Name. dnsName may be a comma-separated
 // list when one regional gateway must serve both canonical and regional SNI.
@@ -160,8 +208,13 @@ func NewACME(dnsName, email, cacheDir, directoryURL, gcsCacheBucket string) (*Se
 			// no-prompt-logging policy.
 			fmt.Fprintf(os.Stderr, "enclavetls.acme_get_certificate_failed sni=%q err=%v\n", hello.ServerName, err)
 		}
-		if err == nil && cert != nil && len(cert.Certificate) > 0 && !supportsProto(hello.SupportedProtos, acme.ALPNProto) {
-			srv.setLeafDER(cert.Certificate[0])
+		if err == nil && cert != nil && len(cert.Certificate) > 0 {
+			if setter, ok := hello.Conn.(selectedLeafSetter); ok {
+				setter.setSelectedLeafDER(cert.Certificate[0])
+			}
+			if !supportsProto(hello.SupportedProtos, acme.ALPNProto) {
+				srv.setLeafDER(cert.Certificate[0])
+			}
 		}
 		return cert, err
 	}
@@ -192,7 +245,24 @@ func splitDNSNames(value string) []string {
 // connections are TLS-terminated. The handshake happens lazily on first
 // read/write; callers should set their own deadlines.
 func (s *Server) Wrap(inner net.Listener) net.Listener {
-	return tls.NewListener(inner, s.tlsConfig)
+	return &trackingListener{Listener: inner, server: s}
+}
+
+func (l *trackingListener) Accept() (net.Conn, error) {
+	raw, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	selected := &selectedLeafConn{Conn: raw}
+	if l.server != nil {
+		if der := l.server.CurrentLeafDER(); len(der) > 0 {
+			selected.setSelectedLeafDER(der)
+		}
+	}
+	return &trackedTLSConn{
+		Conn:     tls.Server(selected, l.server.tlsConfig),
+		selected: selected,
+	}, nil
 }
 
 func (s *Server) CurrentLeafDER() []byte {
@@ -227,6 +297,13 @@ func supportsProto(items []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func SelectedLeafDER(conn net.Conn) []byte {
+	if reader, ok := conn.(selectedLeafReader); ok {
+		return reader.SelectedLeafDER()
+	}
+	return nil
 }
 
 type memoryACMECache struct {

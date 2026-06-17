@@ -206,6 +206,135 @@ func TestWrap_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestWrapTracksSelectedLeafPerConnection(t *testing.T) {
+	apiTrusted, err := NewSelfSigned("api.trustedrouter.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiQuill, err := NewSelfSigned("api.quillrouter.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{}
+	srv.tlsConfig = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"http/1.1"},
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			cert := &apiTrusted.Certificate
+			if hello.ServerName == "api.quillrouter.com" {
+				cert = &apiQuill.Certificate
+			}
+			if setter, ok := hello.Conn.(selectedLeafSetter); ok {
+				setter.setSelectedLeafDER(cert.Certificate[0])
+			}
+			// Mirror the ACME production path: a later handshake for another
+			// hostname updates the process-global leaf cache. The selected leaf
+			// attached to the first connection must still remain stable.
+			srv.setLeafDER(cert.Certificate[0])
+			return cert, nil
+		},
+	}
+
+	innerL := newPipeListener(t)
+	defer innerL.Close()
+	tlsL := srv.Wrap(innerL)
+	pool := x509.NewCertPool()
+	trustedLeaf, err := x509.ParseCertificate(apiTrusted.Certificate.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse trustedrouter leaf: %v", err)
+	}
+	quillLeaf, err := x509.ParseCertificate(apiQuill.Certificate.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse quillrouter leaf: %v", err)
+	}
+	pool.AddCert(trustedLeaf)
+	pool.AddCert(quillLeaf)
+
+	firstRelease := make(chan struct{})
+	firstDone := make(chan []byte, 1)
+	firstAccepted := make(chan struct{}, 1)
+	go func() {
+		conn, err := tlsL.Accept()
+		if err != nil {
+			firstDone <- nil
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+		buf := []byte{0}
+		_, _ = conn.Read(buf)
+		firstAccepted <- struct{}{}
+		<-firstRelease
+		firstDone <- SelectedLeafDER(conn)
+	}()
+
+	client1, err := innerL.dial()
+	if err != nil {
+		t.Fatalf("dial first: %v", err)
+	}
+	tc1 := tls.Client(client1, &tls.Config{
+		RootCAs:    pool,
+		ServerName: "api.trustedrouter.com",
+		MinVersion: tls.VersionTLS12,
+	})
+	_ = tc1.SetDeadline(time.Now().Add(2 * time.Second))
+	if err := tc1.Handshake(); err != nil {
+		t.Fatalf("first handshake: %v", err)
+	}
+	if _, err := tc1.Write([]byte{1}); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	<-firstAccepted
+
+	secondDone := make(chan []byte, 1)
+	go func() {
+		conn, err := tlsL.Accept()
+		if err != nil {
+			secondDone <- nil
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+		buf := []byte{0}
+		_, _ = conn.Read(buf)
+		secondDone <- SelectedLeafDER(conn)
+	}()
+
+	client2, err := innerL.dial()
+	if err != nil {
+		t.Fatalf("dial second: %v", err)
+	}
+	tc2 := tls.Client(client2, &tls.Config{
+		RootCAs:    pool,
+		ServerName: "api.quillrouter.com",
+		MinVersion: tls.VersionTLS12,
+	})
+	_ = tc2.SetDeadline(time.Now().Add(2 * time.Second))
+	if err := tc2.Handshake(); err != nil {
+		t.Fatalf("second handshake: %v", err)
+	}
+	if _, err := tc2.Write([]byte{1}); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	secondLeaf := <-secondDone
+
+	close(firstRelease)
+	firstLeaf := <-firstDone
+	_ = tc1.Close()
+	_ = tc2.Close()
+
+	if !bytes.Equal(secondLeaf, apiQuill.Certificate.Certificate[0]) {
+		t.Fatal("second connection did not record the quillrouter leaf")
+	}
+	if !bytes.Equal(srv.CurrentLeafDER(), apiQuill.Certificate.Certificate[0]) {
+		t.Fatal("test setup failed: global leaf was not overwritten by second handshake")
+	}
+	if !bytes.Equal(firstLeaf, apiTrusted.Certificate.Certificate[0]) {
+		t.Fatal("first connection leaf changed after another hostname handshake")
+	}
+}
+
 // TestWrap_RejectsClientWithDifferentRoot ensures a client that doesn't
 // trust the leaf gets rejected (basic confidence in the TLS config).
 func TestWrap_RejectsClientWithDifferentRoot(t *testing.T) {

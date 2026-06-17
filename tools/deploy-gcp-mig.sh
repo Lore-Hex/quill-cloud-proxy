@@ -4,7 +4,7 @@
 # What this script provisions, idempotently, in $REGION:
 #
 #   - quill-enclave-tpl-${REGION}-NNN     instance template (n2d SEV-SNP,
-#                                          confidential-space-debug image,
+#                                          confidential-space production image,
 #                                          metadata wired to the Anthropic
 #                                          variant of the workload)
 #   - quill-enclave-tcp-443-${REGION}      regional TCP health check on :443
@@ -152,14 +152,15 @@ MACHINE_TYPE="${MACHINE_TYPE:-n2d-standard-2}"
 # Confidential VM attestation flavor. Defaults to AMD SEV-SNP (n2d-* and
 # c3d-* families). Override to TDX for Intel-CPU families (c3-* without
 # the trailing d). Both flavors are supported by the same
-# confidential-space-debug image and produce equivalent attestation
+# confidential-space image and produce equivalent attestation
 # tokens (the workload doesn't care which CPU vendor attested it,
 # only that the attestation is valid). Useful when one CPU family is
 # stocked-out across a region — switching escapes zone-resource
 # exhaustion without leaving the region.
 CONF_COMPUTE_TYPE="${CONF_COMPUTE_TYPE:-SEV_SNP}"
-CSP_IMAGE_FAMILY="${CSP_IMAGE_FAMILY:-confidential-space-debug}"
+CSP_IMAGE_FAMILY="${CSP_IMAGE_FAMILY:-confidential-space}"
 CSP_IMAGE_PROJECT="${CSP_IMAGE_PROJECT:-confidential-space-images}"
+TEE_CONTAINER_LOG_REDIRECT="${TEE_CONTAINER_LOG_REDIRECT:-false}"
 
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 gc() { gcloud --project "$PROJECT_ID" "$@"; }
@@ -215,7 +216,7 @@ gc compute instance-templates create "$TEMPLATE" \
   --confidential-compute-type="$CONF_COMPUTE_TYPE" \
   --maintenance-policy=TERMINATE \
   --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring \
-  --metadata="^|^tee-container-log-redirect=true|tee-env-QUILL_API_HOST=${API_HOST}|tee-env-QUILL_DEVICE_KEYS_SECRET=${QUILL_DEVICE_KEYS_SECRET}|tee-env-QUILL_GCP_PROJECT_ID=${PROJECT_ID}|tee-env-QUILL_GCP_REGION=${REGION}|tee-env-QUILL_GEMINI_VERTEX_REGION=${QUILL_GEMINI_VERTEX_REGION}|tee-env-QUILL_ANTHROPIC_SECRET=${QUILL_ANTHROPIC_SECRET}|tee-env-QUILL_OPENAI_SECRET=${QUILL_OPENAI_SECRET}|tee-env-QUILL_GEMINI_SECRET=${QUILL_GEMINI_SECRET}|tee-env-QUILL_CEREBRAS_SECRET=${QUILL_CEREBRAS_SECRET}|tee-env-QUILL_DEEPSEEK_SECRET=${QUILL_DEEPSEEK_SECRET}|tee-env-QUILL_MISTRAL_SECRET=${QUILL_MISTRAL_SECRET}|tee-env-QUILL_KIMI_SECRET=${QUILL_KIMI_SECRET}|tee-env-QUILL_ZAI_SECRET=${QUILL_ZAI_SECRET}|tee-env-QUILL_TOGETHER_SECRET=${QUILL_TOGETHER_SECRET}|tee-env-QUILL_FIREWORKS_SECRET=${QUILL_FIREWORKS_SECRET}${COHERE_TEE_ENV}${VOYAGE_TEE_ENV}${XIAOMI_TEE_ENV}|tee-env-QUILL_GROK_SECRET=${QUILL_GROK_SECRET}|tee-env-QUILL_NOVITA_SECRET=${QUILL_NOVITA_SECRET}|tee-env-QUILL_PHALA_SECRET=${QUILL_PHALA_SECRET}|tee-env-QUILL_SILICONFLOW_SECRET=${QUILL_SILICONFLOW_SECRET}|tee-env-QUILL_TINFOIL_SECRET=${QUILL_TINFOIL_SECRET}|tee-env-QUILL_VENICE_SECRET=${QUILL_VENICE_SECRET}|tee-env-QUILL_PARASAIL_SECRET=${QUILL_PARASAIL_SECRET}|tee-env-QUILL_LIGHTNING_SECRET=${QUILL_LIGHTNING_SECRET}|tee-env-QUILL_GMI_SECRET=${QUILL_GMI_SECRET}|tee-env-QUILL_DEEPINFRA_SECRET=${QUILL_DEEPINFRA_SECRET}|tee-env-QUILL_NEBIUS_SECRET=${QUILL_NEBIUS_SECRET}|tee-env-QUILL_MINIMAX_SECRET=${QUILL_MINIMAX_SECRET}|tee-env-QUILL_ACME_CACHE_GCS_BUCKET=${QUILL_ACME_CACHE_GCS_BUCKET}|tee-env-QUILL_ACME_EMAIL=acme-${REGION}@trustedrouter.com|tee-env-QUILL_TRUSTEDROUTER_INTERNAL_SECRET=${QUILL_TRUSTEDROUTER_INTERNAL_SECRET}|tee-env-TR_CONTROL_PLANE_BASE_URL=${TR_CONTROL_PLANE_BASE_URL}|tee-env-QUILL_FIRST_BYTE_TIMEOUT_SECONDS=${QUILL_FIRST_BYTE_TIMEOUT_SECONDS}|tee-image-reference=${IMAGE_REF}|tee-restart-policy=Always" \
+  --metadata="^|^tee-container-log-redirect=${TEE_CONTAINER_LOG_REDIRECT}|tee-env-QUILL_API_HOST=${API_HOST}|tee-env-QUILL_DEVICE_KEYS_SECRET=${QUILL_DEVICE_KEYS_SECRET}|tee-env-QUILL_GCP_PROJECT_ID=${PROJECT_ID}|tee-env-QUILL_GCP_REGION=${REGION}|tee-env-QUILL_GEMINI_VERTEX_REGION=${QUILL_GEMINI_VERTEX_REGION}|tee-env-QUILL_ANTHROPIC_SECRET=${QUILL_ANTHROPIC_SECRET}|tee-env-QUILL_OPENAI_SECRET=${QUILL_OPENAI_SECRET}|tee-env-QUILL_GEMINI_SECRET=${QUILL_GEMINI_SECRET}|tee-env-QUILL_CEREBRAS_SECRET=${QUILL_CEREBRAS_SECRET}|tee-env-QUILL_DEEPSEEK_SECRET=${QUILL_DEEPSEEK_SECRET}|tee-env-QUILL_MISTRAL_SECRET=${QUILL_MISTRAL_SECRET}|tee-env-QUILL_KIMI_SECRET=${QUILL_KIMI_SECRET}|tee-env-QUILL_ZAI_SECRET=${QUILL_ZAI_SECRET}|tee-env-QUILL_TOGETHER_SECRET=${QUILL_TOGETHER_SECRET}|tee-env-QUILL_FIREWORKS_SECRET=${QUILL_FIREWORKS_SECRET}${COHERE_TEE_ENV}${VOYAGE_TEE_ENV}${XIAOMI_TEE_ENV}|tee-env-QUILL_GROK_SECRET=${QUILL_GROK_SECRET}|tee-env-QUILL_NOVITA_SECRET=${QUILL_NOVITA_SECRET}|tee-env-QUILL_PHALA_SECRET=${QUILL_PHALA_SECRET}|tee-env-QUILL_SILICONFLOW_SECRET=${QUILL_SILICONFLOW_SECRET}|tee-env-QUILL_TINFOIL_SECRET=${QUILL_TINFOIL_SECRET}|tee-env-QUILL_VENICE_SECRET=${QUILL_VENICE_SECRET}|tee-env-QUILL_PARASAIL_SECRET=${QUILL_PARASAIL_SECRET}|tee-env-QUILL_LIGHTNING_SECRET=${QUILL_LIGHTNING_SECRET}|tee-env-QUILL_GMI_SECRET=${QUILL_GMI_SECRET}|tee-env-QUILL_DEEPINFRA_SECRET=${QUILL_DEEPINFRA_SECRET}|tee-env-QUILL_NEBIUS_SECRET=${QUILL_NEBIUS_SECRET}|tee-env-QUILL_MINIMAX_SECRET=${QUILL_MINIMAX_SECRET}|tee-env-QUILL_ACME_CACHE_GCS_BUCKET=${QUILL_ACME_CACHE_GCS_BUCKET}|tee-env-QUILL_ACME_EMAIL=acme-${REGION}@trustedrouter.com|tee-env-QUILL_TRUSTEDROUTER_INTERNAL_SECRET=${QUILL_TRUSTEDROUTER_INTERNAL_SECRET}|tee-env-TR_CONTROL_PLANE_BASE_URL=${TR_CONTROL_PLANE_BASE_URL}|tee-env-QUILL_FIRST_BYTE_TIMEOUT_SECONDS=${QUILL_FIRST_BYTE_TIMEOUT_SECONDS}|tee-image-reference=${IMAGE_REF}|tee-restart-policy=Always" \
   >/dev/null
 
 # 4. Create or update the MIG.

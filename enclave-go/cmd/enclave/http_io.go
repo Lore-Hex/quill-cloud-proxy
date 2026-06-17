@@ -17,7 +17,6 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/attestation"
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 )
 
 type responseStatsConn struct {
@@ -211,19 +210,15 @@ func isUnsupportedResponsesEndpoint(method, routePath string) bool {
 	return false
 }
 
-// serveAttestation answers GET /attestation with the NSM-signed CBOR
-// document binding the live TLS cert's public key. Clients fetch this
-// before sending prompts; verify against AWS's NSM root + check PCR0
-// matches the trust page's published value + check the cert presented in
-// their TLS handshake matches the doc's PublicKey field.
+// serveAttestation answers GET /attestation with a hardware-signed document
+// binding the exact TLS leaf cert selected for this connection. Clients fetch
+// this before sending prompts; verify the attestation chain + measurement, then
+// check the cert presented in their TLS handshake is the cert bound in the
+// document/JWT.
 //
 // nonce: ?nonce=<hex> in the query string. Optional but recommended —
 // a client-supplied freshness token so the doc is provably not a replay.
-func serveAttestation(conn io.Writer, tlsServer *enclavetls.Server, deviceBlob, nonce []byte) {
-	var leafDER []byte
-	if tlsServer != nil {
-		leafDER = tlsServer.CurrentLeafDER()
-	}
+func serveAttestation(conn io.Writer, leafDER, deviceBlob, nonce []byte) {
 	if leafDER == nil {
 		writeError(conn, 503, "TLS not enabled in this enclave; attestation requires a bound cert")
 		return

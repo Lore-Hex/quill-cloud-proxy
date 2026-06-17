@@ -295,7 +295,7 @@ func serveOne(
 	// Trust binding still holds — the doc commits to the live TLS cert,
 	// which only this enclave can speak.
 	if method == "GET" && routePath == "/attestation" {
-		serveAttestation(conn, tlsServer, deviceBlob, nonce)
+		serveAttestation(conn, enclavetls.SelectedLeafDER(conn), deviceBlob, nonce)
 		return
 	}
 
