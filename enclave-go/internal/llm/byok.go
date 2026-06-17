@@ -321,6 +321,7 @@ func invokeAnthropicBYOKStreaming(
 		ToolChoice    *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
 		StopSequences []string                    `json:"stop_sequences,omitempty"`
 		Thinking      any                         `json:"thinking,omitempty"`
+		OutputConfig  any                         `json:"output_config,omitempty"`
 		Stream        bool                        `json:"stream"`
 	}{
 		Model:         modelID,
@@ -333,6 +334,7 @@ func invokeAnthropicBYOKStreaming(
 		ToolChoice:    body.ToolChoice,
 		StopSequences: body.StopSequences,
 		Thinking:      body.Thinking,
+		OutputConfig:  body.OutputConfig,
 		Stream:        true,
 	}
 	bodyBytes, err := json.Marshal(reqBody)

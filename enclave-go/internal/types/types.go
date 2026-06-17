@@ -359,6 +359,12 @@ type AnthropicMessagesRequest struct {
 	ToolChoice       *AnthropicToolChoice `json:"tool_choice,omitempty"`
 	StopSequences    []string             `json:"stop_sequences,omitempty"`
 	Thinking         any                  `json:"thinking,omitempty"`
+	// OutputConfig carries the newer Anthropic effort control
+	// (e.g. {"effort":"xhigh"}). opus-4.7+ rejects the legacy
+	// thinking.type=enabled+budget_tokens form and requires
+	// thinking.type=adaptive PLUS output_config.effort, so this must be
+	// forwarded alongside Thinking or adaptive thinking stays minimal.
+	OutputConfig any `json:"output_config,omitempty"`
 
 	// NativeContent marks a request that arrived on /v1/messages with
 	// already-Anthropic-shaped content. The anthropic-direct path must

@@ -36,6 +36,7 @@ type AnthropicNativeRequest struct {
 	ToolChoice    *types.AnthropicToolChoice `json:"tool_choice,omitempty"`
 	StopSequences []string                   `json:"stop_sequences,omitempty"`
 	Thinking      any                        `json:"thinking,omitempty"`
+	OutputConfig  any                        `json:"output_config,omitempty"`
 	Metadata      map[string]any             `json:"metadata,omitempty"`
 }
 
@@ -76,6 +77,7 @@ func MessagesToAnthropic(req *AnthropicNativeRequest) (*types.AnthropicMessagesR
 		ToolChoice:        req.ToolChoice,
 		StopSequences:     req.StopSequences,
 		Thinking:          req.Thinking,
+		OutputConfig:      req.OutputConfig,
 		NativeContent:     true,
 	}
 	return out, nil

@@ -61,6 +61,36 @@ func TestMessagesToAnthropicValidatesAndPreservesNativeShape(t *testing.T) {
 	}
 }
 
+func TestMessagesToAnthropicForwardsOutputConfig(t *testing.T) {
+	// opus-4.7+ rejects thinking.type=enabled+budget_tokens and requires
+	// thinking.type=adaptive PLUS output_config.effort. The gateway forwarded
+	// `thinking` but dropped `output_config`, so adaptive arrived without its
+	// effort directive (minimal thinking). output_config must be carried through.
+	req := &AnthropicNativeRequest{
+		Model:     "anthropic/claude-opus-4.7",
+		MaxTokens: 256,
+		Messages: []types.AnthropicMessage{
+			{Role: "user", Content: "hi"},
+		},
+		Thinking:     map[string]any{"type": "adaptive"},
+		OutputConfig: map[string]any{"effort": "xhigh"},
+	}
+	out, err := MessagesToAnthropic(req)
+	if err != nil {
+		t.Fatalf("MessagesToAnthropic: %v", err)
+	}
+	oc, ok := out.OutputConfig.(map[string]any)
+	if !ok {
+		t.Fatalf("output_config dropped: %#v", out.OutputConfig)
+	}
+	if oc["effort"] != "xhigh" {
+		t.Fatalf("output_config.effort = %v, want xhigh", oc["effort"])
+	}
+	if th, _ := out.Thinking.(map[string]any); th["type"] != "adaptive" {
+		t.Fatalf("thinking not preserved: %#v", out.Thinking)
+	}
+}
+
 func TestMessagesToAnthropicStripsEmptyTextBlocks(t *testing.T) {
 	// Repro: a multi-turn tool loop replays a near-empty assistant turn (a lone
 	// whitespace token). Anthropic 400s on empty/whitespace text blocks, which
