@@ -888,10 +888,11 @@ func serveMessages(
 		result, err := adapter.CollectAnthropicText(pr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.messages_collect_failed model=%q err=%v\n", req.Model, err)
+			status, message := upstreamErrorResponse(err)
 			if trEnabled {
-				_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
+				_ = trGateway.Refund(ctx, authorization, status, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 			}
-			writeAnthropicError(conn, 502, "provider error")
+			writeAnthropicError(conn, status, message)
 			return
 		}
 		inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(

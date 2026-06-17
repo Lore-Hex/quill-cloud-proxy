@@ -368,6 +368,35 @@ func newMessageID() string {
 	return "msg_" + hex.EncodeToString(buf[:])
 }
 
+// upstreamErrorResponse maps a provider/upstream error to the status + message
+// to return to the client. Provider clients wrap upstream HTTP failures as
+// "...http <status>: <body>" (see internal/llm/*.go); when we recognize that
+// shape we surface the upstream status and (truncated) body so callers get the
+// real reason — e.g. an Anthropic 400 validation error — instead of an opaque
+// "provider error". Anything we can't classify stays a generic 502. Upstream
+// 4xx/5xx bodies are API status/validation messages (no keys, no user data).
+func upstreamErrorResponse(err error) (int, string) {
+	if err == nil {
+		return 502, "provider error"
+	}
+	s := err.Error()
+	if i := strings.LastIndex(s, "http "); i >= 0 {
+		rest := s[i+len("http "):]
+		if c := strings.IndexByte(rest, ':'); c > 0 {
+			if code, e := strconv.Atoi(strings.TrimSpace(rest[:c])); e == nil && code >= 400 && code < 600 {
+				body := strings.TrimSpace(rest[c+1:])
+				if len(body) > 1200 {
+					body = body[:1200]
+				}
+				if body != "" {
+					return code, body
+				}
+			}
+		}
+	}
+	return 502, "provider error"
+}
+
 // writeAnthropicError writes the Anthropic-shaped error envelope the
 // Messages API uses: {"type":"error","error":{"type":...,"message":...}}.
 func writeAnthropicError(w io.Writer, status int, message string) {
