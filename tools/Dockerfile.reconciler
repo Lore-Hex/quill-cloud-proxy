@@ -1,0 +1,23 @@
+# Control-plane enclave-DNS reconciler — runs as a Cloud Run job on a schedule.
+# Probes every enclave instance with a full attestation check and publishes only
+# the healthy ones into api.quillrouter.com. See tools/reconcile-enclave-dns.py.
+#
+# Base has gcloud (instance discovery + Cloud DNS) and authenticates as the
+# job's service account via the metadata server (ADC). uv provides the
+# verify-attestation script's deps (cbor2, cryptography).
+FROM google/cloud-sdk:slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && ln -s /root/.local/bin/uv /usr/local/bin/uv
+
+WORKDIR /app
+COPY tools/verify-attestation.py tools/aws-nitro-root.pem tools/reconcile-enclave-dns.py /app/tools/
+# Warm the uv dep cache into the image so each scheduled run is fast.
+RUN uv run --script /app/tools/verify-attestation.py --help >/dev/null 2>&1 || true
+
+# QUILL_RECONCILE_APPLY=1 makes it actually change DNS; default is dry-run.
+ENV QUILL_RECONCILE_APPLY=0
+CMD ["sh","-c","uv run --script /app/tools/reconcile-enclave-dns.py $([ \"$QUILL_RECONCILE_APPLY\" = 1 ] && echo --apply || echo --dry-run)"]

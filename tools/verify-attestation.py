@@ -175,9 +175,14 @@ def cert_spki(der: bytes) -> bytes:
     )
 
 
-def fetch_attestation_same_tls_socket(host: str, nonce_hex: str, port: int = 443) -> tuple[bytes, bytes]:
+def fetch_attestation_same_tls_socket(
+    host: str, nonce_hex: str, port: int = 443, connect_ip: str | None = None
+) -> tuple[bytes, bytes]:
+    # connect_ip lets a caller (e.g. the DNS reconciler) attest a SPECIFIC
+    # instance by IP while still presenting/validating the canonical hostname
+    # (SNI + cert SAN + Host header stay `host`). Without it, host is dialed.
     ctx = ssl.create_default_context()
-    with socket.create_connection((host, port), timeout=10) as raw:
+    with socket.create_connection((connect_ip or host, port), timeout=10) as raw:
         with ctx.wrap_socket(raw, server_hostname=host) as tls:
             cert_der = tls.getpeercert(binary_form=True)
             if cert_der is None:
@@ -207,9 +212,9 @@ def fetch_attestation_same_tls_socket(host: str, nonce_hex: str, port: int = 443
     return cert_der, body
 
 
-def fetch_live_cert_der(host: str, port: int = 443) -> bytes:
+def fetch_live_cert_der(host: str, port: int = 443, connect_ip: str | None = None) -> bytes:
     ctx = ssl.create_default_context()
-    with socket.create_connection((host, port), timeout=10) as raw:
+    with socket.create_connection((connect_ip or host, port), timeout=10) as raw:
         with ctx.wrap_socket(raw, server_hostname=host) as tls:
             der = tls.getpeercert(binary_form=True)
             if der is None:
@@ -388,6 +393,12 @@ def main() -> int:
     parser.add_argument("blob", nargs="?", help="attestation file path, '-' for stdin, or omit for live sampling")
     parser.add_argument("--api-host", default="api.trustedrouter.com", help="API host to verify")
     parser.add_argument("--port", type=int, default=443)
+    parser.add_argument(
+        "--connect-ip",
+        default=None,
+        help="dial this IP directly but keep --api-host as SNI/cert-name/Host "
+        "(attest one specific instance behind a shared hostname)",
+    )
     parser.add_argument("--samples", type=int, default=1, help="same-TLS-socket live samples to fetch")
     parser.add_argument("--expected-pcr0", default=None, help="hex AWS Nitro PCR0 from the trust page")
     parser.add_argument("--expect-digest", default=None, help="GCP Confidential Space image_digest from the trust page")
@@ -400,7 +411,7 @@ def main() -> int:
         sys.exit("[FAIL] --samples > 1 requires live mode; omit the blob path")
 
     if blob is not None:
-        cert_der = fetch_live_cert_der(args.api_host, args.port)
+        cert_der = fetch_live_cert_der(args.api_host, args.port, connect_ip=args.connect_ip)
         if looks_like_jwt(blob):
             verify_gcp_jwt(
                 blob,
@@ -423,7 +434,7 @@ def main() -> int:
         sys.exit("[FAIL] --samples must be >= 1")
     for sample in range(1, args.samples + 1):
         nonce_hex = secrets.token_hex(32)
-        cert_der, live_blob = fetch_attestation_same_tls_socket(args.api_host, nonce_hex, args.port)
+        cert_der, live_blob = fetch_attestation_same_tls_socket(args.api_host, nonce_hex, args.port, connect_ip=args.connect_ip)
         print(f"\nSample {sample}/{args.samples}:")
         if looks_like_jwt(live_blob):
             verify_gcp_jwt(
