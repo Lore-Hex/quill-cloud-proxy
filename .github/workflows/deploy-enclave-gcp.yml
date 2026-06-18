@@ -250,7 +250,7 @@ jobs:
         # at this template and recreates instances on it.
         id: prev
         run: |
-          for pair in "us-central1:quill-enclave-mig-us" "europe-west4:quill-enclave-mig-eu"; do
+          for pair in "us-central1:quill-enclave-mig-us" "europe-west4:quill-enclave-mig-eu" "us-east4:quill-enclave-mig-useast4"; do
             region="${pair%%:*}"
             mig="${pair##*:}"
             tmpl=$(gcloud compute instance-groups managed describe "$mig" \
@@ -324,7 +324,13 @@ jobs:
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          API_HOST: api-europe-west4.quillrouter.com
+          # Every region must whitelist the canonical SNIs, not just its
+          # regional name: with the reconciler/DNS architecture (no L7 LB),
+          # clients connect directly to in-region enclaves using
+          # api.quillrouter.com / api.trustedrouter.com. A regional-only
+          # API_HOST makes autocert reject the canonical SNI (TLS internal
+          # error) and the attest-by-canonical-host reconciler drop the region.
+          API_HOST: api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com
           REGION_SHORT: eu
         run: bash tools/deploy-gcp-mig.sh europe-west4
 
@@ -360,6 +366,50 @@ jobs:
             --region=europe-west4 --project=quill-cloud-proxy \
             --max-unavailable=0 --max-surge=3 --quiet
           echo "us-central1 keeps the new release."
+          exit 1
+
+      - name: Roll the GCP MIG (us-east4)
+        env:
+          IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
+          IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
+          API_HOST: api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com
+          REGION_SHORT: useast4
+          # us-east4 runs Intel TDX (c3-*), not AMD SEV-SNP: n2d capacity is
+          # chronically short here, so the live region is c3-standard-4/TDX.
+          MACHINE_TYPE: c3-standard-4
+          CONF_COMPUTE_TYPE: TDX
+        run: bash tools/deploy-gcp-mig.sh us-east4
+
+      - name: Wait for us-east4 MIG to be stable
+        # See us-central1 wait step — same rationale.
+        timeout-minutes: 15
+        run: |
+          gcloud compute instance-groups managed wait-until quill-enclave-mig-useast4 \
+            --region=us-east4 --project=quill-cloud-proxy --stable
+
+      - name: Canary gate — watch us-east4 only (3 min, post-stable)
+        id: canary_useast4
+        continue-on-error: true
+        run: python3 tools/watchdog.py --regions us-east4 --duration-min 3 --rollback-after 2
+
+      - name: Rollback us-east4 MIG + abort (canary tripped)
+        if: ${{ steps.canary_useast4.outcome == 'failure' && steps.canary_useast4.outputs.rollback_regions != '' }}
+        env:
+          PREV_USEAST4: ${{ steps.prev.outputs.us_east4_template }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PREV_USEAST4}" ]; then
+            echo "no prior us-east4 template recorded; cannot rollback"
+            exit 1
+          fi
+          echo "us-east4 canary failed; pointing MIG back at ${PREV_USEAST4}"
+          gcloud compute instance-groups managed set-instance-template quill-enclave-mig-useast4 \
+            --region=us-east4 --project=quill-cloud-proxy \
+            --template="${PREV_USEAST4}" --quiet
+          gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-useast4 \
+            --region=us-east4 --project=quill-cloud-proxy \
+            --max-unavailable=0 --max-surge=3 --quiet
+          echo "us-central1 + europe-west4 keep the new release."
           exit 1
 
       # No cross-region "final watchdog" step. Each region's health is

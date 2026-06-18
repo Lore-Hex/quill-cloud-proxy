@@ -266,10 +266,16 @@ if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/
   log "updating MIG $MIG_NAME -> template $TEMPLATE (target size $TARGET_SIZE)"
   gc compute instance-groups managed set-instance-template "$MIG_NAME" \
     --region="$REGION" --template="$TEMPLATE" >/dev/null
-  # Repoint autohealing at the (possibly new) health check. No-op if already
-  # set; converges a pre-existing MIG that was created against the old :443 HC.
+  # NO MIG autohealing. The GCP passthrough-NLB health check cannot pass
+  # against the Confidential Space enclave (TLS terminates in-VM; both the
+  # :443 and the dedicated :8081 probes read UNHEALTHY on serving instances —
+  # see the ENCLAVE_LB_TEARDOWN findings). Fleet health is owned by the
+  # control-plane reconciler (tools/reconcile-enclave-dns.py), which attests
+  # every instance and publishes only healthy ones into api.quillrouter.com
+  # DNS. Actively CLEAR any autohealing a prior deploy attached so the broken
+  # HC can never kill-loop the (capacity-scarce) Confidential VMs.
   gc compute instance-groups managed update "$MIG_NAME" \
-    --region="$REGION" --health-check="$HC_URI" --initial-delay=300 >/dev/null
+    --region="$REGION" --clear-autohealing >/dev/null
   # Reconcile size on every deploy — lets us raise TARGET_SIZE for a
   # region (e.g. eu went 2→3 to absorb the 2026-05-11 watchdog-flap
   # pattern) without a one-shot operator step.
@@ -295,14 +301,14 @@ if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/
     --max-surge="$MAX_SURGE" >/dev/null
 else
   log "creating MIG $MIG_NAME (size=$TARGET_SIZE)"
+  # No --health-check / autohealing on create — see the update branch above.
+  # Health is owned by the attesting DNS reconciler, not the MIG.
   gc compute instance-groups managed create "$MIG_NAME" \
     --base-instance-name="$MIG_NAME" \
     --template="$TEMPLATE" \
     --size="$TARGET_SIZE" \
     --region="$REGION" \
-    --health-check="$HC_URI" \
-    --initial-delay=300 \
-    --description="Autohealing MIG for quill enclave gateway in $REGION." >/dev/null
+    --description="quill enclave gateway in $REGION (no MIG autohealing; health owned by tools/reconcile-enclave-dns.py)." >/dev/null
 fi
 
 # 5. Backend service (regional EXTERNAL TCP passthrough) attaching the MIG.
