@@ -128,6 +128,33 @@ func TestVertexGeminiHonorsExplicitLowReasoningForPro(t *testing.T) {
 	}
 }
 
+func TestVertexGeminiExplicitThinkingBudget(t *testing.T) {
+	// reasoning.max_tokens maps to Gemini 2.5's native thinkingBudget.
+	req := &qtypes.OpenAIChatRequest{Reasoning: map[string]any{"max_tokens": float64(24576)}}
+	if got := vertexGeminiThinkingConfig("gemini-2.5-flash", req); got["thinkingBudget"] != 24576 {
+		t.Fatalf("explicit budget = %#v", got)
+	}
+	// -1 = dynamic / full thinking (reproduces the lab thinking-mode scores).
+	req = &qtypes.OpenAIChatRequest{Reasoning: map[string]any{"max_tokens": float64(-1)}}
+	if got := vertexGeminiThinkingConfig("gemini-2.5-flash", req); got["thinkingBudget"] != -1 {
+		t.Fatalf("dynamic budget = %#v", got)
+	}
+	// thinking_budget alias also works.
+	req = &qtypes.OpenAIChatRequest{Reasoning: map[string]any{"thinking_budget": float64(8000)}}
+	if got := vertexGeminiThinkingConfig("gemini-2.5-flash", req); got["thinkingBudget"] != 8000 {
+		t.Fatalf("alias budget = %#v", got)
+	}
+	// Gemini 3+ uses a level, so a positive/dynamic budget maps to "high".
+	req = &qtypes.OpenAIChatRequest{Reasoning: map[string]any{"max_tokens": float64(-1)}}
+	if got := vertexGeminiThinkingConfig("gemini-3.5-flash", req); got["thinkingLevel"] != "high" {
+		t.Fatalf("gemini-3 budget->level = %#v", got)
+	}
+	// No budget: the cost-conscious default is unchanged (off for 2.5 flash).
+	if got := vertexGeminiThinkingConfig("gemini-2.5-flash", nil); got["thinkingBudget"] != 0 {
+		t.Fatalf("default unchanged = %#v", got)
+	}
+}
+
 func TestVertexGeminiImageInputAndOutputStayInsideEnclave(t *testing.T) {
 	imageURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(testPNG(t))
 	var capturedBody map[string]any

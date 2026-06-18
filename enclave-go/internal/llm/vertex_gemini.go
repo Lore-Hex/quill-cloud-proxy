@@ -357,10 +357,25 @@ func vertexGeminiImageModel(modelID string) bool {
 
 func vertexGeminiThinkingConfig(modelID string, req *qtypes.OpenAIChatRequest) map[string]any {
 	modelID = strings.ToLower(modelID)
+	is25 := strings.HasPrefix(modelID, "gemini-2.5")
+	// Explicit numeric thinking budget (OpenRouter-style `reasoning.max_tokens`),
+	// exposing Gemini's native thinkingBudget so a caller can request full
+	// reasoning instead of the cost-conscious default. -1 = dynamic (the model
+	// thinks as much as it needs, up to its max); 0 = off; N = a token budget.
+	// Gemini 2.5 takes a token budget; Gemini 3+ takes a level, so map there.
+	if budget, ok := vertexGeminiThinkingBudget(req); ok && !vertexGeminiImageModel(modelID) {
+		if is25 {
+			return map[string]any{"thinkingBudget": budget}
+		}
+		if budget == 0 {
+			return map[string]any{"thinkingLevel": "low"}
+		}
+		return map[string]any{"thinkingLevel": "high"}
+	}
 	if effort := vertexGeminiReasoningEffort(req); effort != "" && !vertexGeminiImageModel(modelID) {
 		switch effort {
 		case "none", "off", "disable", "disabled", "minimal", "low":
-			if strings.HasPrefix(modelID, "gemini-2.5") {
+			if is25 {
 				return map[string]any{"thinkingBudget": 0}
 			}
 			return map[string]any{"thinkingLevel": "low"}
@@ -371,10 +386,49 @@ func vertexGeminiThinkingConfig(modelID string, req *qtypes.OpenAIChatRequest) m
 	if !strings.Contains(modelID, "flash") || vertexGeminiImageModel(modelID) {
 		return nil
 	}
-	if strings.HasPrefix(modelID, "gemini-2.5") {
+	if is25 {
 		return map[string]any{"thinkingBudget": 0}
 	}
 	return map[string]any{"thinkingLevel": "minimal"}
+}
+
+// vertexGeminiThinkingBudget reads an explicit thinking-token budget from the
+// request's `reasoning` object: OpenRouter-style `reasoning.max_tokens`, or the
+// aliases `thinking_budget` / `budget_tokens`. Returns (budget, true) when one
+// is set. This is the path to Gemini's native thinkingBudget; -1 requests
+// dynamic (full) thinking, which is what reproduces the labs' thinking-mode scores.
+func vertexGeminiThinkingBudget(req *qtypes.OpenAIChatRequest) (int, bool) {
+	if req == nil {
+		return 0, false
+	}
+	reasoning, ok := req.Reasoning.(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	for _, key := range []string{"max_tokens", "thinking_budget", "budget_tokens"} {
+		if raw, present := reasoning[key]; present {
+			if n, ok := vertexGeminiToInt(raw); ok {
+				return n, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func vertexGeminiToInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i), true
+		}
+	}
+	return 0, false
 }
 
 func vertexGeminiReasoningEffort(req *qtypes.OpenAIChatRequest) string {
