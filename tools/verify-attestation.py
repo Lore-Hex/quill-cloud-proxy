@@ -311,8 +311,14 @@ def verify_gcp_jwt(
     print(f"[ok] GCP audience contains {GCP_AUDIENCE}")
 
     digest = first_claim(payload, "image_digest", "submods.container.image_digest")
-    if expect_digest and str(digest).lower() != expect_digest.strip().lower():
-        sys.exit(f"[FAIL] image_digest mismatch:\n  attestation: {digest}\n  expected:    {expect_digest}")
+    if expect_digest:
+        # --expect-digest may be a comma-separated SET: the published trust
+        # digest PLUS the incoming release digest during a rolling deploy (so
+        # the fleet, which legitimately spans two digests mid-roll, all
+        # verifies). Pass if the attestation matches ANY allowed digest.
+        allowed = {d.strip().lower() for d in expect_digest.split(",") if d.strip()}
+        if str(digest).lower() not in allowed:
+            sys.exit(f"[FAIL] image_digest mismatch:\n  attestation: {digest}\n  expected one of: {sorted(allowed)}")
     if digest:
         print(f"[ok] image_digest {str(digest)[:24]}...")
 
@@ -401,7 +407,7 @@ def main() -> int:
     )
     parser.add_argument("--samples", type=int, default=1, help="same-TLS-socket live samples to fetch")
     parser.add_argument("--expected-pcr0", default=None, help="hex AWS Nitro PCR0 from the trust page")
-    parser.add_argument("--expect-digest", default=None, help="GCP Confidential Space image_digest from the trust page")
+    parser.add_argument("--expect-digest", default=None, help="GCP Confidential Space image_digest(s); comma-separated to accept any of a set (e.g. published trust digest + incoming release during a rollout)")
     parser.add_argument("--device-blob-sha", default=None, help="hex SHA-256 of canonical device-key blob")
     parser.add_argument("--allow-debug", action="store_true", help="do not fail when GCP dbgstat is enabled")
     args = parser.parse_args()

@@ -61,6 +61,13 @@ ENCLAVE_TAG = os.environ.get("QUILL_ENCLAVE_TAG", "quill-enclave")
 # stale-but-serving beats blanking the API.
 MIN_HEALTHY = int(os.environ.get("QUILL_MIN_HEALTHY", "2"))
 VERIFIER = Path(__file__).parent / "verify-attestation.py"
+# Artifact Registry repo holding the enclave image. The reconciler also accepts
+# the newest gcp-release-* digest from here (the release a deploy is rolling TO,
+# before the trust page publishes it) so DNS never blanks mid-roll.
+AR_IMAGE = os.environ.get(
+    "QUILL_AR_IMAGE",
+    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi",
+)
 
 
 def log(msg: str) -> None:
@@ -101,6 +108,29 @@ def trust_digest() -> str:
     if not d.startswith("sha256:"):
         sys.exit(f"[FAIL] trust digest looks wrong: {d!r}")
     return d
+
+
+def newest_release_digest() -> str | None:
+    """Digest of the newest gcp-release-* image in Artifact Registry — the
+    release a deploy is rolling TO, before the trust page has published it.
+
+    Accepted IN ADDITION to the live trust digest. A rolling deploy legitimately
+    spans two digests at once (old draining, new booting); gating DNS on only
+    the published trust digest rejects the whole incoming fleet mid-roll and
+    blanks DNS (the 2026-06-18 near-outage). The strict single-digest guarantee
+    still holds CLIENT-side against the published trust page; this only governs
+    DNS membership. Best-effort: None (→ trust digest only) if AR can't be read."""
+    try:
+        out = subprocess.run(
+            ["gcloud", "artifacts", "docker", "images", "list", AR_IMAGE,
+             "--include-tags", "--filter", "tags~gcp-release",
+             "--sort-by=~UPDATE_TIME", "--limit", "1",
+             "--format=value(version)", "--project", PROJECT],
+            capture_output=True, text=True, timeout=30,
+        ).stdout.strip()
+        return out if out.startswith("sha256:") else None
+    except Exception:
+        return None
 
 
 def attest(ip: str, digest: str) -> bool:
@@ -158,9 +188,17 @@ def main() -> int:
     g.add_argument("--apply", action="store_true", help="reconcile the DNS record")
     args = ap.parse_args()
 
-    digest = trust_digest()
+    # DNS membership is gated on attestation against a SET of acceptable
+    # digests: the published trust digest PLUS the newest release in Artifact
+    # Registry (the digest a deploy is rolling to before the trust page
+    # publishes). Keeps the fleet servable across the entire rollout window.
+    trusted = trust_digest()
+    incoming = newest_release_digest()
+    allowed = [trusted] + ([incoming] if incoming and incoming != trusted else [])
+    digest = ",".join(allowed)
     fleet = discover_instances()
-    log(f"reconcile: {len(fleet)} running enclave instances; trust digest {digest[:23]}…")
+    log(f"reconcile: {len(fleet)} running enclave instances; accepting digest(s) "
+        + " + ".join(d[:23] + "…" for d in allowed))
     if not fleet:
         sys.exit("[FAIL] no running enclave instances discovered")
 
