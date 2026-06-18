@@ -18,6 +18,16 @@ Examples:
         --expect-digest "$(curl -fsS https://trust.trustedrouter.com/image-digest-gcp.txt)" \\
         --samples 8
 
+    # Concurrent cross-SNI binding stress test against ONE instance. The
+    # --samples check is sequential same-socket, so it cannot expose a global
+    # last-cert race (one handshake overwriting another's cert). This hammers a
+    # single enclave with interleaved api.trustedrouter.com / api.quillrouter.com
+    # connections and asserts each served cert is bound in its OWN token — the
+    # only way to catch that substitution class.
+    ./tools/verify-attestation.py --binding-stress \\
+        --connect-ip 35.193.251.216 \\
+        --expect-digest "$(curl -fsS https://trust.trustedrouter.com/image-digest-gcp.txt)"
+
     # Offline AWS Nitro CBOR check.
     ./tools/verify-attestation.py attestation.cbor \\
         --expected-pcr0 "$(curl -fsS https://trust.trustedrouter.com/pcr0.txt)" \\
@@ -27,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import hashlib
 import json
 import secrets
@@ -394,6 +405,110 @@ def read_blob(path: str | None) -> bytes | None:
     return Path(path).read_bytes()
 
 
+def _probe_binding(host: str, port: int, connect_ip: str | None) -> dict[str, Any]:
+    """One TLS connection: capture the served leaf cert AND fetch /attestation on
+    the SAME socket, then report whether that cert is bound in the token's GCP
+    nonce. A 500/handshake error is recorded as `error` (the Confidential Space
+    launcher's token socket can saturate under load) — NOT a binding mismatch."""
+    nonce_hex = secrets.token_hex(16)
+    try:
+        cert_der, blob = fetch_attestation_same_tls_socket(
+            host, nonce_hex, port, connect_ip=connect_ip
+        )
+    except (SystemExit, Exception) as exc:  # fetch_* sys.exit()s on non-200
+        return {"host": host, "error": str(exc) or repr(exc)}
+    served_fp = hashlib.sha256(cert_der).hexdigest().lower()
+    if not looks_like_jwt(blob):
+        return {"host": host, "error": "non-JWT attestation (binding-stress is GCP-only)"}
+    payload = parse_jwt_payload(blob)
+    nonces = gcp_nonce_values(payload)
+    dbg = [str(v) for k, v in walk_values(payload) if k.lower() == "dbgstat"]
+    digest = first_claim(payload, "image_digest", "submods.container.image_digest")
+    return {"host": host, "served_fp": served_fp, "bound": served_fp in nonces,
+            "dbgstat": dbg, "digest": digest}
+
+
+def binding_stress(
+    connect_ip: str | None, hosts: list[str], concurrency: int, rounds: int,
+    port: int, expect_digest: str | None,
+) -> int:
+    """Adversarial concurrent cross-SNI binding check against a single instance.
+
+    Fires `concurrency` simultaneous connections per round, `rounds` rounds, with
+    the SNI interleaved across `hosts`. Asserts every served cert is bound in its
+    own attestation token. A process-global last-cert race (one handshake
+    overwriting another's cert) surfaces here as mismatches; the sequential
+    --samples check cannot see it. Returns 0 iff no mismatches."""
+    target = connect_ip or hosts[0]
+    print(f"[binding-stress] {concurrency}x{rounds} concurrent probes -> {target}; "
+          f"interleaved SNIs={hosts}")
+    results: list[dict[str, Any]] = []
+    for _ in range(rounds):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as ex:
+            futs = [ex.submit(_probe_binding, hosts[i % len(hosts)], port, connect_ip)
+                    for i in range(concurrency)]
+            for fut in concurrent.futures.as_completed(futs):
+                results.append(fut.result())
+
+    by_host: dict[str, dict[str, int]] = {}
+    fps: dict[str, set[str]] = {}
+    mismatches: list[dict[str, Any]] = []
+    dbg: set[str] = set()
+    digests: set[str] = set()
+    errors = 0
+    for r in results:
+        if r.get("error"):
+            errors += 1
+            continue
+        h = r["host"]
+        slot = by_host.setdefault(h, {"n": 0, "bound": 0})
+        slot["n"] += 1
+        if r["bound"]:
+            slot["bound"] += 1
+        else:
+            mismatches.append(r)
+        fps.setdefault(h, set()).add(r["served_fp"][:16])
+        dbg.update(r.get("dbgstat", []))
+        if r.get("digest"):
+            digests.add(str(r["digest"]))
+
+    bound_ok = sum(s["bound"] for s in by_host.values())
+    for h in sorted(by_host):
+        s = by_host[h]
+        print(f"[binding-stress]   SNI {h:28s} {s['bound']}/{s['n']} bound  "
+              f"served-fp={sorted(fps.get(h, []))}")
+    print(f"[binding-stress]   distinct served certs: "
+          f"{sorted({f for s in fps.values() for f in s})}")
+    print(f"[binding-stress]   dbgstat seen: {sorted(dbg) or '(none)'}; "
+          f"errors/500s: {errors}; successful bound checks: {bound_ok}")
+
+    if expect_digest:
+        allowed = {d.strip().lower() for d in expect_digest.split(",") if d.strip()}
+        bad = {d for d in digests if d.lower() not in allowed}
+        if bad:
+            print(f"[FAIL] image_digest(s) not in expected set: {sorted(bad)} "
+                  f"(expected one of {sorted(allowed)})")
+            return 1
+        if digests:
+            print(f"[ok] all observed image_digests in expected set ({sorted(digests)})")
+
+    if mismatches:
+        print(f"[FAIL] {len(mismatches)} cert-binding MISMATCH(es) under concurrency — "
+              "a served cert was NOT bound in its own token (substitution race present)")
+        for m in mismatches[:8]:
+            print(f"  host={m['host']} served_fp={m['served_fp'][:16]} bound={m['bound']}")
+        return 1
+    if bound_ok == 0:
+        print("[WARN] every probe errored (token socket saturated?) — no binding "
+              "confirmed; retry with a lower --binding-stress-concurrency")
+        return 2
+    if len(by_host) < 2:
+        print("[WARN] only one SNI produced successful probes; cross-SNI substitution "
+              "not fully exercised this run (retry or lower concurrency)")
+    print(f"[ok] no binding mismatches across {bound_ok} concurrent mixed-SNI probes")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("blob", nargs="?", help="attestation file path, '-' for stdin, or omit for live sampling")
@@ -410,7 +525,24 @@ def main() -> int:
     parser.add_argument("--expect-digest", default=None, help="GCP Confidential Space image_digest(s); comma-separated to accept any of a set (e.g. published trust digest + incoming release during a rollout)")
     parser.add_argument("--device-blob-sha", default=None, help="hex SHA-256 of canonical device-key blob")
     parser.add_argument("--allow-debug", action="store_true", help="do not fail when GCP dbgstat is enabled")
+    parser.add_argument("--binding-stress", action="store_true",
+                        help="concurrent cross-SNI binding stress test against ONE instance "
+                             "(use with --connect-ip); asserts each served cert is bound in its "
+                             "own token. Catches a global last-cert race the sequential --samples "
+                             "check cannot.")
+    parser.add_argument("--binding-stress-hosts",
+                        default="api.trustedrouter.com,api.quillrouter.com",
+                        help="comma-separated SNIs to interleave in --binding-stress")
+    parser.add_argument("--binding-stress-concurrency", type=int, default=12)
+    parser.add_argument("--binding-stress-rounds", type=int, default=4)
     args = parser.parse_args()
+
+    if args.binding_stress:
+        hosts = [h.strip() for h in args.binding_stress_hosts.split(",") if h.strip()]
+        if not hosts:
+            sys.exit("[FAIL] --binding-stress-hosts produced no hosts")
+        return binding_stress(args.connect_ip, hosts, args.binding_stress_concurrency,
+                              args.binding_stress_rounds, args.port, args.expect_digest)
 
     blob = read_blob(args.blob)
     if blob is not None and args.samples > 1:
