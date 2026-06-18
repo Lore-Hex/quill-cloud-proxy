@@ -62,7 +62,17 @@ SUBNET="${SUBNET:-default}"
 REGION_SHORT="${REGION_SHORT:-${REGION//-/}}"
 TEMPLATE_PREFIX="${TEMPLATE_PREFIX:-quill-enclave-tpl-${REGION_SHORT}}"
 MIG_NAME="${MIG_NAME:-quill-enclave-mig-${REGION_SHORT}}"
-HC_NAME="quill-enclave-tcp-443-${REGION_SHORT}"
+# Health check now targets a DEDICATED PLAINTEXT liveness port (default 8081),
+# NOT the TLS serving port :443. The enclave terminates TLS in-process on :443,
+# and the GCP passthrough-NLB's probe to :443 does not give a clean signal
+# against a serving instance (incident 2026-06-17: bare-TCP AND SSL probes to
+# :443 both read UNHEALTHY on the serving us-central1 MIG while external clients
+# succeed). The workload now also binds a plaintext HTTP 200 listener on
+# QUILL_HEALTH_PORT (wired into VM metadata below); the LB health-checks that.
+HEALTH_PORT="${HEALTH_PORT:-8081}"
+HC_NAME="quill-enclave-health-${HEALTH_PORT}-${REGION_SHORT}"
+# Firewall allowing the GCP health-checker ranges to reach the health port.
+FW_HEALTH_NAME="${FW_HEALTH_NAME:-quill-allow-lb-health-${HEALTH_PORT}}"
 BES_NAME="quill-enclave-bes-${REGION_SHORT}"
 FR_NAME="quill-enclave-fr-${REGION_SHORT}"
 LB_IP_NAME="quill-lb-ip-${REGION_SHORT}"
@@ -190,15 +200,46 @@ fi
 LB_IP=$(gc compute addresses describe "$LB_IP_NAME" --region="$REGION" --format='value(address)')
 log "  $LB_IP"
 
-# 2. Health check (TCP:443 — see comment above).
+# 2. Health check (HTTP:$HEALTH_PORT — dedicated plaintext liveness port, see
+# comment above). HTTP (not bare TCP) so the probe verifies the workload's
+# health handler actually responds 200, not merely that the port is bound.
 if ! gc compute health-checks describe "$HC_NAME" --region="$REGION" >/dev/null 2>&1; then
-  log "creating health check $HC_NAME"
-  gc compute health-checks create tcp "$HC_NAME" \
+  log "creating health check $HC_NAME (HTTP:$HEALTH_PORT)"
+  gc compute health-checks create http "$HC_NAME" \
     --region="$REGION" \
-    --port=443 \
+    --port="$HEALTH_PORT" \
+    --request-path=/ \
     --check-interval=10s --timeout=5s \
     --unhealthy-threshold=3 --healthy-threshold=2 \
-    --description="TCP probe of in-enclave TLS listener; bare TCP because cert SAN is the public hostname not the LB IP."
+    --description="HTTP probe of in-enclave plaintext liveness listener on :${HEALTH_PORT} (off the TLS :443 path)."
+fi
+
+# 2b. Firewall: allow the GCP health-checker ranges to reach the health port on
+# tagged enclave instances. Idempotent (global rule, shared across regions).
+#
+# CRITICAL: include BOTH the modern (35.191.0.0/16, 130.211.0.0/22) AND the
+# LEGACY (209.85.152.0/22, 209.85.204.0/22) health-check source ranges. These
+# regional external passthrough NLBs are probed from the LEGACY 209.85.0.0/16
+# block, NOT the modern ranges (verified by tcpdump 2026-06-17). The serving
+# port :443 is publicly open so its probes always land; a dedicated port like
+# :8081 is dropped unless the legacy range is allowed — which is exactly why
+# the bare-:443 health check "worked" in one region and the :8081 probe failed
+# everywhere until this range was added. Keep all four.
+HC_SOURCE_RANGES="35.191.0.0/16,130.211.0.0/22,209.85.152.0/22,209.85.204.0/22"
+if ! gc compute firewall-rules describe "$FW_HEALTH_NAME" >/dev/null 2>&1; then
+  log "creating firewall $FW_HEALTH_NAME (${HC_SOURCE_RANGES} -> tcp:$HEALTH_PORT)"
+  gc compute firewall-rules create "$FW_HEALTH_NAME" \
+    --network="$NETWORK" \
+    --direction=INGRESS --action=ALLOW \
+    --rules="tcp:${HEALTH_PORT}" \
+    --source-ranges="$HC_SOURCE_RANGES" \
+    --target-tags=quill-enclave \
+    --description="Allow GCP LB health-checker ranges (modern + legacy 209.85) to reach the enclave plaintext liveness port :${HEALTH_PORT}."
+else
+  # Converge an existing rule onto the full range set (e.g. one created before
+  # the legacy 209.85 ranges were known to be required).
+  gc compute firewall-rules update "$FW_HEALTH_NAME" \
+    --source-ranges="$HC_SOURCE_RANGES" >/dev/null 2>&1 || true
 fi
 
 # 3. Instance template (always create new; rolling-replace handles the swap).
@@ -216,7 +257,7 @@ gc compute instance-templates create "$TEMPLATE" \
   --confidential-compute-type="$CONF_COMPUTE_TYPE" \
   --maintenance-policy=TERMINATE \
   --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring \
-  --metadata="^|^tee-container-log-redirect=${TEE_CONTAINER_LOG_REDIRECT}|tee-env-QUILL_API_HOST=${API_HOST}|tee-env-QUILL_DEVICE_KEYS_SECRET=${QUILL_DEVICE_KEYS_SECRET}|tee-env-QUILL_GCP_PROJECT_ID=${PROJECT_ID}|tee-env-QUILL_GCP_REGION=${REGION}|tee-env-QUILL_GEMINI_VERTEX_REGION=${QUILL_GEMINI_VERTEX_REGION}|tee-env-QUILL_ANTHROPIC_SECRET=${QUILL_ANTHROPIC_SECRET}|tee-env-QUILL_OPENAI_SECRET=${QUILL_OPENAI_SECRET}|tee-env-QUILL_GEMINI_SECRET=${QUILL_GEMINI_SECRET}|tee-env-QUILL_CEREBRAS_SECRET=${QUILL_CEREBRAS_SECRET}|tee-env-QUILL_DEEPSEEK_SECRET=${QUILL_DEEPSEEK_SECRET}|tee-env-QUILL_MISTRAL_SECRET=${QUILL_MISTRAL_SECRET}|tee-env-QUILL_KIMI_SECRET=${QUILL_KIMI_SECRET}|tee-env-QUILL_ZAI_SECRET=${QUILL_ZAI_SECRET}|tee-env-QUILL_TOGETHER_SECRET=${QUILL_TOGETHER_SECRET}|tee-env-QUILL_FIREWORKS_SECRET=${QUILL_FIREWORKS_SECRET}${COHERE_TEE_ENV}${VOYAGE_TEE_ENV}${XIAOMI_TEE_ENV}|tee-env-QUILL_GROK_SECRET=${QUILL_GROK_SECRET}|tee-env-QUILL_NOVITA_SECRET=${QUILL_NOVITA_SECRET}|tee-env-QUILL_PHALA_SECRET=${QUILL_PHALA_SECRET}|tee-env-QUILL_SILICONFLOW_SECRET=${QUILL_SILICONFLOW_SECRET}|tee-env-QUILL_TINFOIL_SECRET=${QUILL_TINFOIL_SECRET}|tee-env-QUILL_VENICE_SECRET=${QUILL_VENICE_SECRET}|tee-env-QUILL_PARASAIL_SECRET=${QUILL_PARASAIL_SECRET}|tee-env-QUILL_LIGHTNING_SECRET=${QUILL_LIGHTNING_SECRET}|tee-env-QUILL_GMI_SECRET=${QUILL_GMI_SECRET}|tee-env-QUILL_DEEPINFRA_SECRET=${QUILL_DEEPINFRA_SECRET}|tee-env-QUILL_NEBIUS_SECRET=${QUILL_NEBIUS_SECRET}|tee-env-QUILL_MINIMAX_SECRET=${QUILL_MINIMAX_SECRET}|tee-env-QUILL_ACME_CACHE_GCS_BUCKET=${QUILL_ACME_CACHE_GCS_BUCKET}|tee-env-QUILL_ACME_EMAIL=acme-${REGION}@trustedrouter.com|tee-env-QUILL_TRUSTEDROUTER_INTERNAL_SECRET=${QUILL_TRUSTEDROUTER_INTERNAL_SECRET}|tee-env-TR_CONTROL_PLANE_BASE_URL=${TR_CONTROL_PLANE_BASE_URL}|tee-env-QUILL_FIRST_BYTE_TIMEOUT_SECONDS=${QUILL_FIRST_BYTE_TIMEOUT_SECONDS}|tee-image-reference=${IMAGE_REF}|tee-restart-policy=Always" \
+  --metadata="^|^tee-container-log-redirect=${TEE_CONTAINER_LOG_REDIRECT}|tee-env-QUILL_API_HOST=${API_HOST}|tee-env-QUILL_HEALTH_PORT=${HEALTH_PORT}|tee-env-QUILL_DEVICE_KEYS_SECRET=${QUILL_DEVICE_KEYS_SECRET}|tee-env-QUILL_GCP_PROJECT_ID=${PROJECT_ID}|tee-env-QUILL_GCP_REGION=${REGION}|tee-env-QUILL_GEMINI_VERTEX_REGION=${QUILL_GEMINI_VERTEX_REGION}|tee-env-QUILL_ANTHROPIC_SECRET=${QUILL_ANTHROPIC_SECRET}|tee-env-QUILL_OPENAI_SECRET=${QUILL_OPENAI_SECRET}|tee-env-QUILL_GEMINI_SECRET=${QUILL_GEMINI_SECRET}|tee-env-QUILL_CEREBRAS_SECRET=${QUILL_CEREBRAS_SECRET}|tee-env-QUILL_DEEPSEEK_SECRET=${QUILL_DEEPSEEK_SECRET}|tee-env-QUILL_MISTRAL_SECRET=${QUILL_MISTRAL_SECRET}|tee-env-QUILL_KIMI_SECRET=${QUILL_KIMI_SECRET}|tee-env-QUILL_ZAI_SECRET=${QUILL_ZAI_SECRET}|tee-env-QUILL_TOGETHER_SECRET=${QUILL_TOGETHER_SECRET}|tee-env-QUILL_FIREWORKS_SECRET=${QUILL_FIREWORKS_SECRET}${COHERE_TEE_ENV}${VOYAGE_TEE_ENV}${XIAOMI_TEE_ENV}|tee-env-QUILL_GROK_SECRET=${QUILL_GROK_SECRET}|tee-env-QUILL_NOVITA_SECRET=${QUILL_NOVITA_SECRET}|tee-env-QUILL_PHALA_SECRET=${QUILL_PHALA_SECRET}|tee-env-QUILL_SILICONFLOW_SECRET=${QUILL_SILICONFLOW_SECRET}|tee-env-QUILL_TINFOIL_SECRET=${QUILL_TINFOIL_SECRET}|tee-env-QUILL_VENICE_SECRET=${QUILL_VENICE_SECRET}|tee-env-QUILL_PARASAIL_SECRET=${QUILL_PARASAIL_SECRET}|tee-env-QUILL_LIGHTNING_SECRET=${QUILL_LIGHTNING_SECRET}|tee-env-QUILL_GMI_SECRET=${QUILL_GMI_SECRET}|tee-env-QUILL_DEEPINFRA_SECRET=${QUILL_DEEPINFRA_SECRET}|tee-env-QUILL_NEBIUS_SECRET=${QUILL_NEBIUS_SECRET}|tee-env-QUILL_MINIMAX_SECRET=${QUILL_MINIMAX_SECRET}|tee-env-QUILL_ACME_CACHE_GCS_BUCKET=${QUILL_ACME_CACHE_GCS_BUCKET}|tee-env-QUILL_ACME_EMAIL=acme-${REGION}@trustedrouter.com|tee-env-QUILL_TRUSTEDROUTER_INTERNAL_SECRET=${QUILL_TRUSTEDROUTER_INTERNAL_SECRET}|tee-env-TR_CONTROL_PLANE_BASE_URL=${TR_CONTROL_PLANE_BASE_URL}|tee-env-QUILL_FIRST_BYTE_TIMEOUT_SECONDS=${QUILL_FIRST_BYTE_TIMEOUT_SECONDS}|tee-image-reference=${IMAGE_REF}|tee-restart-policy=Always" \
   >/dev/null
 
 # 4. Create or update the MIG.
@@ -225,6 +266,10 @@ if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/
   log "updating MIG $MIG_NAME -> template $TEMPLATE (target size $TARGET_SIZE)"
   gc compute instance-groups managed set-instance-template "$MIG_NAME" \
     --region="$REGION" --template="$TEMPLATE" >/dev/null
+  # Repoint autohealing at the (possibly new) health check. No-op if already
+  # set; converges a pre-existing MIG that was created against the old :443 HC.
+  gc compute instance-groups managed update "$MIG_NAME" \
+    --region="$REGION" --health-check="$HC_URI" --initial-delay=300 >/dev/null
   # Reconcile size on every deploy — lets us raise TARGET_SIZE for a
   # region (e.g. eu went 2→3 to absorb the 2026-05-11 watchdog-flap
   # pattern) without a one-shot operator step.
@@ -275,6 +320,13 @@ if ! gc compute backend-services describe "$BES_NAME" --region="$REGION" >/dev/n
     --region="$REGION" \
     --instance-group="$MIG_NAME" \
     --instance-group-region="$REGION" >/dev/null
+else
+  # Converge an existing backend service onto the (possibly new) health check.
+  log "updating backend service $BES_NAME health check -> $HC_NAME"
+  gc compute backend-services update "$BES_NAME" \
+    --region="$REGION" \
+    --health-checks="$HC_NAME" \
+    --health-checks-region="$REGION" >/dev/null
 fi
 
 # 6. Forwarding rule on :443 binding the static IP to the backend service.

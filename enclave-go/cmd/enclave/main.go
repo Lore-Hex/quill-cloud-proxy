@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -221,6 +222,18 @@ func main() {
 		}
 	}
 
+	// LB health endpoint. The serving port (:443) terminates TLS inside the
+	// enclave, so the GCP passthrough-NLB's TCP/SSL health probe to :443 does
+	// not give a clean signal against a serving instance (incident 2026-06-17).
+	// When QUILL_HEALTH_PORT is set we run a dedicated PLAINTEXT listener on a
+	// separate port that returns 200 off the TLS path. It is unauthenticated
+	// and exposes NO sensitive data — only liveness — so it is safe to bind in
+	// the clear. GCP sets QUILL_HEALTH_PORT=8081 and points the LB health check
+	// (and a firewall allow for 35.191.0.0/16,130.211.0.0/22) at it.
+	if hp := strings.TrimSpace(os.Getenv("QUILL_HEALTH_PORT")); hp != "" {
+		startHealthListener(hp)
+	}
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -228,6 +241,33 @@ func main() {
 		}
 		go serveOne(ctx, conn, registry, br, tlsServer, deviceBlob, trGateway, byokSecrets)
 	}
+}
+
+// startHealthListener binds a plaintext HTTP liveness endpoint on the given
+// port and serves 200 on every path. It runs in its own goroutine so it never
+// blocks the main serve loop. The endpoint returns no request-derived or
+// secret data (no prompt logging, no attestation) — it exists solely so the
+// load balancer can health-check the instance without traversing the TLS
+// listener on :443.
+func startHealthListener(port string) {
+	hl, err := net.Listen("tcp", net.JoinHostPort("", port)) // #nosec G102 -- liveness-only, no sensitive data.
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "health listener bind failed port=%s: %v\n", port, err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "health listener up port=%s\n", port)
+	go func() {
+		srv := &http.Server{
+			ReadHeaderTimeout: 5 * time.Second,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, "ok\n")
+			}),
+		}
+		if err := srv.Serve(hl); err != nil {
+			fmt.Fprintf(os.Stderr, "health listener stopped port=%s: %v\n", port, err)
+		}
+	}()
 }
 
 func serveOne(

@@ -34,5 +34,9 @@ COPY --from=builder /out/quill-enclave /quill-enclave
 # because Confidential Space VMs don't decrypt either; the workload owns
 # the TLS handshake.
 ENV QUILL_ENCLAVE_TLS=true
+# Dedicated plaintext liveness port for the LB health check (off the TLS :443
+# path). Default-on; EXPOSEd so the CS launcher forwards ingress to it.
+ENV QUILL_HEALTH_PORT=8081
+EXPOSE 8081
 
 ENTRYPOINT ["/quill-enclave"]

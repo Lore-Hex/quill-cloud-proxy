@@ -39,13 +39,18 @@ COPY --from=builder /out/quill-enclave /quill-enclave
 # the TLS handshake.
 ENV QUILL_ENCLAVE_TLS=true
 ENV QUILL_TLS_MODE=acme
+# Dedicated plaintext liveness port for the LB health check (off the TLS :443
+# path). Default-on; overridable via the allow-list below. Empty = disabled.
+ENV QUILL_HEALTH_PORT=8081
 
-# Publish the listener port. Without this, the Confidential Space
+# Publish the listener ports. Without this, the Confidential Space
 # launcher doesn't forward ingress to the container — the workload boots
-# fine and binds :443 inside the container's netns, but external
+# fine and binds the port inside the container's netns, but external
 # traffic never reaches it. (CSP launcher log: "Exposed Ports: map[]"
-# is the smoking gun.)
+# is the smoking gun.) The health port must be EXPOSEd too, or the LB
+# probe can't reach the liveness listener.
 EXPOSE 443
+EXPOSE 8081
 
 # Confidential Space refuses to inject metadata-supplied env vars unless
 # the image explicitly whitelists the names here. Without this LABEL the
@@ -53,7 +58,7 @@ EXPOSE 443
 # overridden on this image; allowed envs to be overridden: []".
 # These names are only POINTERS to secrets / project / region — never
 # secrets themselves, so override-from-metadata is fine.
-LABEL "tee.launch_policy.allow_env_override"="QUILL_GCP_PROJECT_ID,QUILL_GCP_REGION,QUILL_DEVICE_KEYS_SECRET,QUILL_OPENROUTER_SECRET,QUILL_TRUSTEDROUTER_INTERNAL_SECRET,TR_CONTROL_PLANE_BASE_URL,TR_REGION,QUILL_API_HOST,QUILL_TLS_MODE,QUILL_ACME_EMAIL,QUILL_ACME_CACHE_DIR,QUILL_ACME_DIRECTORY_URL,QUILL_ACME_CACHE_GCS_BUCKET"
+LABEL "tee.launch_policy.allow_env_override"="QUILL_GCP_PROJECT_ID,QUILL_GCP_REGION,QUILL_DEVICE_KEYS_SECRET,QUILL_OPENROUTER_SECRET,QUILL_TRUSTEDROUTER_INTERNAL_SECRET,TR_CONTROL_PLANE_BASE_URL,TR_REGION,QUILL_API_HOST,QUILL_TLS_MODE,QUILL_ACME_EMAIL,QUILL_ACME_CACHE_DIR,QUILL_ACME_DIRECTORY_URL,QUILL_ACME_CACHE_GCS_BUCKET,QUILL_HEALTH_PORT"
 # Allow the workload to bind :443 directly.
 LABEL "tee.launch_policy.log_redirect"="always"
 
