@@ -68,6 +68,16 @@ AR_IMAGE = os.environ.get(
     "QUILL_AR_IMAGE",
     "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi",
 )
+# Per-region retry hostnames. Each enclave only whitelists its OWN region's
+# regional SNI (a us VM rejects api-us-east4.* with a TLS alert), so these MUST
+# resolve to ONLY that region's VMs — not the canonical all-region set. When
+# enabled, the reconciler also publishes api-<gcp-region>.<suffix> A = that
+# region's healthy IPs. Suffix is quillrouter.com because that is the name baked
+# into each enclave's autocert HostWhitelist (QUILL_API_HOST); trustedrouter
+# regional names would need an enclave whitelist change first.
+PUBLISH_REGIONAL = os.environ.get("QUILL_PUBLISH_REGIONAL", "0") == "1"
+REGIONAL_ZONE = os.environ.get("QUILL_REGIONAL_ZONE", "quillrouter-com")
+REGIONAL_SUFFIX = os.environ.get("QUILL_REGIONAL_SUFFIX", "quillrouter.com")
 
 
 def log(msg: str) -> None:
@@ -147,37 +157,59 @@ def attest(ip: str, digest: str) -> bool:
         return False
 
 
-def current_dns_ips() -> list[str]:
+def current_dns_ips(zone: str, record: str) -> list[str]:
     rows = gcloud_json([
-        "dns", "record-sets", "list", "--zone", DNS_ZONE,
-        "--name", RECORD, "--type", "A",
+        "dns", "record-sets", "list", "--zone", zone,
+        "--name", record, "--type", "A",
     ])
     for r in rows:
-        if r.get("name") == RECORD and r.get("type") == "A":
+        if r.get("name") == record and r.get("type") == "A":
             return list(r.get("rrdatas", []))
     return []
 
 
-def set_dns_ips(ips: list[str]) -> None:
+def set_dns_ips(zone: str, record: str, ips: list[str]) -> None:
     """Idempotent transactional replace of the A record."""
-    cur = current_dns_ips()
+    cur = current_dns_ips(zone, record)
     base = ["gcloud", "dns", "record-sets", "transaction"]
-    subprocess.run([*base, "start", "--zone", DNS_ZONE, "--project", PROJECT], check=True,
+    subprocess.run([*base, "start", "--zone", zone, "--project", PROJECT], check=True,
                    capture_output=True, text=True)
     try:
         if cur:
-            subprocess.run([*base, "remove", "--zone", DNS_ZONE, "--project", PROJECT,
-                            "--name", RECORD, "--type", "A", "--ttl", str(TTL), *cur],
+            subprocess.run([*base, "remove", "--zone", zone, "--project", PROJECT,
+                            "--name", record, "--type", "A", "--ttl", str(TTL), *cur],
                            check=True, capture_output=True, text=True)
-        subprocess.run([*base, "add", "--zone", DNS_ZONE, "--project", PROJECT,
-                        "--name", RECORD, "--type", "A", "--ttl", str(TTL), *ips],
+        subprocess.run([*base, "add", "--zone", zone, "--project", PROJECT,
+                        "--name", record, "--type", "A", "--ttl", str(TTL), *ips],
                        check=True, capture_output=True, text=True)
-        subprocess.run([*base, "execute", "--zone", DNS_ZONE, "--project", PROJECT],
+        subprocess.run([*base, "execute", "--zone", zone, "--project", PROJECT],
                        check=True, capture_output=True, text=True)
     except Exception:
-        subprocess.run([*base, "abort", "--zone", DNS_ZONE, "--project", PROJECT],
+        subprocess.run([*base, "abort", "--zone", zone, "--project", PROJECT],
                        capture_output=True, text=True)
         raise
+
+
+def reconcile_regional(by_region: dict[str, list[str]], apply: bool) -> None:
+    """Publish api-<gcp-region>.<suffix> A = that region's healthy IPs.
+
+    Region-pinned retry hostnames must resolve only to VMs that whitelist the
+    regional SNI (i.e. that region's VMs). A region with 0 healthy IPs this cycle
+    is SKIPPED — its record is left at last-good, never blanked, mirroring the
+    canonical MIN_HEALTHY safety."""
+    for region in sorted(by_region):
+        ips = sorted(set(by_region[region]))
+        if not ips:
+            continue
+        record = f"api-{region}.{REGIONAL_SUFFIX}".rstrip(".") + "."
+        cur = sorted(current_dns_ips(REGIONAL_ZONE, record))
+        if cur == ips:
+            log(f"  regional {record} already correct ({len(ips)} A)")
+            continue
+        log(f"  regional {record} {cur} -> {ips}")
+        if apply:
+            set_dns_ips(REGIONAL_ZONE, record, ips)
+            log(f"  regional {record} APPLIED")
 
 
 def main() -> int:
@@ -206,13 +238,13 @@ def main() -> int:
     healthy: list[dict] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
         results = list(ex.map(lambda i: (i, attest(i["ip"], digest)), fleet))
-    by_region: dict[str, int] = {}
+    by_region: dict[str, list[str]] = {}
     for inst, ok in results:
         mark = "ok " if ok else "FAIL"
         log(f"  [{mark}] {inst['region']:14s} {inst['ip']:15s} {inst['name']}")
         if ok:
             healthy.append(inst)
-            by_region[inst["region"]] = by_region.get(inst["region"], 0) + 1
+            by_region.setdefault(inst["region"], []).append(inst["ip"])
 
     healthy_ips = sorted({i["ip"] for i in healthy})
     regions = sorted(by_region)
@@ -222,17 +254,19 @@ def main() -> int:
         sys.exit(f"[FAIL] only {len(healthy_ips)} healthy (< MIN_HEALTHY={MIN_HEALTHY}); "
                  "refusing to shrink DNS — leaving last-good record in place")
 
-    cur = sorted(current_dns_ips())
+    cur = sorted(current_dns_ips(DNS_ZONE, RECORD))
     if cur == healthy_ips:
-        log(f"reconcile: DNS already correct ({len(healthy_ips)} A records) — no change")
-        return 0
-
-    log(f"reconcile: DNS {RECORD} {cur} -> {healthy_ips}")
-    if args.apply:
-        set_dns_ips(healthy_ips)
-        log("reconcile: APPLIED")
+        log(f"reconcile: canonical {RECORD} already correct ({len(healthy_ips)} A) — no change")
     else:
-        log("reconcile: DRY-RUN (pass --apply to change DNS)")
+        log(f"reconcile: canonical {RECORD} {cur} -> {healthy_ips}")
+        if args.apply:
+            set_dns_ips(DNS_ZONE, RECORD, healthy_ips)
+            log("reconcile: APPLIED canonical")
+        else:
+            log("reconcile: DRY-RUN canonical (pass --apply to change DNS)")
+
+    if PUBLISH_REGIONAL:
+        reconcile_regional(by_region, args.apply)
     return 0
 
 
