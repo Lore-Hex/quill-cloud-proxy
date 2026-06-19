@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# Deploy (or refresh) one regional gateway MIG + L4 TCP-passthrough LB.
+# Deploy (or refresh) one regional gateway MIG. NO load balancer.
 #
 # What this script provisions, idempotently, in $REGION:
 #
-#   - quill-enclave-tpl-${REGION}-NNN     instance template (n2d SEV-SNP,
-#                                          confidential-space production image,
-#                                          metadata wired to the Anthropic
-#                                          variant of the workload)
-#   - quill-enclave-tcp-443-${REGION}      regional TCP health check on :443
-#   - quill-enclave-mig-${REGION}          regional MIG, autohealing,
+#   - quill-enclave-tpl-${REGION}-NNN     instance template (confidential-space
+#                                          production image, metadata wired to
+#                                          the multi-provider workload)
+#   - quill-enclave-mig-${REGION}          regional MIG, NO autohealing,
 #                                          target size 2 (HA across zones)
-#   - quill-lb-ip-${REGION}                static external IP for the LB
-#   - quill-enclave-bes-${REGION}          regional backend service
-#                                          (TCP, EXTERNAL, attaches the MIG)
-#   - quill-enclave-fr-${REGION}           forwarding rule on :443 binding
-#                                          the static IP to the backend
 #
-# The trust property: the LB is pure TCP passthrough — it forwards the raw
-# byte stream to whichever backend handles the connection. TLS terminates
-# *inside* the attested workload (autocert on :443), with the ACME cache
-# shared across replicas via gs://quill-acme-cache so any replica can
+# There is NO GCP load balancer. A GCP health check cannot usefully validate a
+# Confidential Space enclave: an HTTP/L7 probe needs the in-VM TLS cert it can't
+# get, and a bare-TCP:443 probe only proves the socket accepts, not that the
+# instance attests (and us-central1 CVMs fail every GCP HC type regardless). An
+# L4 LB was trialed and torn down 2026-06-19 — do NOT re-add it here. Fleet
+# membership is owned by the attesting control-plane reconciler
+# (tools/reconcile-enclave-dns.py), which attests every instance and publishes
+# only the healthy ones into the api.trustedrouter.com / api.quillrouter.com A
+# records. Each instance serves TLS directly on its own public IP:443 — TLS
+# terminates *inside* the attested workload (autocert on :443), with the ACME
+# cache shared across replicas via gs://quill-acme-cache so any replica can
 # answer Let's Encrypt's TLS-ALPN-01 challenge for the same hostname.
 #
 # Per-region ACME account: each region's template sets
@@ -32,9 +32,9 @@
 # region is also faster — bump the region's email to a fresh
 # `acme-${REGION}-002@…` and the next deploy gets a clean account.
 #
-# DNS for api{,-${REGION}}.quillrouter.com is set out of band (Cloudflare,
-# DNS-only / grey-cloud) to point at the static IP this script reserves.
-# The deploy script does NOT modify DNS.
+# DNS for api{,-${REGION}}.{trustedrouter,quillrouter}.com is managed by the
+# enclave-dns-reconciler (it publishes attested instance IPs). This deploy
+# script does NOT modify DNS, and no longer reserves any static IP.
 #
 # Usage:
 #   IMAGE_REF=us-central1-docker.pkg.dev/.../enclave-anthropic:gcp-release-XXX \
@@ -62,20 +62,10 @@ SUBNET="${SUBNET:-default}"
 REGION_SHORT="${REGION_SHORT:-${REGION//-/}}"
 TEMPLATE_PREFIX="${TEMPLATE_PREFIX:-quill-enclave-tpl-${REGION_SHORT}}"
 MIG_NAME="${MIG_NAME:-quill-enclave-mig-${REGION_SHORT}}"
-# Health check: bare TCP on the serving port :443. This is the ONLY health
-# check that passes against these Confidential Space enclaves (us-east4 backend
-# is HEALTHY on it). NOTE (2026-06-17): a dedicated HTTP :8081 liveness port was
-# tried; it works on plain VMs but GCP LB health checks do NOT pass against
-# Confidential VMs on a dedicated port (only the publicly-open :443 path works).
-# Separately, us-central1 Confidential VMs fail ALL health-check types (HTTP/TCP,
-# any port) — a GCP platform quirk; us-east4 Confidential VMs pass on TCP:443.
-# The enclave still binds a plaintext liveness listener on QUILL_HEALTH_PORT
-# (image default 8081) for manual/internal checks, but the LB does NOT use it.
+# The enclave binds a plaintext liveness listener on QUILL_HEALTH_PORT (image
+# default 8081) for manual/internal checks only — nothing health-checks it (there
+# is no LB). Fleet health is the reconciler's attestation, not a GCP HC.
 HEALTH_PORT="${HEALTH_PORT:-8081}"
-HC_NAME="quill-enclave-tcp-443-${REGION_SHORT}"
-BES_NAME="quill-enclave-bes-${REGION_SHORT}"
-FR_NAME="quill-enclave-fr-${REGION_SHORT}"
-LB_IP_NAME="quill-lb-ip-${REGION_SHORT}"
 TARGET_SIZE="${TARGET_SIZE:-2}"
 MAX_SURGE="${MAX_SURGE:-3}"
 MAX_UNAVAILABLE="${MAX_UNAVAILABLE:-0}"
@@ -201,32 +191,7 @@ next_template_name() {
   fi
 }
 
-# 1. Reserve the static IP if it doesn't exist.
-log "ensuring static IP $LB_IP_NAME"
-if ! gc compute addresses describe "$LB_IP_NAME" --region="$REGION" >/dev/null 2>&1; then
-  gc compute addresses create "$LB_IP_NAME" \
-    --region="$REGION" \
-    --network-tier=PREMIUM \
-    --description="External IP for quill-enclave L4 TCP passthrough LB ($REGION)"
-fi
-LB_IP=$(gc compute addresses describe "$LB_IP_NAME" --region="$REGION" --format='value(address)')
-log "  $LB_IP"
-
-# 2. Health check (bare TCP:443 — the serving port). :443 is publicly open
-# (firewall quill-allow-public-tls, 0.0.0.0/0 -> tcp:443), so the GCP
-# health-checker source ranges — which for these legacy passthrough NLBs are
-# 209.85.0.0/16, NOT just the modern 35.191/130.211 — always reach it.
-if ! gc compute health-checks describe "$HC_NAME" --region="$REGION" >/dev/null 2>&1; then
-  log "creating health check $HC_NAME (TCP:443)"
-  gc compute health-checks create tcp "$HC_NAME" \
-    --region="$REGION" \
-    --port=443 \
-    --check-interval=10s --timeout=5s \
-    --unhealthy-threshold=3 --healthy-threshold=2 \
-    --description="Bare TCP probe of the in-enclave TLS listener on :443 (the only HC that passes against Confidential Space instances)."
-fi
-
-# 3. Instance template (always create new; rolling-replace handles the swap).
+# 1. Instance template (always create new; rolling-replace handles the swap).
 TEMPLATE=$(next_template_name)
 log "creating instance template $TEMPLATE"
 gc compute instance-templates create "$TEMPLATE" \
@@ -244,8 +209,7 @@ gc compute instance-templates create "$TEMPLATE" \
   --metadata="^|^tee-container-log-redirect=${TEE_CONTAINER_LOG_REDIRECT}|tee-env-QUILL_API_HOST=${API_HOST}|tee-env-QUILL_HEALTH_PORT=${HEALTH_PORT}|tee-env-QUILL_DEVICE_KEYS_SECRET=${QUILL_DEVICE_KEYS_SECRET}|tee-env-QUILL_GCP_PROJECT_ID=${PROJECT_ID}|tee-env-QUILL_GCP_REGION=${REGION}|tee-env-QUILL_GEMINI_VERTEX_REGION=${QUILL_GEMINI_VERTEX_REGION}|tee-env-QUILL_ANTHROPIC_SECRET=${QUILL_ANTHROPIC_SECRET}|tee-env-QUILL_OPENAI_SECRET=${QUILL_OPENAI_SECRET}|tee-env-QUILL_GEMINI_SECRET=${QUILL_GEMINI_SECRET}|tee-env-QUILL_CEREBRAS_SECRET=${QUILL_CEREBRAS_SECRET}|tee-env-QUILL_DEEPSEEK_SECRET=${QUILL_DEEPSEEK_SECRET}|tee-env-QUILL_MISTRAL_SECRET=${QUILL_MISTRAL_SECRET}|tee-env-QUILL_KIMI_SECRET=${QUILL_KIMI_SECRET}|tee-env-QUILL_ZAI_SECRET=${QUILL_ZAI_SECRET}|tee-env-QUILL_TOGETHER_SECRET=${QUILL_TOGETHER_SECRET}|tee-env-QUILL_FIREWORKS_SECRET=${QUILL_FIREWORKS_SECRET}${COHERE_TEE_ENV}${VOYAGE_TEE_ENV}${XIAOMI_TEE_ENV}|tee-env-QUILL_GROK_SECRET=${QUILL_GROK_SECRET}|tee-env-QUILL_NOVITA_SECRET=${QUILL_NOVITA_SECRET}|tee-env-QUILL_PHALA_SECRET=${QUILL_PHALA_SECRET}|tee-env-QUILL_SILICONFLOW_SECRET=${QUILL_SILICONFLOW_SECRET}|tee-env-QUILL_TINFOIL_SECRET=${QUILL_TINFOIL_SECRET}|tee-env-QUILL_VENICE_SECRET=${QUILL_VENICE_SECRET}|tee-env-QUILL_PARASAIL_SECRET=${QUILL_PARASAIL_SECRET}|tee-env-QUILL_LIGHTNING_SECRET=${QUILL_LIGHTNING_SECRET}|tee-env-QUILL_GMI_SECRET=${QUILL_GMI_SECRET}|tee-env-QUILL_DEEPINFRA_SECRET=${QUILL_DEEPINFRA_SECRET}|tee-env-QUILL_NEBIUS_SECRET=${QUILL_NEBIUS_SECRET}|tee-env-QUILL_MINIMAX_SECRET=${QUILL_MINIMAX_SECRET}|tee-env-QUILL_ACME_CACHE_GCS_BUCKET=${QUILL_ACME_CACHE_GCS_BUCKET}|tee-env-QUILL_ACME_EMAIL=acme-${REGION}@trustedrouter.com|tee-env-QUILL_TRUSTEDROUTER_INTERNAL_SECRET=${QUILL_TRUSTEDROUTER_INTERNAL_SECRET}|tee-env-TR_CONTROL_PLANE_BASE_URL=${TR_CONTROL_PLANE_BASE_URL}|tee-env-QUILL_FIRST_BYTE_TIMEOUT_SECONDS=${QUILL_FIRST_BYTE_TIMEOUT_SECONDS}|tee-image-reference=${IMAGE_REF}|tee-restart-policy=Always" \
   >/dev/null
 
-# 4. Create or update the MIG.
-HC_URI="projects/${PROJECT_ID}/regions/${REGION}/healthChecks/${HC_NAME}"
+# 2. Create or update the MIG.
 if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/dev/null 2>&1; then
   log "updating MIG $MIG_NAME -> template $TEMPLATE (target size $TARGET_SIZE)"
   gc compute instance-groups managed set-instance-template "$MIG_NAME" \
@@ -295,49 +259,10 @@ else
     --description="quill enclave gateway in $REGION (no MIG autohealing; health owned by tools/reconcile-enclave-dns.py)." >/dev/null
 fi
 
-# 5. Backend service (regional EXTERNAL TCP passthrough) attaching the MIG.
-if ! gc compute backend-services describe "$BES_NAME" --region="$REGION" >/dev/null 2>&1; then
-  log "creating backend service $BES_NAME"
-  gc compute backend-services create "$BES_NAME" \
-    --region="$REGION" \
-    --load-balancing-scheme=EXTERNAL \
-    --protocol=TCP \
-    --health-checks="$HC_NAME" \
-    --health-checks-region="$REGION" \
-    --connection-draining-timeout=30 \
-    --description="Regional external TCP passthrough backend for quill enclave gateway in $REGION."
-  gc compute backend-services add-backend "$BES_NAME" \
-    --region="$REGION" \
-    --instance-group="$MIG_NAME" \
-    --instance-group-region="$REGION" >/dev/null
-else
-  # Converge an existing backend service onto the (possibly new) health check.
-  log "updating backend service $BES_NAME health check -> $HC_NAME"
-  gc compute backend-services update "$BES_NAME" \
-    --region="$REGION" \
-    --health-checks="$HC_NAME" \
-    --health-checks-region="$REGION" >/dev/null
-fi
-
-# 6. Forwarding rule on :443 binding the static IP to the backend service.
-if ! gc compute forwarding-rules describe "$FR_NAME" --region="$REGION" >/dev/null 2>&1; then
-  log "creating forwarding rule $FR_NAME"
-  gc compute forwarding-rules create "$FR_NAME" \
-    --region="$REGION" \
-    --load-balancing-scheme=EXTERNAL \
-    --address="$LB_IP_NAME" \
-    --ip-protocol=TCP \
-    --ports=443 \
-    --backend-service="$BES_NAME" \
-    --backend-service-region="$REGION" \
-    --description="External TCP:443 passthrough to MIG; TLS terminates in-enclave."
-fi
-
 cat <<EOF
 
-quill-enclave gateway in $REGION is provisioned.
+quill-enclave gateway in $REGION is provisioned (no LB; DNS via reconciler).
 
-  static IP:        $LB_IP   (point Cloudflare A record at this, DNS-only)
   hostname (SNI):   $API_HOST
   template:         $TEMPLATE
   image:            $IMAGE_REF
