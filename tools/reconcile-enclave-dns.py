@@ -169,25 +169,33 @@ def current_dns_ips(zone: str, record: str) -> list[str]:
 
 
 def set_dns_ips(zone: str, record: str, ips: list[str]) -> None:
-    """Idempotent transactional replace of the A record."""
+    """Atomically set the A record to `ips` (replace; no transaction race).
+
+    `record-sets update` overwrites the record's rrdatas + ttl regardless of the
+    current value, so we never read-then-`remove` the old IPs. The old
+    transactional path raced: it `remove`d the exact ttl+rrdatas it had read a
+    moment earlier, and if the record drifted in between — a concurrent reconcile
+    tick, or simply a pre-existing different TTL — the `remove` failed on an exact
+    mismatch and aborted the whole reconcile. That is what failed the 2026-06-19
+    deploy at the "Reconcile DNS before us-east4 canary" step."""
     cur = current_dns_ips(zone, record)
-    base = ["gcloud", "dns", "record-sets", "transaction"]
-    subprocess.run([*base, "start", "--zone", zone, "--project", PROJECT], check=True,
-                   capture_output=True, text=True)
-    try:
-        if cur:
-            subprocess.run([*base, "remove", "--zone", zone, "--project", PROJECT,
-                            "--name", record, "--type", "A", "--ttl", str(TTL), *cur],
-                           check=True, capture_output=True, text=True)
-        subprocess.run([*base, "add", "--zone", zone, "--project", PROJECT,
-                        "--name", record, "--type", "A", "--ttl", str(TTL), *ips],
-                       check=True, capture_output=True, text=True)
-        subprocess.run([*base, "execute", "--zone", zone, "--project", PROJECT],
-                       check=True, capture_output=True, text=True)
-    except Exception:
-        subprocess.run([*base, "abort", "--zone", zone, "--project", PROJECT],
-                       capture_output=True, text=True)
-        raise
+
+    def _run(verb: str):
+        return subprocess.run(
+            ["gcloud", "dns", "record-sets", verb, record,
+             "--zone", zone, "--project", PROJECT,
+             "--type", "A", "--ttl", str(TTL), "--rrdatas", ",".join(ips)],
+            capture_output=True, text=True)
+
+    verb = "update" if cur else "create"
+    p = _run(verb)
+    if p.returncode != 0:
+        # Record existence flipped under us (a concurrent writer created/deleted
+        # it between our read and write): try the other verb once.
+        p = _run("create" if verb == "update" else "update")
+        if p.returncode != 0:
+            raise RuntimeError(
+                f"set_dns_ips({record}) failed: {(p.stderr or p.stdout).strip()}")
 
 
 def reconcile_regional(by_region: dict[str, list[str]], apply: bool) -> None:
