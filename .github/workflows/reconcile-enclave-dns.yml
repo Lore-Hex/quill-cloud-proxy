@@ -33,5 +33,9 @@ jobs:
       - name: Reconcile canonical and regional DNS
         env:
           QUILL_RECONCILE_APPLY: "1"
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
           QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
         run: uv run --script tools/reconcile-enclave-dns.py --apply
