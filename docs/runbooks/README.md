@@ -9,24 +9,24 @@ start with [incident-response.md](./incident-response.md).
 
 ## Current architecture (DNS & health) — read this first
 
-The enclave fleet's **serving path is DNS, not a load balancer.** The GCP LB was
-deleted 2026-06-18; a **bare-TCP:443** LB (`quill-enclave-bes-*` /
-`quill-enclave-fr-*`, health check `quill-enclave-tcp-443-*`) was then restored
-2026-06-19. The earlier objection was specifically about *HTTP / dedicated-port*
-probes — those can't pass a Confidential Space enclave that terminates TLS in-VM —
-so the restored check is a raw TCP connect to the publicly-open serving port,
-paired with a 30 s handshake read-deadline in the enclave (`serveOne`) so an L4
-probe (TCP connect, no ClientHello) closes cleanly with a FIN instead of pinning a
-goroutine and reading half-open/UNHEALTHY.
+The enclave fleet has **no GCP load balancer** — the serving path is **DNS,
+managed by the reconciler.** A GCP health check can't usefully validate a
+Confidential Space enclave: an HTTP/L7 probe needs the in-VM TLS cert it can't
+get, and a bare-TCP:443 probe only proves the socket accepts — not that the
+instance *attests*. Attestation is the only health signal that means anything
+here, so the reconciler owns membership. **Ignore any older step that runs
+`gcloud compute backend-services get-health` or waits on "backend health"; there
+is no LB.**
 
-**That LB is NOT the serving authority** — DNS points at attested instance IPs
-published by the reconciler, not at the LB forwarding-rule IPs. As of 2026-06-19
-every backend still reads `UNHEALTHY` (us-central1 Confidential VMs fail *all* GCP
-health-check types — a platform quirk — and the TCP:443 path isn't yet proven live
-in the other regions). So **do not treat `gcloud compute backend-services
-get-health` as a serving signal.** It is at most a coarse liveness hint for a
-secondary fast-failover layer that is not in the path today. Attestation, via the
-reconciler, remains the membership gate.
+> History (so git-log spelunkers aren't confused): an LB existed until
+> 2026-06-18, then a **bare-TCP:443** LB was briefly trialed 2026-06-19 to test
+> whether an L4 health check could pass a CS enclave (paired with a 30 s
+> handshake read-deadline in `serveOne` so an L4 probe closes cleanly). It
+> couldn't — every backend stayed `UNHEALTHY` even with the read-deadline image
+> live in us-east4 and europe-west4 — so the whole stack (`quill-enclave-bes-*`,
+> `-fr-*`, `quill-enclave-tcp-443-*`, `quill-lb-ip-*`) was torn down again the
+> same day. Don't recreate it. (`tools/deploy-gcp-mig.sh` still re-creates it on
+> a roll until that's stripped — see the deploy runbooks.)
 
 - **Health authority = the control-plane reconciler**, `tools/reconcile-enclave-dns.py`,
   run as Cloud Run job **`enclave-dns-reconciler`** on Cloud Scheduler

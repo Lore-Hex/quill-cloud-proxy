@@ -87,11 +87,10 @@ for eu).
 Symptom: the MIG rolled new instances but `api.trustedrouter.com` still resolves
 to the old IPs; new instances aren't being picked up.
 
-Backend-service health is **not** the signal here (see README → Current
-architecture): the restored TCP:443 LB is not the serving authority and currently
-reads UNHEALTHY across regions, so its `get-health` tells you nothing about what
-customers reach. DNS membership is owned by the `enclave-dns-reconciler` job: it
-attests each instance by IP and publishes only the ones that pass. So
+There is **no load balancer** here (see README → Current architecture; a TCP:443
+LB was trialed and torn down 2026-06-19). DNS membership is owned by the
+`enclave-dns-reconciler` job: it attests each instance by IP and publishes only
+the ones that pass. So
 "new instance not in DNS" means **the reconciler hasn't attested it healthy** —
 either it's still booting, or it fails attestation. Check both directly:
 

@@ -13,7 +13,7 @@ Run [enclave-deploy-monitoring-checklist.md](./enclave-deploy-monitoring-checkli
 - Do not force push trust artifacts.
 - Do not run a second MIG update while the GitHub rollout is already updating the same MIG.
 - Do not wait passively on a stuck rollout. If the MIG is not stable after 2 minutes, run direct instance smoke checks from the monitoring checklist.
-- The serving path is reconciler-DNS, not a load balancer (a TCP:443 LB exists but is not the serving authority — see README), and you do not hand-edit DNS: the `enclave-dns-reconciler` job publishes a region's instances automatically, but only once they pass `/attestation`. Don't try to force an IP into DNS that hasn't passed the verifier.
+- The serving path is reconciler-DNS, not a load balancer (there is no LB — a TCP:443 trial was torn down 2026-06-19; see README), and you do not hand-edit DNS: the `enclave-dns-reconciler` job publishes a region's instances automatically, but only once they pass `/attestation`. Don't try to force an IP into DNS that hasn't passed the verifier.
 
 ## Fastest Safe Path
 
@@ -130,9 +130,15 @@ gcloud compute instance-groups managed wait-until quill-enclave-mig-useast4 \
   --region=us-east4 --project=quill-cloud-proxy --stable
 ```
 
-After any manual roll, `deploy-gcp-mig.sh` re-attaches a (broken, unused) `:8081`
-autoheal health check; clear it so it can't churn the VMs:
-`gcloud compute instance-groups managed update quill-enclave-mig-<short> --region=<region> --clear-autohealing`.
+After any manual roll, note that `deploy-gcp-mig.sh` **re-creates the retired LB
+stack** for that region — static IP `quill-lb-ip-<short>`, health check
+`quill-enclave-tcp-443-<short>`, backend service `quill-enclave-bes-<short>`, and
+forwarding rule `quill-enclave-fr-<short>` (the LB was deliberately torn down
+2026-06-19; the script just hasn't been stripped yet). None of it is in the
+serving path (DNS is reconciler-managed), so it's harmless, but tear it back down
+to keep the fleet clean (forwarding-rule → backend-service → health-check → IP).
+The script already self-clears MIG autohealing, so you do **not** need a manual
+`--clear-autohealing`.
 
 ## Rollback
 

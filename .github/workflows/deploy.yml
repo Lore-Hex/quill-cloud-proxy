@@ -3,6 +3,14 @@ name: Deploy
 on:
   push:
     branches: [main]
+    # This is the AWS pipeline (ECR image build + cosign trust signing + S3
+    # trust-page sync). Its only inputs are enclave-go/, parent/, and
+    # trust-page/. Skip docs/markdown-only pushes so runbook edits don't kick
+    # off a needless AWS redeploy. (paths-ignore, not an allowlist, so a real
+    # code change is never silently skipped.)
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
   workflow_dispatch: {}
 
 permissions:
