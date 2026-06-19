@@ -158,7 +158,19 @@ TR_CONTROL_PLANE_BASE_URL="${TR_CONTROL_PLANE_BASE_URL:-https://trustedrouter.co
 # now waits up to 20s before failover instead of 8s.
 QUILL_FIRST_BYTE_TIMEOUT_SECONDS="${QUILL_FIRST_BYTE_TIMEOUT_SECONDS:-20}"
 WORKLOAD_SA="${WORKLOAD_SA:-quill-workload@${PROJECT_ID}.iam.gserviceaccount.com}"
-MACHINE_TYPE="${MACHINE_TYPE:-n2d-standard-2}"
+default_machine_type="n2d-standard-2"
+default_conf_compute_type="SEV_SNP"
+case "$REGION" in
+  europe-west4|us-east4)
+    # These regions have repeatedly failed or stocked out on AMD SEV-SNP n2d
+    # for this workload. Intel TDX on c3 is the profile currently serving
+    # us-east4 reliably, and europe-west4 has c3-standard-4 capacity in all
+    # zones.
+    default_machine_type="c3-standard-4"
+    default_conf_compute_type="TDX"
+    ;;
+esac
+MACHINE_TYPE="${MACHINE_TYPE:-$default_machine_type}"
 # Confidential VM attestation flavor. Defaults to AMD SEV-SNP (n2d-* and
 # c3d-* families). Override to TDX for Intel-CPU families (c3-* without
 # the trailing d). Both flavors are supported by the same
@@ -167,7 +179,7 @@ MACHINE_TYPE="${MACHINE_TYPE:-n2d-standard-2}"
 # only that the attestation is valid). Useful when one CPU family is
 # stocked-out across a region — switching escapes zone-resource
 # exhaustion without leaving the region.
-CONF_COMPUTE_TYPE="${CONF_COMPUTE_TYPE:-SEV_SNP}"
+CONF_COMPUTE_TYPE="${CONF_COMPUTE_TYPE:-$default_conf_compute_type}"
 CSP_IMAGE_FAMILY="${CSP_IMAGE_FAMILY:-confidential-space}"
 CSP_IMAGE_PROJECT="${CSP_IMAGE_PROJECT:-confidential-space-images}"
 TEE_CONTAINER_LOG_REDIRECT="${TEE_CONTAINER_LOG_REDIRECT:-false}"

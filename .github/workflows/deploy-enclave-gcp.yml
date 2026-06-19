@@ -354,6 +354,11 @@ jobs:
           # error) and the attest-by-canonical-host reconciler drop the region.
           API_HOST: api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com
           REGION_SHORT: eu
+          # europe-west4 matches us-east4's working Confidential Space profile:
+          # Intel TDX on c3. The prior n2d/SEV-SNP EU instances booted but did
+          # not accept TCP:443, so the DNS reconciler correctly kept EU out.
+          MACHINE_TYPE: c3-standard-4
+          CONF_COMPUTE_TYPE: TDX
         run: bash tools/deploy-gcp-mig.sh europe-west4
 
       - name: Wait for europe-west4 MIG to be stable
