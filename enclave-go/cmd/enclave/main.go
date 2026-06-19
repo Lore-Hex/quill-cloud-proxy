@@ -284,6 +284,17 @@ func serveOne(
 	conn = statsConn
 	defer conn.Close()
 
+	// Bound the TLS handshake + request read. The enclave terminates TLS
+	// lazily (handshake deferred to the first read in readRequest), so a bare
+	// TCP connection that establishes and sends NO ClientHello — e.g. an L4
+	// load-balancer health probe — would otherwise pin this goroutine on a
+	// blocking handshake read forever, never reaching the deferred Close. That
+	// leaves the probe connection half-open instead of cleanly closed, which a
+	// GCP passthrough-NLB TCP health check reads as unhealthy. A deadline makes
+	// such probes time out and close cleanly (FIN). Cleared once the request is
+	// read so streaming responses are never truncated.
+	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+
 	requestLogID := newRequestLogID()
 	requestStartedAt := time.Now()
 	requestMethod := "unknown"
@@ -306,6 +317,9 @@ func serveOne(
 	}()
 
 	method, path, bearer, idempotencyKey, body, err := readRequest(conn)
+	// Request (and its TLS handshake) is fully read; drop the deadline so a
+	// long-running streamed response is never cut off.
+	_ = conn.SetReadDeadline(time.Time{})
 	requestMethod = method
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {

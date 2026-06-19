@@ -62,17 +62,17 @@ SUBNET="${SUBNET:-default}"
 REGION_SHORT="${REGION_SHORT:-${REGION//-/}}"
 TEMPLATE_PREFIX="${TEMPLATE_PREFIX:-quill-enclave-tpl-${REGION_SHORT}}"
 MIG_NAME="${MIG_NAME:-quill-enclave-mig-${REGION_SHORT}}"
-# Health check now targets a DEDICATED PLAINTEXT liveness port (default 8081),
-# NOT the TLS serving port :443. The enclave terminates TLS in-process on :443,
-# and the GCP passthrough-NLB's probe to :443 does not give a clean signal
-# against a serving instance (incident 2026-06-17: bare-TCP AND SSL probes to
-# :443 both read UNHEALTHY on the serving us-central1 MIG while external clients
-# succeed). The workload now also binds a plaintext HTTP 200 listener on
-# QUILL_HEALTH_PORT (wired into VM metadata below); the LB health-checks that.
+# Health check: bare TCP on the serving port :443. This is the ONLY health
+# check that passes against these Confidential Space enclaves (us-east4 backend
+# is HEALTHY on it). NOTE (2026-06-17): a dedicated HTTP :8081 liveness port was
+# tried; it works on plain VMs but GCP LB health checks do NOT pass against
+# Confidential VMs on a dedicated port (only the publicly-open :443 path works).
+# Separately, us-central1 Confidential VMs fail ALL health-check types (HTTP/TCP,
+# any port) — a GCP platform quirk; us-east4 Confidential VMs pass on TCP:443.
+# The enclave still binds a plaintext liveness listener on QUILL_HEALTH_PORT
+# (image default 8081) for manual/internal checks, but the LB does NOT use it.
 HEALTH_PORT="${HEALTH_PORT:-8081}"
-HC_NAME="quill-enclave-health-${HEALTH_PORT}-${REGION_SHORT}"
-# Firewall allowing the GCP health-checker ranges to reach the health port.
-FW_HEALTH_NAME="${FW_HEALTH_NAME:-quill-allow-lb-health-${HEALTH_PORT}}"
+HC_NAME="quill-enclave-tcp-443-${REGION_SHORT}"
 BES_NAME="quill-enclave-bes-${REGION_SHORT}"
 FR_NAME="quill-enclave-fr-${REGION_SHORT}"
 LB_IP_NAME="quill-lb-ip-${REGION_SHORT}"
@@ -200,46 +200,18 @@ fi
 LB_IP=$(gc compute addresses describe "$LB_IP_NAME" --region="$REGION" --format='value(address)')
 log "  $LB_IP"
 
-# 2. Health check (HTTP:$HEALTH_PORT — dedicated plaintext liveness port, see
-# comment above). HTTP (not bare TCP) so the probe verifies the workload's
-# health handler actually responds 200, not merely that the port is bound.
+# 2. Health check (bare TCP:443 — the serving port). :443 is publicly open
+# (firewall quill-allow-public-tls, 0.0.0.0/0 -> tcp:443), so the GCP
+# health-checker source ranges — which for these legacy passthrough NLBs are
+# 209.85.0.0/16, NOT just the modern 35.191/130.211 — always reach it.
 if ! gc compute health-checks describe "$HC_NAME" --region="$REGION" >/dev/null 2>&1; then
-  log "creating health check $HC_NAME (HTTP:$HEALTH_PORT)"
-  gc compute health-checks create http "$HC_NAME" \
+  log "creating health check $HC_NAME (TCP:443)"
+  gc compute health-checks create tcp "$HC_NAME" \
     --region="$REGION" \
-    --port="$HEALTH_PORT" \
-    --request-path=/ \
+    --port=443 \
     --check-interval=10s --timeout=5s \
     --unhealthy-threshold=3 --healthy-threshold=2 \
-    --description="HTTP probe of in-enclave plaintext liveness listener on :${HEALTH_PORT} (off the TLS :443 path)."
-fi
-
-# 2b. Firewall: allow the GCP health-checker ranges to reach the health port on
-# tagged enclave instances. Idempotent (global rule, shared across regions).
-#
-# CRITICAL: include BOTH the modern (35.191.0.0/16, 130.211.0.0/22) AND the
-# LEGACY (209.85.152.0/22, 209.85.204.0/22) health-check source ranges. These
-# regional external passthrough NLBs are probed from the LEGACY 209.85.0.0/16
-# block, NOT the modern ranges (verified by tcpdump 2026-06-17). The serving
-# port :443 is publicly open so its probes always land; a dedicated port like
-# :8081 is dropped unless the legacy range is allowed — which is exactly why
-# the bare-:443 health check "worked" in one region and the :8081 probe failed
-# everywhere until this range was added. Keep all four.
-HC_SOURCE_RANGES="35.191.0.0/16,130.211.0.0/22,209.85.152.0/22,209.85.204.0/22"
-if ! gc compute firewall-rules describe "$FW_HEALTH_NAME" >/dev/null 2>&1; then
-  log "creating firewall $FW_HEALTH_NAME (${HC_SOURCE_RANGES} -> tcp:$HEALTH_PORT)"
-  gc compute firewall-rules create "$FW_HEALTH_NAME" \
-    --network="$NETWORK" \
-    --direction=INGRESS --action=ALLOW \
-    --rules="tcp:${HEALTH_PORT}" \
-    --source-ranges="$HC_SOURCE_RANGES" \
-    --target-tags=quill-enclave \
-    --description="Allow GCP LB health-checker ranges (modern + legacy 209.85) to reach the enclave plaintext liveness port :${HEALTH_PORT}."
-else
-  # Converge an existing rule onto the full range set (e.g. one created before
-  # the legacy 209.85 ranges were known to be required).
-  gc compute firewall-rules update "$FW_HEALTH_NAME" \
-    --source-ranges="$HC_SOURCE_RANGES" >/dev/null 2>&1 || true
+    --description="Bare TCP probe of the in-enclave TLS listener on :443 (the only HC that passes against Confidential Space instances)."
 fi
 
 # 3. Instance template (always create new; rolling-replace handles the swap).
