@@ -243,6 +243,18 @@ jobs:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
       - uses: google-github-actions/setup-gcloud@v2
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Reconcile enclave DNS
+        env:
+          QUILL_RECONCILE_APPLY: "1"
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
+          QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
+        run: uv run --script tools/reconcile-enclave-dns.py --apply
+
       - name: Capture pre-rollout templates (for rollback)
         # The MIG keeps every prior instance template, so we just need
         # to remember which one was bound before the rollout started.
@@ -295,6 +307,16 @@ jobs:
           gcloud compute instance-groups managed wait-until quill-enclave-mig-us \
             --region=us-central1 --project=quill-cloud-proxy --stable
 
+      - name: Reconcile DNS before us-central1 canary
+        env:
+          QUILL_RECONCILE_APPLY: "1"
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
+          QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
+        run: uv run --script tools/reconcile-enclave-dns.py --apply
+
       - name: Canary gate — watch us-central1 only (3 min, post-stable)
         id: canary_us
         continue-on-error: true
@@ -343,6 +365,16 @@ jobs:
           gcloud compute instance-groups managed wait-until quill-enclave-mig-eu \
             --region=europe-west4 --project=quill-cloud-proxy --stable
 
+      - name: Reconcile DNS before europe-west4 canary
+        env:
+          QUILL_RECONCILE_APPLY: "1"
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
+          QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
+        run: uv run --script tools/reconcile-enclave-dns.py --apply
+
       - name: Canary gate — watch europe-west4 only (3 min, post-stable)
         id: canary_eu
         continue-on-error: true
@@ -386,6 +418,16 @@ jobs:
         run: |
           gcloud compute instance-groups managed wait-until quill-enclave-mig-useast4 \
             --region=us-east4 --project=quill-cloud-proxy --stable
+
+      - name: Reconcile DNS before us-east4 canary
+        env:
+          QUILL_RECONCILE_APPLY: "1"
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
+          QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
+        run: uv run --script tools/reconcile-enclave-dns.py --apply
 
       - name: Canary gate — watch us-east4 only (3 min, post-stable)
         id: canary_useast4
