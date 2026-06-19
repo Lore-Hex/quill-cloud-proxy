@@ -19,11 +19,14 @@ import (
 
 const trustedRouterFusionModel = "trustedrouter/fusion"
 const trustedRouterFusionTool = "trustedrouter:fusion"
+const defaultFusionSelectionStrategy = "synthesize_non_refusals"
 
 var fusionQualityPanel = []string{
-	"anthropic/claude-opus-4.8",
-	"openai/gpt-5.5",
-	"google/gemini-3.1-pro-preview",
+	"minimax/minimax-m3",
+	"moonshotai/kimi-k2.7-code",
+	"z-ai/glm-5.2",
+	"google/gemma-4-31b-it",
+	"deepseek/deepseek-v4-pro",
 }
 
 var fusionBudgetPanel = []string{
@@ -100,7 +103,7 @@ func maybeServeFusion(
 		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion analysis_models must contain 1-8 models", Context: "analysis_models"}
 	}
 	if config.SelectionStrategy == "" {
-		config.SelectionStrategy = "synthesize"
+		config.SelectionStrategy = defaultFusionSelectionStrategy
 	}
 	switch config.SelectionStrategy {
 	case "synthesize", "synthesize_non_refusals", "first_success", "first_non_refusal":

@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1261,6 +1262,36 @@ func TestFusionPanelForSynthesisRejectsAllRefusals(t *testing.T) {
 	var adapterErr *adapter.AdapterError
 	if !asAdapterErr(err, &adapterErr) || adapterErr.Status != 502 || !strings.Contains(adapterErr.Message, "no non-refusal") {
 		t.Fatalf("error = %#v, want 502 no non-refusal", err)
+	}
+}
+
+func TestFusionDefaultsUseOpenPanelM3FuserAndNonRefusalSynthesis(t *testing.T) {
+	want := []string{
+		"minimax/minimax-m3",
+		"moonshotai/kimi-k2.7-code",
+		"z-ai/glm-5.2",
+		"google/gemma-4-31b-it",
+		"deepseek/deepseek-v4-pro",
+	}
+	if !reflect.DeepEqual(fusionQualityPanel, want) {
+		t.Fatalf("fusionQualityPanel = %#v, want %#v", fusionQualityPanel, want)
+	}
+	if defaultFusionSelectionStrategy != "synthesize_non_refusals" {
+		t.Fatalf("defaultFusionSelectionStrategy = %q", defaultFusionSelectionStrategy)
+	}
+	finalModels, err := fusionFinalModels(fusionConfig{}, trustedRouterFusionModel, fusionQualityPanel[0])
+	if err != nil {
+		t.Fatalf("fusionFinalModels: %v", err)
+	}
+	judgeModels, err := fusionJudgeModels(fusionConfig{}, finalModels[0])
+	if err != nil {
+		t.Fatalf("fusionJudgeModels: %v", err)
+	}
+	if !reflect.DeepEqual(finalModels, []string{"minimax/minimax-m3"}) {
+		t.Fatalf("finalModels = %#v, want M3 fuser", finalModels)
+	}
+	if !reflect.DeepEqual(judgeModels, []string{"minimax/minimax-m3"}) {
+		t.Fatalf("judgeModels = %#v, want M3 judge", judgeModels)
 	}
 }
 
