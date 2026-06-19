@@ -148,27 +148,22 @@ TR_CONTROL_PLANE_BASE_URL="${TR_CONTROL_PLANE_BASE_URL:-https://trustedrouter.co
 # now waits up to 20s before failover instead of 8s.
 QUILL_FIRST_BYTE_TIMEOUT_SECONDS="${QUILL_FIRST_BYTE_TIMEOUT_SECONDS:-20}"
 WORKLOAD_SA="${WORKLOAD_SA:-quill-workload@${PROJECT_ID}.iam.gserviceaccount.com}"
-default_machine_type="n2d-standard-2"
-default_conf_compute_type="SEV_SNP"
-case "$REGION" in
-  europe-west4|us-east4)
-    # These regions have repeatedly failed or stocked out on AMD SEV-SNP n2d
-    # for this workload. Intel TDX on c3 is the profile currently serving
-    # us-east4 reliably, and europe-west4 has c3-standard-4 capacity in all
-    # zones.
-    default_machine_type="c3-standard-4"
-    default_conf_compute_type="TDX"
-    ;;
-esac
+# Confidential flavor: **Intel TDX on c3, for ALL regions.** AMD SEV-SNP is NOT
+# usable for this workload — Google Cloud Attestation rejects it with
+# UNSUPPORTED_CC_TECHNOLOGY ("AMD SEV-SNP is not currently supported by Google
+# Cloud Attestation"), so a SEV-SNP enclave can't fetch its attestation token
+# (v1.VerifyConfidentialSpace 400) and the workload crash-loops on boot. This bit
+# us 2026-06-19: the pipeline rolled us-central1 with the OLD n2d/SEV-SNP default
+# and it crash-looped for hours, while eu + us-east4 (already pinned to c3/TDX)
+# stayed healthy — same image, only the CPU confidential tech differed. So the
+# default is c3/TDX everywhere now; there is no SEV-SNP fallback.
+#
+# If c3 ever stocks out in a region, override MACHINE_TYPE to another Intel-CPU
+# family that supports TDX (e.g. c3d is AMD → NO; stay on c3/c4 Intel), but keep
+# CONF_COMPUTE_TYPE=TDX. Never set CONF_COMPUTE_TYPE=SEV_SNP — GCA won't attest it.
+default_machine_type="c3-standard-4"
+default_conf_compute_type="TDX"
 MACHINE_TYPE="${MACHINE_TYPE:-$default_machine_type}"
-# Confidential VM attestation flavor. Defaults to AMD SEV-SNP (n2d-* and
-# c3d-* families). Override to TDX for Intel-CPU families (c3-* without
-# the trailing d). Both flavors are supported by the same
-# confidential-space image and produce equivalent attestation
-# tokens (the workload doesn't care which CPU vendor attested it,
-# only that the attestation is valid). Useful when one CPU family is
-# stocked-out across a region — switching escapes zone-resource
-# exhaustion without leaving the region.
 CONF_COMPUTE_TYPE="${CONF_COMPUTE_TYPE:-$default_conf_compute_type}"
 CSP_IMAGE_FAMILY="${CSP_IMAGE_FAMILY:-confidential-space}"
 CSP_IMAGE_PROJECT="${CSP_IMAGE_PROJECT:-confidential-space-images}"
