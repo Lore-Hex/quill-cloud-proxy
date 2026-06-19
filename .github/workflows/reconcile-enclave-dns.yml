@@ -1,0 +1,37 @@
+name: Reconcile enclave DNS
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: reconcile-enclave-dns
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Reconcile canonical and regional DNS
+        env:
+          QUILL_RECONCILE_APPLY: "1"
+          QUILL_PUBLISH_REGIONAL: "1"
+        run: uv run --script tools/reconcile-enclave-dns.py --apply
