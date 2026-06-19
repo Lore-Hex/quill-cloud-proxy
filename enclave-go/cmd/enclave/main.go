@@ -613,10 +613,12 @@ func serveResponsesNonStreaming(
 	result, err := adapter.CollectAnthropicText(pr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_collect_failed model=%q err=%v\n", req.Model, err)
+		// Surface the real upstream status+message instead of an opaque 502.
+		status, message := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
+			_ = trGateway.Refund(ctx, authorization, status, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		}
-		writeError(conn, 502, "provider error")
+		writeError(conn, status, message)
 		return
 	}
 	if len(result.ToolCalls) == 0 {
@@ -702,10 +704,14 @@ func serveChatNonStreaming(
 	result, err := adapter.CollectAnthropicText(pr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_collect_failed model=%q err=%v\n", req.Model, err)
+		// Surface the real upstream status+message (e.g. a 400 "max_tokens is too
+		// large for this model") instead of an opaque 502, matching the streaming
+		// path. upstreamErrorResponse falls back to 502 if it can't classify.
+		status, message := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
+			_ = trGateway.Refund(ctx, authorization, status, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		}
-		writeError(conn, 502, "provider error")
+		writeError(conn, status, message)
 		return
 	}
 	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
