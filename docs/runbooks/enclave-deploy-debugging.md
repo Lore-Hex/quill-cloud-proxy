@@ -3,6 +3,12 @@
 When the GHA workflow `deploy-enclave-gcp.yml` fails or rolls back,
 walk through these checks before guessing.
 
+For any active deploy, keep
+[enclave-deploy-monitoring-checklist.md](./enclave-deploy-monitoring-checklist.md)
+open beside this runbook. Debugging starts with what the public API
+and direct backend IPs are actually serving, not with the workflow's
+current step name.
+
 ## Quick triage
 
 ```bash
@@ -75,6 +81,26 @@ Symptom: `gcloud compute backend-services get-health` shows new
 instances UNHEALTHY indefinitely. New traffic routes to old
 instances, smoke test 502s.
 
+First, check whether direct public instance traffic and GCP backend
+health disagree. If direct instance `/health` and `/attestation` pass
+but backend health is red, this is a load balancer or health-check
+path issue. Do not keep waiting on `wait-until --stable` without
+checking the public path every 2 minutes.
+
+```bash
+gcloud compute backend-services get-health quill-enclave-bes-us \
+  --region=us-central1 --project=quill-cloud-proxy
+
+for ip in <new-instance-ip-1> <new-instance-ip-2>; do
+  curl -sS -o /dev/null -w 'health %{http_code} %{time_total}\n' \
+    --resolve api.trustedrouter.com:443:${ip} \
+    --max-time 8 https://api.trustedrouter.com/health || true
+  curl -sS -o /dev/null -w 'attestation %{http_code} %{time_total}\n' \
+    --resolve api.trustedrouter.com:443:${ip} \
+    --max-time 12 "https://api.trustedrouter.com/attestation?nonce=$(openssl rand -hex 16)" || true
+done
+```
+
 Pull the workload's serial console:
 
 ```bash
@@ -99,6 +125,33 @@ Common substring → cause:
 - **`workload finished with a non-zero return code`** without a
   preceding error — pull more lines, the actual error is usually
   10–20 lines before this.
+
+### 6b. Public attestation fails while health passes
+
+Symptom: `/health` returns an expected auth-gated response, but
+`/attestation` returns non-200 or the verifier fails.
+
+This is a trust-critical failure. Do not rely on provider smoke alone.
+Run:
+
+```bash
+DIGEST="$(cat trust-page/image-digest-gcp.txt)"
+
+uv run --script tools/verify-attestation.py \
+  --api-host api.trustedrouter.com \
+  --expect-digest "${DIGEST}" \
+  --samples 4
+```
+
+Common cause:
+
+- **Wrong or missing TLS cert binding** — `/attestation` must bind the
+  cert selected on the same TLS connection. A process-global cert
+  cache is not acceptable when serving multiple SNI hostnames.
+- **Debug Confidential Space image** — verifier must reject
+  `dbgstat=enabled`. Production deploys must use
+  `CSP_IMAGE_FAMILY=confidential-space`, not
+  `confidential-space-debug`.
 
 ### 7. Rollout: MIG rolling but no instances replaced
 

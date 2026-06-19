@@ -4,12 +4,16 @@ Use this when a trust-critical enclave fix must be tested or served faster than 
 
 The normal GitHub workflow is intentionally conservative: CI gate, build, trust artifact commit, us-central1 rollout, 3 minute us canary, europe-west4 rollout, 3 minute eu canary, then trust page publish. That is safe, but it can take 15 to 25 minutes. The emergency path gets one attested regional endpoint live first, proves it with a regional smoke, and lets the normal global rollout finish afterward.
 
+Run [enclave-deploy-monitoring-checklist.md](./enclave-deploy-monitoring-checklist.md) alongside this procedure. In an emergency, the checklist is not optional: every slow step needs external `/health`, `/attestation`, digest, and debug-state checks before traffic is moved or trusted.
+
 ## Do Not Bypass
 
 - Do not deploy an image that has no `trust-page/gcp-release.json` digest.
 - Do not fall back to a non-enclave prompt path.
 - Do not force push trust artifacts.
 - Do not run a second MIG update while the GitHub rollout is already updating the same MIG.
+- Do not wait passively on a stuck rollout. If the MIG is not stable after 2 minutes, run direct instance smoke checks from the monitoring checklist.
+- Do not move DNS or load balancer traffic until the exact target IPs or regional endpoint pass `/attestation` and verifier checks.
 
 ## Fastest Safe Path
 
@@ -66,7 +70,18 @@ The normal GitHub workflow is intentionally conservative: CI gate, build, trust 
    python3 tools/watchdog.py --regions us-central1 --duration-min 1 --rollback-after 1
    ```
 
-7. Smoke the regional prompt path.
+7. Verify attestation before any prompt smoke.
+
+   ```bash
+   DIGEST="$(cat trust-page/image-digest-gcp.txt)"
+
+   uv run --script tools/verify-attestation.py \
+     --api-host api-us-central1.quillrouter.com \
+     --expect-digest "${DIGEST}" \
+     --samples 4
+   ```
+
+8. Smoke the regional prompt path.
 
    ```bash
    SMOKE_KEY="$(gcloud secrets versions access latest \
@@ -80,7 +95,7 @@ The normal GitHub workflow is intentionally conservative: CI gate, build, trust 
      https://api-us-central1.quillrouter.com/v1/chat/completions
    ```
 
-8. Use the regional endpoint for urgent verification or traffic steering while the standard workflow completes EU and publishes trust.
+9. Use the regional endpoint for urgent verification or traffic steering while the standard workflow completes EU and publishes trust.
 
 ## EU Follow-Up
 
