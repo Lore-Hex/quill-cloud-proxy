@@ -84,7 +84,9 @@ func TestPerProviderNativeMaps(t *testing.T) {
 	}{
 		// tinfoil — every model has a dot→dash or strip-author transform
 		{"tinfoil", "moonshotai/kimi-k2.6", "kimi-k2-6"},
-		{"tinfoil", "z-ai/glm-5.1", "glm-5-1"},
+		{"tinfoil", "moonshotai/kimi-k2.7-code", "kimi-k2-7-code"},
+		{"tinfoil", "z-ai/glm-5.2", "glm-5-2"},
+		{"tinfoil", "google/gemma-4-31b-it", "gemma4-31b"},
 		{"tinfoil", "meta-llama/llama-3.3-70b-instruct", "llama3-3-70b"},
 		{"tinfoil", "openai/gpt-oss-120b", "gpt-oss-120b"},
 		{"tinfoil", "nomic-ai/nomic-embed-text", "nomic-embed-text"},

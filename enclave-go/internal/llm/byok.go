@@ -1067,16 +1067,16 @@ var phalaModelMap = map[string]string{
 
 // tinfoilModelMap maps OR-canonical → Tinfoil native. Tinfoil
 // flattens everything to a bare slug and replaces dots with
-// dashes (`kimi-k2.6` → `kimi-k2-6`, `glm-5.1` → `glm-5-1`).
+// dashes (`kimi-k2.6` → `kimi-k2-6`, `glm-5.2` → `glm-5-2`).
 // Without this map, every Tinfoil-routed request for a model
 // containing a dot in its version silently 404s. Source:
 // `quill-router/scripts/pricing/providers/tinfoil.py`.
 var tinfoilModelMap = map[string]string{
 	"moonshotai/kimi-k2.6":              "kimi-k2-6",
-	"z-ai/glm-5.1":                      "glm-5-1",
+	"moonshotai/kimi-k2.7-code":         "kimi-k2-7-code",
+	"z-ai/glm-5.2":                      "glm-5-2",
 	"deepseek/deepseek-v4-pro":          "deepseek-v4-pro",
-	"google/gemma-4-31b":                "gemma4-31b",
-	"qwen/qwen3-vl-30b":                 "qwen3-vl-30b",
+	"google/gemma-4-31b-it":             "gemma4-31b",
 	"meta-llama/llama-3.3-70b-instruct": "llama3-3-70b",
 	"openai/gpt-oss-120b":               "gpt-oss-120b",
 	"mistralai/voxtral-small-24b":       "voxtral-small-24b",
