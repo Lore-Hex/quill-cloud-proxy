@@ -61,9 +61,10 @@ substitutions.
 ### 4. Rollout: `usage: tools/deploy-gcp-mig.sh <region>`
 
 Script needs the region as a positional arg. **Fix:** the workflow
-passes `us-central1` and `europe-west4` explicitly. If a new region
-is added, update both the workflow and the
-`scripts/deploy/secrets.sh` etc.
+rolls all three regions explicitly — `us-central1`, `europe-west4`, and
+`us-east4` — each as its own staged step. If a new region is added, add a
+rollout step to `.github/workflows/deploy-enclave-gcp.yml` (and the reconciler
+will pick the region up automatically once its instances attest).
 
 ### 5. Rollout: `set API_HOST=...`
 
@@ -71,35 +72,48 @@ is added, update both the workflow and the
 tools/deploy-gcp-mig.sh: line 64: API_HOST: set API_HOST=api.quillrouter.com
 ```
 
-Each region needs `API_HOST` exported (the SNI the enclave's TLS
-handler accepts). Workflow sets `API_HOST=api.quillrouter.com` for us
-and `API_HOST=api-europe-west4.quillrouter.com` for eu.
+Each region needs `API_HOST` exported (the comma-separated SNIs the enclave's
+`autocert` HostWhitelist accepts). **Every region must include the canonical
+names**, not just its regional one — the reconciler attests over
+`api.quillrouter.com`/`api.trustedrouter.com`, so a regional-only `API_HOST`
+makes the enclave reject the canonical SNI (TLS internal error) and the region
+drops out of DNS. The workflow sets, per region,
+`api.quillrouter.com,api-<region>.quillrouter.com,api.trustedrouter.com`
+(e.g. `api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com`
+for eu).
 
-### 6. Rollout: instances stay UNHEALTHY after MIG roll
+### 6. Rollout: new instances never appear in DNS
 
-Symptom: `gcloud compute backend-services get-health` shows new
-instances UNHEALTHY indefinitely. New traffic routes to old
-instances, smoke test 502s.
+Symptom: the MIG rolled new instances but `api.trustedrouter.com` still resolves
+to the old IPs; new instances aren't being picked up.
 
-First, check whether direct public instance traffic and GCP backend
-health disagree. If direct instance `/health` and `/attestation` pass
-but backend health is red, this is a load balancer or health-check
-path issue. Do not keep waiting on `wait-until --stable` without
-checking the public path every 2 minutes.
+There is **no load balancer or backend-service health** here (see README →
+Current architecture). DNS membership is owned by the `enclave-dns-reconciler`
+job: it attests each instance by IP and publishes only the ones that pass. So
+"new instance not in DNS" means **the reconciler hasn't attested it healthy** —
+either it's still booting, or it fails attestation. Check both directly:
 
 ```bash
-gcloud compute backend-services get-health quill-enclave-bes-us \
-  --region=us-central1 --project=quill-cloud-proxy
+# A) Does the reconciler see + accept it? (its log lists each instance ok/FAIL)
+gcloud run jobs execute enclave-dns-reconciler --region=us-central1 --project=quill-cloud-proxy --wait
+gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="enclave-dns-reconciler"' \
+  --project=quill-cloud-proxy --limit=20 --freshness=10m --format='value(textPayload)'
 
+# B) Probe the new instance's /attestation directly over the canonical SNI
 for ip in <new-instance-ip-1> <new-instance-ip-2>; do
-  curl -sS -o /dev/null -w 'health %{http_code} %{time_total}\n' \
-    --resolve api.trustedrouter.com:443:${ip} \
-    --max-time 8 https://api.trustedrouter.com/health || true
   curl -sS -o /dev/null -w 'attestation %{http_code} %{time_total}\n' \
     --resolve api.trustedrouter.com:443:${ip} \
     --max-time 12 "https://api.trustedrouter.com/attestation?nonce=$(openssl rand -hex 16)" || true
 done
 ```
+
+If `/attestation` is **connection-refused** the enclave isn't serving yet (still
+booting — wait). A **`TLSV1_ALERT_INTERNAL_ERROR`** means `autocert` rejected the
+canonical SNI — the instance's `API_HOST` is missing the canonical names (see
+#5). A **500** means the Confidential Space teeserver couldn't mint the
+attestation token (usually a wedged launcher — recreate the VM, see #7). The
+common boot-failure substrings to look for on the serial console: same list as
+below.
 
 Pull the workload's serial console:
 
@@ -158,9 +172,12 @@ Common cause:
 Symptom: `gcloud compute instance-groups managed describe` shows
 `isStable: false, versionTarget.isReached: false` and stays there.
 
-Likely the new instances are failing health checks (see #6) and
-autohealing keeps trying. Force a replace cycle if you've already
-fixed the underlying cause:
+The MIGs have **no autohealing** (the reconciler is the health authority), so
+this is *not* a health-check kill-loop. A genuinely stuck roll is almost always
+**Confidential VM capacity**: the surge instance can't be created
+(`n2d`/SEV-SNP in us/eu, `c3`/TDX in us-east4 are chronically scarce) — check
+`list-errors` for a stockout. If instead the new VMs came up but won't attest,
+fix that first (see #6). To force a clean replace cycle once the cause is fixed:
 
 ```bash
 gcloud compute instance-groups managed recreate-instances quill-enclave-mig-us \

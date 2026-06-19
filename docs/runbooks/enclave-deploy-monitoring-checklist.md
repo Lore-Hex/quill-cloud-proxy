@@ -21,30 +21,30 @@ cat trust-page/image-digest-gcp.txt
 gh run list --workflow=deploy-enclave-gcp.yml --repo Lore-Hex/quill-cloud-proxy --limit=5
 ```
 
-Capture current traffic:
+Capture current traffic. The primary record is now **`api.trustedrouter.com`**
+(A, reconciler-managed, zone `trustedrouter-com`); `api.quillrouter.com` is a
+CNAME to it.
 
 ```bash
-dig @8.8.8.8 +short api.quillrouter.com A
-dig @1.1.1.1 +short api.quillrouter.com A
-dig @ns-cloud-d1.googledomains.com +short api.quillrouter.com A
+dig @8.8.8.8 +short api.trustedrouter.com A
+dig @1.1.1.1 +short api.trustedrouter.com A
 
 gcloud dns record-sets list \
-  --zone=quillrouter-com \
+  --zone=trustedrouter-com \
   --project=quill-cloud-proxy \
-  --name=api.quillrouter.com. \
+  --name=api.trustedrouter.com. \
   --type=A
 ```
 
-Capture rollback points:
+Capture rollback points (all three regions):
 
 ```bash
-gcloud compute instance-groups managed describe quill-enclave-mig-us \
-  --region=us-central1 --project=quill-cloud-proxy \
-  --format='value(versions[0].instanceTemplate)'
-
-gcloud compute instance-groups managed describe quill-enclave-mig-eu \
-  --region=europe-west4 --project=quill-cloud-proxy \
-  --format='value(versions[0].instanceTemplate)'
+for pair in us:us-central1 useast4:us-east4 eu:europe-west4; do
+  short=${pair%%:*}; region=${pair##*:}
+  gcloud compute instance-groups managed describe quill-enclave-mig-$short \
+    --region=$region --project=quill-cloud-proxy \
+    --format="value(versions[0].instanceTemplate)"
+done
 ```
 
 ## During Each Region Rollout
@@ -109,22 +109,30 @@ uv run --script tools/verify-attestation.py \
   --samples 4
 ```
 
-## Before Moving Traffic
+## DNS is moved automatically — verify, don't hand-edit
 
-Never move DNS or load balancer traffic based only on MIG stability.
-First prove the exact target IPs or regional endpoint pass:
+You don't move DNS by hand. The `enclave-dns-reconciler` job (every 2 min)
+attests each instance and publishes only the passing ones, so a freshly-rolled
+instance joins `api.trustedrouter.com` within a reconcile cycle + TTL (≈3 min)
+once it attests. Your job is to confirm it actually happened, and to nudge it if
+it lags:
 
 ```bash
-for ip in <new-ip-1> <new-ip-2>; do
-  curl -sS -o /dev/null -w '%{http_code} %{time_total}\n' \
-    --resolve api.trustedrouter.com:443:${ip} \
-    --max-time 12 \
-    "https://api.trustedrouter.com/attestation?nonce=$(openssl rand -hex 16)"
-done
+# Force a reconcile and read its verdict per instance (ok / FAIL)
+gcloud run jobs execute enclave-dns-reconciler --region=us-central1 --project=quill-cloud-proxy --wait
+gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="enclave-dns-reconciler"' \
+  --project=quill-cloud-proxy --limit=20 --freshness=10m --format='value(textPayload)'
+
+# Then confirm the published A record matches the healthy new IPs
+gcloud dns record-sets list --zone=trustedrouter-com --project=quill-cloud-proxy \
+  --name=api.trustedrouter.com. --type=A --format='value(rrdatas[].list())'
 ```
 
-If any old IP fails attestation and any new IP passes, switch traffic
-toward the passing new IPs rather than waiting on the stale route.
+If a new instance passes `/attestation` directly but the reconciler marks it FAIL,
+the usual cause is a digest the reconciler doesn't accept yet — it accepts the
+live trust-page digest plus the newest `gcp-release-*` in Artifact Registry, so
+make sure the running digest is one of those (publish the trust page if the
+release is new: `gh workflow run publish-trust-page.yml --ref main`).
 
 ## After Moving Traffic
 
@@ -175,9 +183,10 @@ of these happen:
 - The verifier reports a digest mismatch.
 - The verifier reports `dbgstat=enabled`.
 - The verifier reports a cert binding mismatch.
-- The MIG waits for health longer than 5 minutes and direct instance
-  smoke disagrees with backend health.
-- The old traffic path fails attestation while a new candidate passes.
+- The MIG has been stable for >5 minutes but the reconciler still won't add the
+  new instances to DNS (and direct `/attestation` on them is non-200).
+- A digest mismatch the reconciler can't resolve (running digest is neither the
+  trust-page digest nor the newest `gcp-release-*`).
 
 ## Incident Notes
 

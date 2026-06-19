@@ -24,7 +24,7 @@ You're looking for: which **target_region** is degraded, which
 |---|---|---|
 | One target_region down, other up | Regional issue (provider outage in that region, MIG instance churn, regional secret access) | [Per-region triage](#per-region-triage) |
 | Both regions down on same probe_type | Code regression or shared upstream | [Recent-deploy triage](#recent-deploy-triage) |
-| All probe_types in one region down | Regional LB / regional MIG / regional secret | [Per-region triage](#per-region-triage) |
+| All probe_types in one region down | Regional MIG down / region dropped from DNS by the reconciler / regional secret | [Per-region triage](#per-region-triage) |
 | Only attestation probe red | Confidential Space attestation chain (TLS, key fetch, GCS access) | [Attestation chain](#attestation-chain) |
 
 ## Recent-deploy triage
@@ -87,8 +87,8 @@ Common patterns and their meanings:
 
 | Log substring | Diagnosis |
 |---|---|
-| `acme_get_certificate_failed sni=""` | **Background noise.** Health-check probes hit the LB IP without SNI all the time; ~50/hour every hour, on healthy and unhealthy hours alike. **NOT** evidence of an outage on its own. Compare the count against another hour using `tools/dx/enclave-logs.sh --since <healthy-hour>` before chasing this. |
-| `acme_get_certificate_failed ... HostWhitelist` | Same — probe hit raw IP instead of `api.quillrouter.com`. Background noise. |
+| `acme_get_certificate_failed sni=""` | **Mostly background noise** (random internet scanners hitting the raw instance IP with no SNI). Historically the GCP LB health-checker also generated ~50/hour of these, but the LB was removed 2026-06-18, so the steady drumbeat should be gone — a *sustained* spike now is more likely real (a misconfigured client, or a region whose `API_HOST` lost its canonical SNIs). Compare the count against a known-good hour with `tools/dx/enclave-logs.sh --since <healthy-hour>` before chasing it. |
+| `acme_get_certificate_failed ... HostWhitelist` | Same — request hit a raw IP / unwhitelisted name instead of `api.trustedrouter.com`/`api.quillrouter.com`. |
 | `bootstrap/gcp: ... key: secret fetch http 403` | Workload SA missing `roles/secretmanager.secretAccessor` on the named secret. Re-run `tools/deploy-gcp-bootstrap.sh` or grant the binding directly. |
 | `env var ... is not allowed to be overridden on this image` | Confidential Space launch policy `allow_env_override` doesn't include the env name. Add it to the Dockerfile LABEL and rebuild. |
 | `provider error` http 502 | Upstream provider failing OR enclave provider client misrouting. Check upstream's status page; if down, route customer requests via `provider.only=[]` to a healthy provider. |

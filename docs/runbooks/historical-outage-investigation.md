@@ -112,22 +112,36 @@ errors look terrifying but show ~50/hour every hour, healthy or not.
 Compare against a known-good hour before concluding ACME caused
 anything.
 
-## Step 3 — Cloud Monitoring for the LB
+## Step 3 — Reconciler + DNS history
 
-Backend 5xx rate, healthy-backend count, request latency p99 — all
-exposed as Cloud Monitoring metrics for the load balancer.
+The enclave has had **no load balancer since 2026-06-18**; DNS membership is
+owned by the `enclave-dns-reconciler` job. For a recent bucket, reconstruct what
+was in DNS and what the reconciler decided:
 
 ```bash
-# Inspect via metrics explorer for the hour:
-#   loadbalancing.googleapis.com/https/backend_request_count
-#   filter: backend_service_name = quill-enclave-bes-us | -eu
-#   group_by: response_code_class
-# Look for elevated 5xx during the bucket.
+# What the reconciler concluded each cycle (per-instance ok/FAIL, applied changes)
+gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="enclave-dns-reconciler" AND timestamp>="<start>" AND timestamp<="<end>"' \
+  --project=quill-cloud-proxy --format='value(timestamp,textPayload)' --limit=50
+
+# DNS A-record changes during the bucket (Cloud DNS change history)
+gcloud dns record-sets changes list --zone=trustedrouter-com --project=quill-cloud-proxy \
+  --format='table(startTime,status)' --limit=20
+
+# MIG events in the affected region (recreate / surge / VM death)
+gcloud compute instance-groups managed list-errors quill-enclave-mig-us \
+  --region=us-central1 --project=quill-cloud-proxy
 ```
 
-If the LB shows 5xx, the workload was returning errors. If the LB
-shows healthy-backends dropping to 0 briefly, that's a MIG-side
-event (instance recreate, surge during a rollout, autohealing).
+A region dropping out of `api.trustedrouter.com` during the bucket means the
+reconciler stopped getting healthy `/attestation` from that region's VMs (digest
+mismatch, ACME/cert failure, teeserver 500, or all VMs gone). Its `MIN_HEALTHY=2`
+guard freezes the record rather than blanking it, so a partial failure shows up
+as a *stale* DNS answer, not an empty one.
+
+> For buckets **before 2026-06-18** the LB still existed — inspect
+> `loadbalancing.googleapis.com/https/backend_request_count` filtered by
+> `backend_service_name = quill-enclave-bes-{us,eu}`, grouped by
+> `response_code_class`, for elevated 5xx or healthy-backends dropping to 0.
 
 ## Step 4 — Audit log: did anything change?
 

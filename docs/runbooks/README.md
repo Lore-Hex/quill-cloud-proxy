@@ -7,6 +7,42 @@ architecture (see top-level README for that).
 If you're paged or notice red on https://status.trustedrouter.com/,
 start with [incident-response.md](./incident-response.md).
 
+## Current architecture (DNS & health) — read this first
+
+As of **2026-06-18** the enclave fleet has **no GCP load balancer**. The regional
+backend services (`quill-enclave-bes-*`), forwarding rules (`quill-enclave-fr-*`),
+regional health checks, and LB static IPs were deleted — a GCP passthrough-NLB
+health check can never pass against a Confidential Space enclave (TLS terminates
+in-VM). Ignore any older step that runs `gcloud compute backend-services
+get-health` or waits on "backend health"; those resources no longer exist.
+
+- **Health authority = the control-plane reconciler**, `tools/reconcile-enclave-dns.py`,
+  run as Cloud Run job **`enclave-dns-reconciler`** on Cloud Scheduler
+  **`enclave-dns-reconciler-tick`** (every 2 min). It attests every
+  `quill-enclave`-tagged RUNNING instance by IP (`tools/verify-attestation.py`)
+  and publishes **only the healthy ones** into DNS (`MIN_HEALTHY=2`, never blanks
+  the record). It accepts a digest **set** — the live trust-page digest plus the
+  newest `gcp-release-*` digest in Artifact Registry — so it tolerates a rollout
+  window. It is **not** in the serving path: if it stops, DNS freezes at last-good
+  and serving continues. Force a cycle with
+  `gcloud run jobs execute enclave-dns-reconciler --region=us-central1 --project=quill-cloud-proxy`.
+- **DNS:** primary is **`api.trustedrouter.com`** (A record, reconciler-managed,
+  Cloud DNS zone `trustedrouter-com`, TTL 60). `api.quillrouter.com` is a CNAME to
+  it. Per-region retry hostnames `api-<gcp-region>.quillrouter.com` are
+  reconciler-published A records pointing at **only that region's** VMs (each
+  enclave whitelists only its own region's regional SNI, so they cannot point at
+  the all-region set).
+- **3 regions:** `quill-enclave-mig-us` (us-central1), `quill-enclave-mig-useast4`
+  (us-east4), `quill-enclave-mig-eu` (europe-west4). The MIGs have **no
+  autohealing** (the reconciler is the health authority); `deploy-gcp-mig.sh`
+  actively `--clear-autohealing`. A MIG only recreates a VM on actual VM death,
+  not on app-health failure.
+- **The real operator signal** is direct per-instance `/attestation` over the
+  canonical SNI (`tools/verify-attestation.py`, or its `--binding-stress` mode)
+  plus the reconciler job logs
+  (`gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="enclave-dns-reconciler"' --limit 20`),
+  **not** GCP backend health.
+
 ## Catalog
 
 | Runbook | When to use |

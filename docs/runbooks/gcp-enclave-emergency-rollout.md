@@ -13,7 +13,7 @@ Run [enclave-deploy-monitoring-checklist.md](./enclave-deploy-monitoring-checkli
 - Do not force push trust artifacts.
 - Do not run a second MIG update while the GitHub rollout is already updating the same MIG.
 - Do not wait passively on a stuck rollout. If the MIG is not stable after 2 minutes, run direct instance smoke checks from the monitoring checklist.
-- Do not move DNS or load balancer traffic until the exact target IPs or regional endpoint pass `/attestation` and verifier checks.
+- There is no load balancer and you do not hand-edit DNS: the `enclave-dns-reconciler` job publishes a region's instances automatically, but only once they pass `/attestation`. Don't try to force an IP into DNS that hasn't passed the verifier.
 
 ## Fastest Safe Path
 
@@ -97,23 +97,42 @@ Run [enclave-deploy-monitoring-checklist.md](./enclave-deploy-monitoring-checkli
 
 9. Use the regional endpoint for urgent verification or traffic steering while the standard workflow completes EU and publishes trust.
 
-## EU Follow-Up
+## EU + us-east4 Follow-Up
 
-After US is healthy, roll EU with the same released digest.
+After US is healthy, roll the other two regions with the same released digest.
+Once each region's instances attest, the reconciler adds them to DNS on its own
+(within a reconcile cycle + TTL ≈ 3 min); force it with
+`gcloud run jobs execute enclave-dns-reconciler --region=us-central1 --project=quill-cloud-proxy`.
+
+**Note the per-region machine profile and that `API_HOST` must include the
+canonical names** (regional-only `API_HOST` makes the region fail attestation —
+see enclave-deploy-debugging.md #5). `REGION_SHORT` must be `eu`/`useast4` (not
+the dashes-stripped `europewest4`).
 
 ```bash
+# europe-west4 (n2d / SEV-SNP — the deploy-gcp-mig.sh defaults)
 export PROJECT_ID=quill-cloud-proxy
 export IMAGE_REF="us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi@$(cat trust-page/image-digest-gcp.txt)"
 export REGION_SHORT=eu
-export API_HOST="api-europe-west4.quillrouter.com"
-export MAX_SURGE=3
-export MAX_UNAVAILABLE=0
-
+export API_HOST="api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com"
+export MAX_SURGE=3 MAX_UNAVAILABLE=0
 bash tools/deploy-gcp-mig.sh europe-west4
 gcloud compute instance-groups managed wait-until quill-enclave-mig-eu \
   --region=europe-west4 --project=quill-cloud-proxy --stable
 python3 tools/watchdog.py --regions europe-west4 --duration-min 1 --rollback-after 1
+
+# us-east4 (c3 / TDX — capacity is chronically scarce here)
+export REGION_SHORT=useast4
+export MACHINE_TYPE=c3-standard-4 CONF_COMPUTE_TYPE=TDX
+export API_HOST="api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com"
+bash tools/deploy-gcp-mig.sh us-east4
+gcloud compute instance-groups managed wait-until quill-enclave-mig-useast4 \
+  --region=us-east4 --project=quill-cloud-proxy --stable
 ```
+
+After any manual roll, `deploy-gcp-mig.sh` re-attaches a (broken, unused) `:8081`
+autoheal health check; clear it so it can't churn the VMs:
+`gcloud compute instance-groups managed update quill-enclave-mig-<short> --region=<region> --clear-autohealing`.
 
 ## Rollback
 
