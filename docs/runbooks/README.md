@@ -9,12 +9,24 @@ start with [incident-response.md](./incident-response.md).
 
 ## Current architecture (DNS & health) — read this first
 
-As of **2026-06-18** the enclave fleet has **no GCP load balancer**. The regional
-backend services (`quill-enclave-bes-*`), forwarding rules (`quill-enclave-fr-*`),
-regional health checks, and LB static IPs were deleted — a GCP passthrough-NLB
-health check can never pass against a Confidential Space enclave (TLS terminates
-in-VM). Ignore any older step that runs `gcloud compute backend-services
-get-health` or waits on "backend health"; those resources no longer exist.
+The enclave fleet's **serving path is DNS, not a load balancer.** The GCP LB was
+deleted 2026-06-18; a **bare-TCP:443** LB (`quill-enclave-bes-*` /
+`quill-enclave-fr-*`, health check `quill-enclave-tcp-443-*`) was then restored
+2026-06-19. The earlier objection was specifically about *HTTP / dedicated-port*
+probes — those can't pass a Confidential Space enclave that terminates TLS in-VM —
+so the restored check is a raw TCP connect to the publicly-open serving port,
+paired with a 30 s handshake read-deadline in the enclave (`serveOne`) so an L4
+probe (TCP connect, no ClientHello) closes cleanly with a FIN instead of pinning a
+goroutine and reading half-open/UNHEALTHY.
+
+**That LB is NOT the serving authority** — DNS points at attested instance IPs
+published by the reconciler, not at the LB forwarding-rule IPs. As of 2026-06-19
+every backend still reads `UNHEALTHY` (us-central1 Confidential VMs fail *all* GCP
+health-check types — a platform quirk — and the TCP:443 path isn't yet proven live
+in the other regions). So **do not treat `gcloud compute backend-services
+get-health` as a serving signal.** It is at most a coarse liveness hint for a
+secondary fast-failover layer that is not in the path today. Attestation, via the
+reconciler, remains the membership gate.
 
 - **Health authority = the control-plane reconciler**, `tools/reconcile-enclave-dns.py`,
   run as Cloud Run job **`enclave-dns-reconciler`** on Cloud Scheduler

@@ -13,7 +13,7 @@ Run [enclave-deploy-monitoring-checklist.md](./enclave-deploy-monitoring-checkli
 - Do not force push trust artifacts.
 - Do not run a second MIG update while the GitHub rollout is already updating the same MIG.
 - Do not wait passively on a stuck rollout. If the MIG is not stable after 2 minutes, run direct instance smoke checks from the monitoring checklist.
-- There is no load balancer and you do not hand-edit DNS: the `enclave-dns-reconciler` job publishes a region's instances automatically, but only once they pass `/attestation`. Don't try to force an IP into DNS that hasn't passed the verifier.
+- The serving path is reconciler-DNS, not a load balancer (a TCP:443 LB exists but is not the serving authority — see README), and you do not hand-edit DNS: the `enclave-dns-reconciler` job publishes a region's instances automatically, but only once they pass `/attestation`. Don't try to force an IP into DNS that hasn't passed the verifier.
 
 ## Fastest Safe Path
 

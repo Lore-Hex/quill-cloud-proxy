@@ -114,9 +114,11 @@ anything.
 
 ## Step 3 — Reconciler + DNS history
 
-The enclave has had **no load balancer since 2026-06-18**; DNS membership is
-owned by the `enclave-dns-reconciler` job. For a recent bucket, reconstruct what
-was in DNS and what the reconciler decided:
+Since 2026-06-18 the **serving path is DNS, not a load balancer** — DNS membership
+is owned by the `enclave-dns-reconciler` job. (A bare-TCP:443 LB was restored
+2026-06-19 but is not in the serving path; ignore its backend health for a serving
+investigation — see README.) For a recent bucket, reconstruct what was in DNS and
+what the reconciler decided:
 
 ```bash
 # What the reconciler concluded each cycle (per-instance ok/FAIL, applied changes)
