@@ -59,6 +59,7 @@ is no LB.**
 
 | Runbook | When to use |
 |---|---|
+| [enclave-state-2026-06-19.md](./enclave-state-2026-06-19.md) | Current-state snapshot + copy-paste verification checklist + manual-deploy procedure. Start here to confirm the fleet is healthy. |
 | [incident-response.md](./incident-response.md) | Status page is red right now. First response. |
 | [historical-outage-investigation.md](./historical-outage-investigation.md) | Status-page bucket > 1h ago is red and you need to figure out why. |
 | [enclave-deploy-monitoring-checklist.md](./enclave-deploy-monitoring-checklist.md) | Checklist to run during every enclave deploy so public API, attestation, digest, and debug state are checked at each step. |
