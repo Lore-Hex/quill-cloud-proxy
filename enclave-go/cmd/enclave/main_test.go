@@ -628,6 +628,92 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 	}
 }
 
+func TestServeOneFusionCodeRoutesCodeKimiInPanelAndJudge(t *testing.T) {
+	// End-to-end (mocked upstream + gateway, no real API calls): a
+	// trustedrouter/fusion-code request uses the DEFAULT panel + judge, so the
+	// kimi-k2.6 -> kimi-k2.7-code swap must show up in the authorize calls for
+	// the panel and the judge, and the general Kimi must never be authorized.
+	var authorizeCalls []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		_ = json.Unmarshal(body, &payload)
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			authorizeCalls = append(authorizeCalls, payload)
+			model, _ := payload["model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id":       "auth_" + model,
+				"workspace_id":           "ws_1",
+				"api_key_hash":           "key_1",
+				"model":                  model,
+				"endpoint_id":            model + "@test/prepaid",
+				"provider":               "test",
+				"usage_type":             "Credits",
+				"limit_usage_type":       "Credits",
+				"route_candidates":       []any{},
+				"broadcast_destinations": []any{},
+			}})
+		case "/internal/gateway/settle":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"settled":           true,
+				"generation_id":     "gen",
+				"cost_microdollars": 1,
+				"model":             payload["selected_model"],
+				"provider":          "test",
+				"region":            "us-central1",
+			}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fusionEchoLLM{}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/fusion-code","stream":false,"messages":[{"role":"user","content":"hi"}],"max_tokens":32}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer t\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(requestBody), requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	var codeKimiPanel, codeKimiJudge bool
+	for _, c := range authorizeCalls {
+		model, _ := c["model"].(string)
+		route, _ := c["route_type"].(string)
+		if model == fusionGeneralKimi {
+			t.Fatalf("fusion-code authorized the general Kimi %q (route %q); swap did not apply", model, route)
+		}
+		if model == fusionCodeKimi && route == "fusion.panel" {
+			codeKimiPanel = true
+		}
+		if model == fusionCodeKimi && route == "fusion.judge" {
+			codeKimiJudge = true
+		}
+	}
+	if !codeKimiPanel || !codeKimiJudge {
+		t.Fatalf("fusion-code must route %s in panel AND judge; authorize calls: %#v", fusionCodeKimi, authorizeCalls)
+	}
+}
+
 func TestServeOneTrustedRouterFusionSynthesizesOnlyNonRefusals(t *testing.T) {
 	bearer := "test-user-bearer"
 	var authorizeCalls []map[string]any
