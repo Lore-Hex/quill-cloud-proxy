@@ -1177,6 +1177,42 @@ func TestFusionPanelEvidenceSurfacesToolCalls(t *testing.T) {
 	}
 }
 
+func TestFusionPanelRequestPassesFunctionToolsStripsFusionTool(t *testing.T) {
+	fnTool := map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}}
+	fusionTool := map[string]any{"type": trustedRouterFusionTool, "parameters": map[string]any{}}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterFusionModel,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "weather in Paris?"}},
+		Tools:    []any{fnTool, fusionTool},
+	}
+	out := fusionPanelRequest(req, "some/model", 0, 0)
+	if len(out.Tools) != 1 {
+		t.Fatalf("panel tools = %d, want 1 (function tool kept, fusion config tool stripped)", len(out.Tools))
+	}
+	if m, _ := out.Tools[0].(map[string]any); m["type"] != "function" {
+		t.Fatalf("panel tool type = %v, want function", m["type"])
+	}
+	if len(out.Messages) == 0 || out.Messages[0].Role != "system" {
+		t.Fatalf("expected a leading system prompt")
+	}
+	if sys := types.ContentText(out.Messages[0].Content); !strings.Contains(sys, "emit the tool call directly") {
+		t.Fatalf("panel system prompt is not tool-aware: %q", sys)
+	}
+}
+
+func TestFusionPanelRequestNoToolsClearsToolChoice(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hi"}},
+	}
+	out := fusionPanelRequest(req, "some/model", 0, 0)
+	if len(out.Tools) != 0 {
+		t.Fatalf("panel tools = %d, want 0", len(out.Tools))
+	}
+	if out.ToolChoice != nil {
+		t.Fatalf("ToolChoice should be nil when no function tools are present")
+	}
+}
+
 func TestSelectFusionPanelResultFirstNonRefusal(t *testing.T) {
 	panel := []fusionCallResult{
 		{

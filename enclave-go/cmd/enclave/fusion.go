@@ -947,15 +947,31 @@ func fusionPanelRequest(req *types.OpenAIChatRequest, model string, index int, m
 	out.Model = model
 	out.Models = nil
 	out.Stream = false
-	out.Tools = nil
-	out.ToolChoice = nil
+	// Give each panel member the caller's function tools (minus the
+	// trustedrouter:fusion config entry) so they can actually propose tool calls.
+	// Without this the panel was tool-blind and only ever produced text, so the
+	// select strategies (first_non_refusal / first_success) could never surface a
+	// tool call — a tool-use request silently lost its tools. The first
+	// non-refusal panel member still wins as before; now that answer may itself
+	// be a tool call, which passes straight through.
+	out.Tools = stripFusionToolEntries(req.Tools)
+	if len(out.Tools) == 0 {
+		out.ToolChoice = nil
+	}
 	out.Plugins = nil
 	out.ResponseFormat = nil
 	out.MaxTokens = fusionInnerMaxTokens(req, maxCompletionTokens)
-	out.Messages = prependSystem(req.Messages, fmt.Sprintf(
+	system := fmt.Sprintf(
 		"You are TrustedRouter Fusion panel member %d. Answer the user's request independently. Focus on correctness, cite uncertainty, and do not mention Fusion internals. Return only the visible answer; do not include chain-of-thought, hidden reasoning, or <think> blocks.",
 		index+1,
-	))
+	)
+	if len(out.Tools) > 0 {
+		system = fmt.Sprintf(
+			"You are TrustedRouter Fusion panel member %d. Solve the user's request independently. If the next correct step is a tool call, emit the tool call directly instead of describing it; otherwise return only the visible answer. Focus on correctness, do not mention Fusion internals, and do not include chain-of-thought or <think> blocks.",
+			index+1,
+		)
+	}
+	out.Messages = prependSystem(req.Messages, system)
 	out.Metadata = fusionMetadata(req.Metadata, "panel", model)
 	return out
 }
