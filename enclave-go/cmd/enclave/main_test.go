@@ -1337,7 +1337,7 @@ func TestFusionPanelForSynthesisRejectsAllRefusals(t *testing.T) {
 	}
 }
 
-func TestFusionDefaultsUseOpenPanelM3FuserAndNonRefusalSynthesis(t *testing.T) {
+func TestFusionDefaultsUseOpenPanelExplicitJudgeAndFuserFallbacks(t *testing.T) {
 	want := []string{
 		"minimax/minimax-m3",
 		"moonshotai/kimi-k2.7-code",
@@ -1359,11 +1359,11 @@ func TestFusionDefaultsUseOpenPanelM3FuserAndNonRefusalSynthesis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fusionJudgeModels: %v", err)
 	}
-	if !reflect.DeepEqual(finalModels, []string{"minimax/minimax-m3"}) {
-		t.Fatalf("finalModels = %#v, want M3 fuser", finalModels)
+	if !reflect.DeepEqual(finalModels, []string{"z-ai/glm-5.2", "minimax/minimax-m3"}) {
+		t.Fatalf("finalModels = %#v, want GLM 5.2 with M3 fallback", finalModels)
 	}
-	if !reflect.DeepEqual(judgeModels, []string{"minimax/minimax-m3"}) {
-		t.Fatalf("judgeModels = %#v, want M3 judge", judgeModels)
+	if !reflect.DeepEqual(judgeModels, []string{"moonshotai/kimi-k2.7-code", "minimax/minimax-m3"}) {
+		t.Fatalf("judgeModels = %#v, want Kimi K2.7 Code with M3 fallback", judgeModels)
 	}
 }
 

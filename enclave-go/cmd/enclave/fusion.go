@@ -21,6 +21,16 @@ const trustedRouterFusionModel = "trustedrouter/fusion"
 const trustedRouterFusionTool = "trustedrouter:fusion"
 const defaultFusionSelectionStrategy = "synthesize_non_refusals"
 
+var fusionDefaultJudgeModels = []string{
+	"moonshotai/kimi-k2.7-code",
+	"minimax/minimax-m3",
+}
+
+var fusionDefaultFinalModels = []string{
+	"z-ai/glm-5.2",
+	"minimax/minimax-m3",
+}
+
 var fusionQualityPanel = []string{
 	"minimax/minimax-m3",
 	"moonshotai/kimi-k2.7-code",
@@ -1233,7 +1243,7 @@ func fusionFinalModels(config fusionConfig, requestedModel string, fallback stri
 		case requestedModel != "" && requestedModel != trustedRouterFusionModel:
 			raw = []string{requestedModel}
 		default:
-			raw = []string{fallback}
+			raw = fusionDefaultFinalModels
 		}
 	}
 	if len(raw) == 0 || len(raw) > 8 {
@@ -1256,7 +1266,7 @@ func fusionJudgeModels(config fusionConfig, fallback string) ([]string, error) {
 		if config.JudgeModel != "" {
 			raw = []string{config.JudgeModel}
 		} else {
-			raw = []string{fallback}
+			raw = fusionDefaultJudgeModels
 		}
 	}
 	if len(raw) == 0 || len(raw) > 8 {
