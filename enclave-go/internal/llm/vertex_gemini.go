@@ -29,7 +29,15 @@ func newVertexGemini(_ *qtypes.BootstrapData) *vertexGeminiClient {
 	projectID := os.Getenv("QUILL_GCP_PROJECT_ID")
 	region := os.Getenv("QUILL_GEMINI_VERTEX_REGION")
 	if region == "" {
-		region = "global"
+		// Default to a REGIONAL endpoint, not "global". Vertex Gemini implicit
+		// context caching (cachedContentTokenCount, mapped below to
+		// prompt_tokens_details.cached_tokens) only hits reliably on a regional
+		// endpoint: "global" spreads requests across backends so the per-region
+		// implicit cache mostly misses. Verified 2026-06-20: an identical
+		// ~2.9k-token prompt repeated gets cached=0 on global vs 2031/2884 cached
+		// on us-central1. An operator can still set "global" explicitly to trade
+		// caching for cross-region availability.
+		region = "us-central1"
 	}
 	return &vertexGeminiClient{
 		auth: &gcpClient{

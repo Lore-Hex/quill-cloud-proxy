@@ -271,3 +271,14 @@ func mustJSON(t *testing.T, value any) []byte {
 	}
 	return body
 }
+
+// Vertex Gemini implicit context caching only hits on a REGIONAL endpoint; the
+// "global" default silently disabled it (verified 2026-06-20). Lock the default
+// to a regional endpoint so caching can't regress to a no-op.
+func TestVertexGeminiDefaultsToRegionalEndpointForCaching(t *testing.T) {
+	t.Setenv("QUILL_GEMINI_VERTEX_REGION", "")
+	c := newVertexGemini(nil)
+	if c.auth.region == "" || c.auth.region == "global" {
+		t.Fatalf("default Gemini Vertex region %q disables implicit caching; want a regional endpoint", c.auth.region)
+	}
+}
