@@ -178,6 +178,10 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		{"siliconflow", "tencent/hunyuan-a13b-instruct", "tencent/hunyuan-a13b-instruct", "tencent/Hunyuan-A13B-Instruct"},
 		{"siliconflow", "z-ai/glm-5", "z-ai/glm-5", "zai-org/GLM-5"},
 		{"siliconflow", "z-ai/glm-5v-turbo", "z-ai/glm-5v-turbo", "zai-org/GLM-5V-Turbo"},
+		// DeepInfra keeps the upstream author path and mixed-case GLM
+		// version. Without this provider-specific map, directModelID strips
+		// the author and sends bare "GLM-5.2", which DeepInfra rejects.
+		{"deepinfra", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2"},
 		// zai-direct accepts only the bare id; glm-4.7 was mis-mapped to
 		// "zai-glm-4.7" by the global directModelMap.
 		{"zai", "z-ai/glm-4.7", "z-ai/glm-4.7", "glm-4.7"},

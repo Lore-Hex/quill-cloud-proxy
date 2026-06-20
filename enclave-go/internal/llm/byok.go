@@ -989,6 +989,7 @@ var deepinfraModelMap = map[string]string{
 	"meta-llama/llama-3.3-70b-instruct": "meta-llama/Llama-3.3-70B-Instruct",
 	"deepseek/deepseek-v3.1":            "deepseek-ai/DeepSeek-V3.1",
 	"qwen/qwen3.5-27b":                  "Qwen/Qwen3.5-27B",
+	"z-ai/glm-5.2":                      "zai-org/GLM-5.2",
 }
 
 // gmiModelMap maps OR-canonical → GMI Cloud native. Two patterns:
