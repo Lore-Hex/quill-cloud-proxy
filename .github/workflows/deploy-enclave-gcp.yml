@@ -326,6 +326,14 @@ jobs:
           QUILL_REGIONAL_SUFFIX: quillrouter.com
         run: uv run --script tools/reconcile-enclave-dns.py --apply
 
+      - name: Wait for us-central1 synthetic up
+        # The canary reads status.json; wait until the synthetic monitor has
+        # re-probed this freshly-rolled region as up so the canary measures
+        # steady state, not the post-roll boot transient (the regional endpoint
+        # is briefly unreachable mid-replace -> false down -> false rollback).
+        timeout-minutes: 12
+        run: bash tools/wait-region-synthetic-up.sh us-central1 us-central1
+
       - name: Canary gate — watch us-central1 only (3 min, post-stable)
         id: canary_us
         continue-on-error: true
@@ -395,6 +403,12 @@ jobs:
           QUILL_REGIONAL_SUFFIX: quillrouter.com
         run: uv run --script tools/reconcile-enclave-dns.py --apply
 
+      - name: Wait for europe-west4 synthetic up
+        # See us-central1. eu is where the boot-transient false-down repeatedly
+        # tripped the canary while the region was actually healthy.
+        timeout-minutes: 12
+        run: bash tools/wait-region-synthetic-up.sh europe-west4 europe-west4
+
       - name: Canary gate — watch europe-west4 only (3 min, post-stable)
         id: canary_eu
         continue-on-error: true
@@ -453,6 +467,11 @@ jobs:
           QUILL_REGIONAL_ZONE: quillrouter-com
           QUILL_REGIONAL_SUFFIX: quillrouter.com
         run: uv run --script tools/reconcile-enclave-dns.py --apply
+
+      - name: Wait for us-east4 synthetic up
+        # See us-central1.
+        timeout-minutes: 12
+        run: bash tools/wait-region-synthetic-up.sh us-east4 us-east4
 
       - name: Canary gate — watch us-east4 only (3 min, post-stable)
         id: canary_useast4
