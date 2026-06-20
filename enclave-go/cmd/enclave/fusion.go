@@ -22,16 +22,12 @@ const trustedRouterFusionCodeModel = "trustedrouter/fusion-code"
 const trustedRouterFusionTool = "trustedrouter:fusion"
 const defaultFusionSelectionStrategy = "synthesize_non_refusals"
 
-// Plain trustedrouter/fusion judges with the general kimi-k2.6; the code-tuned
-// trustedrouter/fusion-code keeps the prior kimi-k2.7-code judge. Everything
-// else (analysis panel, final synthesizers) is shared between the two.
+// fusion judges and panels with the general moonshotai/kimi-k2.6 (minimax-m3
+// fallback). trustedrouter/fusion-code is identical EXCEPT it swaps that Kimi
+// for the code-tuned moonshotai/kimi-k2.7-code everywhere (panel + judge) via
+// fusionCodeModelSwap — keeping fusion-code a single-knob variant of fusion.
 var fusionDefaultJudgeModels = []string{
 	"moonshotai/kimi-k2.6",
-	"minimax/minimax-m3",
-}
-
-var fusionCodeJudgeModels = []string{
-	"moonshotai/kimi-k2.7-code",
 	"minimax/minimax-m3",
 }
 
@@ -42,7 +38,7 @@ var fusionDefaultFinalModels = []string{
 
 var fusionQualityPanel = []string{
 	"minimax/minimax-m3",
-	"moonshotai/kimi-k2.7-code",
+	"moonshotai/kimi-k2.6",
 	"z-ai/glm-5.2",
 	"google/gemma-4-31b-it",
 	"deepseek/deepseek-v4-pro",
@@ -50,8 +46,26 @@ var fusionQualityPanel = []string{
 
 var fusionBudgetPanel = []string{
 	"google/gemini-3-flash-preview",
-	"moonshotai/kimi-k2.7-code",
+	"moonshotai/kimi-k2.6",
 	"deepseek/deepseek-v4-pro",
+}
+
+// fusionCodeModelSwap maps each model that trustedrouter/fusion-code replaces
+// with its code-tuned variant. Applied to the resolved panel + judge.
+var fusionCodeModelSwap = map[string]string{
+	"moonshotai/kimi-k2.6": "moonshotai/kimi-k2.7-code",
+}
+
+func applyFusionCodeSwap(models []string) []string {
+	out := make([]string, len(models))
+	for i, m := range models {
+		if swapped, ok := fusionCodeModelSwap[m]; ok {
+			out[i] = swapped
+		} else {
+			out[i] = m
+		}
+	}
+	return out
 }
 
 var fusionModelAliases = map[string]string{
@@ -144,6 +158,15 @@ func maybeServeFusion(
 		return true, err
 	}
 
+	// fusion-code: swap the general Kimi for its code-tuned variant across the
+	// resolved panel + judge (final synthesizers carry no Kimi, so it's a no-op
+	// there). One knob keeps fusion-code in lockstep with the rest of fusion.
+	if req.Model == trustedRouterFusionCodeModel {
+		config.AnalysisModels = applyFusionCodeSwap(config.AnalysisModels)
+		judgeModels = applyFusionCodeSwap(judgeModels)
+		finalModels = applyFusionCodeSwap(finalModels)
+	}
+
 	if req.Stream {
 		serveFusionStreaming(ctx, conn, br, req, config, finalModels, judgeModels, trGateway, secretCache, bearer, originalInput, requestLogID)
 	} else {
@@ -155,12 +178,6 @@ func maybeServeFusion(
 func fusionConfigForRequest(req *types.OpenAIChatRequest) (fusionConfig, bool, error) {
 	config := fusionConfig{Enabled: true}
 	requested := req.Model == trustedRouterFusionModel || req.Model == trustedRouterFusionCodeModel
-	if req.Model == trustedRouterFusionCodeModel {
-		// fusion-code runs the same pipeline as fusion but with the code-tuned
-		// judge. A plugin/tool judge_models override still wins — it merges on
-		// top of this base below.
-		config.JudgeModels = append([]string(nil), fusionCodeJudgeModels...)
-	}
 
 	if pluginConfig, ok, err := fusionConfigFromPlugins(req.Plugins); err != nil {
 		return fusionConfig{}, true, err
