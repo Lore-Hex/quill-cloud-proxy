@@ -286,11 +286,20 @@ func WriteChatCompletionResponse(
 	toolCalls []types.ToolCall,
 	inputTokens int,
 	outputTokens int,
+	usage *StreamUsage,
 	created int64,
 	finishReason string,
 ) error {
 	if finishReason == "" {
 		finishReason = "stop"
+	}
+	// Cached/reasoning detail counts come from the upstream-reported usage when
+	// present (nil on the chars/4 estimate fallback). inputTokens/outputTokens
+	// stay as the real-or-estimated totals the caller computed.
+	cachedTokens, reasoningTokens := 0, 0
+	if usage != nil {
+		cachedTokens = usage.CacheReadInputTokens
+		reasoningTokens = usage.ReasoningTokens
 	}
 	message := map[string]any{
 		"role":    "assistant",
@@ -315,11 +324,7 @@ func WriteChatCompletionResponse(
 				"finish_reason": finishReason,
 			},
 		},
-		"usage": map[string]int{
-			"prompt_tokens":     inputTokens,
-			"completion_tokens": outputTokens,
-			"total_tokens":      inputTokens + outputTokens,
-		},
+		"usage": chatCompletionUsage(inputTokens, outputTokens, cachedTokens, reasoningTokens),
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -557,24 +562,35 @@ func mergeUsage(usage **StreamUsage, m map[string]any) {
 	}
 }
 
+// chatCompletionUsage builds the OpenAI `usage` object shared by the streaming
+// (writeUsageChunk) and non-streaming (WriteChatCompletionResponse) paths. It
+// adds the prompt_tokens_details.cached_tokens and
+// completion_tokens_details.reasoning_tokens sub-objects only when those counts
+// are present, matching OpenAI's documented shape. Keeping a single builder
+// ensures both response shapes surface prompt-cache savings identically.
+func chatCompletionUsage(inputTokens, outputTokens, cachedTokens, reasoningTokens int) map[string]any {
+	body := map[string]any{
+		"prompt_tokens":     inputTokens,
+		"completion_tokens": outputTokens,
+		"total_tokens":      inputTokens + outputTokens,
+	}
+	if reasoningTokens > 0 {
+		body["completion_tokens_details"] = map[string]any{
+			"reasoning_tokens": reasoningTokens,
+		}
+	}
+	if cachedTokens > 0 {
+		body["prompt_tokens_details"] = map[string]any{
+			"cached_tokens": cachedTokens,
+		}
+	}
+	return body
+}
+
 // writeUsageChunk writes the stream_options.include_usage final chunk:
 // empty choices, populated usage — matching OpenAI's documented shape.
 func writeUsageChunk(w io.Writer, id, model string, created int64, usage *StreamUsage) error {
-	usageBody := map[string]any{
-		"prompt_tokens":     usage.InputTokens,
-		"completion_tokens": usage.OutputTokens,
-		"total_tokens":      usage.InputTokens + usage.OutputTokens,
-	}
-	if usage.ReasoningTokens > 0 {
-		usageBody["completion_tokens_details"] = map[string]any{
-			"reasoning_tokens": usage.ReasoningTokens,
-		}
-	}
-	if usage.CacheReadInputTokens > 0 {
-		usageBody["prompt_tokens_details"] = map[string]any{
-			"cached_tokens": usage.CacheReadInputTokens,
-		}
-	}
+	usageBody := chatCompletionUsage(usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.ReasoningTokens)
 	chunk := map[string]any{
 		"id":      id,
 		"object":  "chat.completion.chunk",

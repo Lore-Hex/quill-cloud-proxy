@@ -667,7 +667,7 @@ func serveResponsesNonStreaming(
 		req.Model = selectedModel
 	}
 	var body bytes.Buffer
-	if err := adapter.WriteResponsesResponse(&body, requestID, req.Model, result.Text, result.ToolCalls, inputTokens, outputTokens, time.Now().Unix(), responseTextConfig(req), req.Response); err != nil {
+	if err := adapter.WriteResponsesResponse(&body, requestID, req.Model, result.Text, result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(), responseTextConfig(req), req.Response); err != nil {
 		writeError(conn, 500, "responses encoding error")
 		return
 	}
@@ -739,7 +739,7 @@ func serveChatNonStreaming(
 		req.Model = selectedModel
 	}
 	var body bytes.Buffer
-	if err := adapter.WriteChatCompletionResponse(&body, requestID, req.Model, result.Text, result.ToolCalls, inputTokens, outputTokens, time.Now().Unix(), result.FinishReason); err != nil {
+	if err := adapter.WriteChatCompletionResponse(&body, requestID, req.Model, result.Text, result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(), result.FinishReason); err != nil {
 		writeError(conn, 500, "chat completion encoding error")
 		return
 	}

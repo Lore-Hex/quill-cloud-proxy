@@ -381,7 +381,7 @@ func serveFusionNonStreaming(
 			responseModel = selectedRouteModel(selected, finalModels[0])
 		}
 		var body bytes.Buffer
-		if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, selected.Result.Text, selected.Result.ToolCalls, totalIn, totalOut, time.Now().Unix(), selected.Result.FinishReason); err != nil {
+		if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, selected.Result.Text, selected.Result.ToolCalls, totalIn, totalOut, selected.Result.Usage, time.Now().Unix(), selected.Result.FinishReason); err != nil {
 			writeError(conn, 500, "fusion response encoding error")
 			return
 		}
@@ -413,7 +413,7 @@ func serveFusionNonStreaming(
 		responseModel = finalModels[0]
 	}
 	var body bytes.Buffer
-	if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, final.Result.Text, final.Result.ToolCalls, totalIn, totalOut, time.Now().Unix(), final.Result.FinishReason); err != nil {
+	if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, final.Result.Text, final.Result.ToolCalls, totalIn, totalOut, final.Result.Usage, time.Now().Unix(), final.Result.FinishReason); err != nil {
 		writeError(conn, 500, "fusion response encoding error")
 		return
 	}

@@ -469,11 +469,17 @@ func WriteResponsesResponse(
 	toolCalls []types.ToolCall,
 	inputTokens int,
 	outputTokens int,
+	usage *StreamUsage,
 	created int64,
 	textConfig map[string]any,
 	meta *types.ResponseRequestMeta,
 ) error {
-	payload := responsesObject(responseID, model, text, toolCalls, inputTokens, outputTokens, created, "completed", textConfig, meta)
+	cachedTokens, reasoningTokens := 0, 0
+	if usage != nil {
+		cachedTokens = usage.CacheReadInputTokens
+		reasoningTokens = usage.ReasoningTokens
+	}
+	payload := responsesObject(responseID, model, text, toolCalls, inputTokens, outputTokens, cachedTokens, reasoningTokens, created, "completed", textConfig, meta)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -531,13 +537,13 @@ func TransformResponsesStream(
 	seq := 0
 	if err := writeResponseEventSeq(w, &seq, "response.created", map[string]any{
 		"type":     "response.created",
-		"response": responsesObject(responseID, model, "", nil, inputTokens, 0, created, "in_progress", textConfig, meta),
+		"response": responsesObject(responseID, model, "", nil, inputTokens, 0, 0, 0, created, "in_progress", textConfig, meta),
 	}); err != nil {
 		return StreamResult{}, err
 	}
 	if err := writeResponseEventSeq(w, &seq, "response.in_progress", map[string]any{
 		"type":     "response.in_progress",
-		"response": responsesObject(responseID, model, "", nil, inputTokens, 0, created, "in_progress", textConfig, meta),
+		"response": responsesObject(responseID, model, "", nil, inputTokens, 0, 0, 0, created, "in_progress", textConfig, meta),
 	}); err != nil {
 		return StreamResult{}, err
 	}
@@ -769,7 +775,7 @@ func finishResponsesStream(
 		body map[string]any
 	}{"response.completed", map[string]any{
 		"type":     "response.completed",
-		"response": responsesObject(responseID, model, text, toolCalls, inputTokens, outputTokens, created, "completed", textConfig, meta),
+		"response": responsesObject(responseID, model, text, toolCalls, inputTokens, outputTokens, 0, 0, created, "completed", textConfig, meta),
 	}})
 	for _, event := range events {
 		if err := writeResponseEventSeq(w, seq, event.name, event.body); err != nil {
@@ -784,6 +790,7 @@ func responsesObject(
 	responseID, model, text string,
 	toolCalls []types.ToolCall,
 	inputTokens, outputTokens int,
+	cachedTokens, reasoningTokens int,
 	created int64,
 	status string,
 	textConfig map[string]any,
@@ -814,11 +821,11 @@ func responsesObject(
 		usage = map[string]any{
 			"input_tokens": inputTokens,
 			"input_tokens_details": map[string]any{
-				"cached_tokens": 0,
+				"cached_tokens": cachedTokens,
 			},
 			"output_tokens": outputTokens,
 			"output_tokens_details": map[string]any{
-				"reasoning_tokens": 0,
+				"reasoning_tokens": reasoningTokens,
 			},
 			"total_tokens": inputTokens + outputTokens,
 		}

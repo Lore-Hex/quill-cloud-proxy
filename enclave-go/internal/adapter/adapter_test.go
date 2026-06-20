@@ -510,6 +510,7 @@ func TestWriteChatCompletionResponseIncludesToolCalls(t *testing.T) {
 		[]types.ToolCall{{ID: "call_1", CallID: "call_1", Name: "setup", Arguments: `{}`}},
 		11,
 		7,
+		nil,
 		123,
 		"tool_calls",
 	)
@@ -539,6 +540,57 @@ func TestWriteChatCompletionResponseIncludesToolCalls(t *testing.T) {
 	}
 }
 
+func TestWriteChatCompletionResponseSurfacesCachedAndReasoningTokens(t *testing.T) {
+	var out bytes.Buffer
+	// Provider reported a prompt-cache hit (e.g. Gemini cachedContentTokenCount,
+	// surfaced through CollectAnthropicText as CacheReadInputTokens) plus some
+	// reasoning tokens. The non-streaming chat.completion response must surface
+	// both as the OpenAI-shaped detail sub-objects — historically it dropped them.
+	usage := &StreamUsage{InputTokens: 13027, OutputTokens: 5, ReasoningTokens: 3, CacheReadInputTokens: 12266}
+	if err := WriteChatCompletionResponse(&out, "chatcmpl_cache", "google/gemini-3.1-pro-preview", "ok", nil, 13027, 5, usage, 123, "stop"); err != nil {
+		t.Fatalf("WriteChatCompletionResponse: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, out.String())
+	}
+	u := payload["usage"].(map[string]any)
+	ptd, ok := u["prompt_tokens_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing prompt_tokens_details in usage=%#v", u)
+	}
+	if got := ptd["cached_tokens"]; got != float64(12266) {
+		t.Fatalf("cached_tokens = %#v, want 12266", got)
+	}
+	ctd, ok := u["completion_tokens_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing completion_tokens_details in usage=%#v", u)
+	}
+	if got := ctd["reasoning_tokens"]; got != float64(3) {
+		t.Fatalf("reasoning_tokens = %#v, want 3", got)
+	}
+}
+
+// When the upstream reported no cache/reasoning detail (or usage is nil on the
+// estimate fallback), the detail sub-objects must be omitted, not emitted as 0.
+func TestWriteChatCompletionResponseOmitsZeroDetails(t *testing.T) {
+	var out bytes.Buffer
+	if err := WriteChatCompletionResponse(&out, "chatcmpl_plain", "anthropic/claude-opus-4.8", "hi", nil, 10, 4, nil, 123, "stop"); err != nil {
+		t.Fatalf("WriteChatCompletionResponse: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	u := payload["usage"].(map[string]any)
+	if _, present := u["prompt_tokens_details"]; present {
+		t.Fatalf("prompt_tokens_details must be omitted when no cache hit, usage=%#v", u)
+	}
+	if _, present := u["completion_tokens_details"]; present {
+		t.Fatalf("completion_tokens_details must be omitted when no reasoning, usage=%#v", u)
+	}
+}
+
 func TestWriteResponsesResponseIncludesFunctionCallOutput(t *testing.T) {
 	var out bytes.Buffer
 	meta := &types.ResponseRequestMeta{
@@ -559,6 +611,7 @@ func TestWriteResponsesResponseIncludesFunctionCallOutput(t *testing.T) {
 		[]types.ToolCall{{ID: "call_1", CallID: "call_1", Name: "get_weather", Arguments: `{"location":"Paris"}`}},
 		12,
 		8,
+		nil,
 		123,
 		nil,
 		meta,
