@@ -1366,20 +1366,21 @@ func TestFusionDefaultsUseOpenPanelExplicitJudgeAndFuserFallbacks(t *testing.T) 
 		t.Fatalf("judgeModels = %#v, want Kimi K2.6 with M3 fallback", judgeModels)
 	}
 
-	// trustedrouter/fusion-code is fusion with the code-tuned Kimi: the swap
-	// turns the general kimi-k2.6 into kimi-k2.7-code across BOTH the panel and
-	// the judge, and leaves every other model untouched.
+	// trustedrouter/fusion-code is fusion with the code-tuned Kimi: it is a
+	// recognized fusion request, and the swap turns the general kimi-k2.6 into
+	// kimi-k2.7-code across the real default panel + judge — and ONLY the Kimi
+	// (non-Kimi models like the glm-5.2/m3 synthesizer are left untouched).
 	if _, requested, err := fusionConfigForRequest(&types.OpenAIChatRequest{Model: trustedRouterFusionCodeModel}); err != nil || !requested {
 		t.Fatalf("fusion-code must be a recognized fusion request: requested=%v err=%v", requested, err)
 	}
-	if got := applyFusionCodeSwap(fusionQualityPanel); got[1] != "moonshotai/kimi-k2.7-code" {
-		t.Fatalf("fusion-code quality panel swap = %#v, want kimi-k2.7-code at index 1", got)
+	if got := applyFusionCodeSwap(fusionQualityPanel); got[1] != fusionCodeKimi {
+		t.Fatalf("fusion-code panel swap = %#v, want %s at index 1", got, fusionCodeKimi)
 	}
-	if got := applyFusionCodeSwap(judgeModels); !reflect.DeepEqual(got, []string{"moonshotai/kimi-k2.7-code", "minimax/minimax-m3"}) {
-		t.Fatalf("fusion-code judge swap = %#v, want Kimi K2.7 Code with M3 fallback", got)
+	if got := applyFusionCodeSwap(fusionDefaultJudgeModels); !reflect.DeepEqual(got, []string{fusionCodeKimi, "minimax/minimax-m3"}) {
+		t.Fatalf("fusion-code judge swap = %#v, want %s with M3 fallback", got, fusionCodeKimi)
 	}
-	if got := applyFusionCodeSwap(finalModels); !reflect.DeepEqual(got, finalModels) {
-		t.Fatalf("fusion-code swap changed non-Kimi final models: %#v", got)
+	if got := applyFusionCodeSwap(fusionDefaultFinalModels); !reflect.DeepEqual(got, fusionDefaultFinalModels) {
+		t.Fatalf("fusion-code swap must not touch the non-Kimi synthesizer: %#v", got)
 	}
 }
 

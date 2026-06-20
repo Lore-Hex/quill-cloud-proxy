@@ -22,12 +22,16 @@ const trustedRouterFusionCodeModel = "trustedrouter/fusion-code"
 const trustedRouterFusionTool = "trustedrouter:fusion"
 const defaultFusionSelectionStrategy = "synthesize_non_refusals"
 
-// fusion judges and panels with the general moonshotai/kimi-k2.6 (minimax-m3
-// fallback). trustedrouter/fusion-code is identical EXCEPT it swaps that Kimi
-// for the code-tuned moonshotai/kimi-k2.7-code everywhere (panel + judge) via
-// fusionCodeModelSwap — keeping fusion-code a single-knob variant of fusion.
+// fusion uses the general Kimi for its panel and judge; trustedrouter/fusion-code
+// is identical except it swaps that one model for the code-tuned Kimi (see
+// applyFusionCodeSwap). Both fall back to minimax/minimax-m3.
+const (
+	fusionGeneralKimi = "moonshotai/kimi-k2.6"
+	fusionCodeKimi    = "moonshotai/kimi-k2.7-code"
+)
+
 var fusionDefaultJudgeModels = []string{
-	"moonshotai/kimi-k2.6",
+	fusionGeneralKimi,
 	"minimax/minimax-m3",
 }
 
@@ -38,7 +42,7 @@ var fusionDefaultFinalModels = []string{
 
 var fusionQualityPanel = []string{
 	"minimax/minimax-m3",
-	"moonshotai/kimi-k2.6",
+	fusionGeneralKimi,
 	"z-ai/glm-5.2",
 	"google/gemma-4-31b-it",
 	"deepseek/deepseek-v4-pro",
@@ -46,21 +50,18 @@ var fusionQualityPanel = []string{
 
 var fusionBudgetPanel = []string{
 	"google/gemini-3-flash-preview",
-	"moonshotai/kimi-k2.6",
+	fusionGeneralKimi,
 	"deepseek/deepseek-v4-pro",
 }
 
-// fusionCodeModelSwap maps each model that trustedrouter/fusion-code replaces
-// with its code-tuned variant. Applied to the resolved panel + judge.
-var fusionCodeModelSwap = map[string]string{
-	"moonshotai/kimi-k2.6": "moonshotai/kimi-k2.7-code",
-}
-
+// applyFusionCodeSwap rewrites the single model trustedrouter/fusion-code
+// differs on — the general Kimi -> the code-tuned Kimi — leaving everything else
+// untouched. This is the only difference between fusion and fusion-code.
 func applyFusionCodeSwap(models []string) []string {
 	out := make([]string, len(models))
 	for i, m := range models {
-		if swapped, ok := fusionCodeModelSwap[m]; ok {
-			out[i] = swapped
+		if m == fusionGeneralKimi {
+			out[i] = fusionCodeKimi
 		} else {
 			out[i] = m
 		}
@@ -158,13 +159,12 @@ func maybeServeFusion(
 		return true, err
 	}
 
-	// fusion-code: swap the general Kimi for its code-tuned variant across the
-	// resolved panel + judge (final synthesizers carry no Kimi, so it's a no-op
-	// there). One knob keeps fusion-code in lockstep with the rest of fusion.
+	// fusion-code: swap the general Kimi for its code-tuned variant in the
+	// panel + judge (the synthesizer carries no Kimi, and a user's explicit
+	// final_models should not be rewritten).
 	if req.Model == trustedRouterFusionCodeModel {
 		config.AnalysisModels = applyFusionCodeSwap(config.AnalysisModels)
 		judgeModels = applyFusionCodeSwap(judgeModels)
-		finalModels = applyFusionCodeSwap(finalModels)
 	}
 
 	if req.Stream {
