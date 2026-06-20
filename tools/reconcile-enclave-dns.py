@@ -60,6 +60,12 @@ ENCLAVE_TAG = os.environ.get("QUILL_ENCLAVE_TAG", "quill-enclave")
 # fewer (e.g. a probe-side network blip), it refuses to shrink the record —
 # stale-but-serving beats blanking the API.
 MIN_HEALTHY = int(os.environ.get("QUILL_MIN_HEALTHY", "2"))
+# Per-REGION floor for the region-pinned retry hostnames. Each region has only 2
+# VMs, so the canonical floor of 2 is wrong here (a region at 1 healthy should
+# publish that 1, not freeze on a dead pair). Default 1 = publish whatever is
+# healthy, never blank (0 healthy is skipped). Raise it to refuse shrinking a
+# regional record below N.
+MIN_HEALTHY_REGIONAL = int(os.environ.get("QUILL_MIN_HEALTHY_REGIONAL", "1"))
 VERIFIER = Path(__file__).parent / "verify-attestation.py"
 # Artifact Registry repo holding the enclave image. The reconciler also accepts
 # the newest gcp-release-* digest from here (the release a deploy is rolling TO,
@@ -105,6 +111,9 @@ def discover_instances() -> list[dict]:
             for ac in nic.get("accessConfigs", []) or []:
                 if ac.get("natIP"):
                     ip = ac["natIP"]
+                    break  # first external IP wins — deterministic on multi-NIC
+            if ip:
+                break
         zone = (r.get("zone") or "").rsplit("/", 1)[-1]
         if ip:
             fleet.append({"name": r["name"], "zone": zone,
@@ -153,7 +162,11 @@ def attest(ip: str, digest: str) -> bool:
             capture_output=True, text=True, timeout=45,
         )
         return p.returncode == 0
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, OSError) as e:
+        # A probe failure (timeout, or an OSError such as a missing `uv`/verifier
+        # or EMFILE under the thread pool) is a LOCALIZED unhealthy, not a crash
+        # of the whole reconcile — every other instance must still be evaluated.
+        log(f"  [probe-error] {ip}: {type(e).__name__}: {e}")
         return False
 
 
@@ -202,15 +215,20 @@ def reconcile_regional(by_region: dict[str, list[str]], apply: bool) -> None:
     """Publish api-<gcp-region>.<suffix> A = that region's healthy IPs.
 
     Region-pinned retry hostnames must resolve only to VMs that whitelist the
-    regional SNI (i.e. that region's VMs). A region with 0 healthy IPs this cycle
-    is SKIPPED — its record is left at last-good, never blanked, mirroring the
-    canonical MIN_HEALTHY safety."""
+    regional SNI (i.e. that region's VMs). Safety floor: never SHRINK a regional
+    record below MIN_HEALTHY_REGIONAL (default 1) — a region with 0 healthy IPs,
+    or fewer than the floor when it currently has more, is left at last-good
+    rather than blanked/shrunk. Growing a record is always allowed."""
     for region in sorted(by_region):
         ips = sorted(set(by_region[region]))
         if not ips:
-            continue
+            continue  # never publish/blank to an empty record
         record = f"api-{region}.{REGIONAL_SUFFIX}".rstrip(".") + "."
         cur = sorted(current_dns_ips(REGIONAL_ZONE, record))
+        if len(ips) < MIN_HEALTHY_REGIONAL and len(ips) < len(cur):
+            log(f"  regional {record}: {len(ips)} healthy < floor "
+                f"{MIN_HEALTHY_REGIONAL} and < current {len(cur)} — leaving last-good")
+            continue
         if cur == ips:
             log(f"  regional {record} already correct ({len(ips)} A)")
             continue
