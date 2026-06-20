@@ -18,10 +18,19 @@ import (
 )
 
 const trustedRouterFusionModel = "trustedrouter/fusion"
+const trustedRouterFusionCodeModel = "trustedrouter/fusion-code"
 const trustedRouterFusionTool = "trustedrouter:fusion"
 const defaultFusionSelectionStrategy = "synthesize_non_refusals"
 
+// Plain trustedrouter/fusion judges with the general kimi-k2.6; the code-tuned
+// trustedrouter/fusion-code keeps the prior kimi-k2.7-code judge. Everything
+// else (analysis panel, final synthesizers) is shared between the two.
 var fusionDefaultJudgeModels = []string{
+	"moonshotai/kimi-k2.6",
+	"minimax/minimax-m3",
+}
+
+var fusionCodeJudgeModels = []string{
 	"moonshotai/kimi-k2.7-code",
 	"minimax/minimax-m3",
 }
@@ -98,7 +107,7 @@ func maybeServeFusion(
 		return false, nil
 	}
 	if !config.Enabled {
-		if req.Model == trustedRouterFusionModel {
+		if req.Model == trustedRouterFusionModel || req.Model == trustedRouterFusionCodeModel {
 			return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion cannot be disabled without selecting a concrete model", Context: "plugins.fusion.enabled"}
 		}
 		return false, nil
@@ -145,7 +154,13 @@ func maybeServeFusion(
 
 func fusionConfigForRequest(req *types.OpenAIChatRequest) (fusionConfig, bool, error) {
 	config := fusionConfig{Enabled: true}
-	requested := req.Model == trustedRouterFusionModel
+	requested := req.Model == trustedRouterFusionModel || req.Model == trustedRouterFusionCodeModel
+	if req.Model == trustedRouterFusionCodeModel {
+		// fusion-code runs the same pipeline as fusion but with the code-tuned
+		// judge. A plugin/tool judge_models override still wins — it merges on
+		// top of this base below.
+		config.JudgeModels = append([]string(nil), fusionCodeJudgeModels...)
+	}
 
 	if pluginConfig, ok, err := fusionConfigFromPlugins(req.Plugins); err != nil {
 		return fusionConfig{}, true, err
@@ -1240,7 +1255,7 @@ func fusionFinalModels(config fusionConfig, requestedModel string, fallback stri
 		switch {
 		case config.JudgeModel != "":
 			raw = []string{config.JudgeModel}
-		case requestedModel != "" && requestedModel != trustedRouterFusionModel:
+		case requestedModel != "" && requestedModel != trustedRouterFusionModel && requestedModel != trustedRouterFusionCodeModel:
 			raw = []string{requestedModel}
 		default:
 			raw = fusionDefaultFinalModels

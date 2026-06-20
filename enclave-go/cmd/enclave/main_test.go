@@ -1362,8 +1362,22 @@ func TestFusionDefaultsUseOpenPanelExplicitJudgeAndFuserFallbacks(t *testing.T) 
 	if !reflect.DeepEqual(finalModels, []string{"z-ai/glm-5.2", "minimax/minimax-m3"}) {
 		t.Fatalf("finalModels = %#v, want GLM 5.2 with M3 fallback", finalModels)
 	}
-	if !reflect.DeepEqual(judgeModels, []string{"moonshotai/kimi-k2.7-code", "minimax/minimax-m3"}) {
-		t.Fatalf("judgeModels = %#v, want Kimi K2.7 Code with M3 fallback", judgeModels)
+	if !reflect.DeepEqual(judgeModels, []string{"moonshotai/kimi-k2.6", "minimax/minimax-m3"}) {
+		t.Fatalf("judgeModels = %#v, want Kimi K2.6 with M3 fallback", judgeModels)
+	}
+
+	// trustedrouter/fusion-code shares the pipeline but keeps the code-tuned
+	// judge (kimi-k2.7-code) that plain fusion moved off of.
+	codeCfg, requested, err := fusionConfigForRequest(&types.OpenAIChatRequest{Model: trustedRouterFusionCodeModel})
+	if err != nil || !requested {
+		t.Fatalf("fusion-code config: requested=%v err=%v", requested, err)
+	}
+	codeJudge, err := fusionJudgeModels(codeCfg, "z-ai/glm-5.2")
+	if err != nil {
+		t.Fatalf("fusion-code judgeModels: %v", err)
+	}
+	if !reflect.DeepEqual(codeJudge, []string{"moonshotai/kimi-k2.7-code", "minimax/minimax-m3"}) {
+		t.Fatalf("fusion-code judgeModels = %#v, want Kimi K2.7 Code with M3 fallback", codeJudge)
 	}
 }
 
