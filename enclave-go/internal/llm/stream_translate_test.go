@@ -167,3 +167,46 @@ func TestOpenAICompatibleRequestBody(t *testing.T) {
 		}
 	})
 }
+
+func TestOpenAIStreamUsageCachedTokensPrecedence(t *testing.T) {
+	cases := []struct {
+		name  string
+		usage openAIStreamUsage
+		want  int
+	}{
+		{"openai standard nested", openAIStreamUsage{PromptTokensDetails: &openAIPromptTokenDetails{CachedTokens: 100}}, 100},
+		{"moonshot kimi top-level cached_tokens", openAIStreamUsage{CachedTokensTop: 200}, 200},
+		{"deepseek prompt_cache_hit_tokens", openAIStreamUsage{PromptCacheHitTokens: 300}, 300},
+		{"standard wins over fallbacks", openAIStreamUsage{PromptTokensDetails: &openAIPromptTokenDetails{CachedTokens: 1}, CachedTokensTop: 2, PromptCacheHitTokens: 3}, 1},
+		{"none reported", openAIStreamUsage{PromptTokens: 50}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.usage.cachedTokens(); got != tc.want {
+				t.Fatalf("cachedTokens() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// DeepSeek (prompt_cache_hit_tokens) and Moonshot/Kimi (top-level cached_tokens)
+// report cache hits in non-OpenAI-standard fields; both must surface as
+// cache_read_input_tokens in the translated Anthropic stream.
+func TestTranslateOpenAIStreamSurfacesNonStandardCacheFields(t *testing.T) {
+	cases := []struct{ name, chunk, wantSub string }{
+		{"deepseek", `{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":80,"completion_tokens":5,"prompt_cache_hit_tokens":64}}`, `"cache_read_input_tokens":64`},
+		{"kimi", `{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":80,"completion_tokens":5,"cached_tokens":70}}`, `"cache_read_input_tokens":70`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			in := "data: " + tc.chunk + "\n\ndata: [DONE]\n\n"
+			if err := translateOpenAIStreamToAnthropic(strings.NewReader(in), &out); err != nil {
+				t.Fatalf("translate: %v", err)
+			}
+			if !strings.Contains(out.String(), tc.wantSub) {
+				t.Fatalf("missing %s in output: %s", tc.wantSub, out.String())
+			}
+		})
+	}
+}

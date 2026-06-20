@@ -158,6 +158,32 @@ type openAIStreamUsage struct {
 	TotalTokens             int                       `json:"total_tokens"`
 	CompletionTokensDetails *openAIStreamUsageDetails `json:"completion_tokens_details"`
 	PromptTokensDetails     *openAIPromptTokenDetails `json:"prompt_tokens_details"`
+	// Non-standard prompt-cache fields some OpenAI-compatible providers use
+	// INSTEAD of prompt_tokens_details.cached_tokens (verified 2026-06-20):
+	//   Moonshot/Kimi (kimi-k2.* automatic prefix cache) -> top-level usage.cached_tokens
+	//   DeepSeek ("context caching on disk", on by default) -> usage.prompt_cache_hit_tokens
+	// Without these, those providers' cache hits are silently dropped because
+	// the gateway only read the OpenAI-standard nested field.
+	CachedTokensTop      int `json:"cached_tokens"`
+	PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
+}
+
+// cachedTokens returns the prompt-cache hit count, normalizing across the
+// field each provider reports it in. The OpenAI-standard nested placement
+// wins; then Moonshot/Kimi's top-level usage.cached_tokens; then DeepSeek's
+// prompt_cache_hit_tokens. The Gemini path sets PromptTokensDetails directly,
+// so it keeps taking precedence unchanged.
+func (u *openAIStreamUsage) cachedTokens() int {
+	if u == nil {
+		return 0
+	}
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 {
+		return u.PromptTokensDetails.CachedTokens
+	}
+	if u.CachedTokensTop > 0 {
+		return u.CachedTokensTop
+	}
+	return u.PromptCacheHitTokens
 }
 
 type openAIStreamUsageDetails struct {
@@ -237,8 +263,8 @@ func writeAnthropicStop(w io.Writer, stopReason string, usage *openAIStreamUsage
 		if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens > 0 {
 			usageBody["reasoning_tokens"] = usage.CompletionTokensDetails.ReasoningTokens
 		}
-		if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens > 0 {
-			usageBody["cache_read_input_tokens"] = usage.PromptTokensDetails.CachedTokens
+		if cached := usage.cachedTokens(); cached > 0 {
+			usageBody["cache_read_input_tokens"] = cached
 		}
 		mDelta["usage"] = usageBody
 	}

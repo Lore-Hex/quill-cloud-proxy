@@ -307,6 +307,15 @@ jobs:
           gcloud compute instance-groups managed wait-until quill-enclave-mig-us \
             --region=us-central1 --project=quill-cloud-proxy --stable
 
+      - name: Wait for us-central1 instances to attest healthy
+        # MIG-stable != attestation-healthy: Confidential Space GCA tokens are
+        # not ready until ~5-8 min after boot, and the reconciler only publishes
+        # attested instances. Without this gate the post-stable canary measures
+        # the boot transient (synthetic reads the region DOWN) and rolls a good
+        # release back — exactly what tripped europe-west4 on 2026-06-20.
+        timeout-minutes: 14
+        run: bash tools/wait-region-attested.sh quill-enclave-mig-us- us-central1
+
       - name: Reconcile DNS before us-central1 canary
         env:
           QUILL_RECONCILE_APPLY: "1"
@@ -370,6 +379,12 @@ jobs:
           gcloud compute instance-groups managed wait-until quill-enclave-mig-eu \
             --region=europe-west4 --project=quill-cloud-proxy --stable
 
+      - name: Wait for europe-west4 instances to attest healthy
+        # See us-central1 gate. eu is where the boot-transient canary trip
+        # actually fired (up->down->down, then healthy ~7 min later).
+        timeout-minutes: 14
+        run: bash tools/wait-region-attested.sh quill-enclave-mig-eu- europe-west4
+
       - name: Reconcile DNS before europe-west4 canary
         env:
           QUILL_RECONCILE_APPLY: "1"
@@ -423,6 +438,11 @@ jobs:
         run: |
           gcloud compute instance-groups managed wait-until quill-enclave-mig-useast4 \
             --region=us-east4 --project=quill-cloud-proxy --stable
+
+      - name: Wait for us-east4 instances to attest healthy
+        # See us-central1 gate.
+        timeout-minutes: 14
+        run: bash tools/wait-region-attested.sh quill-enclave-mig-useast4- us-east4
 
       - name: Reconcile DNS before us-east4 canary
         env:
