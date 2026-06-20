@@ -87,14 +87,7 @@ QUILL_ANTHROPIC_SECRET="${QUILL_ANTHROPIC_SECRET:-trustedrouter-anthropic-api-ke
 # disabled provider; the catalog publishes prepaid routes for these.
 QUILL_OPENAI_SECRET="${QUILL_OPENAI_SECRET:-trustedrouter-openai-api-key}"
 QUILL_GEMINI_SECRET="${QUILL_GEMINI_SECRET:-trustedrouter-gemini-api-key}"
-# Pin Gemini/Vertex to ONE regional endpoint (not "global"): Vertex implicit
-# context caching only hits reliably on a regional endpoint — "global" spreads
-# requests across backends so the per-region cache mostly misses (verified
-# 2026-06-20). One shared region means a client's repeated long prompts share a
-# cache (cached_tokens, 0.25x input price) regardless of which enclave served
-# them. Trade-off: no cross-region Gemini failover; eu/us-east4 enclaves add a
-# little latency calling us-central1 Vertex.
-QUILL_GEMINI_VERTEX_REGION="${QUILL_GEMINI_VERTEX_REGION:-us-central1}"
+QUILL_GEMINI_VERTEX_REGION="${QUILL_GEMINI_VERTEX_REGION:-global}"
 QUILL_CEREBRAS_SECRET="${QUILL_CEREBRAS_SECRET:-trustedrouter-cerebras-api-key}"
 QUILL_DEEPSEEK_SECRET="${QUILL_DEEPSEEK_SECRET:-trustedrouter-deepseek-api-key}"
 QUILL_MISTRAL_SECRET="${QUILL_MISTRAL_SECRET:-trustedrouter-mistral-api-key}"
