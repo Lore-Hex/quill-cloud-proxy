@@ -20,4 +20,10 @@ RUN uv run --script /app/tools/verify-attestation.py --help >/dev/null 2>&1 || t
 
 # QUILL_RECONCILE_APPLY=1 makes it actually change DNS; default is dry-run.
 ENV QUILL_RECONCILE_APPLY=0
+# Publish per-region A records (api-<region>.quillrouter.com) on every
+# scheduled run so regional DNS self-heals after instance churn instead of
+# only refreshing during a deploy (the synthetic monitor probes these).
+ENV QUILL_PUBLISH_REGIONAL=1
+ENV QUILL_REGIONAL_ZONE=quillrouter-com
+ENV QUILL_REGIONAL_SUFFIX=quillrouter.com
 CMD ["sh","-c","uv run --script /app/tools/reconcile-enclave-dns.py $([ \"$QUILL_RECONCILE_APPLY\" = 1 ] && echo --apply || echo --dry-run)"]

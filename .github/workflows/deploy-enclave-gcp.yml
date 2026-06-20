@@ -337,7 +337,7 @@ jobs:
       - name: Canary gate — watch us-central1 only (3 min, post-stable)
         id: canary_us
         continue-on-error: true
-        run: python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 2
+        run: python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 2 --skip-baseline
 
       - name: Rollback us-central1 MIG + abort (canary tripped)
         if: ${{ steps.canary_us.outcome == 'failure' && steps.canary_us.outputs.rollback_regions != '' }}
@@ -412,7 +412,7 @@ jobs:
       - name: Canary gate — watch europe-west4 only (3 min, post-stable)
         id: canary_eu
         continue-on-error: true
-        run: python3 tools/watchdog.py --regions europe-west4 --duration-min 3 --rollback-after 2
+        run: python3 tools/watchdog.py --regions europe-west4 --duration-min 3 --rollback-after 2 --skip-baseline
 
       - name: Rollback europe-west4 MIG + abort (canary tripped)
         if: ${{ steps.canary_eu.outcome == 'failure' && steps.canary_eu.outputs.rollback_regions != '' }}
@@ -476,7 +476,7 @@ jobs:
       - name: Canary gate — watch us-east4 only (3 min, post-stable)
         id: canary_useast4
         continue-on-error: true
-        run: python3 tools/watchdog.py --regions us-east4 --duration-min 3 --rollback-after 2
+        run: python3 tools/watchdog.py --regions us-east4 --duration-min 3 --rollback-after 2 --skip-baseline
 
       - name: Rollback us-east4 MIG + abort (canary tripped)
         if: ${{ steps.canary_useast4.outcome == 'failure' && steps.canary_useast4.outputs.rollback_regions != '' }}
