@@ -1141,6 +1141,42 @@ func TestFusionVisibleAnswerStripsThinkBlocks(t *testing.T) {
 	}
 }
 
+func TestFusionToolCallsTextRendersNameAndArgs(t *testing.T) {
+	if got := fusionToolCallsText(nil); got != "" {
+		t.Fatalf("no tool calls = %q, want empty", got)
+	}
+	got := fusionToolCallsText([]types.ToolCall{
+		{Name: "get_weather", Arguments: `{"city":"Paris"}`},
+		{Name: "lookup", Arguments: ""},
+	})
+	want := `Proposed tool call(s): get_weather({"city":"Paris"}), lookup({})`
+	if got != want {
+		t.Fatalf("fusionToolCallsText = %q, want %q", got, want)
+	}
+}
+
+func TestFusionPanelEvidenceSurfacesToolCalls(t *testing.T) {
+	panel := []fusionCallResult{
+		{Model: "m_tool", Result: adapter.StreamResult{
+			Text:      "",
+			ToolCalls: []types.ToolCall{{Name: "get_weather", Arguments: `{"city":"Paris"}`}},
+		}},
+		{Model: "m_text", Result: adapter.StreamResult{Text: "It is sunny."}},
+	}
+	got := fusionPanelEvidence(panel)
+	// The actual tool call (name + args) must reach the judge/synthesizer, not a
+	// content-free placeholder.
+	if strings.Contains(got, "[panel member returned tool calls]") {
+		t.Fatalf("evidence still uses the placeholder:\n%s", got)
+	}
+	if !strings.Contains(got, `get_weather({"city":"Paris"})`) {
+		t.Fatalf("evidence missing the rendered tool call:\n%s", got)
+	}
+	if !strings.Contains(got, "It is sunny.") {
+		t.Fatalf("evidence dropped the text answer:\n%s", got)
+	}
+}
+
 func TestSelectFusionPanelResultFirstNonRefusal(t *testing.T) {
 	panel := []fusionCallResult{
 		{

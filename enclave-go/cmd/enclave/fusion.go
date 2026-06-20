@@ -1013,12 +1013,45 @@ func fusionPanelEvidence(panel []fusionCallResult) string {
 			model = item.Authorization.Model
 		}
 		text := strings.TrimSpace(item.Result.Text)
-		if text == "" && len(item.Result.ToolCalls) > 0 {
-			text = "[panel member returned tool calls]"
+		// Surface each panel member's ACTUAL tool calls (name + arguments) so the
+		// judge can compare them and the final synthesizer can fuse/emit the best
+		// one. Previously these were flattened to a content-free "[returned tool
+		// calls]" placeholder, which made synthesis blind to the panel's tool-use
+		// decisions (the synthesizer then chose a tool call essentially alone).
+		if tc := fusionToolCallsText(item.Result.ToolCalls); tc != "" {
+			if text != "" {
+				text += "\n" + tc
+			} else {
+				text = tc
+			}
 		}
 		fmt.Fprintf(&b, "\n[%d] model=%s\n%s\n", i+1, model, text)
 	}
 	return b.String()
+}
+
+// fusionToolCallsText renders a panel member's tool calls as readable
+// `name(arguments)` evidence for the judge and synthesizer prompts.
+func fusionToolCallsText(calls []types.ToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(calls))
+	for _, c := range calls {
+		name := strings.TrimSpace(c.Name)
+		if name == "" {
+			continue
+		}
+		args := strings.TrimSpace(c.Arguments)
+		if args == "" {
+			args = "{}"
+		}
+		parts = append(parts, fmt.Sprintf("%s(%s)", name, args))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Proposed tool call(s): " + strings.Join(parts, ", ")
 }
 
 func fusionJudgePrompt(req *types.OpenAIChatRequest, panel []fusionCallResult) string {
