@@ -85,6 +85,13 @@ QUILL_ANTHROPIC_SECRET="${QUILL_ANTHROPIC_SECRET:-trustedrouter-anthropic-api-ke
 # Default to the canonical Secret Manager names created by the
 # trusted-router setup. Override with an empty value only for a deliberately
 # disabled provider; the catalog publishes prepaid routes for these.
+#
+# DEFERRED (review 2026-06-21): the ~20 QUILL_*_SECRET defaults below + their
+# per-provider `if [ -n ... ]` fetch blocks are copy-paste; they could collapse
+# into one data-driven loop (a name->secret table) with a single empty-skip
+# guard. Intentionally NOT done yet — won't refactor a just-stabilized
+# production deploy script without a dedicated test-deploy. Bundle the DRY +
+# the resize guard (below) into the next real edit to this script.
 QUILL_OPENAI_SECRET="${QUILL_OPENAI_SECRET:-trustedrouter-openai-api-key}"
 QUILL_GEMINI_SECRET="${QUILL_GEMINI_SECRET:-trustedrouter-gemini-api-key}"
 QUILL_GEMINI_VERTEX_REGION="${QUILL_GEMINI_VERTEX_REGION:-global}"
@@ -224,6 +231,10 @@ if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/
   # pattern) without a one-shot operator step.
   current_size=$(gc compute instance-groups managed describe "$MIG_NAME" \
     --region="$REGION" --format='value(targetSize)' 2>/dev/null || echo "")
+  # DEFERRED (review 2026-06-21): add a resize guard — refuse to apply when
+  # TARGET_SIZE is empty/unset or would drop the MIG below a safe floor (a bad
+  # or empty TARGET_SIZE reaching here could scale a region to 0). Deferred with
+  # the provider-loop DRY above; land both in the next deploy-script test-deploy.
   if [ "$current_size" != "$TARGET_SIZE" ]; then
     log "resizing MIG $MIG_NAME: ${current_size:-?} -> $TARGET_SIZE"
     gc compute instance-groups managed resize "$MIG_NAME" \

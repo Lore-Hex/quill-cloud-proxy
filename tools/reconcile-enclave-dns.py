@@ -20,6 +20,11 @@ reconcile cycle + TTL; the MIG recreates dead VMs; other regions keep serving.
 It is intentionally NOT in the serving path: if this reconciler stops, DNS
 freezes at the last-good set (no new failover, but serving continues).
 
+DEFERRED (review 2026-06-21): the v5 source tidy-ups live here, but the
+DEPLOYED reconciler image is still v4 — behavior is unchanged by the tidy-ups,
+so the image rebuild was skipped. Source thus runs ahead of the running image
+until the next *functional* reconciler change triggers a rebuild.
+
 Run
 ---
   # read-only: show what DNS *would* become
