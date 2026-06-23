@@ -45,7 +45,7 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 	switch provider {
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai", "together",
 		"fireworks", "grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
-		"parasail", "lightning", "gmi", "deepinfra", "nebius", "minimax", "xiaomi":
+		"parasail", "lightning", "gmi", "deepinfra", "friendli", "nebius", "minimax", "xiaomi":
 		return true
 	default:
 		return false
@@ -685,6 +685,10 @@ func directBaseURL(provider string) string {
 		// `/v1/openai` path (not `/v1`) — DeepInfra namespaces the
 		// OpenAI-shape endpoints separately from their native /v1.
 		return "https://api.deepinfra.com/v1/openai"
+	case "friendli":
+		// FriendliAI serverless Model API. OpenAI-compatible /v1 surface
+		// under the non-standard /serverless prefix.
+		return "https://api.friendli.ai/serverless/v1"
 	case "nebius":
 		// Nebius Token Factory OpenAI-compatible shared inference.
 		return "https://api.tokenfactory.nebius.com/v1"
@@ -827,6 +831,8 @@ var providerNativeModelMaps = map[string]map[string]string{
 	"tinfoil":     tinfoilModelMap,
 	"novita":      novitaModelMap,
 	"phala":       phalaModelMap,
+	"venice":      veniceModelMap,
+	"friendli":    friendliModelMap,
 	"minimax":     minimaxModelMap,
 	"siliconflow": siliconflowModelMap,
 	"zai":         zaiModelMap,
@@ -846,6 +852,7 @@ var siliconflowModelMap = map[string]string{
 	"tencent/hunyuan-a13b-instruct": "tencent/Hunyuan-A13B-Instruct",
 	"tencent/hy3-preview":           "tencent/Hy3-preview",
 	"z-ai/glm-5":                    "zai-org/GLM-5",
+	"z-ai/glm-5.2":                  "zai-org/GLM-5.2",
 	"z-ai/glm-5v-turbo":             "zai-org/GLM-5V-Turbo",
 }
 
@@ -903,6 +910,7 @@ var togetherModelMap = map[string]string{
 	"qwen/qwen3.5-9b":                   "Qwen/Qwen3.5-9B",
 	"z-ai/glm-5":                        "zai-org/GLM-5",
 	"z-ai/glm-5.1":                      "zai-org/GLM-5.1",
+	"z-ai/glm-5.2":                      "zai-org/GLM-5.2",
 }
 
 // lightningModelMap maps OR-canonical → Lightning AI native.
@@ -955,6 +963,7 @@ var parasailModelMap = map[string]string{
 	// z-ai / glm
 	"z-ai/glm-5":   "parasail-glm-5",
 	"z-ai/glm-5.1": "parasail-glm-51",
+	"z-ai/glm-5.2": "parasail-glm-52",
 	"z-ai/glm-4.7": "parasail-glm47",
 	// moonshot
 	"moonshotai/kimi-k2.5": "parasail-kimi-k25",
@@ -1006,6 +1015,7 @@ var gmiModelMap = map[string]string{
 	"deepseek/deepseek-v3.1":    "deepseek-ai/DeepSeek-V3.1",
 	"z-ai/glm-5":                "zai-org/GLM-5-FP8",
 	"z-ai/glm-5.1":              "zai-org/GLM-5.1-FP8",
+	"z-ai/glm-5.2":              "zai-org/GLM-5.2-FP8",
 	"anthropic/claude-opus-4.7": "anthropic/claude-opus-4.7",
 	"openai/gpt-5.4-nano":       "openai/gpt-5.4-nano",
 	"openai/gpt-5.5":            "openai/gpt-5.5",
@@ -1061,6 +1071,7 @@ var phalaModelMap = map[string]string{
 	"z-ai/glm-4.7-flash":               "phala/glm-4.7-flash",
 	"z-ai/glm-5":                       "phala/glm-5",
 	"z-ai/glm-5.1":                     "phala/glm-5.1",
+	"z-ai/glm-5.2":                     "phala/glm-5.2",
 	"deepseek/deepseek-v3.2":           "phala/deepseek-v3.2",
 	"deepseek/deepseek-chat-v3.1":      "phala/deepseek-chat-v3.1",
 	"xiaomi/mimo-v2-flash":             "phala/mimo-v2-flash",
@@ -1084,6 +1095,27 @@ var tinfoilModelMap = map[string]string{
 	"openai/whisper-large-v3-turbo":     "whisper-large-v3-turbo",
 	"qwen/qwen3-tts":                    "qwen3-tts",
 	"nomic-ai/nomic-embed-text":         "nomic-embed-text",
+}
+
+// veniceModelMap maps OR-canonical → Venice native ids. Venice's API uses
+// dashed provider-local names (`zai-org-glm-5-2`) and no longer reliably
+// aliases OR-style ids.
+var veniceModelMap = map[string]string{
+	"z-ai/glm-5.2": "zai-org-glm-5-2",
+}
+
+// friendliModelMap maps OR-canonical → Friendli native ids. Friendli mixes
+// local ids for Llama with upstream-author ids for GLM/Qwen/MiniMax.
+var friendliModelMap = map[string]string{
+	"meta-llama/llama-3.3-70b-instruct": "meta-llama-3.3-70b-instruct",
+	"meta-llama/llama-3.1-8b-instruct":  "meta-llama-3.1-8b-instruct",
+	"qwen/qwen3-235b-a22b-2507":         "Qwen/Qwen3-235B-A22B-Instruct-2507",
+	"lgai-exaone/k-exaone-236b-a23b":    "LGAI-EXAONE/K-EXAONE-236B-A23B",
+	"z-ai/glm-5":                        "zai-org/GLM-5",
+	"minimax/minimax-m2.5":              "MiniMaxAI/MiniMax-M2.5",
+	"deepseek/deepseek-v3.2":            "deepseek-ai/DeepSeek-V3.2",
+	"z-ai/glm-5.1":                      "zai-org/GLM-5.1",
+	"z-ai/glm-5.2":                      "zai-org/GLM-5.2",
 }
 
 var directModelMap = map[string]string{
@@ -1150,6 +1182,8 @@ func normalizeDirectProvider(provider string) string {
 		return "gmi"
 	case "deepinfra", "deep-infra", "deep_infra":
 		return "deepinfra"
+	case "friendli", "friendli-ai", "friendliai":
+		return "friendli"
 	case "nebius", "nebius-ai", "nebius-ai-studio", "tokenfactory", "token-factory":
 		return "nebius"
 	case "minimax", "mini-max", "minimax-ai", "minimaxai":

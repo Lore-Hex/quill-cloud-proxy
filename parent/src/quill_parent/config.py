@@ -32,7 +32,9 @@ class Settings(BaseSettings):
     # Where the enclave's vsock listener is. In dev mode (transport=unix-socket)
     # we point at /tmp/quill-enclave-<port>.sock instead.
     enclave_relay_port: int = 8001
-    max_request_body_bytes: int = 4 * 1024 * 1024
+    # Keep aligned with the enclave prompt-path cap. Vision requests often
+    # contain base64 JSON payloads several times larger than the original image.
+    max_request_body_bytes: int = 32 * 1024 * 1024
 
     # DynamoDB table for usage counters.
     usage_table_name: str = "quill_usage"

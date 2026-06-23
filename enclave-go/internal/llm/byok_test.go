@@ -23,8 +23,10 @@ func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 		"lightning",
 		"gmi",
 		"deepinfra",
+		"friendli",
 		"nebius",
 		"minimax",
+		"xiaomi",
 	} {
 		if !isOpenAICompatibleBYOKProvider(provider) {
 			t.Fatalf("%s should be an OpenAI-compatible BYOK provider", provider)
@@ -94,6 +96,7 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		{"together", "meta-llama/llama-3.1-70b-instruct", "meta-llama/Llama-3.1-70B-Instruct-Turbo"},
 		{"together", "mistralai/mixtral-8x7b-instruct", "mistralai/Mixtral-8x7B-Instruct-v0.1"},
 		{"together", "deepseek/deepseek-v3-ocr", "deepseek-ai/DeepSeek-V3-OCR"},
+		{"together", "z-ai/glm-5.2", "zai-org/GLM-5.2"},
 		// lightning — non-gemma
 		{"lightning", "meta-llama/llama-3.3-70b-instruct", "lightning-ai/llama-3.3-70b"},
 		{"lightning", "deepseek/deepseek-v3.1", "lightning-ai/DeepSeek-V3.1"},
@@ -126,6 +129,7 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		// case proprietary author paths, dot-versioned models.
 		{"parasail", "deepseek/deepseek-v4-pro", "parasail-deepseek-v4-pro"},
 		{"parasail", "z-ai/glm-5.1", "parasail-glm-51"},
+		{"parasail", "z-ai/glm-5.2", "parasail-glm-52"},
 		{"parasail", "moonshotai/kimi-k2.6", "parasail-kimi-k26"},
 		{"parasail", "openai/gpt-oss-120b", "parasail-gpt-oss-120b"},
 		{"parasail", "thedrummer/cydonia-24b-v4.1", "parasail-cydonia-24-v41"},
@@ -141,9 +145,14 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		// pass-through tier the key isn't entitled to.
 		{"phala", "openai/gpt-oss-120b", "phala/gpt-oss-120b"},
 		{"phala", "z-ai/glm-5", "phala/glm-5"},
+		{"phala", "z-ai/glm-5.2", "phala/glm-5.2"},
 		{"phala", "deepseek/deepseek-v3.2", "phala/deepseek-v3.2"},
 		{"phala", "moonshotai/kimi-k2.6", "phala/kimi-k2.6"},
 		{"phala", "google/gemma-3-27b-it", "phala/gemma-3-27b-it"},
+		{"venice", "z-ai/glm-5.2", "zai-org-glm-5-2"},
+		{"friendli", "z-ai/glm-5.2", "zai-org/GLM-5.2"},
+		{"friendli", "meta-llama/llama-3.3-70b-instruct", "meta-llama-3.3-70b-instruct"},
+		{"friendli", "qwen/qwen3-235b-a22b-2507", "Qwen/Qwen3-235B-A22B-Instruct-2507"},
 	}
 	for _, tc := range cases {
 		got := directModelID(tc.provider, tc.orID, tc.orID)
@@ -177,11 +186,14 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		{"siliconflow", "minimax/minimax-m3", "minimax/minimax-m3", "MiniMaxAI/MiniMax-M3"},
 		{"siliconflow", "tencent/hunyuan-a13b-instruct", "tencent/hunyuan-a13b-instruct", "tencent/Hunyuan-A13B-Instruct"},
 		{"siliconflow", "z-ai/glm-5", "z-ai/glm-5", "zai-org/GLM-5"},
+		{"siliconflow", "z-ai/glm-5.2", "z-ai/glm-5.2", "zai-org/GLM-5.2"},
 		{"siliconflow", "z-ai/glm-5v-turbo", "z-ai/glm-5v-turbo", "zai-org/GLM-5V-Turbo"},
 		// DeepInfra keeps the upstream author path and mixed-case GLM
 		// version. Without this provider-specific map, directModelID strips
 		// the author and sends bare "GLM-5.2", which DeepInfra rejects.
 		{"deepinfra", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2"},
+		{"gmi", "z-ai/glm-5.2", "zai-org/GLM-5.2-FP8", "zai-org/GLM-5.2-FP8"},
+		{"friendli", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2"},
 		// zai-direct accepts only the bare id; glm-4.7 was mis-mapped to
 		// "zai-glm-4.7" by the global directModelMap.
 		{"zai", "z-ai/glm-4.7", "z-ai/glm-4.7", "glm-4.7"},

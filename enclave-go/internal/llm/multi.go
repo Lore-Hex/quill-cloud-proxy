@@ -50,6 +50,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		lightning:   newOpenAICompatible("lightning", boot.LightningAPIKey),
 		gmi:         newOpenAICompatible("gmi", boot.GMIAPIKey),
 		deepinfra:   newOpenAICompatible("deepinfra", boot.DeepInfraAPIKey),
+		friendli:    newOpenAICompatible("friendli", boot.FriendliAPIKey),
 		nebius:      newOpenAICompatible("nebius", boot.NebiusAPIKey),
 		minimax:     newOpenAICompatible("minimax", boot.MiniMaxAPIKey),
 		// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
@@ -89,6 +90,7 @@ type multiClient struct {
 	lightning   *openAICompatibleClient
 	gmi         *openAICompatibleClient
 	deepinfra   *openAICompatibleClient
+	friendli    *openAICompatibleClient
 	nebius      *openAICompatibleClient
 	minimax     *openAICompatibleClient
 	xiaomi      *openAICompatibleClient
@@ -158,6 +160,8 @@ func (m *multiClient) InvokeStreaming(
 		return m.gmi.InvokeStreaming(ctx, req, body, out, options...)
 	case "deepinfra":
 		return m.deepinfra.InvokeStreaming(ctx, req, body, out, options...)
+	case "friendli":
+		return m.friendli.InvokeStreaming(ctx, req, body, out, options...)
 	case "nebius":
 		return m.nebius.InvokeStreaming(ctx, req, body, out, options...)
 	case "minimax":
@@ -168,6 +172,6 @@ func (m *multiClient) InvokeStreaming(
 		// Embeddings-only; returns a clear "chat not supported" error.
 		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, nebius, minimax, xiaomi, cohere)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, nebius, minimax, xiaomi, cohere)", provider)
 	}
 }

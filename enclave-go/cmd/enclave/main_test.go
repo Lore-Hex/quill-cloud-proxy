@@ -1961,6 +1961,57 @@ func TestReadRequestRejectsOversizedBodyBeforeAllocation(t *testing.T) {
 	}
 }
 
+func TestReadRequestAcceptsVisionPayloadAboveLegacyLimit(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+
+	body := bytes.Repeat([]byte("x"), 5*1024*1024)
+	go func() {
+		defer client.Close()
+		_, _ = fmt.Fprintf(
+			client,
+			"POST /v1/messages HTTP/1.1\r\nContent-Length: %d\r\n\r\n",
+			len(body),
+		)
+		_, _ = client.Write(body)
+	}()
+
+	method, path, _, _, gotBody, err := readRequest(server)
+	if err != nil {
+		t.Fatalf("readRequest: %v", err)
+	}
+	if method != "POST" || path != "/v1/messages" {
+		t.Fatalf("method/path = %s %s, want POST /v1/messages", method, path)
+	}
+	if len(gotBody) != len(body) {
+		t.Fatalf("body len = %d, want %d", len(gotBody), len(body))
+	}
+}
+
+func TestReadRequestAcceptsAnthropicXAPIKey(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+
+	go func() {
+		defer client.Close()
+		_, _ = fmt.Fprint(
+			client,
+			"POST /v1/messages HTTP/1.1\r\nx-api-key: tr-key-123\r\nContent-Length: 2\r\n\r\n{}",
+		)
+	}()
+
+	_, _, bearer, _, body, err := readRequest(server)
+	if err != nil {
+		t.Fatalf("readRequest: %v", err)
+	}
+	if bearer != "tr-key-123" {
+		t.Fatalf("bearer = %q, want x-api-key value", bearer)
+	}
+	if string(body) != "{}" {
+		t.Fatalf("body = %q, want {}", body)
+	}
+}
+
 func TestServeOneMessagesNonStreamingReturnsEnvelopeAndSettles(t *testing.T) {
 	bearer := "test-user-bearer"
 	var settleBody string
@@ -2126,6 +2177,107 @@ func TestServeOneMessagesStreamingRelaysNativeSSE(t *testing.T) {
 	}
 	if !strings.Contains(settleBody, `"route_type":"messages"`) || !strings.Contains(settleBody, `"streamed":true`) {
 		t.Fatalf("settle body missing streamed messages metadata: %s", settleBody)
+	}
+}
+
+func TestServeOneMessagesAcceptsLargeNativeVisionPayload(t *testing.T) {
+	bearer := "test-user-bearer"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_msg","workspace_id":"ws_1","api_key_hash":"key_1","model":"anthropic/claude-haiku-4.5","endpoint_id":"anthropic/claude-haiku-4.5@anthropic/prepaid","provider":"anthropic","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+		case "/internal/gateway/settle":
+			_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"gen_msg","cost_microdollars":7,"model":"anthropic/claude-haiku-4.5","provider":"anthropic","region":"us-central1"}}`)
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	largeImageData := strings.Repeat("A", 5*1024*1024)
+	requestPayload := map[string]any{
+		"model":      "anthropic/claude-haiku-4.5",
+		"max_tokens": 16,
+		"messages": []map[string]any{{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "text", "text": "describe the screenshot"},
+				{
+					"type": "image",
+					"source": map[string]any{
+						"type":       "base64",
+						"media_type": "image/png",
+						"data":       largeImageData,
+					},
+				},
+			},
+		}},
+	}
+	requestBody, err := json.Marshal(requestPayload)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if len(requestBody) <= 4*1024*1024 {
+		t.Fatalf("test payload len = %d, want above legacy 4MiB cap", len(requestBody))
+	}
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fakeStreamingLLM{}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := fmt.Fprintf(
+			client,
+			"POST /v1/messages HTTP/1.1\r\nx-api-key: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n",
+			bearer,
+			len(requestBody),
+		)
+		if err == nil {
+			_, err = client.Write(requestBody)
+		}
+		writeDone <- err
+	}()
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("write request: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out writing large vision request")
+	}
+	if streamer.body == nil || len(streamer.body.Messages) != 1 {
+		t.Fatalf("streamer body missing messages: %#v", streamer.body)
+	}
+	blocks, ok := streamer.body.Messages[0].Content.([]any)
+	if !ok || len(blocks) != 2 {
+		t.Fatalf("content = %#v, want two native blocks", streamer.body.Messages[0].Content)
+	}
+	imageBlock, ok := blocks[1].(map[string]any)
+	if !ok {
+		t.Fatalf("image block = %#v", blocks[1])
+	}
+	source, ok := imageBlock["source"].(map[string]any)
+	if !ok {
+		t.Fatalf("image source = %#v", imageBlock["source"])
+	}
+	if got := source["data"]; got != largeImageData {
+		t.Fatalf("large image data len = %d, want %d", len(fmt.Sprint(got)), len(largeImageData))
 	}
 }
 
@@ -2467,7 +2619,9 @@ func TestServeOneTrustedRouterProviderErrorDoesNotReturnEmptyStream(t *testing.T
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
 	}
-	if !strings.Contains(body, `"type":"provider_error"`) || !strings.Contains(body, "data: [DONE]\n\n") {
+	if !strings.Contains(body, `"type":"provider_error"`) ||
+		!strings.Contains(body, `"source":"provider"`) ||
+		!strings.Contains(body, "data: [DONE]\n\n") {
 		t.Fatalf("stream did not expose stable provider error: %s", body)
 	}
 	if strings.Contains(body, "private prompt") {
@@ -2542,7 +2696,10 @@ func TestServeOneResponsesProviderErrorClosesPartialStream(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
 	}
-	if !strings.Contains(body, "event: response.failed") || !strings.Contains(body, `"type":"provider_error"`) || !strings.Contains(body, "data: [DONE]\n\n") {
+	if !strings.Contains(body, "event: response.failed") ||
+		!strings.Contains(body, `"type":"provider_error"`) ||
+		!strings.Contains(body, `"source":"provider"`) ||
+		!strings.Contains(body, "data: [DONE]\n\n") {
 		t.Fatalf("responses stream did not close with stable failure: %s", body)
 	}
 	if strings.Contains(body, "private response input") {

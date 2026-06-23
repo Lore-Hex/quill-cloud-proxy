@@ -48,6 +48,7 @@
 //	QUILL_DEEPSEEK_SECRET        name of the secret holding the DeepSeek API key (llm_multi builds)
 //	QUILL_MISTRAL_SECRET         name of the secret holding the Mistral API key (llm_multi builds)
 //	QUILL_FIREWORKS_SECRET       name of the secret holding the Fireworks API key (llm_multi builds)
+//	QUILL_FRIENDLI_SECRET        name of the secret holding the Friendli API key (llm_multi builds)
 //	QUILL_TRUSTEDROUTER_INTERNAL_SECRET optional Secret Manager secret name
 package bootstrap
 
@@ -111,6 +112,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	lightningSecret := os.Getenv("QUILL_LIGHTNING_SECRET")
 	gmiSecret := os.Getenv("QUILL_GMI_SECRET")
 	deepinfraSecret := os.Getenv("QUILL_DEEPINFRA_SECRET")
+	friendliSecret := os.Getenv("QUILL_FRIENDLI_SECRET")
 	nebiusSecret := os.Getenv("QUILL_NEBIUS_SECRET")
 	minimaxSecret := os.Getenv("QUILL_MINIMAX_SECRET")
 	xiaomiSecret := os.Getenv("QUILL_XIAOMI_SECRET")
@@ -138,6 +140,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		lightningSecret,
 		gmiSecret,
 		deepinfraSecret,
+		friendliSecret,
 		nebiusSecret,
 		minimaxSecret,
 		xiaomiSecret,
@@ -322,6 +325,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: deepinfra key: %w", err)
 		}
 	}
+	var friendliKey []byte
+	if friendliSecret != "" {
+		friendliKey, err = fetchSecret(ctx, httpc, token, project, friendliSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: friendli key: %w", err)
+		}
+	}
 	var nebiusKey []byte
 	if nebiusSecret != "" {
 		nebiusKey, err = fetchSecret(ctx, httpc, token, project, nebiusSecret)
@@ -378,6 +388,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		LightningAPIKey:            strings.TrimSpace(string(lightningKey)),
 		GMIAPIKey:                  strings.TrimSpace(string(gmiKey)),
 		DeepInfraAPIKey:            strings.TrimSpace(string(deepinfraKey)),
+		FriendliAPIKey:             strings.TrimSpace(string(friendliKey)),
 		NebiusAPIKey:               strings.TrimSpace(string(nebiusKey)),
 		MiniMaxAPIKey:              strings.TrimSpace(string(minimaxKey)),
 		XiaomiAPIKey:               strings.TrimSpace(string(xiaomiKey)),

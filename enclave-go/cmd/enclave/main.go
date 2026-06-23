@@ -40,7 +40,10 @@ import (
 // EnclaveListenPort + newRawListener are provided by listener_aws.go
 // (vsock CID-LOCAL) or listener_gcp.go (plain TCP).
 
-const maxRequestBodyBytes = 4 * 1024 * 1024
+// Anthropic-compatible vision payloads expand significantly once images are
+// base64-encoded inside JSON. Keep the request cap aligned with common upstream
+// multimodal API limits while still bounding enclave memory per connection.
+const maxRequestBodyBytes = 32 * 1024 * 1024
 const maxAttestationNonceBytes = 64
 
 var errBodyTooLarge = errors.New("request body too large")
@@ -632,7 +635,7 @@ func serveResponsesNonStreaming(
 		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authorization, status, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		}
-		writeError(conn, status, message)
+		writeProviderError(conn, status, message)
 		return
 	}
 	if len(result.ToolCalls) == 0 {
@@ -649,7 +652,7 @@ func serveResponsesNonStreaming(
 			if trGateway != nil && trGateway.Enabled() {
 				_ = trGateway.Refund(ctx, authorization, 502, "provider_structured_output_error", time.Since(requestStarted).Seconds(), req.Metadata)
 			}
-			writeError(conn, 502, "provider structured output error")
+			writeProviderError(conn, 502, "provider structured output error")
 			return
 		} else {
 			result.Text = normalized
@@ -725,7 +728,7 @@ func serveChatNonStreaming(
 		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authorization, status, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		}
-		writeError(conn, status, message)
+		writeProviderError(conn, status, message)
 		return
 	}
 	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
@@ -952,7 +955,7 @@ func serveMessages(
 			if trEnabled {
 				_ = trGateway.Refund(ctx, authorization, status, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 			}
-			writeAnthropicError(conn, status, message)
+			writeAnthropicProviderError(conn, status, message)
 			return
 		}
 		inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(

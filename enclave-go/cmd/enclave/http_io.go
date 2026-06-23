@@ -152,6 +152,10 @@ func readRequest(r net.Conn) (method, path, bearer, idempotencyKey string, body 
 			if strings.HasPrefix(v, "Bearer ") {
 				bearer = v[len("Bearer "):]
 			}
+		case "x-api-key":
+			if bearer == "" {
+				bearer = strings.TrimSpace(v)
+			}
 		case "idempotency-key":
 			idempotencyKey = strings.TrimSpace(v)
 		case "content-length":
@@ -240,8 +244,19 @@ func serveAttestation(conn io.Writer, leafDER, deviceBlob, nonce []byte) {
 }
 
 func writeError(w io.Writer, status int, message string) {
+	writeErrorWithSource(w, status, message, "router")
+}
+
+func writeProviderError(w io.Writer, status int, message string) {
+	writeErrorWithSource(w, status, message, "provider")
+}
+
+func writeErrorWithSource(w io.Writer, status int, message, source string) {
+	if source == "" {
+		source = "router"
+	}
 	body, _ := json.Marshal(map[string]any{
-		"error": map[string]any{"status": status, "message": message},
+		"error": map[string]any{"status": status, "message": message, "source": source},
 	})
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
 		status, statusText(status), len(body))
@@ -271,6 +286,7 @@ func writeOpenAIError(w io.Writer, status int, message, errType, code, param str
 			"type":    errType,
 			"param":   orNilString(param),
 			"code":    code,
+			"source":  "router",
 		},
 	})
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
@@ -400,11 +416,23 @@ func upstreamErrorResponse(err error) (int, string) {
 // writeAnthropicError writes the Anthropic-shaped error envelope the
 // Messages API uses: {"type":"error","error":{"type":...,"message":...}}.
 func writeAnthropicError(w io.Writer, status int, message string) {
+	writeAnthropicErrorWithSource(w, status, message, "router")
+}
+
+func writeAnthropicProviderError(w io.Writer, status int, message string) {
+	writeAnthropicErrorWithSource(w, status, message, "provider")
+}
+
+func writeAnthropicErrorWithSource(w io.Writer, status int, message, source string) {
+	if source == "" {
+		source = "router"
+	}
 	body, _ := json.Marshal(map[string]any{
 		"type": "error",
 		"error": map[string]any{
 			"type":    anthropicErrorType(status),
 			"message": message,
+			"source":  source,
 		},
 	})
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
@@ -419,6 +447,7 @@ func writeAnthropicStreamError(w io.Writer, message string) error {
 		"error": map[string]any{
 			"type":    "api_error",
 			"message": message,
+			"source":  "provider",
 		},
 	})
 	if err != nil {

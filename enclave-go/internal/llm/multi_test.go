@@ -26,6 +26,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"deepseek", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash", "deepseek-v4-flash"},
 		{"mistral", "mistralai/mistral-small-2603", "mistralai/mistral-small-2603", "mistral-small-2603"},
 		{"fireworks", "openai/gpt-oss-120b", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/gpt-oss-120b"},
+		{"friendli", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2"},
 		{"nebius", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B"},
 		{"minimax", "minimax/minimax-m2.7", "MiniMax-M2.7", "MiniMax-M2.7"},
 	}
@@ -74,6 +75,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				deepseek:  client,
 				mistral:   client,
 				fireworks: client,
+				friendli:  client,
 				nebius:    client,
 				minimax:   client,
 			}

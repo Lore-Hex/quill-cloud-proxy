@@ -395,6 +395,7 @@ func writeStreamingProviderError(w io.Writer, routeType, requestID, model string
 	errBody := map[string]any{
 		"message": "provider error",
 		"type":    "provider_error",
+		"source":  "provider",
 	}
 	if routeType == "responses" {
 		payload := map[string]any{

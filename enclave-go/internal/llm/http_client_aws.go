@@ -73,6 +73,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "api.deepinfra.com", CID: 3, Port: 8022},
 	{Host: "api.tokenfactory.nebius.com", CID: 3, Port: 8023},
 	{Host: "api.minimax.io", CID: 3, Port: 8024},
+	{Host: "api.friendli.ai", CID: 3, Port: 8025},
 
 	// GCP cross-cloud APIs. The AWS-side enclave authenticates with
 	// the cross-cloud SA key (received in BootstrapData) and reads

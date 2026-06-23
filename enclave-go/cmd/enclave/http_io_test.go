@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -38,4 +40,67 @@ func TestUpstreamErrorResponse(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWriteErrorSources(t *testing.T) {
+	cases := []struct {
+		name   string
+		write  func(*bytes.Buffer)
+		source string
+	}{
+		{
+			name: "router default",
+			write: func(buf *bytes.Buffer) {
+				writeError(buf, 400, "bad request")
+			},
+			source: "router",
+		},
+		{
+			name: "provider explicit",
+			write: func(buf *bytes.Buffer) {
+				writeProviderError(buf, 502, "provider error")
+			},
+			source: "provider",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			tc.write(&buf)
+			body := httpBody(t, buf.String())
+			var payload map[string]map[string]any
+			if err := json.Unmarshal([]byte(body), &payload); err != nil {
+				t.Fatalf("json: %v\nbody=%s", err, body)
+			}
+			if got := payload["error"]["source"]; got != tc.source {
+				t.Fatalf("source = %v, want %q; body=%s", got, tc.source, body)
+			}
+		})
+	}
+}
+
+func TestAnthropicProviderErrorSource(t *testing.T) {
+	var buf bytes.Buffer
+	writeAnthropicProviderError(&buf, 429, "rate limited")
+	body := httpBody(t, buf.String())
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("json: %v\nbody=%s", err, body)
+	}
+	errorPayload, ok := payload["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing error payload: %#v", payload)
+	}
+	if got := errorPayload["source"]; got != "provider" {
+		t.Fatalf("source = %v, want provider; body=%s", got, body)
+	}
+}
+
+func httpBody(t *testing.T, raw string) string {
+	t.Helper()
+	parts := strings.SplitN(raw, "\r\n\r\n", 2)
+	if len(parts) != 2 {
+		t.Fatalf("missing HTTP body separator: %q", raw)
+	}
+	return parts[1]
 }

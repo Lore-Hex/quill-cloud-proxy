@@ -93,7 +93,7 @@ func serveEmbeddings(
 			_ = trGateway.Refund(ctx, authorization, refundStatus, "provider_error", time.Since(requestStarted).Seconds(), nil)
 		}
 		fmt.Fprintf(os.Stderr, "enclave.embeddings_failed model=%q err=%v\n", req.Model, err)
-		writeError(conn, 502, "provider error")
+		writeProviderError(conn, 502, "provider error")
 		return
 	}
 	// Always echo the public model id, never the upstream-native one.
