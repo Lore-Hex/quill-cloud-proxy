@@ -73,12 +73,15 @@ MIN_HEALTHY = int(os.environ.get("QUILL_MIN_HEALTHY", "2"))
 MIN_HEALTHY_REGIONAL = int(os.environ.get("QUILL_MIN_HEALTHY_REGIONAL", "1"))
 VERIFIER = Path(__file__).parent / "verify-attestation.py"
 # Artifact Registry repo holding the enclave image. The reconciler also accepts
-# the newest gcp-release-* digest from here (the release a deploy is rolling TO,
-# before the trust page publishes it) so DNS never blanks mid-roll.
+# a short window of recent gcp-release-* digests from here. That covers both
+# normal rolling deploy overlap and the recovery case where trust artifacts were
+# published for a release whose rollout later failed, leaving the fleet on the
+# prior still-good digest.
 AR_IMAGE = os.environ.get(
     "QUILL_AR_IMAGE",
     "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi",
 )
+ACCEPT_RECENT_RELEASE_DIGESTS = int(os.environ.get("QUILL_ACCEPT_RECENT_RELEASE_DIGESTS", "4"))
 # Per-region retry hostnames. Each enclave only whitelists its OWN region's
 # regional SNI (a us VM rejects api-us-east4.* with a TLS alert), so these MUST
 # resolve to ONLY that region's VMs — not the canonical all-region set. When
@@ -134,27 +137,27 @@ def trust_digest() -> str:
     return d
 
 
-def newest_release_digest() -> str | None:
-    """Digest of the newest gcp-release-* image in Artifact Registry — the
-    release a deploy is rolling TO, before the trust page has published it.
+def recent_release_digests() -> list[str]:
+    """Recent gcp-release-* image digests in Artifact Registry.
 
     Accepted IN ADDITION to the live trust digest. A rolling deploy legitimately
-    spans two digests at once (old draining, new booting); gating DNS on only
-    the published trust digest rejects the whole incoming fleet mid-roll and
-    blanks DNS (the 2026-06-18 near-outage). The strict single-digest guarantee
-    still holds CLIENT-side against the published trust page; this only governs
-    DNS membership. Best-effort: None (→ trust digest only) if AR can't be read."""
+    spans two digests at once (old draining, new booting); a failed deploy can
+    also publish trust artifacts for an image that never became the fleet's
+    serving digest. Gating DNS on only the published trust digest then rejects
+    the still-good fleet and blocks the next rollout. Keeping this window short
+    preserves a bounded release set while letting operators recover. Best-effort:
+    [] (→ trust digest only) if AR can't be read."""
     try:
         out = subprocess.run(
             ["gcloud", "artifacts", "docker", "images", "list", AR_IMAGE,
              "--include-tags", "--filter", "tags~gcp-release",
-             "--sort-by=~UPDATE_TIME", "--limit", "1",
+             "--sort-by=~UPDATE_TIME", "--limit", str(ACCEPT_RECENT_RELEASE_DIGESTS),
              "--format=value(version)", "--project", PROJECT],
             capture_output=True, text=True, timeout=30,
         ).stdout.strip()
-        return out if out.startswith("sha256:") else None
+        return [line for line in out.splitlines() if line.startswith("sha256:")]
     except Exception:
-        return None
+        return []
 
 
 def attest(ip: str, digest: str) -> bool:
@@ -252,12 +255,12 @@ def main() -> int:
     args = ap.parse_args()
 
     # DNS membership is gated on attestation against a SET of acceptable
-    # digests: the published trust digest PLUS the newest release in Artifact
-    # Registry (the digest a deploy is rolling to before the trust page
-    # publishes). Keeps the fleet servable across the entire rollout window.
+    # digests: the published trust digest PLUS recent release images in Artifact
+    # Registry. Keeps the fleet servable across the entire rollout window and
+    # lets the operator recover when a prior rollout published trust artifacts
+    # but failed before the MIG reached that digest.
     trusted = trust_digest()
-    incoming = newest_release_digest()
-    allowed = [trusted] + ([incoming] if incoming and incoming != trusted else [])
+    allowed = list(dict.fromkeys([trusted, *recent_release_digests()]))
     digest = ",".join(allowed)
     fleet = discover_instances()
     log(f"reconcile: {len(fleet)} running enclave instances; accepting digest(s) "
