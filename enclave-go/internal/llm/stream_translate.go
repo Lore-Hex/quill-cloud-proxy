@@ -41,6 +41,7 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 	toolCalls := map[int]*openAIToolCallAccumulator{}
 	var toolOrder []int
 	var usage *openAIStreamUsage
+	thinkingStarted := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -58,13 +59,10 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 					// Several Chinese OpenAI-compatible providers (Z.AI/Zhipu,
 					// Moonshot in some configs) emit chain-of-thought tokens
 					// in `reasoning_content` and only fill `content` for the
-					// final answer. If we ignore reasoning_content, requests
-					// that hit the max_tokens limit BEFORE the model finishes
-					// thinking come back with empty `content` — the user sees
-					// nothing. Forward reasoning_content as text so the
-					// stream is never silently empty. (Tradeoff: clients see
-					// the chain-of-thought inline; that's strictly more
-					// information than the empty-string alternative.)
+					// final answer. Keep it on the enclave's internal
+					// thinking channel so downstream adapters can stream it as
+					// reasoning_content without mixing it into the visible
+					// assistant answer.
 					ReasoningContent string `json:"reasoning_content"`
 					ToolCalls        []struct {
 						Index    int    `json:"index"`
@@ -100,7 +98,13 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 				return err
 			}
 		} else if choice.Delta.ReasoningContent != "" {
-			if err := writeAnthropicTextDelta(w, choice.Delta.ReasoningContent); err != nil {
+			if !thinkingStarted {
+				thinkingStarted = true
+				if err := writeAnthropicThinkingStart(w, 0); err != nil {
+					return err
+				}
+			}
+			if err := writeAnthropicThinkingDelta(w, 0, choice.Delta.ReasoningContent); err != nil {
 				return err
 			}
 		}
@@ -199,6 +203,34 @@ func writeAnthropicTextDelta(w io.Writer, text string) error {
 		"type":  "content_block_delta",
 		"index": 0,
 		"delta": map[string]any{"type": "text_delta", "text": text},
+	}
+	body, _ := json.Marshal(payload)
+	_, err := fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", body)
+	return err
+}
+
+func writeAnthropicThinkingStart(w io.Writer, index int) error {
+	payload := map[string]any{
+		"type":  "content_block_start",
+		"index": index,
+		"content_block": map[string]any{
+			"type":     "thinking",
+			"thinking": "",
+		},
+	}
+	body, _ := json.Marshal(payload)
+	_, err := fmt.Fprintf(w, "event: content_block_start\ndata: %s\n\n", body)
+	return err
+}
+
+func writeAnthropicThinkingDelta(w io.Writer, index int, text string) error {
+	payload := map[string]any{
+		"type":  "content_block_delta",
+		"index": index,
+		"delta": map[string]any{
+			"type":     "thinking_delta",
+			"thinking": text,
+		},
 	}
 	body, _ := json.Marshal(payload)
 	_, err := fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", body)

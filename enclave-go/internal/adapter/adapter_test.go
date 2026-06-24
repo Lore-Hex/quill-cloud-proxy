@@ -680,6 +680,47 @@ func TestTransformResponsesStreamEmitsFunctionCallEvents(t *testing.T) {
 	}
 }
 
+func TestTransformResponsesStreamEmitsReasoningTextEvents(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"raw response thinking"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"visible response"}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n"))
+	var out bytes.Buffer
+	result, err := TransformResponsesStream(stream, &out, "resp_test", "z-ai/glm-5.2", 10, nil, nil)
+	if err != nil {
+		t.Fatalf("TransformResponsesStream: %v", err)
+	}
+	body := out.String()
+	for _, want := range []string{
+		"response.reasoning_text.delta",
+		"response.reasoning_text.done",
+		`"type":"reasoning"`,
+		`"delta":"raw response thinking"`,
+		"response.output_text.delta",
+		`"delta":"visible response"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream missing %s: %s", want, body)
+		}
+	}
+	if result.Text != "visible response" {
+		t.Fatalf("text = %q, want visible response", result.Text)
+	}
+	if len(result.Thinking) != 1 || result.Thinking[0].Text != "raw response thinking" {
+		t.Fatalf("thinking = %#v, want raw response thinking", result.Thinking)
+	}
+}
+
 func TestResponsesToChatMapsStructuredTextFormat(t *testing.T) {
 	req := &types.OpenAIResponsesRequest{
 		Model: "moonshotai/kimi-k2.6",
@@ -993,6 +1034,44 @@ data: {"type":"message_stop"}
 	}
 	if strings.Contains(out.String(), `"usage"`) {
 		t.Fatalf("usage chunk emitted with no upstream usage: %s", out.String())
+	}
+}
+
+func TestTransformStreamCaptureStreamsThinkingAsReasoningContent(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"raw thought"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-1"}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"visible answer"}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n"))
+	var out bytes.Buffer
+	result, err := TransformStreamCapture(stream, &out, "id1", "model1")
+	if err != nil {
+		t.Fatalf("TransformStreamCapture: %v", err)
+	}
+	if result.Text != "visible answer" {
+		t.Fatalf("text = %q, want visible answer", result.Text)
+	}
+	if len(result.Thinking) != 1 || result.Thinking[0].Text != "raw thought" || result.Thinking[0].Signature != "sig-1" {
+		t.Fatalf("thinking = %#v, want raw thought with signature", result.Thinking)
+	}
+	body := out.String()
+	if !strings.Contains(body, `"reasoning_content":"raw thought"`) || !strings.Contains(body, `"thinking":"raw thought"`) {
+		t.Fatalf("stream did not expose thinking delta: %s", body)
+	}
+	if !strings.Contains(body, `"content":"visible answer"`) {
+		t.Fatalf("stream missing visible content: %s", body)
 	}
 }
 

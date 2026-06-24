@@ -126,6 +126,7 @@ type fusionCallResult struct {
 	Result           adapter.StreamResult
 	Model            string
 	Endpoint         string
+	RawText          string
 	InputTokens      int
 	OutputTokens     int
 	UsageEstimated   bool
@@ -454,7 +455,19 @@ func serveFusionNonStreaming(
 			responseModel = selectedRouteModel(selected, finalModels[0])
 		}
 		var body bytes.Buffer
-		if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, selected.Result.Text, selected.Result.ToolCalls, totalIn, totalOut, selected.Result.Usage, time.Now().Unix(), selected.Result.FinishReason); err != nil {
+		if err := writeFusionChatCompletionResponse(
+			&body,
+			requestID,
+			responseModel,
+			selected.Result.Text,
+			selected.Result.ToolCalls,
+			totalIn,
+			totalOut,
+			selected.Result.Usage,
+			time.Now().Unix(),
+			selected.Result.FinishReason,
+			fusionResponseDetails(config, panel, nil, nil, selected.Model),
+		); err != nil {
 			writeError(conn, 500, "fusion response encoding error")
 			return
 		}
@@ -486,7 +499,19 @@ func serveFusionNonStreaming(
 		responseModel = finalModels[0]
 	}
 	var body bytes.Buffer
-	if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, final.Result.Text, final.Result.ToolCalls, totalIn, totalOut, final.Result.Usage, time.Now().Unix(), final.Result.FinishReason); err != nil {
+	if err := writeFusionChatCompletionResponse(
+		&body,
+		requestID,
+		responseModel,
+		final.Result.Text,
+		final.Result.ToolCalls,
+		totalIn,
+		totalOut,
+		final.Result.Usage,
+		time.Now().Unix(),
+		final.Result.FinishReason,
+		fusionResponseDetails(config, panel, judgeAttempts, finalAttempts, responseModel),
+	); err != nil {
 		writeError(conn, 500, "fusion response encoding error")
 		return
 	}
@@ -512,14 +537,44 @@ func serveFusionStreaming(
 	requestLogID string,
 ) {
 	requestID := newRequestID()
-	panel, judge, err := runFusionPanelAndJudge(ctx, br, req, config, judgeModels, trGateway, secretCache, bearer, requestID, requestLogID)
-	if err != nil {
-		writeFusionError(ctx, conn, trGateway, err)
+	created := time.Now().Unix()
+	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
 		return
 	}
-	err = serveFusionFinalStreaming(ctx, conn, br, req, finalModels, judge.Result.Text, panel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput)
+	chunkW := newChunkedWriter(conn)
+	defer chunkW.Close()
+	statsW := newStreamStatsWriter(chunkW)
+	_ = writeFusionStreamEvent(statsW, requestID, req.Model, created, map[string]any{
+		"event":              "synth.started",
+		"preset":             config.Preset,
+		"selection_strategy": config.SelectionStrategy,
+	})
+	observer := func(stage string, index int, model string) adapter.StreamObserver {
+		return func(delta adapter.StreamDelta) {
+			event := map[string]any{
+				"event":      stage + "." + delta.Type,
+				"stage":      stage,
+				"index":      index,
+				"model":      model,
+				"delta_type": delta.Type,
+			}
+			if delta.Text != "" {
+				event["text"] = delta.Text
+			}
+			if delta.Signature != "" {
+				event["signature"] = delta.Signature
+			}
+			_ = writeFusionStreamEvent(statsW, requestID, req.Model, created, event)
+		}
+	}
+	panel, judge, err := runFusionPanelAndJudgeObserved(ctx, br, req, config, judgeModels, trGateway, secretCache, bearer, requestID, requestLogID, statsW, created, observer)
 	if err != nil {
-		writeFusionError(ctx, conn, trGateway, err)
+		_ = writeFusionStreamError(statsW, requestID, req.Model, created, err)
+		return
+	}
+	err = serveFusionFinalStreamingObserved(ctx, statsW, br, req, finalModels, judge.Result.Text, panel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, created, observer)
+	if err != nil {
+		_ = writeFusionStreamError(statsW, requestID, req.Model, created, err)
 		return
 	}
 	_, _, _ = panel, judge, requestID
@@ -537,7 +592,25 @@ func runFusionPanelAndJudge(
 	requestID string,
 	requestLogID string,
 ) ([]fusionCallResult, fusionCallResult, error) {
-	panel, err := runFusionPanel(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID)
+	return runFusionPanelAndJudgeObserved(ctx, br, req, config, judgeModels, trGateway, secretCache, bearer, requestID, requestLogID, nil, 0, nil)
+}
+
+func runFusionPanelAndJudgeObserved(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	config fusionConfig,
+	judgeModels []string,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+	streamW io.Writer,
+	streamCreated int64,
+	observerFactory func(stage string, index int, model string) adapter.StreamObserver,
+) ([]fusionCallResult, fusionCallResult, error) {
+	panel, err := runFusionPanelObserved(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID, streamW, streamCreated, observerFactory)
 	if err != nil {
 		return nil, fusionCallResult{}, err
 	}
@@ -545,7 +618,7 @@ func runFusionPanelAndJudge(
 	if err != nil {
 		return nil, fusionCallResult{}, err
 	}
-	judge, _, err := runFusionJudge(ctx, br, req, config, judgeModels, synthesisPanel, trGateway, secretCache, bearer, requestID, requestLogID)
+	judge, _, err := runFusionJudgeObserved(ctx, br, req, config, judgeModels, synthesisPanel, trGateway, secretCache, bearer, requestID, requestLogID, streamW, streamCreated, observerFactory)
 	if err != nil {
 		return nil, fusionCallResult{}, err
 	}
@@ -563,12 +636,41 @@ func runFusionPanel(
 	requestID string,
 	requestLogID string,
 ) ([]fusionCallResult, error) {
+	return runFusionPanelObserved(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID, nil, 0, nil)
+}
+
+func runFusionPanelObserved(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	config fusionConfig,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+	streamW io.Writer,
+	streamCreated int64,
+	observerFactory func(stage string, index int, model string) adapter.StreamObserver,
+) ([]fusionCallResult, error) {
 	panel := make([]fusionCallResult, 0, len(config.AnalysisModels))
 	var successCount int
 	var lastErr error
 	for i, model := range config.AnalysisModels {
+		if streamW != nil {
+			_ = writeFusionStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
+				"event": "panel.started",
+				"stage": "panel",
+				"index": i,
+				"model": model,
+			})
+		}
 		panelReq := fusionPanelRequest(req, model, i, config.MaxCompletionTokens)
-		result, err := runFusionCall(ctx, br, panelReq, trGateway, secretCache, bearer, "fusion.panel", fmt.Sprintf("%s:panel:%d", requestID, i), requestLogID, nil, false)
+		var observer adapter.StreamObserver
+		if observerFactory != nil {
+			observer = observerFactory("panel", i, model)
+		}
+		result, err := runFusionCallObserved(ctx, br, panelReq, trGateway, secretCache, bearer, "fusion.panel", fmt.Sprintf("%s:panel:%d", requestID, i), requestLogID, nil, false, observer, streamW != nil)
 		if err != nil {
 			lastErr = err
 			fmt.Fprintf(os.Stderr,
@@ -582,6 +684,15 @@ func runFusionPanel(
 				},
 				Model: model,
 			})
+			if streamW != nil {
+				_ = writeFusionStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
+					"event": "panel.failed",
+					"stage": "panel",
+					"index": i,
+					"model": model,
+					"error": err.Error(),
+				})
+			}
 			continue
 		}
 		if strings.TrimSpace(result.Result.Text) == "" && len(result.Result.ToolCalls) == 0 {
@@ -592,6 +703,15 @@ func runFusionPanel(
 		}
 		successCount++
 		panel = append(panel, result)
+		if streamW != nil {
+			_ = writeFusionStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
+				"event":  "panel.done",
+				"stage":  "panel",
+				"index":  i,
+				"model":  model,
+				"detail": fusionCallDetails(result),
+			})
+		}
 	}
 	if successCount == 0 {
 		if lastErr != nil {
@@ -615,20 +735,69 @@ func runFusionJudge(
 	requestID string,
 	requestLogID string,
 ) (fusionCallResult, []fusionCallResult, error) {
+	return runFusionJudgeObserved(ctx, br, req, config, judgeModels, panel, trGateway, secretCache, bearer, requestID, requestLogID, nil, 0, nil)
+}
+
+func runFusionJudgeObserved(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	config fusionConfig,
+	judgeModels []string,
+	panel []fusionCallResult,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+	streamW io.Writer,
+	streamCreated int64,
+	observerFactory func(stage string, index int, model string) adapter.StreamObserver,
+) (fusionCallResult, []fusionCallResult, error) {
 	attempts := make([]fusionCallResult, 0, len(judgeModels))
 	var lastErr error
 	for i, judgeModel := range judgeModels {
+		if streamW != nil {
+			_ = writeFusionStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
+				"event": "judge.started",
+				"stage": "judge",
+				"index": i,
+				"model": judgeModel,
+			})
+		}
 		judgeReq := fusionJudgeRequest(req, judgeModel, panel, config.MaxCompletionTokens)
-		judge, err := runFusionCall(ctx, br, judgeReq, trGateway, secretCache, bearer, "fusion.judge", fmt.Sprintf("%s:judge:%d", requestID, i), requestLogID, nil, false)
+		var observer adapter.StreamObserver
+		if observerFactory != nil {
+			observer = observerFactory("judge", i, judgeModel)
+		}
+		judge, err := runFusionCallObserved(ctx, br, judgeReq, trGateway, secretCache, bearer, "fusion.judge", fmt.Sprintf("%s:judge:%d", requestID, i), requestLogID, nil, false, observer, streamW != nil)
 		if err != nil {
 			lastErr = err
 			fmt.Fprintf(os.Stderr,
 				"enclave.fusion_judge_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
 				requestLogID, requestID, judgeModel, i+1, err.Error(),
 			)
+			if streamW != nil {
+				_ = writeFusionStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
+					"event": "judge.failed",
+					"stage": "judge",
+					"index": i,
+					"model": judgeModel,
+					"error": err.Error(),
+				})
+			}
 			continue
 		}
 		attempts = append(attempts, judge)
+		if streamW != nil {
+			_ = writeFusionStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
+				"event":  "judge.done",
+				"stage":  "judge",
+				"index":  i,
+				"model":  judgeModel,
+				"detail": fusionCallDetails(judge),
+			})
+		}
 		if !fusionJudgeResultUsable(judge) {
 			fmt.Fprintf(os.Stderr,
 				"enclave.fusion_judge_unusable request_log_id=%q request_id=%q model=%q attempt=%d finish_reason=%q\n",
@@ -718,7 +887,25 @@ func runFusionCall(
 	originalInput any,
 	broadcastContent bool,
 ) (fusionCallResult, error) {
-	return runFusionCallValidated(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, nil, true)
+	return runFusionCallValidatedObserved(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, nil, true, nil, false)
+}
+
+func runFusionCallObserved(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	routeType string,
+	idempotencyKey string,
+	requestLogID string,
+	originalInput any,
+	broadcastContent bool,
+	observer adapter.StreamObserver,
+	streamed bool,
+) (fusionCallResult, error) {
+	return runFusionCallValidatedObserved(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, nil, true, observer, streamed)
 }
 
 func runFusionCallValidated(
@@ -735,6 +922,26 @@ func runFusionCallValidated(
 	broadcastContent bool,
 	validateBeforeSettle func(adapter.StreamResult) error,
 	useLongLastCandidateBudget bool,
+) (fusionCallResult, error) {
+	return runFusionCallValidatedObserved(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, nil, false)
+}
+
+func runFusionCallValidatedObserved(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	routeType string,
+	idempotencyKey string,
+	requestLogID string,
+	originalInput any,
+	broadcastContent bool,
+	validateBeforeSettle func(adapter.StreamResult) error,
+	useLongLastCandidateBudget bool,
+	observer adapter.StreamObserver,
+	streamed bool,
 ) (fusionCallResult, error) {
 	requestStarted := time.Now()
 	authz, options, err := authorizeFusionCall(ctx, req, trGateway, secretCache, bearer, routeType, idempotencyKey)
@@ -754,13 +961,14 @@ func runFusionCallValidated(
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
 	go invokeProviderStream(ctx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget)
-	result, err := adapter.CollectAnthropicText(pr)
+	result, err := adapter.CollectAnthropicTextWithObserver(pr, observer)
 	if err != nil {
 		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authz, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		return fusionCallResult{}, err
 	}
+	rawText := result.Text
 	if strings.HasPrefix(routeType, "fusion.") {
 		result.Text = fusionVisibleAnswer(result.Text)
 		if routeType == "fusion.final" && strings.TrimSpace(result.Text) == "" && len(result.ToolCalls) == 0 {
@@ -792,7 +1000,7 @@ func runFusionCallValidated(
 		ElapsedSeconds:   maxDurationSeconds(time.Since(requestStarted), 0.001),
 		UsageEstimated:   usageEstimated,
 		FinishReason:     result.FinishReason,
-		Streamed:         false,
+		Streamed:         streamed,
 		RouteType:        routeType,
 		SelectedModel:    selectedModel,
 		SelectedEndpoint: selectedEndpoint,
@@ -822,6 +1030,7 @@ func runFusionCallValidated(
 		Result:           result,
 		Model:            selectedModel,
 		Endpoint:         selectedEndpoint,
+		RawText:          rawText,
 		InputTokens:      inputTokens,
 		OutputTokens:     outputTokens,
 		UsageEstimated:   usageEstimated,
@@ -882,6 +1091,118 @@ func serveFusionFinalStreaming(
 			)
 			continue
 		}
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final models produced no streaming answer", Context: "fusion.final"}
+}
+
+func serveFusionFinalStreamingObserved(
+	ctx context.Context,
+	streamW io.Writer,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	finalModels []string,
+	judgeJSON string,
+	panel []fusionCallResult,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+	originalInput any,
+	created int64,
+	observerFactory func(stage string, index int, model string) adapter.StreamObserver,
+) error {
+	var lastErr error
+	for i, finalModel := range finalModels {
+		_ = writeFusionStreamEvent(streamW, requestID, req.Model, created, map[string]any{
+			"event": "final.started",
+			"stage": "final",
+			"index": i,
+			"model": finalModel,
+		})
+		finalReq := fusionFinalRequest(req, finalModel, judgeJSON, panel)
+		finalReq.Stream = true
+		idempotencyKey := requestID + ":final"
+		if i > 0 {
+			idempotencyKey = fmt.Sprintf("%s:final:%d", requestID, i)
+		}
+		var contentCommitted bool
+		baseObserver := adapter.StreamObserver(nil)
+		if observerFactory != nil {
+			baseObserver = observerFactory("final", i, finalModel)
+		}
+		observer := func(delta adapter.StreamDelta) {
+			if baseObserver != nil {
+				baseObserver(delta)
+			}
+			switch delta.Type {
+			case "text_delta":
+				if delta.Text == "" {
+					return
+				}
+				contentCommitted = true
+				_ = writeFusionStreamDelta(streamW, requestID, finalModel, created, map[string]any{"content": delta.Text}, "")
+			case "thinking_delta":
+				if delta.Text == "" {
+					return
+				}
+				_ = writeFusionStreamDelta(streamW, requestID, finalModel, created, map[string]any{
+					"reasoning_content": delta.Text,
+					"thinking":          delta.Text,
+				}, "")
+			}
+		}
+		final, err := runFusionCallValidatedObserved(
+			ctx,
+			br,
+			finalReq,
+			trGateway,
+			secretCache,
+			bearer,
+			"fusion.final",
+			idempotencyKey,
+			requestLogID,
+			originalInput,
+			true,
+			fusionValidateFinalResult,
+			i == len(finalModels)-1,
+			observer,
+			true,
+		)
+		if err != nil {
+			lastErr = err
+			_ = writeFusionStreamEvent(streamW, requestID, req.Model, created, map[string]any{
+				"event": "final.failed",
+				"stage": "final",
+				"index": i,
+				"model": finalModel,
+				"error": err.Error(),
+			})
+			if contentCommitted {
+				return err
+			}
+			continue
+		}
+		_ = writeFusionStreamEvent(streamW, requestID, req.Model, created, map[string]any{
+			"event":  "final.done",
+			"stage":  "final",
+			"index":  i,
+			"model":  finalModel,
+			"detail": fusionCallDetails(final),
+		})
+		if err := writeFusionStreamDelta(streamW, requestID, final.Model, created, map[string]any{}, final.Result.FinishReason); err != nil {
+			return err
+		}
+		if chatIncludeUsage(req) {
+			if err := writeFusionStreamUsage(streamW, requestID, final.Model, created, final); err != nil {
+				return err
+			}
+		}
+		_, err = streamW.Write([]byte("data: [DONE]\n\n"))
+		return err
 	}
 	if lastErr != nil {
 		return lastErr
@@ -990,6 +1311,156 @@ func serveFusionFinalStreamingAttempt(
 		})
 	}
 	return true, nil
+}
+
+func writeFusionChatCompletionResponse(
+	w io.Writer,
+	requestID string,
+	model string,
+	text string,
+	toolCalls []types.ToolCall,
+	inputTokens int,
+	outputTokens int,
+	usage *adapter.StreamUsage,
+	created int64,
+	finishReason string,
+	details map[string]any,
+) error {
+	var body bytes.Buffer
+	if err := adapter.WriteChatCompletionResponse(
+		&body,
+		requestID,
+		model,
+		text,
+		toolCalls,
+		inputTokens,
+		outputTokens,
+		usage,
+		created,
+		finishReason,
+	); err != nil {
+		return err
+	}
+	if len(details) == 0 {
+		_, err := w.Write(body.Bytes())
+		return err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body.Bytes(), &payload); err != nil {
+		return err
+	}
+	payload["trustedrouter"] = map[string]any{"synth": details}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(encoded)
+	return err
+}
+
+func writeFusionStreamEvent(w io.Writer, requestID string, model string, created int64, event map[string]any) error {
+	chunk := map[string]any{
+		"id":            requestID,
+		"object":        "chat.completion.chunk",
+		"created":       created,
+		"model":         model,
+		"choices":       []map[string]any{},
+		"trustedrouter": map[string]any{"synth": event},
+	}
+	body, err := json.Marshal(chunk)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		return err
+	}
+	if _, err := w.Write(body); err != nil {
+		return err
+	}
+	_, err = w.Write([]byte("\n\n"))
+	return err
+}
+
+func writeFusionStreamDelta(w io.Writer, requestID string, model string, created int64, delta map[string]any, finishReason string) error {
+	var finish any
+	if finishReason != "" {
+		finish = finishReason
+	}
+	chunk := map[string]any{
+		"id":      requestID,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"delta":         delta,
+			"finish_reason": finish,
+		}},
+	}
+	body, err := json.Marshal(chunk)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		return err
+	}
+	if _, err := w.Write(body); err != nil {
+		return err
+	}
+	_, err = w.Write([]byte("\n\n"))
+	return err
+}
+
+func writeFusionStreamUsage(w io.Writer, requestID string, model string, created int64, result fusionCallResult) error {
+	usage := map[string]any{
+		"prompt_tokens":     result.InputTokens,
+		"completion_tokens": result.OutputTokens,
+		"total_tokens":      result.InputTokens + result.OutputTokens,
+	}
+	if result.Result.Usage != nil && result.Result.Usage.ReasoningTokens > 0 {
+		usage["completion_tokens_details"] = map[string]any{
+			"reasoning_tokens": result.Result.Usage.ReasoningTokens,
+		}
+	}
+	if result.Result.Usage != nil && result.Result.Usage.CacheReadInputTokens > 0 {
+		usage["prompt_tokens_details"] = map[string]any{
+			"cached_tokens": result.Result.Usage.CacheReadInputTokens,
+		}
+	}
+	chunk := map[string]any{
+		"id":      requestID,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []map[string]any{},
+		"usage":   usage,
+	}
+	body, err := json.Marshal(chunk)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		return err
+	}
+	if _, err := w.Write(body); err != nil {
+		return err
+	}
+	_, err = w.Write([]byte("\n\n"))
+	return err
+}
+
+func writeFusionStreamError(w io.Writer, requestID string, model string, created int64, err error) error {
+	if err == nil {
+		return nil
+	}
+	if writeErr := writeFusionStreamEvent(w, requestID, model, created, map[string]any{
+		"event": "synth.error",
+		"error": err.Error(),
+	}); writeErr != nil {
+		return writeErr
+	}
+	_, writeErr := w.Write([]byte("data: [DONE]\n\n"))
+	return writeErr
 }
 
 func authorizeFusionCall(
@@ -1117,6 +1588,82 @@ func fusionPanelEvidence(panel []fusionCallResult) string {
 		fmt.Fprintf(&b, "\n[%d] model=%s\n%s\n", i+1, model, text)
 	}
 	return b.String()
+}
+
+func fusionResponseDetails(
+	config fusionConfig,
+	panel []fusionCallResult,
+	judgeAttempts []fusionCallResult,
+	finalAttempts []fusionCallResult,
+	selectedModel string,
+) map[string]any {
+	details := map[string]any{
+		"preset":             config.Preset,
+		"selection_strategy": config.SelectionStrategy,
+		"selected_model":     selectedModel,
+		"panel":              fusionCallDetailsList(panel),
+		"note":               "Panel entries include raw provider thinking/output when the provider returns it.",
+	}
+	if len(judgeAttempts) > 0 {
+		details["judge_attempts"] = fusionCallDetailsList(judgeAttempts)
+		details["judge"] = fusionCallDetails(judgeAttempts[len(judgeAttempts)-1])
+	}
+	if len(finalAttempts) > 0 {
+		details["final_attempts"] = fusionCallDetailsList(finalAttempts)
+	}
+	return details
+}
+
+func fusionCallDetailsList(items []fusionCallResult) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, fusionCallDetails(item))
+	}
+	return out
+}
+
+func fusionCallDetails(item fusionCallResult) map[string]any {
+	model := item.Model
+	if model == "" && item.Authorization != nil {
+		model = item.Authorization.Model
+	}
+	endpoint := item.Endpoint
+	if endpoint == "" && item.Authorization != nil {
+		endpoint = item.Authorization.EndpointID
+	}
+	detail := map[string]any{
+		"model":          model,
+		"endpoint":       endpoint,
+		"finish_reason":  item.Result.FinishReason,
+		"visible_answer": strings.TrimSpace(item.Result.Text),
+		"input_tokens":   item.InputTokens,
+		"output_tokens":  item.OutputTokens,
+	}
+	if item.UsageEstimated {
+		detail["usage_estimated"] = true
+	}
+	if raw := strings.TrimSpace(item.RawText); raw != "" && raw != strings.TrimSpace(item.Result.Text) {
+		detail["raw_output"] = raw
+	}
+	if len(item.Result.Thinking) > 0 {
+		thinking := make([]map[string]any, 0, len(item.Result.Thinking))
+		for _, block := range item.Result.Thinking {
+			entry := map[string]any{"text": block.Text}
+			if block.Signature != "" {
+				entry["signature"] = block.Signature
+			}
+			thinking = append(thinking, entry)
+		}
+		detail["thinking"] = thinking
+	}
+	if len(item.Result.ToolCalls) > 0 {
+		detail["tool_calls"] = item.Result.ToolCalls
+	}
+	if item.SettlementResult != nil {
+		detail["generation_id"] = item.SettlementResult.GenerationID
+		detail["cost_microdollars"] = item.SettlementResult.CostMicrodollars
+	}
+	return detail
 }
 
 // fusionToolCallsText renders a panel member's tool calls as readable

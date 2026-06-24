@@ -361,6 +361,17 @@ func TransformStreamCapture(r io.Reader, w io.Writer, requestID, model string) (
 	return TransformStreamCaptureWithOptions(r, w, requestID, model, false)
 }
 
+// StreamDelta is one provider-native streaming delta after it has been
+// normalized to the enclave's Anthropic-shaped internal stream contract.
+type StreamDelta struct {
+	Type      string
+	Index     int
+	Text      string
+	Signature string
+}
+
+type StreamObserver func(StreamDelta)
+
 // TransformStreamCaptureWithOptions is TransformStreamCapture plus the
 // OpenAI stream_options.include_usage behavior: when emitUsageChunk is
 // true and the upstream reported usage, a final chunk with empty
@@ -376,6 +387,8 @@ func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, mode
 	var usage *StreamUsage
 	toolByBlock := map[int]*streamToolCall{}
 	var toolBlockOrder []int
+	thinkingByIndex := map[int]*ThinkingBlock{}
+	var thinkingOrder []int
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
@@ -401,7 +414,7 @@ func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, mode
 			}
 		}
 		_, err := w.Write([]byte("data: [DONE]\n\n"))
-		result := StreamResult{Text: captured.String(), FinishReason: finishReason, Usage: usage}
+		result := StreamResult{Text: captured.String(), FinishReason: finishReason, Usage: usage, Thinking: orderedThinking(thinkingByIndex, thinkingOrder)}
 		for _, blockIndex := range toolBlockOrder {
 			call := toolByBlock[blockIndex]
 			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
@@ -429,7 +442,21 @@ func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, mode
 			}
 		case "content_block_start":
 			blockJSON := getMap(dataJSON, "content_block")
-			if blockJSON == nil || getString(blockJSON, "type") != "tool_use" {
+			if blockJSON == nil {
+				continue
+			}
+			if getString(blockJSON, "type") == "thinking" {
+				blockIndex := getInt(dataJSON, "index")
+				if _, ok := thinkingByIndex[blockIndex]; !ok {
+					thinkingOrder = append(thinkingOrder, blockIndex)
+				}
+				thinkingByIndex[blockIndex] = &ThinkingBlock{
+					Text:      getString(blockJSON, "thinking"),
+					Signature: getString(blockJSON, "signature"),
+				}
+				continue
+			}
+			if getString(blockJSON, "type") != "tool_use" {
 				continue
 			}
 			blockIndex := getInt(dataJSON, "index")
@@ -476,6 +503,33 @@ func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, mode
 				}
 				if err := writeChunk(w, requestID, model, created, map[string]any{"content": deltaText}, ""); err != nil {
 					return StreamResult{}, err
+				}
+			case "thinking_delta":
+				deltaText := getString(delta, "thinking")
+				if deltaText == "" {
+					continue
+				}
+				blockIndex := getInt(dataJSON, "index")
+				if tb := thinkingByIndex[blockIndex]; tb != nil {
+					tb.Text += deltaText
+				}
+				if err := sendRole(); err != nil {
+					return StreamResult{}, err
+				}
+				if err := writeChunk(w, requestID, model, created, map[string]any{
+					"reasoning_content": deltaText,
+					"thinking":          deltaText,
+				}, ""); err != nil {
+					return StreamResult{}, err
+				}
+			case "signature_delta":
+				signature := getString(delta, "signature")
+				if signature == "" {
+					continue
+				}
+				blockIndex := getInt(dataJSON, "index")
+				if tb := thinkingByIndex[blockIndex]; tb != nil {
+					tb.Signature += signature
 				}
 			case "input_json_delta":
 				call := toolByBlock[getInt(dataJSON, "index")]

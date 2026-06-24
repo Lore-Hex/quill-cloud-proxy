@@ -380,6 +380,10 @@ func normalizeImageDetail(detail string) (string, error) {
 }
 
 func CollectAnthropicText(r io.Reader) (StreamResult, error) {
+	return CollectAnthropicTextWithObserver(r, nil)
+}
+
+func CollectAnthropicTextWithObserver(r io.Reader, observer StreamObserver) (StreamResult, error) {
 	finishReason := "stop"
 	var captured strings.Builder
 	var usage *StreamUsage
@@ -426,22 +430,38 @@ func CollectAnthropicText(r io.Reader) (StreamResult, error) {
 		case "content_block_delta":
 			delta := getMap(dataJSON, "delta")
 			if delta != nil && getString(delta, "type") == "text_delta" {
-				captured.WriteString(getString(delta, "text"))
+				text := getString(delta, "text")
+				captured.WriteString(text)
+				if observer != nil && text != "" {
+					observer(StreamDelta{Type: "text_delta", Index: getInt(dataJSON, "index"), Text: text})
+				}
 			} else if delta != nil && getString(delta, "type") == "input_json_delta" {
 				index := getInt(dataJSON, "index")
 				call := toolCallsByIndex[index]
 				if call != nil {
-					call.Arguments += getString(delta, "partial_json")
+					partial := getString(delta, "partial_json")
+					call.Arguments += partial
+					if observer != nil && partial != "" {
+						observer(StreamDelta{Type: "input_json_delta", Index: index, Text: partial})
+					}
 				}
 			} else if delta != nil && getString(delta, "type") == "thinking_delta" {
 				index := getInt(dataJSON, "index")
+				text := getString(delta, "thinking")
 				if tb := thinkingByIndex[index]; tb != nil {
-					tb.Text += getString(delta, "thinking")
+					tb.Text += text
+				}
+				if observer != nil && text != "" {
+					observer(StreamDelta{Type: "thinking_delta", Index: index, Text: text})
 				}
 			} else if delta != nil && getString(delta, "type") == "signature_delta" {
 				index := getInt(dataJSON, "index")
+				signature := getString(delta, "signature")
 				if tb := thinkingByIndex[index]; tb != nil {
-					tb.Signature += getString(delta, "signature")
+					tb.Signature += signature
+				}
+				if observer != nil && signature != "" {
+					observer(StreamDelta{Type: "signature_delta", Index: index, Signature: signature})
 				}
 			}
 		case "message_delta":
@@ -530,10 +550,13 @@ func TransformResponsesStream(
 	messageID := "msg_" + strings.TrimPrefix(responseID, "resp_")
 	finishReason := "stop"
 	var captured strings.Builder
+	var reasoningCaptured strings.Builder
 	toolCallsByIndex := map[int]*types.ToolCall{}
 	var toolOrder []int
 	toolOutputIndexes := map[int]int{}
 	toolDone := map[int]bool{}
+	thinkingByIndex := map[int]*ThinkingBlock{}
+	var thinkingOrder []int
 	seq := 0
 	if err := writeResponseEventSeq(w, &seq, "response.created", map[string]any{
 		"type":     "response.created",
@@ -550,6 +573,9 @@ func TransformResponsesStream(
 	nextOutputIndex := 0
 	messageOutputIndex := 0
 	messageStarted := false
+	reasoningID := "rs_" + strings.TrimPrefix(responseID, "resp_")
+	reasoningOutputIndex := 0
+	reasoningStarted := false
 	startMessage := func() error {
 		if messageStarted {
 			return nil
@@ -578,6 +604,69 @@ func TransformResponsesStream(
 			"part":          map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
 		})
 	}
+	startReasoning := func() error {
+		if reasoningStarted {
+			return nil
+		}
+		reasoningOutputIndex = nextOutputIndex
+		nextOutputIndex++
+		reasoningStarted = true
+		if err := writeResponseEventSeq(w, &seq, "response.output_item.added", map[string]any{
+			"type":         "response.output_item.added",
+			"response_id":  responseID,
+			"output_index": reasoningOutputIndex,
+			"item": map[string]any{
+				"id":      reasoningID,
+				"type":    "reasoning",
+				"status":  "in_progress",
+				"summary": []any{},
+			},
+		}); err != nil {
+			return err
+		}
+		return writeResponseEventSeq(w, &seq, "response.content_part.added", map[string]any{
+			"type":          "response.content_part.added",
+			"item_id":       reasoningID,
+			"output_index":  reasoningOutputIndex,
+			"content_index": 0,
+			"part":          map[string]any{"type": "reasoning_text", "text": ""},
+		})
+	}
+	finishReasoning := func() error {
+		if !reasoningStarted {
+			return nil
+		}
+		text := reasoningCaptured.String()
+		if err := writeResponseEventSeq(w, &seq, "response.reasoning_text.done", map[string]any{
+			"type":          "response.reasoning_text.done",
+			"item_id":       reasoningID,
+			"output_index":  reasoningOutputIndex,
+			"content_index": 0,
+			"text":          text,
+		}); err != nil {
+			return err
+		}
+		if err := writeResponseEventSeq(w, &seq, "response.content_part.done", map[string]any{
+			"type":          "response.content_part.done",
+			"item_id":       reasoningID,
+			"output_index":  reasoningOutputIndex,
+			"content_index": 0,
+			"part":          map[string]any{"type": "reasoning_text", "text": text},
+		}); err != nil {
+			return err
+		}
+		return writeResponseEventSeq(w, &seq, "response.output_item.done", map[string]any{
+			"type":         "response.output_item.done",
+			"response_id":  responseID,
+			"output_index": reasoningOutputIndex,
+			"item": map[string]any{
+				"id":      reasoningID,
+				"type":    "reasoning",
+				"status":  "completed",
+				"summary": []map[string]any{{"type": "reasoning_text", "text": text}},
+			},
+		})
+	}
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
@@ -590,7 +679,24 @@ func TransformResponsesStream(
 		switch eventName {
 		case "content_block_start":
 			block := getMap(dataJSON, "content_block")
-			if block == nil || getString(block, "type") != "tool_use" {
+			if block == nil {
+				continue
+			}
+			if getString(block, "type") == "thinking" {
+				blockIndex := getInt(dataJSON, "index")
+				if _, ok := thinkingByIndex[blockIndex]; !ok {
+					thinkingOrder = append(thinkingOrder, blockIndex)
+				}
+				thinkingByIndex[blockIndex] = &ThinkingBlock{
+					Text:      getString(block, "thinking"),
+					Signature: getString(block, "signature"),
+				}
+				if err := startReasoning(); err != nil {
+					return StreamResult{}, err
+				}
+				continue
+			}
+			if getString(block, "type") != "tool_use" {
 				continue
 			}
 			blockIndex := getInt(dataJSON, "index")
@@ -646,6 +752,33 @@ func TransformResponsesStream(
 				}); err != nil {
 					return StreamResult{}, err
 				}
+			case "thinking_delta":
+				deltaText := getString(delta, "thinking")
+				if deltaText == "" {
+					continue
+				}
+				blockIndex := getInt(dataJSON, "index")
+				if tb := thinkingByIndex[blockIndex]; tb != nil {
+					tb.Text += deltaText
+				}
+				if err := startReasoning(); err != nil {
+					return StreamResult{}, err
+				}
+				reasoningCaptured.WriteString(deltaText)
+				if err := writeResponseEventSeq(w, &seq, "response.reasoning_text.delta", map[string]any{
+					"type":          "response.reasoning_text.delta",
+					"item_id":       reasoningID,
+					"output_index":  reasoningOutputIndex,
+					"content_index": 0,
+					"delta":         deltaText,
+				}); err != nil {
+					return StreamResult{}, err
+				}
+			case "signature_delta":
+				blockIndex := getInt(dataJSON, "index")
+				if tb := thinkingByIndex[blockIndex]; tb != nil {
+					tb.Signature += getString(delta, "signature")
+				}
 			case "input_json_delta":
 				blockIndex := getInt(dataJSON, "index")
 				call := toolCallsByIndex[blockIndex]
@@ -697,24 +830,30 @@ func TransformResponsesStream(
 			}
 		case "message_stop":
 			toolCalls := orderedToolCalls(toolCallsByIndex, toolOrder)
+			if err := finishReasoning(); err != nil {
+				return StreamResult{}, err
+			}
 			if !messageStarted && len(toolCalls) == 0 {
 				if err := startMessage(); err != nil {
 					return StreamResult{}, err
 				}
 			}
-			return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex)
+			return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex)
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return StreamResult{}, err
 	}
 	toolCalls := orderedToolCalls(toolCallsByIndex, toolOrder)
+	if err := finishReasoning(); err != nil {
+		return StreamResult{}, err
+	}
 	if !messageStarted && len(toolCalls) == 0 {
 		if err := startMessage(); err != nil {
 			return StreamResult{}, err
 		}
 	}
-	return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex)
+	return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex)
 }
 
 func finishResponsesStream(
@@ -725,6 +864,7 @@ func finishResponsesStream(
 	model string,
 	text string,
 	toolCalls []types.ToolCall,
+	thinking []ThinkingBlock,
 	inputTokens int,
 	created int64,
 	finishReason string,
@@ -783,7 +923,7 @@ func finishResponsesStream(
 		}
 	}
 	_, err := w.Write([]byte("data: [DONE]\n\n"))
-	return StreamResult{Text: text, FinishReason: finishReason, ToolCalls: toolCalls}, err
+	return StreamResult{Text: text, FinishReason: finishReason, ToolCalls: toolCalls, Thinking: thinking}, err
 }
 
 func responsesObject(

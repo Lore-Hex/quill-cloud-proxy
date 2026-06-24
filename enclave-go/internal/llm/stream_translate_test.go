@@ -93,6 +93,29 @@ func TestTranslateOpenAIStreamNoUsageOmitsUsage(t *testing.T) {
 	}
 }
 
+func TestTranslateOpenAIStreamPreservesReasoningContentAsThinking(t *testing.T) {
+	upstream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"reasoning_content":"think first"},"finish_reason":null}]}`,
+		`data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := translateOpenAIStreamToAnthropic(strings.NewReader(upstream), &out); err != nil {
+		t.Fatalf("translateOpenAIStreamToAnthropic: %v", err)
+	}
+	body := out.String()
+	if !strings.Contains(body, `"type":"thinking"`) || !strings.Contains(body, `"thinking":"think first"`) || !strings.Contains(body, `"type":"thinking_delta"`) {
+		t.Fatalf("reasoning_content was not preserved as thinking: %s", body)
+	}
+	if !strings.Contains(body, `"type":"text_delta"`) || !strings.Contains(body, `"text":"answer"`) {
+		t.Fatalf("visible content lost: %s", body)
+	}
+	if strings.Contains(body, `"type":"text_delta","text":"think first"`) {
+		t.Fatalf("reasoning_content leaked into visible text: %s", body)
+	}
+}
+
 // TestOpenAICompatibleRequestBody locks in the upstream request shape:
 //  1. stream_options.include_usage is ALWAYS requested (feeds settlement
 //     + the client-facing include_usage chunk);

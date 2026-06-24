@@ -603,6 +603,30 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 	if !strings.Contains(body, `"model":"z-ai/glm-5.2"`) || !strings.Contains(body, "final answer from z-ai/glm-5.2") {
 		t.Fatalf("fusion response did not use selectable judge/final model: %s", body)
 	}
+	var response map[string]any
+	if err := json.Unmarshal(bodyBytes, &response); err != nil {
+		t.Fatalf("decode fusion response: %v", err)
+	}
+	trusted, ok := response["trustedrouter"].(map[string]any)
+	if !ok {
+		t.Fatalf("fusion response missing trustedrouter details: %s", body)
+	}
+	synth, ok := trusted["synth"].(map[string]any)
+	if !ok {
+		t.Fatalf("fusion response missing trustedrouter.synth details: %#v", trusted)
+	}
+	panelDetails, ok := synth["panel"].([]any)
+	if !ok || len(panelDetails) != 2 {
+		t.Fatalf("fusion panel details = %#v, want two entries", synth["panel"])
+	}
+	firstPanel := panelDetails[0].(map[string]any)
+	if firstPanel["model"] != "google/gemini-3-flash-preview" ||
+		!strings.Contains(firstPanel["visible_answer"].(string), "analysis from google/gemini-3-flash-preview") {
+		t.Fatalf("bad first panel detail: %#v", firstPanel)
+	}
+	if strings.Contains(body, "<think>") || strings.Contains(body, "private fusion prompt") {
+		t.Fatalf("fusion details leaked hidden thinking or original prompt: %s", body)
+	}
 	if len(authorizeCalls) != 4 {
 		t.Fatalf("authorize calls = %d, want panel+panel+judge+final", len(authorizeCalls))
 	}
@@ -625,6 +649,96 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 		!strings.Contains(finalCall.LastMessage, "analysis from moonshotai/kimi-k2.7-code") ||
 		!strings.Contains(finalCall.LastMessage, "Judge analysis JSON:") {
 		t.Fatalf("final fusion prompt did not include panel evidence and judge analysis: %s", finalCall.LastMessage)
+	}
+}
+
+func TestServeOneTrustedRouterFusionStreamsThinkingEvents(t *testing.T) {
+	bearer := "test-user-bearer"
+	var settleCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode authorize payload: %v", err)
+			}
+			model := payload["model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id": fmt.Sprintf("auth_fusion_stream_%s", strings.ReplaceAll(model, "/", "_")),
+				"workspace_id":     "ws_1",
+				"api_key_hash":     "key_1",
+				"model":            model,
+				"endpoint_id":      model + "@test/prepaid",
+				"provider":         "test",
+				"usage_type":       "Credits",
+				"limit_usage_type": "Credits",
+				"route_candidates": []any{},
+			}})
+		case "/internal/gateway/settle":
+			settleCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"settled":           true,
+				"generation_id":     fmt.Sprintf("gen_fusion_stream_%d", settleCalls),
+				"cost_microdollars": 1,
+				"provider":          "test",
+				"region":            "us-central1",
+			}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fusionEchoLLM{thinking: true}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/synth","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"compare options"}],"tools":[{"type":"trustedrouter:synth","parameters":{"analysis_models":["minimax/minimax-m3"],"judge_models":["moonshotai/kimi-k2.6"],"final_models":["z-ai/glm-5.2"],"max_completion_tokens":64}}],"max_tokens":32}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	for _, want := range []string{
+		`"event":"panel.thinking_delta"`,
+		`"event":"judge.thinking_delta"`,
+		`"event":"final.thinking_delta"`,
+		`"reasoning_content":"thinking from z-ai/glm-5.2"`,
+		`"content":"final answer from z-ai/glm-5.2"`,
+		`"event":"final.done"`,
+		`"usage"`,
+		"data: [DONE]\n\n",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream missing %q: %s", want, body)
+		}
+	}
+	if settleCalls != 3 {
+		t.Fatalf("settle calls = %d, want panel+judge+final", settleCalls)
 	}
 }
 
@@ -1224,6 +1338,36 @@ func TestFusionVisibleAnswerStripsThinkBlocks(t *testing.T) {
 	}
 	if got := fusionVisibleAnswer("visible <think>unterminated"); got != "visible" {
 		t.Fatalf("unterminated think output = %q, want visible", got)
+	}
+}
+
+func TestFusionCallDetailsIncludesRawThinkingWhenProviderReturnsIt(t *testing.T) {
+	detail := fusionCallDetails(fusionCallResult{
+		Model: "z-ai/glm-5.2",
+		Result: adapter.StreamResult{
+			Text:         "visible answer",
+			FinishReason: "stop",
+			Thinking: []adapter.ThinkingBlock{{
+				Text:      "raw thinking block",
+				Signature: "sig_123",
+			}},
+		},
+		RawText:      "<think>raw thinking block</think>\nvisible answer",
+		InputTokens:  11,
+		OutputTokens: 7,
+	})
+	if detail["visible_answer"] != "visible answer" {
+		t.Fatalf("visible_answer = %#v", detail["visible_answer"])
+	}
+	if raw := detail["raw_output"].(string); !strings.Contains(raw, "<think>raw thinking block</think>") {
+		t.Fatalf("raw_output = %q, want raw think block", raw)
+	}
+	thinking, ok := detail["thinking"].([]map[string]any)
+	if !ok || len(thinking) != 1 {
+		t.Fatalf("thinking = %#v, want one raw thinking block", detail["thinking"])
+	}
+	if thinking[0]["text"] != "raw thinking block" || thinking[0]["signature"] != "sig_123" {
+		t.Fatalf("thinking block = %#v", thinking[0])
 	}
 }
 
@@ -2336,6 +2480,7 @@ type fusionEchoLLM struct {
 	calls         []fusionEchoCall
 	failModels    map[string]bool
 	refusalModels map[string]bool
+	thinking      bool
 }
 
 func (f *fusionEchoLLM) InvokeStreaming(
@@ -2364,9 +2509,20 @@ func (f *fusionEchoLLM) InvokeStreaming(
 	} else if len(req.Messages) > 0 && strings.Contains(types.ContentText(req.Messages[len(req.Messages)-1].Content), "TrustedRouter Synth panel answers and judge analysis follow") {
 		text = "final answer from " + req.Model
 	}
+	thinkingEvents := ""
+	if f.thinking {
+		thinkingEvents = fmt.Sprintf(`event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":%q}}
+
+`, "thinking from "+req.Model)
+	}
 	_, err := fmt.Fprintf(out, `event: message_start
 data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"%s","stop_reason":null,"usage":{"input_tokens":3,"output_tokens":0}}}
 
+%s
 event: content_block_delta
 data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%q}}
 
@@ -2376,7 +2532,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":
 event: message_stop
 data: {"type":"message_stop"}
 
-`, req.Model, text)
+`, req.Model, thinkingEvents, text)
 	return err
 }
 
