@@ -24,6 +24,8 @@ func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 		"gmi",
 		"deepinfra",
 		"friendli",
+		"baseten",
+		"wafer",
 		"nebius",
 		"minimax",
 		"xiaomi",
@@ -153,6 +155,12 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		{"friendli", "z-ai/glm-5.2", "zai-org/GLM-5.2"},
 		{"friendli", "meta-llama/llama-3.3-70b-instruct", "meta-llama-3.3-70b-instruct"},
 		{"friendli", "qwen/qwen3-235b-a22b-2507", "Qwen/Qwen3-235B-A22B-Instruct-2507"},
+		{"baseten", "z-ai/glm-5.2", "zai-org/GLM-5.2"},
+		{"baseten", "moonshotai/kimi-k2.7-code", "moonshotai/Kimi-K2.7-Code"},
+		{"baseten", "deepseek/deepseek-v4-pro", "deepseek-ai/DeepSeek-V4-Pro"},
+		{"wafer", "z-ai/glm-5.2", "GLM-5.2"},
+		{"wafer", "moonshotai/kimi-k2.7-code", "Kimi-K2.7-Code"},
+		{"wafer", "minimax/minimax-m3", "MiniMax-M3"},
 	}
 	for _, tc := range cases {
 		got := directModelID(tc.provider, tc.orID, tc.orID)
@@ -194,6 +202,8 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		{"deepinfra", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2"},
 		{"gmi", "z-ai/glm-5.2", "zai-org/GLM-5.2-FP8", "zai-org/GLM-5.2-FP8"},
 		{"friendli", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2"},
+		{"baseten", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2"},
+		{"wafer", "z-ai/glm-5.2", "GLM-5.2", "GLM-5.2"},
 		// zai-direct accepts only the bare id; glm-4.7 was mis-mapped to
 		// "zai-glm-4.7" by the global directModelMap.
 		{"zai", "z-ai/glm-4.7", "z-ai/glm-4.7", "glm-4.7"},

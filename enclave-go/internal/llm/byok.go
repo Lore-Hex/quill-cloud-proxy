@@ -45,7 +45,8 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 	switch provider {
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai", "together",
 		"fireworks", "grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
-		"parasail", "lightning", "gmi", "deepinfra", "friendli", "nebius", "minimax", "xiaomi":
+		"parasail", "lightning", "gmi", "deepinfra", "friendli", "baseten", "wafer",
+		"nebius", "minimax", "xiaomi":
 		return true
 	default:
 		return false
@@ -227,6 +228,9 @@ func invokeOpenAICompatibleStreamingWithClient(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
+	if provider == "wafer" {
+		httpReq.Header.Set("Wafer-ZDR", "required")
+	}
 
 	if httpc == nil {
 		httpc = defaultHTTPClient()
@@ -689,6 +693,13 @@ func directBaseURL(provider string) string {
 		// FriendliAI serverless Model API. OpenAI-compatible /v1 surface
 		// under the non-standard /serverless prefix.
 		return "https://api.friendli.ai/serverless/v1"
+	case "baseten":
+		// Baseten Model APIs. OpenAI-compatible chat completions.
+		return "https://inference.baseten.co/v1"
+	case "wafer":
+		// Wafer serverless API. OpenAI-compatible chat completions; requests
+		// include Wafer-ZDR: required in invokeOpenAICompatibleStreamingWithClient.
+		return "https://pass.wafer.ai/v1"
 	case "nebius":
 		// Nebius Token Factory OpenAI-compatible shared inference.
 		return "https://api.tokenfactory.nebius.com/v1"
@@ -833,6 +844,8 @@ var providerNativeModelMaps = map[string]map[string]string{
 	"phala":       phalaModelMap,
 	"venice":      veniceModelMap,
 	"friendli":    friendliModelMap,
+	"baseten":     basetenModelMap,
+	"wafer":       waferModelMap,
 	"minimax":     minimaxModelMap,
 	"siliconflow": siliconflowModelMap,
 	"zai":         zaiModelMap,
@@ -1118,6 +1131,40 @@ var friendliModelMap = map[string]string{
 	"z-ai/glm-5.2":                      "zai-org/GLM-5.2",
 }
 
+// basetenModelMap maps OR-canonical → Baseten native ids. Baseten's
+// /v1/models uses upstream-author mixed-case ids, so the generic strip-author
+// fallback would ship bare/lowercase slugs that Baseten does not advertise.
+var basetenModelMap = map[string]string{
+	"openai/gpt-oss-120b":                      "openai/gpt-oss-120b",
+	"z-ai/glm-4.7":                             "zai-org/GLM-4.7",
+	"moonshotai/kimi-k2.5":                     "moonshotai/Kimi-K2.5",
+	"z-ai/glm-5":                               "zai-org/GLM-5",
+	"nvidia/nemotron-120b-a12b":                "nvidia/Nemotron-120B-A12B",
+	"z-ai/glm-5.1":                             "zai-org/GLM-5.1",
+	"moonshotai/kimi-k2.6":                     "moonshotai/Kimi-K2.6",
+	"deepseek/deepseek-v4-pro":                 "deepseek-ai/DeepSeek-V4-Pro",
+	"nvidia/nvidia-nemotron-3-ultra-550b-a55b": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+	"z-ai/glm-5.2":                             "zai-org/GLM-5.2",
+	"moonshotai/kimi-k2.7-code":                "moonshotai/Kimi-K2.7-Code",
+}
+
+// waferModelMap maps OR-canonical → Wafer native ids. Wafer's ids are short
+// provider-local names like "GLM-5.2" and "Kimi-K2.7-Code"; they do not carry
+// the OR author namespace.
+var waferModelMap = map[string]string{
+	"z-ai/glm-5.1":               "GLM-5.1",
+	"z-ai/glm-5.2":               "GLM-5.2",
+	"moonshotai/kimi-k2.6":       "Kimi-K2.6",
+	"moonshotai/kimi-k2.7-code":  "Kimi-K2.7-Code",
+	"qwen/qwen3.5-397b-a17b":     "Qwen3.5-397B-A17B",
+	"qwen/qwen3.6-35b-a3b":       "Qwen3.6-35B-A3B",
+	"qwen/qwen3.6-max-preview":   "qwen3.6-max-preview",
+	"qwen/qwen3.7-max":           "qwen3.7-max",
+	"deepseek/deepseek-v4-flash": "deepseek-v4-flash",
+	"deepseek/deepseek-v4-pro":   "deepseek-v4-pro",
+	"minimax/minimax-m3":         "MiniMax-M3",
+}
+
 var directModelMap = map[string]string{
 	"anthropic/claude-opus-4.8":   "claude-opus-4-8",
 	"anthropic/claude-opus-4.7":   "claude-opus-4-7",
@@ -1184,6 +1231,10 @@ func normalizeDirectProvider(provider string) string {
 		return "deepinfra"
 	case "friendli", "friendli-ai", "friendliai":
 		return "friendli"
+	case "baseten", "base-ten":
+		return "baseten"
+	case "wafer", "wafer-ai":
+		return "wafer"
 	case "nebius", "nebius-ai", "nebius-ai-studio", "tokenfactory", "token-factory":
 		return "nebius"
 	case "minimax", "mini-max", "minimax-ai", "minimaxai":

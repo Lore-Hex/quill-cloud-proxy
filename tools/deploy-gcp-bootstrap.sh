@@ -69,6 +69,8 @@ LIGHTNING_SECRET="${LIGHTNING_SECRET:-trustedrouter-lightning-api-key}"
 GMI_SECRET="${GMI_SECRET:-trustedrouter-gmi-api-key}"
 DEEPINFRA_SECRET="${DEEPINFRA_SECRET:-trustedrouter-deepinfra-api-key}"
 FRIENDLI_SECRET="${FRIENDLI_SECRET:-trustedrouter-friendli-api-key}"
+BASETEN_SECRET="${BASETEN_SECRET:-trustedrouter-baseten-api-key}"
+WAFER_SECRET="${WAFER_SECRET:-trustedrouter-wafer-api-key}"
 NEBIUS_SECRET="${NEBIUS_SECRET:-trustedrouter-nebius-api-key}"
 MINIMAX_SECRET="${MINIMAX_SECRET:-trustedrouter-minimax-api-key}"
 XIAOMI_SECRET="${XIAOMI_SECRET:-trustedrouter-xiaomi-api-key}"
@@ -160,6 +162,8 @@ for secret in \
   "$GMI_SECRET" \
   "$DEEPINFRA_SECRET" \
   "$FRIENDLI_SECRET" \
+  "$BASETEN_SECRET" \
+  "$WAFER_SECRET" \
   "$NEBIUS_SECRET" \
   "$MINIMAX_SECRET" \
   "$XIAOMI_SECRET" \

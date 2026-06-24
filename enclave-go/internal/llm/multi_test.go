@@ -27,6 +27,8 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"mistral", "mistralai/mistral-small-2603", "mistralai/mistral-small-2603", "mistral-small-2603"},
 		{"fireworks", "openai/gpt-oss-120b", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/gpt-oss-120b"},
 		{"friendli", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2"},
+		{"baseten", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2"},
+		{"wafer", "z-ai/glm-5.2", "GLM-5.2", "GLM-5.2"},
 		{"nebius", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B"},
 		{"minimax", "minimax/minimax-m2.7", "MiniMax-M2.7", "MiniMax-M2.7"},
 	}
@@ -43,6 +45,9 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				}
 				if r.Header.Get("User-Agent") != "TrustedRouter/1.0" {
 					t.Fatalf("user-agent = %q", r.Header.Get("User-Agent"))
+				}
+				if tt.provider == "wafer" && r.Header.Get("Wafer-ZDR") != "required" {
+					t.Fatalf("Wafer-ZDR header = %q, want required", r.Header.Get("Wafer-ZDR"))
 				}
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
@@ -76,6 +81,8 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				mistral:   client,
 				fireworks: client,
 				friendli:  client,
+				baseten:   client,
+				wafer:     client,
 				nebius:    client,
 				minimax:   client,
 			}

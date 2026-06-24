@@ -108,6 +108,9 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("lightning_api_key", "trustedrouter-lightning-api-key"),
     ("gmi_api_key", "trustedrouter-gmi-api-key"),
     ("deepinfra_api_key", "trustedrouter-deepinfra-api-key"),
+    ("friendli_api_key", "trustedrouter-friendli-api-key"),
+    ("baseten_api_key", "trustedrouter-baseten-api-key"),
+    ("wafer_api_key", "trustedrouter-wafer-api-key"),
     ("nebius_api_key", "trustedrouter-nebius-api-key"),
     ("minimax_api_key", "trustedrouter-minimax-api-key"),
     # Voyage AI — embeddings only (OpenAI-shaped /v1/embeddings). Optional like

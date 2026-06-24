@@ -49,6 +49,8 @@
 //	QUILL_MISTRAL_SECRET         name of the secret holding the Mistral API key (llm_multi builds)
 //	QUILL_FIREWORKS_SECRET       name of the secret holding the Fireworks API key (llm_multi builds)
 //	QUILL_FRIENDLI_SECRET        name of the secret holding the Friendli API key (llm_multi builds)
+//	QUILL_BASETEN_SECRET         name of the secret holding the Baseten API key (llm_multi builds)
+//	QUILL_WAFER_SECRET           name of the secret holding the Wafer API key (llm_multi builds)
 //	QUILL_TRUSTEDROUTER_INTERNAL_SECRET optional Secret Manager secret name
 package bootstrap
 
@@ -113,6 +115,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	gmiSecret := os.Getenv("QUILL_GMI_SECRET")
 	deepinfraSecret := os.Getenv("QUILL_DEEPINFRA_SECRET")
 	friendliSecret := os.Getenv("QUILL_FRIENDLI_SECRET")
+	basetenSecret := os.Getenv("QUILL_BASETEN_SECRET")
+	waferSecret := os.Getenv("QUILL_WAFER_SECRET")
 	nebiusSecret := os.Getenv("QUILL_NEBIUS_SECRET")
 	minimaxSecret := os.Getenv("QUILL_MINIMAX_SECRET")
 	xiaomiSecret := os.Getenv("QUILL_XIAOMI_SECRET")
@@ -141,6 +145,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		gmiSecret,
 		deepinfraSecret,
 		friendliSecret,
+		basetenSecret,
+		waferSecret,
 		nebiusSecret,
 		minimaxSecret,
 		xiaomiSecret,
@@ -332,6 +338,20 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: friendli key: %w", err)
 		}
 	}
+	var basetenKey []byte
+	if basetenSecret != "" {
+		basetenKey, err = fetchSecret(ctx, httpc, token, project, basetenSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: baseten key: %w", err)
+		}
+	}
+	var waferKey []byte
+	if waferSecret != "" {
+		waferKey, err = fetchSecret(ctx, httpc, token, project, waferSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: wafer key: %w", err)
+		}
+	}
 	var nebiusKey []byte
 	if nebiusSecret != "" {
 		nebiusKey, err = fetchSecret(ctx, httpc, token, project, nebiusSecret)
@@ -389,6 +409,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		GMIAPIKey:                  strings.TrimSpace(string(gmiKey)),
 		DeepInfraAPIKey:            strings.TrimSpace(string(deepinfraKey)),
 		FriendliAPIKey:             strings.TrimSpace(string(friendliKey)),
+		BasetenAPIKey:              strings.TrimSpace(string(basetenKey)),
+		WaferAPIKey:                strings.TrimSpace(string(waferKey)),
 		NebiusAPIKey:               strings.TrimSpace(string(nebiusKey)),
 		MiniMaxAPIKey:              strings.TrimSpace(string(minimaxKey)),
 		XiaomiAPIKey:               strings.TrimSpace(string(xiaomiKey)),

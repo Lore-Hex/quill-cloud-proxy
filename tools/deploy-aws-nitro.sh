@@ -674,6 +674,9 @@ allowlist:
   - {address: api.deepinfra.com,             port: 443}
   - {address: api.tokenfactory.nebius.com,   port: 443}
   - {address: api.minimax.io,                port: 443}
+  - {address: api.friendli.ai,               port: 443}
+  - {address: inference.baseten.co,          port: 443}
+  - {address: pass.wafer.ai,                 port: 443}
   # GCP cross-cloud APIs — auth + Spanner + Bigtable + GCS (ACME cache)
   # + KMS (BYOK envelope-unwrap when an AWS-side request lands with a
   # customer-provided GCP-KMS-wrapped envelope).
@@ -756,6 +759,9 @@ write_vsock_unit 8021 api.gmi-serving.com
 write_vsock_unit 8022 api.deepinfra.com
 write_vsock_unit 8023 api.tokenfactory.nebius.com
 write_vsock_unit 8024 api.minimax.io
+write_vsock_unit 8025 api.friendli.ai
+write_vsock_unit 8026 inference.baseten.co
+write_vsock_unit 8027 pass.wafer.ai
 write_vsock_unit 8030 oauth2.googleapis.com
 write_vsock_unit 8031 spanner.googleapis.com
 write_vsock_unit 8032 bigtable.googleapis.com

@@ -66,6 +66,9 @@ SECRETS=(
   trustedrouter-lightning-api-key
   trustedrouter-gmi-api-key
   trustedrouter-deepinfra-api-key
+  trustedrouter-friendli-api-key
+  trustedrouter-baseten-api-key
+  trustedrouter-wafer-api-key
   trustedrouter-nebius-api-key
   trustedrouter-minimax-api-key
   # Voyage AI — embeddings only (OpenAI-shaped /v1/embeddings). Mirrored so the
