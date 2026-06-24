@@ -1170,7 +1170,6 @@ var waferZDRNativeModels = map[string]struct{}{
 	"GLM-5.2":           {},
 	"Kimi-K2.6":         {},
 	"Qwen3.5-397B-A17B": {},
-	"Qwen3.6-35B-A3B":   {},
 	"deepseek-v4-flash": {},
 	"deepseek-v4-pro":   {},
 }

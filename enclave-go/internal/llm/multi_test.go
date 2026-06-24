@@ -31,6 +31,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"baseten", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2", false},
 		{"wafer", "z-ai/glm-5.2", "GLM-5.2", "GLM-5.2", true},
 		{"wafer", "moonshotai/kimi-k2.7-code", "Kimi-K2.7-Code", "Kimi-K2.7-Code", false},
+		{"wafer", "qwen/qwen3.6-35b-a3b", "Qwen3.6-35B-A3B", "Qwen3.6-35B-A3B", false},
 		{"nebius", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B", false},
 		{"minimax", "minimax/minimax-m2.7", "MiniMax-M2.7", "MiniMax-M2.7", false},
 	}
