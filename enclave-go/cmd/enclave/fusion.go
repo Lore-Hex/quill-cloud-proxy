@@ -25,16 +25,17 @@ const trustedRouterSynthTool = "trustedrouter:synth"
 const trustedRouterFusionTool = "trustedrouter:fusion"
 const defaultFusionSelectionStrategy = "synthesize_non_refusals"
 
-// fusion uses the general Kimi for its panel and judge; trustedrouter/fusion-code
-// is identical except it swaps that one model for the code-tuned Kimi (see
-// applyFusionCodeSwap). Both fall back to minimax/minimax-m3.
+// fusion uses the general Kimi in its panel and the code-tuned Kimi for its
+// default judge. trustedrouter/fusion-code is kept as an alias that also swaps
+// any general Kimi panel model for the code-tuned Kimi (see applyFusionCodeSwap).
+// Both judge/final paths fall back to minimax/minimax-m3.
 const (
 	fusionGeneralKimi = "moonshotai/kimi-k2.6"
 	fusionCodeKimi    = "moonshotai/kimi-k2.7-code"
 )
 
 var fusionDefaultJudgeModels = []string{
-	fusionGeneralKimi,
+	fusionCodeKimi,
 	"minimax/minimax-m3",
 }
 

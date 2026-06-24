@@ -1599,14 +1599,14 @@ func TestFusionDefaultsUseOpenPanelExplicitJudgeAndFuserFallbacks(t *testing.T) 
 	if !reflect.DeepEqual(finalModels, []string{"z-ai/glm-5.2", "minimax/minimax-m3"}) {
 		t.Fatalf("finalModels = %#v, want GLM 5.2 with M3 fallback", finalModels)
 	}
-	if !reflect.DeepEqual(judgeModels, []string{"moonshotai/kimi-k2.6", "minimax/minimax-m3"}) {
-		t.Fatalf("judgeModels = %#v, want Kimi K2.6 with M3 fallback", judgeModels)
+	if !reflect.DeepEqual(judgeModels, []string{"moonshotai/kimi-k2.7-code", "minimax/minimax-m3"}) {
+		t.Fatalf("judgeModels = %#v, want Kimi K2.7 Code with M3 fallback", judgeModels)
 	}
 
 	// trustedrouter/fusion-code is fusion with the code-tuned Kimi: it is a
-	// recognized fusion request, and the swap turns the general kimi-k2.6 into
-	// kimi-k2.7-code across the real default panel + judge — and ONLY the Kimi
-	// (non-Kimi models like the glm-5.2/m3 synthesizer are left untouched).
+	// recognized fusion request, and the swap still turns the general kimi-k2.6
+	// panel model into kimi-k2.7-code — while leaving the already-code default
+	// judge and the non-Kimi glm-5.2/m3 synthesizer untouched.
 	for _, model := range []string{trustedRouterSynthCodeModel, trustedRouterFusionCodeModel} {
 		if _, requested, err := fusionConfigForRequest(&types.OpenAIChatRequest{Model: model}); err != nil || !requested {
 			t.Fatalf("%s must be a recognized synth request: requested=%v err=%v", model, requested, err)
