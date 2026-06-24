@@ -17,8 +17,11 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
+const trustedRouterSynthModel = "trustedrouter/synth"
+const trustedRouterSynthCodeModel = "trustedrouter/synth-code"
 const trustedRouterFusionModel = "trustedrouter/fusion"
 const trustedRouterFusionCodeModel = "trustedrouter/fusion-code"
+const trustedRouterSynthTool = "trustedrouter:synth"
 const trustedRouterFusionTool = "trustedrouter:fusion"
 const defaultFusionSelectionStrategy = "synthesize_non_refusals"
 
@@ -80,6 +83,33 @@ var fusionModelAliases = map[string]string{
 	"~zai/glm-latest":               "z-ai/glm-5.2",
 }
 
+func isFusionModel(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case trustedRouterSynthModel, trustedRouterSynthCodeModel, trustedRouterFusionModel, trustedRouterFusionCodeModel:
+		return true
+	default:
+		return false
+	}
+}
+
+func isFusionCodeModel(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case trustedRouterSynthCodeModel, trustedRouterFusionCodeModel:
+		return true
+	default:
+		return false
+	}
+}
+
+func isFusionToolType(toolType string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolType)) {
+	case trustedRouterSynthTool, trustedRouterFusionTool:
+		return true
+	default:
+		return false
+	}
+}
+
 type fusionConfig struct {
 	Enabled             bool
 	AnalysisModels      []string
@@ -122,19 +152,19 @@ func maybeServeFusion(
 		return false, nil
 	}
 	if !config.Enabled {
-		if req.Model == trustedRouterFusionModel || req.Model == trustedRouterFusionCodeModel {
-			return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion cannot be disabled without selecting a concrete model", Context: "plugins.fusion.enabled"}
+		if isFusionModel(req.Model) {
+			return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth cannot be disabled without selecting a concrete model", Context: "plugins.synth.enabled"}
 		}
 		return false, nil
 	}
 	if trGateway == nil || !trGateway.Enabled() {
-		return true, &adapter.AdapterError{Status: 503, Message: "trustedrouter/fusion requires the TrustedRouter control plane", Context: "trustedrouter/fusion"}
+		return true, &adapter.AdapterError{Status: 503, Message: "trustedrouter/synth requires the TrustedRouter control plane", Context: "trustedrouter/synth"}
 	}
 	if len(config.AnalysisModels) == 0 {
 		config.AnalysisModels = append([]string(nil), fusionQualityPanel...)
 	}
 	if len(config.AnalysisModels) > 8 {
-		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion analysis_models must contain 1-8 models", Context: "analysis_models"}
+		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth analysis_models must contain 1-8 models", Context: "analysis_models"}
 	}
 	if config.SelectionStrategy == "" {
 		config.SelectionStrategy = defaultFusionSelectionStrategy
@@ -142,10 +172,10 @@ func maybeServeFusion(
 	switch config.SelectionStrategy {
 	case "synthesize", "synthesize_non_refusals", "first_success", "first_non_refusal":
 	default:
-		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion selection_strategy must be synthesize, synthesize_non_refusals, first_success, or first_non_refusal", Context: "selection_strategy"}
+		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth selection_strategy must be synthesize, synthesize_non_refusals, first_success, or first_non_refusal", Context: "selection_strategy"}
 	}
 	if config.MaxToolCalls < 0 || config.MaxToolCalls > 16 {
-		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion max_tool_calls must be between 1 and 16", Context: "max_tool_calls"}
+		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth max_tool_calls must be between 1 and 16", Context: "max_tool_calls"}
 	}
 	for i, model := range config.AnalysisModels {
 		config.AnalysisModels[i] = resolveFusionModelID(model)
@@ -162,7 +192,7 @@ func maybeServeFusion(
 	// fusion-code: swap the general Kimi for its code-tuned variant in the
 	// panel + judge (the synthesizer carries no Kimi, and a user's explicit
 	// final_models should not be rewritten).
-	if req.Model == trustedRouterFusionCodeModel {
+	if isFusionCodeModel(req.Model) {
 		config.AnalysisModels = applyFusionCodeSwap(config.AnalysisModels)
 		judgeModels = applyFusionCodeSwap(judgeModels)
 	}
@@ -177,7 +207,7 @@ func maybeServeFusion(
 
 func fusionConfigForRequest(req *types.OpenAIChatRequest) (fusionConfig, bool, error) {
 	config := fusionConfig{Enabled: true}
-	requested := req.Model == trustedRouterFusionModel || req.Model == trustedRouterFusionCodeModel
+	requested := isFusionModel(req.Model)
 
 	if pluginConfig, ok, err := fusionConfigFromPlugins(req.Plugins); err != nil {
 		return fusionConfig{}, true, err
@@ -205,7 +235,8 @@ func fusionConfigFromPlugins(plugins []any) (fusionConfig, bool, error) {
 		if !ok {
 			return fusionConfig{}, false, &adapter.AdapterError{Status: 400, Message: "plugin must be an object", Context: "plugins"}
 		}
-		if strings.TrimSpace(stringValue(m["id"])) != "fusion" {
+		pluginID := strings.ToLower(strings.TrimSpace(stringValue(m["id"])))
+		if pluginID != "synth" && pluginID != "fusion" {
 			continue
 		}
 		config, err := parseFusionParameters(m)
@@ -230,10 +261,10 @@ func fusionConfigFromTools(tools []any) ([]any, fusionConfig, bool, error) {
 		if strings.HasPrefix(toolType, "openrouter:") {
 			return nil, fusionConfig{}, true, &adapter.AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools.type"}
 		}
-		if strings.HasPrefix(toolType, "trustedrouter:") && toolType != trustedRouterFusionTool {
+		if strings.HasPrefix(toolType, "trustedrouter:") && !isFusionToolType(toolType) {
 			return nil, fusionConfig{}, true, &adapter.AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools.type"}
 		}
-		if toolType != trustedRouterFusionTool {
+		if !isFusionToolType(toolType) {
 			clean = append(clean, item)
 			continue
 		}
@@ -257,7 +288,7 @@ func fusionParametersMap(value any, context string) (map[string]any, error) {
 	}
 	m, ok := value.(map[string]any)
 	if !ok {
-		return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion parameters must be an object", Context: context}
+		return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth parameters must be an object", Context: context}
 	}
 	return m, nil
 }
@@ -270,7 +301,7 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 	if enabled, ok := raw["enabled"]; ok {
 		value, ok := enabled.(bool)
 		if !ok {
-			return config, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion enabled must be boolean", Context: "enabled"}
+			return config, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth enabled must be boolean", Context: "enabled"}
 		}
 		config.Enabled = value
 	}
@@ -281,7 +312,7 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 		case "budget":
 			config.AnalysisModels = append([]string(nil), fusionBudgetPanel...)
 		default:
-			return config, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion preset must be quality or budget", Context: "preset"}
+			return config, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth preset must be quality or budget", Context: "preset"}
 		}
 		config.Preset = preset
 	}
@@ -566,7 +597,7 @@ func runFusionPanel(
 		if lastErr != nil {
 			return nil, lastErr
 		}
-		return nil, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion panel produced no successful responses", Context: "fusion.panel"}
+		return nil, &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth panel produced no successful responses", Context: "fusion.panel"}
 	}
 	return panel, nil
 }
@@ -617,7 +648,7 @@ func runFusionJudge(
 	if lastErr != nil && len(attempts) == 0 {
 		return fusionCallResult{}, attempts, lastErr
 	}
-	return fusionCallResult{}, attempts, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion judges produced no usable non-refusal analysis", Context: "fusion.judge"}
+	return fusionCallResult{}, attempts, &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth judges produced no usable non-refusal analysis", Context: "fusion.judge"}
 }
 
 func runFusionFinal(
@@ -671,7 +702,7 @@ func runFusionFinal(
 	if lastErr != nil {
 		return fusionCallResult{}, attempts, lastErr
 	}
-	return fusionCallResult{}, attempts, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion final models produced no usable non-refusal answer", Context: "fusion.final"}
+	return fusionCallResult{}, attempts, &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final models produced no usable non-refusal answer", Context: "fusion.final"}
 }
 
 func runFusionCall(
@@ -736,7 +767,7 @@ func runFusionCallValidated(
 			if trGateway != nil && trGateway.Enabled() {
 				_ = trGateway.Refund(ctx, authz, 502, "empty_output", time.Since(requestStarted).Seconds(), req.Metadata)
 			}
-			return fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion final model returned an empty visible answer", Context: "fusion.final"}
+			return fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final model returned an empty visible answer", Context: "fusion.final"}
 		}
 	}
 	if validateBeforeSettle != nil {
@@ -855,7 +886,7 @@ func serveFusionFinalStreaming(
 	if lastErr != nil {
 		return lastErr
 	}
-	return &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion final models produced no streaming answer", Context: "fusion.final"}
+	return &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final models produced no streaming answer", Context: "fusion.final"}
 }
 
 func serveFusionFinalStreamingAttempt(
@@ -990,7 +1021,7 @@ func fusionPanelRequest(req *types.OpenAIChatRequest, model string, index int, m
 	out.Models = nil
 	out.Stream = false
 	// Give each panel member the caller's function tools (minus the
-	// trustedrouter:fusion config entry) so they can actually propose tool calls.
+	// trustedrouter:synth config entry) so they can actually propose tool calls.
 	// Without this the panel was tool-blind and only ever produced text, so the
 	// select strategies (first_non_refusal / first_success) could never surface a
 	// tool call — a tool-use request silently lost its tools. The first
@@ -1004,12 +1035,12 @@ func fusionPanelRequest(req *types.OpenAIChatRequest, model string, index int, m
 	out.ResponseFormat = nil
 	out.MaxTokens = fusionInnerMaxTokens(req, maxCompletionTokens)
 	system := fmt.Sprintf(
-		"You are TrustedRouter Fusion panel member %d. Answer the user's request independently. Focus on correctness, cite uncertainty, and do not mention Fusion internals. Return only the visible answer; do not include chain-of-thought, hidden reasoning, or <think> blocks.",
+		"You are TrustedRouter Synth panel member %d. Answer the user's request independently. Focus on correctness, cite uncertainty, and do not mention Synth internals. Return only the visible answer; do not include chain-of-thought, hidden reasoning, or <think> blocks.",
 		index+1,
 	)
 	if len(out.Tools) > 0 {
 		system = fmt.Sprintf(
-			"You are TrustedRouter Fusion panel member %d. Solve the user's request independently. If the next correct step is a tool call, emit the tool call directly instead of describing it; otherwise return only the visible answer. Focus on correctness, do not mention Fusion internals, and do not include chain-of-thought or <think> blocks.",
+			"You are TrustedRouter Synth panel member %d. Solve the user's request independently. If the next correct step is a tool call, emit the tool call directly instead of describing it; otherwise return only the visible answer. Focus on correctness, do not mention Synth internals, and do not include chain-of-thought or <think> blocks.",
 			index+1,
 		)
 	}
@@ -1031,7 +1062,7 @@ func fusionJudgeRequest(req *types.OpenAIChatRequest, model string, panel []fusi
 	out.Messages = []types.OpenAIChatMessage{
 		{
 			Role:    "system",
-			Content: "You are the TrustedRouter Fusion judge. Compare panel responses and return compact JSON with keys consensus, contradictions, partial_coverage, unique_insights, blind_spots, and final_guidance. Do not write the final answer. Return only JSON; do not include chain-of-thought, hidden reasoning, or <think> blocks.",
+			Content: "You are the TrustedRouter Synth judge. Compare panel responses and return compact JSON with keys consensus, contradictions, partial_coverage, unique_insights, blind_spots, and final_guidance. Do not write the final answer. Return only JSON; do not include chain-of-thought, hidden reasoning, or <think> blocks.",
 		},
 		{
 			Role:    "user",
@@ -1050,9 +1081,9 @@ func fusionFinalRequest(req *types.OpenAIChatRequest, model string, judgeJSON st
 	out.Plugins = nil
 	out.Tools = stripFusionToolEntries(out.Tools)
 	out.Messages = append([]types.OpenAIChatMessage{}, req.Messages...)
-	instruction := "TrustedRouter Fusion panel answers and judge analysis follow. Use the panel answers as the primary evidence and the judge analysis as guidance to write the final answer for the original request. Return only the final visible answer. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
+	instruction := "TrustedRouter Synth panel answers and judge analysis follow. Use the panel answers as the primary evidence and the judge analysis as guidance to write the final answer for the original request. Return only the final visible answer. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
 	if len(out.Tools) > 0 {
-		instruction = "TrustedRouter Fusion panel answers and judge analysis follow. Continue solving the original task using the panel answers as primary evidence and the judge analysis as guidance. If the next correct action is a tool call, emit the tool call directly instead of describing it in text. Return visible text only when no tool call is needed. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
+		instruction = "TrustedRouter Synth panel answers and judge analysis follow. Continue solving the original task using the panel answers as primary evidence and the judge analysis as guidance. If the next correct action is a tool call, emit the tool call directly instead of describing it in text. Return visible text only when no tool call is needed. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
 	}
 	out.Messages = append(out.Messages, types.OpenAIChatMessage{
 		Role:    "user",
@@ -1185,7 +1216,7 @@ func fusionMetadata(input map[string]any, stage string, model string) map[string
 	for k, v := range input {
 		out[k] = v
 	}
-	out["trustedrouter_router"] = "trustedrouter/fusion"
+	out["trustedrouter_router"] = "trustedrouter/synth"
 	out["trustedrouter_fusion_stage"] = stage
 	out["trustedrouter_fusion_model"] = model
 	return out
@@ -1233,7 +1264,7 @@ func fusionPanelUsageTotals(panel []fusionCallResult) (int, int) {
 
 func selectFusionPanelResult(panel []fusionCallResult, strategy string) (fusionCallResult, error) {
 	if len(panel) == 0 {
-		return fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion panel produced no responses", Context: "fusion.panel"}
+		return fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth panel produced no responses", Context: "fusion.panel"}
 	}
 	if strategy == "first_non_refusal" {
 		for _, item := range panel {
@@ -1247,7 +1278,7 @@ func selectFusionPanelResult(panel []fusionCallResult, strategy string) (fusionC
 			return item, nil
 		}
 	}
-	return fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion panel produced no usable response", Context: "fusion.panel"}
+	return fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth panel produced no usable response", Context: "fusion.panel"}
 }
 
 func fusionPanelForSynthesis(panel []fusionCallResult, strategy string) ([]fusionCallResult, error) {
@@ -1261,7 +1292,7 @@ func fusionPanelForSynthesis(panel []fusionCallResult, strategy string) ([]fusio
 		}
 	}
 	if len(filtered) == 0 {
-		return nil, &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion panel produced no non-refusal responses", Context: "fusion.panel"}
+		return nil, &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth panel produced no non-refusal responses", Context: "fusion.panel"}
 	}
 	return filtered, nil
 }
@@ -1272,20 +1303,20 @@ func fusionFinalModels(config fusionConfig, requestedModel string, fallback stri
 		switch {
 		case config.JudgeModel != "":
 			raw = []string{config.JudgeModel}
-		case requestedModel != "" && requestedModel != trustedRouterFusionModel && requestedModel != trustedRouterFusionCodeModel:
+		case requestedModel != "" && !isFusionModel(requestedModel):
 			raw = []string{requestedModel}
 		default:
 			raw = fusionDefaultFinalModels
 		}
 	}
 	if len(raw) == 0 || len(raw) > 8 {
-		return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion final_models must contain 1-8 models", Context: "final_models"}
+		return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth final_models must contain 1-8 models", Context: "final_models"}
 	}
 	out := make([]string, 0, len(raw))
 	for _, model := range raw {
 		resolved := resolveFusionModelID(model)
 		if resolved == "" {
-			return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion final_models must contain non-empty model ids", Context: "final_models"}
+			return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth final_models must contain non-empty model ids", Context: "final_models"}
 		}
 		out = append(out, resolved)
 	}
@@ -1302,13 +1333,13 @@ func fusionJudgeModels(config fusionConfig, fallback string) ([]string, error) {
 		}
 	}
 	if len(raw) == 0 || len(raw) > 8 {
-		return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion judge_models must contain 1-8 models", Context: "judge_models"}
+		return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth judge_models must contain 1-8 models", Context: "judge_models"}
 	}
 	out := make([]string, 0, len(raw))
 	for _, model := range raw {
 		resolved := resolveFusionModelID(model)
 		if resolved == "" {
-			return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion judge_models must contain non-empty model ids", Context: "judge_models"}
+			return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth judge_models must contain non-empty model ids", Context: "judge_models"}
 		}
 		out = append(out, resolved)
 	}
@@ -1337,10 +1368,10 @@ func fusionJudgeResultUsable(item fusionCallResult) bool {
 
 func fusionValidateFinalResult(result adapter.StreamResult) error {
 	if strings.TrimSpace(result.Text) == "" && len(result.ToolCalls) == 0 {
-		return &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion final model returned an empty visible answer", Context: "fusion.final"}
+		return &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final model returned an empty visible answer", Context: "fusion.final"}
 	}
 	if strings.TrimSpace(result.Text) != "" && fusionLooksLikeRefusal(result.Text) {
-		return &adapter.AdapterError{Status: 502, Message: "trustedrouter/fusion final model returned a refusal", Context: "fusion.final"}
+		return &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final model returned a refusal", Context: "fusion.final"}
 	}
 	return nil
 }
@@ -1415,7 +1446,7 @@ func stripFusionToolEntries(tools []any) []any {
 	out := make([]any, 0, len(tools))
 	for _, item := range tools {
 		m, ok := item.(map[string]any)
-		if !ok || strings.TrimSpace(stringValue(m["type"])) != trustedRouterFusionTool {
+		if !ok || !isFusionToolType(stringValue(m["type"])) {
 			out = append(out, item)
 		}
 	}
@@ -1455,13 +1486,13 @@ func stringValue(value any) string {
 func stringList(value any, context string) ([]string, error) {
 	raw, ok := value.([]any)
 	if !ok {
-		return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion list fields must be arrays", Context: context}
+		return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth list fields must be arrays", Context: context}
 	}
 	out := make([]string, 0, len(raw))
 	for _, item := range raw {
 		value := strings.TrimSpace(stringValue(item))
 		if value == "" {
-			return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion model ids must be strings", Context: context}
+			return nil, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth model ids must be strings", Context: context}
 		}
 		out = append(out, value)
 	}
@@ -1476,7 +1507,7 @@ func intField(raw map[string]any, name string) (int, bool, error) {
 	switch v := value.(type) {
 	case float64:
 		if v != float64(int(v)) {
-			return 0, true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion integer field must be an integer", Context: name}
+			return 0, true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth integer field must be an integer", Context: name}
 		}
 		return int(v), true, nil
 	case int:
@@ -1484,10 +1515,10 @@ func intField(raw map[string]any, name string) (int, bool, error) {
 	case json.Number:
 		n, err := v.Int64()
 		if err != nil {
-			return 0, true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion integer field must be an integer", Context: name}
+			return 0, true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth integer field must be an integer", Context: name}
 		}
 		return int(n), true, nil
 	default:
-		return 0, true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/fusion integer field must be an integer", Context: name}
+		return 0, true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth integer field must be an integer", Context: name}
 	}
 }

@@ -1265,24 +1265,28 @@ func TestFusionPanelEvidenceSurfacesToolCalls(t *testing.T) {
 
 func TestFusionPanelRequestPassesFunctionToolsStripsFusionTool(t *testing.T) {
 	fnTool := map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}}
-	fusionTool := map[string]any{"type": trustedRouterFusionTool, "parameters": map[string]any{}}
-	req := &types.OpenAIChatRequest{
-		Model:    trustedRouterFusionModel,
-		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "weather in Paris?"}},
-		Tools:    []any{fnTool, fusionTool},
-	}
-	out := fusionPanelRequest(req, "some/model", 0, 0)
-	if len(out.Tools) != 1 {
-		t.Fatalf("panel tools = %d, want 1 (function tool kept, fusion config tool stripped)", len(out.Tools))
-	}
-	if m, _ := out.Tools[0].(map[string]any); m["type"] != "function" {
-		t.Fatalf("panel tool type = %v, want function", m["type"])
-	}
-	if len(out.Messages) == 0 || out.Messages[0].Role != "system" {
-		t.Fatalf("expected a leading system prompt")
-	}
-	if sys := types.ContentText(out.Messages[0].Content); !strings.Contains(sys, "emit the tool call directly") {
-		t.Fatalf("panel system prompt is not tool-aware: %q", sys)
+	for _, toolType := range []string{trustedRouterSynthTool, trustedRouterFusionTool} {
+		t.Run(toolType, func(t *testing.T) {
+			fusionTool := map[string]any{"type": toolType, "parameters": map[string]any{}}
+			req := &types.OpenAIChatRequest{
+				Model:    trustedRouterSynthModel,
+				Messages: []types.OpenAIChatMessage{{Role: "user", Content: "weather in Paris?"}},
+				Tools:    []any{fnTool, fusionTool},
+			}
+			out := fusionPanelRequest(req, "some/model", 0, 0)
+			if len(out.Tools) != 1 {
+				t.Fatalf("panel tools = %d, want 1 (function tool kept, synth config tool stripped)", len(out.Tools))
+			}
+			if m, _ := out.Tools[0].(map[string]any); m["type"] != "function" {
+				t.Fatalf("panel tool type = %v, want function", m["type"])
+			}
+			if len(out.Messages) == 0 || out.Messages[0].Role != "system" {
+				t.Fatalf("expected a leading system prompt")
+			}
+			if sys := types.ContentText(out.Messages[0].Content); !strings.Contains(sys, "emit the tool call directly") {
+				t.Fatalf("panel system prompt is not tool-aware: %q", sys)
+			}
+		})
 	}
 }
 
@@ -1437,6 +1441,9 @@ func TestFusionDefaultsUseOpenPanelExplicitJudgeAndFuserFallbacks(t *testing.T) 
 	if defaultFusionSelectionStrategy != "synthesize_non_refusals" {
 		t.Fatalf("defaultFusionSelectionStrategy = %q", defaultFusionSelectionStrategy)
 	}
+	if _, requested, err := fusionConfigForRequest(&types.OpenAIChatRequest{Model: trustedRouterSynthModel}); err != nil || !requested {
+		t.Fatalf("synth must be a recognized synth request: requested=%v err=%v", requested, err)
+	}
 	finalModels, err := fusionFinalModels(fusionConfig{}, trustedRouterFusionModel, fusionQualityPanel[0])
 	if err != nil {
 		t.Fatalf("fusionFinalModels: %v", err)
@@ -1456,8 +1463,10 @@ func TestFusionDefaultsUseOpenPanelExplicitJudgeAndFuserFallbacks(t *testing.T) 
 	// recognized fusion request, and the swap turns the general kimi-k2.6 into
 	// kimi-k2.7-code across the real default panel + judge — and ONLY the Kimi
 	// (non-Kimi models like the glm-5.2/m3 synthesizer are left untouched).
-	if _, requested, err := fusionConfigForRequest(&types.OpenAIChatRequest{Model: trustedRouterFusionCodeModel}); err != nil || !requested {
-		t.Fatalf("fusion-code must be a recognized fusion request: requested=%v err=%v", requested, err)
+	for _, model := range []string{trustedRouterSynthCodeModel, trustedRouterFusionCodeModel} {
+		if _, requested, err := fusionConfigForRequest(&types.OpenAIChatRequest{Model: model}); err != nil || !requested {
+			t.Fatalf("%s must be a recognized synth request: requested=%v err=%v", model, requested, err)
+		}
 	}
 	if got := applyFusionCodeSwap(fusionQualityPanel); got[1] != fusionCodeKimi {
 		t.Fatalf("fusion-code panel swap = %#v, want %s at index 1", got, fusionCodeKimi)
@@ -2352,7 +2361,7 @@ func (f *fusionEchoLLM) InvokeStreaming(
 	text := "analysis from " + req.Model
 	if f.refusalModels[req.Model] {
 		text = "I'm sorry, but I can't help with that."
-	} else if len(req.Messages) > 0 && strings.Contains(types.ContentText(req.Messages[len(req.Messages)-1].Content), "TrustedRouter Fusion panel answers and judge analysis follow") {
+	} else if len(req.Messages) > 0 && strings.Contains(types.ContentText(req.Messages[len(req.Messages)-1].Content), "TrustedRouter Synth panel answers and judge analysis follow") {
 		text = "final answer from " + req.Model
 	}
 	_, err := fmt.Fprintf(out, `event: message_start
