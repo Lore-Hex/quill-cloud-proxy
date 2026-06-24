@@ -20,17 +20,19 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		publicModel   string
 		upstreamModel string
 		wantModel     string
+		wantWaferZDR  bool
 	}{
-		{"openai", "openai/gpt-4o-mini", "openai/gpt-4o-mini", "gpt-4o-mini"},
-		{"cerebras", "meta-llama/llama-3.1-8b-instruct", "meta-llama/llama-3.1-8b-instruct", "llama3.1-8b"},
-		{"deepseek", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash", "deepseek-v4-flash"},
-		{"mistral", "mistralai/mistral-small-2603", "mistralai/mistral-small-2603", "mistral-small-2603"},
-		{"fireworks", "openai/gpt-oss-120b", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/gpt-oss-120b"},
-		{"friendli", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2"},
-		{"baseten", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2"},
-		{"wafer", "z-ai/glm-5.2", "GLM-5.2", "GLM-5.2"},
-		{"nebius", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B"},
-		{"minimax", "minimax/minimax-m2.7", "MiniMax-M2.7", "MiniMax-M2.7"},
+		{"openai", "openai/gpt-4o-mini", "openai/gpt-4o-mini", "gpt-4o-mini", false},
+		{"cerebras", "meta-llama/llama-3.1-8b-instruct", "meta-llama/llama-3.1-8b-instruct", "llama3.1-8b", false},
+		{"deepseek", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash", "deepseek-v4-flash", false},
+		{"mistral", "mistralai/mistral-small-2603", "mistralai/mistral-small-2603", "mistral-small-2603", false},
+		{"fireworks", "openai/gpt-oss-120b", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/gpt-oss-120b", false},
+		{"friendli", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2", false},
+		{"baseten", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2", false},
+		{"wafer", "z-ai/glm-5.2", "GLM-5.2", "GLM-5.2", true},
+		{"wafer", "moonshotai/kimi-k2.7-code", "Kimi-K2.7-Code", "Kimi-K2.7-Code", false},
+		{"nebius", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B", false},
+		{"minimax", "minimax/minimax-m2.7", "MiniMax-M2.7", "MiniMax-M2.7", false},
 	}
 
 	for _, tt := range tests {
@@ -46,8 +48,14 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				if r.Header.Get("User-Agent") != "TrustedRouter/1.0" {
 					t.Fatalf("user-agent = %q", r.Header.Get("User-Agent"))
 				}
-				if tt.provider == "wafer" && r.Header.Get("Wafer-ZDR") != "required" {
-					t.Fatalf("Wafer-ZDR header = %q, want required", r.Header.Get("Wafer-ZDR"))
+				if tt.provider == "wafer" {
+					got := r.Header.Get("Wafer-ZDR")
+					if tt.wantWaferZDR && got != "required" {
+						t.Fatalf("Wafer-ZDR header = %q, want required", got)
+					}
+					if !tt.wantWaferZDR && got != "" {
+						t.Fatalf("Wafer-ZDR header = %q, want omitted", got)
+					}
 				}
 				body, err := io.ReadAll(r.Body)
 				if err != nil {

@@ -228,7 +228,7 @@ func invokeOpenAICompatibleStreamingWithClient(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
-	if provider == "wafer" {
+	if provider == "wafer" && waferModelSupportsZDR(upstreamID) {
 		httpReq.Header.Set("Wafer-ZDR", "required")
 	}
 
@@ -1163,6 +1163,21 @@ var waferModelMap = map[string]string{
 	"deepseek/deepseek-v4-flash": "deepseek-v4-flash",
 	"deepseek/deepseek-v4-pro":   "deepseek-v4-pro",
 	"minimax/minimax-m3":         "MiniMax-M3",
+}
+
+var waferZDRNativeModels = map[string]struct{}{
+	"GLM-5.1":           {},
+	"GLM-5.2":           {},
+	"Kimi-K2.6":         {},
+	"Qwen3.5-397B-A17B": {},
+	"Qwen3.6-35B-A3B":   {},
+	"deepseek-v4-flash": {},
+	"deepseek-v4-pro":   {},
+}
+
+func waferModelSupportsZDR(upstreamID string) bool {
+	_, ok := waferZDRNativeModels[upstreamID]
+	return ok
 }
 
 var directModelMap = map[string]string{
