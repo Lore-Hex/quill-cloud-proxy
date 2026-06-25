@@ -25,6 +25,7 @@ const trustedRouterFusionCodeModel = "trustedrouter/fusion-code"
 const trustedRouterSynthTool = "trustedrouter:synth"
 const trustedRouterFusionTool = "trustedrouter:fusion"
 const defaultFusionSelectionStrategy = "synthesize_non_refusals"
+const maxFusionSynthesisPromptBytes = 4000
 
 // fusion uses the general Kimi in its panel and the code-tuned Kimi for its
 // default judge. trustedrouter/fusion-code is kept as an alias that also swaps
@@ -118,6 +119,7 @@ type fusionConfig struct {
 	JudgeModel          string
 	JudgeModels         []string
 	FinalModels         []string
+	SynthesisPrompt     string
 	MaxToolCalls        int
 	MaxCompletionTokens int
 	SelectionStrategy   string
@@ -373,6 +375,16 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 		}
 		config.FinalModels = models
 	}
+	for _, name := range []string{"synthesis_prompt", "synthesis_instructions", "final_prompt", "final_instructions"} {
+		value, ok, err := stringField(raw, name, maxFusionSynthesisPromptBytes)
+		if err != nil {
+			return config, err
+		}
+		if ok && value != "" {
+			config.SynthesisPrompt = value
+			break
+		}
+	}
 	if n, ok, err := intField(raw, "max_tool_calls"); err != nil {
 		return config, err
 	} else if ok {
@@ -408,6 +420,9 @@ func mergeFusionConfig(base, override fusionConfig) fusionConfig {
 	}
 	if len(override.FinalModels) > 0 {
 		base.FinalModels = append([]string(nil), override.FinalModels...)
+	}
+	if override.SynthesisPrompt != "" {
+		base.SynthesisPrompt = override.SynthesisPrompt
 	}
 	if override.MaxToolCalls != 0 {
 		base.MaxToolCalls = override.MaxToolCalls
@@ -490,7 +505,7 @@ func serveFusionNonStreaming(
 		writeFusionError(ctx, conn, trGateway, err)
 		return
 	}
-	final, finalAttempts, err := runFusionFinal(ctx, br, req, finalModels, judge.Result.Text, synthesisPanel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput)
+	final, finalAttempts, err := runFusionFinal(ctx, br, req, config, finalModels, judge.Result.Text, synthesisPanel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput)
 	if err != nil {
 		writeFusionError(ctx, conn, trGateway, err)
 		return
@@ -574,7 +589,7 @@ func serveFusionStreaming(
 		_ = writeFusionStreamError(statsW, requestID, req.Model, created, err)
 		return
 	}
-	err = serveFusionFinalStreamingObserved(ctx, statsW, br, req, finalModels, judge.Result.Text, panel, judge, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, created, observer)
+	err = serveFusionFinalStreamingObserved(ctx, statsW, br, req, config, finalModels, judge.Result.Text, panel, judge, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, created, observer)
 	if err != nil {
 		_ = writeFusionStreamError(statsW, requestID, req.Model, created, err)
 		return
@@ -851,6 +866,7 @@ func runFusionFinal(
 	ctx context.Context,
 	br llm.Client,
 	req *types.OpenAIChatRequest,
+	config fusionConfig,
 	finalModels []string,
 	judgeJSON string,
 	panel []fusionCallResult,
@@ -864,7 +880,7 @@ func runFusionFinal(
 	attempts := make([]fusionCallResult, 0, len(finalModels))
 	var lastErr error
 	for i, finalModel := range finalModels {
-		finalReq := fusionFinalRequest(req, finalModel, judgeJSON, panel)
+		finalReq := fusionFinalRequest(req, finalModel, judgeJSON, panel, config)
 		idempotencyKey := requestID + ":final"
 		if i > 0 {
 			idempotencyKey = fmt.Sprintf("%s:final:%d", requestID, i)
@@ -1071,6 +1087,7 @@ func serveFusionFinalStreaming(
 	conn io.Writer,
 	br llm.Client,
 	req *types.OpenAIChatRequest,
+	config fusionConfig,
 	finalModels []string,
 	judgeJSON string,
 	panel []fusionCallResult,
@@ -1084,7 +1101,7 @@ func serveFusionFinalStreaming(
 ) error {
 	var lastErr error
 	for i, finalModel := range finalModels {
-		finalReq := fusionFinalRequest(req, finalModel, judgeJSON, panel)
+		finalReq := fusionFinalRequest(req, finalModel, judgeJSON, panel, config)
 		finalReq.Stream = true
 		idempotencyKey := requestID + ":final"
 		if i > 0 {
@@ -1131,6 +1148,7 @@ func serveFusionFinalStreamingObserved(
 	streamW io.Writer,
 	br llm.Client,
 	req *types.OpenAIChatRequest,
+	config fusionConfig,
 	finalModels []string,
 	judgeJSON string,
 	panel []fusionCallResult,
@@ -1152,7 +1170,7 @@ func serveFusionFinalStreamingObserved(
 			"index": i,
 			"model": finalModel,
 		})
-		finalReq := fusionFinalRequest(req, finalModel, judgeJSON, panel)
+		finalReq := fusionFinalRequest(req, finalModel, judgeJSON, panel, config)
 		finalReq.Stream = true
 		idempotencyKey := requestID + ":final"
 		if i > 0 {
@@ -1614,7 +1632,7 @@ func fusionJudgeRequest(req *types.OpenAIChatRequest, model string, panel []fusi
 	return out
 }
 
-func fusionFinalRequest(req *types.OpenAIChatRequest, model string, judgeJSON string, panel []fusionCallResult) *types.OpenAIChatRequest {
+func fusionFinalRequest(req *types.OpenAIChatRequest, model string, judgeJSON string, panel []fusionCallResult, config fusionConfig) *types.OpenAIChatRequest {
 	out := cloneChatRequest(req)
 	out.Model = model
 	out.Models = nil
@@ -1625,6 +1643,9 @@ func fusionFinalRequest(req *types.OpenAIChatRequest, model string, judgeJSON st
 	instruction := "TrustedRouter Synth panel answers and judge analysis follow. Use the panel answers as the primary evidence and the judge analysis as guidance to write the final answer for the original request. Return only the final visible answer. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
 	if len(out.Tools) > 0 {
 		instruction = "TrustedRouter Synth panel answers and judge analysis follow. Continue solving the original task using the panel answers as primary evidence and the judge analysis as guidance. If the next correct action is a tool call, emit the tool call directly instead of describing it in text. Return visible text only when no tool call is needed. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
+	}
+	if custom := strings.TrimSpace(config.SynthesisPrompt); custom != "" {
+		instruction += "\n\nAdditional caller synthesis instructions:\n" + custom + "\n\nSystem constraints still apply: return only the final visible answer. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the original user asked for methodology."
 	}
 	out.Messages = append(out.Messages, types.OpenAIChatMessage{
 		Role:    "user",
@@ -2213,6 +2234,22 @@ func stringValue(value any) string {
 	default:
 		return ""
 	}
+}
+
+func stringField(raw map[string]any, name string, maxBytes int) (string, bool, error) {
+	value, ok := raw[name]
+	if !ok || value == nil {
+		return "", false, nil
+	}
+	rawString, ok := value.(string)
+	if !ok {
+		return "", true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth string field must be a string", Context: name}
+	}
+	out := strings.TrimSpace(rawString)
+	if maxBytes > 0 && len([]byte(out)) > maxBytes {
+		return "", true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth string field is too long", Context: name}
+	}
+	return out, true, nil
 }
 
 func stringList(value any, context string) ([]string, error) {

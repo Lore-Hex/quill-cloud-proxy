@@ -2081,7 +2081,7 @@ func TestFusionFinalRequestTellsToolModelsToEmitToolCalls(t *testing.T) {
 			},
 		},
 	}
-	final := fusionFinalRequest(req, "anthropic/claude-opus-4.8", `{"final_guidance":"call setup"}`, nil)
+	final := fusionFinalRequest(req, "anthropic/claude-opus-4.8", `{"final_guidance":"call setup"}`, nil, fusionConfig{})
 	if len(final.Tools) != 1 {
 		t.Fatalf("final tools = %#v, want only non-fusion tool", final.Tools)
 	}
@@ -2089,6 +2089,55 @@ func TestFusionFinalRequestTellsToolModelsToEmitToolCalls(t *testing.T) {
 	text := types.ContentText(last.Content)
 	if !strings.Contains(text, "emit the tool call directly") || strings.Contains(text, "write the final answer") {
 		t.Fatalf("bad tool final instruction: %s", text)
+	}
+}
+
+func TestFusionFinalRequestIncludesCallerSynthesisPrompt(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Model:    "trustedrouter/synth",
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "Compare both options."}},
+	}
+	final := fusionFinalRequest(
+		req,
+		"z-ai/glm-5.2",
+		`{"final_guidance":"prefer concise output"}`,
+		[]fusionCallResult{{Model: "model/panel", Result: adapter.StreamResult{Text: "panel answer"}}},
+		fusionConfig{SynthesisPrompt: "Return exactly three bullets and include a recommendation."},
+	)
+	last := final.Messages[len(final.Messages)-1]
+	text := types.ContentText(last.Content)
+	if !strings.Contains(text, "Additional caller synthesis instructions:") ||
+		!strings.Contains(text, "Return exactly three bullets and include a recommendation.") {
+		t.Fatalf("final prompt omitted caller synthesis prompt: %s", text)
+	}
+	if !strings.Contains(text, "System constraints still apply") ||
+		!strings.Contains(text, "Do not include chain-of-thought") {
+		t.Fatalf("final prompt omitted output hygiene after caller prompt: %s", text)
+	}
+}
+
+func TestParseFusionParametersAcceptsSynthesisPromptAliases(t *testing.T) {
+	config, err := parseFusionParameters(map[string]any{
+		"final_instructions": "Use JSON only.",
+	})
+	if err != nil {
+		t.Fatalf("parseFusionParameters: %v", err)
+	}
+	if config.SynthesisPrompt != "Use JSON only." {
+		t.Fatalf("SynthesisPrompt = %q, want alias value", config.SynthesisPrompt)
+	}
+}
+
+func TestParseFusionParametersRejectsInvalidSynthesisPrompt(t *testing.T) {
+	if _, err := parseFusionParameters(map[string]any{
+		"synthesis_prompt": 123,
+	}); err == nil {
+		t.Fatalf("parseFusionParameters accepted non-string synthesis_prompt")
+	}
+	if _, err := parseFusionParameters(map[string]any{
+		"synthesis_prompt": strings.Repeat("x", maxFusionSynthesisPromptBytes+1),
+	}); err == nil {
+		t.Fatalf("parseFusionParameters accepted overlong synthesis_prompt")
 	}
 }
 
