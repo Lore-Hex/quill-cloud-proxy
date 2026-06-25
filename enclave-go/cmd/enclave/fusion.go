@@ -573,7 +573,7 @@ func serveFusionStreaming(
 		_ = writeFusionStreamError(statsW, requestID, req.Model, created, err)
 		return
 	}
-	err = serveFusionFinalStreamingObserved(ctx, statsW, br, req, finalModels, judge.Result.Text, panel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, created, observer)
+	err = serveFusionFinalStreamingObserved(ctx, statsW, br, req, finalModels, judge.Result.Text, panel, judge, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, created, observer)
 	if err != nil {
 		_ = writeFusionStreamError(statsW, requestID, req.Model, created, err)
 		return
@@ -1048,6 +1048,7 @@ func serveFusionFinalStreaming(
 	finalModels []string,
 	judgeJSON string,
 	panel []fusionCallResult,
+	judge fusionCallResult,
 	trGateway *trustedrouter.Client,
 	secretCache *byokcache.Cache,
 	bearer string,
@@ -1107,6 +1108,7 @@ func serveFusionFinalStreamingObserved(
 	finalModels []string,
 	judgeJSON string,
 	panel []fusionCallResult,
+	judge fusionCallResult,
 	trGateway *trustedrouter.Client,
 	secretCache *byokcache.Cache,
 	bearer string,
@@ -1135,25 +1137,52 @@ func serveFusionFinalStreamingObserved(
 		if observerFactory != nil {
 			baseObserver = observerFactory("final", i, finalModel)
 		}
+		visibleFilter := newFusionVisibleStreamFilter(
+			func(text string) {
+				if text == "" {
+					return
+				}
+				if baseObserver != nil {
+					baseObserver(adapter.StreamDelta{Type: "text_delta", Text: text})
+				}
+				contentCommitted = true
+				_ = writeFusionStreamDelta(streamW, requestID, finalModel, created, map[string]any{"content": text}, "")
+			},
+			func(text string) {
+				if text == "" {
+					return
+				}
+				if baseObserver != nil {
+					baseObserver(adapter.StreamDelta{Type: "thinking_delta", Text: text})
+				}
+				_ = writeFusionStreamDelta(streamW, requestID, finalModel, created, map[string]any{
+					"reasoning_content": text,
+					"thinking":          text,
+				}, "")
+			},
+		)
 		observer := func(delta adapter.StreamDelta) {
-			if baseObserver != nil {
-				baseObserver(delta)
-			}
 			switch delta.Type {
 			case "text_delta":
 				if delta.Text == "" {
 					return
 				}
-				contentCommitted = true
-				_ = writeFusionStreamDelta(streamW, requestID, finalModel, created, map[string]any{"content": delta.Text}, "")
+				visibleFilter.Write(delta.Text)
 			case "thinking_delta":
 				if delta.Text == "" {
 					return
+				}
+				if baseObserver != nil {
+					baseObserver(delta)
 				}
 				_ = writeFusionStreamDelta(streamW, requestID, finalModel, created, map[string]any{
 					"reasoning_content": delta.Text,
 					"thinking":          delta.Text,
 				}, "")
+			default:
+				if baseObserver != nil {
+					baseObserver(delta)
+				}
 			}
 		}
 		final, err := runFusionCallValidatedObserved(
@@ -1187,6 +1216,7 @@ func serveFusionFinalStreamingObserved(
 			}
 			continue
 		}
+		visibleFilter.Flush()
 		_ = writeFusionStreamEvent(streamW, requestID, req.Model, created, map[string]any{
 			"event":  "final.done",
 			"stage":  "final",
@@ -1198,7 +1228,7 @@ func serveFusionFinalStreamingObserved(
 			return err
 		}
 		if chatIncludeUsage(req) {
-			if err := writeFusionStreamUsage(streamW, requestID, final.Model, created, final); err != nil {
+			if err := writeFusionStreamUsage(streamW, requestID, final.Model, created, final, fusionTotalCostMicrodollars(panel, []fusionCallResult{judge}, []fusionCallResult{final})); err != nil {
 				return err
 			}
 		}
@@ -1351,6 +1381,11 @@ func writeFusionChatCompletionResponse(
 		return err
 	}
 	payload["trustedrouter"] = map[string]any{"synth": details}
+	if cost, ok := fusionCostMicrodollars(details); ok {
+		if usage, ok := payload["usage"].(map[string]any); ok {
+			usage["cost_microdollars"] = cost
+		}
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -1412,11 +1447,14 @@ func writeFusionStreamDelta(w io.Writer, requestID string, model string, created
 	return err
 }
 
-func writeFusionStreamUsage(w io.Writer, requestID string, model string, created int64, result fusionCallResult) error {
+func writeFusionStreamUsage(w io.Writer, requestID string, model string, created int64, result fusionCallResult, totalCostMicrodollars int) error {
 	usage := map[string]any{
 		"prompt_tokens":     result.InputTokens,
 		"completion_tokens": result.OutputTokens,
 		"total_tokens":      result.InputTokens + result.OutputTokens,
+	}
+	if totalCostMicrodollars > 0 {
+		usage["cost_microdollars"] = totalCostMicrodollars
 	}
 	if result.Result.Usage != nil && result.Result.Usage.ReasoningTokens > 0 {
 		usage["completion_tokens_details"] = map[string]any{
@@ -1435,6 +1473,11 @@ func writeFusionStreamUsage(w io.Writer, requestID string, model string, created
 		"model":   model,
 		"choices": []map[string]any{},
 		"usage":   usage,
+	}
+	if totalCostMicrodollars > 0 {
+		chunk["trustedrouter"] = map[string]any{"synth": map[string]any{
+			"cost_microdollars": totalCostMicrodollars,
+		}}
 	}
 	body, err := json.Marshal(chunk)
 	if err != nil {
@@ -1605,6 +1648,9 @@ func fusionResponseDetails(
 		"panel":              fusionCallDetailsList(panel),
 		"note":               "Panel entries include raw provider thinking/output when the provider returns it.",
 	}
+	if cost := fusionTotalCostMicrodollars(panel, judgeAttempts, finalAttempts); cost > 0 {
+		details["cost_microdollars"] = cost
+	}
 	if len(judgeAttempts) > 0 {
 		details["judge_attempts"] = fusionCallDetailsList(judgeAttempts)
 		details["judge"] = fusionCallDetails(judgeAttempts[len(judgeAttempts)-1])
@@ -1613,6 +1659,35 @@ func fusionResponseDetails(
 		details["final_attempts"] = fusionCallDetailsList(finalAttempts)
 	}
 	return details
+}
+
+func fusionTotalCostMicrodollars(groups ...[]fusionCallResult) int {
+	total := 0
+	for _, items := range groups {
+		for _, item := range items {
+			if item.SettlementResult != nil {
+				total += item.SettlementResult.CostMicrodollars
+			}
+		}
+	}
+	return total
+}
+
+func fusionCostMicrodollars(details map[string]any) (int, bool) {
+	if details == nil {
+		return 0, false
+	}
+	switch value := details["cost_microdollars"].(type) {
+	case int:
+		return value, value > 0
+	case int64:
+		return int(value), value > 0
+	case float64:
+		if value > 0 && value == float64(int(value)) {
+			return int(value), true
+		}
+	}
+	return 0, false
 }
 
 func fusionCallDetailsList(items []fusionCallResult) []map[string]any {
@@ -2018,6 +2093,89 @@ func fusionVisibleAnswer(text string) string {
 		out = out[:start] + out[end:]
 	}
 	return strings.TrimSpace(out)
+}
+
+type fusionVisibleStreamFilter struct {
+	inThink      bool
+	pending      string
+	contentSent  bool
+	emitContent  func(string)
+	emitThinking func(string)
+}
+
+func newFusionVisibleStreamFilter(emitContent func(string), emitThinking func(string)) *fusionVisibleStreamFilter {
+	return &fusionVisibleStreamFilter{emitContent: emitContent, emitThinking: emitThinking}
+}
+
+func (f *fusionVisibleStreamFilter) Write(text string) {
+	f.pending += text
+	f.drain(false)
+}
+
+func (f *fusionVisibleStreamFilter) Flush() {
+	f.drain(true)
+}
+
+func (f *fusionVisibleStreamFilter) drain(flush bool) {
+	for {
+		if f.inThink {
+			idx := strings.Index(strings.ToLower(f.pending), "</think>")
+			if idx < 0 {
+				emitLen := len(f.pending)
+				if !flush {
+					if emitLen <= len("</think>")-1 {
+						return
+					}
+					emitLen -= len("</think>") - 1
+				}
+				if emitLen > 0 {
+					f.emitThinking(f.pending[:emitLen])
+					f.pending = f.pending[emitLen:]
+					continue
+				}
+				return
+			}
+			if idx > 0 {
+				f.emitThinking(f.pending[:idx])
+			}
+			f.pending = f.pending[idx+len("</think>"):]
+			f.inThink = false
+			continue
+		}
+
+		idx := strings.Index(strings.ToLower(f.pending), "<think>")
+		if idx < 0 {
+			emitLen := len(f.pending)
+			if !flush {
+				if emitLen <= len("<think>")-1 {
+					return
+				}
+				emitLen -= len("<think>") - 1
+			}
+			if emitLen > 0 {
+				f.emitVisibleContent(f.pending[:emitLen])
+				f.pending = f.pending[emitLen:]
+				continue
+			}
+			return
+		}
+		if idx > 0 {
+			f.emitVisibleContent(f.pending[:idx])
+		}
+		f.pending = f.pending[idx+len("<think>"):]
+		f.inThink = true
+	}
+}
+
+func (f *fusionVisibleStreamFilter) emitVisibleContent(text string) {
+	if !f.contentSent {
+		text = strings.TrimLeft(text, " \t\r\n")
+	}
+	if text == "" {
+		return
+	}
+	f.contentSent = true
+	f.emitContent(text)
 }
 
 func stringValue(value any) string {
