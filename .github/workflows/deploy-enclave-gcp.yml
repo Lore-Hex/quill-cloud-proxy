@@ -332,7 +332,13 @@ jobs:
         # steady state, not the post-roll boot transient (the regional endpoint
         # is briefly unreachable mid-replace -> false down -> false rollback).
         timeout-minutes: 12
-        run: bash tools/wait-region-synthetic-up.sh us-central1 us-central1
+        env:
+          WAIT_UP_SLEEP: "10"
+          WAIT_UP_ROUNDS: "72"
+        run: |
+          gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-minute \
+            --location=us-central1 --project=quill-cloud-proxy || true
+          bash tools/wait-region-synthetic-up.sh us-central1 us-central1
 
       - name: Canary gate — watch us-central1 only (3 min, post-stable)
         id: canary_us
@@ -407,7 +413,13 @@ jobs:
         # See us-central1. eu is where the boot-transient false-down repeatedly
         # tripped the canary while the region was actually healthy.
         timeout-minutes: 12
-        run: bash tools/wait-region-synthetic-up.sh europe-west4 europe-west4
+        env:
+          WAIT_UP_SLEEP: "10"
+          WAIT_UP_ROUNDS: "72"
+        run: |
+          gcloud scheduler jobs run trusted-router-synthetic-europe-west4-every-minute \
+            --location=europe-west4 --project=quill-cloud-proxy || true
+          bash tools/wait-region-synthetic-up.sh europe-west4 europe-west4
 
       - name: Canary gate — watch europe-west4 only (3 min, post-stable)
         id: canary_eu
@@ -471,7 +483,14 @@ jobs:
       - name: Wait for us-east4 synthetic up
         # See us-central1.
         timeout-minutes: 12
-        run: bash tools/wait-region-synthetic-up.sh us-east4 us-east4
+        env:
+          WAIT_UP_SLEEP: "10"
+          WAIT_UP_ROUNDS: "72"
+        run: |
+          # us-east4 is currently covered by the us-central1 synthetic worker.
+          gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-minute \
+            --location=us-central1 --project=quill-cloud-proxy || true
+          bash tools/wait-region-synthetic-up.sh us-east4 us-east4
 
       - name: Canary gate — watch us-east4 only (3 min, post-stable)
         id: canary_useast4
@@ -534,12 +553,12 @@ jobs:
             echo "smoke skipped: no SMOKE_TEST_API_KEY or synthetic monitor secret"
             exit 0
           fi
-          for attempt in $(seq 1 8); do
+          for attempt in $(seq 1 3); do
             response=$(curl -sw "\n%{http_code}" \
-              --silent --show-error --max-time 45 \
+              --silent --show-error --max-time 60 \
               -H "authorization: Bearer ${SMOKE_KEY}" \
               -H "content-type: application/json" \
-              -d '{"model":"trustedrouter/monitor","messages":[{"role":"user","content":"reply exactly PONG"}],"max_tokens":8}' \
+              -d '{"model":"trustedrouter/monitor","messages":[{"role":"user","content":"reply exactly PONG"}],"max_tokens":32}' \
               https://api.quillrouter.com/v1/chat/completions || true)
             code=$(echo "$response" | tail -n1)
             echo "attempt ${attempt}: HTTP ${code}"
@@ -547,7 +566,7 @@ jobs:
               echo "smoke ok — synthetic monitor route live on prod"
               exit 0
             fi
-            sleep 15
+            sleep 5
           done
           echo "smoke didn't observe a 200 within bounded retry window"
           # exit 0 — non-blocking
