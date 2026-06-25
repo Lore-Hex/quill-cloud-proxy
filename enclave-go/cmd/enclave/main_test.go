@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -518,6 +519,7 @@ func TestServeOneTrustedRouterRetriesFallbackCandidatesAndSettlesSelectedRoute(t
 func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 	bearer := "test-user-bearer"
 	privatePrompt := "private fusion prompt"
+	var controlPlaneMu sync.Mutex
 	var authorizeCalls []map[string]any
 	var settleCalls []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -534,11 +536,14 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 			if err := json.Unmarshal(body, &payload); err != nil {
 				t.Fatalf("decode authorize payload: %v", err)
 			}
+			controlPlaneMu.Lock()
 			authorizeCalls = append(authorizeCalls, payload)
+			authID := len(authorizeCalls)
+			controlPlaneMu.Unlock()
 			model := payload["model"].(string)
 			endpoint := model + "@test/prepaid"
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-				"authorization_id":       fmt.Sprintf("auth_fusion_%d", len(authorizeCalls)),
+				"authorization_id":       fmt.Sprintf("auth_fusion_%d", authID),
 				"workspace_id":           "ws_1",
 				"api_key_hash":           "key_1",
 				"model":                  model,
@@ -554,11 +559,14 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 			if err := json.Unmarshal(body, &payload); err != nil {
 				t.Fatalf("decode settle payload: %v", err)
 			}
+			controlPlaneMu.Lock()
 			settleCalls = append(settleCalls, payload)
+			settleID := len(settleCalls)
+			controlPlaneMu.Unlock()
 			model, _ := payload["selected_model"].(string)
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
 				"settled":           true,
-				"generation_id":     fmt.Sprintf("gen_fusion_%d", len(settleCalls)),
+				"generation_id":     fmt.Sprintf("gen_fusion_%d", settleID),
 				"cost_microdollars": 1,
 				"model":             model,
 				"provider":          "test",
@@ -643,12 +651,23 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 	if len(authorizeCalls) != 4 {
 		t.Fatalf("authorize calls = %d, want panel+panel+judge+final", len(authorizeCalls))
 	}
-	wantModels := []string{"google/gemini-3-flash-preview", "moonshotai/kimi-k2.7-code", "z-ai/glm-5.2", "z-ai/glm-5.2"}
-	wantRoutes := []string{"fusion.panel", "fusion.panel", "fusion.judge", "fusion.final"}
-	for i := range wantModels {
-		if authorizeCalls[i]["model"] != wantModels[i] || authorizeCalls[i]["route_type"] != wantRoutes[i] {
-			t.Fatalf("authorize[%d] = %#v, want model=%q route=%q", i, authorizeCalls[i], wantModels[i], wantRoutes[i])
+	panelModels := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		if authorizeCalls[i]["route_type"] != "fusion.panel" {
+			t.Fatalf("authorize[%d] = %#v, want panel route", i, authorizeCalls[i])
 		}
+		panelModels[authorizeCalls[i]["model"].(string)] = true
+	}
+	for _, want := range []string{"google/gemini-3-flash-preview", "moonshotai/kimi-k2.7-code"} {
+		if !panelModels[want] {
+			t.Fatalf("panel authorize calls = %#v, missing %q", authorizeCalls[:2], want)
+		}
+	}
+	if authorizeCalls[2]["model"] != "z-ai/glm-5.2" || authorizeCalls[2]["route_type"] != "fusion.judge" {
+		t.Fatalf("authorize[2] = %#v, want judge", authorizeCalls[2])
+	}
+	if authorizeCalls[3]["model"] != "z-ai/glm-5.2" || authorizeCalls[3]["route_type"] != "fusion.final" {
+		t.Fatalf("authorize[3] = %#v, want final", authorizeCalls[3])
 	}
 	if len(settleCalls) != 4 {
 		t.Fatalf("settle calls = %d, want 4", len(settleCalls))
@@ -662,6 +681,75 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 		!strings.Contains(finalCall.LastMessage, "analysis from moonshotai/kimi-k2.7-code") ||
 		!strings.Contains(finalCall.LastMessage, "Judge analysis JSON:") {
 		t.Fatalf("final fusion prompt did not include panel evidence and judge analysis: %s", finalCall.LastMessage)
+	}
+}
+
+func TestRunFusionPanelRunsMembersInParallel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode authorize payload: %v", err)
+			}
+			model := payload["model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id":       "auth_" + strings.ReplaceAll(model, "/", "_"),
+				"workspace_id":           "ws_1",
+				"api_key_hash":           "key_1",
+				"model":                  model,
+				"endpoint_id":            model + "@test/prepaid",
+				"provider":               "test",
+				"usage_type":             "Credits",
+				"limit_usage_type":       "Credits",
+				"route_candidates":       []any{},
+				"broadcast_destinations": []any{},
+			}})
+		case "/internal/gateway/settle":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"settled":           true,
+				"generation_id":     "gen_" + time.Now().Format("150405.000000000"),
+				"cost_microdollars": 1,
+				"provider":          "test",
+				"region":            "us-central1",
+			}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fusionEchoLLM{delay: 200 * time.Millisecond}
+	req := &types.OpenAIChatRequest{
+		Model:    "trustedrouter/synth",
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "compare"}},
+	}
+	config := fusionConfig{
+		AnalysisModels:      []string{"model/a", "model/b", "model/c"},
+		MaxCompletionTokens: 32,
+	}
+
+	started := time.Now()
+	panel, err := runFusionPanel(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_parallel", "log_parallel")
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("runFusionPanel: %v", err)
+	}
+	if len(panel) != 3 {
+		t.Fatalf("panel len = %d, want 3", len(panel))
+	}
+	for i, want := range []string{"model/a", "model/b", "model/c"} {
+		if panel[i].Model != want {
+			t.Fatalf("panel[%d].Model = %q, want %q; panel=%#v", i, panel[i].Model, want, panel)
+		}
+	}
+	if elapsed >= 500*time.Millisecond {
+		t.Fatalf("panel took %s; members appear to be serial instead of parallel", elapsed)
 	}
 }
 
@@ -990,6 +1078,7 @@ func TestServeOneFusionCodeRoutesCodeKimiInPanelAndJudge(t *testing.T) {
 	// trustedrouter/fusion-code request uses the DEFAULT panel + judge, so the
 	// kimi-k2.6 -> kimi-k2.7-code swap must show up in the authorize calls for
 	// the panel and the judge, and the general Kimi must never be authorized.
+	var controlPlaneMu sync.Mutex
 	var authorizeCalls []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -997,7 +1086,9 @@ func TestServeOneFusionCodeRoutesCodeKimiInPanelAndJudge(t *testing.T) {
 		_ = json.Unmarshal(body, &payload)
 		switch r.URL.Path {
 		case "/internal/gateway/authorize":
+			controlPlaneMu.Lock()
 			authorizeCalls = append(authorizeCalls, payload)
+			controlPlaneMu.Unlock()
 			model, _ := payload["model"].(string)
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
 				"authorization_id":       "auth_" + model,
@@ -1073,6 +1164,7 @@ func TestServeOneFusionCodeRoutesCodeKimiInPanelAndJudge(t *testing.T) {
 
 func TestServeOneTrustedRouterFusionSynthesizesOnlyNonRefusals(t *testing.T) {
 	bearer := "test-user-bearer"
+	var controlPlaneMu sync.Mutex
 	var authorizeCalls []map[string]any
 	var settleCalls []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1086,10 +1178,13 @@ func TestServeOneTrustedRouterFusionSynthesizesOnlyNonRefusals(t *testing.T) {
 			if err := json.Unmarshal(body, &payload); err != nil {
 				t.Fatalf("decode authorize payload: %v", err)
 			}
+			controlPlaneMu.Lock()
 			authorizeCalls = append(authorizeCalls, payload)
+			authID := len(authorizeCalls)
+			controlPlaneMu.Unlock()
 			model := payload["model"].(string)
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-				"authorization_id":       fmt.Sprintf("auth_fusion_%d", len(authorizeCalls)),
+				"authorization_id":       fmt.Sprintf("auth_fusion_%d", authID),
 				"workspace_id":           "ws_1",
 				"api_key_hash":           "key_1",
 				"model":                  model,
@@ -1105,11 +1200,14 @@ func TestServeOneTrustedRouterFusionSynthesizesOnlyNonRefusals(t *testing.T) {
 			if err := json.Unmarshal(body, &payload); err != nil {
 				t.Fatalf("decode settle payload: %v", err)
 			}
+			controlPlaneMu.Lock()
 			settleCalls = append(settleCalls, payload)
+			settleID := len(settleCalls)
+			controlPlaneMu.Unlock()
 			model, _ := payload["selected_model"].(string)
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
 				"settled":           true,
-				"generation_id":     fmt.Sprintf("gen_fusion_%d", len(settleCalls)),
+				"generation_id":     fmt.Sprintf("gen_fusion_%d", settleID),
 				"cost_microdollars": 1,
 				"model":             model,
 				"provider":          "test",
@@ -1422,6 +1520,7 @@ func TestServeOneTrustedRouterFusionFallsBackAcrossFinalModels(t *testing.T) {
 
 func TestServeOneTrustedRouterFusionContinuesAfterOnePanelFails(t *testing.T) {
 	bearer := "test-user-bearer"
+	var controlPlaneMu sync.Mutex
 	var authorizeCalls []map[string]any
 	var settleCalls []map[string]any
 	var refundCalls []map[string]any
@@ -1436,10 +1535,13 @@ func TestServeOneTrustedRouterFusionContinuesAfterOnePanelFails(t *testing.T) {
 			if err := json.Unmarshal(body, &payload); err != nil {
 				t.Fatalf("decode authorize payload: %v", err)
 			}
+			controlPlaneMu.Lock()
 			authorizeCalls = append(authorizeCalls, payload)
+			authID := len(authorizeCalls)
+			controlPlaneMu.Unlock()
 			model := payload["model"].(string)
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-				"authorization_id":       fmt.Sprintf("auth_fusion_%d", len(authorizeCalls)),
+				"authorization_id":       fmt.Sprintf("auth_fusion_%d", authID),
 				"workspace_id":           "ws_1",
 				"api_key_hash":           "key_1",
 				"model":                  model,
@@ -1455,11 +1557,14 @@ func TestServeOneTrustedRouterFusionContinuesAfterOnePanelFails(t *testing.T) {
 			if err := json.Unmarshal(body, &payload); err != nil {
 				t.Fatalf("decode settle payload: %v", err)
 			}
+			controlPlaneMu.Lock()
 			settleCalls = append(settleCalls, payload)
+			settleID := len(settleCalls)
+			controlPlaneMu.Unlock()
 			model, _ := payload["selected_model"].(string)
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
 				"settled":           true,
-				"generation_id":     fmt.Sprintf("gen_fusion_%d", len(settleCalls)),
+				"generation_id":     fmt.Sprintf("gen_fusion_%d", settleID),
 				"cost_microdollars": 1,
 				"model":             model,
 				"provider":          "test",
@@ -1469,7 +1574,9 @@ func TestServeOneTrustedRouterFusionContinuesAfterOnePanelFails(t *testing.T) {
 			if err := json.Unmarshal(body, &payload); err != nil {
 				t.Fatalf("decode refund payload: %v", err)
 			}
+			controlPlaneMu.Lock()
 			refundCalls = append(refundCalls, payload)
+			controlPlaneMu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
 		default:
 			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
@@ -2739,15 +2846,17 @@ type fusionEchoCall struct {
 }
 
 type fusionEchoLLM struct {
+	mu            sync.Mutex
 	calls         []fusionEchoCall
 	failModels    map[string]bool
 	refusalModels map[string]bool
 	textByModel   map[string]string
 	thinking      bool
+	delay         time.Duration
 }
 
 func (f *fusionEchoLLM) InvokeStreaming(
-	_ context.Context,
+	ctx context.Context,
 	req *types.OpenAIChatRequest,
 	_ *types.AnthropicMessagesRequest,
 	out io.Writer,
@@ -2757,12 +2866,21 @@ func (f *fusionEchoLLM) InvokeStreaming(
 	if len(options) > 0 {
 		option = options[0]
 	}
+	if f.delay > 0 {
+		select {
+		case <-time.After(f.delay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	f.mu.Lock()
 	f.calls = append(f.calls, fusionEchoCall{
 		Model:       req.Model,
 		Provider:    option.Provider,
 		Endpoint:    option.EndpointID,
 		LastMessage: lastChatMessageText(req.Messages),
 	})
+	f.mu.Unlock()
 	if f.failModels[req.Model] {
 		return errors.New("llm/upstream: http 502: provider error")
 	}

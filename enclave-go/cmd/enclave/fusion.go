@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
@@ -654,64 +655,89 @@ func runFusionPanelObserved(
 	streamCreated int64,
 	observerFactory func(stage string, index int, model string) adapter.StreamObserver,
 ) ([]fusionCallResult, error) {
-	panel := make([]fusionCallResult, 0, len(config.AnalysisModels))
-	var successCount int
-	var lastErr error
+	panel := make([]fusionCallResult, len(config.AnalysisModels))
+	successes := make([]bool, len(config.AnalysisModels))
+	errs := make([]error, len(config.AnalysisModels))
+	var wg sync.WaitGroup
+	var streamMu sync.Mutex
+	emit := func(event map[string]any) {
+		if streamW == nil {
+			return
+		}
+		streamMu.Lock()
+		defer streamMu.Unlock()
+		_ = writeFusionStreamEvent(streamW, requestID, req.Model, streamCreated, event)
+	}
 	for i, model := range config.AnalysisModels {
-		if streamW != nil {
-			_ = writeFusionStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
+		wg.Add(1)
+		go func(i int, model string) {
+			defer wg.Done()
+			emit(map[string]any{
 				"event": "panel.started",
 				"stage": "panel",
 				"index": i,
 				"model": model,
 			})
-		}
-		panelReq := fusionPanelRequest(req, model, i, config.MaxCompletionTokens)
-		var observer adapter.StreamObserver
-		if observerFactory != nil {
-			observer = observerFactory("panel", i, model)
-		}
-		result, err := runFusionCallObserved(ctx, br, panelReq, trGateway, secretCache, bearer, "fusion.panel", fmt.Sprintf("%s:panel:%d", requestID, i), requestLogID, nil, false, observer, streamW != nil)
-		if err != nil {
-			lastErr = err
-			fmt.Fprintf(os.Stderr,
-				"enclave.fusion_panel_failed request_log_id=%q request_id=%q model=%q error=%q\n",
-				requestLogID, requestID, model, err.Error(),
-			)
-			panel = append(panel, fusionCallResult{
-				Result: adapter.StreamResult{
-					Text:         fmt.Sprintf("[panel member %d, model %s failed before producing an answer: %s]", i+1, model, err.Error()),
-					FinishReason: "error",
-				},
-				Model: model,
-			})
-			if streamW != nil {
-				_ = writeFusionStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
+			panelReq := fusionPanelRequest(req, model, i, config.MaxCompletionTokens)
+			var observer adapter.StreamObserver
+			if observerFactory != nil {
+				if baseObserver := observerFactory("panel", i, model); baseObserver != nil {
+					observer = func(delta adapter.StreamDelta) {
+						streamMu.Lock()
+						defer streamMu.Unlock()
+						baseObserver(delta)
+					}
+				}
+			}
+			result, err := runFusionCallObserved(ctx, br, panelReq, trGateway, secretCache, bearer, "fusion.panel", fmt.Sprintf("%s:panel:%d", requestID, i), requestLogID, nil, false, observer, streamW != nil)
+			if err != nil {
+				errs[i] = err
+				fmt.Fprintf(os.Stderr,
+					"enclave.fusion_panel_failed request_log_id=%q request_id=%q model=%q error=%q\n",
+					requestLogID, requestID, model, err.Error(),
+				)
+				panel[i] = fusionCallResult{
+					Result: adapter.StreamResult{
+						Text:         fmt.Sprintf("[panel member %d, model %s failed before producing an answer: %s]", i+1, model, err.Error()),
+						FinishReason: "error",
+					},
+					Model: model,
+				}
+				emit(map[string]any{
 					"event": "panel.failed",
 					"stage": "panel",
 					"index": i,
 					"model": model,
 					"error": err.Error(),
 				})
+				return
 			}
-			continue
-		}
-		if strings.TrimSpace(result.Result.Text) == "" && len(result.Result.ToolCalls) == 0 {
-			result.Result.Text = fmt.Sprintf("[panel member %d, model %s returned an empty answer; finish_reason=%s]", i+1, model, result.Result.FinishReason)
-			result.Result.FinishReason = "empty"
-			panel = append(panel, result)
-			continue
-		}
-		successCount++
-		panel = append(panel, result)
-		if streamW != nil {
-			_ = writeFusionStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
+			if strings.TrimSpace(result.Result.Text) == "" && len(result.Result.ToolCalls) == 0 {
+				result.Result.Text = fmt.Sprintf("[panel member %d, model %s returned an empty answer; finish_reason=%s]", i+1, model, result.Result.FinishReason)
+				result.Result.FinishReason = "empty"
+				panel[i] = result
+				return
+			}
+			successes[i] = true
+			panel[i] = result
+			emit(map[string]any{
 				"event":  "panel.done",
 				"stage":  "panel",
 				"index":  i,
 				"model":  model,
 				"detail": fusionCallDetails(result),
 			})
+		}(i, model)
+	}
+	wg.Wait()
+	var successCount int
+	var lastErr error
+	for i := range config.AnalysisModels {
+		if successes[i] {
+			successCount++
+		}
+		if errs[i] != nil {
+			lastErr = errs[i]
 		}
 	}
 	if successCount == 0 {
