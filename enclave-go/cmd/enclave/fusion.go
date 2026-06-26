@@ -26,6 +26,7 @@ const trustedRouterSynthTool = "trustedrouter:synth"
 const trustedRouterFusionTool = "trustedrouter:fusion"
 const defaultFusionSelectionStrategy = "synthesize_non_refusals"
 const maxFusionSynthesisPromptBytes = 4000
+const maxFusionPanelPromptBytes = 4000
 
 // fusion uses the general Kimi in its panel and the code-tuned Kimi for its
 // default judge. trustedrouter/fusion-code is kept as an alias that also swaps
@@ -119,6 +120,7 @@ type fusionConfig struct {
 	JudgeModel          string
 	JudgeModels         []string
 	FinalModels         []string
+	PanelPrompt         string
 	SynthesisPrompt     string
 	MaxToolCalls        int
 	MaxCompletionTokens int
@@ -385,6 +387,11 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 			break
 		}
 	}
+	if value, ok, err := stringField(raw, "panel_prompt", maxFusionPanelPromptBytes); err != nil {
+		return config, err
+	} else if ok && value != "" {
+		config.PanelPrompt = value
+	}
 	if n, ok, err := intField(raw, "max_tool_calls"); err != nil {
 		return config, err
 	} else if ok {
@@ -420,6 +427,9 @@ func mergeFusionConfig(base, override fusionConfig) fusionConfig {
 	}
 	if len(override.FinalModels) > 0 {
 		base.FinalModels = append([]string(nil), override.FinalModels...)
+	}
+	if override.PanelPrompt != "" {
+		base.PanelPrompt = override.PanelPrompt
 	}
 	if override.SynthesisPrompt != "" {
 		base.SynthesisPrompt = override.SynthesisPrompt
@@ -693,7 +703,7 @@ func runFusionPanelObserved(
 				"index": i,
 				"model": model,
 			})
-			panelReq := fusionPanelRequest(req, model, i, config.MaxCompletionTokens)
+			panelReq := fusionPanelRequest(req, model, i, config.MaxCompletionTokens, config.PanelPrompt)
 			var observer adapter.StreamObserver
 			if observerFactory != nil {
 				if baseObserver := observerFactory("panel", i, model); baseObserver != nil {
@@ -1574,7 +1584,7 @@ func authorizeFusionCall(
 	return authz, options, nil
 }
 
-func fusionPanelRequest(req *types.OpenAIChatRequest, model string, index int, maxCompletionTokens int) *types.OpenAIChatRequest {
+func fusionPanelRequest(req *types.OpenAIChatRequest, model string, index int, maxCompletionTokens int, panelPrompt string) *types.OpenAIChatRequest {
 	out := cloneChatRequest(req)
 	out.Model = model
 	out.Models = nil
@@ -1602,6 +1612,9 @@ func fusionPanelRequest(req *types.OpenAIChatRequest, model string, index int, m
 			"You are TrustedRouter Synth panel member %d. Solve the user's request independently. If the next correct step is a tool call, emit the tool call directly instead of describing it; otherwise return only the visible answer. Focus on correctness, do not mention Synth internals, and do not include chain-of-thought or <think> blocks.",
 			index+1,
 		)
+	}
+	if custom := strings.TrimSpace(panelPrompt); custom != "" {
+		system += "\n\nAdditional caller panel instructions:\n" + custom + "\n\nSystem constraints still apply: answer independently and return only the visible answer."
 	}
 	out.Messages = prependSystem(req.Messages, system)
 	out.Metadata = fusionMetadata(req.Metadata, "panel", model)

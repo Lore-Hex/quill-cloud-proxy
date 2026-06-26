@@ -1786,7 +1786,7 @@ func TestFusionPanelRequestPassesFunctionToolsStripsFusionTool(t *testing.T) {
 				Messages: []types.OpenAIChatMessage{{Role: "user", Content: "weather in Paris?"}},
 				Tools:    []any{fnTool, fusionTool},
 			}
-			out := fusionPanelRequest(req, "some/model", 0, 0)
+			out := fusionPanelRequest(req, "some/model", 0, 0, "")
 			if len(out.Tools) != 1 {
 				t.Fatalf("panel tools = %d, want 1 (function tool kept, synth config tool stripped)", len(out.Tools))
 			}
@@ -1807,7 +1807,7 @@ func TestFusionPanelRequestNoToolsClearsToolChoice(t *testing.T) {
 	req := &types.OpenAIChatRequest{
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hi"}},
 	}
-	out := fusionPanelRequest(req, "some/model", 0, 0)
+	out := fusionPanelRequest(req, "some/model", 0, 0, "")
 	if len(out.Tools) != 0 {
 		t.Fatalf("panel tools = %d, want 0", len(out.Tools))
 	}
@@ -2102,7 +2102,10 @@ func TestFusionFinalRequestIncludesCallerSynthesisPrompt(t *testing.T) {
 		"z-ai/glm-5.2",
 		`{"final_guidance":"prefer concise output"}`,
 		[]fusionCallResult{{Model: "model/panel", Result: adapter.StreamResult{Text: "panel answer"}}},
-		fusionConfig{SynthesisPrompt: "Return exactly three bullets and include a recommendation."},
+		fusionConfig{
+			PanelPrompt:     "Panel-only instruction.",
+			SynthesisPrompt: "Return exactly three bullets and include a recommendation.",
+		},
 	)
 	last := final.Messages[len(final.Messages)-1]
 	text := types.ContentText(last.Content)
@@ -2113,6 +2116,28 @@ func TestFusionFinalRequestIncludesCallerSynthesisPrompt(t *testing.T) {
 	if !strings.Contains(text, "System constraints still apply") ||
 		!strings.Contains(text, "Do not include chain-of-thought") {
 		t.Fatalf("final prompt omitted output hygiene after caller prompt: %s", text)
+	}
+	if strings.Contains(text, "Panel-only instruction.") {
+		t.Fatalf("final prompt leaked caller panel prompt: %s", text)
+	}
+}
+
+func TestFusionPanelRequestIncludesCallerPanelPrompt(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Model:    "trustedrouter/synth",
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "Analyze tradeoffs."}},
+	}
+	out := fusionPanelRequest(req, "some/model", 0, 0, "Use the customer's internal rubric.")
+	if len(out.Messages) == 0 || out.Messages[0].Role != "system" {
+		t.Fatalf("expected a leading system prompt")
+	}
+	system := types.ContentText(out.Messages[0].Content)
+	if !strings.Contains(system, "Additional caller panel instructions:") ||
+		!strings.Contains(system, "Use the customer's internal rubric.") {
+		t.Fatalf("panel prompt omitted caller panel prompt: %s", system)
+	}
+	if len(out.Messages) < 2 || types.ContentText(out.Messages[1].Content) != "Analyze tradeoffs." {
+		t.Fatalf("panel prompt should preserve original user message: %#v", out.Messages)
 	}
 }
 
@@ -2128,6 +2153,18 @@ func TestParseFusionParametersAcceptsSynthesisPromptAliases(t *testing.T) {
 	}
 }
 
+func TestParseFusionParametersAcceptsPanelPrompt(t *testing.T) {
+	config, err := parseFusionParameters(map[string]any{
+		"panel_prompt": "Apply the agent context to every panel member.",
+	})
+	if err != nil {
+		t.Fatalf("parseFusionParameters: %v", err)
+	}
+	if config.PanelPrompt != "Apply the agent context to every panel member." {
+		t.Fatalf("PanelPrompt = %q, want panel_prompt value", config.PanelPrompt)
+	}
+}
+
 func TestParseFusionParametersRejectsInvalidSynthesisPrompt(t *testing.T) {
 	if _, err := parseFusionParameters(map[string]any{
 		"synthesis_prompt": 123,
@@ -2138,6 +2175,19 @@ func TestParseFusionParametersRejectsInvalidSynthesisPrompt(t *testing.T) {
 		"synthesis_prompt": strings.Repeat("x", maxFusionSynthesisPromptBytes+1),
 	}); err == nil {
 		t.Fatalf("parseFusionParameters accepted overlong synthesis_prompt")
+	}
+}
+
+func TestParseFusionParametersRejectsInvalidPanelPrompt(t *testing.T) {
+	if _, err := parseFusionParameters(map[string]any{
+		"panel_prompt": 123,
+	}); err == nil {
+		t.Fatalf("parseFusionParameters accepted non-string panel_prompt")
+	}
+	if _, err := parseFusionParameters(map[string]any{
+		"panel_prompt": strings.Repeat("x", maxFusionPanelPromptBytes+1),
+	}); err == nil {
+		t.Fatalf("parseFusionParameters accepted overlong panel_prompt")
 	}
 }
 
