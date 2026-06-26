@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -138,6 +139,29 @@ type fusionCallResult struct {
 	UsageEstimated   bool
 	Authorization    *trustedrouter.Authorization
 	SettlementResult *trustedrouter.SettleResult
+}
+
+type fusionModelFallbackError struct {
+	err error
+}
+
+func (e *fusionModelFallbackError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *fusionModelFallbackError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func fusionCanTryNextModel(err error) bool {
+	var fallbackErr *fusionModelFallbackError
+	return errors.As(err, &fallbackErr)
 }
 
 func maybeServeFusion(
@@ -838,7 +862,7 @@ func runFusionJudgeObserved(
 					"error": err.Error(),
 				})
 			}
-			continue
+			return fusionCallResult{}, attempts, err
 		}
 		attempts = append(attempts, judge)
 		if streamW != nil {
@@ -908,7 +932,7 @@ func runFusionFinal(
 			originalInput,
 			true,
 			fusionValidateFinalResult,
-			i == len(finalModels)-1,
+			true,
 		)
 		if err != nil {
 			lastErr = err
@@ -916,6 +940,9 @@ func runFusionFinal(
 				"enclave.fusion_final_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
 				requestLogID, requestID, finalModel, i+1, err.Error(),
 			)
+			if !fusionCanTryNextModel(err) {
+				return fusionCallResult{}, attempts, err
+			}
 			continue
 		}
 		attempts = append(attempts, final)
@@ -1028,7 +1055,7 @@ func runFusionCallValidatedObserved(
 			if trGateway != nil && trGateway.Enabled() {
 				_ = trGateway.Refund(ctx, authz, 502, "empty_output", time.Since(requestStarted).Seconds(), req.Metadata)
 			}
-			return fusionCallResult{}, &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final model returned an empty visible answer", Context: "fusion.final"}
+			return fusionCallResult{}, &fusionModelFallbackError{err: &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final model returned an empty visible answer", Context: "fusion.final"}}
 		}
 	}
 	if validateBeforeSettle != nil {
@@ -1134,7 +1161,7 @@ func serveFusionFinalStreaming(
 			lastErr = err
 			continue
 		}
-		committed, err := serveFusionFinalStreamingAttempt(ctx, conn, br, finalReq, anthropicReq, options, trGateway, authz, secretCache, time.Now(), originalInput, requestLogID, i == len(finalModels)-1)
+		committed, err := serveFusionFinalStreamingAttempt(ctx, conn, br, finalReq, anthropicReq, options, trGateway, authz, secretCache, time.Now(), originalInput, requestLogID, true)
 		if committed {
 			return nil
 		}
@@ -1144,7 +1171,7 @@ func serveFusionFinalStreaming(
 				"enclave.fusion_final_stream_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
 				requestLogID, requestID, finalModel, i+1, err.Error(),
 			)
-			continue
+			return err
 		}
 	}
 	if lastErr != nil {
@@ -1252,7 +1279,7 @@ func serveFusionFinalStreamingObserved(
 			originalInput,
 			true,
 			fusionValidateFinalResult,
-			i == len(finalModels)-1,
+			true,
 			observer,
 			true,
 		)
@@ -1266,6 +1293,9 @@ func serveFusionFinalStreamingObserved(
 				"error": err.Error(),
 			})
 			if contentCommitted {
+				return err
+			}
+			if !fusionCanTryNextModel(err) {
 				return err
 			}
 			continue
@@ -2051,10 +2081,10 @@ func fusionJudgeResultUsable(item fusionCallResult) bool {
 
 func fusionValidateFinalResult(result adapter.StreamResult) error {
 	if strings.TrimSpace(result.Text) == "" && len(result.ToolCalls) == 0 {
-		return &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final model returned an empty visible answer", Context: "fusion.final"}
+		return &fusionModelFallbackError{err: &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final model returned an empty visible answer", Context: "fusion.final"}}
 	}
 	if strings.TrimSpace(result.Text) != "" && fusionLooksLikeRefusal(result.Text) {
-		return &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final model returned a refusal", Context: "fusion.final"}
+		return &fusionModelFallbackError{err: &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final model returned a refusal", Context: "fusion.final"}}
 	}
 	return nil
 }

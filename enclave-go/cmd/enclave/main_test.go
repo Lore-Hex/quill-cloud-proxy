@@ -1328,14 +1328,14 @@ func TestServeOneTrustedRouterFusionFallsBackAcrossJudgeModels(t *testing.T) {
 
 	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
 	streamer := &fusionEchoLLM{
-		failModels:    map[string]bool{"model/judge-fails": true},
+		textByModel:   map[string]string{"model/judge-empty": ""},
 		refusalModels: map[string]bool{"model/judge-refuses": true},
 	}
 	serverConn, client := net.Pipe()
 	defer client.Close()
 	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
 
-	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["model/panel"],"model":"model/final","fallback_judges":["model/judge-fails","model/judge-refuses","model/judge-good"],"max_completion_tokens":64}}],"max_tokens":32}`)
+	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["model/panel"],"model":"model/final","fallback_judges":["model/judge-empty","model/judge-refuses","model/judge-good"],"max_completion_tokens":64}}],"max_tokens":32}`)
 	if _, err := fmt.Fprintf(
 		client,
 		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
@@ -1365,11 +1365,11 @@ func TestServeOneTrustedRouterFusionFallsBackAcrossJudgeModels(t *testing.T) {
 	if len(authorizeCalls) != 5 {
 		t.Fatalf("authorize calls = %d, want panel+3 judges+final", len(authorizeCalls))
 	}
-	if len(settleCalls) != 4 {
-		t.Fatalf("settle calls = %d, want panel+refusal judge+good judge+final", len(settleCalls))
+	if len(settleCalls) != 5 {
+		t.Fatalf("settle calls = %d, want panel+empty judge+refusal judge+good judge+final", len(settleCalls))
 	}
-	if len(refundCalls) != 1 {
-		t.Fatalf("refund calls = %d, want failed judge refund", len(refundCalls))
+	if len(refundCalls) != 0 {
+		t.Fatalf("refund calls = %d, want none because empty/refusal judges settled before model fallback", len(refundCalls))
 	}
 	wantRoutes := []string{"fusion.panel", "fusion.judge", "fusion.judge", "fusion.judge", "fusion.final"}
 	for i, want := range wantRoutes {
@@ -1377,14 +1377,14 @@ func TestServeOneTrustedRouterFusionFallsBackAcrossJudgeModels(t *testing.T) {
 			t.Fatalf("authorize[%d].route_type = %q, want %q", i, got, want)
 		}
 	}
-	if len(streamer.calls) != 7 {
-		t.Fatalf("provider calls = %#v, want 7 including upstream retries", streamer.calls)
+	if len(streamer.calls) != 5 {
+		t.Fatalf("provider calls = %#v, want panel+empty judge+refusal judge+good judge+final", streamer.calls)
 	}
 	gotModels := []string{}
 	for _, call := range streamer.calls {
 		gotModels = append(gotModels, call.Model)
 	}
-	wantModels := []string{"model/panel", "model/judge-fails", "model/judge-fails", "model/judge-fails", "model/judge-refuses", "model/judge-good", "model/final"}
+	wantModels := []string{"model/panel", "model/judge-empty", "model/judge-refuses", "model/judge-good", "model/final"}
 	if strings.Join(gotModels, ",") != strings.Join(wantModels, ",") {
 		t.Fatalf("provider models = %#v, want %#v", gotModels, wantModels)
 	}
@@ -1392,8 +1392,239 @@ func TestServeOneTrustedRouterFusionFallsBackAcrossJudgeModels(t *testing.T) {
 	if !strings.Contains(finalPrompt, "analysis from model/judge-good") {
 		t.Fatalf("final prompt did not use successful judge analysis: %s", finalPrompt)
 	}
-	if strings.Contains(finalPrompt, "model/judge-refuses") || strings.Contains(finalPrompt, "I'm sorry, but I can't help with that.") {
+	if strings.Contains(finalPrompt, "model/judge-empty") || strings.Contains(finalPrompt, "model/judge-refuses") || strings.Contains(finalPrompt, "I'm sorry, but I can't help with that.") {
 		t.Fatalf("final prompt included rejected judge output: %s", finalPrompt)
+	}
+}
+
+func TestServeOneTrustedRouterFusionDoesNotUseJudgeModelFallbackOnProviderError(t *testing.T) {
+	bearer := "test-user-bearer"
+	var authorizeCalls []map[string]any
+	var settleCalls []map[string]any
+	var refundCalls []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode authorize payload: %v", err)
+			}
+			authorizeCalls = append(authorizeCalls, payload)
+			model := payload["model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id":       fmt.Sprintf("auth_fusion_%d", len(authorizeCalls)),
+				"workspace_id":           "ws_1",
+				"api_key_hash":           "key_1",
+				"model":                  model,
+				"endpoint_id":            model + "@test/prepaid",
+				"provider":               "test",
+				"usage_type":             "Credits",
+				"limit_usage_type":       "Credits",
+				"route_candidates":       []any{},
+				"broadcast_destinations": []any{},
+			}})
+		case "/internal/gateway/settle":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode settle payload: %v", err)
+			}
+			settleCalls = append(settleCalls, payload)
+			model, _ := payload["selected_model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"settled":           true,
+				"generation_id":     fmt.Sprintf("gen_fusion_%d", len(settleCalls)),
+				"cost_microdollars": 1,
+				"model":             model,
+				"provider":          "test",
+			}})
+		case "/internal/gateway/refund":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode refund payload: %v", err)
+			}
+			refundCalls = append(refundCalls, payload)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fusionEchoLLM{failModels: map[string]bool{"model/judge-fails": true}}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["model/panel"],"model":"model/final","fallback_judges":["model/judge-fails","model/judge-good"],"max_completion_tokens":64}}],"max_tokens":32}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 502 {
+		t.Fatalf("status = %d body=%s; provider failure must not consume fallback judge model", resp.StatusCode, body)
+	}
+	if len(authorizeCalls) != 2 {
+		t.Fatalf("authorize calls = %d, want panel+failed judge only", len(authorizeCalls))
+	}
+	if len(settleCalls) != 1 {
+		t.Fatalf("settle calls = %d, want only successful panel settled", len(settleCalls))
+	}
+	if len(refundCalls) != 1 {
+		t.Fatalf("refund calls = %d, want failed judge hold refunded", len(refundCalls))
+	}
+	for _, call := range streamer.calls {
+		if call.Model == "model/judge-good" || call.Model == "model/final" {
+			t.Fatalf("provider fallback model was called after judge provider error: %#v", streamer.calls)
+		}
+	}
+}
+
+func TestServeOneTrustedRouterFusionRetriesSameModelProvidersBeforeModelFallbacks(t *testing.T) {
+	bearer := "test-user-bearer"
+	var authorizeCalls []map[string]any
+	var settleCalls []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode authorize payload: %v", err)
+			}
+			authorizeCalls = append(authorizeCalls, payload)
+			model := payload["model"].(string)
+			provider := "test"
+			candidates := []any{}
+			switch model {
+			case "model/judge-glm":
+				provider = "badjudge"
+				candidates = []any{
+					map[string]any{"model": model, "endpoint_id": model + "@badjudge/prepaid", "provider": "badjudge", "usage_type": "Credits"},
+					map[string]any{"model": model, "endpoint_id": model + "@goodjudge/prepaid", "provider": "goodjudge", "usage_type": "Credits"},
+				}
+			case "model/final-glm":
+				provider = "badfinal"
+				candidates = []any{
+					map[string]any{"model": model, "endpoint_id": model + "@badfinal/prepaid", "provider": "badfinal", "usage_type": "Credits"},
+					map[string]any{"model": model, "endpoint_id": model + "@goodfinal/prepaid", "provider": "goodfinal", "usage_type": "Credits"},
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id":       fmt.Sprintf("auth_fusion_%d", len(authorizeCalls)),
+				"workspace_id":           "ws_1",
+				"api_key_hash":           "key_1",
+				"model":                  model,
+				"endpoint_id":            model + "@" + provider + "/prepaid",
+				"provider":               provider,
+				"usage_type":             "Credits",
+				"limit_usage_type":       "Credits",
+				"route_candidates":       candidates,
+				"broadcast_destinations": []any{},
+			}})
+		case "/internal/gateway/settle":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode settle payload: %v", err)
+			}
+			settleCalls = append(settleCalls, payload)
+			model, _ := payload["selected_model"].(string)
+			provider, _ := payload["selected_provider"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"settled":           true,
+				"generation_id":     fmt.Sprintf("gen_fusion_%d", len(settleCalls)),
+				"cost_microdollars": 1,
+				"model":             model,
+				"provider":          provider,
+			}})
+		case "/internal/gateway/refund":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fusionEchoLLM{failProviders: map[string]bool{"badjudge": true, "badfinal": true}}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["model/panel"],"judge_models":["model/judge-glm","model/judge-m3"],"final_models":["model/final-glm","model/final-m3"],"max_completion_tokens":64}}],"max_tokens":32}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "final answer from model/final-glm") {
+		t.Fatalf("did not stay on the requested final model after provider fallback: %s", body)
+	}
+	for _, call := range authorizeCalls {
+		model, _ := call["model"].(string)
+		if model == "model/judge-m3" || model == "model/final-m3" {
+			t.Fatalf("authorized model fallback even though same-model provider fallback succeeded: %#v", authorizeCalls)
+		}
+	}
+	got := []string{}
+	for _, call := range streamer.calls {
+		got = append(got, call.Model+"@"+call.Provider)
+	}
+	wantContains := []string{
+		"model/judge-glm@badjudge",
+		"model/judge-glm@goodjudge",
+		"model/final-glm@badfinal",
+		"model/final-glm@goodfinal",
+	}
+	joined := strings.Join(got, ",")
+	for _, want := range wantContains {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("provider calls = %#v, missing %s", got, want)
+		}
+	}
+	if len(settleCalls) == 0 || !strings.Contains(fmt.Sprint(settleCalls), "model/final-glm@goodfinal/prepaid") {
+		t.Fatalf("settlement did not record selected same-model provider route: %#v", settleCalls)
 	}
 }
 
@@ -1456,14 +1687,14 @@ func TestServeOneTrustedRouterFusionFallsBackAcrossFinalModels(t *testing.T) {
 
 	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
 	streamer := &fusionEchoLLM{
-		failModels:    map[string]bool{"model/final-fails": true},
+		textByModel:   map[string]string{"model/final-empty": ""},
 		refusalModels: map[string]bool{"model/final-refuses": true},
 	}
 	serverConn, client := net.Pipe()
 	defer client.Close()
 	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
 
-	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["model/panel"],"judge_models":["model/judge-good"],"final_models":["model/final-fails","model/final-refuses","model/final-good"],"max_completion_tokens":64}}],"max_tokens":32}`)
+	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["model/panel"],"judge_models":["model/judge-good"],"final_models":["model/final-empty","model/final-refuses","model/final-good"],"max_completion_tokens":64}}],"max_tokens":32}`)
 	if _, err := fmt.Fprintf(
 		client,
 		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
@@ -1509,12 +1740,115 @@ func TestServeOneTrustedRouterFusionFallsBackAcrossFinalModels(t *testing.T) {
 	wantModels := []string{
 		"model/panel",
 		"model/judge-good",
-		"model/final-fails",
+		"model/final-empty",
 		"model/final-refuses",
 		"model/final-good",
 	}
 	if strings.Join(gotModels, ",") != strings.Join(wantModels, ",") {
 		t.Fatalf("provider models = %#v, want %#v", gotModels, wantModels)
+	}
+}
+
+func TestServeOneTrustedRouterFusionDoesNotUseFinalModelFallbackOnProviderError(t *testing.T) {
+	bearer := "test-user-bearer"
+	var authorizeCalls []map[string]any
+	var settleCalls []map[string]any
+	var refundCalls []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode authorize payload: %v", err)
+			}
+			authorizeCalls = append(authorizeCalls, payload)
+			model := payload["model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id":       fmt.Sprintf("auth_fusion_%d", len(authorizeCalls)),
+				"workspace_id":           "ws_1",
+				"api_key_hash":           "key_1",
+				"model":                  model,
+				"endpoint_id":            model + "@test/prepaid",
+				"provider":               "test",
+				"usage_type":             "Credits",
+				"limit_usage_type":       "Credits",
+				"route_candidates":       []any{},
+				"broadcast_destinations": []any{},
+			}})
+		case "/internal/gateway/settle":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode settle payload: %v", err)
+			}
+			settleCalls = append(settleCalls, payload)
+			model, _ := payload["selected_model"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"settled":           true,
+				"generation_id":     fmt.Sprintf("gen_fusion_%d", len(settleCalls)),
+				"cost_microdollars": 1,
+				"model":             model,
+				"provider":          "test",
+			}})
+		case "/internal/gateway/refund":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode refund payload: %v", err)
+			}
+			refundCalls = append(refundCalls, payload)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fusionEchoLLM{failModels: map[string]bool{"model/final-fails": true}}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["model/panel"],"judge_models":["model/judge-good"],"final_models":["model/final-fails","model/final-good"],"max_completion_tokens":64}}],"max_tokens":32}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 502 {
+		t.Fatalf("status = %d body=%s; provider failure must not consume fallback final model", resp.StatusCode, body)
+	}
+	if len(authorizeCalls) != 3 {
+		t.Fatalf("authorize calls = %d, want panel+judge+failed final only", len(authorizeCalls))
+	}
+	if len(settleCalls) != 2 {
+		t.Fatalf("settle calls = %d, want panel+judge only", len(settleCalls))
+	}
+	if len(refundCalls) != 1 {
+		t.Fatalf("refund calls = %d, want failed final hold refunded", len(refundCalls))
+	}
+	for _, call := range streamer.calls {
+		if call.Model == "model/final-good" {
+			t.Fatalf("final fallback model was called after provider error: %#v", streamer.calls)
+		}
 	}
 }
 
@@ -2948,6 +3282,7 @@ type fusionEchoLLM struct {
 	mu            sync.Mutex
 	calls         []fusionEchoCall
 	failModels    map[string]bool
+	failProviders map[string]bool
 	refusalModels map[string]bool
 	textByModel   map[string]string
 	thinking      bool
@@ -2980,6 +3315,9 @@ func (f *fusionEchoLLM) InvokeStreaming(
 		LastMessage: lastChatMessageText(req.Messages),
 	})
 	f.mu.Unlock()
+	if f.failProviders[option.Provider] {
+		return errors.New("llm/upstream: http 429: rate limited")
+	}
 	if f.failModels[req.Model] {
 		return errors.New("llm/upstream: http 502: provider error")
 	}
