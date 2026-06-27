@@ -188,6 +188,7 @@ type fusionCallResult struct {
 	InputTokens      int
 	OutputTokens     int
 	UsageEstimated   bool
+	ElapsedMS        int64
 	Authorization    *trustedrouter.Authorization
 	SettlementResult *trustedrouter.SettleResult
 }
@@ -1154,6 +1155,7 @@ func runFusionCallValidatedObserved(
 	if err != nil {
 		return fusionCallResult{}, err
 	}
+	elapsedMS := time.Since(requestStarted).Milliseconds()
 	if selectedModel == "" && authz != nil {
 		selectedModel = authz.Model
 	}
@@ -1168,6 +1170,7 @@ func runFusionCallValidatedObserved(
 		InputTokens:      inputTokens,
 		OutputTokens:     outputTokens,
 		UsageEstimated:   usageEstimated,
+		ElapsedMS:        elapsedMS,
 		Authorization:    authz,
 		SettlementResult: settleResult,
 	}, nil
@@ -1862,6 +1865,9 @@ func fusionCallDetails(item fusionCallResult) map[string]any {
 		"visible_answer": strings.TrimSpace(item.Result.Text),
 		"input_tokens":   item.InputTokens,
 		"output_tokens":  item.OutputTokens,
+	}
+	if item.ElapsedMS > 0 {
+		detail["elapsed_ms"] = item.ElapsedMS
 	}
 	if item.UsageEstimated {
 		detail["usage_estimated"] = true

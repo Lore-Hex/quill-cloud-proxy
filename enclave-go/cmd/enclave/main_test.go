@@ -2058,9 +2058,13 @@ func TestFusionCallDetailsIncludesRawThinkingWhenProviderReturnsIt(t *testing.T)
 		RawText:      "<think>raw thinking block</think>\nvisible answer",
 		InputTokens:  11,
 		OutputTokens: 7,
+		ElapsedMS:    1234,
 	})
 	if detail["visible_answer"] != "visible answer" {
 		t.Fatalf("visible_answer = %#v", detail["visible_answer"])
+	}
+	if detail["elapsed_ms"] != int64(1234) {
+		t.Fatalf("elapsed_ms = %#v, want 1234", detail["elapsed_ms"])
 	}
 	if raw := detail["raw_output"].(string); !strings.Contains(raw, "<think>raw thinking block</think>") {
 		t.Fatalf("raw_output = %q, want raw think block", raw)
