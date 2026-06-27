@@ -2078,7 +2078,22 @@ func TestFusionCallDetailsIncludesRawThinkingWhenProviderReturnsIt(t *testing.T)
 	}
 }
 
-func TestFusionPanelGLMOverthinkingRunsSameModelRescue(t *testing.T) {
+func TestFusionOverthinkingConfigRequiresSynthCode(t *testing.T) {
+	if got := fusionOverthinkingConfig("z-ai/glm-5.2", "fusion.panel", true, false); got.enabled {
+		t.Fatalf("plain trustedrouter/synth armed overthinking breaker: %#v", got)
+	}
+	if got := fusionOverthinkingConfig("z-ai/glm-5.2", "fusion.final", true, false); got.enabled {
+		t.Fatalf("plain trustedrouter/synth armed final overthinking breaker: %#v", got)
+	}
+	if got := fusionOverthinkingConfig("z-ai/glm-5.2", "fusion.panel", true, true); !got.enabled || got.thresholdTokens != fusionPanelThinkingTokenBudget {
+		t.Fatalf("synth-code panel breaker = %#v, want enabled panel budget", got)
+	}
+	if got := fusionOverthinkingConfig("z-ai/glm-5.2", "fusion.judge", true, true); got.enabled {
+		t.Fatalf("judge should never arm overthinking breaker: %#v", got)
+	}
+}
+
+func TestFusionCodePanelGLMOverthinkingRunsSameModelRescue(t *testing.T) {
 	trGateway, recorder, closeServer := newFusionGatewayRecorder(t)
 	defer closeServer()
 
@@ -2087,10 +2102,11 @@ func TestFusionPanelGLMOverthinkingRunsSameModelRescue(t *testing.T) {
 		rescueTextByModel: map[string]string{"z-ai/glm-5.2": "rescued panel step"},
 	}
 	req := &types.OpenAIChatRequest{
-		Model:    trustedRouterSynthModel,
+		Model:    trustedRouterSynthCodeModel,
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "Implement the next step."}},
 	}
 	panel, err := runFusionPanel(context.Background(), streamer, req, fusionConfig{
+		CodeModel:           true,
 		AnalysisModels:      []string{"z-ai/glm-5.2"},
 		MaxCompletionTokens: 64,
 	}, trGateway, nil, "bearer", "req_overthink_panel", "log_overthink_panel")
@@ -2134,7 +2150,7 @@ func TestFusionPanelGLMOverthinkingRunsSameModelRescue(t *testing.T) {
 	}
 }
 
-func TestFusionFinalGLMOverthinkingRunsRescueBeforeModelFallback(t *testing.T) {
+func TestFusionCodeFinalGLMOverthinkingRunsRescueBeforeModelFallback(t *testing.T) {
 	trGateway, recorder, closeServer := newFusionGatewayRecorder(t)
 	defer closeServer()
 
@@ -2143,14 +2159,14 @@ func TestFusionFinalGLMOverthinkingRunsRescueBeforeModelFallback(t *testing.T) {
 		rescueTextByModel: map[string]string{"z-ai/glm-5.2": "rescued final answer"},
 	}
 	req := &types.OpenAIChatRequest{
-		Model:    trustedRouterSynthModel,
+		Model:    trustedRouterSynthCodeModel,
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "Return the final answer."}},
 	}
 	final, attempts, err := runFusionFinal(
 		context.Background(),
 		streamer,
 		req,
-		fusionConfig{MaxCompletionTokens: 64},
+		fusionConfig{CodeModel: true, MaxCompletionTokens: 64},
 		[]string{"z-ai/glm-5.2", "minimax/minimax-m3"},
 		`{"final_guidance":"answer now"}`,
 		[]fusionCallResult{{Model: "model/panel", Result: adapter.StreamResult{Text: "panel evidence"}}},

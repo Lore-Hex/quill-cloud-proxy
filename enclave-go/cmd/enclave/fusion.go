@@ -32,6 +32,7 @@ const fusionPanelThinkingTokenBudget = 1000
 const fusionFinalThinkingTokenBudget = 2000
 const fusionPanelRescueMaxTokens = 800
 const fusionFinalRescueMaxTokens = 1600
+const fusionSynthCodeMetadataKey = "trustedrouter_synth_code"
 
 var errFusionOverthinkingBudget = errors.New("trustedrouter/synth thinking budget exceeded")
 
@@ -137,6 +138,7 @@ func isFusionToolType(toolType string) bool {
 
 type fusionConfig struct {
 	Enabled             bool
+	CodeModel           bool
 	AnalysisModels      []string
 	JudgeModel          string
 	JudgeModels         []string
@@ -292,14 +294,17 @@ func maybeServeFusion(
 		return true, err
 	}
 
+	codeModel := isFusionCodeModel(req.Model)
+	config.CodeModel = codeModel
+
 	// fusion-code: swap the general Kimi for its code-tuned variant in the
 	// panel + judge (the synthesizer carries no Kimi, and a user's explicit
 	// final_models should not be rewritten).
-	if isFusionCodeModel(req.Model) {
+	if codeModel {
 		config.AnalysisModels = applyFusionCodeSwap(config.AnalysisModels)
 		judgeModels = applyFusionCodeSwap(judgeModels)
 	}
-	config.BuiltInPanelPrompt, config.BuiltInFinalPrompt = fusionBuiltInPrompts(isFusionCodeModel(req.Model))
+	config.BuiltInPanelPrompt, config.BuiltInFinalPrompt = fusionBuiltInPrompts(codeModel)
 
 	if req.Stream {
 		serveFusionStreaming(ctx, conn, br, req, config, finalModels, judgeModels, trGateway, secretCache, bearer, originalInput, requestLogID)
@@ -803,6 +808,7 @@ func runFusionPanelObserved(
 				"model": model,
 			})
 			panelReq := fusionPanelRequest(req, model, i, config.MaxCompletionTokens, config.PanelPrompt, config.BuiltInPanelPrompt)
+			fusionMarkSynthCodeRequest(panelReq, config.CodeModel)
 			var observer adapter.StreamObserver
 			if observerFactory != nil {
 				if baseObserver := observerFactory("panel", i, model); baseObserver != nil {
@@ -1136,7 +1142,7 @@ func runFusionCallValidatedObservedAttempt(
 	}
 	invokeCtx := ctx
 	cancelInvoke := func() {}
-	overthinking := fusionOverthinkingConfig(req.Model, routeType, allowOverthinkingRescue)
+	overthinking := fusionOverthinkingConfig(req.Model, routeType, allowOverthinkingRescue, fusionIsSynthCodeSubrequest(req))
 	if overthinking.enabled {
 		var cancel context.CancelFunc
 		invokeCtx, cancel = context.WithCancel(ctx)
@@ -1838,6 +1844,7 @@ func fusionFinalRequest(req *types.OpenAIChatRequest, model string, judgeJSON st
 		Content: instruction + "\n\n" + fusionPanelEvidence(panel) + "\n\nJudge analysis JSON:\n" + judgeJSON,
 	})
 	out.Metadata = fusionMetadata(req.Metadata, "final", model)
+	fusionMarkSynthCodeRequest(out, config.CodeModel)
 	return out
 }
 
@@ -2101,8 +2108,8 @@ type fusionOverthinkingSettings struct {
 	thresholdTokens int
 }
 
-func fusionOverthinkingConfig(model string, routeType string, allowRescue bool) fusionOverthinkingSettings {
-	if !fusionIsGLM52(model) {
+func fusionOverthinkingConfig(model string, routeType string, allowRescue bool, synthCode bool) fusionOverthinkingSettings {
+	if !synthCode || !fusionIsGLM52(model) {
 		return fusionOverthinkingSettings{}
 	}
 	switch routeType {
@@ -2113,6 +2120,24 @@ func fusionOverthinkingConfig(model string, routeType string, allowRescue bool) 
 	default:
 		return fusionOverthinkingSettings{}
 	}
+}
+
+func fusionMarkSynthCodeRequest(req *types.OpenAIChatRequest, enabled bool) {
+	if req == nil || !enabled {
+		return
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]any{}
+	}
+	req.Metadata[fusionSynthCodeMetadataKey] = true
+}
+
+func fusionIsSynthCodeSubrequest(req *types.OpenAIChatRequest) bool {
+	if req == nil || req.Metadata == nil {
+		return false
+	}
+	value, _ := req.Metadata[fusionSynthCodeMetadataKey].(bool)
+	return value
 }
 
 func fusionIsGLM52(model string) bool {
