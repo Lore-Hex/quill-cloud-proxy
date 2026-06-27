@@ -2078,6 +2078,116 @@ func TestFusionCallDetailsIncludesRawThinkingWhenProviderReturnsIt(t *testing.T)
 	}
 }
 
+func TestFusionPanelGLMOverthinkingRunsSameModelRescue(t *testing.T) {
+	trGateway, recorder, closeServer := newFusionGatewayRecorder(t)
+	defer closeServer()
+
+	streamer := &fusionEchoLLM{
+		overthinkModels:   map[string]bool{"z-ai/glm-5.2": true},
+		rescueTextByModel: map[string]string{"z-ai/glm-5.2": "rescued panel step"},
+	}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterSynthModel,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "Implement the next step."}},
+	}
+	panel, err := runFusionPanel(context.Background(), streamer, req, fusionConfig{
+		AnalysisModels:      []string{"z-ai/glm-5.2"},
+		MaxCompletionTokens: 64,
+	}, trGateway, nil, "bearer", "req_overthink_panel", "log_overthink_panel")
+	if err != nil {
+		t.Fatalf("runFusionPanel: %v", err)
+	}
+	if len(panel) != 1 {
+		t.Fatalf("panel length = %d, want 1", len(panel))
+	}
+	if got := strings.TrimSpace(panel[0].Result.Text); got != "rescued panel step" {
+		t.Fatalf("panel answer = %q, want rescue result", got)
+	}
+	if panel[0].Rescue == nil {
+		t.Fatalf("panel result missing overthinking rescue details: %#v", panel[0])
+	}
+	if panel[0].Rescue.ThinkingTokens <= fusionPanelThinkingTokenBudget {
+		t.Fatalf("rescue thinking tokens = %d, want over budget", panel[0].Rescue.ThinkingTokens)
+	}
+	recorder.mu.Lock()
+	authorizeCalls := append([]map[string]any{}, recorder.authorize...)
+	settleCalls := append([]map[string]any{}, recorder.settle...)
+	refundCalls := append([]map[string]any{}, recorder.refund...)
+	recorder.mu.Unlock()
+	if len(authorizeCalls) != 2 || len(refundCalls) != 1 || len(settleCalls) != 1 {
+		t.Fatalf("authorize/refund/settle counts = %d/%d/%d, want 2/1/1", len(authorizeCalls), len(refundCalls), len(settleCalls))
+	}
+	for _, call := range authorizeCalls {
+		if call["model"] != "z-ai/glm-5.2" {
+			t.Fatalf("rescue changed model route: %#v", authorizeCalls)
+		}
+	}
+	streamer.mu.Lock()
+	calls := append([]fusionEchoCall{}, streamer.calls...)
+	streamer.mu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("provider calls = %#v, want original plus rescue", calls)
+	}
+	if !strings.Contains(calls[1].LastMessage, fusionOverthinkingRescueInstruction) ||
+		!strings.Contains(calls[1].LastMessage, "deliberating") {
+		t.Fatalf("rescue prompt did not include instruction and aborted reasoning: %q", calls[1].LastMessage)
+	}
+}
+
+func TestFusionFinalGLMOverthinkingRunsRescueBeforeModelFallback(t *testing.T) {
+	trGateway, recorder, closeServer := newFusionGatewayRecorder(t)
+	defer closeServer()
+
+	streamer := &fusionEchoLLM{
+		overthinkModels:   map[string]bool{"z-ai/glm-5.2": true},
+		rescueTextByModel: map[string]string{"z-ai/glm-5.2": "rescued final answer"},
+	}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterSynthModel,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "Return the final answer."}},
+	}
+	final, attempts, err := runFusionFinal(
+		context.Background(),
+		streamer,
+		req,
+		fusionConfig{MaxCompletionTokens: 64},
+		[]string{"z-ai/glm-5.2", "minimax/minimax-m3"},
+		`{"final_guidance":"answer now"}`,
+		[]fusionCallResult{{Model: "model/panel", Result: adapter.StreamResult{Text: "panel evidence"}}},
+		trGateway,
+		nil,
+		"bearer",
+		"req_overthink_final",
+		"log_overthink_final",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("runFusionFinal: %v", err)
+	}
+	if got := strings.TrimSpace(final.Result.Text); got != "rescued final answer" {
+		t.Fatalf("final answer = %q, want rescue result", got)
+	}
+	if final.Model != "z-ai/glm-5.2" {
+		t.Fatalf("final model = %q, want same GLM model rescue before fallback", final.Model)
+	}
+	if len(attempts) != 1 || attempts[0].Rescue == nil {
+		t.Fatalf("final attempts = %#v, want rescued first model only", attempts)
+	}
+	recorder.mu.Lock()
+	authorizeCalls := append([]map[string]any{}, recorder.authorize...)
+	settleCalls := append([]map[string]any{}, recorder.settle...)
+	refundCalls := append([]map[string]any{}, recorder.refund...)
+	recorder.mu.Unlock()
+	if len(authorizeCalls) != 2 || len(refundCalls) != 1 || len(settleCalls) != 1 {
+		t.Fatalf("authorize/refund/settle counts = %d/%d/%d, want 2/1/1", len(authorizeCalls), len(refundCalls), len(settleCalls))
+	}
+	for _, call := range authorizeCalls {
+		if call["model"] != "z-ai/glm-5.2" {
+			t.Fatalf("final rescue should not switch model before fallback: %#v", authorizeCalls)
+		}
+	}
+}
+
 func TestFusionToolCallsTextRendersNameAndArgs(t *testing.T) {
 	if got := fusionToolCallsText(nil); got != "" {
 		t.Fatalf("no tool calls = %q, want empty", got)
@@ -3394,15 +3504,88 @@ type fusionEchoCall struct {
 	LastMessage string
 }
 
+type fusionGatewayRecorder struct {
+	mu        sync.Mutex
+	authorize []map[string]any
+	settle    []map[string]any
+	refund    []map[string]any
+}
+
+func newFusionGatewayRecorder(t *testing.T) (*trustedrouter.Client, *fusionGatewayRecorder, func()) {
+	t.Helper()
+	recorder := &fusionGatewayRecorder{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode authorize payload: %v", err)
+			}
+			model, _ := payload["model"].(string)
+			recorder.mu.Lock()
+			recorder.authorize = append(recorder.authorize, payload)
+			authID := len(recorder.authorize)
+			recorder.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id":       fmt.Sprintf("auth_fusion_%d", authID),
+				"workspace_id":           "ws_1",
+				"api_key_hash":           "key_1",
+				"model":                  model,
+				"endpoint_id":            model + "@test/prepaid",
+				"provider":               "test",
+				"usage_type":             "Credits",
+				"limit_usage_type":       "Credits",
+				"route_candidates":       []any{},
+				"broadcast_destinations": []any{},
+			}})
+		case "/internal/gateway/settle":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode settle payload: %v", err)
+			}
+			model, _ := payload["selected_model"].(string)
+			recorder.mu.Lock()
+			recorder.settle = append(recorder.settle, payload)
+			settleID := len(recorder.settle)
+			recorder.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"settled":           true,
+				"generation_id":     fmt.Sprintf("gen_fusion_%d", settleID),
+				"cost_microdollars": 1,
+				"model":             model,
+				"provider":          "test",
+			}})
+		case "/internal/gateway/refund":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode refund payload: %v", err)
+			}
+			recorder.mu.Lock()
+			recorder.refund = append(recorder.refund, payload)
+			recorder.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	return trustedrouter.New(server.URL, "internal-token", server.Client()), recorder, server.Close
+}
+
 type fusionEchoLLM struct {
-	mu            sync.Mutex
-	calls         []fusionEchoCall
-	failModels    map[string]bool
-	failProviders map[string]bool
-	refusalModels map[string]bool
-	textByModel   map[string]string
-	thinking      bool
-	delay         time.Duration
+	mu                sync.Mutex
+	calls             []fusionEchoCall
+	failModels        map[string]bool
+	failProviders     map[string]bool
+	refusalModels     map[string]bool
+	textByModel       map[string]string
+	rescueTextByModel map[string]string
+	overthinkModels   map[string]bool
+	thinking          bool
+	delay             time.Duration
 }
 
 func (f *fusionEchoLLM) InvokeStreaming(
@@ -3437,6 +3620,28 @@ func (f *fusionEchoLLM) InvokeStreaming(
 	if f.failModels[req.Model] {
 		return errors.New("llm/upstream: http 502: provider error")
 	}
+	rescueRequested := strings.Contains(lastChatMessageText(req.Messages), fusionOverthinkingRescueInstruction)
+	if f.overthinkModels[req.Model] && !rescueRequested {
+		thinking := strings.Repeat("deliberating ", 1200)
+		if _, err := fmt.Fprintf(out, `event: message_start
+data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"%s","stop_reason":null,"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":%q}}
+
+`, req.Model, thinking); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+			return errors.New("test overthinking stream was not canceled")
+		}
+	}
 	text := "analysis from " + req.Model
 	if f.refusalModels[req.Model] {
 		text = "I'm sorry, but I can't help with that."
@@ -3447,6 +3652,11 @@ func (f *fusionEchoLLM) InvokeStreaming(
 	}
 	if override, ok := f.textByModel[req.Model]; ok {
 		text = override
+	}
+	if rescueRequested {
+		if override, ok := f.rescueTextByModel[req.Model]; ok {
+			text = override
+		}
 	}
 	thinkingEvents := ""
 	if f.thinking {

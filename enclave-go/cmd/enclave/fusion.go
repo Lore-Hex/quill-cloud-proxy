@@ -28,6 +28,18 @@ const trustedRouterFusionTool = "trustedrouter:fusion"
 const defaultFusionSelectionStrategy = "synthesize_non_refusals"
 const maxFusionSynthesisPromptBytes = 4000
 const maxFusionPanelPromptBytes = 4000
+const fusionPanelThinkingTokenBudget = 1000
+const fusionFinalThinkingTokenBudget = 2000
+const fusionPanelRescueMaxTokens = 800
+const fusionFinalRescueMaxTokens = 1600
+
+var errFusionOverthinkingBudget = errors.New("trustedrouter/synth thinking budget exceeded")
+
+const fusionOverthinkingRescueInstruction = `You have spent enough reasoning tokens. Stop deliberating.
+Produce the next best concrete agentic step now.
+If a tool call is appropriate, emit the tool call.
+If no tool call is needed, emit the next concise implementation step or final answer.
+Do not restart analysis.`
 
 // fusion uses the general Kimi in its panel and the code-tuned Kimi for its
 // default judge. trustedrouter/fusion-code is kept as an alias that also swaps
@@ -191,6 +203,14 @@ type fusionCallResult struct {
 	ElapsedMS        int64
 	Authorization    *trustedrouter.Authorization
 	SettlementResult *trustedrouter.SettleResult
+	Rescue           *fusionOverthinkingRescue
+}
+
+type fusionOverthinkingRescue struct {
+	RouteType      string
+	Model          string
+	Thinking       string
+	ThinkingTokens int
 }
 
 type fusionModelFallbackError struct {
@@ -1078,6 +1098,27 @@ func runFusionCallValidatedObserved(
 	observer adapter.StreamObserver,
 	streamed bool,
 ) (fusionCallResult, error) {
+	return runFusionCallValidatedObservedAttempt(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, observer, streamed, true)
+}
+
+func runFusionCallValidatedObservedAttempt(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	routeType string,
+	idempotencyKey string,
+	requestLogID string,
+	originalInput any,
+	broadcastContent bool,
+	validateBeforeSettle func(adapter.StreamResult) error,
+	useLongLastCandidateBudget bool,
+	observer adapter.StreamObserver,
+	streamed bool,
+	allowOverthinkingRescue bool,
+) (fusionCallResult, error) {
 	requestStarted := time.Now()
 	authz, options, err := authorizeFusionCall(ctx, req, trGateway, secretCache, bearer, routeType, idempotencyKey)
 	if err != nil {
@@ -1093,10 +1134,48 @@ func runFusionCallValidatedObserved(
 		}
 		return fusionCallResult{}, err
 	}
+	invokeCtx := ctx
+	cancelInvoke := func() {}
+	overthinking := fusionOverthinkingConfig(req.Model, routeType, allowOverthinkingRescue)
+	if overthinking.enabled {
+		var cancel context.CancelFunc
+		invokeCtx, cancel = context.WithCancel(ctx)
+		cancelInvoke = cancel
+		defer cancelInvoke()
+	}
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
-	go invokeProviderStream(ctx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget)
-	result, err := adapter.CollectAnthropicTextWithObserver(pr, observer)
+	collectObserver := observer
+	var guard *fusionOverthinkingGuard
+	if overthinking.enabled {
+		guard = newFusionOverthinkingGuard(overthinking.thresholdTokens, observer, func() {
+			cancelInvoke()
+			_ = pr.CloseWithError(errFusionOverthinkingBudget)
+		})
+		collectObserver = guard.Observe
+	}
+	go invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget)
+	result, err := adapter.CollectAnthropicTextWithObserver(pr, collectObserver)
+	if guard != nil && guard.Tripped() {
+		if trGateway != nil && trGateway.Enabled() {
+			_ = trGateway.Refund(ctx, authz, 502, "fusion_overthinking_budget", time.Since(requestStarted).Seconds(), req.Metadata)
+		}
+		if overthinking.allowRescue {
+			rescueReq := fusionOverthinkingRescueRequest(req, routeType, guard.Reasoning())
+			rescue, rescueErr := runFusionCallValidatedObservedAttempt(ctx, br, rescueReq, trGateway, secretCache, bearer, routeType, idempotencyKey+":rescue", requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, observer, streamed, false)
+			if rescueErr != nil {
+				return fusionCallResult{}, rescueErr
+			}
+			rescue.Rescue = &fusionOverthinkingRescue{
+				RouteType:      routeType,
+				Model:          req.Model,
+				Thinking:       guard.Reasoning(),
+				ThinkingTokens: guard.ThinkingTokens(),
+			}
+			return rescue, nil
+		}
+		return fusionCallResult{}, &fusionModelFallbackError{err: &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth model exceeded unproductive thinking budget", Context: routeType}}
+	}
 	if err != nil {
 		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authz, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
@@ -1875,6 +1954,15 @@ func fusionCallDetails(item fusionCallResult) map[string]any {
 	if item.UsageEstimated {
 		detail["usage_estimated"] = true
 	}
+	if item.Rescue != nil {
+		detail["overthinking_rescue"] = true
+		detail["overthinking_route_type"] = item.Rescue.RouteType
+		detail["overthinking_model"] = item.Rescue.Model
+		detail["aborted_thinking_tokens"] = item.Rescue.ThinkingTokens
+		if text := strings.TrimSpace(item.Rescue.Thinking); text != "" {
+			detail["aborted_thinking"] = text
+		}
+	}
 	if raw := strings.TrimSpace(item.RawText); raw != "" && raw != strings.TrimSpace(item.Result.Text) {
 		detail["raw_output"] = raw
 	}
@@ -2005,6 +2093,191 @@ func forceFusionThroughputRouting(req *types.OpenAIChatRequest) {
 	// plane, so clear it for Synth subcalls.
 	req.Provider.Order = nil
 	req.Provider.Sort = "throughput"
+}
+
+type fusionOverthinkingSettings struct {
+	enabled         bool
+	allowRescue     bool
+	thresholdTokens int
+}
+
+func fusionOverthinkingConfig(model string, routeType string, allowRescue bool) fusionOverthinkingSettings {
+	if !fusionIsGLM52(model) {
+		return fusionOverthinkingSettings{}
+	}
+	switch routeType {
+	case "fusion.panel":
+		return fusionOverthinkingSettings{enabled: true, allowRescue: allowRescue, thresholdTokens: fusionPanelThinkingTokenBudget}
+	case "fusion.final":
+		return fusionOverthinkingSettings{enabled: true, allowRescue: allowRescue, thresholdTokens: fusionFinalThinkingTokenBudget}
+	default:
+		return fusionOverthinkingSettings{}
+	}
+}
+
+func fusionIsGLM52(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	return strings.Contains(normalized, "glm-5.2") ||
+		strings.Contains(normalized, "glm5.2") ||
+		strings.Contains(normalized, "glm-5-2") ||
+		strings.Contains(normalized, "glm52")
+}
+
+func fusionOverthinkingRescueRequest(req *types.OpenAIChatRequest, routeType string, reasoning string) *types.OpenAIChatRequest {
+	out := cloneChatRequest(req)
+	out.Messages = append(out.Messages, types.OpenAIChatMessage{
+		Role: "user",
+		Content: "Previous reasoning from the stopped attempt:\n" +
+			strings.TrimSpace(reasoning) +
+			"\n\n" + fusionOverthinkingRescueInstruction,
+	})
+	out.Metadata = fusionMetadata(out.Metadata, routeType+".rescue", out.Model)
+	maxTokens := fusionPanelRescueMaxTokens
+	if routeType == "fusion.final" {
+		maxTokens = fusionFinalRescueMaxTokens
+	}
+	if out.MaxTokens == nil || *out.MaxTokens <= 0 || *out.MaxTokens > maxTokens {
+		value := maxTokens
+		out.MaxTokens = &value
+	}
+	return out
+}
+
+type fusionOverthinkingGuard struct {
+	mu              sync.Mutex
+	thresholdTokens int
+	base            adapter.StreamObserver
+	abort           func()
+	abortOnce       sync.Once
+	rawText         strings.Builder
+	nativeThinking  strings.Builder
+	productive      bool
+	tripped         bool
+	thinkingTokens  int
+}
+
+func newFusionOverthinkingGuard(thresholdTokens int, base adapter.StreamObserver, abort func()) *fusionOverthinkingGuard {
+	return &fusionOverthinkingGuard{
+		thresholdTokens: thresholdTokens,
+		base:            base,
+		abort:           abort,
+	}
+}
+
+func (g *fusionOverthinkingGuard) Observe(delta adapter.StreamDelta) {
+	if g == nil {
+		return
+	}
+	if g.base != nil {
+		g.base(delta)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	switch delta.Type {
+	case "thinking_delta":
+		if delta.Text != "" {
+			g.nativeThinking.WriteString(delta.Text)
+		}
+	case "input_json_delta":
+		if strings.TrimSpace(delta.Text) != "" {
+			g.productive = true
+		}
+	case "text_delta":
+		if delta.Text != "" {
+			g.rawText.WriteString(delta.Text)
+			visible, _ := fusionSplitLiteralThinking(g.rawText.String())
+			if strings.TrimSpace(visible) != "" {
+				g.productive = true
+			}
+		}
+	}
+	g.checkLocked()
+}
+
+func (g *fusionOverthinkingGuard) checkLocked() {
+	if g.tripped || g.productive || g.thresholdTokens <= 0 {
+		return
+	}
+	tokens := trustedrouter.EstimateOutputTokens(g.reasoningLocked())
+	g.thinkingTokens = tokens
+	if tokens <= g.thresholdTokens {
+		return
+	}
+	g.tripped = true
+	g.abortOnce.Do(func() {
+		if g.abort != nil {
+			g.abort()
+		}
+	})
+}
+
+func (g *fusionOverthinkingGuard) Tripped() bool {
+	if g == nil {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.tripped
+}
+
+func (g *fusionOverthinkingGuard) Reasoning() string {
+	if g == nil {
+		return ""
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.reasoningLocked()
+}
+
+func (g *fusionOverthinkingGuard) ThinkingTokens() int {
+	if g == nil {
+		return 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.thinkingTokens > 0 {
+		return g.thinkingTokens
+	}
+	return trustedrouter.EstimateOutputTokens(g.reasoningLocked())
+}
+
+func (g *fusionOverthinkingGuard) reasoningLocked() string {
+	var parts []string
+	if text := strings.TrimSpace(g.nativeThinking.String()); text != "" {
+		parts = append(parts, text)
+	}
+	_, literal := fusionSplitLiteralThinking(g.rawText.String())
+	if text := strings.TrimSpace(literal); text != "" {
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func fusionSplitLiteralThinking(text string) (string, string) {
+	var visible strings.Builder
+	var thinking strings.Builder
+	lower := strings.ToLower(text)
+	pos := 0
+	for pos < len(text) {
+		start := strings.Index(lower[pos:], "<think>")
+		if start < 0 {
+			visible.WriteString(text[pos:])
+			break
+		}
+		start += pos
+		visible.WriteString(text[pos:start])
+		contentStart := start + len("<think>")
+		end := strings.Index(lower[contentStart:], "</think>")
+		if end < 0 {
+			thinking.WriteString(text[contentStart:])
+			break
+		}
+		end += contentStart
+		thinking.WriteString(text[contentStart:end])
+		pos = end + len("</think>")
+	}
+	return visible.String(), thinking.String()
 }
 
 func fusionInnerMaxTokens(req *types.OpenAIChatRequest, configured int) *int {
