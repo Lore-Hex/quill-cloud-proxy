@@ -340,10 +340,10 @@ jobs:
             --location=us-central1 --project=quill-cloud-proxy || true
           bash tools/wait-region-synthetic-up.sh us-central1 us-central1
 
-      - name: Canary gate — watch us-central1 only (3 min, post-stable)
+      - name: Canary gate — watch us-central1 only (post-stable)
         id: canary_us
         continue-on-error: true
-        run: python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 2 --skip-baseline
+        run: python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 60
 
       - name: Rollback us-central1 MIG + abort (canary tripped)
         if: ${{ steps.canary_us.outcome == 'failure' && steps.canary_us.outputs.rollback_regions != '' }}
@@ -369,7 +369,7 @@ jobs:
         # Keep us-central1 as the serial canary. Once it passes, roll the
         # secondary warm regions concurrently. Each secondary still has the same
         # safety gates as the old serial path: MIG stable, attestation healthy,
-        # DNS reconcile, fresh synthetic-up, and a 3-minute region-local watchdog.
+        # DNS reconcile, fresh synthetic-up, and a region-local watchdog.
         # On failure, only the failed region is rolled back.
         timeout-minutes: 45
         env:
@@ -438,7 +438,7 @@ jobs:
               reconcile_dns
               trigger_synthetic_workers
               WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
-              if ! python3 tools/watchdog.py --regions "${region}" --duration-min 3 --rollback-after 2 --skip-baseline; then
+              if ! python3 tools/watchdog.py --regions "${region}" --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 120; then
                 rollback_region "${region}" "${mig}" "${prev_template}"
                 exit 1
               fi

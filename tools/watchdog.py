@@ -99,6 +99,36 @@ def write_output(key: str, value: str) -> None:
         print(f"::output::{key}={value}", flush=True)
 
 
+def update_rollback_state(
+    *,
+    regions: Iterable[str],
+    per_region: dict[str, str],
+    baseline_down: set[str],
+    rollback_set: set[str],
+    consecutive_down: dict[str, int],
+    rollback_after: int,
+) -> list[str]:
+    """Update watchdog counters for one status snapshot.
+
+    Returns the regions that crossed the rollback threshold on this snapshot.
+    `baseline_down` regions are intentionally held constant: the watchdog is
+    responsible for deploy-introduced regressions, not pre-existing outages.
+    """
+    newly_rolled_back: list[str] = []
+    for region in regions:
+        status = per_region.get(region, "unknown")
+        if region in rollback_set:
+            continue
+        if status == "down" and region not in baseline_down:
+            consecutive_down[region] += 1
+        else:
+            consecutive_down[region] = 0
+        if consecutive_down[region] >= rollback_after:
+            rollback_set.add(region)
+            newly_rolled_back.append(region)
+    return newly_rolled_back
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--duration-min", type=int, default=10)
@@ -128,6 +158,19 @@ def main() -> int:
             "lets us keep an aggressive --rollback-after of 1 (block "
             "any deploy-introduced regression) without false-positive "
             "rollbacks when the underlying probe is already failing."
+        ),
+    )
+    parser.add_argument(
+        "--initial-grace-sec",
+        type=int,
+        default=0,
+        help=(
+            "Wait this long after baseline capture and before the first "
+            "rollback-counting poll. Use this after a fresh synthetic-up gate "
+            "to let status.json age out boot-window samples from old regional "
+            "instances and DNS records. This does not weaken the main gate: "
+            "if the region never reaches synthetic-up, the deploy fails before "
+            "the watchdog starts."
         ),
     )
     parser.add_argument(
@@ -164,6 +207,13 @@ def main() -> int:
                 flush=True,
             )
 
+    if args.initial_grace_sec > 0:
+        print(
+            f"watchdog: waiting {args.initial_grace_sec}s initial grace before rollback accounting",
+            flush=True,
+        )
+        time.sleep(args.initial_grace_sec)
+
     print(
         f"watchdog: polling {args.status_url} every 60s for {args.duration_min} min; "
         f"per-region rollback if 'down' for {args.rollback_after} consecutive minutes "
@@ -173,22 +223,25 @@ def main() -> int:
     for minute in range(1, args.duration_min + 1):
         time.sleep(60)
         per_region = fetch_per_region(args.status_url, regions)
+        newly_rolled_back = update_rollback_state(
+            regions=regions,
+            per_region=per_region,
+            baseline_down=baseline_down,
+            rollback_set=rollback_set,
+            consecutive_down=consecutive_down,
+            rollback_after=args.rollback_after,
+        )
         line = "  minute %d:" % minute
         for region in regions:
             status = per_region.get(region, "unknown")
-            if region in rollback_set:
+            if region in rollback_set and region not in newly_rolled_back:
                 line += f"  {region}=ROLLED_BACK"
                 continue
-            if status == "down" and region not in baseline_down:
-                consecutive_down[region] += 1
-            else:
-                consecutive_down[region] = 0
             tag = f"{status}({consecutive_down[region]})"
             if region in baseline_down:
                 tag += "[baseline]"
             line += f"  {region}={tag}"
-            if consecutive_down[region] >= args.rollback_after:
-                rollback_set.add(region)
+            if region in newly_rolled_back:
                 print(
                     f"  watchdog: ROLLBACK {region} — 'down' for {consecutive_down[region]} consecutive minutes "
                     f"(was {'down' if region in baseline_down else 'healthy'} pre-deploy)",
