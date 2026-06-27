@@ -365,157 +365,130 @@ jobs:
           echo "europe-west4 NEVER received the bad image; safe."
           exit 1
 
-      - name: Roll the GCP MIG (europe-west4)
+      - name: Roll secondary GCP MIGs in parallel (europe-west4 + us-east4)
+        # Keep us-central1 as the serial canary. Once it passes, roll the
+        # secondary warm regions concurrently. Each secondary still has the same
+        # safety gates as the old serial path: MIG stable, attestation healthy,
+        # DNS reconcile, fresh synthetic-up, and a 3-minute region-local watchdog.
+        # On failure, only the failed region is rolled back.
+        timeout-minutes: 45
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          # Every region must whitelist the canonical SNIs, not just its
-          # regional name: with the reconciler/DNS architecture (no L7 LB),
-          # clients connect directly to in-region enclaves using
-          # api.quillrouter.com / api.trustedrouter.com. A regional-only
-          # API_HOST makes autocert reject the canonical SNI (TLS internal
-          # error) and the attest-by-canonical-host reconciler drop the region.
-          API_HOST: api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com
-          REGION_SHORT: eu
-          # europe-west4 matches us-east4's working Confidential Space profile:
-          # Intel TDX on c3. The prior n2d/SEV-SNP EU instances booted but did
-          # not accept TCP:443, so the DNS reconciler correctly kept EU out.
-          MACHINE_TYPE: c3-standard-4
-          CONF_COMPUTE_TYPE: TDX
-        run: bash tools/deploy-gcp-mig.sh europe-west4
-
-      - name: Wait for europe-west4 MIG to be stable
-        # See us-central1 wait step — same rationale. eu is where this
-        # mattered most: prior runs had the cross-region final watchdog
-        # firing mid-drain on eu and rolling it back every time.
-        timeout-minutes: 15
-        run: |
-          gcloud compute instance-groups managed wait-until quill-enclave-mig-eu \
-            --region=europe-west4 --project=quill-cloud-proxy --stable
-
-      - name: Wait for europe-west4 instances to attest healthy
-        # See us-central1 gate. eu is where the boot-transient canary trip
-        # actually fired (up->down->down, then healthy ~7 min later).
-        timeout-minutes: 14
-        run: bash tools/wait-region-attested.sh quill-enclave-mig-eu- europe-west4
-
-      - name: Reconcile DNS before europe-west4 canary
-        env:
-          QUILL_RECONCILE_APPLY: "1"
-          QUILL_API_HOST: api.trustedrouter.com
-          QUILL_DNS_ZONE: trustedrouter-com
-          QUILL_PUBLISH_REGIONAL: "1"
-          QUILL_REGIONAL_ZONE: quillrouter-com
-          QUILL_REGIONAL_SUFFIX: quillrouter.com
-        run: uv run --script tools/reconcile-enclave-dns.py --apply
-
-      - name: Wait for europe-west4 synthetic up
-        # See us-central1. eu is where the boot-transient false-down repeatedly
-        # tripped the canary while the region was actually healthy.
-        timeout-minutes: 12
-        env:
-          WAIT_UP_SLEEP: "10"
-          WAIT_UP_ROUNDS: "72"
-        run: |
-          gcloud scheduler jobs run trusted-router-synthetic-europe-west4-every-minute \
-            --location=europe-west4 --project=quill-cloud-proxy || true
-          bash tools/wait-region-synthetic-up.sh europe-west4 europe-west4
-
-      - name: Canary gate — watch europe-west4 only (3 min, post-stable)
-        id: canary_eu
-        continue-on-error: true
-        run: python3 tools/watchdog.py --regions europe-west4 --duration-min 3 --rollback-after 2 --skip-baseline
-
-      - name: Rollback europe-west4 MIG + abort (canary tripped)
-        if: ${{ steps.canary_eu.outcome == 'failure' && steps.canary_eu.outputs.rollback_regions != '' }}
-        env:
           PREV_EU: ${{ steps.prev.outputs.europe_west4_template }}
-        run: |
-          set -euo pipefail
-          if [ -z "${PREV_EU}" ]; then
-            echo "no prior europe-west4 template recorded; cannot rollback"
-            exit 1
-          fi
-          echo "europe-west4 canary failed; pointing MIG back at ${PREV_EU}"
-          gcloud compute instance-groups managed set-instance-template quill-enclave-mig-eu \
-            --region=europe-west4 --project=quill-cloud-proxy \
-            --template="${PREV_EU}" --quiet
-          gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-eu \
-            --region=europe-west4 --project=quill-cloud-proxy \
-            --max-unavailable=0 --max-surge=3 --quiet
-          echo "us-central1 keeps the new release."
-          exit 1
-
-      - name: Roll the GCP MIG (us-east4)
-        env:
-          IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
-          IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          API_HOST: api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com
-          REGION_SHORT: useast4
-          # us-east4 runs Intel TDX (c3-*), not AMD SEV-SNP: n2d capacity is
-          # chronically short here, so the live region is c3-standard-4/TDX.
-          MACHINE_TYPE: c3-standard-4
-          CONF_COMPUTE_TYPE: TDX
-        run: bash tools/deploy-gcp-mig.sh us-east4
-
-      - name: Wait for us-east4 MIG to be stable
-        # See us-central1 wait step — same rationale.
-        timeout-minutes: 15
-        run: |
-          gcloud compute instance-groups managed wait-until quill-enclave-mig-useast4 \
-            --region=us-east4 --project=quill-cloud-proxy --stable
-
-      - name: Wait for us-east4 instances to attest healthy
-        # See us-central1 gate.
-        timeout-minutes: 14
-        run: bash tools/wait-region-attested.sh quill-enclave-mig-useast4- us-east4
-
-      - name: Reconcile DNS before us-east4 canary
-        env:
-          QUILL_RECONCILE_APPLY: "1"
-          QUILL_API_HOST: api.trustedrouter.com
-          QUILL_DNS_ZONE: trustedrouter-com
-          QUILL_PUBLISH_REGIONAL: "1"
-          QUILL_REGIONAL_ZONE: quillrouter-com
-          QUILL_REGIONAL_SUFFIX: quillrouter.com
-        run: uv run --script tools/reconcile-enclave-dns.py --apply
-
-      - name: Wait for us-east4 synthetic up
-        # See us-central1.
-        timeout-minutes: 12
-        env:
-          WAIT_UP_SLEEP: "10"
-          WAIT_UP_ROUNDS: "72"
-        run: |
-          # us-east4 is currently covered by the us-central1 synthetic worker.
-          gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-minute \
-            --location=us-central1 --project=quill-cloud-proxy || true
-          bash tools/wait-region-synthetic-up.sh us-east4 us-east4
-
-      - name: Canary gate — watch us-east4 only (3 min, post-stable)
-        id: canary_useast4
-        continue-on-error: true
-        run: python3 tools/watchdog.py --regions us-east4 --duration-min 3 --rollback-after 2 --skip-baseline
-
-      - name: Rollback us-east4 MIG + abort (canary tripped)
-        if: ${{ steps.canary_useast4.outcome == 'failure' && steps.canary_useast4.outputs.rollback_regions != '' }}
-        env:
           PREV_USEAST4: ${{ steps.prev.outputs.us_east4_template }}
         run: |
           set -euo pipefail
-          if [ -z "${PREV_USEAST4}" ]; then
-            echo "no prior us-east4 template recorded; cannot rollback"
+
+          reconcile_dns() {
+            local lock="${SECONDARY_ROLLOUT_LOCK_DIR:-/tmp}/dns-reconcile.lock"
+            (
+              flock 9
+              QUILL_RECONCILE_APPLY=1 \
+              QUILL_API_HOST=api.trustedrouter.com \
+              QUILL_DNS_ZONE=trustedrouter-com \
+              QUILL_PUBLISH_REGIONAL=1 \
+              QUILL_REGIONAL_ZONE=quillrouter-com \
+              QUILL_REGIONAL_SUFFIX=quillrouter.com \
+                uv run --script tools/reconcile-enclave-dns.py --apply
+            ) 9>"${lock}"
+          }
+
+          trigger_synthetic_workers() {
+            # Trigger both active monitor jobs so wait-region-synthetic-up does
+            # not stall on a stale peer monitor row. us-east4 is currently
+            # covered by the us-central1 monitor; eu has its own monitor.
+            gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-minute \
+              --location=us-central1 --project=quill-cloud-proxy || true
+            gcloud scheduler jobs run trusted-router-synthetic-europe-west4-every-minute \
+              --location=europe-west4 --project=quill-cloud-proxy || true
+          }
+
+          rollback_region() {
+            local region="$1" mig="$2" prev_template="$3"
+            if [ -z "${prev_template}" ]; then
+              echo "no prior ${region} template recorded; cannot rollback"
+              return 1
+            fi
+            echo "${region} canary failed; pointing MIG back at ${prev_template}"
+            gcloud compute instance-groups managed set-instance-template "${mig}" \
+              --region="${region}" --project=quill-cloud-proxy \
+              --template="${prev_template}" --quiet
+            gcloud compute instance-groups managed rolling-action replace "${mig}" \
+              --region="${region}" --project=quill-cloud-proxy \
+              --max-unavailable=0 --max-surge=3 --quiet
+          }
+
+          roll_secondary_region() {
+            local region="$1" mig="$2" filter="$3" short="$4" api_host="$5" prev_template="$6"
+            local machine_type="${7:-}"
+            local conf_type="${8:-}"
+            echo "::group::secondary rollout ${region}"
+            local status=0
+            (
+              set -euo pipefail
+              export IMAGE_REF IMAGE_DIGEST API_HOST="${api_host}" REGION_SHORT="${short}"
+              if [ -n "${machine_type}" ]; then export MACHINE_TYPE="${machine_type}"; fi
+              if [ -n "${conf_type}" ]; then export CONF_COMPUTE_TYPE="${conf_type}"; fi
+
+              bash tools/deploy-gcp-mig.sh "${region}"
+              gcloud compute instance-groups managed wait-until "${mig}" \
+                --region="${region}" --project=quill-cloud-proxy --stable
+              bash tools/wait-region-attested.sh "${filter}" "${region}"
+              reconcile_dns
+              trigger_synthetic_workers
+              WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
+              if ! python3 tools/watchdog.py --regions "${region}" --duration-min 3 --rollback-after 2 --skip-baseline; then
+                rollback_region "${region}" "${mig}" "${prev_template}"
+                exit 1
+              fi
+              echo "${region} rollout healthy"
+            ) || status=$?
+            echo "::endgroup::"
+            return "${status}"
+          }
+
+          logs_dir="$(mktemp -d "${TMPDIR:-/tmp}/tr-secondary-rollout-XXXXXX")"
+          export SECONDARY_ROLLOUT_LOCK_DIR="${logs_dir}"
+          echo "secondary rollout logs: ${logs_dir}"
+
+          roll_secondary_region \
+            europe-west4 \
+            quill-enclave-mig-eu \
+            quill-enclave-mig-eu- \
+            eu \
+            api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com \
+            "${PREV_EU}" \
+            c3-standard-4 \
+            TDX >"${logs_dir}/europe-west4.log" 2>&1 &
+          pid_eu=$!
+
+          roll_secondary_region \
+            us-east4 \
+            quill-enclave-mig-useast4 \
+            quill-enclave-mig-useast4- \
+            useast4 \
+            api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com \
+            "${PREV_USEAST4}" \
+            c3-standard-4 \
+            TDX >"${logs_dir}/us-east4.log" 2>&1 &
+          pid_useast4=$!
+
+          failed=0
+          if ! wait "${pid_eu}"; then failed=1; fi
+          if ! wait "${pid_useast4}"; then failed=1; fi
+
+          echo "--- europe-west4 rollout log ---"
+          cat "${logs_dir}/europe-west4.log"
+          echo "--- us-east4 rollout log ---"
+          cat "${logs_dir}/us-east4.log"
+
+          if [ "${failed}" -ne 0 ]; then
+            echo "one or more secondary region rollouts failed; failed regions were rolled back above"
             exit 1
           fi
-          echo "us-east4 canary failed; pointing MIG back at ${PREV_USEAST4}"
-          gcloud compute instance-groups managed set-instance-template quill-enclave-mig-useast4 \
-            --region=us-east4 --project=quill-cloud-proxy \
-            --template="${PREV_USEAST4}" --quiet
-          gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-useast4 \
-            --region=us-east4 --project=quill-cloud-proxy \
-            --max-unavailable=0 --max-surge=3 --quiet
-          echo "us-central1 + europe-west4 keep the new release."
-          exit 1
+
+          echo "secondary regions healthy: europe-west4 + us-east4"
 
       # No cross-region "final watchdog" step. Each region's health is
       # gated by its own per-region canary above (us-central1 canary

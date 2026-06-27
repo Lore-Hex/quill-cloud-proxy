@@ -2479,6 +2479,55 @@ func TestFusionPanelRequestIncludesCallerPanelPrompt(t *testing.T) {
 	}
 }
 
+func TestFusionSubcallsForceThroughputRouting(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Model:    "trustedrouter/synth",
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "Analyze tradeoffs."}},
+		Provider: &types.ProviderRouting{
+			Order:          types.StringList{"slow-provider"},
+			Only:           types.StringList{"kimi", "fireworks"},
+			Ignore:         types.StringList{"parasail"},
+			DataCollection: "deny",
+			Sort:           "price",
+		},
+	}
+	panel := fusionPanelRequest(req, "moonshotai/kimi-k2.6", 0, 0, "")
+	judge := fusionJudgeRequest(req, "moonshotai/kimi-k2.7-code", []fusionCallResult{
+		{Model: "moonshotai/kimi-k2.6", Result: adapter.StreamResult{Text: "panel answer"}},
+	}, 0)
+	final := fusionFinalRequest(req, "z-ai/glm-5.2", `{"final_guidance":"answer"}`, []fusionCallResult{
+		{Model: "moonshotai/kimi-k2.6", Result: adapter.StreamResult{Text: "panel answer"}},
+	}, fusionConfig{})
+
+	for name, out := range map[string]*types.OpenAIChatRequest{
+		"panel": panel,
+		"judge": judge,
+		"final": final,
+	} {
+		if out.Provider == nil {
+			t.Fatalf("%s provider routing missing", name)
+		}
+		if out.Provider.Sort != "throughput" {
+			t.Fatalf("%s provider.sort = %#v, want throughput", name, out.Provider.Sort)
+		}
+		if len(out.Provider.Order) != 0 {
+			t.Fatalf("%s provider.order = %#v, want cleared so sort=throughput can apply", name, out.Provider.Order)
+		}
+		if !reflect.DeepEqual([]string(out.Provider.Only), []string{"kimi", "fireworks"}) {
+			t.Fatalf("%s provider.only = %#v", name, out.Provider.Only)
+		}
+		if !reflect.DeepEqual([]string(out.Provider.Ignore), []string{"parasail"}) {
+			t.Fatalf("%s provider.ignore = %#v", name, out.Provider.Ignore)
+		}
+		if out.Provider.DataCollection != "deny" {
+			t.Fatalf("%s provider.data_collection = %q", name, out.Provider.DataCollection)
+		}
+	}
+	if req.Provider.Sort != "price" || !reflect.DeepEqual([]string(req.Provider.Order), []string{"slow-provider"}) {
+		t.Fatalf("fusion subcall builder mutated caller provider routing: %#v", req.Provider)
+	}
+}
+
 func TestFusionBuiltInPromptBundleSelectsSynthAndSynthCode(t *testing.T) {
 	fusionPromptMu.Lock()
 	old := fusionPromptCache

@@ -1675,6 +1675,7 @@ func fusionPanelRequest(req *types.OpenAIChatRequest, model string, index int, m
 	out := cloneChatRequest(req)
 	out.Model = model
 	out.Models = nil
+	forceFusionThroughputRouting(out)
 	out.Stream = false
 	// Give each panel member the caller's function tools (minus the
 	// trustedrouter:synth config entry) so they can actually propose tool calls.
@@ -1713,6 +1714,7 @@ func fusionJudgeRequest(req *types.OpenAIChatRequest, model string, panel []fusi
 	out := cloneChatRequest(req)
 	out.Model = model
 	out.Models = nil
+	forceFusionThroughputRouting(out)
 	out.Stream = false
 	out.Tools = nil
 	out.ToolChoice = nil
@@ -1737,6 +1739,7 @@ func fusionFinalRequest(req *types.OpenAIChatRequest, model string, judgeJSON st
 	out := cloneChatRequest(req)
 	out.Model = model
 	out.Models = nil
+	forceFusionThroughputRouting(out)
 	out.Stream = false
 	out.Plugins = nil
 	out.Tools = stripFusionToolEntries(out.Tools)
@@ -1957,6 +1960,7 @@ func cloneChatRequest(req *types.OpenAIChatRequest) *types.OpenAIChatRequest {
 	out.Models = append([]string{}, req.Models...)
 	out.Tools = append([]any{}, req.Tools...)
 	out.Plugins = append([]any{}, req.Plugins...)
+	out.Provider = cloneProviderRouting(req.Provider)
 	if req.Metadata != nil {
 		out.Metadata = map[string]any{}
 		for k, v := range req.Metadata {
@@ -1970,6 +1974,37 @@ func cloneChatRequest(req *types.OpenAIChatRequest) *types.OpenAIChatRequest {
 		}
 	}
 	return &out
+}
+
+func cloneProviderRouting(provider *types.ProviderRouting) *types.ProviderRouting {
+	if provider == nil {
+		return nil
+	}
+	out := *provider
+	out.Order = append(types.StringList{}, provider.Order...)
+	out.Only = append(types.StringList{}, provider.Only...)
+	out.Ignore = append(types.StringList{}, provider.Ignore...)
+	out.Quantizations = append(types.StringList{}, provider.Quantizations...)
+	if provider.MaxPrice != nil {
+		out.MaxPrice = map[string]any{}
+		for k, v := range provider.MaxPrice {
+			out.MaxPrice[k] = v
+		}
+	}
+	return &out
+}
+
+func forceFusionThroughputRouting(req *types.OpenAIChatRequest) {
+	if req.Provider == nil {
+		req.Provider = &types.ProviderRouting{}
+	}
+	// Synth and Synth Code execute several internal model calls. Each internal
+	// model should use the fastest healthy provider endpoint by default, while
+	// preserving hard filters like provider.only, ignore, data_collection, and
+	// max_price. provider.order would override sort=throughput in the control
+	// plane, so clear it for Synth subcalls.
+	req.Provider.Order = nil
+	req.Provider.Sort = "throughput"
 }
 
 func fusionInnerMaxTokens(req *types.OpenAIChatRequest, configured int) *int {
