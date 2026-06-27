@@ -2741,6 +2741,49 @@ func TestParseFusionParametersAcceptsFrontierPreset(t *testing.T) {
 	}
 }
 
+func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
+	tests := []struct {
+		model  string
+		preset string
+		panel  []string
+		code   bool
+	}{
+		{trustedRouterIrisModel, "budget", fusionBudgetPanel, false},
+		{trustedRouterPrometheusModel, "quality", fusionQualityPanel, false},
+		{trustedRouterZeusModel, "frontier", fusionFrontierPanel, false},
+		{trustedRouterIris10Model, "budget", fusionBudgetPanel, false},
+		{trustedRouterPrometheus10Model, "quality", fusionQualityPanel, false},
+		{trustedRouterZeus10Model, "frontier", fusionFrontierPanel, false},
+		{trustedRouterIrisCodeModel, "budget", fusionBudgetPanel, true},
+		{trustedRouterPrometheusCodeModel, "quality", fusionQualityPanel, true},
+		{trustedRouterZeusCodeModel, "frontier", fusionFrontierPanel, true},
+		{trustedRouterIrisCode10Model, "budget", fusionBudgetPanel, true},
+		{trustedRouterPrometheusCode10Model, "quality", fusionQualityPanel, true},
+		{trustedRouterZeusCode10Model, "frontier", fusionFrontierPanel, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if !isFusionModel(tt.model) {
+				t.Fatalf("%s was not recognized as a synth model", tt.model)
+			}
+			if got := isFusionCodeModel(tt.model); got != tt.code {
+				t.Fatalf("isFusionCodeModel(%q) = %v, want %v", tt.model, got, tt.code)
+			}
+			preset, panel, ok := fusionPresetPanelForModel(tt.model)
+			if !ok {
+				t.Fatalf("fusionPresetPanelForModel(%q) returned !ok", tt.model)
+			}
+			if preset != tt.preset {
+				t.Fatalf("preset = %q, want %q", preset, tt.preset)
+			}
+			if !reflect.DeepEqual(panel, tt.panel) {
+				t.Fatalf("panel = %#v, want %#v", panel, tt.panel)
+			}
+		})
+	}
+}
+
 func TestParseFusionParametersRejectsInvalidSynthesisPrompt(t *testing.T) {
 	if _, err := parseFusionParameters(map[string]any{
 		"synthesis_prompt": 123,

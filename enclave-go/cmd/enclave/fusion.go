@@ -21,6 +21,18 @@ import (
 
 const trustedRouterSynthModel = "trustedrouter/synth"
 const trustedRouterSynthCodeModel = "trustedrouter/synth-code"
+const trustedRouterIrisModel = "trustedrouter/iris"
+const trustedRouterPrometheusModel = "trustedrouter/prometheus"
+const trustedRouterZeusModel = "trustedrouter/zeus"
+const trustedRouterIris10Model = "trustedrouter/iris-1.0"
+const trustedRouterPrometheus10Model = "trustedrouter/prometheus-1.0"
+const trustedRouterZeus10Model = "trustedrouter/zeus-1.0"
+const trustedRouterIrisCodeModel = "trustedrouter/iris-code"
+const trustedRouterPrometheusCodeModel = "trustedrouter/prometheus-code"
+const trustedRouterZeusCodeModel = "trustedrouter/zeus-code"
+const trustedRouterIrisCode10Model = "trustedrouter/iris-code-1.0"
+const trustedRouterPrometheusCode10Model = "trustedrouter/prometheus-code-1.0"
+const trustedRouterZeusCode10Model = "trustedrouter/zeus-code-1.0"
 const trustedRouterFusionModel = "trustedrouter/fusion"
 const trustedRouterFusionCodeModel = "trustedrouter/fusion-code"
 const trustedRouterSynthTool = "trustedrouter:synth"
@@ -70,7 +82,7 @@ var fusionQualityPanel = []string{
 }
 
 var fusionBudgetPanel = []string{
-	"google/gemini-3-flash-preview",
+	"minimax/minimax-m3",
 	fusionGeneralKimi,
 	"deepseek/deepseek-v4-pro",
 }
@@ -78,7 +90,7 @@ var fusionBudgetPanel = []string{
 var fusionFrontierPanel = []string{
 	"anthropic/claude-opus-4.8",
 	"openai/gpt-5.5",
-	"anthropic/claude-sonnet-4.8",
+	"anthropic/claude-sonnet-4.6",
 	"google/gemini-3.1-pro-preview",
 	fusionGeneralKimi,
 }
@@ -111,7 +123,22 @@ var fusionModelAliases = map[string]string{
 
 func isFusionModel(model string) bool {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case trustedRouterSynthModel, trustedRouterSynthCodeModel, trustedRouterFusionModel, trustedRouterFusionCodeModel:
+	case trustedRouterSynthModel,
+		trustedRouterSynthCodeModel,
+		trustedRouterIrisModel,
+		trustedRouterPrometheusModel,
+		trustedRouterZeusModel,
+		trustedRouterIris10Model,
+		trustedRouterPrometheus10Model,
+		trustedRouterZeus10Model,
+		trustedRouterIrisCodeModel,
+		trustedRouterPrometheusCodeModel,
+		trustedRouterZeusCodeModel,
+		trustedRouterIrisCode10Model,
+		trustedRouterPrometheusCode10Model,
+		trustedRouterZeusCode10Model,
+		trustedRouterFusionModel,
+		trustedRouterFusionCodeModel:
 		return true
 	default:
 		return false
@@ -120,10 +147,43 @@ func isFusionModel(model string) bool {
 
 func isFusionCodeModel(model string) bool {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case trustedRouterSynthCodeModel, trustedRouterFusionCodeModel:
+	case trustedRouterSynthCodeModel,
+		trustedRouterIrisCodeModel,
+		trustedRouterPrometheusCodeModel,
+		trustedRouterZeusCodeModel,
+		trustedRouterIrisCode10Model,
+		trustedRouterPrometheusCode10Model,
+		trustedRouterZeusCode10Model,
+		trustedRouterFusionCodeModel:
 		return true
 	default:
 		return false
+	}
+}
+
+func fusionPresetPanelForModel(model string) (string, []string, bool) {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case trustedRouterIrisModel,
+		trustedRouterIris10Model,
+		trustedRouterIrisCodeModel,
+		trustedRouterIrisCode10Model:
+		return "budget", append([]string(nil), fusionBudgetPanel...), true
+	case trustedRouterSynthModel,
+		trustedRouterSynthCodeModel,
+		trustedRouterPrometheusModel,
+		trustedRouterPrometheus10Model,
+		trustedRouterPrometheusCodeModel,
+		trustedRouterPrometheusCode10Model,
+		trustedRouterFusionModel,
+		trustedRouterFusionCodeModel:
+		return "quality", append([]string(nil), fusionQualityPanel...), true
+	case trustedRouterZeusModel,
+		trustedRouterZeus10Model,
+		trustedRouterZeusCodeModel,
+		trustedRouterZeusCode10Model:
+		return "frontier", append([]string(nil), fusionFrontierPanel...), true
+	default:
+		return "", nil, false
 	}
 }
 
@@ -266,7 +326,12 @@ func maybeServeFusion(
 		return true, &adapter.AdapterError{Status: 503, Message: "trustedrouter/synth requires the TrustedRouter control plane", Context: "trustedrouter/synth"}
 	}
 	if len(config.AnalysisModels) == 0 {
-		config.AnalysisModels = append([]string(nil), fusionQualityPanel...)
+		if preset, panel, ok := fusionPresetPanelForModel(req.Model); ok {
+			config.Preset = preset
+			config.AnalysisModels = panel
+		} else {
+			config.AnalysisModels = append([]string(nil), fusionQualityPanel...)
+		}
 	}
 	if len(config.AnalysisModels) > 8 {
 		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth analysis_models must contain 1-8 models", Context: "analysis_models"}
