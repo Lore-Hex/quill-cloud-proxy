@@ -303,9 +303,27 @@ jobs:
         # naturally flap as instances cycle. Timeout caps a stuck
         # rollout — 15 min is generous; a healthy roll is 5-10 min.
         timeout-minutes: 15
+        env:
+          QUILL_RECONCILE_APPLY: "1"
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
+          QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
         run: |
-          gcloud compute instance-groups managed wait-until quill-enclave-mig-us \
-            --region=us-central1 --project=quill-cloud-proxy --stable
+          set -euo pipefail
+          for i in $(seq 1 90); do
+            if gcloud compute instance-groups managed wait-until quill-enclave-mig-us \
+              --region=us-central1 --project=quill-cloud-proxy --stable --timeout=10; then
+              uv run --script tools/reconcile-enclave-dns.py --apply
+              exit 0
+            fi
+            echo "us-central1 still rolling; refreshing attested DNS membership (${i}/90)"
+            uv run --script tools/reconcile-enclave-dns.py --apply || true
+            sleep 5
+          done
+          echo "us-central1 MIG did not stabilize before timeout" >&2
+          exit 1
 
       - name: Wait for us-central1 instances to attest healthy
         # MIG-stable != attestation-healthy: Confidential Space GCA tokens are
@@ -404,6 +422,22 @@ jobs:
               --location=europe-west4 --project=quill-cloud-proxy || true
           }
 
+          wait_region_stable_with_dns_refresh() {
+            local mig="$1" region="$2"
+            for i in $(seq 1 90); do
+              if gcloud compute instance-groups managed wait-until "${mig}" \
+                --region="${region}" --project=quill-cloud-proxy --stable --timeout=10; then
+                reconcile_dns
+                return 0
+              fi
+              echo "${region} still rolling; refreshing attested DNS membership (${i}/90)"
+              reconcile_dns || true
+              sleep 5
+            done
+            echo "${region} MIG did not stabilize before timeout" >&2
+            return 1
+          }
+
           rollback_region() {
             local region="$1" mig="$2" prev_template="$3"
             if [ -z "${prev_template}" ]; then
@@ -432,8 +466,7 @@ jobs:
               if [ -n "${conf_type}" ]; then export CONF_COMPUTE_TYPE="${conf_type}"; fi
 
               bash tools/deploy-gcp-mig.sh "${region}"
-              gcloud compute instance-groups managed wait-until "${mig}" \
-                --region="${region}" --project=quill-cloud-proxy --stable
+              wait_region_stable_with_dns_refresh "${mig}" "${region}"
               bash tools/wait-region-attested.sh "${filter}" "${region}"
               reconcile_dns
               trigger_synthetic_workers
