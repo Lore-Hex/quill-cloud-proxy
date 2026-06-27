@@ -62,6 +62,14 @@ var fusionBudgetPanel = []string{
 	"deepseek/deepseek-v4-pro",
 }
 
+var fusionFrontierPanel = []string{
+	"anthropic/claude-opus-4.8",
+	"openai/gpt-5.5",
+	"anthropic/claude-sonnet-4.8",
+	"google/gemini-3.1-pro-preview",
+	fusionGeneralKimi,
+}
+
 // applyFusionCodeSwap rewrites the single model trustedrouter/fusion-code
 // differs on — the general Kimi -> the code-tuned Kimi — leaving everything else
 // untouched. This is the only difference between fusion and fusion-code.
@@ -123,10 +131,53 @@ type fusionConfig struct {
 	FinalModels         []string
 	PanelPrompt         string
 	SynthesisPrompt     string
+	BuiltInPanelPrompt  string
+	BuiltInFinalPrompt  string
 	MaxToolCalls        int
 	MaxCompletionTokens int
 	SelectionStrategy   string
 	Preset              string
+}
+
+type fusionPromptBundle struct {
+	SynthPanel     string
+	SynthFinal     string
+	SynthCodePanel string
+	SynthCodeFinal string
+}
+
+var fusionPromptMu sync.RWMutex
+var fusionPromptCache fusionPromptBundle
+
+func configureFusionPrompts(boot *types.BootstrapData) {
+	if boot == nil {
+		return
+	}
+	fusionPromptMu.Lock()
+	defer fusionPromptMu.Unlock()
+	fusionPromptCache = fusionPromptBundle{
+		SynthPanel:     strings.TrimSpace(boot.SynthPanelPrompt),
+		SynthFinal:     strings.TrimSpace(boot.SynthSynthesisPrompt),
+		SynthCodePanel: strings.TrimSpace(boot.SynthCodePanelPrompt),
+		SynthCodeFinal: strings.TrimSpace(boot.SynthCodeSynthesisPrompt),
+	}
+}
+
+func fusionBuiltInPrompts(codeModel bool) (string, string) {
+	fusionPromptMu.RLock()
+	defer fusionPromptMu.RUnlock()
+	if codeModel {
+		panel := fusionPromptCache.SynthCodePanel
+		if panel == "" {
+			panel = fusionPromptCache.SynthPanel
+		}
+		final := fusionPromptCache.SynthCodeFinal
+		if final == "" {
+			final = fusionPromptCache.SynthFinal
+		}
+		return panel, final
+	}
+	return fusionPromptCache.SynthPanel, fusionPromptCache.SynthFinal
 }
 
 type fusionCallResult struct {
@@ -227,6 +278,7 @@ func maybeServeFusion(
 		config.AnalysisModels = applyFusionCodeSwap(config.AnalysisModels)
 		judgeModels = applyFusionCodeSwap(judgeModels)
 	}
+	config.BuiltInPanelPrompt, config.BuiltInFinalPrompt = fusionBuiltInPrompts(isFusionCodeModel(req.Model))
 
 	if req.Stream {
 		serveFusionStreaming(ctx, conn, br, req, config, finalModels, judgeModels, trGateway, secretCache, bearer, originalInput, requestLogID)
@@ -342,8 +394,10 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 			config.AnalysisModels = append([]string(nil), fusionQualityPanel...)
 		case "budget":
 			config.AnalysisModels = append([]string(nil), fusionBudgetPanel...)
+		case "frontier":
+			config.AnalysisModels = append([]string(nil), fusionFrontierPanel...)
 		default:
-			return config, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth preset must be quality or budget", Context: "preset"}
+			return config, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth preset must be quality, budget, or frontier", Context: "preset"}
 		}
 		config.Preset = preset
 	}
@@ -727,7 +781,7 @@ func runFusionPanelObserved(
 				"index": i,
 				"model": model,
 			})
-			panelReq := fusionPanelRequest(req, model, i, config.MaxCompletionTokens, config.PanelPrompt)
+			panelReq := fusionPanelRequest(req, model, i, config.MaxCompletionTokens, config.PanelPrompt, config.BuiltInPanelPrompt)
 			var observer adapter.StreamObserver
 			if observerFactory != nil {
 				if baseObserver := observerFactory("panel", i, model); baseObserver != nil {
@@ -1614,7 +1668,7 @@ func authorizeFusionCall(
 	return authz, options, nil
 }
 
-func fusionPanelRequest(req *types.OpenAIChatRequest, model string, index int, maxCompletionTokens int, panelPrompt string) *types.OpenAIChatRequest {
+func fusionPanelRequest(req *types.OpenAIChatRequest, model string, index int, maxCompletionTokens int, panelPrompt string, builtInPrompt ...string) *types.OpenAIChatRequest {
 	out := cloneChatRequest(req)
 	out.Model = model
 	out.Models = nil
@@ -1633,18 +1687,19 @@ func fusionPanelRequest(req *types.OpenAIChatRequest, model string, index int, m
 	out.Plugins = nil
 	out.ResponseFormat = nil
 	out.MaxTokens = fusionInnerMaxTokens(req, maxCompletionTokens)
-	system := fmt.Sprintf(
-		"You are TrustedRouter Synth panel member %d. Answer the user's request independently. Focus on correctness, cite uncertainty, and do not mention Synth internals. Return only the visible answer; do not include chain-of-thought, hidden reasoning, or <think> blocks.",
-		index+1,
-	)
+	basePrompt := ""
+	if len(builtInPrompt) > 0 {
+		basePrompt = strings.TrimSpace(builtInPrompt[0])
+	}
+	if basePrompt == "" {
+		basePrompt = "Answer the request independently and return only the visible answer."
+	}
+	system := fmt.Sprintf("You are TrustedRouter Synth panel member %d.\n\n%s", index+1, basePrompt)
 	if len(out.Tools) > 0 {
-		system = fmt.Sprintf(
-			"You are TrustedRouter Synth panel member %d. Solve the user's request independently. If the next correct step is a tool call, emit the tool call directly instead of describing it; otherwise return only the visible answer. Focus on correctness, do not mention Synth internals, and do not include chain-of-thought or <think> blocks.",
-			index+1,
-		)
+		system += "\n\nIf the next correct step is a provided function call, emit the tool call directly instead of describing it."
 	}
 	if custom := strings.TrimSpace(panelPrompt); custom != "" {
-		system += "\n\nAdditional caller panel instructions:\n" + custom + "\n\nSystem constraints still apply: answer independently and return only the visible answer."
+		system += "\n\nAdditional caller panel instructions:\n" + custom
 	}
 	out.Messages = prependSystem(req.Messages, system)
 	out.Metadata = fusionMetadata(req.Metadata, "panel", model)
@@ -1683,12 +1738,15 @@ func fusionFinalRequest(req *types.OpenAIChatRequest, model string, judgeJSON st
 	out.Plugins = nil
 	out.Tools = stripFusionToolEntries(out.Tools)
 	out.Messages = append([]types.OpenAIChatMessage{}, req.Messages...)
-	instruction := "TrustedRouter Synth panel answers and judge analysis follow. Use the panel answers as the primary evidence and the judge analysis as guidance to write the final answer for the original request. Return only the final visible answer. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
+	instruction := strings.TrimSpace(config.BuiltInFinalPrompt)
+	if instruction == "" {
+		instruction = "Use the panel answers as evidence and the judge analysis as guidance to answer the original request. Return only the final visible answer."
+	}
 	if len(out.Tools) > 0 {
-		instruction = "TrustedRouter Synth panel answers and judge analysis follow. Continue solving the original task using the panel answers as primary evidence and the judge analysis as guidance. If the next correct action is a tool call, emit the tool call directly instead of describing it in text. Return visible text only when no tool call is needed. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the user asked for methodology."
+		instruction += "\n\nIf the next correct action is a provided function call, emit the tool call directly instead of describing it in text. Return visible text only when no tool call is needed."
 	}
 	if custom := strings.TrimSpace(config.SynthesisPrompt); custom != "" {
-		instruction += "\n\nAdditional caller synthesis instructions:\n" + custom + "\n\nSystem constraints still apply: return only the final visible answer. Do not include chain-of-thought, hidden reasoning, analysis, scratchpad text, <think> blocks, or internal model names unless the original user asked for methodology."
+		instruction += "\n\nAdditional caller synthesis instructions:\n" + custom
 	}
 	out.Messages = append(out.Messages, types.OpenAIChatMessage{
 		Role:    "user",

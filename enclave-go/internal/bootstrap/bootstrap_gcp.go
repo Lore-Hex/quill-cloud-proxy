@@ -51,6 +51,11 @@
 //	QUILL_FRIENDLI_SECRET        name of the secret holding the Friendli API key (llm_multi builds)
 //	QUILL_BASETEN_SECRET         name of the secret holding the Baseten API key (llm_multi builds)
 //	QUILL_WAFER_SECRET           name of the secret holding the Wafer API key (llm_multi builds)
+//	QUILL_CRUSOE_SECRET          name of the secret holding the Crusoe API key (llm_multi builds)
+//	QUILL_SYNTH_PANEL_PROMPT_SECRET           name of the secret holding the default synth panel prompt
+//	QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET       name of the secret holding the default synth synthesis prompt
+//	QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET      name of the secret holding the synth-code panel prompt
+//	QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SECRET  name of the secret holding the synth-code synthesis prompt
 //	QUILL_TRUSTEDROUTER_INTERNAL_SECRET optional Secret Manager secret name
 package bootstrap
 
@@ -117,9 +122,14 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	friendliSecret := os.Getenv("QUILL_FRIENDLI_SECRET")
 	basetenSecret := os.Getenv("QUILL_BASETEN_SECRET")
 	waferSecret := os.Getenv("QUILL_WAFER_SECRET")
+	crusoeSecret := os.Getenv("QUILL_CRUSOE_SECRET")
 	nebiusSecret := os.Getenv("QUILL_NEBIUS_SECRET")
 	minimaxSecret := os.Getenv("QUILL_MINIMAX_SECRET")
 	xiaomiSecret := os.Getenv("QUILL_XIAOMI_SECRET")
+	synthPanelPromptSecret := os.Getenv("QUILL_SYNTH_PANEL_PROMPT_SECRET")
+	synthSynthesisPromptSecret := os.Getenv("QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET")
+	synthCodePanelPromptSecret := os.Getenv("QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET")
+	synthCodeSynthesisPromptSecret := os.Getenv("QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SECRET")
 	if !anySet(
 		openrouterSecret,
 		anthropicSecret,
@@ -147,6 +157,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		friendliSecret,
 		basetenSecret,
 		waferSecret,
+		crusoeSecret,
 		nebiusSecret,
 		minimaxSecret,
 		xiaomiSecret,
@@ -352,6 +363,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: wafer key: %w", err)
 		}
 	}
+	var crusoeKey []byte
+	if crusoeSecret != "" {
+		crusoeKey, err = fetchSecret(ctx, httpc, token, project, crusoeSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: crusoe key: %w", err)
+		}
+	}
 	var nebiusKey []byte
 	if nebiusSecret != "" {
 		nebiusKey, err = fetchSecret(ctx, httpc, token, project, nebiusSecret)
@@ -371,6 +389,34 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		xiaomiKey, err = fetchSecret(ctx, httpc, token, project, xiaomiSecret)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap/gcp: xiaomi key: %w", err)
+		}
+	}
+	var synthPanelPrompt []byte
+	if synthPanelPromptSecret != "" {
+		synthPanelPrompt, err = fetchSecret(ctx, httpc, token, project, synthPanelPromptSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: synth panel prompt: %w", err)
+		}
+	}
+	var synthSynthesisPrompt []byte
+	if synthSynthesisPromptSecret != "" {
+		synthSynthesisPrompt, err = fetchSecret(ctx, httpc, token, project, synthSynthesisPromptSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: synth synthesis prompt: %w", err)
+		}
+	}
+	var synthCodePanelPrompt []byte
+	if synthCodePanelPromptSecret != "" {
+		synthCodePanelPrompt, err = fetchSecret(ctx, httpc, token, project, synthCodePanelPromptSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: synth-code panel prompt: %w", err)
+		}
+	}
+	var synthCodeSynthesisPrompt []byte
+	if synthCodeSynthesisPromptSecret != "" {
+		synthCodeSynthesisPrompt, err = fetchSecret(ctx, httpc, token, project, synthCodeSynthesisPromptSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: synth-code synthesis prompt: %w", err)
 		}
 	}
 	var internalGatewayToken string
@@ -411,11 +457,16 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		FriendliAPIKey:             strings.TrimSpace(string(friendliKey)),
 		BasetenAPIKey:              strings.TrimSpace(string(basetenKey)),
 		WaferAPIKey:                strings.TrimSpace(string(waferKey)),
+		CrusoeAPIKey:               strings.TrimSpace(string(crusoeKey)),
 		NebiusAPIKey:               strings.TrimSpace(string(nebiusKey)),
 		MiniMaxAPIKey:              strings.TrimSpace(string(minimaxKey)),
 		XiaomiAPIKey:               strings.TrimSpace(string(xiaomiKey)),
 		TrustedRouterBaseURL:       os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken: strings.TrimSpace(internalGatewayToken),
+		SynthPanelPrompt:           strings.TrimSpace(string(synthPanelPrompt)),
+		SynthSynthesisPrompt:       strings.TrimSpace(string(synthSynthesisPrompt)),
+		SynthCodePanelPrompt:       strings.TrimSpace(string(synthCodePanelPrompt)),
+		SynthCodeSynthesisPrompt:   strings.TrimSpace(string(synthCodeSynthesisPrompt)),
 		// BedrockVsockProxy / OpenRouterVsockProxy unused on GCP — direct egress.
 	}, nil
 }

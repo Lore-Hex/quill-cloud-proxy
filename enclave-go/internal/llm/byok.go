@@ -46,7 +46,7 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai", "together",
 		"fireworks", "grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
 		"parasail", "lightning", "gmi", "deepinfra", "friendli", "baseten", "wafer",
-		"nebius", "minimax", "xiaomi":
+		"crusoe", "nebius", "minimax", "xiaomi":
 		return true
 	default:
 		return false
@@ -700,6 +700,9 @@ func directBaseURL(provider string) string {
 		// Wafer serverless API. OpenAI-compatible chat completions; requests
 		// include Wafer-ZDR: required in invokeOpenAICompatibleStreamingWithClient.
 		return "https://pass.wafer.ai/v1"
+	case "crusoe":
+		// Crusoe Managed Inference. OpenAI-compatible chat completions.
+		return "https://api.inference.crusoecloud.com/v1"
 	case "nebius":
 		// Nebius Token Factory OpenAI-compatible shared inference.
 		return "https://api.tokenfactory.nebius.com/v1"
@@ -846,6 +849,7 @@ var providerNativeModelMaps = map[string]map[string]string{
 	"friendli":    friendliModelMap,
 	"baseten":     basetenModelMap,
 	"wafer":       waferModelMap,
+	"crusoe":      crusoeModelMap,
 	"minimax":     minimaxModelMap,
 	"siliconflow": siliconflowModelMap,
 	"zai":         zaiModelMap,
@@ -1163,6 +1167,29 @@ var waferModelMap = map[string]string{
 	"deepseek/deepseek-v4-flash": "deepseek-v4-flash",
 	"deepseek/deepseek-v4-pro":   "deepseek-v4-pro",
 	"minimax/minimax-m3":         "MiniMax-M3",
+}
+
+// crusoeModelMap maps OR-canonical → Crusoe Managed Inference native ids.
+// Crusoe's /v1/models is OpenAI-compatible but case-sensitive, and some rows
+// intentionally diverge from the usual author namespace (`zai/GLM-5.2` rather
+// than `zai-org/...`, `Deepseek-V4-Flash` with lowercase "s"). Keep exact
+// native ids here so directModelID never falls through to a guessed slug.
+var crusoeModelMap = map[string]string{
+	"deepseek/deepseek-v3-0324":                     "deepseek-ai/DeepSeek-V3-0324",
+	"deepseek/deepseek-v4-flash":                    "deepseek-ai/Deepseek-V4-Flash",
+	"deepseek/deepseek-v4-pro":                      "deepseek-ai/DeepSeek-V4-Pro",
+	"google/gemma-4-31b-it":                         "google/gemma-4-31b-it",
+	"meta-llama/llama-3.3-70b-instruct":             "meta-llama/Llama-3.3-70B-Instruct",
+	"moonshotai/kimi-k2.6":                          "moonshotai/Kimi-K2.6",
+	"nvidia/nemotron-3-nano-30b-a3b":                "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+	"nvidia/nemotron-3-nano-omni-reasoning-30b-a3b": "nvidia/Nemotron-3-Nano-Omni-Reasoning-30B-A3B",
+	"nvidia/nemotron-3-super-120b-a12b":             "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B",
+	"nvidia/nemotron-3-ultra-550b":                  "nvidia/NVIDIA-Nemotron-3-Ultra-550B",
+	"openai/gpt-oss-120b":                           "openai/gpt-oss-120b",
+	"qwen/qwen3-235b-a22b-2507":                     "Qwen/Qwen3-235B-A22B-Instruct-2507",
+	"yutori/n1.5":                                   "yutori/n1.5",
+	"z-ai/glm-5.1":                                  "zai/GLM-5.1",
+	"z-ai/glm-5.2":                                  "zai/GLM-5.2",
 }
 
 var waferZDRNativeModels = map[string]struct{}{

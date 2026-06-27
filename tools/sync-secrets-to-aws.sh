@@ -69,8 +69,13 @@ SECRETS=(
   trustedrouter-friendli-api-key
   trustedrouter-baseten-api-key
   trustedrouter-wafer-api-key
+  trustedrouter-crusoe-api-key
   trustedrouter-nebius-api-key
   trustedrouter-minimax-api-key
+  trustedrouter-synth-panel-prompt-v1
+  trustedrouter-synth-synthesis-prompt-v1
+  trustedrouter-synth-code-panel-prompt-v1
+  trustedrouter-synth-code-synthesis-prompt-v1
   # Voyage AI — embeddings only (OpenAI-shaped /v1/embeddings). Mirrored so the
   # AWS Nitro enclave's parent bootstrap can fetch the same key as GCP.
   trustedrouter-voyage-api-key

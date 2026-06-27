@@ -40,6 +40,10 @@ type BootstrapData struct {
 	// plaintext VM metadata.
 	TrustedRouterBaseURL       string `json:"trustedrouter_base_url,omitempty"`
 	TrustedRouterInternalToken string `json:"trustedrouter_internal_token,omitempty"`
+	SynthPanelPrompt           string `json:"synth_panel_prompt,omitempty"`
+	SynthSynthesisPrompt       string `json:"synth_synthesis_prompt,omitempty"`
+	SynthCodePanelPrompt       string `json:"synth_code_panel_prompt,omitempty"`
+	SynthCodeSynthesisPrompt   string `json:"synth_code_synthesis_prompt,omitempty"`
 
 	// Anthropic direct (only populated for the llm_anthropic build target).
 	// Same trust posture as the OpenRouter key — pulled from Secret Manager
@@ -90,6 +94,7 @@ type BootstrapData struct {
 	FriendliAPIKey  string `json:"friendli_api_key,omitempty"`
 	BasetenAPIKey   string `json:"baseten_api_key,omitempty"`
 	WaferAPIKey     string `json:"wafer_api_key,omitempty"`
+	CrusoeAPIKey    string `json:"crusoe_api_key,omitempty"`
 	NebiusAPIKey    string `json:"nebius_api_key,omitempty"`
 	MiniMaxAPIKey   string `json:"minimax_api_key,omitempty"`
 

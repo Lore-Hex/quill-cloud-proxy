@@ -26,6 +26,7 @@ func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 		"friendli",
 		"baseten",
 		"wafer",
+		"crusoe",
 		"nebius",
 		"minimax",
 		"xiaomi",
@@ -161,6 +162,10 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		{"wafer", "z-ai/glm-5.2", "GLM-5.2"},
 		{"wafer", "moonshotai/kimi-k2.7-code", "Kimi-K2.7-Code"},
 		{"wafer", "minimax/minimax-m3", "MiniMax-M3"},
+		{"crusoe", "z-ai/glm-5.2", "zai/GLM-5.2"},
+		{"crusoe", "deepseek/deepseek-v4-flash", "deepseek-ai/Deepseek-V4-Flash"},
+		{"crusoe", "moonshotai/kimi-k2.6", "moonshotai/Kimi-K2.6"},
+		{"crusoe", "qwen/qwen3-235b-a22b-2507", "Qwen/Qwen3-235B-A22B-Instruct-2507"},
 	}
 	for _, tc := range cases {
 		got := directModelID(tc.provider, tc.orID, tc.orID)

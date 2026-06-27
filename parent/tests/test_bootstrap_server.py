@@ -127,6 +127,27 @@ def test_build_payload_strips_whitespace_from_provider_keys() -> None:
     assert payload["openai_api_key"] == "sk-FAKE-OPENAI"
 
 
+def test_build_payload_loads_prompt_bundle() -> None:
+    sm = _StubSecretsManager(
+        {
+            "quill/trustedrouter-synth-panel-prompt-v1": "  general panel\n",
+            "quill/trustedrouter-synth-synthesis-prompt-v1": "general final",
+            "quill/trustedrouter-synth-code-panel-prompt-v1": "code panel",
+            "quill/trustedrouter-synth-code-synthesis-prompt-v1": "code final\n",
+            "quill/trustedrouter-aws-cross-cloud-sa-key": base64.b64encode(
+                _FAKE_KMS_CIPHERTEXT
+            ).decode("ascii"),
+        }
+    )
+    kms = _StubKMS({_FAKE_KMS_CIPHERTEXT: _FAKE_SA_KEY.encode("utf-8")})
+
+    payload = _build_payload(sm=sm, kms=kms)
+    assert payload["synth_panel_prompt"] == "general panel"
+    assert payload["synth_synthesis_prompt"] == "general final"
+    assert payload["synth_code_panel_prompt"] == "code panel"
+    assert payload["synth_code_synthesis_prompt"] == "code final"
+
+
 def test_build_payload_propagates_tr_control_plane_url() -> None:
     sm = _StubSecretsManager(
         {
@@ -212,6 +233,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "friendli_api_key",
         "baseten_api_key",
         "wafer_api_key",
+        "crusoe_api_key",
         "nebius_api_key",
         "minimax_api_key",
         "voyage_api_key",

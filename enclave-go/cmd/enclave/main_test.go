@@ -2437,19 +2437,19 @@ func TestFusionFinalRequestIncludesCallerSynthesisPrompt(t *testing.T) {
 		`{"final_guidance":"prefer concise output"}`,
 		[]fusionCallResult{{Model: "model/panel", Result: adapter.StreamResult{Text: "panel answer"}}},
 		fusionConfig{
-			PanelPrompt:     "Panel-only instruction.",
-			SynthesisPrompt: "Return exactly three bullets and include a recommendation.",
+			PanelPrompt:        "Panel-only instruction.",
+			SynthesisPrompt:    "Return exactly three bullets and include a recommendation.",
+			BuiltInFinalPrompt: "Use panel evidence. Do not include chain-of-thought.",
 		},
 	)
 	last := final.Messages[len(final.Messages)-1]
 	text := types.ContentText(last.Content)
+	if !strings.Contains(text, "Use panel evidence. Do not include chain-of-thought.") {
+		t.Fatalf("final prompt omitted built-in synthesis prompt: %s", text)
+	}
 	if !strings.Contains(text, "Additional caller synthesis instructions:") ||
 		!strings.Contains(text, "Return exactly three bullets and include a recommendation.") {
 		t.Fatalf("final prompt omitted caller synthesis prompt: %s", text)
-	}
-	if !strings.Contains(text, "System constraints still apply") ||
-		!strings.Contains(text, "Do not include chain-of-thought") {
-		t.Fatalf("final prompt omitted output hygiene after caller prompt: %s", text)
 	}
 	if strings.Contains(text, "Panel-only instruction.") {
 		t.Fatalf("final prompt leaked caller panel prompt: %s", text)
@@ -2475,6 +2475,54 @@ func TestFusionPanelRequestIncludesCallerPanelPrompt(t *testing.T) {
 	}
 }
 
+func TestFusionBuiltInPromptBundleSelectsSynthAndSynthCode(t *testing.T) {
+	fusionPromptMu.Lock()
+	old := fusionPromptCache
+	fusionPromptMu.Unlock()
+	defer func() {
+		fusionPromptMu.Lock()
+		fusionPromptCache = old
+		fusionPromptMu.Unlock()
+	}()
+
+	configureFusionPrompts(&types.BootstrapData{
+		SynthPanelPrompt:         "general panel prompt",
+		SynthSynthesisPrompt:     "general final prompt",
+		SynthCodePanelPrompt:     "code panel prompt",
+		SynthCodeSynthesisPrompt: "code final prompt",
+	})
+
+	panel, final := fusionBuiltInPrompts(false)
+	if panel != "general panel prompt" || final != "general final prompt" {
+		t.Fatalf("general prompts = %q / %q", panel, final)
+	}
+	panel, final = fusionBuiltInPrompts(true)
+	if panel != "code panel prompt" || final != "code final prompt" {
+		t.Fatalf("code prompts = %q / %q", panel, final)
+	}
+}
+
+func TestFusionBuiltInPromptBundleFallsBackFromCodeToGeneral(t *testing.T) {
+	fusionPromptMu.Lock()
+	old := fusionPromptCache
+	fusionPromptMu.Unlock()
+	defer func() {
+		fusionPromptMu.Lock()
+		fusionPromptCache = old
+		fusionPromptMu.Unlock()
+	}()
+
+	configureFusionPrompts(&types.BootstrapData{
+		SynthPanelPrompt:     "general panel prompt",
+		SynthSynthesisPrompt: "general final prompt",
+	})
+
+	panel, final := fusionBuiltInPrompts(true)
+	if panel != "general panel prompt" || final != "general final prompt" {
+		t.Fatalf("code fallback prompts = %q / %q", panel, final)
+	}
+}
+
 func TestParseFusionParametersAcceptsSynthesisPromptAliases(t *testing.T) {
 	config, err := parseFusionParameters(map[string]any{
 		"final_instructions": "Use JSON only.",
@@ -2496,6 +2544,21 @@ func TestParseFusionParametersAcceptsPanelPrompt(t *testing.T) {
 	}
 	if config.PanelPrompt != "Apply the agent context to every panel member." {
 		t.Fatalf("PanelPrompt = %q, want panel_prompt value", config.PanelPrompt)
+	}
+}
+
+func TestParseFusionParametersAcceptsFrontierPreset(t *testing.T) {
+	config, err := parseFusionParameters(map[string]any{
+		"preset": "frontier",
+	})
+	if err != nil {
+		t.Fatalf("parseFusionParameters: %v", err)
+	}
+	if config.Preset != "frontier" {
+		t.Fatalf("Preset = %q, want frontier", config.Preset)
+	}
+	if !reflect.DeepEqual(config.AnalysisModels, fusionFrontierPanel) {
+		t.Fatalf("AnalysisModels = %#v, want frontier panel", config.AnalysisModels)
 	}
 }
 
@@ -3324,7 +3387,9 @@ func (f *fusionEchoLLM) InvokeStreaming(
 	text := "analysis from " + req.Model
 	if f.refusalModels[req.Model] {
 		text = "I'm sorry, but I can't help with that."
-	} else if len(req.Messages) > 0 && strings.Contains(types.ContentText(req.Messages[len(req.Messages)-1].Content), "TrustedRouter Synth panel answers and judge analysis follow") {
+	} else if len(req.Messages) > 0 &&
+		strings.Contains(types.ContentText(req.Messages[len(req.Messages)-1].Content), "Panel answers:") &&
+		strings.Contains(types.ContentText(req.Messages[len(req.Messages)-1].Content), "Judge analysis JSON:") {
 		text = "final answer from " + req.Model
 	}
 	if override, ok := f.textByModel[req.Model]; ok {

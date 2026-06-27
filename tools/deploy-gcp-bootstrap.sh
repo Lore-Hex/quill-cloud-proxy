@@ -71,9 +71,14 @@ DEEPINFRA_SECRET="${DEEPINFRA_SECRET:-trustedrouter-deepinfra-api-key}"
 FRIENDLI_SECRET="${FRIENDLI_SECRET:-trustedrouter-friendli-api-key}"
 BASETEN_SECRET="${BASETEN_SECRET:-trustedrouter-baseten-api-key}"
 WAFER_SECRET="${WAFER_SECRET:-trustedrouter-wafer-api-key}"
+CRUSOE_SECRET="${CRUSOE_SECRET:-trustedrouter-crusoe-api-key}"
 NEBIUS_SECRET="${NEBIUS_SECRET:-trustedrouter-nebius-api-key}"
 MINIMAX_SECRET="${MINIMAX_SECRET:-trustedrouter-minimax-api-key}"
 XIAOMI_SECRET="${XIAOMI_SECRET:-trustedrouter-xiaomi-api-key}"
+SYNTH_PANEL_PROMPT_SECRET="${SYNTH_PANEL_PROMPT_SECRET:-trustedrouter-synth-panel-prompt-v1}"
+SYNTH_SYNTHESIS_PROMPT_SECRET="${SYNTH_SYNTHESIS_PROMPT_SECRET:-trustedrouter-synth-synthesis-prompt-v1}"
+SYNTH_CODE_PANEL_PROMPT_SECRET="${SYNTH_CODE_PANEL_PROMPT_SECRET:-trustedrouter-synth-code-panel-prompt-v1}"
+SYNTH_CODE_SYNTHESIS_PROMPT_SECRET="${SYNTH_CODE_SYNTHESIS_PROMPT_SECRET:-trustedrouter-synth-code-synthesis-prompt-v1}"
 INTERNAL_GATEWAY_SECRET="${INTERNAL_GATEWAY_SECRET:-trustedrouter-internal-gateway-token}"
 DEVICE_KEYS_SECRET="${DEVICE_KEYS_SECRET:-quill-device-keys}"
 
@@ -164,9 +169,14 @@ for secret in \
   "$FRIENDLI_SECRET" \
   "$BASETEN_SECRET" \
   "$WAFER_SECRET" \
+  "$CRUSOE_SECRET" \
   "$NEBIUS_SECRET" \
   "$MINIMAX_SECRET" \
   "$XIAOMI_SECRET" \
+  "$SYNTH_PANEL_PROMPT_SECRET" \
+  "$SYNTH_SYNTHESIS_PROMPT_SECRET" \
+  "$SYNTH_CODE_PANEL_PROMPT_SECRET" \
+  "$SYNTH_CODE_SYNTHESIS_PROMPT_SECRET" \
   "$INTERNAL_GATEWAY_SECRET" \
   "$DEVICE_KEYS_SECRET"; do
   if gc secrets describe "$secret" >/dev/null 2>&1; then

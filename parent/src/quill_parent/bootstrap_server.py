@@ -111,6 +111,7 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("friendli_api_key", "trustedrouter-friendli-api-key"),
     ("baseten_api_key", "trustedrouter-baseten-api-key"),
     ("wafer_api_key", "trustedrouter-wafer-api-key"),
+    ("crusoe_api_key", "trustedrouter-crusoe-api-key"),
     ("nebius_api_key", "trustedrouter-nebius-api-key"),
     ("minimax_api_key", "trustedrouter-minimax-api-key"),
     # Voyage AI — embeddings only (OpenAI-shaped /v1/embeddings). Optional like
@@ -119,6 +120,13 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("voyage_api_key", "trustedrouter-voyage-api-key"),
     # Xiaomi MiMo — OpenAI-compatible chat (api.xiaomimimo.com/v1).
     ("xiaomi_api_key", "trustedrouter-xiaomi-api-key"),
+)
+
+_PROMPT_KEYS: Final[tuple[tuple[str, str], ...]] = (
+    ("synth_panel_prompt", "trustedrouter-synth-panel-prompt-v1"),
+    ("synth_synthesis_prompt", "trustedrouter-synth-synthesis-prompt-v1"),
+    ("synth_code_panel_prompt", "trustedrouter-synth-code-panel-prompt-v1"),
+    ("synth_code_synthesis_prompt", "trustedrouter-synth-code-synthesis-prompt-v1"),
 )
 
 _GCP_SA_KEY_SECRET_SUFFIX: Final[str] = "trustedrouter-aws-cross-cloud-sa-key"
@@ -250,6 +258,14 @@ def _build_bootstrap_data(
             payload[field] = value.strip()
             found += 1
     log.info("bootstrap.provider_keys", found=found, total=len(_PROVIDER_KEYS))
+
+    prompt_found = 0
+    for field, suffix in _PROMPT_KEYS:
+        value = _read_one_secret(sm_client, f"{secret_prefix}{suffix}")
+        if value:
+            payload[field] = value.strip()
+            prompt_found += 1
+    log.info("bootstrap.prompt_keys", found=prompt_found, total=len(_PROMPT_KEYS))
 
     # 2. GCP SA key (KMS-unwrapped).
     sa_secret_id = f"{secret_prefix}{_GCP_SA_KEY_SECRET_SUFFIX}"

@@ -128,6 +128,7 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr, "cross-cloud SA key wired: GOOGLE_APPLICATION_CREDENTIALS=%s\n", credPath)
 	}
+	configureFusionPrompts(boot)
 
 	// 2. Build registries. Capture a canonical hash of the device list
 	// so /attestation can include it in the document's UserData — clients

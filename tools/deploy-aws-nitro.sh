@@ -677,6 +677,7 @@ allowlist:
   - {address: api.friendli.ai,               port: 443}
   - {address: inference.baseten.co,          port: 443}
   - {address: pass.wafer.ai,                 port: 443}
+  - {address: api.inference.crusoecloud.com, port: 443}
   # GCP cross-cloud APIs — auth + Spanner + Bigtable + GCS (ACME cache)
   # + KMS (BYOK envelope-unwrap when an AWS-side request lands with a
   # customer-provided GCP-KMS-wrapped envelope).
@@ -762,6 +763,7 @@ write_vsock_unit 8024 api.minimax.io
 write_vsock_unit 8025 api.friendli.ai
 write_vsock_unit 8026 inference.baseten.co
 write_vsock_unit 8027 pass.wafer.ai
+write_vsock_unit 8028 api.inference.crusoecloud.com
 write_vsock_unit 8030 oauth2.googleapis.com
 write_vsock_unit 8031 spanner.googleapis.com
 write_vsock_unit 8032 bigtable.googleapis.com
