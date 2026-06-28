@@ -79,6 +79,8 @@ SYNTH_PANEL_PROMPT_SECRET="${SYNTH_PANEL_PROMPT_SECRET:-trustedrouter-synth-pane
 SYNTH_SYNTHESIS_PROMPT_SECRET="${SYNTH_SYNTHESIS_PROMPT_SECRET:-trustedrouter-synth-synthesis-prompt-v1}"
 SYNTH_CODE_PANEL_PROMPT_SECRET="${SYNTH_CODE_PANEL_PROMPT_SECRET:-trustedrouter-synth-code-panel-prompt-v1}"
 SYNTH_CODE_SYNTHESIS_PROMPT_SECRET="${SYNTH_CODE_SYNTHESIS_PROMPT_SECRET:-trustedrouter-synth-code-synthesis-prompt-v1}"
+SOCRATES_WORKER_PROMPT_SECRET="${SOCRATES_WORKER_PROMPT_SECRET:-trustedrouter-socrates-worker-prompt-v1}"
+SOCRATES_ADVISOR_PROMPT_SECRET="${SOCRATES_ADVISOR_PROMPT_SECRET:-trustedrouter-socrates-advisor-prompt-v1}"
 INTERNAL_GATEWAY_SECRET="${INTERNAL_GATEWAY_SECRET:-trustedrouter-internal-gateway-token}"
 DEVICE_KEYS_SECRET="${DEVICE_KEYS_SECRET:-quill-device-keys}"
 
@@ -177,6 +179,8 @@ for secret in \
   "$SYNTH_SYNTHESIS_PROMPT_SECRET" \
   "$SYNTH_CODE_PANEL_PROMPT_SECRET" \
   "$SYNTH_CODE_SYNTHESIS_PROMPT_SECRET" \
+  "$SOCRATES_WORKER_PROMPT_SECRET" \
+  "$SOCRATES_ADVISOR_PROMPT_SECRET" \
   "$INTERNAL_GATEWAY_SECRET" \
   "$DEVICE_KEYS_SECRET"; do
   if gc secrets describe "$secret" >/dev/null 2>&1; then

@@ -2280,6 +2280,140 @@ func TestFusionPanelRequestNoToolsClearsToolChoice(t *testing.T) {
 	}
 }
 
+func TestRunSocratesNoAdviceReturnsWorkerAnswer(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &socratesScriptedLLM{}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterSocrates10Model,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "what is 1+1?"}},
+	}
+	config := testSocratesConfig(t)
+
+	final, workers, advisors, adviceCalls, budgetExhausted, err := runSocrates(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_socrates_simple", "log_socrates_simple", nil, nil, 0, nil)
+	if err != nil {
+		t.Fatalf("runSocrates: %v", err)
+	}
+	if got := strings.TrimSpace(final.Result.Text); got != "simple worker answer" {
+		t.Fatalf("final text = %q", got)
+	}
+	if adviceCalls != 0 || budgetExhausted {
+		t.Fatalf("adviceCalls=%d budgetExhausted=%t, want 0 false", adviceCalls, budgetExhausted)
+	}
+	if len(workers) != 1 || len(advisors) != 0 {
+		t.Fatalf("workers=%d advisors=%d, want 1 0", len(workers), len(advisors))
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if len(recorder.authorize) != 1 || recorder.authorize[0]["route_type"] != "socrates.worker" {
+		t.Fatalf("authorize calls = %#v, want one socrates.worker", recorder.authorize)
+	}
+}
+
+func TestRunSocratesAdviceOnceThenWorkerFinal(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &socratesScriptedLLM{callAdviceFirst: true}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterSocrates10Model,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "review this risky migration"}},
+	}
+	config := testSocratesConfig(t)
+
+	final, workers, advisors, adviceCalls, budgetExhausted, err := runSocrates(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_socrates_advice", "log_socrates_advice", nil, nil, 0, nil)
+	if err != nil {
+		t.Fatalf("runSocrates: %v", err)
+	}
+	if got := strings.TrimSpace(final.Result.Text); got != "worker final after advice" {
+		t.Fatalf("final text = %q", got)
+	}
+	if adviceCalls != 1 || budgetExhausted {
+		t.Fatalf("adviceCalls=%d budgetExhausted=%t, want 1 false", adviceCalls, budgetExhausted)
+	}
+	if len(workers) != 2 || len(advisors) != 1 {
+		t.Fatalf("workers=%d advisors=%d, want 2 1", len(workers), len(advisors))
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	var routeTypes []string
+	for _, payload := range recorder.authorize {
+		routeTypes = append(routeTypes, fmt.Sprint(payload["route_type"]))
+	}
+	want := []string{"socrates.worker", "socrates.advisor", "socrates.worker"}
+	if !reflect.DeepEqual(routeTypes, want) {
+		t.Fatalf("route types = %#v, want %#v", routeTypes, want)
+	}
+}
+
+func TestRunSocratesAdviceBudgetExhaustedThenAnswer(t *testing.T) {
+	trGateway, _, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &socratesScriptedLLM{callAdviceFirst: true, callAdviceAfterAdvisor: true}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterSocrates10Model,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hard task"}},
+	}
+	config := testSocratesConfig(t)
+
+	final, _, _, adviceCalls, budgetExhausted, err := runSocrates(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_socrates_budget", "log_socrates_budget", nil, nil, 0, nil)
+	if err != nil {
+		t.Fatalf("runSocrates: %v", err)
+	}
+	if got := strings.TrimSpace(final.Result.Text); got != "worker final after budget exhausted" {
+		t.Fatalf("final text = %q", got)
+	}
+	if adviceCalls != 1 || !budgetExhausted {
+		t.Fatalf("adviceCalls=%d budgetExhausted=%t, want 1 true", adviceCalls, budgetExhausted)
+	}
+}
+
+func TestSocratesRejectsReservedToolCollision(t *testing.T) {
+	err := rejectSocratesToolCollision([]any{
+		map[string]any{"type": "function", "function": map[string]any{"name": socratesAdviceToolName}},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected reserved tool collision error")
+	}
+	var aerr *adapter.AdapterError
+	if !asAdapterErr(err, &aerr) || aerr.Status != 400 {
+		t.Fatalf("error = %v, want 400 adapter error", err)
+	}
+}
+
+func TestNormalizeSocratesConfigDepthBounds(t *testing.T) {
+	config := testSocratesConfig(t)
+	config.Depth = maxOrchestrationDepth + 1
+	config.DepthSet = true
+	err := normalizeSocratesConfig(&config, &types.OpenAIChatRequest{})
+	if err == nil {
+		t.Fatal("expected depth bounds error")
+	}
+	var aerr *adapter.AdapterError
+	if !asAdapterErr(err, &aerr) || aerr.Status != 400 {
+		t.Fatalf("error = %v, want 400 adapter error", err)
+	}
+}
+
+func TestSocratesPromptSecretsRequiredInProductionGCP(t *testing.T) {
+	t.Setenv("QUILL_GCP_PROJECT_ID", "trusted-router-prod")
+	t.Setenv("TR_ALLOW_DEFAULT_SOCRATES_PROMPTS", "")
+	t.Setenv("TR_REQUIRE_SOCRATES_PROMPTS", "")
+	if !socratesPromptsRequired() {
+		t.Fatalf("GCP runtime should require Socrates prompt secrets")
+	}
+
+	t.Setenv("TR_ALLOW_DEFAULT_SOCRATES_PROMPTS", "1")
+	if socratesPromptsRequired() {
+		t.Fatalf("explicit local override should allow fallback prompts")
+	}
+
+	t.Setenv("QUILL_GCP_PROJECT_ID", "")
+	t.Setenv("TR_REQUIRE_SOCRATES_PROMPTS", "1")
+	if !socratesPromptsRequired() {
+		t.Fatalf("explicit require flag should require Socrates prompt secrets")
+	}
+}
+
 func TestSelectFusionPanelResultFirstNonRefusal(t *testing.T) {
 	panel := []fusionCallResult{
 		{
@@ -3645,6 +3779,98 @@ type fusionEchoLLM struct {
 	overthinkModels   map[string]bool
 	thinking          bool
 	delay             time.Duration
+}
+
+type socratesScriptedLLM struct {
+	callAdviceFirst        bool
+	callAdviceAfterAdvisor bool
+}
+
+func (s *socratesScriptedLLM) InvokeStreaming(
+	_ context.Context,
+	req *types.OpenAIChatRequest,
+	_ *types.AnthropicMessagesRequest,
+	out io.Writer,
+	_ ...llm.InvokeOptions,
+) error {
+	switch req.Model {
+	case "anthropic/claude-opus-4.8":
+		return writeAnthropicTextTestStream(out, req.Model, "advisor says check rollback and settlement")
+	case "cerebras/gpt-oss-120b":
+		last := lastChatMessageText(req.Messages)
+		switch {
+		case strings.Contains(last, "Advice budget exhausted"):
+			return writeAnthropicTextTestStream(out, req.Model, "worker final after budget exhausted")
+		case strings.Contains(last, "advisor says"):
+			if s.callAdviceAfterAdvisor {
+				return writeAnthropicToolUseTestStream(out, socratesAdviceToolName)
+			}
+			return writeAnthropicTextTestStream(out, req.Model, "worker final after advice")
+		case s.callAdviceFirst:
+			return writeAnthropicToolUseTestStream(out, socratesAdviceToolName)
+		default:
+			return writeAnthropicTextTestStream(out, req.Model, "simple worker answer")
+		}
+	default:
+		return writeAnthropicTextTestStream(out, req.Model, "answer from "+req.Model)
+	}
+}
+
+func testSocratesConfig(t *testing.T) socratesConfig {
+	t.Helper()
+	config := socratesConfig{
+		Enabled:              true,
+		Depth:                defaultOrchestrationDepth,
+		DepthSet:             true,
+		WorkerModels:         []string{"cerebras/gpt-oss-120b"},
+		AdvisorModels:        []string{"anthropic/claude-opus-4.8"},
+		MaxAdviceCalls:       1,
+		AdvisorMaxTokens:     1024,
+		AdvisorTimeoutMS:     10000,
+		BuiltInWorkerPrompt:  fallbackSocratesWorkerPrompt,
+		BuiltInAdvisorPrompt: fallbackSocratesAdvisorPrompt,
+	}
+	if err := normalizeSocratesConfig(&config, &types.OpenAIChatRequest{}); err != nil {
+		t.Fatalf("normalizeSocratesConfig: %v", err)
+	}
+	return config
+}
+
+func writeAnthropicTextTestStream(out io.Writer, model string, text string) error {
+	_, err := fmt.Fprintf(out, `event: message_start
+data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"%s","stop_reason":null,"usage":{"input_tokens":3,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%q}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":4}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`, model, text)
+	return err
+}
+
+func writeAnthropicToolUseTestStream(out io.Writer, name string) error {
+	_, err := fmt.Fprintf(out, `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_socrates","name":%q,"input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`, name)
+	return err
 }
 
 func (f *fusionEchoLLM) InvokeStreaming(

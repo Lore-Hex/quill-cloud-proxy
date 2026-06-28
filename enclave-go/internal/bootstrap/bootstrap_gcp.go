@@ -56,6 +56,8 @@
 //	QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET       name of the secret holding the default synth synthesis prompt
 //	QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET      name of the secret holding the synth-code panel prompt
 //	QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SECRET  name of the secret holding the synth-code synthesis prompt
+//	QUILL_SOCRATES_WORKER_PROMPT_SECRET       name of the secret holding the Socrates worker prompt
+//	QUILL_SOCRATES_ADVISOR_PROMPT_SECRET      name of the secret holding the Socrates advisor prompt
 //	QUILL_TRUSTEDROUTER_INTERNAL_SECRET optional Secret Manager secret name
 package bootstrap
 
@@ -130,6 +132,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	synthSynthesisPromptSecret := os.Getenv("QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET")
 	synthCodePanelPromptSecret := os.Getenv("QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET")
 	synthCodeSynthesisPromptSecret := os.Getenv("QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SECRET")
+	socratesWorkerPromptSecret := os.Getenv("QUILL_SOCRATES_WORKER_PROMPT_SECRET")
+	socratesAdvisorPromptSecret := os.Getenv("QUILL_SOCRATES_ADVISOR_PROMPT_SECRET")
 	if !anySet(
 		openrouterSecret,
 		anthropicSecret,
@@ -419,6 +423,20 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: synth-code synthesis prompt: %w", err)
 		}
 	}
+	var socratesWorkerPrompt []byte
+	if socratesWorkerPromptSecret != "" {
+		socratesWorkerPrompt, err = fetchSecret(ctx, httpc, token, project, socratesWorkerPromptSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: socrates worker prompt: %w", err)
+		}
+	}
+	var socratesAdvisorPrompt []byte
+	if socratesAdvisorPromptSecret != "" {
+		socratesAdvisorPrompt, err = fetchSecret(ctx, httpc, token, project, socratesAdvisorPromptSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: socrates advisor prompt: %w", err)
+		}
+	}
 	var internalGatewayToken string
 	if internalSecret := os.Getenv("QUILL_TRUSTEDROUTER_INTERNAL_SECRET"); internalSecret != "" {
 		value, err := fetchSecret(ctx, httpc, token, project, internalSecret)
@@ -467,7 +485,9 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		SynthSynthesisPrompt:       strings.TrimSpace(string(synthSynthesisPrompt)),
 		SynthCodePanelPrompt:       strings.TrimSpace(string(synthCodePanelPrompt)),
 		SynthCodeSynthesisPrompt:   strings.TrimSpace(string(synthCodeSynthesisPrompt)),
-		// BedrockVsockProxy / OpenRouterVsockProxy unused on GCP — direct egress.
+		SocratesWorkerPrompt:       strings.TrimSpace(string(socratesWorkerPrompt)),
+		SocratesAdvisorPrompt:      strings.TrimSpace(string(socratesAdvisorPrompt)),
+		// Legacy proxy fields unused on GCP — direct egress.
 	}, nil
 }
 

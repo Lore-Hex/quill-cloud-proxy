@@ -44,6 +44,8 @@ type BootstrapData struct {
 	SynthSynthesisPrompt       string `json:"synth_synthesis_prompt,omitempty"`
 	SynthCodePanelPrompt       string `json:"synth_code_panel_prompt,omitempty"`
 	SynthCodeSynthesisPrompt   string `json:"synth_code_synthesis_prompt,omitempty"`
+	SocratesWorkerPrompt       string `json:"socrates_worker_prompt,omitempty"`
+	SocratesAdvisorPrompt      string `json:"socrates_advisor_prompt,omitempty"`
 
 	// Anthropic direct (only populated for the llm_anthropic build target).
 	// Same trust posture as the OpenRouter key — pulled from Secret Manager
@@ -193,6 +195,7 @@ type OpenAIChatRequest struct {
 	Plugins         []any                `json:"plugins,omitempty"`
 	ToolChoice      any                  `json:"tool_choice,omitempty"`
 	ParallelTools   *bool                `json:"parallel_tool_calls,omitempty"`
+	Depth           *int                 `json:"depth,omitempty"`
 	Response        *ResponseRequestMeta `json:"-"`
 	IdempotencyKey  string               `json:"-"`
 }
