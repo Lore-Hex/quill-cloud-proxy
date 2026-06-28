@@ -298,6 +298,102 @@ func fusionCanTryNextModel(err error) bool {
 	return errors.As(err, &fallbackErr)
 }
 
+type orchestrationCallError struct {
+	err                 error
+	Stage               string
+	AttemptedModel      string
+	Endpoint            string
+	Provider            string
+	InputTokens         int
+	OutputTokens        int
+	UsageEstimated      bool
+	ProviderErrorClass  string
+	ProviderErrorDetail string
+}
+
+func (e *orchestrationCallError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *orchestrationCallError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func fusionProviderErrorForOrchestrationFallback(
+	err error,
+	routeType string,
+	req *types.OpenAIChatRequest,
+	authz *trustedrouter.Authorization,
+	selectedRoute *selectedRouteTracker,
+	options []llm.InvokeOptions,
+) error {
+	callErr := newOrchestrationCallError(err, routeType, req, authz, selectedRoute, options)
+	if errorClass(err) == "rate_limited" {
+		return &fusionModelFallbackError{err: callErr}
+	}
+	return callErr
+}
+
+func newOrchestrationCallError(
+	err error,
+	routeType string,
+	req *types.OpenAIChatRequest,
+	authz *trustedrouter.Authorization,
+	selectedRoute *selectedRouteTracker,
+	options []llm.InvokeOptions,
+) error {
+	if err == nil {
+		return nil
+	}
+	option, ok := invokeAttemptOption(err)
+	if !ok && len(options) > 0 {
+		option = options[0]
+	}
+	model := option.Model
+	if model == "" && selectedRoute != nil {
+		model = selectedRoute.Model("", authz)
+	}
+	if model == "" && req != nil {
+		model = req.Model
+	}
+	if model == "" && authz != nil {
+		model = authz.Model
+	}
+	endpoint := option.EndpointID
+	if endpoint == "" && selectedRoute != nil {
+		endpoint = selectedRoute.Endpoint("", authz)
+	}
+	if endpoint == "" && authz != nil {
+		endpoint = authz.EndpointID
+	}
+	provider := option.Provider
+	if provider == "" && authz != nil {
+		provider = authz.Provider
+	}
+	inputTokens := 0
+	if req != nil {
+		inputTokens = trustedrouter.EstimateInputTokens(req)
+	}
+	return &orchestrationCallError{
+		err:                 err,
+		Stage:               routeType,
+		AttemptedModel:      model,
+		Endpoint:            endpoint,
+		Provider:            provider,
+		InputTokens:         inputTokens,
+		OutputTokens:        0,
+		UsageEstimated:      true,
+		ProviderErrorClass:  errorClass(err),
+		ProviderErrorDetail: err.Error(),
+	}
+}
+
 func maybeServeFusion(
 	ctx context.Context,
 	conn io.Writer,
@@ -1008,6 +1104,9 @@ func runFusionJudgeObserved(
 					"error": err.Error(),
 				})
 			}
+			if fusionCanTryNextModel(err) {
+				continue
+			}
 			return fusionCallResult{}, attempts, err
 		}
 		attempts = append(attempts, judge)
@@ -1225,7 +1324,7 @@ func runFusionCallValidatedObservedAttempt(
 		})
 		collectObserver = guard.Observe
 	}
-	go invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget)
+	go invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
 	result, err := adapter.CollectAnthropicTextWithObserver(pr, collectObserver)
 	if guard != nil && guard.Tripped() {
 		if trGateway != nil && trGateway.Enabled() {
@@ -1251,7 +1350,7 @@ func runFusionCallValidatedObservedAttempt(
 		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authz, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		}
-		return fusionCallResult{}, err
+		return fusionCallResult{}, fusionProviderErrorForOrchestrationFallback(err, routeType, req, authz, selectedRoute, options)
 	}
 	rawText := result.Text
 	if strings.HasPrefix(routeType, "fusion.") {
@@ -1550,7 +1649,7 @@ func serveFusionFinalStreamingAttempt(
 	responseID := newRequestID()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
-	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, useLongLastCandidateBudget)
+	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
 
 	first := make([]byte, 4096)
 	var n int

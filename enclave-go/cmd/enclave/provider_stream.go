@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,6 +30,7 @@ func invokeProviderStream(
 	selectedRoute *selectedRouteTracker,
 	requestLogID string,
 	useLongLastCandidateBudget bool,
+	allowTransientRetries bool,
 ) {
 	options := invokeOptions
 	if len(options) == 0 {
@@ -108,10 +110,11 @@ func invokeProviderStream(
 				candidateWriter.BytesWritten(),
 				errStr,
 			)
-			// Retry the same provider on a transient pre-output failure, but only on
-			// the LAST candidate — earlier candidates fall over to the next one
-			// instead. Safe: no bytes written yet, so no duplicate output / billing.
-			if err == nil || candidateWriter.BytesWritten() > 0 || !isLast || !useLongLastCandidateBudget ||
+			// Retry the same provider on a transient pre-output failure only when
+			// explicitly allowed. Orchestration calls disable this so 429/5xx moves
+			// immediately to the next route/model instead of waiting on same-provider
+			// backoff.
+			if err == nil || candidateWriter.BytesWritten() > 0 || !allowTransientRetries || !isLast || !useLongLastCandidateBudget ||
 				tryN >= maxTransientUpstreamRetries || !isTransientUpstreamError(err) {
 				break
 			}
@@ -140,14 +143,14 @@ func invokeProviderStream(
 			_ = pw.Close()
 			return
 		}
-		lastErr = err
+		lastErr = withInvokeAttemptError(err, option)
 		if !trEnabled || candidateWriter.BytesWritten() > 0 || i == len(options)-1 || !retryableInvokeError(err) {
 			fmt.Fprintf(os.Stderr,
 				"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
 				requestLogID, requestID, i+1, i, time.Since(overallStart).Milliseconds(), errorClass(err),
 			)
 			if trEnabled {
-				_ = pw.CloseWithError(err)
+				_ = pw.CloseWithError(lastErr)
 				return
 			}
 			emitErrorAsAnthropicSSE(pw, err)
@@ -164,6 +167,44 @@ func invokeProviderStream(
 		return
 	}
 	_ = pw.Close()
+}
+
+type invokeAttemptError struct {
+	err    error
+	option llm.InvokeOptions
+}
+
+func (e *invokeAttemptError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *invokeAttemptError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func withInvokeAttemptError(err error, option llm.InvokeOptions) error {
+	if err == nil {
+		return nil
+	}
+	var existing *invokeAttemptError
+	if errors.As(err, &existing) {
+		return err
+	}
+	return &invokeAttemptError{err: err, option: option}
+}
+
+func invokeAttemptOption(err error) (llm.InvokeOptions, bool) {
+	var attemptErr *invokeAttemptError
+	if errors.As(err, &attemptErr) && attemptErr != nil {
+		return attemptErr.option, true
+	}
+	return llm.InvokeOptions{}, false
 }
 
 func authorizationRequestID(authorization *trustedrouter.Authorization) string {

@@ -1628,6 +1628,204 @@ func TestServeOneTrustedRouterFusionRetriesSameModelProvidersBeforeModelFallback
 	}
 }
 
+func TestServeOneTrustedRouterFusionJudgeRateLimitUsesFallbackJudgeImmediately(t *testing.T) {
+	bearer := "test-user-bearer"
+	var authorizeCalls []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode authorize payload: %v", err)
+			}
+			authorizeCalls = append(authorizeCalls, payload)
+			model := payload["model"].(string)
+			provider := "test"
+			if model == "model/judge-429" {
+				provider = "badjudge"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id":       fmt.Sprintf("auth_fusion_%d", len(authorizeCalls)),
+				"workspace_id":           "ws_1",
+				"api_key_hash":           "key_1",
+				"model":                  model,
+				"endpoint_id":            model + "@" + provider + "/prepaid",
+				"provider":               provider,
+				"usage_type":             "Credits",
+				"limit_usage_type":       "Credits",
+				"route_candidates":       []any{},
+				"broadcast_destinations": []any{},
+			}})
+		case "/internal/gateway/settle":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode settle payload: %v", err)
+			}
+			model, _ := payload["selected_model"].(string)
+			provider, _ := payload["selected_provider"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"settled":           true,
+				"generation_id":     "gen_fusion",
+				"cost_microdollars": 1,
+				"model":             model,
+				"provider":          provider,
+			}})
+		case "/internal/gateway/refund":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fusionEchoLLM{failProviders: map[string]bool{"badjudge": true}}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["model/panel"],"judge_models":["model/judge-429","model/judge-good"],"final_models":["model/final"],"max_completion_tokens":64}}],"max_tokens":32}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, string(bodyBytes))
+	}
+	var badJudgeCalls, goodJudgeCalls int
+	for _, call := range streamer.calls {
+		switch {
+		case call.Provider == "badjudge":
+			badJudgeCalls++
+		case call.Model == "model/judge-good":
+			goodJudgeCalls++
+		}
+	}
+	if badJudgeCalls != 1 || goodJudgeCalls != 1 {
+		t.Fatalf("badjudge calls=%d good judge calls=%d all=%#v, want immediate one-shot 429 fallback", badJudgeCalls, goodJudgeCalls, streamer.calls)
+	}
+}
+
+func TestServeOneTrustedRouterFusionFinalRateLimitUsesFallbackFinalImmediately(t *testing.T) {
+	bearer := "test-user-bearer"
+	var authorizeCalls []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode authorize payload: %v", err)
+			}
+			authorizeCalls = append(authorizeCalls, payload)
+			model := payload["model"].(string)
+			provider := "test"
+			if model == "model/final-429" {
+				provider = "badfinal"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id":       fmt.Sprintf("auth_fusion_%d", len(authorizeCalls)),
+				"workspace_id":           "ws_1",
+				"api_key_hash":           "key_1",
+				"model":                  model,
+				"endpoint_id":            model + "@" + provider + "/prepaid",
+				"provider":               provider,
+				"usage_type":             "Credits",
+				"limit_usage_type":       "Credits",
+				"route_candidates":       []any{},
+				"broadcast_destinations": []any{},
+			}})
+		case "/internal/gateway/settle":
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode settle payload: %v", err)
+			}
+			model, _ := payload["selected_model"].(string)
+			provider, _ := payload["selected_provider"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"settled":           true,
+				"generation_id":     "gen_fusion",
+				"cost_microdollars": 1,
+				"model":             model,
+				"provider":          provider,
+			}})
+		case "/internal/gateway/refund":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fusionEchoLLM{failProviders: map[string]bool{"badfinal": true}}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["model/panel"],"judge_models":["model/judge-good"],"final_models":["model/final-429","model/final-good"],"max_completion_tokens":64}}],"max_tokens":32}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "final answer from model/final-good") {
+		t.Fatalf("body did not use fallback final: %s", body)
+	}
+	var badFinalCalls, goodFinalCalls int
+	for _, call := range streamer.calls {
+		switch {
+		case call.Provider == "badfinal":
+			badFinalCalls++
+		case call.Model == "model/final-good":
+			goodFinalCalls++
+		}
+	}
+	if badFinalCalls != 1 || goodFinalCalls != 1 {
+		t.Fatalf("badfinal calls=%d good final calls=%d all=%#v, want immediate one-shot 429 fallback", badFinalCalls, goodFinalCalls, streamer.calls)
+	}
+}
+
 func TestServeOneTrustedRouterFusionFallsBackAcrossFinalModels(t *testing.T) {
 	bearer := "test-user-bearer"
 	var authorizeCalls []map[string]any
@@ -2377,6 +2575,62 @@ func TestRunSocratesWorkerFailureFallsBackToAdvisorFinal(t *testing.T) {
 	}
 	if len(recorder.refund) != 1 || len(recorder.settle) != 1 {
 		t.Fatalf("refund=%d settle=%d, want 1 1", len(recorder.refund), len(recorder.settle))
+	}
+}
+
+func TestSocratesStreamErrorIncludesProviderDiagnostics(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterSocratesProPlus10Model,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hard question"}},
+	}
+	baseErr := errors.New("llm/upstream: http 429: rate limited")
+	err := newOrchestrationCallError(
+		withInvokeAttemptError(baseErr, llm.InvokeOptions{
+			Model:      "anthropic/claude-opus-4.8",
+			Provider:   "anthropic",
+			EndpointID: "anthropic/claude-opus-4.8@anthropic/prepaid",
+		}),
+		"socrates.advisor_final",
+		req,
+		&trustedrouter.Authorization{
+			Model:      "anthropic/claude-opus-4.8",
+			Provider:   "anthropic",
+			EndpointID: "anthropic/claude-opus-4.8@anthropic/prepaid",
+		},
+		nil,
+		nil,
+	)
+	event := socratesStreamErrorEvent(err, nil, nil)
+	if event["event"] != "socrates.error" {
+		t.Fatalf("event = %#v", event)
+	}
+	if event["stage"] != "socrates.advisor_final" {
+		t.Fatalf("stage = %#v, event=%#v", event["stage"], event)
+	}
+	if event["attempted_model"] != "anthropic/claude-opus-4.8" {
+		t.Fatalf("attempted_model = %#v, event=%#v", event["attempted_model"], event)
+	}
+	if event["endpoint"] != "anthropic/claude-opus-4.8@anthropic/prepaid" {
+		t.Fatalf("endpoint = %#v, event=%#v", event["endpoint"], event)
+	}
+	if event["provider"] != "anthropic" {
+		t.Fatalf("provider = %#v, event=%#v", event["provider"], event)
+	}
+	if event["provider_error_class"] != "rate_limited" {
+		t.Fatalf("provider_error_class = %#v, event=%#v", event["provider_error_class"], event)
+	}
+	if got := fmt.Sprint(event["provider_error_detail"]); !strings.Contains(got, "http 429") {
+		t.Fatalf("provider_error_detail = %q, event=%#v", got, event)
+	}
+	if event["input_tokens"] == nil || event["output_tokens"] == nil {
+		t.Fatalf("token counts missing from event=%#v", event)
+	}
+	detail, ok := event["detail"].(map[string]any)
+	if !ok {
+		t.Fatalf("detail missing from event=%#v", event)
+	}
+	if detail["provider_error_class"] != "rate_limited" {
+		t.Fatalf("detail provider error = %#v, detail=%#v", detail["provider_error_class"], detail)
 	}
 }
 

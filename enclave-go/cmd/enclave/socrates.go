@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -532,7 +533,7 @@ func serveSocratesStreaming(
 	}
 	final, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err := runSocrates(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, statsW, created, observer)
 	if err != nil {
-		_ = writeSocratesStreamError(statsW, requestID, req.Model, created, err)
+		_ = writeSocratesStreamError(statsW, requestID, req.Model, created, err, workerAttempts, advisorAttempts)
 		return
 	}
 	responseModel := final.Model
@@ -1331,16 +1332,81 @@ func writeSocratesStreamEvent(w io.Writer, requestID string, model string, creat
 	return err
 }
 
-func writeSocratesStreamError(w io.Writer, requestID string, model string, created int64, err error) error {
+func writeSocratesStreamError(w io.Writer, requestID string, model string, created int64, err error, workerAttempts []fusionCallResult, advisorAttempts []fusionCallResult) error {
 	if err == nil {
 		return nil
 	}
-	if writeErr := writeSocratesStreamEvent(w, requestID, model, created, map[string]any{
-		"event": "socrates.error",
-		"error": err.Error(),
-	}); writeErr != nil {
+	if writeErr := writeSocratesStreamEvent(w, requestID, model, created, socratesStreamErrorEvent(err, workerAttempts, advisorAttempts)); writeErr != nil {
 		return writeErr
 	}
 	_, writeErr := w.Write([]byte("data: [DONE]\n\n"))
 	return writeErr
+}
+
+func socratesStreamErrorEvent(err error, workerAttempts []fusionCallResult, advisorAttempts []fusionCallResult) map[string]any {
+	event := map[string]any{
+		"event": "socrates.error",
+		"error": err.Error(),
+	}
+	var callErr *orchestrationCallError
+	if errors.As(err, &callErr) && callErr != nil {
+		event["stage"] = callErr.Stage
+		event["model"] = callErr.AttemptedModel
+		event["attempted_model"] = callErr.AttemptedModel
+		event["endpoint"] = callErr.Endpoint
+		event["provider"] = callErr.Provider
+		event["input_tokens"] = callErr.InputTokens
+		event["output_tokens"] = callErr.OutputTokens
+		if callErr.UsageEstimated {
+			event["usage_estimated"] = true
+		}
+		event["provider_error_class"] = callErr.ProviderErrorClass
+		event["provider_error_detail"] = callErr.ProviderErrorDetail
+		event["detail"] = map[string]any{
+			"model":                 callErr.AttemptedModel,
+			"endpoint":              callErr.Endpoint,
+			"provider":              callErr.Provider,
+			"input_tokens":          callErr.InputTokens,
+			"output_tokens":         callErr.OutputTokens,
+			"usage_estimated":       callErr.UsageEstimated,
+			"provider_error_class":  callErr.ProviderErrorClass,
+			"provider_error_detail": callErr.ProviderErrorDetail,
+		}
+		return event
+	}
+	if detail, stage, ok := socratesLastAttemptDetail(workerAttempts, advisorAttempts); ok {
+		event["stage"] = stage
+		if model, _ := detail["model"].(string); model != "" {
+			event["model"] = model
+			event["attempted_model"] = model
+		}
+		if endpoint, _ := detail["endpoint"].(string); endpoint != "" {
+			event["endpoint"] = endpoint
+		}
+		if inputTokens, ok := detail["input_tokens"]; ok {
+			event["input_tokens"] = inputTokens
+		}
+		if outputTokens, ok := detail["output_tokens"]; ok {
+			event["output_tokens"] = outputTokens
+		}
+		event["provider_error_class"] = errorClass(err)
+		event["provider_error_detail"] = err.Error()
+		detail["provider_error_class"] = errorClass(err)
+		detail["provider_error_detail"] = err.Error()
+		event["detail"] = detail
+		return event
+	}
+	event["provider_error_class"] = errorClass(err)
+	event["provider_error_detail"] = err.Error()
+	return event
+}
+
+func socratesLastAttemptDetail(workerAttempts []fusionCallResult, advisorAttempts []fusionCallResult) (map[string]any, string, bool) {
+	if len(advisorAttempts) > 0 {
+		return socratesSafeCallDetails(advisorAttempts[len(advisorAttempts)-1], false), "advisor_final", true
+	}
+	if len(workerAttempts) > 0 {
+		return socratesSafeCallDetails(workerAttempts[len(workerAttempts)-1], false), "worker", true
+	}
+	return nil, "", false
 }
