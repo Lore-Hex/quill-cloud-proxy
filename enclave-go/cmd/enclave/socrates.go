@@ -21,6 +21,16 @@ import (
 const trustedRouterSocrates10Model = "trustedrouter/socrates-1.0"
 const trustedRouterSocratesModel = "trustedrouter/socrates"
 const trustedRouterAdvisorModel = "trustedrouter/advisor"
+const trustedRouterAristotle10Model = "trustedrouter/aristotle-1.0"
+const trustedRouterAristotleModel = "trustedrouter/aristotle"
+const trustedRouterPlato10Model = "trustedrouter/plato-1.0"
+const trustedRouterPlatoModel = "trustedrouter/plato"
+const trustedRouterPlatoPro10Model = "trustedrouter/plato-pro-1.0"
+const trustedRouterPlatoProModel = "trustedrouter/plato-pro"
+const trustedRouterSocratesPro10Model = "trustedrouter/socrates-pro-1.0"
+const trustedRouterSocratesProModel = "trustedrouter/socrates-pro"
+const trustedRouterSocratesProPlus10Model = "trustedrouter/socrates-pro-plus-1.0"
+const trustedRouterSocratesProPlusModel = "trustedrouter/socrates-pro-plus"
 const trustedRouterAdvisorTool = "trustedrouter:advisor"
 const socratesAdviceToolName = "_trustedrouter_get_advice"
 
@@ -36,11 +46,10 @@ const maxSocratesAdvisorTimeoutMS = 180000
 
 var defaultSocratesWorkerModels = []string{
 	"cerebras/gpt-oss-120b",
-	"deepseek/deepseek-v4-flash",
 }
 
 var defaultSocratesAdvisorModels = []string{
-	"anthropic/claude-opus-4.8",
+	trustedRouterSocratesPro10Model,
 }
 
 const fallbackSocratesWorkerPrompt = `You are TrustedRouter Socrates 1.0.
@@ -68,6 +77,10 @@ If you call the advisor, use its advice once, then continue and answer directly.
 const fallbackSocratesAdvisorPrompt = `You are the private TrustedRouter Socrates advisor.
 
 Review the conversation and give concise, generous, actionable guidance to the worker model. Do not answer the user directly. Point out risks, missing constraints, likely mistakes, and a better approach. Keep the advice focused enough for the worker to act on immediately.`
+
+const fallbackSocratesAdvisorFinalPrompt = `The TrustedRouter worker model path failed.
+
+Answer the user directly using the conversation context. Be concise, correct, and useful. Do not mention internal routing unless it is necessary to explain a limitation.`
 
 type socratesConfig struct {
 	Enabled              bool
@@ -103,13 +116,52 @@ func configureSocratesPrompts(boot *types.BootstrapData) {
 	}
 }
 
-func isSocratesModel(model string) bool {
+func socratesPresetForModel(model string) (socratesConfig, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case trustedRouterSocrates10Model, trustedRouterSocratesModel, trustedRouterAdvisorModel:
-		return true
+		return socratesConfig{
+			Enabled:       true,
+			WorkerModels:  []string{"cerebras/gpt-oss-120b"},
+			AdvisorModels: []string{trustedRouterSocratesPro10Model},
+		}, true
+	case trustedRouterAristotle10Model, trustedRouterAristotleModel:
+		return socratesConfig{
+			Enabled:       true,
+			WorkerModels:  []string{"deepseek/deepseek-v4-flash"},
+			AdvisorModels: []string{trustedRouterZeus10Model},
+		}, true
+	case trustedRouterPlato10Model, trustedRouterPlatoModel:
+		return socratesConfig{
+			Enabled:       true,
+			WorkerModels:  []string{"deepseek/deepseek-v4-flash"},
+			AdvisorModels: []string{trustedRouterPlatoPro10Model},
+		}, true
+	case trustedRouterPlatoPro10Model, trustedRouterPlatoProModel:
+		return socratesConfig{
+			Enabled:       true,
+			WorkerModels:  []string{"z-ai/glm-5.2"},
+			AdvisorModels: []string{trustedRouterPrometheus10Model},
+		}, true
+	case trustedRouterSocratesPro10Model, trustedRouterSocratesProModel:
+		return socratesConfig{
+			Enabled:       true,
+			WorkerModels:  []string{"cerebras/zai-glm-4.7"},
+			AdvisorModels: []string{trustedRouterSocratesProPlus10Model},
+		}, true
+	case trustedRouterSocratesProPlus10Model, trustedRouterSocratesProPlusModel:
+		return socratesConfig{
+			Enabled:       true,
+			WorkerModels:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
+			AdvisorModels: []string{"anthropic/claude-opus-4.8"},
+		}, true
 	default:
-		return false
+		return socratesConfig{}, false
 	}
+}
+
+func isSocratesModel(model string) bool {
+	_, ok := socratesPresetForModel(model)
+	return ok
 }
 
 func isOrchestrationModel(model string) bool {
@@ -175,6 +227,9 @@ func maybeServeSocrates(
 func socratesConfigForRequest(req *types.OpenAIChatRequest) (socratesConfig, bool, error) {
 	config := socratesConfig{Enabled: true}
 	requested := isSocratesModel(req.Model)
+	if preset, ok := socratesPresetForModel(req.Model); ok {
+		config = mergeSocratesConfig(config, preset)
+	}
 	if req.Depth != nil {
 		config.Depth = *req.Depth
 		config.DepthSet = true
@@ -525,10 +580,14 @@ func runSocrates(
 	observerFactory func(stage string, index int, model string) adapter.StreamObserver,
 ) (fusionCallResult, []fusionCallResult, []fusionCallResult, int, bool, error) {
 	var lastErr error
+	allWorkerAttempts := make([]fusionCallResult, 0, len(config.WorkerModels))
+	allAdvisorAttempts := make([]fusionCallResult, 0, len(config.AdvisorModels))
 	for i, workerModel := range config.WorkerModels {
 		final, workers, advisors, adviceCalls, budgetExhausted, err := runSocratesWorkerLoop(ctx, br, req, config, workerModel, i, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, streamW, streamCreated, observerFactory)
+		allWorkerAttempts = append(allWorkerAttempts, workers...)
+		allAdvisorAttempts = append(allAdvisorAttempts, advisors...)
 		if err == nil {
-			return final, workers, advisors, adviceCalls, budgetExhausted, nil
+			return final, allWorkerAttempts, allAdvisorAttempts, adviceCalls, budgetExhausted, nil
 		}
 		lastErr = err
 		fmt.Fprintf(os.Stderr,
@@ -546,9 +605,14 @@ func runSocrates(
 		}
 	}
 	if lastErr != nil {
-		return fusionCallResult{}, nil, nil, 0, false, lastErr
+		final, advisors, err := runSocratesAdvisorFinal(ctx, br, req, config, req.Messages, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, streamW, streamCreated, observerFactory)
+		allAdvisorAttempts = append(allAdvisorAttempts, advisors...)
+		if err == nil {
+			return final, allWorkerAttempts, allAdvisorAttempts, 0, false, nil
+		}
+		return fusionCallResult{}, allWorkerAttempts, allAdvisorAttempts, 0, false, lastErr
 	}
-	return fusionCallResult{}, nil, nil, 0, false, &adapter.AdapterError{Status: 502, Message: "trustedrouter/socrates worker models produced no response", Context: "socrates.worker"}
+	return fusionCallResult{}, allWorkerAttempts, allAdvisorAttempts, 0, false, &adapter.AdapterError{Status: 502, Message: "trustedrouter/socrates worker models produced no response", Context: "socrates.worker"}
 }
 
 func runSocratesWorkerLoop(
@@ -680,7 +744,9 @@ func runSocratesAdvice(
 		}
 		var result fusionCallResult
 		var err error
-		if isFusionModel(advisorModel) {
+		if isSocratesModel(advisorModel) {
+			result, err = runSocratesNestedAdvisor(ctx, br, req, config, advisorModel, messages, trGateway, secretCache, bearer, fmt.Sprintf("%s:advisor:%d", requestID, i), requestLogID, originalInput, false)
+		} else if isFusionModel(advisorModel) {
 			result, err = runSocratesFusionAdvisor(ctx, br, req, config, advisorModel, messages, trGateway, secretCache, bearer, fmt.Sprintf("%s:advisor:%d", requestID, i), requestLogID, originalInput)
 		} else {
 			advisorReq := socratesAdvisorRequest(req, advisorModel, messages, config)
@@ -726,6 +792,130 @@ func runSocratesAdvice(
 	return "", attempts
 }
 
+func runSocratesAdvisorFinal(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	config socratesConfig,
+	messages []types.OpenAIChatMessage,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+	originalInput any,
+	streamW io.Writer,
+	streamCreated int64,
+	observerFactory func(stage string, index int, model string) adapter.StreamObserver,
+) (fusionCallResult, []fusionCallResult, error) {
+	attempts := make([]fusionCallResult, 0, len(config.AdvisorModels))
+	var lastErr error
+	for i, advisorModel := range config.AdvisorModels {
+		if streamW != nil {
+			_ = writeSocratesStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
+				"event": "advisor_final.started",
+				"stage": "advisor_final",
+				"index": i,
+				"model": advisorModel,
+			})
+		}
+		var result fusionCallResult
+		var err error
+		if isSocratesModel(advisorModel) {
+			result, err = runSocratesNestedAdvisor(ctx, br, req, config, advisorModel, messages, trGateway, secretCache, bearer, fmt.Sprintf("%s:advisor-final:%d", requestID, i), requestLogID, originalInput, true)
+		} else if isFusionModel(advisorModel) {
+			result, err = runSocratesFusionAdvisorFinal(ctx, br, req, config, advisorModel, messages, trGateway, secretCache, bearer, fmt.Sprintf("%s:advisor-final:%d", requestID, i), requestLogID, originalInput)
+		} else {
+			advisorReq := socratesAdvisorFinalRequest(req, advisorModel, messages, config)
+			var observer adapter.StreamObserver
+			if observerFactory != nil {
+				observer = observerFactory("advisor_final", i, advisorModel)
+			}
+			timeout := time.Duration(config.AdvisorTimeoutMS) * time.Millisecond
+			attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+			result, err = runFusionCallObserved(attemptCtx, br, advisorReq, trGateway, secretCache, bearer, "socrates.advisor_final", fmt.Sprintf("%s:advisor-final:%d", requestID, i), requestLogID, originalInput, false, observer, streamW != nil)
+			cancel()
+		}
+		if err != nil {
+			lastErr = err
+			fmt.Fprintf(os.Stderr,
+				"socrates.advisor_final_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
+				requestLogID, requestID, advisorModel, i+1, err.Error(),
+			)
+			continue
+		}
+		attempts = append(attempts, result)
+		text := strings.TrimSpace(result.Result.Text)
+		if text == "" || fusionLooksLikeRefusal(text) {
+			lastErr = &adapter.AdapterError{Status: 502, Message: "trustedrouter/socrates advisor fallback returned an empty or refused response", Context: "socrates.advisor_final"}
+			continue
+		}
+		if streamW != nil {
+			_ = writeSocratesStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
+				"event":  "advisor_final.done",
+				"stage":  "advisor_final",
+				"index":  i,
+				"model":  advisorModel,
+				"detail": socratesSafeCallDetails(result, false),
+			})
+		}
+		return result, attempts, nil
+	}
+	if lastErr != nil {
+		return fusionCallResult{}, attempts, lastErr
+	}
+	return fusionCallResult{}, attempts, &adapter.AdapterError{Status: 502, Message: "trustedrouter/socrates advisor fallback produced no response", Context: "socrates.advisor_final"}
+}
+
+func runSocratesNestedAdvisor(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	config socratesConfig,
+	advisorModel string,
+	messages []types.OpenAIChatMessage,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+	originalInput any,
+	finalAnswer bool,
+) (fusionCallResult, error) {
+	if config.Depth <= 0 {
+		fmt.Fprintf(os.Stderr,
+			"socrates.depth_blocked request_log_id=%q request_id=%q model=%q depth_remaining=%d\n",
+			requestLogID, requestID, advisorModel, config.Depth,
+		)
+		return fusionCallResult{}, &adapter.AdapterError{Status: 400, Message: "trustedrouter orchestration depth exhausted", Context: "depth"}
+	}
+	childDepth := config.Depth - 1
+	var advisorReq *types.OpenAIChatRequest
+	if finalAnswer {
+		advisorReq = socratesAdvisorFinalRequest(req, advisorModel, messages, config)
+	} else {
+		advisorReq = socratesAdvisorRequest(req, advisorModel, messages, config)
+	}
+	advisorReq.Depth = &childDepth
+	childConfig, requested, err := socratesConfigForRequest(advisorReq)
+	if err != nil {
+		return fusionCallResult{}, err
+	}
+	if !requested {
+		return fusionCallResult{}, &adapter.AdapterError{Status: 400, Message: "advisor model is not a supported Socrates model", Context: "advisor_model"}
+	}
+	if err := normalizeSocratesConfig(&childConfig, advisorReq); err != nil {
+		return fusionCallResult{}, err
+	}
+	childConfig.BuiltInWorkerPrompt = config.BuiltInWorkerPrompt
+	childConfig.BuiltInAdvisorPrompt = config.BuiltInAdvisorPrompt
+	final, _, _, _, _, err := runSocrates(ctx, br, advisorReq, childConfig, trGateway, secretCache, bearer, requestID+":socrates", requestLogID, originalInput, nil, 0, nil)
+	if err != nil {
+		return fusionCallResult{}, err
+	}
+	return final, nil
+}
+
 func runSocratesFusionAdvisor(
 	ctx context.Context,
 	br llm.Client,
@@ -733,6 +923,41 @@ func runSocratesFusionAdvisor(
 	config socratesConfig,
 	advisorModel string,
 	messages []types.OpenAIChatMessage,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+	originalInput any,
+) (fusionCallResult, error) {
+	advisorReq := socratesAdvisorRequest(req, advisorModel, messages, config)
+	return runSocratesFusionAdvisorRequest(ctx, br, advisorReq, config, advisorModel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput)
+}
+
+func runSocratesFusionAdvisorFinal(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	config socratesConfig,
+	advisorModel string,
+	messages []types.OpenAIChatMessage,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+	originalInput any,
+) (fusionCallResult, error) {
+	advisorReq := socratesAdvisorFinalRequest(req, advisorModel, messages, config)
+	return runSocratesFusionAdvisorRequest(ctx, br, advisorReq, config, advisorModel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput)
+}
+
+func runSocratesFusionAdvisorRequest(
+	ctx context.Context,
+	br llm.Client,
+	advisorReq *types.OpenAIChatRequest,
+	config socratesConfig,
+	advisorModel string,
 	trGateway *trustedrouter.Client,
 	secretCache *byokcache.Cache,
 	bearer string,
@@ -748,7 +973,6 @@ func runSocratesFusionAdvisor(
 		return fusionCallResult{}, &adapter.AdapterError{Status: 400, Message: "trustedrouter orchestration depth exhausted", Context: "depth"}
 	}
 	childDepth := config.Depth - 1
-	advisorReq := socratesAdvisorRequest(req, advisorModel, messages, config)
 	advisorReq.Depth = &childDepth
 	fusionConfig, requested, err := fusionConfigForRequest(advisorReq)
 	if err != nil {
@@ -837,6 +1061,21 @@ func socratesAdvisorRequest(req *types.OpenAIChatRequest, model string, messages
 	out.MaxTokens = &config.AdvisorMaxTokens
 	out.Messages = prependSystem(messages, config.BuiltInAdvisorPrompt)
 	out.Metadata = socratesMetadata(out.Metadata, "advisor", model, config)
+	return out
+}
+
+func socratesAdvisorFinalRequest(req *types.OpenAIChatRequest, model string, messages []types.OpenAIChatMessage, config socratesConfig) *types.OpenAIChatRequest {
+	out := cloneChatRequest(req)
+	out.Model = model
+	out.Models = nil
+	forceFusionThroughputRouting(out)
+	out.Stream = false
+	out.Plugins = nil
+	out.Tools = nil
+	out.ToolChoice = nil
+	out.MaxTokens = &config.AdvisorMaxTokens
+	out.Messages = prependSystem(messages, fallbackSocratesAdvisorFinalPrompt)
+	out.Metadata = socratesMetadata(out.Metadata, "advisor_final", model, config)
 	return out
 }
 

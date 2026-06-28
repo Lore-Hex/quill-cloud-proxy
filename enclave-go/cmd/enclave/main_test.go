@@ -2345,6 +2345,41 @@ func TestRunSocratesAdviceOnceThenWorkerFinal(t *testing.T) {
 	}
 }
 
+func TestRunSocratesWorkerFailureFallsBackToAdvisorFinal(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &socratesScriptedLLM{failModels: map[string]bool{"cerebras/gpt-oss-120b": true}}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterSocrates10Model,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "solve the hard thing"}},
+	}
+	config := testSocratesConfig(t)
+
+	final, workers, advisors, adviceCalls, budgetExhausted, err := runSocrates(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_socrates_worker_fails", "log_socrates_worker_fails", nil, nil, 0, nil)
+	if err != nil {
+		t.Fatalf("runSocrates: %v", err)
+	}
+	if got := strings.TrimSpace(final.Result.Text); got != "advisor final answer" {
+		t.Fatalf("final text = %q", got)
+	}
+	if len(workers) != 0 || len(advisors) != 1 || adviceCalls != 0 || budgetExhausted {
+		t.Fatalf("workers=%d advisors=%d adviceCalls=%d budgetExhausted=%t, want 0 1 0 false", len(workers), len(advisors), adviceCalls, budgetExhausted)
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	var routeTypes []string
+	for _, payload := range recorder.authorize {
+		routeTypes = append(routeTypes, fmt.Sprint(payload["route_type"]))
+	}
+	want := []string{"socrates.worker", "socrates.advisor_final"}
+	if !reflect.DeepEqual(routeTypes, want) {
+		t.Fatalf("route types = %#v, want %#v", routeTypes, want)
+	}
+	if len(recorder.refund) != 1 || len(recorder.settle) != 1 {
+		t.Fatalf("refund=%d settle=%d, want 1 1", len(recorder.refund), len(recorder.settle))
+	}
+}
+
 func TestRunSocratesWorkerFallbackUsesDistinctIdempotencyKeys(t *testing.T) {
 	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
@@ -2406,6 +2441,66 @@ func TestRunSocratesAdviceBudgetExhaustedThenAnswer(t *testing.T) {
 	}
 	if adviceCalls != 1 || !budgetExhausted {
 		t.Fatalf("adviceCalls=%d budgetExhausted=%t, want 1 true", adviceCalls, budgetExhausted)
+	}
+}
+
+func TestSocratesComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
+	tests := []struct {
+		model    string
+		workers  []string
+		advisors []string
+	}{
+		{
+			model:    trustedRouterAristotle10Model,
+			workers:  []string{"deepseek/deepseek-v4-flash"},
+			advisors: []string{trustedRouterZeus10Model},
+		},
+		{
+			model:    trustedRouterPlato10Model,
+			workers:  []string{"deepseek/deepseek-v4-flash"},
+			advisors: []string{trustedRouterPlatoPro10Model},
+		},
+		{
+			model:    trustedRouterPlatoPro10Model,
+			workers:  []string{"z-ai/glm-5.2"},
+			advisors: []string{trustedRouterPrometheus10Model},
+		},
+		{
+			model:    trustedRouterSocrates10Model,
+			workers:  []string{"cerebras/gpt-oss-120b"},
+			advisors: []string{trustedRouterSocratesPro10Model},
+		},
+		{
+			model:    trustedRouterSocratesPro10Model,
+			workers:  []string{"cerebras/zai-glm-4.7"},
+			advisors: []string{trustedRouterSocratesProPlus10Model},
+		},
+		{
+			model:    trustedRouterSocratesProPlus10Model,
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
+			advisors: []string{"anthropic/claude-opus-4.8"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			req := &types.OpenAIChatRequest{Model: tt.model}
+			config, requested, err := socratesConfigForRequest(req)
+			if err != nil {
+				t.Fatalf("socratesConfigForRequest: %v", err)
+			}
+			if !requested {
+				t.Fatalf("expected %s to request Socrates orchestration", tt.model)
+			}
+			if err := normalizeSocratesConfig(&config, req); err != nil {
+				t.Fatalf("normalizeSocratesConfig: %v", err)
+			}
+			if !reflect.DeepEqual(config.WorkerModels, tt.workers) {
+				t.Fatalf("workers = %#v, want %#v", config.WorkerModels, tt.workers)
+			}
+			if !reflect.DeepEqual(config.AdvisorModels, tt.advisors) {
+				t.Fatalf("advisors = %#v, want %#v", config.AdvisorModels, tt.advisors)
+			}
+		})
 	}
 }
 
@@ -3891,6 +3986,9 @@ func (s *socratesScriptedLLM) InvokeStreaming(
 	}
 	switch req.Model {
 	case "anthropic/claude-opus-4.8":
+		if len(req.Messages) > 0 && strings.Contains(types.ContentText(req.Messages[0].Content), "worker model path failed") {
+			return writeAnthropicTextTestStream(out, req.Model, "advisor final answer")
+		}
 		return writeAnthropicTextTestStream(out, req.Model, "advisor says check rollback and settlement")
 	case "cerebras/gpt-oss-120b":
 		last := lastChatMessageText(req.Messages)
