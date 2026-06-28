@@ -2345,6 +2345,48 @@ func TestRunSocratesAdviceOnceThenWorkerFinal(t *testing.T) {
 	}
 }
 
+func TestRunSocratesWorkerFallbackUsesDistinctIdempotencyKeys(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &socratesScriptedLLM{failModels: map[string]bool{"cerebras/gpt-oss-120b": true}}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterSocrates10Model,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "reply pong"}},
+	}
+	config := testSocratesConfig(t)
+	config.WorkerModels = []string{"cerebras/gpt-oss-120b", "deepseek/deepseek-v4-flash"}
+
+	final, workers, advisors, adviceCalls, budgetExhausted, err := runSocrates(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_socrates_fallback", "log_socrates_fallback", nil, nil, 0, nil)
+	if err != nil {
+		t.Fatalf("runSocrates: %v", err)
+	}
+	if got := strings.TrimSpace(final.Result.Text); got != "answer from deepseek/deepseek-v4-flash" {
+		t.Fatalf("final text = %q", got)
+	}
+	if len(workers) != 1 || len(advisors) != 0 || adviceCalls != 0 || budgetExhausted {
+		t.Fatalf("workers=%d advisors=%d adviceCalls=%d budgetExhausted=%t, want 1 0 0 false", len(workers), len(advisors), adviceCalls, budgetExhausted)
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if len(recorder.authorize) != 2 {
+		t.Fatalf("authorize calls = %d, want 2: %#v", len(recorder.authorize), recorder.authorize)
+	}
+	firstKey := fmt.Sprint(recorder.authorize[0]["idempotency_key"])
+	secondKey := fmt.Sprint(recorder.authorize[1]["idempotency_key"])
+	if firstKey == "" || secondKey == "" || firstKey == secondKey {
+		t.Fatalf("idempotency keys = %q, %q; want distinct non-empty keys", firstKey, secondKey)
+	}
+	if len(recorder.refund) != 1 {
+		t.Fatalf("refund calls = %d, want 1: %#v", len(recorder.refund), recorder.refund)
+	}
+	if len(recorder.settle) != 1 {
+		t.Fatalf("settle calls = %d, want 1: %#v", len(recorder.settle), recorder.settle)
+	}
+	if got := recorder.settle[0]["selected_model"]; got != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("settled model = %v, want deepseek/deepseek-v4-flash", got)
+	}
+}
+
 func TestRunSocratesAdviceBudgetExhaustedThenAnswer(t *testing.T) {
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
@@ -3784,6 +3826,7 @@ type fusionEchoLLM struct {
 type socratesScriptedLLM struct {
 	callAdviceFirst        bool
 	callAdviceAfterAdvisor bool
+	failModels             map[string]bool
 }
 
 func (s *socratesScriptedLLM) InvokeStreaming(
@@ -3793,6 +3836,9 @@ func (s *socratesScriptedLLM) InvokeStreaming(
 	out io.Writer,
 	_ ...llm.InvokeOptions,
 ) error {
+	if s.failModels != nil && s.failModels[req.Model] {
+		return fmt.Errorf("scripted provider failure for %s", req.Model)
+	}
 	switch req.Model {
 	case "anthropic/claude-opus-4.8":
 		return writeAnthropicTextTestStream(out, req.Model, "advisor says check rollback and settlement")

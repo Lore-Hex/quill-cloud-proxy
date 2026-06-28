@@ -519,7 +519,7 @@ func runSocrates(
 ) (fusionCallResult, []fusionCallResult, []fusionCallResult, int, bool, error) {
 	var lastErr error
 	for i, workerModel := range config.WorkerModels {
-		final, workers, advisors, adviceCalls, budgetExhausted, err := runSocratesWorkerLoop(ctx, br, req, config, workerModel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, streamW, streamCreated, observerFactory)
+		final, workers, advisors, adviceCalls, budgetExhausted, err := runSocratesWorkerLoop(ctx, br, req, config, workerModel, i, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, streamW, streamCreated, observerFactory)
 		if err == nil {
 			return final, workers, advisors, adviceCalls, budgetExhausted, nil
 		}
@@ -550,6 +550,7 @@ func runSocratesWorkerLoop(
 	req *types.OpenAIChatRequest,
 	config socratesConfig,
 	workerModel string,
+	workerIndex int,
 	trGateway *trustedrouter.Client,
 	secretCache *byokcache.Cache,
 	bearer string,
@@ -580,7 +581,7 @@ func runSocratesWorkerLoop(
 		if observerFactory != nil {
 			observer = observerFactory("worker", turn, workerModel)
 		}
-		worker, err := runFusionCallObserved(ctx, br, workerReq, trGateway, secretCache, bearer, "socrates.worker", fmt.Sprintf("%s:worker:%d", requestID, turn), requestLogID, originalInput, false, observer, streamW != nil)
+		worker, err := runFusionCallObserved(ctx, br, workerReq, trGateway, secretCache, bearer, "socrates.worker", fmt.Sprintf("%s:worker:%d:%d", requestID, workerIndex, turn), requestLogID, originalInput, false, observer, streamW != nil)
 		if err != nil {
 			return fusionCallResult{}, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err
 		}
