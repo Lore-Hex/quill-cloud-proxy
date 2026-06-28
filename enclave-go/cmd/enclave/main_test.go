@@ -2436,6 +2436,56 @@ func TestNormalizeSocratesConfigDepthBounds(t *testing.T) {
 	}
 }
 
+func TestSocratesMaxAdviceCallsZeroStaysDisabled(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Model: trustedRouterSocrates10Model,
+		Tools: []any{map[string]any{
+			"type": trustedRouterAdvisorTool,
+			"parameters": map[string]any{
+				"max_get_advice_calls": 0,
+			},
+		}},
+	}
+	config, requested, err := socratesConfigForRequest(req)
+	if err != nil {
+		t.Fatalf("socratesConfigForRequest: %v", err)
+	}
+	if !requested {
+		t.Fatal("expected Socrates request")
+	}
+	if err := normalizeSocratesConfig(&config, req); err != nil {
+		t.Fatalf("normalizeSocratesConfig: %v", err)
+	}
+	if config.MaxAdviceCalls != 0 {
+		t.Fatalf("MaxAdviceCalls = %d, want 0", config.MaxAdviceCalls)
+	}
+}
+
+func TestSocratesRejectsTooSmallMaxTokensBeforeAuthorize(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	lowMaxTokens := minSocratesMaxTokens - 1
+	req := &types.OpenAIChatRequest{
+		Model:     trustedRouterSocrates10Model,
+		Messages:  []types.OpenAIChatMessage{{Role: "user", Content: "reply pong"}},
+		MaxTokens: &lowMaxTokens,
+	}
+	var out bytes.Buffer
+	handled, err := maybeServeSocrates(context.Background(), &out, &socratesScriptedLLM{}, req, trGateway, nil, "bearer", nil, "log_socrates_low_tokens")
+	if !handled {
+		t.Fatal("expected Socrates request to be handled")
+	}
+	var aerr *adapter.AdapterError
+	if !asAdapterErr(err, &aerr) || aerr.Status != 400 || aerr.Context != "max_tokens" {
+		t.Fatalf("error = %v, want max_tokens 400", err)
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if len(recorder.authorize) != 0 || len(recorder.settle) != 0 || len(recorder.refund) != 0 {
+		t.Fatalf("gateway calls after invalid config: authorize=%#v settle=%#v refund=%#v", recorder.authorize, recorder.settle, recorder.refund)
+	}
+}
+
 func TestSocratesPromptSecretsRequiredInProductionGCP(t *testing.T) {
 	t.Setenv("QUILL_GCP_PROJECT_ID", "trusted-router-prod")
 	t.Setenv("TR_ALLOW_DEFAULT_SOCRATES_PROMPTS", "")

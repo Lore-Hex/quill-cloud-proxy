@@ -28,6 +28,7 @@ const defaultOrchestrationDepth = 2
 const maxOrchestrationDepth = 4
 const defaultSocratesAdviceCalls = 1
 const maxSocratesAdviceCalls = 3
+const minSocratesMaxTokens = 64
 const defaultSocratesAdvisorMaxTokens = 4096
 const maxSocratesAdvisorMaxTokens = 8192
 const defaultSocratesAdvisorTimeoutMS = 90000
@@ -75,6 +76,7 @@ type socratesConfig struct {
 	WorkerModels         []string
 	AdvisorModels        []string
 	MaxAdviceCalls       int
+	MaxAdviceCallsSet    bool
 	AdvisorMaxTokens     int
 	AdvisorTimeoutMS     int
 	BuiltInWorkerPrompt  string
@@ -261,6 +263,7 @@ func parseSocratesParameters(raw map[string]any) (socratesConfig, error) {
 			return config, err
 		} else if ok {
 			config.MaxAdviceCalls = n
+			config.MaxAdviceCallsSet = true
 			break
 		}
 	}
@@ -291,8 +294,9 @@ func mergeSocratesConfig(base, override socratesConfig) socratesConfig {
 	if len(override.AdvisorModels) > 0 {
 		base.AdvisorModels = append([]string(nil), override.AdvisorModels...)
 	}
-	if override.MaxAdviceCalls != 0 {
+	if override.MaxAdviceCallsSet {
 		base.MaxAdviceCalls = override.MaxAdviceCalls
+		base.MaxAdviceCallsSet = true
 	}
 	if override.AdvisorMaxTokens != 0 {
 		base.AdvisorMaxTokens = override.AdvisorMaxTokens
@@ -326,11 +330,14 @@ func normalizeSocratesConfig(config *socratesConfig, req *types.OpenAIChatReques
 	if len(config.AdvisorModels) == 0 || len(config.AdvisorModels) > 8 {
 		return &adapter.AdapterError{Status: 400, Message: "trustedrouter/advisor advisor_models must contain 1-8 models", Context: "advisor_models"}
 	}
-	if config.MaxAdviceCalls == 0 {
+	if !config.MaxAdviceCallsSet {
 		config.MaxAdviceCalls = defaultSocratesAdviceCalls
 	}
 	if config.MaxAdviceCalls < 0 || config.MaxAdviceCalls > maxSocratesAdviceCalls {
 		return &adapter.AdapterError{Status: 400, Message: "trustedrouter/advisor max_get_advice_calls must be between 0 and 3", Context: "max_get_advice_calls"}
+	}
+	if req.MaxTokens != nil && *req.MaxTokens > 0 && *req.MaxTokens < minSocratesMaxTokens {
+		return &adapter.AdapterError{Status: 400, Message: "trustedrouter/socrates max_tokens must be at least 64", Context: "max_tokens"}
 	}
 	if config.AdvisorMaxTokens == 0 {
 		config.AdvisorMaxTokens = defaultSocratesAdvisorMaxTokens
