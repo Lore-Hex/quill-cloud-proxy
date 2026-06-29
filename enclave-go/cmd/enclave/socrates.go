@@ -20,6 +20,7 @@ import (
 )
 
 const trustedRouterSocrates10Model = "trustedrouter/socrates-1.0"
+const trustedRouterSocrates11Model = "trustedrouter/socrates-1.1"
 const trustedRouterSocratesModel = "trustedrouter/socrates"
 const trustedRouterAdvisorModel = "trustedrouter/advisor"
 const trustedRouterAristotle10Model = "trustedrouter/aristotle-1.0"
@@ -149,7 +150,7 @@ func socratesPresetForModel(model string) (socratesConfig, bool) {
 			WorkerModels:  []string{"cerebras/zai-glm-4.7"},
 			AdvisorModels: []string{trustedRouterSocratesProPlus10Model},
 		}, true
-	case trustedRouterSocratesProPlus10Model, trustedRouterSocratesProPlusModel:
+	case trustedRouterSocrates11Model, trustedRouterSocratesProPlus10Model, trustedRouterSocratesProPlusModel:
 		return socratesConfig{
 			Enabled:       true,
 			WorkerModels:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
