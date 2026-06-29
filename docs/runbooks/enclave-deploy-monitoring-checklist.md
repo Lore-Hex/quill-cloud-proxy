@@ -10,6 +10,21 @@ Do not wait passively on any deploy step for more than 2 minutes.
 If a step is still running, run the relevant external checks below and
 write down the result before continuing to wait.
 
+Do not replace a regional MIG while that region is still in the canonical
+`api.trustedrouter.com` DNS answer. The safe order is:
+
+1. Reconcile canonical DNS with the target region excluded.
+2. Wait until authoritative DNS no longer contains that region's IPs, then wait
+   one TTL for recursive resolver drain.
+3. Roll the regional MIG.
+4. Wait for MIG stable, attestation healthy, and regional synthetic green.
+5. Re-add the region to canonical DNS.
+
+This is the zero-downtime deploy path that works without buying spare
+Confidential VM capacity for blue/green fleets. During the roll, the explicit
+regional hostname may be degraded, but the canonical API keeps serving from the
+other warm regions.
+
 ## Before Rollout
 
 Capture the target release:
@@ -48,6 +63,21 @@ done
 ```
 
 ## During Each Region Rollout
+
+Before starting the replace, confirm the target region is drained from
+canonical DNS:
+
+```bash
+QUILL_API_HOST=api.trustedrouter.com \
+QUILL_DNS_ZONE=trustedrouter-com \
+QUILL_PUBLISH_REGIONAL=1 \
+QUILL_REGIONAL_ZONE=quillrouter-com \
+QUILL_REGIONAL_SUFFIX=quillrouter.com \
+QUILL_EXCLUDE_CANONICAL_REGIONS=<region> \
+  uv run --script tools/reconcile-enclave-dns.py --apply
+
+bash tools/wait-canonical-drained.sh <region>
+```
 
 Poll the workflow and MIG state:
 

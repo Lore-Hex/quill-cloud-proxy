@@ -92,6 +92,11 @@ ACCEPT_RECENT_RELEASE_DIGESTS = int(os.environ.get("QUILL_ACCEPT_RECENT_RELEASE_
 PUBLISH_REGIONAL = os.environ.get("QUILL_PUBLISH_REGIONAL", "0") == "1"
 REGIONAL_ZONE = os.environ.get("QUILL_REGIONAL_ZONE", "quillrouter-com")
 REGIONAL_SUFFIX = os.environ.get("QUILL_REGIONAL_SUFFIX", "quillrouter.com")
+EXCLUDE_CANONICAL_REGIONS = {
+    r.strip()
+    for r in os.environ.get("QUILL_EXCLUDE_CANONICAL_REGIONS", "").split(",")
+    if r.strip()
+}
 
 
 def log(msg: str) -> None:
@@ -280,9 +285,17 @@ def main() -> int:
             healthy.append(inst)
             by_region.setdefault(inst["region"], []).append(inst["ip"])
 
-    healthy_ips = sorted({i["ip"] for i in healthy})
+    canonical_healthy = [
+        i for i in healthy if i["region"] not in EXCLUDE_CANONICAL_REGIONS
+    ]
+    healthy_ips = sorted({i["ip"] for i in canonical_healthy})
     regions = sorted(by_region)
     log(f"reconcile: {len(healthy_ips)} healthy across {len(regions)} regions {regions}")
+    if EXCLUDE_CANONICAL_REGIONS:
+        log(
+            "reconcile: excluding from canonical "
+            + ", ".join(sorted(EXCLUDE_CANONICAL_REGIONS))
+        )
 
     if len(healthy_ips) < MIN_HEALTHY:
         sys.exit(f"[FAIL] only {len(healthy_ips)} healthy (< MIN_HEALTHY={MIN_HEALTHY}); "

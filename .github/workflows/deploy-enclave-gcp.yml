@@ -274,10 +274,24 @@ jobs:
             echo "  pre-rollout ${region}: ${tmpl_short:-<none>}"
           done
 
-      # Staged regional rollout. Roll us-central1 first, gate on a
-      # 3-min single-region synthetic watch; only proceed to
-      # europe-west4 if us-central1 stays up. A bad image reaches at
-      # most one region before the gate catches it.
+      # Staged regional rollout. Before touching any region, drain it from the
+      # canonical API DNS answer and wait one TTL. The regional hostname may be
+      # briefly unavailable while that region rolls, but api.trustedrouter.com
+      # keeps serving from the other warm regions. This avoids relying on spare
+      # Confidential VM capacity for a blue/green primary-region deploy.
+
+      - name: Drain us-central1 from canonical API DNS
+        env:
+          QUILL_RECONCILE_APPLY: "1"
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
+          QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
+          QUILL_EXCLUDE_CANONICAL_REGIONS: us-central1
+        run: |
+          uv run --script tools/reconcile-enclave-dns.py --apply
+          bash tools/wait-canonical-drained.sh us-central1
 
       - name: Roll the GCP MIG (us-central1)
         env:
@@ -310,6 +324,7 @@ jobs:
           QUILL_PUBLISH_REGIONAL: "1"
           QUILL_REGIONAL_ZONE: quillrouter-com
           QUILL_REGIONAL_SUFFIX: quillrouter.com
+          QUILL_EXCLUDE_CANONICAL_REGIONS: us-central1
         run: |
           set -euo pipefail
           for i in $(seq 1 90); do
@@ -342,6 +357,7 @@ jobs:
           QUILL_PUBLISH_REGIONAL: "1"
           QUILL_REGIONAL_ZONE: quillrouter-com
           QUILL_REGIONAL_SUFFIX: quillrouter.com
+          QUILL_EXCLUDE_CANONICAL_REGIONS: us-central1
         run: uv run --script tools/reconcile-enclave-dns.py --apply
 
       - name: Wait for us-central1 synthetic up
@@ -364,7 +380,7 @@ jobs:
         run: python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 60
 
       - name: Rollback us-central1 MIG + abort (canary tripped)
-        if: ${{ steps.canary_us.outcome == 'failure' && steps.canary_us.outputs.rollback_regions != '' }}
+        if: ${{ steps.canary_us.outcome == 'failure' }}
         env:
           PREV_US: ${{ steps.prev.outputs.us_central1_template }}
         run: |
@@ -380,15 +396,24 @@ jobs:
           gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-us \
             --region=us-central1 --project=quill-cloud-proxy \
             --max-unavailable=0 --max-surge=3 --quiet
-          echo "europe-west4 NEVER received the bad image; safe."
+          echo "us-central1 remains drained from canonical API DNS; other regions keep serving."
           exit 1
 
-      - name: Roll secondary GCP MIGs in parallel (europe-west4 + us-east4)
-        # Keep us-central1 as the serial canary. Once it passes, roll the
-        # secondary warm regions concurrently. Each secondary still has the same
-        # safety gates as the old serial path: MIG stable, attestation healthy,
-        # DNS reconcile, fresh synthetic-up, and a region-local watchdog.
-        # On failure, only the failed region is rolled back.
+      - name: Re-add us-central1 to canonical API DNS
+        if: ${{ steps.canary_us.outcome == 'success' }}
+        env:
+          QUILL_RECONCILE_APPLY: "1"
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
+          QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
+        run: uv run --script tools/reconcile-enclave-dns.py --apply
+
+      - name: Roll secondary GCP MIGs serially (europe-west4 + us-east4)
+        # Roll secondaries one at a time with the same DNS-drain invariant used
+        # for us-central1. Parallel secondary deploys are faster, but they reduce
+        # canonical serving capacity during the riskiest part of the rollout.
         timeout-minutes: 45
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
@@ -399,6 +424,7 @@ jobs:
           set -euo pipefail
 
           reconcile_dns() {
+            local exclude="${1:-}"
             local lock="${SECONDARY_ROLLOUT_LOCK_DIR:-/tmp}/dns-reconcile.lock"
             (
               flock 9
@@ -408,6 +434,7 @@ jobs:
               QUILL_PUBLISH_REGIONAL=1 \
               QUILL_REGIONAL_ZONE=quillrouter-com \
               QUILL_REGIONAL_SUFFIX=quillrouter.com \
+              QUILL_EXCLUDE_CANONICAL_REGIONS="${exclude}" \
                 uv run --script tools/reconcile-enclave-dns.py --apply
             ) 9>"${lock}"
           }
@@ -427,11 +454,11 @@ jobs:
             for i in $(seq 1 90); do
               if gcloud compute instance-groups managed wait-until "${mig}" \
                 --region="${region}" --project=quill-cloud-proxy --stable --timeout=10; then
-                reconcile_dns
+                reconcile_dns "${region}"
                 return 0
               fi
               echo "${region} still rolling; refreshing attested DNS membership (${i}/90)"
-              reconcile_dns || true
+              reconcile_dns "${region}" || true
               sleep 5
             done
             echo "${region} MIG did not stabilize before timeout" >&2
@@ -465,16 +492,21 @@ jobs:
               if [ -n "${machine_type}" ]; then export MACHINE_TYPE="${machine_type}"; fi
               if [ -n "${conf_type}" ]; then export CONF_COMPUTE_TYPE="${conf_type}"; fi
 
+              echo "draining ${region} from canonical API DNS"
+              reconcile_dns "${region}"
+              bash tools/wait-canonical-drained.sh "${region}"
               bash tools/deploy-gcp-mig.sh "${region}"
               wait_region_stable_with_dns_refresh "${mig}" "${region}"
               bash tools/wait-region-attested.sh "${filter}" "${region}"
-              reconcile_dns
+              reconcile_dns "${region}"
               trigger_synthetic_workers
               WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
               if ! python3 tools/watchdog.py --regions "${region}" --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 120; then
                 rollback_region "${region}" "${mig}" "${prev_template}"
                 exit 1
               fi
+              echo "re-adding ${region} to canonical API DNS"
+              reconcile_dns
               echo "${region} rollout healthy"
             ) || status=$?
             echo "::endgroup::"
@@ -485,6 +517,7 @@ jobs:
           export SECONDARY_ROLLOUT_LOCK_DIR="${logs_dir}"
           echo "secondary rollout logs: ${logs_dir}"
 
+          failed=0
           roll_secondary_region \
             europe-west4 \
             quill-enclave-mig-eu \
@@ -493,8 +526,7 @@ jobs:
             api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com \
             "${PREV_EU}" \
             c3-standard-4 \
-            TDX >"${logs_dir}/europe-west4.log" 2>&1 &
-          pid_eu=$!
+            TDX >"${logs_dir}/europe-west4.log" 2>&1 || failed=1
 
           roll_secondary_region \
             us-east4 \
@@ -504,12 +536,7 @@ jobs:
             api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com \
             "${PREV_USEAST4}" \
             c3-standard-4 \
-            TDX >"${logs_dir}/us-east4.log" 2>&1 &
-          pid_useast4=$!
-
-          failed=0
-          if ! wait "${pid_eu}"; then failed=1; fi
-          if ! wait "${pid_useast4}"; then failed=1; fi
+            TDX >"${logs_dir}/us-east4.log" 2>&1 || failed=1
 
           echo "--- europe-west4 rollout log ---"
           cat "${logs_dir}/europe-west4.log"
