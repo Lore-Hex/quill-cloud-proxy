@@ -29,6 +29,11 @@ on:
       - "enclave-go/**"
       - "tools/release-gcp.sh"
       - "tools/deploy-gcp-mig.sh"
+      - "tools/reconcile-enclave-dns.py"
+      - "tools/verify-attestation.py"
+      - "tools/wait-canonical-drained.sh"
+      - "tools/wait-region-attested.sh"
+      - "tools/wait-region-synthetic-up.sh"
       - ".github/workflows/deploy-enclave-gcp.yml"
       # Note: trust-page/** is intentionally NOT in this list. Trust
       # artifacts are *output* of this workflow, not input — listing them
