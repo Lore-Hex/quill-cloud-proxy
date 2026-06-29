@@ -3003,7 +3003,7 @@ func TestSocratesComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		{
 			model:    trustedRouterSocratesProPlus10Model,
 			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
-			advisors: []string{"anthropic/claude-opus-4.8"},
+			advisors: []string{trustedRouterZeus10Model},
 		},
 	}
 	for _, tt := range tests {

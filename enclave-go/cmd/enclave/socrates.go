@@ -153,7 +153,7 @@ func socratesPresetForModel(model string) (socratesConfig, bool) {
 		return socratesConfig{
 			Enabled:       true,
 			WorkerModels:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
-			AdvisorModels: []string{"anthropic/claude-opus-4.8"},
+			AdvisorModels: []string{trustedRouterZeus10Model},
 		}, true
 	default:
 		return socratesConfig{}, false
