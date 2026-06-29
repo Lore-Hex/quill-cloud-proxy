@@ -165,12 +165,12 @@ def recent_release_digests() -> list[str]:
         return []
 
 
-def attest(ip: str, digest: str) -> bool:
-    """True iff the instance at `ip` passes full attestation for API_HOST."""
+def attest(ip: str, digest: str, api_host: str = API_HOST) -> bool:
+    """True iff the instance at `ip` passes full attestation for `api_host`."""
     try:
         p = subprocess.run(
             ["uv", "run", "--script", str(VERIFIER),
-             "--api-host", API_HOST, "--connect-ip", ip,
+             "--api-host", api_host, "--connect-ip", ip,
              "--expect-digest", digest, "--samples", "2"],
             capture_output=True, text=True, timeout=45,
         )
@@ -224,6 +224,51 @@ def set_dns_ips(zone: str, record: str, ips: list[str]) -> None:
                 f"set_dns_ips({record}) failed: {(p.stderr or p.stdout).strip()}")
 
 
+def regional_host(region: str) -> str:
+    return f"api-{region}.{REGIONAL_SUFFIX}".rstrip(".")
+
+
+def attest_regional_instances(
+    healthy: list[dict],
+    digest: str,
+) -> dict[str, list[str]]:
+    """Return region->IP list proven with each region's own SNI.
+
+    Passing canonical attestation is not enough for regional DNS. Fresh
+    Confidential Space VMs can become healthy for api.trustedrouter.com before
+    their regional autocert path is ready. Publishing them to
+    api-<region>.quillrouter.com at that point creates regional-only
+    RemoteProtocolError failures during deploys.
+    """
+    regional_candidates = [
+        (inst, regional_host(inst["region"])) for inst in healthy
+    ]
+    if not regional_candidates:
+        return {}
+
+    by_region: dict[str, list[str]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
+        results = list(
+            ex.map(
+                lambda item: (
+                    item[0],
+                    item[1],
+                    attest(item[0]["ip"], digest, item[1]),
+                ),
+                regional_candidates,
+            )
+        )
+    for inst, host, ok in results:
+        mark = "ok " if ok else "FAIL"
+        log(
+            f"  [regional {mark}] {inst['region']:14s} "
+            f"{inst['ip']:15s} {host}"
+        )
+        if ok:
+            by_region.setdefault(inst["region"], []).append(inst["ip"])
+    return by_region
+
+
 def reconcile_regional(by_region: dict[str, list[str]], apply: bool) -> None:
     """Publish api-<gcp-region>.<suffix> A = that region's healthy IPs.
 
@@ -236,7 +281,7 @@ def reconcile_regional(by_region: dict[str, list[str]], apply: bool) -> None:
         ips = sorted(set(by_region[region]))
         if not ips:
             continue  # never publish/blank to an empty record
-        record = f"api-{region}.{REGIONAL_SUFFIX}".rstrip(".") + "."
+        record = regional_host(region) + "."
         cur = sorted(current_dns_ips(REGIONAL_ZONE, record))
         if len(ips) < MIN_HEALTHY_REGIONAL and len(ips) < len(cur):
             log(f"  regional {record}: {len(ips)} healthy < floor "
@@ -313,7 +358,8 @@ def main() -> int:
             log("reconcile: DRY-RUN canonical (pass --apply to change DNS)")
 
     if PUBLISH_REGIONAL:
-        reconcile_regional(by_region, args.apply)
+        regional_by_region = attest_regional_instances(healthy, digest)
+        reconcile_regional(regional_by_region, args.apply)
     return 0
 
 
