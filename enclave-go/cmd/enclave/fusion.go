@@ -35,9 +35,19 @@ const trustedRouterPrometheusCode10Model = "trustedrouter/prometheus-code-1.0"
 const trustedRouterZeusCode10Model = "trustedrouter/zeus-code-1.0"
 const trustedRouterFusionModel = "trustedrouter/fusion"
 const trustedRouterFusionCodeModel = "trustedrouter/fusion-code"
+const trustedRouterSelectorModel = "trustedrouter/selector"
+const trustedRouterMapReduceModel = "trustedrouter/mapreduce"
 const trustedRouterSynthTool = "trustedrouter:synth"
 const trustedRouterFusionTool = "trustedrouter:fusion"
+const trustedRouterSelectorTool = "trustedrouter:selector"
+const trustedRouterMapReduceTool = "trustedrouter:mapreduce"
+const fusionModeSynth = "synth"
+const fusionModeSelector = "selector"
+const fusionModeMapReduce = "mapreduce"
 const defaultFusionSelectionStrategy = "synthesize_non_refusals"
+const fusionSelectorSelectionStrategy = "selector"
+const maxMapReduceParts = 8
+const defaultMapReduceParts = 4
 const maxFusionSynthesisPromptBytes = 4000
 const maxFusionPanelPromptBytes = 4000
 const fusionPanelThinkingTokenBudget = 1000
@@ -138,7 +148,9 @@ func isFusionModel(model string) bool {
 		trustedRouterPrometheusCode10Model,
 		trustedRouterZeusCode10Model,
 		trustedRouterFusionModel,
-		trustedRouterFusionCodeModel:
+		trustedRouterFusionCodeModel,
+		trustedRouterSelectorModel,
+		trustedRouterMapReduceModel:
 		return true
 	default:
 		return false
@@ -175,7 +187,8 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 		trustedRouterPrometheusCodeModel,
 		trustedRouterPrometheusCode10Model,
 		trustedRouterFusionModel,
-		trustedRouterFusionCodeModel:
+		trustedRouterFusionCodeModel,
+		trustedRouterSelectorModel:
 		return "quality", append([]string(nil), fusionQualityPanel...), true
 	case trustedRouterZeusModel,
 		trustedRouterZeus10Model,
@@ -189,7 +202,7 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 
 func isFusionToolType(toolType string) bool {
 	switch strings.ToLower(strings.TrimSpace(toolType)) {
-	case trustedRouterSynthTool, trustedRouterFusionTool:
+	case trustedRouterSynthTool, trustedRouterFusionTool, trustedRouterSelectorTool, trustedRouterMapReduceTool:
 		return true
 	default:
 		return false
@@ -199,16 +212,26 @@ func isFusionToolType(toolType string) bool {
 type fusionConfig struct {
 	Enabled             bool
 	CodeModel           bool
+	Mode                string
 	AnalysisModels      []string
 	JudgeModel          string
 	JudgeModels         []string
 	FinalModels         []string
+	SelectorModels      []string
+	MapperModels        []string
+	ParallelModels      []string
+	ReducerModels       []string
 	PanelPrompt         string
 	SynthesisPrompt     string
+	SelectorPrompt      string
+	MapperPrompt        string
+	ParallelPrompt      string
+	ReducerPrompt       string
 	BuiltInPanelPrompt  string
 	BuiltInFinalPrompt  string
 	MaxToolCalls        int
 	MaxCompletionTokens int
+	MaxParts            int
 	SelectionStrategy   string
 	Preset              string
 }
@@ -421,6 +444,19 @@ func maybeServeFusion(
 	if trGateway == nil || !trGateway.Enabled() {
 		return true, &adapter.AdapterError{Status: 503, Message: "trustedrouter/synth requires the TrustedRouter control plane", Context: "trustedrouter/synth"}
 	}
+	config.Mode = fusionModeForRequest(req.Model, config.Mode)
+	if config.Mode == fusionModeMapReduce {
+		if err := normalizeMapReduceConfig(&config, req.Model); err != nil {
+			return true, err
+		}
+		config.BuiltInPanelPrompt, config.BuiltInFinalPrompt = fusionBuiltInPrompts(false)
+		if req.Stream {
+			serveMapReduceStreaming(ctx, conn, br, req, config, trGateway, secretCache, bearer, originalInput, requestLogID)
+		} else {
+			serveMapReduceNonStreaming(ctx, conn, br, req, config, trGateway, secretCache, bearer, originalInput, requestLogID)
+		}
+		return true, nil
+	}
 	if len(config.AnalysisModels) == 0 {
 		if preset, panel, ok := fusionPresetPanelForModel(req.Model); ok {
 			config.Preset = preset
@@ -433,12 +469,16 @@ func maybeServeFusion(
 		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth analysis_models must contain 1-8 models", Context: "analysis_models"}
 	}
 	if config.SelectionStrategy == "" {
-		config.SelectionStrategy = defaultFusionSelectionStrategy
+		if config.Mode == fusionModeSelector {
+			config.SelectionStrategy = fusionSelectorSelectionStrategy
+		} else {
+			config.SelectionStrategy = defaultFusionSelectionStrategy
+		}
 	}
 	switch config.SelectionStrategy {
-	case "synthesize", "synthesize_non_refusals", "first_success", "first_non_refusal":
+	case "synthesize", "synthesize_non_refusals", "first_success", "first_non_refusal", fusionSelectorSelectionStrategy:
 	default:
-		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth selection_strategy must be synthesize, synthesize_non_refusals, first_success, or first_non_refusal", Context: "selection_strategy"}
+		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth selection_strategy must be synthesize, synthesize_non_refusals, first_success, first_non_refusal, or selector", Context: "selection_strategy"}
 	}
 	if config.MaxToolCalls < 0 || config.MaxToolCalls > 16 {
 		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth max_tool_calls must be between 1 and 16", Context: "max_tool_calls"}
@@ -454,6 +494,13 @@ func maybeServeFusion(
 	if err != nil {
 		return true, err
 	}
+	selectorModels := judgeModels
+	if config.SelectionStrategy == fusionSelectorSelectionStrategy {
+		selectorModels, err = fusionSelectorModels(config)
+		if err != nil {
+			return true, err
+		}
+	}
 
 	codeModel := isFusionCodeModel(req.Model)
 	config.CodeModel = codeModel
@@ -468,9 +515,17 @@ func maybeServeFusion(
 	config.BuiltInPanelPrompt, config.BuiltInFinalPrompt = fusionBuiltInPrompts(codeModel)
 
 	if req.Stream {
-		serveFusionStreaming(ctx, conn, br, req, config, finalModels, judgeModels, trGateway, secretCache, bearer, originalInput, requestLogID)
+		if config.SelectionStrategy == fusionSelectorSelectionStrategy {
+			serveSelectorStreaming(ctx, conn, br, req, config, selectorModels, trGateway, secretCache, bearer, originalInput, requestLogID)
+		} else {
+			serveFusionStreaming(ctx, conn, br, req, config, finalModels, judgeModels, trGateway, secretCache, bearer, originalInput, requestLogID)
+		}
 	} else {
-		serveFusionNonStreaming(ctx, conn, br, req, config, finalModels, judgeModels, trGateway, secretCache, bearer, originalInput, requestLogID)
+		if config.SelectionStrategy == fusionSelectorSelectionStrategy {
+			serveSelectorNonStreaming(ctx, conn, br, req, config, selectorModels, trGateway, secretCache, bearer, originalInput, requestLogID)
+		} else {
+			serveFusionNonStreaming(ctx, conn, br, req, config, finalModels, judgeModels, trGateway, secretCache, bearer, originalInput, requestLogID)
+		}
 	}
 	return true, nil
 }
@@ -506,10 +561,17 @@ func fusionConfigFromPlugins(plugins []any) (fusionConfig, bool, error) {
 			return fusionConfig{}, false, &adapter.AdapterError{Status: 400, Message: "plugin must be an object", Context: "plugins"}
 		}
 		pluginID := strings.ToLower(strings.TrimSpace(stringValue(m["id"])))
-		if pluginID != "synth" && pluginID != "fusion" {
+		if pluginID != "synth" && pluginID != "fusion" && pluginID != "selector" && pluginID != "mapreduce" && pluginID != "map_reduce" {
 			continue
 		}
 		config, err := parseFusionParameters(m)
+		switch pluginID {
+		case "selector":
+			config.Mode = fusionModeSelector
+			config.SelectionStrategy = fusionSelectorSelectionStrategy
+		case "mapreduce", "map_reduce":
+			config.Mode = fusionModeMapReduce
+		}
 		return config, true, err
 	}
 	return fusionConfig{}, false, nil
@@ -545,6 +607,13 @@ func fusionConfigFromTools(tools []any) ([]any, fusionConfig, bool, error) {
 		parsed, err := parseFusionParameters(params)
 		if err != nil {
 			return nil, fusionConfig{}, true, err
+		}
+		switch strings.ToLower(strings.TrimSpace(toolType)) {
+		case trustedRouterSelectorTool:
+			parsed.Mode = fusionModeSelector
+			parsed.SelectionStrategy = fusionSelectorSelectionStrategy
+		case trustedRouterMapReduceTool:
+			parsed.Mode = fusionModeMapReduce
 		}
 		config = mergeFusionConfig(config, parsed)
 		requested = true
@@ -642,6 +711,42 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 		}
 		config.FinalModels = models
 	}
+	if modelsRaw, ok := raw["selector_models"]; ok {
+		models, err := stringList(modelsRaw, "selector_models")
+		if err != nil {
+			return config, err
+		}
+		config.SelectorModels = models
+	} else if model := strings.TrimSpace(stringValue(raw["selector_model"])); model != "" {
+		config.SelectorModels = []string{model}
+	}
+	if modelsRaw, ok := raw["mapper_models"]; ok {
+		models, err := stringList(modelsRaw, "mapper_models")
+		if err != nil {
+			return config, err
+		}
+		config.MapperModels = models
+	} else if model := strings.TrimSpace(stringValue(raw["mapper_model"])); model != "" {
+		config.MapperModels = []string{model}
+	}
+	if modelsRaw, ok := raw["parallel_models"]; ok {
+		models, err := stringList(modelsRaw, "parallel_models")
+		if err != nil {
+			return config, err
+		}
+		config.ParallelModels = models
+	} else if model := strings.TrimSpace(stringValue(raw["parallel_model"])); model != "" {
+		config.ParallelModels = []string{model}
+	}
+	if modelsRaw, ok := raw["reducer_models"]; ok {
+		models, err := stringList(modelsRaw, "reducer_models")
+		if err != nil {
+			return config, err
+		}
+		config.ReducerModels = models
+	} else if model := strings.TrimSpace(stringValue(raw["reducer_model"])); model != "" {
+		config.ReducerModels = []string{model}
+	}
 	for _, name := range []string{"synthesis_prompt", "synthesis_instructions", "final_prompt", "final_instructions"} {
 		value, ok, err := stringField(raw, name, maxFusionSynthesisPromptBytes)
 		if err != nil {
@@ -657,6 +762,46 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 	} else if ok && value != "" {
 		config.PanelPrompt = value
 	}
+	for _, name := range []string{"selector_prompt", "selector_instructions"} {
+		value, ok, err := stringField(raw, name, maxFusionSynthesisPromptBytes)
+		if err != nil {
+			return config, err
+		}
+		if ok && value != "" {
+			config.SelectorPrompt = value
+			break
+		}
+	}
+	for _, name := range []string{"mapper_prompt", "mapper_instructions"} {
+		value, ok, err := stringField(raw, name, maxFusionPanelPromptBytes)
+		if err != nil {
+			return config, err
+		}
+		if ok && value != "" {
+			config.MapperPrompt = value
+			break
+		}
+	}
+	for _, name := range []string{"parallel_prompt", "worker_prompt", "parallel_instructions", "worker_instructions"} {
+		value, ok, err := stringField(raw, name, maxFusionPanelPromptBytes)
+		if err != nil {
+			return config, err
+		}
+		if ok && value != "" {
+			config.ParallelPrompt = value
+			break
+		}
+	}
+	for _, name := range []string{"reducer_prompt", "reducer_instructions", "reduce_prompt", "reduce_instructions"} {
+		value, ok, err := stringField(raw, name, maxFusionSynthesisPromptBytes)
+		if err != nil {
+			return config, err
+		}
+		if ok && value != "" {
+			config.ReducerPrompt = value
+			break
+		}
+	}
 	if n, ok, err := intField(raw, "max_tool_calls"); err != nil {
 		return config, err
 	} else if ok {
@@ -667,12 +812,38 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 	} else if ok {
 		config.MaxCompletionTokens = n
 	}
+	if n, ok, err := intField(raw, "max_parts"); err != nil {
+		return config, err
+	} else if ok {
+		config.MaxParts = n
+	}
+	if mode := strings.TrimSpace(strings.ToLower(stringValue(raw["mode"]))); mode != "" {
+		switch mode {
+		case "selector", "select_best":
+			config.Mode = fusionModeSelector
+			config.SelectionStrategy = fusionSelectorSelectionStrategy
+		case "mapreduce", "map_reduce", "map-reduce":
+			config.Mode = fusionModeMapReduce
+		case "synth", "synthesize", "fusion":
+			config.Mode = fusionModeSynth
+		default:
+			return config, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth mode must be synth, selector, or mapreduce", Context: "mode"}
+		}
+	}
 	if strategy := strings.TrimSpace(strings.ToLower(stringValue(raw["selection_strategy"]))); strategy != "" {
 		config.SelectionStrategy = strategy
 	} else if strategy := strings.TrimSpace(strings.ToLower(stringValue(raw["strategy"]))); strategy != "" {
 		config.SelectionStrategy = strategy
 	} else if strategy := strings.TrimSpace(strings.ToLower(stringValue(raw["type"]))); strategy != "" {
-		config.SelectionStrategy = strategy
+		switch strategy {
+		case "selector", "select_best":
+			config.Mode = fusionModeSelector
+			config.SelectionStrategy = fusionSelectorSelectionStrategy
+		case "mapreduce", "map_reduce", "map-reduce":
+			config.Mode = fusionModeMapReduce
+		default:
+			config.SelectionStrategy = strategy
+		}
 	}
 	return config, nil
 }
@@ -687,11 +858,26 @@ func mergeFusionConfig(base, override fusionConfig) fusionConfig {
 	if override.JudgeModel != "" {
 		base.JudgeModel = override.JudgeModel
 	}
+	if override.Mode != "" {
+		base.Mode = override.Mode
+	}
 	if len(override.JudgeModels) > 0 {
 		base.JudgeModels = append([]string(nil), override.JudgeModels...)
 	}
 	if len(override.FinalModels) > 0 {
 		base.FinalModels = append([]string(nil), override.FinalModels...)
+	}
+	if len(override.SelectorModels) > 0 {
+		base.SelectorModels = append([]string(nil), override.SelectorModels...)
+	}
+	if len(override.MapperModels) > 0 {
+		base.MapperModels = append([]string(nil), override.MapperModels...)
+	}
+	if len(override.ParallelModels) > 0 {
+		base.ParallelModels = append([]string(nil), override.ParallelModels...)
+	}
+	if len(override.ReducerModels) > 0 {
+		base.ReducerModels = append([]string(nil), override.ReducerModels...)
 	}
 	if override.PanelPrompt != "" {
 		base.PanelPrompt = override.PanelPrompt
@@ -699,11 +885,26 @@ func mergeFusionConfig(base, override fusionConfig) fusionConfig {
 	if override.SynthesisPrompt != "" {
 		base.SynthesisPrompt = override.SynthesisPrompt
 	}
+	if override.SelectorPrompt != "" {
+		base.SelectorPrompt = override.SelectorPrompt
+	}
+	if override.MapperPrompt != "" {
+		base.MapperPrompt = override.MapperPrompt
+	}
+	if override.ParallelPrompt != "" {
+		base.ParallelPrompt = override.ParallelPrompt
+	}
+	if override.ReducerPrompt != "" {
+		base.ReducerPrompt = override.ReducerPrompt
+	}
 	if override.MaxToolCalls != 0 {
 		base.MaxToolCalls = override.MaxToolCalls
 	}
 	if override.MaxCompletionTokens != 0 {
 		base.MaxCompletionTokens = override.MaxCompletionTokens
+	}
+	if override.MaxParts != 0 {
+		base.MaxParts = override.MaxParts
 	}
 	if override.SelectionStrategy != "" {
 		base.SelectionStrategy = override.SelectionStrategy

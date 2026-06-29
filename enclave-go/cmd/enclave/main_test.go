@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -750,6 +751,276 @@ func TestRunFusionPanelRunsMembersInParallel(t *testing.T) {
 	}
 	if elapsed >= 500*time.Millisecond {
 		t.Fatalf("panel took %s; members appear to be serial instead of parallel", elapsed)
+	}
+}
+
+func TestServeOneTrustedRouterSelectorReturnsSelectedPanelAnswerVerbatim(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+
+	streamer := &fusionEchoLLM{textByModel: map[string]string{
+		"model/a":        "first panel answer",
+		"model/b":        "best panel answer",
+		"model/selector": `{"selected_index":2,"rationale":"better answer"}`,
+	}}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/selector","stream":false,"messages":[{"role":"user","content":"choose the best"}],"tools":[{"type":"trustedrouter:selector","parameters":{"analysis_models":["model/a","model/b"],"selector_models":["model/selector"],"selector_prompt":"prefer answers with direct evidence","max_completion_tokens":64}}],"max_tokens":64}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	var response struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		TrustedRouter map[string]map[string]any `json:"trustedrouter"`
+	}
+	if err := json.Unmarshal(bodyBytes, &response); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, bodyBytes)
+	}
+	if got := response.Choices[0].Message.Content; got != "best panel answer" {
+		t.Fatalf("selector content = %q, want selected panel answer verbatim", got)
+	}
+	if synth := response.TrustedRouter["synth"]; synth["mode"] != fusionModeSelector || int(synth["selected_index"].(float64)) != 2 {
+		t.Fatalf("selector details = %#v", synth)
+	}
+
+	recorder.mu.Lock()
+	authorizeCalls := append([]map[string]any{}, recorder.authorize...)
+	settleCalls := append([]map[string]any{}, recorder.settle...)
+	recorder.mu.Unlock()
+	var authorizedModels []string
+	for _, call := range authorizeCalls {
+		if model, _ := call["model"].(string); model != "" {
+			authorizedModels = append(authorizedModels, model)
+		}
+	}
+	sort.Strings(authorizedModels)
+	if got, want := strings.Join(authorizedModels, ","), "model/a,model/b,model/selector"; got != want {
+		t.Fatalf("authorized models = %s, want %s", got, want)
+	}
+	if len(settleCalls) != 3 {
+		t.Fatalf("settle calls = %d, want panel a + panel b + selector", len(settleCalls))
+	}
+
+	streamer.mu.Lock()
+	calls := append([]fusionEchoCall{}, streamer.calls...)
+	streamer.mu.Unlock()
+	var selectorCall fusionEchoCall
+	for _, call := range calls {
+		if call.Model == "model/selector" {
+			selectorCall = call
+		}
+	}
+	if !strings.Contains(selectorCall.SystemMessage, "prefer answers with direct evidence") {
+		t.Fatalf("selector prompt was not passed to selector system prompt: %q", selectorCall.SystemMessage)
+	}
+}
+
+func TestServeOneTrustedRouterMapReduceRunsPartsInParallelAndUsesStagePrompts(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+
+	streamer := &fusionEchoLLM{
+		textByModel: map[string]string{
+			"model/mapper":  `{"parts":[{"title":"Alpha","prompt":"Part Alpha"},{"title":"Beta","prompt":"Part Beta"},{"title":"Gamma","prompt":"Part Gamma"}]}`,
+			"model/reducer": "combined final answer",
+		},
+		textByLastMessageContains: map[string]string{
+			"Part Alpha": "alpha result",
+			"Part Beta":  "beta result",
+			"Part Gamma": "gamma result",
+		},
+		delayByModel: map[string]time.Duration{"model/parallel": 200 * time.Millisecond},
+	}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/mapreduce","stream":false,"messages":[{"role":"user","content":"solve a multi-part problem"}],"tools":[{"type":"trustedrouter:mapreduce","parameters":{"mapper_models":["model/mapper"],"parallel_models":["model/parallel"],"reducer_models":["model/reducer"],"max_parts":3,"mapper_prompt":"split into exactly three parts","parallel_prompt":"answer with concise evidence","reducer_prompt":"merge without duplication","max_completion_tokens":64}}],"max_tokens":64}`)
+	started := time.Now()
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	elapsed := time.Since(started)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	if elapsed >= 500*time.Millisecond {
+		t.Fatalf("mapreduce took %s; parallel parts appear to be serial", elapsed)
+	}
+	var response struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		TrustedRouter map[string]map[string]any `json:"trustedrouter"`
+	}
+	if err := json.Unmarshal(bodyBytes, &response); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, bodyBytes)
+	}
+	if got := response.Choices[0].Message.Content; got != "combined final answer" {
+		t.Fatalf("mapreduce content = %q", got)
+	}
+	if synth := response.TrustedRouter["synth"]; synth["mode"] != fusionModeMapReduce {
+		t.Fatalf("mapreduce details = %#v", synth)
+	}
+
+	recorder.mu.Lock()
+	settleCalls := append([]map[string]any{}, recorder.settle...)
+	recorder.mu.Unlock()
+	if len(settleCalls) != 5 {
+		t.Fatalf("settle calls = %d, want mapper + 3 parts + reducer", len(settleCalls))
+	}
+
+	streamer.mu.Lock()
+	calls := append([]fusionEchoCall{}, streamer.calls...)
+	streamer.mu.Unlock()
+	var mapperSeen, reducerSeen bool
+	var parallelSeen int
+	for _, call := range calls {
+		switch call.Model {
+		case "model/mapper":
+			mapperSeen = strings.Contains(call.SystemMessage, "split into exactly three parts")
+		case "model/parallel":
+			if strings.Contains(call.SystemMessage, "answer with concise evidence") {
+				parallelSeen++
+			}
+		case "model/reducer":
+			reducerSeen = strings.Contains(call.LastMessage, "merge without duplication") &&
+				strings.Contains(call.LastMessage, "alpha result") &&
+				strings.Contains(call.LastMessage, "beta result") &&
+				strings.Contains(call.LastMessage, "gamma result")
+		}
+	}
+	if !mapperSeen || parallelSeen != 3 || !reducerSeen {
+		t.Fatalf("stage prompt/call coverage mapper=%v parallel=%d reducer=%v calls=%#v", mapperSeen, parallelSeen, reducerSeen, calls)
+	}
+}
+
+func TestSelectorInvalidChoiceRefundsAndFallsBackToNextSelectorModel(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+
+	streamer := &fusionEchoLLM{textByModel: map[string]string{
+		"model/selector-bad":  `{"selected_index":9}`,
+		"model/selector-good": `{"selected_index":1}`,
+	}}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterSelectorModel,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "choose"}},
+	}
+	panel := []fusionCallResult{{
+		Model: "model/panel",
+		Result: adapter.StreamResult{
+			Text:         "panel answer",
+			FinishReason: "end_turn",
+		},
+	}}
+	selected, attempts, decision, err := runSelectorDecision(
+		context.Background(),
+		streamer,
+		req,
+		fusionConfig{SelectorModels: []string{"model/selector-bad", "model/selector-good"}},
+		[]string{"model/selector-bad", "model/selector-good"},
+		panel,
+		trGateway,
+		nil,
+		"bearer",
+		"req_selector_fallback",
+		"log_selector_fallback",
+	)
+	if err != nil {
+		t.Fatalf("runSelectorDecision: %v", err)
+	}
+	if selected.Result.Text != "panel answer" || decision.SelectedIndex != 1 || len(attempts) != 1 {
+		t.Fatalf("selected=%#v attempts=%d decision=%#v", selected, len(attempts), decision)
+	}
+	recorder.mu.Lock()
+	authorizeCalls := len(recorder.authorize)
+	settleCalls := len(recorder.settle)
+	refundCalls := len(recorder.refund)
+	recorder.mu.Unlock()
+	if authorizeCalls != 2 || refundCalls != 1 || settleCalls != 1 {
+		t.Fatalf("authorize/refund/settle = %d/%d/%d, want 2/1/1", authorizeCalls, refundCalls, settleCalls)
+	}
+}
+
+func TestMapReduceMapperRejectsTooManyPartsBeforeSettlement(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+
+	var parts []string
+	for i := 0; i < 9; i++ {
+		parts = append(parts, fmt.Sprintf(`{"title":"Part %d","prompt":"Do part %d"}`, i+1, i+1))
+	}
+	streamer := &fusionEchoLLM{textByModel: map[string]string{
+		"model/mapper": `{"parts":[` + strings.Join(parts, ",") + `]}`,
+	}}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterMapReduceModel,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "split"}},
+	}
+	_, attempts, _, err := runMapReduceMapper(
+		context.Background(),
+		streamer,
+		req,
+		fusionConfig{MapperModels: []string{"model/mapper"}, MaxParts: maxMapReduceParts},
+		trGateway,
+		nil,
+		"bearer",
+		"req_mapreduce_too_many",
+		"log_mapreduce_too_many",
+	)
+	if err == nil {
+		t.Fatalf("runMapReduceMapper unexpectedly succeeded")
+	}
+	if len(attempts) != 0 {
+		t.Fatalf("mapper attempts = %d, want 0 settled attempts for invalid plan", len(attempts))
+	}
+	recorder.mu.Lock()
+	authorizeCalls := len(recorder.authorize)
+	settleCalls := len(recorder.settle)
+	refundCalls := len(recorder.refund)
+	recorder.mu.Unlock()
+	if authorizeCalls != 1 || refundCalls != 1 || settleCalls != 0 {
+		t.Fatalf("authorize/refund/settle = %d/%d/%d, want 1/1/0", authorizeCalls, refundCalls, settleCalls)
 	}
 }
 
@@ -4132,10 +4403,11 @@ data: {"type":"message_stop"}
 }
 
 type fusionEchoCall struct {
-	Model       string
-	Provider    string
-	Endpoint    string
-	LastMessage string
+	Model         string
+	Provider      string
+	Endpoint      string
+	LastMessage   string
+	SystemMessage string
 }
 
 type fusionGatewayRecorder struct {
@@ -4210,16 +4482,18 @@ func newFusionGatewayRecorder(t *testing.T) (*trustedrouter.Client, *fusionGatew
 }
 
 type fusionEchoLLM struct {
-	mu                sync.Mutex
-	calls             []fusionEchoCall
-	failModels        map[string]bool
-	failProviders     map[string]bool
-	refusalModels     map[string]bool
-	textByModel       map[string]string
-	rescueTextByModel map[string]string
-	overthinkModels   map[string]bool
-	thinking          bool
-	delay             time.Duration
+	mu                        sync.Mutex
+	calls                     []fusionEchoCall
+	failModels                map[string]bool
+	failProviders             map[string]bool
+	refusalModels             map[string]bool
+	textByModel               map[string]string
+	textByLastMessageContains map[string]string
+	rescueTextByModel         map[string]string
+	overthinkModels           map[string]bool
+	thinking                  bool
+	delay                     time.Duration
+	delayByModel              map[string]time.Duration
 }
 
 type socratesScriptedLLM struct {
@@ -4332,19 +4606,24 @@ func (f *fusionEchoLLM) InvokeStreaming(
 	if len(options) > 0 {
 		option = options[0]
 	}
-	if f.delay > 0 {
+	delay := f.delay
+	if f.delayByModel != nil && f.delayByModel[req.Model] > 0 {
+		delay = f.delayByModel[req.Model]
+	}
+	if delay > 0 {
 		select {
-		case <-time.After(f.delay):
+		case <-time.After(delay):
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
 	f.mu.Lock()
 	f.calls = append(f.calls, fusionEchoCall{
-		Model:       req.Model,
-		Provider:    option.Provider,
-		Endpoint:    option.EndpointID,
-		LastMessage: lastChatMessageText(req.Messages),
+		Model:         req.Model,
+		Provider:      option.Provider,
+		Endpoint:      option.EndpointID,
+		LastMessage:   lastChatMessageText(req.Messages),
+		SystemMessage: firstSystemMessageText(req.Messages),
 	})
 	f.mu.Unlock()
 	if f.failProviders[option.Provider] {
@@ -4382,6 +4661,13 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","
 		strings.Contains(types.ContentText(req.Messages[len(req.Messages)-1].Content), "Panel answers:") &&
 		strings.Contains(types.ContentText(req.Messages[len(req.Messages)-1].Content), "Judge analysis JSON:") {
 		text = "final answer from " + req.Model
+	}
+	lastMessage := lastChatMessageText(req.Messages)
+	for needle, override := range f.textByLastMessageContains {
+		if strings.Contains(lastMessage, needle) {
+			text = override
+			break
+		}
 	}
 	if override, ok := f.textByModel[req.Model]; ok {
 		text = override
@@ -4423,6 +4709,15 @@ func lastChatMessageText(messages []types.OpenAIChatMessage) string {
 		return ""
 	}
 	return types.ContentText(messages[len(messages)-1].Content)
+}
+
+func firstSystemMessageText(messages []types.OpenAIChatMessage) string {
+	for _, message := range messages {
+		if message.Role == "system" {
+			return types.ContentText(message.Content)
+		}
+	}
+	return ""
 }
 
 type fallbackAttempt struct {
