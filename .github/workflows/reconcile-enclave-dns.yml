@@ -6,7 +6,10 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: reconcile-enclave-dns
+  # This mutates the same canonical/regional DNS records as the enclave deploy
+  # workflow. Keep it in the same queue so a scheduled reconcile cannot undo an
+  # intentional deploy-time canonical drain while a regional MIG is rolling.
+  group: deploy-enclave-gcp
   cancel-in-progress: false
 
 permissions:
