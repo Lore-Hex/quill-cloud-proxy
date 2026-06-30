@@ -122,7 +122,9 @@ func configureSocratesPrompts(boot *types.BootstrapData) {
 
 func socratesPresetForModel(model string) (socratesConfig, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case trustedRouterSocrates10Model, trustedRouterSocratesModel, trustedRouterAdvisorModel:
+	case trustedRouterAdvisorModel:
+		return socratesConfig{Enabled: true}, true
+	case trustedRouterSocrates10Model, trustedRouterSocratesModel:
 		return socratesConfig{
 			Enabled:       true,
 			WorkerModels:  []string{"cerebras/gpt-oss-120b"},
@@ -180,6 +182,10 @@ func isSocratesModel(model string) bool {
 	return ok
 }
 
+func isGenericSocratesPrimitive(model string) bool {
+	return strings.ToLower(strings.TrimSpace(model)) == trustedRouterAdvisorModel
+}
+
 func isOrchestrationModel(model string) bool {
 	return isSocratesModel(model) || isFusionModel(model)
 }
@@ -211,6 +217,9 @@ func maybeServeSocrates(
 	if trGateway == nil || !trGateway.Enabled() {
 		return true, &adapter.AdapterError{Status: 503, Message: "trustedrouter/socrates requires the TrustedRouter control plane", Context: "trustedrouter/socrates"}
 	}
+	if err := validateGenericSocratesConfig(config, req.Model); err != nil {
+		return true, err
+	}
 	if err := normalizeSocratesConfig(&config, req); err != nil {
 		return true, err
 	}
@@ -238,6 +247,20 @@ func maybeServeSocrates(
 		serveSocratesNonStreaming(ctx, conn, br, req, config, trGateway, secretCache, bearer, originalInput, requestLogID)
 	}
 	return true, nil
+}
+
+func validateGenericSocratesConfig(config socratesConfig, model string) error {
+	if !isGenericSocratesPrimitive(model) {
+		return nil
+	}
+	if len(config.WorkerModels) == 0 || len(config.AdvisorModels) == 0 {
+		return &adapter.AdapterError{
+			Status:  400,
+			Message: "trustedrouter/advisor requires explicit worker_models and advisor_models; use trustedrouter/socrates-1.0 or another named model for a preset",
+			Context: "trustedrouter:advisor",
+		}
+	}
+	return nil
 }
 
 func socratesConfigForRequest(req *types.OpenAIChatRequest) (socratesConfig, bool, error) {

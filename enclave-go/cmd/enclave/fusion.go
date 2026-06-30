@@ -189,13 +189,14 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 		return "budget", append([]string(nil), fusionBudgetPanel...), true
 	case trustedRouterSynthModel,
 		trustedRouterSynthCodeModel,
+		trustedRouterSelectorModel:
+		return "", nil, false
+	case trustedRouterFusionModel,
+		trustedRouterFusionCodeModel,
 		trustedRouterPrometheusModel,
 		trustedRouterPrometheus10Model,
 		trustedRouterPrometheusCodeModel,
-		trustedRouterPrometheusCode10Model,
-		trustedRouterFusionModel,
-		trustedRouterFusionCodeModel,
-		trustedRouterSelectorModel:
+		trustedRouterPrometheusCode10Model:
 		return "quality", append([]string(nil), fusionQualityPanel...), true
 	case trustedRouterZeusModel,
 		trustedRouterZeus10Model,
@@ -230,6 +231,18 @@ func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 func isFusionToolType(toolType string) bool {
 	switch strings.ToLower(strings.TrimSpace(toolType)) {
 	case trustedRouterSynthTool, trustedRouterFusionTool, trustedRouterSelectorTool, trustedRouterMapReduceTool:
+		return true
+	default:
+		return false
+	}
+}
+
+func isGenericFusionPrimitive(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case trustedRouterSynthModel,
+		trustedRouterSynthCodeModel,
+		trustedRouterSelectorModel,
+		trustedRouterMapReduceModel:
 		return true
 	default:
 		return false
@@ -488,9 +501,12 @@ func maybeServeFusion(
 		if preset, panel, ok := fusionPresetPanelForModel(req.Model); ok {
 			config.Preset = preset
 			config.AnalysisModels = panel
-		} else {
+		} else if !isGenericFusionPrimitive(req.Model) {
 			config.AnalysisModels = append([]string(nil), fusionQualityPanel...)
 		}
+	}
+	if err := validateGenericFusionConfig(config, req.Model); err != nil {
+		return true, err
 	}
 	if len(config.AnalysisModels) > 8 {
 		return true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/synth analysis_models must contain 1-8 models", Context: "analysis_models"}
@@ -555,6 +571,30 @@ func maybeServeFusion(
 		}
 	}
 	return true, nil
+}
+
+func validateGenericFusionConfig(config fusionConfig, model string) error {
+	if !isGenericFusionPrimitive(model) {
+		return nil
+	}
+	if len(config.AnalysisModels) > 0 || config.Preset != "" {
+		return nil
+	}
+	switch config.Mode {
+	case fusionModeSelector:
+		if len(config.SelectorModels) > 0 {
+			return nil
+		}
+	case fusionModeMapReduce:
+		if len(config.MapperModels) > 0 || len(config.ParallelModels) > 0 || len(config.ReducerModels) > 0 {
+			return nil
+		}
+	}
+	return &adapter.AdapterError{
+		Status:  400,
+		Message: "trustedrouter/synth requires an explicit preset or analysis_models; use trustedrouter/iris, trustedrouter/prometheus, trustedrouter/zeus, or another named model for a preset",
+		Context: "trustedrouter:synth",
+	}
 }
 
 func fusionConfigForRequest(req *types.OpenAIChatRequest) (fusionConfig, bool, error) {

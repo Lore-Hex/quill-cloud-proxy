@@ -3044,6 +3044,56 @@ func TestSocratesComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 	}
 }
 
+func TestGenericAdvisorRequiresExplicitWorkerAndAdvisorModels(t *testing.T) {
+	req := &types.OpenAIChatRequest{Model: trustedRouterAdvisorModel}
+	config, requested, err := socratesConfigForRequest(req)
+	if err != nil {
+		t.Fatalf("socratesConfigForRequest: %v", err)
+	}
+	if !requested {
+		t.Fatal("trustedrouter/advisor should request Socrates orchestration")
+	}
+	err = validateGenericSocratesConfig(config, req.Model)
+	if err == nil {
+		t.Fatal("validateGenericSocratesConfig returned nil error")
+	}
+	var adapterErr *adapter.AdapterError
+	if !asAdapterErr(err, &adapterErr) || adapterErr.Status != 400 || adapterErr.Context != "trustedrouter:advisor" {
+		t.Fatalf("error = %#v, want 400 trustedrouter:advisor", err)
+	}
+}
+
+func TestGenericAdvisorAcceptsDirectSDKToolConfig(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Model: trustedRouterAdvisorModel,
+		Tools: []any{
+			map[string]any{
+				"type": trustedRouterAdvisorTool,
+				"parameters": map[string]any{
+					"worker_models":  []any{"moonshotai/kimi-k2.7-code"},
+					"advisor_models": []any{"z-ai/glm-5.2"},
+				},
+			},
+		},
+	}
+	config, requested, err := socratesConfigForRequest(req)
+	if err != nil {
+		t.Fatalf("socratesConfigForRequest: %v", err)
+	}
+	if !requested {
+		t.Fatal("trustedrouter/advisor should request Socrates orchestration")
+	}
+	if err := validateGenericSocratesConfig(config, req.Model); err != nil {
+		t.Fatalf("validateGenericSocratesConfig: %v", err)
+	}
+	if !reflect.DeepEqual(config.WorkerModels, []string{"moonshotai/kimi-k2.7-code"}) {
+		t.Fatalf("worker models = %#v", config.WorkerModels)
+	}
+	if !reflect.DeepEqual(config.AdvisorModels, []string{"z-ai/glm-5.2"}) {
+		t.Fatalf("advisor models = %#v", config.AdvisorModels)
+	}
+}
+
 func TestSocratesRejectsReservedToolCollision(t *testing.T) {
 	err := rejectSocratesToolCollision([]any{
 		map[string]any{"type": "function", "function": map[string]any{"name": socratesAdviceToolName}},
@@ -3314,6 +3364,58 @@ func TestFusionDefaultsUseOpenPanelExplicitJudgeAndFuserFallbacks(t *testing.T) 
 	}
 	if got := applyFusionCodeSwap(fusionDefaultFinalModels); !reflect.DeepEqual(got, fusionDefaultFinalModels) {
 		t.Fatalf("fusion-code swap must not touch the non-Kimi synthesizer: %#v", got)
+	}
+}
+
+func TestGenericSynthRequiresExplicitPanelConfig(t *testing.T) {
+	req := &types.OpenAIChatRequest{Model: trustedRouterSynthModel}
+	config, requested, err := fusionConfigForRequest(req)
+	if err != nil {
+		t.Fatalf("fusionConfigForRequest: %v", err)
+	}
+	if !requested {
+		t.Fatal("trustedrouter/synth should request fusion orchestration")
+	}
+	config.Mode = fusionModeForRequest(req.Model, config.Mode)
+	err = validateGenericFusionConfig(config, req.Model)
+	if err == nil {
+		t.Fatal("validateGenericFusionConfig returned nil error")
+	}
+	var adapterErr *adapter.AdapterError
+	if !asAdapterErr(err, &adapterErr) || adapterErr.Status != 400 || adapterErr.Context != "trustedrouter:synth" {
+		t.Fatalf("error = %#v, want 400 trustedrouter:synth", err)
+	}
+}
+
+func TestGenericSynthAcceptsDirectSDKToolConfig(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Model: trustedRouterSynthModel,
+		Tools: []any{
+			map[string]any{
+				"type": trustedRouterFusionTool,
+				"parameters": map[string]any{
+					"analysis_models": []any{"moonshotai/kimi-k2.7-code", "z-ai/glm-5.2"},
+					"model":           "moonshotai/kimi-k2.7-code",
+				},
+			},
+		},
+	}
+	config, requested, err := fusionConfigForRequest(req)
+	if err != nil {
+		t.Fatalf("fusionConfigForRequest: %v", err)
+	}
+	if !requested {
+		t.Fatal("trustedrouter/synth should request fusion orchestration")
+	}
+	config.Mode = fusionModeForRequest(req.Model, config.Mode)
+	if err := validateGenericFusionConfig(config, req.Model); err != nil {
+		t.Fatalf("validateGenericFusionConfig: %v", err)
+	}
+	if !reflect.DeepEqual(config.AnalysisModels, []string{"moonshotai/kimi-k2.7-code", "z-ai/glm-5.2"}) {
+		t.Fatalf("analysis models = %#v", config.AnalysisModels)
+	}
+	if config.JudgeModel != "moonshotai/kimi-k2.7-code" {
+		t.Fatalf("judge model = %q", config.JudgeModel)
 	}
 }
 
