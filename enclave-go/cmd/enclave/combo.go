@@ -84,6 +84,7 @@ func serveSelectorNonStreaming(
 	if responseModel == "" {
 		responseModel = selectedRouteModel(selected, req.Model)
 	}
+	responseModel = requestResponseModel(req, responseModel)
 	var body bytes.Buffer
 	if err := writeFusionChatCompletionResponse(
 		&body,
@@ -152,17 +153,18 @@ func serveSelectorStreaming(
 		"decision": decision,
 		"selected": fusionCallDetails(selected),
 	})
+	responseModel := requestResponseModel(req, selected.Model)
 	if selected.Result.Text != "" {
-		_ = writeFusionStreamDelta(statsW, requestID, selected.Model, created, map[string]any{"content": selected.Result.Text}, "")
+		_ = writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{"content": selected.Result.Text}, "")
 	}
-	if err := writeFusionStreamDelta(statsW, requestID, selected.Model, created, map[string]any{}, selected.Result.FinishReason); err != nil {
+	if err := writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{}, selected.Result.FinishReason); err != nil {
 		return
 	}
 	if chatIncludeUsage(req) {
 		totalIn, totalOut := fusionUsageTotals(panel, selectorAttempts)
 		selected.InputTokens = totalIn
 		selected.OutputTokens = totalOut
-		_ = writeFusionStreamUsage(statsW, requestID, selected.Model, created, selected, fusionTotalCostMicrodollars(panel, selectorAttempts))
+		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, selected, fusionTotalCostMicrodollars(panel, selectorAttempts))
 	}
 	_, _ = statsW.Write([]byte("data: [DONE]\n\n"))
 	_ = originalInput
@@ -329,11 +331,12 @@ func serveMapReduceNonStreaming(
 		return
 	}
 	totalIn, totalOut := mapReduceUsageTotals(details)
+	responseModel := requestResponseModel(req, result.Model)
 	var body bytes.Buffer
 	if err := writeFusionChatCompletionResponse(
 		&body,
 		requestID,
-		result.Model,
+		responseModel,
 		result.Result.Text,
 		result.Result.ToolCalls,
 		totalIn,
@@ -388,17 +391,18 @@ func serveMapReduceStreaming(
 		"mode":    fusionModeMapReduce,
 		"details": mapReduceResponseDetails(config, details, result),
 	})
+	responseModel := requestResponseModel(req, result.Model)
 	if result.Result.Text != "" {
-		_ = writeFusionStreamDelta(statsW, requestID, result.Model, created, map[string]any{"content": result.Result.Text}, "")
+		_ = writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{"content": result.Result.Text}, "")
 	}
-	if err := writeFusionStreamDelta(statsW, requestID, result.Model, created, map[string]any{}, result.Result.FinishReason); err != nil {
+	if err := writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{}, result.Result.FinishReason); err != nil {
 		return
 	}
 	if chatIncludeUsage(req) {
 		totalIn, totalOut := mapReduceUsageTotals(details)
 		result.InputTokens = totalIn
 		result.OutputTokens = totalOut
-		_ = writeFusionStreamUsage(statsW, requestID, result.Model, created, result, mapReduceCostMicrodollars(details, result))
+		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, result, mapReduceCostMicrodollars(details, result))
 	}
 	_, _ = statsW.Write([]byte("data: [DONE]\n\n"))
 }

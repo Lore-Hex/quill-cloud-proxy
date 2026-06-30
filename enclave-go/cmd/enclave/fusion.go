@@ -1016,6 +1016,7 @@ func serveFusionNonStreaming(
 		if responseModel == "" {
 			responseModel = selectedRouteModel(selected, finalModels[0])
 		}
+		responseModel = requestResponseModel(req, responseModel)
 		var body bytes.Buffer
 		if err := writeFusionChatCompletionResponse(
 			&body,
@@ -1060,6 +1061,7 @@ func serveFusionNonStreaming(
 	if responseModel == "" {
 		responseModel = finalModels[0]
 	}
+	responseModel = requestResponseModel(req, responseModel)
 	var body bytes.Buffer
 	if err := writeFusionChatCompletionResponse(
 		&body,
@@ -1778,6 +1780,7 @@ func serveFusionFinalStreamingObserved(
 ) error {
 	var lastErr error
 	for i, finalModel := range finalModels {
+		responseModel := requestResponseModel(req, finalModel)
 		_ = writeFusionStreamEvent(streamW, requestID, req.Model, created, map[string]any{
 			"event": "final.started",
 			"stage": "final",
@@ -1804,7 +1807,7 @@ func serveFusionFinalStreamingObserved(
 					baseObserver(adapter.StreamDelta{Type: "text_delta", Text: text})
 				}
 				contentCommitted = true
-				_ = writeFusionStreamDelta(streamW, requestID, finalModel, created, map[string]any{"content": text}, "")
+				_ = writeFusionStreamDelta(streamW, requestID, responseModel, created, map[string]any{"content": text}, "")
 			},
 			func(text string) {
 				if text == "" {
@@ -1813,7 +1816,7 @@ func serveFusionFinalStreamingObserved(
 				if baseObserver != nil {
 					baseObserver(adapter.StreamDelta{Type: "thinking_delta", Text: text})
 				}
-				_ = writeFusionStreamDelta(streamW, requestID, finalModel, created, map[string]any{
+				_ = writeFusionStreamDelta(streamW, requestID, responseModel, created, map[string]any{
 					"reasoning_content": text,
 					"thinking":          text,
 				}, "")
@@ -1833,7 +1836,7 @@ func serveFusionFinalStreamingObserved(
 				if baseObserver != nil {
 					baseObserver(delta)
 				}
-				_ = writeFusionStreamDelta(streamW, requestID, finalModel, created, map[string]any{
+				_ = writeFusionStreamDelta(streamW, requestID, responseModel, created, map[string]any{
 					"reasoning_content": delta.Text,
 					"thinking":          delta.Text,
 				}, "")
@@ -1885,12 +1888,12 @@ func serveFusionFinalStreamingObserved(
 			"model":  finalModel,
 			"detail": fusionCallDetails(final),
 		})
-		if err := writeFusionStreamDelta(streamW, requestID, final.Model, created, map[string]any{}, final.Result.FinishReason); err != nil {
+		if err := writeFusionStreamDelta(streamW, requestID, responseModel, created, map[string]any{}, final.Result.FinishReason); err != nil {
 			return err
 		}
 		if chatIncludeUsage(req) {
 			details := fusionResponseDetails(config, panel, []fusionCallResult{judge}, []fusionCallResult{final}, final.Model)
-			if err := writeFusionStreamUsage(streamW, requestID, final.Model, created, final, fusionTotalCostMicrodollars(panel, []fusionCallResult{judge}, []fusionCallResult{final}), fusionProviderUsage(details)); err != nil {
+			if err := writeFusionStreamUsage(streamW, requestID, responseModel, created, final, fusionTotalCostMicrodollars(panel, []fusionCallResult{judge}, []fusionCallResult{final}), fusionProviderUsage(details)); err != nil {
 				return err
 			}
 		}

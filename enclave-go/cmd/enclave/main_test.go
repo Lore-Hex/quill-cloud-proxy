@@ -530,6 +530,11 @@ func TestServeOneTrustedRouterCustomModelPrependsHiddenPrompt(t *testing.T) {
 			t.Fatalf("read body: %v", err)
 		}
 		switch r.URL.Path {
+		case "/internal/gateway/resolve-custom-model":
+			if strings.Contains(string(body), hiddenPrompt) || strings.Contains(string(body), "private user prompt") {
+				t.Fatalf("resolve leaked prompt material: %s", body)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"workspace_id":"ws_1","api_key_hash":"key_1","route_type":"chat.completions","custom_model":{"id":"trustedrouter/user-8k3p2z","name":"Legal reviewer","base_model_id":"anthropic/claude-sonnet-4.6","hidden_prompt":"PRIVATE custom preamble","revision":3}}}`)
 		case "/internal/gateway/authorize":
 			if strings.Contains(string(body), hiddenPrompt) || strings.Contains(string(body), "private user prompt") {
 				t.Fatalf("authorize leaked prompt material: %s", body)
@@ -590,6 +595,53 @@ func TestServeOneTrustedRouterCustomModelPrependsHiddenPrompt(t *testing.T) {
 	}
 	if !strings.Contains(settleBody, `"selected_model":"anthropic/claude-sonnet-4.6"`) {
 		t.Fatalf("settle did not bill base selected model: %s", settleBody)
+	}
+}
+
+func TestResolveCustomModelForOrchestrationUsesBaseModelAndResponseOverride(t *testing.T) {
+	bearer := "test-user-bearer"
+	const hiddenPrompt = "PRIVATE orchestration preamble"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if r.URL.Path != "/internal/gateway/resolve-custom-model" {
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+		bodyText := string(body)
+		if strings.Contains(bodyText, hiddenPrompt) || strings.Contains(bodyText, "private user prompt") {
+			t.Fatalf("resolve leaked prompt material: %s", body)
+		}
+		if !strings.Contains(bodyText, `"model":"trustedrouter/user-socrates"`) {
+			t.Fatalf("resolve did not identify custom model: %s", body)
+		}
+		_, _ = fmt.Fprint(w, `{"data":{"workspace_id":"ws_1","api_key_hash":"key_1","route_type":"chat.completions","custom_model":{"id":"trustedrouter/user-socrates","name":"Private Socrates","base_model_id":"trustedrouter/socrates-1.0","hidden_prompt":"PRIVATE orchestration preamble","revision":7}}}`)
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	req := &types.OpenAIChatRequest{
+		Model: "trustedrouter/user-socrates",
+		Messages: []types.OpenAIChatMessage{
+			{Role: "user", Content: "private user prompt"},
+		},
+	}
+	authz, err := maybeResolveCustomModelForOrchestration(context.Background(), req, trGateway, bearer, "chat.completions")
+	if err != nil {
+		t.Fatalf("resolve custom model: %v", err)
+	}
+	if authz == nil || authz.CustomModel == nil {
+		t.Fatalf("missing custom model authz: %#v", authz)
+	}
+	if req.Model != "trustedrouter/socrates-1.0" {
+		t.Fatalf("model = %q, want socrates base", req.Model)
+	}
+	if req.ResponseModel != "trustedrouter/user-socrates" {
+		t.Fatalf("response model = %q", req.ResponseModel)
+	}
+	if len(req.Messages) < 2 || req.Messages[0].Role != "system" || req.Messages[0].Content != hiddenPrompt {
+		t.Fatalf("hidden prompt was not prepended: %#v", req.Messages)
 	}
 }
 

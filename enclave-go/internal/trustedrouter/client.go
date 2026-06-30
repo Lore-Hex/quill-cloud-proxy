@@ -185,6 +185,23 @@ func (c *Client) ValidateKey(ctx context.Context, bearer string, routeType strin
 	return c.postJSON(ctx, "/internal/gateway/validate", body, &decoded)
 }
 
+func (c *Client) ResolveCustomModel(ctx context.Context, bearer string, model string, routeType string) (*Authorization, error) {
+	body := map[string]any{
+		"api_key_lookup_hash": lookupHash(bearer),
+		"model":               model,
+	}
+	if routeType != "" {
+		body["route_type"] = routeType
+	}
+	var decoded struct {
+		Data Authorization `json:"data"`
+	}
+	if err := c.postJSON(ctx, "/internal/gateway/resolve-custom-model", body, &decoded); err != nil {
+		return nil, err
+	}
+	return &decoded.Data, nil
+}
+
 func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest, routeType string) (*Authorization, error) {
 	body := map[string]any{
 		"api_key_lookup_hash":    lookupHash(bearer),

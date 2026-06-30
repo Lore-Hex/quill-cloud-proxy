@@ -197,6 +197,7 @@ type OpenAIChatRequest struct {
 	ParallelTools   *bool                `json:"parallel_tool_calls,omitempty"`
 	Depth           *int                 `json:"depth,omitempty"`
 	Response        *ResponseRequestMeta `json:"-"`
+	ResponseModel   string               `json:"-"`
 	IdempotencyKey  string               `json:"-"`
 }
 

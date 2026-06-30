@@ -497,6 +497,7 @@ func serveSocratesNonStreaming(
 	if responseModel == "" {
 		responseModel = config.WorkerModels[0]
 	}
+	responseModel = requestResponseModel(req, responseModel)
 	var body bytes.Buffer
 	if err := writeSocratesChatCompletionResponse(
 		&body,
@@ -578,6 +579,7 @@ func serveSocratesStreaming(
 	if responseModel == "" {
 		responseModel = config.WorkerModels[0]
 	}
+	responseModel = requestResponseModel(req, responseModel)
 	if len(final.Result.ToolCalls) > 0 {
 		_ = writeSocratesStreamEvent(statsW, requestID, responseModel, created, map[string]any{
 			"event":      "socrates.tool_calls",

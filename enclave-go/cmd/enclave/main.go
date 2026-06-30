@@ -466,6 +466,18 @@ func serveOne(
 	}
 	req.IdempotencyKey = idempotencyKey
 
+	if routeType == "chat.completions" {
+		if _, err := maybeResolveCustomModelForOrchestration(ctx, &req, trGateway, bearer, routeType); err != nil {
+			var aerr *adapter.AdapterError
+			if asAdapterErr(err, &aerr) {
+				writeError(conn, aerr.Status, aerr.Message)
+				return
+			}
+			writeError(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "custom model resolution failed"))
+			return
+		}
+	}
+
 	if handled, err := maybeServeSocrates(ctx, conn, br, &req, trGateway, byokSecrets, bearer, originalInput, requestLogID); handled {
 		if err != nil {
 			var aerr *adapter.AdapterError
