@@ -3010,6 +3010,16 @@ func TestSocratesComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
 			advisors: []string{trustedRouterZeus10Model},
 		},
+		{
+			model:    trustedRouterOpenExploiterA1Model,
+			workers:  []string{trustedRouterOpenExploiterS1Model},
+			advisors: []string{trustedRouterPrometheus10Model},
+		},
+		{
+			model:    trustedRouterOpenExploiterFast1Model,
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
+			advisors: []string{trustedRouterOpenExploiterA1Model},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
@@ -3611,6 +3621,7 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 		{trustedRouterIrisCode10Model, "budget", fusionBudgetPanel, true},
 		{trustedRouterPrometheusCode10Model, "quality", fusionQualityPanel, true},
 		{trustedRouterZeusCode10Model, "frontier", fusionFrontierPanel, true},
+		{trustedRouterOpenExploiterS1Model, "openexploiter-s1", fusionOpenExploiterS1Panel, false},
 	}
 
 	for _, tt := range tests {
@@ -3632,6 +3643,40 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 				t.Fatalf("panel = %#v, want %#v", panel, tt.panel)
 			}
 		})
+	}
+}
+
+func TestFusionOpenExploiterS1PresetResolvesJudgeAndFinalModels(t *testing.T) {
+	req := &types.OpenAIChatRequest{Model: trustedRouterOpenExploiterS1Model}
+	config, requested, err := fusionConfigForRequest(req)
+	if err != nil {
+		t.Fatalf("fusionConfigForRequest: %v", err)
+	}
+	if !requested {
+		t.Fatal("expected OpenExploiter-S1 to request synth orchestration")
+	}
+	preset, panel, ok := fusionPresetPanelForModel(req.Model)
+	if !ok {
+		t.Fatal("expected OpenExploiter-S1 panel preset")
+	}
+	config.Preset = preset
+	config.AnalysisModels = panel
+	finalModels, err := fusionFinalModels(config, req.Model, config.AnalysisModels[0])
+	if err != nil {
+		t.Fatalf("fusionFinalModels: %v", err)
+	}
+	judgeModels, err := fusionJudgeModels(config, req.Model)
+	if err != nil {
+		t.Fatalf("fusionJudgeModels: %v", err)
+	}
+	if !reflect.DeepEqual(config.AnalysisModels, []string{fusionCodeKimi, "z-ai/glm-5.2"}) {
+		t.Fatalf("analysis models = %#v", config.AnalysisModels)
+	}
+	if !reflect.DeepEqual(judgeModels, []string{fusionCodeKimi}) {
+		t.Fatalf("judge models = %#v", judgeModels)
+	}
+	if !reflect.DeepEqual(finalModels, []string{"z-ai/glm-5.2"}) {
+		t.Fatalf("final models = %#v", finalModels)
 	}
 }
 

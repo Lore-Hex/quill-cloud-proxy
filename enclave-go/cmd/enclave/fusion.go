@@ -33,6 +33,7 @@ const trustedRouterZeusCodeModel = "trustedrouter/zeus-code"
 const trustedRouterIrisCode10Model = "trustedrouter/iris-code-1.0"
 const trustedRouterPrometheusCode10Model = "trustedrouter/prometheus-code-1.0"
 const trustedRouterZeusCode10Model = "trustedrouter/zeus-code-1.0"
+const trustedRouterOpenExploiterS1Model = "trustedrouter/openexploiter-s1"
 const trustedRouterFusionModel = "trustedrouter/fusion"
 const trustedRouterFusionCodeModel = "trustedrouter/fusion-code"
 const trustedRouterSelectorModel = "trustedrouter/selector"
@@ -105,6 +106,11 @@ var fusionFrontierPanel = []string{
 	fusionGeneralKimi,
 }
 
+var fusionOpenExploiterS1Panel = []string{
+	fusionCodeKimi,
+	"z-ai/glm-5.2",
+}
+
 // applyFusionCodeSwap rewrites the single model trustedrouter/fusion-code
 // differs on — the general Kimi -> the code-tuned Kimi — leaving everything else
 // untouched. This is the only difference between fusion and fusion-code.
@@ -147,6 +153,7 @@ func isFusionModel(model string) bool {
 		trustedRouterIrisCode10Model,
 		trustedRouterPrometheusCode10Model,
 		trustedRouterZeusCode10Model,
+		trustedRouterOpenExploiterS1Model,
 		trustedRouterFusionModel,
 		trustedRouterFusionCodeModel,
 		trustedRouterSelectorModel,
@@ -195,8 +202,28 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 		trustedRouterZeusCodeModel,
 		trustedRouterZeusCode10Model:
 		return "frontier", append([]string(nil), fusionFrontierPanel...), true
+	case trustedRouterOpenExploiterS1Model:
+		return "openexploiter-s1", append([]string(nil), fusionOpenExploiterS1Panel...), true
 	default:
 		return "", nil, false
+	}
+}
+
+func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case trustedRouterOpenExploiterS1Model:
+		return []string{"z-ai/glm-5.2"}, true
+	default:
+		return nil, false
+	}
+}
+
+func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case trustedRouterOpenExploiterS1Model:
+		return []string{fusionCodeKimi}, true
+	default:
+		return nil, false
 	}
 }
 
@@ -490,7 +517,7 @@ func maybeServeFusion(
 	if err != nil {
 		return true, err
 	}
-	judgeModels, err := fusionJudgeModels(config, finalModels[0])
+	judgeModels, err := fusionJudgeModels(config, req.Model)
 	if err != nil {
 		return true, err
 	}
@@ -2780,6 +2807,12 @@ func fusionFinalModels(config fusionConfig, requestedModel string, fallback stri
 			raw = []string{config.JudgeModel}
 		case requestedModel != "" && !isFusionModel(requestedModel):
 			raw = []string{requestedModel}
+		case requestedModel != "":
+			if presetModels, ok := fusionPresetFinalModelsForModel(requestedModel); ok {
+				raw = presetModels
+			} else {
+				raw = fusionDefaultFinalModels
+			}
 		default:
 			raw = fusionDefaultFinalModels
 		}
@@ -2803,6 +2836,8 @@ func fusionJudgeModels(config fusionConfig, fallback string) ([]string, error) {
 	if len(raw) == 0 {
 		if config.JudgeModel != "" {
 			raw = []string{config.JudgeModel}
+		} else if requestedModels, ok := fusionPresetJudgeModelsForModel(fallback); ok {
+			raw = requestedModels
 		} else {
 			raw = fusionDefaultJudgeModels
 		}

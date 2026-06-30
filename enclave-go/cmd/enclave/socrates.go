@@ -33,6 +33,8 @@ const trustedRouterSocratesPro10Model = "trustedrouter/socrates-pro-1.0"
 const trustedRouterSocratesProModel = "trustedrouter/socrates-pro"
 const trustedRouterSocratesProPlus10Model = "trustedrouter/socrates-pro-plus-1.0"
 const trustedRouterSocratesProPlusModel = "trustedrouter/socrates-pro-plus"
+const trustedRouterOpenExploiterA1Model = "trustedrouter/openexploiter-a1"
+const trustedRouterOpenExploiterFast1Model = "trustedrouter/openexploiter-fast1"
 const trustedRouterAdvisorTool = "trustedrouter:advisor"
 const socratesAdviceToolName = "_trustedrouter_get_advice"
 
@@ -155,6 +157,18 @@ func socratesPresetForModel(model string) (socratesConfig, bool) {
 			Enabled:       true,
 			WorkerModels:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
 			AdvisorModels: []string{trustedRouterZeus10Model},
+		}, true
+	case trustedRouterOpenExploiterA1Model:
+		return socratesConfig{
+			Enabled:       true,
+			WorkerModels:  []string{trustedRouterOpenExploiterS1Model},
+			AdvisorModels: []string{trustedRouterPrometheus10Model},
+		}, true
+	case trustedRouterOpenExploiterFast1Model:
+		return socratesConfig{
+			Enabled:       true,
+			WorkerModels:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
+			AdvisorModels: []string{trustedRouterOpenExploiterA1Model},
 		}, true
 	default:
 		return socratesConfig{}, false
@@ -410,8 +424,8 @@ func normalizeSocratesConfig(config *socratesConfig, req *types.OpenAIChatReques
 	}
 	for i, model := range config.WorkerModels {
 		resolved := resolveFusionModelID(model)
-		if resolved == "" || isOrchestrationModel(resolved) {
-			return &adapter.AdapterError{Status: 400, Message: "trustedrouter/advisor worker_models must be concrete model ids", Context: "worker_models"}
+		if resolved == "" || isSocratesModel(resolved) {
+			return &adapter.AdapterError{Status: 400, Message: "trustedrouter/advisor worker_models must be concrete or synth model ids", Context: "worker_models"}
 		}
 		config.WorkerModels[i] = resolved
 	}
@@ -649,12 +663,18 @@ func runSocratesWorkerLoop(
 				"model": workerModel,
 			})
 		}
-		workerReq := socratesWorkerRequest(req, workerModel, messages, config, allowAdviceTool)
-		var observer adapter.StreamObserver
-		if observerFactory != nil {
-			observer = observerFactory("worker", turn, workerModel)
+		workerReq := socratesWorkerRequest(req, workerModel, messages, config, allowAdviceTool && !isFusionModel(workerModel))
+		var worker fusionCallResult
+		var err error
+		if isFusionModel(workerModel) {
+			worker, err = runSocratesFusionWorkerRequest(ctx, br, workerReq, config, workerModel, trGateway, secretCache, bearer, fmt.Sprintf("%s:worker:%d:%d", requestID, workerIndex, turn), requestLogID, originalInput)
+		} else {
+			var observer adapter.StreamObserver
+			if observerFactory != nil {
+				observer = observerFactory("worker", turn, workerModel)
+			}
+			worker, err = runFusionCallObserved(ctx, br, workerReq, trGateway, secretCache, bearer, "socrates.worker", fmt.Sprintf("%s:worker:%d:%d", requestID, workerIndex, turn), requestLogID, originalInput, false, observer, streamW != nil)
 		}
-		worker, err := runFusionCallObserved(ctx, br, workerReq, trGateway, secretCache, bearer, "socrates.worker", fmt.Sprintf("%s:worker:%d:%d", requestID, workerIndex, turn), requestLogID, originalInput, false, observer, streamW != nil)
 		if err != nil {
 			return fusionCallResult{}, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err
 		}
@@ -967,16 +987,48 @@ func runSocratesFusionAdvisorRequest(
 	requestLogID string,
 	originalInput any,
 ) (fusionCallResult, error) {
+	return runSocratesFusionOrchestrationRequest(ctx, br, advisorReq, config, advisorModel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput)
+}
+
+func runSocratesFusionWorkerRequest(
+	ctx context.Context,
+	br llm.Client,
+	workerReq *types.OpenAIChatRequest,
+	config socratesConfig,
+	workerModel string,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+	originalInput any,
+) (fusionCallResult, error) {
+	return runSocratesFusionOrchestrationRequest(ctx, br, workerReq, config, workerModel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput)
+}
+
+func runSocratesFusionOrchestrationRequest(
+	ctx context.Context,
+	br llm.Client,
+	orchestrationReq *types.OpenAIChatRequest,
+	config socratesConfig,
+	orchestrationModel string,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	requestID string,
+	requestLogID string,
+	originalInput any,
+) (fusionCallResult, error) {
 	if config.Depth <= 0 {
 		fmt.Fprintf(os.Stderr,
 			"socrates.depth_blocked request_log_id=%q request_id=%q model=%q depth_remaining=%d\n",
-			requestLogID, requestID, advisorModel, config.Depth,
+			requestLogID, requestID, orchestrationModel, config.Depth,
 		)
 		return fusionCallResult{}, &adapter.AdapterError{Status: 400, Message: "trustedrouter orchestration depth exhausted", Context: "depth"}
 	}
 	childDepth := config.Depth - 1
-	advisorReq.Depth = &childDepth
-	fusionConfig, requested, err := fusionConfigForRequest(advisorReq)
+	orchestrationReq.Depth = &childDepth
+	fusionConfig, requested, err := fusionConfigForRequest(orchestrationReq)
 	if err != nil {
 		return fusionCallResult{}, err
 	}
@@ -984,7 +1036,7 @@ func runSocratesFusionAdvisorRequest(
 		return fusionCallResult{}, &adapter.AdapterError{Status: 400, Message: "advisor model is not a supported orchestration model", Context: "advisor_model"}
 	}
 	if len(fusionConfig.AnalysisModels) == 0 {
-		if preset, panel, ok := fusionPresetPanelForModel(advisorReq.Model); ok {
+		if preset, panel, ok := fusionPresetPanelForModel(orchestrationReq.Model); ok {
 			fusionConfig.Preset = preset
 			fusionConfig.AnalysisModels = panel
 		} else {
@@ -997,22 +1049,22 @@ func runSocratesFusionAdvisorRequest(
 	for i, model := range fusionConfig.AnalysisModels {
 		fusionConfig.AnalysisModels[i] = resolveFusionModelID(model)
 	}
-	finalModels, err := fusionFinalModels(fusionConfig, advisorReq.Model, fusionConfig.AnalysisModels[0])
+	finalModels, err := fusionFinalModels(fusionConfig, orchestrationReq.Model, fusionConfig.AnalysisModels[0])
 	if err != nil {
 		return fusionCallResult{}, err
 	}
-	judgeModels, err := fusionJudgeModels(fusionConfig, finalModels[0])
+	judgeModels, err := fusionJudgeModels(fusionConfig, orchestrationReq.Model)
 	if err != nil {
 		return fusionCallResult{}, err
 	}
-	codeModel := isFusionCodeModel(advisorReq.Model)
+	codeModel := isFusionCodeModel(orchestrationReq.Model)
 	fusionConfig.CodeModel = codeModel
 	if codeModel {
 		fusionConfig.AnalysisModels = applyFusionCodeSwap(fusionConfig.AnalysisModels)
 		judgeModels = applyFusionCodeSwap(judgeModels)
 	}
 	fusionConfig.BuiltInPanelPrompt, fusionConfig.BuiltInFinalPrompt = fusionBuiltInPrompts(codeModel)
-	panel, err := runFusionPanel(ctx, br, advisorReq, fusionConfig, trGateway, secretCache, bearer, requestID+":fusion", requestLogID)
+	panel, err := runFusionPanel(ctx, br, orchestrationReq, fusionConfig, trGateway, secretCache, bearer, requestID+":fusion", requestLogID)
 	if err != nil {
 		return fusionCallResult{}, err
 	}
@@ -1020,11 +1072,11 @@ func runSocratesFusionAdvisorRequest(
 	if err != nil {
 		return fusionCallResult{}, err
 	}
-	judge, _, err := runFusionJudge(ctx, br, advisorReq, fusionConfig, judgeModels, synthesisPanel, trGateway, secretCache, bearer, requestID+":fusion", requestLogID)
+	judge, _, err := runFusionJudge(ctx, br, orchestrationReq, fusionConfig, judgeModels, synthesisPanel, trGateway, secretCache, bearer, requestID+":fusion", requestLogID)
 	if err != nil {
 		return fusionCallResult{}, err
 	}
-	final, _, err := runFusionFinal(ctx, br, advisorReq, fusionConfig, finalModels, judge.Result.Text, synthesisPanel, trGateway, secretCache, bearer, requestID+":fusion", requestLogID, originalInput)
+	final, _, err := runFusionFinal(ctx, br, orchestrationReq, fusionConfig, finalModels, judge.Result.Text, synthesisPanel, trGateway, secretCache, bearer, requestID+":fusion", requestLogID, originalInput)
 	if err != nil {
 		return fusionCallResult{}, err
 	}
