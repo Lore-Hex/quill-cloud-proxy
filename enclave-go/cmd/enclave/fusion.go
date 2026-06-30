@@ -321,6 +321,7 @@ type fusionCallResult struct {
 	Result           adapter.StreamResult
 	Model            string
 	Endpoint         string
+	RouteType        string
 	RawText          string
 	InputTokens      int
 	OutputTokens     int
@@ -329,6 +330,7 @@ type fusionCallResult struct {
 	Authorization    *trustedrouter.Authorization
 	SettlementResult *trustedrouter.SettleResult
 	Rescue           *fusionOverthinkingRescue
+	Orchestration    map[string]any
 }
 
 type fusionOverthinkingRescue struct {
@@ -1683,6 +1685,7 @@ func runFusionCallValidatedObservedAttempt(
 		Result:           result,
 		Model:            selectedModel,
 		Endpoint:         selectedEndpoint,
+		RouteType:        routeType,
 		RawText:          rawText,
 		InputTokens:      inputTokens,
 		OutputTokens:     outputTokens,
@@ -1886,7 +1889,8 @@ func serveFusionFinalStreamingObserved(
 			return err
 		}
 		if chatIncludeUsage(req) {
-			if err := writeFusionStreamUsage(streamW, requestID, final.Model, created, final, fusionTotalCostMicrodollars(panel, []fusionCallResult{judge}, []fusionCallResult{final})); err != nil {
+			details := fusionResponseDetails(config, panel, []fusionCallResult{judge}, []fusionCallResult{final}, final.Model)
+			if err := writeFusionStreamUsage(streamW, requestID, final.Model, created, final, fusionTotalCostMicrodollars(panel, []fusionCallResult{judge}, []fusionCallResult{final}), fusionProviderUsage(details)); err != nil {
 				return err
 			}
 		}
@@ -2039,9 +2043,12 @@ func writeFusionChatCompletionResponse(
 		return err
 	}
 	payload["trustedrouter"] = map[string]any{"synth": details}
-	if cost, ok := fusionCostMicrodollars(details); ok {
-		if usage, ok := payload["usage"].(map[string]any); ok {
+	if usage, ok := payload["usage"].(map[string]any); ok {
+		if cost, ok := fusionCostMicrodollars(details); ok {
 			usage["cost_microdollars"] = cost
+		}
+		if providerUsage := fusionProviderUsage(details); len(providerUsage) > 0 {
+			usage["provider_usage"] = providerUsage
 		}
 	}
 	encoded, err := json.Marshal(payload)
@@ -2105,7 +2112,7 @@ func writeFusionStreamDelta(w io.Writer, requestID string, model string, created
 	return err
 }
 
-func writeFusionStreamUsage(w io.Writer, requestID string, model string, created int64, result fusionCallResult, totalCostMicrodollars int) error {
+func writeFusionStreamUsage(w io.Writer, requestID string, model string, created int64, result fusionCallResult, totalCostMicrodollars int, providerUsage ...map[string]any) error {
 	usage := map[string]any{
 		"prompt_tokens":     result.InputTokens,
 		"completion_tokens": result.OutputTokens,
@@ -2113,6 +2120,9 @@ func writeFusionStreamUsage(w io.Writer, requestID string, model string, created
 	}
 	if totalCostMicrodollars > 0 {
 		usage["cost_microdollars"] = totalCostMicrodollars
+	}
+	if len(providerUsage) > 0 && len(providerUsage[0]) > 0 {
+		usage["provider_usage"] = providerUsage[0]
 	}
 	if result.Result.Usage != nil && result.Result.Usage.ReasoningTokens > 0 {
 		usage["completion_tokens_details"] = map[string]any{
@@ -2382,10 +2392,14 @@ func fusionCallDetails(item fusionCallResult) map[string]any {
 	detail := map[string]any{
 		"model":          model,
 		"endpoint":       endpoint,
+		"route_type":     item.RouteType,
 		"finish_reason":  item.Result.FinishReason,
 		"visible_answer": strings.TrimSpace(item.Result.Text),
 		"input_tokens":   item.InputTokens,
 		"output_tokens":  item.OutputTokens,
+	}
+	if item.Authorization != nil && item.Authorization.Provider != "" {
+		detail["provider"] = item.Authorization.Provider
 	}
 	if item.ElapsedMS > 0 {
 		detail["elapsed_ms"] = item.ElapsedMS
@@ -2422,6 +2436,9 @@ func fusionCallDetails(item fusionCallResult) map[string]any {
 	if item.SettlementResult != nil {
 		detail["generation_id"] = item.SettlementResult.GenerationID
 		detail["cost_microdollars"] = item.SettlementResult.CostMicrodollars
+	}
+	if len(item.Orchestration) > 0 {
+		detail["orchestration"] = item.Orchestration
 	}
 	return detail
 }

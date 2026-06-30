@@ -594,7 +594,8 @@ func serveSocratesStreaming(
 		usage := final
 		usage.InputTokens = totalIn
 		usage.OutputTokens = totalOut
-		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, usage, socratesTotalCostMicrodollars(workerAttempts, advisorAttempts))
+		details := socratesResponseDetails(config, workerAttempts, advisorAttempts, responseModel, adviceCalls, budgetExhausted)
+		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, usage, socratesTotalCostMicrodollars(workerAttempts, advisorAttempts), socratesProviderUsage(details))
 	}
 	_, _ = statsW.Write([]byte("data: [DONE]\n\n"))
 	fmt.Fprintf(os.Stderr,
@@ -701,6 +702,7 @@ func runSocratesWorkerLoop(
 		if err != nil {
 			return fusionCallResult{}, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err
 		}
+		worker.RouteType = "socrates.worker"
 		workerAttempts = append(workerAttempts, worker)
 		if streamW != nil {
 			_ = writeSocratesStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
@@ -812,6 +814,7 @@ func runSocratesAdvice(
 			)
 			continue
 		}
+		result.RouteType = "socrates.advisor"
 		attempts = append(attempts, result)
 		if streamW != nil {
 			_ = writeSocratesStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
@@ -889,6 +892,7 @@ func runSocratesAdvisorFinal(
 			)
 			continue
 		}
+		result.RouteType = "socrates.advisor_final"
 		attempts = append(attempts, result)
 		text := strings.TrimSpace(result.Result.Text)
 		if text == "" || fusionLooksLikeRefusal(text) {
@@ -954,9 +958,12 @@ func runSocratesNestedAdvisor(
 	}
 	childConfig.BuiltInWorkerPrompt = config.BuiltInWorkerPrompt
 	childConfig.BuiltInAdvisorPrompt = config.BuiltInAdvisorPrompt
-	final, _, _, _, _, err := runSocrates(ctx, br, advisorReq, childConfig, trGateway, secretCache, bearer, requestID+":socrates", requestLogID, originalInput, nil, 0, nil)
+	final, workers, advisors, adviceCalls, budgetExhausted, err := runSocrates(ctx, br, advisorReq, childConfig, trGateway, secretCache, bearer, requestID+":socrates", requestLogID, originalInput, nil, 0, nil)
 	if err != nil {
 		return fusionCallResult{}, err
+	}
+	final.Orchestration = map[string]any{
+		"socrates": socratesResponseDetails(childConfig, workers, advisors, final.Model, adviceCalls, budgetExhausted),
 	}
 	return final, nil
 }
@@ -1095,13 +1102,16 @@ func runSocratesFusionOrchestrationRequest(
 	if err != nil {
 		return fusionCallResult{}, err
 	}
-	judge, _, err := runFusionJudge(ctx, br, orchestrationReq, fusionConfig, judgeModels, synthesisPanel, trGateway, secretCache, bearer, requestID+":fusion", requestLogID)
+	judge, judgeAttempts, err := runFusionJudge(ctx, br, orchestrationReq, fusionConfig, judgeModels, synthesisPanel, trGateway, secretCache, bearer, requestID+":fusion", requestLogID)
 	if err != nil {
 		return fusionCallResult{}, err
 	}
-	final, _, err := runFusionFinal(ctx, br, orchestrationReq, fusionConfig, finalModels, judge.Result.Text, synthesisPanel, trGateway, secretCache, bearer, requestID+":fusion", requestLogID, originalInput)
+	final, finalAttempts, err := runFusionFinal(ctx, br, orchestrationReq, fusionConfig, finalModels, judge.Result.Text, synthesisPanel, trGateway, secretCache, bearer, requestID+":fusion", requestLogID, originalInput)
 	if err != nil {
 		return fusionCallResult{}, err
+	}
+	final.Orchestration = map[string]any{
+		"synth": fusionResponseDetails(fusionConfig, panel, judgeAttempts, finalAttempts, final.Model),
 	}
 	return final, nil
 }
@@ -1372,9 +1382,12 @@ func writeSocratesChatCompletionResponse(
 		return err
 	}
 	payload["trustedrouter"] = map[string]any{"socrates": details}
-	if cost, ok := fusionCostMicrodollars(details); ok {
-		if usage, ok := payload["usage"].(map[string]any); ok {
+	if usage, ok := payload["usage"].(map[string]any); ok {
+		if cost, ok := fusionCostMicrodollars(details); ok {
 			usage["cost_microdollars"] = cost
+		}
+		if providerUsage := socratesProviderUsage(details); len(providerUsage) > 0 {
+			usage["provider_usage"] = providerUsage
 		}
 	}
 	encoded, err := json.Marshal(payload)

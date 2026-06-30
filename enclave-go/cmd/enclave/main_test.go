@@ -623,6 +623,32 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 	if usage["cost_microdollars"] != float64(4) {
 		t.Fatalf("usage cost_microdollars = %#v, want total cost for four subcalls", usage["cost_microdollars"])
 	}
+	providerUsage, ok := usage["provider_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("usage missing provider_usage: %#v", usage)
+	}
+	if providerUsage["router"] != "trustedrouter/synth" ||
+		providerUsage["panel_attempt_count"] != float64(2) ||
+		providerUsage["judge_attempt_count"] != float64(1) ||
+		providerUsage["final_attempt_count"] != float64(1) ||
+		providerUsage["cost_microdollars"] != float64(4) {
+		t.Fatalf("provider_usage summary = %#v", providerUsage)
+	}
+	panelUsage, ok := providerUsage["panel"].([]any)
+	if !ok || len(panelUsage) != 2 {
+		t.Fatalf("provider_usage panel = %#v", providerUsage["panel"])
+	}
+	firstPanelUsage := panelUsage[0].(map[string]any)
+	if firstPanelUsage["route_type"] != "fusion.panel" ||
+		firstPanelUsage["model"] != "google/gemini-3-flash-preview" ||
+		firstPanelUsage["cost_microdollars"] != float64(1) {
+		t.Fatalf("bad provider_usage panel detail: %#v", firstPanelUsage)
+	}
+	for _, forbidden := range []string{"visible_answer", "raw_output", "thinking", "tool_calls", "aborted_thinking"} {
+		if _, ok := firstPanelUsage[forbidden]; ok {
+			t.Fatalf("provider_usage leaked %s: %#v", forbidden, firstPanelUsage)
+		}
+	}
 	trusted, ok := response["trustedrouter"].(map[string]any)
 	if !ok {
 		t.Fatalf("fusion response missing trustedrouter details: %s", body)
@@ -2811,6 +2837,145 @@ func TestRunSocratesAdviceOnceThenWorkerFinal(t *testing.T) {
 	want := []string{"socrates.worker", "socrates.advisor", "socrates.worker"}
 	if !reflect.DeepEqual(routeTypes, want) {
 		t.Fatalf("route types = %#v, want %#v", routeTypes, want)
+	}
+}
+
+func TestSocratesProviderUsageReportsAdviceWithoutText(t *testing.T) {
+	trGateway, _, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &socratesScriptedLLM{callAdviceFirst: true}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterSocrates10Model,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "private risky migration prompt"}},
+	}
+	config := testSocratesConfig(t)
+
+	final, workers, advisors, adviceCalls, budgetExhausted, err := runSocrates(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_socrates_provider_usage", "log_socrates_provider_usage", nil, nil, 0, nil)
+	if err != nil {
+		t.Fatalf("runSocrates: %v", err)
+	}
+	details := socratesResponseDetails(config, workers, advisors, final.Model, adviceCalls, budgetExhausted)
+	providerUsage := socratesProviderUsage(details)
+	if providerUsage["router"] != "trustedrouter/socrates" ||
+		providerUsage["worker_attempt_count"] != 2 ||
+		providerUsage["advisor_attempt_count"] != 1 ||
+		providerUsage["advisor_final_attempt_count"] != 0 ||
+		providerUsage["advice_call_count"] != 1 ||
+		providerUsage["cost_microdollars"] != 3 {
+		t.Fatalf("providerUsage = %#v", providerUsage)
+	}
+	workersUsage, ok := providerUsage["worker_attempts"].([]map[string]any)
+	if !ok || len(workersUsage) != 2 {
+		t.Fatalf("worker_attempts = %#v", providerUsage["worker_attempts"])
+	}
+	if workersUsage[0]["route_type"] != "socrates.worker" || workersUsage[0]["model"] != "cerebras/gpt-oss-120b" {
+		t.Fatalf("bad worker provider usage: %#v", workersUsage[0])
+	}
+	advisorsUsage, ok := providerUsage["advisor_attempts"].([]map[string]any)
+	if !ok || len(advisorsUsage) != 1 {
+		t.Fatalf("advisor_attempts = %#v", providerUsage["advisor_attempts"])
+	}
+	if advisorsUsage[0]["route_type"] != "socrates.advisor" || advisorsUsage[0]["model"] != "anthropic/claude-opus-4.8" {
+		t.Fatalf("bad advisor provider usage: %#v", advisorsUsage[0])
+	}
+	encoded, err := json.Marshal(providerUsage)
+	if err != nil {
+		t.Fatalf("marshal providerUsage: %v", err)
+	}
+	for _, forbidden := range []string{
+		"private risky migration prompt",
+		"advisor says check rollback",
+		"worker final after advice",
+		`"visible_answer":`,
+		`"raw_output":`,
+		`"thinking":`,
+		`"tool_calls":`,
+	} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("provider_usage leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestProviderUsageIncludesNestedOrchestrationWithoutText(t *testing.T) {
+	nestedSynth := fusionResponseDetails(
+		fusionConfig{Preset: "zeus-1.0", SelectionStrategy: "synthesize_non_refusals"},
+		[]fusionCallResult{{
+			Result:           adapter.StreamResult{Text: "nested panel answer", FinishReason: "stop"},
+			Model:            "model/panel",
+			RouteType:        "fusion.panel",
+			InputTokens:      11,
+			OutputTokens:     7,
+			SettlementResult: &trustedrouter.SettleResult{GenerationID: "gen_panel", CostMicrodollars: 5},
+		}},
+		[]fusionCallResult{{
+			Result:           adapter.StreamResult{Text: "nested judge answer", FinishReason: "stop"},
+			Model:            "model/judge",
+			RouteType:        "fusion.judge",
+			InputTokens:      13,
+			OutputTokens:     8,
+			SettlementResult: &trustedrouter.SettleResult{GenerationID: "gen_judge", CostMicrodollars: 6},
+		}},
+		[]fusionCallResult{{
+			Result:           adapter.StreamResult{Text: "nested final answer", FinishReason: "stop"},
+			Model:            "model/final",
+			RouteType:        "fusion.final",
+			InputTokens:      17,
+			OutputTokens:     9,
+			SettlementResult: &trustedrouter.SettleResult{GenerationID: "gen_final", CostMicrodollars: 7},
+		}},
+		"model/final",
+	)
+	details := socratesResponseDetails(
+		testSocratesConfig(t),
+		nil,
+		[]fusionCallResult{{
+			Result:           adapter.StreamResult{Text: "advisor used nested synth", FinishReason: "stop"},
+			Model:            trustedRouterZeus10Model,
+			RouteType:        "socrates.advisor",
+			InputTokens:      23,
+			OutputTokens:     10,
+			SettlementResult: &trustedrouter.SettleResult{GenerationID: "gen_advisor", CostMicrodollars: 18},
+			Orchestration:    map[string]any{"synth": nestedSynth},
+		}},
+		trustedRouterZeus10Model,
+		1,
+		false,
+	)
+
+	providerUsage := socratesProviderUsage(details)
+	advisorsUsage, ok := providerUsage["advisor_attempts"].([]map[string]any)
+	if !ok || len(advisorsUsage) != 1 {
+		t.Fatalf("advisor_attempts = %#v", providerUsage["advisor_attempts"])
+	}
+	nested, ok := advisorsUsage[0]["orchestration"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested orchestration missing: %#v", advisorsUsage[0])
+	}
+	synth, ok := nested["synth"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested synth missing: %#v", nested)
+	}
+	if synth["panel_attempt_count"] != 1 || synth["judge_attempt_count"] != 1 || synth["final_attempt_count"] != 1 || synth["cost_microdollars"] != 18 {
+		t.Fatalf("nested synth summary = %#v", synth)
+	}
+	encoded, err := json.Marshal(providerUsage)
+	if err != nil {
+		t.Fatalf("marshal providerUsage: %v", err)
+	}
+	for _, forbidden := range []string{
+		"nested panel answer",
+		"nested judge answer",
+		"nested final answer",
+		"advisor used nested synth",
+		`"visible_answer":`,
+		`"raw_output":`,
+		`"thinking":`,
+		`"tool_calls":`,
+	} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("provider_usage leaked %q: %s", forbidden, encoded)
+		}
 	}
 }
 
