@@ -490,16 +490,6 @@ func serveOne(
 		return
 	}
 
-	anthropicReq, err := adapter.ToAnthropic(&req, "claude-opus-4-7")
-	if err != nil {
-		var aerr *adapter.AdapterError
-		if asAdapterErr(err, &aerr) {
-			writeError(conn, aerr.Status, aerr.Message)
-			return
-		}
-		writeError(conn, 500, "adapter error")
-		return
-	}
 	var authorization *trustedrouter.Authorization
 	var invokeOptions []llm.InvokeOptions
 	requestStarted := time.Now()
@@ -521,6 +511,17 @@ func serveOne(
 		} else {
 			req.Model = authorization.Model
 		}
+	}
+	applyCustomModelPrompt(&req, authorization)
+	anthropicReq, err := adapter.ToAnthropic(&req, "claude-opus-4-7")
+	if err != nil {
+		var aerr *adapter.AdapterError
+		if asAdapterErr(err, &aerr) {
+			writeError(conn, aerr.Status, aerr.Message)
+			return
+		}
+		writeError(conn, 500, "adapter error")
+		return
 	}
 	if !req.Stream {
 		if routeType == "responses" {
@@ -683,8 +684,9 @@ func serveResponsesNonStreaming(
 	if selectedModel != "" {
 		req.Model = selectedModel
 	}
+	responseModel := customModelResponseModel(req.Model, authorization)
 	var body bytes.Buffer
-	if err := adapter.WriteResponsesResponse(&body, requestID, req.Model, result.Text, result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(), responseTextConfig(req), req.Response); err != nil {
+	if err := adapter.WriteResponsesResponse(&body, requestID, responseModel, result.Text, result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(), responseTextConfig(req), req.Response); err != nil {
 		writeError(conn, 500, "responses encoding error")
 		return
 	}
@@ -755,8 +757,9 @@ func serveChatNonStreaming(
 	if selectedModel != "" {
 		req.Model = selectedModel
 	}
+	responseModel := customModelResponseModel(req.Model, authorization)
 	var body bytes.Buffer
-	if err := adapter.WriteChatCompletionResponse(&body, requestID, req.Model, result.Text, result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(), result.FinishReason); err != nil {
+	if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, result.Text, result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(), result.FinishReason); err != nil {
 		writeError(conn, 500, "chat completion encoding error")
 		return
 	}
@@ -824,6 +827,7 @@ func serveStreaming(
 	if streamModel != "" {
 		req.Model = streamModel
 	}
+	responseModel := customModelResponseModel(req.Model, authorization)
 	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
 		_ = pr.Close()
 		return
@@ -836,9 +840,9 @@ func serveStreaming(
 	var result adapter.StreamResult
 	var err error
 	if routeType == "responses" {
-		result, err = adapter.TransformResponsesStream(pr, statsW, requestID, req.Model, trustedrouter.EstimateInputTokens(req), responseTextConfig(req), req.Response)
+		result, err = adapter.TransformResponsesStream(pr, statsW, requestID, responseModel, trustedrouter.EstimateInputTokens(req), responseTextConfig(req), req.Response)
 	} else {
-		result, err = adapter.TransformStreamCaptureWithOptions(pr, statsW, requestID, req.Model, chatIncludeUsage(req))
+		result, err = adapter.TransformStreamCaptureWithOptions(pr, statsW, requestID, responseModel, chatIncludeUsage(req))
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
@@ -846,7 +850,7 @@ func serveStreaming(
 			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		if routeType == "responses" || statsW.BytesWritten() == 0 {
-			_ = writeStreamingProviderError(statsW, routeType, requestID, req.Model)
+			_ = writeStreamingProviderError(statsW, routeType, requestID, responseModel)
 		}
 		return
 	}
@@ -955,6 +959,7 @@ func serveMessages(
 			req.Model = authorization.Model
 		}
 	}
+	applyCustomModelPromptToMessages(req, anthropicReq, authorization)
 
 	messageID := newMessageID()
 	pr, pw := io.Pipe()
@@ -982,8 +987,9 @@ func serveMessages(
 		if selectedModel != "" {
 			req.Model = selectedModel
 		}
+		responseModel := customModelResponseModel(req.Model, authorization)
 		var envelope bytes.Buffer
-		if err := adapter.WriteMessagesResponse(&envelope, messageID, req.Model, result, inputTokens, outputTokens); err != nil {
+		if err := adapter.WriteMessagesResponse(&envelope, messageID, responseModel, result, inputTokens, outputTokens); err != nil {
 			writeAnthropicError(conn, 500, "messages encoding error")
 			return
 		}
@@ -1026,6 +1032,7 @@ func serveMessages(
 	if streamModel := selectedRoute.Model(req.Model, authorization); streamModel != "" {
 		req.Model = streamModel
 	}
+	responseModel := customModelResponseModel(req.Model, authorization)
 	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
 		_ = pr.Close()
 		return
@@ -1034,7 +1041,7 @@ func serveMessages(
 	defer chunkW.Close()
 	statsW := newStreamStatsWriter(chunkW)
 
-	result, err := adapter.RelayAnthropicStream(pr, statsW, messageID, req.Model)
+	result, err := adapter.RelayAnthropicStream(pr, statsW, messageID, responseModel)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.messages_relay_failed model=%q err=%v\n", req.Model, err)
 		if trEnabled {

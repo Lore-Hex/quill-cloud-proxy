@@ -226,13 +226,13 @@ func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
 		switch r.URL.Path {
 		case "/internal/gateway/authorize":
 			authorizeBody = string(body)
-			if strings.Contains(authorizeBody, bearer) || strings.Contains(authorizeBody, "private response input") {
+			if strings.Contains(authorizeBody, bearer) || strings.Contains(authorizeBody, "private response input") || strings.Contains(authorizeBody, "PRIVATE responses preamble") {
 				t.Fatalf("authorize leaked sensitive material: %s", authorizeBody)
 			}
-			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_resp","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_resp","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[],"custom_model":{"id":"trustedrouter/user-resp1","name":"Responses model","base_model_id":"openai/gpt-4o-mini","hidden_prompt":"PRIVATE responses preamble","revision":4}}}`)
 		case "/internal/gateway/settle":
 			settleBody = string(body)
-			if strings.Contains(settleBody, "Hello") || strings.Contains(settleBody, "private response input") {
+			if strings.Contains(settleBody, "Hello") || strings.Contains(settleBody, "private response input") || strings.Contains(settleBody, "PRIVATE responses preamble") {
 				t.Fatalf("settle leaked content: %s", settleBody)
 			}
 			_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"gen_resp","cost_microdollars":12,"model":"openai/gpt-4o-mini","provider":"openai","region":"us-central1"}}`)
@@ -248,7 +248,7 @@ func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
 	defer client.Close()
 	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
 
-	requestBody := []byte(`{"model":"openai/gpt-4o-mini","input":"private response input","instructions":"be brief","max_output_tokens":32}`)
+	requestBody := []byte(`{"model":"trustedrouter/user-resp1","input":"private response input","instructions":"be brief","max_output_tokens":32}`)
 	_, err := fmt.Fprintf(
 		client,
 		"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
@@ -282,6 +282,9 @@ func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
 	if decoded["object"] != "response" || decoded["status"] != "completed" {
 		t.Fatalf("bad response envelope: %#v", decoded)
 	}
+	if decoded["model"] != "trustedrouter/user-resp1" {
+		t.Fatalf("response model = %#v, want custom id", decoded["model"])
+	}
 	if !strings.Contains(string(bodyBytes), "Hello world") {
 		t.Fatalf("missing output text: %s", bodyBytes)
 	}
@@ -292,7 +295,7 @@ func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
 	if !strings.Contains(settleBody, `"route_type":"responses"`) || !strings.Contains(settleBody, `"streamed":false`) {
 		t.Fatalf("settle body missing responses metadata: %s", settleBody)
 	}
-	if streamer.body == nil || streamer.body.System != "be brief" {
+	if streamer.body == nil || streamer.body.System != "PRIVATE responses preamble\n\nbe brief" {
 		serialized, _ := json.Marshal(streamer.body)
 		t.Fatalf("bad transformed responses body: %s", serialized)
 	}
@@ -514,6 +517,79 @@ func TestServeOneTrustedRouterRetriesFallbackCandidatesAndSettlesSelectedRoute(t
 	if !strings.Contains(settleBody, `"selected_model":"openai/gpt-4o-mini"`) ||
 		!strings.Contains(settleBody, `"selected_endpoint":"openai/gpt-4o-mini@openai/prepaid"`) {
 		t.Fatalf("settle did not bill selected fallback route: %s", settleBody)
+	}
+}
+
+func TestServeOneTrustedRouterCustomModelPrependsHiddenPrompt(t *testing.T) {
+	bearer := "test-user-bearer"
+	const hiddenPrompt = "PRIVATE custom preamble"
+	var settleBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			if strings.Contains(string(body), hiddenPrompt) || strings.Contains(string(body), "private user prompt") {
+				t.Fatalf("authorize leaked prompt material: %s", body)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_custom","workspace_id":"ws_1","api_key_hash":"key_1","model":"anthropic/claude-sonnet-4.6","endpoint_id":"anthropic/claude-sonnet-4.6@anthropic/prepaid","provider":"anthropic","usage_type":"Credits","limit_usage_type":"Credits","custom_model":{"id":"trustedrouter/user-8k3p2z","name":"Legal reviewer","base_model_id":"anthropic/claude-sonnet-4.6","hidden_prompt":"PRIVATE custom preamble","revision":3}}}`)
+		case "/internal/gateway/settle":
+			settleBody = string(body)
+			if strings.Contains(settleBody, hiddenPrompt) || strings.Contains(settleBody, "private user prompt") {
+				t.Fatalf("settle leaked prompt material: %s", settleBody)
+			}
+			_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"gen_custom","cost_microdollars":12,"model":"anthropic/claude-sonnet-4.6","provider":"anthropic","region":"us-central1"}}`)
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	streamer := &fakeStreamingLLM{}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/user-8k3p2z","stream":false,"messages":[{"role":"system","content":"caller system"},{"role":"user","content":"private user prompt"}],"max_tokens":32}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, `"model":"trustedrouter/user-8k3p2z"`) {
+		t.Fatalf("response did not preserve custom model id: %s", body)
+	}
+	if streamer.body == nil || !strings.HasPrefix(streamer.body.System, hiddenPrompt+"\n\ncaller system") {
+		t.Fatalf("hidden prompt was not prepended before caller system: %#v", streamer.body)
+	}
+	deadline := time.Now().Add(time.Second)
+	for settleBody == "" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(settleBody, `"selected_model":"anthropic/claude-sonnet-4.6"`) {
+		t.Fatalf("settle did not bill base selected model: %s", settleBody)
 	}
 }
 
@@ -4431,7 +4507,7 @@ func TestServeOneMessagesNonStreamingReturnsEnvelopeAndSettles(t *testing.T) {
 			if !strings.Contains(string(body), `"route_type":"messages"`) {
 				t.Fatalf("authorize missing messages route_type: %s", body)
 			}
-			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_msg","workspace_id":"ws_1","api_key_hash":"key_1","model":"anthropic/claude-haiku-4.5","endpoint_id":"anthropic/claude-haiku-4.5@anthropic/prepaid","provider":"anthropic","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+			_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_msg","workspace_id":"ws_1","api_key_hash":"key_1","model":"anthropic/claude-haiku-4.5","endpoint_id":"anthropic/claude-haiku-4.5@anthropic/prepaid","provider":"anthropic","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[],"custom_model":{"id":"trustedrouter/user-msg123","name":"Messages model","base_model_id":"anthropic/claude-haiku-4.5","hidden_prompt":"PRIVATE messages preamble","revision":2}}}`)
 		case "/internal/gateway/settle":
 			settleBody = string(body)
 			if strings.Contains(settleBody, "private prompt") || strings.Contains(settleBody, "Hello") {
@@ -4450,7 +4526,7 @@ func TestServeOneMessagesNonStreamingReturnsEnvelopeAndSettles(t *testing.T) {
 	defer client.Close()
 	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
 
-	requestBody := []byte(`{"model":"anthropic/claude-haiku-4.5","max_tokens":99,"system":[{"type":"text","text":"be brief","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"private prompt","cache_control":{"type":"ephemeral"}}]}]}`)
+	requestBody := []byte(`{"model":"trustedrouter/user-msg123","max_tokens":99,"system":[{"type":"text","text":"be brief","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"private prompt","cache_control":{"type":"ephemeral"}}]}]}`)
 	if _, err := fmt.Fprintf(
 		client,
 		"POST /v1/messages HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
@@ -4483,6 +4559,9 @@ func TestServeOneMessagesNonStreamingReturnsEnvelopeAndSettles(t *testing.T) {
 	if !strings.Contains(string(bodyBytes), "Hello world") {
 		t.Fatalf("missing output text: %s", bodyBytes)
 	}
+	if decoded["model"] != "trustedrouter/user-msg123" {
+		t.Fatalf("message response model = %#v, want custom id", decoded["model"])
+	}
 	usage := decoded["usage"].(map[string]any)
 	if usage["input_tokens"] != float64(2) || usage["output_tokens"] != float64(2) {
 		t.Fatalf("envelope usage = %#v, want real upstream 2/2", usage)
@@ -4498,6 +4577,13 @@ func TestServeOneMessagesNonStreamingReturnsEnvelopeAndSettles(t *testing.T) {
 	}
 	if streamer.body.SystemRaw == nil {
 		t.Fatalf("system blocks flattened — cache_control lost")
+	}
+	systemBlocks := streamer.body.SystemRaw.([]any)
+	if got := systemBlocks[0].(map[string]any)["text"]; got != "PRIVATE messages preamble" {
+		t.Fatalf("hidden preamble not prepended to native system blocks: %#v", systemBlocks)
+	}
+	if _, ok := systemBlocks[1].(map[string]any)["cache_control"]; !ok {
+		t.Fatalf("caller system cache_control stripped: %#v", systemBlocks[1])
 	}
 	blocks := streamer.body.Messages[0].Content.([]any)
 	if _, ok := blocks[0].(map[string]any)["cache_control"]; !ok {

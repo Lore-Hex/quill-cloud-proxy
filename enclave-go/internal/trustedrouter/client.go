@@ -94,6 +94,15 @@ type Authorization struct {
 	BYOKCacheKey          string                             `json:"byok_cache_key"`
 	RouteCandidates       []RouteCandidate                   `json:"route_candidates"`
 	BroadcastDestinations []BroadcastDestination             `json:"broadcast_destinations"`
+	CustomModel           *CustomModel                       `json:"custom_model"`
+}
+
+type CustomModel struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	BaseModelID  string `json:"base_model_id"`
+	HiddenPrompt string `json:"hidden_prompt"`
+	Revision     int    `json:"revision"`
 }
 
 type RouteCandidate struct {
