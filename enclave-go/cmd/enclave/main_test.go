@@ -3222,6 +3222,154 @@ func TestServeOneOpenExploiterG1PreservesAliasAndReportsAdvisorUsage(t *testing.
 	}
 }
 
+func TestServeOneAthenaPreservesAliasAndHidesAdvisorMetadata(t *testing.T) {
+	trGateway, _, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &advisorScriptedLLM{
+		callAdviceForModels: map[string]bool{"z-ai/glm-5.2-fast": true},
+		reasoningByModel: map[string]int{
+			"z-ai/glm-5.2-fast":              11,
+			fusionCodeKimi:                   17,
+			trustedRouterPrometheus101MModel: 19,
+		},
+	}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/athena","stream":false,"messages":[{"role":"user","content":"hard security task"}],"max_tokens":128}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	var response struct {
+		Model string         `json:"model"`
+		Usage map[string]any `json:"usage"`
+	}
+	if err := json.Unmarshal(bodyBytes, &response); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, bodyBytes)
+	}
+	if response.Model != trustedRouterAthenaModel {
+		t.Fatalf("model = %q, want %q; body=%s", response.Model, trustedRouterAthenaModel, bodyBytes)
+	}
+	if _, ok := response.Usage["provider_usage"]; ok {
+		t.Fatalf("Athena leaked provider_usage: %#v", response.Usage["provider_usage"])
+	}
+	if _, ok := response.Usage["completion_tokens_details"]; ok {
+		t.Fatalf("Athena leaked reasoning token details: %#v", response.Usage["completion_tokens_details"])
+	}
+	if _, ok := response.Usage["cost_microdollars"]; !ok {
+		t.Fatalf("Athena should still report billing cost: %#v", response.Usage)
+	}
+	encoded := string(bodyBytes)
+	for _, forbidden := range []string{
+		`"trustedrouter"`,
+		`"provider_usage"`,
+		`"completion_tokens_details"`,
+		`"model":"z-ai/glm-5.2-fast"`,
+		`"model":"z-ai/glm-5.2"`,
+		`"model":"` + fusionCodeKimi + `"`,
+		`"model":"` + trustedRouterPrometheus101MModel + `"`,
+		`"worker_models"`,
+		`"advisor_models"`,
+		`"advisor_attempts"`,
+		`"openexploiter"`,
+		"hard security task",
+		"Advisor 1",
+		"advisor says",
+	} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("Athena response leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestServeOneAthenaStreamingHidesAdvisorMetadata(t *testing.T) {
+	trGateway, _, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &advisorScriptedLLM{
+		callAdviceForModels: map[string]bool{"z-ai/glm-5.2-fast": true},
+		reasoningByModel: map[string]int{
+			"z-ai/glm-5.2-fast":              11,
+			fusionCodeKimi:                   17,
+			trustedRouterPrometheus101MModel: 19,
+		},
+	}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/athena","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hard security task"}],"max_tokens":128}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	encoded := string(bodyBytes)
+	if !strings.Contains(encoded, "data: [DONE]") {
+		t.Fatalf("stream did not complete: %s", encoded)
+	}
+	if !strings.Contains(encoded, `"model":"trustedrouter/athena"`) {
+		t.Fatalf("stream did not preserve Athena alias: %s", encoded)
+	}
+	if !strings.Contains(encoded, `"cost_microdollars"`) {
+		t.Fatalf("stream should still report billing cost: %s", encoded)
+	}
+	for _, forbidden := range []string{
+		`"trustedrouter"`,
+		`"provider_usage"`,
+		`"completion_tokens_details"`,
+		`"model":"z-ai/glm-5.2-fast"`,
+		`"model":"z-ai/glm-5.2"`,
+		`"model":"` + fusionCodeKimi + `"`,
+		`"model":"` + trustedRouterPrometheus101MModel + `"`,
+		`"worker_models"`,
+		`"advisor_models"`,
+		`"advisor_attempts"`,
+		`"openexploiter"`,
+		"hard security task",
+		"Advisor 1",
+		"advisor says",
+	} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("Athena stream leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func TestProviderUsageIncludesNestedOrchestrationWithoutText(t *testing.T) {
 	nestedSynth := fusionResponseDetails(
 		fusionConfig{Preset: "zeus-1.0", SelectionStrategy: "synthesize_non_refusals"},

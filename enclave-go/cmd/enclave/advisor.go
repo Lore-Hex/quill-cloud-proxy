@@ -36,6 +36,7 @@ const trustedRouterSocratesProPlusModel = "trustedrouter/socrates-pro-plus"
 const trustedRouterOpenExploiterA1Model = "trustedrouter/openexploiter-a1"
 const trustedRouterOpenExploiterFast1Model = "trustedrouter/openexploiter-fast1"
 const trustedRouterOpenExploiterG1Model = "trustedrouter/openexploiter-g1"
+const trustedRouterAthenaModel = "trustedrouter/athena"
 const trustedRouterAdvisorTool = "trustedrouter:advisor"
 const advisorAdviceToolName = "_trustedrouter_get_advice"
 
@@ -99,6 +100,7 @@ type advisorConfig struct {
 	AdvisorTimeoutMS     int
 	BuiltInWorkerPrompt  string
 	BuiltInAdvisorPrompt string
+	HidePublicMetadata   bool
 }
 
 type advisorPromptBundle struct {
@@ -174,13 +176,20 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 			AdvisorModels: []string{trustedRouterOpenExploiterA1Model},
 		}, true
 	case trustedRouterOpenExploiterG1Model:
-		return advisorConfig{
-			Enabled:       true,
-			WorkerModels:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
-			AdvisorModels: []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
-		}, true
+		return openExploiterG1AdvisorConfig(false), true
+	case trustedRouterAthenaModel:
+		return openExploiterG1AdvisorConfig(true), true
 	default:
 		return advisorConfig{}, false
+	}
+}
+
+func openExploiterG1AdvisorConfig(hidePublicMetadata bool) advisorConfig {
+	return advisorConfig{
+		Enabled:            true,
+		WorkerModels:       []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+		AdvisorModels:      []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
+		HidePublicMetadata: hidePublicMetadata,
 	}
 }
 
@@ -244,9 +253,15 @@ func maybeServeAdvisor(
 		config.BuiltInAdvisorPrompt = fallbackAdvisorPrompt
 	}
 
+	workerModelsLog := strings.Join(config.WorkerModels, ",")
+	advisorModelsLog := strings.Join(config.AdvisorModels, ",")
+	if config.HidePublicMetadata {
+		workerModelsLog = "[hidden]"
+		advisorModelsLog = "[hidden]"
+	}
 	fmt.Fprintf(os.Stderr,
 		"advisor.request_start request_log_id=%q model=%q depth_initial=%d max_get_advice_calls=%d worker_models=%q advisor_models=%q\n",
-		requestLogID, req.Model, config.Depth, config.MaxAdviceCalls, strings.Join(config.WorkerModels, ","), strings.Join(config.AdvisorModels, ","),
+		requestLogID, req.Model, config.Depth, config.MaxAdviceCalls, workerModelsLog, advisorModelsLog,
 	)
 	if req.Stream {
 		serveAdvisorStreaming(ctx, conn, br, req, config, trGateway, secretCache, bearer, originalInput, requestLogID)
@@ -405,6 +420,9 @@ func mergeAdvisorConfig(base, override advisorConfig) advisorConfig {
 	if override.AdvisorTimeoutMS != 0 {
 		base.AdvisorTimeoutMS = override.AdvisorTimeoutMS
 	}
+	if override.HidePublicMetadata {
+		base.HidePublicMetadata = true
+	}
 	return base
 }
 
@@ -496,6 +514,10 @@ func serveAdvisorNonStreaming(
 	requestID := newRequestID()
 	final, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err := runAdvisor(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, nil, 0, nil)
 	if err != nil {
+		if config.HidePublicMetadata {
+			writeError(conn, statusFromControlPlaneError(err), "model request failed")
+			return
+		}
 		writeFusionError(ctx, conn, trGateway, err)
 		return
 	}
@@ -514,7 +536,7 @@ func serveAdvisorNonStreaming(
 		final.Result.ToolCalls,
 		totalIn,
 		totalOut,
-		fusionAggregateStreamUsage(totalIn, totalOut, workerAttempts, advisorAttempts),
+		advisorPublicStreamUsage(config, totalIn, totalOut, workerAttempts, advisorAttempts),
 		time.Now().Unix(),
 		final.Result.FinishReason,
 		advisorResponseDetails(config, workerAttempts, advisorAttempts, responseModel, selectedModel, adviceCalls, budgetExhausted),
@@ -550,36 +572,46 @@ func serveAdvisorStreaming(
 	chunkW := newChunkedWriter(conn)
 	defer chunkW.Close()
 	statsW := newStreamStatsWriter(chunkW)
-	_ = writeAdvisorStreamEvent(statsW, requestID, req.Model, created, map[string]any{
-		"event":                "advisor.started",
-		"depth_initial":        config.Depth,
-		"max_get_advice_calls": config.MaxAdviceCalls,
-	})
-	observer := func(stage string, index int, model string) adapter.StreamObserver {
-		return func(delta adapter.StreamDelta) {
-			event := map[string]any{
-				"event":      stage + "." + delta.Type,
-				"stage":      stage,
-				"index":      index,
-				"model":      model,
-				"delta_type": delta.Type,
-			}
-			if delta.Text != "" {
-				if delta.Type == "thinking_delta" {
-					event["thinking"] = delta.Text
-				} else {
-					event["text"] = delta.Text
+	var streamW io.Writer = statsW
+	var observer func(stage string, index int, model string) adapter.StreamObserver
+	if config.HidePublicMetadata {
+		streamW = nil
+	} else {
+		_ = writeAdvisorStreamEvent(statsW, requestID, req.Model, created, map[string]any{
+			"event":                "advisor.started",
+			"depth_initial":        config.Depth,
+			"max_get_advice_calls": config.MaxAdviceCalls,
+		})
+		observer = func(stage string, index int, model string) adapter.StreamObserver {
+			return func(delta adapter.StreamDelta) {
+				event := map[string]any{
+					"event":      stage + "." + delta.Type,
+					"stage":      stage,
+					"index":      index,
+					"model":      model,
+					"delta_type": delta.Type,
 				}
+				if delta.Text != "" {
+					if delta.Type == "thinking_delta" {
+						event["thinking"] = delta.Text
+					} else {
+						event["text"] = delta.Text
+					}
+				}
+				if delta.Signature != "" {
+					event["signature"] = delta.Signature
+				}
+				_ = writeAdvisorStreamEvent(statsW, requestID, req.Model, created, event)
 			}
-			if delta.Signature != "" {
-				event["signature"] = delta.Signature
-			}
-			_ = writeAdvisorStreamEvent(statsW, requestID, req.Model, created, event)
 		}
 	}
-	final, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err := runAdvisor(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, statsW, created, observer)
+	final, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err := runAdvisor(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, streamW, created, observer)
 	if err != nil {
-		_ = writeAdvisorStreamError(statsW, requestID, req.Model, created, err, workerAttempts, advisorAttempts)
+		if config.HidePublicMetadata {
+			_ = writeHiddenAdvisorStreamError(statsW, requestID, req.Model, created)
+		} else {
+			_ = writeAdvisorStreamError(statsW, requestID, req.Model, created, err, workerAttempts, advisorAttempts)
+		}
 		return
 	}
 	selectedModel := final.Model
@@ -587,7 +619,7 @@ func serveAdvisorStreaming(
 		selectedModel = config.WorkerModels[0]
 	}
 	responseModel := requestOrchestrationResponseModel(req, selectedModel)
-	if len(final.Result.ToolCalls) > 0 {
+	if !config.HidePublicMetadata && len(final.Result.ToolCalls) > 0 {
 		_ = writeAdvisorStreamEvent(statsW, requestID, responseModel, created, map[string]any{
 			"event":      "advisor.tool_calls",
 			"tool_calls": final.Result.ToolCalls,
@@ -603,9 +635,13 @@ func serveAdvisorStreaming(
 		usage := final
 		usage.InputTokens = totalIn
 		usage.OutputTokens = totalOut
-		usage.Result.Usage = fusionAggregateStreamUsage(totalIn, totalOut, workerAttempts, advisorAttempts)
+		usage.Result.Usage = advisorPublicStreamUsage(config, totalIn, totalOut, workerAttempts, advisorAttempts)
 		details := advisorResponseDetails(config, workerAttempts, advisorAttempts, responseModel, selectedModel, adviceCalls, budgetExhausted)
-		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, usage, advisorTotalCostMicrodollars(workerAttempts, advisorAttempts), advisorProviderUsage(details))
+		if config.HidePublicMetadata {
+			_ = writeHiddenAdvisorStreamUsage(statsW, requestID, responseModel, created, usage, advisorTotalCostMicrodollars(workerAttempts, advisorAttempts))
+		} else {
+			_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, usage, advisorTotalCostMicrodollars(workerAttempts, advisorAttempts), advisorProviderUsage(details))
+		}
 	}
 	_, _ = statsW.Write([]byte("data: [DONE]\n\n"))
 	fmt.Fprintf(os.Stderr,
@@ -1591,6 +1627,9 @@ func advisorResponseDetails(config advisorConfig, workerAttempts []fusionCallRes
 	if cost := advisorTotalCostMicrodollars(workerAttempts, advisorAttempts); cost > 0 {
 		details["cost_microdollars"] = cost
 	}
+	if config.HidePublicMetadata {
+		details["_hide_public_metadata"] = true
+	}
 	return details
 }
 
@@ -1646,6 +1685,22 @@ func advisorTotalCostMicrodollars(groups ...[]fusionCallResult) int {
 	return total
 }
 
+func advisorPublicStreamUsage(config advisorConfig, inputTokens int, outputTokens int, groups ...[]fusionCallResult) *adapter.StreamUsage {
+	usage := fusionAggregateStreamUsage(inputTokens, outputTokens, groups...)
+	if !config.HidePublicMetadata || usage == nil {
+		return usage
+	}
+	return &adapter.StreamUsage{
+		InputTokens:  usage.InputTokens,
+		OutputTokens: usage.OutputTokens,
+	}
+}
+
+func advisorHidePublicMetadata(details map[string]any) bool {
+	hidden, _ := details["_hide_public_metadata"].(bool)
+	return hidden
+}
+
 func writeAdvisorChatCompletionResponse(
 	w io.Writer,
 	requestID string,
@@ -1678,12 +1733,15 @@ func writeAdvisorChatCompletionResponse(
 	if err := json.Unmarshal(body.Bytes(), &payload); err != nil {
 		return err
 	}
-	payload["trustedrouter"] = map[string]any{orchestrationDetailKey(details, trustedRouterAdvisorModel): details}
+	hidePublicMetadata := advisorHidePublicMetadata(details)
+	if !hidePublicMetadata {
+		payload["trustedrouter"] = map[string]any{orchestrationDetailKey(details, trustedRouterAdvisorModel): details}
+	}
 	if usage, ok := payload["usage"].(map[string]any); ok {
 		if cost, ok := fusionCostMicrodollars(details); ok {
 			usage["cost_microdollars"] = cost
 		}
-		if providerUsage := advisorProviderUsage(details); len(providerUsage) > 0 {
+		if providerUsage := advisorProviderUsage(details); !hidePublicMetadata && len(providerUsage) > 0 {
 			usage["provider_usage"] = providerUsage
 		}
 	}
@@ -1703,6 +1761,67 @@ func writeAdvisorStreamEvent(w io.Writer, requestID string, model string, create
 		"model":         model,
 		"choices":       []map[string]any{},
 		"trustedrouter": map[string]any{"advisor": event},
+	}
+	body, err := json.Marshal(chunk)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		return err
+	}
+	if _, err := w.Write(body); err != nil {
+		return err
+	}
+	_, err = w.Write([]byte("\n\n"))
+	return err
+}
+
+func writeHiddenAdvisorStreamError(w io.Writer, requestID string, model string, created int64) error {
+	chunk := map[string]any{
+		"id":      requestID,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"delta":         map[string]any{},
+			"finish_reason": "stop",
+		}},
+		"error": map[string]any{
+			"message": "model request failed",
+			"type":    "upstream_error",
+		},
+	}
+	body, err := json.Marshal(chunk)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		return err
+	}
+	if _, err := w.Write(body); err != nil {
+		return err
+	}
+	_, err = w.Write([]byte("\n\ndata: [DONE]\n\n"))
+	return err
+}
+
+func writeHiddenAdvisorStreamUsage(w io.Writer, requestID string, model string, created int64, result fusionCallResult, totalCostMicrodollars int) error {
+	usage := map[string]any{
+		"prompt_tokens":     result.InputTokens,
+		"completion_tokens": result.OutputTokens,
+		"total_tokens":      result.InputTokens + result.OutputTokens,
+	}
+	if totalCostMicrodollars > 0 {
+		usage["cost_microdollars"] = totalCostMicrodollars
+	}
+	chunk := map[string]any{
+		"id":      requestID,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []map[string]any{},
+		"usage":   usage,
 	}
 	body, err := json.Marshal(chunk)
 	if err != nil {
