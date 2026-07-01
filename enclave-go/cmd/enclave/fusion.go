@@ -1027,7 +1027,7 @@ func serveFusionNonStreaming(
 		if responseModel == "" {
 			responseModel = selectedRouteModel(selected, finalModels[0])
 		}
-		responseModel = requestResponseModel(req, responseModel)
+		responseModel = requestOrchestrationResponseModel(req, responseModel)
 		var body bytes.Buffer
 		if err := writeFusionChatCompletionResponse(
 			&body,
@@ -1040,7 +1040,7 @@ func serveFusionNonStreaming(
 			selected.Result.Usage,
 			time.Now().Unix(),
 			selected.Result.FinishReason,
-			fusionResponseDetails(config, panel, nil, nil, selected.Model),
+			fusionResponseDetails(config, panel, nil, nil, responseModel, selected.Model),
 		); err != nil {
 			writeError(conn, 500, "fusion response encoding error")
 			return
@@ -1072,7 +1072,7 @@ func serveFusionNonStreaming(
 	if responseModel == "" {
 		responseModel = finalModels[0]
 	}
-	responseModel = requestResponseModel(req, responseModel)
+	responseModel = requestOrchestrationResponseModel(req, responseModel)
 	var body bytes.Buffer
 	if err := writeFusionChatCompletionResponse(
 		&body,
@@ -1085,7 +1085,7 @@ func serveFusionNonStreaming(
 		final.Result.Usage,
 		time.Now().Unix(),
 		final.Result.FinishReason,
-		fusionResponseDetails(config, panel, judgeAttempts, finalAttempts, responseModel),
+		fusionResponseDetails(config, panel, judgeAttempts, finalAttempts, responseModel, final.Model),
 	); err != nil {
 		writeError(conn, 500, "fusion response encoding error")
 		return
@@ -1791,7 +1791,7 @@ func serveFusionFinalStreamingObserved(
 ) error {
 	var lastErr error
 	for i, finalModel := range finalModels {
-		responseModel := requestResponseModel(req, finalModel)
+		responseModel := requestOrchestrationResponseModel(req, finalModel)
 		_ = writeFusionStreamEvent(streamW, requestID, req.Model, created, map[string]any{
 			"event": "final.started",
 			"stage": "final",
@@ -1903,7 +1903,7 @@ func serveFusionFinalStreamingObserved(
 			return err
 		}
 		if chatIncludeUsage(req) {
-			details := fusionResponseDetails(config, panel, []fusionCallResult{judge}, []fusionCallResult{final}, final.Model)
+			details := fusionResponseDetails(config, panel, []fusionCallResult{judge}, []fusionCallResult{final}, responseModel, final.Model)
 			if err := writeFusionStreamUsage(streamW, requestID, responseModel, created, final, fusionTotalCostMicrodollars(panel, []fusionCallResult{judge}, []fusionCallResult{final}), fusionProviderUsage(details)); err != nil {
 				return err
 			}
@@ -2056,7 +2056,7 @@ func writeFusionChatCompletionResponse(
 	if err := json.Unmarshal(body.Bytes(), &payload); err != nil {
 		return err
 	}
-	payload["trustedrouter"] = map[string]any{"synth": details}
+	payload["trustedrouter"] = map[string]any{orchestrationDetailKey(details, trustedRouterSynthModel): details}
 	if usage, ok := payload["usage"].(map[string]any); ok {
 		if cost, ok := fusionCostMicrodollars(details); ok {
 			usage["cost_microdollars"] = cost
@@ -2157,7 +2157,11 @@ func writeFusionStreamUsage(w io.Writer, requestID string, model string, created
 		"usage":   usage,
 	}
 	if totalCostMicrodollars > 0 {
-		chunk["trustedrouter"] = map[string]any{"synth": map[string]any{
+		key := "synth"
+		if len(providerUsage) > 0 && len(providerUsage[0]) > 0 {
+			key = orchestrationDetailKey(providerUsage[0], trustedRouterSynthModel)
+		}
+		chunk["trustedrouter"] = map[string]any{key: map[string]any{
 			"cost_microdollars": totalCostMicrodollars,
 		}}
 	}
@@ -2335,9 +2339,12 @@ func fusionResponseDetails(
 	panel []fusionCallResult,
 	judgeAttempts []fusionCallResult,
 	finalAttempts []fusionCallResult,
+	routerModel string,
 	selectedModel string,
 ) map[string]any {
 	details := map[string]any{
+		"router":             routerModel,
+		"primitive":          fusionPrimitiveForMode(config.Mode),
 		"preset":             config.Preset,
 		"selection_strategy": config.SelectionStrategy,
 		"selected_model":     selectedModel,

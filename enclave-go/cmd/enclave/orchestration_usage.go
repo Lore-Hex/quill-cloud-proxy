@@ -2,15 +2,17 @@ package main
 
 import "strings"
 
-func socratesProviderUsage(details map[string]any) map[string]any {
+func advisorProviderUsage(details map[string]any) map[string]any {
 	if len(details) == 0 {
 		return nil
 	}
-	workers := providerUsageCallList(details["worker_attempts"])
-	advisorAll := providerUsageCallList(details["advisor_attempts"])
-	advisors, advisorFinal := splitProviderUsageCalls(advisorAll, "socrates.advisor_final")
+	primitive := providerUsageOrDefault(details["primitive"], trustedRouterAdvisorModel)
+	workers := providerUsageCallList(details["worker_attempts"], primitive)
+	advisorAll := providerUsageCallList(details["advisor_attempts"], primitive)
+	advisors, advisorFinal := splitProviderUsageCalls(advisorAll, "advisor.advisor_final")
 	out := map[string]any{
-		"router":                        "trustedrouter/socrates",
+		"router":                        providerUsageOrDefault(details["router"], primitive),
+		"primitive":                     primitive,
 		"version":                       details["version"],
 		"selected_model":                details["selected_model"],
 		"depth_initial":                 details["depth_initial"],
@@ -36,11 +38,17 @@ func fusionProviderUsage(details map[string]any) map[string]any {
 	if len(details) == 0 {
 		return nil
 	}
-	panel := providerUsageCallList(details["panel"])
-	judgeAttempts := providerUsageCallList(details["judge_attempts"])
-	finalAttempts := providerUsageCallList(details["final_attempts"])
+	primitive := providerUsageOrDefault(details["primitive"], trustedRouterSynthModel)
+	panel := providerUsageCallList(details["panel"], primitive)
+	judgeAttempts := providerUsageCallList(details["judge_attempts"], primitive)
+	finalAttempts := providerUsageCallList(details["final_attempts"], primitive)
+	selectorAttempts := providerUsageCallList(details["selector_attempts"], primitive)
+	mapperAttempts := providerUsageCallList(details["mapper_attempts"], primitive)
+	parts := providerUsageCallList(details["parts"], primitive)
+	reducerAttempts := providerUsageCallList(details["reducer_attempts"], primitive)
 	out := map[string]any{
-		"router":                        "trustedrouter/synth",
+		"router":                        providerUsageOrDefault(details["router"], primitive),
+		"primitive":                     primitive,
 		"preset":                        details["preset"],
 		"selection_strategy":            details["selection_strategy"],
 		"selected_model":                details["selected_model"],
@@ -50,6 +58,18 @@ func fusionProviderUsage(details map[string]any) map[string]any {
 		"panel_models":                  providerUsageModels(panel),
 		"judge_models":                  providerUsageModels(judgeAttempts),
 		"final_models":                  providerUsageModels(finalAttempts),
+		"selector_attempt_count":        len(selectorAttempts),
+		"selector_models":               providerUsageModels(selectorAttempts),
+		"selector_attempts":             selectorAttempts,
+		"mapper_attempt_count":          len(mapperAttempts),
+		"part_attempt_count":            len(parts),
+		"reducer_attempt_count":         len(reducerAttempts),
+		"mapper_models":                 providerUsageModels(mapperAttempts),
+		"part_models":                   providerUsageModels(parts),
+		"reducer_models":                providerUsageModels(reducerAttempts),
+		"mapper_attempts":               mapperAttempts,
+		"parts":                         parts,
+		"reducer_attempts":              reducerAttempts,
 		"panel":                         panel,
 		"judge_attempts":                judgeAttempts,
 		"final_attempts":                finalAttempts,
@@ -59,12 +79,12 @@ func fusionProviderUsage(details map[string]any) map[string]any {
 	return pruneEmptyProviderUsage(out)
 }
 
-func providerUsageCallList(value any) []map[string]any {
+func providerUsageCallList(value any, primitive string) []map[string]any {
 	switch items := value.(type) {
 	case []map[string]any:
 		out := make([]map[string]any, 0, len(items))
 		for _, item := range items {
-			out = append(out, providerUsageCall(item))
+			out = append(out, providerUsageCall(item, primitive))
 		}
 		return out
 	case []any:
@@ -74,7 +94,7 @@ func providerUsageCallList(value any) []map[string]any {
 			if !ok {
 				continue
 			}
-			out = append(out, providerUsageCall(item))
+			out = append(out, providerUsageCall(item, primitive))
 		}
 		return out
 	default:
@@ -82,7 +102,7 @@ func providerUsageCallList(value any) []map[string]any {
 	}
 }
 
-func providerUsageCall(detail map[string]any) map[string]any {
+func providerUsageCall(detail map[string]any, primitive string) map[string]any {
 	if len(detail) == 0 {
 		return nil
 	}
@@ -105,6 +125,9 @@ func providerUsageCall(detail map[string]any) map[string]any {
 		"aborted_thinking_tokens",
 	} {
 		if value, ok := detail[key]; ok && !providerUsageEmpty(value) {
+			if key == "route_type" {
+				value = publicOrchestrationRouteType(value, primitive)
+			}
 			out[key] = value
 		}
 	}
@@ -133,13 +156,70 @@ func providerUsageNested(value any) map[string]any {
 		return nil
 	}
 	out := map[string]any{}
-	if details, ok := m["socrates"].(map[string]any); ok {
-		out["socrates"] = socratesProviderUsage(details)
+	if details, ok := m["advisor"].(map[string]any); ok {
+		out["advisor"] = advisorProviderUsage(details)
 	}
-	if details, ok := m["synth"].(map[string]any); ok {
-		out["synth"] = fusionProviderUsage(details)
+	for _, key := range []string{"synth", "selector", "mapreduce"} {
+		if details, ok := m[key].(map[string]any); ok {
+			out[key] = fusionProviderUsage(details)
+		}
 	}
 	return pruneEmptyProviderUsage(out)
+}
+
+func orchestrationDetailKey(details map[string]any, fallback string) string {
+	if details == nil {
+		return orchestrationKeyFromModel(fallback)
+	}
+	return orchestrationKeyFromModel(providerUsageOrDefault(details["primitive"], fallback))
+}
+
+func orchestrationKeyFromModel(model string) string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	model = strings.TrimPrefix(model, "trustedrouter/")
+	switch model {
+	case "", "fusion", "fusion-code", "synth-code":
+		return "synth"
+	default:
+		return model
+	}
+}
+
+func fusionPrimitiveForMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case fusionModeSelector:
+		return trustedRouterSelectorModel
+	case fusionModeMapReduce:
+		return trustedRouterMapReduceModel
+	default:
+		return trustedRouterSynthModel
+	}
+}
+
+func providerUsageOrDefault(value any, fallback string) string {
+	if out := strings.TrimSpace(providerUsageString(value)); out != "" {
+		return out
+	}
+	return fallback
+}
+
+func publicOrchestrationRouteType(value any, primitive string) any {
+	routeType := strings.TrimSpace(providerUsageString(value))
+	if strings.HasPrefix(routeType, "fusion.") {
+		suffix := strings.TrimPrefix(routeType, "fusion.")
+		switch strings.TrimSpace(primitive) {
+		case trustedRouterSelectorModel:
+			if suffix == "selector" {
+				return "selector.decision"
+			}
+			return "selector." + suffix
+		case trustedRouterMapReduceModel:
+			return "mapreduce." + strings.TrimPrefix(suffix, "mapreduce.")
+		default:
+			return "synth." + suffix
+		}
+	}
+	return value
 }
 
 func providerUsageModels(items []map[string]any) []string {

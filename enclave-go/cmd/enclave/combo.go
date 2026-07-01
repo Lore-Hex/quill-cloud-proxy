@@ -84,7 +84,8 @@ func serveSelectorNonStreaming(
 	if responseModel == "" {
 		responseModel = selectedRouteModel(selected, req.Model)
 	}
-	responseModel = requestResponseModel(req, responseModel)
+	responseModel = requestOrchestrationResponseModel(req, responseModel)
+	details := selectorResponseDetails(config, panel, selectorAttempts, selected, decision, responseModel)
 	var body bytes.Buffer
 	if err := writeFusionChatCompletionResponse(
 		&body,
@@ -97,7 +98,7 @@ func serveSelectorNonStreaming(
 		selected.Result.Usage,
 		time.Now().Unix(),
 		selected.Result.FinishReason,
-		selectorResponseDetails(config, panel, selectorAttempts, selected, decision),
+		details,
 	); err != nil {
 		writeError(conn, 500, "selector response encoding error")
 		return
@@ -153,7 +154,7 @@ func serveSelectorStreaming(
 		"decision": decision,
 		"selected": fusionCallDetails(selected),
 	})
-	responseModel := requestResponseModel(req, selected.Model)
+	responseModel := requestOrchestrationResponseModel(req, selected.Model)
 	if selected.Result.Text != "" {
 		_ = writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{"content": selected.Result.Text}, "")
 	}
@@ -164,7 +165,8 @@ func serveSelectorStreaming(
 		totalIn, totalOut := fusionUsageTotals(panel, selectorAttempts)
 		selected.InputTokens = totalIn
 		selected.OutputTokens = totalOut
-		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, selected, fusionTotalCostMicrodollars(panel, selectorAttempts))
+		details := selectorResponseDetails(config, panel, selectorAttempts, selected, decision, responseModel)
+		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, selected, fusionTotalCostMicrodollars(panel, selectorAttempts), fusionProviderUsage(details))
 	}
 	_, _ = statsW.Write([]byte("data: [DONE]\n\n"))
 	_ = originalInput
@@ -331,7 +333,8 @@ func serveMapReduceNonStreaming(
 		return
 	}
 	totalIn, totalOut := mapReduceUsageTotals(details)
-	responseModel := requestResponseModel(req, result.Model)
+	responseModel := requestOrchestrationResponseModel(req, result.Model)
+	responseDetails := mapReduceResponseDetails(config, details, result, responseModel)
 	var body bytes.Buffer
 	if err := writeFusionChatCompletionResponse(
 		&body,
@@ -344,7 +347,7 @@ func serveMapReduceNonStreaming(
 		result.Result.Usage,
 		time.Now().Unix(),
 		result.Result.FinishReason,
-		mapReduceResponseDetails(config, details, result),
+		responseDetails,
 	); err != nil {
 		writeError(conn, 500, "mapreduce response encoding error")
 		return
@@ -389,9 +392,9 @@ func serveMapReduceStreaming(
 	_ = writeFusionStreamEvent(statsW, requestID, req.Model, created, map[string]any{
 		"event":   "mapreduce.done",
 		"mode":    fusionModeMapReduce,
-		"details": mapReduceResponseDetails(config, details, result),
+		"details": mapReduceResponseDetails(config, details, result, requestOrchestrationResponseModel(req, result.Model)),
 	})
-	responseModel := requestResponseModel(req, result.Model)
+	responseModel := requestOrchestrationResponseModel(req, result.Model)
 	if result.Result.Text != "" {
 		_ = writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{"content": result.Result.Text}, "")
 	}
@@ -402,7 +405,8 @@ func serveMapReduceStreaming(
 		totalIn, totalOut := mapReduceUsageTotals(details)
 		result.InputTokens = totalIn
 		result.OutputTokens = totalOut
-		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, result, mapReduceCostMicrodollars(details, result))
+		responseDetails := mapReduceResponseDetails(config, details, result, responseModel)
+		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, result, mapReduceCostMicrodollars(details, result), fusionProviderUsage(responseDetails))
 	}
 	_, _ = statsW.Write([]byte("data: [DONE]\n\n"))
 }
@@ -787,8 +791,10 @@ func normalizeComboModelList(raw []string, fallback []string, context string) ([
 	return out, nil
 }
 
-func selectorResponseDetails(config fusionConfig, panel []fusionCallResult, selectorAttempts []fusionCallResult, selected fusionCallResult, decision selectorDecision) map[string]any {
+func selectorResponseDetails(config fusionConfig, panel []fusionCallResult, selectorAttempts []fusionCallResult, selected fusionCallResult, decision selectorDecision, routerModel string) map[string]any {
 	details := map[string]any{
+		"router":             routerModel,
+		"primitive":          trustedRouterSelectorModel,
 		"mode":               fusionModeSelector,
 		"preset":             config.Preset,
 		"selection_strategy": fusionSelectorSelectionStrategy,
@@ -804,8 +810,10 @@ func selectorResponseDetails(config fusionConfig, panel []fusionCallResult, sele
 	return details
 }
 
-func mapReduceResponseDetails(config fusionConfig, details mapReduceRunDetails, reducer fusionCallResult) map[string]any {
+func mapReduceResponseDetails(config fusionConfig, details mapReduceRunDetails, reducer fusionCallResult, routerModel string) map[string]any {
 	out := map[string]any{
+		"router":             routerModel,
+		"primitive":          trustedRouterMapReduceModel,
 		"mode":               fusionModeMapReduce,
 		"preset":             config.Preset,
 		"selection_strategy": fusionModeMapReduce,

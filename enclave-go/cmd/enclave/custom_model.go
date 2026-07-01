@@ -101,6 +101,19 @@ func requestResponseModel(req *types.OpenAIChatRequest, fallback string) string 
 	return fallback
 }
 
+func requestOrchestrationResponseModel(req *types.OpenAIChatRequest, fallback string) string {
+	if req == nil {
+		return fallback
+	}
+	if modelID := strings.TrimSpace(req.ResponseModel); modelID != "" {
+		return modelID
+	}
+	if modelID := strings.TrimSpace(req.Model); modelID != "" && isOrchestrationModel(modelID) {
+		return modelID
+	}
+	return fallback
+}
+
 func isCustomModelID(model string) bool {
 	return strings.HasPrefix(strings.TrimSpace(model), "trustedrouter/user-")
 }

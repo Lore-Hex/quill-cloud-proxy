@@ -129,7 +129,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "cross-cloud SA key wired: GOOGLE_APPLICATION_CREDENTIALS=%s\n", credPath)
 	}
 	configureFusionPrompts(boot)
-	configureSocratesPrompts(boot)
+	configureAdvisorPrompts(boot)
 
 	// 2. Build registries. Capture a canonical hash of the device list
 	// so /attestation can include it in the document's UserData — clients
@@ -478,14 +478,14 @@ func serveOne(
 		}
 	}
 
-	if handled, err := maybeServeSocrates(ctx, conn, br, &req, trGateway, byokSecrets, bearer, originalInput, requestLogID); handled {
+	if handled, err := maybeServeAdvisor(ctx, conn, br, &req, trGateway, byokSecrets, bearer, originalInput, requestLogID); handled {
 		if err != nil {
 			var aerr *adapter.AdapterError
 			if asAdapterErr(err, &aerr) {
 				writeError(conn, aerr.Status, aerr.Message)
 				return
 			}
-			writeError(conn, 500, "socrates error")
+			writeError(conn, 500, "advisor error")
 		}
 		return
 	}

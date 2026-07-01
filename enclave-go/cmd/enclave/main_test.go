@@ -737,7 +737,7 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
 	}
-	if !strings.Contains(body, `"model":"z-ai/glm-5.2"`) || !strings.Contains(body, "final answer from z-ai/glm-5.2") {
+	if !strings.Contains(body, `"model":"trustedrouter/fusion"`) || !strings.Contains(body, "final answer from z-ai/glm-5.2") {
 		t.Fatalf("fusion response did not use selectable judge/final model: %s", body)
 	}
 	var response map[string]any
@@ -755,7 +755,9 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 	if !ok {
 		t.Fatalf("usage missing provider_usage: %#v", usage)
 	}
-	if providerUsage["router"] != "trustedrouter/synth" ||
+	if providerUsage["router"] != "trustedrouter/fusion" ||
+		providerUsage["primitive"] != trustedRouterSynthModel ||
+		providerUsage["selected_model"] != "z-ai/glm-5.2" ||
 		providerUsage["panel_attempt_count"] != float64(2) ||
 		providerUsage["judge_attempt_count"] != float64(1) ||
 		providerUsage["final_attempt_count"] != float64(1) ||
@@ -767,7 +769,7 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 		t.Fatalf("provider_usage panel = %#v", providerUsage["panel"])
 	}
 	firstPanelUsage := panelUsage[0].(map[string]any)
-	if firstPanelUsage["route_type"] != "fusion.panel" ||
+	if firstPanelUsage["route_type"] != "synth.panel" ||
 		firstPanelUsage["model"] != "google/gemini-3-flash-preview" ||
 		firstPanelUsage["cost_microdollars"] != float64(1) {
 		t.Fatalf("bad provider_usage panel detail: %#v", firstPanelUsage)
@@ -943,11 +945,13 @@ func TestServeOneTrustedRouterSelectorReturnsSelectedPanelAnswerVerbatim(t *test
 		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
 	}
 	var response struct {
+		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage         map[string]any            `json:"usage"`
 		TrustedRouter map[string]map[string]any `json:"trustedrouter"`
 	}
 	if err := json.Unmarshal(bodyBytes, &response); err != nil {
@@ -956,8 +960,21 @@ func TestServeOneTrustedRouterSelectorReturnsSelectedPanelAnswerVerbatim(t *test
 	if got := response.Choices[0].Message.Content; got != "best panel answer" {
 		t.Fatalf("selector content = %q, want selected panel answer verbatim", got)
 	}
-	if synth := response.TrustedRouter["synth"]; synth["mode"] != fusionModeSelector || int(synth["selected_index"].(float64)) != 2 {
-		t.Fatalf("selector details = %#v", synth)
+	if response.Model != trustedRouterSelectorModel {
+		t.Fatalf("model = %q, want %q", response.Model, trustedRouterSelectorModel)
+	}
+	if selector := response.TrustedRouter["selector"]; selector["mode"] != fusionModeSelector || int(selector["selected_index"].(float64)) != 2 {
+		t.Fatalf("selector details = %#v", selector)
+	}
+	providerUsage, ok := response.Usage["provider_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("selector usage missing provider_usage: %#v", response.Usage)
+	}
+	if providerUsage["router"] != trustedRouterSelectorModel ||
+		providerUsage["primitive"] != trustedRouterSelectorModel ||
+		providerUsage["selected_model"] != "model/b" ||
+		providerUsage["selector_attempt_count"] != float64(1) {
+		t.Fatalf("selector provider_usage = %#v", providerUsage)
 	}
 
 	recorder.mu.Lock()
@@ -1039,11 +1056,13 @@ func TestServeOneTrustedRouterMapReduceRunsPartsInParallelAndUsesStagePrompts(t 
 		t.Fatalf("mapreduce took %s; parallel parts appear to be serial", elapsed)
 	}
 	var response struct {
+		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage         map[string]any            `json:"usage"`
 		TrustedRouter map[string]map[string]any `json:"trustedrouter"`
 	}
 	if err := json.Unmarshal(bodyBytes, &response); err != nil {
@@ -1052,8 +1071,23 @@ func TestServeOneTrustedRouterMapReduceRunsPartsInParallelAndUsesStagePrompts(t 
 	if got := response.Choices[0].Message.Content; got != "combined final answer" {
 		t.Fatalf("mapreduce content = %q", got)
 	}
-	if synth := response.TrustedRouter["synth"]; synth["mode"] != fusionModeMapReduce {
-		t.Fatalf("mapreduce details = %#v", synth)
+	if response.Model != trustedRouterMapReduceModel {
+		t.Fatalf("model = %q, want %q", response.Model, trustedRouterMapReduceModel)
+	}
+	if mapreduce := response.TrustedRouter["mapreduce"]; mapreduce["mode"] != fusionModeMapReduce {
+		t.Fatalf("mapreduce details = %#v", mapreduce)
+	}
+	providerUsage, ok := response.Usage["provider_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("mapreduce usage missing provider_usage: %#v", response.Usage)
+	}
+	if providerUsage["router"] != trustedRouterMapReduceModel ||
+		providerUsage["primitive"] != trustedRouterMapReduceModel ||
+		providerUsage["selected_model"] != "model/reducer" ||
+		providerUsage["mapper_attempt_count"] != float64(1) ||
+		providerUsage["part_attempt_count"] != float64(3) ||
+		providerUsage["reducer_attempt_count"] != float64(1) {
+		t.Fatalf("mapreduce provider_usage = %#v", providerUsage)
 	}
 
 	recorder.mu.Lock()
@@ -2903,19 +2937,19 @@ func TestFusionPanelRequestNoToolsClearsToolChoice(t *testing.T) {
 	}
 }
 
-func TestRunSocratesNoAdviceReturnsWorkerAnswer(t *testing.T) {
+func TestRunAdvisorNoAdviceReturnsWorkerAnswer(t *testing.T) {
 	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
-	streamer := &socratesScriptedLLM{}
+	streamer := &advisorScriptedLLM{}
 	req := &types.OpenAIChatRequest{
 		Model:    trustedRouterSocrates10Model,
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "what is 1+1?"}},
 	}
-	config := testSocratesConfig(t)
+	config := testAdvisorConfig(t)
 
-	final, workers, advisors, adviceCalls, budgetExhausted, err := runSocrates(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_socrates_simple", "log_socrates_simple", nil, nil, 0, nil)
+	final, workers, advisors, adviceCalls, budgetExhausted, err := runAdvisor(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_advisor_simple", "log_advisor_simple", nil, nil, 0, nil)
 	if err != nil {
-		t.Fatalf("runSocrates: %v", err)
+		t.Fatalf("runAdvisor: %v", err)
 	}
 	if got := strings.TrimSpace(final.Result.Text); got != "simple worker answer" {
 		t.Fatalf("final text = %q", got)
@@ -2928,24 +2962,24 @@ func TestRunSocratesNoAdviceReturnsWorkerAnswer(t *testing.T) {
 	}
 	recorder.mu.Lock()
 	defer recorder.mu.Unlock()
-	if len(recorder.authorize) != 1 || recorder.authorize[0]["route_type"] != "socrates.worker" {
-		t.Fatalf("authorize calls = %#v, want one socrates.worker", recorder.authorize)
+	if len(recorder.authorize) != 1 || recorder.authorize[0]["route_type"] != "advisor.worker" {
+		t.Fatalf("authorize calls = %#v, want one advisor.worker", recorder.authorize)
 	}
 }
 
-func TestRunSocratesAdviceOnceThenWorkerFinal(t *testing.T) {
+func TestRunAdvisorAdviceOnceThenWorkerFinal(t *testing.T) {
 	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
-	streamer := &socratesScriptedLLM{callAdviceFirst: true}
+	streamer := &advisorScriptedLLM{callAdviceFirst: true}
 	req := &types.OpenAIChatRequest{
 		Model:    trustedRouterSocrates10Model,
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "review this risky migration"}},
 	}
-	config := testSocratesConfig(t)
+	config := testAdvisorConfig(t)
 
-	final, workers, advisors, adviceCalls, budgetExhausted, err := runSocrates(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_socrates_advice", "log_socrates_advice", nil, nil, 0, nil)
+	final, workers, advisors, adviceCalls, budgetExhausted, err := runAdvisor(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_advisor_advice", "log_advisor_advice", nil, nil, 0, nil)
 	if err != nil {
-		t.Fatalf("runSocrates: %v", err)
+		t.Fatalf("runAdvisor: %v", err)
 	}
 	if got := strings.TrimSpace(final.Result.Text); got != "worker final after advice" {
 		t.Fatalf("final text = %q", got)
@@ -2962,16 +2996,16 @@ func TestRunSocratesAdviceOnceThenWorkerFinal(t *testing.T) {
 	for _, payload := range recorder.authorize {
 		routeTypes = append(routeTypes, fmt.Sprint(payload["route_type"]))
 	}
-	want := []string{"socrates.worker", "socrates.advisor", "socrates.worker"}
+	want := []string{"advisor.worker", "advisor.advisor", "advisor.worker"}
 	if !reflect.DeepEqual(routeTypes, want) {
 		t.Fatalf("route types = %#v, want %#v", routeTypes, want)
 	}
 }
 
-func TestRunSocratesAdviceRunsAdvisorsInParallel(t *testing.T) {
+func TestRunAdvisorAdviceRunsAdvisorsInParallel(t *testing.T) {
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
-	streamer := &socratesScriptedLLM{
+	streamer := &advisorScriptedLLM{
 		delayByModel: map[string]time.Duration{
 			"advisor/slow-a": 90 * time.Millisecond,
 			"advisor/slow-b": 90 * time.Millisecond,
@@ -2981,11 +3015,11 @@ func TestRunSocratesAdviceRunsAdvisorsInParallel(t *testing.T) {
 		Model:    trustedRouterAdvisorModel,
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "need advice"}},
 	}
-	config := testSocratesConfig(t)
+	config := testAdvisorConfig(t)
 	config.AdvisorModels = []string{"advisor/slow-a", "advisor/slow-b"}
 
 	started := time.Now()
-	text, attempts := runSocratesAdvice(context.Background(), streamer, req, config, req.Messages, trGateway, nil, "bearer", "req_socrates_parallel_advice", "log_socrates_parallel_advice", nil, nil, 0, nil)
+	text, attempts := runAdvisorAdvice(context.Background(), streamer, req, config, req.Messages, trGateway, nil, "bearer", "req_advisor_parallel_advice", "log_advisor_parallel_advice", nil, nil, 0, nil)
 	elapsed := time.Since(started)
 
 	if elapsed >= 170*time.Millisecond {
@@ -3002,23 +3036,25 @@ func TestRunSocratesAdviceRunsAdvisorsInParallel(t *testing.T) {
 	}
 }
 
-func TestSocratesProviderUsageReportsAdviceWithoutText(t *testing.T) {
+func TestAdvisorProviderUsageReportsAdviceWithoutText(t *testing.T) {
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
-	streamer := &socratesScriptedLLM{callAdviceFirst: true}
+	streamer := &advisorScriptedLLM{callAdviceFirst: true}
 	req := &types.OpenAIChatRequest{
 		Model:    trustedRouterSocrates10Model,
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "private risky migration prompt"}},
 	}
-	config := testSocratesConfig(t)
+	config := testAdvisorConfig(t)
 
-	final, workers, advisors, adviceCalls, budgetExhausted, err := runSocrates(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_socrates_provider_usage", "log_socrates_provider_usage", nil, nil, 0, nil)
+	final, workers, advisors, adviceCalls, budgetExhausted, err := runAdvisor(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_advisor_provider_usage", "log_advisor_provider_usage", nil, nil, 0, nil)
 	if err != nil {
-		t.Fatalf("runSocrates: %v", err)
+		t.Fatalf("runAdvisor: %v", err)
 	}
-	details := socratesResponseDetails(config, workers, advisors, final.Model, adviceCalls, budgetExhausted)
-	providerUsage := socratesProviderUsage(details)
-	if providerUsage["router"] != "trustedrouter/socrates" ||
+	details := advisorResponseDetails(config, workers, advisors, trustedRouterSocrates10Model, final.Model, adviceCalls, budgetExhausted)
+	providerUsage := advisorProviderUsage(details)
+	if providerUsage["router"] != trustedRouterSocrates10Model ||
+		providerUsage["primitive"] != trustedRouterAdvisorModel ||
+		providerUsage["selected_model"] != "cerebras/gpt-oss-120b" ||
 		providerUsage["worker_attempt_count"] != 2 ||
 		providerUsage["advisor_attempt_count"] != 1 ||
 		providerUsage["advisor_final_attempt_count"] != 0 ||
@@ -3030,14 +3066,14 @@ func TestSocratesProviderUsageReportsAdviceWithoutText(t *testing.T) {
 	if !ok || len(workersUsage) != 2 {
 		t.Fatalf("worker_attempts = %#v", providerUsage["worker_attempts"])
 	}
-	if workersUsage[0]["route_type"] != "socrates.worker" || workersUsage[0]["model"] != "cerebras/gpt-oss-120b" {
+	if workersUsage[0]["route_type"] != "advisor.worker" || workersUsage[0]["model"] != "cerebras/gpt-oss-120b" {
 		t.Fatalf("bad worker provider usage: %#v", workersUsage[0])
 	}
 	advisorsUsage, ok := providerUsage["advisor_attempts"].([]map[string]any)
 	if !ok || len(advisorsUsage) != 1 {
 		t.Fatalf("advisor_attempts = %#v", providerUsage["advisor_attempts"])
 	}
-	if advisorsUsage[0]["route_type"] != "socrates.advisor" || advisorsUsage[0]["model"] != "anthropic/claude-opus-4.8" {
+	if advisorsUsage[0]["route_type"] != "advisor.advisor" || advisorsUsage[0]["model"] != "anthropic/claude-opus-4.8" {
 		t.Fatalf("bad advisor provider usage: %#v", advisorsUsage[0])
 	}
 	encoded, err := json.Marshal(providerUsage)
@@ -3055,6 +3091,80 @@ func TestSocratesProviderUsageReportsAdviceWithoutText(t *testing.T) {
 	} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("provider_usage leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestServeOneOpenExploiterG1PreservesAliasAndReportsAdvisorUsage(t *testing.T) {
+	trGateway, _, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &advisorScriptedLLM{
+		callAdviceForModels: map[string]bool{"z-ai/glm-5.2-fast": true},
+	}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/openexploiter-g1","stream":false,"messages":[{"role":"user","content":"hard security task"}],"max_tokens":128}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	var response struct {
+		Model  string         `json:"model"`
+		Usage  map[string]any `json:"usage"`
+		Router map[string]any `json:"trustedrouter"`
+	}
+	if err := json.Unmarshal(bodyBytes, &response); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, bodyBytes)
+	}
+	if response.Model != trustedRouterOpenExploiterG1Model {
+		t.Fatalf("model = %q, want %q; body=%s", response.Model, trustedRouterOpenExploiterG1Model, bodyBytes)
+	}
+	details, ok := response.Router["advisor"].(map[string]any)
+	if !ok {
+		t.Fatalf("trustedrouter details = %#v, want advisor primitive", response.Router)
+	}
+	if details["router"] != trustedRouterOpenExploiterG1Model ||
+		details["primitive"] != trustedRouterAdvisorModel ||
+		details["selected_model"] != "z-ai/glm-5.2-fast" ||
+		details["advice_call_count"] != float64(1) {
+		t.Fatalf("advisor details = %#v", details)
+	}
+	providerUsage, ok := response.Usage["provider_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("usage provider_usage missing: %#v", response.Usage)
+	}
+	if providerUsage["router"] != trustedRouterOpenExploiterG1Model ||
+		providerUsage["primitive"] != trustedRouterAdvisorModel ||
+		providerUsage["selected_model"] != "z-ai/glm-5.2-fast" ||
+		providerUsage["advice_call_count"] != float64(1) {
+		t.Fatalf("provider_usage = %#v", providerUsage)
+	}
+	if got, ok := providerUsage["advisor_attempt_count"].(float64); !ok || got < 2 {
+		t.Fatalf("advisor_attempt_count = %#v, want default G1 advisors reported", providerUsage["advisor_attempt_count"])
+	}
+	encoded := string(bodyBytes)
+	for _, forbidden := range []string{`"socrates"`, "hard security task", "Advisor 1", "advisor says"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("response leaked or mislabeled %q: %s", forbidden, encoded)
 		}
 	}
 }
@@ -3086,26 +3196,72 @@ func TestProviderUsageIncludesNestedOrchestrationWithoutText(t *testing.T) {
 			OutputTokens:     9,
 			SettlementResult: &trustedrouter.SettleResult{GenerationID: "gen_final", CostMicrodollars: 7},
 		}},
+		trustedRouterZeus10Model,
 		"model/final",
 	)
-	details := socratesResponseDetails(
-		testSocratesConfig(t),
+	nestedSelector := map[string]any{
+		"router":         trustedRouterSelectorModel,
+		"primitive":      trustedRouterSelectorModel,
+		"selected_model": "model/selected",
+		"selector_attempts": []map[string]any{{
+			"route_type":        "fusion.selector",
+			"model":             "model/selector",
+			"generation_id":     "gen_selector",
+			"input_tokens":      19,
+			"output_tokens":     3,
+			"cost_microdollars": 2,
+		}},
+		"cost_microdollars": 2,
+	}
+	nestedMapReduce := map[string]any{
+		"router":         trustedRouterMapReduceModel,
+		"primitive":      trustedRouterMapReduceModel,
+		"selected_model": "model/reducer",
+		"mapper_attempts": []map[string]any{{
+			"route_type":        "fusion.mapreduce.mapper",
+			"model":             "model/mapper",
+			"generation_id":     "gen_mapper",
+			"input_tokens":      5,
+			"output_tokens":     4,
+			"cost_microdollars": 1,
+		}},
+		"parts": []map[string]any{{
+			"route_type":        "fusion.mapreduce.part",
+			"model":             "model/part",
+			"generation_id":     "gen_part",
+			"input_tokens":      6,
+			"output_tokens":     4,
+			"cost_microdollars": 2,
+		}},
+		"reducer_attempts": []map[string]any{{
+			"route_type":        "fusion.mapreduce.reducer",
+			"model":             "model/reducer",
+			"generation_id":     "gen_reducer",
+			"input_tokens":      7,
+			"output_tokens":     4,
+			"cost_microdollars": 3,
+		}},
+		"cost_microdollars": 6,
+	}
+	details := advisorResponseDetails(
+		testAdvisorConfig(t),
 		nil,
 		[]fusionCallResult{{
 			Result:           adapter.StreamResult{Text: "advisor used nested synth", FinishReason: "stop"},
 			Model:            trustedRouterZeus10Model,
-			RouteType:        "socrates.advisor",
+			RouteType:        "advisor.advisor",
 			InputTokens:      23,
 			OutputTokens:     10,
 			SettlementResult: &trustedrouter.SettleResult{GenerationID: "gen_advisor", CostMicrodollars: 18},
-			Orchestration:    map[string]any{"synth": nestedSynth},
+			Orchestration:    map[string]any{"synth": nestedSynth, "selector": nestedSelector, "mapreduce": nestedMapReduce},
 		}},
+		trustedRouterAristotle10Model,
 		trustedRouterZeus10Model,
 		1,
 		false,
 	)
 
-	providerUsage := socratesProviderUsage(details)
+	providerUsage := advisorProviderUsage(details)
 	advisorsUsage, ok := providerUsage["advisor_attempts"].([]map[string]any)
 	if !ok || len(advisorsUsage) != 1 {
 		t.Fatalf("advisor_attempts = %#v", providerUsage["advisor_attempts"])
@@ -3120,6 +3276,28 @@ func TestProviderUsageIncludesNestedOrchestrationWithoutText(t *testing.T) {
 	}
 	if synth["panel_attempt_count"] != 1 || synth["judge_attempt_count"] != 1 || synth["final_attempt_count"] != 1 || synth["cost_microdollars"] != 18 {
 		t.Fatalf("nested synth summary = %#v", synth)
+	}
+	selector, ok := nested["selector"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested selector missing: %#v", nested)
+	}
+	if selector["selector_attempt_count"] != 1 || selector["cost_microdollars"] != 2 {
+		t.Fatalf("nested selector summary = %#v", selector)
+	}
+	selectorAttempts, ok := selector["selector_attempts"].([]map[string]any)
+	if !ok || len(selectorAttempts) != 1 || selectorAttempts[0]["route_type"] != "selector.decision" {
+		t.Fatalf("nested selector attempts = %#v", selector["selector_attempts"])
+	}
+	mapreduce, ok := nested["mapreduce"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested mapreduce missing: %#v", nested)
+	}
+	if mapreduce["mapper_attempt_count"] != 1 || mapreduce["part_attempt_count"] != 1 || mapreduce["reducer_attempt_count"] != 1 || mapreduce["cost_microdollars"] != 6 {
+		t.Fatalf("nested mapreduce summary = %#v", mapreduce)
+	}
+	mapreduceReducers, ok := mapreduce["reducer_attempts"].([]map[string]any)
+	if !ok || len(mapreduceReducers) != 1 || mapreduceReducers[0]["route_type"] != "mapreduce.reducer" {
+		t.Fatalf("nested mapreduce reducer attempts = %#v", mapreduce["reducer_attempts"])
 	}
 	encoded, err := json.Marshal(providerUsage)
 	if err != nil {
@@ -3141,19 +3319,19 @@ func TestProviderUsageIncludesNestedOrchestrationWithoutText(t *testing.T) {
 	}
 }
 
-func TestRunSocratesWorkerFailureFallsBackToAdvisorFinal(t *testing.T) {
+func TestRunAdvisorWorkerFailureFallsBackToAdvisorFinal(t *testing.T) {
 	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
-	streamer := &socratesScriptedLLM{failModels: map[string]bool{"cerebras/gpt-oss-120b": true}}
+	streamer := &advisorScriptedLLM{failModels: map[string]bool{"cerebras/gpt-oss-120b": true}}
 	req := &types.OpenAIChatRequest{
 		Model:    trustedRouterSocrates10Model,
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "solve the hard thing"}},
 	}
-	config := testSocratesConfig(t)
+	config := testAdvisorConfig(t)
 
-	final, workers, advisors, adviceCalls, budgetExhausted, err := runSocrates(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_socrates_worker_fails", "log_socrates_worker_fails", nil, nil, 0, nil)
+	final, workers, advisors, adviceCalls, budgetExhausted, err := runAdvisor(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_advisor_worker_fails", "log_advisor_worker_fails", nil, nil, 0, nil)
 	if err != nil {
-		t.Fatalf("runSocrates: %v", err)
+		t.Fatalf("runAdvisor: %v", err)
 	}
 	if got := strings.TrimSpace(final.Result.Text); got != "advisor final answer" {
 		t.Fatalf("final text = %q", got)
@@ -3167,7 +3345,7 @@ func TestRunSocratesWorkerFailureFallsBackToAdvisorFinal(t *testing.T) {
 	for _, payload := range recorder.authorize {
 		routeTypes = append(routeTypes, fmt.Sprint(payload["route_type"]))
 	}
-	want := []string{"socrates.worker", "socrates.advisor_final"}
+	want := []string{"advisor.worker", "advisor.advisor_final"}
 	if !reflect.DeepEqual(routeTypes, want) {
 		t.Fatalf("route types = %#v, want %#v", routeTypes, want)
 	}
@@ -3176,7 +3354,7 @@ func TestRunSocratesWorkerFailureFallsBackToAdvisorFinal(t *testing.T) {
 	}
 }
 
-func TestSocratesStreamErrorIncludesProviderDiagnostics(t *testing.T) {
+func TestAdvisorStreamErrorIncludesProviderDiagnostics(t *testing.T) {
 	req := &types.OpenAIChatRequest{
 		Model:    trustedRouterSocratesProPlus10Model,
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hard question"}},
@@ -3188,7 +3366,7 @@ func TestSocratesStreamErrorIncludesProviderDiagnostics(t *testing.T) {
 			Provider:   "anthropic",
 			EndpointID: "anthropic/claude-opus-4.8@anthropic/prepaid",
 		}),
-		"socrates.advisor_final",
+		"advisor.advisor_final",
 		req,
 		&trustedrouter.Authorization{
 			Model:      "anthropic/claude-opus-4.8",
@@ -3198,11 +3376,11 @@ func TestSocratesStreamErrorIncludesProviderDiagnostics(t *testing.T) {
 		nil,
 		nil,
 	)
-	event := socratesStreamErrorEvent(err, nil, nil)
-	if event["event"] != "socrates.error" {
+	event := advisorStreamErrorEvent(err, nil, nil)
+	if event["event"] != "advisor.error" {
 		t.Fatalf("event = %#v", event)
 	}
-	if event["stage"] != "socrates.advisor_final" {
+	if event["stage"] != "advisor.advisor_final" {
 		t.Fatalf("stage = %#v, event=%#v", event["stage"], event)
 	}
 	if event["attempted_model"] != "anthropic/claude-opus-4.8" {
@@ -3232,20 +3410,20 @@ func TestSocratesStreamErrorIncludesProviderDiagnostics(t *testing.T) {
 	}
 }
 
-func TestRunSocratesWorkerFallbackUsesDistinctIdempotencyKeys(t *testing.T) {
+func TestRunAdvisorWorkerFallbackUsesDistinctIdempotencyKeys(t *testing.T) {
 	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
-	streamer := &socratesScriptedLLM{failModels: map[string]bool{"cerebras/gpt-oss-120b": true}}
+	streamer := &advisorScriptedLLM{failModels: map[string]bool{"cerebras/gpt-oss-120b": true}}
 	req := &types.OpenAIChatRequest{
 		Model:    trustedRouterSocrates10Model,
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "reply pong"}},
 	}
-	config := testSocratesConfig(t)
+	config := testAdvisorConfig(t)
 	config.WorkerModels = []string{"cerebras/gpt-oss-120b", "deepseek/deepseek-v4-flash"}
 
-	final, workers, advisors, adviceCalls, budgetExhausted, err := runSocrates(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_socrates_fallback", "log_socrates_fallback", nil, nil, 0, nil)
+	final, workers, advisors, adviceCalls, budgetExhausted, err := runAdvisor(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_advisor_fallback", "log_advisor_fallback", nil, nil, 0, nil)
 	if err != nil {
-		t.Fatalf("runSocrates: %v", err)
+		t.Fatalf("runAdvisor: %v", err)
 	}
 	if got := strings.TrimSpace(final.Result.Text); got != "answer from deepseek/deepseek-v4-flash" {
 		t.Fatalf("final text = %q", got)
@@ -3274,19 +3452,19 @@ func TestRunSocratesWorkerFallbackUsesDistinctIdempotencyKeys(t *testing.T) {
 	}
 }
 
-func TestRunSocratesAdviceBudgetExhaustedThenAnswer(t *testing.T) {
+func TestRunAdvisorAdviceBudgetExhaustedThenAnswer(t *testing.T) {
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
-	streamer := &socratesScriptedLLM{callAdviceFirst: true, callAdviceAfterAdvisor: true}
+	streamer := &advisorScriptedLLM{callAdviceFirst: true, callAdviceAfterAdvisor: true}
 	req := &types.OpenAIChatRequest{
 		Model:    trustedRouterSocrates10Model,
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hard task"}},
 	}
-	config := testSocratesConfig(t)
+	config := testAdvisorConfig(t)
 
-	final, _, _, adviceCalls, budgetExhausted, err := runSocrates(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_socrates_budget", "log_socrates_budget", nil, nil, 0, nil)
+	final, _, _, adviceCalls, budgetExhausted, err := runAdvisor(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_advisor_budget", "log_advisor_budget", nil, nil, 0, nil)
 	if err != nil {
-		t.Fatalf("runSocrates: %v", err)
+		t.Fatalf("runAdvisor: %v", err)
 	}
 	if got := strings.TrimSpace(final.Result.Text); got != "worker final after budget exhausted" {
 		t.Fatalf("final text = %q", got)
@@ -3296,7 +3474,7 @@ func TestRunSocratesAdviceBudgetExhaustedThenAnswer(t *testing.T) {
 	}
 }
 
-func TestSocratesComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
+func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 	tests := []struct {
 		model    string
 		workers  []string
@@ -3356,15 +3534,15 @@ func TestSocratesComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
 			req := &types.OpenAIChatRequest{Model: tt.model}
-			config, requested, err := socratesConfigForRequest(req)
+			config, requested, err := advisorConfigForRequest(req)
 			if err != nil {
-				t.Fatalf("socratesConfigForRequest: %v", err)
+				t.Fatalf("advisorConfigForRequest: %v", err)
 			}
 			if !requested {
-				t.Fatalf("expected %s to request Socrates orchestration", tt.model)
+				t.Fatalf("expected %s to request advisor orchestration", tt.model)
 			}
-			if err := normalizeSocratesConfig(&config, req); err != nil {
-				t.Fatalf("normalizeSocratesConfig: %v", err)
+			if err := normalizeAdvisorConfig(&config, req); err != nil {
+				t.Fatalf("normalizeAdvisorConfig: %v", err)
 			}
 			if !reflect.DeepEqual(config.WorkerModels, tt.workers) {
 				t.Fatalf("workers = %#v, want %#v", config.WorkerModels, tt.workers)
@@ -3378,16 +3556,16 @@ func TestSocratesComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 
 func TestGenericAdvisorRequiresExplicitWorkerAndAdvisorModels(t *testing.T) {
 	req := &types.OpenAIChatRequest{Model: trustedRouterAdvisorModel}
-	config, requested, err := socratesConfigForRequest(req)
+	config, requested, err := advisorConfigForRequest(req)
 	if err != nil {
-		t.Fatalf("socratesConfigForRequest: %v", err)
+		t.Fatalf("advisorConfigForRequest: %v", err)
 	}
 	if !requested {
-		t.Fatal("trustedrouter/advisor should request Socrates orchestration")
+		t.Fatal("trustedrouter/advisor should request advisor orchestration")
 	}
-	err = validateGenericSocratesConfig(config, req.Model)
+	err = validateGenericAdvisorConfig(config, req.Model)
 	if err == nil {
-		t.Fatal("validateGenericSocratesConfig returned nil error")
+		t.Fatal("validateGenericAdvisorConfig returned nil error")
 	}
 	var adapterErr *adapter.AdapterError
 	if !asAdapterErr(err, &adapterErr) || adapterErr.Status != 400 || adapterErr.Context != "trustedrouter:advisor" {
@@ -3408,15 +3586,15 @@ func TestGenericAdvisorAcceptsDirectSDKToolConfig(t *testing.T) {
 			},
 		},
 	}
-	config, requested, err := socratesConfigForRequest(req)
+	config, requested, err := advisorConfigForRequest(req)
 	if err != nil {
-		t.Fatalf("socratesConfigForRequest: %v", err)
+		t.Fatalf("advisorConfigForRequest: %v", err)
 	}
 	if !requested {
-		t.Fatal("trustedrouter/advisor should request Socrates orchestration")
+		t.Fatal("trustedrouter/advisor should request advisor orchestration")
 	}
-	if err := validateGenericSocratesConfig(config, req.Model); err != nil {
-		t.Fatalf("validateGenericSocratesConfig: %v", err)
+	if err := validateGenericAdvisorConfig(config, req.Model); err != nil {
+		t.Fatalf("validateGenericAdvisorConfig: %v", err)
 	}
 	if !reflect.DeepEqual(config.WorkerModels, []string{"moonshotai/kimi-k2.7-code"}) {
 		t.Fatalf("worker models = %#v", config.WorkerModels)
@@ -3426,9 +3604,9 @@ func TestGenericAdvisorAcceptsDirectSDKToolConfig(t *testing.T) {
 	}
 }
 
-func TestSocratesRejectsReservedToolCollision(t *testing.T) {
-	err := rejectSocratesToolCollision([]any{
-		map[string]any{"type": "function", "function": map[string]any{"name": socratesAdviceToolName}},
+func TestAdvisorRejectsReservedToolCollision(t *testing.T) {
+	err := rejectAdvisorToolCollision([]any{
+		map[string]any{"type": "function", "function": map[string]any{"name": advisorAdviceToolName}},
 	}, nil)
 	if err == nil {
 		t.Fatal("expected reserved tool collision error")
@@ -3439,11 +3617,11 @@ func TestSocratesRejectsReservedToolCollision(t *testing.T) {
 	}
 }
 
-func TestNormalizeSocratesConfigDepthBounds(t *testing.T) {
-	config := testSocratesConfig(t)
+func TestNormalizeAdvisorConfigDepthBounds(t *testing.T) {
+	config := testAdvisorConfig(t)
 	config.Depth = maxOrchestrationDepth + 1
 	config.DepthSet = true
-	err := normalizeSocratesConfig(&config, &types.OpenAIChatRequest{})
+	err := normalizeAdvisorConfig(&config, &types.OpenAIChatRequest{})
 	if err == nil {
 		t.Fatal("expected depth bounds error")
 	}
@@ -3453,7 +3631,7 @@ func TestNormalizeSocratesConfigDepthBounds(t *testing.T) {
 	}
 }
 
-func TestSocratesMaxAdviceCallsZeroStaysDisabled(t *testing.T) {
+func TestAdvisorMaxAdviceCallsZeroStaysDisabled(t *testing.T) {
 	req := &types.OpenAIChatRequest{
 		Model: trustedRouterSocrates10Model,
 		Tools: []any{map[string]any{
@@ -3463,34 +3641,34 @@ func TestSocratesMaxAdviceCallsZeroStaysDisabled(t *testing.T) {
 			},
 		}},
 	}
-	config, requested, err := socratesConfigForRequest(req)
+	config, requested, err := advisorConfigForRequest(req)
 	if err != nil {
-		t.Fatalf("socratesConfigForRequest: %v", err)
+		t.Fatalf("advisorConfigForRequest: %v", err)
 	}
 	if !requested {
-		t.Fatal("expected Socrates request")
+		t.Fatal("expected advisor request")
 	}
-	if err := normalizeSocratesConfig(&config, req); err != nil {
-		t.Fatalf("normalizeSocratesConfig: %v", err)
+	if err := normalizeAdvisorConfig(&config, req); err != nil {
+		t.Fatalf("normalizeAdvisorConfig: %v", err)
 	}
 	if config.MaxAdviceCalls != 0 {
 		t.Fatalf("MaxAdviceCalls = %d, want 0", config.MaxAdviceCalls)
 	}
 }
 
-func TestSocratesRejectsTooSmallMaxTokensBeforeAuthorize(t *testing.T) {
+func TestAdvisorRejectsTooSmallMaxTokensBeforeAuthorize(t *testing.T) {
 	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
-	lowMaxTokens := minSocratesMaxTokens - 1
+	lowMaxTokens := minAdvisorMaxTokens - 1
 	req := &types.OpenAIChatRequest{
 		Model:     trustedRouterSocrates10Model,
 		Messages:  []types.OpenAIChatMessage{{Role: "user", Content: "reply pong"}},
 		MaxTokens: &lowMaxTokens,
 	}
 	var out bytes.Buffer
-	handled, err := maybeServeSocrates(context.Background(), &out, &socratesScriptedLLM{}, req, trGateway, nil, "bearer", nil, "log_socrates_low_tokens")
+	handled, err := maybeServeAdvisor(context.Background(), &out, &advisorScriptedLLM{}, req, trGateway, nil, "bearer", nil, "log_advisor_low_tokens")
 	if !handled {
-		t.Fatal("expected Socrates request to be handled")
+		t.Fatal("expected advisor request to be handled")
 	}
 	var aerr *adapter.AdapterError
 	if !asAdapterErr(err, &aerr) || aerr.Status != 400 || aerr.Context != "max_tokens" {
@@ -3503,23 +3681,23 @@ func TestSocratesRejectsTooSmallMaxTokensBeforeAuthorize(t *testing.T) {
 	}
 }
 
-func TestSocratesPromptSecretsRequiredInProductionGCP(t *testing.T) {
+func TestAdvisorPromptSecretsRequiredInProductionGCP(t *testing.T) {
 	t.Setenv("QUILL_GCP_PROJECT_ID", "trusted-router-prod")
 	t.Setenv("TR_ALLOW_DEFAULT_SOCRATES_PROMPTS", "")
 	t.Setenv("TR_REQUIRE_SOCRATES_PROMPTS", "")
-	if !socratesPromptsRequired() {
-		t.Fatalf("GCP runtime should require Socrates prompt secrets")
+	if !advisorPromptsRequired() {
+		t.Fatalf("GCP runtime should require advisor prompt secrets")
 	}
 
 	t.Setenv("TR_ALLOW_DEFAULT_SOCRATES_PROMPTS", "1")
-	if socratesPromptsRequired() {
+	if advisorPromptsRequired() {
 		t.Fatalf("explicit local override should allow fallback prompts")
 	}
 
 	t.Setenv("QUILL_GCP_PROJECT_ID", "")
 	t.Setenv("TR_REQUIRE_SOCRATES_PROMPTS", "1")
-	if !socratesPromptsRequired() {
-		t.Fatalf("explicit require flag should require Socrates prompt secrets")
+	if !advisorPromptsRequired() {
+		t.Fatalf("explicit require flag should require advisor prompt secrets")
 	}
 }
 
@@ -4991,14 +5169,15 @@ type fusionEchoLLM struct {
 	delayByModel              map[string]time.Duration
 }
 
-type socratesScriptedLLM struct {
+type advisorScriptedLLM struct {
 	callAdviceFirst        bool
 	callAdviceAfterAdvisor bool
+	callAdviceForModels    map[string]bool
 	failModels             map[string]bool
 	delayByModel           map[string]time.Duration
 }
 
-func (s *socratesScriptedLLM) InvokeStreaming(
+func (s *advisorScriptedLLM) InvokeStreaming(
 	ctx context.Context,
 	req *types.OpenAIChatRequest,
 	_ *types.AnthropicMessagesRequest,
@@ -5015,6 +5194,13 @@ func (s *socratesScriptedLLM) InvokeStreaming(
 	if s.failModels != nil && s.failModels[req.Model] {
 		return fmt.Errorf("scripted provider failure for %s", req.Model)
 	}
+	if s.callAdviceForModels != nil && s.callAdviceForModels[req.Model] {
+		last := lastChatMessageText(req.Messages)
+		if strings.Contains(last, "TrustedRouter advisor panel") || strings.Contains(last, "Advisor 1") || strings.Contains(last, "advisor says") {
+			return writeAnthropicTextTestStream(out, req.Model, "worker final after advice from "+req.Model)
+		}
+		return writeAnthropicToolUseTestStream(out, advisorAdviceToolName)
+	}
 	switch req.Model {
 	case "anthropic/claude-opus-4.8":
 		if len(req.Messages) > 0 && strings.Contains(types.ContentText(req.Messages[0].Content), "worker model path failed") {
@@ -5028,11 +5214,11 @@ func (s *socratesScriptedLLM) InvokeStreaming(
 			return writeAnthropicTextTestStream(out, req.Model, "worker final after budget exhausted")
 		case strings.Contains(last, "advisor says"):
 			if s.callAdviceAfterAdvisor {
-				return writeAnthropicToolUseTestStream(out, socratesAdviceToolName)
+				return writeAnthropicToolUseTestStream(out, advisorAdviceToolName)
 			}
 			return writeAnthropicTextTestStream(out, req.Model, "worker final after advice")
 		case s.callAdviceFirst:
-			return writeAnthropicToolUseTestStream(out, socratesAdviceToolName)
+			return writeAnthropicToolUseTestStream(out, advisorAdviceToolName)
 		default:
 			return writeAnthropicTextTestStream(out, req.Model, "simple worker answer")
 		}
@@ -5041,9 +5227,9 @@ func (s *socratesScriptedLLM) InvokeStreaming(
 	}
 }
 
-func testSocratesConfig(t *testing.T) socratesConfig {
+func testAdvisorConfig(t *testing.T) advisorConfig {
 	t.Helper()
-	config := socratesConfig{
+	config := advisorConfig{
 		Enabled:              true,
 		Depth:                defaultOrchestrationDepth,
 		DepthSet:             true,
@@ -5052,11 +5238,11 @@ func testSocratesConfig(t *testing.T) socratesConfig {
 		MaxAdviceCalls:       1,
 		AdvisorMaxTokens:     1024,
 		AdvisorTimeoutMS:     10000,
-		BuiltInWorkerPrompt:  fallbackSocratesWorkerPrompt,
-		BuiltInAdvisorPrompt: fallbackSocratesAdvisorPrompt,
+		BuiltInWorkerPrompt:  fallbackAdvisorWorkerPrompt,
+		BuiltInAdvisorPrompt: fallbackAdvisorPrompt,
 	}
-	if err := normalizeSocratesConfig(&config, &types.OpenAIChatRequest{}); err != nil {
-		t.Fatalf("normalizeSocratesConfig: %v", err)
+	if err := normalizeAdvisorConfig(&config, &types.OpenAIChatRequest{}); err != nil {
+		t.Fatalf("normalizeAdvisorConfig: %v", err)
 	}
 	return config
 }
@@ -5080,7 +5266,7 @@ data: {"type":"message_stop"}
 
 func writeAnthropicToolUseTestStream(out io.Writer, name string) error {
 	_, err := fmt.Fprintf(out, `event: content_block_start
-data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_socrates","name":%q,"input":{}}}
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_advisor","name":%q,"input":{}}}
 
 event: content_block_delta
 data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}
