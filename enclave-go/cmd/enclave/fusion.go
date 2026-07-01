@@ -146,14 +146,16 @@ func applyFusionCodeSwap(models []string) []string {
 }
 
 var fusionModelAliases = map[string]string{
-	"~anthropic/claude-opus-latest": "anthropic/claude-opus-4.8",
-	"~anthropic/claude-latest":      "anthropic/claude-opus-4.8",
-	"~openai/gpt-latest":            "openai/gpt-5.5",
-	"~google/gemini-pro-latest":     "google/gemini-3.1-pro-preview",
-	"~google/gemini-flash-latest":   "google/gemini-3-flash-preview",
-	"~moonshotai/kimi-latest":       "moonshotai/kimi-k2.7-code",
-	"~kimi/latest":                  "moonshotai/kimi-k2.7-code",
-	"~zai/glm-latest":               "z-ai/glm-5.2",
+	"~anthropic/claude-opus-latest":   "anthropic/claude-opus-4.8",
+	"~anthropic/claude-latest":        "anthropic/claude-opus-4.8",
+	"~anthropic/claude-sonnet-latest": "anthropic/claude-sonnet-5",
+	"~anthropic/claude-haiku-latest":  "anthropic/claude-haiku-4.5",
+	"~openai/gpt-latest":              "openai/gpt-5.5",
+	"~google/gemini-pro-latest":       "google/gemini-3.1-pro-preview",
+	"~google/gemini-flash-latest":     "google/gemini-3-flash-preview",
+	"~moonshotai/kimi-latest":         "moonshotai/kimi-k2.7-code",
+	"~kimi/latest":                    "moonshotai/kimi-k2.7-code",
+	"~zai/glm-latest":                 "z-ai/glm-5.2",
 }
 
 func isFusionModel(model string) bool {
@@ -3103,7 +3105,7 @@ func stripFusionToolEntries(tools []any) []any {
 	out := make([]any, 0, len(tools))
 	for _, item := range tools {
 		m, ok := item.(map[string]any)
-		if !ok || !isFusionToolType(stringValue(m["type"])) {
+		if !ok || (!isFusionToolType(stringValue(m["type"])) && !isSubagentToolType(stringValue(m["type"]))) {
 			out = append(out, item)
 		}
 	}

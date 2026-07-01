@@ -58,6 +58,7 @@ const (
 // an unknown id to api.anthropic.com returns a 404 with a "Did you mean..."
 // hint that you can paste in here.
 var modelIDMap = map[string]string{
+	"anthropic/claude-sonnet-5":   "claude-sonnet-5",
 	"anthropic/claude-opus-4.7":   "claude-opus-4-7",
 	"anthropic/claude-sonnet-4.6": "claude-sonnet-4-6",
 	"anthropic/claude-haiku-4.5":  "claude-haiku-4-5",
@@ -70,6 +71,7 @@ var modelIDMap = map[string]string{
 	"anthropic/claude-opus-4":   "claude-opus-4-20250514",
 	"anthropic/claude-sonnet-4": "claude-sonnet-4-20250514",
 	"claude-opus-4-7":           "claude-opus-4-7",
+	"claude-sonnet-5":           "claude-sonnet-5",
 	"claude-sonnet-4-6":         "claude-sonnet-4-6",
 	"claude-haiku-4-5":          "claude-haiku-4-5",
 }

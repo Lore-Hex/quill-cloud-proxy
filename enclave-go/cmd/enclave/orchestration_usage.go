@@ -118,6 +118,40 @@ func fusionProviderUsage(details map[string]any) map[string]any {
 	return pruneEmptyProviderUsage(out)
 }
 
+func subagentProviderUsage(details map[string]any) map[string]any {
+	if len(details) == 0 {
+		return nil
+	}
+	primitive := providerUsageOrDefault(details["primitive"], trustedRouterSubagentModel)
+	controllers := providerUsageCallList(details["controller_attempts"], primitive)
+	workers := providerUsageCallList(details["subagent_attempts"], primitive)
+	allCalls := providerUsageConcat(controllers, workers)
+	out := map[string]any{
+		"router":                        providerUsageOrDefault(details["router"], primitive),
+		"primitive":                     primitive,
+		"version":                       details["version"],
+		"selected_model":                details["selected_model"],
+		"controller_model":              details["controller_model"],
+		"worker_model":                  details["worker_model"],
+		"depth_initial":                 details["depth_initial"],
+		"max_subagent_calls":            details["max_subagent_calls"],
+		"subagent_call_count":           details["subagent_call_count"],
+		"subagent_budget_exhausted":     details["subagent_budget_exhausted"],
+		"controller_attempt_count":      len(controllers),
+		"subagent_attempt_count":        len(workers),
+		"controller_models":             providerUsageModels(controllers),
+		"subagent_models":               providerUsageModels(workers),
+		"reasoning_tokens":              providerUsageIntSum(allCalls, "reasoning_tokens"),
+		"cache_read_input_tokens":       providerUsageIntSum(allCalls, "cache_read_input_tokens"),
+		"cache_creation_input_tokens":   providerUsageIntSum(allCalls, "cache_creation_input_tokens"),
+		"controller_attempts":           controllers,
+		"subagent_attempts":             workers,
+		"cost_microdollars":             details["cost_microdollars"],
+		"contains_prompt_or_completion": false,
+	}
+	return pruneEmptyProviderUsage(out)
+}
+
 func providerUsageCallList(value any, primitive string) []map[string]any {
 	switch items := value.(type) {
 	case []map[string]any:
@@ -201,6 +235,9 @@ func providerUsageNested(value any) map[string]any {
 	if details, ok := m["advisor"].(map[string]any); ok {
 		out["advisor"] = advisorProviderUsage(details)
 	}
+	if details, ok := m["subagent"].(map[string]any); ok {
+		out["subagent"] = subagentProviderUsage(details)
+	}
 	for _, key := range []string{"synth", "selector", "mapreduce"} {
 		if details, ok := m[key].(map[string]any); ok {
 			out[key] = fusionProviderUsage(details)
@@ -260,6 +297,9 @@ func publicOrchestrationRouteType(value any, primitive string) any {
 		default:
 			return "synth." + suffix
 		}
+	}
+	if strings.HasPrefix(routeType, "subagent.") {
+		return routeType
 	}
 	return value
 }

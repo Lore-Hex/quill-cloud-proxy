@@ -3874,6 +3874,188 @@ func TestGenericAdvisorAcceptsDirectSDKToolConfig(t *testing.T) {
 	}
 }
 
+func TestSubagentAcceptsOpenRouterToolConfig(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Model: "deepseek/deepseek-v4-flash",
+		Tools: []any{
+			map[string]any{"type": "function", "function": map[string]any{"name": "user_tool"}},
+			map[string]any{
+				"type": openRouterSubagentTool,
+				"parameters": map[string]any{
+					"model":          "~anthropic/claude-sonnet-latest",
+					"instructions":   "answer the delegated task tersely",
+					"max_tool_calls": 2,
+				},
+			},
+		},
+	}
+	config, requested, err := subagentConfigForRequest(req)
+	if err != nil {
+		t.Fatalf("subagentConfigForRequest: %v", err)
+	}
+	if !requested {
+		t.Fatal("expected openrouter:subagent to request subagent orchestration")
+	}
+	if err := normalizeSubagentConfig(&config, req); err != nil {
+		t.Fatalf("normalizeSubagentConfig: %v", err)
+	}
+	if config.ControllerModel != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("controller model = %q", config.ControllerModel)
+	}
+	if config.WorkerModel != "anthropic/claude-sonnet-5" {
+		t.Fatalf("worker model = %q, want Sonnet 5 alias resolution", config.WorkerModel)
+	}
+	if config.MaxCalls != 2 {
+		t.Fatalf("MaxCalls = %d, want 2", config.MaxCalls)
+	}
+	if len(req.Tools) != 1 || functionNameFromTool(req.Tools[0].(map[string]any)) != "user_tool" {
+		t.Fatalf("caller tools after subagent strip = %#v", req.Tools)
+	}
+}
+
+func TestSubagentRejectsWorkerFunctionTools(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Model: "deepseek/deepseek-v4-flash",
+		Tools: []any{map[string]any{
+			"type": openRouterSubagentTool,
+			"parameters": map[string]any{
+				"model": "cerebras/gpt-oss-120b",
+				"tools": []any{map[string]any{
+					"type":     "function",
+					"function": map[string]any{"name": "not_allowed"},
+				}},
+			},
+		}},
+	}
+	config, requested, err := subagentConfigForRequest(req)
+	if err != nil {
+		t.Fatalf("subagentConfigForRequest: %v", err)
+	}
+	if !requested {
+		t.Fatal("expected subagent request")
+	}
+	err = normalizeSubagentConfig(&config, req)
+	var aerr *adapter.AdapterError
+	if !asAdapterErr(err, &aerr) || aerr.Status != 400 || aerr.Context != "tools" {
+		t.Fatalf("error = %#v, want 400 tools", err)
+	}
+}
+
+func TestSubagentRejectsNestedOrchestrationWorkerInAlpha(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Model: "deepseek/deepseek-v4-flash",
+		Tools: []any{map[string]any{
+			"type":       trustedRouterSubagentTool,
+			"parameters": map[string]any{"model": trustedRouterZeus10Model},
+		}},
+	}
+	config, requested, err := subagentConfigForRequest(req)
+	if err != nil {
+		t.Fatalf("subagentConfigForRequest: %v", err)
+	}
+	if !requested {
+		t.Fatal("expected subagent request")
+	}
+	err = normalizeSubagentConfig(&config, req)
+	var aerr *adapter.AdapterError
+	if !asAdapterErr(err, &aerr) || aerr.Status != 400 || aerr.Context != "model" {
+		t.Fatalf("error = %#v, want 400 model", err)
+	}
+}
+
+func TestSubagentRunsWorkerAndSettlesEverySubcall(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	req := &types.OpenAIChatRequest{
+		Model: "deepseek/deepseek-v4-flash",
+		Messages: []types.OpenAIChatMessage{{
+			Role:    "user",
+			Content: "Check deployment risk.",
+		}},
+		Tools: []any{map[string]any{
+			"type": openRouterSubagentTool,
+			"parameters": map[string]any{
+				"model":                 "cerebras/gpt-oss-120b",
+				"instructions":          "answer the delegated task tersely",
+				"max_tool_calls":        2,
+				"max_completion_tokens": 128,
+			},
+		}},
+	}
+	var out bytes.Buffer
+	handled, err := maybeServeSubagent(context.Background(), &out, &subagentScriptedLLM{}, req, trGateway, nil, "bearer", nil, "log_subagent")
+	if err != nil {
+		t.Fatalf("maybeServeSubagent: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected subagent request to be handled")
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(out.Bytes())), nil)
+	if err != nil {
+		t.Fatalf("read response: %v\n%s", err, out.String())
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "final after subagent") {
+		t.Fatalf("subagent response missing final controller answer: %s", body)
+	}
+	if strings.Contains(body, "Summarize the deployment risk") || strings.Contains(body, "worker outcome") {
+		t.Fatalf("subagent response leaked delegated task or worker output outside metadata-safe surface: %s", body)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(bodyBytes, &decoded); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	usage, ok := decoded["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing usage: %#v", decoded)
+	}
+	if usage["cost_microdollars"] != float64(3) {
+		t.Fatalf("cost_microdollars = %#v, want three settled subcalls", usage["cost_microdollars"])
+	}
+	providerUsage, ok := usage["provider_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing provider_usage: %#v", usage)
+	}
+	if providerUsage["primitive"] != trustedRouterSubagentModel ||
+		providerUsage["controller_attempt_count"] != float64(2) ||
+		providerUsage["subagent_attempt_count"] != float64(1) ||
+		providerUsage["subagent_call_count"] != float64(1) ||
+		providerUsage["contains_prompt_or_completion"] != false {
+		t.Fatalf("provider_usage = %#v", providerUsage)
+	}
+	controllerModels, _ := providerUsage["controller_models"].([]any)
+	subagentModels, _ := providerUsage["subagent_models"].([]any)
+	if len(controllerModels) != 1 || controllerModels[0] != "deepseek/deepseek-v4-flash" ||
+		len(subagentModels) != 1 || subagentModels[0] != "cerebras/gpt-oss-120b" {
+		t.Fatalf("provider usage models: controller=%#v subagent=%#v", controllerModels, subagentModels)
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if len(recorder.authorize) != 3 || len(recorder.settle) != 3 || len(recorder.refund) != 0 {
+		t.Fatalf("gateway calls authorize=%#v settle=%#v refund=%#v", recorder.authorize, recorder.settle, recorder.refund)
+	}
+	for i, want := range []struct {
+		model     string
+		routeType string
+	}{
+		{"deepseek/deepseek-v4-flash", "subagent.controller"},
+		{"cerebras/gpt-oss-120b", "subagent.worker"},
+		{"deepseek/deepseek-v4-flash", "subagent.controller"},
+	} {
+		if recorder.authorize[i]["model"] != want.model || recorder.authorize[i]["route_type"] != want.routeType {
+			t.Fatalf("authorize[%d] = %#v, want %s %s", i, recorder.authorize[i], want.model, want.routeType)
+		}
+	}
+}
+
 func TestAdvisorRejectsReservedToolCollision(t *testing.T) {
 	err := rejectAdvisorToolCollision([]any{
 		map[string]any{"type": "function", "function": map[string]any{"name": advisorAdviceToolName}},
@@ -5470,6 +5652,39 @@ type advisorScriptedLLM struct {
 	delayByModel           map[string]time.Duration
 }
 
+type subagentScriptedLLM struct {
+	mu    sync.Mutex
+	calls []fusionEchoCall
+}
+
+func (s *subagentScriptedLLM) InvokeStreaming(
+	_ context.Context,
+	req *types.OpenAIChatRequest,
+	_ *types.AnthropicMessagesRequest,
+	out io.Writer,
+	_ ...llm.InvokeOptions,
+) error {
+	s.mu.Lock()
+	s.calls = append(s.calls, fusionEchoCall{
+		Model:         req.Model,
+		LastMessage:   lastChatMessageText(req.Messages),
+		SystemMessage: firstSystemMessageText(req.Messages),
+	})
+	s.mu.Unlock()
+	switch req.Model {
+	case "deepseek/deepseek-v4-flash":
+		last := lastChatMessageText(req.Messages)
+		if strings.Contains(last, `"outcome":"worker outcome"`) {
+			return writeAnthropicTextTestStream(out, req.Model, "final after subagent")
+		}
+		return writeAnthropicToolUseArgsTestStream(out, subagentPrivateToolName, `{"task_name":"risk","task_description":"Summarize the deployment risk."}`)
+	case "cerebras/gpt-oss-120b":
+		return writeAnthropicTextTestStream(out, req.Model, "worker outcome")
+	default:
+		return writeAnthropicTextTestStream(out, req.Model, "answer from "+req.Model)
+	}
+}
+
 func (s *advisorScriptedLLM) writeText(out io.Writer, model string, text string) error {
 	return writeAnthropicTextUsageTestStream(out, model, text, s.reasoningByModel[model], s.cacheReadByModel[model])
 }
@@ -5573,11 +5788,15 @@ data: {"type":"message_stop"}
 }
 
 func writeAnthropicToolUseTestStream(out io.Writer, name string) error {
+	return writeAnthropicToolUseArgsTestStream(out, name, `{}`)
+}
+
+func writeAnthropicToolUseArgsTestStream(out io.Writer, name string, args string) error {
 	_, err := fmt.Fprintf(out, `event: content_block_start
-data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_advisor","name":%q,"input":{}}}
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_tool","name":%q,"input":{}}}
 
 event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":%q}}
 
 event: content_block_stop
 data: {"type":"content_block_stop","index":0}
@@ -5588,7 +5807,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
 event: message_stop
 data: {"type":"message_stop"}
 
-`, name)
+`, name, args)
 	return err
 }
 

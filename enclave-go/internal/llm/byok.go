@@ -1207,6 +1207,7 @@ func waferModelSupportsZDR(upstreamID string) bool {
 }
 
 var directModelMap = map[string]string{
+	"anthropic/claude-sonnet-5":   "claude-sonnet-5",
 	"anthropic/claude-opus-4.8":   "claude-opus-4-8",
 	"anthropic/claude-opus-4.7":   "claude-opus-4-7",
 	"anthropic/claude-sonnet-4.6": "claude-sonnet-4-6",

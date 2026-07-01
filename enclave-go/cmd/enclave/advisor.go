@@ -213,7 +213,7 @@ func isGenericAdvisorPrimitive(model string) bool {
 }
 
 func isOrchestrationModel(model string) bool {
-	return isAdvisorOrchestrationModel(model) || isFusionModel(model)
+	return isAdvisorOrchestrationModel(model) || isFusionModel(model) || isSubagentModel(model)
 }
 
 func maybeServeAdvisor(
@@ -1576,7 +1576,7 @@ func stripTrustedRouterToolEntries(tools []any) []any {
 			continue
 		}
 		toolType := strings.ToLower(strings.TrimSpace(stringValue(m["type"])))
-		if strings.HasPrefix(toolType, "trustedrouter:") {
+		if strings.HasPrefix(toolType, "trustedrouter:") || isSubagentToolType(toolType) {
 			continue
 		}
 		out = append(out, item)
