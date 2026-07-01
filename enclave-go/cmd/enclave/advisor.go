@@ -178,7 +178,12 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 	case trustedRouterOpenPatcherG1Model:
 		return openPatcherG1AdvisorConfig(false), true
 	case trustedRouterAthenaModel:
-		return openPatcherG1AdvisorConfig(true), true
+		return advisorConfig{
+			Enabled:            true,
+			WorkerModels:       []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			AdvisorModels:      []string{trustedRouterZeus10MiniModel},
+			HidePublicMetadata: true,
+		}, true
 	default:
 		return advisorConfig{}, false
 	}

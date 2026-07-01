@@ -28,6 +28,7 @@ const trustedRouterIris10Model = "trustedrouter/iris-1.0"
 const trustedRouterPrometheus10Model = "trustedrouter/prometheus-1.0"
 const trustedRouterPrometheus101MModel = "trustedrouter/prometheus-1.0-1m"
 const trustedRouterZeus10Model = "trustedrouter/zeus-1.0"
+const trustedRouterZeus10MiniModel = "trustedrouter/zeus-1.0-mini"
 const trustedRouterIrisCodeModel = "trustedrouter/iris-code"
 const trustedRouterPrometheusCodeModel = "trustedrouter/prometheus-code"
 const trustedRouterZeusCodeModel = "trustedrouter/zeus-code"
@@ -109,9 +110,19 @@ var fusionBudgetPanel = []string{
 var fusionFrontierPanel = []string{
 	"anthropic/claude-opus-4.8",
 	"openai/gpt-5.5",
-	"anthropic/claude-sonnet-4.6",
 	"google/gemini-3.1-pro-preview",
-	fusionGeneralKimi,
+	"minimax/minimax-m3",
+	"z-ai/glm-5.2",
+	"xiaomi/mimo-v2.5-pro",
+	"deepseek/deepseek-v4-pro",
+}
+
+var fusionFrontierMiniPanel = []string{
+	"google/gemini-3.5-flash",
+	"minimax/minimax-m3",
+	"z-ai/glm-5.2",
+	"xiaomi/mimo-v2.5-pro",
+	"deepseek/deepseek-v4-pro",
 }
 
 var fusionOpenPatcherS1Panel = []string{
@@ -156,6 +167,7 @@ func isFusionModel(model string) bool {
 		trustedRouterPrometheus10Model,
 		trustedRouterPrometheus101MModel,
 		trustedRouterZeus10Model,
+		trustedRouterZeus10MiniModel,
 		trustedRouterIrisCodeModel,
 		trustedRouterPrometheusCodeModel,
 		trustedRouterZeusCodeModel,
@@ -214,6 +226,8 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 		trustedRouterZeusCodeModel,
 		trustedRouterZeusCode10Model:
 		return "frontier", append([]string(nil), fusionFrontierPanel...), true
+	case trustedRouterZeus10MiniModel:
+		return "frontier-mini", append([]string(nil), fusionFrontierMiniPanel...), true
 	case trustedRouterOpenPatcherS1Model:
 		return "openpatcher-s1", append([]string(nil), fusionOpenPatcherS1Panel...), true
 	default:

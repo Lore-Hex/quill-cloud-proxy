@@ -3287,6 +3287,7 @@ func TestServeOneAthenaPreservesAliasAndHidesAdvisorMetadata(t *testing.T) {
 		`"model":"z-ai/glm-5.2"`,
 		`"model":"` + fusionCodeKimi + `"`,
 		`"model":"` + trustedRouterPrometheus101MModel + `"`,
+		`"model":"` + trustedRouterZeus10MiniModel + `"`,
 		`"worker_models"`,
 		`"advisor_models"`,
 		`"advisor_attempts"`,
@@ -3356,6 +3357,7 @@ func TestServeOneAthenaStreamingHidesAdvisorMetadata(t *testing.T) {
 		`"model":"z-ai/glm-5.2"`,
 		`"model":"` + fusionCodeKimi + `"`,
 		`"model":"` + trustedRouterPrometheus101MModel + `"`,
+		`"model":"` + trustedRouterZeus10MiniModel + `"`,
 		`"worker_models"`,
 		`"advisor_models"`,
 		`"advisor_attempts"`,
@@ -3730,6 +3732,11 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			model:    trustedRouterOpenPatcherG1Model,
 			workers:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
 			advisors: []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
+		},
+		{
+			model:    trustedRouterAthenaModel,
+			workers:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			advisors: []string{trustedRouterZeus10MiniModel},
 		},
 	}
 	for _, tt := range tests {
@@ -4429,6 +4436,7 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 		{trustedRouterPrometheus10Model, "quality", fusionQualityPanel, false},
 		{trustedRouterPrometheus101MModel, "quality-1m", fusionQuality1MPanel, false},
 		{trustedRouterZeus10Model, "frontier", fusionFrontierPanel, false},
+		{trustedRouterZeus10MiniModel, "frontier-mini", fusionFrontierMiniPanel, false},
 		{trustedRouterIrisCodeModel, "budget", fusionBudgetPanel, true},
 		{trustedRouterPrometheusCodeModel, "quality", fusionQualityPanel, true},
 		{trustedRouterZeusCodeModel, "frontier", fusionFrontierPanel, true},
