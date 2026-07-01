@@ -3696,9 +3696,10 @@ func TestRunAdvisorAdviceBudgetExhaustedThenAnswer(t *testing.T) {
 
 func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 	tests := []struct {
-		model    string
-		workers  []string
-		advisors []string
+		model        string
+		workers      []string
+		advisors     []string
+		jurisdiction string
 	}{
 		{
 			model:    trustedRouterAristotle10Model,
@@ -3736,24 +3737,28 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{
-			model:    trustedRouterOpenPatcherA1Model,
-			workers:  []string{trustedRouterOpenPatcherS1Model},
-			advisors: []string{trustedRouterPrometheus10Model},
+			model:        trustedRouterOpenPatcherA1Model,
+			workers:      []string{trustedRouterOpenPatcherS1Model},
+			advisors:     []string{trustedRouterPrometheus10Model},
+			jurisdiction: providerJurisdictionUS,
 		},
 		{
-			model:    trustedRouterOpenPatcherFast1Model,
-			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
-			advisors: []string{trustedRouterOpenPatcherA1Model},
+			model:        trustedRouterOpenPatcherFast1Model,
+			workers:      []string{"z-ai/glm-5.2-fast"},
+			advisors:     []string{trustedRouterOpenPatcherA1Model},
+			jurisdiction: providerJurisdictionUS,
 		},
 		{
-			model:    trustedRouterOpenPatcherG1Model,
-			workers:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
-			advisors: []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
+			model:        trustedRouterOpenPatcherG1Model,
+			workers:      []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			advisors:     []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
+			jurisdiction: providerJurisdictionUS,
 		},
 		{
-			model:    trustedRouterAthenaModel,
-			workers:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
-			advisors: []string{trustedRouterZeus10MiniModel},
+			model:        trustedRouterAthenaModel,
+			workers:      []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			advisors:     []string{trustedRouterZeus10MiniModel},
+			jurisdiction: providerJurisdictionUS,
 		},
 	}
 	for _, tt := range tests {
@@ -3775,6 +3780,9 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			if !reflect.DeepEqual(config.AdvisorModels, tt.advisors) {
 				t.Fatalf("advisors = %#v, want %#v", config.AdvisorModels, tt.advisors)
 			}
+			if config.ProviderJurisdiction != tt.jurisdiction {
+				t.Fatalf("provider jurisdiction = %q, want %q", config.ProviderJurisdiction, tt.jurisdiction)
+			}
 		})
 	}
 }
@@ -3795,6 +3803,43 @@ func TestGenericAdvisorRequiresExplicitWorkerAndAdvisorModels(t *testing.T) {
 	var adapterErr *adapter.AdapterError
 	if !asAdapterErr(err, &adapterErr) || adapterErr.Status != 400 || adapterErr.Context != "trustedrouter:advisor" {
 		t.Fatalf("error = %#v, want 400 trustedrouter:advisor", err)
+	}
+}
+
+func TestAdvisorUSProviderPolicyIsAppliedToSubrequests(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterAthenaModel,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "Patch this."}},
+	}
+	config, requested, err := advisorConfigForRequest(req)
+	if err != nil {
+		t.Fatalf("advisorConfigForRequest: %v", err)
+	}
+	if !requested {
+		t.Fatal("expected Athena to request advisor orchestration")
+	}
+	if err := normalizeAdvisorConfig(&config, req); err != nil {
+		t.Fatalf("normalizeAdvisorConfig: %v", err)
+	}
+	forceProviderJurisdiction(req, config.ProviderJurisdiction)
+
+	worker := advisorWorkerRequest(req, config.WorkerModels[0], req.Messages, config, true)
+	advisor := advisorRequest(req, config.AdvisorModels[0], req.Messages, config)
+	final := advisorFinalRequest(req, config.AdvisorModels[0], req.Messages, config)
+	for name, out := range map[string]*types.OpenAIChatRequest{
+		"worker":        worker,
+		"advisor":       advisor,
+		"advisor_final": final,
+	} {
+		if out.Provider == nil {
+			t.Fatalf("%s provider routing missing", name)
+		}
+		if out.Provider.Jurisdiction != providerJurisdictionUS {
+			t.Fatalf("%s provider jurisdiction = %q, want %q", name, out.Provider.Jurisdiction, providerJurisdictionUS)
+		}
+		if out.Provider.Sort != "throughput" {
+			t.Fatalf("%s provider sort = %q, want throughput", name, out.Provider.Sort)
+		}
 	}
 }
 
@@ -4494,6 +4539,9 @@ func TestFusionOpenPatcherS1PresetResolvesJudgeAndFinalModels(t *testing.T) {
 	if !requested {
 		t.Fatal("expected OpenPatcher-S1 to request synth orchestration")
 	}
+	if config.ProviderJurisdiction != providerJurisdictionUS {
+		t.Fatalf("provider jurisdiction = %q, want %q", config.ProviderJurisdiction, providerJurisdictionUS)
+	}
 	preset, panel, ok := fusionPresetPanelForModel(req.Model)
 	if !ok {
 		t.Fatal("expected OpenPatcher-S1 panel preset")
@@ -4516,6 +4564,23 @@ func TestFusionOpenPatcherS1PresetResolvesJudgeAndFinalModels(t *testing.T) {
 	}
 	if !reflect.DeepEqual(finalModels, []string{"z-ai/glm-5.2"}) {
 		t.Fatalf("final models = %#v", finalModels)
+	}
+	forceProviderJurisdiction(req, config.ProviderJurisdiction)
+	panelReq := fusionPanelRequest(req, config.AnalysisModels[0], 0, 0, "")
+	judgeReq := fusionJudgeRequest(req, judgeModels[0], []fusionCallResult{
+		{Model: config.AnalysisModels[0], Result: adapter.StreamResult{Text: "patch"}},
+	}, 0)
+	finalReq := fusionFinalRequest(req, finalModels[0], `{"final_guidance":"patch"}`, []fusionCallResult{
+		{Model: config.AnalysisModels[0], Result: adapter.StreamResult{Text: "patch"}},
+	}, config)
+	for name, out := range map[string]*types.OpenAIChatRequest{
+		"panel": panelReq,
+		"judge": judgeReq,
+		"final": finalReq,
+	} {
+		if out.Provider == nil || out.Provider.Jurisdiction != providerJurisdictionUS {
+			t.Fatalf("%s provider routing = %#v, want US jurisdiction", name, out.Provider)
+		}
 	}
 }
 

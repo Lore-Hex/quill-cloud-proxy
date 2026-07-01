@@ -101,6 +101,7 @@ type advisorConfig struct {
 	BuiltInWorkerPrompt  string
 	BuiltInAdvisorPrompt string
 	HidePublicMetadata   bool
+	ProviderJurisdiction string
 }
 
 type advisorPromptBundle struct {
@@ -165,24 +166,27 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 		}, true
 	case trustedRouterOpenPatcherA1Model:
 		return advisorConfig{
-			Enabled:       true,
-			WorkerModels:  []string{trustedRouterOpenPatcherS1Model},
-			AdvisorModels: []string{trustedRouterPrometheus10Model},
+			Enabled:              true,
+			WorkerModels:         []string{trustedRouterOpenPatcherS1Model},
+			AdvisorModels:        []string{trustedRouterPrometheus10Model},
+			ProviderJurisdiction: providerJurisdictionUS,
 		}, true
 	case trustedRouterOpenPatcherFast1Model:
 		return advisorConfig{
-			Enabled:       true,
-			WorkerModels:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
-			AdvisorModels: []string{trustedRouterOpenPatcherA1Model},
+			Enabled:              true,
+			WorkerModels:         []string{"z-ai/glm-5.2-fast"},
+			AdvisorModels:        []string{trustedRouterOpenPatcherA1Model},
+			ProviderJurisdiction: providerJurisdictionUS,
 		}, true
 	case trustedRouterOpenPatcherG1Model:
 		return openPatcherG1AdvisorConfig(false), true
 	case trustedRouterAthenaModel:
 		return advisorConfig{
-			Enabled:            true,
-			WorkerModels:       []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
-			AdvisorModels:      []string{trustedRouterZeus10MiniModel},
-			HidePublicMetadata: true,
+			Enabled:              true,
+			WorkerModels:         []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			AdvisorModels:        []string{trustedRouterZeus10MiniModel},
+			HidePublicMetadata:   true,
+			ProviderJurisdiction: providerJurisdictionUS,
 		}, true
 	default:
 		return advisorConfig{}, false
@@ -191,10 +195,11 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 
 func openPatcherG1AdvisorConfig(hidePublicMetadata bool) advisorConfig {
 	return advisorConfig{
-		Enabled:            true,
-		WorkerModels:       []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
-		AdvisorModels:      []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
-		HidePublicMetadata: hidePublicMetadata,
+		Enabled:              true,
+		WorkerModels:         []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+		AdvisorModels:        []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
+		HidePublicMetadata:   hidePublicMetadata,
+		ProviderJurisdiction: providerJurisdictionUS,
 	}
 }
 
@@ -244,6 +249,7 @@ func maybeServeAdvisor(
 	if err := normalizeAdvisorConfig(&config, req); err != nil {
 		return true, err
 	}
+	forceProviderJurisdiction(req, config.ProviderJurisdiction)
 	if err := rejectAdvisorToolCollision(req.Tools, req.ToolChoice); err != nil {
 		return true, err
 	}
@@ -427,6 +433,9 @@ func mergeAdvisorConfig(base, override advisorConfig) advisorConfig {
 	}
 	if override.HidePublicMetadata {
 		base.HidePublicMetadata = true
+	}
+	if override.ProviderJurisdiction != "" {
+		base.ProviderJurisdiction = override.ProviderJurisdiction
 	}
 	return base
 }

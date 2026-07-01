@@ -275,30 +275,31 @@ func isGenericFusionPrimitive(model string) bool {
 }
 
 type fusionConfig struct {
-	Enabled             bool
-	CodeModel           bool
-	Mode                string
-	AnalysisModels      []string
-	JudgeModel          string
-	JudgeModels         []string
-	FinalModels         []string
-	SelectorModels      []string
-	MapperModels        []string
-	ParallelModels      []string
-	ReducerModels       []string
-	PanelPrompt         string
-	SynthesisPrompt     string
-	SelectorPrompt      string
-	MapperPrompt        string
-	ParallelPrompt      string
-	ReducerPrompt       string
-	BuiltInPanelPrompt  string
-	BuiltInFinalPrompt  string
-	MaxToolCalls        int
-	MaxCompletionTokens int
-	MaxParts            int
-	SelectionStrategy   string
-	Preset              string
+	Enabled              bool
+	CodeModel            bool
+	Mode                 string
+	AnalysisModels       []string
+	JudgeModel           string
+	JudgeModels          []string
+	FinalModels          []string
+	SelectorModels       []string
+	MapperModels         []string
+	ParallelModels       []string
+	ReducerModels        []string
+	PanelPrompt          string
+	SynthesisPrompt      string
+	SelectorPrompt       string
+	MapperPrompt         string
+	ParallelPrompt       string
+	ReducerPrompt        string
+	BuiltInPanelPrompt   string
+	BuiltInFinalPrompt   string
+	MaxToolCalls         int
+	MaxCompletionTokens  int
+	MaxParts             int
+	SelectionStrategy    string
+	Preset               string
+	ProviderJurisdiction string
 }
 
 type fusionPromptBundle struct {
@@ -511,6 +512,7 @@ func maybeServeFusion(
 	if trGateway == nil || !trGateway.Enabled() {
 		return true, &adapter.AdapterError{Status: 503, Message: "trustedrouter/synth requires the TrustedRouter control plane", Context: "trustedrouter/synth"}
 	}
+	forceProviderJurisdiction(req, config.ProviderJurisdiction)
 	config.Mode = fusionModeForRequest(req.Model, config.Mode)
 	if config.Mode == fusionModeMapReduce {
 		if err := normalizeMapReduceConfig(&config, req.Model); err != nil {
@@ -627,6 +629,9 @@ func validateGenericFusionConfig(config fusionConfig, model string) error {
 func fusionConfigForRequest(req *types.OpenAIChatRequest) (fusionConfig, bool, error) {
 	config := fusionConfig{Enabled: true}
 	requested := isFusionModel(req.Model)
+	if strings.EqualFold(strings.TrimSpace(req.Model), trustedRouterOpenPatcherS1Model) {
+		config.ProviderJurisdiction = providerJurisdictionUS
+	}
 
 	if pluginConfig, ok, err := fusionConfigFromPlugins(req.Plugins); err != nil {
 		return fusionConfig{}, true, err
@@ -1005,6 +1010,9 @@ func mergeFusionConfig(base, override fusionConfig) fusionConfig {
 	}
 	if override.Preset != "" {
 		base.Preset = override.Preset
+	}
+	if override.ProviderJurisdiction != "" {
+		base.ProviderJurisdiction = override.ProviderJurisdiction
 	}
 	return base
 }

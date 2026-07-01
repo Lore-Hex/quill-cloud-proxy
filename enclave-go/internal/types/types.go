@@ -309,6 +309,7 @@ type ProviderRouting struct {
 	AllowFallbacks    *bool          `json:"allow_fallbacks,omitempty"`
 	RequireParameters *bool          `json:"require_parameters,omitempty"`
 	DataCollection    string         `json:"data_collection,omitempty"`
+	Jurisdiction      string         `json:"jurisdiction,omitempty"`
 	Only              StringList     `json:"only,omitempty"`
 	Ignore            StringList     `json:"ignore,omitempty"`
 	Quantizations     StringList     `json:"quantizations,omitempty"`
