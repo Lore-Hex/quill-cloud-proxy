@@ -176,7 +176,7 @@ func socratesPresetForModel(model string) (socratesConfig, bool) {
 	case trustedRouterOpenExploiterG1Model:
 		return socratesConfig{
 			Enabled:       true,
-			WorkerModels:  []string{"z-ai/glm-5.2"},
+			WorkerModels:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
 			AdvisorModels: []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
 		}, true
 	default:

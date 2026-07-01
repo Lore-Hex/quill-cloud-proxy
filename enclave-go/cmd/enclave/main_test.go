@@ -3349,7 +3349,7 @@ func TestSocratesComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:    trustedRouterOpenExploiterG1Model,
-			workers:  []string{"z-ai/glm-5.2"},
+			workers:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
 			advisors: []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
 		},
 	}
