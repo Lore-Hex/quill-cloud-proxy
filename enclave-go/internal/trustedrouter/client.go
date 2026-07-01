@@ -153,6 +153,7 @@ type Usage struct {
 	ElapsedSeconds    float64
 	FirstTokenSeconds float64
 	UsageEstimated    bool
+	ReasoningTokens   int
 	FinishReason      string
 	Streamed          bool
 	RouteType         string
@@ -334,6 +335,9 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	}
 	if usage.FirstTokenSeconds > 0 {
 		body["first_token_seconds"] = usage.FirstTokenSeconds
+	}
+	if usage.ReasoningTokens > 0 {
+		body["reasoning_tokens"] = usage.ReasoningTokens
 	}
 	if usage.CacheReadInputTokens > 0 {
 		body["cache_read_input_tokens"] = usage.CacheReadInputTokens

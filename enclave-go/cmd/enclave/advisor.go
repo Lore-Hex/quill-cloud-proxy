@@ -514,7 +514,7 @@ func serveAdvisorNonStreaming(
 		final.Result.ToolCalls,
 		totalIn,
 		totalOut,
-		final.Result.Usage,
+		fusionAggregateStreamUsage(totalIn, totalOut, workerAttempts, advisorAttempts),
 		time.Now().Unix(),
 		final.Result.FinishReason,
 		advisorResponseDetails(config, workerAttempts, advisorAttempts, responseModel, selectedModel, adviceCalls, budgetExhausted),
@@ -603,6 +603,7 @@ func serveAdvisorStreaming(
 		usage := final
 		usage.InputTokens = totalIn
 		usage.OutputTokens = totalOut
+		usage.Result.Usage = fusionAggregateStreamUsage(totalIn, totalOut, workerAttempts, advisorAttempts)
 		details := advisorResponseDetails(config, workerAttempts, advisorAttempts, responseModel, selectedModel, adviceCalls, budgetExhausted)
 		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, usage, advisorTotalCostMicrodollars(workerAttempts, advisorAttempts), advisorProviderUsage(details))
 	}
@@ -1248,6 +1249,10 @@ func runNestedAdvisor(
 	final.Orchestration = map[string]any{
 		"advisor": advisorResponseDetails(childConfig, workers, advisors, requestOrchestrationResponseModel(advisorReq, advisorModel), final.Model, adviceCalls, budgetExhausted),
 	}
+	totalIn, totalOut := advisorUsageTotals(workers, advisors)
+	final.InputTokens = totalIn
+	final.OutputTokens = totalOut
+	final.Result.Usage = fusionAggregateStreamUsage(totalIn, totalOut, workers, advisors)
 	return final, nil
 }
 
@@ -1396,6 +1401,10 @@ func runAdvisorFusionOrchestrationRequest(
 	final.Orchestration = map[string]any{
 		"synth": fusionResponseDetails(fusionConfig, panel, judgeAttempts, finalAttempts, requestOrchestrationResponseModel(orchestrationReq, orchestrationModel), final.Model),
 	}
+	totalIn, totalOut := fusionUsageTotals(panel, judgeAttempts, finalAttempts...)
+	final.InputTokens = totalIn
+	final.OutputTokens = totalOut
+	final.Result.Usage = fusionAggregateStreamUsage(totalIn, totalOut, panel, judgeAttempts, finalAttempts)
 	return final, nil
 }
 

@@ -2970,7 +2970,16 @@ func TestRunAdvisorNoAdviceReturnsWorkerAnswer(t *testing.T) {
 func TestRunAdvisorAdviceOnceThenWorkerFinal(t *testing.T) {
 	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
-	streamer := &advisorScriptedLLM{callAdviceFirst: true}
+	streamer := &advisorScriptedLLM{
+		callAdviceFirst: true,
+		reasoningByModel: map[string]int{
+			"cerebras/gpt-oss-120b":     5,
+			"anthropic/claude-opus-4.8": 7,
+		},
+		cacheReadByModel: map[string]int{
+			"anthropic/claude-opus-4.8": 3,
+		},
+	}
 	req := &types.OpenAIChatRequest{
 		Model:    trustedRouterSocrates10Model,
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "review this risky migration"}},
@@ -3039,7 +3048,16 @@ func TestRunAdvisorAdviceRunsAdvisorsInParallel(t *testing.T) {
 func TestAdvisorProviderUsageReportsAdviceWithoutText(t *testing.T) {
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
-	streamer := &advisorScriptedLLM{callAdviceFirst: true}
+	streamer := &advisorScriptedLLM{
+		callAdviceFirst: true,
+		reasoningByModel: map[string]int{
+			"cerebras/gpt-oss-120b":     5,
+			"anthropic/claude-opus-4.8": 7,
+		},
+		cacheReadByModel: map[string]int{
+			"anthropic/claude-opus-4.8": 3,
+		},
+	}
 	req := &types.OpenAIChatRequest{
 		Model:    trustedRouterSocrates10Model,
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "private risky migration prompt"}},
@@ -3059,6 +3077,8 @@ func TestAdvisorProviderUsageReportsAdviceWithoutText(t *testing.T) {
 		providerUsage["advisor_attempt_count"] != 1 ||
 		providerUsage["advisor_final_attempt_count"] != 0 ||
 		providerUsage["advice_call_count"] != 1 ||
+		providerUsage["reasoning_tokens"] != 12 ||
+		providerUsage["cache_read_input_tokens"] != 3 ||
 		providerUsage["cost_microdollars"] != 3 {
 		t.Fatalf("providerUsage = %#v", providerUsage)
 	}
@@ -3069,12 +3089,18 @@ func TestAdvisorProviderUsageReportsAdviceWithoutText(t *testing.T) {
 	if workersUsage[0]["route_type"] != "advisor.worker" || workersUsage[0]["model"] != "cerebras/gpt-oss-120b" {
 		t.Fatalf("bad worker provider usage: %#v", workersUsage[0])
 	}
+	if workersUsage[1]["reasoning_tokens"] != 5 {
+		t.Fatalf("worker reasoning tokens = %#v", workersUsage[1])
+	}
 	advisorsUsage, ok := providerUsage["advisor_attempts"].([]map[string]any)
 	if !ok || len(advisorsUsage) != 1 {
 		t.Fatalf("advisor_attempts = %#v", providerUsage["advisor_attempts"])
 	}
 	if advisorsUsage[0]["route_type"] != "advisor.advisor" || advisorsUsage[0]["model"] != "anthropic/claude-opus-4.8" {
 		t.Fatalf("bad advisor provider usage: %#v", advisorsUsage[0])
+	}
+	if advisorsUsage[0]["reasoning_tokens"] != 7 || advisorsUsage[0]["cache_read_input_tokens"] != 3 {
+		t.Fatalf("advisor token details = %#v", advisorsUsage[0])
 	}
 	encoded, err := json.Marshal(providerUsage)
 	if err != nil {
@@ -3100,6 +3126,11 @@ func TestServeOneOpenExploiterG1PreservesAliasAndReportsAdvisorUsage(t *testing.
 	defer cleanup()
 	streamer := &advisorScriptedLLM{
 		callAdviceForModels: map[string]bool{"z-ai/glm-5.2-fast": true},
+		reasoningByModel: map[string]int{
+			"z-ai/glm-5.2-fast":              11,
+			fusionCodeKimi:                   17,
+			trustedRouterPrometheus101MModel: 19,
+		},
 	}
 	serverConn, client := net.Pipe()
 	defer client.Close()
@@ -3155,8 +3186,30 @@ func TestServeOneOpenExploiterG1PreservesAliasAndReportsAdvisorUsage(t *testing.
 	if providerUsage["router"] != trustedRouterOpenExploiterG1Model ||
 		providerUsage["primitive"] != trustedRouterAdvisorModel ||
 		providerUsage["selected_model"] != "z-ai/glm-5.2-fast" ||
-		providerUsage["advice_call_count"] != float64(1) {
+		providerUsage["advice_call_count"] != float64(1) ||
+		providerUsage["reasoning_tokens"] != float64(45) {
 		t.Fatalf("provider_usage = %#v", providerUsage)
+	}
+	completionDetails, ok := response.Usage["completion_tokens_details"].(map[string]any)
+	if !ok || completionDetails["reasoning_tokens"] != float64(45) {
+		t.Fatalf("completion token details = %#v usage=%#v", completionDetails, response.Usage)
+	}
+	workerAttempts, ok := providerUsage["worker_attempts"].([]any)
+	if !ok || len(workerAttempts) < 2 {
+		t.Fatalf("worker attempts = %#v", providerUsage["worker_attempts"])
+	}
+	workerFinal, _ := workerAttempts[len(workerAttempts)-1].(map[string]any)
+	if workerFinal["reasoning_tokens"] != float64(11) {
+		t.Fatalf("worker final reasoning = %#v", workerFinal)
+	}
+	advisorAttempts, ok := providerUsage["advisor_attempts"].([]any)
+	if !ok || len(advisorAttempts) < 2 {
+		t.Fatalf("advisor attempts = %#v", providerUsage["advisor_attempts"])
+	}
+	encodedAdvisors, _ := json.Marshal(advisorAttempts)
+	if !strings.Contains(string(encodedAdvisors), `"reasoning_tokens":17`) ||
+		!strings.Contains(string(encodedAdvisors), `"orchestration"`) {
+		t.Fatalf("advisor reasoning tokens missing: %s", encodedAdvisors)
 	}
 	if got, ok := providerUsage["advisor_attempt_count"].(float64); !ok || got < 2 {
 		t.Fatalf("advisor_attempt_count = %#v, want default G1 advisors reported", providerUsage["advisor_attempt_count"])
@@ -5173,8 +5226,14 @@ type advisorScriptedLLM struct {
 	callAdviceFirst        bool
 	callAdviceAfterAdvisor bool
 	callAdviceForModels    map[string]bool
+	reasoningByModel       map[string]int
+	cacheReadByModel       map[string]int
 	failModels             map[string]bool
 	delayByModel           map[string]time.Duration
+}
+
+func (s *advisorScriptedLLM) writeText(out io.Writer, model string, text string) error {
+	return writeAnthropicTextUsageTestStream(out, model, text, s.reasoningByModel[model], s.cacheReadByModel[model])
 }
 
 func (s *advisorScriptedLLM) InvokeStreaming(
@@ -5197,33 +5256,33 @@ func (s *advisorScriptedLLM) InvokeStreaming(
 	if s.callAdviceForModels != nil && s.callAdviceForModels[req.Model] {
 		last := lastChatMessageText(req.Messages)
 		if strings.Contains(last, "TrustedRouter advisor panel") || strings.Contains(last, "Advisor 1") || strings.Contains(last, "advisor says") {
-			return writeAnthropicTextTestStream(out, req.Model, "worker final after advice from "+req.Model)
+			return s.writeText(out, req.Model, "worker final after advice from "+req.Model)
 		}
 		return writeAnthropicToolUseTestStream(out, advisorAdviceToolName)
 	}
 	switch req.Model {
 	case "anthropic/claude-opus-4.8":
 		if len(req.Messages) > 0 && strings.Contains(types.ContentText(req.Messages[0].Content), "worker model path failed") {
-			return writeAnthropicTextTestStream(out, req.Model, "advisor final answer")
+			return s.writeText(out, req.Model, "advisor final answer")
 		}
-		return writeAnthropicTextTestStream(out, req.Model, "advisor says check rollback and settlement")
+		return s.writeText(out, req.Model, "advisor says check rollback and settlement")
 	case "cerebras/gpt-oss-120b":
 		last := lastChatMessageText(req.Messages)
 		switch {
 		case strings.Contains(last, "Advice budget exhausted"):
-			return writeAnthropicTextTestStream(out, req.Model, "worker final after budget exhausted")
+			return s.writeText(out, req.Model, "worker final after budget exhausted")
 		case strings.Contains(last, "advisor says"):
 			if s.callAdviceAfterAdvisor {
 				return writeAnthropicToolUseTestStream(out, advisorAdviceToolName)
 			}
-			return writeAnthropicTextTestStream(out, req.Model, "worker final after advice")
+			return s.writeText(out, req.Model, "worker final after advice")
 		case s.callAdviceFirst:
 			return writeAnthropicToolUseTestStream(out, advisorAdviceToolName)
 		default:
-			return writeAnthropicTextTestStream(out, req.Model, "simple worker answer")
+			return s.writeText(out, req.Model, "simple worker answer")
 		}
 	default:
-		return writeAnthropicTextTestStream(out, req.Model, "answer from "+req.Model)
+		return s.writeText(out, req.Model, "answer from "+req.Model)
 	}
 }
 
@@ -5248,6 +5307,17 @@ func testAdvisorConfig(t *testing.T) advisorConfig {
 }
 
 func writeAnthropicTextTestStream(out io.Writer, model string, text string) error {
+	return writeAnthropicTextUsageTestStream(out, model, text, 0, 0)
+}
+
+func writeAnthropicTextUsageTestStream(out io.Writer, model string, text string, reasoningTokens int, cacheReadTokens int) error {
+	usageFields := `"output_tokens":4`
+	if reasoningTokens > 0 {
+		usageFields += fmt.Sprintf(`,"reasoning_tokens":%d`, reasoningTokens)
+	}
+	if cacheReadTokens > 0 {
+		usageFields += fmt.Sprintf(`,"cache_read_input_tokens":%d`, cacheReadTokens)
+	}
 	_, err := fmt.Fprintf(out, `event: message_start
 data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"%s","stop_reason":null,"usage":{"input_tokens":3,"output_tokens":0}}}
 
@@ -5255,12 +5325,12 @@ event: content_block_delta
 data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%q}}
 
 event: message_delta
-data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":4}}
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{%s}}
 
 event: message_stop
 data: {"type":"message_stop"}
 
-`, model, text)
+`, model, text, usageFields)
 	return err
 }
 

@@ -95,7 +95,7 @@ func serveSelectorNonStreaming(
 		selected.Result.ToolCalls,
 		totalIn,
 		totalOut,
-		selected.Result.Usage,
+		fusionAggregateStreamUsage(totalIn, totalOut, panel, selectorAttempts),
 		time.Now().Unix(),
 		selected.Result.FinishReason,
 		details,
@@ -165,6 +165,7 @@ func serveSelectorStreaming(
 		totalIn, totalOut := fusionUsageTotals(panel, selectorAttempts)
 		selected.InputTokens = totalIn
 		selected.OutputTokens = totalOut
+		selected.Result.Usage = fusionAggregateStreamUsage(totalIn, totalOut, panel, selectorAttempts)
 		details := selectorResponseDetails(config, panel, selectorAttempts, selected, decision, responseModel)
 		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, selected, fusionTotalCostMicrodollars(panel, selectorAttempts), fusionProviderUsage(details))
 	}
@@ -344,7 +345,7 @@ func serveMapReduceNonStreaming(
 		result.Result.ToolCalls,
 		totalIn,
 		totalOut,
-		result.Result.Usage,
+		fusionAggregateStreamUsage(totalIn, totalOut, details.MapperAttempts, details.Parts, details.ReducerAttempts),
 		time.Now().Unix(),
 		result.Result.FinishReason,
 		responseDetails,
@@ -405,6 +406,7 @@ func serveMapReduceStreaming(
 		totalIn, totalOut := mapReduceUsageTotals(details)
 		result.InputTokens = totalIn
 		result.OutputTokens = totalOut
+		result.Result.Usage = fusionAggregateStreamUsage(totalIn, totalOut, details.MapperAttempts, details.Parts, details.ReducerAttempts)
 		responseDetails := mapReduceResponseDetails(config, details, result, responseModel)
 		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, result, mapReduceCostMicrodollars(details, result), fusionProviderUsage(responseDetails))
 	}

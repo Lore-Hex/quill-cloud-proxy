@@ -1114,12 +1114,13 @@ func chatIncludeUsage(req *types.OpenAIChatRequest) bool {
 // usageEstimated-for-settlement). Output is the signal: providers always
 // report both sides together, but if input is somehow missing we estimate
 // it and still flag the settlement as estimated.
-// applyCacheUsage copies provider-reported prompt-cache token counts into
-// the settlement usage record (visibility only — pricing unchanged).
+// applyCacheUsage copies provider-reported reasoning and prompt-cache token
+// counts into the settlement usage record (visibility only — pricing unchanged).
 func applyCacheUsage(usage *trustedrouter.Usage, result adapter.StreamResult) {
 	if result.Usage == nil {
 		return
 	}
+	usage.ReasoningTokens = result.Usage.ReasoningTokens
 	usage.CacheReadInputTokens = result.Usage.CacheReadInputTokens
 	usage.CacheCreationInputTokens = result.Usage.CacheCreationInputTokens
 }

@@ -1037,7 +1037,7 @@ func serveFusionNonStreaming(
 			selected.Result.ToolCalls,
 			totalIn,
 			totalOut,
-			selected.Result.Usage,
+			fusionAggregateStreamUsage(totalIn, totalOut, panel),
 			time.Now().Unix(),
 			selected.Result.FinishReason,
 			fusionResponseDetails(config, panel, nil, nil, responseModel, selected.Model),
@@ -1082,7 +1082,7 @@ func serveFusionNonStreaming(
 		final.Result.ToolCalls,
 		totalIn,
 		totalOut,
-		final.Result.Usage,
+		fusionAggregateStreamUsage(totalIn, totalOut, panel, judgeAttempts, finalAttempts),
 		time.Now().Unix(),
 		final.Result.FinishReason,
 		fusionResponseDetails(config, panel, judgeAttempts, finalAttempts, responseModel, final.Model),
@@ -1904,7 +1904,12 @@ func serveFusionFinalStreamingObserved(
 		}
 		if chatIncludeUsage(req) {
 			details := fusionResponseDetails(config, panel, []fusionCallResult{judge}, []fusionCallResult{final}, responseModel, final.Model)
-			if err := writeFusionStreamUsage(streamW, requestID, responseModel, created, final, fusionTotalCostMicrodollars(panel, []fusionCallResult{judge}, []fusionCallResult{final}), fusionProviderUsage(details)); err != nil {
+			totalIn, totalOut := fusionUsageTotals(panel, []fusionCallResult{judge}, final)
+			usageResult := final
+			usageResult.InputTokens = totalIn
+			usageResult.OutputTokens = totalOut
+			usageResult.Result.Usage = fusionAggregateStreamUsage(totalIn, totalOut, panel, []fusionCallResult{judge}, []fusionCallResult{final})
+			if err := writeFusionStreamUsage(streamW, requestID, responseModel, created, usageResult, fusionTotalCostMicrodollars(panel, []fusionCallResult{judge}, []fusionCallResult{final}), fusionProviderUsage(details)); err != nil {
 				return err
 			}
 		}
@@ -2451,6 +2456,17 @@ func fusionCallDetails(item fusionCallResult) map[string]any {
 		}
 		detail["thinking"] = thinking
 	}
+	if item.Result.Usage != nil {
+		if item.Result.Usage.ReasoningTokens > 0 {
+			detail["reasoning_tokens"] = item.Result.Usage.ReasoningTokens
+		}
+		if item.Result.Usage.CacheReadInputTokens > 0 {
+			detail["cache_read_input_tokens"] = item.Result.Usage.CacheReadInputTokens
+		}
+		if item.Result.Usage.CacheCreationInputTokens > 0 {
+			detail["cache_creation_input_tokens"] = item.Result.Usage.CacheCreationInputTokens
+		}
+	}
 	if len(item.Result.ToolCalls) > 0 {
 		detail["tool_calls"] = item.Result.ToolCalls
 	}
@@ -2824,6 +2840,37 @@ func fusionUsageTotals(panel []fusionCallResult, judges []fusionCallResult, fina
 		outputs = 1
 	}
 	return inputs, outputs
+}
+
+func fusionAggregateStreamUsage(inputTokens int, outputTokens int, groups ...[]fusionCallResult) *adapter.StreamUsage {
+	usage := adapter.StreamUsage{
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+	}
+	hasProviderDetails := false
+	for _, items := range groups {
+		for _, item := range items {
+			if item.Result.Usage == nil {
+				continue
+			}
+			if item.Result.Usage.ReasoningTokens > 0 {
+				usage.ReasoningTokens += item.Result.Usage.ReasoningTokens
+				hasProviderDetails = true
+			}
+			if item.Result.Usage.CacheReadInputTokens > 0 {
+				usage.CacheReadInputTokens += item.Result.Usage.CacheReadInputTokens
+				hasProviderDetails = true
+			}
+			if item.Result.Usage.CacheCreationInputTokens > 0 {
+				usage.CacheCreationInputTokens += item.Result.Usage.CacheCreationInputTokens
+				hasProviderDetails = true
+			}
+		}
+	}
+	if !hasProviderDetails {
+		return nil
+	}
+	return &usage
 }
 
 func fusionPanelUsageTotals(panel []fusionCallResult) (int, int) {

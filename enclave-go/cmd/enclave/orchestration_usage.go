@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 func advisorProviderUsage(details map[string]any) map[string]any {
 	if len(details) == 0 {
@@ -10,6 +13,7 @@ func advisorProviderUsage(details map[string]any) map[string]any {
 	workers := providerUsageCallList(details["worker_attempts"], primitive)
 	advisorAll := providerUsageCallList(details["advisor_attempts"], primitive)
 	advisors, advisorFinal := splitProviderUsageCalls(advisorAll, "advisor.advisor_final")
+	allCalls := providerUsageConcat(workers, advisors, advisorFinal)
 	out := map[string]any{
 		"router":                        providerUsageOrDefault(details["router"], primitive),
 		"primitive":                     primitive,
@@ -25,6 +29,9 @@ func advisorProviderUsage(details map[string]any) map[string]any {
 		"worker_models":                 providerUsageModels(workers),
 		"advisor_models":                providerUsageModels(advisors),
 		"advisor_final_models":          providerUsageModels(advisorFinal),
+		"reasoning_tokens":              providerUsageIntSum(allCalls, "reasoning_tokens"),
+		"cache_read_input_tokens":       providerUsageIntSum(allCalls, "cache_read_input_tokens"),
+		"cache_creation_input_tokens":   providerUsageIntSum(allCalls, "cache_creation_input_tokens"),
 		"worker_attempts":               workers,
 		"advisor_attempts":              advisors,
 		"advisor_final_attempts":        advisorFinal,
@@ -46,6 +53,7 @@ func fusionProviderUsage(details map[string]any) map[string]any {
 	mapperAttempts := providerUsageCallList(details["mapper_attempts"], primitive)
 	parts := providerUsageCallList(details["parts"], primitive)
 	reducerAttempts := providerUsageCallList(details["reducer_attempts"], primitive)
+	allCalls := providerUsageConcat(panel, judgeAttempts, finalAttempts, selectorAttempts, mapperAttempts, parts, reducerAttempts)
 	out := map[string]any{
 		"router":                        providerUsageOrDefault(details["router"], primitive),
 		"primitive":                     primitive,
@@ -67,6 +75,9 @@ func fusionProviderUsage(details map[string]any) map[string]any {
 		"mapper_models":                 providerUsageModels(mapperAttempts),
 		"part_models":                   providerUsageModels(parts),
 		"reducer_models":                providerUsageModels(reducerAttempts),
+		"reasoning_tokens":              providerUsageIntSum(allCalls, "reasoning_tokens"),
+		"cache_read_input_tokens":       providerUsageIntSum(allCalls, "cache_read_input_tokens"),
+		"cache_creation_input_tokens":   providerUsageIntSum(allCalls, "cache_creation_input_tokens"),
 		"mapper_attempts":               mapperAttempts,
 		"parts":                         parts,
 		"reducer_attempts":              reducerAttempts,
@@ -116,6 +127,9 @@ func providerUsageCall(detail map[string]any, primitive string) map[string]any {
 		"finish_reason",
 		"input_tokens",
 		"output_tokens",
+		"reasoning_tokens",
+		"cache_read_input_tokens",
+		"cache_creation_input_tokens",
 		"usage_estimated",
 		"elapsed_ms",
 		"cost_microdollars",
@@ -234,6 +248,42 @@ func providerUsageModels(items []map[string]any) []string {
 		out = append(out, model)
 	}
 	return out
+}
+
+func providerUsageConcat(groups ...[]map[string]any) []map[string]any {
+	total := 0
+	for _, group := range groups {
+		total += len(group)
+	}
+	out := make([]map[string]any, 0, total)
+	for _, group := range groups {
+		out = append(out, group...)
+	}
+	return out
+}
+
+func providerUsageIntSum(items []map[string]any, key string) int {
+	total := 0
+	for _, item := range items {
+		total += providerUsageInt(item[key])
+	}
+	return total
+}
+
+func providerUsageInt(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		if out, err := typed.Int64(); err == nil {
+			return int(out)
+		}
+	}
+	return 0
 }
 
 func pruneEmptyProviderUsage(in map[string]any) map[string]any {
