@@ -26,6 +26,7 @@ const trustedRouterPrometheusModel = "trustedrouter/prometheus"
 const trustedRouterZeusModel = "trustedrouter/zeus"
 const trustedRouterIris10Model = "trustedrouter/iris-1.0"
 const trustedRouterPrometheus10Model = "trustedrouter/prometheus-1.0"
+const trustedRouterPrometheus101MModel = "trustedrouter/prometheus-1.0-1m"
 const trustedRouterZeus10Model = "trustedrouter/zeus-1.0"
 const trustedRouterIrisCodeModel = "trustedrouter/iris-code"
 const trustedRouterPrometheusCodeModel = "trustedrouter/prometheus-code"
@@ -92,6 +93,13 @@ var fusionQualityPanel = []string{
 	"deepseek/deepseek-v4-pro",
 }
 
+var fusionQuality1MPanel = []string{
+	"minimax/minimax-m3",
+	"xiaomi/mimo-v2.5-pro",
+	"z-ai/glm-5.2",
+	"deepseek/deepseek-v4-pro",
+}
+
 var fusionBudgetPanel = []string{
 	"minimax/minimax-m3",
 	fusionGeneralKimi,
@@ -146,6 +154,7 @@ func isFusionModel(model string) bool {
 		trustedRouterZeusModel,
 		trustedRouterIris10Model,
 		trustedRouterPrometheus10Model,
+		trustedRouterPrometheus101MModel,
 		trustedRouterZeus10Model,
 		trustedRouterIrisCodeModel,
 		trustedRouterPrometheusCodeModel,
@@ -198,6 +207,8 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 		trustedRouterPrometheusCodeModel,
 		trustedRouterPrometheusCode10Model:
 		return "quality", append([]string(nil), fusionQualityPanel...), true
+	case trustedRouterPrometheus101MModel:
+		return "quality-1m", append([]string(nil), fusionQuality1MPanel...), true
 	case trustedRouterZeusModel,
 		trustedRouterZeus10Model,
 		trustedRouterZeusCodeModel,

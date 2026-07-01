@@ -2968,6 +2968,40 @@ func TestRunSocratesAdviceOnceThenWorkerFinal(t *testing.T) {
 	}
 }
 
+func TestRunSocratesAdviceRunsAdvisorsInParallel(t *testing.T) {
+	trGateway, _, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &socratesScriptedLLM{
+		delayByModel: map[string]time.Duration{
+			"advisor/slow-a": 90 * time.Millisecond,
+			"advisor/slow-b": 90 * time.Millisecond,
+		},
+	}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterAdvisorModel,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "need advice"}},
+	}
+	config := testSocratesConfig(t)
+	config.AdvisorModels = []string{"advisor/slow-a", "advisor/slow-b"}
+
+	started := time.Now()
+	text, attempts := runSocratesAdvice(context.Background(), streamer, req, config, req.Messages, trGateway, nil, "bearer", "req_socrates_parallel_advice", "log_socrates_parallel_advice", nil, nil, 0, nil)
+	elapsed := time.Since(started)
+
+	if elapsed >= 170*time.Millisecond {
+		t.Fatalf("advisors appear serial, elapsed=%s", elapsed)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(attempts))
+	}
+	if !strings.Contains(text, "Advisor 1 (advisor/slow-a)") ||
+		!strings.Contains(text, "answer from advisor/slow-a") ||
+		!strings.Contains(text, "Advisor 2 (advisor/slow-b)") ||
+		!strings.Contains(text, "answer from advisor/slow-b") {
+		t.Fatalf("parallel advice text did not include both advisors:\n%s", text)
+	}
+}
+
 func TestSocratesProviderUsageReportsAdviceWithoutText(t *testing.T) {
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
@@ -3281,7 +3315,7 @@ func TestSocratesComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		{
 			model:    trustedRouterPlatoPro10Model,
 			workers:  []string{"z-ai/glm-5.2"},
-			advisors: []string{trustedRouterPrometheus10Model},
+			advisors: []string{trustedRouterPrometheus101MModel},
 		},
 		{
 			model:    trustedRouterSocrates10Model,
@@ -3312,6 +3346,11 @@ func TestSocratesComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			model:    trustedRouterOpenExploiterFast1Model,
 			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
 			advisors: []string{trustedRouterOpenExploiterA1Model},
+		},
+		{
+			model:    trustedRouterOpenExploiterG1Model,
+			workers:  []string{"z-ai/glm-5.2"},
+			advisors: []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
 		},
 	}
 	for _, tt := range tests {
@@ -4009,6 +4048,7 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 		{trustedRouterZeusModel, "frontier", fusionFrontierPanel, false},
 		{trustedRouterIris10Model, "budget", fusionBudgetPanel, false},
 		{trustedRouterPrometheus10Model, "quality", fusionQualityPanel, false},
+		{trustedRouterPrometheus101MModel, "quality-1m", fusionQuality1MPanel, false},
 		{trustedRouterZeus10Model, "frontier", fusionFrontierPanel, false},
 		{trustedRouterIrisCodeModel, "budget", fusionBudgetPanel, true},
 		{trustedRouterPrometheusCodeModel, "quality", fusionQualityPanel, true},
@@ -4955,15 +4995,23 @@ type socratesScriptedLLM struct {
 	callAdviceFirst        bool
 	callAdviceAfterAdvisor bool
 	failModels             map[string]bool
+	delayByModel           map[string]time.Duration
 }
 
 func (s *socratesScriptedLLM) InvokeStreaming(
-	_ context.Context,
+	ctx context.Context,
 	req *types.OpenAIChatRequest,
 	_ *types.AnthropicMessagesRequest,
 	out io.Writer,
 	_ ...llm.InvokeOptions,
 ) error {
+	if s.delayByModel != nil && s.delayByModel[req.Model] > 0 {
+		select {
+		case <-time.After(s.delayByModel[req.Model]):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	if s.failModels != nil && s.failModels[req.Model] {
 		return fmt.Errorf("scripted provider failure for %s", req.Model)
 	}
