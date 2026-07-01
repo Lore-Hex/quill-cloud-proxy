@@ -3222,7 +3222,7 @@ func TestServeOneOpenPatcherG1PreservesAliasAndReportsAdvisorUsage(t *testing.T)
 	}
 }
 
-func TestServeOneAthenaPreservesAliasAndHidesAdvisorMetadata(t *testing.T) {
+func TestServeOneAthenaPreservesAliasAndReportsRedactedAdvisorCounters(t *testing.T) {
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
 	streamer := &advisorScriptedLLM{
@@ -3269,11 +3269,26 @@ func TestServeOneAthenaPreservesAliasAndHidesAdvisorMetadata(t *testing.T) {
 	if response.Model != trustedRouterAthenaModel {
 		t.Fatalf("model = %q, want %q; body=%s", response.Model, trustedRouterAthenaModel, bodyBytes)
 	}
-	if _, ok := response.Usage["provider_usage"]; ok {
-		t.Fatalf("Athena leaked provider_usage: %#v", response.Usage["provider_usage"])
+	providerUsage, ok := response.Usage["provider_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("Athena should report redacted provider_usage counters: %#v", response.Usage)
 	}
-	if _, ok := response.Usage["completion_tokens_details"]; ok {
-		t.Fatalf("Athena leaked reasoning token details: %#v", response.Usage["completion_tokens_details"])
+	if providerUsage["router"] != trustedRouterAthenaModel ||
+		providerUsage["primitive"] != trustedRouterAdvisorModel ||
+		providerUsage["advice_call_count"] != float64(1) ||
+		providerUsage["advisor_attempt_count"] == nil ||
+		providerUsage["contains_prompt_or_completion"] != false {
+		t.Fatalf("bad Athena redacted provider_usage: %#v", providerUsage)
+	}
+	if _, ok := providerUsage["advisor_attempts"]; ok {
+		t.Fatalf("Athena redacted provider_usage leaked advisor attempts: %#v", providerUsage)
+	}
+	if _, ok := providerUsage["advisor_models"]; ok {
+		t.Fatalf("Athena redacted provider_usage leaked advisor models: %#v", providerUsage)
+	}
+	completionDetails, ok := response.Usage["completion_tokens_details"].(map[string]any)
+	if !ok || completionDetails["reasoning_tokens"] == nil {
+		t.Fatalf("Athena should report aggregate reasoning tokens: %#v", response.Usage)
 	}
 	if _, ok := response.Usage["cost_microdollars"]; !ok {
 		t.Fatalf("Athena should still report billing cost: %#v", response.Usage)
@@ -3281,8 +3296,6 @@ func TestServeOneAthenaPreservesAliasAndHidesAdvisorMetadata(t *testing.T) {
 	encoded := string(bodyBytes)
 	for _, forbidden := range []string{
 		`"trustedrouter"`,
-		`"provider_usage"`,
-		`"completion_tokens_details"`,
 		`"model":"z-ai/glm-5.2-fast"`,
 		`"model":"z-ai/glm-5.2"`,
 		`"model":"` + fusionCodeKimi + `"`,
@@ -3349,10 +3362,14 @@ func TestServeOneAthenaStreamingHidesAdvisorMetadata(t *testing.T) {
 	if !strings.Contains(encoded, `"cost_microdollars"`) {
 		t.Fatalf("stream should still report billing cost: %s", encoded)
 	}
+	if !strings.Contains(encoded, `"provider_usage"`) ||
+		!strings.Contains(encoded, `"advice_call_count":1`) ||
+		!strings.Contains(encoded, `"advisor_attempt_count"`) ||
+		!strings.Contains(encoded, `"completion_tokens_details"`) {
+		t.Fatalf("stream should report redacted Athena advisor counters and reasoning: %s", encoded)
+	}
 	for _, forbidden := range []string{
 		`"trustedrouter"`,
-		`"provider_usage"`,
-		`"completion_tokens_details"`,
 		`"model":"z-ai/glm-5.2-fast"`,
 		`"model":"z-ai/glm-5.2"`,
 		`"model":"` + fusionCodeKimi + `"`,

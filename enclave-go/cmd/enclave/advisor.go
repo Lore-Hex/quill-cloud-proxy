@@ -642,10 +642,11 @@ func serveAdvisorStreaming(
 		usage.OutputTokens = totalOut
 		usage.Result.Usage = advisorPublicStreamUsage(config, totalIn, totalOut, workerAttempts, advisorAttempts)
 		details := advisorResponseDetails(config, workerAttempts, advisorAttempts, responseModel, selectedModel, adviceCalls, budgetExhausted)
+		providerUsage := advisorPublicProviderUsage(details)
 		if config.HidePublicMetadata {
-			_ = writeHiddenAdvisorStreamUsage(statsW, requestID, responseModel, created, usage, advisorTotalCostMicrodollars(workerAttempts, advisorAttempts))
+			_ = writeHiddenAdvisorStreamUsage(statsW, requestID, responseModel, created, usage, advisorTotalCostMicrodollars(workerAttempts, advisorAttempts), providerUsage)
 		} else {
-			_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, usage, advisorTotalCostMicrodollars(workerAttempts, advisorAttempts), advisorProviderUsage(details))
+			_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, usage, advisorTotalCostMicrodollars(workerAttempts, advisorAttempts), providerUsage)
 		}
 	}
 	_, _ = statsW.Write([]byte("data: [DONE]\n\n"))
@@ -673,12 +674,16 @@ func runAdvisor(
 	var lastErr error
 	allWorkerAttempts := make([]fusionCallResult, 0, len(config.WorkerModels))
 	allAdvisorAttempts := make([]fusionCallResult, 0, len(config.AdvisorModels))
+	totalAdviceCalls := 0
+	anyBudgetExhausted := false
 	for i, workerModel := range config.WorkerModels {
 		final, workers, advisors, adviceCalls, budgetExhausted, err := runAdvisorWorkerLoop(ctx, br, req, config, workerModel, i, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, streamW, streamCreated, observerFactory)
 		allWorkerAttempts = append(allWorkerAttempts, workers...)
 		allAdvisorAttempts = append(allAdvisorAttempts, advisors...)
+		totalAdviceCalls += adviceCalls
+		anyBudgetExhausted = anyBudgetExhausted || budgetExhausted
 		if err == nil {
-			return final, allWorkerAttempts, allAdvisorAttempts, adviceCalls, budgetExhausted, nil
+			return final, allWorkerAttempts, allAdvisorAttempts, totalAdviceCalls, anyBudgetExhausted, nil
 		}
 		lastErr = err
 		fmt.Fprintf(os.Stderr,
@@ -699,11 +704,11 @@ func runAdvisor(
 		final, advisors, err := runAdvisorFinal(ctx, br, req, config, req.Messages, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, streamW, streamCreated, observerFactory)
 		allAdvisorAttempts = append(allAdvisorAttempts, advisors...)
 		if err == nil {
-			return final, allWorkerAttempts, allAdvisorAttempts, 0, false, nil
+			return final, allWorkerAttempts, allAdvisorAttempts, totalAdviceCalls, anyBudgetExhausted, nil
 		}
-		return fusionCallResult{}, allWorkerAttempts, allAdvisorAttempts, 0, false, lastErr
+		return fusionCallResult{}, allWorkerAttempts, allAdvisorAttempts, totalAdviceCalls, anyBudgetExhausted, lastErr
 	}
-	return fusionCallResult{}, allWorkerAttempts, allAdvisorAttempts, 0, false, &adapter.AdapterError{Status: 502, Message: "trustedrouter/advisor worker models produced no response", Context: "advisor.worker"}
+	return fusionCallResult{}, allWorkerAttempts, allAdvisorAttempts, totalAdviceCalls, anyBudgetExhausted, &adapter.AdapterError{Status: 502, Message: "trustedrouter/advisor worker models produced no response", Context: "advisor.worker"}
 }
 
 func runAdvisorWorkerLoop(
@@ -1691,14 +1696,7 @@ func advisorTotalCostMicrodollars(groups ...[]fusionCallResult) int {
 }
 
 func advisorPublicStreamUsage(config advisorConfig, inputTokens int, outputTokens int, groups ...[]fusionCallResult) *adapter.StreamUsage {
-	usage := fusionAggregateStreamUsage(inputTokens, outputTokens, groups...)
-	if !config.HidePublicMetadata || usage == nil {
-		return usage
-	}
-	return &adapter.StreamUsage{
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
-	}
+	return fusionAggregateStreamUsage(inputTokens, outputTokens, groups...)
 }
 
 func advisorHidePublicMetadata(details map[string]any) bool {
@@ -1746,7 +1744,7 @@ func writeAdvisorChatCompletionResponse(
 		if cost, ok := fusionCostMicrodollars(details); ok {
 			usage["cost_microdollars"] = cost
 		}
-		if providerUsage := advisorProviderUsage(details); !hidePublicMetadata && len(providerUsage) > 0 {
+		if providerUsage := advisorPublicProviderUsage(details); len(providerUsage) > 0 {
 			usage["provider_usage"] = providerUsage
 		}
 	}
@@ -1811,7 +1809,7 @@ func writeHiddenAdvisorStreamError(w io.Writer, requestID string, model string, 
 	return err
 }
 
-func writeHiddenAdvisorStreamUsage(w io.Writer, requestID string, model string, created int64, result fusionCallResult, totalCostMicrodollars int) error {
+func writeHiddenAdvisorStreamUsage(w io.Writer, requestID string, model string, created int64, result fusionCallResult, totalCostMicrodollars int, providerUsage map[string]any) error {
 	usage := map[string]any{
 		"prompt_tokens":     result.InputTokens,
 		"completion_tokens": result.OutputTokens,
@@ -1819,6 +1817,19 @@ func writeHiddenAdvisorStreamUsage(w io.Writer, requestID string, model string, 
 	}
 	if totalCostMicrodollars > 0 {
 		usage["cost_microdollars"] = totalCostMicrodollars
+	}
+	if len(providerUsage) > 0 {
+		usage["provider_usage"] = providerUsage
+	}
+	if result.Result.Usage != nil && result.Result.Usage.ReasoningTokens > 0 {
+		usage["completion_tokens_details"] = map[string]any{
+			"reasoning_tokens": result.Result.Usage.ReasoningTokens,
+		}
+	}
+	if result.Result.Usage != nil && result.Result.Usage.CacheReadInputTokens > 0 {
+		usage["prompt_tokens_details"] = map[string]any{
+			"cached_tokens": result.Result.Usage.CacheReadInputTokens,
+		}
 	}
 	chunk := map[string]any{
 		"id":      requestID,

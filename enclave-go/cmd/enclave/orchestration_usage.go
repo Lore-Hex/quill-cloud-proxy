@@ -41,6 +41,34 @@ func advisorProviderUsage(details map[string]any) map[string]any {
 	return pruneEmptyProviderUsage(out)
 }
 
+func advisorPublicProviderUsage(details map[string]any) map[string]any {
+	if !advisorHidePublicMetadata(details) {
+		return advisorProviderUsage(details)
+	}
+	full := advisorProviderUsage(details)
+	if len(full) == 0 {
+		return nil
+	}
+	out := map[string]any{
+		"router":                        providerUsageOrDefault(details["router"], trustedRouterAdvisorModel),
+		"primitive":                     providerUsageOrDefault(details["primitive"], trustedRouterAdvisorModel),
+		"version":                       details["version"],
+		"depth_initial":                 details["depth_initial"],
+		"max_get_advice_calls":          details["max_get_advice_calls"],
+		"advice_call_count":             details["advice_call_count"],
+		"advice_budget_exhausted":       details["advice_budget_exhausted"],
+		"worker_attempt_count":          full["worker_attempt_count"],
+		"advisor_attempt_count":         full["advisor_attempt_count"],
+		"advisor_final_attempt_count":   full["advisor_final_attempt_count"],
+		"reasoning_tokens":              full["reasoning_tokens"],
+		"cache_read_input_tokens":       full["cache_read_input_tokens"],
+		"cache_creation_input_tokens":   full["cache_creation_input_tokens"],
+		"cost_microdollars":             full["cost_microdollars"],
+		"contains_prompt_or_completion": false,
+	}
+	return pruneEmptyProviderUsage(out)
+}
+
 func fusionProviderUsage(details map[string]any) map[string]any {
 	if len(details) == 0 {
 		return nil
