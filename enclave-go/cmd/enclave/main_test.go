@@ -3718,7 +3718,7 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:    trustedRouterSocrates10Model,
-			workers:  []string{"cerebras/gpt-oss-120b"},
+			workers:  []string{"cerebras/gpt-oss-120b", "deepseek/deepseek-v4-flash"},
 			advisors: []string{trustedRouterSocratesPro10Model},
 		},
 		{
@@ -3733,6 +3733,11 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:    trustedRouterSocrates11Model,
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
+			advisors: []string{trustedRouterZeus10Model},
+		},
+		{
+			model:    trustedRouterSocratesModel,
 			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
 			advisors: []string{trustedRouterZeus10Model},
 		},

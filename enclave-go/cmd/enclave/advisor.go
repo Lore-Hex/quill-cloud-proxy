@@ -128,10 +128,10 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case trustedRouterAdvisorModel:
 		return advisorConfig{Enabled: true}, true
-	case trustedRouterSocrates10Model, trustedRouterSocratesModel:
+	case trustedRouterSocrates10Model:
 		return advisorConfig{
 			Enabled:       true,
-			WorkerModels:  []string{"cerebras/gpt-oss-120b"},
+			WorkerModels:  []string{"cerebras/gpt-oss-120b", "deepseek/deepseek-v4-flash"},
 			AdvisorModels: []string{trustedRouterSocratesPro10Model},
 		}, true
 	case trustedRouterAristotle10Model, trustedRouterAristotleModel:
@@ -158,7 +158,7 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 			WorkerModels:  []string{"cerebras/zai-glm-4.7"},
 			AdvisorModels: []string{trustedRouterSocratesProPlus10Model},
 		}, true
-	case trustedRouterSocrates11Model, trustedRouterSocratesProPlus10Model, trustedRouterSocratesProPlusModel:
+	case trustedRouterSocratesModel, trustedRouterSocrates11Model, trustedRouterSocratesProPlus10Model, trustedRouterSocratesProPlusModel:
 		return advisorConfig{
 			Enabled:       true,
 			WorkerModels:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
