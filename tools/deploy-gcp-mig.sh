@@ -184,7 +184,10 @@ MACHINE_TYPE="${MACHINE_TYPE:-$default_machine_type}"
 CONF_COMPUTE_TYPE="${CONF_COMPUTE_TYPE:-$default_conf_compute_type}"
 CSP_IMAGE_FAMILY="${CSP_IMAGE_FAMILY:-confidential-space}"
 CSP_IMAGE_PROJECT="${CSP_IMAGE_PROJECT:-confidential-space-images}"
-TEE_CONTAINER_LOG_REDIRECT="${TEE_CONTAINER_LOG_REDIRECT:-false}"
+# Route the workload's stdout/stderr into Cloud Logging so metadata-only
+# request lifecycle lines such as advisor.request_end and enclave.request_end
+# are observable. Prompt/output content must still never be logged by the app.
+TEE_CONTAINER_LOG_REDIRECT="${TEE_CONTAINER_LOG_REDIRECT:-true}"
 
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 gc() { gcloud --project "$PROJECT_ID" "$@"; }
