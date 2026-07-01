@@ -3121,7 +3121,7 @@ func TestAdvisorProviderUsageReportsAdviceWithoutText(t *testing.T) {
 	}
 }
 
-func TestServeOneOpenExploiterG1PreservesAliasAndReportsAdvisorUsage(t *testing.T) {
+func TestServeOneOpenPatcherG1PreservesAliasAndReportsAdvisorUsage(t *testing.T) {
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
 	streamer := &advisorScriptedLLM{
@@ -3136,7 +3136,7 @@ func TestServeOneOpenExploiterG1PreservesAliasAndReportsAdvisorUsage(t *testing.
 	defer client.Close()
 	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
 
-	requestBody := []byte(`{"model":"trustedrouter/openexploiter-g1","stream":false,"messages":[{"role":"user","content":"hard security task"}],"max_tokens":128}`)
+	requestBody := []byte(`{"model":"trustedrouter/openpatcher-g1","stream":false,"messages":[{"role":"user","content":"hard security task"}],"max_tokens":128}`)
 	if _, err := fmt.Fprintf(
 		client,
 		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
@@ -3166,14 +3166,14 @@ func TestServeOneOpenExploiterG1PreservesAliasAndReportsAdvisorUsage(t *testing.
 	if err := json.Unmarshal(bodyBytes, &response); err != nil {
 		t.Fatalf("decode response: %v body=%s", err, bodyBytes)
 	}
-	if response.Model != trustedRouterOpenExploiterG1Model {
-		t.Fatalf("model = %q, want %q; body=%s", response.Model, trustedRouterOpenExploiterG1Model, bodyBytes)
+	if response.Model != trustedRouterOpenPatcherG1Model {
+		t.Fatalf("model = %q, want %q; body=%s", response.Model, trustedRouterOpenPatcherG1Model, bodyBytes)
 	}
 	details, ok := response.Router["advisor"].(map[string]any)
 	if !ok {
 		t.Fatalf("trustedrouter details = %#v, want advisor primitive", response.Router)
 	}
-	if details["router"] != trustedRouterOpenExploiterG1Model ||
+	if details["router"] != trustedRouterOpenPatcherG1Model ||
 		details["primitive"] != trustedRouterAdvisorModel ||
 		details["selected_model"] != "z-ai/glm-5.2-fast" ||
 		details["advice_call_count"] != float64(1) {
@@ -3183,7 +3183,7 @@ func TestServeOneOpenExploiterG1PreservesAliasAndReportsAdvisorUsage(t *testing.
 	if !ok {
 		t.Fatalf("usage provider_usage missing: %#v", response.Usage)
 	}
-	if providerUsage["router"] != trustedRouterOpenExploiterG1Model ||
+	if providerUsage["router"] != trustedRouterOpenPatcherG1Model ||
 		providerUsage["primitive"] != trustedRouterAdvisorModel ||
 		providerUsage["selected_model"] != "z-ai/glm-5.2-fast" ||
 		providerUsage["advice_call_count"] != float64(1) ||
@@ -3290,7 +3290,7 @@ func TestServeOneAthenaPreservesAliasAndHidesAdvisorMetadata(t *testing.T) {
 		`"worker_models"`,
 		`"advisor_models"`,
 		`"advisor_attempts"`,
-		`"openexploiter"`,
+		`"openpatcher"`,
 		"hard security task",
 		"Advisor 1",
 		"advisor says",
@@ -3359,7 +3359,7 @@ func TestServeOneAthenaStreamingHidesAdvisorMetadata(t *testing.T) {
 		`"worker_models"`,
 		`"advisor_models"`,
 		`"advisor_attempts"`,
-		`"openexploiter"`,
+		`"openpatcher"`,
 		"hard security task",
 		"Advisor 1",
 		"advisor says",
@@ -3717,17 +3717,17 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{
-			model:    trustedRouterOpenExploiterA1Model,
-			workers:  []string{trustedRouterOpenExploiterS1Model},
+			model:    trustedRouterOpenPatcherA1Model,
+			workers:  []string{trustedRouterOpenPatcherS1Model},
 			advisors: []string{trustedRouterPrometheus10Model},
 		},
 		{
-			model:    trustedRouterOpenExploiterFast1Model,
+			model:    trustedRouterOpenPatcherFast1Model,
 			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
-			advisors: []string{trustedRouterOpenExploiterA1Model},
+			advisors: []string{trustedRouterOpenPatcherA1Model},
 		},
 		{
-			model:    trustedRouterOpenExploiterG1Model,
+			model:    trustedRouterOpenPatcherG1Model,
 			workers:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
 			advisors: []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
 		},
@@ -4435,7 +4435,7 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 		{trustedRouterIrisCode10Model, "budget", fusionBudgetPanel, true},
 		{trustedRouterPrometheusCode10Model, "quality", fusionQualityPanel, true},
 		{trustedRouterZeusCode10Model, "frontier", fusionFrontierPanel, true},
-		{trustedRouterOpenExploiterS1Model, "openexploiter-s1", fusionOpenExploiterS1Panel, false},
+		{trustedRouterOpenPatcherS1Model, "openpatcher-s1", fusionOpenPatcherS1Panel, false},
 	}
 
 	for _, tt := range tests {
@@ -4460,18 +4460,18 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 	}
 }
 
-func TestFusionOpenExploiterS1PresetResolvesJudgeAndFinalModels(t *testing.T) {
-	req := &types.OpenAIChatRequest{Model: trustedRouterOpenExploiterS1Model}
+func TestFusionOpenPatcherS1PresetResolvesJudgeAndFinalModels(t *testing.T) {
+	req := &types.OpenAIChatRequest{Model: trustedRouterOpenPatcherS1Model}
 	config, requested, err := fusionConfigForRequest(req)
 	if err != nil {
 		t.Fatalf("fusionConfigForRequest: %v", err)
 	}
 	if !requested {
-		t.Fatal("expected OpenExploiter-S1 to request synth orchestration")
+		t.Fatal("expected OpenPatcher-S1 to request synth orchestration")
 	}
 	preset, panel, ok := fusionPresetPanelForModel(req.Model)
 	if !ok {
-		t.Fatal("expected OpenExploiter-S1 panel preset")
+		t.Fatal("expected OpenPatcher-S1 panel preset")
 	}
 	config.Preset = preset
 	config.AnalysisModels = panel

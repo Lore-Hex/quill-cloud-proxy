@@ -34,7 +34,7 @@ const trustedRouterZeusCodeModel = "trustedrouter/zeus-code"
 const trustedRouterIrisCode10Model = "trustedrouter/iris-code-1.0"
 const trustedRouterPrometheusCode10Model = "trustedrouter/prometheus-code-1.0"
 const trustedRouterZeusCode10Model = "trustedrouter/zeus-code-1.0"
-const trustedRouterOpenExploiterS1Model = "trustedrouter/openexploiter-s1"
+const trustedRouterOpenPatcherS1Model = "trustedrouter/openpatcher-s1"
 const trustedRouterFusionModel = "trustedrouter/fusion"
 const trustedRouterFusionCodeModel = "trustedrouter/fusion-code"
 const trustedRouterSelectorModel = "trustedrouter/selector"
@@ -114,7 +114,7 @@ var fusionFrontierPanel = []string{
 	fusionGeneralKimi,
 }
 
-var fusionOpenExploiterS1Panel = []string{
+var fusionOpenPatcherS1Panel = []string{
 	fusionCodeKimi,
 	"z-ai/glm-5.2",
 }
@@ -162,7 +162,7 @@ func isFusionModel(model string) bool {
 		trustedRouterIrisCode10Model,
 		trustedRouterPrometheusCode10Model,
 		trustedRouterZeusCode10Model,
-		trustedRouterOpenExploiterS1Model,
+		trustedRouterOpenPatcherS1Model,
 		trustedRouterFusionModel,
 		trustedRouterFusionCodeModel,
 		trustedRouterSelectorModel,
@@ -214,8 +214,8 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 		trustedRouterZeusCodeModel,
 		trustedRouterZeusCode10Model:
 		return "frontier", append([]string(nil), fusionFrontierPanel...), true
-	case trustedRouterOpenExploiterS1Model:
-		return "openexploiter-s1", append([]string(nil), fusionOpenExploiterS1Panel...), true
+	case trustedRouterOpenPatcherS1Model:
+		return "openpatcher-s1", append([]string(nil), fusionOpenPatcherS1Panel...), true
 	default:
 		return "", nil, false
 	}
@@ -223,7 +223,7 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 
 func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case trustedRouterOpenExploiterS1Model:
+	case trustedRouterOpenPatcherS1Model:
 		return []string{"z-ai/glm-5.2"}, true
 	default:
 		return nil, false
@@ -232,7 +232,7 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 
 func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case trustedRouterOpenExploiterS1Model:
+	case trustedRouterOpenPatcherS1Model:
 		return []string{fusionCodeKimi}, true
 	default:
 		return nil, false

@@ -33,9 +33,9 @@ const trustedRouterSocratesPro10Model = "trustedrouter/socrates-pro-1.0"
 const trustedRouterSocratesProModel = "trustedrouter/socrates-pro"
 const trustedRouterSocratesProPlus10Model = "trustedrouter/socrates-pro-plus-1.0"
 const trustedRouterSocratesProPlusModel = "trustedrouter/socrates-pro-plus"
-const trustedRouterOpenExploiterA1Model = "trustedrouter/openexploiter-a1"
-const trustedRouterOpenExploiterFast1Model = "trustedrouter/openexploiter-fast1"
-const trustedRouterOpenExploiterG1Model = "trustedrouter/openexploiter-g1"
+const trustedRouterOpenPatcherA1Model = "trustedrouter/openpatcher-a1"
+const trustedRouterOpenPatcherFast1Model = "trustedrouter/openpatcher-fast1"
+const trustedRouterOpenPatcherG1Model = "trustedrouter/openpatcher-g1"
 const trustedRouterAthenaModel = "trustedrouter/athena"
 const trustedRouterAdvisorTool = "trustedrouter:advisor"
 const advisorAdviceToolName = "_trustedrouter_get_advice"
@@ -163,28 +163,28 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 			WorkerModels:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
 			AdvisorModels: []string{trustedRouterZeus10Model},
 		}, true
-	case trustedRouterOpenExploiterA1Model:
+	case trustedRouterOpenPatcherA1Model:
 		return advisorConfig{
 			Enabled:       true,
-			WorkerModels:  []string{trustedRouterOpenExploiterS1Model},
+			WorkerModels:  []string{trustedRouterOpenPatcherS1Model},
 			AdvisorModels: []string{trustedRouterPrometheus10Model},
 		}, true
-	case trustedRouterOpenExploiterFast1Model:
+	case trustedRouterOpenPatcherFast1Model:
 		return advisorConfig{
 			Enabled:       true,
 			WorkerModels:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
-			AdvisorModels: []string{trustedRouterOpenExploiterA1Model},
+			AdvisorModels: []string{trustedRouterOpenPatcherA1Model},
 		}, true
-	case trustedRouterOpenExploiterG1Model:
-		return openExploiterG1AdvisorConfig(false), true
+	case trustedRouterOpenPatcherG1Model:
+		return openPatcherG1AdvisorConfig(false), true
 	case trustedRouterAthenaModel:
-		return openExploiterG1AdvisorConfig(true), true
+		return openPatcherG1AdvisorConfig(true), true
 	default:
 		return advisorConfig{}, false
 	}
 }
 
-func openExploiterG1AdvisorConfig(hidePublicMetadata bool) advisorConfig {
+func openPatcherG1AdvisorConfig(hidePublicMetadata bool) advisorConfig {
 	return advisorConfig{
 		Enabled:            true,
 		WorkerModels:       []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
