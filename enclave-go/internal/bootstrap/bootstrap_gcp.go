@@ -132,8 +132,14 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	synthSynthesisPromptSecret := os.Getenv("QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET")
 	synthCodePanelPromptSecret := os.Getenv("QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET")
 	synthCodeSynthesisPromptSecret := os.Getenv("QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SECRET")
-	advisorWorkerPromptSecret := os.Getenv("QUILL_ADVISOR_WORKER_PROMPT_SECRET")
-	advisorPromptSecret := os.Getenv("QUILL_ADVISOR_PROMPT_SECRET")
+	advisorWorkerPromptSecret := firstSet(
+		os.Getenv("QUILL_ADVISOR_WORKER_PROMPT_SECRET"),
+		os.Getenv("QUILL_SOCRATES_WORKER_PROMPT_SECRET"),
+	)
+	advisorPromptSecret := firstSet(
+		os.Getenv("QUILL_ADVISOR_PROMPT_SECRET"),
+		os.Getenv("QUILL_SOCRATES_ADVISOR_PROMPT_SECRET"),
+	)
 	if !anySet(
 		openrouterSecret,
 		anthropicSecret,
@@ -498,6 +504,15 @@ func anySet(values ...string) bool {
 		}
 	}
 	return false
+}
+
+func firstSet(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 type tokenResponse struct {

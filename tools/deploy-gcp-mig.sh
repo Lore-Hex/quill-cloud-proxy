@@ -122,8 +122,8 @@ QUILL_SYNTH_PANEL_PROMPT_SECRET="${QUILL_SYNTH_PANEL_PROMPT_SECRET:-trustedroute
 QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET="${QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET:-trustedrouter-synth-synthesis-prompt-v1}"
 QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET="${QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET:-trustedrouter-synth-code-panel-prompt-v1}"
 QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SECRET="${QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SECRET:-trustedrouter-synth-code-synthesis-prompt-v1}"
-QUILL_SOCRATES_WORKER_PROMPT_SECRET="${QUILL_SOCRATES_WORKER_PROMPT_SECRET:-trustedrouter-socrates-worker-prompt-v1}"
-QUILL_SOCRATES_ADVISOR_PROMPT_SECRET="${QUILL_SOCRATES_ADVISOR_PROMPT_SECRET:-trustedrouter-socrates-advisor-prompt-v1}"
+QUILL_SOCRATES_WORKER_PROMPT_SECRET="${QUILL_SOCRATES_WORKER_PROMPT_SECRET:-trustedrouter-advisor-worker-prompt-v1}"
+QUILL_SOCRATES_ADVISOR_PROMPT_SECRET="${QUILL_SOCRATES_ADVISOR_PROMPT_SECRET:-trustedrouter-advisor-prompt-v1}"
 # Cohere — embeddings only (native /v2/embed). The secret
 # trustedrouter-cohere-api-key was provisioned in Secret Manager on
 # 2026-06-07, so the enclave can fetch it at boot. NOTE: the bootstrap
