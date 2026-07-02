@@ -413,6 +413,30 @@ type AnthropicMessagesRequest struct {
 	MaxTokensExplicit bool `json:"-"`
 }
 
+// MarshalJSON emits the `system` field from SystemRaw when it is set (native
+// /v1/messages, or a chat request that carried a system-block cache_control
+// breakpoint), falling back to the flattened System string otherwise. SystemRaw
+// stays json:"-" so ONLY this method surfaces it — that way providers which
+// marshal this struct directly (Bedrock) send prompt-cache markers on the system
+// prompt identically to the clients that resolve the field themselves
+// (Anthropic-direct, BYOK, Vertex via anthropicSystemField). All other fields
+// marshal via the struct tags unchanged.
+func (r AnthropicMessagesRequest) MarshalJSON() ([]byte, error) {
+	type alias AnthropicMessagesRequest // no methods -> no recursion
+	shadow := struct {
+		alias
+		System any `json:"system,omitempty"` // shadows alias.System (shallower wins)
+	}{alias: alias(r)}
+	shadow.alias.System = ""
+	switch {
+	case r.SystemRaw != nil:
+		shadow.System = r.SystemRaw
+	case r.System != "":
+		shadow.System = r.System
+	}
+	return json.Marshal(shadow)
+}
+
 type AnthropicTool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`

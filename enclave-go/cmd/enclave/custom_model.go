@@ -72,9 +72,16 @@ func applyCustomModelPromptToMessages(
 	if anthropicReq == nil {
 		return
 	}
+	// Prepend the hidden prompt to the raw system blocks when present (so the
+	// Anthropic-family upstreams that send SystemRaw keep the custom prompt AND
+	// any cache_control), AND always keep the flattened System string in sync —
+	// OpenAI-compatible, Vertex, OpenRouter, and Bedrock paths that read
+	// body.System would otherwise drop the hidden prompt for cache_control
+	// requests (which set SystemRaw).
 	if anthropicReq.SystemRaw != nil {
 		anthropicReq.SystemRaw = prependAnthropicSystemRaw(prompt, anthropicReq.SystemRaw)
-	} else if anthropicReq.System != "" {
+	}
+	if anthropicReq.System != "" {
 		anthropicReq.System = prompt + "\n\n" + anthropicReq.System
 	} else {
 		anthropicReq.System = prompt

@@ -43,6 +43,8 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 		return nil, &AdapterError{Status: 400, Message: "messages must contain at least one entry"}
 	}
 	var systemParts []string
+	var systemBlocks []map[string]any
+	systemHasCacheControl := false
 	var msgs []types.AnthropicMessage
 	for i, m := range req.Messages {
 		if types.ContentEmpty(m.Content) && len(m.ToolCalls) == 0 && m.Role != "tool" {
@@ -58,6 +60,12 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 				}
 			}
 			systemParts = append(systemParts, types.ContentText(m.Content))
+			for _, block := range anthropicSystemBlocks(m.Content) {
+				if _, ok := block["cache_control"]; ok {
+					systemHasCacheControl = true
+				}
+				systemBlocks = append(systemBlocks, block)
+			}
 		case "user":
 			msgs = append(msgs, types.AnthropicMessage{Role: m.Role, Content: m.Content})
 		case "assistant":
@@ -94,6 +102,19 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 	if len(systemParts) > 0 {
 		out.System = strings.Join(systemParts, "\n\n")
 	}
+	// When the client pinned a prompt-cache breakpoint on a system block, send
+	// the system field as Anthropic content blocks (SystemRaw) so the marker
+	// survives — the system prompt is the dominant prompt-cache target. Only when
+	// a breakpoint is actually present, so the common case keeps the flattened
+	// string form. out.System stays populated for token estimation and any
+	// upstream that reads only the string.
+	if systemHasCacheControl {
+		raw := make([]any, len(systemBlocks))
+		for i, block := range systemBlocks {
+			raw[i] = block
+		}
+		out.SystemRaw = raw
+	}
 	tools, err := AnthropicToolsFromChatTools(req.Tools)
 	if err != nil {
 		return nil, err
@@ -106,6 +127,57 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 	out.ToolChoice = toolChoice
 	_ = defaultModel // model is only used for response chunks, not the body
 	return out, nil
+}
+
+// anthropicSystemBlocks converts a chat `system` message's content into
+// Anthropic system content blocks, preserving any client-sent cache_control on
+// each text part. A plain string becomes a single text block. Non-text parts
+// (images are already rejected upstream) and empty text are skipped. Callers
+// only promote these to SystemRaw when at least one carries a breakpoint.
+func anthropicSystemBlocks(content any) []map[string]any {
+	appendPart := func(blocks []map[string]any, text string, cacheControl any) []map[string]any {
+		if strings.TrimSpace(text) == "" {
+			return blocks
+		}
+		block := map[string]any{"type": "text", "text": text}
+		if cacheControl != nil {
+			block["cache_control"] = cacheControl
+		}
+		return append(blocks, block)
+	}
+	switch value := content.(type) {
+	case string:
+		return appendPart(nil, value, nil)
+	case []types.ChatContentPart:
+		var blocks []map[string]any
+		for _, part := range value {
+			if isSystemTextPart(part.Type) {
+				blocks = appendPart(blocks, part.Text, part.CacheControl)
+			}
+		}
+		return blocks
+	case []any:
+		var blocks []map[string]any
+		for _, item := range value {
+			m, ok := item.(map[string]any)
+			if !ok || !isSystemTextPart(stringValue(m["type"])) {
+				continue
+			}
+			blocks = appendPart(blocks, stringValue(m["text"]), m["cache_control"])
+		}
+		return blocks
+	default:
+		return nil
+	}
+}
+
+func isSystemTextPart(partType string) bool {
+	switch partType {
+	case "", "text", "input_text":
+		return true
+	default:
+		return false
+	}
 }
 
 func anthropicAssistantContent(m types.OpenAIChatMessage) any {

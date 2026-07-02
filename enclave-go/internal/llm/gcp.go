@@ -137,7 +137,7 @@ func (c *gcpClient) InvokeStreaming(
 	reqBody := struct {
 		AnthropicVersion string                      `json:"anthropic_version"`
 		Messages         []qtypes.AnthropicMessage   `json:"messages"`
-		System           string                      `json:"system,omitempty"`
+		System           any                         `json:"system,omitempty"`
 		MaxTokens        int                         `json:"max_tokens"`
 		Temperature      *float64                    `json:"temperature,omitempty"`
 		TopP             *float64                    `json:"top_p,omitempty"`
@@ -147,7 +147,10 @@ func (c *gcpClient) InvokeStreaming(
 	}{
 		AnthropicVersion: vertexAnthropicVersion,
 		Messages:         messages,
-		System:           body.System,
+		// anthropicSystemField prefers SystemRaw (content blocks preserving
+		// cache_control) over the flattened string, so system prompt-cache
+		// breakpoints survive on the Vertex Anthropic route too.
+		System: anthropicSystemField(body),
 		MaxTokens:        body.MaxTokens,
 		Temperature:      body.Temperature,
 		TopP:             body.TopP,

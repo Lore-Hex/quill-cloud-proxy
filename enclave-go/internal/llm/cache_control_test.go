@@ -67,6 +67,66 @@ func TestChatCacheControlSurvivesToAnthropicPayload(t *testing.T) {
 	}
 }
 
+// TestChatSystemCacheControlSurvivesToAnthropicPayload guards the highest-value
+// case: a client cache_control breakpoint on the SYSTEM prompt must reach the
+// upstream Anthropic `system` field. ToAnthropic promotes system to content
+// blocks (SystemRaw) when a breakpoint is present, and anthropicSystemField
+// (what anthropic.go/byok.go/gcp.go send upstream) surfaces it rather than the
+// flattened string.
+func TestChatSystemCacheControlSurvivesToAnthropicPayload(t *testing.T) {
+	const reqJSON = `{
+		"model": "anthropic/claude-haiku-4.5",
+		"messages": [
+			{"role": "system", "content": [
+				{"type": "text", "text": "large cached system prefix", "cache_control": {"type": "ephemeral"}}
+			]},
+			{"role": "user", "content": "hi"}
+		]
+	}`
+	var req qtypes.OpenAIChatRequest
+	if err := json.Unmarshal([]byte(reqJSON), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	body, err := adapter.ToAnthropic(&req, "")
+	if err != nil {
+		t.Fatalf("ToAnthropic: %v", err)
+	}
+	raw, err := json.Marshal(anthropicSystemField(body))
+	if err != nil {
+		t.Fatalf("marshal system field: %v", err)
+	}
+	if !strings.Contains(string(raw), `"cache_control"`) || !strings.Contains(string(raw), "ephemeral") {
+		t.Fatalf("upstream Anthropic system field dropped cache_control: %s", raw)
+	}
+	if !strings.Contains(string(raw), "large cached system prefix") {
+		t.Fatalf("system text missing from system field: %s", raw)
+	}
+}
+
+// TestChatSystemWithoutCacheControlStaysString verifies the common case is
+// unchanged: a plain string system prompt (no breakpoint) is sent as a bare
+// string, not promoted to content blocks.
+func TestChatSystemWithoutCacheControlStaysString(t *testing.T) {
+	const reqJSON = `{
+		"model": "anthropic/claude-haiku-4.5",
+		"messages": [
+			{"role": "system", "content": "plain system"},
+			{"role": "user", "content": "hi"}
+		]
+	}`
+	var req qtypes.OpenAIChatRequest
+	if err := json.Unmarshal([]byte(reqJSON), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	body, err := adapter.ToAnthropic(&req, "")
+	if err != nil {
+		t.Fatalf("ToAnthropic: %v", err)
+	}
+	if _, ok := anthropicSystemField(body).(string); !ok {
+		t.Fatalf("expected bare string system field, got %T", anthropicSystemField(body))
+	}
+}
+
 // TestChatImageCacheControlSurvives checks the image branch of the block
 // rebuilder preserves cache_control too (the marker is commonly pinned on the
 // last block of a large multimodal prefix).
