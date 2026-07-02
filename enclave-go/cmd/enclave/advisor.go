@@ -62,7 +62,9 @@ const fallbackAdvisorWorkerPrompt = `You are a TrustedRouter advisor worker.
 
 You have access to one private advisor tool: _trustedrouter_get_advice.
 
-This tool is expensive and should be used rarely, roughly only when you are stuck, uncertain, or facing a high-stakes decision. Most requests should be completed without using it.
+This tool is expensive. Use it deliberately, not for routine work.
+
+For complex, multi-step, high-risk, unfamiliar, or uncertain tasks, call the advisor early in the turn to pressure-test the plan before committing. In an agentic loop, a later turn can use its advisor call when finalizing a risky result, changing strategy, or stuck after failed attempts.
 
 Do not call the advisor for straightforward work:
 - simple factual answers
@@ -71,14 +73,15 @@ Do not call the advisor for straightforward work:
 - tasks where the next step is clear
 - cases where you can answer confidently from the conversation
 
-Call the advisor only when one of these is true:
+Call the advisor when one of these is true:
+- planning with a second model could materially improve the result
 - you are genuinely unsure between multiple approaches
 - the task has security, privacy, legal, compliance, billing, or production-risk implications
 - your first approach appears to be failing
 - the user's constraints conflict or are underspecified in a way that affects correctness
 - a wrong answer would be costly and a second opinion would materially improve the result
 
-If you call the advisor, use its advice once, then continue and answer directly. Do not repeatedly ask for reassurance.`
+Respect the advice budget. Usually make at most one advisor call in a turn. Do not ask repeatedly for reassurance.`
 
 const fallbackAdvisorPrompt = `You are the private TrustedRouter advisor.
 
@@ -119,8 +122,8 @@ func configureAdvisorPrompts(boot *types.BootstrapData) {
 	advisorPromptMu.Lock()
 	defer advisorPromptMu.Unlock()
 	advisorPromptCache = advisorPromptBundle{
-		Worker:  strings.TrimSpace(boot.SocratesWorkerPrompt),
-		Advisor: strings.TrimSpace(boot.SocratesAdvisorPrompt),
+		Worker:  strings.TrimSpace(boot.AdvisorWorkerPrompt),
+		Advisor: strings.TrimSpace(boot.AdvisorPrompt),
 	}
 }
 
@@ -508,8 +511,8 @@ func advisorBuiltInPrompts() (string, string) {
 }
 
 func advisorPromptsRequired() bool {
-	return os.Getenv("TR_REQUIRE_SOCRATES_PROMPTS") == "1" ||
-		(os.Getenv("QUILL_GCP_PROJECT_ID") != "" && os.Getenv("TR_ALLOW_DEFAULT_SOCRATES_PROMPTS") != "1")
+	return os.Getenv("TR_REQUIRE_ADVISOR_PROMPTS") == "1" ||
+		(os.Getenv("QUILL_GCP_PROJECT_ID") != "" && os.Getenv("TR_ALLOW_DEFAULT_ADVISOR_PROMPTS") != "1")
 }
 
 func serveAdvisorNonStreaming(
@@ -1518,7 +1521,7 @@ func advisorAdviceTool() map[string]any {
 		"type": "function",
 		"function": map[string]any{
 			"name":        advisorAdviceToolName,
-			"description": "Ask a stronger TrustedRouter advisor for private guidance only when stuck, uncertain, or facing a high-stakes decision. Do not use for routine or straightforward work.",
+			"description": "Ask a stronger TrustedRouter advisor for private guidance. Use deliberately on complex, multi-step, high-risk, unfamiliar, or uncertain work, especially early to pressure-test a plan, or in a later agentic turn when finalizing, changing strategy, or stuck. Do not use for routine or straightforward work.",
 			"parameters": map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,

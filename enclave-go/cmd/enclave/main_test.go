@@ -4140,19 +4140,19 @@ func TestAdvisorRejectsTooSmallMaxTokensBeforeAuthorize(t *testing.T) {
 
 func TestAdvisorPromptSecretsRequiredInProductionGCP(t *testing.T) {
 	t.Setenv("QUILL_GCP_PROJECT_ID", "trusted-router-prod")
-	t.Setenv("TR_ALLOW_DEFAULT_SOCRATES_PROMPTS", "")
-	t.Setenv("TR_REQUIRE_SOCRATES_PROMPTS", "")
+	t.Setenv("TR_ALLOW_DEFAULT_ADVISOR_PROMPTS", "")
+	t.Setenv("TR_REQUIRE_ADVISOR_PROMPTS", "")
 	if !advisorPromptsRequired() {
 		t.Fatalf("GCP runtime should require advisor prompt secrets")
 	}
 
-	t.Setenv("TR_ALLOW_DEFAULT_SOCRATES_PROMPTS", "1")
+	t.Setenv("TR_ALLOW_DEFAULT_ADVISOR_PROMPTS", "1")
 	if advisorPromptsRequired() {
 		t.Fatalf("explicit local override should allow fallback prompts")
 	}
 
 	t.Setenv("QUILL_GCP_PROJECT_ID", "")
-	t.Setenv("TR_REQUIRE_SOCRATES_PROMPTS", "1")
+	t.Setenv("TR_REQUIRE_ADVISOR_PROMPTS", "1")
 	if !advisorPromptsRequired() {
 		t.Fatalf("explicit require flag should require advisor prompt secrets")
 	}

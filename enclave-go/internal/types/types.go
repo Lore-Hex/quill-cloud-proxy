@@ -44,8 +44,8 @@ type BootstrapData struct {
 	SynthSynthesisPrompt       string `json:"synth_synthesis_prompt,omitempty"`
 	SynthCodePanelPrompt       string `json:"synth_code_panel_prompt,omitempty"`
 	SynthCodeSynthesisPrompt   string `json:"synth_code_synthesis_prompt,omitempty"`
-	SocratesWorkerPrompt       string `json:"socrates_worker_prompt,omitempty"`
-	SocratesAdvisorPrompt      string `json:"socrates_advisor_prompt,omitempty"`
+	AdvisorWorkerPrompt        string `json:"advisor_worker_prompt,omitempty"`
+	AdvisorPrompt              string `json:"advisor_prompt,omitempty"`
 
 	// Anthropic direct (only populated for the llm_anthropic build target).
 	// Same trust posture as the OpenRouter key — pulled from Secret Manager
