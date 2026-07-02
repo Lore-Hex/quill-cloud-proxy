@@ -376,9 +376,11 @@ func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (St
 		// Harvest settlement data regardless of mode.
 		switch eventName {
 		case "message_start":
-			if message := getMap(dataJSON, "message"); message != nil {
-				mergeUsage(&usage, getMap(message, "usage"))
-			}
+			// Route through mergeMessageStartUsage so native /v1/messages
+			// streaming records the Anthropic cache convention identically to
+			// the chat and non-streaming paths — otherwise a full cache hit
+			// (input_tokens:0) would settle on the chars/4 estimate here.
+			mergeMessageStartUsage(&usage, getMap(dataJSON, "message"))
 		case "content_block_start":
 			if block := getMap(dataJSON, "content_block"); block != nil && getString(block, "type") == "tool_use" {
 				index := getInt(dataJSON, "index")

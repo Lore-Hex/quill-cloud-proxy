@@ -224,6 +224,15 @@ type ChatContentPart struct {
 	Type     string        `json:"type"`
 	Text     string        `json:"text,omitempty"`
 	ImageURL *ChatImageURL `json:"image_url,omitempty"`
+	// CacheControl carries a client-sent Anthropic prompt-cache breakpoint
+	// (e.g. {"type":"ephemeral"}) attached to this content block. OpenAI-
+	// format clients targeting Anthropic models set it to pin a cache prefix;
+	// the chat->anthropic translation must forward it onto the upstream
+	// /v1/messages content block or the marker is silently dropped and prompt
+	// caching never engages on the /v1/chat/completions path. Opaque
+	// passthrough (any, omitempty): the enclave does not interpret it —
+	// Anthropic validates the shape and enforces the 4-breakpoint cap.
+	CacheControl any `json:"cache_control,omitempty"`
 }
 
 type ChatImageURL struct {

@@ -87,7 +87,9 @@ func anthropicPartsWithFetchedImages(
 		switch part.Type {
 		case "text":
 			if strings.TrimSpace(part.Text) != "" {
-				out = append(out, map[string]any{"type": "text", "text": part.Text})
+				block := map[string]any{"type": "text", "text": part.Text}
+				withCacheControl(block, part.CacheControl)
+				out = append(out, block)
 			}
 		case "image_url":
 			if part.ImageURL == nil || strings.TrimSpace(part.ImageURL.URL) == "" {
@@ -97,12 +99,26 @@ func anthropicPartsWithFetchedImages(
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, map[string]any{"type": "image", "source": source})
+			block := map[string]any{"type": "image", "source": source}
+			withCacheControl(block, part.CacheControl)
+			out = append(out, block)
 		default:
 			return nil, fmt.Errorf("llm/image: unsupported content part %q", part.Type)
 		}
 	}
 	return out, nil
+}
+
+// withCacheControl re-attaches a client-sent prompt-cache breakpoint to an
+// Anthropic content block. The OpenAI chat path rebuilds every content block
+// as a fresh map (to fetch images / normalize part types), so a cache_control
+// member on the inbound block is dropped unless it is copied forward here —
+// which is exactly why /v1/chat/completions used to lose prompt-cache markers
+// while /v1/messages (verbatim passthrough) kept them.
+func withCacheControl(block map[string]any, cacheControl any) {
+	if cacheControl != nil {
+		block["cache_control"] = cacheControl
+	}
 }
 
 func chatPartFromAny(item any) (qtypes.ChatContentPart, error) {
@@ -111,9 +127,12 @@ func chatPartFromAny(item any) (qtypes.ChatContentPart, error) {
 		return qtypes.ChatContentPart{}, fmt.Errorf("llm/image: content part must be object")
 	}
 	partType := stringValue(m["type"])
+	// cache_control rides along on the part it annotates so the anthropic
+	// content builder can re-emit it on the rebuilt block.
+	cacheControl := m["cache_control"]
 	switch partType {
 	case "", "text", "input_text":
-		return qtypes.ChatContentPart{Type: "text", Text: stringValue(m["text"])}, nil
+		return qtypes.ChatContentPart{Type: "text", Text: stringValue(m["text"]), CacheControl: cacheControl}, nil
 	case "image_url", "input_image":
 		imageURL, detail := imageURLAndDetail(m)
 		if strings.TrimSpace(imageURL) == "" {
@@ -125,6 +144,7 @@ func chatPartFromAny(item any) (qtypes.ChatContentPart, error) {
 				URL:    imageURL,
 				Detail: detail,
 			},
+			CacheControl: cacheControl,
 		}, nil
 	default:
 		return qtypes.ChatContentPart{}, fmt.Errorf("llm/image: unsupported content part %q", partType)

@@ -2844,19 +2844,34 @@ func fusionMetadata(input map[string]any, stage string, model string) map[string
 	return out
 }
 
+// fusionCallPromptTokens returns a child call's FULL prompt token count for
+// aggregated (display-only) orchestration usage. Anthropic reports InputTokens
+// EXCLUSIVE of cache — 0 on a full cache hit — so its cache tokens are folded
+// back in; OpenAI-compatible/Gemini counts already include the cached subset and
+// pass through. This keeps aggregated public prompt_tokens >= cached_tokens.
+// Per-child settlement billing is unaffected: it settles each call on its own
+// uncached InputTokens + separately reported cache counts.
+func fusionCallPromptTokens(item fusionCallResult) int {
+	in := item.InputTokens
+	if u := item.Result.Usage; u != nil && u.InputExcludesCache {
+		in += u.CacheReadInputTokens + u.CacheCreationInputTokens
+	}
+	return in
+}
+
 func fusionUsageTotals(panel []fusionCallResult, judges []fusionCallResult, finals ...fusionCallResult) (int, int) {
 	var inputs int
 	var outputs int
 	for _, final := range finals {
-		inputs += final.InputTokens
+		inputs += fusionCallPromptTokens(final)
 		outputs += final.OutputTokens
 	}
 	for _, item := range panel {
-		inputs += item.InputTokens
+		inputs += fusionCallPromptTokens(item)
 		outputs += item.OutputTokens
 	}
 	for _, item := range judges {
-		inputs += item.InputTokens
+		inputs += fusionCallPromptTokens(item)
 		outputs += item.OutputTokens
 	}
 	if inputs < 1 {
@@ -2903,7 +2918,7 @@ func fusionPanelUsageTotals(panel []fusionCallResult) (int, int) {
 	inputs := 0
 	outputs := 0
 	for _, item := range panel {
-		inputs += item.InputTokens
+		inputs += fusionCallPromptTokens(item)
 		outputs += item.OutputTokens
 	}
 	if inputs < 1 {

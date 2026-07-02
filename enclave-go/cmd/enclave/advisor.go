@@ -1682,7 +1682,7 @@ func advisorUsageTotals(groups ...[]fusionCallResult) (int, int) {
 	var outputs int
 	for _, items := range groups {
 		for _, item := range items {
-			inputs += item.InputTokens
+			inputs += fusionCallPromptTokens(item)
 			outputs += item.OutputTokens
 		}
 	}

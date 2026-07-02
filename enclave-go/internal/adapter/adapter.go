@@ -276,6 +276,15 @@ type StreamUsage struct {
 	// CacheCreationInputTokens were written to it (Anthropic only).
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int
+	// InputExcludesCache is true when InputTokens counts ONLY the uncached
+	// prompt remainder (the Anthropic convention: input_tokens excludes cache
+	// reads/writes, which are reported separately). It is false for
+	// OpenAI-compatible and Gemini upstreams, whose prompt counts already
+	// INCLUDE the cached subset. Set only when native-Anthropic usage arrives
+	// on a message_start event (the OpenAI/Gemini translators never emit one).
+	// chatCompletionUsage uses it to fold cache tokens back into prompt_tokens
+	// for Anthropic without double-counting providers that already include them.
+	InputExcludesCache bool
 }
 
 func WriteChatCompletionResponse(
@@ -293,13 +302,19 @@ func WriteChatCompletionResponse(
 	if finishReason == "" {
 		finishReason = "stop"
 	}
-	// Cached/reasoning detail counts come from the upstream-reported usage when
-	// present (nil on the chars/4 estimate fallback). inputTokens/outputTokens
-	// stay as the real-or-estimated totals the caller computed.
-	cachedTokens, reasoningTokens := 0, 0
+	// Cached/reasoning detail counts come from the upstream-reported usage.
+	// NOTE: usage may be non-nil even when inputTokens is a chars/4 estimate
+	// (realOrEstimatedTokens substitutes an estimated input while returning the
+	// real usage), so the prompt_tokens fold in chatCompletionUsage clamps
+	// cached_tokens to remain a subset. inputTokens/outputTokens stay as the
+	// real-or-estimated totals the caller computed.
+	cachedTokens, cacheCreationTokens, reasoningTokens := 0, 0, 0
+	inputExcludesCache := false
 	if usage != nil {
 		cachedTokens = usage.CacheReadInputTokens
+		cacheCreationTokens = usage.CacheCreationInputTokens
 		reasoningTokens = usage.ReasoningTokens
+		inputExcludesCache = usage.InputExcludesCache
 	}
 	message := map[string]any{
 		"role":    "assistant",
@@ -324,7 +339,7 @@ func WriteChatCompletionResponse(
 				"finish_reason": finishReason,
 			},
 		},
-		"usage": chatCompletionUsage(inputTokens, outputTokens, cachedTokens, reasoningTokens),
+		"usage": chatCompletionUsage(inputTokens, outputTokens, cachedTokens, cacheCreationTokens, reasoningTokens, inputExcludesCache),
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -437,9 +452,7 @@ func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, mode
 		case "message_start":
 			// Native Anthropic streams report input_tokens up front:
 			// {"type":"message_start","message":{...,"usage":{"input_tokens":N,...}}}
-			if message := getMap(dataJSON, "message"); message != nil {
-				mergeUsage(&usage, getMap(message, "usage"))
-			}
+			mergeMessageStartUsage(&usage, getMap(dataJSON, "message"))
 		case "content_block_start":
 			blockJSON := getMap(dataJSON, "content_block")
 			if blockJSON == nil {
@@ -581,6 +594,34 @@ type streamToolCall struct {
 	args        strings.Builder
 }
 
+// mergeMessageStartUsage folds a native-Anthropic message_start usage object
+// into the running total and records the Anthropic accounting convention
+// (input_tokens EXCLUSIVE of cache). Only native Anthropic emits message_start;
+// the OpenAI-compatible and Gemini translators relay usage on a synthetic
+// message_delta with a cache-INCLUSIVE input_tokens (see llm/stream_translate.go
+// writeAnthropicStop), so this is the reliable point to distinguish the two.
+//
+// The convention is marked whenever the event carried a usage OBJECT — even an
+// all-zero one — so a stream that reports input_tokens:0 up front and only
+// carries cache_read_input_tokens on a later message_delta is still recognized
+// as Anthropic. Otherwise mergeUsage would not allocate for the all-zero
+// message_start, InputExcludesCache would stay false, and the fully-cached
+// prompt would surface as cached_tokens > prompt_tokens (prompt_tokens:0).
+func mergeMessageStartUsage(usage **StreamUsage, message map[string]any) {
+	if message == nil {
+		return
+	}
+	m := getMap(message, "usage")
+	if m == nil {
+		return
+	}
+	mergeUsage(usage, m)
+	if *usage == nil {
+		*usage = &StreamUsage{}
+	}
+	(*usage).InputExcludesCache = true
+}
+
 // mergeUsage folds one Anthropic-shaped usage object into the running
 // total, keeping previously seen non-zero fields (input_tokens arrives in
 // message_start, output_tokens in message_delta).
@@ -616,17 +657,48 @@ func mergeUsage(usage **StreamUsage, m map[string]any) {
 	}
 }
 
+// foldedPromptTokens returns the OpenAI-style FULL prompt token count, shared by
+// the chat-completions and Responses usage builders. Anthropic reports its input
+// count EXCLUSIVE of cache (inputExcludesCache), so cache read/creation tokens
+// are added back to keep the prompt total a superset of cached_tokens;
+// OpenAI-compatible and Gemini upstreams already include the cached subset, so
+// their count passes through unchanged.
+func foldedPromptTokens(inputTokens, cachedTokens, cacheCreationTokens int, inputExcludesCache bool) int {
+	prompt := inputTokens
+	if inputExcludesCache {
+		prompt += cachedTokens + cacheCreationTokens
+	}
+	// Guarantee cached_tokens stays a subset of prompt_tokens even when
+	// inputTokens is a chars/4 estimate that undershoots the reported cache
+	// (e.g. a degenerate upstream usage with prompt_tokens:0 but cache_read>0):
+	// the cached and cache-written tokens are by definition part of the prompt.
+	if floor := cachedTokens + cacheCreationTokens; prompt < floor {
+		prompt = floor
+	}
+	return prompt
+}
+
 // chatCompletionUsage builds the OpenAI `usage` object shared by the streaming
 // (writeUsageChunk) and non-streaming (WriteChatCompletionResponse) paths. It
 // adds the prompt_tokens_details.cached_tokens and
 // completion_tokens_details.reasoning_tokens sub-objects only when those counts
 // are present, matching OpenAI's documented shape. Keeping a single builder
 // ensures both response shapes surface prompt-cache savings identically.
-func chatCompletionUsage(inputTokens, outputTokens, cachedTokens, reasoningTokens int) map[string]any {
+//
+// OpenAI semantics require prompt_tokens to be the FULL prompt with
+// cached_tokens as a subset. When inputExcludesCache is true the provider
+// reported inputTokens EXCLUSIVE of cache (Anthropic), so cache-read and
+// cache-write tokens are folded back into prompt_tokens/total_tokens —
+// otherwise a cache hit would surface cached_tokens > prompt_tokens and any
+// client computing uncached = prompt_tokens - cached_tokens goes negative.
+// When false (OpenAI-compatible / Gemini) inputTokens already INCLUDES the
+// cached subset, so folding would double-count and is skipped.
+func chatCompletionUsage(inputTokens, outputTokens, cachedTokens, cacheCreationTokens, reasoningTokens int, inputExcludesCache bool) map[string]any {
+	promptTokens := foldedPromptTokens(inputTokens, cachedTokens, cacheCreationTokens, inputExcludesCache)
 	body := map[string]any{
-		"prompt_tokens":     inputTokens,
+		"prompt_tokens":     promptTokens,
 		"completion_tokens": outputTokens,
-		"total_tokens":      inputTokens + outputTokens,
+		"total_tokens":      promptTokens + outputTokens,
 	}
 	if reasoningTokens > 0 {
 		body["completion_tokens_details"] = map[string]any{
@@ -644,7 +716,7 @@ func chatCompletionUsage(inputTokens, outputTokens, cachedTokens, reasoningToken
 // writeUsageChunk writes the stream_options.include_usage final chunk:
 // empty choices, populated usage — matching OpenAI's documented shape.
 func writeUsageChunk(w io.Writer, id, model string, created int64, usage *StreamUsage) error {
-	usageBody := chatCompletionUsage(usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.ReasoningTokens)
+	usageBody := chatCompletionUsage(usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.CacheCreationInputTokens, usage.ReasoningTokens, usage.InputExcludesCache)
 	chunk := map[string]any{
 		"id":      id,
 		"object":  "chat.completion.chunk",

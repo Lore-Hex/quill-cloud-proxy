@@ -401,9 +401,7 @@ func CollectAnthropicTextWithObserver(r io.Reader, observer StreamObserver) (Str
 		}
 		switch eventName {
 		case "message_start":
-			if message := getMap(dataJSON, "message"); message != nil {
-				mergeUsage(&usage, getMap(message, "usage"))
-			}
+			mergeMessageStartUsage(&usage, getMap(dataJSON, "message"))
 		case "content_block_start":
 			block := getMap(dataJSON, "content_block")
 			if block != nil && getString(block, "type") == "tool_use" {
@@ -494,12 +492,21 @@ func WriteResponsesResponse(
 	textConfig map[string]any,
 	meta *types.ResponseRequestMeta,
 ) error {
-	cachedTokens, reasoningTokens := 0, 0
+	cachedTokens, cacheCreationTokens, reasoningTokens := 0, 0, 0
+	inputExcludesCache := false
 	if usage != nil {
 		cachedTokens = usage.CacheReadInputTokens
+		cacheCreationTokens = usage.CacheCreationInputTokens
 		reasoningTokens = usage.ReasoningTokens
+		inputExcludesCache = usage.InputExcludesCache
 	}
-	payload := responsesObject(responseID, model, text, toolCalls, inputTokens, outputTokens, cachedTokens, reasoningTokens, created, "completed", textConfig, meta)
+	// Fold Anthropic's cache tokens back into the prompt total so input_tokens is
+	// the FULL prompt with input_tokens_details.cached_tokens as a subset — the
+	// same accounting chatCompletionUsage applies. Without this a full cache hit
+	// (real input_tokens:0 from realOrEstimatedTokens) would report input_tokens:0
+	// with a positive cached_tokens and a total that excludes the prompt.
+	promptTokens := foldedPromptTokens(inputTokens, cachedTokens, cacheCreationTokens, inputExcludesCache)
+	payload := responsesObject(responseID, model, text, toolCalls, promptTokens, outputTokens, cachedTokens, reasoningTokens, created, "completed", textConfig, meta)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err

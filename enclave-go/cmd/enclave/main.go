@@ -1155,7 +1155,17 @@ func realOrEstimatedTokens(result adapter.StreamResult, estimatedInput, estimate
 	if result.Usage == nil || result.Usage.OutputTokens <= 0 {
 		return estimatedInput, estimatedOutput, true
 	}
-	if result.Usage.InputTokens <= 0 {
+	// input_tokens == 0 is a REAL count only for an Anthropic full prompt-cache
+	// hit: the convention is exclusive-of-cache (InputExcludesCache) AND the
+	// prompt is actually accounted under cache_read/creation. In that case the
+	// zero must be kept — substituting the chars/4 estimate would settle billing
+	// on an inflated uncached count and double-count prompt_tokens once the
+	// OpenAI usage folds cache back in. Otherwise a zero is a MISSING count and
+	// must fall back to the estimate: non-Anthropic providers report a
+	// cache-inclusive prompt (a zero there is missing), and even an Anthropic
+	// stream with no cache tokens leaves the prompt unaccounted.
+	hasCacheTokens := result.Usage.CacheReadInputTokens > 0 || result.Usage.CacheCreationInputTokens > 0
+	if result.Usage.InputTokens <= 0 && !(result.Usage.InputExcludesCache && hasCacheTokens) {
 		return estimatedInput, result.Usage.OutputTokens, true
 	}
 	return result.Usage.InputTokens, result.Usage.OutputTokens, false
