@@ -288,6 +288,25 @@ func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
 	if !strings.Contains(string(bodyBytes), "Hello world") {
 		t.Fatalf("missing output text: %s", bodyBytes)
 	}
+	usage, ok := decoded["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing usage: %#v", decoded)
+	}
+	if usage["cost_microdollars"] != float64(12) || usage["total_cost_microdollars"] != float64(12) {
+		t.Fatalf("usage cost metadata = %#v", usage)
+	}
+	providerUsage, ok := usage["provider_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing provider_usage: %#v", usage)
+	}
+	if providerUsage["router"] != "direct" ||
+		providerUsage["selected_provider"] != "openai" ||
+		providerUsage["selected_model"] != "openai/gpt-4o-mini" ||
+		providerUsage["fallback_candidate_count"] != float64(1) ||
+		providerUsage["upstream_attempt_count"] != float64(1) ||
+		providerUsage["contains_prompt_or_completion"] != false {
+		t.Fatalf("bad direct provider_usage: %#v", providerUsage)
+	}
 	deadline := time.Now().Add(time.Second)
 	for settleBody == "" && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
@@ -513,6 +532,26 @@ func TestServeOneTrustedRouterRetriesFallbackCandidatesAndSettlesSelectedRoute(t
 	}
 	if !strings.Contains(body, `"model":"openai/gpt-4o-mini"`) {
 		t.Fatalf("response did not use selected fallback model: %s", body)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(bodyBytes, &decoded); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, bodyBytes)
+	}
+	usage, ok := decoded["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing usage: %#v", decoded)
+	}
+	providerUsage, ok := usage["provider_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing provider_usage: %#v", usage)
+	}
+	if providerUsage["selected_provider"] != "openai" ||
+		providerUsage["selected_model"] != "openai/gpt-4o-mini" ||
+		providerUsage["fallback_candidate_count"] != float64(2) ||
+		providerUsage["upstream_attempt_count"] != float64(2) ||
+		providerUsage["fallback_attempt_count"] != float64(1) ||
+		providerUsage["cost_microdollars"] != float64(12) {
+		t.Fatalf("bad fallback provider_usage: %#v", providerUsage)
 	}
 	if !strings.Contains(settleBody, `"selected_model":"openai/gpt-4o-mini"`) ||
 		!strings.Contains(settleBody, `"selected_endpoint":"openai/gpt-4o-mini@openai/prepaid"`) {
@@ -751,17 +790,27 @@ func TestServeOneTrustedRouterFusionRunsPanelJudgeAndFinal(t *testing.T) {
 	if usage["cost_microdollars"] != float64(4) {
 		t.Fatalf("usage cost_microdollars = %#v, want total cost for four subcalls", usage["cost_microdollars"])
 	}
+	if usage["orchestration"] != true ||
+		usage["subcall_count"] != float64(4) ||
+		usage["panel_count"] != float64(2) ||
+		usage["total_cost_microdollars"] != float64(4) {
+		t.Fatalf("usage orchestration summary = %#v", usage)
+	}
 	providerUsage, ok := usage["provider_usage"].(map[string]any)
 	if !ok {
 		t.Fatalf("usage missing provider_usage: %#v", usage)
 	}
-	if providerUsage["router"] != "trustedrouter/fusion" ||
+	if providerUsage["orchestration"] != true ||
+		providerUsage["router"] != "trustedrouter/fusion" ||
 		providerUsage["primitive"] != trustedRouterSynthModel ||
 		providerUsage["selected_model"] != "z-ai/glm-5.2" ||
+		providerUsage["subcall_count"] != float64(4) ||
+		providerUsage["panel_count"] != float64(2) ||
 		providerUsage["panel_attempt_count"] != float64(2) ||
 		providerUsage["judge_attempt_count"] != float64(1) ||
 		providerUsage["final_attempt_count"] != float64(1) ||
-		providerUsage["cost_microdollars"] != float64(4) {
+		providerUsage["cost_microdollars"] != float64(4) ||
+		providerUsage["total_cost_microdollars"] != float64(4) {
 		t.Fatalf("provider_usage summary = %#v", providerUsage)
 	}
 	panelUsage, ok := providerUsage["panel"].([]any)
@@ -3070,16 +3119,19 @@ func TestAdvisorProviderUsageReportsAdviceWithoutText(t *testing.T) {
 	}
 	details := advisorResponseDetails(config, workers, advisors, trustedRouterSocrates10Model, final.Model, adviceCalls, budgetExhausted)
 	providerUsage := advisorProviderUsage(details)
-	if providerUsage["router"] != trustedRouterSocrates10Model ||
+	if providerUsage["orchestration"] != true ||
+		providerUsage["router"] != trustedRouterSocrates10Model ||
 		providerUsage["primitive"] != trustedRouterAdvisorModel ||
 		providerUsage["selected_model"] != "cerebras/gpt-oss-120b" ||
+		providerUsage["subcall_count"] != 3 ||
 		providerUsage["worker_attempt_count"] != 2 ||
 		providerUsage["advisor_attempt_count"] != 1 ||
 		providerUsage["advisor_final_attempt_count"] != 0 ||
 		providerUsage["advice_call_count"] != 1 ||
 		providerUsage["reasoning_tokens"] != 12 ||
 		providerUsage["cache_read_input_tokens"] != 3 ||
-		providerUsage["cost_microdollars"] != 3 {
+		providerUsage["cost_microdollars"] != 3 ||
+		providerUsage["total_cost_microdollars"] != 3 {
 		t.Fatalf("providerUsage = %#v", providerUsage)
 	}
 	workersUsage, ok := providerUsage["worker_attempts"].([]map[string]any)
@@ -3273,8 +3325,10 @@ func TestServeOneAthenaPreservesAliasAndReportsRedactedAdvisorCounters(t *testin
 	if !ok {
 		t.Fatalf("Athena should report redacted provider_usage counters: %#v", response.Usage)
 	}
-	if providerUsage["router"] != trustedRouterAthenaModel ||
+	if providerUsage["orchestration"] != true ||
+		providerUsage["router"] != trustedRouterAthenaModel ||
 		providerUsage["primitive"] != trustedRouterAdvisorModel ||
+		providerUsage["subcall_count"] == nil ||
 		providerUsage["advice_call_count"] != float64(1) ||
 		providerUsage["advisor_attempt_count"] == nil ||
 		providerUsage["contains_prompt_or_completion"] != false {
@@ -4029,10 +4083,13 @@ func TestSubagentRunsWorkerAndSettlesEverySubcall(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing provider_usage: %#v", usage)
 	}
-	if providerUsage["primitive"] != trustedRouterSubagentModel ||
+	if providerUsage["orchestration"] != true ||
+		providerUsage["primitive"] != trustedRouterSubagentModel ||
+		providerUsage["subcall_count"] != float64(3) ||
 		providerUsage["controller_attempt_count"] != float64(2) ||
 		providerUsage["subagent_attempt_count"] != float64(1) ||
 		providerUsage["subagent_call_count"] != float64(1) ||
+		providerUsage["total_cost_microdollars"] != float64(3) ||
 		providerUsage["contains_prompt_or_completion"] != false {
 		t.Fatalf("provider_usage = %#v", providerUsage)
 	}

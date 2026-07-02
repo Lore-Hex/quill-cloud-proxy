@@ -1758,6 +1758,7 @@ func writeAdvisorChatCompletionResponse(
 		}
 		if providerUsage := advisorPublicProviderUsage(details); len(providerUsage) > 0 {
 			usage["provider_usage"] = providerUsage
+			applyUsageProviderSummary(usage, providerUsage)
 		}
 	}
 	encoded, err := json.Marshal(payload)
@@ -1832,6 +1833,7 @@ func writeHiddenAdvisorStreamUsage(w io.Writer, requestID string, model string, 
 	}
 	if len(providerUsage) > 0 {
 		usage["provider_usage"] = providerUsage
+		applyUsageProviderSummary(usage, providerUsage)
 	}
 	if result.Result.Usage != nil && result.Result.Usage.ReasoningTokens > 0 {
 		usage["completion_tokens_details"] = map[string]any{

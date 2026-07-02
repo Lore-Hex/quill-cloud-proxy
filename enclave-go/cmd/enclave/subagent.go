@@ -834,6 +834,7 @@ func writeSubagentChatCompletionResponse(
 		}
 		if providerUsage := subagentProviderUsage(details); len(providerUsage) > 0 {
 			usage["provider_usage"] = providerUsage
+			applyUsageProviderSummary(usage, providerUsage)
 		}
 	}
 	encoded, err := json.Marshal(payload)

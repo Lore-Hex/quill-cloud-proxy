@@ -732,12 +732,19 @@ func serveResponsesNonStreaming(
 		Metadata:          req.Metadata,
 	}
 	applyCacheUsage(&usage, result)
-	if _, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, outputForUsage); err != nil {
+	settlement, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, outputForUsage)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_settle_failed model=%q err=%v\n", req.Model, err)
 		writeError(conn, 502, "settlement failed")
 		return
 	}
-	writeJSONResponse(conn, 200, body.Bytes())
+	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "enclave.responses_metadata_failed model=%q err=%v\n", req.Model, err)
+		writeError(conn, 500, "responses encoding error")
+		return
+	}
+	writeJSONResponse(conn, 200, annotatedBody)
 }
 
 func serveChatNonStreaming(
@@ -805,12 +812,19 @@ func serveChatNonStreaming(
 		Metadata:          req.Metadata,
 	}
 	applyCacheUsage(&usage, result)
-	if _, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text); err != nil {
+	settlement, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_settle_failed model=%q err=%v\n", req.Model, err)
 		writeError(conn, 502, "settlement failed")
 		return
 	}
-	writeJSONResponse(conn, 200, body.Bytes())
+	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "enclave.chat_metadata_failed model=%q err=%v\n", req.Model, err)
+		writeError(conn, 500, "chat completion encoding error")
+		return
+	}
+	writeJSONResponse(conn, 200, annotatedBody)
 }
 
 func serveStreaming(

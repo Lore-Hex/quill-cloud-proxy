@@ -46,6 +46,7 @@ func invokeProviderStream(
 		if option.Model == "" {
 			option.Model = req.Model
 		}
+		selectedRoute.RecordCandidateAttempt(option)
 		req.Model = option.Model
 		// The TTFB budget exists to fall over to the next candidate fast; the LAST
 		// candidate has nothing to fall over to, so give it a longer budget for slow
@@ -248,6 +249,8 @@ type selectedRouteTracker struct {
 	ready    chan struct{}
 	model    string
 	endpoint string
+	provider string
+	attempts int
 }
 
 func newSelectedRouteTracker() *selectedRouteTracker {
@@ -265,10 +268,22 @@ func (t *selectedRouteTracker) Select(option llm.InvokeOptions) {
 	if t.endpoint == "" && option.EndpointID != "" {
 		t.endpoint = option.EndpointID
 	}
+	if t.provider == "" && option.Provider != "" {
+		t.provider = option.Provider
+	}
 	t.mu.Unlock()
 	t.once.Do(func() {
 		close(t.ready)
 	})
+}
+
+func (t *selectedRouteTracker) RecordCandidateAttempt(_ llm.InvokeOptions) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.attempts++
+	t.mu.Unlock()
 }
 
 func (t *selectedRouteTracker) Ready() <-chan struct{} {
@@ -314,6 +329,41 @@ func (t *selectedRouteTracker) Endpoint(fallback string, authorization *trustedr
 		return authorization.EndpointID
 	}
 	return ""
+}
+
+func (t *selectedRouteTracker) Provider(fallback string, authorization *trustedrouter.Authorization) string {
+	if t != nil {
+		t.mu.Lock()
+		provider := t.provider
+		t.mu.Unlock()
+		if provider != "" {
+			return provider
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	if authorization != nil {
+		return authorization.Provider
+	}
+	return ""
+}
+
+func (t *selectedRouteTracker) AttemptCount() int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.attempts
+}
+
+func (t *selectedRouteTracker) FallbackCount() int {
+	attempts := t.AttemptCount()
+	if attempts <= 1 {
+		return 0
+	}
+	return attempts - 1
 }
 
 var firstByteBudget = func() time.Duration {

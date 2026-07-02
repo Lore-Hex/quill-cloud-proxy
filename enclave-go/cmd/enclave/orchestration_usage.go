@@ -15,10 +15,12 @@ func advisorProviderUsage(details map[string]any) map[string]any {
 	advisors, advisorFinal := splitProviderUsageCalls(advisorAll, "advisor.advisor_final")
 	allCalls := providerUsageConcat(workers, advisors, advisorFinal)
 	out := map[string]any{
+		"orchestration":                 true,
 		"router":                        providerUsageOrDefault(details["router"], primitive),
 		"primitive":                     primitive,
 		"version":                       details["version"],
 		"selected_model":                details["selected_model"],
+		"subcall_count":                 len(allCalls),
 		"depth_initial":                 details["depth_initial"],
 		"max_get_advice_calls":          details["max_get_advice_calls"],
 		"advice_call_count":             details["advice_call_count"],
@@ -36,6 +38,7 @@ func advisorProviderUsage(details map[string]any) map[string]any {
 		"advisor_attempts":              advisors,
 		"advisor_final_attempts":        advisorFinal,
 		"cost_microdollars":             details["cost_microdollars"],
+		"total_cost_microdollars":       details["cost_microdollars"],
 		"contains_prompt_or_completion": false,
 	}
 	return pruneEmptyProviderUsage(out)
@@ -50,9 +53,11 @@ func advisorPublicProviderUsage(details map[string]any) map[string]any {
 		return nil
 	}
 	out := map[string]any{
+		"orchestration":                 true,
 		"router":                        providerUsageOrDefault(details["router"], trustedRouterAdvisorModel),
 		"primitive":                     providerUsageOrDefault(details["primitive"], trustedRouterAdvisorModel),
 		"version":                       details["version"],
+		"subcall_count":                 full["subcall_count"],
 		"depth_initial":                 details["depth_initial"],
 		"max_get_advice_calls":          details["max_get_advice_calls"],
 		"advice_call_count":             details["advice_call_count"],
@@ -64,6 +69,7 @@ func advisorPublicProviderUsage(details map[string]any) map[string]any {
 		"cache_read_input_tokens":       full["cache_read_input_tokens"],
 		"cache_creation_input_tokens":   full["cache_creation_input_tokens"],
 		"cost_microdollars":             full["cost_microdollars"],
+		"total_cost_microdollars":       full["total_cost_microdollars"],
 		"contains_prompt_or_completion": false,
 	}
 	return pruneEmptyProviderUsage(out)
@@ -83,11 +89,14 @@ func fusionProviderUsage(details map[string]any) map[string]any {
 	reducerAttempts := providerUsageCallList(details["reducer_attempts"], primitive)
 	allCalls := providerUsageConcat(panel, judgeAttempts, finalAttempts, selectorAttempts, mapperAttempts, parts, reducerAttempts)
 	out := map[string]any{
+		"orchestration":                 true,
 		"router":                        providerUsageOrDefault(details["router"], primitive),
 		"primitive":                     primitive,
 		"preset":                        details["preset"],
 		"selection_strategy":            details["selection_strategy"],
 		"selected_model":                details["selected_model"],
+		"subcall_count":                 len(allCalls),
+		"panel_count":                   len(panel),
 		"panel_attempt_count":           len(panel),
 		"judge_attempt_count":           len(judgeAttempts),
 		"final_attempt_count":           len(finalAttempts),
@@ -113,6 +122,7 @@ func fusionProviderUsage(details map[string]any) map[string]any {
 		"judge_attempts":                judgeAttempts,
 		"final_attempts":                finalAttempts,
 		"cost_microdollars":             details["cost_microdollars"],
+		"total_cost_microdollars":       details["cost_microdollars"],
 		"contains_prompt_or_completion": false,
 	}
 	return pruneEmptyProviderUsage(out)
@@ -127,10 +137,12 @@ func subagentProviderUsage(details map[string]any) map[string]any {
 	workers := providerUsageCallList(details["subagent_attempts"], primitive)
 	allCalls := providerUsageConcat(controllers, workers)
 	out := map[string]any{
+		"orchestration":                 true,
 		"router":                        providerUsageOrDefault(details["router"], primitive),
 		"primitive":                     primitive,
 		"version":                       details["version"],
 		"selected_model":                details["selected_model"],
+		"subcall_count":                 len(allCalls),
 		"controller_model":              details["controller_model"],
 		"worker_model":                  details["worker_model"],
 		"depth_initial":                 details["depth_initial"],
@@ -147,6 +159,7 @@ func subagentProviderUsage(details map[string]any) map[string]any {
 		"controller_attempts":           controllers,
 		"subagent_attempts":             workers,
 		"cost_microdollars":             details["cost_microdollars"],
+		"total_cost_microdollars":       details["cost_microdollars"],
 		"contains_prompt_or_completion": false,
 	}
 	return pruneEmptyProviderUsage(out)
