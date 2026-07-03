@@ -3104,7 +3104,7 @@ func writeFusionError(ctx context.Context, conn io.Writer, trGateway *trustedrou
 		writeError(conn, aerr.Status, aerr.Message)
 		return
 	}
-	writeError(conn, statusFromControlPlaneError(err), "fusion failed")
+	writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "fusion failed"), "router", retryHeadersFromControlPlaneError(err))
 }
 
 func resolveFusionModelID(model string) string {

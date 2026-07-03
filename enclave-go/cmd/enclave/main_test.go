@@ -3410,6 +3410,59 @@ func TestServeOneAthenaPreservesAliasAndReportsRedactedAdvisorCounters(t *testin
 	}
 }
 
+func TestAthenaSpendLimitSurfacesRouterError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/gateway/authorize" {
+			http.Error(w, "unexpected path", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusPaymentRequired)
+		_, _ = io.WriteString(w, `{"error":{"message":"API key spend limit exceeded","type":"payment_required","source":"router"}}`)
+	}))
+	defer server.Close()
+	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	maxTokens := 128
+	req := &types.OpenAIChatRequest{
+		Model:     trustedRouterAthenaModel,
+		Stream:    false,
+		Messages:  []types.OpenAIChatMessage{{Role: "user", Content: "hard security task"}},
+		MaxTokens: &maxTokens,
+	}
+	var out bytes.Buffer
+	handled, err := maybeServeAdvisor(context.Background(), &out, &panicStreamingLLM{t: t}, req, trGateway, nil, "bearer", nil, "log_athena_spend_limit")
+	if err != nil {
+		t.Fatalf("maybeServeAdvisor: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected Athena request to be handled")
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(out.Bytes())), nil)
+	if err != nil {
+		t.Fatalf("read response: %v; raw=%s", err, out.String())
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusPaymentRequired {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "120" {
+		t.Fatalf("Retry-After = %q, want 120", got)
+	}
+	body := string(bodyBytes)
+	if !strings.Contains(body, "API key spend limit exceeded") {
+		t.Fatalf("router spend-limit message missing: %s", body)
+	}
+	if strings.Contains(body, "model request failed") {
+		t.Fatalf("generic hidden advisor error masked router message: %s", body)
+	}
+}
+
 func TestServeOneAthenaStreamingHidesAdvisorMetadata(t *testing.T) {
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()

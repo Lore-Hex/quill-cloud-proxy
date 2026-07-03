@@ -555,7 +555,7 @@ func serveAdvisorNonStreaming(
 	final, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err := runAdvisor(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, nil, 0, nil)
 	if err != nil {
 		if config.HidePublicMetadata {
-			writeError(conn, statusFromControlPlaneError(err), "model request failed")
+			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "model request failed"), "router", retryHeadersFromControlPlaneError(err))
 			return
 		}
 		writeFusionError(ctx, conn, trGateway, err)
