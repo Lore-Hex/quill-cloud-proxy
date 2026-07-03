@@ -52,6 +52,7 @@
 //	QUILL_BASETEN_SECRET         name of the secret holding the Baseten API key (llm_multi builds)
 //	QUILL_WAFER_SECRET           name of the secret holding the Wafer API key (llm_multi builds)
 //	QUILL_CRUSOE_SECRET          name of the secret holding the Crusoe API key (llm_multi builds)
+//	QUILL_MAKORA_SECRET          name of the secret holding the Makora API key (llm_multi builds)
 //	QUILL_SYNTH_PANEL_PROMPT_SECRET           name of the secret holding the default synth panel prompt
 //	QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET       name of the secret holding the default synth synthesis prompt
 //	QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET      name of the secret holding the synth-code panel prompt
@@ -125,6 +126,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	basetenSecret := os.Getenv("QUILL_BASETEN_SECRET")
 	waferSecret := os.Getenv("QUILL_WAFER_SECRET")
 	crusoeSecret := os.Getenv("QUILL_CRUSOE_SECRET")
+	makoraSecret := os.Getenv("QUILL_MAKORA_SECRET")
 	nebiusSecret := os.Getenv("QUILL_NEBIUS_SECRET")
 	minimaxSecret := os.Getenv("QUILL_MINIMAX_SECRET")
 	xiaomiSecret := os.Getenv("QUILL_XIAOMI_SECRET")
@@ -168,6 +170,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		basetenSecret,
 		waferSecret,
 		crusoeSecret,
+		makoraSecret,
 		nebiusSecret,
 		minimaxSecret,
 		xiaomiSecret,
@@ -380,6 +383,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: crusoe key: %w", err)
 		}
 	}
+	var makoraKey []byte
+	if makoraSecret != "" {
+		makoraKey, err = fetchSecret(ctx, httpc, token, project, makoraSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: makora key: %w", err)
+		}
+	}
 	var nebiusKey []byte
 	if nebiusSecret != "" {
 		nebiusKey, err = fetchSecret(ctx, httpc, token, project, nebiusSecret)
@@ -482,6 +492,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		BasetenAPIKey:              strings.TrimSpace(string(basetenKey)),
 		WaferAPIKey:                strings.TrimSpace(string(waferKey)),
 		CrusoeAPIKey:               strings.TrimSpace(string(crusoeKey)),
+		MakoraAPIKey:               strings.TrimSpace(string(makoraKey)),
 		NebiusAPIKey:               strings.TrimSpace(string(nebiusKey)),
 		MiniMaxAPIKey:              strings.TrimSpace(string(minimaxKey)),
 		XiaomiAPIKey:               strings.TrimSpace(string(xiaomiKey)),

@@ -112,6 +112,7 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("baseten_api_key", "trustedrouter-baseten-api-key"),
     ("wafer_api_key", "trustedrouter-wafer-api-key"),
     ("crusoe_api_key", "trustedrouter-crusoe-api-key"),
+    ("makora_api_key", "trustedrouter-makora-api-key"),
     ("nebius_api_key", "trustedrouter-nebius-api-key"),
     ("minimax_api_key", "trustedrouter-minimax-api-key"),
     # Voyage AI — embeddings only (OpenAI-shaped /v1/embeddings). Optional like

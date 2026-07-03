@@ -54,6 +54,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		baseten:     newOpenAICompatible("baseten", boot.BasetenAPIKey),
 		wafer:       newOpenAICompatible("wafer", boot.WaferAPIKey),
 		crusoe:      newOpenAICompatible("crusoe", boot.CrusoeAPIKey),
+		makora:      newOpenAICompatible("makora", boot.MakoraAPIKey),
 		nebius:      newOpenAICompatible("nebius", boot.NebiusAPIKey),
 		minimax:     newOpenAICompatible("minimax", boot.MiniMaxAPIKey),
 		// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
@@ -97,6 +98,7 @@ type multiClient struct {
 	baseten     *openAICompatibleClient
 	wafer       *openAICompatibleClient
 	crusoe      *openAICompatibleClient
+	makora      *openAICompatibleClient
 	nebius      *openAICompatibleClient
 	minimax     *openAICompatibleClient
 	xiaomi      *openAICompatibleClient
@@ -174,6 +176,8 @@ func (m *multiClient) InvokeStreaming(
 		return m.wafer.InvokeStreaming(ctx, req, body, out, options...)
 	case "crusoe":
 		return m.crusoe.InvokeStreaming(ctx, req, body, out, options...)
+	case "makora":
+		return m.makora.InvokeStreaming(ctx, req, body, out, options...)
 	case "nebius":
 		return m.nebius.InvokeStreaming(ctx, req, body, out, options...)
 	case "minimax":
@@ -184,6 +188,6 @@ func (m *multiClient) InvokeStreaming(
 		// Embeddings-only; returns a clear "chat not supported" error.
 		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, wafer, crusoe, nebius, minimax, xiaomi, cohere)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, wafer, crusoe, makora, nebius, minimax, xiaomi, cohere)", provider)
 	}
 }

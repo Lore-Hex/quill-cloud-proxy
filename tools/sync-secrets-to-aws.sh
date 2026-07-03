@@ -70,6 +70,7 @@ SECRETS=(
   trustedrouter-baseten-api-key
   trustedrouter-wafer-api-key
   trustedrouter-crusoe-api-key
+  trustedrouter-makora-api-key
   trustedrouter-nebius-api-key
   trustedrouter-minimax-api-key
   trustedrouter-synth-panel-prompt-v1

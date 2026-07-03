@@ -33,6 +33,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"wafer", "moonshotai/kimi-k2.7-code", "Kimi-K2.7-Code", "Kimi-K2.7-Code", false},
 		{"wafer", "qwen/qwen3.6-35b-a3b", "Qwen3.6-35B-A3B", "Qwen3.6-35B-A3B", false},
 		{"crusoe", "z-ai/glm-5.2", "zai/GLM-5.2", "zai/GLM-5.2", false},
+		{"makora", "z-ai/glm-5.2", "zai-org/GLM-5.2-FP8", "zai-org/GLM-5.2-FP8", false},
 		{"nebius", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B", false},
 		{"minimax", "minimax/minimax-m2.7", "MiniMax-M2.7", "MiniMax-M2.7", false},
 	}
@@ -94,6 +95,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				baseten:   client,
 				wafer:     client,
 				crusoe:    client,
+				makora:    client,
 				nebius:    client,
 				minimax:   client,
 			}

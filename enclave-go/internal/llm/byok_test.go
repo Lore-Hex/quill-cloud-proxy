@@ -27,6 +27,7 @@ func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 		"baseten",
 		"wafer",
 		"crusoe",
+		"makora",
 		"nebius",
 		"minimax",
 		"xiaomi",
@@ -166,6 +167,14 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		{"crusoe", "deepseek/deepseek-v4-flash", "deepseek-ai/Deepseek-V4-Flash"},
 		{"crusoe", "moonshotai/kimi-k2.6", "moonshotai/Kimi-K2.6"},
 		{"crusoe", "qwen/qwen3-235b-a22b-2507", "Qwen/Qwen3-235B-A22B-Instruct-2507"},
+		{"makora", "deepseek/deepseek-v4-flash", "deepseek-ai/DeepSeek-V4-Flash"},
+		{"makora", "deepseek/deepseek-v4-pro", "deepseek-ai/DeepSeek-V4-Pro"},
+		{"makora", "google/gemma-4-26b-a4b-it", "google/gemma-4-26B-A4B"},
+		{"makora", "z-ai/glm-5.2", "zai-org/GLM-5.2-FP8"},
+		{"makora", "z-ai/glm-5.2-nvfp4", "zai-org/GLM-5.2-NVFP4"},
+		{"makora", "moonshotai/kimi-k2.7-code", "moonshotai/Kimi-K2.7-Code"},
+		{"makora", "qwen/qwen3.6-27b", "unsloth/Qwen3.6-27B-NVFP4"},
+		{"makora", "qwen/qwen3.6-35b-a3b", "unsloth/Qwen3.6-35B-A3B-NVFP4"},
 	}
 	for _, tc := range cases {
 		got := directModelID(tc.provider, tc.orID, tc.orID)

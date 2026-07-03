@@ -46,7 +46,7 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai", "together",
 		"fireworks", "grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
 		"parasail", "lightning", "gmi", "deepinfra", "friendli", "baseten", "wafer",
-		"crusoe", "nebius", "minimax", "xiaomi":
+		"crusoe", "makora", "nebius", "minimax", "xiaomi":
 		return true
 	default:
 		return false
@@ -703,6 +703,9 @@ func directBaseURL(provider string) string {
 	case "crusoe":
 		// Crusoe Managed Inference. OpenAI-compatible chat completions.
 		return "https://api.inference.crusoecloud.com/v1"
+	case "makora":
+		// Makora Inference. OpenAI-compatible chat completions.
+		return "https://inference.makora.com/v1"
 	case "nebius":
 		// Nebius Token Factory OpenAI-compatible shared inference.
 		return "https://api.tokenfactory.nebius.com/v1"
@@ -850,6 +853,7 @@ var providerNativeModelMaps = map[string]map[string]string{
 	"baseten":     basetenModelMap,
 	"wafer":       waferModelMap,
 	"crusoe":      crusoeModelMap,
+	"makora":      makoraModelMap,
 	"minimax":     minimaxModelMap,
 	"siliconflow": siliconflowModelMap,
 	"zai":         zaiModelMap,
@@ -1192,6 +1196,23 @@ var crusoeModelMap = map[string]string{
 	"z-ai/glm-5.2":                                  "zai/GLM-5.2",
 }
 
+// makoraModelMap maps OR-canonical → Makora Inference native ids. Makora's
+// OpenAI-compatible /v1/models feed uses upstream-author mixed-case ids, plus a
+// custom model-specific Llama FP8 row. Keep exact ids here so requests never
+// fall through to the generic strip-author fallback.
+var makoraModelMap = map[string]string{
+	"deepseek/deepseek-v4-flash":        "deepseek-ai/DeepSeek-V4-Flash",
+	"deepseek/deepseek-v4-pro":          "deepseek-ai/DeepSeek-V4-Pro",
+	"google/gemma-4-26b-a4b-it":         "google/gemma-4-26B-A4B",
+	"z-ai/glm-5.2":                      "zai-org/GLM-5.2-FP8",
+	"z-ai/glm-5.2-nvfp4":                "zai-org/GLM-5.2-NVFP4",
+	"moonshotai/kimi-k2.7-code":         "moonshotai/Kimi-K2.7-Code",
+	"amd/llama-3.3-70b-instruct-fp8-kv": "amd/Llama-3.3-70B-Instruct-FP8-KV",
+	"meta-llama/llama-3.3-70b-instruct": "meta-llama/Llama-3.3-70B-Instruct",
+	"qwen/qwen3.6-27b":                  "unsloth/Qwen3.6-27B-NVFP4",
+	"qwen/qwen3.6-35b-a3b":              "unsloth/Qwen3.6-35B-A3B-NVFP4",
+}
+
 var waferZDRNativeModels = map[string]struct{}{
 	"GLM-5.1":           {},
 	"GLM-5.2":           {},
@@ -1277,6 +1298,8 @@ func normalizeDirectProvider(provider string) string {
 		return "baseten"
 	case "wafer", "wafer-ai":
 		return "wafer"
+	case "makora", "makora-ai", "makora_inference", "makora-inference":
+		return "makora"
 	case "nebius", "nebius-ai", "nebius-ai-studio", "tokenfactory", "token-factory":
 		return "nebius"
 	case "minimax", "mini-max", "minimax-ai", "minimaxai":

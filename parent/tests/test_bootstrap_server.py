@@ -234,6 +234,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "baseten_api_key",
         "wafer_api_key",
         "crusoe_api_key",
+        "makora_api_key",
         "nebius_api_key",
         "minimax_api_key",
         "voyage_api_key",
