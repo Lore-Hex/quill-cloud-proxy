@@ -3354,7 +3354,7 @@ func TestServeOneAthenaPreservesAliasAndReportsRedactedAdvisorCounters(t *testin
 		`"model":"z-ai/glm-5.2"`,
 		`"model":"` + fusionCodeKimi + `"`,
 		`"model":"` + trustedRouterPrometheus101MModel + `"`,
-		`"model":"` + trustedRouterZeus10MiniModel + `"`,
+		`"model":"` + trustedRouterZeus10Model + `"`,
 		`"worker_models"`,
 		`"advisor_models"`,
 		`"advisor_attempts"`,
@@ -3428,7 +3428,7 @@ func TestServeOneAthenaStreamingHidesAdvisorMetadata(t *testing.T) {
 		`"model":"z-ai/glm-5.2"`,
 		`"model":"` + fusionCodeKimi + `"`,
 		`"model":"` + trustedRouterPrometheus101MModel + `"`,
-		`"model":"` + trustedRouterZeus10MiniModel + `"`,
+		`"model":"` + trustedRouterZeus10Model + `"`,
 		`"worker_models"`,
 		`"advisor_models"`,
 		`"advisor_attempts"`,
@@ -3816,7 +3816,7 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		{
 			model:        trustedRouterAthenaModel,
 			workers:      []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
-			advisors:     []string{trustedRouterZeus10MiniModel},
+			advisors:     []string{trustedRouterZeus10Model},
 			jurisdiction: providerJurisdictionUS,
 		},
 	}
