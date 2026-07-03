@@ -24,6 +24,7 @@ const trustedRouterSocrates11Model = "trustedrouter/socrates-1.1"
 const trustedRouterSocratesModel = "trustedrouter/socrates"
 const trustedRouterAdvisorModel = "trustedrouter/advisor"
 const trustedRouterAristotle10Model = "trustedrouter/aristotle-1.0"
+const trustedRouterAristotle11Model = "trustedrouter/aristotle-1.1"
 const trustedRouterAristotleModel = "trustedrouter/aristotle"
 const trustedRouterPlato10Model = "trustedrouter/plato-1.0"
 const trustedRouterPlatoModel = "trustedrouter/plato"
@@ -138,10 +139,16 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 			WorkerModels:  []string{"cerebras/gpt-oss-120b", "deepseek/deepseek-v4-flash"},
 			AdvisorModels: []string{trustedRouterSocratesPro10Model},
 		}, true
-	case trustedRouterAristotle10Model, trustedRouterAristotleModel:
+	case trustedRouterAristotle10Model:
 		return advisorConfig{
 			Enabled:       true,
 			WorkerModels:  []string{"deepseek/deepseek-v4-flash"},
+			AdvisorModels: []string{trustedRouterZeus10Model},
+		}, true
+	case trustedRouterAristotleModel, trustedRouterAristotle11Model:
+		return advisorConfig{
+			Enabled:       true,
+			WorkerModels:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
 			AdvisorModels: []string{trustedRouterZeus10Model},
 		}, true
 	case trustedRouterPlato10Model, trustedRouterPlatoModel:
@@ -188,7 +195,7 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 		return advisorConfig{
 			Enabled:              true,
 			WorkerModels:         []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
-			AdvisorModels:        []string{trustedRouterZeus10Model},
+			AdvisorModels:        []string{trustedRouterZeus10MiniModel},
 			HidePublicMetadata:   true,
 			ProviderJurisdiction: providerJurisdictionUS,
 		}, true

@@ -3395,6 +3395,7 @@ func TestServeOneAthenaPreservesAliasAndReportsRedactedAdvisorCounters(t *testin
 		`"model":"` + fusionCodeKimi + `"`,
 		`"model":"` + trustedRouterPrometheus101MModel + `"`,
 		`"model":"` + trustedRouterZeus10Model + `"`,
+		`"model":"` + trustedRouterZeus10MiniModel + `"`,
 		`"worker_models"`,
 		`"advisor_models"`,
 		`"advisor_attempts"`,
@@ -3521,6 +3522,7 @@ func TestServeOneAthenaStreamingHidesAdvisorMetadata(t *testing.T) {
 		`"model":"` + fusionCodeKimi + `"`,
 		`"model":"` + trustedRouterPrometheus101MModel + `"`,
 		`"model":"` + trustedRouterZeus10Model + `"`,
+		`"model":"` + trustedRouterZeus10MiniModel + `"`,
 		`"worker_models"`,
 		`"advisor_models"`,
 		`"advisor_attempts"`,
@@ -3854,6 +3856,16 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{
+			model:    trustedRouterAristotle11Model,
+			workers:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			advisors: []string{trustedRouterZeus10Model},
+		},
+		{
+			model:    trustedRouterAristotleModel,
+			workers:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			advisors: []string{trustedRouterZeus10Model},
+		},
+		{
 			model:    trustedRouterPlato10Model,
 			workers:  []string{"deepseek/deepseek-v4-flash"},
 			advisors: []string{trustedRouterPlatoPro10Model},
@@ -3909,7 +3921,7 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		{
 			model:        trustedRouterAthenaModel,
 			workers:      []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
-			advisors:     []string{trustedRouterZeus10Model},
+			advisors:     []string{trustedRouterZeus10MiniModel},
 			jurisdiction: providerJurisdictionUS,
 		},
 	}
