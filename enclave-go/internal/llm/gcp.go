@@ -150,13 +150,13 @@ func (c *gcpClient) InvokeStreaming(
 		// anthropicSystemField prefers SystemRaw (content blocks preserving
 		// cache_control) over the flattened string, so system prompt-cache
 		// breakpoints survive on the Vertex Anthropic route too.
-		System: anthropicSystemField(body),
-		MaxTokens:        body.MaxTokens,
-		Temperature:      body.Temperature,
-		TopP:             body.TopP,
-		Tools:            body.Tools,
-		ToolChoice:       body.ToolChoice,
-		Stream:           true,
+		System:      anthropicSystemField(body),
+		MaxTokens:   body.MaxTokens,
+		Temperature: body.Temperature,
+		TopP:        body.TopP,
+		Tools:       body.Tools,
+		ToolChoice:  body.ToolChoice,
+		Stream:      true,
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
