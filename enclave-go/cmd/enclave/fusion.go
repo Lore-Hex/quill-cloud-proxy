@@ -111,6 +111,7 @@ var fusionFrontierPanel = []string{
 	"anthropic/claude-opus-4.8",
 	"openai/gpt-5.5",
 	"google/gemini-3.1-pro-preview",
+	"google/gemini-3.5-flash",
 	"minimax/minimax-m3",
 	"z-ai/glm-5.2",
 	"xiaomi/mimo-v2.5-pro",
@@ -118,6 +119,7 @@ var fusionFrontierPanel = []string{
 }
 
 var fusionFrontierMiniPanel = []string{
+	"google/gemini-3.1-pro-preview",
 	"google/gemini-3.5-flash",
 	"minimax/minimax-m3",
 	"z-ai/glm-5.2",
@@ -248,6 +250,10 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 
 func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
+	case trustedRouterZeusModel,
+		trustedRouterZeus10Model,
+		trustedRouterZeus10MiniModel:
+		return []string{"z-ai/glm-5.2"}, true
 	case trustedRouterOpenPatcherS1Model:
 		return []string{fusionCodeKimi}, true
 	default:

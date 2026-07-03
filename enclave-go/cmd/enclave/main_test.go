@@ -4880,6 +4880,24 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 	}
 }
 
+func TestFusionZeusPresetsUseGLMJudge(t *testing.T) {
+	for _, model := range []string{
+		trustedRouterZeusModel,
+		trustedRouterZeus10Model,
+		trustedRouterZeus10MiniModel,
+	} {
+		t.Run(model, func(t *testing.T) {
+			judgeModels, err := fusionJudgeModels(fusionConfig{}, model)
+			if err != nil {
+				t.Fatalf("fusionJudgeModels: %v", err)
+			}
+			if !reflect.DeepEqual(judgeModels, []string{"z-ai/glm-5.2"}) {
+				t.Fatalf("judge models = %#v", judgeModels)
+			}
+		})
+	}
+}
+
 func TestFusionOpenPatcherS1PresetResolvesJudgeAndFinalModels(t *testing.T) {
 	req := &types.OpenAIChatRequest{Model: trustedRouterOpenPatcherS1Model}
 	config, requested, err := fusionConfigForRequest(req)
