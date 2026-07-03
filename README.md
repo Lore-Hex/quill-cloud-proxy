@@ -6,7 +6,7 @@
 [![Verifiable trust](https://img.shields.io/website?url=https%3A%2F%2Ftrust.trustedrouter.com&label=trust)](https://trust.trustedrouter.com)
 [![JavaScript SDK](https://img.shields.io/npm/v/@lore-hex/trusted-router?label=JS%20SDK&logo=npm)](https://www.npmjs.com/package/@lore-hex/trusted-router)
 [![Python SDK](https://img.shields.io/pypi/v/trusted-router-py?label=Python%20SDK&logo=pypi)](https://pypi.org/project/trusted-router-py/)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 
 The prompt-handling proxy for Quill Cloud. The workload runs inside **AWS Nitro
 Enclaves** or **GCP Confidential Space**, depending on the deployment target.
@@ -119,4 +119,10 @@ claim even if a caller asks for a weaker setting.
 
 ## License
 
-Apache 2.0. See [`LICENSE`](LICENSE).
+Business Source License 1.1. See [`LICENSE`](LICENSE). The source is public
+so anyone can read, build, and verify the trust surface published at
+https://trust.trustedrouter.com. Non-production use (security review, audit,
+local evaluation) is free. Production use requires a commercial license from
+Lore Hex Corp: licensing@trustedrouter.com. Each version converts to the
+Apache License 2.0 four years after publication. Code published before
+July 3, 2026 remains Apache-2.0.
