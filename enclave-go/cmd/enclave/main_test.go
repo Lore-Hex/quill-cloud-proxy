@@ -3060,6 +3060,47 @@ func TestRunAdvisorAdviceOnceThenWorkerFinal(t *testing.T) {
 	}
 }
 
+func TestRunAdvisorAutoInitialAdviceExplicit(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &advisorScriptedLLM{}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterAdvisorModel,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "review this risky migration"}},
+	}
+	config := testAdvisorConfig(t)
+	config.AutoInitialAdvice = true
+	config.AutoInitialAdviceSet = true
+
+	final, workers, advisors, adviceCalls, budgetExhausted, err := runAdvisor(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_advisor_auto_initial", "log_advisor_auto_initial", nil, nil, 0, nil)
+	if err != nil {
+		t.Fatalf("runAdvisor: %v", err)
+	}
+	if got := strings.TrimSpace(final.Result.Text); got != "worker final after advice" {
+		t.Fatalf("final text = %q", got)
+	}
+	if adviceCalls != 1 || budgetExhausted {
+		t.Fatalf("adviceCalls=%d budgetExhausted=%t, want 1 false", adviceCalls, budgetExhausted)
+	}
+	if len(workers) != 1 || len(advisors) != 1 {
+		t.Fatalf("workers=%d advisors=%d, want 1 1", len(workers), len(advisors))
+	}
+	details := advisorResponseDetails(config, workers, advisors, trustedRouterAdvisorModel, final.Model, adviceCalls, budgetExhausted)
+	if details["auto_initial_advice"] != true {
+		t.Fatalf("auto_initial_advice detail = %#v, want true", details["auto_initial_advice"])
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	var routeTypes []string
+	for _, payload := range recorder.authorize {
+		routeTypes = append(routeTypes, fmt.Sprint(payload["route_type"]))
+	}
+	want := []string{"advisor.advisor", "advisor.worker"}
+	if !reflect.DeepEqual(routeTypes, want) {
+		t.Fatalf("route types = %#v, want %#v", routeTypes, want)
+	}
+}
+
 func TestRunAdvisorAdviceRunsAdvisorsInParallel(t *testing.T) {
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
@@ -3754,6 +3795,7 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		workers      []string
 		advisors     []string
 		jurisdiction string
+		autoInitial  bool
 	}{
 		{
 			model:    trustedRouterAristotle10Model,
@@ -3842,6 +3884,9 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			if config.ProviderJurisdiction != tt.jurisdiction {
 				t.Fatalf("provider jurisdiction = %q, want %q", config.ProviderJurisdiction, tt.jurisdiction)
 			}
+			if config.AutoInitialAdvice != tt.autoInitial {
+				t.Fatalf("auto initial advice = %t, want %t", config.AutoInitialAdvice, tt.autoInitial)
+			}
 		})
 	}
 }
@@ -3909,8 +3954,10 @@ func TestGenericAdvisorAcceptsDirectSDKToolConfig(t *testing.T) {
 			map[string]any{
 				"type": trustedRouterAdvisorTool,
 				"parameters": map[string]any{
-					"worker_models":  []any{"moonshotai/kimi-k2.7-code"},
-					"advisor_models": []any{"z-ai/glm-5.2"},
+					"worker_models":        []any{"moonshotai/kimi-k2.7-code"},
+					"advisor_models":       []any{"z-ai/glm-5.2"},
+					"auto_initial_advice":  true,
+					"max_get_advice_calls": 2,
 				},
 			},
 		},
@@ -3930,6 +3977,12 @@ func TestGenericAdvisorAcceptsDirectSDKToolConfig(t *testing.T) {
 	}
 	if !reflect.DeepEqual(config.AdvisorModels, []string{"z-ai/glm-5.2"}) {
 		t.Fatalf("advisor models = %#v", config.AdvisorModels)
+	}
+	if !config.AutoInitialAdvice {
+		t.Fatal("auto initial advice = false, want true")
+	}
+	if config.MaxAdviceCalls != 2 {
+		t.Fatalf("max advice calls = %d, want 2", config.MaxAdviceCalls)
 	}
 }
 
@@ -5783,10 +5836,11 @@ func (s *advisorScriptedLLM) InvokeStreaming(
 		return s.writeText(out, req.Model, "advisor says check rollback and settlement")
 	case "cerebras/gpt-oss-120b":
 		last := lastChatMessageText(req.Messages)
+		system := firstSystemMessageText(req.Messages)
 		switch {
 		case strings.Contains(last, "Advice budget exhausted"):
 			return s.writeText(out, req.Model, "worker final after budget exhausted")
-		case strings.Contains(last, "advisor says"):
+		case strings.Contains(last, "advisor says") || strings.Contains(system, "advisor says"):
 			if s.callAdviceAfterAdvisor {
 				return writeAnthropicToolUseTestStream(out, advisorAdviceToolName)
 			}

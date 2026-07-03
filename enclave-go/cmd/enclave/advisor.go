@@ -64,13 +64,12 @@ You have access to one private advisor tool: _trustedrouter_get_advice.
 
 This tool is expensive. Use it deliberately, not for routine work.
 
-For complex, multi-step, high-risk, unfamiliar, or uncertain tasks, call the advisor early in the turn to pressure-test the plan before committing. In an agentic loop, a later turn can use its advisor call when finalizing a risky result, changing strategy, or stuck after failed attempts.
+For complex, multi-step, high-risk, unfamiliar, or uncertain tasks, call the advisor early in the turn to pressure-test the plan before committing. In an agentic loop, a later turn can use its advisor call when finalizing a risky result, changing strategy, or stuck after failed attempts. A clear next local action is not by itself a reason to skip advice when the overall task is complex or progress is incomplete.
 
 Do not call the advisor for straightforward work:
 - simple factual answers
 - obvious code edits
 - routine summarization or formatting
-- tasks where the next step is clear
 - cases where you can answer confidently from the conversation
 
 Call the advisor when one of these is true:
@@ -101,6 +100,8 @@ type advisorConfig struct {
 	MaxAdviceCallsSet    bool
 	AdvisorMaxTokens     int
 	AdvisorTimeoutMS     int
+	AutoInitialAdvice    bool
+	AutoInitialAdviceSet bool
 	BuiltInWorkerPrompt  string
 	BuiltInAdvisorPrompt string
 	HidePublicMetadata   bool
@@ -407,7 +408,25 @@ func parseAdvisorParameters(raw map[string]any) (advisorConfig, error) {
 	} else if ok {
 		config.AdvisorTimeoutMS = n
 	}
+	if auto, ok, err := boolField(raw, "auto_initial_advice"); err != nil {
+		return config, err
+	} else if ok {
+		config.AutoInitialAdvice = auto
+		config.AutoInitialAdviceSet = true
+	}
 	return config, nil
+}
+
+func boolField(raw map[string]any, name string) (bool, bool, error) {
+	value, ok := raw[name]
+	if !ok || value == nil {
+		return false, false, nil
+	}
+	valueBool, ok := value.(bool)
+	if !ok {
+		return false, true, &adapter.AdapterError{Status: 400, Message: "trustedrouter/advisor boolean field must be boolean", Context: name}
+	}
+	return valueBool, true, nil
 }
 
 func mergeAdvisorConfig(base, override advisorConfig) advisorConfig {
@@ -433,6 +452,10 @@ func mergeAdvisorConfig(base, override advisorConfig) advisorConfig {
 	}
 	if override.AdvisorTimeoutMS != 0 {
 		base.AdvisorTimeoutMS = override.AdvisorTimeoutMS
+	}
+	if override.AutoInitialAdviceSet {
+		base.AutoInitialAdvice = override.AutoInitialAdvice
+		base.AutoInitialAdviceSet = true
 	}
 	if override.HidePublicMetadata {
 		base.HidePublicMetadata = true
@@ -745,7 +768,28 @@ func runAdvisorWorkerLoop(
 	advisorAttempts := make([]fusionCallResult, 0, config.MaxAdviceCalls)
 	adviceCalls := 0
 	budgetExhausted := false
-	allowAdviceTool := config.MaxAdviceCalls > 0
+	workerConfig := config
+	if advisorShouldAutoInitialAdvice(config) {
+		adviceCalls++
+		fmt.Fprintf(os.Stderr,
+			"advisor.advice_call request_log_id=%q request_id=%q worker_model=%q call_index=%d depth_remaining=%d advisor_models=%q auto_initial=%t\n",
+			requestLogID, requestID, workerModel, adviceCalls, config.Depth, strings.Join(config.AdvisorModels, ","), true,
+		)
+		if streamW != nil {
+			_ = writeAdvisorStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
+				"event":        "advice.started",
+				"stage":        "advisor",
+				"index":        adviceCalls - 1,
+				"auto_initial": true,
+			})
+		}
+		adviceText, attempts := runAdvisorAdvice(ctx, br, req, config, messages, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, streamW, streamCreated, observerFactory)
+		advisorAttempts = append(advisorAttempts, attempts...)
+		if adviceText = strings.TrimSpace(adviceText); adviceText != "" {
+			workerConfig.BuiltInWorkerPrompt = strings.TrimSpace(workerConfig.BuiltInWorkerPrompt + "\n\n" + advisorInitialAdviceMessage(adviceText))
+		}
+	}
+	allowAdviceTool := adviceCalls < config.MaxAdviceCalls
 	for turn := 0; turn < config.MaxAdviceCalls+3; turn++ {
 		if streamW != nil {
 			_ = writeAdvisorStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
@@ -755,7 +799,7 @@ func runAdvisorWorkerLoop(
 				"model": workerModel,
 			})
 		}
-		workerReq := advisorWorkerRequest(req, workerModel, messages, config, allowAdviceTool && !isFusionModel(workerModel))
+		workerReq := advisorWorkerRequest(req, workerModel, messages, workerConfig, allowAdviceTool && !isFusionModel(workerModel))
 		var worker fusionCallResult
 		var err error
 		if isFusionModel(workerModel) {
@@ -1521,7 +1565,7 @@ func advisorAdviceTool() map[string]any {
 		"type": "function",
 		"function": map[string]any{
 			"name":        advisorAdviceToolName,
-			"description": "Ask a stronger TrustedRouter advisor for private guidance. Use deliberately on complex, multi-step, high-risk, unfamiliar, or uncertain work, especially early to pressure-test a plan, or in a later agentic turn when finalizing, changing strategy, or stuck. Do not use for routine or straightforward work.",
+			"description": "Ask a stronger TrustedRouter advisor for private guidance. Use deliberately on complex, multi-step, high-risk, unfamiliar, or uncertain work, especially early to pressure-test a plan, or in a later agentic turn when finalizing, changing strategy, or stuck after failed attempts. A clear next local action is not by itself a reason to skip advice when the overall task is complex or progress is incomplete. Do not use for routine or straightforward work.",
 			"parameters": map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -1621,6 +1665,14 @@ func advisorToolCallID(call types.ToolCall, index int) string {
 	return fmt.Sprintf("call_advisor_advice_%d", index+1)
 }
 
+func advisorShouldAutoInitialAdvice(config advisorConfig) bool {
+	return config.AutoInitialAdvice && config.MaxAdviceCalls > 0 && len(config.AdvisorModels) > 0
+}
+
+func advisorInitialAdviceMessage(adviceText string) string {
+	return "Private TrustedRouter advisor guidance for this worker. Use it to improve the plan, but do not mention that advice was used unless directly relevant.\n\n" + strings.TrimSpace(adviceText)
+}
+
 func advisorMetadata(input map[string]any, stage string, model string, config advisorConfig) map[string]any {
 	out := map[string]any{}
 	for k, v := range input {
@@ -1630,6 +1682,9 @@ func advisorMetadata(input map[string]any, stage string, model string, config ad
 	out["trustedrouter_advisor_stage"] = stage
 	out["trustedrouter_advisor_model"] = model
 	out["trustedrouter_orchestration_depth"] = config.Depth
+	if config.AutoInitialAdvice {
+		out["trustedrouter_advisor_auto_initial_advice"] = true
+	}
 	return out
 }
 
@@ -1641,6 +1696,7 @@ func advisorResponseDetails(config advisorConfig, workerAttempts []fusionCallRes
 		"selected_model":          selectedModel,
 		"depth_initial":           config.Depth,
 		"max_get_advice_calls":    config.MaxAdviceCalls,
+		"auto_initial_advice":     config.AutoInitialAdvice,
 		"advice_call_count":       adviceCalls,
 		"advice_budget_exhausted": budgetExhausted,
 		"worker_attempts":         advisorSafeCallDetailsList(workerAttempts, true),
