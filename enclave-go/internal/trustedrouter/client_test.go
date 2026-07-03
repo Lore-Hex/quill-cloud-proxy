@@ -1,6 +1,7 @@
 package trustedrouter
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -121,5 +122,87 @@ func TestAuthorizeReturnsParsedControlPlaneError(t *testing.T) {
 	}
 	if controlErr.Message != "Routing filters cannot contain router name 'openrouter'" {
 		t.Fatalf("message = %q", controlErr.Message)
+	}
+}
+
+func TestAuthorizeCapturesRetryAfterHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"API key daily spend limit exceeded","type":"key_window_limit_exceeded"}}`)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "internal", server.Client())
+	_, err := client.Authorize(t.Context(), "sk-test", &qtypes.OpenAIChatRequest{
+		Model:    "trustedrouter/cheap",
+		Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "hi"}},
+	})
+	var controlErr *ControlPlaneError
+	if !errors.As(err, &controlErr) {
+		t.Fatalf("error type = %T, want ControlPlaneError", err)
+	}
+	if controlErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d", controlErr.StatusCode)
+	}
+	if controlErr.RetryAfter != "3600" {
+		t.Fatalf("RetryAfter = %q, want 3600", controlErr.RetryAfter)
+	}
+}
+
+func TestKeyInfoUsesLookupHashNotRawBearer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The RAW BEARER MUST NOT LEAVE THE ENCLAVE: KeyInfo POSTs the lookup
+		// hash + internal token to /internal/gateway/key, never GET /v1/key
+		// with the bearer.
+		if r.Method != http.MethodPost || r.URL.Path != "/internal/gateway/key" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Fatalf("raw bearer leaked in Authorization header: %q", r.Header.Get("Authorization"))
+		}
+		if r.Header.Get(internalTokenHeader) != "internal" {
+			t.Fatalf("missing internal token, got %q", r.Header.Get(internalTokenHeader))
+		}
+		var body struct {
+			LookupHash string `json:"api_key_lookup_hash"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.LookupHash != lookupHash("sk-holder") {
+			t.Fatalf("lookup hash = %q, want %q", body.LookupHash, lookupHash("sk-holder"))
+		}
+		if bytes.Contains([]byte(body.LookupHash), []byte("sk-holder")) {
+			t.Fatal("raw key present in payload")
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"data":{"limit_daily":0.5}}`)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "internal", server.Client())
+	status, body, err := client.KeyInfo(t.Context(), "sk-holder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if string(body) != `{"data":{"limit_daily":0.5}}` {
+		t.Fatalf("body = %s", body)
+	}
+}
+
+func TestSanitizeRetryAfter(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"3600", "3600"},
+		{"  120 ", "120"},
+		{"", ""},
+		{"60\r\nX-Evil: 1", ""},               // CRLF injection dropped
+		{"Wed, 21 Oct 2026 07:28:00 GMT", ""}, // HTTP-date we never emit
+		{"abc", ""},
+	} {
+		if got := sanitizeRetryAfter(tc.in); got != tc.want {
+			t.Fatalf("sanitizeRetryAfter(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

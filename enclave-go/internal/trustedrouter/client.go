@@ -134,6 +134,10 @@ type ControlPlaneError struct {
 	Message    string
 	Type       string
 	Body       string
+	// Retry-After from the control plane (e.g. a per-key window spend limit
+	// 429 carries seconds-until-the-window-resets). Relayed to the client so
+	// agents can back off precisely instead of guessing.
+	RetryAfter string
 }
 
 func (e *ControlPlaneError) Error() string {
@@ -445,6 +449,7 @@ func (c *Client) postJSON(ctx context.Context, path string, payload any, out any
 			Path:       path,
 			StatusCode: resp.StatusCode,
 			Body:       string(errBody),
+			RetryAfter: sanitizeRetryAfter(resp.Header.Get("Retry-After")),
 		}
 		var envelope struct {
 			Error struct {
@@ -462,6 +467,57 @@ func (c *Client) postJSON(ctx context.Context, path string, payload any, out any
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// KeyInfo serves the /v1/key passthrough: agents read their own key's budget
+// (limits, per-window remaining, resets_at) through the attested endpoint they
+// send inference to. The RAW BEARER NEVER LEAVES THE ENCLAVE — same contract
+// as authorize: the control plane's /internal/gateway/key is keyed by the
+// key's lookup hash + the internal gateway token. Returns the control-plane
+// status + JSON body verbatim (the caller allowlists statuses).
+func (c *Client) KeyInfo(ctx context.Context, bearer string) (int, []byte, error) {
+	payload, err := json.Marshal(map[string]string{
+		"api_key_lookup_hash": lookupHash(bearer),
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, c.baseURL+"/internal/gateway/key", bytes.NewReader(payload),
+	)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(internalTokenHeader, c.internalToken)
+	resp, err := c.httpc.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("trustedrouter: post /internal/gateway/key: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, nil, fmt.Errorf("trustedrouter: read /internal/gateway/key body: %w", err)
+	}
+	return resp.StatusCode, body, nil
+}
+
+// sanitizeRetryAfter keeps only a bare delta-seconds value (the form the
+// control plane sends — seconds until a spend window resets). Anything else
+// (an HTTP-date we don't emit, or any CRLF/control chars) is dropped, so a
+// relayed Retry-After can never inject into the enclave's hand-written HTTP
+// response headers (codex #93 enclave review).
+func sanitizeRetryAfter(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	for _, r := range v {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return v
 }
 
 func lookupHash(raw string) string {

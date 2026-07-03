@@ -104,3 +104,38 @@ func httpBody(t *testing.T, raw string) string {
 	}
 	return parts[1]
 }
+
+func TestWriteErrorWithSourceHeadersEmitsRetryAfter(t *testing.T) {
+	var buf bytes.Buffer
+	writeErrorWithSourceHeaders(&buf, 429, "API key daily spend limit exceeded", "router",
+		map[string]string{"Retry-After": "1800"})
+	out := buf.String()
+	if !strings.Contains(out, "HTTP/1.1 429") {
+		t.Fatalf("missing status line: %s", out)
+	}
+	if !strings.Contains(out, "Retry-After: 1800\r\n") {
+		t.Fatalf("missing Retry-After header: %s", out)
+	}
+	if !strings.Contains(out, `"message":"API key daily spend limit exceeded"`) {
+		t.Fatalf("missing body: %s", out)
+	}
+	// Header block must terminate before the body.
+	if !strings.Contains(out, "\r\n\r\n{") {
+		t.Fatalf("malformed header/body separation: %s", out)
+	}
+}
+
+func TestAllowlistKeyInfoStatus(t *testing.T) {
+	for _, s := range []int{200, 400, 401, 403, 404, 429, 503} {
+		if got, relay := allowlistKeyInfoStatus(s); got != s || !relay {
+			t.Fatalf("allowlistKeyInfoStatus(%d) = (%d,%v), want (%d,true)", s, got, relay, s)
+		}
+	}
+	// Unexpected statuses collapse to 502 with relay=false so the body is
+	// dropped — INCLUDING a raw 502, which must not be mistaken for expected.
+	for _, s := range []int{100, 301, 302, 418, 500, 502, 504} {
+		if got, relay := allowlistKeyInfoStatus(s); got != 502 || relay {
+			t.Fatalf("allowlistKeyInfoStatus(%d) = (%d,%v), want (502,false)", s, got, relay)
+		}
+	}
+}

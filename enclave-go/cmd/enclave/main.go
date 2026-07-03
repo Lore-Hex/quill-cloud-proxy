@@ -380,6 +380,34 @@ func serveOne(
 		return
 	}
 
+	// Agent budget introspection: GET /v1/key lets a key holder read its own
+	// limits / per-window remaining / resets_at through the same attested
+	// endpoint it sends inference to. The RAW BEARER NEVER LEAVES THE ENCLAVE:
+	// KeyInfo calls the control plane's /internal/gateway/key keyed by the
+	// key's lookup hash + the internal gateway token (same contract as
+	// authorize). Relayed status is allowlisted so a surprise 1xx/3xx can't
+	// confuse an OpenAI-style client.
+	if routePath == "/v1/key" {
+		if method != "GET" || !trEnabled {
+			writeError(conn, 404, "route not found")
+			return
+		}
+		status, keyBody, err := trGateway.KeyInfo(ctx, bearer)
+		if err != nil {
+			writeError(conn, 502, "control plane unavailable")
+			return
+		}
+		// Only relay the control-plane body for an EXPECTED status. An
+		// unexpected status (including a raw 502) may carry an internal/proxy
+		// body a key holder must not see, so drop it (codex).
+		if safe, relay := allowlistKeyInfoStatus(status); relay {
+			writeJSONResponse(conn, safe, keyBody)
+		} else {
+			writeError(conn, safe, "control plane unavailable")
+		}
+		return
+	}
+
 	// Native Anthropic Messages API. The internal pipeline is already
 	// Anthropic-shaped, so this route passes content through verbatim and
 	// relays the provider's native SSE back out — the surface Claude Code
@@ -520,7 +548,7 @@ func serveOne(
 	if trEnabled {
 		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, &req, routeType)
 		if err != nil {
-			writeError(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"))
+			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
 			return
 		}
 		req.Models = nil
@@ -591,7 +619,7 @@ func validateMetadataRoute(
 		return true
 	}
 	if err := trGateway.ValidateKey(ctx, bearer, routeType); err != nil {
-		writeError(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"))
+		writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
 		return false
 	}
 	return true
@@ -982,7 +1010,7 @@ func serveMessages(
 	if trEnabled {
 		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, req, "messages")
 		if err != nil {
-			writeAnthropicError(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"))
+			writeAnthropicErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
 			return
 		}
 		invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)

@@ -178,3 +178,14 @@ func messageFromControlPlaneError(err error, fallback string) string {
 	}
 	return fallback
 }
+
+// retryHeadersFromControlPlaneError relays the control plane's Retry-After
+// (e.g. seconds until a per-key window spend limit resets) so agents can back
+// off precisely. Nil when the error carries none — writers skip empty maps.
+func retryHeadersFromControlPlaneError(err error) map[string]string {
+	var controlErr *trustedrouter.ControlPlaneError
+	if errors.As(err, &controlErr) && controlErr.RetryAfter != "" {
+		return map[string]string{"Retry-After": controlErr.RetryAfter}
+	}
+	return nil
+}

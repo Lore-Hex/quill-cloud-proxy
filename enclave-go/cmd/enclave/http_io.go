@@ -80,6 +80,22 @@ func outcomeForStatus(status int) string {
 	}
 }
 
+// allowlistKeyInfoStatus maps the control-plane /internal/gateway/key status to
+// a client-safe status for the /v1/key relay AND reports whether the
+// control-plane body is safe to relay. `relay` is true ONLY for an expected
+// status; anything unexpected (a 1xx/3xx, or ANY 5xx — including a raw 502 that
+// would otherwise equal the collapsed value) returns (502, false) so the caller
+// drops the possibly-internal body (codex). Never infer "expected" by comparing
+// the mapped status to the original — 502 maps to 502.
+func allowlistKeyInfoStatus(status int) (safe int, relay bool) {
+	switch status {
+	case 200, 400, 401, 403, 404, 429, 503:
+		return status, true
+	default:
+		return 502, false
+	}
+}
+
 type streamStatsWriter struct {
 	w         io.Writer
 	bytes     int
@@ -252,14 +268,27 @@ func writeProviderError(w io.Writer, status int, message string) {
 }
 
 func writeErrorWithSource(w io.Writer, status int, message, source string) {
+	writeErrorWithSourceHeaders(w, status, message, source, nil)
+}
+
+// writeErrorWithSourceHeaders is writeErrorWithSource plus extra response
+// headers (e.g. Retry-After relayed from a control-plane 429 so agents can
+// back off until the key's spend window resets).
+func writeErrorWithSourceHeaders(w io.Writer, status int, message, source string, extra map[string]string) {
 	if source == "" {
 		source = "router"
 	}
 	body, _ := json.Marshal(map[string]any{
 		"error": map[string]any{"status": status, "message": message, "source": source},
 	})
-	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n",
 		status, statusText(status), len(body))
+	for name, value := range extra {
+		if value != "" {
+			fmt.Fprintf(w, "%s: %s\r\n", name, value)
+		}
+	}
+	io.WriteString(w, "\r\n")
 	w.Write(body)
 }
 
@@ -424,6 +453,12 @@ func writeAnthropicProviderError(w io.Writer, status int, message string) {
 }
 
 func writeAnthropicErrorWithSource(w io.Writer, status int, message, source string) {
+	writeAnthropicErrorWithSourceHeaders(w, status, message, source, nil)
+}
+
+func writeAnthropicErrorWithSourceHeaders(
+	w io.Writer, status int, message, source string, extra map[string]string,
+) {
 	if source == "" {
 		source = "router"
 	}
@@ -435,8 +470,14 @@ func writeAnthropicErrorWithSource(w io.Writer, status int, message, source stri
 			"source":  source,
 		},
 	})
-	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n",
 		status, statusText(status), len(body))
+	for name, value := range extra {
+		if value != "" {
+			fmt.Fprintf(w, "%s: %s\r\n", name, value)
+		}
+	}
+	io.WriteString(w, "\r\n")
 	w.Write(body)
 }
 
