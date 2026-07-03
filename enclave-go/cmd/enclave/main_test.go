@@ -3321,9 +3321,8 @@ func TestServeOneAthenaPreservesAliasAndReportsRedactedAdvisorCounters(t *testin
 	streamer := &advisorScriptedLLM{
 		callAdviceForModels: map[string]bool{"z-ai/glm-5.2-fast": true},
 		reasoningByModel: map[string]int{
-			"z-ai/glm-5.2-fast":              11,
-			fusionCodeKimi:                   17,
-			trustedRouterPrometheus101MModel: 19,
+			"z-ai/glm-5.2-fast": 11,
+			"z-ai/glm-5.2":      17,
 		},
 	}
 	serverConn, client := net.Pipe()
@@ -3469,9 +3468,8 @@ func TestServeOneAthenaStreamingHidesAdvisorMetadata(t *testing.T) {
 	streamer := &advisorScriptedLLM{
 		callAdviceForModels: map[string]bool{"z-ai/glm-5.2-fast": true},
 		reasoningByModel: map[string]int{
-			"z-ai/glm-5.2-fast":              11,
-			fusionCodeKimi:                   17,
-			trustedRouterPrometheus101MModel: 19,
+			"z-ai/glm-5.2-fast": 11,
+			"z-ai/glm-5.2":      17,
 		},
 	}
 	serverConn, client := net.Pipe()
