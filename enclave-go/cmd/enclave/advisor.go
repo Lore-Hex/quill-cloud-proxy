@@ -64,7 +64,7 @@ You have access to one private advisor tool: _trustedrouter_get_advice.
 
 This tool is expensive. Use it deliberately, not for routine work.
 
-For complex, multi-step, high-risk, unfamiliar, or uncertain tasks, call the advisor early in the turn to pressure-test the plan before committing. In an agentic loop, a later turn can use its advisor call when finalizing a risky result, changing strategy, or stuck after failed attempts. A clear next local action is not by itself a reason to skip advice when the overall task is complex or progress is incomplete.
+For complex tasks, ask advice at major strategy checkpoints: before a costly/broad approach, after repeated stalls, or when choosing between plausible methods. Use routine commands yourself.
 
 Do not call the advisor for straightforward work:
 - simple factual answers
@@ -1565,7 +1565,7 @@ func advisorAdviceTool() map[string]any {
 		"type": "function",
 		"function": map[string]any{
 			"name":        advisorAdviceToolName,
-			"description": "Ask a stronger TrustedRouter advisor for private guidance. Use deliberately on complex, multi-step, high-risk, unfamiliar, or uncertain work, especially early to pressure-test a plan, or in a later agentic turn when finalizing, changing strategy, or stuck after failed attempts. A clear next local action is not by itself a reason to skip advice when the overall task is complex or progress is incomplete. Do not use for routine or straightforward work.",
+			"description": "Ask a stronger TrustedRouter advisor for private guidance. For complex tasks, ask advice at major strategy checkpoints: before a costly/broad approach, after repeated stalls, or when choosing between plausible methods. Use routine commands yourself. Do not use for routine or straightforward work.",
 			"parameters": map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
