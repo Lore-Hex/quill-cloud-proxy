@@ -902,13 +902,24 @@ func serveStreaming(
 	chunkW := newChunkedWriter(conn)
 	defer chunkW.Close()
 	statsW := newStreamStatsWriter(chunkW)
+	streamW := io.Writer(statsW)
+	var batchW io.WriteCloser
+	if routeType == "chat.completions" {
+		batchW = newSSEBatchWriter(statsW)
+		streamW = batchW
+	}
 
 	var result adapter.StreamResult
 	var err error
 	if routeType == "responses" {
 		result, err = adapter.TransformResponsesStream(pr, statsW, requestID, responseModel, trustedrouter.EstimateInputTokens(req), responseTextConfig(req), req.Response)
 	} else {
-		result, err = adapter.TransformStreamCaptureWithOptions(pr, statsW, requestID, responseModel, chatIncludeUsage(req))
+		result, err = adapter.TransformStreamCaptureWithOptions(pr, streamW, requestID, responseModel, chatIncludeUsage(req))
+	}
+	if batchW != nil {
+		if closeErr := batchW.Close(); err == nil {
+			err = closeErr
+		}
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
