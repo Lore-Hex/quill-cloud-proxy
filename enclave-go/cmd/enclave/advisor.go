@@ -195,7 +195,7 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 		return advisorConfig{
 			Enabled:              true,
 			WorkerModels:         []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
-			AdvisorModels:        []string{trustedRouterZeus10MiniModel},
+			AdvisorModels:        []string{trustedRouterZeus10MiniModel, fusionCodeKimi, fusionGeneralKimi},
 			HidePublicMetadata:   true,
 			ProviderJurisdiction: providerJurisdictionUS,
 		}, true
