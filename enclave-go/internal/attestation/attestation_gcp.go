@@ -15,12 +15,16 @@
 //	                     is in a supported config
 //	nonces[]             caller-supplied freshness tokens
 //
-// We bind the workload's TLS leaf into the JWT by putting the leaf fingerprint
-// in the Confidential Space nonce list, alongside the device-key blob hash and
-// the caller-supplied freshness nonce. Clients verify the JWT against Google's
+// We bind the workload's TLS leaf and live TLS session into the JWT by putting
+// the leaf fingerprint and RFC 9266 tls-exporter channel binding in the
+// Confidential Space nonce list, alongside the device-key blob hash and the
+// caller-supplied freshness nonce. Clients verify the JWT against Google's
 // public keys, check `image_digest` matches the published digest, and check the
-// live TLS cert's SHA-256 appears in `nonces[]`. Same binding chain as the AWS
-// COSE document, with JWT signatures instead of COSE_Sign1.
+// live TLS cert's SHA-256 and SAME-session exporter appear in `nonces[]`.
+// Nothing binds a relay's separate client-facing TLS session to the enclave's
+// exporter value, closing G6 while keeping the leaf binding as defense in depth.
+// Same binding chain as the AWS COSE document, with JWT signatures instead of
+// COSE_Sign1.
 //
 // We hand-roll the HTTP call (no Google SDK) for the same reason as
 // elsewhere — keeps the binary small and the auditable surface tight.
@@ -51,13 +55,25 @@ import (
 const teeserverSocketPath = "/run/container_launcher/teeserver.sock"
 const attestationTokenURL = "http://teeserver/v1/token" // #nosec G101 -- URL, not a secret.
 
+var requestToken = requestTokenFromLauncher
+
 // Get returns the raw JWT bytes for the cmd/enclave handler to forward
 // as Content-Type: application/jwt. Signature matches the AWS variant
 // so cmd/enclave/main.go can call it under either build tag.
 //
 // nonce is optional client freshness. deviceBlob is hashed in to prove
 // the device-key list bound at boot (parallels AWS UserData[:32]).
-func Get(leafDER []byte, deviceBlob []byte, nonce []byte) ([]byte, error) {
+func Get(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte) ([]byte, error) {
+	reqBody := buildTokenRequest(leafDER, deviceBlob, nonce, channelBinding)
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("attestation/gcp: marshal: %w", err)
+	}
+	return requestToken(body)
+}
+
+func buildTokenRequest(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte) tokenRequest {
 	leafFP := sha256.Sum256(leafDER)
 	deviceHash := sha256.Sum256(deviceBlob)
 
@@ -69,15 +85,16 @@ func Get(leafDER []byte, deviceBlob []byte, nonce []byte) ([]byte, error) {
 			hex.EncodeToString(deviceHash[:]),
 		},
 	}
+	if len(channelBinding) > 0 {
+		reqBody.Nonces = append(reqBody.Nonces, hex.EncodeToString(channelBinding))
+	}
 	if len(nonce) > 0 {
 		reqBody.Nonces = append(reqBody.Nonces, hex.EncodeToString(nonce))
 	}
+	return reqBody
+}
 
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("attestation/gcp: marshal: %w", err)
-	}
-
+func requestTokenFromLauncher(body []byte) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", attestationTokenURL, strings.NewReader(string(body)))

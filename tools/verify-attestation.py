@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# dependencies = ["cbor2>=5.5", "cryptography>=42"]
+# dependencies = ["cbor2>=5.5", "cryptography>=42", "pyOpenSSL>=22.0"]
 # requires-python = ">=3.11"
 # ///
 """Verify a TrustedRouter/Quill attestation document end-to-end.
@@ -9,7 +9,20 @@ Production GCP Confidential Space returns a Google-signed JWT from
 `/attestation`; AWS Nitro returns a COSE/CBOR attestation document. This verifier
 supports both formats and can sample the live endpoint over the same TLS socket
 used to fetch the evidence, which catches cross-SNI certificate substitution
-bugs.
+bugs and verifies the RFC 9266 tls-exporter session binding.
+
+Clients MUST fetch `/attestation` and send sensitive requests over the SAME TLS
+connection. The server keeps successful `/attestation` responses alive so the
+next request can reuse the attested TLS session; this verifier proves that by
+fetching a second attestation over the same socket and checking the same exporter
+binding. The exporter binding covers one TLS session; a new connection needs a
+fresh attestation token.
+
+SECURITY: the exporter check ALONE is insufficient. A relay can launder the
+client's own exporter through the caller-nonce channel. Every verifier MUST also
+send a fresh random nonce and require it present; the enclave honors only one
+caller nonce, so a relay cannot supply both the random nonce and the client
+exporter.
 
 Examples:
     # Live GCP production check, including same-connection cert binding.
@@ -39,6 +52,7 @@ import argparse
 import base64
 import concurrent.futures
 import hashlib
+import ipaddress
 import json
 import secrets
 import socket
@@ -50,10 +64,11 @@ from pathlib import Path
 from typing import Any
 
 import cbor2
+from OpenSSL import SSL, crypto
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -61,6 +76,8 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 AWS_NITRO_ROOT_PEM = (Path(__file__).parent / "aws-nitro-root.pem").read_bytes()
 GCP_ISSUER = "https://confidentialcomputing.googleapis.com"
 GCP_AUDIENCE = "quill-cloud"
+EXPORTER_LABEL = b"EXPORTER-Channel-Binding"
+EXPORTER_LENGTH = 32
 _GCP_JWKS: dict[str, Any] | None = None
 
 
@@ -186,41 +203,259 @@ def cert_spki(der: bytes) -> bytes:
     )
 
 
+def _verify_callback(_conn: SSL.Connection, _cert: crypto.X509, _errnum: int, _depth: int, ok: int) -> bool:
+    return bool(ok)
+
+
+def _normalize_dns_name(name: str) -> str:
+    labels = name.rstrip(".").split(".")
+    return ".".join(
+        label if label == "*" else label.encode("idna").decode("ascii")
+        for label in labels
+    ).lower()
+
+
+def _dnsname_matches(pattern: str, host: str) -> bool:
+    try:
+        pattern_norm = _normalize_dns_name(pattern)
+    except UnicodeError:
+        # The peer controls SAN DNS entries. A malformed IDNA label must be a
+        # non-match, not an uncaught traceback that bypasses the verifier's
+        # structured hostname-mismatch [FAIL].
+        return False
+    host_norm = _normalize_dns_name(host)
+    if "*" not in pattern_norm:
+        return host_norm == pattern_norm
+
+    pattern_labels = pattern_norm.split(".")
+    host_labels = host_norm.split(".")
+    if pattern_norm.count("*") != 1 or pattern_labels[0] != "*" or len(pattern_labels) < 3:
+        return False
+    return len(host_labels) == len(pattern_labels) and host_labels[1:] == pattern_labels[1:] and host_labels[0] != ""
+
+
+def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    value = host.strip()
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    try:
+        return ipaddress.ip_address(value)
+    except ValueError:
+        return None
+
+
+def assert_cert_matches_hostname(cert_der: bytes, host: str) -> None:
+    cert = x509.load_der_x509_certificate(cert_der)
+    try:
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except x509.ExtensionNotFound:
+        san = None
+    dns_names = san.get_values_for_type(x509.DNSName) if san is not None else []
+    ip_addresses = san.get_values_for_type(x509.IPAddress) if san is not None else []
+    if not dns_names and not ip_addresses:
+        sys.exit(f"[FAIL] TLS certificate has no DNS/IP SubjectAlternativeName for {host}")
+
+    host_ip = _ip_literal(host)
+    if host_ip is not None:
+        if any(host_ip == candidate for candidate in ip_addresses):
+            return
+    elif any(_dnsname_matches(pattern, host) for pattern in dns_names):
+        return
+
+    san_text = [f"DNS:{name}" for name in dns_names] + [f"IP:{addr}" for addr in ip_addresses]
+    sys.exit(
+        f"[FAIL] TLS certificate hostname mismatch for {host}: "
+        f"no matching SubjectAlternativeName in {san_text}"
+    )
+
+
+def _hex_bytes_len(value: str) -> int:
+    try:
+        bytes.fromhex(value)
+    except ValueError as exc:
+        raise ValueError("fresh caller nonce is not valid hex") from exc
+    return len(value) // 2
+
+
+def require_gcp_fresh_exporter_binding(nonces: list[str], *, exporter_hex: str, nonce_hex: str | None) -> None:
+    nonce_set = {value.lower() for value in nonces}
+    exporter_hex = exporter_hex.lower()
+    if nonce_hex is None:
+        raise ValueError("fresh caller nonce is required when checking TLS exporter binding")
+    nonce_hex = nonce_hex.lower()
+    if _hex_bytes_len(nonce_hex) < 16:
+        raise ValueError("fresh caller nonce must be at least 16 random bytes")
+    if nonce_hex == exporter_hex:
+        raise ValueError("fresh caller nonce must differ from the TLS exporter")
+    if nonce_hex not in nonce_set:
+        raise ValueError(f"fresh caller nonce not present in GCP attestation: {nonce_hex}")
+    if exporter_hex not in nonce_set:
+        raise ValueError(
+            "TLS exporter channel binding is not bound in GCP attestation "
+            "(pre-Tier-B enclave or relay could not bind this session):\n"
+            f"  exporter: {exporter_hex}\n"
+            f"  nonces:   {sorted(nonce_set)}"
+        )
+
+
+def _new_pyopenssl_context() -> SSL.Context:
+    ctx = SSL.Context(SSL.TLS_CLIENT_METHOD)
+    if hasattr(ctx, "set_min_proto_version") and hasattr(SSL, "TLS1_3_VERSION"):
+        ctx.set_min_proto_version(SSL.TLS1_3_VERSION)
+    else:
+        ctx.set_options(
+            SSL.OP_NO_TLSv1
+            | SSL.OP_NO_TLSv1_1
+            | SSL.OP_NO_TLSv1_2
+        )
+    ctx.set_default_verify_paths()
+    ctx.set_verify(SSL.VERIFY_PEER, _verify_callback)
+    return ctx
+
+
+def _attestation_request(host: str, nonce_hex: str) -> bytes:
+    return (
+        f"GET /attestation?nonce={nonce_hex} HTTP/1.1\r\n"
+        f"Host: {host}\r\n"
+        "Accept: application/jwt, application/cbor, */*\r\n"
+        "Connection: keep-alive\r\n"
+        "\r\n"
+    ).encode("ascii")
+
+
+def _recv_or_fail(conn: SSL.Connection, context: str) -> bytes:
+    try:
+        chunk = conn.recv(65536)
+    except SSL.ZeroReturnError as exc:
+        raise EOFError(context) from exc
+    if not chunk:
+        raise EOFError(context)
+    return chunk
+
+
+def _read_http_response(conn: SSL.Connection, context: str) -> tuple[str, dict[str, str], bytes]:
+    response = bytearray()
+    while b"\r\n\r\n" not in response:
+        response.extend(_recv_or_fail(conn, context))
+    header, sep, rest = bytes(response).partition(b"\r\n\r\n")
+    if sep == b"":
+        sys.exit(f"[FAIL] {context} HTTP response had no header/body separator")
+    lines = header.splitlines()
+    if not lines:
+        sys.exit(f"[FAIL] {context} HTTP response had no status line")
+    status_line = lines[0].decode("latin1", "replace")
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        name, colon, value = line.partition(b":")
+        if colon:
+            headers[name.decode("latin1").strip().lower()] = value.decode("latin1").strip()
+    try:
+        content_length = int(headers["content-length"])
+    except KeyError:
+        sys.exit(f"[FAIL] {context} HTTP response had no Content-Length")
+    except ValueError:
+        sys.exit(f"[FAIL] {context} HTTP response had invalid Content-Length: {headers.get('content-length')!r}")
+    if content_length < 0:
+        sys.exit(f"[FAIL] {context} HTTP response had negative Content-Length")
+    body = bytearray(rest)
+    while len(body) < content_length:
+        body.extend(_recv_or_fail(conn, context))
+    return status_line, headers, bytes(body[:content_length])
+
+
+def _require_attestation_body_binds_exporter(blob: bytes, exporter: bytes, nonce_hex: str, label: str) -> None:
+    exporter_hex = exporter.hex().lower()
+    nonce_hex = nonce_hex.lower()
+    try:
+        if looks_like_jwt(blob):
+            nonces = gcp_nonce_values(parse_jwt_payload(blob))
+            require_gcp_fresh_exporter_binding(nonces, exporter_hex=exporter_hex, nonce_hex=nonce_hex)
+            return
+        payload, _ = parse_cose_payload(blob)
+        user_data = payload.get("user_data") or b""
+        if len(user_data) < 96:
+            raise ValueError("AWS attestation has no TLS exporter channel binding in user_data")
+        bound_exporter = user_data[64:96]
+        if bound_exporter != exporter:
+            raise ValueError(
+                "AWS attestation exporter mismatch: "
+                f"user_data={bound_exporter.hex()} exporter={exporter_hex}"
+            )
+        nonce = payload.get("nonce") or b""
+        if nonce != bytes.fromhex(nonce_hex):
+            raise ValueError(
+                "AWS attestation fresh nonce mismatch: "
+                f"payload={bytes(nonce).hex() if isinstance(nonce, bytes) else nonce!r} "
+                f"expected={nonce_hex}"
+            )
+    except Exception as exc:
+        if isinstance(exc, SystemExit):
+            raise
+        sys.exit(f"[FAIL] {label} attestation is not bound to this TLS session: {exc}")
+
+
 def fetch_attestation_same_tls_socket(
     host: str, nonce_hex: str, port: int = 443, connect_ip: str | None = None
-) -> tuple[bytes, bytes]:
+) -> tuple[bytes, bytes, bytes, str, bytes]:
     # connect_ip lets a caller (e.g. the DNS reconciler) attest a SPECIFIC
     # instance by IP while still presenting/validating the canonical hostname
     # (SNI + cert SAN + Host header stay `host`). Without it, host is dialed.
-    ctx = ssl.create_default_context()
-    with socket.create_connection((connect_ip or host, port), timeout=10) as raw:
-        with ctx.wrap_socket(raw, server_hostname=host) as tls:
-            cert_der = tls.getpeercert(binary_form=True)
-            if cert_der is None:
-                sys.exit("[FAIL] TLS handshake returned no peer certificate")
-            req = (
-                f"GET /attestation?nonce={nonce_hex} HTTP/1.1\r\n"
-                f"Host: {host}\r\n"
-                "Accept: application/jwt, application/cbor, */*\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-            ).encode("ascii")
-            tls.sendall(req)
-            response = bytearray()
-            while True:
-                chunk = tls.recv(65536)
-                if not chunk:
-                    break
-                response.extend(chunk)
-    header, sep, body = bytes(response).partition(b"\r\n\r\n")
-    if sep == b"":
-        sys.exit("[FAIL] attestation HTTP response had no header/body separator")
-    status_line = header.splitlines()[0].decode("latin1", "replace")
-    if " 200 " not in status_line:
-        sys.exit(f"[FAIL] attestation HTTP status was not 200: {status_line}")
-    if not body:
-        sys.exit("[FAIL] empty attestation body")
-    return cert_der, body
+    ctx = _new_pyopenssl_context()
+    raw = socket.create_connection((connect_ip or host, port), timeout=10)
+    conn = SSL.Connection(ctx, raw)
+    try:
+        conn.set_tlsext_host_name(host.encode("idna"))
+        conn.set_connect_state()
+        conn.do_handshake()
+        peer = conn.get_peer_certificate()
+        if peer is None:
+            sys.exit("[FAIL] TLS handshake returned no peer certificate")
+        cert_der = crypto.dump_certificate(crypto.FILETYPE_ASN1, peer)
+        assert_cert_matches_hostname(cert_der, host)
+        exporter = conn.export_keying_material(EXPORTER_LABEL, EXPORTER_LENGTH)
+        conn.sendall(_attestation_request(host, nonce_hex))
+        try:
+            status_line, _headers, body = _read_http_response(conn, "attestation")
+        except Exception as exc:
+            sys.exit(f"[FAIL] attestation socket closed before the first response was fully framed: {exc}")
+        if " 200 " not in status_line:
+            sys.exit(f"[FAIL] attestation HTTP status was not 200: {status_line}")
+        if not body:
+            sys.exit("[FAIL] empty attestation body")
+        _require_attestation_body_binds_exporter(body, exporter, nonce_hex, "first")
+
+        # G6 pinning is meaningful only if the prompt can follow the evidence on
+        # this exact TLS session. A second fresh attestation is an unauthenticated
+        # stand-in for that prompt and proves the server did not close after the
+        # first response.
+        followup_nonce_hex = secrets.token_hex(32)
+        try:
+            conn.sendall(_attestation_request(host, followup_nonce_hex))
+            followup_status, _followup_headers, followup_body = _read_http_response(
+                conn, "follow-up attestation"
+            )
+        except Exception as exc:
+            sys.exit(
+                "[FAIL] attested TLS socket closed after the first /attestation; "
+                f"clients cannot pin a sensitive request to that attestation: {exc}"
+            )
+        if " 200 " not in followup_status:
+            sys.exit(f"[FAIL] follow-up attestation HTTP status was not 200: {followup_status}")
+        if not followup_body:
+            sys.exit("[FAIL] empty follow-up attestation body")
+        followup_exporter = conn.export_keying_material(EXPORTER_LABEL, EXPORTER_LENGTH)
+        if followup_exporter != exporter:
+            sys.exit("[FAIL] TLS exporter changed on a reused socket")
+        _require_attestation_body_binds_exporter(
+            followup_body, exporter, followup_nonce_hex, "follow-up"
+        )
+    finally:
+        try:
+            conn.shutdown()
+        except Exception:
+            pass
+        conn.close()
+    return cert_der, exporter, body, followup_nonce_hex, followup_body
 
 
 def fetch_live_cert_der(host: str, port: int = 443, connect_ip: str | None = None) -> bytes:
@@ -303,6 +538,7 @@ def verify_gcp_jwt(
     blob: bytes,
     cert_der: bytes,
     *,
+    exporter: bytes | None,
     expect_digest: str | None,
     nonce_hex: str | None,
     allow_debug: bool,
@@ -343,9 +579,17 @@ def verify_gcp_jwt(
         )
     print(f"[ok] live TLS cert fingerprint bound in GCP nonce ({cert_fp[:16]}...)")
 
-    if nonce_hex and nonce_hex.lower() not in nonces:
-        sys.exit(f"[FAIL] caller nonce not present in GCP attestation: {nonce_hex}")
-    if nonce_hex:
+    if exporter is not None:
+        exporter_hex = exporter.hex().lower()
+        try:
+            require_gcp_fresh_exporter_binding(nonces, exporter_hex=exporter_hex, nonce_hex=nonce_hex)
+        except ValueError as exc:
+            sys.exit(f"[FAIL] {exc}")
+        print(f"[ok] TLS exporter channel binding bound in GCP nonce ({exporter_hex[:16]}...)")
+        print(f"[ok] caller nonce bound ({nonce_hex[:16]}...)")
+    elif nonce_hex:
+        if nonce_hex.lower() not in nonces:
+            sys.exit(f"[FAIL] caller nonce not present in GCP attestation: {nonce_hex}")
         print(f"[ok] caller nonce bound ({nonce_hex[:16]}...)")
 
     if not allow_debug:
@@ -356,6 +600,7 @@ def verify_aws_cbor(
     blob: bytes,
     cert_der: bytes,
     *,
+    exporter: bytes | None,
     expected_pcr0: str | None,
     device_blob_sha: str | None,
 ) -> None:
@@ -395,6 +640,17 @@ def verify_aws_cbor(
         if blob_fp.lower() != device_blob_sha.strip().lower():
             sys.exit(f"[FAIL] device-blob mismatch:\n  attestation: {blob_fp}\n  expected:    {device_blob_sha}")
         print(f"[ok] device-blob hash matches {blob_fp[:16]}...")
+    if exporter is not None:
+        if len(user_data) < 96:
+            sys.exit("[FAIL] AWS attestation has no TLS exporter channel binding in user_data")
+        bound_exporter = user_data[64:96]
+        if bound_exporter != exporter:
+            sys.exit(
+                "[FAIL] TLS exporter channel binding is not bound in AWS attestation:\n"
+                f"  user_data: {bound_exporter.hex()}\n"
+                f"  exporter:  {exporter.hex()}"
+            )
+        print(f"[ok] TLS exporter channel binding bound in AWS user_data ({exporter.hex()[:16]}...)")
 
 
 def read_blob(path: str | None) -> bytes | None:
@@ -412,7 +668,7 @@ def _probe_binding(host: str, port: int, connect_ip: str | None) -> dict[str, An
     launcher's token socket can saturate under load) — NOT a binding mismatch."""
     nonce_hex = secrets.token_hex(16)
     try:
-        cert_der, blob = fetch_attestation_same_tls_socket(
+        cert_der, exporter, blob, _followup_nonce_hex, _followup_blob = fetch_attestation_same_tls_socket(
             host, nonce_hex, port, connect_ip=connect_ip
         )
     except (SystemExit, Exception) as exc:  # fetch_* sys.exit()s on non-200
@@ -422,10 +678,32 @@ def _probe_binding(host: str, port: int, connect_ip: str | None) -> dict[str, An
         return {"host": host, "error": "non-JWT attestation (binding-stress is GCP-only)"}
     payload = parse_jwt_payload(blob)
     nonces = gcp_nonce_values(payload)
+    exporter_hex = exporter.hex().lower()
+    cert_bound = served_fp in nonces
+    exporter_bound = exporter_hex in nonces
+    nonce_bound = nonce_hex.lower() in nonces
+    binding_error = ""
+    try:
+        require_gcp_fresh_exporter_binding(nonces, exporter_hex=exporter_hex, nonce_hex=nonce_hex)
+        fresh_exporter_bound = True
+    except ValueError as exc:
+        fresh_exporter_bound = False
+        binding_error = str(exc)
     dbg = [str(v) for k, v in walk_values(payload) if k.lower() == "dbgstat"]
     digest = first_claim(payload, "image_digest", "submods.container.image_digest")
-    return {"host": host, "served_fp": served_fp, "bound": served_fp in nonces,
-            "dbgstat": dbg, "digest": digest}
+    return {
+        "host": host,
+        "served_fp": served_fp,
+        "exporter": exporter_hex,
+        "nonce": nonce_hex.lower(),
+        "cert_bound": cert_bound,
+        "exporter_bound": exporter_bound,
+        "nonce_bound": nonce_bound,
+        "bound": cert_bound and fresh_exporter_bound,
+        "binding_error": binding_error,
+        "dbgstat": dbg,
+        "digest": digest,
+    }
 
 
 def binding_stress(
@@ -436,7 +714,8 @@ def binding_stress(
 
     Fires `concurrency` simultaneous connections per round, `rounds` rounds, with
     the SNI interleaved across `hosts`. Asserts every served cert is bound in its
-    own attestation token. A process-global last-cert race (one handshake
+    own attestation token, and the verifier's fresh nonce is also echoed. A
+    process-global last-cert race (one handshake
     overwriting another's cert) surfaces here as mismatches; the sequential
     --samples check cannot see it. Returns 0 iff no mismatches."""
     target = connect_ip or hosts[0]
@@ -475,7 +754,7 @@ def binding_stress(
     bound_ok = sum(s["bound"] for s in by_host.values())
     for h in sorted(by_host):
         s = by_host[h]
-        print(f"[binding-stress]   SNI {h:28s} {s['bound']}/{s['n']} bound  "
+        print(f"[binding-stress]   SNI {h:28s} {s['bound']}/{s['n']} cert+exporter+nonce bound  "
               f"served-fp={sorted(fps.get(h, []))}")
     print(f"[binding-stress]   distinct served certs: "
           f"{sorted({f for s in fps.values() for f in s})}")
@@ -493,10 +772,14 @@ def binding_stress(
             print(f"[ok] all observed image_digests in expected set ({sorted(digests)})")
 
     if mismatches:
-        print(f"[FAIL] {len(mismatches)} cert-binding MISMATCH(es) under concurrency — "
-              "a served cert was NOT bound in its own token (substitution race present)")
+        print(f"[FAIL] {len(mismatches)} channel-binding MISMATCH(es) under concurrency — "
+              "a served cert/exporter was NOT bound in its own token (relay or substitution race present)")
         for m in mismatches[:8]:
-            print(f"  host={m['host']} served_fp={m['served_fp'][:16]} bound={m['bound']}")
+            print(
+                f"  host={m['host']} served_fp={m['served_fp'][:16]} "
+                f"cert_bound={m['cert_bound']} exporter_bound={m['exporter_bound']} "
+                f"nonce_bound={m['nonce_bound']} error={m.get('binding_error', '')}"
+            )
         return 1
     if bound_ok == 0:
         print("[WARN] every probe errored (token socket saturated?) — no binding "
@@ -554,6 +837,7 @@ def main() -> int:
             verify_gcp_jwt(
                 blob,
                 cert_der,
+                exporter=None,
                 expect_digest=args.expect_digest,
                 nonce_hex=None,
                 allow_debug=args.allow_debug,
@@ -562,6 +846,7 @@ def main() -> int:
             verify_aws_cbor(
                 blob,
                 cert_der,
+                exporter=None,
                 expected_pcr0=args.expected_pcr0,
                 device_blob_sha=args.device_blob_sha,
             )
@@ -572,23 +857,43 @@ def main() -> int:
         sys.exit("[FAIL] --samples must be >= 1")
     for sample in range(1, args.samples + 1):
         nonce_hex = secrets.token_hex(32)
-        cert_der, live_blob = fetch_attestation_same_tls_socket(args.api_host, nonce_hex, args.port, connect_ip=args.connect_ip)
+        cert_der, exporter, live_blob, followup_nonce_hex, followup_blob = fetch_attestation_same_tls_socket(
+            args.api_host, nonce_hex, args.port, connect_ip=args.connect_ip
+        )
         print(f"\nSample {sample}/{args.samples}:")
         if looks_like_jwt(live_blob):
             verify_gcp_jwt(
                 live_blob,
                 cert_der,
+                exporter=exporter,
                 expect_digest=args.expect_digest,
                 nonce_hex=nonce_hex,
+                allow_debug=args.allow_debug,
+            )
+            verify_gcp_jwt(
+                followup_blob,
+                cert_der,
+                exporter=exporter,
+                expect_digest=args.expect_digest,
+                nonce_hex=followup_nonce_hex,
                 allow_debug=args.allow_debug,
             )
         else:
             verify_aws_cbor(
                 live_blob,
                 cert_der,
+                exporter=exporter,
                 expected_pcr0=args.expected_pcr0,
                 device_blob_sha=args.device_blob_sha,
             )
+            verify_aws_cbor(
+                followup_blob,
+                cert_der,
+                exporter=exporter,
+                expected_pcr0=args.expected_pcr0,
+                device_blob_sha=args.device_blob_sha,
+            )
+        print("[ok] follow-up /attestation stayed on the attested TLS socket")
     print("\nAll sampled attestation bindings passed.")
     return 0
 

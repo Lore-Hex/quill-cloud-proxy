@@ -20,6 +20,8 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 )
 
+var getAttestation = attestation.Get
+
 type responseStatsConn struct {
 	net.Conn
 	mu            sync.Mutex
@@ -44,8 +46,19 @@ func (c *responseStatsConn) Snapshot() (status int, responseBytes int) {
 	return c.status, c.responseBytes
 }
 
+func (c *responseStatsConn) ResetSnapshot() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.status = 0
+	c.responseBytes = 0
+}
+
 func (c *responseStatsConn) SelectedLeafDER() []byte {
 	return enclavetls.SelectedLeafDER(c.Conn)
+}
+
+func (c *responseStatsConn) SelectedExporter() ([]byte, error) {
+	return enclavetls.SelectedExporter(c.Conn)
 }
 
 func parseHTTPStatus(p []byte) int {
@@ -137,8 +150,7 @@ func maxDurationSeconds(duration time.Duration, floor float64) float64 {
 // readRequest reads a minimal HTTP/1.1 request: status line + headers + body.
 // Returns method + path + bearer + idempotency key + body. We don't validate Host or any
 // other field; the dispatch happens by path in serveOne.
-func readRequest(r net.Conn) (method, path, bearer, idempotencyKey string, body []byte, err error) {
-	br := bufio.NewReader(r)
+func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string, body []byte, err error) {
 	statusLine, err := br.ReadString('\n')
 	if err != nil {
 		return "", "", "", "", nil, err
@@ -199,7 +211,19 @@ func parseRequestTarget(rawPath string) (string, []byte, error) {
 	if err != nil {
 		return rawPath, nil, nil
 	}
-	nonceHex := u.Query().Get("nonce")
+	query := u.Query()
+	nonceValues := query["nonce"]
+	// G6 single-slot closure: the verifier requires both its fresh nonce and
+	// the RFC 9266 exporter, so the caller-controlled channel must remain one
+	// nonce slot. Reject duplicates instead of letting Query.Get silently pick
+	// one and weakening that premise later.
+	if len(nonceValues) > 1 {
+		return "", nil, fmt.Errorf("multiple nonce parameters")
+	}
+	nonceHex := ""
+	if len(nonceValues) == 1 {
+		nonceHex = nonceValues[0]
+	}
 	if nonceHex == "" {
 		return u.Path, nil, nil
 	}
@@ -236,27 +260,28 @@ func isUnsupportedResponsesEndpoint(method, routePath string) bool {
 }
 
 // serveAttestation answers GET /attestation with a hardware-signed document
-// binding the exact TLS leaf cert selected for this connection. Clients fetch
-// this before sending prompts; verify the attestation chain + measurement, then
-// check the cert presented in their TLS handshake is the cert bound in the
-// document/JWT.
+// binding the exact TLS leaf cert and RFC 9266 exporter selected for this
+// connection. Clients fetch this before sending prompts; verify the attestation
+// chain + measurement, then check the cert and same-session exporter presented
+// in their TLS handshake are bound in the document/JWT.
 //
 // nonce: ?nonce=<hex> in the query string. Optional but recommended —
 // a client-supplied freshness token so the doc is provably not a replay.
-func serveAttestation(conn io.Writer, leafDER, deviceBlob, nonce []byte) {
+func serveAttestation(conn io.Writer, leafDER, deviceBlob, nonce, channelBinding []byte) bool {
 	if leafDER == nil {
 		writeError(conn, 503, "TLS not enabled in this enclave; attestation requires a bound cert")
-		return
+		return false
 	}
-	doc, err := attestation.Get(leafDER, deviceBlob, nonce)
+	doc, err := getAttestation(leafDER, deviceBlob, nonce, channelBinding)
 	if err != nil {
 		writeError(conn, 500, "attestation: "+err.Error())
-		return
+		return false
 	}
 	fmt.Fprintf(conn,
-		"HTTP/1.1 200 OK\r\nContent-Type: application/cbor\r\nContent-Length: %d\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+		"HTTP/1.1 200 OK\r\nContent-Type: application/cbor\r\nContent-Length: %d\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n",
 		len(doc))
 	conn.Write(doc)
+	return true
 }
 
 func writeError(w io.Writer, status int, message string) {

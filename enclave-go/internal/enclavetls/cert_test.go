@@ -27,6 +27,9 @@ func TestNewSelfSigned_ValidCert(t *testing.T) {
 	if len(srv.Certificate.Certificate) != 1 {
 		t.Fatalf("expected 1 cert in chain, got %d", len(srv.Certificate.Certificate))
 	}
+	if srv.tlsConfig.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("MinVersion = %x, want TLS 1.3", srv.tlsConfig.MinVersion)
+	}
 	der := srv.Certificate.Certificate[0]
 
 	leaf, err := x509.ParseCertificate(der)
@@ -88,6 +91,9 @@ func TestNewACME_ConfiguresTLSALPNInMemory(t *testing.T) {
 	}
 	if srv.tlsConfig == nil {
 		t.Fatal("tlsConfig is nil")
+	}
+	if srv.tlsConfig.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("MinVersion = %x, want TLS 1.3", srv.tlsConfig.MinVersion)
 	}
 	if !supportsProto(srv.tlsConfig.NextProtos, acme.ALPNProto) {
 		t.Fatalf("NextProtos = %v, want ACME TLS-ALPN support", srv.tlsConfig.NextProtos)
@@ -335,6 +341,191 @@ func TestWrapTracksSelectedLeafPerConnection(t *testing.T) {
 	}
 }
 
+func TestSelectedExporterTLS13(t *testing.T) {
+	srv, err := NewSelfSigned("test.quill.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	innerL := newPipeListener(t)
+	defer innerL.Close()
+	tlsL := srv.Wrap(innerL)
+
+	serverExporter := make(chan []byte, 1)
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := tlsL.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+		if _, err := conn.Read([]byte{0}); err != nil {
+			serverErr <- err
+			return
+		}
+		exporter, err := SelectedExporter(conn)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		serverExporter <- exporter
+	}()
+
+	pool := x509.NewCertPool()
+	leaf, err := x509.ParseCertificate(srv.Certificate.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse leaf: %v", err)
+	}
+	pool.AddCert(leaf)
+	client, err := innerL.dial()
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	tc := tls.Client(client, &tls.Config{
+		RootCAs:    pool,
+		ServerName: "test.quill.local",
+		MinVersion: tls.VersionTLS13,
+	})
+	_ = tc.SetDeadline(time.Now().Add(2 * time.Second))
+	if err := tc.Handshake(); err != nil {
+		t.Fatalf("client handshake: %v", err)
+	}
+	clientState := tc.ConnectionState()
+	clientExporter, err := clientState.ExportKeyingMaterial(ExporterLabel, nil, ExporterLength)
+	if err != nil {
+		t.Fatalf("client exporter: %v", err)
+	}
+	if _, err := tc.Write([]byte{1}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case err := <-serverErr:
+		t.Fatalf("server: %v", err)
+	case got := <-serverExporter:
+		if len(got) != ExporterLength {
+			t.Fatalf("exporter length = %d, want %d", len(got), ExporterLength)
+		}
+		if !bytes.Equal(got, clientExporter) {
+			t.Fatal("server exporter did not match client exporter")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for server exporter")
+	}
+}
+
+func TestSelectedExporterDiffersAcrossIndependentTLS13Sessions(t *testing.T) {
+	srv, err := NewSelfSigned("test.quill.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	innerL := newPipeListener(t)
+	defer innerL.Close()
+	tlsL := srv.Wrap(innerL)
+
+	pool := x509.NewCertPool()
+	leaf, err := x509.ParseCertificate(srv.Certificate.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse leaf: %v", err)
+	}
+	pool.AddCert(leaf)
+
+	// G6/RFC 9266 anti-relay closure rests on tls-exporter being derived from
+	// the individual TLS session, not only from the enclave cert or process.
+	sessionA := selectedExporterForLoopbackSession(t, tlsL, innerL, pool)
+	sessionB := selectedExporterForLoopbackSession(t, tlsL, innerL, pool)
+	if bytes.Equal(sessionA, sessionB) {
+		t.Fatalf("independent TLS 1.3 sessions produced the same exporter: %x", sessionA)
+	}
+}
+
+func selectedExporterForLoopbackSession(t *testing.T, tlsL net.Listener, innerL *pipeListener, pool *x509.CertPool) []byte {
+	t.Helper()
+	serverExporter := make(chan []byte, 1)
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := tlsL.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+		if _, err := conn.Read([]byte{0}); err != nil {
+			serverErr <- err
+			return
+		}
+		exporter, err := SelectedExporter(conn)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		serverExporter <- exporter
+	}()
+
+	client, err := innerL.dial()
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+	tc := tls.Client(client, &tls.Config{
+		RootCAs:    pool,
+		ServerName: "test.quill.local",
+		MinVersion: tls.VersionTLS13,
+	})
+	_ = tc.SetDeadline(time.Now().Add(2 * time.Second))
+	if err := tc.Handshake(); err != nil {
+		t.Fatalf("client handshake: %v", err)
+	}
+	if _, err := tc.Write([]byte{1}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = tc.Close()
+
+	select {
+	case err := <-serverErr:
+		t.Fatalf("server: %v", err)
+	case exporter := <-serverExporter:
+		if len(exporter) != ExporterLength {
+			t.Fatalf("exporter length = %d, want %d", len(exporter), ExporterLength)
+		}
+		return exporter
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for server exporter")
+	}
+	return nil
+}
+
+func TestSelectedExporterErrors(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	if _, err := SelectedExporter(server); err == nil || !strings.Contains(err.Error(), "not a TLS connection") {
+		t.Fatalf("non-TLS error = %v, want not a TLS connection", err)
+	}
+
+	tls12 := fakeTLSStateConn{
+		Conn: server,
+		state: tls.ConnectionState{
+			HandshakeComplete: true,
+			Version:           tls.VersionTLS12,
+		},
+	}
+	if _, err := SelectedExporter(tls12); err == nil || !strings.Contains(err.Error(), "requires TLS 1.3") {
+		t.Fatalf("TLS 1.2 error = %v, want TLS 1.3 requirement", err)
+	}
+
+	incomplete := fakeTLSStateConn{
+		Conn:  server,
+		state: tls.ConnectionState{Version: tls.VersionTLS13},
+	}
+	if _, err := SelectedExporter(incomplete); err == nil || !strings.Contains(err.Error(), "handshake") {
+		t.Fatalf("incomplete handshake error = %v, want handshake error", err)
+	}
+}
+
 // TestWrap_RejectsClientWithDifferentRoot ensures a client that doesn't
 // trust the leaf gets rejected (basic confidence in the TLS config).
 func TestWrap_RejectsClientWithDifferentRoot(t *testing.T) {
@@ -431,3 +622,12 @@ type pipeAddr struct{}
 
 func (pipeAddr) Network() string { return "pipe" }
 func (pipeAddr) String() string  { return "pipe" }
+
+type fakeTLSStateConn struct {
+	net.Conn
+	state tls.ConnectionState
+}
+
+func (c fakeTLSStateConn) ConnectionState() tls.ConnectionState {
+	return c.state
+}

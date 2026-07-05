@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -44,7 +45,15 @@ import (
 // base64-encoded inside JSON. Keep the request cap aligned with common upstream
 // multimodal API limits while still bounding enclave memory per connection.
 const maxRequestBodyBytes = 32 * 1024 * 1024
-const maxAttestationNonceBytes = 64
+
+// Confidential Space accepts each nonce string up to 74 bytes. Caller nonces
+// arrive as raw bytes here but are hex-encoded before launch, so 37 raw bytes
+// is the largest value that stays inside CSP's limit (37*2 = 74) and anything
+// larger is a client 400 instead of a downstream attestation-launch failure.
+const maxAttestationNonceBytes = 37
+const maxAttestationsPerConn = 8
+
+var requestReadTimeout = 30 * time.Second
 
 var errBodyTooLarge = errors.New("request body too large")
 
@@ -289,6 +298,26 @@ func serveOne(
 	conn = statsConn
 	defer conn.Close()
 
+	requestReader := bufio.NewReader(conn)
+	attestationCount := 0
+	for serveOneRequest(ctx, conn, statsConn, requestReader, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount) {
+	}
+}
+
+func serveOneRequest(
+	ctx context.Context,
+	conn net.Conn,
+	statsConn *responseStatsConn,
+	requestReader *bufio.Reader,
+	reg *auth.Registry,
+	br llm.Client,
+	deviceBlob []byte,
+	trGateway *trustedrouter.Client,
+	byokSecrets *byokcache.Cache,
+	attestationCount *int,
+) (keepAlive bool) {
+	statsConn.ResetSnapshot()
+
 	// Bound the TLS handshake + request read. The enclave terminates TLS
 	// lazily (handshake deferred to the first read in readRequest), so a bare
 	// TCP connection that establishes and sends NO ClientHello — e.g. an L4
@@ -298,7 +327,7 @@ func serveOne(
 	// GCP passthrough-NLB TCP health check reads as unhealthy. A deadline makes
 	// such probes time out and close cleanly (FIN). Cleared once the request is
 	// read so streaming responses are never truncated.
-	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(requestReadTimeout))
 
 	requestLogID := newRequestLogID()
 	requestStartedAt := time.Now()
@@ -321,12 +350,15 @@ func serveOne(
 		)
 	}()
 
-	method, path, bearer, idempotencyKey, body, err := readRequest(conn)
+	method, path, bearer, idempotencyKey, body, err := readRequest(requestReader)
 	// Request (and its TLS handshake) is fully read; drop the deadline so a
 	// long-running streamed response is never cut off.
 	_ = conn.SetReadDeadline(time.Time{})
 	requestMethod = method
 	if err != nil {
+		if closeWithoutReadErrorResponse(err) {
+			return
+		}
 		if errors.Is(err, errBodyTooLarge) {
 			writeError(conn, 413, "request body too large")
 			return
@@ -354,8 +386,23 @@ func serveOne(
 	// Trust binding still holds — the doc commits to the live TLS cert,
 	// which only this enclave can speak.
 	if method == "GET" && routePath == "/attestation" {
-		serveAttestation(conn, enclavetls.SelectedLeafDER(conn), deviceBlob, nonce)
-		return
+		leafDER := enclavetls.SelectedLeafDER(conn)
+		exporter, err := statsConn.SelectedExporter()
+		if leafDER != nil && (err != nil || len(exporter) == 0) {
+			// G6 fail-closed: the RFC 9266 exporter is the mitigation. A TLS
+			// attestation without that same-session binding is a genuine but
+			// relayable token, so do not emit one.
+			writeError(conn, 503, "attestation: exporter channel binding unavailable")
+			return
+		}
+		if !serveAttestation(conn, leafDER, deviceBlob, nonce, exporter) {
+			return
+		}
+		(*attestationCount)++
+		// G6 pinning requires the prompt to ride the same TLS session whose
+		// exporter was attested. Bound repeated attestations so keep-alive
+		// cannot become an unbounded anonymous request loop.
+		return *attestationCount < maxAttestationsPerConn
 	}
 
 	trEnabled := trGateway != nil && trGateway.Enabled()
@@ -584,6 +631,15 @@ func serveOne(
 		return
 	}
 	serveStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput, routeType, requestLogID)
+	return
+}
+
+func closeWithoutReadErrorResponse(err error) bool {
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func getenv(name, fallback string) string {

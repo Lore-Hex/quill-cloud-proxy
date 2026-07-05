@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +15,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -150,6 +154,68 @@ func (c *selectedLeafTestConn) SelectedLeafDER() []byte {
 	return append([]byte(nil), c.leaf...)
 }
 
+type selectedExporterTestConn struct {
+	net.Conn
+	exporter []byte
+}
+
+func (c *selectedExporterTestConn) SelectedExporter() ([]byte, error) {
+	return append([]byte(nil), c.exporter...), nil
+}
+
+type scriptedConn struct {
+	read   *bytes.Reader
+	writes bytes.Buffer
+	leaf   []byte
+}
+
+func newScriptedConn(request string, leaf []byte) *scriptedConn {
+	return &scriptedConn{
+		read: bytes.NewReader([]byte(request)),
+		leaf: append([]byte(nil), leaf...),
+	}
+}
+
+func (c *scriptedConn) Read(p []byte) (int, error)  { return c.read.Read(p) }
+func (c *scriptedConn) Write(p []byte) (int, error) { return c.writes.Write(p) }
+func (c *scriptedConn) Close() error                { return nil }
+func (c *scriptedConn) LocalAddr() net.Addr         { return testAddr("local") }
+func (c *scriptedConn) RemoteAddr() net.Addr        { return testAddr("remote") }
+func (c *scriptedConn) SetDeadline(time.Time) error { return nil }
+func (c *scriptedConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+func (c *scriptedConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (c *scriptedConn) SelectedLeafDER() []byte {
+	return append([]byte(nil), c.leaf...)
+}
+
+type attestationExporterConn struct {
+	*scriptedConn
+	exporter []byte
+}
+
+func (c *attestationExporterConn) SelectedExporter() ([]byte, error) {
+	return append([]byte(nil), c.exporter...), nil
+}
+
+type attestationTLS12Conn struct {
+	*scriptedConn
+}
+
+func (c *attestationTLS12Conn) ConnectionState() tls.ConnectionState {
+	return tls.ConnectionState{
+		HandshakeComplete: true,
+		Version:           tls.VersionTLS12,
+	}
+}
+
+type testAddr string
+
+func (a testAddr) Network() string { return string(a) }
+func (a testAddr) String() string  { return string(a) }
+
 func TestResponseStatsConnDelegatesSelectedLeafDER(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()
@@ -165,6 +231,428 @@ func TestResponseStatsConnDelegatesSelectedLeafDER(t *testing.T) {
 	if bytes.Equal(enclavetls.SelectedLeafDER(stats), got) {
 		t.Fatal("SelectedLeafDER returned mutable storage")
 	}
+}
+
+func TestResponseStatsConnDelegatesSelectedExporter(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	want := []byte("exporter")
+	stats := &responseStatsConn{Conn: &selectedExporterTestConn{Conn: server, exporter: want}}
+	got, err := enclavetls.SelectedExporter(stats)
+	if err != nil {
+		t.Fatalf("SelectedExporter: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("SelectedExporter = %q, want %q", got, want)
+	}
+	got[0] = 'x'
+	again, err := enclavetls.SelectedExporter(stats)
+	if err != nil {
+		t.Fatalf("SelectedExporter again: %v", err)
+	}
+	if bytes.Equal(again, got) {
+		t.Fatal("SelectedExporter returned mutable storage")
+	}
+}
+
+func TestServeOneAttestationBindsExporter(t *testing.T) {
+	oldGetAttestation := getAttestation
+	defer func() { getAttestation = oldGetAttestation }()
+
+	leafDER := []byte("leaf")
+	deviceBlob := []byte("devices")
+	callerNonce := []byte{0xaa}
+	exporter := bytes.Repeat([]byte{0x42}, enclavetls.ExporterLength)
+
+	getAttestation = func(leaf, device, nonce, channelBinding []byte) ([]byte, error) {
+		if !bytes.Equal(leaf, leafDER) {
+			t.Fatalf("leaf = %q, want %q", leaf, leafDER)
+		}
+		if !bytes.Equal(device, deviceBlob) {
+			t.Fatalf("device = %q, want %q", device, deviceBlob)
+		}
+		if !bytes.Equal(nonce, callerNonce) {
+			t.Fatalf("nonce = %x, want %x", nonce, callerNonce)
+		}
+		if !bytes.Equal(channelBinding, exporter) {
+			t.Fatalf("channelBinding = %x, want %x", channelBinding, exporter)
+		}
+		return []byte(hex.EncodeToString(channelBinding)), nil
+	}
+
+	conn := &attestationExporterConn{
+		scriptedConn: newScriptedConn("GET /attestation?nonce=aa HTTP/1.1\r\nHost: test\r\n\r\n", leafDER),
+		exporter:     exporter,
+	}
+	serveOne(context.Background(), conn, nil, nil, nil, deviceBlob, nil, nil)
+
+	out := conn.writes.String()
+	if !strings.Contains(out, "HTTP/1.1 200 OK") {
+		t.Fatalf("missing 200 response: %s", out)
+	}
+	if got := httpBody(t, out); got != hex.EncodeToString(exporter) {
+		t.Fatalf("body = %q, want exporter hex", got)
+	}
+}
+
+func TestServeOneAttestationRejectsMultipleNonceParameters(t *testing.T) {
+	oldGetAttestation := getAttestation
+	defer func() { getAttestation = oldGetAttestation }()
+
+	getAttestation = func(_, _, _, _ []byte) ([]byte, error) {
+		t.Fatal("getAttestation must not be called for duplicate nonce params")
+		return nil, nil
+	}
+
+	conn := &attestationExporterConn{
+		scriptedConn: newScriptedConn("GET /attestation?nonce=aa&nonce=bb HTTP/1.1\r\nHost: test\r\n\r\n", []byte("leaf")),
+		exporter:     bytes.Repeat([]byte{0x42}, enclavetls.ExporterLength),
+	}
+	serveOne(context.Background(), conn, nil, nil, nil, []byte("devices"), nil, nil)
+
+	out := conn.writes.String()
+	if !strings.Contains(out, "HTTP/1.1 400 Bad Request") {
+		t.Fatalf("missing 400 response: %s", out)
+	}
+	if !strings.Contains(out, "multiple nonce parameters") {
+		t.Fatalf("missing duplicate nonce error: %s", out)
+	}
+}
+
+func TestServeOneAttestationRejectsOversizedNonceWith400(t *testing.T) {
+	oldGetAttestation := getAttestation
+	defer func() { getAttestation = oldGetAttestation }()
+
+	getAttestation = func(_, _, _, _ []byte) ([]byte, error) {
+		t.Fatal("getAttestation must not be called for an oversized caller nonce")
+		return nil, nil
+	}
+
+	nonceHex := strings.Repeat("ab", 38)
+	conn := &attestationExporterConn{
+		scriptedConn: newScriptedConn("GET /attestation?nonce="+nonceHex+" HTTP/1.1\r\nHost: test\r\n\r\n", []byte("leaf")),
+		exporter:     bytes.Repeat([]byte{0x42}, enclavetls.ExporterLength),
+	}
+	serveOne(context.Background(), conn, nil, nil, nil, []byte("devices"), nil, nil)
+
+	out := conn.writes.String()
+	if !strings.Contains(out, "HTTP/1.1 400 Bad Request") {
+		t.Fatalf("missing 400 response: %s", out)
+	}
+	if !strings.Contains(out, "attestation nonce too large") {
+		t.Fatalf("missing oversized nonce error: %s", out)
+	}
+}
+
+func TestServeOneAttestationTLSExporterErrorFailsClosed(t *testing.T) {
+	oldGetAttestation := getAttestation
+	defer func() { getAttestation = oldGetAttestation }()
+
+	getAttestation = func(_, _, _, _ []byte) ([]byte, error) {
+		t.Fatal("getAttestation must not be called without an exporter binding")
+		return nil, nil
+	}
+
+	conn := &attestationTLS12Conn{
+		scriptedConn: newScriptedConn("GET /attestation HTTP/1.1\r\nHost: test\r\n\r\n", []byte("leaf")),
+	}
+	serveOne(context.Background(), conn, nil, nil, nil, []byte("devices"), nil, nil)
+
+	out := conn.writes.String()
+	if !strings.Contains(out, "HTTP/1.1 503 Service Unavailable") {
+		t.Fatalf("missing 503 response: %s", out)
+	}
+	if !strings.Contains(out, "attestation: exporter channel binding unavailable") {
+		t.Fatalf("missing exporter error: %s", out)
+	}
+}
+
+func TestServeOneAttestationEmptyExporterFailsClosed(t *testing.T) {
+	oldGetAttestation := getAttestation
+	defer func() { getAttestation = oldGetAttestation }()
+
+	getAttestation = func(_, _, _, _ []byte) ([]byte, error) {
+		t.Fatal("getAttestation must not be called without a non-empty exporter binding")
+		return nil, nil
+	}
+
+	conn := &attestationExporterConn{
+		scriptedConn: newScriptedConn("GET /attestation HTTP/1.1\r\nHost: test\r\n\r\n", []byte("leaf")),
+	}
+	serveOne(context.Background(), conn, nil, nil, nil, []byte("devices"), nil, nil)
+
+	out := conn.writes.String()
+	if !strings.Contains(out, "HTTP/1.1 503 Service Unavailable") {
+		t.Fatalf("missing 503 response: %s", out)
+	}
+	if !strings.Contains(out, "attestation: exporter channel binding unavailable") {
+		t.Fatalf("missing exporter error: %s", out)
+	}
+}
+
+func TestServeOneAttestationKeepAlivePinsSameTLSSession(t *testing.T) {
+	stubAttestationBody(t)
+	network, addr, clientConfig := startTLSServeOneLoopback(t, auth.New(nil), nil)
+	conn, reader := dialServeOneTLS(t, network, addr, clientConfig)
+	defer conn.Close()
+
+	exporter := clientTLSExporter(t, conn)
+	exporterHex := hex.EncodeToString(exporter)
+	if _, err := io.WriteString(conn, attestationRequest("aa")); err != nil {
+		t.Fatalf("write first attestation: %v", err)
+	}
+	resp1, body1 := readHTTPResponseBody(t, reader)
+	if resp1.StatusCode != 200 {
+		t.Fatalf("first status = %d body=%s", resp1.StatusCode, body1)
+	}
+	if got := resp1.Header.Get("Connection"); got != "keep-alive" {
+		t.Fatalf("first Connection = %q, want keep-alive", got)
+	}
+	if !strings.Contains(body1, "nonce=aa") || !strings.Contains(body1, "exporter="+exporterHex) {
+		t.Fatalf("first attestation did not bind nonce/exporter: %s", body1)
+	}
+
+	if _, err := io.WriteString(conn, attestationRequest("bb")); err != nil {
+		t.Fatalf("write second attestation on same TLS session: %v", err)
+	}
+	resp2, body2 := readHTTPResponseBody(t, reader)
+	if resp2.StatusCode != 200 {
+		t.Fatalf("second status = %d body=%s", resp2.StatusCode, body2)
+	}
+	if !strings.Contains(body2, "nonce=bb") || !strings.Contains(body2, "exporter="+exporterHex) {
+		t.Fatalf("second attestation did not reuse the same TLS exporter: %s", body2)
+	}
+}
+
+func TestServeOneNonAttestationStillClosesAfterOneResponse(t *testing.T) {
+	stubAttestationBody(t)
+	bearer := "test-bearer"
+	network, addr, clientConfig := startTLSServeOneLoopback(t, registryForBearer(bearer), nil)
+	conn, reader := dialServeOneTLS(t, network, addr, clientConfig)
+	defer conn.Close()
+
+	_, err := fmt.Fprintf(conn,
+		"GET /not-found HTTP/1.1\r\nHost: test.quill.local\r\nAuthorization: Bearer %s\r\n\r\n",
+		bearer,
+	)
+	if err != nil {
+		t.Fatalf("write non-attestation request: %v", err)
+	}
+	resp, body := readHTTPResponseBody(t, reader)
+	if resp.StatusCode != 404 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	// net/http.ReadResponse folds "Connection: close" into resp.Close and
+	// strips it from the header map (unlike "keep-alive"), so assert the
+	// parsed semantic field rather than the raw header.
+	if !resp.Close {
+		t.Fatalf("resp.Close = false, want true (Connection: close)")
+	}
+	expectConnectionClosed(t, conn, reader)
+}
+
+func TestServeOneAttestationIdleTimeoutClosesConnection(t *testing.T) {
+	stubAttestationBody(t)
+	oldReadTimeout := requestReadTimeout
+	requestReadTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { requestReadTimeout = oldReadTimeout })
+
+	network, addr, clientConfig := startTLSServeOneLoopback(t, auth.New(nil), nil)
+	conn, reader := dialServeOneTLS(t, network, addr, clientConfig)
+	defer conn.Close()
+
+	if _, err := io.WriteString(conn, attestationRequest("aa")); err != nil {
+		t.Fatalf("write attestation: %v", err)
+	}
+	resp, body := readHTTPResponseBody(t, reader)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	expectConnectionClosed(t, conn, reader)
+}
+
+func TestServeOneAttestationCapClosesConnection(t *testing.T) {
+	stubAttestationBody(t)
+	network, addr, clientConfig := startTLSServeOneLoopback(t, auth.New(nil), nil)
+	conn, reader := dialServeOneTLS(t, network, addr, clientConfig)
+	defer conn.Close()
+
+	for i := 0; i < maxAttestationsPerConn; i++ {
+		nonce := fmt.Sprintf("%02x", i)
+		if _, err := io.WriteString(conn, attestationRequest(nonce)); err != nil {
+			t.Fatalf("write attestation %d: %v", i+1, err)
+		}
+		resp, body := readHTTPResponseBody(t, reader)
+		if resp.StatusCode != 200 {
+			t.Fatalf("attestation %d status = %d body=%s", i+1, resp.StatusCode, body)
+		}
+		if !strings.Contains(body, "nonce="+nonce) {
+			t.Fatalf("attestation %d body did not include nonce %s: %s", i+1, nonce, body)
+		}
+	}
+	expectConnectionClosed(t, conn, reader)
+}
+
+func TestServeOneReusesReaderForPipelinedAttestationRequests(t *testing.T) {
+	stubAttestationBody(t)
+	network, addr, clientConfig := startTLSServeOneLoopback(t, auth.New(nil), nil)
+	conn, reader := dialServeOneTLS(t, network, addr, clientConfig)
+	defer conn.Close()
+
+	if _, err := io.WriteString(conn, attestationRequest("01")+attestationRequest("02")); err != nil {
+		t.Fatalf("write pipelined attestations: %v", err)
+	}
+	resp1, body1 := readHTTPResponseBody(t, reader)
+	if resp1.StatusCode != 200 || !strings.Contains(body1, "nonce=01") {
+		t.Fatalf("first pipelined response status=%d body=%s", resp1.StatusCode, body1)
+	}
+	resp2, body2 := readHTTPResponseBody(t, reader)
+	if resp2.StatusCode != 200 || !strings.Contains(body2, "nonce=02") {
+		t.Fatalf("second pipelined response status=%d body=%s", resp2.StatusCode, body2)
+	}
+}
+
+func stubAttestationBody(t *testing.T) {
+	t.Helper()
+	oldGetAttestation := getAttestation
+	getAttestation = func(_ []byte, deviceBlob []byte, nonce []byte, channelBinding []byte) ([]byte, error) {
+		return []byte(fmt.Sprintf("device=%s nonce=%x exporter=%x", deviceBlob, nonce, channelBinding)), nil
+	}
+	t.Cleanup(func() { getAttestation = oldGetAttestation })
+}
+
+func startTLSServeOneLoopback(t *testing.T, reg *auth.Registry, br llm.Client) (string, string, *tls.Config) {
+	t.Helper()
+	tlsServer, err := enclavetls.NewSelfSigned("test.quill.local")
+	if err != nil {
+		t.Fatalf("NewSelfSigned: %v", err)
+	}
+	network, inner := listenServeOneTestSocket(t)
+	listener := tlsServer.Wrap(inner)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go serveOne(context.Background(), conn, reg, br, tlsServer, []byte("devices"), nil, nil)
+		}
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out closing test TLS listener")
+		}
+	})
+
+	pool := x509.NewCertPool()
+	leaf, err := x509.ParseCertificate(tlsServer.Certificate.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse leaf: %v", err)
+	}
+	pool.AddCert(leaf)
+	return network, inner.Addr().String(), &tls.Config{
+		RootCAs:    pool,
+		ServerName: "test.quill.local",
+		MinVersion: tls.VersionTLS13,
+	}
+}
+
+func listenServeOneTestSocket(t *testing.T) (string, net.Listener) {
+	t.Helper()
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err == nil {
+		return "tcp", inner
+	}
+	baseDir := "/tmp"
+	if _, statErr := os.Stat("/private/tmp"); statErr == nil {
+		baseDir = "/private/tmp"
+	}
+	socketDir, mkdirErr := os.MkdirTemp(baseDir, "qcp-serve-one-")
+	if mkdirErr != nil {
+		t.Fatalf("listen tcp: %v; mkdir unix socket dir: %v", err, mkdirErr)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "s.sock")
+	inner, unixErr := net.Listen("unix", socketPath)
+	if unixErr != nil {
+		if errors.Is(err, os.ErrPermission) && errors.Is(unixErr, os.ErrPermission) {
+			t.Skipf("real socket listen blocked by test sandbox: tcp=%v unix=%v", err, unixErr)
+		}
+		t.Fatalf("listen tcp: %v; listen unix: %v", err, unixErr)
+	}
+	return "unix", inner
+}
+
+func dialServeOneTLS(t *testing.T, network, addr string, config *tls.Config) (*tls.Conn, *bufio.Reader) {
+	t.Helper()
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	conn, err := tls.DialWithDialer(dialer, network, addr, config)
+	if err != nil {
+		t.Fatalf("dial TLS: %v", err)
+	}
+	if state := conn.ConnectionState(); state.Version != tls.VersionTLS13 {
+		conn.Close()
+		t.Fatalf("TLS version = %x, want TLS 1.3", state.Version)
+	}
+	return conn, bufio.NewReader(conn)
+}
+
+func clientTLSExporter(t *testing.T, conn *tls.Conn) []byte {
+	t.Helper()
+	state := conn.ConnectionState()
+	exporter, err := state.ExportKeyingMaterial(enclavetls.ExporterLabel, nil, enclavetls.ExporterLength)
+	if err != nil {
+		t.Fatalf("client exporter: %v", err)
+	}
+	return exporter
+}
+
+func attestationRequest(nonce string) string {
+	return fmt.Sprintf("GET /attestation?nonce=%s HTTP/1.1\r\nHost: test.quill.local\r\n\r\n", nonce)
+}
+
+func readHTTPResponseBody(t *testing.T, reader *bufio.Reader) (*http.Response, string) {
+	t.Helper()
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	return resp, string(body)
+}
+
+func expectConnectionClosed(t *testing.T, conn net.Conn, reader *bufio.Reader) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, err := reader.Peek(1)
+	_ = conn.SetReadDeadline(time.Time{})
+	if err == nil {
+		t.Fatal("connection stayed open and produced another byte")
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		t.Fatal("timed out waiting for connection to close")
+	}
+}
+
+func registryForBearer(bearer string) *auth.Registry {
+	digest := sha256.Sum256([]byte(bearer))
+	return auth.New([]types.DeviceConfig{{
+		KeyHash:  hex.EncodeToString(digest[:]),
+		Owner:    "test",
+		DeviceID: "device-1",
+	}})
 }
 
 func TestParseHTTPStatusAndOutcomeFallbacks(t *testing.T) {
@@ -5375,7 +5863,7 @@ func TestReadRequestRejectsOversizedBodyBeforeAllocation(t *testing.T) {
 		)
 	}()
 
-	_, _, _, _, _, err := readRequest(server)
+	_, _, _, _, _, err := readRequest(bufio.NewReader(server))
 	if !errors.Is(err, errBodyTooLarge) {
 		t.Fatalf("err = %v, want errBodyTooLarge", err)
 	}
@@ -5396,7 +5884,7 @@ func TestReadRequestAcceptsVisionPayloadAboveLegacyLimit(t *testing.T) {
 		_, _ = client.Write(body)
 	}()
 
-	method, path, _, _, gotBody, err := readRequest(server)
+	method, path, _, _, gotBody, err := readRequest(bufio.NewReader(server))
 	if err != nil {
 		t.Fatalf("readRequest: %v", err)
 	}
@@ -5420,7 +5908,7 @@ func TestReadRequestAcceptsAnthropicXAPIKey(t *testing.T) {
 		)
 	}()
 
-	_, _, bearer, _, body, err := readRequest(server)
+	_, _, bearer, _, body, err := readRequest(bufio.NewReader(server))
 	if err != nil {
 		t.Fatalf("readRequest: %v", err)
 	}

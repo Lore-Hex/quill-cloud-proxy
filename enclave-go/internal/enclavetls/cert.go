@@ -36,6 +36,11 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
+const (
+	ExporterLabel  = "EXPORTER-Channel-Binding"
+	ExporterLength = 32
+)
+
 // Server holds the freshly-minted cert + the tls.Config the listener wraps.
 type Server struct {
 	Certificate     tls.Certificate
@@ -51,6 +56,14 @@ type selectedLeafSetter interface {
 
 type selectedLeafReader interface {
 	SelectedLeafDER() []byte
+}
+
+type selectedExporterReader interface {
+	SelectedExporter() ([]byte, error)
+}
+
+type tlsConnectionStateReader interface {
+	ConnectionState() tls.ConnectionState
 }
 
 type selectedLeafConn struct {
@@ -150,8 +163,11 @@ func NewSelfSigned(dnsName string) (*Server, error) {
 	srv := &Server{
 		Certificate: cert,
 		tlsConfig: &tls.Config{
-			Certificates:             []tls.Certificate{cert},
-			MinVersion:               tls.VersionTLS12,
+			Certificates: []tls.Certificate{cert},
+			// G6/RFC 9266 closure depends on TLS 1.3 exporter channel binding:
+			// every supported SDK and modern tool negotiates 1.3, and TLS 1.2
+			// exporters are EMS-dependent.
+			MinVersion:               tls.VersionTLS13,
 			NextProtos:               []string{"http/1.1"},
 			PreferServerCipherSuites: true,
 		},
@@ -218,7 +234,10 @@ func NewACME(dnsName, email, cacheDir, directoryURL, gcsCacheBucket string) (*Se
 		}
 		return cert, err
 	}
-	tlsConfig.MinVersion = tls.VersionTLS12
+	// G6/RFC 9266 closure depends on TLS 1.3 exporter channel binding:
+	// every supported SDK and modern tool negotiates 1.3, and TLS 1.2
+	// exporters are EMS-dependent.
+	tlsConfig.MinVersion = tls.VersionTLS13
 	tlsConfig.NextProtos = []string{"http/1.1", acme.ALPNProto}
 	srv.tlsConfig = tlsConfig
 	return srv, nil
@@ -304,6 +323,28 @@ func SelectedLeafDER(conn net.Conn) []byte {
 		return reader.SelectedLeafDER()
 	}
 	return nil
+}
+
+func SelectedExporter(conn net.Conn) ([]byte, error) {
+	if reader, ok := conn.(selectedExporterReader); ok {
+		return reader.SelectedExporter()
+	}
+	c, ok := conn.(tlsConnectionStateReader)
+	if !ok {
+		return nil, fmt.Errorf("not a TLS connection")
+	}
+	state := c.ConnectionState()
+	if !state.HandshakeComplete {
+		return nil, fmt.Errorf("TLS handshake is not complete")
+	}
+	if state.Version < tls.VersionTLS13 {
+		return nil, fmt.Errorf("exporter channel binding requires TLS 1.3")
+	}
+	// G6/RFC 9266 closure: derive this from the enclave's own live TLS
+	// session. A relay proxy terminates a separate client-facing session with
+	// a different master secret, so it cannot present a token bound to this
+	// exporter value or mint one itself.
+	return state.ExportKeyingMaterial(ExporterLabel, nil, ExporterLength)
 }
 
 type memoryACMECache struct {
