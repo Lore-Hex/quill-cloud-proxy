@@ -168,10 +168,18 @@ def recent_release_digests() -> list[str]:
 def attest(ip: str, digest: str, api_host: str = API_HOST) -> bool:
     """True iff the instance at `ip` passes full attestation for `api_host`."""
     try:
+        # DNS membership gates on image-digest attestation identity + liveness:
+        # a relay cannot forge a Google-signed token carrying an accepted digest
+        # and the live cert/fresh nonce. RFC 9266 exporter binding is the
+        # client-connect confidentiality proof; requiring it here fails closed
+        # against not-yet-upgraded instances before the MIG can roll, recreating
+        # the G6 deploy deadlock. Strict binding remains covered by client
+        # --samples / --binding-stress and the standalone trust check.
         p = subprocess.run(
             ["uv", "run", "--script", str(VERIFIER),
              "--api-host", api_host, "--connect-ip", ip,
-             "--expect-digest", digest, "--samples", "2"],
+             "--expect-digest", digest, "--samples", "2",
+             "--no-require-exporter-binding"],
             capture_output=True, text=True, timeout=45,
         )
         return p.returncode == 0

@@ -24,6 +24,12 @@ send a fresh random nonce and require it present; the enclave honors only one
 caller nonce, so a relay cannot supply both the random nonce and the client
 exporter.
 
+Default mode is the strict client/security proof that closes G6: exporter
+binding is required and the same-socket keep-alive pin is demonstrated.
+`--no-require-exporter-binding` is liveness/identity mode for the DNS
+reconciler during rolling deploys: verify digest + cert + fresh nonce + debug
+state, but make the exporter optional and skip the same-socket pin follow-up.
+
 Examples:
     # Live GCP production check, including same-connection cert binding.
     ./tools/verify-attestation.py \\
@@ -277,7 +283,13 @@ def _hex_bytes_len(value: str) -> int:
     return len(value) // 2
 
 
-def require_gcp_fresh_exporter_binding(nonces: list[str], *, exporter_hex: str, nonce_hex: str | None) -> None:
+def require_gcp_fresh_exporter_binding(
+    nonces: list[str],
+    *,
+    exporter_hex: str,
+    nonce_hex: str | None,
+    require_exporter: bool = True,
+) -> None:
     nonce_set = {value.lower() for value in nonces}
     exporter_hex = exporter_hex.lower()
     if nonce_hex is None:
@@ -289,7 +301,7 @@ def require_gcp_fresh_exporter_binding(nonces: list[str], *, exporter_hex: str, 
         raise ValueError("fresh caller nonce must differ from the TLS exporter")
     if nonce_hex not in nonce_set:
         raise ValueError(f"fresh caller nonce not present in GCP attestation: {nonce_hex}")
-    if exporter_hex not in nonce_set:
+    if require_exporter and exporter_hex not in nonce_set:
         raise ValueError(
             "TLS exporter channel binding is not bound in GCP attestation "
             "(pre-Tier-B enclave or relay could not bind this session):\n"
@@ -363,24 +375,37 @@ def _read_http_response(conn: SSL.Connection, context: str) -> tuple[str, dict[s
     return status_line, headers, bytes(body[:content_length])
 
 
-def _require_attestation_body_binds_exporter(blob: bytes, exporter: bytes, nonce_hex: str, label: str) -> None:
+def _require_attestation_body_binds_exporter(
+    blob: bytes,
+    exporter: bytes,
+    nonce_hex: str,
+    label: str,
+    *,
+    require_exporter: bool = True,
+) -> None:
     exporter_hex = exporter.hex().lower()
     nonce_hex = nonce_hex.lower()
     try:
         if looks_like_jwt(blob):
             nonces = gcp_nonce_values(parse_jwt_payload(blob))
-            require_gcp_fresh_exporter_binding(nonces, exporter_hex=exporter_hex, nonce_hex=nonce_hex)
+            require_gcp_fresh_exporter_binding(
+                nonces,
+                exporter_hex=exporter_hex,
+                nonce_hex=nonce_hex,
+                require_exporter=require_exporter,
+            )
             return
         payload, _ = parse_cose_payload(blob)
         user_data = payload.get("user_data") or b""
-        if len(user_data) < 96:
-            raise ValueError("AWS attestation has no TLS exporter channel binding in user_data")
-        bound_exporter = user_data[64:96]
-        if bound_exporter != exporter:
-            raise ValueError(
-                "AWS attestation exporter mismatch: "
-                f"user_data={bound_exporter.hex()} exporter={exporter_hex}"
-            )
+        if require_exporter:
+            if len(user_data) < 96:
+                raise ValueError("AWS attestation has no TLS exporter channel binding in user_data")
+            bound_exporter = user_data[64:96]
+            if bound_exporter != exporter:
+                raise ValueError(
+                    "AWS attestation exporter mismatch: "
+                    f"user_data={bound_exporter.hex()} exporter={exporter_hex}"
+                )
         nonce = payload.get("nonce") or b""
         if nonce != bytes.fromhex(nonce_hex):
             raise ValueError(
@@ -395,8 +420,14 @@ def _require_attestation_body_binds_exporter(blob: bytes, exporter: bytes, nonce
 
 
 def fetch_attestation_same_tls_socket(
-    host: str, nonce_hex: str, port: int = 443, connect_ip: str | None = None
-) -> tuple[bytes, bytes, bytes, str, bytes]:
+    host: str,
+    nonce_hex: str,
+    port: int = 443,
+    connect_ip: str | None = None,
+    *,
+    require_exporter: bool = True,
+    require_pin: bool = True,
+) -> tuple[bytes, bytes, bytes, str | None, bytes | None]:
     # connect_ip lets a caller (e.g. the DNS reconciler) attest a SPECIFIC
     # instance by IP while still presenting/validating the canonical hostname
     # (SNI + cert SAN + Host header stay `host`). Without it, host is dialed.
@@ -422,7 +453,15 @@ def fetch_attestation_same_tls_socket(
             sys.exit(f"[FAIL] attestation HTTP status was not 200: {status_line}")
         if not body:
             sys.exit("[FAIL] empty attestation body")
-        _require_attestation_body_binds_exporter(body, exporter, nonce_hex, "first")
+        _require_attestation_body_binds_exporter(
+            body,
+            exporter,
+            nonce_hex,
+            "first",
+            require_exporter=require_exporter,
+        )
+        if not require_pin:
+            return cert_der, exporter, body, None, None
 
         # G6 pinning is meaningful only if the prompt can follow the evidence on
         # this exact TLS session. A second fresh attestation is an unauthenticated
@@ -447,7 +486,11 @@ def fetch_attestation_same_tls_socket(
         if followup_exporter != exporter:
             sys.exit("[FAIL] TLS exporter changed on a reused socket")
         _require_attestation_body_binds_exporter(
-            followup_body, exporter, followup_nonce_hex, "follow-up"
+            followup_body,
+            exporter,
+            followup_nonce_hex,
+            "follow-up",
+            require_exporter=require_exporter,
         )
     finally:
         try:
@@ -542,6 +585,7 @@ def verify_gcp_jwt(
     expect_digest: str | None,
     nonce_hex: str | None,
     allow_debug: bool,
+    require_exporter: bool = True,
 ) -> None:
     verify_gcp_jwt_signature(blob)
     payload = parse_jwt_payload(blob)
@@ -582,10 +626,20 @@ def verify_gcp_jwt(
     if exporter is not None:
         exporter_hex = exporter.hex().lower()
         try:
-            require_gcp_fresh_exporter_binding(nonces, exporter_hex=exporter_hex, nonce_hex=nonce_hex)
+            require_gcp_fresh_exporter_binding(
+                nonces,
+                exporter_hex=exporter_hex,
+                nonce_hex=nonce_hex,
+                require_exporter=require_exporter,
+            )
         except ValueError as exc:
             sys.exit(f"[FAIL] {exc}")
-        print(f"[ok] TLS exporter channel binding bound in GCP nonce ({exporter_hex[:16]}...)")
+        if require_exporter:
+            print(f"[ok] TLS exporter channel binding bound in GCP nonce ({exporter_hex[:16]}...)")
+        elif exporter_hex in nonces:
+            print(f"[ok] optional TLS exporter channel binding present in GCP nonce ({exporter_hex[:16]}...)")
+        else:
+            print("[ok] TLS exporter channel binding optional in liveness mode")
         print(f"[ok] caller nonce bound ({nonce_hex[:16]}...)")
     elif nonce_hex:
         if nonce_hex.lower() not in nonces:
@@ -661,7 +715,7 @@ def read_blob(path: str | None) -> bytes | None:
     return Path(path).read_bytes()
 
 
-def _probe_binding(host: str, port: int, connect_ip: str | None) -> dict[str, Any]:
+def _probe_binding(host: str, port: int, connect_ip: str | None, require_exporter: bool = True) -> dict[str, Any]:
     """One TLS connection: capture the served leaf cert AND fetch /attestation on
     the SAME socket, then report whether that cert is bound in the token's GCP
     nonce. A 500/handshake error is recorded as `error` (the Confidential Space
@@ -669,7 +723,12 @@ def _probe_binding(host: str, port: int, connect_ip: str | None) -> dict[str, An
     nonce_hex = secrets.token_hex(16)
     try:
         cert_der, exporter, blob, _followup_nonce_hex, _followup_blob = fetch_attestation_same_tls_socket(
-            host, nonce_hex, port, connect_ip=connect_ip
+            host,
+            nonce_hex,
+            port,
+            connect_ip=connect_ip,
+            require_exporter=require_exporter,
+            require_pin=require_exporter,
         )
     except (SystemExit, Exception) as exc:  # fetch_* sys.exit()s on non-200
         return {"host": host, "error": str(exc) or repr(exc)}
@@ -684,7 +743,12 @@ def _probe_binding(host: str, port: int, connect_ip: str | None) -> dict[str, An
     nonce_bound = nonce_hex.lower() in nonces
     binding_error = ""
     try:
-        require_gcp_fresh_exporter_binding(nonces, exporter_hex=exporter_hex, nonce_hex=nonce_hex)
+        require_gcp_fresh_exporter_binding(
+            nonces,
+            exporter_hex=exporter_hex,
+            nonce_hex=nonce_hex,
+            require_exporter=require_exporter,
+        )
         fresh_exporter_bound = True
     except ValueError as exc:
         fresh_exporter_bound = False
@@ -708,7 +772,7 @@ def _probe_binding(host: str, port: int, connect_ip: str | None) -> dict[str, An
 
 def binding_stress(
     connect_ip: str | None, hosts: list[str], concurrency: int, rounds: int,
-    port: int, expect_digest: str | None,
+    port: int, expect_digest: str | None, require_exporter: bool = True,
 ) -> int:
     """Adversarial concurrent cross-SNI binding check against a single instance.
 
@@ -724,7 +788,7 @@ def binding_stress(
     results: list[dict[str, Any]] = []
     for _ in range(rounds):
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as ex:
-            futs = [ex.submit(_probe_binding, hosts[i % len(hosts)], port, connect_ip)
+            futs = [ex.submit(_probe_binding, hosts[i % len(hosts)], port, connect_ip, require_exporter)
                     for i in range(concurrency)]
             for fut in concurrent.futures.as_completed(futs):
                 results.append(fut.result())
@@ -808,6 +872,13 @@ def main() -> int:
     parser.add_argument("--expect-digest", default=None, help="GCP Confidential Space image_digest(s); comma-separated to accept any of a set (e.g. published trust digest + incoming release during a rollout)")
     parser.add_argument("--device-blob-sha", default=None, help="hex SHA-256 of canonical device-key blob")
     parser.add_argument("--allow-debug", action="store_true", help="do not fail when GCP dbgstat is enabled")
+    parser.add_argument(
+        "--no-require-exporter-binding",
+        dest="require_exporter_binding",
+        action="store_false",
+        default=True,
+        help="liveness/identity mode for DNS reconciliation: require digest, cert, fresh nonce, and dbgstat checks, but make the TLS exporter optional and skip the same-socket pin follow-up",
+    )
     parser.add_argument("--binding-stress", action="store_true",
                         help="concurrent cross-SNI binding stress test against ONE instance "
                              "(use with --connect-ip); asserts each served cert is bound in its "
@@ -819,13 +890,15 @@ def main() -> int:
     parser.add_argument("--binding-stress-concurrency", type=int, default=12)
     parser.add_argument("--binding-stress-rounds", type=int, default=4)
     args = parser.parse_args()
+    require_exporter = args.require_exporter_binding
 
     if args.binding_stress:
         hosts = [h.strip() for h in args.binding_stress_hosts.split(",") if h.strip()]
         if not hosts:
             sys.exit("[FAIL] --binding-stress-hosts produced no hosts")
         return binding_stress(args.connect_ip, hosts, args.binding_stress_concurrency,
-                              args.binding_stress_rounds, args.port, args.expect_digest)
+                              args.binding_stress_rounds, args.port, args.expect_digest,
+                              require_exporter=require_exporter)
 
     blob = read_blob(args.blob)
     if blob is not None and args.samples > 1:
@@ -841,6 +914,7 @@ def main() -> int:
                 expect_digest=args.expect_digest,
                 nonce_hex=None,
                 allow_debug=args.allow_debug,
+                require_exporter=require_exporter,
             )
         else:
             verify_aws_cbor(
@@ -858,7 +932,12 @@ def main() -> int:
     for sample in range(1, args.samples + 1):
         nonce_hex = secrets.token_hex(32)
         cert_der, exporter, live_blob, followup_nonce_hex, followup_blob = fetch_attestation_same_tls_socket(
-            args.api_host, nonce_hex, args.port, connect_ip=args.connect_ip
+            args.api_host,
+            nonce_hex,
+            args.port,
+            connect_ip=args.connect_ip,
+            require_exporter=require_exporter,
+            require_pin=require_exporter,
         )
         print(f"\nSample {sample}/{args.samples}:")
         if looks_like_jwt(live_blob):
@@ -869,32 +948,40 @@ def main() -> int:
                 expect_digest=args.expect_digest,
                 nonce_hex=nonce_hex,
                 allow_debug=args.allow_debug,
+                require_exporter=require_exporter,
             )
-            verify_gcp_jwt(
-                followup_blob,
-                cert_der,
-                exporter=exporter,
-                expect_digest=args.expect_digest,
-                nonce_hex=followup_nonce_hex,
-                allow_debug=args.allow_debug,
-            )
+            if require_exporter:
+                verify_gcp_jwt(
+                    followup_blob,
+                    cert_der,
+                    exporter=exporter,
+                    expect_digest=args.expect_digest,
+                    nonce_hex=followup_nonce_hex,
+                    allow_debug=args.allow_debug,
+                    require_exporter=require_exporter,
+                )
         else:
             verify_aws_cbor(
                 live_blob,
                 cert_der,
-                exporter=exporter,
+                exporter=exporter if require_exporter else None,
                 expected_pcr0=args.expected_pcr0,
                 device_blob_sha=args.device_blob_sha,
             )
-            verify_aws_cbor(
-                followup_blob,
-                cert_der,
-                exporter=exporter,
-                expected_pcr0=args.expected_pcr0,
-                device_blob_sha=args.device_blob_sha,
-            )
-        print("[ok] follow-up /attestation stayed on the attested TLS socket")
-    print("\nAll sampled attestation bindings passed.")
+            if require_exporter:
+                verify_aws_cbor(
+                    followup_blob,
+                    cert_der,
+                    exporter=exporter,
+                    expected_pcr0=args.expected_pcr0,
+                    device_blob_sha=args.device_blob_sha,
+                )
+        if require_exporter:
+            print("[ok] follow-up /attestation stayed on the attested TLS socket")
+    if require_exporter:
+        print("\nAll sampled attestation bindings passed.")
+    else:
+        print("\nAll sampled liveness attestations passed.")
     return 0
 
 

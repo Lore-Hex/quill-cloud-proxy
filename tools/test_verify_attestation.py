@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import base64
 import datetime
+import hashlib
 import importlib.util
 import ipaddress
+import json
 import os
 import sys
 import types
@@ -220,6 +223,73 @@ class GCPNonceBindingTests(VerifierTestCase):
             exporter_hex=exporter,
             nonce_hex=verifier_nonce,
         )
+
+
+def jwt_for_payload(payload: dict) -> bytes:
+    def b64url_json(value: dict) -> str:
+        raw = json.dumps(value, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+    return f"{b64url_json({'alg': 'RS256', 'kid': 'offline-test'})}.{b64url_json(payload)}.sig".encode("ascii")
+
+
+class GCPLivenessModeTests(VerifierTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._orig_verify_signature = VERIFIER.verify_gcp_jwt_signature
+        VERIFIER.verify_gcp_jwt_signature = lambda _blob: None
+        self.cert_der = b"offline leaf cert"
+        self.cert_fp = hashlib.sha256(self.cert_der).hexdigest()
+        self.exporter = bytes.fromhex("aa" * 32)
+        self.nonce_hex = "bb" * 32
+        self.digest = "sha256:offline-good"
+
+    def tearDown(self) -> None:
+        if VERIFIER is not None:
+            VERIFIER.verify_gcp_jwt_signature = self._orig_verify_signature
+        super().tearDown()
+
+    def payload(self, *, nonces: list[str] | None = None, digest: str | None = None) -> dict:
+        return {
+            "iss": VERIFIER.GCP_ISSUER,
+            "aud": [VERIFIER.GCP_AUDIENCE],
+            "image_digest": digest or self.digest,
+            "eat_nonce": nonces if nonces is not None else [self.cert_fp, self.nonce_hex],
+        }
+
+    def verify(self, payload: dict, *, require_exporter: bool) -> None:
+        VERIFIER.verify_gcp_jwt(
+            jwt_for_payload(payload),
+            self.cert_der,
+            exporter=self.exporter,
+            expect_digest=self.digest,
+            nonce_hex=self.nonce_hex,
+            allow_debug=False,
+            require_exporter=require_exporter,
+        )
+
+    def test_liveness_accepts_old_style_token_without_exporter(self) -> None:
+        self.verify(self.payload(), require_exporter=False)
+
+    def test_strict_rejects_old_style_token_without_exporter(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            self.verify(self.payload(), require_exporter=True)
+        self.assertIn("TLS exporter channel binding is not bound", str(raised.exception))
+
+    def test_liveness_rejects_missing_fresh_nonce(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            self.verify(self.payload(nonces=[self.cert_fp]), require_exporter=False)
+        self.assertIn("fresh caller nonce not present", str(raised.exception))
+
+    def test_liveness_rejects_wrong_digest(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            self.verify(self.payload(digest="sha256:wrong"), require_exporter=False)
+        self.assertIn("image_digest mismatch", str(raised.exception))
+
+    def test_liveness_rejects_unbound_cert(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            self.verify(self.payload(nonces=["00" * 32, self.nonce_hex]), require_exporter=False)
+        self.assertIn("live TLS cert fingerprint is not bound", str(raised.exception))
 
 
 if __name__ == "__main__":
