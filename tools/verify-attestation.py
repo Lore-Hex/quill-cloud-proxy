@@ -60,10 +60,12 @@ import concurrent.futures
 import hashlib
 import ipaddress
 import json
+import select
 import secrets
 import socket
 import ssl
 import sys
+import time
 import urllib.request
 from collections.abc import Iterable
 from pathlib import Path
@@ -85,6 +87,8 @@ GCP_AUDIENCE = "quill-cloud"
 EXPORTER_LABEL = b"EXPORTER-Channel-Binding"
 EXPORTER_LENGTH = 32
 _GCP_JWKS: dict[str, Any] | None = None
+_TLS_IO_TIMEOUT_SECONDS = 15.0
+_SAME_TLS_SOCKET_TIMEOUT_SECONDS = 40.0
 
 
 def b64url_decode(value: str) -> bytes:
@@ -335,9 +339,71 @@ def _attestation_request(host: str, nonce_hex: str) -> bytes:
     ).encode("ascii")
 
 
-def _recv_or_fail(conn: SSL.Connection, context: str) -> bytes:
+def _ssl_call(sock: socket.socket, op, *, timeout: float, what: str):
+    """Run a pyOpenSSL socket-BIO operation with timeout-mode socket retries.
+
+    Python sockets created with socket.create_connection(..., timeout=...) are
+    non-blocking under the hood. pyOpenSSL does not hide that for socket BIOs:
+    handshake/read/write signal "try again when the fd is ready" by raising
+    WantReadError or WantWriteError. Retrying through select is the standard
+    socket-BIO pattern and keeps a real deadline instead of hanging forever.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return op()
+        except SSL.WantReadError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([sock], [], [], remaining)[0]:
+                raise TimeoutError(f"{what}: TLS read timeout")
+        except SSL.WantWriteError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([], [sock], [], remaining)[1]:
+                raise TimeoutError(f"{what}: TLS write timeout")
+
+
+def _tls_timeout_remaining(deadline: float, what: str) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError(f"{what}: TLS operation deadline exceeded")
+    return min(_TLS_IO_TIMEOUT_SECONDS, remaining)
+
+
+def _ssl_send_all(
+    sock: socket.socket,
+    conn: SSL.Connection,
+    data: bytes,
+    *,
+    deadline: float,
+    what: str,
+) -> None:
+    sent = 0
+    while sent < len(data):
+        n = _ssl_call(
+            sock,
+            lambda: conn.send(data[sent:]),
+            timeout=_tls_timeout_remaining(deadline, what),
+            what=what,
+        )
+        if n <= 0:
+            raise EOFError(f"{what}: TLS send returned {n}")
+        sent += n
+
+
+def _recv_or_fail(
+    conn: SSL.Connection,
+    raw: socket.socket,
+    context: str,
+    *,
+    deadline: float,
+) -> bytes:
     try:
-        chunk = conn.recv(65536)
+        chunk = _ssl_call(
+            raw,
+            lambda: conn.recv(65536),
+            timeout=_tls_timeout_remaining(deadline, f"{context} recv"),
+            what=f"{context} recv",
+        )
     except SSL.ZeroReturnError as exc:
         raise EOFError(context) from exc
     if not chunk:
@@ -345,10 +411,16 @@ def _recv_or_fail(conn: SSL.Connection, context: str) -> bytes:
     return chunk
 
 
-def _read_http_response(conn: SSL.Connection, context: str) -> tuple[str, dict[str, str], bytes]:
+def _read_http_response(
+    conn: SSL.Connection,
+    raw: socket.socket,
+    context: str,
+    *,
+    deadline: float,
+) -> tuple[str, dict[str, str], bytes]:
     response = bytearray()
     while b"\r\n\r\n" not in response:
-        response.extend(_recv_or_fail(conn, context))
+        response.extend(_recv_or_fail(conn, raw, context, deadline=deadline))
     header, sep, rest = bytes(response).partition(b"\r\n\r\n")
     if sep == b"":
         sys.exit(f"[FAIL] {context} HTTP response had no header/body separator")
@@ -371,7 +443,7 @@ def _read_http_response(conn: SSL.Connection, context: str) -> tuple[str, dict[s
         sys.exit(f"[FAIL] {context} HTTP response had negative Content-Length")
     body = bytearray(rest)
     while len(body) < content_length:
-        body.extend(_recv_or_fail(conn, context))
+        body.extend(_recv_or_fail(conn, raw, context, deadline=deadline))
     return status_line, headers, bytes(body[:content_length])
 
 
@@ -427,26 +499,44 @@ def fetch_attestation_same_tls_socket(
     *,
     require_exporter: bool = True,
     require_pin: bool = True,
+    timeout: float = _SAME_TLS_SOCKET_TIMEOUT_SECONDS,
 ) -> tuple[bytes, bytes, bytes, str | None, bytes | None]:
     # connect_ip lets a caller (e.g. the DNS reconciler) attest a SPECIFIC
     # instance by IP while still presenting/validating the canonical hostname
     # (SNI + cert SAN + Host header stay `host`). Without it, host is dialed.
     ctx = _new_pyopenssl_context()
-    raw = socket.create_connection((connect_ip or host, port), timeout=10)
+    deadline = time.monotonic() + timeout
+    raw = socket.create_connection((connect_ip or host, port), timeout=min(10.0, timeout))
     conn = SSL.Connection(ctx, raw)
     try:
         conn.set_tlsext_host_name(host.encode("idna"))
         conn.set_connect_state()
-        conn.do_handshake()
+        _ssl_call(
+            raw,
+            conn.do_handshake,
+            timeout=_tls_timeout_remaining(deadline, "handshake"),
+            what="handshake",
+        )
         peer = conn.get_peer_certificate()
         if peer is None:
             sys.exit("[FAIL] TLS handshake returned no peer certificate")
         cert_der = crypto.dump_certificate(crypto.FILETYPE_ASN1, peer)
         assert_cert_matches_hostname(cert_der, host)
         exporter = conn.export_keying_material(EXPORTER_LABEL, EXPORTER_LENGTH)
-        conn.sendall(_attestation_request(host, nonce_hex))
+        _ssl_send_all(
+            raw,
+            conn,
+            _attestation_request(host, nonce_hex),
+            deadline=deadline,
+            what="attestation request",
+        )
         try:
-            status_line, _headers, body = _read_http_response(conn, "attestation")
+            status_line, _headers, body = _read_http_response(
+                conn,
+                raw,
+                "attestation",
+                deadline=deadline,
+            )
         except Exception as exc:
             sys.exit(f"[FAIL] attestation socket closed before the first response was fully framed: {exc}")
         if " 200 " not in status_line:
@@ -469,9 +559,18 @@ def fetch_attestation_same_tls_socket(
         # first response.
         followup_nonce_hex = secrets.token_hex(32)
         try:
-            conn.sendall(_attestation_request(host, followup_nonce_hex))
+            _ssl_send_all(
+                raw,
+                conn,
+                _attestation_request(host, followup_nonce_hex),
+                deadline=deadline,
+                what="follow-up attestation request",
+            )
             followup_status, _followup_headers, followup_body = _read_http_response(
-                conn, "follow-up attestation"
+                conn,
+                raw,
+                "follow-up attestation",
+                deadline=deadline,
             )
         except Exception as exc:
             sys.exit(
