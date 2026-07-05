@@ -6,11 +6,25 @@ on:
     paths:
       - "trust-page/**"
       - ".github/workflows/publish-trust-page.yml"
+  # Backstop: the deploy workflow commits trust artifacts with GITHUB_TOKEN,
+  # and GITHUB_TOKEN pushes never trigger push workflows — so a failed
+  # in-run Pages publish used to leave trust.trustedrouter.com serving a
+  # stale digest with nothing re-firing it (observed 2026-07-04, run
+  # 28720340595). workflow_run fires on deploy completion regardless of the
+  # deploy run's conclusion, so the page always gets (re)published from
+  # main's current artifacts.
+  workflow_run:
+    workflows: ["Deploy GCP enclave (attested workload)"]
+    types: [completed]
   workflow_dispatch: {}
 
+# Serialize with the deploy workflow's publish-trust-page job (same group
+# name there). Concurrent Pages deployments conflict; queueing them is the
+# root-cause fix. Publishes are idempotent, so an extra queued run is
+# harmless.
 concurrency:
-  group: publish-trust-page
-  cancel-in-progress: true
+  group: trust-pages-deployment
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -25,6 +39,10 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow_run checks out the triggering run's head by default;
+          # always publish main's current artifacts instead.
+          ref: main
       - name: Validate static trust page
         run: |
           set -euo pipefail
@@ -58,3 +76,29 @@ jobs:
           path: trust-page/
       - id: deployment
         uses: actions/deploy-pages@v4
+        # Pages deployments fail transiently (deployment conflicts, API
+        # blips). Don't fail the job on the first attempt; retry once
+        # after a backoff below.
+        continue-on-error: true
+      - name: Backoff before retry
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 45
+      - id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+      - name: Verify live page matches repo artifacts
+        run: |
+          set -euo pipefail
+          expected="$(cat trust-page/trust/image-digest-gcp.txt)"
+          echo "expected digest: ${expected}"
+          for attempt in $(seq 1 30); do
+            live="$(curl -fsS "https://trust.trustedrouter.com/trust/image-digest-gcp.txt?nocache=${GITHUB_RUN_ID}-${attempt}" || true)"
+            if [ "${live}" = "${expected}" ]; then
+              echo "live trust page matches repo artifacts"
+              exit 0
+            fi
+            echo "attempt ${attempt}: live='${live}' — waiting for Pages/CDN propagation"
+            sleep 20
+          done
+          echo "live trust page still does not match repo artifacts after 10 minutes" >&2
+          exit 1

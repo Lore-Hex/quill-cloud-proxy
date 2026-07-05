@@ -617,6 +617,12 @@ jobs:
   publish-trust-page:
     needs: [build-and-release, rollout]
     runs-on: ubuntu-latest
+    # Serialize Pages deployments with the standalone publish-trust-page
+    # workflow (same group name there). Concurrent deployments conflict —
+    # that's the transient failure observed in run 28720340595.
+    concurrency:
+      group: trust-pages-deployment
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -630,3 +636,41 @@ jobs:
           path: trust-page/
       - id: deployment
         uses: actions/deploy-pages@v4
+        # Transient Pages failures shouldn't strand the trust page on a
+        # stale digest; retry once after a backoff. The standalone
+        # publish-trust-page workflow also re-fires on this workflow's
+        # completion as a backstop.
+        continue-on-error: true
+      - name: Backoff before retry
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 45
+      - id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+
+  # The point of the whole pipeline: the digest customers can verify at
+  # https://trust.trustedrouter.com must equal the digest the fleet is
+  # actually running. Fail the run loudly if they diverge; the standalone
+  # publish workflow's workflow_run backstop then re-publishes and
+  # self-verifies.
+  verify-trust-page:
+    needs: [build-and-release, publish-trust-page]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify published digest matches this rollout
+        env:
+          EXPECTED: ${{ needs.build-and-release.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          echo "expected digest: ${EXPECTED}"
+          for attempt in $(seq 1 30); do
+            live="$(curl -fsS "https://trust.trustedrouter.com/trust/image-digest-gcp.txt?nocache=${GITHUB_RUN_ID}-${attempt}" || true)"
+            if [ "${live}" = "${EXPECTED}" ]; then
+              echo "trust page matches the rolled-out digest"
+              exit 0
+            fi
+            echo "attempt ${attempt}: live='${live}' — waiting for Pages/CDN propagation"
+            sleep 20
+          done
+          echo "trust page digest does not match the rolled-out digest after 10 minutes" >&2
+          exit 1
