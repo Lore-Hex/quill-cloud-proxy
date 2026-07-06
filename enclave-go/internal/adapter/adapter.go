@@ -337,6 +337,17 @@ type ThinkingBlock struct {
 	Signature string
 }
 
+func JoinThinking(thinking []ThinkingBlock) string {
+	if len(thinking) == 0 {
+		return ""
+	}
+	var joined strings.Builder
+	for _, block := range thinking {
+		joined.WriteString(block.Text)
+	}
+	return joined.String()
+}
+
 // StreamUsage is the provider-reported token accounting for one stream.
 type StreamUsage struct {
 	InputTokens     int
@@ -364,6 +375,7 @@ func WriteChatCompletionResponse(
 	requestID string,
 	model string,
 	text string,
+	reasoning string,
 	toolCalls []types.ToolCall,
 	inputTokens int,
 	outputTokens int,
@@ -398,6 +410,10 @@ func WriteChatCompletionResponse(
 		}
 		message["content"] = nil
 		message["tool_calls"] = chatToolCalls(toolCalls)
+	}
+	if reasoning != "" {
+		message["reasoning"] = reasoning
+		message["reasoning_content"] = reasoning
 	}
 	payload := map[string]any{
 		"id":      requestID,
@@ -602,6 +618,7 @@ func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, mode
 					return StreamResult{}, err
 				}
 				if err := writeChunk(w, requestID, model, created, map[string]any{
+					"reasoning":         deltaText,
 					"reasoning_content": deltaText,
 					"thinking":          deltaText,
 				}, ""); err != nil {

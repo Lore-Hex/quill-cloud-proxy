@@ -876,7 +876,7 @@ func serveChatNonStreaming(
 	}
 	responseModel := customModelResponseModel(req.Model, authorization)
 	var body bytes.Buffer
-	if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, result.Text, result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(), result.FinishReason); err != nil {
+	if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, result.Text, adapter.JoinThinking(result.Thinking), result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(), result.FinishReason); err != nil {
 		writeError(conn, 500, "chat completion encoding error")
 		return
 	}

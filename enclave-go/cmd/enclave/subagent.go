@@ -354,7 +354,7 @@ func serveSubagentNonStreaming(
 	responseModel := requestOrchestrationResponseModel(req, selectedModel)
 	details := subagentResponseDetails(config, controllers, workers, responseModel, selectedModel, callCount, budgetExhausted)
 	var body bytes.Buffer
-	if err := writeSubagentChatCompletionResponse(&body, requestID, responseModel, final.Result.Text, final.Result.ToolCalls, totalIn, totalOut, fusionAggregateStreamUsage(totalIn, totalOut, controllers, workers), time.Now().Unix(), final.Result.FinishReason, details); err != nil {
+	if err := writeSubagentChatCompletionResponse(&body, requestID, responseModel, final.Result.Text, adapter.JoinThinking(final.Result.Thinking), final.Result.ToolCalls, totalIn, totalOut, fusionAggregateStreamUsage(totalIn, totalOut, controllers, workers), time.Now().Unix(), final.Result.FinishReason, details); err != nil {
 		writeError(conn, 500, "subagent response encoding error")
 		return
 	}
@@ -811,6 +811,7 @@ func writeSubagentChatCompletionResponse(
 	requestID string,
 	model string,
 	text string,
+	reasoning string,
 	toolCalls []types.ToolCall,
 	inputTokens int,
 	outputTokens int,
@@ -820,7 +821,7 @@ func writeSubagentChatCompletionResponse(
 	details map[string]any,
 ) error {
 	var body bytes.Buffer
-	if err := adapter.WriteChatCompletionResponse(&body, requestID, model, text, toolCalls, inputTokens, outputTokens, usage, created, finishReason); err != nil {
+	if err := adapter.WriteChatCompletionResponse(&body, requestID, model, text, reasoning, toolCalls, inputTokens, outputTokens, usage, created, finishReason); err != nil {
 		return err
 	}
 	var payload map[string]any

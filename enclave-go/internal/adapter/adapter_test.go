@@ -551,6 +551,48 @@ func TestCollectAnthropicTextCapturesThinking(t *testing.T) {
 	}
 }
 
+func TestWriteChatCompletionResponseIncludesReasoningFromThinking(t *testing.T) {
+	result := StreamResult{
+		Text: "final answer",
+		Thinking: []ThinkingBlock{
+			{Text: "first thought. "},
+			{Text: "second thought."},
+		},
+	}
+	var out bytes.Buffer
+	if err := WriteChatCompletionResponse(
+		&out,
+		"chatcmpl_reasoning",
+		"anthropic/claude-opus-4.8",
+		result.Text,
+		JoinThinking(result.Thinking),
+		nil,
+		10,
+		4,
+		nil,
+		123,
+		"stop",
+	); err != nil {
+		t.Fatalf("WriteChatCompletionResponse: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, out.String())
+	}
+	choice := payload["choices"].([]any)[0].(map[string]any)
+	message := choice["message"].(map[string]any)
+	if got := message["content"]; got != "final answer" {
+		t.Fatalf("content = %#v, want final answer", got)
+	}
+	wantReasoning := "first thought. second thought."
+	if got := message["reasoning"]; got != wantReasoning {
+		t.Fatalf("reasoning = %#v, want %q", got, wantReasoning)
+	}
+	if got := message["reasoning_content"]; got != wantReasoning {
+		t.Fatalf("reasoning_content = %#v, want %q", got, wantReasoning)
+	}
+}
+
 func TestWriteChatCompletionResponseIncludesToolCalls(t *testing.T) {
 	var out bytes.Buffer
 	err := WriteChatCompletionResponse(
@@ -558,6 +600,7 @@ func TestWriteChatCompletionResponseIncludesToolCalls(t *testing.T) {
 		"chatcmpl_tool",
 		"anthropic/claude-opus-4.8",
 		"",
+		"tool reasoning",
 		[]types.ToolCall{{ID: "call_1", CallID: "call_1", Name: "setup", Arguments: `{}`}},
 		11,
 		7,
@@ -580,6 +623,12 @@ func TestWriteChatCompletionResponseIncludesToolCalls(t *testing.T) {
 	if message["content"] != nil {
 		t.Fatalf("content = %#v, want nil when tool_calls are present", message["content"])
 	}
+	if got := message["reasoning"]; got != "tool reasoning" {
+		t.Fatalf("reasoning = %#v, want tool reasoning", got)
+	}
+	if got := message["reasoning_content"]; got != "tool reasoning" {
+		t.Fatalf("reasoning_content = %#v, want tool reasoning", got)
+	}
 	calls := message["tool_calls"].([]any)
 	if len(calls) != 1 {
 		t.Fatalf("tool_calls = %#v", calls)
@@ -598,7 +647,7 @@ func TestWriteChatCompletionResponseSurfacesCachedAndReasoningTokens(t *testing.
 	// reasoning tokens. The non-streaming chat.completion response must surface
 	// both as the OpenAI-shaped detail sub-objects — historically it dropped them.
 	usage := &StreamUsage{InputTokens: 13027, OutputTokens: 5, ReasoningTokens: 3, CacheReadInputTokens: 12266}
-	if err := WriteChatCompletionResponse(&out, "chatcmpl_cache", "google/gemini-3.1-pro-preview", "ok", nil, 13027, 5, usage, 123, "stop"); err != nil {
+	if err := WriteChatCompletionResponse(&out, "chatcmpl_cache", "google/gemini-3.1-pro-preview", "ok", "", nil, 13027, 5, usage, 123, "stop"); err != nil {
 		t.Fatalf("WriteChatCompletionResponse: %v", err)
 	}
 	var payload map[string]any
@@ -626,7 +675,7 @@ func TestWriteChatCompletionResponseSurfacesCachedAndReasoningTokens(t *testing.
 // estimate fallback), the detail sub-objects must be omitted, not emitted as 0.
 func TestWriteChatCompletionResponseOmitsZeroDetails(t *testing.T) {
 	var out bytes.Buffer
-	if err := WriteChatCompletionResponse(&out, "chatcmpl_plain", "anthropic/claude-opus-4.8", "hi", nil, 10, 4, nil, 123, "stop"); err != nil {
+	if err := WriteChatCompletionResponse(&out, "chatcmpl_plain", "anthropic/claude-opus-4.8", "hi", "", nil, 10, 4, nil, 123, "stop"); err != nil {
 		t.Fatalf("WriteChatCompletionResponse: %v", err)
 	}
 	var payload map[string]any
@@ -639,6 +688,14 @@ func TestWriteChatCompletionResponseOmitsZeroDetails(t *testing.T) {
 	}
 	if _, present := u["completion_tokens_details"]; present {
 		t.Fatalf("completion_tokens_details must be omitted when no reasoning, usage=%#v", u)
+	}
+	choice := payload["choices"].([]any)[0].(map[string]any)
+	message := choice["message"].(map[string]any)
+	if _, present := message["reasoning"]; present {
+		t.Fatalf("reasoning must be omitted when empty, message=%#v", message)
+	}
+	if _, present := message["reasoning_content"]; present {
+		t.Fatalf("reasoning_content must be omitted when empty, message=%#v", message)
 	}
 }
 
@@ -1118,7 +1175,9 @@ func TestTransformStreamCaptureStreamsThinkingAsReasoningContent(t *testing.T) {
 		t.Fatalf("thinking = %#v, want raw thought with signature", result.Thinking)
 	}
 	body := out.String()
-	if !strings.Contains(body, `"reasoning_content":"raw thought"`) || !strings.Contains(body, `"thinking":"raw thought"`) {
+	if !strings.Contains(body, `"reasoning":"raw thought"`) ||
+		!strings.Contains(body, `"reasoning_content":"raw thought"`) ||
+		!strings.Contains(body, `"thinking":"raw thought"`) {
 		t.Fatalf("stream did not expose thinking delta: %s", body)
 	}
 	if !strings.Contains(body, `"content":"visible answer"`) {
