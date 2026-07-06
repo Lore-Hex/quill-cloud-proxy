@@ -524,6 +524,7 @@ func serveOneRequest(
 			return
 		}
 		req = *chatReq
+		req.NormalizeMaxTokens()
 		originalInput = responsesReq.Input
 	} else if routePath == "/v1/chat/completions" {
 		if method != "POST" {
@@ -534,6 +535,7 @@ func serveOneRequest(
 			writeError(conn, 400, "invalid JSON")
 			return
 		}
+		req.NormalizeMaxTokens()
 		originalInput = req.Messages
 	} else {
 		writeError(conn, 404, "route not found")

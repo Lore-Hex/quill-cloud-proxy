@@ -216,6 +216,12 @@ type testAddr string
 func (a testAddr) Network() string { return string(a) }
 func (a testAddr) String() string  { return string(a) }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func TestResponseStatsConnDelegatesSelectedLeafDER(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()
@@ -952,6 +958,76 @@ func TestServeOneChatNonStreamingReturnsJSONAndSettles(t *testing.T) {
 	}
 	if !strings.Contains(settleBody, `"route_type":"chat.completions"`) || !strings.Contains(settleBody, `"streamed":false`) {
 		t.Fatalf("settle body missing chat metadata: %s", settleBody)
+	}
+}
+
+func TestServeOneChatNormalizesMaxCompletionTokens(t *testing.T) {
+	bearer := "test-user-bearer"
+	var authorizeBody string
+	trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, err
+			}
+			var responseBody string
+			switch r.URL.Path {
+			case "/internal/gateway/authorize":
+				authorizeBody = string(body)
+				responseBody = `{"data":{"authorization_id":"auth_chat","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`
+			case "/internal/gateway/settle":
+				responseBody = `{"data":{"settled":true,"generation_id":"gen_chat","cost_microdollars":12,"model":"openai/gpt-4o-mini","provider":"openai","region":"us-central1"}}`
+			default:
+				t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(responseBody)),
+			}, nil
+		}),
+	})
+
+	streamer := &fakeStreamingLLM{}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"openai/gpt-4o-mini","stream":false,"messages":[{"role":"user","content":"private prompt"}],"max_completion_tokens":321}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	if !strings.Contains(authorizeBody, `"max_output_tokens":321`) || !strings.Contains(authorizeBody, `"max_tokens":321`) {
+		t.Fatalf("authorize body did not use normalized max tokens: %s", authorizeBody)
+	}
+	if streamer.body == nil {
+		t.Fatal("provider body was nil")
+	}
+	if streamer.body.MaxTokens != 321 {
+		t.Fatalf("provider max_tokens = %d, want 321", streamer.body.MaxTokens)
+	}
+	if !streamer.body.MaxTokensExplicit {
+		t.Fatal("provider MaxTokensExplicit = false, want true")
 	}
 }
 

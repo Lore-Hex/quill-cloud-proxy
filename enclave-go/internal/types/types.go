@@ -176,30 +176,51 @@ type ChatStreamOptions struct {
 
 // OpenAIChatRequest is the inbound shape we accept.
 type OpenAIChatRequest struct {
-	Model           string               `json:"model"`
-	Models          []string             `json:"models,omitempty"`
-	Messages        []OpenAIChatMessage  `json:"messages"`
-	Stream          bool                 `json:"stream,omitempty"`
-	StreamOptions   *ChatStreamOptions   `json:"stream_options,omitempty"`
-	Temperature     *float64             `json:"temperature,omitempty"`
-	TopP            *float64             `json:"top_p,omitempty"`
-	MaxTokens       *int                 `json:"max_tokens,omitempty"`
-	Reasoning       any                  `json:"reasoning,omitempty"`
-	ReasoningEffort string               `json:"reasoning_effort,omitempty"`
-	Provider        *ProviderRouting     `json:"provider,omitempty"`
-	Metadata        map[string]any       `json:"metadata,omitempty"`
-	Trace           map[string]any       `json:"trace,omitempty"`
-	User            string               `json:"user,omitempty"`
-	SessionID       string               `json:"session_id,omitempty"`
-	ResponseFormat  map[string]any       `json:"response_format,omitempty"`
-	Tools           []any                `json:"tools,omitempty"`
-	Plugins         []any                `json:"plugins,omitempty"`
-	ToolChoice      any                  `json:"tool_choice,omitempty"`
-	ParallelTools   *bool                `json:"parallel_tool_calls,omitempty"`
-	Depth           *int                 `json:"depth,omitempty"`
-	Response        *ResponseRequestMeta `json:"-"`
-	ResponseModel   string               `json:"-"`
-	IdempotencyKey  string               `json:"-"`
+	Model               string               `json:"model"`
+	Models              []string             `json:"models,omitempty"`
+	Messages            []OpenAIChatMessage  `json:"messages"`
+	Stream              bool                 `json:"stream,omitempty"`
+	StreamOptions       *ChatStreamOptions   `json:"stream_options,omitempty"`
+	Temperature         *float64             `json:"temperature,omitempty"`
+	TopP                *float64             `json:"top_p,omitempty"`
+	MaxTokens           *int                 `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int                 `json:"max_completion_tokens,omitempty"`
+	MaxOutputTokens     *int                 `json:"max_output_tokens,omitempty"`
+	Reasoning           any                  `json:"reasoning,omitempty"`
+	ReasoningEffort     string               `json:"reasoning_effort,omitempty"`
+	Provider            *ProviderRouting     `json:"provider,omitempty"`
+	Metadata            map[string]any       `json:"metadata,omitempty"`
+	Trace               map[string]any       `json:"trace,omitempty"`
+	User                string               `json:"user,omitempty"`
+	SessionID           string               `json:"session_id,omitempty"`
+	ResponseFormat      map[string]any       `json:"response_format,omitempty"`
+	Tools               []any                `json:"tools,omitempty"`
+	Plugins             []any                `json:"plugins,omitempty"`
+	ToolChoice          any                  `json:"tool_choice,omitempty"`
+	ParallelTools       *bool                `json:"parallel_tool_calls,omitempty"`
+	Depth               *int                 `json:"depth,omitempty"`
+	Response            *ResponseRequestMeta `json:"-"`
+	ResponseModel       string               `json:"-"`
+	IdempotencyKey      string               `json:"-"`
+}
+
+// NormalizeMaxTokens folds the OpenAI-chat (`max_completion_tokens`) and
+// Responses/Gemini (`max_output_tokens`) output-limit spellings into the
+// canonical MaxTokens so every downstream reader (Anthropic default,
+// MaxTokensExplicit, byok/openrouter passthrough) honors a client's cap
+// regardless of which name they used. Precedence: max_tokens (legacy/explicit)
+// > max_completion_tokens (modern OpenAI chat) > max_output_tokens.
+func (r *OpenAIChatRequest) NormalizeMaxTokens() {
+	if r.MaxTokens != nil {
+		return
+	}
+	if r.MaxCompletionTokens != nil {
+		r.MaxTokens = r.MaxCompletionTokens
+		return
+	}
+	if r.MaxOutputTokens != nil {
+		r.MaxTokens = r.MaxOutputTokens
+	}
 }
 
 // ResponsesInputItem is the text-only subset of the OpenAI Responses input
@@ -402,9 +423,10 @@ type AnthropicMessagesRequest struct {
 	// every other consumer (token estimation, OpenAI-compatible paths).
 	SystemRaw any `json:"-"`
 
-	// MaxTokensExplicit records whether the CLIENT set max_tokens, or
-	// whether MaxTokens above is adapter.DefaultMaxTokens filled in
-	// because the Anthropic/Bedrock wire format requires the field.
+	// MaxTokensExplicit records whether the CLIENT set an output-token cap
+	// (max_tokens, max_completion_tokens, or max_output_tokens), or whether
+	// MaxTokens above is adapter.DefaultMaxTokens filled in because the
+	// Anthropic/Bedrock wire format requires the field.
 	// OpenAI-compatible upstreams treat max_tokens as optional, and
 	// silently capping reasoning models at the 4096 default truncated
 	// them mid-think (finish_reason=length) when direct calls with no

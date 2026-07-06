@@ -24,6 +24,64 @@ func TestProviderRoutingAcceptsArrayAndCommaSeparatedString(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatRequestNormalizeMaxTokens(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want *int
+	}{
+		{
+			name: "max_completion_tokens only",
+			body: `{"model":"m","messages":[],"max_completion_tokens":123}`,
+			want: intPtr(123),
+		},
+		{
+			name: "max_output_tokens only",
+			body: `{"model":"m","messages":[],"max_output_tokens":234}`,
+			want: intPtr(234),
+		},
+		{
+			name: "max_tokens only",
+			body: `{"model":"m","messages":[],"max_tokens":345}`,
+			want: intPtr(345),
+		},
+		{
+			name: "max_tokens wins over max_completion_tokens",
+			body: `{"model":"m","messages":[],"max_tokens":456,"max_completion_tokens":567}`,
+			want: intPtr(456),
+		},
+		{
+			name: "max_completion_tokens wins over max_output_tokens",
+			body: `{"model":"m","messages":[],"max_completion_tokens":678,"max_output_tokens":789}`,
+			want: intPtr(678),
+		},
+		{
+			name: "none",
+			body: `{"model":"m","messages":[]}`,
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req OpenAIChatRequest
+			if err := json.Unmarshal([]byte(tt.body), &req); err != nil {
+				t.Fatalf("unmarshal chat request: %v", err)
+			}
+			req.NormalizeMaxTokens()
+			if tt.want == nil {
+				if req.MaxTokens != nil {
+					t.Fatalf("MaxTokens = %d, want nil", *req.MaxTokens)
+				}
+				return
+			}
+			if req.MaxTokens == nil || *req.MaxTokens != *tt.want {
+				t.Fatalf("MaxTokens = %v, want %d", req.MaxTokens, *tt.want)
+			}
+		})
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -34,4 +92,8 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func intPtr(i int) *int {
+	return &i
 }

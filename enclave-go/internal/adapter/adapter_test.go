@@ -137,6 +137,57 @@ func TestToAnthropic(t *testing.T) {
 			if got.MaxTokens != tt.want.MaxTokens {
 				t.Errorf("MaxTokens mismatch: got %d, want %d", got.MaxTokens, tt.want.MaxTokens)
 			}
+			if got.MaxTokensExplicit != tt.want.MaxTokensExplicit {
+				t.Errorf("MaxTokensExplicit mismatch: got %v, want %v", got.MaxTokensExplicit, tt.want.MaxTokensExplicit)
+			}
+		})
+	}
+}
+
+func TestToAnthropicUsesNormalizedMaxTokenAliases(t *testing.T) {
+	tests := []struct {
+		name         string
+		body         string
+		wantTokens   int
+		wantExplicit bool
+	}{
+		{
+			name:         "max_completion_tokens only",
+			body:         `{"model":"m","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":123}`,
+			wantTokens:   123,
+			wantExplicit: true,
+		},
+		{
+			name:         "max_output_tokens only",
+			body:         `{"model":"m","messages":[{"role":"user","content":"hi"}],"max_output_tokens":234}`,
+			wantTokens:   234,
+			wantExplicit: true,
+		},
+		{
+			name:         "none",
+			body:         `{"model":"m","messages":[{"role":"user","content":"hi"}]}`,
+			wantTokens:   DefaultMaxTokens,
+			wantExplicit: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req types.OpenAIChatRequest
+			if err := json.Unmarshal([]byte(tt.body), &req); err != nil {
+				t.Fatalf("unmarshal chat request: %v", err)
+			}
+			req.NormalizeMaxTokens()
+			got, err := ToAnthropic(&req, "model-ignored")
+			if err != nil {
+				t.Fatalf("ToAnthropic: %v", err)
+			}
+			if got.MaxTokens != tt.wantTokens {
+				t.Fatalf("MaxTokens = %d, want %d", got.MaxTokens, tt.wantTokens)
+			}
+			if got.MaxTokensExplicit != tt.wantExplicit {
+				t.Fatalf("MaxTokensExplicit = %v, want %v", got.MaxTokensExplicit, tt.wantExplicit)
+			}
 		})
 	}
 }
