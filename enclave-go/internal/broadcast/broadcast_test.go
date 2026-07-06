@@ -1,10 +1,69 @@
 package broadcast
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
+
+func TestStripContentClearsIncludeContent(t *testing.T) {
+	in := []trustedrouter.BroadcastDestination{
+		{ID: "a", Type: "webhook", Endpoint: "https://x.example", IncludeContent: true},
+		{ID: "b", Type: "posthog", Endpoint: "https://y.example", IncludeContent: true},
+	}
+	out := StripContent(in)
+	if len(out) != len(in) {
+		t.Fatalf("len = %d, want %d", len(out), len(in))
+	}
+	for _, d := range out {
+		if d.IncludeContent {
+			t.Fatalf("destination %s still has IncludeContent set", d.ID)
+		}
+	}
+	// The input slice must not be mutated in place.
+	if !in[0].IncludeContent || !in[1].IncludeContent {
+		t.Fatal("StripContent mutated its input")
+	}
+	if StripContent(nil) != nil {
+		t.Fatal("StripContent(nil) should be nil")
+	}
+}
+
+// DevProof G5: content-broadcast destinations from the (unattested) control
+// plane must never cause the enclave to POST prompt/completion anywhere. Prove
+// that a content destination WOULD be delivered, but is NOT after StripContent.
+func TestDeliverContentNeverPostsAfterStripContent(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	dests := []trustedrouter.BroadcastDestination{{
+		ID: "d1", Type: "webhook", Endpoint: srv.URL, Method: http.MethodPost, IncludeContent: true,
+	}}
+	input := []map[string]string{{"role": "user", "content": "private prompt"}}
+
+	// Baseline: a content destination IS delivered without stripping.
+	DeliverContent(context.Background(), srv.Client(), nil, dests, testGeneration(), input, "private output")
+	if atomic.LoadInt32(&hits) == 0 {
+		t.Fatal("baseline: content destination was not delivered (test cannot prove StripContent)")
+	}
+	before := atomic.LoadInt32(&hits)
+
+	// After StripContent, no further POST is made regardless of the flag.
+	DeliverContent(context.Background(), srv.Client(), nil, StripContent(dests), testGeneration(), input, "private output")
+	if got := atomic.LoadInt32(&hits) - before; got != 0 {
+		t.Fatalf("content POSTed %d times after StripContent; want 0", got)
+	}
+}
 
 func testGeneration() Generation {
 	return Generation{

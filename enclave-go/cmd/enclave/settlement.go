@@ -34,8 +34,12 @@ func settleAndBroadcast(
 		return nil, err
 	}
 	contentBroadcasts.Enqueue(broadcast.Job{
-		Cache:        secretCache,
-		Destinations: authorization.BroadcastDestinations,
+		Cache: secretCache,
+		// DevProof G5: never honor content-broadcast destinations from the
+		// (unattested) control plane — strip IncludeContent so the enclave
+		// cannot be told to exfiltrate prompt+completion to an operator-injected
+		// endpoint. Metadata broadcast is control-plane-side and unaffected.
+		Destinations: broadcast.StripContent(authorization.BroadcastDestinations),
 		Generation: broadcast.Generation{
 			ID:                result.GenerationID,
 			WorkspaceID:       authorization.WorkspaceID,

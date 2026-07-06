@@ -40,6 +40,32 @@ type Generation struct {
 	Metadata          map[string]any
 }
 
+// StripContent returns a copy of destinations with IncludeContent cleared, so
+// the content-delivery path (DeliverContent) never POSTs prompt or completion
+// text to any of them.
+//
+// DevProof G5: broadcast destinations arrive from the UNATTESTED control plane,
+// which the enclave cannot trust to carry only user-set destinations — a
+// malicious operator could inject one and exfiltrate plaintext. The enclave is
+// the trust boundary, so it refuses to honor content-broadcast instructions
+// from the control plane rather than trying to make the control plane
+// trustworthy. Metadata broadcast (token counts + timing) is done
+// control-plane-side and never carried content, so it is unaffected. A future
+// user-facing content-broadcast feature must AUTHENTICATE destinations to the
+// user (e.g. an HMAC keyed on the raw API key the operator never sees) rather
+// than trusting the control plane.
+func StripContent(destinations []trustedrouter.BroadcastDestination) []trustedrouter.BroadcastDestination {
+	if len(destinations) == 0 {
+		return nil
+	}
+	out := make([]trustedrouter.BroadcastDestination, len(destinations))
+	for i, d := range destinations {
+		d.IncludeContent = false
+		out[i] = d
+	}
+	return out
+}
+
 func DeliverContent(
 	ctx context.Context,
 	httpc *http.Client,
