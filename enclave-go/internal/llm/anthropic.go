@@ -137,13 +137,14 @@ func (c *anthropicClient) InvokeStreaming(
 		ToolChoice    *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
 		StopSequences []string                    `json:"stop_sequences,omitempty"`
 		Thinking      any                         `json:"thinking,omitempty"`
+		TopK          *int                        `json:"top_k,omitempty"`
 		OutputConfig  any                         `json:"output_config,omitempty"`
 		Stream        bool                        `json:"stream"`
 	}{
 		Model:     model,
 		Messages:  messages,
 		System:    anthropicSystemField(body),
-		MaxTokens: body.MaxTokens,
+		MaxTokens: body.AnthropicDispatchMaxTokens(),
 		// Credits path was sending temperature raw; opus-4.7/4.8 reject it
 		// (400 "temperature is deprecated"). Route through the same helper the
 		// BYOK path already uses so the omission is consistent across paths.
@@ -153,6 +154,7 @@ func (c *anthropicClient) InvokeStreaming(
 		ToolChoice:    body.ToolChoice,
 		StopSequences: body.StopSequences,
 		Thinking:      body.Thinking,
+		TopK:          body.TopK,
 		OutputConfig:  body.OutputConfig,
 		Stream:        true,
 	}

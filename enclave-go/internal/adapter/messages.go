@@ -36,6 +36,8 @@ type AnthropicNativeRequest struct {
 	ToolChoice    *types.AnthropicToolChoice `json:"tool_choice,omitempty"`
 	StopSequences []string                   `json:"stop_sequences,omitempty"`
 	Thinking      any                        `json:"thinking,omitempty"`
+	N             *int                       `json:"n,omitempty"`
+	TopK          *int                       `json:"top_k,omitempty"`
 	OutputConfig  any                        `json:"output_config,omitempty"`
 	Metadata      map[string]any             `json:"metadata,omitempty"`
 }
@@ -77,6 +79,7 @@ func MessagesToAnthropic(req *AnthropicNativeRequest) (*types.AnthropicMessagesR
 		ToolChoice:        req.ToolChoice,
 		StopSequences:     req.StopSequences,
 		Thinking:          req.Thinking,
+		TopK:              req.TopK,
 		OutputConfig:      req.OutputConfig,
 		NativeContent:     true,
 	}
@@ -159,6 +162,10 @@ func flattenSystem(system any) (string, any) {
 // reads req.Tools) still sees them.
 func MessagesToChatShim(req *AnthropicNativeRequest) *types.OpenAIChatRequest {
 	maxTokens := req.MaxTokens
+	var stop any
+	if len(req.StopSequences) > 0 {
+		stop = append([]string(nil), req.StopSequences...)
+	}
 	messages := make([]types.OpenAIChatMessage, 0, len(req.Messages)+1)
 	if text, _ := flattenSystem(req.System); text != "" {
 		messages = append(messages, types.OpenAIChatMessage{Role: "system", Content: text})
@@ -171,6 +178,9 @@ func MessagesToChatShim(req *AnthropicNativeRequest) *types.OpenAIChatRequest {
 		Messages:    messages,
 		Stream:      req.Stream,
 		MaxTokens:   &maxTokens,
+		Stop:        stop,
+		N:           req.N,
+		Reasoning:   req.Thinking,
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
 		Tools:       ChatToolsFromAnthropicTools(req.Tools),

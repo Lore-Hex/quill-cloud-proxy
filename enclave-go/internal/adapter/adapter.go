@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 
@@ -39,6 +40,9 @@ func (e *AdapterError) Error() string {
 
 // ToAnthropic translates an OpenAI request into an Anthropic Messages body.
 func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.AnthropicMessagesRequest, error) {
+	if err := RejectUnsupportedN(req); err != nil {
+		return nil, err
+	}
 	if len(req.Messages) == 0 {
 		return nil, &AdapterError{Status: 400, Message: "messages must contain at least one entry"}
 	}
@@ -98,6 +102,11 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 		MaxTokensExplicit: req.MaxTokens != nil,
 		Temperature:       req.Temperature,
 		TopP:              req.TopP,
+		StopSequences:     req.StopSequences(),
+	}
+	if thinking := anthropicThinkingFromChat(req, out.MaxTokens); thinking != nil {
+		out.Thinking = thinking
+		out.AnthropicMaxTokens = anthropicMaxTokensForThinking(out.MaxTokens, thinking)
 	}
 	if len(systemParts) > 0 {
 		out.System = strings.Join(systemParts, "\n\n")
@@ -127,6 +136,144 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 	out.ToolChoice = toolChoice
 	_ = defaultModel // model is only used for response chunks, not the body
 	return out, nil
+}
+
+func anthropicThinkingFromChat(req *types.OpenAIChatRequest, maxTokens int) any {
+	budget, ok := anthropicThinkingBudget(req)
+	if !ok {
+		return nil
+	}
+	if budget <= 0 {
+		return nil
+	}
+	if maxTokens > 1 && budget >= maxTokens {
+		return map[string]any{"type": "enabled", "budget_tokens": budget}
+	}
+	if maxTokens > 1 && budget == maxTokens {
+		budget = maxTokens - 1
+	}
+	return map[string]any{"type": "enabled", "budget_tokens": budget}
+}
+
+func anthropicMaxTokensForThinking(maxTokens int, thinking any) int {
+	budget := anthropicThinkingBudgetFromConfig(thinking)
+	if budget <= 0 || maxTokens > budget {
+		return maxTokens
+	}
+	if maxTokens > 0 {
+		return budget + maxTokens
+	}
+	return budget + DefaultMaxTokens
+}
+
+func anthropicThinkingBudgetFromConfig(thinking any) int {
+	m, ok := thinking.(map[string]any)
+	if !ok {
+		return 0
+	}
+	return intFromAny(m["budget_tokens"])
+}
+
+func anthropicThinkingBudget(req *types.OpenAIChatRequest) (int, bool) {
+	if req == nil {
+		return 0, false
+	}
+	if budget, ok := anthropicThinkingBudgetFromReasoning(req.Reasoning); ok {
+		return budget, true
+	}
+	if budget, ok := anthropicReasoningEffortBudget(req.ReasoningEffort); ok {
+		return budget, true
+	}
+	return 0, false
+}
+
+func anthropicThinkingBudgetFromReasoning(reasoning any) (int, bool) {
+	switch value := reasoning.(type) {
+	case nil:
+		return 0, false
+	case bool:
+		if value {
+			return anthropicEffortBudget("medium"), true
+		}
+		return 0, false
+	case string:
+		return anthropicReasoningEffortBudget(value)
+	case map[string]any:
+		for _, key := range []string{"max_tokens", "thinking_budget", "budget_tokens"} {
+			if n := intFromAny(value[key]); n > 0 {
+				return n, true
+			}
+		}
+		if effort, _ := value["effort"].(string); effort != "" {
+			return anthropicReasoningEffortBudget(effort)
+		}
+		if typ, _ := value["type"].(string); strings.EqualFold(typ, "enabled") || strings.EqualFold(typ, "adaptive") {
+			return anthropicEffortBudget("medium"), true
+		}
+		if enabled, _ := value["enabled"].(bool); enabled {
+			return anthropicEffortBudget("medium"), true
+		}
+	}
+	return 0, false
+}
+
+func anthropicReasoningEffortBudget(effort string) (int, bool) {
+	normalized := strings.TrimSpace(strings.ToLower(effort))
+	switch normalized {
+	case "low":
+		return anthropicEffortBudget(normalized), true
+	case "medium":
+		return anthropicEffortBudget(normalized), true
+	case "high", "xhigh":
+		return anthropicEffortBudget(normalized), true
+	case "", "none", "off", "disable", "disabled", "minimal":
+		return 0, false
+	default:
+		return 0, false
+	}
+}
+
+func anthropicEffortBudget(effort string) int {
+	switch effort {
+	case "low":
+		return 1024
+	case "high", "xhigh":
+		return 8192
+	default:
+		return 4096
+	}
+}
+
+func intFromAny(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0
+		}
+		return int(n)
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i)
+		}
+	}
+	return 0
+}
+
+func RejectUnsupportedN(req *types.OpenAIChatRequest) error {
+	if req == nil || req.N == nil || *req.N <= 1 {
+		return nil
+	}
+	return &AdapterError{Status: 400, Message: "n>1 is not supported", Context: "n"}
+}
+
+func RejectUnsupportedNForProvider(req *types.OpenAIChatRequest, provider, model string) error {
+	_ = provider
+	_ = model
+	return RejectUnsupportedN(req)
 }
 
 // anthropicSystemBlocks converts a chat `system` message's content into

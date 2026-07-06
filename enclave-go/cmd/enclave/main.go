@@ -542,6 +542,15 @@ func serveOneRequest(
 		return
 	}
 	req.IdempotencyKey = idempotencyKey
+	if err := adapter.RejectUnsupportedN(&req); err != nil {
+		var aerr *adapter.AdapterError
+		if asAdapterErr(err, &aerr) {
+			writeAdapterOpenAIError(conn, aerr)
+			return
+		}
+		writeError(conn, 400, "invalid request")
+		return
+	}
 
 	if routeType == "chat.completions" {
 		if _, err := maybeResolveCustomModelForOrchestration(ctx, &req, trGateway, bearer, routeType); err != nil {
@@ -1059,6 +1068,17 @@ func serveMessages(
 		writeAnthropicError(conn, 400, "invalid JSON")
 		return
 	}
+	req := adapter.MessagesToChatShim(&native)
+	req.IdempotencyKey = idempotencyKey
+	if err := adapter.RejectUnsupportedN(req); err != nil {
+		var aerr *adapter.AdapterError
+		if asAdapterErr(err, &aerr) {
+			writeAnthropicError(conn, aerr.Status, aerr.Message)
+			return
+		}
+		writeAnthropicError(conn, 400, "invalid request")
+		return
+	}
 	anthropicReq, err := adapter.MessagesToAnthropic(&native)
 	if err != nil {
 		var aerr *adapter.AdapterError
@@ -1069,8 +1089,6 @@ func serveMessages(
 		writeAnthropicError(conn, 400, "invalid messages request")
 		return
 	}
-	req := adapter.MessagesToChatShim(&native)
-	req.IdempotencyKey = idempotencyKey
 
 	requestStarted := time.Now()
 	trEnabled := trGateway != nil && trGateway.Enabled()
@@ -1229,6 +1247,29 @@ func serveMessages(
 // stream_options.include_usage final chunk on a chat-completions stream.
 func chatIncludeUsage(req *types.OpenAIChatRequest) bool {
 	return req != nil && req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+}
+
+func resolvedProviderForRequest(req *types.OpenAIChatRequest, options []llm.InvokeOptions, authorization *trustedrouter.Authorization) string {
+	if len(options) > 0 && options[0].Provider != "" {
+		return options[0].Provider
+	}
+	if authorization != nil && authorization.Provider != "" {
+		return authorization.Provider
+	}
+	return ""
+}
+
+func resolvedModelForRequest(req *types.OpenAIChatRequest, options []llm.InvokeOptions, authorization *trustedrouter.Authorization) string {
+	if len(options) > 0 && options[0].Model != "" {
+		return options[0].Model
+	}
+	if req != nil && req.Model != "" {
+		return req.Model
+	}
+	if authorization != nil {
+		return authorization.Model
+	}
+	return ""
 }
 
 // realOrEstimatedTokens prefers the provider-reported usage captured from

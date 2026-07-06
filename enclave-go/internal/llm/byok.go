@@ -65,15 +65,21 @@ type openAICompatibleRequest struct {
 	// openai-compatible providers (zai, kimi, novita, etc.) only
 	// know `max_tokens`. So this client emits ONE or the OTHER per
 	// request — see buildOpenAICompatibleRequest below.
-	MaxTokens           int      `json:"max_tokens,omitempty"`
-	MaxCompletionTokens int      `json:"max_completion_tokens,omitempty"`
-	Temperature         *float64 `json:"temperature,omitempty"`
-	TopP                *float64 `json:"top_p,omitempty"`
-	ResponseFormat      any      `json:"response_format,omitempty"`
-	Tools               []any    `json:"tools,omitempty"`
-	ToolChoice          any      `json:"tool_choice,omitempty"`
-	ParallelToolCalls   *bool    `json:"parallel_tool_calls,omitempty"`
-	Thinking            any      `json:"thinking,omitempty"`
+	MaxTokens           int                `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int                `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64           `json:"temperature,omitempty"`
+	TopP                *float64           `json:"top_p,omitempty"`
+	TopK                *int               `json:"top_k,omitempty"`
+	Seed                *int               `json:"seed,omitempty"`
+	FrequencyPenalty    *float64           `json:"frequency_penalty,omitempty"`
+	PresencePenalty     *float64           `json:"presence_penalty,omitempty"`
+	LogitBias           map[string]float64 `json:"logit_bias,omitempty"`
+	Stop                any                `json:"stop,omitempty"`
+	ResponseFormat      any                `json:"response_format,omitempty"`
+	Tools               []any              `json:"tools,omitempty"`
+	ToolChoice          any                `json:"tool_choice,omitempty"`
+	ParallelToolCalls   *bool              `json:"parallel_tool_calls,omitempty"`
+	Thinking            any                `json:"thinking,omitempty"`
 	// StreamOptions asks the upstream for the final usage-bearing chunk
 	// (stream_options.include_usage). Always sent: real token counts feed
 	// settlement (replacing chars/4 estimates that miscounted reasoning
@@ -181,41 +187,7 @@ func invokeOpenAICompatibleStreamingWithClient(
 		return err
 	}
 	upstreamID := directModelID(provider, req.Model, upstreamModel)
-	reqBody := openAICompatibleRequest{
-		Model:             upstreamID,
-		Messages:          msgs,
-		Stream:            true,
-		Temperature:       openAICompatibleTemperature(provider, upstreamID, body.Temperature),
-		TopP:              body.TopP,
-		Tools:             req.Tools,
-		ToolChoice:        req.ToolChoice,
-		ParallelToolCalls: req.ParallelTools,
-	}
-	if len(req.ResponseFormat) > 0 {
-		reqBody.ResponseFormat = req.ResponseFormat
-	}
-	if kimiToolsNeedThinkingDisabled(provider, upstreamID, req.Tools) {
-		reqBody.Thinking = map[string]string{"type": "disabled"}
-	}
-	reqBody.StreamOptions = &openAICompatibleStreamOptions{IncludeUsage: true}
-	// max_tokens is OPTIONAL on the OpenAI-compatible surface, so only
-	// forward a cap the CLIENT actually set. body.MaxTokens always holds a
-	// value because the Anthropic/Bedrock wire format requires one — but
-	// forwarding that 4096 default here silently truncated reasoning
-	// models mid-think (finish_reason=length, sometimes empty content)
-	// while the same request sent direct ran to the provider's own
-	// model-max default. When the client did set a cap:
-	// per-model parameter rename — openai gpt-5.x rejects max_tokens and
-	// requires max_completion_tokens; every other openai-compatible
-	// provider (and pre-5.x openai models) still wants max_tokens. Emit
-	// exactly one of the two (omitempty hides ints == 0).
-	if body.MaxTokensExplicit {
-		if requiresMaxCompletionTokens(provider, upstreamID) {
-			reqBody.MaxCompletionTokens = body.MaxTokens
-		} else {
-			reqBody.MaxTokens = body.MaxTokens
-		}
-	}
+	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("llm/%s: marshal body: %w", provider, err)
@@ -248,6 +220,62 @@ func invokeOpenAICompatibleStreamingWithClient(
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
 	return translateOpenAIStreamToAnthropic(resp.Body, out)
+}
+
+func buildOpenAICompatibleRequest(
+	provider string,
+	upstreamID string,
+	req *qtypes.OpenAIChatRequest,
+	body *qtypes.AnthropicMessagesRequest,
+	msgs []chatMessage,
+) openAICompatibleRequest {
+	reqBody := openAICompatibleRequest{
+		Model:    upstreamID,
+		Messages: msgs,
+		Stream:   true,
+	}
+	if body != nil {
+		reqBody.Temperature = openAICompatibleTemperature(provider, upstreamID, body.Temperature)
+		reqBody.TopP = body.TopP
+		reqBody.TopK = body.TopK
+		reqBody.Thinking = body.Thinking
+		// max_tokens is OPTIONAL on the OpenAI-compatible surface, so only
+		// forward a cap the CLIENT actually set. body.MaxTokens always holds a
+		// value because the Anthropic/Bedrock wire format requires one — but
+		// forwarding that 4096 default here silently truncated reasoning
+		// models mid-think (finish_reason=length, sometimes empty content)
+		// while the same request sent direct ran to the provider's own
+		// model-max default. When the client did set a cap:
+		// per-model parameter rename — openai gpt-5.x rejects max_tokens and
+		// requires max_completion_tokens; every other openai-compatible
+		// provider (and pre-5.x openai models) still wants max_tokens. Emit
+		// exactly one of the two (omitempty hides ints == 0).
+		if body.MaxTokensExplicit {
+			if requiresMaxCompletionTokens(provider, upstreamID) {
+				reqBody.MaxCompletionTokens = body.MaxTokens
+			} else {
+				reqBody.MaxTokens = body.MaxTokens
+			}
+		}
+	}
+	if req != nil {
+		reqBody.Tools = req.Tools
+		reqBody.ToolChoice = req.ToolChoice
+		reqBody.ParallelToolCalls = req.ParallelTools
+		reqBody.Seed = req.Seed
+		reqBody.FrequencyPenalty = req.FrequencyPenalty
+		reqBody.PresencePenalty = req.PresencePenalty
+		reqBody.LogitBias = req.LogitBias
+		reqBody.Stop = req.Stop
+		if len(req.ResponseFormat) > 0 {
+			reqBody.ResponseFormat = req.ResponseFormat
+		}
+		if kimiToolsNeedThinkingDisabled(provider, upstreamID, req.Tools) {
+			reqBody.Thinking = map[string]string{"type": "disabled"}
+		}
+	}
+	reqBody.StreamOptions = &openAICompatibleStreamOptions{IncludeUsage: true}
+	return reqBody
 }
 
 func openAICompatibleTemperature(provider, modelID string, temperature *float64) *float64 {
@@ -325,19 +353,21 @@ func invokeAnthropicBYOKStreaming(
 		ToolChoice    *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
 		StopSequences []string                    `json:"stop_sequences,omitempty"`
 		Thinking      any                         `json:"thinking,omitempty"`
+		TopK          *int                        `json:"top_k,omitempty"`
 		OutputConfig  any                         `json:"output_config,omitempty"`
 		Stream        bool                        `json:"stream"`
 	}{
 		Model:         modelID,
 		Messages:      messages,
 		System:        anthropicSystemField(body),
-		MaxTokens:     body.MaxTokens,
+		MaxTokens:     body.AnthropicDispatchMaxTokens(),
 		Temperature:   anthropicTemperature(modelID, body.Temperature),
 		TopP:          body.TopP,
 		Tools:         body.Tools,
 		ToolChoice:    body.ToolChoice,
 		StopSequences: body.StopSequences,
 		Thinking:      body.Thinking,
+		TopK:          body.TopK,
 		OutputConfig:  body.OutputConfig,
 		Stream:        true,
 	}

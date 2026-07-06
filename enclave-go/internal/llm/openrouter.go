@@ -136,15 +136,21 @@ func New(boot *qtypes.BootstrapData) Client {
 // pipeline produces); convert the messages array trivially since
 // AnthropicMessage and OpenAI ChatMessage are structurally identical.
 type openRouterRequest struct {
-	Model       string           `json:"model"`
-	Messages    []openRouterMsg  `json:"messages"`
-	Stream      bool             `json:"stream"`
-	MaxTokens   int              `json:"max_tokens,omitempty"`
-	Temperature *float64         `json:"temperature,omitempty"`
-	TopP        *float64         `json:"top_p,omitempty"`
-	Provider    *providerRouting `json:"provider,omitempty"`
-	Tools       []any            `json:"tools,omitempty"`
-	ToolChoice  any              `json:"tool_choice,omitempty"`
+	Model            string           `json:"model"`
+	Messages         []openRouterMsg  `json:"messages"`
+	Stream           bool             `json:"stream"`
+	MaxTokens        int              `json:"max_tokens,omitempty"`
+	Temperature      *float64         `json:"temperature,omitempty"`
+	TopP             *float64         `json:"top_p,omitempty"`
+	Stop             []string         `json:"stop,omitempty"`
+	TopK             *int             `json:"top_k,omitempty"`
+	Thinking         any              `json:"thinking,omitempty"`
+	Seed             *int             `json:"seed,omitempty"`
+	FrequencyPenalty *float64         `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64         `json:"presence_penalty,omitempty"`
+	Provider         *providerRouting `json:"provider,omitempty"`
+	Tools            []any            `json:"tools,omitempty"`
+	ToolChoice       any              `json:"tool_choice,omitempty"`
 }
 
 type openRouterMsg struct {
@@ -223,15 +229,21 @@ func (c *openRouterClient) invokeOne(
 	}
 
 	reqBody := openRouterRequest{
-		Model:       model,
-		Messages:    msgs,
-		Stream:      true,
-		MaxTokens:   body.MaxTokens,
-		Temperature: body.Temperature,
-		TopP:        body.TopP,
-		Provider:    c.providerRouting(req),
-		Tools:       req.Tools,
-		ToolChoice:  req.ToolChoice,
+		Model:            model,
+		Messages:         msgs,
+		Stream:           true,
+		MaxTokens:        body.MaxTokens,
+		Temperature:      body.Temperature,
+		TopP:             body.TopP,
+		Stop:             body.StopSequences,
+		TopK:             body.TopK,
+		Thinking:         body.Thinking,
+		Seed:             req.Seed,
+		FrequencyPenalty: req.FrequencyPenalty,
+		PresencePenalty:  req.PresencePenalty,
+		Provider:         c.providerRouting(req),
+		Tools:            req.Tools,
+		ToolChoice:       req.ToolChoice,
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

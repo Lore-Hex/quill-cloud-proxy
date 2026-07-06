@@ -14,6 +14,12 @@ import (
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
+type openRouterRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f openRouterRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 // TestTranslateOpenAIStreamToAnthropic walks through a representative
 // OpenAI streaming response and confirms we emit the three Anthropic SSE
 // events the downstream adapter expects: content_block_delta (text),
@@ -165,6 +171,128 @@ func TestOpenRouterModelsArrayFallbackAndProviderRouting(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"text":"ok"`) {
 		t.Fatalf("missing translated output: %s", out.String())
+	}
+}
+
+func TestOpenRouterRequestCarriesSeedAndPenalties(t *testing.T) {
+	var payload map[string]any
+	c := &openRouterClient{
+		apiKey:  "test",
+		baseURL: "https://openrouter.test",
+		httpc: &http.Client{Transport: openRouterRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				return nil, err
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+					`data: {"id":"x","choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`,
+					``,
+					`data: {"id":"x","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+					``,
+					`data: [DONE]`,
+					``,
+				}, "\n"))),
+			}, nil
+		})},
+	}
+	seed := 123
+	frequencyPenalty := 0.25
+	presencePenalty := -0.5
+	req := &qtypes.OpenAIChatRequest{
+		Model:            "openai/gpt-4o-mini",
+		Seed:             &seed,
+		FrequencyPenalty: &frequencyPenalty,
+		PresencePenalty:  &presencePenalty,
+	}
+	body := &qtypes.AnthropicMessagesRequest{
+		Messages:  []qtypes.AnthropicMessage{{Role: "user", Content: "hello"}},
+		MaxTokens: 8,
+	}
+	var out bytes.Buffer
+
+	if err := c.InvokeStreaming(t.Context(), req, body, &out); err != nil {
+		t.Fatalf("InvokeStreaming: %v", err)
+	}
+
+	if payload["seed"] != float64(seed) {
+		t.Fatalf("seed = %#v, want %d", payload["seed"], seed)
+	}
+	if payload["frequency_penalty"] != frequencyPenalty {
+		t.Fatalf("frequency_penalty = %#v, want %v", payload["frequency_penalty"], frequencyPenalty)
+	}
+	if payload["presence_penalty"] != presencePenalty {
+		t.Fatalf("presence_penalty = %#v, want %v", payload["presence_penalty"], presencePenalty)
+	}
+}
+
+func TestOpenRouterRequestCarriesAnthropicThinking(t *testing.T) {
+	var payload map[string]any
+	c := &openRouterClient{
+		apiKey:  "test",
+		baseURL: "https://openrouter.test",
+		httpc: &http.Client{Transport: openRouterRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				return nil, err
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+					`data: {"id":"x","choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`,
+					``,
+					`data: {"id":"x","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+					``,
+					`data: [DONE]`,
+					``,
+				}, "\n"))),
+			}, nil
+		})},
+	}
+	topK := 64
+	body := &qtypes.AnthropicMessagesRequest{
+		Messages:      []qtypes.AnthropicMessage{{Role: "user", Content: "think"}},
+		MaxTokens:     8,
+		StopSequences: []string{"END"},
+		TopK:          &topK,
+		Thinking:      map[string]any{"type": "enabled", "budget_tokens": 1024},
+	}
+	var out bytes.Buffer
+
+	if err := c.InvokeStreaming(
+		t.Context(),
+		&qtypes.OpenAIChatRequest{Model: "anthropic/claude-3-5-sonnet"},
+		body,
+		&out,
+	); err != nil {
+		t.Fatalf("InvokeStreaming: %v", err)
+	}
+
+	if payload["model"] != "anthropic/claude-3.5-sonnet" {
+		t.Fatalf("model = %#v", payload["model"])
+	}
+	thinking, ok := payload["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking = %#v, want object", payload["thinking"])
+	}
+	if thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(1024) {
+		t.Fatalf("thinking = %#v", thinking)
+	}
+	if payload["top_k"] != float64(topK) {
+		t.Fatalf("top_k = %#v, want %d", payload["top_k"], topK)
+	}
+	stop, ok := payload["stop"].([]any)
+	if !ok || len(stop) != 1 || stop[0] != "END" {
+		t.Fatalf("stop = %#v", payload["stop"])
 	}
 }
 

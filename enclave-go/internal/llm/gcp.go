@@ -143,6 +143,10 @@ func (c *gcpClient) InvokeStreaming(
 		TopP             *float64                    `json:"top_p,omitempty"`
 		Tools            []qtypes.AnthropicTool      `json:"tools,omitempty"`
 		ToolChoice       *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
+		StopSequences    []string                    `json:"stop_sequences,omitempty"`
+		Thinking         any                         `json:"thinking,omitempty"`
+		TopK             *int                        `json:"top_k,omitempty"`
+		OutputConfig     any                         `json:"output_config,omitempty"`
 		Stream           bool                        `json:"stream"`
 	}{
 		AnthropicVersion: vertexAnthropicVersion,
@@ -150,13 +154,17 @@ func (c *gcpClient) InvokeStreaming(
 		// anthropicSystemField prefers SystemRaw (content blocks preserving
 		// cache_control) over the flattened string, so system prompt-cache
 		// breakpoints survive on the Vertex Anthropic route too.
-		System:      anthropicSystemField(body),
-		MaxTokens:   body.MaxTokens,
-		Temperature: body.Temperature,
-		TopP:        body.TopP,
-		Tools:       body.Tools,
-		ToolChoice:  body.ToolChoice,
-		Stream:      true,
+		System:        anthropicSystemField(body),
+		MaxTokens:     body.AnthropicDispatchMaxTokens(),
+		Temperature:   body.Temperature,
+		TopP:          body.TopP,
+		Tools:         body.Tools,
+		ToolChoice:    body.ToolChoice,
+		StopSequences: body.StopSequences,
+		Thinking:      body.Thinking,
+		TopK:          body.TopK,
+		OutputConfig:  body.OutputConfig,
+		Stream:        true,
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

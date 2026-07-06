@@ -449,6 +449,10 @@ func upstreamErrorResponse(err error) (int, string) {
 	if err == nil {
 		return 502, "provider error"
 	}
+	var aerr *adapter.AdapterError
+	if asAdapterErr(err, &aerr) {
+		return aerr.Status, aerr.Message
+	}
 	s := err.Error()
 	if i := strings.LastIndex(s, "http "); i >= 0 {
 		rest := s[i+len("http "):]

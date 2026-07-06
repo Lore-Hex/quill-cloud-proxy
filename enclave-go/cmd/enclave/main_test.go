@@ -814,6 +814,71 @@ func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
 	}
 }
 
+func TestServeOneResponsesRejectsUnsupportedNBeforeTrustedRouterAuthorization(t *testing.T) {
+	bearer := "test-user-bearer"
+	calls := map[string]int{}
+	var mu sync.Mutex
+	trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			mu.Lock()
+			calls[r.URL.Path]++
+			mu.Unlock()
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("unexpected control-plane call")),
+			}, nil
+		}),
+	})
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), &panicStreamingLLM{t: t}, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"openai/gpt-4o-mini","input":"private prompt","n":2,"max_output_tokens":32}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	var decoded struct {
+		Error struct {
+			Message string `json:"message"`
+			Param   string `json:"param"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(bodyBytes, &decoded); err != nil {
+		t.Fatalf("decode error response: %v body=%s", err, body)
+	}
+	if decoded.Error.Message != "n>1 is not supported" || decoded.Error.Param != "n" {
+		t.Fatalf("bad unsupported n error: %#v body=%s", decoded.Error, body)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 0 {
+		t.Fatalf("control-plane calls = %#v, want none", calls)
+	}
+}
+
 func TestServeOneResponsesImageInputSendsOnlyModalitiesToControlPlane(t *testing.T) {
 	bearer := "test-user-bearer"
 	privateImageURL := "https://example.com/private-image.png"
@@ -1028,6 +1093,71 @@ func TestServeOneChatNormalizesMaxCompletionTokens(t *testing.T) {
 	}
 	if !streamer.body.MaxTokensExplicit {
 		t.Fatal("provider MaxTokensExplicit = false, want true")
+	}
+}
+
+func TestServeOneRejectsUnsupportedNBeforeTrustedRouterAuthorization(t *testing.T) {
+	bearer := "test-user-bearer"
+	calls := map[string]int{}
+	var mu sync.Mutex
+	trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			mu.Lock()
+			calls[r.URL.Path]++
+			mu.Unlock()
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("unexpected control-plane call")),
+			}, nil
+		}),
+	})
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), &panicStreamingLLM{t: t}, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"n":2,"messages":[{"role":"user","content":"private prompt"}],"max_tokens":32}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	var decoded struct {
+		Error struct {
+			Message string `json:"message"`
+			Param   string `json:"param"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(bodyBytes, &decoded); err != nil {
+		t.Fatalf("decode error response: %v body=%s", err, body)
+	}
+	if decoded.Error.Message != "n>1 is not supported" || decoded.Error.Param != "n" {
+		t.Fatalf("bad unsupported n error: %#v body=%s", decoded.Error, body)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 0 {
+		t.Fatalf("control-plane calls = %#v, want none", calls)
 	}
 }
 
@@ -5993,6 +6123,70 @@ func TestReadRequestAcceptsAnthropicXAPIKey(t *testing.T) {
 	}
 	if string(body) != "{}" {
 		t.Fatalf("body = %q, want {}", body)
+	}
+}
+
+func TestServeOneMessagesRejectsUnsupportedNBeforeTrustedRouterAuthorization(t *testing.T) {
+	bearer := "test-user-bearer"
+	calls := map[string]int{}
+	var mu sync.Mutex
+	trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			mu.Lock()
+			calls[r.URL.Path]++
+			mu.Unlock()
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("unexpected control-plane call")),
+			}, nil
+		}),
+	})
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), serverConn, auth.New(nil), &panicStreamingLLM{t: t}, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{"model":"anthropic/claude-haiku-4.5","max_tokens":32,"n":2,"messages":[{"role":"user","content":"private prompt"}]}`)
+	_, err := fmt.Fprintf(
+		client,
+		"POST /v1/messages HTTP/1.1\r\nx-api-key: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	)
+	if err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	var decoded struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(bodyBytes, &decoded); err != nil {
+		t.Fatalf("decode error response: %v body=%s", err, body)
+	}
+	if decoded.Error.Message != "n>1 is not supported" {
+		t.Fatalf("bad unsupported n error: %#v body=%s", decoded.Error, body)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 0 {
+		t.Fatalf("control-plane calls = %#v, want none", calls)
 	}
 }
 

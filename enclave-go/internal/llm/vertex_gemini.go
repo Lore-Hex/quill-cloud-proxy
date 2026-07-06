@@ -199,6 +199,23 @@ func vertexGeminiPayload(
 	if req.TopP != nil {
 		generationConfig["topP"] = *req.TopP
 	}
+	if stops := req.StopSequences(); len(stops) > 0 {
+		generationConfig["stopSequences"] = stops
+	} else if body != nil && len(body.StopSequences) > 0 {
+		generationConfig["stopSequences"] = append([]string(nil), body.StopSequences...)
+	}
+	if req.FrequencyPenalty != nil {
+		generationConfig["frequencyPenalty"] = *req.FrequencyPenalty
+	}
+	if req.PresencePenalty != nil {
+		generationConfig["presencePenalty"] = *req.PresencePenalty
+	}
+	if req.Seed != nil {
+		generationConfig["seed"] = *req.Seed
+	}
+	if body != nil && body.TopK != nil {
+		generationConfig["topK"] = *body.TopK
+	}
 	if vertexGeminiImageModel(modelID) {
 		generationConfig["responseModalities"] = []string{"TEXT", "IMAGE"}
 		generationConfig["candidateCount"] = 1

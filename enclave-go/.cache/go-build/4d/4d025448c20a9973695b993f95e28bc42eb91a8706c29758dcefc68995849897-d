@@ -1,0 +1,11 @@
+./byok.go
+./embeddings.go
+./http_client.go
+./http_client_aws.go
+./iface.go
+./multimodal.go
+./multimodal_aws.go
+./openai_compatible_client.go
+./peercred_other.go
+./stream_translate.go
+./tinfoil_attest.go

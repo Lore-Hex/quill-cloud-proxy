@@ -10,6 +10,7 @@ import (
 )
 
 func TestMessagesToAnthropicValidatesAndPreservesNativeShape(t *testing.T) {
+	topK := 40
 	req := &AnthropicNativeRequest{
 		Model: "anthropic/claude-haiku-4.5",
 		Messages: []types.AnthropicMessage{
@@ -26,6 +27,7 @@ func TestMessagesToAnthropicValidatesAndPreservesNativeShape(t *testing.T) {
 		}},
 		MaxTokens:     128,
 		StopSequences: []string{"END"},
+		TopK:          &topK,
 	}
 	out, err := MessagesToAnthropic(req)
 	if err != nil {
@@ -42,6 +44,9 @@ func TestMessagesToAnthropicValidatesAndPreservesNativeShape(t *testing.T) {
 	}
 	if len(out.StopSequences) != 1 || out.StopSequences[0] != "END" {
 		t.Fatalf("stop_sequences = %#v", out.StopSequences)
+	}
+	if out.TopK == nil || *out.TopK != 40 {
+		t.Fatalf("top_k = %#v, want 40", out.TopK)
 	}
 	// Content blocks must be byte-identical pass-through (cache_control intact).
 	blocks := out.Messages[0].Content.([]any)

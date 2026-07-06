@@ -186,6 +186,14 @@ type OpenAIChatRequest struct {
 	MaxTokens           *int                 `json:"max_tokens,omitempty"`
 	MaxCompletionTokens *int                 `json:"max_completion_tokens,omitempty"`
 	MaxOutputTokens     *int                 `json:"max_output_tokens,omitempty"`
+	Stop                any                  `json:"stop,omitempty"` // string | []string
+	Seed                *int                 `json:"seed,omitempty"`
+	FrequencyPenalty    *float64             `json:"frequency_penalty,omitempty"`
+	PresencePenalty     *float64             `json:"presence_penalty,omitempty"`
+	N                   *int                 `json:"n,omitempty"`
+	LogitBias           map[string]float64   `json:"logit_bias,omitempty"`
+	Logprobs            *bool                `json:"logprobs,omitempty"`
+	TopLogprobs         *int                 `json:"top_logprobs,omitempty"`
 	Reasoning           any                  `json:"reasoning,omitempty"`
 	ReasoningEffort     string               `json:"reasoning_effort,omitempty"`
 	Provider            *ProviderRouting     `json:"provider,omitempty"`
@@ -220,6 +228,32 @@ func (r *OpenAIChatRequest) NormalizeMaxTokens() {
 	}
 	if r.MaxOutputTokens != nil {
 		r.MaxTokens = r.MaxOutputTokens
+	}
+}
+
+// StopSequences normalizes OpenAI's chat-completions stop value into the
+// provider shapes that require []string. Non-string array members are ignored.
+func (r *OpenAIChatRequest) StopSequences() []string {
+	if r == nil {
+		return nil
+	}
+	switch stop := r.Stop.(type) {
+	case nil:
+		return nil
+	case string:
+		return []string{stop}
+	case []string:
+		return append([]string(nil), stop...)
+	case []any:
+		var out []string
+		for _, item := range stop {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 
@@ -287,6 +321,7 @@ type OpenAIResponsesRequest struct {
 	Include              []string         `json:"include,omitempty"`
 	MaxToolCalls         *int             `json:"max_tool_calls,omitempty"`
 	Modalities           []string         `json:"modalities,omitempty"`
+	N                    *int             `json:"n,omitempty"`
 	ParallelToolCalls    *bool            `json:"parallel_tool_calls,omitempty"`
 	PreviousResponseID   string           `json:"previous_response_id,omitempty"`
 	Prompt               any              `json:"prompt,omitempty"`
@@ -403,6 +438,7 @@ type AnthropicMessagesRequest struct {
 	ToolChoice       *AnthropicToolChoice `json:"tool_choice,omitempty"`
 	StopSequences    []string             `json:"stop_sequences,omitempty"`
 	Thinking         any                  `json:"thinking,omitempty"`
+	TopK             *int                 `json:"top_k,omitempty"`
 	// OutputConfig carries the newer Anthropic effort control
 	// (e.g. {"effort":"xhigh"}). opus-4.7+ rejects the legacy
 	// thinking.type=enabled+budget_tokens form and requires
@@ -434,6 +470,18 @@ type AnthropicMessagesRequest struct {
 	// path OMITS max_tokens entirely unless the client asked for one.
 	// json:"-" keeps the Anthropic/Bedrock wire bodies byte-identical.
 	MaxTokensExplicit bool `json:"-"`
+
+	// AnthropicMaxTokens is an Anthropic-only wire override used when native
+	// thinking needs max_tokens to exceed the thinking budget. Shared downstreams
+	// such as OpenAI-compatible and Gemini must continue reading MaxTokens above.
+	AnthropicMaxTokens int `json:"-"`
+}
+
+func (r AnthropicMessagesRequest) AnthropicDispatchMaxTokens() int {
+	if r.AnthropicMaxTokens > 0 {
+		return r.AnthropicMaxTokens
+	}
+	return r.MaxTokens
 }
 
 // MarshalJSON emits the `system` field from SystemRaw when it is set (native
@@ -451,6 +499,7 @@ func (r AnthropicMessagesRequest) MarshalJSON() ([]byte, error) {
 		System any `json:"system,omitempty"` // shadows alias.System (shallower wins)
 	}{alias: alias(r)}
 	shadow.alias.System = ""
+	shadow.alias.MaxTokens = r.AnthropicDispatchMaxTokens()
 	switch {
 	case r.SystemRaw != nil:
 		shadow.System = r.SystemRaw

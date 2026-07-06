@@ -192,6 +192,132 @@ func TestToAnthropicUsesNormalizedMaxTokenAliases(t *testing.T) {
 	}
 }
 
+func TestToAnthropicMapsStopSequences(t *testing.T) {
+	tests := []struct {
+		name string
+		stop any
+		want []string
+	}{
+		{name: "string", stop: "END", want: []string{"END"}},
+		{name: "array", stop: []any{"A", "B"}, want: []string{"A", "B"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ToAnthropic(&types.OpenAIChatRequest{
+				Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hi"}},
+				Stop:     tt.stop,
+			}, "model-ignored")
+			if err != nil {
+				t.Fatalf("ToAnthropic: %v", err)
+			}
+			if !equalStrings(got.StopSequences, tt.want) {
+				t.Fatalf("StopSequences = %#v, want %#v", got.StopSequences, tt.want)
+			}
+		})
+	}
+}
+
+func TestToAnthropicMapsReasoningEffortToThinking(t *testing.T) {
+	maxTokens := 9000
+	got, err := ToAnthropic(&types.OpenAIChatRequest{
+		Messages:        []types.OpenAIChatMessage{{Role: "user", Content: "think"}},
+		MaxTokens:       &maxTokens,
+		ReasoningEffort: "high",
+	}, "model-ignored")
+	if err != nil {
+		t.Fatalf("ToAnthropic: %v", err)
+	}
+	thinking, ok := got.Thinking.(map[string]any)
+	if !ok {
+		t.Fatalf("Thinking = %#v, want map", got.Thinking)
+	}
+	if thinking["type"] != "enabled" {
+		t.Fatalf("thinking.type = %#v, want enabled", thinking["type"])
+	}
+	budget, ok := thinking["budget_tokens"].(int)
+	if !ok {
+		t.Fatalf("budget_tokens = %#v, want int", thinking["budget_tokens"])
+	}
+	if budget <= 0 || budget >= got.MaxTokens {
+		t.Fatalf("budget_tokens = %d, MaxTokens = %d; want budget < MaxTokens", budget, got.MaxTokens)
+	}
+
+	noThinking, err := ToAnthropic(&types.OpenAIChatRequest{
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "no reasoning"}},
+	}, "model-ignored")
+	if err != nil {
+		t.Fatalf("ToAnthropic without reasoning: %v", err)
+	}
+	if noThinking.Thinking != nil {
+		t.Fatalf("Thinking = %#v, want nil", noThinking.Thinking)
+	}
+}
+
+func TestToAnthropicThinkingMaxTokensAreAnthropicOnly(t *testing.T) {
+	maxTokens := 100
+	got, err := ToAnthropic(&types.OpenAIChatRequest{
+		Messages:        []types.OpenAIChatMessage{{Role: "user", Content: "think"}},
+		MaxTokens:       &maxTokens,
+		ReasoningEffort: "high",
+	}, "model-ignored")
+	if err != nil {
+		t.Fatalf("ToAnthropic: %v", err)
+	}
+	if got.MaxTokens != maxTokens {
+		t.Fatalf("shared MaxTokens = %d, want %d", got.MaxTokens, maxTokens)
+	}
+	if got.AnthropicDispatchMaxTokens() != 8292 {
+		t.Fatalf("AnthropicDispatchMaxTokens = %d, want 8292", got.AnthropicDispatchMaxTokens())
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal Anthropic body: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal Anthropic body: %v", err)
+	}
+	if int(payload["max_tokens"].(float64)) != 8292 {
+		t.Fatalf("wire max_tokens = %#v, want 8292; payload=%s", payload["max_tokens"], encoded)
+	}
+}
+
+func TestRejectUnsupportedNGlobally(t *testing.T) {
+	n := 2
+	req := &types.OpenAIChatRequest{
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hi"}},
+		N:        &n,
+	}
+	for _, tc := range []struct {
+		name     string
+		provider string
+		model    string
+	}{
+		{name: "anthropic", provider: "anthropic", model: "anthropic/claude-haiku-4.5"},
+		{name: "openai-compatible", provider: "openai", model: "openai/gpt-4o-mini"},
+		{name: "gemini", provider: "gemini", model: "google/gemini-2.5-flash"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := RejectUnsupportedNForProvider(req, tc.provider, tc.model)
+			aerr, ok := err.(*AdapterError)
+			if !ok {
+				t.Fatalf("error = %T %v, want *AdapterError", err, err)
+			}
+			if aerr.Status != 400 || aerr.Message != "n>1 is not supported" || aerr.Context != "n" {
+				t.Fatalf("AdapterError = %#v", aerr)
+			}
+		})
+	}
+	if _, err := ToAnthropic(req, "model-ignored"); err == nil {
+		t.Fatal("ToAnthropic accepted n>1")
+	}
+
+	one := 1
+	if err := RejectUnsupportedN(&types.OpenAIChatRequest{N: &one}); err != nil {
+		t.Fatalf("n=1 rejected: %v", err)
+	}
+}
+
 func TestToAnthropicConvertsOpenAIToolMessages(t *testing.T) {
 	got, err := ToAnthropic(&types.OpenAIChatRequest{
 		Messages: []types.OpenAIChatMessage{
@@ -1354,4 +1480,16 @@ func TestCollectAnthropicTextCapturesUsage(t *testing.T) {
 	if result.Text != "Hello" {
 		t.Fatalf("text = %q, want Hello", result.Text)
 	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -82,6 +82,29 @@ func TestOpenAIChatRequestNormalizeMaxTokens(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatRequestStopSequences(t *testing.T) {
+	tests := []struct {
+		name string
+		stop any
+		want []string
+	}{
+		{name: "nil", stop: nil, want: nil},
+		{name: "string", stop: "END", want: []string{"END"}},
+		{name: "strings", stop: []string{"A", "B"}, want: []string{"A", "B"}},
+		{name: "any strings only", stop: []any{"A", float64(1), "B", nil}, want: []string{"A", "B"}},
+		{name: "unsupported", stop: float64(1), want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &OpenAIChatRequest{Stop: tt.stop}
+			if got := req.StopSequences(); !equalStrings(got, tt.want) {
+				t.Fatalf("StopSequences() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

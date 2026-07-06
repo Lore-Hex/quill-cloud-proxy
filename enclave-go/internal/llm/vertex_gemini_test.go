@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -92,6 +93,76 @@ func TestVertexGeminiPrepaidUsesVertexGenerateContent(t *testing.T) {
 	parts := contents[0].(map[string]any)["parts"].([]any)
 	if parts[0].(map[string]any)["text"] != "Reply PONG" {
 		t.Fatalf("parts = %#v", parts)
+	}
+}
+
+func TestVertexGeminiPayloadGenerationConfigInboundParams(t *testing.T) {
+	seed := 11
+	frequencyPenalty := 0.25
+	presencePenalty := 0.75
+	n := 3
+	topK := 17
+	req := &qtypes.OpenAIChatRequest{
+		Model:            "google/gemini-3.1-pro-preview",
+		Messages:         []qtypes.OpenAIChatMessage{{Role: "user", Content: "hi"}},
+		Stop:             []any{"END", "DONE"},
+		Seed:             &seed,
+		FrequencyPenalty: &frequencyPenalty,
+		PresencePenalty:  &presencePenalty,
+		N:                &n,
+	}
+	body := &qtypes.AnthropicMessagesRequest{MaxTokens: 128, TopK: &topK}
+	payload, err := vertexGeminiPayload(t.Context(), req, body, "gemini-3.1-pro-preview")
+	if err != nil {
+		t.Fatalf("vertexGeminiPayload: %v", err)
+	}
+	config := payload["generationConfig"].(map[string]any)
+	stops := config["stopSequences"].([]string)
+	if len(stops) != 2 || stops[0] != "END" || stops[1] != "DONE" {
+		t.Fatalf("stopSequences = %#v", config["stopSequences"])
+	}
+	if config["seed"] != seed {
+		t.Fatalf("seed = %#v, want %d", config["seed"], seed)
+	}
+	if config["frequencyPenalty"] != frequencyPenalty {
+		t.Fatalf("frequencyPenalty = %#v", config["frequencyPenalty"])
+	}
+	if config["presencePenalty"] != presencePenalty {
+		t.Fatalf("presencePenalty = %#v", config["presencePenalty"])
+	}
+	if _, ok := config["candidateCount"]; ok {
+		t.Fatalf("candidateCount forwarded from n=%d: %#v", n, config["candidateCount"])
+	}
+	if config["topK"] != topK {
+		t.Fatalf("topK = %#v, want %d", config["topK"], topK)
+	}
+}
+
+func TestVertexGeminiNativeMessagesThinkingProducesThinkingConfig(t *testing.T) {
+	native := &adapter.AnthropicNativeRequest{
+		Model:     "google/gemini-2.5-pro",
+		MaxTokens: 512,
+		Messages: []qtypes.AnthropicMessage{
+			{Role: "user", Content: "solve carefully"},
+		},
+		Thinking: map[string]any{"type": "enabled", "budget_tokens": 4096},
+	}
+	req := adapter.MessagesToChatShim(native)
+	body, err := adapter.MessagesToAnthropic(native)
+	if err != nil {
+		t.Fatalf("MessagesToAnthropic: %v", err)
+	}
+	payload, err := vertexGeminiPayload(t.Context(), req, body, "gemini-2.5-pro")
+	if err != nil {
+		t.Fatalf("vertexGeminiPayload: %v", err)
+	}
+	config := payload["generationConfig"].(map[string]any)
+	thinking, ok := config["thinkingConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinkingConfig missing from native /messages Gemini payload: %#v", config)
+	}
+	if thinking["thinkingBudget"] != 4096 {
+		t.Fatalf("thinkingBudget = %#v, want 4096", thinking["thinkingBudget"])
 	}
 }
 

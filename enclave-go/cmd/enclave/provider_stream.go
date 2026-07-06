@@ -48,6 +48,20 @@ func invokeProviderStream(
 		}
 		selectedRoute.RecordCandidateAttempt(option)
 		req.Model = option.Model
+		if err := adapter.RejectUnsupportedN(req); err != nil {
+			lastErr = withInvokeAttemptError(err, option)
+			fmt.Fprintf(os.Stderr,
+				"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
+				requestLogID, requestID, i+1, i, time.Since(overallStart).Milliseconds(), errorClass(err),
+			)
+			if trEnabled {
+				_ = pw.CloseWithError(lastErr)
+				return
+			}
+			emitErrorAsAnthropicSSE(pw, err)
+			_ = pw.Close()
+			return
+		}
 		// The TTFB budget exists to fall over to the next candidate fast; the LAST
 		// candidate has nothing to fall over to, so give it a longer budget for slow
 		// reasoning first bytes.
@@ -479,6 +493,10 @@ func (w *routeSelectingWriter) BytesWritten() int {
 // cancellation, and TTFB-budget cancellation are handled by the caller's
 // bytes-written / context checks, not here.)
 func retryableInvokeError(err error) bool {
+	var aerr *adapter.AdapterError
+	if asAdapterErr(err, &aerr) {
+		return false
+	}
 	return err != nil
 }
 

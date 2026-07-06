@@ -1,6 +1,12 @@
 package llm
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
+	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+)
 
 func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 	for _, provider := range []string{
@@ -41,6 +47,138 @@ func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 	}
 	if isOpenAICompatibleBYOKProvider("anthropic") {
 		t.Fatal("anthropic should use the native BYOK adapter")
+	}
+}
+
+func TestBuildOpenAICompatibleRequestCarriesInboundParams(t *testing.T) {
+	seed := 7
+	frequencyPenalty := 0.4
+	presencePenalty := 0.8
+	topK := 32
+	n := 3
+	logprobs := true
+	topLogprobs := 2
+	thinking := map[string]any{"type": "enabled", "budget_tokens": 1024}
+	req := &qtypes.OpenAIChatRequest{
+		Seed:             &seed,
+		FrequencyPenalty: &frequencyPenalty,
+		PresencePenalty:  &presencePenalty,
+		N:                &n,
+		LogitBias:        map[string]float64{"42": -1.5},
+		Logprobs:         &logprobs,
+		TopLogprobs:      &topLogprobs,
+		Stop:             []string{"END"},
+	}
+	body := &qtypes.AnthropicMessagesRequest{
+		MaxTokens:         123,
+		MaxTokensExplicit: true,
+		TopK:              &topK,
+		Thinking:          thinking,
+	}
+	got := buildOpenAICompatibleRequest(
+		"openai",
+		"gpt-4o-mini",
+		req,
+		body,
+		[]chatMessage{{Role: "user", Content: "hi"}},
+	)
+	if got.Seed == nil || *got.Seed != seed {
+		t.Fatalf("seed = %#v, want %d", got.Seed, seed)
+	}
+	if got.FrequencyPenalty == nil || *got.FrequencyPenalty != frequencyPenalty {
+		t.Fatalf("frequency_penalty = %#v", got.FrequencyPenalty)
+	}
+	if got.PresencePenalty == nil || *got.PresencePenalty != presencePenalty {
+		t.Fatalf("presence_penalty = %#v", got.PresencePenalty)
+	}
+	if got.TopK == nil || *got.TopK != topK {
+		t.Fatalf("top_k = %#v, want %d", got.TopK, topK)
+	}
+	if got.Thinking == nil {
+		t.Fatal("thinking was not forwarded")
+	}
+	if got.LogitBias["42"] != -1.5 {
+		t.Fatalf("logit_bias = %#v", got.LogitBias)
+	}
+	stop, ok := got.Stop.([]string)
+	if !ok || len(stop) != 1 || stop[0] != "END" {
+		t.Fatalf("stop = %#v", got.Stop)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	for _, key := range []string{"n", "logprobs", "top_logprobs"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("%s present in payload: %s", key, encoded)
+		}
+	}
+}
+
+func TestBuildOpenAICompatibleRequestOmitsAbsentInboundParams(t *testing.T) {
+	got := buildOpenAICompatibleRequest(
+		"openai",
+		"gpt-4o-mini",
+		&qtypes.OpenAIChatRequest{},
+		&qtypes.AnthropicMessagesRequest{},
+		nil,
+	)
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	for _, key := range []string{
+		"seed",
+		"frequency_penalty",
+		"presence_penalty",
+		"logit_bias",
+		"logprobs",
+		"top_logprobs",
+		"n",
+		"stop",
+		"top_k",
+		"thinking",
+	} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("%s present in payload: %s", key, encoded)
+		}
+	}
+}
+
+func TestBuildOpenAICompatibleRequestUsesSharedMaxTokensNotAnthropicThinkingBump(t *testing.T) {
+	maxTokens := 100
+	req := &qtypes.OpenAIChatRequest{
+		Messages:        []qtypes.OpenAIChatMessage{{Role: "user", Content: "think"}},
+		MaxTokens:       &maxTokens,
+		ReasoningEffort: "high",
+	}
+	body, err := adapter.ToAnthropic(req, "model-ignored")
+	if err != nil {
+		t.Fatalf("ToAnthropic: %v", err)
+	}
+	if body.MaxTokens != maxTokens {
+		t.Fatalf("shared MaxTokens = %d, want %d", body.MaxTokens, maxTokens)
+	}
+	if body.AnthropicDispatchMaxTokens() <= body.MaxTokens {
+		t.Fatalf("AnthropicDispatchMaxTokens = %d, shared MaxTokens = %d", body.AnthropicDispatchMaxTokens(), body.MaxTokens)
+	}
+	got := buildOpenAICompatibleRequest(
+		"openai",
+		"gpt-4o-mini",
+		req,
+		body,
+		[]chatMessage{{Role: "user", Content: "think"}},
+	)
+	if got.MaxTokens != maxTokens {
+		t.Fatalf("OpenAI-compatible max_tokens = %d, want %d", got.MaxTokens, maxTokens)
 	}
 }
 
