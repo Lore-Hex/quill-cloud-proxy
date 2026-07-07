@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -65,7 +64,7 @@ func TestMapOpenAIFinishReason(t *testing.T) {
 		"stop":           "end_turn",
 		"length":         "max_tokens",
 		"tool_calls":     "tool_use",
-		"content_filter": "end_turn",
+		"content_filter": qtypes.SyntheticStopReasonContentFilter,
 		"weird":          "end_turn",
 		"":               "end_turn",
 	}
@@ -91,36 +90,38 @@ func TestUnknownModelRejected(t *testing.T) {
 
 func TestOpenRouterModelsArrayFallbackAndProviderRouting(t *testing.T) {
 	var requests []map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read request body: %v", err)
-		}
-		var payload map[string]any
-		if err := json.Unmarshal(body, &payload); err != nil {
-			t.Fatalf("decode request body: %v", err)
-		}
-		requests = append(requests, payload)
-		if len(requests) == 1 {
-			http.Error(w, `{"error":{"message":"busy"}}`, http.StatusTooManyRequests)
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(strings.Join([]string{
-			`data: {"id":"x","choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`,
-			``,
-			`data: {"id":"x","choices":[{"delta":{},"finish_reason":"stop"}]}`,
-			``,
-			`data: [DONE]`,
-			``,
-		}, "\n")))
-	}))
-	defer server.Close()
-
 	c := &openRouterClient{
-		apiKey:    "test",
-		httpc:     server.Client(),
-		baseURL:   server.URL,
+		apiKey: "test",
+		httpc: &http.Client{Transport: openRouterRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, err
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				return nil, err
+			}
+			requests = append(requests, payload)
+			if len(requests) == 1 {
+				return &http.Response{
+					StatusCode: http.StatusTooManyRequests,
+					Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"busy"}}`)),
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+					`data: {"id":"x","choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`,
+					``,
+					`data: {"id":"x","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+					``,
+					`data: [DONE]`,
+					``,
+				}, "\n"))),
+			}, nil
+		})},
+		baseURL:   "https://openrouter.test",
 		providers: []string{"google-vertex", "anthropic"},
 	}
 	allowFallbacks := true
@@ -265,6 +266,7 @@ func TestOpenRouterRequestCarriesAnthropicThinking(t *testing.T) {
 		StopSequences: []string{"END"},
 		TopK:          &topK,
 		Thinking:      map[string]any{"type": "enabled", "budget_tokens": 1024},
+		Metadata:      map[string]any{"user_id": "user-123"},
 	}
 	var out bytes.Buffer
 
@@ -290,22 +292,92 @@ func TestOpenRouterRequestCarriesAnthropicThinking(t *testing.T) {
 	if payload["top_k"] != float64(topK) {
 		t.Fatalf("top_k = %#v, want %d", payload["top_k"], topK)
 	}
+	metadata, ok := payload["metadata"].(map[string]any)
+	if !ok || metadata["user_id"] != "user-123" {
+		t.Fatalf("metadata = %#v, want user_id", payload["metadata"])
+	}
 	stop, ok := payload["stop"].([]any)
 	if !ok || len(stop) != 1 || stop[0] != "END" {
 		t.Fatalf("stop = %#v", payload["stop"])
+	}
+	if _, ok := payload["max_tokens"]; ok {
+		t.Fatalf("max_tokens present despite MaxTokensExplicit=false: %#v", payload["max_tokens"])
+	}
+}
+
+func TestOpenRouterAnthropicTemperatureGuard(t *testing.T) {
+	invoke := func(t *testing.T, model string, temp float64) map[string]any {
+		t.Helper()
+		var payload map[string]any
+		c := &openRouterClient{
+			apiKey:  "test",
+			baseURL: "https://openrouter.test",
+			httpc: &http.Client{Transport: openRouterRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					return nil, err
+				}
+				if err := json.Unmarshal(body, &payload); err != nil {
+					return nil, err
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+						`data: {"id":"x","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+						``,
+						`data: [DONE]`,
+						``,
+					}, "\n"))),
+				}, nil
+			})},
+		}
+		body := &qtypes.AnthropicMessagesRequest{
+			Messages:    []qtypes.AnthropicMessage{{Role: "user", Content: "hello"}},
+			MaxTokens:   8,
+			Temperature: &temp,
+		}
+		if err := c.InvokeStreaming(t.Context(), &qtypes.OpenAIChatRequest{Model: model}, body, &bytes.Buffer{}); err != nil {
+			t.Fatalf("InvokeStreaming: %v", err)
+		}
+		return payload
+	}
+
+	payload := invoke(t, "anthropic/claude-3-5-sonnet", 1.8)
+	if payload["model"] != "anthropic/claude-3.5-sonnet" {
+		t.Fatalf("model = %#v", payload["model"])
+	}
+	if payload["temperature"] != 1.0 {
+		t.Fatalf("temperature = %#v, want clamped 1.0", payload["temperature"])
+	}
+
+	for _, model := range []string{
+		"anthropic/claude-opus-4.7",
+		"anthropic/claude-opus-4.7:floor",
+		"anthropic/claude-opus-4.7:extended",
+		"anthropic/claude-opus-4.8:nitro",
+	} {
+		opusPayload := invoke(t, model, 0.5)
+		if _, ok := opusPayload["temperature"]; ok {
+			t.Fatalf("opus temperature present for %s: %#v", model, opusPayload["temperature"])
+		}
 	}
 }
 
 func TestOpenRouterAllowFallbacksFalseStopsAtFirstModel(t *testing.T) {
 	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls++
-		http.Error(w, `{"error":{"message":"busy"}}`, http.StatusTooManyRequests)
-	}))
-	defer server.Close()
-
 	allowFallbacks := false
-	c := &openRouterClient{apiKey: "test", httpc: server.Client(), baseURL: server.URL}
+	c := &openRouterClient{
+		apiKey:  "test",
+		baseURL: "https://openrouter.test",
+		httpc: &http.Client{Transport: openRouterRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"busy"}}`)),
+			}, nil
+		})},
+	}
 	err := c.InvokeStreaming(
 		t.Context(),
 		&qtypes.OpenAIChatRequest{

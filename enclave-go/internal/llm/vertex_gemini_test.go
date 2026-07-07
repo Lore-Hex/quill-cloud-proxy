@@ -334,6 +334,35 @@ func TestVertexGeminiResponseFormatBecomesResponseSchema(t *testing.T) {
 	}
 }
 
+func TestMapGeminiFinishReasonReturnsAnthropicStopReasons(t *testing.T) {
+	cases := map[string]string{
+		"STOP":                     "end_turn",
+		"MAX_TOKENS":               "max_tokens",
+		"RECITATION":               "max_tokens",
+		"SAFETY":                   qtypes.SyntheticStopReasonContentFilter,
+		"BLOCKLIST":                qtypes.SyntheticStopReasonContentFilter,
+		"PROHIBITED_CONTENT":       qtypes.SyntheticStopReasonContentFilter,
+		"SPII":                     qtypes.SyntheticStopReasonContentFilter,
+		"IMAGE_SAFETY":             qtypes.SyntheticStopReasonContentFilter,
+		"IMAGE_BLOCKLIST":          qtypes.SyntheticStopReasonContentFilter,
+		"IMAGE_PROHIBITED_CONTENT": qtypes.SyntheticStopReasonContentFilter,
+		"IMAGE_SPII":               qtypes.SyntheticStopReasonContentFilter,
+		"IMAGE_SAFETY_FILTER":      qtypes.SyntheticStopReasonContentFilter,
+		"IMAGE_RECITATION":         "max_tokens",
+		"IMAGE_RECITATION_POLICY":  "max_tokens",
+		"IMAGE_OTHER":              "end_turn",
+	}
+	for in, want := range cases {
+		got := mapGeminiFinishReason(in)
+		if got != want {
+			t.Fatalf("mapGeminiFinishReason(%q) = %q, want %q", in, got, want)
+		}
+		if got == "length" || got == "content_filter" {
+			t.Fatalf("mapGeminiFinishReason(%q) leaked OpenAI vocabulary %q", in, got)
+		}
+	}
+}
+
 func mustJSON(t *testing.T, value any) []byte {
 	t.Helper()
 	body, err := json.Marshal(value)

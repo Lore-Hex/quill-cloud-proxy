@@ -192,6 +192,43 @@ func TestToAnthropicUsesNormalizedMaxTokenAliases(t *testing.T) {
 	}
 }
 
+func TestToAnthropicNarrowsMetadataToAnthropicUserID(t *testing.T) {
+	got, err := ToAnthropic(&types.OpenAIChatRequest{
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hi"}},
+		Metadata: map[string]any{
+			"user_id":      "user-123",
+			"internal_tag": "x",
+			"foo":          42,
+		},
+	}, "model-ignored")
+	if err != nil {
+		t.Fatalf("ToAnthropic: %v", err)
+	}
+	if len(got.Metadata) != 1 || got.Metadata["user_id"] != "user-123" {
+		t.Fatalf("Metadata = %#v, want only user_id", got.Metadata)
+	}
+	if _, ok := got.Metadata["internal_tag"]; ok {
+		t.Fatalf("Metadata leaked internal_tag: %#v", got.Metadata)
+	}
+	if _, ok := got.Metadata["foo"]; ok {
+		t.Fatalf("Metadata leaked foo: %#v", got.Metadata)
+	}
+
+	noUserID, err := ToAnthropic(&types.OpenAIChatRequest{
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hi"}},
+		Metadata: map[string]any{
+			"internal_tag": "x",
+			"foo":          42,
+		},
+	}, "model-ignored")
+	if err != nil {
+		t.Fatalf("ToAnthropic without user_id: %v", err)
+	}
+	if noUserID.Metadata != nil {
+		t.Fatalf("Metadata = %#v, want nil without user_id", noUserID.Metadata)
+	}
+}
+
 func TestToAnthropicMapsStopSequences(t *testing.T) {
 	tests := []struct {
 		name string
@@ -440,6 +477,23 @@ data: {"type":"message_stop"}
 	}
 	if lastFinishReason != "stop" {
 		t.Errorf("finish_reason mismatch: got %v, want %q", lastFinishReason, "stop")
+	}
+}
+
+func TestMapStopReasonPreservesFilterAndLengthMarkers(t *testing.T) {
+	cases := map[string]string{
+		"end_turn":                             "stop",
+		"stop_sequence":                        "stop",
+		"max_tokens":                           "length",
+		"length":                               "length",
+		"content_filter":                       "content_filter",
+		types.SyntheticStopReasonContentFilter: "content_filter",
+		"tool_use":                             "tool_calls",
+	}
+	for in, want := range cases {
+		if got := mapStopReason(in); got != want {
+			t.Fatalf("mapStopReason(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

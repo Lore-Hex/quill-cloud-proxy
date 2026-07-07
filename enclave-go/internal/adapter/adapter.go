@@ -103,6 +103,7 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 		Temperature:       req.Temperature,
 		TopP:              req.TopP,
 		StopSequences:     req.StopSequences(),
+		Metadata:          anthropicUserIDMetadata(req.Metadata),
 	}
 	if thinking := anthropicThinkingFromChat(req, out.MaxTokens); thinking != nil {
 		out.Thinking = thinking
@@ -136,6 +137,14 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 	out.ToolChoice = toolChoice
 	_ = defaultModel // model is only used for response chunks, not the body
 	return out, nil
+}
+
+func anthropicUserIDMetadata(m map[string]any) map[string]any {
+	v, ok := m["user_id"].(string)
+	if !ok || v == "" {
+		return nil
+	}
+	return map[string]any{"user_id": v}
 }
 
 func anthropicThinkingFromChat(req *types.OpenAIChatRequest, maxTokens int) any {
@@ -1041,8 +1050,10 @@ func mapStopReason(reason string) string {
 	switch reason {
 	case "end_turn", "stop_sequence":
 		return "stop"
-	case "max_tokens":
+	case "max_tokens", "length":
 		return "length"
+	case types.SyntheticStopReasonContentFilter, "content_filter":
+		return "content_filter"
 	case "tool_use":
 		return "tool_calls"
 	default:

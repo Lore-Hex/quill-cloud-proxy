@@ -93,6 +93,21 @@ func TestTranslateOpenAIStreamNoUsageOmitsUsage(t *testing.T) {
 	}
 }
 
+func TestTranslateOpenAIStreamMapsContentFilterToInternalStopReason(t *testing.T) {
+	upstream := strings.Join([]string{
+		`data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	var out bytes.Buffer
+	if err := translateOpenAIStreamToAnthropic(strings.NewReader(upstream), &out); err != nil {
+		t.Fatalf("translateOpenAIStreamToAnthropic: %v", err)
+	}
+	if !strings.Contains(out.String(), `"stop_reason":"`+qtypes.SyntheticStopReasonContentFilter+`"`) {
+		t.Fatalf("content_filter marker not mapped: %s", out.String())
+	}
+}
+
 func TestTranslateOpenAIStreamPreservesReasoningContentAsThinking(t *testing.T) {
 	upstream := strings.Join([]string{
 		`data: {"choices":[{"delta":{"reasoning_content":"think first"},"finish_reason":null}]}`,

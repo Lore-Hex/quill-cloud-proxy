@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 type upstreamHTTPError struct {
@@ -317,7 +319,7 @@ func mapOpenAIFinishReason(reason string) string {
 	case "tool_calls":
 		return "tool_use"
 	case "content_filter":
-		return "end_turn"
+		return qtypes.SyntheticStopReasonContentFilter
 	default:
 		return "end_turn"
 	}

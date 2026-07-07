@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+// SyntheticStopReasonContentFilter is the Anthropic-valid stop_reason used
+// internally for upstream safety/content-filter stops. OpenAI-facing adapters
+// translate it back to finish_reason=content_filter.
+const SyntheticStopReasonContentFilter = "refusal"
+
 // DeviceConfig is one entry in the sealed device-key blob.
 type DeviceConfig struct {
 	KeyHash  string `json:"key_hash"`  // hex sha256 of the bearer
@@ -438,6 +443,7 @@ type AnthropicMessagesRequest struct {
 	ToolChoice       *AnthropicToolChoice `json:"tool_choice,omitempty"`
 	StopSequences    []string             `json:"stop_sequences,omitempty"`
 	Thinking         any                  `json:"thinking,omitempty"`
+	Metadata         map[string]any       `json:"metadata,omitempty"`
 	TopK             *int                 `json:"top_k,omitempty"`
 	// OutputConfig carries the newer Anthropic effort control
 	// (e.g. {"effort":"xhigh"}). opus-4.7+ rejects the legacy

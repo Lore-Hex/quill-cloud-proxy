@@ -28,6 +28,7 @@ func TestMessagesToAnthropicValidatesAndPreservesNativeShape(t *testing.T) {
 		MaxTokens:     128,
 		StopSequences: []string{"END"},
 		TopK:          &topK,
+		Metadata:      map[string]any{"user_id": "user-123"},
 	}
 	out, err := MessagesToAnthropic(req)
 	if err != nil {
@@ -47,6 +48,9 @@ func TestMessagesToAnthropicValidatesAndPreservesNativeShape(t *testing.T) {
 	}
 	if out.TopK == nil || *out.TopK != 40 {
 		t.Fatalf("top_k = %#v, want 40", out.TopK)
+	}
+	if out.Metadata["user_id"] != "user-123" {
+		t.Fatalf("metadata = %#v, want user_id", out.Metadata)
 	}
 	// Content blocks must be byte-identical pass-through (cache_control intact).
 	blocks := out.Messages[0].Content.([]any)
@@ -341,4 +345,101 @@ func TestRelayAnthropicStreamSynthesizesFramingAndRemapsIndexes(t *testing.T) {
 	if result.FinishReason != "tool_calls" {
 		t.Fatalf("finish = %q", result.FinishReason)
 	}
+}
+
+func TestRelayAnthropicStreamEmitsValidAnthropicStopReasonsForGeminiStops(t *testing.T) {
+	valid := map[string]bool{
+		"end_turn":      true,
+		"max_tokens":    true,
+		"stop_sequence": true,
+		"tool_use":      true,
+		"pause_turn":    true,
+		"refusal":       true,
+	}
+	cases := map[string]struct {
+		internalStop string
+		wantStop     string
+		wantFinish   string
+	}{
+		"Gemini MAX_TOKENS": {
+			internalStop: "max_tokens",
+			wantStop:     "max_tokens",
+			wantFinish:   "length",
+		},
+		"Gemini SAFETY": {
+			internalStop: types.SyntheticStopReasonContentFilter,
+			wantStop:     "refusal",
+			wantFinish:   "content_filter",
+		},
+		"legacy OpenAI length": {
+			internalStop: "length",
+			wantStop:     "max_tokens",
+			wantFinish:   "length",
+		},
+		"legacy OpenAI content_filter": {
+			internalStop: "content_filter",
+			wantStop:     "refusal",
+			wantFinish:   "content_filter",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			synthetic := strings.Join([]string{
+				`event: message_delta`,
+				`data: {"type":"message_delta","delta":{"stop_reason":"` + tc.internalStop + `"},"usage":{"output_tokens":1}}`,
+				``,
+				`event: message_stop`,
+				`data: {"type":"message_stop"}`,
+				``,
+			}, "\n")
+
+			var out bytes.Buffer
+			result, err := RelayAnthropicStream(strings.NewReader(synthetic), &out, "msg_local", "gemini-3.1-pro")
+			if err != nil {
+				t.Fatalf("RelayAnthropicStream: %v", err)
+			}
+			if result.FinishReason != tc.wantFinish {
+				t.Fatalf("finish reason = %q, want %q", result.FinishReason, tc.wantFinish)
+			}
+			stopReason := emittedMessageDeltaStopReason(t, out.String())
+			if stopReason != tc.wantStop {
+				t.Fatalf("emitted stop_reason = %q, want %q; stream=%s", stopReason, tc.wantStop, out.String())
+			}
+			if !valid[stopReason] {
+				t.Fatalf("emitted invalid Anthropic stop_reason %q", stopReason)
+			}
+			if stopReason == "length" || stopReason == "content_filter" {
+				t.Fatalf("emitted OpenAI vocabulary stop_reason %q", stopReason)
+			}
+		})
+	}
+}
+
+func emittedMessageDeltaStopReason(t *testing.T, stream string) string {
+	t.Helper()
+	for _, block := range strings.Split(strings.TrimSpace(stream), "\n\n") {
+		if !strings.Contains(block, "event: message_delta") {
+			continue
+		}
+		dataStart := strings.Index(block, "data: ")
+		if dataStart < 0 {
+			t.Fatalf("message_delta missing data: %q", block)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(block[dataStart+len("data: "):]), &payload); err != nil {
+			t.Fatalf("decode message_delta: %v", err)
+		}
+		delta, ok := payload["delta"].(map[string]any)
+		if !ok {
+			t.Fatalf("message_delta missing delta: %#v", payload)
+		}
+		reason, ok := delta["stop_reason"].(string)
+		if !ok {
+			t.Fatalf("message_delta missing stop_reason: %#v", delta)
+		}
+		return reason
+	}
+	t.Fatalf("message_delta not emitted: %s", stream)
+	return ""
 }

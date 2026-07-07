@@ -735,12 +735,26 @@ func geminiInlineDataURL(part map[string]any) string {
 }
 
 func mapGeminiFinishReason(reason string) string {
-	switch strings.ToUpper(strings.TrimSpace(reason)) {
-	case "MAX_TOKENS":
+	normalized := strings.ToUpper(strings.TrimSpace(reason))
+	switch normalized {
+	case "MAX_TOKENS", "RECITATION", "IMAGE_RECITATION":
 		return "max_tokens"
+	case "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT":
+		return qtypes.SyntheticStopReasonContentFilter
 	case "STOP":
 		return "end_turn"
 	default:
+		if strings.HasPrefix(normalized, "IMAGE_") {
+			if strings.Contains(normalized, "RECITATION") {
+				return "max_tokens"
+			}
+			if strings.Contains(normalized, "SAFETY") ||
+				strings.Contains(normalized, "BLOCKLIST") ||
+				strings.Contains(normalized, "PROHIBITED_CONTENT") ||
+				strings.Contains(normalized, "SPII") {
+				return qtypes.SyntheticStopReasonContentFilter
+			}
+		}
 		return "end_turn"
 	}
 }

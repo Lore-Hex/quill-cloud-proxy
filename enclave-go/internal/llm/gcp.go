@@ -130,6 +130,8 @@ func (c *gcpClient) InvokeStreaming(
 	if err != nil {
 		return err
 	}
+	option := firstOptions(options)
+	modelID := directModelID("vertex", req.Model, option.UpstreamModel)
 
 	// Build the Vertex-shaped request body. Identical to Anthropic's
 	// Messages API except `anthropic_version` is in the body and `model`
@@ -145,6 +147,7 @@ func (c *gcpClient) InvokeStreaming(
 		ToolChoice       *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
 		StopSequences    []string                    `json:"stop_sequences,omitempty"`
 		Thinking         any                         `json:"thinking,omitempty"`
+		Metadata         map[string]any              `json:"metadata,omitempty"`
 		TopK             *int                        `json:"top_k,omitempty"`
 		OutputConfig     any                         `json:"output_config,omitempty"`
 		Stream           bool                        `json:"stream"`
@@ -156,12 +159,13 @@ func (c *gcpClient) InvokeStreaming(
 		// breakpoints survive on the Vertex Anthropic route too.
 		System:        anthropicSystemField(body),
 		MaxTokens:     body.AnthropicDispatchMaxTokens(),
-		Temperature:   body.Temperature,
+		Temperature:   anthropicTemperature(modelID, body.Temperature),
 		TopP:          body.TopP,
 		Tools:         body.Tools,
 		ToolChoice:    body.ToolChoice,
 		StopSequences: body.StopSequences,
 		Thinking:      body.Thinking,
+		Metadata:      body.Metadata,
 		TopK:          body.TopK,
 		OutputConfig:  body.OutputConfig,
 		Stream:        true,
@@ -173,7 +177,7 @@ func (c *gcpClient) InvokeStreaming(
 
 	url := fmt.Sprintf(
 		"https://%s/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:streamRawPredict",
-		c.vertexHost(), c.projectID, c.region, directModelID("vertex", req.Model, firstOptions(options).UpstreamModel),
+		c.vertexHost(), c.projectID, c.region, modelID,
 	)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
 	if err != nil {

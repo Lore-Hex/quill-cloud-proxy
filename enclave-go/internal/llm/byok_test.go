@@ -2,11 +2,20 @@ package llm
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
+
+type byokRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f byokRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 	for _, provider := range []string{
@@ -384,6 +393,26 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 	}
 }
 
+func TestDirectModelIDStripsOpenRouterVariantBeforeMapping(t *testing.T) {
+	base := directModelID("anthropic", "anthropic/claude-opus-4.7", "anthropic/claude-opus-4.7")
+	if base != "claude-opus-4-7" {
+		t.Fatalf("directModelID(base) = %q, want claude-opus-4-7", base)
+	}
+	for _, model := range []string{
+		"anthropic/claude-opus-4.7:extended",
+		"anthropic/claude-opus-4.7:floor",
+		"anthropic/claude-opus-4.7:nitro",
+		"anthropic/claude-opus-4.7:online",
+	} {
+		if got := directModelID("anthropic", model, model); got != base {
+			t.Fatalf("directModelID(%q) = %q, want %q", model, got, base)
+		}
+	}
+	if got := stripOpenRouterModelVariant("provider:namespace/model"); got != "provider:namespace/model" {
+		t.Fatalf("stripOpenRouterModelVariant stripped unknown colon segment: %q", got)
+	}
+}
+
 func TestFireworksDirectModelIDPreservesFullUpstreamResource(t *testing.T) {
 	got := directModelID(
 		"fireworks",
@@ -393,6 +422,51 @@ func TestFireworksDirectModelIDPreservesFullUpstreamResource(t *testing.T) {
 	want := "accounts/fireworks/models/gpt-oss-120b"
 	if got != want {
 		t.Fatalf("directModelID(fireworks) = %q, want %q", got, want)
+	}
+}
+
+func TestAnthropicBYOKOmitsTemperatureForSuffixedOpusVariant(t *testing.T) {
+	temp := 0.5
+	var payload map[string]any
+	httpc := &http.Client{
+		Transport: byokRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.String() != "https://api.anthropic.com/v1/messages" {
+				t.Fatalf("url = %q", req.URL.String())
+			}
+			if got := req.Header.Get("x-api-key"); got != "sk-test" {
+				t.Fatalf("x-api-key = %q", got)
+			}
+			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request body: %v", err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")),
+			}, nil
+		}),
+	}
+	err := invokeAnthropicBYOKStreamingWithClient(
+		t.Context(),
+		httpc,
+		&qtypes.OpenAIChatRequest{Model: "anthropic/claude-opus-4.7:extended"},
+		&qtypes.AnthropicMessagesRequest{
+			Messages:    []qtypes.AnthropicMessage{{Role: "user", Content: "hi"}},
+			MaxTokens:   8,
+			Temperature: &temp,
+		},
+		io.Discard,
+		"sk-test",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("invokeAnthropicBYOKStreaming: %v", err)
+	}
+	if payload["model"] != "claude-opus-4-7" {
+		t.Fatalf("model = %#v, want claude-opus-4-7; payload=%#v", payload["model"], payload)
+	}
+	if _, ok := payload["temperature"]; ok {
+		t.Fatalf("opus temperature present: %#v", payload["temperature"])
 	}
 }
 
@@ -419,5 +493,9 @@ func TestProviderSpecificTemperatureOmission(t *testing.T) {
 	}
 	if got := anthropicTemperature("claude-sonnet-4-6", &zero); got == nil || *got != 0 {
 		t.Fatalf("Claude Sonnet temperature = %v, want 0", got)
+	}
+	hot := 1.7
+	if got := anthropicTemperature("claude-sonnet-4-6", &hot); got == nil || *got != 1.0 {
+		t.Fatalf("Claude Sonnet high temperature = %v, want 1.0", got)
 	}
 }

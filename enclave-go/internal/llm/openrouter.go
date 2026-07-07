@@ -57,11 +57,11 @@ const (
 
 var fallbackOpenRouterHTTPClient = pooledHTTPClient(defaultStreamingHTTPTimeout)
 
-// modelIDMap turns the Quill-public model name into OpenRouter's slug.
+// openRouterModelIDMap turns the Quill-public model name into OpenRouter's slug.
 // We use the explicit slug (no `:zdr` variant suffix) because we also pass
 // `provider.data_collection: "deny"` + `provider.only: ["Anthropic"]` in
 // the body — that's the strict ZDR pin and it composes with any model.
-var modelIDMap = map[string]string{
+var openRouterModelIDMap = map[string]string{
 	"claude-opus-4-7":             "anthropic/claude-opus-4.7",
 	"claude-sonnet-4-6":           "anthropic/claude-sonnet-4.6",
 	"claude-haiku-4-5":            "anthropic/claude-haiku-4.5",
@@ -122,7 +122,7 @@ func parseProvidersEnv() []string {
 // newOpenRouterHTTPClient is provided by openrouter_transport_aws.go (vsock
 // tunnel through the parent) or openrouter_transport_gcp.go (direct egress,
 // since CSP VMs reach the internet without a proxy).
-func New(boot *qtypes.BootstrapData) Client {
+func newOpenRouter(boot *qtypes.BootstrapData) *openRouterClient {
 	return &openRouterClient{
 		apiKey:    boot.OpenRouterAPIKey,
 		httpc:     newOpenRouterHTTPClient(boot),
@@ -145,6 +145,7 @@ type openRouterRequest struct {
 	Stop             []string         `json:"stop,omitempty"`
 	TopK             *int             `json:"top_k,omitempty"`
 	Thinking         any              `json:"thinking,omitempty"`
+	Metadata         map[string]any   `json:"metadata,omitempty"`
 	Seed             *int             `json:"seed,omitempty"`
 	FrequencyPenalty *float64         `json:"frequency_penalty,omitempty"`
 	PresencePenalty  *float64         `json:"presence_penalty,omitempty"`
@@ -232,18 +233,21 @@ func (c *openRouterClient) invokeOne(
 		Model:            model,
 		Messages:         msgs,
 		Stream:           true,
-		MaxTokens:        body.MaxTokens,
-		Temperature:      body.Temperature,
+		Temperature:      openRouterTemperature(model, body.Temperature),
 		TopP:             body.TopP,
 		Stop:             body.StopSequences,
 		TopK:             body.TopK,
 		Thinking:         body.Thinking,
+		Metadata:         body.Metadata,
 		Seed:             req.Seed,
 		FrequencyPenalty: req.FrequencyPenalty,
 		PresencePenalty:  req.PresencePenalty,
 		Provider:         c.providerRouting(req),
 		Tools:            req.Tools,
 		ToolChoice:       req.ToolChoice,
+	}
+	if body.MaxTokensExplicit {
+		reqBody.MaxTokens = body.MaxTokens
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
@@ -275,6 +279,14 @@ func (c *openRouterClient) invokeOne(
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
 	return translateOpenAIStreamToAnthropic(resp.Body, out)
+}
+
+func openRouterTemperature(model string, temperature *float64) *float64 {
+	modelID := stripOpenRouterModelVariant(model)
+	if strings.HasPrefix(strings.ToLower(modelID), "anthropic/claude") {
+		return anthropicTemperature(directModelID("anthropic", modelID, modelID), temperature)
+	}
+	return temperature
 }
 
 func (c *openRouterClient) endpoint() string {
@@ -333,7 +345,7 @@ func routeCandidates(req *qtypes.OpenAIChatRequest) ([]string, error) {
 	out := make([]string, 0, len(raw))
 	seen := map[string]bool{}
 	for _, modelName := range raw {
-		mapped, ok := mapModelID(modelName)
+		mapped, ok := mapOpenRouterModelID(modelName)
 		if !ok {
 			return nil, fmt.Errorf("llm/openrouter: unknown model: %s", modelName)
 		}
@@ -357,8 +369,8 @@ func appendExpanded(out []string, modelName string) []string {
 	}
 }
 
-func mapModelID(modelName string) (string, bool) {
-	if mapped, ok := modelIDMap[modelName]; ok {
+func mapOpenRouterModelID(modelName string) (string, bool) {
+	if mapped, ok := openRouterModelIDMap[modelName]; ok {
 		return mapped, true
 	}
 	if strings.Contains(modelName, "/") {

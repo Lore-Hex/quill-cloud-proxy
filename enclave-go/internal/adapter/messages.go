@@ -79,6 +79,7 @@ func MessagesToAnthropic(req *AnthropicNativeRequest) (*types.AnthropicMessagesR
 		ToolChoice:        req.ToolChoice,
 		StopSequences:     req.StopSequences,
 		Thinking:          req.Thinking,
+		Metadata:          req.Metadata,
 		TopK:              req.TopK,
 		OutputConfig:      req.OutputConfig,
 		NativeContent:     true,
@@ -230,10 +231,23 @@ func mapFinishReasonToAnthropic(finishReason string) string {
 	switch finishReason {
 	case "length":
 		return "max_tokens"
+	case "content_filter":
+		return types.SyntheticStopReasonContentFilter
 	case "tool_calls":
 		return "tool_use"
 	default:
 		return "end_turn"
+	}
+}
+
+func normalizeAnthropicSSEStopReason(reason string) string {
+	switch reason {
+	case "length":
+		return "max_tokens"
+	case "content_filter", types.SyntheticStopReasonContentFilter:
+		return types.SyntheticStopReasonContentFilter
+	default:
+		return reason
 	}
 }
 
@@ -488,6 +502,11 @@ func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (St
 			}
 			if err := closeTextBlock(); err != nil {
 				return StreamResult{}, err
+			}
+			if delta := getMap(dataJSON, "delta"); delta != nil {
+				if reason := getString(delta, "stop_reason"); reason != "" {
+					delta["stop_reason"] = normalizeAnthropicSSEStopReason(reason)
+				}
 			}
 			if err := writeEvent(eventName, dataJSON); err != nil {
 				return StreamResult{}, err

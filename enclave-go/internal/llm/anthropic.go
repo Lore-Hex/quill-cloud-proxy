@@ -137,6 +137,7 @@ func (c *anthropicClient) InvokeStreaming(
 		ToolChoice    *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
 		StopSequences []string                    `json:"stop_sequences,omitempty"`
 		Thinking      any                         `json:"thinking,omitempty"`
+		Metadata      map[string]any              `json:"metadata,omitempty"`
 		TopK          *int                        `json:"top_k,omitempty"`
 		OutputConfig  any                         `json:"output_config,omitempty"`
 		Stream        bool                        `json:"stream"`
@@ -154,6 +155,7 @@ func (c *anthropicClient) InvokeStreaming(
 		ToolChoice:    body.ToolChoice,
 		StopSequences: body.StopSequences,
 		Thinking:      body.Thinking,
+		Metadata:      body.Metadata,
 		TopK:          body.TopK,
 		OutputConfig:  body.OutputConfig,
 		Stream:        true,

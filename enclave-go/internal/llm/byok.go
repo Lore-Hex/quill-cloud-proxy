@@ -337,6 +337,18 @@ func invokeAnthropicBYOKStreaming(
 	apiKey string,
 	upstreamModel string,
 ) error {
+	return invokeAnthropicBYOKStreamingWithClient(ctx, defaultHTTPClient(), req, body, out, apiKey, upstreamModel)
+}
+
+func invokeAnthropicBYOKStreamingWithClient(
+	ctx context.Context,
+	httpc *http.Client,
+	req *qtypes.OpenAIChatRequest,
+	body *qtypes.AnthropicMessagesRequest,
+	out io.Writer,
+	apiKey string,
+	upstreamModel string,
+) error {
 	messages, err := anthropicUpstreamMessages(ctx, body)
 	if err != nil {
 		return err
@@ -353,6 +365,7 @@ func invokeAnthropicBYOKStreaming(
 		ToolChoice    *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
 		StopSequences []string                    `json:"stop_sequences,omitempty"`
 		Thinking      any                         `json:"thinking,omitempty"`
+		Metadata      map[string]any              `json:"metadata,omitempty"`
 		TopK          *int                        `json:"top_k,omitempty"`
 		OutputConfig  any                         `json:"output_config,omitempty"`
 		Stream        bool                        `json:"stream"`
@@ -367,6 +380,7 @@ func invokeAnthropicBYOKStreaming(
 		ToolChoice:    body.ToolChoice,
 		StopSequences: body.StopSequences,
 		Thinking:      body.Thinking,
+		Metadata:      body.Metadata,
 		TopK:          body.TopK,
 		OutputConfig:  body.OutputConfig,
 		Stream:        true,
@@ -384,7 +398,10 @@ func invokeAnthropicBYOKStreaming(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	resp, err := defaultHTTPClient().Do(httpReq)
+	if httpc == nil {
+		httpc = defaultHTTPClient()
+	}
+	resp, err := httpc.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("llm/byok: anthropic invoke: %w", err)
 	}
@@ -404,6 +421,10 @@ func anthropicTemperature(modelID string, temperature *float64) *float64 {
 	model := strings.ToLower(modelID)
 	if strings.Contains(model, "claude-opus-4-7") || strings.Contains(model, "claude-opus-4-8") {
 		return nil
+	}
+	if temperature != nil && *temperature > 1.0 {
+		clamped := 1.0
+		return &clamped
 	}
 	return temperature
 }
@@ -750,8 +771,9 @@ func directBaseURL(provider string) string {
 }
 
 func directModelID(provider, model, upstreamModel string) string {
+	model = stripOpenRouterModelVariant(model)
+	upstreamModel = stripOpenRouterModelVariant(strings.TrimSpace(upstreamModel))
 	resolved := model
-	upstreamModel = strings.TrimSpace(upstreamModel)
 	// Provider-specific overrides (consulted first). Together hosts
 	// open-weight models under their own catalog naming
 	// (`Llama-3.3-70B-Instruct-Turbo` etc.) rather than the
@@ -843,12 +865,16 @@ func providerPreservesAuthorModelID(provider string) bool {
 }
 
 func stripOpenRouterModelVariant(model string) string {
-	for _, suffix := range []string{":free", ":floor", ":nitro"} {
-		if strings.HasSuffix(model, suffix) {
-			return strings.TrimSuffix(model, suffix)
-		}
+	idx := strings.LastIndex(model, ":")
+	if idx < 0 || idx+1 == len(model) {
+		return model
 	}
-	return model
+	switch strings.ToLower(model[idx+1:]) {
+	case "free", "floor", "nitro", "extended", "online":
+		return model[:idx]
+	default:
+		return model
+	}
 }
 
 // togetherModelMap translates the OpenRouter-canonical model id (what
