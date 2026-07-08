@@ -3618,6 +3618,54 @@ func TestFusionToolCallsTextRendersNameAndArgs(t *testing.T) {
 	}
 }
 
+func TestFusionStreamToolCallsEmitOpenAICompatibleDeltas(t *testing.T) {
+	var out bytes.Buffer
+	calls := []types.ToolCall{{
+		ID:        "call_view",
+		Name:      "view",
+		Arguments: `{"path":"."}`,
+	}}
+	if err := writeFusionStreamToolCalls(&out, "chatcmpl_test", "trustedrouter/socrates-1.1", 123, calls); err != nil {
+		t.Fatalf("write tool calls: %v", err)
+	}
+	if err := writeFusionStreamDelta(&out, "chatcmpl_test", "trustedrouter/socrates-1.1", 123, map[string]any{}, fusionFinishReason(adapter.StreamResult{ToolCalls: calls})); err != nil {
+		t.Fatalf("write finish: %v", err)
+	}
+
+	var sawToolDelta, sawFinish bool
+	for _, event := range strings.Split(strings.TrimSpace(out.String()), "\n\n") {
+		var chunk map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(event, "data: ")), &chunk); err != nil {
+			t.Fatalf("unmarshal %q: %v", event, err)
+		}
+		choices := chunk["choices"].([]any)
+		choice := choices[0].(map[string]any)
+		if choice["finish_reason"] == "tool_calls" {
+			sawFinish = true
+		}
+		delta := choice["delta"].(map[string]any)
+		rawCalls, ok := delta["tool_calls"].([]any)
+		if !ok {
+			continue
+		}
+		call := rawCalls[0].(map[string]any)
+		if call["index"] != float64(0) || call["id"] != "call_view" || call["type"] != "function" {
+			t.Fatalf("bad tool call envelope: %#v", call)
+		}
+		fn := call["function"].(map[string]any)
+		if fn["name"] != "view" || fn["arguments"] != `{"path":"."}` {
+			t.Fatalf("bad tool call function: %#v", fn)
+		}
+		sawToolDelta = true
+	}
+	if !sawToolDelta {
+		t.Fatalf("stream did not include OpenAI tool_calls delta: %s", out.String())
+	}
+	if !sawFinish {
+		t.Fatalf("stream did not finish with tool_calls: %s", out.String())
+	}
+}
+
 func TestFusionPanelEvidenceSurfacesToolCalls(t *testing.T) {
 	panel := []fusionCallResult{
 		{Model: "m_tool", Result: adapter.StreamResult{

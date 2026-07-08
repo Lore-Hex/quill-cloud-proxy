@@ -667,15 +667,20 @@ func serveAdvisorStreaming(
 		selectedModel = config.WorkerModels[0]
 	}
 	responseModel := requestOrchestrationResponseModel(req, selectedModel)
-	if !config.HidePublicMetadata && len(final.Result.ToolCalls) > 0 {
-		_ = writeAdvisorStreamEvent(statsW, requestID, responseModel, created, map[string]any{
-			"event":      "advisor.tool_calls",
-			"tool_calls": final.Result.ToolCalls,
-		})
+	if len(final.Result.ToolCalls) > 0 {
+		if !config.HidePublicMetadata {
+			_ = writeAdvisorStreamEvent(statsW, requestID, responseModel, created, map[string]any{
+				"event":      "advisor.tool_calls",
+				"tool_calls": final.Result.ToolCalls,
+			})
+		}
+		if err := writeFusionStreamToolCalls(statsW, requestID, responseModel, created, final.Result.ToolCalls); err != nil {
+			return
+		}
 	} else if text := strings.TrimSpace(final.Result.Text); text != "" {
 		_ = writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{"content": text}, "")
 	}
-	if err := writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{}, final.Result.FinishReason); err != nil {
+	if err := writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{}, fusionFinishReason(final.Result)); err != nil {
 		return
 	}
 	if chatIncludeUsage(req) {

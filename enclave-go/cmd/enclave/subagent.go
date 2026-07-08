@@ -409,10 +409,13 @@ func serveSubagentStreaming(
 			"event":      "subagent.tool_calls",
 			"tool_calls": final.Result.ToolCalls,
 		})
+		if err := writeFusionStreamToolCalls(statsW, requestID, responseModel, created, final.Result.ToolCalls); err != nil {
+			return
+		}
 	} else if text := strings.TrimSpace(final.Result.Text); text != "" {
 		_ = writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{"content": text}, "")
 	}
-	if err := writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{}, final.Result.FinishReason); err != nil {
+	if err := writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{}, fusionFinishReason(final.Result)); err != nil {
 		return
 	}
 	if chatIncludeUsage(req) {

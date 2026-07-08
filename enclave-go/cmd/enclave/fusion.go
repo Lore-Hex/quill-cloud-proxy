@@ -1931,7 +1931,12 @@ func serveFusionFinalStreamingObserved(
 			"model":  finalModel,
 			"detail": fusionCallDetails(final),
 		})
-		if err := writeFusionStreamDelta(streamW, requestID, responseModel, created, map[string]any{}, final.Result.FinishReason); err != nil {
+		if len(final.Result.ToolCalls) > 0 {
+			if err := writeFusionStreamToolCalls(streamW, requestID, responseModel, created, final.Result.ToolCalls); err != nil {
+				return err
+			}
+		}
+		if err := writeFusionStreamDelta(streamW, requestID, responseModel, created, map[string]any{}, fusionFinishReason(final.Result)); err != nil {
 			return err
 		}
 		if chatIncludeUsage(req) {
@@ -2164,6 +2169,40 @@ func writeFusionStreamDelta(w io.Writer, requestID string, model string, created
 	}
 	_, err = w.Write([]byte("\n\n"))
 	return err
+}
+
+func writeFusionStreamToolCalls(w io.Writer, requestID string, model string, created int64, toolCalls []types.ToolCall) error {
+	for i, call := range toolCalls {
+		id := strings.TrimSpace(call.ID)
+		if id == "" {
+			id = strings.TrimSpace(call.CallID)
+		}
+		if id == "" {
+			id = fmt.Sprintf("call_%d", i+1)
+		}
+		delta := map[string]any{
+			"tool_calls": []map[string]any{{
+				"index": i,
+				"id":    id,
+				"type":  "function",
+				"function": map[string]any{
+					"name":      call.Name,
+					"arguments": call.Arguments,
+				},
+			}},
+		}
+		if err := writeFusionStreamDelta(w, requestID, model, created, delta, ""); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func fusionFinishReason(result adapter.StreamResult) string {
+	if len(result.ToolCalls) > 0 {
+		return "tool_calls"
+	}
+	return result.FinishReason
 }
 
 func writeFusionStreamUsage(w io.Writer, requestID string, model string, created int64, result fusionCallResult, totalCostMicrodollars int, providerUsage ...map[string]any) error {

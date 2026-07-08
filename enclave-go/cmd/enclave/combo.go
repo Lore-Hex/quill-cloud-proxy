@@ -156,10 +156,14 @@ func serveSelectorStreaming(
 		"selected": fusionCallDetails(selected),
 	})
 	responseModel := requestOrchestrationResponseModel(req, selected.Model)
-	if selected.Result.Text != "" {
+	if len(selected.Result.ToolCalls) > 0 {
+		if err := writeFusionStreamToolCalls(statsW, requestID, responseModel, created, selected.Result.ToolCalls); err != nil {
+			return
+		}
+	} else if selected.Result.Text != "" {
 		_ = writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{"content": selected.Result.Text}, "")
 	}
-	if err := writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{}, selected.Result.FinishReason); err != nil {
+	if err := writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{}, fusionFinishReason(selected.Result)); err != nil {
 		return
 	}
 	if chatIncludeUsage(req) {
@@ -398,10 +402,14 @@ func serveMapReduceStreaming(
 		"details": mapReduceResponseDetails(config, details, result, requestOrchestrationResponseModel(req, result.Model)),
 	})
 	responseModel := requestOrchestrationResponseModel(req, result.Model)
-	if result.Result.Text != "" {
+	if len(result.Result.ToolCalls) > 0 {
+		if err := writeFusionStreamToolCalls(statsW, requestID, responseModel, created, result.Result.ToolCalls); err != nil {
+			return
+		}
+	} else if result.Result.Text != "" {
 		_ = writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{"content": result.Result.Text}, "")
 	}
-	if err := writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{}, result.Result.FinishReason); err != nil {
+	if err := writeFusionStreamDelta(statsW, requestID, responseModel, created, map[string]any{}, fusionFinishReason(result.Result)); err != nil {
 		return
 	}
 	if chatIncludeUsage(req) {
