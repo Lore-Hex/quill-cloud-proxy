@@ -48,6 +48,8 @@ const maxAdvisorAdviceCalls = 3
 const minAdvisorMaxTokens = 64
 const defaultAdvisorMaxTokens = 4096
 const maxAdvisorMaxTokens = 8192
+const defaultAdvisorWorkerTimeoutMS = 60000
+const maxAdvisorWorkerTimeoutMS = 180000
 const defaultAdvisorTimeoutMS = 90000
 const maxAdvisorTimeoutMS = 180000
 
@@ -100,6 +102,7 @@ type advisorConfig struct {
 	MaxAdviceCalls       int
 	MaxAdviceCallsSet    bool
 	AdvisorMaxTokens     int
+	WorkerTimeoutMS      int
 	AdvisorTimeoutMS     int
 	AutoInitialAdvice    bool
 	AutoInitialAdviceSet bool
@@ -172,7 +175,7 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 	case trustedRouterSocratesModel, trustedRouterSocrates11Model, trustedRouterSocratesProPlus10Model, trustedRouterSocratesProPlusModel:
 		return advisorConfig{
 			Enabled:       true,
-			WorkerModels:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
+			WorkerModels:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
 			AdvisorModels: []string{trustedRouterZeus10Model},
 		}, true
 	case trustedRouterOpenPatcherA1Model:
@@ -410,6 +413,11 @@ func parseAdvisorParameters(raw map[string]any) (advisorConfig, error) {
 	} else if ok {
 		config.AdvisorMaxTokens = n
 	}
+	if n, ok, err := intField(raw, "worker_timeout_ms"); err != nil {
+		return config, err
+	} else if ok {
+		config.WorkerTimeoutMS = n
+	}
 	if n, ok, err := intField(raw, "advisor_timeout_ms"); err != nil {
 		return config, err
 	} else if ok {
@@ -456,6 +464,9 @@ func mergeAdvisorConfig(base, override advisorConfig) advisorConfig {
 	}
 	if override.AdvisorMaxTokens != 0 {
 		base.AdvisorMaxTokens = override.AdvisorMaxTokens
+	}
+	if override.WorkerTimeoutMS != 0 {
+		base.WorkerTimeoutMS = override.WorkerTimeoutMS
 	}
 	if override.AdvisorTimeoutMS != 0 {
 		base.AdvisorTimeoutMS = override.AdvisorTimeoutMS
@@ -510,6 +521,12 @@ func normalizeAdvisorConfig(config *advisorConfig, req *types.OpenAIChatRequest)
 	}
 	if config.AdvisorMaxTokens < 1 || config.AdvisorMaxTokens > maxAdvisorMaxTokens {
 		return &adapter.AdapterError{Status: 400, Message: "trustedrouter/advisor advisor_max_tokens must be between 1 and 8192", Context: "advisor_max_tokens"}
+	}
+	if config.WorkerTimeoutMS == 0 {
+		config.WorkerTimeoutMS = defaultAdvisorWorkerTimeoutMS
+	}
+	if config.WorkerTimeoutMS < 1000 || config.WorkerTimeoutMS > maxAdvisorWorkerTimeoutMS {
+		return &adapter.AdapterError{Status: 400, Message: "trustedrouter/advisor worker_timeout_ms must be between 1000 and 180000", Context: "worker_timeout_ms"}
 	}
 	if config.AdvisorTimeoutMS == 0 {
 		config.AdvisorTimeoutMS = defaultAdvisorTimeoutMS
@@ -815,6 +832,7 @@ func runAdvisorWorkerLoop(
 		workerReq := advisorWorkerRequest(req, workerModel, messages, workerConfig, allowAdviceTool && !isFusionModel(workerModel))
 		var worker fusionCallResult
 		var err error
+		workerTimeout := advisorWorkerAttemptTimeout(config)
 		if isFusionModel(workerModel) {
 			worker, err = runAdvisorFusionWorkerRequest(ctx, br, workerReq, config, workerModel, trGateway, secretCache, bearer, fmt.Sprintf("%s:worker:%d:%d", requestID, workerIndex, turn), requestLogID, originalInput)
 		} else {
@@ -822,7 +840,7 @@ func runAdvisorWorkerLoop(
 			if observerFactory != nil {
 				observer = observerFactory("worker", turn, workerModel)
 			}
-			worker, err = runFusionCallObserved(ctx, br, workerReq, trGateway, secretCache, bearer, "advisor.worker", fmt.Sprintf("%s:worker:%d:%d", requestID, workerIndex, turn), requestLogID, originalInput, false, observer, streamW != nil)
+			worker, err = runFusionCallObservedWithInvokeTimeout(ctx, br, workerReq, trGateway, secretCache, bearer, "advisor.worker", fmt.Sprintf("%s:worker:%d:%d", requestID, workerIndex, turn), requestLogID, originalInput, false, observer, streamW != nil, workerTimeout)
 		}
 		if err != nil {
 			return fusionCallResult{}, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err
@@ -885,6 +903,13 @@ func runAdvisorWorkerLoop(
 		})
 	}
 	return fusionCallResult{}, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, &adapter.AdapterError{Status: 502, Message: "trustedrouter/advisor did not complete after advice", Context: "advisor"}
+}
+
+func advisorWorkerAttemptTimeout(config advisorConfig) time.Duration {
+	if config.WorkerTimeoutMS <= 0 {
+		return 0
+	}
+	return time.Duration(config.WorkerTimeoutMS) * time.Millisecond
 }
 
 func runAdvisorAdvice(
@@ -1709,6 +1734,7 @@ func advisorResponseDetails(config advisorConfig, workerAttempts []fusionCallRes
 		"selected_model":          selectedModel,
 		"depth_initial":           config.Depth,
 		"max_get_advice_calls":    config.MaxAdviceCalls,
+		"worker_timeout_ms":       config.WorkerTimeoutMS,
 		"auto_initial_advice":     config.AutoInitialAdvice,
 		"advice_call_count":       adviceCalls,
 		"advice_budget_exhausted": budgetExhausted,

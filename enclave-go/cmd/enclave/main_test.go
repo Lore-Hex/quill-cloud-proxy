@@ -4466,6 +4466,41 @@ func TestRunAdvisorWorkerFailureFallsBackToAdvisorFinal(t *testing.T) {
 	}
 }
 
+func TestRunAdvisorWorkerTimeoutFallsBackToNextWorker(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &advisorScriptedLLM{delayByModel: map[string]time.Duration{
+		"cerebras/gpt-oss-120b": 100 * time.Millisecond,
+	}}
+	req := &types.OpenAIChatRequest{
+		Model:    trustedRouterSocrates10Model,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "reply pong"}},
+	}
+	config := testAdvisorConfig(t)
+	config.WorkerModels = []string{"cerebras/gpt-oss-120b", "deepseek/deepseek-v4-flash"}
+	config.WorkerTimeoutMS = 20
+
+	start := time.Now()
+	final, workers, advisors, adviceCalls, budgetExhausted, err := runAdvisor(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_advisor_worker_timeout", "log_advisor_worker_timeout", nil, nil, 0, nil)
+	if err != nil {
+		t.Fatalf("runAdvisor: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("runAdvisor elapsed = %s, want bounded worker timeout and fallback", elapsed)
+	}
+	if got := strings.TrimSpace(final.Result.Text); got != "answer from deepseek/deepseek-v4-flash" {
+		t.Fatalf("final text = %q", got)
+	}
+	if len(workers) != 1 || len(advisors) != 0 || adviceCalls != 0 || budgetExhausted {
+		t.Fatalf("workers=%d advisors=%d adviceCalls=%d budgetExhausted=%t, want 1 0 0 false", len(workers), len(advisors), adviceCalls, budgetExhausted)
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if len(recorder.authorize) != 2 || len(recorder.refund) != 1 || len(recorder.settle) != 1 {
+		t.Fatalf("authorize=%d refund=%d settle=%d, want 2 1 1", len(recorder.authorize), len(recorder.refund), len(recorder.settle))
+	}
+}
+
 func TestAdvisorStreamErrorIncludesProviderDiagnostics(t *testing.T) {
 	req := &types.OpenAIChatRequest{
 		Model:    trustedRouterSocratesProPlus10Model,
@@ -4631,17 +4666,17 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:    trustedRouterSocratesProPlus10Model,
-			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{
 			model:    trustedRouterSocrates11Model,
-			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{
 			model:    trustedRouterSocratesModel,
-			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed"},
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{

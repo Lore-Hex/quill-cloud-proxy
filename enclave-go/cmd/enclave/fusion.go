@@ -1545,7 +1545,26 @@ func runFusionCallObserved(
 	observer adapter.StreamObserver,
 	streamed bool,
 ) (fusionCallResult, error) {
-	return runFusionCallValidatedObserved(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, nil, true, observer, streamed)
+	return runFusionCallObservedWithInvokeTimeout(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, observer, streamed, 0)
+}
+
+func runFusionCallObservedWithInvokeTimeout(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	routeType string,
+	idempotencyKey string,
+	requestLogID string,
+	originalInput any,
+	broadcastContent bool,
+	observer adapter.StreamObserver,
+	streamed bool,
+	invokeTimeout time.Duration,
+) (fusionCallResult, error) {
+	return runFusionCallValidatedObservedAttempt(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, nil, true, observer, streamed, true, invokeTimeout)
 }
 
 func runFusionCallValidated(
@@ -1583,7 +1602,7 @@ func runFusionCallValidatedObserved(
 	observer adapter.StreamObserver,
 	streamed bool,
 ) (fusionCallResult, error) {
-	return runFusionCallValidatedObservedAttempt(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, observer, streamed, true)
+	return runFusionCallValidatedObservedAttempt(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, observer, streamed, true, 0)
 }
 
 func runFusionCallValidatedObservedAttempt(
@@ -1603,6 +1622,7 @@ func runFusionCallValidatedObservedAttempt(
 	observer adapter.StreamObserver,
 	streamed bool,
 	allowOverthinkingRescue bool,
+	invokeTimeout time.Duration,
 ) (fusionCallResult, error) {
 	requestStarted := time.Now()
 	authz, options, err := authorizeFusionCall(ctx, req, trGateway, secretCache, bearer, routeType, idempotencyKey)
@@ -1621,13 +1641,22 @@ func runFusionCallValidatedObservedAttempt(
 	}
 	invokeCtx := ctx
 	cancelInvoke := func() {}
+	if invokeTimeout > 0 {
+		var cancel context.CancelFunc
+		invokeCtx, cancel = context.WithTimeout(ctx, invokeTimeout)
+		cancelInvoke = cancel
+	}
 	overthinking := fusionOverthinkingConfig(req.Model, routeType, allowOverthinkingRescue, fusionIsSynthCodeSubrequest(req))
 	if overthinking.enabled {
 		var cancel context.CancelFunc
-		invokeCtx, cancel = context.WithCancel(ctx)
-		cancelInvoke = cancel
-		defer cancelInvoke()
+		invokeCtx, cancel = context.WithCancel(invokeCtx)
+		previousCancel := cancelInvoke
+		cancelInvoke = func() {
+			cancel()
+			previousCancel()
+		}
 	}
+	defer cancelInvoke()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
 	collectObserver := observer
@@ -1647,7 +1676,7 @@ func runFusionCallValidatedObservedAttempt(
 		}
 		if overthinking.allowRescue {
 			rescueReq := fusionOverthinkingRescueRequest(req, routeType, guard.Reasoning())
-			rescue, rescueErr := runFusionCallValidatedObservedAttempt(ctx, br, rescueReq, trGateway, secretCache, bearer, routeType, idempotencyKey+":rescue", requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, observer, streamed, false)
+			rescue, rescueErr := runFusionCallValidatedObservedAttempt(ctx, br, rescueReq, trGateway, secretCache, bearer, routeType, idempotencyKey+":rescue", requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, observer, streamed, false, 0)
 			if rescueErr != nil {
 				return fusionCallResult{}, rescueErr
 			}
