@@ -57,6 +57,13 @@ var defaultAdvisorWorkerModels = []string{
 	"cerebras/gpt-oss-120b",
 }
 
+var socratesProPlusWorkerModels = []string{
+	"xiaomi/mimo-v2.5-pro-ultraspeed",
+	"minimax/minimax-m3",
+	"z-ai/glm-5.2-fast",
+	"deepseek/deepseek-v4-flash",
+}
+
 var defaultAdvisorModels = []string{
 	trustedRouterSocratesPro10Model,
 }
@@ -175,7 +182,7 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 	case trustedRouterSocratesModel, trustedRouterSocrates11Model, trustedRouterSocratesProPlus10Model, trustedRouterSocratesProPlusModel:
 		return advisorConfig{
 			Enabled:       true,
-			WorkerModels:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
+			WorkerModels:  append([]string(nil), socratesProPlusWorkerModels...),
 			AdvisorModels: []string{trustedRouterZeus10Model},
 		}, true
 	case trustedRouterOpenPatcherA1Model:

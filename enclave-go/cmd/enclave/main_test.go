@@ -4666,17 +4666,17 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:    trustedRouterSocratesProPlus10Model,
-			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "minimax/minimax-m3", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{
 			model:    trustedRouterSocrates11Model,
-			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "minimax/minimax-m3", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{
 			model:    trustedRouterSocratesModel,
-			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "minimax/minimax-m3", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{
