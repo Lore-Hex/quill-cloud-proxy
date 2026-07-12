@@ -29,6 +29,8 @@ func TestTagMapRejectsInvalidShapes(t *testing.T) {
 		{name: "reserved aws", raw: `{"AWS:owner":"legal"}`, want: "reserved prefix"},
 		{name: "reserved trustedrouter", raw: `{"trustedrouter:owner":"legal"}`, want: "reserved prefix"},
 		{name: "punctuation", raw: `{"bad#key":"legal"}`, want: "unsupported characters"},
+		{name: "line separator", raw: "{\"team\":\"legal\\u2028platform\"}", want: "unsupported characters"},
+		{name: "paragraph separator", raw: "{\"team\":\"legal\\u2029platform\"}", want: "unsupported characters"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

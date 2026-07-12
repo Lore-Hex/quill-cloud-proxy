@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
@@ -15,6 +17,7 @@ func annotateSettledResponseMetadata(
 	selectedRoute *selectedRouteTracker,
 	invokeOptions []llm.InvokeOptions,
 	result adapter.StreamResult,
+	includeOpenRouterMetadata bool,
 ) ([]byte, error) {
 	if len(body) == 0 {
 		return body, nil
@@ -111,12 +114,111 @@ func annotateSettledResponseMetadata(
 	routeUsage = pruneEmptyProviderUsage(routeUsage)
 	usage["provider_usage"] = routeUsage
 	payload["trustedrouter"] = mergeTrustedRouterRouting(payload["trustedrouter"], routeUsage)
+	if includeOpenRouterMetadata {
+		payload["openrouter_metadata"] = openRouterRoutingMetadata(
+			authorization,
+			selectedRoute,
+			invokeOptions,
+		)
+	}
 
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
 	return encoded, nil
+}
+
+func openRouterRoutingMetadata(
+	authorization *trustedrouter.Authorization,
+	selectedRoute *selectedRouteTracker,
+	invokeOptions []llm.InvokeOptions,
+) map[string]any {
+	requested := ""
+	region := ""
+	usageType := ""
+	if authorization != nil {
+		requested = authorization.RequestedModel
+		if requested == "" {
+			requested = authorization.Model
+		}
+		region = authorization.Region
+		usageType = authorization.UsageType
+	}
+	selectedModel := ""
+	selectedProvider := ""
+	selectedEndpoint := ""
+	if selectedRoute != nil {
+		selectedModel = selectedRoute.Model("", authorization)
+		selectedProvider = selectedRoute.Provider("", authorization)
+		selectedEndpoint = selectedRoute.Endpoint("", authorization)
+	}
+	if authorization != nil {
+		if selectedModel == "" {
+			selectedModel = authorization.Model
+		}
+		if selectedProvider == "" {
+			selectedProvider = authorization.Provider
+		}
+		if selectedEndpoint == "" {
+			selectedEndpoint = authorization.EndpointID
+		}
+	}
+	attempt := 0
+	fallbacks := 0
+	if selectedRoute != nil {
+		attempt = selectedRoute.AttemptCount()
+		fallbacks = selectedRoute.FallbackCount()
+	}
+	if attempt == 0 && authorization != nil {
+		attempt = 1
+	}
+	strategy := "direct"
+	if fallbacks > 0 {
+		strategy = "fallback"
+	} else if strings.HasPrefix(requested, "trustedrouter/") {
+		strategy = "alias"
+	}
+	available := make([]map[string]any, 0, routeCandidateCount(authorization, invokeOptions))
+	if authorization != nil && len(authorization.RouteCandidates) > 0 {
+		for _, candidate := range authorization.RouteCandidates {
+			provider := candidate.ProviderName
+			if provider == "" {
+				provider = candidate.Provider
+			}
+			available = append(available, map[string]any{
+				"provider": provider,
+				"model":    candidate.Model,
+				"selected": candidate.EndpointID == selectedEndpoint,
+			})
+		}
+	} else if authorization != nil {
+		provider := authorization.ProviderName
+		if provider == "" {
+			provider = authorization.Provider
+		}
+		available = append(available, map[string]any{
+			"provider": provider,
+			"model":    selectedModel,
+			"selected": true,
+		})
+	}
+	return map[string]any{
+		"requested": requested,
+		"strategy":  strategy,
+		"region":    region,
+		"summary": fmt.Sprintf(
+			"available=%d, selected=%s",
+			len(available),
+			selectedProvider,
+		),
+		"attempt": attempt,
+		"is_byok": strings.EqualFold(usageType, "BYOK"),
+		"endpoints": map[string]any{
+			"total":     len(available),
+			"available": available,
+		},
+	}
 }
 
 func applyUsageProviderSummary(usage map[string]any, providerUsage map[string]any) {

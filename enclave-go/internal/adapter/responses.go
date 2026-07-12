@@ -981,7 +981,7 @@ func responsesObject(
 			"total_tokens": inputTokens + outputTokens,
 		}
 	}
-	return map[string]any{
+	payload := map[string]any{
 		"id":                   responseID,
 		"object":               "response",
 		"created_at":           created,
@@ -1008,6 +1008,10 @@ func responsesObject(
 		"truncation":  "disabled",
 		"usage":       usage,
 	}
+	if status == "completed" && meta != nil && len(meta.OpenRouterMetadata) > 0 {
+		payload["openrouter_metadata"] = meta.OpenRouterMetadata
+	}
+	return payload
 }
 
 func responseFunctionCallItem(responseID string, index int, call types.ToolCall) map[string]any {

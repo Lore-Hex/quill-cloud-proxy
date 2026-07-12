@@ -551,6 +551,10 @@ func serveOneRequest(
 	}
 	req.IdempotencyKey = idempotencyKey
 	applyAttributionHeaders(&req, attribution)
+	if err := req.ValidateAttribution(); err != nil {
+		writeOpenAIError(conn, 400, err.Error(), "invalid_request_error", "invalid_request_metadata", "")
+		return
+	}
 	if err := adapter.RejectUnsupportedN(&req); err != nil {
 		var aerr *adapter.AdapterError
 		if asAdapterErr(err, &aerr) {
@@ -874,7 +878,7 @@ func serveResponsesNonStreaming(
 		writeError(conn, 502, "settlement failed")
 		return
 	}
-	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result)
+	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result, req.OpenRouterMetadata)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_metadata_failed model=%q err=%v\n", req.Model, err)
 		writeError(conn, 500, "responses encoding error")
@@ -955,7 +959,7 @@ func serveChatNonStreaming(
 		writeError(conn, 502, "settlement failed")
 		return
 	}
-	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result)
+	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result, req.OpenRouterMetadata)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_metadata_failed model=%q err=%v\n", req.Model, err)
 		writeError(conn, 500, "chat completion encoding error")
@@ -1003,6 +1007,16 @@ func serveStreaming(
 		req.Model = streamModel
 	}
 	responseModel := customModelResponseModel(req.Model, authorization)
+	var routerMetadata map[string]any
+	if req.OpenRouterMetadata {
+		routerMetadata = openRouterRoutingMetadata(authorization, selectedRoute, invokeOptions)
+		if routeType == "responses" {
+			if req.Response == nil {
+				req.Response = &types.ResponseRequestMeta{}
+			}
+			req.Response.OpenRouterMetadata = routerMetadata
+		}
+	}
 	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
 		_ = pr.Close()
 		return
@@ -1023,7 +1037,7 @@ func serveStreaming(
 	if routeType == "responses" {
 		result, err = adapter.TransformResponsesStream(pr, statsW, requestID, responseModel, trustedrouter.EstimateInputTokens(req), responseTextConfig(req), req.Response)
 	} else {
-		result, err = adapter.TransformStreamCaptureWithOptions(pr, streamW, requestID, responseModel, chatIncludeUsage(req))
+		result, err = adapter.TransformStreamCaptureWithRouterMetadata(pr, streamW, requestID, responseModel, chatIncludeUsage(req), routerMetadata)
 	}
 	if batchW != nil {
 		if closeErr := batchW.Close(); err == nil {
@@ -1119,6 +1133,10 @@ func serveMessages(
 	req := adapter.MessagesToChatShim(&native)
 	req.IdempotencyKey = idempotencyKey
 	applyAttributionHeaders(req, attribution)
+	if err := req.ValidateAttribution(); err != nil {
+		writeAnthropicError(conn, 400, err.Error())
+		return
+	}
 	if err := adapter.RejectUnsupportedN(req); err != nil {
 		var aerr *adapter.AdapterError
 		if asAdapterErr(err, &aerr) {

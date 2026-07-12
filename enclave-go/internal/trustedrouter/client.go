@@ -87,6 +87,9 @@ type Authorization struct {
 	UpstreamModel         string                             `json:"upstream_model"`
 	EndpointID            string                             `json:"endpoint_id"`
 	Provider              string                             `json:"provider"`
+	ProviderName          string                             `json:"provider_name"`
+	RequestedModel        string                             `json:"requested_model"`
+	Region                string                             `json:"region"`
 	UsageType             string                             `json:"usage_type"`
 	LimitUsageType        string                             `json:"limit_usage_type"`
 	BYOKSecretRef         string                             `json:"byok_secret_ref"`
@@ -111,6 +114,7 @@ type RouteCandidate struct {
 	Model               string                             `json:"model"`
 	UpstreamModel       string                             `json:"upstream_model"`
 	Provider            string                             `json:"provider"`
+	ProviderName        string                             `json:"provider_name"`
 	UsageType           string                             `json:"usage_type"`
 	BYOKSecretRef       string                             `json:"byok_secret_ref"`
 	BYOKEncryptedSecret *byokcache.EncryptedSecretEnvelope `json:"byok_encrypted_secret"`

@@ -95,7 +95,7 @@ func portableTagText(value string) bool {
 		if strings.ContainsRune("+-=._:/@", char) {
 			continue
 		}
-		if unicode.IsLetter(char) || unicode.IsNumber(char) || unicode.Is(unicode.Z, char) {
+		if unicode.IsLetter(char) || unicode.IsNumber(char) || unicode.Is(unicode.Zs, char) {
 			continue
 		}
 		return false

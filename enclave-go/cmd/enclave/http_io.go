@@ -207,7 +207,7 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 			}
 		case "x-openrouter-categories":
 			attribution.AppCategories = splitAttributionCategories(v)
-		case "x-openrouter-metadata":
+		case "x-openrouter-metadata", "x-openrouter-experimental-metadata":
 			attribution.OpenRouterMetadata = strings.EqualFold(v, "enabled")
 		case "content-length":
 			parsed, parseErr := strconv.Atoi(v)

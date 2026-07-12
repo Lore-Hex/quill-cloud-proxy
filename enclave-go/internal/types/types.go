@@ -368,6 +368,7 @@ type ResponseRequestMeta struct {
 	PromptCacheRetention string
 	Reasoning            any
 	Store                bool
+	OpenRouterMetadata   map[string]any
 }
 
 type ToolCall struct {

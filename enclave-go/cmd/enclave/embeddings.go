@@ -49,6 +49,19 @@ func serveEmbeddings(
 	req.App = attribution.App
 	req.HTTPReferer = attribution.HTTPReferer
 	req.AppCategories = append([]string(nil), attribution.AppCategories...)
+	chatAttribution := &types.OpenAIChatRequest{
+		User:          req.User,
+		SessionID:     req.SessionID,
+		Trace:         req.Trace,
+		App:           req.App,
+		HTTPReferer:   req.HTTPReferer,
+		AppCategories: req.AppCategories,
+	}
+	if err := chatAttribution.ValidateAttribution(); err != nil {
+		writeOpenAIError(conn, 400, err.Error(), "invalid_request_error", "invalid_request_metadata", "")
+		return
+	}
+	req.App = chatAttribution.App
 	if req.Model == "" {
 		writeOpenAIError(conn, 400, "model is required", "invalid_request_error", "bad_request", "model")
 		return
