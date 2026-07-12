@@ -340,36 +340,32 @@ func invokeAnthropicBYOKStreaming(
 	return invokeAnthropicBYOKStreamingWithClient(ctx, defaultHTTPClient(), req, body, out, apiKey, upstreamModel)
 }
 
-func invokeAnthropicBYOKStreamingWithClient(
-	ctx context.Context,
-	httpc *http.Client,
-	req *qtypes.OpenAIChatRequest,
+// anthropicWireRequest is an explicit provider projection. Router-only fields
+// live on the inbound request types and cannot enter this wire shape by future
+// struct-tag additions.
+type anthropicWireRequest struct {
+	Model         string                      `json:"model"`
+	Messages      []qtypes.AnthropicMessage   `json:"messages"`
+	System        any                         `json:"system,omitempty"`
+	MaxTokens     int                         `json:"max_tokens"`
+	Temperature   *float64                    `json:"temperature,omitempty"`
+	TopP          *float64                    `json:"top_p,omitempty"`
+	Tools         []qtypes.AnthropicTool      `json:"tools,omitempty"`
+	ToolChoice    *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
+	StopSequences []string                    `json:"stop_sequences,omitempty"`
+	Thinking      any                         `json:"thinking,omitempty"`
+	Metadata      map[string]any              `json:"metadata,omitempty"`
+	TopK          *int                        `json:"top_k,omitempty"`
+	OutputConfig  any                         `json:"output_config,omitempty"`
+	Stream        bool                        `json:"stream"`
+}
+
+func buildAnthropicWireRequest(
+	modelID string,
+	messages []qtypes.AnthropicMessage,
 	body *qtypes.AnthropicMessagesRequest,
-	out io.Writer,
-	apiKey string,
-	upstreamModel string,
-) error {
-	messages, err := anthropicUpstreamMessages(ctx, body)
-	if err != nil {
-		return err
-	}
-	modelID := directModelID("anthropic", req.Model, upstreamModel)
-	reqBody := struct {
-		Model         string                      `json:"model"`
-		Messages      []qtypes.AnthropicMessage   `json:"messages"`
-		System        any                         `json:"system,omitempty"`
-		MaxTokens     int                         `json:"max_tokens"`
-		Temperature   *float64                    `json:"temperature,omitempty"`
-		TopP          *float64                    `json:"top_p,omitempty"`
-		Tools         []qtypes.AnthropicTool      `json:"tools,omitempty"`
-		ToolChoice    *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
-		StopSequences []string                    `json:"stop_sequences,omitempty"`
-		Thinking      any                         `json:"thinking,omitempty"`
-		Metadata      map[string]any              `json:"metadata,omitempty"`
-		TopK          *int                        `json:"top_k,omitempty"`
-		OutputConfig  any                         `json:"output_config,omitempty"`
-		Stream        bool                        `json:"stream"`
-	}{
+) anthropicWireRequest {
+	return anthropicWireRequest{
 		Model:         modelID,
 		Messages:      messages,
 		System:        anthropicSystemField(body),
@@ -385,6 +381,23 @@ func invokeAnthropicBYOKStreamingWithClient(
 		OutputConfig:  body.OutputConfig,
 		Stream:        true,
 	}
+}
+
+func invokeAnthropicBYOKStreamingWithClient(
+	ctx context.Context,
+	httpc *http.Client,
+	req *qtypes.OpenAIChatRequest,
+	body *qtypes.AnthropicMessagesRequest,
+	out io.Writer,
+	apiKey string,
+	upstreamModel string,
+) error {
+	messages, err := anthropicUpstreamMessages(ctx, body)
+	if err != nil {
+		return err
+	}
+	modelID := directModelID("anthropic", req.Model, upstreamModel)
+	reqBody := buildAnthropicWireRequest(modelID, messages, body)
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("llm/byok: marshal anthropic body: %w", err)

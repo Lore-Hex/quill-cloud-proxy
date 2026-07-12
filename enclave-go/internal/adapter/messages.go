@@ -40,6 +40,10 @@ type AnthropicNativeRequest struct {
 	TopK          *int                       `json:"top_k,omitempty"`
 	OutputConfig  any                        `json:"output_config,omitempty"`
 	Metadata      map[string]any             `json:"metadata,omitempty"`
+	Trace         map[string]any             `json:"trace,omitempty"`
+	User          string                     `json:"user,omitempty"`
+	SessionID     string                     `json:"session_id,omitempty"`
+	Tags          *types.RequestTags         `json:"tags,omitempty"`
 }
 
 // MessagesToAnthropic validates the native request and builds the
@@ -187,6 +191,10 @@ func MessagesToChatShim(req *AnthropicNativeRequest) *types.OpenAIChatRequest {
 		Tools:       ChatToolsFromAnthropicTools(req.Tools),
 		ToolChoice:  chatToolChoiceFromAnthropic(req.ToolChoice),
 		Metadata:    req.Metadata,
+		Trace:       req.Trace,
+		User:        req.User,
+		SessionID:   req.SessionID,
+		Tags:        types.CloneRequestTags(req.Tags),
 	}
 }
 

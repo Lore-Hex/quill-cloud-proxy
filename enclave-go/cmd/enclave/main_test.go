@@ -6152,9 +6152,58 @@ func TestReadRequestRejectsOversizedBodyBeforeAllocation(t *testing.T) {
 		)
 	}()
 
-	_, _, _, _, _, err := readRequest(bufio.NewReader(server))
+	_, _, _, _, _, _, err := readRequest(bufio.NewReader(server))
 	if !errors.Is(err, errBodyTooLarge) {
 		t.Fatalf("err = %v, want errBodyTooLarge", err)
+	}
+}
+
+func TestReadRequestBoundsUnauthenticatedHeaders(t *testing.T) {
+	t.Run("line", func(t *testing.T) {
+		raw := "GET /health HTTP/1.1\r\nX-Fill: " + strings.Repeat("x", maxHTTPHeaderLineBytes) + "\r\n\r\n"
+		_, _, _, _, _, _, err := readRequest(
+			bufio.NewReaderSize(strings.NewReader(raw), maxHTTPHeaderLineBytes+1),
+		)
+		if !errors.Is(err, errHeadersTooLarge) {
+			t.Fatalf("err = %v, want errHeadersTooLarge", err)
+		}
+	})
+
+	t.Run("total", func(t *testing.T) {
+		var raw strings.Builder
+		raw.WriteString("GET /health HTTP/1.1\r\n")
+		for index := 0; index < 20; index++ {
+			fmt.Fprintf(&raw, "X-Fill-%d: %s\r\n", index, strings.Repeat("x", 4*1024))
+		}
+		raw.WriteString("\r\n")
+		_, _, _, _, _, _, err := readRequest(
+			bufio.NewReaderSize(strings.NewReader(raw.String()), maxHTTPHeaderLineBytes+1),
+		)
+		if !errors.Is(err, errHeadersTooLarge) {
+			t.Fatalf("err = %v, want errHeadersTooLarge", err)
+		}
+	})
+
+	t.Run("count", func(t *testing.T) {
+		var raw strings.Builder
+		raw.WriteString("GET /health HTTP/1.1\r\n")
+		for index := 0; index <= maxHTTPHeaderCount; index++ {
+			fmt.Fprintf(&raw, "X-%d: value\r\n", index)
+		}
+		raw.WriteString("\r\n")
+		_, _, _, _, _, _, err := readRequest(
+			bufio.NewReaderSize(strings.NewReader(raw.String()), maxHTTPHeaderLineBytes+1),
+		)
+		if !errors.Is(err, errHeadersTooLarge) {
+			t.Fatalf("err = %v, want errHeadersTooLarge", err)
+		}
+	})
+}
+
+func TestSplitAttributionCategoriesCapsBeforeValidation(t *testing.T) {
+	categories := splitAttributionCategories(strings.Repeat("legal,", 10_000))
+	if len(categories) != 3 {
+		t.Fatalf("len(categories) = %d, want 3", len(categories))
 	}
 }
 
@@ -6173,7 +6222,7 @@ func TestReadRequestAcceptsVisionPayloadAboveLegacyLimit(t *testing.T) {
 		_, _ = client.Write(body)
 	}()
 
-	method, path, _, _, gotBody, err := readRequest(bufio.NewReader(server))
+	method, path, _, _, _, gotBody, err := readRequest(bufio.NewReader(server))
 	if err != nil {
 		t.Fatalf("readRequest: %v", err)
 	}
@@ -6197,7 +6246,7 @@ func TestReadRequestAcceptsAnthropicXAPIKey(t *testing.T) {
 		)
 	}()
 
-	_, _, bearer, _, body, err := readRequest(bufio.NewReader(server))
+	_, _, bearer, _, _, body, err := readRequest(bufio.NewReader(server))
 	if err != nil {
 		t.Fatalf("readRequest: %v", err)
 	}
@@ -6206,6 +6255,59 @@ func TestReadRequestAcceptsAnthropicXAPIKey(t *testing.T) {
 	}
 	if string(body) != "{}" {
 		t.Fatalf("body = %q, want {}", body)
+	}
+}
+
+func TestReadRequestCapturesOpenRouterAttributionHeaders(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+
+	go func() {
+		defer client.Close()
+		_, _ = fmt.Fprint(
+			client,
+			"POST /v1/chat/completions HTTP/1.1\r\n"+
+				"X-Session-Id: session-header\r\n"+
+				"HTTP-Referer: https://legal.example/app\r\n"+
+				"X-Title: Legacy title\r\n"+
+				"X-OpenRouter-Title: Contract Review\r\n"+
+				"X-OpenRouter-Categories: legal, productivity\r\n"+
+				"X-OpenRouter-Metadata: enabled\r\n"+
+				"Content-Length: 2\r\n\r\n{}",
+		)
+	}()
+
+	_, _, _, _, attribution, _, err := readRequest(bufio.NewReader(server))
+	if err != nil {
+		t.Fatalf("readRequest: %v", err)
+	}
+	if attribution.SessionID != "session-header" || attribution.HTTPReferer != "https://legal.example/app" {
+		t.Fatalf("attribution = %#v", attribution)
+	}
+	if attribution.App != "Contract Review" {
+		t.Fatalf("app = %q", attribution.App)
+	}
+	if got := strings.Join(attribution.AppCategories, ","); got != "legal,productivity" {
+		t.Fatalf("categories = %q", got)
+	}
+	if !attribution.OpenRouterMetadata {
+		t.Fatal("OpenRouter metadata opt-in was not captured")
+	}
+}
+
+func TestApplyAttributionHeadersPreservesBodySessionID(t *testing.T) {
+	req := &types.OpenAIChatRequest{SessionID: "session-body"}
+	applyAttributionHeaders(req, requestAttributionHeaders{
+		SessionID:     "session-header",
+		HTTPReferer:   "https://legal.example/app",
+		App:           "Contract Review",
+		AppCategories: []string{"legal"},
+	})
+	if req.SessionID != "session-body" {
+		t.Fatalf("session id = %q", req.SessionID)
+	}
+	if req.App != "Contract Review" || req.HTTPReferer != "https://legal.example/app" {
+		t.Fatalf("request attribution = %#v", req)
 	}
 }
 

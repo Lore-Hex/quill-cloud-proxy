@@ -100,6 +100,36 @@ func TestMessagesToAnthropicForwardsOutputConfig(t *testing.T) {
 	}
 }
 
+func TestMessagesToAnthropicDropsRouterOnlyMetadataFromProviderBody(t *testing.T) {
+	req := &AnthropicNativeRequest{
+		Model:     "anthropic/claude-haiku-4.5",
+		MaxTokens: 64,
+		Messages:  []types.AnthropicMessage{{Role: "user", Content: "hello"}},
+		User:      "router-user-marker",
+		SessionID: "router-session-marker",
+		Trace:     map[string]any{"router-trace-marker": true},
+		Tags:      types.NewRequestTags(types.TagMap{"router-tag-marker": "legal"}),
+	}
+	out, err := MessagesToAnthropic(req)
+	if err != nil {
+		t.Fatalf("MessagesToAnthropic: %v", err)
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, marker := range []string{
+		"router-user-marker",
+		"router-session-marker",
+		"router-trace-marker",
+		"router-tag-marker",
+	} {
+		if strings.Contains(string(encoded), marker) {
+			t.Fatalf("provider payload leaked %q: %s", marker, encoded)
+		}
+	}
+}
+
 func TestMessagesToAnthropicStripsEmptyTextBlocks(t *testing.T) {
 	// Repro: a multi-turn tool loop replays a near-empty assistant turn (a lone
 	// whitespace token). Anthropic 400s on empty/whitespace text blocks, which

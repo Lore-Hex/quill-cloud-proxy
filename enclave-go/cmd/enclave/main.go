@@ -298,7 +298,7 @@ func serveOne(
 	conn = statsConn
 	defer conn.Close()
 
-	requestReader := bufio.NewReader(conn)
+	requestReader := bufio.NewReaderSize(conn, maxHTTPHeaderLineBytes+1)
 	attestationCount := 0
 	for serveOneRequest(ctx, conn, statsConn, requestReader, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount) {
 	}
@@ -350,7 +350,7 @@ func serveOneRequest(
 		)
 	}()
 
-	method, path, bearer, idempotencyKey, body, err := readRequest(requestReader)
+	method, path, bearer, idempotencyKey, attribution, body, err := readRequest(requestReader)
 	// Request (and its TLS handshake) is fully read; drop the deadline so a
 	// long-running streamed response is never cut off.
 	_ = conn.SetReadDeadline(time.Time{})
@@ -361,6 +361,10 @@ func serveOneRequest(
 		}
 		if errors.Is(err, errBodyTooLarge) {
 			writeError(conn, 413, "request body too large")
+			return
+		}
+		if errors.Is(err, errHeadersTooLarge) {
+			writeError(conn, 431, "request headers too large")
 			return
 		}
 		writeError(conn, 400, "could not read request")
@@ -423,7 +427,7 @@ func serveOneRequest(
 			writeError(conn, 404, "route not found")
 			return
 		}
-		serveEmbeddings(ctx, conn, br, body, trGateway, trEnabled, bearer, byokSecrets, idempotencyKey)
+		serveEmbeddings(ctx, conn, br, body, trGateway, trEnabled, bearer, byokSecrets, idempotencyKey, attribution, requestLogID)
 		return
 	}
 
@@ -464,7 +468,7 @@ func serveOneRequest(
 			writeAnthropicError(conn, 404, "route not found")
 			return
 		}
-		serveMessages(ctx, conn, br, body, trGateway, byokSecrets, bearer, idempotencyKey, requestLogID)
+		serveMessages(ctx, conn, br, body, trGateway, byokSecrets, bearer, idempotencyKey, requestLogID, attribution)
 		return
 	}
 
@@ -505,6 +509,10 @@ func serveOneRequest(
 		routeType = "responses"
 		responsesReq, err := parseResponsesRequest(body)
 		if err != nil {
+			if message, ok := tagValidationMessage(err); ok {
+				writeOpenAIError(conn, 400, message, "invalid_request_error", "invalid_tags", "tags")
+				return
+			}
 			var aerr *adapter.AdapterError
 			if asAdapterErr(err, &aerr) {
 				writeAdapterOpenAIError(conn, aerr)
@@ -532,6 +540,10 @@ func serveOneRequest(
 			return
 		}
 		if err := json.Unmarshal(body, &req); err != nil {
+			if message, ok := tagValidationMessage(err); ok {
+				writeOpenAIError(conn, 400, message, "invalid_request_error", "invalid_tags", "tags")
+				return
+			}
 			writeError(conn, 400, "invalid JSON")
 			return
 		}
@@ -542,6 +554,15 @@ func serveOneRequest(
 		return
 	}
 	req.IdempotencyKey = idempotencyKey
+	applyAttributionHeaders(&req, attribution)
+	if err := validateOrObserveRequestMetadata(&req, requestLogID); err != nil {
+		if message, ok := tagValidationMessage(err); ok {
+			writeOpenAIError(conn, 400, message, "invalid_request_error", "invalid_tags", "tags")
+			return
+		}
+		writeOpenAIError(conn, 400, err.Error(), "invalid_request_error", "invalid_request_metadata", "")
+		return
+	}
 	if err := adapter.RejectUnsupportedN(&req); err != nil {
 		var aerr *adapter.AdapterError
 		if asAdapterErr(err, &aerr) {
@@ -673,6 +694,37 @@ func parseResponsesRequest(body []byte) (*types.OpenAIResponsesRequest, error) {
 		return nil, err
 	}
 	return &req, nil
+}
+
+func applyAttributionHeaders(req *types.OpenAIChatRequest, attribution requestAttributionHeaders) {
+	if req == nil {
+		return
+	}
+	if req.SessionID == "" {
+		req.SessionID = attribution.SessionID
+	}
+	req.App = attribution.App
+	req.HTTPReferer = attribution.HTTPReferer
+	req.AppCategories = append([]string(nil), attribution.AppCategories...)
+	req.OpenRouterMetadata = attribution.OpenRouterMetadata
+}
+
+func applyUsageAttribution(usage *trustedrouter.Usage, req *types.OpenAIChatRequest) {
+	if usage == nil || req == nil {
+		return
+	}
+	usage.Tags = types.CloneTags(req.Tags.Values())
+	usage.App = req.App
+	usage.HTTPReferer = req.HTTPReferer
+	usage.AppCategories = append([]string(nil), req.AppCategories...)
+}
+
+func tagValidationMessage(err error) (string, bool) {
+	var tagErr *types.TagValidationError
+	if errors.As(err, &tagErr) {
+		return tagErr.Error(), true
+	}
+	return "", false
 }
 
 func validateMetadataRoute(
@@ -826,6 +878,7 @@ func serveResponsesNonStreaming(
 		Trace:             req.Trace,
 		Metadata:          req.Metadata,
 	}
+	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
 	settlement, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, outputForUsage)
 	if err != nil {
@@ -833,7 +886,7 @@ func serveResponsesNonStreaming(
 		writeError(conn, 502, "settlement failed")
 		return
 	}
-	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result)
+	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result, req.OpenRouterMetadata)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_metadata_failed model=%q err=%v\n", req.Model, err)
 		writeError(conn, 500, "responses encoding error")
@@ -906,6 +959,7 @@ func serveChatNonStreaming(
 		Trace:             req.Trace,
 		Metadata:          req.Metadata,
 	}
+	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
 	settlement, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text)
 	if err != nil {
@@ -913,7 +967,7 @@ func serveChatNonStreaming(
 		writeError(conn, 502, "settlement failed")
 		return
 	}
-	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result)
+	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result, req.OpenRouterMetadata)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_metadata_failed model=%q err=%v\n", req.Model, err)
 		writeError(conn, 500, "chat completion encoding error")
@@ -961,6 +1015,16 @@ func serveStreaming(
 		req.Model = streamModel
 	}
 	responseModel := customModelResponseModel(req.Model, authorization)
+	var routerMetadata map[string]any
+	if req.OpenRouterMetadata {
+		routerMetadata = openRouterRoutingMetadata(authorization, selectedRoute)
+		if routeType == "responses" {
+			if req.Response == nil {
+				req.Response = &types.ResponseRequestMeta{}
+			}
+			req.Response.OpenRouterMetadata = routerMetadata
+		}
+	}
 	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
 		_ = pr.Close()
 		return
@@ -981,7 +1045,7 @@ func serveStreaming(
 	if routeType == "responses" {
 		result, err = adapter.TransformResponsesStream(pr, statsW, requestID, responseModel, trustedrouter.EstimateInputTokens(req), responseTextConfig(req), req.Response)
 	} else {
-		result, err = adapter.TransformStreamCaptureWithOptions(pr, streamW, requestID, responseModel, chatIncludeUsage(req))
+		result, err = adapter.TransformStreamCaptureWithRouterMetadata(pr, streamW, requestID, responseModel, chatIncludeUsage(req), routerMetadata)
 	}
 	if batchW != nil {
 		if closeErr := batchW.Close(); err == nil {
@@ -1020,6 +1084,7 @@ func serveStreaming(
 		Trace:             req.Trace,
 		Metadata:          req.Metadata,
 	}
+	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
 	if _, err := settleAndBroadcast(
 		ctx,
@@ -1062,14 +1127,24 @@ func serveMessages(
 	bearer string,
 	idempotencyKey string,
 	requestLogID string,
+	attribution requestAttributionHeaders,
 ) {
 	var native adapter.AnthropicNativeRequest
 	if err := json.Unmarshal(body, &native); err != nil {
+		if message, ok := tagValidationMessage(err); ok {
+			writeAnthropicError(conn, 400, message)
+			return
+		}
 		writeAnthropicError(conn, 400, "invalid JSON")
 		return
 	}
 	req := adapter.MessagesToChatShim(&native)
 	req.IdempotencyKey = idempotencyKey
+	applyAttributionHeaders(req, attribution)
+	if err := validateOrObserveRequestMetadata(req, requestLogID); err != nil {
+		writeAnthropicError(conn, 400, err.Error())
+		return
+	}
 	if err := adapter.RejectUnsupportedN(req); err != nil {
 		var aerr *adapter.AdapterError
 		if asAdapterErr(err, &aerr) {
@@ -1159,6 +1234,7 @@ func serveMessages(
 			SelectedEndpoint: selectedEndpoint,
 			Metadata:         req.Metadata,
 		}
+		applyUsageAttribution(&usage, req)
 		applyCacheUsage(&usage, result)
 		if _, err := settleAndBroadcast(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text); err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.messages_settle_failed model=%q err=%v\n", req.Model, err)
@@ -1224,6 +1300,7 @@ func serveMessages(
 		SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
 		Metadata:          req.Metadata,
 	}
+	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
 	if _, err := settleAndBroadcast(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text); err != nil {
 		fmt.Fprintf(os.Stderr,

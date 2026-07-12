@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -21,6 +22,14 @@ import (
 )
 
 var getAttestation = attestation.Get
+
+const (
+	maxHTTPHeaderLineBytes = 16 * 1024
+	maxHTTPHeaderBytes     = 64 * 1024
+	maxHTTPHeaderCount     = 100
+)
+
+var errHeadersTooLarge = errors.New("request headers too large")
 
 type responseStatsConn struct {
 	net.Conn
@@ -147,14 +156,24 @@ func maxDurationSeconds(duration time.Duration, floor float64) float64 {
 	return seconds
 }
 
+type requestAttributionHeaders struct {
+	SessionID          string
+	HTTPReferer        string
+	App                string
+	AppCategories      []string
+	OpenRouterMetadata bool
+}
+
 // readRequest reads a minimal HTTP/1.1 request: status line + headers + body.
-// Returns method + path + bearer + idempotency key + body. We don't validate Host or any
-// other field; the dispatch happens by path in serveOne.
-func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string, body []byte, err error) {
-	statusLine, err := br.ReadString('\n')
+// Attribution headers are retained inside the enclave and sent only to the
+// TrustedRouter control plane, never to model providers.
+func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string, attribution requestAttributionHeaders, body []byte, err error) {
+	statusLineBytes, err := readBoundedHTTPLine(br)
 	if err != nil {
-		return "", "", "", "", nil, err
+		return "", "", "", "", attribution, nil, err
 	}
+	headerBytes := len(statusLineBytes)
+	statusLine := string(statusLineBytes)
 	parts := strings.Fields(statusLine)
 	if len(parts) >= 2 {
 		method = parts[0]
@@ -162,19 +181,30 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 	}
 
 	contentLength := 0
+	headerCount := 0
 	for {
-		line, err := br.ReadString('\n')
+		lineBytes, err := readBoundedHTTPLine(br)
 		if err != nil {
-			return "", "", "", "", nil, err
+			return "", "", "", "", attribution, nil, err
 		}
+		headerBytes += len(lineBytes)
+		if headerBytes > maxHTTPHeaderBytes {
+			return "", "", "", "", attribution, nil, errHeadersTooLarge
+		}
+		line := string(lineBytes)
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
 			break
 		}
-		k, v, ok := strings.Cut(line, ": ")
+		headerCount++
+		if headerCount > maxHTTPHeaderCount {
+			return "", "", "", "", attribution, nil, errHeadersTooLarge
+		}
+		k, v, ok := strings.Cut(line, ":")
 		if !ok {
 			continue
 		}
+		v = strings.TrimSpace(v)
 		switch strings.ToLower(k) {
 		case "authorization":
 			if strings.HasPrefix(v, "Bearer ") {
@@ -186,13 +216,27 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 			}
 		case "idempotency-key":
 			idempotencyKey = strings.TrimSpace(v)
+		case "x-session-id":
+			attribution.SessionID = v
+		case "http-referer":
+			attribution.HTTPReferer = v
+		case "x-openrouter-title":
+			attribution.App = v
+		case "x-title":
+			if attribution.App == "" {
+				attribution.App = v
+			}
+		case "x-openrouter-categories":
+			attribution.AppCategories = splitAttributionCategories(v)
+		case "x-openrouter-metadata", "x-openrouter-experimental-metadata":
+			attribution.OpenRouterMetadata = strings.EqualFold(v, "enabled")
 		case "content-length":
 			parsed, parseErr := strconv.Atoi(v)
 			if parseErr != nil || parsed < 0 {
-				return "", "", "", "", nil, fmt.Errorf("invalid content-length")
+				return "", "", "", "", attribution, nil, fmt.Errorf("invalid content-length")
 			}
 			if parsed > maxRequestBodyBytes {
-				return "", "", "", "", nil, errBodyTooLarge
+				return "", "", "", "", attribution, nil, errBodyTooLarge
 			}
 			contentLength = parsed
 		}
@@ -200,10 +244,38 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 	body = make([]byte, contentLength)
 	if contentLength > 0 {
 		if _, err := io.ReadFull(br, body); err != nil {
-			return "", "", "", "", nil, err
+			return "", "", "", "", attribution, nil, err
 		}
 	}
-	return method, path, bearer, idempotencyKey, body, nil
+	return method, path, bearer, idempotencyKey, attribution, body, nil
+}
+
+func readBoundedHTTPLine(br *bufio.Reader) ([]byte, error) {
+	line, err := br.ReadSlice('\n')
+	if errors.Is(err, bufio.ErrBufferFull) || len(line) > maxHTTPHeaderLineBytes {
+		return nil, errHeadersTooLarge
+	}
+	if err != nil {
+		return nil, err
+	}
+	return line, nil
+}
+
+func splitAttributionCategories(value string) []string {
+	// Retain one entry beyond the supported maximum so validation can report
+	// the error without strings.Split allocating proportional to attacker input.
+	categories := make([]string, 0, 3)
+	for len(categories) < 3 {
+		item, rest, found := strings.Cut(value, ",")
+		if category := strings.TrimSpace(item); category != "" {
+			categories = append(categories, category)
+		}
+		if !found {
+			break
+		}
+		value = rest
+	}
+	return categories
 }
 
 func parseRequestTarget(rawPath string) (string, []byte, error) {

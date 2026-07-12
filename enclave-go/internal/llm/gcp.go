@@ -48,6 +48,46 @@ const (
 	vertexAnthropicVersion = "vertex-2023-10-16"
 )
 
+type vertexAnthropicWireRequest struct {
+	AnthropicVersion string                      `json:"anthropic_version"`
+	Messages         []qtypes.AnthropicMessage   `json:"messages"`
+	System           any                         `json:"system,omitempty"`
+	MaxTokens        int                         `json:"max_tokens"`
+	Temperature      *float64                    `json:"temperature,omitempty"`
+	TopP             *float64                    `json:"top_p,omitempty"`
+	Tools            []qtypes.AnthropicTool      `json:"tools,omitempty"`
+	ToolChoice       *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
+	StopSequences    []string                    `json:"stop_sequences,omitempty"`
+	Thinking         any                         `json:"thinking,omitempty"`
+	Metadata         map[string]any              `json:"metadata,omitempty"`
+	TopK             *int                        `json:"top_k,omitempty"`
+	OutputConfig     any                         `json:"output_config,omitempty"`
+	Stream           bool                        `json:"stream"`
+}
+
+func buildVertexAnthropicWireRequest(
+	modelID string,
+	messages []qtypes.AnthropicMessage,
+	body *qtypes.AnthropicMessagesRequest,
+) vertexAnthropicWireRequest {
+	return vertexAnthropicWireRequest{
+		AnthropicVersion: vertexAnthropicVersion,
+		Messages:         messages,
+		System:           anthropicSystemField(body),
+		MaxTokens:        body.AnthropicDispatchMaxTokens(),
+		Temperature:      anthropicTemperature(modelID, body.Temperature),
+		TopP:             body.TopP,
+		Tools:            body.Tools,
+		ToolChoice:       body.ToolChoice,
+		StopSequences:    body.StopSequences,
+		Thinking:         body.Thinking,
+		Metadata:         body.Metadata,
+		TopK:             body.TopK,
+		OutputConfig:     body.OutputConfig,
+		Stream:           true,
+	}
+}
+
 type gcpClient struct {
 	projectID string
 	region    string // "global", "us-east1", etc.
@@ -136,40 +176,7 @@ func (c *gcpClient) InvokeStreaming(
 	// Build the Vertex-shaped request body. Identical to Anthropic's
 	// Messages API except `anthropic_version` is in the body and `model`
 	// goes into the URL.
-	reqBody := struct {
-		AnthropicVersion string                      `json:"anthropic_version"`
-		Messages         []qtypes.AnthropicMessage   `json:"messages"`
-		System           any                         `json:"system,omitempty"`
-		MaxTokens        int                         `json:"max_tokens"`
-		Temperature      *float64                    `json:"temperature,omitempty"`
-		TopP             *float64                    `json:"top_p,omitempty"`
-		Tools            []qtypes.AnthropicTool      `json:"tools,omitempty"`
-		ToolChoice       *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
-		StopSequences    []string                    `json:"stop_sequences,omitempty"`
-		Thinking         any                         `json:"thinking,omitempty"`
-		Metadata         map[string]any              `json:"metadata,omitempty"`
-		TopK             *int                        `json:"top_k,omitempty"`
-		OutputConfig     any                         `json:"output_config,omitempty"`
-		Stream           bool                        `json:"stream"`
-	}{
-		AnthropicVersion: vertexAnthropicVersion,
-		Messages:         messages,
-		// anthropicSystemField prefers SystemRaw (content blocks preserving
-		// cache_control) over the flattened string, so system prompt-cache
-		// breakpoints survive on the Vertex Anthropic route too.
-		System:        anthropicSystemField(body),
-		MaxTokens:     body.AnthropicDispatchMaxTokens(),
-		Temperature:   anthropicTemperature(modelID, body.Temperature),
-		TopP:          body.TopP,
-		Tools:         body.Tools,
-		ToolChoice:    body.ToolChoice,
-		StopSequences: body.StopSequences,
-		Thinking:      body.Thinking,
-		Metadata:      body.Metadata,
-		TopK:          body.TopK,
-		OutputConfig:  body.OutputConfig,
-		Stream:        true,
-	}
+	reqBody := buildVertexAnthropicWireRequest(modelID, messages, body)
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("llm/gcp: marshal body: %w", err)

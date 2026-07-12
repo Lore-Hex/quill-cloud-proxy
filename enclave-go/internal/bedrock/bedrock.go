@@ -25,6 +25,44 @@ type Client struct {
 	br *bedrockruntime.Client
 }
 
+type anthropicBedrockWireRequest struct {
+	AnthropicVersion string                      `json:"anthropic_version"`
+	System           any                         `json:"system,omitempty"`
+	Messages         []qtypes.AnthropicMessage   `json:"messages"`
+	MaxTokens        int                         `json:"max_tokens"`
+	Temperature      *float64                    `json:"temperature,omitempty"`
+	TopP             *float64                    `json:"top_p,omitempty"`
+	Tools            []qtypes.AnthropicTool      `json:"tools,omitempty"`
+	ToolChoice       *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
+	StopSequences    []string                    `json:"stop_sequences,omitempty"`
+	Thinking         any                         `json:"thinking,omitempty"`
+	Metadata         map[string]any              `json:"metadata,omitempty"`
+	TopK             *int                        `json:"top_k,omitempty"`
+	OutputConfig     any                         `json:"output_config,omitempty"`
+}
+
+func buildAnthropicBedrockWireRequest(body *qtypes.AnthropicMessagesRequest) anthropicBedrockWireRequest {
+	system := any(body.System)
+	if body.SystemRaw != nil {
+		system = body.SystemRaw
+	}
+	return anthropicBedrockWireRequest{
+		AnthropicVersion: body.AnthropicVersion,
+		System:           system,
+		Messages:         body.Messages,
+		MaxTokens:        body.AnthropicDispatchMaxTokens(),
+		Temperature:      body.Temperature,
+		TopP:             body.TopP,
+		Tools:            body.Tools,
+		ToolChoice:       body.ToolChoice,
+		StopSequences:    body.StopSequences,
+		Thinking:         body.Thinking,
+		Metadata:         body.Metadata,
+		TopK:             body.TopK,
+		OutputConfig:     body.OutputConfig,
+	}
+}
+
 // modelIDMap turns the human-friendly model name we accept on the wire
 // into the Bedrock model ID for us-east-1. Confirm against
 // `aws bedrock list-foundation-models --region us-east-1` before launch.
@@ -80,7 +118,7 @@ func (c *Client) InvokeStreaming(
 	body *qtypes.AnthropicMessagesRequest,
 	out io.Writer,
 ) error {
-	bodyBytes, err := json.Marshal(body)
+	bodyBytes, err := json.Marshal(buildAnthropicBedrockWireRequest(body))
 	if err != nil {
 		return fmt.Errorf("bedrock: marshal body: %w", err)
 	}

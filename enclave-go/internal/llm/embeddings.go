@@ -77,19 +77,9 @@ func invokeOpenAICompatibleEmbeddings(
 	if strings.TrimSpace(baseURL) == "" {
 		return nil, fmt.Errorf("llm/%s: missing base URL", provider)
 	}
-	inputs := req.Inputs()
-	if len(inputs) == 0 {
-		return nil, fmt.Errorf("llm/%s: empty embedding input", provider)
-	}
-	payload := map[string]any{
-		"model": embeddingUpstreamModel(provider, req.Model, upstreamModel),
-		"input": inputs,
-	}
-	if req.EncodingFormat != "" {
-		payload["encoding_format"] = req.EncodingFormat
-	}
-	if req.Dimensions != nil {
-		payload["dimensions"] = *req.Dimensions
+	payload, err := openAICompatibleEmbeddingWirePayload(provider, req, upstreamModel)
+	if err != nil {
+		return nil, err
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -144,7 +134,7 @@ func invokeOpenAICompatibleEmbeddings(
 	}
 	promptTokens := parsed.Usage.PromptTokens
 	if promptTokens <= 0 {
-		promptTokens = qtypes.EstimateEmbeddingInputTokens(inputs)
+		promptTokens = qtypes.EstimateEmbeddingInputTokens(req.Inputs())
 	}
 	return &qtypes.EmbeddingResponse{
 		Object: "list",
@@ -152,4 +142,26 @@ func invokeOpenAICompatibleEmbeddings(
 		Model:  req.Model,
 		Usage:  qtypes.EmbeddingUsage{PromptTokens: promptTokens, TotalTokens: promptTokens},
 	}, nil
+}
+
+func openAICompatibleEmbeddingWirePayload(
+	provider string,
+	req *qtypes.EmbeddingRequest,
+	upstreamModel string,
+) (map[string]any, error) {
+	inputs := req.Inputs()
+	if len(inputs) == 0 {
+		return nil, fmt.Errorf("llm/%s: empty embedding input", provider)
+	}
+	payload := map[string]any{
+		"model": embeddingUpstreamModel(provider, req.Model, upstreamModel),
+		"input": inputs,
+	}
+	if req.EncodingFormat != "" {
+		payload["encoding_format"] = req.EncodingFormat
+	}
+	if req.Dimensions != nil {
+		payload["dimensions"] = *req.Dimensions
+	}
+	return payload, nil
 }

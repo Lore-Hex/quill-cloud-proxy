@@ -80,21 +80,26 @@ func (c *Client) Enabled() bool {
 }
 
 type Authorization struct {
-	AuthorizationID       string                             `json:"authorization_id"`
-	WorkspaceID           string                             `json:"workspace_id"`
-	APIKeyHash            string                             `json:"api_key_hash"`
-	Model                 string                             `json:"model"`
-	UpstreamModel         string                             `json:"upstream_model"`
-	EndpointID            string                             `json:"endpoint_id"`
-	Provider              string                             `json:"provider"`
-	UsageType             string                             `json:"usage_type"`
-	LimitUsageType        string                             `json:"limit_usage_type"`
-	BYOKSecretRef         string                             `json:"byok_secret_ref"`
-	BYOKEncryptedSecret   *byokcache.EncryptedSecretEnvelope `json:"byok_encrypted_secret"`
-	BYOKCacheKey          string                             `json:"byok_cache_key"`
-	RouteCandidates       []RouteCandidate                   `json:"route_candidates"`
-	BroadcastDestinations []BroadcastDestination             `json:"broadcast_destinations"`
-	CustomModel           *CustomModel                       `json:"custom_model"`
+	AuthorizationID        string                             `json:"authorization_id"`
+	WorkspaceID            string                             `json:"workspace_id"`
+	APIKeyHash             string                             `json:"api_key_hash"`
+	Model                  string                             `json:"model"`
+	UpstreamModel          string                             `json:"upstream_model"`
+	EndpointID             string                             `json:"endpoint_id"`
+	Provider               string                             `json:"provider"`
+	ProviderName           string                             `json:"provider_name"`
+	RequestedModel         string                             `json:"requested_model"`
+	Region                 string                             `json:"region"`
+	UsageType              string                             `json:"usage_type"`
+	LimitUsageType         string                             `json:"limit_usage_type"`
+	BYOKSecretRef          string                             `json:"byok_secret_ref"`
+	BYOKEncryptedSecret    *byokcache.EncryptedSecretEnvelope `json:"byok_encrypted_secret"`
+	BYOKCacheKey           string                             `json:"byok_cache_key"`
+	RouteCandidates        []RouteCandidate                   `json:"route_candidates"`
+	BroadcastDestinations  []BroadcastDestination             `json:"broadcast_destinations"`
+	CustomModel            *CustomModel                       `json:"custom_model"`
+	Tags                   qtypes.TagMap                      `json:"tags"`
+	RequestMetadataVersion int                                `json:"request_metadata_version"`
 }
 
 type CustomModel struct {
@@ -110,6 +115,7 @@ type RouteCandidate struct {
 	Model               string                             `json:"model"`
 	UpstreamModel       string                             `json:"upstream_model"`
 	Provider            string                             `json:"provider"`
+	ProviderName        string                             `json:"provider_name"`
 	UsageType           string                             `json:"usage_type"`
 	BYOKSecretRef       string                             `json:"byok_secret_ref"`
 	BYOKEncryptedSecret *byokcache.EncryptedSecretEnvelope `json:"byok_encrypted_secret"`
@@ -167,6 +173,10 @@ type Usage struct {
 	SessionID         string
 	Trace             map[string]any
 	Metadata          map[string]any
+	Tags              qtypes.TagMap
+	App               string
+	HTTPReferer       string
+	AppCategories     []string
 	// Prompt-cache token counts when the provider reported them. Sent to
 	// settle for visibility (GatewaySettleRequest is extra="allow");
 	// cache-aware pricing is a control-plane follow-up — today cached
@@ -241,11 +251,35 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	if req.Metadata != nil {
 		body["metadata"] = req.Metadata
 	}
+	if req.Tags != nil {
+		body["tags"] = req.Tags.Values()
+	}
+	if req.App != "" {
+		body["app"] = req.App
+	}
+	if req.HTTPReferer != "" {
+		body["http_referer"] = req.HTTPReferer
+	}
+	if len(req.AppCategories) > 0 {
+		body["app_categories"] = req.AppCategories
+	}
 	var decoded struct {
 		Data Authorization `json:"data"`
 	}
 	if err := c.postJSON(ctx, "/internal/gateway/authorize", body, &decoded); err != nil {
 		return nil, err
+	}
+	if req.Tags != nil && decoded.Data.RequestMetadataVersion < 1 {
+		_ = c.Refund(ctx, &decoded.Data, 503, "request_metadata_unavailable", 0.001, nil)
+		return nil, &ControlPlaneError{
+			Path:       "/internal/gateway/authorize",
+			StatusCode: 503,
+			Type:       "request_metadata_unavailable",
+			Message:    "request tagging is not available on the active control plane",
+		}
+	}
+	if decoded.Data.RequestMetadataVersion >= 1 {
+		req.Tags = qtypes.NewRequestTags(decoded.Data.Tags)
 	}
 	return &decoded.Data, nil
 }
@@ -273,11 +307,44 @@ func (c *Client) AuthorizeEmbeddings(ctx context.Context, bearer string, req *qt
 	if req.User != "" {
 		body["user"] = req.User
 	}
+	if req.SessionID != "" {
+		body["session_id"] = req.SessionID
+	}
+	if req.Metadata != nil {
+		body["metadata"] = req.Metadata
+	}
+	if req.Trace != nil {
+		body["trace"] = req.Trace
+	}
+	if req.Tags != nil {
+		body["tags"] = req.Tags.Values()
+	}
+	if req.App != "" {
+		body["app"] = req.App
+	}
+	if req.HTTPReferer != "" {
+		body["http_referer"] = req.HTTPReferer
+	}
+	if len(req.AppCategories) > 0 {
+		body["app_categories"] = req.AppCategories
+	}
 	var decoded struct {
 		Data Authorization `json:"data"`
 	}
 	if err := c.postJSON(ctx, "/internal/gateway/authorize", body, &decoded); err != nil {
 		return nil, err
+	}
+	if req.Tags != nil && decoded.Data.RequestMetadataVersion < 1 {
+		_ = c.Refund(ctx, &decoded.Data, 503, "request_metadata_unavailable", 0.001, nil)
+		return nil, &ControlPlaneError{
+			Path:       "/internal/gateway/authorize",
+			StatusCode: 503,
+			Type:       "request_metadata_unavailable",
+			Message:    "request tagging is not available on the active control plane",
+		}
+	}
+	if decoded.Data.RequestMetadataVersion >= 1 {
+		req.Tags = qtypes.NewRequestTags(decoded.Data.Tags)
 	}
 	return &decoded.Data, nil
 }
@@ -308,6 +375,10 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	if selectedEndpoint == "" {
 		selectedEndpoint = auth.EndpointID
 	}
+	app := usage.App
+	if app == "" {
+		app = "attested-gateway"
+	}
 	body := map[string]any{
 		"authorization_id":     auth.AuthorizationID,
 		"actual_input_tokens":  usage.InputTokens,
@@ -320,7 +391,7 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 		"elapsed_seconds":      usage.ElapsedSeconds,
 		"selected_model":       selectedModel,
 		"selected_endpoint":    selectedEndpoint,
-		"app":                  "attested-gateway",
+		"app":                  app,
 	}
 	if usage.RouteType != "" {
 		body["route_type"] = usage.RouteType
@@ -336,6 +407,12 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	}
 	if usage.Metadata != nil {
 		body["metadata"] = usage.Metadata
+	}
+	if usage.HTTPReferer != "" {
+		body["http_referer"] = usage.HTTPReferer
+	}
+	if len(usage.AppCategories) > 0 {
+		body["app_categories"] = usage.AppCategories
 	}
 	if usage.FirstTokenSeconds > 0 {
 		body["first_token_seconds"] = usage.FirstTokenSeconds

@@ -128,6 +128,41 @@ func TestBuildOpenAICompatibleRequestCarriesInboundParams(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICompatibleRequestOmitsRouterOnlyMetadata(t *testing.T) {
+	req := &qtypes.OpenAIChatRequest{
+		User:          "user-123",
+		SessionID:     "matter-456",
+		Trace:         map[string]any{"source": "eval"},
+		Tags:          qtypes.NewRequestTags(qtypes.TagMap{"team": "legal"}),
+		App:           "Contract Review",
+		HTTPReferer:   "https://legal.example/app",
+		AppCategories: []string{"legal"},
+	}
+	got := buildOpenAICompatibleRequest(
+		"openai",
+		"gpt-4o-mini",
+		req,
+		&qtypes.AnthropicMessagesRequest{},
+		[]chatMessage{{Role: "user", Content: "private input"}},
+	)
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, forbidden := range []string{
+		"user-123",
+		"matter-456",
+		"source",
+		"team",
+		"Contract Review",
+		"legal.example",
+	} {
+		if strings.Contains(string(body), forbidden) {
+			t.Fatalf("provider payload leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
 func TestBuildOpenAICompatibleRequestOmitsAbsentInboundParams(t *testing.T) {
 	got := buildOpenAICompatibleRequest(
 		"openai",

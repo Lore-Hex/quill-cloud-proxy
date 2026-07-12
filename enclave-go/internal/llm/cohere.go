@@ -28,6 +28,26 @@ type cohereClient struct {
 	httpc   *http.Client
 }
 
+func cohereEmbeddingWirePayload(
+	req *qtypes.EmbeddingRequest,
+	option InvokeOptions,
+) (map[string]any, error) {
+	inputs := req.Inputs()
+	if len(inputs) == 0 {
+		return nil, fmt.Errorf("llm/cohere: empty embedding input")
+	}
+	inputType := strings.TrimSpace(req.InputType)
+	if inputType == "" {
+		inputType = "search_document"
+	}
+	return map[string]any{
+		"model":           embeddingUpstreamModel("cohere", req.Model, option.UpstreamModel),
+		"texts":           inputs,
+		"input_type":      inputType,
+		"embedding_types": []string{"float"},
+	}, nil
+}
+
 func newCohere(apiKey string) *cohereClient {
 	return &cohereClient{
 		apiKey:  strings.TrimSpace(apiKey),
@@ -61,22 +81,9 @@ func (c *cohereClient) InvokeEmbedding(
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, fmt.Errorf("llm/cohere: missing api key")
 	}
-	inputs := req.Inputs()
-	if len(inputs) == 0 {
-		return nil, fmt.Errorf("llm/cohere: empty embedding input")
-	}
-	inputType := strings.TrimSpace(req.InputType)
-	if inputType == "" {
-		// search_document is the right default for indexing a corpus; the
-		// OpenAI embeddings request has no input_type so callers that want
-		// query-time embeddings pass input_type explicitly.
-		inputType = "search_document"
-	}
-	payload := map[string]any{
-		"model":           embeddingUpstreamModel("cohere", req.Model, option.UpstreamModel),
-		"texts":           inputs,
-		"input_type":      inputType,
-		"embedding_types": []string{"float"},
+	payload, err := cohereEmbeddingWirePayload(req, option)
+	if err != nil {
+		return nil, err
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -132,7 +139,7 @@ func (c *cohereClient) InvokeEmbedding(
 	}
 	promptTokens := parsed.Meta.BilledUnits.InputTokens
 	if promptTokens <= 0 {
-		promptTokens = qtypes.EstimateEmbeddingInputTokens(inputs)
+		promptTokens = qtypes.EstimateEmbeddingInputTokens(req.Inputs())
 	}
 	return &qtypes.EmbeddingResponse{
 		Object: "list",

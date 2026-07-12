@@ -639,6 +639,17 @@ type StreamObserver func(StreamDelta)
 // expect. Usage is captured into the StreamResult either way so
 // settlement can bill real token counts instead of chars/4 estimates.
 func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, model string, emitUsageChunk bool) (StreamResult, error) {
+	return TransformStreamCaptureWithRouterMetadata(r, w, requestID, model, emitUsageChunk, nil)
+}
+
+func TransformStreamCaptureWithRouterMetadata(
+	r io.Reader,
+	w io.Writer,
+	requestID string,
+	model string,
+	emitUsageChunk bool,
+	routerMetadata map[string]any,
+) (StreamResult, error) {
 	created := time.Now().Unix()
 	finishReason := "stop"
 	roleSent := false
@@ -669,6 +680,11 @@ func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, mode
 		}
 		if emitUsageChunk && usage != nil {
 			if err := writeUsageChunk(w, requestID, model, created, usage); err != nil {
+				return StreamResult{}, err
+			}
+		}
+		if len(routerMetadata) > 0 {
+			if err := writeRouterMetadataChunk(w, requestID, model, created, routerMetadata); err != nil {
 				return StreamResult{}, err
 			}
 		}
@@ -828,6 +844,29 @@ func TransformStreamCaptureWithOptions(r io.Reader, w io.Writer, requestID, mode
 		return StreamResult{}, err
 	}
 	return finish()
+}
+
+func writeRouterMetadataChunk(
+	w io.Writer,
+	id string,
+	model string,
+	created int64,
+	metadata map[string]any,
+) error {
+	payload := map[string]any{
+		"id":                  id,
+		"object":              "chat.completion.chunk",
+		"created":             created,
+		"model":               model,
+		"choices":             []any{},
+		"openrouter_metadata": metadata,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "data: %s\n\n", body)
+	return err
 }
 
 // streamToolCall accumulates one tool_use block while its OpenAI-shaped

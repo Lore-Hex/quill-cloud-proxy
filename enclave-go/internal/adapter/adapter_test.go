@@ -1536,6 +1536,57 @@ func TestCollectAnthropicTextCapturesUsage(t *testing.T) {
 	}
 }
 
+func TestChatStreamEmitsOptInRouterMetadataBeforeDone(t *testing.T) {
+	var out bytes.Buffer
+	metadata := map[string]any{"requested": "trustedrouter/auto", "attempt": 2}
+	_, err := TransformStreamCaptureWithRouterMetadata(
+		strings.NewReader(usageBearingAnthropicStream),
+		&out,
+		"chatcmpl_meta",
+		"openai/gpt-4o-mini",
+		true,
+		metadata,
+	)
+	if err != nil {
+		t.Fatalf("TransformStreamCaptureWithRouterMetadata: %v", err)
+	}
+	body := out.String()
+	metadataAt := strings.Index(body, `"openrouter_metadata"`)
+	doneAt := strings.Index(body, "data: [DONE]")
+	if metadataAt < 0 || doneAt < 0 || metadataAt > doneAt {
+		t.Fatalf("router metadata must precede DONE: %s", body)
+	}
+}
+
+func TestResponsesStreamEmitsOptInRouterMetadataOnCompletedResponse(t *testing.T) {
+	var out bytes.Buffer
+	meta := &types.ResponseRequestMeta{
+		OpenRouterMetadata: map[string]any{
+			"requested": "trustedrouter/auto",
+			"attempt":   1,
+		},
+	}
+	_, err := TransformResponsesStream(
+		strings.NewReader(usageBearingAnthropicStream),
+		&out,
+		"resp_meta",
+		"openai/gpt-4o-mini",
+		10,
+		nil,
+		meta,
+	)
+	if err != nil {
+		t.Fatalf("TransformResponsesStream: %v", err)
+	}
+	body := out.String()
+	completedAt := strings.Index(body, "response.completed")
+	metadataAt := strings.LastIndex(body, `"openrouter_metadata"`)
+	doneAt := strings.Index(body, "data: [DONE]")
+	if completedAt < 0 || metadataAt < completedAt || doneAt < metadataAt {
+		t.Fatalf("completed response metadata ordering is wrong: %s", body)
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

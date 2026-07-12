@@ -1737,6 +1737,7 @@ func runFusionCallValidatedObservedAttempt(
 		Trace:            req.Trace,
 		Metadata:         req.Metadata,
 	}
+	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
 	var inputForBroadcast any
 	var outputForBroadcast string
@@ -2067,6 +2068,7 @@ func serveFusionFinalStreamingAttempt(
 		Trace:             req.Trace,
 		Metadata:          req.Metadata,
 	}
+	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
 	if _, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, adapter.ResponsesOutputForUsage(result)); err != nil {
 		fmt.Fprintf(os.Stderr,

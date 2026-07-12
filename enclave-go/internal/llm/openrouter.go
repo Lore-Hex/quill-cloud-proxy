@@ -159,6 +159,41 @@ type openRouterMsg struct {
 	Content any    `json:"content"`
 }
 
+func (c *openRouterClient) buildWireRequest(
+	model string,
+	req *qtypes.OpenAIChatRequest,
+	body *qtypes.AnthropicMessagesRequest,
+) openRouterRequest {
+	msgs := make([]openRouterMsg, 0, len(body.Messages)+1)
+	if body.System != "" {
+		msgs = append(msgs, openRouterMsg{Role: "system", Content: body.System})
+	}
+	for _, message := range body.Messages {
+		msgs = append(msgs, openRouterMsg{Role: message.Role, Content: message.Content})
+	}
+	wire := openRouterRequest{
+		Model:            model,
+		Messages:         msgs,
+		Stream:           true,
+		Temperature:      openRouterTemperature(model, body.Temperature),
+		TopP:             body.TopP,
+		Stop:             body.StopSequences,
+		TopK:             body.TopK,
+		Thinking:         body.Thinking,
+		Metadata:         body.Metadata,
+		Seed:             req.Seed,
+		FrequencyPenalty: req.FrequencyPenalty,
+		PresencePenalty:  req.PresencePenalty,
+		Provider:         c.providerRouting(req),
+		Tools:            req.Tools,
+		ToolChoice:       req.ToolChoice,
+	}
+	if body.MaxTokensExplicit {
+		wire.MaxTokens = body.MaxTokens
+	}
+	return wire
+}
+
 // providerRouting pins OpenRouter's upstream-provider choice + enforces
 // ZDR. `data_collection: "deny"` filters to providers that contractually
 // don't log; `only` further narrows to a configured list (default
@@ -221,34 +256,7 @@ func (c *openRouterClient) invokeOne(
 	body *qtypes.AnthropicMessagesRequest,
 	out io.Writer,
 ) error {
-	msgs := make([]openRouterMsg, 0, len(body.Messages)+1)
-	if body.System != "" {
-		msgs = append(msgs, openRouterMsg{Role: "system", Content: body.System})
-	}
-	for _, m := range body.Messages {
-		msgs = append(msgs, openRouterMsg{Role: m.Role, Content: m.Content})
-	}
-
-	reqBody := openRouterRequest{
-		Model:            model,
-		Messages:         msgs,
-		Stream:           true,
-		Temperature:      openRouterTemperature(model, body.Temperature),
-		TopP:             body.TopP,
-		Stop:             body.StopSequences,
-		TopK:             body.TopK,
-		Thinking:         body.Thinking,
-		Metadata:         body.Metadata,
-		Seed:             req.Seed,
-		FrequencyPenalty: req.FrequencyPenalty,
-		PresencePenalty:  req.PresencePenalty,
-		Provider:         c.providerRouting(req),
-		Tools:            req.Tools,
-		ToolChoice:       req.ToolChoice,
-	}
-	if body.MaxTokensExplicit {
-		reqBody.MaxTokens = body.MaxTokens
-	}
+	reqBody := c.buildWireRequest(model, req, body)
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("llm/openrouter: marshal: %w", err)

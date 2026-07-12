@@ -265,6 +265,13 @@ type selectedRouteTracker struct {
 	endpoint string
 	provider string
 	attempts int
+	routes   []routeAttempt
+}
+
+type routeAttempt struct {
+	model    string
+	endpoint string
+	provider string
 }
 
 func newSelectedRouteTracker() *selectedRouteTracker {
@@ -291,13 +298,27 @@ func (t *selectedRouteTracker) Select(option llm.InvokeOptions) {
 	})
 }
 
-func (t *selectedRouteTracker) RecordCandidateAttempt(_ llm.InvokeOptions) {
+func (t *selectedRouteTracker) RecordCandidateAttempt(option llm.InvokeOptions) {
 	if t == nil {
 		return
 	}
 	t.mu.Lock()
 	t.attempts++
+	t.routes = append(t.routes, routeAttempt{
+		model:    option.Model,
+		endpoint: option.EndpointID,
+		provider: option.Provider,
+	})
 	t.mu.Unlock()
+}
+
+func (t *selectedRouteTracker) AttemptedRoutes() []routeAttempt {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]routeAttempt(nil), t.routes...)
 }
 
 func (t *selectedRouteTracker) Ready() <-chan struct{} {

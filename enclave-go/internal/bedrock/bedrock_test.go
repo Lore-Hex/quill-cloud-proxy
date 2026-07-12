@@ -3,7 +3,11 @@
 package bedrock
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
+
+	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 func TestMapModel(t *testing.T) {
@@ -47,5 +51,43 @@ func TestSplitCIDPort(t *testing.T) {
 		if cid != tt.wantCID || port != tt.wantPort {
 			t.Errorf("split(%q) = (%d, %d), want (%d, %d)", tt.input, cid, port, tt.wantCID, tt.wantPort)
 		}
+	}
+}
+
+func TestBedrockWireProjectionExcludesInternalAndRouterOnlyFields(t *testing.T) {
+	body := &qtypes.AnthropicMessagesRequest{
+		AnthropicVersion:   "bedrock-2023-05-31",
+		System:             "system",
+		SystemRaw:          []any{map[string]any{"type": "text", "text": "system"}},
+		Messages:           []qtypes.AnthropicMessage{{Role: "user", Content: "private input"}},
+		MaxTokens:          128,
+		MaxTokensExplicit:  true,
+		AnthropicMaxTokens: 256,
+		NativeContent:      true,
+	}
+	encoded, err := json.Marshal(buildAnthropicBedrockWireRequest(body))
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, forbidden := range []string{
+		"system_raw",
+		"native_content",
+		"max_tokens_explicit",
+		"anthropic_max_tokens",
+		"tags",
+		"trace",
+		"session_id",
+		"http_referer",
+	} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("Bedrock payload contains %q: %s", forbidden, encoded)
+		}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload["max_tokens"] != float64(256) {
+		t.Fatalf("max_tokens = %#v, want 256", payload["max_tokens"])
 	}
 }
