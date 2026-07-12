@@ -95,6 +95,7 @@ type Authorization struct {
 	RouteCandidates       []RouteCandidate                   `json:"route_candidates"`
 	BroadcastDestinations []BroadcastDestination             `json:"broadcast_destinations"`
 	CustomModel           *CustomModel                       `json:"custom_model"`
+	Tags                  qtypes.TagMap                      `json:"tags"`
 }
 
 type CustomModel struct {
@@ -167,6 +168,10 @@ type Usage struct {
 	SessionID         string
 	Trace             map[string]any
 	Metadata          map[string]any
+	Tags              qtypes.TagMap
+	App               string
+	HTTPReferer       string
+	AppCategories     []string
 	// Prompt-cache token counts when the provider reported them. Sent to
 	// settle for visibility (GatewaySettleRequest is extra="allow");
 	// cache-aware pricing is a control-plane follow-up — today cached
@@ -241,12 +246,25 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	if req.Metadata != nil {
 		body["metadata"] = req.Metadata
 	}
+	if req.Tags != nil {
+		body["tags"] = req.Tags
+	}
+	if req.App != "" {
+		body["app"] = req.App
+	}
+	if req.HTTPReferer != "" {
+		body["http_referer"] = req.HTTPReferer
+	}
+	if len(req.AppCategories) > 0 {
+		body["app_categories"] = req.AppCategories
+	}
 	var decoded struct {
 		Data Authorization `json:"data"`
 	}
 	if err := c.postJSON(ctx, "/internal/gateway/authorize", body, &decoded); err != nil {
 		return nil, err
 	}
+	req.Tags = qtypes.CloneTags(decoded.Data.Tags)
 	return &decoded.Data, nil
 }
 
@@ -273,12 +291,34 @@ func (c *Client) AuthorizeEmbeddings(ctx context.Context, bearer string, req *qt
 	if req.User != "" {
 		body["user"] = req.User
 	}
+	if req.SessionID != "" {
+		body["session_id"] = req.SessionID
+	}
+	if req.Metadata != nil {
+		body["metadata"] = req.Metadata
+	}
+	if req.Trace != nil {
+		body["trace"] = req.Trace
+	}
+	if req.Tags != nil {
+		body["tags"] = req.Tags
+	}
+	if req.App != "" {
+		body["app"] = req.App
+	}
+	if req.HTTPReferer != "" {
+		body["http_referer"] = req.HTTPReferer
+	}
+	if len(req.AppCategories) > 0 {
+		body["app_categories"] = req.AppCategories
+	}
 	var decoded struct {
 		Data Authorization `json:"data"`
 	}
 	if err := c.postJSON(ctx, "/internal/gateway/authorize", body, &decoded); err != nil {
 		return nil, err
 	}
+	req.Tags = qtypes.CloneTags(decoded.Data.Tags)
 	return &decoded.Data, nil
 }
 
@@ -308,6 +348,10 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	if selectedEndpoint == "" {
 		selectedEndpoint = auth.EndpointID
 	}
+	app := usage.App
+	if app == "" {
+		app = "attested-gateway"
+	}
 	body := map[string]any{
 		"authorization_id":     auth.AuthorizationID,
 		"actual_input_tokens":  usage.InputTokens,
@@ -320,7 +364,7 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 		"elapsed_seconds":      usage.ElapsedSeconds,
 		"selected_model":       selectedModel,
 		"selected_endpoint":    selectedEndpoint,
-		"app":                  "attested-gateway",
+		"app":                  app,
 	}
 	if usage.RouteType != "" {
 		body["route_type"] = usage.RouteType
@@ -336,6 +380,12 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	}
 	if usage.Metadata != nil {
 		body["metadata"] = usage.Metadata
+	}
+	if usage.HTTPReferer != "" {
+		body["http_referer"] = usage.HTTPReferer
+	}
+	if len(usage.AppCategories) > 0 {
+		body["app_categories"] = usage.AppCategories
 	}
 	if usage.FirstTokenSeconds > 0 {
 		body["first_token_seconds"] = usage.FirstTokenSeconds

@@ -29,15 +29,26 @@ func serveEmbeddings(
 	bearer string,
 	secretCache *byokcache.Cache,
 	idempotencyKey string,
+	attribution requestAttributionHeaders,
 ) {
 	requestStarted := time.Now()
 
 	var req types.EmbeddingRequest
 	if err := json.Unmarshal(rawBody, &req); err != nil {
+		if message, ok := tagValidationMessage(err); ok {
+			writeOpenAIError(conn, 400, message, "invalid_request_error", "invalid_tags", "tags")
+			return
+		}
 		writeOpenAIError(conn, 400, "invalid JSON", "invalid_request_error", "bad_request", "")
 		return
 	}
 	req.IdempotencyKey = idempotencyKey
+	if req.SessionID == "" {
+		req.SessionID = attribution.SessionID
+	}
+	req.App = attribution.App
+	req.HTTPReferer = attribution.HTTPReferer
+	req.AppCategories = append([]string(nil), attribution.AppCategories...)
 	if req.Model == "" {
 		writeOpenAIError(conn, 400, "model is required", "invalid_request_error", "bad_request", "model")
 		return
@@ -116,6 +127,13 @@ func serveEmbeddings(
 			SelectedModel:    req.Model,
 			SelectedEndpoint: authorization.EndpointID,
 			User:             req.User,
+			SessionID:        req.SessionID,
+			Trace:            req.Trace,
+			Metadata:         req.Metadata,
+			Tags:             types.CloneTags(req.Tags),
+			App:              req.App,
+			HTTPReferer:      req.HTTPReferer,
+			AppCategories:    append([]string(nil), req.AppCategories...),
 		}
 		if _, err := trGateway.Settle(ctx, authorization, usage); err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.embeddings_settle_failed model=%q err=%v\n", req.Model, err)

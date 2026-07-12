@@ -206,6 +206,7 @@ type OpenAIChatRequest struct {
 	Trace               map[string]any       `json:"trace,omitempty"`
 	User                string               `json:"user,omitempty"`
 	SessionID           string               `json:"session_id,omitempty"`
+	Tags                TagMap               `json:"tags,omitempty"`
 	ResponseFormat      map[string]any       `json:"response_format,omitempty"`
 	Tools               []any                `json:"tools,omitempty"`
 	Plugins             []any                `json:"plugins,omitempty"`
@@ -215,6 +216,10 @@ type OpenAIChatRequest struct {
 	Response            *ResponseRequestMeta `json:"-"`
 	ResponseModel       string               `json:"-"`
 	IdempotencyKey      string               `json:"-"`
+	App                 string               `json:"-"`
+	HTTPReferer         string               `json:"-"`
+	AppCategories       []string             `json:"-"`
+	OpenRouterMetadata  bool                 `json:"-"`
 }
 
 // NormalizeMaxTokens folds the OpenAI-chat (`max_completion_tokens`) and
@@ -320,6 +325,7 @@ type OpenAIResponsesRequest struct {
 	Trace                map[string]any   `json:"trace,omitempty"`
 	User                 string           `json:"user,omitempty"`
 	SessionID            string           `json:"session_id,omitempty"`
+	Tags                 TagMap           `json:"tags,omitempty"`
 	Store                *bool            `json:"store,omitempty"`
 	Background           *bool            `json:"background,omitempty"`
 	Conversation         any              `json:"conversation,omitempty"`

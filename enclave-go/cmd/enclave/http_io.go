@@ -147,13 +147,21 @@ func maxDurationSeconds(duration time.Duration, floor float64) float64 {
 	return seconds
 }
 
+type requestAttributionHeaders struct {
+	SessionID          string
+	HTTPReferer        string
+	App                string
+	AppCategories      []string
+	OpenRouterMetadata bool
+}
+
 // readRequest reads a minimal HTTP/1.1 request: status line + headers + body.
-// Returns method + path + bearer + idempotency key + body. We don't validate Host or any
-// other field; the dispatch happens by path in serveOne.
-func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string, body []byte, err error) {
+// Attribution headers are retained inside the enclave and sent only to the
+// TrustedRouter control plane, never to model providers.
+func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string, attribution requestAttributionHeaders, body []byte, err error) {
 	statusLine, err := br.ReadString('\n')
 	if err != nil {
-		return "", "", "", "", nil, err
+		return "", "", "", "", attribution, nil, err
 	}
 	parts := strings.Fields(statusLine)
 	if len(parts) >= 2 {
@@ -165,16 +173,17 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
-			return "", "", "", "", nil, err
+			return "", "", "", "", attribution, nil, err
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
 			break
 		}
-		k, v, ok := strings.Cut(line, ": ")
+		k, v, ok := strings.Cut(line, ":")
 		if !ok {
 			continue
 		}
+		v = strings.TrimSpace(v)
 		switch strings.ToLower(k) {
 		case "authorization":
 			if strings.HasPrefix(v, "Bearer ") {
@@ -186,13 +195,27 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 			}
 		case "idempotency-key":
 			idempotencyKey = strings.TrimSpace(v)
+		case "x-session-id":
+			attribution.SessionID = v
+		case "http-referer":
+			attribution.HTTPReferer = v
+		case "x-openrouter-title":
+			attribution.App = v
+		case "x-title":
+			if attribution.App == "" {
+				attribution.App = v
+			}
+		case "x-openrouter-categories":
+			attribution.AppCategories = splitAttributionCategories(v)
+		case "x-openrouter-metadata":
+			attribution.OpenRouterMetadata = strings.EqualFold(v, "enabled")
 		case "content-length":
 			parsed, parseErr := strconv.Atoi(v)
 			if parseErr != nil || parsed < 0 {
-				return "", "", "", "", nil, fmt.Errorf("invalid content-length")
+				return "", "", "", "", attribution, nil, fmt.Errorf("invalid content-length")
 			}
 			if parsed > maxRequestBodyBytes {
-				return "", "", "", "", nil, errBodyTooLarge
+				return "", "", "", "", attribution, nil, errBodyTooLarge
 			}
 			contentLength = parsed
 		}
@@ -200,10 +223,20 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 	body = make([]byte, contentLength)
 	if contentLength > 0 {
 		if _, err := io.ReadFull(br, body); err != nil {
-			return "", "", "", "", nil, err
+			return "", "", "", "", attribution, nil, err
 		}
 	}
-	return method, path, bearer, idempotencyKey, body, nil
+	return method, path, bearer, idempotencyKey, attribution, body, nil
+}
+
+func splitAttributionCategories(value string) []string {
+	var categories []string
+	for _, item := range strings.Split(value, ",") {
+		if category := strings.TrimSpace(item); category != "" {
+			categories = append(categories, category)
+		}
+	}
+	return categories
 }
 
 func parseRequestTarget(rawPath string) (string, []byte, error) {

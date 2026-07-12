@@ -65,6 +65,94 @@ func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 	}
 }
 
+func TestAuthorizeAndSettleCarryAttributionWithoutMutableSettleTags(t *testing.T) {
+	var authorizePayload map[string]any
+	var settlePayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			if err := json.Unmarshal(body, &authorizePayload); err != nil {
+				t.Fatalf("decode authorize: %v", err)
+			}
+			_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_1","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","tags":{"environment":"production","team":"legal"},"route_candidates":[]}}`)
+		case "/internal/gateway/settle":
+			if err := json.Unmarshal(body, &settlePayload); err != nil {
+				t.Fatalf("decode settle: %v", err)
+			}
+			_, _ = io.WriteString(w, `{"data":{"generation_id":"gen_1","cost_microdollars":1}}`)
+		default:
+			t.Fatalf("unexpected path = %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "internal", server.Client())
+	req := &qtypes.OpenAIChatRequest{
+		Model:         "openai/gpt-4o-mini",
+		Messages:      []qtypes.OpenAIChatMessage{{Role: "user", Content: "private prompt"}},
+		User:          "user-123",
+		SessionID:     "matter-456",
+		Trace:         map[string]any{"source": "eval"},
+		Tags:          qtypes.TagMap{"team": "legal"},
+		App:           "Contract Review",
+		HTTPReferer:   "https://legal.example/app",
+		AppCategories: []string{"legal", "productivity"},
+	}
+	auth, err := client.Authorize(t.Context(), "sk-test", req)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if req.Tags["environment"] != "production" {
+		t.Fatalf("effective request tags = %#v", req.Tags)
+	}
+	if authorizePayload["user"] != "user-123" || authorizePayload["session_id"] != "matter-456" {
+		t.Fatalf("authorize attribution = %#v", authorizePayload)
+	}
+	if authorizePayload["http_referer"] != "https://legal.example/app" || authorizePayload["app"] != "Contract Review" {
+		t.Fatalf("authorize app attribution = %#v", authorizePayload)
+	}
+	if strings.Contains(string(mustJSON(t, authorizePayload)), "private prompt") {
+		t.Fatalf("authorize payload leaked prompt: %#v", authorizePayload)
+	}
+
+	_, err = client.Settle(t.Context(), auth, Usage{
+		RequestID:      "req-1",
+		InputTokens:    10,
+		OutputTokens:   2,
+		ElapsedSeconds: 0.1,
+		User:           req.User,
+		SessionID:      req.SessionID,
+		Trace:          req.Trace,
+		Metadata:       req.Metadata,
+		Tags:           req.Tags,
+		App:            req.App,
+		HTTPReferer:    req.HTTPReferer,
+		AppCategories:  req.AppCategories,
+	})
+	if err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if _, ok := settlePayload["tags"]; ok {
+		t.Fatalf("settlement must use authorization-frozen tags server-side: %#v", settlePayload)
+	}
+	if settlePayload["app"] != "Contract Review" || settlePayload["http_referer"] != "https://legal.example/app" {
+		t.Fatalf("settle attribution = %#v", settlePayload)
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return body
+}
+
 func TestValidateKeySendsLookupHashAndRouteOnly(t *testing.T) {
 	rawKey := "test-user-bearer"
 	var payload map[string]any

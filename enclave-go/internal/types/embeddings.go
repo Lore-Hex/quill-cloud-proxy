@@ -7,13 +7,20 @@ import "encoding/json"
 // `InputType` is Cohere-only (search_document / search_query / …); OpenAI
 // and Together ignore it.
 type EmbeddingRequest struct {
-	Model          string `json:"model"`
-	Input          any    `json:"input"`
-	EncodingFormat string `json:"encoding_format,omitempty"`
-	Dimensions     *int   `json:"dimensions,omitempty"`
-	InputType      string `json:"input_type,omitempty"`
-	User           string `json:"user,omitempty"`
-	IdempotencyKey string `json:"-"`
+	Model          string         `json:"model"`
+	Input          any            `json:"input"`
+	EncodingFormat string         `json:"encoding_format,omitempty"`
+	Dimensions     *int           `json:"dimensions,omitempty"`
+	InputType      string         `json:"input_type,omitempty"`
+	User           string         `json:"user,omitempty"`
+	SessionID      string         `json:"session_id,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+	Trace          map[string]any `json:"trace,omitempty"`
+	Tags           TagMap         `json:"tags,omitempty"`
+	IdempotencyKey string         `json:"-"`
+	App            string         `json:"-"`
+	HTTPReferer    string         `json:"-"`
+	AppCategories  []string       `json:"-"`
 }
 
 // EmbeddingData is one embedding in the response. The vector is carried as
