@@ -30,6 +30,7 @@ func serveEmbeddings(
 	secretCache *byokcache.Cache,
 	idempotencyKey string,
 	attribution requestAttributionHeaders,
+	requestLogID string,
 ) {
 	requestStarted := time.Now()
 
@@ -53,15 +54,26 @@ func serveEmbeddings(
 		User:          req.User,
 		SessionID:     req.SessionID,
 		Trace:         req.Trace,
+		Tags:          types.CloneRequestTags(req.Tags),
 		App:           req.App,
 		HTTPReferer:   req.HTTPReferer,
 		AppCategories: req.AppCategories,
 	}
-	if err := chatAttribution.ValidateAttribution(); err != nil {
+	if err := validateOrObserveRequestMetadata(chatAttribution, requestLogID); err != nil {
+		if message, ok := tagValidationMessage(err); ok {
+			writeOpenAIError(conn, 400, message, "invalid_request_error", "invalid_tags", "tags")
+			return
+		}
 		writeOpenAIError(conn, 400, err.Error(), "invalid_request_error", "invalid_request_metadata", "")
 		return
 	}
+	req.User = chatAttribution.User
+	req.SessionID = chatAttribution.SessionID
+	req.Trace = chatAttribution.Trace
+	req.Tags = types.CloneRequestTags(chatAttribution.Tags)
 	req.App = chatAttribution.App
+	req.HTTPReferer = chatAttribution.HTTPReferer
+	req.AppCategories = append([]string(nil), chatAttribution.AppCategories...)
 	if req.Model == "" {
 		writeOpenAIError(conn, 400, "model is required", "invalid_request_error", "bad_request", "model")
 		return
@@ -143,7 +155,7 @@ func serveEmbeddings(
 			SessionID:        req.SessionID,
 			Trace:            req.Trace,
 			Metadata:         req.Metadata,
-			Tags:             types.CloneTags(req.Tags),
+			Tags:             types.CloneTags(req.Tags.Values()),
 			App:              req.App,
 			HTTPReferer:      req.HTTPReferer,
 			AppCategories:    append([]string(nil), req.AppCategories...),

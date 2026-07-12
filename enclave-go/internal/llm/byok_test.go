@@ -133,7 +133,7 @@ func TestBuildOpenAICompatibleRequestOmitsRouterOnlyMetadata(t *testing.T) {
 		User:          "user-123",
 		SessionID:     "matter-456",
 		Trace:         map[string]any{"source": "eval"},
-		Tags:          qtypes.TagMap{"team": "legal"},
+		Tags:          qtypes.NewRequestTags(qtypes.TagMap{"team": "legal"}),
 		App:           "Contract Review",
 		HTTPReferer:   "https://legal.example/app",
 		AppCategories: []string{"legal"},

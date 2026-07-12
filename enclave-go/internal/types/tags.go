@@ -27,6 +27,81 @@ func (e *TagValidationError) Error() string { return e.Message }
 // by TrustedRouter request attribution.
 type TagMap map[string]string
 
+// RequestTags is the inbound JSON wrapper for request tags. It deliberately
+// records a valid-but-incompatible JSON shape instead of failing the entire
+// request decode so the gateway can run an observe-first compatibility phase.
+// Clean, control-plane-issued tags continue to use TagMap directly.
+type RequestTags struct {
+	values        TagMap
+	validationErr *TagValidationError
+}
+
+func (tags *RequestTags) UnmarshalJSON(data []byte) error {
+	tags.values = nil
+	tags.validationErr = nil
+	var decoded map[string]string
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		if !json.Valid(data) {
+			return err
+		}
+		tags.validationErr = &TagValidationError{Message: "tags must be an object with string values"}
+		return nil
+	}
+	validated, err := ValidateTags(decoded)
+	if err != nil {
+		if validationErr, ok := err.(*TagValidationError); ok {
+			tags.validationErr = validationErr
+		} else {
+			tags.validationErr = &TagValidationError{Message: "tags are invalid"}
+		}
+		return nil
+	}
+	tags.values = validated
+	return nil
+}
+
+// MarshalJSON never re-emits an invalid inbound representation. Provider
+// serializers should not include RequestTags at all, but this fail-closed
+// behavior prevents an accidental raw-value leak if a request is marshaled.
+func (tags RequestTags) MarshalJSON() ([]byte, error) {
+	if tags.validationErr != nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(tags.values)
+}
+
+func NewRequestTags(tags TagMap) *RequestTags {
+	if tags == nil {
+		return nil
+	}
+	return &RequestTags{values: CloneTags(tags)}
+}
+
+func CloneRequestTags(tags *RequestTags) *RequestTags {
+	if tags == nil {
+		return nil
+	}
+	cloned := &RequestTags{values: CloneTags(tags.values)}
+	if tags.validationErr != nil {
+		cloned.validationErr = &TagValidationError{Message: tags.validationErr.Message}
+	}
+	return cloned
+}
+
+func (tags *RequestTags) Values() TagMap {
+	if tags == nil || tags.validationErr != nil {
+		return nil
+	}
+	return CloneTags(tags.values)
+}
+
+func (tags *RequestTags) ValidationError() error {
+	if tags == nil || tags.validationErr == nil {
+		return nil
+	}
+	return tags.validationErr
+}
+
 func (tags *TagMap) UnmarshalJSON(data []byte) error {
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		*tags = nil

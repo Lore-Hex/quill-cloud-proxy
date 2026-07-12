@@ -27,8 +27,8 @@ func TestValidateAttributionRejectsInvalidMetadata(t *testing.T) {
 		req  *OpenAIChatRequest
 		want string
 	}{
-		{name: "user", req: &OpenAIChatRequest{User: strings.Repeat("u", 129)}, want: "user"},
-		{name: "session", req: &OpenAIChatRequest{SessionID: strings.Repeat("s", 129)}, want: "session_id"},
+		{name: "user", req: &OpenAIChatRequest{User: strings.Repeat("u", 257)}, want: "user"},
+		{name: "session", req: &OpenAIChatRequest{SessionID: strings.Repeat("s", 257)}, want: "session_id"},
 		{name: "referer scheme", req: &OpenAIChatRequest{HTTPReferer: "file:///etc/passwd"}, want: "http or https"},
 		{name: "categories count", req: &OpenAIChatRequest{AppCategories: []string{"one", "two", "three"}}, want: "at most 2"},
 		{name: "category shape", req: &OpenAIChatRequest{AppCategories: []string{"Legal Ops"}}, want: "lowercase kebab-case"},

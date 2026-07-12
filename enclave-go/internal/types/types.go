@@ -206,7 +206,7 @@ type OpenAIChatRequest struct {
 	Trace               map[string]any       `json:"trace,omitempty"`
 	User                string               `json:"user,omitempty"`
 	SessionID           string               `json:"session_id,omitempty"`
-	Tags                TagMap               `json:"tags,omitempty"`
+	Tags                *RequestTags         `json:"tags,omitempty"`
 	ResponseFormat      map[string]any       `json:"response_format,omitempty"`
 	Tools               []any                `json:"tools,omitempty"`
 	Plugins             []any                `json:"plugins,omitempty"`
@@ -325,7 +325,7 @@ type OpenAIResponsesRequest struct {
 	Trace                map[string]any   `json:"trace,omitempty"`
 	User                 string           `json:"user,omitempty"`
 	SessionID            string           `json:"session_id,omitempty"`
-	Tags                 TagMap           `json:"tags,omitempty"`
+	Tags                 *RequestTags     `json:"tags,omitempty"`
 	Store                *bool            `json:"store,omitempty"`
 	Background           *bool            `json:"background,omitempty"`
 	Conversation         any              `json:"conversation,omitempty"`

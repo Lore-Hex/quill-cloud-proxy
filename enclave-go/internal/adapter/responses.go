@@ -197,7 +197,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 		Trace:          req.Trace,
 		User:           req.User,
 		SessionID:      req.SessionID,
-		Tags:           types.CloneTags(req.Tags),
+		Tags:           types.CloneRequestTags(req.Tags),
 		ResponseFormat: responseFormat,
 		Tools:          tools,
 		ToolChoice:     toolChoice,

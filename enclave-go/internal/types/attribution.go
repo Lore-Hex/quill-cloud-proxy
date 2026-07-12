@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	MaxAttributionUserRunes     = 128
-	MaxAttributionSessionRunes  = 128
+	MaxAttributionUserRunes     = 256
+	MaxAttributionSessionRunes  = 256
 	MaxAttributionAppRunes      = 120
 	MaxAttributionRefererRunes  = 2048
 	MaxAttributionCategories    = 2

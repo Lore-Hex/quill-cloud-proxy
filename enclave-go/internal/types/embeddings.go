@@ -16,7 +16,7 @@ type EmbeddingRequest struct {
 	SessionID      string         `json:"session_id,omitempty"`
 	Metadata       map[string]any `json:"metadata,omitempty"`
 	Trace          map[string]any `json:"trace,omitempty"`
-	Tags           TagMap         `json:"tags,omitempty"`
+	Tags           *RequestTags   `json:"tags,omitempty"`
 	IdempotencyKey string         `json:"-"`
 	App            string         `json:"-"`
 	HTTPReferer    string         `json:"-"`

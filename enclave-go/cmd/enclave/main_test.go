@@ -6158,6 +6158,55 @@ func TestReadRequestRejectsOversizedBodyBeforeAllocation(t *testing.T) {
 	}
 }
 
+func TestReadRequestBoundsUnauthenticatedHeaders(t *testing.T) {
+	t.Run("line", func(t *testing.T) {
+		raw := "GET /health HTTP/1.1\r\nX-Fill: " + strings.Repeat("x", maxHTTPHeaderLineBytes) + "\r\n\r\n"
+		_, _, _, _, _, _, err := readRequest(
+			bufio.NewReaderSize(strings.NewReader(raw), maxHTTPHeaderLineBytes+1),
+		)
+		if !errors.Is(err, errHeadersTooLarge) {
+			t.Fatalf("err = %v, want errHeadersTooLarge", err)
+		}
+	})
+
+	t.Run("total", func(t *testing.T) {
+		var raw strings.Builder
+		raw.WriteString("GET /health HTTP/1.1\r\n")
+		for index := 0; index < 20; index++ {
+			fmt.Fprintf(&raw, "X-Fill-%d: %s\r\n", index, strings.Repeat("x", 4*1024))
+		}
+		raw.WriteString("\r\n")
+		_, _, _, _, _, _, err := readRequest(
+			bufio.NewReaderSize(strings.NewReader(raw.String()), maxHTTPHeaderLineBytes+1),
+		)
+		if !errors.Is(err, errHeadersTooLarge) {
+			t.Fatalf("err = %v, want errHeadersTooLarge", err)
+		}
+	})
+
+	t.Run("count", func(t *testing.T) {
+		var raw strings.Builder
+		raw.WriteString("GET /health HTTP/1.1\r\n")
+		for index := 0; index <= maxHTTPHeaderCount; index++ {
+			fmt.Fprintf(&raw, "X-%d: value\r\n", index)
+		}
+		raw.WriteString("\r\n")
+		_, _, _, _, _, _, err := readRequest(
+			bufio.NewReaderSize(strings.NewReader(raw.String()), maxHTTPHeaderLineBytes+1),
+		)
+		if !errors.Is(err, errHeadersTooLarge) {
+			t.Fatalf("err = %v, want errHeadersTooLarge", err)
+		}
+	})
+}
+
+func TestSplitAttributionCategoriesCapsBeforeValidation(t *testing.T) {
+	categories := splitAttributionCategories(strings.Repeat("legal,", 10_000))
+	if len(categories) != 3 {
+		t.Fatalf("len(categories) = %d, want 3", len(categories))
+	}
+}
+
 func TestReadRequestAcceptsVisionPayloadAboveLegacyLimit(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()

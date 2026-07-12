@@ -118,7 +118,6 @@ func annotateSettledResponseMetadata(
 		payload["openrouter_metadata"] = openRouterRoutingMetadata(
 			authorization,
 			selectedRoute,
-			invokeOptions,
 		)
 	}
 
@@ -132,7 +131,6 @@ func annotateSettledResponseMetadata(
 func openRouterRoutingMetadata(
 	authorization *trustedrouter.Authorization,
 	selectedRoute *selectedRouteTracker,
-	invokeOptions []llm.InvokeOptions,
 ) map[string]any {
 	requested := ""
 	region := ""
@@ -164,6 +162,19 @@ func openRouterRoutingMetadata(
 			selectedEndpoint = authorization.EndpointID
 		}
 	}
+	selectedModelInternal := selectedModel
+	selectedProviderInternal := selectedProvider
+	selectedEndpointInternal := selectedEndpoint
+	customModelID := ""
+	if authorization != nil && authorization.CustomModel != nil {
+		customModelID = strings.TrimSpace(authorization.CustomModel.ID)
+	}
+	if customModelID != "" {
+		requested = customModelID
+		selectedModel = customModelID
+		selectedProvider = "trustedrouter"
+		selectedEndpoint = ""
+	}
 	attempt := 0
 	fallbacks := 0
 	if selectedRoute != nil {
@@ -179,46 +190,51 @@ func openRouterRoutingMetadata(
 	} else if strings.HasPrefix(requested, "trustedrouter/") {
 		strategy = "alias"
 	}
-	available := make([]map[string]any, 0, routeCandidateCount(authorization, invokeOptions))
-	if authorization != nil && len(authorization.RouteCandidates) > 0 {
-		for _, candidate := range authorization.RouteCandidates {
-			provider := candidate.ProviderName
-			if provider == "" {
-				provider = candidate.Provider
-			}
-			available = append(available, map[string]any{
-				"provider": provider,
-				"model":    candidate.Model,
-				"selected": candidate.EndpointID == selectedEndpoint,
-			})
+	attempted := selectedRoute.AttemptedRoutes()
+	available := make([]map[string]any, 0, len(attempted))
+	for _, route := range attempted {
+		model := route.model
+		provider := route.provider
+		selected := route.endpoint != "" && route.endpoint == selectedEndpointInternal
+		if route.endpoint == "" {
+			selected = route.model == selectedModelInternal && route.provider == selectedProviderInternal
 		}
-	} else if authorization != nil {
-		provider := authorization.ProviderName
-		if provider == "" {
-			provider = authorization.Provider
+		if customModelID != "" {
+			model = customModelID
+			provider = "trustedrouter"
 		}
 		available = append(available, map[string]any{
 			"provider": provider,
+			"model":    model,
+			"selected": selected,
+		})
+	}
+	if len(available) == 0 && selectedModel != "" {
+		available = append(available, map[string]any{
+			"provider": selectedProvider,
 			"model":    selectedModel,
 			"selected": true,
 		})
 	}
-	return map[string]any{
+	metadata := map[string]any{
 		"requested": requested,
 		"strategy":  strategy,
-		"region":    region,
 		"summary": fmt.Sprintf(
 			"available=%d, selected=%s",
 			len(available),
 			selectedProvider,
 		),
 		"attempt": attempt,
-		"is_byok": strings.EqualFold(usageType, "BYOK"),
 		"endpoints": map[string]any{
 			"total":     len(available),
 			"available": available,
 		},
 	}
+	if customModelID == "" {
+		metadata["region"] = region
+		metadata["is_byok"] = strings.EqualFold(usageType, "BYOK")
+	}
+	return metadata
 }
 
 func applyUsageProviderSummary(usage map[string]any, providerUsage map[string]any) {

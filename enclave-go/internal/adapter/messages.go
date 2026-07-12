@@ -43,7 +43,7 @@ type AnthropicNativeRequest struct {
 	Trace         map[string]any             `json:"trace,omitempty"`
 	User          string                     `json:"user,omitempty"`
 	SessionID     string                     `json:"session_id,omitempty"`
-	Tags          types.TagMap               `json:"tags,omitempty"`
+	Tags          *types.RequestTags         `json:"tags,omitempty"`
 }
 
 // MessagesToAnthropic validates the native request and builds the
@@ -194,7 +194,7 @@ func MessagesToChatShim(req *AnthropicNativeRequest) *types.OpenAIChatRequest {
 		Trace:       req.Trace,
 		User:        req.User,
 		SessionID:   req.SessionID,
-		Tags:        types.CloneTags(req.Tags),
+		Tags:        types.CloneRequestTags(req.Tags),
 	}
 }
 

@@ -78,7 +78,7 @@ func TestAuthorizeAndSettleCarryAttributionWithoutMutableSettleTags(t *testing.T
 			if err := json.Unmarshal(body, &authorizePayload); err != nil {
 				t.Fatalf("decode authorize: %v", err)
 			}
-			_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_1","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","tags":{"environment":"production","team":"legal"},"route_candidates":[]}}`)
+			_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_1","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","request_metadata_version":1,"tags":{"environment":"production","team":"legal"},"route_candidates":[]}}`)
 		case "/internal/gateway/settle":
 			if err := json.Unmarshal(body, &settlePayload); err != nil {
 				t.Fatalf("decode settle: %v", err)
@@ -97,7 +97,7 @@ func TestAuthorizeAndSettleCarryAttributionWithoutMutableSettleTags(t *testing.T
 		User:          "user-123",
 		SessionID:     "matter-456",
 		Trace:         map[string]any{"source": "eval"},
-		Tags:          qtypes.TagMap{"team": "legal"},
+		Tags:          qtypes.NewRequestTags(qtypes.TagMap{"team": "legal"}),
 		App:           "Contract Review",
 		HTTPReferer:   "https://legal.example/app",
 		AppCategories: []string{"legal", "productivity"},
@@ -106,7 +106,7 @@ func TestAuthorizeAndSettleCarryAttributionWithoutMutableSettleTags(t *testing.T
 	if err != nil {
 		t.Fatalf("Authorize: %v", err)
 	}
-	if req.Tags["environment"] != "production" {
+	if req.Tags.Values()["environment"] != "production" {
 		t.Fatalf("effective request tags = %#v", req.Tags)
 	}
 	if authorizePayload["user"] != "user-123" || authorizePayload["session_id"] != "matter-456" {
@@ -128,7 +128,7 @@ func TestAuthorizeAndSettleCarryAttributionWithoutMutableSettleTags(t *testing.T
 		SessionID:      req.SessionID,
 		Trace:          req.Trace,
 		Metadata:       req.Metadata,
-		Tags:           req.Tags,
+		Tags:           req.Tags.Values(),
 		App:            req.App,
 		HTTPReferer:    req.HTTPReferer,
 		AppCategories:  req.AppCategories,
@@ -141,6 +141,36 @@ func TestAuthorizeAndSettleCarryAttributionWithoutMutableSettleTags(t *testing.T
 	}
 	if settlePayload["app"] != "Contract Review" || settlePayload["http_referer"] != "https://legal.example/app" {
 		t.Fatalf("settle attribution = %#v", settlePayload)
+	}
+}
+
+func TestAuthorizeRefundsAndFailsWhenControlPlaneLacksTagCapability(t *testing.T) {
+	refunds := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_old","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"endpoint_1","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+		case "/internal/gateway/refund":
+			refunds++
+			_, _ = io.WriteString(w, `{"data":{"refunded":true}}`)
+		default:
+			t.Fatalf("unexpected path = %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "internal", server.Client())
+	req := &qtypes.OpenAIChatRequest{
+		Model: "openai/gpt-4o-mini",
+		Tags:  qtypes.NewRequestTags(qtypes.TagMap{"team": "legal"}),
+	}
+	_, err := client.Authorize(t.Context(), "sk-test", req)
+	var controlErr *ControlPlaneError
+	if !errors.As(err, &controlErr) || controlErr.StatusCode != 503 || controlErr.Type != "request_metadata_unavailable" {
+		t.Fatalf("err = %#v, want request_metadata_unavailable 503", err)
+	}
+	if refunds != 1 {
+		t.Fatalf("refunds = %d, want 1", refunds)
 	}
 }
 

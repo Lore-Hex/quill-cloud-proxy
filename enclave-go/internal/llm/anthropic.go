@@ -126,40 +126,9 @@ func (c *anthropicClient) InvokeStreaming(
 
 	// Build the Anthropic Messages API body. Same shape as `body` but with
 	// the resolved upstream model id and `stream: true`.
-	reqBody := struct {
-		Model         string                      `json:"model"`
-		Messages      []qtypes.AnthropicMessage   `json:"messages"`
-		System        any                         `json:"system,omitempty"`
-		MaxTokens     int                         `json:"max_tokens"`
-		Temperature   *float64                    `json:"temperature,omitempty"`
-		TopP          *float64                    `json:"top_p,omitempty"`
-		Tools         []qtypes.AnthropicTool      `json:"tools,omitempty"`
-		ToolChoice    *qtypes.AnthropicToolChoice `json:"tool_choice,omitempty"`
-		StopSequences []string                    `json:"stop_sequences,omitempty"`
-		Thinking      any                         `json:"thinking,omitempty"`
-		Metadata      map[string]any              `json:"metadata,omitempty"`
-		TopK          *int                        `json:"top_k,omitempty"`
-		OutputConfig  any                         `json:"output_config,omitempty"`
-		Stream        bool                        `json:"stream"`
-	}{
-		Model:     model,
-		Messages:  messages,
-		System:    anthropicSystemField(body),
-		MaxTokens: body.AnthropicDispatchMaxTokens(),
-		// Credits path was sending temperature raw; opus-4.7/4.8 reject it
-		// (400 "temperature is deprecated"). Route through the same helper the
-		// BYOK path already uses so the omission is consistent across paths.
-		Temperature:   anthropicTemperature(model, body.Temperature),
-		TopP:          body.TopP,
-		Tools:         body.Tools,
-		ToolChoice:    body.ToolChoice,
-		StopSequences: body.StopSequences,
-		Thinking:      body.Thinking,
-		Metadata:      body.Metadata,
-		TopK:          body.TopK,
-		OutputConfig:  body.OutputConfig,
-		Stream:        true,
-	}
+	// Credits and BYOK share one explicit provider projection so router-only
+	// metadata cannot diverge across the two Anthropic paths.
+	reqBody := buildAnthropicWireRequest(model, messages, body)
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("llm/anthropic: marshal body: %w", err)

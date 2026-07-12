@@ -298,7 +298,7 @@ func serveOne(
 	conn = statsConn
 	defer conn.Close()
 
-	requestReader := bufio.NewReader(conn)
+	requestReader := bufio.NewReaderSize(conn, maxHTTPHeaderLineBytes+1)
 	attestationCount := 0
 	for serveOneRequest(ctx, conn, statsConn, requestReader, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount) {
 	}
@@ -363,6 +363,10 @@ func serveOneRequest(
 			writeError(conn, 413, "request body too large")
 			return
 		}
+		if errors.Is(err, errHeadersTooLarge) {
+			writeError(conn, 431, "request headers too large")
+			return
+		}
 		writeError(conn, 400, "could not read request")
 		return
 	}
@@ -423,7 +427,7 @@ func serveOneRequest(
 			writeError(conn, 404, "route not found")
 			return
 		}
-		serveEmbeddings(ctx, conn, br, body, trGateway, trEnabled, bearer, byokSecrets, idempotencyKey, attribution)
+		serveEmbeddings(ctx, conn, br, body, trGateway, trEnabled, bearer, byokSecrets, idempotencyKey, attribution, requestLogID)
 		return
 	}
 
@@ -551,7 +555,11 @@ func serveOneRequest(
 	}
 	req.IdempotencyKey = idempotencyKey
 	applyAttributionHeaders(&req, attribution)
-	if err := req.ValidateAttribution(); err != nil {
+	if err := validateOrObserveRequestMetadata(&req, requestLogID); err != nil {
+		if message, ok := tagValidationMessage(err); ok {
+			writeOpenAIError(conn, 400, message, "invalid_request_error", "invalid_tags", "tags")
+			return
+		}
 		writeOpenAIError(conn, 400, err.Error(), "invalid_request_error", "invalid_request_metadata", "")
 		return
 	}
@@ -705,7 +713,7 @@ func applyUsageAttribution(usage *trustedrouter.Usage, req *types.OpenAIChatRequ
 	if usage == nil || req == nil {
 		return
 	}
-	usage.Tags = types.CloneTags(req.Tags)
+	usage.Tags = types.CloneTags(req.Tags.Values())
 	usage.App = req.App
 	usage.HTTPReferer = req.HTTPReferer
 	usage.AppCategories = append([]string(nil), req.AppCategories...)
@@ -1009,7 +1017,7 @@ func serveStreaming(
 	responseModel := customModelResponseModel(req.Model, authorization)
 	var routerMetadata map[string]any
 	if req.OpenRouterMetadata {
-		routerMetadata = openRouterRoutingMetadata(authorization, selectedRoute, invokeOptions)
+		routerMetadata = openRouterRoutingMetadata(authorization, selectedRoute)
 		if routeType == "responses" {
 			if req.Response == nil {
 				req.Response = &types.ResponseRequestMeta{}
@@ -1133,7 +1141,7 @@ func serveMessages(
 	req := adapter.MessagesToChatShim(&native)
 	req.IdempotencyKey = idempotencyKey
 	applyAttributionHeaders(req, attribution)
-	if err := req.ValidateAttribution(); err != nil {
+	if err := validateOrObserveRequestMetadata(req, requestLogID); err != nil {
 		writeAnthropicError(conn, 400, err.Error())
 		return
 	}

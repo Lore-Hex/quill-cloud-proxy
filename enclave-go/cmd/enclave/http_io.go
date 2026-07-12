@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -21,6 +22,14 @@ import (
 )
 
 var getAttestation = attestation.Get
+
+const (
+	maxHTTPHeaderLineBytes = 16 * 1024
+	maxHTTPHeaderBytes     = 64 * 1024
+	maxHTTPHeaderCount     = 100
+)
+
+var errHeadersTooLarge = errors.New("request headers too large")
 
 type responseStatsConn struct {
 	net.Conn
@@ -159,10 +168,12 @@ type requestAttributionHeaders struct {
 // Attribution headers are retained inside the enclave and sent only to the
 // TrustedRouter control plane, never to model providers.
 func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string, attribution requestAttributionHeaders, body []byte, err error) {
-	statusLine, err := br.ReadString('\n')
+	statusLineBytes, err := readBoundedHTTPLine(br)
 	if err != nil {
 		return "", "", "", "", attribution, nil, err
 	}
+	headerBytes := len(statusLineBytes)
+	statusLine := string(statusLineBytes)
 	parts := strings.Fields(statusLine)
 	if len(parts) >= 2 {
 		method = parts[0]
@@ -170,14 +181,24 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 	}
 
 	contentLength := 0
+	headerCount := 0
 	for {
-		line, err := br.ReadString('\n')
+		lineBytes, err := readBoundedHTTPLine(br)
 		if err != nil {
 			return "", "", "", "", attribution, nil, err
 		}
+		headerBytes += len(lineBytes)
+		if headerBytes > maxHTTPHeaderBytes {
+			return "", "", "", "", attribution, nil, errHeadersTooLarge
+		}
+		line := string(lineBytes)
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
 			break
+		}
+		headerCount++
+		if headerCount > maxHTTPHeaderCount {
+			return "", "", "", "", attribution, nil, errHeadersTooLarge
 		}
 		k, v, ok := strings.Cut(line, ":")
 		if !ok {
@@ -229,12 +250,30 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 	return method, path, bearer, idempotencyKey, attribution, body, nil
 }
 
+func readBoundedHTTPLine(br *bufio.Reader) ([]byte, error) {
+	line, err := br.ReadSlice('\n')
+	if errors.Is(err, bufio.ErrBufferFull) || len(line) > maxHTTPHeaderLineBytes {
+		return nil, errHeadersTooLarge
+	}
+	if err != nil {
+		return nil, err
+	}
+	return line, nil
+}
+
 func splitAttributionCategories(value string) []string {
-	var categories []string
-	for _, item := range strings.Split(value, ",") {
+	// Retain one entry beyond the supported maximum so validation can report
+	// the error without strings.Split allocating proportional to attacker input.
+	categories := make([]string, 0, 3)
+	for len(categories) < 3 {
+		item, rest, found := strings.Cut(value, ",")
 		if category := strings.TrimSpace(item); category != "" {
 			categories = append(categories, category)
 		}
+		if !found {
+			break
+		}
+		value = rest
 	}
 	return categories
 }

@@ -44,6 +44,29 @@ func TestTagMapRejectsInvalidShapes(t *testing.T) {
 	}
 }
 
+func TestRequestTagsCaptureInvalidCompatibleJSONWithoutFailingBodyDecode(t *testing.T) {
+	for _, raw := range []string{
+		`[{"Key":"team","Value":"legal"}]`,
+		`{"priority":7}`,
+		`{"bad#key":"legal"}`,
+	} {
+		var tags RequestTags
+		if err := json.Unmarshal([]byte(raw), &tags); err != nil {
+			t.Fatalf("Unmarshal(%s): %v", raw, err)
+		}
+		if tags.ValidationError() == nil {
+			t.Fatalf("ValidationError(%s) = nil", raw)
+		}
+		if tags.Values() != nil {
+			t.Fatalf("Values(%s) = %#v, want nil", raw, tags.Values())
+		}
+		encoded, err := json.Marshal(tags)
+		if err != nil || string(encoded) != "null" {
+			t.Fatalf("Marshal(%s) = %s, %v; want null", raw, encoded, err)
+		}
+	}
+}
+
 func TestTagMapEnforcesCountAndAggregateSize(t *testing.T) {
 	tooMany := make(map[string]string, MaxTags+1)
 	for index := range MaxTags + 1 {
