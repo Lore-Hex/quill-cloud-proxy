@@ -128,7 +128,6 @@ func TestAuthorizeAndSettleCarryAttributionWithoutMutableSettleTags(t *testing.T
 		SessionID:      req.SessionID,
 		Trace:          req.Trace,
 		Metadata:       req.Metadata,
-		Tags:           req.Tags.Values(),
 		App:            req.App,
 		HTTPReferer:    req.HTTPReferer,
 		AppCategories:  req.AppCategories,
@@ -141,6 +140,59 @@ func TestAuthorizeAndSettleCarryAttributionWithoutMutableSettleTags(t *testing.T
 	}
 	if settlePayload["app"] != "Contract Review" || settlePayload["http_referer"] != "https://legal.example/app" {
 		t.Fatalf("settle attribution = %#v", settlePayload)
+	}
+}
+
+func TestSettleMapsTrustedSyntheticAppSentinelToDefault(t *testing.T) {
+	tests := []struct {
+		name string
+		app  string
+		want string
+	}{
+		{name: "sentinel exact", app: "TrustedRouter Synthetic", want: "attested-gateway"},
+		{name: "sentinel mixed case", app: "trustedrouter synthetic", want: "attested-gateway"},
+		{name: "client app", app: "Customer Portal", want: "Customer Portal"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var payload map[string]any
+			client := New("https://control.example", "internal", &http.Client{
+				Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					if r.URL.Path != "/internal/gateway/settle" {
+						t.Fatalf("path = %s", r.URL.Path)
+					}
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Fatalf("read body: %v", err)
+					}
+					if err := json.Unmarshal(body, &payload); err != nil {
+						t.Fatalf("decode body: %v", err)
+					}
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(strings.NewReader(`{"data":{"generation_id":"gen_1","cost_microdollars":1}}`)),
+					}, nil
+				}),
+			})
+			_, err := client.Settle(t.Context(), &Authorization{
+				AuthorizationID: "auth_1",
+				Model:           "openai/gpt-4o-mini",
+				EndpointID:      "endpoint_1",
+			}, Usage{
+				RequestID:      "req_1",
+				InputTokens:    1,
+				OutputTokens:   1,
+				ElapsedSeconds: 0.001,
+				App:            test.app,
+			})
+			if err != nil {
+				t.Fatalf("Settle: %v", err)
+			}
+			if got := payload["app"]; got != test.want {
+				t.Fatalf("app = %v, want %q; payload=%#v", got, test.want, payload)
+			}
+		})
 	}
 }
 
@@ -181,6 +233,12 @@ func mustJSON(t *testing.T, value any) []byte {
 		t.Fatalf("marshal: %v", err)
 	}
 	return body
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func TestValidateKeySendsLookupHashAndRouteOnly(t *testing.T) {

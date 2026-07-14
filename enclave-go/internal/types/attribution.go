@@ -66,19 +66,19 @@ func (r *OpenAIChatRequest) ValidateAttribution() error {
 	if r.Trace == nil {
 		return nil
 	}
+	stats, err := traceItemStats(r.Trace, 1, traceStats{})
+	if err != nil {
+		return err
+	}
+	if stats.Items > MaxTraceItems {
+		return &AttributionValidationError{Message: "trace may contain at most 256 keys and array elements"}
+	}
 	encoded, err := json.Marshal(r.Trace)
 	if err != nil {
 		return &AttributionValidationError{Message: "trace must contain valid JSON values"}
 	}
 	if len(encoded) > MaxTraceUTF8Bytes {
 		return &AttributionValidationError{Message: "trace must use at most 8192 UTF-8 bytes"}
-	}
-	items, err := traceItemCount(r.Trace, 1)
-	if err != nil {
-		return err
-	}
-	if items > MaxTraceItems {
-		return &AttributionValidationError{Message: "trace may contain at most 256 keys and array elements"}
 	}
 	return nil
 }
@@ -90,33 +90,65 @@ func boundedAttributionString(value, field string, limit int) error {
 	return nil
 }
 
-func traceItemCount(value any, depth int) (int, error) {
+type traceStats struct {
+	Items    int
+	MinBytes int
+}
+
+func traceItemStats(value any, depth int, stats traceStats) (traceStats, error) {
 	if depth > MaxTraceDepth {
-		return 0, &AttributionValidationError{Message: "trace may be at most 8 levels deep"}
+		return stats, &AttributionValidationError{Message: "trace may be at most 8 levels deep"}
+	}
+	stats.MinBytes += traceMinBytes(value)
+	if stats.MinBytes > MaxTraceUTF8Bytes {
+		return stats, &AttributionValidationError{Message: "trace must use at most 8192 UTF-8 bytes"}
 	}
 	switch item := value.(type) {
 	case map[string]any:
-		count := len(item)
-		for _, child := range item {
-			childCount, err := traceItemCount(child, depth+1)
-			if err != nil {
-				return 0, err
+		for key, child := range item {
+			stats.Items++
+			if stats.Items > MaxTraceItems {
+				return stats, &AttributionValidationError{Message: "trace may contain at most 256 keys and array elements"}
 			}
-			count += childCount
+			stats.MinBytes += len(key)
+			if stats.MinBytes > MaxTraceUTF8Bytes {
+				return stats, &AttributionValidationError{Message: "trace must use at most 8192 UTF-8 bytes"}
+			}
+			nextStats, err := traceItemStats(child, depth+1, stats)
+			if err != nil {
+				return nextStats, err
+			}
+			stats = nextStats
 		}
-		return count, nil
+		return stats, nil
 	case []any:
-		count := len(item)
 		for _, child := range item {
-			childCount, err := traceItemCount(child, depth+1)
-			if err != nil {
-				return 0, err
+			stats.Items++
+			if stats.Items > MaxTraceItems {
+				return stats, &AttributionValidationError{Message: "trace may contain at most 256 keys and array elements"}
 			}
-			count += childCount
+			nextStats, err := traceItemStats(child, depth+1, stats)
+			if err != nil {
+				return nextStats, err
+			}
+			stats = nextStats
 		}
-		return count, nil
+		return stats, nil
 	default:
-		return 0, nil
+		return stats, nil
+	}
+}
+
+func traceMinBytes(value any) int {
+	switch item := value.(type) {
+	case map[string]any, []any:
+		return 2
+	case string:
+		return len(item)
+	case bool, nil:
+		return 4
+	default:
+		return 1
 	}
 }
 

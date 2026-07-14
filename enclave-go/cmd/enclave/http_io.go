@@ -24,7 +24,7 @@ import (
 var getAttestation = attestation.Get
 
 const (
-	maxHTTPHeaderLineBytes = 16 * 1024
+	maxHTTPHeaderLineBytes = 16*1024 - 1
 	maxHTTPHeaderBytes     = 64 * 1024
 	maxHTTPHeaderCount     = 100
 )

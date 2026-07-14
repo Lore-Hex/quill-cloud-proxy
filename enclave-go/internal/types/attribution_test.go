@@ -46,6 +46,18 @@ func TestValidateAttributionRejectsInvalidMetadata(t *testing.T) {
 	}
 }
 
+func TestTraceItemStatsRejectsHugeStringBeforeMarshal(t *testing.T) {
+	stats, err := traceItemStats(map[string]any{
+		"payload": strings.Repeat("x", 1<<20),
+	}, 1, traceStats{})
+	if err == nil || !strings.Contains(err.Error(), "8192 UTF-8 bytes") {
+		t.Fatalf("err = %v, want trace byte limit", err)
+	}
+	if stats.MinBytes <= MaxTraceUTF8Bytes {
+		t.Fatalf("min bytes = %d, want over %d", stats.MinBytes, MaxTraceUTF8Bytes)
+	}
+}
+
 func nestedTrace(depth int) map[string]any {
 	var value any = "leaf"
 	for range depth {
