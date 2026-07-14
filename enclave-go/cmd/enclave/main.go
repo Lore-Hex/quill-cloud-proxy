@@ -713,7 +713,6 @@ func applyUsageAttribution(usage *trustedrouter.Usage, req *types.OpenAIChatRequ
 	if usage == nil || req == nil {
 		return
 	}
-	usage.Tags = types.CloneTags(req.Tags.Values())
 	usage.App = req.App
 	usage.HTTPReferer = req.HTTPReferer
 	usage.AppCategories = append([]string(nil), req.AppCategories...)
@@ -998,9 +997,10 @@ func serveStreaming(
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
 	providerDone := make(chan struct{})
+	providerReq := *req
 	go func() {
 		defer close(providerDone)
-		invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
+		invokeProviderStream(ctx, br, &providerReq, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
 	}()
 	if trGateway != nil && trGateway.Enabled() && len(invokeOptions) > 1 {
 		select {
@@ -1246,9 +1246,10 @@ func serveMessages(
 	}
 
 	providerDone := make(chan struct{})
+	providerReq := *req
 	go func() {
 		defer close(providerDone)
-		invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID, true, true)
+		invokeProviderStream(ctx, br, &providerReq, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID, true, true)
 	}()
 	if trEnabled && len(invokeOptions) > 1 {
 		select {

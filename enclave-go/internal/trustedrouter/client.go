@@ -23,6 +23,8 @@ import (
 
 const internalTokenHeader = "x-trustedrouter-internal-token"
 
+const trustedSyntheticApp = "TrustedRouter Synthetic"
+
 const imageOutputTokenEstimate = 1290
 
 var imageDataURLPattern = regexp.MustCompile(`data:image/[^;"\s]+;base64,[A-Za-z0-9+/=_-]+`)
@@ -173,10 +175,10 @@ type Usage struct {
 	SessionID         string
 	Trace             map[string]any
 	Metadata          map[string]any
-	Tags              qtypes.TagMap
-	App               string
-	HTTPReferer       string
-	AppCategories     []string
+	// Tags are frozen at authorize; settle never sends client-mutable tags.
+	App           string
+	HTTPReferer   string
+	AppCategories []string
 	// Prompt-cache token counts when the provider reported them. Sent to
 	// settle for visibility (GatewaySettleRequest is extra="allow");
 	// cache-aware pricing is a control-plane follow-up — today cached
@@ -376,7 +378,7 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 		selectedEndpoint = auth.EndpointID
 	}
 	app := usage.App
-	if app == "" {
+	if app == "" || strings.EqualFold(app, trustedSyntheticApp) {
 		app = "attested-gateway"
 	}
 	body := map[string]any{

@@ -46,7 +46,7 @@ jobs:
         # Tests under build tags run only when their tag is set, so each
         # matrix slot exercises just the code its tag combination
         # actually compiles in.
-        run: go test -tags '${{ matrix.tags }}' ./...
+        run: go test -race -tags '${{ matrix.tags }}' ./...
 
   parent:
     runs-on: ubuntu-latest

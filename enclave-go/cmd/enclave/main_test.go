@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -6159,8 +6160,25 @@ func TestReadRequestRejectsOversizedBodyBeforeAllocation(t *testing.T) {
 }
 
 func TestReadRequestBoundsUnauthenticatedHeaders(t *testing.T) {
-	t.Run("line", func(t *testing.T) {
-		raw := "GET /health HTTP/1.1\r\nX-Fill: " + strings.Repeat("x", maxHTTPHeaderLineBytes) + "\r\n\r\n"
+	t.Run("line exactly at cap", func(t *testing.T) {
+		headerPrefix := "X-Fill: "
+		fillLen := maxHTTPHeaderLineBytes - len(headerPrefix) - len("\r\n")
+		raw := "GET /health HTTP/1.1\r\n" + headerPrefix + strings.Repeat("x", fillLen) + "\r\n\r\n"
+		method, path, _, _, _, _, err := readRequest(
+			bufio.NewReaderSize(strings.NewReader(raw), maxHTTPHeaderLineBytes+1),
+		)
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if method != "GET" || path != "/health" {
+			t.Fatalf("request = %s %s, want GET /health", method, path)
+		}
+	})
+
+	t.Run("line one byte over cap", func(t *testing.T) {
+		headerPrefix := "X-Fill: "
+		fillLen := maxHTTPHeaderLineBytes - len(headerPrefix) - len("\r\n") + 1
+		raw := "GET /health HTTP/1.1\r\n" + headerPrefix + strings.Repeat("x", fillLen) + "\r\n\r\n"
 		_, _, _, _, _, _, err := readRequest(
 			bufio.NewReaderSize(strings.NewReader(raw), maxHTTPHeaderLineBytes+1),
 		)
@@ -6654,6 +6672,60 @@ func TestServeOneMessagesAcceptsLargeNativeVisionPayload(t *testing.T) {
 	}
 }
 
+func TestServeStreamingDoesNotRaceRequestModelSelection(t *testing.T) {
+	trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/internal/gateway/settle" {
+				t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"data":{"generation_id":"gen_stream","cost_microdollars":1,"model":"selected-model","provider":"test","region":"test"}}`)),
+			}, nil
+		}),
+	})
+	req := &types.OpenAIChatRequest{
+		Model:    "requested-model",
+		Stream:   true,
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hi"}},
+	}
+	authz := &trustedrouter.Authorization{
+		AuthorizationID: "auth_stream",
+		WorkspaceID:     "ws_1",
+		APIKeyHash:      "key_hash",
+		Model:           "auth-model",
+		EndpointID:      "auth-endpoint",
+		Provider:        "test",
+		UsageType:       "Credits",
+	}
+	var out bytes.Buffer
+	serveStreaming(
+		context.Background(),
+		&out,
+		&modelReadingStreamingLLM{},
+		req,
+		&types.AnthropicMessagesRequest{},
+		[]llm.InvokeOptions{
+			{Model: "selected-model", Provider: "test", EndpointID: "endpoint-1"},
+			{Model: "fallback-model", Provider: "test", EndpointID: "endpoint-2"},
+		},
+		trGateway,
+		authz,
+		nil,
+		time.Now(),
+		nil,
+		"chat.completions",
+		"race-test",
+	)
+	if !strings.Contains(out.String(), "HTTP/1.1 200 OK") {
+		t.Fatalf("stream response missing success head: %s", out.String())
+	}
+	if req.Model != "selected-model" {
+		t.Fatalf("req.Model = %q, want selected-model", req.Model)
+	}
+}
+
 type fakeStreamingLLM struct {
 	model   string
 	body    *types.AnthropicMessagesRequest
@@ -6686,6 +6758,35 @@ event: message_stop
 data: {"type":"message_stop"}
 
 `)
+	return err
+}
+
+type modelReadingStreamingLLM struct{}
+
+func (m *modelReadingStreamingLLM) InvokeStreaming(
+	ctx context.Context,
+	req *types.OpenAIChatRequest,
+	body *types.AnthropicMessagesRequest,
+	out io.Writer,
+	options ...llm.InvokeOptions,
+) error {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = req.Model
+				runtime.Gosched()
+			}
+		}
+	}()
+	err := (&fakeStreamingLLM{}).InvokeStreaming(ctx, req, body, out, options...)
+	close(stop)
+	<-done
 	return err
 }
 

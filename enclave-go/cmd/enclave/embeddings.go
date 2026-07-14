@@ -155,7 +155,6 @@ func serveEmbeddings(
 			SessionID:        req.SessionID,
 			Trace:            req.Trace,
 			Metadata:         req.Metadata,
-			Tags:             types.CloneTags(req.Tags.Values()),
 			App:              req.App,
 			HTTPReferer:      req.HTTPReferer,
 			AppCategories:    append([]string(nil), req.AppCategories...),

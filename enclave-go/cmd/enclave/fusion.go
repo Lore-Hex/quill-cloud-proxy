@@ -2007,7 +2007,8 @@ func serveFusionFinalStreamingAttempt(
 	responseID := newRequestID()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
-	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
+	providerReq := *req
+	go invokeProviderStream(ctx, br, &providerReq, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
 
 	first := make([]byte, 4096)
 	var n int
