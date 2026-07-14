@@ -30,18 +30,20 @@ const imageOutputTokenEstimate = 1290
 var imageDataURLPattern = regexp.MustCompile(`data:image/[^;"\s]+;base64,[A-Za-z0-9+/=_-]+`)
 
 type Client struct {
-	baseURL       string
-	internalToken string
-	httpc         *http.Client
-	region        string
+	baseURL        string
+	internalToken  string
+	httpc          *http.Client
+	region         string
+	authorizeRetry retryPolicy
 }
 
 func NewFromEnv() *Client {
 	return &Client{
-		baseURL:       strings.TrimRight(os.Getenv("TR_CONTROL_PLANE_BASE_URL"), "/"),
-		internalToken: os.Getenv("TR_INTERNAL_GATEWAY_TOKEN"),
-		region:        os.Getenv("TR_REGION"),
-		httpc:         newControlPlaneHTTPClient(),
+		baseURL:        strings.TrimRight(os.Getenv("TR_CONTROL_PLANE_BASE_URL"), "/"),
+		internalToken:  os.Getenv("TR_INTERNAL_GATEWAY_TOKEN"),
+		region:         os.Getenv("TR_REGION"),
+		httpc:          newControlPlaneHTTPClient(),
+		authorizeRetry: defaultAuthorizeRetryPolicy(),
 	}
 }
 
@@ -59,10 +61,11 @@ func NewFromBootstrap(boot *qtypes.BootstrapData) *Client {
 		region = boot.Region
 	}
 	return &Client{
-		baseURL:       baseURL,
-		internalToken: strings.TrimSpace(internalToken),
-		region:        region,
-		httpc:         newControlPlaneHTTPClient(),
+		baseURL:        baseURL,
+		internalToken:  strings.TrimSpace(internalToken),
+		region:         region,
+		httpc:          newControlPlaneHTTPClient(),
+		authorizeRetry: defaultAuthorizeRetryPolicy(),
 	}
 }
 
@@ -71,9 +74,10 @@ func New(baseURL, internalToken string, httpc *http.Client) *Client {
 		httpc = newControlPlaneHTTPClient()
 	}
 	return &Client{
-		baseURL:       strings.TrimRight(baseURL, "/"),
-		internalToken: internalToken,
-		httpc:         httpc,
+		baseURL:        strings.TrimRight(baseURL, "/"),
+		internalToken:  internalToken,
+		httpc:          httpc,
+		authorizeRetry: defaultAuthorizeRetryPolicy(),
 	}
 }
 
@@ -220,6 +224,10 @@ func (c *Client) ResolveCustomModel(ctx context.Context, bearer string, model st
 }
 
 func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest, routeType string) (*Authorization, error) {
+	idempotencyKey, err := authorizationIdempotencyKey(req.IdempotencyKey)
+	if err != nil {
+		return nil, err
+	}
 	body := map[string]any{
 		"api_key_lookup_hash":    lookupHash(bearer),
 		"model":                  req.Model,
@@ -228,9 +236,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 		"max_tokens":             req.MaxTokens,
 		"region":                 c.region,
 		"route_type":             routeType,
-	}
-	if req.IdempotencyKey != "" {
-		body["idempotency_key"] = req.IdempotencyKey
+		"idempotency_key":        idempotencyKey,
 	}
 	if len(req.Models) > 0 {
 		body["models"] = req.Models
@@ -268,7 +274,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	var decoded struct {
 		Data Authorization `json:"data"`
 	}
-	if err := c.postJSON(ctx, "/internal/gateway/authorize", body, &decoded); err != nil {
+	if err := c.postJSONWithRetry(ctx, "/internal/gateway/authorize", body, &decoded, c.authorizeRetry); err != nil {
 		return nil, err
 	}
 	if req.Tags != nil && decoded.Data.RequestMetadataVersion < 1 {
@@ -295,6 +301,10 @@ func (c *Client) AuthorizeEmbeddings(ctx context.Context, bearer string, req *qt
 	if inputTokens < 1 {
 		inputTokens = 1
 	}
+	idempotencyKey, err := authorizationIdempotencyKey(req.IdempotencyKey)
+	if err != nil {
+		return nil, err
+	}
 	body := map[string]any{
 		"api_key_lookup_hash":    lookupHash(bearer),
 		"model":                  req.Model,
@@ -302,9 +312,7 @@ func (c *Client) AuthorizeEmbeddings(ctx context.Context, bearer string, req *qt
 		"max_output_tokens":      1,
 		"region":                 c.region,
 		"route_type":             "embeddings",
-	}
-	if req.IdempotencyKey != "" {
-		body["idempotency_key"] = req.IdempotencyKey
+		"idempotency_key":        idempotencyKey,
 	}
 	if req.User != "" {
 		body["user"] = req.User
@@ -333,7 +341,7 @@ func (c *Client) AuthorizeEmbeddings(ctx context.Context, bearer string, req *qt
 	var decoded struct {
 		Data Authorization `json:"data"`
 	}
-	if err := c.postJSON(ctx, "/internal/gateway/authorize", body, &decoded); err != nil {
+	if err := c.postJSONWithRetry(ctx, "/internal/gateway/authorize", body, &decoded, c.authorizeRetry); err != nil {
 		return nil, err
 	}
 	if req.Tags != nil && decoded.Data.RequestMetadataVersion < 1 {
