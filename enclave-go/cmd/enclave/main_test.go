@@ -4706,8 +4706,8 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:    trustedRouterLiberty20Model,
-			workers:  []string{"openai/gpt-oss-120b"},
-			advisors: []string{"google/gemma-4-31b-it", trustedRouterLiberty10Model},
+			workers:  []string{"google/gemma-4-31b-it"},
+			advisors: []string{"openai/gpt-oss-120b", trustedRouterLiberty10Model},
 		},
 		{
 			model:    trustedRouterLiberty30Model,

@@ -214,8 +214,8 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 	case trustedRouterLiberty20Model:
 		return advisorConfig{
 			Enabled:       true,
-			WorkerModels:  []string{"openai/gpt-oss-120b"},
-			AdvisorModels: []string{"google/gemma-4-31b-it", trustedRouterLiberty10Model},
+			WorkerModels:  []string{"google/gemma-4-31b-it"},
+			AdvisorModels: []string{"openai/gpt-oss-120b", trustedRouterLiberty10Model},
 		}, true
 	case trustedRouterLiberty30Model:
 		return advisorConfig{
