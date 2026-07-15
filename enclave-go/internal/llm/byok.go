@@ -1223,6 +1223,7 @@ var basetenModelMap = map[string]string{
 	"nvidia/nvidia-nemotron-3-ultra-550b-a55b": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
 	"z-ai/glm-5.2":                             "zai-org/GLM-5.2",
 	"moonshotai/kimi-k2.7-code":                "moonshotai/Kimi-K2.7-Code",
+	"thinkingmachines/inkling":                 "thinkingmachines/inkling",
 }
 
 // waferModelMap maps OR-canonical → Wafer native ids. Wafer's ids are short
