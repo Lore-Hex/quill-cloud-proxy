@@ -220,8 +220,8 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 	case trustedRouterLiberty30Model:
 		return advisorConfig{
 			Enabled:       true,
-			WorkerModels:  []string{"google/gemma-4-31b-it"},
-			AdvisorModels: []string{"openai/gpt-oss-120b", trustedRouterLiberty10Model},
+			WorkerModels:  []string{"thinkingmachines/inkling"},
+			AdvisorModels: []string{"openai/gpt-oss-120b", "google/gemma-4-31b-it", "nvidia/nemotron-3-ultra-550b-a55b"},
 		}, true
 	default:
 		return advisorConfig{}, false
@@ -1259,6 +1259,10 @@ func advisorNeedsCompactedContext(advisorModel string, messages []types.OpenAICh
 
 func advisorContextLimitTokens(model string) int {
 	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "openai/gpt-oss-120b":
+		return 131_072
+	case "google/gemma-4-31b-it":
+		return 262_144
 	case trustedRouterPrometheus101MModel,
 		trustedRouterLiberty10Model,
 		"thinkingmachines/inkling",

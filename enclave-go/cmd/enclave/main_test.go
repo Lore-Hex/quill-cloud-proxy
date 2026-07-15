@@ -4711,8 +4711,8 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:    trustedRouterLiberty30Model,
-			workers:  []string{"google/gemma-4-31b-it"},
-			advisors: []string{"openai/gpt-oss-120b", trustedRouterLiberty10Model},
+			workers:  []string{"thinkingmachines/inkling"},
+			advisors: []string{"openai/gpt-oss-120b", "google/gemma-4-31b-it", "nvidia/nemotron-3-ultra-550b-a55b"},
 		},
 	}
 	for _, tt := range tests {
@@ -5689,6 +5689,20 @@ func TestLibertyOneAndItsComponentsKeepMillionTokenAdvisorContext(t *testing.T) 
 	} {
 		if got := advisorContextLimitTokens(model); got != 1_048_576 {
 			t.Fatalf("advisorContextLimitTokens(%q) = %d, want 1048576", model, got)
+		}
+	}
+}
+
+func TestLibertyAdvisorModelsUseTheirPublishedContextLimits(t *testing.T) {
+	tests := map[string]int{
+		"openai/gpt-oss-120b":               131_072,
+		"google/gemma-4-31b-it":             262_144,
+		"nvidia/nemotron-3-ultra-550b-a55b": 1_048_576,
+		"thinkingmachines/inkling":          1_048_576,
+	}
+	for model, want := range tests {
+		if got := advisorContextLimitTokens(model); got != want {
+			t.Fatalf("advisorContextLimitTokens(%q) = %d, want %d", model, got, want)
 		}
 	}
 }
