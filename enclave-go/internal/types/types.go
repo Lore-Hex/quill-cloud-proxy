@@ -94,17 +94,18 @@ type BootstrapData struct {
 	//   parasail:  api.parasail.io/v1
 	//   lightning: lightning.ai/api/v1
 	//   gmi:       api.gmi-serving.com/v1
-	ParasailAPIKey  string `json:"parasail_api_key,omitempty"`
-	LightningAPIKey string `json:"lightning_api_key,omitempty"`
-	GMIAPIKey       string `json:"gmi_api_key,omitempty"`
-	DeepInfraAPIKey string `json:"deepinfra_api_key,omitempty"`
-	FriendliAPIKey  string `json:"friendli_api_key,omitempty"`
-	BasetenAPIKey   string `json:"baseten_api_key,omitempty"`
-	WaferAPIKey     string `json:"wafer_api_key,omitempty"`
-	CrusoeAPIKey    string `json:"crusoe_api_key,omitempty"`
-	MakoraAPIKey    string `json:"makora_api_key,omitempty"`
-	NebiusAPIKey    string `json:"nebius_api_key,omitempty"`
-	MiniMaxAPIKey   string `json:"minimax_api_key,omitempty"`
+	ParasailAPIKey         string `json:"parasail_api_key,omitempty"`
+	LightningAPIKey        string `json:"lightning_api_key,omitempty"`
+	GMIAPIKey              string `json:"gmi_api_key,omitempty"`
+	DeepInfraAPIKey        string `json:"deepinfra_api_key,omitempty"`
+	FriendliAPIKey         string `json:"friendli_api_key,omitempty"`
+	BasetenAPIKey          string `json:"baseten_api_key,omitempty"`
+	ThinkingMachinesAPIKey string `json:"thinking_machines_api_key,omitempty"`
+	WaferAPIKey            string `json:"wafer_api_key,omitempty"`
+	CrusoeAPIKey           string `json:"crusoe_api_key,omitempty"`
+	MakoraAPIKey           string `json:"makora_api_key,omitempty"`
+	NebiusAPIKey           string `json:"nebius_api_key,omitempty"`
+	MiniMaxAPIKey          string `json:"minimax_api_key,omitempty"`
 
 	// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
 	XiaomiAPIKey string `json:"xiaomi_api_key,omitempty"`

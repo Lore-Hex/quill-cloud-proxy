@@ -45,7 +45,7 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 	switch provider {
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai", "together",
 		"fireworks", "grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
-		"parasail", "lightning", "gmi", "deepinfra", "friendli", "baseten", "wafer",
+		"parasail", "lightning", "gmi", "deepinfra", "friendli", "baseten", "thinkingmachines", "wafer",
 		"crusoe", "makora", "nebius", "minimax", "xiaomi":
 		return true
 	default:
@@ -760,6 +760,8 @@ func directBaseURL(provider string) string {
 	case "baseten":
 		// Baseten Model APIs. OpenAI-compatible chat completions.
 		return "https://inference.baseten.co/v1"
+	case "thinkingmachines":
+		return "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1"
 	case "wafer":
 		// Wafer serverless API. OpenAI-compatible chat completions; requests
 		// include Wafer-ZDR: required in invokeOpenAICompatibleStreamingWithClient.
@@ -909,23 +911,24 @@ func stripOpenRouterModelVariant(model string) string {
 // fall through to the generic strip-author logic — fine for any
 // upstream whose API accepts the OR-canonical id verbatim.
 var providerNativeModelMaps = map[string]map[string]string{
-	"together":    togetherModelMap,
-	"lightning":   lightningModelMap,
-	"parasail":    parasailModelMap,
-	"deepinfra":   deepinfraModelMap,
-	"gmi":         gmiModelMap,
-	"tinfoil":     tinfoilModelMap,
-	"novita":      novitaModelMap,
-	"phala":       phalaModelMap,
-	"venice":      veniceModelMap,
-	"friendli":    friendliModelMap,
-	"baseten":     basetenModelMap,
-	"wafer":       waferModelMap,
-	"crusoe":      crusoeModelMap,
-	"makora":      makoraModelMap,
-	"minimax":     minimaxModelMap,
-	"siliconflow": siliconflowModelMap,
-	"zai":         zaiModelMap,
+	"together":         togetherModelMap,
+	"lightning":        lightningModelMap,
+	"parasail":         parasailModelMap,
+	"deepinfra":        deepinfraModelMap,
+	"gmi":              gmiModelMap,
+	"tinfoil":          tinfoilModelMap,
+	"novita":           novitaModelMap,
+	"phala":            phalaModelMap,
+	"venice":           veniceModelMap,
+	"friendli":         friendliModelMap,
+	"baseten":          basetenModelMap,
+	"thinkingmachines": thinkingMachinesModelMap,
+	"wafer":            waferModelMap,
+	"crusoe":           crusoeModelMap,
+	"makora":           makoraModelMap,
+	"minimax":          minimaxModelMap,
+	"siliconflow":      siliconflowModelMap,
+	"zai":              zaiModelMap,
 }
 
 // siliconflowModelMap translates OR-canonical → SiliconFlow's native catalog
@@ -1223,7 +1226,11 @@ var basetenModelMap = map[string]string{
 	"nvidia/nvidia-nemotron-3-ultra-550b-a55b": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
 	"z-ai/glm-5.2":                             "zai-org/GLM-5.2",
 	"moonshotai/kimi-k2.7-code":                "moonshotai/Kimi-K2.7-Code",
-	"thinkingmachines/inkling":                 "thinkingmachines/inkling",
+	"thinkingmachines/inkling-1m":              "thinkingmachines/inkling",
+}
+
+var thinkingMachinesModelMap = map[string]string{
+	"thinkingmachines/inkling": "thinkingmachines/Inkling:peft:262144",
 }
 
 // waferModelMap maps OR-canonical → Wafer native ids. Wafer's ids are short
@@ -1366,6 +1373,8 @@ func normalizeDirectProvider(provider string) string {
 		return "friendli"
 	case "baseten", "base-ten":
 		return "baseten"
+	case "thinkingmachines", "thinking-machines", "tinker":
+		return "thinkingmachines"
 	case "wafer", "wafer-ai":
 		return "wafer"
 	case "makora", "makora-ai", "makora_inference", "makora-inference":

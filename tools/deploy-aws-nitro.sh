@@ -676,6 +676,7 @@ allowlist:
   - {address: api.minimax.io,                port: 443}
   - {address: api.friendli.ai,               port: 443}
   - {address: inference.baseten.co,          port: 443}
+  - {address: tinker.thinkingmachines.dev,  port: 443}
   - {address: pass.wafer.ai,                 port: 443}
   - {address: api.inference.crusoecloud.com, port: 443}
   # GCP cross-cloud APIs — auth + Spanner + Bigtable + GCS (ACME cache)
@@ -762,6 +763,7 @@ write_vsock_unit 8023 api.tokenfactory.nebius.com
 write_vsock_unit 8024 api.minimax.io
 write_vsock_unit 8025 api.friendli.ai
 write_vsock_unit 8026 inference.baseten.co
+write_vsock_unit 8039 tinker.thinkingmachines.dev
 write_vsock_unit 8027 pass.wafer.ai
 write_vsock_unit 8028 api.inference.crusoecloud.com
 write_vsock_unit 8030 oauth2.googleapis.com

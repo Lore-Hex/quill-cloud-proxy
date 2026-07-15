@@ -124,6 +124,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	deepinfraSecret := os.Getenv("QUILL_DEEPINFRA_SECRET")
 	friendliSecret := os.Getenv("QUILL_FRIENDLI_SECRET")
 	basetenSecret := os.Getenv("QUILL_BASETEN_SECRET")
+	thinkingMachinesSecret := os.Getenv("QUILL_THINKING_MACHINES_SECRET")
 	waferSecret := os.Getenv("QUILL_WAFER_SECRET")
 	crusoeSecret := os.Getenv("QUILL_CRUSOE_SECRET")
 	makoraSecret := os.Getenv("QUILL_MAKORA_SECRET")
@@ -168,6 +169,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		deepinfraSecret,
 		friendliSecret,
 		basetenSecret,
+		thinkingMachinesSecret,
 		waferSecret,
 		crusoeSecret,
 		makoraSecret,
@@ -369,6 +371,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: baseten key: %w", err)
 		}
 	}
+	var thinkingMachinesKey []byte
+	if thinkingMachinesSecret != "" {
+		thinkingMachinesKey, err = fetchSecret(ctx, httpc, token, project, thinkingMachinesSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: thinking machines key: %w", err)
+		}
+	}
 	var waferKey []byte
 	if waferSecret != "" {
 		waferKey, err = fetchSecret(ctx, httpc, token, project, waferSecret)
@@ -490,6 +499,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		DeepInfraAPIKey:            strings.TrimSpace(string(deepinfraKey)),
 		FriendliAPIKey:             strings.TrimSpace(string(friendliKey)),
 		BasetenAPIKey:              strings.TrimSpace(string(basetenKey)),
+		ThinkingMachinesAPIKey:     strings.TrimSpace(string(thinkingMachinesKey)),
 		WaferAPIKey:                strings.TrimSpace(string(waferKey)),
 		CrusoeAPIKey:               strings.TrimSpace(string(crusoeKey)),
 		MakoraAPIKey:               strings.TrimSpace(string(makoraKey)),

@@ -215,13 +215,13 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 		return advisorConfig{
 			Enabled:       true,
 			WorkerModels:  []string{"google/gemma-4-31b-it"},
-			AdvisorModels: []string{"openai/gpt-oss-120b", trustedRouterLiberty10Model},
+			AdvisorModels: []string{"openai/gpt-oss-120b", trustedRouterLiberty101MModel},
 		}, true
 	case trustedRouterLiberty30Model:
 		return advisorConfig{
 			Enabled:       true,
 			WorkerModels:  []string{"thinkingmachines/inkling"},
-			AdvisorModels: []string{"openai/gpt-oss-120b", "google/gemma-4-31b-it", "nvidia/nemotron-3-ultra-550b-a55b"},
+			AdvisorModels: []string{"openai/gpt-oss-120b", "google/gemma-4-31b-it", "nvidia/nemotron-3-ultra-550b-a55b", trustedRouterLiberty101MModel},
 		}, true
 	default:
 		return advisorConfig{}, false
@@ -1264,14 +1264,17 @@ func advisorContextLimitTokens(model string) int {
 	case "google/gemma-4-31b-it":
 		return 262_144
 	case trustedRouterPrometheus101MModel,
-		trustedRouterLiberty10Model,
-		"thinkingmachines/inkling",
+		trustedRouterLiberty101MModel,
+		"thinkingmachines/inkling-1m",
 		"nvidia/nemotron-3-ultra-550b-a55b",
 		"minimax/minimax-m3",
 		"xiaomi/mimo-v2.5-pro",
 		"z-ai/glm-5.2",
 		"deepseek/deepseek-v4-pro":
 		return 1_048_576
+	case trustedRouterLiberty10Model,
+		"thinkingmachines/inkling":
+		return 262_144
 	default:
 		return 200_000
 	}

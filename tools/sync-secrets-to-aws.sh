@@ -68,6 +68,7 @@ SECRETS=(
   trustedrouter-deepinfra-api-key
   trustedrouter-friendli-api-key
   trustedrouter-baseten-api-key
+  trustedrouter-thinking-machines-api-key
   trustedrouter-wafer-api-key
   trustedrouter-crusoe-api-key
   trustedrouter-makora-api-key

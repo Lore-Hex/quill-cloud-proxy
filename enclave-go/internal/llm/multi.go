@@ -29,34 +29,35 @@ import (
 // up-front so connection pools and any cached state warm up at boot.
 func New(boot *qtypes.BootstrapData) Client {
 	return &multiClient{
-		anthropic:   newAnthropic(boot),
-		vertex:      newVertex(boot),
-		openai:      newOpenAICompatible("openai", boot.OpenAIAPIKey),
-		gemini:      newVertexGemini(boot),
-		cerebras:    newOpenAICompatible("cerebras", boot.CerebrasAPIKey),
-		deepseek:    newOpenAICompatible("deepseek", boot.DeepSeekAPIKey),
-		mistral:     newOpenAICompatible("mistral", boot.MistralAPIKey),
-		kimi:        newKimi(boot),
-		zai:         newZAI(boot),
-		together:    newOpenAICompatible("together", boot.TogetherAPIKey),
-		fireworks:   newOpenAICompatible("fireworks", boot.FireworksAPIKey),
-		grok:        newOpenAICompatible("grok", boot.GrokAPIKey),
-		novita:      newOpenAICompatible("novita", boot.NovitaAPIKey),
-		phala:       newOpenAICompatible("phala", boot.PhalaAPIKey),
-		siliconflow: newOpenAICompatible("siliconflow", boot.SiliconFlowAPIKey),
-		tinfoil:     newTinfoilAttested(boot.TinfoilAPIKey),
-		venice:      newOpenAICompatible("venice", boot.VeniceAPIKey),
-		parasail:    newOpenAICompatible("parasail", boot.ParasailAPIKey),
-		lightning:   newOpenAICompatible("lightning", boot.LightningAPIKey),
-		gmi:         newOpenAICompatible("gmi", boot.GMIAPIKey),
-		deepinfra:   newOpenAICompatible("deepinfra", boot.DeepInfraAPIKey),
-		friendli:    newOpenAICompatible("friendli", boot.FriendliAPIKey),
-		baseten:     newOpenAICompatible("baseten", boot.BasetenAPIKey),
-		wafer:       newOpenAICompatible("wafer", boot.WaferAPIKey),
-		crusoe:      newOpenAICompatible("crusoe", boot.CrusoeAPIKey),
-		makora:      newOpenAICompatible("makora", boot.MakoraAPIKey),
-		nebius:      newOpenAICompatible("nebius", boot.NebiusAPIKey),
-		minimax:     newOpenAICompatible("minimax", boot.MiniMaxAPIKey),
+		anthropic:        newAnthropic(boot),
+		vertex:           newVertex(boot),
+		openai:           newOpenAICompatible("openai", boot.OpenAIAPIKey),
+		gemini:           newVertexGemini(boot),
+		cerebras:         newOpenAICompatible("cerebras", boot.CerebrasAPIKey),
+		deepseek:         newOpenAICompatible("deepseek", boot.DeepSeekAPIKey),
+		mistral:          newOpenAICompatible("mistral", boot.MistralAPIKey),
+		kimi:             newKimi(boot),
+		zai:              newZAI(boot),
+		together:         newOpenAICompatible("together", boot.TogetherAPIKey),
+		fireworks:        newOpenAICompatible("fireworks", boot.FireworksAPIKey),
+		grok:             newOpenAICompatible("grok", boot.GrokAPIKey),
+		novita:           newOpenAICompatible("novita", boot.NovitaAPIKey),
+		phala:            newOpenAICompatible("phala", boot.PhalaAPIKey),
+		siliconflow:      newOpenAICompatible("siliconflow", boot.SiliconFlowAPIKey),
+		tinfoil:          newTinfoilAttested(boot.TinfoilAPIKey),
+		venice:           newOpenAICompatible("venice", boot.VeniceAPIKey),
+		parasail:         newOpenAICompatible("parasail", boot.ParasailAPIKey),
+		lightning:        newOpenAICompatible("lightning", boot.LightningAPIKey),
+		gmi:              newOpenAICompatible("gmi", boot.GMIAPIKey),
+		deepinfra:        newOpenAICompatible("deepinfra", boot.DeepInfraAPIKey),
+		friendli:         newOpenAICompatible("friendli", boot.FriendliAPIKey),
+		baseten:          newOpenAICompatible("baseten", boot.BasetenAPIKey),
+		thinkingmachines: newOpenAICompatible("thinkingmachines", boot.ThinkingMachinesAPIKey),
+		wafer:            newOpenAICompatible("wafer", boot.WaferAPIKey),
+		crusoe:           newOpenAICompatible("crusoe", boot.CrusoeAPIKey),
+		makora:           newOpenAICompatible("makora", boot.MakoraAPIKey),
+		nebius:           newOpenAICompatible("nebius", boot.NebiusAPIKey),
+		minimax:          newOpenAICompatible("minimax", boot.MiniMaxAPIKey),
 		// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
 		xiaomi: newOpenAICompatible("xiaomi", boot.XiaomiAPIKey),
 		// Cohere — embeddings only (native /v2/embed). Its InvokeStreaming
@@ -73,38 +74,39 @@ func New(boot *qtypes.BootstrapData) Client {
 }
 
 type multiClient struct {
-	anthropic   *anthropicClient
-	vertex      *gcpClient
-	openai      *openAICompatibleClient
-	gemini      *vertexGeminiClient
-	cerebras    *openAICompatibleClient
-	deepseek    *openAICompatibleClient
-	mistral     *openAICompatibleClient
-	kimi        *kimiClient
-	zai         *zaiClient
-	together    *openAICompatibleClient
-	fireworks   *openAICompatibleClient
-	grok        *openAICompatibleClient
-	novita      *openAICompatibleClient
-	phala       *openAICompatibleClient
-	siliconflow *openAICompatibleClient
-	tinfoil     *openAICompatibleClient
-	venice      *openAICompatibleClient
-	parasail    *openAICompatibleClient
-	lightning   *openAICompatibleClient
-	gmi         *openAICompatibleClient
-	deepinfra   *openAICompatibleClient
-	friendli    *openAICompatibleClient
-	baseten     *openAICompatibleClient
-	wafer       *openAICompatibleClient
-	crusoe      *openAICompatibleClient
-	makora      *openAICompatibleClient
-	nebius      *openAICompatibleClient
-	minimax     *openAICompatibleClient
-	xiaomi      *openAICompatibleClient
-	cohere      *cohereClient
-	voyage      *openAICompatibleClient
-	geminiEmbed *openAICompatibleClient
+	anthropic        *anthropicClient
+	vertex           *gcpClient
+	openai           *openAICompatibleClient
+	gemini           *vertexGeminiClient
+	cerebras         *openAICompatibleClient
+	deepseek         *openAICompatibleClient
+	mistral          *openAICompatibleClient
+	kimi             *kimiClient
+	zai              *zaiClient
+	together         *openAICompatibleClient
+	fireworks        *openAICompatibleClient
+	grok             *openAICompatibleClient
+	novita           *openAICompatibleClient
+	phala            *openAICompatibleClient
+	siliconflow      *openAICompatibleClient
+	tinfoil          *openAICompatibleClient
+	venice           *openAICompatibleClient
+	parasail         *openAICompatibleClient
+	lightning        *openAICompatibleClient
+	gmi              *openAICompatibleClient
+	deepinfra        *openAICompatibleClient
+	friendli         *openAICompatibleClient
+	baseten          *openAICompatibleClient
+	thinkingmachines *openAICompatibleClient
+	wafer            *openAICompatibleClient
+	crusoe           *openAICompatibleClient
+	makora           *openAICompatibleClient
+	nebius           *openAICompatibleClient
+	minimax          *openAICompatibleClient
+	xiaomi           *openAICompatibleClient
+	cohere           *cohereClient
+	voyage           *openAICompatibleClient
+	geminiEmbed      *openAICompatibleClient
 }
 
 func (m *multiClient) InvokeStreaming(
@@ -172,6 +174,8 @@ func (m *multiClient) InvokeStreaming(
 		return m.friendli.InvokeStreaming(ctx, req, body, out, options...)
 	case "baseten":
 		return m.baseten.InvokeStreaming(ctx, req, body, out, options...)
+	case "thinkingmachines":
+		return m.thinkingmachines.InvokeStreaming(ctx, req, body, out, options...)
 	case "wafer":
 		return m.wafer.InvokeStreaming(ctx, req, body, out, options...)
 	case "crusoe":
@@ -188,6 +192,6 @@ func (m *multiClient) InvokeStreaming(
 		// Embeddings-only; returns a clear "chat not supported" error.
 		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, wafer, crusoe, makora, nebius, minimax, xiaomi, cohere)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, thinkingmachines, wafer, crusoe, makora, nebius, minimax, xiaomi, cohere)", provider)
 	}
 }
