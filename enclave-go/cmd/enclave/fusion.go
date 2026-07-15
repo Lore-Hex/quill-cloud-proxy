@@ -252,6 +252,8 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case trustedRouterOpenPatcherS1Model:
 		return []string{"z-ai/glm-5.2"}, true
+	case trustedRouterLiberty10Model:
+		return []string{"thinkingmachines/inkling"}, true
 	default:
 		return nil, false
 	}
@@ -265,6 +267,8 @@ func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 		return []string{"z-ai/glm-5.2"}, true
 	case trustedRouterOpenPatcherS1Model:
 		return []string{fusionCodeKimi}, true
+	case trustedRouterLiberty10Model:
+		return []string{"thinkingmachines/inkling"}, true
 	default:
 		return nil, false
 	}

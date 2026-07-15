@@ -5693,6 +5693,28 @@ func TestLibertyOneAndItsComponentsKeepMillionTokenAdvisorContext(t *testing.T) 
 	}
 }
 
+func TestLibertyOneUsesInklingForJudgeAndFinalSynthesis(t *testing.T) {
+	judgeModels, err := fusionJudgeModels(fusionConfig{}, trustedRouterLiberty10Model)
+	if err != nil {
+		t.Fatalf("fusionJudgeModels: %v", err)
+	}
+	finalModels, err := fusionFinalModels(
+		fusionConfig{},
+		trustedRouterLiberty10Model,
+		fusionLiberty10Panel[0],
+	)
+	if err != nil {
+		t.Fatalf("fusionFinalModels: %v", err)
+	}
+	want := []string{"thinkingmachines/inkling"}
+	if !reflect.DeepEqual(judgeModels, want) {
+		t.Fatalf("judge models = %#v, want %#v", judgeModels, want)
+	}
+	if !reflect.DeepEqual(finalModels, want) {
+		t.Fatalf("final models = %#v, want %#v", finalModels, want)
+	}
+}
+
 func TestFusionZeusPresetsUseGLMJudge(t *testing.T) {
 	for _, model := range []string{
 		trustedRouterZeusModel,
