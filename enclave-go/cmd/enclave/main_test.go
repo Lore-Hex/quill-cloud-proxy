@@ -4704,6 +4704,16 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			advisors:     []string{trustedRouterZeus10MiniModel, fusionCodeKimi, fusionGeneralKimi},
 			jurisdiction: providerJurisdictionUS,
 		},
+		{
+			model:    trustedRouterLiberty20Model,
+			workers:  []string{"openai/gpt-oss-120b"},
+			advisors: []string{"google/gemma-4-31b-it", trustedRouterLiberty10Model},
+		},
+		{
+			model:    trustedRouterLiberty30Model,
+			workers:  []string{"google/gemma-4-31b-it"},
+			advisors: []string{"openai/gpt-oss-120b", trustedRouterLiberty10Model},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
@@ -5646,6 +5656,7 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 		{trustedRouterPrometheusCode10Model, "quality", fusionQualityPanel, true},
 		{trustedRouterZeusCode10Model, "frontier", fusionFrontierPanel, true},
 		{trustedRouterOpenPatcherS1Model, "openpatcher-s1", fusionOpenPatcherS1Panel, false},
+		{trustedRouterLiberty10Model, "liberty-1.0", fusionLiberty10Panel, false},
 	}
 
 	for _, tt := range tests {
@@ -5667,6 +5678,40 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 				t.Fatalf("panel = %#v, want %#v", panel, tt.panel)
 			}
 		})
+	}
+}
+
+func TestLibertyOneAndItsComponentsKeepMillionTokenAdvisorContext(t *testing.T) {
+	for _, model := range []string{
+		trustedRouterLiberty10Model,
+		"thinkingmachines/inkling",
+		"nvidia/nemotron-3-ultra-550b-a55b",
+	} {
+		if got := advisorContextLimitTokens(model); got != 1_048_576 {
+			t.Fatalf("advisorContextLimitTokens(%q) = %d, want 1048576", model, got)
+		}
+	}
+}
+
+func TestLibertyOneUsesInklingForJudgeAndFinalSynthesis(t *testing.T) {
+	judgeModels, err := fusionJudgeModels(fusionConfig{}, trustedRouterLiberty10Model)
+	if err != nil {
+		t.Fatalf("fusionJudgeModels: %v", err)
+	}
+	finalModels, err := fusionFinalModels(
+		fusionConfig{},
+		trustedRouterLiberty10Model,
+		fusionLiberty10Panel[0],
+	)
+	if err != nil {
+		t.Fatalf("fusionFinalModels: %v", err)
+	}
+	want := []string{"thinkingmachines/inkling"}
+	if !reflect.DeepEqual(judgeModels, want) {
+		t.Fatalf("judge models = %#v, want %#v", judgeModels, want)
+	}
+	if !reflect.DeepEqual(finalModels, want) {
+		t.Fatalf("final models = %#v, want %#v", finalModels, want)
 	}
 }
 

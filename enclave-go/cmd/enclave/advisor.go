@@ -38,6 +38,8 @@ const trustedRouterOpenPatcherA1Model = "trustedrouter/openpatcher-a1"
 const trustedRouterOpenPatcherFast1Model = "trustedrouter/openpatcher-fast1"
 const trustedRouterOpenPatcherG1Model = "trustedrouter/openpatcher-g1"
 const trustedRouterAthenaModel = "trustedrouter/athena"
+const trustedRouterLiberty20Model = "trustedrouter/liberty-2.0"
+const trustedRouterLiberty30Model = "trustedrouter/liberty-3.0"
 const trustedRouterAdvisorTool = "trustedrouter:advisor"
 const advisorAdviceToolName = "_trustedrouter_get_advice"
 
@@ -208,6 +210,18 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 			AdvisorModels:        []string{trustedRouterZeus10MiniModel, fusionCodeKimi, fusionGeneralKimi},
 			HidePublicMetadata:   true,
 			ProviderJurisdiction: providerJurisdictionUS,
+		}, true
+	case trustedRouterLiberty20Model:
+		return advisorConfig{
+			Enabled:       true,
+			WorkerModels:  []string{"openai/gpt-oss-120b"},
+			AdvisorModels: []string{"google/gemma-4-31b-it", trustedRouterLiberty10Model},
+		}, true
+	case trustedRouterLiberty30Model:
+		return advisorConfig{
+			Enabled:       true,
+			WorkerModels:  []string{"google/gemma-4-31b-it"},
+			AdvisorModels: []string{"openai/gpt-oss-120b", trustedRouterLiberty10Model},
 		}, true
 	default:
 		return advisorConfig{}, false
@@ -1246,6 +1260,9 @@ func advisorNeedsCompactedContext(advisorModel string, messages []types.OpenAICh
 func advisorContextLimitTokens(model string) int {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case trustedRouterPrometheus101MModel,
+		trustedRouterLiberty10Model,
+		"thinkingmachines/inkling",
+		"nvidia/nemotron-3-ultra-550b-a55b",
 		"minimax/minimax-m3",
 		"xiaomi/mimo-v2.5-pro",
 		"z-ai/glm-5.2",

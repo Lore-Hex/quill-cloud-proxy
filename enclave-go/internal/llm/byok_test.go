@@ -342,6 +342,7 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		{"baseten", "z-ai/glm-5.2", "zai-org/GLM-5.2"},
 		{"baseten", "moonshotai/kimi-k2.7-code", "moonshotai/Kimi-K2.7-Code"},
 		{"baseten", "deepseek/deepseek-v4-pro", "deepseek-ai/DeepSeek-V4-Pro"},
+		{"baseten", "thinkingmachines/inkling", "thinkingmachines/inkling"},
 		{"wafer", "z-ai/glm-5.2", "GLM-5.2"},
 		{"wafer", "moonshotai/kimi-k2.7-code", "Kimi-K2.7-Code"},
 		{"wafer", "minimax/minimax-m3", "MiniMax-M3"},
@@ -399,6 +400,7 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		{"gmi", "z-ai/glm-5.2", "zai-org/GLM-5.2-FP8", "zai-org/GLM-5.2-FP8"},
 		{"friendli", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2"},
 		{"baseten", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2"},
+		{"baseten", "thinkingmachines/inkling", "thinkingmachines/inkling", "thinkingmachines/inkling"},
 		{"wafer", "z-ai/glm-5.2", "GLM-5.2", "GLM-5.2"},
 		// zai-direct accepts only the bare id; glm-4.7 was mis-mapped to
 		// "zai-glm-4.7" by the global directModelMap.

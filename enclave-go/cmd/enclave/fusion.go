@@ -36,6 +36,7 @@ const trustedRouterIrisCode10Model = "trustedrouter/iris-code-1.0"
 const trustedRouterPrometheusCode10Model = "trustedrouter/prometheus-code-1.0"
 const trustedRouterZeusCode10Model = "trustedrouter/zeus-code-1.0"
 const trustedRouterOpenPatcherS1Model = "trustedrouter/openpatcher-s1"
+const trustedRouterLiberty10Model = "trustedrouter/liberty-1.0"
 const trustedRouterFusionModel = "trustedrouter/fusion"
 const trustedRouterFusionCodeModel = "trustedrouter/fusion-code"
 const trustedRouterSelectorModel = "trustedrouter/selector"
@@ -132,6 +133,11 @@ var fusionOpenPatcherS1Panel = []string{
 	"z-ai/glm-5.2",
 }
 
+var fusionLiberty10Panel = []string{
+	"thinkingmachines/inkling",
+	"nvidia/nemotron-3-ultra-550b-a55b",
+}
+
 // applyFusionCodeSwap rewrites the single model trustedrouter/fusion-code
 // differs on — the general Kimi -> the code-tuned Kimi — leaving everything else
 // untouched. This is the only difference between fusion and fusion-code.
@@ -179,6 +185,7 @@ func isFusionModel(model string) bool {
 		trustedRouterPrometheusCode10Model,
 		trustedRouterZeusCode10Model,
 		trustedRouterOpenPatcherS1Model,
+		trustedRouterLiberty10Model,
 		trustedRouterFusionModel,
 		trustedRouterFusionCodeModel,
 		trustedRouterSelectorModel,
@@ -234,6 +241,8 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 		return "frontier-mini", append([]string(nil), fusionFrontierMiniPanel...), true
 	case trustedRouterOpenPatcherS1Model:
 		return "openpatcher-s1", append([]string(nil), fusionOpenPatcherS1Panel...), true
+	case trustedRouterLiberty10Model:
+		return "liberty-1.0", append([]string(nil), fusionLiberty10Panel...), true
 	default:
 		return "", nil, false
 	}
@@ -243,6 +252,8 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case trustedRouterOpenPatcherS1Model:
 		return []string{"z-ai/glm-5.2"}, true
+	case trustedRouterLiberty10Model:
+		return []string{"thinkingmachines/inkling"}, true
 	default:
 		return nil, false
 	}
@@ -256,6 +267,8 @@ func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 		return []string{"z-ai/glm-5.2"}, true
 	case trustedRouterOpenPatcherS1Model:
 		return []string{fusionCodeKimi}, true
+	case trustedRouterLiberty10Model:
+		return []string{"thinkingmachines/inkling"}, true
 	default:
 		return nil, false
 	}
