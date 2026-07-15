@@ -4706,13 +4706,13 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:    trustedRouterLiberty20Model,
-			workers:  []string{"openai/gpt-oss-120b"},
-			advisors: []string{"google/gemma-4-31b-it", trustedRouterLiberty10Model},
+			workers:  []string{"google/gemma-4-31b-it"},
+			advisors: []string{"openai/gpt-oss-120b", trustedRouterLiberty101MModel},
 		},
 		{
 			model:    trustedRouterLiberty30Model,
-			workers:  []string{"google/gemma-4-31b-it"},
-			advisors: []string{"openai/gpt-oss-120b", trustedRouterLiberty10Model},
+			workers:  []string{"thinkingmachines/inkling"},
+			advisors: []string{"openai/gpt-oss-120b", "google/gemma-4-31b-it", "nvidia/nemotron-3-ultra-550b-a55b", trustedRouterLiberty101MModel},
 		},
 	}
 	for _, tt := range tests {
@@ -5657,6 +5657,7 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 		{trustedRouterZeusCode10Model, "frontier", fusionFrontierPanel, true},
 		{trustedRouterOpenPatcherS1Model, "openpatcher-s1", fusionOpenPatcherS1Panel, false},
 		{trustedRouterLiberty10Model, "liberty-1.0", fusionLiberty10Panel, false},
+		{trustedRouterLiberty101MModel, "liberty-1.0-1m", fusionLiberty101MPanel, false},
 	}
 
 	for _, tt := range tests {
@@ -5681,10 +5682,10 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 	}
 }
 
-func TestLibertyOneAndItsComponentsKeepMillionTokenAdvisorContext(t *testing.T) {
+func TestLibertyOneMillionAndItsComponentsKeepMillionTokenAdvisorContext(t *testing.T) {
 	for _, model := range []string{
-		trustedRouterLiberty10Model,
-		"thinkingmachines/inkling",
+		trustedRouterLiberty101MModel,
+		"thinkingmachines/inkling-1m",
 		"nvidia/nemotron-3-ultra-550b-a55b",
 	} {
 		if got := advisorContextLimitTokens(model); got != 1_048_576 {
@@ -5693,25 +5694,49 @@ func TestLibertyOneAndItsComponentsKeepMillionTokenAdvisorContext(t *testing.T) 
 	}
 }
 
-func TestLibertyOneUsesInklingForJudgeAndFinalSynthesis(t *testing.T) {
-	judgeModels, err := fusionJudgeModels(fusionConfig{}, trustedRouterLiberty10Model)
-	if err != nil {
-		t.Fatalf("fusionJudgeModels: %v", err)
+func TestLibertyAdvisorModelsUseTheirPublishedContextLimits(t *testing.T) {
+	tests := map[string]int{
+		"openai/gpt-oss-120b":               131_072,
+		"google/gemma-4-31b-it":             262_144,
+		"nvidia/nemotron-3-ultra-550b-a55b": 1_048_576,
+		"thinkingmachines/inkling":          262_144,
+		"thinkingmachines/inkling-1m":       1_048_576,
+		trustedRouterLiberty10Model:         262_144,
+		trustedRouterLiberty101MModel:       1_048_576,
 	}
-	finalModels, err := fusionFinalModels(
-		fusionConfig{},
-		trustedRouterLiberty10Model,
-		fusionLiberty10Panel[0],
-	)
-	if err != nil {
-		t.Fatalf("fusionFinalModels: %v", err)
+	for model, want := range tests {
+		if got := advisorContextLimitTokens(model); got != want {
+			t.Fatalf("advisorContextLimitTokens(%q) = %d, want %d", model, got, want)
+		}
 	}
-	want := []string{"thinkingmachines/inkling"}
-	if !reflect.DeepEqual(judgeModels, want) {
-		t.Fatalf("judge models = %#v, want %#v", judgeModels, want)
+}
+
+func TestLibertyOneVariantsUseMatchingInklingForJudgeAndFinalSynthesis(t *testing.T) {
+	tests := []struct {
+		model string
+		panel []string
+		want  []string
+	}{
+		{trustedRouterLiberty10Model, fusionLiberty10Panel, []string{"thinkingmachines/inkling"}},
+		{trustedRouterLiberty101MModel, fusionLiberty101MPanel, []string{"thinkingmachines/inkling-1m"}},
 	}
-	if !reflect.DeepEqual(finalModels, want) {
-		t.Fatalf("final models = %#v, want %#v", finalModels, want)
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			judgeModels, err := fusionJudgeModels(fusionConfig{}, tt.model)
+			if err != nil {
+				t.Fatalf("fusionJudgeModels: %v", err)
+			}
+			finalModels, err := fusionFinalModels(fusionConfig{}, tt.model, tt.panel[0])
+			if err != nil {
+				t.Fatalf("fusionFinalModels: %v", err)
+			}
+			if !reflect.DeepEqual(judgeModels, tt.want) {
+				t.Fatalf("judge models = %#v, want %#v", judgeModels, tt.want)
+			}
+			if !reflect.DeepEqual(finalModels, tt.want) {
+				t.Fatalf("final models = %#v, want %#v", finalModels, tt.want)
+			}
+		})
 	}
 }
 

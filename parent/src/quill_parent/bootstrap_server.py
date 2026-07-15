@@ -110,6 +110,7 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("deepinfra_api_key", "trustedrouter-deepinfra-api-key"),
     ("friendli_api_key", "trustedrouter-friendli-api-key"),
     ("baseten_api_key", "trustedrouter-baseten-api-key"),
+    ("thinking_machines_api_key", "trustedrouter-thinking-machines-api-key"),
     ("wafer_api_key", "trustedrouter-wafer-api-key"),
     ("crusoe_api_key", "trustedrouter-crusoe-api-key"),
     ("makora_api_key", "trustedrouter-makora-api-key"),

@@ -232,6 +232,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "deepinfra_api_key",
         "friendli_api_key",
         "baseten_api_key",
+        "thinking_machines_api_key",
         "wafer_api_key",
         "crusoe_api_key",
         "makora_api_key",

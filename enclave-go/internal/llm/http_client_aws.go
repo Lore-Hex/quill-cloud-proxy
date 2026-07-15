@@ -75,6 +75,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "api.minimax.io", CID: 3, Port: 8024},
 	{Host: "api.friendli.ai", CID: 3, Port: 8025},
 	{Host: "inference.baseten.co", CID: 3, Port: 8026},
+	{Host: "tinker.thinkingmachines.dev", CID: 3, Port: 8039},
 	{Host: "pass.wafer.ai", CID: 3, Port: 8027},
 	{Host: "api.inference.crusoecloud.com", CID: 3, Port: 8028},
 	{Host: "inference.makora.com", CID: 3, Port: 8029},
