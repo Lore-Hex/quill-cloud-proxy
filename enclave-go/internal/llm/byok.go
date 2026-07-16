@@ -279,8 +279,11 @@ func buildOpenAICompatibleRequest(
 }
 
 func openAICompatibleTemperature(provider, modelID string, temperature *float64) *float64 {
-	if provider == "kimi" && strings.Contains(strings.ToLower(modelID), "kimi-k2.") {
-		return nil
+	if provider == "kimi" {
+		model := strings.ToLower(modelID)
+		if strings.Contains(model, "kimi-k2.") || strings.Contains(model, "kimi-k3") {
+			return nil
+		}
 	}
 	// OpenAI gpt-5.x / o-series reasoning models reject any temperature other
 	// than the default (1): forwarding temperature=0 returns

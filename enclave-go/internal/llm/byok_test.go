@@ -518,6 +518,9 @@ func TestProviderSpecificTemperatureOmission(t *testing.T) {
 	if got := openAICompatibleTemperature("kimi", "kimi-k2.6", &zero); got != nil {
 		t.Fatalf("Kimi K2.6 temperature = %v, want omitted", *got)
 	}
+	if got := openAICompatibleTemperature("kimi", "kimi-k3", &zero); got != nil {
+		t.Fatalf("Kimi K3 temperature = %v, want omitted", *got)
+	}
 	if got := openAICompatibleTemperature("openai", "gpt-4o-mini", &zero); got == nil || *got != 0 {
 		t.Fatalf("OpenAI temperature = %v, want 0", got)
 	}

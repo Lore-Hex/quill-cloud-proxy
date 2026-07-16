@@ -20,7 +20,7 @@ func advisorProviderUsage(details map[string]any) map[string]any {
 		"primitive":                     primitive,
 		"version":                       details["version"],
 		"selected_model":                details["selected_model"],
-		"subcall_count":                 len(allCalls),
+		"subcall_count":                 providerUsageSubcallCount(allCalls),
 		"depth_initial":                 details["depth_initial"],
 		"max_get_advice_calls":          details["max_get_advice_calls"],
 		"advice_call_count":             details["advice_call_count"],
@@ -95,7 +95,7 @@ func fusionProviderUsage(details map[string]any) map[string]any {
 		"preset":                        details["preset"],
 		"selection_strategy":            details["selection_strategy"],
 		"selected_model":                details["selected_model"],
-		"subcall_count":                 len(allCalls),
+		"subcall_count":                 providerUsageSubcallCount(allCalls),
 		"panel_count":                   len(panel),
 		"panel_attempt_count":           len(panel),
 		"judge_attempt_count":           len(judgeAttempts),
@@ -142,7 +142,7 @@ func subagentProviderUsage(details map[string]any) map[string]any {
 		"primitive":                     primitive,
 		"version":                       details["version"],
 		"selected_model":                details["selected_model"],
-		"subcall_count":                 len(allCalls),
+		"subcall_count":                 providerUsageSubcallCount(allCalls),
 		"controller_model":              details["controller_model"],
 		"worker_model":                  details["worker_model"],
 		"depth_initial":                 details["depth_initial"],
@@ -341,6 +341,38 @@ func providerUsageConcat(groups ...[]map[string]any) []map[string]any {
 		out = append(out, group...)
 	}
 	return out
+}
+
+func providerUsageSubcallCount(items []map[string]any) int {
+	total := 0
+	for _, item := range items {
+		if nested := providerUsageNestedSubcallCount(item["orchestration"]); nested > 0 {
+			total += nested
+			continue
+		}
+		total++
+	}
+	return total
+}
+
+func providerUsageNestedSubcallCount(value any) int {
+	nested, ok := value.(map[string]any)
+	if !ok {
+		return 0
+	}
+	total := 0
+	for _, raw := range nested {
+		details, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		count := providerUsageInt(details["subcall_count"])
+		if count < 1 {
+			count = 1
+		}
+		total += count
+	}
+	return total
 }
 
 func providerUsageIntSum(items []map[string]any, key string) int {

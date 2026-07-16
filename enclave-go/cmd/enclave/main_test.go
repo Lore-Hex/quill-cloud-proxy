@@ -4212,6 +4212,15 @@ func TestServeOneOpenPatcherG2RunsKimiWorkerAndParallelAdvisors(t *testing.T) {
 	if len(authorize) == 0 || len(settle) != len(authorize) || len(refund) != 0 {
 		t.Fatalf("gateway lifecycle authorize=%d settle=%d refund=%d", len(authorize), len(settle), len(refund))
 	}
+	wantLeafCalls := float64(len(authorize))
+	if response.Usage["cost_microdollars"] != wantLeafCalls {
+		t.Fatalf("top-level cost = %#v, want all %d settled leaf calls", response.Usage["cost_microdollars"], len(authorize))
+	}
+	if providerUsage["cost_microdollars"] != wantLeafCalls ||
+		providerUsage["total_cost_microdollars"] != wantLeafCalls ||
+		providerUsage["subcall_count"] != wantLeafCalls {
+		t.Fatalf("nested provider usage did not include all %d leaf calls: %#v", len(authorize), providerUsage)
+	}
 	for _, call := range authorize {
 		provider, _ := call["provider"].(map[string]any)
 		if provider != nil && provider["jurisdiction"] == providerJurisdictionUS {
@@ -4544,6 +4553,12 @@ func TestProviderUsageIncludesNestedOrchestrationWithoutText(t *testing.T) {
 	)
 
 	providerUsage := advisorProviderUsage(details)
+	if providerUsage["cost_microdollars"] != 26 || providerUsage["total_cost_microdollars"] != 26 {
+		t.Fatalf("nested cost = %#v/%#v, want 26", providerUsage["cost_microdollars"], providerUsage["total_cost_microdollars"])
+	}
+	if providerUsage["subcall_count"] != 7 {
+		t.Fatalf("nested subcall_count = %#v, want 7 leaf calls", providerUsage["subcall_count"])
+	}
 	advisorsUsage, ok := providerUsage["advisor_attempts"].([]map[string]any)
 	if !ok || len(advisorsUsage) != 1 {
 		t.Fatalf("advisor_attempts = %#v", providerUsage["advisor_attempts"])

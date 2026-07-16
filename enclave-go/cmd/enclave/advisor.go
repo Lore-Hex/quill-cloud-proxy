@@ -1840,15 +1840,7 @@ func advisorUsageTotals(groups ...[]fusionCallResult) (int, int) {
 }
 
 func advisorTotalCostMicrodollars(groups ...[]fusionCallResult) int {
-	total := 0
-	for _, items := range groups {
-		for _, item := range items {
-			if item.SettlementResult != nil {
-				total += item.SettlementResult.CostMicrodollars
-			}
-		}
-	}
-	return total
+	return fusionTotalCostMicrodollars(groups...)
 }
 
 func advisorPublicStreamUsage(config advisorConfig, inputTokens int, outputTokens int, groups ...[]fusionCallResult) *adapter.StreamUsage {
