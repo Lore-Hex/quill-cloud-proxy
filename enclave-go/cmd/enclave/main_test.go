@@ -5740,6 +5740,144 @@ func TestLibertyOneVariantsUseNemotronForJudgeAndFinalSynthesis(t *testing.T) {
 	}
 }
 
+func TestLibertyPresetsReturnNonEmptyThroughLocalGateway(t *testing.T) {
+	tests := []struct {
+		model           string
+		componentModels []string
+	}{
+		{
+			model: trustedRouterLiberty10Model,
+			componentModels: []string{
+				"thinkingmachines/inkling",
+				"nvidia/nemotron-3-ultra-550b-a55b",
+				"google/gemma-4-31b-it",
+			},
+		},
+		{
+			model: trustedRouterLiberty101MModel,
+			componentModels: []string{
+				"thinkingmachines/inkling-1m",
+				"nvidia/nemotron-3-ultra-550b-a55b",
+			},
+		},
+		{
+			model: trustedRouterLiberty20Model,
+			componentModels: []string{
+				"thinkingmachines/inkling-1m",
+				"thinkingmachines/inkling",
+				"nvidia/nemotron-3-ultra-550b-a55b",
+				"google/gemma-4-31b-it",
+			},
+		},
+		{
+			model: trustedRouterLiberty30Model,
+			componentModels: []string{
+				"thinkingmachines/inkling-1m",
+				"thinkingmachines/inkling",
+				"nvidia/nemotron-3-ultra-550b-a55b",
+				"google/gemma-4-31b-it",
+				"openai/gpt-oss-120b",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			trGateway, recorder, closeGateway := newFusionGatewayRecorder(t)
+			defer closeGateway()
+			streamer := &libertyEndToEndLLM{}
+			serverConn, client := net.Pipe()
+			defer client.Close()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+			}()
+
+			requestBody, err := json.Marshal(map[string]any{
+				"model":      tt.model,
+				"stream":     false,
+				"messages":   []map[string]any{{"role": "user", "content": "Reply with a short local test answer."}},
+				"max_tokens": 512,
+			})
+			if err != nil {
+				t.Fatalf("encode request: %v", err)
+			}
+			if _, err := fmt.Fprintf(
+				client,
+				"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer local-liberty-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+				len(requestBody),
+				requestBody,
+			); err != nil {
+				t.Fatalf("write request: %v", err)
+			}
+
+			resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				t.Fatalf("read response body: %v", err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+			}
+
+			var decoded map[string]any
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Fatalf("decode response: %v body=%s", err, body)
+			}
+			if decoded["model"] != tt.model {
+				t.Fatalf("response model = %#v, want %q", decoded["model"], tt.model)
+			}
+			choices, ok := decoded["choices"].([]any)
+			if !ok || len(choices) == 0 {
+				t.Fatalf("response has no choices: %s", body)
+			}
+			choice, ok := choices[0].(map[string]any)
+			if !ok {
+				t.Fatalf("choice has wrong shape: %#v", choices[0])
+			}
+			message, ok := choice["message"].(map[string]any)
+			if !ok {
+				t.Fatalf("choice has no message: %#v", choice)
+			}
+			content, _ := message["content"].(string)
+			if strings.TrimSpace(content) == "" {
+				t.Fatalf("response content is empty: %s", body)
+			}
+
+			recorder.mu.Lock()
+			authorize := append([]map[string]any(nil), recorder.authorize...)
+			settle := append([]map[string]any(nil), recorder.settle...)
+			refund := append([]map[string]any(nil), recorder.refund...)
+			recorder.mu.Unlock()
+			if len(authorize) == 0 || len(settle) != len(authorize) || len(refund) != 0 {
+				t.Fatalf("gateway lifecycle authorize=%d settle=%d refund=%d", len(authorize), len(settle), len(refund))
+			}
+			authorizedModels := map[string]bool{}
+			for _, call := range authorize {
+				model, _ := call["model"].(string)
+				authorizedModels[model] = true
+			}
+			for _, model := range tt.componentModels {
+				if !authorizedModels[model] {
+					t.Fatalf("authorized models = %#v, missing %q", authorizedModels, model)
+				}
+			}
+
+			client.Close()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("serveOne did not return")
+			}
+		})
+	}
+}
+
 func TestFusionZeusPresetsUseGLMJudge(t *testing.T) {
 	for _, model := range []string{
 		trustedRouterZeusModel,
@@ -6952,6 +7090,35 @@ type fusionEchoLLM struct {
 	thinking                  bool
 	delay                     time.Duration
 	delayByModel              map[string]time.Duration
+}
+
+type libertyEndToEndLLM struct {
+	fusionEchoLLM
+}
+
+func (l *libertyEndToEndLLM) InvokeStreaming(
+	ctx context.Context,
+	req *types.OpenAIChatRequest,
+	body *types.AnthropicMessagesRequest,
+	out io.Writer,
+	options ...llm.InvokeOptions,
+) error {
+	hasAdvisorTool := false
+	for _, rawTool := range req.Tools {
+		tool, ok := rawTool.(map[string]any)
+		if ok && functionNameFromTool(tool) == advisorAdviceToolName {
+			hasAdvisorTool = true
+			break
+		}
+	}
+	if req.Model == "nvidia/nemotron-3-ultra-550b-a55b" && hasAdvisorTool {
+		last := lastChatMessageText(req.Messages)
+		if strings.Contains(last, "TrustedRouter advisor panel") || strings.Contains(last, "Advisor 1") {
+			return writeAnthropicTextTestStream(out, req.Model, "non-empty Liberty answer after advisor synthesis")
+		}
+		return writeAnthropicToolUseTestStream(out, advisorAdviceToolName)
+	}
+	return l.fusionEchoLLM.InvokeStreaming(ctx, req, body, out, options...)
 }
 
 type advisorScriptedLLM struct {

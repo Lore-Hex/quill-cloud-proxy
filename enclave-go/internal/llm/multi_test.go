@@ -29,6 +29,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"fireworks", "openai/gpt-oss-120b", "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/gpt-oss-120b", false},
 		{"friendli", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2", false},
 		{"baseten", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2", false},
+		{"baseten", "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B", "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B", false},
 		{"thinkingmachines", "thinkingmachines/inkling", "thinkingmachines/Inkling:peft:262144", "thinkingmachines/Inkling:peft:262144", false},
 		{"wafer", "z-ai/glm-5.2", "GLM-5.2", "GLM-5.2", true},
 		{"wafer", "moonshotai/kimi-k2.7-code", "Kimi-K2.7-Code", "Kimi-K2.7-Code", false},
