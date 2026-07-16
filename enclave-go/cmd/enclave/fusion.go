@@ -27,6 +27,7 @@ const trustedRouterZeusModel = "trustedrouter/zeus"
 const trustedRouterIris10Model = "trustedrouter/iris-1.0"
 const trustedRouterPrometheus10Model = "trustedrouter/prometheus-1.0"
 const trustedRouterPrometheus101MModel = "trustedrouter/prometheus-1.0-1m"
+const trustedRouterPrometheus20Model = "trustedrouter/prometheus-2.0"
 const trustedRouterZeus10Model = "trustedrouter/zeus-1.0"
 const trustedRouterZeus10MiniModel = "trustedrouter/zeus-1.0-mini"
 const trustedRouterIrisCodeModel = "trustedrouter/iris-code"
@@ -76,6 +77,7 @@ Do not restart analysis.`
 const (
 	fusionGeneralKimi = "moonshotai/kimi-k2.6"
 	fusionCodeKimi    = "moonshotai/kimi-k2.7-code"
+	fusionKimiK3      = "moonshotai/kimi-k3"
 )
 
 var fusionDefaultJudgeModels = []string{
@@ -101,6 +103,14 @@ var fusionQuality1MPanel = []string{
 	"xiaomi/mimo-v2.5-pro",
 	"z-ai/glm-5.2",
 	"deepseek/deepseek-v4-pro",
+}
+
+var fusionPrometheus20Panel = []string{
+	"minimax/minimax-m3",
+	fusionKimiK3,
+	"z-ai/glm-5.2",
+	"deepseek/deepseek-v4-pro",
+	"xiaomi/mimo-v2.5-pro",
 }
 
 var fusionBudgetPanel = []string{
@@ -183,6 +193,7 @@ func isFusionModel(model string) bool {
 		trustedRouterIris10Model,
 		trustedRouterPrometheus10Model,
 		trustedRouterPrometheus101MModel,
+		trustedRouterPrometheus20Model,
 		trustedRouterZeus10Model,
 		trustedRouterZeus10MiniModel,
 		trustedRouterIrisCodeModel,
@@ -233,13 +244,15 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 		return "", nil, false
 	case trustedRouterFusionModel,
 		trustedRouterFusionCodeModel,
-		trustedRouterPrometheusModel,
 		trustedRouterPrometheus10Model,
 		trustedRouterPrometheusCodeModel,
 		trustedRouterPrometheusCode10Model:
 		return "quality", append([]string(nil), fusionQualityPanel...), true
 	case trustedRouterPrometheus101MModel:
 		return "quality-1m", append([]string(nil), fusionQuality1MPanel...), true
+	case trustedRouterPrometheusModel,
+		trustedRouterPrometheus20Model:
+		return "quality-2.0", append([]string(nil), fusionPrometheus20Panel...), true
 	case trustedRouterZeusModel,
 		trustedRouterZeus10Model,
 		trustedRouterZeusCodeModel,
@@ -260,6 +273,9 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 
 func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
+	case trustedRouterPrometheusModel,
+		trustedRouterPrometheus20Model:
+		return []string{fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
 	case trustedRouterOpenPatcherS1Model:
 		return []string{"z-ai/glm-5.2"}, true
 	case trustedRouterLiberty10Model:
@@ -273,6 +289,9 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 
 func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
+	case trustedRouterPrometheusModel,
+		trustedRouterPrometheus20Model:
+		return []string{"minimax/minimax-m3", fusionKimiK3}, true
 	case trustedRouterZeusModel,
 		trustedRouterZeus10Model,
 		trustedRouterZeus10MiniModel:
