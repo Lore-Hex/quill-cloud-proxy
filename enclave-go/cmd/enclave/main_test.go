@@ -4128,10 +4128,11 @@ func TestServeOneOpenPatcherG1PreservesAliasAndReportsAdvisorUsage(t *testing.T)
 	}
 }
 
-func TestServeOneOpenPatcherG2AutoRunsKimiWorkerAndParallelAdvisors(t *testing.T) {
+func TestServeOneOpenPatcherG2RunsAdvisorsWhenWorkerRequestsAdvice(t *testing.T) {
 	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
 	streamer := &advisorScriptedLLM{
+		callAdviceForModels: map[string]bool{fusionKimiK3: true},
 		reasoningByModel: map[string]int{
 			fusionKimiK3:               11,
 			"google/gemma-4-31b-it":    13,
@@ -4186,8 +4187,8 @@ func TestServeOneOpenPatcherG2AutoRunsKimiWorkerAndParallelAdvisors(t *testing.T
 	if !ok || details["router"] != trustedRouterOpenPatcherG2Model || details["selected_model"] != fusionKimiK3 {
 		t.Fatalf("advisor details = %#v", response.Router)
 	}
-	if details["auto_initial_advice"] != true {
-		t.Fatalf("auto_initial_advice = %#v, want true", details["auto_initial_advice"])
+	if details["auto_initial_advice"] != false {
+		t.Fatalf("auto_initial_advice = %#v, want false", details["auto_initial_advice"])
 	}
 	if details["advice_call_count"] != float64(1) {
 		t.Fatalf("advice_call_count = %#v, want 1", details["advice_call_count"])
@@ -4235,6 +4236,23 @@ func TestServeOneOpenPatcherG2AutoRunsKimiWorkerAndParallelAdvisors(t *testing.T
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("serveOne did not return")
+	}
+}
+
+func TestOpenPatcherG2AdvisorCallsAreOptional(t *testing.T) {
+	req := &types.OpenAIChatRequest{Model: trustedRouterOpenPatcherG2Model}
+	config, requested, err := advisorConfigForRequest(req)
+	if err != nil {
+		t.Fatalf("advisorConfigForRequest: %v", err)
+	}
+	if !requested {
+		t.Fatal("OpenPatcher G2 should use advisor orchestration")
+	}
+	if err := normalizeAdvisorConfig(&config, req); err != nil {
+		t.Fatalf("normalizeAdvisorConfig: %v", err)
+	}
+	if config.AutoInitialAdvice || advisorShouldAutoInitialAdvice(config) {
+		t.Fatal("OpenPatcher G2 must leave advisor calls optional for the worker")
 	}
 }
 
@@ -4895,10 +4913,9 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			jurisdiction: providerJurisdictionUS,
 		},
 		{
-			model:       trustedRouterOpenPatcherG2Model,
-			workers:     []string{fusionKimiK3},
-			advisors:    []string{"google/gemma-4-31b-it", trustedRouterPrometheus20Model},
-			autoInitial: true,
+			model:    trustedRouterOpenPatcherG2Model,
+			workers:  []string{fusionKimiK3},
+			advisors: []string{"google/gemma-4-31b-it", trustedRouterPrometheus20Model},
 		},
 		{
 			model:        trustedRouterAthenaModel,
