@@ -2555,12 +2555,38 @@ func fusionTotalCostMicrodollars(groups ...[]fusionCallResult) int {
 	total := 0
 	for _, items := range groups {
 		for _, item := range items {
-			if item.SettlementResult != nil {
-				total += item.SettlementResult.CostMicrodollars
-			}
+			total += orchestrationCallCostMicrodollars(item)
 		}
 	}
 	return total
+}
+
+func orchestrationCallCostMicrodollars(item fusionCallResult) int {
+	if total, ok := nestedOrchestrationCostMicrodollars(item.Orchestration); ok {
+		return total
+	}
+	if item.SettlementResult != nil {
+		return item.SettlementResult.CostMicrodollars
+	}
+	return 0
+}
+
+func nestedOrchestrationCostMicrodollars(orchestration map[string]any) (int, bool) {
+	total := 0
+	found := false
+	for _, raw := range orchestration {
+		details, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		cost, ok := fusionCostMicrodollars(details)
+		if !ok {
+			continue
+		}
+		total += cost
+		found = true
+	}
+	return total, found
 }
 
 func fusionCostMicrodollars(details map[string]any) (int, bool) {
