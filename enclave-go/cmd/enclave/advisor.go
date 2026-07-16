@@ -29,6 +29,7 @@ const trustedRouterAristotleModel = "trustedrouter/aristotle"
 const trustedRouterPlato10Model = "trustedrouter/plato-1.0"
 const trustedRouterPlatoModel = "trustedrouter/plato"
 const trustedRouterPlatoPro10Model = "trustedrouter/plato-pro-1.0"
+const trustedRouterPlatoPro20Model = "trustedrouter/plato-pro-2.0"
 const trustedRouterPlatoProModel = "trustedrouter/plato-pro"
 const trustedRouterSocratesPro10Model = "trustedrouter/socrates-pro-1.0"
 const trustedRouterSocratesProModel = "trustedrouter/socrates-pro"
@@ -170,11 +171,17 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 			WorkerModels:  []string{"deepseek/deepseek-v4-flash"},
 			AdvisorModels: []string{trustedRouterPlatoPro10Model},
 		}, true
-	case trustedRouterPlatoPro10Model, trustedRouterPlatoProModel:
+	case trustedRouterPlatoPro10Model:
 		return advisorConfig{
 			Enabled:       true,
 			WorkerModels:  []string{"z-ai/glm-5.2"},
 			AdvisorModels: []string{trustedRouterPrometheus101MModel},
+		}, true
+	case trustedRouterPlatoPro20Model, trustedRouterPlatoProModel:
+		return advisorConfig{
+			Enabled:       true,
+			WorkerModels:  []string{"z-ai/glm-5.2"},
+			AdvisorModels: []string{trustedRouterPrometheus20Model},
 		}, true
 	case trustedRouterSocratesPro10Model, trustedRouterSocratesProModel:
 		return advisorConfig{
@@ -1272,6 +1279,8 @@ func advisorContextLimitTokens(model string) int {
 		return 262_144
 	case trustedRouterPrometheus101MModel,
 		trustedRouterPrometheus20Model,
+		trustedRouterPlatoPro20Model,
+		trustedRouterPlatoProModel,
 		trustedRouterLiberty101MModel,
 		"thinkingmachines/inkling-1m",
 		"nvidia/nemotron-3-ultra-550b-a55b",

@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -4824,6 +4825,16 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			advisors: []string{trustedRouterPrometheus101MModel},
 		},
 		{
+			model:    trustedRouterPlatoPro20Model,
+			workers:  []string{"z-ai/glm-5.2"},
+			advisors: []string{trustedRouterPrometheus20Model},
+		},
+		{
+			model:    trustedRouterPlatoProModel,
+			workers:  []string{"z-ai/glm-5.2"},
+			advisors: []string{trustedRouterPrometheus20Model},
+		},
+		{
 			model:    trustedRouterSocrates10Model,
 			workers:  []string{"cerebras/gpt-oss-120b", "deepseek/deepseek-v4-flash"},
 			advisors: []string{trustedRouterSocratesPro10Model},
@@ -5568,13 +5579,17 @@ func TestFusionFinalModelsRejectsMoreThanEight(t *testing.T) {
 	}
 }
 
-func TestFusionFinalModelsPreservesLegacyModelField(t *testing.T) {
-	models, err := fusionFinalModels(fusionConfig{JudgeModel: "~kimi/latest"}, "trustedrouter/fusion", "model/fallback")
-	if err != nil {
-		t.Fatalf("fusionFinalModels: %v", err)
-	}
-	if len(models) != 1 || models[0] != "moonshotai/kimi-k2.7-code" {
-		t.Fatalf("models = %#v, want resolved kimi latest", models)
+func TestFusionKimiLatestAliasesResolveToK3(t *testing.T) {
+	for _, alias := range []string{"~kimi/latest", "~moonshotai/kimi-latest"} {
+		t.Run(alias, func(t *testing.T) {
+			models, err := fusionFinalModels(fusionConfig{JudgeModel: alias}, "trustedrouter/fusion", "model/fallback")
+			if err != nil {
+				t.Fatalf("fusionFinalModels: %v", err)
+			}
+			if len(models) != 1 || models[0] != fusionKimiK3 {
+				t.Fatalf("models = %#v, want Kimi K3", models)
+			}
+		})
 	}
 }
 
@@ -5814,10 +5829,11 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 		panel  []string
 		code   bool
 	}{
-		{trustedRouterIrisModel, "budget", fusionBudgetPanel, false},
+		{trustedRouterIrisModel, "budget-2.0", fusionIris20Panel, false},
 		{trustedRouterPrometheusModel, "quality-2.0", fusionPrometheus20Panel, false},
 		{trustedRouterZeusModel, "frontier", fusionFrontierPanel, false},
 		{trustedRouterIris10Model, "budget", fusionBudgetPanel, false},
+		{trustedRouterIris20Model, "budget-2.0", fusionIris20Panel, false},
 		{trustedRouterPrometheus10Model, "quality", fusionQualityPanel, false},
 		{trustedRouterPrometheus101MModel, "quality-1m", fusionQuality1MPanel, false},
 		{trustedRouterPrometheus20Model, "quality-2.0", fusionPrometheus20Panel, false},
@@ -5830,6 +5846,7 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 		{trustedRouterPrometheusCode10Model, "quality", fusionQualityPanel, true},
 		{trustedRouterZeusCode10Model, "frontier", fusionFrontierPanel, true},
 		{trustedRouterOpenPatcherS1Model, "openpatcher-s1", fusionOpenPatcherS1Panel, false},
+		{trustedRouterOpenPatcherS2Model, "openpatcher-s2", fusionOpenPatcherS2Panel, false},
 		{trustedRouterLiberty10Model, "liberty-1.0", fusionLiberty10Panel, false},
 		{trustedRouterLiberty101MModel, "liberty-1.0-1m", fusionLiberty101MPanel, false},
 	}
@@ -5859,6 +5876,8 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 func TestLibertyOneMillionAndItsComponentsKeepMillionTokenAdvisorContext(t *testing.T) {
 	for _, model := range []string{
 		trustedRouterLiberty101MModel,
+		trustedRouterPlatoPro20Model,
+		trustedRouterPlatoProModel,
 		"thinkingmachines/inkling-1m",
 		"nvidia/nemotron-3-ultra-550b-a55b",
 	} {
@@ -5920,6 +5939,66 @@ func TestPrometheusTwoPresetPinsPanelJudgeAndSynthFallbackOrder(t *testing.T) {
 				t.Fatalf("final = %#v, want %#v", final, wantFinal)
 			}
 		})
+	}
+}
+
+func TestIrisTwoAndOpenPatcherSTwoReplaceK2WithoutMutatingPriorVersions(t *testing.T) {
+	tests := []struct {
+		model      string
+		wantPanel  []string
+		wantJudges []string
+		wantFinal  []string
+	}{
+		{
+			model:      trustedRouterIris20Model,
+			wantPanel:  []string{"minimax/minimax-m3", fusionKimiK3, "deepseek/deepseek-v4-pro"},
+			wantJudges: []string{fusionKimiK3, "minimax/minimax-m3"},
+			wantFinal:  []string{"z-ai/glm-5.2", "minimax/minimax-m3"},
+		},
+		{
+			model:      trustedRouterIrisModel,
+			wantPanel:  []string{"minimax/minimax-m3", fusionKimiK3, "deepseek/deepseek-v4-pro"},
+			wantJudges: []string{fusionKimiK3, "minimax/minimax-m3"},
+			wantFinal:  []string{"z-ai/glm-5.2", "minimax/minimax-m3"},
+		},
+		{
+			model:      trustedRouterOpenPatcherS2Model,
+			wantPanel:  []string{fusionKimiK3, "z-ai/glm-5.2"},
+			wantJudges: []string{fusionKimiK3, "minimax/minimax-m3"},
+			wantFinal:  []string{"z-ai/glm-5.2", fusionKimiK3, "minimax/minimax-m3"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			_, panel, ok := fusionPresetPanelForModel(tt.model)
+			if !ok || !reflect.DeepEqual(panel, tt.wantPanel) {
+				t.Fatalf("panel = %#v ok=%t, want %#v true", panel, ok, tt.wantPanel)
+			}
+			judges, err := fusionJudgeModels(fusionConfig{}, tt.model)
+			if err != nil {
+				t.Fatalf("fusionJudgeModels: %v", err)
+			}
+			if !reflect.DeepEqual(judges, tt.wantJudges) {
+				t.Fatalf("judges = %#v, want %#v", judges, tt.wantJudges)
+			}
+			final, err := fusionFinalModels(fusionConfig{}, tt.model, panel[0])
+			if err != nil {
+				t.Fatalf("fusionFinalModels: %v", err)
+			}
+			if !reflect.DeepEqual(final, tt.wantFinal) {
+				t.Fatalf("final = %#v, want %#v", final, tt.wantFinal)
+			}
+		})
+	}
+
+	_, irisOnePanel, ok := fusionPresetPanelForModel(trustedRouterIris10Model)
+	if !ok || !reflect.DeepEqual(irisOnePanel, fusionBudgetPanel) || !slices.Contains(irisOnePanel, fusionGeneralKimi) {
+		t.Fatalf("Iris 1.0 changed: panel=%#v ok=%t", irisOnePanel, ok)
+	}
+	_, sOnePanel, ok := fusionPresetPanelForModel(trustedRouterOpenPatcherS1Model)
+	if !ok || !reflect.DeepEqual(sOnePanel, fusionOpenPatcherS1Panel) || !slices.Contains(sOnePanel, fusionCodeKimi) {
+		t.Fatalf("OpenPatcher-S1 changed: panel=%#v ok=%t", sOnePanel, ok)
 	}
 }
 
@@ -6194,6 +6273,24 @@ func TestFusionOpenPatcherS1PresetResolvesJudgeAndFinalModels(t *testing.T) {
 		if out.Provider == nil || out.Provider.Jurisdiction != providerJurisdictionUS {
 			t.Fatalf("%s provider routing = %#v, want US jurisdiction", name, out.Provider)
 		}
+	}
+}
+
+func TestFusionOpenPatcherS2UsesGlobalK3Routing(t *testing.T) {
+	req := &types.OpenAIChatRequest{Model: trustedRouterOpenPatcherS2Model}
+	config, requested, err := fusionConfigForRequest(req)
+	if err != nil {
+		t.Fatalf("fusionConfigForRequest: %v", err)
+	}
+	if !requested {
+		t.Fatal("expected OpenPatcher-S2 to request synth orchestration")
+	}
+	if config.ProviderJurisdiction != "" {
+		t.Fatalf("provider jurisdiction = %q, want global routing", config.ProviderJurisdiction)
+	}
+	_, panel, ok := fusionPresetPanelForModel(req.Model)
+	if !ok || !reflect.DeepEqual(panel, []string{fusionKimiK3, "z-ai/glm-5.2"}) {
+		t.Fatalf("panel = %#v ok=%t", panel, ok)
 	}
 }
 
