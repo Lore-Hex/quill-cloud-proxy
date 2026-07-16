@@ -2146,6 +2146,75 @@ func TestServeOneTrustedRouterFusionStreamsThinkingEvents(t *testing.T) {
 	}
 }
 
+func TestServeOnePrometheusTwoStreamsPinnedStagesAndSettlesEachSubcall(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &fusionEchoLLM{thinking: true}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+	}()
+
+	requestBody := []byte(`{"model":"trustedrouter/prometheus-2.0","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"compare options"}],"max_tokens":64}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	bodyBytes, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := string(bodyBytes)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	for _, want := range []string{
+		`"event":"panel.thinking_delta"`,
+		`"event":"judge.thinking_delta"`,
+		`"event":"final.thinking_delta"`,
+		`"model":"trustedrouter/prometheus-2.0"`,
+		`"reasoning_content":"thinking from moonshotai/kimi-k3"`,
+		`"event":"final.done"`,
+		"data: [DONE]\n\n",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream missing %q: %s", want, body)
+		}
+	}
+	if visible, _ := fusionStreamVisibleAndReasoning(t, body); visible != "final answer from moonshotai/kimi-k3" {
+		t.Fatalf("visible final stream content = %q", visible)
+	}
+
+	recorder.mu.Lock()
+	authorizeCount := len(recorder.authorize)
+	settleCount := len(recorder.settle)
+	refundCount := len(recorder.refund)
+	recorder.mu.Unlock()
+	if authorizeCount != 7 || settleCount != 7 || refundCount != 0 {
+		t.Fatalf("gateway lifecycle authorize=%d settle=%d refund=%d, want 7/7/0", authorizeCount, settleCount, refundCount)
+	}
+
+	client.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveOne did not return")
+	}
+}
+
 func TestServeOneTrustedRouterFusionStreamingStripsLiteralThinkFromContent(t *testing.T) {
 	bearer := "test-user-bearer"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4058,6 +4127,105 @@ func TestServeOneOpenPatcherG1PreservesAliasAndReportsAdvisorUsage(t *testing.T)
 	}
 }
 
+func TestServeOneOpenPatcherG2RunsKimiWorkerAndParallelAdvisors(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	streamer := &advisorScriptedLLM{
+		callAdviceForModels: map[string]bool{fusionKimiK3: true},
+		reasoningByModel: map[string]int{
+			fusionKimiK3:               11,
+			"google/gemma-4-31b-it":    13,
+			"minimax/minimax-m3":       17,
+			"z-ai/glm-5.2":             19,
+			"deepseek/deepseek-v4-pro": 23,
+			"xiaomi/mimo-v2.5-pro":     29,
+		},
+	}
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+	}()
+
+	requestBody := []byte(`{"model":"trustedrouter/openpatcher-g2","stream":false,"messages":[{"role":"user","content":"hard security task"}],"max_tokens":128}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	bodyBytes, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	var response struct {
+		Model  string         `json:"model"`
+		Usage  map[string]any `json:"usage"`
+		Router map[string]any `json:"trustedrouter"`
+	}
+	if err := json.Unmarshal(bodyBytes, &response); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, bodyBytes)
+	}
+	if response.Model != trustedRouterOpenPatcherG2Model {
+		t.Fatalf("model = %q, want %q; body=%s", response.Model, trustedRouterOpenPatcherG2Model, bodyBytes)
+	}
+	details, ok := response.Router["advisor"].(map[string]any)
+	if !ok || details["router"] != trustedRouterOpenPatcherG2Model || details["selected_model"] != fusionKimiK3 {
+		t.Fatalf("advisor details = %#v", response.Router)
+	}
+	if details["advice_call_count"] != float64(1) {
+		t.Fatalf("advice_call_count = %#v, want 1", details["advice_call_count"])
+	}
+	providerUsage, ok := response.Usage["provider_usage"].(map[string]any)
+	if !ok || providerUsage["router"] != trustedRouterOpenPatcherG2Model {
+		t.Fatalf("provider_usage = %#v", response.Usage)
+	}
+	encodedUsage, err := json.Marshal(providerUsage)
+	if err != nil {
+		t.Fatalf("marshal provider usage: %v", err)
+	}
+	for _, required := range []string{fusionKimiK3, "google/gemma-4-31b-it", trustedRouterPrometheus20Model} {
+		if !strings.Contains(string(encodedUsage), required) {
+			t.Fatalf("provider usage missing %q: %s", required, encodedUsage)
+		}
+	}
+
+	recorder.mu.Lock()
+	authorize := append([]map[string]any(nil), recorder.authorize...)
+	settle := append([]map[string]any(nil), recorder.settle...)
+	refund := append([]map[string]any(nil), recorder.refund...)
+	recorder.mu.Unlock()
+	if len(authorize) == 0 || len(settle) != len(authorize) || len(refund) != 0 {
+		t.Fatalf("gateway lifecycle authorize=%d settle=%d refund=%d", len(authorize), len(settle), len(refund))
+	}
+	for _, call := range authorize {
+		provider, _ := call["provider"].(map[string]any)
+		if provider != nil && provider["jurisdiction"] == providerJurisdictionUS {
+			t.Fatalf("G2 unexpectedly forced a US-only route: %#v", call)
+		}
+	}
+
+	client.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveOne did not return")
+	}
+}
+
 func TestServeOneAthenaPreservesAliasAndReportsRedactedAdvisorCounters(t *testing.T) {
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
@@ -4697,6 +4865,11 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			workers:      []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
 			advisors:     []string{fusionCodeKimi, trustedRouterPrometheus101MModel},
 			jurisdiction: providerJurisdictionUS,
+		},
+		{
+			model:    trustedRouterOpenPatcherG2Model,
+			workers:  []string{fusionKimiK3},
+			advisors: []string{"google/gemma-4-31b-it", trustedRouterPrometheus20Model},
 		},
 		{
 			model:        trustedRouterAthenaModel,
@@ -5642,11 +5815,12 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 		code   bool
 	}{
 		{trustedRouterIrisModel, "budget", fusionBudgetPanel, false},
-		{trustedRouterPrometheusModel, "quality", fusionQualityPanel, false},
+		{trustedRouterPrometheusModel, "quality-2.0", fusionPrometheus20Panel, false},
 		{trustedRouterZeusModel, "frontier", fusionFrontierPanel, false},
 		{trustedRouterIris10Model, "budget", fusionBudgetPanel, false},
 		{trustedRouterPrometheus10Model, "quality", fusionQualityPanel, false},
 		{trustedRouterPrometheus101MModel, "quality-1m", fusionQuality1MPanel, false},
+		{trustedRouterPrometheus20Model, "quality-2.0", fusionPrometheus20Panel, false},
 		{trustedRouterZeus10Model, "frontier", fusionFrontierPanel, false},
 		{trustedRouterZeus10MiniModel, "frontier-mini", fusionFrontierMiniPanel, false},
 		{trustedRouterIrisCodeModel, "budget", fusionBudgetPanel, true},
@@ -5711,6 +5885,69 @@ func TestLibertyAdvisorModelsUseTheirPublishedContextLimits(t *testing.T) {
 	}
 }
 
+func TestPrometheusTwoPresetPinsPanelJudgeAndSynthFallbackOrder(t *testing.T) {
+	wantPanel := []string{
+		"minimax/minimax-m3",
+		fusionKimiK3,
+		"z-ai/glm-5.2",
+		"deepseek/deepseek-v4-pro",
+		"xiaomi/mimo-v2.5-pro",
+	}
+	wantJudges := []string{"minimax/minimax-m3", fusionKimiK3}
+	wantFinal := []string{fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"}
+
+	for _, model := range []string{trustedRouterPrometheusModel, trustedRouterPrometheus20Model} {
+		t.Run(model, func(t *testing.T) {
+			preset, panel, ok := fusionPresetPanelForModel(model)
+			if !ok || preset != "quality-2.0" {
+				t.Fatalf("preset = %q ok=%t, want quality-2.0 true", preset, ok)
+			}
+			if !reflect.DeepEqual(panel, wantPanel) {
+				t.Fatalf("panel = %#v, want %#v", panel, wantPanel)
+			}
+			judges, err := fusionJudgeModels(fusionConfig{}, model)
+			if err != nil {
+				t.Fatalf("fusionJudgeModels: %v", err)
+			}
+			if !reflect.DeepEqual(judges, wantJudges) {
+				t.Fatalf("judges = %#v, want %#v", judges, wantJudges)
+			}
+			final, err := fusionFinalModels(fusionConfig{}, model, panel[0])
+			if err != nil {
+				t.Fatalf("fusionFinalModels: %v", err)
+			}
+			if !reflect.DeepEqual(final, wantFinal) {
+				t.Fatalf("final = %#v, want %#v", final, wantFinal)
+			}
+		})
+	}
+}
+
+func TestOpenPatcherG2UsesFullKimiContextAndCompactsOnlyGemmaAdvisor(t *testing.T) {
+	config, ok := advisorPresetForModel(trustedRouterOpenPatcherG2Model)
+	if !ok {
+		t.Fatal("OpenPatcher-G2 preset is missing")
+	}
+	config.AdvisorMaxTokens = defaultAdvisorMaxTokens
+	longMessages := []types.OpenAIChatMessage{{
+		Role:    "user",
+		Content: strings.Repeat("context ", 150_000),
+	}}
+
+	if got := advisorContextLimitTokens(fusionKimiK3); got != 1_048_576 {
+		t.Fatalf("Kimi K3 context = %d, want 1048576", got)
+	}
+	if got := advisorContextLimitTokens(trustedRouterPrometheus20Model); got != 1_048_576 {
+		t.Fatalf("Prometheus 2.0 context = %d, want 1048576", got)
+	}
+	if !advisorNeedsCompactedContext("google/gemma-4-31b-it", longMessages, config) {
+		t.Fatal("Gemma advisor should receive compacted context")
+	}
+	if advisorNeedsCompactedContext(trustedRouterPrometheus20Model, longMessages, config) {
+		t.Fatal("Prometheus 2.0 advisor should receive the full context")
+	}
+}
+
 func TestLibertyOneVariantsUseNemotronForJudgeAndFinalSynthesis(t *testing.T) {
 	tests := []struct {
 		model string
@@ -5740,11 +5977,21 @@ func TestLibertyOneVariantsUseNemotronForJudgeAndFinalSynthesis(t *testing.T) {
 	}
 }
 
-func TestLibertyPresetsReturnNonEmptyThroughLocalGateway(t *testing.T) {
+func TestNamedOrchestrationPresetsReturnNonEmptyThroughLocalGateway(t *testing.T) {
 	tests := []struct {
 		model           string
 		componentModels []string
 	}{
+		{
+			model: trustedRouterPrometheus20Model,
+			componentModels: []string{
+				"minimax/minimax-m3",
+				fusionKimiK3,
+				"z-ai/glm-5.2",
+				"deepseek/deepseek-v4-pro",
+				"xiaomi/mimo-v2.5-pro",
+			},
+		},
 		{
 			model: trustedRouterLiberty10Model,
 			componentModels: []string{
@@ -7185,7 +7432,15 @@ func (s *advisorScriptedLLM) InvokeStreaming(
 	if s.failModels != nil && s.failModels[req.Model] {
 		return fmt.Errorf("scripted provider failure for %s", req.Model)
 	}
-	if s.callAdviceForModels != nil && s.callAdviceForModels[req.Model] {
+	hasAdviceTool := false
+	for _, rawTool := range req.Tools {
+		tool, ok := rawTool.(map[string]any)
+		if ok && functionNameFromTool(tool) == advisorAdviceToolName {
+			hasAdviceTool = true
+			break
+		}
+	}
+	if hasAdviceTool && s.callAdviceForModels != nil && s.callAdviceForModels[req.Model] {
 		last := lastChatMessageText(req.Messages)
 		if strings.Contains(last, "TrustedRouter advisor panel") || strings.Contains(last, "Advisor 1") || strings.Contains(last, "advisor says") {
 			return s.writeText(out, req.Model, "worker final after advice from "+req.Model)
