@@ -4706,13 +4706,13 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:    trustedRouterLiberty20Model,
-			workers:  []string{"google/gemma-4-31b-it"},
-			advisors: []string{"openai/gpt-oss-120b", trustedRouterLiberty101MModel},
+			workers:  []string{"nvidia/nemotron-3-ultra-550b-a55b"},
+			advisors: []string{trustedRouterLiberty101MModel, trustedRouterLiberty10Model},
 		},
 		{
 			model:    trustedRouterLiberty30Model,
-			workers:  []string{"thinkingmachines/inkling"},
-			advisors: []string{"openai/gpt-oss-120b", "google/gemma-4-31b-it", "nvidia/nemotron-3-ultra-550b-a55b", trustedRouterLiberty101MModel},
+			workers:  []string{"nvidia/nemotron-3-ultra-550b-a55b"},
+			advisors: []string{"google/gemma-4-31b-it", "openai/gpt-oss-120b", trustedRouterLiberty101MModel, "thinkingmachines/inkling"},
 		},
 	}
 	for _, tt := range tests {
@@ -5711,14 +5711,14 @@ func TestLibertyAdvisorModelsUseTheirPublishedContextLimits(t *testing.T) {
 	}
 }
 
-func TestLibertyOneVariantsUseMatchingInklingForJudgeAndFinalSynthesis(t *testing.T) {
+func TestLibertyOneVariantsUseNemotronForJudgeAndFinalSynthesis(t *testing.T) {
 	tests := []struct {
 		model string
 		panel []string
 		want  []string
 	}{
-		{trustedRouterLiberty10Model, fusionLiberty10Panel, []string{"thinkingmachines/inkling"}},
-		{trustedRouterLiberty101MModel, fusionLiberty101MPanel, []string{"thinkingmachines/inkling-1m"}},
+		{trustedRouterLiberty10Model, fusionLiberty10Panel, []string{"nvidia/nemotron-3-ultra-550b-a55b"}},
+		{trustedRouterLiberty101MModel, fusionLiberty101MPanel, []string{"nvidia/nemotron-3-ultra-550b-a55b"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {

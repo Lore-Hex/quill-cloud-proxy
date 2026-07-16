@@ -214,14 +214,14 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 	case trustedRouterLiberty20Model:
 		return advisorConfig{
 			Enabled:       true,
-			WorkerModels:  []string{"google/gemma-4-31b-it"},
-			AdvisorModels: []string{"openai/gpt-oss-120b", trustedRouterLiberty101MModel},
+			WorkerModels:  []string{"nvidia/nemotron-3-ultra-550b-a55b"},
+			AdvisorModels: []string{trustedRouterLiberty101MModel, trustedRouterLiberty10Model},
 		}, true
 	case trustedRouterLiberty30Model:
 		return advisorConfig{
 			Enabled:       true,
-			WorkerModels:  []string{"thinkingmachines/inkling"},
-			AdvisorModels: []string{"openai/gpt-oss-120b", "google/gemma-4-31b-it", "nvidia/nemotron-3-ultra-550b-a55b", trustedRouterLiberty101MModel},
+			WorkerModels:  []string{"nvidia/nemotron-3-ultra-550b-a55b"},
+			AdvisorModels: []string{"google/gemma-4-31b-it", "openai/gpt-oss-120b", trustedRouterLiberty101MModel, "thinkingmachines/inkling"},
 		}, true
 	default:
 		return advisorConfig{}, false
