@@ -1215,18 +1215,18 @@ var friendliModelMap = map[string]string{
 // /v1/models uses upstream-author mixed-case ids, so the generic strip-author
 // fallback would ship bare/lowercase slugs that Baseten does not advertise.
 var basetenModelMap = map[string]string{
-	"openai/gpt-oss-120b":                      "openai/gpt-oss-120b",
-	"z-ai/glm-4.7":                             "zai-org/GLM-4.7",
-	"moonshotai/kimi-k2.5":                     "moonshotai/Kimi-K2.5",
-	"z-ai/glm-5":                               "zai-org/GLM-5",
-	"nvidia/nemotron-120b-a12b":                "nvidia/Nemotron-120B-A12B",
-	"z-ai/glm-5.1":                             "zai-org/GLM-5.1",
-	"moonshotai/kimi-k2.6":                     "moonshotai/Kimi-K2.6",
-	"deepseek/deepseek-v4-pro":                 "deepseek-ai/DeepSeek-V4-Pro",
-	"nvidia/nvidia-nemotron-3-ultra-550b-a55b": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
-	"z-ai/glm-5.2":                             "zai-org/GLM-5.2",
-	"moonshotai/kimi-k2.7-code":                "moonshotai/Kimi-K2.7-Code",
-	"thinkingmachines/inkling-1m":              "thinkingmachines/inkling",
+	"openai/gpt-oss-120b":               "openai/gpt-oss-120b",
+	"z-ai/glm-4.7":                      "zai-org/GLM-4.7",
+	"moonshotai/kimi-k2.5":              "moonshotai/Kimi-K2.5",
+	"z-ai/glm-5":                        "zai-org/GLM-5",
+	"nvidia/nemotron-120b-a12b":         "nvidia/Nemotron-120B-A12B",
+	"z-ai/glm-5.1":                      "zai-org/GLM-5.1",
+	"moonshotai/kimi-k2.6":              "moonshotai/Kimi-K2.6",
+	"deepseek/deepseek-v4-pro":          "deepseek-ai/DeepSeek-V4-Pro",
+	"nvidia/nemotron-3-ultra-550b-a55b": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+	"z-ai/glm-5.2":                      "zai-org/GLM-5.2",
+	"moonshotai/kimi-k2.7-code":         "moonshotai/Kimi-K2.7-Code",
+	"thinkingmachines/inkling-1m":       "thinkingmachines/inkling",
 }
 
 var thinkingMachinesModelMap = map[string]string{
