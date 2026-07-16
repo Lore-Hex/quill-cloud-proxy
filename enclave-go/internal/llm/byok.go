@@ -35,7 +35,7 @@ func invokeBYOKStreaming(
 	case provider == "anthropic":
 		return true, invokeAnthropicBYOKStreaming(ctx, req, body, out, options.ProviderAPIKey, options.UpstreamModel)
 	case isOpenAICompatibleBYOKProvider(provider):
-		return true, invokeOpenAICompatibleBYOKStreaming(ctx, provider, req, body, out, options.ProviderAPIKey, options.UpstreamModel)
+		return true, invokeOpenAICompatibleBYOKStreaming(ctx, provider, req, body, out, options.ProviderAPIKey, options.UpstreamModel, options.ProviderCacheScope)
 	default:
 		return true, fmt.Errorf("llm/byok: unsupported provider %q", options.Provider)
 	}
@@ -54,9 +54,10 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 }
 
 type openAICompatibleRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Model           string        `json:"model"`
+	Messages        []chatMessage `json:"messages"`
+	Stream          bool          `json:"stream"`
+	UserCacheSecret string        `json:"user_cache_secret,omitempty"`
 	// max_tokens vs max_completion_tokens: OpenAI's gpt-5.x family
 	// (gpt-5, gpt-5.1, ..., gpt-5.4, gpt-5.4-mini, gpt-5.4-nano,
 	// gpt-5.5, ...) REQUIRES `max_completion_tokens` and returns
@@ -132,8 +133,9 @@ func invokeOpenAICompatibleBYOKStreaming(
 	out io.Writer,
 	apiKey string,
 	upstreamModel string,
+	providerCacheScope string,
 ) error {
-	return InvokeOpenAICompatibleStreaming(ctx, provider, directBaseURL(provider), apiKey, req, body, out, upstreamModel)
+	return InvokeOpenAICompatibleStreaming(ctx, provider, directBaseURL(provider), apiKey, req, body, out, upstreamModel, providerCacheScope)
 }
 
 // InvokeOpenAICompatibleStreaming is the shared OpenAI-compatible upstream
@@ -153,7 +155,12 @@ func InvokeOpenAICompatibleStreaming(
 	body *qtypes.AnthropicMessagesRequest,
 	out io.Writer,
 	upstreamModel string,
+	providerCacheScopes ...string,
 ) error {
+	providerCacheScope := ""
+	if len(providerCacheScopes) > 0 {
+		providerCacheScope = providerCacheScopes[0]
+	}
 	return invokeOpenAICompatibleStreamingWithClient(
 		ctx,
 		defaultHTTPClient(),
@@ -164,6 +171,7 @@ func InvokeOpenAICompatibleStreaming(
 		body,
 		out,
 		upstreamModel,
+		providerCacheScope,
 	)
 }
 
@@ -175,7 +183,12 @@ func invokeOpenAICompatibleStreamingWithClient(
 	body *qtypes.AnthropicMessagesRequest,
 	out io.Writer,
 	upstreamModel string,
+	providerCacheScopes ...string,
 ) error {
+	providerCacheScope := ""
+	if len(providerCacheScopes) > 0 {
+		providerCacheScope = providerCacheScopes[0]
+	}
 	if strings.TrimSpace(apiKey) == "" {
 		return fmt.Errorf("llm/%s: missing api key", provider)
 	}
@@ -188,6 +201,9 @@ func invokeOpenAICompatibleStreamingWithClient(
 	}
 	upstreamID := directModelID(provider, req.Model, upstreamModel)
 	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
+	if normalizeDirectProvider(provider) == "tinfoil" {
+		reqBody.UserCacheSecret = strings.TrimSpace(providerCacheScope)
+	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("llm/%s: marshal body: %w", provider, err)

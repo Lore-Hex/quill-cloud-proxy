@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -112,18 +114,31 @@ func invokeOptionsForAuthorization(
 			continue
 		}
 		options = append(options, llm.InvokeOptions{
-			Model:          candidate.Model,
-			UpstreamModel:  candidate.UpstreamModel,
-			ProviderAPIKey: providerKey,
-			Provider:       candidate.Provider,
-			EndpointID:     candidate.EndpointID,
-			UsageType:      candidate.UsageType,
+			Model:              candidate.Model,
+			UpstreamModel:      candidate.UpstreamModel,
+			ProviderAPIKey:     providerKey,
+			Provider:           candidate.Provider,
+			EndpointID:         candidate.EndpointID,
+			UsageType:          candidate.UsageType,
+			ProviderCacheScope: providerCacheScope(authorization.WorkspaceID),
 		})
 	}
 	if len(options) == 0 && len(unavailable) > 0 {
 		return nil, fmt.Errorf("no authorized route candidate has an available provider key: %s", strings.Join(unavailable, "; "))
 	}
 	return options, nil
+}
+
+// providerCacheScope gives cache-capable providers a stable, opaque namespace
+// per TrustedRouter workspace. The source workspace UUID never leaves the
+// enclave, and separate workspaces cannot observe each other's cache timing.
+func providerCacheScope(workspaceID string) string {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("trustedrouter/provider-cache/v1\x00" + workspaceID))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func providerAPIKeyForRoute(

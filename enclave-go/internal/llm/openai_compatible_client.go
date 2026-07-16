@@ -89,5 +89,6 @@ func (c *openAICompatibleClient) InvokeStreaming(
 		body,
 		out,
 		option.UpstreamModel,
+		option.ProviderCacheScope,
 	)
 }
