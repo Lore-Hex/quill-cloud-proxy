@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
+
+var claude5Generation = regexp.MustCompile(`claude-[a-z][a-z0-9]*-5([.-]|$)`)
 
 func firstOptions(options []InvokeOptions) InvokeOptions {
 	if len(options) == 0 {
@@ -451,6 +454,12 @@ func invokeAnthropicBYOKStreamingWithClient(
 
 func anthropicTemperature(modelID string, temperature *float64) *float64 {
 	model := strings.ToLower(modelID)
+	// Anthropic rejects temperature on Claude 5-generation models. The
+	// regexp covers future 5-family members so the next launch doesn't
+	// repeat this incident.
+	if claude5Generation.MatchString(model) {
+		return nil
+	}
 	if strings.Contains(model, "claude-opus-4-7") || strings.Contains(model, "claude-opus-4-8") {
 		return nil
 	}
@@ -1310,9 +1319,10 @@ var makoraModelMap = map[string]string{
 }
 
 var waferZDRNativeModels = map[string]struct{}{
-	"GLM-5.1":           {},
-	"GLM-5.2":           {},
-	"Kimi-K2.6":         {},
+	"GLM-5.1": {},
+	"GLM-5.2": {},
+	// Wafer withdrew ZDR for Kimi-K2.6 on 2026-06-26; the control-plane
+	// catalog now serves it at standard tier (quill-router leaderboard-fixes).
 	"Qwen3.5-397B-A17B": {},
 	"deepseek-v4-flash": {},
 	"deepseek-v4-pro":   {},

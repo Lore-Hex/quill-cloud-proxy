@@ -537,11 +537,127 @@ func TestProviderSpecificTemperatureOmission(t *testing.T) {
 	if got := anthropicTemperature("claude-opus-4-7", &zero); got != nil {
 		t.Fatalf("Claude Opus 4.7 temperature = %v, want omitted", *got)
 	}
+	for _, model := range []string{
+		"claude-fable-5",
+		"anthropic/claude-fable-5",
+		"claude-sonnet-5-20260901",
+		"claude-haiku-5",
+	} {
+		if got := anthropicTemperature(model, &zero); got != nil {
+			t.Fatalf("%s temperature = %v, want omitted", model, *got)
+		}
+	}
 	if got := anthropicTemperature("claude-sonnet-4-6", &zero); got == nil || *got != 0 {
 		t.Fatalf("Claude Sonnet temperature = %v, want 0", got)
 	}
 	hot := 1.7
 	if got := anthropicTemperature("claude-sonnet-4-6", &hot); got == nil || *got != 1.0 {
 		t.Fatalf("Claude Sonnet high temperature = %v, want 1.0", got)
+	}
+}
+
+func TestClaude5GenerationRegexp(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"claude-fable-5", true},
+		{"anthropic/claude-fable-5", true},
+		{"claude-sonnet-5-20260901", true},
+		{"claude-haiku-5", true},
+		{"claude-sonnet-4-6", false},
+		{"claude-opus-4-8", false},
+		{"claude-3-5-sonnet", false},
+		{"claude-3-5-sonnet-20241022", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := claude5Generation.MatchString(strings.ToLower(tt.model)); got != tt.want {
+				t.Fatalf("claude5Generation.MatchString(%q) = %v, want %v", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWaferZDRHeaderContract(t *testing.T) {
+	tests := []struct {
+		name          string
+		model         string
+		upstreamModel string
+		wantModel     string
+		wantZDR       bool
+	}{
+		{
+			name:          "glm remains zdr native",
+			model:         "z-ai/glm-5.2",
+			upstreamModel: "GLM-5.2",
+			wantModel:     "GLM-5.2",
+			wantZDR:       true,
+		},
+		{
+			name:          "kimi k2.6 is standard tier",
+			model:         "moonshotai/kimi-k2.6",
+			upstreamModel: "Kimi-K2.6",
+			wantModel:     "Kimi-K2.6",
+			wantZDR:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			httpc := &http.Client{
+				Transport: byokRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+					if req.URL.String() != "https://pass.wafer.ai/v1/chat/completions" {
+						t.Fatalf("url = %q", req.URL.String())
+					}
+					gotZDR := req.Header.Get("Wafer-ZDR")
+					if tt.wantZDR && gotZDR != "required" {
+						t.Fatalf("Wafer-ZDR header = %q, want required", gotZDR)
+					}
+					if !tt.wantZDR && gotZDR != "" {
+						t.Fatalf("Wafer-ZDR header = %q, want omitted", gotZDR)
+					}
+
+					var payload map[string]any
+					if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+						t.Fatalf("decode request body: %v", err)
+					}
+					if payload["model"] != tt.wantModel {
+						t.Fatalf("model = %#v, want %q; payload=%#v", payload["model"], tt.wantModel, payload)
+					}
+
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+						Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+							`data: {"id":"x","choices":[{"delta":{"content":"ok"},"finish_reason":null}]}`,
+							``,
+							`data: {"id":"x","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+							``,
+							`data: [DONE]`,
+							``,
+						}, "\n"))),
+					}, nil
+				}),
+			}
+
+			err := invokeOpenAICompatibleStreamingWithClient(
+				t.Context(),
+				httpc,
+				"wafer",
+				"https://pass.wafer.ai/v1",
+				"sk-test",
+				&qtypes.OpenAIChatRequest{Model: tt.model},
+				&qtypes.AnthropicMessagesRequest{
+					Messages:  []qtypes.AnthropicMessage{{Role: "user", Content: "hi"}},
+					MaxTokens: 8,
+				},
+				io.Discard,
+				tt.upstreamModel,
+			)
+			if err != nil {
+				t.Fatalf("invokeOpenAICompatibleStreamingWithClient: %v", err)
+			}
+		})
 	}
 }
