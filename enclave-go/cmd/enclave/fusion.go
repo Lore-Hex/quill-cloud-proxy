@@ -263,9 +263,9 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 	case trustedRouterOpenPatcherS1Model:
 		return []string{"z-ai/glm-5.2"}, true
 	case trustedRouterLiberty10Model:
-		return []string{"thinkingmachines/inkling"}, true
+		return []string{"nvidia/nemotron-3-ultra-550b-a55b"}, true
 	case trustedRouterLiberty101MModel:
-		return []string{"thinkingmachines/inkling-1m"}, true
+		return []string{"nvidia/nemotron-3-ultra-550b-a55b"}, true
 	default:
 		return nil, false
 	}
@@ -280,9 +280,9 @@ func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 	case trustedRouterOpenPatcherS1Model:
 		return []string{fusionCodeKimi}, true
 	case trustedRouterLiberty10Model:
-		return []string{"thinkingmachines/inkling"}, true
+		return []string{"nvidia/nemotron-3-ultra-550b-a55b"}, true
 	case trustedRouterLiberty101MModel:
-		return []string{"thinkingmachines/inkling-1m"}, true
+		return []string{"nvidia/nemotron-3-ultra-550b-a55b"}, true
 	default:
 		return nil, false
 	}
