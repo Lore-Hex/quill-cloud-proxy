@@ -420,6 +420,7 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		{"mistral", "mistralai/mistral-large", "mistralai/mistral-large", "mistral-large-latest"},
 		{"mistral", "mistralai/mistral-small-3.2-24b-instruct", "mistralai/mistral-small-3.2-24b-instruct", "mistral-small-2506"},
 		{"mistral", "mistralai/mistral-nemo", "mistralai/mistral-nemo", "open-mistral-nemo"},
+		{"kimi", "moonshotai/kimi-k3", "kimi-k3", "kimi-k3"},
 		{"kimi", "moonshotai/kimi-k2.7-code", "moonshotai/kimi-k2.7-code", "moonshotai/Kimi-K2.7-Code"},
 		// anthropic path calls directModelID FIRST, so claude-4.0's dated-id
 		// remap must resolve here (the bare "claude-opus-4" 404s on Anthropic).
