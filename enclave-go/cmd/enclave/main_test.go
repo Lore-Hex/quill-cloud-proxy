@@ -4128,11 +4128,10 @@ func TestServeOneOpenPatcherG1PreservesAliasAndReportsAdvisorUsage(t *testing.T)
 	}
 }
 
-func TestServeOneOpenPatcherG2RunsKimiWorkerAndParallelAdvisors(t *testing.T) {
+func TestServeOneOpenPatcherG2AutoRunsKimiWorkerAndParallelAdvisors(t *testing.T) {
 	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
 	streamer := &advisorScriptedLLM{
-		callAdviceForModels: map[string]bool{fusionKimiK3: true},
 		reasoningByModel: map[string]int{
 			fusionKimiK3:               11,
 			"google/gemma-4-31b-it":    13,
@@ -4186,6 +4185,9 @@ func TestServeOneOpenPatcherG2RunsKimiWorkerAndParallelAdvisors(t *testing.T) {
 	details, ok := response.Router["advisor"].(map[string]any)
 	if !ok || details["router"] != trustedRouterOpenPatcherG2Model || details["selected_model"] != fusionKimiK3 {
 		t.Fatalf("advisor details = %#v", response.Router)
+	}
+	if details["auto_initial_advice"] != true {
+		t.Fatalf("auto_initial_advice = %#v, want true", details["auto_initial_advice"])
 	}
 	if details["advice_call_count"] != float64(1) {
 		t.Fatalf("advice_call_count = %#v, want 1", details["advice_call_count"])
@@ -4893,9 +4895,10 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			jurisdiction: providerJurisdictionUS,
 		},
 		{
-			model:    trustedRouterOpenPatcherG2Model,
-			workers:  []string{fusionKimiK3},
-			advisors: []string{"google/gemma-4-31b-it", trustedRouterPrometheus20Model},
+			model:       trustedRouterOpenPatcherG2Model,
+			workers:     []string{fusionKimiK3},
+			advisors:    []string{"google/gemma-4-31b-it", trustedRouterPrometheus20Model},
+			autoInitial: true,
 		},
 		{
 			model:        trustedRouterAthenaModel,

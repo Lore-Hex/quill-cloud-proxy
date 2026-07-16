@@ -213,9 +213,11 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 		return openPatcherG1AdvisorConfig(false), true
 	case trustedRouterOpenPatcherG2Model:
 		return advisorConfig{
-			Enabled:       true,
-			WorkerModels:  []string{fusionKimiK3},
-			AdvisorModels: []string{"google/gemma-4-31b-it", trustedRouterPrometheus20Model},
+			Enabled:              true,
+			WorkerModels:         []string{fusionKimiK3},
+			AdvisorModels:        []string{"google/gemma-4-31b-it", trustedRouterPrometheus20Model},
+			AutoInitialAdvice:    true,
+			AutoInitialAdviceSet: true,
 		}, true
 	case trustedRouterAthenaModel:
 		return advisorConfig{
