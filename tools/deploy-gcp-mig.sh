@@ -243,31 +243,44 @@ if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/
     --region="$REGION" --clear-autohealing >/dev/null
   # Reconcile size on every deploy — lets us raise TARGET_SIZE for a
   # region (e.g. eu went 2→3 to absorb the 2026-05-11 watchdog-flap
-  # pattern) without a one-shot operator step.
-  current_size=$(gc compute instance-groups managed describe "$MIG_NAME" \
-    --region="$REGION" --format='value(targetSize)' 2>/dev/null || echo "")
+  # pattern) without a one-shot operator step. GROW-ONLY: a shrink here on a
+  # mixed-template fleet (leftover from an interrupted roll) would let the MIG
+  # pick victims arbitrarily — possibly the attested, DNS-published instances.
+  # Shrinking is owned by `mig-surge-drain.sh drain`, which is template-aware.
   # DEFERRED (review 2026-06-21): add a resize guard — refuse to apply when
   # TARGET_SIZE is empty/unset or would drop the MIG below a safe floor (a bad
   # or empty TARGET_SIZE reaching here could scale a region to 0). Deferred with
   # the provider-loop DRY above; land both in the next deploy-script test-deploy.
-  if [ "$current_size" != "$TARGET_SIZE" ]; then
-    log "resizing MIG $MIG_NAME: ${current_size:-?} -> $TARGET_SIZE"
+  current_size=$(gc compute instance-groups managed describe "$MIG_NAME" \
+    --region="$REGION" --format='value(targetSize)' 2>/dev/null || echo "")
+  if [ -n "$current_size" ] && [ "$current_size" -lt "$TARGET_SIZE" ]; then
+    log "resizing MIG $MIG_NAME: ${current_size} -> $TARGET_SIZE"
     gc compute instance-groups managed resize "$MIG_NAME" \
       --region="$REGION" --size="$TARGET_SIZE" >/dev/null
   fi
-  # Prefer a surge rollout so the regional gateway keeps serving while the
-  # new attested image boots and passes health checks. Regional MIGs span
-  # three zones, so the fixed surge default is 3.
-  # NOTE: `gcloud compute instance-groups managed rolling-action replace`
-  # does NOT support --min-ready (the flag exists on `rolling-action
-  # start-update` but not on `replace`). The TCP-vs-TLS readiness gap
-  # is instead absorbed by the `wait-until --stable` step in the
-  # workflow that runs before each per-region canary — the canary
-  # measures POST-rolling steady state, not the mid-drain window.
-  gc compute instance-groups managed rolling-action replace "$MIG_NAME" \
-    --region="$REGION" \
-    --max-unavailable="$MAX_UNAVAILABLE" \
-    --max-surge="$MAX_SURGE" >/dev/null
+  if [ "${ROLL_STRATEGY:-surge-drain}" = "replace" ]; then
+    # Escape hatch: legacy one-shot replace. This DELETES the old instances —
+    # the only IPs published for api-${REGION}.quillrouter.com — as soon as the
+    # new ones are RUNNING, ~5-8 min before Confidential Space attestation lets
+    # the reconciler publish their replacements. The regional hostname WILL
+    # refuse connections for that window. Use only to force-cycle a region
+    # whose fleet is already dead.
+    gc compute instance-groups managed rolling-action replace "$MIG_NAME" \
+      --region="$REGION" \
+      --max-unavailable="$MAX_UNAVAILABLE" \
+      --max-surge="$MAX_SURGE" >/dev/null
+  else
+    # Phase 1 of the zero-downtime roll (tools/mig-surge-drain.sh): surge
+    # TARGET_SIZE new-template instances ALONGSIDE the old fleet. The old
+    # instances keep serving and remain the regional DNS answer until the
+    # workflow has gated attestation (wait-attested), published the new IPs
+    # (reconcile-enclave-dns.py), and let resolver caches settle >= 2xTTL —
+    # only then does the workflow run `mig-surge-drain.sh drain` to delete
+    # the old-template instances. api-${REGION}.quillrouter.com never points
+    # at an empty or all-dead set at any moment of the roll.
+    TARGET_SIZE="$TARGET_SIZE" PROJECT_ID="$PROJECT_ID" \
+      bash "$(dirname "$0")/mig-surge-drain.sh" surge "$REGION" "$MIG_NAME"
+  fi
 else
   log "creating MIG $MIG_NAME (size=$TARGET_SIZE)"
   # No --health-check / autohealing on create — see the update branch above.

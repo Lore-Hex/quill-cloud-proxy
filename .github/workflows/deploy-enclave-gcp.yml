@@ -281,10 +281,21 @@ jobs:
           done
 
       # Staged regional rollout. Before touching any region, drain it from the
-      # canonical API DNS answer and wait one TTL. The regional hostname may be
-      # briefly unavailable while that region rolls, but api.trustedrouter.com
-      # keeps serving from the other warm regions. This avoids relying on spare
-      # Confidential VM capacity for a blue/green primary-region deploy.
+      # canonical API DNS answer and wait one TTL; api.trustedrouter.com keeps
+      # serving from the other warm regions throughout.
+      #
+      # The REGIONAL hostname (api-<region>.quillrouter.com) has nothing to
+      # fail over to, so it is kept up by rolling each MIG in two phases
+      # (tools/mig-surge-drain.sh) instead of `rolling-action replace`:
+      # surge new-template instances alongside the old fleet → wait for the
+      # new instances to ATTEST (Confidential Space needs ~5-8 min; the DNS
+      # reconciler only publishes attested IPs) → reconcile DNS so the record
+      # holds old+new IPs → settle >= 2xTTL so every cached resolver answer
+      # contains the new IPs → drain exactly the old-template instances.
+      # The old `replace` deleted the old fleet minutes before the new one
+      # could enter DNS, refusing all api-<region> connections on every
+      # deploy. Transient capacity is baseline+TARGET_SIZE — less than the
+      # old surge of 3 — so this does not add Confidential-VM stockout risk.
 
       - name: Drain us-central1 from canonical API DNS
         env:
@@ -317,11 +328,12 @@ jobs:
         run: bash tools/deploy-gcp-mig.sh us-central1
 
       - name: Wait for us-central1 MIG to be stable
-        # Block until the rolling-replace finishes draining the old
-        # instances. We *want* the canary below to measure post-roll
-        # steady state, not the mid-roll drain window where probes
-        # naturally flap as instances cycle. Timeout caps a stuck
-        # rollout — 15 min is generous; a healthy roll is 5-10 min.
+        # Block until the surge finishes creating the new-template
+        # instances (the old fleet is untouched and still serving).
+        # We *want* the canary below to measure post-roll steady
+        # state, not the mid-roll window where probes naturally flap
+        # as instances boot. Timeout caps a stuck rollout — 15 min is
+        # generous; a healthy surge is 2-5 min.
         timeout-minutes: 15
         env:
           QUILL_RECONCILE_APPLY: "1"
@@ -366,6 +378,29 @@ jobs:
           QUILL_EXCLUDE_CANONICAL_REGIONS: us-central1
         run: uv run --script tools/reconcile-enclave-dns.py --apply
 
+      - name: Settle regional DNS, then drain the old us-central1 fleet
+        # Phase 2 of the zero-downtime roll. At this point the surged
+        # new-template instances are attested AND published (previous two
+        # steps), so api-us-central1.quillrouter.com holds old+new IPs. Wait
+        # >= 2xTTL so no resolver can still be caching an old-only answer,
+        # then delete exactly the old-template instances. drain refuses to
+        # run unless a full baseline fleet exists on the current template —
+        # a failed roll leaves the OLD fleet serving, never a dead region.
+        env:
+          QUILL_RECONCILE_APPLY: "1"
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
+          QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
+          QUILL_EXCLUDE_CANONICAL_REGIONS: us-central1
+        run: |
+          set -euo pipefail
+          echo "settling resolver caches (2xTTL) before draining the old fleet"
+          sleep "${QUILL_DNS_SETTLE_SECONDS:-130}"
+          bash tools/mig-surge-drain.sh drain us-central1 quill-enclave-mig-us
+          uv run --script tools/reconcile-enclave-dns.py --apply
+
       - name: Wait for us-central1 synthetic up
         # The canary reads status.json; wait until the synthetic monitor has
         # re-probed this freshly-rolled region as up so the canary measures
@@ -391,19 +426,35 @@ jobs:
         if: ${{ steps.canary_us.outcome == 'failure' }}
         env:
           PREV_US: ${{ steps.prev.outputs.us_central1_template }}
+          QUILL_RECONCILE_APPLY: "1"
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
+          QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
+          QUILL_EXCLUDE_CANONICAL_REGIONS: us-central1
         run: |
           set -euo pipefail
           if [ -z "${PREV_US}" ]; then
             echo "no prior us-central1 template recorded; cannot rollback"
             exit 1
           fi
-          echo "us-central1 canary failed; pointing MIG back at ${PREV_US}"
+          echo "us-central1 canary failed; rolling back to ${PREV_US} (surge/drain)"
+          # Same zero-downtime choreography as the forward roll, in reverse:
+          # surge PREV-template instances alongside the canary-failed fleet
+          # (which keeps serving — degraded beats dead air), gate on the PREV
+          # instances attesting (template-aware, so a crash-looping bad fleet
+          # cannot wedge the rollback), publish, settle 2xTTL, then drain the
+          # bad-template instances.
           gcloud compute instance-groups managed set-instance-template quill-enclave-mig-us \
             --region=us-central1 --project=quill-cloud-proxy \
             --template="${PREV_US}" --quiet
-          gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-us \
-            --region=us-central1 --project=quill-cloud-proxy \
-            --max-unavailable=0 --max-surge=3 --quiet
+          bash tools/mig-surge-drain.sh surge us-central1 quill-enclave-mig-us
+          bash tools/mig-surge-drain.sh wait-attested us-central1 quill-enclave-mig-us
+          uv run --script tools/reconcile-enclave-dns.py --apply
+          sleep "${QUILL_DNS_SETTLE_SECONDS:-130}"
+          bash tools/mig-surge-drain.sh drain us-central1 quill-enclave-mig-us
+          uv run --script tools/reconcile-enclave-dns.py --apply
           echo "us-central1 remains drained from canonical API DNS; other regions keep serving."
           exit 1
 
@@ -479,13 +530,19 @@ jobs:
               echo "no prior ${region} template recorded; cannot rollback"
               return 1
             fi
-            echo "${region} canary failed; pointing MIG back at ${prev_template}"
+            echo "${region} canary failed; rolling back to ${prev_template} (surge/drain)"
+            # Zero-downtime rollback, mirror of the forward roll: surge PREV
+            # instances beside the canary-failed fleet, gate on the PREV
+            # instances attesting (template-aware), publish, settle, drain.
             gcloud compute instance-groups managed set-instance-template "${mig}" \
               --region="${region}" --project=quill-cloud-proxy \
               --template="${prev_template}" --quiet
-            gcloud compute instance-groups managed rolling-action replace "${mig}" \
-              --region="${region}" --project=quill-cloud-proxy \
-              --max-unavailable=0 --max-surge=3 --quiet
+            bash tools/mig-surge-drain.sh surge "${region}" "${mig}"
+            bash tools/mig-surge-drain.sh wait-attested "${region}" "${mig}"
+            reconcile_dns "${region}"
+            sleep "${QUILL_DNS_SETTLE_SECONDS:-130}"
+            bash tools/mig-surge-drain.sh drain "${region}" "${mig}"
+            reconcile_dns "${region}"
           }
 
           roll_secondary_region() {
@@ -506,6 +563,12 @@ jobs:
               bash tools/deploy-gcp-mig.sh "${region}"
               wait_region_stable_with_dns_refresh "${mig}" "${region}"
               bash tools/wait-region-attested.sh "${filter}" "${region}"
+              reconcile_dns "${region}"
+              # Phase 2: the surged fleet is attested + published; settle
+              # resolver caches past the TTL, then drain the old template.
+              echo "settling ${region} regional DNS (2xTTL) before draining the old fleet"
+              sleep "${QUILL_DNS_SETTLE_SECONDS:-130}"
+              bash tools/mig-surge-drain.sh drain "${region}" "${mig}"
               reconcile_dns "${region}"
               trigger_synthetic_workers
               WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
