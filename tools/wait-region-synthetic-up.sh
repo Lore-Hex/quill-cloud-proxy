@@ -17,8 +17,10 @@
 # this fails closed after the ceiling, which is a clean abort, not a false
 # rollback of a good release.
 #
-# Parse matches tools/watchdog.py fetch_per_region exactly: worst
-# effective_status across data.current.checks whose target_region matches.
+# Require a complete probe set from both monitor regions created after this
+# gate starts. This prevents stale peer failures from poisoning a healthy
+# rollout and prevents one fast TLS check from releasing the gate before the
+# inference and attestation probes finish.
 #
 # Usage: wait-region-synthetic-up.sh <gcp-region> [label]
 set -uo pipefail
@@ -28,39 +30,13 @@ LABEL="${2:-$REGION}"
 URL="${STATUS_URL:-https://trustedrouter.com/status.json}"
 ROUNDS="${WAIT_UP_ROUNDS:-20}"   # 20 * 30s = 10 min ceiling
 SLEEP="${WAIT_UP_SLEEP:-30}"
+STARTED_AT="${WAIT_UP_STARTED_AT:-$(date -u +%s)}"
+MONITOR_REGIONS="${WAIT_UP_MONITOR_REGIONS:-us-central1,europe-west4}"
 
 for i in $(seq 1 "$ROUNDS"); do
-  st=$(curl -sS --max-time 10 "$URL" 2>/dev/null | REGION="$REGION" ELAPSED="$SECONDS" python3 -c "
-import json, os, sys
-region = os.environ['REGION']
-# Gate runtime so far. A synthetic check whose age_seconds < elapsed was
-# probed AFTER this gate started (i.e. after the roll). 'up' only counts on
-# such a fresh post-start probe; a stale pre-roll 'up' (age >= elapsed) does
-# not release the canary, which would otherwise race the post-roll dip
-# (codex 2026-06-20). The synthetic cadence (~3-4 min) means the gate self-
-# waits roughly that long for the first qualifying probe, which is fine.
-elapsed = float(os.environ.get('ELAPSED', '0'))
-sev = {'up': 0, 'degraded': 1, 'down': 2}
-try:
-    checks = json.load(sys.stdin).get('data', {}).get('current', {}).get('checks', []) or []
-except Exception:
-    print('unknown'); sys.exit()
-worst = -1
-min_age = None
-for c in checks:
-    if (c or {}).get('target_region') != region:
-        continue
-    s = ((c or {}).get('effective_status') or (c or {}).get('status') or '').lower()
-    if s in sev and sev[s] > worst:
-        worst = sev[s]
-    a = (c or {}).get('age_seconds')
-    if isinstance(a, (int, float)) and (min_age is None or a < min_age):
-        min_age = a
-status = {0: 'up', 1: 'degraded', 2: 'down'}.get(worst, 'unknown')
-if status == 'up' and (min_age is None or min_age >= elapsed):
-    status = 'stale-up'
-print(status)
-")
+  st=$(curl -sS --max-time 10 "$URL" 2>/dev/null | \
+    python3 tools/synthetic_gate_status.py \
+      "$REGION" "$STARTED_AT" "$MONITOR_REGIONS")
   echo "${LABEL}: synthetic status = ${st} (round ${i}, elapsed ${SECONDS}s)"
   [ "$st" = "up" ] && exit 0
   sleep "$SLEEP"

@@ -34,6 +34,7 @@ on:
       - "tools/wait-canonical-drained.sh"
       - "tools/wait-region-attested.sh"
       - "tools/wait-region-synthetic-up.sh"
+      - "tools/synthetic_gate_status.py"
       - ".github/workflows/deploy-enclave-gcp.yml"
       # Note: trust-page/** is intentionally NOT in this list. Trust
       # artifacts are *output* of this workflow, not input — listing them
@@ -377,6 +378,8 @@ jobs:
         run: |
           gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-minute \
             --location=us-central1 --project=quill-cloud-proxy || true
+          gcloud scheduler jobs run trusted-router-synthetic-europe-west4-every-minute \
+            --location=europe-west4 --project=quill-cloud-proxy || true
           bash tools/wait-region-synthetic-up.sh us-central1 us-central1
 
       - name: Canary gate — watch us-central1 only (post-stable)
