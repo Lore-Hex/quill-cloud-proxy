@@ -1058,7 +1058,7 @@ func serveStreaming(
 			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		if routeType == "responses" || statsW.BytesWritten() == 0 {
-			_ = writeStreamingProviderError(statsW, routeType, requestID, responseModel)
+			_ = writeStreamingProviderError(statsW, routeType, requestID, responseModel, err)
 		}
 		return
 	}
@@ -1278,7 +1278,8 @@ func serveMessages(
 			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		if statsW.BytesWritten() == 0 {
-			_ = writeAnthropicStreamError(statsW, "provider error")
+			_, message := upstreamErrorResponse(err)
+			_ = writeAnthropicStreamError(statsW, message)
 		}
 		return
 	}

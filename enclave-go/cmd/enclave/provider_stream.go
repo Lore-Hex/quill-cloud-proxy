@@ -521,11 +521,15 @@ func retryableInvokeError(err error) bool {
 	return err != nil
 }
 
-func writeStreamingProviderError(w io.Writer, routeType, requestID, model string) error {
+func writeStreamingProviderError(w io.Writer, routeType, requestID, model string, err error) error {
+	status, message := upstreamErrorResponse(err)
 	errBody := map[string]any{
-		"message": "provider error",
+		"message": message,
 		"type":    "provider_error",
 		"source":  "provider",
+	}
+	if err != nil {
+		errBody["status"] = status
 	}
 	if routeType == "responses" {
 		payload := map[string]any{
@@ -539,26 +543,26 @@ func writeStreamingProviderError(w io.Writer, routeType, requestID, model string
 				"error":      errBody,
 			},
 		}
-		encoded, err := json.Marshal(payload)
-		if err != nil {
-			return err
+		encoded, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			return marshalErr
 		}
-		if _, err := fmt.Fprintf(w, "event: response.failed\ndata: %s\n\n", encoded); err != nil {
-			return err
+		if _, writeErr := fmt.Fprintf(w, "event: response.failed\ndata: %s\n\n", encoded); writeErr != nil {
+			return writeErr
 		}
-		_, err = io.WriteString(w, "data: [DONE]\n\n")
-		return err
+		_, writeErr := io.WriteString(w, "data: [DONE]\n\n")
+		return writeErr
 	}
 	payload := map[string]any{"error": errBody}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return err
+	encoded, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return marshalErr
 	}
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", encoded); err != nil {
-		return err
+	if _, writeErr := fmt.Fprintf(w, "data: %s\n\n", encoded); writeErr != nil {
+		return writeErr
 	}
-	_, err = io.WriteString(w, "data: [DONE]\n\n")
-	return err
+	_, writeErr := io.WriteString(w, "data: [DONE]\n\n")
+	return writeErr
 }
 
 func emitErrorAsAnthropicSSE(w io.Writer, err error) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,92 @@ func TestUpstreamErrorResponse(t *testing.T) {
 				t.Fatalf("msg = %q, want to contain %q", msg, tc.wantInMsg)
 			}
 		})
+	}
+}
+
+func TestUpstreamErrorResponseScrubsAndTruncatesUpstreamBody(t *testing.T) {
+	prefix := "upstream http 404: "
+	body := `{"error":"Bearer SECRET_TOKEN sk-AbCd_1234 ` + strings.Repeat("x", 1300) + `"}`
+	code, message := upstreamErrorResponse(fmt.Errorf("llm/upstream: http 404: %s", body))
+
+	if code != 404 {
+		t.Fatalf("code = %d, want 404", code)
+	}
+	if !strings.HasPrefix(message, prefix) {
+		t.Fatalf("message = %q, want prefix %q", message, prefix)
+	}
+	if len(message) != len(prefix)+1200 {
+		t.Fatalf("message length = %d, want %d", len(message), len(prefix)+1200)
+	}
+	if strings.Contains(message, "SECRET_TOKEN") || strings.Contains(message, "sk-AbCd_1234") {
+		t.Fatalf("message leaked secret: %q", message)
+	}
+	if !strings.Contains(message, "Bearer ***") || !strings.Contains(message, "sk-***") {
+		t.Fatalf("message missing scrub markers: %q", message)
+	}
+}
+
+func TestWriteStreamingProviderErrorEnrichesChatCompletionsFrame(t *testing.T) {
+	var buf bytes.Buffer
+	err := fmt.Errorf(`llm/upstream: http 404: {"error":"model not found"}`)
+	if writeErr := writeStreamingProviderError(&buf, "chat.completions", "chatcmpl-test", "missing-model", err); writeErr != nil {
+		t.Fatalf("write error: %v", writeErr)
+	}
+
+	frame := strings.SplitN(buf.String(), "\n\n", 2)[0]
+	data := strings.TrimPrefix(frame, "data: ")
+	var payload struct {
+		Error struct {
+			Message        string `json:"message"`
+			Type           string `json:"type"`
+			Source         string `json:"source"`
+			UpstreamStatus int    `json:"status"`
+		} `json:"error"`
+	}
+	if unmarshalErr := json.Unmarshal([]byte(data), &payload); unmarshalErr != nil {
+		t.Fatalf("decode frame: %v; frame=%q", unmarshalErr, frame)
+	}
+	if payload.Error.Message != `upstream http 404: {"error":"model not found"}` {
+		t.Fatalf("message = %q", payload.Error.Message)
+	}
+	if payload.Error.UpstreamStatus != 404 {
+		t.Fatalf("upstream_status = %d, want 404", payload.Error.UpstreamStatus)
+	}
+	if payload.Error.Type != "provider_error" || payload.Error.Source != "provider" {
+		t.Fatalf("error envelope changed: %#v", payload.Error)
+	}
+}
+
+func TestWriteStreamingProviderErrorNilMatchesLegacyGenericFrame(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeStreamingProviderError(&buf, "chat.completions", "chatcmpl-test", "model", nil); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+	const legacy = "data: {\"error\":{\"message\":\"provider error\",\"source\":\"provider\",\"type\":\"provider_error\"}}\n\ndata: [DONE]\n\n"
+	if got := buf.String(); got != legacy {
+		t.Fatalf("generic frame changed:\n got: %q\nwant: %q", got, legacy)
+	}
+}
+
+func TestWriteAnthropicStreamErrorUsesEnrichedUpstreamMessage(t *testing.T) {
+	_, message := upstreamErrorResponse(errors.New("llm/upstream: http 403: account disabled"))
+	var buf bytes.Buffer
+	if err := writeAnthropicStreamError(&buf, message); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	frame := strings.SplitN(buf.String(), "\n\n", 2)[0]
+	data := strings.TrimPrefix(strings.TrimPrefix(frame, "event: error\n"), "data: ")
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		t.Fatalf("decode frame: %v; frame=%q", err, frame)
+	}
+	if payload.Error.Message != "upstream http 403: account disabled" {
+		t.Fatalf("message = %q", payload.Error.Message)
 	}
 }
 
