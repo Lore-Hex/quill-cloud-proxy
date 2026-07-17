@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,11 @@ const (
 )
 
 var errHeadersTooLarge = errors.New("request headers too large")
+
+var (
+	upstreamAPIKeyPattern = regexp.MustCompile(`(?i)\b(sk|rk)-[A-Za-z0-9_\-*]{4,}`)
+	upstreamBearerPattern = regexp.MustCompile(`(?i)bearer\s+\S+`)
+)
 
 type responseStatsConn struct {
 	net.Conn
@@ -513,10 +519,9 @@ func newMessageID() string {
 // upstreamErrorResponse maps a provider/upstream error to the status + message
 // to return to the client. Provider clients wrap upstream HTTP failures as
 // "...http <status>: <body>" (see internal/llm/*.go); when we recognize that
-// shape we surface the upstream status and (truncated) body so callers get the
-// real reason — e.g. an Anthropic 400 validation error — instead of an opaque
-// "provider error". Anything we can't classify stays a generic 502. Upstream
-// 4xx/5xx bodies are API status/validation messages (no keys, no user data).
+// shape we surface the upstream status and scrubbed, truncated body so callers
+// get the real reason — e.g. an Anthropic 400 validation error — instead of an
+// opaque "provider error". Anything we can't classify stays a generic 502.
 func upstreamErrorResponse(err error) (int, string) {
 	if err == nil {
 		return 502, "provider error"
@@ -531,11 +536,13 @@ func upstreamErrorResponse(err error) (int, string) {
 		if c := strings.IndexByte(rest, ':'); c > 0 {
 			if code, e := strconv.Atoi(strings.TrimSpace(rest[:c])); e == nil && code >= 400 && code < 600 {
 				body := strings.TrimSpace(rest[c+1:])
+				body = upstreamAPIKeyPattern.ReplaceAllString(body, "sk-***")
+				body = upstreamBearerPattern.ReplaceAllString(body, "Bearer ***")
 				if len(body) > 1200 {
 					body = body[:1200]
 				}
 				if body != "" {
-					return code, body
+					return code, fmt.Sprintf("upstream http %d: %s", code, body)
 				}
 			}
 		}
