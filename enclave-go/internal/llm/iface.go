@@ -40,12 +40,13 @@ type Client interface {
 }
 
 type InvokeOptions struct {
-	Model          string
-	UpstreamModel  string
-	ProviderAPIKey string
-	Provider       string
-	EndpointID     string
-	UsageType      string
+	Model              string
+	UpstreamModel      string
+	ProviderAPIKey     string
+	Provider           string
+	EndpointID         string
+	UsageType          string
+	ProviderCacheScope string
 }
 
 // New builds the right Client for the build target. Defined exactly once
