@@ -79,6 +79,7 @@ REFRESH_SECONDS: Final[int] = 1800
 # (skip and leave the BootstrapData field empty); the enclave's
 # build-tag-gated provider clients ignore empty keys.
 _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
+    ("openrouter_api_key", "quill-openrouter-key"),
     ("anthropic_api_key", "trustedrouter-anthropic-api-key"),
     ("openai_api_key", "trustedrouter-openai-api-key"),
     ("gemini_api_key", "trustedrouter-gemini-api-key"),

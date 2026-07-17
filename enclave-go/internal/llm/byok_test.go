@@ -1,9 +1,12 @@
 package llm
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -126,6 +129,104 @@ func TestBuildOpenAICompatibleRequestCarriesInboundParams(t *testing.T) {
 		if _, ok := payload[key]; ok {
 			t.Fatalf("%s present in payload: %s", key, encoded)
 		}
+	}
+}
+
+func TestBuildMetaOpenRouterRequestCarriesReasoningWithoutThinkingAlias(t *testing.T) {
+	reasoning := map[string]any{"effort": "minimal"}
+	req := &qtypes.OpenAIChatRequest{
+		Reasoning:       reasoning,
+		ReasoningEffort: "minimal",
+	}
+	body := &qtypes.AnthropicMessagesRequest{
+		Thinking: map[string]any{"type": "enabled", "budget_tokens": 128},
+	}
+
+	got := buildOpenAICompatibleRequest(
+		"meta",
+		"meta/muse-spark-1.1",
+		req,
+		body,
+		[]chatMessage{{Role: "user", Content: "Reply PONG"}},
+	)
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload["reasoning_effort"] != "minimal" {
+		t.Fatalf("reasoning_effort = %#v, want minimal", payload["reasoning_effort"])
+	}
+	gotReasoning, ok := payload["reasoning"].(map[string]any)
+	if !ok || gotReasoning["effort"] != "minimal" {
+		t.Fatalf("reasoning = %#v, want minimal effort", payload["reasoning"])
+	}
+	if _, ok := payload["thinking"]; ok {
+		t.Fatalf("Meta via OpenRouter must receive reasoning, not thinking: %s", encoded)
+	}
+	if got := directBaseURL("meta"); got != "https://openrouter.ai/api/v1" {
+		t.Fatalf("directBaseURL(meta) = %q", got)
+	}
+	if got := directModelID("meta", "meta/muse-spark-1.1", "meta/muse-spark-1.1"); got != "meta/muse-spark-1.1" {
+		t.Fatalf("directModelID(meta) = %q", got)
+	}
+}
+
+func TestInvokeMetaUsesOpenRouterInferenceKeyAndExactMuseID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Path; got != "/chat/completions" {
+			t.Errorf("path = %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-or-test" {
+			t.Errorf("authorization = %q", got)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if payload["model"] != "meta/muse-spark-1.1" {
+			t.Errorf("model = %#v", payload["model"])
+		}
+		if payload["reasoning_effort"] != "minimal" {
+			t.Errorf("reasoning_effort = %#v", payload["reasoning_effort"])
+		}
+		if _, ok := payload["thinking"]; ok {
+			t.Errorf("unexpected thinking alias in request: %#v", payload)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"PONG\"},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	req := &qtypes.OpenAIChatRequest{
+		Model:           "meta/muse-spark-1.1",
+		ReasoningEffort: "minimal",
+	}
+	body := &qtypes.AnthropicMessagesRequest{
+		Messages: []qtypes.AnthropicMessage{{Role: "user", Content: "Reply PONG"}},
+	}
+	var out bytes.Buffer
+	err := invokeOpenAICompatibleStreamingWithClient(
+		context.Background(),
+		server.Client(),
+		"meta",
+		server.URL,
+		"sk-or-test",
+		req,
+		body,
+		&out,
+		"meta/muse-spark-1.1",
+	)
+	if err != nil {
+		t.Fatalf("invoke Muse: %v", err)
+	}
+	if !strings.Contains(out.String(), `"text":"PONG"`) {
+		t.Fatalf("translated output lost PONG: %s", out.String())
 	}
 }
 

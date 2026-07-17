@@ -84,6 +84,8 @@ type openAICompatibleRequest struct {
 	ToolChoice          any                `json:"tool_choice,omitempty"`
 	ParallelToolCalls   *bool              `json:"parallel_tool_calls,omitempty"`
 	Thinking            any                `json:"thinking,omitempty"`
+	Reasoning           any                `json:"reasoning,omitempty"`
+	ReasoningEffort     string             `json:"reasoning_effort,omitempty"`
 	// StreamOptions asks the upstream for the final usage-bearing chunk
 	// (stream_options.include_usage). Always sent: real token counts feed
 	// settlement (replacing chars/4 estimates that miscounted reasoning
@@ -257,7 +259,12 @@ func buildOpenAICompatibleRequest(
 		reqBody.Temperature = openAICompatibleTemperature(provider, upstreamID, body.Temperature)
 		reqBody.TopP = body.TopP
 		reqBody.TopK = body.TopK
-		reqBody.Thinking = body.Thinking
+		// Most direct providers that expose reasoning use their native
+		// `thinking` extension. Meta's Muse endpoint is reached through
+		// OpenRouter and accepts OpenRouter's `reasoning` fields instead.
+		if provider != "meta" {
+			reqBody.Thinking = body.Thinking
+		}
 		// max_tokens is OPTIONAL on the OpenAI-compatible surface, so only
 		// forward a cap the CLIENT actually set. body.MaxTokens always holds a
 		// value because the Anthropic/Bedrock wire format requires one — but
@@ -278,6 +285,8 @@ func buildOpenAICompatibleRequest(
 		}
 	}
 	if req != nil {
+		reqBody.Reasoning = req.Reasoning
+		reqBody.ReasoningEffort = req.ReasoningEffort
 		reqBody.Tools = req.Tools
 		reqBody.ToolChoice = req.ToolChoice
 		reqBody.ParallelToolCalls = req.ParallelTools
@@ -702,6 +711,10 @@ func directBaseURL(provider string) string {
 	switch provider {
 	case "openai":
 		return "https://api.openai.com/v1"
+	case "meta":
+		// Meta Muse Spark is currently served through OpenRouter. The
+		// control-plane provider label is deliberately "Meta via OpenRouter".
+		return "https://openrouter.ai/api/v1"
 	case "cerebras":
 		return "https://api.cerebras.ai/v1"
 	case "deepseek":
@@ -900,7 +913,7 @@ func directModelID(provider, model, upstreamModel string) string {
 
 func providerPreservesAuthorModelID(provider string) bool {
 	switch provider {
-	case "novita", "nebius", "fireworks":
+	case "meta", "novita", "nebius", "fireworks":
 		return true
 	default:
 		return false

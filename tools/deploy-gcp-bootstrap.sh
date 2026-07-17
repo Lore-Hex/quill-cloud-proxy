@@ -46,6 +46,7 @@ BIGTABLE_INSTANCE="${BIGTABLE_INSTANCE:-trusted-router-logs}"
 BIGTABLE_EU_CLUSTER="${BIGTABLE_EU_CLUSTER:-trusted-router-logs-eu}"
 BIGTABLE_EU_ZONE="${BIGTABLE_EU_ZONE:-europe-west4-a}"
 WORKLOAD_SA="${WORKLOAD_SA:-quill-workload@${PROJECT_ID}.iam.gserviceaccount.com}"
+OPENROUTER_SECRET="${OPENROUTER_SECRET:-quill-openrouter-key}"
 ANTHROPIC_SECRET="${ANTHROPIC_SECRET:-trustedrouter-anthropic-api-key}"
 OPENAI_SECRET="${OPENAI_SECRET:-trustedrouter-openai-api-key}"
 GEMINI_SECRET="${GEMINI_SECRET:-trustedrouter-gemini-api-key}"
@@ -148,6 +149,7 @@ fi
 
 # 4. IAM bindings on the secrets the workload reads at boot.
 for secret in \
+  "$OPENROUTER_SECRET" \
   "$ANTHROPIC_SECRET" \
   "$OPENAI_SECRET" \
   "$GEMINI_SECRET" \

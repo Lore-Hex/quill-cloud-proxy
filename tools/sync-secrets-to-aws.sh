@@ -38,6 +38,7 @@ AWS_SECRET_PREFIX="${AWS_SECRET_PREFIX:-quill/}"   # AWS secret name = prefix + 
 # env-var name the enclave reads is keyed off the same id (e.g.
 # QUILL_ANTHROPIC_SECRET → AWS secret quill/QUILL_ANTHROPIC_SECRET).
 SECRETS=(
+  quill-openrouter-key
   trustedrouter-anthropic-api-key
   trustedrouter-openai-api-key
   trustedrouter-gemini-api-key
