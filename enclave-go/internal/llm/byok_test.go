@@ -526,6 +526,10 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		// anthropic path calls directModelID FIRST, so claude-4.0's dated-id
 		// remap must resolve here (the bare "claude-opus-4" 404s on Anthropic).
 		{"anthropic", "anthropic/claude-opus-4.8", "anthropic/claude-opus-4.8", "claude-opus-4-8"},
+		{"anthropic", "anthropic/claude-haiku-4.5", "anthropic/claude-haiku-4.5", "claude-haiku-4-5-20251001"},
+		{"anthropic", "anthropic/claude-sonnet-4.5", "anthropic/claude-sonnet-4.5", "claude-sonnet-4-5-20250929"},
+		{"anthropic", "anthropic/claude-opus-4.5", "anthropic/claude-opus-4.5", "claude-opus-4-5-20251101"},
+		{"anthropic", "anthropic/claude-opus-4.1", "anthropic/claude-opus-4.1", "claude-opus-4-1-20250805"},
 		{"anthropic", "anthropic/claude-opus-4", "anthropic/claude-opus-4", "claude-opus-4-20250514"},
 		{"anthropic", "anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4", "claude-sonnet-4-20250514"},
 	}

@@ -1351,7 +1351,15 @@ var directModelMap = map[string]string{
 	"anthropic/claude-opus-4.8":   "claude-opus-4-8",
 	"anthropic/claude-opus-4.7":   "claude-opus-4-7",
 	"anthropic/claude-sonnet-4.6": "claude-sonnet-4-6",
-	"anthropic/claude-haiku-4.5":  "claude-haiku-4-5",
+	// Pre-4.6 models must use DATED ids: Anthropic retires undated aliases
+	// at deprecation while dated snapshots serve until formal retirement.
+	// Docs: platform.claude.com models overview; observed with
+	// claude-opus-4-1 on 2026-06-21. 4.6+ dateless ids are pinned snapshots
+	// and need no dates.
+	"anthropic/claude-haiku-4.5":  "claude-haiku-4-5-20251001",
+	"anthropic/claude-sonnet-4.5": "claude-sonnet-4-5-20250929",
+	"anthropic/claude-opus-4.5":   "claude-opus-4-5-20251101",
+	"anthropic/claude-opus-4.1":   "claude-opus-4-1-20250805",
 	"anthropic/claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
 	// Original Claude 4.0 GA: Anthropic serves these only under the dated
 	// snapshot id. The anthropic path calls directModelID FIRST (this map),
