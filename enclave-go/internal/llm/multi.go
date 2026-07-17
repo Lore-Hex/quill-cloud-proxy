@@ -32,6 +32,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		anthropic:        newAnthropic(boot),
 		vertex:           newVertex(boot),
 		openai:           newOpenAICompatible("openai", boot.OpenAIAPIKey),
+		meta:             newOpenAICompatible("meta", boot.OpenRouterAPIKey),
 		gemini:           newVertexGemini(boot),
 		cerebras:         newOpenAICompatible("cerebras", boot.CerebrasAPIKey),
 		deepseek:         newOpenAICompatible("deepseek", boot.DeepSeekAPIKey),
@@ -77,6 +78,7 @@ type multiClient struct {
 	anthropic        *anthropicClient
 	vertex           *gcpClient
 	openai           *openAICompatibleClient
+	meta             *openAICompatibleClient
 	gemini           *vertexGeminiClient
 	cerebras         *openAICompatibleClient
 	deepseek         *openAICompatibleClient
@@ -130,6 +132,8 @@ func (m *multiClient) InvokeStreaming(
 		return m.vertex.InvokeStreaming(ctx, req, body, out, options...)
 	case "openai":
 		return m.openai.InvokeStreaming(ctx, req, body, out, options...)
+	case "meta":
+		return m.meta.InvokeStreaming(ctx, req, body, out, options...)
 	case "gemini":
 		return m.gemini.InvokeStreaming(ctx, req, body, out, options...)
 	case "cerebras":
@@ -192,6 +196,6 @@ func (m *multiClient) InvokeStreaming(
 		// Embeddings-only; returns a clear "chat not supported" error.
 		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, gemini, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, thinkingmachines, wafer, crusoe, makora, nebius, minimax, xiaomi, cohere)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, gemini, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, thinkingmachines, wafer, crusoe, makora, nebius, minimax, xiaomi, cohere)", provider)
 	}
 }

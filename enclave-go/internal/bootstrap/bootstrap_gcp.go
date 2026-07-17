@@ -40,7 +40,7 @@
 //
 //	QUILL_GCP_PROJECT_ID         e.g. "quill-cloud-proxy"
 //	QUILL_DEVICE_KEYS_SECRET     name of the secret holding the device-key JSON
-//	QUILL_OPENROUTER_SECRET      name of the secret holding the OpenRouter API key (llm_openrouter builds)
+//	QUILL_OPENROUTER_SECRET      name of the OpenRouter key secret (llm_openrouter and Muse-on-multi)
 //	QUILL_ANTHROPIC_SECRET       name of the secret holding the direct Anthropic API key (llm_anthropic builds)
 //	QUILL_OPENAI_SECRET          name of the secret holding the OpenAI API key (llm_multi builds)
 //	QUILL_GEMINI_SECRET          name of the secret holding the Gemini API key (llm_multi builds)

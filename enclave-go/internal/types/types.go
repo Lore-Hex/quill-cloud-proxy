@@ -33,7 +33,7 @@ type BootstrapData struct {
 	Region            string         `json:"region"`
 	BedrockVsockProxy string         `json:"bedrock_vsock_proxy"` // e.g. "3:8003"
 
-	// OpenRouter (only populated for the openrouter build target). The
+	// OpenRouter (populated for the openrouter target and Meta Muse in multi). The
 	// API key is pulled from KMS-sealed config alongside the device-key
 	// blob; same trust posture as the Bedrock creds (parent decrypts and
 	// hands plaintext over vsock).

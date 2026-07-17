@@ -131,6 +131,38 @@ func TestTranslateOpenAIStreamPreservesReasoningContentAsThinking(t *testing.T) 
 	}
 }
 
+func TestTranslateMuseStreamKeepsVisibleTextAndDropsEncryptedReasoning(t *testing.T) {
+	upstream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","data":"TOP_SECRET_BLOB"}]},"finish_reason":null}]}`,
+		`data: {"choices":[{"delta":{"content":"PONG"},"finish_reason":"stop"}]}`,
+		`data: {"choices":[],"usage":{"prompt_tokens":169,"completion_tokens":110,"total_tokens":279,"prompt_tokens_details":{"cached_tokens":165},"completion_tokens_details":{"reasoning_tokens":98}}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := translateOpenAIStreamToAnthropic(strings.NewReader(upstream), &out); err != nil {
+		t.Fatalf("translateOpenAIStreamToAnthropic: %v", err)
+	}
+	body := out.String()
+	if !strings.Contains(body, `"text":"PONG"`) {
+		t.Fatalf("Muse visible content lost: %s", body)
+	}
+	if strings.Contains(body, "TOP_SECRET_BLOB") || strings.Contains(body, "reasoning.encrypted") {
+		t.Fatalf("encrypted reasoning details leaked downstream: %s", body)
+	}
+	for _, want := range []string{
+		`"input_tokens":169`,
+		`"output_tokens":110`,
+		`"cache_read_input_tokens":165`,
+		`"reasoning_tokens":98`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %s in translated usage: %s", want, body)
+		}
+	}
+}
+
 // TestOpenAICompatibleRequestBody locks in the upstream request shape:
 //  1. stream_options.include_usage is ALWAYS requested (feeds settlement
 //     + the client-facing include_usage chunk);

@@ -86,6 +86,7 @@ def test_build_payload_loads_present_provider_keys_and_skips_missing() -> None:
     populate the present ones and silently skip the missing ones."""
     sm = _StubSecretsManager(
         {
+            "quill/quill-openrouter-key": "sk-or-FAKE",
             "quill/trustedrouter-anthropic-api-key": "sk-ant-FAKE",
             "quill/trustedrouter-openai-api-key": "sk-FAKE-OPENAI",
             "quill/trustedrouter-aws-cross-cloud-sa-key": base64.b64encode(
@@ -102,6 +103,7 @@ def test_build_payload_loads_present_provider_keys_and_skips_missing() -> None:
     assert payload["devices"] == []  # always empty on the AWS multi-provider path
     assert payload["anthropic_api_key"] == "sk-ant-FAKE"
     assert payload["openai_api_key"] == "sk-FAKE-OPENAI"
+    assert payload["openrouter_api_key"] == "sk-or-FAKE"
     # Missing keys produce no field at all (omitempty on the Go side).
     assert "gemini_api_key" not in payload
     assert "cerebras_api_key" not in payload
@@ -210,6 +212,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
     script but forgets the bootstrap_server _PROVIDER_KEYS entry, the
     new key never reaches the enclave."""
     expected_fields = {
+        "openrouter_api_key",
         "anthropic_api_key",
         "openai_api_key",
         "gemini_api_key",
