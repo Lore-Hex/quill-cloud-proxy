@@ -159,6 +159,7 @@ func invokeProviderStream(
 			return
 		}
 		lastErr = withInvokeAttemptError(err, option)
+		selectedRoute.RecordFailure(option, errorClass(err))
 		if !trEnabled || candidateWriter.BytesWritten() > 0 || i == len(options)-1 || !retryableInvokeError(err) {
 			fmt.Fprintf(os.Stderr,
 				"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
@@ -266,6 +267,14 @@ type selectedRouteTracker struct {
 	provider string
 	attempts int
 	routes   []routeAttempt
+	// failures records each provider attempt that errored before producing
+	// output, as "provider|endpoint|error_class". Settle forwards them
+	// (metadata only, no request content) so the control plane can emit a
+	// Sentry warning whenever a request had to route around a failing
+	// provider: individually harmless, but if one provider/model pair
+	// accumulates (e.g. GMI dropping kimi-k3 or nemotron while the default
+	// route preferred it) that is the early signal to demote the route.
+	failures []string
 }
 
 type routeAttempt struct {
@@ -310,6 +319,27 @@ func (t *selectedRouteTracker) RecordCandidateAttempt(option llm.InvokeOptions) 
 		provider: option.Provider,
 	})
 	t.mu.Unlock()
+}
+
+func (t *selectedRouteTracker) RecordFailure(option llm.InvokeOptions, class string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if len(t.failures) < 8 { // cap: settle metadata, not a full trace
+		t.failures = append(t.failures, option.Provider+"|"+option.EndpointID+"|"+class)
+	}
+	t.mu.Unlock()
+}
+
+// Failures returns the failed pre-output attempts recorded so far.
+func (t *selectedRouteTracker) Failures() []string {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string(nil), t.failures...)
 }
 
 func (t *selectedRouteTracker) AttemptedRoutes() []routeAttempt {

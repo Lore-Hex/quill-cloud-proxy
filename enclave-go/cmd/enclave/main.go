@@ -872,6 +872,8 @@ func serveResponsesNonStreaming(
 		RouteType:         "responses",
 		SelectedModel:     selectedModel,
 		SelectedEndpoint:  selectedEndpoint,
+		RouteFallbacks:    len(selectedRoute.Failures()),
+		RouteFailures:     selectedRoute.Failures(),
 		User:              req.User,
 		SessionID:         req.SessionID,
 		Trace:             req.Trace,
@@ -953,6 +955,8 @@ func serveChatNonStreaming(
 		RouteType:         "chat.completions",
 		SelectedModel:     selectedModel,
 		SelectedEndpoint:  selectedEndpoint,
+		RouteFallbacks:    len(selectedRoute.Failures()),
+		RouteFailures:     selectedRoute.Failures(),
 		User:              req.User,
 		SessionID:         req.SessionID,
 		Trace:             req.Trace,
@@ -1079,6 +1083,8 @@ func serveStreaming(
 		RouteType:         routeType,
 		SelectedModel:     selectedRoute.Model(req.Model, authorization),
 		SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
+		RouteFallbacks:    len(selectedRoute.Failures()),
+		RouteFailures:     selectedRoute.Failures(),
 		User:              req.User,
 		SessionID:         req.SessionID,
 		Trace:             req.Trace,
@@ -1232,6 +1238,8 @@ func serveMessages(
 			RouteType:        "messages",
 			SelectedModel:    selectedModel,
 			SelectedEndpoint: selectedEndpoint,
+			RouteFallbacks:   len(selectedRoute.Failures()),
+			RouteFailures:    selectedRoute.Failures(),
 			Metadata:         req.Metadata,
 		}
 		applyUsageAttribution(&usage, req)
@@ -1299,6 +1307,8 @@ func serveMessages(
 		RouteType:         "messages",
 		SelectedModel:     selectedRoute.Model(req.Model, authorization),
 		SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
+		RouteFallbacks:    len(selectedRoute.Failures()),
+		RouteFailures:     selectedRoute.Failures(),
 		Metadata:          req.Metadata,
 	}
 	applyUsageAttribution(&usage, req)
