@@ -75,6 +75,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Test deploy gate helpers
+        run: python3 tools/test_synthetic_gate_status.py
       - name: Assert trust page contains no <script> tags
         run: |
           if grep -qi '<script' trust-page/index.html; then
