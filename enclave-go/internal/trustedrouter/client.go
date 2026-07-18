@@ -191,6 +191,13 @@ type Usage struct {
 	// input still bills at the full input rate.
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int
+	// Route-failover visibility: pre-output provider attempts that failed
+	// before the winning candidate answered, as "provider|endpoint|class"
+	// (metadata only). The control plane emits a Sentry warning when
+	// RouteFallbacks > 0 so dead provider routes accumulate a signal
+	// instead of hiding behind successful failovers.
+	RouteFallbacks int
+	RouteFailures  []string
 }
 
 func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest) (*Authorization, error) {
@@ -437,6 +444,10 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	}
 	if usage.CacheCreationInputTokens > 0 {
 		body["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+	}
+	if usage.RouteFallbacks > 0 {
+		body["route_fallbacks"] = usage.RouteFallbacks
+		body["route_failures"] = usage.RouteFailures
 	}
 	var decoded struct {
 		Data SettleResult `json:"data"`
