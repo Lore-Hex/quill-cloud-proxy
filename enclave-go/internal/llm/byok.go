@@ -46,7 +46,7 @@ func invokeBYOKStreaming(
 
 func isOpenAICompatibleBYOKProvider(provider string) bool {
 	switch provider {
-	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "zai", "together",
+	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "google-ai-studio", "zai", "together",
 		"fireworks", "grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
 		"parasail", "lightning", "gmi", "deepinfra", "friendli", "baseten", "thinkingmachines", "wafer",
 		"crusoe", "makora", "nebius", "minimax", "xiaomi":
@@ -723,7 +723,7 @@ func directBaseURL(provider string) string {
 		return "https://api.mistral.ai/v1"
 	case "kimi":
 		return "https://api.moonshot.ai/v1"
-	case "gemini":
+	case "gemini", "google-ai-studio":
 		return "https://generativelanguage.googleapis.com/v1beta/openai"
 	case "zai":
 		// Z.AI's open OpenAI-compatible endpoint. The legacy
@@ -1391,6 +1391,10 @@ func normalizeDirectProvider(provider string) string {
 	switch slug {
 	case "google", "google-ai", "gemini":
 		return "gemini"
+	case "google-ai-studio", "ai-studio":
+		return "google-ai-studio"
+	case "google-vertex", "google-vertex-ai", "vertex-ai":
+		return "google-vertex"
 	case "moonshot", "moonshot-ai", "moonshotai", "kimi":
 		return "kimi"
 	case "fireworks", "fireworks-ai":

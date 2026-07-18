@@ -101,6 +101,7 @@ type Authorization struct {
 	BYOKSecretRef          string                             `json:"byok_secret_ref"`
 	BYOKEncryptedSecret    *byokcache.EncryptedSecretEnvelope `json:"byok_encrypted_secret"`
 	BYOKCacheKey           string                             `json:"byok_cache_key"`
+	BYOKProvider           string                             `json:"byok_provider"`
 	RouteCandidates        []RouteCandidate                   `json:"route_candidates"`
 	BroadcastDestinations  []BroadcastDestination             `json:"broadcast_destinations"`
 	CustomModel            *CustomModel                       `json:"custom_model"`
@@ -126,6 +127,7 @@ type RouteCandidate struct {
 	BYOKSecretRef       string                             `json:"byok_secret_ref"`
 	BYOKEncryptedSecret *byokcache.EncryptedSecretEnvelope `json:"byok_encrypted_secret"`
 	BYOKCacheKey        string                             `json:"byok_cache_key"`
+	BYOKProvider        string                             `json:"byok_provider"`
 }
 
 type BroadcastDestination struct {

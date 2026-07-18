@@ -67,7 +67,7 @@ func TestVertexGeminiPrepaidUsesVertexGenerateContent(t *testing.T) {
 		req,
 		body,
 		&out,
-		InvokeOptions{Provider: "gemini", UpstreamModel: "google/gemini-2.5-flash"},
+		InvokeOptions{Provider: "google-vertex", UpstreamModel: "google/gemini-2.5-flash"},
 	); err != nil {
 		t.Fatalf("InvokeStreaming: %v", err)
 	}

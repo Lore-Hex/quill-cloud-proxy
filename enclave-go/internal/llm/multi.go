@@ -33,7 +33,8 @@ func New(boot *qtypes.BootstrapData) Client {
 		vertex:           newVertex(boot),
 		openai:           newOpenAICompatible("openai", boot.OpenAIAPIKey),
 		meta:             newOpenAICompatible("meta", boot.OpenRouterAPIKey),
-		gemini:           newVertexGemini(boot),
+		googleVertex:     newVertexGemini(boot),
+		googleAIStudio:   newOpenAICompatible("google-ai-studio", boot.GeminiAPIKey),
 		cerebras:         newOpenAICompatible("cerebras", boot.CerebrasAPIKey),
 		deepseek:         newOpenAICompatible("deepseek", boot.DeepSeekAPIKey),
 		mistral:          newOpenAICompatible("mistral", boot.MistralAPIKey),
@@ -66,11 +67,6 @@ func New(boot *qtypes.BootstrapData) Client {
 		cohere: newCohere(boot.CohereAPIKey),
 		// Voyage — embeddings only (OpenAI-shaped /v1/embeddings).
 		voyage: newOpenAICompatible("voyage", boot.VoyageAPIKey),
-		// Gemini embeddings via the OpenAI-compatible generativelanguage
-		// endpoint (directBaseURL("gemini") = .../v1beta/openai). This is
-		// SEPARATE from the chat path (m.gemini = Vertex OAuth); embeddings
-		// reuse the OpenAI-shaped /embeddings with the QUILL_GEMINI_SECRET key.
-		geminiEmbed: newOpenAICompatible("gemini", boot.GeminiAPIKey),
 	}
 }
 
@@ -79,7 +75,8 @@ type multiClient struct {
 	vertex           *gcpClient
 	openai           *openAICompatibleClient
 	meta             *openAICompatibleClient
-	gemini           *vertexGeminiClient
+	googleVertex     *vertexGeminiClient
+	googleAIStudio   *openAICompatibleClient
 	cerebras         *openAICompatibleClient
 	deepseek         *openAICompatibleClient
 	mistral          *openAICompatibleClient
@@ -108,7 +105,6 @@ type multiClient struct {
 	xiaomi           *openAICompatibleClient
 	cohere           *cohereClient
 	voyage           *openAICompatibleClient
-	geminiEmbed      *openAICompatibleClient
 }
 
 func (m *multiClient) InvokeStreaming(
@@ -128,14 +124,19 @@ func (m *multiClient) InvokeStreaming(
 		// — earlier deploys didn't always populate options.Provider, and the
 		// anthropic-direct path is the safest default for Claude requests.
 		return m.anthropic.InvokeStreaming(ctx, req, body, out, options...)
-	case "vertex", "google", "google-vertex":
+	case "vertex":
 		return m.vertex.InvokeStreaming(ctx, req, body, out, options...)
 	case "openai":
 		return m.openai.InvokeStreaming(ctx, req, body, out, options...)
 	case "meta":
 		return m.meta.InvokeStreaming(ctx, req, body, out, options...)
-	case "gemini":
-		return m.gemini.InvokeStreaming(ctx, req, body, out, options...)
+	case "google-vertex", "gemini":
+		// `gemini` is the pre-split compatibility slug. It intentionally keeps
+		// the old prepaid behavior (Vertex OAuth) for in-flight/replayed
+		// authorizations while new control planes emit google-vertex explicitly.
+		return m.googleVertex.InvokeStreaming(ctx, req, body, out, options...)
+	case "google-ai-studio":
+		return m.googleAIStudio.InvokeStreaming(ctx, req, body, out, options...)
 	case "cerebras":
 		return m.cerebras.InvokeStreaming(ctx, req, body, out, options...)
 	case "deepseek":
@@ -196,6 +197,6 @@ func (m *multiClient) InvokeStreaming(
 		// Embeddings-only; returns a clear "chat not supported" error.
 		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, gemini, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, thinkingmachines, wafer, crusoe, makora, nebius, minimax, xiaomi, cohere)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, thinkingmachines, wafer, crusoe, makora, nebius, minimax, xiaomi, cohere)", provider)
 	}
 }

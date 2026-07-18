@@ -12,8 +12,8 @@ import (
 // InvokeEmbedding implements EmbeddingClient for the multi-provider gateway.
 // It dispatches to the per-provider embeddings client by the provider slug
 // the control plane assigned in the authorization. Only the embedding-capable
-// providers are wired (openai, together, cohere); gemini is deferred (Vertex
-// :predict wiring), and everything else returns a clear error.
+// providers are wired. Google AI Studio exposes OpenAI-compatible embeddings;
+// Vertex embeddings remain disabled until the native :predict adapter exists.
 func (m *multiClient) InvokeEmbedding(
 	ctx context.Context,
 	req *qtypes.EmbeddingRequest,
@@ -33,10 +33,10 @@ func (m *multiClient) InvokeEmbedding(
 		// Qwen3-Embedding-8B etc. — DeepInfra is OpenAI-shaped at
 		// api.deepinfra.com/v1/openai/embeddings; reuses the chat client's key.
 		return m.deepinfra.InvokeEmbedding(ctx, req, options...)
-	case "gemini":
-		// Gemini embeddings via the OpenAI-compatible generativelanguage
-		// endpoint (NOT the Vertex chat path). Uses the QUILL_GEMINI_SECRET key.
-		return m.geminiEmbed.InvokeEmbedding(ctx, req, options...)
+	case "google-ai-studio", "gemini":
+		// `gemini` remains the compatibility slug for old embedding
+		// authorizations, whose implementation was always AI Studio.
+		return m.googleAIStudio.InvokeEmbedding(ctx, req, options...)
 	default:
 		return nil, fmt.Errorf("llm/multi: provider %q does not support embeddings", provider)
 	}

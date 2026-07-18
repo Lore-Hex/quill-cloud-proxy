@@ -28,6 +28,7 @@ func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 		"mistral",
 		"kimi",
 		"gemini",
+		"google-ai-studio",
 		"zai",
 		"together",
 		"fireworks",
@@ -60,6 +61,9 @@ func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 	}
 	if isOpenAICompatibleBYOKProvider("anthropic") {
 		t.Fatal("anthropic should use the native BYOK adapter")
+	}
+	if isOpenAICompatibleBYOKProvider("google-vertex") {
+		t.Fatal("Vertex must use workload identity, not an AI Studio BYOK key")
 	}
 }
 
