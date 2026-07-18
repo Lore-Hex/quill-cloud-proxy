@@ -135,7 +135,7 @@ func TestMultiInvokeEmbeddingDispatch(t *testing.T) {
 		t.Error("expected unknown provider to error")
 	}
 
-	// Positive dispatch: voyage, deepinfra (Qwen3), and gemini are now wired to
+	// Positive dispatch: voyage, deepinfra (Qwen3), and AI Studio are wired to
 	// the OpenAI-compatible embeddings client. Point each at a stub and confirm
 	// the switch routes to it (returns the envelope rather than erroring).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -145,8 +145,8 @@ func TestMultiInvokeEmbeddingDispatch(t *testing.T) {
 	stub := func(p string) *openAICompatibleClient {
 		return &openAICompatibleClient{provider: p, baseURL: srv.URL, apiKey: "k", httpc: srv.Client()}
 	}
-	m := &multiClient{voyage: stub("voyage"), deepinfra: stub("deepinfra"), geminiEmbed: stub("gemini")}
-	for _, prov := range []string{"voyage", "deepinfra", "gemini"} {
+	m := &multiClient{voyage: stub("voyage"), deepinfra: stub("deepinfra"), googleAIStudio: stub("google-ai-studio")}
+	for _, prov := range []string{"voyage", "deepinfra", "google-ai-studio", "gemini"} {
 		resp, err := m.InvokeEmbedding(context.Background(), &qtypes.EmbeddingRequest{Model: "x/y", Input: "hi"}, InvokeOptions{Provider: prov})
 		if err != nil {
 			t.Errorf("%s dispatch: %v", prov, err)
@@ -155,6 +155,9 @@ func TestMultiInvokeEmbeddingDispatch(t *testing.T) {
 		if len(resp.Data) != 1 {
 			t.Errorf("%s resp = %+v", prov, resp)
 		}
+	}
+	if _, err := m.InvokeEmbedding(context.Background(), &qtypes.EmbeddingRequest{Model: "google/gemini-embedding-001", Input: "hi"}, InvokeOptions{Provider: "google-vertex"}); err == nil {
+		t.Fatal("Vertex embeddings must fail until the native adapter is implemented")
 	}
 }
 

@@ -17,7 +17,7 @@ import (
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
-// vertexGeminiClient serves TrustedRouter prepaid Gemini traffic through
+// vertexGeminiClient serves TrustedRouter google-vertex traffic through
 // Vertex AI, so usage bills to normal GCP billing/credits instead of the
 // separate AI Studio Gemini API prepay balance. BYOK Gemini requests are still
 // intercepted by invokeBYOKStreaming before this client runs.
@@ -55,7 +55,7 @@ func (c *vertexGeminiClient) InvokeStreaming(
 		return err
 	}
 	option := firstOptions(options)
-	modelID := directModelID("gemini", req.Model, option.UpstreamModel)
+	modelID := directModelID("google-vertex", req.Model, option.UpstreamModel)
 	payload, err := vertexGeminiPayload(ctx, req, body, modelID)
 	if err != nil {
 		return err

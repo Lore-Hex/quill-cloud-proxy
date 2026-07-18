@@ -23,6 +23,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		wantWaferZDR  bool
 	}{
 		{"openai", "openai/gpt-4o-mini", "openai/gpt-4o-mini", "gpt-4o-mini", false},
+		{"google-ai-studio", "google/gemini-2.5-flash", "google/gemini-2.5-flash", "gemini-2.5-flash", false},
 		{"cerebras", "meta-llama/llama-3.1-8b-instruct", "meta-llama/llama-3.1-8b-instruct", "llama3.1-8b", false},
 		{"deepseek", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash", "deepseek-v4-flash", false},
 		{"mistral", "mistralai/mistral-small-2603", "mistralai/mistral-small-2603", "mistral-small-2603", false},
@@ -89,6 +90,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 			}
 			multi := &multiClient{
 				openai:           client,
+				googleAIStudio:   client,
 				cerebras:         client,
 				deepseek:         client,
 				mistral:          client,
@@ -134,6 +136,29 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				t.Fatalf("stream was not translated to Anthropic SSE: %s", out.String())
 			}
 		})
+	}
+}
+
+func TestGoogleProviderNormalizationKeepsProductsDistinct(t *testing.T) {
+	tests := map[string]string{
+		"gemini":           "gemini",
+		"google":           "gemini",
+		"google-ai-studio": "google-ai-studio",
+		"ai-studio":        "google-ai-studio",
+		"google-vertex":    "google-vertex",
+		"google-vertex-ai": "google-vertex",
+		"vertex-ai":        "google-vertex",
+	}
+	for input, want := range tests {
+		if got := normalizeDirectProvider(input); got != want {
+			t.Errorf("normalizeDirectProvider(%q) = %q, want %q", input, got, want)
+		}
+	}
+	if got := directBaseURL("google-ai-studio"); got != "https://generativelanguage.googleapis.com/v1beta/openai" {
+		t.Fatalf("AI Studio base URL = %q", got)
+	}
+	if got := directBaseURL("google-vertex"); got != "" {
+		t.Fatalf("Vertex must not use API-key compatible base URL, got %q", got)
 	}
 }
 

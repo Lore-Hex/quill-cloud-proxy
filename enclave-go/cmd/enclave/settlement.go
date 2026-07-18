@@ -88,6 +88,7 @@ func invokeOptionsForAuthorization(
 			BYOKSecretRef:       authorization.BYOKSecretRef,
 			BYOKEncryptedSecret: authorization.BYOKEncryptedSecret,
 			BYOKCacheKey:        authorization.BYOKCacheKey,
+			BYOKProvider:        authorization.BYOKProvider,
 		}}
 	}
 	options := make([]llm.InvokeOptions, 0, len(candidates))
@@ -154,10 +155,14 @@ func providerAPIKeyForRoute(
 		if cache == nil {
 			return "", fmt.Errorf("byok cache is not configured")
 		}
+		envelopeProvider := strings.TrimSpace(candidate.BYOKProvider)
+		if envelopeProvider == "" {
+			envelopeProvider = candidate.Provider
+		}
 		secret, _, err := cache.Resolve(
 			ctx,
 			workspaceID,
-			candidate.Provider,
+			envelopeProvider,
 			candidate.BYOKCacheKey,
 			*candidate.BYOKEncryptedSecret,
 		)
