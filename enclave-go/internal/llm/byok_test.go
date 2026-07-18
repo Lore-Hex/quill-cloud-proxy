@@ -409,6 +409,7 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		{"novita", "google/gemma-4-26b-a4b-it", "google/gemma-4-26b-a4b-it"},
 		{"novita", "moonshotai/kimi-k2.6", "moonshotai/kimi-k2.6"},
 		{"novita", "moonshotai/kimi-k2.7-code", "moonshotai/kimi-k2.7-code"},
+		{"novita", "moonshotai/kimi-k3", "moonshotai/kimi-k3"},
 		{"novita", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash"},
 		{"novita", "qwen/qwen3.5-27b", "qwen/qwen3.5-27b"},
 		{"novita", "Sao10K/L3-8B-Stheno-v3.2", "Sao10K/L3-8B-Stheno-v3.2"},
@@ -630,6 +631,19 @@ func TestProviderSpecificTemperatureOmission(t *testing.T) {
 	if got := openAICompatibleTemperature("kimi", "kimi-k3", &zero); got != nil {
 		t.Fatalf("Kimi K3 temperature = %v, want omitted", *got)
 	}
+	for _, tc := range []struct {
+		provider string
+		model    string
+	}{
+		{"novita", "moonshotai/kimi-k2.5"},
+		{"novita", "moonshotai/kimi-k2.6"},
+		{"novita", "moonshotai/kimi-k3"},
+		{"gmi", "moonshotai/kimi-k3"},
+	} {
+		if got := openAICompatibleTemperature(tc.provider, tc.model, &zero); got != nil {
+			t.Fatalf("%s %s temperature = %v, want omitted", tc.provider, tc.model, *got)
+		}
+	}
 	if got := openAICompatibleTemperature("openai", "gpt-4o-mini", &zero); got == nil || *got != 0 {
 		t.Fatalf("OpenAI temperature = %v, want 0", got)
 	}
@@ -662,6 +676,33 @@ func TestProviderSpecificTemperatureOmission(t *testing.T) {
 	hot := 1.7
 	if got := anthropicTemperature("claude-sonnet-4-6", &hot); got == nil || *got != 1.0 {
 		t.Fatalf("Claude Sonnet high temperature = %v, want 1.0", got)
+	}
+}
+
+func TestNovitaUsesCurrentOpenAICompatibleBaseURL(t *testing.T) {
+	if got, want := directBaseURL("novita"), "https://api.novita.ai/openai/v1"; got != want {
+		t.Fatalf("directBaseURL(novita) = %q, want %q", got, want)
+	}
+}
+
+func TestHostedKimiFixedSamplingParametersAreOmitted(t *testing.T) {
+	zero := 0.0
+	one := 1.0
+	body := buildOpenAICompatibleRequest(
+		"novita",
+		"moonshotai/kimi-k3",
+		&qtypes.OpenAIChatRequest{
+			FrequencyPenalty: &one,
+			PresencePenalty:  &one,
+		},
+		&qtypes.AnthropicMessagesRequest{
+			Temperature: &zero,
+			TopP:        &one,
+		},
+		nil,
+	)
+	if body.Temperature != nil || body.TopP != nil || body.FrequencyPenalty != nil || body.PresencePenalty != nil {
+		t.Fatalf("fixed Kimi sampling fields were forwarded: %#v", body)
 	}
 }
 
