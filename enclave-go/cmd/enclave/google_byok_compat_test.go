@@ -29,7 +29,7 @@ func TestLegacyGeminiEnvelopeDecryptsForAIStudioRoute(t *testing.T) {
 	const (
 		workspaceID = "workspace-google-compat"
 		legacySlug  = "gemini"
-		secret      = "AIza-legacy-google-key"
+		secret      = "test-provider-secret-value"
 	)
 	dek := []byte("0123456789abcdef0123456789abcdef")
 	envelope := googleCompatEnvelope(t, dek, workspaceID, legacySlug, secret)
