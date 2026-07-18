@@ -257,7 +257,9 @@ func buildOpenAICompatibleRequest(
 	}
 	if body != nil {
 		reqBody.Temperature = openAICompatibleTemperature(provider, upstreamID, body.Temperature)
-		reqBody.TopP = body.TopP
+		if !kimiUsesFixedSampling(provider, upstreamID) {
+			reqBody.TopP = body.TopP
+		}
 		reqBody.TopK = body.TopK
 		// Most direct providers that expose reasoning use their native
 		// `thinking` extension. Meta's Muse endpoint is reached through
@@ -301,17 +303,22 @@ func buildOpenAICompatibleRequest(
 		if kimiToolsNeedThinkingDisabled(provider, upstreamID, req.Tools) {
 			reqBody.Thinking = map[string]string{"type": "disabled"}
 		}
+		if kimiUsesFixedSampling(provider, upstreamID) {
+			reqBody.FrequencyPenalty = nil
+			reqBody.PresencePenalty = nil
+		}
 	}
 	reqBody.StreamOptions = &openAICompatibleStreamOptions{IncludeUsage: true}
 	return reqBody
 }
 
 func openAICompatibleTemperature(provider, modelID string, temperature *float64) *float64 {
-	if provider == "kimi" {
-		model := strings.ToLower(modelID)
-		if strings.Contains(model, "kimi-k2.") || strings.Contains(model, "kimi-k3") {
-			return nil
-		}
+	// Kimi's hybrid-thinking releases use fixed sampling parameters. This is
+	// a model contract, not a Moonshot-endpoint quirk: hosted routes such as
+	// Novita reject temperature=0 with invalid_request_error as well. Omit the
+	// optional field and let every serving provider apply the model default.
+	if kimiUsesFixedSampling(provider, modelID) {
+		return nil
 	}
 	// OpenAI gpt-5.x / o-series reasoning models reject any temperature other
 	// than the default (1): forwarding temperature=0 returns
@@ -323,6 +330,14 @@ func openAICompatibleTemperature(provider, modelID string, temperature *float64)
 		return nil
 	}
 	return temperature
+}
+
+func kimiUsesFixedSampling(provider, modelID string) bool {
+	model := strings.ToLower(modelID)
+	return strings.Contains(model, "kimi-k2.5") ||
+		strings.Contains(model, "kimi-k2.6") ||
+		strings.Contains(model, "kimi-k3") ||
+		(provider == "kimi" && strings.Contains(model, "kimi-k2."))
 }
 
 func kimiToolsNeedThinkingDisabled(provider, modelID string, tools []any) bool {
@@ -750,8 +765,9 @@ func directBaseURL(provider string) string {
 		// xAI Grok. OpenAI-compatible chat completions.
 		return "https://api.x.ai/v1"
 	case "novita":
-		// Novita AI multi-vendor serverless inference.
-		return "https://api.novita.ai/v3/openai"
+		// Novita AI multi-vendor serverless inference. The OpenAI-compatible
+		// LLM API is under /openai/v1; /v3 is Novita's non-LLM resource API.
+		return "https://api.novita.ai/openai/v1"
 	case "phala":
 		// Phala confidential AI — Intel TDX + NVIDIA CC TEEs.
 		// `api.redpill.ai` is what Phala's official docs use (Yan @
