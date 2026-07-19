@@ -110,6 +110,10 @@ type BootstrapData struct {
 	DigitalOceanAPIKey           string `json:"digitalocean_api_key,omitempty"`
 	CloudflareWorkersAIAPIKey    string `json:"cloudflare_workers_ai_api_key,omitempty"`
 	CloudflareWorkersAIAccountID string `json:"cloudflare_workers_ai_account_id,omitempty"`
+	InceptronAPIKey              string `json:"inceptron_api_key,omitempty"`
+	MorphAPIKey                  string `json:"morph_api_key,omitempty"`
+	AtlasCloudAPIKey             string `json:"atlas_cloud_api_key,omitempty"`
+	StreamLakeAPIKey             string `json:"streamlake_api_key,omitempty"`
 
 	// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
 	XiaomiAPIKey string `json:"xiaomi_api_key,omitempty"`

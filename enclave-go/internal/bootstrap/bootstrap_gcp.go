@@ -134,6 +134,10 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	digitalOceanSecret := os.Getenv("QUILL_DIGITALOCEAN_SECRET")
 	cloudflareWorkersAISecret := os.Getenv("QUILL_CLOUDFLARE_WORKERS_AI_SECRET")
 	cloudflareWorkersAIAccountID := strings.TrimSpace(os.Getenv("QUILL_CLOUDFLARE_WORKERS_AI_ACCOUNT_ID"))
+	inceptronSecret := os.Getenv("QUILL_INCEPTRON_SECRET")
+	morphSecret := os.Getenv("QUILL_MORPH_SECRET")
+	atlasCloudSecret := os.Getenv("QUILL_ATLAS_CLOUD_SECRET")
+	streamLakeSecret := os.Getenv("QUILL_STREAMLAKE_SECRET")
 	xiaomiSecret := os.Getenv("QUILL_XIAOMI_SECRET")
 	synthPanelPromptSecret := os.Getenv("QUILL_SYNTH_PANEL_PROMPT_SECRET")
 	synthSynthesisPromptSecret := os.Getenv("QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET")
@@ -182,6 +186,10 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		chutesSecret,
 		digitalOceanSecret,
 		cloudflareWorkersAISecret,
+		inceptronSecret,
+		morphSecret,
+		atlasCloudSecret,
+		streamLakeSecret,
 		xiaomiSecret,
 	) {
 		return nil, fmt.Errorf("bootstrap/gcp: at least one provider secret env must be set")
@@ -444,6 +452,34 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: QUILL_CLOUDFLARE_WORKERS_AI_ACCOUNT_ID not set")
 		}
 	}
+	var inceptronKey []byte
+	if inceptronSecret != "" {
+		inceptronKey, err = fetchSecret(ctx, httpc, token, project, inceptronSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: inceptron key: %w", err)
+		}
+	}
+	var morphKey []byte
+	if morphSecret != "" {
+		morphKey, err = fetchSecret(ctx, httpc, token, project, morphSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: morph key: %w", err)
+		}
+	}
+	var atlasCloudKey []byte
+	if atlasCloudSecret != "" {
+		atlasCloudKey, err = fetchSecret(ctx, httpc, token, project, atlasCloudSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: atlas cloud key: %w", err)
+		}
+	}
+	var streamLakeKey []byte
+	if streamLakeSecret != "" {
+		streamLakeKey, err = fetchSecret(ctx, httpc, token, project, streamLakeSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: streamlake key: %w", err)
+		}
+	}
 	var xiaomiKey []byte
 	if xiaomiSecret != "" {
 		xiaomiKey, err = fetchSecret(ctx, httpc, token, project, xiaomiSecret)
@@ -540,6 +576,10 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		DigitalOceanAPIKey:           strings.TrimSpace(string(digitalOceanKey)),
 		CloudflareWorkersAIAPIKey:    strings.TrimSpace(string(cloudflareWorkersAIKey)),
 		CloudflareWorkersAIAccountID: cloudflareWorkersAIAccountID,
+		InceptronAPIKey:              strings.TrimSpace(string(inceptronKey)),
+		MorphAPIKey:                  strings.TrimSpace(string(morphKey)),
+		AtlasCloudAPIKey:             strings.TrimSpace(string(atlasCloudKey)),
+		StreamLakeAPIKey:             strings.TrimSpace(string(streamLakeKey)),
 		XiaomiAPIKey:                 strings.TrimSpace(string(xiaomiKey)),
 		TrustedRouterBaseURL:         os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken:   strings.TrimSpace(internalGatewayToken),

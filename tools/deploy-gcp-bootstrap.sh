@@ -80,6 +80,10 @@ MINIMAX_SECRET="${MINIMAX_SECRET:-trustedrouter-minimax-api-key}"
 CHUTES_SECRET="${CHUTES_SECRET:-trustedrouter-chutes-api-key}"
 DIGITALOCEAN_SECRET="${DIGITALOCEAN_SECRET:-trustedrouter-digitalocean-api-key}"
 CLOUDFLARE_WORKERS_AI_SECRET="${CLOUDFLARE_WORKERS_AI_SECRET:-trustedrouter-cloudflare-workers-ai-api-token}"
+INCEPTRON_SECRET="${INCEPTRON_SECRET:-trustedrouter-inceptron-api-key}"
+MORPH_SECRET="${MORPH_SECRET:-trustedrouter-morph-api-key}"
+ATLAS_CLOUD_SECRET="${ATLAS_CLOUD_SECRET:-trustedrouter-atlas-cloud-api-key}"
+STREAMLAKE_SECRET="${STREAMLAKE_SECRET:-trustedrouter-streamlake-api-key}"
 XIAOMI_SECRET="${XIAOMI_SECRET:-trustedrouter-xiaomi-api-key}"
 SYNTH_PANEL_PROMPT_SECRET="${SYNTH_PANEL_PROMPT_SECRET:-trustedrouter-synth-panel-prompt-v1}"
 SYNTH_SYNTHESIS_PROMPT_SECRET="${SYNTH_SYNTHESIS_PROMPT_SECRET:-trustedrouter-synth-synthesis-prompt-v1}"
@@ -186,6 +190,10 @@ for secret in \
   "$CHUTES_SECRET" \
   "$DIGITALOCEAN_SECRET" \
   "$CLOUDFLARE_WORKERS_AI_SECRET" \
+  "$INCEPTRON_SECRET" \
+  "$MORPH_SECRET" \
+  "$ATLAS_CLOUD_SECRET" \
+  "$STREAMLAKE_SECRET" \
   "$XIAOMI_SECRET" \
   "$SYNTH_PANEL_PROMPT_SECRET" \
   "$SYNTH_SYNTHESIS_PROMPT_SECRET" \

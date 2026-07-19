@@ -841,6 +841,14 @@ func directBaseURL(provider string) string {
 		return "https://llm.chutes.ai/v1"
 	case "digitalocean":
 		return "https://inference.do-ai.run/v1"
+	case "inceptron":
+		return "https://api.inceptron.io/v1"
+	case "morph":
+		return "https://api.morphllm.com/v1"
+	case "atlas-cloud":
+		return "https://api.atlascloud.ai/v1"
+	case "streamlake":
+		return "https://vanchin.streamlake.ai/api/gateway/v1/endpoints"
 	default:
 		return ""
 	}
@@ -933,7 +941,7 @@ func directModelID(provider, model, upstreamModel string) string {
 
 func providerPreservesAuthorModelID(provider string) bool {
 	switch provider {
-	case "meta", "novita", "nebius", "fireworks", "chutes", "digitalocean", "cloudflare-workers-ai":
+	case "meta", "novita", "nebius", "fireworks", "chutes", "digitalocean", "cloudflare-workers-ai", "inceptron", "atlas-cloud":
 		return true
 	default:
 		return false
@@ -1465,6 +1473,14 @@ func normalizeDirectProvider(provider string) string {
 		return "digitalocean"
 	case "cloudflare", "cloudflare-workers-ai", "workers-ai":
 		return "cloudflare-workers-ai"
+	case "inceptron", "inceptron-ai":
+		return "inceptron"
+	case "morph", "morph-ai", "morphllm":
+		return "morph"
+	case "atlas", "atlas-cloud", "atlascloud":
+		return "atlas-cloud"
+	case "streamlake", "stream-lake", "vanchin":
+		return "streamlake"
 	default:
 		return slug
 	}
