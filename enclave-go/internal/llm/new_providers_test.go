@@ -26,6 +26,11 @@ func TestNewProviderNormalizationAndBYOKPolicy(t *testing.T) {
 	if isOpenAICompatibleBYOKProvider("cloudflare-workers-ai") {
 		t.Fatal("cloudflare BYOK needs an account id and must stay disabled")
 	}
+	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake"} {
+		if isOpenAICompatibleBYOKProvider(provider) {
+			t.Errorf("%s must use only the operator-key prepaid path", provider)
+		}
+	}
 }
 
 func TestMultiClientConstructsAccountScopedCloudflareEndpoint(t *testing.T) {
@@ -36,6 +41,10 @@ func TestMultiClientConstructsAccountScopedCloudflareEndpoint(t *testing.T) {
 		DigitalOceanAPIKey:           "do-key",
 		CloudflareWorkersAIAPIKey:    "cf-key",
 		CloudflareWorkersAIAccountID: "account-id",
+		InceptronAPIKey:              "inceptron-key",
+		MorphAPIKey:                  "morph-key",
+		AtlasCloudAPIKey:             "atlas-key",
+		StreamLakeAPIKey:             "streamlake-key",
 	}).(*multiClient)
 	if !ok {
 		t.Fatal("New did not return a multiClient")
@@ -52,6 +61,24 @@ func TestMultiClientConstructsAccountScopedCloudflareEndpoint(t *testing.T) {
 	if client.cloudflareWorkersAI.apiKey != "cf-key" {
 		t.Fatal("cloudflare key was not wired into the client")
 	}
+	wantClients := map[string]struct {
+		client  *openAICompatibleClient
+		baseURL string
+		apiKey  string
+	}{
+		"inceptron":   {client.inceptron, "https://api.inceptron.io/v1", "inceptron-key"},
+		"morph":       {client.morph, "https://api.morphllm.com/v1", "morph-key"},
+		"atlas-cloud": {client.atlasCloud, "https://api.atlascloud.ai/v1", "atlas-key"},
+		"streamlake":  {client.streamLake, "https://vanchin.streamlake.ai/api/gateway/v1/endpoints", "streamlake-key"},
+	}
+	for provider, want := range wantClients {
+		if want.client.baseURL != want.baseURL {
+			t.Errorf("%s baseURL = %q, want %q", provider, want.client.baseURL, want.baseURL)
+		}
+		if want.client.apiKey != want.apiKey {
+			t.Errorf("%s operator key was not wired into the client", provider)
+		}
+	}
 }
 
 func TestNewProvidersPreserveAuthorizedUpstreamModelID(t *testing.T) {
@@ -65,6 +92,10 @@ func TestNewProvidersPreserveAuthorizedUpstreamModelID(t *testing.T) {
 		{"chutes", "z-ai/glm-5.2", "zai-org/GLM-5.2-TEE"},
 		{"digitalocean", "deepseek/deepseek-v4-flash", "deepseek-4-flash"},
 		{"cloudflare-workers-ai", "moonshotai/kimi-k3", "moonshotai/kimi-k3"},
+		{"inceptron", "moonshotai/kimi-k2.7-code", "moonshotai/Kimi-K2.7-Code"},
+		{"morph", "z-ai/glm-5.2", "morph-glm52-744b"},
+		{"atlas-cloud", "z-ai/glm-5.2", "zai-org/glm-5.2"},
+		{"streamlake", "kwaipilot/kat-coder-pro-v2.5", "kat-coder-pro-v2.5"},
 	}
 	for _, tc := range cases {
 		if got := directModelID(tc.provider, tc.model, tc.upstream); got != tc.upstream {

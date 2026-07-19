@@ -39,6 +39,10 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"makora", "z-ai/glm-5.2", "zai-org/GLM-5.2-FP8", "zai-org/GLM-5.2-FP8", false},
 		{"nebius", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-397B-A17B", false},
 		{"minimax", "minimax/minimax-m2.7", "MiniMax-M2.7", "MiniMax-M2.7", false},
+		{"inceptron", "moonshotai/kimi-k2.7-code", "moonshotai/Kimi-K2.7-Code", "moonshotai/Kimi-K2.7-Code", false},
+		{"morph", "z-ai/glm-5.2", "morph-glm52-744b", "morph-glm52-744b", false},
+		{"atlas-cloud", "z-ai/glm-5.2", "zai-org/glm-5.2", "zai-org/glm-5.2", false},
+		{"streamlake", "kwaipilot/kat-coder-pro-v2.5", "kat-coder-pro-v2.5", "kat-coder-pro-v2.5", false},
 	}
 
 	for _, tt := range tests {
@@ -103,6 +107,10 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				makora:           client,
 				nebius:           client,
 				minimax:          client,
+				inceptron:        client,
+				morph:            client,
+				atlasCloud:       client,
+				streamLake:       client,
 			}
 			req := &qtypes.OpenAIChatRequest{Model: tt.publicModel}
 			body := &qtypes.AnthropicMessagesRequest{
