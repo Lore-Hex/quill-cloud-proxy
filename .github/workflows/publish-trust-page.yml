@@ -71,7 +71,7 @@ jobs:
           assert Path("trust-page/trust/image-reference-gcp.txt").read_text().strip() == release["image_reference"]
           PY
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: trust-page/
       - id: deployment
