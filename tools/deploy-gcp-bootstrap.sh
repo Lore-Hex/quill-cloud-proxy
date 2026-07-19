@@ -77,6 +77,9 @@ CRUSOE_SECRET="${CRUSOE_SECRET:-trustedrouter-crusoe-api-key}"
 MAKORA_SECRET="${MAKORA_SECRET:-trustedrouter-makora-api-key}"
 NEBIUS_SECRET="${NEBIUS_SECRET:-trustedrouter-nebius-api-key}"
 MINIMAX_SECRET="${MINIMAX_SECRET:-trustedrouter-minimax-api-key}"
+CHUTES_SECRET="${CHUTES_SECRET:-trustedrouter-chutes-api-key}"
+DIGITALOCEAN_SECRET="${DIGITALOCEAN_SECRET:-trustedrouter-digitalocean-api-key}"
+CLOUDFLARE_WORKERS_AI_SECRET="${CLOUDFLARE_WORKERS_AI_SECRET:-trustedrouter-cloudflare-workers-ai-api-token}"
 XIAOMI_SECRET="${XIAOMI_SECRET:-trustedrouter-xiaomi-api-key}"
 SYNTH_PANEL_PROMPT_SECRET="${SYNTH_PANEL_PROMPT_SECRET:-trustedrouter-synth-panel-prompt-v1}"
 SYNTH_SYNTHESIS_PROMPT_SECRET="${SYNTH_SYNTHESIS_PROMPT_SECRET:-trustedrouter-synth-synthesis-prompt-v1}"
@@ -180,6 +183,9 @@ for secret in \
   "$MAKORA_SECRET" \
   "$NEBIUS_SECRET" \
   "$MINIMAX_SECRET" \
+  "$CHUTES_SECRET" \
+  "$DIGITALOCEAN_SECRET" \
+  "$CLOUDFLARE_WORKERS_AI_SECRET" \
   "$XIAOMI_SECRET" \
   "$SYNTH_PANEL_PROMPT_SECRET" \
   "$SYNTH_SYNTHESIS_PROMPT_SECRET" \

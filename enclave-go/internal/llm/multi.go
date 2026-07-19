@@ -60,6 +60,13 @@ func New(boot *qtypes.BootstrapData) Client {
 		makora:           newOpenAICompatible("makora", boot.MakoraAPIKey),
 		nebius:           newOpenAICompatible("nebius", boot.NebiusAPIKey),
 		minimax:          newOpenAICompatible("minimax", boot.MiniMaxAPIKey),
+		chutes:           newOpenAICompatible("chutes", boot.ChutesAPIKey),
+		digitalocean:     newOpenAICompatible("digitalocean", boot.DigitalOceanAPIKey),
+		cloudflareWorkersAI: newOpenAICompatibleAt(
+			"cloudflare-workers-ai",
+			fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/ai/v1", boot.CloudflareWorkersAIAccountID),
+			boot.CloudflareWorkersAIAPIKey,
+		),
 		// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
 		xiaomi: newOpenAICompatible("xiaomi", boot.XiaomiAPIKey),
 		// Cohere — embeddings only (native /v2/embed). Its InvokeStreaming
@@ -71,40 +78,43 @@ func New(boot *qtypes.BootstrapData) Client {
 }
 
 type multiClient struct {
-	anthropic        *anthropicClient
-	vertex           *gcpClient
-	openai           *openAICompatibleClient
-	meta             *openAICompatibleClient
-	googleVertex     *vertexGeminiClient
-	googleAIStudio   *openAICompatibleClient
-	cerebras         *openAICompatibleClient
-	deepseek         *openAICompatibleClient
-	mistral          *openAICompatibleClient
-	kimi             *kimiClient
-	zai              *zaiClient
-	together         *openAICompatibleClient
-	fireworks        *openAICompatibleClient
-	grok             *openAICompatibleClient
-	novita           *openAICompatibleClient
-	phala            *openAICompatibleClient
-	siliconflow      *openAICompatibleClient
-	tinfoil          *openAICompatibleClient
-	venice           *openAICompatibleClient
-	parasail         *openAICompatibleClient
-	lightning        *openAICompatibleClient
-	gmi              *openAICompatibleClient
-	deepinfra        *openAICompatibleClient
-	friendli         *openAICompatibleClient
-	baseten          *openAICompatibleClient
-	thinkingmachines *openAICompatibleClient
-	wafer            *openAICompatibleClient
-	crusoe           *openAICompatibleClient
-	makora           *openAICompatibleClient
-	nebius           *openAICompatibleClient
-	minimax          *openAICompatibleClient
-	xiaomi           *openAICompatibleClient
-	cohere           *cohereClient
-	voyage           *openAICompatibleClient
+	anthropic           *anthropicClient
+	vertex              *gcpClient
+	openai              *openAICompatibleClient
+	meta                *openAICompatibleClient
+	googleVertex        *vertexGeminiClient
+	googleAIStudio      *openAICompatibleClient
+	cerebras            *openAICompatibleClient
+	deepseek            *openAICompatibleClient
+	mistral             *openAICompatibleClient
+	kimi                *kimiClient
+	zai                 *zaiClient
+	together            *openAICompatibleClient
+	fireworks           *openAICompatibleClient
+	grok                *openAICompatibleClient
+	novita              *openAICompatibleClient
+	phala               *openAICompatibleClient
+	siliconflow         *openAICompatibleClient
+	tinfoil             *openAICompatibleClient
+	venice              *openAICompatibleClient
+	parasail            *openAICompatibleClient
+	lightning           *openAICompatibleClient
+	gmi                 *openAICompatibleClient
+	deepinfra           *openAICompatibleClient
+	friendli            *openAICompatibleClient
+	baseten             *openAICompatibleClient
+	thinkingmachines    *openAICompatibleClient
+	wafer               *openAICompatibleClient
+	crusoe              *openAICompatibleClient
+	makora              *openAICompatibleClient
+	nebius              *openAICompatibleClient
+	minimax             *openAICompatibleClient
+	chutes              *openAICompatibleClient
+	digitalocean        *openAICompatibleClient
+	cloudflareWorkersAI *openAICompatibleClient
+	xiaomi              *openAICompatibleClient
+	cohere              *cohereClient
+	voyage              *openAICompatibleClient
 }
 
 func (m *multiClient) InvokeStreaming(
@@ -191,12 +201,18 @@ func (m *multiClient) InvokeStreaming(
 		return m.nebius.InvokeStreaming(ctx, req, body, out, options...)
 	case "minimax":
 		return m.minimax.InvokeStreaming(ctx, req, body, out, options...)
+	case "chutes":
+		return m.chutes.InvokeStreaming(ctx, req, body, out, options...)
+	case "digitalocean":
+		return m.digitalocean.InvokeStreaming(ctx, req, body, out, options...)
+	case "cloudflare-workers-ai":
+		return m.cloudflareWorkersAI.InvokeStreaming(ctx, req, body, out, options...)
 	case "xiaomi":
 		return m.xiaomi.InvokeStreaming(ctx, req, body, out, options...)
 	case "cohere":
 		// Embeddings-only; returns a clear "chat not supported" error.
 		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, thinkingmachines, wafer, crusoe, makora, nebius, minimax, xiaomi, cohere)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, thinkingmachines, wafer, crusoe, makora, nebius, minimax, chutes, digitalocean, cloudflare-workers-ai, xiaomi, cohere)", provider)
 	}
 }

@@ -25,9 +25,14 @@ type openAICompatibleClient struct {
 
 func newOpenAICompatible(provider string, apiKey string) *openAICompatibleClient {
 	provider = normalizeDirectProvider(provider)
+	return newOpenAICompatibleAt(provider, directBaseURL(provider), apiKey)
+}
+
+func newOpenAICompatibleAt(provider string, baseURL string, apiKey string) *openAICompatibleClient {
+	provider = normalizeDirectProvider(provider)
 	return &openAICompatibleClient{
 		provider: provider,
-		baseURL:  directBaseURL(provider),
+		baseURL:  strings.TrimRight(baseURL, "/"),
 		apiKey:   strings.TrimSpace(apiKey),
 		httpc:    defaultHTTPClient(),
 	}
