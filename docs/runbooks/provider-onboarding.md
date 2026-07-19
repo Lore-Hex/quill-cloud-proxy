@@ -39,8 +39,10 @@ NEWPROVIDER_API_KEY=sk-...
 | `src/trusted_router/routing.py` | Add to `_PROVIDER_ALIASES` (slug variants) and `_THROUGHPUT_RANK` |
 | `src/trusted_router/sentry_config.py` | Add `"newprovider_api_key"` to `SENSITIVE_STRING_FRAGMENTS` |
 | `scripts/deploy/secrets.sh` | Add `ensure_secret_from_env_file "NEWPROVIDER_API_KEY" "trustedrouter-newprovider-api-key" ...` |
-| `scripts/deploy/rollout.sh` | Add `add_secret_env_if_exists "NEWPROVIDER_API_KEY" "trustedrouter-newprovider-api-key"` |
 | `scripts/ingest_openrouter_catalog.py` | Add to `PROVIDER_NAME_TO_SLUG`: `"NewProvider": "newprovider"` |
+
+Do not mount operator provider keys into the production control-plane service.
+They belong in Secret Manager and are fetched only by the attested gateway.
 
 Run `pytest -x` — should still be green.
 
@@ -102,7 +104,7 @@ clean.
 
 ```bash
 KEY=$(cat ~/.quill_device_trusted_router.key | tr -d '\n')
-curl -s "https://api.quillrouter.com/v1/chat/completions" \
+curl -s "https://api.trustedrouter.com/v1/chat/completions" \
   -H "authorization: Bearer $KEY" \
   -H "content-type: application/json" \
   -d '{"model":"<newprovider-served-model>","messages":[{"role":"user","content":"PONG"}],"max_tokens":5}'

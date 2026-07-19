@@ -49,7 +49,7 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "google-ai-studio", "zai", "together",
 		"fireworks", "grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
 		"parasail", "lightning", "gmi", "deepinfra", "friendli", "baseten", "thinkingmachines", "wafer",
-		"crusoe", "makora", "nebius", "minimax", "xiaomi":
+		"crusoe", "makora", "nebius", "minimax", "xiaomi", "chutes", "digitalocean":
 		return true
 	default:
 		return false
@@ -837,6 +837,10 @@ func directBaseURL(provider string) string {
 		// host is for China-region keys; this project key is scoped to
 		// the international api.minimax.io endpoint.
 		return "https://api.minimax.io/v1"
+	case "chutes":
+		return "https://llm.chutes.ai/v1"
+	case "digitalocean":
+		return "https://inference.do-ai.run/v1"
 	default:
 		return ""
 	}
@@ -929,7 +933,7 @@ func directModelID(provider, model, upstreamModel string) string {
 
 func providerPreservesAuthorModelID(provider string) bool {
 	switch provider {
-	case "meta", "novita", "nebius", "fireworks":
+	case "meta", "novita", "nebius", "fireworks", "chutes", "digitalocean", "cloudflare-workers-ai":
 		return true
 	default:
 		return false
@@ -1455,6 +1459,12 @@ func normalizeDirectProvider(provider string) string {
 		return "minimax"
 	case "cohere", "cohere-ai":
 		return "cohere"
+	case "chutes", "chutes-ai":
+		return "chutes"
+	case "digitalocean", "digital-ocean", "do-ai":
+		return "digitalocean"
+	case "cloudflare", "cloudflare-workers-ai", "workers-ai":
+		return "cloudflare-workers-ai"
 	default:
 		return slug
 	}

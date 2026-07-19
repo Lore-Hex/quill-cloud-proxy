@@ -130,6 +130,10 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	makoraSecret := os.Getenv("QUILL_MAKORA_SECRET")
 	nebiusSecret := os.Getenv("QUILL_NEBIUS_SECRET")
 	minimaxSecret := os.Getenv("QUILL_MINIMAX_SECRET")
+	chutesSecret := os.Getenv("QUILL_CHUTES_SECRET")
+	digitalOceanSecret := os.Getenv("QUILL_DIGITALOCEAN_SECRET")
+	cloudflareWorkersAISecret := os.Getenv("QUILL_CLOUDFLARE_WORKERS_AI_SECRET")
+	cloudflareWorkersAIAccountID := strings.TrimSpace(os.Getenv("QUILL_CLOUDFLARE_WORKERS_AI_ACCOUNT_ID"))
 	xiaomiSecret := os.Getenv("QUILL_XIAOMI_SECRET")
 	synthPanelPromptSecret := os.Getenv("QUILL_SYNTH_PANEL_PROMPT_SECRET")
 	synthSynthesisPromptSecret := os.Getenv("QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET")
@@ -175,6 +179,9 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		makoraSecret,
 		nebiusSecret,
 		minimaxSecret,
+		chutesSecret,
+		digitalOceanSecret,
+		cloudflareWorkersAISecret,
 		xiaomiSecret,
 	) {
 		return nil, fmt.Errorf("bootstrap/gcp: at least one provider secret env must be set")
@@ -413,6 +420,30 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: minimax key: %w", err)
 		}
 	}
+	var chutesKey []byte
+	if chutesSecret != "" {
+		chutesKey, err = fetchSecret(ctx, httpc, token, project, chutesSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: chutes key: %w", err)
+		}
+	}
+	var digitalOceanKey []byte
+	if digitalOceanSecret != "" {
+		digitalOceanKey, err = fetchSecret(ctx, httpc, token, project, digitalOceanSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: digitalocean key: %w", err)
+		}
+	}
+	var cloudflareWorkersAIKey []byte
+	if cloudflareWorkersAISecret != "" {
+		cloudflareWorkersAIKey, err = fetchSecret(ctx, httpc, token, project, cloudflareWorkersAISecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: cloudflare workers ai key: %w", err)
+		}
+		if cloudflareWorkersAIAccountID == "" {
+			return nil, fmt.Errorf("bootstrap/gcp: QUILL_CLOUDFLARE_WORKERS_AI_ACCOUNT_ID not set")
+		}
+	}
 	var xiaomiKey []byte
 	if xiaomiSecret != "" {
 		xiaomiKey, err = fetchSecret(ctx, httpc, token, project, xiaomiSecret)
@@ -472,48 +503,52 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	}
 
 	return &types.BootstrapData{
-		Devices:                    devices,
-		Region:                     os.Getenv("QUILL_GCP_REGION"),
-		OpenRouterAPIKey:           strings.TrimSpace(string(openrouterKey)),
-		AnthropicAPIKey:            strings.TrimSpace(string(anthropicKey)),
-		OpenAIAPIKey:               strings.TrimSpace(string(openaiKey)),
-		GeminiAPIKey:               strings.TrimSpace(string(geminiKey)),
-		CerebrasAPIKey:             strings.TrimSpace(string(cerebrasKey)),
-		DeepSeekAPIKey:             strings.TrimSpace(string(deepseekKey)),
-		MistralAPIKey:              strings.TrimSpace(string(mistralKey)),
-		KimiAPIKey:                 strings.TrimSpace(string(kimiKey)),
-		ZAIAPIKey:                  strings.TrimSpace(string(zaiKey)),
-		TogetherAPIKey:             strings.TrimSpace(string(togetherKey)),
-		FireworksAPIKey:            strings.TrimSpace(string(fireworksKey)),
-		CohereAPIKey:               strings.TrimSpace(string(cohereKey)),
-		VoyageAPIKey:               strings.TrimSpace(string(voyageKey)),
-		GrokAPIKey:                 strings.TrimSpace(string(grokKey)),
-		NovitaAPIKey:               strings.TrimSpace(string(novitaKey)),
-		PhalaAPIKey:                strings.TrimSpace(string(phalaKey)),
-		SiliconFlowAPIKey:          strings.TrimSpace(string(siliconflowKey)),
-		TinfoilAPIKey:              strings.TrimSpace(string(tinfoilKey)),
-		VeniceAPIKey:               strings.TrimSpace(string(veniceKey)),
-		ParasailAPIKey:             strings.TrimSpace(string(parasailKey)),
-		LightningAPIKey:            strings.TrimSpace(string(lightningKey)),
-		GMIAPIKey:                  strings.TrimSpace(string(gmiKey)),
-		DeepInfraAPIKey:            strings.TrimSpace(string(deepinfraKey)),
-		FriendliAPIKey:             strings.TrimSpace(string(friendliKey)),
-		BasetenAPIKey:              strings.TrimSpace(string(basetenKey)),
-		ThinkingMachinesAPIKey:     strings.TrimSpace(string(thinkingMachinesKey)),
-		WaferAPIKey:                strings.TrimSpace(string(waferKey)),
-		CrusoeAPIKey:               strings.TrimSpace(string(crusoeKey)),
-		MakoraAPIKey:               strings.TrimSpace(string(makoraKey)),
-		NebiusAPIKey:               strings.TrimSpace(string(nebiusKey)),
-		MiniMaxAPIKey:              strings.TrimSpace(string(minimaxKey)),
-		XiaomiAPIKey:               strings.TrimSpace(string(xiaomiKey)),
-		TrustedRouterBaseURL:       os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
-		TrustedRouterInternalToken: strings.TrimSpace(internalGatewayToken),
-		SynthPanelPrompt:           strings.TrimSpace(string(synthPanelPrompt)),
-		SynthSynthesisPrompt:       strings.TrimSpace(string(synthSynthesisPrompt)),
-		SynthCodePanelPrompt:       strings.TrimSpace(string(synthCodePanelPrompt)),
-		SynthCodeSynthesisPrompt:   strings.TrimSpace(string(synthCodeSynthesisPrompt)),
-		AdvisorWorkerPrompt:        strings.TrimSpace(string(advisorWorkerPrompt)),
-		AdvisorPrompt:              strings.TrimSpace(string(advisorPrompt)),
+		Devices:                      devices,
+		Region:                       os.Getenv("QUILL_GCP_REGION"),
+		OpenRouterAPIKey:             strings.TrimSpace(string(openrouterKey)),
+		AnthropicAPIKey:              strings.TrimSpace(string(anthropicKey)),
+		OpenAIAPIKey:                 strings.TrimSpace(string(openaiKey)),
+		GeminiAPIKey:                 strings.TrimSpace(string(geminiKey)),
+		CerebrasAPIKey:               strings.TrimSpace(string(cerebrasKey)),
+		DeepSeekAPIKey:               strings.TrimSpace(string(deepseekKey)),
+		MistralAPIKey:                strings.TrimSpace(string(mistralKey)),
+		KimiAPIKey:                   strings.TrimSpace(string(kimiKey)),
+		ZAIAPIKey:                    strings.TrimSpace(string(zaiKey)),
+		TogetherAPIKey:               strings.TrimSpace(string(togetherKey)),
+		FireworksAPIKey:              strings.TrimSpace(string(fireworksKey)),
+		CohereAPIKey:                 strings.TrimSpace(string(cohereKey)),
+		VoyageAPIKey:                 strings.TrimSpace(string(voyageKey)),
+		GrokAPIKey:                   strings.TrimSpace(string(grokKey)),
+		NovitaAPIKey:                 strings.TrimSpace(string(novitaKey)),
+		PhalaAPIKey:                  strings.TrimSpace(string(phalaKey)),
+		SiliconFlowAPIKey:            strings.TrimSpace(string(siliconflowKey)),
+		TinfoilAPIKey:                strings.TrimSpace(string(tinfoilKey)),
+		VeniceAPIKey:                 strings.TrimSpace(string(veniceKey)),
+		ParasailAPIKey:               strings.TrimSpace(string(parasailKey)),
+		LightningAPIKey:              strings.TrimSpace(string(lightningKey)),
+		GMIAPIKey:                    strings.TrimSpace(string(gmiKey)),
+		DeepInfraAPIKey:              strings.TrimSpace(string(deepinfraKey)),
+		FriendliAPIKey:               strings.TrimSpace(string(friendliKey)),
+		BasetenAPIKey:                strings.TrimSpace(string(basetenKey)),
+		ThinkingMachinesAPIKey:       strings.TrimSpace(string(thinkingMachinesKey)),
+		WaferAPIKey:                  strings.TrimSpace(string(waferKey)),
+		CrusoeAPIKey:                 strings.TrimSpace(string(crusoeKey)),
+		MakoraAPIKey:                 strings.TrimSpace(string(makoraKey)),
+		NebiusAPIKey:                 strings.TrimSpace(string(nebiusKey)),
+		MiniMaxAPIKey:                strings.TrimSpace(string(minimaxKey)),
+		ChutesAPIKey:                 strings.TrimSpace(string(chutesKey)),
+		DigitalOceanAPIKey:           strings.TrimSpace(string(digitalOceanKey)),
+		CloudflareWorkersAIAPIKey:    strings.TrimSpace(string(cloudflareWorkersAIKey)),
+		CloudflareWorkersAIAccountID: cloudflareWorkersAIAccountID,
+		XiaomiAPIKey:                 strings.TrimSpace(string(xiaomiKey)),
+		TrustedRouterBaseURL:         os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
+		TrustedRouterInternalToken:   strings.TrimSpace(internalGatewayToken),
+		SynthPanelPrompt:             strings.TrimSpace(string(synthPanelPrompt)),
+		SynthSynthesisPrompt:         strings.TrimSpace(string(synthSynthesisPrompt)),
+		SynthCodePanelPrompt:         strings.TrimSpace(string(synthCodePanelPrompt)),
+		SynthCodeSynthesisPrompt:     strings.TrimSpace(string(synthCodeSynthesisPrompt)),
+		AdvisorWorkerPrompt:          strings.TrimSpace(string(advisorWorkerPrompt)),
+		AdvisorPrompt:                strings.TrimSpace(string(advisorPrompt)),
 		// Legacy proxy fields unused on GCP — direct egress.
 	}, nil
 }
