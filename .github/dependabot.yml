@@ -1,0 +1,100 @@
+version: 2
+
+updates:
+  - package-ecosystem: "uv"
+    directory: "/parent"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "06:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 5
+    groups:
+      python-security:
+        applies-to: "security-updates"
+        patterns:
+          - "*"
+      python-minor-and-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "gomod"
+    directories:
+      - "/enclave-go"
+      - "/enclave-go/sidecar"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "06:15"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 5
+    groups:
+      go-security:
+        applies-to: "security-updates"
+        patterns:
+          - "*"
+      go-minor-and-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "docker"
+    directories:
+      - "/enclave-go"
+      - "/parent"
+      - "/tools"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "06:30"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "terraform"
+    directory: "/tools/dns"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "06:45"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 3
+    groups:
+      terraform-security:
+        applies-to: "security-updates"
+        patterns:
+          - "*"
+      terraform-minor-and-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "07:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 5
+    groups:
+      actions-security:
+        applies-to: "security-updates"
+        patterns:
+          - "*"
+      actions-minor-and-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
