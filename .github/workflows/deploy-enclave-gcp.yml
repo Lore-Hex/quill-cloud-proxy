@@ -115,7 +115,7 @@ jobs:
       run:
         working-directory: enclave-go
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
@@ -128,7 +128,7 @@ jobs:
       image_ref: ${{ steps.set-vars.outputs.image_ref }}
       image_digest: ${{ steps.resolve-digest.outputs.image_digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # need history for the auto-commit + push back
 
@@ -240,7 +240,7 @@ jobs:
     needs: build-and-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main   # pull the auto-commit just made
       - name: Authenticate to GCP via WIF
@@ -630,7 +630,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main   # pull the auto-commit with the new digest
       - uses: actions/configure-pages@v5

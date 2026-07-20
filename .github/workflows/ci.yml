@@ -32,7 +32,7 @@ jobs:
           - "cloud_gcp,llm_openrouter"
           - "cloud_gcp,llm_multi"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
@@ -54,7 +54,7 @@ jobs:
       run:
         working-directory: parent
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
@@ -74,7 +74,7 @@ jobs:
     # the static trust page before publish.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Test deploy gate helpers
         run: |
           python3 tools/test_synthetic_gate_status.py
