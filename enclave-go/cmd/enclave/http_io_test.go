@@ -9,6 +9,22 @@ import (
 	"testing"
 )
 
+type testClientInputError struct {
+	err error
+}
+
+func (e *testClientInputError) Error() string {
+	return e.err.Error()
+}
+
+func (e *testClientInputError) Unwrap() error {
+	return e.err
+}
+
+func (e *testClientInputError) ClientInputMessage() string {
+	return "invalid image input"
+}
+
 // upstreamErrorResponse must surface the real upstream status + message when the
 // provider client wrapped an HTTP failure as "...http <status>: <body>", so a
 // client sees e.g. a 400 "max_tokens too large" instead of an opaque 502. The
@@ -40,6 +56,49 @@ func TestUpstreamErrorResponse(t *testing.T) {
 				t.Fatalf("msg = %q, want to contain %q", msg, tc.wantInMsg)
 			}
 		})
+	}
+}
+
+func TestUpstreamErrorResponseClassifiesClientInputError(t *testing.T) {
+	err := &testClientInputError{err: errors.New("llm/image: invalid PNG data")}
+	code, message := upstreamErrorResponse(err)
+	if code != 400 {
+		t.Fatalf("code = %d, want 400", code)
+	}
+	if message != "invalid image input" {
+		t.Fatalf("message = %q, want invalid image input", message)
+	}
+	if got := failureReason(err); got != "client_error" {
+		t.Fatalf("failure reason = %q, want client_error", got)
+	}
+	if got := failureReason(errors.New("provider failed")); got != "provider_error" {
+		t.Fatalf("provider failure reason = %q, want provider_error", got)
+	}
+}
+
+func TestClassifiedOpenAIErrorUsesRouterSourceForClientInput(t *testing.T) {
+	var buf bytes.Buffer
+	err := &testClientInputError{err: errors.New("llm/image: invalid PNG data")}
+	writeClassifiedOpenAIError(&buf, 400, "invalid image input", err)
+	body := httpBody(t, buf.String())
+	var payload map[string]map[string]any
+	if jsonErr := json.Unmarshal([]byte(body), &payload); jsonErr != nil {
+		t.Fatalf("decode response: %v", jsonErr)
+	}
+	if got := payload["error"]["source"]; got != "router" {
+		t.Fatalf("source = %#v, want router", got)
+	}
+}
+
+func TestWriteStreamingClientInputErrorUsesRouterSource(t *testing.T) {
+	var buf bytes.Buffer
+	err := &testClientInputError{err: errors.New("llm/image: invalid PNG data")}
+	if writeErr := writeStreamingProviderError(&buf, "responses", "resp_test", "model", err); writeErr != nil {
+		t.Fatalf("writeStreamingProviderError: %v", writeErr)
+	}
+	if !strings.Contains(buf.String(), `"source":"router"`) ||
+		!strings.Contains(buf.String(), `"type":"invalid_request_error"`) {
+		t.Fatalf("streaming client error was mislabeled: %s", buf.String())
 	}
 }
 

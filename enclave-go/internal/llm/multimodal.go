@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -22,6 +23,33 @@ const (
 	maxImageDimension = 8192
 	maxImageRedirect  = 3
 )
+
+type imageInputError struct {
+	err error
+}
+
+func (e *imageInputError) Error() string {
+	return e.err.Error()
+}
+
+func (e *imageInputError) Unwrap() error {
+	return e.err
+}
+
+func (e *imageInputError) ClientInputMessage() string {
+	return "invalid image input"
+}
+
+func markImageInputError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var existing *imageInputError
+	if errors.As(err, &existing) {
+		return err
+	}
+	return &imageInputError{err: err}
+}
 
 func anthropicBodyWithFetchedImages(
 	ctx context.Context,
@@ -182,16 +210,18 @@ func loadAnthropicImageSource(ctx context.Context, raw string) (map[string]any, 
 func loadImageBytes(ctx context.Context, raw string) (string, []byte, error) {
 	raw = strings.TrimSpace(raw)
 	if strings.HasPrefix(raw, "data:") {
-		return imageBytesFromDataURL(raw)
+		mediaType, data, err := imageBytesFromDataURL(raw)
+		return mediaType, data, markImageInputError(err)
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", nil, fmt.Errorf("llm/image: invalid image URL")
+		return "", nil, markImageInputError(fmt.Errorf("llm/image: invalid image URL"))
 	}
 	if u.Scheme != "https" && u.Scheme != "http" {
-		return "", nil, fmt.Errorf("llm/image: unsupported image URL scheme")
+		return "", nil, markImageInputError(fmt.Errorf("llm/image: unsupported image URL scheme"))
 	}
-	return fetchHTTPImage(ctx, u.String())
+	mediaType, data, err := fetchHTTPImage(ctx, u.String())
+	return mediaType, data, markImageInputError(err)
 }
 
 func imageBytesFromDataURL(raw string) (string, []byte, error) {
@@ -217,6 +247,11 @@ func imageBytesFromDataURL(raw string) (string, []byte, error) {
 }
 
 func normalizeImageBytes(mediaType string, data []byte) (string, []byte, error) {
+	normalizedType, normalizedData, err := normalizeImageBytesUnchecked(mediaType, data)
+	return normalizedType, normalizedData, markImageInputError(err)
+}
+
+func normalizeImageBytesUnchecked(mediaType string, data []byte) (string, []byte, error) {
 	mediaType = contentTypeMedia(mediaType)
 	if mediaType == "" {
 		mediaType = contentTypeMedia(http.DetectContentType(data))

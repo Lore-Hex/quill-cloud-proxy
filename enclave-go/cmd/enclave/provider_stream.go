@@ -518,15 +518,24 @@ func retryableInvokeError(err error) bool {
 	if asAdapterErr(err, &aerr) {
 		return false
 	}
+	if isClientInputError(err) {
+		return false
+	}
 	return err != nil
 }
 
 func writeStreamingProviderError(w io.Writer, routeType, requestID, model string, err error) error {
 	status, message := upstreamErrorResponse(err)
+	source := "provider"
+	errType := "provider_error"
+	if isClientInputError(err) {
+		source = "router"
+		errType = "invalid_request_error"
+	}
 	errBody := map[string]any{
 		"message": message,
-		"type":    "provider_error",
-		"source":  "provider",
+		"type":    errType,
+		"source":  source,
 	}
 	if err != nil {
 		errBody["status"] = status

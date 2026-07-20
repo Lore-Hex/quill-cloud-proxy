@@ -97,8 +97,10 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 	if value, ok := raw["prompt_cache_retention"]; ok && presentNonNull(value) {
 		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "prompt_cache_retention"}
 	}
-	if value, ok := raw["reasoning"]; ok && presentNonNull(value) {
-		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "reasoning"}
+	if value, ok := raw["reasoning"]; ok {
+		if err := validateReasoningConfig(value); err != nil {
+			return err
+		}
 	}
 	if value, ok := raw["include"]; ok && containsAny(value) {
 		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "include"}
@@ -202,6 +204,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 		Tools:          tools,
 		ToolChoice:     toolChoice,
 		ParallelTools:  req.ParallelToolCalls,
+		Reasoning:      req.Reasoning,
 		Response: &types.ResponseRequestMeta{
 			Include:              req.Include,
 			Modalities:           req.Modalities,
@@ -265,6 +268,12 @@ func responseInputMessage(item any, index int) (types.OpenAIChatMessage, error) 
 			Context: fmt.Sprintf("input[%d]", index),
 		}
 	}
+	switch stringValue(m["type"]) {
+	case "function_call":
+		return responseFunctionCallMessage(m, index)
+	case "function_call_output":
+		return responseFunctionCallOutputMessage(m, index)
+	}
 	role := stringValue(m["role"])
 	if role == "" {
 		role = "user"
@@ -283,6 +292,86 @@ func responseInputMessage(item any, index int) (types.OpenAIChatMessage, error) 
 		return types.OpenAIChatMessage{}, &AdapterError{Status: 400, Message: "input item must contain text or image"}
 	}
 	return types.OpenAIChatMessage{Role: role, Content: content}, nil
+}
+
+func responseFunctionCallMessage(m map[string]any, index int) (types.OpenAIChatMessage, error) {
+	callID := strings.TrimSpace(stringValue(m["call_id"]))
+	if callID == "" {
+		return types.OpenAIChatMessage{}, &AdapterError{
+			Status: 400, Message: "function_call call_id is required", Context: fmt.Sprintf("input[%d].call_id", index),
+		}
+	}
+	name := strings.TrimSpace(stringValue(m["name"]))
+	if name == "" {
+		return types.OpenAIChatMessage{}, &AdapterError{
+			Status: 400, Message: "function_call name is required", Context: fmt.Sprintf("input[%d].name", index),
+		}
+	}
+	arguments, ok := m["arguments"].(string)
+	if !ok && m["arguments"] != nil {
+		return types.OpenAIChatMessage{}, &AdapterError{
+			Status: 400, Message: "function_call arguments must be a JSON string", Context: fmt.Sprintf("input[%d].arguments", index),
+		}
+	}
+	if strings.TrimSpace(arguments) == "" {
+		arguments = "{}"
+	}
+	if !json.Valid([]byte(arguments)) {
+		return types.OpenAIChatMessage{}, &AdapterError{
+			Status: 400, Message: "function_call arguments must contain valid JSON", Context: fmt.Sprintf("input[%d].arguments", index),
+		}
+	}
+	return types.OpenAIChatMessage{
+		Role:    "assistant",
+		Content: "",
+		ToolCalls: []types.OpenAIToolCall{{
+			ID:   callID,
+			Type: "function",
+			Function: types.OpenAIToolFunction{
+				Name:      name,
+				Arguments: arguments,
+			},
+		}},
+	}, nil
+}
+
+func responseFunctionCallOutputMessage(m map[string]any, index int) (types.OpenAIChatMessage, error) {
+	callID := strings.TrimSpace(stringValue(m["call_id"]))
+	if callID == "" {
+		return types.OpenAIChatMessage{}, &AdapterError{
+			Status: 400, Message: "function_call_output call_id is required", Context: fmt.Sprintf("input[%d].call_id", index),
+		}
+	}
+	outputValue, ok := m["output"]
+	if !ok {
+		return types.OpenAIChatMessage{}, &AdapterError{
+			Status: 400, Message: "function_call_output output is required", Context: fmt.Sprintf("input[%d].output", index),
+		}
+	}
+	output, err := responseFunctionCallOutput(outputValue, index)
+	if err != nil {
+		return types.OpenAIChatMessage{}, err
+	}
+	return types.OpenAIChatMessage{Role: "tool", Content: output, ToolCallID: callID}, nil
+}
+
+func responseFunctionCallOutput(value any, index int) (any, error) {
+	switch output := value.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return output, nil
+	case []any:
+		content, err := responseContent(map[string]any{"content": output})
+		if err != nil {
+			return nil, err
+		}
+		return content, nil
+	default:
+		return nil, &AdapterError{
+			Status: 400, Message: "function_call_output output must be text or content parts", Context: fmt.Sprintf("input[%d].output", index),
+		}
+	}
 }
 
 func responseContent(m map[string]any) (any, error) {
@@ -1258,6 +1347,18 @@ func validateTextConfig(value json.RawMessage) error {
 	}
 	_, err := chatResponseFormatFromResponsesText(parsed)
 	return err
+}
+
+func validateReasoningConfig(value json.RawMessage) error {
+	trimmed := strings.TrimSpace(string(value))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(value, &parsed); err != nil {
+		return &AdapterError{Status: 400, Message: "reasoning must be an object", Context: "reasoning"}
+	}
+	return nil
 }
 
 func chatResponseFormatFromResponsesText(textConfig map[string]any) (map[string]any, error) {

@@ -370,6 +370,14 @@ func writeProviderError(w io.Writer, status int, message string) {
 	writeErrorWithSource(w, status, message, "provider")
 }
 
+func writeClassifiedOpenAIError(w io.Writer, status int, message string, err error) {
+	if isClientInputError(err) {
+		writeError(w, status, message)
+		return
+	}
+	writeProviderError(w, status, message)
+}
+
 func writeErrorWithSource(w io.Writer, status int, message, source string) {
 	writeErrorWithSourceHeaders(w, status, message, source, nil)
 }
@@ -530,6 +538,9 @@ func upstreamErrorResponse(err error) (int, string) {
 	if asAdapterErr(err, &aerr) {
 		return aerr.Status, aerr.Message
 	}
+	if message, ok := clientInputErrorMessage(err); ok {
+		return 400, message
+	}
 	s := err.Error()
 	if i := strings.LastIndex(s, "http "); i >= 0 {
 		rest := s[i+len("http "):]
@@ -550,6 +561,31 @@ func upstreamErrorResponse(err error) (int, string) {
 	return 502, "provider error"
 }
 
+type clientInputError interface {
+	ClientInputMessage() string
+}
+
+func isClientInputError(err error) bool {
+	_, ok := clientInputErrorMessage(err)
+	return ok
+}
+
+func clientInputErrorMessage(err error) (string, bool) {
+	var marker clientInputError
+	if !errors.As(err, &marker) {
+		return "", false
+	}
+	message := strings.TrimSpace(marker.ClientInputMessage())
+	return message, message != ""
+}
+
+func failureReason(err error) string {
+	if isClientInputError(err) {
+		return "client_error"
+	}
+	return "provider_error"
+}
+
 // writeAnthropicError writes the Anthropic-shaped error envelope the
 // Messages API uses: {"type":"error","error":{"type":...,"message":...}}.
 func writeAnthropicError(w io.Writer, status int, message string) {
@@ -558,6 +594,14 @@ func writeAnthropicError(w io.Writer, status int, message string) {
 
 func writeAnthropicProviderError(w io.Writer, status int, message string) {
 	writeAnthropicErrorWithSource(w, status, message, "provider")
+}
+
+func writeClassifiedAnthropicError(w io.Writer, status int, message string, err error) {
+	if isClientInputError(err) {
+		writeAnthropicErrorWithSource(w, status, message, "router")
+		return
+	}
+	writeAnthropicProviderError(w, status, message)
 }
 
 func writeAnthropicErrorWithSource(w io.Writer, status int, message, source string) {
