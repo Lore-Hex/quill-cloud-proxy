@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"hash/crc32"
 	"image"
 	"image/color"
@@ -201,6 +202,20 @@ func TestNormalizeImageBytesRejectsHugeDimensionsBeforeDecode(t *testing.T) {
 	_, _, err = normalizeImageBytes("image/png", pngHeaderWithDimensions(t, 5000, 5000))
 	if err == nil || !strings.Contains(err.Error(), "image dimensions too large") {
 		t.Fatalf("err = %v, want pixel cap error", err)
+	}
+}
+
+func TestMalformedInlineImageIsMarkedAsClientInput(t *testing.T) {
+	_, err := openAICompatibleImageDataURL(
+		t.Context(),
+		"data:image/png;base64,"+base64.StdEncoding.EncodeToString([]byte("not a png")),
+	)
+	if err == nil {
+		t.Fatal("expected malformed image error")
+	}
+	var marker interface{ ClientInputMessage() string }
+	if !errors.As(err, &marker) || marker.ClientInputMessage() != "invalid image input" {
+		t.Fatalf("error = %T %v, want client input marker", err, err)
 	}
 }
 

@@ -708,6 +708,9 @@ func TestRetryableInvokeErrorFailsOverOnAnyPreOutputError(t *testing.T) {
 	if retryableInvokeError(nil) {
 		t.Error("retryableInvokeError(nil) = true, want false")
 	}
+	if retryableInvokeError(&testClientInputError{err: errors.New("llm/image: invalid PNG data")}) {
+		t.Error("client input errors must not be retried across provider candidates")
+	}
 }
 
 func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
@@ -6470,6 +6473,69 @@ func TestServeOneResponsesStreamingUsesResponsesEvents(t *testing.T) {
 	}
 }
 
+func TestServeOneResponsesStreamingAcceptsFunctionOutputContinuationAndReasoning(t *testing.T) {
+	bearer := "test-bearer"
+	digest := sha256.Sum256([]byte(bearer))
+	reg := auth.New([]types.DeviceConfig{{
+		KeyHash: hex.EncodeToString(digest[:]), Owner: "test", DeviceID: "device-1",
+	}})
+	streamer := &fakeStreamingLLM{}
+	server, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), server, reg, streamer, nil, nil, nil, nil)
+
+	requestBody := []byte(`{
+		"model":"z-ai/glm-5.2",
+		"input":[
+			{"type":"function_call","call_id":"call_return_pong","name":"return_pong","arguments":"{\"value\":\"PONG\"}"},
+			{"type":"function_call_output","call_id":"call_return_pong","output":"PONG"}
+		],
+		"tools":[{"type":"function","name":"return_pong","parameters":{"type":"object","properties":{"value":{"type":"string"}}}}],
+		"reasoning":{"effort":"high"},
+		"stream":true
+	}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer, len(requestBody), requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(bodyBytes), "event: response.completed") {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	if streamer.request == nil {
+		t.Fatal("provider did not receive request")
+	}
+	reasoning, ok := streamer.request.Reasoning.(map[string]any)
+	if !ok || reasoning["effort"] != "high" {
+		t.Fatalf("provider reasoning = %#v", streamer.request.Reasoning)
+	}
+	if streamer.body == nil || len(streamer.body.Messages) != 2 {
+		t.Fatalf("provider messages = %#v", streamer.body)
+	}
+	callBlocks, ok := streamer.body.Messages[0].Content.([]map[string]any)
+	if !ok || len(callBlocks) != 1 || callBlocks[0]["type"] != "tool_use" ||
+		callBlocks[0]["id"] != "call_return_pong" {
+		t.Fatalf("provider function call = %#v", streamer.body.Messages[0].Content)
+	}
+	resultBlocks, ok := streamer.body.Messages[1].Content.([]map[string]any)
+	if !ok || len(resultBlocks) != 1 || resultBlocks[0]["type"] != "tool_result" ||
+		resultBlocks[0]["tool_use_id"] != "call_return_pong" || resultBlocks[0]["content"] != "PONG" {
+		t.Fatalf("provider function result = %#v", streamer.body.Messages[1].Content)
+	}
+}
+
 func TestServeOneResponsesRejectsUnsupportedTools(t *testing.T) {
 	bearer := "test-bearer"
 	digest := sha256.Sum256([]byte(bearer))
@@ -7315,6 +7381,7 @@ func TestServeStreamingDoesNotRaceRequestModelSelection(t *testing.T) {
 
 type fakeStreamingLLM struct {
 	model   string
+	request *types.OpenAIChatRequest
 	body    *types.AnthropicMessagesRequest
 	options []llm.InvokeOptions
 }
@@ -7327,6 +7394,7 @@ func (f *fakeStreamingLLM) InvokeStreaming(
 	options ...llm.InvokeOptions,
 ) error {
 	f.model = req.Model
+	f.request = req
 	f.body = body
 	f.options = options
 	_, err := fmt.Fprint(out, `event: message_start

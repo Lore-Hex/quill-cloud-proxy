@@ -3,6 +3,7 @@ package adapter
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -521,6 +522,7 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 		"modalities":["text"],
 		"parallel_tool_calls":true,
 		"prompt_cache_key":"cache-bucket",
+		"reasoning":{"effort":"high"},
 		"service_tier":"auto",
 		"stream_options":{"include_usage":true},
 		"text":{"format":{"type":"text"}},
@@ -568,12 +570,6 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 			name:        "background mode",
 			body:        `{"model":"m","input":"hi","background":true}`,
 			wantContext: "background=true",
-			wantStatus:  501,
-		},
-		{
-			name:        "reasoning controls",
-			body:        `{"model":"m","input":"hi","reasoning":{"effort":"high"}}`,
-			wantContext: "reasoning",
 			wantStatus:  501,
 		},
 		{
@@ -639,6 +635,145 @@ func TestResponsesToChatMapsFunctionTools(t *testing.T) {
 	choiceFn := choice["function"].(map[string]any)
 	if choice["type"] != "function" || choiceFn["name"] != "get_weather" {
 		t.Fatalf("bad tool choice: %#v", choice)
+	}
+}
+
+func TestResponsesToChatMapsFunctionCallOutputContinuation(t *testing.T) {
+	req := &types.OpenAIResponsesRequest{
+		Model: "z-ai/glm-5.2",
+		Input: []any{
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_return_pong",
+				"name":      "return_pong",
+				"arguments": `{"value":"PONG"}`,
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_return_pong",
+				"output":  "PONG",
+			},
+		},
+		Tools: []any{map[string]any{
+			"type": "function",
+			"name": "return_pong",
+			"parameters": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"value": map[string]any{"type": "string"}},
+			},
+		}},
+	}
+
+	chat, err := ResponsesToChat(req)
+	if err != nil {
+		t.Fatalf("ResponsesToChat: %v", err)
+	}
+	if len(chat.Messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(chat.Messages))
+	}
+	call := chat.Messages[0]
+	if call.Role != "assistant" || len(call.ToolCalls) != 1 {
+		t.Fatalf("function call message = %#v", call)
+	}
+	if got := call.ToolCalls[0]; got.ID != "call_return_pong" || got.Type != "function" ||
+		got.Function.Name != "return_pong" || got.Function.Arguments != `{"value":"PONG"}` {
+		t.Fatalf("function call = %#v", got)
+	}
+	output := chat.Messages[1]
+	if output.Role != "tool" || output.ToolCallID != "call_return_pong" || output.Content != "PONG" {
+		t.Fatalf("function output message = %#v", output)
+	}
+
+	anthropic, err := ToAnthropic(chat, chat.Model)
+	if err != nil {
+		t.Fatalf("ToAnthropic: %v", err)
+	}
+	if len(anthropic.Messages) != 2 {
+		t.Fatalf("anthropic messages = %d, want 2", len(anthropic.Messages))
+	}
+	callBlocks := anthropic.Messages[0].Content.([]map[string]any)
+	if len(callBlocks) != 1 || callBlocks[0]["type"] != "tool_use" ||
+		callBlocks[0]["id"] != "call_return_pong" || callBlocks[0]["name"] != "return_pong" {
+		t.Fatalf("anthropic function call = %#v", callBlocks)
+	}
+	resultBlocks := anthropic.Messages[1].Content.([]map[string]any)
+	if len(resultBlocks) != 1 || resultBlocks[0]["type"] != "tool_result" ||
+		resultBlocks[0]["tool_use_id"] != "call_return_pong" || resultBlocks[0]["content"] != "PONG" {
+		t.Fatalf("anthropic function result = %#v", resultBlocks)
+	}
+}
+
+func TestResponsesToChatRejectsMalformedFunctionContinuation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		input   map[string]any
+		context string
+	}{
+		{
+			name:    "missing call id",
+			input:   map[string]any{"type": "function_call", "name": "return_pong", "arguments": `{}`},
+			context: "input[0].call_id",
+		},
+		{
+			name:    "invalid arguments JSON",
+			input:   map[string]any{"type": "function_call", "call_id": "call_1", "name": "return_pong", "arguments": `{`},
+			context: "input[0].arguments",
+		},
+		{
+			name:    "missing output",
+			input:   map[string]any{"type": "function_call_output", "call_id": "call_1"},
+			context: "input[0].output",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ResponsesToChat(&types.OpenAIResponsesRequest{Model: "m", Input: []any{tc.input}})
+			aerr, ok := err.(*AdapterError)
+			if !ok || aerr.Status != 400 || aerr.Context != tc.context {
+				t.Fatalf("error = %#v, want 400 context %q", err, tc.context)
+			}
+		})
+	}
+}
+
+func TestResponsesAcceptAndForwardReasoningConfig(t *testing.T) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(`{
+		"model":"z-ai/glm-5.2",
+		"input":"Return PONG.",
+		"reasoning":{"effort":"high","summary":"auto"}
+	}`), &raw); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if err := RejectUnsupportedResponsesFields(raw); err != nil {
+		t.Fatalf("reasoning configuration rejected: %v", err)
+	}
+
+	reasoning := map[string]any{"effort": "high", "summary": "auto"}
+	chat, err := ResponsesToChat(&types.OpenAIResponsesRequest{
+		Model:     "z-ai/glm-5.2",
+		Input:     "Return PONG.",
+		Reasoning: reasoning,
+	})
+	if err != nil {
+		t.Fatalf("ResponsesToChat: %v", err)
+	}
+	if !reflect.DeepEqual(chat.Reasoning, reasoning) {
+		t.Fatalf("reasoning = %#v, want %#v", chat.Reasoning, reasoning)
+	}
+}
+
+func TestResponsesRejectMalformedReasoningConfig(t *testing.T) {
+	for _, value := range []string{`"high"`, `[]`, `42`} {
+		var raw map[string]json.RawMessage
+		body := `{"model":"m","input":"hi","reasoning":` + value + `}`
+		if err := json.Unmarshal([]byte(body), &raw); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		err := RejectUnsupportedResponsesFields(raw)
+		aerr, ok := err.(*AdapterError)
+		if !ok || aerr.Status != 400 || aerr.Context != "reasoning" {
+			t.Fatalf("reasoning=%s error = %#v, want 400 reasoning AdapterError", value, err)
+		}
 	}
 }
 

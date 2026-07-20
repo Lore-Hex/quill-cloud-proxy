@@ -818,9 +818,9 @@ func serveResponsesNonStreaming(
 		// Surface the real upstream status+message instead of an opaque 502.
 		status, message := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, status, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
+			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
-		writeProviderError(conn, status, message)
+		writeClassifiedOpenAIError(conn, status, message, err)
 		return
 	}
 	if len(result.ToolCalls) == 0 {
@@ -920,9 +920,9 @@ func serveChatNonStreaming(
 		// path. upstreamErrorResponse falls back to 502 if it can't classify.
 		status, message := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, status, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
+			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
-		writeProviderError(conn, status, message)
+		writeClassifiedOpenAIError(conn, status, message, err)
 		return
 	}
 	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
@@ -1054,8 +1054,9 @@ func serveStreaming(
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
+		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
+			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		if routeType == "responses" || statsW.BytesWritten() == 0 {
 			_ = writeStreamingProviderError(statsW, routeType, requestID, responseModel, err)
@@ -1200,9 +1201,9 @@ func serveMessages(
 			fmt.Fprintf(os.Stderr, "enclave.messages_collect_failed model=%q err=%v\n", req.Model, err)
 			status, message := upstreamErrorResponse(err)
 			if trEnabled {
-				_ = trGateway.Refund(ctx, authorization, status, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
+				_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 			}
-			writeAnthropicProviderError(conn, status, message)
+			writeClassifiedAnthropicError(conn, status, message, err)
 			return
 		}
 		inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
@@ -1274,8 +1275,9 @@ func serveMessages(
 	result, err := adapter.RelayAnthropicStream(pr, statsW, messageID, responseModel)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.messages_relay_failed model=%q err=%v\n", req.Model, err)
+		status, _ := upstreamErrorResponse(err)
 		if trEnabled {
-			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
+			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		if statsW.BytesWritten() == 0 {
 			_, message := upstreamErrorResponse(err)
