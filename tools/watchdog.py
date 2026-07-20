@@ -36,6 +36,7 @@ import json
 import os
 import sys
 import time
+import urllib.parse
 import urllib.request
 from collections import defaultdict
 from typing import Iterable
@@ -47,6 +48,16 @@ SEVERITY = {"up": 0, "degraded": 1, "down": 2}
 INVERSE_SEVERITY = {0: "up", 1: "degraded", 2: "down"}
 
 
+def cache_busted_status_url(url: str, nonce: int | None = None) -> str:
+    """Return a unique status URL so a canary never recounts stale CDN data."""
+    parsed = urllib.parse.urlsplit(url)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    query.append(("_watchdog", str(time.time_ns() if nonce is None else nonce)))
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(query), parsed.fragment)
+    )
+
+
 def fetch_per_region(url: str, regions: Iterable[str], timeout: int = 10) -> dict[str, str]:
     """Return {region: 'up'|'degraded'|'down'|'unknown'} for each requested region.
 
@@ -55,7 +66,11 @@ def fetch_per_region(url: str, regions: Iterable[str], timeout: int = 10) -> dic
     has no recent probes) from a real "up" reading.
     """
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        request = urllib.request.Request(
+            cache_busted_status_url(url),
+            headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.load(response)
         checks = payload.get("data", {}).get("current", {}).get("checks", []) or []
     except Exception as exc:

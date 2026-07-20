@@ -230,6 +230,11 @@ type OpenAIChatRequest struct {
 	HTTPReferer         string               `json:"-"`
 	AppCategories       []string             `json:"-"`
 	OpenRouterMetadata  bool                 `json:"-"`
+	// Internal hosted-tool billing fields. They are never decoded from or
+	// encoded into the caller's JSON request; only enclave-owned orchestration
+	// sets them before authorize/settle.
+	AdditionalCostReservationMicrodollars int `json:"-"`
+	AdditionalCostMicrodollars            int `json:"-"`
 }
 
 // NormalizeMaxTokens folds the OpenAI-chat (`max_completion_tokens`) and

@@ -33,17 +33,18 @@ func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 		if err := json.Unmarshal(body, &payload); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_1","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+		_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_1","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","additional_cost_reservation_microdollars":300000,"route_candidates":[]}}`)
 	}))
 	defer server.Close()
 
 	client := New(server.URL, "internal", server.Client())
 	maxTokens := 7
 	auth, err := client.Authorize(t.Context(), rawKey, &qtypes.OpenAIChatRequest{
-		Model:          "openai/gpt-4o-mini",
-		MaxTokens:      &maxTokens,
-		Messages:       []qtypes.OpenAIChatMessage{{Role: "user", Content: "secret prompt"}},
-		IdempotencyKey: "idem-123",
+		Model:                                 "openai/gpt-4o-mini",
+		MaxTokens:                             &maxTokens,
+		Messages:                              []qtypes.OpenAIChatMessage{{Role: "user", Content: "secret prompt"}},
+		IdempotencyKey:                        "idem-123",
+		AdditionalCostReservationMicrodollars: 300_000,
 	})
 	if err != nil {
 		t.Fatalf("Authorize: %v", err)
@@ -62,6 +63,39 @@ func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 	}
 	if payload["idempotency_key"] != "idem-123" {
 		t.Fatalf("idempotency_key = %v", payload["idempotency_key"])
+	}
+	if payload["additional_cost_reservation_microdollars"] != float64(300_000) {
+		t.Fatalf("additional cost reservation = %v", payload["additional_cost_reservation_microdollars"])
+	}
+}
+
+func TestAuthorizeRejectsControlPlaneWithoutHostedToolBilling(t *testing.T) {
+	refunds := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_old","workspace_id":"ws_1","api_key_hash":"key_1","model":"test/model","endpoint_id":"test/model@test/prepaid","provider":"test","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+		case "/internal/gateway/refund":
+			refunds++
+			_, _ = io.WriteString(w, `{"data":{"refunded":true}}`)
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "internal", server.Client())
+	_, err := client.AuthorizeWithRoute(t.Context(), "sk-test", &qtypes.OpenAIChatRequest{
+		Model:                                 "test/model",
+		Messages:                              []qtypes.OpenAIChatMessage{{Role: "user", Content: "search"}},
+		AdditionalCostReservationMicrodollars: 100_000,
+	}, "responses.web_search.planner")
+	var controlErr *ControlPlaneError
+	if !errors.As(err, &controlErr) || controlErr.Type != "hosted_tool_billing_unavailable" {
+		t.Fatalf("error = %#v", err)
+	}
+	if refunds != 1 {
+		t.Fatalf("refunds = %d, want 1", refunds)
 	}
 }
 
@@ -120,17 +154,18 @@ func TestAuthorizeAndSettleCarryAttributionWithoutMutableSettleTags(t *testing.T
 	}
 
 	_, err = client.Settle(t.Context(), auth, Usage{
-		RequestID:      "req-1",
-		InputTokens:    10,
-		OutputTokens:   2,
-		ElapsedSeconds: 0.1,
-		User:           req.User,
-		SessionID:      req.SessionID,
-		Trace:          req.Trace,
-		Metadata:       req.Metadata,
-		App:            req.App,
-		HTTPReferer:    req.HTTPReferer,
-		AppCategories:  req.AppCategories,
+		RequestID:                  "req-1",
+		InputTokens:                10,
+		OutputTokens:               2,
+		ElapsedSeconds:             0.1,
+		User:                       req.User,
+		SessionID:                  req.SessionID,
+		Trace:                      req.Trace,
+		Metadata:                   req.Metadata,
+		App:                        req.App,
+		HTTPReferer:                req.HTTPReferer,
+		AppCategories:              req.AppCategories,
+		AdditionalCostMicrodollars: 7_000,
 	})
 	if err != nil {
 		t.Fatalf("Settle: %v", err)
@@ -140,6 +175,9 @@ func TestAuthorizeAndSettleCarryAttributionWithoutMutableSettleTags(t *testing.T
 	}
 	if settlePayload["app"] != "Contract Review" || settlePayload["http_referer"] != "https://legal.example/app" {
 		t.Fatalf("settle attribution = %#v", settlePayload)
+	}
+	if settlePayload["additional_cost_microdollars"] != float64(7_000) {
+		t.Fatalf("settle additional cost = %#v", settlePayload)
 	}
 }
 

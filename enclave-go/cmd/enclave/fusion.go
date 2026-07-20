@@ -1797,20 +1797,21 @@ func runFusionCallValidatedObservedAttempt(
 	selectedModel := selectedRoute.Model(req.Model, authz)
 	selectedEndpoint := selectedRoute.Endpoint("", authz)
 	usage := trustedrouter.Usage{
-		RequestID:        idempotencyKey,
-		InputTokens:      inputTokens,
-		OutputTokens:     outputTokens,
-		ElapsedSeconds:   maxDurationSeconds(time.Since(requestStarted), 0.001),
-		UsageEstimated:   usageEstimated,
-		FinishReason:     result.FinishReason,
-		Streamed:         streamed,
-		RouteType:        routeType,
-		SelectedModel:    selectedModel,
-		SelectedEndpoint: selectedEndpoint,
-		User:             req.User,
-		SessionID:        req.SessionID,
-		Trace:            req.Trace,
-		Metadata:         req.Metadata,
+		RequestID:                  idempotencyKey,
+		InputTokens:                inputTokens,
+		OutputTokens:               outputTokens,
+		ElapsedSeconds:             maxDurationSeconds(time.Since(requestStarted), 0.001),
+		UsageEstimated:             usageEstimated,
+		FinishReason:               result.FinishReason,
+		Streamed:                   streamed,
+		RouteType:                  routeType,
+		SelectedModel:              selectedModel,
+		SelectedEndpoint:           selectedEndpoint,
+		User:                       req.User,
+		SessionID:                  req.SessionID,
+		Trace:                      req.Trace,
+		Metadata:                   req.Metadata,
+		AdditionalCostMicrodollars: req.AdditionalCostMicrodollars,
 	}
 	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
