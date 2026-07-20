@@ -139,6 +139,7 @@ func main() {
 	}
 	configureFusionPrompts(boot)
 	configureAdvisorPrompts(boot)
+	configureResponsesWebSearch(boot.ExaAPIKey)
 
 	// 2. Build registries. Capture a canonical hash of the device list
 	// so /attestation can include it in the document's UserData — clients
@@ -570,6 +571,12 @@ func serveOneRequest(
 			return
 		}
 		writeError(conn, 400, "invalid request")
+		return
+	}
+
+	if routeType == "responses" && maybeServeResponsesWebSearch(
+		ctx, conn, &req, br, trGateway, byokSecrets, bearer, requestLogID,
+	) {
 		return
 	}
 

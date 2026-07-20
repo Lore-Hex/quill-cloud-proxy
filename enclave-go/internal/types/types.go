@@ -51,6 +51,7 @@ type BootstrapData struct {
 	SynthCodeSynthesisPrompt   string `json:"synth_code_synthesis_prompt,omitempty"`
 	AdvisorWorkerPrompt        string `json:"advisor_worker_prompt,omitempty"`
 	AdvisorPrompt              string `json:"advisor_prompt,omitempty"`
+	ExaAPIKey                  string `json:"exa_api_key,omitempty"`
 
 	// Anthropic direct (only populated for the llm_anthropic build target).
 	// Same trust posture as the OpenRouter key — pulled from Secret Manager
@@ -378,6 +379,33 @@ type ResponseRequestMeta struct {
 	Reasoning            any
 	Store                bool
 	OpenRouterMetadata   map[string]any
+	WebSearch            *ResponseWebSearchConfig
+	WebSearchCalls       []ResponseWebSearchCall
+	OutputAnnotations    []map[string]any
+}
+
+type ResponseWebSearchConfig struct {
+	ToolType          string
+	SearchContextSize string
+	AllowedDomains    []string
+	BlockedDomains    []string
+	UserCountry       string
+	UserCity          string
+	UserRegion        string
+	UserTimezone      string
+	MaxCalls          int
+	IncludeSources    bool
+}
+
+type ResponseWebSearchCall struct {
+	ID      string
+	Query   string
+	Sources []ResponseWebSearchSource
+}
+
+type ResponseWebSearchSource struct {
+	Title string
+	URL   string
 }
 
 type ToolCall struct {

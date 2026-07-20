@@ -6548,7 +6548,7 @@ func TestServeOneResponsesRejectsUnsupportedTools(t *testing.T) {
 	defer client.Close()
 	go serveOne(context.Background(), server, reg, &fakeStreamingLLM{}, nil, nil, nil, nil)
 
-	requestBody := []byte(`{"model":"claude-sonnet-4-6","input":"hi","tools":[{"type":"web_search"}]}`)
+	requestBody := []byte(`{"model":"claude-sonnet-4-6","input":"hi","tools":[{"type":"file_search"}]}`)
 	_, err := fmt.Fprintf(
 		client,
 		"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",

@@ -12,6 +12,8 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
+const TrustedRouterWebSearchFunction = "_trustedrouter_web_search"
+
 func RejectUnsupportedResponsesFields(raw map[string]json.RawMessage) error {
 	return validateResponsesFields(raw, supportedResponsesCreateFields)
 }
@@ -102,8 +104,10 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 			return err
 		}
 	}
-	if value, ok := raw["include"]; ok && containsAny(value) {
-		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "include"}
+	if value, ok := raw["include"]; ok {
+		if err := validateResponsesInclude(value); err != nil {
+			return err
+		}
 	}
 	if value, ok := raw["modalities"]; ok {
 		if err := validateTextModalities(value); err != nil {
@@ -120,11 +124,13 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 			return err
 		}
 	}
-	if value, ok := raw["max_tool_calls"]; ok && presentNonNull(value) {
-		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "max_tool_calls"}
-	}
 	if value, ok := raw["tools"]; ok {
 		if err := validateResponsesTools(value); err != nil {
+			return err
+		}
+	}
+	if value, ok := raw["max_tool_calls"]; ok && presentNonNull(value) {
+		if err := validateResponsesMaxToolCalls(value, raw["tools"]); err != nil {
 			return err
 		}
 	}
@@ -163,6 +169,10 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 		return nil, err
 	}
 	toolChoice, err := ChatToolChoiceFromResponses(req.ToolChoice)
+	if err != nil {
+		return nil, err
+	}
+	webSearch, err := ResponsesWebSearchConfig(req.Tools, req.MaxToolCalls, req.Include)
 	if err != nil {
 		return nil, err
 	}
@@ -215,8 +225,8 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 			StreamOptions:        req.StreamOptions,
 			Text:                 req.Text,
 			InputModalities:      types.RequestInputModalities(&types.OpenAIChatRequest{Messages: messages}),
-			ToolChoice:           toolChoice,
-			Tools:                tools,
+			ToolChoice:           req.ToolChoice,
+			Tools:                req.Tools,
 			TopLogprobs:          req.TopLogprobs,
 			Truncation:           req.Truncation,
 			MaxOutputTokens:      req.MaxOutputTokens,
@@ -224,6 +234,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 			PromptCacheRetention: req.PromptCacheRetention,
 			Reasoning:            req.Reasoning,
 			Store:                false,
+			WebSearch:            webSearch,
 		},
 	}, nil
 }
@@ -1041,7 +1052,16 @@ func responsesObject(
 	usage := any(nil)
 	completedAt := any(nil)
 	if status == "completed" {
+		if meta != nil {
+			for _, call := range meta.WebSearchCalls {
+				output = append(output, responseWebSearchCallItem(call, meta.WebSearch != nil && meta.WebSearch.IncludeSources))
+			}
+		}
 		if text != "" || len(toolCalls) == 0 {
+			annotations := []map[string]any{}
+			if meta != nil && len(meta.OutputAnnotations) > 0 {
+				annotations = meta.OutputAnnotations
+			}
 			output = append(output, map[string]any{
 				"id":     messageID,
 				"type":   "message",
@@ -1050,7 +1070,7 @@ func responsesObject(
 				"content": []map[string]any{{
 					"type":        "output_text",
 					"text":        text,
-					"annotations": []any{},
+					"annotations": annotations,
 				}},
 			})
 		}
@@ -1101,6 +1121,58 @@ func responsesObject(
 		payload["openrouter_metadata"] = meta.OpenRouterMetadata
 	}
 	return payload
+}
+
+func responseWebSearchCallItem(call types.ResponseWebSearchCall, includeSources bool) map[string]any {
+	action := map[string]any{
+		"type":  "search",
+		"query": call.Query,
+	}
+	if includeSources {
+		sources := make([]map[string]any, 0, len(call.Sources))
+		for _, source := range call.Sources {
+			sources = append(sources, map[string]any{
+				"type":  "url",
+				"url":   source.URL,
+				"title": source.Title,
+			})
+		}
+		action["sources"] = sources
+	}
+	return map[string]any{
+		"id":     call.ID,
+		"type":   "web_search_call",
+		"status": "completed",
+		"action": action,
+	}
+}
+
+// BuildResponsesObject exposes the canonical response shaper to enclave-owned
+// hosted tools without duplicating the Responses compatibility envelope.
+func BuildResponsesObject(
+	responseID, model, text string,
+	toolCalls []types.ToolCall,
+	inputTokens, outputTokens int,
+	cachedTokens, reasoningTokens int,
+	created int64,
+	status string,
+	textConfig map[string]any,
+	meta *types.ResponseRequestMeta,
+) map[string]any {
+	return responsesObject(responseID, model, text, toolCalls, inputTokens, outputTokens, cachedTokens, reasoningTokens, created, status, textConfig, meta)
+}
+
+// WriteResponsesEvent writes one OpenAI Responses SSE event with a monotonic
+// sequence number. The payload must not contain prompt or search-result text
+// except for explicit client-facing output deltas.
+func WriteResponsesEvent(w io.Writer, sequence *int, event string, payload map[string]any) error {
+	return writeResponseEventSeq(w, sequence, event, payload)
+}
+
+// ResponseWebSearchCallItem returns the public OpenAI-compatible item used by
+// both buffered and streaming Responses output.
+func ResponseWebSearchCallItem(call types.ResponseWebSearchCall, includeSources bool) map[string]any {
+	return responseWebSearchCallItem(call, includeSources)
 }
 
 func responseFunctionCallItem(responseID string, index int, call types.ToolCall) map[string]any {
@@ -1413,6 +1485,37 @@ func validateResponsesTools(value json.RawMessage) error {
 	return err
 }
 
+func validateResponsesInclude(value json.RawMessage) error {
+	if !presentNonNull(value) {
+		return nil
+	}
+	var includes []string
+	if err := json.Unmarshal(value, &includes); err != nil {
+		return &AdapterError{Status: 400, Message: "include must be an array of strings", Context: "include"}
+	}
+	for _, include := range includes {
+		if include != "web_search_call.action.sources" {
+			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "include"}
+		}
+	}
+	return nil
+}
+
+func validateResponsesMaxToolCalls(value, tools json.RawMessage) error {
+	var maxCalls int
+	if err := json.Unmarshal(value, &maxCalls); err != nil || maxCalls < 1 {
+		return &AdapterError{Status: 400, Message: "max_tool_calls must be a positive integer", Context: "max_tool_calls"}
+	}
+	if maxCalls > 3 {
+		return &AdapterError{Status: 400, Message: "max_tool_calls cannot exceed 3", Context: "max_tool_calls"}
+	}
+	var parsed []any
+	if err := json.Unmarshal(tools, &parsed); err != nil || !containsWebSearchTool(parsed) {
+		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "max_tool_calls"}
+	}
+	return nil
+}
+
 func validateResponsesToolChoice(value json.RawMessage) error {
 	if !presentNonNull(value) {
 		return nil
@@ -1440,12 +1543,220 @@ func ChatToolsFromResponsesTools(tools []any) ([]any, error) {
 	return out, nil
 }
 
+func ResponsesWebSearchConfig(tools []any, maxToolCalls *int, includes []string) (*types.ResponseWebSearchConfig, error) {
+	var config *types.ResponseWebSearchConfig
+	for _, tool := range tools {
+		m, ok := tool.(map[string]any)
+		if !ok {
+			continue
+		}
+		toolType := stringValue(m["type"])
+		if toolType != "web_search" && toolType != "web_search_preview" {
+			continue
+		}
+		if config != nil {
+			return nil, &AdapterError{Status: 400, Message: "only one web_search tool is allowed", Context: "tools"}
+		}
+		parsed, err := parseResponsesWebSearchTool(m)
+		if err != nil {
+			return nil, err
+		}
+		config = parsed
+	}
+	if config == nil {
+		return nil, nil
+	}
+	config.MaxCalls = 3
+	if maxToolCalls != nil {
+		if *maxToolCalls < 1 || *maxToolCalls > 3 {
+			return nil, &AdapterError{Status: 400, Message: "max_tool_calls must be between 1 and 3", Context: "max_tool_calls"}
+		}
+		config.MaxCalls = *maxToolCalls
+	}
+	for _, include := range includes {
+		if include == "web_search_call.action.sources" {
+			config.IncludeSources = true
+		}
+	}
+	return config, nil
+}
+
+func containsWebSearchTool(tools []any) bool {
+	for _, tool := range tools {
+		m, ok := tool.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch stringValue(m["type"]) {
+		case "web_search", "web_search_preview":
+			return true
+		}
+	}
+	return false
+}
+
+func parseResponsesWebSearchTool(tool map[string]any) (*types.ResponseWebSearchConfig, error) {
+	toolType := stringValue(tool["type"])
+	allowed := map[string]struct{}{
+		"type": {}, "search_context_size": {}, "filters": {}, "user_location": {},
+		"external_web_access": {}, "return_token_budget": {}, "search_content_types": {}, "image_settings": {},
+	}
+	for key, value := range tool {
+		if _, ok := allowed[key]; !ok && value != nil {
+			return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools." + key}
+		}
+	}
+	config := &types.ResponseWebSearchConfig{ToolType: toolType, SearchContextSize: "medium"}
+	if size := strings.TrimSpace(stringValue(tool["search_context_size"])); size != "" {
+		switch size {
+		case "low", "medium", "high":
+			config.SearchContextSize = size
+		default:
+			return nil, &AdapterError{Status: 400, Message: "invalid web search context size", Context: "tools.search_context_size"}
+		}
+	}
+	if external, present := tool["external_web_access"]; present && external != nil {
+		allowed, ok := external.(bool)
+		if !ok {
+			return nil, &AdapterError{Status: 400, Message: "external_web_access must be a boolean", Context: "tools.external_web_access"}
+		}
+		if !allowed {
+			return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools.external_web_access"}
+		}
+	}
+	if rawBudget, present := tool["return_token_budget"]; present && rawBudget != nil {
+		budget, ok := rawBudget.(string)
+		if !ok {
+			return nil, &AdapterError{Status: 400, Message: "return_token_budget must be a string", Context: "tools.return_token_budget"}
+		}
+		if strings.TrimSpace(budget) != "default" {
+			return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools.return_token_budget"}
+		}
+	}
+	if rawContentTypes, present := tool["search_content_types"]; present && rawContentTypes != nil {
+		contentTypes, ok := anyStringSlice(rawContentTypes)
+		if !ok {
+			return nil, &AdapterError{Status: 400, Message: "search_content_types must be an array of strings", Context: "tools.search_content_types"}
+		}
+		for _, contentType := range contentTypes {
+			if contentType != "text" {
+				return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools.search_content_types"}
+			}
+		}
+	}
+	if tool["image_settings"] != nil {
+		return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools.image_settings"}
+	}
+	if rawFilters, present := tool["filters"]; present && rawFilters != nil {
+		filters, ok := rawFilters.(map[string]any)
+		if !ok {
+			return nil, &AdapterError{Status: 400, Message: "web search filters must be an object", Context: "tools.filters"}
+		}
+		if toolType == "web_search_preview" && len(filters) > 0 {
+			return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools.filters"}
+		}
+		for key := range filters {
+			if key != "allowed_domains" && key != "blocked_domains" {
+				return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools.filters." + key}
+			}
+		}
+		var err error
+		config.AllowedDomains, err = validatedDomains(filters["allowed_domains"])
+		if err != nil {
+			return nil, err
+		}
+		config.BlockedDomains, err = validatedDomains(filters["blocked_domains"])
+		if err != nil {
+			return nil, err
+		}
+	}
+	if rawLocation, present := tool["user_location"]; present && rawLocation != nil {
+		location, ok := rawLocation.(map[string]any)
+		if !ok {
+			return nil, &AdapterError{Status: 400, Message: "web search user_location must be an object", Context: "tools.user_location"}
+		}
+		for key := range location {
+			switch key {
+			case "type", "country", "city", "region", "timezone":
+			default:
+				return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools.user_location." + key}
+			}
+		}
+		if kind := strings.TrimSpace(stringValue(location["type"])); kind != "" && kind != "approximate" {
+			return nil, &AdapterError{Status: 400, Message: "invalid web search user location", Context: "tools.user_location.type"}
+		}
+		config.UserCountry = strings.ToUpper(strings.TrimSpace(stringValue(location["country"])))
+		if config.UserCountry != "" && len(config.UserCountry) != 2 {
+			return nil, &AdapterError{Status: 400, Message: "country must be a two-letter ISO code", Context: "tools.user_location.country"}
+		}
+		config.UserCity = truncateString(stringValue(location["city"]), 256)
+		config.UserRegion = truncateString(stringValue(location["region"]), 256)
+		config.UserTimezone = truncateString(stringValue(location["timezone"]), 128)
+	}
+	return config, nil
+}
+
+func validatedDomains(value any) ([]string, error) {
+	values, ok := anyStringSlice(value)
+	if !ok && value != nil {
+		return nil, &AdapterError{Status: 400, Message: "web search domains must be strings", Context: "tools.filters"}
+	}
+	if len(values) > 100 {
+		return nil, &AdapterError{Status: 400, Message: "web search domain filter cannot exceed 100 entries", Context: "tools.filters"}
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		domain := strings.ToLower(strings.TrimSpace(value))
+		if domain == "" || strings.Contains(domain, "://") || strings.ContainsAny(domain, "/?#") || len(domain) > 253 {
+			return nil, &AdapterError{Status: 400, Message: "invalid web search domain", Context: "tools.filters"}
+		}
+		out = append(out, domain)
+	}
+	return out, nil
+}
+
+func anyStringSlice(value any) ([]string, bool) {
+	switch values := value.(type) {
+	case nil:
+		return nil, true
+	case []string:
+		return append([]string(nil), values...), true
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, raw := range values {
+			text, ok := raw.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, text)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func truncateString(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= max {
+		return value
+	}
+	return value[:max]
+}
+
 func chatToolFromResponsesTool(tool any) (map[string]any, error) {
 	m, ok := tool.(map[string]any)
 	if !ok {
 		return nil, &AdapterError{Status: 400, Message: "tool must be an object", Context: "tools"}
 	}
-	if stringValue(m["type"]) != "function" {
+	switch stringValue(m["type"]) {
+	case "web_search", "web_search_preview":
+		if _, err := parseResponsesWebSearchTool(m); err != nil {
+			return nil, err
+		}
+		return trustedRouterWebSearchFunctionTool(m), nil
+	case "function":
+	default:
 		return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools"}
 	}
 	if fn, ok := m["function"].(map[string]any); ok {
@@ -1460,10 +1771,44 @@ func chatToolFromResponsesTool(tool any) (map[string]any, error) {
 	return normalizeChatFunctionTool(fn)
 }
 
+func trustedRouterWebSearchFunctionTool(tool map[string]any) map[string]any {
+	description := "Search the live web when current or sourced information is needed. Use a concise standalone search query."
+	if location, ok := tool["user_location"].(map[string]any); ok {
+		parts := []string{}
+		for _, key := range []string{"city", "region", "country", "timezone"} {
+			if value := strings.TrimSpace(stringValue(location[key])); value != "" {
+				parts = append(parts, value)
+			}
+		}
+		if len(parts) > 0 {
+			description += " Approximate user location: " + strings.Join(parts, ", ") + "."
+		}
+	}
+	return map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        TrustedRouterWebSearchFunction,
+			"description": description,
+			"strict":      true,
+			"parameters": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"query": map[string]any{"type": "string", "description": "A standalone web search query."},
+				},
+				"required": []string{"query"},
+			},
+		},
+	}
+}
+
 func normalizeChatFunctionTool(fn map[string]any) (map[string]any, error) {
 	name := strings.TrimSpace(stringValue(fn["name"]))
 	if name == "" {
 		return nil, &AdapterError{Status: 400, Message: "function tool name is required", Context: "tools.function.name"}
+	}
+	if name == TrustedRouterWebSearchFunction {
+		return nil, &AdapterError{Status: 501, Message: "reserved function name", Context: "tools.function.name"}
 	}
 	normalized := map[string]any{"name": name}
 	if description := stringValue(fn["description"]); description != "" {
@@ -1492,7 +1837,14 @@ func ChatToolChoiceFromResponses(choice any) (any, error) {
 			return nil, &AdapterError{Status: 400, Message: "invalid tool_choice", Context: "tool_choice"}
 		}
 	case map[string]any:
-		if stringValue(value["type"]) != "function" {
+		choiceType := stringValue(value["type"])
+		if choiceType == "web_search" || choiceType == "web_search_preview" {
+			return map[string]any{
+				"type":     "function",
+				"function": map[string]any{"name": TrustedRouterWebSearchFunction},
+			}, nil
+		}
+		if choiceType != "function" {
 			return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tool_choice"}
 		}
 		name := stringValue(value["name"])
