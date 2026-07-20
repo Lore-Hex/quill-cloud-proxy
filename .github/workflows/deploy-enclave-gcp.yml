@@ -634,7 +634,7 @@ jobs:
         with:
           ref: main   # pull the auto-commit with the new digest
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: trust-page/
       - id: deployment
