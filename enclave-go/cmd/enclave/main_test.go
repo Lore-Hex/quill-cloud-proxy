@@ -7490,6 +7490,7 @@ func newFusionGatewayRecorder(t *testing.T) (*trustedrouter.Client, *fusionGatew
 				"limit_usage_type":       "Credits",
 				"route_candidates":       []any{},
 				"broadcast_destinations": []any{},
+				"additional_cost_reservation_microdollars": payload["additional_cost_reservation_microdollars"],
 			}})
 		case "/internal/gateway/settle":
 			var payload map[string]any
@@ -7501,10 +7502,14 @@ func newFusionGatewayRecorder(t *testing.T) (*trustedrouter.Client, *fusionGatew
 			recorder.settle = append(recorder.settle, payload)
 			settleID := len(recorder.settle)
 			recorder.mu.Unlock()
+			costMicrodollars := 1
+			if additional, ok := payload["additional_cost_microdollars"].(float64); ok {
+				costMicrodollars += int(additional)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
 				"settled":           true,
 				"generation_id":     fmt.Sprintf("gen_fusion_%d", settleID),
-				"cost_microdollars": 1,
+				"cost_microdollars": costMicrodollars,
 				"model":             model,
 				"provider":          "test",
 			}})

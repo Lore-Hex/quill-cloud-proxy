@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import pathlib
 import unittest
+from unittest import mock
 
 
 def load_watchdog_module():
@@ -20,6 +22,33 @@ watchdog = load_watchdog_module()
 
 
 class WatchdogStateTests(unittest.TestCase):
+    def test_status_url_is_cache_busted_without_losing_existing_query(self) -> None:
+        url = watchdog.cache_busted_status_url(
+            "https://trustedrouter.com/status.json?format=json", nonce=123
+        )
+        self.assertEqual(
+            url,
+            "https://trustedrouter.com/status.json?format=json&_watchdog=123",
+        )
+
+    def test_fetch_requires_a_fresh_status_snapshot(self) -> None:
+        payload = io.BytesIO(
+            b'{"data":{"current":{"checks":[{"target_region":"us-central1",'
+            b'"effective_status":"up"}]}}}'
+        )
+        with mock.patch.object(
+            watchdog.urllib.request, "urlopen", return_value=payload
+        ) as urlopen:
+            result = watchdog.fetch_per_region(
+                "https://trustedrouter.com/status.json", ["us-central1"]
+            )
+
+        self.assertEqual(result, {"us-central1": "up"})
+        request = urlopen.call_args.args[0]
+        self.assertIn("_watchdog=", request.full_url)
+        self.assertEqual(request.get_header("Cache-control"), "no-cache")
+        self.assertEqual(request.get_header("Pragma"), "no-cache")
+
     def test_rolls_back_only_after_threshold(self) -> None:
         regions = ["europe-west4"]
         rollback_set: set[str] = set()

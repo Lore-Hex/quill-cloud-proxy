@@ -63,8 +63,9 @@ func annotateResponsesWebSearchUsage(body []byte, outcome responsesWebSearchOutc
 		payload["usage"] = usage
 	}
 	providerUsage := responsesWebSearchProviderUsage(outcome)
-	usage["cost_microdollars"] = outcome.ModelCostMicrodollars
-	usage["total_cost_microdollars"] = outcome.ModelCostMicrodollars
+	totalCost := outcome.TotalCostMicrodollars
+	usage["cost_microdollars"] = totalCost
+	usage["total_cost_microdollars"] = totalCost
 	usage["provider_usage"] = providerUsage
 	applyUsageProviderSummary(usage, providerUsage)
 	payload["trustedrouter"] = map[string]any{"routing": providerUsage}
@@ -76,14 +77,16 @@ func responsesWebSearchProviderUsage(outcome responsesWebSearchOutcome) map[stri
 	for _, call := range outcome.ModelCalls {
 		modelCalls = append(modelCalls, providerUsageCall(fusionCallDetails(call), "web_search"))
 	}
+	totalCost := outcome.TotalCostMicrodollars
 	return pruneEmptyProviderUsage(map[string]any{
 		"orchestration":                         true,
 		"router":                                "web_search",
 		"subcall_count":                         len(modelCalls),
 		"web_search_call_count":                 len(outcome.WebCalls),
 		"model_attempts":                        modelCalls,
-		"cost_microdollars":                     outcome.ModelCostMicrodollars,
-		"total_cost_microdollars":               outcome.ModelCostMicrodollars,
+		"cost_microdollars":                     totalCost,
+		"total_cost_microdollars":               totalCost,
+		"web_search_cost_microdollars":          outcome.SearchCostMicrodollars,
 		"operator_web_search_cost_microdollars": outcome.SearchCostMicrodollars,
 		"web_search_elapsed_ms":                 outcome.SearchElapsedMS,
 		"contains_prompt_or_completion":         false,
@@ -474,8 +477,9 @@ func annotateResponsesWebSearchObject(payload map[string]any, outcome responsesW
 		return
 	}
 	providerUsage := responsesWebSearchProviderUsage(outcome)
-	usage["cost_microdollars"] = outcome.ModelCostMicrodollars
-	usage["total_cost_microdollars"] = outcome.ModelCostMicrodollars
+	totalCost := outcome.TotalCostMicrodollars
+	usage["cost_microdollars"] = totalCost
+	usage["total_cost_microdollars"] = totalCost
 	usage["provider_usage"] = providerUsage
 	applyUsageProviderSummary(usage, providerUsage)
 	payload["trustedrouter"] = map[string]any{"routing": providerUsage}

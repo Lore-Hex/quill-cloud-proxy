@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -25,6 +26,7 @@ type fakeResponsesWebSearchRunner struct {
 	results  []fusionCallResult
 	errors   []error
 	requests []*types.OpenAIChatRequest
+	routes   []string
 	calls    int
 }
 
@@ -48,6 +50,7 @@ func (webSearchScriptedLLM) InvokeStreaming(
 func (runner *fakeResponsesWebSearchRunner) Run(
 	_ context.Context,
 	req *types.OpenAIChatRequest,
+	routeType string,
 	_ string,
 	observer adapter.StreamObserver,
 	validate func(adapter.StreamResult) error,
@@ -55,7 +58,7 @@ func (runner *fakeResponsesWebSearchRunner) Run(
 ) (fusionCallResult, error) {
 	index := runner.calls
 	runner.calls++
-	runner.requests = append(runner.requests, cloneChatRequest(req))
+	runner.routes = append(runner.routes, routeType)
 	if index < len(runner.errors) && runner.errors[index] != nil {
 		return fusionCallResult{}, runner.errors[index]
 	}
@@ -68,6 +71,7 @@ func (runner *fakeResponsesWebSearchRunner) Run(
 			return fusionCallResult{}, err
 		}
 	}
+	runner.requests = append(runner.requests, cloneChatRequest(req))
 	if observer != nil {
 		for _, block := range result.Result.Thinking {
 			observer(adapter.StreamDelta{Type: "thinking_delta", Text: block.Text})
@@ -129,7 +133,7 @@ func webSearchPlannerCall(query string) fusionCallResult {
 		Model:            "planner/model",
 		InputTokens:      11,
 		OutputTokens:     3,
-		SettlementResult: &trustedrouter.SettleResult{CostMicrodollars: 17, Provider: "planner-provider"},
+		SettlementResult: &trustedrouter.SettleResult{CostMicrodollars: 24, Provider: "planner-provider"},
 	}
 }
 
@@ -178,13 +182,20 @@ func TestExecuteResponsesWebSearchRunsBoundedToolLoopAndAccountsSubcalls(t *test
 	if runner.calls != 2 || len(searcher.queries) != 1 {
 		t.Fatalf("calls = model %d search %d, want 2 and 1", runner.calls, len(searcher.queries))
 	}
+	if len(runner.routes) != 2 || runner.routes[0] != "responses.web_search.planner" || runner.routes[1] != "responses.web_search.final" {
+		t.Fatalf("routes = %#v", runner.routes)
+	}
+	plannerReq := runner.requests[0]
+	if plannerReq.AdditionalCostReservationMicrodollars != maxWebSearchCostPerCallMicrodollars || plannerReq.AdditionalCostMicrodollars != 7 {
+		t.Fatalf("planner cost reservation/actual = %d/%d", plannerReq.AdditionalCostReservationMicrodollars, plannerReq.AdditionalCostMicrodollars)
+	}
 	if got := searcher.queries[0]; got != "trusted router release" {
 		t.Fatalf("query = %q", got)
 	}
 	if got := searcher.options[0].SearchType; got != "instant" {
 		t.Fatalf("search type = %q, want instant", got)
 	}
-	if outcome.InputTokens != 42 || outcome.OutputTokens != 12 || outcome.ModelCostMicrodollars != 40 {
+	if outcome.InputTokens != 42 || outcome.OutputTokens != 12 || outcome.ModelCostMicrodollars != 40 || outcome.TotalCostMicrodollars != 47 {
 		t.Fatalf("aggregated usage = %#v", outcome)
 	}
 	if outcome.CachedTokens != 7 || outcome.ReasoningTokens != 4 || outcome.SearchCostMicrodollars != 7 {
@@ -200,8 +211,8 @@ func TestExecuteResponsesWebSearchRunsBoundedToolLoopAndAccountsSubcalls(t *test
 	if finalReq.Provider == nil || len(finalReq.Provider.Order) == 0 || finalReq.Provider.Order[0] != "planner-provider" {
 		t.Fatalf("continuation provider = %#v", finalReq.Provider)
 	}
-	if runner.requests[0].Reasoning != nil || runner.requests[0].ResponseFormat != nil || finalReq.Reasoning == nil || finalReq.ResponseFormat == nil {
-		t.Fatalf("reasoning settings should be final-only: planner=%#v final=%#v", runner.requests[0].Reasoning, finalReq.Reasoning)
+	if plannerReq.Reasoning != nil || plannerReq.ResponseFormat != nil || finalReq.Reasoning == nil || finalReq.ResponseFormat == nil {
+		t.Fatalf("reasoning settings should be final-only: planner=%#v final=%#v", plannerReq.Reasoning, finalReq.Reasoning)
 	}
 	if len(finalReq.Tools) != 0 || finalReq.ToolChoice != nil {
 		t.Fatalf("internal search tool leaked into final request: tools=%#v choice=%#v", finalReq.Tools, finalReq.ToolChoice)
@@ -214,6 +225,10 @@ func TestExecuteResponsesWebSearchRunsBoundedToolLoopAndAccountsSubcalls(t *test
 		}
 	}
 	providerUsageJSON, _ := json.Marshal(responsesWebSearchProviderUsage(outcome))
+	providerUsage := responsesWebSearchProviderUsage(outcome)
+	if providerUsage["total_cost_microdollars"] != 47 || providerUsage["web_search_cost_microdollars"] != 7 {
+		t.Fatalf("provider usage cost = %#v", providerUsage)
+	}
 	if strings.Contains(string(providerUsageJSON), "trusted router release") || strings.Contains(string(providerUsageJSON), "exa-secret-request-id") {
 		t.Fatalf("private search data leaked into provider usage: %s", providerUsageJSON)
 	}
@@ -242,8 +257,20 @@ func TestExecuteResponsesWebSearchPreservesSettledPlannerMetadataOnSearchFailure
 	if err == nil {
 		t.Fatal("expected search provider error")
 	}
-	if len(outcome.ModelCalls) != 1 || outcome.ModelCalls[0].SettlementResult == nil {
-		t.Fatalf("settled planner metadata lost on search failure: %#v", outcome)
+	if len(outcome.ModelCalls) != 0 {
+		t.Fatalf("failed search must refund the planner instead of settling it: %#v", outcome)
+	}
+}
+
+func TestExecuteResponsesWebSearchRejectsProviderCostAboveReservedBound(t *testing.T) {
+	runner := &fakeResponsesWebSearchRunner{results: []fusionCallResult{webSearchPlannerCall("expensive search")}}
+	searcher := &fakeResponsesWebSearcher{results: []websearch.Result{{
+		CostMicrodollars: maxWebSearchCostPerCallMicrodollars + 1,
+	}}}
+
+	_, err := executeResponsesWebSearch(context.Background(), webSearchTestRequest(), runner, searcher, "root", nil)
+	if err == nil || !strings.Contains(err.Error(), "cost exceeded") {
+		t.Fatalf("error = %v, want bounded cost failure", err)
 	}
 }
 
@@ -312,27 +339,19 @@ func TestResponsesWebSearchRejectsCustomModelWithPrivateBaseBeforeSearch(t *test
 		"trustedrouter/eu",
 	} {
 		t.Run(baseModel, func(t *testing.T) {
-			planner := webSearchPlannerCall("private query")
-			planner.Authorization = &trustedrouter.Authorization{
-				CustomModel: &trustedrouter.CustomModel{BaseModelID: baseModel},
-			}
-			runner := &fakeResponsesWebSearchRunner{results: []fusionCallResult{planner}}
-			searcher := &fakeResponsesWebSearcher{}
-
-			_, err := executeResponsesWebSearch(
-				context.Background(),
-				webSearchTestRequest(),
-				runner,
-				searcher,
-				"root",
-				nil,
-			)
-
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/internal/gateway/resolve-custom-model" {
+					t.Fatalf("path = %q", r.URL.Path)
+				}
+				_, _ = fmt.Fprintf(w, `{"data":{"custom_model":{"id":"trustedrouter/user-private","base_model_id":%s,"revision":1}}}`, mustJSONString(baseModel))
+			}))
+			defer server.Close()
+			gateway := trustedrouter.New(server.URL, "internal", server.Client())
+			req := webSearchTestRequest()
+			req.Model = "trustedrouter/user-private"
+			err := preflightResponsesWebSearchPrivacy(context.Background(), req, gateway, "sk-test")
 			if err == nil {
 				t.Fatal("expected private custom-model base to reject web search")
-			}
-			if len(searcher.queries) != 0 {
-				t.Fatalf("search calls = %d, want 0", len(searcher.queries))
 			}
 		})
 	}
@@ -416,6 +435,15 @@ func TestServeOneResponsesWebSearchEndToEnd(t *testing.T) {
 			t.Fatalf("response missing %q: %s", expected, body)
 		}
 	}
+	var responsePayload map[string]any
+	if err := json.Unmarshal(body, &responsePayload); err != nil {
+		t.Fatal(err)
+	}
+	usage, _ := responsePayload["usage"].(map[string]any)
+	providerUsage, _ := usage["provider_usage"].(map[string]any)
+	if usage["total_cost_microdollars"] != float64(9) || providerUsage["web_search_cost_microdollars"] != float64(7) {
+		t.Fatalf("response usage = %#v", usage)
+	}
 	recorder.mu.Lock()
 	authorizeCount := len(recorder.authorize)
 	settleCount := len(recorder.settle)
@@ -423,5 +451,13 @@ func TestServeOneResponsesWebSearchEndToEnd(t *testing.T) {
 	recorder.mu.Unlock()
 	if authorizeCount != 2 || settleCount != 2 || refundCount != 0 {
 		t.Fatalf("gateway calls authorize=%d settle=%d refund=%d", authorizeCount, settleCount, refundCount)
+	}
+	plannerAuthorize := recorder.authorize[0]
+	plannerSettle := recorder.settle[0]
+	if plannerAuthorize["route_type"] != "responses.web_search.planner" || plannerAuthorize["additional_cost_reservation_microdollars"] != float64(3*maxWebSearchCostPerCallMicrodollars) {
+		t.Fatalf("planner authorize = %#v", plannerAuthorize)
+	}
+	if plannerSettle["route_type"] != "responses.web_search.planner" || plannerSettle["additional_cost_microdollars"] != float64(7) {
+		t.Fatalf("planner settle = %#v", plannerSettle)
 	}
 }

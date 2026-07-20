@@ -86,27 +86,28 @@ func (c *Client) Enabled() bool {
 }
 
 type Authorization struct {
-	AuthorizationID        string                             `json:"authorization_id"`
-	WorkspaceID            string                             `json:"workspace_id"`
-	APIKeyHash             string                             `json:"api_key_hash"`
-	Model                  string                             `json:"model"`
-	UpstreamModel          string                             `json:"upstream_model"`
-	EndpointID             string                             `json:"endpoint_id"`
-	Provider               string                             `json:"provider"`
-	ProviderName           string                             `json:"provider_name"`
-	RequestedModel         string                             `json:"requested_model"`
-	Region                 string                             `json:"region"`
-	UsageType              string                             `json:"usage_type"`
-	LimitUsageType         string                             `json:"limit_usage_type"`
-	BYOKSecretRef          string                             `json:"byok_secret_ref"`
-	BYOKEncryptedSecret    *byokcache.EncryptedSecretEnvelope `json:"byok_encrypted_secret"`
-	BYOKCacheKey           string                             `json:"byok_cache_key"`
-	BYOKProvider           string                             `json:"byok_provider"`
-	RouteCandidates        []RouteCandidate                   `json:"route_candidates"`
-	BroadcastDestinations  []BroadcastDestination             `json:"broadcast_destinations"`
-	CustomModel            *CustomModel                       `json:"custom_model"`
-	Tags                   qtypes.TagMap                      `json:"tags"`
-	RequestMetadataVersion int                                `json:"request_metadata_version"`
+	AuthorizationID                       string                             `json:"authorization_id"`
+	WorkspaceID                           string                             `json:"workspace_id"`
+	APIKeyHash                            string                             `json:"api_key_hash"`
+	Model                                 string                             `json:"model"`
+	UpstreamModel                         string                             `json:"upstream_model"`
+	EndpointID                            string                             `json:"endpoint_id"`
+	Provider                              string                             `json:"provider"`
+	ProviderName                          string                             `json:"provider_name"`
+	RequestedModel                        string                             `json:"requested_model"`
+	Region                                string                             `json:"region"`
+	UsageType                             string                             `json:"usage_type"`
+	LimitUsageType                        string                             `json:"limit_usage_type"`
+	BYOKSecretRef                         string                             `json:"byok_secret_ref"`
+	BYOKEncryptedSecret                   *byokcache.EncryptedSecretEnvelope `json:"byok_encrypted_secret"`
+	BYOKCacheKey                          string                             `json:"byok_cache_key"`
+	BYOKProvider                          string                             `json:"byok_provider"`
+	RouteCandidates                       []RouteCandidate                   `json:"route_candidates"`
+	BroadcastDestinations                 []BroadcastDestination             `json:"broadcast_destinations"`
+	CustomModel                           *CustomModel                       `json:"custom_model"`
+	Tags                                  qtypes.TagMap                      `json:"tags"`
+	RequestMetadataVersion                int                                `json:"request_metadata_version"`
+	AdditionalCostReservationMicrodollars int                                `json:"additional_cost_reservation_microdollars"`
 }
 
 type CustomModel struct {
@@ -189,8 +190,9 @@ type Usage struct {
 	// settle for visibility (GatewaySettleRequest is extra="allow");
 	// cache-aware pricing is a control-plane follow-up — today cached
 	// input still bills at the full input rate.
-	CacheReadInputTokens     int
-	CacheCreationInputTokens int
+	CacheReadInputTokens       int
+	CacheCreationInputTokens   int
+	AdditionalCostMicrodollars int
 }
 
 func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest) (*Authorization, error) {
@@ -240,6 +242,9 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 		"route_type":             routeType,
 		"idempotency_key":        idempotencyKey,
 	}
+	if req.AdditionalCostReservationMicrodollars > 0 {
+		body["additional_cost_reservation_microdollars"] = req.AdditionalCostReservationMicrodollars
+	}
 	if len(req.Models) > 0 {
 		body["models"] = req.Models
 	}
@@ -278,6 +283,16 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	}
 	if err := c.postJSONWithRetry(ctx, "/internal/gateway/authorize", body, &decoded, c.authorizeRetry); err != nil {
 		return nil, err
+	}
+	if req.AdditionalCostReservationMicrodollars > 0 &&
+		decoded.Data.AdditionalCostReservationMicrodollars != req.AdditionalCostReservationMicrodollars {
+		_ = c.Refund(ctx, &decoded.Data, 503, "hosted_tool_billing_unavailable", 0.001, nil)
+		return nil, &ControlPlaneError{
+			Path:       "/internal/gateway/authorize",
+			StatusCode: 503,
+			Type:       "hosted_tool_billing_unavailable",
+			Message:    "hosted-tool billing is not available on the active control plane",
+		}
 	}
 	if req.Tags != nil && decoded.Data.RequestMetadataVersion < 1 {
 		_ = c.Refund(ctx, &decoded.Data, 503, "request_metadata_unavailable", 0.001, nil)
@@ -404,6 +419,9 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 		"selected_model":       selectedModel,
 		"selected_endpoint":    selectedEndpoint,
 		"app":                  app,
+	}
+	if usage.AdditionalCostMicrodollars > 0 {
+		body["additional_cost_microdollars"] = usage.AdditionalCostMicrodollars
 	}
 	if usage.RouteType != "" {
 		body["route_type"] = usage.RouteType
