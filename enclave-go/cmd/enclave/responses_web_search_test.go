@@ -304,6 +304,40 @@ func TestResponsesWebSearchPrivacyFailsClosed(t *testing.T) {
 	}
 }
 
+func TestResponsesWebSearchRejectsCustomModelWithPrivateBaseBeforeSearch(t *testing.T) {
+	for _, baseModel := range []string{
+		"trustedrouter/zdr",
+		"trustedrouter/e2e",
+		"trustedrouter/confidential",
+		"trustedrouter/eu",
+	} {
+		t.Run(baseModel, func(t *testing.T) {
+			planner := webSearchPlannerCall("private query")
+			planner.Authorization = &trustedrouter.Authorization{
+				CustomModel: &trustedrouter.CustomModel{BaseModelID: baseModel},
+			}
+			runner := &fakeResponsesWebSearchRunner{results: []fusionCallResult{planner}}
+			searcher := &fakeResponsesWebSearcher{}
+
+			_, err := executeResponsesWebSearch(
+				context.Background(),
+				webSearchTestRequest(),
+				runner,
+				searcher,
+				"root",
+				nil,
+			)
+
+			if err == nil {
+				t.Fatal("expected private custom-model base to reject web search")
+			}
+			if len(searcher.queries) != 0 {
+				t.Fatalf("search calls = %d, want 0", len(searcher.queries))
+			}
+		})
+	}
+}
+
 func TestResponsesWebSearchStreamingUsesStableItemIDAndCompletes(t *testing.T) {
 	runner := &fakeResponsesWebSearchRunner{results: []fusionCallResult{
 		webSearchPlannerCall("streaming web search"),

@@ -206,6 +206,9 @@ func executeResponsesWebSearch(
 		return responsesWebSearchOutcome{}, err
 	}
 	outcome := responsesWebSearchOutcome{Final: planner, ModelCalls: []fusionCallResult{planner}}
+	if err := validateResponsesWebSearchAuthorization(planner.Authorization); err != nil {
+		return outcome, err
+	}
 	queries, err := plannerWebSearchQueries(planner.Result, config.MaxCalls)
 	if err != nil {
 		return outcome, err
@@ -522,18 +525,39 @@ func validateResponsesWebSearchPrivacy(req *types.OpenAIChatRequest) *adapter.Ad
 	if req == nil {
 		return nil
 	}
-	model := strings.ToLower(strings.TrimSpace(req.Model))
-	for _, prefix := range []string{"trustedrouter/zdr", "trustedrouter/e2e", "trustedrouter/confidential", "trustedrouter/eu"} {
-		if model == prefix || strings.HasPrefix(model, prefix+"-") || strings.HasPrefix(model, prefix+"/") {
-			return &adapter.AdapterError{Status: 400, Message: "web_search is not available for this privacy tier", Context: "tools"}
-		}
+	if isWebSearchRestrictedModel(req.Model) {
+		return webSearchPrivacyError()
 	}
 	if req.Provider != nil {
 		if strings.EqualFold(strings.TrimSpace(req.Provider.DataCollection), "deny") || strings.EqualFold(strings.TrimSpace(req.Provider.Jurisdiction), "eu") {
-			return &adapter.AdapterError{Status: 400, Message: "web_search is not available for this privacy tier", Context: "tools"}
+			return webSearchPrivacyError()
 		}
 	}
 	return nil
+}
+
+func validateResponsesWebSearchAuthorization(authorization *trustedrouter.Authorization) *adapter.AdapterError {
+	if authorization == nil || authorization.CustomModel == nil {
+		return nil
+	}
+	if isWebSearchRestrictedModel(authorization.CustomModel.BaseModelID) {
+		return webSearchPrivacyError()
+	}
+	return nil
+}
+
+func isWebSearchRestrictedModel(modelID string) bool {
+	model := strings.ToLower(strings.TrimSpace(modelID))
+	for _, prefix := range []string{"trustedrouter/zdr", "trustedrouter/e2e", "trustedrouter/confidential", "trustedrouter/eu"} {
+		if model == prefix || strings.HasPrefix(model, prefix+"-") || strings.HasPrefix(model, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func webSearchPrivacyError() *adapter.AdapterError {
+	return &adapter.AdapterError{Status: 400, Message: "web_search is not available for this privacy tier", Context: "tools"}
 }
 
 func classifiedWebSearchError(err error) error {
