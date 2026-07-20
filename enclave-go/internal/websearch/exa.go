@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -27,6 +28,8 @@ const (
 	MaxTitleBytes      = 512
 	MaxSnippetBytes    = 8192
 	maxTotalSnippetLen = 48 << 10
+	maxCostNumberBytes = 64
+	maxCostExponent    = 18
 )
 
 type ExaOptions struct {
@@ -252,24 +255,69 @@ func safeResultURL(raw string) string {
 }
 
 func dollarsToMicrodollars(value json.Number) (int, error) {
-	if strings.TrimSpace(value.String()) == "" {
+	raw := strings.TrimSpace(value.String())
+	if raw == "" {
 		return 0, nil
 	}
-	ratio, ok := new(big.Rat).SetString(value.String())
-	if !ok || ratio.Sign() < 0 {
+	if len(raw) > maxCostNumberBytes || strings.HasPrefix(raw, "-") || strings.HasPrefix(raw, "+") {
 		return 0, errors.New("invalid dollars")
 	}
-	ratio.Mul(ratio, big.NewRat(1_000_000, 1))
-	quotient := new(big.Int)
-	remainder := new(big.Int)
-	quotient.QuoRem(ratio.Num(), ratio.Denom(), remainder)
-	if new(big.Int).Lsh(remainder, 1).Cmp(ratio.Denom()) >= 0 {
-		quotient.Add(quotient, big.NewInt(1))
+
+	mantissa := raw
+	exponent := 0
+	if exponentAt := strings.IndexAny(raw, "eE"); exponentAt >= 0 {
+		if strings.IndexAny(raw[exponentAt+1:], "eE") >= 0 {
+			return 0, errors.New("invalid dollars")
+		}
+		mantissa = raw[:exponentAt]
+		parsedExponent, err := strconv.Atoi(raw[exponentAt+1:])
+		if err != nil || parsedExponent < -maxCostExponent || parsedExponent > maxCostExponent {
+			return 0, errors.New("invalid dollars")
+		}
+		exponent = parsedExponent
 	}
-	if !quotient.IsInt64() || quotient.Int64() > int64(^uint(0)>>1) {
+
+	whole, fraction, hasDecimal := strings.Cut(mantissa, ".")
+	if whole == "" || (hasDecimal && fraction == "") || strings.Contains(fraction, ".") {
+		return 0, errors.New("invalid dollars")
+	}
+	digits := whole + fraction
+	for _, digit := range digits {
+		if digit < '0' || digit > '9' {
+			return 0, errors.New("invalid dollars")
+		}
+	}
+	digits = strings.TrimLeft(digits, "0")
+	if digits == "" {
+		return 0, nil
+	}
+	coefficient, ok := new(big.Int).SetString(digits, 10)
+	if !ok {
+		return 0, errors.New("invalid dollars")
+	}
+
+	// Convert exactly to microdollars, rounding half up. Both the source number
+	// and exponent are tightly bounded before any arbitrary-precision work.
+	shift := 6 + exponent - len(fraction)
+	result := new(big.Int).Set(coefficient)
+	if shift >= 0 {
+		result.Mul(result, pow10(shift))
+	} else {
+		divisor := pow10(-shift)
+		remainder := new(big.Int)
+		result.QuoRem(result, divisor, remainder)
+		if new(big.Int).Lsh(remainder, 1).Cmp(divisor) >= 0 {
+			result.Add(result, big.NewInt(1))
+		}
+	}
+	if !result.IsInt64() || result.Int64() > int64(^uint(0)>>1) {
 		return 0, errors.New("cost overflow")
 	}
-	return int(quotient.Int64()), nil
+	return int(result.Int64()), nil
+}
+
+func pow10(exponent int) *big.Int {
+	return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil)
 }
 
 func truncateUTF8(value string, maxBytes int) string {

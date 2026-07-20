@@ -157,6 +157,38 @@ func TestExaClientBoundsResponseAndSanitizesSources(t *testing.T) {
 	}
 }
 
+func TestDollarsToMicrodollarsRejectsUnboundedOrMalformedNumbers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		value   string
+		want    int
+		wantErr bool
+	}{
+		{name: "integer", value: "2", want: 2_000_000},
+		{name: "fraction", value: "0.007001", want: 7_001},
+		{name: "round half up", value: "0.0000005", want: 1},
+		{name: "bounded exponent", value: "7.001e-3", want: 7_001},
+		{name: "negative", value: "-1", wantErr: true},
+		{name: "huge exponent", value: "1e999999", wantErr: true},
+		{name: "long coefficient", value: strings.Repeat("9", maxCostNumberBytes+1), wantErr: true},
+		{name: "malformed", value: "1.2.3", wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := dollarsToMicrodollars(json.Number(test.value))
+			if (err != nil) != test.wantErr {
+				t.Fatalf("dollarsToMicrodollars(%q) error = %v, wantErr %v", test.value, err, test.wantErr)
+			}
+			if err == nil && got != test.want {
+				t.Fatalf("dollarsToMicrodollars(%q) = %d, want %d", test.value, got, test.want)
+			}
+		})
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
