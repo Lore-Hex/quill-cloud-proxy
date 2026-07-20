@@ -117,6 +117,37 @@ if OpenRouter returns `429` or `5xx`, forwards provider preferences such as
 keeps `provider.data_collection` pinned to `deny` for the hosted no-retention
 claim even if a caller asks for a weaker setting.
 
+## Responses web search
+
+The attested `POST /v1/responses` path supports OpenAI-compatible hosted web
+search with `web_search` and the legacy `web_search_preview` alias. TrustedRouter
+executes searches through Exa from inside the enclave, then gives bounded,
+untrusted search evidence back to the selected model. Queries and result text do
+not pass through the control plane or durable logs.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-tr-...",
+    base_url="https://api.trustedrouter.com/v1",
+)
+
+response = client.responses.create(
+    model="openai/gpt-5.5",
+    input="What changed in Python this week? Cite primary sources.",
+    tools=[{"type": "web_search", "search_context_size": "low"}],
+    include=["web_search_call.action.sources"],
+    store=False,
+)
+print(response.output_text)
+```
+
+Search is intentionally unavailable for ZDR, E2E/confidential, and EU-pinned
+requests until the search provider is contractually approved for those privacy
+tiers. Unsupported hosted tools and advanced search controls fail explicitly;
+they are never silently ignored.
+
 ## License
 
 Business Source License 1.1. See [`LICENSE`](LICENSE). The source is public

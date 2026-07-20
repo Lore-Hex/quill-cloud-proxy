@@ -139,6 +139,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	atlasCloudSecret := os.Getenv("QUILL_ATLAS_CLOUD_SECRET")
 	streamLakeSecret := os.Getenv("QUILL_STREAMLAKE_SECRET")
 	xiaomiSecret := os.Getenv("QUILL_XIAOMI_SECRET")
+	exaSecret := os.Getenv("QUILL_EXA_SECRET")
 	synthPanelPromptSecret := os.Getenv("QUILL_SYNTH_PANEL_PROMPT_SECRET")
 	synthSynthesisPromptSecret := os.Getenv("QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET")
 	synthCodePanelPromptSecret := os.Getenv("QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET")
@@ -487,6 +488,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: xiaomi key: %w", err)
 		}
 	}
+	var exaKey []byte
+	if exaSecret != "" {
+		exaKey, err = fetchSecret(ctx, httpc, token, project, exaSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: exa key: %w", err)
+		}
+	}
 	var synthPanelPrompt []byte
 	if synthPanelPromptSecret != "" {
 		synthPanelPrompt, err = fetchSecret(ctx, httpc, token, project, synthPanelPromptSecret)
@@ -581,6 +589,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		AtlasCloudAPIKey:             strings.TrimSpace(string(atlasCloudKey)),
 		StreamLakeAPIKey:             strings.TrimSpace(string(streamLakeKey)),
 		XiaomiAPIKey:                 strings.TrimSpace(string(xiaomiKey)),
+		ExaAPIKey:                    strings.TrimSpace(string(exaKey)),
 		TrustedRouterBaseURL:         os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken:   strings.TrimSpace(internalGatewayToken),
 		SynthPanelPrompt:             strings.TrimSpace(string(synthPanelPrompt)),

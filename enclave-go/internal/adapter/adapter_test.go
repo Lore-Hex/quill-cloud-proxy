@@ -3,6 +3,7 @@ package adapter
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -573,8 +574,8 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 			wantStatus:  501,
 		},
 		{
-			name:        "hosted tools are explicitly stubbed",
-			body:        `{"model":"m","input":"hi","tools":[{"type":"web_search_preview"}]}`,
+			name:        "unsupported hosted tool remains explicit",
+			body:        `{"model":"m","input":"hi","tools":[{"type":"file_search"}]}`,
 			wantContext: "tools",
 			wantStatus:  501,
 		},
@@ -598,6 +599,84 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 		})
 	}
 }
+
+func TestResponsesToChatMapsWebSearchToReservedFunction(t *testing.T) {
+	req := &types.OpenAIResponsesRequest{
+		Model:        "moonshotai/kimi-k3",
+		Input:        "What happened today?",
+		Include:      []string{"web_search_call.action.sources"},
+		MaxToolCalls: intPointer(2),
+		Tools: []any{map[string]any{
+			"type":                "web_search",
+			"search_context_size": "high",
+			"filters": map[string]any{
+				"allowed_domains": []any{"example.com"},
+				"blocked_domains": []any{"spam.example"},
+			},
+			"user_location": map[string]any{
+				"type":    "approximate",
+				"country": "US",
+			},
+		}},
+		ToolChoice: map[string]any{"type": "web_search"},
+	}
+	chat, err := ResponsesToChat(req)
+	if err != nil {
+		t.Fatalf("ResponsesToChat: %v", err)
+	}
+	if len(chat.Tools) != 1 {
+		t.Fatalf("chat tools = %#v", chat.Tools)
+	}
+	tool, _ := chat.Tools[0].(map[string]any)
+	function, _ := tool["function"].(map[string]any)
+	if function["name"] != TrustedRouterWebSearchFunction {
+		t.Fatalf("function = %#v", function)
+	}
+	choice, _ := chat.ToolChoice.(map[string]any)
+	choiceFunction, _ := choice["function"].(map[string]any)
+	if choiceFunction["name"] != TrustedRouterWebSearchFunction {
+		t.Fatalf("tool choice = %#v", chat.ToolChoice)
+	}
+	if chat.Response == nil || chat.Response.WebSearch == nil {
+		t.Fatalf("web search metadata = %#v", chat.Response)
+	}
+	if chat.Response.WebSearch.SearchContextSize != "high" || chat.Response.WebSearch.UserCountry != "US" || chat.Response.WebSearch.MaxCalls != 2 {
+		t.Fatalf("web search config = %#v", chat.Response.WebSearch)
+	}
+	if len(chat.Response.Tools) != 1 {
+		t.Fatalf("response must preserve original tools: %#v", chat.Response.Tools)
+	}
+}
+
+func TestResponsesWebSearchRejectsUnsupportedControlsAndReservedCollision(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"offline cache only", `{"model":"m","input":"hi","tools":[{"type":"web_search","external_web_access":false}]}`},
+		{"image search", `{"model":"m","input":"hi","tools":[{"type":"web_search","search_content_types":["image"]}]}`},
+		{"unlimited research", `{"model":"m","input":"hi","tools":[{"type":"web_search","return_token_budget":"unlimited"}]}`},
+		{"reserved function collision", `{"model":"m","input":"hi","tools":[{"type":"function","name":"_trustedrouter_web_search","parameters":{"type":"object"}}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(tc.body), &raw); err != nil {
+				t.Fatal(err)
+			}
+			err := RejectUnsupportedResponsesFields(raw)
+			if err == nil {
+				t.Fatal("expected explicit unsupported error")
+			}
+			var aerr *AdapterError
+			if !errors.As(err, &aerr) || aerr.Status != 501 {
+				t.Fatalf("error = %#v", err)
+			}
+		})
+	}
+}
+
+func intPointer(value int) *int { return &value }
 
 func TestResponsesToChatMapsFunctionTools(t *testing.T) {
 	req := &types.OpenAIResponsesRequest{
