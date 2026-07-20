@@ -11,7 +11,7 @@
 # OpenRouter key on the openrouter variant) — never injected as plaintext
 # VM metadata.
 
-FROM golang:1.24-bookworm@sha256:ca0741815eee3625da09eddf15cc8ff678efa16520fcbcdbeb2ae0b0c519c82c AS builder
+FROM golang:1.26-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
