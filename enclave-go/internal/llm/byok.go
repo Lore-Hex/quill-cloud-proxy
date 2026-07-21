@@ -858,13 +858,6 @@ func directModelID(provider, model, upstreamModel string) string {
 	model = stripOpenRouterModelVariant(model)
 	upstreamModel = stripOpenRouterModelVariant(strings.TrimSpace(upstreamModel))
 	resolved := model
-	// Provider-specific overrides (consulted first). Together hosts
-	// open-weight models under their own catalog naming
-	// (`Llama-3.3-70B-Instruct-Turbo` etc.) rather than the
-	// OpenRouter-canonical lowercase. Without this, every Together-
-	// routed request 404s. Maintained as a static table because
-	// runtime discovery would mean an extra Together API call at
-	// boot — net more code in the auditable enclave surface.
 	// Per-provider native-id overrides (consulted first). Each
 	// second-source provider — Together, Lightning, GMI, DeepInfra,
 	// Parasail, Tinfoil — hosts upstream-author models under its own
@@ -873,9 +866,11 @@ func directModelID(provider, model, upstreamModel string) string {
 	// Tinfoil). Without an explicit map, the generic fall-through
 	// below strips the OR-canonical author prefix and ships a bare
 	// model id that 404s on the provider's API. The per-provider
-	// maps are kept in lock-step with the pricing scrapers at
-	// `quill-router/scripts/pricing/providers/<slug>.py`, which are
-	// the source of truth for which native ids actually exist today.
+	// maps cover aliases that cannot be inferred. The authorization's
+	// upstreamModel is the current provider-native id discovered by the
+	// control plane and is authoritative for exact-id providers when no
+	// override exists. That keeps hourly model discovery from depending on a
+	// second hand-maintained Go table.
 	if perProvider, ok := providerNativeModelMaps[provider]; ok {
 		// These maps are keyed by the OR-canonical (lowercase) model id.
 		// The control plane sends the canonical id in `model` and the
@@ -892,6 +887,16 @@ func directModelID(provider, model, upstreamModel string) string {
 			if mapped, ok := perProvider[stripOpenRouterModelVariant(key)]; ok {
 				return mapped
 			}
+		}
+		if provider == "phala" {
+			// Phala's API also lists ordinary non-TEE pass-through models.
+			// Only explicitly mapped phala/* ids qualify for the confidential
+			// route and operator key. Fail closed instead of falling through to
+			// an author-stripped non-confidential model id.
+			return ""
+		}
+		if providerUsesAuthorizedUpstreamModel(provider) && upstreamModel != "" {
+			return upstreamModel
 		}
 	}
 	if providerPreservesAuthorModelID(provider) {
@@ -937,6 +942,19 @@ func directModelID(provider, model, upstreamModel string) string {
 		return stripOpenRouterModelVariant(resolved)
 	}
 	return stripOpenRouterModelVariant(resolved)
+}
+
+// providerUsesAuthorizedUpstreamModel identifies second-source providers whose
+// catalog endpoint is callable using the exact model id returned by their live
+// API. The control plane stores that value on the signed authorization. Static
+// maps still win above for historical aliases and dedicated endpoint slugs.
+func providerUsesAuthorizedUpstreamModel(provider string) bool {
+	switch provider {
+	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow":
+		return true
+	default:
+		return false
+	}
 }
 
 func providerPreservesAuthorModelID(provider string) bool {
