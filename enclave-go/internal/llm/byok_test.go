@@ -547,6 +547,30 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 	}
 }
 
+func TestDirectModelIDUsesNewlyDiscoveredAuthorizedUpstreamID(t *testing.T) {
+	cases := []struct {
+		provider, model, upstream string
+	}{
+		{"together", "openai/gpt-oss-120b", "openai/gpt-oss-120b"},
+		{"together", "moonshotai/kimi-k2.7-code", "moonshotai/Kimi-K2.7-Code"},
+		{"together", "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3-ultra-550b-a55b"},
+		{"deepinfra", "minimax/minimax-m3", "MiniMaxAI/MiniMax-M3"},
+		{"lightning", "qwen/future-model", "Qwen/Future-Model"},
+		{"cerebras", "google/gemma-4-31b-it", "gemma-4-31b"},
+	}
+	for _, tc := range cases {
+		if got := directModelID(tc.provider, tc.model, tc.upstream); got != tc.upstream {
+			t.Errorf("directModelID(%q, %q, %q) = %q, want exact authorized upstream id", tc.provider, tc.model, tc.upstream, got)
+		}
+	}
+}
+
+func TestDirectModelIDRejectsUnmappedPhalaPassThrough(t *testing.T) {
+	if got := directModelID("phala", "openai/gpt-5.5", "openai/gpt-5.5"); got != "" {
+		t.Fatalf("directModelID(phala pass-through) = %q, want fail-closed empty id", got)
+	}
+}
+
 func TestDirectModelIDStripsOpenRouterVariantBeforeMapping(t *testing.T) {
 	base := directModelID("anthropic", "anthropic/claude-opus-4.7", "anthropic/claude-opus-4.7")
 	if base != "claude-opus-4-7" {
