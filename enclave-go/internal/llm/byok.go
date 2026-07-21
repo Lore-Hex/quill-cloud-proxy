@@ -1060,6 +1060,7 @@ var togetherModelMap = map[string]string{
 	"meta-llama/llama-3.3-70b-instruct": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
 	"meta-llama/llama-guard-4-12b":      "meta-llama/Llama-Guard-4-12B",
 	"minimax/minimax-m2.7":              "MiniMaxAI/MiniMax-M2.7",
+	"minimax/minimax-m3":                "MiniMaxAI/MiniMax-M3",
 	"mistralai/mixtral-8x7b-instruct":   "mistralai/Mixtral-8x7B-Instruct-v0.1",
 	"moonshotai/kimi-k2-instruct":       "moonshotai/Kimi-K2-Instruct",
 	"moonshotai/kimi-k2.5":              "moonshotai/Kimi-K2.5",

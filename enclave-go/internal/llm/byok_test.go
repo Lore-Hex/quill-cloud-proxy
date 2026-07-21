@@ -491,6 +491,7 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 	}{
 		// Together native ids verified against api.together.xyz/v1/models.
 		{"together", "moonshotai/kimi-k2.6", "moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.6"},
+		{"together", "minimax/minimax-m3", "MiniMaxAI/MiniMax-M3", "MiniMaxAI/MiniMax-M3"},
 		{"together", "qwen/qwen-2.5-72b-instruct", "Qwen/Qwen2.5-72B-Instruct-Turbo", "Qwen/Qwen2.5-72B-Instruct-Turbo"},
 		{"together", "qwen/qwen-2.5-7b-instruct", "Qwen/Qwen2.5-7B-Instruct-Turbo", "Qwen/Qwen2.5-7B-Instruct-Turbo"},
 		// SiliconFlow native ids verified against api.siliconflow.com/v1/models
