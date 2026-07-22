@@ -5733,6 +5733,7 @@ func TestFusionSubcallsForceThroughputRouting(t *testing.T) {
 			Only:           types.StringList{"kimi", "fireworks"},
 			Ignore:         types.StringList{"parasail"},
 			DataCollection: "deny",
+			MinPrivacy:     "confidential",
 			Sort:           "price",
 		},
 	}
@@ -5766,6 +5767,9 @@ func TestFusionSubcallsForceThroughputRouting(t *testing.T) {
 		}
 		if out.Provider.DataCollection != "deny" {
 			t.Fatalf("%s provider.data_collection = %q", name, out.Provider.DataCollection)
+		}
+		if out.Provider.MinPrivacy != "confidential" {
+			t.Fatalf("%s provider.min_privacy = %q", name, out.Provider.MinPrivacy)
 		}
 	}
 	if req.Provider.Sort != "price" || !reflect.DeepEqual([]string(req.Provider.Order), []string{"slow-provider"}) {

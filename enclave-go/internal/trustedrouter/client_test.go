@@ -69,6 +69,42 @@ func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 	}
 }
 
+func TestAuthorizePreservesFailClosedMinPrivacy(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_private","workspace_id":"ws_1","api_key_hash":"key_1","model":"z-ai/glm-5.2","endpoint_id":"z-ai/glm-5.2@tinfoil/prepaid","provider":"tinfoil","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+	}))
+	defer server.Close()
+
+	var req qtypes.OpenAIChatRequest
+	if err := json.Unmarshal([]byte(`{
+		"model":"trustedrouter/monitor",
+		"messages":[{"role":"user","content":"private prompt"}],
+		"provider":{"min_privacy":"confidential"}
+	}`), &req); err != nil {
+		t.Fatalf("decode inbound request: %v", err)
+	}
+	client := New(server.URL, "internal", server.Client())
+	if _, err := client.Authorize(t.Context(), "sk-test", &req); err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+
+	provider, ok := payload["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("provider routing = %#v", payload["provider"])
+	}
+	if got := provider["min_privacy"]; got != "confidential" {
+		t.Fatalf("provider.min_privacy = %#v, want confidential", got)
+	}
+}
+
 func TestAuthorizeRejectsControlPlaneWithoutHostedToolBilling(t *testing.T) {
 	refunds := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
