@@ -41,6 +41,7 @@ const trustedRouterOpenPatcherG1Model = "trustedrouter/openpatcher-g1"
 const trustedRouterOpenPatcherG2Model = "trustedrouter/openpatcher-g2"
 const trustedRouterAthenaModel = "trustedrouter/athena"
 const trustedRouterLiberty20Model = "trustedrouter/liberty-2.0"
+const parasailLiberty20Model = "parasail/liberty-2.0"
 const trustedRouterLiberty30Model = "trustedrouter/liberty-3.0"
 const trustedRouterAdvisorTool = "trustedrouter:advisor"
 const advisorAdviceToolName = "_trustedrouter_get_advice"
@@ -121,6 +122,8 @@ type advisorConfig struct {
 	BuiltInAdvisorPrompt string
 	HidePublicMetadata   bool
 	ProviderJurisdiction string
+	PreferredProviders   []string
+	BillingProfile       string
 }
 
 type advisorPromptBundle struct {
@@ -231,6 +234,14 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 			WorkerModels:  []string{"nvidia/nemotron-3-ultra-550b-a55b"},
 			AdvisorModels: []string{trustedRouterLiberty101MModel, trustedRouterLiberty10Model},
 		}, true
+	case parasailLiberty20Model:
+		return advisorConfig{
+			Enabled:            true,
+			WorkerModels:       []string{"nvidia/nemotron-3-ultra-550b-a55b"},
+			AdvisorModels:      []string{trustedRouterLiberty101MModel, trustedRouterLiberty10Model},
+			PreferredProviders: []string{"parasail"},
+			BillingProfile:     parasailLiberty20BillingProfile,
+		}, true
 	case trustedRouterLiberty30Model:
 		return advisorConfig{
 			Enabled:       true,
@@ -297,6 +308,15 @@ func maybeServeAdvisor(
 	}
 	if err := normalizeAdvisorConfig(&config, req); err != nil {
 		return true, err
+	}
+	if len(config.PreferredProviders) > 0 {
+		req.InternalPreferredProviders = append(
+			[]string(nil),
+			config.PreferredProviders...,
+		)
+	}
+	if config.BillingProfile != "" {
+		req.InternalBillingProfile = config.BillingProfile
 	}
 	forceProviderJurisdiction(req, config.ProviderJurisdiction)
 	if err := rejectAdvisorToolCollision(req.Tools, req.ToolChoice); err != nil {
@@ -516,6 +536,12 @@ func mergeAdvisorConfig(base, override advisorConfig) advisorConfig {
 	if override.ProviderJurisdiction != "" {
 		base.ProviderJurisdiction = override.ProviderJurisdiction
 	}
+	if len(override.PreferredProviders) > 0 {
+		base.PreferredProviders = append([]string(nil), override.PreferredProviders...)
+	}
+	if override.BillingProfile != "" {
+		base.BillingProfile = override.BillingProfile
+	}
 	return base
 }
 
@@ -611,8 +637,28 @@ func serveAdvisorNonStreaming(
 ) {
 	requestStarted := time.Now()
 	requestID := newRequestID()
+	partnerAuth, err := authorizePartnerTopLevel(
+		ctx,
+		req,
+		config,
+		trGateway,
+		bearer,
+		requestID,
+	)
+	if err != nil {
+		writeFusionError(ctx, conn, trGateway, err)
+		return
+	}
 	final, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err := runAdvisor(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, nil, 0, nil)
 	if err != nil {
+		refundPartnerTopLevel(
+			ctx,
+			trGateway,
+			partnerAuth,
+			err,
+			requestStarted,
+			req.Metadata,
+		)
 		if config.HidePublicMetadata {
 			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "model request failed"), "router", retryHeadersFromControlPlaneError(err))
 			return
@@ -620,12 +666,36 @@ func serveAdvisorNonStreaming(
 		writeFusionError(ctx, conn, trGateway, err)
 		return
 	}
+	partnerSettlement, err := settlePartnerTopLevel(
+		ctx,
+		req,
+		trGateway,
+		secretCache,
+		partnerAuth,
+		final,
+		requestID,
+		requestStarted,
+		originalInput,
+	)
+	if err != nil {
+		writeFusionError(ctx, conn, trGateway, err)
+		return
+	}
 	totalIn, totalOut := advisorUsageTotals(workerAttempts, advisorAttempts)
+	totalIn, totalOut = partnerPublicUsageTotals(
+		req,
+		final,
+		partnerSettlement,
+		totalIn,
+		totalOut,
+	)
 	selectedModel := final.Model
 	if selectedModel == "" {
 		selectedModel = config.WorkerModels[0]
 	}
 	responseModel := requestOrchestrationResponseModel(req, selectedModel)
+	details := advisorResponseDetails(config, workerAttempts, advisorAttempts, responseModel, selectedModel, adviceCalls, budgetExhausted)
+	applyPartnerSettlementDetails(details, partnerSettlement)
 	var body bytes.Buffer
 	if err := writeAdvisorChatCompletionResponse(
 		&body,
@@ -639,7 +709,7 @@ func serveAdvisorNonStreaming(
 		advisorPublicStreamUsage(config, totalIn, totalOut, workerAttempts, advisorAttempts),
 		time.Now().Unix(),
 		final.Result.FinishReason,
-		advisorResponseDetails(config, workerAttempts, advisorAttempts, responseModel, selectedModel, adviceCalls, budgetExhausted),
+		details,
 	); err != nil {
 		writeError(conn, 500, "advisor response encoding error")
 		return
@@ -666,7 +736,27 @@ func serveAdvisorStreaming(
 	requestStarted := time.Now()
 	requestID := newRequestID()
 	created := time.Now().Unix()
+	partnerAuth, err := authorizePartnerTopLevel(
+		ctx,
+		req,
+		config,
+		trGateway,
+		bearer,
+		requestID,
+	)
+	if err != nil {
+		writeFusionError(ctx, conn, trGateway, err)
+		return
+	}
 	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
+		refundPartnerTopLevel(
+			ctx,
+			trGateway,
+			partnerAuth,
+			err,
+			requestStarted,
+			req.Metadata,
+		)
 		return
 	}
 	chunkW := newChunkedWriter(conn)
@@ -707,6 +797,33 @@ func serveAdvisorStreaming(
 	}
 	final, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err := runAdvisor(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, streamW, created, observer)
 	if err != nil {
+		refundPartnerTopLevel(
+			ctx,
+			trGateway,
+			partnerAuth,
+			err,
+			requestStarted,
+			req.Metadata,
+		)
+		if config.HidePublicMetadata {
+			_ = writeHiddenAdvisorStreamError(statsW, requestID, req.Model, created)
+		} else {
+			_ = writeAdvisorStreamError(statsW, requestID, req.Model, created, err, workerAttempts, advisorAttempts)
+		}
+		return
+	}
+	partnerSettlement, err := settlePartnerTopLevel(
+		ctx,
+		req,
+		trGateway,
+		secretCache,
+		partnerAuth,
+		final,
+		requestID,
+		requestStarted,
+		originalInput,
+	)
+	if err != nil {
 		if config.HidePublicMetadata {
 			_ = writeHiddenAdvisorStreamError(statsW, requestID, req.Model, created)
 		} else {
@@ -737,16 +854,29 @@ func serveAdvisorStreaming(
 	}
 	if chatIncludeUsage(req) {
 		totalIn, totalOut := advisorUsageTotals(workerAttempts, advisorAttempts)
+		totalIn, totalOut = partnerPublicUsageTotals(
+			req,
+			final,
+			partnerSettlement,
+			totalIn,
+			totalOut,
+		)
 		usage := final
 		usage.InputTokens = totalIn
 		usage.OutputTokens = totalOut
 		usage.Result.Usage = advisorPublicStreamUsage(config, totalIn, totalOut, workerAttempts, advisorAttempts)
 		details := advisorResponseDetails(config, workerAttempts, advisorAttempts, responseModel, selectedModel, adviceCalls, budgetExhausted)
+		applyPartnerSettlementDetails(details, partnerSettlement)
 		providerUsage := advisorPublicProviderUsage(details)
+		chargedCost := partnerChargedCost(
+			partnerSettlement,
+			workerAttempts,
+			advisorAttempts,
+		)
 		if config.HidePublicMetadata {
-			_ = writeHiddenAdvisorStreamUsage(statsW, requestID, responseModel, created, usage, advisorTotalCostMicrodollars(workerAttempts, advisorAttempts), providerUsage)
+			_ = writeHiddenAdvisorStreamUsage(statsW, requestID, responseModel, created, usage, chargedCost, providerUsage)
 		} else {
-			_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, usage, advisorTotalCostMicrodollars(workerAttempts, advisorAttempts), providerUsage)
+			_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, usage, chargedCost, providerUsage)
 		}
 	}
 	_, _ = statsW.Write([]byte("data: [DONE]\n\n"))

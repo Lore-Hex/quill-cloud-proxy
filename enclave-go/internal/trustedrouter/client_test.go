@@ -107,12 +107,16 @@ func TestAuthorizePreservesFailClosedMinPrivacy(t *testing.T) {
 
 func TestAuthorizeRejectsControlPlaneWithoutHostedToolBilling(t *testing.T) {
 	refunds := 0
+	var refundPayload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/internal/gateway/authorize":
 			_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_old","workspace_id":"ws_1","api_key_hash":"key_1","model":"test/model","endpoint_id":"test/model@test/prepaid","provider":"test","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
 		case "/internal/gateway/refund":
 			refunds++
+			if err := json.NewDecoder(r.Body).Decode(&refundPayload); err != nil {
+				t.Fatalf("decode refund: %v", err)
+			}
 			_, _ = io.WriteString(w, `{"data":{"refunded":true}}`)
 		default:
 			t.Fatalf("path = %s", r.URL.Path)
@@ -132,6 +136,9 @@ func TestAuthorizeRejectsControlPlaneWithoutHostedToolBilling(t *testing.T) {
 	}
 	if refunds != 1 {
 		t.Fatalf("refunds = %d, want 1", refunds)
+	}
+	if refundPayload["route_type"] != "responses.web_search.planner" {
+		t.Fatalf("refund route_type = %#v", refundPayload["route_type"])
 	}
 }
 

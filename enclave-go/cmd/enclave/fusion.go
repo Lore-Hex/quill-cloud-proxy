@@ -1804,7 +1804,7 @@ func runFusionCallValidatedObservedAttempt(
 		UsageEstimated:             usageEstimated,
 		FinishReason:               result.FinishReason,
 		Streamed:                   streamed,
-		RouteType:                  routeType,
+		RouteType:                  partnerInternalBillingRoute(req, routeType),
 		SelectedModel:              selectedModel,
 		SelectedEndpoint:           selectedEndpoint,
 		User:                       req.User,
@@ -2137,7 +2137,7 @@ func serveFusionFinalStreamingAttempt(
 		UsageEstimated:    usageEstimated,
 		FinishReason:      result.FinishReason,
 		Streamed:          true,
-		RouteType:         "fusion.final",
+		RouteType:         partnerInternalBillingRoute(req, "fusion.final"),
 		SelectedModel:     selectedRoute.Model(req.Model, authorization),
 		SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
 		User:              req.User,
@@ -2391,8 +2391,9 @@ func authorizeFusionCall(
 	idempotencyKey string,
 ) (*trustedrouter.Authorization, []llm.InvokeOptions, error) {
 	subReq := *req
-	subReq.IdempotencyKey = idempotencyKey
-	authz, err := trGateway.AuthorizeWithRoute(ctx, bearer, &subReq, routeType)
+	subReq.IdempotencyKey = partnerInternalIdempotencyKey(req, idempotencyKey)
+	billingRoute := partnerInternalBillingRoute(req, routeType)
+	authz, err := trGateway.AuthorizeWithRoute(ctx, bearer, &subReq, billingRoute)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2750,6 +2751,10 @@ func cloneChatRequest(req *types.OpenAIChatRequest) *types.OpenAIChatRequest {
 	out.Models = append([]string{}, req.Models...)
 	out.Tools = append([]any{}, req.Tools...)
 	out.Plugins = append([]any{}, req.Plugins...)
+	out.InternalPreferredProviders = append(
+		[]string{},
+		req.InternalPreferredProviders...,
+	)
 	out.Provider = cloneProviderRouting(req.Provider)
 	if req.Metadata != nil {
 		out.Metadata = map[string]any{}
@@ -2788,12 +2793,22 @@ func forceFusionThroughputRouting(req *types.OpenAIChatRequest) {
 	if req.Provider == nil {
 		req.Provider = &types.ProviderRouting{}
 	}
-	// Synth and Synth Code execute several internal model calls. Each internal
-	// model should use the fastest healthy provider endpoint by default, while
-	// preserving hard filters like provider.only, ignore, data_collection, and
-	// max_price. provider.order would override sort=throughput in the control
-	// plane, so clear it for Synth subcalls.
-	req.Provider.Order = nil
+	// Partner routes can prefer one provider without making it mandatory. The
+	// control plane keeps all unlisted providers as fallbacks.
+	if len(req.InternalPreferredProviders) > 0 {
+		req.Provider.Order = append(
+			types.StringList{},
+			req.InternalPreferredProviders...,
+		)
+		allowFallbacks := true
+		req.Provider.AllowFallbacks = &allowFallbacks
+		req.Provider.Usage = "credits"
+	} else {
+		// Synth and Synth Code execute several internal model calls. Each
+		// internal model should use the fastest healthy provider endpoint by
+		// default. provider.order would override sort=throughput, so clear it.
+		req.Provider.Order = nil
+	}
 	req.Provider.Sort = "throughput"
 }
 
