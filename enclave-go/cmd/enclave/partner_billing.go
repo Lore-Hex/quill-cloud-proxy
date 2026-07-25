@@ -17,6 +17,9 @@ const parasailLiberty20TopLevelRoute = "partner.parasail.liberty-2.0.top_level"
 const parasailLiberty20TopLevelIdempotencyPrefix = "partner-top:parasail-liberty-2.0:"
 const parasailLiberty20InternalRoutePrefix = "partner.parasail.liberty-2.0.internal."
 const parasailLiberty20IdempotencyPrefix = "partner:parasail-liberty-2.0:"
+const parasailLiberty20InputMicrodollarsPerMillion = 2_000_000
+const parasailLiberty20OutputMicrodollarsPerMillion = 19_000_000
+const parasailLiberty20MinimumChargeMicrodollars = 1_000
 
 func partnerInternalBillingRoute(req *types.OpenAIChatRequest, logicalRoute string) string {
 	if req == nil || req.InternalBillingProfile != parasailLiberty20BillingProfile {
@@ -200,7 +203,8 @@ func applyPartnerSettlementDetails(
 	details["cost_microdollars"] = settlement.CostMicrodollars
 	details["billing_provider"] = "parasail"
 	details["pricing"] = map[string]any{
-		"input_microdollars_per_million_tokens":  2_000_000,
-		"output_microdollars_per_million_tokens": 20_000_000,
+		"input_microdollars_per_million_tokens":  parasailLiberty20InputMicrodollarsPerMillion,
+		"output_microdollars_per_million_tokens": parasailLiberty20OutputMicrodollarsPerMillion,
+		"minimum_charge_microdollars":            parasailLiberty20MinimumChargeMicrodollars,
 	}
 }
