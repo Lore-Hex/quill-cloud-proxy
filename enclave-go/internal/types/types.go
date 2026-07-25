@@ -235,6 +235,10 @@ type OpenAIChatRequest struct {
 	// sets them before authorize/settle.
 	AdditionalCostReservationMicrodollars int `json:"-"`
 	AdditionalCostMicrodollars            int `json:"-"`
+	// Internal partner-route controls are set only by enclave-owned presets.
+	// They never cross the public request JSON boundary.
+	InternalPreferredProviders []string `json:"-"`
+	InternalBillingProfile     string   `json:"-"`
 }
 
 // NormalizeMaxTokens folds the OpenAI-chat (`max_completion_tokens`) and
@@ -431,6 +435,7 @@ type ProviderRouting struct {
 	DataCollection    string         `json:"data_collection,omitempty"`
 	MinPrivacy        string         `json:"min_privacy,omitempty"`
 	Jurisdiction      string         `json:"jurisdiction,omitempty"`
+	Usage             string         `json:"usage,omitempty"`
 	Only              StringList     `json:"only,omitempty"`
 	Ignore            StringList     `json:"ignore,omitempty"`
 	Quantizations     StringList     `json:"quantizations,omitempty"`

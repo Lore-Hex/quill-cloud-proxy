@@ -4483,6 +4483,88 @@ func TestServeOneAthenaStreamingHidesAdvisorMetadata(t *testing.T) {
 	}
 }
 
+func TestServeOneParasailLibertyStreamingUsesPartnerBillingBoundary(t *testing.T) {
+	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
+	defer cleanup()
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveOne(context.Background(), serverConn, auth.New(nil), &libertyEndToEndLLM{}, nil, nil, trGateway, nil)
+	}()
+
+	requestBody := []byte(`{"model":"parasail/liberty-2.0","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"Give a short answer."}],"max_tokens":128}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer bearer\r\nIdempotency-Key: stream-partner\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	bodyBytes, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
+	}
+	body := string(bodyBytes)
+	if !strings.Contains(body, `"model":"parasail/liberty-2.0"`) ||
+		!strings.Contains(body, `"cost_microdollars":1`) ||
+		!strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("partner stream is incomplete: %s", body)
+	}
+
+	recorder.mu.Lock()
+	authorize := append([]map[string]any(nil), recorder.authorize...)
+	settle := append([]map[string]any(nil), recorder.settle...)
+	refund := append([]map[string]any(nil), recorder.refund...)
+	recorder.mu.Unlock()
+	topAuthorizations := 0
+	for _, call := range authorize {
+		routeType := fmt.Sprint(call["route_type"])
+		if routeType == parasailLiberty20TopLevelRoute {
+			topAuthorizations++
+			if got := fmt.Sprint(call["idempotency_key"]); got != parasailLiberty20TopLevelIdempotencyPrefix+"stream-partner" {
+				t.Fatalf("top-level idempotency_key = %q", got)
+			}
+			continue
+		}
+		if !strings.HasPrefix(routeType, parasailLiberty20InternalRoutePrefix) {
+			t.Fatalf("internal route_type = %q", routeType)
+		}
+	}
+	topSettlements := 0
+	for _, call := range settle {
+		if fmt.Sprint(call["route_type"]) == parasailLiberty20TopLevelRoute {
+			topSettlements++
+		}
+	}
+	if topAuthorizations != 1 || topSettlements != 1 || len(refund) != 0 {
+		t.Fatalf(
+			"partner stream lifecycle top_authorize=%d top_settle=%d refunds=%d",
+			topAuthorizations,
+			topSettlements,
+			len(refund),
+		)
+	}
+
+	client.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveOne did not return")
+	}
+}
+
 func TestProviderUsageIncludesNestedOrchestrationWithoutText(t *testing.T) {
 	nestedSynth := fusionResponseDetails(
 		fusionConfig{Preset: "zeus-1.0", SelectionStrategy: "synthesize_non_refusals"},
@@ -4836,6 +4918,8 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		advisors     []string
 		jurisdiction string
 		autoInitial  bool
+		preferred    []string
+		billing      string
 	}{
 		{
 			model:    trustedRouterAristotle10Model,
@@ -4932,6 +5016,13 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			advisors: []string{trustedRouterLiberty101MModel, trustedRouterLiberty10Model},
 		},
 		{
+			model:     parasailLiberty20Model,
+			workers:   []string{"nvidia/nemotron-3-ultra-550b-a55b"},
+			advisors:  []string{trustedRouterLiberty101MModel, trustedRouterLiberty10Model},
+			preferred: []string{"parasail"},
+			billing:   parasailLiberty20BillingProfile,
+		},
+		{
 			model:    trustedRouterLiberty30Model,
 			workers:  []string{"nvidia/nemotron-3-ultra-550b-a55b"},
 			advisors: []string{"google/gemma-4-31b-it", "openai/gpt-oss-120b", trustedRouterLiberty101MModel, "thinkingmachines/inkling"},
@@ -4961,6 +5052,12 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			}
 			if config.AutoInitialAdvice != tt.autoInitial {
 				t.Fatalf("auto initial advice = %t, want %t", config.AutoInitialAdvice, tt.autoInitial)
+			}
+			if !reflect.DeepEqual(config.PreferredProviders, tt.preferred) {
+				t.Fatalf("preferred providers = %#v, want %#v", config.PreferredProviders, tt.preferred)
+			}
+			if config.BillingProfile != tt.billing {
+				t.Fatalf("billing profile = %q, want %q", config.BillingProfile, tt.billing)
 			}
 		})
 	}
@@ -6138,6 +6235,15 @@ func TestNamedOrchestrationPresetsReturnNonEmptyThroughLocalGateway(t *testing.T
 			},
 		},
 		{
+			model: parasailLiberty20Model,
+			componentModels: []string{
+				"thinkingmachines/inkling-1m",
+				"thinkingmachines/inkling",
+				"nvidia/nemotron-3-ultra-550b-a55b",
+				"google/gemma-4-31b-it",
+			},
+		},
+		{
 			model: trustedRouterLiberty30Model,
 			componentModels: []string{
 				"thinkingmachines/inkling-1m",
@@ -6162,18 +6268,24 @@ func TestNamedOrchestrationPresetsReturnNonEmptyThroughLocalGateway(t *testing.T
 				serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
 			}()
 
-			requestBody, err := json.Marshal(map[string]any{
+			requestPayload := map[string]any{
 				"model":      tt.model,
 				"stream":     false,
 				"messages":   []map[string]any{{"role": "user", "content": "Reply with a short local test answer."}},
 				"max_tokens": 512,
-			})
+			}
+			requestBody, err := json.Marshal(requestPayload)
 			if err != nil {
 				t.Fatalf("encode request: %v", err)
 			}
+			idempotencyHeader := ""
+			if tt.model == parasailLiberty20Model {
+				idempotencyHeader = "Idempotency-Key: local-parasail-liberty\r\n"
+			}
 			if _, err := fmt.Fprintf(
 				client,
-				"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer local-liberty-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+				"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer local-liberty-key\r\n%sContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+				idempotencyHeader,
 				len(requestBody),
 				requestBody,
 			); err != nil {
@@ -6233,6 +6345,58 @@ func TestNamedOrchestrationPresetsReturnNonEmptyThroughLocalGateway(t *testing.T
 			for _, model := range tt.componentModels {
 				if !authorizedModels[model] {
 					t.Fatalf("authorized models = %#v, missing %q", authorizedModels, model)
+				}
+			}
+			if tt.model == parasailLiberty20Model {
+				topLevelAuthorizations := 0
+				for _, call := range authorize {
+					routeType := fmt.Sprint(call["route_type"])
+					idempotencyKey := fmt.Sprint(call["idempotency_key"])
+					if routeType == parasailLiberty20TopLevelRoute {
+						topLevelAuthorizations++
+						if call["model"] != parasailLiberty20Model {
+							t.Fatalf("top-level model = %#v", call["model"])
+						}
+						wantIdempotency := parasailLiberty20TopLevelIdempotencyPrefix + "local-parasail-liberty"
+						if idempotencyKey != wantIdempotency {
+							t.Fatalf("top-level idempotency_key = %q, want %q", idempotencyKey, wantIdempotency)
+						}
+						continue
+					}
+					if !strings.HasPrefix(routeType, parasailLiberty20InternalRoutePrefix) {
+						t.Fatalf("internal route_type = %q", routeType)
+					}
+					if !strings.HasPrefix(idempotencyKey, parasailLiberty20IdempotencyPrefix) {
+						t.Fatalf("internal idempotency_key = %q", idempotencyKey)
+					}
+					provider, _ := call["provider"].(map[string]any)
+					order, _ := provider["order"].([]any)
+					if len(order) != 1 || order[0] != "parasail" {
+						t.Fatalf("provider.order = %#v, want parasail preference", order)
+					}
+					if provider["allow_fallbacks"] != true {
+						t.Fatalf("provider.allow_fallbacks = %#v, want true", provider["allow_fallbacks"])
+					}
+					if provider["usage"] != "credits" {
+						t.Fatalf("provider.usage = %#v, want credits", provider["usage"])
+					}
+				}
+				if topLevelAuthorizations != 1 {
+					t.Fatalf("top-level authorizations = %d, want 1", topLevelAuthorizations)
+				}
+				topLevelSettlements := 0
+				for _, call := range settle {
+					routeType := fmt.Sprint(call["route_type"])
+					if routeType == parasailLiberty20TopLevelRoute {
+						topLevelSettlements++
+						continue
+					}
+					if !strings.HasPrefix(routeType, parasailLiberty20InternalRoutePrefix) {
+						t.Fatalf("internal settlement route_type = %q", routeType)
+					}
+				}
+				if topLevelSettlements != 1 {
+					t.Fatalf("top-level settlements = %d, want 1", topLevelSettlements)
 				}
 			}
 

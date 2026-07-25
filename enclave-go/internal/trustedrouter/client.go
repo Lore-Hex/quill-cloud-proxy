@@ -108,6 +108,7 @@ type Authorization struct {
 	Tags                                  qtypes.TagMap                      `json:"tags"`
 	RequestMetadataVersion                int                                `json:"request_metadata_version"`
 	AdditionalCostReservationMicrodollars int                                `json:"additional_cost_reservation_microdollars"`
+	RouteType                             string                             `json:"-"`
 }
 
 type CustomModel struct {
@@ -284,6 +285,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	if err := c.postJSONWithRetry(ctx, "/internal/gateway/authorize", body, &decoded, c.authorizeRetry); err != nil {
 		return nil, err
 	}
+	decoded.Data.RouteType = routeType
 	if req.AdditionalCostReservationMicrodollars > 0 &&
 		decoded.Data.AdditionalCostReservationMicrodollars != req.AdditionalCostReservationMicrodollars {
 		_ = c.Refund(ctx, &decoded.Data, 503, "hosted_tool_billing_unavailable", 0.001, nil)
@@ -484,6 +486,9 @@ func (c *Client) Refund(ctx context.Context, auth *Authorization, status int, er
 		"selected_model":    auth.Model,
 		"selected_endpoint": auth.EndpointID,
 		"app":               "attested-gateway",
+	}
+	if auth.RouteType != "" {
+		body["route_type"] = auth.RouteType
 	}
 	if metadata != nil {
 		body["metadata"] = metadata
