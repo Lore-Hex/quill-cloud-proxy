@@ -7,9 +7,10 @@ of regions-to-rollback to `$GITHUB_OUTPUT` (key `rollback_regions`,
 comma-separated) so the workflow's rollback step can target only the
 failing regions.
 
-Per-region status: take the WORST `effective_status` among
-`data.current.checks[]` whose `target_region` matches. Same logic the
-status page uses for overall_status, applied per region.
+Per-region status: take the newest sample for each monitor/probe/target
+dimension, then take the WORST `effective_status` among those current
+dimensions whose `target_region` matches. This prevents stale boot-window
+failures from outweighing newer successful probes during a rollout.
 
 Logic:
   - Poll once per minute for `--duration-min` minutes (default 10).
@@ -79,8 +80,11 @@ def fetch_per_region(url: str, regions: Iterable[str], timeout: int = 10) -> dic
         # the down counter; deploys aren't the suspect for an LB blip).
         return {region: "unknown" for region in regions}
 
-    worst: dict[str, int] = {}
-    for check in checks:
+    latest: dict[
+        tuple[str, str, str, str],
+        tuple[tuple[str, int], int],
+    ] = {}
+    for index, check in enumerate(checks):
         target = (check or {}).get("target_region")
         status = (check or {}).get("effective_status") or (check or {}).get("status")
         if not target or not status:
@@ -90,6 +94,21 @@ def fetch_per_region(url: str, regions: Iterable[str], timeout: int = 10) -> dic
         sev = SEVERITY.get(str(status).lower())
         if sev is None:
             continue
+
+        dimension = (
+            str(target),
+            str((check or {}).get("monitor_region") or ""),
+            str((check or {}).get("probe_type") or ""),
+            str((check or {}).get("target") or ""),
+        )
+        freshness = (str((check or {}).get("created_at") or ""), index)
+        prior = latest.get(dimension)
+        if prior is None or freshness > prior[0]:
+            latest[dimension] = (freshness, sev)
+
+    worst: dict[str, int] = {}
+    for dimension, (_, sev) in latest.items():
+        target = dimension[0]
         if sev > worst.get(target, -1):
             worst[target] = sev
     out: dict[str, str] = {}
