@@ -49,6 +49,49 @@ class WatchdogStateTests(unittest.TestCase):
         self.assertEqual(request.get_header("Cache-control"), "no-cache")
         self.assertEqual(request.get_header("Pragma"), "no-cache")
 
+    def test_fetch_ignores_stale_failure_after_newer_success(self) -> None:
+        payload = io.BytesIO(
+            b'{"data":{"current":{"checks":['
+            b'{"target_region":"us-central1","monitor_region":"europe-west4",'
+            b'"probe_type":"openai_sdk_pong","target":"canonical",'
+            b'"created_at":"2026-07-27T22:47:00Z","effective_status":"down"},'
+            b'{"target_region":"us-central1","monitor_region":"europe-west4",'
+            b'"probe_type":"openai_sdk_pong","target":"canonical",'
+            b'"created_at":"2026-07-27T22:48:00Z","effective_status":"up"}'
+            b"]}}}"
+        )
+        with mock.patch.object(
+            watchdog.urllib.request, "urlopen", return_value=payload
+        ):
+            result = watchdog.fetch_per_region(
+                "https://trustedrouter.com/status.json", ["us-central1"]
+            )
+
+        self.assertEqual(result, {"us-central1": "up"})
+
+    def test_fetch_keeps_newest_failure_and_worst_current_dimension(self) -> None:
+        payload = io.BytesIO(
+            b'{"data":{"current":{"checks":['
+            b'{"target_region":"us-central1","monitor_region":"us-central1",'
+            b'"probe_type":"tls_health","target":"us-central1",'
+            b'"created_at":"2026-07-27T22:48:00Z","effective_status":"up"},'
+            b'{"target_region":"us-central1","monitor_region":"europe-west4",'
+            b'"probe_type":"attestation_nonce","target":"us-central1",'
+            b'"created_at":"2026-07-27T22:47:00Z","effective_status":"up"},'
+            b'{"target_region":"us-central1","monitor_region":"europe-west4",'
+            b'"probe_type":"attestation_nonce","target":"us-central1",'
+            b'"created_at":"2026-07-27T22:49:00Z","effective_status":"down"}'
+            b"]}}}"
+        )
+        with mock.patch.object(
+            watchdog.urllib.request, "urlopen", return_value=payload
+        ):
+            result = watchdog.fetch_per_region(
+                "https://trustedrouter.com/status.json", ["us-central1"]
+            )
+
+        self.assertEqual(result, {"us-central1": "down"})
+
     def test_rolls_back_only_after_threshold(self) -> None:
         regions = ["europe-west4"]
         rollback_set: set[str] = set()
