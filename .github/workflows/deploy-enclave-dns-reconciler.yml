@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "tools/reconcile-enclave-dns.py"
+      - "tools/test_reconcile_enclave_dns.py"
       - "tools/verify-attestation.py"
       - "tools/test_verify_attestation.py"
       - "tools/Dockerfile.reconciler"
@@ -39,6 +40,7 @@ jobs:
           set -euo pipefail
           uv run --script tools/verify-attestation.py --help >/dev/null
           python3 tools/test_verify_attestation.py
+          python3 tools/test_reconcile_enclave_dns.py
 
       - name: Authenticate to GCP via WIF
         uses: google-github-actions/auth@v2

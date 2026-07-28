@@ -240,8 +240,6 @@ gc compute instance-templates create "$TEMPLATE" \
 # 2. Create or update the MIG.
 if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/dev/null 2>&1; then
   log "updating MIG $MIG_NAME -> template $TEMPLATE (target size $TARGET_SIZE)"
-  gc compute instance-groups managed set-instance-template "$MIG_NAME" \
-    --region="$REGION" --template="$TEMPLATE" >/dev/null
   # NO MIG autohealing. The GCP passthrough-NLB health check cannot pass
   # against the Confidential Space enclave (TLS terminates in-VM; both the
   # :443 and the dedicated :8081 probes read UNHEALTHY on serving instances —
@@ -251,7 +249,17 @@ if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/
   # DNS. Actively CLEAR any autohealing a prior deploy attached so the broken
   # HC can never kill-loop the (capacity-scarce) Confidential VMs.
   gc compute instance-groups managed update "$MIG_NAME" \
-    --region="$REGION" --clear-autohealing >/dev/null
+    --region="$REGION" \
+    --clear-autohealing \
+    --update-policy-type=proactive \
+    --update-policy-max-surge="$MAX_SURGE" \
+    --update-policy-max-unavailable="$MAX_UNAVAILABLE" \
+    --update-policy-minimal-action=replace \
+    --update-policy-replacement-method=substitute >/dev/null
+  # The proactive policy above makes this single template change start exactly
+  # one surge rollout.
+  gc compute instance-groups managed set-instance-template "$MIG_NAME" \
+    --region="$REGION" --template="$TEMPLATE" >/dev/null
   # Reconcile size on every deploy — lets us raise TARGET_SIZE for a
   # region (e.g. eu went 2→3 to absorb the 2026-05-11 watchdog-flap
   # pattern) without a one-shot operator step.
@@ -266,19 +274,10 @@ if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/
     gc compute instance-groups managed resize "$MIG_NAME" \
       --region="$REGION" --size="$TARGET_SIZE" >/dev/null
   fi
-  # Prefer a surge rollout so the regional gateway keeps serving while the
-  # new attested image boots and passes health checks. Regional MIGs span
-  # three zones, so the fixed surge default is 3.
-  # NOTE: `gcloud compute instance-groups managed rolling-action replace`
-  # does NOT support --min-ready (the flag exists on `rolling-action
-  # start-update` but not on `replace`). The TCP-vs-TLS readiness gap
-  # is instead absorbed by the `wait-until --stable` step in the
-  # workflow that runs before each per-region canary — the canary
-  # measures POST-rolling steady state, not the mid-drain window.
-  gc compute instance-groups managed rolling-action replace "$MIG_NAME" \
-    --region="$REGION" \
-    --max-unavailable="$MAX_UNAVAILABLE" \
-    --max-surge="$MAX_SURGE" >/dev/null
+  # This MIG's update policy is PROACTIVE with maxUnavailable=0 and surge
+  # capacity. set-instance-template starts that rollout itself. An additional
+  # `rolling-action replace` after it recreates the newly rolled instances a
+  # second time, doubling deployment time and capacity pressure.
 else
   log "creating MIG $MIG_NAME (size=$TARGET_SIZE)"
   # No --health-check / autohealing on create — see the update branch above.
@@ -288,6 +287,11 @@ else
     --template="$TEMPLATE" \
     --size="$TARGET_SIZE" \
     --region="$REGION" \
+    --update-policy-type=proactive \
+    --update-policy-max-surge="$MAX_SURGE" \
+    --update-policy-max-unavailable="$MAX_UNAVAILABLE" \
+    --update-policy-minimal-action=replace \
+    --update-policy-replacement-method=substitute \
     --description="quill enclave gateway in $REGION (no MIG autohealing; health owned by tools/reconcile-enclave-dns.py)." >/dev/null
 fi
 
