@@ -56,6 +56,31 @@ func TestTranslateOpenAIStreamRelaysUsage(t *testing.T) {
 	}
 }
 
+func TestTranslateOpenAIStreamInfersUnclassifiedReasoningFromTotalTokens(t *testing.T) {
+	upstream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"PONG"},"finish_reason":"stop"}]}`,
+		`data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":93}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := translateOpenAIStreamToAnthropic(strings.NewReader(upstream), &out); err != nil {
+		t.Fatalf("translateOpenAIStreamToAnthropic: %v", err)
+	}
+
+	body := out.String()
+	for _, want := range []string{
+		`"input_tokens":7`,
+		`"output_tokens":86`,
+		`"reasoning_tokens":84`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %s in translated usage: %s", want, body)
+		}
+	}
+}
+
 // TestTranslateOpenAIStreamRelaysCachedTokens: OpenAI-style automatic
 // prompt caching reports prompt_tokens_details.cached_tokens; it must
 // relay as cache_read_input_tokens on the synthetic message_delta.
