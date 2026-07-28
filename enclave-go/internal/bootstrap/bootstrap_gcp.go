@@ -50,6 +50,7 @@
 //	QUILL_FIREWORKS_SECRET       name of the secret holding the Fireworks API key (llm_multi builds)
 //	QUILL_FRIENDLI_SECRET        name of the secret holding the Friendli API key (llm_multi builds)
 //	QUILL_BASETEN_SECRET         name of the secret holding the Baseten API key (llm_multi builds)
+//	QUILL_TELNYX_SECRET          name of the secret holding the Telnyx API key (llm_multi builds)
 //	QUILL_WAFER_SECRET           name of the secret holding the Wafer API key (llm_multi builds)
 //	QUILL_CRUSOE_SECRET          name of the secret holding the Crusoe API key (llm_multi builds)
 //	QUILL_MAKORA_SECRET          name of the secret holding the Makora API key (llm_multi builds)
@@ -124,6 +125,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	deepinfraSecret := os.Getenv("QUILL_DEEPINFRA_SECRET")
 	friendliSecret := os.Getenv("QUILL_FRIENDLI_SECRET")
 	basetenSecret := os.Getenv("QUILL_BASETEN_SECRET")
+	telnyxSecret := os.Getenv("QUILL_TELNYX_SECRET")
 	thinkingMachinesSecret := os.Getenv("QUILL_THINKING_MACHINES_SECRET")
 	waferSecret := os.Getenv("QUILL_WAFER_SECRET")
 	crusoeSecret := os.Getenv("QUILL_CRUSOE_SECRET")
@@ -178,6 +180,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		deepinfraSecret,
 		friendliSecret,
 		basetenSecret,
+		telnyxSecret,
 		thinkingMachinesSecret,
 		waferSecret,
 		crusoeSecret,
@@ -387,6 +390,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: baseten key: %w", err)
 		}
 	}
+	var telnyxKey []byte
+	if telnyxSecret != "" {
+		telnyxKey, err = fetchSecret(ctx, httpc, token, project, telnyxSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: telnyx key: %w", err)
+		}
+	}
 	var thinkingMachinesKey []byte
 	if thinkingMachinesSecret != "" {
 		thinkingMachinesKey, err = fetchSecret(ctx, httpc, token, project, thinkingMachinesSecret)
@@ -574,6 +584,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		DeepInfraAPIKey:              strings.TrimSpace(string(deepinfraKey)),
 		FriendliAPIKey:               strings.TrimSpace(string(friendliKey)),
 		BasetenAPIKey:                strings.TrimSpace(string(basetenKey)),
+		TelnyxAPIKey:                 strings.TrimSpace(string(telnyxKey)),
 		ThinkingMachinesAPIKey:       strings.TrimSpace(string(thinkingMachinesKey)),
 		WaferAPIKey:                  strings.TrimSpace(string(waferKey)),
 		CrusoeAPIKey:                 strings.TrimSpace(string(crusoeKey)),

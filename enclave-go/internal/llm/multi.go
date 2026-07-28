@@ -56,6 +56,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		deepinfra:        newOpenAICompatible("deepinfra", boot.DeepInfraAPIKey),
 		friendli:         newOpenAICompatible("friendli", boot.FriendliAPIKey),
 		baseten:          newOpenAICompatible("baseten", boot.BasetenAPIKey),
+		telnyx:           newOpenAICompatible("telnyx", boot.TelnyxAPIKey),
 		thinkingmachines: newOpenAICompatible("thinkingmachines", boot.ThinkingMachinesAPIKey),
 		wafer:            newOpenAICompatible("wafer", boot.WaferAPIKey),
 		crusoe:           newOpenAICompatible("crusoe", boot.CrusoeAPIKey),
@@ -110,6 +111,7 @@ type multiClient struct {
 	deepinfra           *openAICompatibleClient
 	friendli            *openAICompatibleClient
 	baseten             *openAICompatibleClient
+	telnyx              *openAICompatibleClient
 	thinkingmachines    *openAICompatibleClient
 	wafer               *openAICompatibleClient
 	crusoe              *openAICompatibleClient
@@ -205,6 +207,8 @@ func (m *multiClient) InvokeStreaming(
 		return m.friendli.InvokeStreaming(ctx, req, body, out, options...)
 	case "baseten":
 		return m.baseten.InvokeStreaming(ctx, req, body, out, options...)
+	case "telnyx":
+		return m.telnyx.InvokeStreaming(ctx, req, body, out, options...)
 	case "thinkingmachines":
 		return m.thinkingmachines.InvokeStreaming(ctx, req, body, out, options...)
 	case "wafer":
@@ -237,6 +241,6 @@ func (m *multiClient) InvokeStreaming(
 		// Embeddings-only; returns a clear "chat not supported" error.
 		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, thinkingmachines, wafer, crusoe, makora, nebius, minimax, chutes, digitalocean, cloudflare-workers-ai, inceptron, morph, atlas-cloud, streamlake, xiaomi, cohere)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, telnyx, thinkingmachines, wafer, crusoe, makora, nebius, minimax, chutes, digitalocean, cloudflare-workers-ai, inceptron, morph, atlas-cloud, streamlake, xiaomi, cohere)", provider)
 	}
 }

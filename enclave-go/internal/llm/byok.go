@@ -48,7 +48,7 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 	switch provider {
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "google-ai-studio", "zai", "together",
 		"fireworks", "grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
-		"parasail", "lightning", "gmi", "deepinfra", "friendli", "baseten", "thinkingmachines", "wafer",
+		"parasail", "lightning", "gmi", "deepinfra", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer",
 		"crusoe", "makora", "nebius", "minimax", "xiaomi", "chutes", "digitalocean":
 		return true
 	default:
@@ -817,6 +817,9 @@ func directBaseURL(provider string) string {
 	case "baseten":
 		// Baseten Model APIs. OpenAI-compatible chat completions.
 		return "https://inference.baseten.co/v1"
+	case "telnyx":
+		// Telnyx Inference. OpenAI-compatible chat completions.
+		return "https://api.telnyx.com/v2/ai/openai"
 	case "thinkingmachines":
 		return "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1"
 	case "wafer":
@@ -950,7 +953,7 @@ func directModelID(provider, model, upstreamModel string) string {
 // maps still win above for historical aliases and dedicated endpoint slugs.
 func providerUsesAuthorizedUpstreamModel(provider string) bool {
 	switch provider {
-	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow":
+	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow":
 		return true
 	default:
 		return false
@@ -1009,6 +1012,7 @@ var providerNativeModelMaps = map[string]map[string]string{
 	"venice":           veniceModelMap,
 	"friendli":         friendliModelMap,
 	"baseten":          basetenModelMap,
+	"telnyx":           telnyxModelMap,
 	"thinkingmachines": thinkingMachinesModelMap,
 	"wafer":            waferModelMap,
 	"crusoe":           crusoeModelMap,
@@ -1317,6 +1321,23 @@ var basetenModelMap = map[string]string{
 	"thinkingmachines/inkling-1m":       "thinkingmachines/inkling",
 }
 
+// telnyxModelMap maps TrustedRouter canonical ids to the exact mixed-case
+// model ids returned by Telnyx's authenticated OpenAI-compatible catalog.
+var telnyxModelMap = map[string]string{
+	"google/gemma-2b-it":                "google/gemma-2b-it",
+	"meta-llama/llama-3.3-70b-instruct": "meta-llama/Llama-3.3-70B-Instruct",
+	"meta-llama/llama-3.1-70b-instruct": "meta-llama/Meta-Llama-3.1-70B-Instruct",
+	"meta-llama/llama-3.1-8b-instruct":  "meta-llama/Meta-Llama-3.1-8B-Instruct",
+	"minimax/minimax-m2.7":              "MiniMaxAI/MiniMax-M2.7",
+	"minimax/minimax-m3":                "MiniMaxAI/MiniMax-M3-MXFP8",
+	"moonshotai/kimi-k2.5":              "moonshotai/Kimi-K2.5",
+	"moonshotai/kimi-k2.6":              "moonshotai/Kimi-K2.6",
+	"moonshotai/kimi-k3":                "moonshotai/Kimi-K3",
+	"qwen/qwen3-235b-a22b":              "Qwen/Qwen3-235B-A22B",
+	"z-ai/glm-5.1":                      "zai-org/GLM-5.1-FP8",
+	"z-ai/glm-5.2":                      "zai-org/GLM-5.2",
+}
+
 var thinkingMachinesModelMap = map[string]string{
 	"thinkingmachines/inkling": "thinkingmachines/Inkling:peft:262144",
 }
@@ -1474,6 +1495,8 @@ func normalizeDirectProvider(provider string) string {
 		return "friendli"
 	case "baseten", "base-ten":
 		return "baseten"
+	case "telnyx":
+		return "telnyx"
 	case "thinkingmachines", "thinking-machines", "tinker":
 		return "thinkingmachines"
 	case "wafer", "wafer-ai":

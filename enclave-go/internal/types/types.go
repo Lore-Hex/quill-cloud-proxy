@@ -101,6 +101,7 @@ type BootstrapData struct {
 	DeepInfraAPIKey              string `json:"deepinfra_api_key,omitempty"`
 	FriendliAPIKey               string `json:"friendli_api_key,omitempty"`
 	BasetenAPIKey                string `json:"baseten_api_key,omitempty"`
+	TelnyxAPIKey                 string `json:"telnyx_api_key,omitempty"`
 	ThinkingMachinesAPIKey       string `json:"thinking_machines_api_key,omitempty"`
 	WaferAPIKey                  string `json:"wafer_api_key,omitempty"`
 	CrusoeAPIKey                 string `json:"crusoe_api_key,omitempty"`

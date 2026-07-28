@@ -71,6 +71,7 @@ GMI_SECRET="${GMI_SECRET:-trustedrouter-gmi-api-key}"
 DEEPINFRA_SECRET="${DEEPINFRA_SECRET:-trustedrouter-deepinfra-api-key}"
 FRIENDLI_SECRET="${FRIENDLI_SECRET:-trustedrouter-friendli-api-key}"
 BASETEN_SECRET="${BASETEN_SECRET:-trustedrouter-baseten-api-key}"
+TELNYX_SECRET="${TELNYX_SECRET:-trustedrouter-telnyx-api-key}"
 THINKING_MACHINES_SECRET="${THINKING_MACHINES_SECRET:-trustedrouter-thinking-machines-api-key}"
 WAFER_SECRET="${WAFER_SECRET:-trustedrouter-wafer-api-key}"
 CRUSOE_SECRET="${CRUSOE_SECRET:-trustedrouter-crusoe-api-key}"
@@ -182,6 +183,7 @@ for secret in \
   "$DEEPINFRA_SECRET" \
   "$FRIENDLI_SECRET" \
   "$BASETEN_SECRET" \
+  "$TELNYX_SECRET" \
   "$THINKING_MACHINES_SECRET" \
   "$WAFER_SECRET" \
   "$CRUSOE_SECRET" \
