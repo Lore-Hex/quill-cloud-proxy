@@ -7,6 +7,9 @@
 # verify-attestation script's deps (cbor2, cryptography).
 FROM google/cloud-sdk:slim
 
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -14,7 +17,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && ln -s /root/.local/bin/uv /usr/local/bin/uv
 
 WORKDIR /app
-COPY tools/verify-attestation.py tools/aws-nitro-root.pem tools/reconcile-enclave-dns.py /app/tools/
+COPY verify-attestation.py aws-nitro-root.pem reconcile-enclave-dns.py /app/tools/
 # Warm the uv dep cache into the image so each scheduled run is fast.
 RUN uv run --script /app/tools/verify-attestation.py --help >/dev/null 2>&1 || true
 
