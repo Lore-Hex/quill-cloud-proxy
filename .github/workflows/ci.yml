@@ -85,6 +85,9 @@ jobs:
             echo "trust page must not contain <script>" >&2
             exit 1
           fi
+      - name: Assert trust page declares its canonical host
+        run: |
+          test "$(grep -Fc '<link rel="canonical" href="https://trust.trustedrouter.com/">' trust-page/index.html)" -eq 1
       - name: Assert trust page contains no third-party fetches
         run: |
           # Allowlist:
