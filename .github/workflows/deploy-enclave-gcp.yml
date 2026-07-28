@@ -295,8 +295,9 @@ jobs:
           QUILL_PUBLISH_REGIONAL: "1"
           QUILL_REGIONAL_ZONE: quillrouter-com
           QUILL_REGIONAL_SUFFIX: quillrouter.com
-          QUILL_EXCLUDE_CANONICAL_REGIONS: us-central1
         run: |
+          uv run --script tools/reconcile-enclave-dns.py \
+            --set-drain-region us-central1
           uv run --script tools/reconcile-enclave-dns.py --apply
           bash tools/wait-canonical-drained.sh us-central1
 
@@ -331,7 +332,6 @@ jobs:
           QUILL_PUBLISH_REGIONAL: "1"
           QUILL_REGIONAL_ZONE: quillrouter-com
           QUILL_REGIONAL_SUFFIX: quillrouter.com
-          QUILL_EXCLUDE_CANONICAL_REGIONS: us-central1
         run: |
           set -euo pipefail
           for i in $(seq 1 90); do
@@ -364,7 +364,6 @@ jobs:
           QUILL_PUBLISH_REGIONAL: "1"
           QUILL_REGIONAL_ZONE: quillrouter-com
           QUILL_REGIONAL_SUFFIX: quillrouter.com
-          QUILL_EXCLUDE_CANONICAL_REGIONS: us-central1
         run: uv run --script tools/reconcile-enclave-dns.py --apply
 
       - name: Wait for us-central1 synthetic up
@@ -402,9 +401,6 @@ jobs:
           gcloud compute instance-groups managed set-instance-template quill-enclave-mig-us \
             --region=us-central1 --project=quill-cloud-proxy \
             --template="${PREV_US}" --quiet
-          gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-us \
-            --region=us-central1 --project=quill-cloud-proxy \
-            --max-unavailable=0 --max-surge=3 --quiet
           echo "us-central1 remains drained from canonical API DNS; other regions keep serving."
           exit 1
 
@@ -417,7 +413,10 @@ jobs:
           QUILL_PUBLISH_REGIONAL: "1"
           QUILL_REGIONAL_ZONE: quillrouter-com
           QUILL_REGIONAL_SUFFIX: quillrouter.com
-        run: uv run --script tools/reconcile-enclave-dns.py --apply
+        run: |
+          uv run --script tools/reconcile-enclave-dns.py \
+            --clear-drain-region us-central1
+          uv run --script tools/reconcile-enclave-dns.py --apply
 
       - name: Roll secondary GCP MIGs serially (europe-west4 + us-east4)
         # Roll secondaries one at a time with the same DNS-drain invariant used
@@ -433,7 +432,6 @@ jobs:
           set -euo pipefail
 
           reconcile_dns() {
-            local exclude="${1:-}"
             local lock="${SECONDARY_ROLLOUT_LOCK_DIR:-/tmp}/dns-reconcile.lock"
             (
               flock 9
@@ -443,8 +441,19 @@ jobs:
               QUILL_PUBLISH_REGIONAL=1 \
               QUILL_REGIONAL_ZONE=quillrouter-com \
               QUILL_REGIONAL_SUFFIX=quillrouter.com \
-              QUILL_EXCLUDE_CANONICAL_REGIONS="${exclude}" \
                 uv run --script tools/reconcile-enclave-dns.py --apply
+            ) 9>"${lock}"
+          }
+
+          update_drain() {
+            local operation="$1" region="$2"
+            local lock="${SECONDARY_ROLLOUT_LOCK_DIR:-/tmp}/dns-reconcile.lock"
+            (
+              flock 9
+              QUILL_API_HOST=api.trustedrouter.com \
+              QUILL_DNS_ZONE=trustedrouter-com \
+                uv run --script tools/reconcile-enclave-dns.py \
+                  "--${operation}-drain-region" "${region}"
             ) 9>"${lock}"
           }
 
@@ -463,11 +472,11 @@ jobs:
             for i in $(seq 1 90); do
               if gcloud compute instance-groups managed wait-until "${mig}" \
                 --region="${region}" --project=quill-cloud-proxy --stable --timeout=10; then
-                reconcile_dns "${region}"
+                reconcile_dns
                 return 0
               fi
               echo "${region} still rolling; refreshing attested DNS membership (${i}/90)"
-              reconcile_dns "${region}" || true
+              reconcile_dns || true
               sleep 5
             done
             echo "${region} MIG did not stabilize before timeout" >&2
@@ -484,9 +493,6 @@ jobs:
             gcloud compute instance-groups managed set-instance-template "${mig}" \
               --region="${region}" --project=quill-cloud-proxy \
               --template="${prev_template}" --quiet
-            gcloud compute instance-groups managed rolling-action replace "${mig}" \
-              --region="${region}" --project=quill-cloud-proxy \
-              --max-unavailable=0 --max-surge=3 --quiet
           }
 
           roll_secondary_region() {
@@ -502,12 +508,13 @@ jobs:
               if [ -n "${conf_type}" ]; then export CONF_COMPUTE_TYPE="${conf_type}"; fi
 
               echo "draining ${region} from canonical API DNS"
-              reconcile_dns "${region}"
+              update_drain set "${region}"
+              reconcile_dns
               bash tools/wait-canonical-drained.sh "${region}"
               bash tools/deploy-gcp-mig.sh "${region}"
               wait_region_stable_with_dns_refresh "${mig}" "${region}"
               bash tools/wait-region-attested.sh "${filter}" "${region}"
-              reconcile_dns "${region}"
+              reconcile_dns
               trigger_synthetic_workers
               WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
               if ! python3 tools/watchdog.py --regions "${region}" --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 120; then
@@ -515,6 +522,7 @@ jobs:
                 exit 1
               fi
               echo "re-adding ${region} to canonical API DNS"
+              update_drain clear "${region}"
               reconcile_dns
               echo "${region} rollout healthy"
             ) || status=$?

@@ -45,6 +45,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
@@ -97,6 +98,18 @@ EXCLUDE_CANONICAL_REGIONS = {
     for r in os.environ.get("QUILL_EXCLUDE_CANONICAL_REGIONS", "").split(",")
     if r.strip()
 }
+# A persistent rollout drain is shared by the deploy workflow and the scheduled
+# Cloud Run reconciler. Without it, a scheduler tick can re-add a region that a
+# canary rollout deliberately removed from canonical DNS. The TXT record lives
+# in the same managed zone and uses the same DNS-admin permission as A-record
+# reconciliation, avoiding another state service in this trust-critical path.
+DRAIN_RECORD = os.environ.get(
+    "QUILL_DRAIN_RECORD",
+    f"_rollout-drain.{API_HOST.rstrip('.')}.",
+)
+DRAIN_TTL = int(os.environ.get("QUILL_DRAIN_TTL", "30"))
+_REGION_RE = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
+_DRAIN_VERSION = "v1"
 
 
 def log(msg: str) -> None:
@@ -200,6 +213,86 @@ def current_dns_ips(zone: str, record: str) -> list[str]:
         if r.get("name") == record and r.get("type") == "A":
             return list(r.get("rrdatas", []))
     return []
+
+
+def current_dns_txt(zone: str, record: str) -> list[str]:
+    rows = gcloud_json([
+        "dns", "record-sets", "list", "--zone", zone,
+        "--name", record, "--type", "TXT",
+    ])
+    for row in rows:
+        if row.get("name") == record and row.get("type") == "TXT":
+            return list(row.get("rrdatas", []))
+    return []
+
+
+def parse_drain_rrdatas(rrdatas: list[str]) -> set[str]:
+    """Decode the single versioned TXT value used for persistent drains."""
+    if not rrdatas:
+        return set()
+    if len(rrdatas) != 1:
+        raise RuntimeError(
+            f"{DRAIN_RECORD} must contain exactly one TXT value, got {len(rrdatas)}"
+        )
+    payload = rrdatas[0].strip().strip('"')
+    parts = payload.split(";")
+    if not parts or parts[0] != _DRAIN_VERSION:
+        raise RuntimeError(f"{DRAIN_RECORD} has unsupported payload {payload!r}")
+    regions = {part for part in parts[1:] if part}
+    invalid = sorted(region for region in regions if not _REGION_RE.fullmatch(region))
+    if invalid:
+        raise RuntimeError(f"{DRAIN_RECORD} has invalid region(s): {invalid}")
+    return regions
+
+
+def encode_drain_rrdatas(regions: set[str]) -> list[str]:
+    invalid = sorted(region for region in regions if not _REGION_RE.fullmatch(region))
+    if invalid:
+        raise ValueError(f"invalid drain region(s): {invalid}")
+    payload = ";".join([_DRAIN_VERSION, *sorted(regions)])
+    return [f'"{payload}"']
+
+
+def set_dns_txt(zone: str, record: str, rrdatas: list[str]) -> None:
+    cur = current_dns_txt(zone, record)
+
+    def _run(verb: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "gcloud", "dns", "record-sets", verb, record,
+                "--zone", zone, "--project", PROJECT,
+                "--type", "TXT", "--ttl", str(DRAIN_TTL),
+                "--rrdatas", ",".join(rrdatas),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    verb = "update" if cur else "create"
+    result = _run(verb)
+    if result.returncode != 0:
+        result = _run("create" if verb == "update" else "update")
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"set_dns_txt({record}) failed: "
+                f"{(result.stderr or result.stdout).strip()}"
+            )
+
+
+def persistent_drain_regions() -> set[str]:
+    return parse_drain_rrdatas(current_dns_txt(DNS_ZONE, DRAIN_RECORD))
+
+
+def update_persistent_drain(region: str, *, enabled: bool) -> set[str]:
+    if not _REGION_RE.fullmatch(region):
+        raise ValueError(f"invalid drain region: {region!r}")
+    regions = persistent_drain_regions()
+    if enabled:
+        regions.add(region)
+    else:
+        regions.discard(region)
+    set_dns_txt(DNS_ZONE, DRAIN_RECORD, encode_drain_rrdatas(regions))
+    return regions
 
 
 def set_dns_ips(zone: str, record: str, ips: list[str]) -> None:
@@ -307,10 +400,40 @@ def reconcile_regional(by_region: dict[str, list[str]], apply: bool) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group()
-    g.add_argument("--dry-run", action="store_true", default=True,
+    g.add_argument("--dry-run", action="store_true",
                    help="(default) print the would-be healthy set; change nothing")
     g.add_argument("--apply", action="store_true", help="reconcile the DNS record")
+    g.add_argument(
+        "--set-drain-region",
+        metavar="REGION",
+        help="persistently exclude REGION from canonical DNS",
+    )
+    g.add_argument(
+        "--clear-drain-region",
+        metavar="REGION",
+        help="remove REGION from the persistent canonical-DNS drain set",
+    )
+    g.add_argument(
+        "--list-drain-regions",
+        action="store_true",
+        help="print the persistent canonical-DNS drain set",
+    )
     args = ap.parse_args()
+
+    if args.set_drain_region:
+        regions = update_persistent_drain(args.set_drain_region, enabled=True)
+        log("persistent canonical drains: " + ", ".join(sorted(regions)))
+        return 0
+    if args.clear_drain_region:
+        regions = update_persistent_drain(args.clear_drain_region, enabled=False)
+        log(
+            "persistent canonical drains: "
+            + (", ".join(sorted(regions)) if regions else "<none>")
+        )
+        return 0
+    if args.list_drain_regions:
+        print("\n".join(sorted(persistent_drain_regions())))
+        return 0
 
     # DNS membership is gated on attestation against a SET of acceptable
     # digests: the published trust digest PLUS recent release images in Artifact
@@ -338,16 +461,23 @@ def main() -> int:
             healthy.append(inst)
             by_region.setdefault(inst["region"], []).append(inst["ip"])
 
+    persistent_excludes = persistent_drain_regions()
+    canonical_excludes = EXCLUDE_CANONICAL_REGIONS | persistent_excludes
     canonical_healthy = [
-        i for i in healthy if i["region"] not in EXCLUDE_CANONICAL_REGIONS
+        i for i in healthy if i["region"] not in canonical_excludes
     ]
     healthy_ips = sorted({i["ip"] for i in canonical_healthy})
     regions = sorted(by_region)
     log(f"reconcile: {len(healthy_ips)} healthy across {len(regions)} regions {regions}")
-    if EXCLUDE_CANONICAL_REGIONS:
+    if canonical_excludes:
         log(
             "reconcile: excluding from canonical "
-            + ", ".join(sorted(EXCLUDE_CANONICAL_REGIONS))
+            + ", ".join(sorted(canonical_excludes))
+        )
+    if persistent_excludes:
+        log(
+            "reconcile: persistent rollout drains "
+            + ", ".join(sorted(persistent_excludes))
         )
 
     if len(healthy_ips) < MIN_HEALTHY:
