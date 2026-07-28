@@ -9,7 +9,10 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestGetIncludesChannelBindingNonce(t *testing.T) {
@@ -71,6 +74,60 @@ func TestGetKeepsCallerNonceDistinctFromExporter(t *testing.T) {
 	}
 	if slices.Index(nonces, exporterHex) >= slices.Index(nonces, attackerHex) {
 		t.Fatalf("exporter nonce must be committed before caller nonce: %v", nonces)
+	}
+}
+
+func TestGetSerializesLauncherTokenRequests(t *testing.T) {
+	oldRequestToken := requestToken
+	defer func() { requestToken = oldRequestToken }()
+
+	var active atomic.Int32
+	var calls atomic.Int32
+	started := make(chan struct{}, 2)
+	release := make(chan struct{}, 2)
+	requestToken = func([]byte) ([]byte, error) {
+		if got := active.Add(1); got != 1 {
+			t.Errorf("concurrent launcher token requests = %d, want 1", got)
+		}
+		defer active.Add(-1)
+		calls.Add(1)
+		started <- struct{}{}
+		<-release
+		return []byte("token"), nil
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	callGet := func(nonce string) {
+		defer wg.Done()
+		_, err := Get([]byte("leaf"), []byte("devices"), []byte(nonce), []byte("exporter"))
+		errs <- err
+	}
+
+	wg.Add(1)
+	go callGet("first")
+	<-started
+	wg.Add(1)
+	go callGet("second")
+
+	select {
+	case <-started:
+		t.Fatal("second token request entered launcher before first completed")
+	case <-time.After(100 * time.Millisecond):
+	}
+	release <- struct{}{}
+	<-started
+	release <- struct{}{}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("launcher calls = %d, want 2 distinct nonce-bound tokens", got)
 	}
 }
 
