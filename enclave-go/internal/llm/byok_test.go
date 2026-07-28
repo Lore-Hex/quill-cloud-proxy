@@ -137,6 +137,74 @@ func TestBuildOpenAICompatibleRequestCarriesInboundParams(t *testing.T) {
 	}
 }
 
+func TestBuildGoogleAIStudioRequestUsesCostConsciousFlashReasoningDefaults(t *testing.T) {
+	cases := []struct {
+		name   string
+		model  string
+		effort string
+	}{
+		{
+			name:   "Gemini 2.5 Flash disables thinking",
+			model:  "gemini-2.5-flash",
+			effort: "none",
+		},
+		{
+			name:   "Gemini 3.6 Flash uses minimal thinking",
+			model:  "gemini-3.6-flash",
+			effort: "minimal",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildOpenAICompatibleRequest(
+				"google-ai-studio",
+				tc.model,
+				&qtypes.OpenAIChatRequest{},
+				&qtypes.AnthropicMessagesRequest{},
+				[]chatMessage{{Role: "user", Content: "Reply PONG"}},
+			)
+			if got.ReasoningEffort != tc.effort {
+				t.Fatalf("reasoning_effort = %q, want %q", got.ReasoningEffort, tc.effort)
+			}
+		})
+	}
+}
+
+func TestBuildGoogleAIStudioRequestPreservesExplicitReasoningAndImageDefaults(t *testing.T) {
+	explicit := buildOpenAICompatibleRequest(
+		"google-ai-studio",
+		"gemini-3.6-flash",
+		&qtypes.OpenAIChatRequest{ReasoningEffort: "high"},
+		&qtypes.AnthropicMessagesRequest{},
+		nil,
+	)
+	if explicit.ReasoningEffort != "high" {
+		t.Fatalf("explicit reasoning_effort = %q, want high", explicit.ReasoningEffort)
+	}
+
+	image := buildOpenAICompatibleRequest(
+		"google-ai-studio",
+		"gemini-3.1-flash-image-preview",
+		&qtypes.OpenAIChatRequest{},
+		&qtypes.AnthropicMessagesRequest{},
+		nil,
+	)
+	if image.ReasoningEffort != "" {
+		t.Fatalf("image reasoning_effort = %q, want empty", image.ReasoningEffort)
+	}
+
+	pro := buildOpenAICompatibleRequest(
+		"google-ai-studio",
+		"gemini-3.1-pro-preview",
+		&qtypes.OpenAIChatRequest{},
+		&qtypes.AnthropicMessagesRequest{},
+		nil,
+	)
+	if pro.ReasoningEffort != "" {
+		t.Fatalf("pro reasoning_effort = %q, want empty", pro.ReasoningEffort)
+	}
+}
+
 func TestBuildMetaOpenRouterRequestCarriesReasoningWithoutThinkingAlias(t *testing.T) {
 	reasoning := map[string]any{"effort": "minimal"}
 	req := &qtypes.OpenAIChatRequest{

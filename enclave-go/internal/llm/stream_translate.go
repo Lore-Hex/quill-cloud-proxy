@@ -192,6 +192,37 @@ func (u *openAIStreamUsage) cachedTokens() int {
 	return u.PromptCacheHitTokens
 }
 
+// outputTokens returns every provider-reported non-input token. Most OpenAI-
+// compatible providers include reasoning inside completion_tokens. Google AI
+// Studio currently reports visible tokens in completion_tokens while including
+// hidden thinking only in total_tokens. Prefer the larger coherent total so
+// settlement cannot silently underbill those tokens.
+func (u *openAIStreamUsage) outputTokens() int {
+	if u == nil {
+		return 0
+	}
+	output := u.CompletionTokens
+	if fromTotal := u.TotalTokens - u.PromptTokens; fromTotal > output {
+		output = fromTotal
+	}
+	return output
+}
+
+func (u *openAIStreamUsage) reasoningTokens() int {
+	if u == nil {
+		return 0
+	}
+	if u.CompletionTokensDetails != nil && u.CompletionTokensDetails.ReasoningTokens > 0 {
+		return u.CompletionTokensDetails.ReasoningTokens
+	}
+	// When an upstream omits completion_tokens_details, the unexplained
+	// total-token residual is the only authoritative count for hidden work.
+	if residual := u.outputTokens() - u.CompletionTokens; residual > 0 {
+		return residual
+	}
+	return 0
+}
+
 type openAIStreamUsageDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
 }
@@ -292,10 +323,10 @@ func writeAnthropicStop(w io.Writer, stopReason string, usage *openAIStreamUsage
 		// whichever keys are present.
 		usageBody := map[string]any{
 			"input_tokens":  usage.PromptTokens,
-			"output_tokens": usage.CompletionTokens,
+			"output_tokens": usage.outputTokens(),
 		}
-		if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens > 0 {
-			usageBody["reasoning_tokens"] = usage.CompletionTokensDetails.ReasoningTokens
+		if reasoningTokens := usage.reasoningTokens(); reasoningTokens > 0 {
+			usageBody["reasoning_tokens"] = reasoningTokens
 		}
 		if cached := usage.cachedTokens(); cached > 0 {
 			usageBody["cache_read_input_tokens"] = cached

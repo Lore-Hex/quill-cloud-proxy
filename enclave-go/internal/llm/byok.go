@@ -308,8 +308,48 @@ func buildOpenAICompatibleRequest(
 			reqBody.PresencePenalty = nil
 		}
 	}
+	if effort := googleAIStudioDefaultReasoningEffort(provider, upstreamID, req, body); effort != "" {
+		reqBody.ReasoningEffort = effort
+	}
 	reqBody.StreamOptions = &openAICompatibleStreamOptions{IncludeUsage: true}
 	return reqBody
+}
+
+func googleAIStudioDefaultReasoningEffort(
+	provider string,
+	modelID string,
+	req *qtypes.OpenAIChatRequest,
+	body *qtypes.AnthropicMessagesRequest,
+) string {
+	normalizedProvider := normalizeDirectProvider(provider)
+	if normalizedProvider != "google-ai-studio" && normalizedProvider != "gemini" {
+		return ""
+	}
+	if req != nil && (strings.TrimSpace(req.ReasoningEffort) != "" || req.Reasoning != nil) {
+		return ""
+	}
+	if body != nil && body.Thinking != nil {
+		return ""
+	}
+
+	model := strings.ToLower(strings.TrimSpace(modelID))
+	if strings.Contains(model, "image") || !strings.Contains(model, "flash") {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(model, "gemini-2.5"):
+		// Google's OpenAI-compatible endpoint maps "none" to
+		// thinkingBudget=0. Without it, even a tiny PONG can consume the
+		// caller's entire max_tokens budget in hidden thinking.
+		return "none"
+	case strings.HasPrefix(model, "gemini-3"):
+		// Gemini 3 Flash supports the cost-conscious "minimal" level.
+		// Preserve the model's quality-oriented default for Pro and any
+		// explicit caller reasoning setting.
+		return "minimal"
+	default:
+		return ""
+	}
 }
 
 func openAICompatibleTemperature(provider, modelID string, temperature *float64) *float64 {
