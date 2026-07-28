@@ -40,6 +40,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -56,6 +57,7 @@ const teeserverSocketPath = "/run/container_launcher/teeserver.sock"
 const attestationTokenURL = "http://teeserver/v1/token" // #nosec G101 -- URL, not a secret.
 
 var requestToken = requestTokenFromLauncher
+var launcherTokenMu sync.Mutex
 
 // Get returns the raw JWT bytes for the cmd/enclave handler to forward
 // as Content-Type: application/jwt. Signature matches the AWS variant
@@ -70,6 +72,13 @@ func Get(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte)
 	if err != nil {
 		return nil, fmt.Errorf("attestation/gcp: marshal: %w", err)
 	}
+	// Confidential Space's local launcher accepts only one token mint at a
+	// time. Concurrent POSTs can leave one request hanging until its five
+	// second timeout. Serialize the launcher operation, but build and mint a
+	// distinct token for every caller so nonce and TLS-session bindings are
+	// never cached or shared.
+	launcherTokenMu.Lock()
+	defer launcherTokenMu.Unlock()
 	return requestToken(body)
 }
 
