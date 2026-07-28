@@ -217,6 +217,11 @@ func vertexGeminiPayload(
 		generationConfig["topK"] = *body.TopK
 	}
 	if vertexGeminiImageModel(modelID) {
+		// Gemini counts generated image data against maxOutputTokens. Common
+		// chat SDK defaults such as 128 or 1024 can therefore return HTTP 200
+		// with an empty image. Let the image model choose its native output
+		// budget; TrustedRouter's authorization and billing limits still apply.
+		delete(generationConfig, "maxOutputTokens")
 		generationConfig["responseModalities"] = []string{"TEXT", "IMAGE"}
 		generationConfig["candidateCount"] = 1
 	}
