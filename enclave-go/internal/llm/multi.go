@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -35,6 +36,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		meta:             newOpenAICompatible("meta", boot.OpenRouterAPIKey),
 		googleVertex:     newVertexGemini(boot),
 		googleAIStudio:   newOpenAICompatible("google-ai-studio", boot.GeminiAPIKey),
+		aiStudioNative:   newAIStudioGemini(boot),
 		cerebras:         newOpenAICompatible("cerebras", boot.CerebrasAPIKey),
 		deepseek:         newOpenAICompatible("deepseek", boot.DeepSeekAPIKey),
 		mistral:          newOpenAICompatible("mistral", boot.MistralAPIKey),
@@ -88,6 +90,7 @@ type multiClient struct {
 	meta                *openAICompatibleClient
 	googleVertex        *vertexGeminiClient
 	googleAIStudio      *openAICompatibleClient
+	aiStudioNative      *aiStudioGeminiClient
 	cerebras            *openAICompatibleClient
 	deepseek            *openAICompatibleClient
 	mistral             *openAICompatibleClient
@@ -132,10 +135,15 @@ func (m *multiClient) InvokeStreaming(
 	out io.Writer,
 	options ...InvokeOptions,
 ) error {
-	if handled, err := invokeBYOKStreaming(ctx, req, body, out, firstOptions(options)); handled {
+	option := firstOptions(options)
+	provider := normalizeDirectProvider(option.Provider)
+	if googleAIStudioNeedsNativeImage(req, option) &&
+		(provider == "google-ai-studio" || (provider == "gemini" && strings.TrimSpace(option.ProviderAPIKey) != "")) {
+		return m.aiStudioNative.InvokeStreaming(ctx, req, body, out, options...)
+	}
+	if handled, err := invokeBYOKStreaming(ctx, req, body, out, option); handled {
 		return err
 	}
-	provider := normalizeDirectProvider(firstOptions(options).Provider)
 	switch provider {
 	case "anthropic", "":
 		// Empty provider falls through to anthropic for backward compatibility

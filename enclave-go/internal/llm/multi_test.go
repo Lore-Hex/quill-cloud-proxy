@@ -147,6 +147,128 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 	}
 }
 
+func TestMultiClientGoogleAIStudioImageGenerationUsesNativeAPI(t *testing.T) {
+	var capturedPath string
+	var capturedBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		if r.URL.Path == "/chat/completions" {
+			http.Error(w, `{"error":{"message":"Unhandled generated data mime type: image/jpeg"}}`, http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get("x-goog-api-key"); got != "operator-key" {
+			t.Fatalf("x-goog-api-key = %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("native Gemini request sent Authorization header %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			t.Fatalf("decode native request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"data: {\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/jpeg\",\"data\":\"SlBFRw==\"}}]},\"finishReason\":\"STOP\"}]}\n\n",
+		)
+	}))
+	defer server.Close()
+
+	client := &openAICompatibleClient{
+		provider: "google-ai-studio",
+		baseURL:  server.URL,
+		apiKey:   "operator-key",
+		httpc:    server.Client(),
+	}
+	native := &aiStudioGeminiClient{
+		apiKey:  "operator-key",
+		baseURL: server.URL,
+		httpc:   server.Client(),
+	}
+	multi := &multiClient{googleAIStudio: client, aiStudioNative: native}
+	req := &qtypes.OpenAIChatRequest{
+		Model:    "google/gemini-3.1-flash-image-preview",
+		Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "Generate a small red square."}},
+	}
+	body := &qtypes.AnthropicMessagesRequest{MaxTokens: 128}
+	var out bytes.Buffer
+
+	err := multi.InvokeStreaming(
+		t.Context(),
+		req,
+		body,
+		&out,
+		InvokeOptions{
+			Provider:      "google-ai-studio",
+			UpstreamModel: "gemini-3.1-flash-image-preview",
+			UsageType:     "Credits",
+		},
+	)
+	if err != nil {
+		t.Fatalf("InvokeStreaming: %v", err)
+	}
+	if strings.Contains(capturedPath, "chat/completions") {
+		t.Fatalf("image generation used Google OpenAI compatibility path %q", capturedPath)
+	}
+	if capturedPath != "/models/gemini-3.1-flash-image-preview:streamGenerateContent" {
+		t.Fatalf("native Gemini path = %q", capturedPath)
+	}
+	config := capturedBody["generationConfig"].(map[string]any)
+	modalities := config["responseModalities"].([]any)
+	if len(modalities) != 2 || modalities[0] != "TEXT" || modalities[1] != "IMAGE" {
+		t.Fatalf("responseModalities = %#v", modalities)
+	}
+	if _, ok := config["maxOutputTokens"]; ok {
+		t.Fatalf("image generation forwarded maxOutputTokens: %#v", config)
+	}
+	if !strings.Contains(out.String(), "data:image/jpeg;base64,SlBFRw==") {
+		t.Fatalf("native Gemini image missing from translated stream: %s", out.String())
+	}
+}
+
+func TestMultiClientGoogleAIStudioImageGenerationUsesBYOKKey(t *testing.T) {
+	var gotKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("x-goog-api-key")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"data: {\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"UE5H\"}}]},\"finishReason\":\"STOP\"}]}\n\n",
+		)
+	}))
+	defer server.Close()
+
+	native := &aiStudioGeminiClient{
+		apiKey:  "operator-key",
+		baseURL: server.URL,
+		httpc:   server.Client(),
+	}
+	multi := &multiClient{aiStudioNative: native}
+	req := &qtypes.OpenAIChatRequest{
+		Model:    "google/gemini-3.1-flash-image",
+		Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "Generate an icon."}},
+	}
+	var out bytes.Buffer
+	err := multi.InvokeStreaming(
+		t.Context(),
+		req,
+		&qtypes.AnthropicMessagesRequest{MaxTokens: 128},
+		&out,
+		InvokeOptions{
+			Provider:       "google-ai-studio",
+			ProviderAPIKey: "workspace-byok-key",
+			UpstreamModel:  "gemini-3.1-flash-image",
+			UsageType:      "BYOK",
+		},
+	)
+	if err != nil {
+		t.Fatalf("InvokeStreaming: %v", err)
+	}
+	if gotKey != "workspace-byok-key" {
+		t.Fatalf("x-goog-api-key = %q, want BYOK key", gotKey)
+	}
+	if !strings.Contains(out.String(), "data:image/png;base64,UE5H") {
+		t.Fatalf("native Gemini image missing from BYOK stream: %s", out.String())
+	}
+}
+
 func TestGoogleProviderNormalizationKeepsProductsDistinct(t *testing.T) {
 	tests := map[string]string{
 		"gemini":           "gemini",
