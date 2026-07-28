@@ -1,0 +1,79 @@
+name: Deploy enclave DNS reconciler
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/reconcile-enclave-dns.py"
+      - "tools/verify-attestation.py"
+      - "tools/test_verify_attestation.py"
+      - "tools/Dockerfile.reconciler"
+      - "tools/cloudbuild.reconciler.yaml"
+      - ".github/workflows/deploy-enclave-dns-reconciler.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-enclave-dns-reconciler
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: quill-cloud-proxy
+  REGION: us-central1
+  IMAGE_REPOSITORY: us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-dns-reconciler
+  JOB_NAME: enclave-dns-reconciler
+
+jobs:
+  test-build-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Test verifier and reconciler
+        run: |
+          set -euo pipefail
+          uv run --script tools/verify-attestation.py --help >/dev/null
+          python3 tools/test_verify_attestation.py
+
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build immutable reconciler image
+        id: image
+        run: |
+          set -euo pipefail
+          tag="reconciler-${GITHUB_SHA::12}"
+          image="${IMAGE_REPOSITORY}:${tag}"
+          gcloud builds submit \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --config=tools/cloudbuild.reconciler.yaml \
+            --substitutions="_IMAGE=${image},_SOURCE_REVISION=${GITHUB_SHA}" \
+            tools
+          digest="$(gcloud artifacts docker images describe "${image}" \
+            --project="${PROJECT_ID}" \
+            --format='value(image_summary.digest)')"
+          test -n "${digest}"
+          echo "ref=${IMAGE_REPOSITORY}@${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Update and verify the scheduled job
+        run: |
+          set -euo pipefail
+          gcloud run jobs update "${JOB_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --image="${{ steps.image.outputs.ref }}"
+          gcloud run jobs execute "${JOB_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --wait
