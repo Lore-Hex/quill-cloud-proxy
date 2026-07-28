@@ -35,6 +35,7 @@ on:
       - "tools/wait-region-attested.sh"
       - "tools/wait-region-synthetic-up.sh"
       - "tools/synthetic_gate_status.py"
+      - "tools/watchdog.py"
       - ".github/workflows/deploy-enclave-gcp.yml"
       # Note: trust-page/** is intentionally NOT in this list. Trust
       # artifacts are *output* of this workflow, not input — listing them
