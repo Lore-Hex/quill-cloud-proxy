@@ -59,10 +59,13 @@ def evaluate_region(
     if not isinstance(data, Mapping):
         return "waiting"
     current = data.get("current", {})
-    checks = current.get("checks", []) if isinstance(current, Mapping) else []
+    current_checks = current.get("checks", []) if isinstance(current, Mapping) else []
+    samples = data.get("samples", [])
+    checks = [
+        *(current_checks if isinstance(current_checks, list) else []),
+        *(samples if isinstance(samples, list) else []),
+    ]
     latest: dict[tuple[str, str], tuple[float, str]] = {}
-    if not isinstance(checks, list):
-        return "waiting"
 
     for raw_check in checks:
         if not isinstance(raw_check, Mapping):

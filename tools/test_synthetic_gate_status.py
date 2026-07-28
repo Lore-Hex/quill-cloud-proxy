@@ -54,6 +54,28 @@ class SyntheticGateStatusTests(unittest.TestCase):
         checks = complete_samples("us-central1") + complete_samples("europe-west4")
         self.assertEqual(self.evaluate(checks), "up")
 
+    def test_complete_samples_are_used_when_current_checks_are_slo_scoped(self) -> None:
+        checks = complete_samples("us-central1") + complete_samples("europe-west4")
+        started_at = gate._timestamp("2026-07-17T01:00:00Z")
+        self.assertIsNotNone(started_at)
+        result = gate.evaluate_region(
+            {
+                "data": {
+                    "current": {
+                        "checks": [
+                            sample("us-central1", "tls_health"),
+                            sample("europe-west4", "tls_health"),
+                        ]
+                    },
+                    "samples": checks,
+                }
+            },
+            region="us-central1",
+            started_at=started_at,
+            monitor_regions=["us-central1", "europe-west4"],
+        )
+        self.assertEqual(result, "up")
+
     def test_stale_peer_failure_does_not_replace_required_fresh_sample(self) -> None:
         checks = complete_samples("us-central1") + complete_samples("europe-west4")
         checks.append(
