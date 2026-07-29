@@ -510,6 +510,7 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		{"phala", "z-ai/glm-5.2", "phala/glm-5.2"},
 		{"phala", "deepseek/deepseek-v3.2", "phala/deepseek-v3.2"},
 		{"phala", "moonshotai/kimi-k2.6", "phala/kimi-k2.6"},
+		{"phala", "moonshotai/kimi-k3", "moonshotai/kimi-k3"},
 		{"phala", "google/gemma-3-27b-it", "phala/gemma-3-27b-it"},
 		{"venice", "z-ai/glm-5.2", "zai-org-glm-5-2"},
 		{"friendli", "z-ai/glm-5.2", "zai-org/GLM-5.2"},
