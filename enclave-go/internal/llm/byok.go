@@ -1260,7 +1260,7 @@ var novitaModelMap = map[string]string{
 	"google/gemma-4-26b-a4b-it": "google/gemma-4-26b-a4b-it",
 }
 
-// phalaModelMap maps OR-canonical → Phala native.
+// phalaModelMap maps TrustedRouter-canonical → Phala/Redpill native.
 //
 // The 2026-05-12 first attempt routed Phala via the
 // upstream-author form (`openai/gpt-5.5`, `anthropic/claude-haiku-4.5`,
@@ -1275,7 +1275,12 @@ var novitaModelMap = map[string]string{
 // (which our key is entitled to); the upstream-author forms in
 // /v1/models go to a non-TEE pass-through tier that our key is
 // NOT entitled to, hence 401. Confidential AI keys + TEE
-// inference is the entire product reason we use Phala — match it.
+// inference is the primary product reason we use Phala — match it.
+//
+// Exception: a provider route may be deliberately admitted under an
+// upstream-author ID after a direct account canary. Such routes must carry a
+// Standard privacy override in quill-router and map to that exact upstream ID
+// here; they do not inherit the Confidential AI posture of phala/* routes.
 //
 // Source: live probe of api.redpill.ai/v1/models + Phala
 // confidential-ai-api docs on 2026-05-13. Add new entries when
@@ -1285,6 +1290,7 @@ var phalaModelMap = map[string]string{
 	"minimax/minimax-m2.5":             "phala/minimax-m2.5",
 	"moonshotai/kimi-k2.5":             "phala/kimi-k2.5",
 	"moonshotai/kimi-k2.6":             "phala/kimi-k2.6",
+	"moonshotai/kimi-k3":               "moonshotai/kimi-k3",
 	"openai/gpt-oss-120b":              "phala/gpt-oss-120b",
 	"openai/gpt-oss-20b":               "phala/gpt-oss-20b",
 	"qwen/qwen-2.5-7b-instruct":        "phala/qwen-2.5-7b-instruct",
