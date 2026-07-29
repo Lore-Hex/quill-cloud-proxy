@@ -22,6 +22,8 @@ def test_gcp_multi_launch_policy_allows_deployed_env_overrides() -> None:
     assert metadata_envs <= allowed_envs
     assert "QUILL_OPENROUTER_SECRET" in metadata_envs
     assert "QUILL_OPENROUTER_SECRET" in allowed_envs
+    assert "QUILL_NEUROMETRIC_SECRET" in metadata_envs
+    assert "QUILL_NEUROMETRIC_SECRET" in allowed_envs
 
 
 def test_gcp_bootstrap_grants_workload_access_to_openrouter_secret() -> None:
@@ -30,6 +32,16 @@ def test_gcp_bootstrap_grants_workload_access_to_openrouter_secret() -> None:
 
     assert 'OPENROUTER_SECRET="${OPENROUTER_SECRET:-quill-openrouter-key}"' in source
     assert '"$OPENROUTER_SECRET" \\' in source
+
+
+def test_gcp_bootstrap_grants_workload_access_to_neurometric_secret() -> None:
+    bootstrap_script = REPO_ROOT / "tools" / "deploy-gcp-bootstrap.sh"
+    source = bootstrap_script.read_text()
+
+    assert (
+        'NEUROMETRIC_SECRET="${NEUROMETRIC_SECRET:-trustedrouter-neurometric-api-key}"'
+    ) in source
+    assert '"$NEUROMETRIC_SECRET" \\' in source
 
 
 def test_aws_meta_route_mirrors_key_and_vsock_tunnel() -> None:

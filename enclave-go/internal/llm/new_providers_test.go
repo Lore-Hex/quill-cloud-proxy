@@ -26,14 +26,14 @@ func TestNewProviderNormalizationAndBYOKPolicy(t *testing.T) {
 	if isOpenAICompatibleBYOKProvider("cloudflare-workers-ai") {
 		t.Fatal("cloudflare BYOK needs an account id and must stay disabled")
 	}
-	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake"} {
+	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake", "neurometric"} {
 		if isOpenAICompatibleBYOKProvider(provider) {
 			t.Errorf("%s must use only the operator-key prepaid path", provider)
 		}
 	}
 }
 
-func TestMultiClientConstructsAccountScopedCloudflareEndpoint(t *testing.T) {
+func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 	t.Parallel()
 
 	client, ok := New(&qtypes.BootstrapData{
@@ -45,6 +45,7 @@ func TestMultiClientConstructsAccountScopedCloudflareEndpoint(t *testing.T) {
 		MorphAPIKey:                  "morph-key",
 		AtlasCloudAPIKey:             "atlas-key",
 		StreamLakeAPIKey:             "streamlake-key",
+		NeurometricAPIKey:            "neurometric-key",
 	}).(*multiClient)
 	if !ok {
 		t.Fatal("New did not return a multiClient")
@@ -70,6 +71,7 @@ func TestMultiClientConstructsAccountScopedCloudflareEndpoint(t *testing.T) {
 		"morph":       {client.morph, "https://api.morphllm.com/v1", "morph-key"},
 		"atlas-cloud": {client.atlasCloud, "https://api.atlascloud.ai/v1", "atlas-key"},
 		"streamlake":  {client.streamLake, "https://vanchin.streamlake.ai/api/gateway/v1/endpoints", "streamlake-key"},
+		"neurometric": {client.neurometric, "https://wharf.neurometric.ai/v1", "neurometric-key"},
 	}
 	for provider, want := range wantClients {
 		if want.client.baseURL != want.baseURL {
@@ -96,6 +98,7 @@ func TestNewProvidersPreserveAuthorizedUpstreamModelID(t *testing.T) {
 		{"morph", "z-ai/glm-5.2", "morph-glm52-744b"},
 		{"atlas-cloud", "z-ai/glm-5.2", "zai-org/glm-5.2"},
 		{"streamlake", "kwaipilot/kat-coder-pro-v2.5", "kat-coder-pro-v2.5"},
+		{"neurometric", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b"},
 	}
 	for _, tc := range cases {
 		if got := directModelID(tc.provider, tc.model, tc.upstream); got != tc.upstream {

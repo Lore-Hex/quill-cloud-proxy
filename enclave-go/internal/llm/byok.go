@@ -892,6 +892,8 @@ func directBaseURL(provider string) string {
 		return "https://api.atlascloud.ai/v1"
 	case "streamlake":
 		return "https://vanchin.streamlake.ai/api/gateway/v1/endpoints"
+	case "neurometric":
+		return "https://wharf.neurometric.ai/v1"
 	default:
 		return ""
 	}
@@ -938,9 +940,9 @@ func directModelID(provider, model, upstreamModel string) string {
 			// an author-stripped non-confidential model id.
 			return ""
 		}
-		if providerUsesAuthorizedUpstreamModel(provider) && upstreamModel != "" {
-			return upstreamModel
-		}
+	}
+	if providerUsesAuthorizedUpstreamModel(provider) && upstreamModel != "" {
+		return upstreamModel
 	}
 	if providerPreservesAuthorModelID(provider) {
 		key := upstreamModel
@@ -993,7 +995,7 @@ func directModelID(provider, model, upstreamModel string) string {
 // maps still win above for historical aliases and dedicated endpoint slugs.
 func providerUsesAuthorizedUpstreamModel(provider string) bool {
 	switch provider {
-	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow":
+	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow", "neurometric":
 		return true
 	default:
 		return false
@@ -1563,6 +1565,8 @@ func normalizeDirectProvider(provider string) string {
 		return "atlas-cloud"
 	case "streamlake", "stream-lake", "vanchin":
 		return "streamlake"
+	case "neurometric", "neurometric-ai":
+		return "neurometric"
 	default:
 		return slug
 	}

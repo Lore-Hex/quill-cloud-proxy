@@ -85,6 +85,7 @@ INCEPTRON_SECRET="${INCEPTRON_SECRET:-trustedrouter-inceptron-api-key}"
 MORPH_SECRET="${MORPH_SECRET:-trustedrouter-morph-api-key}"
 ATLAS_CLOUD_SECRET="${ATLAS_CLOUD_SECRET:-trustedrouter-atlas-cloud-api-key}"
 STREAMLAKE_SECRET="${STREAMLAKE_SECRET:-trustedrouter-streamlake-api-key}"
+NEUROMETRIC_SECRET="${NEUROMETRIC_SECRET:-trustedrouter-neurometric-api-key}"
 EXA_SECRET="${EXA_SECRET:-trustedrouter-exa-api-key}"
 XIAOMI_SECRET="${XIAOMI_SECRET:-trustedrouter-xiaomi-api-key}"
 SYNTH_PANEL_PROMPT_SECRET="${SYNTH_PANEL_PROMPT_SECRET:-trustedrouter-synth-panel-prompt-v1}"
@@ -197,6 +198,7 @@ for secret in \
   "$MORPH_SECRET" \
   "$ATLAS_CLOUD_SECRET" \
   "$STREAMLAKE_SECRET" \
+  "$NEUROMETRIC_SECRET" \
   "$EXA_SECRET" \
   "$XIAOMI_SECRET" \
   "$SYNTH_PANEL_PROMPT_SECRET" \
