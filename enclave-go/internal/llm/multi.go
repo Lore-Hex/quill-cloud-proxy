@@ -74,6 +74,10 @@ func New(boot *qtypes.BootstrapData) Client {
 		morph:      newOpenAICompatible("morph", boot.MorphAPIKey),
 		atlasCloud: newOpenAICompatible("atlas-cloud", boot.AtlasCloudAPIKey),
 		streamLake: newOpenAICompatible("streamlake", boot.StreamLakeAPIKey),
+		neurometric: newOpenAICompatible(
+			"neurometric",
+			boot.NeurometricAPIKey,
+		),
 		// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
 		xiaomi: newOpenAICompatible("xiaomi", boot.XiaomiAPIKey),
 		// Cohere — embeddings only (native /v2/embed). Its InvokeStreaming
@@ -125,6 +129,7 @@ type multiClient struct {
 	morph               *openAICompatibleClient
 	atlasCloud          *openAICompatibleClient
 	streamLake          *openAICompatibleClient
+	neurometric         *openAICompatibleClient
 	xiaomi              *openAICompatibleClient
 	cohere              *cohereClient
 	voyage              *openAICompatibleClient
@@ -235,12 +240,14 @@ func (m *multiClient) InvokeStreaming(
 		return m.atlasCloud.InvokeStreaming(ctx, req, body, out, options...)
 	case "streamlake":
 		return m.streamLake.InvokeStreaming(ctx, req, body, out, options...)
+	case "neurometric":
+		return m.neurometric.InvokeStreaming(ctx, req, body, out, options...)
 	case "xiaomi":
 		return m.xiaomi.InvokeStreaming(ctx, req, body, out, options...)
 	case "cohere":
 		// Embeddings-only; returns a clear "chat not supported" error.
 		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, telnyx, thinkingmachines, wafer, crusoe, makora, nebius, minimax, chutes, digitalocean, cloudflare-workers-ai, inceptron, morph, atlas-cloud, streamlake, xiaomi, cohere)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, telnyx, thinkingmachines, wafer, crusoe, makora, nebius, minimax, chutes, digitalocean, cloudflare-workers-ai, inceptron, morph, atlas-cloud, streamlake, neurometric, xiaomi, cohere)", provider)
 	}
 }
