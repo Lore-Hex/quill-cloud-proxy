@@ -55,6 +55,7 @@
 //	QUILL_CRUSOE_SECRET          name of the secret holding the Crusoe API key (llm_multi builds)
 //	QUILL_MAKORA_SECRET          name of the secret holding the Makora API key (llm_multi builds)
 //	QUILL_NEUROMETRIC_SECRET     name of the secret holding the Neurometric API key (llm_multi builds)
+//	QUILL_ALIBABA_SECRET         name of the secret holding the Alibaba Model Studio API key (llm_multi builds)
 //	QUILL_SYNTH_PANEL_PROMPT_SECRET           name of the secret holding the default synth panel prompt
 //	QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET       name of the secret holding the default synth synthesis prompt
 //	QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET      name of the secret holding the synth-code panel prompt
@@ -142,6 +143,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	atlasCloudSecret := os.Getenv("QUILL_ATLAS_CLOUD_SECRET")
 	streamLakeSecret := os.Getenv("QUILL_STREAMLAKE_SECRET")
 	neurometricSecret := os.Getenv("QUILL_NEUROMETRIC_SECRET")
+	alibabaSecret := os.Getenv("QUILL_ALIBABA_SECRET")
 	xiaomiSecret := os.Getenv("QUILL_XIAOMI_SECRET")
 	exaSecret := os.Getenv("QUILL_EXA_SECRET")
 	synthPanelPromptSecret := os.Getenv("QUILL_SYNTH_PANEL_PROMPT_SECRET")
@@ -197,6 +199,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		atlasCloudSecret,
 		streamLakeSecret,
 		neurometricSecret,
+		alibabaSecret,
 		xiaomiSecret,
 	) {
 		return nil, fmt.Errorf("bootstrap/gcp: at least one provider secret env must be set")
@@ -501,6 +504,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: neurometric key: %w", err)
 		}
 	}
+	var alibabaKey []byte
+	if alibabaSecret != "" {
+		alibabaKey, err = fetchSecret(ctx, httpc, token, project, alibabaSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: alibaba key: %w", err)
+		}
+	}
 	var xiaomiKey []byte
 	if xiaomiSecret != "" {
 		xiaomiKey, err = fetchSecret(ctx, httpc, token, project, xiaomiSecret)
@@ -610,6 +620,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		AtlasCloudAPIKey:             strings.TrimSpace(string(atlasCloudKey)),
 		StreamLakeAPIKey:             strings.TrimSpace(string(streamLakeKey)),
 		NeurometricAPIKey:            strings.TrimSpace(string(neurometricKey)),
+		AlibabaAPIKey:                strings.TrimSpace(string(alibabaKey)),
 		XiaomiAPIKey:                 strings.TrimSpace(string(xiaomiKey)),
 		ExaAPIKey:                    strings.TrimSpace(string(exaKey)),
 		TrustedRouterBaseURL:         os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
