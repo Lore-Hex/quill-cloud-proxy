@@ -117,6 +117,7 @@ type BootstrapData struct {
 	AtlasCloudAPIKey             string `json:"atlas_cloud_api_key,omitempty"`
 	StreamLakeAPIKey             string `json:"streamlake_api_key,omitempty"`
 	NeurometricAPIKey            string `json:"neurometric_api_key,omitempty"`
+	AlibabaAPIKey                string `json:"alibaba_api_key,omitempty"`
 
 	// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
 	XiaomiAPIKey string `json:"xiaomi_api_key,omitempty"`

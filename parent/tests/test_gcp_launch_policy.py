@@ -24,6 +24,8 @@ def test_gcp_multi_launch_policy_allows_deployed_env_overrides() -> None:
     assert "QUILL_OPENROUTER_SECRET" in allowed_envs
     assert "QUILL_NEUROMETRIC_SECRET" in metadata_envs
     assert "QUILL_NEUROMETRIC_SECRET" in allowed_envs
+    assert "QUILL_ALIBABA_SECRET" in metadata_envs
+    assert "QUILL_ALIBABA_SECRET" in allowed_envs
 
 
 def test_gcp_bootstrap_grants_workload_access_to_openrouter_secret() -> None:

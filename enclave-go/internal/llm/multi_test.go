@@ -45,6 +45,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"atlas-cloud", "z-ai/glm-5.2", "zai-org/glm-5.2", "zai-org/glm-5.2", false},
 		{"streamlake", "kwaipilot/kat-coder-pro-v2.5", "kat-coder-pro-v2.5", "kat-coder-pro-v2.5", false},
 		{"neurometric", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b", false},
+		{"alibaba", "qwen/qwen3.7-flash", "qwen3.7-flash", "qwen3.7-flash", false},
 	}
 
 	for _, tt := range tests {
@@ -115,6 +116,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				atlasCloud:       client,
 				streamLake:       client,
 				neurometric:      client,
+				alibaba:          client,
 			}
 			req := &qtypes.OpenAIChatRequest{Model: tt.publicModel}
 			body := &qtypes.AnthropicMessagesRequest{
