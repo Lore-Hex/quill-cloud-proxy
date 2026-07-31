@@ -244,3 +244,72 @@ func TestVideoContentHeadersForbidCaching(t *testing.T) {
 		}
 	}
 }
+
+func TestVideoContentCleansUpAfterVeniceCompleteBadRequest(t *testing.T) {
+	providerRequests := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerRequests++
+		switch r.URL.Path {
+		case "/retrieve":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			w.Header().Set("Content-Type", "video/mp4")
+			if body["delete_media_on_completion"] == true {
+				_, _ = io.WriteString(w, "cleanup-copy")
+				return
+			}
+			_, _ = io.WriteString(w, "video-bytes")
+		case "/complete":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"Request ID is invalid."}`)
+		default:
+			t.Fatalf("unexpected provider path %q", r.URL.Path)
+		}
+	}))
+	defer provider.Close()
+
+	cleaned := false
+	cleanCalls := 0
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/gateway/video/jobs/job-delivery/lookup":
+			job := map[string]any{
+				"id": "job-delivery", "status": "completed",
+				"provider_model":  "minimax-h3-text-to-video",
+				"provider_job_id": "provider-job",
+			}
+			if cleaned {
+				job["cleaned_at"] = "2026-07-31T00:00:00Z"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": job})
+		case "/internal/gateway/video/jobs/job-delivery/cleaned":
+			cleanCalls++
+			cleaned = true
+			_, _ = io.WriteString(w, `{"data":{"id":"job-delivery","cleaned_at":"2026-07-31T00:00:00Z"}}`)
+		default:
+			t.Fatalf("unexpected control path %q", r.URL.Path)
+		}
+	}))
+	defer control.Close()
+
+	service := &videoService{
+		provider: video.NewVeniceClientAt("venice-secret", provider.URL, provider.Client()),
+		control:  trustedrouter.New(control.URL, "internal", control.Client()),
+	}
+	var first bytes.Buffer
+	service.serveContent(context.Background(), &first, "sk-private", "job-delivery")
+	if !strings.Contains(first.String(), "HTTP/1.1 200 OK") || !strings.Contains(first.String(), "video-bytes") {
+		t.Fatalf("first content response = %q", first.String())
+	}
+	if cleanCalls != 1 || providerRequests != 3 {
+		t.Fatalf("cleanup calls = %d, provider requests = %d", cleanCalls, providerRequests)
+	}
+
+	var second bytes.Buffer
+	service.serveContent(context.Background(), &second, "sk-private", "job-delivery")
+	if !strings.Contains(second.String(), "HTTP/1.1 410 Gone") || providerRequests != 3 {
+		t.Fatalf("second content response = %q; provider requests = %d", second.String(), providerRequests)
+	}
+}
