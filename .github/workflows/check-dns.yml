@@ -13,10 +13,9 @@
 # operator notification through the standard GitHub Actions failure
 # email / Slack / whatever's wired up.
 #
-# Cadence: once per day. Drift is slow + rare; 24h detect window is
-# plenty (and still 24x faster than Cloudflare's own crawl
-# heuristic). Offset to 07:07 UTC so it doesn't collide with the
-# top-of-hour price-refresh bot.
+# Cadence: every six hours. NS drift is slow, but this workflow also checks
+# public TLS expiry and must warn well before a renewal failure becomes an
+# outage. Offset by seven minutes so it does not collide with hourly jobs.
 #
 # Fix path on red: see docs/runbook.md "DNS-vendor-split symptoms"
 # in the quill-router repo, plus tools/dns/main.tf in this repo.
@@ -25,7 +24,7 @@ name: DNS NS-drift check
 
 on:
   schedule:
-    - cron: "7 7 * * *"
+    - cron: "7 */6 * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -36,6 +35,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Query authoritative NS for each zone
         run: |
           set -euo pipefail
@@ -86,3 +87,6 @@ jobs:
           done
 
           exit "$fail"
+
+      - name: Check public TLS validity and expiry
+        run: python3 tools/check-public-tls.py --minimum-days 14

@@ -31,7 +31,13 @@ gc() {
 }
 
 cert_slug="$(printf '%s' "$HOST" | tr '.[:upper:]' '-[:lower:]' | sed 's/[^a-z0-9-]/-/g')"
-cert_name="${CERT_PREFIX}-${cert_slug}-cert"
+if [ "$HOST" = "trustedrouter.com" ]; then
+  # Keep the apex certificate independent from trust.trustedrouter.com. The
+  # trust site is hosted separately, so a shared certificate cannot renew.
+  cert_name="${CERT_NAME:-trusted-router-apex-cert-v2}"
+else
+  cert_name="${CERT_NAME:-${CERT_PREFIX}-${cert_slug}-cert}"
+fi
 
 if ! gc compute ssl-certificates describe "$cert_name" \
   --project="$PROJECT" --global >/dev/null 2>&1; then
@@ -42,6 +48,18 @@ if ! gc compute ssl-certificates describe "$cert_name" \
     --domains="$HOST"
 else
   echo "managed certificate $cert_name already exists"
+fi
+
+domains="$(
+  gc compute ssl-certificates describe "$cert_name" \
+    --project="$PROJECT" \
+    --global \
+    --format='value(managed.domains)' | tr ';' '\n' | sed '/^$/d'
+)"
+if [ "$domains" != "$HOST" ]; then
+  echo "$cert_name must contain only $HOST; found: $domains" >&2
+  echo "Use a separate certificate for every independently hosted hostname." >&2
+  exit 1
 fi
 
 existing="$(
