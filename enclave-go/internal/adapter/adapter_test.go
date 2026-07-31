@@ -1065,6 +1065,69 @@ func TestWriteChatCompletionResponseSurfacesCachedAndReasoningTokens(t *testing.
 	}
 }
 
+func TestServiceTierIsPreservedAcrossResponsesAndChatShapes(t *testing.T) {
+	chat, err := ResponsesToChat(&types.OpenAIResponsesRequest{
+		Model:       "openai/gpt-5.6-sol",
+		Input:       "PONG",
+		ServiceTier: "priority",
+	})
+	if err != nil {
+		t.Fatalf("ResponsesToChat: %v", err)
+	}
+	if chat.ServiceTier != "priority" {
+		t.Fatalf("chat service_tier = %q, want priority", chat.ServiceTier)
+	}
+
+	usage := &StreamUsage{InputTokens: 7, OutputTokens: 2, ServiceTier: "default"}
+	var chatOut bytes.Buffer
+	if err := WriteChatCompletionResponse(
+		&chatOut,
+		"chatcmpl_tier",
+		chat.Model,
+		"PONG",
+		"",
+		nil,
+		7,
+		2,
+		usage,
+		123,
+		"stop",
+	); err != nil {
+		t.Fatalf("WriteChatCompletionResponse: %v", err)
+	}
+	var chatPayload map[string]any
+	if err := json.Unmarshal(chatOut.Bytes(), &chatPayload); err != nil {
+		t.Fatalf("decode chat response: %v", err)
+	}
+	if chatPayload["service_tier"] != "default" {
+		t.Fatalf("chat response service_tier = %#v", chatPayload["service_tier"])
+	}
+
+	var responsesOut bytes.Buffer
+	if err := WriteResponsesResponse(
+		&responsesOut,
+		"resp_tier",
+		chat.Model,
+		"PONG",
+		nil,
+		7,
+		2,
+		usage,
+		123,
+		nil,
+		chat.Response,
+	); err != nil {
+		t.Fatalf("WriteResponsesResponse: %v", err)
+	}
+	var responsesPayload map[string]any
+	if err := json.Unmarshal(responsesOut.Bytes(), &responsesPayload); err != nil {
+		t.Fatalf("decode Responses response: %v", err)
+	}
+	if responsesPayload["service_tier"] != "default" {
+		t.Fatalf("Responses service_tier = %#v", responsesPayload["service_tier"])
+	}
+}
+
 // When the upstream reported no cache/reasoning detail (or usage is nil on the
 // estimate fallback), the detail sub-objects must be omitted, not emitted as 0.
 func TestWriteChatCompletionResponseOmitsZeroDetails(t *testing.T) {

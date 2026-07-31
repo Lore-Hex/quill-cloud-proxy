@@ -215,6 +215,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 		ToolChoice:     toolChoice,
 		ParallelTools:  req.ParallelToolCalls,
 		Reasoning:      req.Reasoning,
+		ServiceTier:    req.ServiceTier,
 		Response: &types.ResponseRequestMeta{
 			Include:              req.Include,
 			Modalities:           req.Modalities,
@@ -603,6 +604,9 @@ func WriteResponsesResponse(
 		cacheCreationTokens = usage.CacheCreationInputTokens
 		reasoningTokens = usage.ReasoningTokens
 		inputExcludesCache = usage.InputExcludesCache
+		if meta != nil && usage.ServiceTier != "" {
+			meta.ActualServiceTier = usage.ServiceTier
+		}
 	}
 	// Fold Anthropic's cache tokens back into the prompt total so input_tokens is
 	// the FULL prompt with input_tokens_details.cached_tokens as a subset — the
@@ -668,6 +672,7 @@ func TransformResponsesStream(
 	toolDone := map[int]bool{}
 	thinkingByIndex := map[int]*ThinkingBlock{}
 	var thinkingOrder []int
+	var usage *StreamUsage
 	seq := 0
 	if err := writeResponseEventSeq(w, &seq, "response.created", map[string]any{
 		"type":     "response.created",
@@ -939,6 +944,10 @@ func TransformResponsesStream(
 					finishReason = mapStopReason(reason)
 				}
 			}
+			mergeUsage(&usage, getMap(dataJSON, "usage"))
+			if meta != nil && usage != nil && usage.ServiceTier != "" {
+				meta.ActualServiceTier = usage.ServiceTier
+			}
 		case "message_stop":
 			toolCalls := orderedToolCalls(toolCallsByIndex, toolOrder)
 			if err := finishReasoning(); err != nil {
@@ -949,7 +958,7 @@ func TransformResponsesStream(
 					return StreamResult{}, err
 				}
 			}
-			return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex)
+			return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex)
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
@@ -964,7 +973,7 @@ func TransformResponsesStream(
 			return StreamResult{}, err
 		}
 	}
-	return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex)
+	return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex)
 }
 
 func finishResponsesStream(
@@ -976,6 +985,7 @@ func finishResponsesStream(
 	text string,
 	toolCalls []types.ToolCall,
 	thinking []ThinkingBlock,
+	usage *StreamUsage,
 	inputTokens int,
 	created int64,
 	finishReason string,
@@ -985,6 +995,23 @@ func finishResponsesStream(
 	messageOutputIndex int,
 ) (StreamResult, error) {
 	outputTokens := estimateTextTokens(ResponsesOutputForUsage(StreamResult{Text: text, ToolCalls: toolCalls}))
+	cachedTokens := 0
+	reasoningTokens := 0
+	if usage != nil {
+		if usage.InputTokens > 0 {
+			inputTokens = foldedPromptTokens(
+				usage.InputTokens,
+				usage.CacheReadInputTokens,
+				usage.CacheCreationInputTokens,
+				usage.InputExcludesCache,
+			)
+		}
+		if usage.OutputTokens > 0 {
+			outputTokens = usage.OutputTokens
+		}
+		cachedTokens = usage.CacheReadInputTokens
+		reasoningTokens = usage.ReasoningTokens
+	}
 	events := []struct {
 		name string
 		body map[string]any
@@ -1026,7 +1053,7 @@ func finishResponsesStream(
 		body map[string]any
 	}{"response.completed", map[string]any{
 		"type":     "response.completed",
-		"response": responsesObject(responseID, model, text, toolCalls, inputTokens, outputTokens, 0, 0, created, "completed", textConfig, meta),
+		"response": responsesObject(responseID, model, text, toolCalls, inputTokens, outputTokens, cachedTokens, reasoningTokens, created, "completed", textConfig, meta),
 	}})
 	for _, event := range events {
 		if err := writeResponseEventSeq(w, seq, event.name, event.body); err != nil {
@@ -1034,7 +1061,7 @@ func finishResponsesStream(
 		}
 	}
 	_, err := w.Write([]byte("data: [DONE]\n\n"))
-	return StreamResult{Text: text, FinishReason: finishReason, ToolCalls: toolCalls, Thinking: thinking}, err
+	return StreamResult{Text: text, FinishReason: finishReason, ToolCalls: toolCalls, Thinking: thinking, Usage: usage}, err
 }
 
 func responsesObject(
@@ -1116,6 +1143,15 @@ func responsesObject(
 		"top_p":       1,
 		"truncation":  "disabled",
 		"usage":       usage,
+	}
+	if meta != nil {
+		serviceTier := strings.TrimSpace(meta.ActualServiceTier)
+		if serviceTier == "" {
+			serviceTier = strings.TrimSpace(meta.ServiceTier)
+		}
+		if serviceTier != "" {
+			payload["service_tier"] = serviceTier
+		}
 	}
 	if status == "completed" && meta != nil && len(meta.OpenRouterMetadata) > 0 {
 		payload["openrouter_metadata"] = meta.OpenRouterMetadata

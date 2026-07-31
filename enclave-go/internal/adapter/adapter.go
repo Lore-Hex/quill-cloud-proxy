@@ -509,6 +509,7 @@ type StreamUsage struct {
 	InputTokens     int
 	OutputTokens    int
 	ReasoningTokens int // subset of OutputTokens; 0 when not reported
+	ServiceTier     string
 	// Prompt-cache accounting. CacheReadInputTokens were served from the
 	// provider's prompt cache (Anthropic cache_read_input_tokens, OpenAI
 	// prompt_tokens_details.cached_tokens, Gemini cachedContentTokenCount);
@@ -584,6 +585,9 @@ func WriteChatCompletionResponse(
 			},
 		},
 		"usage": chatCompletionUsage(inputTokens, outputTokens, cachedTokens, cacheCreationTokens, reasoningTokens, inputExcludesCache),
+	}
+	if usage != nil && usage.ServiceTier != "" {
+		payload["service_tier"] = usage.ServiceTier
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -918,7 +922,8 @@ func mergeUsage(usage **StreamUsage, m map[string]any) {
 	reasoning := getInt(m, "reasoning_tokens")
 	cacheRead := getInt(m, "cache_read_input_tokens")
 	cacheCreation := getInt(m, "cache_creation_input_tokens")
-	if in == 0 && out == 0 && reasoning == 0 && cacheRead == 0 && cacheCreation == 0 {
+	serviceTier := getString(m, "service_tier")
+	if in == 0 && out == 0 && reasoning == 0 && cacheRead == 0 && cacheCreation == 0 && serviceTier == "" {
 		return
 	}
 	if *usage == nil {
@@ -938,6 +943,9 @@ func mergeUsage(usage **StreamUsage, m map[string]any) {
 	}
 	if cacheCreation > 0 {
 		(*usage).CacheCreationInputTokens = cacheCreation
+	}
+	if serviceTier != "" {
+		(*usage).ServiceTier = serviceTier
 	}
 }
 
@@ -1008,6 +1016,9 @@ func writeUsageChunk(w io.Writer, id, model string, created int64, usage *Stream
 		"model":   model,
 		"choices": []map[string]any{},
 		"usage":   usageBody,
+	}
+	if usage.ServiceTier != "" {
+		chunk["service_tier"] = usage.ServiceTier
 	}
 	body, err := json.Marshal(chunk)
 	if err != nil {

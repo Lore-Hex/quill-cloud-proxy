@@ -214,6 +214,7 @@ type OpenAIChatRequest struct {
 	TopLogprobs         *int                 `json:"top_logprobs,omitempty"`
 	Reasoning           any                  `json:"reasoning,omitempty"`
 	ReasoningEffort     string               `json:"reasoning_effort,omitempty"`
+	ServiceTier         string               `json:"service_tier,omitempty"`
 	Provider            *ProviderRouting     `json:"provider,omitempty"`
 	Metadata            map[string]any       `json:"metadata,omitempty"`
 	Trace               map[string]any       `json:"trace,omitempty"`
@@ -379,6 +380,7 @@ type ResponseRequestMeta struct {
 	PromptCacheKey       string
 	SafetyIdentifier     string
 	ServiceTier          string
+	ActualServiceTier    string
 	StreamOptions        map[string]any
 	Text                 map[string]any
 	ToolChoice           any

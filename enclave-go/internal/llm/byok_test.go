@@ -137,6 +137,31 @@ func TestBuildOpenAICompatibleRequestCarriesInboundParams(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICompatibleRequestCarriesOpenAIServiceTier(t *testing.T) {
+	req := &qtypes.OpenAIChatRequest{ServiceTier: "priority"}
+	got := buildOpenAICompatibleRequest(
+		"openai",
+		"gpt-5.6-sol",
+		req,
+		&qtypes.AnthropicMessagesRequest{},
+		[]chatMessage{{Role: "user", Content: "hi"}},
+	)
+	if got.ServiceTier != "priority" {
+		t.Fatalf("service_tier = %q, want priority", got.ServiceTier)
+	}
+
+	otherProvider := buildOpenAICompatibleRequest(
+		"together",
+		"openai/gpt-oss-120b",
+		req,
+		&qtypes.AnthropicMessagesRequest{},
+		[]chatMessage{{Role: "user", Content: "hi"}},
+	)
+	if otherProvider.ServiceTier != "" {
+		t.Fatalf("non-OpenAI service_tier = %q, want omitted", otherProvider.ServiceTier)
+	}
+}
+
 func TestBuildGoogleAIStudioRequestUsesCostConsciousFlashReasoningDefaults(t *testing.T) {
 	cases := []struct {
 		name   string

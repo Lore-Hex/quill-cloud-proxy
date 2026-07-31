@@ -43,6 +43,7 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 	toolCalls := map[int]*openAIToolCallAccumulator{}
 	var toolOrder []int
 	var usage *openAIStreamUsage
+	serviceTier := ""
 	thinkingStarted := false
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -55,7 +56,8 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 		}
 
 		var chunk struct {
-			Choices []struct {
+			ServiceTier string `json:"service_tier"`
+			Choices     []struct {
 				Delta struct {
 					Content string `json:"content"`
 					// Several Chinese OpenAI-compatible providers (Z.AI/Zhipu,
@@ -87,8 +89,17 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue
 		}
-		if chunk.Usage != nil && (chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0) {
+		if chunk.ServiceTier != "" {
+			serviceTier = chunk.ServiceTier
+		}
+		if chunk.Usage != nil {
 			usage = chunk.Usage
+		}
+		if usage == nil && serviceTier != "" {
+			usage = &openAIStreamUsage{}
+		}
+		if usage != nil && serviceTier != "" {
+			usage.ServiceTier = serviceTier
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -170,8 +181,9 @@ type openAIStreamUsage struct {
 	//   DeepSeek ("context caching on disk", on by default) -> usage.prompt_cache_hit_tokens
 	// Without these, those providers' cache hits are silently dropped because
 	// the gateway only read the OpenAI-standard nested field.
-	CachedTokensTop      int `json:"cached_tokens"`
-	PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
+	CachedTokensTop      int    `json:"cached_tokens"`
+	PromptCacheHitTokens int    `json:"prompt_cache_hit_tokens"`
+	ServiceTier          string `json:"-"`
 }
 
 // cachedTokens returns the prompt-cache hit count, normalizing across the
@@ -330,6 +342,9 @@ func writeAnthropicStop(w io.Writer, stopReason string, usage *openAIStreamUsage
 		}
 		if cached := usage.cachedTokens(); cached > 0 {
 			usageBody["cache_read_input_tokens"] = cached
+		}
+		if usage.ServiceTier != "" {
+			usageBody["service_tier"] = usage.ServiceTier
 		}
 		mDelta["usage"] = usageBody
 	}

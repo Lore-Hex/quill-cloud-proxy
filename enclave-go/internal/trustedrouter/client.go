@@ -194,6 +194,7 @@ type Usage struct {
 	CacheReadInputTokens       int
 	CacheCreationInputTokens   int
 	AdditionalCostMicrodollars int
+	ServiceTier                string
 }
 
 func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest) (*Authorization, error) {
@@ -245,6 +246,9 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	}
 	if req.AdditionalCostReservationMicrodollars > 0 {
 		body["additional_cost_reservation_microdollars"] = req.AdditionalCostReservationMicrodollars
+	}
+	if req.ServiceTier != "" {
+		body["service_tier"] = req.ServiceTier
 	}
 	if len(req.Models) > 0 {
 		body["models"] = req.Models
@@ -457,6 +461,9 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	}
 	if usage.CacheCreationInputTokens > 0 {
 		body["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+	}
+	if usage.ServiceTier != "" {
+		body["service_tier"] = usage.ServiceTier
 	}
 	var decoded struct {
 		Data SettleResult `json:"data"`

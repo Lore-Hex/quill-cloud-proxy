@@ -86,6 +86,7 @@ type openAICompatibleRequest struct {
 	Thinking            any                `json:"thinking,omitempty"`
 	Reasoning           any                `json:"reasoning,omitempty"`
 	ReasoningEffort     string             `json:"reasoning_effort,omitempty"`
+	ServiceTier         string             `json:"service_tier,omitempty"`
 	// StreamOptions asks the upstream for the final usage-bearing chunk
 	// (stream_options.include_usage). Always sent: real token counts feed
 	// settlement (replacing chars/4 estimates that miscounted reasoning
@@ -287,6 +288,14 @@ func buildOpenAICompatibleRequest(
 		}
 	}
 	if req != nil {
+		if normalizeDirectProvider(provider) == "openai" {
+			reqBody.ServiceTier = strings.TrimSpace(req.ServiceTier)
+			if reqBody.ServiceTier == "" {
+				// Keep billing predictable even if the operator's OpenAI
+				// project default changes to Priority later.
+				reqBody.ServiceTier = "default"
+			}
+		}
 		reqBody.Reasoning = req.Reasoning
 		reqBody.ReasoningEffort = req.ReasoningEffort
 		reqBody.Tools = req.Tools
