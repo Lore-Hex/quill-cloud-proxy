@@ -230,10 +230,13 @@ type OpenAIChatRequest struct {
 	Response            *ResponseRequestMeta `json:"-"`
 	ResponseModel       string               `json:"-"`
 	IdempotencyKey      string               `json:"-"`
-	App                 string               `json:"-"`
-	HTTPReferer         string               `json:"-"`
-	AppCategories       []string             `json:"-"`
-	OpenRouterMetadata  bool                 `json:"-"`
+	// RequestFingerprint is an enclave-generated, keyed digest used to bind
+	// asynchronous idempotency keys to content without exposing that content.
+	RequestFingerprint string   `json:"-"`
+	App                string   `json:"-"`
+	HTTPReferer        string   `json:"-"`
+	AppCategories      []string `json:"-"`
+	OpenRouterMetadata bool     `json:"-"`
 	// Internal hosted-tool billing fields. They are never decoded from or
 	// encoded into the caller's JSON request; only enclave-owned orchestration
 	// sets them before authorize/settle.
