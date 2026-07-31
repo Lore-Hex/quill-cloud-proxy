@@ -1122,11 +1122,7 @@ func serveStreaming(
 		settlementRetries.Enqueue(settlementRetryJob{
 			trGateway:     trGateway,
 			authorization: authorization,
-			secretCache:   secretCache,
 			usage:         usage,
-			req:           req,
-			originalInput: originalInput,
-			output:        adapter.ResponsesOutputForUsage(result),
 			requestLogID:  requestLogID,
 		})
 	}
@@ -1328,11 +1324,7 @@ func serveMessages(
 		settlementRetries.Enqueue(settlementRetryJob{
 			trGateway:     trGateway,
 			authorization: authorization,
-			secretCache:   byokSecrets,
 			usage:         usage,
-			req:           req,
-			originalInput: native.Messages,
-			output:        result.Text,
 			requestLogID:  requestLogID,
 		})
 	}

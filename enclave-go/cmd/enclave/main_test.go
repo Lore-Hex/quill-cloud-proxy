@@ -66,6 +66,67 @@ func TestSettlementRetryQueueDropsOldestWhenFull(t *testing.T) {
 	}
 }
 
+func TestSettlementRetryQueueRetainsOnlyBillingState(t *testing.T) {
+	q := &settlementRetryQueue{
+		jobs:        make(chan settlementRetryJob, 1),
+		maxAttempts: 2,
+	}
+	authz := &trustedrouter.Authorization{
+		AuthorizationID:       "auth_retry",
+		WorkspaceID:           "workspace-private",
+		Model:                 "openai/gpt-4o-mini",
+		EndpointID:            "openai/gpt-4o-mini@openai/prepaid",
+		RouteCandidates:       []trustedrouter.RouteCandidate{{Provider: "openai"}},
+		BroadcastDestinations: []trustedrouter.BroadcastDestination{{ID: "private"}},
+	}
+	usage := trustedrouter.Usage{
+		RequestID:     "request_retry",
+		InputTokens:   12,
+		OutputTokens:  34,
+		SelectedModel: "openai/gpt-4o-mini",
+		User:          "private-user",
+		SessionID:     "private-session",
+		Trace:         map[string]any{"private": strings.Repeat("x", 1024)},
+		Metadata:      map[string]any{"private": strings.Repeat("y", 1024)},
+		App:           strings.Repeat("a", 1024),
+		HTTPReferer:   strings.Repeat("r", 1024),
+		AppCategories: []string{strings.Repeat("c", 1024)},
+		FinishReason:  "stop",
+		ServiceTier:   "default",
+	}
+
+	if !q.Enqueue(settlementRetryJob{authorization: authz, usage: usage}) {
+		t.Fatal("retry enqueue failed")
+	}
+	queued := <-q.jobs
+	if queued.authorization == authz {
+		t.Fatal("retry retained the full authorization object")
+	}
+	if queued.authorization.AuthorizationID != authz.AuthorizationID ||
+		queued.authorization.Model != authz.Model ||
+		queued.authorization.EndpointID != authz.EndpointID {
+		t.Fatalf("billing authorization fields changed: %#v", queued.authorization)
+	}
+	if queued.authorization.WorkspaceID != "" ||
+		len(queued.authorization.RouteCandidates) != 0 ||
+		len(queued.authorization.BroadcastDestinations) != 0 {
+		t.Fatalf("retry retained non-billing authorization state: %#v", queued.authorization)
+	}
+	if queued.usage.RequestID != usage.RequestID || queued.usage.InputTokens != 12 ||
+		queued.usage.OutputTokens != 34 || queued.usage.ServiceTier != "default" {
+		t.Fatalf("billing usage fields changed: %#v", queued.usage)
+	}
+	if queued.usage.User != "" || queued.usage.SessionID != "" ||
+		queued.usage.Trace != nil || queued.usage.Metadata != nil ||
+		queued.usage.App != "" || queued.usage.HTTPReferer != "" ||
+		queued.usage.AppCategories != nil {
+		t.Fatalf("retry retained prompt-adjacent request state: %#v", queued.usage)
+	}
+	if authz.WorkspaceID != "workspace-private" || len(authz.RouteCandidates) != 1 {
+		t.Fatal("compaction mutated the live authorization")
+	}
+}
+
 func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
 	var settleCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +169,6 @@ func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
 			Streamed:       true,
 			RouteType:      "chat.completions",
 		},
-		req: &types.OpenAIChatRequest{Model: "openai/gpt-4o-mini"},
 	}
 	q.process(context.Background(), job)
 	retry := <-q.jobs
