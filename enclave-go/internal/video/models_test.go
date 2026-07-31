@@ -32,12 +32,14 @@ func TestLaunchModelsIncludeHailuo3H3(t *testing.T) {
 }
 
 func TestResolveHailuo3UsesH3ProviderModelAndContentFreeQuote(t *testing.T) {
+	generateAudio := true
 	req := &CreateRequest{
 		Model:          "minimax/hailuo-3",
 		Prompt:         "PRIVATE prompt that must not be quoted",
 		NegativePrompt: "PRIVATE negative prompt",
 		Duration:       5,
 		Resolution:     "2K",
+		GenerateAudio:  &generateAudio,
 	}
 	model, queue, quote, err := Resolve(req)
 	if err != nil {
@@ -52,6 +54,9 @@ func TestResolveHailuo3UsesH3ProviderModelAndContentFreeQuote(t *testing.T) {
 	if queue["prompt"] != req.Prompt || queue["negative_prompt"] != req.NegativePrompt {
 		t.Fatalf("queue payload lost request content: %#v", queue)
 	}
+	if _, found := queue["audio"]; found {
+		t.Fatalf("H3 audio is always-on; provider payload must omit its non-configurable audio field: %#v", queue)
+	}
 	serialized, _ := json.Marshal(quote)
 	if strings.Contains(string(serialized), "PRIVATE") || quote["prompt"] != nil || quote["negative_prompt"] != nil {
 		t.Fatalf("quote leaked content: %s", serialized)
@@ -59,6 +64,44 @@ func TestResolveHailuo3UsesH3ProviderModelAndContentFreeQuote(t *testing.T) {
 	if quote["model"] != "minimax-h3-text-to-video" || quote["resolution"] != "2K" {
 		t.Fatalf("bad quote settings: %#v", quote)
 	}
+}
+
+func TestResolveHailuo3RejectsDisablingAlwaysOnAudio(t *testing.T) {
+	generateAudio := false
+	_, _, _, err := Resolve(&CreateRequest{
+		Model: "minimax/hailuo-3", Prompt: "move", GenerateAudio: &generateAudio,
+	})
+	if err == nil || err.Error() != "model always generates audio and does not support disabling it" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestResolveNormalizesAudioFlagsByProviderCapability(t *testing.T) {
+	t.Run("configurable model forwards true", func(t *testing.T) {
+		_, queue, quote, err := Resolve(&CreateRequest{
+			Model: "bytedance/seedance-2.0-fast", Prompt: "move", GenerateAudio: boolPointer(true),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if queue["audio"] != true || quote["audio"] != true {
+			t.Fatalf("audio flags queue=%#v quote=%#v", queue, quote)
+		}
+	})
+	t.Run("video-only model omits explicit false", func(t *testing.T) {
+		_, queue, quote, err := Resolve(&CreateRequest{
+			Model: "google/gemini-omni-flash", Prompt: "move", GenerateAudio: boolPointer(false),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, found := queue["audio"]; found {
+			t.Fatalf("queue forwarded unsupported false audio toggle: %#v", queue)
+		}
+		if _, found := quote["audio"]; found {
+			t.Fatalf("quote forwarded unsupported false audio toggle: %#v", quote)
+		}
+	})
 }
 
 func TestResolveSelectsImageAndReferenceVariants(t *testing.T) {
@@ -163,6 +206,9 @@ func TestModelsJSONIsTruthfulAboutProviderPrivacy(t *testing.T) {
 		case "minimax/hailuo-3":
 			if modalities != "text,image,audio" {
 				t.Fatalf("H3 modalities = %q", modalities)
+			}
+			if row.TrustedRouter["audio_mode"] != "always" {
+				t.Fatalf("H3 audio mode = %#v", row.TrustedRouter["audio_mode"])
 			}
 		}
 	}

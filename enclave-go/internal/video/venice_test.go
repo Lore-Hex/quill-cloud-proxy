@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -95,6 +96,63 @@ func TestQueueRetrieveDownloadAndComplete(t *testing.T) {
 	}
 	if len(requests) != 4 {
 		t.Fatalf("request count = %d: %#v", len(requests), requests)
+	}
+}
+
+func TestCompleteFallsBackToDeleteOnRetrieveAfterProviderBadRequest(t *testing.T) {
+	requests := 0
+	client := NewVeniceClient("venice-secret", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		switch req.URL.Path {
+		case "/api/v1/video/complete":
+			return response(400, "application/json", `{"error":"Request ID is invalid."}`), nil
+		case "/api/v1/video/retrieve":
+			var payload map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["delete_media_on_completion"] != true {
+				t.Fatalf("cleanup retrieve payload = %#v", payload)
+			}
+			return response(200, "video/mp4", "provider-copy"), nil
+		default:
+			t.Fatalf("unexpected path %q", req.URL.Path)
+			return nil, nil
+		}
+	})})
+	if err := client.Complete(context.Background(), "minimax-h3-text-to-video", "queue-1"); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("request count = %d, want 2", requests)
+	}
+}
+
+func TestCompleteFallbackTreatsMissingMediaAsCleaned(t *testing.T) {
+	client := NewVeniceClient("venice-secret", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/api/v1/video/complete" {
+			return response(400, "application/json", `{"error":"Request ID is invalid."}`), nil
+		}
+		return response(404, "application/json", `{"error":"record not found"}`), nil
+	})})
+	if err := client.Complete(context.Background(), "model", "queue-1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCompleteDoesNotHideRetryableProviderFailure(t *testing.T) {
+	requests := 0
+	client := NewVeniceClient("venice-secret", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		return response(503, "application/json", `{"error":"unavailable"}`), nil
+	})})
+	err := client.Complete(context.Background(), "model", "queue-1")
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || !httpErr.Retryable || httpErr.Status != 503 {
+		t.Fatalf("error = %#v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("request count = %d, want 1", requests)
 	}
 }
 

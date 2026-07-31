@@ -53,6 +53,7 @@ type Model struct {
 	ImageProviderModel     string
 	ReferenceProviderModel string
 	SupportsAudio          bool
+	AudioAlwaysOn          bool
 	SupportsImage          bool
 	SupportsReferences     bool
 	SupportsAudioReference bool
@@ -135,7 +136,7 @@ var models = map[string]Model{
 		TextProviderModel:      "minimax-h3-text-to-video",
 		ImageProviderModel:     "minimax-h3-image-to-video",
 		ReferenceProviderModel: "minimax-h3-reference-to-video",
-		SupportsAudio:          true, SupportsImage: true, SupportsReferences: true,
+		AudioAlwaysOn:          true, SupportsImage: true, SupportsReferences: true,
 		SupportsAudioReference: true,
 		PromptCharacterLimit:   2500, MinimumDuration: 5, MaximumDuration: 15,
 		AllowedResolutions:    []string{"2K"},
@@ -223,10 +224,22 @@ func Resolve(req *CreateRequest) (Model, map[string]any, map[string]any, error) 
 		queue["negative_prompt"] = req.NegativePrompt
 	}
 	if req.GenerateAudio != nil {
-		if *req.GenerateAudio && !model.SupportsAudio {
+		switch {
+		case model.AudioAlwaysOn:
+			if !*req.GenerateAudio {
+				return Model{}, nil, nil, fmt.Errorf("model always generates audio and does not support disabling it")
+			}
+			// Venice advertises H3 audio as always-on and rejects an explicit
+			// audio field, even when it is true. Accept the portable request
+			// semantic while omitting the invalid provider toggle.
+		case model.SupportsAudio:
+			queue["audio"] = *req.GenerateAudio
+		case *req.GenerateAudio:
 			return Model{}, nil, nil, fmt.Errorf("model does not support generated audio")
+		default:
+			// An explicit false is equivalent to the default for video-only
+			// models. Do not forward a field the provider does not support.
 		}
-		queue["audio"] = *req.GenerateAudio
 	}
 	if req.Seed != nil {
 		queue["seed"] = *req.Seed
@@ -477,8 +490,14 @@ func ModelsJSON() ([]byte, error) {
 			inputModalities = append(inputModalities, "video")
 		}
 		parameters := []string{"prompt", "duration", "resolution", "aspect_ratio", "size", "seed"}
-		if model.SupportsAudio {
+		if model.SupportsAudio || model.AudioAlwaysOn {
 			parameters = append(parameters, "generate_audio")
+		}
+		audioMode := "none"
+		if model.SupportsAudio {
+			audioMode = "configurable"
+		} else if model.AudioAlwaysOn {
+			audioMode = "always"
 		}
 		if model.SupportsImage {
 			parameters = append(parameters, "frame_images")
@@ -497,6 +516,7 @@ func ModelsJSON() ([]byte, error) {
 				"provider_e2ee":                false,
 				"provider_zero_data_retention": false,
 				"stores_content":               false,
+				"audio_mode":                   audioMode,
 				"provider_temporarily_stores_generated_media": true,
 			},
 		})

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -147,10 +148,19 @@ func (c *VeniceClient) Complete(ctx context.Context, providerModel, queueID stri
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
 	if err := requireSuccess(resp); err != nil {
-		return err
+		resp.Body.Close()
+		var httpErr *HTTPError
+		if !errors.As(err, &httpErr) || httpErr.Status != http.StatusBadRequest {
+			return err
+		}
+		// Venice currently returns 400 from /complete for some VPS-backed
+		// video models even though the queue remains retrievable. Its documented
+		// delete-on-retrieve path is the reliable cleanup fallback. This runs
+		// only after TrustedRouter has delivered the full response to the client.
+		return c.deleteOnRetrieve(ctx, providerModel, queueID)
 	}
+	defer resp.Body.Close()
 	var body struct {
 		Success bool `json:"success"`
 	}
@@ -158,6 +168,39 @@ func (c *VeniceClient) Complete(ctx context.Context, providerModel, queueID stri
 		return fmt.Errorf("venice video cleanup failed")
 	}
 	return nil
+}
+
+func (c *VeniceClient) deleteOnRetrieve(ctx context.Context, providerModel, queueID string) error {
+	resp, err := c.post(ctx, "/retrieve", map[string]any{
+		"model": providerModel, "queue_id": queueID, "delete_media_on_completion": true,
+	})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if err := requireSuccess(resp); err != nil {
+		return err
+	}
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if strings.HasPrefix(contentType, "video/") || strings.HasPrefix(contentType, "application/octet-stream") {
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			return fmt.Errorf("venice video cleanup stream failed: %w", err)
+		}
+		return nil
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 128*1024)).Decode(&body); err != nil {
+		return fmt.Errorf("venice video cleanup: invalid response")
+	}
+	if strings.EqualFold(body.Status, "COMPLETED") {
+		return nil
+	}
+	return fmt.Errorf("venice video cleanup is not ready")
 }
 
 func (c *VeniceClient) Download(ctx context.Context, rawURL string) (*PollResult, error) {
