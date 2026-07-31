@@ -39,12 +39,21 @@ var (
 
 type responseStatsConn struct {
 	net.Conn
+	writeMu       sync.Mutex
 	mu            sync.Mutex
 	status        int
 	responseBytes int
 }
 
 func (c *responseStatsConn) Write(p []byte) (int, error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if responseWriteTimeout > 0 {
+		_ = c.Conn.SetWriteDeadline(time.Now().Add(responseWriteTimeout))
+		defer func() {
+			_ = c.Conn.SetWriteDeadline(time.Time{})
+		}()
+	}
 	n, err := c.Conn.Write(p)
 	c.mu.Lock()
 	defer c.mu.Unlock()

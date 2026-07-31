@@ -2,10 +2,12 @@ package broadcast
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
@@ -15,10 +17,12 @@ import (
 const (
 	defaultContentQueueSize    = 256
 	defaultContentQueueWorkers = 2
+	defaultContentQueueBytes   = 64 << 20
+	defaultContentJobBytes     = 16 << 20
 )
 
 // Job carries opt-in prompt/output export material. It is intentionally
-// memory-only and bounded by Queue capacity.
+// memory-only and bounded by both Queue capacity and an aggregate byte budget.
 type Job struct {
 	Cache        *byokcache.Cache
 	Destinations []trustedrouter.BroadcastDestination
@@ -28,21 +32,34 @@ type Job struct {
 }
 
 type QueueOptions struct {
-	Size       int
-	Workers    int
-	HTTPClient *http.Client
+	Size        int
+	Workers     int
+	MaxBytes    int
+	MaxJobBytes int
+	HTTPClient  *http.Client
 }
 
 type Queue struct {
-	jobs    chan Job
-	workers int
-	httpc   *http.Client
+	jobs        chan queuedJob
+	workers     int
+	maxBytes    int
+	maxJobBytes int
+	httpc       *http.Client
+	mu          sync.Mutex
+	queuedBytes int
+}
+
+type queuedJob struct {
+	Job
+	bytes int
 }
 
 func NewQueueFromEnv() *Queue {
 	return NewQueue(QueueOptions{
-		Size:    envInt("QUILL_BROADCAST_CONTENT_QUEUE_SIZE", defaultContentQueueSize),
-		Workers: envInt("QUILL_BROADCAST_CONTENT_WORKERS", defaultContentQueueWorkers),
+		Size:        envInt("QUILL_BROADCAST_CONTENT_QUEUE_SIZE", defaultContentQueueSize),
+		Workers:     envInt("QUILL_BROADCAST_CONTENT_WORKERS", defaultContentQueueWorkers),
+		MaxBytes:    envInt("QUILL_BROADCAST_CONTENT_QUEUE_MAX_BYTES", defaultContentQueueBytes),
+		MaxJobBytes: envInt("QUILL_BROADCAST_CONTENT_JOB_MAX_BYTES", defaultContentJobBytes),
 	})
 }
 
@@ -53,14 +70,25 @@ func NewQueue(options QueueOptions) *Queue {
 	if options.Workers <= 0 {
 		options.Workers = defaultContentQueueWorkers
 	}
+	if options.MaxBytes <= 0 {
+		options.MaxBytes = defaultContentQueueBytes
+	}
+	if options.MaxJobBytes <= 0 {
+		options.MaxJobBytes = defaultContentJobBytes
+	}
+	if options.MaxJobBytes > options.MaxBytes {
+		options.MaxJobBytes = options.MaxBytes
+	}
 	httpc := options.HTTPClient
 	if httpc == nil {
 		httpc = &http.Client{Timeout: 5 * time.Second}
 	}
 	return &Queue{
-		jobs:    make(chan Job, options.Size),
-		workers: options.Workers,
-		httpc:   httpc,
+		jobs:        make(chan queuedJob, options.Size),
+		workers:     options.Workers,
+		maxBytes:    options.MaxBytes,
+		maxJobBytes: options.MaxJobBytes,
+		httpc:       httpc,
 	}
 }
 
@@ -86,20 +114,33 @@ func (q *Queue) Enqueue(job Job) bool {
 		logContentDrop("queue_disabled", job)
 		return false
 	}
-	select {
-	case q.jobs <- job:
-		return true
-	default:
+	inputJSON, err := json.Marshal(job.Input)
+	if err != nil {
+		logContentDrop("input_encode_failed", job)
+		return false
 	}
-
-	select {
-	case dropped := <-q.jobs:
-		logContentDrop("drop_oldest", dropped)
-	default:
+	jobBytes := len(inputJSON) + len(job.Output)
+	if jobBytes > q.maxJobBytes {
+		logContentDrop("job_too_large", job)
+		return false
 	}
+	queued := queuedJob{Job: job, bytes: jobBytes}
 
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for len(q.jobs) >= cap(q.jobs) || q.queuedBytes+jobBytes > q.maxBytes {
+		select {
+		case dropped := <-q.jobs:
+			q.queuedBytes -= dropped.bytes
+			logContentDrop("drop_oldest", dropped.Job)
+		default:
+			logContentDrop("queue_full", job)
+			return false
+		}
+	}
 	select {
-	case q.jobs <- job:
+	case q.jobs <- queued:
+		q.queuedBytes += jobBytes
 		return true
 	default:
 		logContentDrop("queue_full", job)
@@ -112,15 +153,18 @@ func (q *Queue) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case job := <-q.jobs:
+		case queued := <-q.jobs:
+			q.mu.Lock()
+			q.queuedBytes -= queued.bytes
+			q.mu.Unlock()
 			DeliverContent(
 				ctx,
 				q.httpc,
-				job.Cache,
-				job.Destinations,
-				job.Generation,
-				job.Input,
-				job.Output,
+				queued.Cache,
+				queued.Destinations,
+				queued.Generation,
+				queued.Input,
+				queued.Output,
 			)
 		}
 	}

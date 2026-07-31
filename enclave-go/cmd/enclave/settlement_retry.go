@@ -7,9 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 const (
@@ -24,11 +22,7 @@ var settlementRetries = newSettlementRetryQueueFromEnv()
 type settlementRetryJob struct {
 	trGateway     *trustedrouter.Client
 	authorization *trustedrouter.Authorization
-	secretCache   *byokcache.Cache
 	usage         trustedrouter.Usage
-	req           *types.OpenAIChatRequest
-	originalInput any
-	output        string
 	requestLogID  string
 	attempt       int
 	enqueuedAt    time.Time
@@ -88,6 +82,7 @@ func (q *settlementRetryQueue) Enqueue(job settlementRetryJob) bool {
 	if job.attempt <= 0 {
 		job.attempt = 1
 	}
+	job = compactSettlementRetryJob(job)
 	if job.enqueuedAt.IsZero() {
 		job.enqueuedAt = time.Now()
 	}
@@ -158,6 +153,7 @@ func (q *settlementRetryQueue) run(ctx context.Context) {
 }
 
 func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJob) {
+	job = compactSettlementRetryJob(job)
 	if job.attempt <= 0 {
 		job.attempt = 1
 	}
@@ -172,16 +168,7 @@ func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJ
 		}
 	}
 
-	_, err := settleAndBroadcast(
-		ctx,
-		job.trGateway,
-		job.authorization,
-		job.secretCache,
-		job.usage,
-		job.req,
-		job.originalInput,
-		job.output,
-	)
+	_, err := job.trGateway.Settle(ctx, job.authorization, job.usage)
 	if err == nil {
 		fmt.Fprintf(os.Stderr,
 			"enclave.settlement_retry_success request_log_id=%q request_id=%q auth_id=%q attempt=%d age_ms=%d\n",
@@ -215,6 +202,27 @@ func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJ
 	}
 	job.attempt++
 	_ = q.Enqueue(job)
+}
+
+// compactSettlementRetryJob keeps the durable billing identity and measured
+// usage while dropping prompt-adjacent data and provider secrets. A control-
+// plane outage may fill this queue, so a count bound alone is not sufficient.
+func compactSettlementRetryJob(job settlementRetryJob) settlementRetryJob {
+	if auth := job.authorization; auth != nil {
+		job.authorization = &trustedrouter.Authorization{
+			AuthorizationID: auth.AuthorizationID,
+			Model:           auth.Model,
+			EndpointID:      auth.EndpointID,
+		}
+	}
+	job.usage.User = ""
+	job.usage.SessionID = ""
+	job.usage.Trace = nil
+	job.usage.Metadata = nil
+	job.usage.App = ""
+	job.usage.HTTPReferer = ""
+	job.usage.AppCategories = nil
+	return job
 }
 
 func (q *settlementRetryQueue) delay(attempt int) time.Duration {

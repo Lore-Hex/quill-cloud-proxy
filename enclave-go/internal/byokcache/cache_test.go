@@ -85,6 +85,48 @@ func TestResolveExpiresAfterTTL(t *testing.T) {
 	}
 }
 
+func TestResolveBoundsCachedPlaintextEntries(t *testing.T) {
+	now := time.Unix(100, 0)
+	unwrapper := &fakeUnwrapper{dek: fixedDEK()}
+	cache := New(Options{
+		TTL:        time.Hour,
+		MaxEntries: 2,
+		Unwrapper:  unwrapper,
+		Now:        func() time.Time { return now },
+	})
+
+	for _, provider := range []string{"first", "second", "third"} {
+		envelope := testEnvelope(t, "workspace-1", provider, provider+"-secret")
+		if _, _, err := cache.Resolve(
+			t.Context(),
+			"workspace-1",
+			provider,
+			Fingerprint("workspace-1", provider, envelope),
+			envelope,
+		); err != nil {
+			t.Fatalf("Resolve(%s): %v", provider, err)
+		}
+	}
+
+	if got := cache.Size(); got != 2 {
+		t.Fatalf("cache size = %d, want 2", got)
+	}
+	first := testEnvelope(t, "workspace-1", "first", "first-secret")
+	_, cached, err := cache.Resolve(
+		t.Context(),
+		"workspace-1",
+		"first",
+		Fingerprint("workspace-1", "first", first),
+		first,
+	)
+	if err != nil {
+		t.Fatalf("Resolve(evicted): %v", err)
+	}
+	if cached {
+		t.Fatal("oldest plaintext entry was not evicted")
+	}
+}
+
 func TestRotationCacheKeyForcesDecryptAndNewSecret(t *testing.T) {
 	now := time.Unix(100, 0)
 	unwrapper := &fakeUnwrapper{dek: fixedDEK()}

@@ -4,6 +4,7 @@
 package byokcache
 
 import (
+	"container/list"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -19,7 +20,10 @@ import (
 
 const Algorithm = "TR-BYOK-ENVELOPE-AES-256-GCM-V1"
 
-const defaultTTL = 2 * time.Minute
+const (
+	defaultTTL        = 2 * time.Minute
+	defaultMaxEntries = 50_000
+)
 
 // EncryptedSecretEnvelope mirrors trusted_router.storage_models.
 // It contains no plaintext provider key or plaintext DEK.
@@ -39,20 +43,24 @@ type DEKUnwrapper interface {
 }
 
 type Options struct {
-	TTL       time.Duration
-	Unwrapper DEKUnwrapper
-	Now       func() time.Time
+	TTL        time.Duration
+	MaxEntries int
+	Unwrapper  DEKUnwrapper
+	Now        func() time.Time
 }
 
 type Cache struct {
-	mu        sync.Mutex
-	ttl       time.Duration
-	unwrapper DEKUnwrapper
-	now       func() time.Time
-	entries   map[string]entry
+	mu         sync.Mutex
+	ttl        time.Duration
+	maxEntries int
+	unwrapper  DEKUnwrapper
+	now        func() time.Time
+	entries    map[string]*list.Element
+	order      list.List
 }
 
 type entry struct {
+	cacheKey    string
 	workspaceID string
 	provider    string
 	secret      string
@@ -64,15 +72,20 @@ func New(opts Options) *Cache {
 	if ttl <= 0 {
 		ttl = defaultTTL
 	}
+	maxEntries := opts.MaxEntries
+	if maxEntries <= 0 {
+		maxEntries = defaultMaxEntries
+	}
 	now := opts.Now
 	if now == nil {
 		now = time.Now
 	}
 	return &Cache{
-		ttl:       ttl,
-		unwrapper: opts.Unwrapper,
-		now:       now,
-		entries:   make(map[string]entry),
+		ttl:        ttl,
+		maxEntries: maxEntries,
+		unwrapper:  opts.Unwrapper,
+		now:        now,
+		entries:    make(map[string]*list.Element),
 	}
 }
 
@@ -95,7 +108,8 @@ func (c *Cache) Resolve(
 	now := c.now()
 	c.mu.Lock()
 	c.pruneLocked(now)
-	if cached, ok := c.entries[cacheKey]; ok && now.Before(cached.expiresAt) {
+	if element, ok := c.entries[cacheKey]; ok {
+		cached := element.Value.(entry)
 		secret := cached.secret
 		c.mu.Unlock()
 		return secret, true, nil
@@ -108,12 +122,26 @@ func (c *Cache) Resolve(
 	}
 
 	c.mu.Lock()
-	c.entries[cacheKey] = entry{
+	insertedAt := c.now()
+	c.pruneLocked(insertedAt)
+	if existing, ok := c.entries[cacheKey]; ok {
+		c.removeLocked(existing)
+	}
+	for len(c.entries) >= c.maxEntries {
+		oldest := c.order.Front()
+		if oldest == nil {
+			break
+		}
+		c.removeLocked(oldest)
+	}
+	inserted := c.order.PushBack(entry{
+		cacheKey:    cacheKey,
 		workspaceID: workspaceID,
 		provider:    provider,
 		secret:      secret,
-		expiresAt:   now.Add(c.ttl),
-	}
+		expiresAt:   insertedAt.Add(c.ttl),
+	})
+	c.entries[cacheKey] = inserted
 	c.mu.Unlock()
 	return secret, false, nil
 }
@@ -124,9 +152,10 @@ func (c *Cache) InvalidateProvider(workspaceID, provider string) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for key, cached := range c.entries {
+	for _, element := range c.entries {
+		cached := element.Value.(entry)
 		if cached.workspaceID == workspaceID && cached.provider == provider {
-			delete(c.entries, key)
+			c.removeLocked(element)
 		}
 	}
 }
@@ -137,9 +166,10 @@ func (c *Cache) InvalidateWorkspace(workspaceID string) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for key, cached := range c.entries {
+	for _, element := range c.entries {
+		cached := element.Value.(entry)
 		if cached.workspaceID == workspaceID {
-			delete(c.entries, key)
+			c.removeLocked(element)
 		}
 	}
 }
@@ -155,11 +185,23 @@ func (c *Cache) Size() int {
 }
 
 func (c *Cache) pruneLocked(now time.Time) {
-	for key, cached := range c.entries {
-		if !now.Before(cached.expiresAt) {
-			delete(c.entries, key)
+	for {
+		oldest := c.order.Front()
+		if oldest == nil {
+			return
 		}
+		cached := oldest.Value.(entry)
+		if now.Before(cached.expiresAt) {
+			return
+		}
+		c.removeLocked(oldest)
 	}
+}
+
+func (c *Cache) removeLocked(element *list.Element) {
+	cached := element.Value.(entry)
+	delete(c.entries, cached.cacheKey)
+	c.order.Remove(element)
 }
 
 func decryptEnvelope(

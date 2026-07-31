@@ -55,6 +55,10 @@ const maxAttestationsPerConn = 8
 
 var requestReadTimeout = 30 * time.Second
 
+// Bound writes to clients that stop reading without limiting provider thinking
+// time or total streaming duration. The deadline is renewed for every write.
+var responseWriteTimeout = 30 * time.Second
+
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
@@ -1118,11 +1122,7 @@ func serveStreaming(
 		settlementRetries.Enqueue(settlementRetryJob{
 			trGateway:     trGateway,
 			authorization: authorization,
-			secretCache:   secretCache,
 			usage:         usage,
-			req:           req,
-			originalInput: originalInput,
-			output:        adapter.ResponsesOutputForUsage(result),
 			requestLogID:  requestLogID,
 		})
 	}
@@ -1324,11 +1324,7 @@ func serveMessages(
 		settlementRetries.Enqueue(settlementRetryJob{
 			trGateway:     trGateway,
 			authorization: authorization,
-			secretCache:   byokSecrets,
 			usage:         usage,
-			req:           req,
-			originalInput: native.Messages,
-			output:        result.Text,
 			requestLogID:  requestLogID,
 		})
 	}
