@@ -470,6 +470,8 @@ func statusText(status int) string {
 	switch status {
 	case 200:
 		return "OK"
+	case 202:
+		return "Accepted"
 	case 400:
 		return "Bad Request"
 	case 401:
@@ -478,6 +480,12 @@ func statusText(status int) string {
 		return "Payload Too Large"
 	case 404:
 		return "Not Found"
+	case 409:
+		return "Conflict"
+	case 410:
+		return "Gone"
+	case 429:
+		return "Too Many Requests"
 	case 501:
 		return "Not Implemented"
 	case 502:

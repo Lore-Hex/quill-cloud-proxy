@@ -152,6 +152,8 @@ func main() {
 	registry := auth.New(boot.Devices)
 	br := llm.New(boot) // build-tag-gated: AWS Bedrock by default, GCP Vertex with -tags gcp
 	trGateway := trustedrouter.NewFromBootstrap(boot)
+	videoGateway = newVideoService(boot.VeniceAPIKey, trGateway)
+	videoGateway.Start(ctx)
 	var byokSecrets *byokcache.Cache
 	if trGateway.Enabled() {
 		// On AWS, NewVsockKMSClient routes oauth2 + cloudkms over the
@@ -433,6 +435,10 @@ func serveOneRequest(
 			return
 		}
 		serveEmbeddings(ctx, conn, br, body, trGateway, trEnabled, bearer, byokSecrets, idempotencyKey, attribution, requestLogID)
+		return
+	}
+
+	if maybeServeVideoRoute(ctx, conn, method, routePath, body, trGateway, bearer, idempotencyKey) {
 		return
 	}
 

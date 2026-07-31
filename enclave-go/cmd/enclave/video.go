@@ -1,0 +1,517 @@
+package main
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/video"
+)
+
+var videoGateway *videoService
+
+type videoService struct {
+	provider *video.VeniceClient
+	control  *trustedrouter.Client
+	workerID string
+}
+
+func newVideoService(apiKey string, control *trustedrouter.Client) *videoService {
+	return &videoService{
+		provider: video.NewVeniceClient(apiKey, llm.NewProviderHTTPClient()),
+		control:  control,
+		workerID: "video-" + randomHex(8),
+	}
+}
+
+func (s *videoService) Enabled() bool {
+	return s != nil && s.provider != nil && s.provider.Enabled() && s.control != nil && s.control.Enabled()
+}
+
+func (s *videoService) Start(ctx context.Context) {
+	if !s.Enabled() {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.drain(ctx)
+			}
+		}
+	}()
+}
+
+func (s *videoService) drain(ctx context.Context) {
+	claimCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	jobs, err := s.control.ClaimVideoJobs(claimCtx, s.workerID, 8, 60)
+	cancel()
+	if err != nil {
+		return
+	}
+	for i := range jobs {
+		job := jobs[i]
+		jobCtx, jobCancel := context.WithTimeout(ctx, 45*time.Second)
+		_, _ = s.pollAndFinalize(jobCtx, &job, s.workerID)
+		jobCancel()
+	}
+}
+
+func maybeServeVideoRoute(
+	ctx context.Context,
+	conn io.Writer,
+	method, routePath string,
+	body []byte,
+	trGateway *trustedrouter.Client,
+	bearer, idempotencyKey string,
+) bool {
+	if routePath != "/v1/videos" && routePath != "/v1/videos/models" && !strings.HasPrefix(routePath, "/v1/videos/") {
+		return false
+	}
+	if videoGateway == nil || !videoGateway.Enabled() || trGateway == nil || !trGateway.Enabled() {
+		writeOpenAIError(conn, 503, "video generation is temporarily unavailable", "server_error", "video_unavailable", "")
+		return true
+	}
+	if routePath == "/v1/videos/models" {
+		if method != http.MethodGet {
+			writeOpenAIError(conn, 404, "route not found", "invalid_request_error", "not_found", "")
+			return true
+		}
+		if err := trGateway.ValidateKey(ctx, bearer, "videos.models"); err != nil {
+			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
+			return true
+		}
+		out, err := video.ModelsJSON()
+		if err != nil {
+			writeOpenAIError(conn, 500, "could not serialize video models", "server_error", "internal_error", "")
+			return true
+		}
+		writeJSONResponse(conn, 200, out)
+		return true
+	}
+	if routePath == "/v1/videos" {
+		if method != http.MethodPost {
+			writeOpenAIError(conn, 404, "route not found", "invalid_request_error", "not_found", "")
+			return true
+		}
+		videoGateway.serveCreate(ctx, conn, body, bearer, idempotencyKey)
+		return true
+	}
+	jobID, content, ok := parseVideoJobPath(routePath)
+	if !ok || method != http.MethodGet {
+		writeOpenAIError(conn, 404, "route not found", "invalid_request_error", "not_found", "")
+		return true
+	}
+	if content {
+		videoGateway.serveContent(ctx, conn, bearer, jobID)
+	} else {
+		videoGateway.serveStatus(ctx, conn, bearer, jobID)
+	}
+	return true
+}
+
+func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []byte, bearer, idempotencyKey string) {
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	decoder.DisallowUnknownFields()
+	var req video.CreateRequest
+	if err := decoder.Decode(&req); err != nil {
+		writeOpenAIError(conn, 400, "invalid video request", "invalid_request_error", "bad_request", "")
+		return
+	}
+	model, queuePayload, quotePayload, err := video.Resolve(&req)
+	if err != nil {
+		var unsupported *video.UnsupportedError
+		if errors.As(err, &unsupported) {
+			writeOpenAIError(conn, 501, unsupported.Error(), "not_supported_in_alpha", "not_supported_in_alpha", unsupported.Field)
+			return
+		}
+		writeOpenAIError(conn, 400, err.Error(), "invalid_request_error", "bad_request", "")
+		return
+	}
+	quoteCtx, cancelQuote := context.WithTimeout(ctx, 20*time.Second)
+	quotedMicrodollars, err := s.provider.Quote(quoteCtx, quotePayload)
+	cancelQuote()
+	if err != nil {
+		writeVideoProviderError(conn, err, "could not quote video generation")
+		return
+	}
+	auth, err := s.control.AuthorizeVideo(
+		ctx,
+		bearer,
+		model.ID,
+		idempotencyKey,
+		videoRequestFingerprint(bearer, &req),
+		req.Provider,
+		quotedMicrodollars,
+	)
+	if err != nil {
+		writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
+		return
+	}
+	if auth.Provider != "venice" {
+		_ = s.control.Refund(ctx, auth, 503, "video_provider_unavailable", 0.001, nil)
+		writeOpenAIError(conn, 503, "authorized video provider is unavailable", "server_error", "video_provider_unavailable", "")
+		return
+	}
+	providerModel, _ := queuePayload["model"].(string)
+	job := &trustedrouter.VideoJob{
+		ID: videoJobID(auth.AuthorizationID), AuthorizationID: auth.AuthorizationID,
+		WorkspaceID: auth.WorkspaceID, KeyHash: auth.APIKeyHash,
+		Model: model.ID, Provider: auth.Provider, EndpointID: auth.EndpointID,
+		ProviderModel:      providerModel,
+		QuotedMicrodollars: auth.AdditionalCostReservationMicrodollars,
+		Status:             "submitting",
+	}
+	stored, err := s.control.PrepareVideoJob(ctx, job)
+	if err != nil {
+		_ = s.control.Refund(ctx, auth, 503, "video_job_store_unavailable", 0.001, nil)
+		writeOpenAIError(conn, 503, "video job storage is unavailable", "server_error", "video_job_store_unavailable", "")
+		return
+	}
+	if !stored.Created {
+		writeVideoJobResponse(conn, http.StatusAccepted, stored)
+		return
+	}
+	queueCtx, cancelQueue := context.WithTimeout(ctx, 45*time.Second)
+	queued, err := s.provider.Queue(queueCtx, queuePayload)
+	cancelQueue()
+	if err != nil {
+		_ = s.control.Refund(ctx, auth, videoErrorStatus(err), "video_provider_error", 0.001, nil)
+		_, _ = s.control.UpdateVideoJob(ctx, stored.ID, "failed", "", "FAILED", "", "provider_error", 5)
+		writeVideoProviderError(conn, err, "video provider rejected the job")
+		return
+	}
+	stored, err = s.control.MarkVideoJobQueued(ctx, stored.ID, queued.QueueID, queued.ProviderModel, 5)
+	if err != nil {
+		// The provider may already be working. Do not submit a duplicate and do
+		// not pretend the job failed; the deterministic idempotency record keeps
+		// the hold bounded while operators repair this rare control-plane split.
+		writeOpenAIError(conn, 503, "video job was queued but its status is temporarily unavailable", "server_error", "video_job_update_unavailable", "")
+		return
+	}
+	writeVideoJobResponse(conn, http.StatusAccepted, stored)
+}
+
+func (s *videoService) serveStatus(ctx context.Context, conn io.Writer, bearer, jobID string) {
+	job, err := s.control.LookupVideoJob(ctx, bearer, jobID)
+	if err != nil {
+		writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "video job lookup failed"), "router", retryHeadersFromControlPlaneError(err))
+		return
+	}
+	if job.Status == "pending" || job.Status == "in_progress" {
+		job, err = s.pollAndFinalize(ctx, job, "")
+		if err != nil {
+			writeVideoProviderError(conn, err, "could not poll video job")
+			return
+		}
+	}
+	writeVideoJobResponse(conn, 200, job)
+}
+
+func (s *videoService) serveContent(ctx context.Context, conn io.Writer, bearer, jobID string) {
+	job, err := s.control.LookupVideoJob(ctx, bearer, jobID)
+	if err != nil {
+		writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "video job lookup failed"), "router", retryHeadersFromControlPlaneError(err))
+		return
+	}
+	if job.CleanedAt != "" {
+		writeOpenAIError(conn, 410, "video content has already been retrieved", "invalid_request_error", "content_expired", "")
+		return
+	}
+	if job.Status == "failed" {
+		writeOpenAIError(conn, 502, "video generation failed", "provider_error", "video_generation_failed", "")
+		return
+	}
+	if job.Status == "submitting" {
+		writeOpenAIError(conn, 409, "video is not ready", "invalid_request_error", "video_not_ready", "")
+		return
+	}
+	if job.Status != "completed" {
+		job, err = s.pollAndFinalize(ctx, job, "")
+		if err != nil {
+			writeVideoProviderError(conn, err, "could not poll video job")
+			return
+		}
+		if job.Status != "completed" {
+			if job.Status == "failed" {
+				writeOpenAIError(conn, 502, "video generation failed", "provider_error", "video_generation_failed", "")
+				return
+			}
+			writeOpenAIError(conn, 409, "video is not ready", "invalid_request_error", "video_not_ready", "")
+			return
+		}
+	}
+	result, err := s.provider.Retrieve(ctx, job.ProviderModel, job.ProviderJobID)
+	if err != nil {
+		writeVideoProviderError(conn, err, "could not retrieve video content")
+		return
+	}
+	if result.Body == nil {
+		if result.DownloadURL == "" {
+			writeOpenAIError(conn, 502, "provider did not return streamable video content", "server_error", "video_content_unavailable", "")
+			return
+		}
+		result, err = s.provider.Download(ctx, result.DownloadURL)
+		if err != nil {
+			writeVideoProviderError(conn, err, "could not download video content")
+			return
+		}
+	}
+	defer result.Body.Close()
+	contentType := result.ContentType
+	if contentType == "" {
+		contentType = "video/mp4"
+	}
+	if err := writeVideoResponseHead(conn, contentType, job.ID); err != nil {
+		return
+	}
+	chunked := newChunkedWriter(conn)
+	_, copyErr := io.Copy(chunked, result.Body)
+	closeErr := chunked.Close()
+	if copyErr != nil || closeErr != nil {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	if err := s.provider.Complete(cleanupCtx, job.ProviderModel, job.ProviderJobID); err == nil {
+		_ = s.control.MarkVideoJobCleaned(cleanupCtx, job.ID)
+	}
+	cancel()
+}
+
+func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.VideoJob, leaseOwner string) (*trustedrouter.VideoJob, error) {
+	if job == nil {
+		return job, nil
+	}
+	if job.Status == "submitting" && job.ProviderJobID == "" {
+		auth := authorizationForVideoJob(job)
+		if err := s.control.Refund(ctx, auth, 503, "video_submission_interrupted", 0.001, nil); err != nil {
+			return job, err
+		}
+		updated, err := s.control.UpdateVideoJob(ctx, job.ID, "failed", leaseOwner, "SUBMISSION_INTERRUPTED", "", "submission_interrupted", 5)
+		if err != nil {
+			return job, err
+		}
+		return updated, nil
+	}
+	if job.ProviderJobID == "" {
+		return job, nil
+	}
+	if job.Status == "failed" {
+		return job, nil
+	}
+	if job.Status == "completed" {
+		if job.CleanedAt != "" {
+			return job, nil
+		}
+		if err := s.provider.Complete(ctx, job.ProviderModel, job.ProviderJobID); err != nil {
+			return job, err
+		}
+		if err := s.control.MarkVideoJobCleaned(ctx, job.ID); err != nil {
+			return job, err
+		}
+		job.CleanedAt = time.Now().UTC().Format(time.RFC3339)
+		return job, nil
+	}
+	result, err := s.provider.Retrieve(ctx, job.ProviderModel, job.ProviderJobID)
+	if err != nil {
+		var httpErr *video.HTTPError
+		if errors.As(err, &httpErr) && !httpErr.Retryable {
+			auth := authorizationForVideoJob(job)
+			_ = s.control.Refund(ctx, auth, httpErr.Status, "video_provider_error", 0.001, nil)
+			updated, updateErr := s.control.UpdateVideoJob(ctx, job.ID, "failed", leaseOwner, "FAILED", "", "provider_error", 5)
+			if updateErr == nil {
+				return updated, nil
+			}
+		}
+		if leaseOwner != "" {
+			_, _ = s.control.UpdateVideoJob(ctx, job.ID, "in_progress", leaseOwner, "RETRY", "", "", 10)
+		}
+		return job, err
+	}
+	if result.Body != nil {
+		result.Body.Close()
+	}
+	switch result.State {
+	case video.PollProcessing:
+		updated, err := s.control.UpdateVideoJob(ctx, job.ID, "in_progress", leaseOwner, result.ProviderStatus, "", "", 5)
+		if err != nil {
+			return job, err
+		}
+		return updated, nil
+	case video.PollFailed:
+		auth := authorizationForVideoJob(job)
+		if err := s.control.Refund(ctx, auth, 502, "video_provider_failed", 0.001, nil); err != nil {
+			return job, err
+		}
+		updated, err := s.control.UpdateVideoJob(ctx, job.ID, "failed", leaseOwner, result.ProviderStatus, "", "provider_failed", 5)
+		if err != nil {
+			return job, err
+		}
+		return updated, nil
+	case video.PollCompleted:
+		auth := authorizationForVideoJob(job)
+		settled, err := s.control.Settle(ctx, auth, trustedrouter.Usage{
+			RequestID: "video-" + job.ID, InputTokens: 0, OutputTokens: 0,
+			ElapsedSeconds: videoElapsed(job.CreatedAt), FinishReason: "completed",
+			RouteType: "videos", SelectedModel: job.Model, SelectedEndpoint: job.EndpointID,
+			AdditionalCostMicrodollars: job.QuotedMicrodollars,
+		})
+		if err != nil {
+			return job, err
+		}
+		updated, err := s.control.UpdateVideoJob(ctx, job.ID, "completed", leaseOwner, result.ProviderStatus, settled.GenerationID, "", 5)
+		if err != nil {
+			return job, err
+		}
+		return updated, nil
+	default:
+		return job, fmt.Errorf("unknown video provider status")
+	}
+}
+
+func authorizationForVideoJob(job *trustedrouter.VideoJob) *trustedrouter.Authorization {
+	return &trustedrouter.Authorization{
+		AuthorizationID: job.AuthorizationID, WorkspaceID: job.WorkspaceID,
+		APIKeyHash: job.KeyHash, Model: job.Model, RequestedModel: job.Model,
+		EndpointID: job.EndpointID, Provider: job.Provider,
+		AdditionalCostReservationMicrodollars: job.QuotedMicrodollars,
+		RouteType:                             "videos",
+	}
+}
+
+func parseVideoJobPath(path string) (string, bool, bool) {
+	rest := strings.TrimPrefix(path, "/v1/videos/")
+	if rest == path || rest == "" {
+		return "", false, false
+	}
+	content := strings.HasSuffix(rest, "/content")
+	if content {
+		rest = strings.TrimSuffix(rest, "/content")
+	}
+	if rest == "" || strings.Contains(rest, "/") || !strings.HasPrefix(rest, "job-") {
+		return "", false, false
+	}
+	return rest, content, true
+}
+
+func videoJobID(authorizationID string) string {
+	digest := sha256.Sum256([]byte("trustedrouter-video:" + authorizationID))
+	return "job-" + hex.EncodeToString(digest[:16])
+}
+
+func videoRequestFingerprint(bearer string, req *video.CreateRequest) string {
+	canonical, err := json.Marshal(req)
+	if err != nil {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(bearer))
+	_, _ = mac.Write(canonical)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func writeVideoJobResponse(conn io.Writer, status int, job *trustedrouter.VideoJob) {
+	if job == nil {
+		writeOpenAIError(conn, 500, "video job unavailable", "server_error", "internal_error", "")
+		return
+	}
+	publicStatus := job.Status
+	if publicStatus == "submitting" {
+		publicStatus = "pending"
+	}
+	payload := map[string]any{
+		"id":          job.ID,
+		"polling_url": "/v1/videos/" + job.ID,
+		"status":      publicStatus,
+	}
+	if job.GenerationID != "" {
+		payload["generation_id"] = job.GenerationID
+	}
+	if publicStatus == "completed" && job.CleanedAt == "" {
+		payload["unsigned_urls"] = []string{"/v1/videos/" + job.ID + "/content"}
+		if job.ContentExpiresAt != "" {
+			payload["expires_at"] = job.ContentExpiresAt
+		}
+	}
+	if publicStatus == "completed" {
+		payload["usage"] = map[string]any{
+			"cost":              microdollarsJSONNumber(job.QuotedMicrodollars),
+			"cost_microdollars": job.QuotedMicrodollars,
+			"is_byok":           false,
+		}
+	}
+	if publicStatus == "failed" {
+		payload["error"] = "video generation failed"
+	}
+	body, _ := json.Marshal(payload)
+	writeJSONResponse(conn, status, body)
+}
+
+func writeVideoResponseHead(conn io.Writer, contentType, jobID string) error {
+	_, err := fmt.Fprintf(conn,
+		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: %s\r\nContent-Disposition: attachment; filename=%q\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
+		contentType,
+		jobID+".mp4",
+	)
+	return err
+}
+
+func microdollarsJSONNumber(value int) json.Number {
+	whole := value / 1_000_000
+	fraction := value % 1_000_000
+	if fraction == 0 {
+		return json.Number(fmt.Sprintf("%d", whole))
+	}
+	return json.Number(strings.TrimRight(fmt.Sprintf("%d.%06d", whole, fraction), "0"))
+}
+
+func writeVideoProviderError(conn io.Writer, err error, fallback string) {
+	status := videoErrorStatus(err)
+	code := "video_provider_error"
+	if status == 429 {
+		code = "rate_limit_exceeded"
+	}
+	writeOpenAIError(conn, status, fallback, "provider_error", code, "")
+}
+
+func videoErrorStatus(err error) int {
+	var httpErr *video.HTTPError
+	if errors.As(err, &httpErr) {
+		if httpErr.Status >= 400 && httpErr.Status <= 599 {
+			return httpErr.Status
+		}
+	}
+	return 502
+}
+
+func videoElapsed(createdAt string) float64 {
+	created, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return 0.001
+	}
+	elapsed := time.Since(created).Seconds()
+	if elapsed < 0.001 {
+		return 0.001
+	}
+	return elapsed
+}
+
+func randomHex(bytesCount int) string {
+	buf := make([]byte, bytesCount)
+	_, _ = rand.Read(buf)
+	return hex.EncodeToString(buf)
+}
