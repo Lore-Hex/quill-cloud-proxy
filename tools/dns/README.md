@@ -57,9 +57,12 @@ the authoritative parent-zone NS set.
 ### Adding a new control-plane HTTPS hostname
 
 DNS only gets the hostname to the load balancer. The Google-managed
-certificate on `trusted-router-control-https-proxy` must also cover the
-new hostname, or browsers will reject TLS. After adding a record such
-as `eu.trustedrouter.com`, run:
+certificates on `trusted-router-control-https-proxy` must also cover the
+new hostname, or browsers will reject TLS. Every independently hosted
+hostname must have its own certificate. In particular, never combine
+`trustedrouter.com` with `trust.trustedrouter.com`: the trust site is hosted
+on GitHub Pages, so GCP cannot renew a shared certificate. After adding a
+record such as `eu.trustedrouter.com`, run:
 
 ```bash
 GCLOUD_ACCOUNT=<account-with-compute-ssl-permissions> \

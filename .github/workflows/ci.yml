@@ -80,6 +80,7 @@ jobs:
           python3 tools/test_synthetic_gate_status.py
           python3 tools/test_watchdog.py
           python3 tools/test_verify_attestation.py
+          python3 tools/test_check_public_tls.py
       - name: Assert trust page contains no <script> tags
         run: |
           if grep -qi '<script' trust-page/index.html; then
