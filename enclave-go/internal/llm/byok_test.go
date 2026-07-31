@@ -559,6 +559,7 @@ func TestPerProviderNativeMaps(t *testing.T) {
 		{"telnyx", "z-ai/glm-5.1", "zai-org/GLM-5.1-FP8"},
 		{"telnyx", "z-ai/glm-5.2", "zai-org/GLM-5.2"},
 		{"thinkingmachines", "thinkingmachines/inkling", "thinkingmachines/Inkling:peft:262144"},
+		{"thinkingmachines", "thinkingmachines/inkling-small", "thinkingmachines/Inkling-Small:peft:262144:sampling-nvfp4"},
 		{"wafer", "z-ai/glm-5.2", "GLM-5.2"},
 		{"wafer", "moonshotai/kimi-k2.7-code", "Kimi-K2.7-Code"},
 		{"wafer", "minimax/minimax-m3", "MiniMax-M3"},
@@ -622,6 +623,7 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		{"telnyx", "moonshotai/kimi-k3", "moonshotai/Kimi-K3", "moonshotai/Kimi-K3"},
 		{"telnyx", "minimax/minimax-m3", "MiniMaxAI/MiniMax-M3-MXFP8", "MiniMaxAI/MiniMax-M3-MXFP8"},
 		{"thinkingmachines", "thinkingmachines/inkling", "thinkingmachines/Inkling:peft:262144", "thinkingmachines/Inkling:peft:262144"},
+		{"thinkingmachines", "thinkingmachines/inkling-small", "thinkingmachines/Inkling-Small:peft:262144:sampling-nvfp4", "thinkingmachines/Inkling-Small:peft:262144:sampling-nvfp4"},
 		{"wafer", "z-ai/glm-5.2", "GLM-5.2", "GLM-5.2"},
 		// zai-direct accepts only the bare id; glm-4.7 was mis-mapped to
 		// "zai-glm-4.7" by the global directModelMap.

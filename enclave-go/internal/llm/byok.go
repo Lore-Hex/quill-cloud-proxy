@@ -1398,7 +1398,8 @@ var telnyxModelMap = map[string]string{
 }
 
 var thinkingMachinesModelMap = map[string]string{
-	"thinkingmachines/inkling": "thinkingmachines/Inkling:peft:262144",
+	"thinkingmachines/inkling":       "thinkingmachines/Inkling:peft:262144",
+	"thinkingmachines/inkling-small": "thinkingmachines/Inkling-Small:peft:262144:sampling-nvfp4",
 }
 
 // waferModelMap maps OR-canonical → Wafer native ids. Wafer's ids are short
