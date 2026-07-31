@@ -10,11 +10,14 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 )
 
+const defaultProviderCircuitMaxStates = 4096
+
 type providerCircuitRegistry struct {
 	mu        sync.Mutex
 	enabled   bool
 	threshold int
 	openFor   time.Duration
+	maxStates int
 	now       func() time.Time
 	states    map[string]providerCircuitState
 }
@@ -22,22 +25,28 @@ type providerCircuitRegistry struct {
 type providerCircuitState struct {
 	failures  int
 	openUntil time.Time
+	updatedAt time.Time
 }
 
 func newProviderCircuitRegistryFromEnv() *providerCircuitRegistry {
 	enabled := strings.ToLower(strings.TrimSpace(os.Getenv("QUILL_PROVIDER_CIRCUIT_BREAKER"))) != "false"
 	threshold := circuitEnvInt("QUILL_PROVIDER_CIRCUIT_FAILURE_THRESHOLD", 3)
 	openSeconds := circuitEnvInt("QUILL_PROVIDER_CIRCUIT_OPEN_SECONDS", 60)
+	maxStates := circuitEnvInt("QUILL_PROVIDER_CIRCUIT_MAX_STATES", defaultProviderCircuitMaxStates)
 	if threshold < 1 {
 		threshold = 1
 	}
 	if openSeconds < 1 {
 		openSeconds = 1
 	}
+	if maxStates < 1 {
+		maxStates = 1
+	}
 	return &providerCircuitRegistry{
 		enabled:   enabled,
 		threshold: threshold,
 		openFor:   time.Duration(openSeconds) * time.Second,
+		maxStates: maxStates,
 		now:       time.Now,
 		states:    map[string]providerCircuitState{},
 	}
@@ -85,17 +94,43 @@ func (r *providerCircuitRegistry) RecordFailure(option llm.InvokeOptions) bool {
 		return false
 	}
 	key := providerCircuitKey(option)
+	now := r.now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := r.states[key]
+	state, exists := r.states[key]
+	if !exists && len(r.states) >= r.stateLimit() {
+		r.evictOldestLocked()
+	}
 	state.failures++
+	state.updatedAt = now
 	opened := false
 	if state.failures >= r.threshold {
-		state.openUntil = r.now().Add(r.openFor)
+		state.openUntil = now.Add(r.openFor)
 		opened = true
 	}
 	r.states[key] = state
 	return opened
+}
+
+func (r *providerCircuitRegistry) stateLimit() int {
+	if r.maxStates > 0 {
+		return r.maxStates
+	}
+	return defaultProviderCircuitMaxStates
+}
+
+func (r *providerCircuitRegistry) evictOldestLocked() {
+	var oldestKey string
+	var oldestTime time.Time
+	for key, state := range r.states {
+		if oldestKey == "" || state.updatedAt.Before(oldestTime) {
+			oldestKey = key
+			oldestTime = state.updatedAt
+		}
+	}
+	if oldestKey != "" {
+		delete(r.states, oldestKey)
+	}
 }
 
 func providerCircuitKey(option llm.InvokeOptions) string {

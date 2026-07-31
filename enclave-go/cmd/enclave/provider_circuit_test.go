@@ -62,6 +62,35 @@ func TestProviderCircuitKeyIncludesProviderRegionAndFamily(t *testing.T) {
 	}
 }
 
+func TestProviderCircuitStateIsBounded(t *testing.T) {
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	registry := &providerCircuitRegistry{
+		enabled:   true,
+		threshold: 3,
+		openFor:   time.Minute,
+		maxStates: 2,
+		now:       func() time.Time { return now },
+		states:    map[string]providerCircuitState{},
+	}
+	options := []llm.InvokeOptions{
+		{Provider: "first", Model: "first/model-a"},
+		{Provider: "second", Model: "second/model-b"},
+		{Provider: "third", Model: "third/model-c"},
+	}
+
+	for _, option := range options {
+		registry.RecordFailure(option)
+		now = now.Add(time.Second)
+	}
+
+	if len(registry.states) != 2 {
+		t.Fatalf("circuit states = %d, want 2", len(registry.states))
+	}
+	if _, ok := registry.states[providerCircuitKey(options[0])]; ok {
+		t.Fatal("oldest circuit state was not evicted")
+	}
+}
+
 func TestParseFirstByteBudgetDefaultsToProductionBudget(t *testing.T) {
 	for _, raw := range []string{"", "0", "-1", "not-a-number"} {
 		if got := parseFirstByteBudget(raw); got != 20*time.Second {

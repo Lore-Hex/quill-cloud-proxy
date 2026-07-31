@@ -55,6 +55,10 @@ const maxAttestationsPerConn = 8
 
 var requestReadTimeout = 30 * time.Second
 
+// Bound writes to clients that stop reading without limiting provider thinking
+// time or total streaming duration. The deadline is renewed for every write.
+var responseWriteTimeout = 30 * time.Second
+
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
