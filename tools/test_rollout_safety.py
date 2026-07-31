@@ -38,6 +38,14 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("--update-policy-max-unavailable=\"$MAX_UNAVAILABLE\"", deploy)
         self.assertIn("--update-policy-max-surge=\"$MAX_SURGE\"", deploy)
 
+    def test_default_capacity_keeps_each_region_warm_during_rollout(self) -> None:
+        deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
+
+        self.assertIn('TARGET_SIZE="${TARGET_SIZE:-2}"', deploy)
+        self.assertIn('MAX_SURGE="${MAX_SURGE:-3}"', deploy)
+        self.assertIn('MAX_UNAVAILABLE="${MAX_UNAVAILABLE:-0}"', deploy)
+        self.assertIn('--update-policy-max-unavailable="$MAX_UNAVAILABLE"', deploy)
+
 
 if __name__ == "__main__":
     unittest.main()

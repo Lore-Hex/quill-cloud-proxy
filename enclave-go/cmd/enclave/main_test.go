@@ -7099,6 +7099,50 @@ func TestReadRequestBoundsUnauthenticatedHeaders(t *testing.T) {
 	})
 }
 
+func TestHealthIsStorageFreeAndReusesTLSConnection(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+
+	go serveOne(
+		context.Background(),
+		server,
+		auth.New(nil),
+		&panicStreamingLLM{t: t},
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	reader := bufio.NewReader(client)
+	for request := 0; request < 2; request++ {
+		if _, err := io.WriteString(
+			client,
+			"GET /health HTTP/1.1\r\nHost: api.trustedrouter.com\r\nConnection: keep-alive\r\n\r\n",
+		); err != nil {
+			t.Fatalf("write health request %d: %v", request, err)
+		}
+		response, err := http.ReadResponse(reader, nil)
+		if err != nil {
+			t.Fatalf("read health response %d: %v", request, err)
+		}
+		body, err := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if err != nil {
+			t.Fatalf("read health body %d: %v", request, err)
+		}
+		if response.StatusCode != http.StatusOK || string(body) != `{"status":"ok"}` {
+			t.Fatalf("health response %d = %d %q", request, response.StatusCode, body)
+		}
+		if response.Header.Get("Server-Timing") == "" {
+			t.Fatalf("health response %d missing Server-Timing", request)
+		}
+		if response.Close {
+			t.Fatalf("health response %d closed a reusable connection", request)
+		}
+	}
+}
+
 func TestSplitAttributionCategoriesCapsBeforeValidation(t *testing.T) {
 	categories := splitAttributionCategories(strings.Repeat("legal,", 10_000))
 	if len(categories) != 3 {
