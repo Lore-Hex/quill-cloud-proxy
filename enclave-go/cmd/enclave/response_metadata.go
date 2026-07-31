@@ -84,6 +84,10 @@ func annotateSettledResponseMetadata(
 		if result.Usage.ReasoningTokens > 0 {
 			routeUsage["reasoning_tokens"] = result.Usage.ReasoningTokens
 		}
+		if result.Usage.ServiceTier != "" {
+			payload["service_tier"] = result.Usage.ServiceTier
+			routeUsage["service_tier"] = result.Usage.ServiceTier
+		}
 	}
 	if promptTokens := tokenCountFromUsage(usage, "prompt_tokens", "input_tokens"); promptTokens > 0 {
 		uncached := promptTokens - cacheRead

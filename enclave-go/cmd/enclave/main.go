@@ -883,6 +883,7 @@ func serveResponsesNonStreaming(
 		SessionID:         req.SessionID,
 		Trace:             req.Trace,
 		Metadata:          req.Metadata,
+		ServiceTier:       requestedServiceTierForSettlement(req),
 	}
 	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
@@ -964,6 +965,7 @@ func serveChatNonStreaming(
 		SessionID:         req.SessionID,
 		Trace:             req.Trace,
 		Metadata:          req.Metadata,
+		ServiceTier:       requestedServiceTierForSettlement(req),
 	}
 	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
@@ -1091,6 +1093,7 @@ func serveStreaming(
 		SessionID:         req.SessionID,
 		Trace:             req.Trace,
 		Metadata:          req.Metadata,
+		ServiceTier:       requestedServiceTierForSettlement(req),
 	}
 	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
@@ -1375,6 +1378,30 @@ func applyCacheUsage(usage *trustedrouter.Usage, result adapter.StreamResult) {
 	usage.ReasoningTokens = result.Usage.ReasoningTokens
 	usage.CacheReadInputTokens = result.Usage.CacheReadInputTokens
 	usage.CacheCreationInputTokens = result.Usage.CacheCreationInputTokens
+	if result.Usage.ServiceTier != "" {
+		usage.ServiceTier = result.Usage.ServiceTier
+	}
+}
+
+func requestedServiceTierForSettlement(req *types.OpenAIChatRequest) string {
+	if req == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(req.ServiceTier)) {
+	case "priority":
+		// OpenAI documents the actual tier in every response when requested.
+		// If an upstream omits it, retain the requested priority tier rather
+		// than silently undercharging an operator-funded request.
+		return "priority"
+	case "auto":
+		// Auto may be downgraded. Missing provider metadata is settled at the
+		// customer-favorable standard rate; a reported actual tier overrides it.
+		return "default"
+	case "default":
+		return "default"
+	default:
+		return ""
+	}
 }
 
 func realOrEstimatedTokens(result adapter.StreamResult, estimatedInput, estimatedOutput int) (int, int, bool) {

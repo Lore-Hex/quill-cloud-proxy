@@ -56,6 +56,23 @@ func TestTranslateOpenAIStreamRelaysUsage(t *testing.T) {
 	}
 }
 
+func TestTranslateOpenAIStreamRelaysActualServiceTier(t *testing.T) {
+	upstream := strings.Join([]string{
+		`data: {"service_tier":"default","choices":[{"delta":{"content":"PONG"},"finish_reason":"stop"}]}`,
+		`data: {"service_tier":"default","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := translateOpenAIStreamToAnthropic(strings.NewReader(upstream), &out); err != nil {
+		t.Fatalf("translateOpenAIStreamToAnthropic: %v", err)
+	}
+	if !strings.Contains(out.String(), `"service_tier":"default"`) {
+		t.Fatalf("actual service tier not relayed: %s", out.String())
+	}
+}
+
 func TestTranslateOpenAIStreamInfersUnclassifiedReasoningFromTotalTokens(t *testing.T) {
 	upstream := strings.Join([]string{
 		`data: {"choices":[{"delta":{"content":"PONG"},"finish_reason":"stop"}]}`,

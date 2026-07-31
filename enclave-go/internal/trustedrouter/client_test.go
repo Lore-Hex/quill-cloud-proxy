@@ -69,6 +69,55 @@ func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 	}
 }
 
+func TestAuthorizeAndSettleCarryServiceTier(t *testing.T) {
+	var authorizePayload map[string]any
+	var settlePayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			if err := json.NewDecoder(r.Body).Decode(&authorizePayload); err != nil {
+				t.Fatalf("decode authorize: %v", err)
+			}
+			_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_priority","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-5.6-sol","endpoint_id":"openai/gpt-5.6-sol@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+		case "/internal/gateway/settle":
+			if err := json.NewDecoder(r.Body).Decode(&settlePayload); err != nil {
+				t.Fatalf("decode settle: %v", err)
+			}
+			_, _ = io.WriteString(w, `{"data":{"generation_id":"gen_priority","cost_microdollars":1}}`)
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "internal", server.Client())
+	req := &qtypes.OpenAIChatRequest{
+		Model:       "openai/gpt-5.6-sol",
+		ServiceTier: "priority",
+		Messages:    []qtypes.OpenAIChatMessage{{Role: "user", Content: "PONG"}},
+	}
+	auth, err := client.Authorize(t.Context(), "sk-test", req)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if authorizePayload["service_tier"] != "priority" {
+		t.Fatalf("authorize service_tier = %#v", authorizePayload["service_tier"])
+	}
+	_, err = client.Settle(t.Context(), auth, Usage{
+		RequestID:      "req-priority",
+		InputTokens:    7,
+		OutputTokens:   2,
+		ElapsedSeconds: 0.1,
+		ServiceTier:    "default",
+	})
+	if err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if settlePayload["service_tier"] != "default" {
+		t.Fatalf("settle service_tier = %#v", settlePayload["service_tier"])
+	}
+}
+
 func TestAuthorizePreservesFailClosedMinPrivacy(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
