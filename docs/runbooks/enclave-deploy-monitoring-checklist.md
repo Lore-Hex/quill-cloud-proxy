@@ -117,7 +117,9 @@ done
 
 Required result before using a candidate instance:
 
-- `/health` reaches the enclave. `401` is acceptable if the endpoint is auth-gated.
+- `/health` returns `200` with `{"status":"ok"}` from the candidate enclave.
+  A `401` identifies an old revision during the rolling transition and is not
+  sufficient to approve a new candidate.
 - `/attestation` returns `200`.
 - The attestation token reports the expected image digest.
 - `dbgstat` is absent or disabled. `enabled` is a blocker.

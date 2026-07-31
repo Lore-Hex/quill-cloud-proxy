@@ -52,6 +52,7 @@ const maxRequestBodyBytes = 32 * 1024 * 1024
 // larger is a client 400 instead of a downstream attestation-launch failure.
 const maxAttestationNonceBytes = 37
 const maxAttestationsPerConn = 8
+const maxHealthRequestsPerConn = 128
 
 var requestReadTimeout = 30 * time.Second
 
@@ -305,7 +306,8 @@ func serveOne(
 
 	requestReader := bufio.NewReaderSize(conn, maxHTTPHeaderLineBytes+1)
 	attestationCount := 0
-	for serveOneRequest(ctx, conn, statsConn, requestReader, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount) {
+	healthRequestCount := 0
+	for serveOneRequest(ctx, conn, statsConn, requestReader, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount, &healthRequestCount) {
 	}
 }
 
@@ -320,6 +322,7 @@ func serveOneRequest(
 	trGateway *trustedrouter.Client,
 	byokSecrets *byokcache.Cache,
 	attestationCount *int,
+	healthRequestCount *int,
 ) (keepAlive bool) {
 	statsConn.ResetSnapshot()
 
@@ -356,6 +359,7 @@ func serveOneRequest(
 	}()
 
 	method, path, bearer, idempotencyKey, attribution, body, err := readRequest(requestReader)
+	processingStartedAt := time.Now()
 	// Request (and its TLS handshake) is fully read; drop the deadline so a
 	// long-running streamed response is never cut off.
 	_ = conn.SetReadDeadline(time.Time{})
@@ -389,6 +393,19 @@ func serveOneRequest(
 		routePath,
 		len(body),
 	)
+
+	// Public liveness is deliberately computed entirely inside the enclave.
+	// It does not authenticate, read storage, call the control plane, mint an
+	// attestation token, or touch a provider. Keeping this tiny response alive
+	// lets monitors measure a second request on the same TLS connection and
+	// separates handshake cost from gateway processing without weakening the
+	// prompt path.
+	if method == "GET" && routePath == "/health" {
+		(*healthRequestCount)++
+		keepAlive = *healthRequestCount < maxHealthRequestsPerConn
+		writeHealthResponse(conn, keepAlive, processingStartedAt)
+		return keepAlive
+	}
 
 	// /attestation is the only path that's anonymous: clients call it
 	// BEFORE pinning, so requiring a bearer would defeat the purpose.

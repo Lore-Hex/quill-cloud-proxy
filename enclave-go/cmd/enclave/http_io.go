@@ -371,6 +371,23 @@ func serveAttestation(conn io.Writer, leafDER, deviceBlob, nonce, channelBinding
 	return true
 }
 
+func writeHealthResponse(w io.Writer, keepAlive bool, processingStartedAt time.Time) {
+	body := []byte(`{"status":"ok"}`)
+	connection := "close"
+	if keepAlive {
+		connection = "keep-alive"
+	}
+	processingMilliseconds := float64(time.Since(processingStartedAt).Nanoseconds()) / 1_000_000
+	fmt.Fprintf(
+		w,
+		"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nCache-Control: no-store\r\nServer-Timing: gateway;dur=%.3f\r\nConnection: %s\r\n\r\n",
+		len(body),
+		processingMilliseconds,
+		connection,
+	)
+	_, _ = w.Write(body)
+}
+
 func writeError(w io.Writer, status int, message string) {
 	writeErrorWithSource(w, status, message, "router")
 }

@@ -143,7 +143,7 @@ Common substring → cause:
 
 ### 6b. Public attestation fails while health passes
 
-Symptom: `/health` returns an expected auth-gated response, but
+Symptom: `/health` returns `200` from the storage-free enclave liveness path, but
 `/attestation` returns non-200 or the verifier fails.
 
 This is a trust-critical failure. Do not rely on provider smoke alone.
