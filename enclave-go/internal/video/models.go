@@ -68,6 +68,14 @@ type Model struct {
 	ImageUsesSourceAspect  bool
 }
 
+type RequestMetadata struct {
+	InputMode       string
+	DurationSeconds int
+	Resolution      string
+	AspectRatio     string
+	GenerateAudio   bool
+}
+
 var models = map[string]Model{
 	"bytedance/seedance-2.0": {
 		ID: "bytedance/seedance-2.0", Name: "ByteDance Seedance 2.0",
@@ -143,11 +151,140 @@ var models = map[string]Model{
 		AllowedAspectRatios:   []string{"16:9", "21:9", "4:3", "1:1", "3:4", "9:16"},
 		ImageUsesSourceAspect: true,
 	},
+	"google/veo-3.1": {
+		ID: "google/veo-3.1", Name: "Google Veo 3.1",
+		Description:     "Google Veo 3.1 full-quality video generation with configurable audio.",
+		DefaultDuration: 8, DefaultResolution: "1080p", DefaultAspectRatio: "16:9",
+		TextProviderModel:  "veo3.1-full-text-to-video",
+		ImageProviderModel: "veo3.1-full-image-to-video",
+		SupportsAudio:      true, SupportsImage: true,
+		PromptCharacterLimit:  2500,
+		AllowedDurations:      []int{4, 6, 8},
+		AllowedResolutions:    []string{"720p", "1080p", "4k"},
+		AllowedAspectRatios:   []string{"16:9", "9:16"},
+		ImageUsesSourceAspect: true,
+	},
+	"google/veo-3.1-fast": {
+		ID: "google/veo-3.1-fast", Name: "Google Veo 3.1 Fast",
+		Description:     "Google Veo 3.1 optimized for faster video generation with configurable audio.",
+		DefaultDuration: 8, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
+		TextProviderModel:  "veo3.1-fast-text-to-video",
+		ImageProviderModel: "veo3.1-fast-image-to-video",
+		SupportsAudio:      true, SupportsImage: true,
+		PromptCharacterLimit:  2500,
+		AllowedDurations:      []int{4, 6, 8},
+		AllowedResolutions:    []string{"720p", "1080p", "4k"},
+		AllowedAspectRatios:   []string{"16:9", "9:16"},
+		ImageUsesSourceAspect: true,
+	},
+	"openai/sora-2": {
+		ID: "openai/sora-2", Name: "OpenAI Sora 2",
+		Description:     "OpenAI Sora 2 text and image video generation with synchronized audio.",
+		DefaultDuration: 4, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
+		TextProviderModel:  "sora-2-text-to-video",
+		ImageProviderModel: "sora-2-image-to-video",
+		AudioAlwaysOn:      true, SupportsImage: true,
+		PromptCharacterLimit: 2500,
+		AllowedDurations:     []int{4, 8, 12},
+		AllowedResolutions:   []string{"720p"},
+		AllowedAspectRatios:  []string{"16:9", "9:16"},
+	},
+	"openai/sora-2-pro": {
+		ID: "openai/sora-2-pro", Name: "OpenAI Sora 2 Pro",
+		Description:     "OpenAI Sora 2 Pro high-quality text and image video generation with synchronized audio.",
+		DefaultDuration: 8, DefaultResolution: "1080p", DefaultAspectRatio: "16:9",
+		TextProviderModel:  "sora-2-pro-text-to-video",
+		ImageProviderModel: "sora-2-pro-image-to-video",
+		AudioAlwaysOn:      true, SupportsImage: true,
+		PromptCharacterLimit: 2500,
+		AllowedDurations:     []int{4, 8, 12, 16, 20},
+		AllowedResolutions:   []string{"720p", "1080p", "true_1080p"},
+		AllowedAspectRatios:  []string{"16:9", "9:16"},
+	},
+	"runway/gen-4.5": {
+		ID: "runway/gen-4.5", Name: "Runway Gen-4.5",
+		Description:     "Runway Gen-4.5 text and image video generation.",
+		DefaultDuration: 5, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
+		TextProviderModel:    "runway-gen4-5-text",
+		ImageProviderModel:   "runway-gen4-5",
+		SupportsImage:        true,
+		PromptCharacterLimit: 1000,
+		MinimumDuration:      2, MaximumDuration: 10,
+		AllowedAspectRatios: []string{"16:9", "9:16"},
+		OmitResolution:      true,
+	},
+	"kling/v3-pro": {
+		ID: "kling/v3-pro", Name: "Kling V3 Pro",
+		Description:     "Kling V3 Pro text and image video generation with optional audio.",
+		DefaultDuration: 5, DefaultResolution: "1080p", DefaultAspectRatio: "16:9",
+		TextProviderModel:  "kling-v3-pro-text-to-video",
+		ImageProviderModel: "kling-v3-pro-image-to-video",
+		SupportsAudio:      true, SupportsImage: true,
+		PromptCharacterLimit: 2500,
+		MinimumDuration:      3, MaximumDuration: 15,
+		AllowedAspectRatios: []string{"16:9", "9:16", "1:1"},
+		OmitResolution:      true, ImageUsesSourceAspect: true,
+	},
+	"kling/o3-pro": {
+		ID: "kling/o3-pro", Name: "Kling O3 Pro",
+		Description:     "Kling O3 Pro text and image video generation with optional audio.",
+		DefaultDuration: 5, DefaultResolution: "1080p", DefaultAspectRatio: "16:9",
+		TextProviderModel:  "kling-o3-pro-text-to-video",
+		ImageProviderModel: "kling-o3-pro-image-to-video",
+		SupportsAudio:      true, SupportsImage: true,
+		PromptCharacterLimit: 2500,
+		MinimumDuration:      3, MaximumDuration: 15,
+		AllowedAspectRatios: []string{"16:9", "9:16", "1:1"},
+		OmitResolution:      true, ImageUsesSourceAspect: true,
+	},
+	"alibaba/wan-2.7": {
+		ID: "alibaba/wan-2.7", Name: "Alibaba Wan 2.7",
+		Description:     "Wan 2.7 text and image video generation.",
+		DefaultDuration: 5, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
+		TextProviderModel:     "wan-2-7-text-to-video",
+		ImageProviderModel:    "wan-2-7-image-to-video",
+		SupportsImage:         true,
+		PromptCharacterLimit:  2500,
+		AllowedDurations:      []int{5, 10, 15},
+		AllowedResolutions:    []string{"720p", "1080p"},
+		AllowedAspectRatios:   []string{"16:9", "9:16", "1:1"},
+		ImageUsesSourceAspect: true,
+	},
+	"shengshu/vidu-q3": {
+		ID: "shengshu/vidu-q3", Name: "ShengShu Vidu Q3",
+		Description:     "Vidu Q3 text and image video generation with optional audio.",
+		DefaultDuration: 5, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
+		TextProviderModel:  "vidu-q3-text-to-video",
+		ImageProviderModel: "vidu-q3-image-to-video",
+		SupportsAudio:      true, SupportsImage: true,
+		PromptCharacterLimit:  2500,
+		AllowedDurations:      []int{3, 5, 8, 10, 12, 14, 16},
+		AllowedResolutions:    []string{"360p", "540p", "720p", "1080p"},
+		AllowedAspectRatios:   []string{"16:9", "9:16", "4:3", "3:4", "1:1"},
+		ImageUsesSourceAspect: true,
+	},
+	"pixverse/c1": {
+		ID: "pixverse/c1", Name: "PixVerse C1",
+		Description:     "PixVerse C1 text and image video generation with optional audio.",
+		DefaultDuration: 5, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
+		TextProviderModel:  "pixverse-c1-text-to-video",
+		ImageProviderModel: "pixverse-c1-image-to-video",
+		SupportsAudio:      true, SupportsImage: true,
+		PromptCharacterLimit:  2500,
+		AllowedDurations:      []int{3, 5, 8, 10, 15},
+		AllowedResolutions:    []string{"360p", "540p", "720p", "1080p"},
+		AllowedAspectRatios:   []string{"16:9", "4:3", "1:1", "3:4", "9:16", "2:3", "3:2", "21:9"},
+		ImageUsesSourceAspect: true,
+	},
 }
 
 func Models() []Model {
 	order := []string{
 		"bytedance/seedance-2.0-fast", "bytedance/seedance-2.0",
+		"google/veo-3.1-fast", "google/veo-3.1",
+		"openai/sora-2", "openai/sora-2-pro", "runway/gen-4.5",
+		"kling/v3-pro", "kling/o3-pro", "alibaba/wan-2.7",
+		"shengshu/vidu-q3", "pixverse/c1",
 		"lightricks/ltx-2.3-fast", "lightricks/ltx-2.3",
 		"google/gemini-omni-flash", "minimax/hailuo-3",
 	}
@@ -240,6 +377,11 @@ func Resolve(req *CreateRequest) (Model, map[string]any, map[string]any, error) 
 			// An explicit false is equivalent to the default for video-only
 			// models. Do not forward a field the provider does not support.
 		}
+	} else if model.SupportsAudio {
+		// Venice documents generated audio as enabled by default for models
+		// with a configurable audio switch. Send the default explicitly so
+		// the content-free quote and persisted metadata describe the same job.
+		queue["audio"] = true
 	}
 	if req.Seed != nil {
 		queue["seed"] = *req.Seed
@@ -295,6 +437,35 @@ func Resolve(req *CreateRequest) (Model, map[string]any, map[string]any, error) 
 		}
 	}
 	return model, queue, quote, nil
+}
+
+func Metadata(model Model, queue map[string]any) RequestMetadata {
+	duration, _ := strconv.Atoi(strings.TrimSuffix(fmt.Sprint(queue["duration"]), "s"))
+	resolution := strings.TrimSpace(fmt.Sprint(queue["resolution"]))
+	if resolution == "" || resolution == "<nil>" {
+		resolution = model.DefaultResolution
+	}
+	aspect := strings.TrimSpace(fmt.Sprint(queue["aspect_ratio"]))
+	if aspect == "" || aspect == "<nil>" {
+		aspect = "source"
+	}
+	inputMode := "text"
+	switch {
+	case queue["video_url"] != nil:
+		inputMode = "video"
+	case queue["reference_image_urls"] != nil || queue["audio_url"] != nil:
+		inputMode = "reference"
+	case queue["image_url"] != nil:
+		inputMode = "image"
+	}
+	audio := model.AudioAlwaysOn
+	if configured, ok := queue["audio"].(bool); ok {
+		audio = configured
+	}
+	return RequestMetadata{
+		InputMode: inputMode, DurationSeconds: duration, Resolution: resolution,
+		AspectRatio: aspect, GenerateAudio: audio,
+	}
 }
 
 func validateDuration(model Model, duration int) error {

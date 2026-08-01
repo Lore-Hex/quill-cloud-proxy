@@ -55,13 +55,11 @@ func (c *VeniceClient) Quote(ctx context.Context, payload map[string]any) (int, 
 	if err != nil || upstream <= 0 {
 		return 0, fmt.Errorf("venice video quote: invalid amount")
 	}
-	// TrustedRouter's public prepaid price is provider cost plus 5%, rounded
-	// upward to the nearest microdollar. No floating point touches the ledger.
-	maxInt := int(^uint(0) >> 1)
-	if upstream > (maxInt-99)/105 {
-		return 0, fmt.Errorf("venice video quote: amount is too large")
+	quoted, err := customerVideoPrice(upstream)
+	if err != nil {
+		return 0, fmt.Errorf("venice video quote: %w", err)
 	}
-	return (upstream*105 + 99) / 100, nil
+	return quoted, nil
 }
 
 type QueueResult struct {

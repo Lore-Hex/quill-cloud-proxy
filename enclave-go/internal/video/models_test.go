@@ -6,10 +6,20 @@ import (
 	"testing"
 )
 
-func TestLaunchModelsIncludeHailuo3H3(t *testing.T) {
+func TestVideoModelsIncludeLaunchAndExpansionSet(t *testing.T) {
 	want := map[string]bool{
 		"bytedance/seedance-2.0":      false,
 		"bytedance/seedance-2.0-fast": false,
+		"google/veo-3.1":              false,
+		"google/veo-3.1-fast":         false,
+		"openai/sora-2":               false,
+		"openai/sora-2-pro":           false,
+		"runway/gen-4.5":              false,
+		"kling/v3-pro":                false,
+		"kling/o3-pro":                false,
+		"alibaba/wan-2.7":             false,
+		"shengshu/vidu-q3":            false,
+		"pixverse/c1":                 false,
 		"lightricks/ltx-2.3":          false,
 		"lightricks/ltx-2.3-fast":     false,
 		"google/gemini-omni-flash":    false,
@@ -28,6 +38,79 @@ func TestLaunchModelsIncludeHailuo3H3(t *testing.T) {
 		if !seen {
 			t.Fatalf("missing launch model %q", id)
 		}
+	}
+}
+
+func TestResolveExpandedModelsUsesExactDirectProviderIDs(t *testing.T) {
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{model: "google/veo-3.1", want: "veo3.1-full-text-to-video"},
+		{model: "google/veo-3.1-fast", want: "veo3.1-fast-text-to-video"},
+		{model: "openai/sora-2", want: "sora-2-text-to-video"},
+		{model: "openai/sora-2-pro", want: "sora-2-pro-text-to-video"},
+		{model: "runway/gen-4.5", want: "runway-gen4-5-text"},
+		{model: "kling/v3-pro", want: "kling-v3-pro-text-to-video"},
+		{model: "kling/o3-pro", want: "kling-o3-pro-text-to-video"},
+		{model: "alibaba/wan-2.7", want: "wan-2-7-text-to-video"},
+		{model: "shengshu/vidu-q3", want: "vidu-q3-text-to-video"},
+		{model: "pixverse/c1", want: "pixverse-c1-text-to-video"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.model, func(t *testing.T) {
+			_, queue, quote, err := Resolve(&CreateRequest{Model: tc.model, Prompt: "move"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if queue["model"] != tc.want || quote["model"] != tc.want {
+				t.Fatalf("models queue=%#v quote=%#v, want %q", queue["model"], quote["model"], tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveExpandedModelsUsesExactImageProviderIDs(t *testing.T) {
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{model: "google/veo-3.1", want: "veo3.1-full-image-to-video"},
+		{model: "google/veo-3.1-fast", want: "veo3.1-fast-image-to-video"},
+		{model: "openai/sora-2", want: "sora-2-image-to-video"},
+		{model: "openai/sora-2-pro", want: "sora-2-pro-image-to-video"},
+		{model: "runway/gen-4.5", want: "runway-gen4-5"},
+		{model: "kling/v3-pro", want: "kling-v3-pro-image-to-video"},
+		{model: "kling/o3-pro", want: "kling-o3-pro-image-to-video"},
+		{model: "alibaba/wan-2.7", want: "wan-2-7-image-to-video"},
+		{model: "shengshu/vidu-q3", want: "vidu-q3-image-to-video"},
+		{model: "pixverse/c1", want: "pixverse-c1-image-to-video"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.model, func(t *testing.T) {
+			model, queue, quote, err := Resolve(&CreateRequest{
+				Model:  tc.model,
+				Prompt: "move",
+				FrameImages: []FrameImage{{
+					FrameType: "first_frame",
+					ImageURL:  "https://assets.example/frame.jpg",
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if queue["model"] != tc.want || quote["model"] != tc.want {
+				t.Fatalf("models queue=%#v quote=%#v, want %q", queue["model"], quote["model"], tc.want)
+			}
+			metadata := Metadata(model, queue)
+			if metadata.InputMode != "image" || metadata.DurationSeconds <= 0 || metadata.Resolution == "" {
+				t.Fatalf("metadata = %#v", metadata)
+			}
+			serialized, _ := json.Marshal(quote)
+			if strings.Contains(string(serialized), "assets.example") {
+				t.Fatalf("quote leaked image URL: %s", serialized)
+			}
+		})
 	}
 }
 
@@ -187,7 +270,7 @@ func TestModelsJSONIsTruthfulAboutProviderPrivacy(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Data) != 6 {
+	if len(payload.Data) != 16 {
 		t.Fatalf("model count = %d", len(payload.Data))
 	}
 	for _, row := range payload.Data {

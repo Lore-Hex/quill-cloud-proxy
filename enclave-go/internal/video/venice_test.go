@@ -23,7 +23,7 @@ func response(status int, contentType, body string) *http.Response {
 	}
 }
 
-func TestQuoteUsesDirectVeniceAndExactFivePercentIntegerMarkup(t *testing.T) {
+func TestQuoteUsesDirectVeniceAndExactTwentyPercentIntegerMarkup(t *testing.T) {
 	client := NewVeniceClient("venice-secret", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.String() != "https://api.venice.ai/api/v1/video/quote" {
 			t.Fatalf("unexpected provider URL %q", req.URL.String())
@@ -47,8 +47,8 @@ func TestQuoteUsesDirectVeniceAndExactFivePercentIntegerMarkup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if quoted != 850_500 {
-		t.Fatalf("quoted microdollars = %d, want 850500", quoted)
+	if quoted != 972_000 {
+		t.Fatalf("quoted microdollars = %d, want 972000", quoted)
 	}
 }
 

@@ -19,6 +19,12 @@ type VideoJob struct {
 	EndpointID         string `json:"endpoint_id"`
 	ProviderModel      string `json:"provider_model"`
 	QuotedMicrodollars int    `json:"quoted_microdollars"`
+	InputMode          string `json:"input_mode"`
+	DurationSeconds    int    `json:"duration_seconds"`
+	Resolution         string `json:"resolution"`
+	AspectRatio        string `json:"aspect_ratio"`
+	GenerateAudio      bool   `json:"generate_audio"`
+	Region             string `json:"region"`
 	Status             string `json:"status"`
 	ProviderJobID      string `json:"provider_job_id"`
 	ProviderStatus     string `json:"provider_status"`
@@ -75,6 +81,9 @@ func (c *Client) PrepareVideoJob(ctx context.Context, job *VideoJob) (*VideoJob,
 		"model": job.Model, "provider": job.Provider,
 		"endpoint_id": job.EndpointID, "provider_model": job.ProviderModel,
 		"quoted_microdollars": job.QuotedMicrodollars,
+		"input_mode":          job.InputMode, "duration_seconds": job.DurationSeconds,
+		"resolution": job.Resolution, "aspect_ratio": job.AspectRatio,
+		"generate_audio": job.GenerateAudio, "region": job.Region,
 	}
 	var decoded struct {
 		Data VideoJob `json:"data"`

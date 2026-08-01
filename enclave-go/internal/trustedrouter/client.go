@@ -195,6 +195,11 @@ type Usage struct {
 	CacheCreationInputTokens   int
 	AdditionalCostMicrodollars int
 	ServiceTier                string
+	VideoInputMode             string
+	VideoDurationSeconds       int
+	VideoResolution            string
+	VideoAspectRatio           string
+	VideoGenerateAudio         bool
 }
 
 func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest) (*Authorization, error) {
@@ -443,6 +448,13 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	}
 	if usage.RouteType != "" {
 		body["route_type"] = usage.RouteType
+	}
+	if usage.RouteType == "videos" {
+		body["video_input_mode"] = usage.VideoInputMode
+		body["video_duration_seconds"] = usage.VideoDurationSeconds
+		body["video_resolution"] = usage.VideoResolution
+		body["video_aspect_ratio"] = usage.VideoAspectRatio
+		body["video_generate_audio"] = usage.VideoGenerateAudio
 	}
 	if usage.User != "" {
 		body["user"] = usage.User

@@ -73,6 +73,7 @@ func TestVideoRequestFingerprintBindsContentWithoutExposingIt(t *testing.T) {
 func TestVideoCreateQuotesThenAuthorizesBeforeSendingPromptToProvider(t *testing.T) {
 	events := make([]string, 0, 5)
 	var authorizeBody map[string]any
+	var prepareBody map[string]any
 	var queueBody map[string]any
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -105,13 +106,16 @@ func TestVideoCreateQuotesThenAuthorizesBeforeSendingPromptToProvider(t *testing
 			if err := json.NewDecoder(r.Body).Decode(&authorizeBody); err != nil {
 				t.Fatal(err)
 			}
-			_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth-video-1","workspace_id":"ws-1","api_key_hash":"key-hash","model":"lightricks/ltx-2.3-fast","requested_model":"lightricks/ltx-2.3-fast","endpoint_id":"lightricks/ltx-2.3-fast@venice/prepaid","provider":"venice","usage_type":"Credits","limit_usage_type":"Credits","additional_cost_reservation_microdollars":420000}}`)
+			_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth-video-1","workspace_id":"ws-1","api_key_hash":"key-hash","model":"lightricks/ltx-2.3-fast","requested_model":"lightricks/ltx-2.3-fast","endpoint_id":"lightricks/ltx-2.3-fast@venice/prepaid","provider":"venice","usage_type":"Credits","limit_usage_type":"Credits","additional_cost_reservation_microdollars":480000,"region":"us-central1"}}`)
 		case "/internal/gateway/video/jobs/prepare":
 			events = append(events, "prepare")
-			_, _ = io.WriteString(w, `{"data":{"id":"job-test","workspace_id":"ws-1","key_hash":"key-hash","authorization_id":"auth-video-1","model":"lightricks/ltx-2.3-fast","provider":"venice","endpoint_id":"lightricks/ltx-2.3-fast@venice/prepaid","provider_model":"ltx-2-v2-3-fast-text-to-video","quoted_microdollars":420000,"status":"submitting","created":true}}`)
+			if err := json.NewDecoder(r.Body).Decode(&prepareBody); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(w, `{"data":{"id":"job-test","workspace_id":"ws-1","key_hash":"key-hash","authorization_id":"auth-video-1","model":"lightricks/ltx-2.3-fast","provider":"venice","endpoint_id":"lightricks/ltx-2.3-fast@venice/prepaid","provider_model":"ltx-2-v2-3-fast-text-to-video","quoted_microdollars":480000,"input_mode":"text","duration_seconds":6,"resolution":"1080p","aspect_ratio":"16:9","generate_audio":true,"region":"us-central1","status":"submitting","created":true}}`)
 		case "/internal/gateway/video/jobs/job-test/queued":
 			events = append(events, "queued")
-			_, _ = io.WriteString(w, `{"data":{"id":"job-test","workspace_id":"ws-1","key_hash":"key-hash","authorization_id":"auth-video-1","model":"lightricks/ltx-2.3-fast","provider":"venice","endpoint_id":"lightricks/ltx-2.3-fast@venice/prepaid","provider_model":"ltx-2-v2-3-fast-text-to-video","provider_job_id":"provider-job-1","quoted_microdollars":420000,"status":"pending"}}`)
+			_, _ = io.WriteString(w, `{"data":{"id":"job-test","workspace_id":"ws-1","key_hash":"key-hash","authorization_id":"auth-video-1","model":"lightricks/ltx-2.3-fast","provider":"venice","endpoint_id":"lightricks/ltx-2.3-fast@venice/prepaid","provider_model":"ltx-2-v2-3-fast-text-to-video","provider_job_id":"provider-job-1","quoted_microdollars":480000,"status":"pending"}}`)
 		default:
 			t.Fatalf("unexpected control path %q", r.URL.Path)
 		}
@@ -142,6 +146,16 @@ func TestVideoCreateQuotesThenAuthorizesBeforeSendingPromptToProvider(t *testing
 	if strings.Contains(string(encodedAuth), "private launch prompt") || authorizeBody["request_fingerprint"] == nil {
 		t.Fatalf("unsafe authorize payload: %s", encodedAuth)
 	}
+	if authorizeBody["additional_cost_reservation_microdollars"] != float64(480_000) {
+		t.Fatalf("video fee not applied to authorization: %#v", authorizeBody)
+	}
+	encodedPrepare, _ := json.Marshal(prepareBody)
+	if strings.Contains(string(encodedPrepare), "private launch prompt") ||
+		prepareBody["duration_seconds"] != float64(6) ||
+		prepareBody["resolution"] != "1080p" ||
+		prepareBody["generate_audio"] != true {
+		t.Fatalf("bad content-free video metadata: %s", encodedPrepare)
+	}
 	if queueBody["prompt"] != "private launch prompt" {
 		t.Fatalf("provider queue did not receive prompt: %#v", queueBody)
 	}
@@ -166,7 +180,9 @@ func TestCompletedVideoSettlesBeforePublishingCompletedState(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
-			if body["additional_cost_microdollars"] != float64(850_500) || body["route_type"] != "videos" {
+			if body["additional_cost_microdollars"] != float64(850_500) || body["route_type"] != "videos" ||
+				body["video_duration_seconds"] != float64(5) || body["video_resolution"] != "2K" ||
+				body["video_generate_audio"] != true {
 				t.Fatalf("settle body = %#v", body)
 			}
 			_, _ = io.WriteString(w, `{"data":{"generation_id":"gen-video","cost_microdollars":850500}}`)
@@ -187,6 +203,8 @@ func TestCompletedVideoSettlesBeforePublishingCompletedState(t *testing.T) {
 		Model: "minimax/hailuo-3", Provider: "venice", EndpointID: "minimax/hailuo-3@venice/prepaid",
 		ProviderModel: "minimax-h3-text-to-video", ProviderJobID: "provider-job",
 		QuotedMicrodollars: 850_500, Status: "pending",
+		InputMode: "text", DurationSeconds: 5, Resolution: "2K", AspectRatio: "16:9",
+		GenerateAudio: true,
 	}
 	completed, err := service.pollAndFinalize(context.Background(), job, "worker")
 	if err != nil {
