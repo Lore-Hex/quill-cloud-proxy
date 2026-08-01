@@ -16,6 +16,13 @@ SPEC.loader.exec_module(TLS_CHECK)
 
 
 class PublicTLSCheckTests(unittest.TestCase):
+    def test_default_hosts_cover_operational_aliases(self) -> None:
+        self.assertIn("api.trustedrouter.com", TLS_CHECK.DEFAULT_HOSTS)
+        self.assertIn("allyrouter.com", TLS_CHECK.DEFAULT_HOSTS)
+        self.assertIn("status.allyrouter.com", TLS_CHECK.DEFAULT_HOSTS)
+        self.assertIn("trust.allyrouter.com", TLS_CHECK.DEFAULT_HOSTS)
+        self.assertIn("api.allyrouter.com", TLS_CHECK.DEFAULT_HOSTS)
+
     def test_parses_certificate_expiry_as_utc(self) -> None:
         expiry = TLS_CHECK.certificate_expiry(
             {"notAfter": "Sep 30 23:51:54 2026 GMT"}
