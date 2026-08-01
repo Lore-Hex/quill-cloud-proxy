@@ -321,7 +321,8 @@ jobs:
         # instances. We *want* the canary below to measure post-roll
         # steady state, not the mid-roll drain window where probes
         # naturally flap as instances cycle. Timeout caps a stuck
-        # rollout — 15 min is generous; a healthy roll is 5-10 min.
+        # rollout — the MIG intentionally holds replacements ready for 10 min
+        # so attested DNS can publish them before deleting the old generation.
         timeout-minutes: 15
         env:
           QUILL_RECONCILE_APPLY: "1"

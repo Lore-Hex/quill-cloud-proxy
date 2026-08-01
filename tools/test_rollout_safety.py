@@ -46,6 +46,21 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn('MAX_UNAVAILABLE="${MAX_UNAVAILABLE:-0}"', deploy)
         self.assertIn('--update-policy-max-unavailable="$MAX_UNAVAILABLE"', deploy)
 
+    def test_rollout_holds_old_generation_until_replacements_can_attest(self) -> None:
+        deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
+
+        self.assertIn('MIN_READY="${MIN_READY:-600s}"', deploy)
+        self.assertEqual(
+            deploy.count('--update-policy-min-ready="$MIN_READY"'),
+            2,
+            "existing and newly-created MIGs must share the readiness hold",
+        )
+        self.assertEqual(
+            deploy.count("gc beta compute instance-groups managed"),
+            2,
+            "minReadySec must use the beta Compute API until it reaches GA",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
