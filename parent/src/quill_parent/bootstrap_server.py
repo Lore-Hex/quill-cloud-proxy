@@ -68,6 +68,12 @@ VMADDR_CID_ANY: Final[int] = 0xFFFFFFFF
 # restart.
 REFRESH_SECONDS: Final[int] = 1800
 
+# How often to re-warn while the first bootstrap payload has not built.
+# 15s is short enough that the warning appears well before an enclave's
+# own bootstrap timeout, so the parent log explains the enclave exit
+# rather than trailing it.
+FIRST_PAYLOAD_WARN_SECONDS: Final[float] = 15.0
+
 # Provider key catalog: each entry is (BootstrapData field name, AWS
 # Secrets Manager secret name suffix). The full secret path is
 # `${secret_prefix}${suffix}`. This list MUST stay in sync with:
@@ -184,7 +190,7 @@ def _read_one_secret(sm_client: object, secret_id: str) -> str | None:
     return value if isinstance(value, str) else str(value)
 
 
-def _unwrap_gcp_sa_key(sm_client: object, kms_client: object, secret_id: str) -> str:
+def _unwrap_gcp_sa_key(sm_client: object, kms_client: object, secret_id: str) -> str | None:
     """Fetch the wrapped GCP SA key from Secrets Manager, base64-decode
     the ciphertext, and KMS Decrypt to JSON bytes. Returns the JSON
     string the enclave drops at GOOGLE_APPLICATION_CREDENTIALS.
@@ -194,10 +200,22 @@ def _unwrap_gcp_sa_key(sm_client: object, kms_client: object, secret_id: str) ->
         aws kms encrypt --output text --query CiphertextBlob > b64
         aws secretsmanager create-secret --secret-string file://b64
     so the SecretString IS the base64-encoded KMS ciphertext.
+
+    Returns None when the secret is absent. That is the normal state for
+    a STANDALONE regional deployment (aws.trustedrouter.com), which by
+    the separation architecture holds no GCP credential at all: it uses
+    self-signed TLS bound by attestation, not the shared ACME GCS cache,
+    so nothing downstream reads this field (enclave-side it is
+    `omitempty`). Only the legacy api.quillrouter.com failover path
+    populates it.
+
+    A secret that EXISTS but does not decrypt still raises — that is a
+    real misconfiguration, not an absent dependency.
     """
     raw = _read_one_secret(sm_client, secret_id)
     if not raw:
-        raise RuntimeError(f"bootstrap: cross-cloud GCP SA key secret missing: {secret_id}")
+        log.warning("bootstrap.gcp_sa_key_absent", secret_id=secret_id)
+        return None
     try:
         ciphertext = base64.b64decode(raw)
     except Exception as exc:
@@ -272,10 +290,10 @@ def _build_bootstrap_data(
 
     # 2. GCP SA key (KMS-unwrapped).
     sa_secret_id = f"{secret_prefix}{_GCP_SA_KEY_SECRET_SUFFIX}"
-    payload["gcp_service_account_key_json"] = _unwrap_gcp_sa_key(
-        sm_client, kms_client, sa_secret_id
-    )
-    log.info("bootstrap.gcp_sa_key_unwrapped", kms_alias=gcp_sa_kms_alias)
+    sa_key = _unwrap_gcp_sa_key(sm_client, kms_client, sa_secret_id)
+    if sa_key is not None:
+        payload["gcp_service_account_key_json"] = sa_key
+        log.info("bootstrap.gcp_sa_key_unwrapped", kms_alias=gcp_sa_kms_alias)
 
     # 3. TrustedRouter internal token (no KMS wrapping; just a Secrets
     # Manager string). Optional — only the multi-region control-plane
@@ -379,8 +397,32 @@ async def serve_forever(
     # Wait for the first refresh to land before accepting connections.
     # Otherwise a fast-booting enclave can dial the parent's listener
     # before the payload exists and get an empty response.
+    #
+    # This wait is UNBOUNDED on purpose — serving a half-built payload is
+    # worse than not serving — but it must never be silent. When the
+    # first refresh keeps failing (e.g. a secret the builder treats as
+    # mandatory is absent), the bind below is never reached, so the
+    # enclave's dial to vsock:9100 gets ECONNRESET and the enclave exits
+    # at bootstrap. From outside, the parent looks perfectly healthy:
+    # uvicorn is up and /health returns 200, because /health does not
+    # depend on this task. That combination cost a long debugging cycle;
+    # the periodic warning below names the symptom AND the consequence so
+    # the next occurrence is one `docker logs` away.
+    waited = 0.0
     while not cached_payload:
         await asyncio.sleep(0.1)
+        waited += 0.1
+        if waited % FIRST_PAYLOAD_WARN_SECONDS < 0.1:
+            log.warning(
+                "bootstrap.first_payload_pending",
+                waited_seconds=int(waited),
+                port=BOOTSTRAP_PORT,
+                detail=(
+                    "bootstrap payload has not built yet; vsock listener NOT bound, "
+                    "so enclaves will fail bootstrap with ECONNRESET and exit. "
+                    "See the preceding bootstrap.refresh_failed for the cause."
+                ),
+            )
 
     listener = socket.socket(AF_VSOCK, socket.SOCK_STREAM)
     listener.bind((VMADDR_CID_ANY, BOOTSTRAP_PORT))

@@ -10,7 +10,11 @@
 # minor release); the digest pin makes PCR0 stable across rebuilds. To
 # update: `docker manifest inspect golang:1.24-bookworm` for the new
 # arm64 digest, replace below, expect PCR0 to change, re-publish.
-FROM golang:1.24-bookworm@sha256:ca0741815eee3625da09eddf15cc8ff678efa16520fcbcdbeb2ae0b0c519c82c AS builder
+# golang 1.25, matching Dockerfile.enclave.gcp.multi. NOT cosmetic: the
+# attest-sidecar module (enclave-go/sidecar/go.mod) requires go 1.25.5, so a
+# 1.24 base fails that build step outright. Bumping the base CHANGES PCR0 —
+# expected, and the reason this file pins by digest.
+FROM golang:1.25-bookworm@sha256:61170847dd0e20c3c1e374aea35c7057c42e1d638d775c360afcd548531c05ab AS builder
 
 # ca-certificates: Go's crypto/tls reads /etc/ssl/certs/ca-certificates.crt at
 # runtime to verify TLS peers (Bedrock in our case). The scratch base has no
@@ -43,9 +47,27 @@ RUN go build -trimpath -tags "${BUILD_TAGS}" \
       -o /out/quill-enclave ./cmd/enclave
 
 # scratch keeps the EIF tiny and the PCR0 surface minimal.
+# ─── attest-sidecar binary ──────────────────────────────────────────────────
+#
+# Lives in its own Go module (enclave-go/sidecar/go.mod) so its heavy dep graph
+# stays out of the enclave binary. It is NOT optional: without /attest-sidecar
+# the enclave logs
+#   attest_sidecar.skipped reason=binary_missing path="/attest-sidecar"
+# and exits, which presents as a Nitro enclave that starts, disappears from
+# `nitro-cli describe-enclaves`, and leaves parent-pump listening on :8444 with
+# nothing behind the vsock. The NLB health check is TCP-level and stays green
+# throughout, so nothing surfaces the failure. The GCP multi image already
+# builds this; the AWS image did not, which is why AWS attestation had no
+# sidecar to answer.
+RUN cd sidecar && go mod download \
+    && go build -trimpath \
+       -ldflags='-s -w -extldflags=-static' \
+       -o /out/attest-sidecar .
+
 FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /out/quill-enclave /quill-enclave
+COPY --from=builder /out/attest-sidecar /attest-sidecar
 
 # TLS termination INSIDE the enclave — no plaintext prompt content ever
 # exists outside this attested binary. With this ENV the enclave wraps its
@@ -78,8 +100,25 @@ ENV QUILL_ENCLAVE_TLS=true
 # QUILL_ACME_DIRECTORY_URL is LE production. Leave commented to use
 # autocert's default (also LE production) or set explicitly to the LE
 # staging endpoint for testing.
-ENV QUILL_TLS_MODE=acme \
-    QUILL_API_HOST=api.quillrouter.com \
+# TLS mode is a build ARG, not a hardcoded ENV, because the two deployments of
+# this image need different answers:
+#
+#   - The legacy api.quillrouter.com failover uses ACME (a real LE cert cached
+#     in a shared GCS bucket, read via the cross-cloud SA key).
+#   - The STANDALONE aws.trustedrouter.com EU deployment must NOT reach back
+#     into GCP's ACME cache — that cross-cloud dependency is exactly what the
+#     separation architecture removes. It uses SELF-SIGNED, which is correct
+#     for a pure-attestation model: the client fetches /attestation over
+#     unverified TLS, reads the SEV-SNP-signed document, extracts the attested
+#     leaf-cert fingerprint, and pins it. Trust comes from the attestation
+#     binding the cert, not from a CA. Self-signed also has ZERO external
+#     dependency, so /attestation serves the moment the enclave is up.
+#
+# Defaults preserve the previous ACME behaviour so nothing else changes.
+ARG QUILL_TLS_MODE=acme
+ARG QUILL_API_HOST=api.quillrouter.com
+ENV QUILL_TLS_MODE=${QUILL_TLS_MODE} \
+    QUILL_API_HOST=${QUILL_API_HOST} \
     QUILL_ACME_CACHE_GCS_BUCKET=quill-acme-cache \
     QUILL_ACME_EMAIL=acme-aws-us-west-2@trustedrouter.com
 

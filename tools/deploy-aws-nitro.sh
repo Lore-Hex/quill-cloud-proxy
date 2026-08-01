@@ -666,6 +666,14 @@ allowlist:
   - {address: api.redpill.ai,                port: 443}
   - {address: api.siliconflow.com,           port: 443}
   - {address: inference.tinfoil.sh,          port: 443}
+  # ATTESTATION SIDECAR egress. The enclave has NO network and NO DNS: every
+  # outbound host must be listed here AND given a write_vsock_unit below, or
+  # the sidecar dies with 'lookup <host> on [::1]:53: cannot assign requested
+  # address' and takes the enclave down with it. inference.tinfoil.sh above is
+  # the DATA path; these are the VERIFICATION path and are separate.
+  - {address: api-github-proxy.tinfoil.sh, port: 443}
+  - {address: tuf-repo-cdn.sigstore.dev, port: 443}
+  - {address: rekor.sigstore.dev,        port: 443}
   - {address: api.venice.ai,                 port: 443}
   # 2026-05-11 batch (parasail / lightning / gmi). All OpenAI-compatible.
   - {address: api.parasail.io,               port: 443}
@@ -756,6 +764,11 @@ write_vsock_unit 8014 api.novita.ai
 write_vsock_unit 8015 api.redpill.ai
 write_vsock_unit 8016 api.siliconflow.com
 write_vsock_unit 8017 inference.tinfoil.sh
+write_vsock_unit 8042 api-github-proxy.tinfoil.sh
+write_vsock_unit 8043 tuf-repo-cdn.sigstore.dev
+write_vsock_unit 8044 rekor.sigstore.dev
+write_vsock_unit 8045 gh-attestation-proxy.tinfoil.sh
+write_vsock_unit 8046 kds-proxy.tinfoil.sh
 write_vsock_unit 8018 api.venice.ai
 write_vsock_unit 8019 api.parasail.io
 write_vsock_unit 8020 lightning.ai
@@ -844,11 +857,40 @@ nitro-cli build-enclave \\
   --docker-uri ${enclave_repo_url}:${enclave_tag} \\
   --output-file /opt/quill/enclave.eif
 
-nitro-cli run-enclave \\
-  --eif-path /opt/quill/enclave.eif \\
-  --cpu-count 2 \\
-  --memory 4096 \\
-  --enclave-cid 16
+# Run the enclave under systemd, NOT as a bare boot command. A bare
+# run-enclave dies permanently on any crash (or a debug-mode test), taking
+# attestation down until the whole host is replaced — the parent keeps
+# serving 8443/8444 with a dead vsock peer behind it, so /attestation returns
+# nothing and the TCP health check stays green while lying. Restart=always
+# turns "the enclave stopped" into a few seconds of downtime instead of a
+# manual host cycle. ExecStop terminates cleanly so a restart can re-run.
+cat > /etc/systemd/system/quill-enclave.service <<UNIT
+[Unit]
+Description=Quill Nitro enclave
+After=nitro-enclaves-allocator.service
+Wants=nitro-enclaves-allocator.service
+
+[Service]
+Type=simple
+# Do NOT use --attach-console here. On a NON-debug production EIF that flag does
+# not give a long-running foreground process — nitro-cli returns/errors and the
+# unit crash-loops (observed: NRestarts climbing, enclave up-then-gone within
+# 20s). Instead: launch once, then a poll loop that blocks while the enclave is
+# alive and exits (tripping Restart=always) only when it actually dies. That
+# ties unit life to enclave life without the console dependency.
+# terminate-all first so a leftover enclave from a prior start cannot collide
+# on the CID.
+ExecStartPre=-/usr/bin/nitro-cli terminate-enclave --all
+ExecStart=/bin/bash -c '/usr/bin/nitro-cli run-enclave --eif-path /opt/quill/enclave.eif --cpu-count 2 --memory 4096 --enclave-cid 16 && while /usr/bin/nitro-cli describe-enclaves | grep -q EnclaveID; do sleep 10; done; echo "enclave exited" >&2; exit 1'
+ExecStop=/usr/bin/nitro-cli terminate-enclave --all
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now quill-enclave.service
 
 # Liveness signal: the parent's /health endpoint exits 0 once the enclave
 # vsock socket accepts a connect. The ASG health check polls 8443 on TCP.

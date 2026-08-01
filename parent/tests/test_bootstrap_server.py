@@ -166,22 +166,37 @@ def test_build_payload_propagates_tr_control_plane_url() -> None:
     assert payload["trustedrouter_internal_token"] == "tr_internal_token_FAKE"
 
 
-def test_build_payload_raises_when_gcp_sa_key_missing() -> None:
-    """The GCP SA key is REQUIRED (not optional) — without it the
-    AWS-side enclave can't read GCP Spanner/Bigtable cross-cloud and
-    every credit-ledger call fails. Bootstrap should fail loudly so
-    the parent restarts (and the ASG replaces the instance) instead
-    of silently shipping a broken BootstrapData."""
+def test_build_payload_omits_gcp_sa_key_when_absent() -> None:
+    """An ABSENT cross-cloud SA key is a valid configuration, not an error.
+
+    This assertion was inverted (SA key REQUIRED, raise if missing) back
+    when every cloud shared one GCP Spanner ledger, so an AWS enclave
+    without a GCP credential genuinely could not bill. The separation
+    architecture removed that: aws.trustedrouter.com owns its own Aurora
+    DSQL database, its own credits, and self-signed TLS bound by
+    attestation — it holds no GCP credential by design.
+
+    Keeping the old contract had a nasty failure mode. The raise
+    propagated to refresh(), which swallows exceptions, so the payload
+    never built, so the vsock:9100 listener never bound, so every enclave
+    died at bootstrap with ECONNRESET — while uvicorn happily served
+    /health 200 on the same host. Absent must therefore mean absent.
+    """
     sm = _StubSecretsManager(
         {
             "quill/trustedrouter-anthropic-api-key": "sk-ant-FAKE",
-            # SA key DELIBERATELY missing
+            # SA key DELIBERATELY missing — the standalone-region case
         }
     )
-    kms = _StubKMS({})  # Decrypt should never be called
+    kms = _StubKMS({})  # Decrypt must never be called
 
-    with pytest.raises(RuntimeError, match="cross-cloud GCP SA key"):
-        _build_payload(sm=sm, kms=kms)
+    payload = _build_payload(sm=sm, kms=kms)
+
+    assert "gcp_service_account_key_json" not in payload
+    assert kms.calls == []
+    # The rest of the payload still builds, which is the whole point:
+    # a standalone region boots with provider keys and no GCP identity.
+    assert payload["anthropic_api_key"] == "sk-ant-FAKE"
 
 
 def test_build_payload_raises_when_gcp_sa_secret_value_is_not_base64() -> None:
