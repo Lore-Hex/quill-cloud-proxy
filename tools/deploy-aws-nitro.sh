@@ -60,6 +60,15 @@ ASG_MAX="${ASG_MAX:-50}"
 # the steady-state warmup pattern (1% Cloudflare-LB trickle keeps the
 # AWS path warmed under real traffic so its bugs surface in metrics
 # rather than during an outage).
+# Whether the caller set ASG_DESIRED explicitly. When they did NOT, an
+# update of an EXISTING ASG preserves whatever capacity is currently
+# running (see phase_compute). Re-running `--phase compute` to publish a
+# new launch template is a routine operation, and it must not double as
+# "scale the running deployment to zero" -- which is exactly what the bare
+# default did: it took the live eu-west-1 enclave down mid-session, and
+# the terminate-and-wait that followed then had nothing to replace.
+ASG_DESIRED_EXPLICIT=0
+[ -n "${ASG_DESIRED+x}" ] && ASG_DESIRED_EXPLICIT=1
 ASG_DESIRED="${ASG_DESIRED:-0}"
 
 DRY_RUN=1
@@ -1042,7 +1051,7 @@ EOJ
     fi
   fi
 
-  # ASG. We launch with desired=ASG_DESIRED (default 1) so the AWS path
+  # ASG. We launch with desired=ASG_DESIRED (default 0) so the AWS path
   # is continuously warmed by the 1% Cloudflare-LB trickle. Healthcheck
   # type ELB so unhealthy bootstraps get auto-replaced.
   local asg_name="${PROJECT_TAG}-asg"
@@ -1050,13 +1059,26 @@ EOJ
        --auto-scaling-group-names "$asg_name" \
        --query "AutoScalingGroups[0].AutoScalingGroupName" --output text 2>/dev/null \
        | grep -q "$asg_name"; then
-    log "  ASG $asg_name already exists; updating to latest LT version"
+    # Preserve running capacity unless the caller asked for a specific
+    # value. Publishing a launch template must not scale the deployment.
+    local update_desired="$ASG_DESIRED"
+    if [ "$ASG_DESIRED_EXPLICIT" -eq 0 ]; then
+      local current_desired
+      current_desired=$(aws autoscaling describe-auto-scaling-groups \
+        --region "$AWS_REGION" --auto-scaling-group-names "$asg_name" \
+        --query "AutoScalingGroups[0].DesiredCapacity" --output text 2>/dev/null)
+      case "$current_desired" in
+        ''|None|*[!0-9]*) : ;;   # unreadable -> fall back to the default
+        *) update_desired="$current_desired" ;;
+      esac
+    fi
+    log "  ASG $asg_name already exists; updating to latest LT version (desired=$update_desired)"
     if [ $DRY_RUN -eq 0 ]; then
       aws autoscaling update-auto-scaling-group --region "$AWS_REGION" \
         --auto-scaling-group-name "$asg_name" \
         --launch-template "LaunchTemplateName=${lt_name},Version=\$Latest" \
         --min-size "$ASG_MIN" --max-size "$ASG_MAX" \
-        --desired-capacity "$ASG_DESIRED" \
+        --desired-capacity "$update_desired" \
         --vpc-zone-identifier "$subnet_ids"
     fi
   else
