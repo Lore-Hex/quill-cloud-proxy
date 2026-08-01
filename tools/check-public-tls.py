@@ -16,6 +16,12 @@ DEFAULT_HOSTS = (
     "status.trustedrouter.com",
     "eu.trustedrouter.com",
     "trust.trustedrouter.com",
+    "api.trustedrouter.com",
+    "allyrouter.com",
+    "www.allyrouter.com",
+    "status.allyrouter.com",
+    "trust.allyrouter.com",
+    "api.allyrouter.com",
 )
 
 
