@@ -169,13 +169,17 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		return
 	}
 	providerModel, _ := queuePayload["model"].(string)
+	metadata := video.Metadata(model, queuePayload)
 	job := &trustedrouter.VideoJob{
 		ID: videoJobID(auth.AuthorizationID), AuthorizationID: auth.AuthorizationID,
 		WorkspaceID: auth.WorkspaceID, KeyHash: auth.APIKeyHash,
 		Model: model.ID, Provider: auth.Provider, EndpointID: auth.EndpointID,
 		ProviderModel:      providerModel,
 		QuotedMicrodollars: auth.AdditionalCostReservationMicrodollars,
-		Status:             "submitting",
+		InputMode:          metadata.InputMode, DurationSeconds: metadata.DurationSeconds,
+		Resolution: metadata.Resolution, AspectRatio: metadata.AspectRatio,
+		GenerateAudio: metadata.GenerateAudio, Region: auth.Region,
+		Status: "submitting",
 	}
 	stored, err := s.control.PrepareVideoJob(ctx, job)
 	if err != nil {
@@ -370,6 +374,9 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 			ElapsedSeconds: videoElapsed(job.CreatedAt), FinishReason: "completed",
 			RouteType: "videos", SelectedModel: job.Model, SelectedEndpoint: job.EndpointID,
 			AdditionalCostMicrodollars: job.QuotedMicrodollars,
+			VideoInputMode:             job.InputMode, VideoDurationSeconds: job.DurationSeconds,
+			VideoResolution: job.Resolution, VideoAspectRatio: job.AspectRatio,
+			VideoGenerateAudio: job.GenerateAudio,
 		})
 		if err != nil {
 			return job, err
