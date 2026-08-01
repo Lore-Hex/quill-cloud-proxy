@@ -605,6 +605,7 @@ func TestDirectModelIDResolvesMixedCaseUpstreamID(t *testing.T) {
 		// SiliconFlow native ids verified against api.siliconflow.com/v1/models
 		// (mixed-case, different author prefix — deepseek-ai/*, zai-org/*).
 		{"siliconflow", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash", "deepseek-ai/DeepSeek-V4-Flash"},
+		{"siliconflow", "deepseek/deepseek-v4-flash-0731", "deepseek-ai/DeepSeek-V4-Flash-0731", "deepseek-ai/DeepSeek-V4-Flash-0731"},
 		{"siliconflow", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro", "deepseek-ai/DeepSeek-V4-Pro"},
 		{"siliconflow", "minimax/minimax-m3", "minimax/minimax-m3", "MiniMaxAI/MiniMax-M3"},
 		{"siliconflow", "tencent/hunyuan-a13b-instruct", "tencent/hunyuan-a13b-instruct", "tencent/Hunyuan-A13B-Instruct"},
