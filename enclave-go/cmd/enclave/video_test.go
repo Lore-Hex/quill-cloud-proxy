@@ -124,7 +124,9 @@ func TestVideoCreateQuotesThenAuthorizesBeforeSendingPromptToProvider(t *testing
 
 	controlClient := trustedrouter.New(control.URL, "internal", control.Client())
 	service := &videoService{
-		provider: video.NewVeniceClientAt("venice-secret", provider.URL, provider.Client()),
+		providers: video.NewRegistryWithProviders(
+			video.NewVeniceClientAt("venice-secret", provider.URL, provider.Client()),
+		),
 		control:  controlClient,
 		workerID: "test-worker",
 	}
@@ -158,6 +160,93 @@ func TestVideoCreateQuotesThenAuthorizesBeforeSendingPromptToProvider(t *testing
 	}
 	if queueBody["prompt"] != "private launch prompt" {
 		t.Fatalf("provider queue did not receive prompt: %#v", queueBody)
+	}
+}
+
+func TestVideoCreateFallsBackAfterRetryableDirectProviderFailure(t *testing.T) {
+	events := make([]string, 0, 8)
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		events = append(events, "minimax-queue")
+		if r.URL.Path != "/v2/video_generation" {
+			t.Fatalf("unexpected MiniMax path %q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"error":"temporary"}`)
+	}))
+	defer direct.Close()
+	venice := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/quote":
+			events = append(events, "venice-quote")
+			_, _ = io.WriteString(w, `{"quote":0.80}`)
+		case "/queue":
+			events = append(events, "venice-queue")
+			_, _ = io.WriteString(w, `{"model":"minimax-h3-text-to-video","queue_id":"venice-job"}`)
+		default:
+			t.Fatalf("unexpected Venice path %q", r.URL.Path)
+		}
+	}))
+	defer venice.Close()
+
+	var authorizeBody map[string]any
+	var prepareBody map[string]any
+	var queuedBody map[string]any
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			events = append(events, "authorize")
+			if err := json.NewDecoder(r.Body).Decode(&authorizeBody); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth-fallback","workspace_id":"ws-1","api_key_hash":"key-hash","model":"minimax/hailuo-3","requested_model":"minimax/hailuo-3","endpoint_id":"minimax/hailuo-3@minimax/prepaid","provider":"minimax","usage_type":"Credits","limit_usage_type":"Credits","additional_cost_reservation_microdollars":960000,"region":"us-central1","route_candidates":[{"endpoint_id":"minimax/hailuo-3@minimax/prepaid","model":"minimax/hailuo-3","provider":"minimax","usage_type":"Credits"},{"endpoint_id":"minimax/hailuo-3@venice/prepaid","model":"minimax/hailuo-3","provider":"venice","usage_type":"Credits"}]}}`)
+		case "/internal/gateway/video/jobs/prepare":
+			events = append(events, "prepare")
+			if err := json.NewDecoder(r.Body).Decode(&prepareBody); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(w, `{"data":{"id":"job-fallback","workspace_id":"ws-1","key_hash":"key-hash","authorization_id":"auth-fallback","model":"minimax/hailuo-3","provider":"minimax","endpoint_id":"minimax/hailuo-3@minimax/prepaid","provider_model":"minimax/hailuo-3","quoted_microdollars":840000,"input_mode":"text","duration_seconds":5,"resolution":"2K","aspect_ratio":"16:9","generate_audio":true,"region":"us-central1","status":"submitting","created":true}}`)
+		case "/internal/gateway/video/jobs/job-fallback/queued":
+			events = append(events, "queued")
+			if err := json.NewDecoder(r.Body).Decode(&queuedBody); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(w, `{"data":{"id":"job-fallback","workspace_id":"ws-1","key_hash":"key-hash","authorization_id":"auth-fallback","model":"minimax/hailuo-3","provider":"venice","endpoint_id":"minimax/hailuo-3@venice/prepaid","provider_model":"minimax-h3-text-to-video","provider_job_id":"venice-job","quoted_microdollars":960000,"status":"pending"}}`)
+		default:
+			t.Fatalf("unexpected control path %q", r.URL.Path)
+		}
+	}))
+	defer control.Close()
+
+	service := &videoService{
+		providers: video.NewRegistryWithProviders(
+			video.NewMiniMaxClientAt("minimax-secret", direct.URL, direct.Client()),
+			video.NewVeniceClientAt("venice-secret", venice.URL, venice.Client()),
+		),
+		control: trustedrouter.New(control.URL, "internal", control.Client()),
+	}
+	var response bytes.Buffer
+	service.serveCreate(
+		context.Background(), &response,
+		[]byte(`{"model":"minimax/hailuo-3","prompt":"private fallback prompt","duration":5}`),
+		"sk-private", "idem-fallback",
+	)
+	if !strings.Contains(response.String(), "HTTP/1.1 202") {
+		t.Fatalf("create response = %q", response.String())
+	}
+	if authorizeBody["additional_cost_reservation_microdollars"] != float64(960_000) {
+		t.Fatalf("authorization did not reserve the maximum fallback quote: %#v", authorizeBody)
+	}
+	if prepareBody["provider"] != "minimax" || prepareBody["quoted_microdollars"] != float64(840_000) {
+		t.Fatalf("prepare did not record the initially selected direct route: %#v", prepareBody)
+	}
+	if queuedBody["provider"] != "venice" ||
+		queuedBody["endpoint_id"] != "minimax/hailuo-3@venice/prepaid" ||
+		queuedBody["quoted_microdollars"] != float64(960_000) {
+		t.Fatalf("queued transition did not persist the selected fallback: %#v", queuedBody)
+	}
+	wantEvents := "venice-quote,authorize,prepare,minimax-queue,venice-queue,queued"
+	if strings.Join(events, ",") != wantEvents {
+		t.Fatalf("events = %q, want %q", strings.Join(events, ","), wantEvents)
 	}
 }
 
@@ -195,8 +284,10 @@ func TestCompletedVideoSettlesBeforePublishingCompletedState(t *testing.T) {
 	}))
 	defer control.Close()
 	service := &videoService{
-		provider: video.NewVeniceClientAt("venice-secret", provider.URL, provider.Client()),
-		control:  trustedrouter.New(control.URL, "internal", control.Client()),
+		providers: video.NewRegistryWithProviders(
+			video.NewVeniceClientAt("venice-secret", provider.URL, provider.Client()),
+		),
+		control: trustedrouter.New(control.URL, "internal", control.Client()),
 	}
 	job := &trustedrouter.VideoJob{
 		ID: "job-complete", AuthorizationID: "auth-video", WorkspaceID: "ws", KeyHash: "key",
@@ -295,6 +386,7 @@ func TestVideoContentCleansUpAfterVeniceCompleteBadRequest(t *testing.T) {
 		case "/internal/gateway/video/jobs/job-delivery/lookup":
 			job := map[string]any{
 				"id": "job-delivery", "status": "completed",
+				"provider":        "venice",
 				"provider_model":  "minimax-h3-text-to-video",
 				"provider_job_id": "provider-job",
 			}
@@ -313,8 +405,10 @@ func TestVideoContentCleansUpAfterVeniceCompleteBadRequest(t *testing.T) {
 	defer control.Close()
 
 	service := &videoService{
-		provider: video.NewVeniceClientAt("venice-secret", provider.URL, provider.Client()),
-		control:  trustedrouter.New(control.URL, "internal", control.Client()),
+		providers: video.NewRegistryWithProviders(
+			video.NewVeniceClientAt("venice-secret", provider.URL, provider.Client()),
+		),
+		control: trustedrouter.New(control.URL, "internal", control.Client()),
 	}
 	var first bytes.Buffer
 	service.serveContent(context.Background(), &first, "sk-private", "job-delivery")

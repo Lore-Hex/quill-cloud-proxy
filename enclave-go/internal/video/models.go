@@ -66,6 +66,7 @@ type Model struct {
 	AllowedAspectRatios    []string
 	OmitResolution         bool
 	ImageUsesSourceAspect  bool
+	DirectOnly             bool
 }
 
 type RequestMetadata struct {
@@ -106,7 +107,7 @@ var models = map[string]Model{
 		TextProviderModel:  "ltx-2-v2-3-full-text-to-video",
 		ImageProviderModel: "ltx-2-v2-3-full-image-to-video",
 		SupportsAudio:      true, SupportsImage: true,
-		PromptCharacterLimit: 2500,
+		PromptCharacterLimit: 5000,
 		AllowedDurations:     []int{6, 8, 10},
 		AllowedResolutions:   []string{"1080p", "1440p", "2160p"},
 		AllowedAspectRatios:  []string{"16:9", "9:16"},
@@ -118,7 +119,7 @@ var models = map[string]Model{
 		TextProviderModel:  "ltx-2-v2-3-fast-text-to-video",
 		ImageProviderModel: "ltx-2-v2-3-fast-image-to-video",
 		SupportsAudio:      true, SupportsImage: true,
-		PromptCharacterLimit: 2500,
+		PromptCharacterLimit: 5000,
 		AllowedDurations:     []int{6, 8, 10, 12, 14, 16, 18, 20},
 		AllowedResolutions:   []string{"1080p", "1440p", "2160p"},
 		AllowedAspectRatios:  []string{"16:9", "9:16"},
@@ -146,18 +147,18 @@ var models = map[string]Model{
 		ReferenceProviderModel: "minimax-h3-reference-to-video",
 		AudioAlwaysOn:          true, SupportsImage: true, SupportsReferences: true,
 		SupportsAudioReference: true,
-		PromptCharacterLimit:   2500, MinimumDuration: 5, MaximumDuration: 15,
+		PromptCharacterLimit:   7000, MinimumDuration: 4, MaximumDuration: 15,
 		AllowedResolutions:    []string{"2K"},
 		AllowedAspectRatios:   []string{"16:9", "21:9", "4:3", "1:1", "3:4", "9:16"},
 		ImageUsesSourceAspect: true,
 	},
 	"google/veo-3.1": {
 		ID: "google/veo-3.1", Name: "Google Veo 3.1",
-		Description:     "Google Veo 3.1 full-quality video generation with configurable audio.",
+		Description:     "Google Veo 3.1 full-quality video generation with synchronized audio.",
 		DefaultDuration: 8, DefaultResolution: "1080p", DefaultAspectRatio: "16:9",
 		TextProviderModel:  "veo3.1-full-text-to-video",
 		ImageProviderModel: "veo3.1-full-image-to-video",
-		SupportsAudio:      true, SupportsImage: true,
+		AudioAlwaysOn:      true, SupportsImage: true,
 		PromptCharacterLimit:  2500,
 		AllowedDurations:      []int{4, 6, 8},
 		AllowedResolutions:    []string{"720p", "1080p", "4k"},
@@ -166,11 +167,11 @@ var models = map[string]Model{
 	},
 	"google/veo-3.1-fast": {
 		ID: "google/veo-3.1-fast", Name: "Google Veo 3.1 Fast",
-		Description:     "Google Veo 3.1 optimized for faster video generation with configurable audio.",
+		Description:     "Google Veo 3.1 optimized for faster video generation with synchronized audio.",
 		DefaultDuration: 8, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
 		TextProviderModel:  "veo3.1-fast-text-to-video",
 		ImageProviderModel: "veo3.1-fast-image-to-video",
-		SupportsAudio:      true, SupportsImage: true,
+		AudioAlwaysOn:      true, SupportsImage: true,
 		PromptCharacterLimit:  2500,
 		AllowedDurations:      []int{4, 6, 8},
 		AllowedResolutions:    []string{"720p", "1080p", "4k"},
@@ -192,13 +193,13 @@ var models = map[string]Model{
 	"openai/sora-2-pro": {
 		ID: "openai/sora-2-pro", Name: "OpenAI Sora 2 Pro",
 		Description:     "OpenAI Sora 2 Pro high-quality text and image video generation with synchronized audio.",
-		DefaultDuration: 8, DefaultResolution: "1080p", DefaultAspectRatio: "16:9",
+		DefaultDuration: 8, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
 		TextProviderModel:  "sora-2-pro-text-to-video",
 		ImageProviderModel: "sora-2-pro-image-to-video",
 		AudioAlwaysOn:      true, SupportsImage: true,
 		PromptCharacterLimit: 2500,
-		AllowedDurations:     []int{4, 8, 12, 16, 20},
-		AllowedResolutions:   []string{"720p", "1080p", "true_1080p"},
+		AllowedDurations:     []int{4, 8, 12},
+		AllowedResolutions:   []string{"720p", "1024p"},
 		AllowedAspectRatios:  []string{"16:9", "9:16"},
 	},
 	"runway/gen-4.5": {
@@ -215,27 +216,29 @@ var models = map[string]Model{
 	},
 	"kling/v3-pro": {
 		ID: "kling/v3-pro", Name: "Kling V3 Pro",
-		Description:     "Kling V3 Pro text and image video generation with optional audio.",
+		Description:     "Kling Video 3.0 Pro text and image video generation with optional native audio.",
 		DefaultDuration: 5, DefaultResolution: "1080p", DefaultAspectRatio: "16:9",
 		TextProviderModel:  "kling-v3-pro-text-to-video",
 		ImageProviderModel: "kling-v3-pro-image-to-video",
 		SupportsAudio:      true, SupportsImage: true,
-		PromptCharacterLimit: 2500,
+		PromptCharacterLimit: 3072,
 		MinimumDuration:      3, MaximumDuration: 15,
-		AllowedAspectRatios: []string{"16:9", "9:16", "1:1"},
-		OmitResolution:      true, ImageUsesSourceAspect: true,
+		AllowedResolutions:    []string{"720p", "1080p", "4k"},
+		AllowedAspectRatios:   []string{"16:9", "9:16", "1:1"},
+		ImageUsesSourceAspect: true,
 	},
 	"kling/o3-pro": {
-		ID: "kling/o3-pro", Name: "Kling O3 Pro",
-		Description:     "Kling O3 Pro text and image video generation with optional audio.",
+		ID: "kling/o3-pro", Name: "Kling 3.0 Omni Pro",
+		Description:     "Kling Video 3.0 Omni text and image video generation with optional native audio.",
 		DefaultDuration: 5, DefaultResolution: "1080p", DefaultAspectRatio: "16:9",
 		TextProviderModel:  "kling-o3-pro-text-to-video",
 		ImageProviderModel: "kling-o3-pro-image-to-video",
 		SupportsAudio:      true, SupportsImage: true,
-		PromptCharacterLimit: 2500,
+		PromptCharacterLimit: 3072,
 		MinimumDuration:      3, MaximumDuration: 15,
-		AllowedAspectRatios: []string{"16:9", "9:16", "1:1"},
-		OmitResolution:      true, ImageUsesSourceAspect: true,
+		AllowedResolutions:    []string{"720p", "1080p", "4k"},
+		AllowedAspectRatios:   []string{"16:9", "9:16", "1:1"},
+		ImageUsesSourceAspect: true,
 	},
 	"alibaba/wan-2.7": {
 		ID: "alibaba/wan-2.7", Name: "Alibaba Wan 2.7",
@@ -244,11 +247,28 @@ var models = map[string]Model{
 		TextProviderModel:     "wan-2-7-text-to-video",
 		ImageProviderModel:    "wan-2-7-image-to-video",
 		SupportsImage:         true,
-		PromptCharacterLimit:  2500,
-		AllowedDurations:      []int{5, 10, 15},
+		PromptCharacterLimit:  5000,
+		MinimumDuration:       2,
+		MaximumDuration:       15,
 		AllowedResolutions:    []string{"720p", "1080p"},
-		AllowedAspectRatios:   []string{"16:9", "9:16", "1:1"},
+		AllowedAspectRatios:   []string{"16:9", "9:16", "1:1", "4:3", "3:4"},
 		ImageUsesSourceAspect: true,
+	},
+	"x-ai/grok-imagine-video": {
+		ID: "x-ai/grok-imagine-video", Name: "xAI Grok Imagine Video",
+		Description:     "xAI Grok Imagine text, image, and reference video generation.",
+		DefaultDuration: 5, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
+		TextProviderModel:      "grok-imagine-video",
+		ImageProviderModel:     "grok-imagine-video",
+		ReferenceProviderModel: "grok-imagine-video",
+		SupportsImage:          true,
+		SupportsReferences:     true,
+		PromptCharacterLimit:   10_000,
+		MinimumDuration:        1,
+		MaximumDuration:        15,
+		AllowedResolutions:     []string{"480p", "720p"},
+		AllowedAspectRatios:    []string{"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"},
+		DirectOnly:             true,
 	},
 	"shengshu/vidu-q3": {
 		ID: "shengshu/vidu-q3", Name: "ShengShu Vidu Q3",
@@ -280,6 +300,7 @@ var models = map[string]Model{
 
 func Models() []Model {
 	order := []string{
+		"x-ai/grok-imagine-video",
 		"bytedance/seedance-2.0-fast", "bytedance/seedance-2.0",
 		"google/veo-3.1-fast", "google/veo-3.1",
 		"openai/sora-2", "openai/sora-2-pro", "runway/gen-4.5",
@@ -345,6 +366,10 @@ func Resolve(req *CreateRequest) (Model, map[string]any, map[string]any, error) 
 	}
 	if err := validateResolutionAndAspect(model, resolution, aspect); err != nil {
 		return Model{}, nil, nil, err
+	}
+	if (model.ID == "google/veo-3.1" || model.ID == "google/veo-3.1-fast") &&
+		(strings.EqualFold(resolution, "1080p") || strings.EqualFold(resolution, "4k")) && duration != 8 {
+		return Model{}, nil, nil, fmt.Errorf("1080p and 4k Veo generation require an 8-second duration")
 	}
 
 	providerModel := model.TextProviderModel
@@ -676,6 +701,14 @@ func ModelsJSON() ([]byte, error) {
 		if model.SupportsReferences {
 			parameters = append(parameters, "input_references")
 		}
+		primaryProvider := directProviderForModel(model.ID)
+		if primaryProvider == "" {
+			primaryProvider = "venice"
+		}
+		providerRoutes := []string{primaryProvider}
+		if primaryProvider != "venice" && !model.DirectOnly {
+			providerRoutes = append(providerRoutes, "venice")
+		}
 		data = append(data, map[string]any{
 			"id": model.ID, "canonical_slug": model.ID, "name": model.Name,
 			"description":          model.Description,
@@ -683,7 +716,8 @@ func ModelsJSON() ([]byte, error) {
 			"supported_parameters": parameters,
 			"trustedrouter": map[string]any{
 				"attested_gateway":             true,
-				"provider":                     "venice",
+				"provider":                     primaryProvider,
+				"provider_routes":              providerRoutes,
 				"provider_e2ee":                false,
 				"provider_zero_data_retention": false,
 				"stores_content":               false,

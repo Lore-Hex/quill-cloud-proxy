@@ -49,6 +49,7 @@ WORKLOAD_SA="${WORKLOAD_SA:-quill-workload@${PROJECT_ID}.iam.gserviceaccount.com
 OPENROUTER_SECRET="${OPENROUTER_SECRET:-quill-openrouter-key}"
 ANTHROPIC_SECRET="${ANTHROPIC_SECRET:-trustedrouter-anthropic-api-key}"
 OPENAI_SECRET="${OPENAI_SECRET:-trustedrouter-openai-api-key}"
+OPENAI_VIDEO_SECRET="${OPENAI_VIDEO_SECRET:-}"
 GEMINI_SECRET="${GEMINI_SECRET:-trustedrouter-gemini-api-key}"
 CEREBRAS_SECRET="${CEREBRAS_SECRET:-trustedrouter-cerebras-api-key}"
 DEEPSEEK_SECRET="${DEEPSEEK_SECRET:-trustedrouter-deepseek-api-key}"
@@ -86,6 +87,10 @@ MORPH_SECRET="${MORPH_SECRET:-trustedrouter-morph-api-key}"
 ATLAS_CLOUD_SECRET="${ATLAS_CLOUD_SECRET:-trustedrouter-atlas-cloud-api-key}"
 STREAMLAKE_SECRET="${STREAMLAKE_SECRET:-trustedrouter-streamlake-api-key}"
 NEUROMETRIC_SECRET="${NEUROMETRIC_SECRET:-trustedrouter-neurometric-api-key}"
+ALIBABA_SECRET="${ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
+LTX_SECRET="${LTX_SECRET:-trustedrouter-ltx-api-key}"
+RUNWAY_SECRET="${RUNWAY_SECRET:-trustedrouter-runway-api-key}"
+KLING_SECRET="${KLING_SECRET:-trustedrouter-kling-api-key}"
 EXA_SECRET="${EXA_SECRET:-trustedrouter-exa-api-key}"
 XIAOMI_SECRET="${XIAOMI_SECRET:-trustedrouter-xiaomi-api-key}"
 SYNTH_PANEL_PROMPT_SECRET="${SYNTH_PANEL_PROMPT_SECRET:-trustedrouter-synth-panel-prompt-v1}"
@@ -162,6 +167,7 @@ for secret in \
   "$OPENROUTER_SECRET" \
   "$ANTHROPIC_SECRET" \
   "$OPENAI_SECRET" \
+  "$OPENAI_VIDEO_SECRET" \
   "$GEMINI_SECRET" \
   "$CEREBRAS_SECRET" \
   "$DEEPSEEK_SECRET" \
@@ -199,6 +205,10 @@ for secret in \
   "$ATLAS_CLOUD_SECRET" \
   "$STREAMLAKE_SECRET" \
   "$NEUROMETRIC_SECRET" \
+  "$ALIBABA_SECRET" \
+  "$LTX_SECRET" \
+  "$RUNWAY_SECRET" \
+  "$KLING_SECRET" \
   "$EXA_SECRET" \
   "$XIAOMI_SECRET" \
   "$SYNTH_PANEL_PROMPT_SECRET" \
@@ -209,7 +219,9 @@ for secret in \
   "$ADVISOR_PROMPT_SECRET" \
   "$INTERNAL_GATEWAY_SECRET" \
   "$DEVICE_KEYS_SECRET"; do
-  if gc secrets describe "$secret" >/dev/null 2>&1; then
+  if [ -z "$secret" ]; then
+    continue
+  elif gc secrets describe "$secret" >/dev/null 2>&1; then
     log "ensuring workload SA can access secret $secret"
     gc secrets add-iam-policy-binding "$secret" \
       --member="serviceAccount:${WORKLOAD_SA}" \

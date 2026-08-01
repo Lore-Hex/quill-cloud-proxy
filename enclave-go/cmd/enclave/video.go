@@ -22,21 +22,21 @@ import (
 var videoGateway *videoService
 
 type videoService struct {
-	provider *video.VeniceClient
-	control  *trustedrouter.Client
-	workerID string
+	providers *video.Registry
+	control   *trustedrouter.Client
+	workerID  string
 }
 
-func newVideoService(apiKey string, control *trustedrouter.Client) *videoService {
+func newVideoService(keys video.ProviderKeys, control *trustedrouter.Client) *videoService {
 	return &videoService{
-		provider: video.NewVeniceClient(apiKey, llm.NewProviderHTTPClient()),
-		control:  control,
-		workerID: "video-" + randomHex(8),
+		providers: video.NewRegistry(keys, llm.NewProviderHTTPClient()),
+		control:   control,
+		workerID:  "video-" + randomHex(8),
 	}
 }
 
 func (s *videoService) Enabled() bool {
-	return s != nil && s.provider != nil && s.provider.Enabled() && s.control != nil && s.control.Enabled()
+	return s != nil && s.providers != nil && s.providers.Enabled() && s.control != nil && s.control.Enabled()
 }
 
 func (s *videoService) Start(ctx context.Context) {
@@ -133,7 +133,7 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		writeOpenAIError(conn, 400, "invalid video request", "invalid_request_error", "bad_request", "")
 		return
 	}
-	model, queuePayload, quotePayload, err := video.Resolve(&req)
+	resolved, err := video.ResolveRequest(&req)
 	if err != nil {
 		var unsupported *video.UnsupportedError
 		if errors.As(err, &unsupported) {
@@ -143,42 +143,48 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		writeOpenAIError(conn, 400, err.Error(), "invalid_request_error", "bad_request", "")
 		return
 	}
-	quoteCtx, cancelQuote := context.WithTimeout(ctx, 20*time.Second)
-	quotedMicrodollars, err := s.provider.Quote(quoteCtx, quotePayload)
-	cancelQuote()
-	if err != nil {
-		writeVideoProviderError(conn, err, "could not quote video generation")
+	providers := s.providers.Supporting(resolved)
+	if len(providers) == 0 {
+		writeOpenAIError(conn, 503, "no configured video provider supports this request", "server_error", "video_provider_unavailable", "")
 		return
 	}
+	quoteCtx, cancelQuote := context.WithTimeout(ctx, 20*time.Second)
+	quotes, quoteErr := quoteVideoProviders(quoteCtx, providers, resolved)
+	cancelQuote()
+	if len(quotes) == 0 {
+		writeVideoProviderError(conn, quoteErr, "could not quote video generation")
+		return
+	}
+	reservationMicrodollars := maximumVideoQuote(quotes)
 	auth, err := s.control.AuthorizeVideo(
 		ctx,
 		bearer,
-		model.ID,
+		resolved.Model.ID,
 		idempotencyKey,
 		videoRequestFingerprint(bearer, &req),
 		req.Provider,
-		quotedMicrodollars,
+		reservationMicrodollars,
 	)
 	if err != nil {
 		writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
 		return
 	}
-	if auth.Provider != "venice" {
+	routes := authorizedVideoRoutes(auth, quotes)
+	if len(routes) == 0 {
 		_ = s.control.Refund(ctx, auth, 503, "video_provider_unavailable", 0.001, nil)
-		writeOpenAIError(conn, 503, "authorized video provider is unavailable", "server_error", "video_provider_unavailable", "")
+		writeOpenAIError(conn, 503, "no authorized video provider supports this request", "server_error", "video_provider_unavailable", "")
 		return
 	}
-	providerModel, _ := queuePayload["model"].(string)
-	metadata := video.Metadata(model, queuePayload)
+	selected := routes[0]
 	job := &trustedrouter.VideoJob{
 		ID: videoJobID(auth.AuthorizationID), AuthorizationID: auth.AuthorizationID,
 		WorkspaceID: auth.WorkspaceID, KeyHash: auth.APIKeyHash,
-		Model: model.ID, Provider: auth.Provider, EndpointID: auth.EndpointID,
-		ProviderModel:      providerModel,
-		QuotedMicrodollars: auth.AdditionalCostReservationMicrodollars,
-		InputMode:          metadata.InputMode, DurationSeconds: metadata.DurationSeconds,
-		Resolution: metadata.Resolution, AspectRatio: metadata.AspectRatio,
-		GenerateAudio: metadata.GenerateAudio, Region: auth.Region,
+		Model: resolved.Model.ID, Provider: selected.Provider, EndpointID: selected.EndpointID,
+		ProviderModel:      resolved.Model.ID,
+		QuotedMicrodollars: selected.QuotedMicrodollars,
+		InputMode:          resolved.InputMode, DurationSeconds: resolved.DurationSeconds,
+		Resolution: resolved.Resolution, AspectRatio: resolved.AspectRatio,
+		GenerateAudio: resolved.GenerateAudio, Region: auth.Region,
 		Status: "submitting",
 	}
 	stored, err := s.control.PrepareVideoJob(ctx, job)
@@ -191,16 +197,17 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		writeVideoJobResponse(conn, http.StatusAccepted, stored)
 		return
 	}
-	queueCtx, cancelQueue := context.WithTimeout(ctx, 45*time.Second)
-	queued, err := s.provider.Queue(queueCtx, queuePayload)
-	cancelQueue()
+	selected, queued, err := s.queueVideoJob(ctx, resolved, routes)
 	if err != nil {
 		_ = s.control.Refund(ctx, auth, videoErrorStatus(err), "video_provider_error", 0.001, nil)
 		_, _ = s.control.UpdateVideoJob(ctx, stored.ID, "failed", "", "FAILED", "", "provider_error", 5)
 		writeVideoProviderError(conn, err, "video provider rejected the job")
 		return
 	}
-	stored, err = s.control.MarkVideoJobQueued(ctx, stored.ID, queued.QueueID, queued.ProviderModel, 5)
+	stored, err = s.control.MarkVideoJobQueued(
+		ctx, stored.ID, queued.QueueID, selected.Provider, selected.EndpointID,
+		queued.ProviderModel, selected.QuotedMicrodollars, 5,
+	)
 	if err != nil {
 		// The provider may already be working. Do not submit a duplicate and do
 		// not pretend the job failed; the deterministic idempotency record keeps
@@ -209,6 +216,101 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		return
 	}
 	writeVideoJobResponse(conn, http.StatusAccepted, stored)
+}
+
+type authorizedVideoRoute struct {
+	Provider           string
+	EndpointID         string
+	QuotedMicrodollars int
+}
+
+func quoteVideoProviders(
+	ctx context.Context,
+	providers []video.Provider,
+	request *video.ResolvedRequest,
+) (map[string]int, error) {
+	quotes := make(map[string]int, len(providers))
+	var lastErr error
+	for _, provider := range providers {
+		quoted, err := provider.QuoteResolved(ctx, request)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if quoted <= 0 {
+			lastErr = fmt.Errorf("%s returned an invalid video quote", provider.ID())
+			continue
+		}
+		quotes[provider.ID()] = quoted
+	}
+	return quotes, lastErr
+}
+
+func maximumVideoQuote(quotes map[string]int) int {
+	maximum := 0
+	for _, quote := range quotes {
+		if quote > maximum {
+			maximum = quote
+		}
+	}
+	return maximum
+}
+
+func authorizedVideoRoutes(
+	auth *trustedrouter.Authorization,
+	quotes map[string]int,
+) []authorizedVideoRoute {
+	if auth == nil {
+		return nil
+	}
+	routes := make([]authorizedVideoRoute, 0, len(auth.RouteCandidates)+1)
+	seen := make(map[string]struct{}, len(auth.RouteCandidates)+1)
+	appendRoute := func(provider, endpointID string) {
+		quote, ok := quotes[provider]
+		if !ok || endpointID == "" {
+			return
+		}
+		if _, duplicate := seen[endpointID]; duplicate {
+			return
+		}
+		seen[endpointID] = struct{}{}
+		routes = append(routes, authorizedVideoRoute{
+			Provider: provider, EndpointID: endpointID, QuotedMicrodollars: quote,
+		})
+	}
+	appendRoute(auth.Provider, auth.EndpointID)
+	for _, candidate := range auth.RouteCandidates {
+		appendRoute(candidate.Provider, candidate.EndpointID)
+	}
+	return routes
+}
+
+func (s *videoService) queueVideoJob(
+	ctx context.Context,
+	request *video.ResolvedRequest,
+	routes []authorizedVideoRoute,
+) (authorizedVideoRoute, *video.QueueResult, error) {
+	var lastErr error
+	for _, route := range routes {
+		provider, ok := s.providers.Provider(route.Provider)
+		if !ok || !provider.Supports(request) {
+			continue
+		}
+		queueCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		queued, err := provider.QueueResolved(queueCtx, request)
+		cancel()
+		if err == nil {
+			return route, queued, nil
+		}
+		lastErr = err
+		if !video.IsRetryableProviderError(err) {
+			break
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no authorized video provider is configured")
+	}
+	return authorizedVideoRoute{}, nil, lastErr
 }
 
 func (s *videoService) serveStatus(ctx context.Context, conn io.Writer, bearer, jobID string) {
@@ -260,7 +362,12 @@ func (s *videoService) serveContent(ctx context.Context, conn io.Writer, bearer,
 			return
 		}
 	}
-	result, err := s.provider.Retrieve(ctx, job.ProviderModel, job.ProviderJobID)
+	provider, ok := s.providers.Provider(job.Provider)
+	if !ok {
+		writeOpenAIError(conn, 503, "video provider is temporarily unavailable", "server_error", "video_provider_unavailable", "")
+		return
+	}
+	result, err := provider.Retrieve(ctx, job.ProviderModel, job.ProviderJobID)
 	if err != nil {
 		writeVideoProviderError(conn, err, "could not retrieve video content")
 		return
@@ -270,7 +377,7 @@ func (s *videoService) serveContent(ctx context.Context, conn io.Writer, bearer,
 			writeOpenAIError(conn, 502, "provider did not return streamable video content", "server_error", "video_content_unavailable", "")
 			return
 		}
-		result, err = s.provider.Download(ctx, result.DownloadURL)
+		result, err = provider.Download(ctx, result.DownloadURL)
 		if err != nil {
 			writeVideoProviderError(conn, err, "could not download video content")
 			return
@@ -291,7 +398,7 @@ func (s *videoService) serveContent(ctx context.Context, conn io.Writer, bearer,
 		return
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	if err := s.provider.Complete(cleanupCtx, job.ProviderModel, job.ProviderJobID); err == nil {
+	if err := provider.Complete(cleanupCtx, job.ProviderModel, job.ProviderJobID); err == nil {
 		_ = s.control.MarkVideoJobCleaned(cleanupCtx, job.ID)
 	}
 	cancel()
@@ -315,6 +422,10 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 	if job.ProviderJobID == "" {
 		return job, nil
 	}
+	provider, ok := s.providers.Provider(job.Provider)
+	if !ok {
+		return job, fmt.Errorf("video provider %s is not configured", job.Provider)
+	}
 	if job.Status == "failed" {
 		return job, nil
 	}
@@ -322,7 +433,7 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 		if job.CleanedAt != "" {
 			return job, nil
 		}
-		if err := s.provider.Complete(ctx, job.ProviderModel, job.ProviderJobID); err != nil {
+		if err := provider.Complete(ctx, job.ProviderModel, job.ProviderJobID); err != nil {
 			return job, err
 		}
 		if err := s.control.MarkVideoJobCleaned(ctx, job.ID); err != nil {
@@ -331,7 +442,7 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 		job.CleanedAt = time.Now().UTC().Format(time.RFC3339)
 		return job, nil
 	}
-	result, err := s.provider.Retrieve(ctx, job.ProviderModel, job.ProviderJobID)
+	result, err := provider.Retrieve(ctx, job.ProviderModel, job.ProviderJobID)
 	if err != nil {
 		var httpErr *video.HTTPError
 		if errors.As(err, &httpErr) && !httpErr.Retryable {

@@ -26,6 +26,11 @@ def test_gcp_multi_launch_policy_allows_deployed_env_overrides() -> None:
     assert "QUILL_NEUROMETRIC_SECRET" in allowed_envs
     assert "QUILL_ALIBABA_SECRET" in metadata_envs
     assert "QUILL_ALIBABA_SECRET" in allowed_envs
+    for name in ("QUILL_LTX_SECRET", "QUILL_RUNWAY_SECRET", "QUILL_KLING_SECRET"):
+        assert name in metadata_envs
+        assert name in allowed_envs
+    assert "QUILL_OPENAI_VIDEO_SECRET" in allowed_envs
+    assert "OPENAI_VIDEO_TEE_ENV" in deploy_script.read_text()
 
 
 def test_gcp_bootstrap_grants_workload_access_to_openrouter_secret() -> None:
@@ -44,6 +49,28 @@ def test_gcp_bootstrap_grants_workload_access_to_neurometric_secret() -> None:
         'NEUROMETRIC_SECRET="${NEUROMETRIC_SECRET:-trustedrouter-neurometric-api-key}"'
     ) in source
     assert '"$NEUROMETRIC_SECRET" \\' in source
+
+
+def test_gcp_bootstrap_grants_workload_access_to_direct_video_secrets() -> None:
+    bootstrap_script = REPO_ROOT / "tools" / "deploy-gcp-bootstrap.sh"
+    source = bootstrap_script.read_text()
+
+    expected = {
+        "LTX_SECRET": "trustedrouter-ltx-api-key",
+        "RUNWAY_SECRET": "trustedrouter-runway-api-key",
+        "KLING_SECRET": "trustedrouter-kling-api-key",
+    }
+    for env_name, secret_name in expected.items():
+        assert f'{env_name}="${{{env_name}:-{secret_name}}}"' in source
+        assert f'"${env_name}" \\' in source
+
+
+def test_openai_video_secret_is_separate_and_optional() -> None:
+    bootstrap_script = REPO_ROOT / "tools" / "deploy-gcp-bootstrap.sh"
+    source = bootstrap_script.read_text()
+
+    assert 'OPENAI_VIDEO_SECRET="${OPENAI_VIDEO_SECRET:-}"' in source
+    assert '"$OPENAI_VIDEO_SECRET" \\' in source
 
 
 def test_aws_meta_route_mirrors_key_and_vsock_tunnel() -> None:

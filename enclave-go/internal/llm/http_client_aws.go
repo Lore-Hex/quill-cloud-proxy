@@ -80,6 +80,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "api.inference.crusoecloud.com", CID: 3, Port: 8028},
 	{Host: "inference.makora.com", CID: 3, Port: 8029},
 	{Host: "openrouter.ai", CID: 3, Port: 8041}, // Meta Muse via OpenRouter
+	{Host: "ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com", CID: 3, Port: 8042},
 
 	// GCP cross-cloud APIs. The AWS-side enclave authenticates with
 	// the cross-cloud SA key (received in BootstrapData) and reads

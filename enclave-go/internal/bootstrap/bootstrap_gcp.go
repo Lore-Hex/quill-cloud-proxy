@@ -43,6 +43,7 @@
 //	QUILL_OPENROUTER_SECRET      name of the OpenRouter key secret (llm_openrouter and Muse-on-multi)
 //	QUILL_ANTHROPIC_SECRET       name of the secret holding the direct Anthropic API key (llm_anthropic builds)
 //	QUILL_OPENAI_SECRET          name of the secret holding the OpenAI API key (llm_multi builds)
+//	QUILL_OPENAI_VIDEO_SECRET    optional separate OpenAI Sora key; the text key may be ZDR-restricted
 //	QUILL_GEMINI_SECRET          name of the secret holding the Gemini API key (llm_multi builds)
 //	QUILL_CEREBRAS_SECRET        name of the secret holding the Cerebras API key (llm_multi builds)
 //	QUILL_DEEPSEEK_SECRET        name of the secret holding the DeepSeek API key (llm_multi builds)
@@ -56,6 +57,9 @@
 //	QUILL_MAKORA_SECRET          name of the secret holding the Makora API key (llm_multi builds)
 //	QUILL_NEUROMETRIC_SECRET     name of the secret holding the Neurometric API key (llm_multi builds)
 //	QUILL_ALIBABA_SECRET         name of the secret holding the Alibaba Model Studio API key (llm_multi builds)
+//	QUILL_LTX_SECRET             name of the secret holding the LTX API key (llm_multi builds)
+//	QUILL_RUNWAY_SECRET          name of the secret holding the Runway API key (llm_multi builds)
+//	QUILL_KLING_SECRET           name of the secret holding the Kling API key (llm_multi builds)
 //	QUILL_SYNTH_PANEL_PROMPT_SECRET           name of the secret holding the default synth panel prompt
 //	QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET       name of the secret holding the default synth synthesis prompt
 //	QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET      name of the secret holding the synth-code panel prompt
@@ -104,6 +108,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	openrouterSecret := os.Getenv("QUILL_OPENROUTER_SECRET")
 	anthropicSecret := os.Getenv("QUILL_ANTHROPIC_SECRET")
 	openaiSecret := os.Getenv("QUILL_OPENAI_SECRET")
+	openaiVideoSecret := os.Getenv("QUILL_OPENAI_VIDEO_SECRET")
 	geminiSecret := os.Getenv("QUILL_GEMINI_SECRET")
 	cerebrasSecret := os.Getenv("QUILL_CEREBRAS_SECRET")
 	deepseekSecret := os.Getenv("QUILL_DEEPSEEK_SECRET")
@@ -144,6 +149,9 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	streamLakeSecret := os.Getenv("QUILL_STREAMLAKE_SECRET")
 	neurometricSecret := os.Getenv("QUILL_NEUROMETRIC_SECRET")
 	alibabaSecret := os.Getenv("QUILL_ALIBABA_SECRET")
+	ltxSecret := os.Getenv("QUILL_LTX_SECRET")
+	runwaySecret := os.Getenv("QUILL_RUNWAY_SECRET")
+	klingSecret := os.Getenv("QUILL_KLING_SECRET")
 	xiaomiSecret := os.Getenv("QUILL_XIAOMI_SECRET")
 	exaSecret := os.Getenv("QUILL_EXA_SECRET")
 	synthPanelPromptSecret := os.Getenv("QUILL_SYNTH_PANEL_PROMPT_SECRET")
@@ -162,6 +170,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		openrouterSecret,
 		anthropicSecret,
 		openaiSecret,
+		openaiVideoSecret,
 		geminiSecret,
 		cerebrasSecret,
 		deepseekSecret,
@@ -200,6 +209,9 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		streamLakeSecret,
 		neurometricSecret,
 		alibabaSecret,
+		ltxSecret,
+		runwaySecret,
+		klingSecret,
 		xiaomiSecret,
 	) {
 		return nil, fmt.Errorf("bootstrap/gcp: at least one provider secret env must be set")
@@ -240,6 +252,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		openaiKey, err = fetchSecret(ctx, httpc, token, project, openaiSecret)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap/gcp: openai key: %w", err)
+		}
+	}
+	var openaiVideoKey []byte
+	if openaiVideoSecret != "" {
+		openaiVideoKey, err = fetchSecret(ctx, httpc, token, project, openaiVideoSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: openai video key: %w", err)
 		}
 	}
 	var geminiKey []byte
@@ -511,6 +530,27 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: alibaba key: %w", err)
 		}
 	}
+	var ltxKey []byte
+	if ltxSecret != "" {
+		ltxKey, err = fetchSecret(ctx, httpc, token, project, ltxSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: ltx key: %w", err)
+		}
+	}
+	var runwayKey []byte
+	if runwaySecret != "" {
+		runwayKey, err = fetchSecret(ctx, httpc, token, project, runwaySecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: runway key: %w", err)
+		}
+	}
+	var klingKey []byte
+	if klingSecret != "" {
+		klingKey, err = fetchSecret(ctx, httpc, token, project, klingSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: kling key: %w", err)
+		}
+	}
 	var xiaomiKey []byte
 	if xiaomiSecret != "" {
 		xiaomiKey, err = fetchSecret(ctx, httpc, token, project, xiaomiSecret)
@@ -582,6 +622,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		OpenRouterAPIKey:             strings.TrimSpace(string(openrouterKey)),
 		AnthropicAPIKey:              strings.TrimSpace(string(anthropicKey)),
 		OpenAIAPIKey:                 strings.TrimSpace(string(openaiKey)),
+		OpenAIVideoAPIKey:            strings.TrimSpace(string(openaiVideoKey)),
 		GeminiAPIKey:                 strings.TrimSpace(string(geminiKey)),
 		CerebrasAPIKey:               strings.TrimSpace(string(cerebrasKey)),
 		DeepSeekAPIKey:               strings.TrimSpace(string(deepseekKey)),
@@ -621,6 +662,9 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		StreamLakeAPIKey:             strings.TrimSpace(string(streamLakeKey)),
 		NeurometricAPIKey:            strings.TrimSpace(string(neurometricKey)),
 		AlibabaAPIKey:                strings.TrimSpace(string(alibabaKey)),
+		LTXAPIKey:                    strings.TrimSpace(string(ltxKey)),
+		RunwayAPIKey:                 strings.TrimSpace(string(runwayKey)),
+		KlingAPIKey:                  strings.TrimSpace(string(klingKey)),
 		XiaomiAPIKey:                 strings.TrimSpace(string(xiaomiKey)),
 		ExaAPIKey:                    strings.TrimSpace(string(exaKey)),
 		TrustedRouterBaseURL:         os.Getenv("TR_CONTROL_PLANE_BASE_URL"),

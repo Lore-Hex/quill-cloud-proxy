@@ -24,6 +24,7 @@ func TestVideoModelsIncludeLaunchAndExpansionSet(t *testing.T) {
 		"lightricks/ltx-2.3-fast":     false,
 		"google/gemini-omni-flash":    false,
 		"minimax/hailuo-3":            false,
+		"x-ai/grok-imagine-video":     false,
 	}
 	for _, model := range Models() {
 		if _, ok := want[model.ID]; !ok {
@@ -56,6 +57,7 @@ func TestResolveExpandedModelsUsesExactDirectProviderIDs(t *testing.T) {
 		{model: "alibaba/wan-2.7", want: "wan-2-7-text-to-video"},
 		{model: "shengshu/vidu-q3", want: "vidu-q3-text-to-video"},
 		{model: "pixverse/c1", want: "pixverse-c1-text-to-video"},
+		{model: "x-ai/grok-imagine-video", want: "grok-imagine-video"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.model, func(t *testing.T) {
@@ -85,6 +87,7 @@ func TestResolveExpandedModelsUsesExactImageProviderIDs(t *testing.T) {
 		{model: "alibaba/wan-2.7", want: "wan-2-7-image-to-video"},
 		{model: "shengshu/vidu-q3", want: "vidu-q3-image-to-video"},
 		{model: "pixverse/c1", want: "pixverse-c1-image-to-video"},
+		{model: "x-ai/grok-imagine-video", want: "grok-imagine-video"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.model, func(t *testing.T) {
@@ -156,6 +159,30 @@ func TestResolveHailuo3RejectsDisablingAlwaysOnAudio(t *testing.T) {
 	})
 	if err == nil || err.Error() != "model always generates audio and does not support disabling it" {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestResolveProviderNativeDurationAndAudioConstraints(t *testing.T) {
+	if _, _, _, err := Resolve(&CreateRequest{
+		Model: "minimax/hailuo-3", Prompt: "move", Duration: 4,
+	}); err != nil {
+		t.Fatalf("H3 must accept its documented 4-second minimum: %v", err)
+	}
+	if _, _, _, err := Resolve(&CreateRequest{
+		Model: "alibaba/wan-2.7", Prompt: "move", Duration: 2,
+	}); err != nil {
+		t.Fatalf("Wan 2.7 must accept its documented 2-second minimum: %v", err)
+	}
+	generateAudio := false
+	if _, _, _, err := Resolve(&CreateRequest{
+		Model: "google/veo-3.1-fast", Prompt: "move", GenerateAudio: &generateAudio,
+	}); err == nil {
+		t.Fatal("Veo audio is always on and must not accept generate_audio=false")
+	}
+	if _, _, _, err := Resolve(&CreateRequest{
+		Model: "google/veo-3.1-fast", Prompt: "move", Duration: 4, Resolution: "1080p",
+	}); err == nil {
+		t.Fatal("1080p Veo generation must require an 8-second duration")
 	}
 }
 
@@ -270,11 +297,15 @@ func TestModelsJSONIsTruthfulAboutProviderPrivacy(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Data) != 16 {
+	if len(payload.Data) != 17 {
 		t.Fatalf("model count = %d", len(payload.Data))
 	}
 	for _, row := range payload.Data {
-		if row.TrustedRouter["provider"] != "venice" || row.TrustedRouter["provider_e2ee"] != false || row.TrustedRouter["provider_zero_data_retention"] != false {
+		wantProvider := directProviderForModel(row.ID)
+		if wantProvider == "" {
+			wantProvider = "venice"
+		}
+		if row.TrustedRouter["provider"] != wantProvider || row.TrustedRouter["provider_e2ee"] != false || row.TrustedRouter["provider_zero_data_retention"] != false {
 			t.Fatalf("untruthful privacy metadata for %s: %#v", row.ID, row.TrustedRouter)
 		}
 		if row.TrustedRouter["stores_content"] != false || row.TrustedRouter["provider_temporarily_stores_generated_media"] != true {

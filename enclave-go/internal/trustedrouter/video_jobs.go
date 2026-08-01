@@ -96,13 +96,17 @@ func (c *Client) PrepareVideoJob(ctx context.Context, job *VideoJob) (*VideoJob,
 
 func (c *Client) MarkVideoJobQueued(
 	ctx context.Context,
-	jobID, providerJobID, providerModel string,
+	jobID, providerJobID, provider, endpointID, providerModel string,
+	quotedMicrodollars int,
 	pollAfterSeconds int,
 ) (*VideoJob, error) {
 	body := map[string]any{
-		"provider_job_id":    providerJobID,
-		"provider_model":     providerModel,
-		"poll_after_seconds": pollAfterSeconds,
+		"provider_job_id":     providerJobID,
+		"provider":            provider,
+		"endpoint_id":         endpointID,
+		"provider_model":      providerModel,
+		"quoted_microdollars": quotedMicrodollars,
+		"poll_after_seconds":  pollAfterSeconds,
 	}
 	var decoded struct {
 		Data VideoJob `json:"data"`

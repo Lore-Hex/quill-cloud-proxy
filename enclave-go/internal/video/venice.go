@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -33,6 +31,26 @@ func NewVeniceClientAt(apiKey, baseURL string, httpc *http.Client) *VeniceClient
 }
 
 func (c *VeniceClient) Enabled() bool { return c != nil && c.apiKey != "" }
+
+func (c *VeniceClient) ID() string { return "venice" }
+
+func (c *VeniceClient) Supports(request *ResolvedRequest) bool {
+	return request != nil && !request.Model.DirectOnly && request.VeniceModel != ""
+}
+
+func (c *VeniceClient) QuoteResolved(ctx context.Context, request *ResolvedRequest) (int, error) {
+	if !c.Supports(request) {
+		return 0, fmt.Errorf("venice video provider does not support this request")
+	}
+	return c.Quote(ctx, request.VeniceQuotePayload())
+}
+
+func (c *VeniceClient) QueueResolved(ctx context.Context, request *ResolvedRequest) (*QueueResult, error) {
+	if !c.Supports(request) {
+		return nil, fmt.Errorf("venice video provider does not support this request")
+	}
+	return c.Queue(ctx, request.VeniceQueuePayload())
+}
 
 func (c *VeniceClient) Quote(ctx context.Context, payload map[string]any) (int, error) {
 	resp, err := c.post(ctx, "/quote", payload)
@@ -62,11 +80,6 @@ func (c *VeniceClient) Quote(ctx context.Context, payload map[string]any) (int, 
 	return quoted, nil
 }
 
-type QueueResult struct {
-	ProviderModel string
-	QueueID       string
-}
-
 func (c *VeniceClient) Queue(ctx context.Context, payload map[string]any) (*QueueResult, error) {
 	resp, err := c.post(ctx, "/queue", payload)
 	if err != nil {
@@ -87,22 +100,6 @@ func (c *VeniceClient) Queue(ctx context.Context, payload map[string]any) (*Queu
 		return nil, fmt.Errorf("venice video queue: missing job id")
 	}
 	return &QueueResult{ProviderModel: body.Model, QueueID: body.QueueID}, nil
-}
-
-type PollState string
-
-const (
-	PollProcessing PollState = "processing"
-	PollCompleted  PollState = "completed"
-	PollFailed     PollState = "failed"
-)
-
-type PollResult struct {
-	State          PollState
-	ProviderStatus string
-	Body           io.ReadCloser
-	ContentType    string
-	DownloadURL    string
 }
 
 func (c *VeniceClient) Retrieve(ctx context.Context, providerModel, queueID string) (*PollResult, error) {
@@ -202,41 +199,7 @@ func (c *VeniceClient) deleteOnRetrieve(ctx context.Context, providerModel, queu
 }
 
 func (c *VeniceClient) Download(ctx context.Context, rawURL string) (*PollResult, error) {
-	parsed, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
-		return nil, fmt.Errorf("venice video download: invalid URL")
-	}
-	host := strings.ToLower(parsed.Hostname())
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") || host == "metadata.google.internal" {
-		return nil, fmt.Errorf("venice video download: unsafe URL")
-	}
-	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast()) {
-		return nil, fmt.Errorf("venice video download: unsafe URL")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("venice video download: invalid request")
-	}
-	// The URL is provider-issued and pre-signed. Never attach the Venice API
-	// key to a media host.
-	downloadClient := *c.httpc
-	downloadClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-	resp, err := downloadClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("venice video download failed: %w", err)
-	}
-	if err := requireSuccess(resp); err != nil {
-		resp.Body.Close()
-		return nil, err
-	}
-	contentType := resp.Header.Get("Content-Type")
-	if !strings.HasPrefix(strings.ToLower(contentType), "video/") && !strings.HasPrefix(strings.ToLower(contentType), "application/octet-stream") {
-		resp.Body.Close()
-		return nil, fmt.Errorf("venice video download: unexpected content type")
-	}
-	return &PollResult{State: PollCompleted, ProviderStatus: "COMPLETED", Body: resp.Body, ContentType: contentType}, nil
+	return downloadVideo(ctx, c.httpc, rawURL, c.ID(), nil)
 }
 
 func (c *VeniceClient) post(ctx context.Context, path string, payload map[string]any) (*http.Response, error) {
@@ -260,18 +223,8 @@ func (c *VeniceClient) post(ctx context.Context, path string, payload map[string
 	return resp, nil
 }
 
-type HTTPError struct {
-	Status    int
-	Retryable bool
-}
-
-func (e *HTTPError) Error() string { return fmt.Sprintf("venice video http %d", e.Status) }
-
 func requireSuccess(resp *http.Response) error {
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
-	return &HTTPError{Status: resp.StatusCode, Retryable: resp.StatusCode == 429 || resp.StatusCode >= 500}
+	return requireProviderSuccess("venice", resp)
 }
 
 func dollarsToMicrodollars(raw string) (int, error) {
