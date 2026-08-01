@@ -123,13 +123,28 @@ SECRETS=(
 
 DRY_RUN=1
 ONLY_SECRET=""
+STANDALONE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --apply) DRY_RUN=0; shift ;;
     --secret) ONLY_SECRET="$2"; shift 2 ;;
+    --standalone) STANDALONE=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+# Secrets that must NOT be mirrored into a STANDALONE regional deployment
+# (aws.trustedrouter.com). Under the separation architecture such a region
+# owns its own database, credits, and TLS identity, and holds no GCP
+# credential: mirroring the cross-cloud SA key there would re-create
+# exactly the cross-cloud coupling the separation removes, and hand a
+# GDPR-scoped EU deployment a key to US-hosted GCP resources.
+#
+# The parent tolerates the absence (bootstrap_server._unwrap_gcp_sa_key
+# returns None and logs bootstrap.gcp_sa_key_absent).
+STANDALONE_EXCLUDE=(
+  trustedrouter-aws-cross-cloud-sa-key
+)
 
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 
@@ -191,10 +206,28 @@ mirror_one() {
   fi
 }
 
+skip_in_standalone() {
+  local candidate="$1"
+  [ "$STANDALONE" -eq 1 ] || return 1
+  local excluded
+  for excluded in "${STANDALONE_EXCLUDE[@]}"; do
+    [ "$candidate" = "$excluded" ] && return 0
+  done
+  return 1
+}
+
 if [ -n "$ONLY_SECRET" ]; then
-  mirror_one "$ONLY_SECRET"
+  if skip_in_standalone "$ONLY_SECRET"; then
+    log "SKIP (standalone region): $ONLY_SECRET"
+  else
+    mirror_one "$ONLY_SECRET"
+  fi
 else
   for secret in "${SECRETS[@]}"; do
+    if skip_in_standalone "$secret"; then
+      log "SKIP (standalone region): $secret"
+      continue
+    fi
     mirror_one "$secret"
   done
 fi
