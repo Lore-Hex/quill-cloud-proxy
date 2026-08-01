@@ -69,6 +69,13 @@ HEALTH_PORT="${HEALTH_PORT:-8081}"
 TARGET_SIZE="${TARGET_SIZE:-2}"
 MAX_SURGE="${MAX_SURGE:-3}"
 MAX_UNAVAILABLE="${MAX_UNAVAILABLE:-0}"
+# A Confidential Space VM reaches RUNNING well before the enclave has fetched
+# secrets, obtained its ACME certificates, and started serving attested TLS.
+# Without a readiness hold the MIG deletes the old generation about 10-20s
+# after creating replacements, leaving regional DNS pointed only at dead IPs
+# until the reconciler catches up. The reconciler runs throughout this window
+# and publishes each replacement only after real attestation succeeds.
+MIN_READY="${MIN_READY:-600s}"
 
 IMAGE_REF="${IMAGE_REF:?set IMAGE_REF=us-central1-docker.pkg.dev/.../enclave-anthropic:gcp-release-XXX}"
 API_HOST="${API_HOST:?set API_HOST=api.quillrouter.com (or api-${REGION}.quillrouter.com)}"
@@ -258,12 +265,16 @@ if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/
   # every instance and publishes only healthy ones into api.quillrouter.com
   # DNS. Actively CLEAR any autohealing a prior deploy attached so the broken
   # HC can never kill-loop the (capacity-scarce) Confidential VMs.
-  gc compute instance-groups managed update "$MIG_NAME" \
+  # minReadySec is currently exposed by the beta Compute API. It delays old-VM
+  # deletion; it does not enable MIG autohealing or change the trust signal.
+  gc beta compute instance-groups managed update "$MIG_NAME" \
     --region="$REGION" \
     --clear-autohealing \
+    --description="quill enclave gateway in $REGION (DNS via attestation reconciler; $MIN_READY rollout readiness hold; no MIG autohealing)." \
     --update-policy-type=proactive \
     --update-policy-max-surge="$MAX_SURGE" \
     --update-policy-max-unavailable="$MAX_UNAVAILABLE" \
+    --update-policy-min-ready="$MIN_READY" \
     --update-policy-minimal-action=replace \
     --update-policy-replacement-method=substitute >/dev/null
   # The proactive policy above makes this single template change start exactly
@@ -292,7 +303,7 @@ else
   log "creating MIG $MIG_NAME (size=$TARGET_SIZE)"
   # No --health-check / autohealing on create — see the update branch above.
   # Health is owned by the attesting DNS reconciler, not the MIG.
-  gc compute instance-groups managed create "$MIG_NAME" \
+  gc beta compute instance-groups managed create "$MIG_NAME" \
     --base-instance-name="$MIG_NAME" \
     --template="$TEMPLATE" \
     --size="$TARGET_SIZE" \
@@ -300,9 +311,10 @@ else
     --update-policy-type=proactive \
     --update-policy-max-surge="$MAX_SURGE" \
     --update-policy-max-unavailable="$MAX_UNAVAILABLE" \
+    --update-policy-min-ready="$MIN_READY" \
     --update-policy-minimal-action=replace \
     --update-policy-replacement-method=substitute \
-    --description="quill enclave gateway in $REGION (no MIG autohealing; health owned by tools/reconcile-enclave-dns.py)." >/dev/null
+    --description="quill enclave gateway in $REGION (DNS via attestation reconciler; $MIN_READY rollout readiness hold; no MIG autohealing)." >/dev/null
 fi
 
 cat <<EOF
