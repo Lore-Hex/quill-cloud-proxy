@@ -71,11 +71,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 						t.Fatalf("Wafer-ZDR header = %q, want omitted", got)
 					}
 				}
-				if got := r.Header.Get("X-0G-Provider-Trust-Mode"); tt.provider == "zero-g" {
-					if got != "private" {
-						t.Fatalf("0G trust mode header = %q, want private", got)
-					}
-				} else if got != "" {
+				if got := r.Header.Get("X-0G-Provider-Trust-Mode"); got != "" {
 					t.Fatalf("0G trust mode header leaked to %s: %q", tt.provider, got)
 				}
 				body, err := io.ReadAll(r.Body)
@@ -124,7 +120,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				atlasCloud:       client,
 				streamLake:       client,
 				neurometric:      client,
-				zeroG:            client,
+				zeroG:            newZeroGAt(server.URL, "operator-key", server.Client()),
 				alibaba:          client,
 			}
 			req := &qtypes.OpenAIChatRequest{Model: tt.publicModel}
@@ -321,6 +317,72 @@ func TestZeroGProviderContract(t *testing.T) {
 	}
 	if isOpenAICompatibleBYOKProvider("zero-g") {
 		t.Fatal("0G onboarding is prepaid-only and must not accept BYOK")
+	}
+}
+
+func TestZeroGClaudeUsesAnthropicMessagesFormat(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/messages" {
+			t.Fatalf("path = %s, want /messages", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer operator-key" {
+			t.Fatalf("authorization = %q", got)
+		}
+		if got := r.Header.Get("x-api-key"); got != "" {
+			t.Fatalf("x-api-key must be omitted, got %q", got)
+		}
+		if got := r.Header.Get("anthropic-version"); got != "2023-06-01" {
+			t.Fatalf("anthropic-version = %q", got)
+		}
+		if got := r.Header.Get("X-0G-Provider-Trust-Mode"); got != "" {
+			t.Fatalf("0G trust mode must be omitted, got %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_0g","type":"message","role":"assistant","content":[],"model":"claude-opus-5","stop_reason":null,"usage":{"input_tokens":4,"output_tokens":0}}}`,
+			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	multi := &multiClient{zeroG: newZeroGAt(server.URL, "operator-key", server.Client())}
+	req := &qtypes.OpenAIChatRequest{Model: "anthropic/claude-opus-5"}
+	body := &qtypes.AnthropicMessagesRequest{
+		Messages:  []qtypes.AnthropicMessage{{Role: "user", Content: "PONG"}},
+		MaxTokens: 16,
+	}
+	var out bytes.Buffer
+	err := multi.InvokeStreaming(
+		t.Context(),
+		req,
+		body,
+		&out,
+		InvokeOptions{
+			Model:         "anthropic/claude-opus-5",
+			UpstreamModel: "claude-opus-5",
+			Provider:      "zero-g",
+			UsageType:     "Credits",
+		},
+	)
+	if err != nil {
+		t.Fatalf("InvokeStreaming: %v", err)
+	}
+	if got := captured["model"]; got != "claude-opus-5" {
+		t.Fatalf("upstream model = %#v", got)
+	}
+	if got := captured["stream"]; got != true {
+		t.Fatalf("stream = %#v", got)
+	}
+	if !strings.Contains(out.String(), "message_start") {
+		t.Fatalf("missing Anthropic stream: %q", out.String())
 	}
 }
 

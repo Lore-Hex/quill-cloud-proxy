@@ -222,12 +222,6 @@ func invokeOpenAICompatibleStreamingWithClient(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
-	if normalizeDirectProvider(provider) == "zero-g" {
-		// Ask 0G's router for a private TeeML worker. This header is a routing
-		// request, not cryptographic verification: this client does not yet
-		// receive and pin a route quote/code measurement before sending bytes.
-		httpReq.Header.Set("X-0G-Provider-Trust-Mode", "private")
-	}
 	if provider == "wafer" && waferModelSupportsZDR(upstreamID) {
 		httpReq.Header.Set("Wafer-ZDR", "required")
 	}
@@ -493,37 +487,68 @@ func invokeAnthropicBYOKStreamingWithClient(
 	apiKey string,
 	upstreamModel string,
 ) error {
+	return invokeAnthropicCompatibleStreamingWithClient(
+		ctx,
+		httpc,
+		"anthropic",
+		"https://api.anthropic.com/v1/messages",
+		false,
+		req,
+		body,
+		out,
+		apiKey,
+		upstreamModel,
+	)
+}
+
+func invokeAnthropicCompatibleStreamingWithClient(
+	ctx context.Context,
+	httpc *http.Client,
+	provider string,
+	endpointURL string,
+	bearerAuth bool,
+	req *qtypes.OpenAIChatRequest,
+	body *qtypes.AnthropicMessagesRequest,
+	out io.Writer,
+	apiKey string,
+	upstreamModel string,
+) error {
 	messages, err := anthropicUpstreamMessages(ctx, body)
 	if err != nil {
 		return err
 	}
-	modelID := directModelID("anthropic", req.Model, upstreamModel)
+	modelID := directModelID(provider, req.Model, upstreamModel)
 	reqBody := buildAnthropicWireRequest(modelID, messages, body)
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return fmt.Errorf("llm/byok: marshal anthropic body: %w", err)
+		return fmt.Errorf("llm/%s: marshal anthropic body: %w", provider, err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return err
 	}
-	httpReq.Header.Set("x-api-key", apiKey)
+	if bearerAuth {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	} else {
+		httpReq.Header.Set("x-api-key", apiKey)
+	}
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
 
 	if httpc == nil {
 		httpc = defaultHTTPClient()
 	}
 	resp, err := httpc.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("llm/byok: anthropic invoke: %w", err)
+		return fmt.Errorf("llm/%s: anthropic invoke: %w", provider, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
-			return fmt.Errorf("llm/byok: read anthropic error body: %w", readErr)
+			return fmt.Errorf("llm/%s: read anthropic error body: %w", provider, readErr)
 		}
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}

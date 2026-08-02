@@ -64,6 +64,12 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 	if client.cloudflareWorkersAI.apiKey != "cf-key" {
 		t.Fatal("cloudflare key was not wired into the client")
 	}
+	if client.zeroG.baseURL != "https://router-api.0g.ai/v1" {
+		t.Fatalf("zero-g baseURL = %q", client.zeroG.baseURL)
+	}
+	if client.zeroG.apiKey != "zero-g-key" {
+		t.Fatal("zero-g key was not wired into the dual-format client")
+	}
 	wantClients := map[string]struct {
 		client  *openAICompatibleClient
 		baseURL string
@@ -74,7 +80,6 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 		"atlas-cloud": {client.atlasCloud, "https://api.atlascloud.ai/v1", "atlas-key"},
 		"streamlake":  {client.streamLake, "https://vanchin.streamlake.ai/api/gateway/v1/endpoints", "streamlake-key"},
 		"neurometric": {client.neurometric, "https://wharf.neurometric.ai/v1", "neurometric-key"},
-		"zero-g":      {client.zeroG, "https://router-api.0g.ai/v1", "zero-g-key"},
 		"alibaba": {
 			client.alibaba,
 			"https://ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com/compatible-mode/v1",
