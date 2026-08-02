@@ -56,7 +56,7 @@
 //	QUILL_CRUSOE_SECRET          name of the secret holding the Crusoe API key (llm_multi builds)
 //	QUILL_MAKORA_SECRET          name of the secret holding the Makora API key (llm_multi builds)
 //	QUILL_NEUROMETRIC_SECRET     name of the secret holding the Neurometric API key (llm_multi builds)
-//	QUILL_ZERO_G_SECRET          name of the secret holding the 0G Private Computer API key (llm_multi builds)
+//	QUILL_ZERO_G_SECRET          name of the secret holding the unrestricted 0G router API key (llm_multi builds)
 //	QUILL_ALIBABA_SECRET         name of the secret holding the Alibaba Model Studio API key (llm_multi builds)
 //	QUILL_LTX_SECRET             name of the secret holding the LTX API key (llm_multi builds)
 //	QUILL_RUNWAY_SECRET          name of the secret holding the Runway API key (llm_multi builds)

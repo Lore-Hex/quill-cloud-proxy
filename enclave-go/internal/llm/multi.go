@@ -78,7 +78,7 @@ func New(boot *qtypes.BootstrapData) Client {
 			"neurometric",
 			boot.NeurometricAPIKey,
 		),
-		zeroG:   newOpenAICompatible("zero-g", boot.ZeroGAPIKey),
+		zeroG:   newZeroG(boot.ZeroGAPIKey),
 		alibaba: newOpenAICompatible("alibaba", boot.AlibabaAPIKey),
 		// Xiaomi MiMo — OpenAI-compatible chat completions at api.xiaomimimo.com/v1.
 		xiaomi: newOpenAICompatible("xiaomi", boot.XiaomiAPIKey),
@@ -132,7 +132,7 @@ type multiClient struct {
 	atlasCloud          *openAICompatibleClient
 	streamLake          *openAICompatibleClient
 	neurometric         *openAICompatibleClient
-	zeroG               *openAICompatibleClient
+	zeroG               *zeroGClient
 	alibaba             *openAICompatibleClient
 	xiaomi              *openAICompatibleClient
 	cohere              *cohereClient
