@@ -7,8 +7,11 @@ Core endpoints:
   GET  /trust                → public, server-rendered HTML showing the
                                attestation status, git commit, image
                                digest, schema, retention policy.
-  GET  /health               → 200 if the enclave socket accepts a
-                               connect (no body inspection).
+  GET  /health               → 200 only if the enclave vsock socket accepts
+                               a connect; 503 otherwise (no body
+                               inspection). This is what the NLB target
+                               group checks, so it MUST reflect the enclave
+                               and not merely this process.
 
 FastAPI must not be the production inference listener. The production
 path is raw TCP passthrough to the enclave-owned TLS terminator.
@@ -16,14 +19,17 @@ path is raw TCP passthrough to the enclave-owned TLS terminator.
 
 from __future__ import annotations
 
+import asyncio
+import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from quill_parent import bootstrap_server
+from quill_parent.bootstrap_server import AF_VSOCK
 from quill_parent.config import Settings, get_settings
 from quill_parent.heartbeat import Heartbeat, emit_startup
 from quill_parent.logging import configure_logging
@@ -94,8 +100,29 @@ def _make_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health(
+        response: Response,
+        settings: Annotated[Settings, Depends(get_settings)],
+    ) -> dict[str, str]:
+        """Report whether the ENCLAVE is reachable, not whether this process is.
+
+        This endpoint is what the NLB target group health-checks
+        (tools/deploy-aws-nitro.sh: HCProtocol=HTTP HCPort=8443
+        HCPath=/health), and it used to return {"status": "ok"}
+        unconditionally — while the module docstring claimed it connected to
+        the enclave socket. So a host whose enclave had died stayed
+        "healthy" and kept taking traffic, and any failover built on top of
+        it (Global Accelerator, a second region) inherited the lie.
+
+        A vsock connect is the cheapest signal that actually distinguishes
+        "the enclave is listening" from "the Python container is up". It
+        does NOT prove the attestation path works — that is the synthetic
+        monitor's job, once a minute, against /attestation.
+        """
+        if await _enclave_is_reachable(settings):
+            return {"status": "ok"}
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "enclave_unreachable"}
 
     @router.get("/admin/usage")
     async def admin_usage(
@@ -126,3 +153,31 @@ def _make_router() -> APIRouter:
 
 
 app = create_app()
+
+
+async def _enclave_is_reachable(settings: Settings) -> bool:
+    """Can we open a vsock connection to the enclave right now?
+
+    Runs in a thread so a slow or blackholed dial cannot stall the event
+    loop that is also serving inference. Any failure is unhealthy: this is
+    a health check, and "I could not tell" must never read as "fine" —
+    that equivalence is what made the previous version useless.
+    """
+    def dial() -> bool:
+        sock = socket.socket(AF_VSOCK, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(settings.enclave_health_timeout_seconds)
+            sock.connect((settings.enclave_cid, settings.enclave_relay_port))
+            return True
+        except OSError:
+            return False
+        finally:
+            sock.close()
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(dial),
+            timeout=settings.enclave_health_timeout_seconds + 0.5,
+        )
+    except (TimeoutError, OSError):
+        return False
