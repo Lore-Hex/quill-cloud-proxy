@@ -137,26 +137,36 @@ phase_iam() {
   # The cross-cloud GCP SA key is wrapped with our CMK and then stored
   # in Secrets Manager. The bootstrap_server unwraps via direct
   # kms:Decrypt — NOT through Secrets Manager's auto-decrypt path.
-  # IAM resource ARNs for KMS must reference the key by its UUID, not
-  # by alias; resolve the CMK ID from the alias at apply time so the
-  # policy stays scoped to the specific key rather than wildcarding
-  # the whole region.
+  # The IAM role is GLOBAL but enclave hosts now run in several regions,
+  # so this policy has to cover every one of them. It previously pinned
+  # AWS_REGION into each ARN, which meant re-running `--phase iam` for a
+  # NEW region silently rewrote the policy to that region alone and
+  # revoked the existing region's access — a second-region rollout that
+  # breaks the first. Enumerate the regions instead.
+  #
+  # eu-west-3 hosts hit exactly this: GetSecretValue denied on
+  # quill/quill-openrouter-key because the ARN said eu-west-1. The
+  # symptom is a bootstrap that never binds vsock 9100, so the enclave
+  # dies with ECONNRESET and /health honestly reports 503.
+  local regions="${ENCLAVE_REGIONS:-eu-west-1 eu-west-3}"
   local cmk_alias="alias/${PROJECT_TAG}-cmk"
-  local cmk_arn
-  cmk_arn=$(aws kms list-aliases --region "$AWS_REGION" \
-    --query "Aliases[?AliasName=='${cmk_alias}'].TargetKeyId" \
-    --output text 2>/dev/null || echo "")
-  if [ -n "$cmk_arn" ] && [ "$cmk_arn" != "None" ]; then
-    cmk_arn="arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT}:key/${cmk_arn}"
-  else
-    # CMK doesn't exist yet (first-time bootstrap, phase_kms hasn't
-    # run). Fall back to a wildcard scoped to this account+region —
-    # phase_kms creates exactly one CMK so this is bounded. The next
-    # apply (after phase_kms lands) will tighten the resource to the
-    # specific key.
-    cmk_arn="arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT}:key/*"
-    log "  WARN: ${cmk_alias} not yet provisioned; using wildcard for kms direct-decrypt"
-  fi
+  local cmk_arns="" r key_id
+  for r in $regions; do
+    key_id=$(aws kms list-aliases --region "$r" \
+      --query "Aliases[?AliasName=='${cmk_alias}'].TargetKeyId" \
+      --output text 2>/dev/null || echo "")
+    if [ -n "$key_id" ] && [ "$key_id" != "None" ]; then
+      cmk_arns="${cmk_arns}\"arn:aws:kms:${r}:${AWS_ACCOUNT}:key/${key_id}\","
+    else
+      # CMK not provisioned in this region yet (phase_kms hasn't run).
+      # Wildcard scoped to that account+region; phase_kms creates exactly
+      # one CMK, and the next apply tightens it to the specific key.
+      cmk_arns="${cmk_arns}\"arn:aws:kms:${r}:${AWS_ACCOUNT}:key/*\","
+      log "  WARN: ${cmk_alias} not yet provisioned in ${r}; wildcarding direct-decrypt there"
+    fi
+  done
+  cmk_arns="[${cmk_arns%,}]"
+  log "  IAM policy covers regions: ${regions}"
 
   local policy_doc
   policy_doc=$(cat <<EOF
@@ -167,20 +177,20 @@ phase_iam() {
       "Sid": "ReadProviderSecrets",
       "Effect": "Allow",
       "Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
-      "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/*"
+      "Resource": "arn:aws:secretsmanager:*:${AWS_ACCOUNT}:secret:quill/*"
     },
     {
       "Sid": "DecryptKMSViaSecretsManager",
       "Effect": "Allow",
       "Action": ["kms:Decrypt", "kms:DescribeKey"],
-      "Resource": "arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT}:key/*",
-      "Condition": {"StringEquals": {"kms:ViaService": "secretsmanager.${AWS_REGION}.amazonaws.com"}}
+      "Resource": "arn:aws:kms:*:${AWS_ACCOUNT}:key/*",
+      "Condition": {"StringLike": {"kms:ViaService": "secretsmanager.*.amazonaws.com"}}
     },
     {
       "Sid": "DecryptCrossCloudSAKeyDirect",
       "Effect": "Allow",
       "Action": ["kms:Decrypt", "kms:DescribeKey"],
-      "Resource": "${cmk_arn}"
+      "Resource": ${cmk_arns}
     },
     {
       "Sid": "PullECR",
