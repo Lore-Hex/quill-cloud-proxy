@@ -56,6 +56,7 @@
 //	QUILL_CRUSOE_SECRET          name of the secret holding the Crusoe API key (llm_multi builds)
 //	QUILL_MAKORA_SECRET          name of the secret holding the Makora API key (llm_multi builds)
 //	QUILL_NEUROMETRIC_SECRET     name of the secret holding the Neurometric API key (llm_multi builds)
+//	QUILL_ZERO_G_SECRET          name of the secret holding the 0G Private Computer API key (llm_multi builds)
 //	QUILL_ALIBABA_SECRET         name of the secret holding the Alibaba Model Studio API key (llm_multi builds)
 //	QUILL_LTX_SECRET             name of the secret holding the LTX API key (llm_multi builds)
 //	QUILL_RUNWAY_SECRET          name of the secret holding the Runway API key (llm_multi builds)
@@ -148,6 +149,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	atlasCloudSecret := os.Getenv("QUILL_ATLAS_CLOUD_SECRET")
 	streamLakeSecret := os.Getenv("QUILL_STREAMLAKE_SECRET")
 	neurometricSecret := os.Getenv("QUILL_NEUROMETRIC_SECRET")
+	zeroGSecret := os.Getenv("QUILL_ZERO_G_SECRET")
 	alibabaSecret := os.Getenv("QUILL_ALIBABA_SECRET")
 	ltxSecret := os.Getenv("QUILL_LTX_SECRET")
 	runwaySecret := os.Getenv("QUILL_RUNWAY_SECRET")
@@ -208,6 +210,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		atlasCloudSecret,
 		streamLakeSecret,
 		neurometricSecret,
+		zeroGSecret,
 		alibabaSecret,
 		ltxSecret,
 		runwaySecret,
@@ -523,6 +526,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: neurometric key: %w", err)
 		}
 	}
+	var zeroGKey []byte
+	if zeroGSecret != "" {
+		zeroGKey, err = fetchSecret(ctx, httpc, token, project, zeroGSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: 0g private computer key: %w", err)
+		}
+	}
 	var alibabaKey []byte
 	if alibabaSecret != "" {
 		alibabaKey, err = fetchSecret(ctx, httpc, token, project, alibabaSecret)
@@ -661,6 +671,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		AtlasCloudAPIKey:             strings.TrimSpace(string(atlasCloudKey)),
 		StreamLakeAPIKey:             strings.TrimSpace(string(streamLakeKey)),
 		NeurometricAPIKey:            strings.TrimSpace(string(neurometricKey)),
+		ZeroGAPIKey:                  strings.TrimSpace(string(zeroGKey)),
 		AlibabaAPIKey:                strings.TrimSpace(string(alibabaKey)),
 		LTXAPIKey:                    strings.TrimSpace(string(ltxKey)),
 		RunwayAPIKey:                 strings.TrimSpace(string(runwayKey)),
