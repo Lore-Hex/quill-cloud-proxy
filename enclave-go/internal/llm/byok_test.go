@@ -230,6 +230,46 @@ func TestBuildGoogleAIStudioRequestPreservesExplicitReasoningAndImageDefaults(t 
 	}
 }
 
+func TestBuildEngyQwenRequestDisablesThinkingForVisibleOutput(t *testing.T) {
+	got := buildOpenAICompatibleRequest(
+		"engy",
+		"qwen3.6-35b-a3b",
+		&qtypes.OpenAIChatRequest{},
+		&qtypes.AnthropicMessagesRequest{},
+		[]chatMessage{{Role: "user", Content: "Reply PONG"}},
+	)
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	kwargs, ok := payload["chat_template_kwargs"].(map[string]any)
+	if !ok {
+		t.Fatalf("chat_template_kwargs missing from Engy Qwen payload: %s", encoded)
+	}
+	if enableThinking, ok := kwargs["enable_thinking"].(bool); !ok || enableThinking {
+		t.Fatalf("enable_thinking = %#v, want false", kwargs["enable_thinking"])
+	}
+
+	other := buildOpenAICompatibleRequest(
+		"engy",
+		"glm-5.2",
+		&qtypes.OpenAIChatRequest{},
+		&qtypes.AnthropicMessagesRequest{},
+		nil,
+	)
+	otherEncoded, err := json.Marshal(other)
+	if err != nil {
+		t.Fatalf("marshal other request: %v", err)
+	}
+	if strings.Contains(string(otherEncoded), "chat_template_kwargs") {
+		t.Fatalf("Engy GLM payload unexpectedly changed: %s", otherEncoded)
+	}
+}
+
 func TestBuildMetaOpenRouterRequestCarriesReasoningWithoutThinkingAlias(t *testing.T) {
 	reasoning := map[string]any{"effort": "minimal"}
 	req := &qtypes.OpenAIChatRequest{

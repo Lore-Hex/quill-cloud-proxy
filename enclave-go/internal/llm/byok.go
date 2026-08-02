@@ -69,24 +69,25 @@ type openAICompatibleRequest struct {
 	// openai-compatible providers (zai, kimi, novita, etc.) only
 	// know `max_tokens`. So this client emits ONE or the OTHER per
 	// request — see buildOpenAICompatibleRequest below.
-	MaxTokens           int                `json:"max_tokens,omitempty"`
-	MaxCompletionTokens int                `json:"max_completion_tokens,omitempty"`
-	Temperature         *float64           `json:"temperature,omitempty"`
-	TopP                *float64           `json:"top_p,omitempty"`
-	TopK                *int               `json:"top_k,omitempty"`
-	Seed                *int               `json:"seed,omitempty"`
-	FrequencyPenalty    *float64           `json:"frequency_penalty,omitempty"`
-	PresencePenalty     *float64           `json:"presence_penalty,omitempty"`
-	LogitBias           map[string]float64 `json:"logit_bias,omitempty"`
-	Stop                any                `json:"stop,omitempty"`
-	ResponseFormat      any                `json:"response_format,omitempty"`
-	Tools               []any              `json:"tools,omitempty"`
-	ToolChoice          any                `json:"tool_choice,omitempty"`
-	ParallelToolCalls   *bool              `json:"parallel_tool_calls,omitempty"`
-	Thinking            any                `json:"thinking,omitempty"`
-	Reasoning           any                `json:"reasoning,omitempty"`
-	ReasoningEffort     string             `json:"reasoning_effort,omitempty"`
-	ServiceTier         string             `json:"service_tier,omitempty"`
+	MaxTokens           int                 `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int                 `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64            `json:"temperature,omitempty"`
+	TopP                *float64            `json:"top_p,omitempty"`
+	TopK                *int                `json:"top_k,omitempty"`
+	Seed                *int                `json:"seed,omitempty"`
+	FrequencyPenalty    *float64            `json:"frequency_penalty,omitempty"`
+	PresencePenalty     *float64            `json:"presence_penalty,omitempty"`
+	LogitBias           map[string]float64  `json:"logit_bias,omitempty"`
+	Stop                any                 `json:"stop,omitempty"`
+	ResponseFormat      any                 `json:"response_format,omitempty"`
+	Tools               []any               `json:"tools,omitempty"`
+	ToolChoice          any                 `json:"tool_choice,omitempty"`
+	ParallelToolCalls   *bool               `json:"parallel_tool_calls,omitempty"`
+	Thinking            any                 `json:"thinking,omitempty"`
+	Reasoning           any                 `json:"reasoning,omitempty"`
+	ReasoningEffort     string              `json:"reasoning_effort,omitempty"`
+	ServiceTier         string              `json:"service_tier,omitempty"`
+	ChatTemplateKwargs  *chatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
 	// StreamOptions asks the upstream for the final usage-bearing chunk
 	// (stream_options.include_usage). Always sent: real token counts feed
 	// settlement (replacing chars/4 estimates that miscounted reasoning
@@ -94,6 +95,10 @@ type openAICompatibleRequest struct {
 	// OpenAI, vLLM, and SGLang-backed providers; verified per provider by
 	// the post-deploy smoke matrix.
 	StreamOptions *openAICompatibleStreamOptions `json:"stream_options,omitempty"`
+}
+
+type chatTemplateKwargs struct {
+	EnableThinking bool `json:"enable_thinking"`
 }
 
 type openAICompatibleStreamOptions struct {
@@ -319,6 +324,13 @@ func buildOpenAICompatibleRequest(
 	}
 	if effort := googleAIStudioDefaultReasoningEffort(provider, upstreamID, req, body); effort != "" {
 		reqBody.ReasoningEffort = effort
+	}
+	// Engy's Qwen 3.6 endpoint otherwise returns its complete answer only in
+	// reasoning_content while leaving message.content empty. Disable thinking
+	// at the provider chat-template boundary so ordinary OpenAI clients receive
+	// a usable visible answer. Keep the override scoped to this verified route.
+	if normalizeDirectProvider(provider) == "engy" && strings.EqualFold(strings.TrimSpace(upstreamID), "qwen3.6-35b-a3b") {
+		reqBody.ChatTemplateKwargs = &chatTemplateKwargs{EnableThinking: false}
 	}
 	reqBody.StreamOptions = &openAICompatibleStreamOptions{IncludeUsage: true}
 	return reqBody
