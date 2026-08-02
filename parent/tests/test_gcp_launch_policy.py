@@ -24,6 +24,8 @@ def test_gcp_multi_launch_policy_allows_deployed_env_overrides() -> None:
     assert "QUILL_OPENROUTER_SECRET" in allowed_envs
     assert "QUILL_NEUROMETRIC_SECRET" in metadata_envs
     assert "QUILL_NEUROMETRIC_SECRET" in allowed_envs
+    assert "QUILL_ENGY_SECRET" in metadata_envs
+    assert "QUILL_ENGY_SECRET" in allowed_envs
     assert "QUILL_ALIBABA_SECRET" in metadata_envs
     assert "QUILL_ALIBABA_SECRET" in allowed_envs
     for name in ("QUILL_LTX_SECRET", "QUILL_RUNWAY_SECRET", "QUILL_KLING_SECRET"):
@@ -49,6 +51,19 @@ def test_gcp_bootstrap_grants_workload_access_to_neurometric_secret() -> None:
         'NEUROMETRIC_SECRET="${NEUROMETRIC_SECRET:-trustedrouter-neurometric-api-key}"'
     ) in source
     assert '"$NEUROMETRIC_SECRET" \\' in source
+
+
+def test_gcp_bootstrap_grants_workload_access_to_engy_secret() -> None:
+    bootstrap_script = REPO_ROOT / "tools" / "deploy-gcp-bootstrap.sh"
+    source = bootstrap_script.read_text()
+
+    assert 'ENGY_SECRET="${ENGY_SECRET:-trustedrouter-engy-api-key}"' in source
+    assert '"$ENGY_SECRET" \\' in source
+
+    deploy = (REPO_ROOT / "tools" / "deploy-gcp-mig.sh").read_text()
+    assert 'if [ "${QUILL_ENGY_SECRET+x}" != "x" ]; then' in deploy
+    assert "gc secrets describe trustedrouter-engy-api-key" in deploy
+    assert 'ENGY_TEE_ENV="|tee-env-QUILL_ENGY_SECRET=${QUILL_ENGY_SECRET}"' in deploy
 
 
 def test_gcp_bootstrap_grants_workload_access_to_direct_video_secrets() -> None:
