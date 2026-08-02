@@ -1,4 +1,4 @@
-# NS-drift check for trustedrouter.com, quillrouter.com, and allyrouter.com.
+# NS-drift check for all canonical and independent backup domains.
 #
 # Why this exists
 # ───────────────
@@ -49,9 +49,10 @@ jobs:
           expected_tr="ns-cloud-b1.googledomains.com.,ns-cloud-b2.googledomains.com.,ns-cloud-b3.googledomains.com.,ns-cloud-b4.googledomains.com."
           expected_qr="ns-cloud-d1.googledomains.com.,ns-cloud-d2.googledomains.com.,ns-cloud-d3.googledomains.com.,ns-cloud-d4.googledomains.com."
           expected_ar="ns-1324.awsdns-37.org.,ns-1917.awsdns-47.co.uk.,ns-556.awsdns-05.net.,ns-82.awsdns-10.com."
+          expected_ur="ns-1243.awsdns-27.org.,ns-1544.awsdns-01.co.uk.,ns-509.awsdns-63.com.,ns-855.awsdns-42.net."
 
           fail=0
-          for pair in trustedrouter.com:"$expected_tr" quillrouter.com:"$expected_qr" allyrouter.com:"$expected_ar"; do
+          for pair in trustedrouter.com:"$expected_tr" quillrouter.com:"$expected_qr" allyrouter.com:"$expected_ar" uptimerouter.com:"$expected_ur"; do
             d="${pair%%:*}"
             expected="${pair#*:}"
             # Query the TLD directly so we get what the REGISTRY has
@@ -78,7 +79,7 @@ jobs:
           # Also sanity-check that Google Cloud DNS still answers
           # authoritatively for each zone. Cheap to verify: one dig
           # against one delegated nameserver per zone.
-          for pair in trustedrouter.com:ns-cloud-b1.googledomains.com quillrouter.com:ns-cloud-d1.googledomains.com allyrouter.com:ns-1324.awsdns-37.org; do
+          for pair in trustedrouter.com:ns-cloud-b1.googledomains.com quillrouter.com:ns-cloud-d1.googledomains.com allyrouter.com:ns-1324.awsdns-37.org uptimerouter.com:ns-855.awsdns-42.net; do
             d="${pair%%:*}"
             ns="${pair#*:}"
             if ! dig +short +tries=2 +timeout=5 NS "$d" "@$ns" | grep -q .; then

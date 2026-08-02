@@ -28,6 +28,12 @@ jobs:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
 
+      - name: Authenticate to AWS for backup-domain DNS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Install uv
@@ -41,4 +47,6 @@ jobs:
           QUILL_PUBLISH_REGIONAL: "1"
           QUILL_REGIONAL_ZONE: quillrouter-com
           QUILL_REGIONAL_SUFFIX: quillrouter.com
-        run: uv run --script tools/reconcile-enclave-dns.py --apply
+        run: |
+          uv run --script tools/reconcile-enclave-dns.py --apply
+          python3 tools/sync-route53-api-aliases.py --apply

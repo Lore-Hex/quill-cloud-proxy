@@ -22,6 +22,11 @@ DEFAULT_HOSTS = (
     "status.allyrouter.com",
     "trust.allyrouter.com",
     "api.allyrouter.com",
+    "uptimerouter.com",
+    "www.uptimerouter.com",
+    "status.uptimerouter.com",
+    "trust.uptimerouter.com",
+    "api.uptimerouter.com",
 )
 
 
