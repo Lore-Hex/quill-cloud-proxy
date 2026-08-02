@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/video"
@@ -67,6 +68,47 @@ func TestVideoRequestFingerprintBindsContentWithoutExposingIt(t *testing.T) {
 	})
 	if len(a) != 64 || a == b || a == c || strings.Contains(a, "private") {
 		t.Fatalf("bad request fingerprints: %q %q %q", a, b, c)
+	}
+}
+
+func TestVideoPollStateBacksOffWhenQueueIsIdleAndResetsAfterWork(t *testing.T) {
+	state := videoPollState{}
+	workerID := "video-test-worker"
+
+	first := state.nextDelay(workerID, 0, nil)
+	second := state.nextDelay(workerID, 0, nil)
+	third := state.nextDelay(workerID, 0, nil)
+	fourth := state.nextDelay(workerID, 0, nil)
+	if !(first < second && second < third) {
+		t.Fatalf("idle delays did not increase: %s, %s, %s", first, second, third)
+	}
+	for _, delay := range []time.Duration{third, fourth} {
+		if delay < 25*time.Second || delay > 35*time.Second {
+			t.Fatalf("capped idle delay = %s, want about 30s", delay)
+		}
+	}
+
+	active := state.nextDelay(workerID, 2, nil)
+	if active < 4*time.Second || active > 6*time.Second {
+		t.Fatalf("active delay = %s, want about 5s", active)
+	}
+	if state.consecutiveIdle != 0 {
+		t.Fatalf("idle state did not reset: %d", state.consecutiveIdle)
+	}
+}
+
+func TestVideoPollStateDesynchronizesWorkersAndBacksOffErrors(t *testing.T) {
+	left := videoPollState{}
+	right := videoPollState{}
+	leftDelay := left.nextDelay("video-worker-left", 0, context.DeadlineExceeded)
+	rightDelay := right.nextDelay("video-worker-right", 0, context.DeadlineExceeded)
+	if leftDelay == rightDelay {
+		t.Fatalf("worker jitter unexpectedly matched: %s", leftDelay)
+	}
+	for _, delay := range []time.Duration{leftDelay, rightDelay} {
+		if delay < 12*time.Second || delay > 18*time.Second {
+			t.Fatalf("error delay = %s, want jittered 15s floor", delay)
+		}
 	}
 }
 

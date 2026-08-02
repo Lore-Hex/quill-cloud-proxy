@@ -250,6 +250,11 @@ jobs:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
       - uses: google-github-actions/setup-gcloud@v2
+        with:
+          # MIG minReadySec is still exposed through the beta command group.
+          # Install it explicitly so a non-interactive runner never pauses to
+          # ask whether it may install the component mid-rollout.
+          install_components: beta
       - uses: astral-sh/setup-uv@v5
 
       - name: Reconcile enclave DNS
@@ -315,6 +320,30 @@ jobs:
           # `quill-enclave-mig-us`, not `quill-enclave-mig-uscentral1`.
           REGION_SHORT: us
         run: bash tools/deploy-gcp-mig.sh us-central1
+
+      - name: Clear a stale drain when the primary template never changed
+        if: ${{ failure() }}
+        env:
+          PREV_US: ${{ steps.prev.outputs.us_central1_template }}
+          QUILL_RECONCILE_APPLY: "1"
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
+          QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
+        run: |
+          set -euo pipefail
+          current="$(gcloud compute instance-groups managed describe quill-enclave-mig-us \
+            --region=us-central1 --project=quill-cloud-proxy \
+            --format='value(instanceTemplate.basename())')"
+          if [ -z "${PREV_US}" ] || [ "${current}" != "${PREV_US}" ]; then
+            echo "primary template may have changed; preserving the rollout drain"
+            exit 0
+          fi
+          echo "primary template is unchanged; clearing the stale rollout drain"
+          uv run --script tools/reconcile-enclave-dns.py \
+            --clear-drain-region us-central1
+          uv run --script tools/reconcile-enclave-dns.py --apply
 
       - name: Wait for us-central1 MIG to be stable
         # Block until the rolling-replace finishes draining the old

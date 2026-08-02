@@ -48,6 +48,9 @@ class RolloutSafetyTests(unittest.TestCase):
 
     def test_rollout_holds_old_generation_until_replacements_can_attest(self) -> None:
         deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
 
         self.assertIn('MIN_READY="${MIN_READY:-600s}"', deploy)
         self.assertEqual(
@@ -60,6 +63,18 @@ class RolloutSafetyTests(unittest.TestCase):
             2,
             "minReadySec must use the beta Compute API until it reaches GA",
         )
+        self.assertIn("install_components: beta", workflow)
+
+    def test_pre_roll_failure_only_clears_drain_when_template_is_unchanged(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "Clear a stale drain when the primary template never changed", workflow
+        )
+        self.assertIn('[ "${current}" != "${PREV_US}" ]', workflow)
+        self.assertIn("--clear-drain-region us-central1", workflow)
 
 
 if __name__ == "__main__":

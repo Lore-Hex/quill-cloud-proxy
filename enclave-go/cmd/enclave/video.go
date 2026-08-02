@@ -27,6 +27,42 @@ type videoService struct {
 	workerID  string
 }
 
+const (
+	videoPollActiveInterval = 5 * time.Second
+	videoPollIdleMax        = 30 * time.Second
+	videoPollErrorFloor     = 15 * time.Second
+)
+
+type videoPollState struct {
+	consecutiveIdle int
+}
+
+func (p *videoPollState) nextDelay(workerID string, jobs int, pollErr error) time.Duration {
+	base := videoPollActiveInterval
+	if jobs > 0 {
+		p.consecutiveIdle = 0
+	} else {
+		if p.consecutiveIdle < 8 {
+			p.consecutiveIdle++
+		}
+		base <<= min(p.consecutiveIdle, 3)
+		if base > videoPollIdleMax {
+			base = videoPollIdleMax
+		}
+	}
+	if pollErr != nil && base < videoPollErrorFloor {
+		base = videoPollErrorFloor
+	}
+	return jitterVideoPoll(base, workerID, p.consecutiveIdle)
+}
+
+func jitterVideoPoll(base time.Duration, workerID string, generation int) time.Duration {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s#%d", workerID, generation)))
+	// Stable per worker and backoff generation, in the range 85%..115%.
+	percent := 85 + int(sum[0])%31
+	return base * time.Duration(percent) / 100
+}
+
 func newVideoService(keys video.ProviderKeys, control *trustedrouter.Client) *videoService {
 	return &videoService{
 		providers: video.NewRegistry(keys, llm.NewProviderHTTPClient()),
@@ -44,25 +80,27 @@ func (s *videoService) Start(ctx context.Context) {
 		return
 	}
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
+		state := videoPollState{}
+		timer := time.NewTimer(jitterVideoPoll(2*time.Second, s.workerID, -1))
+		defer timer.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
-				s.drain(ctx)
+			case <-timer.C:
+				jobs, err := s.drain(ctx)
+				timer.Reset(state.nextDelay(s.workerID, jobs, err))
 			}
 		}
 	}()
 }
 
-func (s *videoService) drain(ctx context.Context) {
+func (s *videoService) drain(ctx context.Context) (int, error) {
 	claimCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	jobs, err := s.control.ClaimVideoJobs(claimCtx, s.workerID, 8, 60)
 	cancel()
 	if err != nil {
-		return
+		return 0, err
 	}
 	for i := range jobs {
 		job := jobs[i]
@@ -70,6 +108,7 @@ func (s *videoService) drain(ctx context.Context) {
 		_, _ = s.pollAndFinalize(jobCtx, &job, s.workerID)
 		jobCancel()
 	}
+	return len(jobs), nil
 }
 
 func maybeServeVideoRoute(
