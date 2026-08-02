@@ -87,6 +87,7 @@ MORPH_SECRET="${MORPH_SECRET:-trustedrouter-morph-api-key}"
 ATLAS_CLOUD_SECRET="${ATLAS_CLOUD_SECRET:-trustedrouter-atlas-cloud-api-key}"
 STREAMLAKE_SECRET="${STREAMLAKE_SECRET:-trustedrouter-streamlake-api-key}"
 NEUROMETRIC_SECRET="${NEUROMETRIC_SECRET:-trustedrouter-neurometric-api-key}"
+ENGY_SECRET="${ENGY_SECRET:-trustedrouter-engy-api-key}"
 ALIBABA_SECRET="${ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
 LTX_SECRET="${LTX_SECRET:-trustedrouter-ltx-api-key}"
 RUNWAY_SECRET="${RUNWAY_SECRET:-trustedrouter-runway-api-key}"
@@ -205,6 +206,7 @@ for secret in \
   "$ATLAS_CLOUD_SECRET" \
   "$STREAMLAKE_SECRET" \
   "$NEUROMETRIC_SECRET" \
+  "$ENGY_SECRET" \
   "$ALIBABA_SECRET" \
   "$LTX_SECRET" \
   "$RUNWAY_SECRET" \

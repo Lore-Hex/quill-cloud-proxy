@@ -45,6 +45,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"atlas-cloud", "z-ai/glm-5.2", "zai-org/glm-5.2", "zai-org/glm-5.2", false},
 		{"streamlake", "kwaipilot/kat-coder-pro-v2.5", "kat-coder-pro-v2.5", "kat-coder-pro-v2.5", false},
 		{"neurometric", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b", false},
+		{"engy", "z-ai/glm-5.2", "glm-5.2", "glm-5.2", false},
 		{"zero-g", "z-ai/glm-5.2", "glm-5.2", "glm-5.2", false},
 		{"alibaba", "qwen/qwen3.7-flash", "qwen3.7-flash", "qwen3.7-flash", false},
 	}
@@ -120,6 +121,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				atlasCloud:       client,
 				streamLake:       client,
 				neurometric:      client,
+				engy:             client,
 				zeroG:            newZeroGAt(server.URL, "operator-key", server.Client()),
 				alibaba:          client,
 			}
