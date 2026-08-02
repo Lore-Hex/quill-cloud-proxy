@@ -84,6 +84,45 @@ Debug-mode consoles are also destructive on a live host:
 collides on CID 16. Stop the supervisor first, and never read a console on
 a host whose restart count you are simultaneously using as evidence.
 
+## Inference path (enclave → control plane)
+
+`/attestation` working does NOT mean inference works — they fail
+independently. Attestation is self-contained inside the enclave; inference
+needs the enclave to authorize the caller's key against a control plane
+over vsock.
+
+The authorize call goes to `POST {control_plane}/v1/internal/gateway/authorize`
+with header `x-trustedrouter-internal-token`, tunneled via **vsock port
+8040**. The token comes from Secrets Manager
+`quill/trustedrouter-internal-gateway-token` (same value Cloud Run consumes
+as `TR_INTERNAL_GATEWAY_TOKEN` — compare sha256 fingerprints, never values).
+
+Getting this working produced a ladder of *different* errors. Each one is a
+distinct cause, so read the code before assuming:
+
+| Response | Meaning |
+| --- | --- |
+| `401 Invalid API key` | the enclave could not authorize AT ALL — usually the internal token is missing from this region's Secrets Manager |
+| `404 route not found` | auth SUCCEEDED; that path just isn't a gateway route (`/v1/models` is control-plane-only — the GCP gateway 404s identically) |
+| `502 gateway authorization failed` after ~28s | the authorize call TIMED OUT. 28s is retries, not rejection — a rejection is fast |
+| `400 Model does not support chat completions: auto` | full path works; use a catalog id such as `trustedrouter/auto` |
+| `200` | done |
+
+**Isolating a 502 timeout.** Run the authorize call from the PARENT host
+(which has ordinary network) with the token from Secrets Manager. If the
+parent gets a fast answer (a `400 model: Field required` on an empty body
+is a healthy response — the token was accepted) while the enclave times
+out, the fault is strictly the enclave→vsock→parent hop, not auth and not
+the control plane. That single differential test replaces a lot of guessing.
+
+In the one occurrence so far, `systemctl restart quill-vsock-proxy-8040`
+fixed it immediately. The likeliest mechanism is that `vsock-proxy` pins the
+address it resolved at startup while `trustedrouter.com` sits behind a load
+balancer whose IP can change — but a wedged proxy process fits the same
+evidence, so treat the mechanism as UNCONFIRMED. Do not add a blind
+periodic restart: recycling the tunnel kills in-flight streaming requests.
+Detect it with a synthetic that exercises a real completion end to end.
+
 ## Traps
 
 - **`--phase compute` used to scale the ASG to zero.** `ASG_DESIRED`
