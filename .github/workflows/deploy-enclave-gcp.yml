@@ -462,7 +462,9 @@ jobs:
         # Roll secondaries one at a time with the same DNS-drain invariant used
         # for us-central1. Parallel secondary deploys are faster, but they reduce
         # canonical serving capacity during the riskiest part of the rollout.
-        timeout-minutes: 45
+        # Two regions with two 10-minute readiness holds, fresh synthetic gates,
+        # and regional watchdogs can legitimately exceed 45 minutes.
+        timeout-minutes: 90
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
