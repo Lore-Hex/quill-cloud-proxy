@@ -26,7 +26,7 @@ func TestNewProviderNormalizationAndBYOKPolicy(t *testing.T) {
 	if isOpenAICompatibleBYOKProvider("cloudflare-workers-ai") {
 		t.Fatal("cloudflare BYOK needs an account id and must stay disabled")
 	}
-	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake", "neurometric", "alibaba"} {
+	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake", "neurometric", "zero-g", "alibaba"} {
 		if isOpenAICompatibleBYOKProvider(provider) {
 			t.Errorf("%s must use only the operator-key prepaid path", provider)
 		}
@@ -46,6 +46,7 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 		AtlasCloudAPIKey:             "atlas-key",
 		StreamLakeAPIKey:             "streamlake-key",
 		NeurometricAPIKey:            "neurometric-key",
+		ZeroGAPIKey:                  "zero-g-key",
 		AlibabaAPIKey:                "alibaba-key",
 	}).(*multiClient)
 	if !ok {
@@ -73,6 +74,7 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 		"atlas-cloud": {client.atlasCloud, "https://api.atlascloud.ai/v1", "atlas-key"},
 		"streamlake":  {client.streamLake, "https://vanchin.streamlake.ai/api/gateway/v1/endpoints", "streamlake-key"},
 		"neurometric": {client.neurometric, "https://wharf.neurometric.ai/v1", "neurometric-key"},
+		"zero-g":      {client.zeroG, "https://router-api.0g.ai/v1", "zero-g-key"},
 		"alibaba": {
 			client.alibaba,
 			"https://ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com/compatible-mode/v1",
@@ -105,6 +107,7 @@ func TestNewProvidersPreserveAuthorizedUpstreamModelID(t *testing.T) {
 		{"atlas-cloud", "z-ai/glm-5.2", "zai-org/glm-5.2"},
 		{"streamlake", "kwaipilot/kat-coder-pro-v2.5", "kat-coder-pro-v2.5"},
 		{"neurometric", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b"},
+		{"zero-g", "z-ai/glm-5.2", "glm-5.2"},
 		{"alibaba", "qwen/qwen3.7-flash", "qwen3.7-flash"},
 	}
 	for _, tc := range cases {

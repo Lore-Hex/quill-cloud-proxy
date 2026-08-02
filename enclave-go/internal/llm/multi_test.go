@@ -45,6 +45,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"atlas-cloud", "z-ai/glm-5.2", "zai-org/glm-5.2", "zai-org/glm-5.2", false},
 		{"streamlake", "kwaipilot/kat-coder-pro-v2.5", "kat-coder-pro-v2.5", "kat-coder-pro-v2.5", false},
 		{"neurometric", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b", false},
+		{"zero-g", "z-ai/glm-5.2", "glm-5.2", "glm-5.2", false},
 		{"alibaba", "qwen/qwen3.7-flash", "qwen3.7-flash", "qwen3.7-flash", false},
 	}
 
@@ -69,6 +70,13 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 					if !tt.wantWaferZDR && got != "" {
 						t.Fatalf("Wafer-ZDR header = %q, want omitted", got)
 					}
+				}
+				if got := r.Header.Get("X-0G-Provider-Trust-Mode"); tt.provider == "zero-g" {
+					if got != "private" {
+						t.Fatalf("0G trust mode header = %q, want private", got)
+					}
+				} else if got != "" {
+					t.Fatalf("0G trust mode header leaked to %s: %q", tt.provider, got)
 				}
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
@@ -116,6 +124,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				atlasCloud:       client,
 				streamLake:       client,
 				neurometric:      client,
+				zeroG:            client,
 				alibaba:          client,
 			}
 			req := &qtypes.OpenAIChatRequest{Model: tt.publicModel}
@@ -295,6 +304,23 @@ func TestGoogleProviderNormalizationKeepsProductsDistinct(t *testing.T) {
 	}
 	if got := directBaseURL("google-vertex"); got != "" {
 		t.Fatalf("Vertex must not use API-key compatible base URL, got %q", got)
+	}
+}
+
+func TestZeroGProviderContract(t *testing.T) {
+	for _, input := range []string{"0g", "0G Private Computer", "zero_g"} {
+		if got := normalizeDirectProvider(input); got != "zero-g" {
+			t.Errorf("normalizeDirectProvider(%q) = %q, want zero-g", input, got)
+		}
+	}
+	if got := directBaseURL("zero-g"); got != "https://router-api.0g.ai/v1" {
+		t.Fatalf("0G base URL = %q", got)
+	}
+	if got := directModelID("zero-g", "z-ai/glm-5.2", "glm-5.2"); got != "glm-5.2" {
+		t.Fatalf("0G upstream model = %q", got)
+	}
+	if isOpenAICompatibleBYOKProvider("zero-g") {
+		t.Fatal("0G onboarding is prepaid-only and must not accept BYOK")
 	}
 }
 
