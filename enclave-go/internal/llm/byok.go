@@ -223,8 +223,9 @@ func invokeOpenAICompatibleStreamingWithClient(
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
 	if normalizeDirectProvider(provider) == "zero-g" {
-		// TeeTLS attests only 0G's routing proxy. Private forces TeeML so
-		// model execution itself remains inside confidential compute.
+		// Ask 0G's router for a private TeeML worker. This header is a routing
+		// request, not cryptographic verification: this client does not yet
+		// receive and pin a route quote/code measurement before sending bytes.
 		httpReq.Header.Set("X-0G-Provider-Trust-Mode", "private")
 	}
 	if provider == "wafer" && waferModelSupportsZDR(upstreamID) {
