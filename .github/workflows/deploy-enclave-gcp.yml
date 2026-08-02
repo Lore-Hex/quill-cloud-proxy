@@ -257,6 +257,12 @@ jobs:
           install_components: beta
       - uses: astral-sh/setup-uv@v5
 
+      - name: Authenticate to AWS for backup-domain DNS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
       - name: Reconcile enclave DNS
         env:
           QUILL_RECONCILE_APPLY: "1"
@@ -265,7 +271,9 @@ jobs:
           QUILL_PUBLISH_REGIONAL: "1"
           QUILL_REGIONAL_ZONE: quillrouter-com
           QUILL_REGIONAL_SUFFIX: quillrouter.com
-        run: uv run --script tools/reconcile-enclave-dns.py --apply
+        run: |
+          uv run --script tools/reconcile-enclave-dns.py --apply
+          python3 tools/sync-route53-api-aliases.py --apply
 
       - name: Capture pre-rollout templates (for rollback)
         # The MIG keeps every prior instance template, so we just need
@@ -304,6 +312,7 @@ jobs:
           uv run --script tools/reconcile-enclave-dns.py \
             --set-drain-region us-central1
           uv run --script tools/reconcile-enclave-dns.py --apply
+          python3 tools/sync-route53-api-aliases.py --apply
           bash tools/wait-canonical-drained.sh us-central1
 
       - name: Roll the GCP MIG (us-central1)
@@ -312,10 +321,11 @@ jobs:
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
           # us-central1 serves the canonical global convenience hostname, the
           # explicit regional SDK retry hostname, api.trustedrouter.com, and
-          # api.allyrouter.com. The enclave ACME manager whitelists every SNI
+          # api.allyrouter.com, and api.uptimerouter.com. The enclave ACME
+          # manager whitelists every SNI
           # value and issues separate cached certs as needed; TLS still
           # terminates only inside the attested workload.
-          API_HOST: api.quillrouter.com,api-us-central1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com
+          API_HOST: api.quillrouter.com,api-us-central1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com
           # REGION_SHORT must match the existing prod MIG suffix —
           # `quill-enclave-mig-us`, not `quill-enclave-mig-uscentral1`.
           REGION_SHORT: us
@@ -344,6 +354,7 @@ jobs:
           uv run --script tools/reconcile-enclave-dns.py \
             --clear-drain-region us-central1
           uv run --script tools/reconcile-enclave-dns.py --apply
+          python3 tools/sync-route53-api-aliases.py --apply
 
       - name: Wait for us-central1 MIG to be stable
         # Block until the rolling-replace finishes draining the old
@@ -445,6 +456,7 @@ jobs:
           uv run --script tools/reconcile-enclave-dns.py \
             --clear-drain-region us-central1
           uv run --script tools/reconcile-enclave-dns.py --apply
+          python3 tools/sync-route53-api-aliases.py --apply
 
       - name: Roll secondary GCP MIGs serially (europe-west4 + us-east4)
         # Roll secondaries one at a time with the same DNS-drain invariant used
@@ -470,6 +482,7 @@ jobs:
               QUILL_REGIONAL_ZONE=quillrouter-com \
               QUILL_REGIONAL_SUFFIX=quillrouter.com \
                 uv run --script tools/reconcile-enclave-dns.py --apply
+              python3 tools/sync-route53-api-aliases.py --apply
             ) 9>"${lock}"
           }
 
@@ -568,7 +581,7 @@ jobs:
             quill-enclave-mig-eu \
             quill-enclave-mig-eu- \
             eu \
-            api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com \
+            api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_EU}" \
             c3-standard-4 \
             TDX >"${logs_dir}/europe-west4.log" 2>&1 || failed=1
@@ -578,7 +591,7 @@ jobs:
             quill-enclave-mig-useast4 \
             quill-enclave-mig-useast4- \
             useast4 \
-            api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com \
+            api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_USEAST4}" \
             c3-standard-4 \
             TDX >"${logs_dir}/us-east4.log" 2>&1 || failed=1

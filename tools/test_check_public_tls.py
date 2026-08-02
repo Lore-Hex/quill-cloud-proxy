@@ -22,6 +22,10 @@ class PublicTLSCheckTests(unittest.TestCase):
         self.assertIn("status.allyrouter.com", TLS_CHECK.DEFAULT_HOSTS)
         self.assertIn("trust.allyrouter.com", TLS_CHECK.DEFAULT_HOSTS)
         self.assertIn("api.allyrouter.com", TLS_CHECK.DEFAULT_HOSTS)
+        self.assertIn("uptimerouter.com", TLS_CHECK.DEFAULT_HOSTS)
+        self.assertIn("status.uptimerouter.com", TLS_CHECK.DEFAULT_HOSTS)
+        self.assertIn("trust.uptimerouter.com", TLS_CHECK.DEFAULT_HOSTS)
+        self.assertIn("api.uptimerouter.com", TLS_CHECK.DEFAULT_HOSTS)
 
     def test_parses_certificate_expiry_as_utc(self) -> None:
         expiry = TLS_CHECK.certificate_expiry(
