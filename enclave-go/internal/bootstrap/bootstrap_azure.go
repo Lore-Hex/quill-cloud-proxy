@@ -13,6 +13,19 @@
 // networking, so — like Confidential Space — it fetches its own secrets and no
 // unattested process ever holds them.
 //
+// Azure reads AZURE Key Vault. It does not call Google.
+// =====================================================
+// This adapter used to SKR-release a wrapping key, unwrap a GCP service-account
+// key with it, mint a Google OAuth token, and then pull ~39 secrets from Google
+// Secret Manager. That made an Azure boot depend on Google being reachable,
+// which voids the independence that is the entire reason a second cloud exists:
+// a Google outage would take down the cloud whose job is to survive one.
+//
+// Azure now keeps its OWN copies. Key rotation is infrequent, so a second copy
+// is an accepted cost — the same trade already made on AWS, where the provider
+// secrets were replicated into eu-west-3 Secrets Manager rather than having the
+// AWS enclave call Google.
+//
 // Where the trust actually comes from
 // ===================================
 // Secrets must be reachable ONLY by attested code running the expected
@@ -35,91 +48,125 @@
 // measurement was REFUSED with 403. The gate is real hardware, not policy
 // paperwork.
 //
-// Why the released key unwraps a *Google* credential
-// ==================================================
-// The enclave needs Google credentials at runtime no matter which cloud it
-// runs on (Spanner credit ledger, Bigtable generations, shared ACME cache), and
-// all ~40 provider secrets already live in one Google project. Copying them
-// into Key Vault would create a second set that drifts. So Key Vault holds
-// exactly ONE thing: the key that unwraps a GCP service-account key. Everything
-// else comes from Secret Manager through the shared path in secrets_google.go.
+// Why the bundle is encrypted rather than just ACL'd to the identity
+// ==================================================================
+// The container group's managed identity can read the bundle secret from Key
+// Vault. That alone is a WEAKER gate than the one above: an identity is
+// attached to a container group, not to a measurement, so anything able to
+// present that identity — an operator with the right RBAC role, a future
+// container in the same group, a compromised deploy pipeline — could read the
+// plaintext, and the SEV-SNP measurement would stop mattering.
 //
-// The wrapped SA-key blob is not secret-by-obscurity — it is inert without the
-// SKR-gated private key, so it travels as plain deploy configuration.
+// So the vault secret holds CIPHERTEXT: a hybrid envelope that only the
+// SKR-released key opens. The managed identity is reduced to a transport
+// credential for an inert blob. Both properties then hold at once — the enclave
+// makes no Google call, AND the secrets are readable only by a workload whose
+// measurement satisfies the release policy.
 //
 // Boot sequence
 // =============
 //  1. validate env (no I/O — a misconfigured deploy must fail before it can
 //     blame the network)
-//  2. POST the skr sidecar  -> RSA private key as JWK
-//  3. RSA-OAEP-unwrap the SA-key blob
-//  4. JWT-bearer exchange at oauth2.googleapis.com -> Google access token
-//  5. shared Secret Manager fetch -> BootstrapData
-//  6. attach the SA key JSON so cmd/enclave/main.go can write it to tmpfs and
-//     point GOOGLE_APPLICATION_CREDENTIALS at it
+//  2. POST the skr sidecar         -> RSA private key as JWK   [attested]
+//  3. GET  IMDS                    -> managed-identity token for Key Vault
+//  4. GET  {vault}/secrets/{name}  -> the encrypted bundle (inert)
+//  5. RSA-OAEP+AES-GCM open        -> bundle JSON: secret name -> value
+//  6. shared name->field mapping   -> BootstrapData
 //
 // Required env:
 //
 //	QUILL_AZURE_MAA_ENDPOINT   e.g. "trquilluaen.uaen.attest.azure.net"
-//	QUILL_AZURE_AKV_ENDPOINT   e.g. "trquillkv.vault.azure.net"
+//	QUILL_AZURE_AKV_ENDPOINT   e.g. "trquillkv.vault.azure.net" — the vault
+//	                           holding BOTH the SKR key and the bundle secret
 //	QUILL_AZURE_SKR_KEY_ID     e.g. "tr-bootstrap-wrap"
-//	exactly one of
-//	  QUILL_AZURE_SA_KEY_CIPHERTEXT       the envelope, inline
-//	  QUILL_AZURE_SA_KEY_CIPHERTEXT_PATH  path to the envelope on disk
+//	QUILL_AZURE_BUNDLE_SECRET  e.g. "tr-bootstrap-bundle" — the Key Vault
+//	                           secret whose value is the encrypted bundle
+//	QUILL_AZURE_SA_KEY_ENTRY   the bundle entry holding the GCP service-account
+//	                           key JSON (see "Runtime Google dependency" below)
 //	plus everything resolveSecretConfig() requires (QUILL_GCP_PROJECT_ID,
 //	QUILL_DEVICE_KEYS_SECRET, >=1 provider secret).
 //
-// Both ciphertext forms accept the SAME thing: the envelope JSON, or that JSON
-// base64-encoded, or (for a payload small enough) a bare OAEP ciphertext. They
-// used to differ — inline was base64-decoded and the path form was not — which
-// turned "wrote the string I would have put in the env var into a file" into a
-// boot-fatal error that blamed the vault key. See loadSAKeyCiphertext.
-//
 // Optional env:
 //
-//	QUILL_AZURE_SKR_URL  default "http://localhost:8080/key/release";
-//	                     must be loopback (see validateSKRURL)
-//	QUILL_AZURE_REGION   overrides QUILL_GCP_REGION for BootstrapData.Region
+//	QUILL_AZURE_SKR_URL        default "http://localhost:8080/key/release";
+//	                           must be loopback (see validateSKRURL)
+//	QUILL_AZURE_BUNDLE_VERSION pins one immutable Key Vault secret version instead
+//	                           of following "current". Unset = current, which is
+//	                           what makes silent substitution and silent rollback
+//	                           possible; see "What the deploy channel still
+//	                           decides" above
+//	QUILL_AZURE_MI_CLIENT_ID   user-assigned managed identity client id; required
+//	                           by IMDS only when the container group has more
+//	                           than one identity attached
+//	QUILL_AZURE_REGION         overrides QUILL_GCP_REGION for BootstrapData.Region
 //
-// None of MAA / AKV / key id has a default, and that is deliberate. Defaulting
-// the MAA instance would attest against an authority nobody chose — the exact
-// forgery hole the verifier work closed. A missing one is a hard error.
+// None of MAA / AKV / key id / bundle secret has a default, and that is
+// deliberate. Defaulting the MAA instance would attest against an authority
+// nobody chose — the exact forgery hole the verifier work closed. A missing one
+// is a hard error.
+//
+// Runtime Google dependency — NOT closed by this change
+// =====================================================
+// BOOT makes no Google call. RUNTIME still does: internal/enclavetls/gcscache.go
+// and internal/byokcache/kms_gcp.go both authenticate via
+// GOOGLE_APPLICATION_CREDENTIALS (the shared ACME cert cache in GCS, and the
+// BYOK KMS unwrapper), and cmd/enclave/main.go writes
+// BootstrapData.GCPServiceAccountKeyJSON to tmpfs to populate it. Neither file
+// is build-tagged, so both are compiled into the Azure image.
+//
+// The service-account key therefore rides INSIDE the bundle, as one more entry:
+// boot stays Google-free, and the key arrives under the same attestation gate as
+// everything else. That is as far as this change can go. FULL independence from
+// Google additionally requires an Azure-native control plane — the credit ledger
+// (Spanner), the generations store (Bigtable) and the shared ACME cache (GCS)
+// would all need Azure homes — which is out of scope here.
 //
 // What the deploy channel still decides
 // =====================================
-// SKR gates the *unwrap key*. Which Google identity gets unwrapped is decided
-// by the ciphertext, and that is deploy configuration on every cloud (GCP picks
-// it by attaching a service account to the Confidential Space VM; Azure picks it
-// by supplying this blob). What keeps that honest on Azure is that the container
-// group's env-var rules are part of the CCE policy, so changing them changes the
-// policy hash, changes x-ms-sevsnpvm-hostdata, and fails the workload pin that
-// verify makes mandatory.
+// SKR gates the key that opens the bundle. WHICH bundle gets opened is decided
+// by QUILL_AZURE_BUNDLE_SECRET, and pointing that at a different vault secret is
+// deploy configuration on every cloud (GCP picks its identity by attaching a
+// service account to the Confidential Space VM). What keeps that honest on Azure
+// is that the container group's env-var rules are part of the CCE policy, so
+// changing them changes the policy hash, changes x-ms-sevsnpvm-hostdata, and
+// fails the workload pin that verify makes mandatory.
 //
-// That argument covers the env form and NOT the _PATH form: a CCE policy
-// measures the env-var rules but not the CONTENTS of a mounted volume. Prefer
-// QUILL_AZURE_SA_KEY_CIPHERTEXT. The path form exists for the mounted-secret
-// deploy shape and is measurement-weaker; a deploy that uses it is trusting
-// whoever can write that volume.
+// What SKR does NOT give you is bundle INTEGRITY. Be precise about this, because
+// the obvious reading is wrong and someone will rely on it: sealing a bundle
+// needs only the vault key's PUBLIC half, which Key Vault serves to any principal
+// with keys/get and which the bundle-producing pipeline holds by construction. A
+// release policy governs release of the PRIVATE half; it does not restrict who
+// may encrypt TO the public one. The envelope carries no authenticity binding
+// either — OAEP uses no label and gcm.Open is called with nil AAD — so a
+// principal holding secrets/set on the bundle can seal values of their own to the
+// same key and this code cannot tell them from the operator's.
+//
+// So: CONFIDENTIALITY is enforced by the measurement (only an attested workload
+// can open a bundle). INTEGRITY is not — "Key Vault Secrets Officer on this
+// vault" is a trusted role, and must be administered as one. Setting
+// QUILL_AZURE_BUNDLE_VERSION pins one immutable secret version and closes the
+// silent-substitution and silent-rollback window, because the pin lives in the
+// CCE-measured env-var set: changing it changes hostdata and the release fails.
+// Device keys are separately covered — main.go hashes boot.Devices into the
+// attestation document, so a client pinning UserData sees substituted bearer
+// tokens. Nothing covers the provider keys, the TR token, or the SA key.
 //
 // Dependency surface: stdlib only. Linking a heavy dependency chain into this
 // binary corrupted the main request loop in a previous rollout (deploy
-// 25592563258, see maybeStartAttestSidecar()), which is why the JWT-bearer
-// exchange below is hand-rolled instead of pulling in golang.org/x/oauth2.
+// 25592563258, see maybeStartAttestSidecar()), which is why the Key Vault and
+// IMDS calls below are hand-rolled instead of pulling in the Azure SDK.
 package bootstrap
 
 import (
 	"bytes"
 	"context"
-	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"math/big"
@@ -127,6 +174,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -140,36 +188,65 @@ const (
 	// is refused. attestation_azure.go pins the same port for the same reason.
 	defaultSKRURL = "http://localhost:8080/key/release"
 
-	// googleTokenEndpoint is the JWT-bearer exchange. Overridden per-request by
-	// the SA key's own token_uri when it carries one, which is also how the
-	// tests redirect it.
-	googleTokenEndpoint = "https://oauth2.googleapis.com/token" // #nosec G101 -- public OAuth token endpoint, not a credential.
+	// imdsHost is the Azure Instance Metadata Service. Link-local, so plain
+	// HTTP by design: there is no name to put in a certificate and the address
+	// is not routable off the host. It is a const so the value cannot be edited
+	// away; the var below exists only to be redirected by tests.
+	imdsHost = "http://169.254.169.254"
 
-	// googleCloudPlatformScope covers Secret Manager plus the Spanner /
-	// Bigtable / GCS access the enclave needs later from the same SA key.
-	googleCloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
+	// imdsAPIVersion is the token endpoint's contract version. 2018-02-01 is
+	// the version ACI supports.
+	imdsAPIVersion = "2018-02-01"
 
-	// saKeyEnvelopeAlg / saKeyEnvelopeVersion identify the hybrid wrapping
-	// format. See saKeyEnvelope for why a hybrid format is not optional.
-	saKeyEnvelopeAlg     = "RSA-OAEP-256+A256GCM"
-	saKeyEnvelopeVersion = 1
+	// keyVaultResource is the AAD resource (audience) a Key Vault data-plane
+	// token must be issued for. A token for any other audience is rejected by
+	// the vault with 401, so getting this wrong is loud rather than silent.
+	keyVaultResource = "https://vault.azure.net"
 
-	// saKeyContentKeyBytes is what "A256GCM" in saKeyEnvelopeAlg means. It is
+	// keyVaultAPIVersion for GET /secrets/{name}.
+	keyVaultAPIVersion = "7.4"
+
+	// envelopeAlg / envelopeVersion identify the hybrid wrapping format. See
+	// secretEnvelope for why a hybrid format is not optional.
+	envelopeAlg     = "RSA-OAEP-256+A256GCM"
+	envelopeVersion = 1
+
+	// envelopeContentKeyBytes is what "A256GCM" in envelopeAlg means. It is
 	// checked explicitly because aes.NewCipher happily accepts 16 and 24 too,
 	// which would let an envelope labelled A256GCM open under AES-128 and make
 	// the label decorative.
-	saKeyContentKeyBytes = 32
+	envelopeContentKeyBytes = 32
 
 	// maxSKRResponseBytes bounds the released-key read. An RSA-4096 private JWK
 	// is ~2.5 KB.
 	maxSKRResponseBytes = 64 << 10
 
+	// maxKeyVaultResponseBytes bounds the bundle read. Key Vault caps a secret
+	// value at 25 KB; the JSON wrapper and base64 expansion push the worst case
+	// to ~40 KB. 1 MiB is generous and still bounded — an unbounded ReadAll on
+	// the boot path is an unbounded allocation.
+	maxKeyVaultResponseBytes = 1 << 20
+
 	azureTag = "bootstrap/azure"
 )
 
-// Fetch releases the wrapping key under attestation, unwraps the GCP service
-// account key with it, mints a Google access token, and assembles
-// BootstrapData from Google Secret Manager via the shared path.
+// imdsBaseURL and keyVaultBaseURLOverride are the two test seams in this file,
+// following the convention secrets_google.go uses for secretManagerBaseURL:
+// unexported, reachable from no env var, flag or request path, and pinned to
+// their production values by TestAzureEndpointSeamsDefaultToProduction.
+//
+// keyVaultBaseURLOverride is empty in production, where the base is derived from
+// QUILL_AZURE_AKV_ENDPOINT over https. It exists because httptest serves plain
+// HTTP, and the alternative — letting the endpoint env var carry its own scheme
+// — would let a deploy send a Key Vault bearer token over cleartext.
+var (
+	imdsBaseURL             = imdsHost
+	keyVaultBaseURLOverride string
+)
+
+// Fetch releases the wrapping key under attestation, reads the encrypted
+// secret bundle from Key Vault with the container group's managed identity,
+// opens the bundle with the released key, and assembles BootstrapData.
 //
 // Every error below names the step that failed. That is not politeness: the
 // worst bug this system has had was a bootstrap that failed silently and left
@@ -183,80 +260,113 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	if region := strings.TrimSpace(os.Getenv("QUILL_AZURE_REGION")); region != "" {
 		cfg.region = region
 	}
-	skr, err := resolveSKRConfig()
-	if err != nil {
-		return nil, err
-	}
-	ciphertext, err := loadSAKeyCiphertext()
+	az, err := resolveAzureConfig()
 	if err != nil {
 		return nil, err
 	}
 
-	// Step 1 — attestation-gated key release.
-	wrappingKey, err := releaseWrappingKey(ctx, newSKRHTTPClient(), skr)
+	// Step 1 — attestation-gated key release. This is the gate: everything
+	// below is inert without the key it returns.
+	wrappingKey, err := releaseWrappingKey(ctx, newSKRHTTPClient(), az)
 	if err != nil {
 		return nil, err
 	}
 
-	// Step 2 — unwrap the service-account key.
-	saKeyJSON, err := decryptSAKey(wrappingKey, ciphertext)
+	// Step 2 — managed-identity token, then the encrypted bundle. Neither call
+	// leaves Azure. Two clients, not one: the legs retry different statuses.
+	vaultToken, err := fetchIMDSToken(ctx, newIMDSHTTPClient(), az)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext, err := fetchKeyVaultSecret(ctx, newKeyVaultHTTPClient(), az, vaultToken)
 	if err != nil {
 		return nil, err
 	}
 
-	// Step 3 — exchange it for a Google access token.
-	googleHTTP := newGoogleHTTPClient()
-	token, err := mintGoogleAccessToken(ctx, googleHTTP, saKeyJSON)
+	// Step 3 — open the bundle. Only the SKR-released key can do this, which is
+	// what keeps the managed identity from being sufficient on its own.
+	bundleJSON, err := decryptEnvelope(wrappingKey, ciphertext)
+	if err != nil {
+		return nil, err
+	}
+	bundle, err := parseBundle(bundleJSON)
 	if err != nil {
 		return nil, err
 	}
 
-	// Step 4 — the shared Secret Manager path, identical to GCP's.
-	data, err := fetchBootstrapSecrets(ctx, googleHTTP, token, cfg, azureTag)
+	// Step 4 — the shared name -> BootstrapData mapping, identical to GCP's.
+	data, err := assembleBootstrapData(ctx, cfg, azureTag, bundle.resolve)
 	if err != nil {
 		return nil, err
 	}
 
-	// Step 5 — hand the SA key to main.go, which writes it to tmpfs and points
-	// GOOGLE_APPLICATION_CREDENTIALS at it so every downstream Google client
-	// (gcscache, byokcache's KMS unwrapper, the settlement path) authenticates
-	// without repeating this dance.
-	data.GCPServiceAccountKeyJSON = string(saKeyJSON)
+	// Step 5 — the GCP service-account key, which rides in the bundle like any
+	// other secret. main.go writes it to tmpfs and points
+	// GOOGLE_APPLICATION_CREDENTIALS at it, because gcscache (shared ACME cache
+	// in GCS) and byokcache (KMS unwrapper) still authenticate to Google at
+	// RUNTIME. Carrying it in the bundle keeps BOOT free of Google calls; see
+	// the "Runtime Google dependency" note in the package comment for what full
+	// independence would additionally require.
+	saKey, err := bundle.require(az.saKeyEntry, "gcp service-account key")
+	if err != nil {
+		return nil, err
+	}
+	data.GCPServiceAccountKeyJSON = saKey
 	return data, nil
 }
 
-// skrConfig is the validated Secure Key Release configuration.
-type skrConfig struct {
-	url         string
+// azureConfig is the validated Azure-side configuration: the Secure Key Release
+// parameters plus the Key Vault coordinates of the encrypted bundle.
+type azureConfig struct {
+	skrURL      string
 	maaEndpoint string
 	akvEndpoint string
 	keyID       string
+
+	bundleSecret  string
+	bundleVersion string
+	saKeyEntry    string
+	miClientID    string
 }
 
-func resolveSKRConfig() (skrConfig, error) {
-	cfg := skrConfig{
-		url:         strings.TrimSpace(os.Getenv("QUILL_AZURE_SKR_URL")),
-		maaEndpoint: strings.TrimSpace(os.Getenv("QUILL_AZURE_MAA_ENDPOINT")),
-		akvEndpoint: strings.TrimSpace(os.Getenv("QUILL_AZURE_AKV_ENDPOINT")),
-		keyID:       strings.TrimSpace(os.Getenv("QUILL_AZURE_SKR_KEY_ID")),
+func resolveAzureConfig() (azureConfig, error) {
+	cfg := azureConfig{
+		skrURL:        strings.TrimSpace(os.Getenv("QUILL_AZURE_SKR_URL")),
+		maaEndpoint:   strings.TrimSpace(os.Getenv("QUILL_AZURE_MAA_ENDPOINT")),
+		akvEndpoint:   strings.TrimSpace(os.Getenv("QUILL_AZURE_AKV_ENDPOINT")),
+		keyID:         strings.TrimSpace(os.Getenv("QUILL_AZURE_SKR_KEY_ID")),
+		bundleSecret:  strings.TrimSpace(os.Getenv("QUILL_AZURE_BUNDLE_SECRET")),
+		bundleVersion: strings.TrimSpace(os.Getenv("QUILL_AZURE_BUNDLE_VERSION")),
+		saKeyEntry:    strings.TrimSpace(os.Getenv("QUILL_AZURE_SA_KEY_ENTRY")),
+		miClientID:    strings.TrimSpace(os.Getenv("QUILL_AZURE_MI_CLIENT_ID")),
 	}
-	if cfg.url == "" {
-		cfg.url = defaultSKRURL
+	if cfg.skrURL == "" {
+		cfg.skrURL = defaultSKRURL
 	}
-	// No defaults for these three. Which MAA instance signs the attestation
-	// token, and which vault honours it, are trust decisions — silently
-	// picking one would produce a release that looks attested and is not.
-	if cfg.maaEndpoint == "" {
-		return skrConfig{}, fmt.Errorf("%s: skr config: QUILL_AZURE_MAA_ENDPOINT is not set (refusing to default the attestation authority)", azureTag)
+	// No defaults for any of these. Which MAA instance signs the attestation
+	// token, which vault honours it, and which secret is opened are trust
+	// decisions — silently picking one would produce a boot that looks attested
+	// and is not.
+	for _, required := range []struct{ env, value, why string }{
+		{"QUILL_AZURE_MAA_ENDPOINT", cfg.maaEndpoint, " (refusing to default the attestation authority)"},
+		{"QUILL_AZURE_AKV_ENDPOINT", cfg.akvEndpoint, ""},
+		{"QUILL_AZURE_SKR_KEY_ID", cfg.keyID, ""},
+		{"QUILL_AZURE_BUNDLE_SECRET", cfg.bundleSecret, " (the Key Vault secret holding the encrypted bundle)"},
+		// Required rather than optional: gcscache and byokcache read
+		// GOOGLE_APPLICATION_CREDENTIALS at runtime, so a bundle with no SA key
+		// boots an enclave that cannot renew its TLS certificate or unwrap a
+		// BYOK key — failures that surface hours later, far from their cause.
+		{"QUILL_AZURE_SA_KEY_ENTRY", cfg.saKeyEntry, " (the bundle entry holding the GCP service-account key needed by gcscache/byokcache at runtime)"},
+	} {
+		if required.value == "" {
+			return azureConfig{}, fmt.Errorf("%s: azure config: %s is not set%s", azureTag, required.env, required.why)
+		}
 	}
-	if cfg.akvEndpoint == "" {
-		return skrConfig{}, fmt.Errorf("%s: skr config: QUILL_AZURE_AKV_ENDPOINT is not set", azureTag)
+	if err := validateSKRURL(cfg.skrURL); err != nil {
+		return azureConfig{}, err
 	}
-	if cfg.keyID == "" {
-		return skrConfig{}, fmt.Errorf("%s: skr config: QUILL_AZURE_SKR_KEY_ID is not set", azureTag)
-	}
-	if err := validateSKRURL(cfg.url); err != nil {
-		return skrConfig{}, err
+	if err := validateAKVEndpoint(cfg.akvEndpoint); err != nil {
+		return azureConfig{}, err
 	}
 	return cfg, nil
 }
@@ -268,11 +378,11 @@ func resolveSKRConfig() (skrConfig, error) {
 // it used to be an unchecked override. Point it off-box at anything returning
 // an RSA JWK and the whole gate evaporates: no SNP report, no MAA exchange, no
 // Key Vault call, no hostdata comparison — and then the enclave boots on
-// whatever Google identity the matching ciphertext carries while /attestation
-// keeps serving a genuine token for the real, unmodified measurement. An
-// attestation that is truthful about the code and silent about the credentials
-// the code is running on is the worst shape this system can produce, so the
-// substitution is refused outright rather than left to deploy discipline.
+// whatever secrets the matching bundle carries while /attestation keeps serving
+// a genuine token for the real, unmodified measurement. An attestation that is
+// truthful about the code and silent about the credentials the code is running
+// on is the worst shape this system can produce, so the substitution is refused
+// outright rather than left to deploy discipline.
 //
 // Loopback is not a heuristic: the skr sidecar is a container in THIS container
 // group and answers on localhost. Nothing legitimate points this elsewhere. The
@@ -281,10 +391,10 @@ func resolveSKRConfig() (skrConfig, error) {
 func validateSKRURL(raw string) error {
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("%s: skr config: QUILL_AZURE_SKR_URL is not a URL: %w", azureTag, err)
+		return fmt.Errorf("%s: azure config: QUILL_AZURE_SKR_URL is not a URL: %w", azureTag, err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("%s: skr config: QUILL_AZURE_SKR_URL scheme %q (want http or https)", azureTag, parsed.Scheme)
+		return fmt.Errorf("%s: azure config: QUILL_AZURE_SKR_URL scheme %q (want http or https)", azureTag, parsed.Scheme)
 	}
 	host := parsed.Hostname()
 	if host == "localhost" {
@@ -293,49 +403,199 @@ func validateSKRURL(raw string) error {
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 		return nil
 	}
-	return fmt.Errorf("%s: skr config: QUILL_AZURE_SKR_URL host %q is not loopback — the skr sidecar runs in this container group, and an off-box endpoint could hand back a key with no attestation at all (no MAA exchange, no hostdata check)", azureTag, host)
+	return fmt.Errorf("%s: azure config: QUILL_AZURE_SKR_URL host %q is not loopback — the skr sidecar runs in this container group, and an off-box endpoint could hand back a key with no attestation at all (no MAA exchange, no hostdata check)", azureTag, host)
+}
+
+// keyVaultHostSuffixes are the DNS suffixes Azure serves Key Vault / Managed HSM
+// data planes on, across the public and sovereign clouds. The endpoint must end
+// in one of them.
+//
+// This is an allow-list rather than a syntax check because the alternative
+// accepts ANY hostname: with only "no scheme, no path" enforced, a deploy that
+// can set one env var simply names its own host and both legs below follow it.
+// Adding a cloud means adding a line here, which is a visible change to the set
+// of authorities this enclave will hand a bearer token to.
+var keyVaultHostSuffixes = []string{
+	".vault.azure.net",         // public
+	".vault.azure.cn",          // China
+	".vault.usgovcloudapi.net", // US Gov
+	".vault.microsoftazure.de", // Germany
+	".managedhsm.azure.net",    // Managed HSM, public
+	".managedhsm.azure.cn",     // Managed HSM, China
+	".managedhsm.usgovcloudapi.net",
+}
+
+// validateAKVEndpoint requires a bare, recognisable vault hostname.
+//
+// The value is used twice, and BOTH uses are trust anchors: it is handed to the
+// skr sidecar as the vault to release the wrapping key from, and it is the https
+// authority this file sends a Key Vault bearer token to. So this is the same
+// class of control as validateSKRURL, reached through a different variable, and
+// it has to be as strict.
+//
+// What the previous "no scheme, no path" check missed, both driven end to end:
+//
+//   - ANY hostname passed. "attacker.example.com" is not a vault, but nothing
+//     said so.
+//   - USERINFO passed. "trquillkv.vault.azure.net@attacker.example.com" sends the
+//     request to attacker.example.com while an ARM template or CCE-policy diff
+//     shows a string that begins with the real vault's hostname. That is the
+//     dangerous form: it survives review by looking right.
+//
+// Either one repoints both legs at a host the attacker runs. Leg 1 then returns
+// an attacker-chosen private key (the sidecar performs a real SNP report and MAA
+// exchange, then asks a "vault" with no release policy, which happily wraps any
+// key to the transfer key in the token it was just handed), and leg 2 returns a
+// bundle sealed to it. The enclave boots on attacker-supplied device keys and
+// provider keys while /attestation keeps serving a truthful document for
+// unmodified code — the exact shape validateSKRURL calls the worst this system
+// can produce. The real vault is never contacted, so hostdata is never evaluated
+// and the CCE-policy mitigation never fires.
+func validateAKVEndpoint(endpoint string) error {
+	fail := func(why string) error {
+		return fmt.Errorf("%s: azure config: QUILL_AZURE_AKV_ENDPOINT %q %s — it must be a bare vault hostname such as \"myvault.vault.azure.net\" (no scheme, no userinfo, no port, no path), because it is both the vault the skr sidecar releases the wrapping key from and the https authority a Key Vault access token is sent to", azureTag, endpoint, why)
+	}
+	if endpoint == "" {
+		return fail("is empty")
+	}
+	if strings.Contains(endpoint, "://") || strings.ContainsAny(endpoint, "/?#") {
+		return fail("has a scheme or a path")
+	}
+	// Parse it exactly as keyVaultSecretURL will, so what is validated is what
+	// is dialled. A syntax check that does not agree with the URL builder is how
+	// the userinfo bypass got in.
+	parsed, err := url.Parse("https://" + endpoint)
+	if err != nil {
+		return fail(fmt.Sprintf("is not a valid https authority (%v)", err))
+	}
+	if parsed.User != nil {
+		return fail(fmt.Sprintf("carries userinfo, so the request would actually go to %q", parsed.Host))
+	}
+	if parsed.Host != endpoint {
+		// Catches userinfo, ports, brackets, escapes — anything where the
+		// authority the stdlib derives is not the string an operator read.
+		return fail(fmt.Sprintf("parses to authority %q, which is not the same string", parsed.Host))
+	}
+	if parsed.Port() != "" {
+		return fail("names a port")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if net.ParseIP(host) != nil {
+		return fail("is an IP address, not a vault hostname")
+	}
+	for _, suffix := range keyVaultHostSuffixes {
+		// A bare suffix ("vault.azure.net") is not a vault, so require a label
+		// in front of it as well as the suffix itself.
+		if strings.HasSuffix(host, suffix) && len(host) > len(suffix) {
+			return nil
+		}
+	}
+	return fail(fmt.Sprintf("is not an Azure Key Vault hostname (want one of %s)", strings.Join(keyVaultHostSuffixes, ", ")))
+}
+
+// refuseRedirect is the CheckRedirect for every client on this boot path.
+//
+// Without it, validateSKRURL and validateAKVEndpoint validate a string that the
+// stdlib is then free to walk away from: http.Client follows up to 10 redirects
+// and replays the POST body via GetBody, and nothing re-validates a hop. A
+// swapped or compromised sidecar image — or a co-located container that wins the
+// bind on the loopback port — answers 307 and the "must be loopback" pin is
+// gone, with the released key then coming from wherever the Location header
+// says. Driven before this was added: Fetch completed a boot against
+// "skr.attacker.example", the exact host validateSKRURL refuses, with no MAA
+// exchange and no hostdata comparison.
+//
+// On the Key Vault leg a cross-host redirect does not leak the bearer token
+// (net/http strips Authorization when the host changes; a same-host, different-
+// PORT hop does forward it, which is stdlib-intended). The reason to refuse
+// there is the same as here anyway: the bundle must come from the authority that
+// was validated, not from one a response body chose.
+//
+// Neither endpoint has any legitimate reason to redirect. The skr sidecar is a
+// container in this group and Key Vault's data plane answers directly.
+func refuseRedirect(req *http.Request, via []*http.Request) error {
+	return fmt.Errorf("%s: refusing redirect to %q after %d hop(s): the boot path pins its endpoints (loopback sidecar, IMDS, the configured vault) and a redirect would move the request off a validated authority", azureTag, req.URL.Redacted(), len(via))
+}
+
+// bootTransport returns the shared transport with proxying disabled.
+//
+// http.DefaultTransport carries Proxy: ProxyFromEnvironment, and Go's proxy
+// bypass exempts loopback but NOT link-local — measured: with HTTP_PROXY set,
+// 169.254.169.254 resolves to the proxy while localhost and 127.0.0.1 do not.
+// The IMDS call is plain HTTP and its RESPONSE BODY IS THE TOKEN, so an
+// HTTP_PROXY anywhere in the container environment would hand that token to
+// whoever the proxy names. Nothing in this repo sets HTTP_PROXY, so this is
+// hardening rather than a live bug — but it is the one place where pinning the
+// proxy off is both cheap and obviously correct.
+//
+// The type assertion is what preserves the http.DefaultTransport test seam: when
+// a test has substituted a recorder, it is honoured verbatim.
+func bootTransport() http.RoundTripper {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return http.DefaultTransport
+	}
+	clone := base.Clone()
+	clone.Proxy = nil
+	return clone
 }
 
 // newSKRHTTPClient builds the client for the key-release round trip.
 //
-// 60s rather than the 30s the Google calls get: one attempt already covers a
-// hardware SNP report, an MAA exchange and a Key Vault call, and containers in
-// an ACI group start concurrently — the sidecar may still be coming up when the
-// enclave makes its first request. The retries turn that startup race into a
-// short wait instead of a crash-loop. A 403 is NOT retried: that is the release
-// policy rejecting this measurement, and it will reject it again.
+// 60s rather than the 30s the Azure control-plane calls get: one attempt
+// already covers a hardware SNP report, an MAA exchange and a Key Vault call,
+// and containers in an ACI group start concurrently — the sidecar may still be
+// coming up when the enclave makes its first request. The retries turn that
+// startup race into a short wait instead of a crash-loop. A 403 is NOT retried:
+// that is the release policy rejecting this measurement, and it will reject it
+// again.
 func newSKRHTTPClient() *http.Client {
 	return &http.Client{
-		Timeout:   60 * time.Second,
-		Transport: &retryTransport{base: http.DefaultTransport, attempts: 4, backoff: 500 * time.Millisecond},
+		Timeout:       60 * time.Second,
+		CheckRedirect: refuseRedirect,
+		Transport:     &retryTransport{base: bootTransport(), attempts: 4, backoff: 500 * time.Millisecond, retryStatus: retryableStatus},
 	}
 }
 
-// newGoogleHTTPClient builds the client for the token exchange and the ~40
-// Secret Manager fetches.
+// newIMDSHTTPClient builds the client for the managed-identity token.
 //
-// 30s, not the 10s the GCP adapter uses, and with retries: on Confidential
-// Space these are in-network metadata-adjacent calls, but from UAE North every
-// one of them is a cross-cloud WAN round trip. internal/byokcache gives the
-// same cross-cloud JWT exchange a 30s client for the same reason. Without the
-// retries a single transient 503 anywhere in 41 calls is a boot failure, and
-// main.go turns a boot failure into os.Exit(1) — a container-group crash-loop
-// that re-runs the SNP report and MAA exchange on every restart.
-func newGoogleHTTPClient() *http.Client {
+// IMDS is famously slow to answer for the first few seconds of a container
+// group's life, and main.go turns a bootstrap error into os.Exit(1): a
+// container-group crash-loop that re-runs the SNP report and MAA exchange on
+// every restart. That is why this leg retries a wider set of statuses than the
+// Key Vault leg — see retryableIMDSStatus.
+func newIMDSHTTPClient() *http.Client {
 	return &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: &retryTransport{base: http.DefaultTransport, attempts: 4, backoff: 250 * time.Millisecond},
+		Timeout:       30 * time.Second,
+		CheckRedirect: refuseRedirect,
+		Transport:     &retryTransport{base: bootTransport(), attempts: 4, backoff: 250 * time.Millisecond, retryStatus: retryableIMDSStatus},
+	}
+}
+
+// newKeyVaultHTTPClient builds the client for the single Key Vault fetch.
+//
+// Separate from the IMDS client purely so the retry predicate can differ: on the
+// vault a 403 (RBAC) and a 404 (no such secret) are verdicts, and repeating them
+// only delays a boot that is already doomed.
+func newKeyVaultHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: refuseRedirect,
+		Transport:     &retryTransport{base: bootTransport(), attempts: 4, backoff: 250 * time.Millisecond, retryStatus: retryableStatus},
 	}
 }
 
 // retryTransport retries a boot-path request that failed in a way a retry can
-// fix. Deliberately narrow: transport errors, 429, and 5xx. A 4xx is a verdict
-// (403 from the release policy, 403/404 from Secret Manager) and repeating it
-// only delays a boot that is already doomed.
+// fix. Deliberately narrow, and narrow in a way that differs per leg: what
+// counts as retryable is the caller's decision, because the same status means
+// different things at IMDS and at Key Vault.
 type retryTransport struct {
 	base     http.RoundTripper
 	attempts int
 	backoff  time.Duration
+	// retryStatus decides whether a response status is worth another attempt.
+	// Required: a nil predicate would silently turn every retry off.
+	retryStatus func(int) bool
 }
 
 func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -358,7 +618,7 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 
 		resp, err = t.base.RoundTrip(attemptReq)
-		if err == nil && !retryableStatus(resp.StatusCode) {
+		if err == nil && !t.retryStatus(resp.StatusCode) {
 			return resp, nil
 		}
 		if attempt >= t.attempts || req.Context().Err() != nil {
@@ -380,6 +640,10 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 }
 
+// retryableStatus is the conservative default: transport errors, 429, and 5xx.
+// A 4xx is a verdict (403 from the release policy, 403 from Key Vault RBAC, 404
+// for a secret that does not exist) and repeating it only delays a boot that is
+// already doomed.
 func retryableStatus(code int) bool {
 	switch code {
 	case http.StatusTooManyRequests,
@@ -391,6 +655,33 @@ func retryableStatus(code int) bool {
 	}
 	return false
 }
+
+// retryableIMDSStatus additionally retries the statuses IMDS returns while a
+// managed identity is still propagating at container-group start.
+//
+// The default set covered 429 and 5xx and so covered none of them, which made
+// the retries miss the exact cold-start race they were added for: IMDS answers
+// 400 in that window (see the hint in fetchIMDSToken), and 400 was treated as
+// permanent. A managed identity that had not finished propagating produced a
+// hard boot failure, os.Exit(1) in main.go, and an ACI restart that re-ran the
+// SNP report and MAA exchange — the crash-loop the retries exist to prevent.
+// Azure's own IMDS guidance also treats 404 and 410 as retryable.
+//
+// This is deliberately NOT applied to the Key Vault leg, where 403 and 404 are
+// real verdicts about RBAC and about QUILL_AZURE_BUNDLE_SECRET. The cost here is
+// bounded: a genuinely unassigned identity now fails after four attempts
+// (~1.75s of backoff) instead of one, still naming 400 and what it means.
+func retryableIMDSStatus(code int) bool {
+	switch code {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusGone:
+		return true
+	}
+	return retryableStatus(code)
+}
+
+// ---------------------------------------------------------------------------
+// step 1 — attestation-gated key release
+// ---------------------------------------------------------------------------
 
 // skrRequest is the body the skr sidecar (mcr.microsoft.com/aci/skr:2.7)
 // accepts on POST /key/release.
@@ -417,7 +708,7 @@ type skrResponse struct {
 // answering 201 or 202 with the released key printed the whole private JWK into
 // the bootstrap error, which main.go writes to stderr and ACI ships to Log
 // Analytics — outside the attested boundary.
-func releaseWrappingKey(ctx context.Context, httpc *http.Client, cfg skrConfig) (*rsa.PrivateKey, error) {
+func releaseWrappingKey(ctx context.Context, httpc *http.Client, cfg azureConfig) (*rsa.PrivateKey, error) {
 	body, err := json.Marshal(skrRequest{
 		MAAEndpoint: cfg.maaEndpoint,
 		AKVEndpoint: cfg.akvEndpoint,
@@ -426,15 +717,15 @@ func releaseWrappingKey(ctx context.Context, httpc *http.Client, cfg skrConfig) 
 	if err != nil {
 		return nil, fmt.Errorf("%s: skr release: marshal request: %w", azureTag, err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.skrURL, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("%s: skr release: build request for %s: %w", azureTag, cfg.url, err)
+		return nil, fmt.Errorf("%s: skr release: build request for %s: %w", azureTag, cfg.skrURL, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := httpc.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s: skr release: POST %s unreachable (is the skr sidecar running in this container group?): %w", azureTag, cfg.url, err)
+		return nil, fmt.Errorf("%s: skr release: POST %s unreachable (is the skr sidecar running in this container group?): %w", azureTag, cfg.skrURL, err)
 	}
 	defer resp.Body.Close()
 
@@ -504,7 +795,7 @@ type jwkRSAPrivate struct {
 
 // parseJWKRSAPrivateKey converts the released JWK into an *rsa.PrivateKey.
 //
-// Errors name the missing/!bad field but never its value — every one of these
+// Errors name the missing/bad field but never its value — every one of these
 // fields is key material.
 func parseJWKRSAPrivateKey(raw []byte) (*rsa.PrivateKey, error) {
 	var jwk jwkRSAPrivate
@@ -584,61 +875,168 @@ func jwkBigInt(value string) (*big.Int, error) {
 	return new(big.Int).SetBytes(decoded), nil
 }
 
-// loadSAKeyCiphertext reads the wrapped SA key from the environment.
-//
-// Inline and path forms are both supported because the two deploy paths differ:
-// an ACI container group carries it as an env var, a mounted secret volume
-// carries it as a file. Exactly one must be set — accepting both would leave
-// "which one won?" ambiguous during an incident.
-//
-// Both forms go through decodeCiphertextBlob, so they accept the same bytes.
-// They did not always: inline was base64-decoded and the path form was handed
-// through raw, so writing the exact string you would have put in the env var
-// into a file failed with an error blaming the vault key. That sends an
-// incident down the wrong path over one layer of base64.
-func loadSAKeyCiphertext() ([]byte, error) {
-	inline := strings.TrimSpace(os.Getenv("QUILL_AZURE_SA_KEY_CIPHERTEXT"))
-	path := strings.TrimSpace(os.Getenv("QUILL_AZURE_SA_KEY_CIPHERTEXT_PATH"))
+// ---------------------------------------------------------------------------
+// step 2 — managed identity, then the encrypted bundle
+// ---------------------------------------------------------------------------
 
-	switch {
-	case inline == "" && path == "":
-		return nil, fmt.Errorf("%s: sa-key ciphertext: set exactly one of QUILL_AZURE_SA_KEY_CIPHERTEXT or QUILL_AZURE_SA_KEY_CIPHERTEXT_PATH", azureTag)
-	case inline != "" && path != "":
-		return nil, fmt.Errorf("%s: sa-key ciphertext: QUILL_AZURE_SA_KEY_CIPHERTEXT and QUILL_AZURE_SA_KEY_CIPHERTEXT_PATH are both set; set exactly one", azureTag)
-	case path != "":
-		raw, err := os.ReadFile(path) // #nosec G304 -- path comes from the workload spec, not from a request.
-		if err != nil {
-			return nil, fmt.Errorf("%s: sa-key ciphertext: read %s: %w", azureTag, path, err)
-		}
-		blob, err := decodeCiphertextBlob(raw)
-		if err != nil {
-			return nil, fmt.Errorf("%s: sa-key ciphertext: %s: %w", azureTag, path, err)
-		}
-		return blob, nil
-	default:
-		blob, err := decodeCiphertextBlob([]byte(inline))
-		if err != nil {
-			return nil, fmt.Errorf("%s: sa-key ciphertext: QUILL_AZURE_SA_KEY_CIPHERTEXT: %w", azureTag, err)
-		}
-		return blob, nil
+// fetchIMDSToken asks the Instance Metadata Service for an AAD token scoped to
+// the Key Vault data plane, using the container group's managed identity.
+//
+// This credential is deliberately NOT the security boundary — it only fetches
+// ciphertext. See the "Why the bundle is encrypted" note in the package comment.
+func fetchIMDSToken(ctx context.Context, httpc *http.Client, cfg azureConfig) (string, error) {
+	query := url.Values{}
+	query.Set("api-version", imdsAPIVersion)
+	query.Set("resource", keyVaultResource)
+	if cfg.miClientID != "" {
+		// Required when the container group has more than one identity
+		// attached; IMDS answers 400 "multiple user-assigned identities" if it
+		// has to guess.
+		query.Set("client_id", cfg.miClientID)
 	}
+	endpoint := imdsBaseURL + "/metadata/identity/oauth2/token?" + query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("%s: imds token: build request: %w", azureTag, err)
+	}
+	// IMDS refuses any request without this header — it is what makes an SSRF
+	// through a proxy unable to reach the metadata service by accident.
+	req.Header.Set("Metadata", "true")
+
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("%s: imds token: GET %s unreachable (is a managed identity assigned to this container group?): %w", azureTag, imdsBaseURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// An IMDS error body is a diagnostic envelope
+		// ({"error":"invalid_request","error_description":...}), never a token.
+		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if readErr != nil {
+			return "", fmt.Errorf("%s: imds token: http %d and error body unreadable: %w", azureTag, resp.StatusCode, readErr)
+		}
+		hint := ""
+		if resp.StatusCode == http.StatusBadRequest {
+			hint = " (400 usually means no managed identity is assigned, or several are and QUILL_AZURE_MI_CLIENT_ID must name one)"
+		}
+		return "", fmt.Errorf("%s: imds token: for resource %s http %d%s: %s", azureTag, keyVaultResource, resp.StatusCode, hint, errBody)
+	}
+
+	var decoded struct {
+		AccessToken string `json:"access_token"`
+		Resource    string `json:"resource"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxKeyVaultResponseBytes)).Decode(&decoded); err != nil {
+		// A 200 body carries the access token; withhold it.
+		return "", fmt.Errorf("%s: imds token: 200 response is not JSON (body withheld because it may contain a token): %w", azureTag, err)
+	}
+	if decoded.AccessToken == "" {
+		return "", fmt.Errorf("%s: imds token: response has an empty access_token", azureTag)
+	}
+	// Check the audience we asked for is the audience we got. This field was
+	// parsed and then never read, which made the struct imply a check that did
+	// not exist: a token minted for another resource (management.azure.com, say,
+	// via a mis-set query or a proxying IMDS) was accepted here and only rejected
+	// later by the vault's 401 — an authorization decision deferred to a remote
+	// party. Enforced only when the field is present, so an IMDS version that
+	// stops echoing it does not become a boot failure. Trailing slashes are
+	// normalised because the two spellings are the same audience.
+	if got := strings.TrimRight(decoded.Resource, "/"); got != "" && got != strings.TrimRight(keyVaultResource, "/") {
+		return "", fmt.Errorf("%s: imds token: issued for resource %q, but this token is only usable against %s — refusing to send it to the vault", azureTag, decoded.Resource, keyVaultResource)
+	}
+	return decoded.AccessToken, nil
 }
 
-// decodeCiphertextBlob normalises whatever the deploy supplied into envelope
-// bytes: the envelope JSON, that JSON base64-encoded, or a bare OAEP ciphertext.
+// keyVaultSecretURL builds the data-plane URL for the bundle secret.
 //
-// The order matters. JSON is detected first so a textual envelope is never
-// mistaken for something else. Base64 is tried second, with interior whitespace
-// stripped because `base64` line-wraps at 76 columns by default. Anything else
-// is returned EXACTLY as read — in particular NOT whitespace-trimmed, because
-// OAEP output is uniform binary and ~4.6% of ciphertexts begin or end with a
-// byte that happens to be ASCII whitespace. Trimming those silently shortened
-// the blob and produced a decrypt failure telling the operator to rotate a
-// vault key that was fine.
+// With QUILL_AZURE_BUNDLE_VERSION unset this requests "current", which is what
+// makes both silent substitution (a new version written by anyone holding
+// secrets/set) and silent rollback (reinstating a superseded version, and with
+// it rotated-out keys) take effect on the next cold start. Setting it appends
+// the version segment and pins one immutable value; see the integrity note in
+// the package comment for why SKR does not cover this on its own.
+func keyVaultSecretURL(cfg azureConfig) string {
+	base := keyVaultBaseURLOverride
+	if base == "" {
+		base = "https://" + cfg.akvEndpoint
+	}
+	path := "/secrets/" + url.PathEscape(cfg.bundleSecret)
+	if cfg.bundleVersion != "" {
+		path += "/" + url.PathEscape(cfg.bundleVersion)
+	}
+	return fmt.Sprintf("%s%s?api-version=%s", strings.TrimSuffix(base, "/"), path, keyVaultAPIVersion)
+}
+
+// fetchKeyVaultSecret reads the encrypted bundle.
+//
+// The 403 hint is the one an operator will actually need: on a vault using RBAC
+// the identity needs "Key Vault Secrets User", and on a vault still using access
+// policies it needs a `get` permission on secrets. Those are different knobs in
+// different blades, and the response body does not say which model the vault is
+// in.
+func fetchKeyVaultSecret(ctx context.Context, httpc *http.Client, cfg azureConfig, token string) ([]byte, error) {
+	endpoint := keyVaultSecretURL(cfg)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%s: key vault: build request for %s: %w", azureTag, endpoint, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s: key vault: GET %s: %w", azureTag, endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// Safe to echo: a non-200 body is Azure's error envelope. The 200 path
+		// below echoes nothing.
+		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if readErr != nil {
+			return nil, fmt.Errorf("%s: key vault: http %d and error body unreadable: %w", azureTag, resp.StatusCode, readErr)
+		}
+		hint := ""
+		switch resp.StatusCode {
+		case http.StatusForbidden:
+			hint = " (403 = the container group's managed identity cannot read this secret: grant it \"Key Vault Secrets User\" on an RBAC vault, or a `get` secret permission on an access-policy vault)"
+		case http.StatusUnauthorized:
+			hint = " (401 = the token was rejected: it must be issued for the " + keyVaultResource + " audience)"
+		case http.StatusNotFound:
+			hint = " (404 = no such secret in this vault: check QUILL_AZURE_BUNDLE_SECRET)"
+		}
+		return nil, fmt.Errorf("%s: key vault: secret %q in %s http %d%s: %s",
+			azureTag, cfg.bundleSecret, cfg.akvEndpoint, resp.StatusCode, hint, errBody)
+	}
+
+	var decoded struct {
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxKeyVaultResponseBytes)).Decode(&decoded); err != nil {
+		// The 200 body is the encrypted bundle. It is inert without the
+		// SKR-released key, but it is not diagnostic either, so withhold it.
+		return nil, fmt.Errorf("%s: key vault: 200 response is not JSON (body withheld): %w", azureTag, err)
+	}
+	if strings.TrimSpace(decoded.Value) == "" {
+		return nil, fmt.Errorf("%s: key vault: secret %q has an empty value", azureTag, cfg.bundleSecret)
+	}
+	return decodeCiphertextBlob([]byte(decoded.Value))
+}
+
+// decodeCiphertextBlob normalises whatever the deploy stored into envelope
+// bytes: the envelope JSON, or that JSON base64-encoded.
+//
+// JSON is detected first so a textual envelope is never mistaken for something
+// else. Base64 is tried second, with interior whitespace stripped because
+// `base64` line-wraps at 76 columns by default and Key Vault stores whatever
+// string it was given. Both forms are accepted because the alternative is a
+// boot-fatal error over one layer of base64, which sends an incident down the
+// wrong path — the operator is told to rotate a vault key that was fine.
 func decodeCiphertextBlob(raw []byte) ([]byte, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
-		return nil, fmt.Errorf("is empty")
+		return nil, fmt.Errorf("%s: key vault: secret value is empty", azureTag)
 	}
 	if trimmed[0] == '{' {
 		return trimmed, nil
@@ -646,7 +1044,7 @@ func decodeCiphertextBlob(raw []byte) ([]byte, error) {
 	if decoded, ok := decodeBase64Any(trimmed); ok {
 		return decoded, nil
 	}
-	return raw, nil
+	return nil, fmt.Errorf("%s: key vault: secret value (%d bytes) is neither a %s envelope JSON object nor base64 of one", azureTag, len(trimmed), envelopeAlg)
 }
 
 // decodeBase64Any accepts the four base64 flavours a producer might emit
@@ -669,27 +1067,36 @@ func decodeBase64Any(text []byte) ([]byte, bool) {
 	return nil, false
 }
 
-// saKeyEnvelope is the hybrid wrapping format for the service-account key.
+// ---------------------------------------------------------------------------
+// step 3 — the envelope, and the bundle inside it
+// ---------------------------------------------------------------------------
+
+// secretEnvelope is the hybrid wrapping format for the bundle.
 //
 // Why hybrid and not a bare RSA-OAEP ciphertext: RSA-OAEP can only encrypt
 // k - 2*hLen - 2 bytes, which with SHA-256 is 190 bytes under a 2048-bit key and
-// 446 bytes under a 4096-bit key. A GCP service-account key JSON is ~2.3 KB. A
-// direct OAEP blob of one is arithmetically impossible, so the payload rides
-// under AES-256-GCM and only the 32-byte content key is OAEP-wrapped. The
-// security property is unchanged — the content key is inert without the
-// SKR-released private key.
+// 446 bytes under a 4096-bit key. The bundle is ~40 secrets plus a ~2.3 KB
+// service-account key — kilobytes, not hundreds of bytes. A direct OAEP blob of
+// one is arithmetically impossible, so the payload rides under AES-256-GCM and
+// only the 32-byte content key is OAEP-wrapped. The security property is
+// unchanged — the content key is inert without the SKR-released private key.
 //
-// Produce one with (openssl/python, offline, using the vault key's PUBLIC half):
+// Produce one with (python, offline, using the vault key's PUBLIC half):
 //
+//	bundle = json.dumps({name: value, ...}).encode()
 //	k  = os.urandom(32); nonce = os.urandom(12)
-//	ct = AESGCM(k).encrypt(nonce, sa_key_json_bytes, None)
+//	ct = AESGCM(k).encrypt(nonce, bundle, None)
 //	ek = pub.encrypt(k, OAEP(mgf1=SHA256, algorithm=SHA256, label=None))
 //	json {"v":1,"alg":"RSA-OAEP-256+A256GCM","enc_key":b64(ek),
 //	      "nonce":b64(nonce),"ciphertext":b64(ct)}
 //
 // OAEP parameters are fixed at SHA-256 for both the digest and MGF1, with no
 // label. Key Vault calls this RSA-OAEP-256.
-type saKeyEnvelope struct {
+//
+// This is the SAME wire format the previous single-service-account-key envelope
+// used, field for field, so an existing producer only changes what it puts in
+// the plaintext.
+type secretEnvelope struct {
 	V          int    `json:"v"`
 	Alg        string `json:"alg"`
 	EncKey     string `json:"enc_key"`
@@ -697,200 +1104,133 @@ type saKeyEnvelope struct {
 	Ciphertext string `json:"ciphertext"`
 }
 
-// decryptSAKey unwraps the service-account key with the released private key.
+// decryptEnvelope opens the hybrid envelope with the SKR-released private key.
 //
-// Accepts the hybrid envelope above, or — for a payload small enough to fit —
-// a bare RSA-OAEP-SHA256 ciphertext. Detection is unambiguous: the envelope is
-// a JSON object carrying enc_key, and a raw OAEP ciphertext never is.
-func decryptSAKey(key *rsa.PrivateKey, blob []byte) ([]byte, error) {
+// There is no bare-OAEP fallback. There used to be, when the payload was a
+// single service-account key that a 4096-bit key could *almost* hold; a bundle
+// never fits, so the fallback could only ever fire on a malformed envelope and
+// would then report an OAEP failure for what is actually a JSON problem.
+func decryptEnvelope(key *rsa.PrivateKey, blob []byte) ([]byte, error) {
 	if len(blob) == 0 {
-		return nil, fmt.Errorf("%s: sa-key decrypt: ciphertext is empty", azureTag)
+		return nil, fmt.Errorf("%s: bundle decrypt: ciphertext is empty", azureTag)
 	}
 
-	var env saKeyEnvelope
-	if err := json.Unmarshal(bytes.TrimSpace(blob), &env); err == nil && env.EncKey != "" {
-		return decryptSAKeyEnvelope(key, env)
+	var env secretEnvelope
+	if err := json.Unmarshal(bytes.TrimSpace(blob), &env); err != nil {
+		return nil, fmt.Errorf("%s: bundle decrypt: %d-byte blob is not a %s envelope JSON object: %w", azureTag, len(blob), envelopeAlg, err)
 	}
-
-	// Bare OAEP fallback.
-	plaintext, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, key, blob, nil)
-	if err != nil {
-		return nil, fmt.Errorf("%s: sa-key decrypt: %d-byte blob is neither a %s envelope nor a bare RSA-OAEP-SHA256 ciphertext this key can open (modulus %d bits; check it was encrypted to the CURRENT %s public key with SHA-256/MGF1-SHA256 and no label): %w",
-			azureTag, len(blob), saKeyEnvelopeAlg, key.N.BitLen(), saKeyEnvelopeAlg, err)
+	if env.EncKey == "" {
+		return nil, fmt.Errorf("%s: bundle decrypt: envelope has no enc_key", azureTag)
 	}
-	return plaintext, nil
-}
-
-func decryptSAKeyEnvelope(key *rsa.PrivateKey, env saKeyEnvelope) ([]byte, error) {
-	if env.V != saKeyEnvelopeVersion {
-		return nil, fmt.Errorf("%s: sa-key decrypt: envelope version %d (this build understands %d)", azureTag, env.V, saKeyEnvelopeVersion)
+	if env.V != envelopeVersion {
+		return nil, fmt.Errorf("%s: bundle decrypt: envelope version %d (this build understands %d)", azureTag, env.V, envelopeVersion)
 	}
-	if env.Alg != saKeyEnvelopeAlg {
-		return nil, fmt.Errorf("%s: sa-key decrypt: envelope alg %q (this build understands %q)", azureTag, env.Alg, saKeyEnvelopeAlg)
+	if env.Alg != envelopeAlg {
+		return nil, fmt.Errorf("%s: bundle decrypt: envelope alg %q (this build understands %q)", azureTag, env.Alg, envelopeAlg)
 	}
-	encKey, err := base64.StdEncoding.DecodeString(env.EncKey)
-	if err != nil {
-		return nil, fmt.Errorf("%s: sa-key decrypt: envelope enc_key is not base64: %w", azureTag, err)
+	// Same four-flavour tolerance decodeCiphertextBlob applies one layer out, and
+	// for the same reason stated there: a producer written with Python's
+	// urlsafe_b64encode (or any unpadded encoder) would otherwise fail here with
+	// "enc_key is not base64", which reads like a corrupt or wrong-key envelope
+	// and sends the operator off to rotate a vault key that was fine. Accepting
+	// the alternate alphabets costs nothing — the envelope's integrity comes from
+	// GCM and OAEP, not from which base64 dialect carried the bytes.
+	encKey, ok := decodeBase64Any([]byte(env.EncKey))
+	if !ok {
+		return nil, fmt.Errorf("%s: bundle decrypt: envelope enc_key is not base64 (tried std/raw-std/url/raw-url)", azureTag)
 	}
-	nonce, err := base64.StdEncoding.DecodeString(env.Nonce)
-	if err != nil {
-		return nil, fmt.Errorf("%s: sa-key decrypt: envelope nonce is not base64: %w", azureTag, err)
+	nonce, ok := decodeBase64Any([]byte(env.Nonce))
+	if !ok {
+		return nil, fmt.Errorf("%s: bundle decrypt: envelope nonce is not base64 (tried std/raw-std/url/raw-url)", azureTag)
 	}
-	ciphertext, err := base64.StdEncoding.DecodeString(env.Ciphertext)
-	if err != nil {
-		return nil, fmt.Errorf("%s: sa-key decrypt: envelope ciphertext is not base64: %w", azureTag, err)
+	ciphertext, ok := decodeBase64Any([]byte(env.Ciphertext))
+	if !ok {
+		return nil, fmt.Errorf("%s: bundle decrypt: envelope ciphertext is not base64 (tried std/raw-std/url/raw-url)", azureTag)
 	}
 
 	contentKey, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, key, encKey, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%s: sa-key decrypt: RSA-OAEP-SHA256 unwrap of the content key failed (released key modulus %d bits, enc_key %d bytes; check the envelope was encrypted to the CURRENT vault key with SHA-256/MGF1-SHA256 and no label): %w",
+		return nil, fmt.Errorf("%s: bundle decrypt: RSA-OAEP-SHA256 unwrap of the content key failed (released key modulus %d bits, enc_key %d bytes; check the envelope was encrypted to the CURRENT vault key with SHA-256/MGF1-SHA256 and no label): %w",
 			azureTag, key.N.BitLen(), len(encKey), err)
 	}
 
 	// Checked before aes.NewCipher, which accepts 16 and 24 as well and would
 	// otherwise let an envelope labelled A256GCM open under AES-128.
-	if len(contentKey) != saKeyContentKeyBytes {
-		return nil, fmt.Errorf("%s: sa-key decrypt: unwrapped content key is %d bytes, but %s means %d",
-			azureTag, len(contentKey), saKeyEnvelopeAlg, saKeyContentKeyBytes)
+	if len(contentKey) != envelopeContentKeyBytes {
+		return nil, fmt.Errorf("%s: bundle decrypt: unwrapped content key is %d bytes, but %s means %d",
+			azureTag, len(contentKey), envelopeAlg, envelopeContentKeyBytes)
 	}
 	block, err := aes.NewCipher(contentKey)
 	if err != nil {
-		return nil, fmt.Errorf("%s: sa-key decrypt: unwrapped content key is not a valid AES key (%d bytes): %w", azureTag, len(contentKey), err)
+		return nil, fmt.Errorf("%s: bundle decrypt: unwrapped content key is not a valid AES key (%d bytes): %w", azureTag, len(contentKey), err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("%s: sa-key decrypt: init AES-GCM: %w", azureTag, err)
+		return nil, fmt.Errorf("%s: bundle decrypt: init AES-GCM: %w", azureTag, err)
 	}
+	// crypto/cipher's gcm.Open PANICS on a wrong-length nonce rather than
+	// returning an error, and a panic on the boot path is the "hung with no
+	// explanation" failure this package exists to avoid.
 	if len(nonce) != gcm.NonceSize() {
-		return nil, fmt.Errorf("%s: sa-key decrypt: envelope nonce is %d bytes (want %d)", azureTag, len(nonce), gcm.NonceSize())
+		return nil, fmt.Errorf("%s: bundle decrypt: envelope nonce is %d bytes (want %d)", azureTag, len(nonce), gcm.NonceSize())
 	}
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%s: sa-key decrypt: AES-GCM open failed — the envelope is corrupt or was not sealed with this content key: %w", azureTag, err)
+		return nil, fmt.Errorf("%s: bundle decrypt: AES-GCM open failed — the envelope is corrupt or was not sealed with this content key: %w", azureTag, err)
 	}
 	return plaintext, nil
 }
 
-// serviceAccountKey is the subset of a Google SA key JSON needed to sign the
-// bearer assertion.
-type serviceAccountKey struct {
-	Type        string `json:"type"`
-	ClientEmail string `json:"client_email"`
-	PrivateKey  string `json:"private_key"`
-	TokenURI    string `json:"token_uri"`
-}
-
-// mintGoogleAccessToken runs the JWT-bearer flow: sign an RS256 assertion with
-// the service-account key, POST it to Google's token endpoint, get an access
-// token scoped to cloud-platform.
+// secretBundle is the decrypted payload: logical secret name -> value.
 //
-// Hand-rolled on stdlib crypto by design — see the dependency note in the
-// package comment. The identical flow exists as unexported helpers in
-// internal/enclavetls and internal/byokcache, but both read the key from a file
-// path and cache expiry on a long-lived token source; bootstrap holds the key
-// in memory, needs exactly one token, and must not depend on either package.
-func mintGoogleAccessToken(ctx context.Context, httpc *http.Client, saKeyJSON []byte) (string, error) {
-	var sa serviceAccountKey
-	if err := json.Unmarshal(saKeyJSON, &sa); err != nil {
-		// Length only: the decrypted bytes are the credential.
-		return "", fmt.Errorf("%s: google token: decrypted sa-key is not JSON (%d bytes; content withheld): %w", azureTag, len(saKeyJSON), err)
-	}
-	if sa.Type != "service_account" {
-		return "", fmt.Errorf("%s: google token: sa-key type %q (want service_account)", azureTag, sa.Type)
-	}
-	if sa.ClientEmail == "" || sa.PrivateKey == "" {
-		return "", fmt.Errorf("%s: google token: sa-key is missing client_email or private_key", azureTag)
-	}
+// The names are the SAME ones the deploy puts in QUILL_*_SECRET and that Google
+// Secret Manager uses on the GCP side, which is what lets both clouds share the
+// binding table in secrets.go. Producing the bundle is then a mechanical dump of
+// those names, and a rename on one cloud is visibly a rename on both.
+type secretBundle map[string]string
 
-	signer, err := parsePEMRSAPrivateKey(sa.PrivateKey)
-	if err != nil {
-		return "", fmt.Errorf("%s: google token: sa-key private_key: %w", azureTag, err)
+func parseBundle(plaintext []byte) (secretBundle, error) {
+	var bundle secretBundle
+	if err := json.Unmarshal(plaintext, &bundle); err != nil {
+		// Length only: the plaintext is every secret this system has.
+		return nil, fmt.Errorf("%s: bundle parse: decrypted payload (%d bytes) is not a JSON object of secret name -> value; content withheld: %w", azureTag, len(plaintext), err)
 	}
-
-	tokenURI := sa.TokenURI
-	if tokenURI == "" {
-		tokenURI = googleTokenEndpoint
+	if len(bundle) == 0 {
+		return nil, fmt.Errorf("%s: bundle parse: decrypted payload is an empty object — it carries no secrets", azureTag)
 	}
-
-	now := time.Now()
-	header := `{"alg":"RS256","typ":"JWT"}`
-	claims := fmt.Sprintf(
-		`{"iss":%q,"scope":%q,"aud":%q,"exp":%d,"iat":%d}`,
-		sa.ClientEmail, googleCloudPlatformScope, tokenURI, now.Add(time.Hour).Unix(), now.Unix(),
-	)
-	signingInput := base64.RawURLEncoding.EncodeToString([]byte(header)) +
-		"." + base64.RawURLEncoding.EncodeToString([]byte(claims))
-	digest := sha256.Sum256([]byte(signingInput))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, signer, crypto.SHA256, digest[:])
-	if err != nil {
-		return "", fmt.Errorf("%s: google token: sign assertion: %w", azureTag, err)
-	}
-	assertion := signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
-
-	form := url.Values{}
-	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
-	form.Set("assertion", assertion)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURI, strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", fmt.Errorf("%s: google token: build request for %s: %w", azureTag, tokenURI, err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := httpc.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("%s: google token: POST %s: %w", azureTag, tokenURI, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		// Google's non-200 body is an OAuth error envelope
-		// ({"error":"invalid_grant",...}) — diagnostic, never credential.
-		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		if readErr != nil {
-			return "", fmt.Errorf("%s: google token: jwt-bearer exchange http %d and error body unreadable: %w", azureTag, resp.StatusCode, readErr)
-		}
-		return "", fmt.Errorf("%s: google token: jwt-bearer exchange for %s http %d: %s", azureTag, sa.ClientEmail, resp.StatusCode, errBody)
-	}
-
-	var decoded struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		// A 200 body carries the access token; withhold it.
-		return "", fmt.Errorf("%s: google token: 200 response is not JSON (body withheld because it may contain a token): %w", azureTag, err)
-	}
-	if decoded.AccessToken == "" {
-		return "", fmt.Errorf("%s: google token: jwt-bearer exchange returned an empty access_token", azureTag)
-	}
-	return decoded.AccessToken, nil
+	return bundle, nil
 }
 
-// parsePEMRSAPrivateKey decodes a PEM-encoded RSA key in either PKCS#1 or
-// PKCS#8 form. Google issues PKCS#8 ("PRIVATE KEY"); PKCS#1 is accepted because
-// re-wrapped keys occasionally arrive that way.
-func parsePEMRSAPrivateKey(pemText string) (*rsa.PrivateKey, error) {
-	block, _ := pem.Decode([]byte(pemText))
-	if block == nil {
-		return nil, fmt.Errorf("no PEM block found")
+// resolve is the secretResolver the shared assembly in secrets.go calls. The
+// context is unused: everything was fetched in one round trip already.
+func (b secretBundle) resolve(_ context.Context, name string) ([]byte, error) {
+	value, ok := b[name]
+	if !ok {
+		return nil, fmt.Errorf("no entry %q in the bundle (bundle has %d entries: %s)", name, len(b), b.names())
 	}
-	switch block.Type {
-	case "RSA PRIVATE KEY":
-		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("parse pkcs1: %w", err)
-		}
-		return key, nil
-	case "PRIVATE KEY":
-		parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("parse pkcs8: %w", err)
-		}
-		key, ok := parsed.(*rsa.PrivateKey)
-		if !ok {
-			return nil, fmt.Errorf("pkcs8 key is %T, want *rsa.PrivateKey", parsed)
-		}
-		return key, nil
-	default:
-		return nil, fmt.Errorf("unsupported PEM block type %q", block.Type)
+	return []byte(value), nil
+}
+
+// require reads one entry that is not part of the binding table.
+func (b secretBundle) require(name, what string) (string, error) {
+	value, ok := b[name]
+	if !ok {
+		return "", fmt.Errorf("%s: bundle: no entry %q for the %s (bundle has %d entries: %s)", azureTag, name, what, len(b), b.names())
 	}
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("%s: bundle: entry %q for the %s is empty", azureTag, name, what)
+	}
+	return value, nil
+}
+
+// names lists the bundle's KEYS — never its values — so a "which entry is
+// missing?" error is actionable without printing a single secret. Sorted so the
+// same broken bundle produces the same error every boot.
+func (b secretBundle) names() string {
+	keys := make([]string, 0, len(b))
+	for name := range b {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
 }

@@ -1,227 +1,253 @@
-//go:build cloud_gcp || cloud_azure
+//go:build cloud_gcp
 
 package bootstrap
 
 import (
-	"reflect"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
-// This file carries the SAME build tag as the code it covers, so the shared
-// Secret Manager path is exercised under cloud_gcp as well as cloud_azure.
+// Coverage for the Google Secret Manager TRANSPORT, which is now GCP-only.
 //
-// That matters more than it looks. secrets_google.go has one implementation and
-// two callers, and until this file existed only the Azure caller had any tests
-// (bootstrap_azure_test.go is //go:build cloud_azure, so `go test -tags
-// cloud_gcp ./internal/bootstrap/` reported "no test files"). The whitespace
-// regression these tests pin reached the shared file and changed the LIVE GCP
-// path, and nothing under cloud_gcp could have caught it.
+// It used to be exercised only from bootstrap_azure_test.go, because Azure ran
+// through this same code. Azure now reads Azure Key Vault, so without this file
+// the live GCP fetch path would have no test at all — a coverage cliff opened
+// by a change that never touched it.
 
-// clearSecretEnv unsets every variable the binding table reads, plus the three
-// scalar ones, so a developer's ambient shell cannot decide the outcome.
-func clearSecretEnv(t *testing.T) {
+const (
+	gcpTestProject       = "quill-cloud-proxy"
+	gcpTestDevicesSecret = "tr-device-keys"
+	gcpTestORSecret      = "tr-openrouter-key"
+	gcpTestToken         = "ya29.TEST-ACCESS-TOKEN"
+
+	// Distinctive so a leak assertion cannot produce a false negative.
+	gcpTestORValue = "sk-or-v1-OPENROUTER-SECRET-VALUE-DO-NOT-LOG"
+)
+
+// secretManagerFixture stands up a fake Secret Manager and points the package
+// var at it.
+type secretManagerFixture struct {
+	t       *testing.T
+	values  map[string]string
+	handler http.HandlerFunc
+	srv     *httptest.Server
+	authz   []string
+}
+
+func newSecretManagerFixture(t *testing.T) *secretManagerFixture {
 	t.Helper()
-	for _, binding := range secretBindings {
-		for _, env := range binding.envs {
-			t.Setenv(env, "")
+	f := &secretManagerFixture{
+		t: t,
+		values: map[string]string{
+			gcpTestDevicesSecret: `[{"key_hash":"c0ffee","owner":"joseph","device_id":"dev-1"}]`,
+			gcpTestORSecret:      gcpTestORValue,
+		},
+	}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.authz = append(f.authz, r.Header.Get("Authorization"))
+		if f.handler != nil {
+			f.handler(w, r)
+			return
 		}
-	}
-	for _, env := range []string{
-		"QUILL_GCP_PROJECT_ID", "QUILL_DEVICE_KEYS_SECRET",
-		"QUILL_GCP_REGION", "TR_CONTROL_PLANE_BASE_URL",
-	} {
-		t.Setenv(env, "")
-	}
+		f.serve(w, r)
+	}))
+	t.Cleanup(f.srv.Close)
+
+	prev := secretManagerBaseURL
+	secretManagerBaseURL = f.srv.URL
+	t.Cleanup(func() { secretManagerBaseURL = prev })
+	return f
 }
 
-func validSecretEnv(t *testing.T) {
+func (f *secretManagerFixture) serve(w http.ResponseWriter, r *http.Request) {
+	name := gcpSecretNameFromPath(r.URL.Path)
+	value, ok := f.values[name]
+	if !ok {
+		http.Error(w, `{"error":{"code":404,"message":"Secret not found"}}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"name":    fmt.Sprintf("projects/%s/secrets/%s/versions/1", gcpTestProject, name),
+		"payload": map[string]string{"data": base64.StdEncoding.EncodeToString([]byte(value))},
+	})
+}
+
+// gcpSecretNameFromPath pulls "<name>" out of
+// /v1/projects/<p>/secrets/<name>/versions/latest:access
+func gcpSecretNameFromPath(path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	for i, part := range parts {
+		if part == "secrets" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+func gcpTestConfig(t *testing.T) secretConfig {
 	t.Helper()
 	clearSecretEnv(t)
-	t.Setenv("QUILL_GCP_PROJECT_ID", "quill-cloud-proxy")
-	t.Setenv("QUILL_DEVICE_KEYS_SECRET", "tr-device-keys")
-	t.Setenv("QUILL_OPENROUTER_SECRET", "tr-openrouter-key")
-}
-
-// A secret NAME that is present but blank is a broken deploy. Skipping it boots
-// a gateway whose key for that provider is "" and which 401s every request to
-// it at runtime; the pre-refactor GCP code fetched a secret literally named
-// "   " and died 404 at boot. Failing here is louder than both — it happens
-// before any network I/O and names the variable.
-func TestResolveSecretConfigRejectsWhitespaceOnlyValues(t *testing.T) {
-	for _, tc := range []struct{ env, want string }{
-		{"QUILL_GCP_PROJECT_ID", "QUILL_GCP_PROJECT_ID"},
-		{"QUILL_DEVICE_KEYS_SECRET", "QUILL_DEVICE_KEYS_SECRET"},
-		{"QUILL_ANTHROPIC_SECRET", "QUILL_ANTHROPIC_SECRET"},
-		{"QUILL_TRUSTEDROUTER_INTERNAL_SECRET", "QUILL_TRUSTEDROUTER_INTERNAL_SECRET"},
-	} {
-		t.Run(tc.env, func(t *testing.T) {
-			validSecretEnv(t)
-			t.Setenv(tc.env, " \t\n ")
-
-			_, err := resolveSecretConfig("bootstrap/gcp")
-			if err == nil {
-				t.Fatalf("%s set to whitespace booted cleanly", tc.env)
-			}
-			for _, want := range []string{"bootstrap/gcp", tc.want, "whitespace only"} {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error does not name %q\n  got: %v", want, err)
-				}
-			}
-		})
-	}
-}
-
-// An empty value still means "not configured": that is how a container spec
-// says "off", and the pre- and post-refactor code agree on it.
-func TestResolveSecretConfigTreatsEmptyAsUnset(t *testing.T) {
-	validSecretEnv(t)
-
+	t.Setenv("QUILL_GCP_PROJECT_ID", gcpTestProject)
+	t.Setenv("QUILL_DEVICE_KEYS_SECRET", gcpTestDevicesSecret)
+	t.Setenv("QUILL_OPENROUTER_SECRET", gcpTestORSecret)
+	t.Setenv("QUILL_GCP_REGION", "europe-west4")
 	cfg, err := resolveSecretConfig("bootstrap/gcp")
 	if err != nil {
 		t.Fatalf("resolveSecretConfig: %v", err)
 	}
-	for i, binding := range secretBindings {
-		want := ""
-		if binding.envs[0] == "QUILL_OPENROUTER_SECRET" {
-			want = "tr-openrouter-key"
-		}
-		if cfg.names[i] != want {
-			t.Errorf("%s -> %q, want %q", binding.label, cfg.names[i], want)
-		}
-	}
+	return cfg
 }
 
-// The advisor bindings accept a pre-rename spelling; an empty first variable
-// must still fall through to it.
-func TestResolveSecretConfigFallsThroughToLegacyEnvNames(t *testing.T) {
-	validSecretEnv(t)
-	t.Setenv("QUILL_SOCRATES_ADVISOR_PROMPT_SECRET", "tr-advisor-prompt")
-	t.Setenv("QUILL_SOCRATES_WORKER_PROMPT_SECRET", "tr-advisor-worker-prompt")
+func TestFetchBootstrapSecretsHappyPath(t *testing.T) {
+	f := newSecretManagerFixture(t)
+	cfg := gcpTestConfig(t)
 
-	cfg, err := resolveSecretConfig("bootstrap/gcp")
+	data, err := fetchBootstrapSecrets(context.Background(), f.srv.Client(), gcpTestToken, cfg, "bootstrap/gcp")
 	if err != nil {
-		t.Fatalf("resolveSecretConfig: %v", err)
+		t.Fatalf("fetchBootstrapSecrets: %v", err)
 	}
-	got := map[string]string{}
-	for i, binding := range secretBindings {
-		got[binding.label] = cfg.names[i]
+	if len(data.Devices) != 1 || data.Devices[0].DeviceID != "dev-1" {
+		t.Errorf("devices = %+v", data.Devices)
 	}
-	if got["advisor prompt"] != "tr-advisor-prompt" {
-		t.Errorf("advisor prompt = %q", got["advisor prompt"])
+	if data.OpenRouterAPIKey != gcpTestORValue {
+		t.Errorf("openrouter key = %q", data.OpenRouterAPIKey)
 	}
-	if got["advisor worker prompt"] != "tr-advisor-worker-prompt" {
-		t.Errorf("advisor worker prompt = %q", got["advisor worker prompt"])
+	if data.Region != "europe-west4" {
+		t.Errorf("region = %q", data.Region)
 	}
-}
-
-// The newer spelling wins when both are set.
-func TestResolveSecretConfigPrefersTheCurrentEnvName(t *testing.T) {
-	validSecretEnv(t)
-	t.Setenv("QUILL_ADVISOR_PROMPT_SECRET", "current")
-	t.Setenv("QUILL_SOCRATES_ADVISOR_PROMPT_SECRET", "legacy")
-
-	cfg, err := resolveSecretConfig("bootstrap/gcp")
-	if err != nil {
-		t.Fatalf("resolveSecretConfig: %v", err)
+	if len(f.authz) == 0 {
+		t.Fatal("Secret Manager was never called")
 	}
-	for i, binding := range secretBindings {
-		if binding.label == "advisor prompt" && cfg.names[i] != "current" {
-			t.Errorf("advisor prompt = %q, want the current spelling to win", cfg.names[i])
+	for _, header := range f.authz {
+		if header != "Bearer "+gcpTestToken {
+			t.Fatalf("Authorization = %q, want the supplied token", header)
 		}
 	}
 }
 
-// A deploy with prompt overrides and a control-plane token but no provider key
-// has no LLM backend at all. It must fail at boot rather than serve a gateway
-// that 500s every request.
-func TestResolveSecretConfigRequiresAProviderSecret(t *testing.T) {
-	clearSecretEnv(t)
-	t.Setenv("QUILL_GCP_PROJECT_ID", "quill-cloud-proxy")
-	t.Setenv("QUILL_DEVICE_KEYS_SECRET", "tr-device-keys")
-	t.Setenv("QUILL_SYNTH_PANEL_PROMPT_SECRET", "tr-synth-panel")
-	t.Setenv("QUILL_TRUSTEDROUTER_INTERNAL_SECRET", "tr-internal")
-
-	if _, err := resolveSecretConfig("bootstrap/gcp"); err == nil ||
-		!strings.Contains(err.Error(), "at least one provider secret") {
-		t.Fatalf("want the provider guard to fire, got %v", err)
+// The URL is a contract with a live Google API. Building it wrong is a 404 at
+// boot on the production cloud, so pin the shape rather than trusting the fake
+// to be forgiving.
+func TestFetchSecretBuildsTheAccessURL(t *testing.T) {
+	f := newSecretManagerFixture(t)
+	var seen string
+	f.handler = func(w http.ResponseWriter, r *http.Request) {
+		seen = r.URL.Path
+		f.serve(w, r)
+	}
+	if _, err := fetchSecret(context.Background(), f.srv.Client(), gcpTestToken, gcpTestProject, gcpTestORSecret); err != nil {
+		t.Fatalf("fetchSecret: %v", err)
+	}
+	want := "/v1/projects/" + gcpTestProject + "/secrets/" + gcpTestORSecret + "/versions/latest:access"
+	if seen != want {
+		t.Errorf("path = %q, want %q", seen, want)
 	}
 }
 
-// Every binding must write to its OWN field. A copy-paste in a 39-row table is
-// how one provider's API key ends up being sent to another provider's endpoint,
-// and nothing else in the suite would notice: the fetch would succeed and the
-// wrong key would only fail much later, at the upstream.
-func TestSecretBindingsAssignDistinctFields(t *testing.T) {
-	seen := map[string]string{} // field name -> binding label
-	for _, binding := range secretBindings {
-		marker := "MARKER-" + binding.label
-		var data types.BootstrapData
-		binding.assign(&data, marker)
-
-		value := reflect.ValueOf(data)
-		var hit []string
-		for i := 0; i < value.NumField(); i++ {
-			field := value.Field(i)
-			if field.Kind() == reflect.String && field.String() == marker {
-				hit = append(hit, value.Type().Field(i).Name)
-			}
+// Every error must name WHICH secret failed, otherwise an operator is left
+// guessing which of ~40 entries is misconfigured.
+func TestFetchBootstrapSecretsNamesTheFailingSecret(t *testing.T) {
+	f := newSecretManagerFixture(t)
+	cfg := gcpTestConfig(t)
+	f.handler = func(w http.ResponseWriter, r *http.Request) {
+		if gcpSecretNameFromPath(r.URL.Path) == gcpTestORSecret {
+			http.Error(w, `{"error":{"code":403,"message":"Permission denied on secret"}}`, http.StatusForbidden)
+			return
 		}
-		if len(hit) != 1 {
-			t.Errorf("%q writes %d fields (%v), want exactly 1", binding.label, len(hit), hit)
-			continue
-		}
-		if other, dup := seen[hit[0]]; dup {
-			t.Errorf("%q and %q both write BootstrapData.%s", other, binding.label, hit[0])
-		}
-		seen[hit[0]] = binding.label
+		f.serve(w, r)
 	}
-}
 
-// Structural pins on the table itself, so a bad edit is caught here rather than
-// three weeks later on one cloud only. The counts reproduce the hand-written
-// sequence bootstrap_gcp.go used before secrets_google.go existed: 32 provider
-// keys in the anySet list, 4 synth prompts, 2 advisor prompts, 1 TR token.
-func TestSecretBindingsTableIsWellFormed(t *testing.T) {
-	if len(secretBindings) != 39 {
-		t.Errorf("secretBindings has %d entries, want 39", len(secretBindings))
-	}
-	providers := 0
-	envs := map[string]string{}
-	for _, binding := range secretBindings {
-		if binding.provider {
-			providers++
-		}
-		if binding.label == "" || binding.assign == nil || len(binding.envs) == 0 {
-			t.Errorf("malformed binding %+v", binding.envs)
-		}
-		for _, env := range binding.envs {
-			if other, dup := envs[env]; dup {
-				t.Errorf("%s is read by both %q and %q", env, other, binding.label)
-			}
-			envs[env] = binding.label
-		}
-	}
-	if providers != 32 {
-		t.Errorf("%d provider bindings, want 32 — the 'at least one provider' guard counts these", providers)
-	}
-}
-
-func TestFirstSetEnvErrorNamesTheOffendingVariable(t *testing.T) {
-	clearSecretEnv(t)
-	t.Setenv("QUILL_ADVISOR_PROMPT_SECRET", "  ")
-	t.Setenv("QUILL_SOCRATES_ADVISOR_PROMPT_SECRET", "legacy")
-
-	// The blank value must NOT fall through to the legacy spelling: silently
-	// using a different secret than the one the operator named is worse than
-	// refusing to boot.
-	value, err := firstSetEnv([]string{"QUILL_ADVISOR_PROMPT_SECRET", "QUILL_SOCRATES_ADVISOR_PROMPT_SECRET"})
+	_, err := fetchBootstrapSecrets(context.Background(), f.srv.Client(), gcpTestToken, cfg, "bootstrap/gcp")
 	if err == nil {
-		t.Fatalf("want an error, got value %q", value)
+		t.Fatal("want an error")
 	}
-	if !strings.Contains(err.Error(), "QUILL_ADVISOR_PROMPT_SECRET") {
-		t.Errorf("error does not name the variable: %v", err)
+	for _, want := range []string{"bootstrap/gcp", "openrouter key", "secret fetch http 403", "Permission denied"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not name %q\n  got: %v", want, err)
+		}
+	}
+}
+
+func TestFetchBootstrapSecretsNamesDeviceKeysSeparately(t *testing.T) {
+	f := newSecretManagerFixture(t)
+	cfg := gcpTestConfig(t)
+	delete(f.values, gcpTestDevicesSecret)
+
+	_, err := fetchBootstrapSecrets(context.Background(), f.srv.Client(), gcpTestToken, cfg, "bootstrap/gcp")
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	for _, want := range []string{"bootstrap/gcp", "device-keys", "404"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not name %q\n  got: %v", want, err)
+		}
+	}
+}
+
+func TestFetchBootstrapSecretsDeviceKeysNotJSON(t *testing.T) {
+	f := newSecretManagerFixture(t)
+	cfg := gcpTestConfig(t)
+	f.values[gcpTestDevicesSecret] = "not-json-at-all"
+
+	_, err := fetchBootstrapSecrets(context.Background(), f.srv.Client(), gcpTestToken, cfg, "bootstrap/gcp")
+	if err == nil || !strings.Contains(err.Error(), "parse device-keys JSON") {
+		t.Fatalf("err = %v, want a device-keys parse failure", err)
+	}
+}
+
+// Secret Manager payloads routinely carry a trailing newline (anything created
+// with `printf ... | gcloud secrets create --data-file=-` does). An API key with
+// "\n" on the end produces an unparseable Authorization header and a 401 from
+// the provider that looks like a bad key rather than a bad payload.
+func TestFetchBootstrapSecretsTrimsValues(t *testing.T) {
+	f := newSecretManagerFixture(t)
+	cfg := gcpTestConfig(t)
+	f.values[gcpTestORSecret] = "  " + gcpTestORValue + "\n"
+
+	data, err := fetchBootstrapSecrets(context.Background(), f.srv.Client(), gcpTestToken, cfg, "bootstrap/gcp")
+	if err != nil {
+		t.Fatalf("fetchBootstrapSecrets: %v", err)
+	}
+	if data.OpenRouterAPIKey != gcpTestORValue {
+		t.Errorf("openrouter key not trimmed: %q", data.OpenRouterAPIKey)
+	}
+}
+
+// The 200 body IS the secret. A decode failure must not echo it.
+func TestFetchSecretWithholdsTheSuccessBody(t *testing.T) {
+	f := newSecretManagerFixture(t)
+	f.handler = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"payload":{"data":"` + base64.StdEncoding.EncodeToString([]byte(gcpTestORValue)) + `" TRUNCATED`))
+	}
+	_, err := fetchSecret(context.Background(), f.srv.Client(), gcpTestToken, gcpTestProject, gcpTestORSecret)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if strings.Contains(err.Error(), gcpTestORValue) {
+		t.Errorf("the secret value leaked into the decode error: %v", err)
+	}
+	if strings.Contains(err.Error(), base64.StdEncoding.EncodeToString([]byte(gcpTestORValue))) {
+		t.Errorf("the base64 secret payload leaked into the decode error: %v", err)
+	}
+}
+
+// secretManagerBaseURL is a package var so tests can redirect it. That is only
+// acceptable while production still resolves to the real host.
+func TestSecretManagerBaseURLDefaultsToProduction(t *testing.T) {
+	if secretManagerHost != "https://secretmanager.googleapis.com" {
+		t.Errorf("secretManagerHost = %q", secretManagerHost)
+	}
+	// A fixture redirects it and restores it on cleanup; outside one it must be
+	// the production host.
+	if secretManagerBaseURL != secretManagerHost {
+		t.Errorf("secretManagerBaseURL = %q, want %q — the test seam leaked", secretManagerBaseURL, secretManagerHost)
 	}
 }

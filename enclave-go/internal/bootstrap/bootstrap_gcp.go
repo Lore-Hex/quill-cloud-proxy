@@ -36,11 +36,16 @@
 //     secrets/$NAME/versions/latest:access  Authorization: Bearer ...
 //     → returns {"payload":{"data":"<base64>"}}
 //
-// Step 3 — and every secret name, fetch order, and BootstrapData field it
-// feeds — lives in secrets_google.go, shared with the Azure adapter. This file
-// owns exactly one thing that is GCP-specific: obtaining the access token from
-// the metadata server. Everything else must stay in the shared file so the two
-// self-fetching clouds cannot drift apart.
+// Every secret NAME, its order, and the BootstrapData field it feeds live in
+// secrets.go, shared with the Azure adapter; step 3's transport lives in
+// secrets_google.go, which is GCP-only. This file owns exactly one thing:
+// obtaining the access token from the metadata server. The name -> field
+// mapping must stay in the shared file so the two self-fetching clouds cannot
+// drift apart.
+//
+// Azure does NOT come through secrets_google.go. It keeps its own copies of the
+// secrets in Azure Key Vault so that a Google outage cannot take it down; see
+// the header of bootstrap_azure.go.
 //
 // Required env (set in the workload spec / Confidential Space metadata):
 //
@@ -67,8 +72,7 @@
 //	QUILL_ADVISOR_PROMPT_SECRET               name of the secret holding the advisor prompt
 //	QUILL_TRUSTEDROUTER_INTERNAL_SECRET optional Secret Manager secret name
 //
-// The full, authoritative list is the secretBindings table in
-// secrets_google.go.
+// The full, authoritative list is the secretBindings table in secrets.go.
 package bootstrap
 
 import (

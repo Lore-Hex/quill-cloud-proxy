@@ -106,12 +106,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 1b. Cross-cloud GCP credentials (AWS-side enclave path).
+	// 1b. Cross-cloud GCP credentials (AWS-side and Azure-side enclave paths).
 	//
-	// The parent's bootstrap server pulls the AWS-KMS-wrapped GCP
+	// On AWS the parent's bootstrap server pulls the AWS-KMS-wrapped GCP
 	// service-account key from `quill/trustedrouter-aws-cross-cloud-sa-key`,
 	// unwraps via the per-instance enclave CMK, and ships the plaintext
-	// JSON in `boot.GCPServiceAccountKeyJSON`. The enclave writes it to a
+	// JSON in `boot.GCPServiceAccountKeyJSON`. On Azure the same field is
+	// filled from one entry of the encrypted bundle the enclave opens with
+	// an SKR-released key, so no unattested process holds it. The enclave
+	// writes it to a
 	// tmpfs file and points GOOGLE_APPLICATION_CREDENTIALS at the path so
 	// every downstream client library (gcscache's SA-key token path, the
 	// AWS-side LLM provider transports that read GCP secrets, the BYOK
