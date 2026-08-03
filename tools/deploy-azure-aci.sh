@@ -721,7 +721,16 @@ phase_policy() {
   #     operator's own config directory, and the operator's next host-side `az`
   #     fails with EACCES on its own config. (Docker Desktop on macOS remaps
   #     ownership and hides this; a Linux host or CI runner does not.)
-  run docker run --rm \
+  #   * the copied config's cliextensions are DELETED before installing. confcom
+  #     ships NATIVE wheels (pydantic_core), so a host-built extension copied into
+  #     this Linux container dies with
+  #     "ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'" —
+  #     an error that names neither Azure nor the policy and sends you looking in
+  #     the wrong place. Credentials are what we want from the host config; the
+  #     extension must be installed for the container's own platform.
+  # --platform is explicit: confcom only ships linux/amd64, and on an arm64
+  # workstation docker would otherwise emulate or refuse, after the pull.
+  run docker run --rm --platform linux/amd64 \
     -e AZURE_CONFIG_DIR=/azure-config \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "$WORKDIR:/work" \
@@ -729,8 +738,9 @@ phase_policy() {
     "$confcom_image" \
     sh -c 'mkdir -p /azure-config \
       && cp -a /azure-config-ro/. /azure-config/ \
+      && rm -rf /azure-config/cliextensions \
       && { az extension add --name confcom --yes >/dev/null 2>&1 || true; } \
-      && az confcom acipolicygen --template-file /work/template.json --yes' \
+      && az confcom acipolicygen --template-file /work/template.json -y' \
     2>&1 | tee "$WORKDIR/acipolicygen.log"
 
   if [ "$APPLY" != "1" ]; then
