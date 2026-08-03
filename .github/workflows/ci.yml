@@ -22,6 +22,7 @@ jobs:
         #   cloud_gcp + llm_vertex      → GCP Confidential Space with Vertex AI
         #   cloud_gcp + llm_openrouter  → GCP Confidential Space with OpenRouter ZDR
         #   cloud_gcp + llm_multi       → GCP production multi-provider gateway
+        #   cloud_azure + llm_multi     → Azure confidential containers (ACI)
         #
         # CI exercises every shipped build target so a change that breaks
         # one fails fast.
@@ -31,11 +32,28 @@ jobs:
           - "cloud_gcp,llm_vertex"
           - "cloud_gcp,llm_openrouter"
           - "cloud_gcp,llm_multi"
+          - "cloud_azure,llm_multi"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
+      # The Azure slot runs the envelope round-trip test, which EXECUTES
+      # tools/azure-seal-bundle.py and feeds its ciphertext to the real
+      # decryptor in bootstrap_azure.go. That is the only thing standing
+      # between "both sides read the same paragraph of documentation" and "the
+      # producer's output actually opens", so the interpreter it needs is a CI
+      # dependency, not a developer convenience.
+      #
+      # A venv rather than a bare `pip install`: newer Ubuntu images mark the
+      # system Python externally-managed (PEP 668) and refuse it. The test
+      # FAILS, never skips, if this python cannot import cryptography.
+      - name: Python for the envelope round-trip (${{ matrix.tags }})
+        if: contains(matrix.tags, 'cloud_azure')
+        run: |
+          python3 -m venv /tmp/sealervenv
+          /tmp/sealervenv/bin/pip install --quiet --disable-pip-version-check cryptography
+          echo "QUILL_AZURE_SEALER_PYTHON=/tmp/sealervenv/bin/python" >> "$GITHUB_ENV"
       - name: Build (${{ matrix.tags }})
         run: go build -tags '${{ matrix.tags }}' ./...
       - name: Vet (${{ matrix.tags }})
@@ -77,6 +95,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test deploy gate helpers
         run: python3 tools/test_synthetic_gate_status.py
+      # The Azure deploy script's guards are the only thing standing between a
+      # routine deploy and a container group whose measurement the SKR key does
+      # not pin — which boots, attests perfectly, gets 403 from Key Vault and,
+      # under restartPolicy=Never, does not come back. These tests drive the
+      # real script against a stubbed `az`/`docker` and assert on the mutations
+      # it would have performed, so a guard that stops working fails here rather
+      # than in UAE North.
+      - name: Test the Azure ACI deploy script's guards
+        run: python3 tools/test_deploy_azure_aci.py
       - name: Assert trust page contains no <script> tags
         run: |
           if grep -qi '<script' trust-page/index.html; then

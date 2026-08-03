@@ -44,18 +44,24 @@ import (
 // (loopback), IMDS, and Key Vault. There is no Google endpoint, and
 // TestFetchMakesNoCallToGoogle drives that rather than asserting it in prose.
 
+// The *Secret constants below are secret NAMES, not secret values — the whole
+// point of the binding table is that a name is a public coordinate and only the
+// bundle carries values. gosec's G101 heuristic cannot tell the two apart, and
+// these had to be annotated when cloud_azure joined the CI lint matrix.
 const (
 	testSAEmail       = "tr-azure@quill-cloud-proxy.iam.gserviceaccount.com"
 	testProject       = "quill-cloud-proxy"
-	testDevicesSecret = "tr-device-keys"
-	testORSecret      = "tr-openrouter-key"
-	testAnthSecret    = "tr-anthropic-key"
-	testBundleSecret  = "tr-bootstrap-bundle"
-	testSAKeyEntry    = "tr-cross-cloud-sa-key"
+	testDevicesSecret = "tr-device-keys"        // #nosec G101 -- secret NAME, not a credential.
+	testORSecret      = "tr-openrouter-key"     // #nosec G101 -- secret NAME, not a credential.
+	testAnthSecret    = "tr-anthropic-key"      // #nosec G101 -- secret NAME, not a credential.
+	testBundleSecret  = "tr-bootstrap-bundle"   // #nosec G101 -- Key Vault secret NAME, not a credential.
+	testSAKeyEntry    = "tr-cross-cloud-sa-key" // #nosec G101 -- bundle entry NAME, not a credential.
 	testAKVEndpoint   = "trquillkv.vault.azure.net"
 	testMAAEndpoint   = "trquilluaen.uaen.attest.azure.net"
 	testSKRKeyID      = "tr-bootstrap-wrap"
-	testVaultToken    = "eyJ0eXAiOiJKV1QTEST-MANAGED-IDENTITY-TOKEN"
+	// Not a real token: a fixture string the fake IMDS hands back so the fake
+	// vault can check the Authorization header.
+	testVaultToken = "eyJ0eXAiOiJKV1QTEST-MANAGED-IDENTITY-TOKEN" // #nosec G101 -- test fixture, not a credential.
 
 	// Distinctive so the leak scan cannot produce a false negative.
 	testORValue   = "sk-or-v1-OPENROUTER-SECRET-VALUE-DO-NOT-LOG"
@@ -1724,6 +1730,9 @@ func pemBody(t *testing.T, saKeyJSON []byte) string {
 	block, _ := pem.Decode([]byte(sa.PrivateKey))
 	if block == nil {
 		t.Fatal("no PEM block in test SA key")
+		// Unreachable: t.Fatal does not return. staticcheck cannot know that,
+		// so without this the next line reads as a nil dereference (SA5011).
+		return ""
 	}
 	return base64.StdEncoding.EncodeToString(block.Bytes)[:64]
 }
