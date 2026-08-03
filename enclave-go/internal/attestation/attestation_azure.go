@@ -11,7 +11,8 @@
 //	                           launch — the analogue of GCP's image_digest
 //	                           and Nitro's PCR0
 //	x-ms-sevsnpvm-is-debuggable false on a properly locked-down guest
-//	x-ms-sevsnpvm-reportdata   the 64 bytes WE supply (see below)
+//	x-ms-sevsnpvm-reportdata   sha256(runtime_data) || 32 zero bytes,
+//	                           computed by the sidecar (see below)
 //	x-ms-attestation-type      "sevsnpvm"
 //
 // Why this backend resembles the GCP one and not the AWS one
@@ -26,32 +27,47 @@
 //
 // Binding (the part that must not be got wrong)
 // ---------------------------------------------
-// SEV-SNP gives exactly 64 bytes of caller-controlled REPORT_DATA. That is
-// the only field cryptographically bound into the hardware report, so
-// everything we need to prove must be reduced into it. We hash the same four
-// inputs the other backends bind — TLS leaf fingerprint, device blob, client
-// nonce, and the channel binding that ties the attestation to the live TLS
-// session — into a single SHA-512 digest, which is exactly 64 bytes and fills
-// REPORT_DATA without truncation.
+// SEV-SNP gives 64 bytes of REPORT_DATA. We do NOT compute it: the sidecar
+// does, as sha256(runtime_data) followed by 32 zero bytes. Any report_data we
+// send is ignored. The pre-image is what we control, and it carries the same
+// four inputs the other backends bind — TLS leaf fingerprint, device blob,
+// client nonce, and the channel binding that ties the attestation to the live
+// TLS session. MAA echoes the pre-image back in the token so a verifier can
+// recompute the digest and confirm the report commits to these exact values.
 //
-// The full pre-image is ALSO sent as runtime_data so a verifier can recompute
-// the digest and confirm the report commits to these specific values; MAA
-// echoes it back in the token. Sending only the digest would leave a verifier
-// unable to tell WHAT was bound.
+// FIELD ORDER IS LOAD-BEARING, and not for style reasons. MAA does not echo
+// runtime_data as the bytes we sent; it re-serialises it as a JSON object with
+// keys in ALPHABETICAL order. The original byte order is therefore destroyed
+// in transit, and a verifier recomputing sha256 over the echoed object can only
+// ever reproduce the sorted form. So we emit sorted-by-key JSON in the first
+// place: encoding/json writes struct fields in declaration order, and these
+// fields are declared alphabetically so the emitted bytes already equal what a
+// verifier reconstructs. Reordering this struct silently breaks verification of
+// every token — the hash stops matching and nothing else changes.
 //
-// STATUS: written against Azure's documented guest-attestation contract but
-// NOT yet exercised on real SEV-SNP hardware — there is no Azure environment
-// to run it in yet. The unit tests cover request construction and the error
-// paths through the injectable seam; the live-transport behaviour is exactly
-// the class of thing that only shows up against the real endpoint (see the
-// verifier live-transport lesson from the GCP rollout), so treat a first
-// deployment as a real bring-up, not a formality.
+// MEASURED, not assumed. Verified 2026-08-03 against a real SEV-SNP
+// confidential container group in Azure UAE North (skr sidecar 2.7):
+//
+//	x-ms-sevsnpvm-hostdata     == the CCE policy hash from `az confcom
+//	                              acipolicygen`, and it CHANGED when the
+//	                              container command changed, so it genuinely
+//	                              measures this workload
+//	x-ms-sevsnpvm-reportdata   == sha256(runtime_data) || 32 zero bytes
+//	x-ms-runtime               == a JSON OBJECT with sorted keys, not the
+//	                              base64 string that was sent
+//	x-ms-sevsnpvm-is-debuggable== false
+//
+// The first draft of this file computed SHA-512 into REPORT_DATA and declared
+// the fields in a non-sorted order. Both were reasonable readings of the
+// documentation and both are wrong against the real endpoint: no token would
+// ever have verified. That is the live-transport lesson from the GCP rollout
+// repeating itself, which is why these values are now pinned by a real-token
+// fixture in tools/test_verify_attestation_maa.py rather than by reasoning.
 package attestation
 
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -67,7 +83,12 @@ import (
 // address and the MAA instance are environment-driven: MAA endpoints are
 // per-region and per-tenant, and hardcoding either would make the image
 // non-portable across regions.
-const defaultSidecarURL = "http://localhost:8284/attest/maa"
+// Port 8080, measured against skr sidecar 2.7 in UAE North: its log reads
+// "Listening and serving HTTP on localhost:8080". An earlier draft used 8284,
+// which appears in some Azure samples; against this sidecar every request
+// would have been refused. Override with QUILL_AZURE_ATTESTATION_URL if a
+// future sidecar moves it again.
+const defaultSidecarURL = "http://localhost:8080/attest/maa"
 
 func sidecarURL() string {
 	if v := os.Getenv("QUILL_AZURE_ATTESTATION_URL"); v != "" {
@@ -102,10 +123,14 @@ func Get(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte)
 // Field names and hex encoding intentionally match the values the GCP backend
 // packs into its `nonces` array, so a verifier can apply one rule across both
 // clouds instead of learning a per-cloud layout.
+// Fields are declared in ALPHABETICAL order on purpose — see the package
+// comment. MAA re-serialises this object with sorted keys, so emitting sorted
+// bytes is the only way a verifier can recompute sha256 over what the hardware
+// actually committed to. Do not reorder.
 type runtimeData struct {
-	LeafFingerprint string `json:"leaf_fp"`
-	DeviceHash      string `json:"device_hash"`
 	ChannelBinding  string `json:"channel_binding,omitempty"`
+	DeviceHash      string `json:"device_hash"`
+	LeafFingerprint string `json:"leaf_fp"`
 	Nonce           string `json:"nonce,omitempty"`
 }
 
@@ -124,22 +149,21 @@ func buildTokenRequest(leafDER []byte, deviceBlob []byte, nonce []byte, channelB
 		rd.Nonce = hex.EncodeToString(nonce)
 	}
 
-	// Marshal deterministically: the verifier recomputes REPORT_DATA from
-	// this exact byte string, so any re-ordering would break verification.
-	// encoding/json emits struct fields in declaration order, which is stable.
+	// encoding/json emits struct fields in declaration order, and the fields
+	// are declared alphabetically, so this is already the sorted-key form a
+	// verifier reconstructs from MAA's echoed object.
 	rdJSON, err := json.Marshal(rd)
 	if err != nil {
 		return tokenRequest{}, fmt.Errorf("attestation/azure: marshal runtime data: %w", err)
 	}
 
-	// SHA-512 is exactly 64 bytes — the full width of SEV-SNP REPORT_DATA —
-	// so nothing is truncated and no padding scheme has to be agreed on.
-	digest := sha512.Sum512(rdJSON)
-
+	// No report_data is sent. The sidecar computes REPORT_DATA itself as
+	// sha256(runtime_data) || 32 zero bytes and ignores anything supplied
+	// here, so sending a digest would only invite the belief that this side
+	// chose it.
 	return tokenRequest{
 		MAAEndpoint: maaEndpoint(),
 		RuntimeData: base64.StdEncoding.EncodeToString(rdJSON),
-		ReportData:  base64.StdEncoding.EncodeToString(digest[:]),
 	}, nil
 }
 
@@ -179,5 +203,4 @@ func requestTokenFromSidecar(body []byte) ([]byte, error) {
 type tokenRequest struct {
 	MAAEndpoint string `json:"maa_endpoint"`
 	RuntimeData string `json:"runtime_data"`
-	ReportData  string `json:"report_data,omitempty"`
 }

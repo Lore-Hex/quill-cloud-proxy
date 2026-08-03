@@ -3,11 +3,12 @@
 package attestation
 
 import (
+	"bytes"
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"sort"
 	"testing"
 )
 
@@ -55,10 +56,13 @@ func TestBuildTokenRequestBindsAllFourInputs(t *testing.T) {
 	}
 }
 
-func TestReportDataIsTheFullSha512OfRuntimeData(t *testing.T) {
-	// SEV-SNP REPORT_DATA is exactly 64 bytes. If this ever produced a
-	// different length the hardware would silently zero-pad or reject, and
-	// the verifier's recomputation would stop matching.
+func TestRuntimeDataKeysAreSortedSoAVerifierCanRecompute(t *testing.T) {
+	// The single most fragile property in this file, and it is invisible
+	// without a real token: MAA does NOT echo runtime_data as the bytes we
+	// sent. It re-serialises it as a JSON object with keys in alphabetical
+	// order, so a verifier recomputing sha256 over the echoed object can only
+	// ever produce the sorted form. Emitting sorted bytes is what makes the
+	// two sides agree. Measured against real SEV-SNP hardware 2026-08-03.
 	req, err := buildTokenRequest([]byte("l"), []byte("d"), []byte("n"), []byte("c"))
 	if err != nil {
 		t.Fatalf("buildTokenRequest: %v", err)
@@ -67,16 +71,46 @@ func TestReportDataIsTheFullSha512OfRuntimeData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode runtime_data: %v", err)
 	}
-	reportData, err := base64.StdEncoding.DecodeString(req.ReportData)
+
+	var order []string
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if _, err := dec.Token(); err != nil { // consume '{'
+		t.Fatalf("runtime_data is not a JSON object: %v", err)
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			t.Fatalf("read key: %v", err)
+		}
+		order = append(order, key.(string))
+		var discard json.RawMessage
+		if err := dec.Decode(&discard); err != nil {
+			t.Fatalf("read value: %v", err)
+		}
+	}
+
+	if !sort.StringsAreSorted(order) {
+		t.Errorf("runtime_data keys must be emitted in sorted order, got %v; "+
+			"MAA re-serialises sorted, so any other order makes every real "+
+			"token fail verification", order)
+	}
+}
+
+func TestNoReportDataIsSent(t *testing.T) {
+	// The sidecar computes REPORT_DATA itself as sha256(runtime_data) plus 32
+	// zero bytes and ignores anything we supply. An earlier draft sent a
+	// SHA-512 digest, which no verifier could ever have reproduced from a real
+	// token. Sending nothing keeps the one authority for that value.
+	req, err := buildTokenRequest([]byte("l"), []byte("d"), []byte("n"), []byte("c"))
 	if err != nil {
-		t.Fatalf("decode report_data: %v", err)
+		t.Fatalf("buildTokenRequest: %v", err)
 	}
-	if len(reportData) != 64 {
-		t.Fatalf("report_data must be 64 bytes, got %d", len(reportData))
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
 	}
-	want := sha512.Sum512(raw)
-	if string(reportData) != string(want[:]) {
-		t.Error("report_data is not SHA-512 of runtime_data; verifier could not recompute it")
+	if bytes.Contains(body, []byte("report_data")) {
+		t.Errorf("request must not carry report_data, got %s", body)
 	}
 }
 
@@ -108,8 +142,8 @@ func TestBindingIsSensitiveToEveryInput(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if other.ReportData == base.ReportData {
-			t.Errorf("changing %s did not change report_data", name)
+		if other.RuntimeData == base.RuntimeData {
+			t.Errorf("changing %s did not change runtime_data", name)
 		}
 	}
 }

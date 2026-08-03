@@ -18,6 +18,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+import pathlib
 import sys
 import time
 import types
@@ -168,7 +169,7 @@ def maa_payload(
         "x-ms-attestation-type": "sevsnpvm",
         "x-ms-sevsnpvm-is-debuggable": False,
         "x-ms-sevsnpvm-hostdata": HOSTDATA,
-        "x-ms-sevsnpvm-reportdata": hashlib.sha512(runtime_bytes).hexdigest(),
+        "x-ms-sevsnpvm-reportdata": hashlib.sha256(runtime_bytes).hexdigest() + "00" * 32,
         "x-ms-runtime": runtime_claim,
     }
     payload.update(overrides)
@@ -436,10 +437,10 @@ def test_hostdata_match_is_case_insensitive() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_reportdata_not_matching_sha512_of_runtime_data_is_rejected() -> None:
+def test_reportdata_not_matching_sha256_of_runtime_data_is_rejected() -> None:
     with pytest.raises(SystemExit) as raised:
         run_verify(
-            maa_payload(**{"x-ms-sevsnpvm-reportdata": hashlib.sha512(b"some other bytes").hexdigest()})
+            maa_payload(**{"x-ms-sevsnpvm-reportdata": hashlib.sha256(b"some other bytes").hexdigest() + "00" * 32})
         )
     assert "REPORT_DATA does not commit to the echoed runtime data" in str(raised.value)
 
@@ -478,15 +479,24 @@ def test_runtime_object_without_runtime_fields_is_rejected() -> None:
     assert "carries no leaf_fp/device_hash runtime data" in str(raised.value)
 
 
-def test_canonical_runtime_json_matches_go_encoding_json() -> None:
-    """Go emits declaration order, no spaces, and drops empty omitempty fields."""
+def test_canonical_runtime_json_is_sorted_no_spaces_and_drops_omitempty() -> None:
+    """SORTED keys, no spaces, empty omitempty fields dropped.
+
+    Sorted, not Go declaration order. MAA re-serialises runtime_data with keys
+    alphabetised, so the bytes the enclave sent cannot be recovered from the
+    token and only the sorted form is reconstructible. attestation_azure.go now
+    declares its struct fields alphabetically to match, so both sides hash
+    identical bytes. Measured on real SEV-SNP hardware 2026-08-03; the earlier
+    declaration-order spelling would have failed every genuine token.
+    """
     assert VERIFIER.canonical_runtime_data_json(runtime_fields()) == (
-        b'{"leaf_fp":"' + CERT_FP.encode() + b'","device_hash":"' + DEVICE_HASH.encode()
-        + b'","channel_binding":"' + EXPORTER.hex().encode()
+        b'{"channel_binding":"' + EXPORTER.hex().encode()
+        + b'","device_hash":"' + DEVICE_HASH.encode()
+        + b'","leaf_fp":"' + CERT_FP.encode()
         + b'","nonce":"' + NONCE_HEX.encode() + b'"}'
     )
     assert VERIFIER.canonical_runtime_data_json({"leaf_fp": "aa", "device_hash": "bb"}) == (
-        b'{"leaf_fp":"aa","device_hash":"bb"}'
+        b'{"device_hash":"bb","leaf_fp":"aa"}'
     )
 
 
@@ -1078,3 +1088,110 @@ def test_cose_documents_are_not_captured_by_jwt_routing() -> None:
     """
     assert VERIFIER.looks_like_jwt(b"\x84\x44\xa1\x01\x38\x22") is False
     assert VERIFIER.looks_like_jwt(sign_jwt(maa_payload())) is True
+
+
+# ---------------------------------------------------------------------------
+# Real-hardware fixture.
+#
+# Every shape below was ASSUMED when this verifier was first written, and three
+# of the assumptions were wrong. The token in tools/fixtures/ came off a real
+# AMD SEV-SNP confidential container group in Azure UAE North on 2026-08-03
+# (skr sidecar 2.7), signed by a real MAA instance. It exists so the corrections
+# cannot silently regress into the plausible-but-wrong versions.
+# ---------------------------------------------------------------------------
+
+_FIXTURE_DIR = pathlib.Path(__file__).parent / "fixtures"
+_REAL_TOKEN = (_FIXTURE_DIR / "maa_real_sevsnp_token.jwt").read_text().strip()
+_REAL_ISSUER = "https://trquilluaen.uaen.attest.azure.net"
+_REAL_HOSTDATA = "994b542047b4d5ed6163b7b54e56e0d642624d1e7179b1df43b9fe761c25a987"
+# The probe bound leaf_fp = sha256(b"probe-leaf-der"), so this is the cert.
+_REAL_CERT_DER = b"probe-leaf-der"
+_REAL_EXPORTER = bytes.fromhex("aa" * 32)
+_REAL_NONCE_HEX = "bb" * 16
+
+
+def _va():
+    return _load_verifier()
+
+
+def _real_payload():
+    return _va().parse_jwt_payload(_REAL_TOKEN.encode())
+
+
+class TestRealHardwareToken:
+    def test_hostdata_is_the_cce_policy_hash(self):
+        """HOST_DATA carries the confidential-container policy hash.
+
+        This is the whole reason Azure can attest at the same strength as
+        Nitro PCR0 and Confidential Space image_digest. It was also observed
+        to CHANGE when the container command changed, so it measures this
+        workload rather than just the base image.
+        """
+        assert _real_payload()["x-ms-sevsnpvm-hostdata"] == _REAL_HOSTDATA
+
+    def test_hostdata_is_not_all_zero(self):
+        """A plain CVM yields all-zero HOST_DATA. Confidential containers do not."""
+        raw = _real_payload()["x-ms-sevsnpvm-hostdata"]
+        assert any(bytes.fromhex(raw))
+
+    def test_report_data_is_sha256_of_runtime_then_zero_padding(self):
+        """NOT sha512, and only half the 64-byte field is the digest.
+
+        The first draft checked sha512 across all 64 bytes; it would have
+        rejected this genuine token, which reads as "Azure attestation is
+        broken" rather than "our verifier is wrong".
+        """
+        va = _va()
+        payload = _real_payload()
+        _fields, runtime_bytes = va.maa_runtime_data(payload)
+        claimed = payload["x-ms-sevsnpvm-reportdata"].lower()
+        assert len(claimed) == 128
+        assert claimed[:64] == hashlib.sha256(runtime_bytes).hexdigest()
+        assert set(claimed[64:]) == {"0"}
+
+    def test_runtime_claim_is_an_object_with_sorted_keys(self):
+        """MAA re-serialises runtime_data; the sent byte order does not survive.
+
+        This is why attestation_azure.go declares its struct fields
+        alphabetically — so the bytes it hashes already equal what is
+        reconstructed here.
+        """
+        rd = _real_payload()["x-ms-runtime"]
+        assert isinstance(rd, dict)
+        assert list(rd.keys()) == sorted(rd.keys())
+
+    def test_full_verification_passes_against_the_real_token(self, monkeypatch):
+        """The end-to-end chain, on hardware-produced evidence."""
+        va = _va()
+        jwks = json.loads((_FIXTURE_DIR / "maa_real_jwks.json").read_text())
+        monkeypatch.setattr(va, "fetch_maa_jwks", lambda _uri: jwks)
+        # The fixture token expires; freeze the clock inside its window.
+        monkeypatch.setattr(va.time, "time", lambda: _real_payload()["iat"] + 60)
+        va.verify_maa_jwt(
+            _REAL_TOKEN.encode(),
+            _REAL_CERT_DER,
+            exporter=_REAL_EXPORTER,
+            expect_hostdata=_REAL_HOSTDATA,
+            expect_issuer=_REAL_ISSUER,
+            nonce_hex=_REAL_NONCE_HEX,
+            allow_debug=False,
+            require_exporter=True,
+        )
+
+    def test_real_token_is_rejected_for_a_different_hostdata(self, monkeypatch):
+        """The workload pin must actually bite on real evidence too."""
+        va = _va()
+        jwks = json.loads((_FIXTURE_DIR / "maa_real_jwks.json").read_text())
+        monkeypatch.setattr(va, "fetch_maa_jwks", lambda _uri: jwks)
+        monkeypatch.setattr(va.time, "time", lambda: _real_payload()["iat"] + 60)
+        with pytest.raises(SystemExit):
+            va.verify_maa_jwt(
+                _REAL_TOKEN.encode(),
+                _REAL_CERT_DER,
+                exporter=_REAL_EXPORTER,
+                expect_hostdata="ff" * 32,
+                expect_issuer=_REAL_ISSUER,
+                nonce_hex=_REAL_NONCE_HEX,
+                allow_debug=False,
+                require_exporter=True,
+            )

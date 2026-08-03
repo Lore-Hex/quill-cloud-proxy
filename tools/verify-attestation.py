@@ -1138,22 +1138,29 @@ def _decode_base64_any(value: str, what: str) -> bytes:
 
 
 def canonical_runtime_data_json(fields: dict[str, Any]) -> bytes:
-    """Rebuild the exact bytes the enclave hashed into SEV-SNP REPORT_DATA.
+    """Rebuild the exact bytes the SNP report commits to.
 
-    attestation_azure.go marshals its runtimeData struct with encoding/json,
-    which emits fields in declaration order, with no whitespace, dropping the
-    two `omitempty` fields when they are empty. Reproducing those bytes
-    byte-for-byte is the only thing that makes the SHA-512 recomputation a real
-    check rather than a formality — a different serialisation would simply
-    never match and every token would fail.
+    MEASURED against a real SEV-SNP confidential container group (Azure UAE
+    North, skr sidecar 2.7) on 2026-08-03. MAA does NOT echo the base64 string
+    the enclave sent — it re-serialises runtime_data as a JSON object with keys
+    in ALPHABETICAL order, so the sent byte order is destroyed in transit and
+    only the sorted form can ever be reconstructed here.
+
+    attestation_azure.go therefore declares its runtimeData fields
+    alphabetically so the bytes it hashes already equal this reconstruction.
+    Sorting here and not there (or vice versa) means the digest never matches
+    and every real token fails — which is exactly what the first draft did,
+    with fields in declaration order and SHA-512 over them.
+
+    `omitempty` still applies: absent channel_binding/nonce are dropped rather
+    than emitted as "".
     """
-    ordered: dict[str, str] = {}
-    for name in MAA_RUNTIME_FIELDS:
-        value = fields.get(name)
-        if name in MAA_RUNTIME_OMITEMPTY_FIELDS and value in (None, ""):
-            continue
-        ordered[name] = "" if value is None else str(value)
-    return json.dumps(ordered, separators=(",", ":")).encode("utf-8")
+    ordered = {
+        name: ("" if fields.get(name) is None else str(fields.get(name)))
+        for name in sorted(MAA_RUNTIME_FIELDS)
+        if not (name in MAA_RUNTIME_OMITEMPTY_FIELDS and fields.get(name) in (None, ""))
+    }
+    return json.dumps(ordered, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
 def _find_runtime_fields(obj: Any, depth: int = 0) -> dict[str, Any] | None:
@@ -1427,15 +1434,38 @@ def verify_maa_jwt(
     if not isinstance(report_data, str) or not report_data.strip():
         sys.exit("[FAIL] MAA token has no x-ms-sevsnpvm-reportdata claim")
     claimed_report_data = report_data.strip().lower().removeprefix("0x")
-    computed_report_data = hashlib.sha512(runtime_bytes).hexdigest()
-    if claimed_report_data != computed_report_data:
+    # MEASURED on real hardware (Azure UAE North, skr sidecar 2.7, 2026-08-03):
+    # REPORT_DATA is sha256(runtime_data) followed by 32 ZERO bytes, and the
+    # sidecar computes it itself — a report_data supplied in the request is
+    # ignored. SEV-SNP's field is 64 bytes wide and sha256 only fills half of
+    # it, so the tail padding is part of the format, not slack.
+    #
+    # The first draft checked sha512 over the whole 64 bytes. It was a
+    # defensible reading of the docs and it would have rejected every genuine
+    # token, which is the failure mode that looks like "Azure attestation is
+    # broken" rather than "our verifier is wrong".
+    if len(claimed_report_data) != 128:
+        sys.exit(
+            "[FAIL] MAA x-ms-sevsnpvm-reportdata is not 64 bytes: "
+            f"{len(claimed_report_data)} hex chars"
+        )
+    claimed_digest, claimed_padding = claimed_report_data[:64], claimed_report_data[64:]
+    computed_report_data = hashlib.sha256(runtime_bytes).hexdigest()
+    if claimed_digest != computed_report_data:
         sys.exit(
             "[FAIL] MAA REPORT_DATA does not commit to the echoed runtime data:\n"
-            f"  sha512(runtime_data):     {computed_report_data}\n"
-            f"  x-ms-sevsnpvm-reportdata: {claimed_report_data}\n"
+            f"  sha256(runtime_data):     {computed_report_data}\n"
+            f"  x-ms-sevsnpvm-reportdata: {claimed_digest}\n"
             "  the hardware report is not bound to these runtime claims"
         )
-    print(f"[ok] SEV-SNP REPORT_DATA is sha512(runtime_data) ({computed_report_data[:16]}...)")
+    if set(claimed_padding) != {"0"}:
+        # Non-zero tail means the layout is not the one measured here. Refuse
+        # rather than assume the first 32 bytes still mean what we think.
+        sys.exit(
+            "[FAIL] MAA REPORT_DATA tail is not zero padding: "
+            f"{claimed_padding}\n  expected sha256(runtime_data) || 32 zero bytes"
+        )
+    print(f"[ok] SEV-SNP REPORT_DATA is sha256(runtime_data)||0*32 ({computed_report_data[:16]}...)")
 
     leaf_fp = str(fields.get("leaf_fp") or "").strip().lower()
     cert_fp = hashlib.sha256(cert_der).hexdigest().lower()
