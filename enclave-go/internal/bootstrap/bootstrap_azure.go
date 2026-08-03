@@ -169,6 +169,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -307,11 +308,32 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	// RUNTIME. Carrying it in the bundle keeps BOOT free of Google calls; see
 	// the "Runtime Google dependency" note in the package comment for what full
 	// independence would additionally require.
-	saKey, err := bundle.require(az.saKeyEntry, "gcp service-account key")
-	if err != nil {
-		return nil, err
+	// OPTIONAL, matching the AWS parent. bootstrap_server.py treats a missing
+	// cross-cloud SA key as a WARNING, not a fatal error, and that is not
+	// laxness: requiring it once turned a missing secret into a bootstrap that
+	// never bound its vsock listener, so the enclave died with ECONNRESET and
+	// nothing said why. The fix there was to make it optional and LOUD.
+	//
+	// Requiring it here would also be worse than inconsistent. No cross-cloud
+	// SA key is provisioned in this account at all, so a hard requirement means
+	// Azure cannot deploy without first minting a long-lived Google credential -
+	// i.e. the cloud built for independence could not start without adding a
+	// dependency on the cloud it exists to be independent of.
+	//
+	// What degrades without it: gcscache (the shared ACME cert cache in GCS) and
+	// byokcache (the KMS unwrapper). Both branch on GOOGLE_APPLICATION_CREDENTIALS
+	// and are unreachable from boot. An enclave without this key serves its own
+	// attested self-signed certificate - exactly what the AWS gateway already
+	// does, and what tools/verify-attestation.py --attested-cert-only validates -
+	// and refuses BYOK unwrap rather than silently mis-serving it.
+	if saKey := bundle.optional(az.saKeyEntry); saKey != "" {
+		data.GCPServiceAccountKeyJSON = saKey
+	} else {
+		log.Printf("%s bootstrap: no %q entry in the bundle: shared ACME cache and "+
+			"BYOK unwrap are DISABLED; the enclave will serve its own attested "+
+			"self-signed certificate (this is the AWS posture, not a failure)",
+			azureTag, az.saKeyEntry)
 	}
-	data.GCPServiceAccountKeyJSON = saKey
 	return data, nil
 }
 
@@ -1221,6 +1243,16 @@ func (b secretBundle) require(name, what string) (string, error) {
 		return "", fmt.Errorf("%s: bundle: entry %q for the %s is empty", azureTag, name, what)
 	}
 	return value, nil
+}
+
+// optional reads an entry that may legitimately be absent, returning "" when it
+// is. Distinct from require on purpose: the caller decides whether absence is a
+// failure, so a degraded-but-honest boot cannot be mistaken for a broken one.
+func (b secretBundle) optional(name string) string {
+	if name == "" {
+		return ""
+	}
+	return strings.TrimSpace(b[name])
 }
 
 // names lists the bundle's KEYS — never its values — so a "which entry is

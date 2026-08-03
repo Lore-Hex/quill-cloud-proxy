@@ -1282,24 +1282,66 @@ func TestFetchBundleDeviceKeysNotJSON(t *testing.T) {
 	requireErrContains(t, err, "bootstrap/azure", "parse device-keys JSON")
 }
 
-// gcscache (shared ACME cache in GCS) and byokcache (KMS unwrapper) read
-// GOOGLE_APPLICATION_CREDENTIALS at runtime. A bundle with no SA key boots an
-// enclave that cannot renew its TLS certificate or unwrap a BYOK key — failures
-// that surface hours later, far from their cause. Fail at boot instead.
-func TestFetchBundleMissingTheSAKeyEntry(t *testing.T) {
+// The SA key is OPTIONAL, matching the AWS parent.
+//
+// An earlier draft required it, reasoning that gcscache (shared ACME cache) and
+// byokcache (KMS unwrapper) read GOOGLE_APPLICATION_CREDENTIALS at runtime, so a
+// missing key surfaces hours later at cert renewal. That reasoning is real but
+// the conclusion was wrong twice over.
+//
+// First, precedent: the AWS parent's bootstrap_server.py treats a missing
+// cross-cloud SA key as a warning. Requiring it there once produced a bootstrap
+// that never bound its vsock listener, so the enclave died with ECONNRESET and
+// nothing said why - the fix was to make it optional and LOUD.
+//
+// Second, and worse: no cross-cloud SA key is provisioned in this account.
+// Requiring it means the cloud built for independence cannot start without first
+// minting a long-lived Google credential.
+//
+// Absent, the enclave serves its own attested self-signed certificate - the AWS
+// posture, validated by verify-attestation.py --attested-cert-only.
+func TestFetchBundleWithoutTheSAKeyEntryStillBoots(t *testing.T) {
 	f := newAzureFixture(t)
 	delete(f.bundle, testSAKeyEntry)
 
-	_, err := Fetch(context.Background())
-	requireErrContains(t, err, "bootstrap/azure", "bundle", "no entry", testSAKeyEntry, "gcp service-account key")
+	data, err := Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("a bundle with no SA key must still boot: %v", err)
+	}
+	if data.GCPServiceAccountKeyJSON != "" {
+		t.Errorf("no SA key was supplied, so none must be carried; got %d bytes",
+			len(data.GCPServiceAccountKeyJSON))
+	}
 }
 
-func TestFetchBundleEmptySAKeyEntry(t *testing.T) {
+func TestFetchBundleBlankSAKeyEntryIsTreatedAsAbsent(t *testing.T) {
+	// Whitespace must not become a "present" credential that main.go writes to
+	// tmpfs and points GOOGLE_APPLICATION_CREDENTIALS at - that would fail at
+	// first use rather than being cleanly disabled here.
 	f := newAzureFixture(t)
 	f.bundle[testSAKeyEntry] = "   "
 
-	_, err := Fetch(context.Background())
-	requireErrContains(t, err, "bootstrap/azure", "bundle", testSAKeyEntry, "is empty")
+	data, err := Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("a blank SA key must be treated as absent, not fatal: %v", err)
+	}
+	if data.GCPServiceAccountKeyJSON != "" {
+		t.Errorf("blank SA key must not be carried; got %q", data.GCPServiceAccountKeyJSON)
+	}
+}
+
+func TestFetchBundleCarriesTheSAKeyWhenPresent(t *testing.T) {
+	// Optional must not mean ignored.
+	f := newAzureFixture(t)
+	f.bundle[testSAKeyEntry] = `{"type":"service_account"}`
+
+	data, err := Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if data.GCPServiceAccountKeyJSON != `{"type":"service_account"}` {
+		t.Errorf("a supplied SA key must be carried, got %q", data.GCPServiceAccountKeyJSON)
+	}
 }
 
 // A "which entry is missing?" error has to be actionable, which means listing
