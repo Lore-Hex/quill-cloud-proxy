@@ -51,9 +51,9 @@ func (c *MiniMaxClient) QuoteResolved(_ context.Context, request *ResolvedReques
 	if extraImages < 0 {
 		extraImages = 0
 	}
-	// MiniMax H3 is $0.14/s at 2K. The first five reference images and
-	// audio references are free; each additional image is $0.08.
-	return staticCustomerQuote(140_000, request.DurationSeconds, extraImages*80_000)
+	// MiniMax H3 is $0.13/s at 2K. The first five input images are free;
+	// each additional image is $0.04.
+	return staticCustomerQuote(130_000, request.DurationSeconds, extraImages*40_000)
 }
 
 func (c *MiniMaxClient) QueueResolved(ctx context.Context, request *ResolvedRequest) (*QueueResult, error) {

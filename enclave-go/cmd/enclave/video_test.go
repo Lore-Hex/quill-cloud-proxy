@@ -246,7 +246,7 @@ func TestVideoCreateFallsBackAfterRetryableDirectProviderFailure(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&prepareBody); err != nil {
 				t.Fatal(err)
 			}
-			_, _ = io.WriteString(w, `{"data":{"id":"job-fallback","workspace_id":"ws-1","key_hash":"key-hash","authorization_id":"auth-fallback","model":"minimax/hailuo-3","provider":"minimax","endpoint_id":"minimax/hailuo-3@minimax/prepaid","provider_model":"minimax/hailuo-3","quoted_microdollars":840000,"input_mode":"text","duration_seconds":5,"resolution":"2K","aspect_ratio":"16:9","generate_audio":true,"region":"us-central1","status":"submitting","created":true}}`)
+			_, _ = io.WriteString(w, `{"data":{"id":"job-fallback","workspace_id":"ws-1","key_hash":"key-hash","authorization_id":"auth-fallback","model":"minimax/hailuo-3","provider":"minimax","endpoint_id":"minimax/hailuo-3@minimax/prepaid","provider_model":"minimax/hailuo-3","quoted_microdollars":780000,"input_mode":"text","duration_seconds":5,"resolution":"2K","aspect_ratio":"16:9","generate_audio":true,"region":"us-central1","status":"submitting","created":true}}`)
 		case "/internal/gateway/video/jobs/job-fallback/queued":
 			events = append(events, "queued")
 			if err := json.NewDecoder(r.Body).Decode(&queuedBody); err != nil {
@@ -278,7 +278,7 @@ func TestVideoCreateFallsBackAfterRetryableDirectProviderFailure(t *testing.T) {
 	if authorizeBody["additional_cost_reservation_microdollars"] != float64(960_000) {
 		t.Fatalf("authorization did not reserve the maximum fallback quote: %#v", authorizeBody)
 	}
-	if prepareBody["provider"] != "minimax" || prepareBody["quoted_microdollars"] != float64(840_000) {
+	if prepareBody["provider"] != "minimax" || prepareBody["quoted_microdollars"] != float64(780_000) {
 		t.Fatalf("prepare did not record the initially selected direct route: %#v", prepareBody)
 	}
 	if queuedBody["provider"] != "venice" ||

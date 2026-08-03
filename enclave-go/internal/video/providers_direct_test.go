@@ -3,6 +3,7 @@ package video
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -97,8 +98,8 @@ func TestMiniMaxProviderUsesH3MultimodalContractAndExactQuote(t *testing.T) {
 		}
 	})})
 	quoted, err := client.QuoteResolved(context.Background(), request)
-	if err != nil || quoted != 672_000 {
-		t.Fatalf("quote=%d err=%v, want 672000", quoted, err)
+	if err != nil || quoted != 624_000 {
+		t.Fatalf("quote=%d err=%v, want 624000", quoted, err)
 	}
 	queued, err := client.QueueResolved(context.Background(), request)
 	if err != nil || queued.QueueID != "minimax-job" {
@@ -114,6 +115,24 @@ func TestMiniMaxProviderUsesH3MultimodalContractAndExactQuote(t *testing.T) {
 	poll, err := client.Retrieve(context.Background(), queued.ProviderModel, queued.QueueID)
 	if err != nil || poll.State != PollCompleted || poll.DownloadURL == "" {
 		t.Fatalf("poll=%#v err=%v", poll, err)
+	}
+}
+
+func TestMiniMaxProviderChargesCurrentExtraImagePrice(t *testing.T) {
+	references := make([]InputReference, 0, 6)
+	for index := 0; index < 6; index++ {
+		references = append(references, InputReference{
+			Type: "image",
+			URL:  fmt.Sprintf("https://assets.example/reference-%d.png", index),
+		})
+	}
+	request := resolvedVideoRequest(t, CreateRequest{
+		Model: "minimax/hailuo-3", Prompt: "move", Duration: 4,
+		InputReferences: references,
+	})
+	quoted, err := NewMiniMaxClient("minimax-secret", nil).QuoteResolved(context.Background(), request)
+	if err != nil || quoted != 672_000 {
+		t.Fatalf("quote=%d err=%v, want 672000", quoted, err)
 	}
 }
 

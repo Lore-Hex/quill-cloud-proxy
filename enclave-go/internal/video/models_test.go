@@ -235,6 +235,11 @@ func TestResolveSelectsImageAndReferenceVariants(t *testing.T) {
 			req:  CreateRequest{Model: "minimax/hailuo-3", Prompt: "move", InputReferences: []InputReference{{Type: "audio", URL: "https://assets.example/reference.mp3"}}},
 			want: "minimax-h3-reference-to-video",
 		},
+		{
+			name: "hailuo h3 video reference",
+			req:  CreateRequest{Model: "minimax/hailuo-3", Prompt: "move", InputReferences: []InputReference{{Type: "video", URL: "https://assets.example/reference.mp4"}}},
+			want: "minimax-h3-reference-to-video",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -261,7 +266,6 @@ func TestResolveRejectsUnsupportedAndUnsafeInputs(t *testing.T) {
 		{name: "metadata url", req: CreateRequest{Model: "minimax/hailuo-3", Prompt: "x", FrameImages: []FrameImage{{ImageURL: "https://metadata.google.internal/computeMetadata/v1/"}}}},
 		{name: "private ip", req: CreateRequest{Model: "minimax/hailuo-3", Prompt: "x", FrameImages: []FrameImage{{ImageURL: "https://127.0.0.1/a.png"}}}},
 		{name: "http", req: CreateRequest{Model: "minimax/hailuo-3", Prompt: "x", FrameImages: []FrameImage{{ImageURL: "http://example.com/a.png"}}}},
-		{name: "hailuo video reference", req: CreateRequest{Model: "minimax/hailuo-3", Prompt: "x", InputReferences: []InputReference{{Type: "video", URL: "https://example.com/a.mp4"}}}},
 		{name: "omni audio toggle", req: CreateRequest{Model: "google/gemini-omni-flash", Prompt: "x", GenerateAudio: boolPointer(true)}},
 		{name: "ltx bad duration", req: CreateRequest{Model: "lightricks/ltx-2.3", Prompt: "x", Duration: 7}},
 		{name: "unknown field model", req: CreateRequest{Model: "unknown/video", Prompt: "x"}},
@@ -318,7 +322,7 @@ func TestModelsJSONIsTruthfulAboutProviderPrivacy(t *testing.T) {
 				t.Fatalf("omni modalities = %q", modalities)
 			}
 		case "minimax/hailuo-3":
-			if modalities != "text,image,audio" {
+			if modalities != "text,image,audio,video" {
 				t.Fatalf("H3 modalities = %q", modalities)
 			}
 			if row.TrustedRouter["audio_mode"] != "always" {
