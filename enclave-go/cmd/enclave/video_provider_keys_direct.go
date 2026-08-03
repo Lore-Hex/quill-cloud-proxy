@@ -11,7 +11,8 @@ func videoProviderKeys(boot *types.BootstrapData) video.ProviderKeys {
 	return video.ProviderKeys{
 		Venice: boot.VeniceAPIKey, Google: boot.GeminiAPIKey,
 		MiniMax: boot.MiniMaxAPIKey, XAI: boot.GrokAPIKey, Alibaba: boot.AlibabaAPIKey,
-		LTX: boot.LTXAPIKey, Runway: boot.RunwayAPIKey,
+		AtlasCloud: boot.AtlasCloudAPIKey,
+		LTX:        boot.LTXAPIKey, Runway: boot.RunwayAPIKey,
 		OpenAI: boot.OpenAIVideoAPIKey, Kling: boot.KlingAPIKey,
 	}
 }

@@ -42,15 +42,16 @@ type Provider interface {
 }
 
 type ProviderKeys struct {
-	Venice  string
-	Google  string
-	MiniMax string
-	XAI     string
-	Alibaba string
-	LTX     string
-	Runway  string
-	OpenAI  string
-	Kling   string
+	Venice     string
+	Google     string
+	MiniMax    string
+	AtlasCloud string
+	XAI        string
+	Alibaba    string
+	LTX        string
+	Runway     string
+	OpenAI     string
+	Kling      string
 }
 
 type Registry struct {
@@ -61,6 +62,7 @@ func NewRegistry(keys ProviderKeys, httpc *http.Client) *Registry {
 	return NewRegistryWithProviders(
 		NewGoogleVeoClient(keys.Google, httpc),
 		NewMiniMaxClient(keys.MiniMax, httpc),
+		NewAtlasCloudVideoClient(keys.AtlasCloud, httpc),
 		NewXAIClient(keys.XAI, httpc),
 		NewAlibabaClient(keys.Alibaba, httpc),
 		NewLTXClient(keys.LTX, httpc),
