@@ -30,7 +30,7 @@
 # revert to the two-stage variant in git history (commit ea094b1) —
 # that cleanly isolates Go 1.25 stdlib as the actual culprit.
 
-FROM golang:1.25-bookworm@sha256:61170847dd0e20c3c1e374aea35c7057c42e1d638d775c360afcd548531c05ab AS builder
+FROM golang:1.26-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
