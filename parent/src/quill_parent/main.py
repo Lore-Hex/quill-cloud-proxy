@@ -163,6 +163,7 @@ async def _enclave_is_reachable(settings: Settings) -> bool:
     a health check, and "I could not tell" must never read as "fine" —
     that equivalence is what made the previous version useless.
     """
+
     def dial() -> bool:
         sock = socket.socket(AF_VSOCK, socket.SOCK_STREAM)
         try:
