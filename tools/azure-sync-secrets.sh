@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Seed the Azure bootstrap bundle, the same way every other cloud gets seeded.
+#
+# Why this looks like tools/sync-secrets-to-aws.sh
+# ================================================
+# That script mirrors provider keys from GCP Secret Manager into AWS Secrets
+# Manager, and says why: GCP stays the single source of truth, and the AWS
+# enclave then consumes secrets from its OWN cloud's store the same way the GCP
+# enclave consumes them from Secret Manager. Provisioning reads from GCP; the
+# enclave never does.
+#
+# Azure is the same shape with one difference. Key Vault holds ONE secret - an
+# encrypted bundle of all of them - because Key Vault's per-secret access is
+# granted to an identity, and an identity is attached to a container group
+# rather than to a measurement. Sealing the bundle to the SKR key means the
+# managed identity can fetch it and still not read it: only a workload whose
+# x-ms-sevsnpvm-hostdata matches the release policy can decrypt.
+#
+# An earlier version of this read from AWS Secrets Manager, which was simply
+# wrong. AWS is a peer cloud, not a source of truth; it happened to hold most of
+# these keys because it had been seeded the same way. Reading from it made Azure
+# inherit whatever AWS was missing - the device-key blob, both advisor prompts,
+# the cohere key - and turned a straightforward mirror into a two-source merge.
+#
+# SOURCES (pick one)
+#   --from-gcp    (default)  mirror from GCP Secret Manager, like the AWS script
+#   --values FILE            a JSON object of {logical name: value}; no cloud
+#                            read at all, for an operator working from their own
+#                            copy or restoring from a break-glass export
+#
+# WHAT THIS TOUCHES: every provider key in plaintext, in memory and in one
+# mode-0600 temp file removed on every exit path. Secret NAMES are printed;
+# values never are.
+#
+# Usage:
+#   bash tools/azure-sync-secrets.sh                      # dry-run from GCP
+#   bash tools/azure-sync-secrets.sh --apply
+#   bash tools/azure-sync-secrets.sh --values ./secrets.json --apply
+set -euo pipefail
+
+GCP_PROJECT="${GCP_PROJECT:-quill-cloud-proxy}"
+GCP_ACCOUNT="${GCP_ACCOUNT:-tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com}"
+VAULT="${VAULT:-trquillkv}"
+SKR_KEY="${SKR_KEY:-tr-bootstrap-wrap}"
+BUNDLE_SECRET="${BUNDLE_SECRET:-tr-bootstrap-bundle}"
+SEALER_PYTHON="${SEALER_PYTHON:-python3}"
+
+APPLY=0
+VALUES_IN=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --apply)     APPLY=1; shift ;;
+    --from-gcp)  VALUES_IN=""; shift ;;
+    --values)    VALUES_IN="$2"; shift 2 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$here/.." && pwd)"
+
+env_json="$(mktemp)"; values_json="$(mktemp)"
+chmod 600 "$env_json" "$values_json"
+trap 'rm -f "$env_json" "$values_json"' EXIT
+
+echo "==> rendering the deploy env (the bundle's key names come from it)"
+# print-env is the single source of truth for which logical names the container
+# group will ask for, and the env is MEASURED. Deriving the list any other way
+# is how a bundle ends up valid for a measurement other than the one deployed -
+# which surfaces as a 403 from Key Vault with nothing pointing at the cause.
+RESOURCE_GROUP="${RESOURCE_GROUP:-TR-TEE-DUBAI}" \
+SKR_COMMAND="${SKR_COMMAND:-/bin/skr}" \
+  bash "$repo/tools/deploy-azure-aci.sh" print-env > "$env_json"
+
+if [ -n "$VALUES_IN" ]; then
+  echo "==> using operator-supplied values: ${VALUES_IN}"
+  cp "$VALUES_IN" "$values_json"
+  "$SEALER_PYTHON" - "$env_json" "$values_json" <<'PY'
+import json, sys
+env, values = (json.load(open(p)) for p in sys.argv[1:3])
+EXCLUDED = {"QUILL_AZURE_BUNDLE_SECRET"}  # the secret this script WRITES
+names = sorted({v for k, v in env.items()
+                if k.startswith("QUILL_") and k.endswith("_SECRET") and k not in EXCLUDED})
+have = [n for n in names if str(values.get(n, "")).strip()]
+print(f"    required : {len(names)}")
+print(f"    supplied : {len(have)}")
+absent = [n for n in names if n not in have]
+if absent:
+    print(f"    ABSENT   : {absent}")
+PY
+else
+  echo "==> mirroring from GCP Secret Manager (${GCP_PROJECT}) — same source of truth as the AWS mirror"
+  "$SEALER_PYTHON" - "$env_json" "$values_json" "$GCP_PROJECT" "$GCP_ACCOUNT" <<'PY'
+import json, subprocess, sys
+
+env_path, values_path, project, account = sys.argv[1:5]
+env = json.load(open(env_path))
+
+# QUILL_AZURE_BUNDLE_SECRET names the Key Vault secret this script WRITES.
+# Treating it as an input makes the script hunt for something that by definition
+# cannot exist yet, and report a self-inflicted "missing" that hides real gaps.
+EXCLUDED = {"QUILL_AZURE_BUNDLE_SECRET"}
+names = sorted({v for k, v in env.items()
+                if k.startswith("QUILL_") and k.endswith("_SECRET") and k not in EXCLUDED})
+
+values, missing = {}, []
+for name in names:
+    proc = subprocess.run(
+        ["gcloud", "secrets", "versions", "access", "latest",
+         "--secret", name, "--project", project, "--account", account],
+        capture_output=True, text=True,
+    )
+    # A trailing newline in a stored secret becomes a 401 that reads as a bad
+    # key, so strip exactly what the CLI appends and nothing else.
+    if proc.returncode == 0 and proc.stdout.strip():
+        values[name] = proc.stdout.rstrip("\n")
+    else:
+        missing.append(name)
+
+json.dump(values, open(values_path, "w"))
+print(f"    required : {len(names)}")
+print(f"    resolved : {len(values)}")
+if missing:
+    print(f"    MISSING  : {missing}")
+    print("    A missing provider key is survivable — that provider is simply")
+    print("    unavailable on this cloud. A missing device-keys blob is not,")
+    print("    and the sealer refuses to produce a bundle without it.")
+PY
+fi
+
+if [ $APPLY -eq 0 ]; then
+  echo
+  echo "dry-run only. Re-run with --apply to seal and upload."
+  exit 0
+fi
+
+echo "==> sealing to ${VAULT}/${SKR_KEY} and uploading as ${BUNDLE_SECRET}"
+# --deploy-env makes the sealer validate against the SAME env the container
+# group is measured with, so it cannot produce a bundle valid for a different
+# measurement than the one being deployed.
+"$SEALER_PYTHON" "$repo/tools/azure-seal-bundle.py" \
+  --deploy-env "$env_json" \
+  --values "$values_json" \
+  --vault "$VAULT" \
+  --key-name "$SKR_KEY" \
+  --upload-secret "$BUNDLE_SECRET"
+
+echo
+echo "Sealed. Ciphertext at rest: the managed identity can fetch this secret"
+echo "and still not read it — only a workload whose hostdata matches the SKR"
+echo "release policy can decrypt it."
