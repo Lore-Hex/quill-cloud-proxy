@@ -114,6 +114,12 @@ SECRETS=(
   # credit-transfer endpoints require different tokens by design, so this
   # secret can never move money.
   trustedrouter-federation-peer-token
+  # Per-plane deferred-settlement tokens. Possession identifies the plane at
+  # home's apply-usage endpoint; each debits usage only and can never mint.
+  trustedrouter-federation-settlement-token-aws-eu
+  trustedrouter-federation-settlement-token-azure-uae
+  # Home's token map (plane=token,...), generated from the per-plane files.
+  trustedrouter-federation-settlement-inbound-tokens
   # Cross-cloud GCP service-account key. The AWS enclave uses this to
   # authenticate to GCP Spanner + Bigtable + KMS + Secret Manager.
   # Granted only the minimum permissions needed (datastore.user,
