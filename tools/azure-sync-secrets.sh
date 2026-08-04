@@ -49,10 +49,17 @@ SEALER_PYTHON="${SEALER_PYTHON:-python3}"
 APPLY=0
 VALUES_IN=""
 TEMPLATE_OUT=""
+# The operator's own files. Provider keys are short tokens already living in an
+# env file; prompts are multi-KB documents and the device blob is JSON, so those
+# get one file each. See tools/quill_secret_sources.py.
+KEYS_FILE="${KEYS_FILE:-$HOME/.quill_cloud_keys.private}"
+SECRETS_DIR="${SECRETS_DIR:-$HOME/.quill-secrets}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply)     APPLY=1; shift ;;
     --values)    VALUES_IN="$2"; shift 2 ;;
+    --keys-file)   KEYS_FILE="$2"; shift 2 ;;
+    --secrets-dir) SECRETS_DIR="$2"; shift 2 ;;
     --template)  TEMPLATE_OUT="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -98,13 +105,6 @@ print("     means that provider is unavailable on this cloud.")
   exit 0
 fi
 
-if [ -z "$VALUES_IN" ]; then
-  echo "[FAIL] --values FILE is required: a JSON object of {logical name: value}." >&2
-  echo "       There is no other source. Reading another cloud's store would make" >&2
-  echo "       that cloud a hub this one cannot be provisioned without." >&2
-  exit 2
-fi
-
 echo "==> rendering the deploy env (the bundle's key names come from it)"
 # print-env is the single source of truth for which logical names the container
 # group will ask for, and the env is MEASURED. Deriving the list any other way
@@ -130,6 +130,22 @@ absent = [n for n in names if n not in have]
 if absent:
     print(f"    ABSENT   : {absent}")
 PY
+else
+  echo "==> resolving from your files"
+  echo "    keys : ${KEYS_FILE}"
+  echo "    dir  : ${SECRETS_DIR}"
+  needed="$(mktemp)"; chmod 600 "$needed"
+  "$SEALER_PYTHON" -c '
+import json, sys
+env = json.load(open(sys.argv[1]))
+EXCLUDED = {"QUILL_AZURE_BUNDLE_SECRET"}
+json.dump(sorted({v for k, v in env.items()
+                  if k.startswith("QUILL_") and k.endswith("_SECRET") and k not in EXCLUDED}),
+          open(sys.argv[2], "w"))
+' "$env_json" "$needed"
+  "$SEALER_PYTHON" "$repo/tools/quill_secret_sources.py" \
+    "$needed" "$values_json" "$KEYS_FILE" "$SECRETS_DIR"
+  rm -f "$needed"
 fi
 
 if [ $APPLY -eq 0 ]; then
