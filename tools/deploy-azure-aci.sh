@@ -433,14 +433,39 @@ export MAA_ENDPOINT VAULT SKR_KEY BUNDLE_SECRET SA_KEY_ENTRY LOCATION API_HOST \
   QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SECRET QUILL_ADVISOR_WORKER_PROMPT_SECRET \
   QUILL_ADVISOR_PROMPT_SECRET QUILL_TRUSTEDROUTER_INTERNAL_SECRET
 
+# An unpinned bundle is a real hole, not a style preference, so on --apply this
+# REFUSES rather than warns.
+#
+# SKR gates WHO can open the bundle and never WHICH bundle is opened. With no
+# version pinned the enclave reads whatever "current" is at cold start, so
+# anyone holding secrets/set on the vault can substitute or roll back the entire
+# secret set and the next restart takes it - silently, with attestation still
+# perfect, because the measurement covers the container and not the secret's
+# contents.
+#
+# tools/azure-sync-secrets.sh prints the exact line to set after every seal, so
+# the pinned value is never something an operator has to go hunting for. A
+# dry-run still only warns: reviewing a template is not deploying one.
 warn_unpinned_bundle() {
-  if [ -z "$QUILL_AZURE_BUNDLE_VERSION" ]; then
-    log "WARNING: QUILL_AZURE_BUNDLE_VERSION is unset."
-    note "The enclave will read the CURRENT version of secret '$BUNDLE_SECRET'."
-    note "SKR gates WHO can open the bundle, never WHICH bundle is opened, so anyone"
-    note "holding secrets/set on $VAULT can substitute or roll back the entire secret"
-    note "set and the next cold start picks it up. Pin a version (see the header)."
+  if [ -n "$QUILL_AZURE_BUNDLE_VERSION" ]; then
+    return
   fi
+  if [ "$APPLY" = "1" ] && [ "${ALLOW_UNPINNED_BUNDLE:-0}" != "1" ]; then
+    log "FATAL: QUILL_AZURE_BUNDLE_VERSION is unset."
+    note "The enclave would read the CURRENT version of secret '$BUNDLE_SECRET', so"
+    note "anyone holding secrets/set on $VAULT could swap or roll back the whole"
+    note "secret set and the next cold start would take it - with attestation still"
+    note "passing, because the measurement covers the container, not the secret."
+    note ""
+    note "tools/azure-sync-secrets.sh prints the version to pin after each seal."
+    note "Set ALLOW_UNPINNED_BUNDLE=1 only for a deliberate floating-bundle deploy."
+    exit 1
+  fi
+  log "WARNING: QUILL_AZURE_BUNDLE_VERSION is unset."
+  note "The enclave will read the CURRENT version of secret '$BUNDLE_SECRET'."
+  note "SKR gates WHO can open the bundle, never WHICH bundle is opened, so anyone"
+  note "holding secrets/set on $VAULT can substitute or roll back the entire secret"
+  note "set and the next cold start picks it up. Pin a version (see the header)."
 }
 
 resolve_mi_client_id() {
