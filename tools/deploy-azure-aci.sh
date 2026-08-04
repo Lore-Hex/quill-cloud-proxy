@@ -182,7 +182,14 @@ QUILL_ADVISOR_WORKER_PROMPT_SECRET="${QUILL_ADVISOR_WORKER_PROMPT_SECRET:-truste
 QUILL_ADVISOR_PROMPT_SECRET="${QUILL_ADVISOR_PROMPT_SECRET:-trustedrouter-advisor-prompt-v1}"
 QUILL_TRUSTEDROUTER_INTERNAL_SECRET="${QUILL_TRUSTEDROUTER_INTERNAL_SECRET:-trustedrouter-internal-gateway-token}"
 
-QUILL_ACME_CACHE_GCS_BUCKET="${QUILL_ACME_CACHE_GCS_BUCKET:-quill-acme-cache}"
+# EMPTY on Azure, deliberately. The GCS-backed autocert cache is a GCP
+# dependency (metadata-server token fetch), and this cloud's whole point is
+# to come up without one - live issuance died on exactly that lookup. A
+# single-replica container group is fine on autocert's in-process memory
+# cache; the trade is a fresh Let's Encrypt issuance per container start,
+# and LE's duplicate-cert limit (5/week) would only bite under a restart
+# loop, which is a fault worth surfacing anyway.
+QUILL_ACME_CACHE_GCS_BUCKET="${QUILL_ACME_CACHE_GCS_BUCKET:-}"
 QUILL_ACME_EMAIL="${QUILL_ACME_EMAIL:-acme-azure-${LOCATION}@trustedrouter.com}"
 QUILL_FIRST_BYTE_TIMEOUT_SECONDS="${QUILL_FIRST_BYTE_TIMEOUT_SECONDS:-20}"
 QUILL_HEALTH_PORT="${QUILL_HEALTH_PORT:-8081}"
@@ -997,8 +1004,21 @@ import base64, json, sys
 raw = sys.stdin.read().strip()
 if not raw:
     sys.exit(0)
-raw += "=" * (-len(raw) % 4)
-policy = json.loads(base64.urlsafe_b64decode(raw))
+# az returns this field in one of THREE shapes depending on CLI version: base64,
+# raw JSON, or a Python bytes-repr of the JSON (b'{"version":...}'). Assuming
+# base64 makes `bind` die on "Incorrect padding" while the policy is perfectly
+# readable, and the error names neither Azure nor the policy.
+quote = chr(39)
+# chr(39), not a literal quote: this whole program is embedded in a bash
+# single-quoted -c string, so a literal one closes it early and the code the
+# interpreter finally sees is not the code written here.
+if raw[:2] == "b" + quote and raw[-1:] == quote:
+    raw = raw[2:-1]
+raw = raw.strip(quote).strip(chr(34))
+if raw.lstrip().startswith("{"):
+    policy = json.loads(raw)
+else:
+    policy = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
 seen = []
 for clause in policy.get("anyOf", []):
     for claim in clause.get("allOf", []):
@@ -1185,6 +1205,35 @@ phase_verify() {
        measurement is not one the key accepts ($(printf '%s' "$accepted" | tr '\n' ' '))."
   fi
   log "running at $ip (fqdn $fqdn)"
+
+  # DNS reconcile: ACI hands out a NEW public IP on redeploy, so the A record
+  # for $API_HOST goes stale exactly when a deploy succeeds — the moment
+  # everything reports green and TLS quietly dies. The zone lives in Google
+  # Cloud DNS (the shared front door; an operator-side fact, not an enclave
+  # runtime dependency). Warn-not-die without gcloud: the deploy is still
+  # good, the operator just has one manual record to fix, and the warning
+  # names it.
+  local current_dns=""
+  if command -v gcloud >/dev/null 2>&1; then
+    current_dns="$(gcloud dns record-sets describe "${API_HOST}." \
+      --project "${DNS_PROJECT:-quill-cloud-proxy}" --zone "${DNS_ZONE:-trustedrouter-com}" \
+      --type A --format 'value(rrdatas[0])' 2>/dev/null || true)"
+    if [ "$current_dns" = "$ip" ]; then
+      log "dns: ${API_HOST} already -> $ip"
+    elif [ -n "$current_dns" ]; then
+      log "dns: reconciling ${API_HOST} $current_dns -> $ip"
+      gcloud dns record-sets update "${API_HOST}." \
+        --project "${DNS_PROJECT:-quill-cloud-proxy}" --zone "${DNS_ZONE:-trustedrouter-com}" \
+        --type A --ttl 120 --rrdatas "$ip" >/dev/null
+    else
+      log "dns: creating ${API_HOST} -> $ip"
+      gcloud dns record-sets create "${API_HOST}." \
+        --project "${DNS_PROJECT:-quill-cloud-proxy}" --zone "${DNS_ZONE:-trustedrouter-com}" \
+        --type A --ttl 120 --rrdatas "$ip" >/dev/null
+    fi
+  else
+    note "gcloud not found: update ${API_HOST} A -> $ip in Cloud DNS yourself, or TLS stays dark"
+  fi
 
   cat >&2 <<EOF
 
