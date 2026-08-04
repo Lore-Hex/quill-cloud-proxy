@@ -222,6 +222,13 @@ while index < len(argv):
     else:
         index += 1
 
+# 9e16b0f pre-pulls the measured image into the host daemon, because confcom
+# rides the mounted socket and its own pull is anonymous. A pull carries no
+# -v, so without this the stub rejects it as "no /work mount". docker.log
+# already records the invocation for assertions.
+if argv and argv[0] == "pull":
+    sys.exit(0)
+
 work_spec = mounts.get("/work")
 if not work_spec:
     print("stub docker: no /work mount", file=sys.stderr)
@@ -283,6 +290,12 @@ class DeployHarness(unittest.TestCase):
             # One provider secret, so render_env_json has something to emit and
             # the enclave-side "at least one provider" rule is satisfied.
             QUILL_OPENROUTER_SECRET="quill-openrouter-key",
+            # f610fd9 made an unpinned bundle FATAL under --apply, and this
+            # harness never pinned one — so every --apply test died at the
+            # pin guard before reaching the behaviour it actually names.
+            # env_overrides is applied after this, so a test can still pass
+            # QUILL_AZURE_BUNDLE_VERSION="" to exercise the refusal itself.
+            QUILL_AZURE_BUNDLE_VERSION="stubbundleversion0123456789abcdef",
             VERIFY_TIMEOUT_SECONDS="1",
         )
         env.update(env_overrides)
@@ -825,6 +838,82 @@ class TestSecretNameListsDoNotDrift(unittest.TestCase):
             "a name rendered into the container env with no default above is always empty, "
             "so the provider is silently unconfigured",
         )
+
+
+class TestUnpinnedBundleIsRefused(DeployHarness):
+    """f610fd9 shipped this guard with no test at all.
+
+    SKR gates WHO may open the bundle, never WHICH bundle — so a deploy that
+    follows the mutable "current" version can be silently substituted or
+    rolled back underneath a measurement that still verifies. The refusal is
+    the only thing closing that hole, which makes an untested refusal a
+    security control nobody knows is working.
+    """
+
+    def test_apply_without_a_pin_is_fatal_and_mutates_nothing(self) -> None:
+        result = self.run_script(
+            "--apply", "build", "template", "policy", "bind", "deploy",
+            QUILL_AZURE_BUNDLE_VERSION="",
+        )
+        self.assertNotEqual(result.returncode, 0, "an unpinned --apply must not proceed")
+        self.assertIn("FATAL", result.stderr)
+        self.assertIn("QUILL_AZURE_BUNDLE_VERSION", result.stderr)
+        # The point is not just the exit code: refusing AFTER mutating Azure
+        # would leave exactly the half-applied state the guard exists to avoid.
+        self.assertEqual(self.mutations(), [], "a refused deploy must touch nothing")
+
+    def test_dry_run_without_a_pin_only_warns(self) -> None:
+        """A dry run cannot substitute anything, so it must stay reviewable."""
+        result = self.run_script(
+            "build", "template", "policy", QUILL_AZURE_BUNDLE_VERSION="",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr[-800:])
+
+    def test_the_escape_hatch_works_and_is_explicit(self) -> None:
+        result = self.run_script(
+            "--apply", "build", "template",
+            QUILL_AZURE_BUNDLE_VERSION="", ALLOW_UNPINNED_BUNDLE="1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr[-800:])
+
+    def test_the_pin_reaches_the_MEASURED_env(self) -> None:
+        """A pin the CCE policy does not measure is decoration: the container
+        could be started with a different bundle version and still attest."""
+        import json as _json
+        result = self.run_script("print-env", QUILL_AZURE_BUNDLE_VERSION="pinnedbundle0123456789abcdef0123")
+        self.assertEqual(result.returncode, 0, result.stderr[-800:])
+        env = _json.loads(result.stdout)
+        self.assertEqual(env.get("QUILL_AZURE_BUNDLE_VERSION"), "pinnedbundle0123456789abcdef0123")
+
+
+class TestPolicyPullIsDryRunSafe(DeployHarness):
+    """9e16b0f's pre-pull ran bare, so it fired on a DRY RUN too.
+
+    On a dry run the digest is the synthetic sha256:DRYRUN000... that no
+    registry has, so every dry run died at "cannot pull". That contradicts the
+    script's own require_tool contract - a dry run must produce a reviewable
+    template on a laptop with neither az nor docker - and made the SAFE command
+    the failing one.
+    """
+
+    def test_dry_run_does_not_pull(self) -> None:
+        result = self.run_script("build", "template", "policy")
+        self.assertEqual(result.returncode, 0, result.stderr[-800:])
+        self.assertIn("DRY-RUN", result.stderr)
+        self.assertNotIn("cannot pull", result.stderr)
+
+    def test_apply_does_pull_before_confcom(self) -> None:
+        """The pull must still happen for real, and BEFORE the policy gen -
+        confcom's own pull rides the socket anonymously and 401s against ACR."""
+        result = self.run_script("--apply", "build", "template", "policy")
+        self.assertEqual(result.returncode, 0, result.stderr[-800:])
+        log = (self.state / "docker.log").read_text() if (self.state / "docker.log").exists() else ""
+        pull_at = log.find("pull")
+        gen_at = log.find("acipolicygen")
+        self.assertNotEqual(pull_at, -1, f"no docker pull recorded; log={log[:400]}")
+        if gen_at != -1:
+            self.assertLess(pull_at, gen_at, "the pull must precede confcom's policy generation")
+
 
 
 if __name__ == "__main__":

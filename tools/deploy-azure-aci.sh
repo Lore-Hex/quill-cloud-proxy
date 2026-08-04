@@ -732,9 +732,15 @@ phase_policy() {
   # against ACR. Runs that followed a local build only worked because the
   # image was already in the daemon cache; REUSE_IMAGE=1 (an ACR-side
   # build) has no such residue, which is how this failed the first time.
+  # Through run(), NOT bare: a bare pull executes on a DRY RUN too, where the
+  # digest is the synthetic sha256:DRYRUN000... that no registry has, so every
+  # dry run died at "cannot pull ...". That contradicts this script's own
+  # require_tool contract — a dry run's job is to produce a reviewable template
+  # on a laptop with neither az nor docker installed — and it made the safe
+  # command the one that fails.
   local policy_image_ref
   policy_image_ref="${ACR_LOGIN_SERVER:-${ACR}.azurecr.io}/${IMAGE_REPO}@$(cat "$WORKDIR/image-digest.txt")"
-  docker pull --platform linux/amd64 "$policy_image_ref" >/dev/null \
+  run docker pull --platform linux/amd64 "$policy_image_ref" \
     || die "cannot pull $policy_image_ref into the host daemon for confcom"
 
   local confcom_image="${CONFCOM_IMAGE:-mcr.microsoft.com/azure-cli:latest}"
