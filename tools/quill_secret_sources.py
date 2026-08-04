@@ -72,6 +72,28 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "CRUSOE_API_KEY": "trustedrouter-crusoe-api-key",
     "THINKING_MACHINES_API_KEY": "trustedrouter-thinking-machines-api-key",
     "OPENROUTER_API_KEY": "quill-openrouter-key",
+    # Control-plane secrets. AWS needs these; Azure's enclave bundle does not.
+    "STRIPE_SECRET_KEY": "trustedrouter-stripe-secret-key",
+    "STRIPE_WEBHOOK_SECRET": "trustedrouter-stripe-webhook-secret",
+    "SENTRY_DSN": "trustedrouter-sentry-dsn",
+    "GOOGLE_CLIENT_ID": "trustedrouter-google-client-id",
+    "GOOGLE_CLIENT_SECRET": "trustedrouter-google-client-secret",
+    "GITHUB_CLIENT_ID": "trustedrouter-github-client-id",
+    "GITHUB_CLIENT_SECRET": "trustedrouter-github-client-secret",
+    "PAYPAL_CLIENT_ID": "trustedrouter-paypal-client-id",
+    "PAYPAL_CLIENT_SECRET": "trustedrouter-paypal-client-secret",
+    "PAYPAL_WEBHOOK_ID": "trustedrouter-paypal-webhook-id",
+    "PHALA_API_KEY": "trustedrouter-phala-api-key",
+    "AXIOM_API_TOKEN": "trustedrouter-axiom-api-token",
+    "TR_SYNTHETIC_MONITOR_API_KEY": "trustedrouter-synthetic-monitor-api-key",
+    "TR_API_KEY_FOR_SELF_HEAL": "trustedrouter-tr-api-key-for-self-heal",
+    "CLOUDFLARE_API_TOKEN": "cloudflare-api-token",
+    # ASSUMPTION worth checking: the env file holds TWO zone ids
+    # (CLOUDFLARE_ZONE_ID_TRUSTEDROUTER and _QUILLROUTER) while the deploy asks
+    # for one unqualified "cloudflare-zone-id". Mapped to the trustedrouter.com
+    # zone because that is the domain the enclave fleet publishes under. If DNS
+    # reconciliation ever edits the wrong zone, this line is why.
+    "CLOUDFLARE_ZONE_ID_TRUSTEDROUTER": "cloudflare-zone-id",
 }
 
 DEFAULT_KEYS_FILE = Path.home() / ".quill_cloud_keys.private"
