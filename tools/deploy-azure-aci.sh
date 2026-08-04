@@ -726,6 +726,17 @@ phase_policy() {
   log "phase policy: generating the CCE policy (this pulls the image; it takes a few minutes)"
   az_rw acr login --name "$ACR"
 
+  # Pull the measured image into the HOST daemon before confcom runs.
+  # confcom's docker client rides the mounted socket, and per-request
+  # registry auth does not cross it — its pull is anonymous and 401s
+  # against ACR. Runs that followed a local build only worked because the
+  # image was already in the daemon cache; REUSE_IMAGE=1 (an ACR-side
+  # build) has no such residue, which is how this failed the first time.
+  local policy_image_ref
+  policy_image_ref="${ACR_LOGIN_SERVER:-${ACR}.azurecr.io}/${IMAGE_REPO}@$(cat "$WORKDIR/image-digest.txt")"
+  docker pull --platform linux/amd64 "$policy_image_ref" >/dev/null \
+    || die "cannot pull $policy_image_ref into the host daemon for confcom"
+
   local confcom_image="${CONFCOM_IMAGE:-mcr.microsoft.com/azure-cli:latest}"
   case "$confcom_image" in
     *@sha256:*) ;;
