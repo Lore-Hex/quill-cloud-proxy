@@ -1,24 +1,25 @@
 #!/usr/bin/env bash
 # Publish provider API keys into AWS Secrets Manager, this cloud's own store.
 #
-# SOURCE (pick one)
-#   --values FILE   a JSON object of {secret id: value}, supplied by the deploy.
-#                   PREFERRED.
-#   --from-gcp      read Google Secret Manager. How these secrets originally
-#                   reached AWS, and still the right tool for a one-time
-#                   migration or a reconcile against the historical source.
+# SOURCE: --values FILE, a JSON object of {secret id: value} supplied by the
+# deploy. There is no other source, deliberately.
 #
-# Why the file is preferred
-# =========================
-# Reading from GCP makes GCP the hub every other cloud depends on to be
+# This script used to read Google Secret Manager and describe GCP as "the single
+# source of truth". That made GCP a hub every other cloud depended on to be
 # PROVISIONED - the same coupling separate clouds exist to remove, moved one
-# layer up. It also means a key rotation cannot reach any cloud until GCP is
-# reachable. The deploy already holds these values in order to publish them
-# anywhere, so handing them to each cloud directly keeps every cloud a peer and
-# leaves no cloud able to block another's bring-up.
+# layer up from runtime. It meant no cloud could be brought up or have a key
+# rotated while GCP was unreachable, and every new cloud inherited whatever the
+# hub happened to be missing.
 #
-# Either way the ENCLAVE only ever reads AWS Secrets Manager; the source here is
-# a provisioning-time question, not a runtime one.
+# The GCP path is gone rather than deprecated. A second source kept "for
+# migration" is a second source somebody uses, and the two produce different
+# results without saying which ran - the failure mode being avoided.
+#
+# The deploy already holds these values in order to publish them anywhere, so
+# handing them to each cloud directly keeps every cloud a peer.
+#
+# The ENCLAVE only ever reads AWS Secrets Manager. The source here is a
+# provisioning-time question, never a runtime one.
 #
 # Why
 # ===
@@ -47,7 +48,6 @@
 
 set -euo pipefail
 
-GCP_PROJECT="${GCP_PROJECT:-quill-cloud-proxy}"
 AWS_REGION="${AWS_REGION:-us-west-2}"
 AWS_SECRET_PREFIX="${AWS_SECRET_PREFIX:-quill/}"   # AWS secret name = prefix + GCP secret id
 
@@ -143,19 +143,8 @@ DRY_RUN=1
 ONLY_SECRET=""
 STANDALONE=0
 # Where the values come from. A deploy-supplied JSON file of
-# {secret id: value} is the DEFAULT SOURCE when given; --from-gcp reads Google
-# Secret Manager instead.
+# {secret id: value} is the ONLY source.
 #
-# Why the file is the better default: reading from GCP makes GCP the hub every
-# other cloud depends on for provisioning, which is the same coupling the
-# separate clouds exist to remove, one layer up. It also means rotating a key
-# requires GCP to be reachable before any other cloud can be brought up. The
-# deploy already has to hold these values to put them anywhere; letting it hand
-# them to each cloud directly keeps every cloud a peer.
-#
-# --from-gcp is kept because it is how these secrets originally reached AWS and
-# is still the right tool for a one-time migration or a reconcile against the
-# historical source. It is no longer the recommended path.
 VALUES_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -163,8 +152,6 @@ while [[ $# -gt 0 ]]; do
     --secret) ONLY_SECRET="$2"; shift 2 ;;
     --values)
       VALUES_FILE="$2"; shift 2; continue ;;
-    --from-gcp)
-      VALUES_FILE=""; shift; continue ;;
     --standalone) STANDALONE=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -186,8 +173,8 @@ STANDALONE_EXCLUDE=(
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 
 # Sanity check both CLIs are configured.
-if ! gcloud auth list --format='value(account)' --filter='status:ACTIVE' >/dev/null 2>&1; then
-  log "FATAL: gcloud not authenticated. Run 'gcloud auth login'." >&2
+if false; then
+  :
   exit 1
 fi
 if ! aws sts get-caller-identity --region "$AWS_REGION" >/dev/null 2>&1; then
@@ -196,27 +183,31 @@ if ! aws sts get-caller-identity --region "$AWS_REGION" >/dev/null 2>&1; then
 fi
 
 aws_account=$(aws sts get-caller-identity --query Account --output text)
-log "GCP project: $GCP_PROJECT"
+if [ -z "$VALUES_FILE" ]; then
+  echo "[FAIL] --values FILE is required: a JSON object of {secret id: value}." >&2
+  echo "       There is no other source. Reading another cloud would make that" >&2
+  echo "       cloud a hub every other one needs in order to be provisioned." >&2
+  exit 2
+fi
+
 log "AWS account: $aws_account region: $AWS_REGION"
 log "Mode: $([ $DRY_RUN -eq 1 ] && echo DRY-RUN || echo APPLY)"
 
 mirror_one() {
-  local gcp_secret_name="$1"
-  local aws_secret_name="${AWS_SECRET_PREFIX}${gcp_secret_name}"
+  local secret_id="$1"
+  local aws_secret_name="${AWS_SECRET_PREFIX}${secret_id}"
 
-  log "→ ${gcp_secret_name}"
+  log "→ ${secret_id}"
 
   # Read the latest version from GCP. If the secret doesn't exist in GCP,
   # we don't create one in AWS — that would be a footgun (creating
   # phantom secrets in the failover store that don't have a source of
   # truth). Skip with a warning instead.
   local value
-  if [ -n "$VALUES_FILE" ]; then
-    # A deploy-supplied file. Absent here means the operator did not intend to
-    # publish this secret, so skip it rather than reaching for another cloud —
-    # a silent fallback is how a "deploy-sourced" sync quietly becomes a
-    # GCP-sourced one again.
-    if ! value=$(VALUES_FILE="$VALUES_FILE" SECRET_ID="$gcp_secret_name" python3 -c '
+  # Absent here means the operator did not intend to publish this secret, so
+  # skip it. There is nowhere else to look by design.
+  if true; then
+    if ! value=$(VALUES_FILE="$VALUES_FILE" SECRET_ID="$secret_id" python3 -c '
 import json, os, sys
 values = json.load(open(os.environ["VALUES_FILE"]))
 v = values.get(os.environ["SECRET_ID"])
@@ -224,14 +215,9 @@ if v is None or not str(v).strip():
     sys.exit(1)
 sys.stdout.write(str(v))
 ' 2>/dev/null); then
-      log "  WARN: '$gcp_secret_name' absent from $VALUES_FILE; skipping"
+      log "  WARN: '$secret_id' absent from $VALUES_FILE; skipping"
       return
     fi
-  elif ! value=$(gcloud secrets versions access latest \
-      --secret="$gcp_secret_name" \
-      --project="$GCP_PROJECT" 2>/dev/null); then
-    log "  WARN: GCP secret '$gcp_secret_name' not found; skipping"
-    return
   fi
 
   if [ $DRY_RUN -eq 1 ]; then
@@ -251,13 +237,11 @@ sys.stdout.write(str(v))
     log "  creating new AWS secret"
     aws secretsmanager create-secret \
       --name "$aws_secret_name" \
-      --description "$([ -n "$VALUES_FILE" ] \
-        && echo "Published by the deploy (tools/sync-secrets-to-aws.sh --values). AWS Secrets Manager is this cloud's own store; no other cloud is read at runtime." \
-        || echo "Mirrored from GCP Secret Manager (project=${GCP_PROJECT}, secret=${gcp_secret_name}) by a --from-gcp migration run.")" \
+      --description "Published by the deploy (tools/sync-secrets-to-aws.sh --values). AWS Secrets Manager is this cloud's own store; no other cloud is read, at provisioning time or at runtime." \
       --secret-string "$value" \
       --region "$AWS_REGION" \
-      --tags "Key=Source,Value=$([ -n "$VALUES_FILE" ] && echo deploy || echo gcp-secret-manager)" \
-             "Key=GcpSecretName,Value=${gcp_secret_name}" >/dev/null
+      --tags 'Key=Source,Value=deploy' \
+             "Key=SecretId,Value=${secret_id}" >/dev/null
   fi
 }
 
