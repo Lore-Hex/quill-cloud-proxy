@@ -279,10 +279,17 @@ def _first_set_env(env: dict[str, str], names: tuple[str, ...], label: str) -> s
 
 @dataclass(frozen=True)
 class RequiredEntry:
-    """One bundle key the deployed enclave will ask for, and why."""
+    """One bundle key the deployed enclave will ask for, and why.
+
+    `optional` distinguishes "the enclave KNOWS this key and uses it when
+    present" from "the enclave DEMANDS it". Both must be known, or the
+    unused-values check rejects a value the enclave would happily consume; only
+    the demanded ones may block a seal.
+    """
 
     name: str
     label: str
+    optional: bool = False
 
 
 def required_entries(env: dict[str, str]) -> list[RequiredEntry]:
@@ -301,9 +308,20 @@ def required_entries(env: dict[str, str]) -> list[RequiredEntry]:
         if value.strip() == "":
             fail(f"deploy env: {name} is set to whitespace only ({len(value)} chars)")
 
+    # The device-key blob is genuinely required: without it the enclave has no
+    # identity to serve and dies on first use.
+    #
+    # The GCP service-account key is NOT. bootstrap_azure.go treats it as
+    # optional, matching the AWS parent, and an enclave without it serves its own
+    # attested self-signed certificate while refusing BYOK unwrap - a degraded
+    # posture, not a broken one. Requiring it HERE while the enclave tolerates
+    # its absence would mean this cloud cannot be provisioned without first
+    # minting a long-lived Google credential, which is the dependency the whole
+    # separate-cloud exercise exists to remove. Kept in the bundle when supplied,
+    # never demanded.
     entries = [
         RequiredEntry(env[DEVICE_KEYS_ENV], "device keys"),
-        RequiredEntry(env[SA_KEY_ENTRY_ENV], "gcp service-account key"),
+        RequiredEntry(env[SA_KEY_ENTRY_ENV], "gcp service-account key", optional=True),
     ]
     any_provider = False
     for binding in BINDINGS:
@@ -344,7 +362,13 @@ def build_bundle(
     gateway that 401s every request using that key hours after the deploy that
     caused it.
     """
-    missing = [entry for entry in entries if entry.name not in values]
+    # Only NON-optional entries can block a seal. Optional ones are still in
+    # `entries`, so they count as known and a supplied value is not rejected as
+    # unused - the distinction the `optional` flag exists to make.
+    missing = [
+        entry for entry in entries
+        if entry.name not in values and not entry.optional
+    ]
     if missing:
         fail(
             "the deploy env names bundle entries that --values does not provide:\n"
@@ -398,7 +422,13 @@ def sanity_check_structured_entries(env: dict[str, str], bundle: dict[str, str])
             "the enclave unmarshals it into []DeviceConfig, so it must be a JSON array"
         )
 
+    # Validate the service-account key only when one was supplied. It is
+    # optional (see the entries list above); absent, there is nothing to check
+    # and the enclave runs the AWS posture. Indexing unconditionally here would
+    # KeyError on exactly the configuration the enclave supports.
     sa_key = env[SA_KEY_ENTRY_ENV]
+    if sa_key not in bundle:
+        return
     try:
         service_account = json.loads(bundle[sa_key])
     except json.JSONDecodeError as exc:

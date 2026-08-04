@@ -29,6 +29,10 @@ VAULT="${VAULT:-trquillkv}"
 SKR_KEY="${SKR_KEY:-tr-bootstrap-wrap}"
 BUNDLE_SECRET="${BUNDLE_SECRET:-tr-bootstrap-bundle}"
 SEALER_PYTHON="${SEALER_PYTHON:-python3}"
+# Fallback source for the secrets AWS never held (device keys, advisor prompts,
+# some provider keys). Provisioning-time only; see the note at the fallback.
+GCP_PROJECT="${GCP_PROJECT:-quill-cloud-proxy}"
+GCP_ACCOUNT="${GCP_ACCOUNT:-tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com}"
 
 APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
@@ -51,17 +55,24 @@ SKR_COMMAND="${SKR_COMMAND:-/bin/skr}" \
   bash "$repo/tools/deploy-azure-aci.sh" print-env > "$env_json"
 
 echo "==> reading secrets from ${SRC_REGION}"
-"$SEALER_PYTHON" - "$env_json" "$values_json" "$SRC_REGION" "$SECRET_PREFIX" <<'PY'
+"$SEALER_PYTHON" - "$env_json" "$values_json" "$SRC_REGION" "$SECRET_PREFIX" "$GCP_PROJECT" "$GCP_ACCOUNT" <<'PY'
 import json, subprocess, sys
 
-env_path, values_path, region, prefix = sys.argv[1:5]
+env_path, values_path, region, prefix, gcp_project, gcp_account = sys.argv[1:7]
 env = json.load(open(env_path))
 
-# Only QUILL_*_SECRET entries name bundle keys; everything else in the env is
-# ordinary configuration and must not be treated as a secret name.
-names = sorted({v for k, v in env.items() if k.startswith("QUILL_") and k.endswith("_SECRET")})
+# Only QUILL_*_SECRET entries name bundle keys -- with one exception that is
+# not cosmetic. QUILL_AZURE_BUNDLE_SECRET names the Key Vault secret this script
+# WRITES; treating it as a bundle key makes the script hunt for a secret that by
+# definition cannot exist yet, and report a self-inflicted "missing" that hides
+# the real gaps underneath it.
+EXCLUDED = {"QUILL_AZURE_BUNDLE_SECRET"}
+names = sorted({
+    v for k, v in env.items()
+    if k.startswith("QUILL_") and k.endswith("_SECRET") and k not in EXCLUDED
+})
 
-values, missing = {}, []
+values, missing, from_gcp = {}, [], []
 for name in names:
     proc = subprocess.run(
         ["aws", "secretsmanager", "get-secret-value", "--region", region,
@@ -72,12 +83,30 @@ for name in names:
     # key, so strip exactly the newline the CLI adds and nothing else.
     if proc.returncode == 0 and proc.stdout.strip():
         values[name] = proc.stdout.rstrip("\n")
+        continue
+
+    # AWS is an INCOMPLETE source. It never held the device-key blob, the
+    # advisor prompts, or every provider key -- those live only in Google
+    # Secret Manager. Falling back to it here is a one-time PROVISIONING copy,
+    # which is a different thing from the enclave calling Google at BOOT: the
+    # sealed bundle is what Azure reads at runtime, and nothing in that path
+    # touches Google.
+    gproc = subprocess.run(
+        ["gcloud", "secrets", "versions", "access", "latest",
+         "--secret", name, "--project", gcp_project, "--account", gcp_account],
+        capture_output=True, text=True,
+    )
+    if gproc.returncode == 0 and gproc.stdout.strip():
+        values[name] = gproc.stdout.rstrip("\n")
+        from_gcp.append(name)
     else:
         missing.append(name)
 
 json.dump(values, open(values_path, "w"))
 print(f"    required : {len(names)}")
-print(f"    resolved : {len(values)}")
+print(f"    resolved : {len(values)}  (AWS {len(values)-len(from_gcp)}, GCP fallback {len(from_gcp)})")
+if from_gcp:
+    print(f"    via GCP  : {sorted(from_gcp)}")
 if missing:
     print(f"    MISSING  : {missing}")
     print("    A missing provider key does not stop the enclave booting; that")
