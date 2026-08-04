@@ -106,7 +106,10 @@ set -euo pipefail
 # North. Override any of them from the environment.
 
 SUBSCRIPTION="${SUBSCRIPTION:-}"
-RESOURCE_GROUP="${RESOURCE_GROUP:-tr-quill-uaen}"
+# TR-TEE-DUBAI is where the LIVE stack lives (identity, vault, container
+# group). The old default named a group that no longer holds the
+# prerequisites, so every bare run failed the tr-skr-identity check.
+RESOURCE_GROUP="${RESOURCE_GROUP:-TR-TEE-DUBAI}"
 LOCATION="${LOCATION:-uaenorth}"
 ACR="${ACR:-trquillacr}"
 VAULT="${VAULT:-trquillkv}"
