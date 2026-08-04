@@ -146,12 +146,23 @@ STANDALONE=0
 # {secret id: value} is the ONLY source.
 #
 VALUES_FILE=""
+# The operator's own files, same two sources Azure resolves from. Provider keys
+# are short tokens in an env file under the operator's own names; prompts and the
+# device blob are one file each, because escaping a 2 KB prompt into an env line
+# turns a bug there into a silent behaviour change. See tools/quill_secret_sources.py.
+KEYS_FILE="${KEYS_FILE:-$HOME/.quill_cloud_keys.private}"
+SECRETS_DIR="${SECRETS_DIR:-$HOME/.quill-secrets}"
+RESOLVED_VALUES=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --apply) DRY_RUN=0; shift ;;
     --secret) ONLY_SECRET="$2"; shift 2 ;;
     --values)
       VALUES_FILE="$2"; shift 2; continue ;;
+    --keys-file)
+      KEYS_FILE="$2"; shift 2; continue ;;
+    --secrets-dir)
+      SECRETS_DIR="$2"; shift 2; continue ;;
     --standalone) STANDALONE=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -183,11 +194,21 @@ if ! aws sts get-caller-identity --region "$AWS_REGION" >/dev/null 2>&1; then
 fi
 
 aws_account=$(aws sts get-caller-identity --query Account --output text)
+# With no explicit --values, resolve from the operator's own files. This is the
+# ordinary path: the values already live on the deploy machine, so no cloud is
+# read and no cloud is a hub another one needs in order to come up.
 if [ -z "$VALUES_FILE" ]; then
-  echo "[FAIL] --values FILE is required: a JSON object of {secret id: value}." >&2
-  echo "       There is no other source. Reading another cloud would make that" >&2
-  echo "       cloud a hub every other one needs in order to be provisioned." >&2
-  exit 2
+  needed_json="$(mktemp)"; RESOLVED_VALUES="$(mktemp)"
+  chmod 600 "$needed_json" "$RESOLVED_VALUES"
+  trap 'rm -f "$needed_json" "$RESOLVED_VALUES"' EXIT
+  printf '%s\n' "${SECRETS[@]}" | python3 -c '
+import json, sys
+json.dump([l.strip() for l in sys.stdin if l.strip()], open(sys.argv[1], "w"))
+' "$needed_json"
+  log "resolving from your files: $KEYS_FILE + $SECRETS_DIR"
+  python3 "$(dirname "${BASH_SOURCE[0]}")/quill_secret_sources.py" \
+    "$needed_json" "$RESOLVED_VALUES" "$KEYS_FILE" "$SECRETS_DIR"
+  VALUES_FILE="$RESOLVED_VALUES"
 fi
 
 log "AWS account: $aws_account region: $AWS_REGION"
