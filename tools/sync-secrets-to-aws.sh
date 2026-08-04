@@ -1,6 +1,24 @@
 #!/usr/bin/env bash
-# Mirror provider API keys + the cross-cloud GCP service-account key
-# from GCP Secret Manager into AWS Secrets Manager (us-west-2).
+# Publish provider API keys into AWS Secrets Manager, this cloud's own store.
+#
+# SOURCE (pick one)
+#   --values FILE   a JSON object of {secret id: value}, supplied by the deploy.
+#                   PREFERRED.
+#   --from-gcp      read Google Secret Manager. How these secrets originally
+#                   reached AWS, and still the right tool for a one-time
+#                   migration or a reconcile against the historical source.
+#
+# Why the file is preferred
+# =========================
+# Reading from GCP makes GCP the hub every other cloud depends on to be
+# PROVISIONED - the same coupling separate clouds exist to remove, moved one
+# layer up. It also means a key rotation cannot reach any cloud until GCP is
+# reachable. The deploy already holds these values in order to publish them
+# anywhere, so handing them to each cloud directly keeps every cloud a peer and
+# leaves no cloud able to block another's bring-up.
+#
+# Either way the ENCLAVE only ever reads AWS Secrets Manager; the source here is
+# a provisioning-time question, not a runtime one.
 #
 # Why
 # ===
@@ -124,10 +142,29 @@ SECRETS=(
 DRY_RUN=1
 ONLY_SECRET=""
 STANDALONE=0
+# Where the values come from. A deploy-supplied JSON file of
+# {secret id: value} is the DEFAULT SOURCE when given; --from-gcp reads Google
+# Secret Manager instead.
+#
+# Why the file is the better default: reading from GCP makes GCP the hub every
+# other cloud depends on for provisioning, which is the same coupling the
+# separate clouds exist to remove, one layer up. It also means rotating a key
+# requires GCP to be reachable before any other cloud can be brought up. The
+# deploy already has to hold these values to put them anywhere; letting it hand
+# them to each cloud directly keeps every cloud a peer.
+#
+# --from-gcp is kept because it is how these secrets originally reached AWS and
+# is still the right tool for a one-time migration or a reconcile against the
+# historical source. It is no longer the recommended path.
+VALUES_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --apply) DRY_RUN=0; shift ;;
     --secret) ONLY_SECRET="$2"; shift 2 ;;
+    --values)
+      VALUES_FILE="$2"; shift 2; continue ;;
+    --from-gcp)
+      VALUES_FILE=""; shift; continue ;;
     --standalone) STANDALONE=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -174,7 +211,23 @@ mirror_one() {
   # phantom secrets in the failover store that don't have a source of
   # truth). Skip with a warning instead.
   local value
-  if ! value=$(gcloud secrets versions access latest \
+  if [ -n "$VALUES_FILE" ]; then
+    # A deploy-supplied file. Absent here means the operator did not intend to
+    # publish this secret, so skip it rather than reaching for another cloud —
+    # a silent fallback is how a "deploy-sourced" sync quietly becomes a
+    # GCP-sourced one again.
+    if ! value=$(VALUES_FILE="$VALUES_FILE" SECRET_ID="$gcp_secret_name" python3 -c '
+import json, os, sys
+values = json.load(open(os.environ["VALUES_FILE"]))
+v = values.get(os.environ["SECRET_ID"])
+if v is None or not str(v).strip():
+    sys.exit(1)
+sys.stdout.write(str(v))
+' 2>/dev/null); then
+      log "  WARN: '$gcp_secret_name' absent from $VALUES_FILE; skipping"
+      return
+    fi
+  elif ! value=$(gcloud secrets versions access latest \
       --secret="$gcp_secret_name" \
       --project="$GCP_PROJECT" 2>/dev/null); then
     log "  WARN: GCP secret '$gcp_secret_name' not found; skipping"
@@ -198,10 +251,12 @@ mirror_one() {
     log "  creating new AWS secret"
     aws secretsmanager create-secret \
       --name "$aws_secret_name" \
-      --description "Mirrored from GCP Secret Manager (project=${GCP_PROJECT}, secret=${gcp_secret_name}). Source of truth lives in GCP; this script keeps AWS in sync." \
+      --description "$([ -n "$VALUES_FILE" ] \
+        && echo "Published by the deploy (tools/sync-secrets-to-aws.sh --values). AWS Secrets Manager is this cloud's own store; no other cloud is read at runtime." \
+        || echo "Mirrored from GCP Secret Manager (project=${GCP_PROJECT}, secret=${gcp_secret_name}) by a --from-gcp migration run.")" \
       --secret-string "$value" \
       --region "$AWS_REGION" \
-      --tags 'Key=Source,Value=gcp-secret-manager' \
+      --tags "Key=Source,Value=$([ -n "$VALUES_FILE" ] && echo deploy || echo gcp-secret-manager)" \
              "Key=GcpSecretName,Value=${gcp_secret_name}" >/dev/null
   fi
 }
