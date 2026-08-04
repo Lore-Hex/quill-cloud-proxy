@@ -22,24 +22,25 @@
 # inherit whatever AWS was missing - the device-key blob, both advisor prompts,
 # the cohere key - and turned a straightforward mirror into a two-source merge.
 #
-# SOURCES (pick one)
-#   --from-gcp    (default)  mirror from GCP Secret Manager, like the AWS script
-#   --values FILE            a JSON object of {logical name: value}; no cloud
-#                            read at all, for an operator working from their own
-#                            copy or restoring from a break-glass export
+# SOURCE: --values FILE, a JSON object of {logical name: value} supplied by the
+# deploy. There is no other source, deliberately - the same rule
+# tools/sync-secrets-to-aws.sh now follows.
+#
+# Reading another cloud's secret store would make that cloud a hub every other
+# one needs in order to be PROVISIONED: no cloud brought up, and no key rotated,
+# while the hub is unreachable. A second source kept "for migration" is a second
+# source somebody uses, and the two produce different bundles without saying
+# which ran.
 #
 # WHAT THIS TOUCHES: every provider key in plaintext, in memory and in one
 # mode-0600 temp file removed on every exit path. Secret NAMES are printed;
 # values never are.
 #
 # Usage:
-#   bash tools/azure-sync-secrets.sh                      # dry-run from GCP
-#   bash tools/azure-sync-secrets.sh --apply
+#   bash tools/azure-sync-secrets.sh --values ./secrets.json           # dry-run
 #   bash tools/azure-sync-secrets.sh --values ./secrets.json --apply
 set -euo pipefail
 
-GCP_PROJECT="${GCP_PROJECT:-quill-cloud-proxy}"
-GCP_ACCOUNT="${GCP_ACCOUNT:-tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com}"
 VAULT="${VAULT:-trquillkv}"
 SKR_KEY="${SKR_KEY:-tr-bootstrap-wrap}"
 BUNDLE_SECRET="${BUNDLE_SECRET:-tr-bootstrap-bundle}"
@@ -50,7 +51,6 @@ VALUES_IN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply)     APPLY=1; shift ;;
-    --from-gcp)  VALUES_IN=""; shift ;;
     --values)    VALUES_IN="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -62,6 +62,13 @@ repo="$(cd "$here/.." && pwd)"
 env_json="$(mktemp)"; values_json="$(mktemp)"
 chmod 600 "$env_json" "$values_json"
 trap 'rm -f "$env_json" "$values_json"' EXIT
+
+if [ -z "$VALUES_IN" ]; then
+  echo "[FAIL] --values FILE is required: a JSON object of {logical name: value}." >&2
+  echo "       There is no other source. Reading another cloud's store would make" >&2
+  echo "       that cloud a hub this one cannot be provisioned without." >&2
+  exit 2
+fi
 
 echo "==> rendering the deploy env (the bundle's key names come from it)"
 # print-env is the single source of truth for which logical names the container
@@ -87,44 +94,6 @@ print(f"    supplied : {len(have)}")
 absent = [n for n in names if n not in have]
 if absent:
     print(f"    ABSENT   : {absent}")
-PY
-else
-  echo "==> mirroring from GCP Secret Manager (${GCP_PROJECT}) — same source of truth as the AWS mirror"
-  "$SEALER_PYTHON" - "$env_json" "$values_json" "$GCP_PROJECT" "$GCP_ACCOUNT" <<'PY'
-import json, subprocess, sys
-
-env_path, values_path, project, account = sys.argv[1:5]
-env = json.load(open(env_path))
-
-# QUILL_AZURE_BUNDLE_SECRET names the Key Vault secret this script WRITES.
-# Treating it as an input makes the script hunt for something that by definition
-# cannot exist yet, and report a self-inflicted "missing" that hides real gaps.
-EXCLUDED = {"QUILL_AZURE_BUNDLE_SECRET"}
-names = sorted({v for k, v in env.items()
-                if k.startswith("QUILL_") and k.endswith("_SECRET") and k not in EXCLUDED})
-
-values, missing = {}, []
-for name in names:
-    proc = subprocess.run(
-        ["gcloud", "secrets", "versions", "access", "latest",
-         "--secret", name, "--project", project, "--account", account],
-        capture_output=True, text=True,
-    )
-    # A trailing newline in a stored secret becomes a 401 that reads as a bad
-    # key, so strip exactly what the CLI appends and nothing else.
-    if proc.returncode == 0 and proc.stdout.strip():
-        values[name] = proc.stdout.rstrip("\n")
-    else:
-        missing.append(name)
-
-json.dump(values, open(values_path, "w"))
-print(f"    required : {len(names)}")
-print(f"    resolved : {len(values)}")
-if missing:
-    print(f"    MISSING  : {missing}")
-    print("    A missing provider key is survivable — that provider is simply")
-    print("    unavailable on this cloud. A missing device-keys blob is not,")
-    print("    and the sealer refuses to produce a bundle without it.")
 PY
 fi
 
