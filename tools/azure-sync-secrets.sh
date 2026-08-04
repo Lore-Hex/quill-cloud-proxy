@@ -48,10 +48,12 @@ SEALER_PYTHON="${SEALER_PYTHON:-python3}"
 
 APPLY=0
 VALUES_IN=""
+TEMPLATE_OUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply)     APPLY=1; shift ;;
     --values)    VALUES_IN="$2"; shift 2 ;;
+    --template)  TEMPLATE_OUT="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -62,6 +64,39 @@ repo="$(cd "$here/.." && pwd)"
 env_json="$(mktemp)"; values_json="$(mktemp)"
 chmod 600 "$env_json" "$values_json"
 trap 'rm -f "$env_json" "$values_json"' EXIT
+
+# --template gives the values file an origin.
+#
+# Without it, --values is required and NOTHING in either repo produces one: the
+# operator is told to supply a file whose required key names exist only inside
+# print-env. That is a flow with a hole in the middle, and it is the hole that
+# opened when the GCP source was removed.
+#
+# This reads no secret store, so it is safe to run anywhere. It writes every
+# required name with an empty value; the operator fills them from wherever they
+# keep them.
+if [ -n "$TEMPLATE_OUT" ]; then
+  tmpl_env="$(mktemp)"; chmod 600 "$tmpl_env"
+  RESOURCE_GROUP="${RESOURCE_GROUP:-TR-TEE-DUBAI}" \
+  SKR_COMMAND="${SKR_COMMAND:-/bin/skr}" \
+    bash "$repo/tools/deploy-azure-aci.sh" print-env > "$tmpl_env"
+  "$SEALER_PYTHON" -c '
+import json, sys
+env = json.load(open(sys.argv[1]))
+EXCLUDED = {"QUILL_AZURE_BUNDLE_SECRET"}   # the secret this script WRITES
+names = sorted({v for k, v in env.items()
+                if k.startswith("QUILL_") and k.endswith("_SECRET") and k not in EXCLUDED})
+json.dump({n: "" for n in names}, open(sys.argv[2], "w"), indent=2, sort_keys=True)
+print(f"[ok] wrote {sys.argv[2]} with {len(names)} empty entries")
+print("     Fill each value from wherever you keep them, then:")
+print(f"       bash tools/azure-sync-secrets.sh --values {sys.argv[2]} --apply")
+print("     Only quill-device-keys is mandatory. A blank provider key simply")
+print("     means that provider is unavailable on this cloud.")
+' "$tmpl_env" "$TEMPLATE_OUT"
+  rm -f "$tmpl_env"
+  chmod 600 "$TEMPLATE_OUT"
+  exit 0
+fi
 
 if [ -z "$VALUES_IN" ]; then
   echo "[FAIL] --values FILE is required: a JSON object of {logical name: value}." >&2
