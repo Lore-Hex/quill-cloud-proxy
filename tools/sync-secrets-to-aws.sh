@@ -108,6 +108,12 @@ SECRETS=(
   # Distinct from tr-api-key-for-self-heal which is a customer-facing
   # API key used by TR's self-heal flow as a customer of itself.
   trustedrouter-internal-gateway-token
+  # Federation shared token: a peer plane presents it, the home plane
+  # validates it (TR_FEDERATION_HOME_TOKEN on the peer, TR_FEDERATION_PEER_TOKEN
+  # on home — one value, two roles). Grants directory READS only; the
+  # credit-transfer endpoints require different tokens by design, so this
+  # secret can never move money.
+  trustedrouter-federation-peer-token
   # Cross-cloud GCP service-account key. The AWS enclave uses this to
   # authenticate to GCP Spanner + Bigtable + KMS + Secret Manager.
   # Granted only the minimum permissions needed (datastore.user,
