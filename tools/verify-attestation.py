@@ -314,7 +314,19 @@ def require_gcp_fresh_exporter_binding(
         )
 
 
-def _new_pyopenssl_context() -> SSL.Context:
+def _new_pyopenssl_context(*, ca_trust: bool = True) -> SSL.Context:
+    """Build the client TLS context.
+
+    `ca_trust=False` selects the ATTESTED-CERT-ONLY model used by the
+    standalone regional enclaves (aws.trustedrouter.com): the enclave
+    serves a self-signed cert it minted inside the TEE, and trust comes
+    from the attestation document binding that cert's fingerprint — not
+    from any CA. Skipping chain validation here does NOT weaken the
+    proof, because the cert-to-attestation binding check downstream is
+    unconditional: a substituted cert fails that check even though the
+    handshake succeeded. What it does drop is hostname/CA identity, so
+    this mode must never be the default for CA-issued deployments.
+    """
     ctx = SSL.Context(SSL.TLS_CLIENT_METHOD)
     if hasattr(ctx, "set_min_proto_version") and hasattr(SSL, "TLS1_3_VERSION"):
         ctx.set_min_proto_version(SSL.TLS1_3_VERSION)
@@ -324,8 +336,11 @@ def _new_pyopenssl_context() -> SSL.Context:
             | SSL.OP_NO_TLSv1_1
             | SSL.OP_NO_TLSv1_2
         )
-    ctx.set_default_verify_paths()
-    ctx.set_verify(SSL.VERIFY_PEER, _verify_callback)
+    if ca_trust:
+        ctx.set_default_verify_paths()
+        ctx.set_verify(SSL.VERIFY_PEER, _verify_callback)
+    else:
+        ctx.set_verify(SSL.VERIFY_NONE, lambda *_a: True)
     return ctx
 
 
@@ -499,12 +514,13 @@ def fetch_attestation_same_tls_socket(
     *,
     require_exporter: bool = True,
     require_pin: bool = True,
+    ca_trust: bool = True,
     timeout: float = _SAME_TLS_SOCKET_TIMEOUT_SECONDS,
 ) -> tuple[bytes, bytes, bytes, str | None, bytes | None]:
     # connect_ip lets a caller (e.g. the DNS reconciler) attest a SPECIFIC
     # instance by IP while still presenting/validating the canonical hostname
     # (SNI + cert SAN + Host header stay `host`). Without it, host is dialed.
-    ctx = _new_pyopenssl_context()
+    ctx = _new_pyopenssl_context(ca_trust=ca_trust)
     deadline = time.monotonic() + timeout
     raw = socket.create_connection((connect_ip or host, port), timeout=min(10.0, timeout))
     conn = SSL.Connection(ctx, raw)
@@ -600,8 +616,15 @@ def fetch_attestation_same_tls_socket(
     return cert_der, exporter, body, followup_nonce_hex, followup_body
 
 
-def fetch_live_cert_der(host: str, port: int = 443, connect_ip: str | None = None) -> bytes:
+def fetch_live_cert_der(
+    host: str, port: int = 443, connect_ip: str | None = None, *, ca_trust: bool = True
+) -> bytes:
     ctx = ssl.create_default_context()
+    if not ca_trust:
+        # See _new_pyopenssl_context: attested-cert-only mode. The cert we
+        # return here is still checked against the attestation binding.
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
     with socket.create_connection((connect_ip or host, port), timeout=10) as raw:
         with ctx.wrap_socket(raw, server_hostname=host) as tls:
             der = tls.getpeercert(binary_form=True)
@@ -978,6 +1001,16 @@ def main() -> int:
         default=True,
         help="liveness/identity mode for DNS reconciliation: require digest, cert, fresh nonce, and dbgstat checks, but make the TLS exporter optional and skip the same-socket pin follow-up",
     )
+    parser.add_argument(
+        "--attested-cert-only",
+        dest="ca_trust",
+        action="store_false",
+        default=True,
+        help="the endpoint serves a SELF-SIGNED cert minted inside the TEE "
+             "(standalone regional enclaves, e.g. aws.trustedrouter.com): skip CA "
+             "chain/hostname validation, but still require the attestation to bind "
+             "the presented cert. Trust comes from the attestation, not a CA.",
+    )
     parser.add_argument("--binding-stress", action="store_true",
                         help="concurrent cross-SNI binding stress test against ONE instance "
                              "(use with --connect-ip); asserts each served cert is bound in its "
@@ -1004,7 +1037,9 @@ def main() -> int:
         sys.exit("[FAIL] --samples > 1 requires live mode; omit the blob path")
 
     if blob is not None:
-        cert_der = fetch_live_cert_der(args.api_host, args.port, connect_ip=args.connect_ip)
+        cert_der = fetch_live_cert_der(
+            args.api_host, args.port, connect_ip=args.connect_ip, ca_trust=args.ca_trust
+        )
         if looks_like_jwt(blob):
             verify_gcp_jwt(
                 blob,
@@ -1037,6 +1072,7 @@ def main() -> int:
             connect_ip=args.connect_ip,
             require_exporter=require_exporter,
             require_pin=require_exporter,
+            ca_trust=args.ca_trust,
         )
         print(f"\nSample {sample}/{args.samples}:")
         if looks_like_jwt(live_blob):

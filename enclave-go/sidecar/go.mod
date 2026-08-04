@@ -2,7 +2,12 @@ module github.com/Lore-Hex/quill-cloud-proxy/enclave-go-sidecar
 
 go 1.25.5
 
-require github.com/tinfoilsh/tinfoil-go/verifier v0.12.0
+require (
+	github.com/mdlayher/vsock v1.2.1
+	github.com/tinfoilsh/tinfoil-go/verifier v0.12.0
+)
+
+replace github.com/tinfoilsh/tinfoil-go/verifier => ../third_party/tinfoil-verifier
 
 require (
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
@@ -44,6 +49,7 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.3 // indirect
 	github.com/in-toto/attestation v1.1.2 // indirect
 	github.com/in-toto/in-toto-golang v0.9.0 // indirect
+	github.com/mdlayher/socket v0.4.1 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect

@@ -279,6 +279,12 @@ func main() {
 	log.Printf("starting; enclave=%s repo=%s socket=%s reverify=%s",
 		*flagEnclaveHost, *flagCodeRepo, *flagSocketPath, *flagReverifyEvery)
 
+	// Route all outbound verification traffic over vsock before anything
+	// dials. A Nitro enclave has no network and no resolver, so both HTTP and
+	// the verifier's final raw TLS dial need explicit vsock routes.
+	installVsockTransport()
+	log.Printf("outbound verification traffic routed over vsock to parent CID %d", parentCID)
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 

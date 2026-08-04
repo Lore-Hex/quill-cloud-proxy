@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
-# Mirror provider API keys + the cross-cloud GCP service-account key
-# from GCP Secret Manager into AWS Secrets Manager (us-west-2).
+# Publish provider API keys into AWS Secrets Manager, this cloud's own store.
+#
+# SOURCE: --values FILE, a JSON object of {secret id: value} supplied by the
+# deploy. There is no other source, deliberately.
+#
+# This script used to read Google Secret Manager and describe GCP as "the single
+# source of truth". That made GCP a hub every other cloud depended on to be
+# PROVISIONED - the same coupling separate clouds exist to remove, moved one
+# layer up from runtime. It meant no cloud could be brought up or have a key
+# rotated while GCP was unreachable, and every new cloud inherited whatever the
+# hub happened to be missing.
+#
+# The GCP path is gone rather than deprecated. A second source kept "for
+# migration" is a second source somebody uses, and the two produce different
+# results without saying which ran - the failure mode being avoided.
+#
+# The deploy already holds these values in order to publish them anywhere, so
+# handing them to each cloud directly keeps every cloud a peer.
+#
+# The ENCLAVE only ever reads AWS Secrets Manager. The source here is a
+# provisioning-time question, never a runtime one.
 #
 # Why
 # ===
@@ -29,7 +48,6 @@
 
 set -euo pipefail
 
-GCP_PROJECT="${GCP_PROJECT:-quill-cloud-proxy}"
 AWS_REGION="${AWS_REGION:-us-west-2}"
 AWS_SECRET_PREFIX="${AWS_SECRET_PREFIX:-quill/}"   # AWS secret name = prefix + GCP secret id
 
@@ -90,6 +108,18 @@ SECRETS=(
   # Distinct from tr-api-key-for-self-heal which is a customer-facing
   # API key used by TR's self-heal flow as a customer of itself.
   trustedrouter-internal-gateway-token
+  # Federation shared token: a peer plane presents it, the home plane
+  # validates it (TR_FEDERATION_HOME_TOKEN on the peer, TR_FEDERATION_PEER_TOKEN
+  # on home — one value, two roles). Grants directory READS only; the
+  # credit-transfer endpoints require different tokens by design, so this
+  # secret can never move money.
+  trustedrouter-federation-peer-token
+  # Per-plane deferred-settlement tokens. Possession identifies the plane at
+  # home's apply-usage endpoint; each debits usage only and can never mint.
+  trustedrouter-federation-settlement-token-aws-eu
+  trustedrouter-federation-settlement-token-azure-uae
+  # Home's token map (plane=token,...), generated from the per-plane files.
+  trustedrouter-federation-settlement-inbound-tokens
   # Cross-cloud GCP service-account key. The AWS enclave uses this to
   # authenticate to GCP Spanner + Bigtable + KMS + Secret Manager.
   # Granted only the minimum permissions needed (datastore.user,
@@ -123,19 +153,51 @@ SECRETS=(
 
 DRY_RUN=1
 ONLY_SECRET=""
+STANDALONE=0
+# Where the values come from. A deploy-supplied JSON file of
+# {secret id: value} is the ONLY source.
+#
+VALUES_FILE=""
+# The operator's own files, same two sources Azure resolves from. Provider keys
+# are short tokens in an env file under the operator's own names; prompts and the
+# device blob are one file each, because escaping a 2 KB prompt into an env line
+# turns a bug there into a silent behaviour change. See tools/quill_secret_sources.py.
+KEYS_FILE="${KEYS_FILE:-$HOME/.quill_cloud_keys.private}"
+SECRETS_DIR="${SECRETS_DIR:-$HOME/.quill-secrets}"
+RESOLVED_VALUES=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --apply) DRY_RUN=0; shift ;;
     --secret) ONLY_SECRET="$2"; shift 2 ;;
+    --values)
+      VALUES_FILE="$2"; shift 2; continue ;;
+    --keys-file)
+      KEYS_FILE="$2"; shift 2; continue ;;
+    --secrets-dir)
+      SECRETS_DIR="$2"; shift 2; continue ;;
+    --standalone) STANDALONE=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
+# Secrets that must NOT be mirrored into a STANDALONE regional deployment
+# (aws.trustedrouter.com). Under the separation architecture such a region
+# owns its own database, credits, and TLS identity, and holds no GCP
+# credential: mirroring the cross-cloud SA key there would re-create
+# exactly the cross-cloud coupling the separation removes, and hand a
+# GDPR-scoped EU deployment a key to US-hosted GCP resources.
+#
+# The parent tolerates the absence (bootstrap_server._unwrap_gcp_sa_key
+# returns None and logs bootstrap.gcp_sa_key_absent).
+STANDALONE_EXCLUDE=(
+  trustedrouter-aws-cross-cloud-sa-key
+)
+
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 
 # Sanity check both CLIs are configured.
-if ! gcloud auth list --format='value(account)' --filter='status:ACTIVE' >/dev/null 2>&1; then
-  log "FATAL: gcloud not authenticated. Run 'gcloud auth login'." >&2
+if false; then
+  :
   exit 1
 fi
 if ! aws sts get-caller-identity --region "$AWS_REGION" >/dev/null 2>&1; then
@@ -144,26 +206,51 @@ if ! aws sts get-caller-identity --region "$AWS_REGION" >/dev/null 2>&1; then
 fi
 
 aws_account=$(aws sts get-caller-identity --query Account --output text)
-log "GCP project: $GCP_PROJECT"
+# With no explicit --values, resolve from the operator's own files. This is the
+# ordinary path: the values already live on the deploy machine, so no cloud is
+# read and no cloud is a hub another one needs in order to come up.
+if [ -z "$VALUES_FILE" ]; then
+  needed_json="$(mktemp)"; RESOLVED_VALUES="$(mktemp)"
+  chmod 600 "$needed_json" "$RESOLVED_VALUES"
+  trap 'rm -f "$needed_json" "$RESOLVED_VALUES"' EXIT
+  printf '%s\n' "${SECRETS[@]}" | python3 -c '
+import json, sys
+json.dump([l.strip() for l in sys.stdin if l.strip()], open(sys.argv[1], "w"))
+' "$needed_json"
+  log "resolving from your files: $KEYS_FILE + $SECRETS_DIR"
+  python3 "$(dirname "${BASH_SOURCE[0]}")/quill_secret_sources.py" \
+    "$needed_json" "$RESOLVED_VALUES" "$KEYS_FILE" "$SECRETS_DIR"
+  VALUES_FILE="$RESOLVED_VALUES"
+fi
+
 log "AWS account: $aws_account region: $AWS_REGION"
 log "Mode: $([ $DRY_RUN -eq 1 ] && echo DRY-RUN || echo APPLY)"
 
 mirror_one() {
-  local gcp_secret_name="$1"
-  local aws_secret_name="${AWS_SECRET_PREFIX}${gcp_secret_name}"
+  local secret_id="$1"
+  local aws_secret_name="${AWS_SECRET_PREFIX}${secret_id}"
 
-  log "→ ${gcp_secret_name}"
+  log "→ ${secret_id}"
 
   # Read the latest version from GCP. If the secret doesn't exist in GCP,
   # we don't create one in AWS — that would be a footgun (creating
   # phantom secrets in the failover store that don't have a source of
   # truth). Skip with a warning instead.
   local value
-  if ! value=$(gcloud secrets versions access latest \
-      --secret="$gcp_secret_name" \
-      --project="$GCP_PROJECT" 2>/dev/null); then
-    log "  WARN: GCP secret '$gcp_secret_name' not found; skipping"
-    return
+  # Absent here means the operator did not intend to publish this secret, so
+  # skip it. There is nowhere else to look by design.
+  if true; then
+    if ! value=$(VALUES_FILE="$VALUES_FILE" SECRET_ID="$secret_id" python3 -c '
+import json, os, sys
+values = json.load(open(os.environ["VALUES_FILE"]))
+v = values.get(os.environ["SECRET_ID"])
+if v is None or not str(v).strip():
+    sys.exit(1)
+sys.stdout.write(str(v))
+' 2>/dev/null); then
+      log "  WARN: '$secret_id' absent from $VALUES_FILE; skipping"
+      return
+    fi
   fi
 
   if [ $DRY_RUN -eq 1 ]; then
@@ -183,18 +270,36 @@ mirror_one() {
     log "  creating new AWS secret"
     aws secretsmanager create-secret \
       --name "$aws_secret_name" \
-      --description "Mirrored from GCP Secret Manager (project=${GCP_PROJECT}, secret=${gcp_secret_name}). Source of truth lives in GCP; this script keeps AWS in sync." \
+      --description "Published by the deploy (tools/sync-secrets-to-aws.sh --values). AWS Secrets Manager is this cloud's own store; no other cloud is read, at provisioning time or at runtime." \
       --secret-string "$value" \
       --region "$AWS_REGION" \
-      --tags 'Key=Source,Value=gcp-secret-manager' \
-             "Key=GcpSecretName,Value=${gcp_secret_name}" >/dev/null
+      --tags 'Key=Source,Value=deploy' \
+             "Key=SecretId,Value=${secret_id}" >/dev/null
   fi
 }
 
+skip_in_standalone() {
+  local candidate="$1"
+  [ "$STANDALONE" -eq 1 ] || return 1
+  local excluded
+  for excluded in "${STANDALONE_EXCLUDE[@]}"; do
+    [ "$candidate" = "$excluded" ] && return 0
+  done
+  return 1
+}
+
 if [ -n "$ONLY_SECRET" ]; then
-  mirror_one "$ONLY_SECRET"
+  if skip_in_standalone "$ONLY_SECRET"; then
+    log "SKIP (standalone region): $ONLY_SECRET"
+  else
+    mirror_one "$ONLY_SECRET"
+  fi
 else
   for secret in "${SECRETS[@]}"; do
+    if skip_in_standalone "$secret"; then
+      log "SKIP (standalone region): $secret"
+      continue
+    fi
     mirror_one "$secret"
   done
 fi

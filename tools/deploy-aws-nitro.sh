@@ -60,6 +60,15 @@ ASG_MAX="${ASG_MAX:-50}"
 # the steady-state warmup pattern (1% Cloudflare-LB trickle keeps the
 # AWS path warmed under real traffic so its bugs surface in metrics
 # rather than during an outage).
+# Whether the caller set ASG_DESIRED explicitly. When they did NOT, an
+# update of an EXISTING ASG preserves whatever capacity is currently
+# running (see phase_compute). Re-running `--phase compute` to publish a
+# new launch template is a routine operation, and it must not double as
+# "scale the running deployment to zero" -- which is exactly what the bare
+# default did: it took the live eu-west-1 enclave down mid-session, and
+# the terminate-and-wait that followed then had nothing to replace.
+ASG_DESIRED_EXPLICIT=0
+[ -n "${ASG_DESIRED+x}" ] && ASG_DESIRED_EXPLICIT=1
 ASG_DESIRED="${ASG_DESIRED:-0}"
 
 DRY_RUN=1
@@ -128,26 +137,36 @@ phase_iam() {
   # The cross-cloud GCP SA key is wrapped with our CMK and then stored
   # in Secrets Manager. The bootstrap_server unwraps via direct
   # kms:Decrypt — NOT through Secrets Manager's auto-decrypt path.
-  # IAM resource ARNs for KMS must reference the key by its UUID, not
-  # by alias; resolve the CMK ID from the alias at apply time so the
-  # policy stays scoped to the specific key rather than wildcarding
-  # the whole region.
+  # The IAM role is GLOBAL but enclave hosts now run in several regions,
+  # so this policy has to cover every one of them. It previously pinned
+  # AWS_REGION into each ARN, which meant re-running `--phase iam` for a
+  # NEW region silently rewrote the policy to that region alone and
+  # revoked the existing region's access — a second-region rollout that
+  # breaks the first. Enumerate the regions instead.
+  #
+  # eu-west-3 hosts hit exactly this: GetSecretValue denied on
+  # quill/quill-openrouter-key because the ARN said eu-west-1. The
+  # symptom is a bootstrap that never binds vsock 9100, so the enclave
+  # dies with ECONNRESET and /health honestly reports 503.
+  local regions="${ENCLAVE_REGIONS:-eu-west-1 eu-west-3}"
   local cmk_alias="alias/${PROJECT_TAG}-cmk"
-  local cmk_arn
-  cmk_arn=$(aws kms list-aliases --region "$AWS_REGION" \
-    --query "Aliases[?AliasName=='${cmk_alias}'].TargetKeyId" \
-    --output text 2>/dev/null || echo "")
-  if [ -n "$cmk_arn" ] && [ "$cmk_arn" != "None" ]; then
-    cmk_arn="arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT}:key/${cmk_arn}"
-  else
-    # CMK doesn't exist yet (first-time bootstrap, phase_kms hasn't
-    # run). Fall back to a wildcard scoped to this account+region —
-    # phase_kms creates exactly one CMK so this is bounded. The next
-    # apply (after phase_kms lands) will tighten the resource to the
-    # specific key.
-    cmk_arn="arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT}:key/*"
-    log "  WARN: ${cmk_alias} not yet provisioned; using wildcard for kms direct-decrypt"
-  fi
+  local cmk_arns="" r key_id
+  for r in $regions; do
+    key_id=$(aws kms list-aliases --region "$r" \
+      --query "Aliases[?AliasName=='${cmk_alias}'].TargetKeyId" \
+      --output text 2>/dev/null || echo "")
+    if [ -n "$key_id" ] && [ "$key_id" != "None" ]; then
+      cmk_arns="${cmk_arns}\"arn:aws:kms:${r}:${AWS_ACCOUNT}:key/${key_id}\","
+    else
+      # CMK not provisioned in this region yet (phase_kms hasn't run).
+      # Wildcard scoped to that account+region; phase_kms creates exactly
+      # one CMK, and the next apply tightens it to the specific key.
+      cmk_arns="${cmk_arns}\"arn:aws:kms:${r}:${AWS_ACCOUNT}:key/*\","
+      log "  WARN: ${cmk_alias} not yet provisioned in ${r}; wildcarding direct-decrypt there"
+    fi
+  done
+  cmk_arns="[${cmk_arns%,}]"
+  log "  IAM policy covers regions: ${regions}"
 
   local policy_doc
   policy_doc=$(cat <<EOF
@@ -158,20 +177,20 @@ phase_iam() {
       "Sid": "ReadProviderSecrets",
       "Effect": "Allow",
       "Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
-      "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT}:secret:quill/*"
+      "Resource": "arn:aws:secretsmanager:*:${AWS_ACCOUNT}:secret:quill/*"
     },
     {
       "Sid": "DecryptKMSViaSecretsManager",
       "Effect": "Allow",
       "Action": ["kms:Decrypt", "kms:DescribeKey"],
-      "Resource": "arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT}:key/*",
-      "Condition": {"StringEquals": {"kms:ViaService": "secretsmanager.${AWS_REGION}.amazonaws.com"}}
+      "Resource": "arn:aws:kms:*:${AWS_ACCOUNT}:key/*",
+      "Condition": {"StringLike": {"kms:ViaService": "secretsmanager.*.amazonaws.com"}}
     },
     {
       "Sid": "DecryptCrossCloudSAKeyDirect",
       "Effect": "Allow",
       "Action": ["kms:Decrypt", "kms:DescribeKey"],
-      "Resource": "${cmk_arn}"
+      "Resource": ${cmk_arns}
     },
     {
       "Sid": "PullECR",
@@ -666,6 +685,14 @@ allowlist:
   - {address: api.redpill.ai,                port: 443}
   - {address: api.siliconflow.com,           port: 443}
   - {address: inference.tinfoil.sh,          port: 443}
+  # ATTESTATION SIDECAR egress. The enclave has NO network and NO DNS: every
+  # outbound host must be listed here AND given a write_vsock_unit below, or
+  # the sidecar dies with 'lookup <host> on [::1]:53: cannot assign requested
+  # address' and takes the enclave down with it. inference.tinfoil.sh above is
+  # the DATA path; these are the VERIFICATION path and are separate.
+  - {address: api-github-proxy.tinfoil.sh, port: 443}
+  - {address: tuf-repo-cdn.sigstore.dev, port: 443}
+  - {address: rekor.sigstore.dev,        port: 443}
   - {address: api.venice.ai,                 port: 443}
   # 2026-05-11 batch (parasail / lightning / gmi). All OpenAI-compatible.
   - {address: api.parasail.io,               port: 443}
@@ -756,6 +783,11 @@ write_vsock_unit 8014 api.novita.ai
 write_vsock_unit 8015 api.redpill.ai
 write_vsock_unit 8016 api.siliconflow.com
 write_vsock_unit 8017 inference.tinfoil.sh
+write_vsock_unit 8042 api-github-proxy.tinfoil.sh
+write_vsock_unit 8043 tuf-repo-cdn.sigstore.dev
+write_vsock_unit 8044 rekor.sigstore.dev
+write_vsock_unit 8045 gh-attestation-proxy.tinfoil.sh
+write_vsock_unit 8046 kds-proxy.tinfoil.sh
 write_vsock_unit 8018 api.venice.ai
 write_vsock_unit 8019 api.parasail.io
 write_vsock_unit 8020 lightning.ai
@@ -844,11 +876,40 @@ nitro-cli build-enclave \\
   --docker-uri ${enclave_repo_url}:${enclave_tag} \\
   --output-file /opt/quill/enclave.eif
 
-nitro-cli run-enclave \\
-  --eif-path /opt/quill/enclave.eif \\
-  --cpu-count 2 \\
-  --memory 4096 \\
-  --enclave-cid 16
+# Run the enclave under systemd, NOT as a bare boot command. A bare
+# run-enclave dies permanently on any crash (or a debug-mode test), taking
+# attestation down until the whole host is replaced — the parent keeps
+# serving 8443/8444 with a dead vsock peer behind it, so /attestation returns
+# nothing and the TCP health check stays green while lying. Restart=always
+# turns "the enclave stopped" into a few seconds of downtime instead of a
+# manual host cycle. ExecStop terminates cleanly so a restart can re-run.
+cat > /etc/systemd/system/quill-enclave.service <<UNIT
+[Unit]
+Description=Quill Nitro enclave
+After=nitro-enclaves-allocator.service
+Wants=nitro-enclaves-allocator.service
+
+[Service]
+Type=simple
+# Do NOT use --attach-console here. On a NON-debug production EIF that flag does
+# not give a long-running foreground process — nitro-cli returns/errors and the
+# unit crash-loops (observed: NRestarts climbing, enclave up-then-gone within
+# 20s). Instead: launch once, then a poll loop that blocks while the enclave is
+# alive and exits (tripping Restart=always) only when it actually dies. That
+# ties unit life to enclave life without the console dependency.
+# terminate-all first so a leftover enclave from a prior start cannot collide
+# on the CID.
+ExecStartPre=-/usr/bin/nitro-cli terminate-enclave --all
+ExecStart=/bin/bash -c '/usr/bin/nitro-cli run-enclave --eif-path /opt/quill/enclave.eif --cpu-count 2 --memory 4096 --enclave-cid 16 && while /usr/bin/nitro-cli describe-enclaves | grep -q EnclaveID; do sleep 10; done; echo "enclave exited" >&2; exit 1'
+ExecStop=/usr/bin/nitro-cli terminate-enclave --all
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now quill-enclave.service
 
 # Liveness signal: the parent's /health endpoint exits 0 once the enclave
 # vsock socket accepts a connect. The ASG health check polls 8443 on TCP.
@@ -1000,7 +1061,7 @@ EOJ
     fi
   fi
 
-  # ASG. We launch with desired=ASG_DESIRED (default 1) so the AWS path
+  # ASG. We launch with desired=ASG_DESIRED (default 0) so the AWS path
   # is continuously warmed by the 1% Cloudflare-LB trickle. Healthcheck
   # type ELB so unhealthy bootstraps get auto-replaced.
   local asg_name="${PROJECT_TAG}-asg"
@@ -1008,13 +1069,26 @@ EOJ
        --auto-scaling-group-names "$asg_name" \
        --query "AutoScalingGroups[0].AutoScalingGroupName" --output text 2>/dev/null \
        | grep -q "$asg_name"; then
-    log "  ASG $asg_name already exists; updating to latest LT version"
+    # Preserve running capacity unless the caller asked for a specific
+    # value. Publishing a launch template must not scale the deployment.
+    local update_desired="$ASG_DESIRED"
+    if [ "$ASG_DESIRED_EXPLICIT" -eq 0 ]; then
+      local current_desired
+      current_desired=$(aws autoscaling describe-auto-scaling-groups \
+        --region "$AWS_REGION" --auto-scaling-group-names "$asg_name" \
+        --query "AutoScalingGroups[0].DesiredCapacity" --output text 2>/dev/null)
+      case "$current_desired" in
+        ''|None|*[!0-9]*) : ;;   # unreadable -> fall back to the default
+        *) update_desired="$current_desired" ;;
+      esac
+    fi
+    log "  ASG $asg_name already exists; updating to latest LT version (desired=$update_desired)"
     if [ $DRY_RUN -eq 0 ]; then
       aws autoscaling update-auto-scaling-group --region "$AWS_REGION" \
         --auto-scaling-group-name "$asg_name" \
         --launch-template "LaunchTemplateName=${lt_name},Version=\$Latest" \
         --min-size "$ASG_MIN" --max-size "$ASG_MAX" \
-        --desired-capacity "$ASG_DESIRED" \
+        --desired-capacity "$update_desired" \
         --vpc-zone-identifier "$subnet_ids"
     fi
   else
