@@ -66,6 +66,7 @@
 package attestation
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -196,7 +197,46 @@ func requestTokenFromSidecar(body []byte) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("attestation/azure: token http %d: %s", resp.StatusCode, errBody)
 	}
-	return io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("attestation/azure: read token: %w", err)
+	}
+	// UNWRAP the sidecar's `{"token": "<JWT>"}` envelope.
+	//
+	// /attestation's wire contract is a BARE attestation document: GCP
+	// Confidential Space serves the OIDC JWT itself, AWS Nitro serves the
+	// COSE_Sign1 bytes, and every client — tools/verify-attestation.py, the
+	// SDKs, the synthetic probes — sniffs the first bytes to decide which.
+	// Passing the sidecar's envelope through verbatim made Azure the only
+	// cloud whose document arrived wrapped, so the sniff fell through to the
+	// CBOR branch and every verification died inside a CBOR parser with a
+	// message about truncated input — pointing at the transport rather than
+	// at the shape. The envelope is the SIDECAR's contract, not ours.
+	return unwrapSidecarToken(raw)
+}
+
+// unwrapSidecarToken returns the bare JWT from the guest-attestation
+// sidecar's JSON envelope, tolerating a bare token in case a future sidecar
+// version stops wrapping.
+func unwrapSidecarToken(raw []byte) ([]byte, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("attestation/azure: sidecar returned an empty body")
+	}
+	if trimmed[0] != '{' {
+		return trimmed, nil
+	}
+	var envelope struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(trimmed, &envelope); err != nil {
+		return nil, fmt.Errorf("attestation/azure: sidecar body is neither a token nor JSON: %w", err)
+	}
+	if envelope.Token == "" {
+		// Deliberately does not echo the body: it is attestation material.
+		return nil, fmt.Errorf("attestation/azure: sidecar JSON has no non-empty \"token\"")
+	}
+	return []byte(envelope.Token), nil
 }
 
 // tokenRequest is the body the Azure guest-attestation sidecar accepts.

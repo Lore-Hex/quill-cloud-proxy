@@ -171,3 +171,52 @@ func TestGetPropagatesTokenBytes(t *testing.T) {
 		t.Errorf("Get returned %q, want the issuer's bytes verbatim", got)
 	}
 }
+
+// TestUnwrapSidecarToken pins /attestation's wire contract: a BARE document.
+//
+// The sidecar answers with `{"token": "<JWT>"}`; passing that through made
+// Azure the only cloud serving a wrapped document, so every client's
+// first-byte sniff fell through to the CBOR branch and verification died
+// inside a CBOR parser complaining about truncated input.
+func TestUnwrapSidecarToken(t *testing.T) {
+	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL3gudWFlbi5hdHRlc3QuYXp1cmUubmV0In0.sig"
+
+	t.Run("unwraps the sidecar envelope", func(t *testing.T) {
+		got, err := unwrapSidecarToken([]byte(`{"token":"` + jwt + `"}`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(got) != jwt {
+			t.Fatalf("got %q, want the bare JWT", got)
+		}
+		if got[0] == '{' {
+			t.Fatal("still wrapped: clients sniff the first byte to pick a parser")
+		}
+	})
+
+	t.Run("passes a bare token through", func(t *testing.T) {
+		got, err := unwrapSidecarToken([]byte("  " + jwt + "\n"))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(got) != jwt {
+			t.Fatalf("got %q, want the bare JWT", got)
+		}
+	})
+
+	t.Run("rejects an empty body", func(t *testing.T) {
+		if _, err := unwrapSidecarToken([]byte("   ")); err == nil {
+			t.Fatal("empty body must be an error, not an empty attestation")
+		}
+	})
+
+	t.Run("rejects JSON with no token", func(t *testing.T) {
+		_, err := unwrapSidecarToken([]byte(`{"error":"nope"}`))
+		if err == nil {
+			t.Fatal("JSON without a token must be an error")
+		}
+		if bytes.Contains([]byte(err.Error()), []byte("nope")) {
+			t.Fatal("error must not echo the sidecar body: it is attestation material")
+		}
+	})
+}
