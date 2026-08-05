@@ -29,6 +29,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
+	batchapi "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/batch"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bootstrap"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
@@ -150,6 +151,7 @@ func main() {
 	// learn the exact set of bearer tokens currently authorized, and any
 	// silent rotation produces a new attestation.
 	registry := auth.New(boot.Devices)
+	deviceBlob, _ := json.Marshal(boot.Devices)
 	br := llm.New(boot) // build-tag-gated: AWS Bedrock by default, GCP Vertex with -tags gcp
 	trGateway := trustedrouter.NewFromBootstrap(boot)
 	videoGateway = newVideoService(videoProviderKeys(boot), trGateway)
@@ -168,9 +170,52 @@ func main() {
 			},
 		})
 		settlementRetries.Start(ctx)
+		batchConfig, batchEnabled := productionBatchConfig()
+		if batchEnabled {
+			kmsHTTP := byokcache.NewVsockKMSClient()
+			identity, identityErr := byokcache.NewConfidentialSpaceTokenSource(batchConfig.WIFProvider, kmsHTTP)
+			if identityErr != nil {
+				fmt.Fprintf(os.Stderr, "batch.service_start_failed err=%q\n", identityErr.Error())
+				batchGateway = nil
+			} else {
+				kms := &byokcache.GoogleKMSUnwrapper{
+					HTTPClient:  kmsHTTP,
+					TokenSource: identity,
+				}
+				nativeProviders := nativeBatchProviders(boot)
+				// Keep the authorizer available even when native submission is
+				// disabled so a restarted worker can refund durable in-flight holds.
+				nativeAuthorizer := &batchNativeAuthorizer{gateway: trGateway}
+				batchGateway, err = batchapi.New(batchapi.Options{
+					Store:                 batchapi.NewGCSStoreWithTokenSource(batchConfig.Bucket, identity),
+					Protector:             &batchapi.EnvelopeProtector{KMS: kms, KeyName: batchConfig.KMSKey},
+					Keys:                  trGateway,
+					NativeAuthorizer:      nativeAuthorizer,
+					NativeProviders:       nativeProviders,
+					NativeSubmitProviders: nativeBatchSubmitProviders(nativeBatchSubmitAllowlist),
+					Executor: &batchEnclaveExecutor{
+						registry:   registry,
+						backend:    br,
+						deviceBlob: deviceBlob,
+						gateway:    trGateway,
+						byok:       byokSecrets,
+					},
+					Logf: func(format string, args ...any) {
+						fmt.Fprintf(os.Stderr, format+"\n", args...)
+					},
+				})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "batch.service_start_failed err=%q\n", err.Error())
+					batchGateway = nil
+				} else {
+					batchGateway.Start(ctx)
+					fmt.Fprintf(os.Stderr, "batch.service_started bucket=%q\n", batchConfig.Bucket)
+				}
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "batch.service_disabled reason=unsupported_cloud")
+		}
 	}
-
-	deviceBlob, _ := json.Marshal(boot.Devices)
 
 	// 3. Listen on vsock/TCP. When QUILL_ENCLAVE_TLS=true, wrap the listener
 	// with an enclave-owned cert so TLS is terminated INSIDE the attested
@@ -451,6 +496,10 @@ func serveOneRequest(
 			return
 		}
 		serveEmbeddings(ctx, conn, br, body, trGateway, trEnabled, bearer, byokSecrets, idempotencyKey, attribution, requestLogID)
+		return
+	}
+
+	if maybeServeBatchRoute(ctx, conn, method, routePath, body, bearer) {
 		return
 	}
 
@@ -1269,12 +1318,18 @@ func serveMessages(
 		}
 		applyUsageAttribution(&usage, req)
 		applyCacheUsage(&usage, result)
-		if _, err := settleAndBroadcast(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text); err != nil {
+		settlement, err := settleAndBroadcast(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.messages_settle_failed model=%q err=%v\n", req.Model, err)
 			writeAnthropicError(conn, 502, "settlement failed")
 			return
 		}
-		writeJSONResponse(conn, 200, envelope.Bytes())
+		responseBody, err := annotateBatchSettlementOnlyUsage(ctx, envelope.Bytes(), settlement)
+		if err != nil {
+			writeAnthropicError(conn, 500, "messages encoding error")
+			return
+		}
+		writeJSONResponse(conn, 200, responseBody)
 		return
 	}
 

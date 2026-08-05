@@ -237,8 +237,34 @@ jobs:
             git push origin HEAD:main
           fi
 
-  rollout:
+  grant-batch-image-access:
     needs: build-and-release
+    runs-on: ubuntu-latest
+    environment: batch-release
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require explicit Batch storage activation
+        env:
+          TR_BATCH_STORAGE_ENABLED: ${{ vars.TR_BATCH_STORAGE_ENABLED }}
+        run: |
+          if [ "${TR_BATCH_STORAGE_ENABLED}" != "true" ]; then
+            echo "Attested Batch storage is compiled in, but TR_BATCH_STORAGE_ENABLED is not true." >&2
+            exit 1
+          fi
+      - name: Authenticate isolated Batch release identity
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-batch-release@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Grant only the new measured enclave digest
+        env:
+          IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
+        run: bash tools/reconcile-gcp-batch-image-access.sh grant "${IMAGE_DIGEST}"
+
+  rollout:
+    needs: [build-and-release, grant-batch-image-access]
+    if: ${{ needs.grant-batch-image-access.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

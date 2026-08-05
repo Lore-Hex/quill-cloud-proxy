@@ -82,6 +82,25 @@ func Get(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte)
 	return requestToken(body)
 }
 
+// MintOIDCToken asks the Confidential Space launcher for a fresh attestation
+// token suitable for workload-identity federation. The WIP provider, not this
+// client, enforces the production-image and image-digest policy.
+func MintOIDCToken(ctx context.Context, audience string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(audience) == "" {
+		return nil, fmt.Errorf("attestation/gcp: audience is required")
+	}
+	body, err := json.Marshal(tokenRequest{Audience: audience, TokenType: "OIDC"})
+	if err != nil {
+		return nil, fmt.Errorf("attestation/gcp: marshal workload identity token: %w", err)
+	}
+	launcherTokenMu.Lock()
+	defer launcherTokenMu.Unlock()
+	return requestToken(body)
+}
+
 func buildTokenRequest(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte) tokenRequest {
 	leafFP := sha256.Sum256(leafDER)
 	deviceHash := sha256.Sum256(deviceBlob)

@@ -1047,6 +1047,13 @@ func directModelID(provider, model, upstreamModel string) string {
 	return stripOpenRouterModelVariant(resolved)
 }
 
+// DirectModelID resolves the provider-native model identifier used by direct
+// inference and provider-native Batch. Keeping both paths on this resolver
+// prevents catalog aliases from drifting into invalid upstream model names.
+func DirectModelID(provider, model, upstreamModel string) string {
+	return directModelID(provider, model, upstreamModel)
+}
+
 // providerUsesAuthorizedUpstreamModel identifies second-source providers whose
 // catalog endpoint is callable using the exact model id returned by their live
 // API. The control plane stores that value on the signed authorization. Static

@@ -87,6 +87,7 @@ func serveEmbeddings(
 
 	var authorization *trustedrouter.Authorization
 	var invokeOptions []llm.InvokeOptions
+	var settlement *trustedrouter.SettleResult
 	if trEnabled {
 		var err error
 		authorization, err = trGateway.AuthorizeEmbeddings(ctx, bearer, &req, inputTokens)
@@ -159,7 +160,8 @@ func serveEmbeddings(
 			HTTPReferer:      req.HTTPReferer,
 			AppCategories:    append([]string(nil), req.AppCategories...),
 		}
-		if _, err := trGateway.Settle(ctx, authorization, usage); err != nil {
+		settlement, err = trGateway.Settle(ctx, authorization, usage)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.embeddings_settle_failed model=%q err=%v\n", req.Model, err)
 			writeError(conn, 502, "settlement failed")
 			return
@@ -167,6 +169,11 @@ func serveEmbeddings(
 	}
 
 	out, err := json.Marshal(resp)
+	if err != nil {
+		writeError(conn, 500, "embeddings encoding error")
+		return
+	}
+	out, err = annotateBatchSettlementOnlyUsage(ctx, out, settlement)
 	if err != nil {
 		writeError(conn, 500, "embeddings encoding error")
 		return

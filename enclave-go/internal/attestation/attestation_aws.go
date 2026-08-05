@@ -26,6 +26,7 @@
 package attestation
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/x509"
 	"errors"
@@ -35,6 +36,10 @@ import (
 	"github.com/hf/nsm/request"
 	"github.com/hf/nsm/response"
 )
+
+func MintOIDCToken(context.Context, string) ([]byte, error) {
+	return nil, errors.New("attestation: Confidential Space OIDC tokens are unavailable on AWS")
+}
 
 type nsmSession interface {
 	Send(request.Request) (response.Response, error)
