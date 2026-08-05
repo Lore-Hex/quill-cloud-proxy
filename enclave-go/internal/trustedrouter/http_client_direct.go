@@ -15,9 +15,11 @@ import (
 )
 
 func newControlPlaneHTTPClient() *http.Client {
+	// markDialFailures tags errors coming from the dialer so endpoint failover
+	// can tell "never reached a server" from "may have been processed".
 	return &http.Client{
 		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
+		Transport: markDialFailures(&http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
 				Timeout:   5 * time.Second,
@@ -38,6 +40,6 @@ func newControlPlaneHTTPClient() *http.Client {
 				MinVersion:         tls.VersionTLS12,
 				ClientSessionCache: tls.NewLRUClientSessionCache(256),
 			},
-		},
+		}),
 	}
 }

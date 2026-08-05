@@ -30,7 +30,10 @@ const imageOutputTokenEstimate = 1290
 var imageDataURLPattern = regexp.MustCompile(`data:image/[^;"\s]+;base64,[A-Za-z0-9+/=_-]+`)
 
 type Client struct {
-	baseURL        string
+	// baseURLs is ordered: index 0 is this cloud's OWN control plane, later
+	// entries are fallbacks used only when an earlier one cannot be dialled.
+	// See endpoints.go for why only dial failures may advance it.
+	baseURLs       []string
 	internalToken  string
 	httpc          *http.Client
 	region         string
@@ -39,7 +42,7 @@ type Client struct {
 
 func NewFromEnv() *Client {
 	return &Client{
-		baseURL:        strings.TrimRight(os.Getenv("TR_CONTROL_PLANE_BASE_URL"), "/"),
+		baseURLs:       parseControlPlaneEndpoints(os.Getenv("TR_CONTROL_PLANE_BASE_URL")),
 		internalToken:  os.Getenv("TR_INTERNAL_GATEWAY_TOKEN"),
 		region:         os.Getenv("TR_REGION"),
 		httpc:          newControlPlaneHTTPClient(),
@@ -48,9 +51,9 @@ func NewFromEnv() *Client {
 }
 
 func NewFromBootstrap(boot *qtypes.BootstrapData) *Client {
-	baseURL := strings.TrimRight(os.Getenv("TR_CONTROL_PLANE_BASE_URL"), "/")
-	if baseURL == "" && boot != nil {
-		baseURL = strings.TrimRight(boot.TrustedRouterBaseURL, "/")
+	baseURLs := parseControlPlaneEndpoints(os.Getenv("TR_CONTROL_PLANE_BASE_URL"))
+	if len(baseURLs) == 0 && boot != nil {
+		baseURLs = parseControlPlaneEndpoints(boot.TrustedRouterBaseURL)
 	}
 	internalToken := os.Getenv("TR_INTERNAL_GATEWAY_TOKEN")
 	if internalToken == "" && boot != nil {
@@ -61,7 +64,7 @@ func NewFromBootstrap(boot *qtypes.BootstrapData) *Client {
 		region = boot.Region
 	}
 	return &Client{
-		baseURL:        baseURL,
+		baseURLs:       baseURLs,
 		internalToken:  strings.TrimSpace(internalToken),
 		region:         region,
 		httpc:          newControlPlaneHTTPClient(),
@@ -74,7 +77,7 @@ func New(baseURL, internalToken string, httpc *http.Client) *Client {
 		httpc = newControlPlaneHTTPClient()
 	}
 	return &Client{
-		baseURL:        strings.TrimRight(baseURL, "/"),
+		baseURLs:       parseControlPlaneEndpoints(baseURL),
 		internalToken:  internalToken,
 		httpc:          httpc,
 		authorizeRetry: defaultAuthorizeRetryPolicy(),
@@ -82,7 +85,16 @@ func New(baseURL, internalToken string, httpc *http.Client) *Client {
 }
 
 func (c *Client) Enabled() bool {
-	return c != nil && c.baseURL != "" && c.internalToken != ""
+	return c != nil && len(c.baseURLs) > 0 && c.internalToken != ""
+}
+
+// primaryBaseURL is this cloud's own control plane — the one used unless it
+// cannot be dialled at all.
+func (c *Client) primaryBaseURL() string {
+	if c == nil || len(c.baseURLs) == 0 {
+		return ""
+	}
+	return c.baseURLs[0]
 }
 
 type Authorization struct {
@@ -566,21 +578,55 @@ func (c *Client) FetchImage(ctx context.Context, url string) (string, []byte, er
 	return decoded.Data.MediaType, data, nil
 }
 
+// postToFirstDialable POSTs to the ordered control-plane endpoints, moving to
+// the next ONLY when the current one could not be dialled.
+//
+// That restriction is the whole safety argument: net/http runs DialContext
+// before writing any request byte, so a dial failure proves this request
+// reached no server and cannot have escrowed credits or booked usage. Every
+// other error is ambiguous — notably a connection dropped mid-response, where
+// the server HAS processed the request and we merely failed to read the answer.
+// Re-sending that to a DIFFERENT plane with a DIFFERENT database (idempotency
+// keys do not travel between them) could reserve or bill twice.
+func (c *Client) postToFirstDialable(ctx context.Context, path string, body []byte) (*http.Response, error) {
+	if len(c.baseURLs) == 0 {
+		return nil, fmt.Errorf("trustedrouter: no control-plane endpoint configured")
+	}
+	for i, base := range c.baseURLs {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(internalTokenHeader, c.internalToken)
+
+		resp, err := c.httpc.Do(req)
+		if err == nil {
+			if i > 0 {
+				// A silent fallback reads as health: the primary could be down
+				// for days while every request quietly succeeds on the standby.
+				fmt.Fprintf(os.Stderr,
+					"enclave.control_plane_failover path=%q endpoint_index=%d\n", path, i)
+			}
+			return resp, nil
+		}
+		if !isDialFailure(err) || i == len(c.baseURLs)-1 {
+			return nil, fmt.Errorf("trustedrouter: post %s: %w", path, err)
+		}
+		fmt.Fprintf(os.Stderr,
+			"enclave.control_plane_undialable path=%q endpoint_index=%d err=%v\n", path, i, err)
+	}
+	return nil, fmt.Errorf("trustedrouter: post %s: no endpoint dialable", path)
+}
+
 func (c *Client) postJSON(ctx context.Context, path string, payload any, out any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	resp, err := c.postToFirstDialable(ctx, path, body)
 	if err != nil {
 		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(internalTokenHeader, c.internalToken)
-
-	resp, err := c.httpc.Do(req)
-	if err != nil {
-		return fmt.Errorf("trustedrouter: post %s: %w", path, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -625,17 +671,9 @@ func (c *Client) KeyInfo(ctx context.Context, bearer string) (int, []byte, error
 	if err != nil {
 		return 0, nil, err
 	}
-	req, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, c.baseURL+"/internal/gateway/key", bytes.NewReader(payload),
-	)
+	resp, err := c.postToFirstDialable(ctx, "/internal/gateway/key", payload)
 	if err != nil {
 		return 0, nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(internalTokenHeader, c.internalToken)
-	resp, err := c.httpc.Do(req)
-	if err != nil {
-		return 0, nil, fmt.Errorf("trustedrouter: post /internal/gateway/key: %w", err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
