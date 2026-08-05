@@ -39,16 +39,16 @@
 // a separate process + separate module keeps the main enclave's
 // dep graph lean (this file uses Go stdlib only).
 //
-// Cross-check decision matrix (resolveExpectedFP below)
-// =====================================================
+// Cross-check decision matrix (resolveExpectedAttestation below)
+// ===============================================================
 //
 //	both ok + agree    → use verifiedFP (the safer of the two)
 //	both ok + disagree → REFUSE — either tinfoil is rotating mid-
 //	                     fetch (next attempt resolves) or one
 //	                     network leg is being MITM'd
-//	raw ok, sidecar dn → raw-only mode, log "sidecar unreachable"
-//	sidecar ok, raw dn → sidecar-only mode, log "raw fetch failed"
-//	neither ok         → hard error; tinfoil requests fail closed
+//	raw ok, sidecar dn → REFUSE — full verification is mandatory
+//	sidecar ok, raw dn → REFUSE — independent cross-check is mandatory
+//	neither ok         → REFUSE
 //
 // Per-request enforcement
 // =======================
@@ -85,9 +85,13 @@
 //     result for 10 min, so its response is in-memory)
 //   - String compare on the two FPs.
 //
-// Every subsequent request:
+// Every subsequent request while the proof remains current:
+//   - One in-memory proof-status query to the local sidecar over its
+//     Unix socket. A failed re-verification closes the route immediately.
 //   - One SHA-256 of the peer cert's DER pubkey + one string compare,
-//     both inside the existing TLS handshake. Microseconds.
+//     both inside the existing TLS handshake.
+//   - Once the proof expires or its identity changes, both sources must
+//     verify again before another provider request can be sent.
 //
 // Empirically: tinfoil US TTFT pre-attestation 779 ms avg →
 // post-attestation 805 ms avg. Delta is run-to-run noise.
@@ -221,8 +225,8 @@ type tinfoilAttestation struct {
 // the socket exists and answers, the main enclave dual-sources the
 // expected TLS fingerprint: stdlib-only parse here (rawFP) AND
 // full-Sigstore-+-AMD-VCEK-chain-verified (verifiedFP) from the sidecar.
-// Disagreement = refuse the request. Sidecar unreachable = log loudly
-// and fall through to rawFP-only (the pin still holds).
+// Missing, expired, failed, or disagreeing verification from either source
+// refuses the request. There is no single-source downgrade mode.
 //
 // "@tinfoil-attest" is a Linux abstract socket — no filesystem entry,
 // works even when the runtime image is FROM scratch and /run is read
@@ -267,16 +271,14 @@ var errSidecarPIDMismatch = errors.New("attest sidecar peer PID mismatch")
 // hex SHA-256 of the enclave's TLS public key (PKIX-DER form), matching
 // the SDK's TLSPublicKeyFP convention.
 //
-// We fetch over plain TLS via http.DefaultTransport (WebPKI chain
-// validation only). This is intentionally lighter than the verifiedFP
-// path: the sidecar runs the full Sigstore + AMD VCEK chain
-// independently, and resolveExpectedFP refuses any request where the
-// two paths disagree. So trusting the WebPKI chain on the .well-known
-// endpoint at this layer is fine — an attacker who could spoof
-// .well-known would also need to forge a signed AMD report that
-// matched on the sidecar side, which they can't.
+// We fetch over WebPKI-validated TLS using the build's normal outbound
+// transport: direct in GCP and the allowlisted parent-vsock byte pipe in AWS
+// Nitro. This is intentionally lighter than the verifiedFP path: the sidecar
+// runs the full Sigstore + AMD VCEK chain independently, and the request is
+// refused unless both paths agree.
 func fetchExpectedTLSPubkeyFP(ctx context.Context) (string, error) {
-	httpc := &http.Client{Timeout: 10 * time.Second}
+	httpc := defaultHTTPClient()
+	httpc.Timeout = 10 * time.Second
 	req, err := http.NewRequestWithContext(ctx, "GET",
 		"https://"+tinfoilEnclaveHost+tinfoilAttestPath, nil)
 	if err != nil {
@@ -385,12 +387,9 @@ func unixSocketHTTPClient(socket string) *http.Client {
 // On any failure (sidecar not running, socket unreachable, sidecar
 // returned 5xx because verify chain itself is broken) returns an error.
 //
-// The caller (resolveExpectedFP) treats this error as "sidecar
-// unavailable" and falls back to rawFP-only mode with a loud warning.
-// We deliberately do NOT silently substitute rawFP for the sidecar's
-// answer — that would let an attacker who can break the sidecar but
-// not the in-process fetch downgrade us silently to a single-source
-// pin.
+// The caller treats every error as a hard verification failure. It never
+// substitutes the independently parsed raw fingerprint for a missing full
+// verification result.
 func fetchSidecarVerifiedFP(ctx context.Context) (*sidecarPayload, error) {
 	socket := strings.TrimSpace(tinfoilSidecarSocket)
 	if socket == "" {
@@ -416,17 +415,42 @@ func fetchSidecarVerifiedFP(ctx context.Context) (*sidecarPayload, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<14)).Decode(&v); err != nil {
 		return nil, fmt.Errorf("sidecar decode: %w", err)
 	}
-	if v.FP == "" {
-		return nil, errors.New("sidecar returned empty fp")
-	}
-	if !v.ExpiresAt.IsZero() && time.Now().After(v.ExpiresAt) {
-		return nil, fmt.Errorf("sidecar fp expired at %s", v.ExpiresAt.Format(time.RFC3339))
+	if err := validateSidecarPayload(&v, time.Now()); err != nil {
+		return nil, err
 	}
 	return &v, nil
 }
 
-// resolveExpectedFP returns the TLS-pubkey fingerprint we should pin
-// to for tinfoil traffic, dual-sourced where possible:
+var errTinfoilAttestationRequired = errors.New("tinfoil: complete attestation verification required")
+
+func validateSidecarPayload(v *sidecarPayload, now time.Time) error {
+	if v == nil {
+		return errors.New("sidecar returned no verification payload")
+	}
+	decodedFP, err := hex.DecodeString(v.FP)
+	if err != nil || len(decodedFP) != sha256.Size {
+		return errors.New("sidecar returned invalid TLS public-key fingerprint")
+	}
+	if strings.TrimSpace(v.CodeDigest) == "" {
+		return errors.New("sidecar returned empty verified code digest")
+	}
+	if v.VerifiedAt.IsZero() {
+		return errors.New("sidecar returned no verification timestamp")
+	}
+	if v.ExpiresAt.IsZero() {
+		return errors.New("sidecar returned no verification expiration")
+	}
+	if !v.ExpiresAt.After(v.VerifiedAt) {
+		return errors.New("sidecar verification expiration is not after verification time")
+	}
+	if !now.Before(v.ExpiresAt) {
+		return fmt.Errorf("sidecar verification expired at %s", v.ExpiresAt.Format(time.RFC3339))
+	}
+	return nil
+}
+
+// resolveExpectedAttestation returns the full verified payload whose TLS
+// fingerprint we should pin for Tinfoil traffic. Both sources are mandatory:
 //
 //  1. rawFP      — stdlib-only parse of /.well-known/tinfoil-attestation
 //     (fetched directly from this process)
@@ -435,51 +459,56 @@ func fetchSidecarVerifiedFP(ctx context.Context) (*sidecarPayload, error) {
 //
 // Decision matrix:
 //
-//   - Both succeed and agree   → return verifiedFP (safer; full chain).
+//   - Both succeed and agree   → return the full verified payload.
 //   - Both succeed and DISAGREE → REFUSE. Either tinfoil is rotating
 //     mid-flight (next attempt resolves)
 //     or one network leg is being MITM'd.
 //     Either way we don't pick a side.
-//   - Only raw succeeds         → return rawFP, log "sidecar
-//     unreachable; raw-only mode" loudly.
-//     The pin still holds; it just lacks
-//     the AMD signature attestation.
-//   - Only sidecar succeeds     → return verifiedFP, log similarly
-//     (raw fetch failed, e.g. tinfoil's
-//     .well-known briefly 503'd).
-//   - Neither succeeds          → return error. Tinfoil requests fail
-//     closed.
+//   - Only one succeeds         → REFUSE. Single-source verification is
+//     never enough to send request bytes.
+//   - Neither succeeds          → REFUSE.
 //
 // log lines use the structured key=value format the rest of the
 // enclave already uses, so they show up cleanly in the regional
 // log dataset.
-func resolveExpectedFP(ctx context.Context) (string, error) {
+func resolveExpectedAttestation(ctx context.Context) (*sidecarPayload, error) {
 	rawFP, rawErr := fetchExpectedTLSPubkeyFP(ctx)
 	verified, sidecarErr := fetchSidecarVerifiedFP(ctx)
-
-	switch {
-	case rawErr == nil && sidecarErr == nil:
-		if rawFP != verified.FP {
-			log.Printf("tinfoil.attest.cross_check_disagreement raw_fp=%s verified_fp=%s code_digest=%s",
-				rawFP, verified.FP, verified.CodeDigest)
-			return "", fmt.Errorf("tinfoil attestation cross-check disagreement: raw=%s verified=%s",
-				rawFP, verified.FP)
-		}
-		log.Printf("tinfoil.attest.cross_check_ok fp=%s code_digest=%s code_fp=%s",
-			verified.FP, verified.CodeDigest, verified.CodeFingerprint)
-		return verified.FP, nil
-	case rawErr == nil && sidecarErr != nil:
-		log.Printf("tinfoil.attest.sidecar_unreachable err=%q raw_fp=%s mode=raw_only",
-			sidecarErr.Error(), rawFP)
-		return rawFP, nil
-	case rawErr != nil && sidecarErr == nil:
-		log.Printf("tinfoil.attest.raw_fetch_failed err=%q verified_fp=%s mode=verified_only",
-			rawErr.Error(), verified.FP)
-		return verified.FP, nil
-	default:
-		return "", fmt.Errorf("tinfoil attestation unavailable: raw=%v sidecar=%v",
-			rawErr, sidecarErr)
+	if _, err := resolveExpectedFPFromResults(rawFP, rawErr, verified, sidecarErr); err != nil {
+		return nil, err
 	}
+	return verified, nil
+}
+
+func resolveExpectedFPFromResults(
+	rawFP string,
+	rawErr error,
+	verified *sidecarPayload,
+	sidecarErr error,
+) (string, error) {
+	if rawErr != nil {
+		log.Printf("tinfoil.attest.fail_closed source=raw_fetch action=refuse err=%q", rawErr.Error())
+		return "", fmt.Errorf("%w: independent attestation fetch failed: %v",
+			errTinfoilAttestationRequired, rawErr)
+	}
+	if sidecarErr != nil {
+		log.Printf("tinfoil.attest.fail_closed source=full_verifier action=refuse err=%q", sidecarErr.Error())
+		return "", fmt.Errorf("%w: full verifier failed: %v",
+			errTinfoilAttestationRequired, sidecarErr)
+	}
+	if err := validateSidecarPayload(verified, time.Now()); err != nil {
+		log.Printf("tinfoil.attest.fail_closed source=full_verifier action=refuse err=%q", err.Error())
+		return "", fmt.Errorf("%w: %v", errTinfoilAttestationRequired, err)
+	}
+	if rawFP != verified.FP {
+		log.Printf("tinfoil.attest.cross_check_disagreement action=refuse raw_fp=%s verified_fp=%s code_digest=%s",
+			rawFP, verified.FP, verified.CodeDigest)
+		return "", fmt.Errorf("%w: cross-check disagreement: raw=%s verified=%s",
+			errTinfoilAttestationRequired, rawFP, verified.FP)
+	}
+	log.Printf("tinfoil.attest.cross_check_ok fp=%s code_digest=%s code_fp=%s expires_at=%s",
+		verified.FP, verified.CodeDigest, verified.CodeFingerprint, verified.ExpiresAt.Format(time.RFC3339))
+	return verified.FP, nil
 }
 
 // pinnedTLSDial returns a DialTLSContext callback that completes the TLS
@@ -493,10 +522,14 @@ func resolveExpectedFP(ctx context.Context) (string, error) {
 // request data is sent.
 func pinnedTLSDial(expectedFP string) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		dialer := &tls.Dialer{
-			NetDialer: &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second},
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("tinfoil pin: invalid destination %q: %w", addr, err)
 		}
-		conn, err := dialer.DialContext(ctx, network, addr)
+		if !strings.EqualFold(host, tinfoilEnclaveHost) {
+			return nil, fmt.Errorf("tinfoil pin: destination %q is not allowed", host)
+		}
+		conn, err := dialTinfoilTLS(ctx, network, addr)
 		if err != nil {
 			return nil, err
 		}
@@ -533,27 +566,51 @@ var errCertFingerprintMismatch = errors.New("tinfoil: cert fingerprint mismatch"
 // On second consecutive mismatch the request returns an error to the
 // caller — we never silently fall back to a non-pinned client.
 type attestedRoundTripper struct {
-	mu         sync.RWMutex
-	transport  *http.Transport
-	expected   string
+	mu        sync.RWMutex
+	refreshMu sync.Mutex
+	transport http.RoundTripper
+	expected  string
+
 	verifiedAt time.Time
+	expiresAt  time.Time
+	codeDigest string
+	resolve    func(context.Context) (*sidecarPayload, error)
+	check      func(context.Context) (*sidecarPayload, error)
+	now        func() time.Time
 }
 
 func newAttestedRoundTripper(ctx context.Context) (*attestedRoundTripper, error) {
-	fp, err := resolveExpectedFP(ctx)
+	return newAttestedRoundTripperWithResolver(ctx, resolveExpectedAttestation, time.Now)
+}
+
+func newAttestedRoundTripperWithResolver(
+	ctx context.Context,
+	resolver func(context.Context) (*sidecarPayload, error),
+	now func() time.Time,
+) (*attestedRoundTripper, error) {
+	verified, err := resolver(ctx)
 	if err != nil {
 		return nil, err
 	}
+	currentTime := now()
+	if err := validateSidecarPayload(verified, currentTime); err != nil {
+		return nil, fmt.Errorf("%w: %v", errTinfoilAttestationRequired, err)
+	}
 	return &attestedRoundTripper{
-		transport:  buildPinnedTransport(fp),
-		expected:   fp,
-		verifiedAt: time.Now(),
+		transport:  buildPinnedTransport(verified.FP),
+		expected:   verified.FP,
+		verifiedAt: verified.VerifiedAt,
+		expiresAt:  verified.ExpiresAt,
+		codeDigest: verified.CodeDigest,
+		resolve:    resolver,
+		check:      fetchSidecarVerifiedFP,
+		now:        now,
 	}, nil
 }
 
 func buildPinnedTransport(fp string) *http.Transport {
 	return &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 nil,
 		DialTLSContext:        pinnedTLSDial(fp),
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          128,
@@ -565,16 +622,22 @@ func buildPinnedTransport(fp string) *http.Transport {
 }
 
 func (r *attestedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := r.ensureFresh(req.Context()); err != nil {
+		return nil, fmt.Errorf("tinfoil attestation freshness check failed: %w", err)
+	}
 	r.mu.RLock()
 	t := r.transport
 	r.mu.RUnlock()
+	if t == nil {
+		return nil, errors.New("tinfoil: verified transport unavailable")
+	}
 	resp, err := t.RoundTrip(req)
 	if err == nil || !errors.Is(err, errCertFingerprintMismatch) {
 		return resp, err
 	}
 	// Possible cert rotation: re-fetch attestation and try once more.
-	if reErr := r.refresh(req.Context()); reErr != nil {
-		return nil, err
+	if reErr := r.refresh(req.Context(), true); reErr != nil {
+		return nil, fmt.Errorf("tinfoil attestation refresh after pin mismatch failed: %w", reErr)
 	}
 	r.mu.RLock()
 	t = r.transport
@@ -582,16 +645,74 @@ func (r *attestedRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	return t.RoundTrip(req)
 }
 
-func (r *attestedRoundTripper) refresh(ctx context.Context) error {
-	fp, err := resolveExpectedFP(ctx)
+func (r *attestedRoundTripper) currentTime() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
+}
+
+func (r *attestedRoundTripper) ensureFresh(ctx context.Context) error {
+	r.mu.RLock()
+	expiresAt := r.expiresAt
+	expected := r.expected
+	codeDigest := r.codeDigest
+	r.mu.RUnlock()
+	if expiresAt.IsZero() || !r.currentTime().Before(expiresAt) {
+		return r.refresh(ctx, false)
+	}
+	if r.check == nil {
+		return fmt.Errorf("%w: sidecar proof checker unavailable", errTinfoilAttestationRequired)
+	}
+	latest, err := r.check(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: latest sidecar verification failed: %v", errTinfoilAttestationRequired, err)
+	}
+	if err := validateSidecarPayload(latest, r.currentTime()); err != nil {
+		return fmt.Errorf("%w: latest sidecar proof invalid: %v", errTinfoilAttestationRequired, err)
+	}
+	if latest.FP != expected || latest.CodeDigest != codeDigest {
+		// A legitimate Tinfoil cert or workload rotation still requires a
+		// fresh independent raw cross-check before request bytes can leave.
+		return r.refresh(ctx, true)
+	}
+	return nil
+}
+
+func (r *attestedRoundTripper) refresh(ctx context.Context, force bool) error {
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+
+	if !force {
+		r.mu.RLock()
+		expiresAt := r.expiresAt
+		r.mu.RUnlock()
+		if !expiresAt.IsZero() && r.currentTime().Before(expiresAt) {
+			return nil
+		}
+	}
+	if r.resolve == nil {
+		return fmt.Errorf("%w: verifier resolver unavailable", errTinfoilAttestationRequired)
+	}
+	verified, err := r.resolve(ctx)
 	if err != nil {
 		return err
 	}
+	if err := validateSidecarPayload(verified, r.currentTime()); err != nil {
+		return fmt.Errorf("%w: %v", errTinfoilAttestationRequired, err)
+	}
+	newTransport := buildPinnedTransport(verified.FP)
 	r.mu.Lock()
-	r.transport = buildPinnedTransport(fp)
-	r.expected = fp
-	r.verifiedAt = time.Now()
+	oldTransport := r.transport
+	r.transport = newTransport
+	r.expected = verified.FP
+	r.verifiedAt = verified.VerifiedAt
+	r.expiresAt = verified.ExpiresAt
+	r.codeDigest = verified.CodeDigest
 	r.mu.Unlock()
+	if old, ok := oldTransport.(*http.Transport); ok {
+		old.CloseIdleConnections()
+	}
 	return nil
 }
 
@@ -609,6 +730,10 @@ var (
 	tinfoilCachedClient *http.Client
 )
 
+func refuseTinfoilRedirect(*http.Request, []*http.Request) error {
+	return errors.New("tinfoil: redirects are not allowed")
+}
+
 func tinfoilAttestedHTTPClient(timeout time.Duration) (*http.Client, error) {
 	tinfoilCacheMu.Lock()
 	defer tinfoilCacheMu.Unlock()
@@ -623,8 +748,9 @@ func tinfoilAttestedHTTPClient(timeout time.Duration) (*http.Client, error) {
 	}
 	tinfoilCachedRT = rt
 	tinfoilCachedClient = &http.Client{
-		Timeout:   timeout,
-		Transport: rt,
+		Timeout:       timeout,
+		Transport:     rt,
+		CheckRedirect: refuseTinfoilRedirect,
 	}
 	return tinfoilCachedClient, nil
 }

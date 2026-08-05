@@ -96,11 +96,10 @@ func main() {
 	// consecutive-down. Sidecar isolation keeps that dep tree out of
 	// the main enclave entirely.
 	//
-	// Sidecar failure is intentionally non-fatal here: the in-process
-	// stdlib pin still holds even with no sidecar, so tinfoil traffic
-	// continues to be TLS-bound to the public key in REPORT_DATA;
-	// only the AMD-signature attestation is missing in that mode and
-	// we log it loudly so it's visible in dashboards.
+	// Sidecar process failure is non-fatal to the enclave because other
+	// providers remain usable. Tinfoil itself fails closed: without a fresh
+	// full-chain sidecar result AND the independent in-process cross-check,
+	// no Tinfoil request bytes are sent.
 	maybeStartAttestSidecar()
 
 	// 1. Fetch bootstrap data from parent.
@@ -1451,8 +1450,8 @@ func maybeStartAttestSidecar() {
 	}
 	info, err := os.Stat(sidecarPath)
 	if err != nil {
-		// Not packaged — log and continue. tinfoil_attest.go will see
-		// the sidecar socket as unreachable and run in raw-only mode.
+		// Not packaged — log and continue serving other providers. Every
+		// Tinfoil route will refuse before provider invocation.
 		fmt.Fprintf(os.Stderr, "attest_sidecar.skipped reason=binary_missing path=%q err=%q\n", sidecarPath, err.Error())
 		return
 	}
@@ -1477,10 +1476,9 @@ func maybeStartAttestSidecar() {
 	// internal/llm.
 	llm.SetExpectedSidecarPID(cmd.Process.Pid)
 	fmt.Fprintf(os.Stderr, "attest_sidecar.started pid=%d path=%q\n", cmd.Process.Pid, sidecarPath)
-	// Reap the child if it ever exits so it doesn't become a zombie.
-	// We don't restart it — if the sidecar is sick, we serve in
-	// raw-only mode rather than thrash, and a future deploy will
-	// rebuild the image.
+	// Reap the child if it ever exits so it doesn't become a zombie. We
+	// don't restart it here; the per-request sidecar status check makes
+	// Tinfoil fail closed immediately, while other providers keep serving.
 	go func() {
 		if err := cmd.Wait(); err != nil {
 			fmt.Fprintf(os.Stderr, "attest_sidecar.exited err=%q pid=%d\n", err.Error(), cmd.Process.Pid)

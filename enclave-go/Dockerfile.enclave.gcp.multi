@@ -58,7 +58,7 @@ RUN go build -trimpath -tags 'cloud_gcp,llm_multi' \
 # even though we now share a Go toolchain. The module split is the
 # load-bearing isolation, not the toolchain split.
 RUN cd sidecar && go mod download \
-    && go build -trimpath \
+    && go build -trimpath -tags cloud_gcp \
        -ldflags='-s -w -extldflags=-static' \
        -o /out/attest-sidecar .
 
