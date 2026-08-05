@@ -24,12 +24,28 @@ import (
 // the enclave is permitted to dial. trustedrouter.com points at the
 // global GCP LB fronting the FastAPI control plane (api-key lookups,
 // reservation/settle, byok envelope unwrap).
+// ORDER HERE IS NOT THE FAILOVER ORDER — this is only the set of hosts the
+// enclave is PERMITTED to dial. The order it actually tries them in comes from
+// TR_CONTROL_PLANE_BASE_URL (see endpoints.go).
+//
+// This list is compiled into the binary, so it is inside the EIF and therefore
+// MEASURED BY PCR0. Adding a host later costs an image rebuild and a fleet-wide
+// re-pin of every PCR0 assertion, which is why both the AWS plane and the
+// canonical plane are listed now even though only one is primary: the expensive,
+// measured part is done once and generously, and which one is preferred stays
+// ordinary configuration that can change freely.
 var trControlPlaneTunnels = []vsockhttp.Tunnel{
+	{Host: "aws.trustedrouter.com", CID: 3, Port: 8048},
 	{Host: "trustedrouter.com", CID: 3, Port: 8040},
 }
 
 func newControlPlaneHTTPClient() *http.Client {
-	c := vsockhttp.NewClient(trControlPlaneTunnels)
-	c.Timeout = 30 * time.Second
-	return c
+	// The vsock dialer's failures are plain syscall errors, not *net.OpError,
+	// so they are tagged here rather than classified by shape later — a
+	// shape-based check would miss the most likely real failure, the parent's
+	// vsock-proxy being down.
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: markDialFailures(vsockhttp.NewTransport(trControlPlaneTunnels)),
+	}
 }
