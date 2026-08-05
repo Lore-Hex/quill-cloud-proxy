@@ -50,12 +50,15 @@ def test_batch_resource_provisioning_is_attestation_and_retention_scoped() -> No
     assert "--public-access-prevention" in provision
     assert "--clear-soft-delete" in provision
     assert '"age":30' in provision
+    assert "--rotation-period=90d" in provision
+    assert '--next-rotation-time="${next_rotation_time}"' in provision
     assert "roles/storage.objectAdmin" in reconcile
     assert "roles/cloudkms.cryptoKeyEncrypterDecrypter" in reconcile
     assert "/attribute.image_digest/" in reconcile
     assert 'CURRENT_MEMBER="${MEMBER_PREFIX}${IMAGE_DIGEST}"' in reconcile
     assert 'BATCH_RELEASE_SA="${BATCH_RELEASE_SA:-tr-batch-release@' in provision
     assert "serviceAccount:${BATCH_RELEASE_SA}" in provision
+    assert provision.count("retry_eventual_iam gcloud") == 3
     assert "serviceAccount:${DEPLOY_SA}" not in provision
     assert "subject/repo:${GITHUB_REPOSITORY}:environment:batch-release" in provision
 

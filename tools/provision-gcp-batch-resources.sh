@@ -27,6 +27,17 @@ if [[ ! "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
   exit 2
 fi
 
+retry_eventual_iam() {
+  local attempt
+  for ((attempt = 1; attempt <= 12; attempt++)); do
+    if "$@" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 5
+  done
+  "$@"
+}
+
 gcloud services enable \
   cloudkms.googleapis.com \
   confidentialcomputing.googleapis.com \
@@ -38,12 +49,18 @@ gcloud services enable \
 
 if ! gcloud kms keys describe "${KMS_KEY}" \
   --project="${PROJECT_ID}" --location="${KMS_LOCATION}" --keyring="${KMS_KEYRING}" >/dev/null 2>&1; then
+  if next_rotation_time="$(date -u -d '+90 days' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"; then
+    :
+  else
+    next_rotation_time="$(date -u -v+90d '+%Y-%m-%dT%H:%M:%SZ')"
+  fi
   gcloud kms keys create "${KMS_KEY}" \
     --project="${PROJECT_ID}" \
     --location="${KMS_LOCATION}" \
     --keyring="${KMS_KEYRING}" \
     --purpose=encryption \
     --rotation-period=90d \
+    --next-rotation-time="${next_rotation_time}" \
     --quiet
 fi
 
@@ -135,27 +152,24 @@ if ! gcloud iam service-accounts describe "${BATCH_RELEASE_SA}" \
     --quiet
 fi
 
-gcloud iam service-accounts add-iam-policy-binding "${BATCH_RELEASE_SA}" \
+retry_eventual_iam gcloud iam service-accounts add-iam-policy-binding "${BATCH_RELEASE_SA}" \
   --project="${PROJECT_ID}" \
   --member="principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${GITHUB_WIF_POOL}/subject/repo:${GITHUB_REPOSITORY}:environment:batch-release" \
   --role=roles/iam.workloadIdentityUser \
-  --condition=None \
-  --quiet >/dev/null
+  --condition=None --quiet
 
-gcloud storage buckets add-iam-policy-binding "gs://${BATCH_BUCKET}" \
+retry_eventual_iam gcloud storage buckets add-iam-policy-binding "gs://${BATCH_BUCKET}" \
   --project="${PROJECT_ID}" \
   --member="serviceAccount:${BATCH_RELEASE_SA}" \
   --role="${ROLE_NAME}" \
-  --condition=None \
-  --quiet >/dev/null
-gcloud kms keys add-iam-policy-binding "${KMS_KEY}" \
+  --condition=None --quiet
+retry_eventual_iam gcloud kms keys add-iam-policy-binding "${KMS_KEY}" \
   --project="${PROJECT_ID}" \
   --location="${KMS_LOCATION}" \
   --keyring="${KMS_KEYRING}" \
   --member="serviceAccount:${BATCH_RELEASE_SA}" \
   --role="${ROLE_NAME}" \
-  --condition=None \
-  --quiet >/dev/null
+  --condition=None --quiet
 
 "$(dirname "$0")/reconcile-gcp-batch-image-access.sh" grant "${IMAGE_DIGEST}"
 
