@@ -86,6 +86,7 @@ INCEPTRON_SECRET="${INCEPTRON_SECRET:-trustedrouter-inceptron-api-key}"
 MORPH_SECRET="${MORPH_SECRET:-trustedrouter-morph-api-key}"
 ATLAS_CLOUD_SECRET="${ATLAS_CLOUD_SECRET:-trustedrouter-atlas-cloud-api-key}"
 STREAMLAKE_SECRET="${STREAMLAKE_SECRET:-trustedrouter-streamlake-api-key}"
+SCALEWAY_SECRET="${SCALEWAY_SECRET:-trustedrouter-scaleway-api-key}"
 NEUROMETRIC_SECRET="${NEUROMETRIC_SECRET:-trustedrouter-neurometric-api-key}"
 ENGY_SECRET="${ENGY_SECRET:-trustedrouter-engy-api-key}"
 ALIBABA_SECRET="${ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
@@ -205,6 +206,7 @@ for secret in \
   "$MORPH_SECRET" \
   "$ATLAS_CLOUD_SECRET" \
   "$STREAMLAKE_SECRET" \
+  "$SCALEWAY_SECRET" \
   "$NEUROMETRIC_SECRET" \
   "$ENGY_SECRET" \
   "$ALIBABA_SECRET" \

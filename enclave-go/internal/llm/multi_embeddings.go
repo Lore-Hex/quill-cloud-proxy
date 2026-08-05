@@ -33,6 +33,8 @@ func (m *multiClient) InvokeEmbedding(
 		// Qwen3-Embedding-8B etc. — DeepInfra is OpenAI-shaped at
 		// api.deepinfra.com/v1/openai/embeddings; reuses the chat client's key.
 		return m.deepinfra.InvokeEmbedding(ctx, req, options...)
+	case "scaleway":
+		return m.scaleway.InvokeEmbedding(ctx, req, options...)
 	case "google-ai-studio", "gemini":
 		// `gemini` remains the compatibility slug for old embedding
 		// authorizations, whose implementation was always AI Studio.

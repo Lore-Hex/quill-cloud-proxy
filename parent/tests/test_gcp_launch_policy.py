@@ -24,6 +24,8 @@ def test_gcp_multi_launch_policy_allows_deployed_env_overrides() -> None:
     assert "QUILL_OPENROUTER_SECRET" in allowed_envs
     assert "QUILL_NEUROMETRIC_SECRET" in metadata_envs
     assert "QUILL_NEUROMETRIC_SECRET" in allowed_envs
+    assert "QUILL_SCALEWAY_SECRET" in metadata_envs
+    assert "QUILL_SCALEWAY_SECRET" in allowed_envs
     assert "QUILL_ENGY_SECRET" in metadata_envs
     assert "QUILL_ENGY_SECRET" in allowed_envs
     assert "QUILL_ALIBABA_SECRET" in metadata_envs
@@ -98,6 +100,14 @@ def test_gcp_bootstrap_grants_workload_access_to_neurometric_secret() -> None:
         'NEUROMETRIC_SECRET="${NEUROMETRIC_SECRET:-trustedrouter-neurometric-api-key}"'
     ) in source
     assert '"$NEUROMETRIC_SECRET" \\' in source
+
+
+def test_gcp_bootstrap_grants_workload_access_to_scaleway_secret() -> None:
+    bootstrap_script = REPO_ROOT / "tools" / "deploy-gcp-bootstrap.sh"
+    source = bootstrap_script.read_text()
+
+    assert 'SCALEWAY_SECRET="${SCALEWAY_SECRET:-trustedrouter-scaleway-api-key}"' in source
+    assert '"$SCALEWAY_SECRET" \\' in source
 
 
 def test_gcp_bootstrap_grants_workload_access_to_engy_secret() -> None:

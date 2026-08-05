@@ -26,7 +26,7 @@ func TestNewProviderNormalizationAndBYOKPolicy(t *testing.T) {
 	if isOpenAICompatibleBYOKProvider("cloudflare-workers-ai") {
 		t.Fatal("cloudflare BYOK needs an account id and must stay disabled")
 	}
-	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake", "neurometric", "engy", "zero-g", "alibaba"} {
+	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake", "scaleway", "neurometric", "engy", "zero-g", "alibaba"} {
 		if isOpenAICompatibleBYOKProvider(provider) {
 			t.Errorf("%s must use only the operator-key prepaid path", provider)
 		}
@@ -45,6 +45,7 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 		MorphAPIKey:                  "morph-key",
 		AtlasCloudAPIKey:             "atlas-key",
 		StreamLakeAPIKey:             "streamlake-key",
+		ScalewayAPIKey:               "scaleway-key",
 		NeurometricAPIKey:            "neurometric-key",
 		EngyAPIKey:                   "engy-key",
 		ZeroGAPIKey:                  "zero-g-key",
@@ -80,6 +81,7 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 		"morph":       {client.morph, "https://api.morphllm.com/v1", "morph-key"},
 		"atlas-cloud": {client.atlasCloud, "https://api.atlascloud.ai/v1", "atlas-key"},
 		"streamlake":  {client.streamLake, "https://vanchin.streamlake.ai/api/gateway/v1/endpoints", "streamlake-key"},
+		"scaleway":    {client.scaleway, "https://api.scaleway.ai/v1", "scaleway-key"},
 		"neurometric": {client.neurometric, "https://wharf.neurometric.ai/v1", "neurometric-key"},
 		"engy":        {client.engy, "https://api.engy.ai/v1", "engy-key"},
 		"alibaba": {
@@ -113,6 +115,7 @@ func TestNewProvidersPreserveAuthorizedUpstreamModelID(t *testing.T) {
 		{"morph", "z-ai/glm-5.2", "morph-glm52-744b"},
 		{"atlas-cloud", "z-ai/glm-5.2", "zai-org/glm-5.2"},
 		{"streamlake", "kwaipilot/kat-coder-pro-v2.5", "kat-coder-pro-v2.5"},
+		{"scaleway", "z-ai/glm-5.2", "glm-5.2"},
 		{"neurometric", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b"},
 		{"engy", "z-ai/glm-5.2", "glm-5.2"},
 		{"zero-g", "z-ai/glm-5.2", "glm-5.2"},
