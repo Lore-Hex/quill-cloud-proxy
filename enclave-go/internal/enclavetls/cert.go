@@ -48,6 +48,21 @@ type Server struct {
 	tlsConfig       *tls.Config
 	mu              sync.RWMutex
 	leafDER         []byte
+
+	// singleCert is true when this Server serves exactly ONE certificate for
+	// every connection, i.e. the self-signed path, where that cert carries all
+	// SANs. Only then may Accept() pre-seed a connection's leaf from the
+	// process-global leafDER, because with one cert the global and the
+	// per-connection value cannot disagree.
+	//
+	// On the ACME path they CAN disagree, and did: autocert issues one cert
+	// PER SNI NAME, GetCertificate writes both the per-connection leaf and the
+	// global, and Go's TLS 1.3 server never calls GetCertificate on a resumed
+	// (PSK) handshake. So a resumed session kept the pre-seed — whichever
+	// hostname most recently completed a FULL handshake anywhere in the
+	// process — and /attestation bound a certificate the client never saw.
+	// Reproduced live on three GCP replicas serving five hostnames.
+	singleCert bool
 }
 
 type selectedLeafSetter interface {
@@ -161,6 +176,12 @@ func NewSelfSigned(dnsName string) (*Server, error) {
 	cert.Leaf = leaf
 
 	srv := &Server{
+		// One cert with every SAN, installed via Certificates rather than
+		// GetCertificate — which is never called on this path at all, making
+		// Accept()'s pre-seed the ONLY writer of the per-connection leaf.
+		// Removing that pre-seed would leave SelectedLeafDER nil on every AWS
+		// Nitro connection and 503 the whole fleet's /attestation.
+		singleCert:  true,
 		Certificate: cert,
 		tlsConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
@@ -211,7 +232,7 @@ func NewACME(dnsName, email, cacheDir, directoryURL, gcsCacheBucket string) (*Se
 		manager.Client = &acme.Client{DirectoryURL: directoryURL}
 	}
 
-	srv := &Server{}
+	srv := &Server{singleCert: false}
 	tlsConfig := manager.TLSConfig()
 	managerGetCertificate := tlsConfig.GetCertificate
 	tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -239,6 +260,13 @@ func NewACME(dnsName, email, cacheDir, directoryURL, gcsCacheBucket string) (*Se
 	// exporters are EMS-dependent.
 	tlsConfig.MinVersion = tls.VersionTLS13
 	tlsConfig.NextProtos = []string{"http/1.1", acme.ALPNProto}
+	// Session resumption is what makes the multi-certificate case unsafe: Go's
+	// TLS 1.3 server skips GetCertificate on a PSK handshake, so nothing would
+	// record which cert this session actually used. Disabling tickets forces a
+	// full handshake per NEW connection — one extra round trip, negligible
+	// under keep-alive — and in exchange every connection's attested leaf is
+	// the one it was actually served.
+	tlsConfig.SessionTicketsDisabled = true
 	srv.tlsConfig = tlsConfig
 	return srv, nil
 }
@@ -273,7 +301,12 @@ func (l *trackingListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 	selected := &selectedLeafConn{Conn: raw}
-	if l.server != nil {
+	// Pre-seed ONLY when the server has a single certificate. On a
+	// multi-certificate (ACME) server the global leaf belongs to whichever
+	// hostname last completed a full handshake, so seeding it here would
+	// attest the wrong certificate on any connection that does not call
+	// GetCertificate. See Server.singleCert.
+	if l.server != nil && l.server.singleCert {
 		if der := l.server.CurrentLeafDER(); len(der) > 0 {
 			selected.setSelectedLeafDER(der)
 		}
