@@ -376,7 +376,14 @@ def build_bundle(
             + "\n  A bundle missing any of these boots an enclave that dies with "
             '"no entry ... in the bundle" AFTER a full attestation round trip.'
         )
-    blank = [entry for entry in entries if values[entry.name].strip() == ""]
+    # Only entries actually SUPPLIED can be blank. An optional entry that was
+    # never provided is absent, not empty, and the missing-check above has
+    # already decided absence is fine for it - indexing every entry here
+    # KeyErrors on exactly the optional-and-omitted case that is supported.
+    blank = [
+        entry for entry in entries
+        if entry.name in values and values[entry.name].strip() == ""
+    ]
     if blank:
         fail(
             "these bundle entries have empty or whitespace-only values:\n"
@@ -384,7 +391,14 @@ def build_bundle(
             + "\n  The enclave rejects a present-but-empty secret at boot for the same reason."
         )
 
-    bundle = {entry.name: values[entry.name] for entry in entries}
+    # An optional entry that was never supplied is simply not in the bundle.
+    # The enclave treats its absence as a degraded-but-valid posture; putting an
+    # empty string there instead would make it "present" and fail at first use.
+    bundle = {
+        entry.name: values[entry.name]
+        for entry in entries
+        if entry.name in values
+    }
 
     extra = sorted(set(values) - set(bundle))
     if extra:
