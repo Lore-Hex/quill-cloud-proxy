@@ -182,10 +182,17 @@ func main() {
 					HTTPClient:  kmsHTTP,
 					TokenSource: identity,
 				}
+				nativeProviders := nativeBatchProviders(boot)
+				// Keep the authorizer available even when native submission is
+				// disabled so a restarted worker can refund durable in-flight holds.
+				nativeAuthorizer := &batchNativeAuthorizer{gateway: trGateway}
 				batchGateway, err = batchapi.New(batchapi.Options{
-					Store:     batchapi.NewGCSStoreWithTokenSource(batchConfig.Bucket, identity),
-					Protector: &batchapi.EnvelopeProtector{KMS: kms, KeyName: batchConfig.KMSKey},
-					Keys:      trGateway,
+					Store:                 batchapi.NewGCSStoreWithTokenSource(batchConfig.Bucket, identity),
+					Protector:             &batchapi.EnvelopeProtector{KMS: kms, KeyName: batchConfig.KMSKey},
+					Keys:                  trGateway,
+					NativeAuthorizer:      nativeAuthorizer,
+					NativeProviders:       nativeProviders,
+					NativeSubmitProviders: nativeBatchSubmitProviders(nativeBatchSubmitAllowlist),
 					Executor: &batchEnclaveExecutor{
 						registry:   registry,
 						backend:    br,

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -57,13 +58,96 @@ func maybeServeBatchRoute(
 		return true
 	}
 	id := strings.TrimPrefix(routePath, base+"/")
-	result, apiErr := batchGateway.Get(ctx, bearer, id)
+	result, apiErr := batchGateway.PrepareGet(ctx, bearer, id)
 	if apiErr != nil {
 		writeBatchError(conn, apiErr)
 		return true
 	}
-	writeBatchJSON(conn, http.StatusOK, result)
+	if !result.ResultSet {
+		writeBatchJSON(conn, http.StatusOK, &result.Batch)
+		return true
+	}
+	// Result objects can contain tens of thousands of large provider bodies.
+	// Stream one decrypted checkpoint at a time so response size does not become
+	// enclave memory usage. An interrupted object read leaves an incomplete
+	// chunked response, which makes clients retry instead of accepting partial
+	// results as a completed batch.
+	_ = writePreparedBatch(ctx, conn, result)
 	return true
+}
+
+func writePreparedBatch(ctx context.Context, w io.Writer, prepared *batchapi.PreparedBatch) error {
+	batch := prepared.Batch
+	prefix, err := json.Marshal(struct {
+		ID               string                 `json:"id"`
+		Object           string                 `json:"object"`
+		Endpoint         string                 `json:"endpoint"`
+		Model            string                 `json:"model"`
+		CompletionWindow string                 `json:"completion_window"`
+		Status           string                 `json:"status"`
+		CreatedAt        int64                  `json:"created_at"`
+		FinalizedAt      *int64                 `json:"finalized_at"`
+		RequestCounts    batchapi.RequestCounts `json:"request_counts"`
+		Usage            *batchapi.Usage        `json:"usage"`
+	}{
+		ID:               batch.ID,
+		Object:           batch.Object,
+		Endpoint:         batch.Endpoint,
+		Model:            batch.Model,
+		CompletionWindow: batch.CompletionWindow,
+		Status:           batch.Status,
+		CreatedAt:        batch.CreatedAt,
+		FinalizedAt:      batch.FinalizedAt,
+		RequestCounts:    batch.RequestCounts,
+		Usage:            batch.Usage,
+	})
+	if err != nil {
+		return err
+	}
+	errorJSON, err := json.Marshal(batch.Error)
+	if err != nil {
+		return err
+	}
+	if len(prefix) == 0 || prefix[len(prefix)-1] != '}' {
+		return errors.New("batch response prefix is invalid")
+	}
+	if err := writeResponseHead(w, http.StatusOK, "application/json"); err != nil {
+		return err
+	}
+	chunked := newChunkedWriter(w)
+	if _, err := chunked.Write(append(prefix[:len(prefix)-1], []byte(`,"results":[`)...)); err != nil {
+		return err
+	}
+	first := true
+	for {
+		result, ok, err := prepared.Next(ctx)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			break
+		}
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			return err
+		}
+		if !first {
+			if _, err := chunked.Write([]byte(",")); err != nil {
+				clear(encoded)
+				return err
+			}
+		}
+		first = false
+		if _, err := chunked.Write(encoded); err != nil {
+			clear(encoded)
+			return err
+		}
+		clear(encoded)
+	}
+	if _, err := chunked.Write(append([]byte(`],"error":`), append(errorJSON, '}')...)); err != nil {
+		return err
+	}
+	return chunked.Close()
 }
 
 func writeBatchJSON(w io.Writer, status int, value any) {

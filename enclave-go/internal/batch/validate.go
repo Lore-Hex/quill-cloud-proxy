@@ -8,7 +8,10 @@ import (
 	"strings"
 )
 
-const maxCustomIDBytes = 256
+const (
+	maxCustomIDBytes = 256
+	maxBatchRequests = 50_000
+)
 
 // ParseCreate preserves OpenRouter's stream-parser contract: endpoint and
 // model must appear before requests. A normal struct unmarshal cannot enforce
@@ -86,7 +89,11 @@ func validateCreate(req *CreateRequest) *APIError {
 	if len(req.Requests) == 0 {
 		return badRequest("requests must be a non-empty array", "requests", "bad_request")
 	}
+	if len(req.Requests) > maxBatchRequests {
+		return badRequest("requests cannot exceed 50000 items", "requests", "batch_too_large")
+	}
 	customIDs := make(map[string]struct{}, len(req.Requests))
+	embeddingInputs := 0
 	for i := range req.Requests {
 		item := &req.Requests[i]
 		param := fmt.Sprintf("requests[%d]", i)
@@ -103,6 +110,16 @@ func validateCreate(req *CreateRequest) *APIError {
 			return err
 		}
 		item.Body = body
+		if req.Endpoint == "/v1/embeddings" {
+			embeddingInputs += embeddingInputCount(body)
+			if embeddingInputs > maxBatchRequests {
+				return badRequest(
+					"batch embeddings cannot exceed 50000 total inputs",
+					"requests",
+					"batch_too_large",
+				)
+			}
+		}
 	}
 	return nil
 }
@@ -150,6 +167,33 @@ func validEmbeddingInput(raw json.RawMessage) bool {
 		return false
 	}
 	return validEmbeddingValue(value, 0)
+}
+
+func embeddingInputCount(raw json.RawMessage) int {
+	var body map[string]json.RawMessage
+	if json.Unmarshal(raw, &body) != nil {
+		return 0
+	}
+	var value any
+	if json.Unmarshal(body["input"], &value) != nil {
+		return 0
+	}
+	switch typed := value.(type) {
+	case string:
+		return 1
+	case []any:
+		if len(typed) == 0 {
+			return 0
+		}
+		switch typed[0].(type) {
+		case string, []any:
+			return len(typed)
+		default:
+			return 1
+		}
+	default:
+		return 0
+	}
 }
 
 func validEmbeddingValue(value any, depth int) bool {

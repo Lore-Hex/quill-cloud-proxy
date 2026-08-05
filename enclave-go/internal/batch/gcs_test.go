@@ -74,9 +74,12 @@ func TestGCSStoreListsObjectsAndMapsConditionalFailures(t *testing.T) {
 		return jsonResponse(http.StatusPreconditionFailed, `{}`), nil
 	})}
 	store := NewGCSStoreForTest("bucket", client, fixedAccessToken("token"))
-	objects, err := store.List(t.Context(), activePrefix, 25)
+	objects, nextPageToken, err := store.List(t.Context(), activePrefix, 25, "")
 	if err != nil || len(objects) != 2 || objects[0].Generation != 2 || objects[1].Name != "b" {
 		t.Fatalf("List = %#v, %v", objects, err)
+	}
+	if nextPageToken != "" {
+		t.Fatalf("next page token = %q, want empty", nextPageToken)
 	}
 	if _, err := store.Put(t.Context(), "a", nil, PutCondition{Generation: 2}); err != ErrPrecondition {
 		t.Fatalf("Put error = %v", err)

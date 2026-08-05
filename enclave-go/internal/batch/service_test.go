@@ -24,6 +24,33 @@ type memoryObjectStore struct {
 	putFailure error
 }
 
+func getBatchForTest(
+	ctx context.Context,
+	service *Service,
+	bearer string,
+	id string,
+) (*Batch, *APIError) {
+	prepared, apiErr := service.PrepareGet(ctx, bearer, id)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	result := prepared.Batch
+	if prepared.ResultSet {
+		result.Results = make([]Result, 0, result.RequestCounts.Completed+result.RequestCounts.Failed)
+		for {
+			item, ok, err := prepared.Next(ctx)
+			if err != nil {
+				return nil, internalAPIError("batch results unavailable")
+			}
+			if !ok {
+				break
+			}
+			result.Results = append(result.Results, item)
+		}
+	}
+	return &result, nil
+}
+
 func newMemoryObjectStore() *memoryObjectStore {
 	return &memoryObjectStore{next: 1, objects: map[string]StoredObject{}}
 }
@@ -72,7 +99,12 @@ func (s *memoryObjectStore) Delete(_ context.Context, name string, generation in
 	return nil
 }
 
-func (s *memoryObjectStore) List(_ context.Context, prefix string, limit int) ([]ObjectMeta, error) {
+func (s *memoryObjectStore) List(
+	_ context.Context,
+	prefix string,
+	limit int,
+	pageToken string,
+) ([]ObjectMeta, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	names := make([]string, 0)
@@ -82,14 +114,23 @@ func (s *memoryObjectStore) List(_ context.Context, prefix string, limit int) ([
 		}
 	}
 	sort.Strings(names)
+	if pageToken != "" {
+		start := sort.SearchStrings(names, pageToken)
+		if start < len(names) && names[start] == pageToken {
+			start++
+		}
+		names = names[start:]
+	}
+	nextPageToken := ""
 	if limit > 0 && len(names) > limit {
+		nextPageToken = names[limit-1]
 		names = names[:limit]
 	}
 	out := make([]ObjectMeta, 0, len(names))
 	for _, name := range names {
 		out = append(out, ObjectMeta{Name: name, Generation: s.objects[name].Generation})
 	}
-	return out, nil
+	return out, nextPageToken, nil
 }
 
 type copyProtector struct{}
@@ -143,6 +184,7 @@ type concurrencyTrackingExecutor struct {
 	maxActive int
 	calls     int
 	release   <-chan struct{}
+	started   chan<- struct{}
 }
 
 func (e *concurrencyTrackingExecutor) Execute(context.Context, string, string, []byte, string) (int, string, []byte, error) {
@@ -153,6 +195,9 @@ func (e *concurrencyTrackingExecutor) Execute(context.Context, string, string, [
 		e.maxActive = e.active
 	}
 	e.mu.Unlock()
+	if e.started != nil {
+		e.started <- struct{}{}
+	}
 	<-e.release
 	e.mu.Lock()
 	e.active--
@@ -253,7 +298,7 @@ func TestServiceCompletesPartialBatchWithExactAccountingAndNoOuterRetry(t *testi
 		t.Fatalf("worker wrote duplicate aggregate results object: %v", err)
 	}
 
-	completed, apiErr := service.Get(t.Context(), "sk-tr-owner", created.ID)
+	completed, apiErr := getBatchForTest(t.Context(), service, "sk-tr-owner", created.ID)
 	if apiErr != nil {
 		t.Fatalf("Get: %v", apiErr)
 	}
@@ -279,8 +324,126 @@ func TestServiceCompletesPartialBatchWithExactAccountingAndNoOuterRetry(t *testi
 		t.Fatalf("attempts=%#v idempotency=%#v", attempts, idempotency)
 	}
 
-	if _, apiErr := service.Get(t.Context(), "sk-tr-other", created.ID); apiErr == nil || apiErr.Status != 404 {
+	if _, apiErr := getBatchForTest(t.Context(), service, "sk-tr-other", created.ID); apiErr == nil || apiErr.Status != 404 {
 		t.Fatalf("cross-owner Get apiErr = %#v", apiErr)
+	}
+}
+
+func TestRunAvailableRotatesAcrossEveryActiveObjectPage(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryObjectStore()
+	service := newTestService(
+		t,
+		store,
+		copyProtector{},
+		&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("terminal jobs must not execute")
+			return nil, nil
+		})},
+		time.Now,
+		"page-worker",
+	)
+	for index := 0; index <= maxActiveScan; index++ {
+		id := fmt.Sprintf("batch_page_%04d", index)
+		encoded, err := json.Marshal(job{Batch: Batch{
+			ID:               id,
+			Object:           ObjectType,
+			Endpoint:         "/v1/chat/completions",
+			Model:            "test/model",
+			CompletionWindow: CompletionWindow,
+			Status:           StatusCompleted,
+			CreatedAt:        1,
+			RequestCounts:    RequestCounts{Total: 1, Completed: 1},
+		}, ExpiresAt: time.Now().Add(time.Hour).Unix()})
+		if err != nil {
+			t.Fatalf("encode job %d: %v", index, err)
+		}
+		if _, err := store.Put(t.Context(), activeJobName(id), encoded, PutCondition{Generation: 0}); err != nil {
+			t.Fatalf("seed job %d: %v", index, err)
+		}
+	}
+	if err := service.runAvailable(t.Context()); err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if service.scanPageToken == "" {
+		t.Fatal("first page did not preserve a continuation token")
+	}
+	if err := service.runAvailable(t.Context()); err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if service.scanPageToken != "" {
+		t.Fatalf("scan did not reach the final page: %q", service.scanPageToken)
+	}
+}
+
+func TestRunAvailableBoundsParallelBatchJobs(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryObjectStore()
+	release := make(chan struct{}, 3)
+	started := make(chan struct{}, 3)
+	executor := &concurrencyTrackingExecutor{release: release, started: started}
+	service, err := New(Options{
+		Store:         store,
+		Protector:     copyProtector{},
+		Keys:          allowKeys{"sk-tr-owner": true},
+		Executor:      executor,
+		WorkerID:      "bounded-job-worker",
+		Concurrency:   1,
+		JobWorkers:    2,
+		PollInterval:  time.Hour,
+		LeaseDuration: time.Minute,
+		Now:           time.Now,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	request := []byte(`{"endpoint":"/v1/chat/completions","model":"test/model","requests":[{"custom_id":"one","body":{"messages":[{"role":"user","content":"A"}]}}]}`)
+	for index := 0; index < 3; index++ {
+		if _, apiErr := service.Create(t.Context(), "sk-tr-owner", request); apiErr != nil {
+			t.Fatalf("Create %d: %v", index, apiErr)
+		}
+	}
+	done := make(chan error, 1)
+	go func() { done <- service.runAvailable(t.Context()) }()
+	<-started
+	<-started
+	select {
+	case <-started:
+		t.Fatal("third batch started above the configured two-job bound")
+	case <-time.After(20 * time.Millisecond):
+	}
+	store.mu.Lock()
+	leased := 0
+	for name, object := range store.objects {
+		if !strings.HasPrefix(name, activePrefix) {
+			continue
+		}
+		var active job
+		if err := json.Unmarshal(object.Data, &active); err != nil {
+			store.mu.Unlock()
+			t.Fatalf("decode active job: %v", err)
+		}
+		if active.LeaseOwner != "" {
+			leased++
+		}
+	}
+	store.mu.Unlock()
+	if leased != 2 {
+		t.Fatalf("leased jobs = %d, want exactly the two jobs with active workers", leased)
+	}
+	release <- struct{}{}
+	<-started
+	release <- struct{}{}
+	release <- struct{}{}
+	if err := <-done; err != nil {
+		t.Fatalf("runAvailable: %v", err)
+	}
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	if executor.calls != 3 || executor.maxActive != 2 {
+		t.Fatalf("calls=%d max_active=%d", executor.calls, executor.maxActive)
 	}
 }
 
@@ -459,7 +622,7 @@ func TestServiceRecoversFromItemCheckpointsWithoutReinvoking(t *testing.T) {
 	if err := service.runAvailable(t.Context()); err != nil {
 		t.Fatalf("runAvailable: %v", err)
 	}
-	completed, apiErr := service.Get(t.Context(), "sk-tr-owner", created.ID)
+	completed, apiErr := getBatchForTest(t.Context(), service, "sk-tr-owner", created.ID)
 	if apiErr != nil {
 		t.Fatalf("Get: %v", apiErr)
 	}
@@ -514,11 +677,12 @@ func TestServiceExpiresAfterCompletionWindowWithoutInvoking(t *testing.T) {
 	if err := service.runAvailable(t.Context()); err != nil {
 		t.Fatalf("runAvailable: %v", err)
 	}
-	expired, apiErr := service.Get(t.Context(), "sk-tr-owner", created.ID)
+	expired, apiErr := getBatchForTest(t.Context(), service, "sk-tr-owner", created.ID)
 	if apiErr != nil {
 		t.Fatalf("Get: %v", apiErr)
 	}
-	if calls != 0 || expired.Status != StatusExpired || expired.FinalizedAt == nil || expired.Results != nil || expired.Usage != nil {
+	if calls != 0 || expired.Status != StatusExpired || expired.FinalizedAt == nil ||
+		expired.Results == nil || len(expired.Results) != 0 || expired.Usage != nil {
 		t.Fatalf("calls=%d expired=%#v", calls, expired)
 	}
 }
@@ -607,6 +771,31 @@ func TestUsageParsingPreservesIntegerMicrodollars(t *testing.T) {
 	usage := usageFromBody(decoded)
 	if usage.PromptTokens != 9007199254740993 || usage.CompletionTokens != 2 || usage.CostMicrodollars != 9007199254740995 {
 		t.Fatalf("usage lost integer precision: %#v", usage)
+	}
+}
+
+func TestAggregateUsageIncludesChargedRecoveryFailure(t *testing.T) {
+	t.Parallel()
+
+	usage := aggregateUsageStates([]itemState{
+		{
+			finished: true,
+			usage: Usage{
+				PromptTokens: 10, CompletionTokens: 2, CostMicrodollars: 7,
+			},
+		},
+		{
+			finished: true,
+			failed:   true,
+			usage: Usage{
+				PromptTokens: 20, CompletionTokens: 3, CostMicrodollars: 11,
+			},
+		},
+		{finished: true, failed: true},
+	})
+	if usage.PromptTokens != 30 || usage.CompletionTokens != 5 ||
+		usage.TotalTokens != 35 || usage.CostMicrodollars != 18 || usage.Cost != 0.000018 {
+		t.Fatalf("usage = %#v", usage)
 	}
 }
 

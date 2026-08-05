@@ -45,7 +45,7 @@ type ObjectStore interface {
 	Get(context.Context, string) (StoredObject, error)
 	Put(context.Context, string, []byte, PutCondition) (StoredObject, error)
 	Delete(context.Context, string, int64) error
-	List(context.Context, string, int) ([]ObjectMeta, error)
+	List(context.Context, string, int, string) ([]ObjectMeta, string, error)
 }
 
 type AccessTokenSource interface {
@@ -188,10 +188,15 @@ func (s *GCSStore) Delete(ctx context.Context, name string, generation int64) er
 	}
 }
 
-func (s *GCSStore) List(ctx context.Context, prefix string, limit int) ([]ObjectMeta, error) {
+func (s *GCSStore) List(
+	ctx context.Context,
+	prefix string,
+	limit int,
+	pageToken string,
+) ([]ObjectMeta, string, error) {
 	token, err := s.tokens.Token(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("batch gcs token: %w", err)
+		return nil, "", fmt.Errorf("batch gcs token: %w", err)
 	}
 	if limit <= 0 || limit > 1000 {
 		limit = 100
@@ -199,30 +204,34 @@ func (s *GCSStore) List(ctx context.Context, prefix string, limit int) ([]Object
 	values := url.Values{
 		"prefix":     {prefix},
 		"maxResults": {strconv.Itoa(limit)},
-		"fields":     {"items(name,generation)"},
+		"fields":     {"items(name,generation),nextPageToken"},
+	}
+	if pageToken != "" {
+		values.Set("pageToken", pageToken)
 	}
 	reqURL := fmt.Sprintf("%s/b/%s/o?%s", gcsAPIBase, url.PathEscape(s.bucket), values.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := s.httpc.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("batch gcs list: %w", err)
+		return nil, "", fmt.Errorf("batch gcs list: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, gcsStatusError("list", resp)
+		return nil, "", gcsStatusError("list", resp)
 	}
 	var decoded struct {
-		Items []struct {
+		NextPageToken string `json:"nextPageToken"`
+		Items         []struct {
 			Name       string `json:"name"`
 			Generation string `json:"generation"`
 		} `json:"items"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&decoded); err != nil {
-		return nil, fmt.Errorf("batch gcs list decode: %w", err)
+		return nil, "", fmt.Errorf("batch gcs list decode: %w", err)
 	}
 	out := make([]ObjectMeta, 0, len(decoded.Items))
 	for _, item := range decoded.Items {
@@ -232,7 +241,7 @@ func (s *GCSStore) List(ctx context.Context, prefix string, limit int) ([]Object
 		}
 		out = append(out, ObjectMeta{Name: item.Name, Generation: generation})
 	}
-	return out, nil
+	return out, decoded.NextPageToken, nil
 }
 
 func (s *GCSStore) objectLimit() int64 {

@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,8 +23,13 @@ const (
 	terminalPrefix     = "trustedrouter-batches/v1/jobs/"
 	artifactPrefix     = "trustedrouter-batches/v1/artifacts/"
 	defaultConcurrency = 8
+	defaultJobWorkers  = 2
 	maxActiveScan      = 1000
+	maxItemResultScan  = 1000
 	maxResponseBytes   = 64 * 1024 * 1024
+	// Envelope encryption base64-encodes ciphertext. Keep a full MiB of room
+	// for the wrapped DEK and JSON envelope below GCS's object limit.
+	maxBatchPlaintextBytes = (maxGCSObjectSize * 3 / 4) - (1024 * 1024)
 )
 
 type KeyValidator interface {
@@ -34,30 +41,43 @@ type Executor interface {
 }
 
 type Options struct {
-	Store         ObjectStore
-	Protector     Protector
-	Keys          KeyValidator
-	Executor      Executor
-	WorkerID      string
-	Concurrency   int
-	PollInterval  time.Duration
-	LeaseDuration time.Duration
-	Now           func() time.Time
-	Logf          func(string, ...any)
+	Store            ObjectStore
+	Protector        Protector
+	Keys             KeyValidator
+	Executor         Executor
+	NativeAuthorizer NativeAuthorizer
+	NativeProviders  []NativeProvider
+	// NativeSubmitProviders is a measured, fail-closed allowlist for new
+	// provider-retained Batch submissions. NativeProviders may contain more
+	// adapters so an image with submissions disabled can still recover, cancel,
+	// and clean up jobs created by an earlier image.
+	NativeSubmitProviders []string
+	WorkerID              string
+	Concurrency           int
+	JobWorkers            int
+	PollInterval          time.Duration
+	LeaseDuration         time.Duration
+	Now                   func() time.Time
+	Logf                  func(string, ...any)
 }
 
 type Service struct {
-	store       ObjectStore
-	protector   Protector
-	keys        KeyValidator
-	executor    Executor
-	workerID    string
-	concurrency int
-	poll        time.Duration
-	lease       time.Duration
-	now         func() time.Time
-	logf        func(string, ...any)
-	wake        chan struct{}
+	store                 ObjectStore
+	protector             Protector
+	keys                  KeyValidator
+	executor              Executor
+	nativeAuthorizer      NativeAuthorizer
+	nativeProviders       map[string]NativeProvider
+	nativeSubmitProviders map[string]struct{}
+	workerID              string
+	concurrency           int
+	jobWorkers            int
+	poll                  time.Duration
+	lease                 time.Duration
+	now                   func() time.Time
+	logf                  func(string, ...any)
+	wake                  chan struct{}
+	scanPageToken         string
 }
 
 var errLeaseLost = errors.New("batch lease lost")
@@ -103,6 +123,37 @@ func (l *jobLease) snapshot() (job, int64) {
 	return l.job, l.generation
 }
 
+func (l *jobLease) release(ctx context.Context) error {
+	return l.releaseAt(ctx, 0)
+}
+
+func (l *jobLease) releaseAt(ctx context.Context, nextAttemptAt int64) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.job.LeaseOwner = ""
+	l.job.LeaseUntil = 0
+	l.job.NextAttemptAt = max(nextAttemptAt, 0)
+	l.job.Results = nil
+	encoded, err := json.Marshal(l.job)
+	if err != nil {
+		return err
+	}
+	updated, err := l.service.store.Put(
+		ctx,
+		activeJobName(l.job.ID),
+		encoded,
+		PutCondition{Generation: l.generation},
+	)
+	if errors.Is(err, ErrPrecondition) {
+		return errLeaseLost
+	}
+	if err != nil {
+		return err
+	}
+	l.generation = updated.Generation
+	return nil
+}
+
 func (l *jobLease) maintain(ctx context.Context, cancel context.CancelFunc) func() {
 	interval := l.service.lease / 3
 	if interval < time.Second {
@@ -143,6 +194,9 @@ func New(options Options) (*Service, error) {
 	if options.Concurrency <= 0 {
 		options.Concurrency = defaultConcurrency
 	}
+	if options.JobWorkers <= 0 {
+		options.JobWorkers = defaultJobWorkers
+	}
 	if options.PollInterval <= 0 {
 		options.PollInterval = 5 * time.Second
 	}
@@ -158,18 +212,40 @@ func New(options Options) (*Service, error) {
 	if options.WorkerID == "" {
 		options.WorkerID = randomID("batch_worker_", 8)
 	}
+	nativeProviders := make(map[string]NativeProvider, len(options.NativeProviders))
+	for _, provider := range options.NativeProviders {
+		if provider == nil {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(provider.Name()))
+		if name == "" {
+			continue
+		}
+		nativeProviders[name] = provider
+	}
+	nativeSubmitProviders := make(map[string]struct{}, len(options.NativeSubmitProviders))
+	for _, configured := range options.NativeSubmitProviders {
+		name := strings.ToLower(strings.TrimSpace(configured))
+		if _, available := nativeProviders[name]; name != "" && available {
+			nativeSubmitProviders[name] = struct{}{}
+		}
+	}
 	return &Service{
-		store:       options.Store,
-		protector:   options.Protector,
-		keys:        options.Keys,
-		executor:    options.Executor,
-		workerID:    options.WorkerID,
-		concurrency: options.Concurrency,
-		poll:        options.PollInterval,
-		lease:       options.LeaseDuration,
-		now:         options.Now,
-		logf:        options.Logf,
-		wake:        make(chan struct{}, 1),
+		store:                 options.Store,
+		protector:             options.Protector,
+		keys:                  options.Keys,
+		executor:              options.Executor,
+		nativeAuthorizer:      options.NativeAuthorizer,
+		nativeProviders:       nativeProviders,
+		nativeSubmitProviders: nativeSubmitProviders,
+		workerID:              options.WorkerID,
+		concurrency:           options.Concurrency,
+		jobWorkers:            options.JobWorkers,
+		poll:                  options.PollInterval,
+		lease:                 options.LeaseDuration,
+		now:                   options.Now,
+		logf:                  options.Logf,
+		wake:                  make(chan struct{}, 1),
 	}, nil
 }
 
@@ -193,6 +269,16 @@ func (s *Service) Create(ctx context.Context, bearer string, raw []byte) (*Batch
 	payload, err := json.Marshal(encryptedPayload{APIKeyLookupHash: ownerLookupHash, Requests: req.Requests})
 	if err != nil {
 		return nil, internalAPIError("could not encode batch")
+	}
+	if batchPlaintextTooLarge(len(payload)) {
+		clear(payload)
+		return nil, &APIError{
+			Status:  http.StatusRequestEntityTooLarge,
+			Message: "batch input is too large",
+			Type:    "invalid_request_error",
+			Code:    "batch_too_large",
+			Param:   "requests",
+		}
 	}
 	encrypted, err := s.protector.Seal(ctx, id, "input", payload)
 	clear(payload)
@@ -218,7 +304,14 @@ func (s *Service) Create(ctx context.Context, bearer string, raw []byte) (*Batch
 	return &batch, nil
 }
 
-func (s *Service) Get(ctx context.Context, bearer, id string) (*Batch, *APIError) {
+func batchPlaintextTooLarge(size int) bool {
+	return size > maxBatchPlaintextBytes
+}
+
+// PrepareGet authenticates a batch read and validates its complete result
+// index before callers write response headers. Result bodies remain encrypted
+// in object storage until Next asks for one.
+func (s *Service) PrepareGet(ctx context.Context, bearer, id string) (*PreparedBatch, *APIError) {
 	if err := s.keys.ValidateKey(ctx, bearer, "batch"); err != nil {
 		return nil, controlPlaneAPIError(err)
 	}
@@ -242,8 +335,9 @@ func (s *Service) Get(ctx context.Context, bearer, id string) (*Batch, *APIError
 	if job.OwnerLookupHash != trustedrouter.LookupHash(bearer) {
 		return nil, &APIError{Status: 404, Message: "batch not found", Type: "invalid_request_error", Code: "not_found"}
 	}
-	batch := job.Batch
-	if batch.Status == StatusCompleted {
+	prepared := &PreparedBatch{Batch: job.Batch, service: s, batchID: id}
+	if prepared.Batch.Status == StatusCompleted || prepared.Batch.Status == StatusExpired {
+		prepared.ResultSet = true
 		if job.ResultsObject != "" {
 			// Compatibility with batches finalized by the first beta build.
 			resultObject, err := s.store.Get(ctx, job.ResultsObject)
@@ -254,30 +348,28 @@ func (s *Service) Get(ctx context.Context, bearer, id string) (*Batch, *APIError
 			if err != nil {
 				return nil, internalAPIError("batch results unavailable")
 			}
-			if err := json.Unmarshal(plaintext, &batch.Results); err != nil {
+			if err := json.Unmarshal(plaintext, &prepared.legacy); err != nil {
 				clear(plaintext)
 				return nil, internalAPIError("batch results unavailable")
 			}
 			clear(plaintext)
 		} else {
-			batch.Results = make([]Result, batch.RequestCounts.Total)
-			for index := range batch.Results {
-				stored, err := s.store.Get(ctx, itemResultName(id, index))
-				if err != nil {
-					return nil, internalAPIError("batch results unavailable")
+			prepared.present, err = s.listItemResultPresence(
+				ctx, id, prepared.Batch.RequestCounts.Total,
+			)
+			if err != nil {
+				return nil, internalAPIError("batch results unavailable")
+			}
+			if prepared.Batch.Status == StatusCompleted {
+				for _, exists := range prepared.present {
+					if !exists {
+						return nil, internalAPIError("batch results unavailable")
+					}
 				}
-				result, err := s.openItemResult(ctx, id, index, stored.Data)
-				if err != nil {
-					return nil, internalAPIError("batch results unavailable")
-				}
-				batch.Results[index] = result
 			}
 		}
-		if batch.Results == nil {
-			batch.Results = []Result{}
-		}
 	}
-	return &batch, nil
+	return prepared, nil
 }
 
 func (s *Service) workerLoop(ctx context.Context) {
@@ -304,27 +396,43 @@ func (s *Service) signalWorker() {
 }
 
 func (s *Service) runAvailable(ctx context.Context) error {
-	objects, err := s.store.List(ctx, activePrefix, maxActiveScan)
+	objects, nextPageToken, err := s.store.List(ctx, activePrefix, maxActiveScan, s.scanPageToken)
 	if err != nil {
 		return err
 	}
+	s.scanPageToken = nextPageToken
+	workers := max(1, s.jobWorkers)
+	limit := make(chan struct{}, workers)
+	var wait sync.WaitGroup
+objectsLoop:
 	for _, object := range objects {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			break
 		}
-		claimed, generation, ok, err := s.claim(ctx, object.Name)
-		if err != nil {
-			s.logf("batch.claim_failed object=%q err=%q", object.Name, err.Error())
-			continue
+		select {
+		case limit <- struct{}{}:
+		case <-ctx.Done():
+			break objectsLoop
 		}
-		if !ok {
-			continue
-		}
-		if err := s.process(ctx, claimed, generation); err != nil {
-			s.logf("batch.process_failed id=%q err=%q", claimed.ID, err.Error())
-		}
+		wait.Add(1)
+		go func(name string) {
+			defer wait.Done()
+			defer func() { <-limit }()
+			claimed, generation, ok, err := s.claim(ctx, name)
+			if err != nil {
+				s.logf("batch.claim_failed object=%q err=%q", name, err.Error())
+				return
+			}
+			if !ok {
+				return
+			}
+			if err := s.process(ctx, claimed, generation); err != nil {
+				s.logf("batch.process_failed id=%q err=%q", claimed.ID, err.Error())
+			}
+		}(object.Name)
 	}
-	return nil
+	wait.Wait()
+	return ctx.Err()
 }
 
 func (s *Service) claim(ctx context.Context, name string) (job, int64, bool, error) {
@@ -343,15 +451,14 @@ func (s *Service) claim(ctx context.Context, name string) (job, int64, bool, err
 	if job.LeaseUntil > now.Unix() && job.LeaseOwner != s.workerID {
 		return job, stored.Generation, false, nil
 	}
-	if now.Unix() >= job.ExpiresAt {
-		job.Status = StatusExpired
-		finalized := now.Unix()
-		job.FinalizedAt = &finalized
-		return s.finishTerminal(ctx, job, stored.Generation)
+	if job.NextAttemptAt > now.Unix() {
+		return job, stored.Generation, false, nil
 	}
+	expired := now.Unix() >= job.ExpiresAt
 	job.Status = StatusInProgress
 	job.LeaseOwner = s.workerID
 	job.LeaseUntil = now.Add(s.lease).Unix()
+	job.NextAttemptAt = 0
 	encoded, err := json.Marshal(job)
 	if err != nil {
 		return job, 0, false, err
@@ -363,7 +470,64 @@ func (s *Service) claim(ctx context.Context, name string) (job, int64, bool, err
 	if err != nil {
 		return job, 0, false, err
 	}
+	if expired {
+		// Expiration can stream a large provider result file and reconcile many
+		// ledger rows. Maintain the same generation-guarded lease throughout so
+		// another region cannot settle and refund the same item concurrently.
+		expireCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		lease := &jobLease{service: s, job: job, generation: updated.Generation}
+		stopHeartbeat := lease.maintain(expireCtx, cancel)
+		if err := s.expireNative(expireCtx, job); err != nil {
+			if errors.Is(err, errNativeStateNewerVersion) {
+				stopHeartbeat()
+				releaseErr := lease.releaseAt(ctx, s.now().Add(s.poll).Unix())
+				return job, updated.Generation, false, releaseErr
+			}
+			attempt := job.ExpiryAttempts + 1
+			updateErr := lease.update(ctx, func(meta *jobMetadata) {
+				meta.ExpiryAttempts = attempt
+			})
+			stopHeartbeat()
+			if updateErr != nil {
+				return job, updated.Generation, false, errors.Join(err, updateErr)
+			}
+			releaseErr := lease.releaseAt(
+				ctx, s.now().Add(nativeRetryDelay(attempt)).Unix(),
+			)
+			return job, updated.Generation, false, errors.Join(err, releaseErr)
+		}
+		states, err := s.loadItemStates(expireCtx, job)
+		if err != nil {
+			stopHeartbeat()
+			return job, updated.Generation, false, err
+		}
+		finalized := s.now().Unix()
+		counts := countsForStates(states)
+		usage := aggregateUsageStates(states)
+		if counts.Completed+counts.Failed == 0 {
+			usage = nil
+		}
+		if err := lease.update(expireCtx, func(meta *jobMetadata) {
+			meta.Status = StatusExpired
+			meta.FinalizedAt = &finalized
+			meta.RequestCounts = counts
+			meta.Usage = usage
+			meta.ExpiryAttempts = 0
+		}); err != nil {
+			stopHeartbeat()
+			return job, updated.Generation, false, err
+		}
+		stopHeartbeat()
+		job, generation := lease.snapshot()
+		return s.finishTerminal(ctx, job, generation)
+	}
 	return job, updated.Generation, true, nil
+}
+
+func (s *Service) loadItemStates(ctx context.Context, job job) ([]itemState, error) {
+	states, _, err := s.loadItemStatesAndPending(ctx, job)
+	return states, err
 }
 
 func (s *Service) finishTerminal(ctx context.Context, job job, activeGeneration int64) (job, int64, bool, error) {
@@ -390,6 +554,18 @@ func (s *Service) process(ctx context.Context, job job, generation int64) error 
 	}
 	processCtx, cancel := context.WithTimeout(ctx, remaining)
 	defer cancel()
+	lease := &jobLease{service: s, job: job, generation: generation}
+	if err := lease.update(processCtx, nil); err != nil {
+		return err
+	}
+	stopHeartbeat := lease.maintain(processCtx, cancel)
+	defer stopHeartbeat()
+	if nextAttemptAt, deferred, err := s.nativeDeferred(processCtx, job.ID); err != nil {
+		return err
+	} else if deferred {
+		stopHeartbeat()
+		return lease.releaseAt(processCtx, nextAttemptAt)
+	}
 
 	input, err := s.store.Get(processCtx, job.InputObject)
 	if err != nil {
@@ -405,34 +581,71 @@ func (s *Service) process(ctx context.Context, job job, generation int64) error 
 		return err
 	}
 	clear(plaintext)
+	defer clearRequests(payload.Requests)
 	if payload.APIKeyLookupHash != job.OwnerLookupHash || len(payload.Requests) != job.RequestCounts.Total {
 		return fmt.Errorf("batch input metadata mismatch")
 	}
 
-	states := make([]itemState, len(payload.Requests))
-	pending := make([]int, 0, len(payload.Requests))
-	for index := range payload.Requests {
-		stored, err := s.store.Get(processCtx, itemResultName(job.ID, index))
-		if err == nil {
-			result, err := s.openItemResult(processCtx, job.ID, index, stored.Data)
+	states, pending, err := s.loadItemStatesAndPending(processCtx, job)
+	if err != nil {
+		return err
+	}
+	job.RequestCounts = countsForStates(states)
+	if err := lease.update(processCtx, func(meta *jobMetadata) {
+		meta.RequestCounts = job.RequestCounts
+	}); err != nil {
+		return err
+	}
+
+	_, _, hasNativeState, err := s.loadNativeState(processCtx, job.ID)
+	if err != nil {
+		return err
+	}
+	if len(pending) > 0 || hasNativeState {
+		outcome, err := s.tryNative(
+			processCtx, job, payload.APIKeyLookupHash, pending, payload.Requests,
+		)
+		if err != nil {
+			if outcome == nativePending {
+				stopHeartbeat()
+				if releaseErr := lease.releaseAt(processCtx, s.nativeNextAttemptAt(processCtx, job.ID)); releaseErr != nil {
+					return errors.Join(err, releaseErr)
+				}
+			}
+			return err
+		}
+		if outcome == nativePending {
+			stopHeartbeat()
+			return lease.releaseAt(processCtx, s.nativeNextAttemptAt(processCtx, job.ID))
+		}
+		if outcome == nativeCompleted {
+			states, pending, err = s.loadItemStatesAndPending(processCtx, job)
 			if err != nil {
 				return err
 			}
-			states[index] = stateForResult(result)
-			continue
+			if len(pending) != 0 {
+				return fmt.Errorf("native batch completed with %d missing item checkpoints", len(pending))
+			}
+			if err := lease.update(processCtx, func(meta *jobMetadata) {
+				meta.RequestCounts = countsForStates(states)
+			}); err != nil {
+				return err
+			}
+		} else if outcome == nativeManagedFallback {
+			// Native reconciliation may have checkpointed some provider results
+			// before falling back. Refresh the pending set so managed execution
+			// never repeats a result that was already settled and made durable.
+			states, pending, err = s.loadItemStatesAndPending(processCtx, job)
+			if err != nil {
+				return err
+			}
+			if err := lease.update(processCtx, func(meta *jobMetadata) {
+				meta.RequestCounts = countsForStates(states)
+			}); err != nil {
+				return err
+			}
 		}
-		if !errors.Is(err, ErrNotFound) {
-			return err
-		}
-		pending = append(pending, index)
 	}
-	job.RequestCounts = countsForStates(states)
-	lease := &jobLease{service: s, job: job, generation: generation}
-	if err := lease.update(processCtx, nil); err != nil {
-		return err
-	}
-	stopHeartbeat := lease.maintain(processCtx, cancel)
-	defer stopHeartbeat()
 
 	type completedItem struct {
 		index int
@@ -528,22 +741,15 @@ func (s *Service) executeAndCheckpoint(
 	request Request,
 ) (itemState, error) {
 	result := s.executeItem(ctx, job, apiKeyLookupHash, index, request)
-	encoded, err := json.Marshal(itemCheckpoint{
-		Result:           result,
-		Usage:            result.Usage,
-		CostMicrodollars: result.Usage.CostMicrodollars,
-	})
-	if err == nil {
-		encoded, err = s.protector.Seal(ctx, job.ID, itemResultKind(index), encoded)
-	}
-	if err == nil {
-		_, err = s.store.Put(ctx, itemResultName(job.ID, index), encoded, PutCondition{Generation: 0})
-		if errors.Is(err, ErrPrecondition) {
-			var stored StoredObject
-			stored, err = s.store.Get(ctx, itemResultName(job.ID, index))
-			if err == nil {
-				result, err = s.openItemResult(ctx, job.ID, index, stored.Data)
-			}
+	err := s.storeItemCheckpoint(ctx, job.ID, index, result)
+	if errors.Is(err, ErrPrecondition) {
+		var stored StoredObject
+		stored, err = s.store.Get(ctx, itemResultName(job.ID, index))
+		if err == nil {
+			result, err = s.openItemResult(ctx, job.ID, index, stored.Data)
+		}
+		if err == nil {
+			err = s.storeItemStateCheckpoint(ctx, job.ID, index, stateForResult(result))
 		}
 	}
 	if err != nil {
@@ -578,8 +784,32 @@ func (s *Service) openItemResult(ctx context.Context, batchID string, index int,
 		return Result{}, err
 	}
 	checkpoint.Usage.CostMicrodollars = checkpoint.CostMicrodollars
+	checkpoint.Usage.GenerationID = checkpoint.GenerationID
+	checkpoint.Usage.Provider = checkpoint.Provider
+	checkpoint.Usage.Region = checkpoint.Region
 	checkpoint.Result.Usage = checkpoint.Usage
 	return checkpoint.Result, nil
+}
+
+func (s *Service) openItemState(ctx context.Context, batchID string, index int, encoded []byte) (itemState, error) {
+	plaintext, err := s.protector.Open(ctx, batchID, itemStateKind(index), encoded)
+	if err != nil {
+		return itemState{}, err
+	}
+	defer clear(plaintext)
+	var checkpoint itemStateCheckpoint
+	if err := json.Unmarshal(plaintext, &checkpoint); err != nil {
+		return itemState{}, err
+	}
+	checkpoint.Usage.CostMicrodollars = checkpoint.CostMicrodollars
+	checkpoint.Usage.GenerationID = checkpoint.GenerationID
+	checkpoint.Usage.Provider = checkpoint.Provider
+	checkpoint.Usage.Region = checkpoint.Region
+	return itemState{
+		finished: checkpoint.Finished,
+		failed:   checkpoint.Failed,
+		usage:    checkpoint.Usage,
+	}, nil
 }
 
 func (s *Service) executeItem(ctx context.Context, job job, apiKeyLookupHash string, index int, item Request) Result {
@@ -714,18 +944,26 @@ func countsForStates(states []itemState) RequestCounts {
 
 func aggregateUsageStates(states []itemState) *Usage {
 	usage := &Usage{IsBYOK: true}
-	successes := 0
+	contributors := 0
 	for _, state := range states {
-		if !state.finished || state.failed {
+		if !state.finished {
 			continue
 		}
-		successes++
+		// A settlement may commit before its provider result checkpoint is
+		// durable. Recovery deliberately records that item as failed while
+		// preserving the real charge. Include such charged failures in aggregate
+		// usage; ordinary failed items carry zero usage and remain excluded.
+		if state.failed && state.usage.PromptTokens == 0 &&
+			state.usage.CompletionTokens == 0 && state.usage.CostMicrodollars == 0 {
+			continue
+		}
+		contributors++
 		usage.PromptTokens += state.usage.PromptTokens
 		usage.CompletionTokens += state.usage.CompletionTokens
 		usage.CostMicrodollars += state.usage.CostMicrodollars
 		usage.IsBYOK = usage.IsBYOK && state.usage.IsBYOK
 	}
-	if successes == 0 {
+	if contributors == 0 {
 		usage.IsBYOK = false
 	}
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
@@ -823,7 +1061,165 @@ func finalResultsName(id string) string { return artifactPrefix + id + "/results
 func itemResultName(id string, index int) string {
 	return fmt.Sprintf("%s%s/items/%08d.enc", artifactPrefix, id, index)
 }
+func itemStateName(id string, index int) string {
+	return fmt.Sprintf("%s%s/states/%08d.enc", artifactPrefix, id, index)
+}
+
+func itemResultPrefix(id string) string { return artifactPrefix + id + "/items/" }
+
+func (s *Service) listItemResultPresence(
+	ctx context.Context,
+	batchID string,
+	total int,
+) ([]bool, error) {
+	present := make([]bool, total)
+	prefix := itemResultPrefix(batchID)
+	pageToken := ""
+	for {
+		objects, nextPageToken, err := s.store.List(
+			ctx, prefix, maxItemResultScan, pageToken,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for _, object := range objects {
+			base := strings.TrimPrefix(object.Name, prefix)
+			if base == object.Name || !strings.HasSuffix(base, ".enc") {
+				return nil, fmt.Errorf("batch item result object name is invalid")
+			}
+			rawIndex := strings.TrimSuffix(base, ".enc")
+			index, parseErr := strconv.Atoi(rawIndex)
+			if parseErr != nil || index < 0 || index >= total || object.Name != itemResultName(batchID, index) {
+				return nil, fmt.Errorf("batch item result object index is invalid")
+			}
+			if present[index] {
+				return nil, fmt.Errorf("batch item result object is duplicated")
+			}
+			present[index] = true
+		}
+		if nextPageToken == "" {
+			return present, nil
+		}
+		if nextPageToken == pageToken {
+			return nil, fmt.Errorf("batch item result listing did not advance")
+		}
+		pageToken = nextPageToken
+	}
+}
+
+func (s *Service) loadListedItemStates(
+	ctx context.Context,
+	batchID string,
+	present []bool,
+) ([]itemState, error) {
+	type loadedItem struct {
+		index int
+		state itemState
+		err   error
+	}
+	count := 0
+	for _, exists := range present {
+		if exists {
+			count++
+		}
+	}
+	loaded := make([]itemState, len(present))
+	if count == 0 {
+		return loaded, nil
+	}
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	workers := min(max(1, s.concurrency), count)
+	indexes := make(chan int)
+	completed := make(chan loadedItem, workers)
+	var wait sync.WaitGroup
+	for range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for index := range indexes {
+				stored, err := s.store.Get(workCtx, itemStateName(batchID, index))
+				var state itemState
+				if err == nil {
+					state, err = s.openItemState(workCtx, batchID, index, stored.Data)
+				} else if errors.Is(err, ErrNotFound) {
+					// A crash can leave the full result durable before its compact
+					// state companion. Repair from the source-of-truth result.
+					stored, err = s.store.Get(workCtx, itemResultName(batchID, index))
+					if err == nil {
+						var result Result
+						result, err = s.openItemResult(workCtx, batchID, index, stored.Data)
+						state = stateForResult(result)
+					}
+					if err == nil {
+						err = s.storeItemStateCheckpoint(workCtx, batchID, index, state)
+					}
+				}
+				select {
+				case completed <- loadedItem{index: index, state: state, err: err}:
+				case <-workCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(indexes)
+		for index, exists := range present {
+			if !exists {
+				continue
+			}
+			select {
+			case indexes <- index:
+			case <-workCtx.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		wait.Wait()
+		close(completed)
+	}()
+	var firstErr error
+	for item := range completed {
+		if item.err != nil && firstErr == nil {
+			firstErr = item.err
+			cancel()
+			continue
+		}
+		loaded[item.index] = item.state
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return loaded, nil
+}
+
+func (s *Service) loadItemStatesAndPending(
+	ctx context.Context,
+	job job,
+) ([]itemState, []int, error) {
+	present, err := s.listItemResultPresence(ctx, job.ID, job.RequestCounts.Total)
+	if err != nil {
+		return nil, nil, err
+	}
+	states, err := s.loadListedItemStates(ctx, job.ID, present)
+	if err != nil {
+		return nil, nil, err
+	}
+	pending := make([]int, 0, len(present))
+	for index, exists := range present {
+		if !exists {
+			pending = append(pending, index)
+		}
+	}
+	return states, pending, nil
+}
 func itemResultKind(index int) string { return fmt.Sprintf("result:%d", index) }
+func itemStateKind(index int) string  { return fmt.Sprintf("state:%d", index) }
 
 func resultID(batchID, customID string) string {
 	sum := sha256.Sum256([]byte(batchID + "\x00" + customID))

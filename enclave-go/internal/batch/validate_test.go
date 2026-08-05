@@ -139,3 +139,57 @@ func TestParseCreateBoundsCustomIDByBytes(t *testing.T) {
 		t.Fatalf("apiErr = %#v", apiErr)
 	}
 }
+
+func TestValidateCreateBoundsRequestCountBeforePerItemWork(t *testing.T) {
+	t.Parallel()
+
+	req := CreateRequest{
+		Endpoint: "/v1/chat/completions",
+		Model:    "test/model",
+		Requests: make([]Request, maxBatchRequests+1),
+	}
+	apiErr := validateCreate(&req)
+	if apiErr == nil || apiErr.Code != "batch_too_large" || apiErr.Param != "requests" {
+		t.Fatalf("apiErr = %#v", apiErr)
+	}
+}
+
+func TestBatchPlaintextLimitLeavesEnvelopeEncryptionHeadroom(t *testing.T) {
+	t.Parallel()
+
+	if batchPlaintextTooLarge(maxBatchPlaintextBytes) ||
+		!batchPlaintextTooLarge(maxBatchPlaintextBytes+1) {
+		t.Fatal("batch plaintext boundary is not enforced exactly")
+	}
+	if maxBatchPlaintextBytes*4/3 >= maxGCSObjectSize {
+		t.Fatalf(
+			"plaintext cap %d does not leave envelope headroom below object cap %d",
+			maxBatchPlaintextBytes, maxGCSObjectSize,
+		)
+	}
+}
+
+func TestValidateCreateBoundsTotalEmbeddingInputs(t *testing.T) {
+	t.Parallel()
+
+	inputs := make([]string, maxBatchRequests)
+	for index := range inputs {
+		inputs[index] = "x"
+	}
+	encodedInputs, err := json.Marshal(inputs)
+	if err != nil {
+		t.Fatalf("marshal inputs: %v", err)
+	}
+	req := CreateRequest{
+		Endpoint: "/v1/embeddings",
+		Model:    "embed/model",
+		Requests: []Request{
+			{CustomID: "many", Body: json.RawMessage(`{"input":` + string(encodedInputs) + `}`)},
+			{CustomID: "one-more", Body: json.RawMessage(`{"input":"overflow"}`)},
+		},
+	}
+	apiErr := validateCreate(&req)
+	if apiErr == nil || apiErr.Code != "batch_too_large" || apiErr.Param != "requests" {
+		t.Fatalf("apiErr = %#v", apiErr)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"sort"
 	"strings"
 	"sync"
@@ -68,7 +69,12 @@ func (s *routeBatchStore) Delete(_ context.Context, name string, generation int6
 	return nil
 }
 
-func (s *routeBatchStore) List(_ context.Context, prefix string, limit int) ([]batchapi.ObjectMeta, error) {
+func (s *routeBatchStore) List(
+	_ context.Context,
+	prefix string,
+	limit int,
+	pageToken string,
+) ([]batchapi.ObjectMeta, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var names []string
@@ -78,14 +84,23 @@ func (s *routeBatchStore) List(_ context.Context, prefix string, limit int) ([]b
 		}
 	}
 	sort.Strings(names)
+	if pageToken != "" {
+		start := sort.SearchStrings(names, pageToken)
+		if start < len(names) && names[start] == pageToken {
+			start++
+		}
+		names = names[start:]
+	}
+	nextPageToken := ""
 	if limit > 0 && len(names) > limit {
+		nextPageToken = names[limit-1]
 		names = names[:limit]
 	}
 	objects := make([]batchapi.ObjectMeta, 0, len(names))
 	for _, name := range names {
 		objects = append(objects, batchapi.ObjectMeta{Name: name, Generation: s.objects[name].Generation})
 	}
-	return objects, nil
+	return objects, nextPageToken, nil
 }
 
 type routeBatchProtector struct{}
@@ -138,6 +153,19 @@ func batchHTTPBody(t *testing.T, response string) []byte {
 	return []byte(parts[1])
 }
 
+func chunkedBatchHTTPBody(t *testing.T, response string) []byte {
+	t.Helper()
+	parts := strings.SplitN(response, "\r\n\r\n", 2)
+	if len(parts) != 2 {
+		t.Fatalf("invalid HTTP response: %q", response)
+	}
+	body, err := io.ReadAll(httputil.NewChunkedReader(strings.NewReader(parts[1])))
+	if err != nil {
+		t.Fatalf("decode chunked response: %v", err)
+	}
+	return body
+}
+
 func TestMaybeServeBatchRouteCreateAndGet(t *testing.T) {
 	previous := batchGateway
 	batchGateway = testBatchGateway(t)
@@ -171,6 +199,55 @@ func TestMaybeServeBatchRouteCreateAndGet(t *testing.T) {
 		t.Fatalf("decode get: %v", err)
 	}
 	if fetched.ID != created.ID || fetched.Status != "validating" {
+		t.Fatalf("fetched = %#v", fetched)
+	}
+}
+
+func TestCompletedBatchRouteStreamsValidOrderedJSON(t *testing.T) {
+	previous := batchGateway
+	batchGateway = testBatchGateway(t)
+	t.Cleanup(func() { batchGateway = previous })
+	batchGateway.Start(t.Context())
+
+	created, apiErr := batchGateway.Create(
+		t.Context(),
+		"owner-key",
+		[]byte(`{"endpoint":"/v1/chat/completions","model":"test/model","requests":[{"custom_id":"one","body":{"messages":[{"role":"user","content":"hello"}]}},{"custom_id":"two","body":{"messages":[{"role":"user","content":"world"}]}}]}`),
+	)
+	if apiErr != nil {
+		t.Fatalf("create: %#v", apiErr)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		prepared, getErr := batchGateway.PrepareGet(t.Context(), "owner-key", created.ID)
+		if getErr != nil {
+			t.Fatalf("prepare get: %#v", getErr)
+		}
+		if prepared.Batch.Status == batchapi.StatusCompleted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("batch remained %q", prepared.Batch.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var response bytes.Buffer
+	if !maybeServeBatchRoute(
+		t.Context(), &response, http.MethodGet,
+		"/api/beta/batches/"+created.ID, nil, "owner-key",
+	) {
+		t.Fatal("completed batch route was not handled")
+	}
+	if !strings.Contains(response.String(), "Transfer-Encoding: chunked") {
+		t.Fatalf("response did not stream: %q", response.String())
+	}
+	var fetched batchapi.Batch
+	if err := json.Unmarshal(chunkedBatchHTTPBody(t, response.String()), &fetched); err != nil {
+		t.Fatalf("decode streamed batch: %v", err)
+	}
+	if fetched.Status != batchapi.StatusCompleted || len(fetched.Results) != 2 ||
+		fetched.Results[0].CustomID != "one" || fetched.Results[1].CustomID != "two" {
 		t.Fatalf("fetched = %#v", fetched)
 	}
 }

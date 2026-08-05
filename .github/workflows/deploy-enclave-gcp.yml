@@ -128,6 +128,7 @@ jobs:
     outputs:
       image_ref: ${{ steps.set-vars.outputs.image_ref }}
       image_digest: ${{ steps.resolve-digest.outputs.image_digest }}
+      native_batch_enabled: ${{ steps.set-vars.outputs.native_batch_enabled }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -141,6 +142,16 @@ jobs:
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
           echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+          if grep -Eq '^[[:space:]]*nativeBatchSubmitAllowlist[[:space:]]*=[[:space:]]*""[[:space:]]*$' \
+            enclave-go/cmd/enclave/batch_native_config.go && \
+            grep -Eq '^[[:space:]]*NativeSubmitProviders:[[:space:]]*nativeBatchSubmitProviders\(nativeBatchSubmitAllowlist\),[[:space:]]*$' \
+            enclave-go/cmd/enclave/main.go; then
+            echo "native_batch_enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            # Fail closed: any nonempty value or source-shape change requires
+            # the protected Batch release approval before rollout.
+            echo "native_batch_enabled=true" >> "$GITHUB_OUTPUT"
+          fi
           echo "SHA=${SHA}" >> "$GITHUB_ENV"
           echo "IMAGE_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
           echo "IMAGE_REF=${IMAGE_REF}" >> "$GITHUB_ENV"
@@ -237,8 +248,57 @@ jobs:
             git push origin HEAD:main
           fi
 
-  rollout:
+  grant-batch-image-access:
     needs: build-and-release
+    if: needs.build-and-release.outputs.native_batch_enabled == 'true'
+    runs-on: ubuntu-latest
+    environment: batch-release
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require explicit Batch storage activation
+        env:
+          TR_BATCH_STORAGE_ENABLED: ${{ vars.TR_BATCH_STORAGE_ENABLED }}
+        run: |
+          if [ "${TR_BATCH_STORAGE_ENABLED}" != "true" ]; then
+            echo "Native Batch content export is compiled in, but TR_BATCH_STORAGE_ENABLED is not true." >&2
+            exit 1
+          fi
+      - name: Authenticate isolated Batch release identity
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-batch-release@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Grant only the new measured enclave digest
+        env:
+          IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
+        run: bash tools/reconcile-gcp-batch-image-access.sh grant "${IMAGE_DIGEST}"
+
+  batch-image-access-not-required:
+    needs: build-and-release
+    if: needs.build-and-release.outputs.native_batch_enabled == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm native Batch content export is dark
+        run: echo "Compile-time native Batch provider allowlist is empty; no Batch IAM grant is required."
+
+  rollout:
+    needs: [build-and-release, grant-batch-image-access, batch-image-access-not-required]
+    if: >-
+      ${{
+        always() &&
+        needs.build-and-release.result == 'success' &&
+        (
+          (
+            needs.build-and-release.outputs.native_batch_enabled == 'true' &&
+            needs.grant-batch-image-access.result == 'success'
+          ) ||
+          (
+            needs.build-and-release.outputs.native_batch_enabled == 'false' &&
+            needs.batch-image-access-not-required.result == 'success'
+          )
+        )
+      }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

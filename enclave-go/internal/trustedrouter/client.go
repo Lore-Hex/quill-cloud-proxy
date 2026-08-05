@@ -108,6 +108,7 @@ type Authorization struct {
 	Tags                                  qtypes.TagMap                      `json:"tags"`
 	RequestMetadataVersion                int                                `json:"request_metadata_version"`
 	AdditionalCostReservationMicrodollars int                                `json:"additional_cost_reservation_microdollars"`
+	NativeBatchEligible                   bool                               `json:"native_batch_eligible"`
 	RouteType                             string                             `json:"-"`
 }
 
@@ -200,6 +201,14 @@ type Usage struct {
 	VideoResolution            string
 	VideoAspectRatio           string
 	VideoGenerateAudio         bool
+}
+
+// RefundAttribution carries the same content-free request identifiers as a
+// successful settlement. It never includes prompts, outputs, or credentials.
+type RefundAttribution struct {
+	User      string
+	SessionID string
+	Trace     map[string]any
 }
 
 func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest) (*Authorization, error) {
@@ -338,8 +347,21 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 // of the input tokens alone. Metadata-only, like AuthorizeWithRoute: model,
 // token count, region — never the input text.
 func (c *Client) AuthorizeEmbeddings(ctx context.Context, bearer string, req *qtypes.EmbeddingRequest, inputTokens int) (*Authorization, error) {
+	return c.AuthorizeEmbeddingsWithRoute(ctx, bearer, req, inputTokens, "embeddings")
+}
+
+func (c *Client) AuthorizeEmbeddingsWithRoute(
+	ctx context.Context,
+	bearer string,
+	req *qtypes.EmbeddingRequest,
+	inputTokens int,
+	routeType string,
+) (*Authorization, error) {
 	if inputTokens < 1 {
 		inputTokens = 1
+	}
+	if strings.TrimSpace(routeType) == "" {
+		routeType = "embeddings"
 	}
 	idempotencyKey, err := authorizationIdempotencyKey(req.IdempotencyKey)
 	if err != nil {
@@ -351,7 +373,7 @@ func (c *Client) AuthorizeEmbeddings(ctx context.Context, bearer string, req *qt
 		"estimated_input_tokens": inputTokens,
 		"max_output_tokens":      1,
 		"region":                 c.region,
-		"route_type":             "embeddings",
+		"route_type":             routeType,
 		"idempotency_key":        idempotencyKey,
 	}
 	if req.User != "" {
@@ -384,6 +406,7 @@ func (c *Client) AuthorizeEmbeddings(ctx context.Context, bearer string, req *qt
 	if err := c.postJSONWithRetry(ctx, "/internal/gateway/authorize", body, &decoded, c.authorizeRetry); err != nil {
 		return nil, err
 	}
+	decoded.Data.RouteType = routeType
 	if req.Tags != nil && decoded.Data.RequestMetadataVersion < 1 {
 		_ = c.Refund(ctx, &decoded.Data, 503, "request_metadata_unavailable", 0.001, nil)
 		return nil, &ControlPlaneError{
@@ -400,13 +423,20 @@ func (c *Client) AuthorizeEmbeddings(ctx context.Context, bearer string, req *qt
 }
 
 type SettleResult struct {
-	GenerationID     string  `json:"generation_id"`
-	CostMicrodollars int     `json:"cost_microdollars"`
-	Cost             float64 `json:"cost"`
-	UsageType        string  `json:"usage_type"`
-	Model            string  `json:"model"`
-	Provider         string  `json:"provider"`
-	Region           string  `json:"region"`
+	GenerationID         string  `json:"generation_id"`
+	CostMicrodollars     int     `json:"cost_microdollars"`
+	Cost                 float64 `json:"cost"`
+	InputTokens          int     `json:"input_tokens"`
+	OutputTokens         int     `json:"output_tokens"`
+	ReasoningTokens      int     `json:"reasoning_tokens"`
+	CacheReadInputTokens int     `json:"cache_read_input_tokens"`
+	UsageType            string  `json:"usage_type"`
+	Model                string  `json:"model"`
+	Provider             string  `json:"provider"`
+	Region               string  `json:"region"`
+	Settled              bool    `json:"settled"`
+	AlreadySettled       bool    `json:"already_settled"`
+	FinalizationOutcome  string  `json:"finalization_outcome"`
 }
 
 func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (*SettleResult, error) {
@@ -499,8 +529,47 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 }
 
 func (c *Client) Refund(ctx context.Context, auth *Authorization, status int, errorType string, elapsedSeconds float64, metadata map[string]any) error {
+	_, err := c.RefundDetailed(ctx, auth, status, errorType, elapsedSeconds, metadata)
+	return err
+}
+
+// RefundDetailed preserves the control plane's idempotency outcome. Most
+// real-time callers only need Refund's error, while durable Batch workers must
+// distinguish an already-refunded replay from a late refund that lost to a
+// successful settlement.
+func (c *Client) RefundDetailed(ctx context.Context, auth *Authorization, status int, errorType string, elapsedSeconds float64, metadata map[string]any) (*SettleResult, error) {
+	return c.refundDetailed(
+		ctx, auth, status, errorType, elapsedSeconds, metadata, RefundAttribution{},
+	)
+}
+
+// RefundDetailedAttributed preserves content-free request attribution for
+// durable workers whose refund may occur long after the original request.
+func (c *Client) RefundDetailedAttributed(
+	ctx context.Context,
+	auth *Authorization,
+	status int,
+	errorType string,
+	elapsedSeconds float64,
+	metadata map[string]any,
+	attribution RefundAttribution,
+) (*SettleResult, error) {
+	return c.refundDetailed(
+		ctx, auth, status, errorType, elapsedSeconds, metadata, attribution,
+	)
+}
+
+func (c *Client) refundDetailed(
+	ctx context.Context,
+	auth *Authorization,
+	status int,
+	errorType string,
+	elapsedSeconds float64,
+	metadata map[string]any,
+	attribution RefundAttribution,
+) (*SettleResult, error) {
 	if auth == nil {
-		return nil
+		return &SettleResult{}, nil
 	}
 	if status < 100 {
 		status = 502
@@ -524,8 +593,22 @@ func (c *Client) Refund(ctx context.Context, auth *Authorization, status int, er
 	if metadata != nil {
 		body["metadata"] = metadata
 	}
-	var decoded map[string]any
-	return c.postJSON(ctx, "/internal/gateway/refund", body, &decoded)
+	if attribution.User != "" {
+		body["user"] = attribution.User
+	}
+	if attribution.SessionID != "" {
+		body["session_id"] = attribution.SessionID
+	}
+	if attribution.Trace != nil {
+		body["trace"] = attribution.Trace
+	}
+	var decoded struct {
+		Data SettleResult `json:"data"`
+	}
+	if err := c.postJSON(ctx, "/internal/gateway/refund", body, &decoded); err != nil {
+		return nil, err
+	}
+	return &decoded.Data, nil
 }
 
 // FetchImage asks the control plane to fetch a remote image URL on the
