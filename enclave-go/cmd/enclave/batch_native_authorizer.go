@@ -10,6 +10,7 @@ import (
 	"time"
 
 	batchapi "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/batch"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -142,12 +143,18 @@ func nativeRoutes(authorization *trustedrouter.Authorization) []batchapi.NativeR
 	}
 	routes := make([]batchapi.NativeRoute, 0, len(candidates))
 	for _, candidate := range candidates {
+		provider := strings.TrimSpace(candidate.Provider)
+		model := strings.TrimSpace(candidate.Model)
 		routes = append(routes, batchapi.NativeRoute{
-			Provider:      strings.TrimSpace(candidate.Provider),
-			EndpointID:    strings.TrimSpace(candidate.EndpointID),
-			Model:         strings.TrimSpace(candidate.Model),
-			UpstreamModel: strings.TrimSpace(candidate.UpstreamModel),
-			UsageType:     strings.TrimSpace(candidate.UsageType),
+			Provider:   provider,
+			EndpointID: strings.TrimSpace(candidate.EndpointID),
+			Model:      model,
+			UpstreamModel: llm.DirectModelID(
+				provider,
+				model,
+				strings.TrimSpace(candidate.UpstreamModel),
+			),
+			UsageType: strings.TrimSpace(candidate.UsageType),
 		})
 	}
 	return routes

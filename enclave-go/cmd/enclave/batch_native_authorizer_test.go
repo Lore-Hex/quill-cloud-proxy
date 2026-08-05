@@ -80,6 +80,32 @@ func batchNativeAuthorization(handle []byte) batchapi.NativeAuthorization {
 	return batchapi.NativeAuthorization{Handle: json.RawMessage(handle)}
 }
 
+func TestNativeRoutesUseTheLiveInferenceProviderModelResolver(t *testing.T) {
+	t.Parallel()
+
+	routes := nativeRoutes(&trustedrouter.Authorization{
+		RouteCandidates: []trustedrouter.RouteCandidate{
+			{
+				Provider: "openai", Model: "openai/gpt-5.5",
+				UpstreamModel: "openai/gpt-5.5", UsageType: "Credits",
+			},
+			{
+				Provider: "parasail", Model: "z-ai/glm-5.2",
+				UpstreamModel: "parasail-glm-52", UsageType: "Credits",
+			},
+		},
+	})
+	if len(routes) != 2 {
+		t.Fatalf("routes = %#v", routes)
+	}
+	if routes[0].UpstreamModel != "gpt-5.5" {
+		t.Fatalf("OpenAI upstream model = %q", routes[0].UpstreamModel)
+	}
+	if routes[1].UpstreamModel != "parasail-glm-52" {
+		t.Fatalf("Parasail upstream model = %q", routes[1].UpstreamModel)
+	}
+}
+
 func TestBatchNativeAuthorizePreservesOrdinaryBYOKRouting(t *testing.T) {
 	t.Parallel()
 

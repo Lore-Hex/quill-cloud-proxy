@@ -13,7 +13,7 @@ import (
 // content export. Activation requires a reviewed source change and a new image
 // digest. Keep adapters available independently for recovery and cleanup.
 const (
-	nativeBatchSubmitAllowlist = ""
+	nativeBatchSubmitAllowlist = "openai,parasail"
 	parasailNativeBatchBaseURL = "https://api.parasail.io/v1"
 )
 

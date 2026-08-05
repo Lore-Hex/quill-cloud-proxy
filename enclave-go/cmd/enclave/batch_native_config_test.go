@@ -15,8 +15,8 @@ func TestNativeBatchAdaptersAndMeasuredSubmitAllowlistAreSeparate(t *testing.T) 
 	if len(providers) != 2 || providers[0].Name() != "openai" || providers[1].Name() != "parasail" {
 		t.Fatalf("providers = %#v", providers)
 	}
-	if nativeBatchSubmitAllowlist != "" {
-		t.Fatalf("production submit allowlist must remain dark before explicit approval: %q", nativeBatchSubmitAllowlist)
+	if nativeBatchSubmitAllowlist != "openai,parasail" {
+		t.Fatalf("production submit allowlist = %q", nativeBatchSubmitAllowlist)
 	}
 	if parasailNativeBatchBaseURL != "https://api.parasail.io/v1" {
 		t.Fatalf("Parasail Batch base URL = %q", parasailNativeBatchBaseURL)
