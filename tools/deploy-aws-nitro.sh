@@ -691,6 +691,14 @@ allowlist:
   # address' and takes the enclave down with it. inference.tinfoil.sh above is
   # the DATA path; these are the VERIFICATION path and are separate.
   - {address: api-github-proxy.tinfoil.sh, port: 443}
+  # Rest of the tinfoil verification path. A unit without a matching
+  # address entry here is silently refused by vsock-proxy itself.
+  - {address: gh-attestation-proxy.tinfoil.sh, port: 443}
+  - {address: kds-proxy.tinfoil.sh,            port: 443}
+  # Makora inference. enclave-go/internal/llm/http_client_aws.go maps this
+  # host to vsock 8029, so without both the address entry and the unit
+  # below every Makora request from the enclave fails to connect.
+  - {address: inference.makora.com,            port: 443}
   - {address: tuf-repo-cdn.sigstore.dev, port: 443}
   - {address: rekor.sigstore.dev,        port: 443}
   - {address: api.venice.ai,                 port: 443}
@@ -744,6 +752,19 @@ write_vsock_unit() {
   local port="\$1"
   local host="\$2"
   local svc="quill-vsock-proxy-\${port}.service"
+  # Refuse to reuse a port. Two calls with the same port render the SAME unit
+  # file, so the second silently overwrites the first and one upstream becomes
+  # unreachable. Worse, the trailing \`systemctl enable --now\` does NOT restart
+  # an already-running service, so the unit file on disk and the running
+  # process disagree until something restarts it — and which upstream is broken
+  # then depends on restart history. This shipped: 8042 was assigned to both
+  # api-github-proxy.tinfoil.sh and a MaaS host.
+  if [ -e "/run/quill-vsock-ports/\${port}" ]; then
+    echo "FATAL: vsock port \${port} is already assigned to \$(cat "/run/quill-vsock-ports/\${port}"); refusing to overwrite it with \${host}" >&2
+    exit 1
+  fi
+  mkdir -p /run/quill-vsock-ports
+  printf '%s' "\${host}" > "/run/quill-vsock-ports/\${port}"
   cat > "/etc/systemd/system/\${svc}" <<UNIT
 [Unit]
 Description=Quill Nitro vsock-proxy: vsock CID-LOCAL:\${port} -> \${host}:443
@@ -801,7 +822,8 @@ write_vsock_unit 8039 tinker.thinkingmachines.dev
 write_vsock_unit 8027 pass.wafer.ai
 write_vsock_unit 8028 api.inference.crusoecloud.com
 write_vsock_unit 8041 openrouter.ai
-write_vsock_unit 8042 ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com
+write_vsock_unit 8047 ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com
+write_vsock_unit 8029 inference.makora.com
 write_vsock_unit 8030 oauth2.googleapis.com
 write_vsock_unit 8031 spanner.googleapis.com
 write_vsock_unit 8032 bigtable.googleapis.com
