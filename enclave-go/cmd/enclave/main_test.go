@@ -807,7 +807,7 @@ func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
 	defer client.Close()
 	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
 
-	requestBody := []byte(`{"model":"trustedrouter/user-resp1","input":"private response input","instructions":"be brief","max_output_tokens":32}`)
+	requestBody := []byte(`{"model":"trustedrouter/user-resp1","input":"private response input","instructions":"be brief","max_output_tokens":32,"usage":{"include":true}}`)
 	_, err := fmt.Fprintf(
 		client,
 		"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",

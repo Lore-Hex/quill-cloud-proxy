@@ -59,6 +59,7 @@ var supportedResponsesCreateFields = map[string]struct{}{
 	"trace":                  {},
 	"truncation":             {},
 	"user":                   {},
+	"usage":                  {},
 }
 
 var supportedResponsesInputTokenFields = map[string]struct{}{
@@ -151,6 +152,21 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 		var options map[string]any
 		if err := json.Unmarshal(value, &options); err != nil && presentNonNull(value) {
 			return &AdapterError{Status: 400, Message: "stream_options must be an object", Context: "stream_options"}
+		}
+	}
+	if value, ok := raw["usage"]; ok && presentNonNull(value) {
+		// OpenRouter's legacy usage.include request option is deprecated and
+		// has no effect because usage is always returned. Accept it as a no-op
+		// so clients can switch base URLs without a Responses-only failure.
+		var options map[string]json.RawMessage
+		if err := json.Unmarshal(value, &options); err != nil {
+			return &AdapterError{Status: 400, Message: "usage must be an object", Context: "usage"}
+		}
+		if include, ok := options["include"]; ok && presentNonNull(include) {
+			var enabled bool
+			if err := json.Unmarshal(include, &enabled); err != nil {
+				return &AdapterError{Status: 400, Message: "usage.include must be a boolean", Context: "usage.include"}
+			}
 		}
 	}
 	return nil

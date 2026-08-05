@@ -526,6 +526,7 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 		"reasoning":{"effort":"high"},
 		"service_tier":"auto",
 		"stream_options":{"include_usage":true},
+		"usage":{"include":true},
 		"text":{"format":{"type":"text"}},
 		"tool_choice":"auto",
 		"tools":[],
@@ -597,6 +598,45 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 				t.Fatalf("adapter error = status %d context %q, want status %d context %q", aerr.Status, aerr.Context, tc.wantStatus, tc.wantContext)
 			}
 		})
+	}
+}
+
+func TestResponsesLegacyUsageIncludeIsAcceptedAsNoOp(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"m","input":"hi","usage":{"include":true}}`,
+		`{"model":"m","input":"hi","usage":{"include":false}}`,
+		`{"model":"m","input":"hi","usage":null}`,
+	} {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(body), &raw); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		if err := RejectUnsupportedResponsesFields(raw); err != nil {
+			t.Fatalf("legacy usage.include rejected for %s: %v", body, err)
+		}
+	}
+}
+
+func TestResponsesLegacyUsageIncludeRejectsMalformedShapes(t *testing.T) {
+	for _, tc := range []struct {
+		body        string
+		wantContext string
+	}{
+		{`{"model":"m","input":"hi","usage":true}`, "usage"},
+		{`{"model":"m","input":"hi","usage":{"include":"yes"}}`, "usage.include"},
+	} {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(tc.body), &raw); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		err := RejectUnsupportedResponsesFields(raw)
+		if err == nil {
+			t.Fatalf("malformed legacy usage accepted: %s", tc.body)
+		}
+		aerr, ok := err.(*AdapterError)
+		if !ok || aerr.Status != 400 || aerr.Context != tc.wantContext {
+			t.Fatalf("error = %#v, want status 400 context %q", err, tc.wantContext)
+		}
 	}
 }
 
