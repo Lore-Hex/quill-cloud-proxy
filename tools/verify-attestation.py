@@ -164,6 +164,39 @@ def verify_gcp_jwt_signature(blob: bytes) -> None:
     print(f"[ok] GCP JWT signature validates against issuer JWKS kid={kid[:12]}...")
 
 
+def check_pcr0_pin(pcr0: str, expected_pcr0: str | None) -> None:
+    """Require PCR0 to be one of the pinned measurements. Unpinned = no check.
+
+    Comma-separated SET, matching --expected-hostdata on the Azure path.
+
+    This used to be an equality check, which made changing PCR0 impossible
+    without an outage: a rolling EIF replacement legitimately spans the
+    published measurement and the incoming one, and under equality one of the
+    two ALWAYS fails. Widening the pin first is what makes the change possible.
+
+    Note the sharp edge that motivated the fix: writing "old,new" against an
+    equality check fails BOTH, because neither value equals the literal joined
+    string. So attempting a bind window without this turns the whole fleet red
+    rather than accepting both measurements — the opposite of the intent.
+    """
+    if not expected_pcr0:
+        return
+    allowed = {
+        value.strip().lower().removeprefix("0x")
+        for value in expected_pcr0.split(",")
+        if value.strip()
+    }
+    if not allowed:
+        return
+    if pcr0.lower() not in allowed:
+        sys.exit(
+            "[FAIL] PCR0 mismatch:\n"
+            f"  attestation:     {pcr0}\n"
+            f"  expected one of: {sorted(allowed)}"
+        )
+    print(f"[ok] PCR0 matches {pcr0[:16]}...")
+
+
 def parse_cose_payload(blob: bytes) -> tuple[dict[str, Any], bytes]:
     cose = cbor2.loads(blob)
     if not isinstance(cose, list) or len(cose) != 4:
@@ -784,10 +817,7 @@ def verify_aws_cbor(
     verify_cose_signature(blob)
 
     pcr0 = payload["pcrs"][0].hex()
-    if expected_pcr0 and pcr0.lower() != expected_pcr0.strip().lower():
-        sys.exit(f"[FAIL] PCR0 mismatch:\n  attestation: {pcr0}\n  expected:    {expected_pcr0}")
-    if expected_pcr0:
-        print(f"[ok] PCR0 matches {pcr0[:16]}...")
+    check_pcr0_pin(pcr0, expected_pcr0)
 
     doc_spki = payload.get("public_key")
     if not doc_spki:

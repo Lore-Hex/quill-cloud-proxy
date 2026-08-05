@@ -491,5 +491,51 @@ class GCPLivenessModeTests(VerifierTestCase):
         self.assertIn("live TLS cert fingerprint is not bound", str(raised.exception))
 
 
+@unittest.skipIf(VERIFIER is None, f"verifier not importable: {LOAD_ERROR}")
+class TestPCR0PinIsASet(unittest.TestCase):
+    """A rolling EIF replacement spans two measurements; the pin must accept both.
+
+    This is what unblocks changing PCR0 at all. The AWS enclave's control-plane
+    allowlist is compiled into the binary and therefore measured, so pointing
+    AWS at its own control plane REQUIRES a new PCR0 — and rolling to it means a
+    window where both the published and the incoming measurement are live.
+
+    The sharp edge worth pinning: under the old equality check, writing
+    "old,new" failed BOTH, because neither equals the literal joined string. So
+    an operator following the obvious bind-window procedure would have turned
+    the whole fleet red instead of widening the pin.
+    """
+
+    OLD = "2c12e22215d4269d1a788063d59fc5a8cf565b92bf1bee1761d7651b0b9ca5139274504adf001ca6626c7108fafc6883"
+    NEW = "aa" * 48
+
+    def test_single_pin_still_matches(self) -> None:
+        VERIFIER.check_pcr0_pin(self.OLD, self.OLD)
+
+    def test_single_pin_still_rejects_a_different_measurement(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            VERIFIER.check_pcr0_pin(self.NEW, self.OLD)
+        self.assertIn("PCR0 mismatch", str(raised.exception))
+
+    def test_bind_window_accepts_both_measurements(self) -> None:
+        both = f"{self.OLD},{self.NEW}"
+        VERIFIER.check_pcr0_pin(self.OLD, both)
+        VERIFIER.check_pcr0_pin(self.NEW, both)
+
+    def test_bind_window_still_rejects_a_third_measurement(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            VERIFIER.check_pcr0_pin("bb" * 48, f"{self.OLD},{self.NEW}")
+        self.assertIn("PCR0 mismatch", str(raised.exception))
+
+    def test_whitespace_case_and_0x_prefix_are_tolerated(self) -> None:
+        VERIFIER.check_pcr0_pin(self.OLD, f"  0X{self.OLD.upper()} , {self.NEW}  ")
+
+    def test_unpinned_does_not_check(self) -> None:
+        # Absent pin means "not asserting a measurement", not "accept nothing".
+        VERIFIER.check_pcr0_pin(self.OLD, None)
+        VERIFIER.check_pcr0_pin(self.OLD, "")
+        VERIFIER.check_pcr0_pin(self.OLD, "  ,  ")
+
+
 if __name__ == "__main__":
     unittest.main()
