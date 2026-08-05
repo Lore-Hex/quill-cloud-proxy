@@ -1,3 +1,5 @@
+//go:build cloud_aws
+
 // Outbound verification traffic for the attestation sidecar, over vsock.
 //
 // WHY THIS FILE EXISTS
@@ -150,14 +152,17 @@ func newVsockTransport() *http.Transport {
 	}
 }
 
-// installVsockTransport makes vsock the process-wide default.
+// installPlatformTransport makes vsock the process-wide default for the
+// cloud_aws build. The GCP build has a normal network interface and uses the
+// direct implementation in direct_transport.go.
 //
 // HTTP requests use the process-wide default transport. The verifier's final
 // certificate-binding check uses a raw TLS dial, so its vendored dial hook is
 // installed separately. Both paths fail closed through the same route table.
-func installVsockTransport() {
+func installPlatformTransport() string {
 	transport := newVsockTransport()
 	http.DefaultTransport = transport
 	http.DefaultClient = &http.Client{Transport: transport, Timeout: 60 * time.Second}
 	tinfoilclient.DialTLSContext = dialTLSOverVsock
+	return "vsock"
 }

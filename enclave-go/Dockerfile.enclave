@@ -60,7 +60,7 @@ RUN go build -trimpath -tags "${BUILD_TAGS}" \
 # builds this; the AWS image did not, which is why AWS attestation had no
 # sidecar to answer.
 RUN cd sidecar && go mod download \
-    && go build -trimpath \
+    && go build -trimpath -tags cloud_aws \
        -ldflags='-s -w -extldflags=-static' \
        -o /out/attest-sidecar .
 

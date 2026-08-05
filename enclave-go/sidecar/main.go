@@ -17,10 +17,9 @@
 // module with its own go.mod, so none of those packages get linked
 // into the main enclave's symbol table. The main enclave keeps its
 // proven-stable dep graph and just talks to this sidecar over a
-// Unix socket. If sigstore/whatever ever breaks the world, only this
-// binary blows up; the main enclave keeps serving requests under
-// the stdlib-only fingerprint pin (with a loud "sidecar unreachable"
-// log).
+// Unix socket. If the verifier is unavailable, only Tinfoil routes fail;
+// the main enclave remains available for other providers. The main enclave
+// never sends Tinfoil request bytes under a single-source downgrade.
 //
 // What this binary does
 // =====================
@@ -45,9 +44,10 @@
 //     socket (default /run/tinfoil-attest.sock; can also use Linux
 //     abstract sockets via @-prefix paths if /run is read-only).
 //
-//  3. Exponential-backoff retry on Verify failures. Old verified
-//     values are NOT served past their ExpiresAt — better to hard-fail
-//     a request than to serve a stale-and-rotated FP.
+//  3. Exponential-backoff retry on Verify failures. A failed latest Verify
+//     attempt immediately makes the endpoint unavailable, even when an older
+//     proof has not reached ExpiresAt. Old values are also never served past
+//     ExpiresAt.
 //
 // How the main enclave uses it
 // ============================
@@ -71,8 +71,8 @@
 //     in-process disagrees).
 //   - Compromised sidecar that fails-open by returning the rawFP →
 //     this binary doesn't see rawFP, so it can't pretend to have
-//     verified what it didn't. Best the attacker can do is downgrade
-//     to "sidecar unavailable" (which the main enclave logs loudly).
+//     verified what it didn't. A missing sidecar result makes the main
+//     enclave refuse the Tinfoil route.
 //   - Compromised process running this sidecar's code in-place →
 //     same threat model as the main enclave being compromised; the
 //     cross-check doesn't help, but Confidential Space's hardware
@@ -151,11 +151,9 @@ const (
 	initialBackoff = 2 * time.Second
 	maxBackoff     = 1 * time.Minute
 
-	// How long after a successful verification we keep serving the
-	// value. Bigger than reverifyInterval so a single failed reverify
-	// doesn't tip us into "expired"; small enough that an attacker
-	// can't hold us at a stale FP forever (e.g. by black-holing
-	// reverifies after compromising the sidecar's network leg).
+	// Scheduling buffer beyond reverifyInterval. An explicit failed reverify
+	// still invalidates the proof immediately; this buffer only prevents timer
+	// and request scheduling jitter from expiring a healthy proof mid-refresh.
 	gracePeriod = 5 * time.Minute
 )
 
@@ -184,17 +182,15 @@ func (s *state) set(v *verifiedPayload, err error) {
 	s.lastErr = err
 }
 
-// snapshot returns the current verified value if it's still inside the
-// grace window, or an error if not. Callers must NOT use a value past
-// ExpiresAt — the cross-check on the main enclave side relies on
-// "verified within the last reverifyInterval+grace" being true.
+// snapshot returns the current verified value only when the latest Verify
+// attempt succeeded and the proof remains inside its bounded lifetime.
 func (s *state) snapshot() (*verifiedPayload, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.lastErr != nil {
+		return nil, fmt.Errorf("latest attestation verification failed: %w", s.lastErr)
+	}
 	if s.current == nil {
-		if s.lastErr != nil {
-			return nil, s.lastErr
-		}
 		return nil, errors.New("no successful verification yet")
 	}
 	if time.Now().After(s.current.ExpiresAt) {
@@ -279,11 +275,11 @@ func main() {
 	log.Printf("starting; enclave=%s repo=%s socket=%s reverify=%s",
 		*flagEnclaveHost, *flagCodeRepo, *flagSocketPath, *flagReverifyEvery)
 
-	// Route all outbound verification traffic over vsock before anything
-	// dials. A Nitro enclave has no network and no resolver, so both HTTP and
-	// the verifier's final raw TLS dial need explicit vsock routes.
-	installVsockTransport()
-	log.Printf("outbound verification traffic routed over vsock to parent CID %d", parentCID)
+	// AWS Nitro has no network interface and uses a parent-vsock byte pipe.
+	// GCP Confidential Space has direct egress and must not attempt that AWS
+	// path. Build tags select the transport without a runtime fallback.
+	transportMode := installPlatformTransport()
+	log.Printf("outbound verification transport=%s", transportMode)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
