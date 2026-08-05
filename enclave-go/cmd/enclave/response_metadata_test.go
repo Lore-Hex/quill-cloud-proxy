@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -99,5 +101,61 @@ func TestOpenRouterRoutingMetadataMasksCustomModelAndUnattemptedTopology(t *test
 	endpoints := metadata["endpoints"].(map[string]any)
 	if endpoints["total"] != 1 {
 		t.Fatalf("endpoints = %#v, want attempted route only", endpoints)
+	}
+}
+
+func TestAnnotateSettlementOnlyUsageAddsIntegerCostWithoutContent(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"id":"msg_1","usage":{"input_tokens":11,"output_tokens":3}}`)
+	annotated, err := annotateSettlementOnlyUsage(body, &trustedrouter.SettleResult{
+		CostMicrodollars: 17,
+		UsageType:        "Credits",
+		Model:            "anthropic/claude-sonnet",
+		Provider:         "anthropic",
+		Region:           "us-central1",
+	})
+	if err != nil {
+		t.Fatalf("annotateSettlementOnlyUsage: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(annotated, &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	usage := payload["usage"].(map[string]any)
+	if usage["cost_microdollars"] != float64(17) || usage["total_cost_microdollars"] != float64(17) {
+		t.Fatalf("usage = %#v", usage)
+	}
+	providerUsage := usage["provider_usage"].(map[string]any)
+	if providerUsage["usage_type"] != "Credits" || providerUsage["contains_prompt_or_completion"] != false {
+		t.Fatalf("provider_usage = %#v", providerUsage)
+	}
+	for _, forbidden := range []string{"prompt", "completion", "messages", "input", "output"} {
+		if strings.Contains(string(annotated), `"`+forbidden+`"`) {
+			t.Fatalf("annotated response contains %q: %s", forbidden, annotated)
+		}
+	}
+}
+
+func TestBatchSettlementUsageDoesNotChangeOrdinaryResponses(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"id":"msg_ordinary","usage":{"input_tokens":2,"output_tokens":1}}`)
+	settlement := &trustedrouter.SettleResult{CostMicrodollars: 9, UsageType: "Credits"}
+	ordinary, err := annotateBatchSettlementOnlyUsage(context.Background(), body, settlement)
+	if err != nil {
+		t.Fatalf("ordinary response: %v", err)
+	}
+	if !bytes.Equal(ordinary, body) {
+		t.Fatalf("ordinary response changed: %s", ordinary)
+	}
+
+	batchCtx := context.WithValue(context.Background(), batchExecutionContextKey{}, true)
+	annotated, err := annotateBatchSettlementOnlyUsage(batchCtx, body, settlement)
+	if err != nil {
+		t.Fatalf("batch response: %v", err)
+	}
+	if bytes.Equal(annotated, body) || !bytes.Contains(annotated, []byte(`"cost_microdollars":9`)) {
+		t.Fatalf("batch response missing accounting metadata: %s", annotated)
 	}
 }

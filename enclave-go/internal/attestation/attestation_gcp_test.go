@@ -131,6 +131,29 @@ func TestGetSerializesLauncherTokenRequests(t *testing.T) {
 	}
 }
 
+func TestMintOIDCTokenUsesSTSAudienceWithoutCallerContent(t *testing.T) {
+	oldRequestToken := requestToken
+	defer func() { requestToken = oldRequestToken }()
+
+	requestToken = func(body []byte) ([]byte, error) {
+		var request tokenRequest
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		if request.Audience != "https://sts.googleapis.com" || request.TokenType != "OIDC" || len(request.Nonces) != 0 {
+			t.Fatalf("request = %#v", request)
+		}
+		return []byte("attestation-jwt"), nil
+	}
+	token, err := MintOIDCToken(t.Context(), "https://sts.googleapis.com")
+	if err != nil {
+		t.Fatalf("MintOIDCToken: %v", err)
+	}
+	if string(token) != "attestation-jwt" {
+		t.Fatalf("token = %q", token)
+	}
+}
+
 func getWithCapturedNonces(t *testing.T, leafDER, deviceBlob, nonce, channelBinding []byte) []byte {
 	t.Helper()
 	oldRequestToken := requestToken

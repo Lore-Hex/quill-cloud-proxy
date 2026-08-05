@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -130,6 +131,53 @@ func annotateSettledResponseMetadata(
 		return nil, err
 	}
 	return encoded, nil
+}
+
+// annotateSettlementOnlyUsage adds TrustedRouter's integer cost and billing
+// mode to response shapes that do not pass through the chat metadata adapter
+// (currently native Messages and embeddings). Batch aggregation can then use
+// one response-level accounting contract for every supported API shape.
+func annotateSettlementOnlyUsage(body []byte, settlement *trustedrouter.SettleResult) ([]byte, error) {
+	if settlement == nil || len(body) == 0 {
+		return body, nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	usage, _ := payload["usage"].(map[string]any)
+	if usage == nil {
+		usage = map[string]any{}
+		payload["usage"] = usage
+	}
+	usage["cost_microdollars"] = settlement.CostMicrodollars
+	usage["total_cost_microdollars"] = settlement.CostMicrodollars
+	providerUsage, _ := usage["provider_usage"].(map[string]any)
+	if providerUsage == nil {
+		providerUsage = map[string]any{}
+	}
+	if settlement.UsageType != "" {
+		providerUsage["usage_type"] = settlement.UsageType
+	}
+	if settlement.Model != "" {
+		providerUsage["selected_model"] = settlement.Model
+	}
+	if settlement.Provider != "" {
+		providerUsage["selected_provider"] = settlement.Provider
+	}
+	if settlement.Region != "" {
+		providerUsage["region"] = settlement.Region
+	}
+	providerUsage["contains_prompt_or_completion"] = false
+	usage["provider_usage"] = providerUsage
+	return json.Marshal(payload)
+}
+
+func annotateBatchSettlementOnlyUsage(ctx context.Context, body []byte, settlement *trustedrouter.SettleResult) ([]byte, error) {
+	if !isBatchExecutionContext(ctx) {
+		return body, nil
+	}
+	return annotateSettlementOnlyUsage(body, settlement)
 }
 
 func openRouterRoutingMetadata(

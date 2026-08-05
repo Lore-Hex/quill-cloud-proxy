@@ -39,6 +39,73 @@ type GoogleKMSUnwrapper struct {
 	Endpoint    string
 }
 
+// WrapDEK encrypts a data-encryption key with Cloud KMS. Keeping wrap and
+// unwrap on the same lightweight client lets enclave-only features use
+// envelope encryption without pulling the large Google SDK into the trusted
+// workload.
+func (u *GoogleKMSUnwrapper) WrapDEK(ctx context.Context, keyName string, plaintext, aad []byte) ([]byte, error) {
+	if strings.TrimSpace(keyName) == "" {
+		return nil, fmt.Errorf("kms: empty key name")
+	}
+	tokenSource := u.TokenSource
+	if tokenSource == nil {
+		tokenSource = NewMetadataTokenSource(nil)
+	}
+	token, err := tokenSource.Token(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	payload := map[string]string{
+		"plaintext":                   base64.StdEncoding.EncodeToString(plaintext),
+		"additionalAuthenticatedData": base64.StdEncoding.EncodeToString(aad),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := strings.TrimRight(u.Endpoint, "/")
+	if endpoint == "" {
+		endpoint = defaultKMSEndpoint
+	}
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		endpoint+"/v1/"+keyName+":encrypt",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient(u.HTTPClient).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("kms encrypt: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if readErr != nil {
+			return nil, fmt.Errorf("kms encrypt: read error body: %w", readErr)
+		}
+		return nil, fmt.Errorf("kms encrypt http %d: %s", resp.StatusCode, errBody)
+	}
+
+	var decoded struct {
+		Ciphertext string `json:"ciphertext"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return nil, fmt.Errorf("kms encrypt: decode response: %w", err)
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(decoded.Ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("kms encrypt: decode ciphertext: %w", err)
+	}
+	return ciphertext, nil
+}
+
 func (u *GoogleKMSUnwrapper) UnwrapDEK(ctx context.Context, keyName string, encryptedDEK, aad []byte) ([]byte, error) {
 	if strings.TrimSpace(keyName) == "" {
 		return nil, fmt.Errorf("kms: empty key name")

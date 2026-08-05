@@ -208,7 +208,7 @@ func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenA
 
 func (c *Client) ValidateKey(ctx context.Context, bearer string, routeType string) error {
 	body := map[string]any{
-		"api_key_lookup_hash": lookupHash(bearer),
+		"api_key_lookup_hash": requestLookupHash(ctx, bearer),
 	}
 	if routeType != "" {
 		body["route_type"] = routeType
@@ -219,7 +219,7 @@ func (c *Client) ValidateKey(ctx context.Context, bearer string, routeType strin
 
 func (c *Client) ResolveCustomModel(ctx context.Context, bearer string, model string, routeType string) (*Authorization, error) {
 	body := map[string]any{
-		"api_key_lookup_hash": lookupHash(bearer),
+		"api_key_lookup_hash": requestLookupHash(ctx, bearer),
 		"model":               model,
 	}
 	if routeType != "" {
@@ -240,7 +240,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 		return nil, err
 	}
 	body := map[string]any{
-		"api_key_lookup_hash":    lookupHash(bearer),
+		"api_key_lookup_hash":    requestLookupHash(ctx, bearer),
 		"model":                  req.Model,
 		"estimated_input_tokens": EstimateInputTokens(req),
 		"max_output_tokens":      outputTokenEstimate(req),
@@ -346,7 +346,7 @@ func (c *Client) AuthorizeEmbeddings(ctx context.Context, bearer string, req *qt
 		return nil, err
 	}
 	body := map[string]any{
-		"api_key_lookup_hash":    lookupHash(bearer),
+		"api_key_lookup_hash":    requestLookupHash(ctx, bearer),
 		"model":                  req.Model,
 		"estimated_input_tokens": inputTokens,
 		"max_output_tokens":      1,
@@ -620,7 +620,7 @@ func (c *Client) postJSON(ctx context.Context, path string, payload any, out any
 // status + JSON body verbatim (the caller allowlists statuses).
 func (c *Client) KeyInfo(ctx context.Context, bearer string) (int, []byte, error) {
 	payload, err := json.Marshal(map[string]string{
-		"api_key_lookup_hash": lookupHash(bearer),
+		"api_key_lookup_hash": requestLookupHash(ctx, bearer),
 	})
 	if err != nil {
 		return 0, nil, err
@@ -666,6 +666,38 @@ func sanitizeRetryAfter(v string) string {
 func lookupHash(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
+}
+
+type apiKeyLookupHashContextKey struct{}
+
+// WithAPIKeyLookupHash returns an enclave-internal context that authorizes by
+// an already-derived lookup hash. It exists for delayed batch execution so a
+// raw API key never has to be persisted. Public HTTP requests cannot set Go
+// context values, and callers must still pass through the normal authorize,
+// reserve, settle, refund, and key-revocation checks.
+func WithAPIKeyLookupHash(ctx context.Context, value string) (context.Context, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) != sha256.Size || len(value) != sha256.Size*2 {
+		return nil, fmt.Errorf("trustedrouter: invalid API key lookup hash")
+	}
+	return context.WithValue(ctx, apiKeyLookupHashContextKey{}, value), nil
+}
+
+func requestLookupHash(ctx context.Context, bearer string) string {
+	if ctx != nil {
+		if value, ok := ctx.Value(apiKeyLookupHashContextKey{}).(string); ok && value != "" {
+			return value
+		}
+	}
+	return lookupHash(bearer)
+}
+
+// LookupHash returns the one-way lookup identifier used by the control plane.
+// It is safe to persist as batch ownership metadata; raw API keys are never
+// persisted, including in encrypted batch artifacts.
+func LookupHash(raw string) string {
+	return lookupHash(raw)
 }
 
 func EstimateInputTokens(req *qtypes.OpenAIChatRequest) int {

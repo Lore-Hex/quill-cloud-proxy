@@ -404,6 +404,42 @@ func TestValidateKeySendsLookupHashAndRouteOnly(t *testing.T) {
 	}
 }
 
+func TestBatchContextUsesPrecomputedLookupHashWithoutAcceptingItAsBearer(t *testing.T) {
+	lookup := strings.Repeat("ab", 32)
+	var received string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		received, _ = payload["api_key_lookup_hash"].(string)
+		_, _ = io.WriteString(w, `{"data":{"workspace_id":"ws_1","api_key_hash":"key_1","route_type":"batch"}}`)
+	}))
+	defer server.Close()
+
+	ctx, err := WithAPIKeyLookupHash(t.Context(), strings.ToUpper(lookup))
+	if err != nil {
+		t.Fatalf("WithAPIKeyLookupHash: %v", err)
+	}
+	client := New(server.URL, "internal", server.Client())
+	if err := client.ValidateKey(ctx, "not-a-real-bearer", "batch"); err != nil {
+		t.Fatalf("ValidateKey: %v", err)
+	}
+	if received != lookup {
+		t.Fatalf("lookup hash = %q, want %q", received, lookup)
+	}
+
+	if _, err := WithAPIKeyLookupHash(t.Context(), "not-a-sha256-digest"); err == nil {
+		t.Fatal("accepted invalid lookup hash")
+	}
+	if err := client.ValidateKey(t.Context(), lookup, "batch"); err != nil {
+		t.Fatalf("direct ValidateKey: %v", err)
+	}
+	if received == lookup {
+		t.Fatal("public-style bearer was accepted as a precomputed lookup hash")
+	}
+}
+
 func TestAuthorizeReturnsParsedControlPlaneError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

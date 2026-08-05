@@ -119,7 +119,7 @@ func (c *Client) MarkVideoJobQueued(
 }
 
 func (c *Client) LookupVideoJob(ctx context.Context, bearer, jobID string) (*VideoJob, error) {
-	body := map[string]any{"api_key_lookup_hash": lookupHash(bearer)}
+	body := map[string]any{"api_key_lookup_hash": requestLookupHash(ctx, bearer)}
 	var decoded struct {
 		Data VideoJob `json:"data"`
 	}
