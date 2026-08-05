@@ -26,7 +26,7 @@ func TestNewProviderNormalizationAndBYOKPolicy(t *testing.T) {
 	if isOpenAICompatibleBYOKProvider("cloudflare-workers-ai") {
 		t.Fatal("cloudflare BYOK needs an account id and must stay disabled")
 	}
-	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake", "neurometric", "engy", "zero-g", "alibaba"} {
+	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake", "neurometric", "engy", "zero-g", "alibaba", "azure"} {
 		if isOpenAICompatibleBYOKProvider(provider) {
 			t.Errorf("%s must use only the operator-key prepaid path", provider)
 		}
@@ -49,6 +49,7 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 		EngyAPIKey:                   "engy-key",
 		ZeroGAPIKey:                  "zero-g-key",
 		AlibabaAPIKey:                "alibaba-key",
+		AzureAPIKey:                  "azure-key",
 	}).(*multiClient)
 	if !ok {
 		t.Fatal("New did not return a multiClient")
@@ -70,6 +71,9 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 	}
 	if client.zeroG.apiKey != "zero-g-key" {
 		t.Fatal("zero-g key was not wired into the dual-format client")
+	}
+	if client.azure.openAI.apiKey != "azure-key" || client.azure.anthropic.apiKey != "azure-key" {
+		t.Fatal("Azure key was not wired into both protocol clients")
 	}
 	wantClients := map[string]struct {
 		client  *openAICompatibleClient
