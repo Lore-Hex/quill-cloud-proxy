@@ -398,6 +398,10 @@ func (s *Service) signalWorker() {
 func (s *Service) runAvailable(ctx context.Context) error {
 	objects, nextPageToken, err := s.store.List(ctx, activePrefix, maxActiveScan, s.scanPageToken)
 	if err != nil {
+		// GCS page tokens are opaque and may become invalid after enough object
+		// churn. Retry from the prefix root on the next worker tick instead of
+		// replaying one stale token forever.
+		s.scanPageToken = ""
 		return err
 	}
 	s.scanPageToken = nextPageToken

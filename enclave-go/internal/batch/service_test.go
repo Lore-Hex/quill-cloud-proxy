@@ -24,6 +24,23 @@ type memoryObjectStore struct {
 	putFailure error
 }
 
+type rejectingPageTokenStore struct {
+	ObjectStore
+	rejected string
+}
+
+func (s *rejectingPageTokenStore) List(
+	ctx context.Context,
+	prefix string,
+	limit int,
+	pageToken string,
+) ([]ObjectMeta, string, error) {
+	if pageToken == s.rejected {
+		return nil, "", errors.New("stale page token")
+	}
+	return s.ObjectStore.List(ctx, prefix, limit, pageToken)
+}
+
 func getBatchForTest(
 	ctx context.Context,
 	service *Service,
@@ -374,6 +391,33 @@ func TestRunAvailableRotatesAcrossEveryActiveObjectPage(t *testing.T) {
 	}
 	if service.scanPageToken != "" {
 		t.Fatalf("scan did not reach the final page: %q", service.scanPageToken)
+	}
+}
+
+func TestRunAvailableClearsRejectedPageToken(t *testing.T) {
+	t.Parallel()
+
+	store := &rejectingPageTokenStore{
+		ObjectStore: newMemoryObjectStore(),
+		rejected:    "stale-token",
+	}
+	service := newTestService(
+		t,
+		store,
+		copyProtector{},
+		&http.Client{},
+		time.Now,
+		"page-worker",
+	)
+	service.scanPageToken = store.rejected
+	if err := service.runAvailable(t.Context()); err == nil {
+		t.Fatal("expected stale page token error")
+	}
+	if service.scanPageToken != "" {
+		t.Fatalf("scan page token was not reset: %q", service.scanPageToken)
+	}
+	if err := service.runAvailable(t.Context()); err != nil {
+		t.Fatalf("root scan after reset: %v", err)
 	}
 }
 

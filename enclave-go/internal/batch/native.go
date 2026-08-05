@@ -42,6 +42,11 @@ var ErrNativeAuthorizationRefunded = errors.New("native batch authorization was 
 // refunded and the item returns to the managed path when that path is allowed.
 var ErrNativeSettlementRejected = errors.New("native batch settlement was rejected")
 
+// ErrNativeUsageMissing means the provider returned a successful result
+// without authoritative token usage. Native Batch billing must never settle
+// from a token estimate; the item is refunded and returned to the managed path.
+var ErrNativeUsageMissing = errors.New("native batch provider usage is missing")
+
 // ErrNativeSettlementPending means the control plane has claimed the
 // authorization but its durable generation is not visible yet. It is unsafe
 // to infer that the authorization was refunded and rerun the provider call;

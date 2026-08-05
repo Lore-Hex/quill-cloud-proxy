@@ -2256,7 +2256,7 @@ func TestNativeBatchExpirationBacksOffAfterTransientCancelFailure(t *testing.T) 
 	}
 }
 
-func TestNativeBatchExpirationBoundsPersistentCancelFailure(t *testing.T) {
+func TestNativeBatchExpirationKeepsRetryingPersistentCancelFailure(t *testing.T) {
 	t.Parallel()
 
 	store := newMemoryObjectStore()
@@ -2279,12 +2279,9 @@ func TestNativeBatchExpirationBoundsPersistentCancelFailure(t *testing.T) {
 	}
 	now = now.Add(25 * time.Hour)
 
-	for attempt := 1; attempt <= nativeCleanupMaxAttempts; attempt++ {
+	for attempt := 1; attempt <= nativeCleanupMaxAttempts+1; attempt++ {
 		if err := service.runAvailable(t.Context()); err != nil {
 			t.Fatalf("expiration pass %d: %v", attempt, err)
-		}
-		if attempt == nativeCleanupMaxAttempts {
-			break
 		}
 		activeObject, err := store.Get(t.Context(), activeJobName(created.ID))
 		if err != nil {
@@ -2297,11 +2294,11 @@ func TestNativeBatchExpirationBoundsPersistentCancelFailure(t *testing.T) {
 		now = time.Unix(active.NextAttemptAt+1, 0)
 	}
 
-	expired, apiErr := getBatchForTest(t.Context(), service, "sk-tr-owner", created.ID)
-	if apiErr != nil || expired.Status != StatusExpired || expired.RequestCounts.Failed != 2 {
-		t.Fatalf("expired=%#v err=%#v", expired, apiErr)
+	inProgress, apiErr := getBatchForTest(t.Context(), service, "sk-tr-owner", created.ID)
+	if apiErr != nil || inProgress.Status != StatusInProgress {
+		t.Fatalf("in_progress=%#v err=%#v", inProgress, apiErr)
 	}
-	if provider.cancelCalls != nativeCleanupMaxAttempts || len(authorizer.refunded) != 2 {
+	if provider.cancelCalls != nativeCleanupMaxAttempts+1 || len(authorizer.refunded) != 0 {
 		t.Fatalf("cancel=%d refunded=%v", provider.cancelCalls, authorizer.refunded)
 	}
 }
@@ -2375,7 +2372,7 @@ func TestNativeBatchExpirationRecoversAndCancelsAmbiguousCreate(t *testing.T) {
 	}
 }
 
-func TestNativeBatchMissingUsageEstimatesVisibleOutputBeforeSettlement(t *testing.T) {
+func TestNativeBatchMissingUsageRefundsAndUsesManagedPath(t *testing.T) {
 	t.Parallel()
 
 	store := newMemoryObjectStore()
@@ -2384,7 +2381,8 @@ func TestNativeBatchMissingUsageEstimatesVisibleOutputBeforeSettlement(t *testin
 		{Index: 0, StatusCode: 200, Body: json.RawMessage(`{"id":"zero","choices":[{"message":{"content":"12345678"}}]}`)},
 		{Index: 1, StatusCode: 200, Body: json.RawMessage(`{"id":"one","choices":[{"message":{"content":"1234"}}]}`)},
 	}}
-	service := newNativeService(t, store, authorizer, provider, &fakeManagedExecutor{}, time.Now)
+	executor := &fakeManagedExecutor{}
+	service := newNativeService(t, store, authorizer, provider, executor, time.Now)
 	created, apiErr := service.Create(t.Context(), "sk-tr-owner", twoRequestBatch())
 	if apiErr != nil {
 		t.Fatalf("Create: %v", apiErr)
@@ -2396,34 +2394,42 @@ func TestNativeBatchMissingUsageEstimatesVisibleOutputBeforeSettlement(t *testin
 	if apiErr != nil || completed.Status != StatusCompleted {
 		t.Fatalf("completed=%#v err=%#v", completed, apiErr)
 	}
-	if completed.Usage == nil || completed.Usage.CompletionTokens != 3 {
+	if completed.Usage == nil || completed.Usage.CompletionTokens != 4 {
 		t.Fatalf("usage = %#v", completed.Usage)
 	}
-	providerUsage := completed.Results[0].Response.Body.(map[string]any)["usage"].(map[string]any)["provider_usage"].(map[string]any)
-	if providerUsage["usage_estimated"] != true {
-		t.Fatalf("provider usage = %#v; estimated usage was not disclosed", providerUsage)
+	if executor.calls != 2 || len(authorizer.refunded) != 2 || len(authorizer.settled) != 0 {
+		t.Fatalf(
+			"managed=%d refunded=%v settled=%v",
+			executor.calls,
+			authorizer.refunded,
+			authorizer.settled,
+		)
 	}
 }
 
-func TestNativeBatchMissingUsageEstimatesStructuredOutput(t *testing.T) {
+func TestNativeBatchRequiresAuthoritativeUsage(t *testing.T) {
 	t.Parallel()
 
-	decoded := map[string]any{
-		"choices": []any{map[string]any{
-			"message": map[string]any{
-				"content": []any{
-					map[string]any{"type": "output_text", "text": "structured result"},
-				},
-				"tool_calls": []any{map[string]any{
-					"type":     "function",
-					"function": map[string]any{"name": "lookup", "arguments": `{"id":42}`},
-				}},
-			},
-		}},
+	complete := map[string]any{
+		"usage": map[string]any{
+			"input_tokens":  json.Number("9"),
+			"output_tokens": json.Number("0"),
+		},
 	}
-	got := estimateNativeOutputTokens(decoded)
-	if got < 20 {
-		t.Fatalf("structured output estimate = %d; structured content was undercounted", got)
+	if !nativeUsageComplete(complete, "/v1/responses") {
+		t.Fatal("explicit zero output usage should be accepted")
+	}
+	if nativeUsageComplete(
+		map[string]any{"usage": map[string]any{"input_tokens": 9}},
+		"/v1/responses",
+	) {
+		t.Fatal("missing output usage was accepted")
+	}
+	if !nativeUsageComplete(
+		map[string]any{"usage": map[string]any{"prompt_tokens": 9}},
+		"/v1/embeddings",
+	) {
+		t.Fatal("embedding input usage should be sufficient")
 	}
 }
 

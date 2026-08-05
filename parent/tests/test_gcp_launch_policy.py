@@ -69,22 +69,13 @@ def test_gcp_rollout_grants_before_rollout_and_never_prunes_in_same_release() ->
     assert workflow.index(grant) < workflow.index(first_rollout)
     assert prune not in workflow
     assert workflow.count("tr-batch-release@quill-cloud-proxy.iam.gserviceaccount.com") == 1
-    assert "native_batch_enabled: ${{ steps.set-vars.outputs.native_batch_enabled }}" in workflow
-    assert (
-        '^[[:space:]]*nativeBatchSubmitAllowlist[[:space:]]*=[[:space:]]*""[[:space:]]*$'
-        in workflow
-    )
-    assert (
-        "NativeSubmitProviders:[[:space:]]*"
-        "nativeBatchSubmitProviders\\(nativeBatchSubmitAllowlist\\)" in workflow
-    )
-    assert "if: needs.build-and-release.outputs.native_batch_enabled == 'true'" in workflow
+    assert "native_batch_enabled" not in workflow
     assert "environment: batch-release" in workflow
     assert "Require explicit Batch storage activation" in workflow
     assert 'if [ "${TR_BATCH_STORAGE_ENABLED}" != "true" ]; then' in workflow
-    assert "batch-image-access-not-required:" in workflow
+    assert "batch-image-access-not-required:" not in workflow
+    assert "needs: [build-and-release, grant-batch-image-access]" in workflow
     assert "needs.grant-batch-image-access.result == 'success'" in workflow
-    assert "needs.batch-image-access-not-required.result == 'success'" in workflow
     assert "TR_NATIVE_BATCH_PROVIDERS" not in workflow
 
 

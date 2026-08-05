@@ -1148,6 +1148,23 @@ func (s *Service) finishNativeProviderResult(
 	err = s.checkpointNativeSuccess(
 		ctx, job, index, requests[index], authorization, state, providerResult, decoded,
 	)
+	if errors.Is(err, ErrNativeUsageMissing) {
+		if allowManagedFallback {
+			return s.fallbackNativeItem(
+				ctx, job, apiKeyLookupHash, index, requests[index], authorization,
+				http.StatusBadGateway, "native_batch_usage_missing",
+			)
+		}
+		if refundErr := s.refundNativeAuthorizationOnce(
+			ctx, job.ID, index, requests[index], authorization,
+			http.StatusBadGateway, "native_batch_usage_missing",
+		); refundErr != nil {
+			return refundErr
+		}
+		return s.storeNativeFailureResult(
+			ctx, job, index, requests[index], "native_batch_usage_missing",
+		)
+	}
 	if errors.Is(err, ErrNativeSettlementRejected) {
 		if allowManagedFallback {
 			return s.fallbackNativeItem(
@@ -1189,13 +1206,10 @@ func (s *Service) checkpointNativeSuccess(
 	providerResult NativeProviderResult,
 	decoded any,
 ) error {
-	usage := usageFromBody(decoded)
-	usageEstimated := usage.PromptTokens <= 0
-	if usage.CompletionTokens == 0 && job.Endpoint != "/v1/embeddings" {
-		usage.CompletionTokens = estimateNativeOutputTokens(decoded)
-		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-		usageEstimated = true
+	if !nativeUsageComplete(decoded, job.Endpoint) {
+		return ErrNativeUsageMissing
 	}
+	usage := usageFromBody(decoded)
 	details := nativeResponseDetails(decoded)
 	result, err := s.settleNativeAuthorizationResultOnce(ctx, job.ID, index, authorization, NativeUsage{
 		RequestID:       firstNonEmpty(providerResult.RequestID, bodyRequestID(providerResult.Body)),
@@ -1204,7 +1218,7 @@ func (s *Service) checkpointNativeSuccess(
 		CacheReadTokens: details.cacheReadTokens,
 		ReasoningTokens: details.reasoningTokens,
 		FinishReason:    details.finishReason,
-		UsageEstimated:  usageEstimated,
+		UsageEstimated:  false,
 		Elapsed:         time.Millisecond,
 		Route: NativeRoute{
 			Provider:      state.Provider,
@@ -1214,7 +1228,7 @@ func (s *Service) checkpointNativeSuccess(
 			UsageType:     NativeUsageTypeCredit,
 		},
 	}, func(settled Usage) Result {
-		visible := nativeVisibleBody(decoded, job.Model, settled, state, usageEstimated)
+		visible := nativeVisibleBody(decoded, job.Model, settled, state, false)
 		return Result{
 			ID:       resultID(job.ID, request.CustomID),
 			CustomID: request.CustomID,
@@ -1236,38 +1250,32 @@ func (s *Service) checkpointNativeSuccess(
 	return err
 }
 
-func estimateNativeOutputTokens(decoded any) int {
-	payload, _ := decoded.(map[string]any)
-	choices, _ := payload["choices"].([]any)
-	bytes := 0
-	for _, rawChoice := range choices {
-		choice, _ := rawChoice.(map[string]any)
-		message, _ := choice["message"].(map[string]any)
-		for _, key := range []string{"content", "reasoning", "reasoning_content"} {
-			bytes += nativeOutputValueBytes(message[key])
-		}
-		if toolCalls, ok := message["tool_calls"]; ok {
-			bytes += nativeOutputValueBytes(toolCalls)
-		}
+func nativeUsageComplete(decoded any, endpoint string) bool {
+	payload, ok := decoded.(map[string]any)
+	if !ok {
+		return false
 	}
-	if bytes == 0 {
-		return 0
+	usage, ok := payload["usage"].(map[string]any)
+	if !ok || !nativeUsageIntegerPresent(usage, "prompt_tokens", "input_tokens") {
+		return false
 	}
-	return max(1, (bytes+3)/4)
+	if endpoint == "/v1/embeddings" {
+		return true
+	}
+	return nativeUsageIntegerPresent(usage, "completion_tokens", "output_tokens")
 }
 
-func nativeOutputValueBytes(value any) int {
-	if value == nil {
-		return 0
+func nativeUsageIntegerPresent(values map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		switch value := values[key].(type) {
+		case int:
+			return value >= 0
+		case json.Number:
+			number, err := value.Int64()
+			return err == nil && number >= 0
+		}
 	}
-	if text, ok := value.(string); ok {
-		return len(text)
-	}
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return 0
-	}
-	return len(encoded)
+	return false
 }
 
 type nativeResponseUsageDetails struct {
@@ -1740,7 +1748,6 @@ func (s *Service) expireNative(ctx context.Context, job job) error {
 	if err != nil {
 		return err
 	}
-	expiryRetryExhausted := job.ExpiryAttempts+1 >= nativeCleanupMaxAttempts
 	var provider NativeProvider
 	if provider = s.nativeProviders[strings.ToLower(state.Provider)]; provider != nil {
 		if state.Stage != nativeStageCleanup && strings.TrimSpace(state.Submission.ID) == "" && state.SubmitUncertain {
@@ -1758,26 +1765,16 @@ func (s *Service) expireNative(ctx context.Context, job job) error {
 					return err
 				}
 			case recoverErr == nil:
-				if !expiryRetryExhausted {
-					return fmt.Errorf("native batch provider %s recovered an invalid job", provider.Name())
-				}
-				s.logf("batch.native_expiry_recovery_abandoned id=%q provider=%q", job.ID, state.Provider)
+				return fmt.Errorf("native batch provider %s recovered an invalid job", provider.Name())
 			case !errors.Is(recoverErr, ErrNativeNotFound):
-				if !expiryRetryExhausted {
-					return recoverErr
-				}
-				s.logf("batch.native_expiry_recovery_abandoned id=%q provider=%q", job.ID, state.Provider)
+				return recoverErr
 			}
 		}
 		if state.Stage != nativeStageCleanup && !state.ResultsHarvested && strings.TrimSpace(state.Submission.ID) != "" {
 			poll, pollErr := provider.Poll(ctx, state.Submission)
 			if pollErr != nil {
 				if !nativeProviderObjectGone(pollErr) {
-					if !expiryRetryExhausted {
-						return pollErr
-					}
-					s.logf("batch.native_expiry_poll_abandoned id=%q provider=%q", job.ID, state.Provider)
-					poll = NativeProviderPoll{Status: NativeStatusFailed, Job: state.Submission}
+					return pollErr
 				} else {
 					s.logf("batch.native_expiry_object_gone id=%q provider=%q stage=%q", job.ID, state.Provider, "poll")
 					poll = NativeProviderPoll{Status: NativeStatusFailed, Job: state.Submission}
@@ -1788,19 +1785,12 @@ func (s *Service) expireNative(ctx context.Context, job job) error {
 			}
 			if poll.Status == NativeStatusPending {
 				if err := provider.Cancel(ctx, state.Submission); err != nil {
-					if !expiryRetryExhausted {
-						return err
-					}
-					s.logf("batch.native_expiry_cancel_abandoned id=%q provider=%q", job.ID, state.Provider)
-					poll = NativeProviderPoll{Status: NativeStatusFailed, Job: state.Submission}
+					return err
 				} else {
 					poll, pollErr = provider.Poll(ctx, state.Submission)
 					if pollErr != nil {
 						if !nativeProviderObjectGone(pollErr) {
-							if !expiryRetryExhausted {
-								return pollErr
-							}
-							s.logf("batch.native_expiry_poll_abandoned id=%q provider=%q", job.ID, state.Provider)
+							return pollErr
 						} else {
 							s.logf("batch.native_expiry_object_gone id=%q provider=%q stage=%q", job.ID, state.Provider, "poll_after_cancel")
 						}
@@ -1818,10 +1808,7 @@ func (s *Service) expireNative(ctx context.Context, job job) error {
 					state, provider, false,
 				); err != nil {
 					if !nativeProviderObjectGone(err) && !errors.Is(err, ErrNativeInvalidResult) {
-						if !expiryRetryExhausted {
-							return err
-						}
-						s.logf("batch.native_expiry_results_abandoned id=%q provider=%q", job.ID, state.Provider)
+						return err
 					} else {
 						s.logf("batch.native_expiry_results_unavailable id=%q provider=%q", job.ID, state.Provider)
 					}
@@ -1832,22 +1819,13 @@ func (s *Service) expireNative(ctx context.Context, job job) error {
 					return err
 				}
 			case NativeStatusPending:
-				if !expiryRetryExhausted {
-					return fmt.Errorf("native batch provider %s cancellation is still pending", provider.Name())
-				}
-				s.logf("batch.native_expiry_cancel_abandoned id=%q provider=%q", job.ID, state.Provider)
+				return fmt.Errorf("native batch provider %s cancellation is still pending", provider.Name())
 			default:
-				if !expiryRetryExhausted {
-					return fmt.Errorf("native batch provider %s returned invalid status", provider.Name())
-				}
-				s.logf("batch.native_expiry_poll_abandoned id=%q provider=%q", job.ID, state.Provider)
+				return fmt.Errorf("native batch provider %s returned invalid status", provider.Name())
 			}
 		}
 	} else if nativeProviderJobNeedsCleanup(state.Submission) {
-		if !expiryRetryExhausted {
-			return fmt.Errorf("native batch provider %s is unavailable for cleanup", state.Provider)
-		}
-		s.logf("batch.native_expiry_provider_unavailable id=%q provider=%q", job.ID, state.Provider)
+		return fmt.Errorf("native batch provider %s is unavailable for cleanup", state.Provider)
 	}
 	if state.Stage != nativeStageDisabled {
 		state.Stage = nativeStageDisabled
