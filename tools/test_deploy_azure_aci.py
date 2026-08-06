@@ -30,6 +30,7 @@ script before the fix and fail again if the fix is reverted.
 from __future__ import annotations
 
 import pathlib
+import base64
 import json
 import os
 import subprocess
@@ -122,11 +123,17 @@ if argv[:3] == ["keyvault", "key", "show"]:
     bound = read("bound-hostdata")
     if not bound:
         sys.exit(0)
+    # The authority MUST match the one this deploy binds under. The real
+    # multi-region carry-over preserves clauses belonging to OTHER authorities,
+    # so a stub speaking as "stub.attest.azure.net" would be modelling a second
+    # region that does not exist and its pins would accumulate forever.
+    authority = "https://" + os.environ.get("MAA_ENDPOINT", "trquilluaen.uaen.attest.azure.net")
     document = {"version": "1.0.0", "anyOf": [
-        {"authority": "https://stub.attest.azure.net",
+        {"authority": authority,
          "allOf": [{"claim": "x-ms-sevsnpvm-hostdata", "equals": pin}]}
         for pin in bound.splitlines()]}
-    print(base64.urlsafe_b64encode(json.dumps(document).encode()).decode().rstrip("="))
+    # Emitted as the CLI really emits it: a Python bytes repr, not base64.
+    print(repr(json.dumps(document).encode()))
     sys.exit(0)
 
 if argv[:2] == ["container", "show"]:
@@ -991,22 +998,26 @@ class TestReleasePolicyIsMultiRegionSafe(unittest.TestCase):
         for auth in self._authorities(a):
             self.assertEqual(self._hostdata_for(a, auth), self._hostdata_for(b, auth))
 
-    def test_a_corrupt_prior_policy_does_not_block_a_deploy(self) -> None:
-        """Refusing here would make bootstrapping a region impossible; the
-        deploy must still write its own clause."""
+    def test_an_unreadable_prior_policy_is_REFUSED(self) -> None:
+        """Semantics deliberately inverted after this bit in production.
+
+        This originally asserted that a corrupt prior policy should not block a
+        deploy. That is wrong: if the key HAS a policy we cannot read, rendering
+        from this deploy's values alone silently revokes every other region.
+        "Unreadable" and "absent" are different facts and only absent is safe.
+        The decoder therefore fails, and the shell refuses.
+        """
         with tempfile.TemporaryDirectory() as tmp:
-            out = os.path.join(tmp, "out.json")
-            prior = os.path.join(tmp, "prior.json")
-            with open(prior, "w") as fh:
+            raw = os.path.join(tmp, "raw")
+            with open(raw, "w") as fh:
                 fh.write("{ this is not json")
-            subprocess.run(
-                [sys.executable, "-c", _extract_release_policy_python(),
-                 out, self.SEA.removeprefix("https://"), prior, "bb" * 32],
-                check=True, capture_output=True, text=True,
+            r = subprocess.run(
+                [sys.executable, str(Path(__file__).with_name("azure_decode_release_policy.py")), raw],
+                capture_output=True, text=True,
             )
-            with open(out) as fh:
-                pol = json.load(fh)
-        self.assertEqual(self._authorities(pol), [self.SEA])
+        self.assertNotEqual(r.returncode, 0,
+                            "an unreadable policy must fail, never look like an absent one")
+        self.assertEqual(r.stdout, "")
 
     def test_pinning_nothing_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1025,6 +1036,68 @@ def _extract_release_policy_python() -> str:
     start = src.index("write_release_policy() {")
     body = src[start:src.index("\nPY\n", start)]
     return body[body.index("<<'PY'\n") + len("<<'PY'\n"):]
+
+
+class TestReleasePolicyDecoder(unittest.TestCase):
+    """`az keyvault key show --query releasePolicy.encodedPolicy -o tsv` returns a
+    PYTHON BYTES REPR, not base64, despite the field name. `base64 -d` on it
+    yields nothing — and an empty result was indistinguishable from "this key has
+    no policy", so the multi-region carry-over would have concluded there was
+    nothing to preserve and silently revoked every other region's access to the
+    bootstrap key. Those regions keep serving until their next cold start, then
+    never come back.
+
+    "Could not read it" and "there is nothing there" are different facts and only
+    the second is safe to act on, so the decoder reports failure rather than
+    emitting empty.
+    """
+
+    DECODER = Path(__file__).with_name("azure_decode_release_policy.py")
+    POLICY = {
+        "version": "1.0.0",
+        "anyOf": [{
+            "authority": "https://trquilluaen.uaen.attest.azure.net",
+            "allOf": [{"claim": "x-ms-sevsnpvm-hostdata", "equals": "aa" * 32}],
+        }],
+    }
+
+    def _run(self, raw):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = os.path.join(tmp, "raw")
+            with open(f, "w") as fh:
+                fh.write(raw)
+            return subprocess.run([sys.executable, str(self.DECODER), f],
+                                  capture_output=True, text=True)
+
+    def test_decodes_the_python_bytes_repr_the_cli_actually_returns(self) -> None:
+        raw = repr(json.dumps(self.POLICY).encode())
+        r = self._run(raw)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), self.POLICY)
+
+    def test_decodes_real_base64_too(self) -> None:
+        raw = base64.b64encode(json.dumps(self.POLICY).encode()).decode()
+        r = self._run(raw)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), self.POLICY)
+
+    def test_decodes_plain_json(self) -> None:
+        r = self._run(json.dumps(self.POLICY))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), self.POLICY)
+
+    def test_garbage_FAILS_rather_than_emitting_empty(self) -> None:
+        """The whole point: an unreadable policy must not look like an absent one."""
+        for raw in ("!!!not-a-policy!!!", "b'not json'", '{"version":"1.0.0"}'):
+            with self.subTest(raw=raw):
+                r = self._run(raw)
+                self.assertNotEqual(r.returncode, 0,
+                                    f"{raw!r} must fail, not silently yield nothing")
+                self.assertEqual(r.stdout, "")
+
+    def test_empty_input_fails(self) -> None:
+        self.assertNotEqual(self._run("").returncode, 0)
+        self.assertNotEqual(self._run("None").returncode, 0)
 
 
 if __name__ == "__main__":

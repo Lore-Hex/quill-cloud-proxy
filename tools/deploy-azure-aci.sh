@@ -99,6 +99,9 @@
 
 set -euo pipefail
 
+# Directory of this script, so helper tools resolve regardless of cwd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ---------------------------------------------------------------------------
 # configuration
 # ---------------------------------------------------------------------------
@@ -1002,11 +1005,40 @@ write_release_policy() {
   # So each region OWNS the clauses naming its own authority and never edits
   # another's. That also makes the deploys order-independent, which matters
   # because there is no lock between them.
+  # Read the policy currently on the key. `az keyvault key show` does NOT return
+  # base64 here despite the field being called encodedPolicy: this CLI hands back
+  # a PYTHON BYTES REPR, i.e. the literal characters  b'{"version":...}'  . Piping
+  # that through `base64 -d` yields nothing, which silently looked like "the key
+  # has no policy" and would have dropped the other region's clauses — the exact
+  # outage this carry-over exists to prevent. Both shapes are accepted, and the
+  # empty case is distinguished from the unreadable one below.
+  # Read the policy currently on the key.
+  #
+  # `az keyvault key show` does NOT return base64 here despite the field being
+  # called encodedPolicy: this CLI hands back a PYTHON BYTES REPR, the literal
+  # characters  b'{"version":...}'  . Piping that through `base64 -d` produces
+  # nothing, which looked exactly like "the key has no policy" and would have
+  # silently dropped the other region's clauses — the outage this carry-over
+  # exists to prevent.
+  #
+  # The raw value goes through a FILE rather than argv or stdin. It contains
+  # quotes and braces, and `python3 -` already takes its script from stdin, so
+  # both of the other channels are quoting traps.
   local existing="$WORKDIR/release-policy.existing.json"
-  if ! az keyvault key show --vault-name "$VAULT" --name "$SKR_KEY" \
-        --query 'releasePolicy.encodedPolicy' -o tsv 2>/dev/null \
-        | tr -d '\n' | base64 -d > "$existing" 2>/dev/null; then
-    : > "$existing"
+  local rawpol="$WORKDIR/release-policy.raw"
+  : > "$existing"
+  az keyvault key show --vault-name "$VAULT" --name "$SKR_KEY" \
+     --query 'releasePolicy.encodedPolicy' -o tsv > "$rawpol" 2>/dev/null || : > "$rawpol"
+
+  if [ -s "$rawpol" ] && [ "$(cat "$rawpol")" != "None" ]; then
+    if ! python3 "$SCRIPT_DIR/azure_decode_release_policy.py" "$rawpol" > "$existing"; then
+      # The key HAS a policy and it could not be read. Rendering from this
+      # deploy alone would silently revoke every other region, so refuse.
+      die "the SKR key has a release policy that could not be decoded; refusing to
+       overwrite it, because doing so would drop any other region's clauses and
+       break that region on its next cold start. Inspect:
+         az keyvault key show --vault-name $VAULT --name $SKR_KEY --query releasePolicy.encodedPolicy -o tsv"
+    fi
   fi
 
   python3 - "$WORKDIR/release-policy.json" "$MAA_ENDPOINT" "$existing" "${values[@]}" <<'PY'
@@ -1023,15 +1055,17 @@ authority = f"https://{maa}"
 # absent existing policy is treated as "no other regions" rather than as an
 # error: on a first deploy there is nothing to preserve, and refusing here
 # would make bootstrapping a region impossible.
+# An EMPTY file means the key genuinely has no policy yet (first deploy of the
+# first region) — the only case where having nothing to preserve is safe. The
+# shell refuses outright if a policy exists but could not be decoded, so a parse
+# failure here is a bug rather than a normal state and must not be swallowed.
 carried = []
-try:
+if os.path.getsize(existing_path) > 0:
     with open(existing_path) as handle:
         prior = json.load(handle)
     for clause in prior.get("anyOf", []):
         if isinstance(clause, dict) and clause.get("authority") != authority:
             carried.append(clause)
-except (OSError, ValueError):
-    pass
 
 mine = [
     {
