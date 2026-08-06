@@ -748,11 +748,36 @@ template = {
                 # exists to prevent, and an empty one fails loudly.
                 "ccePolicy": ""
             },
-            # Never. A confidential container group that restarts re-runs the
-            # SNP report and the MAA exchange on every attempt; if the release
-            # policy does not match, that is an unbounded attestation
-            # crash-loop against Key Vault rather than one clear failure.
-            "restartPolicy": "Never",
+            # OnFailure, and this was Never until availability was measured.
+            #
+            # THE ORIGINAL REASONING, which was sound: a confidential group that
+            # restarts re-runs the SNP report and the MAA exchange every
+            # attempt, so a release-policy mismatch becomes an unbounded
+            # attestation crash-loop against Key Vault instead of one clear
+            # failure. Never made a broken deploy loud.
+            #
+            # WHY IT CHANGED: it also made every OTHER fault permanent. A panic,
+            # an OOM, a transient upstream stall — anything that exits the
+            # process once — leaves the group in `Succeeded` forever, serving
+            # nothing, until a human notices. That converts a fault whose
+            # natural repair takes seconds into an outage whose repair takes
+            # however long it takes someone to look, which is the single
+            # largest term in this deployment's availability budget. Four nines
+            # is 52 minutes a year TOTAL; one un-restarted crash spends the
+            # whole year's budget before anyone has read the page.
+            #
+            # The loudness the original reasoning wanted is now provided by
+            # things that actually watch: `verify` gates every deploy on a live
+            # attestation, `audit` reports a release policy that has drifted
+            # from what is running, and the synthetic probes sample each region
+            # every minute. A crash-loop is no longer quiet just because the
+            # container keeps trying — and the deploy's wait loop below now
+            # fails fast on a rising restart count rather than spinning the
+            # full timeout.
+            #
+            # Set RESTART_POLICY=Never to get the old behaviour for a region
+            # you are actively debugging.
+            "restartPolicy": os.environ.get("RESTART_POLICY", "OnFailure"),
             "imageRegistryCredentials": [{
                 "server": os.environ["ACR_LOGIN_SERVER"],
                 # Identity-based, not username/password. The ARM template is an
@@ -1491,6 +1516,24 @@ print((doc.get("confidentialComputeProperties") or {}).get("ccePolicy") or "")
 
 # ---------------------------------------------------------------------------
 # phase: verify — a deploy that cannot prove its own measurement is not a deploy
+# A gcloud DNS write failed. Say what that means for the deploy.
+#
+# Under `set -e` this used to be a bare gcloud error and an exit code — in the
+# middle of `all`, AFTER the container group was created and the release policy
+# was bound, but BEFORE verify and narrow. The operator sees "you do not
+# currently have an active account selected" and has no way to know that Azure
+# was already changed and the deploy is half-finished.
+dns_write_failed() {
+  die "the DNS $1 for $API_HOST FAILED (see the gcloud error just above).
+
+       THE DEPLOY IS HALF-FINISHED. The container group exists and the release
+       policy is already bound to it; what did not happen is verify and narrow.
+       Nothing is serving on $API_HOST, because TLS-ALPN-01 needs that record.
+
+       Fix the credential (gcloud auth), point $API_HOST at $ip, then re-run:
+           ./tools/deploy-azure-aci.sh --apply verify narrow"
+}
+
 # ---------------------------------------------------------------------------
 phase_verify() {
   if [ "$APPLY" != "1" ]; then
@@ -1518,7 +1561,7 @@ phase_verify() {
   fi
 
   log "phase verify: waiting for $CONTAINER_GROUP to run"
-  local state="" ip="" fqdn="" waited=0
+  local state="" ip="" fqdn="" restarts="" waited=0
   while [ "$waited" -lt "${VERIFY_TIMEOUT_SECONDS:-600}" ]; do
     state="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
       --query "instanceView.state" -o tsv 2>/dev/null || true)"
@@ -1526,6 +1569,33 @@ phase_verify() {
       --query "ipAddress.ip" -o tsv 2>/dev/null || true)"
     fqdn="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
       --query "ipAddress.fqdn" -o tsv 2>/dev/null || true)"
+    # A CRASH-LOOP READS AS `Running`.
+    #
+    # Under restartPolicy=OnFailure the group state never settles on Succeeded,
+    # so the case above cannot see a workload that is failing — it just keeps
+    # restarting, and the wait spins the whole timeout before dying with a
+    # generic message. That is the cost the old restartPolicy=Never was buying,
+    # and it has to be paid for here rather than by making every real fault
+    # permanent.
+    #
+    # A restart count that climbs while we are still waiting to serve means the
+    # workload cannot start, which is a different failure from "slow to start"
+    # and deserves a different message. The threshold is 2 rather than 1 because
+    # a single restart during a cold start is normal.
+    restarts="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
+      --query "containers[0].instanceView.restartCount" -o tsv 2>/dev/null || true)"
+    case "$restarts" in
+      ''|*[!0-9]*) : ;;
+      *)
+        if [ "$restarts" -ge "${MAX_START_RESTARTS:-2}" ]; then
+          phase_logs
+          die "the enclave has restarted $restarts times without serving — it is crash-looping,
+       not starting slowly. A Key Vault 403 in the log above means the release policy
+       does not match this workload's measurement. The key currently accepts
+       $(printf '%s' "$accepted" | tr '\n' ' ')."
+        fi ;;
+    esac
+
     case "$state" in
       Running) break ;;
       # Succeeded and Stopped are the states of the failure this whole script
@@ -1541,6 +1611,7 @@ phase_verify() {
        release policy does not match this workload's measurement: re-run the policy
        and bind phases, then redeploy. The key currently accepts $(printf '%s' "$accepted" | tr '\n' ' ')." ;;
     esac
+
     sleep 10
     waited=$((waited + 10))
   done
@@ -1570,15 +1641,47 @@ phase_verify() {
       log "dns: reconciling ${API_HOST} $current_dns -> $ip"
       gcloud dns record-sets update "${API_HOST}." \
         --project "${DNS_PROJECT:-quill-cloud-proxy}" --zone "${DNS_ZONE:-trustedrouter-com}" \
-        --type A --ttl 120 --rrdatas "$ip" >/dev/null
+        --type A --ttl 120 --rrdatas "$ip" >/dev/null \
+        || dns_write_failed "update"
     else
       log "dns: creating ${API_HOST} -> $ip"
       gcloud dns record-sets create "${API_HOST}." \
         --project "${DNS_PROJECT:-quill-cloud-proxy}" --zone "${DNS_ZONE:-trustedrouter-com}" \
-        --type A --ttl 120 --rrdatas "$ip" >/dev/null
+        --type A --ttl 120 --rrdatas "$ip" >/dev/null \
+        || dns_write_failed "create"
     fi
   else
     note "gcloud not found: update ${API_HOST} A -> $ip in Cloud DNS yourself, or TLS stays dark"
+  fi
+
+  # ASSERT THE RECORD, DO NOT ASSUME IT.
+  #
+  # Every gcloud call above could fail — expired credentials being the common
+  # one — and the failure text scrolls past while the deploy carries on to wait
+  # for /attestation on a hostname that resolves nowhere. Ten minutes later it
+  # dies saying the enclave never served, and the log it prints is the enclave's,
+  # which is healthy. The operator then debugs an enclave for a DNS fault.
+  #
+  # This cost a real debugging cycle on the southeastasia bring-up. The record
+  # is a precondition for TLS-ALPN-01, so it gets checked like one.
+  local resolved=""
+  if command -v dig >/dev/null 2>&1; then
+    resolved="$(dig +short "$API_HOST" A 2>/dev/null | grep -E '^[0-9.]+$' | head -1 || true)"
+  elif command -v host >/dev/null 2>&1; then
+    resolved="$(host -t A "$API_HOST" 2>/dev/null | awk '/has address/ {print $NF; exit}' || true)"
+  fi
+
+  if [ -z "$resolved" ]; then
+    note "could not resolve $API_HOST locally (no dig/host, or the record is brand new)."
+    note "If the wait below times out, check DNS FIRST — the enclave is likely fine."
+  elif [ "$resolved" != "$ip" ]; then
+    die "$API_HOST resolves to $resolved but this group is at $ip.
+       TLS-ALPN-01 cannot issue a cert, so the enclave will never serve on that
+       name no matter how long we wait. If a gcloud error scrolled past above,
+       that is the cause: fix the record, then re-run 'verify'.
+       This is a DNS fault, NOT an enclave fault — do not go reading enclave logs."
+  else
+    log "dns: $API_HOST resolves to $ip"
   fi
 
   cat >&2 <<EOF

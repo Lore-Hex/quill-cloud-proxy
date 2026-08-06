@@ -185,6 +185,8 @@ if argv[:2] == ["container", "show"]:
         sys.exit(3)
     if query == "confidentialComputeProperties.ccePolicy":
         print("" if flag("show-omits-policy") else read("deployed-policy"))
+    elif query == "containers[0].instanceView.restartCount":
+        print(read("group-restarts", "0"))
     elif query == "instanceView.state":
         print(read("group-state", "Running"))
     elif query == "ipAddress.ip":
@@ -1363,6 +1365,156 @@ class TestBundlePinGuardFiresWhereItApplies(DeployHarness):
         self.healthy_deploy()
         result = self.run_script("--apply", "audit", QUILL_AZURE_BUNDLE_VERSION="")
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class TestRestartPolicyIsTheAvailabilityBudget(DeployHarness):
+    """`Never` made every one-off fault permanent.
+
+    A panic, an OOM, a transient upstream stall — anything that exits the
+    process once — left the group in `Succeeded` forever, serving nothing,
+    until a human noticed. Four nines is 52 minutes a YEAR; one un-restarted
+    crash spends the entire budget before anyone has read the page.
+    """
+
+    def test_the_group_restarts_on_failure_by_default(self) -> None:
+        self.healthy_deploy()
+        template = json.loads((self.work / "template.json").read_text())
+        self.assertEqual(
+            template["resources"][0]["properties"]["restartPolicy"],
+            "OnFailure",
+            "a fault that exits the process once would be a permanent outage",
+        )
+
+    def test_never_is_still_reachable_for_debugging(self) -> None:
+        """A region being actively debugged wants one clear failure, not a loop."""
+        self.healthy_deploy(RESTART_POLICY="Never")
+        template = json.loads((self.work / "template.json").read_text())
+        self.assertEqual(template["resources"][0]["properties"]["restartPolicy"], "Never")
+
+    def test_restart_policy_is_measured(self) -> None:
+        """It is part of the container definition, so it changes HOST_DATA.
+
+        If it were not measured, an operator could flip a deployed group's
+        restart behaviour without the key noticing — and the measurement would
+        stop describing the workload.
+        """
+        def measure(policy: str) -> str:
+            result = self.run_script("--apply", "build", "template", "policy", RESTART_POLICY=policy)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return (self.work / "cce-policy-hash.txt").read_text().strip()
+
+        self.assertNotEqual(
+            measure("Never"), measure("OnFailure"),
+            "restartPolicy did not change the measurement",
+        )
+
+
+class TestACrashLoopFailsFast(DeployHarness):
+    """Under OnFailure a failing workload never settles on `Succeeded`.
+
+    So the state check that catches a Key Vault 403 cannot see it — the group
+    reports `Running` while restarting forever, and the deploy spins its whole
+    timeout before dying with a generic message. That is the cost the old
+    `Never` was buying, and it has to be paid here instead of by making every
+    real fault permanent.
+    """
+
+    def test_a_climbing_restart_count_ends_the_wait(self) -> None:
+        self.healthy_deploy()
+        self.state_file("group-restarts").write_text("5")
+        self.state_file("container-logs").write_text(
+            "quill-enclave: skr release: http 403 from key vault"
+        )
+
+        result = self.run_script("--apply", "verify", VERIFY_TIMEOUT_SECONDS="60")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("crash-looping", result.stderr)
+        self.assertIn("not starting slowly", result.stderr)
+        self.assertIn("403", result.stderr, "the deciding log line must be shown")
+
+    def test_one_restart_during_a_cold_start_is_tolerated(self) -> None:
+        """A single restart while coming up is normal; failing on it would make
+        the deploy flaky, and a flaky gate gets bypassed."""
+        self.healthy_deploy()
+        self.state_file("group-restarts").write_text("1")
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+
+        result = self.run_script(
+            "--apply", "verify", VERIFY_ATTESTATION_CMD=str(verifier)
+        )
+
+        self.assertNotIn("crash-looping", result.stderr)
+
+
+class TestDnsIsAPreconditionNotAnAssumption(DeployHarness):
+    """A DNS fault used to be reported as an enclave fault.
+
+    Every gcloud call in the DNS block can fail — expired credentials being the
+    common one — and the error scrolled past while the deploy carried on
+    waiting for /attestation on a hostname resolving nowhere. Ten minutes later
+    it died saying the enclave never served, and printed the enclave's log,
+    which was healthy. This cost a real debugging cycle on the southeastasia
+    bring-up.
+    """
+
+    def _gcloud(self, *, succeeds: bool = True) -> None:
+        """The DNS writer. Real gcloud on PATH is unauthenticated in CI, which
+        made every one of these tests die at the wrong step."""
+        stub = self.bin / "gcloud"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            + ("exit 0\n" if succeeds
+               else "echo 'ERROR: You do not currently have an active account selected.' >&2\nexit 1\n")
+        )
+        stub.chmod(0o755)
+
+    def _resolver(self, address: str) -> Path:
+        stub = self.bin / "dig"
+        stub.write_text(f"#!/usr/bin/env bash\necho '{address}'\n")
+        stub.chmod(0o755)
+        return stub
+
+    def test_a_record_pointing_elsewhere_stops_the_wait(self) -> None:
+        self.healthy_deploy()
+        self._gcloud()
+        self._resolver("203.0.113.7")  # not the group's 10.0.0.9
+
+        result = self.run_script("--apply", "verify", VERIFY_TIMEOUT_SECONDS="120")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("resolves to 203.0.113.7", result.stderr)
+        self.assertIn("NOT an enclave fault", result.stderr)
+
+    def test_a_failed_dns_write_says_the_deploy_is_half_finished(self) -> None:
+        """Under `set -e` this was a bare gcloud error and an exit code.
+
+        In the middle of `all`, AFTER the group was created and the policy
+        bound, but BEFORE verify and narrow. The operator sees an auth error
+        and has no way to know Azure was already changed.
+        """
+        self.healthy_deploy()
+        self._gcloud(succeeds=False)
+
+        result = self.run_script("--apply", "verify")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("HALF-FINISHED", result.stderr)
+        self.assertIn("--apply verify narrow", result.stderr)
+
+    def test_a_correct_record_does_not_stop_the_wait(self) -> None:
+        self.healthy_deploy()
+        self._gcloud()
+        self._resolver("10.0.0.9")
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+
+        result = self.run_script("--apply", "verify", VERIFY_ATTESTATION_CMD=str(verifier))
+
+        self.assertNotIn("NOT an enclave fault", result.stderr)
 
 
 if __name__ == "__main__":
