@@ -988,32 +988,72 @@ write_release_policy() {
     [ -n "$line" ] && values+=("$line")
   done <<< "$hostdata_set"
   [ "${#values[@]}" -gt 0 ] || die "refusing to write a release policy that pins no hostdata at all"
-  python3 - "$WORKDIR/release-policy.json" "$MAA_ENDPOINT" "${values[@]}" <<'PY'
-import json, sys
 
-out_path, maa = sys.argv[1], sys.argv[2]
-hostdata = [value.strip() for value in sys.argv[3:] if value.strip()]
+  # MULTI-REGION: read the policy currently on the key and keep every clause
+  # belonging to a DIFFERENT authority.
+  #
+  # One SKR key serves every Azure region, and each region attests against its
+  # OWN MAA instance (uaenorth -> trquilluaen.uaen…, southeastasia ->
+  # trquillsea.sasia…). Rendering the policy from this deploy's values alone
+  # would drop the other region's clause, and that region's next cold start
+  # takes a Key Vault 403 and never comes back — an outage in a region nobody
+  # touched, caused by deploying its neighbour.
+  #
+  # So each region OWNS the clauses naming its own authority and never edits
+  # another's. That also makes the deploys order-independent, which matters
+  # because there is no lock between them.
+  local existing="$WORKDIR/release-policy.existing.json"
+  if ! az keyvault key show --vault-name "$VAULT" --name "$SKR_KEY" \
+        --query 'releasePolicy.encodedPolicy' -o tsv 2>/dev/null \
+        | tr -d '\n' | base64 -d > "$existing" 2>/dev/null; then
+    : > "$existing"
+  fi
+
+  python3 - "$WORKDIR/release-policy.json" "$MAA_ENDPOINT" "$existing" "${values[@]}" <<'PY'
+import json, os, sys
+
+out_path, maa, existing_path = sys.argv[1], sys.argv[2], sys.argv[3]
+hostdata = [value.strip() for value in sys.argv[4:] if value.strip()]
 if not hostdata:
     raise SystemExit("[FAIL] refusing to write a release policy that pins no hostdata at all")
-policy = {
-    "version": "1.0.0",
-    "anyOf": [
-        {
-            "authority": f"https://{maa}",
-            "allOf": [
-                {"claim": "x-ms-attestation-type",       "equals": "sevsnpvm"},
-                {"claim": "x-ms-compliance-status",      "equals": "azure-compliant-uvm"},
-                {"claim": "x-ms-sevsnpvm-is-debuggable", "equals": "false"},
-                {"claim": "x-ms-sevsnpvm-hostdata",      "equals": value},
-            ],
-        }
-        for value in hostdata
-    ],
-}
+
+authority = f"https://{maa}"
+
+# Clauses for OTHER authorities are carried over verbatim. A malformed or
+# absent existing policy is treated as "no other regions" rather than as an
+# error: on a first deploy there is nothing to preserve, and refusing here
+# would make bootstrapping a region impossible.
+carried = []
+try:
+    with open(existing_path) as handle:
+        prior = json.load(handle)
+    for clause in prior.get("anyOf", []):
+        if isinstance(clause, dict) and clause.get("authority") != authority:
+            carried.append(clause)
+except (OSError, ValueError):
+    pass
+
+mine = [
+    {
+        "authority": authority,
+        "allOf": [
+            {"claim": "x-ms-attestation-type",       "equals": "sevsnpvm"},
+            {"claim": "x-ms-compliance-status",      "equals": "azure-compliant-uvm"},
+            {"claim": "x-ms-sevsnpvm-is-debuggable", "equals": "false"},
+            {"claim": "x-ms-sevsnpvm-hostdata",      "equals": value},
+        ],
+    }
+    for value in hostdata
+]
+
+policy = {"version": "1.0.0", "anyOf": carried + mine}
 with open(out_path, "w") as handle:
     json.dump(policy, handle, indent=2)
     handle.write("\n")
-print(f"[ok] wrote {out_path} pinning {len(hostdata)} hostdata value(s)")
+
+others = sorted({c.get("authority", "?") for c in carried})
+print(f"[ok] wrote {out_path} pinning {len(mine)} hostdata value(s) for {authority}"
+      + (f"; preserved {len(carried)} clause(s) for {others}" if carried else ""))
 PY
 }
 

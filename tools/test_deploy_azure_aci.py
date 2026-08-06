@@ -29,6 +29,7 @@ script before the fix and fail again if the fix is reverted.
 
 from __future__ import annotations
 
+import pathlib
 import json
 import os
 import subprocess
@@ -914,6 +915,116 @@ class TestPolicyPullIsDryRunSafe(DeployHarness):
         if gen_at != -1:
             self.assertLess(pull_at, gen_at, "the pull must precede confcom's policy generation")
 
+
+
+class TestReleasePolicyIsMultiRegionSafe(unittest.TestCase):
+    """One SKR key serves every Azure region; each region attests against its OWN
+    MAA instance. Rendering the policy from one deploy's values alone drops the
+    other region's clause, and that region's next COLD START takes a Key Vault
+    403 and never returns — an outage in a region nobody touched, caused by
+    deploying its neighbour.
+
+    So a deploy owns the clauses naming its own authority and must carry every
+    other authority's clause through untouched. That also makes the two deploys
+    order-independent, which matters because nothing locks between them.
+    """
+
+    UAEN = "https://trquilluaen.uaen.attest.azure.net"
+    SEA = "https://trquillsea.sasia.attest.azure.net"
+
+    def _render(self, maa, hostdata, existing):
+        """Run the script's embedded policy renderer against a given prior policy."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "out.json")
+            prior = os.path.join(tmp, "prior.json")
+            with open(prior, "w") as fh:
+                json.dump(existing, fh) if existing is not None else fh.write("")
+            src = _extract_release_policy_python()
+            subprocess.run(
+                [sys.executable, "-c", src, out, maa, prior, *hostdata],
+                check=True, capture_output=True, text=True,
+            )
+            with open(out) as fh:
+                return json.load(fh)
+
+    def _authorities(self, policy):
+        return sorted({c["authority"] for c in policy["anyOf"]})
+
+    def _hostdata_for(self, policy, authority):
+        out = []
+        for c in policy["anyOf"]:
+            if c["authority"] != authority:
+                continue
+            for claim in c["allOf"]:
+                if claim["claim"] == "x-ms-sevsnpvm-hostdata":
+                    out.append(claim["equals"])
+        return sorted(out)
+
+    def test_first_region_writes_its_own_clause(self) -> None:
+        pol = self._render(self.UAEN.removeprefix("https://"), ["aa" * 32], None)
+        self.assertEqual(self._authorities(pol), [self.UAEN])
+        self.assertEqual(self._hostdata_for(pol, self.UAEN), ["aa" * 32])
+
+    def test_second_region_does_not_drop_the_first(self) -> None:
+        first = self._render(self.UAEN.removeprefix("https://"), ["aa" * 32], None)
+        both = self._render(self.SEA.removeprefix("https://"), ["bb" * 32], first)
+        self.assertEqual(self._authorities(both), sorted([self.SEA, self.UAEN]))
+        self.assertEqual(self._hostdata_for(both, self.UAEN), ["aa" * 32],
+                         "deploying southeastasia must not disturb uaenorth's clause")
+        self.assertEqual(self._hostdata_for(both, self.SEA), ["bb" * 32])
+
+    def test_redeploying_a_region_replaces_only_its_own_clauses(self) -> None:
+        first = self._render(self.UAEN.removeprefix("https://"), ["aa" * 32], None)
+        both = self._render(self.SEA.removeprefix("https://"), ["bb" * 32], first)
+        # uaenorth rolls to a new measurement, spanning old+new during the window
+        rolled = self._render(self.UAEN.removeprefix("https://"), ["aa" * 32, "cc" * 32], both)
+        self.assertEqual(self._hostdata_for(rolled, self.UAEN), sorted(["aa" * 32, "cc" * 32]))
+        self.assertEqual(self._hostdata_for(rolled, self.SEA), ["bb" * 32],
+                         "rolling uaenorth must leave southeastasia untouched")
+
+    def test_deploy_order_does_not_matter(self) -> None:
+        a = self._render(self.SEA.removeprefix("https://"), ["bb" * 32],
+                         self._render(self.UAEN.removeprefix("https://"), ["aa" * 32], None))
+        b = self._render(self.UAEN.removeprefix("https://"), ["aa" * 32],
+                         self._render(self.SEA.removeprefix("https://"), ["bb" * 32], None))
+        self.assertEqual(self._authorities(a), self._authorities(b))
+        for auth in self._authorities(a):
+            self.assertEqual(self._hostdata_for(a, auth), self._hostdata_for(b, auth))
+
+    def test_a_corrupt_prior_policy_does_not_block_a_deploy(self) -> None:
+        """Refusing here would make bootstrapping a region impossible; the
+        deploy must still write its own clause."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "out.json")
+            prior = os.path.join(tmp, "prior.json")
+            with open(prior, "w") as fh:
+                fh.write("{ this is not json")
+            subprocess.run(
+                [sys.executable, "-c", _extract_release_policy_python(),
+                 out, self.SEA.removeprefix("https://"), prior, "bb" * 32],
+                check=True, capture_output=True, text=True,
+            )
+            with open(out) as fh:
+                pol = json.load(fh)
+        self.assertEqual(self._authorities(pol), [self.SEA])
+
+    def test_pinning_nothing_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            r = subprocess.run(
+                [sys.executable, "-c", _extract_release_policy_python(),
+                 os.path.join(tmp, "o.json"), "x.attest.azure.net", os.path.join(tmp, "none.json")],
+                capture_output=True, text=True,
+            )
+        self.assertNotEqual(r.returncode, 0, "a policy pinning no hostdata must be refused")
+
+
+def _extract_release_policy_python() -> str:
+    """Pull the python heredoc out of write_release_policy so the test exercises
+    the SHIPPING renderer rather than a copy that can drift from it."""
+    src = pathlib.Path(__file__).with_name("deploy-azure-aci.sh").read_text()
+    start = src.index("write_release_policy() {")
+    body = src[start:src.index("\nPY\n", start)]
+    return body[body.index("<<'PY'\n") + len("<<'PY'\n"):]
 
 
 if __name__ == "__main__":
