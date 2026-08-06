@@ -33,6 +33,8 @@ jobs:
           # is how an untested tag set reached production and then had to be
           # recovered by inference — see tools/release-aws-enclave.sh.
           - "cloud_aws,llm_multi"
+          # Azure is now buildable from main; keep it that way.
+          - "cloud_azure,llm_multi"
           - "cloud_gcp,llm_vertex"
           - "cloud_gcp,llm_openrouter"
           - "cloud_gcp,llm_multi"

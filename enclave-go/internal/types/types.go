@@ -130,22 +130,30 @@ type BootstrapData struct {
 
 	// Cross-cloud GCP service-account key (JSON, plaintext).
 	//
-	// Populated only on the AWS-side enclave path: the parent fetches the
-	// AWS-KMS-wrapped ciphertext from `quill/trustedrouter-aws-cross-cloud-sa-key`
-	// in AWS Secrets Manager, decrypts via `alias/quill-enclave-cmk`, and
-	// ships the plaintext JSON over vsock to the enclave. The enclave
-	// writes this to a tmpfs path and points GOOGLE_APPLICATION_CREDENTIALS
-	// at it so the GCP client libraries (Spanner, Bigtable, KMS, Secret
-	// Manager) authenticate cross-cloud without us mirroring those
-	// resources to AWS.
+	// Populated on the two clouds that are not GCP, because gcscache (the
+	// shared ACME cert cache in GCS) and byokcache (the KMS unwrapper) still
+	// authenticate to Google at RUNTIME. cmd/enclave/main.go writes this to a
+	// tmpfs path and points GOOGLE_APPLICATION_CREDENTIALS at it so the client
+	// code finds one credential instead of each module repeating the dance.
 	//
-	// V1 trust caveat (parallel to BedrockAccessKey): the parent sees
-	// plaintext for ~ms at boot. V1.1 will switch to attestation-gated
-	// KMS Decrypt where the parent only forwards still-encrypted bytes
-	// and the enclave does the unwrap inside the measured boundary.
+	// AWS: the parent fetches the AWS-KMS-wrapped ciphertext from
+	// `quill/trustedrouter-aws-cross-cloud-sa-key` in AWS Secrets Manager,
+	// decrypts via `alias/quill-enclave-cmk`, and ships the plaintext JSON
+	// over vsock. V1 trust caveat (parallel to BedrockAccessKey): the parent
+	// sees plaintext for ~ms at boot. V1.1 will switch to attestation-gated
+	// KMS Decrypt where the parent only forwards still-encrypted bytes and the
+	// enclave does the unwrap inside the measured boundary.
+	//
+	// Azure: it arrives as one entry inside the encrypted bundle the enclave
+	// pulls from Key Vault and opens with an SKR-released key, so no
+	// unattested process ever holds it. See bootstrap_azure.go.
 	//
 	// On GCP-side enclaves this stays empty — Confidential Space uses
 	// metadata-server tokens, not an SA key.
+	//
+	// This field existing at all is what keeps AWS and Azure from being fully
+	// Google-independent at runtime; closing that needs Azure/AWS-native homes
+	// for the credit ledger, the generations store and the ACME cache.
 	GCPServiceAccountKeyJSON string `json:"gcp_service_account_key_json,omitempty"`
 
 	// Cloudflare DNS API token for the DNS-01 ACME fallback path

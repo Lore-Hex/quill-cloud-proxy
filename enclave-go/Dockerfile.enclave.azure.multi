@@ -1,0 +1,133 @@
+# Multi-provider Azure confidential-container build (AMD SEV-SNP, ACI).
+#
+# Modelled line for line on Dockerfile.enclave.gcp.multi — same Go toolchain,
+# same two binaries, same scratch runtime — with the build tags swapped to
+# `cloud_azure,llm_multi` and three Azure-specific differences called out
+# below. Keeping the two files structurally parallel is deliberate: they are
+# the same workload on different hardware, and a diff between them should show
+# only what genuinely differs about the platform.
+#
+# The image this produces is the thing the CCE policy measures. Every byte of
+# it — layers, entrypoint, env — feeds the policy hash that ends up in
+# x-ms-sevsnpvm-hostdata and that the Key Vault release policy is bound to. So
+# a change here is a change to the enclave's identity: rebuild, regenerate the
+# policy, RE-BIND the key, then deploy. tools/deploy-azure-aci.sh enforces that
+# order and explains why.
+
+# ─── Builder ────────────────────────────────────────────────────────────────
+#
+# Same pinned Go 1.25 builder as the GCP multi image. The history behind
+# pinning it (deploy 25592563258, the sidecar module split) is written up in
+# Dockerfile.enclave.gcp.multi and applies unchanged here.
+FROM golang:1.25-bookworm@sha256:61170847dd0e20c3c1e374aea35c7057c42e1d638d775c360afcd548531c05ab AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+# ─── Main enclave binary ────────────────────────────────────────────────────
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# GOARCH=amd64 is not a default, it is a hardware requirement: AMD SEV-SNP is
+# x86-64 only, and Azure confidential containers run nowhere else. It is also
+# what keeps the image SINGLE-ARCH, which `az confcom acipolicygen` requires —
+# Docker's containerd image store reports platform "/" for a multi-arch
+# manifest and confcom refuses to generate a policy for it.
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+RUN go build -trimpath -tags 'cloud_azure,llm_multi' \
+      -ldflags='-s -w -extldflags=-static' \
+      -o /out/quill-enclave ./cmd/enclave
+
+# ─── attest-sidecar binary ──────────────────────────────────────────────────
+#
+# Separate Go module (enclave-go/sidecar/go.mod) so its sigstore/go-tuf/CT dep
+# tree is never linked into /quill-enclave. Included on Azure for the same
+# reason as on GCP: the llm_multi build serves tinfoil, and tinfoil traffic is
+# verified against an AMD-signed attestation the sidecar produces. Its absence
+# is non-fatal (main.go logs attest_sidecar.skipped and serves in raw-only
+# mode), but shipping it keeps the Azure and GCP fleets behaviourally identical.
+RUN cd sidecar && go mod download \
+    && go build -trimpath \
+       -ldflags='-s -w -extldflags=-static' \
+       -o /out/attest-sidecar .
+
+# ─── /tmp — REQUIRED on Azure, unlike GCP ───────────────────────────────────
+#
+# THIS IS NOT COSMETIC. A scratch image has no directories at all, and on the
+# Azure boot path cmd/enclave/main.go ALWAYS writes the bundle's GCP
+# service-account key to /tmp/gcp-sa.json and exits(1) if the write fails —
+# QUILL_AZURE_SA_KEY_ENTRY is a required env var precisely because gcscache
+# (shared ACME cache in GCS) and byokcache (KMS unwrapper) authenticate with
+# that key at runtime. On GCP that block no-ops because
+# BootstrapData.GCPServiceAccountKeyJSON is empty there, which is why
+# Dockerfile.enclave.gcp.multi gets away with no /tmp and why copying it
+# verbatim would produce an Azure image that attests perfectly and then dies
+# with "write GCP SA key tmpfs failed: no such file or directory".
+#
+# Mode 1777 matches a normal /tmp, and getting it into the IMAGE takes the
+# staging directory below rather than the obvious one-liner. `COPY <dir> <dest>`
+# copies the CONTENTS of <dir>, so `COPY /out/tmp /tmp` creates /tmp implicitly
+# with default 0755 and drops the chmod on the floor — the built layer really
+# does contain `drwxr-xr-x 0/0 tmp/`, verifiable with `docker save | tar -tv`.
+# `--chmod` does not help either: it applies to the entries being copied, not to
+# a destination the copy invents.
+#
+# Copying the PARENT (`/out/rootfs/` -> `/`) makes tmp/ an entry that is itself
+# copied, so its mode survives. Nothing on this image runs as a non-root user
+# today, so 1777 is defence in depth rather than a live requirement — but a
+# comment claiming a mode the image does not have is the kind of thing the next
+# person builds on.
+RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
+
+# ─── Scratch runtime, both binaries ─────────────────────────────────────────
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /out/rootfs/ /
+COPY --from=builder /out/quill-enclave /quill-enclave
+COPY --from=builder /out/attest-sidecar /attest-sidecar
+
+ENV QUILL_ENCLAVE_TLS=true
+ENV QUILL_TLS_MODE=acme
+# Plaintext liveness port for operator checks, off the TLS :443 path. Same
+# default as the GCP image. Nothing health-checks it on Azure either: ACI has
+# no attesting health probe, so fleet membership is the DNS reconciler's
+# attestation, exactly as on GCP.
+ENV QUILL_HEALTH_PORT=8081
+
+EXPOSE 443
+EXPOSE 8081
+
+# NO `tee.launch_policy.allow_env_override` label.
+#
+# That label is Confidential Space's mechanism for deciding which env vars a
+# deploy may set on an attested workload. Azure has no equivalent and needs
+# none: on ACI the container group's ENTIRE env-var set is an input to the CCE
+# policy, so every name AND value is measured into the policy hash, into
+# x-ms-sevsnpvm-hostdata, and thus into the Key Vault release policy the key is
+# bound to. Changing one env var changes the measurement and the enclave gets a
+# 403 from Key Vault instead of booting. An allow-list would be strictly weaker
+# than what the platform already enforces, and pretending it did something here
+# would be worse than omitting it.
+#
+# The env this image reads, for operators reading the image rather than the
+# deploy script (tools/deploy-azure-aci.sh is the source of truth):
+#
+#   Azure boot:   QUILL_AZURE_MAA_ENDPOINT, QUILL_AZURE_AKV_ENDPOINT,
+#                 QUILL_AZURE_SKR_KEY_ID, QUILL_AZURE_BUNDLE_SECRET,
+#                 QUILL_AZURE_SA_KEY_ENTRY   (all required, no defaults)
+#                 QUILL_AZURE_BUNDLE_VERSION, QUILL_AZURE_MI_CLIENT_ID,
+#                 QUILL_AZURE_SKR_URL, QUILL_AZURE_REGION,
+#                 QUILL_AZURE_ATTESTATION_URL (optional)
+#   Secret names: QUILL_GCP_PROJECT_ID, QUILL_DEVICE_KEYS_SECRET,
+#                 QUILL_*_SECRET (the binding table in
+#                 internal/bootstrap/secrets.go)
+#   Serving:      QUILL_API_HOST, QUILL_TLS_MODE, QUILL_ACME_EMAIL,
+#                 QUILL_ACME_CACHE_GCS_BUCKET, QUILL_HEALTH_PORT,
+#                 QUILL_FIRST_BYTE_TIMEOUT_SECONDS, TR_CONTROL_PLANE_BASE_URL
+
+ENTRYPOINT ["/quill-enclave"]

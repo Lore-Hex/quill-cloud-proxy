@@ -1,4 +1,4 @@
-.PHONY: sync lint format format-check typecheck test check run-mock clean docker-build docker-push deploy-trust gcp-release enclave-go-build
+.PHONY: sync lint format format-check typecheck test check run-mock clean docker-build docker-push deploy-trust gcp-release enclave-go-build deploy-script-test
 
 ENCLAVE_DIR  := enclave-go
 PARENT_DIR   := parent
@@ -7,7 +7,7 @@ REPO         := quill-cloud-proxy
 TRUST_BUCKET := trust.quill.lorehex.co
 GOLANGCI_LINT_VERSION := v1.64.8
 GOLANGCI_LINT_MODULE := github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-GO_TAGS := cloud_aws,llm_bedrock cloud_aws,llm_openrouter cloud_gcp,llm_vertex cloud_gcp,llm_openrouter cloud_gcp,llm_multi
+GO_TAGS := cloud_aws,llm_bedrock cloud_aws,llm_openrouter cloud_gcp,llm_vertex cloud_gcp,llm_openrouter cloud_gcp,llm_multi cloud_azure,llm_multi
 
 # ---- Go enclave -----------------------------------------------------------
 
@@ -49,7 +49,14 @@ typecheck:
 test:
 	cd $(PARENT_DIR) && uv run pytest
 
-check: lint format-check typecheck test enclave-go-build enclave-go-lint enclave-go-test
+# ---- Deploy-script guards -------------------------------------------------
+# tools/deploy-azure-aci.sh's guards are what keep a deploy from creating a
+# container group the SKR key will refuse. They run against a stubbed az/docker;
+# no Azure is touched.
+deploy-script-test:
+	python3 tools/test_deploy_azure_aci.py
+
+check: lint format-check typecheck test enclave-go-build enclave-go-lint enclave-go-test deploy-script-test
 
 run-mock:
 	cd $(PARENT_DIR) && QUILL_TRANSPORT=unix-socket uv run uvicorn quill_parent.main:app --host 127.0.0.1 --port 8443
