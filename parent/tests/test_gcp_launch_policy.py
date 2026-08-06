@@ -78,8 +78,7 @@ def test_gcp_rollout_grants_before_rollout_and_never_prunes_in_same_release() ->
     assert 'if [ "${TR_BATCH_STORAGE_ENABLED}" != "true" ]; then' in workflow
     assert "batch-image-access-not-required:" not in workflow
     assert (
-        "needs: [build-and-release, grant-batch-image-access, "
-        "publish-transition-trust-page]"
+        "needs: [build-and-release, grant-batch-image-access, publish-transition-trust-page]"
     ) in workflow
     assert "needs.grant-batch-image-access.result == 'success'" in workflow
     assert "needs.publish-transition-trust-page.result == 'success'" in workflow
