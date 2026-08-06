@@ -64,11 +64,14 @@
         <p>Clients can fetch live attestation, verify issuer/audience/digest, and compare the measured image digest with the release data published here.</p>
       </div>
       <aside class="panel">
-        <h2>Current GCP Workload</h2>
+        <h2>GCP workload release</h2>
         <div class="kv">
           <div><div class="label">Source commit</div><div class="value">8c1179e</div></div>
           <div><div class="label">Image</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-8c1179e</div></div>
-          <div><div class="label">Digest</div><div class="value">sha256:25b032c7d1eea78007c928d880ef502d247fc0deb259004a416f028bd644b869</div></div>
+          <div><div class="label">Accepted image references</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-8c1179e</div></div>
+          <div><div class="label">Target digest</div><div class="value">sha256:25b032c7d1eea78007c928d880ef502d247fc0deb259004a416f028bd644b869</div></div>
+          <div><div class="label">Release state</div><div class="value">current</div></div>
+          <div><div class="label">Accepted measured digests</div><div class="value">sha256:25b032c7d1eea78007c928d880ef502d247fc0deb259004a416f028bd644b869</div></div>
           <div><div class="label">Attested gateway repo</div><div class="value"><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Lore-Hex/quill-cloud-proxy</a></div></div>
           <div><div class="label">API base</div><div class="value">https://api.trustedrouter.com/v1</div></div>
         </div>
@@ -81,7 +84,7 @@
           <li><span class="check">OK</span><span>Fetch <code>https://api.trustedrouter.com/attestation</code> over normal public TLS.</span></li>
           <li><span class="check">OK</span><span>Verify the JWT issuer is <code>https://confidentialcomputing.googleapis.com</code>.</span></li>
           <li><span class="check">OK</span><span>Verify the audience is <code>quill-cloud</code>.</span></li>
-          <li><span class="check">OK</span><span>Compare the attested image digest with this page.</span></li>
+          <li><span class="check">OK</span><span>Compare the attested image digest with the accepted measured digests on this page. During a rolling release, the old and new measured workloads are both listed.</span></li>
           <li><span class="check">OK</span><span>Check the TLS certificate fingerprint is bound into the attestation nonce.</span></li>
         </ul>
       </div>
@@ -119,6 +122,12 @@
     <section class="panel">
       <h2>Machine-readable release</h2>
       <pre>{
+  &quot;accepted_image_digests&quot;: [
+    &quot;sha256:25b032c7d1eea78007c928d880ef502d247fc0deb259004a416f028bd644b869&quot;
+  ],
+  &quot;accepted_image_references&quot;: [
+    &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-8c1179e&quot;
+  ],
   &quot;api_base_url&quot;: &quot;https://api.trustedrouter.com/v1&quot;,
   &quot;attestation_audience&quot;: &quot;quill-cloud&quot;,
   &quot;attestation_issuer&quot;: &quot;https://confidentialcomputing.googleapis.com&quot;,
@@ -139,6 +148,7 @@
   &quot;image_digest&quot;: &quot;sha256:25b032c7d1eea78007c928d880ef502d247fc0deb259004a416f028bd644b869&quot;,
   &quot;image_reference&quot;: &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-8c1179e&quot;,
   &quot;platform&quot;: &quot;gcp-confidential-space&quot;,
+  &quot;release_state&quot;: &quot;current&quot;,
   &quot;released_by&quot;: &quot;github-actions:deploy-enclave-gcp&quot;,
   &quot;source_commit&quot;: &quot;8c1179e&quot;,
   &quot;source_repo&quot;: &quot;https://github.com/Lore-Hex/quill-cloud-proxy&quot;,

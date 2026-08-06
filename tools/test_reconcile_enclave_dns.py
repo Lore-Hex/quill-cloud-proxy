@@ -83,5 +83,30 @@ class PersistentDrainTests(unittest.TestCase):
         )
 
 
+class TrustDigestTests(unittest.TestCase):
+    def test_reads_single_digest(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"sha256:" + b"1" * 64
+        with mock.patch.object(reconciler.urllib.request, "urlopen", return_value=response):
+            self.assertEqual(reconciler.trust_digests(), ["sha256:" + "1" * 64])
+
+    def test_reads_deduplicated_rollout_digest_set(self) -> None:
+        old = "sha256:" + "1" * 64
+        new = "sha256:" + "2" * 64
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = f"{old},{new},{old}\n".encode()
+        with mock.patch.object(reconciler.urllib.request, "urlopen", return_value=response):
+            self.assertEqual(reconciler.trust_digests(), [old, new])
+
+    def test_rejects_malformed_rollout_digest_set(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"sha256:not-a-digest"
+        with (
+            mock.patch.object(reconciler.urllib.request, "urlopen", return_value=response),
+            self.assertRaisesRegex(SystemExit, "trust digest set looks wrong"),
+        ):
+            reconciler.trust_digests()
+
+
 if __name__ == "__main__":
     unittest.main()

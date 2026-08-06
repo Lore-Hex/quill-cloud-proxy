@@ -5,13 +5,13 @@
 # job. Each release:
 #   1. Builds the enclave image via Cloud Build (no human in the build path)
 #   2. Resolves the immutable OCI digest from Artifact Registry
-#   3. Writes that digest into trust-page/{image-digest-gcp.txt,
-#      image-reference-gcp.txt, gcp-release.json}
+#   3. Publishes a transition allowlist containing the old and new measured
+#      digests before any serving region changes.
 #   4. Auto-commits those trust artifacts back to main, attributed to
 #      this workflow run by SHA + run-id
 #   5. Rolls the GCP MIG so the running workload matches the new digest
 #   6. Smoke-tests an inference call against the rolled workload
-#   7. Publishes trust-page/ to GitHub Pages — which serves
+#   7. Collapses the allowlist to the new digest and republishes trust-page/ — which serves
 #      https://trust.trustedrouter.com/. Verifiers can diff the GitHub
 #      tree against the live page byte-for-byte.
 #
@@ -128,6 +128,8 @@ jobs:
     outputs:
       image_ref: ${{ steps.set-vars.outputs.image_ref }}
       image_digest: ${{ steps.resolve-digest.outputs.image_digest }}
+      accepted_digests: ${{ steps.write-trust.outputs.accepted_digests }}
+      accepted_references: ${{ steps.write-trust.outputs.accepted_references }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -216,14 +218,23 @@ jobs:
           echo "image_digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "DIGEST=${DIGEST}" >> "$GITHUB_ENV"
 
-      - name: Write trust-page artifacts
+      - id: write-trust
+        name: Write transitional trust-page artifacts
         run: |
           set -euo pipefail
+          previous="$(cat trust-page/image-digest-gcp.txt)"
+          previous_references="$(cat trust-page/image-reference-gcp.txt)"
           python3 tools/write-trust-artifacts.py \
             --out-dir trust-page \
             --commit "${SHA}" \
             --image-reference "${IMAGE_REF}" \
-            --image-digest "${DIGEST}"
+            --image-digest "${DIGEST}" \
+            --accepted-image-digests "${previous}" \
+            --accepted-image-references "${previous_references}"
+          accepted="$(cat trust-page/image-digest-gcp.txt)"
+          accepted_references="$(cat trust-page/image-reference-gcp.txt)"
+          echo "accepted_digests=${accepted}" >> "$GITHUB_OUTPUT"
+          echo "accepted_references=${accepted_references}" >> "$GITHUB_OUTPUT"
 
       - name: Commit trust artifacts back to main
         run: |
@@ -236,6 +247,17 @@ jobs:
             git commit -m "[bot] enclave release ${SHA}: digest ${DIGEST}"
             git push origin HEAD:main
           fi
+
+  publish-transition-trust-page:
+    needs: build-and-release
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/publish-trust-page.yml
+    with:
+      expected_digests: ${{ needs.build-and-release.outputs.accepted_digests }}
+      expected_references: ${{ needs.build-and-release.outputs.accepted_references }}
 
   grant-batch-image-access:
     needs: build-and-release
@@ -263,8 +285,8 @@ jobs:
         run: bash tools/reconcile-gcp-batch-image-access.sh grant "${IMAGE_DIGEST}"
 
   rollout:
-    needs: [build-and-release, grant-batch-image-access]
-    if: ${{ needs.grant-batch-image-access.result == 'success' }}
+    needs: [build-and-release, grant-batch-image-access, publish-transition-trust-page]
+    if: ${{ needs.grant-batch-image-access.result == 'success' && needs.publish-transition-trust-page.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -690,68 +712,48 @@ jobs:
           echo "smoke didn't observe a 200 within bounded retry window"
           # exit 0 — non-blocking
 
-  # Publish trust-page/ to GitHub Pages. Pages serves
-  # https://trust.trustedrouter.com once you add a CNAME at your DNS
-  # provider: `trust.trustedrouter.com → lore-hex.github.io`. Until DNS
-  # is in place, the page is reachable at
-  # https://lore-hex.github.io/quill-cloud-proxy/.
-  publish-trust-page:
+  # A failed rollout may leave old and new measured workloads serving in
+  # different regions, so its transition allowlist must remain published.
+  # Collapse to the target digest only after every regional gate succeeds.
+  finalize-trust-artifacts:
     needs: [build-and-release, rollout]
     runs-on: ubuntu-latest
-    # Serialize Pages deployments with the standalone publish-trust-page
-    # workflow (same group name there). Concurrent deployments conflict —
-    # that's the transient failure observed in run 28720340595.
-    concurrency:
-      group: trust-pages-deployment
-      cancel-in-progress: false
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main   # pull the auto-commit with the new digest
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: trust-page/
-      - id: deployment
-        uses: actions/deploy-pages@v4
-        # Transient Pages failures shouldn't strand the trust page on a
-        # stale digest; retry once after a backoff. The standalone
-        # publish-trust-page workflow also re-fires on this workflow's
-        # completion as a backstop.
-        continue-on-error: true
-      - name: Backoff before retry
-        if: steps.deployment.outcome == 'failure'
-        run: sleep 45
-      - id: deployment_retry
-        if: steps.deployment.outcome == 'failure'
-        uses: actions/deploy-pages@v4
-
-  # The point of the whole pipeline: the digest customers can verify at
-  # https://trust.trustedrouter.com must equal the digest the fleet is
-  # actually running. Fail the run loudly if they diverge; the standalone
-  # publish workflow's workflow_run backstop then re-publishes and
-  # self-verifies.
-  verify-trust-page:
-    needs: [build-and-release, publish-trust-page]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Verify published digest matches this rollout
+          ref: main
+          fetch-depth: 0
+      - name: Publish only the fully rolled-out digest in source artifacts
         env:
-          EXPECTED: ${{ needs.build-and-release.outputs.image_digest }}
+          IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
+          IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
         run: |
           set -euo pipefail
-          echo "expected digest: ${EXPECTED}"
-          for attempt in $(seq 1 30); do
-            live="$(curl -fsS "https://trust.trustedrouter.com/trust/image-digest-gcp.txt?nocache=${GITHUB_RUN_ID}-${attempt}" || true)"
-            if [ "${live}" = "${EXPECTED}" ]; then
-              echo "trust page matches the rolled-out digest"
-              exit 0
-            fi
-            echo "attempt ${attempt}: live='${live}' — waiting for Pages/CDN propagation"
-            sleep 20
-          done
-          echo "trust page digest does not match the rolled-out digest after 10 minutes" >&2
-          exit 1
+          git pull --rebase origin main
+          python3 tools/write-trust-artifacts.py \
+            --out-dir trust-page \
+            --commit "${IMAGE_REF##*gcp-release-}" \
+            --image-reference "${IMAGE_REF}" \
+            --image-digest "${IMAGE_DIGEST}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust
+          if git diff --cached --quiet; then
+            echo "final trust-page artifacts unchanged"
+          else
+            git commit -m "[bot] finalize enclave release ${IMAGE_DIGEST}"
+            git push origin HEAD:main
+          fi
+
+  # Publish and verify the single final digest through the same reusable path
+  # used for the pre-rollout transition set.
+  publish-trust-page:
+    needs: [build-and-release, finalize-trust-artifacts]
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/publish-trust-page.yml
+    with:
+      expected_digests: ${{ needs.build-and-release.outputs.image_digest }}
+      expected_references: ${{ needs.build-and-release.outputs.image_ref }}
