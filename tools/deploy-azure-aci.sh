@@ -77,6 +77,9 @@
 #   ./tools/deploy-azure-aci.sh --apply policy bind  # one or more phases
 #   ./tools/deploy-azure-aci.sh print-env            # env JSON for the sealer
 #   ./tools/deploy-azure-aci.sh verify               # re-check a live deploy
+#   ./tools/deploy-azure-aci.sh audit                # read-only: is the LIVE
+#                                                    #   workload still authorized,
+#                                                    #   and is a bind window open?
 #   ./tools/deploy-azure-aci.sh --apply rollback     # put the old pin back
 #   ./tools/deploy-azure-aci.sh logs                 # both containers' logs
 #
@@ -235,6 +238,24 @@ APPLY=0
 # ---------------------------------------------------------------------------
 # plumbing
 # ---------------------------------------------------------------------------
+
+# The ONE way this script runs the attestation verifier.
+#
+# There were two call sites invoking it two different ways — one through
+# python3 and $REPO_ROOT, one executing it directly from $SCRIPT_DIR — so they
+# could disagree about which interpreter and which copy of the file ran, and
+# neither could be exercised by a test. This is the seam: tests point
+# VERIFY_ATTESTATION_CMD at a stub, and the deploy's most important assertion
+# stops being the one thing the suite cannot reach.
+VERIFY_ATTESTATION_CMD="${VERIFY_ATTESTATION_CMD:-}"
+verify_attestation() {
+  if [ -n "$VERIFY_ATTESTATION_CMD" ]; then
+    # shellcheck disable=SC2086
+    $VERIFY_ATTESTATION_CMD "$@"
+  else
+    python3 "$REPO_ROOT/tools/verify-attestation.py" "$@"
+  fi
+}
 
 log()  { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 die()  { printf '\n[FAIL] %s\n' "$*" >&2; exit 1; }
@@ -495,11 +516,32 @@ export MAA_ENDPOINT VAULT SKR_KEY BUNDLE_SECRET SA_KEY_ENTRY LOCATION API_HOST \
 # tools/azure-sync-secrets.sh prints the exact line to set after every seal, so
 # the pinned value is never something an operator has to go hunting for. A
 # dry-run still only warns: reviewing a template is not deploying one.
+# Fatal only for the phases that actually BAKE the bundle version into a
+# measured container. It used to fire on any --apply, which meant `narrow`,
+# `narrow-live`, `rollback` and `logs` — phases that never read the bundle and
+# cannot pin anything — all demanded a version too.
+#
+# That is not a harmless extra prompt. The only way past it is
+# ALLOW_UNPINNED_BUNDLE=1, so an operator repairing a release policy at 2am
+# learns to set that variable, and carries the habit into the one phase where
+# it silently un-pins the secret set of a real deploy. A guard that fires where
+# it does not apply gets routed around where it does.
+bundle_pin_is_required_for_phase() {
+  case "$1" in
+    build|template|policy|deploy|all|print-env) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 warn_unpinned_bundle() {
   if [ -n "$QUILL_AZURE_BUNDLE_VERSION" ]; then
     return
   fi
-  if [ "$APPLY" = "1" ] && [ "${ALLOW_UNPINNED_BUNDLE:-0}" != "1" ]; then
+  local needs_pin=1
+  for phase in "${PHASES[@]:-all}"; do
+    bundle_pin_is_required_for_phase "$phase" && needs_pin=0
+  done
+  if [ "$APPLY" = "1" ] && [ "$needs_pin" = "0" ] && [ "${ALLOW_UNPINNED_BUNDLE:-0}" != "1" ]; then
     log "FATAL: QUILL_AZURE_BUNDLE_VERSION is unset."
     note "The enclave would read the CURRENT version of secret '$BUNDLE_SECRET', so"
     note "anyone holding secrets/set on $VAULT could swap or roll back the whole"
@@ -935,6 +977,62 @@ phase_bind() {
 # key keeps releasing to a measurement nobody is running and nobody is watching
 # — a workload that could be resurrected from an old image and would boot with
 # every current secret.
+# ---------------------------------------------------------------------------
+# phase: narrow-live — close a window whose deploy workdir is gone
+# ---------------------------------------------------------------------------
+# `narrow` narrows to what THIS WORKSPACE built. That is the right source
+# during a deploy, and it is unavailable in the situation that actually leaves
+# windows open: a deploy that failed weeks ago, on a different machine, whose
+# $WORKDIR was a temp directory that no longer exists. `audit` can then see the
+# open window and offer no way to close it, which is how it stays open.
+#
+# So this narrows to what is RUNNING instead — but only after proving the
+# running thing attests, because narrowing to an unverified measurement is
+# strictly worse than the open window it replaces: it would revoke every other
+# measurement while blessing one nobody has checked. The proof is the same
+# verify-attestation.py the deploy uses, pinned to the same MAA authority.
+#
+# Deliberately NOT part of `all`. During a real deploy the template is present
+# and authoritative; reaching for the live group there would narrow to whatever
+# happens to be running, including the workload the deploy was replacing.
+phase_narrow_live() {
+  require_tool python3
+  require_tool curl
+
+  az_cli container show --name "$CONTAINER_GROUP" --resource-group "$RESOURCE_GROUP" \
+    --query "confidentialComputeProperties.ccePolicy" -o tsv > "$WORKDIR/live-cce.b64" 2>/dev/null \
+    || die "no container group '$CONTAINER_GROUP' in '$RESOURCE_GROUP' — nothing live to narrow to"
+  [ -s "$WORKDIR/live-cce.b64" ] \
+    || die "container group '$CONTAINER_GROUP' has no CCE policy — it is not a confidential group"
+
+  local live
+  live="$(python3 -c '
+import base64, hashlib, sys
+print(hashlib.sha256(base64.b64decode(open(sys.argv[1]).read().strip())).hexdigest())
+' "$WORKDIR/live-cce.b64")"
+  log "phase narrow-live: live workload measures $live"
+
+  if [ "$APPLY" != "1" ]; then
+    log "dry-run — would verify the live enclave attests to $live, then pin it alone"
+    return 0
+  fi
+
+  log "proving the live enclave actually attests before trusting its measurement"
+  verify_attestation \
+    --api-host "$API_HOST" \
+    --expected-maa-issuer "https://$MAA_ENDPOINT" \
+    --expected-hostdata "$live" \
+    || die "the live enclave did NOT attest to $live.
+       Refusing to narrow: that would revoke every other measurement in favour of
+       one that has not been proved. Investigate before closing the window —
+       the open window is the safer of the two states."
+
+  log "phase narrow-live: $SKR_KEY in $VAULT -> hostdata $live only"
+  write_release_policy "$live"
+  apply_release_policy "$live"
+  rm -f "$WORKDIR/previous-hostdata.txt"
+}
+
 phase_narrow() {
   [ -f "$WORKDIR/template.json" ] || die "run the template phase first"
   local hash
@@ -1126,8 +1224,22 @@ apply_release_policy() {
 # line. This is the authority on what the deploy must measure — not our local
 # hash file. It is a set rather than a single value because bind deliberately
 # widens it for the duration of a deploy; see the header.
+# The hostdata values this key releases to FOR THIS REGION'S MAA AUTHORITY.
+#
+# Scoping to one authority is not tidiness. The release policy is shared: one
+# key, one `anyOf` clause per region. An unscoped read makes `bind` compute its
+# baseline from EVERY region's measurement, so bringing up region two would
+# widen region two's clause to also accept region one's workload — and
+# `rollback` in region two would then restore region one's hashes into region
+# two's clause, which is not a state any deploy of region two can reach or
+# undo. The blast radius is small (an attacker would have to run region one's
+# exact measured image in region two) but the mess is permanent, and it grows
+# with every region added.
+#
+# This was written when there was one region, where scoped and unscoped are the
+# same answer. They stop being the same answer at region two.
 bound_hostdata() {
-  az_cli keyvault key show --vault-name "$VAULT" --name "$SKR_KEY" \
+  MAA_ENDPOINT="$MAA_ENDPOINT" az_cli keyvault key show --vault-name "$VAULT" --name "$SKR_KEY" \
     --query "releasePolicy.encodedPolicy" -o tsv 2>/dev/null \
   | python3 -c '
 import base64, json, sys
@@ -1149,8 +1261,12 @@ if raw.lstrip().startswith("{"):
     policy = json.loads(raw)
 else:
     policy = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
+import os
+authority = "https://" + os.environ["MAA_ENDPOINT"]
 seen = []
 for clause in policy.get("anyOf", []):
+    if clause.get("authority") != authority:
+        continue
     for claim in clause.get("allOf", []):
         if claim.get("claim") == "x-ms-sevsnpvm-hostdata":
             value = claim.get("equals", "")
@@ -1159,6 +1275,106 @@ for clause in policy.get("anyOf", []):
 for value in seen:
     print(value)
 '
+}
+
+# ---------------------------------------------------------------------------
+# phase: audit — read-only; is the LIVE state what the key actually allows?
+# ---------------------------------------------------------------------------
+# Every other phase asks "did my deploy work". This one asks the two questions
+# nothing else asks, about a region that is already up and looks fine.
+#
+#   1. IS THE RUNNING WORKLOAD STILL AUTHORIZED? A running enclave holds its
+#      unsealed secrets in memory, so it survives losing its key release. It
+#      dies at its next COLD START — an ACI host maintenance event, weeks
+#      later, at no particular time. Nothing between now and then reports it.
+#
+#   2. IS A BIND WINDOW STILL OPEN? `bind` widens to {old, new} and `narrow`
+#      closes it after `verify`. A deploy that dies at `verify` leaves the
+#      window open BY DESIGN, so rollback stays possible — and then nobody
+#      runs `narrow`, and a retired measurement keeps the right to unseal
+#      every current provider credential, indefinitely. UAE North was sitting
+#      in exactly this state when this phase was written, from a deploy weeks
+#      earlier that failed at verify.
+#
+# Both are states where the fleet is serving, the dashboards are green, and the
+# thing that is wrong is what would happen NEXT. That is the failure shape this
+# stack keeps rediscovering, so it gets a command.
+phase_audit() {
+  local encoded
+  encoded="$(az_cli keyvault key show --vault-name "$VAULT" --name "$SKR_KEY" \
+    --query "releasePolicy.encodedPolicy" -o tsv 2>/dev/null || true)"
+  [ -n "$encoded" ] || die "could not read the release policy of $SKR_KEY in $VAULT"
+
+  log "phase audit: $SKR_KEY in $VAULT"
+  printf '%s' "$encoded" > "$WORKDIR/release-policy.raw"
+  "$SCRIPT_DIR/azure_decode_release_policy.py" "$WORKDIR/release-policy.raw" \
+    > "$WORKDIR/release-policy.json" \
+    || die "could not decode the release policy — see tools/azure_decode_release_policy.py"
+
+  python3 - "$WORKDIR/release-policy.json" <<'PY'
+import json, sys
+policy = json.load(open(sys.argv[1]))
+for clause in policy.get("anyOf", []):
+    values = [c.get("equals") for c in clause.get("allOf", [])
+              if c.get("claim") == "x-ms-sevsnpvm-hostdata"]
+    print("  authority %s" % clause.get("authority"))
+    for value in values:
+        print("    hostdata %s" % value)
+PY
+
+  # What is actually running here, measured the same way the deploy measures it:
+  # sha256 over the DECODED CCE policy attached to the live container group.
+  local live=""
+  if az_cli container show --name "$CONTAINER_GROUP" --resource-group "$RESOURCE_GROUP" \
+       --query "confidentialComputeProperties.ccePolicy" -o tsv >"$WORKDIR/live-cce.b64" 2>/dev/null \
+     && [ -s "$WORKDIR/live-cce.b64" ]; then
+    live="$(python3 -c '
+import base64, hashlib, sys
+raw = open(sys.argv[1]).read().strip()
+if raw:
+    print(hashlib.sha256(base64.b64decode(raw)).hexdigest())
+' "$WORKDIR/live-cce.b64")"
+  fi
+
+  local allowed problems=0
+  allowed="$(bound_hostdata)"
+  log "authority for this region: https://$MAA_ENDPOINT"
+
+  if [ -z "$live" ]; then
+    note "no live container group '$CONTAINER_GROUP' in '$RESOURCE_GROUP' — skipping the
+      running-workload checks. This is expected before a region's first deploy."
+  else
+    log "live workload hostdata: $live"
+    if printf '%s\n' "$allowed" | grep -qxF "$live"; then
+      log "[ok] the running workload is still authorized to release the key"
+    else
+      problems=$((problems + 1))
+      printf >&2 '\n[PROBLEM] the RUNNING workload is NOT in this authority'"'"'s release policy.\n'
+      printf >&2 '  It is serving now only because it holds its secrets in memory. It will\n'
+      printf >&2 '  fail at its next cold start — an ACI host maintenance event, at no time\n'
+      printf >&2 '  of your choosing — with a Key Vault 403.\n'
+      printf >&2 '  Fix: ./tools/deploy-azure-aci.sh --apply bind   (with this region'"'"'s env)\n'
+    fi
+
+    local stale
+    stale="$(printf '%s\n' "$allowed" | grep -v '^$' | grep -vxF "$live" || true)"
+    if [ -n "$stale" ]; then
+      problems=$((problems + 1))
+      printf >&2 '\n[PROBLEM] a bind window is still OPEN: %s retired measurement(s) can still\n' \
+        "$(printf '%s\n' "$stale" | grep -c .)"
+      printf >&2 '  unseal every current provider credential.\n'
+      printf '%s\n' "$stale" | sed 's/^/    /' >&2
+      printf >&2 '  This is what a deploy that died at `verify` leaves behind. Once the live\n'
+      printf >&2 '  workload is verified, close it:\n'
+      printf >&2 '  Fix: ./tools/deploy-azure-aci.sh --apply narrow   (needs that deploy'"'"'s workdir)\n'
+    else
+      log "[ok] no bind window is open — the key releases only to what is running"
+    fi
+  fi
+
+  [ "$problems" -eq 0 ] || die "$problems problem(s) above. Each one is currently invisible
+       to every dashboard, which is why this phase exists."
+  log "audit clean"
 }
 
 # ---------------------------------------------------------------------------
@@ -1393,7 +1609,7 @@ EOF
   #                          so "our instance signed it" does not mean "it
   #                          describes our workload"
   log "verifying the live attestation against the pin the KEY requires"
-  python3 "$REPO_ROOT/tools/verify-attestation.py" \
+  verify_attestation \
     --api-host "$API_HOST" \
     --connect-ip "$ip" \
     --expected-maa-issuer "https://${MAA_ENDPOINT}" \
@@ -1468,8 +1684,10 @@ for phase in "${PHASES[@]}"; do
     deploy)   phase_deploy ;;
     verify)   phase_verify ;;
     narrow)   phase_narrow ;;
+    audit)    phase_audit ;;
+    narrow-live) phase_narrow_live ;;
     rollback) phase_rollback ;;
     logs)     phase_logs ;;
-    *) die "unknown phase '$phase' (build template policy bind deploy verify narrow rollback all print-env logs)" ;;
+    *) die "unknown phase '$phase' (build template policy bind deploy verify narrow narrow-live audit rollback all print-env logs)" ;;
   esac
 done

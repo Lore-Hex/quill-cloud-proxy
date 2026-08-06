@@ -40,6 +40,7 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+FOREIGN_AUTHORITY = "https://trquillsea.sasia.attest.azure.net"
 SCRIPT = REPO_ROOT / "tools" / "deploy-azure-aci.sh"
 SEALER = REPO_ROOT / "tools" / "azure-seal-bundle.py"
 
@@ -53,6 +54,10 @@ SEALER = REPO_ROOT / "tools" / "azure-seal-bundle.py"
 
 AZ_STUB = r'''#!/usr/bin/env python3
 import base64, json, os, sys
+
+# A second region's MAA instance. Kept in sync with the module-level
+# constant of the same name so tests can assert on it.
+FOREIGN_AUTHORITY = "https://trquillsea.sasia.attest.azure.net"
 
 state = os.environ["STUB_STATE"]
 
@@ -111,27 +116,40 @@ if argv[:3] == ["keyvault", "key", "set-attributes"]:
     path = arg("--policy") or arg("--release-policy")
     with open(path) as handle:
         policy = json.load(handle)
-    pins = [claim["equals"]
-            for clause in policy.get("anyOf", [])
-            for claim in clause.get("allOf", [])
-            if claim.get("claim") == "x-ms-sevsnpvm-hostdata"]
-    write("bound-hostdata", "\n".join(pins))
-    log("mutations.log", "MUTATE-BIND-KEY :: pins=" + ",".join(pins))
+    # Split by AUTHORITY. The stub used to flatten every clause into one set,
+    # which modelled a world where regions share a pin list — they do not, and
+    # the flattening hid the very bug these tests exist to catch.
+    mine, theirs = [], []
+    for clause in policy.get("anyOf", []):
+        bucket = theirs if clause.get("authority") == FOREIGN_AUTHORITY else mine
+        for claim in clause.get("allOf", []):
+            if claim.get("claim") == "x-ms-sevsnpvm-hostdata":
+                bucket.append(claim["equals"])
+    write("bound-hostdata", "\n".join(mine))
+    write("foreign-hostdata", "\n".join(theirs))
+    log("mutations.log", "MUTATE-BIND-KEY :: pins=" + ",".join(mine))
     sys.exit(0)
 
 if argv[:3] == ["keyvault", "key", "show"]:
     bound = read("bound-hostdata")
-    if not bound:
+    foreign = read("foreign-hostdata")
+    if not bound and not foreign:
         sys.exit(0)
     # The authority MUST match the one this deploy binds under. The real
     # multi-region carry-over preserves clauses belonging to OTHER authorities,
     # so a stub speaking as "stub.attest.azure.net" would be modelling a second
     # region that does not exist and its pins would accumulate forever.
     authority = "https://" + os.environ.get("MAA_ENDPOINT", "trquilluaen.uaen.attest.azure.net")
-    document = {"version": "1.0.0", "anyOf": [
-        {"authority": authority,
-         "allOf": [{"claim": "x-ms-sevsnpvm-hostdata", "equals": pin}]}
-        for pin in bound.splitlines()]}
+    clauses = [{"authority": authority,
+                "allOf": [{"claim": "x-ms-sevsnpvm-hostdata", "equals": pin}]}
+               for pin in bound.splitlines()]
+    # A SECOND region, if the test asked for one. Its clauses must survive every
+    # write and must never be read as if they belonged to this region.
+    for pin in read("foreign-hostdata").splitlines():
+        if pin:
+            clauses.append({"authority": FOREIGN_AUTHORITY,
+                            "allOf": [{"claim": "x-ms-sevsnpvm-hostdata", "equals": pin}]})
+    document = {"version": "1.0.0", "anyOf": clauses}
     # Emitted as the CLI really emits it: a Python bytes repr, not base64.
     print(repr(json.dumps(document).encode()))
     sys.exit(0)
@@ -159,6 +177,12 @@ if argv[:2] == ["container", "show"]:
                   sys.stdout)
         print()
         sys.exit(0)
+    if not exists:
+        print("ERROR: (ResourceNotFound) The Resource "
+              "'Microsoft.ContainerInstance/containerGroups/%s' under resource group "
+              "'%s' was not found." % (arg("--name"), arg("--resource-group")),
+              file=sys.stderr)
+        sys.exit(3)
     if query == "confidentialComputeProperties.ccePolicy":
         print("" if flag("show-omits-policy") else read("deployed-policy"))
     elif query == "instanceView.state":
@@ -1098,6 +1122,247 @@ class TestReleasePolicyDecoder(unittest.TestCase):
     def test_empty_input_fails(self) -> None:
         self.assertNotEqual(self._run("").returncode, 0)
         self.assertNotEqual(self._run("None").returncode, 0)
+
+
+class TestBoundHostdataIsScopedToThisRegion(DeployHarness):
+    """The release policy is SHARED across regions; reads of it must not be.
+
+    One key, one `anyOf` clause per region. Reading hostdata across every
+    clause was correct when there was one region and silently wrong at two: it
+    makes `bind` compute its baseline from the other region's measurement, so
+    bringing up region two widens region two's clause to also accept region
+    one's workload — and `rollback` in region two then restores region one's
+    hashes into region two's clause, a state no deploy of region two can reach
+    or undo.
+    """
+
+    def test_bind_does_not_absorb_another_regions_measurement(self) -> None:
+        foreign = "f" * 64
+        self.state_file("foreign-hostdata").write_text(foreign)
+
+        mine = self.healthy_deploy()
+
+        self.assertNotIn(
+            foreign,
+            self.bound_pins(),
+            "this region's clause absorbed another region's measurement",
+        )
+        self.assertIn(mine, self.bound_pins())
+
+    def test_the_other_regions_clause_survives_the_write(self) -> None:
+        """Scoping the READ must not turn into dropping the other clause.
+
+        Losing it is worse than absorbing it: the other region keeps serving
+        and fails its next COLD START, which is the quietest way to lose a
+        region.
+        """
+        foreign = "f" * 64
+        self.state_file("foreign-hostdata").write_text(foreign)
+        self.healthy_deploy()
+
+        written = json.loads((self.work / "release-policy.json").read_text())
+        authorities = {clause["authority"] for clause in written["anyOf"]}
+        self.assertIn(FOREIGN_AUTHORITY, authorities, "the other region's clause was dropped")
+
+
+class TestAuditSeesWhatDashboardsCannot(DeployHarness):
+    """`audit` asks the two questions about a region that is already up.
+
+    Both describe a fleet that is serving, green, and wrong about what happens
+    NEXT — which is why nothing else reports them.
+    """
+
+    def test_a_clean_region_audits_clean(self) -> None:
+        self.healthy_deploy()
+        result = self.run_script("audit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("audit clean", result.stderr)
+
+    def test_an_open_bind_window_is_a_failure(self) -> None:
+        """A deploy that died at `verify` leaves {old, new} pinned forever.
+
+        The retired measurement keeps the right to unseal every current
+        provider credential. UAE North was in exactly this state when `audit`
+        was written, from a deploy weeks earlier.
+        """
+        live = self.healthy_deploy()
+        retired = "1" * 64
+        self.state_file("bound-hostdata").write_text(f"{live}\n{retired}")
+
+        result = self.run_script("audit")
+
+        self.assertNotEqual(result.returncode, 0, "an open bind window audited clean")
+        self.assertIn("bind window is still OPEN", result.stderr)
+        self.assertIn(retired, result.stderr)
+
+    def test_a_running_workload_that_lost_its_authorization_is_a_failure(self) -> None:
+        """It is serving only because it holds its secrets in MEMORY.
+
+        It dies at its next cold start — an ACI host maintenance event, at no
+        time of anyone's choosing. Nothing between now and then reports it.
+        """
+        self.healthy_deploy()
+        self.state_file("bound-hostdata").write_text("2" * 64)
+
+        result = self.run_script("audit")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("NOT in this authority", result.stderr)
+        self.assertIn("cold start", result.stderr)
+
+    def test_audit_never_mutates(self) -> None:
+        """It runs against production to answer a question, so it must be inert
+        even when it finds problems."""
+        live = self.healthy_deploy()
+        self.state_file("bound-hostdata").write_text(f"{live}\n{'1' * 64}")
+        self.clear_mutations()
+
+        self.run_script("--apply", "audit")
+
+        self.assertEqual(self.mutations(), [], "audit mutated Azure")
+
+    def test_a_region_with_no_group_yet_is_not_a_failure(self) -> None:
+        """Before a region's first deploy there is nothing to check, and
+        `audit` must not become a thing operators learn to ignore."""
+        # The key already exists, carrying the first region's clause.
+        self.state_file("foreign-hostdata").write_text("f" * 64)
+        result = self.run_script("audit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_audit_ignores_the_other_regions_clauses(self) -> None:
+        """Otherwise every region audits dirty as soon as a second exists."""
+        self.state_file("foreign-hostdata").write_text("f" * 64)
+        self.healthy_deploy()
+        result = self.run_script("audit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class TestNarrowLive(DeployHarness):
+    """Closing a window whose deploy workdir is long gone.
+
+    `narrow` narrows to what THIS workspace built, which is unavailable in the
+    situation that actually leaves windows open: a deploy that failed weeks
+    ago, on another machine, into a temp directory. `audit` could then see the
+    window and offer no way to close it, which is how it stays open.
+    """
+
+    def _verifier(self, *, succeeds: bool) -> str:
+        path = self.bin / "stub-verify"
+        path.write_text(
+            "#!/usr/bin/env bash\n"
+            f'echo "$@" >> "$STUB_STATE/verify.log"\n'
+            f"exit {0 if succeeds else 1}\n"
+        )
+        path.chmod(0o755)
+        return str(path)
+
+    def test_narrows_to_the_live_workload(self) -> None:
+        live = self.healthy_deploy()
+        self.state_file("bound-hostdata").write_text(f"{live}\n{'1' * 64}")
+
+        result = self.run_script(
+            "--apply", "narrow-live", VERIFY_ATTESTATION_CMD=self._verifier(succeeds=True)
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.bound_pins(), [live])
+
+    def test_refuses_when_the_live_enclave_does_not_attest(self) -> None:
+        """Narrowing to an UNVERIFIED measurement is strictly worse than the
+        open window it replaces: it revokes every other measurement while
+        blessing one nobody has checked."""
+        live = self.healthy_deploy()
+        retired = "1" * 64
+        self.state_file("bound-hostdata").write_text(f"{live}\n{retired}")
+        self.clear_mutations()
+
+        result = self.run_script(
+            "--apply", "narrow-live", VERIFY_ATTESTATION_CMD=self._verifier(succeeds=False)
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did NOT attest", result.stderr)
+        self.assertEqual(
+            sorted(self.bound_pins()),
+            sorted([live, retired]),
+            "the pin was changed despite a failed attestation",
+        )
+
+    def test_verifies_against_this_regions_authority(self) -> None:
+        """*.attest.azure.net is a namespace every Azure tenant can join, not
+        an authority. A verifier called without the issuer pin proves nothing.
+        """
+        self.healthy_deploy()
+        verifier = self._verifier(succeeds=True)
+        self.run_script("--apply", "narrow-live", VERIFY_ATTESTATION_CMD=verifier)
+
+        recorded = self.read_state("verify.log")
+        self.assertIn("--expected-maa-issuer", recorded)
+        self.assertIn("https://" + os.environ.get(
+            "MAA_ENDPOINT", "trquilluaen.uaen.attest.azure.net"), recorded)
+
+    def test_dry_run_does_not_narrow(self) -> None:
+        live = self.healthy_deploy()
+        retired = "1" * 64
+        self.state_file("bound-hostdata").write_text(f"{live}\n{retired}")
+        self.clear_mutations()
+
+        result = self.run_script("narrow-live", VERIFY_ATTESTATION_CMD=self._verifier(succeeds=True))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+    def test_refuses_when_nothing_is_running(self) -> None:
+        result = self.run_script(
+            "--apply", "narrow-live", VERIFY_ATTESTATION_CMD=self._verifier(succeeds=True)
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("nothing live to narrow to", result.stderr)
+
+
+class TestBundlePinGuardFiresWhereItApplies(DeployHarness):
+    """A guard that fires where it does not apply gets routed around where it does.
+
+    The only way past the unpinned-bundle refusal is ALLOW_UNPINNED_BUNDLE=1.
+    While it fired on every --apply, an operator repairing a release policy at
+    2am had to set that variable — and carried the habit into the one phase
+    where it silently un-pins the secret set of a real deploy.
+    """
+
+    def test_deploy_still_refuses_an_unpinned_bundle(self) -> None:
+        self.healthy_deploy()
+        result = self.run_script("--apply", "deploy", QUILL_AZURE_BUNDLE_VERSION="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("QUILL_AZURE_BUNDLE_VERSION is unset", result.stderr)
+
+    def test_build_still_refuses_an_unpinned_bundle(self) -> None:
+        """The version is baked into the measured container at build time."""
+        result = self.run_script("--apply", "build", QUILL_AZURE_BUNDLE_VERSION="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("QUILL_AZURE_BUNDLE_VERSION is unset", result.stderr)
+
+    def test_repair_phases_do_not_demand_a_bundle_version(self) -> None:
+        """narrow, narrow-live and rollback never read the bundle and cannot
+        pin anything, so there is nothing for the operator to supply."""
+        live = self.healthy_deploy()
+        self.state_file("bound-hostdata").write_text(f"{live}\n{'1' * 64}")
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+
+        result = self.run_script(
+            "--apply", "narrow-live",
+            QUILL_AZURE_BUNDLE_VERSION="",
+            VERIFY_ATTESTATION_CMD=str(verifier),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.bound_pins(), [live])
+
+    def test_audit_does_not_demand_a_bundle_version(self) -> None:
+        self.healthy_deploy()
+        result = self.run_script("--apply", "audit", QUILL_AZURE_BUNDLE_VERSION="")
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
