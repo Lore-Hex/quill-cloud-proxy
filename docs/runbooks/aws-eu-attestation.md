@@ -103,7 +103,7 @@ distinct cause, so read the code before assuming:
 | Response | Meaning |
 | --- | --- |
 | `401 Invalid API key` | the enclave could not authorize AT ALL — usually the internal token is missing from this region's Secrets Manager |
-| `404 route not found` | auth SUCCEEDED; that path just isn't a gateway route (`/v1/models` is control-plane-only — the GCP gateway 404s identically) |
+| `404 route not found` | auth SUCCEEDED; that path is not a gateway route. `GET /v1/models` is the public catalog exception and should return `200` without auth. |
 | `502 gateway authorization failed` after ~28s | the authorize call TIMED OUT. 28s is retries, not rejection — a rejection is fast |
 | `400 Model does not support chat completions: auto` | full path works; use a catalog id such as `trustedrouter/auto` |
 | `200` | done |

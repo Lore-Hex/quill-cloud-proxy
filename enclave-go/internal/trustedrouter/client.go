@@ -16,6 +16,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -26,6 +28,12 @@ const internalTokenHeader = "x-trustedrouter-internal-token"
 const trustedSyntheticApp = "TrustedRouter Synthetic"
 
 const imageOutputTokenEstimate = 1290
+
+const (
+	publicModelsFreshTTL = 5 * time.Minute
+	publicModelsStaleTTL = 30 * time.Minute
+	publicModelsMaxBytes = 8 << 20
+)
 
 var imageDataURLPattern = regexp.MustCompile(`data:image/[^;"\s]+;base64,[A-Za-z0-9+/=_-]+`)
 
@@ -38,6 +46,9 @@ type Client struct {
 	httpc          *http.Client
 	region         string
 	authorizeRetry retryPolicy
+	modelsMu       sync.Mutex
+	modelsBody     []byte
+	modelsFetched  time.Time
 }
 
 func NewFromEnv() *Client {
@@ -86,6 +97,83 @@ func New(baseURL, internalToken string, httpc *http.Client) *Client {
 
 func (c *Client) Enabled() bool {
 	return c != nil && len(c.baseURLs) > 0 && c.internalToken != ""
+}
+
+// PublicModels returns the public model catalog through the same attested
+// origin clients use for inference. The catalog contains public metadata only;
+// this request carries neither a user bearer nor the internal gateway token.
+// A short cache avoids turning catalog discovery into a control-plane hot path,
+// while a bounded stale copy keeps SDK discovery available during a brief
+// control-plane interruption.
+func (c *Client) PublicModels(ctx context.Context) ([]byte, error) {
+	if c == nil || len(c.baseURLs) == 0 {
+		return nil, fmt.Errorf("trustedrouter: no control-plane endpoint configured")
+	}
+
+	c.modelsMu.Lock()
+	defer c.modelsMu.Unlock()
+
+	now := time.Now()
+	if len(c.modelsBody) > 0 && now.Sub(c.modelsFetched) <= publicModelsFreshTTL {
+		return append([]byte(nil), c.modelsBody...), nil
+	}
+
+	body, err := c.fetchPublicModels(ctx)
+	if err == nil {
+		c.modelsBody = append(c.modelsBody[:0], body...)
+		c.modelsFetched = now
+		return append([]byte(nil), c.modelsBody...), nil
+	}
+	if len(c.modelsBody) > 0 && now.Sub(c.modelsFetched) <= publicModelsStaleTTL {
+		fmt.Fprintf(os.Stderr, "enclave.models_stale_fallback err=%q\n", err.Error())
+		return append([]byte(nil), c.modelsBody...), nil
+	}
+	return nil, err
+}
+
+func (c *Client) fetchPublicModels(ctx context.Context) ([]byte, error) {
+	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var lastErr error
+	for _, base := range c.baseURLs {
+		req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, base+"/models", nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/json")
+		resp, err := c.httpc.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("trustedrouter: get /models: %w", err)
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, publicModelsMaxBytes+1))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("trustedrouter: read /models: %w", readErr)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("trustedrouter: /models http %d", resp.StatusCode)
+			continue
+		}
+		if len(body) > publicModelsMaxBytes {
+			lastErr = fmt.Errorf("trustedrouter: /models response too large")
+			continue
+		}
+		var envelope struct {
+			Data []json.RawMessage `json:"data"`
+		}
+		if json.Unmarshal(body, &envelope) != nil || len(envelope.Data) == 0 {
+			lastErr = fmt.Errorf("trustedrouter: invalid /models response")
+			continue
+		}
+		return body, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("trustedrouter: no control-plane endpoint configured")
+	}
+	return nil, lastErr
 }
 
 // primaryBaseURL is this cloud's own control plane — the one used unless it

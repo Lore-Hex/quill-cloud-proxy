@@ -456,8 +456,8 @@ func serveOneRequest(
 		return keepAlive
 	}
 
-	// /attestation is the only path that's anonymous: clients call it
-	// BEFORE pinning, so requiring a bearer would defeat the purpose.
+	// /attestation is anonymous because clients call it BEFORE pinning, so
+	// requiring a bearer would defeat the purpose.
 	// Trust binding still holds — the doc commits to the live TLS cert,
 	// which only this enclave can speak.
 	if method == "GET" && routePath == "/attestation" {
@@ -478,6 +478,13 @@ func serveOneRequest(
 		// exporter was attested. Bound repeated attestations so keep-alive
 		// cannot become an unbounded anonymous request loop.
 		return *attestationCount < maxAttestationsPerConn
+	}
+
+	// Public SDK discovery belongs on the documented API origin. The enclave
+	// relays only catalog metadata; prompt-bearing routes remain behind the
+	// authentication gate below.
+	if maybeServePublicModels(ctx, conn, method, routePath, trGateway) {
+		return
 	}
 
 	trEnabled := trGateway != nil && trGateway.Enabled()

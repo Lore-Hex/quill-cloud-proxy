@@ -9,9 +9,107 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
+
+func TestPublicModelsCachesCatalogWithoutCredentials(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodGet || r.URL.Path != "/models" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("authorization leaked to public catalog: %q", got)
+		}
+		if got := r.Header.Get(internalTokenHeader); got != "" {
+			t.Fatalf("internal token leaked to public catalog: %q", got)
+		}
+		_, _ = io.WriteString(w, `{"data":[{"id":"trustedrouter/auto"}]}`)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "internal-secret", server.Client())
+	first, err := client.PublicModels(t.Context())
+	if err != nil {
+		t.Fatalf("PublicModels first: %v", err)
+	}
+	first[0] = 'x'
+	second, err := client.PublicModels(t.Context())
+	if err != nil {
+		t.Fatalf("PublicModels second: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("catalog calls = %d, want 1", calls)
+	}
+	if !strings.Contains(string(second), "trustedrouter/auto") {
+		t.Fatalf("cached catalog was mutated: %s", second)
+	}
+}
+
+func TestPublicModelsUsesBoundedStaleCatalogOnRefreshFailure(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			_, _ = io.WriteString(w, `{"data":[{"id":"trustedrouter/zdr"}]}`)
+			return
+		}
+		http.Error(w, "temporary failure", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "internal", server.Client())
+	want, err := client.PublicModels(t.Context())
+	if err != nil {
+		t.Fatalf("PublicModels prime: %v", err)
+	}
+	client.modelsFetched = time.Now().Add(-publicModelsFreshTTL - time.Second)
+	got, err := client.PublicModels(t.Context())
+	if err != nil {
+		t.Fatalf("PublicModels stale fallback: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("stale body = %s, want %s", got, want)
+	}
+	if calls != 2 {
+		t.Fatalf("catalog calls = %d, want 2", calls)
+	}
+}
+
+func TestPublicModelsRejectsMalformedCatalog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":[]}`)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "internal", server.Client())
+	if _, err := client.PublicModels(t.Context()); err == nil || !strings.Contains(err.Error(), "invalid /models response") {
+		t.Fatalf("PublicModels error = %v", err)
+	}
+}
+
+func TestPublicModelsFallsThroughReadOnlyControlPlanes(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer primary.Close()
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":[{"id":"trustedrouter/e2e"}]}`)
+	}))
+	defer secondary.Close()
+
+	client := New(primary.URL+","+secondary.URL, "internal", secondary.Client())
+	body, err := client.PublicModels(t.Context())
+	if err != nil {
+		t.Fatalf("PublicModels: %v", err)
+	}
+	if !strings.Contains(string(body), "trustedrouter/e2e") {
+		t.Fatalf("catalog = %s", body)
+	}
+}
 
 func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 	rawKey := "sk-tr-v1-secret"
