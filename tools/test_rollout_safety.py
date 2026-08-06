@@ -95,6 +95,13 @@ class RolloutSafetyTests(unittest.TestCase):
         )
         self.assertIn('--accepted-image-digests "${previous}"', workflow)
         self.assertIn(
+            '--accepted-image-references "${previous_references}"', workflow
+        )
+        self.assertIn(
+            "expected_references: ${{ needs.build-and-release.outputs.accepted_references }}",
+            workflow,
+        )
+        self.assertIn(
             "needs: [build-and-release, finalize-trust-artifacts]",
             workflow,
         )

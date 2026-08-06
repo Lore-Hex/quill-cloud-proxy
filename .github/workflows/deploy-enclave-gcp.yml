@@ -129,6 +129,7 @@ jobs:
       image_ref: ${{ steps.set-vars.outputs.image_ref }}
       image_digest: ${{ steps.resolve-digest.outputs.image_digest }}
       accepted_digests: ${{ steps.write-trust.outputs.accepted_digests }}
+      accepted_references: ${{ steps.write-trust.outputs.accepted_references }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -222,14 +223,18 @@ jobs:
         run: |
           set -euo pipefail
           previous="$(cat trust-page/image-digest-gcp.txt)"
+          previous_references="$(cat trust-page/image-reference-gcp.txt)"
           python3 tools/write-trust-artifacts.py \
             --out-dir trust-page \
             --commit "${SHA}" \
             --image-reference "${IMAGE_REF}" \
             --image-digest "${DIGEST}" \
-            --accepted-image-digests "${previous}"
+            --accepted-image-digests "${previous}" \
+            --accepted-image-references "${previous_references}"
           accepted="$(cat trust-page/image-digest-gcp.txt)"
+          accepted_references="$(cat trust-page/image-reference-gcp.txt)"
           echo "accepted_digests=${accepted}" >> "$GITHUB_OUTPUT"
+          echo "accepted_references=${accepted_references}" >> "$GITHUB_OUTPUT"
 
       - name: Commit trust artifacts back to main
         run: |
@@ -252,6 +257,7 @@ jobs:
     uses: ./.github/workflows/publish-trust-page.yml
     with:
       expected_digests: ${{ needs.build-and-release.outputs.accepted_digests }}
+      expected_references: ${{ needs.build-and-release.outputs.accepted_references }}
 
   grant-batch-image-access:
     needs: build-and-release
@@ -750,3 +756,4 @@ jobs:
     uses: ./.github/workflows/publish-trust-page.yml
     with:
       expected_digests: ${{ needs.build-and-release.outputs.image_digest }}
+      expected_references: ${{ needs.build-and-release.outputs.image_ref }}

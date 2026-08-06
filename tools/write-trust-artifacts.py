@@ -43,14 +43,35 @@ def normalize_image_digests(
     return normalized
 
 
+def normalize_image_references(
+    image_reference: str,
+    accepted_image_references: Sequence[str] | None = None,
+) -> list[str]:
+    candidates = [*(accepted_image_references or ()), image_reference]
+    normalized: list[str] = []
+    for candidate in candidates:
+        for value in candidate.split(","):
+            reference = value.strip()
+            if reference and reference not in normalized:
+                normalized.append(reference)
+    if not normalized:
+        raise ValueError("at least one accepted image reference is required")
+    return normalized
+
+
 def release_payload(
     commit: str,
     image_reference: str,
     image_digest: str,
     accepted_image_digests: Sequence[str] | None = None,
+    accepted_image_references: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     target = normalize_image_digests(image_digest)[0]
     accepted = normalize_image_digests(target, accepted_image_digests)
+    target_reference = normalize_image_references(image_reference)[0]
+    accepted_references = normalize_image_references(
+        target_reference, accepted_image_references
+    )
     return {
         "platform": "gcp-confidential-space",
         "source_repo": ATTESTED_GATEWAY_REPO,
@@ -64,10 +85,15 @@ def release_payload(
         },
         "commit": commit,
         "source_commit": commit,
-        "image_reference": image_reference,
+        "image_reference": target_reference,
+        "accepted_image_references": accepted_references,
         "image_digest": target,
         "accepted_image_digests": accepted,
-        "release_state": "current" if accepted == [target] else "rolling",
+        "release_state": (
+            "current"
+            if accepted == [target] and accepted_references == [target_reference]
+            else "rolling"
+        ),
         "attestation_issuer": "https://confidentialcomputing.googleapis.com",
         "attestation_audience": "quill-cloud",
         "api_base_url": "https://api.trustedrouter.com/v1",
@@ -102,6 +128,10 @@ def trust_html(release: dict[str, Any]) -> str:
     digest = html.escape(str(release["image_digest"]))
     accepted_digests = [str(value) for value in release["accepted_image_digests"]]
     accepted = html.escape(", ".join(accepted_digests))
+    accepted_references = [
+        str(value) for value in release["accepted_image_references"]
+    ]
+    accepted_refs = html.escape(", ".join(accepted_references))
     release_state = html.escape(str(release["release_state"]))
     image = html.escape(str(release["image_reference"]))
     source = html.escape(str(release["source_commit"]))
@@ -176,6 +206,7 @@ def trust_html(release: dict[str, Any]) -> str:
         <div class="kv">
           <div><div class="label">Source commit</div><div class="value">{source}</div></div>
           <div><div class="label">Image</div><div class="value">{image}</div></div>
+          <div><div class="label">Accepted image references</div><div class="value">{accepted_refs}</div></div>
           <div><div class="label">Target digest</div><div class="value">{digest}</div></div>
           <div><div class="label">Release state</div><div class="value">{release_state}</div></div>
           <div><div class="label">Accepted measured digests</div><div class="value">{accepted}</div></div>
@@ -238,7 +269,9 @@ def trust_html(release: dict[str, Any]) -> str:
 def write_artifacts(out_dir: Path, release: dict[str, Any]) -> None:
     release_json = json.dumps(release, indent=2, sort_keys=True) + "\n"
     digest = ",".join(str(value) for value in release["accepted_image_digests"]) + "\n"
-    reference = str(release["image_reference"]) + "\n"
+    reference = ",".join(
+        str(value) for value in release["accepted_image_references"]
+    ) + "\n"
     write_text(out_dir / "gcp-release.json", release_json)
     write_text(out_dir / "image-digest-gcp.txt", digest)
     write_text(out_dir / "image-reference-gcp.txt", reference)
@@ -259,6 +292,11 @@ def main() -> int:
         default="",
         help="comma-separated measured digests accepted during a rolling release",
     )
+    parser.add_argument(
+        "--accepted-image-references",
+        default="",
+        help="comma-separated image references accepted during a rolling release",
+    )
     args = parser.parse_args()
     write_artifacts(
         Path(args.out_dir),
@@ -267,6 +305,9 @@ def main() -> int:
             args.image_reference,
             args.image_digest,
             [args.accepted_image_digests] if args.accepted_image_digests else None,
+            [args.accepted_image_references]
+            if args.accepted_image_references
+            else None,
         ),
     )
     return 0

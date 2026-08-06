@@ -2,6 +2,9 @@
   "accepted_image_digests": [
     "sha256:25b032c7d1eea78007c928d880ef502d247fc0deb259004a416f028bd644b869"
   ],
+  "accepted_image_references": [
+    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-8c1179e"
+  ],
   "api_base_url": "https://api.trustedrouter.com/v1",
   "attestation_audience": "quill-cloud",
   "attestation_issuer": "https://confidentialcomputing.googleapis.com",

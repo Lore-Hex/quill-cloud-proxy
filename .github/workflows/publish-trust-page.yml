@@ -7,6 +7,10 @@ on:
         description: "Exact comma-separated digest set expected after publication"
         required: false
         type: string
+      expected_references:
+        description: "Exact comma-separated image-reference set expected after publication"
+        required: false
+        type: string
   push:
     branches: [main]
     paths:
@@ -73,11 +77,18 @@ jobs:
           assert release["source_repositories"]["attested_gateway"].endswith("/quill-cloud-proxy")
           assert release["image_digest"].startswith("sha256:")
           accepted = release["accepted_image_digests"]
+          accepted_references = release["accepted_image_references"]
           assert accepted and release["image_digest"] in accepted
-          assert release["release_state"] == ("current" if accepted == [release["image_digest"]] else "rolling")
+          assert accepted_references and release["image_reference"] in accepted_references
+          assert release["release_state"] == (
+              "current"
+              if accepted == [release["image_digest"]]
+              and accepted_references == [release["image_reference"]]
+              else "rolling"
+          )
           assert release["source_commit"]
           assert Path("trust-page/trust/image-digest-gcp.txt").read_text().strip() == ",".join(accepted)
-          assert Path("trust-page/trust/image-reference-gcp.txt").read_text().strip() == release["image_reference"]
+          assert Path("trust-page/trust/image-reference-gcp.txt").read_text().strip() == ",".join(accepted_references)
           PY
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
@@ -98,17 +109,20 @@ jobs:
       - name: Verify live page matches repo artifacts
         env:
           EXPECTED_DIGESTS: ${{ inputs.expected_digests }}
+          EXPECTED_REFERENCES: ${{ inputs.expected_references }}
         run: |
           set -euo pipefail
           expected="${EXPECTED_DIGESTS:-$(cat trust-page/trust/image-digest-gcp.txt)}"
+          expected_references="${EXPECTED_REFERENCES:-$(cat trust-page/trust/image-reference-gcp.txt)}"
           echo "expected digest: ${expected}"
           for attempt in $(seq 1 30); do
             live="$(curl -fsS "https://trust.trustedrouter.com/trust/image-digest-gcp.txt?nocache=${GITHUB_RUN_ID}-${attempt}" || true)"
-            if [ "${live}" = "${expected}" ]; then
+            live_references="$(curl -fsS "https://trust.trustedrouter.com/trust/image-reference-gcp.txt?nocache=${GITHUB_RUN_ID}-${attempt}" || true)"
+            if [ "${live}" = "${expected}" ] && [ "${live_references}" = "${expected_references}" ]; then
               echo "live trust page matches repo artifacts"
               exit 0
             fi
-            echo "attempt ${attempt}: live='${live}' — waiting for Pages/CDN propagation"
+            echo "attempt ${attempt}: digests='${live}' references='${live_references}' — waiting for Pages/CDN propagation"
             sleep 20
           done
           echo "live trust page still does not match repo artifacts after 10 minutes" >&2
