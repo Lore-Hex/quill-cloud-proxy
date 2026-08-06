@@ -147,12 +147,13 @@ def discover_instances() -> list[dict]:
     return fleet
 
 
-def trust_digest() -> str:
+def trust_digests() -> list[str]:
     with urllib.request.urlopen(TRUST_DIGEST_URL, timeout=10) as resp:
-        d = resp.read().decode().strip()
-    if not d.startswith("sha256:"):
-        sys.exit(f"[FAIL] trust digest looks wrong: {d!r}")
-    return d
+        raw = resp.read().decode().strip()
+    digests = [value.strip().lower() for value in raw.split(",") if value.strip()]
+    if not digests or any(not re.fullmatch(r"sha256:[0-9a-f]{64}", d) for d in digests):
+        sys.exit(f"[FAIL] trust digest set looks wrong: {raw!r}")
+    return list(dict.fromkeys(digests))
 
 
 def recent_release_digests() -> list[str]:
@@ -440,8 +441,8 @@ def main() -> int:
     # Registry. Keeps the fleet servable across the entire rollout window and
     # lets the operator recover when a prior rollout published trust artifacts
     # but failed before the MIG reached that digest.
-    trusted = trust_digest()
-    allowed = list(dict.fromkeys([trusted, *recent_release_digests()]))
+    trusted = trust_digests()
+    allowed = list(dict.fromkeys([*trusted, *recent_release_digests()]))
     digest = ",".join(allowed)
     fleet = discover_instances()
     log(f"reconcile: {len(fleet)} running enclave instances; accepting digest(s) "

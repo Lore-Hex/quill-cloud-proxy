@@ -76,6 +76,29 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn('[ "${current}" != "${PREV_US}" ]', workflow)
         self.assertIn("--clear-drain-region us-central1", workflow)
 
+    def test_public_allowlist_is_published_before_rollout_and_collapsed_after(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+
+        transition = workflow.index("\n  publish-transition-trust-page:")
+        rollout = workflow.index("\n  rollout:")
+        finalize = workflow.index("\n  finalize-trust-artifacts:")
+        publish_final = workflow.index("\n  publish-trust-page:", finalize)
+
+        self.assertLess(transition, rollout)
+        self.assertLess(rollout, finalize)
+        self.assertLess(finalize, publish_final)
+        self.assertIn(
+            "needs: [build-and-release, grant-batch-image-access, publish-transition-trust-page]",
+            workflow,
+        )
+        self.assertIn('--accepted-image-digests "${previous}"', workflow)
+        self.assertIn(
+            "needs: [build-and-release, finalize-trust-artifacts]",
+            workflow,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
