@@ -1664,21 +1664,38 @@ phase_verify() {
   #
   # This cost a real debugging cycle on the southeastasia bring-up. The record
   # is a precondition for TLS-ALPN-01, so it gets checked like one.
-  local resolved=""
-  if command -v dig >/dev/null 2>&1; then
-    resolved="$(dig +short "$API_HOST" A 2>/dev/null | grep -E '^[0-9.]+$' | head -1 || true)"
-  elif command -v host >/dev/null 2>&1; then
-    resolved="$(host -t A "$API_HOST" 2>/dev/null | awk '/has address/ {print $NF; exit}' || true)"
-  fi
+  # A record this deploy JUST rewrote will not have propagated yet — the TTL is
+  # 120s and the local resolver is still holding the old answer. So poll rather
+  # than judging on the first look: "wrong" and "not yet" are different states
+  # and only one of them is a fault. Failing on the first mismatch turns every
+  # redeploy that moves the IP into a false alarm, and a check that cries wolf
+  # on the happy path is a check people learn to skip.
+  local resolved="" dns_waited=0
+  resolve_api_host() {
+    if command -v dig >/dev/null 2>&1; then
+      dig +short "$API_HOST" A 2>/dev/null | grep -E '^[0-9.]+$' | head -1
+    elif command -v host >/dev/null 2>&1; then
+      host -t A "$API_HOST" 2>/dev/null | awk '/has address/ {print $NF; exit}'
+    fi
+  }
+
+  resolved="$(resolve_api_host || true)"
+  while [ -n "$resolved" ] && [ "$resolved" != "$ip" ] && [ "$dns_waited" -lt "${DNS_PROPAGATION_TIMEOUT:-300}" ]; do
+    log "dns: $API_HOST still resolves to $resolved, waiting for $ip (${dns_waited}s)"
+    sleep 15
+    dns_waited=$((dns_waited + 15))
+    resolved="$(resolve_api_host || true)"
+  done
 
   if [ -z "$resolved" ]; then
     note "could not resolve $API_HOST locally (no dig/host, or the record is brand new)."
     note "If the wait below times out, check DNS FIRST — the enclave is likely fine."
   elif [ "$resolved" != "$ip" ]; then
-    die "$API_HOST resolves to $resolved but this group is at $ip.
-       TLS-ALPN-01 cannot issue a cert, so the enclave will never serve on that
-       name no matter how long we wait. If a gcloud error scrolled past above,
-       that is the cause: fix the record, then re-run 'verify'.
+    die "$API_HOST still resolves to $resolved after ${dns_waited}s; this group is at $ip.
+       That is past any reasonable TTL, so it is not propagation — the record is
+       wrong. TLS-ALPN-01 cannot issue a cert, so the enclave will never serve on
+       that name no matter how long we wait. If a gcloud error scrolled past
+       above, that is the cause: fix the record, then re-run 'verify narrow'.
        This is a DNS fault, NOT an enclave fault — do not go reading enclave logs."
   else
     log "dns: $API_HOST resolves to $ip"

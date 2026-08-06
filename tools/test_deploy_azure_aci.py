@@ -1482,10 +1482,12 @@ class TestDnsIsAPreconditionNotAnAssumption(DeployHarness):
         self._gcloud()
         self._resolver("203.0.113.7")  # not the group's 10.0.0.9
 
-        result = self.run_script("--apply", "verify", VERIFY_TIMEOUT_SECONDS="120")
+        result = self.run_script(
+            "--apply", "verify", VERIFY_TIMEOUT_SECONDS="120", DNS_PROPAGATION_TIMEOUT="0"
+        )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("resolves to 203.0.113.7", result.stderr)
+        self.assertIn("still resolves to 203.0.113.7", result.stderr)
         self.assertIn("NOT an enclave fault", result.stderr)
 
     def test_a_failed_dns_write_says_the_deploy_is_half_finished(self) -> None:
@@ -1503,6 +1505,41 @@ class TestDnsIsAPreconditionNotAnAssumption(DeployHarness):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("HALF-FINISHED", result.stderr)
         self.assertIn("--apply verify narrow", result.stderr)
+
+    def test_propagation_is_waited_out_not_treated_as_a_fault(self) -> None:
+        """A record this deploy just rewrote has not propagated yet.
+
+        The TTL is 120s and the local resolver still holds the old answer, so
+        judging on the FIRST look turns every redeploy that moves the IP into a
+        false alarm — which is exactly what happened on the southeastasia roll.
+        A check that cries wolf on the happy path is a check people skip.
+        """
+        self.healthy_deploy()
+        self._gcloud()
+        # Old answer first, then the new one — a resolver mid-propagation.
+        counter = self.state / "dig-calls"
+        stub = self.bin / "dig"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'n=$(cat "{counter}" 2>/dev/null || echo 0); echo $((n+1)) > "{counter}"\n'
+            'if [ "$n" -lt 1 ]; then echo 203.0.113.7; else echo 10.0.0.9; fi\n'
+        )
+        stub.chmod(0o755)
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+
+        result = self.run_script(
+            "--apply", "verify",
+            VERIFY_ATTESTATION_CMD=str(verifier),
+            DNS_PROPAGATION_TIMEOUT="60",
+        )
+
+        # The assertion is about the DNS gate, not the (stubbed) enclave: it
+        # must WAIT through the stale answer and then accept the new one.
+        self.assertIn("still resolves to 203.0.113.7, waiting for 10.0.0.9", result.stderr)
+        self.assertIn("dns: api-azure.trustedrouter.com resolves to 10.0.0.9", result.stderr)
+        self.assertNotIn("NOT an enclave fault", result.stderr)
 
     def test_a_correct_record_does_not_stop_the_wait(self) -> None:
         self.healthy_deploy()
