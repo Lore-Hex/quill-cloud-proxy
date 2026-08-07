@@ -173,3 +173,17 @@ func dnsFQDN(name string) string {
 	}
 	return name + "."
 }
+
+// NewCloudDNSProvider builds a Cloud DNS provider that authenticates with the
+// same credential the shared ACME cache already uses — GCE metadata on GCP, or
+// the cross-cloud service-account key elsewhere — minted for the Cloud DNS
+// scope rather than the storage one.
+func NewCloudDNSProvider(project, managedZone string, httpClient *http.Client) *CloudDNSProvider {
+	tokens := &gcpTokenSource{httpClient: newTokenHTTPClient(), scope: cloudDNSScope}
+	return &CloudDNSProvider{
+		Project:     project,
+		ManagedZone: managedZone,
+		HTTPClient:  httpClient,
+		AccessToken: tokens.Token,
+	}
+}

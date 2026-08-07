@@ -55,6 +55,7 @@ const (
 	metadataToken = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" // #nosec G101 -- metadata endpoint URL, not a secret.
 	gcpTokenURL   = "https://oauth2.googleapis.com/token"                                                        // #nosec G101 -- public OAuth token endpoint, not a credential.
 	gcsScope      = "https://www.googleapis.com/auth/devstorage.read_write"
+	cloudDNSScope = "https://www.googleapis.com/auth/ndev.clouddns.readwrite"
 )
 
 // NewGCSCache returns an autocert.Cache backed by GCS. Callers should pass
@@ -182,9 +183,22 @@ func (c *gcsCache) Delete(ctx context.Context, key string) error {
 // Tokens are cached until 5 minutes before expiry.
 type gcpTokenSource struct {
 	httpClient *http.Client
-	mu         sync.Mutex
-	token      string
-	expiresAt  time.Time
+	// scope requested when minting from an SA key. Empty means GCS.
+	// It is a field rather than a constant because the DNS-01 renewer needs
+	// ndev.clouddns.readwrite from the same credential, and a token minted for
+	// the wrong scope fails at the API with a 403 that names neither the scope
+	// nor the caller.
+	scope     string
+	mu        sync.Mutex
+	token     string
+	expiresAt time.Time
+}
+
+func (s *gcpTokenSource) requestedScope() string {
+	if s.scope != "" {
+		return s.scope
+	}
+	return gcsScope
 }
 
 func (s *gcpTokenSource) Token(ctx context.Context) (string, error) {
@@ -304,7 +318,7 @@ func (s *gcpTokenSource) tokenFromSAKey(ctx context.Context, credPath string) (s
 	hdr := `{"alg":"RS256","typ":"JWT"}`
 	claim := fmt.Sprintf(
 		`{"iss":%q,"scope":%q,"aud":%q,"exp":%d,"iat":%d}`,
-		sa.ClientEmail, gcsScope, tokenURI, now.Add(time.Hour).Unix(), now.Unix(),
+		sa.ClientEmail, s.requestedScope(), tokenURI, now.Add(time.Hour).Unix(), now.Unix(),
 	)
 	signingInput := base64.RawURLEncoding.EncodeToString([]byte(hdr)) +
 		"." + base64.RawURLEncoding.EncodeToString([]byte(claim))
