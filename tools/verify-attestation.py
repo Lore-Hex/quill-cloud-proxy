@@ -466,14 +466,34 @@ def _new_pyopenssl_context(*, ca_trust: bool = True) -> SSL.Context:
     this mode must never be the default for CA-issued deployments.
     """
     ctx = SSL.Context(SSL.TLS_CLIENT_METHOD)
-    if hasattr(ctx, "set_min_proto_version") and hasattr(SSL, "TLS1_3_VERSION"):
-        ctx.set_min_proto_version(SSL.TLS1_3_VERSION)
+    # ADVERTISE 1.2+1.3 LIKE A REAL CLIENT; REQUIRE 1.3 BY ASSERTION.
+    #
+    # This used to pin the minimum to TLS 1.3, which made OpenSSL send a
+    # supported_versions extension containing ONLY 0x0304 — a hello no ordinary
+    # browser or SDK ever sends. On 2026-08-07 that turned out to be
+    # unroutable to the Azure enclaves: a 1.3-only hello REACHES the server
+    # (GetCertificate fires) and no response ever comes back, deterministically,
+    # in both regions, while the identical hello advertising 1.2+1.3 completes
+    # normally and GCP and AWS accept either. Size is not the cause — the
+    # WORKING hello is larger (1557 bytes vs 1484).
+    #
+    # So this tool could not verify the one deployment it most needed to, for a
+    # reason that has nothing to do with the deployment's security.
+    #
+    # Pinning the floor was never the real requirement anyway. The requirement
+    # is that the session actually NEGOTIATES 1.3, because the RFC 9266
+    # exporter channel binding this tool checks is TLS 1.3-only. That was
+    # previously implicit — nothing asserted it — so deleting the min-version
+    # line would have silently downgraded every check. assert_tls13() below
+    # makes it explicit and load-bearing.
+    #
+    # The enclave independently refuses TLS 1.2 (alert 70), so advertising it
+    # cannot produce a weaker session; it only makes this hello look like the
+    # ones real clients send.
+    if hasattr(ctx, "set_min_proto_version") and hasattr(SSL, "TLS1_2_VERSION"):
+        ctx.set_min_proto_version(SSL.TLS1_2_VERSION)
     else:
-        ctx.set_options(
-            SSL.OP_NO_TLSv1
-            | SSL.OP_NO_TLSv1_1
-            | SSL.OP_NO_TLSv1_2
-        )
+        ctx.set_options(SSL.OP_NO_TLSv1 | SSL.OP_NO_TLSv1_1)
     if ca_trust:
         ctx.set_default_verify_paths()
         ctx.set_verify(SSL.VERIFY_PEER, _verify_callback)
@@ -657,6 +677,25 @@ def _require_attestation_body_binds_exporter(
         sys.exit(f"[FAIL] {label} attestation is not bound to this TLS session: {exc}")
 
 
+def assert_tls13(conn, label: str = "") -> None:
+    """The negotiated version MUST be TLS 1.3.
+
+    Not the advertised floor — the negotiated result. The exporter channel
+    binding (RFC 9266) that ties the attestation to this exact session exists
+    only in 1.3; on a 1.2 session export_keying_material() still returns bytes,
+    so a downgraded session would produce a binding that looks fine and proves
+    nothing.
+    """
+    version = conn.get_protocol_version_name()
+    where = f" ({label})" if label else ""
+    if version != "TLSv1.3":
+        sys.exit(
+            f"[FAIL] negotiated {version}, need TLSv1.3{where}. The exporter "
+            "channel binding this proof depends on does not exist below 1.3."
+        )
+    print(f"[ok] negotiated TLSv1.3{where}")
+
+
 def fetch_attestation_same_tls_socket(
     host: str,
     nonce_hex: str,
@@ -684,6 +723,7 @@ def fetch_attestation_same_tls_socket(
             timeout=_tls_timeout_remaining(deadline, "handshake"),
             what="handshake",
         )
+        assert_tls13(conn, host)
         peer = conn.get_peer_certificate()
         if peer is None:
             sys.exit("[FAIL] TLS handshake returned no peer certificate")
