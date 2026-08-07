@@ -243,7 +243,7 @@ func NewACME(
 	tlsConfig := manager.TLSConfig()
 	managerGetCertificate := tlsConfig.GetCertificate
 	tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		cert, err := managerGetCertificate(hello)
+		cert, err := getCertificateWithECDSAFallback(managerGetCertificate, hello)
 		if err != nil {
 			// Operationally critical: without this line autocert failures
 			// surface only as TLS alert 80 to the client; the enclave logs
@@ -420,4 +420,105 @@ func (c *memoryACMECache) Delete(_ context.Context, key string) error {
 	defer c.mu.Unlock()
 	delete(c.items, key)
 	return nil
+}
+
+// getCertificateWithECDSAFallback wraps an autocert GetCertificate with one
+// retry that claims P-256 support.
+//
+// P-256-IN-supported_groups IS NOT "CAN USE AN ECDSA CERT". autocert keys its
+// cache by algorithm and decides via supportsECDSA(), which reads the client's
+// supported_groups and treats a missing P-256 as "this client needs RSA". It
+// then looks up "<host>+rsa", and where no RSA cert was ever issued the
+// handshake dies with TLS alert 80 — for a client that would have been
+// perfectly happy with the ECDSA leaf the server already serves everyone else.
+//
+// That heuristic predates TLS 1.3, where the certificate's key type is governed
+// by signature_algorithms and NOT by key-exchange groups. This server requires
+// 1.3 (it rejects 1.2 outright), so the retry is sound.
+//
+// It stopped being theoretical: OpenSSL 3.5+ leads with post-quantum/X25519
+// groups and can omit P-256 entirely. Reproduced live 2026-08-07 against both
+// Azure enclave regions — `openssl s_client -groups X25519` failed while
+// `-groups P-256` succeeded, and curl was unaffected, so nothing watching this
+// stack noticed. GCP escaped only because an RSA cert happened to be sitting in
+// the shared cache from some earlier client.
+//
+// The retry reaches the SAME cached leaf: it issues nothing, needs no
+// rate-limit budget, and cannot invent a certificate that does not exist. If it
+// also fails, the ORIGINAL error is returned — the retry must never rewrite the
+// diagnosis of an unrelated failure.
+func getCertificateWithECDSAFallback(
+	get func(*tls.ClientHelloInfo) (*tls.Certificate, error),
+	hello *tls.ClientHelloInfo,
+) (*tls.Certificate, error) {
+	// Steer the lookup BEFORE calling autocert, not after it fails.
+	//
+	// An earlier version of this retried on error, which was correct in
+	// principle and useless in practice: the FIRST call is the expensive one.
+	// A cache miss on "<host>+rsa" sends autocert into createCert, which opens
+	// an ACME order and BLOCKS on the network — and against a rate-limited CA
+	// that block is long enough that the client gives up mid-handshake. The
+	// server never even sends a ServerHello. Observed live: the same request
+	// that used to fail fast with alert 80 instead hung with no response at
+	// all, which is strictly harder to diagnose.
+	//
+	// So when the client's signature_algorithms say it accepts ECDSA, ask for
+	// the ECDSA cert up front. That is a cache HIT, it returns immediately, and
+	// no ACME order is ever opened.
+	if clientAcceptsECDSA(hello) {
+		if ecdsaHello := withP256(hello); ecdsaHello != hello {
+			if cert, err := get(ecdsaHello); err == nil {
+				return cert, nil
+			}
+			// Fall through: whatever went wrong was not the algorithm choice,
+			// so let the unmodified hello produce the real error.
+		}
+	}
+	return get(hello)
+}
+
+// clientAcceptsECDSA reports whether the client's signature_algorithms permit
+// an ECDSA leaf.
+//
+// This is the check autocert's supportsECDSA() should be making on its own for
+// TLS 1.3, and the ONLY one that is actually authoritative there: in 1.3 the
+// certificate's key type is negotiated through signature_algorithms, while
+// supported_groups constrains key exchange. autocert additionally requires
+// P-256 among the groups, which is a TLS 1.2-era conflation and is exactly what
+// breaks modern OpenSSL clients that lead with X25519.
+//
+// An empty list means the client stated no preference, which RFC 8446 leaves
+// open and autocert also treats as ECDSA-capable.
+func clientAcceptsECDSA(hello *tls.ClientHelloInfo) bool {
+	if len(hello.SignatureSchemes) == 0 {
+		return true
+	}
+	for _, scheme := range hello.SignatureSchemes {
+		switch scheme {
+		case tls.ECDSAWithP256AndSHA256,
+			tls.ECDSAWithP384AndSHA384,
+			tls.ECDSAWithP521AndSHA512,
+			tls.ECDSAWithSHA1:
+			return true
+		}
+	}
+	return false
+}
+
+// withP256 returns a shallow copy of hello with CurveP256 present in
+// SupportedCurves, leaving the caller's struct untouched.
+//
+// It exists solely to steer autocert's supportsECDSA() heuristic; nothing about
+// the actual handshake changes. The copy matters: hello belongs to crypto/tls
+// and is reused, so appending in place would corrupt the live handshake state
+// for every subsequent lookup on that connection.
+func withP256(hello *tls.ClientHelloInfo) *tls.ClientHelloInfo {
+	for _, curve := range hello.SupportedCurves {
+		if curve == tls.CurveP256 {
+			return hello // already advertised; the failure was something else
+		}
+	}
+	clone := *hello
+	clone.SupportedCurves = append(append([]tls.CurveID(nil), hello.SupportedCurves...), tls.CurveP256)
+	return &clone
 }
