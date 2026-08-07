@@ -944,6 +944,8 @@ func directBaseURL(provider string) string {
 		return "https://api.atlascloud.ai/v1"
 	case "streamlake":
 		return "https://vanchin.streamlake.ai/api/gateway/v1/endpoints"
+	case "scaleway":
+		return "https://api.scaleway.ai/v1"
 	case "neurometric":
 		return "https://wharf.neurometric.ai/v1"
 	case "engy":
@@ -1060,7 +1062,7 @@ func DirectModelID(provider, model, upstreamModel string) string {
 // maps still win above for historical aliases and dedicated endpoint slugs.
 func providerUsesAuthorizedUpstreamModel(provider string) bool {
 	switch provider {
-	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow", "neurometric", "engy", "zero-g", "alibaba":
+	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow", "scaleway", "neurometric", "engy", "zero-g", "alibaba":
 		return true
 	default:
 		return false
@@ -1637,6 +1639,8 @@ func normalizeDirectProvider(provider string) string {
 		return "atlas-cloud"
 	case "streamlake", "stream-lake", "vanchin":
 		return "streamlake"
+	case "scaleway", "scaleway-ai":
+		return "scaleway"
 	case "neurometric", "neurometric-ai":
 		return "neurometric"
 	case "engy", "engy-ai":

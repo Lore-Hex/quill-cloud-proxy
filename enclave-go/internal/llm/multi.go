@@ -74,6 +74,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		morph:      newOpenAICompatible("morph", boot.MorphAPIKey),
 		atlasCloud: newOpenAICompatible("atlas-cloud", boot.AtlasCloudAPIKey),
 		streamLake: newOpenAICompatible("streamlake", boot.StreamLakeAPIKey),
+		scaleway:   newOpenAICompatible("scaleway", boot.ScalewayAPIKey),
 		neurometric: newOpenAICompatible(
 			"neurometric",
 			boot.NeurometricAPIKey,
@@ -132,6 +133,7 @@ type multiClient struct {
 	morph               *openAICompatibleClient
 	atlasCloud          *openAICompatibleClient
 	streamLake          *openAICompatibleClient
+	scaleway            *openAICompatibleClient
 	neurometric         *openAICompatibleClient
 	engy                *openAICompatibleClient
 	zeroG               *zeroGClient
@@ -246,6 +248,8 @@ func (m *multiClient) InvokeStreaming(
 		return m.atlasCloud.InvokeStreaming(ctx, req, body, out, options...)
 	case "streamlake":
 		return m.streamLake.InvokeStreaming(ctx, req, body, out, options...)
+	case "scaleway":
+		return m.scaleway.InvokeStreaming(ctx, req, body, out, options...)
 	case "neurometric":
 		return m.neurometric.InvokeStreaming(ctx, req, body, out, options...)
 	case "engy":
@@ -260,6 +264,6 @@ func (m *multiClient) InvokeStreaming(
 		// Embeddings-only; returns a clear "chat not supported" error.
 		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, telnyx, thinkingmachines, wafer, crusoe, makora, nebius, minimax, chutes, digitalocean, cloudflare-workers-ai, inceptron, morph, atlas-cloud, streamlake, neurometric, engy, zero-g, alibaba, xiaomi, cohere)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, telnyx, thinkingmachines, wafer, crusoe, makora, nebius, minimax, chutes, digitalocean, cloudflare-workers-ai, inceptron, morph, atlas-cloud, streamlake, scaleway, neurometric, engy, zero-g, alibaba, xiaomi, cohere)", provider)
 	}
 }

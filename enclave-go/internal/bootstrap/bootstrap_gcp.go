@@ -56,6 +56,7 @@
 //	QUILL_CRUSOE_SECRET          name of the secret holding the Crusoe API key (llm_multi builds)
 //	QUILL_MAKORA_SECRET          name of the secret holding the Makora API key (llm_multi builds)
 //	QUILL_NEUROMETRIC_SECRET     name of the secret holding the Neurometric API key (llm_multi builds)
+//	QUILL_SCALEWAY_SECRET        name of the secret holding the Scaleway API key (llm_multi builds)
 //	QUILL_ENGY_SECRET            name of the secret holding the Engy API key (llm_multi builds)
 //	QUILL_ZERO_G_SECRET          name of the secret holding the unrestricted 0G router API key (llm_multi builds)
 //	QUILL_ALIBABA_SECRET         name of the secret holding the Alibaba Model Studio API key (llm_multi builds)
@@ -149,6 +150,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	morphSecret := os.Getenv("QUILL_MORPH_SECRET")
 	atlasCloudSecret := os.Getenv("QUILL_ATLAS_CLOUD_SECRET")
 	streamLakeSecret := os.Getenv("QUILL_STREAMLAKE_SECRET")
+	scalewaySecret := os.Getenv("QUILL_SCALEWAY_SECRET")
 	neurometricSecret := os.Getenv("QUILL_NEUROMETRIC_SECRET")
 	engySecret := os.Getenv("QUILL_ENGY_SECRET")
 	zeroGSecret := os.Getenv("QUILL_ZERO_G_SECRET")
@@ -211,6 +213,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		morphSecret,
 		atlasCloudSecret,
 		streamLakeSecret,
+		scalewaySecret,
 		neurometricSecret,
 		engySecret,
 		zeroGSecret,
@@ -522,6 +525,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: streamlake key: %w", err)
 		}
 	}
+	var scalewayKey []byte
+	if scalewaySecret != "" {
+		scalewayKey, err = fetchSecret(ctx, httpc, token, project, scalewaySecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: scaleway key: %w", err)
+		}
+	}
 	var neurometricKey []byte
 	if neurometricSecret != "" {
 		neurometricKey, err = fetchSecret(ctx, httpc, token, project, neurometricSecret)
@@ -680,6 +690,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		MorphAPIKey:                  strings.TrimSpace(string(morphKey)),
 		AtlasCloudAPIKey:             strings.TrimSpace(string(atlasCloudKey)),
 		StreamLakeAPIKey:             strings.TrimSpace(string(streamLakeKey)),
+		ScalewayAPIKey:               strings.TrimSpace(string(scalewayKey)),
 		NeurometricAPIKey:            strings.TrimSpace(string(neurometricKey)),
 		EngyAPIKey:                   strings.TrimSpace(string(engyKey)),
 		ZeroGAPIKey:                  strings.TrimSpace(string(zeroGKey)),
