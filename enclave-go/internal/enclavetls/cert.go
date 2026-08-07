@@ -205,7 +205,10 @@ func NewSelfSigned(dnsName string) (*Server, error) {
 // MIGs since LE's TLS-ALPN-01 validation can land on any backend the L4 LB
 // chose, and only a shared cache lets every replica answer with the same
 // challenge token.
-func NewACME(dnsName, email, cacheDir, directoryURL, gcsCacheBucket string) (*Server, error) {
+func NewACME(
+	dnsName, email, cacheDir, directoryURL, gcsCacheBucket string,
+	eab *acme.ExternalAccountBinding,
+) (*Server, error) {
 	dnsNames := splitDNSNames(dnsName)
 	if len(dnsNames) == 0 {
 		return nil, fmt.Errorf("enclavetls: dns name required")
@@ -227,6 +230,10 @@ func NewACME(dnsName, email, cacheDir, directoryURL, gcsCacheBucket string) (*Se
 		HostPolicy: autocert.HostWhitelist(dnsNames...),
 		Cache:      cache,
 		Email:      email,
+		// Required by every CA worth failing over to (Google Trust Services,
+		// ZeroSSL, commercial ACME). nil for Let's Encrypt, which does not use
+		// it — so this is inert until a second CA is configured.
+		ExternalAccountBinding: eab,
 	}
 	if directoryURL != "" {
 		manager.Client = &acme.Client{DirectoryURL: directoryURL}
