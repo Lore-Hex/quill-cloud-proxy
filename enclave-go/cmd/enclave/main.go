@@ -240,6 +240,18 @@ func main() {
 		apiHost := getenv("QUILL_API_HOST", "api.quillrouter.com")
 		mode := getenv("QUILL_TLS_MODE", "self-signed")
 		var err error
+		// Parsed BEFORE either path: a malformed EAB must stop the process
+		// here, with a message naming the variable, rather than surface later
+		// as an ACME signature error against a CA whose docs the operator is
+		// reading for the first time during an outage.
+		eab, eabErr := enclavetls.ExternalAccountBindingFromEnv(
+			os.Getenv("QUILL_ACME_EAB_KID"),
+			os.Getenv("QUILL_ACME_EAB_HMAC_KEY"),
+		)
+		if eabErr != nil {
+			fmt.Fprintf(os.Stderr, "enclavetls acme eab: %v\n", eabErr)
+			os.Exit(1)
+		}
 		if mode == "acme" {
 			tlsServer, err = enclavetls.NewACME(
 				apiHost,
@@ -247,6 +259,7 @@ func main() {
 				os.Getenv("QUILL_ACME_CACHE_DIR"),
 				os.Getenv("QUILL_ACME_DIRECTORY_URL"),
 				os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET"),
+				eab,
 			)
 		} else {
 			tlsServer, err = enclavetls.NewSelfSigned(apiHost)
@@ -284,6 +297,11 @@ func main() {
 					CloudflareAPIToken: boot.CloudflareAPIToken,
 					CloudflareZoneID:   boot.CloudflareZoneID,
 					HTTPClient:         enclavetls.NewDNS01HTTPClient(),
+					// Same binding as autocert's. Both register accounts, and
+					// a CA that requires EAB rejects whichever one omits it —
+					// so a renewer without it is a fallback that fails only
+					// when it is finally needed.
+					ExternalAccountBinding: eab,
 				})
 				fmt.Fprintf(os.Stderr, "enclavetls.dns01_renewer_started host=%s zone=%s\n",
 					dnsName, boot.CloudflareZoneID)

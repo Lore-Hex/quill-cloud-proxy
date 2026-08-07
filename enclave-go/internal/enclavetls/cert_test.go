@@ -85,7 +85,7 @@ func TestNewSelfSigned_AllowsMultipleDNSNames(t *testing.T) {
 }
 
 func TestNewACME_ConfiguresTLSALPNInMemory(t *testing.T) {
-	srv, err := NewACME("api.quillrouter.com", "", "", "", "")
+	srv, err := NewACME("api.quillrouter.com", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("NewACME: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestNewACME_ConfiguresTLSALPNInMemory(t *testing.T) {
 }
 
 func TestNewACME_RejectsUnlistedSNIForMultiHostConfig(t *testing.T) {
-	srv, err := NewACME("api.quillrouter.com,api-us-central1.quillrouter.com", "", "", "", "")
+	srv, err := NewACME("api.quillrouter.com,api-us-central1.quillrouter.com", "", "", "", "", nil)
 	if err != nil {
 		t.Fatalf("NewACME: %v", err)
 	}
@@ -810,7 +810,7 @@ func TestACMEDisablesResumptionAndSelfSignedDoesNot(t *testing.T) {
 			"and the Accept() pre-seed is that path's only leaf writer")
 	}
 
-	acme, err := NewACME("api.trustedrouter.com,api.uptimerouter.com", "", "memory", "", "")
+	acme, err := NewACME("api.trustedrouter.com,api.uptimerouter.com", "", "memory", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

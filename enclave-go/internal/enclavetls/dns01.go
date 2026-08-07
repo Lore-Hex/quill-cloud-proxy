@@ -55,15 +55,21 @@ import (
 // time. All fields are required unless noted. Created in cmd/enclave/
 // main.go from BootstrapData + the env-baked ACME config.
 type DNS01Config struct {
-	DNSName             string         // e.g. "api.quillrouter.com"
-	Email               string         // ACME account email
-	DirectoryURL        string         // empty → LE prod
-	Cache               autocert.Cache // shared GCS cache (same one autocert uses)
-	CloudflareAPIToken  string         // Zone:DNS:Edit on the zone
-	CloudflareZoneID    string         // the zone of DNSName (e.g. quillrouter.com's zone id)
-	HTTPClient          *http.Client   // vsock-tunneled on AWS, stdlib on GCP
-	RenewWithinDuration time.Duration  // renew when cert has <= this much life left (default 30d)
-	CheckEvery          time.Duration  // poll cadence (default 6h)
+	DNSName            string         // e.g. "api.quillrouter.com"
+	Email              string         // ACME account email
+	DirectoryURL       string         // empty → LE prod
+	Cache              autocert.Cache // shared GCS cache (same one autocert uses)
+	CloudflareAPIToken string         // Zone:DNS:Edit on the zone
+	CloudflareZoneID   string         // the zone of DNSName (e.g. quillrouter.com's zone id)
+	HTTPClient         *http.Client   // vsock-tunneled on AWS, stdlib on GCP
+	// EAB binds this ACME account to an account the CA already knows about.
+	// nil for Let's Encrypt; REQUIRED by the CAs this path exists to fail
+	// over to. Without it, pointing DirectoryURL at one of them fails at
+	// registration during an outage — the worst moment to learn the fallback
+	// was never wired.
+	ExternalAccountBinding *acme.ExternalAccountBinding
+	RenewWithinDuration    time.Duration // renew when cert has <= this much life left (default 30d)
+	CheckEvery             time.Duration // poll cadence (default 6h)
 }
 
 // StartDNS01Renewer spawns a goroutine that periodically checks the
@@ -169,7 +175,8 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config) error {
 
 	// 2. Register / get account.
 	_, err = client.Register(ctx, &acme.Account{
-		Contact: []string{"mailto:" + cfg.Email},
+		Contact:                []string{"mailto:" + cfg.Email},
+		ExternalAccountBinding: cfg.ExternalAccountBinding,
 	}, acme.AcceptTOS)
 	if err != nil && !errors.Is(err, acme.ErrAccountAlreadyExists) {
 		// Account-exists is fine; LE returns it on idempotent register.
