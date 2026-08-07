@@ -61,12 +61,28 @@ class TrustArtifactTests(unittest.TestCase):
 
             self.assertEqual(
                 (out / "image-digest-gcp.txt").read_text(encoding="utf-8"),
+                f"{NEW}\n",
+            )
+            self.assertEqual(
+                (out / "accepted-image-digests-gcp.txt").read_text(
+                    encoding="utf-8"
+                ),
                 f"{OLD},{NEW}\n",
             )
             stored = json.loads((out / "gcp-release.json").read_text(encoding="utf-8"))
             self.assertEqual(stored["accepted_image_digests"], [OLD, NEW])
             self.assertEqual(
                 stored["accepted_image_references"], [OLD_REF, NEW_REF]
+            )
+            self.assertEqual(
+                (out / "image-reference-gcp.txt").read_text(encoding="utf-8"),
+                f"{NEW_REF}\n",
+            )
+            self.assertEqual(
+                (out / "accepted-image-references-gcp.txt").read_text(
+                    encoding="utf-8"
+                ),
+                f"{OLD_REF},{NEW_REF}\n",
             )
             self.assertEqual(stored["release_state"], "rolling")
             page = (out / "index.html").read_text(encoding="utf-8")

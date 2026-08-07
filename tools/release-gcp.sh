@@ -71,6 +71,12 @@ if [[ "${PUBLISH_TRUST:-0}" == "1" ]]; then
   aws s3 cp "$REPO_ROOT/trust-page/image-reference-gcp.txt" "s3://$TRUST_BUCKET/image-reference-gcp.txt" \
     --cache-control "max-age=60, public" \
     --content-type "text/plain; charset=utf-8"
+  aws s3 cp "$REPO_ROOT/trust-page/accepted-image-digests-gcp.txt" "s3://$TRUST_BUCKET/accepted-image-digests-gcp.txt" \
+    --cache-control "max-age=60, public" \
+    --content-type "text/plain; charset=utf-8"
+  aws s3 cp "$REPO_ROOT/trust-page/accepted-image-references-gcp.txt" "s3://$TRUST_BUCKET/accepted-image-references-gcp.txt" \
+    --cache-control "max-age=60, public" \
+    --content-type "text/plain; charset=utf-8"
   aws s3 cp "$REPO_ROOT/trust-page/gcp-release.json" "s3://$TRUST_BUCKET/gcp-release.json" \
     --cache-control "max-age=60, public" \
     --content-type "application/json"
@@ -85,6 +91,8 @@ Image reference: $IMAGE_REF
 Image digest:    $IMAGE_DIGEST
 Trust files:
   trust-page/image-digest-gcp.txt
+  trust-page/accepted-image-digests-gcp.txt
   trust-page/image-reference-gcp.txt
+  trust-page/accepted-image-references-gcp.txt
   trust-page/gcp-release.json
 EOF
