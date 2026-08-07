@@ -40,6 +40,7 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+FOREIGN_AUTHORITY = "https://trquillsea.sasia.attest.azure.net"
 SCRIPT = REPO_ROOT / "tools" / "deploy-azure-aci.sh"
 SEALER = REPO_ROOT / "tools" / "azure-seal-bundle.py"
 
@@ -53,6 +54,10 @@ SEALER = REPO_ROOT / "tools" / "azure-seal-bundle.py"
 
 AZ_STUB = r'''#!/usr/bin/env python3
 import base64, json, os, sys
+
+# A second region's MAA instance. Kept in sync with the module-level
+# constant of the same name so tests can assert on it.
+FOREIGN_AUTHORITY = "https://trquillsea.sasia.attest.azure.net"
 
 state = os.environ["STUB_STATE"]
 
@@ -111,27 +116,40 @@ if argv[:3] == ["keyvault", "key", "set-attributes"]:
     path = arg("--policy") or arg("--release-policy")
     with open(path) as handle:
         policy = json.load(handle)
-    pins = [claim["equals"]
-            for clause in policy.get("anyOf", [])
-            for claim in clause.get("allOf", [])
-            if claim.get("claim") == "x-ms-sevsnpvm-hostdata"]
-    write("bound-hostdata", "\n".join(pins))
-    log("mutations.log", "MUTATE-BIND-KEY :: pins=" + ",".join(pins))
+    # Split by AUTHORITY. The stub used to flatten every clause into one set,
+    # which modelled a world where regions share a pin list — they do not, and
+    # the flattening hid the very bug these tests exist to catch.
+    mine, theirs = [], []
+    for clause in policy.get("anyOf", []):
+        bucket = theirs if clause.get("authority") == FOREIGN_AUTHORITY else mine
+        for claim in clause.get("allOf", []):
+            if claim.get("claim") == "x-ms-sevsnpvm-hostdata":
+                bucket.append(claim["equals"])
+    write("bound-hostdata", "\n".join(mine))
+    write("foreign-hostdata", "\n".join(theirs))
+    log("mutations.log", "MUTATE-BIND-KEY :: pins=" + ",".join(mine))
     sys.exit(0)
 
 if argv[:3] == ["keyvault", "key", "show"]:
     bound = read("bound-hostdata")
-    if not bound:
+    foreign = read("foreign-hostdata")
+    if not bound and not foreign:
         sys.exit(0)
     # The authority MUST match the one this deploy binds under. The real
     # multi-region carry-over preserves clauses belonging to OTHER authorities,
     # so a stub speaking as "stub.attest.azure.net" would be modelling a second
     # region that does not exist and its pins would accumulate forever.
     authority = "https://" + os.environ.get("MAA_ENDPOINT", "trquilluaen.uaen.attest.azure.net")
-    document = {"version": "1.0.0", "anyOf": [
-        {"authority": authority,
-         "allOf": [{"claim": "x-ms-sevsnpvm-hostdata", "equals": pin}]}
-        for pin in bound.splitlines()]}
+    clauses = [{"authority": authority,
+                "allOf": [{"claim": "x-ms-sevsnpvm-hostdata", "equals": pin}]}
+               for pin in bound.splitlines()]
+    # A SECOND region, if the test asked for one. Its clauses must survive every
+    # write and must never be read as if they belonged to this region.
+    for pin in read("foreign-hostdata").splitlines():
+        if pin:
+            clauses.append({"authority": FOREIGN_AUTHORITY,
+                            "allOf": [{"claim": "x-ms-sevsnpvm-hostdata", "equals": pin}]})
+    document = {"version": "1.0.0", "anyOf": clauses}
     # Emitted as the CLI really emits it: a Python bytes repr, not base64.
     print(repr(json.dumps(document).encode()))
     sys.exit(0)
@@ -159,8 +177,16 @@ if argv[:2] == ["container", "show"]:
                   sys.stdout)
         print()
         sys.exit(0)
+    if not exists:
+        print("ERROR: (ResourceNotFound) The Resource "
+              "'Microsoft.ContainerInstance/containerGroups/%s' under resource group "
+              "'%s' was not found." % (arg("--name"), arg("--resource-group")),
+              file=sys.stderr)
+        sys.exit(3)
     if query == "confidentialComputeProperties.ccePolicy":
         print("" if flag("show-omits-policy") else read("deployed-policy"))
+    elif query == "containers[0].instanceView.restartCount":
+        print(read("group-restarts", "0"))
     elif query == "instanceView.state":
         print(read("group-state", "Running"))
     elif query == "ipAddress.ip":
@@ -1098,6 +1124,434 @@ class TestReleasePolicyDecoder(unittest.TestCase):
     def test_empty_input_fails(self) -> None:
         self.assertNotEqual(self._run("").returncode, 0)
         self.assertNotEqual(self._run("None").returncode, 0)
+
+
+class TestBoundHostdataIsScopedToThisRegion(DeployHarness):
+    """The release policy is SHARED across regions; reads of it must not be.
+
+    One key, one `anyOf` clause per region. Reading hostdata across every
+    clause was correct when there was one region and silently wrong at two: it
+    makes `bind` compute its baseline from the other region's measurement, so
+    bringing up region two widens region two's clause to also accept region
+    one's workload — and `rollback` in region two then restores region one's
+    hashes into region two's clause, a state no deploy of region two can reach
+    or undo.
+    """
+
+    def test_bind_does_not_absorb_another_regions_measurement(self) -> None:
+        foreign = "f" * 64
+        self.state_file("foreign-hostdata").write_text(foreign)
+
+        mine = self.healthy_deploy()
+
+        self.assertNotIn(
+            foreign,
+            self.bound_pins(),
+            "this region's clause absorbed another region's measurement",
+        )
+        self.assertIn(mine, self.bound_pins())
+
+    def test_the_other_regions_clause_survives_the_write(self) -> None:
+        """Scoping the READ must not turn into dropping the other clause.
+
+        Losing it is worse than absorbing it: the other region keeps serving
+        and fails its next COLD START, which is the quietest way to lose a
+        region.
+        """
+        foreign = "f" * 64
+        self.state_file("foreign-hostdata").write_text(foreign)
+        self.healthy_deploy()
+
+        written = json.loads((self.work / "release-policy.json").read_text())
+        authorities = {clause["authority"] for clause in written["anyOf"]}
+        self.assertIn(FOREIGN_AUTHORITY, authorities, "the other region's clause was dropped")
+
+
+class TestAuditSeesWhatDashboardsCannot(DeployHarness):
+    """`audit` asks the two questions about a region that is already up.
+
+    Both describe a fleet that is serving, green, and wrong about what happens
+    NEXT — which is why nothing else reports them.
+    """
+
+    def test_a_clean_region_audits_clean(self) -> None:
+        self.healthy_deploy()
+        result = self.run_script("audit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("audit clean", result.stderr)
+
+    def test_an_open_bind_window_is_a_failure(self) -> None:
+        """A deploy that died at `verify` leaves {old, new} pinned forever.
+
+        The retired measurement keeps the right to unseal every current
+        provider credential. UAE North was in exactly this state when `audit`
+        was written, from a deploy weeks earlier.
+        """
+        live = self.healthy_deploy()
+        retired = "1" * 64
+        self.state_file("bound-hostdata").write_text(f"{live}\n{retired}")
+
+        result = self.run_script("audit")
+
+        self.assertNotEqual(result.returncode, 0, "an open bind window audited clean")
+        self.assertIn("bind window is still OPEN", result.stderr)
+        self.assertIn(retired, result.stderr)
+
+    def test_a_running_workload_that_lost_its_authorization_is_a_failure(self) -> None:
+        """It is serving only because it holds its secrets in MEMORY.
+
+        It dies at its next cold start — an ACI host maintenance event, at no
+        time of anyone's choosing. Nothing between now and then reports it.
+        """
+        self.healthy_deploy()
+        self.state_file("bound-hostdata").write_text("2" * 64)
+
+        result = self.run_script("audit")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("NOT in this authority", result.stderr)
+        self.assertIn("cold start", result.stderr)
+
+    def test_audit_never_mutates(self) -> None:
+        """It runs against production to answer a question, so it must be inert
+        even when it finds problems."""
+        live = self.healthy_deploy()
+        self.state_file("bound-hostdata").write_text(f"{live}\n{'1' * 64}")
+        self.clear_mutations()
+
+        self.run_script("--apply", "audit")
+
+        self.assertEqual(self.mutations(), [], "audit mutated Azure")
+
+    def test_a_region_with_no_group_yet_is_not_a_failure(self) -> None:
+        """Before a region's first deploy there is nothing to check, and
+        `audit` must not become a thing operators learn to ignore."""
+        # The key already exists, carrying the first region's clause.
+        self.state_file("foreign-hostdata").write_text("f" * 64)
+        result = self.run_script("audit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_audit_ignores_the_other_regions_clauses(self) -> None:
+        """Otherwise every region audits dirty as soon as a second exists."""
+        self.state_file("foreign-hostdata").write_text("f" * 64)
+        self.healthy_deploy()
+        result = self.run_script("audit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class TestNarrowLive(DeployHarness):
+    """Closing a window whose deploy workdir is long gone.
+
+    `narrow` narrows to what THIS workspace built, which is unavailable in the
+    situation that actually leaves windows open: a deploy that failed weeks
+    ago, on another machine, into a temp directory. `audit` could then see the
+    window and offer no way to close it, which is how it stays open.
+    """
+
+    def _verifier(self, *, succeeds: bool) -> str:
+        path = self.bin / "stub-verify"
+        path.write_text(
+            "#!/usr/bin/env bash\n"
+            f'echo "$@" >> "$STUB_STATE/verify.log"\n'
+            f"exit {0 if succeeds else 1}\n"
+        )
+        path.chmod(0o755)
+        return str(path)
+
+    def test_narrows_to_the_live_workload(self) -> None:
+        live = self.healthy_deploy()
+        self.state_file("bound-hostdata").write_text(f"{live}\n{'1' * 64}")
+
+        result = self.run_script(
+            "--apply", "narrow-live", VERIFY_ATTESTATION_CMD=self._verifier(succeeds=True)
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.bound_pins(), [live])
+
+    def test_refuses_when_the_live_enclave_does_not_attest(self) -> None:
+        """Narrowing to an UNVERIFIED measurement is strictly worse than the
+        open window it replaces: it revokes every other measurement while
+        blessing one nobody has checked."""
+        live = self.healthy_deploy()
+        retired = "1" * 64
+        self.state_file("bound-hostdata").write_text(f"{live}\n{retired}")
+        self.clear_mutations()
+
+        result = self.run_script(
+            "--apply", "narrow-live", VERIFY_ATTESTATION_CMD=self._verifier(succeeds=False)
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did NOT attest", result.stderr)
+        self.assertEqual(
+            sorted(self.bound_pins()),
+            sorted([live, retired]),
+            "the pin was changed despite a failed attestation",
+        )
+
+    def test_verifies_against_this_regions_authority(self) -> None:
+        """*.attest.azure.net is a namespace every Azure tenant can join, not
+        an authority. A verifier called without the issuer pin proves nothing.
+        """
+        self.healthy_deploy()
+        verifier = self._verifier(succeeds=True)
+        self.run_script("--apply", "narrow-live", VERIFY_ATTESTATION_CMD=verifier)
+
+        recorded = self.read_state("verify.log")
+        self.assertIn("--expected-maa-issuer", recorded)
+        self.assertIn("https://" + os.environ.get(
+            "MAA_ENDPOINT", "trquilluaen.uaen.attest.azure.net"), recorded)
+
+    def test_dry_run_does_not_narrow(self) -> None:
+        live = self.healthy_deploy()
+        retired = "1" * 64
+        self.state_file("bound-hostdata").write_text(f"{live}\n{retired}")
+        self.clear_mutations()
+
+        result = self.run_script("narrow-live", VERIFY_ATTESTATION_CMD=self._verifier(succeeds=True))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+    def test_refuses_when_nothing_is_running(self) -> None:
+        result = self.run_script(
+            "--apply", "narrow-live", VERIFY_ATTESTATION_CMD=self._verifier(succeeds=True)
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("nothing live to narrow to", result.stderr)
+
+
+class TestBundlePinGuardFiresWhereItApplies(DeployHarness):
+    """A guard that fires where it does not apply gets routed around where it does.
+
+    The only way past the unpinned-bundle refusal is ALLOW_UNPINNED_BUNDLE=1.
+    While it fired on every --apply, an operator repairing a release policy at
+    2am had to set that variable — and carried the habit into the one phase
+    where it silently un-pins the secret set of a real deploy.
+    """
+
+    def test_deploy_still_refuses_an_unpinned_bundle(self) -> None:
+        self.healthy_deploy()
+        result = self.run_script("--apply", "deploy", QUILL_AZURE_BUNDLE_VERSION="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("QUILL_AZURE_BUNDLE_VERSION is unset", result.stderr)
+
+    def test_build_still_refuses_an_unpinned_bundle(self) -> None:
+        """The version is baked into the measured container at build time."""
+        result = self.run_script("--apply", "build", QUILL_AZURE_BUNDLE_VERSION="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("QUILL_AZURE_BUNDLE_VERSION is unset", result.stderr)
+
+    def test_repair_phases_do_not_demand_a_bundle_version(self) -> None:
+        """narrow, narrow-live and rollback never read the bundle and cannot
+        pin anything, so there is nothing for the operator to supply."""
+        live = self.healthy_deploy()
+        self.state_file("bound-hostdata").write_text(f"{live}\n{'1' * 64}")
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+
+        result = self.run_script(
+            "--apply", "narrow-live",
+            QUILL_AZURE_BUNDLE_VERSION="",
+            VERIFY_ATTESTATION_CMD=str(verifier),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.bound_pins(), [live])
+
+    def test_audit_does_not_demand_a_bundle_version(self) -> None:
+        self.healthy_deploy()
+        result = self.run_script("--apply", "audit", QUILL_AZURE_BUNDLE_VERSION="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class TestRestartPolicyIsTheAvailabilityBudget(DeployHarness):
+    """`Never` made every one-off fault permanent.
+
+    A panic, an OOM, a transient upstream stall — anything that exits the
+    process once — left the group in `Succeeded` forever, serving nothing,
+    until a human noticed. Four nines is 52 minutes a YEAR; one un-restarted
+    crash spends the entire budget before anyone has read the page.
+    """
+
+    def test_the_group_restarts_on_failure_by_default(self) -> None:
+        self.healthy_deploy()
+        template = json.loads((self.work / "template.json").read_text())
+        self.assertEqual(
+            template["resources"][0]["properties"]["restartPolicy"],
+            "OnFailure",
+            "a fault that exits the process once would be a permanent outage",
+        )
+
+    def test_never_is_still_reachable_for_debugging(self) -> None:
+        """A region being actively debugged wants one clear failure, not a loop."""
+        self.healthy_deploy(RESTART_POLICY="Never")
+        template = json.loads((self.work / "template.json").read_text())
+        self.assertEqual(template["resources"][0]["properties"]["restartPolicy"], "Never")
+
+    def test_restart_policy_is_measured(self) -> None:
+        """It is part of the container definition, so it changes HOST_DATA.
+
+        If it were not measured, an operator could flip a deployed group's
+        restart behaviour without the key noticing — and the measurement would
+        stop describing the workload.
+        """
+        def measure(policy: str) -> str:
+            result = self.run_script("--apply", "build", "template", "policy", RESTART_POLICY=policy)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return (self.work / "cce-policy-hash.txt").read_text().strip()
+
+        self.assertNotEqual(
+            measure("Never"), measure("OnFailure"),
+            "restartPolicy did not change the measurement",
+        )
+
+
+class TestACrashLoopFailsFast(DeployHarness):
+    """Under OnFailure a failing workload never settles on `Succeeded`.
+
+    So the state check that catches a Key Vault 403 cannot see it — the group
+    reports `Running` while restarting forever, and the deploy spins its whole
+    timeout before dying with a generic message. That is the cost the old
+    `Never` was buying, and it has to be paid here instead of by making every
+    real fault permanent.
+    """
+
+    def test_a_climbing_restart_count_ends_the_wait(self) -> None:
+        self.healthy_deploy()
+        self.state_file("group-restarts").write_text("5")
+        self.state_file("container-logs").write_text(
+            "quill-enclave: skr release: http 403 from key vault"
+        )
+
+        result = self.run_script("--apply", "verify", VERIFY_TIMEOUT_SECONDS="60")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("crash-looping", result.stderr)
+        self.assertIn("not starting slowly", result.stderr)
+        self.assertIn("403", result.stderr, "the deciding log line must be shown")
+
+    def test_one_restart_during_a_cold_start_is_tolerated(self) -> None:
+        """A single restart while coming up is normal; failing on it would make
+        the deploy flaky, and a flaky gate gets bypassed."""
+        self.healthy_deploy()
+        self.state_file("group-restarts").write_text("1")
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+
+        result = self.run_script(
+            "--apply", "verify", VERIFY_ATTESTATION_CMD=str(verifier)
+        )
+
+        self.assertNotIn("crash-looping", result.stderr)
+
+
+class TestDnsIsAPreconditionNotAnAssumption(DeployHarness):
+    """A DNS fault used to be reported as an enclave fault.
+
+    Every gcloud call in the DNS block can fail — expired credentials being the
+    common one — and the error scrolled past while the deploy carried on
+    waiting for /attestation on a hostname resolving nowhere. Ten minutes later
+    it died saying the enclave never served, and printed the enclave's log,
+    which was healthy. This cost a real debugging cycle on the southeastasia
+    bring-up.
+    """
+
+    def _gcloud(self, *, succeeds: bool = True) -> None:
+        """The DNS writer. Real gcloud on PATH is unauthenticated in CI, which
+        made every one of these tests die at the wrong step."""
+        stub = self.bin / "gcloud"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            + ("exit 0\n" if succeeds
+               else "echo 'ERROR: You do not currently have an active account selected.' >&2\nexit 1\n")
+        )
+        stub.chmod(0o755)
+
+    def _resolver(self, address: str) -> Path:
+        stub = self.bin / "dig"
+        stub.write_text(f"#!/usr/bin/env bash\necho '{address}'\n")
+        stub.chmod(0o755)
+        return stub
+
+    def test_a_record_pointing_elsewhere_stops_the_wait(self) -> None:
+        self.healthy_deploy()
+        self._gcloud()
+        self._resolver("203.0.113.7")  # not the group's 10.0.0.9
+
+        result = self.run_script(
+            "--apply", "verify", VERIFY_TIMEOUT_SECONDS="120", DNS_PROPAGATION_TIMEOUT="0"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("still resolves to 203.0.113.7", result.stderr)
+        self.assertIn("NOT an enclave fault", result.stderr)
+
+    def test_a_failed_dns_write_says_the_deploy_is_half_finished(self) -> None:
+        """Under `set -e` this was a bare gcloud error and an exit code.
+
+        In the middle of `all`, AFTER the group was created and the policy
+        bound, but BEFORE verify and narrow. The operator sees an auth error
+        and has no way to know Azure was already changed.
+        """
+        self.healthy_deploy()
+        self._gcloud(succeeds=False)
+
+        result = self.run_script("--apply", "verify")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("HALF-FINISHED", result.stderr)
+        self.assertIn("--apply verify narrow", result.stderr)
+
+    def test_propagation_is_waited_out_not_treated_as_a_fault(self) -> None:
+        """A record this deploy just rewrote has not propagated yet.
+
+        The TTL is 120s and the local resolver still holds the old answer, so
+        judging on the FIRST look turns every redeploy that moves the IP into a
+        false alarm — which is exactly what happened on the southeastasia roll.
+        A check that cries wolf on the happy path is a check people skip.
+        """
+        self.healthy_deploy()
+        self._gcloud()
+        # Old answer first, then the new one — a resolver mid-propagation.
+        counter = self.state / "dig-calls"
+        stub = self.bin / "dig"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'n=$(cat "{counter}" 2>/dev/null || echo 0); echo $((n+1)) > "{counter}"\n'
+            'if [ "$n" -lt 1 ]; then echo 203.0.113.7; else echo 10.0.0.9; fi\n'
+        )
+        stub.chmod(0o755)
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+
+        result = self.run_script(
+            "--apply", "verify",
+            VERIFY_ATTESTATION_CMD=str(verifier),
+            DNS_PROPAGATION_TIMEOUT="60",
+        )
+
+        # The assertion is about the DNS gate, not the (stubbed) enclave: it
+        # must WAIT through the stale answer and then accept the new one.
+        self.assertIn("still resolves to 203.0.113.7, waiting for 10.0.0.9", result.stderr)
+        self.assertIn("dns: api-azure.trustedrouter.com resolves to 10.0.0.9", result.stderr)
+        self.assertNotIn("NOT an enclave fault", result.stderr)
+
+    def test_a_correct_record_does_not_stop_the_wait(self) -> None:
+        self.healthy_deploy()
+        self._gcloud()
+        self._resolver("10.0.0.9")
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+
+        result = self.run_script("--apply", "verify", VERIFY_ATTESTATION_CMD=str(verifier))
+
+        self.assertNotIn("NOT an enclave fault", result.stderr)
 
 
 if __name__ == "__main__":
