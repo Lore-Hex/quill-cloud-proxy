@@ -229,7 +229,9 @@ def trust_html(release: dict[str, Any]) -> str:
       <div class="panel">
         <h2>Published Files</h2>
         <p><a href="/trust/image-digest-gcp.txt">image-digest-gcp.txt</a></p>
+        <p><a href="/trust/accepted-image-digests-gcp.txt">accepted-image-digests-gcp.txt</a></p>
         <p><a href="/trust/image-reference-gcp.txt">image-reference-gcp.txt</a></p>
+        <p><a href="/trust/accepted-image-references-gcp.txt">accepted-image-references-gcp.txt</a></p>
         <p><a href="/trust/gcp-release.json">gcp-release.json</a></p>
       </div>
       <div class="panel warn">
@@ -268,16 +270,29 @@ def trust_html(release: dict[str, Any]) -> str:
 
 def write_artifacts(out_dir: Path, release: dict[str, Any]) -> None:
     release_json = json.dumps(release, indent=2, sort_keys=True) + "\n"
-    digest = ",".join(str(value) for value in release["accepted_image_digests"]) + "\n"
-    reference = ",".join(
+    digest = str(release["image_digest"]) + "\n"
+    reference = str(release["image_reference"]) + "\n"
+    accepted_digests = (
+        ",".join(str(value) for value in release["accepted_image_digests"]) + "\n"
+    )
+    accepted_references = ",".join(
         str(value) for value in release["accepted_image_references"]
     ) + "\n"
     write_text(out_dir / "gcp-release.json", release_json)
     write_text(out_dir / "image-digest-gcp.txt", digest)
     write_text(out_dir / "image-reference-gcp.txt", reference)
+    write_text(out_dir / "accepted-image-digests-gcp.txt", accepted_digests)
+    write_text(out_dir / "accepted-image-references-gcp.txt", accepted_references)
     write_text(out_dir / "trust" / "gcp-release.json", release_json)
     write_text(out_dir / "trust" / "image-digest-gcp.txt", digest)
     write_text(out_dir / "trust" / "image-reference-gcp.txt", reference)
+    write_text(
+        out_dir / "trust" / "accepted-image-digests-gcp.txt", accepted_digests
+    )
+    write_text(
+        out_dir / "trust" / "accepted-image-references-gcp.txt",
+        accepted_references,
+    )
     write_text(out_dir / "index.html", trust_html(release))
 
 

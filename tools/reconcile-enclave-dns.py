@@ -57,7 +57,8 @@ API_HOST = os.environ.get("QUILL_API_HOST", "api.quillrouter.com")
 RECORD = API_HOST.rstrip(".") + "."
 TTL = int(os.environ.get("QUILL_DNS_TTL", "60"))
 TRUST_DIGEST_URL = os.environ.get(
-    "QUILL_TRUST_DIGEST_URL", "https://trust.trustedrouter.com/image-digest-gcp.txt"
+    "QUILL_TRUST_DIGEST_URL",
+    "https://trust.trustedrouter.com/accepted-image-digests-gcp.txt",
 )
 # Network tag every enclave instance carries (MIG + standalone). Discovery is
 # attestation-gated, so a tagged-but-wrong instance is simply excluded.

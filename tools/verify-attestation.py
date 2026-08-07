@@ -73,7 +73,7 @@ Examples:
     # Live GCP production check, including same-connection cert binding.
     ./tools/verify-attestation.py \\
         --api-host api.trustedrouter.com \\
-        --expect-digest "$(curl -fsS https://trust.trustedrouter.com/image-digest-gcp.txt)" \\
+        --expect-digest "$(curl -fsS https://trust.trustedrouter.com/accepted-image-digests-gcp.txt)" \\
         --samples 8
 
     # Concurrent cross-SNI binding stress test against ONE instance. The
@@ -84,7 +84,7 @@ Examples:
     # only way to catch that substitution class.
     ./tools/verify-attestation.py --binding-stress \\
         --connect-ip 35.193.251.216 \\
-        --expect-digest "$(curl -fsS https://trust.trustedrouter.com/image-digest-gcp.txt)"
+        --expect-digest "$(curl -fsS https://trust.trustedrouter.com/accepted-image-digests-gcp.txt)"
 
     # Offline AWS Nitro CBOR check.
     ./tools/verify-attestation.py attestation.cbor \\

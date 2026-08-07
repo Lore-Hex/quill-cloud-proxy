@@ -222,8 +222,8 @@ jobs:
         name: Write transitional trust-page artifacts
         run: |
           set -euo pipefail
-          previous="$(cat trust-page/image-digest-gcp.txt)"
-          previous_references="$(cat trust-page/image-reference-gcp.txt)"
+          previous="$(cat trust-page/accepted-image-digests-gcp.txt 2>/dev/null || cat trust-page/image-digest-gcp.txt)"
+          previous_references="$(cat trust-page/accepted-image-references-gcp.txt 2>/dev/null || cat trust-page/image-reference-gcp.txt)"
           python3 tools/write-trust-artifacts.py \
             --out-dir trust-page \
             --commit "${SHA}" \
@@ -231,8 +231,8 @@ jobs:
             --image-digest "${DIGEST}" \
             --accepted-image-digests "${previous}" \
             --accepted-image-references "${previous_references}"
-          accepted="$(cat trust-page/image-digest-gcp.txt)"
-          accepted_references="$(cat trust-page/image-reference-gcp.txt)"
+          accepted="$(cat trust-page/accepted-image-digests-gcp.txt)"
+          accepted_references="$(cat trust-page/accepted-image-references-gcp.txt)"
           echo "accepted_digests=${accepted}" >> "$GITHUB_OUTPUT"
           echo "accepted_references=${accepted_references}" >> "$GITHUB_OUTPUT"
 
@@ -240,7 +240,7 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust
+          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust
           if git diff --cached --quiet; then
             echo "trust-page artifacts unchanged; nothing to commit"
           else
@@ -737,7 +737,7 @@ jobs:
             --image-digest "${IMAGE_DIGEST}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust
+          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust
           if git diff --cached --quiet; then
             echo "final trust-page artifacts unchanged"
           else
