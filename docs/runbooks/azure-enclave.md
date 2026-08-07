@@ -65,6 +65,35 @@ gcloud secrets versions access latest --secret quillcloud-stripe-secret-key \
 > access; sealing it into a bundle makes that measurement a full-privilege
 > principal in the GCP project.
 
+### The wildcard — how issuance leaves the availability path for good
+
+A wildcard is the permanent fix. `*.trustedrouter.com` is one certificate that
+covers every region and every future machine, so bringing up a region costs
+**zero** issuances and the per-identifier rate limit stops being reachable.
+
+Wildcards can only be obtained through DNS-01, and `trustedrouter.com` is served
+by Google Cloud DNS. Set both variables and the enclave answers DNS-01 through
+Cloud DNS instead of Cloudflare:
+
+```
+QUILL_ACME_DNS_GCP_PROJECT=quill-cloud-proxy
+QUILL_ACME_DNS_MANAGED_ZONE=trustedrouter-com
+```
+
+Both are measured env, so setting them changes `HOST_DATA` and requires the
+normal bind/deploy/verify/narrow cycle.
+
+The credential is the same least-privilege cache service account, which needs
+`roles/dns.admin` in addition to its bucket access. The DNS API is requested
+with the `ndev.clouddns.readwrite` scope — a token minted with the storage scope
+fails with a 403 that names neither the scope nor the caller.
+
+**The wildcard challenge record is at the BASE name.** For `*.trustedrouter.com`
+the CA queries `_acme-challenge.trustedrouter.com`; the asterisk label is
+stripped. A record published at `_acme-challenge.*.trustedrouter.com` carries a
+literal asterisk label that is never queried, so validation times out while the
+zone looks correct.
+
 **A shared cache is also what makes multi-region serving of one hostname
 possible.** TLS-ALPN-01 validation lands on whichever region DNS points at, so
 replicas can only answer for each other when they share the cache.
@@ -247,12 +276,14 @@ python3 tools/test_deploy_azure_aci.py && python3 tools/test_bootstrap_azure_reg
 
 * **`uaenorth` has no shared certificate cache** (`QUILL_ACME_CACHE_GCS_BUCKET`
   is empty; bundle `867e5261…`, while `southeastasia` runs `068c0237…` with the
-  cache). It needs one more deploy on the current bundle — that deploy must
-  issue a certificate, so run it when its 168h window has room, and it is the
-  last issuance the region ever needs.
+  cache). This is the cause of the only real Azure downtime so far. Close it by
+  issuing the wildcard into the shared cache first, then deploying `uaenorth`
+  with the cache set — it then READS the wildcard and issues nothing.
 * **No failover between the two regions.** Each serves its own hostname, so a
-  region loss is a full outage for clients pointed at it. Fixing it needs both
-  regions serving one name, which needs the shared cache in both.
+  region loss is a full outage for clients pointed at it. Once the wildcard is
+  cached, both regions can serve any name under the domain, and
+  `api-azure.trustedrouter.com` can carry both regional IPs with membership
+  gated on attestation.
 * **Attestation is probed by nonce only.** The full binding — cert fingerprint
   in the MAA document, exporter channel binding, same-socket follow-up — is
   checked by `verify-attestation.py`, not by the status page.

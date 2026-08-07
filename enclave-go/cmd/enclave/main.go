@@ -279,9 +279,12 @@ func main() {
 		// validation routing with it). The renewer runs alongside
 		// autocert; both write to the same GCS cache, so whichever
 		// produces a fresh cert first wins.
+		cloudDNSConfigured := strings.TrimSpace(os.Getenv("QUILL_ACME_DNS_GCP_PROJECT")) != "" &&
+			strings.TrimSpace(os.Getenv("QUILL_ACME_DNS_MANAGED_ZONE")) != ""
+		cloudflareConfigured := strings.TrimSpace(boot.CloudflareAPIToken) != "" &&
+			strings.TrimSpace(boot.CloudflareZoneID) != ""
 		if mode == "acme" &&
-			strings.TrimSpace(boot.CloudflareAPIToken) != "" &&
-			strings.TrimSpace(boot.CloudflareZoneID) != "" &&
+			(cloudDNSConfigured || cloudflareConfigured) &&
 			strings.TrimSpace(os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET")) != "" {
 			enclavetls.SetDNS01Stderr(os.Stderr)
 			for _, dnsName := range strings.Split(apiHost, ",") {
@@ -290,7 +293,12 @@ func main() {
 					continue
 				}
 				enclavetls.StartDNS01Renewer(ctx, enclavetls.DNS01Config{
-					DNSName:            dnsName,
+					DNSName: dnsName,
+					// Cloud DNS when the zone is configured, Cloudflare
+					// otherwise. trustedrouter.com is served by Cloud DNS, so
+					// without this the DNS-01 fallback cannot touch the zone
+					// that matters and only looks configured.
+					Provider:           dns01Provider(),
 					Email:              os.Getenv("QUILL_ACME_EMAIL"),
 					DirectoryURL:       os.Getenv("QUILL_ACME_DIRECTORY_URL"),
 					Cache:              enclavetls.NewGCSCache(os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET")),
@@ -1569,4 +1577,19 @@ func maybeStartAttestSidecar() {
 			fmt.Fprintf(os.Stderr, "attest_sidecar.exited ok pid=%d\n", cmd.Process.Pid)
 		}
 	}()
+}
+
+// dns01Provider selects the DNS-01 challenge publisher.
+//
+// Cloud DNS when a project and managed zone are configured, Cloudflare (nil,
+// the DNS01Config default) otherwise. trustedrouter.com is served by Cloud DNS,
+// so the Cloudflare-only renewer could never touch the zone that actually
+// matters — it looked configured and could not have worked.
+func dns01Provider() enclavetls.DNS01Provider {
+	project := strings.TrimSpace(os.Getenv("QUILL_ACME_DNS_GCP_PROJECT"))
+	zone := strings.TrimSpace(os.Getenv("QUILL_ACME_DNS_MANAGED_ZONE"))
+	if project == "" || zone == "" {
+		return nil
+	}
+	return enclavetls.NewCloudDNSProvider(project, zone, enclavetls.NewDNS01HTTPClient())
 }

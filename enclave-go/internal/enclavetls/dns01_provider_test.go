@@ -150,3 +150,66 @@ func TestMissingConfigurationIsRefusedBeforeAnyCall(t *testing.T) {
 		t.Error("made an API call despite incomplete configuration")
 	}
 }
+
+// --------------------------------------------------------------------------
+// The wildcard rule, and the provider seam
+// --------------------------------------------------------------------------
+
+func TestWildcardChallengeStripsTheAsteriskLabel(t *testing.T) {
+	// For "*.example.com" the CA looks at _acme-challenge.EXAMPLE.COM. Publishing
+	// _acme-challenge.*.example.com creates a record with a literal asterisk
+	// label that is never queried, so validation times out while the record sits
+	// in the zone looking correct — the worst kind of wrong.
+	got := challengeRecordName("*.trustedrouter.com")
+	if got != "_acme-challenge.trustedrouter.com" {
+		t.Fatalf("wildcard challenge name = %q", got)
+	}
+}
+
+func TestNonWildcardChallengeKeepsTheFullName(t *testing.T) {
+	got := challengeRecordName("api-azure.trustedrouter.com")
+	if got != "_acme-challenge.api-azure.trustedrouter.com" {
+		t.Fatalf("challenge name = %q", got)
+	}
+}
+
+func TestConfigWithoutAProviderStillUsesCloudflare(t *testing.T) {
+	// Every deployment that predates this seam passes no Provider, and must keep
+	// behaving exactly as it did.
+	if name := (DNS01Config{}).provider().Name(); name != "cloudflare" {
+		t.Fatalf("default provider = %q, want cloudflare", name)
+	}
+}
+
+func TestAConfiguredProviderIsUsed(t *testing.T) {
+	p := &CloudDNSProvider{}
+	if name := (DNS01Config{Provider: p}).provider().Name(); name != "clouddns" {
+		t.Fatalf("provider = %q, want clouddns", name)
+	}
+}
+
+func TestCloudDNSProviderRequestsTheDNSScopeNotStorage(t *testing.T) {
+	// A token minted for the storage scope fails against the DNS API with a 403
+	// that names neither the scope nor the caller.
+	p := NewCloudDNSProvider("proj", "zone", nil)
+	if p.AccessToken == nil {
+		t.Fatal("no token source wired")
+	}
+	if cloudDNSScope == gcsScope {
+		t.Fatal("DNS and storage scopes must differ")
+	}
+	if cloudDNSScope != "https://www.googleapis.com/auth/ndev.clouddns.readwrite" {
+		t.Fatalf("unexpected DNS scope %q", cloudDNSScope)
+	}
+}
+
+func TestTokenSourceDefaultsToStorageScope(t *testing.T) {
+	// The GCS cache constructs its source without a scope and must keep getting
+	// the storage one.
+	if (&gcpTokenSource{}).requestedScope() != gcsScope {
+		t.Fatal("default scope changed")
+	}
+	if (&gcpTokenSource{scope: cloudDNSScope}).requestedScope() != cloudDNSScope {
+		t.Fatal("explicit scope ignored")
+	}
+}

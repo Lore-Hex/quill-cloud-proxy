@@ -62,6 +62,9 @@ type DNS01Config struct {
 	CloudflareAPIToken string         // Zone:DNS:Edit on the zone
 	CloudflareZoneID   string         // the zone of DNSName (e.g. quillrouter.com's zone id)
 	HTTPClient         *http.Client   // vsock-tunneled on AWS, stdlib on GCP
+	// Provider publishes the challenge TXT. nil selects Cloudflare, which is
+	// what every existing deployment used before this seam existed.
+	Provider DNS01Provider
 	// EAB binds this ACME account to an account the CA already knows about.
 	// nil for Let's Encrypt; REQUIRED by the CAs this path exists to fail
 	// over to. Without it, pointing DirectoryURL at one of them fails at
@@ -212,17 +215,18 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config) error {
 			return fmt.Errorf("acme dns-01 token: %w", err)
 		}
 
-		recordName := "_acme-challenge." + cfg.DNSName
-		recordID, err := cloudflareAddTXTRecord(ctx, cfg, recordName, token)
+		provider := cfg.provider()
+		recordName := challengeRecordName(cfg.DNSName)
+		recordID, err := provider.AddTXT(ctx, recordName, token)
 		if err != nil {
-			return fmt.Errorf("cloudflare TXT add: %w", err)
+			return fmt.Errorf("%s TXT add: %w", provider.Name(), err)
 		}
 		// Best-effort cleanup of the TXT record whether the challenge
 		// passes or fails. LE rate-limits the same TXT being seen
 		// across consecutive orders, so leaving stale records around
 		// is operationally bad.
 		defer func() {
-			if delErr := cloudflareDeleteTXTRecord(ctx, cfg, recordID); delErr != nil {
+			if delErr := provider.RemoveTXT(ctx, recordID); delErr != nil {
 				fmt.Fprintf(maybeStderr,
 					"dns01_renewer.txt_cleanup_failed record_id=%s err=%v\n",
 					recordID, delErr,
@@ -448,4 +452,43 @@ func SetDNS01Stderr(w io.Writer) {
 	if w != nil {
 		maybeStderr = w
 	}
+}
+
+// provider returns the configured challenge publisher, defaulting to
+// Cloudflare so existing deployments behave exactly as before.
+func (c DNS01Config) provider() DNS01Provider {
+	if c.Provider != nil {
+		return c.Provider
+	}
+	return cloudflareProvider{cfg: c}
+}
+
+// challengeRecordName is where the CA looks for the DNS-01 token.
+//
+// THE WILDCARD RULE. For "*.example.com" the challenge record is
+// _acme-challenge.EXAMPLE.COM — the label is stripped, not kept. Publishing
+// _acme-challenge.*.example.com creates a record with a literal asterisk label
+// that the CA never queries, so validation times out with the record sitting
+// right there in the zone looking correct.
+//
+// This matters because a wildcard is the whole reason DNS-01 exists here: one
+// *.trustedrouter.com in the shared cache serves every region and every future
+// machine, and takes certificate issuance off the availability path.
+func challengeRecordName(dnsName string) string {
+	return "_acme-challenge." + strings.TrimPrefix(strings.TrimSpace(dnsName), "*.")
+}
+
+// cloudflareProvider adapts the pre-existing Cloudflare helpers to the
+// DNS01Provider interface. Its handle is the record id, which is what the
+// Cloudflare API deletes by.
+type cloudflareProvider struct{ cfg DNS01Config }
+
+func (p cloudflareProvider) Name() string { return "cloudflare" }
+
+func (p cloudflareProvider) AddTXT(ctx context.Context, name, value string) (string, error) {
+	return cloudflareAddTXTRecord(ctx, p.cfg, name, value)
+}
+
+func (p cloudflareProvider) RemoveTXT(ctx context.Context, handle string) error {
+	return cloudflareDeleteTXTRecord(ctx, p.cfg, handle)
 }
