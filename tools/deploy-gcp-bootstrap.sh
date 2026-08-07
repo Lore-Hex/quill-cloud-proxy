@@ -89,6 +89,7 @@ STREAMLAKE_SECRET="${STREAMLAKE_SECRET:-trustedrouter-streamlake-api-key}"
 NEUROMETRIC_SECRET="${NEUROMETRIC_SECRET:-trustedrouter-neurometric-api-key}"
 ENGY_SECRET="${ENGY_SECRET:-trustedrouter-engy-api-key}"
 ALIBABA_SECRET="${ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
+AZURE_SECRET="${AZURE_SECRET:-trustedrouter-azure-api-key}"
 LTX_SECRET="${LTX_SECRET:-trustedrouter-ltx-api-key}"
 RUNWAY_SECRET="${RUNWAY_SECRET:-trustedrouter-runway-api-key}"
 KLING_SECRET="${KLING_SECRET:-trustedrouter-kling-api-key}"
@@ -208,6 +209,7 @@ for secret in \
   "$NEUROMETRIC_SECRET" \
   "$ENGY_SECRET" \
   "$ALIBABA_SECRET" \
+  "$AZURE_SECRET" \
   "$LTX_SECRET" \
   "$RUNWAY_SECRET" \
   "$KLING_SECRET" \

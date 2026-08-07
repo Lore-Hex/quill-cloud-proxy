@@ -121,6 +121,7 @@ type BootstrapData struct {
 	EngyAPIKey                   string `json:"engy_api_key,omitempty"`
 	ZeroGAPIKey                  string `json:"zero_g_api_key,omitempty"`
 	AlibabaAPIKey                string `json:"alibaba_api_key,omitempty"`
+	AzureAPIKey                  string `json:"azure_api_key,omitempty"`
 	LTXAPIKey                    string `json:"ltx_api_key,omitempty"`
 	RunwayAPIKey                 string `json:"runway_api_key,omitempty"`
 	KlingAPIKey                  string `json:"kling_api_key,omitempty"`
