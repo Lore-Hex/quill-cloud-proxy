@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
@@ -22,11 +23,25 @@ func maybeServePublicModels(
 		return false
 	}
 	if gateway == nil {
+		// Distinct from a fetch failure: the control-plane client was never
+		// constructed, so no request was even attempted. Both used to emit the
+		// same opaque 503, making the two indistinguishable from outside.
+		fmt.Fprintf(os.Stderr, "enclave.public_models_unavailable reason=%q\n", "no control-plane client")
 		writeError(w, 503, "model catalog unavailable")
 		return true
 	}
 	body, err := gateway.PublicModels(ctx)
 	if err != nil {
+		// The error was DISCARDED here. The enclave knew exactly why the
+		// catalog was unavailable — unreachable control plane, non-200,
+		// oversized body, malformed envelope — and threw it away, leaving a
+		// 503 whose cause cannot be recovered from outside or from the logs.
+		//
+		// PublicModels serves a stale copy for 30 minutes, so a PERSISTENT 503
+		// means no fetch has ever succeeded since boot. That is a
+		// configuration or egress fault, not a blip, and the text below is the
+		// only thing that says which.
+		fmt.Fprintf(os.Stderr, "enclave.public_models_unavailable reason=%q\n", err.Error())
 		writeError(w, 503, "model catalog unavailable")
 		return true
 	}
