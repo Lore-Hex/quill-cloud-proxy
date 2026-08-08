@@ -287,13 +287,20 @@ func main() {
 			(cloudDNSConfigured || cloudflareConfigured) &&
 			strings.TrimSpace(os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET")) != "" {
 			enclavetls.SetDNS01Stderr(os.Stderr)
-			for _, dnsName := range strings.Split(apiHost, ",") {
+			// QUILL_API_HOST is built as API_HOST followed by EXTRA_API_HOSTS
+			// (tools/deploy-azure-aci.sh), so index 0 is the name DNS points at
+			// and the rest are shared names this region also serves. Only the
+			// latter need DNS-01 to bootstrap, because TLS-ALPN-01 for them
+			// lands on whichever region DNS resolves to, never here.
+			for i, dnsName := range strings.Split(apiHost, ",") {
 				dnsName = strings.TrimSpace(dnsName)
 				if dnsName == "" {
 					continue
 				}
+				isSharedName := i > 0
 				enclavetls.StartDNS01Renewer(ctx, enclavetls.DNS01Config{
-					DNSName: dnsName,
+					DNSName:        dnsName,
+					AllowBootstrap: isSharedName,
 					// Cloud DNS when the zone is configured, Cloudflare
 					// otherwise. trustedrouter.com is served by Cloud DNS, so
 					// without this the DNS-01 fallback cannot touch the zone
