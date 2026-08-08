@@ -271,23 +271,12 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config) error {
 		return fmt.Errorf("acme finalize: %w", err)
 	}
 
-	// 6. Persist the combined cert+key to Cache in autocert's format
-	// (cert chain PEM concatenated with the EC private key PEM). The
-	// next autocert.GetCertificate call returns this on cache hit.
-	var buf bytes.Buffer
-	for _, b := range der {
-		if err := pem.Encode(&buf, &pem.Block{Type: "CERTIFICATE", Bytes: b}); err != nil {
-			return fmt.Errorf("pem cert: %w", err)
-		}
-	}
-	keyDER, err := x509.MarshalECPrivateKey(certKey)
+	// 6. Persist the combined key+cert to the cache in autocert's format.
+	blob, err := encodeAutocertEntry(certKey, der)
 	if err != nil {
-		return fmt.Errorf("marshal key: %w", err)
+		return err
 	}
-	if err := pem.Encode(&buf, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}); err != nil {
-		return fmt.Errorf("pem key: %w", err)
-	}
-	if err := cfg.Cache.Put(ctx, cfg.DNSName, buf.Bytes()); err != nil {
+	if err := cfg.Cache.Put(ctx, cfg.DNSName, blob); err != nil {
 		return fmt.Errorf("cache put: %w", err)
 	}
 	fmt.Fprintf(maybeStderr, "dns01_renewer.cert_renewed dns_name=%s\n", cfg.DNSName)
@@ -491,4 +480,43 @@ func (p cloudflareProvider) AddTXT(ctx context.Context, name, value string) (str
 
 func (p cloudflareProvider) RemoveTXT(ctx context.Context, handle string) error {
 	return cloudflareDeleteTXTRecord(ctx, p.cfg, handle)
+}
+
+// encodeAutocertEntry serialises a certificate for autocert's cache.
+//
+// THE PRIVATE KEY MUST COME FIRST. autocert's cacheGet does a single
+// pem.Decode and rejects the entry outright unless that first block is the
+// key:
+//
+//	priv, pub := pem.Decode(data)
+//	if priv == nil || !strings.Contains(priv.Type, "PRIVATE") {
+//	    return nil, ErrCacheMiss
+//	}
+//
+// This renewer wrote the chain first and the key last, under a comment
+// claiming it was "autocert's format". Every certificate it produced was
+// therefore returned as a cache MISS — no error, no log, just a cache that
+// never hit. Combined with the renewer only speaking to Cloudflare while
+// trustedrouter.com is served by Cloud DNS, the DNS-01 fallback had two
+// independent reasons it could not work, and neither was visible because
+// DNS-01 only runs behind TLS-ALPN-01.
+//
+// Getting this wrong is invisible in exactly the way that matters: the write
+// succeeds, the object appears in the bucket, and the certificate is silently
+// never used.
+func encodeAutocertEntry(key *ecdsa.PrivateKey, chain [][]byte) ([]byte, error) {
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("marshal key: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := pem.Encode(&buf, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}); err != nil {
+		return nil, fmt.Errorf("pem key: %w", err)
+	}
+	for _, b := range chain {
+		if err := pem.Encode(&buf, &pem.Block{Type: "CERTIFICATE", Bytes: b}); err != nil {
+			return nil, fmt.Errorf("pem cert: %w", err)
+		}
+	}
+	return buf.Bytes(), nil
 }
