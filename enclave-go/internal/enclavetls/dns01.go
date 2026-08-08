@@ -62,6 +62,18 @@ type DNS01Config struct {
 	CloudflareAPIToken string         // Zone:DNS:Edit on the zone
 	CloudflareZoneID   string         // the zone of DNSName (e.g. quillrouter.com's zone id)
 	HTTPClient         *http.Client   // vsock-tunneled on AWS, stdlib on GCP
+	// AllowBootstrap lets DNS-01 obtain the FIRST certificate for this name,
+	// rather than only renewing one TLS-ALPN-01 already produced.
+	//
+	// Off by default, and that default is right for a region's PRIMARY name:
+	// DNS points at it, so TLS-ALPN-01 works, and letting both paths issue at
+	// once would race and burn two of five weekly issuances for one name.
+	//
+	// It must be ON for a SHARED name — one this region serves but DNS does not
+	// point at. TLS-ALPN-01 validation lands on whichever region DNS resolves
+	// to, so from here it can never succeed, and without bootstrap the name is
+	// simply never obtained. That is the case multi-region failover depends on.
+	AllowBootstrap bool
 	// Provider publishes the challenge TXT. nil selects Cloudflare, which is
 	// what every existing deployment used before this seam existed.
 	Provider DNS01Provider
@@ -124,10 +136,14 @@ func maybeRenewDNS01(ctx context.Context, cfg DNS01Config) error {
 	}
 	raw, err := cfg.Cache.Get(ctx, cfg.DNSName)
 	if errors.Is(err, autocert.ErrCacheMiss) {
-		// No cert yet; let autocert handle the first-issuance via
-		// TLS-ALPN-01 on the first TLS handshake. DNS-01 is the
-		// renewal fallback, not the bootstrap path.
-		return nil
+		if !cfg.AllowBootstrap {
+			// Primary name: DNS points here, so autocert's TLS-ALPN-01 will
+			// obtain it on the first handshake. Issuing from both paths at once
+			// would race and spend two of five weekly issuances on one name.
+			return nil
+		}
+		fmt.Fprintf(maybeStderr, "dns01_renewer.bootstrapping dns_name=%s\n", cfg.DNSName)
+		return runDNS01Order(ctx, cfg)
 	}
 	if err != nil {
 		// Cache read errored. Don't treat as "needs renewal" — that

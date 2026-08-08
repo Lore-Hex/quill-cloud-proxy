@@ -16,6 +16,11 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
+// A directory URL that cannot be reached. Unit tests must never talk to a
+// real CA: it is slow, it is flaky, and it spends issuance budget that is a
+// hard 5-per-168h.
+const unroutableACME = "http://127.0.0.1:1/directory"
+
 func newTestProvider(t *testing.T, handler http.HandlerFunc) (*CloudDNSProvider, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
@@ -344,5 +349,63 @@ func TestAnEntryWithNoCertificateIsAnError(t *testing.T) {
 
 	if _, err := leafFromAutocertEntry(buf.Bytes()); err == nil {
 		t.Fatal("a key-only entry was accepted as a certificate")
+	}
+}
+
+// --------------------------------------------------------------------------
+// Bootstrap: the only way a shared name is ever obtained
+// --------------------------------------------------------------------------
+
+type missCache struct{ puts int }
+
+func (c *missCache) Get(context.Context, string) ([]byte, error) {
+	return nil, autocert.ErrCacheMiss
+}
+func (c *missCache) Put(context.Context, string, []byte) error { c.puts++; return nil }
+func (c *missCache) Delete(context.Context, string) error      { return nil }
+
+func TestPrimaryNameDoesNotBootstrapOnCacheMiss(t *testing.T) {
+	// DNS points at the primary, so autocert's TLS-ALPN-01 obtains it. Issuing
+	// from both paths at once would race and spend two of five weekly
+	// issuances on one name.
+	cache := &missCache{}
+	err := maybeRenewDNS01(context.Background(), DNS01Config{
+		DNSName: "api-azure-sea.trustedrouter.com",
+		Cache:   cache,
+		// Unroutable: no test may touch a real CA. If the no-op gate ever
+		// breaks, this fails locally instead of registering against Let's
+		// Encrypt and spending rate-limit budget from a unit test.
+		DirectoryURL: unroutableACME,
+		// AllowBootstrap deliberately false.
+	})
+	if err != nil {
+		t.Fatalf("a cache miss on the primary name should be a no-op, got %v", err)
+	}
+	if cache.puts != 0 {
+		t.Fatal("primary name attempted an order on cache miss")
+	}
+}
+
+func TestSharedNameBootstrapsOnCacheMiss(t *testing.T) {
+	// A shared name is served here but DNS points elsewhere, so TLS-ALPN-01 can
+	// never validate it from this region. Without bootstrap it is simply never
+	// obtained, and multi-region failover cannot exist.
+	//
+	// The order itself needs an ACME server, so this asserts the decision — that
+	// it PROCEEDS past the miss — rather than a completed issuance.
+	cache := &missCache{}
+	err := maybeRenewDNS01(context.Background(), DNS01Config{
+		DNSName:        "api-azure.trustedrouter.com",
+		Cache:          cache,
+		AllowBootstrap: true,
+		DirectoryURL:   unroutableACME,
+	})
+	if err == nil {
+		t.Fatal("expected the order to be attempted (and fail against the unroutable CA)")
+	}
+	// It must fail REACHING the CA, which proves it got past the cache miss and
+	// tried to issue. Any earlier return means bootstrap did not happen.
+	if !strings.Contains(err.Error(), "acme") && !strings.Contains(err.Error(), "connect") {
+		t.Fatalf("returned before attempting the order: %v", err)
 	}
 }
