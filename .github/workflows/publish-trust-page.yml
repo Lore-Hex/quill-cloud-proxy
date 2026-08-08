@@ -11,6 +11,11 @@ on:
         description: "Exact comma-separated image-reference set expected after publication"
         required: false
         type: string
+      artifact_name:
+        description: "Unique Pages artifact name within the calling workflow run"
+        required: false
+        default: "github-pages"
+        type: string
   push:
     branches: [main]
     paths:
@@ -97,9 +102,12 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
+          name: ${{ inputs.artifact_name || 'github-pages' }}
           path: trust-page/
       - id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: ${{ inputs.artifact_name || 'github-pages' }}
         # Pages deployments fail transiently (deployment conflicts, API
         # blips). Don't fail the job on the first attempt; retry once
         # after a backoff below.
@@ -110,6 +118,8 @@ jobs:
       - id: deployment_retry
         if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: ${{ inputs.artifact_name || 'github-pages' }}
       - name: Verify live page matches repo artifacts
         env:
           EXPECTED_DIGESTS: ${{ inputs.expected_digests }}

@@ -256,6 +256,7 @@ jobs:
       id-token: write
     uses: ./.github/workflows/publish-trust-page.yml
     with:
+      artifact_name: github-pages-transition
       expected_digests: ${{ needs.build-and-release.outputs.accepted_digests }}
       expected_references: ${{ needs.build-and-release.outputs.accepted_references }}
 
@@ -755,5 +756,6 @@ jobs:
       id-token: write
     uses: ./.github/workflows/publish-trust-page.yml
     with:
+      artifact_name: github-pages-final
       expected_digests: ${{ needs.build-and-release.outputs.image_digest }}
       expected_references: ${{ needs.build-and-release.outputs.image_ref }}

@@ -106,6 +106,24 @@ class RolloutSafetyTests(unittest.TestCase):
             workflow,
         )
 
+    def test_transition_and_final_pages_artifacts_have_unique_names(self) -> None:
+        deploy_workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+        publish_workflow = (
+            ROOT / ".github" / "workflows" / "publish-trust-page.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(
+            deploy_workflow.count("artifact_name: github-pages-transition"), 1
+        )
+        self.assertEqual(deploy_workflow.count("artifact_name: github-pages-final"), 1)
+        self.assertEqual(
+            publish_workflow.count("${{ inputs.artifact_name || 'github-pages' }}"),
+            3,
+            "upload, initial deploy, and retry must select the same artifact",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
