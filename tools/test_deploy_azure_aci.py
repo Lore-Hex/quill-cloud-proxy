@@ -1554,5 +1554,65 @@ class TestDnsIsAPreconditionNotAnAssumption(DeployHarness):
         self.assertNotIn("NOT an enclave fault", result.stderr)
 
 
+class TestSharedHostnameForFailover(DeployHarness):
+    """Two regions must be able to serve ONE hostname.
+
+    That is what multi-region failover needs: an A record carrying both regional
+    IPs, with every region able to answer for the shared name. Without it, two
+    regions with two hostnames are two single points of failure rather than
+    redundancy.
+    """
+
+    def _api_host(self, **env: str) -> str:
+        result = self.run_script("print-env", **env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["QUILL_API_HOST"]
+
+    def test_a_region_serves_its_own_name_and_the_shared_one(self) -> None:
+        got = self._api_host(
+            API_HOST="api-azure-sea.trustedrouter.com",
+            EXTRA_API_HOSTS="api-azure.trustedrouter.com",
+        )
+        self.assertEqual(
+            got, "api-azure-sea.trustedrouter.com,api-azure.trustedrouter.com"
+        )
+
+    def test_unset_extras_leave_the_env_untouched(self) -> None:
+        """Every existing deployment passes no extras and must be byte-identical."""
+        self.assertEqual(
+            self._api_host(API_HOST="api-azure.trustedrouter.com", EXTRA_API_HOSTS=""),
+            "api-azure.trustedrouter.com",
+        )
+
+    def test_blank_and_spaced_entries_are_dropped(self) -> None:
+        """A trailing comma in an env var must not whitelist an empty SNI, which
+        autocert would reject at handshake time rather than at deploy time."""
+        self.assertEqual(
+            self._api_host(
+                API_HOST="a.trustedrouter.com",
+                EXTRA_API_HOSTS=" b.trustedrouter.com , ,c.trustedrouter.com,",
+            ),
+            "a.trustedrouter.com,b.trustedrouter.com,c.trustedrouter.com",
+        )
+
+    def test_the_dns_record_still_uses_only_the_primary_name(self) -> None:
+        """API_HOST drives the A record this deploy reconciles. If the shared
+        name leaked into it, the deploy would try to create one record literally
+        named 'a.example.com,b.example.com'."""
+        self.healthy_deploy(
+            API_HOST="api-azure-sea.trustedrouter.com",
+            EXTRA_API_HOSTS="api-azure.trustedrouter.com",
+        )
+        template = json.loads((self.work / "template.json").read_text())
+        env = {
+            e["name"]: e.get("value")
+            for c in template["resources"][0]["properties"]["containers"]
+            if c["name"] == "quill-enclave"
+            for e in c["properties"]["environmentVariables"]
+        }
+        self.assertIn("api-azure.trustedrouter.com", env["QUILL_API_HOST"])
+        self.assertIn("api-azure-sea.trustedrouter.com", env["QUILL_API_HOST"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
