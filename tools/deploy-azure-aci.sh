@@ -127,6 +127,18 @@ SA_KEY_ENTRY="${SA_KEY_ENTRY:-tr-cross-cloud-sa-key}"
 CONTAINER_GROUP="${CONTAINER_GROUP:-quill-enclave-${LOCATION}}"
 DNS_LABEL="${DNS_LABEL:-${CONTAINER_GROUP}}"
 API_HOST="${API_HOST:-api-azure.trustedrouter.com}"
+# Additional SNI names this region serves, comma-separated.
+#
+# API_HOST stays a SINGLE name because it drives the DNS record this deploy
+# reconciles and the host `verify` attests against; a list there would try to
+# create one A record literally named "a.example.com,b.example.com".
+#
+# EXTRA_API_HOSTS is how a region serves a SHARED name in addition to its own.
+# That is what multi-region failover needs: both regions answering for one
+# hostname, so an A record can carry both IPs. Serving a shared name requires
+# the shared ACME cache, because whichever region DNS points at is the only one
+# that can answer a TLS-ALPN-01 challenge for it.
+EXTRA_API_HOSTS="${EXTRA_API_HOSTS:-}"
 IMAGE_REPO="${IMAGE_REPO:-quill-enclave-azure}"
 IMAGE_TAG="${IMAGE_TAG:-azure-$(date -u +%Y%m%d%H%M%S)}"
 
@@ -425,7 +437,12 @@ env = {
     "QUILL_GCP_REGION":          os.environ["LOCATION"],
     "QUILL_DEVICE_KEYS_SECRET":  os.environ["QUILL_DEVICE_KEYS_SECRET"],
     # --- serving ----------------------------------------------------------
-    "QUILL_API_HOST":                   os.environ["API_HOST"],
+    # The enclave splits this on commas and whitelists every name; the deploy
+    # keeps API_HOST single for DNS and verification.
+    "QUILL_API_HOST": ",".join(
+        [os.environ["API_HOST"]]
+        + [h.strip() for h in os.environ.get("EXTRA_API_HOSTS", "").split(",") if h.strip()]
+    ),
     "QUILL_ACME_EMAIL":                 os.environ["QUILL_ACME_EMAIL"],
     "QUILL_ACME_CACHE_GCS_BUCKET":      os.environ["QUILL_ACME_CACHE_GCS_BUCKET"],
     "QUILL_ACME_DNS_GCP_PROJECT":       os.environ["QUILL_ACME_DNS_GCP_PROJECT"],
@@ -485,7 +502,7 @@ PY
 
 # The env vars render_env_json reads out of the process. Exported here so the
 # python heredoc sees them.
-export MAA_ENDPOINT VAULT SKR_KEY BUNDLE_SECRET SA_KEY_ENTRY LOCATION API_HOST \
+export MAA_ENDPOINT VAULT SKR_KEY BUNDLE_SECRET SA_KEY_ENTRY LOCATION API_HOST EXTRA_API_HOSTS \
   QUILL_GCP_PROJECT_ID QUILL_DEVICE_KEYS_SECRET QUILL_ACME_EMAIL \
   QUILL_ACME_CACHE_GCS_BUCKET QUILL_ACME_DNS_GCP_PROJECT QUILL_ACME_DNS_MANAGED_ZONE QUILL_HEALTH_PORT QUILL_FIRST_BYTE_TIMEOUT_SECONDS \
   TR_CONTROL_PLANE_BASE_URL QUILL_AZURE_BUNDLE_VERSION \
