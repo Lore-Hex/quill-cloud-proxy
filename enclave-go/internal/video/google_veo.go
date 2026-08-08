@@ -99,7 +99,6 @@ func (c *GoogleVeoClient) QueueResolved(ctx context.Context, request *ResolvedRe
 		"aspectRatio":     request.AspectRatio,
 		"durationSeconds": request.DurationSeconds,
 		"resolution":      strings.ToLower(request.Resolution),
-		"numberOfVideos":  1,
 	}
 	if request.Seed != nil {
 		parameters["seed"] = *request.Seed
