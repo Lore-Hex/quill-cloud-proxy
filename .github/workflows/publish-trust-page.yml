@@ -100,7 +100,7 @@ jobs:
           assert Path("trust-page/trust/accepted-image-references-gcp.txt").read_text().strip() == ",".join(accepted_references)
           PY
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           name: ${{ inputs.artifact_name || 'github-pages' }}
           path: trust-page/
