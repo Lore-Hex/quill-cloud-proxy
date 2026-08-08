@@ -173,6 +173,9 @@ func TestGoogleVeoProviderUsesLongRunningOperationAndKeyedDownload(t *testing.T)
 	if parameters["durationSeconds"] != float64(8) || parameters["aspectRatio"] != "9:16" {
 		t.Fatalf("bad Veo parameters: %#v", parameters)
 	}
+	if _, present := parameters["numberOfVideos"]; present {
+		t.Fatalf("Veo 3.1 rejects numberOfVideos: %#v", parameters)
+	}
 	poll, err := client.Retrieve(context.Background(), queued.ProviderModel, queued.QueueID)
 	if err != nil || poll.State != PollCompleted {
 		t.Fatalf("poll=%#v err=%v", poll, err)
