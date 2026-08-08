@@ -137,7 +137,7 @@ func (c *Client) fetchPublicModels(ctx context.Context) ([]byte, error) {
 
 	var lastErr error
 	for _, base := range c.baseURLs {
-		req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, base+"/models", nil)
+		req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, publicModelsURL(base), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -155,6 +155,19 @@ func (c *Client) fetchPublicModels(ctx context.Context) ([]byte, error) {
 		}
 		if resp.StatusCode != http.StatusOK {
 			lastErr = fmt.Errorf("trustedrouter: /models http %d", resp.StatusCode)
+			continue
+		}
+		// A 200 is not enough. trustedrouter.com/models is a human-facing HTML
+		// page and answers 200 happily; only the content type distinguishes it
+		// from the API. Naming the type turns "invalid /models response" into a
+		// message that identifies the mistake.
+		// Specifically HTML. A 200 text/html body is the signature of hitting
+		// the human-facing page instead of the API, and the JSON decode below
+		// would report it as a malformed catalog. Anything else — including a
+		// missing or sloppy content type — is left to the decoder, because a
+		// control plane serving valid JSON without the header is still correct.
+		if ct := resp.Header.Get("Content-Type"); strings.Contains(strings.ToLower(ct), "text/html") {
+			lastErr = fmt.Errorf("trustedrouter: /models returned HTML (%q), not the API — wrong path?", ct)
 			continue
 		}
 		if len(body) > publicModelsMaxBytes {
@@ -953,4 +966,25 @@ func maxFloat(a, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+// publicModelsURL builds the versioned catalog URL from a control-plane base.
+//
+// THE BASE IS NOT VERSIONED, AND EVERY OTHER CALLER RELIES ON THAT. The
+// internal endpoints are absolute from the domain root
+// (/internal/gateway/authorize, /internal/gateway/settle, …), so GCP ships
+// TR_CONTROL_PLANE_BASE_URL=https://trustedrouter.com and that is correct for
+// them. PublicModels was the only method that assumed the base already carried
+// /v1, so it fetched https://trustedrouter.com/models — the human-facing HTML
+// page, which answers 200 with text/html. The status check passed, the JSON
+// decode failed, and the enclave served 503 "model catalog unavailable" while
+// inference was perfectly healthy.
+//
+// Normalising here rather than changing the deploy variable keeps the two
+// conventions from silently disagreeing again: whichever form a cloud passes,
+// this resolves to exactly one /v1/models.
+func publicModelsURL(base string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
+	trimmed = strings.TrimSuffix(trimmed, "/v1")
+	return trimmed + "/v1/models"
 }

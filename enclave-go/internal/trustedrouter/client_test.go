@@ -18,7 +18,7 @@ func TestPublicModelsCachesCatalogWithoutCredentials(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if r.Method != http.MethodGet || r.URL.Path != "/models" {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "" {

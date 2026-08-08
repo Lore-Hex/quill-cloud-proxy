@@ -14,7 +14,7 @@ import (
 
 func TestServeOnePublicModelsIsAnonymousOnAttestedOrigin(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/models" {
+		if r.URL.Path != "/v1/models" {
 			t.Fatalf("control-plane path = %q", r.URL.Path)
 		}
 		if r.Header.Get("Authorization") != "" || r.Header.Get("X-TrustedRouter-Internal-Token") != "" {
