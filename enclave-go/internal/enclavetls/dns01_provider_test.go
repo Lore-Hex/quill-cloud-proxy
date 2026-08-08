@@ -2,12 +2,16 @@ package enclavetls
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/acme/autocert"
 )
 
 func newTestProvider(t *testing.T, handler http.HandlerFunc) (*CloudDNSProvider, *httptest.Server) {
@@ -211,5 +215,68 @@ func TestTokenSourceDefaultsToStorageScope(t *testing.T) {
 	}
 	if (&gcpTokenSource{scope: cloudDNSScope}).requestedScope() != cloudDNSScope {
 		t.Fatal("explicit scope ignored")
+	}
+}
+
+// --------------------------------------------------------------------------
+// The cache entry autocert can actually read
+// --------------------------------------------------------------------------
+
+func TestAutocertEntryPutsThePrivateKeyFirst(t *testing.T) {
+	// autocert's cacheGet does ONE pem.Decode and rejects the entry unless the
+	// first block is the key. The renewer wrote the chain first, so every
+	// certificate it produced came back as a cache MISS — no error, no log, a
+	// cache that simply never hit.
+	srv, err := NewSelfSigned("api-azure.trustedrouter.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := encodeAutocertEntry(
+		srv.Certificate.PrivateKey.(*ecdsa.PrivateKey), srv.Certificate.Certificate)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	first, rest := pem.Decode(blob)
+	if first == nil {
+		t.Fatal("no PEM blocks")
+	}
+	if !strings.Contains(first.Type, "PRIVATE") {
+		t.Fatalf("first block is %q; autocert requires the PRIVATE key first", first.Type)
+	}
+	// ...and the chain must still be there behind it.
+	second, _ := pem.Decode(rest)
+	if second == nil || second.Type != "CERTIFICATE" {
+		t.Fatal("certificate chain missing after the key")
+	}
+}
+
+func TestAutocertEntryRoundTripsThroughAutocertsOwnReader(t *testing.T) {
+	// Stronger than inspecting bytes: write the entry the way the renewer does,
+	// then read it back through the real autocert.DirCache + Manager path that
+	// serves live handshakes. A format autocert cannot parse shows up here as a
+	// miss rather than as an error.
+	const host = "api-azure.trustedrouter.com"
+	srv, err := NewSelfSigned(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := encodeAutocertEntry(
+		srv.Certificate.PrivateKey.(*ecdsa.PrivateKey), srv.Certificate.Certificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := autocert.DirCache(dir).Put(context.Background(), host, blob); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := autocert.DirCache(dir).Get(context.Background(), host)
+	if err != nil {
+		t.Fatalf("autocert cache could not read the entry: %v", err)
+	}
+	first, _ := pem.Decode(got)
+	if first == nil || !strings.Contains(first.Type, "PRIVATE") {
+		t.Fatal("round-tripped entry does not lead with the private key")
 	}
 }
