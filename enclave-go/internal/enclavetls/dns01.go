@@ -134,13 +134,9 @@ func maybeRenewDNS01(ctx context.Context, cfg DNS01Config) error {
 		// could mask a misconfiguration. Surface for the operator.
 		return fmt.Errorf("cache get: %w", err)
 	}
-	leafBlock, _ := pem.Decode(raw)
-	if leafBlock == nil {
-		return errors.New("cache returned bytes that don't PEM-decode")
-	}
-	leaf, err := x509.ParseCertificate(leafBlock.Bytes)
+	leaf, err := leafFromAutocertEntry(raw)
 	if err != nil {
-		return fmt.Errorf("parse leaf: %w", err)
+		return err
 	}
 	timeLeft := time.Until(leaf.NotAfter)
 	if timeLeft > cfg.RenewWithinDuration {
@@ -519,4 +515,40 @@ func encodeAutocertEntry(key *ecdsa.PrivateKey, chain [][]byte) ([]byte, error) 
 		}
 	}
 	return buf.Bytes(), nil
+}
+
+// leafFromAutocertEntry extracts the leaf certificate from a cache entry.
+//
+// autocert's format is PRIVATE KEY FIRST, then the chain. This read path took
+// the first PEM block and parsed it as a certificate, which is the mirror of
+// the write bug: against a real autocert-written entry it reads the private key
+// and reports
+//
+//	parse leaf: x509: malformed tbs certificate
+//
+// Observed live on southeastasia. The consequence is worse than a confusing
+// message: maybeRenewDNS01 returns that error and gives up, so the renewer
+// never evaluates expiry and never renews. The DNS-01 fallback stays dark for
+// exactly the certificates it is supposed to protect.
+//
+// Skipping to the first CERTIFICATE block also keeps this tolerant of an entry
+// written the old way, so a cache still holding a legacy blob is readable
+// rather than fatal.
+func leafFromAutocertEntry(raw []byte) (*x509.Certificate, error) {
+	rest := raw
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return nil, errors.New("cache entry has no CERTIFICATE block")
+		}
+		if block.Type != "CERTIFICATE" {
+			continue // the private key, which autocert stores first
+		}
+		leaf, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse leaf: %w", err)
+		}
+		return leaf, nil
+	}
 }

@@ -1,8 +1,10 @@
 package enclavetls
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -278,5 +280,69 @@ func TestAutocertEntryRoundTripsThroughAutocertsOwnReader(t *testing.T) {
 	first, _ := pem.Decode(got)
 	if first == nil || !strings.Contains(first.Type, "PRIVATE") {
 		t.Fatal("round-tripped entry does not lead with the private key")
+	}
+}
+
+func TestLeafIsReadFromAnAutocertWrittenEntry(t *testing.T) {
+	// The read path took the FIRST pem block and parsed it as a certificate.
+	// Against a real autocert entry that block is the private key, so it failed
+	// with "x509: malformed tbs certificate" — observed live on southeastasia.
+	// maybeRenewDNS01 then returns that error and gives up, so the renewer never
+	// evaluates expiry and never renews.
+	const host = "api-azure.trustedrouter.com"
+	srv, err := NewSelfSigned(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := encodeAutocertEntry(
+		srv.Certificate.PrivateKey.(*ecdsa.PrivateKey), srv.Certificate.Certificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	leaf, err := leafFromAutocertEntry(blob)
+	if err != nil {
+		t.Fatalf("could not read the leaf autocert wrote: %v", err)
+	}
+	if err := leaf.VerifyHostname(host); err != nil {
+		t.Fatalf("read the wrong certificate: %v", err)
+	}
+}
+
+func TestLeafIsAlsoReadFromALegacyChainFirstEntry(t *testing.T) {
+	// A cache may still hold an entry written the old way. Reading it should
+	// work rather than being fatal — the renewer's job is to renew, not to
+	// refuse anything unfamiliar.
+	srv, err := NewSelfSigned("legacy.trustedrouter.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	for _, der := range srv.Certificate.Certificate {
+		if err := pem.Encode(&buf, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keyDER, err := x509.MarshalECPrivateKey(srv.Certificate.PrivateKey.(*ecdsa.PrivateKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pem.Encode(&buf, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := leafFromAutocertEntry(buf.Bytes()); err != nil {
+		t.Fatalf("legacy chain-first entry should still be readable: %v", err)
+	}
+}
+
+func TestAnEntryWithNoCertificateIsAnError(t *testing.T) {
+	srv, _ := NewSelfSigned("x.trustedrouter.com")
+	keyDER, _ := x509.MarshalECPrivateKey(srv.Certificate.PrivateKey.(*ecdsa.PrivateKey))
+	var buf bytes.Buffer
+	_ = pem.Encode(&buf, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	if _, err := leafFromAutocertEntry(buf.Bytes()); err == nil {
+		t.Fatal("a key-only entry was accepted as a certificate")
 	}
 }

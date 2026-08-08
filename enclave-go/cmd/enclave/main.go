@@ -311,8 +311,18 @@ func main() {
 					// when it is finally needed.
 					ExternalAccountBinding: eab,
 				})
-				fmt.Fprintf(os.Stderr, "enclavetls.dns01_renewer_started host=%s zone=%s\n",
-					dnsName, boot.CloudflareZoneID)
+				// Log the provider that will actually publish the challenge.
+				// This printed the Cloudflare zone unconditionally, so a Cloud
+				// DNS deployment logged "zone=" and looked misconfigured while
+				// being correct.
+				providerName, zone := "cloudflare", boot.CloudflareZoneID
+				if p := dns01Provider(); p != nil {
+					providerName = p.Name()
+					zone = strings.TrimSpace(os.Getenv("QUILL_ACME_DNS_MANAGED_ZONE"))
+				}
+				fmt.Fprintf(os.Stderr,
+					"enclavetls.dns01_renewer_started host=%s provider=%s zone=%s\n",
+					dnsName, providerName, zone)
 			}
 		}
 	}
