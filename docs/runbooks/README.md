@@ -41,11 +41,12 @@ is no LB.**
 - **DNS:** primary is **`api.trustedrouter.com`** (A record, reconciler-managed,
   Cloud DNS zone `trustedrouter-com`, TTL 60). `api.quillrouter.com` is a CNAME to
   it. Per-region retry hostnames `api-<gcp-region>.quillrouter.com` are
-  reconciler-published A records pointing at **only that region's** VMs (each
-  enclave whitelists only its own region's regional SNI, so they cannot point at
-  the all-region set).
-- **3 regions:** `quill-enclave-mig-us` (us-central1), `quill-enclave-mig-useast4`
-  (us-east4), `quill-enclave-mig-eu` (europe-west4). The MIGs have **no
+  reconciler-published A records pointing at **only that region's** VMs.
+- **4 GCP regions:** `quill-enclave-mig-us` (us-central1),
+  `quill-enclave-mig-useast4` (us-east4), `quill-enclave-mig-eu`
+  (europe-west4), and `quill-enclave-mig-sa` (southamerica-east1). The first
+  three use Intel TDX; São Paulo uses Google-attested AMD SEV because TDX is
+  not available there. The MIGs have **no
   autohealing** (the reconciler is the health authority); `deploy-gcp-mig.sh`
   actively `--clear-autohealing`. A MIG only recreates a VM on actual VM death,
   not on app-health failure.

@@ -37,7 +37,7 @@ Usage: $0 [options]
   --since <duration|timestamp>   default: 1h. Either Go-style duration (30m, 2h, 1d)
                                  or RFC3339 timestamp (2026-05-06T03:00:00Z).
   --until <timestamp>            optional end of window (default: now)
-  --region <us-central1|europe-west4>
+  --region <us-central1|us-east4|europe-west4|southamerica-east1>
   --grep <regex>                 case-insensitive grep applied to the message field
   --top                          print top message lines by count, instead of chronological
   --limit <n>                    default: $LIMIT

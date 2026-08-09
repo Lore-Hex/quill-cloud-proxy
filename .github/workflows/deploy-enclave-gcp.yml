@@ -33,6 +33,7 @@ on:
       - "tools/verify-attestation.py"
       - "tools/wait-canonical-drained.sh"
       - "tools/wait-region-attested.sh"
+      - "tools/verify-region-before-dns.sh"
       - "tools/wait-region-synthetic-up.sh"
       - "tools/synthetic_gate_status.py"
       - "tools/watchdog.py"
@@ -357,7 +358,7 @@ jobs:
         # at this template and recreates instances on it.
         id: prev
         run: |
-          for pair in "us-central1:quill-enclave-mig-us" "europe-west4:quill-enclave-mig-eu" "us-east4:quill-enclave-mig-useast4"; do
+          for pair in "us-central1:quill-enclave-mig-us" "europe-west4:quill-enclave-mig-eu" "us-east4:quill-enclave-mig-useast4" "southamerica-east1:quill-enclave-mig-sa"; do
             region="${pair%%:*}"
             mig="${pair##*:}"
             tmpl=$(gcloud compute instance-groups managed describe "$mig" \
@@ -400,7 +401,10 @@ jobs:
           # manager whitelists every SNI
           # value and issues separate cached certs as needed; TLS still
           # terminates only inside the attested workload.
-          API_HOST: api.quillrouter.com,api-us-central1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com
+          # Include the new São Paulo SNI on the already-serving fleet so its
+          # cold CNAME can complete ACME TLS-ALPN issuance into the shared GCS
+          # cache before the regional A record is promoted.
+          API_HOST: api.quillrouter.com,api-us-central1.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com
           # REGION_SHORT must match the existing prod MIG suffix —
           # `quill-enclave-mig-us`, not `quill-enclave-mig-uscentral1`.
           REGION_SHORT: us
@@ -533,18 +537,19 @@ jobs:
           uv run --script tools/reconcile-enclave-dns.py --apply
           python3 tools/sync-route53-api-aliases.py --apply
 
-      - name: Roll secondary GCP MIGs serially (europe-west4 + us-east4)
+      - name: Roll secondary GCP MIGs serially (Europe + US East + São Paulo)
         # Roll secondaries one at a time with the same DNS-drain invariant used
         # for us-central1. Parallel secondary deploys are faster, but they reduce
         # canonical serving capacity during the riskiest part of the rollout.
-        # Two regions with two 10-minute readiness holds, fresh synthetic gates,
-        # and regional watchdogs can legitimately exceed 45 minutes.
-        timeout-minutes: 90
+        # Three regions with 10-minute readiness holds, fresh synthetic gates,
+        # and regional watchdogs can legitimately exceed 90 minutes.
+        timeout-minutes: 135
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
           PREV_EU: ${{ steps.prev.outputs.europe_west4_template }}
           PREV_USEAST4: ${{ steps.prev.outputs.us_east4_template }}
+          PREV_SA: ${{ steps.prev.outputs.southamerica_east1_template }}
         run: |
           set -euo pipefail
 
@@ -558,6 +563,7 @@ jobs:
               QUILL_PUBLISH_REGIONAL=1 \
               QUILL_REGIONAL_ZONE=quillrouter-com \
               QUILL_REGIONAL_SUFFIX=quillrouter.com \
+              QUILL_ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS="${QUILL_ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS:-}" \
                 uv run --script tools/reconcile-enclave-dns.py --apply
               python3 tools/sync-route53-api-aliases.py --apply
             ) 9>"${lock}"
@@ -632,10 +638,28 @@ jobs:
               bash tools/deploy-gcp-mig.sh "${region}"
               wait_region_stable_with_dns_refresh "${mig}" "${region}"
               bash tools/wait-region-attested.sh "${filter}" "${region}"
-              reconcile_dns
-              trigger_synthetic_workers
-              WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
-              if ! python3 tools/watchdog.py --regions "${region}" --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 120; then
+              bash tools/verify-region-before-dns.sh \
+                "${region}" "${filter}" "${IMAGE_DIGEST}"
+
+              # A first-time region still has a cold CNAME. Only this explicit
+              # post-canary reconcile may atomically promote it to a region-only
+              # A record while the canonical rollout drain remains set.
+              QUILL_ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS="${region}" reconcile_dns
+
+              if curl -fsS --max-time 15 https://trustedrouter.com/status.json | \
+                  jq -e --arg region "${region}" \
+                    '[.. | objects | select(.target_region? == $region)] | length > 0' \
+                    >/dev/null; then
+                trigger_synthetic_workers
+                WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
+                if ! python3 tools/watchdog.py --regions "${region}" --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 120; then
+                  rollback_region "${region}" "${mig}" "${prev_template}"
+                  exit 1
+                fi
+              elif [ -z "${prev_template}" ]; then
+                echo "${region}: first deployment has no synthetic target yet; direct per-instance attestation + PONG is the bootstrap gate"
+              else
+                echo "${region}: existing region is missing from synthetic status; failing closed" >&2
                 rollback_region "${region}" "${mig}" "${prev_template}"
                 exit 1
               fi
@@ -658,7 +682,7 @@ jobs:
             quill-enclave-mig-eu \
             quill-enclave-mig-eu- \
             eu \
-            api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
+            api.quillrouter.com,api-europe-west4.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_EU}" \
             c3-standard-4 \
             TDX >"${logs_dir}/europe-west4.log" 2>&1 || failed=1
@@ -668,22 +692,34 @@ jobs:
             quill-enclave-mig-useast4 \
             quill-enclave-mig-useast4- \
             useast4 \
-            api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
+            api.quillrouter.com,api-us-east4.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_USEAST4}" \
             c3-standard-4 \
             TDX >"${logs_dir}/us-east4.log" 2>&1 || failed=1
+
+          roll_secondary_region \
+            southamerica-east1 \
+            quill-enclave-mig-sa \
+            quill-enclave-mig-sa- \
+            sa \
+            api.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
+            "${PREV_SA}" \
+            n2d-standard-4 \
+            SEV >"${logs_dir}/southamerica-east1.log" 2>&1 || failed=1
 
           echo "--- europe-west4 rollout log ---"
           cat "${logs_dir}/europe-west4.log"
           echo "--- us-east4 rollout log ---"
           cat "${logs_dir}/us-east4.log"
+          echo "--- southamerica-east1 rollout log ---"
+          cat "${logs_dir}/southamerica-east1.log"
 
           if [ "${failed}" -ne 0 ]; then
             echo "one or more secondary region rollouts failed; failed regions were rolled back above"
             exit 1
           fi
 
-          echo "secondary regions healthy: europe-west4 + us-east4"
+          echo "secondary regions healthy: europe-west4 + us-east4 + southamerica-east1"
 
       # No cross-region "final watchdog" step. Each region's health is
       # gated by its own per-region canary above (us-central1 canary

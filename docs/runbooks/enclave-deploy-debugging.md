@@ -61,8 +61,8 @@ substitutions.
 ### 4. Rollout: `usage: tools/deploy-gcp-mig.sh <region>`
 
 Script needs the region as a positional arg. **Fix:** the workflow
-rolls all three regions explicitly — `us-central1`, `europe-west4`, and
-`us-east4` — each as its own staged step. If a new region is added, add a
+rolls all four GCP regions explicitly — `us-central1`, `europe-west4`,
+`us-east4`, and `southamerica-east1` — each as its own staged step. If a new region is added, add a
 rollout step to `.github/workflows/deploy-enclave-gcp.yml` (and the reconciler
 will pick the region up automatically once its instances attest).
 
@@ -176,7 +176,8 @@ Symptom: `gcloud compute instance-groups managed describe` shows
 The MIGs have **no autohealing** (the reconciler is the health authority), so
 this is *not* a health-check kill-loop. A genuinely stuck roll is almost always
 **Confidential VM capacity**: the surge instance can't be created
-(`n2d`/SEV-SNP in us/eu, `c3`/TDX in us-east4 are chronically scarce) — check
+(`c3`/TDX in the existing three regions and `n2d`/SEV in São Paulo can stock
+out independently) — check
 `list-errors` for a stockout. If instead the new VMs came up but won't attest,
 fix that first (see #6). To force a clean replace cycle once the cause is fixed:
 

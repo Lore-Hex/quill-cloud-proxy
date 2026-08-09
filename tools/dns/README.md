@@ -106,18 +106,22 @@ terraform import 'cloudflare_record.quill_api_us_east4_a'  "$TF_VAR_cloudflare_z
 terraform import 'cloudflare_record.quill_api_cold_alias["us-central1"]'         "$TF_VAR_cloudflare_zone_id_quillrouter/<record_id>"
 terraform import 'cloudflare_record.quill_api_cold_alias["asia-northeast1"]'     "$TF_VAR_cloudflare_zone_id_quillrouter/<record_id>"
 terraform import 'cloudflare_record.quill_api_cold_alias["asia-southeast1"]'     "$TF_VAR_cloudflare_zone_id_quillrouter/<record_id>"
-terraform import 'cloudflare_record.quill_api_cold_alias["southamerica-east1"]'  "$TF_VAR_cloudflare_zone_id_quillrouter/<record_id>"
 
 # quillrouter.com — Cloud DNS side
 terraform import 'google_dns_record_set.quill_api_a'          projects/quill-cloud-proxy/managedZones/quillrouter-com/rrsets/api.quillrouter.com./A
 terraform import 'google_dns_record_set.quill_api_eu_a'       projects/quill-cloud-proxy/managedZones/quillrouter-com/rrsets/api-europe-west4.quillrouter.com./A
 terraform import 'google_dns_record_set.quill_api_us_east4_a' projects/quill-cloud-proxy/managedZones/quillrouter-com/rrsets/api-us-east4.quillrouter.com./A
-for region in us-central1 asia-northeast1 asia-southeast1 southamerica-east1; do
+for region in us-central1 asia-northeast1 asia-southeast1; do
   terraform import "google_dns_record_set.quill_api_cold_alias[\"$region\"]" \
     "projects/quill-cloud-proxy/managedZones/quillrouter-com/rrsets/api-${region}.quillrouter.com./CNAME"
 done
 terraform import 'google_dns_record_set.quill_apex_ns'  projects/quill-cloud-proxy/managedZones/quillrouter-com/rrsets/quillrouter.com./NS
 ```
+
+`api-southamerica-east1.quillrouter.com` is intentionally absent from the
+cold-alias set. The attestation reconciler owns it as a dynamic region-only A
+record and atomically replaces the former cold CNAME after the first direct
+São Paulo attestation and inference canary passes.
 
 ## Don'ts
 
