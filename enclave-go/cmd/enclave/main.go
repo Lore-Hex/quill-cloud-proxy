@@ -972,7 +972,7 @@ func serveResponsesNonStreaming(
 			if trGateway != nil && trGateway.Enabled() {
 				_ = trGateway.Refund(ctx, authorization, 502, "provider_structured_output_error", time.Since(requestStarted).Seconds(), req.Metadata)
 			}
-			writeProviderError(conn, 502, "provider structured output error")
+			writeSpentProviderError(conn, 502, "provider structured output error")
 			return
 		} else {
 			result.Text = normalized
@@ -992,7 +992,7 @@ func serveResponsesNonStreaming(
 	responseModel := customModelResponseModel(req.Model, authorization)
 	var body bytes.Buffer
 	if err := adapter.WriteResponsesResponse(&body, requestID, responseModel, result.Text, result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(), responseTextConfig(req), req.Response); err != nil {
-		writeError(conn, 500, "responses encoding error")
+		writeSpentError(conn, 500, "responses encoding error")
 		return
 	}
 	usage := trustedrouter.Usage{
@@ -1018,13 +1018,13 @@ func serveResponsesNonStreaming(
 	settlement, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, outputForUsage)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_settle_failed model=%q err=%v\n", req.Model, err)
-		writeError(conn, 502, "settlement failed")
+		writeSpentError(conn, 502, "settlement failed")
 		return
 	}
 	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result, req.OpenRouterMetadata)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_metadata_failed model=%q err=%v\n", req.Model, err)
-		writeError(conn, 500, "responses encoding error")
+		writeSpentError(conn, 500, "responses encoding error")
 		return
 	}
 	writeJSONResponse(conn, 200, annotatedBody)
@@ -1074,7 +1074,7 @@ func serveChatNonStreaming(
 	responseModel := customModelResponseModel(req.Model, authorization)
 	var body bytes.Buffer
 	if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, result.Text, adapter.JoinThinking(result.Thinking), result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(), result.FinishReason); err != nil {
-		writeError(conn, 500, "chat completion encoding error")
+		writeSpentError(conn, 500, "chat completion encoding error")
 		return
 	}
 	usage := trustedrouter.Usage{
@@ -1100,13 +1100,13 @@ func serveChatNonStreaming(
 	settlement, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_settle_failed model=%q err=%v\n", req.Model, err)
-		writeError(conn, 502, "settlement failed")
+		writeSpentError(conn, 502, "settlement failed")
 		return
 	}
 	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result, req.OpenRouterMetadata)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_metadata_failed model=%q err=%v\n", req.Model, err)
-		writeError(conn, 500, "chat completion encoding error")
+		writeSpentError(conn, 500, "chat completion encoding error")
 		return
 	}
 	writeJSONResponse(conn, 200, annotatedBody)

@@ -101,7 +101,7 @@ func serveSelectorNonStreaming(
 		selected.Result.FinishReason,
 		details,
 	); err != nil {
-		writeError(conn, 500, "selector response encoding error")
+		writeSpentError(conn, 500, "selector response encoding error")
 		return
 	}
 	fmt.Fprintf(os.Stderr,
@@ -356,7 +356,7 @@ func serveMapReduceNonStreaming(
 		result.Result.FinishReason,
 		responseDetails,
 	); err != nil {
-		writeError(conn, 500, "mapreduce response encoding error")
+		writeSpentError(conn, 500, "mapreduce response encoding error")
 		return
 	}
 	fmt.Fprintf(os.Stderr,

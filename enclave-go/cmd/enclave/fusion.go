@@ -1148,7 +1148,7 @@ func serveFusionNonStreaming(
 			selected.Result.FinishReason,
 			fusionResponseDetails(config, panel, nil, nil, responseModel, selected.Model),
 		); err != nil {
-			writeError(conn, 500, "fusion response encoding error")
+			writeSpentError(conn, 500, "fusion response encoding error")
 			return
 		}
 		fmt.Fprintf(os.Stderr,
@@ -1194,7 +1194,7 @@ func serveFusionNonStreaming(
 		final.Result.FinishReason,
 		fusionResponseDetails(config, panel, judgeAttempts, finalAttempts, responseModel, final.Model),
 	); err != nil {
-		writeError(conn, 500, "fusion response encoding error")
+		writeSpentError(conn, 500, "fusion response encoding error")
 		return
 	}
 	fmt.Fprintf(os.Stderr,

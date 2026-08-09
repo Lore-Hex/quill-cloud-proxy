@@ -711,7 +711,7 @@ func serveAdvisorNonStreaming(
 		final.Result.FinishReason,
 		details,
 	); err != nil {
-		writeError(conn, 500, "advisor response encoding error")
+		writeSpentError(conn, 500, "advisor response encoding error")
 		return
 	}
 	fmt.Fprintf(os.Stderr,

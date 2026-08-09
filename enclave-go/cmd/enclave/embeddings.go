@@ -163,19 +163,19 @@ func serveEmbeddings(
 		settlement, err = trGateway.Settle(ctx, authorization, usage)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.embeddings_settle_failed model=%q err=%v\n", req.Model, err)
-			writeError(conn, 502, "settlement failed")
+			writeSpentError(conn, 502, "settlement failed")
 			return
 		}
 	}
 
 	out, err := json.Marshal(resp)
 	if err != nil {
-		writeError(conn, 500, "embeddings encoding error")
+		writeSpentError(conn, 500, "embeddings encoding error")
 		return
 	}
 	out, err = annotateBatchSettlementOnlyUsage(ctx, out, settlement)
 	if err != nil {
-		writeError(conn, 500, "embeddings encoding error")
+		writeSpentError(conn, 500, "embeddings encoding error")
 		return
 	}
 	writeJSONResponse(conn, 200, out)
