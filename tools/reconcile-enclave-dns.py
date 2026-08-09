@@ -48,6 +48,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from pathlib import Path
 
@@ -97,6 +98,19 @@ REGIONAL_SUFFIX = os.environ.get("QUILL_REGIONAL_SUFFIX", "quillrouter.com")
 EXCLUDE_CANONICAL_REGIONS = {
     r.strip()
     for r in os.environ.get("QUILL_EXCLUDE_CANONICAL_REGIONS", "").split(",")
+    if r.strip()
+}
+# A newly promoted region can begin life as a cold-region CNAME to the
+# canonical API. During that region's first rollout, keep the CNAME in place
+# while the canonical rollout drain is set. The deploy workflow performs a
+# direct, per-instance attestation + inference canary first, then explicitly
+# allows the atomic CNAME -> A promotion while the region remains excluded
+# from canonical traffic.
+ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS = {
+    r.strip()
+    for r in os.environ.get(
+        "QUILL_ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS", ""
+    ).split(",")
     if r.strip()
 }
 # A persistent rollout drain is shared by the deploy workflow and the scheduled
@@ -206,14 +220,25 @@ def attest(ip: str, digest: str, api_host: str = API_HOST) -> bool:
         return False
 
 
-def current_dns_ips(zone: str, record: str) -> list[str]:
+def current_dns_record(
+    zone: str,
+    record: str,
+    record_type: str,
+) -> dict | None:
     rows = gcloud_json([
         "dns", "record-sets", "list", "--zone", zone,
-        "--name", record, "--type", "A",
+        "--name", record, "--type", record_type,
     ])
     for r in rows:
-        if r.get("name") == record and r.get("type") == "A":
-            return list(r.get("rrdatas", []))
+        if r.get("name") == record and r.get("type") == record_type:
+            return dict(r)
+    return None
+
+
+def current_dns_ips(zone: str, record: str) -> list[str]:
+    row = current_dns_record(zone, record, "A")
+    if row is not None:
+        return list(row.get("rrdatas", []))
     return []
 
 
@@ -297,6 +322,54 @@ def update_persistent_drain(region: str, *, enabled: bool) -> set[str]:
     return regions
 
 
+def replace_cname_with_ips(
+    zone: str,
+    record: str,
+    cname: dict,
+    ips: list[str],
+) -> None:
+    """Atomically replace an existing CNAME with an attested A record."""
+    cname_values = [str(value) for value in cname.get("rrdatas", [])]
+    cname_ttl = int(cname.get("ttl") or TTL)
+    if not cname_values:
+        raise RuntimeError(f"CNAME {record} has no rrdatas")
+
+    with tempfile.TemporaryDirectory(prefix="quill-dns-transaction-") as temp_dir:
+        transaction_file = str(Path(temp_dir) / "transaction.yaml")
+
+        def _run(args: list[str]) -> None:
+            result = subprocess.run(
+                [
+                    "gcloud", "dns", "record-sets", "transaction", *args,
+                    "--zone", zone,
+                    "--project", PROJECT,
+                    "--transaction-file", transaction_file,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"DNS transaction for {record} failed: "
+                    f"{(result.stderr or result.stdout).strip()}"
+                )
+
+        _run(["start"])
+        _run([
+            "remove", *cname_values,
+            "--name", record,
+            "--type", "CNAME",
+            "--ttl", str(cname_ttl),
+        ])
+        _run([
+            "add", *ips,
+            "--name", record,
+            "--type", "A",
+            "--ttl", str(TTL),
+        ])
+        _run(["execute"])
+
+
 def set_dns_ips(zone: str, record: str, ips: list[str]) -> None:
     """Atomically set the A record to `ips` (replace; no transaction race).
 
@@ -307,6 +380,22 @@ def set_dns_ips(zone: str, record: str, ips: list[str]) -> None:
     tick, or simply a pre-existing different TTL — the `remove` failed on an exact
     mismatch and aborted the whole reconcile. That is what failed the 2026-06-19
     deploy at the "Reconcile DNS before us-east4 canary" step."""
+    # Cloud DNS forbids a CNAME and any other record type at the same name.
+    # Cold regional endpoints are CNAMEs, so their first attested deployment
+    # must replace CNAME -> A in ONE authoritative transaction. A separate
+    # delete/create would introduce an avoidable NXDOMAIN window.
+    cname = current_dns_record(zone, record, "CNAME")
+    if cname is not None:
+        try:
+            replace_cname_with_ips(zone, record, cname, ips)
+            return
+        except RuntimeError:
+            # A concurrent reconciler may have completed the promotion. Re-read
+            # once; if the CNAME still exists, surface the original failure.
+            refreshed = current_dns_record(zone, record, "CNAME")
+            if refreshed is not None:
+                raise
+
     cur = current_dns_ips(zone, record)
 
     def _run(verb: str):
@@ -372,7 +461,12 @@ def attest_regional_instances(
     return by_region
 
 
-def reconcile_regional(by_region: dict[str, list[str]], apply: bool) -> None:
+def reconcile_regional(
+    by_region: dict[str, list[str]],
+    apply: bool,
+    *,
+    drained_regions: set[str] | None = None,
+) -> None:
     """Publish api-<gcp-region>.<suffix> A = that region's healthy IPs.
 
     Region-pinned retry hostnames must resolve only to VMs that whitelist the
@@ -380,11 +474,26 @@ def reconcile_regional(by_region: dict[str, list[str]], apply: bool) -> None:
     record below MIN_HEALTHY_REGIONAL (default 1) — a region with 0 healthy IPs,
     or fewer than the floor when it currently has more, is left at last-good
     rather than blanked/shrunk. Growing a record is always allowed."""
+    drained = drained_regions or set()
     for region in sorted(by_region):
         ips = sorted(set(by_region[region]))
         if not ips:
             continue  # never publish/blank to an empty record
         record = regional_host(region) + "."
+        # First-deploy safety: do not turn a cold alias into a live regional
+        # endpoint until the deploy workflow has directly attested and invoked
+        # every new instance. Existing A records continue normal reconciliation
+        # during later rollouts.
+        if (
+            region in drained
+            and region not in ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS
+            and current_dns_record(REGIONAL_ZONE, record, "CNAME") is not None
+        ):
+            log(
+                f"  regional {record}: rollout drain holds cold CNAME until "
+                "the direct canary passes"
+            )
+            continue
         cur = sorted(current_dns_ips(REGIONAL_ZONE, record))
         if len(ips) < MIN_HEALTHY_REGIONAL and len(ips) < len(cur):
             log(f"  regional {record}: {len(ips)} healthy < floor "
@@ -499,7 +608,11 @@ def main() -> int:
 
     if PUBLISH_REGIONAL:
         regional_by_region = attest_regional_instances(healthy, digest)
-        reconcile_regional(regional_by_region, args.apply)
+        reconcile_regional(
+            regional_by_region,
+            args.apply,
+            drained_regions=persistent_excludes,
+        )
     return 0
 
 

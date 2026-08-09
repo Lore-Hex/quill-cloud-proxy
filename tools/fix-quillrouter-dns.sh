@@ -13,7 +13,8 @@
 #   - api-us-central1.quillrouter.com   CNAME → api.quillrouter.com.
 #   - api-asia-northeast1.quillrouter.com    CNAME → api.quillrouter.com.
 #   - api-asia-southeast1.quillrouter.com    CNAME → api.quillrouter.com.
-#   - api-southamerica-east1.quillrouter.com CNAME → api.quillrouter.com.
+#   - api-southamerica-east1 is intentionally NOT repaired here. It is a live,
+#     attestation-reconciled regional A record after the São Paulo rollout.
 #
 # Plus apex NS list needs all 6 nameservers so Cloud-DNS-cached
 # resolvers can rotate to Cloudflare during a Cloud DNS outage.
@@ -58,7 +59,7 @@ gcloud dns record-sets transaction add \
 # 2. Regional CNAMEs — alias to the canonical api endpoint. Used for
 #    routing-by-region without baking the underlying IP into a
 #    separate A record (the IP can change; the alias remains stable).
-for region in us-central1 asia-northeast1 asia-southeast1 southamerica-east1; do
+for region in us-central1 asia-northeast1 asia-southeast1; do
   gcloud dns record-sets transaction add \
     --zone="$ZONE" --project="$PROJECT" \
     --name="api-${region}.quillrouter.com." --type=CNAME --ttl=300 \

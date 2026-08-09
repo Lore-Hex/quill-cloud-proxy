@@ -46,6 +46,81 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn('MAX_UNAVAILABLE="${MAX_UNAVAILABLE:-0}"', deploy)
         self.assertIn('--update-policy-max-unavailable="$MAX_UNAVAILABLE"', deploy)
 
+    def test_sao_paulo_uses_supported_amd_sev_profile(self) -> None:
+        deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('if [ "${REGION}" = "southamerica-east1" ]', deploy)
+        self.assertIn('CONF_COMPUTE_TYPE}" != "SEV"', deploy)
+        self.assertIn('"${MACHINE_TYPE}" != n2d-*', deploy)
+        self.assertIn("CONF_COMPUTE_TYPE=SEV_SNP is not supported", deploy)
+        self.assertIn("southamerica-east1:quill-enclave-mig-sa", workflow)
+        sa_start = workflow.index(
+            "          roll_secondary_region \\\n"
+            "            southamerica-east1"
+        )
+        sa_end = workflow.index(
+            ' >"${logs_dir}/southamerica-east1.log"',
+            sa_start,
+        )
+        sa_call = workflow[sa_start:sa_end]
+        self.assertIn("quill-enclave-mig-sa", sa_call)
+        self.assertIn("api-southamerica-east1.quillrouter.com", sa_call)
+        self.assertIn("n2d-standard-4", sa_call)
+        self.assertIn("SEV", sa_call)
+        self.assertGreaterEqual(
+            workflow.count("api-southamerica-east1.quillrouter.com"),
+            4,
+            "all earlier regional rolls must answer the new SNI for ACME bootstrap",
+        )
+
+    def test_new_region_is_canaried_before_dns_and_global_traffic(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+        function_start = workflow.index("          roll_secondary_region() {")
+        function_end = workflow.index("          logs_dir=", function_start)
+        function = workflow[function_start:function_end]
+
+        direct_canary = function.index("verify-region-before-dns.sh")
+        regional_promotion = function.index(
+            'QUILL_ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS="${region}"'
+        )
+        canonical_readd = function.index('update_drain clear "${region}"')
+        self.assertLess(direct_canary, regional_promotion)
+        self.assertLess(regional_promotion, canonical_readd)
+        self.assertIn(
+            "first deployment has no synthetic target yet; direct per-instance "
+            "attestation + PONG is the bootstrap gate",
+            function,
+        )
+
+        direct_gate = (ROOT / "tools" / "verify-region-before-dns.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('for attempt in 1 2 3; do', direct_gate)
+        self.assertIn('idempotency-key: ${idempotency_key}', direct_gate)
+        self.assertIn('--connect-ip "${ip}"', direct_gate)
+        self.assertIn('--expect-digest "${IMAGE_DIGEST}"', direct_gate)
+
+    def test_sao_paulo_is_not_managed_as_a_cold_dns_alias(self) -> None:
+        terraform = (ROOT / "tools" / "dns" / "main.tf").read_text(encoding="utf-8")
+        repair = (ROOT / "tools" / "fix-quillrouter-dns.sh").read_text(encoding="utf-8")
+        aliases = terraform[
+            terraform.index("  quill_cold_region_aliases = [") : terraform.index(
+                "  ]", terraform.index("  quill_cold_region_aliases = [")
+            )
+        ]
+        self.assertNotIn("southamerica-east1", aliases)
+        cold_loop = repair[
+            repair.index("for region in us-central1") : repair.index(
+                "done", repair.index("for region in us-central1")
+            )
+        ]
+        self.assertNotIn("southamerica-east1", cold_loop)
+
     def test_rollout_holds_old_generation_until_replacements_can_attest(self) -> None:
         deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
         workflow = (

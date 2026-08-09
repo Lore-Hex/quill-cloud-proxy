@@ -110,7 +110,6 @@ locals {
     "australia-southeast1",
     "europe-west2",
     "northamerica-northeast1",
-    "southamerica-east1",
   ]
 
   // Authoritative nameservers delegated at the registrar for quillrouter.com.

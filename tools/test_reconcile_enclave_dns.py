@@ -108,5 +108,124 @@ class TrustDigestTests(unittest.TestCase):
             reconciler.trust_digests()
 
 
+class RegionalDnsPromotionTests(unittest.TestCase):
+    def test_cname_to_a_uses_one_cloud_dns_transaction(self) -> None:
+        completed = mock.Mock(returncode=0, stdout="", stderr="")
+        cname = {
+            "name": "api-southamerica-east1.quillrouter.com.",
+            "type": "CNAME",
+            "ttl": 300,
+            "rrdatas": ["api.quillrouter.com."],
+        }
+
+        with mock.patch.object(
+            reconciler.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            reconciler.replace_cname_with_ips(
+                "quillrouter-com",
+                "api-southamerica-east1.quillrouter.com.",
+                cname,
+                ["203.0.113.10", "203.0.113.11"],
+            )
+
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(
+            [command[4] for command in commands],
+            ["start", "remove", "add", "execute"],
+        )
+        self.assertIn("CNAME", commands[1])
+        self.assertIn("api.quillrouter.com.", commands[1])
+        self.assertIn("A", commands[2])
+        self.assertIn("203.0.113.10", commands[2])
+        self.assertIn("203.0.113.11", commands[2])
+        transaction_files = {
+            command[command.index("--transaction-file") + 1]
+            for command in commands
+        }
+        self.assertEqual(len(transaction_files), 1)
+
+    def test_set_dns_ips_promotes_existing_cname_without_separate_delete(self) -> None:
+        cname = {
+            "type": "CNAME",
+            "ttl": 300,
+            "rrdatas": ["api.quillrouter.com."],
+        }
+        with (
+            mock.patch.object(
+                reconciler,
+                "current_dns_record",
+                return_value=cname,
+            ),
+            mock.patch.object(reconciler, "replace_cname_with_ips") as replace,
+            mock.patch.object(reconciler, "current_dns_ips") as current_ips,
+        ):
+            reconciler.set_dns_ips(
+                "quillrouter-com",
+                "api-southamerica-east1.quillrouter.com.",
+                ["203.0.113.10"],
+            )
+
+        replace.assert_called_once()
+        current_ips.assert_not_called()
+
+    def test_rollout_drain_holds_cold_cname_before_direct_canary(self) -> None:
+        cname = {
+            "type": "CNAME",
+            "ttl": 300,
+            "rrdatas": ["api.quillrouter.com."],
+        }
+        with (
+            mock.patch.object(
+                reconciler,
+                "current_dns_record",
+                return_value=cname,
+            ),
+            mock.patch.object(reconciler, "current_dns_ips") as current_ips,
+            mock.patch.object(reconciler, "set_dns_ips") as set_ips,
+        ):
+            reconciler.reconcile_regional(
+                {"southamerica-east1": ["203.0.113.10"]},
+                True,
+                drained_regions={"southamerica-east1"},
+            )
+
+        current_ips.assert_not_called()
+        set_ips.assert_not_called()
+
+    def test_direct_canary_override_allows_drained_cname_promotion(self) -> None:
+        cname = {
+            "type": "CNAME",
+            "ttl": 300,
+            "rrdatas": ["api.quillrouter.com."],
+        }
+        with (
+            mock.patch.object(
+                reconciler,
+                "ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS",
+                {"southamerica-east1"},
+            ),
+            mock.patch.object(
+                reconciler,
+                "current_dns_record",
+                return_value=cname,
+            ),
+            mock.patch.object(reconciler, "current_dns_ips", return_value=[]),
+            mock.patch.object(reconciler, "set_dns_ips") as set_ips,
+        ):
+            reconciler.reconcile_regional(
+                {"southamerica-east1": ["203.0.113.10"]},
+                True,
+                drained_regions={"southamerica-east1"},
+            )
+
+        set_ips.assert_called_once_with(
+            reconciler.REGIONAL_ZONE,
+            "api-southamerica-east1.quillrouter.com.",
+            ["203.0.113.10"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

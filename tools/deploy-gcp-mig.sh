@@ -195,23 +195,40 @@ TR_CONTROL_PLANE_BASE_URL="${TR_CONTROL_PLANE_BASE_URL:-https://trustedrouter.co
 # now waits up to 20s before failover instead of 8s.
 QUILL_FIRST_BYTE_TIMEOUT_SECONDS="${QUILL_FIRST_BYTE_TIMEOUT_SECONDS:-20}"
 WORKLOAD_SA="${WORKLOAD_SA:-quill-workload@${PROJECT_ID}.iam.gserviceaccount.com}"
-# Confidential flavor: **Intel TDX on c3, for ALL regions.** AMD SEV-SNP is NOT
-# usable for this workload — Google Cloud Attestation rejects it with
-# UNSUPPORTED_CC_TECHNOLOGY ("AMD SEV-SNP is not currently supported by Google
-# Cloud Attestation"), so a SEV-SNP enclave can't fetch its attestation token
-# (v1.VerifyConfidentialSpace 400) and the workload crash-loops on boot. This bit
-# us 2026-06-19: the pipeline rolled us-central1 with the OLD n2d/SEV-SNP default
-# and it crash-looped for hours, while eu + us-east4 (already pinned to c3/TDX)
-# stayed healthy — same image, only the CPU confidential tech differed. So the
-# default is c3/TDX everywhere now; there is no SEV-SNP fallback.
+# Confidential flavor defaults to Intel TDX on c3. Google Cloud Attestation now
+# supports BOTH Intel TDX and AMD SEV for Confidential Space, but it still does
+# not support SEV-SNP for this workload. São Paulo has no TDX machine family, so
+# its release profile is n2d-standard-4 + SEV on AMD Milan. The other live GCP
+# regions remain c3-standard-4 + TDX.
 #
-# If c3 ever stocks out in a region, override MACHINE_TYPE to another Intel-CPU
-# family that supports TDX (e.g. c3d is AMD → NO; stay on c3/c4 Intel), but keep
-# CONF_COMPUTE_TYPE=TDX. Never set CONF_COMPUTE_TYPE=SEV_SNP — GCA won't attest it.
+# SEV and SEV-SNP are different Compute API values. Never set
+# CONF_COMPUTE_TYPE=SEV_SNP: GCA rejects it with
+# UNSUPPORTED_CC_TECHNOLOGY and the workload cannot mint an attestation token.
 default_machine_type="c3-standard-4"
 default_conf_compute_type="TDX"
 MACHINE_TYPE="${MACHINE_TYPE:-$default_machine_type}"
 CONF_COMPUTE_TYPE="${CONF_COMPUTE_TYPE:-$default_conf_compute_type}"
+case "${CONF_COMPUTE_TYPE}" in
+  TDX|SEV) ;;
+  SEV_SNP)
+    echo "CONF_COMPUTE_TYPE=SEV_SNP is not supported by Google Cloud Attestation" >&2
+    exit 1
+    ;;
+  *)
+    echo "unsupported CONF_COMPUTE_TYPE=${CONF_COMPUTE_TYPE}; expected TDX or SEV" >&2
+    exit 1
+    ;;
+esac
+if [ "${REGION}" = "southamerica-east1" ]; then
+  if [ "${CONF_COMPUTE_TYPE}" != "SEV" ] || [[ "${MACHINE_TYPE}" != n2d-* ]]; then
+    echo "southamerica-east1 requires an n2d machine with CONF_COMPUTE_TYPE=SEV" >&2
+    exit 1
+  fi
+fi
+CPU_PLATFORM_ARGS=()
+if [ "${CONF_COMPUTE_TYPE}" = "SEV" ]; then
+  CPU_PLATFORM_ARGS+=(--min-cpu-platform="AMD Milan")
+fi
 CSP_IMAGE_FAMILY="${CSP_IMAGE_FAMILY:-confidential-space}"
 CSP_IMAGE_PROJECT="${CSP_IMAGE_PROJECT:-confidential-space-images}"
 # Route the workload's stdout/stderr into Cloud Logging so metadata-only
@@ -266,8 +283,10 @@ next_template_name() {
 # 1. Instance template (always create new; rolling-replace handles the swap).
 TEMPLATE=$(next_template_name)
 log "creating instance template $TEMPLATE"
+log "confidential profile: region=${REGION} machine=${MACHINE_TYPE} technology=${CONF_COMPUTE_TYPE}"
 gc compute instance-templates create "$TEMPLATE" \
   --machine-type="$MACHINE_TYPE" \
+  "${CPU_PLATFORM_ARGS[@]}" \
   --image-family="$CSP_IMAGE_FAMILY" \
   --image-project="$CSP_IMAGE_PROJECT" \
   --boot-disk-size=11GB --boot-disk-type=pd-balanced \

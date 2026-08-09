@@ -51,10 +51,10 @@ gcloud dns record-sets list \
   --type=A
 ```
 
-Capture rollback points (all three regions):
+Capture rollback points (all four GCP regions):
 
 ```bash
-for pair in us:us-central1 useast4:us-east4 eu:europe-west4; do
+for pair in us:us-central1 useast4:us-east4 eu:europe-west4 sa:southamerica-east1; do
   short=${pair%%:*}; region=${pair##*:}
   gcloud compute instance-groups managed describe quill-enclave-mig-$short \
     --region=$region --project=quill-cloud-proxy \
