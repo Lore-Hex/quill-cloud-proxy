@@ -243,10 +243,36 @@ jobs:
           git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust
           if git diff --cached --quiet; then
             echo "trust-page artifacts unchanged; nothing to commit"
-          else
-            git commit -m "[bot] enclave release ${SHA}: digest ${DIGEST}"
-            git push origin HEAD:main
+            exit 0
           fi
+          git commit -m "[bot] enclave release ${SHA}: digest ${DIGEST}"
+          # main can move under us. `concurrency` queues a second deploy rather
+          # than cancelling it, and that run checked out its OWN sha — so by the
+          # time it pushes, the earlier run's release commit is already on main
+          # and a plain push dies non-fast-forward.
+          #
+          # That failure lands AFTER the image is built and pushed, so rollout is
+          # skipped and a "completed" pipeline ships nothing. Observed for real
+          # on 2026-08-08. Rebase and retry instead.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "push rejected (attempt ${attempt}); rebasing onto origin/main"
+            git fetch origin main
+            # -X theirs keeps the commit being REPLAYED, which is ours: these
+            # artifacts describe the image THIS run just built. During a rebase
+            # the sense is inverted from what you would expect — upstream is
+            # "ours" — so -X ours here would silently discard our digest and
+            # publish a trust page for the wrong image.
+            if ! git rebase -X theirs origin/main; then
+              git rebase --abort || true
+              echo "could not rebase trust artifacts onto origin/main"
+              exit 1
+            fi
+          done
+          echo "trust artifacts could not be pushed after 3 attempts"
+          exit 1
 
   publish-transition-trust-page:
     needs: build-and-release
