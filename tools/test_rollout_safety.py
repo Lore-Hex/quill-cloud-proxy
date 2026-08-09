@@ -100,10 +100,23 @@ class RolloutSafetyTests(unittest.TestCase):
         direct_gate = (ROOT / "tools" / "verify-region-before-dns.sh").read_text(
             encoding="utf-8"
         )
-        self.assertIn('for attempt in 1 2 3; do', direct_gate)
+        canonical_gate = direct_gate.index(
+            'verify_instance "${BOOTSTRAP_HOST}" "${ip}" 3 bootstrap'
+        )
+        dns_bootstrap = direct_gate.index(
+            "if replace_cold_alias_with_bootstrap_ip; then"
+        )
+        regional_gate = direct_gate.index(
+            'verify_instance "${REGIONAL_HOST}" "${ip}" "${regional_attempts}" regional'
+        )
+        self.assertLess(canonical_gate, dns_bootstrap)
+        self.assertLess(dns_bootstrap, regional_gate)
         self.assertIn('idempotency-key: ${idempotency_key}', direct_gate)
         self.assertIn('--connect-ip "${ip}"', direct_gate)
         self.assertIn('--expect-digest "${IMAGE_DIGEST}"', direct_gate)
+        self.assertIn("restore_cold_alias", direct_gate)
+        self.assertIn('trap on_exit EXIT', direct_gate)
+        self.assertIn('promoted_cold_alias=0', direct_gate)
 
     def test_sao_paulo_is_not_managed_as_a_cold_dns_alias(self) -> None:
         terraform = (ROOT / "tools" / "dns" / "main.tf").read_text(encoding="utf-8")
