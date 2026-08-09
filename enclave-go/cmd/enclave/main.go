@@ -1504,8 +1504,34 @@ func applyCacheUsage(usage *trustedrouter.Usage, result adapter.StreamResult) {
 	usage.ReasoningTokens = result.Usage.ReasoningTokens
 	usage.CacheReadInputTokens = result.Usage.CacheReadInputTokens
 	usage.CacheCreationInputTokens = result.Usage.CacheCreationInputTokens
-	if result.Usage.ServiceTier != "" {
-		usage.ServiceTier = result.Usage.ServiceTier
+	if tier, ok := canonicalServiceTier(result.Usage.ServiceTier); ok {
+		usage.ServiceTier = tier
+	}
+}
+
+// canonicalServiceTier maps a provider's reported tier onto the vocabulary
+// settlement accepts, reporting whether it recognized the value at all.
+//
+// Providers disagree on the name of the ordinary tier: Anthropic reports
+// "standard", OpenAI reports "default". They price the same.
+//
+// An UNRECOGNIZED tier is dropped rather than forwarded. Settlement runs after
+// the upstream call has been made and paid for, so forwarding a word the
+// control plane rejects costs TrustedRouter the provider spend AND fails the
+// caller's request — which is exactly what "standard" did to every Anthropic
+// request. Dropping it leaves the already-validated requested tier in place.
+//
+// Cheaper tiers (Anthropic "batch", OpenAI "flex"/"scale") are deliberately
+// NOT mapped to "default": settling one of those at the default rate would
+// overcharge the customer.
+func canonicalServiceTier(reported string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(reported)) {
+	case "standard", "default":
+		return "default", true
+	case "priority":
+		return "priority", true
+	default:
+		return "", false
 	}
 }
 
