@@ -27,7 +27,7 @@ func maybeServePublicModels(
 		// constructed, so no request was even attempted. Both used to emit the
 		// same opaque 503, making the two indistinguishable from outside.
 		fmt.Fprintf(os.Stderr, "enclave.public_models_unavailable reason=%q\n", "no control-plane client")
-		writeError(w, 503, "model catalog unavailable")
+		writeRetryableError(w, 503, "model catalog unavailable")
 		return true
 	}
 	body, err := gateway.PublicModels(ctx)
@@ -42,7 +42,7 @@ func maybeServePublicModels(
 		// configuration or egress fault, not a blip, and the text below is the
 		// only thing that says which.
 		fmt.Fprintf(os.Stderr, "enclave.public_models_unavailable reason=%q\n", err.Error())
-		writeError(w, 503, "model catalog unavailable")
+		writeRetryableError(w, 503, "model catalog unavailable")
 		return true
 	}
 	writePublicModelsResponse(w, body)

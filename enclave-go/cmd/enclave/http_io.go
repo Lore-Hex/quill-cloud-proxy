@@ -396,6 +396,50 @@ func writeProviderError(w io.Writer, status int, message string) {
 	writeErrorWithSource(w, status, message, "provider")
 }
 
+// shouldRetryHeader tells an SDK whether re-sending is safe, overriding its own
+// status heuristics. OpenAI's clients honour exactly this header; ours do too.
+//
+// It exists because the status code alone cannot answer the only question that
+// matters to a retrying client: did a provider already run? A 502 from "could
+// not reach the provider" and a 502 from "the generation succeeded and then
+// settlement failed" are indistinguishable from the outside, and they call for
+// opposite behaviour.
+const shouldRetryHeader = "x-should-retry"
+
+// writeSpentError reports a failure that happened AFTER a provider produced —
+// and we paid for — a result. Re-sending regenerates it.
+//
+// The caller is not double-charged: authorization is idempotent per
+// Idempotency-Key and settlement is exactly-once per authorization. What is
+// lost is real money to the upstream provider, and the caller may receive a
+// different answer than the one already generated.
+//
+// These are usually 500 or 502, and 502 is precisely the status an SDK treats
+// as safe to move domains on, so this header is the only thing standing between
+// a settlement blip and a second generation.
+func writeSpentError(w io.Writer, status int, message string) {
+	writeSpentErrorWithSource(w, status, message, "router")
+}
+
+// writeSpentProviderError is writeSpentError for failures attributed to the
+// upstream provider rather than to us.
+func writeSpentProviderError(w io.Writer, status int, message string) {
+	writeSpentErrorWithSource(w, status, message, "provider")
+}
+
+func writeSpentErrorWithSource(w io.Writer, status int, message, source string) {
+	writeErrorWithSourceHeaders(w, status, message, source,
+		map[string]string{shouldRetryHeader: "false"})
+}
+
+// writeRetryableError reports a failure that happened BEFORE any provider was
+// dispatched. Nothing ran and nothing was billed, so re-sending — here or on
+// another domain — costs nothing and is the right thing for a client to do.
+func writeRetryableError(w io.Writer, status int, message string) {
+	writeErrorWithSourceHeaders(w, status, message, "router",
+		map[string]string{shouldRetryHeader: "true"})
+}
+
 func writeClassifiedOpenAIError(w io.Writer, status int, message string, err error) {
 	if isClientInputError(err) {
 		writeError(w, status, message)
