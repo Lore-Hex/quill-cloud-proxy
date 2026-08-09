@@ -14,21 +14,25 @@ jobs:
         working-directory: enclave-go
     strategy:
       matrix:
-        # The same source tree builds four distinct provider-targeted
-        # binaries via two independent build-tag axes:
+        # The same source tree builds distinct provider-targeted binaries via
+        # two independent build-tag axes:
         #
         #   cloud_aws + llm_bedrock     → AWS Nitro Enclaves with Bedrock
-        #   cloud_aws + llm_openrouter  → AWS Nitro Enclaves with OpenRouter ZDR
         #   cloud_aws + llm_multi       → AWS production multi-provider gateway
+        #   cloud_azure + llm_multi     → Azure production
         #   cloud_gcp + llm_vertex      → GCP Confidential Space with Vertex AI
-        #   cloud_gcp + llm_openrouter  → GCP Confidential Space with OpenRouter ZDR
         #   cloud_gcp + llm_multi       → GCP production multi-provider gateway
+        #
+        # The llm_openrouter backend was removed: no deployment built it. GCP,
+        # AWS, and Azure production all ship llm_multi, which calls providers
+        # directly, so OpenRouter sat in CI as a maintained build target that
+        # nothing shipped — and misled debugging, since its auto-model ladder
+        # looked like the one serving api.trustedrouter.com and was not.
         #
         # CI exercises every shipped build target so a change that breaks
         # one fails fast.
         tags:
           - "cloud_aws,llm_bedrock"
-          - "cloud_aws,llm_openrouter"
           # The combination the AWS fleet actually runs. It was missing, which
           # is how an untested tag set reached production and then had to be
           # recovered by inference — see tools/release-aws-enclave.sh.
@@ -36,7 +40,6 @@ jobs:
           # Azure is now buildable from main; keep it that way.
           - "cloud_azure,llm_multi"
           - "cloud_gcp,llm_vertex"
-          - "cloud_gcp,llm_openrouter"
           - "cloud_gcp,llm_multi"
     steps:
       - uses: actions/checkout@v4
