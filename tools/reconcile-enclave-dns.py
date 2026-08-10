@@ -57,6 +57,46 @@ DNS_ZONE = os.environ.get("QUILL_DNS_ZONE", "quillrouter-com")
 API_HOST = os.environ.get("QUILL_API_HOST", "api.quillrouter.com")
 RECORD = API_HOST.rstrip(".") + "."
 TTL = int(os.environ.get("QUILL_DNS_TTL", "60"))
+
+
+def parse_canonical_mirrors(value: str) -> list[tuple[str, str]]:
+    """Parse `zone:record` mirrors that must match canonical membership."""
+    mirrors: list[tuple[str, str]] = []
+    for raw_entry in value.split(","):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        zone, separator, record = entry.partition(":")
+        zone = zone.strip()
+        record = record.strip().rstrip(".") + "."
+        if not separator or not zone or record == ".":
+            raise ValueError(
+                "QUILL_CANONICAL_DNS_MIRRORS entries must be zone:record"
+            )
+        mirrors.append((zone, record))
+    return mirrors
+
+
+def default_canonical_mirrors(api_host: str) -> str:
+    """Keep the canonical and permanent compatibility names symmetric."""
+    if api_host == "api.trustedrouter.com":
+        return "quillrouter-com:api.quillrouter.com."
+    if api_host == "api.quillrouter.com":
+        return "trustedrouter-com:api.trustedrouter.com."
+    return ""
+
+
+# api.quillrouter.com is a published permanent compatibility hostname. Every
+# attested membership update, including rollout drains, must update it from the
+# exact same healthy set as api.trustedrouter.com. The mapping is symmetric so
+# either historical reconciler configuration self-heals both names. Regional or
+# non-canonical invocations do not gain side effects.
+CANONICAL_MIRRORS = parse_canonical_mirrors(
+    os.environ.get(
+        "QUILL_CANONICAL_DNS_MIRRORS",
+        default_canonical_mirrors(API_HOST),
+    )
+)
 TRUST_DIGEST_URL = os.environ.get(
     "QUILL_TRUST_DIGEST_URL",
     "https://trust.trustedrouter.com/accepted-image-digests-gcp.txt",
@@ -416,6 +456,28 @@ def set_dns_ips(zone: str, record: str, ips: list[str]) -> None:
                 f"set_dns_ips({record}) failed: {(p.stderr or p.stdout).strip()}")
 
 
+def reconcile_dns_record(
+    zone: str,
+    record: str,
+    healthy_ips: list[str],
+    *,
+    apply: bool,
+    label: str,
+) -> None:
+    """Reconcile one canonical or compatibility record to one healthy set."""
+    current = sorted(current_dns_ips(zone, record))
+    if current == healthy_ips:
+        log(f"reconcile: {label} {record} already correct ({len(healthy_ips)} A)")
+        return
+
+    log(f"reconcile: {label} {record} {current} -> {healthy_ips}")
+    if apply:
+        set_dns_ips(zone, record, healthy_ips)
+        log(f"reconcile: APPLIED {label} {record}")
+    else:
+        log(f"reconcile: DRY-RUN {label} {record} (pass --apply to change DNS)")
+
+
 def regional_host(region: str) -> str:
     return f"api-{region}.{REGIONAL_SUFFIX}".rstrip(".")
 
@@ -595,16 +657,21 @@ def main() -> int:
         sys.exit(f"[FAIL] only {len(healthy_ips)} healthy (< MIN_HEALTHY={MIN_HEALTHY}); "
                  "refusing to shrink DNS — leaving last-good record in place")
 
-    cur = sorted(current_dns_ips(DNS_ZONE, RECORD))
-    if cur == healthy_ips:
-        log(f"reconcile: canonical {RECORD} already correct ({len(healthy_ips)} A) — no change")
-    else:
-        log(f"reconcile: canonical {RECORD} {cur} -> {healthy_ips}")
-        if args.apply:
-            set_dns_ips(DNS_ZONE, RECORD, healthy_ips)
-            log("reconcile: APPLIED canonical")
-        else:
-            log("reconcile: DRY-RUN canonical (pass --apply to change DNS)")
+    reconcile_dns_record(
+        DNS_ZONE,
+        RECORD,
+        healthy_ips,
+        apply=args.apply,
+        label="canonical",
+    )
+    for mirror_zone, mirror_record in CANONICAL_MIRRORS:
+        reconcile_dns_record(
+            mirror_zone,
+            mirror_record,
+            healthy_ips,
+            apply=args.apply,
+            label="compatibility mirror",
+        )
 
     if PUBLISH_REGIONAL:
         regional_by_region = attest_regional_instances(healthy, digest)
