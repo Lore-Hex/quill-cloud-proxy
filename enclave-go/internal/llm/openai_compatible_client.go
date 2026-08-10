@@ -84,7 +84,7 @@ func (c *openAICompatibleClient) InvokeStreaming(
 	if err != nil {
 		return fmt.Errorf("llm/%s: http client unavailable: %w", c.provider, err)
 	}
-	return invokeOpenAICompatibleStreamingWithClient(
+	return invokeOpenAICompatibleStreamingWithClientOptions(
 		ctx,
 		httpc,
 		provider,
@@ -94,6 +94,9 @@ func (c *openAICompatibleClient) InvokeStreaming(
 		body,
 		out,
 		option.UpstreamModel,
-		option.ProviderCacheScope,
+		openAICompatibleInvocationOptions{
+			providerCacheScope: option.ProviderCacheScope,
+			waferZDRRequired:   option.WaferZDRRequired,
+		},
 	)
 }

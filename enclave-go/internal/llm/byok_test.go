@@ -913,6 +913,7 @@ func TestWaferZDRHeaderContract(t *testing.T) {
 		upstreamModel string
 		wantModel     string
 		wantZDR       bool
+		zdrRequired   bool
 	}{
 		{
 			name:          "glm remains zdr native",
@@ -920,6 +921,14 @@ func TestWaferZDRHeaderContract(t *testing.T) {
 			upstreamModel: "GLM-5.2",
 			wantModel:     "GLM-5.2",
 			wantZDR:       true,
+		},
+		{
+			name:          "new catalog model uses authorized policy bit",
+			model:         "moonshotai/kimi-k3",
+			upstreamModel: "Kimi-K3",
+			wantModel:     "Kimi-K3",
+			wantZDR:       true,
+			zdrRequired:   true,
 		},
 		{
 			name:          "kimi k2.6 is standard tier",
@@ -968,7 +977,7 @@ func TestWaferZDRHeaderContract(t *testing.T) {
 				}),
 			}
 
-			err := invokeOpenAICompatibleStreamingWithClient(
+			err := invokeOpenAICompatibleStreamingWithClientOptions(
 				t.Context(),
 				httpc,
 				"wafer",
@@ -981,6 +990,7 @@ func TestWaferZDRHeaderContract(t *testing.T) {
 				},
 				io.Discard,
 				tt.upstreamModel,
+				openAICompatibleInvocationOptions{waferZDRRequired: tt.zdrRequired},
 			)
 			if err != nil {
 				t.Fatalf("invokeOpenAICompatibleStreamingWithClient: %v", err)

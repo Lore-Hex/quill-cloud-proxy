@@ -38,7 +38,7 @@ func invokeBYOKStreaming(
 	case provider == "anthropic":
 		return true, invokeAnthropicBYOKStreaming(ctx, req, body, out, options.ProviderAPIKey, options.UpstreamModel)
 	case isOpenAICompatibleBYOKProvider(provider):
-		return true, invokeOpenAICompatibleBYOKStreaming(ctx, provider, req, body, out, options.ProviderAPIKey, options.UpstreamModel, options.ProviderCacheScope)
+		return true, invokeOpenAICompatibleBYOKStreaming(ctx, provider, req, body, out, options)
 	default:
 		return true, fmt.Errorf("llm/byok: unsupported provider %q", options.Provider)
 	}
@@ -142,11 +142,28 @@ func invokeOpenAICompatibleBYOKStreaming(
 	req *qtypes.OpenAIChatRequest,
 	body *qtypes.AnthropicMessagesRequest,
 	out io.Writer,
-	apiKey string,
-	upstreamModel string,
-	providerCacheScope string,
+	options InvokeOptions,
 ) error {
-	return InvokeOpenAICompatibleStreaming(ctx, provider, directBaseURL(provider), apiKey, req, body, out, upstreamModel, providerCacheScope)
+	return invokeOpenAICompatibleStreamingWithClientOptions(
+		ctx,
+		defaultHTTPClient(),
+		provider,
+		directBaseURL(provider),
+		options.ProviderAPIKey,
+		req,
+		body,
+		out,
+		options.UpstreamModel,
+		openAICompatibleInvocationOptions{
+			providerCacheScope: options.ProviderCacheScope,
+			waferZDRRequired:   options.WaferZDRRequired,
+		},
+	)
+}
+
+type openAICompatibleInvocationOptions struct {
+	providerCacheScope string
+	waferZDRRequired   bool
 }
 
 // InvokeOpenAICompatibleStreaming is the shared OpenAI-compatible upstream
@@ -172,7 +189,7 @@ func InvokeOpenAICompatibleStreaming(
 	if len(providerCacheScopes) > 0 {
 		providerCacheScope = providerCacheScopes[0]
 	}
-	return invokeOpenAICompatibleStreamingWithClient(
+	return invokeOpenAICompatibleStreamingWithClientOptions(
 		ctx,
 		defaultHTTPClient(),
 		provider,
@@ -182,7 +199,7 @@ func InvokeOpenAICompatibleStreaming(
 		body,
 		out,
 		upstreamModel,
-		providerCacheScope,
+		openAICompatibleInvocationOptions{providerCacheScope: providerCacheScope},
 	)
 }
 
@@ -200,6 +217,30 @@ func invokeOpenAICompatibleStreamingWithClient(
 	if len(providerCacheScopes) > 0 {
 		providerCacheScope = providerCacheScopes[0]
 	}
+	return invokeOpenAICompatibleStreamingWithClientOptions(
+		ctx,
+		httpc,
+		provider,
+		baseURL,
+		apiKey,
+		req,
+		body,
+		out,
+		upstreamModel,
+		openAICompatibleInvocationOptions{providerCacheScope: providerCacheScope},
+	)
+}
+
+func invokeOpenAICompatibleStreamingWithClientOptions(
+	ctx context.Context,
+	httpc *http.Client,
+	provider, baseURL, apiKey string,
+	req *qtypes.OpenAIChatRequest,
+	body *qtypes.AnthropicMessagesRequest,
+	out io.Writer,
+	upstreamModel string,
+	options openAICompatibleInvocationOptions,
+) error {
 	if strings.TrimSpace(apiKey) == "" {
 		return fmt.Errorf("llm/%s: missing api key", provider)
 	}
@@ -213,7 +254,7 @@ func invokeOpenAICompatibleStreamingWithClient(
 	upstreamID := directModelID(provider, req.Model, upstreamModel)
 	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
 	if normalizeDirectProvider(provider) == "tinfoil" {
-		reqBody.UserCacheSecret = strings.TrimSpace(providerCacheScope)
+		reqBody.UserCacheSecret = strings.TrimSpace(options.providerCacheScope)
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
@@ -227,7 +268,8 @@ func invokeOpenAICompatibleStreamingWithClient(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
-	if provider == "wafer" && waferModelSupportsZDR(upstreamID) {
+	if normalizeDirectProvider(provider) == "wafer" &&
+		(options.waferZDRRequired || legacyWaferModelSupportsZDR(upstreamID)) {
 		httpReq.Header.Set("Wafer-ZDR", "required")
 	}
 
@@ -1513,18 +1555,18 @@ var makoraModelMap = map[string]string{
 	"qwen/qwen3.6-35b-a3b":              "unsloth/Qwen3.6-35B-A3B-NVFP4",
 }
 
-var waferZDRNativeModels = map[string]struct{}{
-	"GLM-5.1": {},
-	"GLM-5.2": {},
-	// Wafer withdrew ZDR for Kimi-K2.6 on 2026-06-26; the control-plane
-	// catalog now serves it at standard tier (quill-router leaderboard-fixes).
-	"Qwen3.5-397B-A17B": {},
+// legacyWaferZDRNativeModels keeps old control-plane responses safe during a
+// rolling deployment. Current model policy arrives as WaferZDRRequired on the
+// authorized route, so newly launched models never require an enclave edit.
+var legacyWaferZDRNativeModels = map[string]struct{}{
+	"GLM-5.1":           {},
+	"GLM-5.2":           {},
 	"deepseek-v4-flash": {},
 	"deepseek-v4-pro":   {},
 }
 
-func waferModelSupportsZDR(upstreamID string) bool {
-	_, ok := waferZDRNativeModels[upstreamID]
+func legacyWaferModelSupportsZDR(upstreamID string) bool {
+	_, ok := legacyWaferZDRNativeModels[upstreamID]
 	return ok
 }
 
