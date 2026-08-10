@@ -494,9 +494,9 @@ jobs:
           WAIT_UP_SLEEP: "10"
           WAIT_UP_ROUNDS: "72"
         run: |
-          gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-five-minutes \
+          gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-three-minutes \
             --location=us-central1 --project=quill-cloud-proxy || true
-          gcloud scheduler jobs run trusted-router-synthetic-europe-west4-every-five-minutes \
+          gcloud scheduler jobs run trusted-router-synthetic-europe-west4-every-three-minutes \
             --location=europe-west4 --project=quill-cloud-proxy || true
           bash tools/wait-region-synthetic-up.sh us-central1 us-central1
 
@@ -585,9 +585,9 @@ jobs:
             # Trigger both active monitor jobs so wait-region-synthetic-up does
             # not stall on a stale peer monitor row. us-east4 is currently
             # covered by the us-central1 monitor; eu has its own monitor.
-            gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-five-minutes \
+            gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-three-minutes \
               --location=us-central1 --project=quill-cloud-proxy || true
-            gcloud scheduler jobs run trusted-router-synthetic-europe-west4-every-five-minutes \
+            gcloud scheduler jobs run trusted-router-synthetic-europe-west4-every-three-minutes \
               --location=europe-west4 --project=quill-cloud-proxy || true
           }
 
