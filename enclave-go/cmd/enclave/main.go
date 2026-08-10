@@ -252,6 +252,51 @@ func main() {
 			fmt.Fprintf(os.Stderr, "enclavetls acme eab: %v\n", eabErr)
 			os.Exit(1)
 		}
+		// Fallback CA (task: LE outage must not be a total TLS outage). Same
+		// fail-fast rule as the primary EAB: a malformed fallback must stop
+		// the process now, not fail registration during the outage it exists
+		// for. GTS and ZeroSSL both REQUIRE EAB, so a fallback directory
+		// without one is almost certainly a misconfiguration — logged loudly,
+		// not fatal, because Buypass-class CAs legitimately run without EAB.
+		// Preferred source is the bootstrap secret ("<kid>:<hmac>", resolved
+		// via Secret Manager alongside provider keys — never plaintext in
+		// instance metadata); the plain env pair remains for dev/tests.
+		fallbackKID := os.Getenv("QUILL_ACME_FALLBACK_EAB_KID")
+		fallbackHMAC := os.Getenv("QUILL_ACME_FALLBACK_EAB_HMAC_KEY")
+		if sealed := strings.TrimSpace(boot.ACMEFallbackEAB); sealed != "" {
+			kid, hmac, found := strings.Cut(sealed, ":")
+			if !found {
+				fmt.Fprintf(os.Stderr,
+					"enclavetls acme fallback eab secret: expected \"<kid>:<hmac>\"\n")
+				os.Exit(1)
+			}
+			fallbackKID, fallbackHMAC = kid, hmac
+		}
+		fallbackEAB, fallbackEABErr := enclavetls.ExternalAccountBindingFromEnv(
+			fallbackKID,
+			fallbackHMAC,
+		)
+		if fallbackEABErr != nil {
+			fmt.Fprintf(os.Stderr, "enclavetls acme fallback eab: %v\n", fallbackEABErr)
+			os.Exit(1)
+		}
+		var fallbackCAs []enclavetls.DNS01CA
+		if fallbackDir := strings.TrimSpace(
+			os.Getenv("QUILL_ACME_FALLBACK_DIRECTORY_URL"),
+		); fallbackDir != "" {
+			if fallbackEAB == nil {
+				fmt.Fprintf(os.Stderr,
+					"enclavetls.acme_fallback_without_eab directory=%s — GTS/ZeroSSL "+
+						"will refuse registration; set QUILL_ACME_FALLBACK_EAB_KID/"+
+						"QUILL_ACME_FALLBACK_EAB_HMAC_KEY unless this CA needs none\n",
+					fallbackDir)
+			}
+			fallbackCAs = append(fallbackCAs, enclavetls.DNS01CA{
+				DirectoryURL:       fallbackDir,
+				EAB:                fallbackEAB,
+				AccountKeyCacheKey: enclavetls.AccountKeyCacheKeyForDirectory(fallbackDir),
+			})
+		}
 		if mode == "acme" {
 			tlsServer, err = enclavetls.NewACME(
 				apiHost,
@@ -317,6 +362,10 @@ func main() {
 					// so a renewer without it is a fallback that fails only
 					// when it is finally needed.
 					ExternalAccountBinding: eab,
+					// The CA half of defense-in-depth: when the primary
+					// directory fails an order, the renewer tries these in
+					// order on the same tick.
+					FallbackCAs: fallbackCAs,
 				})
 				// Log the provider that will actually publish the challenge.
 				// This printed the Cloudflare zone unconditionally, so a Cloud

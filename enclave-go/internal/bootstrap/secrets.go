@@ -138,6 +138,10 @@ var secretBindings = []secretBinding{
 	{[]string{"QUILL_ADVISOR_WORKER_PROMPT_SECRET", "QUILL_SOCRATES_WORKER_PROMPT_SECRET"}, "advisor worker prompt", false, func(b *types.BootstrapData, v string) { b.AdvisorWorkerPrompt = v }},
 	{[]string{"QUILL_ADVISOR_PROMPT_SECRET", "QUILL_SOCRATES_ADVISOR_PROMPT_SECRET"}, "advisor prompt", false, func(b *types.BootstrapData, v string) { b.AdvisorPrompt = v }},
 	{[]string{"QUILL_TRUSTEDROUTER_INTERNAL_SECRET"}, "trustedrouter internal token", false, func(b *types.BootstrapData, v string) { b.TrustedRouterInternalToken = v }},
+	// "<kid>:<base64url-hmac>" for the fallback ACME CA; one entry so the
+	// halves rotate together. Optional: absent simply leaves the fallback
+	// CA (if any) registering without EAB.
+	{[]string{"QUILL_ACME_FALLBACK_EAB_SECRET"}, "acme fallback eab", false, func(b *types.BootstrapData, v string) { b.ACMEFallbackEAB = v }},
 }
 
 // secretConfig is the resolved, validated environment: everything the assembly

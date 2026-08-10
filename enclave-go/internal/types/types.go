@@ -177,6 +177,16 @@ type BootstrapData struct {
 	// Secret Manager entry (or env) so it can be rotated without
 	// re-baking the enclave image.
 	CloudflareZoneID string `json:"cloudflare_zone_id,omitempty"`
+
+	// External Account Binding for the FALLBACK ACME CA (task: a Let's
+	// Encrypt outage must not be a total TLS outage). One secret value in
+	// "<kid>:<base64url-hmac>" form — a single Secret Manager entry so the
+	// two halves cannot be rotated out of step (EAB fails as an opaque
+	// signature error when they are). Rides the same hardened secret
+	// bootstrap as provider keys on every cloud; empty means the fallback
+	// directory (if configured) registers without EAB, which only
+	// Buypass-class CAs accept.
+	ACMEFallbackEAB string `json:"acme_fallback_eab,omitempty"`
 }
 
 // OpenAIChatMessage is one message in an inbound /v1/chat/completions request.

@@ -635,6 +635,17 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		}
 		internalGatewayToken = string(value)
 	}
+	// "<kid>:<hmac>" for the fallback ACME CA (see types.ACMEFallbackEAB).
+	// Optional, same shape as the internal token above: unset env means no
+	// fallback EAB; a SET env with a missing secret fails the boot loudly.
+	var acmeFallbackEAB string
+	if eabSecret := os.Getenv("QUILL_ACME_FALLBACK_EAB_SECRET"); eabSecret != "" {
+		value, err := fetchSecret(ctx, httpc, token, project, eabSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: acme fallback eab: %w", err)
+		}
+		acmeFallbackEAB = string(value)
+	}
 
 	return &types.BootstrapData{
 		Devices:                      devices,
@@ -691,6 +702,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		ExaAPIKey:                    strings.TrimSpace(string(exaKey)),
 		TrustedRouterBaseURL:         os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken:   strings.TrimSpace(internalGatewayToken),
+		ACMEFallbackEAB:              strings.TrimSpace(acmeFallbackEAB),
 		SynthPanelPrompt:             strings.TrimSpace(string(synthPanelPrompt)),
 		SynthSynthesisPrompt:         strings.TrimSpace(string(synthSynthesisPrompt)),
 		SynthCodePanelPrompt:         strings.TrimSpace(string(synthCodePanelPrompt)),
