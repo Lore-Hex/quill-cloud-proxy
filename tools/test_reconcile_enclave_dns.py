@@ -108,6 +108,80 @@ class TrustDigestTests(unittest.TestCase):
             reconciler.trust_digests()
 
 
+class CanonicalMirrorTests(unittest.TestCase):
+    def test_defaults_are_symmetric_for_both_public_api_names(self) -> None:
+        self.assertEqual(
+            reconciler.default_canonical_mirrors("api.trustedrouter.com"),
+            "quillrouter-com:api.quillrouter.com.",
+        )
+        self.assertEqual(
+            reconciler.default_canonical_mirrors("api.quillrouter.com"),
+            "trustedrouter-com:api.trustedrouter.com.",
+        )
+        self.assertEqual(
+            reconciler.default_canonical_mirrors("api-us-east4.quillrouter.com"),
+            "",
+        )
+
+    def test_parses_canonical_mirrors(self) -> None:
+        self.assertEqual(
+            reconciler.parse_canonical_mirrors(
+                "quillrouter-com:api.quillrouter.com,backup-zone:api.backup.test."
+            ),
+            [
+                ("quillrouter-com", "api.quillrouter.com."),
+                ("backup-zone", "api.backup.test."),
+            ],
+        )
+
+    def test_rejects_malformed_canonical_mirror(self) -> None:
+        with self.assertRaisesRegex(ValueError, "zone:record"):
+            reconciler.parse_canonical_mirrors("api.quillrouter.com")
+
+    def test_apply_reconciles_mirror_to_exact_canonical_set(self) -> None:
+        healthy = ["203.0.113.10", "203.0.113.11"]
+        with (
+            mock.patch.object(
+                reconciler,
+                "current_dns_ips",
+                return_value=["198.51.100.7"],
+            ),
+            mock.patch.object(reconciler, "set_dns_ips") as set_dns_ips,
+        ):
+            reconciler.reconcile_dns_record(
+                "quillrouter-com",
+                "api.quillrouter.com.",
+                healthy,
+                apply=True,
+                label="compatibility mirror",
+            )
+
+        set_dns_ips.assert_called_once_with(
+            "quillrouter-com",
+            "api.quillrouter.com.",
+            healthy,
+        )
+
+    def test_dry_run_never_mutates_mirror(self) -> None:
+        with (
+            mock.patch.object(
+                reconciler,
+                "current_dns_ips",
+                return_value=["198.51.100.7"],
+            ),
+            mock.patch.object(reconciler, "set_dns_ips") as set_dns_ips,
+        ):
+            reconciler.reconcile_dns_record(
+                "quillrouter-com",
+                "api.quillrouter.com.",
+                ["203.0.113.10"],
+                apply=False,
+                label="compatibility mirror",
+            )
+
+        set_dns_ips.assert_not_called()
+
+
 class RegionalDnsPromotionTests(unittest.TestCase):
     def test_cname_to_a_uses_one_cloud_dns_transaction(self) -> None:
         completed = mock.Mock(returncode=0, stdout="", stderr="")
