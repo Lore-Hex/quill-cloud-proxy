@@ -47,6 +47,7 @@ type InvokeOptions struct {
 	EndpointID         string
 	UsageType          string
 	ProviderCacheScope string
+	WaferZDRRequired   bool
 }
 
 // New builds the right Client for the build target. Defined exactly once

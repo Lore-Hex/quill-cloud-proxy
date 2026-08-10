@@ -42,3 +42,34 @@ func TestInvokeOptionsCarryWorkspaceCacheScope(t *testing.T) {
 		t.Fatalf("cache scope = %q, want %q", got, want)
 	}
 }
+
+func TestInvokeOptionsCarryWaferZDRPolicy(t *testing.T) {
+	authorization := &trustedrouter.Authorization{
+		WorkspaceID: "workspace-123",
+		Model:       "moonshotai/kimi-k3",
+		EndpointID:  "moonshotai/kimi-k3@wafer/prepaid",
+		Provider:    "wafer",
+		UsageType:   "Credits",
+		RouteCandidates: []trustedrouter.RouteCandidate{
+			{
+				Model:            "moonshotai/kimi-k3",
+				UpstreamModel:    "Kimi-K3",
+				EndpointID:       "moonshotai/kimi-k3@wafer/prepaid",
+				Provider:         "wafer",
+				UsageType:        "Credits",
+				WaferZDRRequired: true,
+			},
+		},
+	}
+
+	options, err := invokeOptionsForAuthorization(context.Background(), nil, authorization)
+	if err != nil {
+		t.Fatalf("invokeOptionsForAuthorization: %v", err)
+	}
+	if len(options) != 1 {
+		t.Fatalf("options = %d, want 1", len(options))
+	}
+	if !options[0].WaferZDRRequired {
+		t.Fatal("WaferZDRRequired was not propagated to the provider invocation")
+	}
+}

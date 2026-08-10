@@ -89,6 +89,7 @@ func invokeOptionsForAuthorization(
 			BYOKEncryptedSecret: authorization.BYOKEncryptedSecret,
 			BYOKCacheKey:        authorization.BYOKCacheKey,
 			BYOKProvider:        authorization.BYOKProvider,
+			WaferZDRRequired:    authorization.WaferZDRRequired,
 		}}
 	}
 	options := make([]llm.InvokeOptions, 0, len(candidates))
@@ -122,6 +123,7 @@ func invokeOptionsForAuthorization(
 			EndpointID:         candidate.EndpointID,
 			UsageType:          candidate.UsageType,
 			ProviderCacheScope: providerCacheScope(authorization.WorkspaceID),
+			WaferZDRRequired:   candidate.WaferZDRRequired,
 		})
 	}
 	if len(options) == 0 && len(unavailable) > 0 {

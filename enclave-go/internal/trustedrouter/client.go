@@ -207,6 +207,7 @@ type Authorization struct {
 	EndpointID                            string                             `json:"endpoint_id"`
 	Provider                              string                             `json:"provider"`
 	ProviderName                          string                             `json:"provider_name"`
+	WaferZDRRequired                      bool                               `json:"wafer_zdr_required"`
 	RequestedModel                        string                             `json:"requested_model"`
 	Region                                string                             `json:"region"`
 	UsageType                             string                             `json:"usage_type"`
@@ -239,6 +240,7 @@ type RouteCandidate struct {
 	UpstreamModel       string                             `json:"upstream_model"`
 	Provider            string                             `json:"provider"`
 	ProviderName        string                             `json:"provider_name"`
+	WaferZDRRequired    bool                               `json:"wafer_zdr_required"`
 	UsageType           string                             `json:"usage_type"`
 	BYOKSecretRef       string                             `json:"byok_secret_ref"`
 	BYOKEncryptedSecret *byokcache.EncryptedSecretEnvelope `json:"byok_encrypted_secret"`
