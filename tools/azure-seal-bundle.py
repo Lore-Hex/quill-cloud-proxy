@@ -158,6 +158,8 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_CLOUDFLARE_WORKERS_AI_SECRET",), "cloudflare workers ai key", True),
     Binding(("QUILL_DIGITALOCEAN_SECRET",), "digitalocean key", True),
     Binding(("QUILL_ENGY_SECRET",), "engy key", True),
+    Binding(("QUILL_DATABRICKS_SECRET",), "databricks token", True),
+    Binding(("QUILL_DATABRICKS_HOST_SECRET",), "databricks host", False),
     Binding(("QUILL_EXA_SECRET",), "exa key", True),
     Binding(("QUILL_INCEPTRON_SECRET",), "inceptron key", True),
     Binding(("QUILL_KLING_SECRET",), "kling key", True),

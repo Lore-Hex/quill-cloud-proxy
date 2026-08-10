@@ -120,6 +120,8 @@ var secretBindings = []secretBinding{
 	{[]string{"QUILL_CLOUDFLARE_WORKERS_AI_SECRET"}, "cloudflare workers ai key", true, func(b *types.BootstrapData, v string) { b.CloudflareWorkersAIAPIKey = v }},
 	{[]string{"QUILL_DIGITALOCEAN_SECRET"}, "digitalocean key", true, func(b *types.BootstrapData, v string) { b.DigitalOceanAPIKey = v }},
 	{[]string{"QUILL_ENGY_SECRET"}, "engy key", true, func(b *types.BootstrapData, v string) { b.EngyAPIKey = v }},
+	{[]string{"QUILL_DATABRICKS_SECRET"}, "databricks token", true, func(b *types.BootstrapData, v string) { b.DatabricksToken = v }},
+	{[]string{"QUILL_DATABRICKS_HOST_SECRET"}, "databricks host", false, func(b *types.BootstrapData, v string) { b.DatabricksHost = v }},
 	{[]string{"QUILL_EXA_SECRET"}, "exa key", true, func(b *types.BootstrapData, v string) { b.ExaAPIKey = v }},
 	{[]string{"QUILL_INCEPTRON_SECRET"}, "inceptron key", true, func(b *types.BootstrapData, v string) { b.InceptronAPIKey = v }},
 	{[]string{"QUILL_KLING_SECRET"}, "kling key", true, func(b *types.BootstrapData, v string) { b.KlingAPIKey = v }},
@@ -309,6 +311,9 @@ func assembleBootstrapData(ctx context.Context, cfg secretConfig, tag string, re
 			return nil, fmt.Errorf("%s: %s: secret %q resolved to an empty value (%d bytes before trimming) — a present-but-empty secret would boot a gateway that fails every request using it", tag, binding.label, name, len(value))
 		}
 		binding.assign(data, trimmed)
+	}
+	if err := validateDatabricksBootstrap(data); err != nil {
+		return nil, fmt.Errorf("%s: %w", tag, err)
 	}
 	return data, nil
 }

@@ -151,6 +151,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	streamLakeSecret := os.Getenv("QUILL_STREAMLAKE_SECRET")
 	neurometricSecret := os.Getenv("QUILL_NEUROMETRIC_SECRET")
 	engySecret := os.Getenv("QUILL_ENGY_SECRET")
+	databricksSecret := os.Getenv("QUILL_DATABRICKS_SECRET")
+	databricksHostSecret := os.Getenv("QUILL_DATABRICKS_HOST_SECRET")
 	zeroGSecret := os.Getenv("QUILL_ZERO_G_SECRET")
 	alibabaSecret := os.Getenv("QUILL_ALIBABA_SECRET")
 	ltxSecret := os.Getenv("QUILL_LTX_SECRET")
@@ -213,6 +215,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		streamLakeSecret,
 		neurometricSecret,
 		engySecret,
+		databricksSecret,
 		zeroGSecret,
 		alibabaSecret,
 		ltxSecret,
@@ -536,6 +539,20 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: engy key: %w", err)
 		}
 	}
+	var databricksToken []byte
+	if databricksSecret != "" {
+		databricksToken, err = fetchSecret(ctx, httpc, token, project, databricksSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: databricks token: %w", err)
+		}
+	}
+	var databricksHost []byte
+	if databricksHostSecret != "" {
+		databricksHost, err = fetchSecret(ctx, httpc, token, project, databricksHostSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: databricks host: %w", err)
+		}
+	}
 	var zeroGKey []byte
 	if zeroGSecret != "" {
 		zeroGKey, err = fetchSecret(ctx, httpc, token, project, zeroGSecret)
@@ -647,7 +664,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		acmeFallbackEAB = string(value)
 	}
 
-	return &types.BootstrapData{
+	data := &types.BootstrapData{
 		Devices:                      devices,
 		Region:                       os.Getenv("QUILL_GCP_REGION"),
 		OpenRouterAPIKey:             strings.TrimSpace(string(openrouterKey)),
@@ -693,6 +710,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		StreamLakeAPIKey:             strings.TrimSpace(string(streamLakeKey)),
 		NeurometricAPIKey:            strings.TrimSpace(string(neurometricKey)),
 		EngyAPIKey:                   strings.TrimSpace(string(engyKey)),
+		DatabricksToken:              strings.TrimSpace(string(databricksToken)),
+		DatabricksHost:               strings.TrimSpace(string(databricksHost)),
 		ZeroGAPIKey:                  strings.TrimSpace(string(zeroGKey)),
 		AlibabaAPIKey:                strings.TrimSpace(string(alibabaKey)),
 		LTXAPIKey:                    strings.TrimSpace(string(ltxKey)),
@@ -710,7 +729,11 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		AdvisorWorkerPrompt:          strings.TrimSpace(string(advisorWorkerPrompt)),
 		AdvisorPrompt:                strings.TrimSpace(string(advisorPrompt)),
 		// Legacy proxy fields unused on GCP — direct egress.
-	}, nil
+	}
+	if err := validateDatabricksBootstrap(data); err != nil {
+		return nil, fmt.Errorf("bootstrap/gcp: %w", err)
+	}
+	return data, nil
 }
 
 func anySet(values ...string) bool {
