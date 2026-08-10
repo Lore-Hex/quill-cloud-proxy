@@ -76,6 +76,13 @@ DNS may not have those permissions.
 `eu.trustedrouter.com` uses the control-plane global load balancer and must be
 included on the GCP HTTPS proxy certificate.
 
+### SES authentication records
+
+SES DKIM and custom MAIL FROM records are declared in `ses-records.json` and
+reconciled by `tools/reconcile_ses_dns.py`. The scheduled enclave DNS workflow
+applies that file so an SES identity cannot remain enabled with missing public
+authentication records.
+
 ## Import block (one-time, paste each line one by one)
 
 ```bash

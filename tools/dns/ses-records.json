@@ -1,0 +1,36 @@
+{
+  "project": "quill-cloud-proxy",
+  "zone": "trustedrouter-com",
+  "records": [
+    {
+      "name": "znhrnrlgh3aaumcd7ayvagf2ra3ymdco._domainkey.support.trustedrouter.com.",
+      "type": "CNAME",
+      "ttl": 300,
+      "rrdatas": ["znhrnrlgh3aaumcd7ayvagf2ra3ymdco.dkim.amazonses.com."]
+    },
+    {
+      "name": "4y3fyxxkabwwx5jceibshw73qbo5qzq6._domainkey.support.trustedrouter.com.",
+      "type": "CNAME",
+      "ttl": 300,
+      "rrdatas": ["4y3fyxxkabwwx5jceibshw73qbo5qzq6.dkim.amazonses.com."]
+    },
+    {
+      "name": "hg7zis4i4tdltvyfwrzj3ytasayjovn2._domainkey.support.trustedrouter.com.",
+      "type": "CNAME",
+      "ttl": 300,
+      "rrdatas": ["hg7zis4i4tdltvyfwrzj3ytasayjovn2.dkim.amazonses.com."]
+    },
+    {
+      "name": "mail.support.trustedrouter.com.",
+      "type": "MX",
+      "ttl": 300,
+      "rrdatas": ["10 feedback-smtp.us-east-1.amazonses.com."]
+    },
+    {
+      "name": "mail.support.trustedrouter.com.",
+      "type": "TXT",
+      "ttl": 300,
+      "rrdatas": ["\"v=spf1 include:amazonses.com ~all\""]
+    }
+  ]
+}
