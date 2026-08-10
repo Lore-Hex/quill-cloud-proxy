@@ -119,6 +119,8 @@ type BootstrapData struct {
 	StreamLakeAPIKey             string `json:"streamlake_api_key,omitempty"`
 	NeurometricAPIKey            string `json:"neurometric_api_key,omitempty"`
 	EngyAPIKey                   string `json:"engy_api_key,omitempty"`
+	DatabricksToken              string `json:"databricks_token,omitempty"`
+	DatabricksHost               string `json:"databricks_host,omitempty"`
 	ZeroGAPIKey                  string `json:"zero_g_api_key,omitempty"`
 	AlibabaAPIKey                string `json:"alibaba_api_key,omitempty"`
 	LTXAPIKey                    string `json:"ltx_api_key,omitempty"`

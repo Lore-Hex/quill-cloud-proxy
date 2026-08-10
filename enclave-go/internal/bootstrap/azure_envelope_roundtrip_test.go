@@ -149,6 +149,13 @@ func applyEnv(t *testing.T, env map[string]string) {
 	}
 }
 
+func fixtureBindingValue(binding secretBinding, fallback string) string {
+	if binding.envs[0] == "QUILL_DATABRICKS_HOST_SECRET" {
+		return "https://dbc-test.cloud.databricks.com"
+	}
+	return fallback
+}
+
 func writeJSONFile(t *testing.T, dir, name string, value any) string {
 	t.Helper()
 	raw, err := json.Marshal(value)
@@ -212,6 +219,7 @@ func TestPythonSealedBundleBootsTheEnclave(t *testing.T) {
 	}
 	for i, binding := range secretBindings {
 		value := fmt.Sprintf("VALUE-%02d-%s-DO-NOT-LOG", i, strings.ToUpper(strings.ReplaceAll(binding.label, " ", "_")))
+		value = fixtureBindingValue(binding, value)
 		values[secretNames[i]] = value
 		binding.assign(want, value)
 	}
@@ -307,8 +315,8 @@ func TestPythonSealedBundleSurvivesBase64Wrapping(t *testing.T) {
 	values := map[string]string{
 		testDevicesSecret: `[{"key_hash":"c0ffee","owner":"joseph","device_id":"dev-1"}]`,
 	}
-	for i := range secretBindings {
-		values[secretNames[i]] = fmt.Sprintf("value-%02d", i)
+	for i, binding := range secretBindings {
+		values[secretNames[i]] = fixtureBindingValue(binding, fmt.Sprintf("value-%02d", i))
 	}
 	saKeyPath := filepath.Join(dir, "sa-key.json")
 	if err := os.WriteFile(saKeyPath, makeSAKeyJSON(t, f.saKey), 0o600); err != nil {
@@ -543,8 +551,8 @@ func TestSealerRefusesToSealAnUnbootableBundle(t *testing.T) {
 
 	baseValues := func() map[string]string {
 		values := map[string]string{testDevicesSecret: devicesJSON}
-		for i := range secretBindings {
-			values[secretNames[i]] = fmt.Sprintf("value-%02d", i)
+		for i, binding := range secretBindings {
+			values[secretNames[i]] = fixtureBindingValue(binding, fmt.Sprintf("value-%02d", i))
 		}
 		return values
 	}

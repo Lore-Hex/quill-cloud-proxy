@@ -26,7 +26,7 @@ func TestNewProviderNormalizationAndBYOKPolicy(t *testing.T) {
 	if isOpenAICompatibleBYOKProvider("cloudflare-workers-ai") {
 		t.Fatal("cloudflare BYOK needs an account id and must stay disabled")
 	}
-	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake", "neurometric", "engy", "zero-g", "alibaba"} {
+	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake", "neurometric", "engy", "databricks", "zero-g", "alibaba"} {
 		if isOpenAICompatibleBYOKProvider(provider) {
 			t.Errorf("%s must use only the operator-key prepaid path", provider)
 		}
@@ -47,6 +47,8 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 		StreamLakeAPIKey:             "streamlake-key",
 		NeurometricAPIKey:            "neurometric-key",
 		EngyAPIKey:                   "engy-key",
+		DatabricksToken:              "databricks-token",
+		DatabricksHost:               "dbc-1234.cloud.databricks.com",
 		ZeroGAPIKey:                  "zero-g-key",
 		AlibabaAPIKey:                "alibaba-key",
 	}).(*multiClient)
@@ -82,6 +84,11 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 		"streamlake":  {client.streamLake, "https://vanchin.streamlake.ai/api/gateway/v1/endpoints", "streamlake-key"},
 		"neurometric": {client.neurometric, "https://wharf.neurometric.ai/v1", "neurometric-key"},
 		"engy":        {client.engy, "https://api.engy.ai/v1", "engy-key"},
+		"databricks": {
+			client.databricks,
+			"https://dbc-1234.cloud.databricks.com/serving-endpoints",
+			"databricks-token",
+		},
 		"alibaba": {
 			client.alibaba,
 			"https://ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com/compatible-mode/v1",
@@ -115,12 +122,49 @@ func TestNewProvidersPreserveAuthorizedUpstreamModelID(t *testing.T) {
 		{"streamlake", "kwaipilot/kat-coder-pro-v2.5", "kat-coder-pro-v2.5"},
 		{"neurometric", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b"},
 		{"engy", "z-ai/glm-5.2", "glm-5.2"},
+		{"databricks", "z-ai/glm-5.2", "databricks-glm-5-2"},
 		{"zero-g", "z-ai/glm-5.2", "glm-5.2"},
 		{"alibaba", "qwen/qwen3.7-flash", "qwen3.7-flash"},
 	}
 	for _, tc := range cases {
 		if got := directModelID(tc.provider, tc.model, tc.upstream); got != tc.upstream {
 			t.Errorf("directModelID(%q) = %q, want %q", tc.provider, got, tc.upstream)
+		}
+	}
+}
+
+func TestDatabricksServingBaseURL(t *testing.T) {
+	t.Parallel()
+
+	valid := map[string]string{
+		"dbc-1234.cloud.databricks.com":          "https://dbc-1234.cloud.databricks.com/serving-endpoints",
+		"https://adb-123.azuredatabricks.net/":   "https://adb-123.azuredatabricks.net/serving-endpoints",
+		"https://dbc-123.gcp.databricks.com:443": "https://dbc-123.gcp.databricks.com/serving-endpoints",
+	}
+	for raw, want := range valid {
+		got, err := databricksServingBaseURL(raw)
+		if err != nil {
+			t.Errorf("databricksServingBaseURL(%q): %v", raw, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("databricksServingBaseURL(%q) = %q, want %q", raw, got, want)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"http://dbc-1234.cloud.databricks.com",
+		"https://dbc-1234.cloud.databricks.com:8443",
+		"https://user@dbc-1234.cloud.databricks.com",
+		"https://dbc-1234.cloud.databricks.com/path",
+		"https://dbc-1234.cloud.databricks.com?next=evil",
+		"https://cloud.databricks.com.evil.example",
+		"https://127.0.0.1",
+	}
+	for _, raw := range invalid {
+		if got, err := databricksServingBaseURL(raw); err == nil {
+			t.Errorf("databricksServingBaseURL(%q) = %q, want rejection", raw, got)
 		}
 	}
 }
