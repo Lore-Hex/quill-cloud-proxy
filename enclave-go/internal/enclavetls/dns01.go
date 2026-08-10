@@ -44,6 +44,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
 
@@ -83,8 +84,41 @@ type DNS01Config struct {
 	// registration during an outage — the worst moment to learn the fallback
 	// was never wired.
 	ExternalAccountBinding *acme.ExternalAccountBinding
-	RenewWithinDuration    time.Duration // renew when cert has <= this much life left (default 30d)
-	CheckEvery             time.Duration // poll cadence (default 6h)
+	// FallbackCAs are tried IN ORDER when the primary CA (DirectoryURL
+	// above) fails an order. This is the CA half of defense-in-depth that
+	// the DNS-01 transport half always promised: a sustained Let's Encrypt
+	// outage flips issuance to the next CA automatically on the next
+	// renewer tick, instead of being a total TLS outage with a 30-day fuse.
+	// Order is preference: LE-first keeps the fallback CA cold (zero spend,
+	// zero rate-limit history) in the normal world.
+	FallbackCAs         []DNS01CA
+	RenewWithinDuration time.Duration // renew when cert has <= this much life left (default 30d)
+	CheckEvery          time.Duration // poll cadence (default 6h)
+}
+
+// DNS01CA is one certificate authority the renewer can order from.
+type DNS01CA struct {
+	DirectoryURL string // empty → LE prod (only sensible for the primary)
+	// EAB for THIS CA. Google Trust Services and ZeroSSL refuse
+	// registration without it; Let's Encrypt ignores it.
+	EAB *acme.ExternalAccountBinding
+	// AccountKeyCacheKey isolates ACME account state per CA. Every CA sees
+	// a registration signed by the key at this cache key; sharing one key
+	// across CAs would entangle their account state and rate-limit
+	// histories. Empty → the legacy shared key ("acme_account+key"), which
+	// stays correct for the primary CA (it IS that account).
+	AccountKeyCacheKey string
+}
+
+// AccountKeyCacheKeyForDirectory derives a stable per-CA account key cache
+// key from the directory URL, so the same fallback CA reuses its account
+// across restarts and replicas (registration is idempotent per key).
+func AccountKeyCacheKeyForDirectory(directoryURL string) string {
+	host := directoryURL
+	if u, err := neturl.Parse(directoryURL); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	return "acme_account+key+" + strings.ToLower(host)
 }
 
 // StartDNS01Renewer spawns a goroutine that periodically checks the
@@ -143,7 +177,7 @@ func maybeRenewDNS01(ctx context.Context, cfg DNS01Config) error {
 			return nil
 		}
 		fmt.Fprintf(maybeStderr, "dns01_renewer.bootstrapping dns_name=%s\n", cfg.DNSName)
-		return runDNS01Order(ctx, cfg)
+		return runDNS01Orders(ctx, cfg)
 	}
 	if err != nil {
 		// Cache read errored. Don't treat as "needs renewal" — that
@@ -164,19 +198,67 @@ func maybeRenewDNS01(ctx context.Context, cfg DNS01Config) error {
 		"dns01_renewer.renewing dns_name=%s expires_in_hours=%.1f\n",
 		cfg.DNSName, timeLeft.Hours(),
 	)
-	return runDNS01Order(ctx, cfg)
+	return runDNS01Orders(ctx, cfg)
 }
 
-// runDNS01Order executes one full DNS-01 ACME order, leaving the cert
-// in Cache when successful. All on-the-wire pieces (ACME directory,
+// orderCA is the per-CA order function, indirect so tests can exercise the
+// fallback ORDERING logic without standing up a fake ACME directory (the
+// wire path below is the one production has been running since DNS-01
+// shipped; the new, untested-in-prod logic is the iteration).
+var orderCA = runDNS01Order
+
+// runDNS01Orders tries the primary CA, then each FallbackCA in order. The
+// first success wins; every failure is logged with the directory it came
+// from so an operator can tell "LE is down, GTS carried it" from the log
+// line alone. All CAs failing returns the joined error.
+func runDNS01Orders(ctx context.Context, cfg DNS01Config) error {
+	cas := make([]DNS01CA, 0, 1+len(cfg.FallbackCAs))
+	cas = append(cas, DNS01CA{
+		DirectoryURL: cfg.DirectoryURL,
+		EAB:          cfg.ExternalAccountBinding,
+		// Legacy shared key: this IS the account autocert shares.
+		AccountKeyCacheKey: "acme_account+key",
+	})
+	cas = append(cas, cfg.FallbackCAs...)
+	var errs []error
+	for index, ca := range cas {
+		err := orderCA(ctx, cfg, ca)
+		if err == nil {
+			if index > 0 {
+				fmt.Fprintf(maybeStderr,
+					"dns01_renewer.fallback_ca_issued dns_name=%s directory=%s\n",
+					cfg.DNSName, ca.DirectoryURL,
+				)
+			}
+			return nil
+		}
+		directory := ca.DirectoryURL
+		if directory == "" {
+			directory = "letsencrypt-default"
+		}
+		fmt.Fprintf(maybeStderr,
+			"dns01_renewer.ca_failed dns_name=%s directory=%s err=%v\n",
+			cfg.DNSName, directory, err,
+		)
+		errs = append(errs, fmt.Errorf("%s: %w", directory, err))
+	}
+	return errors.Join(errs...)
+}
+
+// runDNS01Order executes one full DNS-01 ACME order against ONE CA, leaving
+// the cert in Cache when successful. All on-the-wire pieces (ACME directory,
 // Cloudflare API) go through cfg.HTTPClient so the same vsock-tunneled
 // transport works on AWS Nitro.
-func runDNS01Order(ctx context.Context, cfg DNS01Config) error {
-	// 1. Build or load the ACME account key. We share the same account
-	// key autocert stores in Cache under "acme_account+key" so DNS-01
-	// renewals and TLS-ALPN-01 renewals come from the same LE account
-	// (and share the per-account rate limits + history).
-	accountKey, err := loadOrCreateACMEAccountKey(ctx, cfg.Cache)
+func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
+	// 1. Build or load the ACME account key for THIS CA. The primary CA
+	// shares autocert's key ("acme_account+key") so DNS-01 and TLS-ALPN-01
+	// renewals come from one LE account (same rate limits + history);
+	// fallback CAs get their own key so account state never crosses CAs.
+	accountCacheKey := ca.AccountKeyCacheKey
+	if accountCacheKey == "" {
+		accountCacheKey = "acme_account+key"
+	}
+	accountKey, err := loadOrCreateACMEAccountKey(ctx, cfg.Cache, accountCacheKey)
 	if err != nil {
 		return fmt.Errorf("acme account key: %w", err)
 	}
@@ -184,14 +266,14 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config) error {
 		Key:        accountKey,
 		HTTPClient: cfg.HTTPClient,
 	}
-	if cfg.DirectoryURL != "" {
-		client.DirectoryURL = cfg.DirectoryURL
+	if ca.DirectoryURL != "" {
+		client.DirectoryURL = ca.DirectoryURL
 	}
 
 	// 2. Register / get account.
 	_, err = client.Register(ctx, &acme.Account{
 		Contact:                []string{"mailto:" + cfg.Email},
-		ExternalAccountBinding: cfg.ExternalAccountBinding,
+		ExternalAccountBinding: ca.EAB,
 	}, acme.AcceptTOS)
 	if err != nil && !errors.Is(err, acme.ErrAccountAlreadyExists) {
 		// Account-exists is fine; LE returns it on idempotent register.
@@ -295,12 +377,14 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config) error {
 	return nil
 }
 
-// loadOrCreateACMEAccountKey reads (or creates) the persisted account
-// key under the same cache key autocert uses ("acme_account+key").
-// Sharing the key means DNS-01 and TLS-ALPN-01 renewals come from a
-// single ACME account.
-func loadOrCreateACMEAccountKey(ctx context.Context, cache autocert.Cache) (*ecdsa.PrivateKey, error) {
-	raw, err := cache.Get(ctx, "acme_account+key")
+// loadOrCreateACMEAccountKey reads (or creates) the persisted account key
+// under the given cache key. The primary CA uses autocert's shared key
+// ("acme_account+key"); fallback CAs use a per-directory key so account
+// state and rate-limit history never cross CAs.
+func loadOrCreateACMEAccountKey(
+	ctx context.Context, cache autocert.Cache, cacheKey string,
+) (*ecdsa.PrivateKey, error) {
+	raw, err := cache.Get(ctx, cacheKey)
 	if errors.Is(err, autocert.ErrCacheMiss) {
 		key, gerr := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if gerr != nil {
@@ -314,7 +398,7 @@ func loadOrCreateACMEAccountKey(ctx context.Context, cache autocert.Cache) (*ecd
 		if err := pem.Encode(&buf, &pem.Block{Type: "EC PRIVATE KEY", Bytes: der}); err != nil {
 			return nil, fmt.Errorf("pem encode account key: %w", err)
 		}
-		if perr := cache.Put(ctx, "acme_account+key", buf.Bytes()); perr != nil {
+		if perr := cache.Put(ctx, cacheKey, buf.Bytes()); perr != nil {
 			return nil, fmt.Errorf("persist account key: %w", perr)
 		}
 		return key, nil

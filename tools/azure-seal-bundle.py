@@ -184,6 +184,7 @@ BINDINGS: tuple[Binding, ...] = (
         False,
     ),
     Binding(("QUILL_TRUSTEDROUTER_INTERNAL_SECRET",), "trustedrouter internal token", False),
+    Binding(("QUILL_ACME_FALLBACK_EAB_SECRET",), "acme fallback eab", False),
 )
 
 # Envelope constants. These MUST equal envelopeAlg / envelopeVersion /

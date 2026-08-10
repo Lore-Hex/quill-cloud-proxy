@@ -27,6 +27,19 @@ DEFAULT_HOSTS = (
     "status.uptimerouter.com",
     "trust.uptimerouter.com",
     "api.uptimerouter.com",
+    # Per-region gateway hostnames. The canonical names above rotate to
+    # whichever region is healthy, so a SINGLE region whose renewal stalled
+    # could run its cert to zero unalerted while every canonical probe
+    # stayed green — the region goes dark only when DNS finally sends
+    # someone there. Probe the regions directly (GCP regions publish
+    # api-<region>.quillrouter.com via the DNS reconciler; AWS/Azure use
+    # their cloud-scoped trustedrouter.com names).
+    "api-us-central1.quillrouter.com",
+    "api-us-east4.quillrouter.com",
+    "api-europe-west4.quillrouter.com",
+    "api-southamerica-east1.quillrouter.com",
+    "api-aws.trustedrouter.com",
+    "api-azure.trustedrouter.com",
 )
 
 
