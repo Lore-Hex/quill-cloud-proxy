@@ -234,7 +234,15 @@ QUILL_TRUSTEDROUTER_INTERNAL_SECRET="${QUILL_TRUSTEDROUTER_INTERNAL_SECRET:-trus
 # cache; the trade is a fresh Let's Encrypt issuance per container start,
 # and LE's duplicate-cert limit (5/week) would only bite under a restart
 # loop, which is a fault worth surfacing anyway.
-QUILL_ACME_CACHE_GCS_BUCKET="${QUILL_ACME_CACHE_GCS_BUCKET:-}"
+# The shared fleet cert cache — load-bearing THREE ways: (1) the DNS-01
+# renewer's start gate requires it; (2) a region serving a SHARED name it
+# does not own in DNS (SEA serving api-azure) can only get that cert FROM
+# this cache — TLS-ALPN-01 validation lands wherever DNS points, never
+# here; (3) the CA fallback writes into this cache so every replica picks
+# the cert up on the next handshake. Empty was another out-of-band-env
+# drift: the bring-up set it by hand, the script default lost it, and a
+# rebuild from the script silently regressed to per-container certs.
+QUILL_ACME_CACHE_GCS_BUCKET="${QUILL_ACME_CACHE_GCS_BUCKET:-quill-acme-cache}"
 # DNS-01 via Google Cloud DNS. Set both to let the enclave answer DNS-01, which
 # is the only route to a WILDCARD certificate — and a wildcard in the shared
 # cache is what takes issuance off the availability path for every region.
