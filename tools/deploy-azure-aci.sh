@@ -1687,28 +1687,53 @@ phase_verify() {
   # runtime dependency). Warn-not-die without gcloud: the deploy is still
   # good, the operator just has one manual record to fix, and the warning
   # names it.
+  # TRAFFIC-MANAGER-FRONTED NAMES ARE NOT RECONCILED TO CONTAINER IPS.
+  # api-azure.trustedrouter.com is a CNAME to trquill-azure-gw.trafficmanager.net
+  # (priority: Dubai, then Singapore; TCP:443 probes every 10s), which is what
+  # lets a deploy's DELETE+RECREATE stop costing regional downtime: TM marks
+  # the recreating region degraded within ~30s and Singapore serves api-azure
+  # from the shared cert cache. Reconciling this name to a container IP here
+  # would silently UNDO that failover on the next deploy — the exact
+  # out-of-band-vs-script drift this file keeps re-learning, in reverse.
+  local tm_target="${TRAFFIC_MANAGER_TARGET:-trquill-azure-gw.trafficmanager.net.}"
+  local tm_fronted="${TRAFFIC_MANAGER_FRONTED_HOSTS:-api-azure.trustedrouter.com}"
   local current_dns=""
   if command -v gcloud >/dev/null 2>&1; then
-    current_dns="$(gcloud dns record-sets describe "${API_HOST}." \
-      --project "${DNS_PROJECT:-quill-cloud-proxy}" --zone "${DNS_ZONE:-trustedrouter-com}" \
-      --type A --format 'value(rrdatas[0])' 2>/dev/null || true)"
-    if [ "$current_dns" = "$ip" ]; then
-      log "dns: ${API_HOST} already -> $ip"
-    elif [ -n "$current_dns" ]; then
-      log "dns: reconciling ${API_HOST} $current_dns -> $ip"
-      gcloud dns record-sets update "${API_HOST}." \
+    if [ "$API_HOST" = "$tm_fronted" ]; then
+      current_dns="$(gcloud dns record-sets describe "${API_HOST}." \
         --project "${DNS_PROJECT:-quill-cloud-proxy}" --zone "${DNS_ZONE:-trustedrouter-com}" \
-        --type A --ttl 120 --rrdatas "$ip" >/dev/null \
-        || dns_write_failed "update"
+        --type CNAME --format 'value(rrdatas[0])' 2>/dev/null || true)"
+      if [ "$current_dns" = "$tm_target" ]; then
+        log "dns: ${API_HOST} already CNAME -> $tm_target (traffic manager owns routing)"
+      else
+        log "dns: ${API_HOST} expected CNAME -> $tm_target but found '${current_dns:-nothing}'"
+        note "NOT auto-fixing a traffic-manager cutover from a deploy script:"
+        note "an A<->CNAME type change is a routing decision, not a reconcile."
+        note "Fix by hand (gcloud dns record-sets transaction) or set"
+        note "TRAFFIC_MANAGER_FRONTED_HOSTS='' to return this name to per-IP reconcile."
+      fi
     else
-      log "dns: creating ${API_HOST} -> $ip"
-      gcloud dns record-sets create "${API_HOST}." \
+      current_dns="$(gcloud dns record-sets describe "${API_HOST}." \
         --project "${DNS_PROJECT:-quill-cloud-proxy}" --zone "${DNS_ZONE:-trustedrouter-com}" \
-        --type A --ttl 120 --rrdatas "$ip" >/dev/null \
-        || dns_write_failed "create"
+        --type A --format 'value(rrdatas[0])' 2>/dev/null || true)"
+      if [ "$current_dns" = "$ip" ]; then
+        log "dns: ${API_HOST} already -> $ip"
+      elif [ -n "$current_dns" ]; then
+        log "dns: reconciling ${API_HOST} $current_dns -> $ip"
+        gcloud dns record-sets update "${API_HOST}." \
+          --project "${DNS_PROJECT:-quill-cloud-proxy}" --zone "${DNS_ZONE:-trustedrouter-com}" \
+          --type A --ttl 120 --rrdatas "$ip" >/dev/null \
+          || dns_write_failed "update"
+      else
+        log "dns: creating ${API_HOST} -> $ip"
+        gcloud dns record-sets create "${API_HOST}." \
+          --project "${DNS_PROJECT:-quill-cloud-proxy}" --zone "${DNS_ZONE:-trustedrouter-com}" \
+          --type A --ttl 120 --rrdatas "$ip" >/dev/null \
+          || dns_write_failed "create"
+      fi
     fi
   else
-    note "gcloud not found: update ${API_HOST} A -> $ip in Cloud DNS yourself, or TLS stays dark"
+    note "gcloud not found: verify ${API_HOST} DNS in Cloud DNS yourself, or TLS stays dark"
   fi
 
   # ASSERT THE RECORD, DO NOT ASSUME IT.
@@ -1736,6 +1761,18 @@ phase_verify() {
     fi
   }
 
+  # A traffic-manager-fronted name resolves to whichever region TM currently
+  # prefers — during a Dubai deploy that is legitimately SINGAPORE'S address.
+  # Asserting it equals THIS group's IP would fail every deploy the failover
+  # correctly absorbs, so for TM names assert "resolves to something" and let
+  # the serving wait below (which dials the name) prove the path end-to-end.
+  if [ "$API_HOST" = "$tm_fronted" ]; then
+    resolved="$(resolve_api_host || true)"
+    if [ -n "$resolved" ]; then
+      log "dns: $API_HOST resolves via traffic manager to $resolved (either region is correct)"
+      ip="$resolved"
+    fi
+  else
   resolved="$(resolve_api_host || true)"
   while [ -n "$resolved" ] && [ "$resolved" != "$ip" ] && [ "$dns_waited" -lt "${DNS_PROPAGATION_TIMEOUT:-300}" ]; do
     log "dns: $API_HOST still resolves to $resolved, waiting for $ip (${dns_waited}s)"
@@ -1743,6 +1780,7 @@ phase_verify() {
     dns_waited=$((dns_waited + 15))
     resolved="$(resolve_api_host || true)"
   done
+  fi
 
   if [ -z "$resolved" ]; then
     note "could not resolve $API_HOST locally (no dig/host, or the record is brand new)."
