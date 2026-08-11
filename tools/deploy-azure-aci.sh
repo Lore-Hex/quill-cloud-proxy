@@ -238,8 +238,15 @@ QUILL_ACME_CACHE_GCS_BUCKET="${QUILL_ACME_CACHE_GCS_BUCKET:-}"
 # DNS-01 via Google Cloud DNS. Set both to let the enclave answer DNS-01, which
 # is the only route to a WILDCARD certificate — and a wildcard in the shared
 # cache is what takes issuance off the availability path for every region.
-QUILL_ACME_DNS_GCP_PROJECT="${QUILL_ACME_DNS_GCP_PROJECT:-}"
-QUILL_ACME_DNS_MANAGED_ZONE="${QUILL_ACME_DNS_MANAGED_ZONE:-}"
+# Cloud DNS provider for the DNS-01 renewer. Without these the renewer —
+# which carries BOTH the CA-fallback ordering and the eager GTS account
+# registration — never starts on Azure, so the sealed EAB was cargo until
+# now ("configured but not working"). The zone lives in GCP Cloud DNS and
+# the enclave writes it with its bundle SA (tr-azure-acme-cache@), which
+# needs zone-scoped roles/dns.admin on trustedrouter-com — an IAM grant,
+# deliberately OUTSIDE the measurement, so completing it needs no release.
+QUILL_ACME_DNS_GCP_PROJECT="${QUILL_ACME_DNS_GCP_PROJECT:-quill-cloud-proxy}"
+QUILL_ACME_DNS_MANAGED_ZONE="${QUILL_ACME_DNS_MANAGED_ZONE:-trustedrouter-com}"
 QUILL_ACME_EMAIL="${QUILL_ACME_EMAIL:-acme-azure-${LOCATION}@trustedrouter.com}"
 QUILL_FIRST_BYTE_TIMEOUT_SECONDS="${QUILL_FIRST_BYTE_TIMEOUT_SECONDS:-20}"
 QUILL_HEALTH_PORT="${QUILL_HEALTH_PORT:-8081}"
