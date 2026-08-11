@@ -195,17 +195,16 @@ QUILL_ACME_CACHE_GCS_BUCKET="${QUILL_ACME_CACHE_GCS_BUCKET:-quill-acme-cache}"
 # keys are single-use and expire ~7 days unused, so mint at rollout).
 ACME_DNS_GCP_PROJECT="${ACME_DNS_GCP_PROJECT:-quill-cloud-proxy}"
 ACME_DNS_MANAGED_ZONE="${ACME_DNS_MANAGED_ZONE:-trustedrouter-com}"
-# EMPTY defaults on purpose: bootstrap FAILS HARD on a set-but-missing
-# secret (the right behavior for provider keys), so defaulting these before
-# the secret exists would brick the next deploy. ACTIVATION, once the
-# Public CA API is enabled and the EAB minted into Secret Manager as
-# "<kid>:<hmac>" under trustedrouter-acme-gts-eab:
-#   ACME_FALLBACK_DIRECTORY_URL=https://dv.acme-v02.api.pki.goog/directory
-#   ACME_FALLBACK_EAB_SECRET=trustedrouter-acme-gts-eab
-# — then flip these defaults in THIS file (config-as-code, not a hand-set
-# env), so the fallback can never silently rot out of the deploy.
-ACME_FALLBACK_DIRECTORY_URL="${ACME_FALLBACK_DIRECTORY_URL:-}"
-ACME_FALLBACK_EAB_SECRET="${ACME_FALLBACK_EAB_SECRET:-}"
+# ACTIVATED 2026-08-11: trustedrouter-acme-gts-eab exists in Secret Manager
+# ("<kid>:<hmac>", minted via `gcloud publicca external-account-keys create`)
+# and quill-workload@ holds secretAccessor on exactly that secret. Because
+# bootstrap FAILS HARD on a set-but-missing/unreadable secret, a healthy
+# rollout of this template is itself positive proof the fallback EAB
+# resolves — no separate "is it wired" check can silently pass while the
+# real thing is broken. If GTS ever needs a fresh EAB (keys are single-use
+# per ACME account), mint a new version into the SAME secret name.
+ACME_FALLBACK_DIRECTORY_URL="${ACME_FALLBACK_DIRECTORY_URL:-https://dv.acme-v02.api.pki.goog/directory}"
+ACME_FALLBACK_EAB_SECRET="${ACME_FALLBACK_EAB_SECRET:-trustedrouter-acme-gts-eab}"
 TR_CONTROL_PLANE_BASE_URL="${TR_CONTROL_PLANE_BASE_URL:-https://trustedrouter.com}"
 # Time-to-first-byte budget per upstream attempt before the enclave cancels
 # and fails over. Default bumped 8s -> 20s on 2026-06-04: ~16 real Novita
