@@ -243,7 +243,20 @@ QUILL_ACME_DNS_MANAGED_ZONE="${QUILL_ACME_DNS_MANAGED_ZONE:-}"
 QUILL_ACME_EMAIL="${QUILL_ACME_EMAIL:-acme-azure-${LOCATION}@trustedrouter.com}"
 QUILL_FIRST_BYTE_TIMEOUT_SECONDS="${QUILL_FIRST_BYTE_TIMEOUT_SECONDS:-20}"
 QUILL_HEALTH_PORT="${QUILL_HEALTH_PORT:-8081}"
-TR_CONTROL_PLANE_BASE_URL="${TR_CONTROL_PLANE_BASE_URL:-https://trustedrouter.com}"
+# TWO PLANES, azure first. The live containers have carried this ordered
+# list since the Azure control plane went up, but the default here still
+# said home-only — exactly the out-of-band drift the header forbids. The
+# enclave's postToFirstDialable walks the list in order, so the Azure plane
+# serves normally and a dead Azure plane fails over to home in-process.
+TR_CONTROL_PLANE_BASE_URL="${TR_CONTROL_PLANE_BASE_URL:-https://azure.trustedrouter.com/v1,https://trustedrouter.com/v1}"
+# Fallback ACME CA (task #56, Azure leg). Directory is plain env (measured,
+# not secret); the EAB value rides the SEALED BUNDLE under the entry named
+# by QUILL_ACME_FALLBACK_EAB_SECRET (azure-seal-bundle.py binding). By the
+# time this ships, the fleet's GTS account is already durably registered
+# (eager pre-registration + shared account-key cache), so the sealed EAB is
+# belt-and-suspenders for a cold re-registration.
+QUILL_ACME_FALLBACK_DIRECTORY_URL="${QUILL_ACME_FALLBACK_DIRECTORY_URL:-https://dv.acme-v02.api.pki.goog/directory}"
+QUILL_ACME_FALLBACK_EAB_SECRET="${QUILL_ACME_FALLBACK_EAB_SECRET:-trustedrouter-acme-gts-eab}"
 # Unset = follow "current", which is substitutable and rollback-able. See the
 # header. warn_unpinned_bundle() says so on every run.
 QUILL_AZURE_BUNDLE_VERSION="${QUILL_AZURE_BUNDLE_VERSION:-}"
@@ -450,6 +463,10 @@ env = {
     "QUILL_HEALTH_PORT":                os.environ["QUILL_HEALTH_PORT"],
     "QUILL_FIRST_BYTE_TIMEOUT_SECONDS": os.environ["QUILL_FIRST_BYTE_TIMEOUT_SECONDS"],
     "TR_CONTROL_PLANE_BASE_URL":        os.environ["TR_CONTROL_PLANE_BASE_URL"],
+    # Fallback ACME CA: directory is a coordinate; the EAB env is the NAME
+    # of a sealed-bundle entry, never a value (same rule as every secret).
+    "QUILL_ACME_FALLBACK_DIRECTORY_URL": os.environ["QUILL_ACME_FALLBACK_DIRECTORY_URL"],
+    "QUILL_ACME_FALLBACK_EAB_SECRET":    os.environ["QUILL_ACME_FALLBACK_EAB_SECRET"],
 }
 
 # Every QUILL_*_SECRET this deploy configures. Order is irrelevant to the
@@ -505,6 +522,7 @@ PY
 export MAA_ENDPOINT VAULT SKR_KEY BUNDLE_SECRET SA_KEY_ENTRY LOCATION API_HOST EXTRA_API_HOSTS \
   QUILL_GCP_PROJECT_ID QUILL_DEVICE_KEYS_SECRET QUILL_ACME_EMAIL \
   QUILL_ACME_CACHE_GCS_BUCKET QUILL_ACME_DNS_GCP_PROJECT QUILL_ACME_DNS_MANAGED_ZONE QUILL_HEALTH_PORT QUILL_FIRST_BYTE_TIMEOUT_SECONDS \
+  QUILL_ACME_FALLBACK_DIRECTORY_URL QUILL_ACME_FALLBACK_EAB_SECRET \
   TR_CONTROL_PLANE_BASE_URL QUILL_AZURE_BUNDLE_VERSION \
   QUILL_OPENROUTER_SECRET QUILL_ANTHROPIC_SECRET QUILL_OPENAI_SECRET \
   QUILL_ALIBABA_SECRET QUILL_ATLAS_CLOUD_SECRET QUILL_CHUTES_SECRET \

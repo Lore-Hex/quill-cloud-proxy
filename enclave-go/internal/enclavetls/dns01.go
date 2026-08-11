@@ -141,6 +141,15 @@ func StartDNS01Renewer(ctx context.Context, cfg DNS01Config) {
 	}
 
 	go func() {
+		// Fallback-CA accounts register EAGERLY, not at first outage: GTS
+		// EAB keys expire ~7 days after minting if unused, and the fallback
+		// only orders when LE is already down — which would mean discovering
+		// an expired EAB at the exact moment it was needed. Registering now
+		// converts the short-fuse EAB into a durable CA account (shared via
+		// the account-key cache, so one success covers the whole fleet).
+		// Retried each tick until it succeeds; never blocks renewal.
+		registered := preRegisterFallbackCAs(ctx, cfg, false)
+
 		// One-shot check on startup so a deploy during an active
 		// outage doesn't have to wait one tick.
 		if err := maybeRenewDNS01(ctx, cfg); err != nil {
@@ -153,6 +162,7 @@ func StartDNS01Renewer(ctx context.Context, cfg DNS01Config) {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
+				registered = preRegisterFallbackCAs(ctx, cfg, registered)
 				if err := maybeRenewDNS01(ctx, cfg); err != nil {
 					fmt.Fprintf(maybeStderr, "dns01_renewer.check_failed err=%v\n", err)
 				}
@@ -199,6 +209,59 @@ func maybeRenewDNS01(ctx context.Context, cfg DNS01Config) error {
 		cfg.DNSName, timeLeft.Hours(),
 	)
 	return runDNS01Orders(ctx, cfg)
+}
+
+// registerCA registers (or confirms) the ACME account for one CA. Indirect
+// for the same reason as orderCA below.
+var registerCA = registerFallbackAccount
+
+func registerFallbackAccount(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
+	accountCacheKey := ca.AccountKeyCacheKey
+	if accountCacheKey == "" {
+		accountCacheKey = "acme_account+key"
+	}
+	accountKey, err := loadOrCreateACMEAccountKey(ctx, cfg.Cache, accountCacheKey)
+	if err != nil {
+		return fmt.Errorf("acme account key: %w", err)
+	}
+	client := &acme.Client{Key: accountKey, HTTPClient: cfg.HTTPClient}
+	if ca.DirectoryURL != "" {
+		client.DirectoryURL = ca.DirectoryURL
+	}
+	_, err = client.Register(ctx, &acme.Account{
+		Contact:                []string{"mailto:" + cfg.Email},
+		ExternalAccountBinding: ca.EAB,
+	}, acme.AcceptTOS)
+	if err != nil && !errors.Is(err, acme.ErrAccountAlreadyExists) {
+		return err
+	}
+	return nil
+}
+
+// preRegisterFallbackCAs registers every fallback CA account once. Returns
+// true when all succeeded (callers stop retrying); a failure is logged and
+// retried on the next renewer tick. Success is fleet-wide durable: the
+// account key lives in the shared cache, so replicas and other clouds that
+// register the same key get ErrAccountAlreadyExists, EAB no longer needed.
+func preRegisterFallbackCAs(ctx context.Context, cfg DNS01Config, alreadyDone bool) bool {
+	if alreadyDone || len(cfg.FallbackCAs) == 0 {
+		return true
+	}
+	done := true
+	for _, ca := range cfg.FallbackCAs {
+		if err := registerCA(ctx, cfg, ca); err != nil {
+			fmt.Fprintf(maybeStderr,
+				"dns01_renewer.fallback_preregister_failed directory=%s err=%v\n",
+				ca.DirectoryURL, err,
+			)
+			done = false
+			continue
+		}
+		fmt.Fprintf(maybeStderr,
+			"dns01_renewer.fallback_preregistered directory=%s\n", ca.DirectoryURL,
+		)
+	}
+	return done
 }
 
 // orderCA is the per-CA order function, indirect so tests can exercise the

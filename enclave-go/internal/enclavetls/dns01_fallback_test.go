@@ -124,3 +124,39 @@ func TestAccountKeyCacheKeyForDirectoryIsHostScoped(t *testing.T) {
 		t.Fatalf("unexpected cache key: %q", got)
 	}
 }
+
+func TestPreRegisterRetriesUntilSuccessThenStops(t *testing.T) {
+	var calls int
+	previous := registerCA
+	registerCA = func(_ context.Context, _ DNS01Config, _ DNS01CA) error {
+		calls++
+		if calls == 1 {
+			return errors.New("directory unreachable")
+		}
+		return nil
+	}
+	t.Cleanup(func() { registerCA = previous })
+
+	cfg := DNS01Config{
+		DNSName:     "api.trustedrouter.com",
+		FallbackCAs: []DNS01CA{{DirectoryURL: "https://dv.acme-v02.api.pki.goog/directory"}},
+	}
+	if preRegisterFallbackCAs(context.Background(), cfg, false) {
+		t.Fatal("first attempt failed; must report not-done so the tick retries")
+	}
+	if !preRegisterFallbackCAs(context.Background(), cfg, false) {
+		t.Fatal("second attempt succeeded; must report done")
+	}
+	if !preRegisterFallbackCAs(context.Background(), cfg, true) {
+		t.Fatal("alreadyDone must short-circuit")
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 register calls (fail, succeed, then stop), got %d", calls)
+	}
+}
+
+func TestPreRegisterNoFallbacksIsDone(t *testing.T) {
+	if !preRegisterFallbackCAs(context.Background(), DNS01Config{}, false) {
+		t.Fatal("no fallback CAs must report done immediately")
+	}
+}
