@@ -7318,6 +7318,80 @@ func TestServeOneMessagesRejectsUnsupportedNBeforeTrustedRouterAuthorization(t *
 	}
 }
 
+func TestServeOneMessagesRejectsOrchestrationBeforeTrustedRouterAuthorization(t *testing.T) {
+	models := []string{
+		trustedRouterSynthModel,
+		trustedRouterFusionModel,
+		trustedRouterSelectorModel,
+		trustedRouterMapReduceModel,
+		trustedRouterAdvisorModel,
+		trustedRouterSubagentModel,
+		trustedRouterSocratesModel,
+	}
+	for _, model := range models {
+		t.Run(model, func(t *testing.T) {
+			var controlPlaneCalls int
+			trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
+				Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					controlPlaneCalls++
+					return &http.Response{
+						StatusCode: http.StatusInternalServerError,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(strings.NewReader("unexpected control-plane call")),
+					}, nil
+				}),
+			})
+			serverConn, client := net.Pipe()
+			defer client.Close()
+			go serveOne(context.Background(), serverConn, auth.New(nil), &panicStreamingLLM{t: t}, nil, nil, trGateway, nil)
+
+			requestBody, err := json.Marshal(map[string]any{
+				"model":      model,
+				"max_tokens": 32,
+				"messages": []map[string]string{{
+					"role":    "user",
+					"content": "private prompt",
+				}},
+			})
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			_, err = fmt.Fprintf(
+				client,
+				"POST /v1/messages HTTP/1.1\r\nx-api-key: test-user-bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+				len(requestBody),
+				requestBody,
+			)
+			if err != nil {
+				t.Fatalf("write request: %v", err)
+			}
+
+			resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if resp.StatusCode != http.StatusNotImplemented {
+				t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+			}
+			if !bytes.Contains(body, []byte(`"type":"api_error"`)) ||
+				!bytes.Contains(body, []byte("/v1/chat/completions or /v1/responses")) {
+				t.Fatalf("unexpected Messages error: %s", body)
+			}
+			if bytes.Contains(body, []byte("private prompt")) {
+				t.Fatalf("error leaked prompt: %s", body)
+			}
+			if controlPlaneCalls != 0 {
+				t.Fatalf("control-plane calls = %d, want none", controlPlaneCalls)
+			}
+		})
+	}
+}
+
 func TestServeOneMessagesNonStreamingReturnsEnvelopeAndSettles(t *testing.T) {
 	bearer := "test-user-bearer"
 	var settleBody string

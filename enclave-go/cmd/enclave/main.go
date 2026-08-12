@@ -1329,6 +1329,21 @@ func serveMessages(
 		writeAnthropicError(conn, 400, err.Error())
 		return
 	}
+	// Orchestration primitives currently emit OpenAI/Responses envelopes. Do
+	// not forward their public aliases to the control-plane route selector: it
+	// must fail closed rather than silently reducing an orchestration request to
+	// one model, and the resulting intentional 501 used to look like an internal
+	// billing outage. Reject at the public endpoint before authorization so no
+	// hold is created and the caller receives the native Messages error shape.
+	if isOrchestrationModel(req.Model) || isGenericAdvisorPrimitive(req.Model) {
+		fmt.Fprintf(os.Stderr,
+			"enclave.messages_orchestration_unsupported request_log_id=%q model=%q\n",
+			requestLogID,
+			req.Model,
+		)
+		writeAnthropicError(conn, 501, "TrustedRouter orchestration models are not supported by the Anthropic Messages API; use /v1/chat/completions or /v1/responses")
+		return
+	}
 	if err := adapter.RejectUnsupportedN(req); err != nil {
 		var aerr *adapter.AdapterError
 		if asAdapterErr(err, &aerr) {
