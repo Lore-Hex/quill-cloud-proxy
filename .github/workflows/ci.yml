@@ -125,7 +125,8 @@ jobs:
           fi
       - name: Assert trust page declares its canonical host
         run: |
-          test "$(grep -Fc '<link rel="canonical" href="https://trust.trustedrouter.com/">' trust-page/index.html)" -eq 1
+          test "$(grep -Fc '<link rel="canonical" href="https://trustedrouter.com/trust">' trust-page/index.html)" -eq 1
+          test "$(grep -Fc '<link rel="canonical" href="https://trust.trustedrouter.com/">' trust-page/index.html)" -eq 0
       - name: Assert trust page contains no third-party fetches
         run: |
           # Allowlist:
