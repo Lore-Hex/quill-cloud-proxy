@@ -176,6 +176,12 @@ func TestVertexGeminiUsesMinimalThinkingForFlashTextModels(t *testing.T) {
 	if got := vertexGeminiThinkingConfig("gemini-3.5-flash", nil); got["thinkingLevel"] != "minimal" {
 		t.Fatalf("gemini-3.5-flash thinkingConfig = %#v", got)
 	}
+	if got := vertexGeminiThinkingConfig("gemini-3.6-flash", nil); got["thinkingLevel"] != "minimal" {
+		t.Fatalf("gemini-3.6-flash thinkingConfig = %#v", got)
+	}
+	if got := vertexGeminiThinkingConfig("gemini-3.7-flash", nil); got["thinkingLevel"] != "low" {
+		t.Fatalf("gemini-3.7-flash thinkingConfig = %#v", got)
+	}
 	if got := vertexGeminiThinkingConfig("gemini-3.1-pro-preview", nil); got != nil {
 		t.Fatalf("gemini pro should not change thinking by default: %#v", got)
 	}

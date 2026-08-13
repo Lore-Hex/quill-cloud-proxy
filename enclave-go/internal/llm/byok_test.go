@@ -178,6 +178,11 @@ func TestBuildGoogleAIStudioRequestUsesCostConsciousFlashReasoningDefaults(t *te
 			model:  "gemini-3.6-flash",
 			effort: "minimal",
 		},
+		{
+			name:   "Gemini 3.7 Flash uses low thinking",
+			model:  "gemini-3.7-flash",
+			effort: "low",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -228,6 +233,39 @@ func TestBuildGoogleAIStudioRequestPreservesExplicitReasoningAndImageDefaults(t 
 	if pro.ReasoningEffort != "" {
 		t.Fatalf("pro reasoning_effort = %q, want empty", pro.ReasoningEffort)
 	}
+}
+
+func TestBuildGoogleAIStudioRequestNormalizesGemini37MinimalThinking(t *testing.T) {
+	t.Run("top-level effort", func(t *testing.T) {
+		got := buildOpenAICompatibleRequest(
+			"google-ai-studio",
+			"gemini-3.7-flash",
+			&qtypes.OpenAIChatRequest{ReasoningEffort: "minimal"},
+			&qtypes.AnthropicMessagesRequest{},
+			nil,
+		)
+		if got.ReasoningEffort != "low" {
+			t.Fatalf("reasoning_effort = %q, want low", got.ReasoningEffort)
+		}
+	})
+
+	t.Run("reasoning object without mutating caller", func(t *testing.T) {
+		original := map[string]any{"effort": "minimal", "exclude": true}
+		got := buildOpenAICompatibleRequest(
+			"google-ai-studio",
+			"gemini-3.7-flash",
+			&qtypes.OpenAIChatRequest{Reasoning: original},
+			&qtypes.AnthropicMessagesRequest{},
+			nil,
+		)
+		reasoning := got.Reasoning.(map[string]any)
+		if reasoning["effort"] != "low" || reasoning["exclude"] != true {
+			t.Fatalf("reasoning = %#v, want low effort and preserved fields", reasoning)
+		}
+		if original["effort"] != "minimal" {
+			t.Fatalf("caller reasoning mutated: %#v", original)
+		}
+	})
 }
 
 func TestBuildEngyQwenRequestDisablesThinkingForVisibleOutput(t *testing.T) {

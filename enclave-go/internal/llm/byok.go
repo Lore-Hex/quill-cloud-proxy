@@ -367,6 +367,12 @@ func buildOpenAICompatibleRequest(
 	if effort := googleAIStudioDefaultReasoningEffort(provider, upstreamID, req, body); effort != "" {
 		reqBody.ReasoningEffort = effort
 	}
+	reqBody.ReasoningEffort = googleAIStudioCompatibleReasoningEffort(
+		provider,
+		upstreamID,
+		reqBody.ReasoningEffort,
+	)
+	reqBody.Reasoning = googleAIStudioCompatibleReasoning(provider, upstreamID, reqBody.Reasoning)
 	// Engy's Qwen 3.6 endpoint otherwise returns its complete answer only in
 	// reasoning_content while leaving message.content empty. Disable thinking
 	// at the provider chat-template boundary so ordinary OpenAI clients receive
@@ -406,13 +412,47 @@ func googleAIStudioDefaultReasoningEffort(
 		// caller's entire max_tokens budget in hidden thinking.
 		return "none"
 	case strings.HasPrefix(model, "gemini-3"):
-		// Gemini 3 Flash supports the cost-conscious "minimal" level.
-		// Preserve the model's quality-oriented default for Pro and any
-		// explicit caller reasoning setting.
-		return "minimal"
+		return geminiFlashDefaultThinkingLevel(model)
 	default:
 		return ""
 	}
+}
+
+func googleAIStudioCompatibleReasoningEffort(provider, modelID, effort string) string {
+	normalizedProvider := normalizeDirectProvider(provider)
+	if normalizedProvider != "google-ai-studio" && normalizedProvider != "gemini" {
+		return effort
+	}
+	if !geminiVersionAtLeast(modelID, 3, 7) {
+		return effort
+	}
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "none", "off", "disable", "disabled", "minimal":
+		return "low"
+	default:
+		return effort
+	}
+}
+
+func googleAIStudioCompatibleReasoning(provider, modelID string, reasoning any) any {
+	values, ok := reasoning.(map[string]any)
+	if !ok {
+		return reasoning
+	}
+	effort, ok := values["effort"].(string)
+	if !ok {
+		return reasoning
+	}
+	normalized := googleAIStudioCompatibleReasoningEffort(provider, modelID, effort)
+	if normalized == effort {
+		return reasoning
+	}
+	result := make(map[string]any, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	result["effort"] = normalized
+	return result
 }
 
 func openAICompatibleTemperature(provider, modelID string, temperature *float64) *float64 {
