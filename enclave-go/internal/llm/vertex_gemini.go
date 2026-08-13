@@ -411,7 +411,7 @@ func vertexGeminiThinkingConfig(modelID string, req *qtypes.OpenAIChatRequest) m
 	if is25 {
 		return map[string]any{"thinkingBudget": 0}
 	}
-	return map[string]any{"thinkingLevel": "minimal"}
+	return map[string]any{"thinkingLevel": geminiFlashDefaultThinkingLevel(modelID)}
 }
 
 // vertexGeminiThinkingBudget reads an explicit thinking-token budget from the
