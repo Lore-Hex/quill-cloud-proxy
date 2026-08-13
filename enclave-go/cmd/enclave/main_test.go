@@ -883,11 +883,27 @@ func TestServeOneResponsesRejectsUnsupportedNBeforeTrustedRouterAuthorization(t 
 	bearer := "test-user-bearer"
 	calls := map[string]int{}
 	var mu sync.Mutex
+	validated := make(chan struct{}, 1)
 	trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read control-plane body: %v", err)
+			}
 			mu.Lock()
 			calls[r.URL.Path]++
 			mu.Unlock()
+			if r.URL.Path == "/internal/gateway/validate" {
+				if strings.Contains(string(body), bearer) || strings.Contains(string(body), "private prompt") {
+					t.Fatalf("validation leaked credential or prompt: %s", body)
+				}
+				validated <- struct{}{}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"data":{"workspace_id":"ws_rejected","api_key_hash":"key_rejected"}}`)),
+				}, nil
+			}
 			return &http.Response{
 				StatusCode: http.StatusInternalServerError,
 				Header:     make(http.Header),
@@ -936,11 +952,16 @@ func TestServeOneResponsesRejectsUnsupportedNBeforeTrustedRouterAuthorization(t 
 	if decoded.Error.Message != "n>1 is not supported" || decoded.Error.Param != "n" {
 		t.Fatalf("bad unsupported n error: %#v body=%s", decoded.Error, body)
 	}
+	select {
+	case <-validated:
+	case <-time.After(time.Second):
+		t.Fatal("metadata-only identity validation was not called")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(calls) != 0 {
-		t.Fatalf("control-plane calls = %#v, want none", calls)
+	if len(calls) != 1 || calls["/internal/gateway/validate"] != 1 {
+		t.Fatalf("control-plane calls = %#v, want one metadata-only validation", calls)
 	}
 }
 
@@ -1165,11 +1186,27 @@ func TestServeOneRejectsUnsupportedNBeforeTrustedRouterAuthorization(t *testing.
 	bearer := "test-user-bearer"
 	calls := map[string]int{}
 	var mu sync.Mutex
+	validated := make(chan struct{}, 1)
 	trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read control-plane body: %v", err)
+			}
 			mu.Lock()
 			calls[r.URL.Path]++
 			mu.Unlock()
+			if r.URL.Path == "/internal/gateway/validate" {
+				if strings.Contains(string(body), bearer) || strings.Contains(string(body), "private prompt") {
+					t.Fatalf("validation leaked credential or prompt: %s", body)
+				}
+				validated <- struct{}{}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"data":{"workspace_id":"ws_rejected","api_key_hash":"key_rejected"}}`)),
+				}, nil
+			}
 			return &http.Response{
 				StatusCode: http.StatusInternalServerError,
 				Header:     make(http.Header),
@@ -1218,11 +1255,16 @@ func TestServeOneRejectsUnsupportedNBeforeTrustedRouterAuthorization(t *testing.
 	if decoded.Error.Message != "n>1 is not supported" || decoded.Error.Param != "n" {
 		t.Fatalf("bad unsupported n error: %#v body=%s", decoded.Error, body)
 	}
+	select {
+	case <-validated:
+	case <-time.After(time.Second):
+		t.Fatal("metadata-only identity validation was not called")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(calls) != 0 {
-		t.Fatalf("control-plane calls = %#v, want none", calls)
+	if len(calls) != 1 || calls["/internal/gateway/validate"] != 1 {
+		t.Fatalf("control-plane calls = %#v, want one metadata-only validation", calls)
 	}
 }
 
@@ -3500,10 +3542,26 @@ func TestServeOneTrustedRouterFusionRejectsUnsupportedExtensionToolNamespaces(t 
 	bearer := "test-user-bearer"
 	for _, toolType := range []string{"openrouter:fusion", "trustedrouter:exa"} {
 		t.Run(toolType, func(t *testing.T) {
-			var authorizeCalled bool
+			validated := make(chan struct{}, 1)
+			calls := map[string]int{}
+			var mu sync.Mutex
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				authorizeCalled = true
-				t.Fatalf("control plane should not be called for rejected tool namespace")
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read control-plane body: %v", err)
+				}
+				mu.Lock()
+				calls[r.URL.Path]++
+				mu.Unlock()
+				if r.URL.Path != "/internal/gateway/validate" {
+					http.Error(w, "unexpected billing call", http.StatusInternalServerError)
+					return
+				}
+				if strings.Contains(string(body), bearer) || strings.Contains(string(body), "private prompt") {
+					t.Fatalf("validation leaked credential or prompt: %s", body)
+				}
+				validated <- struct{}{}
+				_, _ = fmt.Fprint(w, `{"data":{"workspace_id":"ws_rejected","api_key_hash":"key_rejected"}}`)
 			}))
 			defer server.Close()
 
@@ -3539,8 +3597,15 @@ func TestServeOneTrustedRouterFusionRejectsUnsupportedExtensionToolNamespaces(t 
 			if !strings.Contains(body, "not_supported_in_alpha") || strings.Contains(body, "private prompt") {
 				t.Fatalf("bad namespace rejection body: %s", body)
 			}
-			if authorizeCalled {
-				t.Fatal("authorize was called")
+			select {
+			case <-validated:
+			case <-time.After(time.Second):
+				t.Fatal("metadata-only identity validation was not called")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(calls) != 1 || calls["/internal/gateway/validate"] != 1 {
+				t.Fatalf("control-plane calls = %#v, want one metadata-only validation", calls)
 			}
 		})
 	}
@@ -6802,6 +6867,89 @@ func TestServeOneResponsesRejectsUnsupportedTools(t *testing.T) {
 	}
 }
 
+func TestServeOnePreAuthorization501ResolvesWorkspaceWithoutBillingHold(t *testing.T) {
+	bearer := "test-user-bearer"
+	validationCalls := make(chan map[string]any, 1)
+	unexpectedPaths := make(chan string, 1)
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/internal/gateway/validate" {
+			unexpectedPaths <- request.URL.Path
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			unexpectedPaths <- "read-error"
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if bytes.Contains(body, []byte(bearer)) || bytes.Contains(body, []byte("private response input")) {
+			unexpectedPaths <- "sensitive-body"
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			unexpectedPaths <- "decode-error"
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		validationCalls <- payload
+		_, _ = io.WriteString(w, `{"data":{"workspace_id":"ws-error-owner","api_key_hash":"stored-error-key"}}`)
+	}))
+	defer controlPlane.Close()
+
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	go serveOne(
+		context.Background(),
+		serverConn,
+		auth.New(nil),
+		&panicStreamingLLM{t: t},
+		nil,
+		nil,
+		trustedrouter.New(controlPlane.URL, "internal", controlPlane.Client()),
+		nil,
+	)
+
+	requestBody := []byte(`{"model":"claude-sonnet-4-6","input":"private response input","store":true}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		bearer,
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if response.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("status = %d body=%s", response.StatusCode, body)
+	}
+
+	select {
+	case path := <-unexpectedPaths:
+		t.Fatalf("unexpected control-plane request: %s", path)
+	case payload := <-validationCalls:
+		if payload["api_key_lookup_hash"] != trustedrouter.LookupHash(bearer) {
+			t.Fatalf("lookup hash = %#v", payload["api_key_lookup_hash"])
+		}
+		if payload["route_type"] != "/v1/responses" {
+			t.Fatalf("route type = %#v", payload["route_type"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("error request did not perform metadata-only workspace attribution")
+	}
+}
+
 func TestServeOneResponsesInputTokensCountsLocally(t *testing.T) {
 	bearer := "test-bearer"
 	digest := sha256.Sum256([]byte(bearer))
@@ -7258,11 +7406,27 @@ func TestServeOneMessagesRejectsUnsupportedNBeforeTrustedRouterAuthorization(t *
 	bearer := "test-user-bearer"
 	calls := map[string]int{}
 	var mu sync.Mutex
+	validated := make(chan struct{}, 1)
 	trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read control-plane body: %v", err)
+			}
 			mu.Lock()
 			calls[r.URL.Path]++
 			mu.Unlock()
+			if r.URL.Path == "/internal/gateway/validate" {
+				if strings.Contains(string(body), bearer) || strings.Contains(string(body), "private prompt") {
+					t.Fatalf("validation leaked credential or prompt: %s", body)
+				}
+				validated <- struct{}{}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"data":{"workspace_id":"ws_rejected","api_key_hash":"key_rejected"}}`)),
+				}, nil
+			}
 			return &http.Response{
 				StatusCode: http.StatusInternalServerError,
 				Header:     make(http.Header),
@@ -7310,11 +7474,16 @@ func TestServeOneMessagesRejectsUnsupportedNBeforeTrustedRouterAuthorization(t *
 	if decoded.Error.Message != "n>1 is not supported" {
 		t.Fatalf("bad unsupported n error: %#v body=%s", decoded.Error, body)
 	}
+	select {
+	case <-validated:
+	case <-time.After(time.Second):
+		t.Fatal("metadata-only identity validation was not called")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(calls) != 0 {
-		t.Fatalf("control-plane calls = %#v, want none", calls)
+	if len(calls) != 1 || calls["/internal/gateway/validate"] != 1 {
+		t.Fatalf("control-plane calls = %#v, want one metadata-only validation", calls)
 	}
 }
 
@@ -7330,10 +7499,29 @@ func TestServeOneMessagesRejectsOrchestrationBeforeTrustedRouterAuthorization(t 
 	}
 	for _, model := range models {
 		t.Run(model, func(t *testing.T) {
-			var controlPlaneCalls int
+			validated := make(chan struct{}, 1)
+			calls := map[string]int{}
+			var mu sync.Mutex
 			trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
 				Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-					controlPlaneCalls++
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Fatalf("read control-plane body: %v", err)
+					}
+					mu.Lock()
+					calls[r.URL.Path]++
+					mu.Unlock()
+					if r.URL.Path == "/internal/gateway/validate" {
+						if strings.Contains(string(body), "test-user-bearer") || strings.Contains(string(body), "private prompt") {
+							t.Fatalf("validation leaked credential or prompt: %s", body)
+						}
+						validated <- struct{}{}
+						return &http.Response{
+							StatusCode: http.StatusOK,
+							Header:     make(http.Header),
+							Body:       io.NopCloser(strings.NewReader(`{"data":{"workspace_id":"ws_rejected","api_key_hash":"key_rejected"}}`)),
+						}, nil
+					}
 					return &http.Response{
 						StatusCode: http.StatusInternalServerError,
 						Header:     make(http.Header),
@@ -7385,8 +7573,15 @@ func TestServeOneMessagesRejectsOrchestrationBeforeTrustedRouterAuthorization(t 
 			if bytes.Contains(body, []byte("private prompt")) {
 				t.Fatalf("error leaked prompt: %s", body)
 			}
-			if controlPlaneCalls != 0 {
-				t.Fatalf("control-plane calls = %d, want none", controlPlaneCalls)
+			select {
+			case <-validated:
+			case <-time.After(time.Second):
+				t.Fatal("metadata-only identity validation was not called")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(calls) != 1 || calls["/internal/gateway/validate"] != 1 {
+				t.Fatalf("control-plane calls = %#v, want one metadata-only validation", calls)
 			}
 		})
 	}

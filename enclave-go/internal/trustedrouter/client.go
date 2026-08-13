@@ -226,6 +226,14 @@ type Authorization struct {
 	RouteType                             string                             `json:"-"`
 }
 
+// KeyIdentity is metadata-only ownership information returned by the
+// control plane's validation endpoint. It is safe for internal operational
+// attribution: neither field is a raw credential, prompt, or response.
+type KeyIdentity struct {
+	WorkspaceID string `json:"workspace_id"`
+	APIKeyHash  string `json:"api_key_hash"`
+}
+
 type CustomModel struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
@@ -331,14 +339,28 @@ func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenA
 }
 
 func (c *Client) ValidateKey(ctx context.Context, bearer string, routeType string) error {
+	_, err := c.ValidateKeyInfo(ctx, bearer, routeType)
+	return err
+}
+
+// ValidateKeyInfo performs the same side-effect-free key validation as
+// ValidateKey and returns the verified workspace/key identity. Error paths in
+// the enclave use this after writing the client response so requests rejected
+// before billing authorization remain attributable without creating a hold.
+func (c *Client) ValidateKeyInfo(ctx context.Context, bearer string, routeType string) (*KeyIdentity, error) {
 	body := map[string]any{
 		"api_key_lookup_hash": requestLookupHash(ctx, bearer),
 	}
 	if routeType != "" {
 		body["route_type"] = routeType
 	}
-	var decoded map[string]any
-	return c.postJSON(ctx, "/internal/gateway/validate", body, &decoded)
+	var decoded struct {
+		Data KeyIdentity `json:"data"`
+	}
+	if err := c.postJSON(ctx, "/internal/gateway/validate", body, &decoded); err != nil {
+		return nil, err
+	}
+	return &decoded.Data, nil
 }
 
 func (c *Client) ResolveCustomModel(ctx context.Context, bearer string, model string, routeType string) (*Authorization, error) {
