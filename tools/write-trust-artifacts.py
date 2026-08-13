@@ -20,6 +20,7 @@ PROCUREMENT_JSON_URL = "https://trustedrouter.com/legal/procurement.json"
 SOC2_READINESS_URL = "https://trustedrouter.com/legal/soc2-readiness"
 HIPAA_READINESS_URL = "https://trustedrouter.com/legal/hipaa-readiness"
 SUBPROCESSORS_URL = "https://trustedrouter.com/legal/subprocessors"
+CANONICAL_TRUST_URL = "https://trustedrouter.com/trust"
 _IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -143,7 +144,7 @@ def trust_html(release: dict[str, Any]) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TrustedRouter Trust</title>
   <meta name="description" content="Verify that api.trustedrouter.com runs the published open-source attested workload.">
-  <link rel="canonical" href="https://trust.trustedrouter.com/">
+  <link rel="canonical" href="{CANONICAL_TRUST_URL}">
   <style>
     :root {{
       color-scheme: light;

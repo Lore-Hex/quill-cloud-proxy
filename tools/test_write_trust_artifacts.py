@@ -86,6 +86,16 @@ class TrustArtifactTests(unittest.TestCase):
             )
             self.assertEqual(stored["release_state"], "rolling")
             page = (out / "index.html").read_text(encoding="utf-8")
+            self.assertEqual(
+                page.count(
+                    '<link rel="canonical" href="https://trustedrouter.com/trust">'
+                ),
+                1,
+            )
+            self.assertNotIn(
+                '<link rel="canonical" href="https://trust.trustedrouter.com/">',
+                page,
+            )
             self.assertIn("Accepted measured digests", page)
             self.assertIn("Accepted image references", page)
             self.assertIn("During a rolling release", page)
