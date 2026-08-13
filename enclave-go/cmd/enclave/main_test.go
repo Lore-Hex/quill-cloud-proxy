@@ -2451,11 +2451,10 @@ func fusionStreamVisibleAndReasoning(t *testing.T, body string) (string, string)
 	return visible.String(), reasoning.String()
 }
 
-func TestServeOneFusionCodeRoutesCodeKimiInPanelAndJudge(t *testing.T) {
+func TestServeOneFusionCodeRoutesCodeKimiInPanelAndReleasePinnedJudge(t *testing.T) {
 	// End-to-end (mocked upstream + gateway, no real API calls): a
-	// trustedrouter/fusion-code request uses the DEFAULT panel + judge, so the
-	// kimi-k2.6 -> kimi-k2.7-code swap must show up in the authorize calls for
-	// the panel and the judge, and the general Kimi must never be authorized.
+	// trustedrouter/fusion-code request swaps kimi-k2.6 for kimi-k2.7-code in
+	// the panel while its default judge remains pinned to DeepSeek 0813.
 	var controlPlaneMu sync.Mutex
 	var authorizeCalls []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2521,7 +2520,7 @@ func TestServeOneFusionCodeRoutesCodeKimiInPanelAndJudge(t *testing.T) {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 
-	var codeKimiPanel, codeKimiJudge bool
+	var codeKimiPanel, releaseJudge bool
 	for _, c := range authorizeCalls {
 		model, _ := c["model"].(string)
 		route, _ := c["route_type"].(string)
@@ -2531,12 +2530,12 @@ func TestServeOneFusionCodeRoutesCodeKimiInPanelAndJudge(t *testing.T) {
 		if model == fusionCodeKimi && route == "fusion.panel" {
 			codeKimiPanel = true
 		}
-		if model == fusionCodeKimi && route == "fusion.judge" {
-			codeKimiJudge = true
+		if model == deepSeekV4Pro0813Model && route == "fusion.judge" {
+			releaseJudge = true
 		}
 	}
-	if !codeKimiPanel || !codeKimiJudge {
-		t.Fatalf("fusion-code must route %s in panel AND judge; authorize calls: %#v", fusionCodeKimi, authorizeCalls)
+	if !codeKimiPanel || !releaseJudge {
+		t.Fatalf("fusion-code must route %s in the panel and %s as judge; authorize calls: %#v", fusionCodeKimi, deepSeekV4Pro0813Model, authorizeCalls)
 	}
 }
 
@@ -5057,14 +5056,29 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{
+			model:    trustedRouterAristotle20Model,
+			workers:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			advisors: []string{trustedRouterZeus20Model},
+		},
+		{
 			model:    trustedRouterAristotleModel,
 			workers:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
-			advisors: []string{trustedRouterZeus10Model},
+			advisors: []string{trustedRouterZeus20Model},
 		},
 		{
 			model:    trustedRouterPlato10Model,
 			workers:  []string{"deepseek/deepseek-v4-flash"},
 			advisors: []string{trustedRouterPlatoPro10Model},
+		},
+		{
+			model:    trustedRouterPlato30Model,
+			workers:  []string{deepSeekV4Pro0813Model},
+			advisors: []string{trustedRouterPrometheus30Model},
+		},
+		{
+			model:    trustedRouterPlatoModel,
+			workers:  []string{deepSeekV4Pro0813Model},
+			advisors: []string{trustedRouterPrometheus30Model},
 		},
 		{
 			model:    trustedRouterPlatoPro10Model,
@@ -5102,9 +5116,14 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			advisors: []string{trustedRouterZeus10Model},
 		},
 		{
+			model:    trustedRouterSocrates20Model,
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "minimax/minimax-m3", "z-ai/glm-5.2-fast", deepSeekV4Pro0813Model},
+			advisors: []string{trustedRouterZeus20Model},
+		},
+		{
 			model:    trustedRouterSocratesModel,
-			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "minimax/minimax-m3", "z-ai/glm-5.2-fast", "deepseek/deepseek-v4-flash"},
-			advisors: []string{trustedRouterZeus10Model},
+			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "minimax/minimax-m3", "z-ai/glm-5.2-fast", deepSeekV4Pro0813Model},
+			advisors: []string{trustedRouterZeus20Model},
 		},
 		{
 			model:        trustedRouterOpenPatcherA1Model,
@@ -5130,9 +5149,26 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 			advisors: []string{"google/gemma-4-31b-it", trustedRouterPrometheus20Model},
 		},
 		{
-			model:        trustedRouterAthenaModel,
+			model:    trustedRouterOpenPatcherG3Model,
+			workers:  []string{fusionKimiK3},
+			advisors: []string{"google/gemma-4-31b-it", trustedRouterPrometheus30Model},
+		},
+		{
+			model:        trustedRouterAthena10Model,
 			workers:      []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
 			advisors:     []string{trustedRouterZeus10MiniModel, fusionCodeKimi, fusionGeneralKimi},
+			jurisdiction: providerJurisdictionUS,
+		},
+		{
+			model:        trustedRouterAthena20Model,
+			workers:      []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			advisors:     []string{trustedRouterZeus20Model, fusionCodeKimi, fusionGeneralKimi},
+			jurisdiction: providerJurisdictionUS,
+		},
+		{
+			model:        trustedRouterAthenaModel,
+			workers:      []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			advisors:     []string{trustedRouterZeus20Model, fusionCodeKimi, fusionGeneralKimi},
 			jurisdiction: providerJurisdictionUS,
 		},
 		{
@@ -5695,7 +5731,7 @@ func TestFusionDefaultsUseOpenPanelExplicitJudgeAndFuserFallbacks(t *testing.T) 
 		"moonshotai/kimi-k2.6",
 		"z-ai/glm-5.2",
 		"google/gemma-4-31b-it",
-		"deepseek/deepseek-v4-pro",
+		deepSeekV4Pro0813Model,
 	}
 	if !reflect.DeepEqual(fusionQualityPanel, want) {
 		t.Fatalf("fusionQualityPanel = %#v, want %#v", fusionQualityPanel, want)
@@ -5714,17 +5750,17 @@ func TestFusionDefaultsUseOpenPanelExplicitJudgeAndFuserFallbacks(t *testing.T) 
 	if err != nil {
 		t.Fatalf("fusionJudgeModels: %v", err)
 	}
-	if !reflect.DeepEqual(finalModels, []string{"z-ai/glm-5.2", "minimax/minimax-m3"}) {
-		t.Fatalf("finalModels = %#v, want GLM 5.2 with M3 fallback", finalModels)
+	if !reflect.DeepEqual(finalModels, []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"}) {
+		t.Fatalf("finalModels = %#v, want DeepSeek 0813 with ZDR-capable fallbacks", finalModels)
 	}
-	if !reflect.DeepEqual(judgeModels, []string{"moonshotai/kimi-k2.7-code", "minimax/minimax-m3"}) {
-		t.Fatalf("judgeModels = %#v, want Kimi K2.7 Code with M3 fallback", judgeModels)
+	if !reflect.DeepEqual(judgeModels, []string{deepSeekV4Pro0813Model, fusionKimiK3, "minimax/minimax-m3"}) {
+		t.Fatalf("judgeModels = %#v, want DeepSeek 0813 with ZDR-capable fallbacks", judgeModels)
 	}
 
 	// trustedrouter/fusion-code is fusion with the code-tuned Kimi: it is a
 	// recognized fusion request, and the swap still turns the general kimi-k2.6
-	// panel model into kimi-k2.7-code — while leaving the already-code default
-	// judge and the non-Kimi glm-5.2/m3 synthesizer untouched.
+	// panel model into kimi-k2.7-code while leaving the release-pinned default
+	// judge and synthesizer fallback lists untouched.
 	for _, model := range []string{trustedRouterSynthCodeModel, trustedRouterFusionCodeModel} {
 		if _, requested, err := fusionConfigForRequest(&types.OpenAIChatRequest{Model: model}); err != nil || !requested {
 			t.Fatalf("%s must be a recognized synth request: requested=%v err=%v", model, requested, err)
@@ -5733,11 +5769,36 @@ func TestFusionDefaultsUseOpenPanelExplicitJudgeAndFuserFallbacks(t *testing.T) 
 	if got := applyFusionCodeSwap(fusionQualityPanel); got[1] != fusionCodeKimi {
 		t.Fatalf("fusion-code panel swap = %#v, want %s at index 1", got, fusionCodeKimi)
 	}
-	if got := applyFusionCodeSwap(fusionDefaultJudgeModels); !reflect.DeepEqual(got, []string{fusionCodeKimi, "minimax/minimax-m3"}) {
-		t.Fatalf("fusion-code judge swap = %#v, want %s with M3 fallback", got, fusionCodeKimi)
+	if got := applyFusionCodeSwap(fusionDefaultJudgeModels); !reflect.DeepEqual(got, fusionDefaultJudgeModels) {
+		t.Fatalf("fusion-code swap must not rewrite the default judge releases: %#v", got)
 	}
 	if got := applyFusionCodeSwap(fusionDefaultFinalModels); !reflect.DeepEqual(got, fusionDefaultFinalModels) {
 		t.Fatalf("fusion-code swap must not touch the non-Kimi synthesizer: %#v", got)
+	}
+}
+
+func TestFusionAuthorizationFallbackOnlyClassifiesModelSpecificMisses(t *testing.T) {
+	for _, errorType := range []string{"model_not_supported", "provider_not_supported"} {
+		err := fusionClassifyAuthorizationError(&trustedrouter.ControlPlaneError{
+			Path:       "/internal/gateway/authorize",
+			StatusCode: http.StatusBadRequest,
+			Type:       errorType,
+			Message:    "No route candidates match the requested provider filters",
+		})
+		if !fusionCanTryNextModel(err) {
+			t.Fatalf("%s should advance the model fallback list: %v", errorType, err)
+		}
+	}
+
+	for _, err := range []error{
+		&trustedrouter.ControlPlaneError{StatusCode: http.StatusBadRequest, Type: "bad_request"},
+		&trustedrouter.ControlPlaneError{StatusCode: http.StatusUnauthorized, Type: "invalid_api_key"},
+		&trustedrouter.ControlPlaneError{StatusCode: http.StatusPaymentRequired, Type: "insufficient_credits"},
+		&trustedrouter.ControlPlaneError{StatusCode: http.StatusTooManyRequests, Type: "key_window_limit_exceeded"},
+	} {
+		if classified := fusionClassifyAuthorizationError(err); fusionCanTryNextModel(classified) {
+			t.Fatalf("terminal authorization error became a fallback: %#v", err)
+		}
 	}
 }
 
@@ -6093,24 +6154,28 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 		panel  []string
 		code   bool
 	}{
-		{trustedRouterIrisModel, "budget-2.0", fusionIris20Panel, false},
-		{trustedRouterPrometheusModel, "quality-2.0", fusionPrometheus20Panel, false},
-		{trustedRouterZeusModel, "frontier", fusionFrontierPanel, false},
-		{trustedRouterIris10Model, "budget", fusionBudgetPanel, false},
+		{trustedRouterIrisModel, "budget-3.0", fusionIris30Panel, false},
+		{trustedRouterPrometheusModel, "quality-3.0", fusionPrometheus30Panel, false},
+		{trustedRouterZeusModel, "frontier-2.0", fusionFrontierPanel, false},
+		{trustedRouterIris10Model, "budget-1.0", fusionIris10Panel, false},
 		{trustedRouterIris20Model, "budget-2.0", fusionIris20Panel, false},
-		{trustedRouterPrometheus10Model, "quality", fusionQualityPanel, false},
+		{trustedRouterIris30Model, "budget-3.0", fusionIris30Panel, false},
+		{trustedRouterPrometheus10Model, "quality-1.0", fusionPrometheus10Panel, false},
 		{trustedRouterPrometheus101MModel, "quality-1m", fusionQuality1MPanel, false},
 		{trustedRouterPrometheus20Model, "quality-2.0", fusionPrometheus20Panel, false},
-		{trustedRouterZeus10Model, "frontier", fusionFrontierPanel, false},
+		{trustedRouterPrometheus30Model, "quality-3.0", fusionPrometheus30Panel, false},
+		{trustedRouterZeus10Model, "frontier-1.0", fusionFrontier10Panel, false},
 		{trustedRouterZeus10MiniModel, "frontier-mini", fusionFrontierMiniPanel, false},
+		{trustedRouterZeus20Model, "frontier-2.0", fusionFrontierPanel, false},
 		{trustedRouterIrisCodeModel, "budget", fusionBudgetPanel, true},
 		{trustedRouterPrometheusCodeModel, "quality", fusionQualityPanel, true},
-		{trustedRouterZeusCodeModel, "frontier", fusionFrontierPanel, true},
-		{trustedRouterIrisCode10Model, "budget", fusionBudgetPanel, true},
-		{trustedRouterPrometheusCode10Model, "quality", fusionQualityPanel, true},
-		{trustedRouterZeusCode10Model, "frontier", fusionFrontierPanel, true},
+		{trustedRouterZeusCodeModel, "frontier-2.0", fusionFrontierPanel, true},
+		{trustedRouterIrisCode10Model, "budget-1.0", fusionIris10Panel, true},
+		{trustedRouterPrometheusCode10Model, "quality-1.0", fusionPrometheus10Panel, true},
+		{trustedRouterZeusCode10Model, "frontier-1.0", fusionFrontier10Panel, true},
 		{trustedRouterOpenPatcherS1Model, "openpatcher-s1", fusionOpenPatcherS1Panel, false},
 		{trustedRouterOpenPatcherS2Model, "openpatcher-s2", fusionOpenPatcherS2Panel, false},
+		{trustedRouterOpenPatcherS3Model, "openpatcher-s3", fusionOpenPatcherS3Panel, false},
 		{trustedRouterLiberty10Model, "liberty-1.0", fusionLiberty10Panel, false},
 		{trustedRouterLiberty101MModel, "liberty-1.0-1m", fusionLiberty101MPanel, false},
 	}
@@ -6168,45 +6233,58 @@ func TestLibertyAdvisorModelsUseTheirPublishedContextLimits(t *testing.T) {
 	}
 }
 
-func TestPrometheusTwoPresetPinsPanelJudgeAndSynthFallbackOrder(t *testing.T) {
-	wantPanel := []string{
-		"minimax/minimax-m3",
-		fusionKimiK3,
-		"z-ai/glm-5.2",
-		"deepseek/deepseek-v4-pro",
-		"xiaomi/mimo-v2.5-pro",
+func TestPrometheusVersionsPinOldAndNewDeepSeekReleases(t *testing.T) {
+	tests := []struct {
+		model      string
+		preset     string
+		panel      []string
+		wantJudges []string
+		wantFinal  []string
+	}{
+		{
+			model:      trustedRouterPrometheus20Model,
+			preset:     "quality-2.0",
+			panel:      fusionPrometheus20Panel,
+			wantJudges: []string{"minimax/minimax-m3", fusionKimiK3},
+			wantFinal:  []string{fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"},
+		},
+		{
+			model:      trustedRouterPrometheus30Model,
+			preset:     "quality-3.0",
+			panel:      fusionPrometheus30Panel,
+			wantJudges: []string{deepSeekV4Pro0813Model, "minimax/minimax-m3", fusionKimiK3},
+			wantFinal:  []string{deepSeekV4Pro0813Model, fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"},
+		},
+		{
+			model:      trustedRouterPrometheusModel,
+			preset:     "quality-3.0",
+			panel:      fusionPrometheus30Panel,
+			wantJudges: []string{deepSeekV4Pro0813Model, "minimax/minimax-m3", fusionKimiK3},
+			wantFinal:  []string{deepSeekV4Pro0813Model, fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"},
+		},
 	}
-	wantJudges := []string{"minimax/minimax-m3", fusionKimiK3}
-	wantFinal := []string{fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"}
-
-	for _, model := range []string{trustedRouterPrometheusModel, trustedRouterPrometheus20Model} {
-		t.Run(model, func(t *testing.T) {
-			preset, panel, ok := fusionPresetPanelForModel(model)
-			if !ok || preset != "quality-2.0" {
-				t.Fatalf("preset = %q ok=%t, want quality-2.0 true", preset, ok)
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			preset, panel, ok := fusionPresetPanelForModel(tt.model)
+			if !ok || preset != tt.preset || !reflect.DeepEqual(panel, tt.panel) {
+				t.Fatalf("preset=%q panel=%#v ok=%t", preset, panel, ok)
 			}
-			if !reflect.DeepEqual(panel, wantPanel) {
-				t.Fatalf("panel = %#v, want %#v", panel, wantPanel)
+			judges, err := fusionJudgeModels(fusionConfig{}, tt.model)
+			if err != nil || !reflect.DeepEqual(judges, tt.wantJudges) {
+				t.Fatalf("judges=%#v err=%v, want %#v", judges, err, tt.wantJudges)
 			}
-			judges, err := fusionJudgeModels(fusionConfig{}, model)
-			if err != nil {
-				t.Fatalf("fusionJudgeModels: %v", err)
-			}
-			if !reflect.DeepEqual(judges, wantJudges) {
-				t.Fatalf("judges = %#v, want %#v", judges, wantJudges)
-			}
-			final, err := fusionFinalModels(fusionConfig{}, model, panel[0])
-			if err != nil {
-				t.Fatalf("fusionFinalModels: %v", err)
-			}
-			if !reflect.DeepEqual(final, wantFinal) {
-				t.Fatalf("final = %#v, want %#v", final, wantFinal)
+			final, err := fusionFinalModels(fusionConfig{}, tt.model, panel[0])
+			if err != nil || !reflect.DeepEqual(final, tt.wantFinal) {
+				t.Fatalf("final=%#v err=%v, want %#v", final, err, tt.wantFinal)
 			}
 		})
 	}
+	if !slices.Contains(fusionPrometheus20Panel, deepSeekV4Pro0423Model) || slices.Contains(fusionPrometheus20Panel, deepSeekV4Pro0813Model) {
+		t.Fatalf("Prometheus 2.0 release changed: %#v", fusionPrometheus20Panel)
+	}
 }
 
-func TestIrisTwoAndOpenPatcherSTwoReplaceK2WithoutMutatingPriorVersions(t *testing.T) {
+func TestIrisAndOpenPatcherVersionsRemainImmutable(t *testing.T) {
 	tests := []struct {
 		model      string
 		wantPanel  []string
@@ -6215,21 +6293,33 @@ func TestIrisTwoAndOpenPatcherSTwoReplaceK2WithoutMutatingPriorVersions(t *testi
 	}{
 		{
 			model:      trustedRouterIris20Model,
-			wantPanel:  []string{"minimax/minimax-m3", fusionKimiK3, "deepseek/deepseek-v4-pro"},
+			wantPanel:  []string{"minimax/minimax-m3", fusionKimiK3, deepSeekV4Pro0423Model},
 			wantJudges: []string{fusionKimiK3, "minimax/minimax-m3"},
 			wantFinal:  []string{"z-ai/glm-5.2", "minimax/minimax-m3"},
 		},
 		{
+			model:      trustedRouterIris30Model,
+			wantPanel:  []string{"minimax/minimax-m3", fusionKimiK3, deepSeekV4Pro0813Model},
+			wantJudges: []string{deepSeekV4Pro0813Model, fusionKimiK3, "minimax/minimax-m3"},
+			wantFinal:  []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"},
+		},
+		{
 			model:      trustedRouterIrisModel,
-			wantPanel:  []string{"minimax/minimax-m3", fusionKimiK3, "deepseek/deepseek-v4-pro"},
-			wantJudges: []string{fusionKimiK3, "minimax/minimax-m3"},
-			wantFinal:  []string{"z-ai/glm-5.2", "minimax/minimax-m3"},
+			wantPanel:  []string{"minimax/minimax-m3", fusionKimiK3, deepSeekV4Pro0813Model},
+			wantJudges: []string{deepSeekV4Pro0813Model, fusionKimiK3, "minimax/minimax-m3"},
+			wantFinal:  []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"},
 		},
 		{
 			model:      trustedRouterOpenPatcherS2Model,
 			wantPanel:  []string{fusionKimiK3, "z-ai/glm-5.2"},
 			wantJudges: []string{fusionKimiK3, "minimax/minimax-m3"},
 			wantFinal:  []string{"z-ai/glm-5.2", fusionKimiK3, "minimax/minimax-m3"},
+		},
+		{
+			model:      trustedRouterOpenPatcherS3Model,
+			wantPanel:  []string{"z-ai/glm-5.2", deepSeekV4Pro0813Model},
+			wantJudges: []string{deepSeekV4Pro0813Model, "minimax/minimax-m3", fusionKimiK3},
+			wantFinal:  []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"},
 		},
 	}
 
@@ -6257,7 +6347,7 @@ func TestIrisTwoAndOpenPatcherSTwoReplaceK2WithoutMutatingPriorVersions(t *testi
 	}
 
 	_, irisOnePanel, ok := fusionPresetPanelForModel(trustedRouterIris10Model)
-	if !ok || !reflect.DeepEqual(irisOnePanel, fusionBudgetPanel) || !slices.Contains(irisOnePanel, fusionGeneralKimi) {
+	if !ok || !reflect.DeepEqual(irisOnePanel, fusionIris10Panel) || !slices.Contains(irisOnePanel, deepSeekV4Pro0423Model) {
 		t.Fatalf("Iris 1.0 changed: panel=%#v ok=%t", irisOnePanel, ok)
 	}
 	_, sOnePanel, ok := fusionPresetPanelForModel(trustedRouterOpenPatcherS1Model)
@@ -6331,8 +6421,25 @@ func TestNamedOrchestrationPresetsReturnNonEmptyThroughLocalGateway(t *testing.T
 				"minimax/minimax-m3",
 				fusionKimiK3,
 				"z-ai/glm-5.2",
-				"deepseek/deepseek-v4-pro",
+				deepSeekV4Pro0423Model,
 				"xiaomi/mimo-v2.5-pro",
+			},
+		},
+		{
+			model: trustedRouterPrometheus30Model,
+			componentModels: []string{
+				"minimax/minimax-m3",
+				fusionKimiK3,
+				"z-ai/glm-5.2",
+				deepSeekV4Pro0813Model,
+				"xiaomi/mimo-v2.5-pro",
+			},
+		},
+		{
+			model: trustedRouterOpenPatcherS3Model,
+			componentModels: []string{
+				"z-ai/glm-5.2",
+				deepSeekV4Pro0813Model,
 			},
 		},
 		{
@@ -6535,19 +6642,25 @@ func TestNamedOrchestrationPresetsReturnNonEmptyThroughLocalGateway(t *testing.T
 	}
 }
 
-func TestFusionZeusPresetsUseGLMJudge(t *testing.T) {
-	for _, model := range []string{
-		trustedRouterZeusModel,
-		trustedRouterZeus10Model,
-		trustedRouterZeus10MiniModel,
-	} {
+func TestFusionZeusJudgeVersionsRemainImmutable(t *testing.T) {
+	tests := []struct {
+		model string
+		want  []string
+	}{
+		{trustedRouterZeusModel, []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"}},
+		{trustedRouterZeus20Model, []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"}},
+		{trustedRouterZeus10Model, []string{"z-ai/glm-5.2"}},
+		{trustedRouterZeus10MiniModel, []string{"z-ai/glm-5.2"}},
+	}
+	for _, tt := range tests {
+		model := tt.model
 		t.Run(model, func(t *testing.T) {
 			judgeModels, err := fusionJudgeModels(fusionConfig{}, model)
 			if err != nil {
 				t.Fatalf("fusionJudgeModels: %v", err)
 			}
-			if !reflect.DeepEqual(judgeModels, []string{"z-ai/glm-5.2"}) {
-				t.Fatalf("judge models = %#v", judgeModels)
+			if !reflect.DeepEqual(judgeModels, tt.want) {
+				t.Fatalf("judge models = %#v, want %#v", judgeModels, tt.want)
 			}
 		})
 	}

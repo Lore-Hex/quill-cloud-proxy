@@ -21,12 +21,15 @@ import (
 
 const trustedRouterSocrates10Model = "trustedrouter/socrates-1.0"
 const trustedRouterSocrates11Model = "trustedrouter/socrates-1.1"
+const trustedRouterSocrates20Model = "trustedrouter/socrates-2.0"
 const trustedRouterSocratesModel = "trustedrouter/socrates"
 const trustedRouterAdvisorModel = "trustedrouter/advisor"
 const trustedRouterAristotle10Model = "trustedrouter/aristotle-1.0"
 const trustedRouterAristotle11Model = "trustedrouter/aristotle-1.1"
+const trustedRouterAristotle20Model = "trustedrouter/aristotle-2.0"
 const trustedRouterAristotleModel = "trustedrouter/aristotle"
 const trustedRouterPlato10Model = "trustedrouter/plato-1.0"
+const trustedRouterPlato30Model = "trustedrouter/plato-3.0"
 const trustedRouterPlatoModel = "trustedrouter/plato"
 const trustedRouterPlatoPro10Model = "trustedrouter/plato-pro-1.0"
 const trustedRouterPlatoPro20Model = "trustedrouter/plato-pro-2.0"
@@ -39,6 +42,9 @@ const trustedRouterOpenPatcherA1Model = "trustedrouter/openpatcher-a1"
 const trustedRouterOpenPatcherFast1Model = "trustedrouter/openpatcher-fast1"
 const trustedRouterOpenPatcherG1Model = "trustedrouter/openpatcher-g1"
 const trustedRouterOpenPatcherG2Model = "trustedrouter/openpatcher-g2"
+const trustedRouterOpenPatcherG3Model = "trustedrouter/openpatcher-g3"
+const trustedRouterAthena10Model = "trustedrouter/athena-1.0"
+const trustedRouterAthena20Model = "trustedrouter/athena-2.0"
 const trustedRouterAthenaModel = "trustedrouter/athena"
 const trustedRouterLiberty20Model = "trustedrouter/liberty-2.0"
 const parasailLiberty20Model = "parasail/liberty-2.0"
@@ -62,11 +68,20 @@ var defaultAdvisorWorkerModels = []string{
 	"cerebras/gpt-oss-120b",
 }
 
-var socratesProPlusWorkerModels = []string{
+// Released named presets are immutable. New component graphs require a new
+// public version; G1/G2 and all prior Socrates/Athena graphs stay frozen.
+var socrates11WorkerModels = []string{
 	"xiaomi/mimo-v2.5-pro-ultraspeed",
 	"minimax/minimax-m3",
 	"z-ai/glm-5.2-fast",
 	"deepseek/deepseek-v4-flash",
+}
+
+var socrates20WorkerModels = []string{
+	"xiaomi/mimo-v2.5-pro-ultraspeed",
+	"minimax/minimax-m3",
+	"z-ai/glm-5.2-fast",
+	deepSeekV4Pro0813Model,
 }
 
 var defaultAdvisorModels = []string{
@@ -162,17 +177,29 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 			WorkerModels:  []string{"deepseek/deepseek-v4-flash"},
 			AdvisorModels: []string{trustedRouterZeus10Model},
 		}, true
-	case trustedRouterAristotleModel, trustedRouterAristotle11Model:
+	case trustedRouterAristotle11Model:
 		return advisorConfig{
 			Enabled:       true,
 			WorkerModels:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
 			AdvisorModels: []string{trustedRouterZeus10Model},
 		}, true
-	case trustedRouterPlato10Model, trustedRouterPlatoModel:
+	case trustedRouterAristotleModel, trustedRouterAristotle20Model:
+		return advisorConfig{
+			Enabled:       true,
+			WorkerModels:  []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			AdvisorModels: []string{trustedRouterZeus20Model},
+		}, true
+	case trustedRouterPlato10Model:
 		return advisorConfig{
 			Enabled:       true,
 			WorkerModels:  []string{"deepseek/deepseek-v4-flash"},
 			AdvisorModels: []string{trustedRouterPlatoPro10Model},
+		}, true
+	case trustedRouterPlatoModel, trustedRouterPlato30Model:
+		return advisorConfig{
+			Enabled:       true,
+			WorkerModels:  []string{deepSeekV4Pro0813Model},
+			AdvisorModels: []string{trustedRouterPrometheus30Model},
 		}, true
 	case trustedRouterPlatoPro10Model:
 		return advisorConfig{
@@ -192,11 +219,17 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 			WorkerModels:  []string{"cerebras/zai-glm-4.7"},
 			AdvisorModels: []string{trustedRouterSocratesProPlus10Model},
 		}, true
-	case trustedRouterSocratesModel, trustedRouterSocrates11Model, trustedRouterSocratesProPlus10Model, trustedRouterSocratesProPlusModel:
+	case trustedRouterSocrates11Model, trustedRouterSocratesProPlus10Model, trustedRouterSocratesProPlusModel:
 		return advisorConfig{
 			Enabled:       true,
-			WorkerModels:  append([]string(nil), socratesProPlusWorkerModels...),
+			WorkerModels:  append([]string(nil), socrates11WorkerModels...),
 			AdvisorModels: []string{trustedRouterZeus10Model},
+		}, true
+	case trustedRouterSocratesModel, trustedRouterSocrates20Model:
+		return advisorConfig{
+			Enabled:       true,
+			WorkerModels:  append([]string(nil), socrates20WorkerModels...),
+			AdvisorModels: []string{trustedRouterZeus20Model},
 		}, true
 	case trustedRouterOpenPatcherA1Model:
 		return advisorConfig{
@@ -220,11 +253,25 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 			WorkerModels:  []string{fusionKimiK3},
 			AdvisorModels: []string{"google/gemma-4-31b-it", trustedRouterPrometheus20Model},
 		}, true
-	case trustedRouterAthenaModel:
+	case trustedRouterOpenPatcherG3Model:
+		return advisorConfig{
+			Enabled:       true,
+			WorkerModels:  []string{fusionKimiK3},
+			AdvisorModels: []string{"google/gemma-4-31b-it", trustedRouterPrometheus30Model},
+		}, true
+	case trustedRouterAthena10Model:
 		return advisorConfig{
 			Enabled:              true,
 			WorkerModels:         []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
 			AdvisorModels:        []string{trustedRouterZeus10MiniModel, fusionCodeKimi, fusionGeneralKimi},
+			HidePublicMetadata:   true,
+			ProviderJurisdiction: providerJurisdictionUS,
+		}, true
+	case trustedRouterAthenaModel, trustedRouterAthena20Model:
+		return advisorConfig{
+			Enabled:              true,
+			WorkerModels:         []string{"z-ai/glm-5.2-fast", "z-ai/glm-5.2"},
+			AdvisorModels:        []string{trustedRouterZeus20Model, fusionCodeKimi, fusionGeneralKimi},
 			HidePublicMetadata:   true,
 			ProviderJurisdiction: providerJurisdictionUS,
 		}, true
@@ -1409,8 +1456,24 @@ func advisorContextLimitTokens(model string) int {
 		return 262_144
 	case trustedRouterPrometheus101MModel,
 		trustedRouterPrometheus20Model,
+		trustedRouterPrometheus30Model,
+		trustedRouterPrometheusModel,
+		trustedRouterIris30Model,
+		trustedRouterIrisModel,
 		trustedRouterPlatoPro20Model,
 		trustedRouterPlatoProModel,
+		trustedRouterPlato30Model,
+		trustedRouterPlatoModel,
+		trustedRouterSocrates20Model,
+		trustedRouterSocratesModel,
+		trustedRouterAristotle20Model,
+		trustedRouterAristotleModel,
+		trustedRouterZeus20Model,
+		trustedRouterZeusModel,
+		trustedRouterOpenPatcherG3Model,
+		trustedRouterAthena10Model,
+		trustedRouterAthena20Model,
+		trustedRouterAthenaModel,
 		trustedRouterLiberty101MModel,
 		"thinkingmachines/inkling-1m",
 		"nvidia/nemotron-3-ultra-550b-a55b",
@@ -1418,7 +1481,9 @@ func advisorContextLimitTokens(model string) int {
 		fusionKimiK3,
 		"xiaomi/mimo-v2.5-pro",
 		"z-ai/glm-5.2",
-		"deepseek/deepseek-v4-pro":
+		"deepseek/deepseek-v4-pro",
+		deepSeekV4Pro0423Model,
+		deepSeekV4Pro0813Model:
 		return 1_048_576
 	case trustedRouterLiberty10Model,
 		"thinkingmachines/inkling":

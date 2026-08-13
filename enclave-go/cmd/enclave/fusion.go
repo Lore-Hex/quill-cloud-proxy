@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -26,11 +27,14 @@ const trustedRouterPrometheusModel = "trustedrouter/prometheus"
 const trustedRouterZeusModel = "trustedrouter/zeus"
 const trustedRouterIris10Model = "trustedrouter/iris-1.0"
 const trustedRouterIris20Model = "trustedrouter/iris-2.0"
+const trustedRouterIris30Model = "trustedrouter/iris-3.0"
 const trustedRouterPrometheus10Model = "trustedrouter/prometheus-1.0"
 const trustedRouterPrometheus101MModel = "trustedrouter/prometheus-1.0-1m"
 const trustedRouterPrometheus20Model = "trustedrouter/prometheus-2.0"
+const trustedRouterPrometheus30Model = "trustedrouter/prometheus-3.0"
 const trustedRouterZeus10Model = "trustedrouter/zeus-1.0"
 const trustedRouterZeus10MiniModel = "trustedrouter/zeus-1.0-mini"
+const trustedRouterZeus20Model = "trustedrouter/zeus-2.0"
 const trustedRouterIrisCodeModel = "trustedrouter/iris-code"
 const trustedRouterPrometheusCodeModel = "trustedrouter/prometheus-code"
 const trustedRouterZeusCodeModel = "trustedrouter/zeus-code"
@@ -39,6 +43,7 @@ const trustedRouterPrometheusCode10Model = "trustedrouter/prometheus-code-1.0"
 const trustedRouterZeusCode10Model = "trustedrouter/zeus-code-1.0"
 const trustedRouterOpenPatcherS1Model = "trustedrouter/openpatcher-s1"
 const trustedRouterOpenPatcherS2Model = "trustedrouter/openpatcher-s2"
+const trustedRouterOpenPatcherS3Model = "trustedrouter/openpatcher-s3"
 const trustedRouterLiberty10Model = "trustedrouter/liberty-1.0"
 const trustedRouterLiberty101MModel = "trustedrouter/liberty-1.0-1m"
 const trustedRouterFusionModel = "trustedrouter/fusion"
@@ -63,6 +68,8 @@ const fusionFinalThinkingTokenBudget = 2000
 const fusionPanelRescueMaxTokens = 800
 const fusionFinalRescueMaxTokens = 1600
 const fusionSynthCodeMetadataKey = "trustedrouter_synth_code"
+const deepSeekV4Pro0423Model = "deepseek/deepseek-v4-pro-0423"
+const deepSeekV4Pro0813Model = "deepseek/deepseek-v4-pro-0813"
 
 var errFusionOverthinkingBudget = errors.New("trustedrouter/synth thinking budget exceeded")
 
@@ -82,12 +89,17 @@ const (
 	fusionKimiK3      = "moonshotai/kimi-k3"
 )
 
+// Released orchestration presets are immutable. Add a new version and move
+// only the rolling alias; never rewrite a released graph in place. In
+// particular, OpenPatcher G1/G2 and all 0423-backed presets below stay frozen.
 var fusionDefaultJudgeModels = []string{
-	fusionCodeKimi,
+	deepSeekV4Pro0813Model,
+	fusionKimiK3,
 	"minimax/minimax-m3",
 }
 
 var fusionDefaultFinalModels = []string{
+	deepSeekV4Pro0813Model,
 	"z-ai/glm-5.2",
 	"minimax/minimax-m3",
 }
@@ -97,34 +109,62 @@ var fusionQualityPanel = []string{
 	fusionGeneralKimi,
 	"z-ai/glm-5.2",
 	"google/gemma-4-31b-it",
-	"deepseek/deepseek-v4-pro",
+	deepSeekV4Pro0813Model,
+}
+
+var fusionPrometheus10Panel = []string{
+	"minimax/minimax-m3",
+	fusionGeneralKimi,
+	"z-ai/glm-5.2",
+	"google/gemma-4-31b-it",
+	deepSeekV4Pro0423Model,
 }
 
 var fusionQuality1MPanel = []string{
 	"minimax/minimax-m3",
 	"xiaomi/mimo-v2.5-pro",
 	"z-ai/glm-5.2",
-	"deepseek/deepseek-v4-pro",
+	deepSeekV4Pro0423Model,
 }
 
 var fusionPrometheus20Panel = []string{
 	"minimax/minimax-m3",
 	fusionKimiK3,
 	"z-ai/glm-5.2",
-	"deepseek/deepseek-v4-pro",
+	deepSeekV4Pro0423Model,
+	"xiaomi/mimo-v2.5-pro",
+}
+
+var fusionPrometheus30Panel = []string{
+	"minimax/minimax-m3",
+	fusionKimiK3,
+	"z-ai/glm-5.2",
+	deepSeekV4Pro0813Model,
 	"xiaomi/mimo-v2.5-pro",
 }
 
 var fusionBudgetPanel = []string{
 	"minimax/minimax-m3",
 	fusionGeneralKimi,
-	"deepseek/deepseek-v4-pro",
+	deepSeekV4Pro0813Model,
+}
+
+var fusionIris10Panel = []string{
+	"minimax/minimax-m3",
+	fusionGeneralKimi,
+	deepSeekV4Pro0423Model,
 }
 
 var fusionIris20Panel = []string{
 	"minimax/minimax-m3",
 	fusionKimiK3,
-	"deepseek/deepseek-v4-pro",
+	deepSeekV4Pro0423Model,
+}
+
+var fusionIris30Panel = []string{
+	"minimax/minimax-m3",
+	fusionKimiK3,
+	deepSeekV4Pro0813Model,
 }
 
 var fusionFrontierPanel = []string{
@@ -135,7 +175,18 @@ var fusionFrontierPanel = []string{
 	"minimax/minimax-m3",
 	"z-ai/glm-5.2",
 	"xiaomi/mimo-v2.5-pro",
-	"deepseek/deepseek-v4-pro",
+	deepSeekV4Pro0813Model,
+}
+
+var fusionFrontier10Panel = []string{
+	"anthropic/claude-opus-4.8",
+	"openai/gpt-5.5",
+	"google/gemini-3.1-pro-preview",
+	"google/gemini-3.5-flash",
+	"minimax/minimax-m3",
+	"z-ai/glm-5.2",
+	"xiaomi/mimo-v2.5-pro",
+	deepSeekV4Pro0423Model,
 }
 
 var fusionFrontierMiniPanel = []string{
@@ -144,7 +195,7 @@ var fusionFrontierMiniPanel = []string{
 	"minimax/minimax-m3",
 	"z-ai/glm-5.2",
 	"xiaomi/mimo-v2.5-pro",
-	"deepseek/deepseek-v4-pro",
+	deepSeekV4Pro0423Model,
 }
 
 var fusionOpenPatcherS1Panel = []string{
@@ -155,6 +206,11 @@ var fusionOpenPatcherS1Panel = []string{
 var fusionOpenPatcherS2Panel = []string{
 	fusionKimiK3,
 	"z-ai/glm-5.2",
+}
+
+var fusionOpenPatcherS3Panel = []string{
+	"z-ai/glm-5.2",
+	deepSeekV4Pro0813Model,
 }
 
 var fusionLiberty10Panel = []string{
@@ -205,11 +261,14 @@ func isFusionModel(model string) bool {
 		trustedRouterZeusModel,
 		trustedRouterIris10Model,
 		trustedRouterIris20Model,
+		trustedRouterIris30Model,
 		trustedRouterPrometheus10Model,
 		trustedRouterPrometheus101MModel,
 		trustedRouterPrometheus20Model,
+		trustedRouterPrometheus30Model,
 		trustedRouterZeus10Model,
 		trustedRouterZeus10MiniModel,
+		trustedRouterZeus20Model,
 		trustedRouterIrisCodeModel,
 		trustedRouterPrometheusCodeModel,
 		trustedRouterZeusCodeModel,
@@ -218,6 +277,7 @@ func isFusionModel(model string) bool {
 		trustedRouterZeusCode10Model,
 		trustedRouterOpenPatcherS1Model,
 		trustedRouterOpenPatcherS2Model,
+		trustedRouterOpenPatcherS3Model,
 		trustedRouterLiberty10Model,
 		trustedRouterLiberty101MModel,
 		trustedRouterFusionModel,
@@ -249,38 +309,49 @@ func isFusionCodeModel(model string) bool {
 func fusionPresetPanelForModel(model string) (string, []string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case trustedRouterIrisModel,
-		trustedRouterIris20Model:
+		trustedRouterIris30Model:
+		return "budget-3.0", append([]string(nil), fusionIris30Panel...), true
+	case trustedRouterIris20Model:
 		return "budget-2.0", append([]string(nil), fusionIris20Panel...), true
 	case trustedRouterIris10Model,
-		trustedRouterIrisCodeModel,
 		trustedRouterIrisCode10Model:
+		return "budget-1.0", append([]string(nil), fusionIris10Panel...), true
+	case trustedRouterIrisCodeModel:
 		return "budget", append([]string(nil), fusionBudgetPanel...), true
 	case trustedRouterSynthModel,
 		trustedRouterSynthCodeModel,
 		trustedRouterSelectorModel:
 		return "", nil, false
 	case trustedRouterFusionModel,
-		trustedRouterFusionCodeModel,
-		trustedRouterPrometheus10Model,
-		trustedRouterPrometheusCodeModel,
+		trustedRouterFusionCodeModel:
+		return "quality", append([]string(nil), fusionQualityPanel...), true
+	case trustedRouterPrometheus10Model,
 		trustedRouterPrometheusCode10Model:
+		return "quality-1.0", append([]string(nil), fusionPrometheus10Panel...), true
+	case trustedRouterPrometheusCodeModel:
 		return "quality", append([]string(nil), fusionQualityPanel...), true
 	case trustedRouterPrometheus101MModel:
 		return "quality-1m", append([]string(nil), fusionQuality1MPanel...), true
 	case trustedRouterPrometheusModel,
-		trustedRouterPrometheus20Model:
+		trustedRouterPrometheus30Model:
+		return "quality-3.0", append([]string(nil), fusionPrometheus30Panel...), true
+	case trustedRouterPrometheus20Model:
 		return "quality-2.0", append([]string(nil), fusionPrometheus20Panel...), true
 	case trustedRouterZeusModel,
-		trustedRouterZeus10Model,
-		trustedRouterZeusCodeModel,
+		trustedRouterZeus20Model,
+		trustedRouterZeusCodeModel:
+		return "frontier-2.0", append([]string(nil), fusionFrontierPanel...), true
+	case trustedRouterZeus10Model,
 		trustedRouterZeusCode10Model:
-		return "frontier", append([]string(nil), fusionFrontierPanel...), true
+		return "frontier-1.0", append([]string(nil), fusionFrontier10Panel...), true
 	case trustedRouterZeus10MiniModel:
 		return "frontier-mini", append([]string(nil), fusionFrontierMiniPanel...), true
 	case trustedRouterOpenPatcherS1Model:
 		return "openpatcher-s1", append([]string(nil), fusionOpenPatcherS1Panel...), true
 	case trustedRouterOpenPatcherS2Model:
 		return "openpatcher-s2", append([]string(nil), fusionOpenPatcherS2Panel...), true
+	case trustedRouterOpenPatcherS3Model:
+		return "openpatcher-s3", append([]string(nil), fusionOpenPatcherS3Panel...), true
 	case trustedRouterLiberty10Model:
 		return "liberty-1.0", append([]string(nil), fusionLiberty10Panel...), true
 	case trustedRouterLiberty101MModel:
@@ -293,15 +364,34 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case trustedRouterPrometheusModel,
-		trustedRouterPrometheus20Model:
+		trustedRouterPrometheus30Model:
+		return []string{deepSeekV4Pro0813Model, fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
+	case trustedRouterPrometheus20Model:
 		return []string{fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
+	case trustedRouterPrometheus10Model,
+		trustedRouterPrometheus101MModel,
+		trustedRouterPrometheusCode10Model:
+		return []string{"z-ai/glm-5.2", "minimax/minimax-m3"}, true
 	case trustedRouterIrisModel,
-		trustedRouterIris20Model:
+		trustedRouterIris30Model:
+		return []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
+	case trustedRouterIris10Model,
+		trustedRouterIris20Model,
+		trustedRouterIrisCode10Model:
+		return []string{"z-ai/glm-5.2", "minimax/minimax-m3"}, true
+	case trustedRouterZeusModel,
+		trustedRouterZeus20Model:
+		return []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
+	case trustedRouterZeus10Model,
+		trustedRouterZeus10MiniModel,
+		trustedRouterZeusCode10Model:
 		return []string{"z-ai/glm-5.2", "minimax/minimax-m3"}, true
 	case trustedRouterOpenPatcherS1Model:
 		return []string{"z-ai/glm-5.2"}, true
 	case trustedRouterOpenPatcherS2Model:
 		return []string{"z-ai/glm-5.2", fusionKimiK3, "minimax/minimax-m3"}, true
+	case trustedRouterOpenPatcherS3Model:
+		return []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
 	case trustedRouterLiberty10Model:
 		return []string{"nvidia/nemotron-3-ultra-550b-a55b"}, true
 	case trustedRouterLiberty101MModel:
@@ -314,19 +404,35 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case trustedRouterPrometheusModel,
-		trustedRouterPrometheus20Model:
+		trustedRouterPrometheus30Model:
+		return []string{deepSeekV4Pro0813Model, "minimax/minimax-m3", fusionKimiK3}, true
+	case trustedRouterPrometheus20Model:
 		return []string{"minimax/minimax-m3", fusionKimiK3}, true
+	case trustedRouterPrometheus10Model,
+		trustedRouterPrometheus101MModel,
+		trustedRouterPrometheusCode10Model:
+		return []string{fusionCodeKimi, "minimax/minimax-m3"}, true
 	case trustedRouterIrisModel,
-		trustedRouterIris20Model:
+		trustedRouterIris30Model:
+		return []string{deepSeekV4Pro0813Model, fusionKimiK3, "minimax/minimax-m3"}, true
+	case trustedRouterIris20Model:
 		return []string{fusionKimiK3, "minimax/minimax-m3"}, true
+	case trustedRouterIris10Model,
+		trustedRouterIrisCode10Model:
+		return []string{fusionCodeKimi, "minimax/minimax-m3"}, true
 	case trustedRouterZeusModel,
-		trustedRouterZeus10Model,
-		trustedRouterZeus10MiniModel:
+		trustedRouterZeus20Model:
+		return []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
+	case trustedRouterZeus10Model,
+		trustedRouterZeus10MiniModel,
+		trustedRouterZeusCode10Model:
 		return []string{"z-ai/glm-5.2"}, true
 	case trustedRouterOpenPatcherS1Model:
 		return []string{fusionCodeKimi}, true
 	case trustedRouterOpenPatcherS2Model:
 		return []string{fusionKimiK3, "minimax/minimax-m3"}, true
+	case trustedRouterOpenPatcherS3Model:
+		return []string{deepSeekV4Pro0813Model, "minimax/minimax-m3", fusionKimiK3}, true
 	case trustedRouterLiberty10Model:
 		return []string{"nvidia/nemotron-3-ultra-550b-a55b"}, true
 	case trustedRouterLiberty101MModel:
@@ -470,6 +576,18 @@ func (e *fusionModelFallbackError) Unwrap() error {
 func fusionCanTryNextModel(err error) bool {
 	var fallbackErr *fusionModelFallbackError
 	return errors.As(err, &fallbackErr)
+}
+
+func fusionClassifyAuthorizationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var controlErr *trustedrouter.ControlPlaneError
+	if errors.As(err, &controlErr) && controlErr.StatusCode == http.StatusBadRequest &&
+		(controlErr.Type == "model_not_supported" || controlErr.Type == "provider_not_supported") {
+		return &fusionModelFallbackError{err: err}
+	}
+	return err
 }
 
 type orchestrationCallError struct {
@@ -1879,7 +1997,10 @@ func serveFusionFinalStreaming(
 				"enclave.fusion_final_stream_authorize_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
 				requestLogID, requestID, finalModel, i+1, err.Error(),
 			)
-			continue
+			if fusionCanTryNextModel(err) {
+				continue
+			}
+			return err
 		}
 		anthropicReq, err := adapter.ToAnthropic(finalReq, finalReq.Model)
 		if err != nil {
@@ -2391,7 +2512,11 @@ func authorizeFusionCall(
 	billingRoute := partnerInternalBillingRoute(req, routeType)
 	authz, err := trGateway.AuthorizeWithRoute(ctx, bearer, &subReq, billingRoute)
 	if err != nil {
-		return nil, nil, err
+		// A model-specific authorization miss (including a hard privacy floor
+		// leaving no eligible endpoint) should advance an orchestration fallback
+		// list. Authentication, credit, budget, rate-limit, and malformed-request
+		// failures remain terminal.
+		return nil, nil, fusionClassifyAuthorizationError(err)
 	}
 	options, err := invokeOptionsForAuthorization(ctx, secretCache, authz)
 	if err != nil {
