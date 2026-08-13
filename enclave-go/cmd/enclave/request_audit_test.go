@@ -14,7 +14,7 @@ import (
 )
 
 func TestRequestAuditResolvesWorkspaceForPreAuthorizationError(t *testing.T) {
-	const bearer = "sk-tr-v1-private-test-key"
+	const bearer = "synthetic-private-bearer-material"
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		body, err := io.ReadAll(request.Body)
