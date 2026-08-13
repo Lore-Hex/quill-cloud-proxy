@@ -2779,6 +2779,7 @@ func TestServeOneTrustedRouterFusionDoesNotUseJudgeModelFallbackOnProviderError(
 	var authorizeCalls []map[string]any
 	var settleCalls []map[string]any
 	var refundCalls []map[string]any
+	validateCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -2825,6 +2826,12 @@ func TestServeOneTrustedRouterFusionDoesNotUseJudgeModelFallbackOnProviderError(
 			}
 			refundCalls = append(refundCalls, payload)
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
+		case "/internal/gateway/validate":
+			validateCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"workspace_id": "ws_1",
+				"api_key_hash": "key_1",
+			}})
 		default:
 			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
 		}
@@ -2835,7 +2842,11 @@ func TestServeOneTrustedRouterFusionDoesNotUseJudgeModelFallbackOnProviderError(
 	streamer := &fusionEchoLLM{failModels: map[string]bool{"model/judge-fails": true}}
 	serverConn, client := net.Pipe()
 	defer client.Close()
-	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+	}()
 
 	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["model/panel"],"model":"model/final","fallback_judges":["model/judge-fails","model/judge-good"],"max_completion_tokens":64}}],"max_tokens":32}`)
 	if _, err := fmt.Fprintf(
@@ -2858,6 +2869,7 @@ func TestServeOneTrustedRouterFusionDoesNotUseJudgeModelFallbackOnProviderError(
 		t.Fatalf("read body: %v", err)
 	}
 	body := string(bodyBytes)
+	<-serveDone
 	if resp.StatusCode != 502 {
 		t.Fatalf("status = %d body=%s; provider failure must not consume fallback judge model", resp.StatusCode, body)
 	}
@@ -2869,6 +2881,9 @@ func TestServeOneTrustedRouterFusionDoesNotUseJudgeModelFallbackOnProviderError(
 	}
 	if len(refundCalls) != 1 {
 		t.Fatalf("refund calls = %d, want failed judge hold refunded", len(refundCalls))
+	}
+	if validateCalls != 1 {
+		t.Fatalf("validate calls = %d, want failed request attribution lookup", validateCalls)
 	}
 	for _, call := range streamer.calls {
 		if call.Model == "model/judge-good" || call.Model == "model/final" {
@@ -3329,6 +3344,7 @@ func TestServeOneTrustedRouterFusionDoesNotUseFinalModelFallbackOnProviderError(
 	var authorizeCalls []map[string]any
 	var settleCalls []map[string]any
 	var refundCalls []map[string]any
+	validateCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -3375,6 +3391,12 @@ func TestServeOneTrustedRouterFusionDoesNotUseFinalModelFallbackOnProviderError(
 			}
 			refundCalls = append(refundCalls, payload)
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
+		case "/internal/gateway/validate":
+			validateCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"workspace_id": "ws_1",
+				"api_key_hash": "key_1",
+			}})
 		default:
 			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
 		}
@@ -3385,7 +3407,11 @@ func TestServeOneTrustedRouterFusionDoesNotUseFinalModelFallbackOnProviderError(
 	streamer := &fusionEchoLLM{failModels: map[string]bool{"model/final-fails": true}}
 	serverConn, client := net.Pipe()
 	defer client.Close()
-	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+	}()
 
 	requestBody := []byte(`{"model":"trustedrouter/fusion","stream":false,"messages":[{"role":"user","content":"private fusion prompt"}],"tools":[{"type":"trustedrouter:fusion","parameters":{"analysis_models":["model/panel"],"judge_models":["model/judge-good"],"final_models":["model/final-fails","model/final-good"],"max_completion_tokens":64}}],"max_tokens":32}`)
 	if _, err := fmt.Fprintf(
@@ -3408,6 +3434,7 @@ func TestServeOneTrustedRouterFusionDoesNotUseFinalModelFallbackOnProviderError(
 		t.Fatalf("read body: %v", err)
 	}
 	body := string(bodyBytes)
+	<-serveDone
 	if resp.StatusCode != 502 {
 		t.Fatalf("status = %d body=%s; provider failure must not consume fallback final model", resp.StatusCode, body)
 	}
@@ -3419,6 +3446,9 @@ func TestServeOneTrustedRouterFusionDoesNotUseFinalModelFallbackOnProviderError(
 	}
 	if len(refundCalls) != 1 {
 		t.Fatalf("refund calls = %d, want failed final hold refunded", len(refundCalls))
+	}
+	if validateCalls != 1 {
+		t.Fatalf("validate calls = %d, want failed request attribution lookup", validateCalls)
 	}
 	for _, call := range streamer.calls {
 		if call.Model == "model/final-good" {
