@@ -469,7 +469,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-func TestValidateKeySendsLookupHashAndRouteOnly(t *testing.T) {
+func TestValidateKeyInfoReturnsIdentityAndSendsLookupHashAndRouteOnly(t *testing.T) {
 	rawKey := "test-user-bearer"
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -491,8 +491,12 @@ func TestValidateKeySendsLookupHashAndRouteOnly(t *testing.T) {
 	defer server.Close()
 
 	client := New(server.URL, "internal", server.Client())
-	if err := client.ValidateKey(t.Context(), rawKey, "responses.input_tokens"); err != nil {
-		t.Fatalf("ValidateKey: %v", err)
+	identity, err := client.ValidateKeyInfo(t.Context(), rawKey, "responses.input_tokens")
+	if err != nil {
+		t.Fatalf("ValidateKeyInfo: %v", err)
+	}
+	if identity.WorkspaceID != "ws_1" || identity.APIKeyHash != "key_1" {
+		t.Fatalf("identity = %#v", identity)
 	}
 	if payload["api_key_lookup_hash"] != lookupHash(rawKey) {
 		t.Fatalf("lookup hash = %v", payload["api_key_lookup_hash"])

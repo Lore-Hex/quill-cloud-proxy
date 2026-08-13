@@ -483,19 +483,22 @@ func serveOneRequest(
 	requestMethod := "unknown"
 	requestRoute := "unknown"
 	requestBodyBytes := 0
+	requestBearer := ""
+	requestIdentity := requestAuditIdentity{attribution: "anonymous"}
 	fmt.Fprintf(os.Stderr, "enclave.request_accept request_log_id=%q\n", requestLogID)
 	defer func() {
 		status, responseBytes := statsConn.Snapshot()
-		fmt.Fprintf(os.Stderr,
-			"enclave.request_end request_log_id=%q method=%q route=%q status=%d outcome=%q body_bytes=%d response_bytes=%d elapsed_ms=%d\n",
+		requestIdentity.resolveFailure(ctx, trGateway, requestBearer, requestRoute, status)
+		writeRequestEndLog(
+			os.Stderr,
 			requestLogID,
 			requestMethod,
 			requestRoute,
 			status,
-			outcomeForStatus(status),
 			requestBodyBytes,
 			responseBytes,
-			time.Since(requestStartedAt).Milliseconds(),
+			time.Since(requestStartedAt),
+			requestIdentity,
 		)
 	}()
 
@@ -521,18 +524,21 @@ func serveOneRequest(
 		return
 	}
 	requestBodyBytes = len(body)
+	requestBearer = bearer
+	requestIdentity.bindBearer(bearer)
 	routePath, nonce, err := parseRequestTarget(path)
 	requestRoute = routePath
 	if err != nil {
 		writeError(conn, 400, err.Error())
 		return
 	}
-	fmt.Fprintf(os.Stderr,
-		"enclave.request_start request_log_id=%q method=%q route=%q body_bytes=%d\n",
+	writeRequestStartLog(
+		os.Stderr,
 		requestLogID,
 		method,
 		routePath,
 		len(body),
+		requestIdentity,
 	)
 
 	// Public liveness is deliberately computed entirely inside the enclave.
@@ -814,6 +820,7 @@ func serveOneRequest(
 			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
 			return
 		}
+		requestIdentity.bindAuthorization(authorization)
 		req.Models = nil
 		invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)
 		if err != nil {
