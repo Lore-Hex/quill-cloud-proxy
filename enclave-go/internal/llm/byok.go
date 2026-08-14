@@ -1028,6 +1028,8 @@ func directBaseURL(provider string) string {
 		return "https://vanchin.streamlake.ai/api/gateway/v1/endpoints"
 	case "neurometric":
 		return "https://wharf.neurometric.ai/v1"
+	case "pearl":
+		return "https://inference.pearlresearch.ai/v1"
 	case "engy":
 		return "https://api.engy.ai/v1"
 	case "zero-g":
@@ -1142,7 +1144,7 @@ func DirectModelID(provider, model, upstreamModel string) string {
 // maps still win above for historical aliases and dedicated endpoint slugs.
 func providerUsesAuthorizedUpstreamModel(provider string) bool {
 	switch provider {
-	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow", "neurometric", "engy", "databricks", "zero-g", "alibaba":
+	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow", "neurometric", "pearl", "engy", "databricks", "zero-g", "alibaba":
 		return true
 	default:
 		return false
@@ -1721,6 +1723,8 @@ func normalizeDirectProvider(provider string) string {
 		return "streamlake"
 	case "neurometric", "neurometric-ai":
 		return "neurometric"
+	case "pearl", "pearl-research", "pearl-research-labs":
+		return "pearl"
 	case "engy", "engy-ai":
 		return "engy"
 	case "databricks", "databricks-fmapi":

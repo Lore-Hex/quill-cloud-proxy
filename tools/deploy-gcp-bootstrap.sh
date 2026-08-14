@@ -87,6 +87,7 @@ MORPH_SECRET="${MORPH_SECRET:-trustedrouter-morph-api-key}"
 ATLAS_CLOUD_SECRET="${ATLAS_CLOUD_SECRET:-trustedrouter-atlas-cloud-api-key}"
 STREAMLAKE_SECRET="${STREAMLAKE_SECRET:-trustedrouter-streamlake-api-key}"
 NEUROMETRIC_SECRET="${NEUROMETRIC_SECRET:-trustedrouter-neurometric-api-key}"
+PEARL_SECRET="${PEARL_SECRET:-trustedrouter-pearl-api-key}"
 ENGY_SECRET="${ENGY_SECRET:-trustedrouter-engy-api-key}"
 DATABRICKS_SECRET="${DATABRICKS_SECRET:-trustedrouter-databricks-token}"
 DATABRICKS_HOST_SECRET="${DATABRICKS_HOST_SECRET:-trustedrouter-databricks-host}"
@@ -208,6 +209,7 @@ for secret in \
   "$ATLAS_CLOUD_SECRET" \
   "$STREAMLAKE_SECRET" \
   "$NEUROMETRIC_SECRET" \
+  "$PEARL_SECRET" \
   "$ENGY_SECRET" \
   "$DATABRICKS_SECRET" \
   "$DATABRICKS_HOST_SECRET" \

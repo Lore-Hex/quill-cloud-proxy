@@ -150,6 +150,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	atlasCloudSecret := os.Getenv("QUILL_ATLAS_CLOUD_SECRET")
 	streamLakeSecret := os.Getenv("QUILL_STREAMLAKE_SECRET")
 	neurometricSecret := os.Getenv("QUILL_NEUROMETRIC_SECRET")
+	pearlSecret := os.Getenv("QUILL_PEARL_SECRET")
 	engySecret := os.Getenv("QUILL_ENGY_SECRET")
 	databricksSecret := os.Getenv("QUILL_DATABRICKS_SECRET")
 	databricksHostSecret := os.Getenv("QUILL_DATABRICKS_HOST_SECRET")
@@ -214,6 +215,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		atlasCloudSecret,
 		streamLakeSecret,
 		neurometricSecret,
+		pearlSecret,
 		engySecret,
 		databricksSecret,
 		zeroGSecret,
@@ -532,6 +534,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: neurometric key: %w", err)
 		}
 	}
+	var pearlKey []byte
+	if pearlSecret != "" {
+		pearlKey, err = fetchSecret(ctx, httpc, token, project, pearlSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: pearl key: %w", err)
+		}
+	}
 	var engyKey []byte
 	if engySecret != "" {
 		engyKey, err = fetchSecret(ctx, httpc, token, project, engySecret)
@@ -709,6 +718,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		AtlasCloudAPIKey:             strings.TrimSpace(string(atlasCloudKey)),
 		StreamLakeAPIKey:             strings.TrimSpace(string(streamLakeKey)),
 		NeurometricAPIKey:            strings.TrimSpace(string(neurometricKey)),
+		PearlAPIKey:                  strings.TrimSpace(string(pearlKey)),
 		EngyAPIKey:                   strings.TrimSpace(string(engyKey)),
 		DatabricksToken:              strings.TrimSpace(string(databricksToken)),
 		DatabricksHost:               strings.TrimSpace(string(databricksHost)),

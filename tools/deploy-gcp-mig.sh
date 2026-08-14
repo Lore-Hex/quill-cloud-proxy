@@ -285,6 +285,22 @@ if [ -n "${QUILL_ENGY_SECRET}" ]; then
   ENGY_TEE_ENV="|tee-env-QUILL_ENGY_SECRET=${QUILL_ENGY_SECRET}"
 fi
 
+# Pearl stays dark until its operator key exists. The control plane only
+# publishes Pearl routes after this secret-backed gateway support is deployed.
+if [ "${QUILL_PEARL_SECRET+x}" != "x" ]; then
+  QUILL_PEARL_SECRET=""
+  if gc secrets describe trustedrouter-pearl-api-key >/dev/null 2>&1; then
+    QUILL_PEARL_SECRET="trustedrouter-pearl-api-key"
+  fi
+fi
+PEARL_TEE_ENV=""
+if [ -n "${QUILL_PEARL_SECRET}" ]; then
+  PEARL_TEE_ENV="|tee-env-QUILL_PEARL_SECRET=${QUILL_PEARL_SECRET}"
+fi
+# The template metadata has one composite segment for these independently
+# optional providers, so either can remain dark without emitting an empty name.
+ENGY_TEE_ENV="${PEARL_TEE_ENV}${ENGY_TEE_ENV}"
+
 # Databricks requires both a workspace-scoped token and its workspace host.
 # Keep the provider dark until the pair exists, and never deploy a partial pair.
 if [ "${QUILL_DATABRICKS_SECRET+x}" != "x" ]; then
