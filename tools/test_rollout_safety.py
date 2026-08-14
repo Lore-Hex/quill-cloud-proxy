@@ -118,6 +118,34 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn('trap on_exit EXIT', direct_gate)
         self.assertIn('promoted_cold_alias=0', direct_gate)
 
+    def test_secondary_rollout_explicitly_guards_fail_closed_steps(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+        function_start = workflow.index("          roll_secondary_region() {")
+        function_end = workflow.index("          logs_dir=", function_start)
+        function = workflow[function_start:function_end]
+
+        # Bash ignores `set -e` throughout a function invoked from an OR-list.
+        # The production caller uses `roll_secondary_region ... || failed=1`, so
+        # every safety gate must terminate the subshell explicitly.
+        self.assertIn("              rollout_step() {", function)
+        self.assertIn("                  exit \"${step_status}\"", function)
+        for command in (
+            'rollout_step update_drain set "${region}"',
+            "rollout_step reconcile_dns",
+            'rollout_step bash tools/wait-canonical-drained.sh "${region}"',
+            'rollout_step bash tools/deploy-gcp-mig.sh "${region}"',
+            "rollout_step wait_region_stable_with_dns_refresh",
+            "rollout_step bash tools/wait-region-attested.sh",
+            "rollout_step bash tools/verify-region-before-dns.sh",
+            "rollout_step bash tools/wait-region-synthetic-up.sh",
+            'rollout_step update_drain clear "${region}"',
+        ):
+            self.assertIn(command, function)
+
+        self.assertIn("failed regions remain drained from canonical DNS", workflow)
+
     def test_sao_paulo_is_not_managed_as_a_cold_dns_alias(self) -> None:
         terraform = (ROOT / "tools" / "dns" / "main.tf").read_text(encoding="utf-8")
         repair = (ROOT / "tools" / "fix-quillrouter-dns.sh").read_text(encoding="utf-8")
