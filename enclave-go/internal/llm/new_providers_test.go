@@ -26,7 +26,7 @@ func TestNewProviderNormalizationAndBYOKPolicy(t *testing.T) {
 	if isOpenAICompatibleBYOKProvider("cloudflare-workers-ai") {
 		t.Fatal("cloudflare BYOK needs an account id and must stay disabled")
 	}
-	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake", "neurometric", "engy", "databricks", "zero-g", "alibaba"} {
+	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake", "neurometric", "pearl", "engy", "databricks", "zero-g", "alibaba"} {
 		if isOpenAICompatibleBYOKProvider(provider) {
 			t.Errorf("%s must use only the operator-key prepaid path", provider)
 		}
@@ -46,6 +46,7 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 		AtlasCloudAPIKey:             "atlas-key",
 		StreamLakeAPIKey:             "streamlake-key",
 		NeurometricAPIKey:            "neurometric-key",
+		PearlAPIKey:                  "pearl-key",
 		EngyAPIKey:                   "engy-key",
 		DatabricksToken:              "databricks-token",
 		DatabricksHost:               "dbc-1234.cloud.databricks.com",
@@ -83,6 +84,7 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 		"atlas-cloud": {client.atlasCloud, "https://api.atlascloud.ai/v1", "atlas-key"},
 		"streamlake":  {client.streamLake, "https://vanchin.streamlake.ai/api/gateway/v1/endpoints", "streamlake-key"},
 		"neurometric": {client.neurometric, "https://wharf.neurometric.ai/v1", "neurometric-key"},
+		"pearl":       {client.pearl, "https://inference.pearlresearch.ai/v1", "pearl-key"},
 		"engy":        {client.engy, "https://api.engy.ai/v1", "engy-key"},
 		"databricks": {
 			client.databricks,
@@ -121,6 +123,7 @@ func TestNewProvidersPreserveAuthorizedUpstreamModelID(t *testing.T) {
 		{"atlas-cloud", "z-ai/glm-5.2", "zai-org/glm-5.2"},
 		{"streamlake", "kwaipilot/kat-coder-pro-v2.5", "kat-coder-pro-v2.5"},
 		{"neurometric", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b"},
+		{"pearl", "deepseek/deepseek-v4-pro", "deepseek-ai/DeepSeek-V4-Pro"},
 		{"engy", "z-ai/glm-5.2", "glm-5.2"},
 		{"databricks", "z-ai/glm-5.2", "databricks-glm-5-2"},
 		{"zero-g", "z-ai/glm-5.2", "glm-5.2"},

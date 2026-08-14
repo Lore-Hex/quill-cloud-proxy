@@ -118,6 +118,7 @@ type BootstrapData struct {
 	AtlasCloudAPIKey             string `json:"atlas_cloud_api_key,omitempty"`
 	StreamLakeAPIKey             string `json:"streamlake_api_key,omitempty"`
 	NeurometricAPIKey            string `json:"neurometric_api_key,omitempty"`
+	PearlAPIKey                  string `json:"pearl_api_key,omitempty"`
 	EngyAPIKey                   string `json:"engy_api_key,omitempty"`
 	DatabricksToken              string `json:"databricks_token,omitempty"`
 	DatabricksHost               string `json:"databricks_host,omitempty"`
