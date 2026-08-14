@@ -627,31 +627,41 @@ jobs:
             local status=0
             (
               set -euo pipefail
+              rollout_step() {
+                local step_status=0
+                "$@" || {
+                  step_status=$?
+                  echo "${region} rollout step failed (${step_status}): $*" >&2
+                  exit "${step_status}"
+                }
+              }
               export IMAGE_REF IMAGE_DIGEST API_HOST="${api_host}" REGION_SHORT="${short}"
               if [ -n "${machine_type}" ]; then export MACHINE_TYPE="${machine_type}"; fi
               if [ -n "${conf_type}" ]; then export CONF_COMPUTE_TYPE="${conf_type}"; fi
 
               echo "draining ${region} from canonical API DNS"
-              update_drain set "${region}"
-              reconcile_dns
-              bash tools/wait-canonical-drained.sh "${region}"
-              bash tools/deploy-gcp-mig.sh "${region}"
-              wait_region_stable_with_dns_refresh "${mig}" "${region}"
-              bash tools/wait-region-attested.sh "${filter}" "${region}"
-              bash tools/verify-region-before-dns.sh \
+              rollout_step update_drain set "${region}"
+              rollout_step reconcile_dns
+              rollout_step bash tools/wait-canonical-drained.sh "${region}"
+              rollout_step bash tools/deploy-gcp-mig.sh "${region}"
+              rollout_step wait_region_stable_with_dns_refresh "${mig}" "${region}"
+              rollout_step bash tools/wait-region-attested.sh "${filter}" "${region}"
+              rollout_step bash tools/verify-region-before-dns.sh \
                 "${region}" "${filter}" "${IMAGE_DIGEST}"
 
               # A first-time region still has a cold CNAME. Only this explicit
               # post-canary reconcile may atomically promote it to a region-only
               # A record while the canonical rollout drain remains set.
-              QUILL_ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS="${region}" reconcile_dns
+              QUILL_ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS="${region}" \
+                rollout_step reconcile_dns
 
               if curl -fsS --max-time 15 https://trustedrouter.com/status.json | \
                   jq -e --arg region "${region}" \
                     '[.. | objects | select(.target_region? == $region)] | length > 0' \
                     >/dev/null; then
                 trigger_synthetic_workers
-                WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
+                WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 \
+                  rollout_step bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
                 if ! python3 tools/watchdog.py --regions "${region}" --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 120; then
                   rollback_region "${region}" "${mig}" "${prev_template}"
                   exit 1
@@ -664,8 +674,8 @@ jobs:
                 exit 1
               fi
               echo "re-adding ${region} to canonical API DNS"
-              update_drain clear "${region}"
-              reconcile_dns
+              rollout_step update_drain clear "${region}"
+              rollout_step reconcile_dns
               echo "${region} rollout healthy"
             ) || status=$?
             echo "::endgroup::"
@@ -715,7 +725,7 @@ jobs:
           cat "${logs_dir}/southamerica-east1.log"
 
           if [ "${failed}" -ne 0 ]; then
-            echo "one or more secondary region rollouts failed; failed regions were rolled back above"
+            echo "one or more secondary region rollouts failed; failed regions remain drained from canonical DNS"
             exit 1
           fi
 
