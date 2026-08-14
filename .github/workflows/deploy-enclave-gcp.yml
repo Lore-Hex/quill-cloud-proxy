@@ -37,6 +37,7 @@ on:
       - "tools/wait-region-synthetic-up.sh"
       - "tools/synthetic_gate_status.py"
       - "tools/watchdog.py"
+      - "tools/roll-secondary-region.sh"
       - ".github/workflows/deploy-enclave-gcp.yml"
       # Note: trust-page/** is intentionally NOT in this list. Trust
       # artifacts are *output* of this workflow, not input — listing them
@@ -537,199 +538,78 @@ jobs:
           uv run --script tools/reconcile-enclave-dns.py --apply
           python3 tools/sync-route53-api-aliases.py --apply
 
-      - name: Roll secondary GCP MIGs serially (Europe + US East + São Paulo)
-        # Roll secondaries one at a time with the same DNS-drain invariant used
-        # for us-central1. Parallel secondary deploys are faster, but they reduce
-        # canonical serving capacity during the riskiest part of the rollout.
-        # Three regions with 10-minute readiness holds, fresh synthetic gates,
-        # and regional watchdogs can legitimately exceed 90 minutes.
-        timeout-minutes: 135
+      # AWS OIDC credentials are temporary and cannot refresh in place. Each
+      # secondary rollout can legitimately take 30+ minutes, so authenticate
+      # immediately before every region instead of reusing the session created
+      # near the start of this long-running job.
+      - name: Refresh AWS credentials for Europe backup-domain DNS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Roll Europe GCP MIG
+        timeout-minutes: 55
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          PREV_EU: ${{ steps.prev.outputs.europe_west4_template }}
-          PREV_USEAST4: ${{ steps.prev.outputs.us_east4_template }}
-          PREV_SA: ${{ steps.prev.outputs.southamerica_east1_template }}
+          PREV_TEMPLATE: ${{ steps.prev.outputs.europe_west4_template }}
         run: |
-          set -euo pipefail
-
-          reconcile_dns() {
-            local lock="${SECONDARY_ROLLOUT_LOCK_DIR:-/tmp}/dns-reconcile.lock"
-            (
-              flock 9
-              QUILL_RECONCILE_APPLY=1 \
-              QUILL_API_HOST=api.trustedrouter.com \
-              QUILL_DNS_ZONE=trustedrouter-com \
-              QUILL_PUBLISH_REGIONAL=1 \
-              QUILL_REGIONAL_ZONE=quillrouter-com \
-              QUILL_REGIONAL_SUFFIX=quillrouter.com \
-              QUILL_ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS="${QUILL_ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS:-}" \
-                uv run --script tools/reconcile-enclave-dns.py --apply
-              python3 tools/sync-route53-api-aliases.py --apply
-            ) 9>"${lock}"
-          }
-
-          update_drain() {
-            local operation="$1" region="$2"
-            local lock="${SECONDARY_ROLLOUT_LOCK_DIR:-/tmp}/dns-reconcile.lock"
-            (
-              flock 9
-              QUILL_API_HOST=api.trustedrouter.com \
-              QUILL_DNS_ZONE=trustedrouter-com \
-                uv run --script tools/reconcile-enclave-dns.py \
-                  "--${operation}-drain-region" "${region}"
-            ) 9>"${lock}"
-          }
-
-          trigger_synthetic_workers() {
-            # Trigger both active monitor jobs so wait-region-synthetic-up does
-            # not stall on a stale peer monitor row. us-east4 is currently
-            # covered by the us-central1 monitor; eu has its own monitor.
-            gcloud scheduler jobs run trusted-router-synthetic-us-central1-every-three-minutes \
-              --location=us-central1 --project=quill-cloud-proxy || true
-            gcloud scheduler jobs run trusted-router-synthetic-europe-west4-every-three-minutes \
-              --location=europe-west4 --project=quill-cloud-proxy || true
-          }
-
-          wait_region_stable_with_dns_refresh() {
-            local mig="$1" region="$2"
-            for i in $(seq 1 90); do
-              if gcloud compute instance-groups managed wait-until "${mig}" \
-                --region="${region}" --project=quill-cloud-proxy --stable --timeout=10; then
-                reconcile_dns
-                return 0
-              fi
-              echo "${region} still rolling; refreshing attested DNS membership (${i}/90)"
-              reconcile_dns || true
-              sleep 5
-            done
-            echo "${region} MIG did not stabilize before timeout" >&2
-            return 1
-          }
-
-          rollback_region() {
-            local region="$1" mig="$2" prev_template="$3"
-            if [ -z "${prev_template}" ]; then
-              echo "no prior ${region} template recorded; cannot rollback"
-              return 1
-            fi
-            echo "${region} canary failed; pointing MIG back at ${prev_template}"
-            gcloud compute instance-groups managed set-instance-template "${mig}" \
-              --region="${region}" --project=quill-cloud-proxy \
-              --template="${prev_template}" --quiet
-          }
-
-          roll_secondary_region() {
-            local region="$1" mig="$2" filter="$3" short="$4" api_host="$5" prev_template="$6"
-            local machine_type="${7:-}"
-            local conf_type="${8:-}"
-            echo "::group::secondary rollout ${region}"
-            local status=0
-            (
-              set -euo pipefail
-              rollout_step() {
-                local step_status=0
-                "$@" || {
-                  step_status=$?
-                  echo "${region} rollout step failed (${step_status}): $*" >&2
-                  exit "${step_status}"
-                }
-              }
-              export IMAGE_REF IMAGE_DIGEST API_HOST="${api_host}" REGION_SHORT="${short}"
-              if [ -n "${machine_type}" ]; then export MACHINE_TYPE="${machine_type}"; fi
-              if [ -n "${conf_type}" ]; then export CONF_COMPUTE_TYPE="${conf_type}"; fi
-
-              echo "draining ${region} from canonical API DNS"
-              rollout_step update_drain set "${region}"
-              rollout_step reconcile_dns
-              rollout_step bash tools/wait-canonical-drained.sh "${region}"
-              rollout_step bash tools/deploy-gcp-mig.sh "${region}"
-              rollout_step wait_region_stable_with_dns_refresh "${mig}" "${region}"
-              rollout_step bash tools/wait-region-attested.sh "${filter}" "${region}"
-              rollout_step bash tools/verify-region-before-dns.sh \
-                "${region}" "${filter}" "${IMAGE_DIGEST}"
-
-              # A first-time region still has a cold CNAME. Only this explicit
-              # post-canary reconcile may atomically promote it to a region-only
-              # A record while the canonical rollout drain remains set.
-              QUILL_ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS="${region}" \
-                rollout_step reconcile_dns
-
-              if curl -fsS --max-time 15 https://trustedrouter.com/status.json | \
-                  jq -e --arg region "${region}" \
-                    '[.. | objects | select(.target_region? == $region)] | length > 0' \
-                    >/dev/null; then
-                trigger_synthetic_workers
-                WAIT_UP_SLEEP=10 WAIT_UP_ROUNDS=72 \
-                  rollout_step bash tools/wait-region-synthetic-up.sh "${region}" "${region}"
-                if ! python3 tools/watchdog.py --regions "${region}" --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 120; then
-                  rollback_region "${region}" "${mig}" "${prev_template}"
-                  exit 1
-                fi
-              elif [ -z "${prev_template}" ]; then
-                echo "${region}: first deployment has no synthetic target yet; direct per-instance attestation + PONG is the bootstrap gate"
-              else
-                echo "${region}: existing region is missing from synthetic status; failing closed" >&2
-                rollback_region "${region}" "${mig}" "${prev_template}"
-                exit 1
-              fi
-              echo "re-adding ${region} to canonical API DNS"
-              rollout_step update_drain clear "${region}"
-              rollout_step reconcile_dns
-              echo "${region} rollout healthy"
-            ) || status=$?
-            echo "::endgroup::"
-            return "${status}"
-          }
-
-          logs_dir="$(mktemp -d "${TMPDIR:-/tmp}/tr-secondary-rollout-XXXXXX")"
-          export SECONDARY_ROLLOUT_LOCK_DIR="${logs_dir}"
-          echo "secondary rollout logs: ${logs_dir}"
-
-          failed=0
-          roll_secondary_region \
+          bash tools/roll-secondary-region.sh \
             europe-west4 \
             quill-enclave-mig-eu \
             quill-enclave-mig-eu- \
             eu \
             api.quillrouter.com,api-europe-west4.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
-            "${PREV_EU}" \
+            "${PREV_TEMPLATE}" \
             c3-standard-4 \
-            TDX >"${logs_dir}/europe-west4.log" 2>&1 || failed=1
+            TDX
 
-          roll_secondary_region \
+      - name: Refresh AWS credentials for US East backup-domain DNS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Roll US East GCP MIG
+        timeout-minutes: 55
+        env:
+          IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
+          IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
+          PREV_TEMPLATE: ${{ steps.prev.outputs.us_east4_template }}
+        run: |
+          bash tools/roll-secondary-region.sh \
             us-east4 \
             quill-enclave-mig-useast4 \
             quill-enclave-mig-useast4- \
             useast4 \
             api.quillrouter.com,api-us-east4.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
-            "${PREV_USEAST4}" \
+            "${PREV_TEMPLATE}" \
             c3-standard-4 \
-            TDX >"${logs_dir}/us-east4.log" 2>&1 || failed=1
+            TDX
 
-          roll_secondary_region \
+      - name: Refresh AWS credentials for São Paulo backup-domain DNS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Roll São Paulo GCP MIG
+        timeout-minutes: 55
+        env:
+          IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
+          IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
+          PREV_TEMPLATE: ${{ steps.prev.outputs.southamerica_east1_template }}
+        run: |
+          bash tools/roll-secondary-region.sh \
             southamerica-east1 \
             quill-enclave-mig-sa \
             quill-enclave-mig-sa- \
             sa \
             api.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
-            "${PREV_SA}" \
+            "${PREV_TEMPLATE}" \
             n2d-standard-4 \
-            SEV >"${logs_dir}/southamerica-east1.log" 2>&1 || failed=1
-
-          echo "--- europe-west4 rollout log ---"
-          cat "${logs_dir}/europe-west4.log"
-          echo "--- us-east4 rollout log ---"
-          cat "${logs_dir}/us-east4.log"
-          echo "--- southamerica-east1 rollout log ---"
-          cat "${logs_dir}/southamerica-east1.log"
-
-          if [ "${failed}" -ne 0 ]; then
-            echo "one or more secondary region rollouts failed; failed regions remain drained from canonical DNS"
-            exit 1
-          fi
-
-          echo "secondary regions healthy: europe-west4 + us-east4 + southamerica-east1"
+            SEV
 
       # No cross-region "final watchdog" step. Each region's health is
       # gated by its own per-region canary above (us-central1 canary

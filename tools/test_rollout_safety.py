@@ -14,11 +14,14 @@ class RolloutSafetyTests(unittest.TestCase):
         workflow = (
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
         ).read_text(encoding="utf-8")
+        secondary = (ROOT / "tools" / "roll-secondary-region.sh").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("--set-drain-region us-central1", workflow)
         self.assertIn("--clear-drain-region us-central1", workflow)
-        self.assertIn('update_drain set "${region}"', workflow)
-        self.assertIn('update_drain clear "${region}"', workflow)
+        self.assertIn('update_drain set "${region}"', secondary)
+        self.assertIn('update_drain clear "${region}"', secondary)
         self.assertNotIn("QUILL_EXCLUDE_CANONICAL_REGIONS:", workflow)
 
     def test_rollout_does_not_force_a_second_replacement_wave(self) -> None:
@@ -58,13 +61,10 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("CONF_COMPUTE_TYPE=SEV_SNP is not supported", deploy)
         self.assertIn("southamerica-east1:quill-enclave-mig-sa", workflow)
         sa_start = workflow.index(
-            "          roll_secondary_region \\\n"
+            "          bash tools/roll-secondary-region.sh \\\n"
             "            southamerica-east1"
         )
-        sa_end = workflow.index(
-            ' >"${logs_dir}/southamerica-east1.log"',
-            sa_start,
-        )
+        sa_end = workflow.index("\n\n      # No cross-region", sa_start)
         sa_call = workflow[sa_start:sa_end]
         self.assertIn("quill-enclave-mig-sa", sa_call)
         self.assertIn("api-southamerica-east1.quillrouter.com", sa_call)
@@ -77,12 +77,9 @@ class RolloutSafetyTests(unittest.TestCase):
         )
 
     def test_new_region_is_canaried_before_dns_and_global_traffic(self) -> None:
-        workflow = (
-            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
-        ).read_text(encoding="utf-8")
-        function_start = workflow.index("          roll_secondary_region() {")
-        function_end = workflow.index("          logs_dir=", function_start)
-        function = workflow[function_start:function_end]
+        function = (ROOT / "tools" / "roll-secondary-region.sh").read_text(
+            encoding="utf-8"
+        )
 
         direct_canary = function.index("verify-region-before-dns.sh")
         regional_promotion = function.index(
@@ -122,15 +119,14 @@ class RolloutSafetyTests(unittest.TestCase):
         workflow = (
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
         ).read_text(encoding="utf-8")
-        function_start = workflow.index("          roll_secondary_region() {")
-        function_end = workflow.index("          logs_dir=", function_start)
-        function = workflow[function_start:function_end]
+        function = (ROOT / "tools" / "roll-secondary-region.sh").read_text(
+            encoding="utf-8"
+        )
 
-        # Bash ignores `set -e` throughout a function invoked from an OR-list.
-        # The production caller uses `roll_secondary_region ... || failed=1`, so
-        # every safety gate must terminate the subshell explicitly.
-        self.assertIn("              rollout_step() {", function)
-        self.assertIn("                  exit \"${step_status}\"", function)
+        # Keep every safety-sensitive command behind the explicit wrapper so
+        # failures terminate this region before the next workflow step starts.
+        self.assertIn("rollout_step() {", function)
+        self.assertIn('exit "${step_status}"', function)
         for command in (
             'rollout_step update_drain set "${region}"',
             "rollout_step reconcile_dns",
@@ -144,7 +140,44 @@ class RolloutSafetyTests(unittest.TestCase):
         ):
             self.assertIn(command, function)
 
-        self.assertIn("failed regions remain drained from canonical DNS", workflow)
+        self.assertIn("set -euo pipefail", function)
+        europe = workflow.index("      - name: Roll Europe GCP MIG")
+        us_east = workflow.index("      - name: Roll US East GCP MIG")
+        sao_paulo = workflow.index("      - name: Roll São Paulo GCP MIG")
+        self.assertLess(europe, us_east)
+        self.assertLess(us_east, sao_paulo)
+
+    def test_each_secondary_rollout_refreshes_route53_credentials(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+
+        pairs = (
+            (
+                "Refresh AWS credentials for Europe backup-domain DNS",
+                "Roll Europe GCP MIG",
+            ),
+            (
+                "Refresh AWS credentials for US East backup-domain DNS",
+                "Roll US East GCP MIG",
+            ),
+            (
+                "Refresh AWS credentials for São Paulo backup-domain DNS",
+                "Roll São Paulo GCP MIG",
+            ),
+        )
+        previous_roll = -1
+        for refresh_name, roll_name in pairs:
+            refresh = workflow.index(f"      - name: {refresh_name}")
+            roll = workflow.index(f"      - name: {roll_name}")
+            self.assertLess(previous_roll, refresh)
+            self.assertLess(refresh, roll)
+            segment = workflow[refresh:roll]
+            self.assertIn("uses: aws-actions/configure-aws-credentials@v4", segment)
+            self.assertIn("role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}", segment)
+            previous_roll = roll
+
+        self.assertIn('"tools/roll-secondary-region.sh"', workflow)
 
     def test_sao_paulo_is_not_managed_as_a_cold_dns_alias(self) -> None:
         terraform = (ROOT / "tools" / "dns" / "main.tf").read_text(encoding="utf-8")

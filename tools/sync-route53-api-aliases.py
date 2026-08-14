@@ -37,13 +37,24 @@ ALIASES = (
 
 
 def run_json(command: list[str]) -> Any:
-    result = subprocess.run(
-        command,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return json.loads(result.stdout or "{}")
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "no command output").strip()
+        operation = " ".join(command[:3])
+        raise RuntimeError(
+            f"{operation} failed with exit {exc.returncode}: {detail}"
+        ) from exc
+    try:
+        return json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        operation = " ".join(command[:3])
+        raise RuntimeError(f"{operation} returned invalid JSON") from exc
 
 
 def normalized_ipv4(

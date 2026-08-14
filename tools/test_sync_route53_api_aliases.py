@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("sync-route53-api-aliases.py")
@@ -49,6 +51,34 @@ class Route53AliasSyncTests(unittest.TestCase):
             record["ResourceRecords"],
             [{"Value": "34.11.59.111"}, {"Value": "34.11.89.24"}],
         )
+
+    def test_command_failure_reports_stderr(self) -> None:
+        failure = subprocess.CalledProcessError(
+            254,
+            ["aws", "route53", "list-resource-record-sets"],
+            stderr="The security token included in the request is expired",
+        )
+        with mock.patch.object(SYNC.subprocess, "run", side_effect=failure):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "aws route53 list-resource-record-sets failed with exit 254: "
+                "The security token included in the request is expired",
+            ):
+                SYNC.run_json(["aws", "route53", "list-resource-record-sets"])
+
+    def test_invalid_command_json_has_operation_context(self) -> None:
+        result = subprocess.CompletedProcess(
+            ["gcloud", "dns", "record-sets"],
+            0,
+            stdout="not-json",
+            stderr="",
+        )
+        with mock.patch.object(SYNC.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "gcloud dns record-sets returned invalid JSON",
+            ):
+                SYNC.run_json(["gcloud", "dns", "record-sets"])
 
 
 if __name__ == "__main__":
