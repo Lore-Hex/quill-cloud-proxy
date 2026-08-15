@@ -19,7 +19,10 @@ on:
   push:
     branches: [main]
     paths:
-      - "trust-page/trust/aws-release.json trust-page/trust/pcr0-aws.txt trust-page/trust/accepted-pcr0s-aws.txt trust-page/pcr0.txt"
+      - "trust-page/trust/aws-release.json"
+      - "trust-page/trust/pcr0-aws.txt"
+      - "trust-page/trust/accepted-pcr0s-aws.txt"
+      - "trust-page/pcr0.txt"
       - ".github/workflows/publish-trust-aws.yml"
   workflow_dispatch: {}
 
