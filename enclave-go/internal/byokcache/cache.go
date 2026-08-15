@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -307,7 +308,7 @@ func aad(workspaceID, provider string) []byte {
 // Must stay byte-identical to _aad_v2 in quill-router's byok_crypto.py. A
 // divergence here is not a test failure, it is every BYOK key in that family
 // failing to decrypt.
-func aadV2(namespace, workspaceID, context string) []byte {
+func aadV2(namespace, workspaceID, context string) ([]byte, error) {
 	parts := [][]byte{
 		[]byte("trustedrouter/byok/v2"),
 		[]byte(namespace),
@@ -317,11 +318,21 @@ func aadV2(namespace, workspaceID, context string) []byte {
 	out := make([]byte, 0, 64)
 	var length [4]byte
 	for _, part := range parts {
-		binary.BigEndian.PutUint32(length[:], uint32(len(part)))
+		// A component longer than a uint32 cannot be length-prefixed in this
+		// encoding. These are identifiers — a namespace, a workspace UUID, a
+		// provider slug — so this is unreachable in practice, but an unchecked
+		// int->uint32 narrowing in the function that derives AEAD associated
+		// data is not something to leave to reasoning about callers: a wrapped
+		// length would silently produce a DIFFERENT tuple's AAD.
+		if uint64(len(part)) > math.MaxUint32 {
+			return nil, fmt.Errorf("byokcache: AAD component is %d bytes, over the uint32 limit", len(part))
+		}
+		// The bound above makes this conversion total; gosec cannot see that.
+		binary.BigEndian.PutUint32(length[:], uint32(len(part))) //nolint:gosec // bounded above
 		out = append(out, length[:]...)
 		out = append(out, part...)
 	}
-	return out
+	return out, nil
 }
 
 // envelopeAAD selects the associated data for an envelope's declared format.
@@ -335,7 +346,7 @@ func envelopeAAD(algorithm, workspaceID, provider string) ([]byte, error) {
 	case Algorithm:
 		return aad(workspaceID, provider), nil
 	case AlgorithmV2:
-		return aadV2(namespaceProvider, workspaceID, provider), nil
+		return aadV2(namespaceProvider, workspaceID, provider)
 	default:
 		return nil, fmt.Errorf("byokcache: unsupported envelope algorithm %q", algorithm)
 	}

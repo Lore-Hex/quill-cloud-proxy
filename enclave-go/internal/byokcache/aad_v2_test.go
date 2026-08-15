@@ -15,10 +15,13 @@ import (
 //
 // This vector was produced by the Python implementation and pasted here. If it
 // ever fails, one of the two encoders changed and the migration is broken.
+// Not a credential; a fixed plaintext so the round trip asserts something.
+const testProviderSecret = "opaque-test-plaintext" //nolint:gosec // fixture, not a credential
+
 const pythonVectorProviderWs1OpenAI = "0000001574727573746564726f757465722f62796f6b2f76320000000870726f76696465720000000477732d31000000066f70656e6169"
 
 func TestAADv2MatchesTheControlPlaneVector(t *testing.T) {
-	got := hex.EncodeToString(aadV2("provider", "ws-1", "openai"))
+	got := hex.EncodeToString(mustAADv2(t, "provider", "ws-1", "openai"))
 	if got != pythonVectorProviderWs1OpenAI {
 		t.Fatalf("v2 AAD diverged from the control plane\n got: %s\nwant: %s", got, pythonVectorProviderWs1OpenAI)
 	}
@@ -32,7 +35,7 @@ func TestAADv2IsInjective(t *testing.T) {
 	for _, ns := range []string{"provider", "control"} {
 		for _, w := range alphabet {
 			for _, c := range alphabet {
-				key := string(aadV2(ns, w, c))
+				key := string(mustAADv2(t, ns, w, c))
 				tuple := [3]string{ns, w, c}
 				if prev, ok := seen[key]; ok && prev != tuple {
 					t.Fatalf("collision: %v and %v produce identical AAD", prev, tuple)
@@ -52,7 +55,7 @@ func TestAADv1IsNotInjective(t *testing.T) {
 	if string(aad("a:b", "c")) != string(aad("a", "b:c")) {
 		t.Fatal("expected the documented v1 collision; if this fails, v1 changed")
 	}
-	if string(aadV2("provider", "a:b", "c")) == string(aadV2("provider", "a", "b:c")) {
+	if string(mustAADv2(t, "provider", "a:b", "c")) == string(mustAADv2(t, "provider", "a", "b:c")) {
 		t.Fatal("v2 inherited the v1 collision")
 	}
 }
@@ -61,7 +64,7 @@ func TestAADv1IsNotInjective(t *testing.T) {
 // exactly. The enclave only ever passes "provider", but the encoding has to
 // carry the distinction or the control plane's separation is not real.
 func TestAADv2SeparatesNamespaces(t *testing.T) {
-	if string(aadV2("provider", "w", "x")) == string(aadV2("control", "w", "x")) {
+	if string(mustAADv2(t, "provider", "w", "x")) == string(mustAADv2(t, "control", "w", "x")) {
 		t.Fatal("provider and control namespaces collide")
 	}
 }
@@ -79,7 +82,7 @@ func TestEnvelopeAADSelectsByAlgorithm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("v2: %v", err)
 	}
-	if string(v2) != string(aadV2(namespaceProvider, "w", "p")) {
+	if string(v2) != string(mustAADv2(t, namespaceProvider, "w", "p")) {
 		t.Fatal("v2 envelopes must use the v2 AAD with the provider namespace")
 	}
 
@@ -99,10 +102,10 @@ func TestResolveOpensBothEnvelopeFormats(t *testing.T) {
 		aad       []byte
 	}{
 		{"v1 keeps working", Algorithm, aad("ws-1", "openai")},
-		{"v2 opens", AlgorithmV2, aadV2(namespaceProvider, "ws-1", "openai")},
+		{"v2 opens", AlgorithmV2, mustAADv2(t, namespaceProvider, "ws-1", "openai")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			envelope := sealWith(t, tc.algorithm, tc.aad, "sk-provider-secret")
+			envelope := sealWith(t, tc.algorithm, tc.aad, testProviderSecret)
 			cache := New(Options{Unwrapper: &fakeUnwrapper{dek: fixedDEK()}})
 
 			secret, _, err := cache.Resolve(
@@ -110,7 +113,7 @@ func TestResolveOpensBothEnvelopeFormats(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolve: %v", err)
 			}
-			if secret != "sk-provider-secret" {
+			if secret != testProviderSecret {
 				t.Fatalf("got %q", secret)
 			}
 		})
@@ -121,7 +124,7 @@ func TestResolveOpensBothEnvelopeFormats(t *testing.T) {
 // cosmetic — both formats would be interchangeable and the collision would
 // survive.
 func TestV2EnvelopeDoesNotOpenUnderV1AAD(t *testing.T) {
-	envelope := sealWith(t, AlgorithmV2, aad("ws-1", "openai"), "sk-provider-secret")
+	envelope := sealWith(t, AlgorithmV2, aad("ws-1", "openai"), testProviderSecret)
 	cache := New(Options{Unwrapper: &fakeUnwrapper{dek: fixedDEK()}})
 
 	if _, _, err := cache.Resolve(
@@ -150,4 +153,13 @@ func sealWith(t *testing.T, algorithm string, associated []byte, secret string) 
 		Ciphertext:   base64.URLEncoding.EncodeToString(ciphertext),
 		Nonce:        base64.URLEncoding.EncodeToString(nonce),
 	}
+}
+
+func mustAADv2(t *testing.T, namespace, workspaceID, context string) []byte {
+	t.Helper()
+	out, err := aadV2(namespace, workspaceID, context)
+	if err != nil {
+		t.Fatalf("aadV2(%q,%q,%q): %v", namespace, workspaceID, context, err)
+	}
+	return out
 }
