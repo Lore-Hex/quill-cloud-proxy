@@ -99,6 +99,83 @@ jobs:
           assert Path("trust-page/trust/accepted-image-digests-gcp.txt").read_text().strip() == ",".join(accepted)
           assert Path("trust-page/trust/accepted-image-references-gcp.txt").read_text().strip() == ",".join(accepted_references)
           PY
+      - name: Validate AWS and Azure trust records
+        run: |
+          set -euo pipefail
+          # The GCP block above is thorough because GCP's record is produced by
+          # this pipeline. AWS and Azure records are produced out of band by
+          # tools/capture-plane-measurements.py, so what needs guarding here is
+          # internal consistency: the scalar, the accepted set, and the .txt
+          # mirrors must agree. trust-page/pcr0.txt is checked explicitly — it
+          # is the legacy path that served a value matching no running enclave
+          # from the initial commit until 2026-08-15, and the reason it went
+          # unnoticed is that nothing ever compared it to anything.
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          trust = Path("trust-page/trust")
+
+          aws = json.loads((trust / "aws-release.json").read_text())
+          assert aws["platform"] == "aws-nitro-enclaves"
+          assert aws["measurement_type"] == "nitro-pcr0-sha384"
+          assert len(aws["pcr0"]) == 96, "PCR0 must be 48 bytes of hex (SHA-384)"
+          int(aws["pcr0"], 16)
+          assert aws["pcr0"] in aws["accepted_pcr0s"], (
+              "the value expected to be serving is not in its own accepted set"
+          )
+          assert aws["data_policy"]["prompt_output_storage"] is False
+          assert (trust / "pcr0-aws.txt").read_text().strip() == aws["pcr0"]
+          assert (trust / "accepted-pcr0s-aws.txt").read_text().strip() == ",".join(
+              aws["accepted_pcr0s"]
+          )
+          legacy = Path("trust-page/pcr0.txt").read_text().strip()
+          assert legacy == aws["pcr0"], (
+              f"legacy trust-page/pcr0.txt ({legacy[:16]}...) disagrees with the "
+              f"current record ({aws['pcr0'][:16]}...). Two paths publishing "
+              "different measurements is exactly the defect this check exists for; "
+              "re-run tools/capture-plane-measurements.py --write."
+          )
+
+          azure = json.loads((trust / "azure-release.json").read_text())
+          assert azure["platform"] == "azure-confidential-containers-sev-snp"
+          assert azure["measurement_type"] == "sev-snp-hostdata-sha256"
+          assert len(azure["hostdata"]) == 64, "hostdata must be 32 bytes of hex"
+          int(azure["hostdata"], 16)
+          assert azure["hostdata"] in azure["accepted_hostdata"]
+          assert azure["attestation_issuers"], "an MAA record with no issuer is unverifiable"
+          assert azure["data_policy"]["prompt_output_storage"] is False
+          assert (trust / "hostdata-azure.txt").read_text().strip() == azure["hostdata"]
+          assert (trust / "accepted-hostdata-azure.txt").read_text().strip() == ",".join(
+              azure["accepted_hostdata"]
+          )
+          print("AWS and Azure trust records are internally consistent")
+          PY
+      # Sign on the surface customers actually reach. Until now the cosign
+      # bundles existed only on the S3 mirror; every .bundle on
+      # trust.trustedrouter.com returned 404, so the transparency-log property
+      # was real but unreachable from the page the trust page links to.
+      # Keyless signing binds each file to this workflow's GitHub OIDC identity
+      # and records it in Rekor, which is where the timing and immutability
+      # come from — no long-lived key of ours is involved.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
+      - name: Sign published trust artifacts (keyless, Rekor-recorded)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in trust-page/pcr0.txt trust-page/trust/*.json trust-page/trust/*.txt; do
+            cosign sign-blob --bundle "$f.bundle" "$f"
+          done
+          # Bundles are self-contained: signature, ephemeral cert, and Rekor
+          # inclusion proof. Verifying one needs no call to Rekor. Finding the
+          # NEWEST record does — see trust-page/index.html for the identity to
+          # pin when querying the log.
+          ls -1 trust-page/trust/*.bundle trust-page/*.bundle | wc -l | xargs echo "bundles signed:"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

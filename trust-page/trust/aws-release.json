@@ -1,0 +1,24 @@
+{
+  "accepted_pcr0s": [
+    "aef48a453944b35a6cdf472c51a704c1cce185feba75e54538f62f9a0ec54243a1a55fb2c4bddde23b4ea0d0e5e855e1"
+  ],
+  "api_base_url": "https://api-aws.trustedrouter.com/v1",
+  "attestation_format": "cose-sign1-nitro-attestation-document",
+  "attestation_root": "https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip",
+  "data_policy": {
+    "control_plane_prompt_access": false,
+    "prompt_output_storage": false
+  },
+  "measurement_type": "nitro-pcr0-sha384",
+  "observed_module_id": "i-0ccfed0780553a631-enc019fd51d106cc809",
+  "pcr0": "aef48a453944b35a6cdf472c51a704c1cce185feba75e54538f62f9a0ec54243a1a55fb2c4bddde23b4ea0d0e5e855e1",
+  "platform": "aws-nitro-enclaves",
+  "release_state": "current",
+  "reproduce": "tools/verify-pcr0.sh",
+  "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
+  "tls": {
+    "certificate_binding": "user_data[0:64]=certificate fingerprint, user_data[64:96]=TLS exporter channel binding",
+    "hostname": "api-aws.trustedrouter.com",
+    "mode": "attested-self-signed-inside-enclave"
+  }
+}

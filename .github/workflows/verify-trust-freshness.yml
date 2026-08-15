@@ -1,0 +1,140 @@
+name: Verify trust freshness
+
+# Compares every published measurement against a live attestation from the plane
+# it claims to describe, and fails loudly when they disagree.
+#
+# This exists because publishing a measurement and checking it were never the
+# same act. trust-page/pcr0.txt was published from the initial commit onward and
+# matched no running enclave for months. Nothing was broken, exactly — there was
+# simply no step anywhere that compared the number we published to the number
+# that was running, so drift had no way to become visible.
+#
+# Signing does not solve this and neither does Rekor. A transparency log proves
+# when a record was signed and that it has not been altered; it cannot know
+# whether the enclave was rebuilt afterwards. An eight-month-old signature on a
+# deployment that genuinely has not changed is correct. Only this comparison
+# distinguishes the two.
+#
+# Runs on a schedule rather than on deploy because the thing that invalidates a
+# published measurement is an enclave rebuild, which does not touch this repo.
+
+on:
+  schedule:
+    # Twice daily. Drift is not urgent within hours, but it must not survive a
+    # weekend unnoticed.
+    - cron: "23 6,18 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "trust-page/**"
+      - "tools/capture-plane-measurements.py"
+      - ".github/workflows/verify-trust-freshness.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: verify-trust-freshness
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install cbor2
+      - name: Compare published measurements to live attestations
+        id: compare
+        run: |
+          set -euo pipefail
+          python3 tools/capture-plane-measurements.py > /tmp/live.txt 2>&1 || true
+          cat /tmp/live.txt
+          python3 - <<'PY'
+          import json, re, sys
+          from pathlib import Path
+
+          live = Path("/tmp/live.txt").read_text()
+          trust = Path("trust-page/trust")
+          problems = []
+
+          def observed(pattern):
+              match = re.search(pattern, live)
+              return match.group(1) if match else None
+
+          running_pcr0 = observed(r"AWS   PCR0     ([0-9a-f]{96})")
+          running_hostdata = observed(r"Azure hostdata ([0-9a-f]{64})")
+
+          if running_pcr0 is None:
+              problems.append("could not read a live PCR0 from the AWS plane")
+          else:
+              aws = json.loads((trust / "aws-release.json").read_text())
+              if running_pcr0 not in aws["accepted_pcr0s"]:
+                  problems.append(
+                      f"AWS drift: running PCR0 {running_pcr0} is not in the published "
+                      f"accepted set {aws['accepted_pcr0s']}"
+                  )
+
+          if running_hostdata is None:
+              problems.append("could not read live hostdata from the Azure plane")
+          else:
+              azure = json.loads((trust / "azure-release.json").read_text())
+              if running_hostdata not in azure["accepted_hostdata"]:
+                  problems.append(
+                      f"Azure drift: running hostdata {running_hostdata} is not in the "
+                      f"published accepted set {azure['accepted_hostdata']}"
+                  )
+
+          if problems:
+              print("::error::published trust records do not match what is running")
+              for problem in problems:
+                  print(f"  - {problem}")
+              Path("/tmp/problems.txt").write_text("\n".join(problems))
+              sys.exit(1)
+          print("every published measurement matches a live attestation")
+          PY
+      - name: Open an issue on drift
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -f /tmp/problems.txt ]; then
+            cp /tmp/problems.txt /tmp/detail.txt
+          else
+            echo "the freshness check failed; see the run log" > /tmp/detail.txt
+          fi
+          {
+            echo "The scheduled freshness check found a published measurement that no live attestation matches."
+            echo
+            echo '```'
+            cat /tmp/detail.txt
+            echo '```'
+            echo
+            echo "Fix by capturing what is actually running:"
+            echo
+            echo '```bash'
+            echo "python3 tools/capture-plane-measurements.py --write"
+            echo '```'
+            echo
+            echo "During a bind window add --keep-accepted so the outgoing measurement stays"
+            echo "acceptable while the old enclave is still serving."
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > /tmp/issue-body.md
+          # One open issue at a time. A check that files a duplicate every twelve
+          # hours trains you to ignore it, and being ignored is how the original
+          # defect survived for months.
+          existing="$(gh issue list --label trust-drift --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body-file /tmp/issue-body.md
+          else
+            gh issue create \
+              --title "Published trust measurement does not match what is running" \
+              --label trust-drift \
+              --body-file /tmp/issue-body.md
+          fi

@@ -117,6 +117,7 @@ jobs:
           python3 tools/test_write_trust_artifacts.py
           python3 tools/test_reconcile_enclave_dns.py
           python3 tools/test_rollout_safety.py
+          python3 tools/test_verify_pcr0_build_args.py
       - name: Assert trust page contains no <script> tags
         run: |
           if grep -qi '<script' trust-page/index.html; then
