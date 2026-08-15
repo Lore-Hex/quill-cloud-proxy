@@ -48,54 +48,103 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install cbor2
-      - name: Compare published measurements to live attestations
+      - name: Compare PUBLISHED bytes to live attestations
         id: compare
+        env:
+          # Every surface that serves a measurement. Reading the repo instead of
+          # these URLs is the mistake this file was written to catch: the repo
+          # can hold the correct value while a surface still serves the old one,
+          # because publishing is a separate act from committing. An earlier
+          # draft of this very workflow compared against the checked-out repo
+          # and would have reported green while trust.trustedrouter.com served
+          # a PCR0 matching no running enclave.
+          SURFACES: >-
+            https://trust.trustedrouter.com
+            https://trust.quill.lorehex.co
         run: |
           set -euo pipefail
           python3 tools/capture-plane-measurements.py > /tmp/live.txt 2>&1 || true
           cat /tmp/live.txt
           python3 - <<'PY'
-          import json, re, sys
-          from pathlib import Path
+          import json, os, re, sys, urllib.error, urllib.request
 
-          live = Path("/tmp/live.txt").read_text()
-          trust = Path("trust-page/trust")
+          live = open("/tmp/live.txt").read()
           problems = []
 
           def observed(pattern):
               match = re.search(pattern, live)
               return match.group(1) if match else None
 
-          running_pcr0 = observed(r"AWS   PCR0     ([0-9a-f]{96})")
-          running_hostdata = observed(r"Azure hostdata ([0-9a-f]{64})")
+          running = {
+              "gcp": observed(r"GCP   digest   (sha256:[0-9a-f]{64})"),
+              "aws": observed(r"AWS   PCR0     ([0-9a-f]{96})"),
+              "azure": observed(r"Azure hostdata ([0-9a-f]{64})"),
+          }
 
-          if running_pcr0 is None:
-              problems.append("could not read a live PCR0 from the AWS plane")
-          else:
-              aws = json.loads((trust / "aws-release.json").read_text())
-              if running_pcr0 not in aws["accepted_pcr0s"]:
-                  problems.append(
-                      f"AWS drift: running PCR0 {running_pcr0} is not in the published "
-                      f"accepted set {aws['accepted_pcr0s']}"
-                  )
+          def get(url):
+              request = urllib.request.Request(url, headers={"cache-control": "no-cache"})
+              with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+                  return response.read().decode()
 
-          if running_hostdata is None:
-              problems.append("could not read live hostdata from the Azure plane")
-          else:
-              azure = json.loads((trust / "azure-release.json").read_text())
-              if running_hostdata not in azure["accepted_hostdata"]:
+          # Compared against the ACCEPTED SET, never the scalar. During a roll
+          # the live plane legitimately serves the outgoing measurement while the
+          # record already names the incoming one — GCP was mid-roll when this
+          # was written, live a781e99 against target 7a32069, both accepted. A
+          # check pinned to the scalar would cry wolf on every single deploy.
+          PLANES = (
+              ("gcp", "gcp-release.json", "image_digest", "accepted_image_digests", "image-digest-gcp.txt"),
+              ("aws", "aws-release.json", "pcr0", "accepted_pcr0s", "pcr0-aws.txt"),
+              ("azure", "azure-release.json", "hostdata", "accepted_hostdata", "hostdata-azure.txt"),
+          )
+
+          for surface in os.environ["SURFACES"].split():
+              for plane, record_name, scalar, accepted_key, mirror in PLANES:
+                  value = running[plane]
+                  if value is None:
+                      problems.append(f"could not read a live measurement from the {plane} plane")
+                      continue
+                  url = f"{surface}/trust/{record_name}"
+                  try:
+                      record = json.loads(get(url))
+                  except (urllib.error.URLError, ValueError) as exc:
+                      problems.append(f"{url} is not serving a readable record ({exc})")
+                      continue
+                  if value not in record.get(accepted_key, []):
+                      problems.append(
+                          f"{url} publishes {record.get(accepted_key)} but the {plane} plane "
+                          f"is running {value}"
+                      )
+                  try:
+                      mirrored = get(f"{surface}/trust/{mirror}").strip()
+                  except (urllib.error.URLError, ValueError) as exc:
+                      problems.append(f"{surface}/trust/{mirror} is unreadable ({exc})")
+                      continue
+                  if mirrored != record.get(scalar):
+                      problems.append(
+                          f"{surface}: {mirror} says {mirrored} but {record_name} says "
+                          f"{record.get(scalar)}"
+                      )
+
+          # The legacy path is checked by name because it is the one that was
+          # wrong in public for months.
+          for surface in os.environ["SURFACES"].split():
+              try:
+                  legacy = get(f"{surface}/pcr0.txt").strip()
+              except (urllib.error.URLError, ValueError):
+                  continue  # not every surface serves the legacy path
+              if running["aws"] and legacy != running["aws"]:
                   problems.append(
-                      f"Azure drift: running hostdata {running_hostdata} is not in the "
-                      f"published accepted set {azure['accepted_hostdata']}"
+                      f"{surface}/pcr0.txt serves {legacy} but the AWS plane is running "
+                      f"{running['aws']}"
                   )
 
           if problems:
               print("::error::published trust records do not match what is running")
               for problem in problems:
                   print(f"  - {problem}")
-              Path("/tmp/problems.txt").write_text("\n".join(problems))
+              open("/tmp/problems.txt", "w").write("\n".join(problems))
               sys.exit(1)
-          print("every published measurement matches a live attestation")
+          print("every published measurement, on every surface, matches a live attestation")
           PY
       - name: Open an issue on drift
         if: failure()

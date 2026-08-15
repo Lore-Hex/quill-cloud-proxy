@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Produce the AWS and Azure trust records from live attestations.
+"""Read every serving plane's live measurement; produce the AWS and Azure records.
 
 THIS IS THE MISSING PRODUCER. Before this script, trust-page/pcr0.txt had a
 publisher but no producer: the Makefile and the deploy workflow both copied it
@@ -22,8 +22,14 @@ disagree.
     # during a bind window, keep the outgoing measurement acceptable
     python3 tools/capture-plane-measurements.py --write --keep-accepted
 
-Nothing here is billed and no prompt is sent: both endpoints are unauthenticated
-attestation routes.
+GCP is REPORTED but never written: its record is produced by the deploy
+pipeline, which is the correct producer because it knows which digest it is
+rolling to and maintains the accepted set across a bind window. Reporting it here
+is what lets the freshness gate check the plane that carries every prompt — until
+now the only one with no drift check at all.
+
+Nothing here is billed and no prompt is sent: every endpoint used is an
+unauthenticated attestation route.
 """
 
 from __future__ import annotations
@@ -42,6 +48,9 @@ import cbor2
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TRUST_DIR = REPO_ROOT / "trust-page" / "trust"
 
+GCP_ATTESTATION_URL = "https://api.trustedrouter.com/attestation"
+GCP_ATTESTATION_ISSUER = "https://confidentialcomputing.googleapis.com"
+GCP_ATTESTATION_AUDIENCE = "quill-cloud"
 AWS_ATTESTATION_URL = "https://api-aws.trustedrouter.com/attestation"
 AZURE_ATTESTATION_URL = "https://api-azure.trustedrouter.com/attestation"
 TIMEOUT_SECONDS = 25
@@ -93,6 +102,37 @@ def live_aws() -> dict[str, str]:
     return {
         "pcr0": pcr0.hex(),
         "module_id": module_id if isinstance(module_id, str) else "unknown",
+    }
+
+
+def live_gcp() -> dict[str, str]:
+    """Image digest and reference from the running Confidential Space workload.
+
+    Read-only on purpose. gcp-release.json is written by the deploy pipeline,
+    which is the right producer for it — the deploy knows which digest it is
+    rolling TO, and it maintains the accepted set across a bind window. What was
+    missing is not production but comparison: nothing checked the live GCP
+    attestation against the published record, so the plane carrying every prompt
+    was the only one with no drift check at all.
+    """
+    token = _fetch(GCP_ATTESTATION_URL).decode("ascii").strip()
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise ValueError("GCP attestation is not a three-part JWT")
+    padded = parts[1] + "=" * (-len(parts[1]) % 4)
+    claims = json.loads(base64.urlsafe_b64decode(padded))
+    if claims.get("iss") != GCP_ATTESTATION_ISSUER:
+        raise ValueError(f"unexpected attestation issuer {claims.get('iss')!r}")
+    if claims.get("aud") != GCP_ATTESTATION_AUDIENCE:
+        raise ValueError(f"unexpected attestation audience {claims.get('aud')!r}")
+    container = claims.get("submods", {}).get("container", {})
+    digest = container.get("image_digest")
+    if not isinstance(digest, str) or not digest.startswith("sha256:") or len(digest) != 71:
+        raise ValueError("GCP attestation has no usable container image digest")
+    reference = container.get("image_reference")
+    return {
+        "image_digest": digest,
+        "image_reference": reference if isinstance(reference, str) else "unknown",
     }
 
 
@@ -219,6 +259,12 @@ def main() -> int:
     args = parser.parse_args()
 
     failures = []
+    try:
+        gcp = live_gcp()
+        print(f"GCP   digest   {gcp['image_digest']}")
+        print(f"      image    {gcp['image_reference']}")
+    except Exception as exc:  # noqa: BLE001
+        failures.append(f"GCP: {exc}")
     try:
         aws = live_aws()
         print(f"AWS   PCR0     {aws['pcr0']}")

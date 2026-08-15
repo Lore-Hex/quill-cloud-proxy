@@ -171,10 +171,14 @@ jobs:
           for f in trust-page/pcr0.txt trust-page/trust/*.json trust-page/trust/*.txt; do
             cosign sign-blob --bundle "$f.bundle" "$f"
           done
-          # Bundles are self-contained: signature, ephemeral cert, and Rekor
-          # inclusion proof. Verifying one needs no call to Rekor. Finding the
-          # NEWEST record does — see trust-page/index.html for the identity to
-          # pin when querying the log.
+          # What a bundle actually contains, confirmed by dissecting a live one
+          # rather than by repeating the marketing: base64Signature, cert, and
+          # rekorBundle{SignedEntryTimestamp, Payload}. There is NO inclusionProof
+          # and NO checkpoint. So the Signed Entry Timestamp gives a verifiable
+          # timestamp offline against Rekor's public key, but proving the entry
+          # is really in the log — and discovering whether a NEWER entry exists —
+          # both require querying Rekor. See trust-page/index.html for the
+          # identity to pin when doing so.
           ls -1 trust-page/trust/*.bundle trust-page/*.bundle | wc -l | xargs echo "bundles signed:"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
