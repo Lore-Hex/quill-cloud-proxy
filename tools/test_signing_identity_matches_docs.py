@@ -69,6 +69,26 @@ def _signed_files(plane: str) -> set[str]:
 
 
 class SigningIdentityMatchesDocumentation(unittest.TestCase):
+    def test_every_signed_source_file_triggers_its_plane_workflow(self) -> None:
+        import yaml
+
+        for plane in PLANES:
+            workflow = WORKFLOWS / f"publish-trust-{plane}.yml"
+            document = yaml.safe_load(workflow.read_text())
+            # PyYAML's YAML 1.1 loader parses the unquoted `on` key as True.
+            triggers = document.get("on", document.get(True, {}))
+            paths = triggers["push"]["paths"]
+            self.assertTrue(
+                all(" " not in path for path in paths),
+                f"{workflow.name} has a space-joined path entry that can never match",
+            )
+            for signed_file in _signed_files(plane):
+                self.assertIn(
+                    signed_file,
+                    paths,
+                    f"changing {signed_file} does not trigger {workflow.name}",
+                )
+
     def test_page_publisher_does_not_sign(self) -> None:
         # The page publisher uploads what the per-plane workflows signed. If it
         # signs as well, its signature is the one that reaches the published
