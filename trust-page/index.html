@@ -127,12 +127,15 @@
       <p>These files are static so that reading them costs the serving enclaves nothing. The attestation endpoints above are the authority, and they are there for when you want to check a plane deliberately &mdash; not on every page view.</p>
       <p>Every published file carries a <code>.bundle</code> signed with cosign keyless. The signature binds the file to the GitHub Actions identity that produced it and records it in the Sigstore transparency log, so the timing and the immutability come from a third party rather than from us. Verify one without trusting this page:</p>
       <pre>cosign verify-blob \
-  --bundle pcr0-aws.txt.bundle \
-  --certificate-identity-regexp '^https://github.com/Lore-Hex/quill-cloud-proxy/' \
+  --bundle aws-release.json.bundle \
+  --certificate-identity https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-aws.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  pcr0-aws.txt</pre>
-      <p>That identity is what you pin. A signature alone proves authorship, not recency &mdash; to confirm you are looking at the <em>newest</em> record rather than an older one replayed at you, query the transparency log for that same identity. The log is append-only, so a newer entry cannot be hidden from you.</p>
-      <p>One thing the log cannot tell you is whether a measurement is still what is <em>running</em>. A deployment unchanged for months should carry a months-old signature, so age is not drift. Only comparing a published record against a live attestation distinguishes the two, which is what our own scheduled check does &mdash; and what you can do yourself with the endpoints above.</p>
+  aws-release.json</pre>
+      <p><strong>Pin the exact identity, not a pattern.</strong> Each plane is signed by its own workflow file, and the workflow path is embedded in the certificate, so those are three cryptographically distinct signers. A regex over the repository would accept any workflow here and hand every plane the same authority &mdash; which is precisely the property this arrangement exists to avoid. Each record names its own identity in its <code>transparency</code> block, so the record tells you what to pin even if you are reading it from an email months from now.</p>
+      <p>A signature proves authorship, not recency. To confirm you have the <em>newest</em> record rather than an older one replayed at you, search the transparency log for that identity; the log is append-only, so a newer entry cannot be hidden from you. The bundle carries a Signed Entry Timestamp but no inclusion proof, so confirming log membership means querying Rekor rather than trusting the bundle alone.</p>
+      <p>And the log cannot tell you whether a measurement is still what is <em>running</em>. A deployment unchanged for months should carry a months-old signature, so age is not drift. Only comparing a published record against a live attestation distinguishes the two &mdash; which is what our own twice-daily check does, and what you can do yourself with the endpoints above.</p>
+      <p>The whole verifier runs from a URL, with no clone and no install:</p>
+      <pre>uv run https://raw.githubusercontent.com/Lore-Hex/quill-cloud-proxy/main/tools/verify-attestation.py --help</pre>
     </section>
     <section class="grid">
       <div class="panel"><h2>No Prompt Logs</h2><p>Prompt/output storage is disabled. Generation content endpoint returns a compatible <code>content_not_stored</code> response.</p></div>

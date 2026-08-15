@@ -133,7 +133,36 @@ from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 
-AWS_NITRO_ROOT_PEM = (Path(__file__).parent / "aws-nitro-root.pem").read_bytes()
+# Inlined, not read from a sibling file, so this verifier runs straight from a
+# URL with no clone and no packaging:
+#
+#   uv run https://raw.githubusercontent.com/Lore-Hex/quill-cloud-proxy/main/tools/verify-attestation.py --plane aws
+#
+# That matters more than the tidiness of a separate file. A verification tool a
+# reviewer must first clone, install, and wire up is a tool most reviewers never
+# run, and a measurement nobody checks is disclosed rather than published. The
+# PEP 723 header above already made this URL-runnable except for this one line.
+#
+# tools/aws-nitro-root.pem is kept as the reviewable copy and
+# tools/test_nitro_root_pin.py fails if the two ever diverge — an inlined root
+# of trust that can silently drift from its audited counterpart would be worse
+# than the sibling read it replaces.
+AWS_NITRO_ROOT_PEM_SHA256 = "6eb9688305e4bbca67f44b59c29a0661ae930f09b5945b5d1d9ae01125c8d6c0"
+AWS_NITRO_ROOT_PEM = b"""\
+-----BEGIN CERTIFICATE-----
+MIICETCCAZagAwIBAgIRAPkxdWgbkK/hHUbMtOTn+FYwCgYIKoZIzj0EAwMwSTEL
+MAkGA1UEBhMCVVMxDzANBgNVBAoMBkFtYXpvbjEMMAoGA1UECwwDQVdTMRswGQYD
+VQQDDBJhd3Mubml0cm8tZW5jbGF2ZXMwHhcNMTkxMDI4MTMyODA1WhcNNDkxMDI4
+MTQyODA1WjBJMQswCQYDVQQGEwJVUzEPMA0GA1UECgwGQW1hem9uMQwwCgYDVQQL
+DANBV1MxGzAZBgNVBAMMEmF3cy5uaXRyby1lbmNsYXZlczB2MBAGByqGSM49AgEG
+BSuBBAAiA2IABPwCVOumCMHzaHDimtqQvkY4MpJzbolL//Zy2YlES1BR5TSksfbb
+48C8WBoyt7F2Bw7eEtaaP+ohG2bnUs990d0JX28TcPQXCEPZ3BABIeTPYwEoCWZE
+h8l5YoQwTcU/9KNCMEAwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUkCW1DdkF
+R+eWw5b6cp3PmanfS5YwDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMDA2kAMGYC
+MQCjfy+Rocm9Xue4YnwWmNJVA44fA0P5W2OpYow9OYCVRaEevL8uO1XYru5xtMPW
+rfMCMQCi85sWBbJwKKXdS6BptQFuZbT73o/gBh1qUxl/nNr12UO8Yfwr6wPLb+6N
+IwLz3/Y=
+-----END CERTIFICATE-----"""
 GCP_ISSUER = "https://confidentialcomputing.googleapis.com"
 GCP_AUDIENCE = "quill-cloud"
 # `*.attest.azure.net` is a NAMESPACE, not an authority. Any Azure customer can

@@ -1,0 +1,70 @@
+name: Publish trust record (aws)
+
+# One workflow FILE per plane, and that is the entire point of the split.
+# Fulcio embeds the workflow file path in the certificate SAN — verified off a
+# live bundle:
+#
+#   URI:https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/deploy.yml@refs/heads/main
+#
+# so three files mint three cryptographically distinct identities. A verifier
+# pinning the exact identity below will REJECT a aws record signed by any
+# other workflow in this repository, which is what makes each plane's authority
+# independent rather than shared. Signing all three from one workflow would have
+# looked identical on the page and quietly given every plane the same authority.
+#
+# The identity a verifier pins for this plane:
+#   https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-aws.yml@refs/heads/main
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "trust-page/trust/aws-release.json trust-page/trust/pcr0-aws.txt trust-page/trust/accepted-pcr0s-aws.txt trust-page/pcr0.txt"
+      - ".github/workflows/publish-trust-aws.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write   # Fulcio keyless signing
+
+concurrency:
+  group: publish-trust-aws
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
+      - name: Sign the AWS Nitro Enclaves record
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          for f in trust-page/trust/aws-release.json trust-page/trust/pcr0-aws.txt trust-page/trust/accepted-pcr0s-aws.txt trust-page/pcr0.txt; do
+            test -f "$f" || { echo "missing $f" >&2; exit 1; }
+            cosign sign-blob --bundle "$f.bundle" "$f"
+          done
+      - name: Verify each signature under THIS workflow's identity
+        run: |
+          set -euo pipefail
+          # Verifying with the exact identity proves the split actually worked.
+          # If these files were signed elsewhere, this fails — which is the
+          # property the whole design rests on, so it is asserted, not assumed.
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish-trust-aws.yml@${GITHUB_REF}"
+          for f in trust-page/trust/aws-release.json trust-page/trust/pcr0-aws.txt trust-page/trust/accepted-pcr0s-aws.txt trust-page/pcr0.txt; do
+            cosign verify-blob \
+              --bundle "$f.bundle" \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$f"
+          done
+          echo "all aws artifacts verify under $identity"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trust-bundles-aws
+          path: "**/*.bundle"
+          retention-days: 90

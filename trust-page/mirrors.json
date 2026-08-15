@@ -1,0 +1,55 @@
+{
+  "_why": [
+    "Three surfaces serve the same three signed records. Independence is the whole",
+    "point: any one of them can be down, seized, or lying, and a reader can still",
+    "get a correct record from another and verify it against the transparency log.",
+    "",
+    "That property is not created by having three names. It is created by the three",
+    "names sharing NO hosting provider, NO DNS provider, and NO registrar. Those are",
+    "each a single point that takes down or takes over every surface that depends on",
+    "it. tools/test_mirror_independence.py asserts the columns are pairwise disjoint,",
+    "because this is exactly the kind of invariant that is true the day it is written",
+    "and quietly false a year later when one name gets moved for an unrelated reason.",
+    "",
+    "The registrar column is here because a domain can be lost at the registrar",
+    "without any DNS or hosting change at all, and nothing else tracks it."
+  ],
+  "mirrors": [
+    {
+      "name": "primary",
+      "url": "https://trust.trustedrouter.com",
+      "hosting_provider": "github-pages",
+      "dns_provider": "google-cloud-dns",
+      "registrar": "google-domains",
+      "note": "Published by the GitHub Pages deployment; the name customers are given."
+    },
+    {
+      "name": "s3",
+      "url": "https://trust.quill.lorehex.co",
+      "hosting_provider": "aws-s3-cloudfront",
+      "dns_provider": "cloudflare",
+      "registrar": "namecheap",
+      "note": "S3 website origin behind CloudFront, synced by the release workflows."
+    }
+  ],
+  "planned": [
+    {
+      "name": "vendor-address",
+      "url": "https://storage.googleapis.com/<bucket>/trust/",
+      "hosting_provider": "google-cloud-storage",
+      "dns_provider": "none-of-ours",
+      "registrar": "none-of-ours",
+      "note": [
+        "Deliberately a vendor-owned address. It needs no DNS record and no domain",
+        "of ours, so it is the only surface that survives losing a registrar or a",
+        "DNS account. Not live yet — listed so the gap is visible rather than",
+        "assumed away."
+      ]
+    }
+  ],
+  "records": [
+    "trust/gcp-release.json",
+    "trust/aws-release.json",
+    "trust/azure-release.json"
+  ]
+}

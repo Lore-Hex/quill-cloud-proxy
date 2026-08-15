@@ -52,7 +52,15 @@ GCP_ATTESTATION_URL = "https://api.trustedrouter.com/attestation"
 GCP_ATTESTATION_ISSUER = "https://confidentialcomputing.googleapis.com"
 GCP_ATTESTATION_AUDIENCE = "quill-cloud"
 AWS_ATTESTATION_URL = "https://api-aws.trustedrouter.com/attestation"
-AZURE_ATTESTATION_URL = "https://api-azure.trustedrouter.com/attestation"
+# Azure serves from more than one region and each region runs its OWN CCE
+# policy, so hostdata DIFFERS per region — verified live: UAE North reports
+# 44e44a55... via trquilluaen, Singapore reports 26e60588... via trquillsea.
+# Capturing only one region publishes a set that rejects the other, and a
+# verifier routed there reads that as tampering. Every region must be polled.
+AZURE_ATTESTATION_URLS = (
+    "https://api-azure.trustedrouter.com/attestation",
+    "https://api-azure-sea.trustedrouter.com/attestation",
+)
 TIMEOUT_SECONDS = 25
 
 ATTESTED_GATEWAY_REPO = "https://github.com/Lore-Hex/quill-cloud-proxy"
@@ -136,9 +144,9 @@ def live_gcp() -> dict[str, str]:
     }
 
 
-def live_azure() -> dict[str, str]:
-    """hostdata, launch measurement and MAA issuer from the running container."""
-    token = _fetch(AZURE_ATTESTATION_URL).decode("ascii").strip()
+def _azure_region(url: str) -> dict[str, str]:
+    """One Azure region's measurement. Fails closed on anything unexpected."""
+    token = _fetch(url).decode("ascii").strip()
     parts = token.split(".")
     if len(parts) != 3:
         raise ValueError("Azure attestation is not a three-part JWT")
@@ -154,10 +162,78 @@ def live_azure() -> dict[str, str]:
         raise ValueError("Azure attestation has no issuer")
     launch = claims.get("x-ms-sevsnpvm-launchmeasurement")
     return {
+        "url": url,
         "hostdata": hostdata,
         "issuer": issuer,
         "launch_measurement": launch if isinstance(launch, str) else "unknown",
         "compliance": str(claims.get("x-ms-compliance-status", "unknown")),
+    }
+
+
+def live_azure() -> list[dict[str, str]]:
+    """Every reachable Azure region's measurement.
+
+    Returns one entry per region. A region that cannot be reached is omitted
+    rather than fatal — but omitting it must NOT narrow the published set, or a
+    transient outage in one region would silently de-publish a measurement that
+    is still serving traffic elsewhere. main() enforces that by refusing to
+    write when a region is unreachable unless --keep-accepted is in play.
+    """
+    regions: list[dict[str, str]] = []
+    errors: list[str] = []
+    for url in AZURE_ATTESTATION_URLS:
+        try:
+            regions.append(_azure_region(url))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{url}: {exc}")
+    if not regions:
+        raise ValueError("; ".join(errors) or "no Azure region answered")
+    for error in errors:
+        print(f"      WARNING unreachable region {error}", file=sys.stderr)
+    return regions
+
+
+REPO_SLUG = "Lore-Hex/quill-cloud-proxy"
+FULCIO_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+REKOR_URL = "https://rekor.sigstore.dev"
+
+
+def transparency(plane: str, record_filename: str) -> dict[str, Any]:
+    """Verification instructions carried inside the record itself.
+
+    A record gets emailed, pasted into a ticket, or read from a cache months
+    later. Whoever is holding it then has no page to read, so the bytes have to
+    tell them how to catch us out — including the exact identity to pin, since a
+    regex over the repo would accept a signature from any workflow here and
+    silently discard the per-plane authority the split exists to create.
+    """
+    identity = (
+        f"https://github.com/{REPO_SLUG}/.github/workflows/"
+        f"publish-trust-{plane}.yml@refs/heads/main"
+    )
+    return {
+        "certificate_identity": identity,
+        "certificate_oidc_issuer": FULCIO_OIDC_ISSUER,
+        "transparency_log": REKOR_URL,
+        "bundle": f"{record_filename}.bundle",
+        "verify": (
+            f"cosign verify-blob --bundle {record_filename}.bundle "
+            f"--certificate-identity {identity} "
+            f"--certificate-oidc-issuer {FULCIO_OIDC_ISSUER} {record_filename}"
+        ),
+        "newest_check": (
+            "The signature proves who wrote this record and when, not that it is "
+            "the newest one. Search the transparency log for the identity above; "
+            "the log is append-only, so a newer entry cannot be hidden from you. "
+            "The bundle carries a Signed Entry Timestamp but no inclusion proof, "
+            "so confirming log membership requires querying Rekor."
+        ),
+        "running_check": (
+            "Neither the signature nor the log says this measurement is still what "
+            "is RUNNING — an unchanged deployment should carry an old signature, so "
+            "age is not drift. Fetch a live attestation from api_base_url and compare "
+            "it against the accepted set in this record."
+        ),
     }
 
 
@@ -210,35 +286,65 @@ def build_aws_record(live: dict[str, str], *, keep: bool) -> dict[str, Any]:
         },
         "data_policy": {"prompt_output_storage": False, "control_plane_prompt_access": False},
         "reproduce": "tools/verify-pcr0.sh",
+        "transparency": transparency("aws", "aws-release.json"),
     }
 
 
-def build_azure_record(live: dict[str, str], *, keep: bool) -> dict[str, Any]:
-    accepted = _merged(
-        live["hostdata"],
-        _existing(TRUST_DIR / "azure-release.json", "accepted_hostdata"),
-        keep,
-    )
-    issuers = _merged(
-        live["issuer"], _existing(TRUST_DIR / "azure-release.json", "attestation_issuers"), True
-    )
+def build_azure_record(regions: list[dict[str, str]], *, keep: bool) -> dict[str, Any]:
+    """Azure record covering EVERY region, because each runs its own CCE policy.
+
+    hostdata is sha256 over the decoded CCE policy and the regions do not share
+    one, so this is a genuine set rather than a bind-window artifact: both values
+    are correct simultaneously and permanently. Publishing one region's value
+    alone tells a verifier routed to the other that the enclave does not match
+    its measurement — an accusation of tampering caused entirely by us.
+    """
+    existing_hostdata = _existing(TRUST_DIR / "azure-release.json", "accepted_hostdata")
+    existing_issuers = _existing(TRUST_DIR / "azure-release.json", "attestation_issuers")
+
+    observed_hostdata = [region["hostdata"] for region in regions]
+    observed_issuers = [region["issuer"] for region in regions]
+
+    accepted = list(dict.fromkeys(observed_hostdata + (existing_hostdata if keep else [])))
+    # Issuers always accumulate: a region we serve from but never listed makes a
+    # verifier reject a token that is in fact genuine.
+    issuers = list(dict.fromkeys(observed_issuers + existing_issuers))
+
     return {
         "platform": "azure-confidential-containers-sev-snp",
         "source_repo": ATTESTED_GATEWAY_REPO,
         "measurement_type": "sev-snp-hostdata-sha256",
-        "hostdata": live["hostdata"],
+        # No single scalar is "the" measurement here — which region answers
+        # depends on Traffic Manager. The set is the answer.
+        "hostdata": observed_hostdata[0],
         "accepted_hostdata": accepted,
-        "release_state": "current" if len(accepted) == 1 else "rolling",
-        "observed_launch_measurement": live["launch_measurement"],
-        "observed_compliance_status": live["compliance"],
+        "release_state": "multi-region",
+        "regions": [
+            {
+                "attestation_url": region["url"],
+                "hostdata": region["hostdata"],
+                "attestation_issuer": region["issuer"],
+                "launch_measurement": region["launch_measurement"],
+                "compliance_status": region["compliance"],
+            }
+            for region in regions
+        ],
         "attestation_format": "microsoft-azure-attestation-jwt",
         "attestation_type": "sevsnpvm",
-        # Each serving region runs its own MAA instance, so issuers accumulate
-        # rather than being replaced by whichever region answered this time.
         "attestation_issuers": issuers,
         "api_base_url": f"https://{AZURE_API_HOSTNAME}/v1",
         "tls": {"mode": "acme-inside-confidential-container", "hostname": AZURE_API_HOSTNAME},
         "data_policy": {"prompt_output_storage": False, "control_plane_prompt_access": False},
+        # Said plainly because a uniform green tick across three planes with
+        # different evidence strength overstates this one: on AWS the COSE_Sign1
+        # chain verifies against a committed root, whereas here Microsoft's
+        # attestation service re-attests the SEV-SNP report and a verifier never
+        # sees the raw report or the AMD chain.
+        "transparency": transparency("azure", "azure-release.json"),
+        "evidence_note": (
+            "MAA re-attests the SEV-SNP report; verifiers see Microsoft's assertion, "
+            "not the raw hardware report or the AMD certificate chain."
+        ),
     }
 
 
@@ -274,8 +380,9 @@ def main() -> int:
         aws = None
     try:
         azure = live_azure()
-        print(f"Azure hostdata {azure['hostdata']}")
-        print(f"      issuer   {azure['issuer']}")
+        for region in azure:
+            print(f"Azure hostdata {region['hostdata']}")
+            print(f"      issuer   {region['issuer']}")
     except Exception as exc:  # noqa: BLE001
         failures.append(f"Azure: {exc}")
         azure = None
@@ -301,6 +408,17 @@ def main() -> int:
         # point: two paths that can drift apart is how this broke the first time.
         _write(REPO_ROOT / "trust-page" / "pcr0.txt", record["pcr0"] + "\n")
     if azure:
+        if len(azure) < len(AZURE_ATTESTATION_URLS) and not args.keep_accepted:
+            # Writing now would drop the unreachable region's hostdata from the
+            # published set while that region may still be serving traffic.
+            print(
+                f"REFUSING to write: only {len(azure)} of {len(AZURE_ATTESTATION_URLS)} Azure "
+                "regions answered. Narrowing the set on a partial read would de-publish a "
+                "measurement that is still live. Re-run when all regions respond, or pass "
+                "--keep-accepted to preserve what is already published.",
+                file=sys.stderr,
+            )
+            return 1
         record = build_azure_record(azure, keep=args.keep_accepted)
         _write(
             TRUST_DIR / "azure-release.json", json.dumps(record, indent=2, sort_keys=True) + "\n"

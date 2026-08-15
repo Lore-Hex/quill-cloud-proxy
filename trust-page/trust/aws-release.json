@@ -10,7 +10,7 @@
     "prompt_output_storage": false
   },
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0ccfed0780553a631-enc019fd51d106cc809",
+  "observed_module_id": "i-0f68b769f59b715e2-enc019fd521e00d81e7",
   "pcr0": "aef48a453944b35a6cdf472c51a704c1cce185feba75e54538f62f9a0ec54243a1a55fb2c4bddde23b4ea0d0e5e855e1",
   "platform": "aws-nitro-enclaves",
   "release_state": "current",
@@ -20,5 +20,14 @@
     "certificate_binding": "user_data[0:64]=certificate fingerprint, user_data[64:96]=TLS exporter channel binding",
     "hostname": "api-aws.trustedrouter.com",
     "mode": "attested-self-signed-inside-enclave"
+  },
+  "transparency": {
+    "bundle": "aws-release.json.bundle",
+    "certificate_identity": "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-aws.yml@refs/heads/main",
+    "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
+    "newest_check": "The signature proves who wrote this record and when, not that it is the newest one. Search the transparency log for the identity above; the log is append-only, so a newer entry cannot be hidden from you. The bundle carries a Signed Entry Timestamp but no inclusion proof, so confirming log membership requires querying Rekor.",
+    "running_check": "Neither the signature nor the log says this measurement is still what is RUNNING \u2014 an unchanged deployment should carry an old signature, so age is not drift. Fetch a live attestation from api_base_url and compare it against the accepted set in this record.",
+    "transparency_log": "https://rekor.sigstore.dev",
+    "verify": "cosign verify-blob --bundle aws-release.json.bundle --certificate-identity https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-aws.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com aws-release.json"
   }
 }
