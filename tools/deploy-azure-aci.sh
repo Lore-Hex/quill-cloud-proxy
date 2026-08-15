@@ -1853,6 +1853,32 @@ EOF
     log "WARNING: the key still accepts more than one measurement (the deploy window is open)."
     note "Run 'narrow' to pin only $expected_hostdata. 'all' does this for you."
   fi
+
+  # A verified deploy whose measurement was never published is a deploy nobody
+  # outside can check. That gap is not hypothetical: the AWS plane's PCR0 went
+  # unpublished for months precisely because publishing lived in prose at the
+  # end of a runbook rather than in the script that finishes the release.
+  #
+  # Both Azure regions run their own CCE policy, so hostdata differs per region
+  # and the published set must contain every one of them — capture polls them
+  # all and refuses to narrow on a partial read.
+  local published_file="$(dirname "$0")/../trust-page/trust/accepted-hostdata-azure.txt"
+  local published=""
+  [ -f "$published_file" ] && published="$(cat "$published_file")"
+  if [ -n "$expected_hostdata" ] && [[ ",$published," != *",$expected_hostdata,"* ]]; then
+    log ""
+    log "MEASUREMENT NOT PUBLISHED: this region attests hostdata"
+    log "  $expected_hostdata"
+    log "which is not in the published set"
+    log "  ${published:-<nothing published>}"
+    log ""
+    log "Publish it before calling the deploy done:"
+    log "  python3 tools/capture-plane-measurements.py --write --keep-accepted"
+    log "  # then commit trust-page/ — that fires publish-trust-azure.yml"
+    log ""
+    log "Use --keep-accepted while any region is still serving the old policy."
+    return 1
+  fi
 }
 
 phase_logs() {
