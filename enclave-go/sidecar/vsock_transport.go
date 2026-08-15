@@ -69,6 +69,11 @@ var vsockTunnels = map[string]uint32{
 	// AMD Key Distribution Service proxy: the VCEK endorsement certificate
 	// that roots the SEV-SNP report. Terminal step of the verify chain.
 	"kds-proxy.tinfoil.sh": 8046, // GitHub attestation bundle for the code digest
+	// Chutes' signed TDX quote is verified with Intel collateral, and its
+	// signed GPU evidence is submitted to NVIDIA Remote Attestation Service.
+	// Both are verification-only paths; no prompt or response bytes use them.
+	"api.trustedservices.intel.com": 8051,
+	"nras.attestation.nvidia.com":   8052,
 }
 
 // unconfiguredHostError is returned instead of attempting a DNS dial, so a

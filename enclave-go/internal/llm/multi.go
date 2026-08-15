@@ -63,7 +63,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		makora:           newOpenAICompatible("makora", boot.MakoraAPIKey),
 		nebius:           newOpenAICompatible("nebius", boot.NebiusAPIKey),
 		minimax:          newOpenAICompatible("minimax", boot.MiniMaxAPIKey),
-		chutes:           newOpenAICompatible("chutes", boot.ChutesAPIKey),
+		chutes:           newChutesE2EE(boot.ChutesAPIKey),
 		digitalocean:     newOpenAICompatible("digitalocean", boot.DigitalOceanAPIKey),
 		cloudflareWorkersAI: newOpenAICompatibleAt(
 			"cloudflare-workers-ai",
@@ -130,7 +130,7 @@ type multiClient struct {
 	makora              *openAICompatibleClient
 	nebius              *openAICompatibleClient
 	minimax             *openAICompatibleClient
-	chutes              *openAICompatibleClient
+	chutes              *chutesE2EEClient
 	digitalocean        *openAICompatibleClient
 	cloudflareWorkersAI *openAICompatibleClient
 	inceptron           *openAICompatibleClient
@@ -160,6 +160,13 @@ func (m *multiClient) InvokeStreaming(
 	if googleAIStudioNeedsNativeImage(req, option) &&
 		(provider == "google-ai-studio" || (provider == "gemini" && strings.TrimSpace(option.ProviderAPIKey) != "")) {
 		return m.aiStudioNative.InvokeStreaming(ctx, req, body, out, options...)
+	}
+	// Chutes BYOK must use the same attested ML-KEM path as prepaid traffic.
+	// Never let its per-workspace key fall through to the generic HTTPS
+	// OpenAI-compatible adapter, which would expose prompt plaintext to the
+	// Chutes API edge and silently lose the E2E guarantee.
+	if provider == "chutes" && strings.TrimSpace(option.ProviderAPIKey) != "" {
+		return m.chutes.InvokeStreaming(ctx, req, body, out, options...)
 	}
 	if handled, err := invokeBYOKStreaming(ctx, req, body, out, option); handled {
 		return err

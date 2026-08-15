@@ -280,6 +280,11 @@ func main() {
 	// path. Build tags select the transport without a runtime fallback.
 	transportMode := installPlatformTransport()
 	log.Printf("outbound verification transport=%s", transportMode)
+	chutesAttestor, err := newChutesVerifier()
+	if err != nil {
+		log.Fatalf("initialize Chutes verifier: %v", err)
+	}
+	chutesVerifySlots := make(chan struct{}, 4)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -331,6 +336,35 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(v)
+	})
+	mux.HandleFunc("/verify-chutes", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		select {
+		case chutesVerifySlots <- struct{}{}:
+			defer func() { <-chutesVerifySlots }()
+		case <-r.Context().Done():
+			http.Error(w, "verification canceled", http.StatusRequestTimeout)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, chutesMaxEvidenceBytes)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		var request chutesVerificationRequest
+		if err := decoder.Decode(&request); err != nil {
+			http.Error(w, "invalid Chutes evidence request", http.StatusBadRequest)
+			return
+		}
+		verified, err := chutesAttestor.verify(r.Context(), &request)
+		if err != nil {
+			log.Printf("chutes verification refused instance=%s reason=%v", truncate(request.Instance, 12), err)
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(verified)
 	})
 
 	srv := &http.Server{

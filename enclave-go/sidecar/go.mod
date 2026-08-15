@@ -5,6 +5,7 @@ go 1.25.5
 require (
 	github.com/mdlayher/vsock v1.2.1
 	github.com/tinfoilsh/tinfoil-go/verifier v0.12.0
+	github.com/google/go-tdx-guest v0.3.1
 )
 
 replace github.com/tinfoilsh/tinfoil-go/verifier => ../third_party/tinfoil-verifier
@@ -43,7 +44,6 @@ require (
 	github.com/google/certificate-transparency-go v1.3.2 // indirect
 	github.com/google/go-containerregistry v0.20.7 // indirect
 	github.com/google/go-sev-guest v0.14.1 // indirect
-	github.com/google/go-tdx-guest v0.3.1 // indirect
 	github.com/google/logger v1.1.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.3 // indirect
