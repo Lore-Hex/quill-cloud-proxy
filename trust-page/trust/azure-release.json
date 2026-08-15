@@ -1,0 +1,52 @@
+{
+  "accepted_hostdata": [
+    "44e44a55fa76e7e970319777f0e0814c3757908c8fc2a4165ff586d9ef4b1334",
+    "26e60588f011ac37b416b2ef73f151c1f4c3a13e443bf6c469fea88ba16fa166"
+  ],
+  "api_base_url": "https://api-azure.trustedrouter.com/v1",
+  "attestation_format": "microsoft-azure-attestation-jwt",
+  "attestation_issuers": [
+    "https://trquilluaen.uaen.attest.azure.net",
+    "https://trquillsea.sasia.attest.azure.net"
+  ],
+  "attestation_type": "sevsnpvm",
+  "data_policy": {
+    "control_plane_prompt_access": false,
+    "prompt_output_storage": false
+  },
+  "evidence_note": "MAA re-attests the SEV-SNP report; verifiers see Microsoft's assertion, not the raw hardware report or the AMD certificate chain.",
+  "hostdata": "44e44a55fa76e7e970319777f0e0814c3757908c8fc2a4165ff586d9ef4b1334",
+  "measurement_type": "sev-snp-hostdata-sha256",
+  "platform": "azure-confidential-containers-sev-snp",
+  "regions": [
+    {
+      "attestation_issuer": "https://trquilluaen.uaen.attest.azure.net",
+      "attestation_url": "https://api-azure.trustedrouter.com/attestation",
+      "compliance_status": "azure-compliant-uvm",
+      "hostdata": "44e44a55fa76e7e970319777f0e0814c3757908c8fc2a4165ff586d9ef4b1334",
+      "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866"
+    },
+    {
+      "attestation_issuer": "https://trquillsea.sasia.attest.azure.net",
+      "attestation_url": "https://api-azure-sea.trustedrouter.com/attestation",
+      "compliance_status": "azure-compliant-uvm",
+      "hostdata": "26e60588f011ac37b416b2ef73f151c1f4c3a13e443bf6c469fea88ba16fa166",
+      "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866"
+    }
+  ],
+  "release_state": "multi-region",
+  "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
+  "tls": {
+    "hostname": "api-azure.trustedrouter.com",
+    "mode": "acme-inside-confidential-container"
+  },
+  "transparency": {
+    "bundle": "azure-release.json.bundle",
+    "certificate_identity": "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-azure.yml@refs/heads/main",
+    "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
+    "newest_check": "The signature proves who wrote this record and when, not that it is the newest one. Search the transparency log for the identity above; the log is append-only, so a newer entry cannot be hidden from you. The bundle carries a Signed Entry Timestamp but no inclusion proof, so confirming log membership requires querying Rekor.",
+    "running_check": "Neither the signature nor the log says this measurement is still what is RUNNING \u2014 an unchanged deployment should carry an old signature, so age is not drift. Fetch a live attestation from api_base_url and compare it against the accepted set in this record.",
+    "transparency_log": "https://rekor.sigstore.dev",
+    "verify": "cosign verify-blob --bundle azure-release.json.bundle --certificate-identity https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-azure.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com azure-release.json"
+  }
+}

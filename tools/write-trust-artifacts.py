@@ -235,11 +235,49 @@ def trust_html(release: dict[str, Any]) -> str:
         <p><a href="/trust/image-reference-gcp.txt">image-reference-gcp.txt</a></p>
         <p><a href="/trust/accepted-image-references-gcp.txt">accepted-image-references-gcp.txt</a></p>
         <p><a href="/trust/gcp-release.json">gcp-release.json</a></p>
+        <p><a href="/trust/aws-release.json">aws-release.json</a> &middot; <a href="/trust/pcr0-aws.txt">pcr0-aws.txt</a></p>
+        <p><a href="/trust/azure-release.json">azure-release.json</a> &middot; <a href="/trust/hostdata-azure.txt">hostdata-azure.txt</a></p>
+        <p>Every file above is published with a matching <code>.bundle</code>.</p>
+        <p><a href="/trust/retractions/2026-08-15-aws-pcr0.json">Retractions</a> &mdash; measurements we published that were wrong.</p>
       </div>
       <div class="panel warn">
         <h2>DNS Requirement</h2>
         <p><code>api.trustedrouter.com</code> (and its <code>api.quillrouter.com</code> alias) must remain DNS-only or TCP-passthrough. TLS termination by a CDN would break the hosted-code trust claim because the prompt path certificate key must remain inside the measured workload.</p>
       </div>
+    </section>
+    <section class="grid" aria-label="Attested serving planes">
+      <div class="panel">
+        <h2>GCP &middot; Confidential Space</h2>
+        <p>Measures the container image. Compare <code>image_digest</code> in <a href="/trust/gcp-release.json">gcp-release.json</a> against a live attestation JWT from <code>confidentialcomputing.googleapis.com</code> with audience <code>quill-cloud</code>.</p>
+        <p><code>https://api.trustedrouter.com/attestation</code></p>
+      </div>
+      <div class="panel">
+        <h2>AWS &middot; Nitro Enclaves</h2>
+        <p>Measures the enclave image file into PCR0 (SHA-384). Compare <code>pcr0</code> in <a href="/trust/aws-release.json">aws-release.json</a> against PCR0 in a live attestation document. Rebuild it yourself with <code>tools/verify-pcr0.sh</code>.</p>
+        <p>This plane serves a certificate generated inside the enclave, not one from a public CA. Its fingerprint and the TLS exporter value are bound into the attestation's <code>user_data</code>, so the connection you are on is the connection that was attested. Chain validation is replaced by that binding, not dropped.</p>
+        <p><code>https://api-aws.trustedrouter.com/attestation</code></p>
+      </div>
+      <div class="panel">
+        <h2>Azure &middot; Confidential Containers</h2>
+        <p>Measures the SEV-SNP <code>hostdata</code>, which is sha256 over the decoded CCE policy. Compare it against <code>x-ms-sevsnpvm-hostdata</code> in a live MAA token. Each serving region runs its own MAA instance, so accept any issuer listed in <a href="/trust/azure-release.json">azure-release.json</a>.</p>
+        <p><code>https://api-azure.trustedrouter.com/attestation</code></p>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Checking this page rather than believing it</h2>
+      <p>These files are static so that reading them costs the serving enclaves nothing. The attestation endpoints above are the authority, and they are there for when you want to check a plane deliberately &mdash; not on every page view.</p>
+      <p>Every published file carries a <code>.bundle</code> signed with cosign keyless. The signature binds the file to the GitHub Actions identity that produced it and records it in the Sigstore transparency log, so the timing and the immutability come from a third party rather than from us. Verify one without trusting this page:</p>
+      <pre>cosign verify-blob \\
+  --bundle aws-release.json.bundle \\
+  --certificate-identity https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-aws.yml@refs/heads/main \\
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+  aws-release.json</pre>
+      <p><strong>Pin the exact identity, not a pattern.</strong> Each plane is signed by its own workflow file, and the workflow path is embedded in the certificate, so those are three cryptographically distinct signers. A regex over the repository would accept any workflow here and hand every plane the same authority &mdash; which is precisely the property this arrangement exists to avoid. Each record names its own identity in its <code>transparency</code> block, so the record tells you what to pin even if you are reading it from an email months from now.</p>
+      <p>A signature proves authorship, not recency. To confirm you have the <em>newest</em> record rather than an older one replayed at you, search the transparency log for that identity; the log is append-only, so a newer entry cannot be hidden from you. The bundle carries a Signed Entry Timestamp but no inclusion proof, so confirming log membership means querying Rekor rather than trusting the bundle alone.</p>
+      <p><strong>What the image digest does not cover.</strong> Confidential Space allows a launch to override an allowlisted set of environment variables at a fixed image digest, and that allowlist includes <code>QUILL_API_HOST</code>, <code>QUILL_TLS_MODE</code>, <code>TR_CONTROL_PLANE_BASE_URL</code> and the ACME settings. So the digest pins the code, not every parameter the code was started with. We are telling you because a verifier who discovers it themselves is entitled to wonder what else went unmentioned. The AWS plane bakes its equivalents into the image, where they are covered by PCR0; the Azure plane pins them in the CCE policy, which is what <code>hostdata</code> measures.</p>
+      <p>And the log cannot tell you whether a measurement is still what is <em>running</em>. A deployment unchanged for months should carry a months-old signature, so age is not drift. Only comparing a published record against a live attestation distinguishes the two &mdash; which is what our own twice-daily check does, and what you can do yourself with the endpoints above.</p>
+      <p>The whole verifier runs from a URL, with no clone and no install:</p>
+      <pre>uv run https://raw.githubusercontent.com/Lore-Hex/quill-cloud-proxy/main/tools/verify-attestation.py --help</pre>
     </section>
     <section class="grid">
       <div class="panel"><h2>No Prompt Logs</h2><p>Prompt/output storage is disabled. Generation content endpoint returns a compatible <code>content_not_stored</code> response.</p></div>

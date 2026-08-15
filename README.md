@@ -105,8 +105,25 @@ git diff trust-page/
 ```
 
 That writes `image-reference-gcp.txt`, `image-digest-gcp.txt`, and
-`gcp-release.json`. The deploy workflow signs those files with keyless cosign
-and publishes the files plus `.bundle` proofs to `trust.quill.lorehex.co`.
+`gcp-release.json`.
+
+Publishing and signing are separate from that write, and it is worth being
+precise about which surface gets what, because a previous version of this
+paragraph was wrong in a way that mattered:
+
+* `trust.trustedrouter.com` (GitHub Pages) is the surface the trust page links
+  to. `publish-trust-page.yml` deploys it and, since 2026-08-15, signs every
+  published file there. Before that it signed nothing, so every `.bundle` URL a
+  reader followed from the trust page returned 404 while this README told them
+  the proofs were published.
+* `trust.quill.lorehex.co` (S3 + CloudFront) is the mirror. `deploy.yml` syncs
+  and signs it — but that workflow is `workflow_dispatch` only, and the AWS
+  runbook forbids running it, so in practice nothing republished that mirror
+  for months.
+
+AWS and Azure records are produced separately by
+`tools/capture-plane-measurements.py` from live attestations, and signed by
+`publish-trust-{aws,azure}.yml` under their own identities.
 
 ## Routing
 

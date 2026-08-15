@@ -125,3 +125,47 @@ say "  2. refresh ONE eu-west-3 instance"
 say "  3. read its PCR0 from a live attestation"
 say "  4. publish old+new PCR0 (the pin is a SET — qcp#112 / router#459)"
 say "  5. refresh the rest, verify, then narrow the pin to the new value"
+say ""
+say "Step 4 is the one that got skipped for months, and it is skippable because"
+say "it lives in a runbook rather than in this script. Capture it here instead:"
+say ""
+say "    python3 tools/capture-plane-measurements.py --write --keep-accepted"
+say "    # then commit trust-page/, which fires publish-trust-aws.yml"
+say ""
+say "--keep-accepted during the roll, so the outgoing PCR0 stays acceptable"
+say "while instances are still serving it. Narrow only after the last one is"
+say "refreshed. Running it WITHOUT --keep-accepted mid-roll publishes a set that"
+say "rejects the instances that have not rolled yet."
+
+# Refuse to exit 0 while the published measurement disagrees with what is
+# running. An operator-run release whose publish step lives only in prose is
+# the most likely rot vector in this whole arrangement — that is precisely how
+# trust-page/pcr0.txt kept a value matching no running enclave from the initial
+# commit onward. Exiting non-zero here does not undo the image push; it just
+# refuses to call the release finished while the public record is wrong.
+say ""
+say "checking the published AWS measurement against a live attestation..."
+if python3 "$(dirname "$0")/../tools/capture-plane-measurements.py" >/dev/null 2>&1; then
+  published="$(cat "$(dirname "$0")/../trust-page/trust/accepted-pcr0s-aws.txt" 2>/dev/null || echo "")"
+  running="$(python3 - <<'PY' 2>/dev/null || true
+import subprocess, re, sys, pathlib
+out = subprocess.run(
+    [sys.executable, str(pathlib.Path(__file__).parent / "capture-plane-measurements.py")],
+    capture_output=True, text=True,
+).stdout
+match = re.search(r"AWS   PCR0     ([0-9a-f]{96})", out)
+print(match.group(1) if match else "")
+PY
+)"
+  if [ -n "$running" ] && [ -n "$published" ] && [[ ",$published," != *",$running,"* ]]; then
+    say ""
+    say "RELEASE NOT COMPLETE: the running AWS enclave measures"
+    say "  $running"
+    say "which is not in the published set"
+    say "  $published"
+    say ""
+    say "Publish it before calling this done:"
+    say "  python3 tools/capture-plane-measurements.py --write --keep-accepted"
+    exit 1
+  fi
+fi

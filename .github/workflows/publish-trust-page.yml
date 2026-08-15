@@ -99,6 +99,107 @@ jobs:
           assert Path("trust-page/trust/accepted-image-digests-gcp.txt").read_text().strip() == ",".join(accepted)
           assert Path("trust-page/trust/accepted-image-references-gcp.txt").read_text().strip() == ",".join(accepted_references)
           PY
+      - name: Validate AWS and Azure trust records
+        run: |
+          set -euo pipefail
+          # The GCP block above is thorough because GCP's record is produced by
+          # this pipeline. AWS and Azure records are produced out of band by
+          # tools/capture-plane-measurements.py, so what needs guarding here is
+          # internal consistency: the scalar, the accepted set, and the .txt
+          # mirrors must agree. trust-page/pcr0.txt is checked explicitly — it
+          # is the legacy path that served a value matching no running enclave
+          # from the initial commit until 2026-08-15, and the reason it went
+          # unnoticed is that nothing ever compared it to anything.
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          trust = Path("trust-page/trust")
+
+          aws = json.loads((trust / "aws-release.json").read_text())
+          assert aws["platform"] == "aws-nitro-enclaves"
+          assert aws["measurement_type"] == "nitro-pcr0-sha384"
+          assert len(aws["pcr0"]) == 96, "PCR0 must be 48 bytes of hex (SHA-384)"
+          int(aws["pcr0"], 16)
+          assert aws["pcr0"] in aws["accepted_pcr0s"], (
+              "the value expected to be serving is not in its own accepted set"
+          )
+          assert aws["data_policy"]["prompt_output_storage"] is False
+          assert (trust / "pcr0-aws.txt").read_text().strip() == aws["pcr0"]
+          assert (trust / "accepted-pcr0s-aws.txt").read_text().strip() == ",".join(
+              aws["accepted_pcr0s"]
+          )
+          legacy = Path("trust-page/pcr0.txt").read_text().strip()
+          assert legacy == aws["pcr0"], (
+              f"legacy trust-page/pcr0.txt ({legacy[:16]}...) disagrees with the "
+              f"current record ({aws['pcr0'][:16]}...). Two paths publishing "
+              "different measurements is exactly the defect this check exists for; "
+              "re-run tools/capture-plane-measurements.py --write."
+          )
+
+          azure = json.loads((trust / "azure-release.json").read_text())
+          assert azure["platform"] == "azure-confidential-containers-sev-snp"
+          assert azure["measurement_type"] == "sev-snp-hostdata-sha256"
+          assert len(azure["hostdata"]) == 64, "hostdata must be 32 bytes of hex"
+          int(azure["hostdata"], 16)
+          assert azure["hostdata"] in azure["accepted_hostdata"]
+          assert azure["attestation_issuers"], "an MAA record with no issuer is unverifiable"
+          assert azure["data_policy"]["prompt_output_storage"] is False
+          assert (trust / "hostdata-azure.txt").read_text().strip() == azure["hostdata"]
+          assert (trust / "accepted-hostdata-azure.txt").read_text().strip() == ",".join(
+              azure["accepted_hostdata"]
+          )
+          # The GCP artifacts exist at BOTH trust-page/<f> and
+          # trust-page/trust/<f>, and both are live. Two paths publishing the
+          # same measurement is precisely the shape that let pcr0.txt go wrong
+          # for months, so assert they agree rather than trusting the producer
+          # to keep writing both.
+          for name in (
+              "gcp-release.json",
+              "image-digest-gcp.txt",
+              "image-reference-gcp.txt",
+              "accepted-image-digests-gcp.txt",
+              "accepted-image-references-gcp.txt",
+          ):
+              top = Path("trust-page") / name
+              nested = trust / name
+              if top.is_file() and nested.is_file():
+                  assert top.read_text() == nested.read_text(), (
+                      f"trust-page/{name} and trust-page/trust/{name} disagree. "
+                      "Whichever a reader fetched, one of them is wrong."
+                  )
+          print("AWS and Azure trust records are internally consistent")
+          print("GCP artifacts agree across both published paths")
+          PY
+      # Sign on the surface customers actually reach. Until now the cosign
+      # bundles existed only on the S3 mirror; every .bundle on
+      # trust.trustedrouter.com returned 404, so the transparency-log property
+      # was real but unreachable from the page the trust page links to.
+      # Keyless signing binds each file to this workflow's GitHub OIDC identity
+      # and records it in Rekor, which is where the timing and immutability
+      # come from — no long-lived key of ours is involved.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
+      - name: Sign published trust artifacts (keyless, Rekor-recorded)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in trust-page/*.json trust-page/*.txt trust-page/trust/*.json trust-page/trust/*.txt; do
+            cosign sign-blob --bundle "$f.bundle" "$f"
+          done
+          # What a bundle actually contains, confirmed by dissecting a live one
+          # rather than by repeating the marketing: base64Signature, cert, and
+          # rekorBundle{SignedEntryTimestamp, Payload}. There is NO inclusionProof
+          # and NO checkpoint. So the Signed Entry Timestamp gives a verifiable
+          # timestamp offline against Rekor's public key, but proving the entry
+          # is really in the log — and discovering whether a NEWER entry exists —
+          # both require querying Rekor. See trust-page/index.html for the
+          # identity to pin when doing so.
+          ls -1 trust-page/trust/*.bundle trust-page/*.bundle | wc -l | xargs echo "bundles signed:"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
@@ -145,3 +246,44 @@ jobs:
           done
           echo "live trust page still does not match repo artifacts after 10 minutes" >&2
           exit 1
+      - name: Verify every plane's record and bundle actually published
+        run: |
+          set -euo pipefail
+          # The loop above checks only the four GCP files. A failed publish of
+          # aws-release.json used to leave the job green while the record the
+          # trust page links to returned 404 — which is how the AWS plane spent
+          # months with nothing published at all.
+          base="https://trust.trustedrouter.com"
+          missing=0
+          for f in trust/gcp-release.json trust/aws-release.json trust/azure-release.json \
+                   trust/pcr0-aws.txt trust/hostdata-azure.txt pcr0.txt; do
+            for attempt in $(seq 1 20); do
+              code="$(curl -s -o /tmp/body -w '%{http_code}' "${base}/${f}?nocache=${GITHUB_RUN_ID}-${attempt}")"
+              [ "$code" = "200" ] && break
+              sleep 15
+            done
+            if [ "$code" != "200" ]; then
+              echo "::error::${base}/${f} is not published (HTTP ${code})"
+              missing=$((missing+1))
+              continue
+            fi
+            if ! diff -q "trust-page/${f}" /tmp/body >/dev/null 2>&1; then
+              echo "::error::${base}/${f} differs from the repo copy"
+              missing=$((missing+1))
+            fi
+          done
+          # Bundles are checked for existence, not content: a published record
+          # whose signature is missing cannot be verified by anyone, which makes
+          # the transparency story on the page untrue.
+          for f in trust/gcp-release.json trust/aws-release.json trust/azure-release.json; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' "${base}/${f}.bundle?nocache=${GITHUB_RUN_ID}")"
+            if [ "$code" != "200" ]; then
+              echo "::error::${base}/${f}.bundle is not published (HTTP ${code})"
+              missing=$((missing+1))
+            fi
+          done
+          if [ "$missing" -gt 0 ]; then
+            echo "${missing} published artifact(s) missing or stale" >&2
+            exit 1
+          fi
+          echo "every record and bundle is published and matches the repo"

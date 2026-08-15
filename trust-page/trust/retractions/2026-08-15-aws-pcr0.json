@@ -1,0 +1,63 @@
+{
+  "retraction_of": {
+    "artifact": "pcr0.txt",
+    "value": "9b4ca5666e5820d148395aeb839cee35da0610a00e64e4a03026a19999ce5bb1eb3199a962bc17d9139aa4641cd1b710",
+    "claimed": "the PCR0 of the running TrustedRouter AWS Nitro enclave",
+    "published_at": "https://trust.trustedrouter.com/pcr0.txt",
+    "also_published_at": "https://trust.quill.lorehex.co/pcr0.txt"
+  },
+  "status": "retracted",
+  "retracted_on": "2026-08-15",
+  "what_was_wrong": [
+    "This value matched no enclave we have ever run. It was committed in the",
+    "repository's initial commit and never updated, while the AWS enclave was",
+    "rebuilt and its PCR0 changed.",
+    "",
+    "Anyone who followed the documented procedure during that period compared a",
+    "live attestation against this number, found a mismatch, and would have",
+    "correctly concluded that the running code did not match the published",
+    "measurement. The mismatch was real. The published number was the wrong half."
+  ],
+  "why_a_retraction_and_not_just_a_correction": [
+    "The false value was signed with cosign keyless and recorded in the Sigstore",
+    "transparency log, which is append-only. That entry cannot be removed and",
+    "will remain independently verifiable forever. Deleting or overwriting the",
+    "file corrects what we serve today but leaves the log holding a signed",
+    "statement of ours that is false, with nothing beside it.",
+    "",
+    "So the correction is published into the same log, under the same identity,",
+    "where anyone auditing the history will find it next to the entry it",
+    "corrects. A transparency log is only useful if we are willing to be",
+    "transparent in it when we are the ones who got it wrong."
+  ],
+  "correct_value_at_retraction": {
+    "pcr0": "aef48a453944b35a6cdf472c51a704c1cce185feba75e54538f62f9a0ec54243a1a55fb2c4bddde23b4ea0d0e5e855e1",
+    "read_from": "https://api-aws.trustedrouter.com/attestation",
+    "record": "https://trust.trustedrouter.com/trust/aws-release.json",
+    "caveat": [
+      "Do not treat this value as current. It was correct on 2026-08-15 and will",
+      "change on the next enclave rebuild. Read the record above, and compare it",
+      "against a live attestation yourself — which is the practice whose absence",
+      "caused this."
+    ]
+  },
+  "root_cause": [
+    "The file had a publisher and no producer: two places copied it to S3 and",
+    "nothing anywhere wrote it. PCR0 cannot be known before an instance boots, so",
+    "its only source is a live attestation, and no tool captured one. The only",
+    "workflow that signed and published trust artifacts was forbidden by the",
+    "release runbook. And tools/verify-pcr0.sh, the reproducible build a third",
+    "party would run to check us, could not execute at all — it built from a",
+    "directory that has never existed in this repository."
+  ],
+  "what_changed": [
+    "tools/capture-plane-measurements.py reads each plane's measurement from a",
+    "live attestation and writes the record; nothing is typed by a human.",
+    "A scheduled job compares every published record against a live attestation",
+    "twice a day and files an issue when they disagree.",
+    "CI fails if the published paths disagree with each other, verified by",
+    "restoring the false value and watching the suite go red.",
+    "tools/verify-pcr0.sh now builds with the same arguments as the real release,",
+    "so a third party can reproduce PCR0 and get a number that matches."
+  ]
+}

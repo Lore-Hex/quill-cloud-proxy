@@ -1,0 +1,435 @@
+#!/usr/bin/env python3
+"""Read every serving plane's live measurement; produce the AWS and Azure records.
+
+THIS IS THE MISSING PRODUCER. Before this script, trust-page/pcr0.txt had a
+publisher but no producer: the Makefile and the deploy workflow both copied it
+to S3, and nothing anywhere wrote it. It carried the same value from the initial
+commit onward, matching no running enclave, and no procedure existed to change
+that — the AWS runbook does not mention the trust page at all.
+
+PCR0 cannot be known before an instance boots (release-aws-enclave.sh says so in
+its own output), so the only source for it is a live attestation. Same for
+Azure's hostdata. That makes capture-then-publish the honest shape: measure what
+is actually running, write it down, and let CI refuse to publish if the two ever
+disagree.
+
+    # inspect what is running without touching the repo
+    python3 tools/capture-plane-measurements.py
+
+    # write trust-page/trust/{aws,azure}-release.json and the .txt files
+    python3 tools/capture-plane-measurements.py --write
+
+    # during a bind window, keep the outgoing measurement acceptable
+    python3 tools/capture-plane-measurements.py --write --keep-accepted
+
+GCP is REPORTED but never written: its record is produced by the deploy
+pipeline, which is the correct producer because it knows which digest it is
+rolling to and maintains the accepted set across a bind window. Reporting it here
+is what lets the freshness gate check the plane that carries every prompt — until
+now the only one with no drift check at all.
+
+Nothing here is billed and no prompt is sent: every endpoint used is an
+unauthenticated attestation route.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import ssl
+import sys
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+import cbor2
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+TRUST_DIR = REPO_ROOT / "trust-page" / "trust"
+
+GCP_ATTESTATION_URL = "https://api.trustedrouter.com/attestation"
+GCP_ATTESTATION_ISSUER = "https://confidentialcomputing.googleapis.com"
+GCP_ATTESTATION_AUDIENCE = "quill-cloud"
+AWS_ATTESTATION_URL = "https://api-aws.trustedrouter.com/attestation"
+# Azure serves from more than one region and each region runs its OWN CCE
+# policy, so hostdata DIFFERS per region — verified live: UAE North reports
+# 44e44a55... via trquilluaen, Singapore reports 26e60588... via trquillsea.
+# Capturing only one region publishes a set that rejects the other, and a
+# verifier routed there reads that as tampering. Every region must be polled.
+AZURE_ATTESTATION_URLS = (
+    "https://api-azure.trustedrouter.com/attestation",
+    "https://api-azure-sea.trustedrouter.com/attestation",
+)
+TIMEOUT_SECONDS = 25
+
+ATTESTED_GATEWAY_REPO = "https://github.com/Lore-Hex/quill-cloud-proxy"
+AWS_API_HOSTNAME = "api-aws.trustedrouter.com"
+AZURE_API_HOSTNAME = "api-azure.trustedrouter.com"
+AWS_ATTESTATION_ROOT = "https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip"
+
+
+def _fetch(url: str, *, verify_tls: bool = True) -> bytes:
+    context: ssl.SSLContext | None = None
+    if not verify_tls:
+        # The AWS enclave serves a certificate it generated itself — that is the
+        # design, not a defect, and there is no chain to validate. What replaces
+        # chain validation is the binding in the attestation's user_data, which
+        # this script does not check. So treat the result as an unauthenticated
+        # read: sufficient to record what is running, NOT sufficient to
+        # authenticate the enclave. Use tools/verify-attestation.py for that.
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    if not url.startswith("https://"):
+        raise ValueError(f"refusing to fetch non-HTTPS URL {url!r}")
+    request = urllib.request.Request(url, headers={"accept": "*/*"})  # noqa: S310
+    with urllib.request.urlopen(  # noqa: S310 - scheme checked above
+        request, timeout=TIMEOUT_SECONDS, context=context
+    ) as response:
+        return response.read()
+
+
+def live_aws() -> dict[str, str]:
+    """PCR0 and module id from the running Nitro enclave. Fails closed."""
+    envelope = cbor2.loads(_fetch(AWS_ATTESTATION_URL, verify_tls=False))
+    if not isinstance(envelope, list) or len(envelope) != 4:
+        raise ValueError("AWS attestation is not a 4-element COSE_Sign1 envelope")
+    document = cbor2.loads(envelope[2])
+    if not isinstance(document, dict):
+        raise ValueError("AWS attestation payload is not a map")
+    if document.get("digest") != "SHA384":
+        raise ValueError(f"unexpected PCR digest algorithm {document.get('digest')!r}")
+    pcrs = document.get("pcrs")
+    if not isinstance(pcrs, dict) or 0 not in pcrs:
+        raise ValueError("AWS attestation has no PCR0")
+    pcr0 = pcrs[0]
+    if not isinstance(pcr0, bytes) or len(pcr0) != 48:
+        raise ValueError("PCR0 is not 48 bytes; refusing to publish it")
+    module_id = document.get("module_id")
+    return {
+        "pcr0": pcr0.hex(),
+        "module_id": module_id if isinstance(module_id, str) else "unknown",
+    }
+
+
+def live_gcp() -> dict[str, str]:
+    """Image digest and reference from the running Confidential Space workload.
+
+    Read-only on purpose. gcp-release.json is written by the deploy pipeline,
+    which is the right producer for it — the deploy knows which digest it is
+    rolling TO, and it maintains the accepted set across a bind window. What was
+    missing is not production but comparison: nothing checked the live GCP
+    attestation against the published record, so the plane carrying every prompt
+    was the only one with no drift check at all.
+    """
+    token = _fetch(GCP_ATTESTATION_URL).decode("ascii").strip()
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise ValueError("GCP attestation is not a three-part JWT")
+    padded = parts[1] + "=" * (-len(parts[1]) % 4)
+    claims = json.loads(base64.urlsafe_b64decode(padded))
+    if claims.get("iss") != GCP_ATTESTATION_ISSUER:
+        raise ValueError(f"unexpected attestation issuer {claims.get('iss')!r}")
+    if claims.get("aud") != GCP_ATTESTATION_AUDIENCE:
+        raise ValueError(f"unexpected attestation audience {claims.get('aud')!r}")
+    container = claims.get("submods", {}).get("container", {})
+    digest = container.get("image_digest")
+    if not isinstance(digest, str) or not digest.startswith("sha256:") or len(digest) != 71:
+        raise ValueError("GCP attestation has no usable container image digest")
+    reference = container.get("image_reference")
+    return {
+        "image_digest": digest,
+        "image_reference": reference if isinstance(reference, str) else "unknown",
+    }
+
+
+def _azure_region(url: str) -> dict[str, str]:
+    """One Azure region's measurement. Fails closed on anything unexpected."""
+    token = _fetch(url).decode("ascii").strip()
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise ValueError("Azure attestation is not a three-part JWT")
+    padded = parts[1] + "=" * (-len(parts[1]) % 4)
+    claims = json.loads(base64.urlsafe_b64decode(padded))
+    if claims.get("x-ms-attestation-type") != "sevsnpvm":
+        raise ValueError(f"unexpected attestation type {claims.get('x-ms-attestation-type')!r}")
+    hostdata = claims.get("x-ms-sevsnpvm-hostdata")
+    issuer = claims.get("iss")
+    if not isinstance(hostdata, str) or len(hostdata) != 64:
+        raise ValueError("Azure attestation has no 32-byte hostdata; refusing to publish")
+    if not isinstance(issuer, str) or not issuer:
+        raise ValueError("Azure attestation has no issuer")
+    launch = claims.get("x-ms-sevsnpvm-launchmeasurement")
+    return {
+        "url": url,
+        "hostdata": hostdata,
+        "issuer": issuer,
+        "launch_measurement": launch if isinstance(launch, str) else "unknown",
+        "compliance": str(claims.get("x-ms-compliance-status", "unknown")),
+    }
+
+
+def live_azure() -> list[dict[str, str]]:
+    """Every reachable Azure region's measurement.
+
+    Returns one entry per region. A region that cannot be reached is omitted
+    rather than fatal — but omitting it must NOT narrow the published set, or a
+    transient outage in one region would silently de-publish a measurement that
+    is still serving traffic elsewhere. main() enforces that by refusing to
+    write when a region is unreachable unless --keep-accepted is in play.
+    """
+    regions: list[dict[str, str]] = []
+    errors: list[str] = []
+    for url in AZURE_ATTESTATION_URLS:
+        try:
+            regions.append(_azure_region(url))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{url}: {exc}")
+    if not regions:
+        raise ValueError("; ".join(errors) or "no Azure region answered")
+    for error in errors:
+        print(f"      WARNING unreachable region {error}", file=sys.stderr)
+    return regions
+
+
+REPO_SLUG = "Lore-Hex/quill-cloud-proxy"
+FULCIO_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+REKOR_URL = "https://rekor.sigstore.dev"
+
+
+def transparency(plane: str, record_filename: str) -> dict[str, Any]:
+    """Verification instructions carried inside the record itself.
+
+    A record gets emailed, pasted into a ticket, or read from a cache months
+    later. Whoever is holding it then has no page to read, so the bytes have to
+    tell them how to catch us out — including the exact identity to pin, since a
+    regex over the repo would accept a signature from any workflow here and
+    silently discard the per-plane authority the split exists to create.
+    """
+    identity = (
+        f"https://github.com/{REPO_SLUG}/.github/workflows/"
+        f"publish-trust-{plane}.yml@refs/heads/main"
+    )
+    return {
+        "certificate_identity": identity,
+        "certificate_oidc_issuer": FULCIO_OIDC_ISSUER,
+        "transparency_log": REKOR_URL,
+        "bundle": f"{record_filename}.bundle",
+        "verify": (
+            f"cosign verify-blob --bundle {record_filename}.bundle "
+            f"--certificate-identity {identity} "
+            f"--certificate-oidc-issuer {FULCIO_OIDC_ISSUER} {record_filename}"
+        ),
+        "newest_check": (
+            "The signature proves who wrote this record and when, not that it is "
+            "the newest one. Search the transparency log for the identity above; "
+            "the log is append-only, so a newer entry cannot be hidden from you. "
+            "The bundle carries a Signed Entry Timestamp but no inclusion proof, "
+            "so confirming log membership requires querying Rekor."
+        ),
+        "running_check": (
+            "Neither the signature nor the log says this measurement is still what "
+            "is RUNNING — an unchanged deployment should carry an old signature, so "
+            "age is not drift. Fetch a live attestation from api_base_url and compare "
+            "it against the accepted set in this record."
+        ),
+    }
+
+
+def _merged(primary: str, existing: list[str], keep: bool) -> list[str]:
+    """Accepted set, primary first.
+
+    During a bind window the released key is bound to the outgoing and incoming
+    measurement at once, so --keep-accepted preserves what was already published
+    instead of narrowing the pin while the old enclave is still serving.
+    """
+    values = [primary]
+    if keep:
+        values.extend(v for v in existing if v and v != primary)
+    return list(dict.fromkeys(values))
+
+
+def _existing(path: Path, key: str) -> list[str]:
+    if not path.is_file():
+        return []
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    values = record.get(key, [])
+    return [v for v in values if isinstance(v, str)]
+
+
+def build_aws_record(live: dict[str, str], *, keep: bool) -> dict[str, Any]:
+    accepted = _merged(
+        live["pcr0"], _existing(TRUST_DIR / "aws-release.json", "accepted_pcr0s"), keep
+    )
+    return {
+        "platform": "aws-nitro-enclaves",
+        "source_repo": ATTESTED_GATEWAY_REPO,
+        "measurement_type": "nitro-pcr0-sha384",
+        "pcr0": live["pcr0"],
+        "accepted_pcr0s": accepted,
+        "release_state": "current" if len(accepted) == 1 else "rolling",
+        "observed_module_id": live["module_id"],
+        "attestation_format": "cose-sign1-nitro-attestation-document",
+        "attestation_root": AWS_ATTESTATION_ROOT,
+        "api_base_url": f"https://{AWS_API_HOSTNAME}/v1",
+        "tls": {
+            "mode": "attested-self-signed-inside-enclave",
+            "hostname": AWS_API_HOSTNAME,
+            "certificate_binding": (
+                "user_data[0:64]=certificate fingerprint, "
+                "user_data[64:96]=TLS exporter channel binding"
+            ),
+        },
+        "data_policy": {"prompt_output_storage": False, "control_plane_prompt_access": False},
+        "reproduce": "tools/verify-pcr0.sh",
+        "transparency": transparency("aws", "aws-release.json"),
+    }
+
+
+def build_azure_record(regions: list[dict[str, str]], *, keep: bool) -> dict[str, Any]:
+    """Azure record covering EVERY region, because each runs its own CCE policy.
+
+    hostdata is sha256 over the decoded CCE policy and the regions do not share
+    one, so this is a genuine set rather than a bind-window artifact: both values
+    are correct simultaneously and permanently. Publishing one region's value
+    alone tells a verifier routed to the other that the enclave does not match
+    its measurement — an accusation of tampering caused entirely by us.
+    """
+    existing_hostdata = _existing(TRUST_DIR / "azure-release.json", "accepted_hostdata")
+    existing_issuers = _existing(TRUST_DIR / "azure-release.json", "attestation_issuers")
+
+    observed_hostdata = [region["hostdata"] for region in regions]
+    observed_issuers = [region["issuer"] for region in regions]
+
+    accepted = list(dict.fromkeys(observed_hostdata + (existing_hostdata if keep else [])))
+    # Issuers always accumulate: a region we serve from but never listed makes a
+    # verifier reject a token that is in fact genuine.
+    issuers = list(dict.fromkeys(observed_issuers + existing_issuers))
+
+    return {
+        "platform": "azure-confidential-containers-sev-snp",
+        "source_repo": ATTESTED_GATEWAY_REPO,
+        "measurement_type": "sev-snp-hostdata-sha256",
+        # No single scalar is "the" measurement here — which region answers
+        # depends on Traffic Manager. The set is the answer.
+        "hostdata": observed_hostdata[0],
+        "accepted_hostdata": accepted,
+        "release_state": "multi-region",
+        "regions": [
+            {
+                "attestation_url": region["url"],
+                "hostdata": region["hostdata"],
+                "attestation_issuer": region["issuer"],
+                "launch_measurement": region["launch_measurement"],
+                "compliance_status": region["compliance"],
+            }
+            for region in regions
+        ],
+        "attestation_format": "microsoft-azure-attestation-jwt",
+        "attestation_type": "sevsnpvm",
+        "attestation_issuers": issuers,
+        "api_base_url": f"https://{AZURE_API_HOSTNAME}/v1",
+        "tls": {"mode": "acme-inside-confidential-container", "hostname": AZURE_API_HOSTNAME},
+        "data_policy": {"prompt_output_storage": False, "control_plane_prompt_access": False},
+        # Said plainly because a uniform green tick across three planes with
+        # different evidence strength overstates this one: on AWS the COSE_Sign1
+        # chain verifies against a committed root, whereas here Microsoft's
+        # attestation service re-attests the SEV-SNP report and a verifier never
+        # sees the raw report or the AMD chain.
+        "transparency": transparency("azure", "azure-release.json"),
+        "evidence_note": (
+            "MAA re-attests the SEV-SNP report; verifiers see Microsoft's assertion, "
+            "not the raw hardware report or the AMD certificate chain."
+        ),
+    }
+
+
+def _write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    print(f"  wrote {path.relative_to(REPO_ROOT)}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--write", action="store_true", help="write the trust-page records")
+    parser.add_argument(
+        "--keep-accepted",
+        action="store_true",
+        help="keep already-published measurements in the accepted set (bind window)",
+    )
+    args = parser.parse_args()
+
+    failures = []
+    try:
+        gcp = live_gcp()
+        print(f"GCP   digest   {gcp['image_digest']}")
+        print(f"      image    {gcp['image_reference']}")
+    except Exception as exc:  # noqa: BLE001
+        failures.append(f"GCP: {exc}")
+    try:
+        aws = live_aws()
+        print(f"AWS   PCR0     {aws['pcr0']}")
+        print(f"      module   {aws['module_id']}")
+    except Exception as exc:  # noqa: BLE001
+        failures.append(f"AWS: {exc}")
+        aws = None
+    try:
+        azure = live_azure()
+        for region in azure:
+            print(f"Azure hostdata {region['hostdata']}")
+            print(f"      issuer   {region['issuer']}")
+    except Exception as exc:  # noqa: BLE001
+        failures.append(f"Azure: {exc}")
+        azure = None
+
+    for failure in failures:
+        print(f"FAILED {failure}", file=sys.stderr)
+    if failures and not (aws or azure):
+        return 1
+
+    if not args.write:
+        print("\n(dry run — pass --write to update trust-page/trust/)")
+        return 1 if failures else 0
+
+    if aws:
+        record = build_aws_record(aws, keep=args.keep_accepted)
+        _write(TRUST_DIR / "aws-release.json", json.dumps(record, indent=2, sort_keys=True) + "\n")
+        _write(TRUST_DIR / "pcr0-aws.txt", record["pcr0"] + "\n")
+        _write(TRUST_DIR / "accepted-pcr0s-aws.txt", ",".join(record["accepted_pcr0s"]) + "\n")
+        # trust-page/pcr0.txt is the legacy path, live at
+        # https://trust.trustedrouter.com/pcr0.txt and copied to S3 by both the
+        # Makefile and deploy.yml. It is the file that served a wrong value for
+        # months. Writing it from the same source as the canonical record is the
+        # point: two paths that can drift apart is how this broke the first time.
+        _write(REPO_ROOT / "trust-page" / "pcr0.txt", record["pcr0"] + "\n")
+    if azure:
+        if len(azure) < len(AZURE_ATTESTATION_URLS) and not args.keep_accepted:
+            # Writing now would drop the unreachable region's hostdata from the
+            # published set while that region may still be serving traffic.
+            print(
+                f"REFUSING to write: only {len(azure)} of {len(AZURE_ATTESTATION_URLS)} Azure "
+                "regions answered. Narrowing the set on a partial read would de-publish a "
+                "measurement that is still live. Re-run when all regions respond, or pass "
+                "--keep-accepted to preserve what is already published.",
+                file=sys.stderr,
+            )
+            return 1
+        record = build_azure_record(azure, keep=args.keep_accepted)
+        _write(
+            TRUST_DIR / "azure-release.json", json.dumps(record, indent=2, sort_keys=True) + "\n"
+        )
+        _write(TRUST_DIR / "hostdata-azure.txt", record["hostdata"] + "\n")
+        _write(
+            TRUST_DIR / "accepted-hostdata-azure.txt",
+            ",".join(record["accepted_hostdata"]) + "\n",
+        )
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
