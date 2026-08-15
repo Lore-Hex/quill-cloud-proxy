@@ -19,7 +19,9 @@ on:
   push:
     branches: [main]
     paths:
-      - "trust-page/trust/azure-release.json trust-page/trust/hostdata-azure.txt trust-page/trust/accepted-hostdata-azure.txt"
+      - "trust-page/trust/azure-release.json"
+      - "trust-page/trust/hostdata-azure.txt"
+      - "trust-page/trust/accepted-hostdata-azure.txt"
       - ".github/workflows/publish-trust-azure.yml"
   workflow_dispatch: {}
 
