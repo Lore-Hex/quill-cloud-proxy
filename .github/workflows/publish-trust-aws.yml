@@ -24,7 +24,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write   # commit the signed bundles
   id-token: write   # Fulcio keyless signing
 
 concurrency:
@@ -71,8 +71,32 @@ jobs:
               "$f"
           done
           echo "all aws artifacts verify under $identity"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: trust-bundles-aws
-          path: "**/*.bundle"
-          retention-days: 90
+      # Commit the bundles so they reach the PUBLISHED surface. Uploading them
+      # as CI artifacts left the signatures reachable only from a workflow run,
+      # while trust.trustedrouter.com served bundles signed by the page
+      # publisher instead — so the exact-identity command the trust page
+      # documents FAILED against the bundle it pointed at. Verified before this
+      # change: documented publish-trust-aws.yml, actual publish-trust-page.yml.
+      #
+      # GITHUB_TOKEN pushes do not trigger push workflows, so this cannot loop.
+      # Publishing to Pages happens on the workflow_run backstop in
+      # publish-trust-page.yml, which fires when this workflow completes.
+      - name: Commit bundles
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- 'trust-page/**/*.bundle' 'trust-page/*.bundle' || true
+          if git diff --cached --quiet; then
+            echo "no bundle changes"
+            exit 0
+          fi
+          git commit -m "[bot] sign aws trust artifacts"
+          # Another plane's workflow may have pushed first; rebase rather than
+          # fail, since these commits only ever touch disjoint bundle files.
+          for attempt in 1 2 3; do
+            git pull --rebase --quiet origin main && git push origin HEAD:main && exit 0
+            sleep 5
+          done
+          echo "could not push signed bundles" >&2
+          exit 1

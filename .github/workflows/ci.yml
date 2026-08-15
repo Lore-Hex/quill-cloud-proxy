@@ -120,6 +120,7 @@ jobs:
           python3 tools/test_verify_pcr0_build_args.py
           python3 tools/test_nitro_root_pin.py
           python3 tools/test_mirror_independence.py
+          python3 tools/test_signing_identity_matches_docs.py
       - name: Assert trust page contains no <script> tags
         run: |
           if grep -qi '<script' trust-page/index.html; then

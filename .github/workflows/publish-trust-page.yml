@@ -29,7 +29,13 @@ on:
   # deploy run's conclusion, so the page always gets (re)published from
   # main's current artifacts.
   workflow_run:
-    workflows: ["Deploy GCP enclave (attested workload)"]
+    workflows:
+      - "Deploy GCP enclave (attested workload)"
+      # Republish once a plane has signed and committed its bundles, otherwise
+      # the records go live with last run's signatures beside them.
+      - "Publish trust record (gcp)"
+      - "Publish trust record (aws)"
+      - "Publish trust record (azure)"
     types: [completed]
   workflow_dispatch: {}
 
@@ -171,35 +177,13 @@ jobs:
           print("AWS and Azure trust records are internally consistent")
           print("GCP artifacts agree across both published paths")
           PY
-      # Sign on the surface customers actually reach. Until now the cosign
-      # bundles existed only on the S3 mirror; every .bundle on
-      # trust.trustedrouter.com returned 404, so the transparency-log property
-      # was real but unreachable from the page the trust page links to.
-      # Keyless signing binds each file to this workflow's GitHub OIDC identity
-      # and records it in Rekor, which is where the timing and immutability
-      # come from — no long-lived key of ours is involved.
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-        with:
-          cosign-release: v2.4.1
-      - name: Sign published trust artifacts (keyless, Rekor-recorded)
-        env:
-          COSIGN_YES: "true"
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          for f in trust-page/*.json trust-page/*.txt trust-page/trust/*.json trust-page/trust/*.txt; do
-            cosign sign-blob --bundle "$f.bundle" "$f"
-          done
-          # What a bundle actually contains, confirmed by dissecting a live one
-          # rather than by repeating the marketing: base64Signature, cert, and
-          # rekorBundle{SignedEntryTimestamp, Payload}. There is NO inclusionProof
-          # and NO checkpoint. So the Signed Entry Timestamp gives a verifiable
-          # timestamp offline against Rekor's public key, but proving the entry
-          # is really in the log — and discovering whether a NEWER entry exists —
-          # both require querying Rekor. See trust-page/index.html for the
-          # identity to pin when doing so.
-          ls -1 trust-page/trust/*.bundle trust-page/*.bundle | wc -l | xargs echo "bundles signed:"
+      # NOT signed here. Each plane's record is signed by its own workflow, and
+      # those bundles are committed to the repo, so this job publishes them
+      # unchanged. Signing here as well is what broke the property: the page
+      # publisher's signature is the one that reached the published surface, so
+      # every record carried publish-trust-page.yml as its signer while the
+      # trust page told verifiers to pin the per-plane identity. The documented
+      # command failed against the very bundle it named.
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
@@ -276,6 +260,12 @@ jobs:
           # whose signature is missing cannot be verified by anyone, which makes
           # the transparency story on the page untrue.
           for f in trust/gcp-release.json trust/aws-release.json trust/azure-release.json; do
+            # Only assert bundles that exist in the repo. A record published
+            # before its plane workflow has signed it is a transient state, not
+            # a fault — but a bundle that is committed and NOT served is exactly
+            # the gap that left every published signature carrying the wrong
+            # identity.
+            [ -f "trust-page/${f}.bundle" ] || continue
             code="$(curl -s -o /dev/null -w '%{http_code}' "${base}/${f}.bundle?nocache=${GITHUB_RUN_ID}")"
             if [ "$code" != "200" ]; then
               echo "::error::${base}/${f}.bundle is not published (HTTP ${code})"
