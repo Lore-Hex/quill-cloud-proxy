@@ -685,6 +685,11 @@ allowlist:
   - {address: api.redpill.ai,                port: 443}
   - {address: api.siliconflow.com,           port: 443}
   - {address: inference.tinfoil.sh,          port: 443}
+  # Chutes discovery and ciphertext relay. TLS still terminates inside the
+  # enclave and application payloads are additionally encrypted to the
+  # attested GPU instance.
+  - {address: llm.chutes.ai,                 port: 443}
+  - {address: api.chutes.ai,                 port: 443}
   # ATTESTATION SIDECAR egress. The enclave has NO network and NO DNS: every
   # outbound host must be listed here AND given a write_vsock_unit below, or
   # the sidecar dies with 'lookup <host> on [::1]:53: cannot assign requested
@@ -695,6 +700,10 @@ allowlist:
   # address entry here is silently refused by vsock-proxy itself.
   - {address: gh-attestation-proxy.tinfoil.sh, port: 443}
   - {address: kds-proxy.tinfoil.sh,            port: 443}
+  # Chutes verification-only egress. These hosts receive TDX collateral
+  # requests and signed GPU attestation evidence, never prompts or outputs.
+  - {address: api.trustedservices.intel.com,    port: 443}
+  - {address: nras.attestation.nvidia.com,      port: 443}
   # Makora inference. enclave-go/internal/llm/http_client_aws.go maps this
   # host to vsock 8029, so without both the address entry and the unit
   # below every Makora request from the enclave fails to connect.
@@ -826,6 +835,10 @@ write_vsock_unit 8027 pass.wafer.ai
 write_vsock_unit 8028 api.inference.crusoecloud.com
 write_vsock_unit 8041 openrouter.ai
 write_vsock_unit 8047 ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com
+write_vsock_unit 8049 llm.chutes.ai
+write_vsock_unit 8050 api.chutes.ai
+write_vsock_unit 8051 api.trustedservices.intel.com
+write_vsock_unit 8052 nras.attestation.nvidia.com
 write_vsock_unit 8029 inference.makora.com
 write_vsock_unit 8030 oauth2.googleapis.com
 write_vsock_unit 8031 spanner.googleapis.com

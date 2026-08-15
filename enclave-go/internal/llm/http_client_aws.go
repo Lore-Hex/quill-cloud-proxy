@@ -81,6 +81,10 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "inference.makora.com", CID: 3, Port: 8029},
 	{Host: "openrouter.ai", CID: 3, Port: 8041}, // Meta Muse via OpenRouter
 	{Host: "ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com", CID: 3, Port: 8047},
+	// Chutes discovery and encrypted inference relay. Prompt bytes remain
+	// encrypted end-to-end between this enclave and the attested GPU worker.
+	{Host: "llm.chutes.ai", CID: 3, Port: 8049},
+	{Host: "api.chutes.ai", CID: 3, Port: 8050},
 
 	// GCP cross-cloud APIs. The AWS-side enclave authenticates with
 	// the cross-cloud SA key (received in BootstrapData) and reads

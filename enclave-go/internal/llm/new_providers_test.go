@@ -17,8 +17,8 @@ func TestNewProviderNormalizationAndBYOKPolicy(t *testing.T) {
 	if got := normalizeDirectProvider("Workers AI"); got != "cloudflare-workers-ai" {
 		t.Fatalf("normalize Workers AI = %q", got)
 	}
-	if !isOpenAICompatibleBYOKProvider("chutes") {
-		t.Fatal("chutes should support the existing OpenAI-compatible BYOK path")
+	if isOpenAICompatibleBYOKProvider("chutes") {
+		t.Fatal("chutes must not use the plaintext OpenAI-compatible BYOK path")
 	}
 	if !isOpenAICompatibleBYOKProvider("digitalocean") {
 		t.Fatal("digitalocean should support the existing OpenAI-compatible BYOK path")
@@ -56,8 +56,8 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 	if !ok {
 		t.Fatal("New did not return a multiClient")
 	}
-	if client.chutes.baseURL != "https://llm.chutes.ai/v1" {
-		t.Fatalf("chutes baseURL = %q", client.chutes.baseURL)
+	if client.chutes.apiBase != "https://api.chutes.ai" {
+		t.Fatalf("chutes apiBase = %q", client.chutes.apiBase)
 	}
 	if client.digitalocean.baseURL != "https://inference.do-ai.run/v1" {
 		t.Fatalf("digitalocean baseURL = %q", client.digitalocean.baseURL)

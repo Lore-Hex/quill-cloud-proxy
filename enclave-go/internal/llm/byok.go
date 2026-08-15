@@ -49,7 +49,7 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "google-ai-studio", "zai", "together",
 		"fireworks", "grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
 		"parasail", "lightning", "gmi", "deepinfra", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer",
-		"crusoe", "makora", "nebius", "minimax", "xiaomi", "chutes", "digitalocean":
+		"crusoe", "makora", "nebius", "minimax", "xiaomi", "digitalocean":
 		return true
 	default:
 		return false
