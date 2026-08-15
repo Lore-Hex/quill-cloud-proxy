@@ -1014,8 +1014,6 @@ func directBaseURL(provider string) string {
 		// host is for China-region keys; this project key is scoped to
 		// the international api.minimax.io endpoint.
 		return "https://api.minimax.io/v1"
-	case "chutes":
-		return "https://llm.chutes.ai/v1"
 	case "digitalocean":
 		return "https://inference.do-ai.run/v1"
 	case "inceptron":
