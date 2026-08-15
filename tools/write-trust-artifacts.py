@@ -21,6 +21,7 @@ SOC2_READINESS_URL = "https://trustedrouter.com/legal/soc2-readiness"
 HIPAA_READINESS_URL = "https://trustedrouter.com/legal/hipaa-readiness"
 SUBPROCESSORS_URL = "https://trustedrouter.com/legal/subprocessors"
 CANONICAL_TRUST_URL = "https://trustedrouter.com/trust"
+API_REFERENCE_URL = "https://trustedrouter.com/api/reference"
 _IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -191,7 +192,7 @@ def trust_html(release: dict[str, Any]) -> str:
   <header>
     <nav>
       <a class="brand" href="https://trustedrouter.com"><span class="mark">TR</span><span>TrustedRouter</span></a>
-      <div class="links"><a href="{CONTROL_PLANE_REPO}">Control repo</a><a href="{ATTESTED_GATEWAY_REPO}">Gateway repo</a><a href="{CLOUD_INFRA_REPO}">Infra repo</a><a href="{QUILL_REPO}">Quill repo</a><a href="{LEGAL_PACKET_URL}">Legal</a><a href="/trust/gcp-release.json">gcp-release.json</a><a href="{api}">API</a><a href="https://trustedrouter.com">Console</a></div>
+      <div class="links"><a href="{CONTROL_PLANE_REPO}">Control repo</a><a href="{ATTESTED_GATEWAY_REPO}">Gateway repo</a><a href="{CLOUD_INFRA_REPO}">Infra repo</a><a href="{QUILL_REPO}">Quill repo</a><a href="{LEGAL_PACKET_URL}">Legal</a><a href="/trust/gcp-release.json">gcp-release.json</a><a href="{API_REFERENCE_URL}">API docs</a><a href="https://trustedrouter.com">Console</a></div>
     </nav>
   </header>
   <main class="wrap">
