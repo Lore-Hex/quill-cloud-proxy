@@ -54,13 +54,35 @@ import (
 //
 // WHAT IT DOES NOT ESTABLISH
 // --------------------------
+//
 //   - It is not a signature. Someone who edits this package, hand-edits both
 //     `accepted` and `source_sha256`, and never runs CI produces a declaration
 //     that the consumer accepts. The pin is that CI runs `go test ./...` on
 //     every push and pull request, so the forgery has to survive a red build.
+//
+//   - IT MEASURES BEHAVIOUR IN THIS TEST'S ENVIRONMENT, NOT THE ENCLAVE'S.
+//     This is the surviving form of evasion 2 above and it is worth stating
+//     precisely, because the four evasions this file was written to close all
+//     needed a rebuild while this one does not. Add to envelopeAAD:
+//
+//     if algorithm == AlgorithmV2 && os.Getenv("TR_BYOK_V2_KILL") == "1" {
+//     return nil, fmt.Errorf("byokcache: unsupported envelope algorithm %q", algorithm)
+//     }
+//
+//     CI has no such variable set, so the round trip succeeds, this test is
+//     green, and the declaration says V1 and V2. Set it in the running enclave
+//     and v2 envelopes stop opening while quill-router's gate reads V1,V2 and
+//     clears the deploy. Neither this test nor that gate can see it. What
+//     constrains it is that the enclave's environment is fixed by the CCE
+//     policy / PCR0 it is released with, so the variable is reviewable at
+//     release time — that is a review property, not a measured one. The safe
+//     direction does hold: a flag that ENABLES v2 collapses the declaration to
+//     V1 when CI runs without it, which fails closed.
+//
 //   - It covers the byokcache read path only. A refusal upstream of this
 //     package — settlement.go declining to hand a v2 envelope over at all —
 //     is invisible here and would show as accepted.
+//
 //   - It says nothing about which build is RUNNING. That is the source_commit
 //     assertion in the release record, and it is weaker than this.
 const acceptedFormatsFile = "accepted_formats.json"
