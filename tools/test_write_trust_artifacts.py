@@ -99,6 +99,11 @@ class TrustArtifactTests(unittest.TestCase):
             self.assertIn("Accepted measured digests", page)
             self.assertIn("Accepted image references", page)
             self.assertIn("During a rolling release", page)
+            self.assertIn(
+                '<a href="https://trustedrouter.com/api/reference">API docs</a>',
+                page,
+            )
+            self.assertNotIn(f'<a href="{release["api_base_url"]}">API</a>', page)
 
 
 if __name__ == "__main__":
