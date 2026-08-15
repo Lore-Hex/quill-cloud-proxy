@@ -39,9 +39,43 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the source_commit check resolves an arbitrary sha
       - uses: sigstore/cosign-installer@v3
         with:
           cosign-release: v2.4.1
+      # source_commit is what makes a measurement mappable to source. This
+      # record carried no such key at all until tools/capture-plane-measurements.py
+      # started writing one, so a PCR0 published here named a build nobody
+      # could locate — tools/verify-pcr0.sh reproduces PCR0 FROM a commit, and
+      # there was no commit to give it.
+      #
+      # This step FAILS on a source_commit that is present and wrong, and only
+      # WARNS on one that is absent. That asymmetry is deliberate. Blocking the
+      # publication of a true measurement is the failure this repo already
+      # lived through: trust-page/pcr0.txt matched no running enclave from the
+      # initial commit onward because publishing was skippable. A record with
+      # weak provenance is still better than an absent one, and the party that
+      # must refuse to proceed is the CONSUMER — quill-router's
+      # scripts/check_format_ordering.py fails closed on a missing or
+      # not-configured source_commit before it lets a control plane deploy.
+      - name: Check source_commit provenance
+        run: |
+          set -euo pipefail
+          commit="$(jq -r '.source_commit // ""' trust-page/trust/aws-release.json)"
+          if [ -z "${commit}" ] || [ "${commit}" = "not-configured" ]; then
+            echo "::warning::aws-release.json carries no source_commit, so the running PCR0 cannot be mapped to a commit. quill-router's envelope-format ordering gate will FAIL CLOSED on this record. Re-run: python3 tools/capture-plane-measurements.py --write --keep-accepted"
+            exit 0
+          fi
+          if ! printf '%s' "${commit}" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            echo "source_commit '${commit}' is not a git object id — refusing to sign a record that names a build nobody can find." >&2
+            exit 1
+          fi
+          if ! git cat-file -e "${commit}^{commit}" 2>/dev/null; then
+            echo "source_commit '${commit}' does not exist in this repository — a measurement attributed to a commit that is not here is worse than one attributed to none." >&2
+            exit 1
+          fi
+          echo "aws-release.json source_commit ${commit} resolves in this repository"
       - name: Sign the AWS Nitro Enclaves record
         env:
           COSIGN_YES: "true"
