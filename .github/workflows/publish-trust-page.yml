@@ -149,7 +149,27 @@ jobs:
           assert (trust / "accepted-hostdata-azure.txt").read_text().strip() == ",".join(
               azure["accepted_hostdata"]
           )
+          # The GCP artifacts exist at BOTH trust-page/<f> and
+          # trust-page/trust/<f>, and both are live. Two paths publishing the
+          # same measurement is precisely the shape that let pcr0.txt go wrong
+          # for months, so assert they agree rather than trusting the producer
+          # to keep writing both.
+          for name in (
+              "gcp-release.json",
+              "image-digest-gcp.txt",
+              "image-reference-gcp.txt",
+              "accepted-image-digests-gcp.txt",
+              "accepted-image-references-gcp.txt",
+          ):
+              top = Path("trust-page") / name
+              nested = trust / name
+              if top.is_file() and nested.is_file():
+                  assert top.read_text() == nested.read_text(), (
+                      f"trust-page/{name} and trust-page/trust/{name} disagree. "
+                      "Whichever a reader fetched, one of them is wrong."
+                  )
           print("AWS and Azure trust records are internally consistent")
+          print("GCP artifacts agree across both published paths")
           PY
       # Sign on the surface customers actually reach. Until now the cosign
       # bundles existed only on the S3 mirror; every .bundle on
@@ -168,7 +188,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          for f in trust-page/pcr0.txt trust-page/trust/*.json trust-page/trust/*.txt; do
+          for f in trust-page/*.json trust-page/*.txt trust-page/trust/*.json trust-page/trust/*.txt; do
             cosign sign-blob --bundle "$f.bundle" "$f"
           done
           # What a bundle actually contains, confirmed by dissecting a live one
@@ -226,3 +246,44 @@ jobs:
           done
           echo "live trust page still does not match repo artifacts after 10 minutes" >&2
           exit 1
+      - name: Verify every plane's record and bundle actually published
+        run: |
+          set -euo pipefail
+          # The loop above checks only the four GCP files. A failed publish of
+          # aws-release.json used to leave the job green while the record the
+          # trust page links to returned 404 — which is how the AWS plane spent
+          # months with nothing published at all.
+          base="https://trust.trustedrouter.com"
+          missing=0
+          for f in trust/gcp-release.json trust/aws-release.json trust/azure-release.json \
+                   trust/pcr0-aws.txt trust/hostdata-azure.txt pcr0.txt; do
+            for attempt in $(seq 1 20); do
+              code="$(curl -s -o /tmp/body -w '%{http_code}' "${base}/${f}?nocache=${GITHUB_RUN_ID}-${attempt}")"
+              [ "$code" = "200" ] && break
+              sleep 15
+            done
+            if [ "$code" != "200" ]; then
+              echo "::error::${base}/${f} is not published (HTTP ${code})"
+              missing=$((missing+1))
+              continue
+            fi
+            if ! diff -q "trust-page/${f}" /tmp/body >/dev/null 2>&1; then
+              echo "::error::${base}/${f} differs from the repo copy"
+              missing=$((missing+1))
+            fi
+          done
+          # Bundles are checked for existence, not content: a published record
+          # whose signature is missing cannot be verified by anyone, which makes
+          # the transparency story on the page untrue.
+          for f in trust/gcp-release.json trust/aws-release.json trust/azure-release.json; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' "${base}/${f}.bundle?nocache=${GITHUB_RUN_ID}")"
+            if [ "$code" != "200" ]; then
+              echo "::error::${base}/${f}.bundle is not published (HTTP ${code})"
+              missing=$((missing+1))
+            fi
+          done
+          if [ "$missing" -gt 0 ]; then
+            echo "${missing} published artifact(s) missing or stale" >&2
+            exit 1
+          fi
+          echo "every record and bundle is published and matches the repo"

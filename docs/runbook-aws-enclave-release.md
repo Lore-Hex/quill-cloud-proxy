@@ -108,7 +108,42 @@ still in the pinned set at that stage, which is the reason step 5 comes last.
 * **Do not run `.github/workflows/deploy.yml`.** It builds arm64, which this
   fleet cannot execute, and it also republishes trust artifacts and moves the
   `enclave-latest` alias as a side effect.
+
+  This instruction is correct, but for a long time it was the *only* thing said
+  about trust artifacts here — and since `deploy.yml` was the only workflow that
+  signed and published them, forbidding it quietly meant nothing ever republished
+  the AWS measurement. `trust-page/pcr0.txt` carried a value matching no running
+  enclave from the initial commit until 2026-08-15 as a direct result.
+
+  Publishing the AWS measurement is now a separate step that does not involve
+  `deploy.yml` at all — see "Publish the measurement" below. Do that instead.
 * **Do not narrow the pin before the roll finishes** — the un-rolled instances
   fail, and the DNS reconciler drains them.
 * **Do not put anything that terminates TLS in front of the enclave.** The
   attestation binds the leaf minted inside the TEE; an ALB or CDN voids it.
+
+
+## Publish the measurement
+
+PCR0 does not exist until an instance boots, so it is read from a live
+attestation rather than computed at build time:
+
+```bash
+# during the roll, while old instances are still serving
+python3 tools/capture-plane-measurements.py --write --keep-accepted
+
+# after the last instance is refreshed and verified, narrow the pin
+python3 tools/capture-plane-measurements.py --write
+```
+
+Commit `trust-page/`. That fires `publish-trust-aws.yml`, which signs the record
+under the AWS-only identity a verifier pins.
+
+`--keep-accepted` is not optional during a roll. Without it you publish a set
+that excludes the instances that have not rolled yet, and anyone verifying
+against one of them is told the enclave does not match its published
+measurement.
+
+`tools/release-aws-enclave.sh` now refuses to exit 0 while the published set
+disagrees with what is running, so a skipped publish fails the release rather
+than passing quietly.
