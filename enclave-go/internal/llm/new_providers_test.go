@@ -20,6 +20,9 @@ func TestNewProviderNormalizationAndBYOKPolicy(t *testing.T) {
 	if isOpenAICompatibleBYOKProvider("chutes") {
 		t.Fatal("chutes must not use the plaintext OpenAI-compatible BYOK path")
 	}
+	if got := directBaseURL("chutes"); got != "" {
+		t.Fatalf("chutes must not expose a plaintext provider base URL, got %q", got)
+	}
 	if !isOpenAICompatibleBYOKProvider("digitalocean") {
 		t.Fatal("digitalocean should support the existing OpenAI-compatible BYOK path")
 	}

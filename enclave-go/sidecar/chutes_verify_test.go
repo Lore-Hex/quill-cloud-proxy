@@ -110,6 +110,7 @@ func newNRASTestServer(t *testing.T, now time.Time, nonce string, overallPass bo
 				"iat": state.now.Unix(), "nbf": state.now.Add(-time.Minute).Unix(), "exp": state.now.Add(time.Hour).Unix(),
 			}
 			overall := map[string]any{
+				"iss": chutesNRASIssuer,
 				"sub": "NVIDIA-PLATFORM-ATTESTATION", "eat_nonce": state.nonce,
 				"x-nvidia-overall-att-result": state.overallPass,
 			}
@@ -120,6 +121,7 @@ func newNRASTestServer(t *testing.T, now time.Time, nonce string, overallPass bo
 				state.mutateOverall(overall)
 			}
 			detached := map[string]any{
+				"iss":       chutesNRASIssuer,
 				"eat_nonce": state.nonce, "measres": "success", "secboot": true,
 				"dbgstat": "disabled", "hwmodel": "NVIDIA H200",
 				"x-nvidia-gpu-arch-check":                              true,
@@ -414,6 +416,14 @@ func TestNRASVerifierRejectsInvalidSignedClaims(t *testing.T) {
 			mutateOverall: func(claims map[string]any) { claims["sub"] = "OTHER" },
 			expected:      "subject",
 		},
+		"overall issuer": {
+			mutateOverall: func(claims map[string]any) { claims["iss"] = "https://attacker.invalid" },
+			expected:      "issuer",
+		},
+		"detached issuer": {
+			mutateDetached: func(claims map[string]any) { claims["iss"] = "https://attacker.invalid" },
+			expected:       "issuer",
+		},
 		"overall nonce": {
 			mutateOverall: func(claims map[string]any) { claims["eat_nonce"] = "wrong" },
 			expected:      "nonce",
@@ -427,6 +437,18 @@ func TestNRASVerifierRejectsInvalidSignedClaims(t *testing.T) {
 				claims["x-nvidia-gpu-attestation-report-signature-verified"] = false
 			},
 			expected: "signature-verified",
+		},
+		"required RIM verdict": {
+			mutateDetached: func(claims map[string]any) {
+				claims["x-nvidia-gpu-driver-rim-signature-verified"] = false
+			},
+			expected: "driver-rim-signature-verified",
+		},
+		"boolean string verdict": {
+			mutateDetached: func(claims map[string]any) {
+				claims["x-nvidia-future-integrity-check"] = "false"
+			},
+			expected: "future-integrity-check",
 		},
 		"hardware model": {
 			mutateDetached: func(claims map[string]any) { claims["hwmodel"] = "NVIDIA L4" },

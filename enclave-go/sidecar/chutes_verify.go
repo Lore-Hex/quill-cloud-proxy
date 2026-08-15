@@ -36,6 +36,7 @@ const (
 	chutesMaxNRASBytes       = 4 << 20
 	chutesNRASURL            = "https://nras.attestation.nvidia.com/v3/attest/gpu"
 	chutesNRASJWKSURL        = "https://nras.attestation.nvidia.com/.well-known/jwks.json"
+	chutesNRASIssuer         = "https://nras.attestation.nvidia.com"
 )
 
 //go:embed chutes_measurements.json
@@ -396,6 +397,9 @@ func (v *nrasVerifier) verifyEAT(raw []byte, nonce string, gpuCount int, expecte
 	if err != nil {
 		return fmt.Errorf("verify NVIDIA overall token: %w", err)
 	}
+	if claimString(overallClaims["iss"]) != chutesNRASIssuer {
+		return errors.New("NVIDIA overall token has an unexpected issuer")
+	}
 	if claimString(overallClaims["sub"]) != "NVIDIA-PLATFORM-ATTESTATION" {
 		return errors.New("NVIDIA overall token has an unexpected subject")
 	}
@@ -420,6 +424,9 @@ func (v *nrasVerifier) verifyEAT(raw []byte, nonce string, gpuCount int, expecte
 		if err != nil {
 			return fmt.Errorf("verify NVIDIA detached token %s: %w", key, err)
 		}
+		if claimString(claims["iss"]) != chutesNRASIssuer {
+			return fmt.Errorf("NVIDIA detached token %s has an unexpected issuer", key)
+		}
 		if claimString(claims["eat_nonce"]) != nonce {
 			return fmt.Errorf("NVIDIA detached token %s nonce mismatch", key)
 		}
@@ -433,6 +440,11 @@ func (v *nrasVerifier) verifyEAT(raw []byte, nonce string, gpuCount int, expecte
 			"x-nvidia-gpu-attestation-report-parsed",
 			"x-nvidia-gpu-attestation-report-nonce-match",
 			"x-nvidia-gpu-attestation-report-signature-verified",
+			"x-nvidia-gpu-driver-rim-signature-verified",
+			"x-nvidia-gpu-vbios-rim-signature-verified",
+			"x-nvidia-gpu-driver-rim-measurements-available",
+			"x-nvidia-gpu-vbios-rim-measurements-available",
+			"x-nvidia-gpu-vbios-index-no-conflict",
 		} {
 			if !claimTrue(claims[required]) {
 				return fmt.Errorf("NVIDIA detached token %s failed %s", key, required)
@@ -632,6 +644,12 @@ func rejectFalseNVIDIAClaims(claims map[string]any) error {
 		if strings.HasPrefix(key, "x-nvidia-") {
 			if boolean, ok := value.(bool); ok && !boolean {
 				return fmt.Errorf("claim %s is false", key)
+			}
+			if text, ok := value.(string); ok {
+				boolean, err := strconv.ParseBool(strings.TrimSpace(text))
+				if err == nil && !boolean {
+					return fmt.Errorf("claim %s is false", key)
+				}
 			}
 		}
 	}
