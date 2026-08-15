@@ -10,6 +10,7 @@ import (
 	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -18,7 +19,21 @@ import (
 	"time"
 )
 
-const Algorithm = "TR-BYOK-ENVELOPE-AES-256-GCM-V1"
+const (
+	// Algorithm is the original envelope format. Its associated data is
+	// colon-joined and not injective; see aad below.
+	Algorithm = "TR-BYOK-ENVELOPE-AES-256-GCM-V1"
+
+	// AlgorithmV2 length-prefixes the associated data and adds a namespace
+	// component. The control plane starts writing these only after every
+	// enclave region can read them — a v2 envelope reaching a build that only
+	// knows v1 is a hard failure for that customer's BYOK key.
+	AlgorithmV2 = "TR-BYOK-ENVELOPE-AES-256-GCM-V2"
+
+	// namespaceProvider is the only namespace the enclave sees. Control
+	// secrets are decrypted in the control plane and never reach here.
+	namespaceProvider = "provider"
+)
 
 const (
 	defaultTTL        = 2 * time.Minute
@@ -211,14 +226,14 @@ func decryptEnvelope(
 	provider string,
 	envelope EncryptedSecretEnvelope,
 ) (string, error) {
-	if envelope.Algorithm != Algorithm {
-		return "", fmt.Errorf("byokcache: unsupported envelope algorithm %q", envelope.Algorithm)
-	}
 	if unwrapper == nil {
 		return "", errors.New("byokcache: DEK unwrapper is required")
 	}
 
-	aad := aad(workspaceID, provider)
+	aad, err := envelopeAAD(envelope.Algorithm, workspaceID, provider)
+	if err != nil {
+		return "", err
+	}
 	encryptedDEK, err := decodeB64(envelope.EncryptedDEK)
 	if err != nil {
 		return "", fmt.Errorf("byokcache: decode encrypted DEK: %w", err)
@@ -272,8 +287,58 @@ func Fingerprint(workspaceID string, provider string, envelope EncryptedSecretEn
 	return "byokcache:v1:" + hex.EncodeToString(digest.Sum(nil))
 }
 
+// aad builds the v1 associated data.
+//
+// Colon-joined with no escaping and no length prefix, so component boundaries
+// are ambiguous: ("a:b","c") and ("a","b:c") produce identical bytes. That is
+// the defect v2 exists to fix. Kept because envelopes written before the
+// migration are still v1 and must keep opening.
 func aad(workspaceID, provider string) []byte {
 	return []byte(fmt.Sprintf("trustedrouter:byok:%s:%s", workspaceID, provider))
+}
+
+// aadV2 builds the v2 associated data: length-prefixed, so no choice of
+// component values can produce the same bytes from a different tuple.
+//
+// Each component is a 4-byte big-endian length followed by its UTF-8 bytes.
+// The namespace component separates secret families, so a control-secret
+// purpose can never collide with a provider slug even if the strings match.
+//
+// Must stay byte-identical to _aad_v2 in quill-router's byok_crypto.py. A
+// divergence here is not a test failure, it is every BYOK key in that family
+// failing to decrypt.
+func aadV2(namespace, workspaceID, context string) []byte {
+	parts := [][]byte{
+		[]byte("trustedrouter/byok/v2"),
+		[]byte(namespace),
+		[]byte(workspaceID),
+		[]byte(context),
+	}
+	out := make([]byte, 0, 64)
+	var length [4]byte
+	for _, part := range parts {
+		binary.BigEndian.PutUint32(length[:], uint32(len(part)))
+		out = append(out, length[:]...)
+		out = append(out, part...)
+	}
+	return out
+}
+
+// envelopeAAD selects the associated data for an envelope's declared format.
+//
+// The enclave only ever decrypts BYOK provider secrets — settlement.go reaches
+// byokcache exclusively for candidates whose UsageType is BYOK — so the
+// namespace is always "provider" here. Control secrets are decrypted in the
+// control plane and never cross this boundary.
+func envelopeAAD(algorithm, workspaceID, provider string) ([]byte, error) {
+	switch algorithm {
+	case Algorithm:
+		return aad(workspaceID, provider), nil
+	case AlgorithmV2:
+		return aadV2(namespaceProvider, workspaceID, provider), nil
+	default:
+		return nil, fmt.Errorf("byokcache: unsupported envelope algorithm %q", algorithm)
+	}
 }
 
 func decodeB64(value string) ([]byte, error) {
