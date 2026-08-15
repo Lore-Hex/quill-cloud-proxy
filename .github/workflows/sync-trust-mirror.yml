@@ -1,0 +1,101 @@
+name: Sync trust mirror (S3)
+
+# The S3 mirror had no publisher that was allowed to run.
+#
+# trust.quill.lorehex.co is synced by deploy.yml — which is workflow_dispatch
+# only AND explicitly forbidden by docs/runbook-aws-enclave-release.md, because
+# it also builds arm64 and moves the enclave-latest alias. So the one workflow
+# permitted to refresh the mirror was one nobody was permitted to run.
+#
+# The consequence was live and measurable: after the corrected measurements
+# reached trust.trustedrouter.com, trust.quill.lorehex.co went on serving PCR0
+# 9b4ca566... — a value matching no enclave we have ever run — and 404ing on the
+# AWS and Azure records entirely. Two surfaces, two different answers, one of
+# them false. The freshness gate caught it; there was simply nothing that could
+# fix it.
+#
+# This workflow does the sync and NOTHING else: no image build, no ECR push, no
+# alias move. That is the whole reason it can be allowed to run automatically.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "trust-page/**"
+      - ".github/workflows/sync-trust-mirror.yml"
+  # Fires after the per-plane workflows commit their bundles, so the mirror gets
+  # the signatures too rather than records with no proofs beside them.
+  workflow_run:
+    workflows:
+      - "Publish trust record (gcp)"
+      - "Publish trust record (aws)"
+      - "Publish trust record (azure)"
+    types: [completed]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write   # OIDC into AWS
+  contents: read
+
+concurrency:
+  group: sync-trust-mirror
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Sync trust artifacts to the S3 mirror
+        run: |
+          set -euo pipefail
+          # --delete so a file removed from the repo stops being served. Without
+          # it the mirror accumulates records nobody maintains, which is how a
+          # measurement outlives the enclave it describes.
+          aws s3 sync trust-page/ s3://trust.quill.lorehex.co/ \
+            --delete \
+            --exclude "build.sh" \
+            --cache-control "max-age=60, public" \
+            --content-type "text/html; charset=utf-8"
+          # s3 sync stamps one content-type over everything; correct the ones
+          # that are not HTML. A JSON record served as text/html is still
+          # readable by curl but breaks anything content-type aware.
+          while IFS= read -r f; do
+            rel="${f#trust-page/}"
+            case "$f" in
+              *.json)   ct="application/json" ;;
+              *.txt)    ct="text/plain; charset=utf-8" ;;
+              *.bundle) ct="application/json" ;;
+              *)        continue ;;
+            esac
+            aws s3 cp "$f" "s3://trust.quill.lorehex.co/${rel}" \
+              --cache-control "max-age=60, public" --content-type "$ct"
+          done < <(find trust-page -type f \( -name '*.json' -o -name '*.txt' -o -name '*.bundle' \))
+      - name: Verify the mirror serves what the repo holds
+        run: |
+          set -euo pipefail
+          # Syncing is not serving. This is the check whose absence let the
+          # mirror drift: read every record back from the public URL and
+          # compare bytes.
+          base="https://trust.quill.lorehex.co"
+          missing=0
+          for f in trust/gcp-release.json trust/aws-release.json trust/azure-release.json pcr0.txt; do
+            [ -f "trust-page/${f}" ] || continue
+            for attempt in $(seq 1 12); do
+              code="$(curl -s -o /tmp/body -w '%{http_code}' "${base}/${f}?nocache=${GITHUB_RUN_ID}-${attempt}")"
+              [ "$code" = "200" ] && diff -q "trust-page/${f}" /tmp/body >/dev/null 2>&1 && break
+              sleep 10
+            done
+            if [ "$code" != "200" ] || ! diff -q "trust-page/${f}" /tmp/body >/dev/null 2>&1; then
+              echo "::error::${base}/${f} does not match the repo (HTTP ${code})"
+              missing=$((missing+1))
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "mirror matches the repo"

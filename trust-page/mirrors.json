@@ -29,7 +29,7 @@
       "hosting_provider": "aws-s3-cloudfront",
       "dns_provider": "cloudflare",
       "registrar": "namecheap",
-      "note": "S3 website origin behind CloudFront, synced by the release workflows."
+      "note": "S3 website origin behind CloudFront. Synced by sync-trust-mirror.yml. Until 2026-08-15 its only publisher was deploy.yml, which the AWS runbook forbids running, so this surface served a PCR0 matching no running enclave while the primary surface was correct."
     }
   ],
   "planned": [
@@ -42,7 +42,7 @@
       "note": [
         "Deliberately a vendor-owned address. It needs no DNS record and no domain",
         "of ours, so it is the only surface that survives losing a registrar or a",
-        "DNS account. Not live yet — listed so the gap is visible rather than",
+        "DNS account. Not live yet \u2014 listed so the gap is visible rather than",
         "assumed away."
       ]
     }
