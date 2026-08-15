@@ -130,11 +130,25 @@ attestation rather than computed at build time:
 
 ```bash
 # during the roll, while old instances are still serving
-python3 tools/capture-plane-measurements.py --write --keep-accepted
+python3 tools/capture-plane-measurements.py --write --keep-accepted \
+    --source-commit "$(git rev-parse --short HEAD)"
 
 # after the last instance is refreshed and verified, narrow the pin
-python3 tools/capture-plane-measurements.py --write
+python3 tools/capture-plane-measurements.py --write \
+    --source-commit "$(git rev-parse --short HEAD)"
 ```
+
+`--source-commit` is the commit that BUILT the enclave now running, and it has
+no default. Here — immediately after a release, from the same checkout the
+release was built from — HEAD is that commit, which is why the recipe above
+spells it out rather than relying on a default that would also fire in every
+other flow. Anywhere else (re-publishing later, answering a drift alert), pass
+the sha of the release instead; if nobody can name it, omit the flag and the
+record records `not-configured`, which makes quill-router's envelope-format
+ordering gate refuse control-plane deploys against this cloud until a real
+commit is published. A commit that is in this repository but is not the one
+that built the running enclave is the one error nothing downstream can detect:
+it makes the gate read a real file at the wrong commit.
 
 Commit `trust-page/`. That fires `publish-trust-aws.yml`, which signs the record
 under the AWS-only identity a verifier pins.

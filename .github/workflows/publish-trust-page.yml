@@ -140,7 +140,8 @@ jobs:
               f"legacy trust-page/pcr0.txt ({legacy[:16]}...) disagrees with the "
               f"current record ({aws['pcr0'][:16]}...). Two paths publishing "
               "different measurements is exactly the defect this check exists for; "
-              "re-run tools/capture-plane-measurements.py --write."
+              "re-run tools/capture-plane-measurements.py --write "
+              "--source-commit <sha of the enclave release>."
           )
 
           azure = json.loads((trust / "azure-release.json").read_text())

@@ -17,13 +17,11 @@ disagree.
     python3 tools/capture-plane-measurements.py
 
     # write trust-page/trust/{aws,azure}-release.json and the .txt files
-    python3 tools/capture-plane-measurements.py --write
+    python3 tools/capture-plane-measurements.py --write --source-commit 1a2b3c4
 
     # during a bind window, keep the outgoing measurement acceptable
-    python3 tools/capture-plane-measurements.py --write --keep-accepted
-
-    # when HEAD is not the commit that built the running enclave
-    python3 tools/capture-plane-measurements.py --write --source-commit 1a2b3c4
+    python3 tools/capture-plane-measurements.py --write --keep-accepted \
+        --source-commit 1a2b3c4
 
 Both records now carry source_commit, which they did not before: aws-release.json
 and azure-release.json had no such key at all, so their running measurements were
@@ -31,6 +29,14 @@ unmappable to source. gcp-release.json has always carried one because its produc
 is a deploy pipeline that knows the commit it is rolling. Here the producer is a
 capture, so the commit is an assertion by the operator rather than a measurement —
 see resolve_source_commit for what that does and does not establish.
+
+--source-commit HAS NO DEFAULT and deliberately so. It used to default to HEAD
+whenever enclave-go was clean, which is the normal state, and this script runs
+against an already-running enclave at an arbitrary later time: a clean tree is
+no evidence that HEAD is the released build. Run without it and the record says
+`not-configured`, which the downstream deploy gate treats as a refusal. That is
+the intended outcome — a true measurement with no provenance still publishes,
+and the party that must not proceed on it fails closed on its own.
 
 GCP is REPORTED but never written: its record is produced by the deploy
 pipeline, which is the correct producer because it knows which digest it is
@@ -86,6 +92,21 @@ AWS_ATTESTATION_ROOT = "https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclav
 SOURCE_COMMIT_UNSET = "not-configured"
 _COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
+# How strong the source_commit in a record is. Published in the record itself
+# because "which commit" and "how do you know" are different questions, and a
+# reader holding only the bytes cannot ask the second one otherwise.
+#
+#   operator-asserted -- supplied by whoever ran the release and checked only
+#                        against this repository's history. NOT reproduced from
+#                        the measurement; `reproduce` names the tool that can.
+#   none              -- no commit; the record is unmappable to source.
+PROVENANCE_ASSERTED = "operator-asserted"
+PROVENANCE_NONE = "none"
+
+
+def _provenance(source_commit: str) -> str:
+    return PROVENANCE_NONE if source_commit == SOURCE_COMMIT_UNSET else PROVENANCE_ASSERTED
+
 
 def _git(*args: str) -> str | None:
     """Run git in this repository. None on any failure — never a guess."""
@@ -105,7 +126,7 @@ def _git(*args: str) -> str | None:
 
 
 def resolve_source_commit(explicit: str | None = None) -> str:
-    """The commit whose enclave-go tree built what is running.
+    """The commit whose enclave-go tree built what is running. NO DEFAULT.
 
     THIS IS AN ASSERTION, NOT A MEASUREMENT. PCR0 and hostdata are
     measurements and neither carries a commit; whoever ran the release is the
@@ -121,29 +142,57 @@ def resolve_source_commit(explicit: str | None = None) -> str:
     missing or not-configured source_commit rather than assuming a superset,
     which is why recording a wrong value here is worse than recording none.
 
-    Default: HEAD, and only when enclave-go is clean. release-aws-enclave.sh
-    already refuses to build from a dirty enclave-go because the image would
-    correspond to no commit; recording one anyway would be exactly the
-    fabrication that guard exists to prevent.
+    THIS DEFAULTED TO HEAD AND MUST NOT. The argument for that default was that
+    release-aws-enclave.sh refuses to BUILD from a dirty enclave-go, so a clean
+    tree means HEAD is the build. The two are not the same moment. That guard
+    runs when HEAD IS the build; this script runs against an already-running
+    enclave at an arbitrary later time, and a clean enclave-go says nothing
+    about whether main has moved since the release. Worse, the flow that most
+    often runs this — the freshness check's auto-filed drift issue — fires
+    precisely BECAUSE what is published no longer matches what is running, i.e.
+    exactly when HEAD is not the released commit. The default therefore
+    manufactured, unattended, the "real file at the wrong commit" this
+    docstring already called worse than reading nothing.
+
+    So: the commit must be supplied. Absent, the record says `not-configured`
+    and the deploy gate fails closed, which is the outcome the whole design
+    prefers. Supplied, it is checked against this repository — a real object,
+    of type commit, reachable from HEAD — so a typo, a sha from another clone,
+    or a commit that was never merged is refused rather than published.
+
+    What none of that establishes is the binding between the commit and the
+    MEASUREMENT. Only tools/verify-pcr0.sh can do that, by rebuilding PCR0 from
+    the commit on Nitro-capable hardware, and it is not run here. The record
+    therefore also carries `source_commit_provenance` naming what this is:
+    operator-asserted.
     """
-    if explicit:
-        candidate = explicit.strip()
-        if candidate != SOURCE_COMMIT_UNSET and not _COMMIT_RE.fullmatch(candidate):
-            raise ValueError(f"--source-commit {candidate!r} is not a git object id")
-        return candidate
-    dirty = _git("status", "--porcelain", "--", "enclave-go")
-    if dirty is None:
-        print("      WARNING no git here; recording source_commit as unset", file=sys.stderr)
-        return SOURCE_COMMIT_UNSET
-    if dirty:
+    if not explicit:
         print(
-            "      WARNING enclave-go is dirty, so HEAD does not describe any build; "
-            "recording source_commit as unset. Pass --source-commit <sha> if you know it.",
+            "      WARNING no --source-commit given, so this record cannot be mapped to source. "
+            "Recording not-configured. quill-router's check_format_ordering.py will refuse to "
+            "deploy against it, by design. Pass --source-commit <sha of the enclave release>.",
             file=sys.stderr,
         )
         return SOURCE_COMMIT_UNSET
-    head = _git("rev-parse", "--short", "HEAD")
-    return head if head and _COMMIT_RE.fullmatch(head) else SOURCE_COMMIT_UNSET
+
+    candidate = explicit.strip()
+    if candidate == SOURCE_COMMIT_UNSET:
+        return candidate
+    if not _COMMIT_RE.fullmatch(candidate):
+        raise ValueError(f"--source-commit {candidate!r} is not a git object id")
+    kind = _git("cat-file", "-t", f"{candidate}^{{commit}}")
+    if kind != "commit":
+        raise ValueError(
+            f"--source-commit {candidate!r} is not a commit in this repository. A sha that "
+            "resolves nowhere here names a build nobody can reproduce from this source."
+        )
+    if _git("merge-base", "--is-ancestor", candidate, "HEAD") is None:
+        raise ValueError(
+            f"--source-commit {candidate!r} is not reachable from HEAD. An enclave release is "
+            "built from this history; a commit outside it is either the wrong sha or a tree that "
+            "was never merged, and either way the record would point auditors at the wrong source."
+        )
+    return candidate
 
 
 def _fetch(url: str, *, verify_tls: bool = True) -> bytes:
@@ -352,6 +401,11 @@ def build_aws_record(
         # running measurements unmappable to source. A verifier could rebuild
         # PCR0 from a commit only by first guessing which commit to try.
         "source_commit": source_commit,
+        # What that commit is worth. It is an operator's assertion checked
+        # against this repository's history, never a value derived from the
+        # measurement: nothing here reproduces PCR0. `reproduce` names the tool
+        # that does, and until someone runs it this field says so.
+        "source_commit_provenance": _provenance(source_commit),
         "measurement_type": "nitro-pcr0-sha384",
         "pcr0": live["pcr0"],
         "accepted_pcr0s": accepted,
@@ -407,6 +461,9 @@ def build_azure_record(
         # attribute one build per region. Stated rather than papered over;
         # quill-router's ordering gate records the same limit.
         "source_commit": source_commit,
+        # See build_aws_record: an assertion checked against this repository,
+        # not a value reproduced from the measurement.
+        "source_commit_provenance": _provenance(source_commit),
         "measurement_type": "sev-snp-hostdata-sha256",
         # No single scalar is "the" measurement here — which region answers
         # depends on Traffic Manager. The set is the answer.
@@ -460,8 +517,10 @@ def main() -> int:
         "--source-commit",
         default=None,
         help=(
-            "commit whose enclave-go tree built the running enclave "
-            "(default: HEAD when enclave-go is clean, otherwise unset)"
+            "commit whose enclave-go tree built the RUNNING enclave. No default: HEAD is not "
+            "that commit except by coincidence, and this record is the only thing that maps a "
+            "measurement to source. Omit it and the record records not-configured, which the "
+            "envelope-format ordering gate treats as a refusal."
         ),
     )
     args = parser.parse_args()

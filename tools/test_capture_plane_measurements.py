@@ -24,12 +24,30 @@ AWS and Azure are produced by a capture of what is already running, and a captur
 cannot measure a commit. That asymmetry is the whole reason the AWS and Azure
 BYOK envelope ordering could not be machine-checked.
 
-SCOPE LIMIT, stated plainly. This proves the record carries a commit and that a
-dirty or unknowable tree yields the sentinel instead of a guess. It does NOT
-prove the commit is the one that built the running enclave — nothing here can,
-because PCR0 and hostdata carry no commit. It also does not prove the Azure
-regions run the same build: the record describes two regions and carries one
-commit, and this file asserts nothing about that gap beyond its existence.
+THE DEFECT THIS FILE NOW ALSO PINS. source_commit used to DEFAULT to HEAD
+whenever `git status --porcelain -- enclave-go` was clean, which is the normal
+state. The justification was that release-aws-enclave.sh refuses to build from a
+dirty enclave-go, so at BUILD time HEAD is the build — but this script runs
+against an already-running enclave at an arbitrary later time, and both
+documented invocations (the AWS runbook and the freshness check's auto-filed
+drift issue) omitted the flag. The drift-remediation path fires precisely
+BECAUSE the published measurement no longer matches what is running, i.e. exactly
+when HEAD has moved past the released enclave. The default therefore
+manufactured, unattended, a real-but-wrong commit — the one error the publish
+workflow's `git cat-file` check cannot see, and the one the docstring itself
+called worse than recording nothing. There is no default now, and
+`NoDefaultCommitTests` is what keeps it from coming back.
+
+SCOPE LIMIT, stated plainly. This proves the record carries a commit or the
+sentinel, that no value is invented when none is given, and that a supplied
+commit is checked against this repository. It does NOT prove the commit is the
+one that built the running enclave — nothing here can, because PCR0 and hostdata
+carry no commit, and a commit that is genuinely in this history but belongs to
+the wrong build passes every check in this file. That is why the record now
+publishes `source_commit_provenance: operator-asserted` rather than implying
+more. It also does not prove the Azure regions run the same build: the record
+describes two regions and carries one commit, and this file asserts nothing
+about that gap beyond its existence.
 """
 
 from __future__ import annotations
@@ -113,13 +131,13 @@ class SourceCommitTests(unittest.TestCase):
         )
 
 
-class DirtyTreeTests(unittest.TestCase):
-    """A dirty enclave-go tree corresponds to no commit, so it yields none.
+class NoDefaultCommitTests(unittest.TestCase):
+    """No --source-commit, no commit. The tree's state is not evidence.
 
-    release-aws-enclave.sh already refuses to BUILD from a dirty enclave-go
-    because PCR0 would be unreproducible. The same fact has to hold on the
-    publish side: HEAD names a tree that is not the tree that was built, so
-    recording HEAD would be a fabrication with a plausible shape.
+    A clean enclave-go once meant "HEAD is the build". It never did: the build
+    guard runs at build time, this runs whenever someone captures. So a clean
+    tree, a dirty tree, and no git at all now all produce the same answer —
+    the sentinel — and the only way to publish a commit is to name one.
     """
 
     def _repo(self, directory: str) -> Path:
@@ -133,44 +151,105 @@ class DirtyTreeTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(root), "commit", "-qm", "initial"], check=True)
         return root
 
-    def test_clean_tree_records_head(self) -> None:
+    def _at(self, root: Path, *args: str) -> str:
+        original = capture.REPO_ROOT
+        capture.REPO_ROOT = root
+        try:
+            return capture.resolve_source_commit(*args)
+        finally:
+            capture.REPO_ROOT = original
+
+    def _head(self, root: Path) -> str:
+        return subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def test_a_clean_tree_does_not_record_head(self) -> None:
+        # The regression this file exists for. A clean enclave-go is the normal
+        # state; if it produced a commit, every unattended re-run of the
+        # documented remediation would publish HEAD as the running build.
         with tempfile.TemporaryDirectory() as directory:
             root = self._repo(directory)
-            original = capture.REPO_ROOT
-            capture.REPO_ROOT = root
-            try:
-                recorded = capture.resolve_source_commit()
-            finally:
-                capture.REPO_ROOT = original
-            expected = subprocess.run(
-                ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip()
-            self.assertEqual(recorded, expected)
 
-    def test_dirty_enclave_go_records_the_sentinel(self) -> None:
+            recorded = self._at(root)
+
+            self.assertEqual(recorded, capture.SOURCE_COMMIT_UNSET)
+            self.assertNotEqual(recorded, self._head(root))
+
+    def test_a_dirty_tree_records_the_sentinel(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self._repo(directory)
             (root / "enclave-go" / "main.go").write_text("package main // edited\n")
-            original = capture.REPO_ROOT
-            capture.REPO_ROOT = root
-            try:
-                recorded = capture.resolve_source_commit()
-            finally:
-                capture.REPO_ROOT = original
-            self.assertEqual(recorded, capture.SOURCE_COMMIT_UNSET)
+
+            self.assertEqual(self._at(root), capture.SOURCE_COMMIT_UNSET)
 
     def test_no_git_at_all_records_the_sentinel(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            original = capture.REPO_ROOT
-            capture.REPO_ROOT = Path(directory)
-            try:
-                recorded = capture.resolve_source_commit()
-            finally:
-                capture.REPO_ROOT = original
-            self.assertEqual(recorded, capture.SOURCE_COMMIT_UNSET)
+            self.assertEqual(self._at(Path(directory)), capture.SOURCE_COMMIT_UNSET)
+
+    def test_a_supplied_commit_that_is_in_this_repository_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._repo(directory)
+            head = self._head(root)
+
+            self.assertEqual(self._at(root, head), head)
+
+    def test_a_supplied_commit_that_is_not_in_this_repository_is_refused(self) -> None:
+        # A sha from another clone, or a typo that happens to be well-formed
+        # hex. It would send an auditor to a commit that does not exist and the
+        # deploy gate to a file it cannot fetch.
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._repo(directory)
+
+            with self.assertRaisesRegex(ValueError, "not a commit in this repository"):
+                self._at(root, "0123456789abcdef0123456789abcdef01234567")
+
+    def test_a_supplied_commit_outside_this_history_is_refused(self) -> None:
+        # Real object, real commit, never merged. An enclave release is built
+        # from this history, so a commit off it names a tree nobody shipped.
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._repo(directory)
+            subprocess.run(["git", "-C", str(root), "checkout", "-qb", "side"], check=True)
+            (root / "enclave-go" / "side.go").write_text("package main\n")
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "side"], check=True)
+            unmerged = self._head(root)
+            subprocess.run(["git", "-C", str(root), "checkout", "-q", "-"], check=True)
+
+            with self.assertRaisesRegex(ValueError, "not reachable from HEAD"):
+                self._at(root, unmerged)
+
+
+class ProvenanceFieldTests(unittest.TestCase):
+    """The record says how strong its own source_commit is.
+
+    "Which commit" and "how do you know" are different questions, and a reader
+    holding only the bytes cannot ask the second one unless the record answers
+    it. Nothing here reproduces PCR0 from the commit, so the answer is
+    operator-asserted, and it says so.
+    """
+
+    def test_a_named_commit_is_published_as_operator_asserted(self) -> None:
+        for record in (
+            capture.build_aws_record(AWS_LIVE, keep=False, source_commit="1a2b3c4"),
+            capture.build_azure_record(AZURE_LIVE, keep=False, source_commit="1a2b3c4"),
+        ):
+            self.assertEqual(record["source_commit_provenance"], capture.PROVENANCE_ASSERTED)
+        # "operator-asserted" is only honest if the record also names the tool
+        # that could upgrade it, which is the one that rebuilds PCR0 from a
+        # commit and is not run by this script.
+        aws = capture.build_aws_record(AWS_LIVE, keep=False, source_commit="1a2b3c4")
+        self.assertEqual(aws["reproduce"], "tools/verify-pcr0.sh")
+
+    def test_no_commit_is_published_as_no_provenance(self) -> None:
+        for record in (
+            capture.build_aws_record(AWS_LIVE, keep=False),
+            capture.build_azure_record(AZURE_LIVE, keep=False),
+        ):
+            self.assertEqual(record["source_commit_provenance"], capture.PROVENANCE_NONE)
 
 
 class PublishedRecordTests(unittest.TestCase):
