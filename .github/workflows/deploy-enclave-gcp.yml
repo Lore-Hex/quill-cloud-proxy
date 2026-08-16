@@ -145,7 +145,7 @@ jobs:
       run:
         working-directory: enclave-go
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26.10"
@@ -169,7 +169,7 @@ jobs:
       accepted_references: ${{ steps.write-trust.outputs.accepted_references }}
       stage_d_policy_sha256: ${{ steps.stage-d-transition.outputs.policy_sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # need history for the auto-commit + push back
           # Trust-artifact commits push directly to protected main. The
@@ -511,7 +511,7 @@ jobs:
     needs: build-and-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
       - uses: sigstore/cosign-installer@v3
@@ -539,7 +539,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: batch-release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Require explicit Batch storage activation
         env:
           TR_BATCH_STORAGE_ENABLED: ${{ vars.TR_BATCH_STORAGE_ENABLED }}
@@ -567,7 +567,7 @@ jobs:
     outputs:
       operation: ${{ steps.admit.outputs.TR_DEPLOY_MUTEX_OPERATION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
@@ -598,7 +598,7 @@ jobs:
       GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
       STAGE_D_PROBE_API_KEY: ${{ secrets.STAGE_D_PROBE_API_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Match the image source, not a newer main containing runtime envs
           # that the built Confidential Space image does not allow. Trust
@@ -1085,7 +1085,7 @@ jobs:
     outputs:
       stage_d_policy_sha256: ${{ steps.finalize.outputs.policy_sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
@@ -1146,7 +1146,7 @@ jobs:
     needs: [build-and-release, finalize-trust-artifacts]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
       - uses: sigstore/cosign-installer@v3
@@ -1175,7 +1175,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github

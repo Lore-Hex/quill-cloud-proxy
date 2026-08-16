@@ -82,7 +82,7 @@ jobs:
       ZONE: ${{ inputs.zone }}
       TARGET_SIZE: ${{ inputs.target_size }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Authenticate to GCP via WIF
         uses: google-github-actions/auth@v3
         with:

@@ -23,7 +23,7 @@ jobs:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # workflow_run otherwise checks out the triggering run's head. Trust
           # artifacts are committed by several workflows, so main is canonical.

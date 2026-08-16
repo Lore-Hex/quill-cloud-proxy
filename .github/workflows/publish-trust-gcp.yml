@@ -41,7 +41,7 @@ jobs:
   sign:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Match the attested release workflow's protected-main publisher.
           # Signing still uses this workflow's separate OIDC identity.

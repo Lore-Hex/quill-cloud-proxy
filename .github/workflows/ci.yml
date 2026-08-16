@@ -42,7 +42,7 @@ jobs:
           - "cloud_gcp,llm_vertex"
           - "cloud_gcp,llm_multi"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26.10"
@@ -69,7 +69,7 @@ jobs:
           - "cloud_aws"
           - "cloud_gcp"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26.10"
@@ -86,7 +86,7 @@ jobs:
       run:
         working-directory: parent
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
@@ -106,7 +106,7 @@ jobs:
     # the static trust page before publish.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Provenance validation resolves the exact commit that built each
           # published enclave. A shallow checkout makes older release commits
