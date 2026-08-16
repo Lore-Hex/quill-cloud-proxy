@@ -104,6 +104,10 @@ class TrustArtifactTests(unittest.TestCase):
                 page,
             )
             self.assertNotIn(f'<a href="{release["api_base_url"]}">API</a>', page)
+            self.assertIn("User-provided models", page)
+            self.assertIn("leave the attested boundary", page)
+            self.assertIn("not covered by TrustedRouter's zero-data-retention promise", page)
+            self.assertIn("not yet served from the AWS region", page)
 
 
 if __name__ == "__main__":

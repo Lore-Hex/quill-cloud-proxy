@@ -280,6 +280,11 @@ def trust_html(release: dict[str, Any]) -> str:
       <pre>uv run https://raw.githubusercontent.com/Lore-Hex/quill-cloud-proxy/main/tools/verify-attestation.py --help</pre>
     </section>
     <section class="grid">
+      <div class="panel warn">
+        <h2>User-provided models</h2>
+        <p>Requests to <code>trustedrouter/user-*</code> models leave the attested boundary for a community-operated HTTPS endpoint chosen by the model owner. The enclave still terminates the caller's TLS, never logs prompts, decrypts owner credentials only inside the enclave, and connects only to public addresses under a measured, IP-pinned egress policy that refuses redirects. It sends only the allowlisted OpenAI request body plus a <code>TR-Signature</code>.</p>
+        <p><strong>The owner's endpoint is not attested and is not covered by TrustedRouter's zero-data-retention promise.</strong> User-provided models are not yet served from the AWS region.</p>
+      </div>
       <div class="panel"><h2>No Prompt Logs</h2><p>Prompt/output storage is disabled. Generation content endpoint returns a compatible <code>content_not_stored</code> response.</p></div>
       <div class="panel">
         <h2>Hosted Open Source</h2>
