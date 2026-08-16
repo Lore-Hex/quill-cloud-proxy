@@ -137,8 +137,9 @@ def resolve_source_commit(explicit: str | None = None) -> str:
     build ACCEPTS.
 
     That downstream question is quill-router's scripts/check_format_ordering.py,
-    which refuses to let a control plane deploy a build writing an envelope
-    format the enclave serving that cloud cannot read. It fails closed on a
+    a CI check that refuses any pull request changing the control plane's
+    written envelope format set until every enclave's declaration shows the new
+    format is readable. It fails closed on a
     missing or not-configured source_commit rather than assuming a superset,
     which is why recording a wrong value here is worse than recording none.
 
@@ -169,8 +170,9 @@ def resolve_source_commit(explicit: str | None = None) -> str:
     if not explicit:
         print(
             "      WARNING no --source-commit given, so this record cannot be mapped to source. "
-            "Recording not-configured. quill-router's check_format_ordering.py will refuse to "
-            "deploy against it, by design. Pass --source-commit <sha of the enclave release>.",
+            "Recording not-configured. quill-router's check_format_ordering.py fails closed "
+            "against it on any format-changing pull request, by design. "
+            "Pass --source-commit <sha of the enclave release>.",
             file=sys.stderr,
         )
         return SOURCE_COMMIT_UNSET
@@ -563,11 +565,11 @@ def main() -> int:
         # Not fatal. Publishing a TRUE measurement with weak provenance beats
         # publishing nothing — trust-page/pcr0.txt served a value matching no
         # running enclave for months precisely because publishing was easy to
-        # skip. The consumer that must not proceed on this is the deploy gate,
-        # and it fails closed there.
+        # skip. The consumer that must not proceed on this is quill-router's
+        # format-ordering CI check, and it fails closed there.
         print(
             "      WARNING this record will not support the envelope-format ordering "
-            "gate; quill-router's check_format_ordering.py fails closed without it.",
+            "check; quill-router's check_format_ordering.py fails closed without it.",
             file=sys.stderr,
         )
 
