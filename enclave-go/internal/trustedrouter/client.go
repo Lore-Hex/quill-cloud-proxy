@@ -235,11 +235,27 @@ type KeyIdentity struct {
 }
 
 type CustomModel struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	BaseModelID  string `json:"base_model_id"`
-	HiddenPrompt string `json:"hidden_prompt"`
-	Revision     int    `json:"revision"`
+	ID                      string                             `json:"id"`
+	Name                    string                             `json:"name"`
+	Kind                    string                             `json:"kind"`
+	BaseModelID             string                             `json:"base_model_id"`
+	HiddenPrompt            string                             `json:"hidden_prompt"`
+	UserModelKind           string                             `json:"user_model_kind"`
+	OwnerWorkspaceID        string                             `json:"owner_workspace_id"`
+	OwnerUserID             string                             `json:"owner_user_id"`
+	EndpointURL             string                             `json:"endpoint_url"`
+	UpstreamModelID         string                             `json:"upstream_model_id"`
+	Revision                int                                `json:"revision"`
+	SupportsStreaming       bool                               `json:"supports_streaming"`
+	SecretNamespace         string                             `json:"secret_namespace"`
+	EndpointEncryptedSecret *byokcache.EncryptedSecretEnvelope `json:"endpoint_encrypted_secret"`
+	EndpointSecretPurpose   string                             `json:"endpoint_secret_purpose"`
+	SigningEncryptedSecret  *byokcache.EncryptedSecretEnvelope `json:"signing_encrypted_secret"`
+	SigningSecretPurpose    string                             `json:"signing_secret_purpose"`
+	ConnectTimeoutSeconds   int                                `json:"connect_timeout_seconds"`
+	FirstByteTimeoutSeconds int                                `json:"first_byte_timeout_seconds"`
+	IdleTimeoutSeconds      int                                `json:"idle_timeout_seconds"`
+	TotalTimeoutSeconds     int                                `json:"total_timeout_seconds"`
 }
 
 type RouteCandidate struct {

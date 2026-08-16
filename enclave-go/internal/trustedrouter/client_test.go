@@ -167,6 +167,35 @@ func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 	}
 }
 
+func TestResolveCustomModelDecodesUserProvidedDispatchContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/gateway/resolve-custom-model" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"data":{"workspace_id":"caller-ws","custom_model":{"id":"trustedrouter/user-demo","name":"Demo","kind":"user_provided","user_model_kind":"human","owner_workspace_id":"owner-ws","owner_user_id":"owner-user","endpoint_url":"https://owner.example/v1","upstream_model_id":"private-model","revision":7,"supports_streaming":true,"secret_namespace":"user_model","endpoint_encrypted_secret":null,"endpoint_secret_purpose":"user_model_endpoint_key","signing_encrypted_secret":{"algorithm":"TR-BYOK-ENVELOPE-AES-256-GCM-V2","key_ref":"kms-key","encrypted_dek":"dek","dek_nonce":"dek-nonce","ciphertext":"ciphertext","nonce":"nonce"},"signing_secret_purpose":"user_model_signing","connect_timeout_seconds":10,"first_byte_timeout_seconds":300,"idle_timeout_seconds":120,"total_timeout_seconds":900}}}`)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "internal", server.Client())
+	auth, err := client.ResolveCustomModel(t.Context(), "sk-test", "trustedrouter/user-demo", "responses")
+	if err != nil {
+		t.Fatalf("ResolveCustomModel: %v", err)
+	}
+	model := auth.CustomModel
+	if model == nil {
+		t.Fatal("missing custom model")
+	}
+	if model.Kind != "user_provided" || model.UserModelKind != "human" || model.OwnerWorkspaceID != "owner-ws" {
+		t.Fatalf("identity fields = %#v", model)
+	}
+	if model.EndpointEncryptedSecret != nil || model.SigningEncryptedSecret == nil {
+		t.Fatalf("secret envelope nullability = %#v", model)
+	}
+	if !model.SupportsStreaming || model.FirstByteTimeoutSeconds != 300 || model.TotalTimeoutSeconds != 900 {
+		t.Fatalf("dispatch fields = %#v", model)
+	}
+}
+
 func TestAuthorizeAndSettleCarryServiceTier(t *testing.T) {
 	var authorizePayload map[string]any
 	var settlePayload map[string]any
