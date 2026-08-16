@@ -129,11 +129,18 @@ func TestSettlementRetryQueueRetainsOnlyBillingState(t *testing.T) {
 
 func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
 	var settleCalls int
+	const retryRequestLogID = "rlog_0123456789abcdef0123456789abcdef"
+	var settleBodies []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/internal/gateway/settle" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		settleCalls++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode settle body: %v", err)
+		}
+		settleBodies = append(settleBodies, body)
 		if settleCalls == 1 {
 			http.Error(w, "temporarily down", http.StatusBadGateway)
 			return
@@ -160,6 +167,7 @@ func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
 	job := settlementRetryJob{
 		trGateway:     trustedrouter.New(server.URL, "internal", server.Client()),
 		authorization: authz,
+		requestLogID:  retryRequestLogID,
 		usage: trustedrouter.Usage{
 			RequestID:      "chatcmpl_retry",
 			InputTokens:    1,
@@ -178,6 +186,13 @@ func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
 	q.process(context.Background(), retry)
 	if settleCalls != 2 {
 		t.Fatalf("settle calls = %d, want 2", settleCalls)
+	}
+	// A retried settle must carry the same gateway_request_id the first
+	// attempt did, even though the worker runs on the queue's own context.
+	for i, body := range settleBodies {
+		if got, _ := body["gateway_request_id"].(string); got != retryRequestLogID {
+			t.Fatalf("settle call %d gateway_request_id = %q, want %q", i+1, got, retryRequestLogID)
+		}
 	}
 }
 

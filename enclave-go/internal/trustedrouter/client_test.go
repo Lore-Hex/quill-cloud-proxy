@@ -2,6 +2,7 @@ package trustedrouter
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -164,6 +165,87 @@ func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 	}
 	if payload["additional_cost_reservation_microdollars"] != float64(300_000) {
 		t.Fatalf("additional cost reservation = %v", payload["additional_cost_reservation_microdollars"])
+	}
+}
+
+func TestGatewayRequestIDForwarding(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want bool
+	}{
+		{name: "valid", id: "rlog_0123456789abcdef0123456789abcdef", want: true},
+		{name: "missing"},
+		{name: "malformed", id: "rlog_0123456789abcdef0123456789abcdeg"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payloads := make(map[string]map[string]any)
+			client := New("https://control.example", "internal", &http.Client{
+				Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					var payload map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Fatalf("decode %s body: %v", r.URL.Path, err)
+					}
+					payloads[r.URL.Path] = payload
+					var responseBody string
+					switch r.URL.Path {
+					case "/internal/gateway/authorize":
+						responseBody = `{"data":{"authorization_id":"auth_1","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`
+					case "/internal/gateway/settle":
+						responseBody = `{"data":{"generation_id":"gen_1","cost_microdollars":1}}`
+					case "/internal/gateway/refund":
+						responseBody = `{"data":{"refunded":true}}`
+					default:
+						t.Fatalf("unexpected path %s", r.URL.Path)
+					}
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(strings.NewReader(responseBody)),
+					}, nil
+				}),
+			})
+			ctx := context.Context(t.Context())
+			if test.id != "" {
+				ctx = WithRequestLogID(ctx, test.id)
+			}
+			auth, err := client.Authorize(ctx, "sk-test", &qtypes.OpenAIChatRequest{
+				Model:    "openai/gpt-4o-mini",
+				Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "hello"}},
+			})
+			if err != nil {
+				t.Fatalf("Authorize: %v", err)
+			}
+			if _, err := client.Settle(ctx, auth, Usage{
+				RequestID:      "chatcmpl_1",
+				InputTokens:    1,
+				OutputTokens:   1,
+				ElapsedSeconds: 0.01,
+			}); err != nil {
+				t.Fatalf("Settle: %v", err)
+			}
+			if _, err := client.RefundDetailedAttributed(
+				ctx, auth, http.StatusBadGateway, "provider_error", 0.01, nil,
+				RefundAttribution{User: "user-1"},
+			); err != nil {
+				t.Fatalf("RefundDetailedAttributed: %v", err)
+			}
+
+			if _, ok := payloads["/internal/gateway/authorize"]["gateway_request_id"]; ok {
+				t.Fatalf("authorize body contains gateway_request_id: %#v", payloads["/internal/gateway/authorize"])
+			}
+			for _, path := range []string{"/internal/gateway/settle", "/internal/gateway/refund"} {
+				got, ok := payloads[path]["gateway_request_id"]
+				if test.want {
+					if !ok || got != test.id {
+						t.Fatalf("%s gateway_request_id = %#v, present=%v, want %q", path, got, ok, test.id)
+					}
+				} else if ok {
+					t.Fatalf("%s gateway_request_id = %#v, want absent", path, got)
+				}
+			}
+		})
 	}
 }
 
