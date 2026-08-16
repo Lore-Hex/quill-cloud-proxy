@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"io"
+	"math"
 	"net"
 	"syscall"
 	"time"
@@ -38,7 +39,13 @@ func userModelClientDisconnect(ctx context.Context, writer io.Writer) <-chan str
 	disconnected := make(chan struct{})
 	go func() {
 		defer unix.Close(fd)
-		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN | unix.POLLERR | unix.POLLHUP | unix.POLLRDHUP}}
+		// A file descriptor never exceeds int32 on Linux, but narrow only after
+		// proving it: a silent wraparound would poll the wrong descriptor.
+		if fd < 0 || fd > math.MaxInt32 {
+			return
+		}
+		pollFD := int32(fd)
+		poll := []unix.PollFd{{Fd: pollFD, Events: unix.POLLIN | unix.POLLERR | unix.POLLHUP | unix.POLLRDHUP}}
 		for {
 			select {
 			case <-ctx.Done():

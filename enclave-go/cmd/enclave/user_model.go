@@ -26,9 +26,11 @@ import (
 )
 
 const (
-	userModelSecretNamespace       = "user_model"
-	userModelEndpointSecretPurpose = "user_model_endpoint_key"
-	userModelSigningSecretPurpose  = "user_model_signing"
+	userModelSecretNamespace = "user_model"
+	// AAD purpose labels, not credentials: they name WHICH secret an envelope
+	// is bound to and are identical on both planes.
+	userModelEndpointSecretPurpose = "user_model_endpoint_key" //nolint:gosec // G101: AAD label
+	userModelSigningSecretPurpose  = "user_model_signing"      //nolint:gosec // G101: AAD label
 	maxUserModelSSEEventBytes      = 1 << 20
 	maxUserModelResponseBytes      = 64 << 20
 )

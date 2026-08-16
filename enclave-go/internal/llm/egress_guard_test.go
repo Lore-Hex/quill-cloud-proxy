@@ -377,7 +377,10 @@ func newGuardTLSServerForHost(t *testing.T, host string) (*httptest.Server, *x50
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
 	}))
-	server.TLS = &tls.Config{Certificates: []tls.Certificate{certificate}}
+	server.TLS = &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS12,
+	}
 	server.StartTLS()
 	roots := x509.NewCertPool()
 	parsed, err := x509.ParseCertificate(der)
