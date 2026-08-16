@@ -9,7 +9,7 @@
   "probe": "seal an envelope with the control plane's own associated data, then require (*Cache).Resolve to return the plaintext",
   "generator": "go test ./internal/byokcache -run TestAcceptedFormatsDeclaration -args -update-accepted-formats",
   "source_sha256": {
-    "cache.go": "25b29718575332d3da562c4691b5b3f67fb09a71b64c00f54a233d7473d2abbe",
+    "cache.go": "c50a8201cb800b7963786645da07d4591d863e627e38f2bfa28cdfbe4a546ea1",
     "confidential_space_token.go": "9b7b0f5bdd5a3fbd6cc06b90fb73b062e7b7766dce893d5d59dac8c86210ab6c",
     "confidential_space_token_other.go": "9744c64218561ec6546bac3cc644272beb74205d98d0d712ddd75bdaf4b40057",
     "kms_gcp.go": "e3e806baf051a5a9053fd7c8d1f5fec5913774265baa79469a5b41f40d42ab18",
