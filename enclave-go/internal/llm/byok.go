@@ -384,6 +384,35 @@ func buildOpenAICompatibleRequest(
 	return reqBody
 }
 
+// BuildOpenAICompatibleRequestShape returns the same OpenAI projection used by
+// fixed providers without sending it. User-provided model dispatch uses this
+// for Messages and Responses callers, then applies its smaller owner-body
+// allowlist. Keeping one projection prevents native Anthropic tool_use and
+// tool_result blocks from leaking into an endpoint that expects OpenAI chat.
+func BuildOpenAICompatibleRequestShape(
+	ctx context.Context,
+	req *qtypes.OpenAIChatRequest,
+	body *qtypes.AnthropicMessagesRequest,
+	upstreamModel string,
+	stream bool,
+) (map[string]any, error) {
+	messages, err := openAICompatibleMessagesWithFetchedImages(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+	projected := buildOpenAICompatibleRequest("user-model", upstreamModel, req, body, messages)
+	projected.Stream = stream
+	encoded, err := json.Marshal(projected)
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]any
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func googleAIStudioDefaultReasoningEffort(
 	provider string,
 	modelID string,
