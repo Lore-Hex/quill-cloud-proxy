@@ -41,6 +41,8 @@ var requestLogIDPattern = regexp.MustCompile(`^rlog_[0-9a-f]{32}$`)
 
 type requestLogIDContextKey struct{}
 
+type clientContextContextKey struct{}
+
 // WithRequestLogID associates the enclave audit-log ID with control-plane
 // settlement and refund calls made for the request.
 func WithRequestLogID(ctx context.Context, requestLogID string) context.Context {
@@ -53,6 +55,26 @@ func requestLogIDFromContext(ctx context.Context) string {
 		return ""
 	}
 	return requestLogID
+}
+
+// WithClientContext associates bounded, content-free SDK and retry telemetry
+// with settlement and refund calls made for the request.
+func WithClientContext(ctx context.Context, clientContext *qtypes.ClientContext) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if clientContext == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, clientContextContextKey{}, clientContext)
+}
+
+func clientContextFromContext(ctx context.Context) *qtypes.ClientContext {
+	if ctx == nil {
+		return nil
+	}
+	clientContext, _ := ctx.Value(clientContextContextKey{}).(*qtypes.ClientContext)
+	return clientContext
 }
 
 type Client struct {
@@ -242,6 +264,18 @@ type Authorization struct {
 	AdditionalCostReservationMicrodollars int                                `json:"additional_cost_reservation_microdollars"`
 	NativeBatchEligible                   bool                               `json:"native_batch_eligible"`
 	RouteType                             string                             `json:"-"`
+	settlementClientContext               *qtypes.ClientContext
+}
+
+// ClientContextForSettlementRetry returns the context captured by the failed
+// settle attempt so the bounded retry queue can re-attach it to its own
+// context without retaining the original request context.
+func (a *Authorization) ClientContextForSettlementRetry() *qtypes.ClientContext {
+	if a == nil || a.settlementClientContext == nil {
+		return nil
+	}
+	copy := *a.settlementClientContext
+	return &copy
 }
 
 // KeyIdentity is metadata-only ownership information returned by the
@@ -647,6 +681,12 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	if requestLogID := requestLogIDFromContext(ctx); requestLogID != "" {
 		body["gateway_request_id"] = requestLogID
 	}
+	auth.settlementClientContext = nil
+	if clientContext := clientContextFromContext(ctx); clientContext != nil && clientContext.Validate() == nil {
+		body["client"] = clientContext.AsBody()
+		copy := *clientContext
+		auth.settlementClientContext = &copy
+	}
 	if usage.AdditionalCostMicrodollars > 0 {
 		body["additional_cost_microdollars"] = usage.AdditionalCostMicrodollars
 	}
@@ -763,6 +803,9 @@ func (c *Client) refundDetailed(
 	}
 	if requestLogID := requestLogIDFromContext(ctx); requestLogID != "" {
 		body["gateway_request_id"] = requestLogID
+	}
+	if clientContext := clientContextFromContext(ctx); clientContext != nil && clientContext.Validate() == nil {
+		body["client"] = clientContext.AsBody()
 	}
 	if auth.RouteType != "" {
 		body["route_type"] = auth.RouteType

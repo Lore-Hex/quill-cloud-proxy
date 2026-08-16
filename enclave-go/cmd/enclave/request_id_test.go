@@ -9,11 +9,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 const testRequestLogID = "rlog_0123456789abcdef0123456789abcdef"
@@ -359,7 +362,18 @@ func TestServeOneUsesResponseRequestIDForSettlementOnly(t *testing.T) {
 	body := []byte(`{"model":"openai/gpt-4o-mini","stream":false,"messages":[{"role":"user","content":"hello"}],"max_tokens":8}`)
 	if _, err := fmt.Fprintf(
 		peer,
-		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer test-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		"POST /v1/chat/completions HTTP/1.1\r\n"+
+			"Authorization: Bearer test-key\r\n"+
+			"User-Agent: OpenAI/Python 2.46.0\r\n"+
+			"X-Stainless-Lang: python\r\n"+
+			"X-Stainless-Runtime: CPython\r\n"+
+			"X-Stainless-Runtime-Version: 3.12.1\r\n"+
+			"X-Stainless-OS: MacOS\r\n"+
+			"X-Stainless-Arch: arm64\r\n"+
+			"X-Stainless-Retry-Count: 7\r\n"+
+			"X-Stainless-Timeout: 120\r\n"+
+			"X-TR-Client: v=1;a=1;po=transport_error;pc=connect_timeout;ph=apex;pm=10012;sm=10530;s=0;fo=1\r\n"+
+			"Content-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
 		len(body), body,
 	); err != nil {
 		t.Fatalf("write request: %v", err)
@@ -375,12 +389,246 @@ func TestServeOneUsesResponseRequestIDForSettlementOnly(t *testing.T) {
 		t.Fatalf("x-request-id = %q, want rlog_<32 lowercase hex>", requestID)
 	}
 	requireRequestIDHeaders(t, resp, requestID)
-	if _, ok := (<-authorizePayloadCh)["gateway_request_id"]; ok {
+	authorizePayload := <-authorizePayloadCh
+	if _, ok := authorizePayload["gateway_request_id"]; ok {
 		t.Fatal("authorize body contains gateway_request_id")
 	}
-	if got := (<-settlePayloadCh)["gateway_request_id"]; got != requestID {
+	if _, ok := authorizePayload["client"]; ok {
+		t.Fatal("authorize body contains client")
+	}
+	settlePayload := <-settlePayloadCh
+	if got := settlePayload["gateway_request_id"]; got != requestID {
 		t.Fatalf("settle gateway_request_id = %#v, want %q", got, requestID)
 	}
+	wantClient := map[string]any{
+		"v":                float64(1),
+		"source":           "tr",
+		"sdk":              "openai-python",
+		"sdk_version":      "2.46.0",
+		"lang":             "python",
+		"runtime":          "cpython/3.12.1",
+		"os":               "macos",
+		"arch":             "arm64",
+		"timeout_ms":       float64(120000),
+		"attempt":          float64(1),
+		"prev_outcome":     "transport_error",
+		"prev_error_class": "connect_timeout",
+		"prev_host":        "apex",
+		"prev_elapsed_ms":  float64(10012),
+		"since_first_ms":   float64(10530),
+		"stream":           false,
+		"failover_used":    true,
+	}
+	if got := settlePayload["client"]; !reflect.DeepEqual(got, wantClient) {
+		t.Fatalf("settle client = %#v, want %#v", got, wantClient)
+	}
+}
+
+func TestServeOneMalformedTRClientFallsBackToStainlessContext(t *testing.T) {
+	authorizePayloadCh := make(chan map[string]any, 1)
+	settlePayloadCh := make(chan map[string]any, 1)
+	trGateway := trustedrouter.New("https://control.example", "internal", &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				return nil, err
+			}
+			var body string
+			switch r.URL.Path {
+			case "/internal/gateway/authorize":
+				authorizePayloadCh <- payload
+				body = `{"data":{"authorization_id":"auth_1","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`
+			case "/internal/gateway/settle":
+				settlePayloadCh <- payload
+				body = `{"data":{"generation_id":"gen_1","cost_microdollars":1}}`
+			default:
+				return nil, fmt.Errorf("unexpected path %s", r.URL.Path)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewBufferString(body)),
+			}, nil
+		}),
+	})
+
+	server, peer := net.Pipe()
+	defer peer.Close()
+	go serveOne(context.Background(), server, auth.New(nil), &fakeStreamingLLM{}, nil, nil, trGateway, nil)
+	body := []byte(`{"model":"openai/gpt-4o-mini","stream":false,"messages":[{"role":"user","content":"hello"}],"max_tokens":8}`)
+	if _, err := fmt.Fprintf(
+		peer,
+		"POST /v1/chat/completions HTTP/1.1\r\n"+
+			"Authorization: Bearer test-key\r\n"+
+			"X-Stainless-Lang: Go\r\n"+
+			"X-TR-Client: v=1;zz=1\r\n"+
+			"Content-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(body), body,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(peer), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if payload := <-authorizePayloadCh; payload["client"] != nil {
+		t.Fatalf("authorize body contains client: %#v", payload)
+	}
+	payload := <-settlePayloadCh
+	want := map[string]any{"v": float64(1), "source": "stainless", "lang": "go"}
+	if !reflect.DeepEqual(payload["client"], want) {
+		t.Fatalf("settle client = %#v, want %#v", payload["client"], want)
+	}
+}
+
+func TestServeOneRefundCarriesClientContext(t *testing.T) {
+	authorizePayloadCh := make(chan map[string]any, 1)
+	refundPayloadCh := make(chan map[string]any, 1)
+	trGateway := trustedrouter.New("https://control.example", "internal", &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				return nil, err
+			}
+			var body string
+			switch r.URL.Path {
+			case "/internal/gateway/authorize":
+				authorizePayloadCh <- payload
+				body = `{"data":{"authorization_id":"auth_1","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`
+			case "/internal/gateway/refund":
+				refundPayloadCh <- payload
+				body = `{"data":{"refunded":true}}`
+			default:
+				return nil, fmt.Errorf("unexpected path %s", r.URL.Path)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewBufferString(body)),
+			}, nil
+		}),
+	})
+
+	server, peer := net.Pipe()
+	defer peer.Close()
+	go serveOne(context.Background(), server, auth.New(nil), &failingStreamingLLM{}, nil, nil, trGateway, nil)
+	body := []byte(`{"model":"openai/gpt-4o-mini","stream":false,"messages":[{"role":"user","content":"hello"}],"max_tokens":8}`)
+	if _, err := fmt.Fprintf(
+		peer,
+		"POST /v1/chat/completions HTTP/1.1\r\n"+
+			"Authorization: Bearer test-key\r\n"+
+			"User-Agent: trusted-router-js/1.2.3 node/22.4.0\r\n"+
+			"X-TR-Client: v=1;a=0;s=0\r\n"+
+			"Content-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(body), body,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(peer), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	if payload := <-authorizePayloadCh; payload["client"] != nil {
+		t.Fatalf("authorize body contains client: %#v", payload)
+	}
+	payload := <-refundPayloadCh
+	want := map[string]any{
+		"v": float64(1), "source": "tr", "sdk": "tr-js", "sdk_version": "1.2.3",
+		"runtime": "node/22.4.0", "attempt": float64(0), "stream": false,
+	}
+	if !reflect.DeepEqual(payload["client"], want) {
+		t.Fatalf("refund client = %#v, want %#v", payload["client"], want)
+	}
+}
+
+func TestServeOneEmbeddingsSettlementCarriesClientContext(t *testing.T) {
+	authorizePayloadCh := make(chan map[string]any, 1)
+	settlePayloadCh := make(chan map[string]any, 1)
+	trGateway := trustedrouter.New("https://control.example", "internal", &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				return nil, err
+			}
+			var body string
+			switch r.URL.Path {
+			case "/internal/gateway/authorize":
+				authorizePayloadCh <- payload
+				body = `{"data":{"authorization_id":"auth_embeddings","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/text-embedding-3-small","endpoint_id":"openai/text-embedding-3-small@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`
+			case "/internal/gateway/settle":
+				settlePayloadCh <- payload
+				body = `{"data":{"generation_id":"gen_embeddings","cost_microdollars":1}}`
+			default:
+				return nil, fmt.Errorf("unexpected path %s", r.URL.Path)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewBufferString(body)),
+			}, nil
+		}),
+	})
+
+	server, peer := net.Pipe()
+	defer peer.Close()
+	go serveOne(context.Background(), server, auth.New(nil), &fakeEmbeddingLLM{}, nil, nil, trGateway, nil)
+	body := []byte(`{"model":"openai/text-embedding-3-small","input":"hello"}`)
+	if _, err := fmt.Fprintf(
+		peer,
+		"POST /v1/embeddings HTTP/1.1\r\n"+
+			"Authorization: Bearer test-key\r\n"+
+			"X-TR-Client: v=1;a=0;s=0\r\n"+
+			"Content-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(body), body,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(peer), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if payload := <-authorizePayloadCh; payload["client"] != nil {
+		t.Fatalf("embeddings authorize body contains client: %#v", payload)
+	}
+	payload := <-settlePayloadCh
+	want := map[string]any{"v": float64(1), "source": "tr", "attempt": float64(0), "stream": false}
+	if !reflect.DeepEqual(payload["client"], want) {
+		t.Fatalf("embeddings settle client = %#v, want %#v", payload["client"], want)
+	}
+}
+
+type fakeEmbeddingLLM struct{ fakeStreamingLLM }
+
+func (f *fakeEmbeddingLLM) InvokeEmbedding(
+	_ context.Context,
+	req *types.EmbeddingRequest,
+	_ ...llm.InvokeOptions,
+) (*types.EmbeddingResponse, error) {
+	return &types.EmbeddingResponse{
+		Object: "list",
+		Data: []types.EmbeddingData{{
+			Object:    "embedding",
+			Embedding: json.RawMessage(`[0.1,0.2]`),
+			Index:     0,
+		}},
+		Model: req.Model,
+		Usage: types.EmbeddingUsage{PromptTokens: 1, TotalTokens: 1},
+	}, nil
 }
 
 func responseFromStatsConn(t *testing.T, requestID string, write func(io.Writer) error) (*http.Response, []byte) {

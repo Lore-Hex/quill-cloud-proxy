@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 const (
@@ -24,6 +25,7 @@ type settlementRetryJob struct {
 	authorization *trustedrouter.Authorization
 	usage         trustedrouter.Usage
 	requestLogID  string
+	clientContext *types.ClientContext
 	attempt       int
 	enqueuedAt    time.Time
 }
@@ -171,9 +173,9 @@ func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJ
 	// The retry worker runs on the queue's own context; re-attach the
 	// request's audit id so a retried settle carries the same
 	// gateway_request_id the first attempt would have.
-	_, err := job.trGateway.Settle(
-		trustedrouter.WithRequestLogID(ctx, job.requestLogID), job.authorization, job.usage,
-	)
+	retryContext := trustedrouter.WithRequestLogID(ctx, job.requestLogID)
+	retryContext = trustedrouter.WithClientContext(retryContext, job.clientContext)
+	_, err := job.trGateway.Settle(retryContext, job.authorization, job.usage)
 	if err == nil {
 		fmt.Fprintf(os.Stderr,
 			"enclave.settlement_retry_success request_log_id=%q request_id=%q auth_id=%q attempt=%d age_ms=%d\n",
@@ -213,6 +215,13 @@ func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJ
 // usage while dropping prompt-adjacent data and provider secrets. A control-
 // plane outage may fill this queue, so a count bound alone is not sufficient.
 func compactSettlementRetryJob(job settlementRetryJob) settlementRetryJob {
+	if job.clientContext == nil && job.authorization != nil {
+		job.clientContext = job.authorization.ClientContextForSettlementRetry()
+	}
+	if job.clientContext != nil {
+		copy := *job.clientContext
+		job.clientContext = &copy
+	}
 	if auth := job.authorization; auth != nil {
 		job.authorization = &trustedrouter.Authorization{
 			AuthorizationID: auth.AuthorizationID,

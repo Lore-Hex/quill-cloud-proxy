@@ -221,6 +221,7 @@ type requestAttributionHeaders struct {
 	App                string
 	AppCategories      []string
 	OpenRouterMetadata bool
+	ClientContext      clientContextHeaders
 }
 
 // readRequest reads a minimal HTTP/1.1 request: status line + headers + body.
@@ -289,6 +290,38 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 			attribution.AppCategories = splitAttributionCategories(v)
 		case "x-openrouter-metadata", "x-openrouter-experimental-metadata":
 			attribution.OpenRouterMetadata = strings.EqualFold(v, "enabled")
+		case "user-agent":
+			captureBoundedClientHeader(
+				&attribution.ClientContext.userAgent,
+				&attribution.ClientContext.userAgentSet,
+				v,
+				maxClientUserAgentBytes,
+				&attribution.ClientContext.userAgentTooLong,
+			)
+		case "x-stainless-lang":
+			captureBoundedStainlessHeader(&attribution.ClientContext.stainlessLang, &attribution.ClientContext.stainlessLangSet, v, &attribution.ClientContext)
+		case "x-stainless-runtime":
+			captureBoundedStainlessHeader(&attribution.ClientContext.stainlessRuntime, &attribution.ClientContext.stainlessRuntimeSet, v, &attribution.ClientContext)
+		case "x-stainless-runtime-version":
+			captureBoundedStainlessHeader(&attribution.ClientContext.stainlessRuntimeVersion, &attribution.ClientContext.stainlessRuntimeVersionSet, v, &attribution.ClientContext)
+		case "x-stainless-os":
+			captureBoundedStainlessHeader(&attribution.ClientContext.stainlessOS, &attribution.ClientContext.stainlessOSSet, v, &attribution.ClientContext)
+		case "x-stainless-arch":
+			captureBoundedStainlessHeader(&attribution.ClientContext.stainlessArch, &attribution.ClientContext.stainlessArchSet, v, &attribution.ClientContext)
+		case "x-stainless-retry-count":
+			captureBoundedStainlessHeader(&attribution.ClientContext.stainlessRetryCount, &attribution.ClientContext.stainlessRetryCountSet, v, &attribution.ClientContext)
+		case "x-stainless-timeout":
+			captureBoundedStainlessHeader(&attribution.ClientContext.stainlessTimeout, &attribution.ClientContext.stainlessTimeoutSet, v, &attribution.ClientContext)
+		case "x-stainless-read-timeout":
+			captureBoundedStainlessHeader(&attribution.ClientContext.stainlessReadTimeout, &attribution.ClientContext.stainlessReadTimeoutSet, v, &attribution.ClientContext)
+		case "x-tr-client":
+			captureBoundedClientHeader(
+				&attribution.ClientContext.trClient,
+				&attribution.ClientContext.trClientSet,
+				v,
+				maxTRClientHeaderBytes,
+				&attribution.ClientContext.trClientTooLong,
+			)
 		case "content-length":
 			parsed, parseErr := strconv.Atoi(v)
 			if parseErr != nil || parsed < 0 {
@@ -307,6 +340,21 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 		}
 	}
 	return method, path, bearer, idempotencyKey, attribution, body, nil
+}
+
+func captureBoundedStainlessHeader(destination *string, set *bool, value string, raw *clientContextHeaders) {
+	tooLong := 0
+	captureBoundedClientHeader(destination, set, value, maxClientStainlessValueBytes, &tooLong)
+	raw.stainlessValuesTooLong += tooLong
+}
+
+func captureBoundedClientHeader(destination *string, set *bool, value string, maximum int, tooLong *int) {
+	if len(value) > maximum {
+		(*tooLong)++
+		return
+	}
+	*destination = value
+	*set = true
 }
 
 func readBoundedHTTPLine(br *bufio.Reader) ([]byte, error) {

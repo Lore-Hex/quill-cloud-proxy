@@ -168,6 +168,11 @@ func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
 		trGateway:     trustedrouter.New(server.URL, "internal", server.Client()),
 		authorization: authz,
 		requestLogID:  retryRequestLogID,
+		clientContext: &types.ClientContext{
+			V:       1,
+			Source:  "tr",
+			Attempt: intPtrMainTest(1),
+		},
 		usage: trustedrouter.Usage{
 			RequestID:      "chatcmpl_retry",
 			InputTokens:    1,
@@ -193,8 +198,49 @@ func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
 		if got, _ := body["gateway_request_id"].(string); got != retryRequestLogID {
 			t.Fatalf("settle call %d gateway_request_id = %q, want %q", i+1, got, retryRequestLogID)
 		}
+		client, ok := body["client"].(map[string]any)
+		if !ok || client["source"] != "tr" || client["attempt"] != float64(1) {
+			t.Fatalf("settle call %d client = %#v", i+1, body["client"])
+		}
 	}
 }
+
+func TestSettlementRetryQueueCapturesClientContextFromFailedSettle(t *testing.T) {
+	client := trustedrouter.New("https://control.example", "internal", &http.Client{
+		Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("temporarily unavailable")),
+			}, nil
+		}),
+	})
+	authz := &trustedrouter.Authorization{
+		AuthorizationID: "auth_retry_context",
+		Model:           "openai/gpt-4o-mini",
+		EndpointID:      "openai/gpt-4o-mini@openai/prepaid",
+	}
+	clientContext := &types.ClientContext{V: 1, Source: "tr", Attempt: intPtrMainTest(1)}
+	ctx := trustedrouter.WithClientContext(t.Context(), clientContext)
+	usage := trustedrouter.Usage{RequestID: "req_retry_context", InputTokens: 1, OutputTokens: 1}
+	if _, err := client.Settle(ctx, authz, usage); err == nil {
+		t.Fatal("Settle succeeded, want failure")
+	}
+
+	q := &settlementRetryQueue{jobs: make(chan settlementRetryJob, 1), maxAttempts: 2}
+	if !q.Enqueue(settlementRetryJob{trGateway: client, authorization: authz, usage: usage}) {
+		t.Fatal("retry enqueue failed")
+	}
+	queued := <-q.jobs
+	if queued.clientContext == nil || queued.clientContext.Attempt == nil || *queued.clientContext.Attempt != 1 {
+		t.Fatalf("queued client context = %#v", queued.clientContext)
+	}
+	if queued.clientContext == clientContext {
+		t.Fatal("retry queue retained mutable client context pointer")
+	}
+}
+
+func intPtrMainTest(value int) *int { return &value }
 
 func TestResponseStatsConnCapturesStatusBytesAndOutcome(t *testing.T) {
 	server, client := net.Pipe()
@@ -7543,6 +7589,91 @@ func TestReadRequestCapturesOpenRouterAttributionHeaders(t *testing.T) {
 	}
 	if !attribution.OpenRouterMetadata {
 		t.Fatal("OpenRouter metadata opt-in was not captured")
+	}
+}
+
+func TestReadRequestCapturesBoundedClientContextHeaders(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+
+	go func() {
+		defer client.Close()
+		_, _ = fmt.Fprint(
+			client,
+			"POST /v1/chat/completions HTTP/1.1\r\n"+
+				"User-Agent: OpenAI/Python 2.46.0\r\n"+
+				"X-Stainless-Lang: python\r\n"+
+				"X-Stainless-Runtime: CPython\r\n"+
+				"X-Stainless-Runtime-Version: 3.12.1\r\n"+
+				"X-Stainless-OS: MacOS\r\n"+
+				"X-Stainless-Arch: arm64\r\n"+
+				"X-Stainless-Retry-Count: 1\r\n"+
+				"X-Stainless-Timeout: 120\r\n"+
+				"X-Stainless-Read-Timeout: 30\r\n"+
+				"X-TR-Client: v=1;a=1;s=1\r\n"+
+				"X-Unrelated-Client-Data: must-not-be-read\r\n"+
+				"Content-Length: 2\r\n\r\n{}",
+		)
+	}()
+
+	_, _, _, _, attribution, _, err := readRequest(bufio.NewReader(server))
+	if err != nil {
+		t.Fatalf("readRequest: %v", err)
+	}
+	want := clientContextHeaders{
+		userAgent:                  "OpenAI/Python 2.46.0",
+		stainlessLang:              "python",
+		stainlessRuntime:           "CPython",
+		stainlessRuntimeVersion:    "3.12.1",
+		stainlessOS:                "MacOS",
+		stainlessArch:              "arm64",
+		stainlessRetryCount:        "1",
+		stainlessTimeout:           "120",
+		stainlessReadTimeout:       "30",
+		trClient:                   "v=1;a=1;s=1",
+		userAgentSet:               true,
+		stainlessLangSet:           true,
+		stainlessRuntimeSet:        true,
+		stainlessRuntimeVersionSet: true,
+		stainlessOSSet:             true,
+		stainlessArchSet:           true,
+		stainlessRetryCountSet:     true,
+		stainlessTimeoutSet:        true,
+		stainlessReadTimeoutSet:    true,
+		trClientSet:                true,
+	}
+	if !reflect.DeepEqual(attribution.ClientContext, want) {
+		t.Fatalf("client headers = %#v, want %#v", attribution.ClientContext, want)
+	}
+}
+
+func TestReadRequestDropsOverlongClientContextHeaderValues(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+
+	go func() {
+		defer client.Close()
+		_, _ = fmt.Fprintf(
+			client,
+			"POST /v1/chat/completions HTTP/1.1\r\nUser-Agent: %s\r\nX-Stainless-Lang: %s\r\nX-TR-Client: %s\r\nContent-Length: 2\r\n\r\n{}",
+			strings.Repeat("u", 257),
+			strings.Repeat("p", 65),
+			strings.Repeat("x", 161),
+		)
+	}()
+
+	_, _, _, _, attribution, _, err := readRequest(bufio.NewReader(server))
+	if err != nil {
+		t.Fatalf("readRequest: %v", err)
+	}
+	raw := attribution.ClientContext
+	if raw.userAgent != "" || raw.stainlessLang != "" || raw.trClient != "" {
+		t.Fatalf("overlong values retained: %#v", raw)
+	}
+	context, dropped := parseClientContext(raw)
+	wantDropped := []string{"user_agent_too_long", "stainless_value_too_long", "x_tr_client_too_long"}
+	if context != nil || !reflect.DeepEqual(dropped, wantDropped) {
+		t.Fatalf("parsed overlong headers = (%#v, %#v), want nil, %#v", context, dropped, wantDropped)
 	}
 }
 
