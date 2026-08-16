@@ -21,6 +21,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 type userModelIntegrationFixture struct {
@@ -34,6 +35,7 @@ type userModelIntegrationFixture struct {
 	ownerBodies    []map[string]any
 	settleBodies   []map[string]any
 	refundBodies   []map[string]any
+	settleStatus   int
 	originalClient func(string, llm.EgressGuardOptions) (*http.Client, error)
 }
 
@@ -113,7 +115,12 @@ func newUserModelIntegrationFixtureWithResponder(
 		case "/internal/gateway/settle":
 			fixture.mu.Lock()
 			fixture.settleBodies = append(fixture.settleBodies, body)
+			settleStatus := fixture.settleStatus
 			fixture.mu.Unlock()
+			if settleStatus != 0 {
+				http.Error(w, "settlement unavailable", settleStatus)
+				return
+			}
 			writeUserModelTestJSON(t, w, map[string]any{"data": map[string]any{
 				"settled": true, "generation_id": "gen-user", "cost_microdollars": 3,
 				"model": fixture.model.ID, "provider": "trustedrouter", "region": "us-central1",
@@ -293,6 +300,35 @@ func TestServeUserModelResponsesAndMessagesUseNativeAdapters(t *testing.T) {
 	}
 }
 
+func TestServeUserModelBufferedOwnerStreamingMessagesUsesTRRequestID(t *testing.T) {
+	fixture := newUserModelIntegrationFixture(t, false)
+	response, payload := fixture.request(
+		"/v1/messages",
+		`{"model":"trustedrouter/user-demo","stream":true,"max_tokens":32,"messages":[{"role":"user","content":"private prompt"}]}`,
+	)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.StatusCode, payload)
+	}
+	if bytes.Contains(payload, []byte("owner-id")) || !bytes.Contains(payload, []byte(`"id":"msg_`)) {
+		t.Fatalf("message_start did not use the TrustedRouter request id: %s", payload)
+	}
+	fixture.oneSettle(t)
+}
+
+func TestServeUserModelBufferedSettleFailureDisablesSDKRetry(t *testing.T) {
+	fixture := newUserModelIntegrationFixture(t, false)
+	fixture.mu.Lock()
+	fixture.settleStatus = http.StatusInternalServerError
+	fixture.mu.Unlock()
+	response, payload := fixture.request(
+		"/v1/chat/completions",
+		`{"model":"trustedrouter/user-demo","stream":false,"messages":[{"role":"user","content":"private prompt"}]}`,
+	)
+	if response.StatusCode != http.StatusInternalServerError || response.Header.Get(shouldRetryHeader) != "false" {
+		t.Fatalf("status=%d %s=%q body=%s", response.StatusCode, shouldRetryHeader, response.Header.Get(shouldRetryHeader), payload)
+	}
+}
+
 func TestServeUserModelRefundTaxonomy(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -452,11 +488,13 @@ func TestServeUserModelDisconnectBeforeFirstByteRefundsWithoutStrikeType(t *test
 	oldInterval := userModelKeepaliveInterval
 	userModelKeepaliveInterval = 10 * time.Millisecond
 	t.Cleanup(func() { userModelKeepaliveInterval = oldInterval })
-	fixture := newUserModelIntegrationFixtureWithResponder(t, true, func(_ http.ResponseWriter, r *http.Request) {
-		select {
-		case <-r.Context().Done():
-		case <-time.After(time.Second):
-		}
+	fixture := newUserModelIntegrationFixtureWithResponder(t, true, func(w http.ResponseWriter, _ *http.Request) {
+		// The owner eventually produces a valid answer, but no response-body byte
+		// reaches the caller after the 200 head. That is a refund, not a partial
+		// settlement merely because the owner observed a first byte.
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"late answer\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 	})
 
 	serverConn, clientConn := net.Pipe()
@@ -481,14 +519,41 @@ func TestServeUserModelDisconnectBeforeFirstByteRefundsWithoutStrikeType(t *test
 }
 
 func TestServeUserModelLateDisconnectSettlesPartialUsage(t *testing.T) {
+	t.Setenv("TR_SSE_BATCH_MS", "0")
+	chunks := []string{
+		"first delivered segment has enough text; ",
+		"second delivered segment has enough text; ",
+		"third delivered segment has enough text; ",
+		"fourth owner-only segment; ",
+		"fifth owner-only segment; ",
+		"sixth owner-only segment.",
+	}
+	allowOwnerToFinish := make(chan struct{})
+	var finishOwnerOnce sync.Once
+	finishOwner := func() { finishOwnerOnce.Do(func() { close(allowOwnerToFinish) }) }
+	defer finishOwner()
 	fixture := newUserModelIntegrationFixtureWithResponder(t, true, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"delivered text\"},\"finish_reason\":null}]}\n\n")
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
+		for index, chunk := range chunks {
+			finishReason := any(nil)
+			if index == len(chunks)-1 {
+				finishReason = "stop"
+			}
+			payload, _ := json.Marshal(map[string]any{
+				"object": "chat.completion.chunk",
+				"choices": []map[string]any{{
+					"delta": map[string]any{"content": chunk}, "finish_reason": finishReason,
+				}},
+			})
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			if index == 2 {
+				<-allowOwnerToFinish
+			}
 		}
-		time.Sleep(100 * time.Millisecond)
-		_, _ = io.WriteString(w, "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"too late\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	})
 
 	serverConn, clientConn := net.Pipe()
@@ -502,10 +567,18 @@ func TestServeUserModelLateDisconnectSettlesPartialUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read response head: %v", err)
 	}
+	// Read until the THIRD event has been delivered in full (its terminating
+	// blank line included): the adapter may write an event's data and its
+	// terminator in separate writes, and only a complete event counts as
+	// delivered output — a torn final event favours the caller, never the owner.
+	thirdEventComplete := func(delivered []byte) bool {
+		index := bytes.Index(delivered, []byte(chunks[2]))
+		return index >= 0 && bytes.Contains(delivered[index:], []byte("\n\n"))
+	}
 	var delivered bytes.Buffer
 	buffer := make([]byte, 4096)
 	deadline := time.Now().Add(time.Second)
-	for !bytes.Contains(delivered.Bytes(), []byte("delivered text")) && time.Now().Before(deadline) {
+	for !thirdEventComplete(delivered.Bytes()) && time.Now().Before(deadline) {
 		n, readErr := response.Body.Read(buffer)
 		if n > 0 {
 			delivered.Write(buffer[:n])
@@ -514,17 +587,25 @@ func TestServeUserModelLateDisconnectSettlesPartialUsage(t *testing.T) {
 			t.Fatalf("stream read err=%v body=%s", readErr, delivered.Bytes())
 		}
 	}
-	if !bytes.Contains(delivered.Bytes(), []byte("delivered text")) {
+	if !thirdEventComplete(delivered.Bytes()) {
 		t.Fatalf("first delivered stream omitted content: %s", delivered.Bytes())
 	}
 	clientConn.Close()
+	finishOwner()
 
 	settle := fixture.oneSettle(t)
 	if settle["finish_reason"] != "client_closed" || settle["usage_estimated"] != true {
 		t.Fatalf("partial settle = %#v", settle)
 	}
-	if output, _ := settle["actual_output_tokens"].(float64); output <= 0 {
-		t.Fatalf("partial output tokens = %#v", settle)
+	wantOutput := trustedrouter.EstimateOutputTokens(strings.Join(chunks[:3], ""))
+	if output, _ := settle["actual_output_tokens"].(float64); output != float64(wantOutput) || output == 1 {
+		t.Fatalf("partial output tokens = %#v, want %d", settle, wantOutput)
+	}
+	wantInput := trustedrouter.EstimateInputTokens(&types.OpenAIChatRequest{
+		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "private prompt"}},
+	})
+	if input, _ := settle["actual_input_tokens"].(float64); input != float64(wantInput) {
+		t.Fatalf("partial input tokens = %#v, want %d", settle, wantInput)
 	}
 	fixture.mu.Lock()
 	refundCount := len(fixture.refundBodies)

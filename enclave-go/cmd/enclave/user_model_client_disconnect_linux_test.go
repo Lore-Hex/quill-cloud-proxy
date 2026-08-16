@@ -7,40 +7,47 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 )
 
-func TestUserModelClientDisconnectObservesHangupWithoutReading(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+func TestUserModelDisconnectWatcherUnwrapsProductionTLSChain(t *testing.T) {
+	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer tcpListener.Close()
+	tlsServer, err := enclavetls.NewSelfSigned("localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := tlsServer.Wrap(tcpListener)
 	accepted := make(chan net.Conn, 1)
 	go func() {
-		conn, acceptErr := listener.Accept()
+		conn, acceptErr := wrapper.Accept()
 		if acceptErr == nil {
 			accepted <- conn
 		}
 	}()
-	client, err := net.Dial("tcp", listener.Addr().String())
+	peer, err := net.Dial("tcp", tcpListener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := <-accepted
-	defer server.Close()
+	serverConn := <-accepted
+	defer serverConn.Close()
 
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	disconnected := userModelClientDisconnect(ctx, server)
+	disconnected := userModelClientDisconnect(ctx, &responseStatsConn{Conn: serverConn})
 	if disconnected == nil {
-		t.Fatal("TCP connection did not expose a disconnect signal")
+		t.Fatal("production tracked TLS chain did not expose its TCP syscall connection")
 	}
-	if err := client.Close(); err != nil {
+	if err := peer.Close(); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case <-disconnected:
-	case <-time.After(time.Second):
-		t.Fatal("peer hangup was not observed")
+	case <-time.After(2 * time.Second):
+		t.Fatal("disconnect watcher did not fire after peer close")
 	}
 }

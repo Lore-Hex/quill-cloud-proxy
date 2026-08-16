@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/net/idna"
 )
 
 // IPResolver is the DNS surface used by the guarded dialer. It is injectable
@@ -75,6 +77,15 @@ func NewGuardedHTTPClient(endpointURL string, options EgressGuardOptions) (*http
 	if registeredHost == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, &EgressGuardError{Reason: "invalid endpoint URL"}
 	}
+	registeredHost, err = canonicalEgressHost(registeredHost)
+	if err != nil {
+		return nil, err
+	}
+	if isTrustedRouterEgressHost(registeredHost) {
+		// The enclave must enforce this independently of registration so a stale
+		// control-plane row cannot recurse back into a TrustedRouter gateway.
+		return nil, &EgressGuardError{Reason: "endpoint must not be a TrustedRouter host"}
+	}
 
 	connectTimeout := options.ConnectTimeout
 	if connectTimeout <= 0 {
@@ -95,7 +106,8 @@ func NewGuardedHTTPClient(endpointURL string, options EgressGuardOptions) (*http
 		if splitErr != nil {
 			return nil, &EgressGuardError{Reason: "invalid dial address"}
 		}
-		if !strings.EqualFold(strings.TrimSuffix(host, "."), strings.TrimSuffix(registeredHost, ".")) {
+		dialHost, normalizeErr := canonicalEgressHost(host)
+		if normalizeErr != nil || !strings.EqualFold(dialHost, registeredHost) {
 			return nil, &EgressGuardError{Reason: "dial host differs from registered host"}
 		}
 		// DNS is part of connection establishment. A hostile or broken
@@ -116,17 +128,27 @@ func NewGuardedHTTPClient(endpointURL string, options EgressGuardOptions) (*http
 			return nil, &EgressGuardError{Reason: "DNS returned no addresses"}
 		}
 
-		conn, dialErr := dial(connectCtx, network, net.JoinHostPort(addresses[0].Unmap().String(), port))
-		if dialErr != nil {
-			return nil, &EgressDialError{Err: dialErr}
+		var lastDialErr error
+		for _, vettedAddress := range addresses {
+			// All answers were vetted before the first dial. Trying them in DNS
+			// order preserves fail-closed mixed-answer handling while avoiding an
+			// outage when the first public address alone is unreachable.
+			conn, dialErr := dial(connectCtx, network, net.JoinHostPort(vettedAddress.Unmap().String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastDialErr = dialErr
 		}
-		return conn, nil
+		return nil, &EgressDialError{Err: lastDialErr}
 	}
 
 	transport := &http.Transport{
-		Proxy:                 nil,
-		DialContext:           guardedDial,
-		ForceAttemptHTTP2:     true,
+		Proxy:             nil,
+		DialContext:       guardedDial,
+		ForceAttemptHTTP2: true,
+		// Owner responses are deliberately small. Transparent gzip inflation is
+		// an unnecessary memory amplifier at this untrusted boundary.
+		DisableCompression:    true,
 		ResponseHeaderTimeout: options.ResponseHeaderTimeout,
 		TLSHandshakeTimeout:   connectTimeout,
 		IdleConnTimeout:       options.IdleTimeout,
@@ -143,6 +165,36 @@ func NewGuardedHTTPClient(endpointURL string, options EgressGuardOptions) (*http
 			return http.ErrUseLastResponse
 		},
 	}, nil
+}
+
+func canonicalEgressHost(host string) (string, error) {
+	host = strings.TrimSuffix(strings.TrimSpace(host), ".")
+	if host == "" {
+		return "", &EgressGuardError{Reason: "invalid endpoint host"}
+	}
+	if address, parseErr := netip.ParseAddr(strings.Trim(host, "[]")); parseErr == nil {
+		return strings.ToLower(address.Unmap().String()), nil
+	}
+	ascii, err := idna.Lookup.ToASCII(host)
+	if err != nil || ascii == "" {
+		return "", &EgressGuardError{Reason: "invalid endpoint host"}
+	}
+	return strings.ToLower(strings.TrimSuffix(ascii, ".")), nil
+}
+
+var trustedRouterEgressSuffixes = [...]string{
+	"trustedrouter.com",
+	"allyrouter.com",
+	"uptimerouter.com",
+}
+
+func isTrustedRouterEgressHost(host string) bool {
+	for _, suffix := range trustedRouterEgressSuffixes {
+		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveAll(ctx context.Context, resolver IPResolver, host string) ([]netip.Addr, error) {
@@ -234,6 +286,15 @@ func mustEgressPrefixes(values ...string) []netip.Prefix {
 type idleBodyTransport struct {
 	base    http.RoundTripper
 	timeout time.Duration
+}
+
+func (t *idleBodyTransport) CloseIdleConnections() {
+	// http.Client only discovers pool cleanup through this optional method;
+	// without forwarding it, every per-dispatch owner Transport leaked its idle
+	// sockets until the transport's timeout elapsed.
+	if closer, ok := t.base.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
 }
 
 func (t *idleBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {

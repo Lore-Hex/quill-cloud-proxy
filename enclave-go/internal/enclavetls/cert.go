@@ -87,6 +87,17 @@ type selectedLeafConn struct {
 	leafDER []byte
 }
 
+// NetConn exposes the transport socket to infrastructure that must observe
+// connection state without consuming TLS bytes. In particular, the Linux
+// user-model disconnect watcher needs the TCP fd to cancel paid owner work
+// when a buffered caller has already gone away.
+func (c *selectedLeafConn) NetConn() net.Conn {
+	if c == nil {
+		return nil
+	}
+	return c.Conn
+}
+
 func (c *selectedLeafConn) setSelectedLeafDER(der []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

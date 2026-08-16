@@ -5,13 +5,18 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -94,6 +99,62 @@ func TestBuildUserModelOwnerBodyPreservesAllowedFieldsAfterNativeAdaptation(t *t
 	}
 }
 
+func TestBuildUserModelOwnerBodyScopesStreamOptionsToStreamingOwners(t *testing.T) {
+	for _, route := range []string{"messages", "responses"} {
+		for _, ownerStreaming := range []bool{false, true} {
+			for _, callerSupplied := range []bool{false, true} {
+				name := fmt.Sprintf("%s/owner_stream=%v/caller_options=%v", route, ownerStreaming, callerSupplied)
+				t.Run(name, func(t *testing.T) {
+					req := &types.OpenAIChatRequest{Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hello"}}}
+					if callerSupplied {
+						if route == "responses" {
+							req.Response = &types.ResponseRequestMeta{StreamOptions: map[string]any{"include_usage": false, "sentinel": "caller"}}
+						} else {
+							req.StreamOptions = &types.ChatStreamOptions{IncludeUsage: false}
+						}
+					} else if route == "responses" {
+						req.Response = &types.ResponseRequestMeta{}
+					}
+					anthropicReq := &types.AnthropicMessagesRequest{
+						Messages: []types.AnthropicMessage{{Role: "user", Content: "hello"}}, MaxTokens: 32,
+					}
+					body, err := buildUserModelOwnerBody(t.Context(), req, nil, anthropicReq, &trustedrouter.CustomModel{
+						UpstreamModelID: "owner-private", SupportsStreaming: ownerStreaming,
+					})
+					if err != nil {
+						t.Fatalf("buildUserModelOwnerBody: %v", err)
+					}
+					var decoded map[string]any
+					if err := json.Unmarshal(body, &decoded); err != nil {
+						t.Fatal(err)
+					}
+					options, present := decoded["stream_options"].(map[string]any)
+					if !ownerStreaming {
+						if _, exists := decoded["stream_options"]; exists {
+							t.Fatalf("buffered owner received stream_options: %s", body)
+						}
+						return
+					}
+					if !present {
+						t.Fatalf("streaming owner omitted stream_options: %s", body)
+					}
+					if !callerSupplied && options["include_usage"] != true {
+						t.Fatalf("default stream_options = %#v", options)
+					}
+					if callerSupplied && route == "responses" && options["sentinel"] != "caller" {
+						t.Fatalf("caller stream_options were replaced: %#v", options)
+					}
+					if callerSupplied && route == "messages" {
+						if _, overwritten := options["include_usage"]; overwritten {
+							t.Fatalf("caller stream_options were replaced: %#v", options)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestTranslateUserModelSSEToAnthropicContract(t *testing.T) {
 	owner := strings.Join([]string{
 		`data: {"id":"owner-id","object":"chat.completion.chunk","model":"owner-private","choices":[{"delta":{"role":"assistant","content":"hel"},"finish_reason":null}]}`,
@@ -143,10 +204,67 @@ func TestTranslateUserModelSSEPreservesToolCalls(t *testing.T) {
 	}
 }
 
+func TestTranslateUserModelSSESkipsEmptyChoiceChunkWithoutUsage(t *testing.T) {
+	owner := strings.Join([]string{
+		`data: {"object":"chat.completion.chunk","choices":[]}`,
+		"",
+		`data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	var internal bytes.Buffer
+	if err := translateUserModelSSE(strings.NewReader(owner), &internal); err != nil {
+		t.Fatalf("translateUserModelSSE: %v", err)
+	}
+	result, err := adapter.CollectAnthropicText(bytes.NewReader(internal.Bytes()))
+	if err != nil || result.Text != "answer" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
+type countingUserModelReader struct {
+	r io.Reader
+	n int
+}
+
+func (r *countingUserModelReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	r.n += n
+	return n, err
+}
+
+func TestTranslateUserModelSSERejectsNewlineFreeLineAtBound(t *testing.T) {
+	source := &countingUserModelReader{r: io.MultiReader(
+		strings.NewReader("data: "),
+		io.LimitReader(strings.NewReader(strings.Repeat("x", 4<<20)), 4<<20),
+	)}
+	err := translateUserModelSSE(source, io.Discard)
+	var malformed *malformedUserModelResponse
+	if !errors.As(err, &malformed) {
+		t.Fatalf("error = %v, want malformed response", err)
+	}
+	if source.n > maxUserModelSSEEventBytes {
+		t.Fatalf("reader consumed %d bytes, want at most %d", source.n, maxUserModelSSEEventBytes)
+	}
+}
+
+func TestTranslateUserModelSSETotalReaderCapFailsIncompleteStream(t *testing.T) {
+	source := &countingUserModelReader{r: strings.NewReader(strings.Repeat(": ping\n\n", 64))}
+	err := translateUserModelSSE(limitUserModelResponse(source, 128), io.Discard)
+	var malformed *malformedUserModelResponse
+	if !errors.As(err, &malformed) {
+		t.Fatalf("error = %v, want malformed response", err)
+	}
+	if source.n > 129 {
+		t.Fatalf("limited reader consumed %d bytes, want at most 129", source.n)
+	}
+}
+
 func TestTranslateUserModelBufferedSynthesizesToolsAndUsage(t *testing.T) {
 	owner := `{"id":"owner-id","object":"chat.completion","model":"owner-private","choices":[{"message":{"role":"assistant","content":"answer","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":8,"completion_tokens":3}}`
 	var internal bytes.Buffer
-	if err := translateUserModelBuffered(strings.NewReader(owner), &internal, "trustedrouter/user-demo"); err != nil {
+	if err := translateUserModelBuffered(strings.NewReader(owner), &internal, "trustedrouter/user-demo", "msg_tr_request"); err != nil {
 		t.Fatalf("translateUserModelBuffered: %v", err)
 	}
 	result, err := adapter.CollectAnthropicText(bytes.NewReader(internal.Bytes()))
@@ -162,6 +280,9 @@ func TestTranslateUserModelBufferedSynthesizesToolsAndUsage(t *testing.T) {
 	if !strings.Contains(internal.String(), `"model":"trustedrouter/user-demo"`) || strings.Contains(internal.String(), "owner-private") {
 		t.Fatalf("response model masking failed: %s", internal.String())
 	}
+	if !strings.Contains(internal.String(), `"id":"msg_tr_request"`) || strings.Contains(internal.String(), "owner-id") {
+		t.Fatalf("owner completion id leaked into message_start: %s", internal.String())
+	}
 }
 
 func TestTranslateUserModelRejectsMalformedSSE(t *testing.T) {
@@ -170,6 +291,164 @@ func TestTranslateUserModelRejectsMalformedSSE(t *testing.T) {
 	var malformed *malformedUserModelResponse
 	if err == nil || !errors.As(err, &malformed) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+type gatedFirstUserModelWrite struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	calls   int
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (w *gatedFirstUserModelWrite) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	first := w.calls == 0
+	w.calls++
+	w.mu.Unlock()
+	if first {
+		close(w.entered)
+		<-w.release
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *gatedFirstUserModelWrite) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+func TestSynchronizedUserModelWriterKeepsResponsesEventsAtomic(t *testing.T) {
+	oldInterval := userModelKeepaliveInterval
+	userModelKeepaliveInterval = time.Millisecond
+	t.Cleanup(func() { userModelKeepaliveInterval = oldInterval })
+	slow := &gatedFirstUserModelWrite{entered: make(chan struct{}), release: make(chan struct{})}
+	w := &synchronizedUserModelWriter{w: slow}
+	eventDone := make(chan error, 1)
+	go func() {
+		sequence := 0
+		eventDone <- adapter.WriteResponsesEvent(w, &sequence, "response.output_text.delta", map[string]any{
+			"type": "response.output_text.delta", "delta": "abc",
+		})
+	}()
+	<-slow.entered
+	dispatchDone := make(chan struct{})
+	keepaliveDone := make(chan struct{})
+	state := newUserModelDispatchState()
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		writeUserModelKeepalives(state, dispatchDone, w, cancel)
+		close(keepaliveDone)
+	}()
+	// Let a tiny-interval tick dequeue while the slow caller holds the event's
+	// first Write. The keepalive must skip after that Write marks dataWritten.
+	time.Sleep(10 * time.Millisecond)
+	close(slow.release)
+	if err := <-eventDone; err != nil {
+		t.Fatal(err)
+	}
+	close(dispatchDone)
+	<-keepaliveDone
+	sequence := 1
+	if err := adapter.WriteResponsesEvent(w, &sequence, "response.function_call_arguments.delta", map[string]any{
+		"type": "response.function_call_arguments.delta", "delta": `{"q":1}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if output := slow.String(); strings.Contains(output, ": keepalive") || strings.Contains(output, "event: response.output_text.delta\n: keepalive") {
+		t.Fatalf("keepalive split Responses event: %q", output)
+	}
+	if got := w.deliveredOutput(); got != `abc{"q":1}` {
+		t.Fatalf("delivered semantic output = %q", got)
+	}
+}
+
+type userModelFixedResolver []netip.Addr
+
+func (r userModelFixedResolver) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
+	return append([]netip.Addr(nil), r...), nil
+}
+
+func TestDispatchUserModelClosesOwnerConnectionsHTTP1AndHTTP2(t *testing.T) {
+	for _, useHTTP2 := range []bool{false, true} {
+		t.Run(fmt.Sprintf("http2=%v", useHTTP2), func(t *testing.T) {
+			oldClient := newUserModelHTTPClient
+			t.Cleanup(func() { newUserModelHTTPClient = oldClient })
+			var statesMu sync.Mutex
+			states := map[net.Conn]http.ConnState{}
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				wantMajor := 1
+				if useHTTP2 {
+					wantMajor = 2
+				}
+				if r.ProtoMajor != wantMajor {
+					t.Errorf("protocol = %s, want HTTP/%d", r.Proto, wantMajor)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"object":"chat.completion","choices":[{"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}]}`)
+			}))
+			server.EnableHTTP2 = useHTTP2
+			server.Config.ConnState = func(conn net.Conn, state http.ConnState) {
+				statesMu.Lock()
+				states[conn] = state
+				statesMu.Unlock()
+			}
+			server.StartTLS()
+			defer server.Close()
+			roots := x509.NewCertPool()
+			roots.AddCert(server.Certificate())
+			newUserModelHTTPClient = func(endpoint string, options llm.EgressGuardOptions) (*http.Client, error) {
+				options.RootCAs = roots
+				options.Resolver = userModelFixedResolver{netip.MustParseAddr("8.8.8.8")}
+				options.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+				}
+				return llm.NewGuardedHTTPClient(endpoint, options)
+			}
+
+			dek := bytes.Repeat([]byte{6}, 32)
+			cache := byokcache.New(byokcache.Options{Unwrapper: &userModelTestUnwrapper{dek: dek}})
+			model := &trustedrouter.CustomModel{
+				ID: "trustedrouter/user-demo", Kind: "user_provided", UserModelKind: "machine",
+				OwnerWorkspaceID: "owner-ws", EndpointURL: "https://example.com/v1", UpstreamModelID: "owner-private",
+				SecretNamespace:        userModelSecretNamespace,
+				SigningEncryptedSecret: sealUserModelTestSecret(t, dek, "owner-ws", userModelSigningSecretPurpose, "signing-secret"),
+				SigningSecretPurpose:   userModelSigningSecretPurpose,
+				ConnectTimeoutSeconds:  10, FirstByteTimeoutSeconds: 30, IdleTimeoutSeconds: 60, TotalTimeoutSeconds: 300,
+			}
+			if err := dispatchUserModel(
+				t.Context(), newUserModelDispatchState(),
+				&types.OpenAIChatRequest{Messages: []types.OpenAIChatMessage{{Role: "user", Content: "prompt"}}},
+				map[string]any{"messages": []any{map[string]any{"role": "user", "content": "prompt"}}},
+				nil, model, cache, io.Discard,
+			); err != nil {
+				t.Fatalf("dispatchUserModel: %v", err)
+			}
+
+			deadline := time.Now().Add(time.Second)
+			for {
+				statesMu.Lock()
+				open := 0
+				for _, state := range states {
+					if state != http.StateClosed && state != http.StateHijacked {
+						open++
+					}
+				}
+				statesMu.Unlock()
+				if open == 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("%d owner connections remained open after dispatch", open)
+				}
+				time.Sleep(time.Millisecond)
+			}
+		})
 	}
 }
 

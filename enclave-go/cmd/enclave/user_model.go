@@ -30,6 +30,7 @@ const (
 	userModelEndpointSecretPurpose = "user_model_endpoint_key"
 	userModelSigningSecretPurpose  = "user_model_signing"
 	maxUserModelSSEEventBytes      = 1 << 20
+	maxUserModelResponseBytes      = 64 << 20
 )
 
 var (
@@ -77,6 +78,7 @@ func (e *malformedUserModelResponse) Error() string {
 
 type userModelDispatchState struct {
 	startedAt time.Time
+	requestID string
 	firstByte chan struct{}
 	once      sync.Once
 	mu        sync.Mutex
@@ -187,6 +189,16 @@ func buildUserModelOwnerBody(
 	}
 	body["model"] = model.UpstreamModelID
 	body["stream"] = model.SupportsStreaming
+	if !model.SupportsStreaming {
+		// Strict buffered owners reject stream-only controls. The shared native
+		// projection injects this field, and chat callers may supply it directly,
+		// so remove it after the owner capability has forced stream=false.
+		delete(body, "stream_options")
+	} else if _, present := body["stream_options"]; !present {
+		// Streaming owners should report usage even when the caller did not ask
+		// for it; real counts are preferable to settlement estimates.
+		body["stream_options"] = map[string]any{"include_usage": true}
+	}
 	return json.Marshal(body)
 }
 
@@ -253,6 +265,9 @@ func dispatchUserModel(
 	if err != nil {
 		return connectionUserModelError(model, err)
 	}
+	// Guarded clients own a per-dispatch Transport. Close its pool when this
+	// generation ends so untrusted owners cannot accumulate idle connections.
+	defer httpClient.CloseIdleConnections()
 
 	totalCtx, cancelTotal := context.WithDeadline(ctx, state.startedAt.Add(totalTimeout))
 	defer cancelTotal()
@@ -292,8 +307,12 @@ func dispatchUserModel(
 		return upstreamStatusUserModelError(model, response.StatusCode)
 	}
 
+	// Bound total bytes as a second line of defense behind the per-event cap.
+	// LimitReader prevents an endless sequence of small, valid SSE lines from
+	// consuming an unbounded amount of enclave work or retained buffers.
+	ownerBody := limitUserModelResponse(response.Body, maxUserModelResponseBytes)
 	first, err := readFirstUserModelBytes(
-		totalCtx, cancelTotal, response.Body, state.startedAt.Add(firstByteTimeout),
+		totalCtx, cancelTotal, ownerBody, state.startedAt.Add(firstByteTimeout),
 	)
 	if err != nil {
 		if errors.Is(err, errUserModelFirstByteTimeout) || errors.Is(totalCtx.Err(), context.DeadlineExceeded) {
@@ -305,11 +324,11 @@ func dispatchUserModel(
 		return malformedUserModelError(model, err)
 	}
 	state.markFirstByte()
-	reader := io.MultiReader(bytes.NewReader(first), response.Body)
+	reader := io.MultiReader(bytes.NewReader(first), ownerBody)
 	if model.SupportsStreaming {
 		err = translateUserModelSSE(reader, out)
 	} else {
-		err = translateUserModelBuffered(reader, out, model.ID)
+		err = translateUserModelBuffered(reader, out, model.ID, state.requestID)
 	}
 	if err == nil {
 		return nil
@@ -329,6 +348,12 @@ func dispatchUserModel(
 		return connectionUserModelError(model, err)
 	}
 	return internalUserModelError(err)
+}
+
+func limitUserModelResponse(body io.Reader, maxBytes int64) io.Reader {
+	// Retain one byte beyond the budget so downstream parsers cannot mistake a
+	// truncated, exactly-at-the-cap response for a naturally terminated body.
+	return io.LimitReader(body, maxBytes+1)
 }
 
 func validateUserModelContract(model *trustedrouter.CustomModel, secretCache *byokcache.Cache) error {
@@ -441,7 +466,11 @@ func readFirstUserModelBytes(
 }
 
 func translateUserModelSSE(r io.Reader, w io.Writer) error {
-	reader := bufio.NewReader(r)
+	// Scanner refuses an overlong token as soon as the fixed line cap is hit;
+	// unlike Reader.ReadBytes it never grows a slice until an attacker finally
+	// supplies a newline.
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxUserModelSSEEventBytes)
 	var event bytes.Buffer
 	sawChunk := false
 	sawDone := false
@@ -471,10 +500,9 @@ func translateUserModelSSE(r io.Reader, w io.Writer) error {
 			usage = chunk.Usage
 		}
 		if len(chunk.Choices) == 0 {
-			if chunk.Usage != nil {
-				return nil
-			}
-			return &malformedUserModelResponse{reason: "owner SSE chunk has no choices"}
+			// Empty choice chunks are harmless provider metadata/heartbeats. Usage
+			// is optional on that shape in the control-plane reference dispatcher.
+			return nil
 		}
 		sawChunk = true
 		choice := chunk.Choices[0]
@@ -516,33 +544,27 @@ func translateUserModelSSE(r io.Reader, w io.Writer) error {
 		return nil
 	}
 
-	for !sawDone {
-		line, err := reader.ReadBytes('\n')
-		if len(line) > 0 {
-			trimmed := bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
-			if len(trimmed) == 0 {
-				if err := process(event.Bytes()); err != nil {
-					return err
-				}
-				event.Reset()
-			} else {
-				event.Write(trimmed)
-				event.WriteByte('\n')
-				if event.Len() > maxUserModelSSEEventBytes {
-					return &malformedUserModelResponse{reason: "owner SSE event is too large"}
-				}
-			}
-		}
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
+	for !sawDone && scanner.Scan() {
+		line := bytes.TrimSuffix(scanner.Bytes(), []byte("\r"))
+		if len(line) == 0 {
+			if err := process(event.Bytes()); err != nil {
 				return err
 			}
-			if event.Len() > 0 {
-				if err := process(event.Bytes()); err != nil {
-					return err
-				}
+			event.Reset()
+		} else {
+			event.Write(line)
+			event.WriteByte('\n')
+			if event.Len() > maxUserModelSSEEventBytes {
+				return &malformedUserModelResponse{reason: "owner SSE event is too large"}
 			}
-			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return &malformedUserModelResponse{reason: "owner SSE line is too large"}
+	}
+	if !sawDone && event.Len() > 0 {
+		if err := process(event.Bytes()); err != nil {
+			return err
 		}
 	}
 	if !sawChunk || !sawDone {
@@ -584,7 +606,7 @@ func userModelSSEData(event []byte) []byte {
 	return bytes.Join(values, []byte("\n"))
 }
 
-func translateUserModelBuffered(r io.Reader, w io.Writer, responseModel string) error {
+func translateUserModelBuffered(r io.Reader, w io.Writer, responseModel, requestID string) error {
 	raw, err := io.ReadAll(io.LimitReader(r, maxRequestBodyBytes+1))
 	if err != nil {
 		return err
@@ -619,10 +641,13 @@ func translateUserModelBuffered(r io.Reader, w io.Writer, responseModel string) 
 	}
 	inputTokens := userModelUsageInt(completion.Usage, "prompt_tokens")
 	outputTokens := userModelUsageInt(completion.Usage, "completion_tokens")
-	messageID := completion.ID
+	messageID := requestID
 	if messageID == "" {
 		messageID = newMessageID()
 	}
+	// The owner completion id belongs outside the TrustedRouter response
+	// namespace. In particular, /v1/messages may relay message_start verbatim,
+	// so always bind that id to the enclave-generated request id.
 	if err := writeUserModelEvent(w, "message_start", map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
@@ -871,7 +896,9 @@ func serveUserModelBuffered(
 	option llm.InvokeOptions,
 	requestLogID string,
 ) {
+	requestID := newUserModelRequestID(routeType)
 	state := newUserModelDispatchState()
+	state.requestID = requestID
 	dispatchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	clientClosed := cancelUserModelOnDisconnect(dispatchCtx, cancel, conn)
@@ -890,24 +917,17 @@ func serveUserModelBuffered(
 		_ = pr.CloseWithError(collectErr)
 	}
 	dispatchErr := <-done
-	if collectErr != nil || dispatchErr != nil {
-		dispatchFailure := asUserModelDispatchError(dispatchErr)
-		if clientClosed.Load() && state.firstTokenSeconds() > 0 {
-			settlePartialUserModel(
-				ctx, trGateway, authorization, secretCache, req, originalInput, result,
-				newUserModelRequestID(routeType), routeType, state, false, requestLogID,
-			)
-			return
-		}
-		refundUserModel(ctx, trGateway, authorization, dispatchFailure, state, req.Metadata)
-		writeUserModelBufferedError(conn, routeType, dispatchFailure)
+	if clientClosed.Load() {
+		// Buffered routes have not written any response body before settlement.
+		// An owner first byte is not delivery to the caller, so a disconnected
+		// caller must receive a 499 refund rather than a partial settlement.
+		refundUserModel(ctx, trGateway, authorization, clientClosedUserModelError(context.Canceled), state, req.Metadata)
 		return
 	}
-	if clientClosed.Load() {
-		settlePartialUserModel(
-			ctx, trGateway, authorization, secretCache, req, originalInput, result,
-			newUserModelRequestID(routeType), routeType, state, false, requestLogID,
-		)
+	if collectErr != nil || dispatchErr != nil {
+		dispatchFailure := asUserModelDispatchError(dispatchErr)
+		refundUserModel(ctx, trGateway, authorization, dispatchFailure, state, req.Metadata)
+		writeUserModelBufferedError(conn, routeType, dispatchFailure)
 		return
 	}
 
@@ -922,7 +942,6 @@ func serveUserModelBuffered(
 		result.Text = normalized
 	}
 
-	requestID := newUserModelRequestID(routeType)
 	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
 		result,
 		trustedrouter.EstimateInputTokens(req),
@@ -958,18 +977,24 @@ func serveUserModelBuffered(
 		req, authorization, result, requestID, routeType, state,
 		inputTokens, outputTokens, usageEstimated, false, result.FinishReason,
 	)
+	if clientClosed.Load() {
+		// Encoding/normalization may take long enough for the watcher to fire
+		// after collection. No buffered body has been delivered at this point.
+		refundUserModel(ctx, trGateway, authorization, clientClosedUserModelError(context.Canceled), state, req.Metadata)
+		return
+	}
 	settlement, err := settleAndBroadcast(
 		ctx, trGateway, authorization, secretCache, usage, req, originalInput,
 		adapter.ResponsesOutputForUsage(result),
 	)
 	if err != nil {
-		writeUserModelBufferedError(conn, routeType, internalUserModelError(errors.New("settlement failed")))
+		writeUserModelBufferedSpentError(conn, routeType, internalUserModelError(errors.New("settlement failed")))
 		return
 	}
 	if routeType == "messages" {
 		annotated, annotationErr := annotateBatchSettlementOnlyUsage(ctx, responseBody.Bytes(), settlement)
 		if annotationErr != nil {
-			writeUserModelBufferedError(conn, routeType, internalUserModelError(annotationErr))
+			writeUserModelBufferedSpentError(conn, routeType, internalUserModelError(annotationErr))
 			return
 		}
 		writeJSONResponse(conn, http.StatusOK, annotated)
@@ -980,7 +1005,7 @@ func serveUserModelBuffered(
 		[]llm.InvokeOptions{option}, result, req.OpenRouterMetadata,
 	)
 	if err != nil {
-		writeUserModelBufferedError(conn, routeType, internalUserModelError(err))
+		writeUserModelBufferedSpentError(conn, routeType, internalUserModelError(err))
 		return
 	}
 	writeJSONResponse(conn, http.StatusOK, annotated)
@@ -1021,6 +1046,7 @@ func serveUserModelStreaming(
 	}
 
 	state := newUserModelDispatchState()
+	state.requestID = requestID
 	dispatchCtx, cancel := context.WithCancel(ctx)
 	clientClosed := cancelUserModelOnDisconnect(dispatchCtx, cancel, conn)
 	pr, pw := io.Pipe()
@@ -1065,25 +1091,25 @@ func serveUserModelStreaming(
 	<-keepaliveDone
 
 	if clientClosed.Load() {
-		if state.firstTokenSeconds() == 0 {
+		if clientWriter.bodyBytesWritten() == 0 {
 			failure := clientClosedUserModelError(context.Canceled)
 			refundUserModel(ctx, trGateway, authorization, failure, state, req.Metadata)
 			return
 		}
 		settlePartialUserModel(
-			ctx, trGateway, authorization, secretCache, req, originalInput, result,
+			ctx, trGateway, authorization, secretCache, req, originalInput, clientWriter.deliveredOutput(),
 			requestID, routeType, state, true, requestLogID,
 		)
 		return
 	}
 	if clientErr := clientWriter.err(); clientErr != nil {
-		if state.firstTokenSeconds() == 0 {
+		if clientWriter.bodyBytesWritten() == 0 {
 			failure := clientClosedUserModelError(clientErr)
 			refundUserModel(ctx, trGateway, authorization, failure, state, req.Metadata)
 			return
 		}
 		settlePartialUserModel(
-			ctx, trGateway, authorization, secretCache, req, originalInput, result,
+			ctx, trGateway, authorization, secretCache, req, originalInput, clientWriter.deliveredOutput(),
 			requestID, routeType, state, true, requestLogID,
 		)
 		return
@@ -1147,9 +1173,13 @@ func cancelUserModelOnDisconnect(
 }
 
 type synchronizedUserModelWriter struct {
-	mu       sync.Mutex
-	w        io.Writer
-	writeErr error
+	mu             sync.Mutex
+	w              io.Writer
+	writeErr       error
+	bodyBytes      int64
+	dataWritten    bool
+	deliveryBuffer []byte
+	delivered      strings.Builder
 }
 
 func (w *synchronizedUserModelWriter) Write(p []byte) (int, error) {
@@ -1159,10 +1189,114 @@ func (w *synchronizedUserModelWriter) Write(p []byte) (int, error) {
 		return 0, w.writeErr
 	}
 	n, err := w.w.Write(p)
+	if n > 0 {
+		w.bodyBytes += int64(n)
+		w.dataWritten = true
+		w.captureDeliveredLocked(p[:n])
+	}
 	if err != nil {
 		w.writeErr = err
 	}
 	return n, err
+}
+
+func (w *synchronizedUserModelWriter) writeKeepalive() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.writeErr != nil {
+		return w.writeErr
+	}
+	if w.dataWritten {
+		// A tick may already be runnable when the transform starts a multi-Write
+		// event. Sharing the lock and checking this flag prevents the comment from
+		// landing between that event's event: and data: lines.
+		return nil
+	}
+	_, err := io.WriteString(w.w, ": keepalive\n\n")
+	if err != nil {
+		w.writeErr = err
+	}
+	return err
+}
+
+func (w *synchronizedUserModelWriter) bodyBytesWritten() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.bodyBytes
+}
+
+func (w *synchronizedUserModelWriter) deliveredOutput() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.delivered.String()
+}
+
+func (w *synchronizedUserModelWriter) captureDeliveredLocked(p []byte) {
+	w.deliveryBuffer = append(w.deliveryBuffer, p...)
+	for {
+		event, rest, ok := nextSSEEvent(w.deliveryBuffer)
+		if !ok {
+			if len(w.deliveryBuffer) > 2*maxUserModelSSEEventBytes {
+				// Settlement capture must never become a second unbounded parser. A
+				// malformed final event is still counted by bodyBytes for the refund
+				// gate, but contributes no speculative output tokens.
+				w.deliveryBuffer = nil
+			}
+			return
+		}
+		w.captureDeliveredEventLocked(event)
+		w.deliveryBuffer = rest
+	}
+}
+
+func (w *synchronizedUserModelWriter) captureDeliveredEventLocked(event []byte) {
+	payload := userModelSSEData(event)
+	if payload == nil || bytes.Equal(payload, []byte("[DONE]")) {
+		return
+	}
+	var object map[string]any
+	if json.Unmarshal(payload, &object) != nil {
+		return
+	}
+	if choices, ok := object["choices"].([]any); ok && len(choices) > 0 {
+		choice, _ := choices[0].(map[string]any)
+		delta, _ := choice["delta"].(map[string]any)
+		w.captureDeliveredDeltaLocked(delta)
+		return
+	}
+	eventType, _ := object["type"].(string)
+	switch eventType {
+	case "content_block_delta":
+		delta, _ := object["delta"].(map[string]any)
+		w.captureDeliveredDeltaLocked(delta)
+	case "response.output_text.delta", "response.function_call_arguments.delta":
+		if delta, ok := object["delta"].(string); ok {
+			w.delivered.WriteString(delta)
+		}
+	}
+}
+
+func (w *synchronizedUserModelWriter) captureDeliveredDeltaLocked(delta map[string]any) {
+	if delta == nil {
+		return
+	}
+	if content, ok := delta["content"].(string); ok {
+		w.delivered.WriteString(content)
+	}
+	if text, ok := delta["text"].(string); ok && delta["type"] == "text_delta" {
+		w.delivered.WriteString(text)
+	}
+	if partial, ok := delta["partial_json"].(string); ok && delta["type"] == "input_json_delta" {
+		w.delivered.WriteString(partial)
+	}
+	toolCalls, _ := delta["tool_calls"].([]any)
+	for _, rawCall := range toolCalls {
+		call, _ := rawCall.(map[string]any)
+		function, _ := call["function"].(map[string]any)
+		if arguments, ok := function["arguments"].(string); ok {
+			w.delivered.WriteString(arguments)
+		}
+	}
 }
 
 func (w *synchronizedUserModelWriter) err() error {
@@ -1182,7 +1316,7 @@ func (w *synchronizedUserModelWriter) close(chunked *chunkedWriter) {
 func writeUserModelKeepalives(
 	state *userModelDispatchState,
 	dispatchDone <-chan struct{},
-	w io.Writer,
+	w *synchronizedUserModelWriter,
 	cancel context.CancelFunc,
 ) {
 	interval := userModelKeepaliveInterval
@@ -1198,7 +1332,7 @@ func writeUserModelKeepalives(
 		case <-dispatchDone:
 			return
 		case <-ticker.C:
-			if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
+			if err := w.writeKeepalive(); err != nil {
 				cancel()
 				return
 			}
@@ -1213,7 +1347,7 @@ func settlePartialUserModel(
 	secretCache *byokcache.Cache,
 	req *types.OpenAIChatRequest,
 	originalInput any,
-	result adapter.StreamResult,
+	deliveredOutput string,
 	requestID string,
 	routeType string,
 	state *userModelDispatchState,
@@ -1221,14 +1355,15 @@ func settlePartialUserModel(
 	requestLogID string,
 ) {
 	inputTokens := trustedrouter.EstimateInputTokens(req)
-	outputTokens := trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result))
+	outputTokens := trustedrouter.EstimateOutputTokens(deliveredOutput)
+	result := adapter.StreamResult{Text: deliveredOutput}
 	usage := userModelUsage(
 		req, authorization, result, requestID, routeType, state,
 		inputTokens, outputTokens, true, streamed, "client_closed",
 	)
 	if _, err := settleAndBroadcast(
 		ctx, trGateway, authorization, secretCache, usage, req, originalInput,
-		adapter.ResponsesOutputForUsage(result),
+		deliveredOutput,
 	); err != nil {
 		settlementRetries.Enqueue(settlementRetryJob{
 			trGateway: trGateway, authorization: authorization, usage: usage, requestLogID: requestLogID,
@@ -1291,19 +1426,52 @@ func asUserModelDispatchError(err error) *userModelDispatchError {
 }
 
 func writeUserModelBufferedError(w io.Writer, routeType string, failure *userModelDispatchError) {
+	writeUserModelBufferedErrorWithHeaders(w, routeType, failure, nil)
+}
+
+func writeUserModelBufferedSpentError(w io.Writer, routeType string, failure *userModelDispatchError) {
+	// A complete owner generation has already consumed the owner's compute.
+	// Tell SDKs not to fail over and generate a second billable answer when
+	// settlement or post-settlement response annotation fails.
+	writeUserModelBufferedErrorWithHeaders(
+		w, routeType, failure, map[string]string{shouldRetryHeader: "false"},
+	)
+}
+
+func writeUserModelBufferedErrorWithHeaders(
+	w io.Writer,
+	routeType string,
+	failure *userModelDispatchError,
+	headers map[string]string,
+) {
 	if failure == nil || failure.callerStatus == 499 {
 		return
 	}
+	var body []byte
 	if routeType == "messages" {
-		body, _ := json.Marshal(map[string]any{
+		body, _ = json.Marshal(map[string]any{
 			"type":  "error",
 			"error": map[string]any{"type": failure.refundType, "message": failure.message},
 		})
-		fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n", failure.callerStatus, statusText(failure.callerStatus), len(body))
-		_, _ = w.Write(body)
-		return
+	} else {
+		body, _ = json.Marshal(map[string]any{
+			"error": map[string]any{
+				"message": failure.message,
+				"type":    failure.refundType,
+				"param":   nil,
+				"code":    failure.refundType,
+				"source":  "router",
+			},
+		})
 	}
-	writeOpenAIError(w, failure.callerStatus, failure.message, failure.refundType, failure.refundType, "")
+	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n", failure.callerStatus, statusText(failure.callerStatus), len(body))
+	for name, value := range headers {
+		if value != "" {
+			fmt.Fprintf(w, "%s: %s\r\n", name, value)
+		}
+	}
+	_, _ = io.WriteString(w, "\r\n")
+	_, _ = w.Write(body)
 }
 
 func writeUserModelStreamingError(
