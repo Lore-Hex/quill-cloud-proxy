@@ -107,6 +107,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # capture-plane-measurements.py imports cbor2 at module scope to parse
+      # the Nitro COSE attestation; same install verify-trust-freshness.yml does.
+      - run: pip install cbor2
       - name: Test deploy gate helpers
         run: |
           python3 tools/test_synthetic_gate_status.py
