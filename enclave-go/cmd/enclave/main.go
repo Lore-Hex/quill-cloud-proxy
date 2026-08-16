@@ -465,7 +465,9 @@ func serveOneRequest(
 	attestationCount *int,
 	healthRequestCount *int,
 ) (keepAlive bool) {
-	statsConn.ResetSnapshot()
+	requestLogID := newRequestLogID()
+	statsConn.BeginRequest(requestLogID)
+	ctx = trustedrouter.WithRequestLogID(ctx, requestLogID)
 
 	// Bound the TLS handshake + request read. The enclave terminates TLS
 	// lazily (handshake deferred to the first read in readRequest), so a bare
@@ -478,7 +480,6 @@ func serveOneRequest(
 	// read so streaming responses are never truncated.
 	_ = conn.SetReadDeadline(time.Now().Add(requestReadTimeout))
 
-	requestLogID := newRequestLogID()
 	requestStartedAt := time.Now()
 	requestMethod := "unknown"
 	requestRoute := "unknown"

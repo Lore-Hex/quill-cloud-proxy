@@ -37,6 +37,24 @@ const (
 
 var imageDataURLPattern = regexp.MustCompile(`data:image/[^;"\s]+;base64,[A-Za-z0-9+/=_-]+`)
 
+var requestLogIDPattern = regexp.MustCompile(`^rlog_[0-9a-f]{32}$`)
+
+type requestLogIDContextKey struct{}
+
+// WithRequestLogID associates the enclave audit-log ID with control-plane
+// settlement and refund calls made for the request.
+func WithRequestLogID(ctx context.Context, requestLogID string) context.Context {
+	return context.WithValue(ctx, requestLogIDContextKey{}, requestLogID)
+}
+
+func requestLogIDFromContext(ctx context.Context) string {
+	requestLogID, _ := ctx.Value(requestLogIDContextKey{}).(string)
+	if !requestLogIDPattern.MatchString(requestLogID) {
+		return ""
+	}
+	return requestLogID
+}
+
 type Client struct {
 	// baseURLs is ordered: index 0 is this cloud's OWN control plane, later
 	// entries are fallbacks used only when an earlier one cannot be dialled.
@@ -626,6 +644,9 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 		"selected_endpoint":    selectedEndpoint,
 		"app":                  app,
 	}
+	if requestLogID := requestLogIDFromContext(ctx); requestLogID != "" {
+		body["gateway_request_id"] = requestLogID
+	}
 	if usage.AdditionalCostMicrodollars > 0 {
 		body["additional_cost_microdollars"] = usage.AdditionalCostMicrodollars
 	}
@@ -739,6 +760,9 @@ func (c *Client) refundDetailed(
 		"selected_model":    auth.Model,
 		"selected_endpoint": auth.EndpointID,
 		"app":               "attested-gateway",
+	}
+	if requestLogID := requestLogIDFromContext(ctx); requestLogID != "" {
+		body["gateway_request_id"] = requestLogID
 	}
 	if auth.RouteType != "" {
 		body["route_type"] = auth.RouteType

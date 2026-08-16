@@ -43,6 +43,7 @@ type responseStatsConn struct {
 	mu            sync.Mutex
 	status        int
 	responseBytes int
+	requestID     string
 }
 
 func (c *responseStatsConn) Write(p []byte) (int, error) {
@@ -54,14 +55,51 @@ func (c *responseStatsConn) Write(p []byte) (int, error) {
 			_ = c.Conn.SetWriteDeadline(time.Time{})
 		}()
 	}
-	n, err := c.Conn.Write(p)
+	wireBytes := p
+	injectedHeaderBytes := 0
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.status == 0 {
+		requestID := c.requestID
+		// The injection opportunity exists only on the first write. Clearing the
+		// ID here keeps a partial or non-HTTP first write from being modified later.
+		c.requestID = ""
+		if statusLineEnd := bytes.Index(p, []byte("\r\n")); requestID != "" && bytes.HasPrefix(p, []byte("HTTP/")) && statusLineEnd >= 0 {
+			statusLineEnd += len("\r\n")
+			headers := []byte("x-request-id: " + requestID + "\r\nrequest-id: " + requestID + "\r\n")
+			wireBytes = make([]byte, 0, len(p)+len(headers))
+			wireBytes = append(wireBytes, p[:statusLineEnd]...)
+			wireBytes = append(wireBytes, headers...)
+			wireBytes = append(wireBytes, p[statusLineEnd:]...)
+			injectedHeaderBytes = len(headers)
+		}
+	}
+	c.mu.Unlock()
+
+	n, err := c.Conn.Write(wireBytes)
+	c.mu.Lock()
 	if c.status == 0 {
 		c.status = parseHTTPStatus(p)
 	}
 	c.responseBytes += n
-	return n, err
+	c.mu.Unlock()
+	if injectedHeaderBytes == 0 {
+		return n, err
+	}
+	if err == nil {
+		return len(p), nil
+	}
+	statusLineBytes := bytes.Index(p, []byte("\r\n")) + len("\r\n")
+	callerBytes := n
+	if n > statusLineBytes {
+		callerBytes = statusLineBytes
+		if n > statusLineBytes+injectedHeaderBytes {
+			callerBytes += n - statusLineBytes - injectedHeaderBytes
+		}
+	}
+	if callerBytes > len(p) {
+		callerBytes = len(p)
+	}
+	return callerBytes, err
 }
 
 func (c *responseStatsConn) Snapshot() (status int, responseBytes int) {
@@ -70,11 +108,17 @@ func (c *responseStatsConn) Snapshot() (status int, responseBytes int) {
 	return c.status, c.responseBytes
 }
 
+// ResetSnapshot clears response statistics and any pending request ID.
 func (c *responseStatsConn) ResetSnapshot() {
+	c.BeginRequest("")
+}
+
+func (c *responseStatsConn) BeginRequest(requestID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.status = 0
 	c.responseBytes = 0
+	c.requestID = requestID
 }
 
 func (c *responseStatsConn) SelectedLeafDER() []byte {
