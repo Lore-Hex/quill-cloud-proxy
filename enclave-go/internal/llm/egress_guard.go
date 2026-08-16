@@ -195,6 +195,10 @@ var globalIPv6Unicast = netip.MustParsePrefix("2000::/3")
 
 var reservedEgressPrefixes = mustEgressPrefixes(
 	"0.0.0.0/8",
+	// Shared address space (CGNAT, RFC 6598): never internet-routable, and
+	// used INSIDE clouds for internal services — an owner "endpoint" there
+	// is an internal target, not a public one.
+	"100.64.0.0/10",
 	"192.0.0.0/24",
 	"192.0.2.0/24",
 	"198.18.0.0/15",
