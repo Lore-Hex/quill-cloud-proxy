@@ -118,7 +118,7 @@ jobs:
       run:
         working-directory: enclave-go
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
@@ -133,7 +133,7 @@ jobs:
       accepted_digests: ${{ steps.write-trust.outputs.accepted_digests }}
       accepted_references: ${{ steps.write-trust.outputs.accepted_references }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # need history for the auto-commit + push back
 
@@ -293,7 +293,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: batch-release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Require explicit Batch storage activation
         env:
           TR_BATCH_STORAGE_ENABLED: ${{ vars.TR_BATCH_STORAGE_ENABLED }}
@@ -318,7 +318,7 @@ jobs:
     if: ${{ needs.grant-batch-image-access.result == 'success' && needs.publish-transition-trust-page.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main   # pull the auto-commit just made
       - name: Authenticate to GCP via WIF
@@ -672,7 +672,7 @@ jobs:
     needs: [build-and-release, rollout]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0

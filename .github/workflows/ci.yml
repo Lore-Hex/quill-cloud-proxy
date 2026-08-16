@@ -42,7 +42,7 @@ jobs:
           - "cloud_gcp,llm_vertex"
           - "cloud_gcp,llm_multi"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
@@ -69,7 +69,7 @@ jobs:
           - "cloud_aws"
           - "cloud_gcp"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25.5"
@@ -86,7 +86,7 @@ jobs:
       run:
         working-directory: parent
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
@@ -106,7 +106,7 @@ jobs:
     # the static trust page before publish.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # capture-plane-measurements.py imports cbor2 at module scope to parse
       # the Nitro COSE attestation; same install verify-trust-freshness.yml does.
       - run: pip install cbor2

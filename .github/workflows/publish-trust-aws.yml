@@ -38,7 +38,7 @@ jobs:
   sign:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # the source_commit check resolves an arbitrary sha
       - uses: sigstore/cosign-installer@v3
