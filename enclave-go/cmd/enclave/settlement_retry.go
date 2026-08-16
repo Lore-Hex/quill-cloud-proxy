@@ -215,10 +215,9 @@ func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJ
 // usage while dropping prompt-adjacent data and provider secrets. A control-
 // plane outage may fill this queue, so a count bound alone is not sufficient.
 func compactSettlementRetryJob(job settlementRetryJob) settlementRetryJob {
-	if job.clientContext == nil && job.authorization != nil {
-		job.clientContext = job.authorization.ClientContextForSettlementRetry()
-	}
 	if job.clientContext != nil {
+		// Detach from the request's value so the queued job never aliases
+		// memory the request goroutine may still touch.
 		copy := *job.clientContext
 		job.clientContext = &copy
 	}

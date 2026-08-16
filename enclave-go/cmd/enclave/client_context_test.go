@@ -22,6 +22,16 @@ func TestParseClientContextUserAgents(t *testing.T) {
 		{name: "unknown vendor language", ua: "OpenAI/Ruby 1.2.3", want: clientBody("openai-other", "1.2.3", "")},
 		{name: "TrustedRouter Python", ua: "trusted-router-py/0.6.0 python/3.12.1 platform/macos", want: clientBody("tr-py", "0.6.0", "python/3.12.1")},
 		{name: "TrustedRouter Go", ua: "trusted-router-go/1.2.3 go/1.24.2", want: clientBody("tr-go", "1.2.3", "go/1.24.2")},
+		// The exact shapes the six SDKs send today (userAgent()/Transport.java/
+		// transport.rs/Constants.swift at origin/main), so a UA change in any
+		// SDK that stops classifying shows up here first.
+		{name: "real py", ua: "trusted-router-py/0.5.0 python/3.12.1 httpx/0.27.0 Darwin", want: clientBody("tr-py", "0.5.0", "python/3.12.1")},
+		{name: "real js", ua: "trusted-router-js/0.4.0 node/22.4.0 darwin", want: clientBody("tr-js", "0.4.0", "node/22.4.0")},
+		{name: "real js browser", ua: "trusted-router-js/0.4.0 browser web", want: clientBody("tr-js", "0.4.0", "")},
+		{name: "real go", ua: "trusted-router-go/0.3.0 go/go1.24.2 linux", want: clientBody("tr-go", "0.3.0", "go/go1.24.2")},
+		{name: "real java", ua: "trusted-router-java/0.2.0 java/17.0.2 Linux", want: clientBody("tr-java", "0.2.0", "java/17.0.2")},
+		{name: "real rust", ua: "trusted-router-rust/0.3.0", want: clientBody("tr-rust", "0.3.0", "")},
+		{name: "real swift", ua: "trusted-router-swift/1.0.0 (macOS 14.5)", want: clientBody("tr-swift", "1.0.0", "")},
 		{name: "garbage", ua: "curl/8.7.1", want: clientBody("other", "", "")},
 	}
 	for _, test := range tests {

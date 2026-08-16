@@ -1352,6 +1352,7 @@ func serveStreaming(
 			authorization: authorization,
 			usage:         usage,
 			requestLogID:  requestLogID,
+			clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
 	}
 }
@@ -1604,6 +1605,7 @@ func serveMessages(
 			authorization: authorization,
 			usage:         usage,
 			requestLogID:  requestLogID,
+			clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
 	}
 }

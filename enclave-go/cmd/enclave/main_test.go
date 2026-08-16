@@ -205,16 +205,10 @@ func TestSettlementRetryQueueRetriesSettleAndBroadcast(t *testing.T) {
 	}
 }
 
-func TestSettlementRetryQueueCapturesClientContextFromFailedSettle(t *testing.T) {
-	client := trustedrouter.New("https://control.example", "internal", &http.Client{
-		Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
-			return &http.Response{
-				StatusCode: http.StatusBadGateway,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader("temporarily unavailable")),
-			}, nil
-		}),
-	})
+func TestSettlementRetryQueueCarriesClientContextFromTheRequestContext(t *testing.T) {
+	// Every enqueue site passes trustedrouter.ClientContextFromContext(ctx)
+	// on the job, exactly like requestLogID: the retry worker runs on the
+	// queue's own context, so the value must travel on the job.
 	authz := &trustedrouter.Authorization{
 		AuthorizationID: "auth_retry_context",
 		Model:           "openai/gpt-4o-mini",
@@ -222,13 +216,17 @@ func TestSettlementRetryQueueCapturesClientContextFromFailedSettle(t *testing.T)
 	}
 	clientContext := &types.ClientContext{V: 1, Source: "tr", Attempt: intPtrMainTest(1)}
 	ctx := trustedrouter.WithClientContext(t.Context(), clientContext)
-	usage := trustedrouter.Usage{RequestID: "req_retry_context", InputTokens: 1, OutputTokens: 1}
-	if _, err := client.Settle(ctx, authz, usage); err == nil {
-		t.Fatal("Settle succeeded, want failure")
+	if trustedrouter.ClientContextFromContext(t.Context()) != nil {
+		t.Fatal("ClientContextFromContext returned a value for a bare context")
 	}
+	usage := trustedrouter.Usage{RequestID: "req_retry_context", InputTokens: 1, OutputTokens: 1}
 
 	q := &settlementRetryQueue{jobs: make(chan settlementRetryJob, 1), maxAttempts: 2}
-	if !q.Enqueue(settlementRetryJob{trGateway: client, authorization: authz, usage: usage}) {
+	if !q.Enqueue(settlementRetryJob{
+		authorization: authz,
+		usage:         usage,
+		clientContext: trustedrouter.ClientContextFromContext(ctx),
+	}) {
 		t.Fatal("retry enqueue failed")
 	}
 	queued := <-q.jobs
@@ -9123,4 +9121,49 @@ func (f *failingStreamingLLM) InvokeStreaming(
 	_ ...llm.InvokeOptions,
 ) error {
 	return errors.New("provider exploded")
+}
+
+func TestEverySettlementRetryEnqueueSiteCarriesRequestLogIDAndClientContext(t *testing.T) {
+	// The retry worker runs on the queue's own context, so per-request values
+	// (audit id, client telemetry) only reach a retried settle if the enqueue
+	// site copies them onto the job. A new site that forgets one would still
+	// compile and still settle -- it would just silently lose the value.
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sites := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(source)
+		for offset := 0; ; {
+			index := strings.Index(text[offset:], "settlementRetryJob{")
+			if index < 0 {
+				break
+			}
+			start := offset + index
+			end := strings.Index(text[start:], "})")
+			if end < 0 {
+				t.Fatalf("%s: unterminated settlementRetryJob literal at byte %d", name, start)
+			}
+			literal := text[start : start+end]
+			for _, field := range []string{"requestLogID:", "clientContext:"} {
+				if !strings.Contains(literal, field) {
+					t.Errorf("%s: settlementRetryJob literal at byte %d does not set %s", name, start, field)
+				}
+			}
+			sites++
+			offset = start + end
+		}
+	}
+	if sites < 5 {
+		t.Fatalf("found %d settlementRetryJob enqueue sites, want at least 5", sites)
+	}
 }

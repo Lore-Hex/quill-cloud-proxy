@@ -382,10 +382,10 @@ func TestClientContextContextHelpersAreNilSafe(t *testing.T) {
 	if ctx == nil {
 		t.Fatal("WithClientContext(nil, nil) returned nil")
 	}
-	if got := clientContextFromContext(ctx); got != nil {
+	if got := ClientContextFromContext(ctx); got != nil {
 		t.Fatalf("client context = %#v, want nil", got)
 	}
-	if got := clientContextFromContext(nil); got != nil { //nolint:staticcheck // Explicitly verify the documented nil-safe helper.
+	if got := ClientContextFromContext(nil); got != nil { //nolint:staticcheck // Explicitly verify the documented nil-safe helper.
 		t.Fatalf("nil-context client context = %#v, want nil", got)
 	}
 }
@@ -407,7 +407,7 @@ func TestClientContextIsReadOnlyBySettleAndRefundBodyBuilders(t *testing.T) {
 				return true
 			}
 			identifier, ok := call.Fun.(*ast.Ident)
-			if ok && identifier.Name == "clientContextFromContext" {
+			if ok && identifier.Name == "ClientContextFromContext" {
 				readers = append(readers, function.Name.Name)
 			}
 			return true

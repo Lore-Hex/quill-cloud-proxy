@@ -69,7 +69,11 @@ func WithClientContext(ctx context.Context, clientContext *qtypes.ClientContext)
 	return context.WithValue(ctx, clientContextContextKey{}, clientContext)
 }
 
-func clientContextFromContext(ctx context.Context) *qtypes.ClientContext {
+// ClientContextFromContext returns the client context attached by
+// WithClientContext, or nil. Exported so the enclave's settlement retry queue
+// can carry the value on its job (the retry worker runs on the queue's own
+// context) exactly like the request log id.
+func ClientContextFromContext(ctx context.Context) *qtypes.ClientContext {
 	if ctx == nil {
 		return nil
 	}
@@ -264,18 +268,6 @@ type Authorization struct {
 	AdditionalCostReservationMicrodollars int                                `json:"additional_cost_reservation_microdollars"`
 	NativeBatchEligible                   bool                               `json:"native_batch_eligible"`
 	RouteType                             string                             `json:"-"`
-	settlementClientContext               *qtypes.ClientContext
-}
-
-// ClientContextForSettlementRetry returns the context captured by the failed
-// settle attempt so the bounded retry queue can re-attach it to its own
-// context without retaining the original request context.
-func (a *Authorization) ClientContextForSettlementRetry() *qtypes.ClientContext {
-	if a == nil || a.settlementClientContext == nil {
-		return nil
-	}
-	copy := *a.settlementClientContext
-	return &copy
 }
 
 // KeyIdentity is metadata-only ownership information returned by the
@@ -681,11 +673,8 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	if requestLogID := requestLogIDFromContext(ctx); requestLogID != "" {
 		body["gateway_request_id"] = requestLogID
 	}
-	auth.settlementClientContext = nil
-	if clientContext := clientContextFromContext(ctx); clientContext != nil && clientContext.Validate() == nil {
+	if clientContext := ClientContextFromContext(ctx); clientContext != nil && clientContext.Validate() == nil {
 		body["client"] = clientContext.AsBody()
-		copy := *clientContext
-		auth.settlementClientContext = &copy
 	}
 	if usage.AdditionalCostMicrodollars > 0 {
 		body["additional_cost_microdollars"] = usage.AdditionalCostMicrodollars
@@ -804,7 +793,7 @@ func (c *Client) refundDetailed(
 	if requestLogID := requestLogIDFromContext(ctx); requestLogID != "" {
 		body["gateway_request_id"] = requestLogID
 	}
-	if clientContext := clientContextFromContext(ctx); clientContext != nil && clientContext.Validate() == nil {
+	if clientContext := ClientContextFromContext(ctx); clientContext != nil && clientContext.Validate() == nil {
 		body["client"] = clientContext.AsBody()
 	}
 	if auth.RouteType != "" {

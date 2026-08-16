@@ -2282,6 +2282,7 @@ func serveFusionFinalStreamingAttempt(
 			authorization: authorization,
 			usage:         usage,
 			requestLogID:  requestLogID,
+			clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
 	}
 	return true, nil

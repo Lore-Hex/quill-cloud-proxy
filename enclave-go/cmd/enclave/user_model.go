@@ -1138,6 +1138,7 @@ func serveUserModelStreaming(
 	); err != nil {
 		settlementRetries.Enqueue(settlementRetryJob{
 			trGateway: trGateway, authorization: authorization, usage: usage, requestLogID: requestLogID,
+			clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
 	}
 }
@@ -1369,6 +1370,7 @@ func settlePartialUserModel(
 	); err != nil {
 		settlementRetries.Enqueue(settlementRetryJob{
 			trGateway: trGateway, authorization: authorization, usage: usage, requestLogID: requestLogID,
+			clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
 	}
 }
