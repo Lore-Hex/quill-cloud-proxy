@@ -17,10 +17,26 @@ disagree.
     python3 tools/capture-plane-measurements.py
 
     # write trust-page/trust/{aws,azure}-release.json and the .txt files
-    python3 tools/capture-plane-measurements.py --write
+    python3 tools/capture-plane-measurements.py --write --source-commit 1a2b3c4
 
     # during a bind window, keep the outgoing measurement acceptable
-    python3 tools/capture-plane-measurements.py --write --keep-accepted
+    python3 tools/capture-plane-measurements.py --write --keep-accepted \
+        --source-commit 1a2b3c4
+
+Both records now carry source_commit, which they did not before: aws-release.json
+and azure-release.json had no such key at all, so their running measurements were
+unmappable to source. gcp-release.json has always carried one because its producer
+is a deploy pipeline that knows the commit it is rolling. Here the producer is a
+capture, so the commit is an assertion by the operator rather than a measurement —
+see resolve_source_commit for what that does and does not establish.
+
+--source-commit HAS NO DEFAULT and deliberately so. It used to default to HEAD
+whenever enclave-go was clean, which is the normal state, and this script runs
+against an already-running enclave at an arbitrary later time: a clean tree is
+no evidence that HEAD is the released build. Run without it and the record says
+`not-configured`, which the downstream deploy gate treats as a refusal. That is
+the intended outcome — a true measurement with no provenance still publishes,
+and the party that must not proceed on it fails closed on its own.
 
 GCP is REPORTED but never written: its record is produced by the deploy
 pipeline, which is the correct producer because it knows which digest it is
@@ -37,7 +53,9 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import ssl
+import subprocess
 import sys
 import urllib.request
 from pathlib import Path
@@ -67,6 +85,116 @@ ATTESTED_GATEWAY_REPO = "https://github.com/Lore-Hex/quill-cloud-proxy"
 AWS_API_HOSTNAME = "api-aws.trustedrouter.com"
 AZURE_API_HOSTNAME = "api-azure.trustedrouter.com"
 AWS_ATTESTATION_ROOT = "https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip"
+
+# What a record says when nobody could name the commit. Chosen to match the
+# sentinel gcp-release.json already uses for an unset measurement, so a
+# consumer has one string to test rather than two.
+SOURCE_COMMIT_UNSET = "not-configured"
+_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+# How strong the source_commit in a record is. Published in the record itself
+# because "which commit" and "how do you know" are different questions, and a
+# reader holding only the bytes cannot ask the second one otherwise.
+#
+#   operator-asserted -- supplied by whoever ran the release and checked only
+#                        against this repository's history. NOT reproduced from
+#                        the measurement; `reproduce` names the tool that can.
+#   none              -- no commit; the record is unmappable to source.
+PROVENANCE_ASSERTED = "operator-asserted"
+PROVENANCE_NONE = "none"
+
+
+def _provenance(source_commit: str) -> str:
+    return PROVENANCE_NONE if source_commit == SOURCE_COMMIT_UNSET else PROVENANCE_ASSERTED
+
+
+def _git(*args: str) -> str | None:
+    """Run git in this repository. None on any failure — never a guess."""
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["git", "-C", str(REPO_ROOT), *args],  # noqa: S607 - git from PATH is intended
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
+
+
+def resolve_source_commit(explicit: str | None = None) -> str:
+    """The commit whose enclave-go tree built what is running. NO DEFAULT.
+
+    THIS IS AN ASSERTION, NOT A MEASUREMENT. PCR0 and hostdata are
+    measurements and neither carries a commit; whoever ran the release is the
+    only party that knows which source produced them. What makes the assertion
+    checkable afterwards is `reproduce` — tools/verify-pcr0.sh rebuilds PCR0
+    from a commit — and what makes it necessary is that a measurement with no
+    commit is unmappable to source, so nothing downstream can ask what that
+    build ACCEPTS.
+
+    That downstream question is quill-router's scripts/check_format_ordering.py,
+    a CI check that refuses any pull request changing the control plane's
+    written envelope format set until every enclave's declaration shows the new
+    format is readable. It fails closed on a
+    missing or not-configured source_commit rather than assuming a superset,
+    which is why recording a wrong value here is worse than recording none.
+
+    THIS DEFAULTED TO HEAD AND MUST NOT. The argument for that default was that
+    release-aws-enclave.sh refuses to BUILD from a dirty enclave-go, so a clean
+    tree means HEAD is the build. The two are not the same moment. That guard
+    runs when HEAD IS the build; this script runs against an already-running
+    enclave at an arbitrary later time, and a clean enclave-go says nothing
+    about whether main has moved since the release. Worse, the flow that most
+    often runs this — the freshness check's auto-filed drift issue — fires
+    precisely BECAUSE what is published no longer matches what is running, i.e.
+    exactly when HEAD is not the released commit. The default therefore
+    manufactured, unattended, the "real file at the wrong commit" this
+    docstring already called worse than reading nothing.
+
+    So: the commit must be supplied. Absent, the record says `not-configured`
+    and the deploy gate fails closed, which is the outcome the whole design
+    prefers. Supplied, it is checked against this repository — a real object,
+    of type commit, reachable from HEAD — so a typo, a sha from another clone,
+    or a commit that was never merged is refused rather than published.
+
+    What none of that establishes is the binding between the commit and the
+    MEASUREMENT. Only tools/verify-pcr0.sh can do that, by rebuilding PCR0 from
+    the commit on Nitro-capable hardware, and it is not run here. The record
+    therefore also carries `source_commit_provenance` naming what this is:
+    operator-asserted.
+    """
+    if not explicit:
+        print(
+            "      WARNING no --source-commit given, so this record cannot be mapped to source. "
+            "Recording not-configured. quill-router's check_format_ordering.py fails closed "
+            "against it on any format-changing pull request, by design. "
+            "Pass --source-commit <sha of the enclave release>.",
+            file=sys.stderr,
+        )
+        return SOURCE_COMMIT_UNSET
+
+    candidate = explicit.strip()
+    if candidate == SOURCE_COMMIT_UNSET:
+        return candidate
+    if not _COMMIT_RE.fullmatch(candidate):
+        raise ValueError(f"--source-commit {candidate!r} is not a git object id")
+    kind = _git("cat-file", "-t", f"{candidate}^{{commit}}")
+    if kind != "commit":
+        raise ValueError(
+            f"--source-commit {candidate!r} is not a commit in this repository. A sha that "
+            "resolves nowhere here names a build nobody can reproduce from this source."
+        )
+    if _git("merge-base", "--is-ancestor", candidate, "HEAD") is None:
+        raise ValueError(
+            f"--source-commit {candidate!r} is not reachable from HEAD. An enclave release is "
+            "built from this history; a commit outside it is either the wrong sha or a tree that "
+            "was never merged, and either way the record would point auditors at the wrong source."
+        )
+    return candidate
 
 
 def _fetch(url: str, *, verify_tls: bool = True) -> bytes:
@@ -261,13 +389,25 @@ def _existing(path: Path, key: str) -> list[str]:
     return [v for v in values if isinstance(v, str)]
 
 
-def build_aws_record(live: dict[str, str], *, keep: bool) -> dict[str, Any]:
+def build_aws_record(
+    live: dict[str, str], *, keep: bool, source_commit: str = SOURCE_COMMIT_UNSET
+) -> dict[str, Any]:
     accepted = _merged(
         live["pcr0"], _existing(TRUST_DIR / "aws-release.json", "accepted_pcr0s"), keep
     )
     return {
         "platform": "aws-nitro-enclaves",
         "source_repo": ATTESTED_GATEWAY_REPO,
+        # gcp-release.json has carried this since its first publish; aws and
+        # azure carried NO source_commit key at all, which is what made their
+        # running measurements unmappable to source. A verifier could rebuild
+        # PCR0 from a commit only by first guessing which commit to try.
+        "source_commit": source_commit,
+        # What that commit is worth. It is an operator's assertion checked
+        # against this repository's history, never a value derived from the
+        # measurement: nothing here reproduces PCR0. `reproduce` names the tool
+        # that does, and until someone runs it this field says so.
+        "source_commit_provenance": _provenance(source_commit),
         "measurement_type": "nitro-pcr0-sha384",
         "pcr0": live["pcr0"],
         "accepted_pcr0s": accepted,
@@ -290,7 +430,9 @@ def build_aws_record(live: dict[str, str], *, keep: bool) -> dict[str, Any]:
     }
 
 
-def build_azure_record(regions: list[dict[str, str]], *, keep: bool) -> dict[str, Any]:
+def build_azure_record(
+    regions: list[dict[str, str]], *, keep: bool, source_commit: str = SOURCE_COMMIT_UNSET
+) -> dict[str, Any]:
     """Azure record covering EVERY region, because each runs its own CCE policy.
 
     hostdata is sha256 over the decoded CCE policy and the regions do not share
@@ -313,6 +455,17 @@ def build_azure_record(regions: list[dict[str, str]], *, keep: bool) -> dict[str
     return {
         "platform": "azure-confidential-containers-sev-snp",
         "source_repo": ATTESTED_GATEWAY_REPO,
+        # ONE commit for a record that describes TWO regions. That is honest
+        # only while both regions run the same build, which is the steady
+        # state but not the state during a roll. A consumer that needs
+        # per-region provenance must read a per-region source_commit, and
+        # there is none to read — this capture has a single HEAD and cannot
+        # attribute one build per region. Stated rather than papered over;
+        # quill-router's ordering gate records the same limit.
+        "source_commit": source_commit,
+        # See build_aws_record: an assertion checked against this repository,
+        # not a value reproduced from the measurement.
+        "source_commit_provenance": _provenance(source_commit),
         "measurement_type": "sev-snp-hostdata-sha256",
         # No single scalar is "the" measurement here — which region answers
         # depends on Traffic Manager. The set is the answer.
@@ -362,7 +515,18 @@ def main() -> int:
         action="store_true",
         help="keep already-published measurements in the accepted set (bind window)",
     )
+    parser.add_argument(
+        "--source-commit",
+        default=None,
+        help=(
+            "commit whose enclave-go tree built the RUNNING enclave. No default: HEAD is not "
+            "that commit except by coincidence, and this record is the only thing that maps a "
+            "measurement to source. Omit it and the record records not-configured, which the "
+            "envelope-format ordering gate treats as a refusal."
+        ),
+    )
     args = parser.parse_args()
+    commit = resolve_source_commit(args.source_commit)
 
     failures = []
     try:
@@ -396,8 +560,21 @@ def main() -> int:
         print("\n(dry run — pass --write to update trust-page/trust/)")
         return 1 if failures else 0
 
+    print(f"source commit  {commit}")
+    if commit == SOURCE_COMMIT_UNSET:
+        # Not fatal. Publishing a TRUE measurement with weak provenance beats
+        # publishing nothing — trust-page/pcr0.txt served a value matching no
+        # running enclave for months precisely because publishing was easy to
+        # skip. The consumer that must not proceed on this is quill-router's
+        # format-ordering CI check, and it fails closed there.
+        print(
+            "      WARNING this record will not support the envelope-format ordering "
+            "check; quill-router's check_format_ordering.py fails closed without it.",
+            file=sys.stderr,
+        )
+
     if aws:
-        record = build_aws_record(aws, keep=args.keep_accepted)
+        record = build_aws_record(aws, keep=args.keep_accepted, source_commit=commit)
         _write(TRUST_DIR / "aws-release.json", json.dumps(record, indent=2, sort_keys=True) + "\n")
         _write(TRUST_DIR / "pcr0-aws.txt", record["pcr0"] + "\n")
         _write(TRUST_DIR / "accepted-pcr0s-aws.txt", ",".join(record["accepted_pcr0s"]) + "\n")
@@ -419,7 +596,7 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
-        record = build_azure_record(azure, keep=args.keep_accepted)
+        record = build_azure_record(azure, keep=args.keep_accepted, source_commit=commit)
         _write(
             TRUST_DIR / "azure-release.json", json.dumps(record, indent=2, sort_keys=True) + "\n"
         )

@@ -38,9 +38,67 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the source_commit check resolves an arbitrary sha
       - uses: sigstore/cosign-installer@v3
         with:
           cosign-release: v2.4.1
+      # source_commit is what makes a measurement mappable to source. This
+      # record carried no such key at all until tools/capture-plane-measurements.py
+      # started writing one, so the hostdata published here named a build
+      # nobody could locate.
+      #
+      # This step FAILS on a source_commit that is malformed, absent from this
+      # repository, or not reachable from HEAD, and only WARNS on one that is
+      # absent. That asymmetry is deliberate. Blocking the publication of a
+      # true measurement is the failure this repo already lived through:
+      # trust-page/pcr0.txt matched no running enclave from the initial commit
+      # onward because publishing was skippable. A record with weak provenance
+      # is still better than an absent one, and the party that must refuse to
+      # proceed is the CONSUMER — quill-router's
+      # scripts/check_format_ordering.py fails closed on a missing or
+      # not-configured source_commit before it lets a control plane deploy.
+      #
+      # It does NOT detect the realistic wrong value: a commit that is really
+      # in this history and is simply not the one that built the running
+      # enclave. That value used to be MANUFACTURED here, by
+      # capture-plane-measurements.py defaulting source_commit to HEAD; the
+      # default is gone, so producing it now takes a deliberate wrong --source-
+      # commit rather than an unattended re-run of the documented remediation.
+      #
+      # Note what this does NOT check: the record describes TWO regions and
+      # carries ONE source_commit. Resolving that commit says nothing about
+      # whether both regions are running it.
+      - name: Check source_commit provenance
+        run: |
+          set -euo pipefail
+          commit="$(jq -r '.source_commit // ""' trust-page/trust/azure-release.json)"
+          if [ -z "${commit}" ] || [ "${commit}" = "not-configured" ]; then
+            echo "::warning::azure-release.json carries no source_commit, so the running hostdata cannot be mapped to a commit. quill-router's envelope-format ordering gate will FAIL CLOSED on this record. Re-run: python3 tools/capture-plane-measurements.py --write --keep-accepted --source-commit <sha of the enclave release>"
+            exit 0
+          fi
+          if ! printf '%s' "${commit}" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            echo "source_commit '${commit}' is not a git object id — refusing to sign a record that names a build nobody can find." >&2
+            exit 1
+          fi
+          if ! git cat-file -e "${commit}^{commit}" 2>/dev/null; then
+            echo "source_commit '${commit}' does not exist in this repository — a measurement attributed to a commit that is not here is worse than one attributed to none." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${commit}" HEAD; then
+            echo "source_commit '${commit}' is not reachable from HEAD — an enclave release is built from this history, so a commit outside it is the wrong sha or a tree that never merged." >&2
+            exit 1
+          fi
+          # WHAT THIS CANNOT SEE, said plainly: a commit that is genuinely in
+          # this history and is simply not the one that built the running
+          # enclave. Nothing in a PCR0 or in hostdata carries a commit, so the
+          # only check that could distinguish them is tools/verify-pcr0.sh,
+          # which rebuilds PCR0 from a commit on Nitro-capable hardware and is
+          # not run here. The record therefore publishes
+          # source_commit_provenance: operator-asserted, and the producer
+          # refuses to invent the value in the first place — it has no default.
+          provenance="$(jq -r '.source_commit_provenance // "none"' trust-page/trust/azure-release.json)"
+          echo "azure-release.json source_commit ${commit} is in this history (provenance: ${provenance})"
       - name: Sign the Azure Confidential Containers record
         env:
           COSIGN_YES: "true"

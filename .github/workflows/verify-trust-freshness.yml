@@ -167,8 +167,18 @@ jobs:
             echo "Fix by capturing what is actually running:"
             echo
             echo '```bash'
-            echo "python3 tools/capture-plane-measurements.py --write"
+            echo "python3 tools/capture-plane-measurements.py --write --source-commit <sha>"
             echo '```'
+            echo
+            echo "--source-commit is the commit whose enclave-go tree built the enclave that is"
+            echo "RUNNING NOW, which is exactly what this alert says has changed. It is not HEAD"
+            echo "except by coincidence: this issue fires because what is published no longer"
+            echo "matches what is serving, so main has usually moved past the released enclave."
+            echo "Get it from the release that rolled the running build (the run log of"
+            echo "tools/release-aws-enclave.sh, or the deploy that produced the new measurement)."
+            echo "If nobody can name it, run without the flag: the record then says"
+            echo "not-configured, and quill-router's envelope-format ordering gate refuses"
+            echo "control-plane deploys against that cloud until a real commit is published."
             echo
             echo "During a bind window add --keep-accepted so the outgoing measurement stays"
             echo "acceptable while the old enclave is still serving."
