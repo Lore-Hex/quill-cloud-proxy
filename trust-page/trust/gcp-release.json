@@ -1,10 +1,8 @@
 {
   "accepted_image_digests": [
-    "sha256:faf603fd84cab6d3f0a7ca7750750d2f88e2d84836c664422a20f46a98f8fe82",
     "sha256:44a80f760efde63ef2f4e36ff75dca11b6eb1e34aaca52e700e8ac8f33ba6456"
   ],
   "accepted_image_references": [
-    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-f57b791",
     "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-835423c"
   ],
   "api_base_url": "https://api.trustedrouter.com/v1",
@@ -27,7 +25,7 @@
   "image_digest": "sha256:44a80f760efde63ef2f4e36ff75dca11b6eb1e34aaca52e700e8ac8f33ba6456",
   "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-835423c",
   "platform": "gcp-confidential-space",
-  "release_state": "rolling",
+  "release_state": "current",
   "released_by": "github-actions:deploy-enclave-gcp",
   "source_commit": "835423c",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
