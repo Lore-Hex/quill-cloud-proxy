@@ -1,6 +1,6 @@
-// Package byokcache decrypts TrustedRouter BYOK envelopes inside the
-// attested gateway and keeps plaintext provider keys only in short-lived
-// process memory.
+// Package byokcache decrypts TrustedRouter secret envelopes inside the
+// attested gateway and keeps plaintext provider or owner endpoint keys only in
+// short-lived process memory.
 package byokcache
 
 import (
@@ -31,9 +31,12 @@ const (
 	// knows v1 is a hard failure for that customer's BYOK key.
 	AlgorithmV2 = "TR-BYOK-ENVELOPE-AES-256-GCM-V2"
 
-	// namespaceProvider is the only namespace the enclave sees. Control
-	// secrets are decrypted in the control plane and never reach here.
-	namespaceProvider = "provider"
+	// The enclave opens provider BYOK keys and owner-supplied model endpoint
+	// credentials. Control secrets remain control-plane-only. Keeping the
+	// user-model family in its own AAD namespace prevents a provider key or a
+	// control purpose with the same spelling from being substituted here.
+	namespaceProvider  = "provider"
+	namespaceUserModel = "user_model"
 )
 
 const (
@@ -77,6 +80,7 @@ type Cache struct {
 
 type entry struct {
 	cacheKey    string
+	namespace   string
 	workspaceID string
 	provider    string
 	secret      string
@@ -114,12 +118,54 @@ func (c *Cache) Resolve(
 	cacheKey string,
 	envelope EncryptedSecretEnvelope,
 ) (string, bool, error) {
+	return c.resolve(ctx, namespaceProvider, workspaceID, provider, cacheKey, envelope)
+}
+
+// ResolveUserModel opens an owner endpoint credential under the user_model
+// namespace. This family was introduced after AAD v2, so accepting a v1
+// envelope would erase the namespace separation at the trust boundary.
+//
+// The cache key is always derived inside the enclave. The control plane is
+// intentionally not allowed to choose a key that could alias another owner's
+// plaintext secret.
+func (c *Cache) ResolveUserModel(
+	ctx context.Context,
+	ownerWorkspaceID string,
+	purpose string,
+	envelope EncryptedSecretEnvelope,
+) (string, bool, error) {
+	cacheKey, err := userModelFingerprint(ownerWorkspaceID, purpose, envelope)
+	if err != nil {
+		return "", false, err
+	}
+	return c.resolve(
+		ctx,
+		namespaceUserModel,
+		ownerWorkspaceID,
+		purpose,
+		cacheKey,
+		envelope,
+	)
+}
+
+func (c *Cache) resolve(
+	ctx context.Context,
+	namespace string,
+	workspaceID string,
+	contextName string,
+	cacheKey string,
+	envelope EncryptedSecretEnvelope,
+) (string, bool, error) {
 	if c == nil {
 		return "", false, errors.New("byokcache: nil cache")
 	}
 	if cacheKey == "" {
-		cacheKey = Fingerprint(workspaceID, provider, envelope)
+		cacheKey = Fingerprint(workspaceID, contextName, envelope)
 	}
+	// Namespace the lookup key even when a legacy provider caller supplies its
+	// own cache key. Otherwise a provider entry could bypass user_model AAD
+	// verification merely by colliding with the enclave-derived fingerprint.
+	cacheKey = namespace + "\x00" + cacheKey
 
 	now := c.now()
 	c.mu.Lock()
@@ -132,7 +178,7 @@ func (c *Cache) Resolve(
 	}
 	c.mu.Unlock()
 
-	secret, err := decryptEnvelope(ctx, c.unwrapper, workspaceID, provider, envelope)
+	secret, err := decryptEnvelope(ctx, c.unwrapper, namespace, workspaceID, contextName, envelope)
 	if err != nil {
 		return "", false, err
 	}
@@ -152,8 +198,9 @@ func (c *Cache) Resolve(
 	}
 	inserted := c.order.PushBack(entry{
 		cacheKey:    cacheKey,
+		namespace:   namespace,
 		workspaceID: workspaceID,
-		provider:    provider,
+		provider:    contextName,
 		secret:      secret,
 		expiresAt:   insertedAt.Add(c.ttl),
 	})
@@ -170,7 +217,7 @@ func (c *Cache) InvalidateProvider(workspaceID, provider string) {
 	defer c.mu.Unlock()
 	for _, element := range c.entries {
 		cached := element.Value.(entry)
-		if cached.workspaceID == workspaceID && cached.provider == provider {
+		if cached.namespace == namespaceProvider && cached.workspaceID == workspaceID && cached.provider == provider {
 			c.removeLocked(element)
 		}
 	}
@@ -223,15 +270,16 @@ func (c *Cache) removeLocked(element *list.Element) {
 func decryptEnvelope(
 	ctx context.Context,
 	unwrapper DEKUnwrapper,
+	namespace string,
 	workspaceID string,
-	provider string,
+	contextName string,
 	envelope EncryptedSecretEnvelope,
 ) (string, error) {
 	if unwrapper == nil {
 		return "", errors.New("byokcache: DEK unwrapper is required")
 	}
 
-	aad, err := envelopeAAD(envelope.Algorithm, workspaceID, provider)
+	aad, err := envelopeAAD(envelope.Algorithm, namespace, workspaceID, contextName)
 	if err != nil {
 		return "", err
 	}
@@ -265,7 +313,7 @@ func decryptEnvelope(
 	}
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
-		return "", fmt.Errorf("byokcache: decrypt provider key: %w", err)
+		return "", fmt.Errorf("byokcache: decrypt envelope: %w", err)
 	}
 	return string(plaintext), nil
 }
@@ -286,6 +334,22 @@ func Fingerprint(workspaceID string, provider string, envelope EncryptedSecretEn
 		_, _ = digest.Write([]byte{0})
 	}
 	return "byokcache:v1:" + hex.EncodeToString(digest.Sum(nil))
+}
+
+func userModelFingerprint(ownerWorkspaceID, purpose string, envelope EncryptedSecretEnvelope) (string, error) {
+	ciphertext, err := decodeB64(envelope.Ciphertext)
+	if err != nil {
+		return "", fmt.Errorf("byokcache: fingerprint ciphertext: %w", err)
+	}
+	identity, err := aadV2(namespaceUserModel, ownerWorkspaceID, purpose)
+	if err != nil {
+		return "", err
+	}
+	ciphertextHash := sha256.Sum256(ciphertext)
+	digest := sha256.New()
+	_, _ = digest.Write(identity)
+	_, _ = digest.Write(ciphertextHash[:])
+	return "byokcache:user-model:v1:" + hex.EncodeToString(digest.Sum(nil)), nil
 }
 
 // aad builds the v1 associated data.
@@ -337,16 +401,23 @@ func aadV2(namespace, workspaceID, context string) ([]byte, error) {
 
 // envelopeAAD selects the associated data for an envelope's declared format.
 //
-// The enclave only ever decrypts BYOK provider secrets — settlement.go reaches
-// byokcache exclusively for candidates whose UsageType is BYOK — so the
-// namespace is always "provider" here. Control secrets are decrypted in the
-// control plane and never cross this boundary.
-func envelopeAAD(algorithm, workspaceID, provider string) ([]byte, error) {
+// Provider envelopes retain v1 compatibility; user-model endpoint/signing
+// secrets were introduced after v2 and must never lose their namespace. The
+// control family remains control-plane-only and is deliberately rejected.
+func envelopeAAD(algorithm, namespace, workspaceID, contextName string) ([]byte, error) {
 	switch algorithm {
 	case Algorithm:
-		return aad(workspaceID, provider), nil
+		if namespace != namespaceProvider {
+			return nil, fmt.Errorf("byokcache: namespace %q requires a v2 envelope", namespace)
+		}
+		return aad(workspaceID, contextName), nil
 	case AlgorithmV2:
-		return aadV2(namespaceProvider, workspaceID, provider)
+		switch namespace {
+		case namespaceProvider, namespaceUserModel:
+			return aadV2(namespace, workspaceID, contextName)
+		default:
+			return nil, fmt.Errorf("byokcache: unsupported envelope namespace %q", namespace)
+		}
 	default:
 		return nil, fmt.Errorf("byokcache: unsupported envelope algorithm %q", algorithm)
 	}
