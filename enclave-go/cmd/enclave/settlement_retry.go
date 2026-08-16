@@ -168,7 +168,12 @@ func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJ
 		}
 	}
 
-	_, err := job.trGateway.Settle(ctx, job.authorization, job.usage)
+	// The retry worker runs on the queue's own context; re-attach the
+	// request's audit id so a retried settle carries the same
+	// gateway_request_id the first attempt would have.
+	_, err := job.trGateway.Settle(
+		trustedrouter.WithRequestLogID(ctx, job.requestLogID), job.authorization, job.usage,
+	)
 	if err == nil {
 		fmt.Fprintf(os.Stderr,
 			"enclave.settlement_retry_success request_log_id=%q request_id=%q auth_id=%q attempt=%d age_ms=%d\n",
