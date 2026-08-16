@@ -657,6 +657,7 @@ func serveOneRequest(
 	}
 
 	var req types.OpenAIChatRequest
+	var rawUserModelBody map[string]any
 	req.IdempotencyKey = idempotencyKey
 	routeType := "chat.completions"
 	originalInput := any(nil)
@@ -757,14 +758,12 @@ func serveOneRequest(
 		return
 	}
 
-	if routeType == "responses" && maybeServeResponsesWebSearch(
-		ctx, conn, &req, br, trGateway, byokSecrets, bearer, requestLogID,
-	) {
-		return
-	}
-
-	if routeType == "chat.completions" {
-		if _, err := maybeResolveCustomModelForOrchestration(ctx, &req, trGateway, bearer, routeType); err != nil {
+	var resolvedCustomModel *trustedrouter.Authorization
+	if isCustomModelID(req.Model) {
+		resolvedCustomModel, err = maybeResolveCustomModelForOrchestration(
+			ctx, &req, trGateway, bearer, routeType,
+		)
+		if err != nil {
 			var aerr *adapter.AdapterError
 			if asAdapterErr(err, &aerr) {
 				writeError(conn, aerr.Status, aerr.Message)
@@ -773,6 +772,25 @@ func serveOneRequest(
 			writeError(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "custom model resolution failed"))
 			return
 		}
+		if isUserProvidedCustomModel(resolvedCustomModel) && !userModelDispatchSupported() {
+			writeUserModelPlaneError(conn, routeType)
+			return
+		}
+		if routeType == "chat.completions" && isUserProvidedCustomModel(resolvedCustomModel) {
+			// Retain only the parsed, in-memory caller shape for this dispatch.
+			// The explicit owner allowlist preserves whether the caller chose
+			// max_tokens vs max_completion_tokens while stripping TR controls.
+			if err := json.Unmarshal(body, &rawUserModelBody); err != nil {
+				writeError(conn, 400, "invalid JSON")
+				return
+			}
+		}
+	}
+
+	if routeType == "responses" && !isUserProvidedCustomModel(resolvedCustomModel) && maybeServeResponsesWebSearch(
+		ctx, conn, &req, br, trGateway, byokSecrets, bearer, requestLogID,
+	) {
+		return
 	}
 
 	if handled, err := maybeServeAdvisor(ctx, conn, br, &req, trGateway, byokSecrets, bearer, originalInput, requestLogID); handled {
@@ -813,6 +831,19 @@ func serveOneRequest(
 
 	var authorization *trustedrouter.Authorization
 	var invokeOptions []llm.InvokeOptions
+	var userModelAnthropicReq *types.AnthropicMessagesRequest
+	if routeType == "responses" && isUserProvidedCustomModel(resolvedCustomModel) {
+		userModelAnthropicReq, err = adapter.ToAnthropic(&req, "claude-opus-4-7")
+		if err != nil {
+			var aerr *adapter.AdapterError
+			if asAdapterErr(err, &aerr) {
+				writeAdapterOpenAIError(conn, aerr)
+				return
+			}
+			writeOpenAIError(conn, 500, "adapter error", "internal_error", "internal_error", "")
+			return
+		}
+	}
 	requestStarted := time.Now()
 	if trEnabled {
 		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, &req, routeType)
@@ -821,7 +852,16 @@ func serveOneRequest(
 			return
 		}
 		requestIdentity.bindAuthorization(authorization)
+		attachResolvedUserModel(authorization, resolvedCustomModel)
 		req.Models = nil
+		if isUserProvidedCustomModel(authorization) {
+			req.Model = authorization.Model
+			serveUserModel(
+				ctx, conn, &req, rawUserModelBody, userModelAnthropicReq, routeType, trGateway,
+				authorization, byokSecrets, originalInput, nil, requestLogID,
+			)
+			return
+		}
 		invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)
 		if err != nil {
 			_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), req.Metadata)
@@ -1370,6 +1410,26 @@ func serveMessages(
 		writeAnthropicError(conn, 400, "invalid messages request")
 		return
 	}
+	var resolvedCustomModel *trustedrouter.Authorization
+	if isCustomModelID(req.Model) {
+		resolvedCustomModel, err = maybeResolveCustomModelForOrchestration(
+			ctx, req, trGateway, bearer, "messages",
+		)
+		if err != nil {
+			writeAnthropicErrorWithSourceHeaders(
+				conn,
+				statusFromControlPlaneError(err),
+				messageFromControlPlaneError(err, "custom model resolution failed"),
+				"router",
+				retryHeadersFromControlPlaneError(err),
+			)
+			return
+		}
+		if isUserProvidedCustomModel(resolvedCustomModel) && !userModelDispatchSupported() {
+			writeUserModelPlaneError(conn, "messages")
+			return
+		}
+	}
 
 	requestStarted := time.Now()
 	trEnabled := trGateway != nil && trGateway.Enabled()
@@ -1379,6 +1439,15 @@ func serveMessages(
 		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, req, "messages")
 		if err != nil {
 			writeAnthropicErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
+			return
+		}
+		attachResolvedUserModel(authorization, resolvedCustomModel)
+		if isUserProvidedCustomModel(authorization) {
+			req.Model = authorization.Model
+			serveUserModel(
+				ctx, conn, req, nil, anthropicReq, "messages", trGateway, authorization,
+				byokSecrets, native.Messages, &native, requestLogID,
+			)
 			return
 		}
 		invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)

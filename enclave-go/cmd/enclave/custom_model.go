@@ -29,18 +29,43 @@ func maybeResolveCustomModelForOrchestration(
 	if authorization == nil || authorization.CustomModel == nil {
 		return nil, &adapter.AdapterError{Status: 502, Message: "custom model resolution returned no custom model", Context: "custom_model"}
 	}
+	if strings.EqualFold(strings.TrimSpace(authorization.CustomModel.Kind), "user_provided") {
+		// Unlike prompt wrappers, authorize intentionally returns only the
+		// Credits sentinel for a user model. Retain this resolve result so the
+		// caller can attach the enclave-only dispatch contract after authorize.
+		return authorization, nil
+	}
+	// Preserve the pre-Phase-6 behavior on Responses and Messages: their
+	// prompt-wrapper routing continues to be owned by authorize. Those routes
+	// resolve early only to discover user_provided dispatch metadata.
+	if routeType != "chat.completions" {
+		return authorization, nil
+	}
 	baseModelID := strings.TrimSpace(authorization.CustomModel.BaseModelID)
 	if baseModelID == "" {
 		return nil, &adapter.AdapterError{Status: 502, Message: "custom model has no base model", Context: "custom_model.base_model_id"}
 	}
 	if !isOrchestrationModel(baseModelID) {
-		return nil, nil
+		return authorization, nil
 	}
 	req.ResponseModel = strings.TrimSpace(authorization.CustomModel.ID)
 	req.Model = baseModelID
 	req.Models = nil
 	applyCustomModelPrompt(req, authorization)
 	return authorization, nil
+}
+
+func attachResolvedUserModel(
+	authorization *trustedrouter.Authorization,
+	resolved *trustedrouter.Authorization,
+) {
+	if authorization == nil || !isUserProvidedCustomModel(resolved) {
+		return
+	}
+	// /authorize freezes the billing sentinel and /resolve freezes the owner
+	// dispatch block. Combining them only inside the enclave keeps a single
+	// source of truth for response-model masking and dispatch.
+	authorization.CustomModel = resolved.CustomModel
 }
 
 func applyCustomModelPrompt(req *types.OpenAIChatRequest, authorization *trustedrouter.Authorization) {

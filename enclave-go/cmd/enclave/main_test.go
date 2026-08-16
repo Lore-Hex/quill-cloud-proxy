@@ -783,6 +783,8 @@ func TestServeOneResponsesNonStreamingReturnsResponseAndSettles(t *testing.T) {
 			t.Fatalf("read body: %v", err)
 		}
 		switch r.URL.Path {
+		case "/internal/gateway/resolve-custom-model":
+			_, _ = fmt.Fprint(w, `{"data":{"workspace_id":"ws_1","api_key_hash":"key_1","route_type":"responses","custom_model":{"id":"trustedrouter/user-resp1","name":"Responses model","kind":"prompt_wrapper","base_model_id":"openai/gpt-4o-mini","hidden_prompt":"PRIVATE responses preamble","revision":4}}}`)
 		case "/internal/gateway/authorize":
 			authorizeBody = string(body)
 			if strings.Contains(authorizeBody, bearer) || strings.Contains(authorizeBody, "private response input") || strings.Contains(authorizeBody, "PRIVATE responses preamble") {
@@ -7739,6 +7741,8 @@ func TestServeOneMessagesNonStreamingReturnsEnvelopeAndSettles(t *testing.T) {
 			t.Fatalf("read body: %v", err)
 		}
 		switch r.URL.Path {
+		case "/internal/gateway/resolve-custom-model":
+			_, _ = fmt.Fprint(w, `{"data":{"workspace_id":"ws_1","api_key_hash":"key_1","route_type":"messages","custom_model":{"id":"trustedrouter/user-msg123","name":"Messages model","kind":"prompt_wrapper","base_model_id":"anthropic/claude-haiku-4.5","hidden_prompt":"PRIVATE messages preamble","revision":2}}}`)
 		case "/internal/gateway/authorize":
 			if strings.Contains(string(body), bearer) || strings.Contains(string(body), "private prompt") {
 				t.Fatalf("authorize leaked sensitive material: %s", body)
