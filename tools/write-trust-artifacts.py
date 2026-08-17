@@ -20,6 +20,7 @@ PROCUREMENT_JSON_URL = "https://trustedrouter.com/legal/procurement.json"
 SOC2_READINESS_URL = "https://trustedrouter.com/legal/soc2-readiness"
 HIPAA_READINESS_URL = "https://trustedrouter.com/legal/hipaa-readiness"
 SUBPROCESSORS_URL = "https://trustedrouter.com/legal/subprocessors"
+CLIENT_TELEMETRY_DISCLOSURE_URL = "https://trustedrouter.com/docs/telemetry"
 CANONICAL_TRUST_URL = "https://trustedrouter.com/trust"
 API_REFERENCE_URL = "https://trustedrouter.com/api/reference"
 _IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -106,6 +107,12 @@ def release_payload(
         "data_policy": {
             "prompt_output_storage": False,
             "control_plane_prompt_access": False,
+            # SDK reliability telemetry (client-observed uptime) is content-free
+            # by construction: closed enums and bounded patterns only, no
+            # prompt/completion/message text, no user/session ids, no IPs.
+            # Contract: https://trustedrouter.com/docs/telemetry
+            "client_telemetry_content_free": True,
+            "client_telemetry_disclosure": CLIENT_TELEMETRY_DISCLOSURE_URL,
         },
         "compliance": {
             "legal_packet": LEGAL_PACKET_URL,
