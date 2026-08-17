@@ -102,6 +102,18 @@ class SourceCommitTests(unittest.TestCase):
         # record rather than only in prose.
         self.assertEqual(len(record["regions"]), 2)
 
+    def test_aws_and_azure_records_carry_the_client_telemetry_claim(self) -> None:
+        for record in (
+            capture.build_aws_record(AWS_LIVE, keep=False, source_commit="1a2b3c4"),
+            capture.build_azure_record(AZURE_LIVE, keep=False, source_commit="1a2b3c4"),
+        ):
+            policy = record["data_policy"]
+            self.assertIs(policy["client_telemetry_content_free"], True)
+            self.assertEqual(
+                policy["client_telemetry_disclosure"],
+                "https://trustedrouter.com/docs/telemetry",
+            )
+
     def test_records_default_to_the_sentinel_rather_than_omitting_the_key(self) -> None:
         # An ABSENT key is what aws-release.json and azure-release.json had,
         # and it is indistinguishable from a consumer that forgot to look. The

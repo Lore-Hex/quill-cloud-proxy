@@ -424,7 +424,12 @@ def build_aws_record(
                 "user_data[64:96]=TLS exporter channel binding"
             ),
         },
-        "data_policy": {"prompt_output_storage": False, "control_plane_prompt_access": False},
+        "data_policy": {
+            "prompt_output_storage": False,
+            "control_plane_prompt_access": False,
+            "client_telemetry_content_free": True,
+            "client_telemetry_disclosure": "https://trustedrouter.com/docs/telemetry",
+        },
         "reproduce": "tools/verify-pcr0.sh",
         "transparency": transparency("aws", "aws-release.json"),
     }
@@ -487,7 +492,12 @@ def build_azure_record(
         "attestation_issuers": issuers,
         "api_base_url": f"https://{AZURE_API_HOSTNAME}/v1",
         "tls": {"mode": "acme-inside-confidential-container", "hostname": AZURE_API_HOSTNAME},
-        "data_policy": {"prompt_output_storage": False, "control_plane_prompt_access": False},
+        "data_policy": {
+            "prompt_output_storage": False,
+            "control_plane_prompt_access": False,
+            "client_telemetry_content_free": True,
+            "client_telemetry_disclosure": "https://trustedrouter.com/docs/telemetry",
+        },
         # Said plainly because a uniform green tick across three planes with
         # different evidence strength overstates this one: on AWS the COSE_Sign1
         # chain verifies against a committed root, whereas here Microsoft's

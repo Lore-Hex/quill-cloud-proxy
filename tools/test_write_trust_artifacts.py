@@ -47,6 +47,24 @@ class TrustArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid OCI image digest"):
             trust.release_payload("abc123", NEW_REF, "sha256:not-a-digest")
 
+    def test_data_policy_carries_the_client_telemetry_claim(self) -> None:
+        """The SDK telemetry disclosure is a machine claim next to the prompt ones.
+
+        Verifiers read data_policy to know what the platform promises about
+        data; the client-observed reliability channel is content-free by
+        construction (closed enums, bounded patterns, extra="forbid" on the
+        server), so the release record says so and points at the contract.
+        """
+        release = trust.release_payload("abc123", NEW_REF, NEW, [], [])
+        policy = release["data_policy"]
+        self.assertIs(policy["prompt_output_storage"], False)
+        self.assertIs(policy["control_plane_prompt_access"], False)
+        self.assertIs(policy["client_telemetry_content_free"], True)
+        self.assertEqual(
+            policy["client_telemetry_disclosure"],
+            "https://trustedrouter.com/docs/telemetry",
+        )
+
     def test_artifacts_publish_machine_readable_accepted_set(self) -> None:
         release = trust.release_payload(
             "abc123",
