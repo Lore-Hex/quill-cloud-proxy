@@ -5,9 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -246,6 +251,172 @@ func TestGatewayRequestIDForwarding(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestClientContextForwardedOnlyOnSettleAndRefund(t *testing.T) {
+	attempt := 0
+	stream := false
+	clientContext := &qtypes.ClientContext{
+		V:          1,
+		Source:     "tr",
+		SDK:        "tr-py",
+		SDKVersion: "0.6.0",
+		Lang:       "python",
+		Runtime:    "cpython/3.12.1",
+		OS:         "macos",
+		Arch:       "arm64",
+		TimeoutMS:  120000,
+		Attempt:    &attempt,
+		Stream:     &stream,
+	}
+
+	type captured struct {
+		authorize []byte
+		settle    map[string]any
+		refund    map[string]any
+	}
+	run := func(context *qtypes.ClientContext) captured {
+		t.Helper()
+		var got captured
+		client := New("https://control.example", "internal", &http.Client{
+			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read %s body: %v", r.URL.Path, err)
+				}
+				responseBody := ""
+				switch r.URL.Path {
+				case "/internal/gateway/authorize":
+					got.authorize = append([]byte(nil), body...)
+					responseBody = `{"data":{"authorization_id":"auth_1","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`
+				case "/internal/gateway/settle":
+					if err := json.Unmarshal(body, &got.settle); err != nil {
+						t.Fatalf("decode settle: %v", err)
+					}
+					responseBody = `{"data":{"generation_id":"gen_1","cost_microdollars":1}}`
+				case "/internal/gateway/refund":
+					if err := json.Unmarshal(body, &got.refund); err != nil {
+						t.Fatalf("decode refund: %v", err)
+					}
+					responseBody = `{"data":{"refunded":true}}`
+				default:
+					t.Fatalf("unexpected path %s", r.URL.Path)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(responseBody)),
+				}, nil
+			}),
+		})
+		ctx := WithClientContext(t.Context(), context)
+		req := &qtypes.OpenAIChatRequest{
+			Model:          "openai/gpt-4o-mini",
+			Messages:       []qtypes.OpenAIChatMessage{{Role: "user", Content: "hello"}},
+			IdempotencyKey: "idem-client-context",
+		}
+		auth, err := client.Authorize(ctx, "sk-test", req)
+		if err != nil {
+			t.Fatalf("Authorize: %v", err)
+		}
+		usage := Usage{RequestID: "chatcmpl_1", InputTokens: 1, OutputTokens: 1, ElapsedSeconds: 0.01}
+		if _, err := client.Settle(ctx, auth, usage); err != nil {
+			t.Fatalf("Settle: %v", err)
+		}
+		if _, err := client.RefundDetailed(ctx, auth, http.StatusBadGateway, "provider_error", 0.01, nil); err != nil {
+			t.Fatalf("RefundDetailed: %v", err)
+		}
+		return got
+	}
+
+	without := run(nil)
+	with := run(clientContext)
+	if !bytes.Equal(with.authorize, without.authorize) {
+		t.Fatalf("authorize body changed with client context:\nwithout=%s\nwith=%s", without.authorize, with.authorize)
+	}
+	var authorize map[string]any
+	if err := json.Unmarshal(with.authorize, &authorize); err != nil {
+		t.Fatalf("decode authorize: %v", err)
+	}
+	if _, ok := authorize["client"]; ok {
+		t.Fatalf("authorize body contains client: %#v", authorize)
+	}
+
+	wantClient := make(map[string]any)
+	wantBytes, err := json.Marshal(clientContext.AsBody())
+	if err != nil {
+		t.Fatalf("marshal expected client context: %v", err)
+	}
+	if err := json.Unmarshal(wantBytes, &wantClient); err != nil {
+		t.Fatalf("decode expected client context: %v", err)
+	}
+	for _, payload := range []struct {
+		name string
+		with map[string]any
+		none map[string]any
+	}{
+		{name: "settle", with: with.settle, none: without.settle},
+		{name: "refund", with: with.refund, none: without.refund},
+	} {
+		if !reflect.DeepEqual(payload.with["client"], wantClient) {
+			t.Fatalf("%s client = %#v, want %#v", payload.name, payload.with["client"], wantClient)
+		}
+		delete(payload.with, "client")
+		if !reflect.DeepEqual(payload.with, payload.none) {
+			t.Fatalf("%s changed beyond client:\nwithout=%#v\nwith=%#v", payload.name, payload.none, payload.with)
+		}
+	}
+
+	invalid := run(&qtypes.ClientContext{V: 1, Source: "tr", SDK: "not-an-sdk"})
+	if _, ok := invalid.settle["client"]; ok {
+		t.Fatalf("settle contains invalid client context: %#v", invalid.settle)
+	}
+	if _, ok := invalid.refund["client"]; ok {
+		t.Fatalf("refund contains invalid client context: %#v", invalid.refund)
+	}
+}
+
+func TestClientContextContextHelpersAreNilSafe(t *testing.T) {
+	ctx := WithClientContext(nil, nil) //nolint:staticcheck // Explicitly verify the documented nil-safe helper.
+	if ctx == nil {
+		t.Fatal("WithClientContext(nil, nil) returned nil")
+	}
+	if got := ClientContextFromContext(ctx); got != nil {
+		t.Fatalf("client context = %#v, want nil", got)
+	}
+	if got := ClientContextFromContext(nil); got != nil { //nolint:staticcheck // Explicitly verify the documented nil-safe helper.
+		t.Fatalf("nil-context client context = %#v, want nil", got)
+	}
+}
+
+func TestClientContextIsReadOnlyBySettleAndRefundBodyBuilders(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "client.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse client.go: %v", err)
+	}
+	var readers []string
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Body == nil {
+			continue
+		}
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			identifier, ok := call.Fun.(*ast.Ident)
+			if ok && identifier.Name == "ClientContextFromContext" {
+				readers = append(readers, function.Name.Name)
+			}
+			return true
+		})
+	}
+	sort.Strings(readers)
+	want := []string{"Settle", "refundDetailed"}
+	if !reflect.DeepEqual(readers, want) {
+		t.Fatalf("client context readers = %#v, want %#v", readers, want)
 	}
 }
 

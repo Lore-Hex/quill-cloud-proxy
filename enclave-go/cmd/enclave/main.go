@@ -524,6 +524,13 @@ func serveOneRequest(
 		writeError(conn, 400, "could not read request")
 		return
 	}
+	clientContext, droppedClientContext := parseClientContext(attribution.ClientContext)
+	for _, reason := range droppedClientContext {
+		fmt.Fprintf(os.Stderr, "enclave.client_context_dropped request_log_id=%q reason=%q\n", requestLogID, reason)
+	}
+	if clientContext != nil {
+		ctx = trustedrouter.WithClientContext(ctx, clientContext)
+	}
 	requestBodyBytes = len(body)
 	requestBearer = bearer
 	requestIdentity.bindBearer(bearer)
@@ -1345,6 +1352,7 @@ func serveStreaming(
 			authorization: authorization,
 			usage:         usage,
 			requestLogID:  requestLogID,
+			clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
 	}
 }
@@ -1597,6 +1605,7 @@ func serveMessages(
 			authorization: authorization,
 			usage:         usage,
 			requestLogID:  requestLogID,
+			clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
 	}
 }

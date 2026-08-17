@@ -41,6 +41,8 @@ var requestLogIDPattern = regexp.MustCompile(`^rlog_[0-9a-f]{32}$`)
 
 type requestLogIDContextKey struct{}
 
+type clientContextContextKey struct{}
+
 // WithRequestLogID associates the enclave audit-log ID with control-plane
 // settlement and refund calls made for the request.
 func WithRequestLogID(ctx context.Context, requestLogID string) context.Context {
@@ -53,6 +55,30 @@ func requestLogIDFromContext(ctx context.Context) string {
 		return ""
 	}
 	return requestLogID
+}
+
+// WithClientContext associates bounded, content-free SDK and retry telemetry
+// with settlement and refund calls made for the request.
+func WithClientContext(ctx context.Context, clientContext *qtypes.ClientContext) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if clientContext == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, clientContextContextKey{}, clientContext)
+}
+
+// ClientContextFromContext returns the client context attached by
+// WithClientContext, or nil. Exported so the enclave's settlement retry queue
+// can carry the value on its job (the retry worker runs on the queue's own
+// context) exactly like the request log id.
+func ClientContextFromContext(ctx context.Context) *qtypes.ClientContext {
+	if ctx == nil {
+		return nil
+	}
+	clientContext, _ := ctx.Value(clientContextContextKey{}).(*qtypes.ClientContext)
+	return clientContext
 }
 
 type Client struct {
@@ -647,6 +673,9 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	if requestLogID := requestLogIDFromContext(ctx); requestLogID != "" {
 		body["gateway_request_id"] = requestLogID
 	}
+	if clientContext := ClientContextFromContext(ctx); clientContext != nil && clientContext.Validate() == nil {
+		body["client"] = clientContext.AsBody()
+	}
 	if usage.AdditionalCostMicrodollars > 0 {
 		body["additional_cost_microdollars"] = usage.AdditionalCostMicrodollars
 	}
@@ -763,6 +792,9 @@ func (c *Client) refundDetailed(
 	}
 	if requestLogID := requestLogIDFromContext(ctx); requestLogID != "" {
 		body["gateway_request_id"] = requestLogID
+	}
+	if clientContext := ClientContextFromContext(ctx); clientContext != nil && clientContext.Validate() == nil {
+		body["client"] = clientContext.AsBody()
 	}
 	if auth.RouteType != "" {
 		body["route_type"] = auth.RouteType
