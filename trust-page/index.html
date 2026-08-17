@@ -68,10 +68,10 @@
         <div class="kv">
           <div><div class="label">Source commit</div><div class="value">0d3fd44</div></div>
           <div><div class="label">Image</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-0d3fd44</div></div>
-          <div><div class="label">Accepted image references</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-7925a4f, us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-0d3fd44</div></div>
+          <div><div class="label">Accepted image references</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-0d3fd44</div></div>
           <div><div class="label">Target digest</div><div class="value">sha256:9301b7b47b70b60c9e55752eb18d95c199a9fb5ee3cd30fc61148facd3e103ef</div></div>
-          <div><div class="label">Release state</div><div class="value">rolling</div></div>
-          <div><div class="label">Accepted measured digests</div><div class="value">sha256:151fd4c1c61c2bcd6c8b2d2073aeebfd42e2846619fdf4ce0f5bc62d3be4b8b7, sha256:9301b7b47b70b60c9e55752eb18d95c199a9fb5ee3cd30fc61148facd3e103ef</div></div>
+          <div><div class="label">Release state</div><div class="value">current</div></div>
+          <div><div class="label">Accepted measured digests</div><div class="value">sha256:9301b7b47b70b60c9e55752eb18d95c199a9fb5ee3cd30fc61148facd3e103ef</div></div>
           <div><div class="label">Attested gateway repo</div><div class="value"><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Lore-Hex/quill-cloud-proxy</a></div></div>
           <div><div class="label">API base</div><div class="value">https://api.trustedrouter.com/v1</div></div>
         </div>
@@ -146,7 +146,6 @@
         <p><strong>The owner's endpoint is not attested and is not covered by TrustedRouter's zero-data-retention promise.</strong> User-provided models are not yet served from the AWS region.</p>
       </div>
       <div class="panel"><h2>No Prompt Logs</h2><p>Prompt/output storage is disabled. Generation content endpoint returns a compatible <code>content_not_stored</code> response.</p></div>
-      <div class="panel"><h2>SDK Reliability Telemetry</h2><p>TrustedRouter SDKs report content-free client-observed reliability (attempt host, outcome class, error class, status, timings, retry/failover flags, SDK/runtime/OS/arch) so failures the gateway never sees are still measured. Every field is a closed enumeration or bounded pattern &mdash; no prompts, completions, message text, user/session ids, IPs, or custom hostnames &mdash; and the server rejects anything else. Retained 90&nbsp;d (samples) / 180&nbsp;d (counters) / 24&nbsp;mo (rollups); opt out with <code>telemetry=False</code>, <code>TRUSTEDROUTER_TELEMETRY=0</code>, or <code>DO_NOT_TRACK=1</code>. Full disclosure: <a href="https://trustedrouter.com/docs/telemetry">trustedrouter.com/docs/telemetry</a>. Machine claim: <code>data_policy.client_telemetry_content_free</code>.</p></div>
       <div class="panel">
         <h2>Hosted Open Source</h2>
         <div class="repo-list">
@@ -169,11 +168,9 @@
       <h2>Machine-readable release</h2>
       <pre>{
   &quot;accepted_image_digests&quot;: [
-    &quot;sha256:151fd4c1c61c2bcd6c8b2d2073aeebfd42e2846619fdf4ce0f5bc62d3be4b8b7&quot;,
     &quot;sha256:9301b7b47b70b60c9e55752eb18d95c199a9fb5ee3cd30fc61148facd3e103ef&quot;
   ],
   &quot;accepted_image_references&quot;: [
-    &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-7925a4f&quot;,
     &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-0d3fd44&quot;
   ],
   &quot;api_base_url&quot;: &quot;https://api.trustedrouter.com/v1&quot;,
@@ -190,13 +187,15 @@
     &quot;subprocessors&quot;: &quot;https://trustedrouter.com/legal/subprocessors&quot;
   },
   &quot;data_policy&quot;: {
+    &quot;client_telemetry_content_free&quot;: true,
+    &quot;client_telemetry_disclosure&quot;: &quot;https://trustedrouter.com/docs/telemetry&quot;,
     &quot;control_plane_prompt_access&quot;: false,
     &quot;prompt_output_storage&quot;: false
   },
   &quot;image_digest&quot;: &quot;sha256:9301b7b47b70b60c9e55752eb18d95c199a9fb5ee3cd30fc61148facd3e103ef&quot;,
   &quot;image_reference&quot;: &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-0d3fd44&quot;,
   &quot;platform&quot;: &quot;gcp-confidential-space&quot;,
-  &quot;release_state&quot;: &quot;rolling&quot;,
+  &quot;release_state&quot;: &quot;current&quot;,
   &quot;released_by&quot;: &quot;github-actions:deploy-enclave-gcp&quot;,
   &quot;source_commit&quot;: &quot;0d3fd44&quot;,
   &quot;source_repo&quot;: &quot;https://github.com/Lore-Hex/quill-cloud-proxy&quot;,
