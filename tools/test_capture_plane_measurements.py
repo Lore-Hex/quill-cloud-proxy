@@ -273,27 +273,31 @@ class PublishedRecordTests(unittest.TestCase):
         )
         self.assertTrue(record.get("source_commit"))
 
-    def test_aws_and_azure_records_are_honest_about_provenance(self) -> None:
-        # As of this change the published aws and azure records still predate
-        # the capture that writes source_commit, so they have none. That is
-        # recorded here as a FACT rather than fixed by inventing a value: the
-        # commit that built the running AWS enclave is not derivable from
-        # anything in this repository, and a guess would defeat the gate that
-        # reads it. The next capture-and-publish fills them in.
-        for plane in ("aws", "azure"):
-            record = json.loads(
-                (capture.REPO_ROOT / "trust-page" / "trust" / f"{plane}-release.json").read_text()
-            )
-            commit = record.get("source_commit")
-            self.assertIn(
-                commit,
-                (None, capture.SOURCE_COMMIT_UNSET),
-                msg=(
-                    f"{plane}-release.json now names source_commit {commit!r}. If that is a real "
-                    "captured commit, delete this assertion — it exists only to pin that we did "
-                    "NOT backfill a guess."
-                ),
-            )
+    def test_published_records_are_honest_about_provenance(self) -> None:
+        # AWS has not been recaptured from a release whose source commit is
+        # known, so preserving the explicit absence remains the honest result.
+        aws = json.loads(
+            (capture.REPO_ROOT / "trust-page" / "trust" / "aws-release.json").read_text()
+        )
+        self.assertIn(aws.get("source_commit"), (None, capture.SOURCE_COMMIT_UNSET))
+
+        # Azure was captured during the Azure-local-secret release from the
+        # exact clean commit used to build the running SEA image. The value is
+        # operator-asserted rather than measurement-derived, but it must at
+        # least identify a real commit in this repository.
+        azure = json.loads(
+            (capture.REPO_ROOT / "trust-page" / "trust" / "azure-release.json").read_text()
+        )
+        commit = azure.get("source_commit")
+        self.assertRegex(commit or "", r"^[0-9a-f]{7,40}$")
+        self.assertEqual(azure.get("source_commit_provenance"), capture.PROVENANCE_ASSERTED)
+        result = subprocess.run(
+            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+            cwd=capture.REPO_ROOT,
+            check=False,
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
 
 
 if __name__ == "__main__":

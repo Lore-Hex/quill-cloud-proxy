@@ -1,6 +1,7 @@
 {
   "accepted_hostdata": [
     "c55d492aaf98db95e60ac87c0d4a787e07d565b460380a6c16bfcc418d60b89e",
+    "12f404bd93a9529303a8cda24be681d428b9d59a6d1a17a17a6a4ecfc5f13f69",
     "f3a0b4ed5b27c81ceded35a54ddeedf2795fb733b4ecc026f8597311d712d81c"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
@@ -11,6 +12,8 @@
   ],
   "attestation_type": "sevsnpvm",
   "data_policy": {
+    "client_telemetry_content_free": true,
+    "client_telemetry_disclosure": "https://trustedrouter.com/docs/telemetry",
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
@@ -30,11 +33,13 @@
       "attestation_issuer": "https://trquillsea.sasia.attest.azure.net",
       "attestation_url": "https://api-azure-sea.trustedrouter.com/attestation",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "f3a0b4ed5b27c81ceded35a54ddeedf2795fb733b4ecc026f8597311d712d81c",
+      "hostdata": "12f404bd93a9529303a8cda24be681d428b9d59a6d1a17a17a6a4ecfc5f13f69",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866"
     }
   ],
   "release_state": "multi-region",
+  "source_commit": "5a85a86205904303eb81ab1ee9826b808896de6e",
+  "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
     "hostname": "api-azure.trustedrouter.com",
