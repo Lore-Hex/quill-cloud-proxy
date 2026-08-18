@@ -107,6 +107,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Provenance validation resolves the exact commit that built each
+          # published enclave. A shallow checkout makes older release commits
+          # appear invalid even when they are ancestors of main.
+          fetch-depth: 0
       # capture-plane-measurements.py imports cbor2 at module scope to parse
       # the Nitro COSE attestation; same install verify-trust-freshness.yml does.
       - run: pip install cbor2
