@@ -31,6 +31,7 @@ const (
 	azureCacheEnvelopeVersion = byte(1)
 	azureCacheKeyBytes        = 32
 	azureCacheMaxPlaintext    = 1 << 20
+	azureBlobMaxAttempts      = 3
 )
 
 // AzureBlobCacheOptions describes the Azure-local shared ACME cache. Account
@@ -177,6 +178,30 @@ func (c *azureBlobCache) Delete(ctx context.Context, key string) error {
 }
 
 func (c *azureBlobCache) do(ctx context.Context, method, key string, body []byte) (*http.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt < azureBlobMaxAttempts; attempt++ {
+		resp, err := c.doOnce(ctx, method, key, body)
+		if err == nil && (resp == nil || !azureBlobRetryableStatus(resp.StatusCode)) {
+			return resp, nil
+		}
+		if attempt == azureBlobMaxAttempts-1 {
+			return resp, err
+		}
+		if resp != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+			_ = resp.Body.Close()
+			lastErr = fmt.Errorf("status %d", resp.StatusCode)
+		} else {
+			lastErr = err
+		}
+		if err := waitAzureBlobRetry(ctx, attempt); err != nil {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func (c *azureBlobCache) doOnce(ctx context.Context, method, key string, body []byte) (*http.Response, error) {
 	token, err := c.tokens.Token(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("token: %w", err)
@@ -197,6 +222,29 @@ func (c *azureBlobCache) do(ctx context.Context, method, key string, body []byte
 		req.Header.Set("Content-Type", "application/octet-stream")
 	}
 	return c.blobHTTP.Do(req)
+}
+
+func azureBlobRetryableStatus(status int) bool {
+	switch status {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests,
+		http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func waitAzureBlobRetry(ctx context.Context, attempt int) error {
+	delay := 100 * time.Millisecond * time.Duration(1<<attempt)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (c *azureBlobCache) blobURL(key string) string {

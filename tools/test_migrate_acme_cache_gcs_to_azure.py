@@ -3,6 +3,7 @@ import base64
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 
 SCRIPT = pathlib.Path(__file__).with_name("migrate-acme-cache-gcs-to-azure.py")
@@ -60,6 +61,26 @@ class AzureCacheMigrationTests(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             MODULE.migration_marker_payload(0)
+
+    def test_request_retries_a_transient_network_failure(self) -> None:
+        response = mock.MagicMock()
+        entered = response.__enter__.return_value
+        entered.status = 200
+        entered.read.return_value = b"ok"
+        with (
+            mock.patch.object(
+                MODULE.urllib.request,
+                "urlopen",
+                side_effect=[MODULE.urllib.error.URLError("temporary"), response],
+            ) as urlopen,
+            mock.patch.object(MODULE.time, "sleep") as sleep,
+        ):
+            status, body = MODULE.request(
+                "GET", "https://storage.example/object", "token"
+            )
+        self.assertEqual((status, body), (200, b"ok"))
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(0.25)
 
 
 if __name__ == "__main__":

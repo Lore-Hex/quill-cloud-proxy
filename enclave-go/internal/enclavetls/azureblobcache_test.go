@@ -234,3 +234,36 @@ func TestAzureBlobStatusErrorDoesNotPersistResponseBody(t *testing.T) {
 		t.Fatalf("error omitted the safe Azure error code: %v", err)
 	}
 }
+
+func TestAzureBlobCacheRetriesTransientResponses(t *testing.T) {
+	t.Parallel()
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		if requests < azureBlobMaxAttempts {
+			w.Header().Set("x-ms-error-code", "ServerBusy")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	cache, err := newAzureBlobCache(azureBlobCacheConfig{
+		account:   "trcache",
+		container: "acme-cache",
+		key:       bytes.Repeat([]byte{0x42}, azureCacheKeyBytes),
+		endpoint:  server.URL,
+		blobHTTP:  server.Client(),
+		tokens:    staticAzureTokenSource{token: "cache-token"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Delete(context.Background(), "api.trustedrouter.com"); err != nil {
+		t.Fatal(err)
+	}
+	if requests != azureBlobMaxAttempts {
+		t.Fatalf("requests = %d, want %d", requests, azureBlobMaxAttempts)
+	}
+}

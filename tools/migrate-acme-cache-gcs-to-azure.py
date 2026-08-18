@@ -20,6 +20,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,6 +33,8 @@ AZURE_MANAGEMENT_API_VERSION = "2023-05-01"
 ENVELOPE_VERSION = 1
 MAX_OBJECT_BYTES = 1 << 20
 MIGRATION_MARKER_VERSION = "v1"
+HTTP_MAX_ATTEMPTS = 4
+RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
 
 
 def fail(message: str) -> "NoReturn":
@@ -76,14 +79,22 @@ def request(
                 "x-ms-blob-type": "BlockBlob",
                 "Content-Type": "application/octet-stream",
             })
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            return response.status, response.read(MAX_OBJECT_BYTES + 128)
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read(2048)
-    except urllib.error.URLError as exc:
-        fail(f"{method} {urllib.parse.urlsplit(url).netloc} failed: {exc.reason}")
+    host = urllib.parse.urlsplit(url).netloc
+    for attempt in range(HTTP_MAX_ATTEMPTS):
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return response.status, response.read(MAX_OBJECT_BYTES + 128)
+        except urllib.error.HTTPError as exc:
+            response_body = exc.read(2048)
+            if exc.code not in RETRYABLE_HTTP_STATUS or attempt == HTTP_MAX_ATTEMPTS - 1:
+                return exc.code, response_body
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            if attempt == HTTP_MAX_ATTEMPTS - 1:
+                reason = getattr(exc, "reason", exc)
+                fail(f"{method} {host} failed after {HTTP_MAX_ATTEMPTS} attempts: {reason}")
+        time.sleep(0.25 * (2**attempt))
+    fail(f"{method} {host} exhausted retries")
 
 
 def aad(account: str, container: str, cache_key: str) -> bytes:
