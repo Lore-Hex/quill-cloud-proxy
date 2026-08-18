@@ -96,9 +96,40 @@ def arg(name, default=None):
 if argv[:2] == ["identity", "show"]:
     if arg("--query") == "clientId":
         print("11111111-2222-3333-4444-555555555555")
+    elif arg("--query") == "principalId":
+        print("66666666-7777-8888-9999-000000000000")
     else:
         print("/subscriptions/STUB/resourcegroups/%s/providers/Microsoft.ManagedIdentity"
               "/userAssignedIdentities/%s" % (arg("--resource-group"), arg("--name")))
+    sys.exit(0)
+
+if argv[:3] == ["storage", "account", "show"]:
+    json.dump({
+        "id": "/subscriptions/STUB/resourceGroups/TR-TEE-DUBAI/providers/Microsoft.Storage/storageAccounts/trquillacmecache",
+        "allowSharedKeyAccess": False,
+        "allowBlobPublicAccess": False,
+        "enableHttpsTrafficOnly": True,
+        "minimumTlsVersion": "TLS1_2",
+    }, sys.stdout)
+    print()
+    sys.exit(0)
+
+if argv[:1] == ["rest"] and arg("--method") == "get":
+    metadata = {} if flag("missing-cache-marker") else {
+        "trustedrouterAcmeSeedVersion": "v1",
+        "trustedrouterAcmeSeedSourceCount": "2",
+    }
+    json.dump({
+        "properties": {
+            "publicAccess": "None",
+            "metadata": metadata,
+        }
+    }, sys.stdout)
+    print()
+    sys.exit(0)
+
+if argv[:3] == ["role", "assignment", "list"]:
+    print("1")
     sys.exit(0)
 
 if argv[:2] == ["acr", "build"]:
@@ -316,6 +347,16 @@ class DeployHarness(unittest.TestCase):
 
     def run_script(self, *args: str, **env_overrides: str) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ)
+        # The developer workstation may be authenticated to several clouds.
+        # Keep each test hermetic; individual tests can opt a forbidden value
+        # back in through env_overrides and prove the guard rejects it.
+        for forbidden in (
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "QUILL_ACME_CACHE_GCS_BUCKET",
+            "QUILL_ACME_DNS_GCP_PROJECT",
+            "QUILL_ACME_DNS_MANAGED_ZONE",
+        ):
+            env.pop(forbidden, None)
         env.update(
             PATH=f"{self.bin}{os.pathsep}{env['PATH']}",
             HOME=str(self.home),
@@ -331,6 +372,9 @@ class DeployHarness(unittest.TestCase):
             # QUILL_AZURE_BUNDLE_VERSION="" to exercise the refusal itself.
             QUILL_AZURE_BUNDLE_VERSION="stubbundleversion0123456789abcdef",
             VERIFY_TIMEOUT_SECONDS="1",
+            # DNS-specific tests exercise the direct per-region path. The
+            # production default remains Traffic Manager for the shared name.
+            TRAFFIC_MANAGER_FRONTED_HOSTS="",
         )
         env.update(env_overrides)
         return subprocess.run(
@@ -432,6 +476,28 @@ class TestDeployGuardAuthenticatesTheTemplate(DeployHarness):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("REFUSING TO DEPLOY", result.stderr)
         self.assertIn(old_pin, result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+
+class TestAzureCloudBoundaryPreflight(DeployHarness):
+    def test_gcp_runtime_configuration_is_rejected_before_mutation(self) -> None:
+        for name, value in (
+            ("GOOGLE_APPLICATION_CREDENTIALS", "/tmp/google.json"),
+            ("QUILL_ACME_CACHE_GCS_BUCKET", "legacy-gcs-cache"),
+            ("QUILL_ACME_DNS_GCP_PROJECT", "legacy-project"),
+            ("QUILL_ACME_DNS_MANAGED_ZONE", "legacy-zone"),
+        ):
+            with self.subTest(name=name):
+                result = self.run_script("--apply", "preflight", **{name: value})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(name, result.stderr)
+                self.assertEqual(self.mutations(), [])
+
+    def test_unseeded_azure_cache_is_rejected_before_mutation(self) -> None:
+        self.state_file("missing-cache-marker").touch()
+        result = self.run_script("--apply", "preflight")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("migration marker", result.stderr)
         self.assertEqual(self.mutations(), [])
 
 
@@ -807,8 +873,7 @@ class TestAzureImageTmpMode(unittest.TestCase):
         self.assertIn(
             "/out/rootfs/",
             runtime,
-            "without this the scratch image has no /tmp and the Azure boot path dies with "
-            '"write GCP SA key tmpfs failed: no such file or directory"',
+            "without this the scratch image has no writable /tmp for runtime scratch files",
         )
 
 

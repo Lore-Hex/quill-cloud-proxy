@@ -72,6 +72,27 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "CRUSOE_API_KEY": "trustedrouter-crusoe-api-key",
     "THINKING_MACHINES_API_KEY": "trustedrouter-thinking-machines-api-key",
     "OPENROUTER_API_KEY": "quill-openrouter-key",
+    "ALIBABA_API_KEY": "trustedrouter-alibaba-api-key",
+    "ATLAS_CLOUD_API_KEY": "trustedrouter-atlas-cloud-api-key",
+    "CHUTES_API_KEY": "trustedrouter-chutes-api-key",
+    "CLOUDFLARE_WORKERS_AI_API_TOKEN": "trustedrouter-cloudflare-workers-ai-api-token",
+    "DATABRICKS_TOKEN": "trustedrouter-databricks-token",
+    "DATABRICKS_HOST": "trustedrouter-databricks-host",
+    "DIGITAL_OCEAN_API_KEY": "trustedrouter-digitalocean-api-key",
+    "ENGY_API_KEY": "trustedrouter-engy-api-key",
+    "EXA_API_KEY": "trustedrouter-exa-api-key",
+    "INCEPTRON_API_KEY": "trustedrouter-inceptron-api-key",
+    "KLING_API_KEY": "trustedrouter-kling-api-key",
+    "LTX_API_KEY": "trustedrouter-ltx-api-key",
+    "MORPH_API_KEY": "trustedrouter-morph-api-key",
+    "NEUROMETRIC_API_KEY": "trustedrouter-neurometric-api-key",
+    "PEARL_RESEARCH_API_KEY": "trustedrouter-pearl-api-key",
+    "RUNWAY_API_KEY": "trustedrouter-runway-api-key",
+    "STREAMLAKE_API_KEY": "trustedrouter-streamlake-api-key",
+    "TELNYX_API_KEY": "trustedrouter-telnyx-api-key",
+    "ZERO_G_API_KEY": "trustedrouter-zero-g-api-key",
+    # The all-model key is the preferred 0G credential when both exist.
+    "ZERO_G_ALL_API_KEY": "trustedrouter-zero-g-api-key",
     # Control-plane secrets. AWS needs these; Azure's enclave bundle does not.
     "STRIPE_SECRET_KEY": "trustedrouter-stripe-secret-key",
     "STRIPE_WEBHOOK_SECRET": "trustedrouter-stripe-webhook-secret",
@@ -94,6 +115,13 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     # zone because that is the domain the enclave fleet publishes under. If DNS
     # reconciliation ever edits the wrong zone, this line is why.
     "CLOUDFLARE_ZONE_ID_TRUSTEDROUTER": "cloudflare-zone-id",
+}
+
+# One operator value can intentionally populate more than one cloud-local
+# logical secret. OpenAI's video API uses the same credential as chat, but the
+# enclave keeps separate fields so either can be rotated independently later.
+COPIED_KEY_ALIASES: dict[str, tuple[str, ...]] = {
+    "CHATGPT_API_KEY": ("trustedrouter-openai-video-key",),
 }
 
 DEFAULT_KEYS_FILE = Path.home() / ".quill_cloud_keys.private"
@@ -155,6 +183,11 @@ def resolve(
         raw = env_values.get(env_name, "")
         if raw.strip():
             from_env[logical] = raw
+    for env_name, logicals in COPIED_KEY_ALIASES.items():
+        raw = env_values.get(env_name, "")
+        if raw.strip():
+            for logical in logicals:
+                from_env[logical] = raw
 
     values: dict[str, str] = {}
     provenance: dict[str, str] = {}

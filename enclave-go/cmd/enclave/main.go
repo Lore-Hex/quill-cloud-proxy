@@ -37,6 +37,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 // EnclaveListenPort + newRawListener are provided by listener_aws.go
@@ -111,39 +112,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 1b. Cross-cloud GCP credentials (AWS-side and Azure-side enclave paths).
-	//
-	// On AWS the parent's bootstrap server pulls the AWS-KMS-wrapped GCP
-	// service-account key from `quill/trustedrouter-aws-cross-cloud-sa-key`,
-	// unwraps via the per-instance enclave CMK, and ships the plaintext
-	// JSON in `boot.GCPServiceAccountKeyJSON`. On Azure the same field is
-	// filled from one entry of the encrypted bundle the enclave opens with
-	// an SKR-released key, so no unattested process holds it. The enclave
-	// writes it to a
-	// tmpfs file and points GOOGLE_APPLICATION_CREDENTIALS at the path so
-	// every downstream client library (gcscache's SA-key token path, the
-	// AWS-side LLM provider transports that read GCP secrets, the BYOK
-	// KMS unwrapper) finds the credential without each module repeating
-	// the bootstrap-RPC + parse dance.
-	//
-	// tmpfs (/tmp inside the enclave is a memfs) keeps the key out of any
-	// persistent storage. It lives only for the enclave's lifetime, gets
-	// re-fetched on every cold start. Permissions 0600.
-	//
-	// On GCP-side enclaves boot.GCPServiceAccountKeyJSON is empty (the
-	// metadata service is used instead) and this block no-ops, so the
-	// same enclave binary handles both clouds.
-	if strings.TrimSpace(boot.GCPServiceAccountKeyJSON) != "" {
-		credPath := "/tmp/gcp-sa.json" // #nosec G101 -- tmpfs path for bootstrap-provided service account JSON, not a credential.
-		if err := os.WriteFile(credPath, []byte(boot.GCPServiceAccountKeyJSON), 0600); err != nil {
-			fmt.Fprintf(os.Stderr, "write GCP SA key tmpfs failed: %v\n", err)
-			os.Exit(1)
-		}
-		if err := os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credPath); err != nil {
-			fmt.Fprintf(os.Stderr, "setenv GOOGLE_APPLICATION_CREDENTIALS failed: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Fprintf(os.Stderr, "cross-cloud SA key wired: GOOGLE_APPLICATION_CREDENTIALS=%s\n", credPath)
+	// Only the AWS build may wire a GCP service-account credential. Azure has
+	// cloud-local sealed provider secrets and a cloud-local encrypted ACME
+	// cache; accepting this credential there would silently reopen a runtime
+	// dependency on GCP.
+	if err := configureCrossCloudCredentials(boot); err != nil {
+		fmt.Fprintf(os.Stderr, "cross-cloud credential configuration failed: %v\n", err)
+		os.Exit(1)
 	}
 	configureFusionPrompts(boot)
 	configureAdvisorPrompts(boot)
@@ -161,17 +136,7 @@ func main() {
 	videoGateway.Start(ctx)
 	var byokSecrets *byokcache.Cache
 	if trGateway.Enabled() {
-		// On AWS, NewVsockKMSClient routes oauth2 + cloudkms over the
-		// parent's vsock-proxy. On GCP it returns a stdlib client.
-		// The TokenSource is shared from the same client so the JWT
-		// exchange leg of the SA-key flow also tunnels correctly.
-		kmsHTTP := byokcache.NewVsockKMSClient()
-		byokSecrets = byokcache.New(byokcache.Options{
-			Unwrapper: &byokcache.GoogleKMSUnwrapper{
-				HTTPClient:  kmsHTTP,
-				TokenSource: byokcache.NewMetadataTokenSource(kmsHTTP),
-			},
-		})
+		byokSecrets = newBYOKSecretCache()
 		settlementRetries.Start(ctx)
 		batchConfig, batchEnabled := productionBatchConfig()
 		if batchEnabled {
@@ -297,15 +262,18 @@ func main() {
 				AccountKeyCacheKey: enclavetls.AccountKeyCacheKeyForDirectory(fallbackDir),
 			})
 		}
+		var acmeCache autocert.Cache
 		if mode == "acme" {
-			tlsServer, err = enclavetls.NewACME(
-				apiHost,
-				os.Getenv("QUILL_ACME_EMAIL"),
-				os.Getenv("QUILL_ACME_CACHE_DIR"),
-				os.Getenv("QUILL_ACME_DIRECTORY_URL"),
-				os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET"),
-				eab,
-			)
+			acmeCache, err = configuredACMECache(ctx, boot)
+			if err == nil {
+				tlsServer, err = enclavetls.NewACMEWithCache(
+					apiHost,
+					os.Getenv("QUILL_ACME_EMAIL"),
+					os.Getenv("QUILL_ACME_DIRECTORY_URL"),
+					acmeCache,
+					eab,
+				)
+			}
 		} else {
 			tlsServer, err = enclavetls.NewSelfSigned(apiHost)
 		}
@@ -328,9 +296,7 @@ func main() {
 			strings.TrimSpace(os.Getenv("QUILL_ACME_DNS_MANAGED_ZONE")) != ""
 		cloudflareConfigured := strings.TrimSpace(boot.CloudflareAPIToken) != "" &&
 			strings.TrimSpace(boot.CloudflareZoneID) != ""
-		if mode == "acme" &&
-			(cloudDNSConfigured || cloudflareConfigured) &&
-			strings.TrimSpace(os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET")) != "" {
+		if mode == "acme" && (cloudDNSConfigured || cloudflareConfigured) && acmeCache != nil {
 			enclavetls.SetDNS01Stderr(os.Stderr)
 			// QUILL_API_HOST is built as API_HOST followed by EXTRA_API_HOSTS
 			// (tools/deploy-azure-aci.sh), so index 0 is the name DNS points at
@@ -353,7 +319,7 @@ func main() {
 					Provider:           dns01Provider(),
 					Email:              os.Getenv("QUILL_ACME_EMAIL"),
 					DirectoryURL:       os.Getenv("QUILL_ACME_DIRECTORY_URL"),
-					Cache:              enclavetls.NewGCSCache(os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET")),
+					Cache:              acmeCache,
 					CloudflareAPIToken: boot.CloudflareAPIToken,
 					CloudflareZoneID:   boot.CloudflareZoneID,
 					HTTPClient:         enclavetls.NewDNS01HTTPClient(),

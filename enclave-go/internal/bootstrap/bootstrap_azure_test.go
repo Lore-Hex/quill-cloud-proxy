@@ -10,10 +10,8 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"go/ast"
 	"go/build"
@@ -49,13 +47,12 @@ import (
 // bundle carries values. gosec's G101 heuristic cannot tell the two apart, and
 // these had to be annotated when cloud_azure joined the CI lint matrix.
 const (
-	testSAEmail       = "tr-azure@quill-cloud-proxy.iam.gserviceaccount.com"
 	testProject       = "quill-cloud-proxy"
-	testDevicesSecret = "tr-device-keys"        // #nosec G101 -- secret NAME, not a credential.
-	testORSecret      = "tr-openrouter-key"     // #nosec G101 -- secret NAME, not a credential.
-	testAnthSecret    = "tr-anthropic-key"      // #nosec G101 -- secret NAME, not a credential.
-	testBundleSecret  = "tr-bootstrap-bundle"   // #nosec G101 -- Key Vault secret NAME, not a credential.
-	testSAKeyEntry    = "tr-cross-cloud-sa-key" // #nosec G101 -- bundle entry NAME, not a credential.
+	testDevicesSecret = "tr-device-keys"          // #nosec G101 -- secret NAME, not a credential.
+	testORSecret      = "tr-openrouter-key"       // #nosec G101 -- secret NAME, not a credential.
+	testAnthSecret    = "tr-anthropic-key"        // #nosec G101 -- secret NAME, not a credential.
+	testBundleSecret  = "tr-bootstrap-bundle"     // #nosec G101 -- Key Vault secret NAME, not a credential.
+	testCacheKeyEntry = "tr-azure-acme-cache-key" // #nosec G101 -- bundle entry NAME, not a credential.
 	testAKVEndpoint   = "trquillkv.vault.azure.net"
 	testMAAEndpoint   = "trquilluaen.uaen.attest.azure.net"
 	testSKRKeyID      = "tr-bootstrap-wrap"
@@ -64,33 +61,30 @@ const (
 	testVaultToken = "eyJ0eXAiOiJKV1QTEST-MANAGED-IDENTITY-TOKEN" // #nosec G101 -- test fixture, not a credential.
 
 	// Distinctive so the leak scan cannot produce a false negative.
-	testORValue   = "sk-or-v1-OPENROUTER-SECRET-VALUE-DO-NOT-LOG"
-	testAnthValue = "sk-ant-ANTHROPIC-SECRET-VALUE-DO-NOT-LOG"
+	testORValue       = "sk-or-v1-OPENROUTER-SECRET-VALUE-DO-NOT-LOG"
+	testAnthValue     = "sk-ant-ANTHROPIC-SECRET-VALUE-DO-NOT-LOG"
+	testCacheKeyValue = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=" // 32 bytes, base64.
 )
 
 // RSA keygen is the slowest thing in this file, so generate once per package.
 var (
 	keysOnce     sync.Once
 	sharedWrap   *rsa.PrivateKey // stands in for the Key Vault RSA-HSM key
-	sharedSA     *rsa.PrivateKey // the service-account signing key
 	sharedForeig *rsa.PrivateKey // an unrelated key, for the negative control
 )
 
-func testKeys(t *testing.T) (wrap, sa, foreign *rsa.PrivateKey) {
+func testKeys(t *testing.T) (wrap, foreign *rsa.PrivateKey) {
 	t.Helper()
 	keysOnce.Do(func() {
 		var err error
 		if sharedWrap, err = rsa.GenerateKey(rand.Reader, 2048); err != nil {
 			panic(err)
 		}
-		if sharedSA, err = rsa.GenerateKey(rand.Reader, 2048); err != nil {
-			panic(err)
-		}
 		if sharedForeig, err = rsa.GenerateKey(rand.Reader, 2048); err != nil {
 			panic(err)
 		}
 	})
-	return sharedWrap, sharedSA, sharedForeig
+	return sharedWrap, sharedForeig
 }
 
 // ---------------------------------------------------------------------------
@@ -104,10 +98,8 @@ func testKeys(t *testing.T) (wrap, sa, foreign *rsa.PrivateKey) {
 type azureFixture struct {
 	t *testing.T
 
-	wrapKey   *rsa.PrivateKey
-	saKey     *rsa.PrivateKey
-	foreign   *rsa.PrivateKey
-	saKeyJSON []byte
+	wrapKey *rsa.PrivateKey
+	foreign *rsa.PrivateKey
 
 	// bundle is sealed fresh on every Key Vault request, so a test can mutate
 	// it right up to the call.
@@ -134,20 +126,18 @@ type azureFixture struct {
 
 func newAzureFixture(t *testing.T) *azureFixture {
 	t.Helper()
-	wrap, sa, foreign := testKeys(t)
+	wrap, foreign := testKeys(t)
 	f := &azureFixture{
 		t:       t,
 		wrapKey: wrap,
-		saKey:   sa,
 		foreign: foreign,
 		sealPub: wrap.Public().(*rsa.PublicKey),
 	}
-	f.saKeyJSON = makeSAKeyJSON(t, f.saKey)
 	f.bundle = map[string]string{
 		testDevicesSecret: `[{"key_hash":"c0ffee","owner":"joseph","device_id":"dev-1"}]`,
 		testORSecret:      testORValue,
 		testAnthSecret:    testAnthValue,
-		testSAKeyEntry:    string(f.saKeyJSON),
+		testCacheKeyEntry: testCacheKeyValue,
 	}
 
 	f.skrSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -208,9 +198,10 @@ func newAzureFixture(t *testing.T) *azureFixture {
 	t.Setenv("QUILL_AZURE_SKR_KEY_ID", testSKRKeyID)
 	t.Setenv("QUILL_AZURE_SKR_URL", f.skrSrv.URL+"/key/release")
 	t.Setenv("QUILL_AZURE_BUNDLE_SECRET", testBundleSecret)
-	t.Setenv("QUILL_AZURE_SA_KEY_ENTRY", testSAKeyEntry)
+	t.Setenv("QUILL_AZURE_ACME_CACHE_KEY_SECRET", testCacheKeyEntry)
 	t.Setenv("QUILL_AZURE_MI_CLIENT_ID", "")
 	t.Setenv("QUILL_AZURE_REGION", "uaenorth")
+	t.Setenv("QUILL_CLOUDFLARE_WORKERS_AI_ACCOUNT_ID", "cloudflare-account")
 
 	t.Setenv("QUILL_GCP_PROJECT_ID", testProject)
 	t.Setenv("QUILL_DEVICE_KEYS_SECRET", testDevicesSecret)
@@ -374,26 +365,6 @@ func sealEnvelopeWithContentKeySize(t *testing.T, pub *rsa.PublicKey, plaintext 
 	return raw
 }
 
-func makeSAKeyJSON(t *testing.T, key *rsa.PrivateKey) []byte {
-	t.Helper()
-	der, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		t.Fatalf("marshal pkcs8: %v", err)
-	}
-	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-	raw, err := json.Marshal(map[string]string{
-		"type":         "service_account",
-		"project_id":   testProject,
-		"client_email": testSAEmail,
-		"private_key":  string(pemBytes),
-		"token_uri":    "https://oauth2.googleapis.com/token",
-	})
-	if err != nil {
-		t.Fatalf("marshal sa key: %v", err)
-	}
-	return raw
-}
-
 func requireErrContains(t *testing.T, err error, wants ...string) {
 	t.Helper()
 	if err == nil {
@@ -481,12 +452,14 @@ func TestFetchHappyPath(t *testing.T) {
 	if data.Region != "uaenorth" {
 		t.Errorf("region = %q, want QUILL_AZURE_REGION to win", data.Region)
 	}
-	// gcscache and byokcache authenticate to Google at RUNTIME, so main.go
-	// still needs this to write to tmpfs. It rides in the bundle, which is what
-	// keeps BOOT free of Google calls.
-	if data.GCPServiceAccountKeyJSON != string(f.saKeyJSON) {
-		t.Errorf("SA key JSON not populated from the bundle (len %d, want %d)",
-			len(data.GCPServiceAccountKeyJSON), len(f.saKeyJSON))
+	if data.AzureACMECacheKey != testCacheKeyValue {
+		t.Errorf("Azure cache key not populated from the bundle")
+	}
+	if data.CloudflareWorkersAIAccountID != "cloudflare-account" {
+		t.Errorf("Cloudflare account ID = %q", data.CloudflareWorkersAIAccountID)
+	}
+	if data.GCPServiceAccountKeyJSON != "" {
+		t.Errorf("Azure bootstrap carried a GCP credential")
 	}
 
 	// Exactly one Key Vault round trip: the bundle exists so that ~40 fetches
@@ -701,9 +674,9 @@ func TestManagedIdentityAloneCannotReadTheSecrets(t *testing.T) {
 	// Exactly what the vault serves to a holder of the managed-identity token.
 	served := base64.StdEncoding.EncodeToString(f.sealBundle())
 	for label, secret := range map[string]string{
-		"openrouter key":                  testORValue,
-		"anthropic key":                   testAnthValue,
-		"service-account private key PEM": pemBody(t, f.saKeyJSON),
+		"openrouter key":  testORValue,
+		"anthropic key":   testAnthValue,
+		"azure cache key": testCacheKeyValue,
 	} {
 		if strings.Contains(served, secret) {
 			t.Errorf("%s is readable by anything holding the managed identity — the vault secret is not actually encrypted", label)
@@ -1282,65 +1255,34 @@ func TestFetchBundleDeviceKeysNotJSON(t *testing.T) {
 	requireErrContains(t, err, "bootstrap/azure", "parse device-keys JSON")
 }
 
-// The SA key is OPTIONAL, matching the AWS parent.
-//
-// An earlier draft required it, reasoning that gcscache (shared ACME cache) and
-// byokcache (KMS unwrapper) read GOOGLE_APPLICATION_CREDENTIALS at runtime, so a
-// missing key surfaces hours later at cert renewal. That reasoning is real but
-// the conclusion was wrong twice over.
-//
-// First, precedent: the AWS parent's bootstrap_server.py treats a missing
-// cross-cloud SA key as a warning. Requiring it there once produced a bootstrap
-// that never bound its vsock listener, so the enclave died with ECONNRESET and
-// nothing said why - the fix was to make it optional and LOUD.
-//
-// Second, and worse: no cross-cloud SA key is provisioned in this account.
-// Requiring it means the cloud built for independence cannot start without first
-// minting a long-lived Google credential.
-//
-// Absent, the enclave serves its own attested self-signed certificate - the AWS
-// posture, validated by verify-attestation.py --attested-cert-only.
-func TestFetchBundleWithoutTheSAKeyEntryStillBoots(t *testing.T) {
+func TestFetchBundleRequiresAzureCacheKeyEntry(t *testing.T) {
 	f := newAzureFixture(t)
-	delete(f.bundle, testSAKeyEntry)
+	delete(f.bundle, testCacheKeyEntry)
 
-	data, err := Fetch(context.Background())
-	if err != nil {
-		t.Fatalf("a bundle with no SA key must still boot: %v", err)
-	}
-	if data.GCPServiceAccountKeyJSON != "" {
-		t.Errorf("no SA key was supplied, so none must be carried; got %d bytes",
-			len(data.GCPServiceAccountKeyJSON))
-	}
+	_, err := Fetch(context.Background())
+	requireErrContains(t, err, "bootstrap/azure", "azure acme cache encryption key", testCacheKeyEntry, "no entry")
 }
 
-func TestFetchBundleBlankSAKeyEntryIsTreatedAsAbsent(t *testing.T) {
-	// Whitespace must not become a "present" credential that main.go writes to
-	// tmpfs and points GOOGLE_APPLICATION_CREDENTIALS at - that would fail at
-	// first use rather than being cleanly disabled here.
+func TestFetchBundleRejectsBlankAzureCacheKey(t *testing.T) {
 	f := newAzureFixture(t)
-	f.bundle[testSAKeyEntry] = "   "
+	f.bundle[testCacheKeyEntry] = "   "
 
-	data, err := Fetch(context.Background())
-	if err != nil {
-		t.Fatalf("a blank SA key must be treated as absent, not fatal: %v", err)
-	}
-	if data.GCPServiceAccountKeyJSON != "" {
-		t.Errorf("blank SA key must not be carried; got %q", data.GCPServiceAccountKeyJSON)
-	}
+	_, err := Fetch(context.Background())
+	requireErrContains(t, err, "bootstrap/azure", "azure acme cache encryption key", "empty")
 }
 
-func TestFetchBundleCarriesTheSAKeyWhenPresent(t *testing.T) {
-	// Optional must not mean ignored.
-	f := newAzureFixture(t)
-	f.bundle[testSAKeyEntry] = `{"type":"service_account"}`
+func TestFetchBundleCarriesAzureCacheKeyOnly(t *testing.T) {
+	newAzureFixture(t)
 
 	data, err := Fetch(context.Background())
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if data.GCPServiceAccountKeyJSON != `{"type":"service_account"}` {
-		t.Errorf("a supplied SA key must be carried, got %q", data.GCPServiceAccountKeyJSON)
+	if data.AzureACMECacheKey != testCacheKeyValue {
+		t.Errorf("Azure cache key was not carried")
+	}
+	if data.GCPServiceAccountKeyJSON != "" {
+		t.Errorf("Azure bootstrap carried a GCP credential")
 	}
 }
 
@@ -1360,8 +1302,8 @@ func TestBundleErrorListsKeysNeverValues(t *testing.T) {
 		t.Errorf("error does not list the bundle's entry names: %v", err)
 	}
 	for label, secret := range map[string]string{
-		"anthropic key":                   testAnthValue,
-		"service-account private key PEM": pemBody(t, f.saKeyJSON),
+		"anthropic key":   testAnthValue,
+		"azure cache key": testCacheKeyValue,
 	} {
 		if strings.Contains(err.Error(), secret) {
 			t.Errorf("%s leaked into the missing-entry error", label)
@@ -1384,7 +1326,7 @@ func TestFetchFailsLoudlyOnMissingAzureConfig(t *testing.T) {
 		{"QUILL_AZURE_AKV_ENDPOINT", nil},
 		{"QUILL_AZURE_SKR_KEY_ID", nil},
 		{"QUILL_AZURE_BUNDLE_SECRET", []string{"encrypted bundle"}},
-		{"QUILL_AZURE_SA_KEY_ENTRY", []string{"gcscache/byokcache"}},
+		{"QUILL_AZURE_ACME_CACHE_KEY_SECRET", []string{"Azure-local cache encryption key"}},
 	} {
 		t.Run(tc.env, func(t *testing.T) {
 			f := newAzureFixture(t)
@@ -1681,7 +1623,7 @@ func TestNoSecretMaterialIsEverLogged(t *testing.T) {
 			forbidden := map[string]string{
 				"wrapping key private exponent (d)": jwkFields["d"],
 				"wrapping key prime p":              jwkFields["p"],
-				"service-account private key PEM":   pemBody(t, f.saKeyJSON),
+				"azure cache key":                   testCacheKeyValue,
 				"managed-identity access token":     testVaultToken,
 				"anthropic API key":                 testAnthValue,
 			}
@@ -1757,26 +1699,6 @@ func wrapLines(text string, width int) string {
 	out.WriteString(text)
 	out.WriteByte('\n')
 	return out.String()
-}
-
-// pemBody returns the base64 body of the SA key's PEM, which is the substring
-// that would actually identify a leak (the BEGIN/END armour is not secret).
-func pemBody(t *testing.T, saKeyJSON []byte) string {
-	t.Helper()
-	var sa struct {
-		PrivateKey string `json:"private_key"`
-	}
-	if err := json.Unmarshal(saKeyJSON, &sa); err != nil {
-		t.Fatalf("sa key json: %v", err)
-	}
-	block, _ := pem.Decode([]byte(sa.PrivateKey))
-	if block == nil {
-		t.Fatal("no PEM block in test SA key")
-		// Unreachable: t.Fatal does not return. staticcheck cannot know that,
-		// so without this the next line reads as a nil dereference (SA5011).
-		return ""
-	}
-	return base64.StdEncoding.EncodeToString(block.Bytes)[:64]
 }
 
 // ---------------------------------------------------------------------------

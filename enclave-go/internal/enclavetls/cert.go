@@ -220,11 +220,17 @@ func NewACME(
 	dnsName, email, cacheDir, directoryURL, gcsCacheBucket string,
 	eab *acme.ExternalAccountBinding,
 ) (*Server, error) {
-	dnsNames := splitDNSNames(dnsName)
-	if len(dnsNames) == 0 {
-		return nil, fmt.Errorf("enclavetls: dns name required")
+	cache, err := NewACMECache(cacheDir, gcsCacheBucket)
+	if err != nil {
+		return nil, err
 	}
+	return NewACMEWithCache(dnsName, email, directoryURL, cache, eab)
+}
 
+// NewACMECache preserves the GCP/AWS cache selection used by existing
+// deployments. Azure constructs its cloud-local encrypted Blob cache and calls
+// NewACMEWithCache directly.
+func NewACMECache(cacheDir, gcsCacheBucket string) (autocert.Cache, error) {
 	var cache autocert.Cache = newMemoryACMECache()
 	switch {
 	case gcsCacheBucket != "":
@@ -234,6 +240,24 @@ func NewACME(
 			return nil, fmt.Errorf("enclavetls: create acme cache: %w", err)
 		}
 		cache = autocert.DirCache(cacheDir)
+	}
+	return cache, nil
+}
+
+// NewACMEWithCache configures enclave-owned ACME using the supplied shared
+// cache. The caller chooses the cloud-native cache implementation; TLS logic
+// remains identical across clouds.
+func NewACMEWithCache(
+	dnsName, email, directoryURL string,
+	cache autocert.Cache,
+	eab *acme.ExternalAccountBinding,
+) (*Server, error) {
+	dnsNames := splitDNSNames(dnsName)
+	if len(dnsNames) == 0 {
+		return nil, fmt.Errorf("enclavetls: dns name required")
+	}
+	if cache == nil {
+		return nil, fmt.Errorf("enclavetls: acme cache required")
 	}
 
 	manager := &autocert.Manager{

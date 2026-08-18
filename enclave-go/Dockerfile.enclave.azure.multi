@@ -56,18 +56,11 @@ RUN cd sidecar && go mod download \
        -ldflags='-s -w -extldflags=-static' \
        -o /out/attest-sidecar .
 
-# ─── /tmp — REQUIRED on Azure, unlike GCP ───────────────────────────────────
+# ─── /tmp ────────────────────────────────────────────────────────────────────
 #
-# THIS IS NOT COSMETIC. A scratch image has no directories at all, and on the
-# Azure boot path cmd/enclave/main.go ALWAYS writes the bundle's GCP
-# service-account key to /tmp/gcp-sa.json and exits(1) if the write fails —
-# QUILL_AZURE_SA_KEY_ENTRY is a required env var precisely because gcscache
-# (shared ACME cache in GCS) and byokcache (KMS unwrapper) authenticate with
-# that key at runtime. On GCP that block no-ops because
-# BootstrapData.GCPServiceAccountKeyJSON is empty there, which is why
-# Dockerfile.enclave.gcp.multi gets away with no /tmp and why copying it
-# verbatim would produce an Azure image that attests perfectly and then dies
-# with "write GCP SA key tmpfs failed: no such file or directory".
+# Azure no longer writes or accepts a GCP credential. Keep a conventional
+# scratch-image /tmp for bounded runtime scratch data and diagnostics, but it
+# is not a cross-cloud credential path.
 #
 # Mode 1777 matches a normal /tmp, and getting it into the IMAGE takes the
 # staging directory below rather than the obvious one-liner. `COPY <dir> <dest>`
@@ -119,7 +112,7 @@ EXPOSE 8081
 #
 #   Azure boot:   QUILL_AZURE_MAA_ENDPOINT, QUILL_AZURE_AKV_ENDPOINT,
 #                 QUILL_AZURE_SKR_KEY_ID, QUILL_AZURE_BUNDLE_SECRET,
-#                 QUILL_AZURE_SA_KEY_ENTRY   (all required, no defaults)
+#                 QUILL_AZURE_ACME_CACHE_KEY_SECRET (all required, no defaults)
 #                 QUILL_AZURE_BUNDLE_VERSION, QUILL_AZURE_MI_CLIENT_ID,
 #                 QUILL_AZURE_SKR_URL, QUILL_AZURE_REGION,
 #                 QUILL_AZURE_ATTESTATION_URL (optional)
@@ -127,7 +120,8 @@ EXPOSE 8081
 #                 QUILL_*_SECRET (the binding table in
 #                 internal/bootstrap/secrets.go)
 #   Serving:      QUILL_API_HOST, QUILL_TLS_MODE, QUILL_ACME_EMAIL,
-#                 QUILL_ACME_CACHE_GCS_BUCKET, QUILL_HEALTH_PORT,
+#                 QUILL_AZURE_ACME_STORAGE_ACCOUNT,
+#                 QUILL_AZURE_ACME_STORAGE_CONTAINER, QUILL_HEALTH_PORT,
 #                 QUILL_FIRST_BYTE_TIMEOUT_SECONDS, TR_CONTROL_PLANE_BASE_URL
 
 ENTRYPOINT ["/quill-enclave"]

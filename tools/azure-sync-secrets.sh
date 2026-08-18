@@ -1,26 +1,16 @@
 #!/usr/bin/env bash
 # Seed the Azure bootstrap bundle, the same way every other cloud gets seeded.
 #
-# Why this looks like tools/sync-secrets-to-aws.sh
-# ================================================
-# That script mirrors provider keys from GCP Secret Manager into AWS Secrets
-# Manager, and says why: GCP stays the single source of truth, and the AWS
-# enclave then consumes secrets from its OWN cloud's store the same way the GCP
-# enclave consumes them from Secret Manager. Provisioning reads from GCP; the
-# enclave never does.
-#
-# Azure is the same shape with one difference. Key Vault holds ONE secret - an
-# encrypted bundle of all of them - because Key Vault's per-secret access is
-# granted to an identity, and an identity is attached to a container group
-# rather than to a measurement. Sealing the bundle to the SKR key means the
+# Azure Key Vault holds ONE encrypted bundle of all values because Key Vault
+# access is granted to an identity, and an identity is attached to a container
+# group rather than to a measurement. Sealing the bundle to the SKR key means the
 # managed identity can fetch it and still not read it: only a workload whose
 # x-ms-sevsnpvm-hostdata matches the release policy can decrypt.
 #
-# An earlier version of this read from AWS Secrets Manager, which was simply
-# wrong. AWS is a peer cloud, not a source of truth; it happened to hold most of
-# these keys because it had been seeded the same way. Reading from it made Azure
-# inherit whatever AWS was missing - the device-key blob, both advisor prompts,
-# the cohere key - and turned a straightforward mirror into a two-source merge.
+# No cloud is the source for another cloud. The operator's restricted local
+# source file feeds independent copies into GCP Secret Manager and this Azure
+# bundle. A GCP or Azure outage therefore cannot block the other cloud's boot or
+# key rotation.
 #
 # SOURCE: --values FILE, a JSON object of {logical name: value} supplied by the
 # deploy. There is no other source, deliberately - the same rule
@@ -97,8 +87,9 @@ json.dump({n: "" for n in names}, open(sys.argv[2], "w"), indent=2, sort_keys=Tr
 print(f"[ok] wrote {sys.argv[2]} with {len(names)} empty entries")
 print("     Fill each value from wherever you keep them, then:")
 print(f"       bash tools/azure-sync-secrets.sh --values {sys.argv[2]} --apply")
-print("     Only quill-device-keys is mandatory. A blank provider key simply")
-print("     means that provider is unavailable on this cloud.")
+print("     Device keys, the Azure cache key, and every provider named by")
+print("     print-env are mandatory. Disable a provider by clearing its")
+print("     QUILL_*_SECRET env before sealing, not with a blank value.")
 ' "$tmpl_env" "$TEMPLATE_OUT"
   rm -f "$tmpl_env"
   chmod 600 "$TEMPLATE_OUT"
