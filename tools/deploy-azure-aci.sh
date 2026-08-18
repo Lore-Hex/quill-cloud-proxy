@@ -60,7 +60,7 @@
 #
 #   1. ./tools/deploy-azure-aci.sh print-env > /tmp/aci-env.json
 #   2. ./tools/azure-seal-bundle.py --deploy-env /tmp/aci-env.json \
-#          --values secrets.json --value-file "$SA_KEY_ENTRY=sa-key.json" \
+#          --values secrets.json \
 #          --vault "$VAULT" --key-name "$SKR_KEY" --upload-secret "$BUNDLE_SECRET"
 #   3. export QUILL_AZURE_BUNDLE_VERSION=<version printed in step 2>
 #   4. ./tools/deploy-azure-aci.sh --apply all
@@ -98,6 +98,9 @@
 #     Release User" + "Key Vault Crypto Officer" (to read/rebind the key) and
 #     "Key Vault Secrets User" (to read the bundle), and AcrPull on the registry
 #   - an exportable RSA-HSM key in the vault (the SKR wrapping key)
+#   - an Azure StorageV2 account with shared-key and public-blob access disabled,
+#     a private Blob container, and Storage Blob Data Contributor granted to
+#     this region's managed identity (tools/provision-azure-acme-cache.sh)
 #   - docker, for `az confcom acipolicygen` (see the policy phase)
 
 set -euo pipefail
@@ -123,7 +126,10 @@ MAA_ENDPOINT="${MAA_ENDPOINT:-trquilluaen.uaen.attest.azure.net}"
 IDENTITY_NAME="${IDENTITY_NAME:-tr-skr-identity}"
 SKR_KEY="${SKR_KEY:-tr-bootstrap-wrap}"
 BUNDLE_SECRET="${BUNDLE_SECRET:-tr-bootstrap-bundle}"
-SA_KEY_ENTRY="${SA_KEY_ENTRY:-tr-cross-cloud-sa-key}"
+AZURE_ACME_STORAGE_ACCOUNT="${AZURE_ACME_STORAGE_ACCOUNT:-trquillacmecache}"
+AZURE_ACME_STORAGE_RESOURCE_GROUP="${AZURE_ACME_STORAGE_RESOURCE_GROUP:-TR-TEE-DUBAI}"
+AZURE_ACME_STORAGE_CONTAINER="${AZURE_ACME_STORAGE_CONTAINER:-acme-cache}"
+QUILL_AZURE_ACME_CACHE_KEY_SECRET="${QUILL_AZURE_ACME_CACHE_KEY_SECRET:-tr-azure-acme-cache-key}"
 CONTAINER_GROUP="${CONTAINER_GROUP:-quill-enclave-${LOCATION}}"
 DNS_LABEL="${DNS_LABEL:-${CONTAINER_GROUP}}"
 API_HOST="${API_HOST:-api-azure.trustedrouter.com}"
@@ -193,33 +199,27 @@ QUILL_WAFER_SECRET="${QUILL_WAFER_SECRET:-trustedrouter-wafer-api-key}"
 QUILL_CRUSOE_SECRET="${QUILL_CRUSOE_SECRET:-trustedrouter-crusoe-api-key}"
 QUILL_MAKORA_SECRET="${QUILL_MAKORA_SECRET:-trustedrouter-makora-api-key}"
 QUILL_NEBIUS_SECRET="${QUILL_NEBIUS_SECRET:-trustedrouter-nebius-api-key}"
-# Bound in secrets.go but NOT yet present in the sealed Key Vault bundle.
-# They default to EMPTY on purpose: resolveSecretConfig treats "" as 'the
-# deploy did not configure this entry' and skips it, whereas naming a bundle
-# entry that does not exist makes the enclave refuse to boot —
-#   bootstrap/azure: alibaba key: no entry "trustedrouter-alibaba-api-key"
-# which is exactly how this took Azure down once. Set the value here only
-# after the secret is actually in the bundle.
-QUILL_ALIBABA_SECRET="${QUILL_ALIBABA_SECRET:-}"
-QUILL_ATLAS_CLOUD_SECRET="${QUILL_ATLAS_CLOUD_SECRET:-}"
-QUILL_CHUTES_SECRET="${QUILL_CHUTES_SECRET:-}"
-QUILL_CLOUDFLARE_WORKERS_AI_SECRET="${QUILL_CLOUDFLARE_WORKERS_AI_SECRET:-}"
-QUILL_DIGITALOCEAN_SECRET="${QUILL_DIGITALOCEAN_SECRET:-}"
-QUILL_DATABRICKS_SECRET="${QUILL_DATABRICKS_SECRET:-}"
-QUILL_DATABRICKS_HOST_SECRET="${QUILL_DATABRICKS_HOST_SECRET:-}"
-QUILL_ENGY_SECRET="${QUILL_ENGY_SECRET:-}"
-QUILL_EXA_SECRET="${QUILL_EXA_SECRET:-}"
-QUILL_INCEPTRON_SECRET="${QUILL_INCEPTRON_SECRET:-}"
-QUILL_KLING_SECRET="${QUILL_KLING_SECRET:-}"
-QUILL_LTX_SECRET="${QUILL_LTX_SECRET:-}"
-QUILL_MORPH_SECRET="${QUILL_MORPH_SECRET:-}"
-QUILL_NEUROMETRIC_SECRET="${QUILL_NEUROMETRIC_SECRET:-}"
-QUILL_PEARL_SECRET="${QUILL_PEARL_SECRET:-}"
-QUILL_OPENAI_VIDEO_SECRET="${QUILL_OPENAI_VIDEO_SECRET:-}"
-QUILL_RUNWAY_SECRET="${QUILL_RUNWAY_SECRET:-}"
-QUILL_STREAMLAKE_SECRET="${QUILL_STREAMLAKE_SECRET:-}"
-QUILL_TELNYX_SECRET="${QUILL_TELNYX_SECRET:-}"
-QUILL_ZERO_G_SECRET="${QUILL_ZERO_G_SECRET:-}"
+QUILL_ALIBABA_SECRET="${QUILL_ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
+QUILL_ATLAS_CLOUD_SECRET="${QUILL_ATLAS_CLOUD_SECRET:-trustedrouter-atlas-cloud-api-key}"
+QUILL_CHUTES_SECRET="${QUILL_CHUTES_SECRET:-trustedrouter-chutes-api-key}"
+QUILL_CLOUDFLARE_WORKERS_AI_SECRET="${QUILL_CLOUDFLARE_WORKERS_AI_SECRET:-trustedrouter-cloudflare-workers-ai-api-token}"
+QUILL_CLOUDFLARE_WORKERS_AI_ACCOUNT_ID="${QUILL_CLOUDFLARE_WORKERS_AI_ACCOUNT_ID:-2698c706fd4793c818af14adad4e1a39}"
+QUILL_DIGITALOCEAN_SECRET="${QUILL_DIGITALOCEAN_SECRET:-trustedrouter-digitalocean-api-key}"
+QUILL_DATABRICKS_SECRET="${QUILL_DATABRICKS_SECRET:-trustedrouter-databricks-token}"
+QUILL_DATABRICKS_HOST_SECRET="${QUILL_DATABRICKS_HOST_SECRET:-trustedrouter-databricks-host}"
+QUILL_ENGY_SECRET="${QUILL_ENGY_SECRET:-trustedrouter-engy-api-key}"
+QUILL_EXA_SECRET="${QUILL_EXA_SECRET:-trustedrouter-exa-api-key}"
+QUILL_INCEPTRON_SECRET="${QUILL_INCEPTRON_SECRET:-trustedrouter-inceptron-api-key}"
+QUILL_KLING_SECRET="${QUILL_KLING_SECRET:-trustedrouter-kling-api-key}"
+QUILL_LTX_SECRET="${QUILL_LTX_SECRET:-trustedrouter-ltx-api-key}"
+QUILL_MORPH_SECRET="${QUILL_MORPH_SECRET:-trustedrouter-morph-api-key}"
+QUILL_NEUROMETRIC_SECRET="${QUILL_NEUROMETRIC_SECRET:-trustedrouter-neurometric-api-key}"
+QUILL_PEARL_SECRET="${QUILL_PEARL_SECRET:-trustedrouter-pearl-api-key}"
+QUILL_OPENAI_VIDEO_SECRET="${QUILL_OPENAI_VIDEO_SECRET:-trustedrouter-openai-video-key}"
+QUILL_RUNWAY_SECRET="${QUILL_RUNWAY_SECRET:-trustedrouter-runway-api-key}"
+QUILL_STREAMLAKE_SECRET="${QUILL_STREAMLAKE_SECRET:-trustedrouter-streamlake-api-key}"
+QUILL_TELNYX_SECRET="${QUILL_TELNYX_SECRET:-trustedrouter-telnyx-api-key}"
+QUILL_ZERO_G_SECRET="${QUILL_ZERO_G_SECRET:-trustedrouter-zero-g-api-key}"
 QUILL_MINIMAX_SECRET="${QUILL_MINIMAX_SECRET:-trustedrouter-minimax-api-key}"
 QUILL_XIAOMI_SECRET="${QUILL_XIAOMI_SECRET:-trustedrouter-xiaomi-api-key}"
 QUILL_SYNTH_PANEL_PROMPT_SECRET="${QUILL_SYNTH_PANEL_PROMPT_SECRET:-trustedrouter-synth-panel-prompt-v1}"
@@ -230,34 +230,10 @@ QUILL_ADVISOR_WORKER_PROMPT_SECRET="${QUILL_ADVISOR_WORKER_PROMPT_SECRET:-truste
 QUILL_ADVISOR_PROMPT_SECRET="${QUILL_ADVISOR_PROMPT_SECRET:-trustedrouter-advisor-prompt-v1}"
 QUILL_TRUSTEDROUTER_INTERNAL_SECRET="${QUILL_TRUSTEDROUTER_INTERNAL_SECRET:-trustedrouter-internal-gateway-token}"
 
-# EMPTY on Azure, deliberately. The GCS-backed autocert cache is a GCP
-# dependency (metadata-server token fetch), and this cloud's whole point is
-# to come up without one - live issuance died on exactly that lookup. A
-# single-replica container group is fine on autocert's in-process memory
-# cache; the trade is a fresh Let's Encrypt issuance per container start,
-# and LE's duplicate-cert limit (5/week) would only bite under a restart
-# loop, which is a fault worth surfacing anyway.
-# The shared fleet cert cache — load-bearing THREE ways: (1) the DNS-01
-# renewer's start gate requires it; (2) a region serving a SHARED name it
-# does not own in DNS (SEA serving api-azure) can only get that cert FROM
-# this cache — TLS-ALPN-01 validation lands wherever DNS points, never
-# here; (3) the CA fallback writes into this cache so every replica picks
-# the cert up on the next handshake. Empty was another out-of-band-env
-# drift: the bring-up set it by hand, the script default lost it, and a
-# rebuild from the script silently regressed to per-container certs.
-QUILL_ACME_CACHE_GCS_BUCKET="${QUILL_ACME_CACHE_GCS_BUCKET:-quill-acme-cache}"
-# DNS-01 via Google Cloud DNS. Set both to let the enclave answer DNS-01, which
-# is the only route to a WILDCARD certificate — and a wildcard in the shared
-# cache is what takes issuance off the availability path for every region.
-# Cloud DNS provider for the DNS-01 renewer. Without these the renewer —
-# which carries BOTH the CA-fallback ordering and the eager GTS account
-# registration — never starts on Azure, so the sealed EAB was cargo until
-# now ("configured but not working"). The zone lives in GCP Cloud DNS and
-# the enclave writes it with its bundle SA (tr-azure-acme-cache@), which
-# needs zone-scoped roles/dns.admin on trustedrouter-com — an IAM grant,
-# deliberately OUTSIDE the measurement, so completing it needs no release.
-QUILL_ACME_DNS_GCP_PROJECT="${QUILL_ACME_DNS_GCP_PROJECT:-quill-cloud-proxy}"
-QUILL_ACME_DNS_MANAGED_ZONE="${QUILL_ACME_DNS_MANAGED_ZONE:-trustedrouter-com}"
+# Azure owns its certificate cache. The managed identity sees only ciphertext;
+# the encryption key is one entry in the SKR-protected bundle and is never an
+# ARM environment value. TLS-ALPN-01 handles issuance, so Azure needs no GCP DNS
+# credential either.
 QUILL_ACME_EMAIL="${QUILL_ACME_EMAIL:-acme-azure-${LOCATION}@trustedrouter.com}"
 QUILL_FIRST_BYTE_TIMEOUT_SECONDS="${QUILL_FIRST_BYTE_TIMEOUT_SECONDS:-20}"
 QUILL_HEALTH_PORT="${QUILL_HEALTH_PORT:-8081}"
@@ -461,10 +437,13 @@ env = {
     "QUILL_AZURE_AKV_ENDPOINT":  os.environ["VAULT"] + ".vault.azure.net",
     "QUILL_AZURE_SKR_KEY_ID":    os.environ["SKR_KEY"],
     "QUILL_AZURE_BUNDLE_SECRET": os.environ["BUNDLE_SECRET"],
-    "QUILL_AZURE_SA_KEY_ENTRY":  os.environ["SA_KEY_ENTRY"],
+    "QUILL_AZURE_ACME_STORAGE_ACCOUNT":   os.environ["AZURE_ACME_STORAGE_ACCOUNT"],
+    "QUILL_AZURE_ACME_STORAGE_CONTAINER": os.environ["AZURE_ACME_STORAGE_CONTAINER"],
+    "QUILL_AZURE_ACME_CACHE_KEY_SECRET":  os.environ["QUILL_AZURE_ACME_CACHE_KEY_SECRET"],
     "QUILL_AZURE_REGION":        os.environ["LOCATION"],
     # --- shared secret-name table (secrets.go) ----------------------------
     "QUILL_GCP_PROJECT_ID":      os.environ["QUILL_GCP_PROJECT_ID"],
+    "QUILL_CLOUDFLARE_WORKERS_AI_ACCOUNT_ID": os.environ["QUILL_CLOUDFLARE_WORKERS_AI_ACCOUNT_ID"],
     "QUILL_GCP_REGION":          os.environ["LOCATION"],
     "QUILL_DEVICE_KEYS_SECRET":  os.environ["QUILL_DEVICE_KEYS_SECRET"],
     # --- serving ----------------------------------------------------------
@@ -475,9 +454,6 @@ env = {
         + [h.strip() for h in os.environ.get("EXTRA_API_HOSTS", "").split(",") if h.strip()]
     ),
     "QUILL_ACME_EMAIL":                 os.environ["QUILL_ACME_EMAIL"],
-    "QUILL_ACME_CACHE_GCS_BUCKET":      os.environ["QUILL_ACME_CACHE_GCS_BUCKET"],
-    "QUILL_ACME_DNS_GCP_PROJECT":       os.environ["QUILL_ACME_DNS_GCP_PROJECT"],
-    "QUILL_ACME_DNS_MANAGED_ZONE":      os.environ["QUILL_ACME_DNS_MANAGED_ZONE"],
     "QUILL_HEALTH_PORT":                os.environ["QUILL_HEALTH_PORT"],
     "QUILL_FIRST_BYTE_TIMEOUT_SECONDS": os.environ["QUILL_FIRST_BYTE_TIMEOUT_SECONDS"],
     "TR_CONTROL_PLANE_BASE_URL":        os.environ["TR_CONTROL_PLANE_BASE_URL"],
@@ -539,9 +515,11 @@ PY
 
 # The env vars render_env_json reads out of the process. Exported here so the
 # python heredoc sees them.
-export MAA_ENDPOINT VAULT SKR_KEY BUNDLE_SECRET SA_KEY_ENTRY LOCATION API_HOST EXTRA_API_HOSTS \
+export MAA_ENDPOINT VAULT SKR_KEY BUNDLE_SECRET LOCATION API_HOST EXTRA_API_HOSTS \
+  AZURE_ACME_STORAGE_ACCOUNT AZURE_ACME_STORAGE_CONTAINER QUILL_AZURE_ACME_CACHE_KEY_SECRET \
   QUILL_GCP_PROJECT_ID QUILL_DEVICE_KEYS_SECRET QUILL_ACME_EMAIL \
-  QUILL_ACME_CACHE_GCS_BUCKET QUILL_ACME_DNS_GCP_PROJECT QUILL_ACME_DNS_MANAGED_ZONE QUILL_HEALTH_PORT QUILL_FIRST_BYTE_TIMEOUT_SECONDS \
+  QUILL_CLOUDFLARE_WORKERS_AI_ACCOUNT_ID \
+  QUILL_HEALTH_PORT QUILL_FIRST_BYTE_TIMEOUT_SECONDS \
   QUILL_ACME_FALLBACK_DIRECTORY_URL QUILL_ACME_FALLBACK_EAB_SECRET \
   TR_CONTROL_PLANE_BASE_URL QUILL_AZURE_BUNDLE_VERSION \
   QUILL_OPENROUTER_SECRET QUILL_ANTHROPIC_SECRET QUILL_OPENAI_SECRET \
@@ -634,6 +612,82 @@ resolve_mi_client_id() {
 resolve_mi_resource_id() {
   az_cli identity show --resource-group "$RESOURCE_GROUP" --name "$IDENTITY_NAME" \
     --query id -o tsv 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# phase: preflight — fail before re-binding or deleting a healthy workload
+# ---------------------------------------------------------------------------
+phase_preflight() {
+  for forbidden in GOOGLE_APPLICATION_CREDENTIALS QUILL_ACME_CACHE_GCS_BUCKET \
+    QUILL_ACME_DNS_GCP_PROJECT QUILL_ACME_DNS_MANAGED_ZONE; do
+    if [ -n "${!forbidden:-}" ]; then
+      die "Azure cloud boundary: $forbidden is set. Azure must use only its Azure-local secret and certificate stores."
+    fi
+  done
+
+  if [ "$APPLY" != "1" ]; then
+    log "phase preflight: dry-run — would verify Azure-local Blob storage and managed-identity access"
+    return 0
+  fi
+
+  require_tool az
+  local account_json account_id mi_principal role_count container_url container_json
+  account_json="$(az_cli storage account show \
+    --resource-group "$AZURE_ACME_STORAGE_RESOURCE_GROUP" \
+    --name "$AZURE_ACME_STORAGE_ACCOUNT" -o json 2>/dev/null || true)"
+  [ -n "$account_json" ] || die "Azure ACME storage account not found: ${AZURE_ACME_STORAGE_RESOURCE_GROUP}/${AZURE_ACME_STORAGE_ACCOUNT}.
+       Run tools/provision-azure-acme-cache.sh --apply before deploying."
+
+  printf '%s' "$account_json" | python3 -c '
+import json, sys
+account = json.load(sys.stdin)
+problems = []
+if account.get("allowSharedKeyAccess") is not False:
+    problems.append("allowSharedKeyAccess must be false")
+if account.get("allowBlobPublicAccess") is not False:
+    problems.append("allowBlobPublicAccess must be false")
+if account.get("enableHttpsTrafficOnly") is not True:
+    problems.append("enableHttpsTrafficOnly must be true")
+if account.get("minimumTlsVersion") != "TLS1_2":
+    problems.append("minimumTlsVersion must be TLS1_2")
+if problems:
+    raise SystemExit("; ".join(problems))
+' || die "Azure ACME storage account security settings are invalid. Run tools/provision-azure-acme-cache.sh --apply."
+
+  account_id="$(printf '%s' "$account_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+  container_url="https://management.azure.com${account_id}/blobServices/default/containers/${AZURE_ACME_STORAGE_CONTAINER}?api-version=2023-05-01"
+  container_json="$(az_cli rest --method get --url "$container_url" 2>/dev/null || true)"
+  [ -n "$container_json" ] \
+    || die "private Azure ACME container not found: ${AZURE_ACME_STORAGE_CONTAINER}"
+  printf '%s' "$container_json" | python3 -c '
+import json, sys
+container = json.load(sys.stdin)
+metadata = container.get("properties", {}).get("metadata") or {}
+version = metadata.get("trustedrouterAcmeSeedVersion")
+count = metadata.get("trustedrouterAcmeSeedSourceCount", "")
+if version != "v1":
+    raise SystemExit("trustedrouterAcmeSeedVersion must be v1")
+try:
+    count_int = int(count)
+except (TypeError, ValueError):
+    raise SystemExit("trustedrouterAcmeSeedSourceCount must be an integer")
+if count_int <= 0:
+    raise SystemExit("trustedrouterAcmeSeedSourceCount must be positive")
+' || die "Azure ACME cache has no verified migration marker. Run tools/migrate-acme-cache-gcs-to-azure.py --apply before deploying."
+
+  mi_principal="$(az_cli identity show --resource-group "$RESOURCE_GROUP" --name "$IDENTITY_NAME" \
+    --query principalId -o tsv 2>/dev/null || true)"
+  [ -n "$mi_principal" ] || die "managed identity not found: ${RESOURCE_GROUP}/${IDENTITY_NAME}"
+  role_count="$(az_cli role assignment list \
+    --assignee "$mi_principal" \
+    --scope "$account_id" \
+    --include-inherited \
+    --query "[?roleDefinitionName=='Storage Blob Data Contributor'] | length(@)" \
+    -o tsv 2>/dev/null || true)"
+  [ "${role_count:-0}" -gt 0 ] \
+    || die "${RESOURCE_GROUP}/${IDENTITY_NAME} lacks Storage Blob Data Contributor on ${AZURE_ACME_STORAGE_ACCOUNT}"
+
+  log "phase preflight: Azure-local cache is private, seeded, and this region's identity can write it"
 }
 
 # ---------------------------------------------------------------------------
@@ -1702,7 +1756,10 @@ phase_verify() {
   # would silently UNDO that failover on the next deploy — the exact
   # out-of-band-vs-script drift this file keeps re-learning, in reverse.
   local tm_target="${TRAFFIC_MANAGER_TARGET:-trquill-azure-gw.trafficmanager.net.}"
-  local tm_fronted="${TRAFFIC_MANAGER_FRONTED_HOSTS:-api-azure.trustedrouter.com}"
+  # Empty is an intentional escape hatch for per-region DNS repair, so use
+  # `${name-default}` rather than `${name:-default}`. The latter silently
+  # replaces an explicit empty value with the Traffic Manager default.
+  local tm_fronted="${TRAFFIC_MANAGER_FRONTED_HOSTS-api-azure.trustedrouter.com}"
   local current_dns=""
   if command -v gcloud >/dev/null 2>&1; then
     if [ "$API_HOST" = "$tm_fronted" ]; then
@@ -1923,18 +1980,19 @@ acquire_workdir_lock
 
 for phase in "${PHASES[@]}"; do
   case "$phase" in
-    all)      phase_build; phase_template; phase_policy; phase_bind; phase_deploy; phase_verify; phase_narrow ;;
+    all)      phase_preflight; phase_build; phase_template; phase_policy; phase_bind; phase_deploy; phase_verify; phase_narrow ;;
+    preflight) phase_preflight ;;
     build)    phase_build ;;
     template) phase_template ;;
     policy)   phase_policy ;;
     bind)     phase_bind ;;
-    deploy)   phase_deploy ;;
+    deploy)   phase_preflight; phase_deploy ;;
     verify)   phase_verify ;;
     narrow)   phase_narrow ;;
     audit)    phase_audit ;;
     narrow-live) phase_narrow_live ;;
     rollback) phase_rollback ;;
     logs)     phase_logs ;;
-    *) die "unknown phase '$phase' (build template policy bind deploy verify narrow narrow-live audit rollback all print-env logs)" ;;
+    *) die "unknown phase '$phase' (preflight build template policy bind deploy verify narrow narrow-live audit rollback all print-env logs)" ;;
   esac
 done

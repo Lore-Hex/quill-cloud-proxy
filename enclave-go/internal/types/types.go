@@ -133,11 +133,8 @@ type BootstrapData struct {
 
 	// Cross-cloud GCP service-account key (JSON, plaintext).
 	//
-	// Populated on the two clouds that are not GCP, because gcscache (the
-	// shared ACME cert cache in GCS) and byokcache (the KMS unwrapper) still
-	// authenticate to Google at RUNTIME. cmd/enclave/main.go writes this to a
-	// tmpfs path and points GOOGLE_APPLICATION_CREDENTIALS at it so the client
-	// code finds one credential instead of each module repeating the dance.
+	// Populated only on the legacy AWS path, where the shared ACME cache and
+	// BYOK KMS unwrapper still authenticate to Google at runtime.
 	//
 	// AWS: the parent fetches the AWS-KMS-wrapped ciphertext from
 	// `quill/trustedrouter-aws-cross-cloud-sa-key` in AWS Secrets Manager,
@@ -147,17 +144,21 @@ type BootstrapData struct {
 	// KMS Decrypt where the parent only forwards still-encrypted bytes and the
 	// enclave does the unwrap inside the measured boundary.
 	//
-	// Azure: it arrives as one entry inside the encrypted bundle the enclave
-	// pulls from Key Vault and opens with an SKR-released key, so no
-	// unattested process ever holds it. See bootstrap_azure.go.
+	// Azure explicitly rejects this field. Its provider secrets and ACME cache
+	// key are cloud-local and released from Key Vault under attestation.
 	//
 	// On GCP-side enclaves this stays empty — Confidential Space uses
 	// metadata-server tokens, not an SA key.
 	//
-	// This field existing at all is what keeps AWS and Azure from being fully
-	// Google-independent at runtime; closing that needs Azure/AWS-native homes
-	// for the credit ledger, the generations store and the ACME cache.
+	// This field existing at all is what keeps AWS from being fully
+	// Google-independent at runtime.
 	GCPServiceAccountKeyJSON string `json:"gcp_service_account_key_json,omitempty"`
+
+	// AzureACMECacheKey is a 32-byte key encoded as base64. Azure releases it
+	// inside the attested bundle, and the enclave uses it to encrypt ACME cache
+	// objects before the managed identity writes them to Blob Storage. The
+	// identity can transport ciphertext but cannot recover TLS private keys.
+	AzureACMECacheKey string `json:"azure_acme_cache_key,omitempty"`
 
 	// Cloudflare DNS API token for the DNS-01 ACME fallback path
 	// (enclavetls/dns01.go). Scoped to `Zone:DNS:Edit` on the

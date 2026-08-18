@@ -24,6 +24,7 @@ fixed order — that is what `deploy-azure-aci.sh`'s phases enforce.
 | wrapping key (shared) | `tr-bootstrap-wrap` — one clause per region's MAA authority |
 | bundle secret (shared) | `tr-bootstrap-bundle` |
 | registry (shared) | `trquillacr` |
+| ACME cache (shared) | Azure Blob `trquillacmecache/acme-cache`, client-side encrypted |
 | per region | resource group, MAA instance, managed identity `tr-skr-identity`, container group `quill-enclave-<region>` |
 
 **Shared on purpose.** One wrapping key and one bundle means one secret set. Per
@@ -36,67 +37,53 @@ running enclave, which holds its unsealed secrets in memory.
 
 ---
 
-## 2. Certificates — the rule that governs availability
+## 2. Cloud-local secrets and certificates
 
 **A deploy must READ its certificate from the shared cache, never mint one.**
 
-`QUILL_ACME_CACHE_GCS_BUCKET=quill-acme-cache` puts every enclave on one
-`autocert` cache in GCS. With it set, redeploying a region costs **zero**
-Let's Encrypt issuances.
+Every Azure enclave uses the Azure Blob container `trquillacmecache/acme-cache`.
+The enclave encrypts each `autocert` object with AES-256-GCM before the managed
+identity writes it. The encryption key is inside the attestation-gated Key
+Vault bundle. The storage identity can move ciphertext but cannot recover the
+TLS private key.
+
+Azure does not accept `GOOGLE_APPLICATION_CREDENTIALS`, a GCS cache, or GCP DNS
+credentials. The executable rejects them at boot and the deploy preflight
+rejects them before changing a live region. GCP and Azure hold independent
+copies of provider secrets; neither cloud reads the other cloud at runtime.
 
 Without it, every deploy mints a new certificate, and Let's Encrypt allows
 **5 per exact set of identifiers per 168h** with no override and nothing to buy.
 Exhaust it and the region serves nothing until the window rolls — the CA's rate
 limit becomes your uptime ceiling.
 
-Access to the cache is the least-privilege service account
-`tr-azure-acme-cache@quill-cloud-proxy.iam.gserviceaccount.com`, sealed into the
-bundle as `tr-cross-cloud-sa-key`. It can write `gs://quill-acme-cache` and
-nothing else — verify with negative controls, not by reading the binding:
+Provision the storage and both regional grants once:
 
 ```bash
-gcloud storage ls gs://quill-acme-cache --project quill-cloud-proxy            # succeeds
-gcloud secrets versions access latest --secret quillcloud-stripe-secret-key \
-  --project quill-cloud-proxy                                                  # must be PERMISSION_DENIED
+./tools/provision-azure-acme-cache.sh --apply
 ```
 
-> Do **not** substitute `tr-aws-cross-cloud` even though it already has access to
-> the same bucket. It carries project-wide Secret Manager, Spanner and Bigtable
-> access; sealing it into a bundle makes that measurement a full-privilege
-> principal in the GCP project.
+The one-time migration tool reads the old GCS cache as an operator, encrypts it
+locally, writes Azure Blob, and verifies every object byte-for-byte after
+decrypting it. This is a migration operation, not an enclave dependency:
 
-### The wildcard — how issuance leaves the availability path for good
-
-A wildcard is the permanent fix. `*.trustedrouter.com` is one certificate that
-covers every region and every future machine, so bringing up a region costs
-**zero** issuances and the per-identifier rate limit stops being reachable.
-
-Wildcards can only be obtained through DNS-01, and `trustedrouter.com` is served
-by Google Cloud DNS. Set both variables and the enclave answers DNS-01 through
-Cloud DNS instead of Cloudflare:
-
-```
-QUILL_ACME_DNS_GCP_PROJECT=quill-cloud-proxy
-QUILL_ACME_DNS_MANAGED_ZONE=trustedrouter-com
+```bash
+python3 tools/migrate-acme-cache-gcs-to-azure.py --apply
 ```
 
-Both are measured env, so setting them changes `HOST_DATA` and requires the
-normal bind/deploy/verify/narrow cycle.
+After the read-back checks pass, the migration writes a non-secret completion
+marker and source-object count to the Azure container. The deploy preflight
+refuses an unmarked or empty cache.
 
-The credential is the same least-privilege cache service account, which needs
-`roles/dns.admin` in addition to its bucket access. The DNS API is requested
-with the `ndev.clouddns.readwrite` scope — a token minted with the storage scope
-fails with a 403 that names neither the scope nor the caller.
+Do not delete the GCS objects after migration. GCP continues to use its own GCS
+copy while Azure uses its Azure copy.
 
-**The wildcard challenge record is at the BASE name.** For `*.trustedrouter.com`
-the CA queries `_acme-challenge.trustedrouter.com`; the asterisk label is
-stripped. A record published at `_acme-challenge.*.trustedrouter.com` carries a
-literal asterisk label that is never queried, so validation times out while the
-zone looks correct.
+### Current BYOK boundary
 
-**A shared cache is also what makes multi-region serving of one hostname
-possible.** TLS-ALPN-01 validation lands on whichever region DNS points at, so
-replicas can only answer for each other when they share the cache.
+Existing BYOK envelopes are wrapped by GCP KMS. Azure does not call GCP to open
+them. Azure therefore serves prepaid routes and fails BYOK routes closed until
+the control plane can emit an Azure-local envelope. Do not describe Azure BYOK
+as available before that second envelope format ships.
 
 ---
 
@@ -134,19 +121,20 @@ and guessing wrong costs a deploy cycle in each direction.
 Requires an operator with User Access Administrator; `tr-deploy` cannot create
 service accounts or identities.
 
-### 3.3 Seal the bundle (only when the secret set changes)
+Grant the regional identity access to the Azure-local certificate cache:
 
 ```bash
-QUILL_ACME_CACHE_GCS_BUCKET=quill-acme-cache RESOURCE_GROUP=TR-TEE-DUBAI \
-  ./tools/azure-sync-secrets.sh --template /tmp/azure-values.json
+./tools/provision-azure-acme-cache.sh --apply
 ```
 
-Fill the values, add `tr-cross-cloud-sa-key` (contents of the cache SA key
-JSON), then:
+### 3.3 Seal the bundle (only when the secret set changes)
+
+The provider keys, device keys, private prompts, and Azure cache key are copied
+from the operator's restricted local source into an Azure-only encrypted Key
+Vault bundle. No cloud secret store is read to create another cloud's copy:
 
 ```bash
-QUILL_ACME_CACHE_GCS_BUCKET=quill-acme-cache RESOURCE_GROUP=TR-TEE-DUBAI \
-  ./tools/azure-sync-secrets.sh --values /tmp/azure-values.json --apply
+RESOURCE_GROUP=TR-TEE-DUBAI ./tools/azure-sync-secrets.sh --apply
 ```
 
 It prints the new version. **Pin it** — the version is part of the container's
@@ -155,10 +143,10 @@ env and therefore part of the measurement. Shred the values file afterwards.
 ### 3.4 Deploy
 
 ```bash
-LOCATION=<region> RESOURCE_GROUP=TR-TEE-<REGION> MAA_ENDPOINT=<attest host> API_HOST=<api host> QUILL_AZURE_BUNDLE_VERSION=<version> QUILL_ACME_CACHE_GCS_BUCKET=quill-acme-cache TR_CONTROL_PLANE_BASE_URL="https://azure.trustedrouter.com/v1,https://trustedrouter.com/v1" ./tools/deploy-azure-aci.sh --apply all
+LOCATION=<region> RESOURCE_GROUP=TR-TEE-<REGION> MAA_ENDPOINT=<attest host> API_HOST=<api host> QUILL_AZURE_BUNDLE_VERSION=<version> TR_CONTROL_PLANE_BASE_URL="https://azure.trustedrouter.com/v1,https://trustedrouter.com/v1" ./tools/deploy-azure-aci.sh --apply all
 ```
 
-`all` runs `build → template → policy → bind → deploy → verify → narrow`. The
+`all` runs `preflight → build → template → policy → bind → deploy → verify → narrow`. The
 order is load-bearing:
 
 * **bind before deploy** — an enclave that comes up against a stale binding
@@ -256,13 +244,14 @@ Deploy the control plane with `bash scripts/deploy/azure_control_plane.sh`.
 | invariant | enforced by |
 |---|---|
 | release policy and container change together, in order | `deploy-azure-aci.sh` phases + `tools/test_deploy_azure_aci.py` |
-| a deploy never mints a certificate | `QUILL_ACME_CACHE_GCS_BUCKET` set in every region |
+| a deploy reuses the shared certificate | encrypted Azure Blob cache set in every region |
 | a fault restarts instead of becoming permanent | `restartPolicy: OnFailure` (override `RESTART_POLICY` only to debug) |
 | a crash-loop fails the deploy fast | rising-restart-count check in `verify` |
 | DNS is a precondition, not an assumption | resolution gate before the `/attestation` wait |
 | every region is probed, at a name it serves | `tests/test_per_enclave_probes.py` (quill-router) |
-| GCP and Azure resolve the same provider secrets | `enclave-go/internal/bootstrap/provider_parity_test.go` |
+| GCP and Azure map the same logical provider secrets | `enclave-go/internal/bootstrap/provider_parity_test.go` |
 | grants exist before a deploy needs them | `bootstrap-azure-region.sh` prerequisite check |
+| Azure has no GCP runtime credential | Azure build-tag boundary tests + deploy `preflight` |
 
 Run the tool tests directly:
 
@@ -274,16 +263,12 @@ python3 tools/test_deploy_azure_aci.py && python3 tools/test_bootstrap_azure_reg
 
 ## 7. Known gaps
 
-* **`uaenorth` has no shared certificate cache** (`QUILL_ACME_CACHE_GCS_BUCKET`
-  is empty; bundle `867e5261…`, while `southeastasia` runs `068c0237…` with the
-  cache). This is the cause of the only real Azure downtime so far. Close it by
-  issuing the wildcard into the shared cache first, then deploying `uaenorth`
-  with the cache set — it then READS the wildcard and issues nothing.
-* **No failover between the two regions.** Each serves its own hostname, so a
-  region loss is a full outage for clients pointed at it. Once the wildcard is
-  cached, both regions can serve any name under the domain, and
-  `api-azure.trustedrouter.com` can carry both regional IPs with membership
-  gated on attestation.
+* **Azure BYOK is intentionally disabled.** Existing envelopes use GCP KMS.
+  Add cloud-specific envelopes before enabling BYOK on Azure; do not restore a
+  Google credential as a shortcut.
+* **Traffic Manager is availability routing, not attestation routing.** The
+  shared hostname fails between UAE North and Southeast Asia, but each backend
+  still needs independent attestation probes before it remains eligible.
 * **Attestation is probed by nonce only.** The full binding — cert fingerprint
   in the MAA document, exporter channel binding, same-socket follow-up — is
   checked by `verify-attestation.py`, not by the status page.

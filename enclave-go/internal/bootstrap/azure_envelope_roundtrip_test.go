@@ -102,7 +102,7 @@ func runSealer(t *testing.T, args ...string) (string, error) {
 
 // fullDeployEnv builds a container-group environment that configures every
 // entry in secretBindings, plus the two entries that are not in the table (the
-// device blob and the service-account key).
+// device blob and the Azure-local cache encryption key).
 //
 // Using the whole table rather than a representative two is deliberate: it
 // makes "a newly added provider secret is missing from the sealer" a failing
@@ -118,12 +118,12 @@ func fullDeployEnv() (env map[string]string, secretNameFor []string) {
 		// The Azure-side coordinates. resolveAzureConfig() requires all of
 		// these, and the sealer requires them too so that a bundle can never be
 		// built for a deploy that could not boot.
-		"QUILL_AZURE_MAA_ENDPOINT":  testMAAEndpoint,
-		"QUILL_AZURE_AKV_ENDPOINT":  testAKVEndpoint,
-		"QUILL_AZURE_SKR_KEY_ID":    testSKRKeyID,
-		"QUILL_AZURE_BUNDLE_SECRET": testBundleSecret,
-		"QUILL_AZURE_SA_KEY_ENTRY":  testSAKeyEntry,
-		"QUILL_AZURE_REGION":        "uaenorth",
+		"QUILL_AZURE_MAA_ENDPOINT":          testMAAEndpoint,
+		"QUILL_AZURE_AKV_ENDPOINT":          testAKVEndpoint,
+		"QUILL_AZURE_SKR_KEY_ID":            testSKRKeyID,
+		"QUILL_AZURE_BUNDLE_SECRET":         testBundleSecret,
+		"QUILL_AZURE_ACME_CACHE_KEY_SECRET": testCacheKeyEntry,
+		"QUILL_AZURE_REGION":                "uaenorth",
 	}
 	secretNameFor = make([]string, len(secretBindings))
 	for i, binding := range secretBindings {
@@ -209,7 +209,10 @@ func TestPythonSealedBundleBootsTheEnclave(t *testing.T) {
 	// round-trip test whose values are all "x" cannot tell a correct mapping
 	// from a scrambled one.
 	devicesJSON := `[{"key_hash":"c0ffee","owner":"joseph","device_id":"dev-1"}]`
-	values := map[string]string{testDevicesSecret: devicesJSON}
+	values := map[string]string{
+		testDevicesSecret: devicesJSON,
+		testCacheKeyEntry: testCacheKeyValue,
+	}
 	want := &types.BootstrapData{
 		Region:               env["QUILL_GCP_REGION"],
 		TrustedRouterBaseURL: env["TR_CONTROL_PLANE_BASE_URL"],
@@ -230,12 +233,6 @@ func TestPythonSealedBundleBootsTheEnclave(t *testing.T) {
 	// pins that behaviour across the seam rather than leaving it to chance.
 	values[secretNames[0]] = "\n  " + values[secretNames[0]] + "  \n"
 
-	saKeyJSON := makeSAKeyJSON(t, f.saKey)
-	saKeyPath := filepath.Join(dir, "sa-key.json")
-	if err := os.WriteFile(saKeyPath, saKeyJSON, 0o600); err != nil {
-		t.Fatalf("write sa key: %v", err)
-	}
-
 	envPath := writeJSONFile(t, dir, "deploy-env.json", env)
 	valuesPath := writeJSONFile(t, dir, "values.json", values)
 	envelopePath := filepath.Join(dir, "bundle.enc.json")
@@ -243,9 +240,6 @@ func TestPythonSealedBundleBootsTheEnclave(t *testing.T) {
 	out, err := runSealer(t,
 		"--deploy-env", envPath,
 		"--values", valuesPath,
-		// Exercises the file-valued path the operator uses for the SA key,
-		// which is far too large and too quote-heavy to paste into JSON.
-		"--value-file", testSAKeyEntry+"="+saKeyPath,
 		"--public-key-pem", publicKeyPEM(t, dir, f.wrapKey),
 		"--out", envelopePath,
 	)
@@ -269,9 +263,11 @@ func TestPythonSealedBundleBootsTheEnclave(t *testing.T) {
 		t.Fatalf("Fetch on a python-sealed bundle: %v", err)
 	}
 
-	// The SA key is not part of the binding table; Fetch fills it from the
-	// entry QUILL_AZURE_SA_KEY_ENTRY names.
-	want.GCPServiceAccountKeyJSON = string(saKeyJSON)
+	// The cache key is Azure-specific and intentionally outside the shared
+	// provider binding table. The Cloudflare account ID is public measured
+	// configuration, not secret-bundle material.
+	want.AzureACMECacheKey = testCacheKeyValue
+	want.CloudflareWorkersAIAccountID = "cloudflare-account"
 
 	if !reflect.DeepEqual(got, want) {
 		// Field-by-field, because a whole-struct dump of ~40 secrets is
@@ -314,20 +310,15 @@ func TestPythonSealedBundleSurvivesBase64Wrapping(t *testing.T) {
 	dir := t.TempDir()
 	values := map[string]string{
 		testDevicesSecret: `[{"key_hash":"c0ffee","owner":"joseph","device_id":"dev-1"}]`,
+		testCacheKeyEntry: testCacheKeyValue,
 	}
 	for i, binding := range secretBindings {
 		values[secretNames[i]] = fixtureBindingValue(binding, fmt.Sprintf("value-%02d", i))
 	}
-	saKeyPath := filepath.Join(dir, "sa-key.json")
-	if err := os.WriteFile(saKeyPath, makeSAKeyJSON(t, f.saKey), 0o600); err != nil {
-		t.Fatalf("write sa key: %v", err)
-	}
-
 	envelopePath := filepath.Join(dir, "bundle.enc.json")
 	if out, err := runSealer(t,
 		"--deploy-env", writeJSONFile(t, dir, "deploy-env.json", env),
 		"--values", writeJSONFile(t, dir, "values.json", values),
-		"--value-file", testSAKeyEntry+"="+saKeyPath,
 		"--public-key-pem", publicKeyPEM(t, dir, f.wrapKey),
 		"--out", envelopePath,
 	); err != nil {
@@ -423,7 +414,7 @@ func assertEnvelopeShape(t *testing.T, envelope []byte, key *rsa.PrivateKey) {
 // would be green against a sealer using any digest at all, and the contract it
 // claims to verify would be vacuous.
 func TestDecryptEnvelopeRejectsADriftedOAEPDigest(t *testing.T) {
-	wrap, _, _ := testKeys(t)
+	wrap, _ := testKeys(t)
 	payload := []byte(`{"tr-device-keys":"[]"}`)
 
 	contentKey := make([]byte, envelopeContentKeyBytes)
@@ -545,12 +536,15 @@ func TestSealerBindingTableMatchesSecretBindings(t *testing.T) {
 // with os.Exit(1) and an ACI restart as the diagnostic. Catching them at the
 // operator's desk is the difference between a typo and an outage.
 func TestSealerRefusesToSealAnUnbootableBundle(t *testing.T) {
-	wrap, saKey, _ := testKeys(t)
+	wrap, _ := testKeys(t)
 	baseEnv, secretNames := fullDeployEnv()
 	devicesJSON := `[{"key_hash":"c0ffee","owner":"joseph","device_id":"dev-1"}]`
 
 	baseValues := func() map[string]string {
-		values := map[string]string{testDevicesSecret: devicesJSON}
+		values := map[string]string{
+			testDevicesSecret: devicesJSON,
+			testCacheKeyEntry: testCacheKeyValue,
+		}
 		for i, binding := range secretBindings {
 			values[secretNames[i]] = fixtureBindingValue(binding, fmt.Sprintf("value-%02d", i))
 		}
@@ -586,6 +580,16 @@ func TestSealerRefusesToSealAnUnbootableBundle(t *testing.T) {
 			name:   "the device blob is missing",
 			values: func(v map[string]string) { delete(v, testDevicesSecret) },
 			wants:  []string{testDevicesSecret, "device keys"},
+		},
+		{
+			name:   "the Azure cache key is missing",
+			values: func(v map[string]string) { delete(v, testCacheKeyEntry) },
+			wants:  []string{testCacheKeyEntry, "azure acme cache key"},
+		},
+		{
+			name:   "the Azure cache key is malformed",
+			values: func(v map[string]string) { v[testCacheKeyEntry] = "not-a-32-byte-base64-key" },
+			wants:  []string{testCacheKeyEntry, "base64"},
 		},
 		{
 			name:   "the device blob is not a JSON array",
@@ -628,14 +632,9 @@ func TestSealerRefusesToSealAnUnbootableBundle(t *testing.T) {
 			if tc.values != nil {
 				tc.values(values)
 			}
-			saKeyPath := filepath.Join(dir, "sa-key.json")
-			if err := os.WriteFile(saKeyPath, makeSAKeyJSON(t, saKey), 0o600); err != nil {
-				t.Fatalf("write sa key: %v", err)
-			}
 			out, err := runSealer(t,
 				"--deploy-env", writeJSONFile(t, dir, "deploy-env.json", env),
 				"--values", writeJSONFile(t, dir, "values.json", values),
-				"--value-file", testSAKeyEntry+"="+saKeyPath,
 				"--public-key-pem", publicKeyPEM(t, dir, wrap),
 				"--out", filepath.Join(dir, "bundle.enc.json"),
 			)

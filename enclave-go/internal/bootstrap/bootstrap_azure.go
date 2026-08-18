@@ -81,8 +81,6 @@
 //	QUILL_AZURE_SKR_KEY_ID     e.g. "tr-bootstrap-wrap"
 //	QUILL_AZURE_BUNDLE_SECRET  e.g. "tr-bootstrap-bundle" — the Key Vault
 //	                           secret whose value is the encrypted bundle
-//	QUILL_AZURE_SA_KEY_ENTRY   the bundle entry holding the GCP service-account
-//	                           key JSON (see "Runtime Google dependency" below)
 //	plus everything resolveSecretConfig() requires (QUILL_GCP_PROJECT_ID,
 //	QUILL_DEVICE_KEYS_SECRET, >=1 provider secret).
 //
@@ -105,21 +103,14 @@
 // nobody chose — the exact forgery hole the verifier work closed. A missing one
 // is a hard error.
 //
-// Runtime Google dependency — NOT closed by this change
-// =====================================================
-// BOOT makes no Google call. RUNTIME still does: internal/enclavetls/gcscache.go
-// and internal/byokcache/kms_gcp.go both authenticate via
-// GOOGLE_APPLICATION_CREDENTIALS (the shared ACME cert cache in GCS, and the
-// BYOK KMS unwrapper), and cmd/enclave/main.go writes
-// BootstrapData.GCPServiceAccountKeyJSON to tmpfs to populate it. Neither file
-// is build-tagged, so both are compiled into the Azure image.
-//
-// The service-account key therefore rides INSIDE the bundle, as one more entry:
-// boot stays Google-free, and the key arrives under the same attestation gate as
-// everything else. That is as far as this change can go. FULL independence from
-// Google additionally requires an Azure-native control plane — the credit ledger
-// (Spanner), the generations store (Bigtable) and the shared ACME cache (GCS)
-// would all need Azure homes — which is out of scope here.
+// Runtime cloud boundary
+// ======================
+// Azure does not accept a GCP service-account credential. Provider keys and the
+// ACME cache encryption key are copies in this sealed Azure bundle. The shared
+// certificate cache is Azure Blob Storage, encrypted inside the enclave before
+// the managed identity can transport it. Existing BYOK envelopes are wrapped
+// by GCP KMS, so Azure refuses those routes until the control plane can issue an
+// Azure-local envelope; it never reaches back to GCP to unwrap one.
 //
 // What the deploy channel still decides
 // =====================================
@@ -149,7 +140,7 @@
 // CCE-measured env-var set: changing it changes hostdata and the release fails.
 // Device keys are separately covered — main.go hashes boot.Devices into the
 // attestation document, so a client pinning UserData sees substituted bearer
-// tokens. Nothing covers the provider keys, the TR token, or the SA key.
+// tokens. Nothing covers the provider keys, the TR token, or the cache key.
 //
 // Dependency surface: stdlib only. Linking a heavy dependency chain into this
 // binary corrupted the main request loop in a previous rollout (deploy
@@ -169,7 +160,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -300,40 +290,15 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// Step 5 — the GCP service-account key, which rides in the bundle like any
-	// other secret. main.go writes it to tmpfs and points
-	// GOOGLE_APPLICATION_CREDENTIALS at it, because gcscache (shared ACME cache
-	// in GCS) and byokcache (KMS unwrapper) still authenticate to Google at
-	// RUNTIME. Carrying it in the bundle keeps BOOT free of Google calls; see
-	// the "Runtime Google dependency" note in the package comment for what full
-	// independence would additionally require.
-	// OPTIONAL, matching the AWS parent. bootstrap_server.py treats a missing
-	// cross-cloud SA key as a WARNING, not a fatal error, and that is not
-	// laxness: requiring it once turned a missing secret into a bootstrap that
-	// never bound its vsock listener, so the enclave died with ECONNRESET and
-	// nothing said why. The fix there was to make it optional and LOUD.
-	//
-	// Requiring it here would also be worse than inconsistent. No cross-cloud
-	// SA key is provisioned in this account at all, so a hard requirement means
-	// Azure cannot deploy without first minting a long-lived Google credential -
-	// i.e. the cloud built for independence could not start without adding a
-	// dependency on the cloud it exists to be independent of.
-	//
-	// What degrades without it: gcscache (the shared ACME cert cache in GCS) and
-	// byokcache (the KMS unwrapper). Both branch on GOOGLE_APPLICATION_CREDENTIALS
-	// and are unreachable from boot. An enclave without this key serves its own
-	// attested self-signed certificate - exactly what the AWS gateway already
-	// does, and what tools/verify-attestation.py --attested-cert-only validates -
-	// and refuses BYOK unwrap rather than silently mis-serving it.
-	if saKey := bundle.optional(az.saKeyEntry); saKey != "" {
-		data.GCPServiceAccountKeyJSON = saKey
-	} else {
-		log.Printf("%s bootstrap: no %q entry in the bundle: shared ACME cache and "+
-			"BYOK unwrap are DISABLED; the enclave will serve its own attested "+
-			"self-signed certificate (this is the AWS posture, not a failure)",
-			azureTag, az.saKeyEntry)
+	data.CloudflareWorkersAIAccountID = strings.TrimSpace(
+		os.Getenv("QUILL_CLOUDFLARE_WORKERS_AI_ACCOUNT_ID"),
+	)
+	cacheKey, err := bundle.require(az.acmeCacheKeyEntry, "azure acme cache encryption key")
+	if err != nil {
+		return nil, err
 	}
+	data.AzureACMECacheKey = strings.TrimSpace(cacheKey)
+
 	return data, nil
 }
 
@@ -345,22 +310,22 @@ type azureConfig struct {
 	akvEndpoint string
 	keyID       string
 
-	bundleSecret  string
-	bundleVersion string
-	saKeyEntry    string
-	miClientID    string
+	bundleSecret      string
+	bundleVersion     string
+	acmeCacheKeyEntry string
+	miClientID        string
 }
 
 func resolveAzureConfig() (azureConfig, error) {
 	cfg := azureConfig{
-		skrURL:        strings.TrimSpace(os.Getenv("QUILL_AZURE_SKR_URL")),
-		maaEndpoint:   strings.TrimSpace(os.Getenv("QUILL_AZURE_MAA_ENDPOINT")),
-		akvEndpoint:   strings.TrimSpace(os.Getenv("QUILL_AZURE_AKV_ENDPOINT")),
-		keyID:         strings.TrimSpace(os.Getenv("QUILL_AZURE_SKR_KEY_ID")),
-		bundleSecret:  strings.TrimSpace(os.Getenv("QUILL_AZURE_BUNDLE_SECRET")),
-		bundleVersion: strings.TrimSpace(os.Getenv("QUILL_AZURE_BUNDLE_VERSION")),
-		saKeyEntry:    strings.TrimSpace(os.Getenv("QUILL_AZURE_SA_KEY_ENTRY")),
-		miClientID:    strings.TrimSpace(os.Getenv("QUILL_AZURE_MI_CLIENT_ID")),
+		skrURL:            strings.TrimSpace(os.Getenv("QUILL_AZURE_SKR_URL")),
+		maaEndpoint:       strings.TrimSpace(os.Getenv("QUILL_AZURE_MAA_ENDPOINT")),
+		akvEndpoint:       strings.TrimSpace(os.Getenv("QUILL_AZURE_AKV_ENDPOINT")),
+		keyID:             strings.TrimSpace(os.Getenv("QUILL_AZURE_SKR_KEY_ID")),
+		bundleSecret:      strings.TrimSpace(os.Getenv("QUILL_AZURE_BUNDLE_SECRET")),
+		bundleVersion:     strings.TrimSpace(os.Getenv("QUILL_AZURE_BUNDLE_VERSION")),
+		acmeCacheKeyEntry: strings.TrimSpace(os.Getenv("QUILL_AZURE_ACME_CACHE_KEY_SECRET")),
+		miClientID:        strings.TrimSpace(os.Getenv("QUILL_AZURE_MI_CLIENT_ID")),
 	}
 	if cfg.skrURL == "" {
 		cfg.skrURL = defaultSKRURL
@@ -374,11 +339,7 @@ func resolveAzureConfig() (azureConfig, error) {
 		{"QUILL_AZURE_AKV_ENDPOINT", cfg.akvEndpoint, ""},
 		{"QUILL_AZURE_SKR_KEY_ID", cfg.keyID, ""},
 		{"QUILL_AZURE_BUNDLE_SECRET", cfg.bundleSecret, " (the Key Vault secret holding the encrypted bundle)"},
-		// Required rather than optional: gcscache and byokcache read
-		// GOOGLE_APPLICATION_CREDENTIALS at runtime, so a bundle with no SA key
-		// boots an enclave that cannot renew its TLS certificate or unwrap a
-		// BYOK key — failures that surface hours later, far from their cause.
-		{"QUILL_AZURE_SA_KEY_ENTRY", cfg.saKeyEntry, " (the bundle entry holding the GCP service-account key needed by gcscache/byokcache at runtime)"},
+		{"QUILL_AZURE_ACME_CACHE_KEY_SECRET", cfg.acmeCacheKeyEntry, " (the bundle entry holding the Azure-local cache encryption key)"},
 	} {
 		if required.value == "" {
 			return azureConfig{}, fmt.Errorf("%s: azure config: %s is not set%s", azureTag, required.env, required.why)
@@ -1098,7 +1059,7 @@ func decodeBase64Any(text []byte) ([]byte, bool) {
 // Why hybrid and not a bare RSA-OAEP ciphertext: RSA-OAEP can only encrypt
 // k - 2*hLen - 2 bytes, which with SHA-256 is 190 bytes under a 2048-bit key and
 // 446 bytes under a 4096-bit key. The bundle is ~40 secrets plus a ~2.3 KB
-// service-account key — kilobytes, not hundreds of bytes. A direct OAEP blob of
+// complete provider bundle — kilobytes, not hundreds of bytes. A direct OAEP blob of
 // one is arithmetically impossible, so the payload rides under AES-256-GCM and
 // only the 32-byte content key is OAEP-wrapped. The security property is
 // unchanged — the content key is inert without the SKR-released private key.
@@ -1115,7 +1076,7 @@ func decodeBase64Any(text []byte) ([]byte, bool) {
 // OAEP parameters are fixed at SHA-256 for both the digest and MGF1, with no
 // label. Key Vault calls this RSA-OAEP-256.
 //
-// This is the SAME wire format the previous single-service-account-key envelope
+// This is the SAME wire format the previous single-secret envelope
 // used, field for field, so an existing producer only changes what it puts in
 // the plaintext.
 type secretEnvelope struct {
@@ -1129,7 +1090,7 @@ type secretEnvelope struct {
 // decryptEnvelope opens the hybrid envelope with the SKR-released private key.
 //
 // There is no bare-OAEP fallback. There used to be, when the payload was a
-// single service-account key that a 4096-bit key could *almost* hold; a bundle
+// single credential that a 4096-bit key could *almost* hold; a bundle
 // never fits, so the fallback could only ever fire on a malformed envelope and
 // would then report an OAEP failure for what is actually a JSON problem.
 func decryptEnvelope(key *rsa.PrivateKey, blob []byte) ([]byte, error) {

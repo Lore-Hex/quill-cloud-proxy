@@ -23,14 +23,14 @@ One Key Vault secret whose value is:
      "nonce":b64(12 random bytes),
      "ciphertext":b64(AES-256-GCM(bundle_json))}
 
-`bundle_json` is a flat JSON object of LOGICAL SECRET NAME -> VALUE, where the
-names are the values of the container group's QUILL_*_SECRET env vars — the
-same names Google Secret Manager uses on the GCP side, which is what lets both
-clouds share the binding table in internal/bootstrap/secrets.go.
+`bundle_json` is a flat JSON object of LOGICAL SECRET NAME -> VALUE. The names
+are the values of the container group's QUILL_*_SECRET env vars: cloud-neutral
+logical names shared by each cloud adapter, which lets the adapters share the
+binding table in internal/bootstrap/secrets.go.
 
     { "trustedrouter-anthropic-api-key": "sk-ant-...",
       "quill-device-keys": "[{\\"key_hash\\":...}]",
-      "quill-azure-gcp-sa-key": "{\\"type\\":\\"service_account\\",...}" }
+      "tr-azure-acme-cache-key": "<base64 32-byte key>" }
 
 WHY RSA-OAEP AT ALL, AND WHY ONLY THE PUBLIC HALF IS NEEDED HERE
 ----------------------------------------------------------------
@@ -60,7 +60,6 @@ Offline (no Azure at all; wraps to a PEM public key, writes a file):
     ./tools/azure-seal-bundle.py \\
         --deploy-env  aci-env.json \\
         --values      secrets.json \\
-        --value-file  quill-azure-gcp-sa-key=sa-key.json \\
         --public-key-pem wrap.pub.pem \\
         --out         bundle.enc.json
 
@@ -70,7 +69,6 @@ Against the real vault (fetches the public half, uploads the sealed blob):
     ./tools/azure-seal-bundle.py \\
         --deploy-env  aci-env.json \\
         --values      secrets.json \\
-        --value-file  quill-azure-gcp-sa-key=sa-key.json \\
         --vault       trquillkv \\
         --key-name    tr-bootstrap-wrap \\
         --upload-secret tr-bootstrap-bundle
@@ -201,7 +199,7 @@ GCM_NONCE_BYTES = 12
 # Env vars bootstrap_azure.go / secrets.go read that are not part of the
 # binding table but still name a BUNDLE ENTRY.
 DEVICE_KEYS_ENV = "QUILL_DEVICE_KEYS_SECRET"
-SA_KEY_ENTRY_ENV = "QUILL_AZURE_SA_KEY_ENTRY"
+AZURE_CACHE_KEY_ENV = "QUILL_AZURE_ACME_CACHE_KEY_SECRET"
 
 # Env vars that must be present for the enclave to boot at all. Checked here so
 # a broken deploy fails at the operator's desk instead of after an SNP report,
@@ -213,7 +211,7 @@ REQUIRED_ENV = (
     "QUILL_AZURE_AKV_ENDPOINT",
     "QUILL_AZURE_SKR_KEY_ID",
     "QUILL_AZURE_BUNDLE_SECRET",
-    SA_KEY_ENTRY_ENV,
+    AZURE_CACHE_KEY_ENV,
 )
 
 
@@ -272,7 +270,7 @@ def _load_json_source(spec: str, what: str) -> dict[str, str]:
             fail(
                 f"{what}: entry {key!r} is a {type(value).__name__}, not a string. "
                 "Bundle values are opaque strings; JSON-valued secrets (device keys, "
-                "the service-account key) must be passed as their serialised text, "
+                "structured secrets) must be passed as their serialised text, "
                 "e.g. --value-file NAME=path.json"
             )
         out[key] = value
@@ -332,18 +330,9 @@ def required_entries(env: dict[str, str]) -> list[RequiredEntry]:
 
     # The device-key blob is genuinely required: without it the enclave has no
     # identity to serve and dies on first use.
-    #
-    # The GCP service-account key is NOT. bootstrap_azure.go treats it as
-    # optional, matching the AWS parent, and an enclave without it serves its own
-    # attested self-signed certificate while refusing BYOK unwrap - a degraded
-    # posture, not a broken one. Requiring it HERE while the enclave tolerates
-    # its absence would mean this cloud cannot be provisioned without first
-    # minting a long-lived Google credential, which is the dependency the whole
-    # separate-cloud exercise exists to remove. Kept in the bundle when supplied,
-    # never demanded.
     entries = [
         RequiredEntry(env[DEVICE_KEYS_ENV], "device keys"),
-        RequiredEntry(env[SA_KEY_ENTRY_ENV], "gcp service-account key", optional=True),
+        RequiredEntry(env[AZURE_CACHE_KEY_ENV], "azure acme cache key"),
     ]
     any_provider = False
     for binding in BINDINGS:
@@ -439,13 +428,12 @@ def build_bundle(
 
 
 def sanity_check_structured_entries(env: dict[str, str], bundle: dict[str, str]) -> None:
-    """Parse the two entries the enclave parses, so a truncated file fails here.
+    """Validate structured/key entries before a broken bundle reaches Azure.
 
-    Both of these are JSON documents the enclave json.Unmarshals at boot. A
-    half-copied service-account key or a device blob that lost its closing
-    bracket is invisible in a bundle of opaque strings, and its symptom is an
-    enclave that attests correctly and then exits — the single most expensive
-    place to find a copy-paste error.
+    A device blob that lost its closing bracket or a malformed cache key is
+    invisible in a bundle of opaque strings, and its symptom is an enclave that
+    attests correctly and then exits — the single most expensive place to find
+    a copy-paste error.
     """
     devices_key = env[DEVICE_KEYS_ENV]
     try:
@@ -458,23 +446,17 @@ def sanity_check_structured_entries(env: dict[str, str], bundle: dict[str, str])
             "the enclave unmarshals it into []DeviceConfig, so it must be a JSON array"
         )
 
-    # Validate the service-account key only when one was supplied. It is
-    # optional (see the entries list above); absent, there is nothing to check
-    # and the enclave runs the AWS posture. Indexing unconditionally here would
-    # KeyError on exactly the configuration the enclave supports.
-    sa_key = env[SA_KEY_ENTRY_ENV]
-    if sa_key not in bundle:
-        return
-    try:
-        service_account = json.loads(bundle[sa_key])
-    except json.JSONDecodeError as exc:
-        fail(f"service-account entry {sa_key!r} is not valid JSON: {exc}")
-    if not isinstance(service_account, dict) or "private_key" not in service_account:
-        fail(
-            f"service-account entry {sa_key!r} does not look like a GCP service-account "
-            "key JSON (no private_key field); gcscache and byokcache authenticate with it "
-            "at runtime, so a wrong file here fails hours after boot"
-        )
+    cache_key_name = env.get(AZURE_CACHE_KEY_ENV, "")
+    if cache_key_name:
+        try:
+            cache_key = base64.b64decode(bundle[cache_key_name], validate=True)
+        except (KeyError, ValueError) as exc:
+            fail(f"azure acme cache key {cache_key_name!r} is not valid base64: {exc}")
+        if len(cache_key) != 32:
+            fail(
+                f"azure acme cache key {cache_key_name!r} is {len(cache_key)} bytes; "
+                "AES-256-GCM requires exactly 32"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +659,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="NAME=PATH",
         help="read one entry's value from a file (repeatable). Wins over --values. "
-        "Use for the service-account key and the device blob.",
+        "Use for the device blob and multiline prompts.",
     )
     parser.add_argument(
         "--allow-unused-values",
