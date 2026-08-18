@@ -99,6 +99,9 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
 DEFAULT_KEYS_FILE = Path.home() / ".quill_cloud_keys.private"
 DEFAULT_SECRETS_DIR = Path.home() / ".quill-secrets"
 
+_BUNDLE_SECRET_ENV = "QUILL_AZURE_BUNDLE_SECRET"
+_BUNDLE_ENTRY_ENVS = ("QUILL_AZURE_SA_KEY_ENTRY",)
+
 #: Extensions stripped when matching a file to a logical name, so
 #: `trustedrouter-advisor-prompt-v1.txt` resolves to that secret.
 _STRIPPABLE = (".txt", ".json", ".md", ".prompt", ".secret")
@@ -140,6 +143,26 @@ def read_secrets_dir(path: Path) -> dict[str, str]:
     return values
 
 
+def required_bundle_names(deploy_env: dict[str, object]) -> list[str]:
+    """Return every logical secret name measured into an Azure deployment."""
+    names = {
+        str(value).strip()
+        for env_name, value in deploy_env.items()
+        if env_name.startswith("QUILL_")
+        and env_name.endswith("_SECRET")
+        and env_name != _BUNDLE_SECRET_ENV
+        and str(value).strip()
+    }
+    # These variables name bundle entries but intentionally do not end in
+    # _SECRET. Omitting one can boot a valid enclave with broken runtime
+    # dependencies, so keep the exception explicit and tested.
+    for env_name in _BUNDLE_ENTRY_ENVS:
+        value = str(deploy_env.get(env_name, "")).strip()
+        if value:
+            names.add(value)
+    return sorted(names)
+
+
 def resolve(
     required: list[str],
     *,
@@ -174,9 +197,20 @@ def resolve(
 
 
 def main() -> int:
+    if len(sys.argv) == 4 and sys.argv[1] == "--required-from-env":
+        deploy_env = json.load(open(sys.argv[2]))
+        if not isinstance(deploy_env, dict):
+            print("deploy env must be a JSON object", file=sys.stderr)
+            return 2
+        json.dump(required_bundle_names(deploy_env), open(sys.argv[3], "w"))
+        return 0
     if len(sys.argv) < 3:
-        print("usage: quill_secret_sources.py NEEDED_JSON OUT_JSON "
-              "[KEYS_FILE] [SECRETS_DIR]", file=sys.stderr)
+        print(
+            "usage: quill_secret_sources.py NEEDED_JSON OUT_JSON "
+            "[KEYS_FILE] [SECRETS_DIR]\n"
+            "   or: quill_secret_sources.py --required-from-env ENV_JSON OUT_JSON",
+            file=sys.stderr,
+        )
         return 2
     needed = sorted(json.load(open(sys.argv[1])))
     keys_file = Path(sys.argv[3]) if len(sys.argv) > 3 else DEFAULT_KEYS_FILE

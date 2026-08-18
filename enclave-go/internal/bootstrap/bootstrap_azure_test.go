@@ -1282,24 +1282,7 @@ func TestFetchBundleDeviceKeysNotJSON(t *testing.T) {
 	requireErrContains(t, err, "bootstrap/azure", "parse device-keys JSON")
 }
 
-// The SA key is OPTIONAL, matching the AWS parent.
-//
-// An earlier draft required it, reasoning that gcscache (shared ACME cache) and
-// byokcache (KMS unwrapper) read GOOGLE_APPLICATION_CREDENTIALS at runtime, so a
-// missing key surfaces hours later at cert renewal. That reasoning is real but
-// the conclusion was wrong twice over.
-//
-// First, precedent: the AWS parent's bootstrap_server.py treats a missing
-// cross-cloud SA key as a warning. Requiring it there once produced a bootstrap
-// that never bound its vsock listener, so the enclave died with ECONNRESET and
-// nothing said why - the fix was to make it optional and LOUD.
-//
-// Second, and worse: no cross-cloud SA key is provisioned in this account.
-// Requiring it means the cloud built for independence cannot start without first
-// minting a long-lived Google credential.
-//
-// Absent, the enclave serves its own attested self-signed certificate - the AWS
-// posture, validated by verify-attestation.py --attested-cert-only.
+// The SA key is optional only in the independent, self-signed posture.
 func TestFetchBundleWithoutTheSAKeyEntryStillBoots(t *testing.T) {
 	f := newAzureFixture(t)
 	delete(f.bundle, testSAKeyEntry)
@@ -1312,6 +1295,15 @@ func TestFetchBundleWithoutTheSAKeyEntryStillBoots(t *testing.T) {
 		t.Errorf("no SA key was supplied, so none must be carried; got %d bytes",
 			len(data.GCPServiceAccountKeyJSON))
 	}
+}
+
+func TestFetchBundleWithoutTheSAKeyRejectsSharedACMECache(t *testing.T) {
+	f := newAzureFixture(t)
+	delete(f.bundle, testSAKeyEntry)
+	t.Setenv("QUILL_ACME_CACHE_GCS_BUCKET", "quill-acme-cache")
+
+	_, err := Fetch(context.Background())
+	requireErrContains(t, err, "bootstrap/azure", testSAKeyEntry, "QUILL_ACME_CACHE_GCS_BUCKET")
 }
 
 func TestFetchBundleBlankSAKeyEntryIsTreatedAsAbsent(t *testing.T) {

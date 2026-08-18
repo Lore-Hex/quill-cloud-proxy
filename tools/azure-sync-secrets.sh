@@ -70,7 +70,13 @@ repo="$(cd "$here/.." && pwd)"
 
 env_json="$(mktemp)"; values_json="$(mktemp)"
 chmod 600 "$env_json" "$values_json"
-trap 'rm -f "$env_json" "$values_json"' EXIT
+cleanup() {
+  rm -f "$env_json" "$values_json"
+  [ -z "${needed:-}" ] || rm -f "$needed"
+  [ -z "${tmpl_env:-}" ] || rm -f "$tmpl_env"
+  [ -z "${tmpl_needed:-}" ] || rm -f "$tmpl_needed"
+}
+trap cleanup EXIT
 
 # --template gives the values file an origin.
 #
@@ -83,24 +89,23 @@ trap 'rm -f "$env_json" "$values_json"' EXIT
 # required name with an empty value; the operator fills them from wherever they
 # keep them.
 if [ -n "$TEMPLATE_OUT" ]; then
-  tmpl_env="$(mktemp)"; chmod 600 "$tmpl_env"
+  tmpl_env="$(mktemp)"; tmpl_needed="$(mktemp)"
+  chmod 600 "$tmpl_env" "$tmpl_needed"
   RESOURCE_GROUP="${RESOURCE_GROUP:-TR-TEE-DUBAI}" \
   SKR_COMMAND="${SKR_COMMAND:-/bin/skr}" \
     bash "$repo/tools/deploy-azure-aci.sh" print-env > "$tmpl_env"
+  "$SEALER_PYTHON" "$repo/tools/quill_secret_sources.py" \
+    --required-from-env "$tmpl_env" "$tmpl_needed"
   "$SEALER_PYTHON" -c '
 import json, sys
-env = json.load(open(sys.argv[1]))
-EXCLUDED = {"QUILL_AZURE_BUNDLE_SECRET"}   # the secret this script WRITES
-names = sorted({v for k, v in env.items()
-                if k.startswith("QUILL_") and k.endswith("_SECRET") and k not in EXCLUDED})
+names = json.load(open(sys.argv[1]))
 json.dump({n: "" for n in names}, open(sys.argv[2], "w"), indent=2, sort_keys=True)
 print(f"[ok] wrote {sys.argv[2]} with {len(names)} empty entries")
 print("     Fill each value from wherever you keep them, then:")
 print(f"       bash tools/azure-sync-secrets.sh --values {sys.argv[2]} --apply")
-print("     Only quill-device-keys is mandatory. A blank provider key simply")
-print("     means that provider is unavailable on this cloud.")
-' "$tmpl_env" "$TEMPLATE_OUT"
-  rm -f "$tmpl_env"
+print("     Every measured provider key is mandatory. If the deploy uses the")
+print("     shared ACME cache, tr-cross-cloud-sa-key is mandatory too.")
+' "$tmpl_needed" "$TEMPLATE_OUT"
   chmod 600 "$TEMPLATE_OUT"
   exit 0
 fi
@@ -114,15 +119,16 @@ RESOURCE_GROUP="${RESOURCE_GROUP:-TR-TEE-DUBAI}" \
 SKR_COMMAND="${SKR_COMMAND:-/bin/skr}" \
   bash "$repo/tools/deploy-azure-aci.sh" print-env > "$env_json"
 
+needed="$(mktemp)"; chmod 600 "$needed"
+"$SEALER_PYTHON" "$repo/tools/quill_secret_sources.py" \
+  --required-from-env "$env_json" "$needed"
+
 if [ -n "$VALUES_IN" ]; then
   echo "==> using operator-supplied values: ${VALUES_IN}"
   cp "$VALUES_IN" "$values_json"
-  "$SEALER_PYTHON" - "$env_json" "$values_json" <<'PY'
+  "$SEALER_PYTHON" - "$needed" "$values_json" <<'PY'
 import json, sys
-env, values = (json.load(open(p)) for p in sys.argv[1:3])
-EXCLUDED = {"QUILL_AZURE_BUNDLE_SECRET"}  # the secret this script WRITES
-names = sorted({v for k, v in env.items()
-                if k.startswith("QUILL_") and k.endswith("_SECRET") and k not in EXCLUDED})
+names, values = (json.load(open(p)) for p in sys.argv[1:3])
 have = [n for n in names if str(values.get(n, "")).strip()]
 print(f"    required : {len(names)}")
 print(f"    supplied : {len(have)}")
@@ -134,18 +140,8 @@ else
   echo "==> resolving from your files"
   echo "    keys : ${KEYS_FILE}"
   echo "    dir  : ${SECRETS_DIR}"
-  needed="$(mktemp)"; chmod 600 "$needed"
-  "$SEALER_PYTHON" -c '
-import json, sys
-env = json.load(open(sys.argv[1]))
-EXCLUDED = {"QUILL_AZURE_BUNDLE_SECRET"}
-json.dump(sorted({v for k, v in env.items()
-                  if k.startswith("QUILL_") and k.endswith("_SECRET") and k not in EXCLUDED}),
-          open(sys.argv[2], "w"))
-' "$env_json" "$needed"
   "$SEALER_PYTHON" "$repo/tools/quill_secret_sources.py" \
     "$needed" "$values_json" "$KEYS_FILE" "$SECRETS_DIR"
-  rm -f "$needed"
 fi
 
 if [ $APPLY -eq 0 ]; then

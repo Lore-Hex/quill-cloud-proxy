@@ -308,26 +308,16 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	// RUNTIME. Carrying it in the bundle keeps BOOT free of Google calls; see
 	// the "Runtime Google dependency" note in the package comment for what full
 	// independence would additionally require.
-	// OPTIONAL, matching the AWS parent. bootstrap_server.py treats a missing
-	// cross-cloud SA key as a WARNING, not a fatal error, and that is not
-	// laxness: requiring it once turned a missing secret into a bootstrap that
-	// never bound its vsock listener, so the enclave died with ECONNRESET and
-	// nothing said why. The fix there was to make it optional and LOUD.
-	//
-	// Requiring it here would also be worse than inconsistent. No cross-cloud
-	// SA key is provisioned in this account at all, so a hard requirement means
-	// Azure cannot deploy without first minting a long-lived Google credential -
-	// i.e. the cloud built for independence could not start without adding a
-	// dependency on the cloud it exists to be independent of.
-	//
-	// What degrades without it: gcscache (the shared ACME cert cache in GCS) and
-	// byokcache (the KMS unwrapper). Both branch on GOOGLE_APPLICATION_CREDENTIALS
-	// and are unreachable from boot. An enclave without this key serves its own
-	// attested self-signed certificate - exactly what the AWS gateway already
-	// does, and what tools/verify-attestation.py --attested-cert-only validates -
-	// and refuses BYOK unwrap rather than silently mis-serving it.
+	// The key remains optional for an independent deployment using an attested
+	// self-signed certificate. It is mandatory when the measured configuration
+	// enables the shared GCS ACME cache: without it the process stays alive but
+	// every public TLS handshake fails while Google ADC probes Azure for the GCE
+	// metadata service. Fail at bootstrap instead of advertising a Running but
+	// unreachable container.
 	if saKey := bundle.optional(az.saKeyEntry); saKey != "" {
 		data.GCPServiceAccountKeyJSON = saKey
+	} else if strings.TrimSpace(os.Getenv("QUILL_ACME_CACHE_GCS_BUCKET")) != "" {
+		return nil, fmt.Errorf("%s bootstrap: no %q entry in the bundle, but QUILL_ACME_CACHE_GCS_BUCKET is configured", azureTag, az.saKeyEntry)
 	} else {
 		log.Printf("%s bootstrap: no %q entry in the bundle: shared ACME cache and "+
 			"BYOK unwrap are DISABLED; the enclave will serve its own attested "+

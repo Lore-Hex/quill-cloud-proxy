@@ -333,17 +333,18 @@ def required_entries(env: dict[str, str]) -> list[RequiredEntry]:
     # The device-key blob is genuinely required: without it the enclave has no
     # identity to serve and dies on first use.
     #
-    # The GCP service-account key is NOT. bootstrap_azure.go treats it as
-    # optional, matching the AWS parent, and an enclave without it serves its own
-    # attested self-signed certificate while refusing BYOK unwrap - a degraded
-    # posture, not a broken one. Requiring it HERE while the enclave tolerates
-    # its absence would mean this cloud cannot be provisioned without first
-    # minting a long-lived Google credential, which is the dependency the whole
-    # separate-cloud exercise exists to remove. Kept in the bundle when supplied,
-    # never demanded.
+    # The GCP service-account key is optional only in the independent-cloud
+    # posture. When a shared GCS ACME cache is configured, omitting it leaves the
+    # enclave unable to load a certificate and therefore unable to serve TLS.
+    # Treat that measured configuration as a hard seal-time requirement.
+    needs_gcp_runtime = bool(env.get("QUILL_ACME_CACHE_GCS_BUCKET", "").strip())
     entries = [
         RequiredEntry(env[DEVICE_KEYS_ENV], "device keys"),
-        RequiredEntry(env[SA_KEY_ENTRY_ENV], "gcp service-account key", optional=True),
+        RequiredEntry(
+            env[SA_KEY_ENTRY_ENV],
+            "gcp service-account key",
+            optional=not needs_gcp_runtime,
+        ),
     ]
     any_provider = False
     for binding in BINDINGS:
