@@ -114,24 +114,4 @@ jobs:
       # separate step driven from the host (build-eif → captured PCR0 →
       # `make deploy-trust QUILL_PCR0=...`).
       - name: Sync static trust page to S3
-        run: |
-          aws s3 sync trust-page/ s3://trust.quill.lorehex.co/ \
-            --exclude "build.sh" \
-            --cache-control "max-age=60, public" \
-            --content-type "text/html; charset=utf-8"
-          aws s3 cp trust-page/pcr0.txt s3://trust.quill.lorehex.co/pcr0.txt \
-            --cache-control "max-age=60, public" \
-            --content-type "text/plain; charset=utf-8"
-          for f in image-digest-gcp.txt accepted-image-digests-gcp.txt image-reference-gcp.txt accepted-image-references-gcp.txt; do
-            aws s3 cp "trust-page/$f" "s3://trust.quill.lorehex.co/$f" \
-              --cache-control "max-age=60, public" \
-              --content-type "text/plain; charset=utf-8"
-          done
-          aws s3 cp trust-page/gcp-release.json s3://trust.quill.lorehex.co/gcp-release.json \
-            --cache-control "max-age=60, public" \
-            --content-type "application/json"
-          for f in trust-page/*.bundle; do
-            aws s3 cp "$f" "s3://trust.quill.lorehex.co/$(basename "$f")" \
-              --cache-control "max-age=60, public" \
-              --content-type "application/json"
-          done
+        run: bash tools/publish-trust-s3.sh

@@ -22,6 +22,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MIRRORS = REPO_ROOT / "trust-page" / "mirrors.json"
 TRUST_DIR = REPO_ROOT / "trust-page"
+WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
 # Columns that must be pairwise disjoint across live mirrors.
 FAILURE_DOMAINS = ("hosting_provider", "dns_provider", "registrar")
@@ -77,6 +78,21 @@ class MirrorIndependence(unittest.TestCase):
                 "actually serving, move it into 'mirrors' so its failure domains "
                 "are checked against the others.",
             )
+
+    def test_s3_publication_precedes_freshness(self) -> None:
+        publisher = (WORKFLOWS / "publish-trust-s3.yml").read_text()
+        freshness = (WORKFLOWS / "verify-trust-freshness.yml").read_text()
+        script = (REPO_ROOT / "tools" / "publish-trust-s3.sh").read_text()
+
+        self.assertIn('workflows: ["Publish trust page"]', publisher)
+        self.assertIn("bash tools/publish-trust-s3.sh", publisher)
+        self.assertIn("AWS_TRUST_PUBLISH_ROLE_ARN", publisher)
+        self.assertIn("https://trust.quill.lorehex.co", publisher)
+        self.assertIn("gh workflow run verify-trust-freshness.yml --ref main", publisher)
+        self.assertNotIn("\n  workflow_run:\n", freshness)
+        self.assertNotIn("\n  push:\n", freshness)
+        self.assertIn('s3://${bucket}/', script)
+        self.assertIn("--delete", script)
 
 
 if __name__ == "__main__":
