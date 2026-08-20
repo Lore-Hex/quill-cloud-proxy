@@ -129,6 +129,55 @@ func TestParseGeneratedImageValidatesBytesAndDimensions(t *testing.T) {
 	}
 }
 
+func TestParseGeneratedImageRejectsTruncatedImagesWithReadableHeaders(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		mediaType string
+		encoded   string
+		trimBytes int
+		format    string
+	}{
+		{
+			name: "jpeg", mediaType: "image/jpeg", encoded: jpegBase64(t, 1376, 768),
+			trimBytes: 2, format: "jpeg",
+		},
+		{
+			name: "png", mediaType: "image/png", encoded: pngBase64(t, 1376, 768),
+			trimBytes: 12, format: "png",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := base64.StdEncoding.DecodeString(tt.encoded)
+			if err != nil {
+				t.Fatalf("decode fixture: %v", err)
+			}
+			if len(raw) <= tt.trimBytes {
+				t.Fatalf("fixture is only %d bytes; cannot trim %d", len(raw), tt.trimBytes)
+			}
+			truncated := raw[:len(raw)-tt.trimBytes]
+
+			// Keep this regression non-vacuous: the truncated fixture must pass
+			// the old header-only validation with the exact expected shape while
+			// failing a full decode.
+			config, format, err := image.DecodeConfig(bytes.NewReader(truncated))
+			if err != nil {
+				t.Fatalf("truncated fixture no longer has a readable header: %v", err)
+			}
+			if config.Width != 1376 || config.Height != 768 || format != tt.format {
+				t.Fatalf("truncated config = %dx%d %q", config.Width, config.Height, format)
+			}
+			if _, _, err := image.Decode(bytes.NewReader(truncated)); err == nil {
+				t.Fatal("truncated fixture unexpectedly decoded completely")
+			}
+
+			dataURL := "data:" + tt.mediaType + ";base64," + base64.StdEncoding.EncodeToString(truncated)
+			if _, err := parseGeneratedImage(dataURL); err == nil {
+				t.Fatal("accepted a truncated image with a valid header")
+			}
+		})
+	}
+}
+
 type imageTestLLM struct {
 	mu        sync.Mutex
 	request   *types.OpenAIChatRequest

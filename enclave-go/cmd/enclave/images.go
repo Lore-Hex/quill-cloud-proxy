@@ -245,6 +245,15 @@ func parseGeneratedImage(text string) (*generatedImage, error) {
 		config.Width > maxGeneratedImagePixels/config.Height {
 		return nil, fmt.Errorf("provider image dimensions exceed the output limit")
 	}
+	// DecodeConfig proves only that the image header is readable. A truncated
+	// JPEG or PNG can still carry a valid header and the expected dimensions,
+	// which would otherwise be settled and returned as a paid successful image.
+	// Bound dimensions first, then decode the full payload so corrupt pixel data,
+	// missing terminal markers, and checksum failures remain all-or-nothing
+	// provider failures.
+	if _, decodedFormat, decodeErr := image.Decode(bytes.NewReader(raw)); decodeErr != nil || decodedFormat != format {
+		return nil, fmt.Errorf("provider returned invalid image bytes")
+	}
 	mediaType := strings.TrimSuffix(strings.TrimPrefix(header, "data:"), ";base64")
 	wantType := map[string]string{"png": "image/png", "jpeg": "image/jpeg"}[format]
 	if wantType == "" || mediaType != wantType {
