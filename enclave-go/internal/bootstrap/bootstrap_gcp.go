@@ -59,6 +59,7 @@
 //	QUILL_ENGY_SECRET            name of the secret holding the Engy API key (llm_multi builds)
 //	QUILL_ZERO_G_SECRET          name of the secret holding the unrestricted 0G router API key (llm_multi builds)
 //	QUILL_ALIBABA_SECRET         name of the secret holding the Alibaba Model Studio API key (llm_multi builds)
+//	QUILL_AZURE_SECRET           name of the Azure AI Foundry account key (llm_multi builds)
 //	QUILL_LTX_SECRET             name of the secret holding the LTX API key (llm_multi builds)
 //	QUILL_RUNWAY_SECRET          name of the secret holding the Runway API key (llm_multi builds)
 //	QUILL_KLING_SECRET           name of the secret holding the Kling API key (llm_multi builds)
@@ -156,6 +157,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	databricksHostSecret := os.Getenv("QUILL_DATABRICKS_HOST_SECRET")
 	zeroGSecret := os.Getenv("QUILL_ZERO_G_SECRET")
 	alibabaSecret := os.Getenv("QUILL_ALIBABA_SECRET")
+	azureSecret := os.Getenv("QUILL_AZURE_SECRET")
 	ltxSecret := os.Getenv("QUILL_LTX_SECRET")
 	runwaySecret := os.Getenv("QUILL_RUNWAY_SECRET")
 	klingSecret := os.Getenv("QUILL_KLING_SECRET")
@@ -220,6 +222,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		databricksSecret,
 		zeroGSecret,
 		alibabaSecret,
+		azureSecret,
 		ltxSecret,
 		runwaySecret,
 		klingSecret,
@@ -576,6 +579,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: alibaba key: %w", err)
 		}
 	}
+	var azureKey []byte
+	if azureSecret != "" {
+		azureKey, err = fetchSecret(ctx, httpc, token, project, azureSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: azure key: %w", err)
+		}
+	}
 	var ltxKey []byte
 	if ltxSecret != "" {
 		ltxKey, err = fetchSecret(ctx, httpc, token, project, ltxSecret)
@@ -724,6 +734,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		DatabricksHost:               strings.TrimSpace(string(databricksHost)),
 		ZeroGAPIKey:                  strings.TrimSpace(string(zeroGKey)),
 		AlibabaAPIKey:                strings.TrimSpace(string(alibabaKey)),
+		AzureAPIKey:                  strings.TrimSpace(string(azureKey)),
 		LTXAPIKey:                    strings.TrimSpace(string(ltxKey)),
 		RunwayAPIKey:                 strings.TrimSpace(string(runwayKey)),
 		KlingAPIKey:                  strings.TrimSpace(string(klingKey)),

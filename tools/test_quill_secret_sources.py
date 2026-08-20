@@ -17,6 +17,7 @@ class QuillSecretSourcesTests(unittest.TestCase):
     def test_new_provider_keys_are_copied_to_cloud_local_names(self) -> None:
         cases = {
             "ALIBABA_API_KEY": "trustedrouter-alibaba-api-key",
+            "AZURE_FOUNDRY_API_KEY": "trustedrouter-azure-api-key",
             "ATLAS_CLOUD_API_KEY": "trustedrouter-atlas-cloud-api-key",
             "DATABRICKS_TOKEN": "trustedrouter-databricks-token",
             "ENGY_API_KEY": "trustedrouter-engy-api-key",

@@ -77,14 +77,26 @@ var modelIDMap = map[string]string{
 }
 
 type anthropicClient struct {
-	apiKey string
-	httpc  *http.Client
+	provider               string
+	url                    string
+	apiKey                 string
+	httpc                  *http.Client
+	useAuthorizedModelName bool
 }
 
 // newAnthropic constructs the Anthropic-direct client. Used as THE Client
 // in single-backend builds (see register_anthropic.go) and as ONE OF the
 // available clients in multi-backend builds (see multi.go).
 func newAnthropic(boot *qtypes.BootstrapData) *anthropicClient {
+	return newAnthropicAt("anthropic", anthropicURL, boot.AnthropicAPIKey, false)
+}
+
+// newAnthropicAt constructs a native Messages client for an explicitly pinned
+// endpoint. Azure Foundry exposes Anthropic deployments on this wire protocol,
+// but the deployment name on the signed authorization is already the complete
+// upstream model identifier and must not be remapped through Anthropic's
+// direct-model aliases.
+func newAnthropicAt(provider, url, apiKey string, useAuthorizedModelName bool) *anthropicClient {
 	// Route through defaultHTTPClient() so the cloud_aws build picks
 	// up the vsock-tunneled transport (api.anthropic.com → vsock-proxy
 	// 8003 → upstream). Direct pooledHTTPClient() would use net.Dialer
@@ -94,8 +106,11 @@ func newAnthropic(boot *qtypes.BootstrapData) *anthropicClient {
 	httpc := defaultHTTPClient()
 	httpc.Timeout = defaultStreamingHTTPTimeout
 	return &anthropicClient{
-		apiKey: strings.TrimSpace(boot.AnthropicAPIKey),
-		httpc:  httpc,
+		provider:               normalizeDirectProvider(provider),
+		url:                    strings.TrimSpace(url),
+		apiKey:                 strings.TrimSpace(apiKey),
+		httpc:                  httpc,
+		useAuthorizedModelName: useAuthorizedModelName,
 	}
 }
 
@@ -110,14 +125,16 @@ func (c *anthropicClient) InvokeStreaming(
 		return err
 	}
 	if c.apiKey == "" {
-		return fmt.Errorf("llm/anthropic: no api key (set QUILL_ANTHROPIC_SECRET)")
+		return fmt.Errorf("llm/%s: no api key", c.provider)
 	}
-	model := directModelID("anthropic", req.Model, firstOptions(options).UpstreamModel)
-	if mapped := mapModelID(model); mapped != "" {
-		model = mapped
+	model := directModelID(c.provider, req.Model, firstOptions(options).UpstreamModel)
+	if !c.useAuthorizedModelName {
+		if mapped := mapModelID(model); mapped != "" {
+			model = mapped
+		}
 	}
 	if model == "" {
-		return fmt.Errorf("llm/anthropic: unmapped model %q", req.Model)
+		return fmt.Errorf("llm/%s: unmapped model %q", c.provider, req.Model)
 	}
 	messages, err := anthropicUpstreamMessages(ctx, body)
 	if err != nil {
@@ -131,10 +148,10 @@ func (c *anthropicClient) InvokeStreaming(
 	reqBody := buildAnthropicWireRequest(model, messages, body)
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return fmt.Errorf("llm/anthropic: marshal body: %w", err)
+		return fmt.Errorf("llm/%s: marshal body: %w", c.provider, err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", anthropicURL, bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return err
 	}
@@ -145,15 +162,15 @@ func (c *anthropicClient) InvokeStreaming(
 
 	resp, err := c.httpc.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("llm/anthropic: invoke: %w", err)
+		return fmt.Errorf("llm/%s: invoke: %w", c.provider, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
-			return fmt.Errorf("llm/anthropic: read error body: %w", readErr)
+			return fmt.Errorf("llm/%s: read error body: %w", c.provider, readErr)
 		}
-		return fmt.Errorf("llm/upstream: http %d: %s", resp.StatusCode, errBody)
+		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
 
 	// Response is native Anthropic SSE bytes. Pump them through to the

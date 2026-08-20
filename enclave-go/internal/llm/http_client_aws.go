@@ -81,6 +81,8 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "inference.makora.com", CID: 3, Port: 8029},
 	{Host: "openrouter.ai", CID: 3, Port: 8041}, // Meta Muse via OpenRouter
 	{Host: "ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com", CID: 3, Port: 8047},
+	{Host: "trustedrouter-foundry-eastus2.openai.azure.com", CID: 3, Port: 8053},
+	{Host: "trustedrouter-foundry-eastus2.services.ai.azure.com", CID: 3, Port: 8054},
 	// Chutes discovery and encrypted inference relay. Prompt bytes remain
 	// encrypted end-to-end between this enclave and the attested GPU worker.
 	{Host: "llm.chutes.ai", CID: 3, Port: 8049},

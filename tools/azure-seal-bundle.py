@@ -151,6 +151,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_XIAOMI_SECRET",), "xiaomi key", True),
     # Kept in step with secrets.go by TestSealerBindingTableMatchesSecretBindings.
     Binding(("QUILL_ALIBABA_SECRET",), "alibaba key", True),
+    Binding(("QUILL_AZURE_SECRET",), "azure key", True),
     Binding(("QUILL_ATLAS_CLOUD_SECRET",), "atlas cloud key", True),
     Binding(("QUILL_CHUTES_SECRET",), "chutes key", True),
     Binding(("QUILL_CLOUDFLARE_WORKERS_AI_SECRET",), "cloudflare workers ai key", True),

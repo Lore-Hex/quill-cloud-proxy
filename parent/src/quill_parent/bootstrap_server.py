@@ -123,6 +123,9 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("makora_api_key", "trustedrouter-makora-api-key"),
     ("nebius_api_key", "trustedrouter-nebius-api-key"),
     ("minimax_api_key", "trustedrouter-minimax-api-key"),
+    # Azure Foundry uses one account key for both its OpenAI-compatible and
+    # native Anthropic deployment surfaces.
+    ("azure_api_key", "trustedrouter-azure-api-key"),
     # Voyage AI — embeddings only (OpenAI-shaped /v1/embeddings). Optional like
     # every other key: if trustedrouter-voyage-api-key is absent in AWS Secrets
     # Manager the parent skips it and the enclave's voyage client stays empty.
