@@ -85,14 +85,17 @@ type Client struct {
 	// baseURLs is ordered: index 0 is this cloud's OWN control plane, later
 	// entries are fallbacks used only when an earlier one cannot be dialled.
 	// See endpoints.go for why only dial failures may advance it.
-	baseURLs       []string
-	internalToken  string
-	httpc          *http.Client
-	region         string
-	authorizeRetry retryPolicy
-	modelsMu       sync.Mutex
-	modelsBody     []byte
-	modelsFetched  time.Time
+	baseURLs           []string
+	internalToken      string
+	httpc              *http.Client
+	region             string
+	authorizeRetry     retryPolicy
+	modelsMu           sync.Mutex
+	modelsBody         []byte
+	modelsFetched      time.Time
+	imageModelsMu      sync.Mutex
+	imageModelsBody    []byte
+	imageModelsFetched time.Time
 }
 
 func NewFromEnv() *Client {
@@ -176,29 +179,93 @@ func (c *Client) PublicModels(ctx context.Context) ([]byte, error) {
 }
 
 func (c *Client) fetchPublicModels(ctx context.Context) ([]byte, error) {
+	return c.fetchPublicCatalog(ctx, "/v1/models", "/models", func(body []byte) bool {
+		var envelope struct {
+			Data []json.RawMessage `json:"data"`
+		}
+		return json.Unmarshal(body, &envelope) == nil && len(envelope.Data) > 0
+	})
+}
+
+// PublicImageModels returns the image-only capability catalog with the same
+// anonymous, bounded, stale-if-error semantics as PublicModels.
+func (c *Client) PublicImageModels(ctx context.Context) ([]byte, error) {
+	if c == nil || len(c.baseURLs) == 0 {
+		return nil, fmt.Errorf("trustedrouter: no control-plane endpoint configured")
+	}
+	c.imageModelsMu.Lock()
+	defer c.imageModelsMu.Unlock()
+	now := time.Now()
+	if len(c.imageModelsBody) > 0 && now.Sub(c.imageModelsFetched) <= publicModelsFreshTTL {
+		return append([]byte(nil), c.imageModelsBody...), nil
+	}
+	body, err := c.fetchPublicCatalog(ctx, "/v1/images/models", "/images/models", func(body []byte) bool {
+		var envelope struct {
+			Data []json.RawMessage `json:"data"`
+		}
+		return json.Unmarshal(body, &envelope) == nil && len(envelope.Data) > 0
+	})
+	if err == nil {
+		c.imageModelsBody = append(c.imageModelsBody[:0], body...)
+		c.imageModelsFetched = now
+		return append([]byte(nil), c.imageModelsBody...), nil
+	}
+	if len(c.imageModelsBody) > 0 && now.Sub(c.imageModelsFetched) <= publicModelsStaleTTL {
+		fmt.Fprintf(os.Stderr, "enclave.image_models_stale_fallback err=%q\n", err.Error())
+		return append([]byte(nil), c.imageModelsBody...), nil
+	}
+	return nil, err
+}
+
+var publicImageModelIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$`)
+
+// PublicImageModelEndpoints relays one public endpoint manifest. Model IDs are
+// path data, never a free-form URL; reject traversal and query injection before
+// building the control-plane request.
+func (c *Client) PublicImageModelEndpoints(ctx context.Context, modelID string) ([]byte, error) {
+	modelID = strings.TrimSpace(modelID)
+	if !publicImageModelIDPattern.MatchString(modelID) {
+		return nil, fmt.Errorf("trustedrouter: invalid image model id")
+	}
+	path := "/v1/images/models/" + modelID + "/endpoints"
+	return c.fetchPublicCatalog(ctx, path, "/images/models/{model}/endpoints", func(body []byte) bool {
+		var envelope struct {
+			ID        string            `json:"id"`
+			Endpoints []json.RawMessage `json:"endpoints"`
+		}
+		return json.Unmarshal(body, &envelope) == nil && envelope.ID == modelID
+	})
+}
+
+func (c *Client) fetchPublicCatalog(
+	ctx context.Context,
+	path string,
+	label string,
+	valid func([]byte) bool,
+) ([]byte, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	var lastErr error
 	for _, base := range c.baseURLs {
-		req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, publicModelsURL(base), nil)
+		req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, publicCatalogURL(base, path), nil)
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Accept", "application/json")
 		resp, err := c.httpc.Do(req)
 		if err != nil {
-			lastErr = fmt.Errorf("trustedrouter: get /models: %w", err)
+			lastErr = fmt.Errorf("trustedrouter: get %s: %w", label, err)
 			continue
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, publicModelsMaxBytes+1))
 		_ = resp.Body.Close()
 		if readErr != nil {
-			lastErr = fmt.Errorf("trustedrouter: read /models: %w", readErr)
+			lastErr = fmt.Errorf("trustedrouter: read %s: %w", label, readErr)
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("trustedrouter: /models http %d", resp.StatusCode)
+			lastErr = fmt.Errorf("trustedrouter: %s http %d", label, resp.StatusCode)
 			continue
 		}
 		// A 200 is not enough. trustedrouter.com/models is a human-facing HTML
@@ -211,18 +278,15 @@ func (c *Client) fetchPublicModels(ctx context.Context) ([]byte, error) {
 		// missing or sloppy content type — is left to the decoder, because a
 		// control plane serving valid JSON without the header is still correct.
 		if ct := resp.Header.Get("Content-Type"); strings.Contains(strings.ToLower(ct), "text/html") {
-			lastErr = fmt.Errorf("trustedrouter: /models returned HTML (%q), not the API — wrong path?", ct)
+			lastErr = fmt.Errorf("trustedrouter: %s returned HTML (%q), not the API — wrong path?", label, ct)
 			continue
 		}
 		if len(body) > publicModelsMaxBytes {
-			lastErr = fmt.Errorf("trustedrouter: /models response too large")
+			lastErr = fmt.Errorf("trustedrouter: %s response too large", label)
 			continue
 		}
-		var envelope struct {
-			Data []json.RawMessage `json:"data"`
-		}
-		if json.Unmarshal(body, &envelope) != nil || len(envelope.Data) == 0 {
-			lastErr = fmt.Errorf("trustedrouter: invalid /models response")
+		if valid == nil || !valid(body) {
+			lastErr = fmt.Errorf("trustedrouter: invalid %s response", label)
 			continue
 		}
 		return body, nil
@@ -1080,7 +1144,11 @@ func maxFloat(a, b float64) float64 {
 // conventions from silently disagreeing again: whichever form a cloud passes,
 // this resolves to exactly one /v1/models.
 func publicModelsURL(base string) string {
+	return publicCatalogURL(base, "/v1/models")
+}
+
+func publicCatalogURL(base, path string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
 	trimmed = strings.TrimSuffix(trimmed, "/v1")
-	return trimmed + "/v1/models"
+	return trimmed + "/" + strings.TrimLeft(path, "/")
 }

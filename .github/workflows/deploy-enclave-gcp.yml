@@ -626,6 +626,26 @@ jobs:
       # overlaps eu's drain phase by construction). The per-region
       # canary alone is the right gate.
 
+      - name: Verify image discovery on attested origin
+        run: |
+          for attempt in $(seq 1 6); do
+            models=$(curl -fsS --max-time 20 \
+              https://api.trustedrouter.com/v1/images/models || true)
+            if python3 -c 'import json,sys; rows=json.load(sys.stdin)["data"]; assert any(row["id"] == "google/gemini-3.1-flash-image" and row["architecture"]["output_modalities"] == ["image"] for row in rows)' <<<"${models}"; then
+              endpoints=$(curl -fsS --max-time 20 \
+                https://api.trustedrouter.com/v1/images/models/google/gemini-3.1-flash-image/endpoints || true)
+              if python3 -c 'import json,sys; assert json.load(sys.stdin)["endpoints"]' <<<"${endpoints}"; then
+                echo "image discovery smoke ok on attested origin"
+                break
+              fi
+            fi
+            if [ "${attempt}" = 6 ]; then
+              echo "image discovery did not become healthy" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
       - name: Smoke test enclave inference (non-blocking)
         # Non-blocking: MIG health checks gate the rollout. This smoke
         # confirms the public SDK path with the dedicated synthetic

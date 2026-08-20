@@ -98,7 +98,7 @@ func (c *aiStudioGeminiClient) InvokeStreaming(
 		}
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
-	return translateGeminiStreamToAnthropic(resp.Body, out)
+	return translateGeminiStreamToAnthropicMode(resp.Body, out, req.ImageGeneration)
 }
 
 func googleAIStudioNeedsNativeImage(req *qtypes.OpenAIChatRequest, option InvokeOptions) bool {
