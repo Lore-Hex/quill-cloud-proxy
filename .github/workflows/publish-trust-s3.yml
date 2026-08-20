@@ -1,0 +1,64 @@
+name: Publish trust mirror (s3)
+
+# The S3/CloudFront mirror is a trust surface, not an AWS compute deployment.
+# Publish it only after the primary Pages workflow has finished so the two
+# surfaces converge in a defined order and freshness never races publication.
+on:
+  workflow_run:
+    workflows: ["Publish trust page"]
+    types: [completed]
+  workflow_dispatch: {}
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+
+concurrency:
+  group: trust-s3-deployment
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow_run otherwise checks out the triggering run's head. Trust
+          # artifacts are committed by several workflows, so main is canonical.
+          ref: main
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TRUST_PUBLISH_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Publish independent S3 trust mirror
+        run: bash tools/publish-trust-s3.sh
+      - name: Verify mirror matches repository artifacts
+        run: |
+          set -euo pipefail
+          base="https://trust.quill.lorehex.co"
+          missing=0
+          for f in trust/gcp-release.json trust/aws-release.json trust/azure-release.json \
+                   trust/image-digest-gcp.txt trust/pcr0-aws.txt trust/hostdata-azure.txt \
+                   pcr0.txt mirrors.json; do
+            matched=0
+            for attempt in $(seq 1 30); do
+              if curl -fsS "${base}/${f}?nocache=${GITHUB_RUN_ID}-${attempt}" -o /tmp/live \
+                 && cmp -s "trust-page/${f}" /tmp/live; then
+                matched=1
+                break
+              fi
+              sleep 10
+            done
+            if [ "$matched" -ne 1 ]; then
+              echo "::error::${base}/${f} is missing or stale after five minutes"
+              missing=$((missing+1))
+            fi
+          done
+          test "$missing" -eq 0
+          echo "S3 trust mirror matches main"
+      - name: Run live-attestation freshness check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run verify-trust-freshness.yml --ref main

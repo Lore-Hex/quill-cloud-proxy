@@ -21,6 +21,8 @@ on:
     paths:
       - "trust-page/**"
       - ".github/workflows/publish-trust-page.yml"
+      - ".github/workflows/publish-trust-s3.yml"
+      - "tools/publish-trust-s3.sh"
   # Backstop: the deploy workflow commits trust artifacts with GITHUB_TOKEN,
   # and GITHUB_TOKEN pushes never trigger push workflows — so a failed
   # in-run Pages publish used to leave trust.trustedrouter.com serving a

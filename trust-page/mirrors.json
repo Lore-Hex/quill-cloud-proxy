@@ -29,7 +29,7 @@
       "hosting_provider": "aws-s3-cloudfront",
       "dns_provider": "cloudflare",
       "registrar": "namecheap",
-      "note": "S3 website origin behind CloudFront, synced by the release workflows."
+      "note": "S3 website origin behind CloudFront, synced after every verified primary trust-page publication."
     }
   ],
   "planned": [

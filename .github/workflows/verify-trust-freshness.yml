@@ -15,20 +15,16 @@ name: Verify trust freshness
 # deployment that genuinely has not changed is correct. Only this comparison
 # distinguishes the two.
 #
-# Runs on a schedule rather than on deploy because the thing that invalidates a
-# published measurement is an enclave rebuild, which does not touch this repo.
+# The S3 mirror publisher dispatches this workflow only after both independent
+# surfaces match the repository. An explicit dispatch avoids GitHub's three-level
+# workflow_run chaining limit when a signing workflow started publication. The
+# schedule catches enclave rebuilds that do not touch this repository.
 
 on:
   schedule:
     # Twice daily. Drift is not urgent within hours, but it must not survive a
     # weekend unnoticed.
     - cron: "23 6,18 * * *"
-  push:
-    branches: [main]
-    paths:
-      - "trust-page/**"
-      - "tools/capture-plane-measurements.py"
-      - ".github/workflows/verify-trust-freshness.yml"
   workflow_dispatch: {}
 
 permissions:
