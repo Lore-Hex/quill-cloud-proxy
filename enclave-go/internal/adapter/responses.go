@@ -505,6 +505,16 @@ func CollectAnthropicText(r io.Reader) (StreamResult, error) {
 }
 
 func CollectAnthropicTextWithObserver(r io.Reader, observer StreamObserver) (StreamResult, error) {
+	return collectAnthropicText(r, observer, false)
+}
+
+// CollectAnthropicTextStrict is for transactional media routes: a clean EOF
+// without message_stop is a failed generation, never a billable partial image.
+func CollectAnthropicTextStrict(r io.Reader) (StreamResult, error) {
+	return collectAnthropicText(r, nil, true)
+}
+
+func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal bool) (StreamResult, error) {
 	finishReason := "stop"
 	var captured strings.Builder
 	var usage *StreamUsage
@@ -596,6 +606,9 @@ func CollectAnthropicTextWithObserver(r io.Reader, observer StreamObserver) (Str
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return StreamResult{}, err
+	}
+	if requireTerminal {
+		return StreamResult{}, fmt.Errorf("adapter: truncated SSE before message_stop")
 	}
 	return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage}, nil
 }

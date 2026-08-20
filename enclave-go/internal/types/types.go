@@ -265,6 +265,12 @@ type OpenAIChatRequest struct {
 	HTTPReferer        string   `json:"-"`
 	AppCategories      []string `json:"-"`
 	OpenRouterMetadata bool     `json:"-"`
+	// Image-generation controls are enclave-owned. They are populated only by
+	// POST /v1/images after strict validation and never accepted through the
+	// chat-completions JSON surface.
+	ImageGeneration  bool   `json:"-"`
+	ImageResolution  string `json:"-"`
+	ImageAspectRatio string `json:"-"`
 	// Internal hosted-tool billing fields. They are never decoded from or
 	// encoded into the caller's JSON request; only enclave-owned orchestration
 	// sets them before authorize/settle.
@@ -477,6 +483,7 @@ type ProviderRouting struct {
 	Quantizations     StringList     `json:"quantizations,omitempty"`
 	Sort              any            `json:"sort,omitempty"`
 	MaxPrice          map[string]any `json:"max_price,omitempty"`
+	Options           map[string]any `json:"options,omitempty"`
 }
 
 // StringList accepts either OpenRouter's normal array form or a

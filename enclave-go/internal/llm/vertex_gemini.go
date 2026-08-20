@@ -216,7 +216,20 @@ func vertexGeminiPayload(
 	if body != nil && body.TopK != nil {
 		generationConfig["topK"] = *body.TopK
 	}
-	if vertexGeminiImageModel(modelID) {
+	if req.ImageGeneration {
+		// The normalized image route promises an image-only result. Gemini's
+		// current GenerateContent contract configures that through responseFormat
+		// (not the older preview-only imageConfig spelling).
+		delete(generationConfig, "maxOutputTokens")
+		generationConfig["responseModalities"] = []string{"IMAGE"}
+		generationConfig["candidateCount"] = 1
+		image := map[string]any{
+			"imageSize":   geminiImageSize(req.ImageResolution),
+			"aspectRatio": geminiImageAspectRatio(req.ImageAspectRatio),
+			"mimeType":    "IMAGE_JPEG",
+		}
+		generationConfig["responseFormat"] = map[string]any{"image": image}
+	} else if vertexGeminiImageModel(modelID) {
 		// Gemini counts generated image data against maxOutputTokens. Common
 		// chat SDK defaults such as 128 or 1024 can therefore return HTTP 200
 		// with an empty image. Let the image model choose its native output
@@ -239,6 +252,31 @@ func vertexGeminiPayload(
 		}
 	}
 	return payload, nil
+}
+
+func geminiImageSize(size string) string {
+	switch size {
+	case "512":
+		return "IMAGE_SIZE_FIVE_TWELVE"
+	case "2K":
+		return "IMAGE_SIZE_TWO_K"
+	case "4K":
+		return "IMAGE_SIZE_FOUR_K"
+	default:
+		return "IMAGE_SIZE_ONE_K"
+	}
+}
+
+func geminiImageAspectRatio(aspectRatio string) string {
+	return map[string]string{
+		"1:1": "ASPECT_RATIO_ONE_BY_ONE", "1:4": "ASPECT_RATIO_ONE_BY_FOUR",
+		"1:8": "ASPECT_RATIO_ONE_BY_EIGHT", "2:3": "ASPECT_RATIO_TWO_BY_THREE",
+		"3:2": "ASPECT_RATIO_THREE_BY_TWO", "3:4": "ASPECT_RATIO_THREE_BY_FOUR",
+		"4:1": "ASPECT_RATIO_FOUR_BY_ONE", "4:3": "ASPECT_RATIO_FOUR_BY_THREE",
+		"4:5": "ASPECT_RATIO_FOUR_BY_FIVE", "5:4": "ASPECT_RATIO_FIVE_BY_FOUR",
+		"8:1": "ASPECT_RATIO_EIGHT_BY_ONE", "9:16": "ASPECT_RATIO_NINE_BY_SIXTEEN",
+		"16:9": "ASPECT_RATIO_SIXTEEN_BY_NINE", "21:9": "ASPECT_RATIO_TWENTY_ONE_BY_NINE",
+	}[aspectRatio]
 }
 
 // geminiToolsFromChat converts OpenAI-style function tools into Gemini
@@ -533,6 +571,10 @@ func sanitizeGeminiSchema(schema map[string]any) map[string]any {
 }
 
 func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
+	return translateGeminiStreamToAnthropicMode(r, w, false)
+}
+
+func translateGeminiStreamToAnthropicMode(r io.Reader, w io.Writer, strict bool) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 64<<20)
 
@@ -540,6 +582,7 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 	var usage *openAIStreamUsage
 	toolIndex := 1 // index 0 is reserved for the text content block
 	sawTool := false
+	sawTerminal := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -551,6 +594,9 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 		}
 		delta, calls, reason, chunkUsage, err := geminiChunkDelta(payload)
 		if err != nil {
+			if strict {
+				return fmt.Errorf("llm/vertex-gemini-stream: malformed event: %w", err)
+			}
 			continue
 		}
 		if chunkUsage != nil {
@@ -581,11 +627,15 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 			toolIndex++
 		}
 		if reason != "" {
+			sawTerminal = true
 			stopReason = mapGeminiFinishReason(reason)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("llm/vertex-gemini-stream: scan: %w", err)
+	}
+	if strict && !sawTerminal {
+		return fmt.Errorf("llm/vertex-gemini-stream: truncated before terminal finish reason")
 	}
 	// Gemini reports finishReason STOP even when it emitted a functionCall;
 	// surface tool_use so the client/agentic loop sees the tool calls.

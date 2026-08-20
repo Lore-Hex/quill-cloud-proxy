@@ -555,7 +555,7 @@ func serveOneRequest(
 	// Public SDK discovery belongs on the documented API origin. The enclave
 	// relays only catalog metadata; prompt-bearing routes remain behind the
 	// authentication gate below.
-	if maybeServePublicModels(ctx, conn, method, routePath, trGateway) {
+	if maybeServePublicModels(ctx, conn, method, routePath, path, trGateway) {
 		return
 	}
 
@@ -578,6 +578,15 @@ func serveOneRequest(
 			return
 		}
 		serveEmbeddings(ctx, conn, br, body, trGateway, trEnabled, bearer, byokSecrets, idempotencyKey, attribution, requestLogID)
+		return
+	}
+
+	if routePath == "/v1/images" {
+		if method != "POST" {
+			writeOpenAIError(conn, 404, "route not found", "invalid_request_error", "not_found", "")
+			return
+		}
+		serveImages(ctx, conn, br, body, trGateway, bearer, byokSecrets, idempotencyKey, attribution, requestLogID)
 		return
 	}
 
