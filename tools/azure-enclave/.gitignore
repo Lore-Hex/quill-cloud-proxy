@@ -1,0 +1,18 @@
+# Terraform state — holds managed-identity principal and client ids, role
+# assignment GUIDs and the attestation providers' URIs. The client id is part
+# of the enclave's MEASURED surface (QUILL_AZURE_MI_CLIENT_ID), and the
+# authority URIs are what the SKR key's release policy pins, so this file
+# describes the trust chain and is treated as sensitive. State is local-only
+# by design — see README ("State") for why a remote backend would make one
+# cloud a prerequisite for provisioning another.
+terraform.tfstate
+terraform.tfstate.backup
+terraform.tfstate.*.backup
+
+# Provider plugins — large binaries. .terraform.lock.hcl IS committed so every
+# operator resolves the same azurerm version; a provider upgrade that changes
+# how a resource id is parsed shows up as spurious drift on shared infra.
+.terraform/
+
+# Plan output files (created via -out).
+*.tfplan
