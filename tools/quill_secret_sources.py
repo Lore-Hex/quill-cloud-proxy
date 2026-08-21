@@ -73,6 +73,8 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "THINKING_MACHINES_API_KEY": "trustedrouter-thinking-machines-api-key",
     "OPENROUTER_API_KEY": "quill-openrouter-key",
     "ALIBABA_API_KEY": "trustedrouter-alibaba-api-key",
+    "AZURE_FOUNDRY_API_KEY": "trustedrouter-azure-api-key",
+    "AZURE_API_KEY": "trustedrouter-azure-api-key",
     "ATLAS_CLOUD_API_KEY": "trustedrouter-atlas-cloud-api-key",
     "CHUTES_API_KEY": "trustedrouter-chutes-api-key",
     "CLOUDFLARE_WORKERS_AI_API_TOKEN": "trustedrouter-cloudflare-workers-ai-api-token",

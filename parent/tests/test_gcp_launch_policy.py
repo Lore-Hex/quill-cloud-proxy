@@ -28,6 +28,8 @@ def test_gcp_multi_launch_policy_allows_deployed_env_overrides() -> None:
     assert "QUILL_ENGY_SECRET" in allowed_envs
     assert "QUILL_ALIBABA_SECRET" in metadata_envs
     assert "QUILL_ALIBABA_SECRET" in allowed_envs
+    assert "QUILL_AZURE_SECRET" in metadata_envs
+    assert "QUILL_AZURE_SECRET" in allowed_envs
     for name in ("QUILL_LTX_SECRET", "QUILL_RUNWAY_SECRET", "QUILL_KLING_SECRET"):
         assert name in metadata_envs
         assert name in allowed_envs
@@ -103,6 +105,17 @@ def test_gcp_bootstrap_grants_workload_access_to_neurometric_secret() -> None:
     assert '"$NEUROMETRIC_SECRET" \\' in source
 
 
+def test_azure_foundry_secret_is_granted_and_activated_only_when_present() -> None:
+    bootstrap = (REPO_ROOT / "tools" / "deploy-gcp-bootstrap.sh").read_text()
+    deploy = (REPO_ROOT / "tools" / "deploy-gcp-mig.sh").read_text()
+
+    assert 'AZURE_SECRET="${AZURE_SECRET:-trustedrouter-azure-api-key}"' in bootstrap
+    assert '"$AZURE_SECRET" \\' in bootstrap
+    assert 'if [ "${QUILL_AZURE_SECRET+x}" != "x" ]; then' in deploy
+    assert "gc secrets describe trustedrouter-azure-api-key" in deploy
+    assert 'AZURE_TEE_ENV="|tee-env-QUILL_AZURE_SECRET=${QUILL_AZURE_SECRET}"' in deploy
+
+
 def test_gcp_bootstrap_grants_workload_access_to_engy_secret() -> None:
     bootstrap_script = REPO_ROOT / "tools" / "deploy-gcp-bootstrap.sh"
     source = bootstrap_script.read_text()
@@ -148,3 +161,20 @@ def test_aws_meta_route_mirrors_key_and_vsock_tunnel() -> None:
     assert "quill-openrouter-key" in sync_script
     assert "write_vsock_unit 8041 openrouter.ai" in deploy_script
     assert 'Host: "openrouter.ai", CID: 3, Port: 8041' in tunnel_source
+
+
+def test_aws_azure_route_mirrors_key_and_both_protocol_tunnels() -> None:
+    sync_script = (REPO_ROOT / "tools" / "sync-secrets-to-aws.sh").read_text()
+    deploy_script = (REPO_ROOT / "tools" / "deploy-aws-nitro.sh").read_text()
+    tunnel_source = (
+        REPO_ROOT / "enclave-go" / "internal" / "llm" / "http_client_aws.go"
+    ).read_text()
+
+    assert "trustedrouter-azure-api-key" in sync_script
+    expected = {
+        8053: "trustedrouter-foundry-eastus2.openai.azure.com",
+        8054: "trustedrouter-foundry-eastus2.services.ai.azure.com",
+    }
+    for port, host in expected.items():
+        assert f"write_vsock_unit {port} {host}" in deploy_script
+        assert f'Host: "{host}", CID: 3, Port: {port}' in tunnel_source

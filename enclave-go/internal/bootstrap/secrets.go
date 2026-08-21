@@ -115,6 +115,7 @@ var secretBindings = []secretBinding{
 	// step by TestProviderSecretParityAcrossClouds, which fails if the two
 	// lists ever diverge again.
 	{[]string{"QUILL_ALIBABA_SECRET"}, "alibaba key", true, func(b *types.BootstrapData, v string) { b.AlibabaAPIKey = v }},
+	{[]string{"QUILL_AZURE_SECRET"}, "azure key", true, func(b *types.BootstrapData, v string) { b.AzureAPIKey = v }},
 	{[]string{"QUILL_ATLAS_CLOUD_SECRET"}, "atlas cloud key", true, func(b *types.BootstrapData, v string) { b.AtlasCloudAPIKey = v }},
 	{[]string{"QUILL_CHUTES_SECRET"}, "chutes key", true, func(b *types.BootstrapData, v string) { b.ChutesAPIKey = v }},
 	{[]string{"QUILL_CLOUDFLARE_WORKERS_AI_SECRET"}, "cloudflare workers ai key", true, func(b *types.BootstrapData, v string) { b.CloudflareWorkersAIAPIKey = v }},

@@ -921,6 +921,93 @@ func TestHostedKimiFixedSamplingParametersAreOmitted(t *testing.T) {
 	}
 }
 
+func TestAzureKimiDeploymentRulesAreExactAndCheckpointSpecific(t *testing.T) {
+	t.Parallel()
+
+	tools := []any{map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":       "pong",
+			"parameters": map[string]any{"type": "object"},
+		},
+	}}
+	for _, tc := range []struct {
+		model                string
+		wantThinkingDisabled bool
+	}{
+		{model: "kimi-k2-5", wantThinkingDisabled: true},
+		{model: "kimi-k2-6", wantThinkingDisabled: true},
+		{model: "kimi-k2-7-code", wantThinkingDisabled: false},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			if !kimiUsesFixedSampling("azure", tc.model) {
+				t.Fatal("Azure Kimi deployment did not use fixed sampling")
+			}
+			if got := kimiToolsNeedThinkingDisabled("azure", tc.model, tools); got != tc.wantThinkingDisabled {
+				t.Fatalf("thinking-disabled rule = %v, want %v", got, tc.wantThinkingDisabled)
+			}
+
+			zero := 0.0
+			one := 1.0
+			request := buildOpenAICompatibleRequest(
+				"azure",
+				tc.model,
+				&qtypes.OpenAIChatRequest{
+					Tools:            tools,
+					FrequencyPenalty: &one,
+					PresencePenalty:  &one,
+				},
+				&qtypes.AnthropicMessagesRequest{
+					Temperature: &zero,
+					TopP:        &one,
+					Thinking:    map[string]string{"type": "enabled"},
+				},
+				nil,
+			)
+			if request.Temperature != nil || request.TopP != nil ||
+				request.FrequencyPenalty != nil || request.PresencePenalty != nil {
+				t.Fatalf("fixed Kimi sampling fields were forwarded: %#v", request)
+			}
+			thinking, ok := request.Thinking.(map[string]string)
+			if !ok {
+				t.Fatalf("thinking = %#v, want string map", request.Thinking)
+			}
+			wantThinking := "enabled"
+			if tc.wantThinkingDisabled {
+				wantThinking = "disabled"
+			}
+			if got := thinking["type"]; got != wantThinking {
+				t.Fatalf("thinking.type = %q, want %q", got, wantThinking)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name     string
+		provider string
+		model    string
+	}{
+		{name: "different provider", provider: "openai", model: "kimi-k2-5"},
+		{name: "future suffix", provider: "azure", model: "kimi-k2-5-preview"},
+		{name: "canonical id is not deployment id", provider: "azure", model: "moonshotai/kimi-k2-5"},
+		{name: "lookalike prefix", provider: "azure", model: "other-kimi-k2-6"},
+	} {
+		t.Run("negative "+tc.name, func(t *testing.T) {
+			t.Parallel()
+			if kimiUsesFixedSampling(tc.provider, tc.model) {
+				t.Fatal("lookalike unexpectedly used Azure Kimi fixed sampling")
+			}
+			if kimiToolsNeedThinkingDisabled(tc.provider, tc.model, tools) {
+				t.Fatal("lookalike unexpectedly disabled thinking")
+			}
+		})
+	}
+	if kimiToolsNeedThinkingDisabled("azure", "kimi-k2-5", nil) {
+		t.Fatal("tool-free Azure Kimi request unexpectedly disabled thinking")
+	}
+}
+
 func TestClaude5GenerationRegexp(t *testing.T) {
 	tests := []struct {
 		model string

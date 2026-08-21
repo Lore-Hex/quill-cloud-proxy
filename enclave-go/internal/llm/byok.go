@@ -105,7 +105,8 @@ type openAICompatibleStreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
-// requiresMaxCompletionTokens returns true for OpenAI models that
+// requiresMaxCompletionTokens returns true for OpenAI models, including
+// OpenAI-family deployments served through Azure Foundry, that
 // reject the legacy `max_tokens` parameter. Currently the gpt-5.x
 // family (and the o-series via the same Responses-style param naming
 // — though we mostly route those through the Responses API). Match
@@ -113,7 +114,8 @@ type openAICompatibleStreamOptions struct {
 // `o1`, `o3`, or `o4` (with optional vendor prefix) flips the
 // parameter name. Add more as OpenAI ships new families.
 func requiresMaxCompletionTokens(provider, modelID string) bool {
-	if provider != "openai" {
+	normalizedProvider := normalizeDirectProvider(provider)
+	if normalizedProvider != "openai" && normalizedProvider != "azure" {
 		return false
 	}
 	m := strings.ToLower(modelID)
@@ -264,7 +266,11 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	if err != nil {
 		return err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	if normalizeDirectProvider(provider) == "azure" {
+		httpReq.Header.Set("api-key", apiKey)
+	} else {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
@@ -380,8 +386,18 @@ func buildOpenAICompatibleRequest(
 	if normalizeDirectProvider(provider) == "engy" && strings.EqualFold(strings.TrimSpace(upstreamID), "qwen3.6-35b-a3b") {
 		reqBody.ChatTemplateKwargs = &chatTemplateKwargs{EnableThinking: false}
 	}
-	reqBody.StreamOptions = &openAICompatibleStreamOptions{IncludeUsage: true}
+	if supportsStreamUsageOption(provider, upstreamID) {
+		reqBody.StreamOptions = &openAICompatibleStreamOptions{IncludeUsage: true}
+	}
 	return reqBody
+}
+
+func supportsStreamUsageOption(provider, modelID string) bool {
+	// Azure's Codestral 2501 deployment rejects stream_options as an extra
+	// field but still includes exact usage in its terminal SSE chunk. Omitting
+	// the request hint therefore preserves exact settlement without estimates.
+	return !(normalizeDirectProvider(provider) == "azure" &&
+		strings.EqualFold(strings.TrimSpace(modelID), "codestral-2501"))
 }
 
 // BuildOpenAICompatibleRequestShape returns the same OpenAI projection used by
@@ -505,7 +521,17 @@ func openAICompatibleTemperature(provider, modelID string, temperature *float64)
 }
 
 func kimiUsesFixedSampling(provider, modelID string) bool {
-	model := strings.ToLower(modelID)
+	model := strings.ToLower(strings.TrimSpace(modelID))
+	// Azure Foundry exposes the same Moonshot checkpoints under deployment
+	// names that replace the version dots with dashes. Keep this exact to the
+	// three authorized Azure deployment ids: substring matching here would
+	// silently apply Kimi request rules to a future, unverified deployment.
+	if normalizeDirectProvider(provider) == "azure" {
+		switch model {
+		case "kimi-k2-5", "kimi-k2-6", "kimi-k2-7-code":
+			return true
+		}
+	}
 	return strings.Contains(model, "kimi-k2.5") ||
 		strings.Contains(model, "kimi-k2.6") ||
 		strings.Contains(model, "kimi-k3") ||
@@ -513,11 +539,18 @@ func kimiUsesFixedSampling(provider, modelID string) bool {
 }
 
 func kimiToolsNeedThinkingDisabled(provider, modelID string, tools []any) bool {
-	if provider != "kimi" || len(tools) == 0 {
+	if len(tools) == 0 {
 		return false
 	}
-	model := strings.ToLower(modelID)
-	return strings.Contains(model, "k2.6") || strings.Contains(model, "k2.5")
+	model := strings.ToLower(strings.TrimSpace(modelID))
+	if normalizeDirectProvider(provider) == "azure" {
+		// K2.5 and K2.6 require non-thinking mode for tool calling. K2.7 Code
+		// deliberately does not inherit this override: direct Kimi's verified
+		// rule does not disable thinking for that checkpoint.
+		return model == "kimi-k2-5" || model == "kimi-k2-6"
+	}
+	return provider == "kimi" &&
+		(strings.Contains(model, "k2.6") || strings.Contains(model, "k2.5"))
 }
 
 // anthropicUpstreamMessages returns the message list for an
@@ -1063,6 +1096,8 @@ func directBaseURL(provider string) string {
 		return "https://router-api.0g.ai/v1"
 	case "alibaba":
 		return "https://ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com/compatible-mode/v1"
+	case "azure":
+		return "https://trustedrouter-foundry-eastus2.openai.azure.com/openai/v1"
 	default:
 		return ""
 	}
@@ -1171,7 +1206,7 @@ func DirectModelID(provider, model, upstreamModel string) string {
 // maps still win above for historical aliases and dedicated endpoint slugs.
 func providerUsesAuthorizedUpstreamModel(provider string) bool {
 	switch provider {
-	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow", "neurometric", "pearl", "engy", "databricks", "zero-g", "alibaba":
+	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow", "neurometric", "pearl", "engy", "databricks", "zero-g", "alibaba", "azure":
 		return true
 	default:
 		return false
@@ -1760,6 +1795,8 @@ func normalizeDirectProvider(provider string) string {
 		return "zero-g"
 	case "alibaba", "alibaba-cloud", "dashscope", "aliyun":
 		return "alibaba"
+	case "azure", "azure-ai", "azure-ai-foundry", "microsoft-foundry":
+		return "azure"
 	default:
 		return slug
 	}

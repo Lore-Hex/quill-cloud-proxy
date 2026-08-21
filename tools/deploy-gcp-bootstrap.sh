@@ -92,6 +92,7 @@ ENGY_SECRET="${ENGY_SECRET:-trustedrouter-engy-api-key}"
 DATABRICKS_SECRET="${DATABRICKS_SECRET:-trustedrouter-databricks-token}"
 DATABRICKS_HOST_SECRET="${DATABRICKS_HOST_SECRET:-trustedrouter-databricks-host}"
 ALIBABA_SECRET="${ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
+AZURE_SECRET="${AZURE_SECRET:-trustedrouter-azure-api-key}"
 LTX_SECRET="${LTX_SECRET:-trustedrouter-ltx-api-key}"
 RUNWAY_SECRET="${RUNWAY_SECRET:-trustedrouter-runway-api-key}"
 KLING_SECRET="${KLING_SECRET:-trustedrouter-kling-api-key}"
@@ -214,6 +215,7 @@ for secret in \
   "$DATABRICKS_SECRET" \
   "$DATABRICKS_HOST_SECRET" \
   "$ALIBABA_SECRET" \
+  "$AZURE_SECRET" \
   "$LTX_SECRET" \
   "$RUNWAY_SECRET" \
   "$KLING_SECRET" \

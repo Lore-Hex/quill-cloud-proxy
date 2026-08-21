@@ -725,6 +725,8 @@ allowlist:
   - {address: api.inference.crusoecloud.com, port: 443}
   - {address: openrouter.ai,                  port: 443}
   - {address: ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com, port: 443}
+  - {address: trustedrouter-foundry-eastus2.openai.azure.com, port: 443}
+  - {address: trustedrouter-foundry-eastus2.services.ai.azure.com, port: 443}
   # GCP cross-cloud APIs — auth + Spanner + Bigtable + GCS (ACME cache)
   # + KMS (BYOK envelope-unwrap when an AWS-side request lands with a
   # customer-provided GCP-KMS-wrapped envelope).
@@ -835,6 +837,8 @@ write_vsock_unit 8027 pass.wafer.ai
 write_vsock_unit 8028 api.inference.crusoecloud.com
 write_vsock_unit 8041 openrouter.ai
 write_vsock_unit 8047 ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com
+write_vsock_unit 8053 trustedrouter-foundry-eastus2.openai.azure.com
+write_vsock_unit 8054 trustedrouter-foundry-eastus2.services.ai.azure.com
 write_vsock_unit 8049 llm.chutes.ai
 write_vsock_unit 8050 api.chutes.ai
 write_vsock_unit 8051 api.trustedservices.intel.com
