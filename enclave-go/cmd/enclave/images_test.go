@@ -41,7 +41,7 @@ func TestParseImageGenerationRequestNormalizesNativeSizes(t *testing.T) {
 		{name: "multiple images", body: `{"model":"google/gemini-3.1-flash-image","prompt":"cat","n":2}`, wantParam: "n"},
 		{name: "unsupported output", body: `{"model":"google/gemini-3.1-flash-image","prompt":"cat","output_format":"jpeg"}`, wantParam: "output_format"},
 		{name: "unsupported seed", body: `{"model":"google/gemini-3.1-flash-image","prompt":"cat","seed":42}`, wantParam: "seed"},
-		{name: "passthrough", body: `{"model":"google/gemini-3.1-flash-image","prompt":"cat","provider":{"options":{"google-ai-studio":{"foo":1}}}}`, wantParam: "provider.options"},
+		{name: "passthrough", body: `{"model":"google/gemini-3.1-flash-image","prompt":"cat","provider":{"options":{"google-ai-studio":{"foo":1}}}}`, wantParam: "provider.options.google-ai-studio.foo"},
 		{name: "unknown", body: `{"model":"google/gemini-3.1-flash-image","prompt":"cat","surprise":true}`, wantParam: ""},
 	}
 	for _, tt := range tests {
