@@ -79,7 +79,7 @@ AZURE_LIVE = [
         "compliance": "azure-compliant-uvm",
     },
     {
-        "url": "https://api-azure-sea.trustedrouter.com/attestation",
+        "url": "https://api-azure-syd.trustedrouter.com/attestation",
         "hostdata": HOSTDATA_SEA,
         "issuer": "https://trquillsea.sasia.attest.azure.net",
         "launch_measurement": "dc" * 24,

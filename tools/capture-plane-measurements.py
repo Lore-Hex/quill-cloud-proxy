@@ -71,13 +71,19 @@ GCP_ATTESTATION_ISSUER = "https://confidentialcomputing.googleapis.com"
 GCP_ATTESTATION_AUDIENCE = "quill-cloud"
 AWS_ATTESTATION_URL = "https://api-aws.trustedrouter.com/attestation"
 # Azure serves from more than one region and each region runs its OWN CCE
-# policy, so hostdata DIFFERS per region — verified live: UAE North reports
-# 44e44a55... via trquilluaen, Singapore reports 26e60588... via trquillsea.
-# Capturing only one region publishes a set that rejects the other, and a
-# verifier routed there reads that as tampering. Every region must be polled.
+# policy, so hostdata DIFFERS per region. Capturing only one region publishes a
+# set that rejects the other, and a verifier routed there reads that as
+# tampering. Every SERVING region must be polled.
+#
+# southeastasia (api-azure-sea) was retired on 2026-08-21 and its resource group
+# deleted; australiaeast replaced it. A retired region left in this tuple is not
+# harmless: the capture warns "unreachable" and carries on, so the published set
+# silently keeps whatever it captured last -- which was Singapore's hostdata,
+# for a region that no longer exists, while Sydney's real measurement went
+# unpublished and unverifiable.
 AZURE_ATTESTATION_URLS = (
     "https://api-azure.trustedrouter.com/attestation",
-    "https://api-azure-sea.trustedrouter.com/attestation",
+    "https://api-azure-syd.trustedrouter.com/attestation",
 )
 TIMEOUT_SECONDS = 25
 
