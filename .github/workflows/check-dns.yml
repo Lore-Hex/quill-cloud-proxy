@@ -9,9 +9,14 @@
 #
 # This workflow catches that exact failure mode by directly querying
 # the .com TLD nameservers for the NS records and diffing against
-# the known-expected Google Cloud DNS NS set per zone. Any mismatch = red run =
-# operator notification through the standard GitHub Actions failure
-# email / Slack / whatever's wired up.
+# the known-expected Google Cloud DNS NS set per zone.
+#
+# A red run files an issue. It used to rely on "operator notification through
+# the standard GitHub Actions failure email / Slack / whatever's wired up",
+# which nobody had verified: between 2026-08-11 and 2026-08-20 this workflow
+# failed 40 consecutive times and produced zero tickets. A detection control
+# reporting into a channel no one has proved exists is not operating, however
+# correct its logic is.
 #
 # Cadence: every six hours. NS drift is slow, but this workflow also checks
 # public TLS expiry and must warn well before a renewal failure becomes an
@@ -27,6 +32,10 @@ on:
     - cron: "7 */6 * * *"
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+  issues: write
+
 concurrency:
   group: check-dns
   cancel-in-progress: false
@@ -37,7 +46,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # continue-on-error so a real NS incident does not switch off certificate
+      # monitoring. Before this, `exit "$fail"` ended the job here and the TLS
+      # step never ran — the two failure modes this workflow exists to catch
+      # were wired so that either one hid the other.
       - name: Query authoritative NS for each zone
+        id: ns
+        continue-on-error: true
         run: |
           set -euo pipefail
           # Expected NS sets — what tools/dns/main.tf says should be
@@ -72,6 +87,11 @@ jobs:
               echo "::error::$d NS drift detected"
               echo "  expected: $expected"
               echo "  actual:   $actual"
+              {
+                echo "$d NS drift detected"
+                echo "  expected: $expected"
+                echo "  actual:   $actual"
+              } >> /tmp/dns-problems.txt
               fail=1
             fi
           done
@@ -84,6 +104,7 @@ jobs:
             ns="${pair#*:}"
             if ! dig +short +tries=2 +timeout=5 NS "$d" "@$ns" | grep -q .; then
               echo "::error::$d not answered by $ns (vendor outage or removed-from-zone)"
+              echo "$d not answered by $ns (vendor outage or removed-from-zone)" >> /tmp/dns-problems.txt
               fail=1
             fi
           done
@@ -91,4 +112,76 @@ jobs:
           exit "$fail"
 
       - name: Check public TLS validity and expiry
-        run: python3 tools/check-public-tls.py --minimum-days 14
+        id: tls
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 tools/check-public-tls.py --minimum-days 14 2>&1 | tee /tmp/tls-output.txt
+        # api-aws.trustedrouter.com is deliberately absent from the probed set:
+        # it serves an attested self-signed certificate and cannot pass public-CA
+        # validation. See tools/check-public-tls.py ATTESTED_SELF_SIGNED_HOSTS.
+
+      - name: Collect TLS problems
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f /tmp/tls-output.txt ]; then
+            grep '^::error::' /tmp/tls-output.txt | sed 's/^::error:://' >> /tmp/dns-problems.txt || true
+          fi
+
+      # Fail the job for either cause, after both checks have run.
+      - name: Fail if NS or TLS checks failed
+        if: always()
+        run: |
+          set -euo pipefail
+          ns='${{ steps.ns.outcome }}'
+          tls='${{ steps.tls.outcome }}'
+          echo "ns=${ns} tls=${tls}"
+          if [ "${ns}" != "success" ] || [ "${tls}" != "success" ]; then
+            echo "::error::DNS/TLS check failed (ns=${ns}, tls=${tls})"
+            exit 1
+          fi
+
+      # One open issue at a time, same pattern as verify-trust-freshness.yml.
+      # A check that files a duplicate every six hours trains you to ignore it,
+      # and being ignored is how a permanently-red signal stops being a signal.
+      - name: File an issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -s /tmp/dns-problems.txt ]; then
+            cp /tmp/dns-problems.txt /tmp/detail.txt
+          else
+            echo "the DNS/TLS check failed; see the run log" > /tmp/detail.txt
+          fi
+          {
+            echo "The scheduled DNS NS-drift and public-TLS check failed."
+            echo
+            echo '```'
+            cat /tmp/detail.txt
+            echo '```'
+            echo
+            echo "**NS drift** means the registrar's delegation no longer matches"
+            echo "tools/dns/main.tf. Fix path: docs/runbook.md \"DNS-vendor-split symptoms\""
+            echo "in quill-router, plus tools/dns/main.tf here. Update the Terraform module"
+            echo "AND the expected values in this workflow in lockstep."
+            echo
+            echo "**TLS expiry** means a public certificate is inside the 14-day warning"
+            echo "window, or a host failed to present a valid chain. Per-region gateway names"
+            echo "are probed directly because the canonical names rotate to whichever region"
+            echo "is healthy, so one region can run its certificate to zero unalerted."
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > /tmp/issue-body.md
+          existing="$(gh issue list --label dns-drift --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body-file /tmp/issue-body.md
+          else
+            gh issue create \
+              --title "DNS NS-drift or public TLS check failed" \
+              --label dns-drift \
+              --body-file /tmp/issue-body.md
+          fi

@@ -38,8 +38,39 @@ DEFAULT_HOSTS = (
     "api-us-east4.quillrouter.com",
     "api-europe-west4.quillrouter.com",
     "api-southamerica-east1.quillrouter.com",
-    "api-aws.trustedrouter.com",
     "api-azure.trustedrouter.com",
+)
+
+
+# Hosts that MUST NOT be probed here, with the reason, so nobody adds them back.
+#
+# This check validates against the public CA trust store. That is the right test
+# for every name above, and the wrong test for a host whose certificate is
+# deliberately self-signed inside an enclave and bound to its attestation
+# document: `ssl.create_default_context()` rejects it by design, on every run,
+# forever.
+#
+# api-aws.trustedrouter.com was added to DEFAULT_HOSTS on 2026-08-10 (PR #143)
+# together with the per-region names. The PR verified the new names "all
+# resolving", which is a different property from "serves a publicly-issued
+# certificate" — only the first was checked. Every scheduled run from
+# 2026-08-11 onward failed on it, 40 consecutive red runs, which is what a
+# permanently-failing assertion looks like from the outside: the workflow's
+# red/green signal stopped carrying information, and a genuine NS drift or
+# expiry warning in the same run would not have changed what it reported.
+#
+# The AWS plane's TLS is not unchecked. Its declared mode is published at
+# trust/aws-release.json as "attested-self-signed-inside-enclave", and
+# verify-trust-freshness.yml compares the live attestation against the
+# published measurement twice daily — which is a stronger check than chain
+# validation, not a weaker one.
+#
+# Re-adding a host here is correct only once its trust record stops declaring
+# an attested self-signed mode.
+ATTESTED_SELF_SIGNED_HOSTS = frozenset(
+    {
+        "api-aws.trustedrouter.com",
+    }
 )
 
 
@@ -80,6 +111,14 @@ def main() -> int:
     minimum_remaining = timedelta(days=args.minimum_days)
     failed = False
     for host in args.hosts:
+        if host in ATTESTED_SELF_SIGNED_HOSTS:
+            print(
+                f"::error::{host} serves an attested self-signed certificate and "
+                f"cannot pass public-CA validation; it is covered by "
+                f"verify-trust-freshness.yml instead"
+            )
+            failed = True
+            continue
         try:
             expires_at = probe_expiry(host, timeout_seconds=args.timeout_seconds)
             remaining = expires_at - now
