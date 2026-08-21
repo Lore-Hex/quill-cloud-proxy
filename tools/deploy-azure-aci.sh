@@ -720,12 +720,38 @@ if count_int <= 0:
   mi_principal="$(az_cli identity show --resource-group "$RESOURCE_GROUP" --name "$IDENTITY_NAME" \
     --query principalId -o tsv 2>/dev/null || true)"
   [ -n "$mi_principal" ] || die "managed identity not found: ${RESOURCE_GROUP}/${IDENTITY_NAME}"
-  role_count="$(az_cli role assignment list \
-    --assignee "$mi_principal" \
-    --scope "$account_id" \
-    --include-inherited \
-    --query "[?roleDefinitionName=='Storage Blob Data Contributor'] | length(@)" \
-    -o tsv 2>/dev/null || true)"
+  # Read the assignment through ARM, NOT `az role assignment list --assignee`.
+  # That form resolves the principal through Microsoft Graph, and Graph is not
+  # dependable here: with a VALID, unexpired Graph token this call was measured
+  # hanging past 120s with no output and no error. Inside a deploy that is worse
+  # than a failure -- there is no TTY to prompt on, so `all --apply` simply
+  # stops after printing the workdir line and never proceeds.
+  #
+  # The old form also swallowed every failure (`2>/dev/null || true`), so any
+  # Graph problem produced an empty count, and an empty count is
+  # indistinguishable from "the grant does not exist": the deploy would abort
+  # claiming the identity lacks a role it actually holds.
+  #
+  # ARM answers the same question without Graph. Inherited assignments are kept
+  # (the old --include-inherited): a grant made at the resource group or
+  # subscription is just as effective as one made on the account.
+  role_def_id="$(az_cli role definition list --name "Storage Blob Data Contributor" \
+    --query "[0].id" -o tsv 2>/dev/null || true)"
+  [ -n "$role_def_id" ] \
+    || die "could not resolve the Storage Blob Data Contributor role definition"
+  assignments_url="https://management.azure.com${account_id}/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01&\$filter=principalId%20eq%20'${mi_principal}'"
+  assignments_json="$(az_cli rest --method get --url "$assignments_url" 2>&1)" || {
+    die "could not list role assignments on ${AZURE_ACME_STORAGE_ACCOUNT}: ${assignments_json}"
+  }
+  role_count="$(printf '%s' "$assignments_json" | python3 -c '
+import json, sys
+wanted = sys.argv[1]
+found = [
+    a for a in json.load(sys.stdin).get("value", [])
+    if a["properties"]["roleDefinitionId"] == wanted
+]
+print(len(found))
+' "$role_def_id")"
   [ "${role_count:-0}" -gt 0 ] \
     || die "${RESOURCE_GROUP}/${IDENTITY_NAME} lacks Storage Blob Data Contributor on ${AZURE_ACME_STORAGE_ACCOUNT}"
 

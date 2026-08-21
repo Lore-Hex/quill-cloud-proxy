@@ -114,6 +114,37 @@ if argv[:3] == ["storage", "account", "show"]:
     print()
     sys.exit(0)
 
+if argv[:1] == ["rest"] and arg("--method") == "get" and "roleAssignments" in (arg("--url") or ""):
+    # preflight reads the ACME-cache role assignment through ARM rather than
+    # `az role assignment list --assignee`, which goes through Graph and was
+    # measured hanging past 120s with a valid token -- inside a deploy that is
+    # an unkillable stall, not an error.
+    #
+    # `no-acme-role` models the identity genuinely lacking the grant; the old
+    # Graph form could not distinguish that from its own failure.
+    if flag("arm-broken"):
+        # A query that could not be answered: non-zero with a reason, never an
+        # empty list. Empty would be a claim about the world.
+        print("ERROR: (GatewayTimeout) the gateway did not receive a response.",
+              file=sys.stderr)
+        sys.exit(1)
+    if flag("no-acme-role"):
+        json.dump({"value": []}, sys.stdout)
+    else:
+        json.dump({"value": [{"properties": {
+            "roleDefinitionId": "/subscriptions/stub/providers/Microsoft.Authorization/"
+                                "roleDefinitions/ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+            "principalId": "stub-principal",
+        }}]}, sys.stdout)
+    print()
+    sys.exit(0)
+
+if argv[:3] == ["role", "definition", "list"]:
+    # ARM, not Graph. Returns the well-known built-in id for whatever was asked.
+    print("/subscriptions/stub/providers/Microsoft.Authorization/"
+          "roleDefinitions/ba92f5b4-2d11-453d-a403-e96b0029c9fe")
+    sys.exit(0)
+
 if argv[:1] == ["rest"] and arg("--method") == "get":
     metadata = {} if flag("missing-cache-marker") else {
         "trustedrouterAcmeSeedVersion": "v1",
@@ -525,6 +556,34 @@ class TestAzureCloudBoundaryPreflight(DeployHarness):
         result = self.run_script("--apply", "preflight")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("migration marker", result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+    def test_an_identity_without_the_cache_role_is_rejected(self) -> None:
+        """The grant genuinely missing must still stop the deploy.
+
+        This is what preflight is FOR: without it the enclave deploys, attests,
+        and then cannot write the shared ACME cache.
+        """
+        self.state_file("no-acme-role").touch()
+        result = self.run_script("--apply", "preflight")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("lacks Storage Blob Data Contributor", result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+    def test_a_role_query_that_fails_is_not_read_as_a_missing_grant(self) -> None:
+        """The old check asked Graph and swallowed every error, so an outage
+        read exactly like "the identity has no such role" -- aborting a deploy
+        by accusing a correctly-configured identity. Worse, with a valid token
+        the Graph call was measured HANGING past 120s, which inside a deploy is
+        a stall with no TTY to prompt on rather than any kind of error.
+
+        A query that cannot be answered must say so in its own words.
+        """
+        self.state_file("arm-broken").touch()
+        result = self.run_script("--apply", "preflight")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not list role assignments", result.stderr)
+        self.assertNotIn("lacks Storage Blob Data Contributor", result.stderr)
         self.assertEqual(self.mutations(), [])
 
 
