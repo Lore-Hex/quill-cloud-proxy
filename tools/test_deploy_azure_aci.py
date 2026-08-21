@@ -161,6 +161,27 @@ if argv[:3] == ["keyvault", "key", "set-attributes"]:
     log("mutations.log", "MUTATE-BIND-KEY :: pins=" + ",".join(mine))
     sys.exit(0)
 
+if argv[:3] == ["keyvault", "secret", "show"]:
+    # The Azure Foundry account key probe. Absent is the DEFAULT because that
+    # is production's state: the provider landed in the enclave before its key
+    # was provisioned. A test opts into "present" by writing azure-foundry-key.
+    #
+    # The error text matters, not just the exit code: the script only treats a
+    # failure as absence when it says SecretNotFound, so that an expired token
+    # cannot masquerade as a missing secret and silently darken a provider.
+    if read("azure-foundry-probe-breaks"):
+        # An expired token: non-zero, empty stdout, and NOT SecretNotFound.
+        # Indistinguishable from absence unless the caller reads the reason.
+        print("ERROR: AADSTS50076: multi-factor authentication required.", file=sys.stderr)
+        sys.exit(1)
+    if read("azure-foundry-key"):
+        print("https://%s.vault.azure.net/secrets/%s/ver"
+              % (arg("--vault-name"), arg("--name")))
+        sys.exit(0)
+    print("ERROR: (SecretNotFound) A secret with (name/id) %s was not found in this key vault."
+          % arg("--name"), file=sys.stderr)
+    sys.exit(3)
+
 if argv[:3] == ["keyvault", "key", "show"]:
     bound = read("bound-hostdata")
     foreign = read("foreign-hostdata")
@@ -931,12 +952,27 @@ class TestSecretNameListsDoNotDrift(unittest.TestCase):
             for line in script.splitlines()
             if line.startswith("QUILL_") and "=" in line
         }
+        # Providers whose name is resolved by a PROBE rather than a plain
+        # default, because the secret may legitimately not exist yet. These are
+        # not silently unconfigured -- they are conditionally configured, and
+        # the assertion below proves the condition is really there rather than
+        # letting an entry drop off the list by accident.
+        probed = {"QUILL_AZURE_SECRET"}
+
         self.assertEqual(
-            rendered - defaults,
+            rendered - defaults - probed,
             set(),
             "a name rendered into the container env with no default above is always empty, "
             "so the provider is silently unconfigured",
         )
+
+        for name in probed & rendered:
+            self.assertIn(
+                'if [ "${%s+x}" != "x" ]; then' % name,
+                script,
+                f"{name} is exempt from the default rule because it is probed, but no "
+                f"probe block exists -- it is now unconditionally empty",
+            )
 
 
 class TestUnpinnedBundleIsRefused(DeployHarness):
@@ -1677,6 +1713,69 @@ class TestSharedHostnameForFailover(DeployHarness):
         }
         self.assertIn("api-azure.trustedrouter.com", env["QUILL_API_HOST"])
         self.assertIn("api-azure-sea.trustedrouter.com", env["QUILL_API_HOST"])
+
+
+class TestAzureFoundryStaysDarkUntilItsKeyExists(DeployHarness):
+    """bd5146a added the Azure Foundry provider to the enclave and gave GCP a
+    probe (deploy-gcp-mig.sh: "Azure Foundry stays dark until its account key
+    exists") but gave THIS script an unconditional default. So every Azure
+    enclave built after it died at bootstrap with
+
+        bootstrap/azure: azure key: no entry "trustedrouter-azure-api-key"
+        in the bundle (bundle has 62 entries: ...)
+
+    while uaenorth and southeastasia kept serving only because their images
+    predated the change. The next redeploy of either would have hit it.
+    """
+
+    def _azure_secret(self, **env) -> str:
+        self.healthy_deploy(**env)
+        template = json.loads((self.work / "template.json").read_text())
+        rendered = {
+            e["name"]: e.get("value")
+            for c in template["resources"][0]["properties"]["containers"]
+            if c["name"] == "quill-enclave"
+            for e in c["properties"]["environmentVariables"]
+        }
+        # render_env_json omits a name that resolves to empty rather than
+        # emitting QUILL_AZURE_SECRET="". Both spell "not configured" to
+        # secrets.go, and omission is the stronger of the two: the measured env
+        # never mentions a secret this deploy cannot supply.
+        return rendered.get("QUILL_AZURE_SECRET", "")
+
+    def test_an_absent_key_leaves_the_provider_unnamed(self) -> None:
+        """An empty name is how secrets.go spells "not configured", and the
+        binding is skipped. Naming a secret that is not in the bundle is fatal.
+        """
+        self.assertEqual(self._azure_secret(), "")
+
+    def test_a_present_key_is_named(self) -> None:
+        """The probe must actually enable the provider once the key lands, or
+        Foundry would stay dark forever and nobody would notice."""
+        (self.state / "azure-foundry-key").write_text("exists")
+        self.assertEqual(self._azure_secret(), "trustedrouter-azure-api-key")
+
+    def test_an_explicit_name_still_wins(self) -> None:
+        """Matching deploy-gcp-mig.sh: an operator override is not second-guessed."""
+        self.assertEqual(
+            self._azure_secret(QUILL_AZURE_SECRET="some-other-key"),
+            "some-other-key",
+        )
+
+    def test_an_explicit_empty_value_keeps_it_dark(self) -> None:
+        """Also matching GCP: passing an empty value is how a deploy disables a
+        provider on purpose, and must not be re-probed into being enabled."""
+        (self.state / "azure-foundry-key").write_text("exists")
+        self.assertEqual(self._azure_secret(QUILL_AZURE_SECRET=""), "")
+
+    def test_a_probe_that_fails_for_another_reason_is_fatal(self) -> None:
+        """An expired token returns empty just like a missing secret does. If
+        that counted as absence, a provider that IS configured would silently
+        go dark -- so only a definitive SecretNotFound may mean "not there"."""
+        (self.state / "azure-foundry-probe-breaks").write_text("1")
+        result = self.run_script("--apply", "build", "template")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not determine whether", result.stderr)
 
 
 if __name__ == "__main__":

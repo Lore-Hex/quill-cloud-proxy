@@ -200,7 +200,37 @@ QUILL_CRUSOE_SECRET="${QUILL_CRUSOE_SECRET:-trustedrouter-crusoe-api-key}"
 QUILL_MAKORA_SECRET="${QUILL_MAKORA_SECRET:-trustedrouter-makora-api-key}"
 QUILL_NEBIUS_SECRET="${QUILL_NEBIUS_SECRET:-trustedrouter-nebius-api-key}"
 QUILL_ALIBABA_SECRET="${QUILL_ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
-QUILL_AZURE_SECRET="${QUILL_AZURE_SECRET:-trustedrouter-azure-api-key}"
+# Azure Foundry stays dark until its account key exists, mirroring the guard in
+# deploy-gcp-mig.sh. GCP probes Secret Manager and leaves the name empty when
+# the secret is absent; this script named it unconditionally, so every fresh
+# Azure enclave built after the Foundry provider landed died at bootstrap with
+#   bootstrap/azure: azure key: no entry "trustedrouter-azure-api-key" in the bundle
+# An empty name is how secrets.go spells "not configured" -- the binding is
+# skipped -- so the fix is to not name a secret that does not exist.
+#
+# Probed against Key Vault rather than the sealed bundle because the bundle is
+# encrypted at rest and the vault is what azure-seal-bundle.py seals FROM: a
+# secret absent here cannot be in the next bundle either.
+#
+# A probe that fails for any reason OTHER than "not found" is fatal rather than
+# treated as absence. An expired token returning empty would otherwise silently
+# disable a provider that is in fact configured, which is the same
+# empty-means-absent trap that makes these failures so hard to see.
+if [ "${QUILL_AZURE_SECRET+x}" != "x" ]; then
+  QUILL_AZURE_SECRET=""
+  azure_key_probe="$(az keyvault secret show --vault-name "$VAULT" \
+    --name trustedrouter-azure-api-key --query id -o tsv 2>&1)" && azure_key_rc=0 || azure_key_rc=$?
+  if [ "$azure_key_rc" -eq 0 ]; then
+    QUILL_AZURE_SECRET="trustedrouter-azure-api-key"
+  elif ! printf '%s' "$azure_key_probe" | grep -q "SecretNotFound"; then
+    # Not die(): this runs in the configuration block, which is evaluated well
+    # before die() is defined further down. Calling it here would replace the
+    # real diagnosis with "die: command not found".
+    printf '\n[FAIL] could not determine whether trustedrouter-azure-api-key exists in %s: %s\n' \
+      "$VAULT" "$azure_key_probe" >&2
+    exit 1
+  fi
+fi
 QUILL_ATLAS_CLOUD_SECRET="${QUILL_ATLAS_CLOUD_SECRET:-trustedrouter-atlas-cloud-api-key}"
 QUILL_CHUTES_SECRET="${QUILL_CHUTES_SECRET:-trustedrouter-chutes-api-key}"
 QUILL_CLOUDFLARE_WORKERS_AI_SECRET="${QUILL_CLOUDFLARE_WORKERS_AI_SECRET:-trustedrouter-cloudflare-workers-ai-api-token}"
