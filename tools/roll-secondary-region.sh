@@ -64,14 +64,19 @@ trigger_synthetic_workers() {
 wait_region_stable_with_dns_refresh() {
   local target_mig="$1"
   local target_region="$2"
-  for i in $(seq 1 90); do
+  # A size-two MIG can hold each replacement for the full 600s minReady
+  # window. Ninety rounds expired seconds before the second replacement
+  # became stable in production; 120 leaves bounded provisioning headroom
+  # while remaining below the workflow step's 55-minute timeout.
+  local wait_rounds=120
+  for i in $(seq 1 "${wait_rounds}"); do
     if gcloud compute instance-groups managed wait-until "${target_mig}" \
       --region="${target_region}" --project=quill-cloud-proxy \
       --stable --timeout=10; then
       reconcile_dns
       return 0
     fi
-    echo "${target_region} still rolling; refreshing attested DNS membership (${i}/90)"
+    echo "${target_region} still rolling; refreshing attested DNS membership (${i}/${wait_rounds})"
     reconcile_dns || true
     sleep 5
   done

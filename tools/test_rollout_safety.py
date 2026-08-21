@@ -214,6 +214,18 @@ class RolloutSafetyTests(unittest.TestCase):
         )
         self.assertIn("install_components: beta", workflow)
 
+    def test_secondary_stability_wait_budget_covers_two_readiness_holds(self) -> None:
+        secondary = (ROOT / "tools" / "roll-secondary-region.sh").read_text(
+            encoding="utf-8"
+        )
+
+        budget = re.search(r"local wait_rounds=(\d+)", secondary)
+        self.assertIsNotNone(budget)
+        assert budget is not None
+        self.assertGreaterEqual(int(budget.group(1)), 120)
+        self.assertIn('seq 1 "${wait_rounds}"', secondary)
+        self.assertIn("(${i}/${wait_rounds})", secondary)
+
     def test_pre_roll_failure_only_clears_drain_when_template_is_unchanged(self) -> None:
         workflow = (
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
