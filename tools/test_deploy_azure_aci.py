@@ -336,6 +336,33 @@ class DeployHarness(unittest.TestCase):
 
         self.state = root / "state"
         self.state.mkdir()
+
+        # Stub the RESOLVER too, or phase_verify's DNS-propagation wait queries
+        # real DNS for the real API_HOST and waits for production to become the
+        # stub's 10.0.0.9. It never does, so the wait burns
+        # DNS_PROPAGATION_TIMEOUT (300s) and blows this harness's 300s
+        # subprocess timeout.
+        #
+        # That made the suite's result depend on the machine: it passes on a box
+        # where resolve_api_host finds neither dig nor host (the wait is skipped
+        # when nothing resolves) and hangs on one where it does -- which is
+        # every Linux CI runner. Reproduced on ubuntu 24.04: 1.8s on macOS,
+        # 300s timeout in a container.
+        #
+        # These read the same group-ip the az stub serves, so DNS agrees with
+        # the container group by construction and the wait exits on the first
+        # poll. A test wanting a mismatch calls _resolver().
+        for name in ("dig", "host"):
+            path = self.bin / name
+            path.write_text(
+                "#!/usr/bin/env bash\n"
+                f'ip="$(cat {self.state}/group-ip 2>/dev/null || echo 10.0.0.9)"\n'
+                # `host -t A NAME` prints a sentence; `dig +short NAME A` prints
+                # the bare address. resolve_api_host parses each accordingly.
+                + ('printf \'%s has address %s\\n\' "$2" "$ip"\n' if name == "host"
+                   else 'printf \'%s\\n\' "$ip"\n')
+            )
+            path.chmod(0o755)
         self.work = root / "work"
         self.work.mkdir()
         # phase_policy refuses to let docker create the operator's credential
@@ -1537,9 +1564,19 @@ class TestDnsIsAPreconditionNotAnAssumption(DeployHarness):
         stub.chmod(0o755)
 
     def _resolver(self, address: str) -> Path:
+        # Overwrite BOTH, not just dig. resolve_api_host prefers dig and falls
+        # back to host, so leaving host at the setUp default would make which
+        # answer a test gets depend on which binaries the machine happens to
+        # have -- the exact platform-dependence the default stubs remove.
         stub = self.bin / "dig"
-        stub.write_text(f"#!/usr/bin/env bash\necho '{address}'\n")
-        stub.chmod(0o755)
+        for name in ("dig", "host"):
+            path = self.bin / name
+            path.write_text(
+                "#!/usr/bin/env bash\n"
+                + (f"printf '%s has address {address}\\n' \"$2\"\n" if name == "host"
+                   else f"echo '{address}'\n")
+            )
+            path.chmod(0o755)
         return stub
 
     def test_a_record_pointing_elsewhere_stops_the_wait(self) -> None:

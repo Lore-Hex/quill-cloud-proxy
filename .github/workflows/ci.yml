@@ -130,6 +130,12 @@ jobs:
           python3 tools/test_nitro_root_pin.py
           python3 tools/test_mirror_independence.py
           python3 tools/test_signing_identity_matches_docs.py
+      # Separate step: this one is ~2 minutes where the others are seconds, so
+      # a failure here should be legible as "the Azure deploy script broke"
+      # rather than hiding at the bottom of a list. It stubs az, docker and the
+      # resolver onto PATH and touches no network.
+      - name: Test the Azure ACI deploy script
+        run: python3 tools/test_deploy_azure_aci.py
       - name: Assert trust page contains no <script> tags
         run: |
           if grep -qi '<script' trust-page/index.html; then
