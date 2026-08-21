@@ -210,4 +210,14 @@ resource "azurerm_role_assignment" "enclave" {
   // Terraform would otherwise try to resolve the principal before the identity
   // has propagated through AAD, which fails intermittently on first apply.
   skip_service_principal_aad_check = true
+
+  lifecycle {
+    // This flag is client-side and create-only: it suppresses a pre-flight AAD
+    // lookup and is not stored on the assignment. An IMPORTED assignment
+    // therefore always reads back as false, which terraform plans as an
+    // in-place update -- and `azurerm_role_assignment` has no update at all, so
+    // the apply dies with "doesn't support update". Ignoring it keeps the flag
+    // effective on create while letting adopted assignments stay adopted.
+    ignore_changes = [skip_service_principal_aad_check]
+  }
 }
