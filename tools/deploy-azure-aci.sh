@@ -208,29 +208,32 @@ QUILL_ALIBABA_SECRET="${QUILL_ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
 # An empty name is how secrets.go spells "not configured" -- the binding is
 # skipped -- so the fix is to not name a secret that does not exist.
 #
-# Probed against Key Vault rather than the sealed bundle because the bundle is
-# encrypted at rest and the vault is what azure-seal-bundle.py seals FROM: a
-# secret absent here cannot be in the next bundle either.
+# This CANNOT be probed the way GCP probes it, and the difference is the whole
+# point of the two clouds' bootstrap designs:
 #
-# A probe that fails for any reason OTHER than "not found" is fatal rather than
-# treated as absence. An expired token returning empty would otherwise silently
-# disable a provider that is in fact configured, which is the same
-# empty-means-absent trap that makes these failures so hard to see.
-if [ "${QUILL_AZURE_SECRET+x}" != "x" ]; then
-  QUILL_AZURE_SECRET=""
-  azure_key_probe="$(az keyvault secret show --vault-name "$VAULT" \
-    --name trustedrouter-azure-api-key --query id -o tsv 2>&1)" && azure_key_rc=0 || azure_key_rc=$?
-  if [ "$azure_key_rc" -eq 0 ]; then
-    QUILL_AZURE_SECRET="trustedrouter-azure-api-key"
-  elif ! printf '%s' "$azure_key_probe" | grep -q "SecretNotFound"; then
-    # Not die(): this runs in the configuration block, which is evaluated well
-    # before die() is defined further down. Calling it here would replace the
-    # real diagnosis with "die: command not found".
-    printf '\n[FAIL] could not determine whether trustedrouter-azure-api-key exists in %s: %s\n' \
-      "$VAULT" "$azure_key_probe" >&2
-    exit 1
-  fi
-fi
+#   GCP    reads Secret Manager per secret, so "does it exist" is one API call
+#   Azure  reads ONE sealed bundle; the individual names are inside AES-GCM
+#          ciphertext and trquillkv holds no per-provider secrets at all
+#          (it holds exactly tr-bootstrap-bundle)
+#
+# So there is nothing to ask. Default empty and let the operator opt in once
+# they have sealed a bundle that actually contains the key, which is the only
+# moment anyone can know. An empty name is how secrets.go spells "not
+# configured": the binding is skipped and render_env_json omits the variable, so
+# the measured env never names a secret this deploy cannot supply.
+#
+# Nothing is silently lost by waiting: azure-seal-bundle.py is given --deploy-env
+# alongside --values, so if this IS set and the values file lacks the key, the
+# seal fails loudly rather than producing a bundle that boots into a crash loop.
+#
+#   ./tools/azure-sync-secrets.sh --values <file> --apply   # seal, incl. the key
+#   QUILL_AZURE_SECRET=trustedrouter-azure-api-key ./tools/deploy-azure-aci.sh ...
+#
+# Do NOT reintroduce a Key Vault probe here. A per-provider secret sitting in
+# trquillkv proves nothing about the bundle, so the probe would report the
+# provider as configured while the enclave still cannot find it -- which is
+# exactly the crash this guard exists to prevent, wearing a green light.
+QUILL_AZURE_SECRET="${QUILL_AZURE_SECRET:-}"
 QUILL_ATLAS_CLOUD_SECRET="${QUILL_ATLAS_CLOUD_SECRET:-trustedrouter-atlas-cloud-api-key}"
 QUILL_CHUTES_SECRET="${QUILL_CHUTES_SECRET:-trustedrouter-chutes-api-key}"
 QUILL_CLOUDFLARE_WORKERS_AI_SECRET="${QUILL_CLOUDFLARE_WORKERS_AI_SECRET:-trustedrouter-cloudflare-workers-ai-api-token}"
