@@ -621,7 +621,15 @@ phase_preflight() {
   for forbidden in GOOGLE_APPLICATION_CREDENTIALS QUILL_ACME_CACHE_GCS_BUCKET \
     QUILL_ACME_DNS_GCP_PROJECT QUILL_ACME_DNS_MANAGED_ZONE; do
     if [ -n "${!forbidden:-}" ]; then
-      die "Azure cloud boundary: $forbidden is set. Azure must use only its Azure-local secret and certificate stores."
+      # Say how to fix it. This fires on any shell that has done GCP work in
+      # the same session, and the variable is almost never wanted HERE rather
+      # than unwanted everywhere -- unsetting it for this one command is the
+      # answer, not editing a profile. `gcloud` is unaffected: it authenticates
+      # from its own credential store, so phase_verify can still reconcile the
+      # Cloud DNS record afterwards.
+      die "Azure cloud boundary: $forbidden is set. Azure must use only its Azure-local secret and certificate stores.
+       Re-run with it unset for this command only:
+         env -u $forbidden <same command>"
     fi
   done
 
