@@ -568,7 +568,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 		return nil, err
 	}
 	decoded.Data.RouteType = routeType
-	if routeType != "videos" && req.AdditionalCostReservationMicrodollars > 0 &&
+	if routeType != "videos" && routeType != "images" && req.AdditionalCostReservationMicrodollars > 0 &&
 		decoded.Data.AdditionalCostReservationMicrodollars != req.AdditionalCostReservationMicrodollars {
 		_ = c.Refund(ctx, &decoded.Data, 503, "hosted_tool_billing_unavailable", 0.001, nil)
 		return nil, &ControlPlaneError{
@@ -585,6 +585,16 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 			StatusCode: 503,
 			Type:       "video_billing_unavailable",
 			Message:    "video billing is not available on the active control plane",
+		}
+	}
+	if routeType == "images" && req.AdditionalCostReservationMicrodollars > 0 &&
+		decoded.Data.AdditionalCostReservationMicrodollars != req.AdditionalCostReservationMicrodollars {
+		_ = c.Refund(ctx, &decoded.Data, 503, "image_billing_unavailable", 0.001, nil)
+		return nil, &ControlPlaneError{
+			Path:       "/internal/gateway/authorize",
+			StatusCode: 503,
+			Type:       "image_billing_unavailable",
+			Message:    "fixed-price image billing is not available on the active control plane",
 		}
 	}
 	if req.Tags != nil && decoded.Data.RequestMetadataVersion < 1 {

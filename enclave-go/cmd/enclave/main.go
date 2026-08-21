@@ -34,6 +34,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/entropy"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/imagegen"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -131,6 +132,10 @@ func main() {
 	registry := auth.New(boot.Devices)
 	deviceBlob, _ := json.Marshal(boot.Devices)
 	br := llm.New(boot) // build-tag-gated: AWS Bedrock by default, GCP Vertex with -tags gcp
+	imageProviderGateway = imagegen.NewRegistry(imagegen.ProviderKeys{
+		OpenAI: boot.OpenAIAPIKey,
+		XAI:    boot.GrokAPIKey,
+	}, llm.NewProviderHTTPClient())
 	trGateway := trustedrouter.NewFromBootstrap(boot)
 	videoGateway = newVideoService(videoProviderKeys(boot), trGateway)
 	videoGateway.Start(ctx)
