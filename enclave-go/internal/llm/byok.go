@@ -521,7 +521,17 @@ func openAICompatibleTemperature(provider, modelID string, temperature *float64)
 }
 
 func kimiUsesFixedSampling(provider, modelID string) bool {
-	model := strings.ToLower(modelID)
+	model := strings.ToLower(strings.TrimSpace(modelID))
+	// Azure Foundry exposes the same Moonshot checkpoints under deployment
+	// names that replace the version dots with dashes. Keep this exact to the
+	// three authorized Azure deployment ids: substring matching here would
+	// silently apply Kimi request rules to a future, unverified deployment.
+	if normalizeDirectProvider(provider) == "azure" {
+		switch model {
+		case "kimi-k2-5", "kimi-k2-6", "kimi-k2-7-code":
+			return true
+		}
+	}
 	return strings.Contains(model, "kimi-k2.5") ||
 		strings.Contains(model, "kimi-k2.6") ||
 		strings.Contains(model, "kimi-k3") ||
@@ -529,11 +539,18 @@ func kimiUsesFixedSampling(provider, modelID string) bool {
 }
 
 func kimiToolsNeedThinkingDisabled(provider, modelID string, tools []any) bool {
-	if provider != "kimi" || len(tools) == 0 {
+	if len(tools) == 0 {
 		return false
 	}
-	model := strings.ToLower(modelID)
-	return strings.Contains(model, "k2.6") || strings.Contains(model, "k2.5")
+	model := strings.ToLower(strings.TrimSpace(modelID))
+	if normalizeDirectProvider(provider) == "azure" {
+		// K2.5 and K2.6 require non-thinking mode for tool calling. K2.7 Code
+		// deliberately does not inherit this override: direct Kimi's verified
+		// rule does not disable thinking for that checkpoint.
+		return model == "kimi-k2-5" || model == "kimi-k2-6"
+	}
+	return provider == "kimi" &&
+		(strings.Contains(model, "k2.6") || strings.Contains(model, "k2.5"))
 }
 
 // anthropicUpstreamMessages returns the message list for an

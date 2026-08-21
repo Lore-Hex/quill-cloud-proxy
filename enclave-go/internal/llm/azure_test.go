@@ -152,9 +152,35 @@ func TestAzureOpenAIReasoningModelsUseCompletionTokenField(t *testing.T) {
 
 	temperature := 0.0
 	maxTokens := 32
-	req := buildOpenAICompatibleRequest(
+	for _, model := range []string{"gpt-5-mini", "gpt-5-4-mini"} {
+		t.Run(model, func(t *testing.T) {
+			t.Parallel()
+			req := buildOpenAICompatibleRequest(
+				"azure",
+				model,
+				&qtypes.OpenAIChatRequest{},
+				&qtypes.AnthropicMessagesRequest{
+					MaxTokens:         maxTokens,
+					MaxTokensExplicit: true,
+					Temperature:       &temperature,
+				},
+				nil,
+			)
+			if req.MaxCompletionTokens != maxTokens {
+				t.Fatalf("max_completion_tokens = %d, want %d", req.MaxCompletionTokens, maxTokens)
+			}
+			if req.MaxTokens != 0 {
+				t.Fatalf("max_tokens = %d, want omitted", req.MaxTokens)
+			}
+			if req.Temperature != nil {
+				t.Fatal("Azure-hosted GPT 5 temperature must be omitted")
+			}
+		})
+	}
+
+	gptOSS := buildOpenAICompatibleRequest(
 		"azure",
-		"gpt-5-4-mini",
+		"gpt-oss-120b",
 		&qtypes.OpenAIChatRequest{},
 		&qtypes.AnthropicMessagesRequest{
 			MaxTokens:         maxTokens,
@@ -163,14 +189,118 @@ func TestAzureOpenAIReasoningModelsUseCompletionTokenField(t *testing.T) {
 		},
 		nil,
 	)
-	if req.MaxCompletionTokens != maxTokens {
-		t.Fatalf("max_completion_tokens = %d, want %d", req.MaxCompletionTokens, maxTokens)
+	if gptOSS.MaxTokens != maxTokens || gptOSS.MaxCompletionTokens != 0 {
+		t.Fatalf(
+			"GPT-OSS token fields = (max_tokens=%d, max_completion_tokens=%d), want (%d, 0)",
+			gptOSS.MaxTokens,
+			gptOSS.MaxCompletionTokens,
+			maxTokens,
+		)
 	}
-	if req.MaxTokens != 0 {
-		t.Fatalf("max_tokens = %d, want omitted", req.MaxTokens)
+	if gptOSS.Temperature == nil || *gptOSS.Temperature != temperature {
+		t.Fatalf("GPT-OSS temperature = %v, want %v", gptOSS.Temperature, temperature)
 	}
-	if req.Temperature != nil {
-		t.Fatal("Azure-hosted GPT 5 temperature must be omitted")
+}
+
+func TestAzureKimiNormalizationsReachWire(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		canonicalID          string
+		deploymentID         string
+		wantThinkingDisabled bool
+	}{
+		{
+			canonicalID:          "moonshotai/kimi-k2.5",
+			deploymentID:         "kimi-k2-5",
+			wantThinkingDisabled: true,
+		},
+		{
+			canonicalID:          "moonshotai/kimi-k2.6",
+			deploymentID:         "kimi-k2-6",
+			wantThinkingDisabled: true,
+		},
+		{
+			canonicalID:          "moonshotai/kimi-k2.7-code",
+			deploymentID:         "kimi-k2-7-code",
+			wantThinkingDisabled: false,
+		},
+	} {
+		t.Run(tc.deploymentID, func(t *testing.T) {
+			t.Parallel()
+
+			payloads := make(chan map[string]any, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Errorf("decode Azure Kimi request: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				payloads <- payload
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"PONG\"},\"finish_reason\":\"stop\"}]}\n\n")
+				_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			}))
+			defer server.Close()
+
+			zero := 0.0
+			one := 1.0
+			tools := []any{map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":       "pong",
+					"parameters": map[string]any{"type": "object"},
+				},
+			}}
+			err := invokeOpenAICompatibleStreamingWithClient(
+				t.Context(),
+				server.Client(),
+				"azure",
+				server.URL,
+				"azure-secret",
+				&qtypes.OpenAIChatRequest{
+					Model:            tc.canonicalID,
+					Tools:            tools,
+					FrequencyPenalty: &one,
+					PresencePenalty:  &one,
+				},
+				&qtypes.AnthropicMessagesRequest{
+					Messages:    []qtypes.AnthropicMessage{{Role: "user", Content: "call pong"}},
+					Temperature: &zero,
+					TopP:        &one,
+					Thinking:    map[string]string{"type": "enabled"},
+				},
+				io.Discard,
+				tc.deploymentID,
+			)
+			if err != nil {
+				t.Fatalf("invoke Azure Kimi request: %v", err)
+			}
+			payload := <-payloads
+			if got := payload["model"]; got != tc.deploymentID {
+				t.Fatalf("model = %#v, want %q", got, tc.deploymentID)
+			}
+			for _, field := range []string{"temperature", "top_p", "frequency_penalty", "presence_penalty"} {
+				if got, ok := payload[field]; ok {
+					t.Fatalf("unsupported %s reached Azure wire: %#v", field, got)
+				}
+			}
+			thinking, ok := payload["thinking"].(map[string]any)
+			if !ok {
+				t.Fatalf("thinking = %#v, want object", payload["thinking"])
+			}
+			wantThinking := "enabled"
+			if tc.wantThinkingDisabled {
+				wantThinking = "disabled"
+			}
+			if got := thinking["type"]; got != wantThinking {
+				t.Fatalf("thinking.type = %#v, want %q", got, wantThinking)
+			}
+			if got, ok := payload["tools"].([]any); !ok || len(got) != 1 {
+				t.Fatalf("tools = %#v, want one tool", payload["tools"])
+			}
+		})
 	}
 }
 
@@ -187,7 +317,7 @@ func TestAzureCodestralOmitsUnsupportedStreamOptions(t *testing.T) {
 	if req.StreamOptions != nil {
 		t.Fatal("Azure Codestral must omit unsupported stream_options")
 	}
-	if !supportsStreamUsageOption("azure", "gpt-5-4-mini") {
+	if !supportsStreamUsageOption("azure", "gpt-5-mini") {
 		t.Fatal("other Azure models must retain stream usage requests")
 	}
 }
