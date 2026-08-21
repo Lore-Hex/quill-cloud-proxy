@@ -106,11 +106,32 @@ for spec in "${REGIONS[@]}"; do
     if [ "$key" = "kv_crypto_officer" ] && [ "$region" != "uaenorth" ]; then
       continue
     fi
-    # --scope alone still returns inherited assignments from parent scopes, so
-    # filter on the exact scope too: importing an inherited subscription-level
-    # assignment would put terraform in charge of a grant it did not make.
-    ra_id="$(az role assignment list --assignee "$mi_pid" --scope "$scope" \
-      --query "[?roleDefinitionName=='${role}' && scope=='${scope}'].id | [0]" -o tsv 2>/dev/null || true)"
+    # Read assignments through ARM, NOT `az role assignment list --assignee`.
+    # That form resolves the principal through Microsoft Graph, which a tenant
+    # with conditional access refuses without a fresh MFA token
+    # (AADSTS50076). The failure is the dangerous kind: it errors, the error is
+    # swallowed, the result is empty, and empty is indistinguishable from "this
+    # grant does not exist" -- so the script would report a region's existing
+    # grants as missing and hand terraform a plan that recreates them.
+    #
+    # The ARM query also filters on the EXACT scope. Scope alone still returns
+    # assignments inherited from parent scopes, and importing an inherited
+    # subscription-level grant would put terraform in charge of one it did not
+    # make.
+    role_def_id="$(az role definition list --name "$role" --query "[0].id" -o tsv)" ||
+      { echo "  could not resolve role definition: ${role}" >&2; exit 1; }
+    ra_json="$(az rest --method get --url \
+      "https://management.azure.com${scope}/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01&\$filter=principalId%20eq%20'${mi_pid}'")" ||
+      { echo "  could not list role assignments at ${scope}" >&2; exit 1; }
+    ra_id="$(printf '%s' "$ra_json" | python3 -c '
+import json, sys
+want_role, want_scope = sys.argv[1], sys.argv[2]
+for a in json.load(sys.stdin).get("value", []):
+    props = a["properties"]
+    if props["roleDefinitionId"] == want_role and props["scope"] == want_scope:
+        print(a["id"])
+        break
+' "$role_def_id" "$scope")"
     adopt "azurerm_role_assignment.enclave[\"${region}:${key}\"]" "$ra_id"
   done
 done
