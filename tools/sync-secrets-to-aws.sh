@@ -93,6 +93,7 @@ SECRETS=(
   trustedrouter-makora-api-key
   trustedrouter-nebius-api-key
   trustedrouter-minimax-api-key
+  trustedrouter-poolside-api-key
   trustedrouter-azure-api-key
   trustedrouter-synth-panel-prompt-v1
   trustedrouter-synth-synthesis-prompt-v1

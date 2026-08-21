@@ -166,6 +166,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_MORPH_SECRET",), "morph key", True),
     Binding(("QUILL_NEUROMETRIC_SECRET",), "neurometric key", True),
     Binding(("QUILL_PEARL_SECRET",), "pearl key", True),
+    Binding(("QUILL_POOLSIDE_SECRET",), "poolside key", True),
     Binding(("QUILL_OPENAI_VIDEO_SECRET",), "openai video key", True),
     Binding(("QUILL_RUNWAY_SECRET",), "runway key", True),
     Binding(("QUILL_STREAMLAKE_SECRET",), "streamlake key", True),

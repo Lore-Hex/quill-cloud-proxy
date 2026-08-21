@@ -130,6 +130,7 @@ var secretBindings = []secretBinding{
 	{[]string{"QUILL_MORPH_SECRET"}, "morph key", true, func(b *types.BootstrapData, v string) { b.MorphAPIKey = v }},
 	{[]string{"QUILL_NEUROMETRIC_SECRET"}, "neurometric key", true, func(b *types.BootstrapData, v string) { b.NeurometricAPIKey = v }},
 	{[]string{"QUILL_PEARL_SECRET"}, "pearl key", true, func(b *types.BootstrapData, v string) { b.PearlAPIKey = v }},
+	{[]string{"QUILL_POOLSIDE_SECRET"}, "poolside key", true, func(b *types.BootstrapData, v string) { b.PoolsideAPIKey = v }},
 	{[]string{"QUILL_OPENAI_VIDEO_SECRET"}, "openai video key", true, func(b *types.BootstrapData, v string) { b.OpenAIVideoAPIKey = v }},
 	{[]string{"QUILL_RUNWAY_SECRET"}, "runway key", true, func(b *types.BootstrapData, v string) { b.RunwayAPIKey = v }},
 	{[]string{"QUILL_STREAMLAKE_SECRET"}, "streamlake key", true, func(b *types.BootstrapData, v string) { b.StreamLakeAPIKey = v }},

@@ -256,6 +256,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "makora_api_key",
         "nebius_api_key",
         "minimax_api_key",
+        "poolside_api_key",
         "azure_api_key",
         "voyage_api_key",
         "xiaomi_api_key",

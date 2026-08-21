@@ -80,6 +80,10 @@ func New(boot *qtypes.BootstrapData) Client {
 		),
 		pearl: newOpenAICompatible("pearl", boot.PearlAPIKey),
 		engy:  newOpenAICompatible("engy", boot.EngyAPIKey),
+		poolside: newOpenAICompatible(
+			"poolside",
+			boot.PoolsideAPIKey,
+		),
 		databricks: newDatabricks(
 			boot.DatabricksHost,
 			boot.DatabricksToken,
@@ -141,6 +145,7 @@ type multiClient struct {
 	neurometric         *openAICompatibleClient
 	pearl               *openAICompatibleClient
 	engy                *openAICompatibleClient
+	poolside            *openAICompatibleClient
 	databricks          *openAICompatibleClient
 	zeroG               *zeroGClient
 	alibaba             *openAICompatibleClient
@@ -268,6 +273,8 @@ func (m *multiClient) InvokeStreaming(
 		return m.pearl.InvokeStreaming(ctx, req, body, out, options...)
 	case "engy":
 		return m.engy.InvokeStreaming(ctx, req, body, out, options...)
+	case "poolside":
+		return m.poolside.InvokeStreaming(ctx, req, body, out, options...)
 	case "databricks":
 		return m.databricks.InvokeStreaming(ctx, req, body, out, options...)
 	case "zero-g":
@@ -282,6 +289,6 @@ func (m *multiClient) InvokeStreaming(
 		// Embeddings-only; returns a clear "chat not supported" error.
 		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, telnyx, thinkingmachines, wafer, crusoe, makora, nebius, minimax, chutes, digitalocean, cloudflare-workers-ai, inceptron, morph, atlas-cloud, streamlake, neurometric, pearl, engy, databricks, zero-g, alibaba, azure, xiaomi, cohere)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, telnyx, thinkingmachines, wafer, crusoe, makora, nebius, minimax, chutes, digitalocean, cloudflare-workers-ai, inceptron, morph, atlas-cloud, streamlake, neurometric, pearl, engy, poolside, databricks, zero-g, alibaba, azure, xiaomi, cohere)", provider)
 	}
 }

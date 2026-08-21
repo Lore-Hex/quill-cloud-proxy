@@ -89,6 +89,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "MORPH_API_KEY": "trustedrouter-morph-api-key",
     "NEUROMETRIC_API_KEY": "trustedrouter-neurometric-api-key",
     "PEARL_RESEARCH_API_KEY": "trustedrouter-pearl-api-key",
+    "POOLSIDE_API_KEY": "trustedrouter-poolside-api-key",
     "RUNWAY_API_KEY": "trustedrouter-runway-api-key",
     "STREAMLAKE_API_KEY": "trustedrouter-streamlake-api-key",
     "TELNYX_API_KEY": "trustedrouter-telnyx-api-key",

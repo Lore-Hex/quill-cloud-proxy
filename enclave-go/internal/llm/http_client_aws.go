@@ -83,6 +83,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com", CID: 3, Port: 8047},
 	{Host: "trustedrouter-foundry-eastus2.openai.azure.com", CID: 3, Port: 8053},
 	{Host: "trustedrouter-foundry-eastus2.services.ai.azure.com", CID: 3, Port: 8054},
+	{Host: "inference.poolside.ai", CID: 3, Port: 8055},
 	// Chutes discovery and encrypted inference relay. Prompt bytes remain
 	// encrypted end-to-end between this enclave and the attested GPU worker.
 	{Host: "llm.chutes.ai", CID: 3, Port: 8049},

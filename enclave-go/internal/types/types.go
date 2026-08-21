@@ -120,6 +120,7 @@ type BootstrapData struct {
 	NeurometricAPIKey            string `json:"neurometric_api_key,omitempty"`
 	PearlAPIKey                  string `json:"pearl_api_key,omitempty"`
 	EngyAPIKey                   string `json:"engy_api_key,omitempty"`
+	PoolsideAPIKey               string `json:"poolside_api_key,omitempty"`
 	DatabricksToken              string `json:"databricks_token,omitempty"`
 	DatabricksHost               string `json:"databricks_host,omitempty"`
 	ZeroGAPIKey                  string `json:"zero_g_api_key,omitempty"`
