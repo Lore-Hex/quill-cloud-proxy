@@ -26,6 +26,8 @@ def test_gcp_multi_launch_policy_allows_deployed_env_overrides() -> None:
     assert "QUILL_NEUROMETRIC_SECRET" in allowed_envs
     assert "QUILL_ENGY_SECRET" in metadata_envs
     assert "QUILL_ENGY_SECRET" in allowed_envs
+    assert "QUILL_POOLSIDE_SECRET" in metadata_envs
+    assert "QUILL_POOLSIDE_SECRET" in allowed_envs
     assert "QUILL_ALIBABA_SECRET" in metadata_envs
     assert "QUILL_ALIBABA_SECRET" in allowed_envs
     assert "QUILL_AZURE_SECRET" in metadata_envs
@@ -127,6 +129,24 @@ def test_gcp_bootstrap_grants_workload_access_to_engy_secret() -> None:
     assert 'if [ "${QUILL_ENGY_SECRET+x}" != "x" ]; then' in deploy
     assert "gc secrets describe trustedrouter-engy-api-key" in deploy
     assert 'ENGY_TEE_ENV="|tee-env-QUILL_ENGY_SECRET=${QUILL_ENGY_SECRET}"' in deploy
+
+
+def test_poolside_secret_is_wired_across_gcp_and_aws() -> None:
+    bootstrap = (REPO_ROOT / "tools" / "deploy-gcp-bootstrap.sh").read_text()
+    deploy = (REPO_ROOT / "tools" / "deploy-gcp-mig.sh").read_text()
+    sync = (REPO_ROOT / "tools" / "sync-secrets-to-aws.sh").read_text()
+    aws_deploy = (REPO_ROOT / "tools" / "deploy-aws-nitro.sh").read_text()
+    tunnel = (REPO_ROOT / "enclave-go" / "internal" / "llm" / "http_client_aws.go").read_text()
+
+    assert 'POOLSIDE_SECRET="${POOLSIDE_SECRET:-trustedrouter-poolside-api-key}"' in bootstrap
+    assert '"$POOLSIDE_SECRET" \\' in bootstrap
+    assert (
+        'QUILL_POOLSIDE_SECRET="${QUILL_POOLSIDE_SECRET:-trustedrouter-poolside-api-key}"'
+    ) in deploy
+    assert "tee-env-QUILL_POOLSIDE_SECRET=${QUILL_POOLSIDE_SECRET}" in deploy
+    assert "trustedrouter-poolside-api-key" in sync
+    assert "write_vsock_unit 8055 inference.poolside.ai" in aws_deploy
+    assert 'Host: "inference.poolside.ai", CID: 3, Port: 8055' in tunnel
 
 
 def test_gcp_bootstrap_grants_workload_access_to_direct_video_secrets() -> None:

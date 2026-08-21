@@ -22,6 +22,7 @@ class QuillSecretSourcesTests(unittest.TestCase):
             "DATABRICKS_TOKEN": "trustedrouter-databricks-token",
             "ENGY_API_KEY": "trustedrouter-engy-api-key",
             "PEARL_RESEARCH_API_KEY": "trustedrouter-pearl-api-key",
+            "POOLSIDE_API_KEY": "trustedrouter-poolside-api-key",
             "TELNYX_API_KEY": "trustedrouter-telnyx-api-key",
             "ZERO_G_ALL_API_KEY": "trustedrouter-zero-g-api-key",
         }

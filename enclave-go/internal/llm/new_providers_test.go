@@ -29,7 +29,7 @@ func TestNewProviderNormalizationAndBYOKPolicy(t *testing.T) {
 	if isOpenAICompatibleBYOKProvider("cloudflare-workers-ai") {
 		t.Fatal("cloudflare BYOK needs an account id and must stay disabled")
 	}
-	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake", "neurometric", "pearl", "engy", "databricks", "zero-g", "alibaba"} {
+	for _, provider := range []string{"inceptron", "morph", "atlas-cloud", "streamlake", "neurometric", "pearl", "engy", "poolside", "databricks", "zero-g", "alibaba"} {
 		if isOpenAICompatibleBYOKProvider(provider) {
 			t.Errorf("%s must use only the operator-key prepaid path", provider)
 		}
@@ -51,6 +51,7 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 		NeurometricAPIKey:            "neurometric-key",
 		PearlAPIKey:                  "pearl-key",
 		EngyAPIKey:                   "engy-key",
+		PoolsideAPIKey:               "poolside-key",
 		DatabricksToken:              "databricks-token",
 		DatabricksHost:               "dbc-1234.cloud.databricks.com",
 		ZeroGAPIKey:                  "zero-g-key",
@@ -89,6 +90,7 @@ func TestMultiClientConstructsOpenAICompatibleProviderEndpoints(t *testing.T) {
 		"neurometric": {client.neurometric, "https://wharf.neurometric.ai/v1", "neurometric-key"},
 		"pearl":       {client.pearl, "https://inference.pearlresearch.ai/v1", "pearl-key"},
 		"engy":        {client.engy, "https://api.engy.ai/v1", "engy-key"},
+		"poolside":    {client.poolside, "https://inference.poolside.ai/v1", "poolside-key"},
 		"databricks": {
 			client.databricks,
 			"https://dbc-1234.cloud.databricks.com/serving-endpoints",
@@ -128,6 +130,7 @@ func TestNewProvidersPreserveAuthorizedUpstreamModelID(t *testing.T) {
 		{"neurometric", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b"},
 		{"pearl", "deepseek/deepseek-v4-pro", "deepseek-ai/DeepSeek-V4-Pro"},
 		{"engy", "z-ai/glm-5.2", "glm-5.2"},
+		{"poolside", "poolside/laguna-s-2.1", "poolside/laguna-s-2.1"},
 		{"databricks", "z-ai/glm-5.2", "databricks-glm-5-2"},
 		{"zero-g", "z-ai/glm-5.2", "glm-5.2"},
 		{"alibaba", "qwen/qwen3.7-flash", "qwen3.7-flash"},

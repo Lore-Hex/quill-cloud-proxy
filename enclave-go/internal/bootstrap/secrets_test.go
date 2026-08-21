@@ -199,8 +199,8 @@ func TestSecretBindingsAssignDistinctFields(t *testing.T) {
 // TestSealerBindingTableMatchesSecretBindings enforce the other two corners of
 // that triangle.
 func TestSecretBindingsTableIsWellFormed(t *testing.T) {
-	if len(secretBindings) != 61 {
-		t.Errorf("secretBindings has %d entries, want 61", len(secretBindings))
+	if len(secretBindings) != 62 {
+		t.Errorf("secretBindings has %d entries, want 62", len(secretBindings))
 	}
 	providers := 0
 	envs := map[string]string{}
@@ -218,8 +218,8 @@ func TestSecretBindingsTableIsWellFormed(t *testing.T) {
 			envs[env] = binding.label
 		}
 	}
-	if providers != 52 {
-		t.Errorf("%d provider bindings, want 52 — the 'at least one provider' guard counts these", providers)
+	if providers != 53 {
+		t.Errorf("%d provider bindings, want 53 — the 'at least one provider' guard counts these", providers)
 	}
 }
 

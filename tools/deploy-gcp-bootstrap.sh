@@ -89,6 +89,7 @@ STREAMLAKE_SECRET="${STREAMLAKE_SECRET:-trustedrouter-streamlake-api-key}"
 NEUROMETRIC_SECRET="${NEUROMETRIC_SECRET:-trustedrouter-neurometric-api-key}"
 PEARL_SECRET="${PEARL_SECRET:-trustedrouter-pearl-api-key}"
 ENGY_SECRET="${ENGY_SECRET:-trustedrouter-engy-api-key}"
+POOLSIDE_SECRET="${POOLSIDE_SECRET:-trustedrouter-poolside-api-key}"
 DATABRICKS_SECRET="${DATABRICKS_SECRET:-trustedrouter-databricks-token}"
 DATABRICKS_HOST_SECRET="${DATABRICKS_HOST_SECRET:-trustedrouter-databricks-host}"
 ALIBABA_SECRET="${ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
@@ -212,6 +213,7 @@ for secret in \
   "$NEUROMETRIC_SECRET" \
   "$PEARL_SECRET" \
   "$ENGY_SECRET" \
+  "$POOLSIDE_SECRET" \
   "$DATABRICKS_SECRET" \
   "$DATABRICKS_HOST_SECRET" \
   "$ALIBABA_SECRET" \

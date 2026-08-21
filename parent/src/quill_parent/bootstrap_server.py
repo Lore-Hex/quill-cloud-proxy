@@ -123,6 +123,7 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("makora_api_key", "trustedrouter-makora-api-key"),
     ("nebius_api_key", "trustedrouter-nebius-api-key"),
     ("minimax_api_key", "trustedrouter-minimax-api-key"),
+    ("poolside_api_key", "trustedrouter-poolside-api-key"),
     # Azure Foundry uses one account key for both its OpenAI-compatible and
     # native Anthropic deployment surfaces.
     ("azure_api_key", "trustedrouter-azure-api-key"),

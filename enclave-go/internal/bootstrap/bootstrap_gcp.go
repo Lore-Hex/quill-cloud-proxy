@@ -57,6 +57,7 @@
 //	QUILL_MAKORA_SECRET          name of the secret holding the Makora API key (llm_multi builds)
 //	QUILL_NEUROMETRIC_SECRET     name of the secret holding the Neurometric API key (llm_multi builds)
 //	QUILL_ENGY_SECRET            name of the secret holding the Engy API key (llm_multi builds)
+//	QUILL_POOLSIDE_SECRET        name of the secret holding the Poolside API key (llm_multi builds)
 //	QUILL_ZERO_G_SECRET          name of the secret holding the unrestricted 0G router API key (llm_multi builds)
 //	QUILL_ALIBABA_SECRET         name of the secret holding the Alibaba Model Studio API key (llm_multi builds)
 //	QUILL_AZURE_SECRET           name of the Azure AI Foundry account key (llm_multi builds)
@@ -153,6 +154,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	neurometricSecret := os.Getenv("QUILL_NEUROMETRIC_SECRET")
 	pearlSecret := os.Getenv("QUILL_PEARL_SECRET")
 	engySecret := os.Getenv("QUILL_ENGY_SECRET")
+	poolsideSecret := os.Getenv("QUILL_POOLSIDE_SECRET")
 	databricksSecret := os.Getenv("QUILL_DATABRICKS_SECRET")
 	databricksHostSecret := os.Getenv("QUILL_DATABRICKS_HOST_SECRET")
 	zeroGSecret := os.Getenv("QUILL_ZERO_G_SECRET")
@@ -219,6 +221,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		neurometricSecret,
 		pearlSecret,
 		engySecret,
+		poolsideSecret,
 		databricksSecret,
 		zeroGSecret,
 		alibabaSecret,
@@ -551,6 +554,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: engy key: %w", err)
 		}
 	}
+	var poolsideKey []byte
+	if poolsideSecret != "" {
+		poolsideKey, err = fetchSecret(ctx, httpc, token, project, poolsideSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: poolside key: %w", err)
+		}
+	}
 	var databricksToken []byte
 	if databricksSecret != "" {
 		databricksToken, err = fetchSecret(ctx, httpc, token, project, databricksSecret)
@@ -730,6 +740,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		NeurometricAPIKey:            strings.TrimSpace(string(neurometricKey)),
 		PearlAPIKey:                  strings.TrimSpace(string(pearlKey)),
 		EngyAPIKey:                   strings.TrimSpace(string(engyKey)),
+		PoolsideAPIKey:               strings.TrimSpace(string(poolsideKey)),
 		DatabricksToken:              strings.TrimSpace(string(databricksToken)),
 		DatabricksHost:               strings.TrimSpace(string(databricksHost)),
 		ZeroGAPIKey:                  strings.TrimSpace(string(zeroGKey)),
