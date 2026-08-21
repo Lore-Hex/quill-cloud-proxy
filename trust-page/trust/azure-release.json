@@ -1,6 +1,6 @@
 {
   "accepted_hostdata": [
-    "05476b437efe8dd6f5aa0690176f4515d6fe0007f2a748cee1eb4263a7277f3d",
+    "2783f2d6888c2f9aca6650aa041e118236c6468a1aa5a303bf2a66ad6208784a",
     "fe7b9515bd1fd71455acd5cfa84c4a36c6837a849631a46a4348ac49b43a5281"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
@@ -18,7 +18,7 @@
     "prompt_output_storage": false
   },
   "evidence_note": "MAA re-attests the SEV-SNP report; verifiers see Microsoft's assertion, not the raw hardware report or the AMD certificate chain.",
-  "hostdata": "05476b437efe8dd6f5aa0690176f4515d6fe0007f2a748cee1eb4263a7277f3d",
+  "hostdata": "2783f2d6888c2f9aca6650aa041e118236c6468a1aa5a303bf2a66ad6208784a",
   "measurement_type": "sev-snp-hostdata-sha256",
   "platform": "azure-confidential-containers-sev-snp",
   "regions": [
@@ -26,7 +26,7 @@
       "attestation_issuer": "https://trquilluaen.uaen.attest.azure.net",
       "attestation_url": "https://api-azure.trustedrouter.com/attestation",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "05476b437efe8dd6f5aa0690176f4515d6fe0007f2a748cee1eb4263a7277f3d",
+      "hostdata": "2783f2d6888c2f9aca6650aa041e118236c6468a1aa5a303bf2a66ad6208784a",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866"
     },
     {
