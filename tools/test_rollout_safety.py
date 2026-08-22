@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from pathlib import Path
 import re
 import unittest
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -127,6 +126,8 @@ class RolloutSafetyTests(unittest.TestCase):
         # failures terminate this region before the next workflow step starts.
         self.assertIn("rollout_step() {", function)
         self.assertIn('exit "${step_status}"', function)
+        self.assertIn("trap on_exit EXIT", function)
+        self.assertIn("bash tools/recover-gcp-region.sh", function)
         for command in (
             'rollout_step update_drain set "${region}"',
             "rollout_step reconcile_dns",
@@ -226,16 +227,59 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn('seq 1 "${wait_rounds}"', secondary)
         self.assertIn("(${i}/${wait_rounds})", secondary)
 
-    def test_pre_roll_failure_only_clears_drain_when_template_is_unchanged(self) -> None:
+    def test_primary_and_secondary_failures_restore_verified_previous_template(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+        secondary = (ROOT / "tools" / "roll-secondary-region.sh").read_text(
+            encoding="utf-8"
+        )
+        recovery = (ROOT / "tools" / "recover-gcp-region.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "Recover us-central1 after any failed rollout step", workflow
+        )
+        self.assertIn("always() && (failure() || steps.canary_us.outcome == 'failure')", workflow)
+        self.assertIn("bash tools/recover-gcp-region.sh", workflow)
+        self.assertIn("bash tools/recover-gcp-region.sh", secondary)
+        self.assertIn("trap 'exit 130' INT", secondary)
+        self.assertIn("trap 'exit 143' TERM", secondary)
+        self.assertIn("trap 'exit 130' INT", recovery)
+        self.assertIn("trap 'exit 143' TERM", recovery)
+        self.assertIn('update_drain set', recovery)
+        self.assertIn('set-instance-template "${mig}"', recovery)
+        self.assertIn("resolve_template_digest", recovery)
+        self.assertIn("wait-canonical-drained.sh", recovery)
+        self.assertIn("verify-region-before-dns.sh", recovery)
+        self.assertIn('update_drain clear', recovery)
+        self.assertLess(
+            recovery.index('update_drain set'),
+            recovery.index('set-instance-template "${mig}"'),
+        )
+        self.assertLess(
+            recovery.index("verify-region-before-dns.sh"),
+            recovery.rindex('update_drain clear'),
+        )
+
+    def test_deploy_preflights_runtime_access_to_every_referenced_secret(self) -> None:
+        deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
+
+        preflight = deploy.index("verify-gcp-runtime-secret-access.py")
+        template = deploy.index("gc compute instance-templates create")
+        self.assertLess(preflight, template)
+        self.assertIn("compgen -A variable", deploy)
+        self.assertIn("QUILL_*_SECRET|ACME_FALLBACK_EAB_SECRET", deploy)
+        self.assertIn('--service-account "${WORKLOAD_SA}"', deploy)
+
+    def test_recovery_and_secret_preflight_changes_trigger_deployment(self) -> None:
         workflow = (
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertIn(
-            "Clear a stale drain when the primary template never changed", workflow
-        )
-        self.assertIn('[ "${current}" != "${PREV_US}" ]', workflow)
-        self.assertIn("--clear-drain-region us-central1", workflow)
+        self.assertIn('- "tools/recover-gcp-region.sh"', workflow)
+        self.assertIn('- "tools/verify-gcp-runtime-secret-access.py"', workflow)
 
     def test_public_allowlist_is_published_before_rollout_and_collapsed_after(self) -> None:
         workflow = (
