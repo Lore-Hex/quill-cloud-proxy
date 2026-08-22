@@ -7,8 +7,7 @@
   "attestation_format": "microsoft-azure-attestation-jwt",
   "attestation_issuers": [
     "https://trquilluaen.uaen.attest.azure.net",
-    "https://trquillsyd.eau.attest.azure.net",
-    "https://trquillsea.sasia.attest.azure.net"
+    "https://trquillsyd.eau.attest.azure.net"
   ],
   "attestation_type": "sevsnpvm",
   "data_policy": {
