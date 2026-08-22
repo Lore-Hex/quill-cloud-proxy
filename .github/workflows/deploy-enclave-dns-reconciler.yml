@@ -6,6 +6,7 @@ on:
     paths:
       - "tools/reconcile-enclave-dns.py"
       - "tools/test_reconcile_enclave_dns.py"
+      - "tools/test_dns_reconciler_scheduler.py"
       - "tools/verify-attestation.py"
       - "tools/test_verify_attestation.py"
       - "tools/Dockerfile.reconciler"
@@ -26,6 +27,9 @@ env:
   REGION: us-central1
   IMAGE_REPOSITORY: us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-dns-reconciler
   JOB_NAME: enclave-dns-reconciler
+  SCHEDULER_NAME: enclave-dns-reconciler-tick
+  SCHEDULER_SCHEDULE: "*/2 * * * *"
+  SCHEDULER_SERVICE_ACCOUNT: enclave-dns-reconciler@quill-cloud-proxy.iam.gserviceaccount.com
 
 jobs:
   test-build-deploy:
@@ -41,6 +45,7 @@ jobs:
           uv run --script tools/verify-attestation.py --help >/dev/null
           python3 tools/test_verify_attestation.py
           python3 tools/test_reconcile_enclave_dns.py
+          python3 tools/test_dns_reconciler_scheduler.py
 
       - name: Authenticate to GCP via WIF
         uses: google-github-actions/auth@v2
@@ -68,13 +73,48 @@ jobs:
           test -n "${digest}"
           echo "ref=${IMAGE_REPOSITORY}@${digest}" >> "${GITHUB_OUTPUT}"
 
-      - name: Update and verify the scheduled job
+      - name: Update the reconciler job and scheduler
         run: |
           set -euo pipefail
           gcloud run jobs update "${JOB_NAME}" \
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
             --image="${{ steps.image.outputs.ref }}"
+
+          run_uri="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${JOB_NAME}:run"
+          retry_flags=(
+            --attempt-deadline=30s
+            --max-retry-attempts=5
+            --min-backoff=10s
+            --max-backoff=30s
+            --max-doublings=2
+            --max-retry-duration=110s
+          )
+          if gcloud scheduler jobs describe "${SCHEDULER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --location="${REGION}" >/dev/null 2>&1; then
+            gcloud scheduler jobs update http "${SCHEDULER_NAME}" \
+              --project="${PROJECT_ID}" \
+              --location="${REGION}" \
+              --schedule="${SCHEDULER_SCHEDULE}" \
+              --uri="${run_uri}" \
+              --http-method=POST \
+              --oauth-service-account-email="${SCHEDULER_SERVICE_ACCOUNT}" \
+              "${retry_flags[@]}"
+          else
+            gcloud scheduler jobs create http "${SCHEDULER_NAME}" \
+              --project="${PROJECT_ID}" \
+              --location="${REGION}" \
+              --schedule="${SCHEDULER_SCHEDULE}" \
+              --uri="${run_uri}" \
+              --http-method=POST \
+              --oauth-service-account-email="${SCHEDULER_SERVICE_ACCOUNT}" \
+              "${retry_flags[@]}"
+          fi
+
+      - name: Verify the reconciler job
+        run: |
+          set -euo pipefail
           gcloud run jobs execute "${JOB_NAME}" \
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
