@@ -243,6 +243,10 @@ func allowedPublicIP(address netip.Addr) bool {
 	return true
 }
 
+// AllowedPublicIP exposes the enclave's single fail-closed public-address
+// policy to other provider adapters that fetch caller-supplied URLs.
+func AllowedPublicIP(address netip.Addr) bool { return allowedPublicIP(address) }
+
 var globalIPv6Unicast = netip.MustParsePrefix("2000::/3")
 
 var reservedEgressPrefixes = mustEgressPrefixes(
@@ -251,6 +255,8 @@ var reservedEgressPrefixes = mustEgressPrefixes(
 	// used INSIDE clouds for internal services — an owner "endpoint" there
 	// is an internal target, not a public one.
 	"100.64.0.0/10",
+	// Azure's platform virtual IP exposes host services from guest VMs.
+	"168.63.129.16/32",
 	"192.0.0.0/24",
 	"192.0.2.0/24",
 	"198.18.0.0/15",

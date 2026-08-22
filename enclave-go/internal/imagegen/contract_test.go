@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"reflect"
@@ -17,11 +20,25 @@ import (
 
 func TestModelRegistryIsExactAndDefensivelyCopied(t *testing.T) {
 	want := []string{
+		"black-forest-labs/flux-2-flex",
+		"black-forest-labs/flux-2-klein-4b",
+		"black-forest-labs/flux-2-klein-9b",
+		"black-forest-labs/flux-2-max",
+		"black-forest-labs/flux-2-pro",
+		"decart/lucy-image-2",
 		"google/gemini-3.1-flash-image",
 		"google/gemini-3.1-flash-image-preview",
 		"openai/gpt-image-1",
 		"openai/gpt-image-1-mini",
 		"openai/gpt-image-2",
+		"recraft/recraftv2",
+		"recraft/recraftv3",
+		"recraft/recraftv4",
+		"recraft/recraftv4_1",
+		"recraft/recraftv4_1_pro",
+		"recraft/recraftv4_1_utility",
+		"recraft/recraftv4_1_utility_pro",
+		"recraft/recraftv4_pro",
 		"x-ai/grok-imagine-image-2.0",
 		"x-ai/grok-imagine-image-quality",
 	}
@@ -110,6 +127,36 @@ func TestParseUsesModelSpecForNormalizedParameters(t *testing.T) {
 			wantRes: "2K", wantAspect: "auto", wantQuality: "low", wantQuote: 63_300,
 		},
 		{
+			name:       "recraft fixed price",
+			body:       `{"model":"recraft/recraftv4_1","prompt":"cat"}`,
+			wantRes:    "1K",
+			wantAspect: "1:1",
+			wantQuote:  36_925,
+		},
+		{
+			name:       "bfl fixed price",
+			body:       `{"model":"black-forest-labs/flux-2-klein-4b","prompt":"cat"}`,
+			wantRes:    "1K",
+			wantAspect: "1:1",
+			wantFormat: "jpeg",
+			wantQuote:  14_770,
+		},
+		{
+			name:      "decart requires a reference",
+			body:      `{"model":"decart/lucy-image-2","prompt":"edit it"}`,
+			wantParam: "input_references",
+		},
+		{
+			name:    "decart fixed price",
+			body:    `{"model":"decart/lucy-image-2","prompt":"edit it","resolution":"480p","input_references":[{"type":"image_url","image_url":{"url":"data:image/png;base64,aW1hZ2U="}}]}`,
+			wantRes: "480p", wantQuote: 10_550,
+		},
+		{
+			name:    "decart resolution is case insensitive",
+			body:    `{"model":"decart/lucy-image-2","prompt":"edit it","resolution":"720P","input_references":[{"type":"image_url","image_url":{"url":"data:image/png;base64,aW1hZ2U="}}]}`,
+			wantRes: "720p", wantQuote: 21_100,
+		},
+		{
 			name:      "unknown passthrough",
 			body:      `{"model":"openai/gpt-image-2","prompt":"cat","provider":{"options":{"openai":{"secret":true}}}}`,
 			wantParam: "provider.options.openai.secret",
@@ -176,6 +223,13 @@ func TestNativeProviderTranslationAndValidatedResponse(t *testing.T) {
 			width: 2496, height: 1664,
 			wantBody: map[string]any{"model": "grok-imagine-image-2.0", "prompt": "cat", "n": float64(1), "response_format": "b64_json", "resolution": "2k", "quality": "low", "aspect_ratio": "3:2"},
 		},
+		{
+			name:     "recraft",
+			request:  `{"model":"recraft/recraftv4_1","prompt":"cat"}`,
+			wantHost: "external.api.recraft.ai", managedKey: "recraft-key", wantMedia: "image/png",
+			width: 1024, height: 1024,
+			wantBody: map[string]any{"model": "recraftv4_1", "prompt": "cat", "n": float64(1), "response_format": "b64_json", "size": "1024x1024"},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			resolved, err := Parse([]byte(tt.request))
@@ -210,8 +264,10 @@ func TestNativeProviderTranslationAndValidatedResponse(t *testing.T) {
 			keys := ProviderKeys{}
 			if resolved.Spec.Provider == "openai" {
 				keys.OpenAI = tt.managedKey
-			} else {
+			} else if resolved.Spec.Provider == "grok" {
 				keys.XAI = tt.managedKey
+			} else {
+				keys.Recraft = tt.managedKey
 			}
 			result, err := NewRegistry(keys, client).Generate(context.Background(), resolved, "", "image-one")
 			if err != nil {
@@ -222,6 +278,163 @@ func TestNativeProviderTranslationAndValidatedResponse(t *testing.T) {
 				t.Fatalf("result = %#v", result)
 			}
 		})
+	}
+}
+
+func TestBFLUsesProviderReturnedRegionalPollingURL(t *testing.T) {
+	resolved, err := Parse([]byte(`{"model":"black-forest-labs/flux-2-klein-4b","prompt":"cat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		response := func(status int, body []byte) (*http.Response, error) {
+			return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header)}, nil
+		}
+		switch requests {
+		case 1:
+			if req.Method != http.MethodPost || req.URL.String() != "https://api.bfl.ai/v1/flux-2-klein-4b" {
+				t.Fatalf("submit request = %s %s", req.Method, req.URL)
+			}
+			if req.Header.Get("x-key") != "bfl-key" || req.Header.Get("Idempotency-Key") != "bfl-one" {
+				t.Fatalf("submit headers = %#v", req.Header)
+			}
+			return response(200, []byte(`{"id":"job-one","polling_url":"https://api.eu2.bfl.ai/v1/get_result?id=job-one"}`))
+		case 2:
+			if req.Method != http.MethodGet || req.URL.String() != "https://api.eu2.bfl.ai/v1/get_result?id=job-one" {
+				t.Fatalf("poll request = %s %s", req.Method, req.URL)
+			}
+			if req.Header.Get("x-key") != "bfl-key" {
+				t.Fatalf("poll x-key = %q", req.Header.Get("x-key"))
+			}
+			return response(200, []byte(`{"status":"Ready","result":{"sample":"https://delivery.eu2.bfl.ai/generated/job-one.jpg?sig=short-lived"}}`))
+		case 3:
+			if req.Method != http.MethodGet || req.URL.Host != "delivery.eu2.bfl.ai" {
+				t.Fatalf("download request = %s %s", req.Method, req.URL)
+			}
+			return response(200, testJPEGBytes(t, 1024, 1024))
+		default:
+			t.Fatalf("unexpected request %d: %s", requests, req.URL)
+			return nil, nil
+		}
+	})}
+	result, err := NewRegistry(ProviderKeys{BFL: "bfl-key"}, client).Generate(
+		t.Context(), resolved, "", "bfl-one",
+	)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if requests != 3 || len(result.Images) != 1 || result.Images[0].MediaType != "image/jpeg" {
+		t.Fatalf("requests=%d result=%#v", requests, result)
+	}
+}
+
+func TestBFLPollingBacksOffAcrossTransientStatus(t *testing.T) {
+	resolved, err := Parse([]byte(`{"model":"black-forest-labs/flux-2-klein-4b","prompt":"cat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		response := func(status int, body []byte) (*http.Response, error) {
+			return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header)}, nil
+		}
+		switch requests {
+		case 1:
+			return response(200, []byte(`{"id":"job-one","polling_url":"https://api.bfl.ai/v1/get_result?id=job-one"}`))
+		case 2:
+			return response(http.StatusTooManyRequests, []byte(`{"message":"slow down"}`))
+		case 3:
+			return response(200, []byte(`{"status":"Ready","result":{"sample":"https://delivery.bfl.ai/generated/job-one.jpg"}}`))
+		case 4:
+			return response(200, testJPEGBytes(t, 1024, 1024))
+		default:
+			t.Fatalf("unexpected request %d: %s", requests, req.URL)
+			return nil, nil
+		}
+	})}
+	result, err := NewRegistry(ProviderKeys{BFL: "bfl-key"}, client).Generate(
+		t.Context(), resolved, "", "bfl-retry",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 4 || len(result.Images) != 1 {
+		t.Fatalf("requests=%d result=%#v", requests, result)
+	}
+}
+
+func TestBFLRejectsUntrustedOrMismatchedPollingURLs(t *testing.T) {
+	for _, raw := range []string{
+		"https://evil.example/v1/get_result?id=job-one",
+		"http://api.eu2.bfl.ai/v1/get_result?id=job-one",
+		"https://api.eu2.bfl.ai/v1/other?id=job-one",
+		"https://api.eu2.bfl.ai/v1/get_result?id=another",
+		"https://api.eu2.bfl.ai/v1/get_result?id=job-one&next=https://evil.example",
+		"https://api.eu2.bfl.ai:8443/v1/get_result?id=job-one",
+		"https://user@api.eu2.bfl.ai/v1/get_result?id=job-one",
+	} {
+		if got, err := validateBFLPollingURL(raw, "job-one"); err == nil {
+			t.Fatalf("accepted polling URL %q as %q", raw, got)
+		}
+	}
+	got, err := validateBFLPollingURL("https://api.eu2.bfl.ai/v1/get_result?id=job-one", "job-one")
+	if err != nil || got == "" {
+		t.Fatalf("rejected valid polling URL: got=%q err=%v", got, err)
+	}
+}
+
+func TestDecartUsesValidatedMultipartImageInput(t *testing.T) {
+	input := testPNG(t, 8, 8)
+	resolved, err := Parse([]byte(`{"model":"decart/lucy-image-2","prompt":"make it blue","resolution":"480p","input_references":[{"type":"image_url","image_url":{"url":"data:image/png;base64,` + input + `"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPost || req.URL.String() != "https://api.decart.ai/v1/generate/lucy-image-2" {
+			t.Fatalf("request = %s %s", req.Method, req.URL)
+		}
+		if req.Header.Get("X-API-KEY") != "decart-key" || req.Header.Get("Idempotency-Key") != "decart-one" {
+			t.Fatalf("headers = %#v", req.Header)
+		}
+		_, params, parseErr := mime.ParseMediaType(req.Header.Get("Content-Type"))
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		reader := multipart.NewReader(req.Body, params["boundary"])
+		fields := map[string][]byte{}
+		for {
+			part, nextErr := reader.NextPart()
+			if nextErr == io.EOF {
+				break
+			}
+			if nextErr != nil {
+				t.Fatal(nextErr)
+			}
+			fields[part.FormName()], nextErr = io.ReadAll(part)
+			if nextErr != nil {
+				t.Fatal(nextErr)
+			}
+		}
+		if string(fields["prompt"]) != "make it blue" || string(fields["resolution"]) != "480p" {
+			t.Fatalf("multipart fields = %#v", fields)
+		}
+		if _, _, decodeErr := image.DecodeConfig(bytes.NewReader(fields["data"])); decodeErr != nil {
+			t.Fatalf("data field is not a normalized image: %v", decodeErr)
+		}
+		output, _ := base64.StdEncoding.DecodeString(testPNG(t, 512, 512))
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(output)), Header: make(http.Header)}, nil
+	})}
+	result, err := NewRegistry(ProviderKeys{Decart: "decart-key"}, client).Generate(
+		t.Context(), resolved, "", "decart-one",
+	)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(result.Images) != 1 || result.Images[0].MediaType != "image/png" {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
@@ -272,6 +485,30 @@ func TestNativeProviderOutputShapeMustMatchTheNormalizedRequest(t *testing.T) {
 		{
 			body:      `{"model":"x-ai/grok-imagine-image-2.0","prompt":"cat","resolution":"1K","aspect_ratio":"3:2"}`,
 			generated: GeneratedImage{Width: 1248, Height: 832},
+		},
+		{
+			body:      `{"model":"recraft/recraftv4_1","prompt":"cat"}`,
+			generated: GeneratedImage{Width: 2048, Height: 2048}, wantError: true,
+		},
+		{
+			body:      `{"model":"recraft/recraftv4_1","prompt":"cat"}`,
+			generated: GeneratedImage{Width: 1024, Height: 1024},
+		},
+		{
+			body:      `{"model":"black-forest-labs/flux-2-klein-4b","prompt":"cat"}`,
+			generated: GeneratedImage{Width: 2048, Height: 2048}, wantError: true,
+		},
+		{
+			body:      `{"model":"black-forest-labs/flux-2-klein-4b","prompt":"cat"}`,
+			generated: GeneratedImage{Width: 1024, Height: 1024},
+		},
+		{
+			body:      `{"model":"decart/lucy-image-2","prompt":"edit","resolution":"480p","input_references":[{"type":"image_url","image_url":{"url":"data:image/png;base64,aW1hZ2U="}}]}`,
+			generated: GeneratedImage{Width: 720, Height: 720}, wantError: true,
+		},
+		{
+			body:      `{"model":"decart/lucy-image-2","prompt":"edit","resolution":"480p","input_references":[{"type":"image_url","image_url":{"url":"data:image/png;base64,aW1hZ2U="}}]}`,
+			generated: GeneratedImage{Width: 480, Height: 480},
 		},
 	} {
 		resolved, err := Parse([]byte(tt.body))
@@ -401,4 +638,15 @@ func testPNG(t *testing.T, width, height int) string {
 		t.Fatal(err)
 	}
 	return base64.StdEncoding.EncodeToString(out.Bytes())
+}
+
+func testJPEGBytes(t *testing.T, width, height int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
 }

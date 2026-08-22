@@ -89,6 +89,11 @@ STREAMLAKE_SECRET="${STREAMLAKE_SECRET:-trustedrouter-streamlake-api-key}"
 NEUROMETRIC_SECRET="${NEUROMETRIC_SECRET:-trustedrouter-neurometric-api-key}"
 PEARL_SECRET="${PEARL_SECRET:-trustedrouter-pearl-api-key}"
 ENGY_SECRET="${ENGY_SECRET:-trustedrouter-engy-api-key}"
+STEPFUN_SECRET="${STEPFUN_SECRET:-trustedrouter-stepfun-api-key}"
+RELACE_SECRET="${RELACE_SECRET:-trustedrouter-relace-api-key}"
+DECART_SECRET="${DECART_SECRET:-trustedrouter-decart-api-key}"
+RECRAFT_SECRET="${RECRAFT_SECRET:-trustedrouter-recraft-api-key}"
+BFL_SECRET="${BFL_SECRET:-trustedrouter-bfl-api-key}"
 DATABRICKS_SECRET="${DATABRICKS_SECRET:-trustedrouter-databricks-token}"
 DATABRICKS_HOST_SECRET="${DATABRICKS_HOST_SECRET:-trustedrouter-databricks-host}"
 ALIBABA_SECRET="${ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
@@ -212,6 +217,11 @@ for secret in \
   "$NEUROMETRIC_SECRET" \
   "$PEARL_SECRET" \
   "$ENGY_SECRET" \
+  "$STEPFUN_SECRET" \
+  "$RELACE_SECRET" \
+  "$DECART_SECRET" \
+  "$RECRAFT_SECRET" \
+  "$BFL_SECRET" \
   "$DATABRICKS_SECRET" \
   "$DATABRICKS_HOST_SECRET" \
   "$ALIBABA_SECRET" \

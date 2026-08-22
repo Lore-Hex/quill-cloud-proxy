@@ -42,6 +42,7 @@ type ModelSpec struct {
 	OutputFormats      []string
 	NativeSizes        map[string]string // normalized aspect ratio -> provider-native pixels
 	Compression        bool
+	MinInputReferences int
 	MaxInputReferences int
 	AllowedPassthrough []string
 	FixedOutputPrices  map[string]int // provider list-price microdollars
@@ -180,6 +181,38 @@ func xaiSpec(id string, qualities []string, prices map[string]int) ModelSpec {
 	}
 }
 
+func fixedSquareSpec(id, provider, upstreamID, format string, prices map[string]int) ModelSpec {
+	formats := []string(nil)
+	if format != "" {
+		formats = []string{format}
+	}
+	return ModelSpec{
+		ID: id, Provider: provider, UpstreamID: upstreamID,
+		Pricing: PricingFixed, SupportsStreaming: false, NMin: 1, NMax: 1,
+		Resolutions: []string{"1K"}, AspectRatios: []string{"1:1"},
+		OutputFormats: formats, FixedOutputPrices: maps.Clone(prices),
+	}
+}
+
+func recraftSpec(id, upstreamID, resolution, nativeSize string, price int) ModelSpec {
+	return ModelSpec{
+		ID: id, Provider: "recraft", UpstreamID: upstreamID,
+		Pricing: PricingFixed, SupportsStreaming: false, NMin: 1, NMax: 1,
+		Resolutions: []string{resolution}, AspectRatios: []string{"1:1"},
+		NativeSizes:       map[string]string{"1:1": nativeSize},
+		FixedOutputPrices: map[string]int{strings.ToLower(resolution): price},
+	}
+}
+
+func decartSpec() ModelSpec {
+	return ModelSpec{
+		ID: "decart/lucy-image-2", Provider: "decart", UpstreamID: "lucy-image-2",
+		Pricing: PricingFixed, SupportsStreaming: false, NMin: 1, NMax: 1,
+		Resolutions: []string{"480p", "720p"}, MinInputReferences: 1, MaxInputReferences: 2,
+		FixedOutputPrices: map[string]int{"480p": 10_000, "720p": 20_000},
+	}
+}
+
 var modelSpecs = func() map[string]ModelSpec {
 	classicShapes := []nativeImageShape{
 		{AspectRatio: "1:1", Size: "1024x1024"},
@@ -203,6 +236,20 @@ var modelSpecs = func() map[string]ModelSpec {
 		xaiSpec("x-ai/grok-imagine-image-2.0", []string{"low", "medium"}, map[string]int{
 			"low_1k": 40_000, "low_2k": 60_000, "medium_1k": 60_000, "medium_2k": 80_000,
 		}),
+		recraftSpec("recraft/recraftv4_1_pro", "recraftv4_1_pro", "2K", "2048x2048", 210_000),
+		recraftSpec("recraft/recraftv4_1_utility_pro", "recraftv4_1_utility_pro", "2K", "2048x2048", 210_000),
+		recraftSpec("recraft/recraftv4_1", "recraftv4_1", "1K", "1024x1024", 35_000),
+		recraftSpec("recraft/recraftv4_1_utility", "recraftv4_1_utility", "1K", "1024x1024", 35_000),
+		recraftSpec("recraft/recraftv4_pro", "recraftv4_pro", "2K", "2048x2048", 250_000),
+		recraftSpec("recraft/recraftv4", "recraftv4", "1K", "1024x1024", 40_000),
+		recraftSpec("recraft/recraftv3", "recraftv3", "1K", "1024x1024", 40_000),
+		recraftSpec("recraft/recraftv2", "recraftv2", "1K", "1024x1024", 22_000),
+		fixedSquareSpec("black-forest-labs/flux-2-klein-4b", "bfl", "flux-2-klein-4b", "jpeg", map[string]int{"1k": 14_000}),
+		fixedSquareSpec("black-forest-labs/flux-2-klein-9b", "bfl", "flux-2-klein-9b", "jpeg", map[string]int{"1k": 15_000}),
+		fixedSquareSpec("black-forest-labs/flux-2-pro", "bfl", "flux-2-pro", "jpeg", map[string]int{"1k": 30_000}),
+		fixedSquareSpec("black-forest-labs/flux-2-max", "bfl", "flux-2-max", "jpeg", map[string]int{"1k": 70_000}),
+		fixedSquareSpec("black-forest-labs/flux-2-flex", "bfl", "flux-2-flex", "jpeg", map[string]int{"1k": 50_000}),
+		decartSpec(),
 	}
 	result := make(map[string]ModelSpec, len(specs))
 	for _, spec := range specs {
@@ -262,8 +309,8 @@ func Parse(raw []byte) (*ResolvedRequest, error) {
 	if n < spec.NMin || n > spec.NMax {
 		return nil, unsupportedRange("n", spec.NMin, spec.NMax)
 	}
-	if len(req.InputReferences) > spec.MaxInputReferences {
-		return nil, unsupportedRange("input_references", 0, spec.MaxInputReferences)
+	if len(req.InputReferences) < spec.MinInputReferences || len(req.InputReferences) > spec.MaxInputReferences {
+		return nil, unsupportedRange("input_references", spec.MinInputReferences, spec.MaxInputReferences)
 	}
 	for i, reference := range req.InputReferences {
 		if reference.Type != "image_url" || strings.TrimSpace(reference.ImageURL.URL) == "" {
@@ -327,8 +374,11 @@ func Parse(raw []byte) (*ResolvedRequest, error) {
 }
 
 func defaultResolution(spec ModelSpec) string {
-	if spec.Pricing == PricingGeminiTokens || spec.Pricing == PricingFixed {
+	if spec.Pricing == PricingGeminiTokens {
 		return "1K"
+	}
+	if spec.Pricing == PricingFixed && len(spec.Resolutions) > 0 {
+		return spec.Resolutions[0]
 	}
 	return ""
 }
@@ -346,6 +396,9 @@ func defaultAspectRatio(spec ModelSpec) string {
 func defaultOutputFormat(spec ModelSpec) string {
 	if spec.Provider == "openai" {
 		return "png"
+	}
+	if len(spec.OutputFormats) > 0 {
+		return spec.OutputFormats[0]
 	}
 	return ""
 }
@@ -400,6 +453,10 @@ func normalizeResolution(raw string) string {
 		return "2K"
 	case "4K":
 		return "4K"
+	case "480P":
+		return "480p"
+	case "720P":
+		return "720p"
 	default:
 		return strings.TrimSpace(raw)
 	}

@@ -25,6 +25,20 @@ func (f imageRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error)
 	return f(req)
 }
 
+func TestFixedPriceNativeImageRouteRejectsUpstreamModelMismatch(t *testing.T) {
+	request, err := imagegen.Parse([]byte(`{"model":"black-forest-labs/flux-2-klein-4b","prompt":"cat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nativeImageRequestForRoute(request, "flux-2-max"); err == nil {
+		t.Fatal("fixed-price upstream mismatch must be rejected")
+	}
+	matched, err := nativeImageRequestForRoute(request, "flux-2-klein-4b")
+	if err != nil || matched.Spec.UpstreamID != "flux-2-klein-4b" {
+		t.Fatalf("matched route = %#v, err=%v", matched, err)
+	}
+}
+
 func TestServeNativeXAIImageUsesFixedQuoteAndSettlesBeforeResponse(t *testing.T) {
 	var mu sync.Mutex
 	var authorize, settle map[string]any

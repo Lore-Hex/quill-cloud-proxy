@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 )
 
 type QueueResult struct {
@@ -41,6 +42,24 @@ type Provider interface {
 	Complete(context.Context, string, string) error
 }
 
+// QueueTimeout lets upload-heavy provider adapters request a bounded timeout
+// without making every provider implement another method.
+func QueueTimeout(provider Provider) time.Duration {
+	const fallback = 45 * time.Second
+	type timeoutProvider interface {
+		QueueTimeout() time.Duration
+	}
+	configured, ok := provider.(timeoutProvider)
+	if !ok {
+		return fallback
+	}
+	timeout := configured.QueueTimeout()
+	if timeout < 5*time.Second || timeout > 5*time.Minute {
+		return fallback
+	}
+	return timeout
+}
+
 type ProviderKeys struct {
 	Venice     string
 	Google     string
@@ -52,6 +71,7 @@ type ProviderKeys struct {
 	Runway     string
 	OpenAI     string
 	Kling      string
+	Decart     string
 }
 
 type Registry struct {
@@ -69,6 +89,7 @@ func NewRegistry(keys ProviderKeys, httpc *http.Client) *Registry {
 		NewRunwayClient(keys.Runway, httpc),
 		NewOpenAIVideoClient(keys.OpenAI, httpc),
 		NewKlingClient(keys.Kling, httpc),
+		NewDecartVideoClient(keys.Decart, httpc),
 		NewVeniceClient(keys.Venice, httpc),
 	)
 }
@@ -148,6 +169,8 @@ func directProviderForModel(modelID string) string {
 		return "openai"
 	case "kling/v3-pro", "kling/o3-pro":
 		return "kling"
+	case "decart/lucy-2.5", "decart/lucy-vton-3.5", "decart/lucy-restyle-2":
+		return "decart"
 	default:
 		return ""
 	}
@@ -157,6 +180,17 @@ type HTTPError struct {
 	Provider  string
 	Status    int
 	Retryable bool
+}
+
+// InputError marks a caller-controlled asset failure. It must never be
+// attributed to a model provider or retried against another paid route.
+type InputError struct{ Message string }
+
+func (e *InputError) Error() string {
+	if e == nil || strings.TrimSpace(e.Message) == "" {
+		return "video input could not be fetched"
+	}
+	return e.Message
 }
 
 func (e *HTTPError) Error() string {
@@ -182,6 +216,10 @@ func IsRetryableProviderError(err error) bool {
 	if err == nil {
 		return false
 	}
+	var inputErr *InputError
+	if AsInputError(err, &inputErr) {
+		return false
+	}
 	var httpErr *HTTPError
 	if AsHTTPError(err, &httpErr) {
 		return httpErr.Retryable
@@ -189,6 +227,22 @@ func IsRetryableProviderError(err error) bool {
 	// Transport failures happen before an HTTP status exists and are safe to
 	// roll over because no provider job id was returned.
 	return true
+}
+
+func AsInputError(err error, target **InputError) bool {
+	for err != nil {
+		if typed, ok := err.(*InputError); ok {
+			*target = typed
+			return true
+		}
+		type unwrapper interface{ Unwrap() error }
+		wrapped, ok := err.(unwrapper)
+		if !ok {
+			return false
+		}
+		err = wrapped.Unwrap()
+	}
+	return false
 }
 
 // AsHTTPError is kept as a tiny wrapper so provider selection code does not

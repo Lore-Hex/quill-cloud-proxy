@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -20,6 +21,8 @@ import (
 )
 
 var videoGateway *videoService
+
+var videoLargeRequestSlots = make(chan struct{}, 2)
 
 type videoService struct {
 	providers *video.Registry
@@ -165,7 +168,16 @@ func maybeServeVideoRoute(
 }
 
 func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []byte, bearer, idempotencyKey string) {
-	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	if len(body) > 1<<20 {
+		select {
+		case videoLargeRequestSlots <- struct{}{}:
+			defer func() { <-videoLargeRequestSlots }()
+		case <-ctx.Done():
+			writeOpenAIError(conn, 499, "request canceled", "invalid_request_error", "client_closed", "")
+			return
+		}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	var req video.CreateRequest
 	if err := decoder.Decode(&req); err != nil {
@@ -335,7 +347,7 @@ func (s *videoService) queueVideoJob(
 		if !ok || !provider.Supports(request) {
 			continue
 		}
-		queueCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		queueCtx, cancel := context.WithTimeout(ctx, video.QueueTimeout(provider))
 		queued, err := provider.QueueResolved(queueCtx, request)
 		cancel()
 		if err == nil {
@@ -637,6 +649,11 @@ func microdollarsJSONNumber(value int) json.Number {
 }
 
 func writeVideoProviderError(conn io.Writer, err error, fallback string) {
+	var inputErr *video.InputError
+	if errors.As(err, &inputErr) {
+		writeOpenAIError(conn, http.StatusBadRequest, inputErr.Error(), "invalid_request_error", "invalid_video_input", "input_references")
+		return
+	}
 	status := videoErrorStatus(err)
 	code := "video_provider_error"
 	if status == 429 {
@@ -646,6 +663,10 @@ func writeVideoProviderError(conn io.Writer, err error, fallback string) {
 }
 
 func videoErrorStatus(err error) int {
+	var inputErr *video.InputError
+	if errors.As(err, &inputErr) {
+		return http.StatusBadRequest
+	}
 	var httpErr *video.HTTPError
 	if errors.As(err, &httpErr) {
 		if httpErr.Status >= 400 && httpErr.Status <= 599 {

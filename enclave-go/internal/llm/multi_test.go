@@ -47,6 +47,9 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"neurometric", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b", "ibm-granite/granite-4.1-8b", false},
 		{"pearl", "deepseek/deepseek-v4-pro", "deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Pro", false},
 		{"engy", "z-ai/glm-5.2", "glm-5.2", "glm-5.2", false},
+		{"stepfun", "stepfun/step-3.7-flash", "step-3.7-flash", "step-3.7-flash", false},
+		{"relace", "moonshotai/kimi-k3", "moonshotai/kimi-k3", "moonshotai/kimi-k3", false},
+		{"relace", "moonshotai/kimi-k3", "", "moonshotai/kimi-k3", false},
 		{"zero-g", "z-ai/glm-5.2", "glm-5.2", "glm-5.2", false},
 		{"alibaba", "qwen/qwen3.7-flash", "qwen3.7-flash", "qwen3.7-flash", false},
 	}
@@ -124,6 +127,8 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				neurometric:      client,
 				pearl:            client,
 				engy:             client,
+				stepfun:          client,
+				relace:           client,
 				zeroG:            newZeroGAt(server.URL, "operator-key", server.Client()),
 				alibaba:          client,
 			}

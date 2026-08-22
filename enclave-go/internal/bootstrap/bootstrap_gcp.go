@@ -57,6 +57,11 @@
 //	QUILL_MAKORA_SECRET          name of the secret holding the Makora API key (llm_multi builds)
 //	QUILL_NEUROMETRIC_SECRET     name of the secret holding the Neurometric API key (llm_multi builds)
 //	QUILL_ENGY_SECRET            name of the secret holding the Engy API key (llm_multi builds)
+//	QUILL_STEPFUN_SECRET         name of the secret holding the StepFun API key (llm_multi builds)
+//	QUILL_RELACE_SECRET          name of the secret holding the Relace API key (llm_multi builds)
+//	QUILL_DECART_SECRET          name of the secret holding the Decart API key (image generation)
+//	QUILL_RECRAFT_SECRET         name of the secret holding the Recraft API key (image generation)
+//	QUILL_BFL_SECRET             name of the secret holding the Black Forest Labs API key (image generation)
 //	QUILL_ZERO_G_SECRET          name of the secret holding the unrestricted 0G router API key (llm_multi builds)
 //	QUILL_ALIBABA_SECRET         name of the secret holding the Alibaba Model Studio API key (llm_multi builds)
 //	QUILL_AZURE_SECRET           name of the Azure AI Foundry account key (llm_multi builds)
@@ -153,6 +158,11 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	neurometricSecret := os.Getenv("QUILL_NEUROMETRIC_SECRET")
 	pearlSecret := os.Getenv("QUILL_PEARL_SECRET")
 	engySecret := os.Getenv("QUILL_ENGY_SECRET")
+	stepfunSecret := os.Getenv("QUILL_STEPFUN_SECRET")
+	relaceSecret := os.Getenv("QUILL_RELACE_SECRET")
+	decartSecret := os.Getenv("QUILL_DECART_SECRET")
+	recraftSecret := os.Getenv("QUILL_RECRAFT_SECRET")
+	bflSecret := os.Getenv("QUILL_BFL_SECRET")
 	databricksSecret := os.Getenv("QUILL_DATABRICKS_SECRET")
 	databricksHostSecret := os.Getenv("QUILL_DATABRICKS_HOST_SECRET")
 	zeroGSecret := os.Getenv("QUILL_ZERO_G_SECRET")
@@ -219,6 +229,11 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		neurometricSecret,
 		pearlSecret,
 		engySecret,
+		stepfunSecret,
+		relaceSecret,
+		decartSecret,
+		recraftSecret,
+		bflSecret,
 		databricksSecret,
 		zeroGSecret,
 		alibabaSecret,
@@ -551,6 +566,41 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 			return nil, fmt.Errorf("bootstrap/gcp: engy key: %w", err)
 		}
 	}
+	var stepfunKey []byte
+	if stepfunSecret != "" {
+		stepfunKey, err = fetchSecret(ctx, httpc, token, project, stepfunSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: stepfun key: %w", err)
+		}
+	}
+	var relaceKey []byte
+	if relaceSecret != "" {
+		relaceKey, err = fetchSecret(ctx, httpc, token, project, relaceSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: relace key: %w", err)
+		}
+	}
+	var decartKey []byte
+	if decartSecret != "" {
+		decartKey, err = fetchSecret(ctx, httpc, token, project, decartSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: decart key: %w", err)
+		}
+	}
+	var recraftKey []byte
+	if recraftSecret != "" {
+		recraftKey, err = fetchSecret(ctx, httpc, token, project, recraftSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: recraft key: %w", err)
+		}
+	}
+	var bflKey []byte
+	if bflSecret != "" {
+		bflKey, err = fetchSecret(ctx, httpc, token, project, bflSecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: bfl key: %w", err)
+		}
+	}
 	var databricksToken []byte
 	if databricksSecret != "" {
 		databricksToken, err = fetchSecret(ctx, httpc, token, project, databricksSecret)
@@ -730,6 +780,11 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		NeurometricAPIKey:            strings.TrimSpace(string(neurometricKey)),
 		PearlAPIKey:                  strings.TrimSpace(string(pearlKey)),
 		EngyAPIKey:                   strings.TrimSpace(string(engyKey)),
+		StepFunAPIKey:                strings.TrimSpace(string(stepfunKey)),
+		RelaceAPIKey:                 strings.TrimSpace(string(relaceKey)),
+		DecartAPIKey:                 strings.TrimSpace(string(decartKey)),
+		RecraftAPIKey:                strings.TrimSpace(string(recraftKey)),
+		BFLAPIKey:                    strings.TrimSpace(string(bflKey)),
 		DatabricksToken:              strings.TrimSpace(string(databricksToken)),
 		DatabricksHost:               strings.TrimSpace(string(databricksHost)),
 		ZeroGAPIKey:                  strings.TrimSpace(string(zeroGKey)),

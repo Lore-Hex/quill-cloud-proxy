@@ -75,6 +75,9 @@ func stringValue(value any) string {
 	if value == nil {
 		return ""
 	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
 	return strings.TrimSpace(fmt.Sprint(value))
 }
 

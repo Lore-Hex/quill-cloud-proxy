@@ -11,11 +11,14 @@ import (
 	_ "image/png"
 	"io"
 	"math"
+	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	_ "golang.org/x/image/webp"
 )
 
@@ -27,9 +30,19 @@ const (
 	maxGeneratedPixels       = 19_000_000
 )
 
+const bflGenerationTimeout = 5 * time.Minute
+
+const (
+	bflInitialPollDelay = 500 * time.Millisecond
+	bflMaxPollDelay     = 8 * time.Second
+)
+
 type ProviderKeys struct {
-	OpenAI string
-	XAI    string
+	OpenAI  string
+	XAI     string
+	Decart  string
+	Recraft string
+	BFL     string
 }
 
 type Registry struct {
@@ -79,7 +92,10 @@ func NewRegistry(keys ProviderKeys, client *http.Client) *Registry {
 	}
 	return &Registry{
 		http: &clone,
-		keys: map[string]string{"openai": keys.OpenAI, "grok": keys.XAI},
+		keys: map[string]string{
+			"openai": keys.OpenAI, "grok": keys.XAI, "decart": keys.Decart,
+			"recraft": keys.Recraft, "bfl": keys.BFL,
+		},
 	}
 }
 
@@ -105,6 +121,12 @@ func (r *Registry) Generate(
 	}
 	if key == "" {
 		return nil, fmt.Errorf("image provider key is unavailable")
+	}
+	if resolved.Spec.Provider == "bfl" {
+		return r.generateBFL(ctx, resolved, key, idempotencyKey)
+	}
+	if resolved.Spec.Provider == "decart" {
+		return r.generateDecart(ctx, resolved, key, idempotencyKey)
 	}
 	endpoint, payload, err := nativeRequest(resolved)
 	if err != nil {
@@ -247,14 +269,262 @@ func nativeRequest(resolved *ResolvedRequest) (string, map[string]any, error) {
 			base["quality"] = resolved.Quality
 		}
 		return "https://api.x.ai/v1/images/generations", base, nil
+	case "recraft":
+		size := resolved.Spec.NativeSizes[resolved.AspectRatio]
+		if size == "" {
+			return "", nil, fmt.Errorf("recraft model has no native size for %q", resolved.AspectRatio)
+		}
+		base["size"] = size
+		return "https://external.api.recraft.ai/v1/images/generations", base, nil
 	default:
 		return "", nil, fmt.Errorf("unsupported native image provider %q", resolved.Spec.Provider)
 	}
 }
 
+func (r *Registry) generateBFL(
+	ctx context.Context,
+	resolved *ResolvedRequest,
+	key, idempotencyKey string,
+) (*Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, bflGenerationTimeout)
+	defer cancel()
+	payload := map[string]any{
+		"prompt": resolved.Request.Prompt, "width": 1024, "height": 1024,
+		"output_format": "jpeg",
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode BFL request: %w", err)
+	}
+	endpoint := "https://api.bfl.ai/v1/" + url.PathEscape(resolved.Spec.UpstreamID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create BFL request: %w", err)
+	}
+	req.Header.Set("x-key", key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	responseBody, status, err := r.doLimited(req, maxProviderErrorBytes)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status > 299 {
+		return nil, decodeProviderError(status, responseBody)
+	}
+	var submitted struct {
+		ID         string `json:"id"`
+		PollingURL string `json:"polling_url"`
+	}
+	if err := decodeExactJSON(responseBody, &submitted); err != nil || strings.TrimSpace(submitted.ID) == "" {
+		return nil, fmt.Errorf("BFL returned an invalid job response")
+	}
+	pollURL, err := validateBFLPollingURL(submitted.PollingURL, submitted.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	pollDelay := bflInitialPollDelay
+	for {
+		if err := waitForImagePoll(ctx, pollDelay); err != nil {
+			return nil, err
+		}
+		pollReq, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+		if requestErr != nil {
+			return nil, fmt.Errorf("create BFL poll request: %w", requestErr)
+		}
+		pollReq.Header.Set("x-key", key)
+		pollReq.Header.Set("Accept", "application/json")
+		pollBody, pollStatus, pollErr := r.doLimited(pollReq, maxProviderErrorBytes)
+		if pollErr != nil {
+			pollDelay = nextImagePollDelay(pollDelay)
+			continue
+		}
+		if pollStatus < 200 || pollStatus > 299 {
+			if pollStatus == http.StatusTooManyRequests || pollStatus >= 500 {
+				pollDelay = nextImagePollDelay(pollDelay)
+				continue
+			}
+			return nil, decodeProviderError(pollStatus, pollBody)
+		}
+		var poll struct {
+			Status string `json:"status"`
+			Result struct {
+				Sample string `json:"sample"`
+			} `json:"result"`
+		}
+		if err := decodeExactJSON(pollBody, &poll); err != nil {
+			return nil, fmt.Errorf("BFL returned an invalid poll response")
+		}
+		switch strings.ToLower(strings.TrimSpace(poll.Status)) {
+		case "ready":
+			return r.downloadBFLResult(ctx, poll.Result.Sample, resolved)
+		case "error", "failed", "request moderated", "content moderated":
+			return nil, &ProviderError{StatusCode: http.StatusBadGateway, Message: "BFL generation failed"}
+		case "pending", "processing", "task not started":
+			pollDelay = nextImagePollDelay(pollDelay)
+			continue
+		default:
+			return nil, fmt.Errorf("BFL returned an unknown job status")
+		}
+	}
+}
+
+func waitForImagePoll(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func nextImagePollDelay(current time.Duration) time.Duration {
+	if current >= bflMaxPollDelay/2 {
+		return bflMaxPollDelay
+	}
+	return current * 2
+}
+
+func validateBFLPollingURL(rawURL, jobID string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Hostname() == "" ||
+		parsed.Port() != "" || parsed.Fragment != "" ||
+		!(parsed.Hostname() == "bfl.ai" || strings.HasSuffix(parsed.Hostname(), ".bfl.ai")) ||
+		parsed.EscapedPath() != "/v1/get_result" {
+		return "", fmt.Errorf("BFL returned an untrusted polling URL")
+	}
+	query := parsed.Query()
+	ids, ok := query["id"]
+	if !ok || len(query) != 1 || len(ids) != 1 || ids[0] != strings.TrimSpace(jobID) {
+		return "", fmt.Errorf("BFL returned a polling URL for the wrong job")
+	}
+	return parsed.String(), nil
+}
+
+func (r *Registry) downloadBFLResult(ctx context.Context, rawURL string, resolved *ResolvedRequest) (*Result, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Hostname() == "" ||
+		parsed.Port() != "" || parsed.Fragment != "" ||
+		!(parsed.Hostname() == "bfl.ai" || strings.HasSuffix(parsed.Hostname(), ".bfl.ai")) {
+		return nil, fmt.Errorf("BFL returned an untrusted result URL")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create BFL result request: %w", err)
+	}
+	body, status, err := r.doLimited(req, maxGeneratedImageBytes)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status > 299 {
+		return nil, &ProviderError{StatusCode: status, Message: http.StatusText(status)}
+	}
+	generated, err := ValidateImage(base64.StdEncoding.EncodeToString(body), resolved.Format)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateOutputShape(resolved, generated); err != nil {
+		return nil, err
+	}
+	return &Result{Created: time.Now().Unix(), Images: []GeneratedImage{*generated}}, nil
+}
+
+func (r *Registry) generateDecart(
+	ctx context.Context,
+	resolved *ResolvedRequest,
+	key, idempotencyKey string,
+) (*Result, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for index, reference := range resolved.Request.InputReferences {
+		mediaType, imageBytes, err := llm.LoadNormalizedImage(ctx, reference.ImageURL.URL)
+		if err != nil {
+			return nil, err
+		}
+		field := "data"
+		if index == 1 {
+			field = "reference_image"
+		}
+		extension := map[string]string{"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[mediaType]
+		part, err := writer.CreateFormFile(field, field+extension)
+		if err != nil {
+			return nil, fmt.Errorf("create Decart image field: %w", err)
+		}
+		if _, err := part.Write(imageBytes); err != nil {
+			return nil, fmt.Errorf("write Decart image field: %w", err)
+		}
+	}
+	if err := writer.WriteField("prompt", resolved.Request.Prompt); err != nil {
+		return nil, fmt.Errorf("write Decart prompt: %w", err)
+	}
+	if err := writer.WriteField("resolution", resolved.Resolution); err != nil {
+		return nil, fmt.Errorf("write Decart resolution: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("finish Decart request: %w", err)
+	}
+	endpoint := "https://api.decart.ai/v1/generate/" + url.PathEscape(resolved.Spec.UpstreamID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	if err != nil {
+		return nil, fmt.Errorf("create Decart request: %w", err)
+	}
+	req.Header.Set("X-API-KEY", key)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	responseBody, status, err := r.doLimited(req, maxGeneratedImageBytes)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status > 299 {
+		return nil, decodeProviderError(status, responseBody)
+	}
+	generated, err := ValidateImage(base64.StdEncoding.EncodeToString(responseBody), "")
+	if err != nil {
+		return nil, err
+	}
+	if err := validateOutputShape(resolved, generated); err != nil {
+		return nil, err
+	}
+	return &Result{Created: time.Now().Unix(), Images: []GeneratedImage{*generated}}, nil
+}
+
+func (r *Registry) doLimited(req *http.Request, limit int) ([]byte, int, error) {
+	resp, err := r.http.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("call image provider: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("read image provider response: %w", err)
+	}
+	if len(body) > limit {
+		return nil, resp.StatusCode, fmt.Errorf("image provider response exceeds the output limit")
+	}
+	return body, resp.StatusCode, nil
+}
+
+func decodeExactJSON(raw []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("trailing JSON")
+	}
+	return nil
+}
+
 func validateOutputShape(resolved *ResolvedRequest, generated *GeneratedImage) error {
 	switch resolved.Spec.Provider {
-	case "openai":
+	case "openai", "recraft":
 		if resolved.AspectRatio == "" || resolved.AspectRatio == "auto" {
 			return nil
 		}
@@ -291,6 +561,19 @@ func validateOutputShape(resolved *ResolvedRequest, generated *GeneratedImage) e
 		wantRatio := wantWidth / wantHeight
 		gotRatio := float64(generated.Width) / float64(generated.Height)
 		if math.Abs(gotRatio-wantRatio)/wantRatio > 0.02 {
+			return fmt.Errorf("image provider returned dimensions outside the request")
+		}
+	case "bfl":
+		if generated.Width != 1024 || generated.Height != 1024 {
+			return fmt.Errorf("image provider returned dimensions outside the request")
+		}
+	case "decart":
+		longEdge := max(generated.Width, generated.Height)
+		minimum, maximum := 400, 540
+		if resolved.Resolution == "720p" {
+			minimum, maximum = 600, 810
+		}
+		if longEdge < minimum || longEdge > maximum {
 			return fmt.Errorf("image provider returned dimensions outside the request")
 		}
 	}
