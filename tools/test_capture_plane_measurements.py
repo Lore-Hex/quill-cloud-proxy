@@ -67,7 +67,8 @@ SPEC.loader.exec_module(capture)
 
 PCR0 = "ab" * 24
 HOSTDATA_UAEN = "c5" * 32
-HOSTDATA_SEA = "f3" * 32
+HOSTDATA_SYD = "f3" * 32
+RETIRED_SEA_ISSUER = "https://trquillsea.sasia.attest.azure.net"
 
 AWS_LIVE = {"pcr0": PCR0, "module_id": "i-0-enc0"}
 AZURE_LIVE = [
@@ -80,8 +81,8 @@ AZURE_LIVE = [
     },
     {
         "url": "https://api-azure-syd.trustedrouter.com/attestation",
-        "hostdata": HOSTDATA_SEA,
-        "issuer": "https://trquillsea.sasia.attest.azure.net",
+        "hostdata": HOSTDATA_SYD,
+        "issuer": "https://trquillsyd.eau.attest.azure.net",
         "launch_measurement": "dc" * 24,
         "compliance": "azure-compliant-uvm",
     },
@@ -101,6 +102,31 @@ class SourceCommitTests(unittest.TestCase):
         # Two regions, one commit. Asserted so the limit is visible in the
         # record rather than only in prose.
         self.assertEqual(len(record["regions"]), 2)
+
+    def test_azure_issuer_census_drops_retired_regions(self) -> None:
+        original_trust_dir = capture.TRUST_DIR
+        with tempfile.TemporaryDirectory() as directory:
+            capture.TRUST_DIR = Path(directory)
+            try:
+                (capture.TRUST_DIR / "azure-release.json").write_text(
+                    json.dumps(
+                        {
+                            "accepted_hostdata": ["aa" * 32],
+                            "attestation_issuers": [RETIRED_SEA_ISSUER],
+                        }
+                    )
+                )
+
+                record = capture.build_azure_record(AZURE_LIVE, keep=True)
+            finally:
+                capture.TRUST_DIR = original_trust_dir
+
+        self.assertEqual(
+            record["attestation_issuers"],
+            [region["issuer"] for region in AZURE_LIVE],
+        )
+        self.assertNotIn(RETIRED_SEA_ISSUER, record["attestation_issuers"])
+        self.assertIn("aa" * 32, record["accepted_hostdata"])
 
     def test_aws_and_azure_records_carry_the_client_telemetry_claim(self) -> None:
         for record in (

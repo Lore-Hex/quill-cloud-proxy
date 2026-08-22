@@ -453,15 +453,16 @@ def build_azure_record(
     its measurement — an accusation of tampering caused entirely by us.
     """
     existing_hostdata = _existing(TRUST_DIR / "azure-release.json", "accepted_hostdata")
-    existing_issuers = _existing(TRUST_DIR / "azure-release.json", "attestation_issuers")
 
     observed_hostdata = [region["hostdata"] for region in regions]
     observed_issuers = [region["issuer"] for region in regions]
 
     accepted = list(dict.fromkeys(observed_hostdata + (existing_hostdata if keep else [])))
-    # Issuers always accumulate: a region we serve from but never listed makes a
-    # verifier reject a token that is in fact genuine.
-    issuers = list(dict.fromkeys(observed_issuers + existing_issuers))
+    # This is the active serving-region census, not an append-only trust history.
+    # Keeping an issuer after its endpoint is retired makes verifiers accept an
+    # authority that no published region can present and turns strict coverage
+    # checks into permanent false alarms.
+    issuers = list(dict.fromkeys(observed_issuers))
 
     return {
         "platform": "azure-confidential-containers-sev-snp",
