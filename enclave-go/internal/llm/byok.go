@@ -370,6 +370,14 @@ func buildOpenAICompatibleRequest(
 			reqBody.PresencePenalty = nil
 		}
 	}
+	// Azure Foundry's OpenAI-compatible Kimi deployments reject the
+	// Moonshot-native `thinking` extension outright. Preserve tools and
+	// tool_choice when present, but always omit thinking rather than asking
+	// K2.5/K2.6 to disable it as the direct Moonshot API requires. Keep this
+	// outside the req != nil block: the provider contract is unconditional.
+	if isAzureKimiDeployment(provider, upstreamID) {
+		reqBody.Thinking = nil
+	}
 	if effort := googleAIStudioDefaultReasoningEffort(provider, upstreamID, req, body); effort != "" {
 		reqBody.ReasoningEffort = effort
 	}
@@ -526,11 +534,8 @@ func kimiUsesFixedSampling(provider, modelID string) bool {
 	// names that replace the version dots with dashes. Keep this exact to the
 	// three authorized Azure deployment ids: substring matching here would
 	// silently apply Kimi request rules to a future, unverified deployment.
-	if normalizeDirectProvider(provider) == "azure" {
-		switch model {
-		case "kimi-k2-5", "kimi-k2-6", "kimi-k2-7-code":
-			return true
-		}
+	if isAzureKimiDeployment(provider, model) {
+		return true
 	}
 	return strings.Contains(model, "kimi-k2.5") ||
 		strings.Contains(model, "kimi-k2.6") ||
@@ -538,19 +543,24 @@ func kimiUsesFixedSampling(provider, modelID string) bool {
 		(provider == "kimi" && strings.Contains(model, "kimi-k2."))
 }
 
+func isAzureKimiDeployment(provider, modelID string) bool {
+	if normalizeDirectProvider(provider) != "azure" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(modelID)) {
+	case "kimi-k2-5", "kimi-k2-6", "kimi-k2-7-code":
+		return true
+	default:
+		return false
+	}
+}
+
 func kimiToolsNeedThinkingDisabled(provider, modelID string, tools []any) bool {
-	if len(tools) == 0 {
+	if provider != "kimi" || len(tools) == 0 {
 		return false
 	}
 	model := strings.ToLower(strings.TrimSpace(modelID))
-	if normalizeDirectProvider(provider) == "azure" {
-		// K2.5 and K2.6 require non-thinking mode for tool calling. K2.7 Code
-		// deliberately does not inherit this override: direct Kimi's verified
-		// rule does not disable thinking for that checkpoint.
-		return model == "kimi-k2-5" || model == "kimi-k2-6"
-	}
-	return provider == "kimi" &&
-		(strings.Contains(model, "k2.6") || strings.Contains(model, "k2.5"))
+	return strings.Contains(model, "k2.6") || strings.Contains(model, "k2.5")
 }
 
 // anthropicUpstreamMessages returns the message list for an

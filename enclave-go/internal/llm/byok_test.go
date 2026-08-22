@@ -944,30 +944,31 @@ func TestAzureKimiDeploymentRulesAreExactAndCheckpointSpecific(t *testing.T) {
 			"parameters": map[string]any{"type": "object"},
 		},
 	}}
-	for _, tc := range []struct {
-		model                string
-		wantThinkingDisabled bool
-	}{
-		{model: "kimi-k2-5", wantThinkingDisabled: true},
-		{model: "kimi-k2-6", wantThinkingDisabled: true},
-		{model: "kimi-k2-7-code", wantThinkingDisabled: false},
-	} {
-		t.Run(tc.model, func(t *testing.T) {
+	toolChoice := map[string]any{
+		"type":     "function",
+		"function": map[string]any{"name": "pong"},
+	}
+	for _, model := range []string{"kimi-k2-5", "kimi-k2-6", "kimi-k2-7-code"} {
+		t.Run(model, func(t *testing.T) {
 			t.Parallel()
-			if !kimiUsesFixedSampling("azure", tc.model) {
+			if !isAzureKimiDeployment("azure", model) {
+				t.Fatal("authorized Azure Kimi deployment was not recognized")
+			}
+			if !kimiUsesFixedSampling("azure", model) {
 				t.Fatal("Azure Kimi deployment did not use fixed sampling")
 			}
-			if got := kimiToolsNeedThinkingDisabled("azure", tc.model, tools); got != tc.wantThinkingDisabled {
-				t.Fatalf("thinking-disabled rule = %v, want %v", got, tc.wantThinkingDisabled)
+			if kimiToolsNeedThinkingDisabled("azure", model, tools) {
+				t.Fatal("Azure Kimi tool call must omit, not disable, thinking")
 			}
 
 			zero := 0.0
 			one := 1.0
 			request := buildOpenAICompatibleRequest(
 				"azure",
-				tc.model,
+				model,
 				&qtypes.OpenAIChatRequest{
 					Tools:            tools,
+					ToolChoice:       toolChoice,
 					FrequencyPenalty: &one,
 					PresencePenalty:  &one,
 				},
@@ -982,42 +983,118 @@ func TestAzureKimiDeploymentRulesAreExactAndCheckpointSpecific(t *testing.T) {
 				request.FrequencyPenalty != nil || request.PresencePenalty != nil {
 				t.Fatalf("fixed Kimi sampling fields were forwarded: %#v", request)
 			}
-			thinking, ok := request.Thinking.(map[string]string)
-			if !ok {
-				t.Fatalf("thinking = %#v, want string map", request.Thinking)
+			if request.Thinking != nil {
+				t.Fatalf("Azure Kimi thinking = %#v, want omitted", request.Thinking)
 			}
-			wantThinking := "enabled"
-			if tc.wantThinkingDisabled {
-				wantThinking = "disabled"
+			if len(request.Tools) != 1 {
+				t.Fatalf("tools = %#v, want one tool", request.Tools)
 			}
-			if got := thinking["type"]; got != wantThinking {
-				t.Fatalf("thinking.type = %q, want %q", got, wantThinking)
+			gotChoice, ok := request.ToolChoice.(map[string]any)
+			if !ok || gotChoice["type"] != "function" {
+				t.Fatalf("tool_choice = %#v, want named function choice", request.ToolChoice)
+			}
+
+			toolFree := buildOpenAICompatibleRequest(
+				"azure",
+				model,
+				nil,
+				&qtypes.AnthropicMessagesRequest{
+					Thinking: map[string]string{"type": "enabled"},
+				},
+				nil,
+			)
+			if toolFree.Thinking != nil {
+				t.Fatalf("tool-free Azure Kimi thinking = %#v, want omitted", toolFree.Thinking)
 			}
 		})
 	}
 
 	for _, tc := range []struct {
-		name     string
-		provider string
-		model    string
+		name              string
+		provider          string
+		model             string
+		wantFixedSampling bool
 	}{
 		{name: "different provider", provider: "openai", model: "kimi-k2-5"},
 		{name: "future suffix", provider: "azure", model: "kimi-k2-5-preview"},
-		{name: "canonical id is not deployment id", provider: "azure", model: "moonshotai/kimi-k2-5"},
+		{name: "hyphenated canonical lookalike", provider: "azure", model: "moonshotai/kimi-k2-5"},
+		{
+			name:              "dotted canonical id is not deployment id",
+			provider:          "azure",
+			model:             "moonshotai/kimi-k2.6",
+			wantFixedSampling: true,
+		},
 		{name: "lookalike prefix", provider: "azure", model: "other-kimi-k2-6"},
 	} {
 		t.Run("negative "+tc.name, func(t *testing.T) {
 			t.Parallel()
-			if kimiUsesFixedSampling(tc.provider, tc.model) {
-				t.Fatal("lookalike unexpectedly used Azure Kimi fixed sampling")
+			if isAzureKimiDeployment(tc.provider, tc.model) {
+				t.Fatal("lookalike unexpectedly matched an Azure Kimi deployment")
 			}
-			if kimiToolsNeedThinkingDisabled(tc.provider, tc.model, tools) {
-				t.Fatal("lookalike unexpectedly disabled thinking")
+			if got := kimiUsesFixedSampling(tc.provider, tc.model); got != tc.wantFixedSampling {
+				t.Fatalf("fixed-sampling rule = %v, want %v", got, tc.wantFixedSampling)
 			}
 		})
 	}
-	if kimiToolsNeedThinkingDisabled("azure", "kimi-k2-5", nil) {
-		t.Fatal("tool-free Azure Kimi request unexpectedly disabled thinking")
+}
+
+func TestAzureKimiThinkingOmissionDoesNotChangeDirectKimiOrLookalikes(t *testing.T) {
+	t.Parallel()
+
+	tools := []any{map[string]any{"type": "function"}}
+	for _, tc := range []struct {
+		model        string
+		wantThinking string
+	}{
+		{model: "moonshotai/kimi-k2.5", wantThinking: "disabled"},
+		{model: "moonshotai/kimi-k2.6", wantThinking: "disabled"},
+		{model: "moonshotai/kimi-k2.7-code", wantThinking: "enabled"},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			request := buildOpenAICompatibleRequest(
+				"kimi",
+				tc.model,
+				&qtypes.OpenAIChatRequest{Tools: tools},
+				&qtypes.AnthropicMessagesRequest{
+					Thinking: map[string]string{"type": "enabled"},
+				},
+				nil,
+			)
+			thinking, ok := request.Thinking.(map[string]string)
+			if !ok || thinking["type"] != tc.wantThinking {
+				t.Fatalf("direct Kimi thinking = %#v, want %q", request.Thinking, tc.wantThinking)
+			}
+		})
+	}
+
+	zero := 0.0
+	one := 1.0
+	if kimiUsesFixedSampling("azure", "other-kimi-k2-6") {
+		t.Fatal("unrelated hyphenated Azure model unexpectedly used Kimi fixed sampling")
+	}
+	request := buildOpenAICompatibleRequest(
+		"azure",
+		"other-kimi-k2-6",
+		&qtypes.OpenAIChatRequest{
+			Tools:            tools,
+			FrequencyPenalty: &one,
+			PresencePenalty:  &one,
+		},
+		&qtypes.AnthropicMessagesRequest{
+			Temperature: &zero,
+			TopP:        &one,
+			Thinking:    map[string]string{"type": "enabled"},
+		},
+		nil,
+	)
+	thinking, ok := request.Thinking.(map[string]string)
+	if !ok || thinking["type"] != "enabled" {
+		t.Fatalf("unrelated Azure model thinking = %#v, want preserved", request.Thinking)
+	}
+	if request.Temperature == nil || request.TopP == nil ||
+		request.FrequencyPenalty == nil || request.PresencePenalty == nil {
+		t.Fatalf("unrelated Azure model sampling was omitted: %#v", request)
 	}
 }
 
