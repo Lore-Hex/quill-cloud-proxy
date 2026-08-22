@@ -1,6 +1,7 @@
 {
   "accepted_hostdata": [
     "97c4cfbcbec6f9320b2db608918563789e530a928c155ce059334e41c3592855",
+    "50b653a15fd1bfb505a275fee6048ced6d15ef51b624b42f0c9b06adad15877c",
     "996886acd040e6c3919ae4825e8bb9a8b1a6e50b33b896281746c263fa199c4e"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
@@ -32,12 +33,12 @@
       "attestation_issuer": "https://trquillsyd.eau.attest.azure.net",
       "attestation_url": "https://api-azure-syd.trustedrouter.com/attestation",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "996886acd040e6c3919ae4825e8bb9a8b1a6e50b33b896281746c263fa199c4e",
+      "hostdata": "50b653a15fd1bfb505a275fee6048ced6d15ef51b624b42f0c9b06adad15877c",
       "launch_measurement": "6d6c354511d6f7c6d7504668903dc5bdc066a048b651840d8d03fb85299ebfa142fccf1d1b0baca496841bdf243619d4"
     }
   ],
   "release_state": "multi-region",
-  "source_commit": "95abe44a988fc7e7133889a66445e8edf252b5e5",
+  "source_commit": "3fb01c16080cfcdcfc654ef63dac5debe29188b3",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
