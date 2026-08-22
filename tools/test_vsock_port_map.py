@@ -27,9 +27,11 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 DEPLOY = ROOT / "tools" / "deploy-aws-nitro.sh"
+DIRECT_PROVIDERS = ROOT / "enclave-go" / "internal" / "directproviders" / "providers.go"
 GO_TUNNEL_FILES = [
     ROOT / "enclave-go" / "internal" / "llm" / "http_client_aws.go",
     ROOT / "enclave-go" / "internal" / "trustedrouter" / "http_client_aws.go",
@@ -98,7 +100,8 @@ for host, ports in sorted(by_host.items()):
 
 # 3. Every host the enclave dials must have a parent unit on the SAME port.
 parent_by_host = {host: port for port, host in units}
-for host, entries in sorted(enclave_tunnels().items()):
+tunnels = enclave_tunnels()
+for host, entries in sorted(tunnels.items()):
     for port, source in entries:
         if host not in parent_by_host:
             fail(
@@ -121,6 +124,22 @@ for _port, host in units:
             f"{host} has a vsock-proxy unit but is not in the vsock-proxy.yaml "
             "address allowlist, so vsock-proxy will refuse to forward to it."
         )
+
+# 5. Every immutable endpoint in the shared direct-provider table must be
+# reachable through the AWS parent. This closes the gap where dispatch and
+# bootstrap agree on a provider, but Nitro silently lacks its tunnel.
+direct_source = DIRECT_PROVIDERS.read_text()
+direct_urls = re.findall(r'BaseURL:\s*"(https://[^"]+)"', direct_source)
+if not direct_urls:
+    fail(f"no direct-provider BaseURL entries parsed from {DIRECT_PROVIDERS}")
+for base_url in direct_urls:
+    host = urlparse(base_url).hostname
+    if not host:
+        fail(f"direct-provider BaseURL has no hostname: {base_url}")
+    elif host not in parent_by_host:
+        fail(f"direct-provider host {host} has no AWS vsock-proxy unit")
+    elif host not in tunnels:
+        fail(f"direct-provider host {host} has no enclave AWS tunnel")
 
 if failures:
     print(f"\n{len(failures)} problem(s) found.")

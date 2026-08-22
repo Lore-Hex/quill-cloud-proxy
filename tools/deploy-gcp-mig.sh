@@ -327,6 +327,16 @@ configure_optional_provider_secret QUILL_RELACE_SECRET trustedrouter-relace-api-
 configure_optional_provider_secret QUILL_DECART_SECRET trustedrouter-decart-api-key
 configure_optional_provider_secret QUILL_RECRAFT_SECRET trustedrouter-recraft-api-key
 configure_optional_provider_secret QUILL_BFL_SECRET trustedrouter-bfl-api-key
+configure_optional_provider_secret QUILL_NEXTBIT_SECRET trustedrouter-nextbit-api-key
+configure_optional_provider_secret QUILL_AION_LABS_SECRET trustedrouter-aion-labs-api-key
+configure_optional_provider_secret QUILL_SAMBANOVA_SECRET trustedrouter-sambanova-api-key
+configure_optional_provider_secret QUILL_INCEPTION_SECRET trustedrouter-inception-api-key
+configure_optional_provider_secret QUILL_AKASHML_SECRET trustedrouter-akashml-api-key
+configure_optional_provider_secret QUILL_ARCEE_SECRET trustedrouter-arcee-api-key
+configure_optional_provider_secret QUILL_UPSTAGE_SECRET trustedrouter-upstage-api-key
+configure_optional_provider_secret QUILL_REKA_SECRET trustedrouter-reka-api-key
+configure_optional_provider_secret QUILL_SAIL_RESEARCH_SECRET trustedrouter-sail-research-api-key
+configure_optional_provider_secret QUILL_MANCER_SECRET trustedrouter-mancer-api-key
 
 # Azure Foundry stays dark until its account key exists. An explicitly supplied
 # empty value also keeps it disabled; this prevents an unrelated gateway roll

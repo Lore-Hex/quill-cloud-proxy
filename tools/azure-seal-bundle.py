@@ -192,6 +192,16 @@ BINDINGS: tuple[Binding, ...] = (
     ),
     Binding(("QUILL_TRUSTEDROUTER_INTERNAL_SECRET",), "trustedrouter internal token", False),
     Binding(("QUILL_ACME_FALLBACK_EAB_SECRET",), "acme fallback eab", False),
+    Binding(("QUILL_NEXTBIT_SECRET",), "nextbit key", True),
+    Binding(("QUILL_AION_LABS_SECRET",), "aion labs key", True),
+    Binding(("QUILL_SAMBANOVA_SECRET",), "sambanova key", True),
+    Binding(("QUILL_INCEPTION_SECRET",), "inception key", True),
+    Binding(("QUILL_AKASHML_SECRET",), "akashml key", True),
+    Binding(("QUILL_ARCEE_SECRET",), "arcee key", True),
+    Binding(("QUILL_UPSTAGE_SECRET",), "upstage key", True),
+    Binding(("QUILL_REKA_SECRET",), "reka key", True),
+    Binding(("QUILL_SAIL_RESEARCH_SECRET",), "sail research key", True),
+    Binding(("QUILL_MANCER_SECRET",), "mancer key", True),
 )
 
 # Envelope constants. These MUST equal envelopeAlg / envelopeVersion /

@@ -88,6 +88,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/directproviders"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -185,6 +186,10 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		os.Getenv("QUILL_ADVISOR_PROMPT_SECRET"),
 		os.Getenv("QUILL_SOCRATES_ADVISOR_PROMPT_SECRET"),
 	)
+	directProviderSecretNames, err := resolveDirectProviderSecretNames("bootstrap/gcp")
+	if err != nil {
+		return nil, err
+	}
 	if !anySet(
 		openrouterSecret,
 		anthropicSecret,
@@ -242,7 +247,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		runwaySecret,
 		klingSecret,
 		xiaomiSecret,
-	) {
+	) && len(directProviderSecretNames) == 0 {
 		return nil, fmt.Errorf("bootstrap/gcp: at least one provider secret env must be set")
 	}
 
@@ -260,6 +265,16 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	var devices []types.DeviceConfig
 	if err := json.Unmarshal(devicesJSON, &devices); err != nil {
 		return nil, fmt.Errorf("bootstrap/gcp: parse device-keys JSON: %w", err)
+	}
+	directProviderAPIKeys, err := fetchDirectProviderAPIKeys(
+		ctx,
+		httpc,
+		token,
+		project,
+		directProviderSecretNames,
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	var openrouterKey []byte
@@ -782,6 +797,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		EngyAPIKey:                   strings.TrimSpace(string(engyKey)),
 		StepFunAPIKey:                strings.TrimSpace(string(stepfunKey)),
 		RelaceAPIKey:                 strings.TrimSpace(string(relaceKey)),
+		ProviderAPIKeys:              directProviderAPIKeys,
 		DecartAPIKey:                 strings.TrimSpace(string(decartKey)),
 		RecraftAPIKey:                strings.TrimSpace(string(recraftKey)),
 		BFLAPIKey:                    strings.TrimSpace(string(bflKey)),
@@ -819,6 +835,35 @@ func anySet(values ...string) bool {
 		}
 	}
 	return false
+}
+
+func fetchDirectProviderAPIKeys(
+	ctx context.Context,
+	httpc *http.Client,
+	token string,
+	project string,
+	names map[string]string,
+) (map[string]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	keys := make(map[string]string, len(names))
+	for _, spec := range directproviders.All() {
+		name := names[spec.Provider]
+		if name == "" {
+			continue
+		}
+		value, err := fetchSecret(ctx, httpc, token, project, name)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: %s: %w", spec.SecretLabel, err)
+		}
+		key := strings.TrimSpace(string(value))
+		if key == "" {
+			return nil, fmt.Errorf("bootstrap/gcp: %s secret is empty", spec.SecretLabel)
+		}
+		keys[spec.Provider] = key
+	}
+	return keys, nil
 }
 
 func firstSet(values ...string) string {

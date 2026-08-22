@@ -30,6 +30,7 @@ import (
 // up-front so connection pools and any cached state warm up at boot.
 func New(boot *qtypes.BootstrapData) Client {
 	return &multiClient{
+		direct:    newBootstrapDirectClients(boot.ProviderAPIKeys),
 		anthropic: newAnthropic(boot),
 		vertex:    newVertex(boot),
 		openai:    newOpenAICompatible("openai", boot.OpenAIAPIKey),
@@ -104,6 +105,7 @@ func New(boot *qtypes.BootstrapData) Client {
 }
 
 type multiClient struct {
+	direct              map[string]*openAICompatibleClient
 	anthropic           *anthropicClient
 	vertex              *gcpClient
 	openai              *openAICompatibleClient
@@ -181,6 +183,9 @@ func (m *multiClient) InvokeStreaming(
 	}
 	if handled, err := invokeBYOKStreaming(ctx, req, body, out, option); handled {
 		return err
+	}
+	if client := m.direct[provider]; client != nil {
+		return client.InvokeStreaming(ctx, req, body, out, options...)
 	}
 	switch provider {
 	case "anthropic", "":
@@ -304,6 +309,18 @@ func (m *multiClient) InvokeStreaming(
 		// Embeddings-only; returns a clear "chat not supported" error.
 		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, openrouter-exclusive, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, telnyx, thinkingmachines, wafer, crusoe, makora, nebius, minimax, chutes, digitalocean, cloudflare-workers-ai, inceptron, morph, atlas-cloud, streamlake, neurometric, pearl, engy, stepfun, relace, databricks, zero-g, alibaba, azure, xiaomi, cohere)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (provider is not compiled or its prepaid credential is unavailable)", provider)
 	}
+}
+
+func newBootstrapDirectClients(keys map[string]string) map[string]*openAICompatibleClient {
+	clients := make(map[string]*openAICompatibleClient)
+	for rawProvider, apiKey := range keys {
+		provider := strings.TrimSpace(rawProvider)
+		if !bootstrapDirectProviderAllowed(provider) || strings.TrimSpace(apiKey) == "" {
+			continue
+		}
+		clients[provider] = newOpenAICompatible(provider, apiKey)
+	}
+	return clients
 }

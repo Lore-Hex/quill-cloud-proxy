@@ -94,6 +94,16 @@ RELACE_SECRET="${RELACE_SECRET:-trustedrouter-relace-api-key}"
 DECART_SECRET="${DECART_SECRET:-trustedrouter-decart-api-key}"
 RECRAFT_SECRET="${RECRAFT_SECRET:-trustedrouter-recraft-api-key}"
 BFL_SECRET="${BFL_SECRET:-trustedrouter-bfl-api-key}"
+NEXTBIT_SECRET="${NEXTBIT_SECRET:-trustedrouter-nextbit-api-key}"
+AION_LABS_SECRET="${AION_LABS_SECRET:-trustedrouter-aion-labs-api-key}"
+SAMBANOVA_SECRET="${SAMBANOVA_SECRET:-trustedrouter-sambanova-api-key}"
+INCEPTION_SECRET="${INCEPTION_SECRET:-trustedrouter-inception-api-key}"
+AKASHML_SECRET="${AKASHML_SECRET:-trustedrouter-akashml-api-key}"
+ARCEE_SECRET="${ARCEE_SECRET:-trustedrouter-arcee-api-key}"
+UPSTAGE_SECRET="${UPSTAGE_SECRET:-trustedrouter-upstage-api-key}"
+REKA_SECRET="${REKA_SECRET:-trustedrouter-reka-api-key}"
+SAIL_RESEARCH_SECRET="${SAIL_RESEARCH_SECRET:-trustedrouter-sail-research-api-key}"
+MANCER_SECRET="${MANCER_SECRET:-trustedrouter-mancer-api-key}"
 DATABRICKS_SECRET="${DATABRICKS_SECRET:-trustedrouter-databricks-token}"
 DATABRICKS_HOST_SECRET="${DATABRICKS_HOST_SECRET:-trustedrouter-databricks-host}"
 ALIBABA_SECRET="${ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
@@ -222,6 +232,16 @@ for secret in \
   "$DECART_SECRET" \
   "$RECRAFT_SECRET" \
   "$BFL_SECRET" \
+  "$NEXTBIT_SECRET" \
+  "$AION_LABS_SECRET" \
+  "$SAMBANOVA_SECRET" \
+  "$INCEPTION_SECRET" \
+  "$AKASHML_SECRET" \
+  "$ARCEE_SECRET" \
+  "$UPSTAGE_SECRET" \
+  "$REKA_SECRET" \
+  "$SAIL_RESEARCH_SECRET" \
+  "$MANCER_SECRET" \
   "$DATABRICKS_SECRET" \
   "$DATABRICKS_HOST_SECRET" \
   "$ALIBABA_SECRET" \

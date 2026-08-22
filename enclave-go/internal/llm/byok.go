@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/directproviders"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -254,6 +255,9 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 		return err
 	}
 	upstreamID := directModelID(provider, req.Model, upstreamModel)
+	if strings.TrimSpace(upstreamID) == "" {
+		return fmt.Errorf("llm/%s: missing authorized upstream model", provider)
+	}
 	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
 	if normalizeDirectProvider(provider) == "tinfoil" {
 		reqBody.UserCacheSecret = strings.TrimSpace(options.providerCacheScope)
@@ -684,6 +688,9 @@ func invokeAnthropicCompatibleStreamingWithClient(
 		return err
 	}
 	modelID := directModelID(provider, req.Model, upstreamModel)
+	if strings.TrimSpace(modelID) == "" {
+		return fmt.Errorf("llm/%s: missing authorized upstream model", provider)
+	}
 	reqBody := buildAnthropicWireRequest(modelID, messages, body)
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
@@ -977,6 +984,9 @@ func LoadNormalizedImage(ctx context.Context, raw string) (string, []byte, error
 }
 
 func directBaseURL(provider string) string {
+	if spec, ok := directproviders.Lookup(provider); ok {
+		return spec.BaseURL
+	}
 	switch provider {
 	case "openai":
 		return "https://api.openai.com/v1"
@@ -1129,9 +1139,17 @@ func directBaseURL(provider string) string {
 	}
 }
 
+func bootstrapDirectProviderAllowed(provider string) bool {
+	_, ok := directproviders.Lookup(provider)
+	return ok
+}
+
 func directModelID(provider, model, upstreamModel string) string {
 	model = stripOpenRouterModelVariant(model)
 	upstreamModel = stripOpenRouterModelVariant(strings.TrimSpace(upstreamModel))
+	if _, exactCatalogIDRequired := directproviders.Lookup(provider); exactCatalogIDRequired && upstreamModel == "" {
+		return ""
+	}
 	resolved := model
 	// Per-provider native-id overrides (consulted first). Each
 	// second-source provider — Together, Lightning, GMI, DeepInfra,
@@ -1231,6 +1249,9 @@ func DirectModelID(provider, model, upstreamModel string) string {
 // API. The control plane stores that value on the signed authorization. Static
 // maps still win above for historical aliases and dedicated endpoint slugs.
 func providerUsesAuthorizedUpstreamModel(provider string) bool {
+	if _, ok := directproviders.Lookup(provider); ok {
+		return true
+	}
 	switch provider {
 	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow", "neurometric", "pearl", "engy", "stepfun", "relace", "databricks", "zero-g", "alibaba", "azure":
 		return true
