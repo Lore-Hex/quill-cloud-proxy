@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -18,10 +19,62 @@ class RolloutSafetyTests(unittest.TestCase):
         )
 
         self.assertIn("--set-drain-region us-central1", workflow)
-        self.assertIn("--clear-drain-region us-central1", workflow)
+        self.assertIn(
+            "PREV_DRAIN_STATE: "
+            "${{ steps.prev.outputs.us_central1_drain_state }}",
+            workflow,
+        )
+        self.assertIn('"--${drain_operation}-drain-region" us-central1', workflow)
+        capture_start = workflow.index("      - name: Capture pre-rollout templates")
+        capture_end = workflow.index(
+            "\n\n      # Staged regional rollout", capture_start
+        )
+        capture = workflow[capture_start:capture_end]
+        self.assertIn("QUILL_API_HOST=api.trustedrouter.com", capture)
+        self.assertIn("QUILL_DNS_ZONE=trustedrouter-com", capture)
+        self.assertIn("--list-drain-regions", capture)
         self.assertIn('update_drain set "${region}"', secondary)
         self.assertIn('update_drain clear "${region}"', secondary)
+        self.assertIn('prior_drain_state="$9"', secondary)
+        self.assertIn(
+            "PREV_DRAIN_STATE: "
+            "${{ steps.prev.outputs.europe_west4_drain_state }}",
+            workflow,
+        )
+        self.assertIn(
+            "PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_east4_drain_state }}",
+            workflow,
+        )
+        self.assertIn(
+            "PREV_DRAIN_STATE: "
+            "${{ steps.prev.outputs.southamerica_east1_drain_state }}",
+            workflow,
+        )
         self.assertNotIn("QUILL_EXCLUDE_CANONICAL_REGIONS:", workflow)
+
+    def test_secondary_rejects_unknown_drain_state_before_mutation(self) -> None:
+        completed = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "tools" / "roll-secondary-region.sh"),
+                "europe-west4",
+                "quill-enclave-mig-eu",
+                "quill-enclave-mig-eu-",
+                "eu",
+                "api.trustedrouter.com",
+                "old-template",
+                "c3-standard-4",
+                "TDX",
+                "",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("invalid pre-rollout drain state", completed.stderr)
 
     def test_rollout_does_not_force_a_second_replacement_wave(self) -> None:
         deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
@@ -244,6 +297,9 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("always() && (failure() || steps.canary_us.outcome == 'failure')", workflow)
         self.assertIn("bash tools/recover-gcp-region.sh", workflow)
         self.assertIn("bash tools/recover-gcp-region.sh", secondary)
+        self.assertIn("prior_drain_state", secondary)
+        self.assertIn('"${previous_template}" "${prior_drain_state}"', secondary)
+        self.assertIn("pre-rollout canonical drain state", secondary)
         self.assertIn("trap 'exit 130' INT", secondary)
         self.assertIn("trap 'exit 143' TERM", secondary)
         self.assertIn("trap 'exit 130' INT", recovery)
@@ -254,6 +310,8 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("wait-canonical-drained.sh", recovery)
         self.assertIn("verify-region-before-dns.sh", recovery)
         self.assertIn('update_drain clear', recovery)
+        self.assertIn('final_drain_state="${6-active}"', recovery)
+        self.assertIn('update_drain set', recovery)
         self.assertLess(
             recovery.index('update_drain set'),
             recovery.index('set-instance-template "${mig}"'),
@@ -262,6 +320,9 @@ class RolloutSafetyTests(unittest.TestCase):
             recovery.index("verify-region-before-dns.sh"),
             recovery.rindex('update_drain clear'),
         )
+
+        self.assertIn("us_central1_drain_state", workflow)
+        self.assertIn("Restore us-central1 canonical drain state", workflow)
 
     def test_deploy_preflights_runtime_access_to_every_referenced_secret(self) -> None:
         deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
