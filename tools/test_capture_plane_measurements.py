@@ -300,27 +300,33 @@ class PublishedRecordTests(unittest.TestCase):
         self.assertTrue(record.get("source_commit"))
 
     def test_published_records_are_honest_about_provenance(self) -> None:
-        # AWS has not been recaptured from a release whose source commit is
-        # known, so preserving the explicit absence remains the honest result.
-        aws = json.loads(
-            (capture.REPO_ROOT / "trust-page" / "trust" / "aws-release.json").read_text()
-        )
-        self.assertIn(aws.get("source_commit"), (None, capture.SOURCE_COMMIT_UNSET))
+        # A capture may preserve historical absence or name the exact build
+        # commit supplied by the release operator. A named commit must be
+        # immutable, reachable from this history, and explicitly described as
+        # operator-asserted rather than inferred from the measurement.
+        for plane in ("aws", "azure"):
+            record = json.loads(
+                (
+                    capture.REPO_ROOT
+                    / "trust-page"
+                    / "trust"
+                    / f"{plane}-release.json"
+                ).read_text()
+            )
+            source_commit = record.get("source_commit")
+            if source_commit in (None, capture.SOURCE_COMMIT_UNSET):
+                self.assertIn(
+                    record.get("source_commit_provenance"),
+                    (None, capture.PROVENANCE_NONE),
+                )
+                continue
 
-        # Azure captures may either preserve explicit absence or name the
-        # operator-supplied commit used for the running build. A named commit
-        # must be immutable, reachable from this history, and explicitly
-        # described as operator-asserted rather than inferred by the capture.
-        azure = json.loads(
-            (capture.REPO_ROOT / "trust-page" / "trust" / "azure-release.json").read_text()
-        )
-        source_commit = azure.get("source_commit")
-        if source_commit == capture.SOURCE_COMMIT_UNSET:
-            self.assertEqual(azure.get("source_commit_provenance"), capture.PROVENANCE_NONE)
-        else:
-            self.assertEqual(capture.resolve_source_commit(source_commit), source_commit)
             self.assertEqual(
-                azure.get("source_commit_provenance"),
+                capture.resolve_source_commit(source_commit),
+                source_commit,
+            )
+            self.assertEqual(
+                record.get("source_commit_provenance"),
                 capture.PROVENANCE_ASSERTED,
             )
 
