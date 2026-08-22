@@ -52,6 +52,16 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"relace", "moonshotai/kimi-k3", "", "moonshotai/kimi-k3", false},
 		{"zero-g", "z-ai/glm-5.2", "glm-5.2", "glm-5.2", false},
 		{"alibaba", "qwen/qwen3.7-flash", "qwen3.7-flash", "qwen3.7-flash", false},
+		{"nextbit", "deepseek/deepseek-v4-flash-0731", "deepseek:v4-flash-0731", "deepseek:v4-flash-0731", false},
+		{"aion-labs", "aion-labs/aion-3.0", "aion-labs/aion-3.0", "aion-labs/aion-3.0", false},
+		{"sambanova", "openai/gpt-oss-120b", "gpt-oss-120b", "gpt-oss-120b", false},
+		{"inception", "inception/mercury-2", "mercury-2", "mercury-2", false},
+		{"akashml", "qwen/qwen3.8-27b", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-27B", false},
+		{"arcee", "moonshotai/kimi-k3", "moonshotai/kimi-k3", "moonshotai/kimi-k3", false},
+		{"upstage", "upstage/solar-pro4", "solar-pro4", "solar-pro4", false},
+		{"reka", "reka/reka-edge-2603", "reka-edge-2603", "reka-edge-2603", false},
+		{"sail-research", "z-ai/glm-5.2", "zai-org/GLM-5.2-FP8", "zai-org/GLM-5.2-FP8", false},
+		{"mancer", "z-ai/glm-4.7", "glm-4.7", "glm-4.7", false},
 	}
 
 	for _, tt := range tests {
@@ -104,7 +114,12 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				apiKey:   "operator-key",
 				httpc:    server.Client(),
 			}
+			direct := map[string]*openAICompatibleClient{}
+			if bootstrapDirectProviderAllowed(tt.provider) {
+				direct[tt.provider] = client
+			}
 			multi := &multiClient{
+				direct:           direct,
 				openai:           client,
 				googleAIStudio:   client,
 				cerebras:         client,
@@ -309,6 +324,61 @@ func TestGoogleProviderNormalizationKeepsProductsDistinct(t *testing.T) {
 	}
 	if got := directBaseURL("google-vertex"); got != "" {
 		t.Fatalf("Vertex must not use API-key compatible base URL, got %q", got)
+	}
+}
+
+func TestBootstrapDirectProviderClientsAreBoundedToCompiledHosts(t *testing.T) {
+	wantBaseURLs := map[string]string{
+		"nextbit":       "https://api.nextbit256.com/v1",
+		"aion-labs":     "https://api.aionlabs.ai/v1",
+		"sambanova":     "https://api.sambanova.ai/v1",
+		"inception":     "https://api.inceptionlabs.ai/v1",
+		"akashml":       "https://api.akashml.com/v1",
+		"arcee":         "https://api.arcee.ai/api/v1",
+		"upstage":       "https://api.upstage.ai/v1",
+		"reka":          "https://api.reka.ai/v1",
+		"sail-research": "https://api.sailresearch.com/v1",
+		"mancer":        "https://mancer.tech/oai/v1",
+	}
+	keys := map[string]string{
+		"nextbit":       " key-nextbit ",
+		"aion-labs":     "key-aion",
+		"sambanova":     "key-sambanova",
+		"inception":     "key-inception",
+		"akashml":       "key-akashml",
+		"arcee":         "key-arcee",
+		"upstage":       "key-upstage",
+		"reka":          "key-reka",
+		"sail-research": "key-sail",
+		"mancer":        "key-mancer",
+		"evil":          "must-not-route",
+		"aion_labs":     "must-not-route",
+		"":              "must-not-route",
+	}
+	clients := newBootstrapDirectClients(keys)
+	if len(clients) != len(wantBaseURLs) {
+		t.Fatalf("clients = %v, want exactly %d compiled providers", clients, len(wantBaseURLs))
+	}
+	for provider, wantBaseURL := range wantBaseURLs {
+		client := clients[provider]
+		if client == nil {
+			t.Fatalf("missing %s client", provider)
+		}
+		if client.baseURL != wantBaseURL {
+			t.Errorf("%s base URL = %q, want %q", provider, client.baseURL, wantBaseURL)
+		}
+		if !providerUsesAuthorizedUpstreamModel(provider) {
+			t.Errorf("%s must preserve the catalog-discovered upstream model", provider)
+		}
+		if got := directModelID(provider, "author/canonical-model", ""); got != "" {
+			t.Errorf("%s guessed an upstream model without authorization: %q", provider, got)
+		}
+	}
+	if clients["nextbit"].apiKey != "key-nextbit" {
+		t.Errorf("bootstrap key was not trimmed")
+	}
+	if clients["evil"] != nil || directBaseURL("evil") != "" {
+		t.Fatal("unknown bootstrap provider acquired a routable client")
 	}
 }
 

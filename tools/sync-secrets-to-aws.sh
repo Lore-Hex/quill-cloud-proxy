@@ -27,17 +27,17 @@
 # plan) reaches every LLM provider over the same direct public APIs
 # the GCP enclave already uses (api.anthropic.com, api.openai.com, ...).
 # It needs the same provider API keys at hand. AWS Secrets Manager is
-# the AWS-native secret store; mirroring from GCP Secret Manager keeps
-# GCP as the single source of truth and lets the AWS-side enclave's
-# bootstrap consume secrets the same way the GCP-side enclave does.
+# the AWS-native secret store. The operator's restricted local source publishes
+# an independent copy to each cloud, so AWS provisioning and runtime do not
+# depend on GCP availability.
 #
 # Idempotency
 # ===========
 # - For every secret we mirror, this script either creates the AWS
 #   secret (if absent) or updates the existing version (if present).
 # - The AWS region is fixed at us-west-2 (the failover compute region).
-# - Re-running this script after a key rotation in GCP picks up the
-#   new value and pushes the rotation to AWS within one run.
+# - Re-running this script after an operator key rotation publishes the new
+#   value to AWS within one run.
 #
 # Run as
 # ======
@@ -52,7 +52,7 @@ AWS_REGION="${AWS_REGION:-us-west-2}"
 AWS_SECRET_PREFIX="${AWS_SECRET_PREFIX:-quill/}"   # AWS secret name = prefix + GCP secret id
 
 # Provider API key secrets that the multi-provider enclave consumes.
-# Each entry is the GCP Secret Manager secret name. The corresponding
+# Each entry is the provider secret's stable logical name. The corresponding
 # env-var name the enclave reads is keyed off the same id (e.g.
 # QUILL_ANTHROPIC_SECRET → AWS secret quill/QUILL_ANTHROPIC_SECRET).
 SECRETS=(
@@ -107,6 +107,16 @@ SECRETS=(
   # excluded because the AWS enclave build has no media adapter.
   trustedrouter-stepfun-api-key
   trustedrouter-relace-api-key
+  trustedrouter-nextbit-api-key
+  trustedrouter-aion-labs-api-key
+  trustedrouter-sambanova-api-key
+  trustedrouter-inception-api-key
+  trustedrouter-akashml-api-key
+  trustedrouter-arcee-api-key
+  trustedrouter-upstage-api-key
+  trustedrouter-reka-api-key
+  trustedrouter-sail-research-api-key
+  trustedrouter-mancer-api-key
   trustedrouter-tr-api-key-for-self-heal
   # The internal gateway token authenticates enclave→TR control-plane
   # calls (x-trustedrouter-internal-token header on /v1/internal/*).

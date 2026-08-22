@@ -28,7 +28,6 @@ Values are returned to the caller and never logged. Callers print names.
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -91,6 +90,16 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "PEARL_RESEARCH_API_KEY": "trustedrouter-pearl-api-key",
     "STEPFUN_API_KEY": "trustedrouter-stepfun-api-key",
     "RELACE_API_KEY": "trustedrouter-relace-api-key",
+    "NEXTBIT_API_KEY": "trustedrouter-nextbit-api-key",
+    "AION_LABS_API_KEY": "trustedrouter-aion-labs-api-key",
+    "SAMBANOVA_API_KEY": "trustedrouter-sambanova-api-key",
+    "INCEPTION_API_KEY": "trustedrouter-inception-api-key",
+    "AKASHML_API_KEY": "trustedrouter-akashml-api-key",
+    "ARCEE_API_KEY": "trustedrouter-arcee-api-key",
+    "UPSTAGE_API_KEY": "trustedrouter-upstage-api-key",
+    "REKA_API_KEY": "trustedrouter-reka-api-key",
+    "SAIL_RESEARCH_API_KEY": "trustedrouter-sail-research-api-key",
+    "MANCER_API_KEY": "trustedrouter-mancer-api-key",
     "NVIDIA_NIM_API_KEY": "trustedrouter-nvidia-nim-api-key",
     "DECART_API_KEY": "trustedrouter-decart-api-key",
     "RECRAFT_API_KEY": "trustedrouter-recraft-api-key",

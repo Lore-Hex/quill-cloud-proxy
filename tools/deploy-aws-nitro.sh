@@ -734,6 +734,19 @@ allowlist:
   - {address: ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com, port: 443}
   - {address: trustedrouter-foundry-eastus2.openai.azure.com, port: 443}
   - {address: trustedrouter-foundry-eastus2.services.ai.azure.com, port: 443}
+  # Provider-owned endpoints verified against their authenticated /models and
+  # /chat/completions APIs on 2026-08-22. tools/test_vsock_port_map.py derives
+  # the required hosts from internal/directproviders and enforces lockstep.
+  - {address: api.nextbit256.com,             port: 443}
+  - {address: api.aionlabs.ai,                port: 443}
+  - {address: api.sambanova.ai,               port: 443}
+  - {address: api.inceptionlabs.ai,           port: 443}
+  - {address: api.akashml.com,                port: 443}
+  - {address: api.arcee.ai,                   port: 443}
+  - {address: api.upstage.ai,                 port: 443}
+  - {address: api.reka.ai,                    port: 443}
+  - {address: api.sailresearch.com,           port: 443}
+  - {address: mancer.tech,                    port: 443}
   # GCP cross-cloud APIs — auth + Spanner + Bigtable + GCS (ACME cache)
   # + KMS (BYOK envelope-unwrap when an AWS-side request lands with a
   # customer-provided GCP-KMS-wrapped envelope).
@@ -846,6 +859,16 @@ write_vsock_unit 8041 openrouter.ai
 write_vsock_unit 8047 ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com
 write_vsock_unit 8053 trustedrouter-foundry-eastus2.openai.azure.com
 write_vsock_unit 8054 trustedrouter-foundry-eastus2.services.ai.azure.com
+write_vsock_unit 8055 api.nextbit256.com
+write_vsock_unit 8056 api.aionlabs.ai
+write_vsock_unit 8057 api.sambanova.ai
+write_vsock_unit 8058 api.inceptionlabs.ai
+write_vsock_unit 8059 api.akashml.com
+write_vsock_unit 8060 api.arcee.ai
+write_vsock_unit 8061 api.upstage.ai
+write_vsock_unit 8062 api.reka.ai
+write_vsock_unit 8063 api.sailresearch.com
+write_vsock_unit 8064 mancer.tech
 write_vsock_unit 8049 llm.chutes.ai
 write_vsock_unit 8050 api.chutes.ai
 write_vsock_unit 8051 api.trustedservices.intel.com

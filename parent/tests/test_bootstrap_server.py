@@ -90,6 +90,7 @@ def test_build_payload_loads_present_provider_keys_and_skips_missing() -> None:
             "quill/quill-openrouter-key": "sk-or-FAKE",
             "quill/trustedrouter-anthropic-api-key": "sk-ant-FAKE",
             "quill/trustedrouter-openai-api-key": "sk-FAKE-OPENAI",
+            "quill/trustedrouter-nextbit-api-key": "sk-FAKE-NEXTBIT",
             "quill/trustedrouter-aws-cross-cloud-sa-key": base64.b64encode(
                 _FAKE_KMS_CIPHERTEXT
             ).decode("ascii"),
@@ -105,6 +106,7 @@ def test_build_payload_loads_present_provider_keys_and_skips_missing() -> None:
     assert payload["anthropic_api_key"] == "sk-ant-FAKE"
     assert payload["openai_api_key"] == "sk-FAKE-OPENAI"
     assert payload["openrouter_api_key"] == "sk-or-FAKE"
+    assert payload["provider_api_keys"] == {"nextbit": "sk-FAKE-NEXTBIT"}
     # Missing keys produce no field at all (omitempty on the Go side).
     assert "gemini_api_key" not in payload
     assert "cerebras_api_key" not in payload
@@ -268,6 +270,21 @@ def test_build_payload_iterates_all_known_providers() -> None:
         f"missing: {expected_fields - actual_fields} extra: {actual_fields - expected_fields}"
     )
 
+    expected_direct = {
+        "nextbit",
+        "aion-labs",
+        "sambanova",
+        "inception",
+        "akashml",
+        "arcee",
+        "upstage",
+        "reka",
+        "sail-research",
+        "mancer",
+    }
+    actual_direct = {provider for provider, _suffix in bootstrap_server._DIRECT_PROVIDER_KEYS}
+    assert actual_direct == expected_direct
+
 
 def test_aws_sync_manifest_contains_every_bootstrap_provider_secret() -> None:
     sync_script = (
@@ -279,5 +296,11 @@ def test_aws_sync_manifest_contains_every_bootstrap_provider_secret() -> None:
         for _field, suffix in bootstrap_server._PROVIDER_KEYS
         if f"\n  {suffix}\n" not in sync_script
     }
+
+    missing.update(
+        suffix
+        for _provider, suffix in bootstrap_server._DIRECT_PROVIDER_KEYS
+        if f"\n  {suffix}\n" not in sync_script
+    )
 
     assert not missing, f"AWS sync manifest is missing provider secrets: {missing}"

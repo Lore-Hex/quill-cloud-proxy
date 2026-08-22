@@ -138,6 +138,16 @@ def test_provider_wave_secrets_are_injected_only_after_existence_check() -> None
         "QUILL_DECART_SECRET": "trustedrouter-decart-api-key",
         "QUILL_RECRAFT_SECRET": "trustedrouter-recraft-api-key",
         "QUILL_BFL_SECRET": "trustedrouter-bfl-api-key",
+        "QUILL_NEXTBIT_SECRET": "trustedrouter-nextbit-api-key",
+        "QUILL_AION_LABS_SECRET": "trustedrouter-aion-labs-api-key",
+        "QUILL_SAMBANOVA_SECRET": "trustedrouter-sambanova-api-key",
+        "QUILL_INCEPTION_SECRET": "trustedrouter-inception-api-key",
+        "QUILL_AKASHML_SECRET": "trustedrouter-akashml-api-key",
+        "QUILL_ARCEE_SECRET": "trustedrouter-arcee-api-key",
+        "QUILL_UPSTAGE_SECRET": "trustedrouter-upstage-api-key",
+        "QUILL_REKA_SECRET": "trustedrouter-reka-api-key",
+        "QUILL_SAIL_RESEARCH_SECRET": "trustedrouter-sail-research-api-key",
+        "QUILL_MANCER_SECRET": "trustedrouter-mancer-api-key",
     }
     assert "configure_optional_provider_secret()" in deploy
     assert "${PROVIDER_WAVE_TEE_ENV}" in deploy

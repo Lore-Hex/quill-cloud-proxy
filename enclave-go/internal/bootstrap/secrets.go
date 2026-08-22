@@ -52,6 +52,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/directproviders"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -78,80 +79,94 @@ type secretBinding struct {
 // several are broken. It reproduces the hand-written sequence bootstrap_gcp.go
 // used before this table existed; reordering it changes which error an operator
 // sees on a bad deploy.
-var secretBindings = []secretBinding{
-	{[]string{"QUILL_OPENROUTER_SECRET"}, "openrouter key", true, func(b *types.BootstrapData, v string) { b.OpenRouterAPIKey = v }},
-	{[]string{"QUILL_ANTHROPIC_SECRET"}, "anthropic key", true, func(b *types.BootstrapData, v string) { b.AnthropicAPIKey = v }},
-	{[]string{"QUILL_OPENAI_SECRET"}, "openai key", true, func(b *types.BootstrapData, v string) { b.OpenAIAPIKey = v }},
-	{[]string{"QUILL_GEMINI_SECRET"}, "gemini key", true, func(b *types.BootstrapData, v string) { b.GeminiAPIKey = v }},
-	{[]string{"QUILL_CEREBRAS_SECRET"}, "cerebras key", true, func(b *types.BootstrapData, v string) { b.CerebrasAPIKey = v }},
-	{[]string{"QUILL_DEEPSEEK_SECRET"}, "deepseek key", true, func(b *types.BootstrapData, v string) { b.DeepSeekAPIKey = v }},
-	{[]string{"QUILL_MISTRAL_SECRET"}, "mistral key", true, func(b *types.BootstrapData, v string) { b.MistralAPIKey = v }},
-	{[]string{"QUILL_KIMI_SECRET"}, "kimi key", true, func(b *types.BootstrapData, v string) { b.KimiAPIKey = v }},
-	{[]string{"QUILL_ZAI_SECRET"}, "zai key", true, func(b *types.BootstrapData, v string) { b.ZAIAPIKey = v }},
-	{[]string{"QUILL_TOGETHER_SECRET"}, "together key", true, func(b *types.BootstrapData, v string) { b.TogetherAPIKey = v }},
-	{[]string{"QUILL_FIREWORKS_SECRET"}, "fireworks key", true, func(b *types.BootstrapData, v string) { b.FireworksAPIKey = v }},
-	{[]string{"QUILL_COHERE_SECRET"}, "cohere key", true, func(b *types.BootstrapData, v string) { b.CohereAPIKey = v }},
-	{[]string{"QUILL_VOYAGE_SECRET"}, "voyage key", true, func(b *types.BootstrapData, v string) { b.VoyageAPIKey = v }},
-	{[]string{"QUILL_GROK_SECRET"}, "grok key", true, func(b *types.BootstrapData, v string) { b.GrokAPIKey = v }},
-	{[]string{"QUILL_NOVITA_SECRET"}, "novita key", true, func(b *types.BootstrapData, v string) { b.NovitaAPIKey = v }},
-	{[]string{"QUILL_PHALA_SECRET"}, "phala key", true, func(b *types.BootstrapData, v string) { b.PhalaAPIKey = v }},
-	{[]string{"QUILL_SILICONFLOW_SECRET"}, "siliconflow key", true, func(b *types.BootstrapData, v string) { b.SiliconFlowAPIKey = v }},
-	{[]string{"QUILL_TINFOIL_SECRET"}, "tinfoil key", true, func(b *types.BootstrapData, v string) { b.TinfoilAPIKey = v }},
-	{[]string{"QUILL_VENICE_SECRET"}, "venice key", true, func(b *types.BootstrapData, v string) { b.VeniceAPIKey = v }},
-	{[]string{"QUILL_PARASAIL_SECRET"}, "parasail key", true, func(b *types.BootstrapData, v string) { b.ParasailAPIKey = v }},
-	{[]string{"QUILL_LIGHTNING_SECRET"}, "lightning key", true, func(b *types.BootstrapData, v string) { b.LightningAPIKey = v }},
-	{[]string{"QUILL_GMI_SECRET"}, "gmi key", true, func(b *types.BootstrapData, v string) { b.GMIAPIKey = v }},
-	{[]string{"QUILL_DEEPINFRA_SECRET"}, "deepinfra key", true, func(b *types.BootstrapData, v string) { b.DeepInfraAPIKey = v }},
-	{[]string{"QUILL_FRIENDLI_SECRET"}, "friendli key", true, func(b *types.BootstrapData, v string) { b.FriendliAPIKey = v }},
-	{[]string{"QUILL_BASETEN_SECRET"}, "baseten key", true, func(b *types.BootstrapData, v string) { b.BasetenAPIKey = v }},
-	{[]string{"QUILL_THINKING_MACHINES_SECRET"}, "thinking machines key", true, func(b *types.BootstrapData, v string) { b.ThinkingMachinesAPIKey = v }},
-	{[]string{"QUILL_WAFER_SECRET"}, "wafer key", true, func(b *types.BootstrapData, v string) { b.WaferAPIKey = v }},
-	{[]string{"QUILL_CRUSOE_SECRET"}, "crusoe key", true, func(b *types.BootstrapData, v string) { b.CrusoeAPIKey = v }},
-	{[]string{"QUILL_MAKORA_SECRET"}, "makora key", true, func(b *types.BootstrapData, v string) { b.MakoraAPIKey = v }},
-	{[]string{"QUILL_NEBIUS_SECRET"}, "nebius key", true, func(b *types.BootstrapData, v string) { b.NebiusAPIKey = v }},
-	{[]string{"QUILL_MINIMAX_SECRET"}, "minimax key", true, func(b *types.BootstrapData, v string) { b.MiniMaxAPIKey = v }},
-	{[]string{"QUILL_XIAOMI_SECRET"}, "xiaomi key", true, func(b *types.BootstrapData, v string) { b.XiaomiAPIKey = v }},
-	// Providers added to bootstrap_gcp.go after this file was written. Kept in
-	// step by TestProviderSecretParityAcrossClouds, which fails if the two
-	// lists ever diverge again.
-	{[]string{"QUILL_ALIBABA_SECRET"}, "alibaba key", true, func(b *types.BootstrapData, v string) { b.AlibabaAPIKey = v }},
-	{[]string{"QUILL_AZURE_SECRET"}, "azure key", true, func(b *types.BootstrapData, v string) { b.AzureAPIKey = v }},
-	{[]string{"QUILL_ATLAS_CLOUD_SECRET"}, "atlas cloud key", true, func(b *types.BootstrapData, v string) { b.AtlasCloudAPIKey = v }},
-	{[]string{"QUILL_CHUTES_SECRET"}, "chutes key", true, func(b *types.BootstrapData, v string) { b.ChutesAPIKey = v }},
-	{[]string{"QUILL_CLOUDFLARE_WORKERS_AI_SECRET"}, "cloudflare workers ai key", true, func(b *types.BootstrapData, v string) { b.CloudflareWorkersAIAPIKey = v }},
-	{[]string{"QUILL_DIGITALOCEAN_SECRET"}, "digitalocean key", true, func(b *types.BootstrapData, v string) { b.DigitalOceanAPIKey = v }},
-	{[]string{"QUILL_ENGY_SECRET"}, "engy key", true, func(b *types.BootstrapData, v string) { b.EngyAPIKey = v }},
-	{[]string{"QUILL_STEPFUN_SECRET"}, "stepfun key", true, func(b *types.BootstrapData, v string) { b.StepFunAPIKey = v }},
-	{[]string{"QUILL_RELACE_SECRET"}, "relace key", true, func(b *types.BootstrapData, v string) { b.RelaceAPIKey = v }},
-	{[]string{"QUILL_DECART_SECRET"}, "decart key", true, func(b *types.BootstrapData, v string) { b.DecartAPIKey = v }},
-	{[]string{"QUILL_RECRAFT_SECRET"}, "recraft key", true, func(b *types.BootstrapData, v string) { b.RecraftAPIKey = v }},
-	{[]string{"QUILL_BFL_SECRET"}, "bfl key", true, func(b *types.BootstrapData, v string) { b.BFLAPIKey = v }},
-	{[]string{"QUILL_DATABRICKS_SECRET"}, "databricks token", true, func(b *types.BootstrapData, v string) { b.DatabricksToken = v }},
-	{[]string{"QUILL_DATABRICKS_HOST_SECRET"}, "databricks host", false, func(b *types.BootstrapData, v string) { b.DatabricksHost = v }},
-	{[]string{"QUILL_EXA_SECRET"}, "exa key", true, func(b *types.BootstrapData, v string) { b.ExaAPIKey = v }},
-	{[]string{"QUILL_INCEPTRON_SECRET"}, "inceptron key", true, func(b *types.BootstrapData, v string) { b.InceptronAPIKey = v }},
-	{[]string{"QUILL_KLING_SECRET"}, "kling key", true, func(b *types.BootstrapData, v string) { b.KlingAPIKey = v }},
-	{[]string{"QUILL_LTX_SECRET"}, "ltx key", true, func(b *types.BootstrapData, v string) { b.LTXAPIKey = v }},
-	{[]string{"QUILL_MORPH_SECRET"}, "morph key", true, func(b *types.BootstrapData, v string) { b.MorphAPIKey = v }},
-	{[]string{"QUILL_NEUROMETRIC_SECRET"}, "neurometric key", true, func(b *types.BootstrapData, v string) { b.NeurometricAPIKey = v }},
-	{[]string{"QUILL_PEARL_SECRET"}, "pearl key", true, func(b *types.BootstrapData, v string) { b.PearlAPIKey = v }},
-	{[]string{"QUILL_OPENAI_VIDEO_SECRET"}, "openai video key", true, func(b *types.BootstrapData, v string) { b.OpenAIVideoAPIKey = v }},
-	{[]string{"QUILL_RUNWAY_SECRET"}, "runway key", true, func(b *types.BootstrapData, v string) { b.RunwayAPIKey = v }},
-	{[]string{"QUILL_STREAMLAKE_SECRET"}, "streamlake key", true, func(b *types.BootstrapData, v string) { b.StreamLakeAPIKey = v }},
-	{[]string{"QUILL_TELNYX_SECRET"}, "telnyx key", true, func(b *types.BootstrapData, v string) { b.TelnyxAPIKey = v }},
-	{[]string{"QUILL_ZERO_G_SECRET"}, "zero g key", true, func(b *types.BootstrapData, v string) { b.ZeroGAPIKey = v }},
-	{[]string{"QUILL_SYNTH_PANEL_PROMPT_SECRET"}, "synth panel prompt", false, func(b *types.BootstrapData, v string) { b.SynthPanelPrompt = v }},
-	{[]string{"QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET"}, "synth synthesis prompt", false, func(b *types.BootstrapData, v string) { b.SynthSynthesisPrompt = v }},
-	{[]string{"QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET"}, "synth-code panel prompt", false, func(b *types.BootstrapData, v string) { b.SynthCodePanelPrompt = v }},
-	{[]string{"QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SECRET"}, "synth-code synthesis prompt", false, func(b *types.BootstrapData, v string) { b.SynthCodeSynthesisPrompt = v }},
-	{[]string{"QUILL_ADVISOR_WORKER_PROMPT_SECRET", "QUILL_SOCRATES_WORKER_PROMPT_SECRET"}, "advisor worker prompt", false, func(b *types.BootstrapData, v string) { b.AdvisorWorkerPrompt = v }},
-	{[]string{"QUILL_ADVISOR_PROMPT_SECRET", "QUILL_SOCRATES_ADVISOR_PROMPT_SECRET"}, "advisor prompt", false, func(b *types.BootstrapData, v string) { b.AdvisorPrompt = v }},
-	{[]string{"QUILL_TRUSTEDROUTER_INTERNAL_SECRET"}, "trustedrouter internal token", false, func(b *types.BootstrapData, v string) { b.TrustedRouterInternalToken = v }},
-	// "<kid>:<base64url-hmac>" for the fallback ACME CA; one entry so the
-	// halves rotate together. Optional: absent simply leaves the fallback
-	// CA (if any) registering without EAB.
-	{[]string{"QUILL_ACME_FALLBACK_EAB_SECRET"}, "acme fallback eab", false, func(b *types.BootstrapData, v string) { b.ACMEFallbackEAB = v }},
-}
+var secretBindings = func() []secretBinding {
+	bindings := []secretBinding{
+		{[]string{"QUILL_OPENROUTER_SECRET"}, "openrouter key", true, func(b *types.BootstrapData, v string) { b.OpenRouterAPIKey = v }},
+		{[]string{"QUILL_ANTHROPIC_SECRET"}, "anthropic key", true, func(b *types.BootstrapData, v string) { b.AnthropicAPIKey = v }},
+		{[]string{"QUILL_OPENAI_SECRET"}, "openai key", true, func(b *types.BootstrapData, v string) { b.OpenAIAPIKey = v }},
+		{[]string{"QUILL_GEMINI_SECRET"}, "gemini key", true, func(b *types.BootstrapData, v string) { b.GeminiAPIKey = v }},
+		{[]string{"QUILL_CEREBRAS_SECRET"}, "cerebras key", true, func(b *types.BootstrapData, v string) { b.CerebrasAPIKey = v }},
+		{[]string{"QUILL_DEEPSEEK_SECRET"}, "deepseek key", true, func(b *types.BootstrapData, v string) { b.DeepSeekAPIKey = v }},
+		{[]string{"QUILL_MISTRAL_SECRET"}, "mistral key", true, func(b *types.BootstrapData, v string) { b.MistralAPIKey = v }},
+		{[]string{"QUILL_KIMI_SECRET"}, "kimi key", true, func(b *types.BootstrapData, v string) { b.KimiAPIKey = v }},
+		{[]string{"QUILL_ZAI_SECRET"}, "zai key", true, func(b *types.BootstrapData, v string) { b.ZAIAPIKey = v }},
+		{[]string{"QUILL_TOGETHER_SECRET"}, "together key", true, func(b *types.BootstrapData, v string) { b.TogetherAPIKey = v }},
+		{[]string{"QUILL_FIREWORKS_SECRET"}, "fireworks key", true, func(b *types.BootstrapData, v string) { b.FireworksAPIKey = v }},
+		{[]string{"QUILL_COHERE_SECRET"}, "cohere key", true, func(b *types.BootstrapData, v string) { b.CohereAPIKey = v }},
+		{[]string{"QUILL_VOYAGE_SECRET"}, "voyage key", true, func(b *types.BootstrapData, v string) { b.VoyageAPIKey = v }},
+		{[]string{"QUILL_GROK_SECRET"}, "grok key", true, func(b *types.BootstrapData, v string) { b.GrokAPIKey = v }},
+		{[]string{"QUILL_NOVITA_SECRET"}, "novita key", true, func(b *types.BootstrapData, v string) { b.NovitaAPIKey = v }},
+		{[]string{"QUILL_PHALA_SECRET"}, "phala key", true, func(b *types.BootstrapData, v string) { b.PhalaAPIKey = v }},
+		{[]string{"QUILL_SILICONFLOW_SECRET"}, "siliconflow key", true, func(b *types.BootstrapData, v string) { b.SiliconFlowAPIKey = v }},
+		{[]string{"QUILL_TINFOIL_SECRET"}, "tinfoil key", true, func(b *types.BootstrapData, v string) { b.TinfoilAPIKey = v }},
+		{[]string{"QUILL_VENICE_SECRET"}, "venice key", true, func(b *types.BootstrapData, v string) { b.VeniceAPIKey = v }},
+		{[]string{"QUILL_PARASAIL_SECRET"}, "parasail key", true, func(b *types.BootstrapData, v string) { b.ParasailAPIKey = v }},
+		{[]string{"QUILL_LIGHTNING_SECRET"}, "lightning key", true, func(b *types.BootstrapData, v string) { b.LightningAPIKey = v }},
+		{[]string{"QUILL_GMI_SECRET"}, "gmi key", true, func(b *types.BootstrapData, v string) { b.GMIAPIKey = v }},
+		{[]string{"QUILL_DEEPINFRA_SECRET"}, "deepinfra key", true, func(b *types.BootstrapData, v string) { b.DeepInfraAPIKey = v }},
+		{[]string{"QUILL_FRIENDLI_SECRET"}, "friendli key", true, func(b *types.BootstrapData, v string) { b.FriendliAPIKey = v }},
+		{[]string{"QUILL_BASETEN_SECRET"}, "baseten key", true, func(b *types.BootstrapData, v string) { b.BasetenAPIKey = v }},
+		{[]string{"QUILL_THINKING_MACHINES_SECRET"}, "thinking machines key", true, func(b *types.BootstrapData, v string) { b.ThinkingMachinesAPIKey = v }},
+		{[]string{"QUILL_WAFER_SECRET"}, "wafer key", true, func(b *types.BootstrapData, v string) { b.WaferAPIKey = v }},
+		{[]string{"QUILL_CRUSOE_SECRET"}, "crusoe key", true, func(b *types.BootstrapData, v string) { b.CrusoeAPIKey = v }},
+		{[]string{"QUILL_MAKORA_SECRET"}, "makora key", true, func(b *types.BootstrapData, v string) { b.MakoraAPIKey = v }},
+		{[]string{"QUILL_NEBIUS_SECRET"}, "nebius key", true, func(b *types.BootstrapData, v string) { b.NebiusAPIKey = v }},
+		{[]string{"QUILL_MINIMAX_SECRET"}, "minimax key", true, func(b *types.BootstrapData, v string) { b.MiniMaxAPIKey = v }},
+		{[]string{"QUILL_XIAOMI_SECRET"}, "xiaomi key", true, func(b *types.BootstrapData, v string) { b.XiaomiAPIKey = v }},
+		// Providers added to bootstrap_gcp.go after this file was written. Kept in
+		// step by TestProviderSecretParityAcrossClouds, which fails if the two
+		// lists ever diverge again.
+		{[]string{"QUILL_ALIBABA_SECRET"}, "alibaba key", true, func(b *types.BootstrapData, v string) { b.AlibabaAPIKey = v }},
+		{[]string{"QUILL_AZURE_SECRET"}, "azure key", true, func(b *types.BootstrapData, v string) { b.AzureAPIKey = v }},
+		{[]string{"QUILL_ATLAS_CLOUD_SECRET"}, "atlas cloud key", true, func(b *types.BootstrapData, v string) { b.AtlasCloudAPIKey = v }},
+		{[]string{"QUILL_CHUTES_SECRET"}, "chutes key", true, func(b *types.BootstrapData, v string) { b.ChutesAPIKey = v }},
+		{[]string{"QUILL_CLOUDFLARE_WORKERS_AI_SECRET"}, "cloudflare workers ai key", true, func(b *types.BootstrapData, v string) { b.CloudflareWorkersAIAPIKey = v }},
+		{[]string{"QUILL_DIGITALOCEAN_SECRET"}, "digitalocean key", true, func(b *types.BootstrapData, v string) { b.DigitalOceanAPIKey = v }},
+		{[]string{"QUILL_ENGY_SECRET"}, "engy key", true, func(b *types.BootstrapData, v string) { b.EngyAPIKey = v }},
+		{[]string{"QUILL_STEPFUN_SECRET"}, "stepfun key", true, func(b *types.BootstrapData, v string) { b.StepFunAPIKey = v }},
+		{[]string{"QUILL_RELACE_SECRET"}, "relace key", true, func(b *types.BootstrapData, v string) { b.RelaceAPIKey = v }},
+		{[]string{"QUILL_DECART_SECRET"}, "decart key", true, func(b *types.BootstrapData, v string) { b.DecartAPIKey = v }},
+		{[]string{"QUILL_RECRAFT_SECRET"}, "recraft key", true, func(b *types.BootstrapData, v string) { b.RecraftAPIKey = v }},
+		{[]string{"QUILL_BFL_SECRET"}, "bfl key", true, func(b *types.BootstrapData, v string) { b.BFLAPIKey = v }},
+		{[]string{"QUILL_DATABRICKS_SECRET"}, "databricks token", true, func(b *types.BootstrapData, v string) { b.DatabricksToken = v }},
+		{[]string{"QUILL_DATABRICKS_HOST_SECRET"}, "databricks host", false, func(b *types.BootstrapData, v string) { b.DatabricksHost = v }},
+		{[]string{"QUILL_EXA_SECRET"}, "exa key", true, func(b *types.BootstrapData, v string) { b.ExaAPIKey = v }},
+		{[]string{"QUILL_INCEPTRON_SECRET"}, "inceptron key", true, func(b *types.BootstrapData, v string) { b.InceptronAPIKey = v }},
+		{[]string{"QUILL_KLING_SECRET"}, "kling key", true, func(b *types.BootstrapData, v string) { b.KlingAPIKey = v }},
+		{[]string{"QUILL_LTX_SECRET"}, "ltx key", true, func(b *types.BootstrapData, v string) { b.LTXAPIKey = v }},
+		{[]string{"QUILL_MORPH_SECRET"}, "morph key", true, func(b *types.BootstrapData, v string) { b.MorphAPIKey = v }},
+		{[]string{"QUILL_NEUROMETRIC_SECRET"}, "neurometric key", true, func(b *types.BootstrapData, v string) { b.NeurometricAPIKey = v }},
+		{[]string{"QUILL_PEARL_SECRET"}, "pearl key", true, func(b *types.BootstrapData, v string) { b.PearlAPIKey = v }},
+		{[]string{"QUILL_OPENAI_VIDEO_SECRET"}, "openai video key", true, func(b *types.BootstrapData, v string) { b.OpenAIVideoAPIKey = v }},
+		{[]string{"QUILL_RUNWAY_SECRET"}, "runway key", true, func(b *types.BootstrapData, v string) { b.RunwayAPIKey = v }},
+		{[]string{"QUILL_STREAMLAKE_SECRET"}, "streamlake key", true, func(b *types.BootstrapData, v string) { b.StreamLakeAPIKey = v }},
+		{[]string{"QUILL_TELNYX_SECRET"}, "telnyx key", true, func(b *types.BootstrapData, v string) { b.TelnyxAPIKey = v }},
+		{[]string{"QUILL_ZERO_G_SECRET"}, "zero g key", true, func(b *types.BootstrapData, v string) { b.ZeroGAPIKey = v }},
+		{[]string{"QUILL_SYNTH_PANEL_PROMPT_SECRET"}, "synth panel prompt", false, func(b *types.BootstrapData, v string) { b.SynthPanelPrompt = v }},
+		{[]string{"QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET"}, "synth synthesis prompt", false, func(b *types.BootstrapData, v string) { b.SynthSynthesisPrompt = v }},
+		{[]string{"QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET"}, "synth-code panel prompt", false, func(b *types.BootstrapData, v string) { b.SynthCodePanelPrompt = v }},
+		{[]string{"QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SECRET"}, "synth-code synthesis prompt", false, func(b *types.BootstrapData, v string) { b.SynthCodeSynthesisPrompt = v }},
+		{[]string{"QUILL_ADVISOR_WORKER_PROMPT_SECRET", "QUILL_SOCRATES_WORKER_PROMPT_SECRET"}, "advisor worker prompt", false, func(b *types.BootstrapData, v string) { b.AdvisorWorkerPrompt = v }},
+		{[]string{"QUILL_ADVISOR_PROMPT_SECRET", "QUILL_SOCRATES_ADVISOR_PROMPT_SECRET"}, "advisor prompt", false, func(b *types.BootstrapData, v string) { b.AdvisorPrompt = v }},
+		{[]string{"QUILL_TRUSTEDROUTER_INTERNAL_SECRET"}, "trustedrouter internal token", false, func(b *types.BootstrapData, v string) { b.TrustedRouterInternalToken = v }},
+		// "<kid>:<base64url-hmac>" for the fallback ACME CA; one entry so the
+		// halves rotate together. Optional: absent simply leaves the fallback
+		// CA (if any) registering without EAB.
+		{[]string{"QUILL_ACME_FALLBACK_EAB_SECRET"}, "acme fallback eab", false, func(b *types.BootstrapData, v string) { b.ACMEFallbackEAB = v }},
+	}
+	for _, spec := range directproviders.All() {
+		spec := spec
+		bindings = append(bindings, secretBinding{
+			envs:     []string{spec.SecretEnv},
+			label:    spec.SecretLabel,
+			provider: true,
+			assign: func(data *types.BootstrapData, value string) {
+				assignDirectProviderAPIKey(data, spec.Provider, value)
+			},
+		})
+	}
+	return bindings
+}()
 
 // secretConfig is the resolved, validated environment: everything the assembly
 // loop needs, read once so a misconfigured deploy fails before any network I/O.

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/directproviders"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -174,8 +175,19 @@ func TestSecretBindingsAssignDistinctFields(t *testing.T) {
 		var hit []string
 		for i := 0; i < value.NumField(); i++ {
 			field := value.Field(i)
-			if field.Kind() == reflect.String && field.String() == marker {
-				hit = append(hit, value.Type().Field(i).Name)
+			fieldName := value.Type().Field(i).Name
+			switch field.Kind() {
+			case reflect.String:
+				if field.String() == marker {
+					hit = append(hit, fieldName)
+				}
+			case reflect.Map:
+				for _, key := range field.MapKeys() {
+					entry := field.MapIndex(key)
+					if entry.Kind() == reflect.String && entry.String() == marker {
+						hit = append(hit, fieldName+"["+key.String()+"]")
+					}
+				}
 			}
 		}
 		if len(hit) != 1 {
@@ -199,8 +211,8 @@ func TestSecretBindingsAssignDistinctFields(t *testing.T) {
 // TestSealerBindingTableMatchesSecretBindings enforce the other two corners of
 // that triangle.
 func TestSecretBindingsTableIsWellFormed(t *testing.T) {
-	if len(secretBindings) != 66 {
-		t.Errorf("secretBindings has %d entries, want 66", len(secretBindings))
+	if len(secretBindings) != 76 {
+		t.Errorf("secretBindings has %d entries, want 76", len(secretBindings))
 	}
 	providers := 0
 	envs := map[string]string{}
@@ -218,8 +230,11 @@ func TestSecretBindingsTableIsWellFormed(t *testing.T) {
 			envs[env] = binding.label
 		}
 	}
-	if providers != 57 {
-		t.Errorf("%d provider bindings, want 57 — the 'at least one provider' guard counts these", providers)
+	if providers != 67 {
+		t.Errorf("%d provider bindings, want 67 — the 'at least one provider' guard counts these", providers)
+	}
+	if err := directproviders.Validate(); err != nil {
+		t.Errorf("direct provider secret specs: %v", err)
 	}
 }
 

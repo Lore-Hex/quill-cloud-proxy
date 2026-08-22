@@ -138,6 +138,22 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("relace_api_key", "trustedrouter-relace-api-key"),
 )
 
+# Simple provider-owned OpenAI-compatible endpoints share one bounded map in
+# BootstrapData. The enclave still owns the provider -> HTTPS base URL table;
+# neither this parent nor a secret value can select an arbitrary hostname.
+_DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
+    ("nextbit", "trustedrouter-nextbit-api-key"),
+    ("aion-labs", "trustedrouter-aion-labs-api-key"),
+    ("sambanova", "trustedrouter-sambanova-api-key"),
+    ("inception", "trustedrouter-inception-api-key"),
+    ("akashml", "trustedrouter-akashml-api-key"),
+    ("arcee", "trustedrouter-arcee-api-key"),
+    ("upstage", "trustedrouter-upstage-api-key"),
+    ("reka", "trustedrouter-reka-api-key"),
+    ("sail-research", "trustedrouter-sail-research-api-key"),
+    ("mancer", "trustedrouter-mancer-api-key"),
+)
+
 _PROMPT_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("synth_panel_prompt", "trustedrouter-synth-panel-prompt-v1"),
     ("synth_synthesis_prompt", "trustedrouter-synth-synthesis-prompt-v1"),
@@ -285,7 +301,19 @@ def _build_bootstrap_data(
         if value:
             payload[field] = value.strip()
             found += 1
-    log.info("bootstrap.provider_keys", found=found, total=len(_PROVIDER_KEYS))
+    direct_provider_keys: dict[str, str] = {}
+    for provider, suffix in _DIRECT_PROVIDER_KEYS:
+        value = _read_one_secret(sm_client, f"{secret_prefix}{suffix}")
+        if value:
+            direct_provider_keys[provider] = value.strip()
+            found += 1
+    if direct_provider_keys:
+        payload["provider_api_keys"] = direct_provider_keys
+    log.info(
+        "bootstrap.provider_keys",
+        found=found,
+        total=len(_PROVIDER_KEYS) + len(_DIRECT_PROVIDER_KEYS),
+    )
 
     prompt_found = 0
     for field, suffix in _PROMPT_KEYS:
@@ -383,11 +411,15 @@ async def serve_forever(
             data = await loop.run_in_executor(None, _build_sync)
             async with payload_lock:
                 cached_payload = json.dumps(data).encode("utf-8")
+            direct_keys = data.get("provider_api_keys")
+            direct_loaded = len(direct_keys) if isinstance(direct_keys, dict) else 0
             log.info(
                 "bootstrap.refresh",
                 # don't log the actual key values; just a count of
                 # which provider fields ended up populated
-                providers_loaded=sum(1 for field, _suffix in _PROVIDER_KEYS if data.get(field)),
+                providers_loaded=(
+                    sum(1 for field, _suffix in _PROVIDER_KEYS if data.get(field)) + direct_loaded
+                ),
             )
         except Exception as exc:
             log.exception("bootstrap.refresh_failed", err=type(exc).__name__)
