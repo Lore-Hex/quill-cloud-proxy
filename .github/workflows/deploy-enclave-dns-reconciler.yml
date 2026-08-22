@@ -6,6 +6,7 @@ on:
     paths:
       - "tools/reconcile-enclave-dns.py"
       - "tools/test_reconcile_enclave_dns.py"
+      - "tools/test_dns_reconciler_scheduler.py"
       - "tools/verify-attestation.py"
       - "tools/test_verify_attestation.py"
       - "tools/Dockerfile.reconciler"
@@ -26,6 +27,9 @@ env:
   REGION: us-central1
   IMAGE_REPOSITORY: us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-dns-reconciler
   JOB_NAME: enclave-dns-reconciler
+  SCHEDULER_NAME: enclave-dns-reconciler-tick
+  SCHEDULER_SCHEDULE: "*/2 * * * *"
+  SCHEDULER_SERVICE_ACCOUNT: enclave-dns-reconciler-invoker@quill-cloud-proxy.iam.gserviceaccount.com
 
 jobs:
   test-build-deploy:
@@ -41,6 +45,7 @@ jobs:
           uv run --script tools/verify-attestation.py --help >/dev/null
           python3 tools/test_verify_attestation.py
           python3 tools/test_reconcile_enclave_dns.py
+          python3 tools/test_dns_reconciler_scheduler.py
 
       - name: Authenticate to GCP via WIF
         uses: google-github-actions/auth@v2
@@ -68,13 +73,85 @@ jobs:
           test -n "${digest}"
           echo "ref=${IMAGE_REPOSITORY}@${digest}" >> "${GITHUB_OUTPUT}"
 
-      - name: Update and verify the scheduled job
+      - name: Update the reconciler job and scheduler
         run: |
           set -euo pipefail
           gcloud run jobs update "${JOB_NAME}" \
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
             --image="${{ steps.image.outputs.ref }}"
+
+          run_uri="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${JOB_NAME}:run"
+          retry_flags=(
+            # Four total attempts finish within 85 seconds even when every
+            # HTTP attempt consumes Cloud Scheduler's 15-second minimum
+            # deadline. That leaves 35 seconds before the next two-minute tick.
+            --attempt-deadline=15s
+            --max-retry-attempts=3
+            --min-backoff=5s
+            --max-backoff=10s
+            --max-doublings=1
+          )
+          describe_error="$(mktemp)"
+          trap 'rm -f "${describe_error}"' EXIT
+          if gcloud scheduler jobs describe "${SCHEDULER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --location="${REGION}" >/dev/null 2>"${describe_error}"; then
+            gcloud scheduler jobs update http "${SCHEDULER_NAME}" \
+              --project="${PROJECT_ID}" \
+              --location="${REGION}" \
+              --schedule="${SCHEDULER_SCHEDULE}" \
+              --uri="${run_uri}" \
+              --http-method=POST \
+              --oauth-service-account-email="${SCHEDULER_SERVICE_ACCOUNT}" \
+              "${retry_flags[@]}"
+          else
+            describe_status=$?
+            if ! grep -Eqi 'NOT_FOUND|not found' "${describe_error}"; then
+              cat "${describe_error}" >&2
+              exit "${describe_status}"
+            fi
+            gcloud scheduler jobs create http "${SCHEDULER_NAME}" \
+              --project="${PROJECT_ID}" \
+              --location="${REGION}" \
+              --schedule="${SCHEDULER_SCHEDULE}" \
+              --uri="${run_uri}" \
+              --http-method=POST \
+              --oauth-service-account-email="${SCHEDULER_SERVICE_ACCOUNT}" \
+              "${retry_flags[@]}"
+          fi
+
+      - name: Verify scheduler authentication path
+        run: |
+          set -euo pipefail
+          before="$(gcloud run jobs executions list \
+            --job="${JOB_NAME}" \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --limit=1 \
+            --format='value(metadata.name)')"
+          gcloud scheduler jobs run "${SCHEDULER_NAME}" \
+            --project="${PROJECT_ID}" \
+            --location="${REGION}"
+          scheduler_execution=""
+          for _ in $(seq 1 24); do
+            latest="$(gcloud run jobs executions list \
+              --job="${JOB_NAME}" \
+              --project="${PROJECT_ID}" \
+              --region="${REGION}" \
+              --limit=1 \
+              --format='value(metadata.name)')"
+            if [ -n "${latest}" ] && [ "${latest}" != "${before}" ]; then
+              scheduler_execution="${latest}"
+              break
+            fi
+            sleep 5
+          done
+          test -n "${scheduler_execution}"
+
+      - name: Verify the reconciler job
+        run: |
+          set -euo pipefail
           gcloud run jobs execute "${JOB_NAME}" \
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
