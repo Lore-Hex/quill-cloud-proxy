@@ -38,6 +38,8 @@ on:
       - "tools/synthetic_gate_status.py"
       - "tools/watchdog.py"
       - "tools/roll-secondary-region.sh"
+      - "tools/recover-gcp-region.sh"
+      - "tools/verify-gcp-runtime-secret-access.py"
       - ".github/workflows/deploy-enclave-gcp.yml"
       # Note: trust-page/** is intentionally NOT in this list. Trust
       # artifacts are *output* of this workflow, not input — listing them
@@ -411,31 +413,6 @@ jobs:
           REGION_SHORT: us
         run: bash tools/deploy-gcp-mig.sh us-central1
 
-      - name: Clear a stale drain when the primary template never changed
-        if: ${{ failure() }}
-        env:
-          PREV_US: ${{ steps.prev.outputs.us_central1_template }}
-          QUILL_RECONCILE_APPLY: "1"
-          QUILL_API_HOST: api.trustedrouter.com
-          QUILL_DNS_ZONE: trustedrouter-com
-          QUILL_PUBLISH_REGIONAL: "1"
-          QUILL_REGIONAL_ZONE: quillrouter-com
-          QUILL_REGIONAL_SUFFIX: quillrouter.com
-        run: |
-          set -euo pipefail
-          current="$(gcloud compute instance-groups managed describe quill-enclave-mig-us \
-            --region=us-central1 --project=quill-cloud-proxy \
-            --format='value(instanceTemplate.basename())')"
-          if [ -z "${PREV_US}" ] || [ "${current}" != "${PREV_US}" ]; then
-            echo "primary template may have changed; preserving the rollout drain"
-            exit 0
-          fi
-          echo "primary template is unchanged; clearing the stale rollout drain"
-          uv run --script tools/reconcile-enclave-dns.py \
-            --clear-drain-region us-central1
-          uv run --script tools/reconcile-enclave-dns.py --apply
-          python3 tools/sync-route53-api-aliases.py --apply
-
       - name: Wait for us-central1 MIG to be stable
         # Block until the rolling-replace finishes draining the old
         # instances. We *want* the canary below to measure post-roll
@@ -506,23 +483,6 @@ jobs:
         continue-on-error: true
         run: python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 60
 
-      - name: Rollback us-central1 MIG + abort (canary tripped)
-        if: ${{ steps.canary_us.outcome == 'failure' }}
-        env:
-          PREV_US: ${{ steps.prev.outputs.us_central1_template }}
-        run: |
-          set -euo pipefail
-          if [ -z "${PREV_US}" ]; then
-            echo "no prior us-central1 template recorded; cannot rollback"
-            exit 1
-          fi
-          echo "us-central1 canary failed; pointing MIG back at ${PREV_US}"
-          gcloud compute instance-groups managed set-instance-template quill-enclave-mig-us \
-            --region=us-central1 --project=quill-cloud-proxy \
-            --template="${PREV_US}" --quiet
-          echo "us-central1 remains drained from canonical API DNS; other regions keep serving."
-          exit 1
-
       - name: Re-add us-central1 to canonical API DNS
         if: ${{ steps.canary_us.outcome == 'success' }}
         env:
@@ -537,6 +497,26 @@ jobs:
             --clear-drain-region us-central1
           uv run --script tools/reconcile-enclave-dns.py --apply
           python3 tools/sync-route53-api-aliases.py --apply
+
+      - name: Refresh AWS credentials for primary recovery
+        if: ${{ always() && (failure() || steps.canary_us.outcome == 'failure') }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Recover us-central1 after any failed rollout step
+        if: ${{ always() && (failure() || steps.canary_us.outcome == 'failure') }}
+        env:
+          PREV_US: ${{ steps.prev.outputs.us_central1_template }}
+        run: |
+          bash tools/recover-gcp-region.sh \
+            us-central1 \
+            quill-enclave-mig-us \
+            quill-enclave-mig-us- \
+            api.quillrouter.com,api-us-central1.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
+            "${PREV_US}"
+          exit 1
 
       # AWS OIDC credentials are temporary and cannot refresh in place. Each
       # secondary rollout can legitimately take 30+ minutes, so authenticate

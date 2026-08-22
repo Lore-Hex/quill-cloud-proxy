@@ -22,7 +22,25 @@ confidential_type="$8"
 : "${IMAGE_DIGEST:?IMAGE_DIGEST is required}"
 
 lock_dir="$(mktemp -d "${TMPDIR:-/tmp}/tr-secondary-rollout-XXXXXX")"
-trap 'rm -rf "${lock_dir}"' EXIT
+drain_started=0
+rollout_complete=0
+
+on_exit() {
+  local status="$?"
+  trap - EXIT
+  if [ "${status}" -ne 0 ] && [ "${drain_started}" -eq 1 ] && [ "${rollout_complete}" -ne 1 ]; then
+    echo "${region}: rollout failed; restoring and verifying the previous template" >&2
+    if ! bash tools/recover-gcp-region.sh \
+      "${region}" "${mig}" "${instance_filter}" "${api_hosts}" "${previous_template}"; then
+      echo "${region}: automatic recovery failed; region remains drained" >&2
+    fi
+  fi
+  rm -rf "${lock_dir}"
+  exit "${status}"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 reconcile_dns() {
   local lock="${lock_dir}/dns-reconcile.lock"
@@ -84,20 +102,6 @@ wait_region_stable_with_dns_refresh() {
   return 1
 }
 
-rollback_region() {
-  local target_region="$1"
-  local target_mig="$2"
-  local prior_template="$3"
-  if [ -z "${prior_template}" ]; then
-    echo "no prior ${target_region} template recorded; cannot rollback" >&2
-    return 1
-  fi
-  echo "${target_region} canary failed; pointing MIG back at ${prior_template}" >&2
-  gcloud compute instance-groups managed set-instance-template "${target_mig}" \
-    --region="${target_region}" --project=quill-cloud-proxy \
-    --template="${prior_template}" --quiet
-}
-
 rollout_step() {
   local step_status=0
   "$@" || {
@@ -114,6 +118,7 @@ export CONF_COMPUTE_TYPE="${confidential_type}"
 
 echo "::group::secondary rollout ${region}"
 echo "draining ${region} from canonical API DNS"
+drain_started=1
 rollout_step update_drain set "${region}"
 rollout_step reconcile_dns
 rollout_step bash tools/wait-canonical-drained.sh "${region}"
@@ -141,19 +146,18 @@ if curl -fsS --max-time 15 https://trustedrouter.com/status.json | \
       --rollback-after 3 \
       --skip-baseline \
       --initial-grace-sec 120; then
-    rollback_region "${region}" "${mig}" "${previous_template}"
     exit 1
   fi
 elif [ -z "${previous_template}" ]; then
   echo "${region}: first deployment has no synthetic target yet; direct per-instance attestation + PONG is the bootstrap gate"
 else
   echo "${region}: existing region is missing from synthetic status; failing closed" >&2
-  rollback_region "${region}" "${mig}" "${previous_template}"
   exit 1
 fi
 
 echo "re-adding ${region} to canonical API DNS"
 rollout_step update_drain clear "${region}"
 rollout_step reconcile_dns
+rollout_complete=1
 echo "${region} rollout healthy"
 echo "::endgroup::"

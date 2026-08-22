@@ -46,6 +46,8 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 REGION="${1:-}"
 if [ -z "$REGION" ]; then
   echo "usage: $0 <region>" >&2
@@ -363,6 +365,25 @@ DATABRICKS_TEE_ENV=""
 if [ -n "${QUILL_DATABRICKS_SECRET}" ]; then
   DATABRICKS_TEE_ENV="|tee-env-QUILL_DATABRICKS_SECRET=${QUILL_DATABRICKS_SECRET}|tee-env-QUILL_DATABRICKS_HOST_SECRET=${QUILL_DATABRICKS_HOST_SECRET}"
 fi
+
+# Bootstrap treats every named secret as required. Prove the runtime service
+# account can read every referenced secret before creating a template or
+# touching a MIG; a deploy-only binding is not sufficient.
+runtime_secret_args=()
+while IFS= read -r variable_name; do
+  case "${variable_name}" in
+    QUILL_*_SECRET|ACME_FALLBACK_EAB_SECRET)
+      secret_name="${!variable_name:-}"
+      if [ -n "${secret_name}" ]; then
+        runtime_secret_args+=(--secret "${secret_name}")
+      fi
+      ;;
+  esac
+done < <(compgen -A variable | LC_ALL=C sort)
+python3 "${SCRIPT_DIR}/verify-gcp-runtime-secret-access.py" \
+  --project "${PROJECT_ID}" \
+  --service-account "${WORKLOAD_SA}" \
+  "${runtime_secret_args[@]}"
 
 # Pick the next template suffix by listing existing templates with our prefix.
 next_template_name() {
