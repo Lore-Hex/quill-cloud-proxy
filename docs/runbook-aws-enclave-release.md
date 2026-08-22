@@ -122,6 +122,17 @@ still in the pinned set at that stage, which is the reason step 5 comes last.
 * **Do not put anything that terminates TLS in front of the enclave.** The
   attestation binds the leaf minted inside the TEE; an ALB or CDN voids it.
 
+Launch-template user data is gzip-compressed because the measured egress
+allowlist is larger than EC2's 16 KiB raw limit. To inspect it during an
+incident, decode and inflate it before reading:
+
+```bash
+aws ec2 describe-launch-template-versions \
+  --launch-template-name quill-enclave-lt --versions <version> \
+  --query 'LaunchTemplateVersions[0].LaunchTemplateData.UserData' \
+  --output text | base64 --decode | gzip --decompress
+```
+
 
 ## Publish the measurement
 

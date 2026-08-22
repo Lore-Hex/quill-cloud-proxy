@@ -37,6 +37,8 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
 AWS_REGION="${AWS_REGION:-us-west-2}"
 PROJECT_TAG="${PROJECT_TAG:-quill-enclave}"
 ECR_REPO_NAME="${ECR_REPO_NAME:-quill-enclave}"
@@ -80,6 +82,11 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "FATAL: python3 is required to encode EC2 user data" >&2
+  exit 1
+fi
 
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 run() {
@@ -966,7 +973,14 @@ systemctl enable --now quill-enclave.service
 EOS
 )
   local user_data_b64
-  user_data_b64=$(printf '%s' "$user_data" | base64 | tr -d '\n')
+  # EC2 accepts at most 16 KiB after base64 decoding. The provider egress
+  # allowlist has grown beyond that as plain shell. Cloud-init natively detects
+  # and inflates gzip user data, and the helper fails before any launch-template
+  # mutation if even the compressed form exceeds EC2's hard limit.
+  # Keep declaration and assignment separate: `local name=$(...)` masks a
+  # failing command substitution and would defeat this fail-closed gate.
+  user_data_b64=$(printf '%s' "$user_data" \
+    | python3 "$SCRIPT_DIR/encode_ec2_user_data.py")
 
   # Launch template
   local lt_name="${PROJECT_TAG}-lt"

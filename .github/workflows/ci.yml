@@ -130,6 +130,7 @@ jobs:
           python3 tools/test_nitro_root_pin.py
           python3 tools/test_mirror_independence.py
           python3 tools/test_signing_identity_matches_docs.py
+          python3 tools/test_encode_ec2_user_data.py
       # Separate step: this one is ~2 minutes where the others are seconds, so
       # a failure here should be legible as "the Azure deploy script broke"
       # rather than hiding at the bottom of a list. It stubs az, docker and the
