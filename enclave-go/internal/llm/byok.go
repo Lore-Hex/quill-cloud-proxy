@@ -966,6 +966,10 @@ func directBaseURL(provider string) string {
 		// Meta Muse Spark is currently served through OpenRouter. The
 		// control-plane provider label is deliberately "Meta via OpenRouter".
 		return "https://openrouter.ai/api/v1"
+	case "openrouter-exclusive":
+		// Narrow credits-only adapter for explicitly allowlisted models with no
+		// provider-direct API. The control plane currently admits Ox Alpha only.
+		return "https://openrouter.ai/api/v1"
 	case "cerebras":
 		return "https://api.cerebras.ai/v1"
 	case "deepseek":
@@ -1215,11 +1219,15 @@ func providerUsesAuthorizedUpstreamModel(provider string) bool {
 
 func providerPreservesAuthorModelID(provider string) bool {
 	switch provider {
-	case "meta", "novita", "nebius", "fireworks", "chutes", "digitalocean", "cloudflare-workers-ai", "inceptron", "atlas-cloud":
+	case "meta", "openrouter-exclusive", "novita", "nebius", "fireworks", "chutes", "digitalocean", "cloudflare-workers-ai", "inceptron", "atlas-cloud":
 		return true
 	default:
 		return false
 	}
+}
+
+func openRouterExclusiveModelAllowed(model, upstreamModel string) bool {
+	return directModelID("openrouter-exclusive", model, upstreamModel) == "stealth/ox-alpha"
 }
 
 func stripOpenRouterModelVariant(model string) string {

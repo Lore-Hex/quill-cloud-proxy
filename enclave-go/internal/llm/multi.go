@@ -30,10 +30,14 @@ import (
 // up-front so connection pools and any cached state warm up at boot.
 func New(boot *qtypes.BootstrapData) Client {
 	return &multiClient{
-		anthropic:        newAnthropic(boot),
-		vertex:           newVertex(boot),
-		openai:           newOpenAICompatible("openai", boot.OpenAIAPIKey),
-		meta:             newOpenAICompatible("meta", boot.OpenRouterAPIKey),
+		anthropic: newAnthropic(boot),
+		vertex:    newVertex(boot),
+		openai:    newOpenAICompatible("openai", boot.OpenAIAPIKey),
+		meta:      newOpenAICompatible("meta", boot.OpenRouterAPIKey),
+		openRouterExclusive: newOpenAICompatible(
+			"openrouter-exclusive",
+			boot.OpenRouterAPIKey,
+		),
 		googleVertex:     newVertexGemini(boot),
 		googleAIStudio:   newOpenAICompatible("google-ai-studio", boot.GeminiAPIKey),
 		aiStudioNative:   newAIStudioGemini(boot),
@@ -102,6 +106,7 @@ type multiClient struct {
 	vertex              *gcpClient
 	openai              *openAICompatibleClient
 	meta                *openAICompatibleClient
+	openRouterExclusive *openAICompatibleClient
 	googleVertex        *vertexGeminiClient
 	googleAIStudio      *openAICompatibleClient
 	aiStudioNative      *aiStudioGeminiClient
@@ -185,6 +190,15 @@ func (m *multiClient) InvokeStreaming(
 		return m.openai.InvokeStreaming(ctx, req, body, out, options...)
 	case "meta":
 		return m.meta.InvokeStreaming(ctx, req, body, out, options...)
+	case "openrouter-exclusive":
+		modelID := ""
+		if req != nil {
+			modelID = req.Model
+		}
+		if !openRouterExclusiveModelAllowed(modelID, option.UpstreamModel) {
+			return fmt.Errorf("llm/openrouter-exclusive: model is not allowlisted")
+		}
+		return m.openRouterExclusive.InvokeStreaming(ctx, req, body, out, options...)
 	case "google-vertex", "gemini":
 		// `gemini` is the pre-split compatibility slug. It intentionally keeps
 		// the old prepaid behavior (Vertex OAuth) for in-flight/replayed
@@ -282,6 +296,6 @@ func (m *multiClient) InvokeStreaming(
 		// Embeddings-only; returns a clear "chat not supported" error.
 		return m.cohere.InvokeStreaming(ctx, req, body, out, options...)
 	default:
-		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, telnyx, thinkingmachines, wafer, crusoe, makora, nebius, minimax, chutes, digitalocean, cloudflare-workers-ai, inceptron, morph, atlas-cloud, streamlake, neurometric, pearl, engy, databricks, zero-g, alibaba, azure, xiaomi, cohere)", provider)
+		return fmt.Errorf("llm/multi: unsupported provider %q (compiled providers: anthropic, vertex, openai, meta, openrouter-exclusive, google-vertex, google-ai-studio, cerebras, deepseek, mistral, kimi, zai, together, fireworks, grok, novita, phala, siliconflow, tinfoil, venice, parasail, lightning, gmi, deepinfra, friendli, baseten, telnyx, thinkingmachines, wafer, crusoe, makora, nebius, minimax, chutes, digitalocean, cloudflare-workers-ai, inceptron, morph, atlas-cloud, streamlake, neurometric, pearl, engy, databricks, zero-g, alibaba, azure, xiaomi, cohere)", provider)
 	}
 }
