@@ -129,6 +129,26 @@ def test_gcp_bootstrap_grants_workload_access_to_engy_secret() -> None:
     assert 'ENGY_TEE_ENV="|tee-env-QUILL_ENGY_SECRET=${QUILL_ENGY_SECRET}"' in deploy
 
 
+def test_provider_wave_secrets_are_injected_only_after_existence_check() -> None:
+    bootstrap = (REPO_ROOT / "tools" / "deploy-gcp-bootstrap.sh").read_text()
+    deploy = (REPO_ROOT / "tools" / "deploy-gcp-mig.sh").read_text()
+    expected = {
+        "QUILL_STEPFUN_SECRET": "trustedrouter-stepfun-api-key",
+        "QUILL_RELACE_SECRET": "trustedrouter-relace-api-key",
+        "QUILL_DECART_SECRET": "trustedrouter-decart-api-key",
+        "QUILL_RECRAFT_SECRET": "trustedrouter-recraft-api-key",
+        "QUILL_BFL_SECRET": "trustedrouter-bfl-api-key",
+    }
+    assert "configure_optional_provider_secret()" in deploy
+    assert "${PROVIDER_WAVE_TEE_ENV}" in deploy
+    for env_name, secret_name in expected.items():
+        assert f"configure_optional_provider_secret {env_name} {secret_name}" in deploy
+        assert f'{env_name}="${{{env_name}:-{secret_name}}}"' not in deploy
+        bootstrap_name = env_name.removeprefix("QUILL_")
+        assert f'{bootstrap_name}="${{{bootstrap_name}:-{secret_name}}}"' in bootstrap
+        assert f'"${bootstrap_name}" \\' in bootstrap
+
+
 def test_gcp_bootstrap_grants_workload_access_to_direct_video_secrets() -> None:
     bootstrap_script = REPO_ROOT / "tools" / "deploy-gcp-bootstrap.sh"
     source = bootstrap_script.read_text()

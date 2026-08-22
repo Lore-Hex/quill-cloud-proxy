@@ -49,7 +49,7 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "google-ai-studio", "zai", "together",
 		"fireworks", "grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
 		"parasail", "lightning", "gmi", "deepinfra", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer",
-		"crusoe", "makora", "nebius", "minimax", "xiaomi", "digitalocean":
+		"crusoe", "makora", "nebius", "minimax", "xiaomi", "digitalocean", "stepfun", "relace":
 		return true
 	default:
 		return false
@@ -947,15 +947,23 @@ func openAICompatiblePartsWithFetchedImages(
 }
 
 func openAICompatibleImageDataURL(ctx context.Context, raw string) (string, error) {
-	mediaType, data, err := loadImageBytes(ctx, raw)
-	if err != nil {
-		return "", err
-	}
-	normalizedType, normalizedData, err := normalizeImageBytes(mediaType, data)
+	normalizedType, normalizedData, err := LoadNormalizedImage(ctx, raw)
 	if err != nil {
 		return "", err
 	}
 	return "data:" + normalizedType + ";base64," + base64.StdEncoding.EncodeToString(normalizedData), nil
+}
+
+// LoadNormalizedImage is the enclave-wide input-image boundary. Native image
+// generation adapters reuse the same URL, byte, format, dimension, and pixel
+// checks as chat/Responses vision so one provider cannot accidentally regain
+// an SSRF or decompression path that another adapter already closed.
+func LoadNormalizedImage(ctx context.Context, raw string) (string, []byte, error) {
+	mediaType, data, err := loadImageBytes(ctx, raw)
+	if err != nil {
+		return "", nil, err
+	}
+	return normalizeImageBytes(mediaType, data)
 }
 
 func directBaseURL(provider string) string {
@@ -1096,6 +1104,10 @@ func directBaseURL(provider string) string {
 		return "https://inference.pearlresearch.ai/v1"
 	case "engy":
 		return "https://api.engy.ai/v1"
+	case "stepfun":
+		return "https://api.stepfun.ai/v1"
+	case "relace":
+		return "https://models.relace.ai/v1"
 	case "zero-g":
 		return "https://router-api.0g.ai/v1"
 	case "alibaba":
@@ -1210,7 +1222,7 @@ func DirectModelID(provider, model, upstreamModel string) string {
 // maps still win above for historical aliases and dedicated endpoint slugs.
 func providerUsesAuthorizedUpstreamModel(provider string) bool {
 	switch provider {
-	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow", "neurometric", "pearl", "engy", "databricks", "zero-g", "alibaba", "azure":
+	case "together", "lightning", "parasail", "deepinfra", "gmi", "tinfoil", "venice", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer", "crusoe", "makora", "minimax", "siliconflow", "neurometric", "pearl", "engy", "stepfun", "relace", "databricks", "zero-g", "alibaba", "azure":
 		return true
 	default:
 		return false
@@ -1219,7 +1231,7 @@ func providerUsesAuthorizedUpstreamModel(provider string) bool {
 
 func providerPreservesAuthorModelID(provider string) bool {
 	switch provider {
-	case "meta", "openrouter-exclusive", "novita", "nebius", "fireworks", "chutes", "digitalocean", "cloudflare-workers-ai", "inceptron", "atlas-cloud":
+	case "meta", "openrouter-exclusive", "novita", "nebius", "fireworks", "chutes", "digitalocean", "cloudflare-workers-ai", "inceptron", "atlas-cloud", "relace":
 		return true
 	default:
 		return false
@@ -1797,6 +1809,10 @@ func normalizeDirectProvider(provider string) string {
 		return "pearl"
 	case "engy", "engy-ai":
 		return "engy"
+	case "stepfun", "step-fun":
+		return "stepfun"
+	case "relace", "relace-ai":
+		return "relace"
 	case "databricks", "databricks-fmapi":
 		return "databricks"
 	case "0g", "0g-private-computer", "zero-g", "zero-g-private-computer":

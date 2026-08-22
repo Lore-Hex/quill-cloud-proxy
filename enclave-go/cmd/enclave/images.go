@@ -347,16 +347,17 @@ func serveNativeImageAuthorized(
 		writeProviderError(conn, 502, "image provider unavailable")
 		return
 	}
-	nativeRequest := *resolved.native
-	nativeRequest.Spec = resolved.native.Spec
-	if strings.TrimSpace(option.UpstreamModel) != "" {
-		nativeRequest.Spec.UpstreamID = option.UpstreamModel
+	nativeRequest, routeErr := nativeImageRequestForRoute(resolved.native, option.UpstreamModel)
+	if routeErr != nil {
+		refundImageGeneration(ctx, trGateway, authorization, 502, "image_catalog_mismatch", started, req.Metadata)
+		writeProviderError(conn, 502, "image provider catalog mismatch")
+		return
 	}
 	generationCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	clientClosed := cancelUserModelOnDisconnect(generationCtx, cancel, conn)
 	result, err := imageProviderGateway.Generate(
-		generationCtx, &nativeRequest, option.ProviderAPIKey, idempotencyKey,
+		generationCtx, nativeRequest, option.ProviderAPIKey, idempotencyKey,
 	)
 	if err != nil {
 		if clientClosed.Load() {
@@ -449,6 +450,26 @@ func serveNativeImageAuthorized(
 		return
 	}
 	writeJSONResponse(conn, 200, payload)
+}
+
+func nativeImageRequestForRoute(
+	request *imagegen.ResolvedRequest,
+	upstreamModel string,
+) (*imagegen.ResolvedRequest, error) {
+	if request == nil {
+		return nil, fmt.Errorf("image request is unavailable")
+	}
+	clone := *request
+	clone.Spec = request.Spec
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if upstreamModel == "" {
+		return &clone, nil
+	}
+	if clone.Spec.Pricing == imagegen.PricingFixed && upstreamModel != clone.Spec.UpstreamID {
+		return nil, fmt.Errorf("fixed-price image route does not match the catalog")
+	}
+	clone.Spec.UpstreamID = upstreamModel
+	return &clone, nil
 }
 
 func refundImageGeneration(

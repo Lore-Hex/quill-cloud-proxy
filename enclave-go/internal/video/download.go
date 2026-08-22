@@ -71,7 +71,7 @@ func downloadVideo(
 
 func validateDownloadURL(rawURL string) (*url.URL, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.Port() != "" {
 		return nil, fmt.Errorf("invalid URL")
 	}
 	host := strings.ToLower(parsed.Hostname())

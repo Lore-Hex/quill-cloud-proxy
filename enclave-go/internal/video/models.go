@@ -43,30 +43,33 @@ type CreateRequest struct {
 }
 
 type Model struct {
-	ID                     string
-	Name                   string
-	Description            string
-	DefaultDuration        int
-	DefaultResolution      string
-	DefaultAspectRatio     string
-	TextProviderModel      string
-	ImageProviderModel     string
-	ReferenceProviderModel string
-	SupportsAudio          bool
-	AudioAlwaysOn          bool
-	SupportsImage          bool
-	SupportsReferences     bool
-	SupportsAudioReference bool
-	SupportsVideoReference bool
-	PromptCharacterLimit   int
-	MinimumDuration        int
-	MaximumDuration        int
-	AllowedDurations       []int
-	AllowedResolutions     []string
-	AllowedAspectRatios    []string
-	OmitResolution         bool
-	ImageUsesSourceAspect  bool
-	DirectOnly             bool
+	ID                       string
+	Name                     string
+	Description              string
+	DefaultDuration          int
+	DefaultResolution        string
+	DefaultAspectRatio       string
+	TextProviderModel        string
+	ImageProviderModel       string
+	ReferenceProviderModel   string
+	SupportsAudio            bool
+	AudioAlwaysOn            bool
+	SupportsImage            bool
+	SupportsReferences       bool
+	SupportsAudioReference   bool
+	SupportsVideoReference   bool
+	PromptCharacterLimit     int
+	MinimumDuration          int
+	MaximumDuration          int
+	AllowedDurations         []int
+	AllowedResolutions       []string
+	AllowedAspectRatios      []string
+	OmitResolution           bool
+	ImageUsesSourceAspect    bool
+	VideoUsesSourceAspect    bool
+	RequiresVideoReference   bool
+	RequiresExplicitDuration bool
+	DirectOnly               bool
 }
 
 type RequestMetadata struct {
@@ -296,6 +299,39 @@ var models = map[string]Model{
 		AllowedAspectRatios:   []string{"16:9", "4:3", "1:1", "3:4", "9:16", "2:3", "3:2", "21:9"},
 		ImageUsesSourceAspect: true,
 	},
+	"decart/lucy-2.5": {
+		ID: "decart/lucy-2.5", Name: "Decart Lucy 2.5",
+		Description:     "Decart Lucy 2.5 asynchronous video editing.",
+		DefaultDuration: 5, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
+		ReferenceProviderModel: "lucy-2.5",
+		SupportsReferences:     true, SupportsVideoReference: true,
+		PromptCharacterLimit: 10_000, MinimumDuration: 1, MaximumDuration: 600,
+		AllowedResolutions: []string{"720p"}, AllowedAspectRatios: []string{"16:9", "9:16"},
+		VideoUsesSourceAspect: true, RequiresVideoReference: true, RequiresExplicitDuration: true,
+		DirectOnly: true,
+	},
+	"decart/lucy-vton-3.5": {
+		ID: "decart/lucy-vton-3.5", Name: "Decart Lucy VTON 3.5",
+		Description:     "Decart Lucy VTON 3.5 virtual try-on video editing.",
+		DefaultDuration: 5, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
+		ReferenceProviderModel: "lucy-vton-3.5",
+		SupportsReferences:     true, SupportsVideoReference: true,
+		PromptCharacterLimit: 10_000, MinimumDuration: 1, MaximumDuration: 600,
+		AllowedResolutions: []string{"720p"}, AllowedAspectRatios: []string{"16:9", "9:16"},
+		VideoUsesSourceAspect: true, RequiresVideoReference: true, RequiresExplicitDuration: true,
+		DirectOnly: true,
+	},
+	"decart/lucy-restyle-2": {
+		ID: "decart/lucy-restyle-2", Name: "Decart Lucy Restyle 2",
+		Description:     "Decart Lucy Restyle 2 asynchronous video restyling.",
+		DefaultDuration: 5, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
+		ReferenceProviderModel: "lucy-restyle-2",
+		SupportsReferences:     true, SupportsVideoReference: true,
+		PromptCharacterLimit: 10_000, MinimumDuration: 1, MaximumDuration: 600,
+		AllowedResolutions: []string{"720p"}, AllowedAspectRatios: []string{"16:9", "9:16"},
+		VideoUsesSourceAspect: true, RequiresVideoReference: true, RequiresExplicitDuration: true,
+		DirectOnly: true,
+	},
 }
 
 func Models() []Model {
@@ -306,6 +342,7 @@ func Models() []Model {
 		"openai/sora-2", "openai/sora-2-pro", "runway/gen-4.5",
 		"kling/v3-pro", "kling/o3-pro", "alibaba/wan-2.7",
 		"shengshu/vidu-q3", "pixverse/c1",
+		"decart/lucy-2.5", "decart/lucy-vton-3.5", "decart/lucy-restyle-2",
 		"lightricks/ltx-2.3-fast", "lightricks/ltx-2.3",
 		"google/gemini-omni-flash", "minimax/hailuo-3",
 	}
@@ -327,6 +364,9 @@ func Resolve(req *CreateRequest) (Model, map[string]any, map[string]any, error) 
 	if req.CallbackURL != "" {
 		return Model{}, nil, nil, &UnsupportedError{Field: "callback_url"}
 	}
+	if model.VideoUsesSourceAspect && (strings.TrimSpace(req.AspectRatio) != "" || strings.TrimSpace(req.Size) != "") {
+		return Model{}, nil, nil, fmt.Errorf("aspect_ratio and size are derived from the source video for this model")
+	}
 	if strings.TrimSpace(req.Prompt) == "" {
 		return Model{}, nil, nil, fmt.Errorf("prompt is required")
 	}
@@ -341,6 +381,9 @@ func Resolve(req *CreateRequest) (Model, map[string]any, map[string]any, error) 
 		return Model{}, nil, nil, fmt.Errorf("negative_prompt is too long")
 	}
 
+	if model.RequiresExplicitDuration && req.Duration == 0 {
+		return Model{}, nil, nil, fmt.Errorf("duration is required for this model")
+	}
 	duration := req.Duration
 	if duration == 0 {
 		duration = model.DefaultDuration
@@ -416,6 +459,9 @@ func Resolve(req *CreateRequest) (Model, map[string]any, map[string]any, error) 
 	if err != nil {
 		return Model{}, nil, nil, err
 	}
+	if model.RequiresVideoReference && videoRef == "" {
+		return Model{}, nil, nil, fmt.Errorf("model requires one video reference")
+	}
 	if first != "" || last != "" {
 		if !model.SupportsImage {
 			return Model{}, nil, nil, fmt.Errorf("model does not support image input")
@@ -448,6 +494,9 @@ func Resolve(req *CreateRequest) (Model, map[string]any, map[string]any, error) 
 				return Model{}, nil, nil, fmt.Errorf("model does not support video references")
 			}
 			queue["video_url"] = videoRef
+			if model.VideoUsesSourceAspect {
+				delete(queue, "aspect_ratio")
+			}
 		}
 	}
 	queue["model"] = providerModel

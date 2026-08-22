@@ -52,6 +52,8 @@ func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 		"nebius",
 		"minimax",
 		"xiaomi",
+		"stepfun",
+		"relace",
 	} {
 		if !isOpenAICompatibleBYOKProvider(provider) {
 			t.Fatalf("%s should be an OpenAI-compatible BYOK provider", provider)
@@ -65,6 +67,17 @@ func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 	}
 	if isOpenAICompatibleBYOKProvider("google-vertex") {
 		t.Fatal("Vertex must use workload identity, not an AI Studio BYOK key")
+	}
+}
+
+func TestNewProviderDirectBaseURLs(t *testing.T) {
+	for provider, want := range map[string]string{
+		"stepfun": "https://api.stepfun.ai/v1",
+		"relace":  "https://models.relace.ai/v1",
+	} {
+		if got := directBaseURL(provider); got != want {
+			t.Fatalf("directBaseURL(%q) = %q, want %q", provider, got, want)
+		}
 	}
 }
 

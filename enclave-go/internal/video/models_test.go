@@ -25,6 +25,9 @@ func TestVideoModelsIncludeLaunchAndExpansionSet(t *testing.T) {
 		"google/gemini-omni-flash":    false,
 		"minimax/hailuo-3":            false,
 		"x-ai/grok-imagine-video":     false,
+		"decart/lucy-2.5":             false,
+		"decart/lucy-vton-3.5":        false,
+		"decart/lucy-restyle-2":       false,
 	}
 	for _, model := range Models() {
 		if _, ok := want[model.ID]; !ok {
@@ -301,7 +304,7 @@ func TestModelsJSONIsTruthfulAboutProviderPrivacy(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Data) != 17 {
+	if len(payload.Data) != 20 {
 		t.Fatalf("model count = %d", len(payload.Data))
 	}
 	for _, row := range payload.Data {
