@@ -307,14 +307,22 @@ class PublishedRecordTests(unittest.TestCase):
         )
         self.assertIn(aws.get("source_commit"), (None, capture.SOURCE_COMMIT_UNSET))
 
-        # The current Azure record was recaptured without an operator-supplied
-        # source commit. Preserve that explicit absence so downstream format
-        # gates continue to fail closed instead of implying false provenance.
+        # Azure captures may either preserve explicit absence or name the
+        # operator-supplied commit used for the running build. A named commit
+        # must be immutable, reachable from this history, and explicitly
+        # described as operator-asserted rather than inferred by the capture.
         azure = json.loads(
             (capture.REPO_ROOT / "trust-page" / "trust" / "azure-release.json").read_text()
         )
-        self.assertEqual(azure.get("source_commit"), capture.SOURCE_COMMIT_UNSET)
-        self.assertEqual(azure.get("source_commit_provenance"), capture.PROVENANCE_NONE)
+        source_commit = azure.get("source_commit")
+        if source_commit == capture.SOURCE_COMMIT_UNSET:
+            self.assertEqual(azure.get("source_commit_provenance"), capture.PROVENANCE_NONE)
+        else:
+            self.assertEqual(capture.resolve_source_commit(source_commit), source_commit)
+            self.assertEqual(
+                azure.get("source_commit_provenance"),
+                capture.PROVENANCE_ASSERTED,
+            )
 
 
 if __name__ == "__main__":
