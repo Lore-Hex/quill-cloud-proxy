@@ -103,6 +103,10 @@ SECRETS=(
   trustedrouter-voyage-api-key
   # Xiaomi MiMo — OpenAI-compatible chat (api.xiaomimimo.com/v1).
   trustedrouter-xiaomi-api-key
+  # Provider-wave chat endpoints. Recraft, BFL, and Decart are deliberately
+  # excluded because the AWS enclave build has no media adapter.
+  trustedrouter-stepfun-api-key
+  trustedrouter-relace-api-key
   trustedrouter-tr-api-key-for-self-heal
   # The internal gateway token authenticates enclave→TR control-plane
   # calls (x-trustedrouter-internal-token header on /v1/internal/*).

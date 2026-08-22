@@ -132,6 +132,10 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("voyage_api_key", "trustedrouter-voyage-api-key"),
     # Xiaomi MiMo — OpenAI-compatible chat (api.xiaomimimo.com/v1).
     ("xiaomi_api_key", "trustedrouter-xiaomi-api-key"),
+    # Provider-wave chat endpoints. Media providers from the same wave are
+    # intentionally absent: the AWS enclave build does not expose media APIs.
+    ("stepfun_api_key", "trustedrouter-stepfun-api-key"),
+    ("relace_api_key", "trustedrouter-relace-api-key"),
 )
 
 _PROMPT_KEYS: Final[tuple[tuple[str, str], ...]] = (

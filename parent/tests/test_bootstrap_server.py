@@ -10,6 +10,7 @@ sm_client_factory / kms_client_factory escape hatches.
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -259,8 +260,24 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "azure_api_key",
         "voyage_api_key",
         "xiaomi_api_key",
+        "stepfun_api_key",
+        "relace_api_key",
     }
     actual_fields = {field for field, _suffix in bootstrap_server._PROVIDER_KEYS}
     assert actual_fields == expected_fields, (
         f"missing: {expected_fields - actual_fields} extra: {actual_fields - expected_fields}"
     )
+
+
+def test_aws_sync_manifest_contains_every_bootstrap_provider_secret() -> None:
+    sync_script = (
+        Path(__file__).resolve().parents[2] / "tools" / "sync-secrets-to-aws.sh"
+    ).read_text()
+
+    missing = {
+        suffix
+        for _field, suffix in bootstrap_server._PROVIDER_KEYS
+        if f"\n  {suffix}\n" not in sync_script
+    }
+
+    assert not missing, f"AWS sync manifest is missing provider secrets: {missing}"
