@@ -281,23 +281,14 @@ class PublishedRecordTests(unittest.TestCase):
         )
         self.assertIn(aws.get("source_commit"), (None, capture.SOURCE_COMMIT_UNSET))
 
-        # Azure was captured during the Azure-local-secret release from the
-        # exact clean commit used to build the running SEA image. The value is
-        # operator-asserted rather than measurement-derived, but it must at
-        # least identify a real commit in this repository.
+        # The current Azure record was recaptured without an operator-supplied
+        # source commit. Preserve that explicit absence so downstream format
+        # gates continue to fail closed instead of implying false provenance.
         azure = json.loads(
             (capture.REPO_ROOT / "trust-page" / "trust" / "azure-release.json").read_text()
         )
-        commit = azure.get("source_commit")
-        self.assertRegex(commit or "", r"^[0-9a-f]{7,40}$")
-        self.assertEqual(azure.get("source_commit_provenance"), capture.PROVENANCE_ASSERTED)
-        result = subprocess.run(
-            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
-            cwd=capture.REPO_ROOT,
-            check=False,
-            capture_output=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertEqual(azure.get("source_commit"), capture.SOURCE_COMMIT_UNSET)
+        self.assertEqual(azure.get("source_commit_provenance"), capture.PROVENANCE_NONE)
 
 
 if __name__ == "__main__":
