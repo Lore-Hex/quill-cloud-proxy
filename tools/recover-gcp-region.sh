@@ -2,8 +2,8 @@
 # Restore one drained GCP gateway region to its previously verified template.
 set -euo pipefail
 
-if [ "$#" -ne 5 ]; then
-  echo "usage: $0 <region> <mig> <instance-filter> <api-hosts> <previous-template>" >&2
+if [ "$#" -lt 5 ] || [ "$#" -gt 6 ]; then
+  echo "usage: $0 <region> <mig> <instance-filter> <api-hosts> <previous-template> [active|drained]" >&2
   exit 2
 fi
 
@@ -12,6 +12,7 @@ mig="$2"
 instance_filter="$3"
 api_hosts="$4"
 previous_template="$5"
+final_drain_state="${6-active}"
 project="${QUILL_GCP_PROJECT_ID:-quill-cloud-proxy}"
 primary_host="${QUILL_API_HOST:-api.trustedrouter.com}"
 dns_zone="${QUILL_DNS_ZONE:-trustedrouter-com}"
@@ -21,6 +22,13 @@ if [ -z "${previous_template}" ]; then
   echo "${region}: no previous template recorded; refusing to mutate DNS or the MIG" >&2
   exit 1
 fi
+case "${final_drain_state}" in
+  active|drained) ;;
+  *)
+    echo "${region}: invalid final drain state '${final_drain_state}'" >&2
+    exit 2
+    ;;
+esac
 
 update_drain() {
   local operation="$1"
@@ -107,11 +115,17 @@ bash tools/verify-region-before-dns.sh \
   "${region}" "${instance_filter}" "${previous_digest}"
 
 # Prove the accepted-digest reconciler also accepts the restored fleet while it
-# remains excluded from canonical traffic, then re-enable it atomically.
+# remains excluded from canonical traffic, then restore its pre-rollout drain
+# state. An intentionally drained region must never be enabled by recovery.
 reconcile_gcp_dns
-echo "${region}: rollback verified; clearing canonical drain"
-update_drain clear
+if [ "${final_drain_state}" = "drained" ]; then
+  echo "${region}: rollback verified; preserving pre-rollout canonical drain"
+  update_drain set
+else
+  echo "${region}: rollback verified; clearing rollout drain"
+  update_drain clear
+fi
 reconcile_gcp_dns
 sync_backup_dns
 recovery_complete=1
-echo "${region}: previous template restored, attested, and re-enabled"
+echo "${region}: previous template restored, attested, and drain state restored to ${final_drain_state}"

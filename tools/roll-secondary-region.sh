@@ -4,8 +4,8 @@
 # each invocation so a long multi-region deploy cannot outlive one AWS session.
 set -euo pipefail
 
-if [ "$#" -ne 8 ]; then
-  echo "usage: $0 <region> <mig> <instance-filter> <short-name> <api-hosts> <previous-template> <machine-type> <confidential-type>" >&2
+if [ "$#" -ne 9 ]; then
+  echo "usage: $0 <region> <mig> <instance-filter> <short-name> <api-hosts> <previous-template> <machine-type> <confidential-type> <active|drained>" >&2
   exit 2
 fi
 
@@ -17,6 +17,18 @@ api_hosts="$5"
 previous_template="$6"
 machine_type="$7"
 confidential_type="$8"
+prior_drain_state="$9"
+
+case "${prior_drain_state}" in
+  active) ;;
+  drained)
+    echo "::warning::${region} was already drained before this rollout; it will remain drained after success or recovery"
+    ;;
+  *)
+    echo "${region}: invalid pre-rollout drain state '${prior_drain_state}'; refusing to mutate" >&2
+    exit 2
+    ;;
+esac
 
 : "${IMAGE_REF:?IMAGE_REF is required}"
 : "${IMAGE_DIGEST:?IMAGE_DIGEST is required}"
@@ -24,6 +36,7 @@ confidential_type="$8"
 lock_dir="$(mktemp -d "${TMPDIR:-/tmp}/tr-secondary-rollout-XXXXXX")"
 drain_started=0
 rollout_complete=0
+echo "${region}: pre-rollout canonical drain state is ${prior_drain_state}"
 
 on_exit() {
   local status="$?"
@@ -31,7 +44,8 @@ on_exit() {
   if [ "${status}" -ne 0 ] && [ "${drain_started}" -eq 1 ] && [ "${rollout_complete}" -ne 1 ]; then
     echo "${region}: rollout failed; restoring and verifying the previous template" >&2
     if ! bash tools/recover-gcp-region.sh \
-      "${region}" "${mig}" "${instance_filter}" "${api_hosts}" "${previous_template}"; then
+      "${region}" "${mig}" "${instance_filter}" "${api_hosts}" \
+      "${previous_template}" "${prior_drain_state}"; then
       echo "${region}: automatic recovery failed; region remains drained" >&2
     fi
   fi
@@ -155,8 +169,13 @@ else
   exit 1
 fi
 
-echo "re-adding ${region} to canonical API DNS"
-rollout_step update_drain clear "${region}"
+if [ "${prior_drain_state}" = "drained" ]; then
+  echo "keeping ${region} drained from canonical API DNS"
+  rollout_step update_drain set "${region}"
+else
+  echo "re-adding ${region} to canonical API DNS"
+  rollout_step update_drain clear "${region}"
+fi
 rollout_step reconcile_dns
 rollout_complete=1
 echo "${region} rollout healthy"

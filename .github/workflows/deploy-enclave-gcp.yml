@@ -361,6 +361,21 @@ jobs:
         # at this template and recreates instances on it.
         id: prev
         run: |
+          if ! drains="$(
+            QUILL_API_HOST=api.trustedrouter.com \
+            QUILL_DNS_ZONE=trustedrouter-com \
+              uv run --script tools/reconcile-enclave-dns.py --list-drain-regions
+          )"; then
+            echo "could not read pre-rollout drain state; refusing to roll" >&2
+            exit 1
+          fi
+          while IFS= read -r drain_region; do
+            if [ -n "${drain_region}" ] && \
+                ! [[ "${drain_region}" =~ ^[a-z][a-z0-9-]{1,62}$ ]]; then
+              echo "invalid drain-list entry '${drain_region}'; refusing to roll" >&2
+              exit 1
+            fi
+          done <<<"${drains}"
           for pair in "us-central1:quill-enclave-mig-us" "europe-west4:quill-enclave-mig-eu" "us-east4:quill-enclave-mig-useast4" "southamerica-east1:quill-enclave-mig-sa"; do
             region="${pair%%:*}"
             mig="${pair##*:}"
@@ -370,7 +385,13 @@ jobs:
             tmpl_short=$(basename "$tmpl")
             key="${region//-/_}_template"
             echo "${key}=${tmpl_short}" >> "$GITHUB_OUTPUT"
+            drain_state="active"
+            if printf '%s\n' "${drains}" | grep -Fxq "${region}"; then
+              drain_state="drained"
+            fi
+            echo "${region//-/_}_drain_state=${drain_state}" >> "$GITHUB_OUTPUT"
             echo "  pre-rollout ${region}: ${tmpl_short:-<none>}"
+            echo "  pre-rollout ${region} drain state: ${drain_state}"
           done
 
       # Staged regional rollout. Before touching any region, drain it from the
@@ -483,9 +504,10 @@ jobs:
         continue-on-error: true
         run: python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 60
 
-      - name: Re-add us-central1 to canonical API DNS
+      - name: Restore us-central1 canonical drain state
         if: ${{ steps.canary_us.outcome == 'success' }}
         env:
+          PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_central1_drain_state }}
           QUILL_RECONCILE_APPLY: "1"
           QUILL_API_HOST: api.trustedrouter.com
           QUILL_DNS_ZONE: trustedrouter-com
@@ -493,8 +515,16 @@ jobs:
           QUILL_REGIONAL_ZONE: quillrouter-com
           QUILL_REGIONAL_SUFFIX: quillrouter.com
         run: |
+          case "${PREV_DRAIN_STATE}" in
+            active) drain_operation=clear ;;
+            drained) drain_operation=set ;;
+            *)
+              echo "us-central1: invalid pre-rollout drain state '${PREV_DRAIN_STATE}'; refusing to mutate DNS" >&2
+              exit 1
+              ;;
+          esac
           uv run --script tools/reconcile-enclave-dns.py \
-            --clear-drain-region us-central1
+            "--${drain_operation}-drain-region" us-central1
           uv run --script tools/reconcile-enclave-dns.py --apply
           python3 tools/sync-route53-api-aliases.py --apply
 
@@ -509,13 +539,15 @@ jobs:
         if: ${{ always() && (failure() || steps.canary_us.outcome == 'failure') }}
         env:
           PREV_US: ${{ steps.prev.outputs.us_central1_template }}
+          PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_central1_drain_state }}
         run: |
           bash tools/recover-gcp-region.sh \
             us-central1 \
             quill-enclave-mig-us \
             quill-enclave-mig-us- \
             api.quillrouter.com,api-us-central1.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
-            "${PREV_US}"
+            "${PREV_US}" \
+            "${PREV_DRAIN_STATE}"
           exit 1
 
       # AWS OIDC credentials are temporary and cannot refresh in place. Each
@@ -534,6 +566,7 @@ jobs:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
           PREV_TEMPLATE: ${{ steps.prev.outputs.europe_west4_template }}
+          PREV_DRAIN_STATE: ${{ steps.prev.outputs.europe_west4_drain_state }}
         run: |
           bash tools/roll-secondary-region.sh \
             europe-west4 \
@@ -543,7 +576,8 @@ jobs:
             api.quillrouter.com,api-europe-west4.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_TEMPLATE}" \
             c3-standard-4 \
-            TDX
+            TDX \
+            "${PREV_DRAIN_STATE}"
 
       - name: Refresh AWS credentials for US East backup-domain DNS
         uses: aws-actions/configure-aws-credentials@v4
@@ -557,6 +591,7 @@ jobs:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
           PREV_TEMPLATE: ${{ steps.prev.outputs.us_east4_template }}
+          PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_east4_drain_state }}
         run: |
           bash tools/roll-secondary-region.sh \
             us-east4 \
@@ -566,7 +601,8 @@ jobs:
             api.quillrouter.com,api-us-east4.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_TEMPLATE}" \
             c3-standard-4 \
-            TDX
+            TDX \
+            "${PREV_DRAIN_STATE}"
 
       - name: Refresh AWS credentials for São Paulo backup-domain DNS
         uses: aws-actions/configure-aws-credentials@v4
@@ -580,6 +616,7 @@ jobs:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
           PREV_TEMPLATE: ${{ steps.prev.outputs.southamerica_east1_template }}
+          PREV_DRAIN_STATE: ${{ steps.prev.outputs.southamerica_east1_drain_state }}
         run: |
           bash tools/roll-secondary-region.sh \
             southamerica-east1 \
@@ -589,7 +626,8 @@ jobs:
             api.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_TEMPLATE}" \
             n2d-standard-4 \
-            SEV
+            SEV \
+            "${PREV_DRAIN_STATE}"
 
       # No cross-region "final watchdog" step. Each region's health is
       # gated by its own per-region canary above (us-central1 canary

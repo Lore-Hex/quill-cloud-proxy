@@ -13,7 +13,7 @@ SCRIPT = ROOT / "tools" / "recover-gcp-region.sh"
 
 class RecoverGCPRegionTests(unittest.TestCase):
     def run_recovery(
-        self, *, fail_verify: bool = False
+        self, *, fail_verify: bool = False, final_drain_state: str = "active"
     ) -> tuple[subprocess.CompletedProcess[str], str]:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
@@ -72,6 +72,7 @@ class RecoverGCPRegionTests(unittest.TestCase):
                         "quill-enclave-mig-eu-",
                         "api.trustedrouter.com,api-europe-west4.quillrouter.com",
                         "old-template",
+                        final_drain_state,
                     ],
                     cwd=ROOT,
                     env=env,
@@ -86,7 +87,12 @@ class RecoverGCPRegionTests(unittest.TestCase):
                     f"recovery script timed out after commands:\n{commands_run}\n"
                     f"stdout={exc.stdout!r}\nstderr={exc.stderr!r}"
                 )
-            return completed, command_log.read_text(encoding="utf-8")
+            commands = (
+                command_log.read_text(encoding="utf-8")
+                if command_log.exists()
+                else ""
+            )
+            return completed, commands
 
     def test_verified_rollback_is_reenabled(self) -> None:
         completed, commands = self.run_recovery()
@@ -119,6 +125,25 @@ class RecoverGCPRegionTests(unittest.TestCase):
         self.assertIn(
             "recovery failed; preserving the canonical rollout drain", completed.stderr
         )
+
+    def test_preexisting_drain_is_preserved_after_verified_recovery(self) -> None:
+        completed, commands = self.run_recovery(final_drain_state="drained")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("--clear-drain-region europe-west4", commands)
+        self.assertEqual(commands.count("--set-drain-region europe-west4"), 2)
+        self.assertGreater(
+            commands.rindex("--set-drain-region europe-west4"),
+            commands.index("verify-region-before-dns.sh"),
+        )
+        self.assertIn("drain state restored to drained", completed.stdout)
+
+    def test_empty_drain_state_fails_before_any_mutation(self) -> None:
+        completed, commands = self.run_recovery(final_drain_state="")
+
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(commands, "")
+        self.assertIn("invalid final drain state", completed.stderr)
 
     def test_missing_previous_template_never_mutates_dns_or_mig(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
