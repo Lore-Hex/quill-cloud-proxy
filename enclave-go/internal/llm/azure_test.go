@@ -206,24 +206,20 @@ func TestAzureKimiNormalizationsReachWire(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		canonicalID          string
-		deploymentID         string
-		wantThinkingDisabled bool
+		canonicalID  string
+		deploymentID string
 	}{
 		{
-			canonicalID:          "moonshotai/kimi-k2.5",
-			deploymentID:         "kimi-k2-5",
-			wantThinkingDisabled: true,
+			canonicalID:  "moonshotai/kimi-k2.5",
+			deploymentID: "kimi-k2-5",
 		},
 		{
-			canonicalID:          "moonshotai/kimi-k2.6",
-			deploymentID:         "kimi-k2-6",
-			wantThinkingDisabled: true,
+			canonicalID:  "moonshotai/kimi-k2.6",
+			deploymentID: "kimi-k2-6",
 		},
 		{
-			canonicalID:          "moonshotai/kimi-k2.7-code",
-			deploymentID:         "kimi-k2-7-code",
-			wantThinkingDisabled: false,
+			canonicalID:  "moonshotai/kimi-k2.7-code",
+			deploymentID: "kimi-k2-7-code",
 		},
 	} {
 		t.Run(tc.deploymentID, func(t *testing.T) {
@@ -253,6 +249,10 @@ func TestAzureKimiNormalizationsReachWire(t *testing.T) {
 					"parameters": map[string]any{"type": "object"},
 				},
 			}}
+			toolChoice := map[string]any{
+				"type":     "function",
+				"function": map[string]any{"name": "pong"},
+			}
 			err := invokeOpenAICompatibleStreamingWithClient(
 				t.Context(),
 				server.Client(),
@@ -262,6 +262,7 @@ func TestAzureKimiNormalizationsReachWire(t *testing.T) {
 				&qtypes.OpenAIChatRequest{
 					Model:            tc.canonicalID,
 					Tools:            tools,
+					ToolChoice:       toolChoice,
 					FrequencyPenalty: &one,
 					PresencePenalty:  &one,
 				},
@@ -286,21 +287,68 @@ func TestAzureKimiNormalizationsReachWire(t *testing.T) {
 					t.Fatalf("unsupported %s reached Azure wire: %#v", field, got)
 				}
 			}
-			thinking, ok := payload["thinking"].(map[string]any)
-			if !ok {
-				t.Fatalf("thinking = %#v, want object", payload["thinking"])
-			}
-			wantThinking := "enabled"
-			if tc.wantThinkingDisabled {
-				wantThinking = "disabled"
-			}
-			if got := thinking["type"]; got != wantThinking {
-				t.Fatalf("thinking.type = %#v, want %q", got, wantThinking)
+			if got, ok := payload["thinking"]; ok {
+				t.Fatalf("Azure Kimi thinking reached wire: %#v", got)
 			}
 			if got, ok := payload["tools"].([]any); !ok || len(got) != 1 {
 				t.Fatalf("tools = %#v, want one tool", payload["tools"])
 			}
+			gotChoice, ok := payload["tool_choice"].(map[string]any)
+			if !ok || gotChoice["type"] != "function" {
+				t.Fatalf("tool_choice = %#v, want named function choice", payload["tool_choice"])
+			}
+			gotFunction, ok := gotChoice["function"].(map[string]any)
+			if !ok || gotFunction["name"] != "pong" {
+				t.Fatalf("tool_choice.function = %#v, want pong", gotChoice["function"])
+			}
 		})
+	}
+}
+
+func TestAzureKimiToolFreeThinkingIsOmittedOnWire(t *testing.T) {
+	t.Parallel()
+
+	payloads := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode Azure Kimi request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		payloads <- payload
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"PONG\"},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	err := invokeOpenAICompatibleStreamingWithClient(
+		t.Context(),
+		server.Client(),
+		"azure",
+		server.URL,
+		"azure-secret",
+		&qtypes.OpenAIChatRequest{Model: "moonshotai/kimi-k2.6"},
+		&qtypes.AnthropicMessagesRequest{
+			Messages: []qtypes.AnthropicMessage{{Role: "user", Content: "say pong"}},
+			Thinking: map[string]string{"type": "enabled"},
+		},
+		io.Discard,
+		"kimi-k2-6",
+	)
+	if err != nil {
+		t.Fatalf("invoke tool-free Azure Kimi request: %v", err)
+	}
+	payload := <-payloads
+	if got, ok := payload["thinking"]; ok {
+		t.Fatalf("tool-free Azure Kimi thinking reached wire: %#v", got)
+	}
+	if got, ok := payload["tools"]; ok {
+		t.Fatalf("tool-free Azure Kimi tools reached wire: %#v", got)
+	}
+	if got, ok := payload["tool_choice"]; ok {
+		t.Fatalf("tool-free Azure Kimi tool_choice reached wire: %#v", got)
 	}
 }
 
