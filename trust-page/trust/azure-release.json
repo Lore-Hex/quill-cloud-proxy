@@ -1,9 +1,7 @@
 {
   "accepted_hostdata": [
     "97c4cfbcbec6f9320b2db608918563789e530a928c155ce059334e41c3592855",
-    "996886acd040e6c3919ae4825e8bb9a8b1a6e50b33b896281746c263fa199c4e",
-    "2783f2d6888c2f9aca6650aa041e118236c6468a1aa5a303bf2a66ad6208784a",
-    "fe7b9515bd1fd71455acd5cfa84c4a36c6837a849631a46a4348ac49b43a5281"
+    "996886acd040e6c3919ae4825e8bb9a8b1a6e50b33b896281746c263fa199c4e"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
   "attestation_format": "microsoft-azure-attestation-jwt",
