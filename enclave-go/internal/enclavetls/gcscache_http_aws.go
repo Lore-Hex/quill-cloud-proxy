@@ -31,15 +31,19 @@ var gcsCacheTunnels = []vsockhttp.Tunnel{
 	{Host: "storage.googleapis.com", CID: 3, Port: 8034},
 }
 
-// dns01Tunnels is the DNS-01 renewer's outbound set. acme-v02 calls
-// land on `acme-v02.api.letsencrypt.org` (and staging on
-// `acme-staging-v02.api.letsencrypt.org`); the Cloudflare DNS API
-// lives at `api.cloudflare.com`. We tunnel all three through the
-// parent's vsock-proxy daemon (ports 8036 / 8037 / 8038).
+// dns01Tunnels is the DNS-01 renewer's outbound set. trustedrouter.com is
+// authoritative in Cloud DNS, so dns.googleapis.com is the path that can
+// actually publish its ACME TXT challenge. The Cloudflare tunnel stays for
+// now for the older provider, but it is vestigial: the
+// quill/cloudflare-api-token secret has never been provisioned. acme-v02
+// calls land on `acme-v02.api.letsencrypt.org` (and staging on
+// `acme-staging-v02.api.letsencrypt.org`). We tunnel all four through the
+// parent's vsock-proxy daemon; the ports must match deploy-aws-nitro.sh.
 var dns01Tunnels = []vsockhttp.Tunnel{
 	{Host: "api.cloudflare.com", CID: 3, Port: 8036},
 	{Host: "acme-v02.api.letsencrypt.org", CID: 3, Port: 8037},
 	{Host: "acme-staging-v02.api.letsencrypt.org", CID: 3, Port: 8038},
+	{Host: "dns.googleapis.com", CID: 3, Port: 8039},
 }
 
 func newCacheHTTPClient() *http.Client {
@@ -54,10 +58,10 @@ func newTokenHTTPClient() *http.Client {
 	return c
 }
 
-// NewDNS01HTTPClient returns the vsock-tunneled client the DNS-01
-// renewer uses for both Cloudflare's DNS API and LE's ACME
-// directory. On non-AWS builds (kms_http_gcp.go) the equivalent
-// function returns a stdlib client.
+// NewDNS01HTTPClient returns the vsock-tunneled client the DNS-01 renewer
+// uses for Cloud DNS, the vestigial Cloudflare provider, and LE's ACME
+// directory. On non-AWS builds (kms_http_gcp.go) the equivalent function
+// returns a stdlib client.
 func NewDNS01HTTPClient() *http.Client {
 	c := vsockhttp.NewClient(dns01Tunnels)
 	c.Timeout = 60 * time.Second

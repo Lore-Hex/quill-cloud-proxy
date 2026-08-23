@@ -72,6 +72,12 @@ BUILD_TAGS="cloud_aws,llm_multi"            # see the header for the evidence
 # read an attestation -- exactly the posture GCP and Azure already ship.
 QUILL_TLS_MODE="acme"
 QUILL_API_HOST="api-aws.trustedrouter.com"
+# These are measured configuration too: changing either changes PCR0. They
+# make renewal instance-independent because the DNS-01 TXT record lives in
+# trustedrouter.com's authoritative Cloud DNS zone, not on whichever one of
+# the fleet's backends Let's Encrypt happens to dial.
+QUILL_ACME_DNS_GCP_PROJECT="quill-cloud-proxy"
+QUILL_ACME_DNS_MANAGED_ZONE="trustedrouter-com"
 # ---------------------------------------------------------------------------
 
 say() { printf '%s\n' "$*"; }
@@ -87,6 +93,8 @@ say "  platform   : ${PLATFORM}"
 say "  build tags : ${BUILD_TAGS}"
 say "  tls mode   : ${QUILL_TLS_MODE}"
 say "  api host   : ${QUILL_API_HOST}"
+say "  dns project: ${QUILL_ACME_DNS_GCP_PROJECT}"
+say "  dns zone   : ${QUILL_ACME_DNS_MANAGED_ZONE}"
 say "  regions    : ${REGIONS}"
 say ""
 
@@ -120,6 +128,8 @@ for region in $REGIONS; do
     --file enclave-go/Dockerfile.enclave \
     --build-arg "BUILD_TAGS=${BUILD_TAGS}" \
     --build-arg "QUILL_TLS_MODE=${QUILL_TLS_MODE}" \
+    --build-arg "QUILL_ACME_DNS_GCP_PROJECT=${QUILL_ACME_DNS_GCP_PROJECT}" \
+    --build-arg "QUILL_ACME_DNS_MANAGED_ZONE=${QUILL_ACME_DNS_MANAGED_ZONE}" \
     --build-arg "QUILL_API_HOST=${QUILL_API_HOST}" \
     --tag "$image" \
     --provenance=false \

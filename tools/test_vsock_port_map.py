@@ -34,6 +34,7 @@ DEPLOY = ROOT / "tools" / "deploy-aws-nitro.sh"
 DIRECT_PROVIDERS = ROOT / "enclave-go" / "internal" / "directproviders" / "providers.go"
 GO_TUNNEL_FILES = [
     ROOT / "enclave-go" / "internal" / "llm" / "http_client_aws.go",
+    ROOT / "enclave-go" / "internal" / "enclavetls" / "gcscache_http_aws.go",
     ROOT / "enclave-go" / "internal" / "trustedrouter" / "http_client_aws.go",
     ROOT / "enclave-go" / "sidecar" / "vsock_transport.go",
 ]
@@ -113,6 +114,16 @@ for host, entries in sorted(tunnels.items()):
                 f"{source} dials {host} on vsock {port}, but the parent proxies "
                 f"that host on {parent_by_host[host]}."
             )
+
+# Cloud DNS is not an LLM provider and used to sit outside this test's input
+# files, which let the renewal path drift independently of the parent map.
+# Keep the durable DNS-01 egress assignment explicit: a green aggregate
+# count is not useful if dns.googleapis.com silently moves or disappears.
+if tunnels.get("dns.googleapis.com") != [(8039, "gcscache_http_aws.go")]:
+    fail(
+        "Cloud DNS renewal must dial dns.googleapis.com on vsock 8039 from "
+        "gcscache_http_aws.go"
+    )
 
 # 4. Every proxied host must also be in the vsock-proxy address allowlist, or
 #    vsock-proxy itself refuses to forward.

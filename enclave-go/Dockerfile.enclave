@@ -117,8 +117,15 @@ ENV QUILL_ENCLAVE_TLS=true
 # Defaults preserve the previous ACME behaviour so nothing else changes.
 ARG QUILL_TLS_MODE=acme
 ARG QUILL_API_HOST=api.quillrouter.com
+# These defaults deliberately keep DNS-01 off for generic builds. When set,
+# both values become ENV layers just like QUILL_TLS_MODE, so Nitro's PCR0
+# measures the authoritative zone the renewer is allowed to modify.
+ARG QUILL_ACME_DNS_GCP_PROJECT=
+ARG QUILL_ACME_DNS_MANAGED_ZONE=
 ENV QUILL_TLS_MODE=${QUILL_TLS_MODE} \
     QUILL_API_HOST=${QUILL_API_HOST} \
+    QUILL_ACME_DNS_GCP_PROJECT=${QUILL_ACME_DNS_GCP_PROJECT} \
+    QUILL_ACME_DNS_MANAGED_ZONE=${QUILL_ACME_DNS_MANAGED_ZONE} \
     QUILL_ACME_CACHE_GCS_BUCKET=quill-acme-cache \
     QUILL_ACME_EMAIL=acme-aws-us-west-2@trustedrouter.com
 

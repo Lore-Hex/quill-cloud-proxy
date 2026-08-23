@@ -46,6 +46,11 @@ PROJECT_TAG="${PROJECT_TAG:-quill-enclave}"
 ECR_REPO_NAME="${ECR_REPO_NAME:-quill-enclave}"
 PARENT_ECR_REPO_NAME="${PARENT_ECR_REPO_NAME:-quill-parent}"
 PARENT_PUMP_ECR_REPO_NAME="${PARENT_PUMP_ECR_REPO_NAME:-quill-parent-pump}"
+# The release image has run ACME since 2026-08-23. Keep this overrideable for
+# the standalone self-signed deployment, whose separation model deliberately
+# carries no cross-cloud GCP credential and therefore must skip the ACME-only
+# preflight below.
+QUILL_TLS_MODE="${QUILL_TLS_MODE:-acme}"
 # Nitro Enclaves require ≥2 vCPU for the enclave + ≥2 for the host, so
 # *.xlarge (4 vCPU) is the practical floor; *.large (2 vCPU) can't run
 # enclaves at all. Default is m5.xlarge — 4 vCPU + 16 GB at ~$138/mo,
@@ -100,6 +105,59 @@ run() {
   fi
 }
 
+acme_sa_key_wrap_recipe() {
+  log "  The SecretString must be produced exactly as bootstrap_server.py documents:"
+  log "    aws kms encrypt --output text --query CiphertextBlob > b64"
+  log "    aws secretsmanager create-secret --secret-string file://b64"
+}
+
+preflight_acme_sa_key() {
+  local secret_id="quill/trustedrouter-aws-cross-cloud-sa-key"
+  local secret_value
+
+  # ACME reads and renews through GCP, so a host launched without this key
+  # cannot merely limp along: the parent cannot unwrap credentials for the
+  # shared cert cache or authoritative Cloud DNS. This was invisible while
+  # the fleet used self-signed TLS, then made every ACME enclave die before it
+  # could say why. Validate the stored representation before any deployment
+  # mutates AWS, while keeping ResourceNotFound distinct from every other
+  # Secrets Manager failure (an auth error or throttle is not "absent").
+  if ! secret_value=$(aws secretsmanager get-secret-value \
+      --region "$AWS_REGION" \
+      --secret-id "$secret_id" \
+      --query SecretString \
+      --output text 2>&1); then
+    if [[ "$secret_value" == *ResourceNotFoundException* ]]; then
+      log "FATAL: ACME preflight: $secret_id is absent from Secrets Manager in $AWS_REGION."
+    else
+      log "FATAL: ACME preflight: Secrets Manager GetSecretValue failed in $AWS_REGION; this is an API error, not evidence that $secret_id is absent."
+      log "  aws CLI: $secret_value"
+    fi
+    acme_sa_key_wrap_recipe
+    return 1
+  fi
+
+  if [ -z "$secret_value" ] || [ "$secret_value" = "None" ]; then
+    log "FATAL: ACME preflight: $secret_id has no SecretString in $AWS_REGION."
+    acme_sa_key_wrap_recipe
+    return 1
+  fi
+  if [ "${secret_value:0:1}" = "{" ]; then
+    log "FATAL: ACME preflight: $secret_id contains raw JSON, but the parent requires base64-of-KMS-ciphertext wrapped by alias/${PROJECT_TAG}-cmk in $AWS_REGION."
+    acme_sa_key_wrap_recipe
+    return 1
+  fi
+  if ! printf '%s' "$secret_value" | python3 -c \
+      'import base64, sys; base64.b64decode(sys.stdin.buffer.read(), validate=True)' \
+      >/dev/null 2>&1; then
+    log "FATAL: ACME preflight: $secret_id is not valid base64-of-KMS-ciphertext in $AWS_REGION."
+    acme_sa_key_wrap_recipe
+    return 1
+  fi
+
+  log "ACME preflight: $secret_id is present and base64-wrapped in $AWS_REGION"
+}
+
 latest_ecr_tag() {
   local repo="$1"
   local prefix="$2"
@@ -131,7 +189,14 @@ if ! aws sts get-caller-identity --region "$AWS_REGION" >/dev/null 2>&1; then
 fi
 AWS_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 log "AWS account: $AWS_ACCOUNT region: $AWS_REGION"
-log "Mode: $([ $DRY_RUN -eq 1 ] && echo DRY-RUN || echo APPLY) phase: $PHASE"
+log "Mode: $([ $DRY_RUN -eq 1 ] && echo DRY-RUN || echo APPLY) phase: $PHASE tls: $QUILL_TLS_MODE"
+
+# The cross-cloud-key phase is the one deliberate escape hatch: it creates or
+# repairs the value this guard checks. Every other ACME deploy path must prove
+# the current region is bootable before it changes infrastructure.
+if [ "$QUILL_TLS_MODE" = "acme" ] && [ "$PHASE" != "cross-cloud-key" ]; then
+  preflight_acme_sa_key
+fi
 
 # ─── Phase: IAM ────────────────────────────────────────────────────────────
 phase_iam() {
@@ -763,13 +828,15 @@ allowlist:
   - {address: bigtableadmin.googleapis.com,  port: 443}
   - {address: storage.googleapis.com,        port: 443}
   - {address: cloudkms.googleapis.com,       port: 443}
-  # DNS-01 ACME fallback path. Cloudflare DNS API for TXT record
-  # add/remove + Let's Encrypt ACME directories for the order flow.
-  # Defense-in-depth: TLS-ALPN-01 via shared GCS cache is the primary,
-  # DNS-01 is the fallback for sustained-outage edge cases.
+  # DNS-01 ACME renewal path. trustedrouter.com is authoritative in Cloud
+  # DNS, so dns.googleapis.com is what makes renewal independent of whichever
+  # backend Let's Encrypt dials. Cloudflare stays allowlisted for the older
+  # provider, but is vestigial: quill/cloudflare-api-token has never been
+  # provisioned. Port assignments below mirror dns01Tunnels exactly.
   - {address: api.cloudflare.com,                 port: 443}
   - {address: acme-v02.api.letsencrypt.org,       port: 443}
   - {address: acme-staging-v02.api.letsencrypt.org, port: 443}
+  - {address: dns.googleapis.com,                 port: 443}
   # TR control plane (key lookup, settle, byok unwrap). Matches the
   # tunnel list in enclave-go/internal/trustedrouter/http_client_aws.go.
   - {address: trustedrouter.com,             port: 443}
@@ -856,7 +923,7 @@ write_vsock_unit 8023 api.tokenfactory.nebius.com
 write_vsock_unit 8024 api.minimax.io
 write_vsock_unit 8025 api.friendli.ai
 write_vsock_unit 8026 inference.baseten.co
-write_vsock_unit 8039 tinker.thinkingmachines.dev
+write_vsock_unit 8069 tinker.thinkingmachines.dev
 write_vsock_unit 8027 pass.wafer.ai
 write_vsock_unit 8028 api.inference.crusoecloud.com
 write_vsock_unit 8041 openrouter.ai
@@ -888,9 +955,13 @@ write_vsock_unit 8032 bigtable.googleapis.com
 write_vsock_unit 8033 bigtableadmin.googleapis.com
 write_vsock_unit 8034 storage.googleapis.com
 write_vsock_unit 8035 cloudkms.googleapis.com
+# These four assignments MUST mirror enclavetls::dns01Tunnels exactly. A host
+# in only one map is unreachable from the enclave even though both files look
+# independently complete.
 write_vsock_unit 8036 api.cloudflare.com
 write_vsock_unit 8037 acme-v02.api.letsencrypt.org
 write_vsock_unit 8038 acme-staging-v02.api.letsencrypt.org
+write_vsock_unit 8039 dns.googleapis.com
 # TR control plane (must match internal/trustedrouter/http_client_aws.go)
 write_vsock_unit 8040 trustedrouter.com
 
