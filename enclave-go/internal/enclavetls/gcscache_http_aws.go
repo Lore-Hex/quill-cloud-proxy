@@ -43,7 +43,12 @@ var dns01Tunnels = []vsockhttp.Tunnel{
 	{Host: "api.cloudflare.com", CID: 3, Port: 8036},
 	{Host: "acme-v02.api.letsencrypt.org", CID: 3, Port: 8037},
 	{Host: "acme-staging-v02.api.letsencrypt.org", CID: 3, Port: 8038},
-	{Host: "dns.googleapis.com", CID: 3, Port: 8039},
+	// 8069, not 8039: 8039 already belongs to a LIVE provider tunnel
+	// (tinker.thinkingmachines.dev in http_client_aws.go), and moving an
+	// existing provider to make room for a newcomer breaks that provider on
+	// any instance where parent units and enclave image skew during a roll.
+	// The new feature takes the new port; live maps do not move.
+	{Host: "dns.googleapis.com", CID: 3, Port: 8069},
 }
 
 func newCacheHTTPClient() *http.Client {

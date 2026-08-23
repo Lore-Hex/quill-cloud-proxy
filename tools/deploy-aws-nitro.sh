@@ -923,7 +923,7 @@ write_vsock_unit 8023 api.tokenfactory.nebius.com
 write_vsock_unit 8024 api.minimax.io
 write_vsock_unit 8025 api.friendli.ai
 write_vsock_unit 8026 inference.baseten.co
-write_vsock_unit 8069 tinker.thinkingmachines.dev
+write_vsock_unit 8039 tinker.thinkingmachines.dev
 write_vsock_unit 8027 pass.wafer.ai
 write_vsock_unit 8028 api.inference.crusoecloud.com
 write_vsock_unit 8041 openrouter.ai
@@ -961,7 +961,7 @@ write_vsock_unit 8035 cloudkms.googleapis.com
 write_vsock_unit 8036 api.cloudflare.com
 write_vsock_unit 8037 acme-v02.api.letsencrypt.org
 write_vsock_unit 8038 acme-staging-v02.api.letsencrypt.org
-write_vsock_unit 8039 dns.googleapis.com
+write_vsock_unit 8069 dns.googleapis.com
 # TR control plane (must match internal/trustedrouter/http_client_aws.go)
 write_vsock_unit 8040 trustedrouter.com
 

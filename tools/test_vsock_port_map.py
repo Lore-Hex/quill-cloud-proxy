@@ -119,9 +119,9 @@ for host, entries in sorted(tunnels.items()):
 # files, which let the renewal path drift independently of the parent map.
 # Keep the durable DNS-01 egress assignment explicit: a green aggregate
 # count is not useful if dns.googleapis.com silently moves or disappears.
-if tunnels.get("dns.googleapis.com") != [(8039, "gcscache_http_aws.go")]:
+if tunnels.get("dns.googleapis.com") != [(8069, "gcscache_http_aws.go")]:
     fail(
-        "Cloud DNS renewal must dial dns.googleapis.com on vsock 8039 from "
+        "Cloud DNS renewal must dial dns.googleapis.com on vsock 8069 from "
         "gcscache_http_aws.go"
     )
 
