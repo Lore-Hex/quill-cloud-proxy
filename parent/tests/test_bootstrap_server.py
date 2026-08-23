@@ -281,6 +281,10 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "reka",
         "sail-research",
         "mancer",
+        "io-net",
+        "scaleway",
+        "featherless",
+        "jina",
     }
     actual_direct = {provider for provider, _suffix in bootstrap_server._DIRECT_PROVIDER_KEYS}
     assert actual_direct == expected_direct

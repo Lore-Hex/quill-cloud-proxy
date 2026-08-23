@@ -1,5 +1,6 @@
 // Package directproviders defines the bounded set of simple, provider-owned
-// OpenAI-compatible endpoints that TrustedRouter may call with operator keys.
+// OpenAI-compatible chat or embedding endpoints that TrustedRouter may call
+// with operator keys.
 //
 // Bootstrap code and inference dispatch both consume this table. Keeping the
 // secret coordinate and immutable HTTPS endpoint together prevents a provider
@@ -32,6 +33,10 @@ var specs = [...]Spec{
 	{Provider: "reka", BaseURL: "https://api.reka.ai/v1", SecretEnv: "QUILL_REKA_SECRET", SecretName: "trustedrouter-reka-api-key", SecretLabel: "reka key"},
 	{Provider: "sail-research", BaseURL: "https://api.sailresearch.com/v1", SecretEnv: "QUILL_SAIL_RESEARCH_SECRET", SecretName: "trustedrouter-sail-research-api-key", SecretLabel: "sail research key"},
 	{Provider: "mancer", BaseURL: "https://mancer.tech/oai/v1", SecretEnv: "QUILL_MANCER_SECRET", SecretName: "trustedrouter-mancer-api-key", SecretLabel: "mancer key"},
+	{Provider: "io-net", BaseURL: "https://api.intelligence.io.solutions/api/v1", SecretEnv: "QUILL_IO_NET_SECRET", SecretName: "trustedrouter-io-net-api-key", SecretLabel: "io intelligence key"},
+	{Provider: "scaleway", BaseURL: "https://api.scaleway.ai/v1", SecretEnv: "QUILL_SCALEWAY_SECRET", SecretName: "trustedrouter-scaleway-api-key", SecretLabel: "scaleway key"},
+	{Provider: "featherless", BaseURL: "https://api.featherless.ai/v1", SecretEnv: "QUILL_FEATHERLESS_SECRET", SecretName: "trustedrouter-featherless-api-key", SecretLabel: "featherless key"},
+	{Provider: "jina", BaseURL: "https://api.jina.ai/v1", SecretEnv: "QUILL_JINA_SECRET", SecretName: "trustedrouter-jina-api-key", SecretLabel: "jina key"},
 }
 
 var byProvider = func() map[string]Spec {
