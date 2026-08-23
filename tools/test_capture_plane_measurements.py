@@ -52,12 +52,14 @@ about that gap beyond its existence.
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).with_name("capture-plane-measurements.py")
 SPEC = importlib.util.spec_from_file_location("capture_plane_measurements", SCRIPT)
@@ -74,6 +76,7 @@ AWS_LIVE = {"pcr0": PCR0, "module_id": "i-0-enc0"}
 AZURE_LIVE = [
     {
         "url": "https://api-azure.trustedrouter.com/attestation",
+        "origin_hostname": "quill-enclave-uaenorth.uaenorth.azurecontainer.io",
         "hostdata": HOSTDATA_UAEN,
         "issuer": "https://trquilluaen.uaen.attest.azure.net",
         "launch_measurement": "dc" * 24,
@@ -81,12 +84,116 @@ AZURE_LIVE = [
     },
     {
         "url": "https://api-azure-syd.trustedrouter.com/attestation",
+        "origin_hostname": "quill-enclave-australiaeast.australiaeast.azurecontainer.io",
         "hostdata": HOSTDATA_SYD,
         "issuer": "https://trquillsyd.eau.attest.azure.net",
         "launch_measurement": "dc" * 24,
         "compliance": "azure-compliant-uvm",
     },
 ]
+
+
+def azure_token(*, issuer: str, hostdata: str = HOSTDATA_UAEN) -> bytes:
+    claims = {
+        "iss": issuer,
+        "x-ms-attestation-type": "sevsnpvm",
+        "x-ms-sevsnpvm-hostdata": hostdata,
+        "x-ms-sevsnpvm-launchmeasurement": "dc" * 24,
+        "x-ms-compliance-status": "azure-compliant-uvm",
+    }
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    return f"e30.{payload}.signature".encode()
+
+
+class AzureOriginCaptureTests(unittest.TestCase):
+    def test_every_region_uses_an_explicit_distinct_origin(self) -> None:
+        origins = [origin for _, origin, _ in capture.AZURE_ATTESTATION_ORIGINS]
+
+        self.assertEqual(len(origins), len(set(origins)))
+        self.assertNotIn("api-azure.trustedrouter.com", origins)
+
+    def test_region_rejects_attestation_from_the_wrong_issuer(self) -> None:
+        with mock.patch.object(
+            capture,
+            "_fetch_at_origin",
+            return_value=azure_token(issuer="https://unexpected.attest.azure.net"),
+        ):
+            with self.assertRaisesRegex(ValueError, "returned issuer"):
+                capture._azure_region(
+                    "https://api-azure.trustedrouter.com/attestation",
+                    origin_hostname="quill-enclave-uaenorth.uaenorth.azurecontainer.io",
+                    expected_issuer="https://trquilluaen.uaen.attest.azure.net",
+                )
+
+    def test_live_capture_fails_closed_on_wrong_regional_issuer(self) -> None:
+        calls = 0
+
+        def fetch(_url: str, _origin_hostname: str) -> bytes:
+            nonlocal calls
+            calls += 1
+            issuer = (
+                "https://trquilluaen.uaen.attest.azure.net"
+                if calls == 1
+                else "https://trquilluaen.uaen.attest.azure.net"
+            )
+            return azure_token(issuer=issuer, hostdata=f"{calls:02x}" * 32)
+
+        with mock.patch.object(capture, "_fetch_at_origin", side_effect=fetch):
+            with self.assertRaisesRegex(capture.AzureOriginIdentityError, "returned issuer"):
+                capture.live_azure()
+
+    def test_live_capture_passes_each_origin_and_expected_issuer(self) -> None:
+        calls: list[tuple[str, str, str]] = []
+
+        def region(
+            url: str, *, origin_hostname: str, expected_issuer: str
+        ) -> dict[str, str]:
+            calls.append((url, origin_hostname, expected_issuer))
+            index = len(calls)
+            return {
+                "url": url,
+                "origin_hostname": origin_hostname,
+                "issuer": expected_issuer,
+                "hostdata": f"{index:02x}" * 32,
+                "launch_measurement": "dc" * 24,
+                "compliance": "azure-compliant-uvm",
+            }
+
+        with mock.patch.object(capture, "_azure_region", side_effect=region):
+            regions = capture.live_azure()
+
+        self.assertEqual(calls, list(capture.AZURE_ATTESTATION_ORIGINS))
+        self.assertEqual(len(regions), len(capture.AZURE_ATTESTATION_ORIGINS))
+
+    def test_duplicate_backend_evidence_is_not_two_regions(self) -> None:
+        duplicate = {
+            "url": "https://api-azure.trustedrouter.com/attestation",
+            "origin_hostname": "origin.example",
+            "issuer": "https://trquilluaen.uaen.attest.azure.net",
+            "hostdata": HOSTDATA_UAEN,
+            "launch_measurement": "dc" * 24,
+            "compliance": "azure-compliant-uvm",
+        }
+        with mock.patch.object(capture, "_azure_region", return_value=duplicate):
+            with self.assertRaisesRegex(ValueError, "duplicate backend evidence"):
+                capture.live_azure()
+
+    def test_live_capture_requires_every_configured_origin(self) -> None:
+        first = dict(AZURE_LIVE[0])
+        with mock.patch.object(
+            capture,
+            "_azure_region",
+            side_effect=[first, OSError("origin does not resolve")],
+        ):
+            with self.assertRaisesRegex(ValueError, "not every configured Azure origin"):
+                capture.live_azure()
+
+    def test_record_builder_requires_origin_provenance(self) -> None:
+        region = dict(AZURE_LIVE[0])
+        del region["origin_hostname"]
+
+        with self.assertRaises(KeyError):
+            capture.build_azure_record([region], keep=False, source_commit="1a2b3c4")
 
 
 class SourceCommitTests(unittest.TestCase):

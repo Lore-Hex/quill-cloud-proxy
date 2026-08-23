@@ -1253,7 +1253,7 @@ phase_narrow_live() {
   [ -s "$WORKDIR/live-cce.b64" ] \
     || die "container group '$CONTAINER_GROUP' has no CCE policy — it is not a confidential group"
 
-  local live
+  local live ip
   live="$(python3 -c '
 import base64, hashlib, sys
 print(hashlib.sha256(base64.b64decode(open(sys.argv[1]).read().strip())).hexdigest())
@@ -1265,9 +1265,16 @@ print(hashlib.sha256(base64.b64decode(open(sys.argv[1]).read().strip())).hexdige
     return 0
   fi
 
+  ip="$(az_cli container show --name "$CONTAINER_GROUP" --resource-group "$RESOURCE_GROUP" \
+    --query "ipAddress.ip" -o tsv 2>/dev/null)" \
+    || die "could not read the live container group's IP; refusing to verify through DNS"
+  [ -n "$ip" ] \
+    || die "the live container group has no IP; refusing to verify through DNS"
+
   log "proving the live enclave actually attests before trusting its measurement"
   verify_attestation \
     --api-host "$API_HOST" \
+    --connect-ip "$ip" \
     --expected-maa-issuer "https://$MAA_ENDPOINT" \
     --expected-hostdata "$live" \
     || die "the live enclave did NOT attest to $live.
@@ -1844,7 +1851,14 @@ phase_verify() {
        The container logs are above — a Key Vault 403 there means this workload's
        measurement is not one the key accepts ($(printf '%s' "$accepted" | tr '\n' ' '))."
   fi
+  [ -n "$ip" ] \
+    || die "container group is Running but Azure returned no IP; refusing to fall back to DNS"
   log "running at $ip (fqdn $fqdn)"
+  # Keep the workload origin separate from the public DNS answer. A shared
+  # Traffic Manager hostname can legitimately resolve to the healthy peer
+  # while this region is being replaced. The deploy must still connect to and
+  # attest THIS newly created group before narrowing its key-release policy.
+  local connect_ip="$ip"
 
   # DNS reconcile: ACI hands out a NEW public IP on redeploy, so the A record
   # for $API_HOST goes stale exactly when a deploy succeeds — the moment
@@ -1855,9 +1869,9 @@ phase_verify() {
   # names it.
   # TRAFFIC-MANAGER-FRONTED NAMES ARE NOT RECONCILED TO CONTAINER IPS.
   # api-azure.trustedrouter.com is a CNAME to trquill-azure-gw.trafficmanager.net
-  # (priority: Dubai, then Singapore; TCP:443 probes every 10s), which is what
+  # (priority: Dubai, then Sydney; TCP:443 probes every 10s), which is what
   # lets a deploy's DELETE+RECREATE stop costing regional downtime: TM marks
-  # the recreating region degraded within ~30s and Singapore serves api-azure
+  # the recreating region degraded within ~30s and Sydney serves api-azure
   # from the shared cert cache. Reconciling this name to a container IP here
   # would silently UNDO that failover on the next deploy — the exact
   # out-of-band-vs-script drift this file keeps re-learning, in reverse.
@@ -1921,7 +1935,7 @@ phase_verify() {
   # and only one of them is a fault. Failing on the first mismatch turns every
   # redeploy that moves the IP into a false alarm, and a check that cries wolf
   # on the happy path is a check people learn to skip.
-  local resolved="" dns_waited=0
+  local resolved="" dns_waited=0 is_tm_fronted=0
   resolve_api_host() {
     if command -v dig >/dev/null 2>&1; then
       dig +short "$API_HOST" A 2>/dev/null | grep -E '^[0-9.]+$' | head -1
@@ -1931,29 +1945,31 @@ phase_verify() {
   }
 
   # A traffic-manager-fronted name resolves to whichever region TM currently
-  # prefers — during a Dubai deploy that is legitimately SINGAPORE'S address.
+  # prefers — during a Dubai deploy that is legitimately SYDNEY'S address.
   # Asserting it equals THIS group's IP would fail every deploy the failover
-  # correctly absorbs, so for TM names assert "resolves to something" and let
-  # the serving wait below (which dials the name) prove the path end-to-end.
+  # correctly absorbs, so for TM names assert both public reachability and the
+  # new group's direct attestation as separate gates.
   if [ "$API_HOST" = "$tm_fronted" ]; then
+    is_tm_fronted=1
     resolved="$(resolve_api_host || true)"
     if [ -n "$resolved" ]; then
       log "dns: $API_HOST resolves via traffic manager to $resolved (either region is correct)"
-      ip="$resolved"
     fi
   else
-  resolved="$(resolve_api_host || true)"
-  while [ -n "$resolved" ] && [ "$resolved" != "$ip" ] && [ "$dns_waited" -lt "${DNS_PROPAGATION_TIMEOUT:-300}" ]; do
-    log "dns: $API_HOST still resolves to $resolved, waiting for $ip (${dns_waited}s)"
-    sleep 15
-    dns_waited=$((dns_waited + 15))
     resolved="$(resolve_api_host || true)"
-  done
+    while [ -n "$resolved" ] && [ "$resolved" != "$ip" ] && [ "$dns_waited" -lt "${DNS_PROPAGATION_TIMEOUT:-300}" ]; do
+      log "dns: $API_HOST still resolves to $resolved, waiting for $ip (${dns_waited}s)"
+      sleep 15
+      dns_waited=$((dns_waited + 15))
+      resolved="$(resolve_api_host || true)"
+    done
   fi
 
   if [ -z "$resolved" ]; then
     note "could not resolve $API_HOST locally (no dig/host, or the record is brand new)."
     note "If the wait below times out, check DNS FIRST — the enclave is likely fine."
+  elif [ "$is_tm_fronted" -eq 1 ]; then
+    log "dns: $API_HOST is reachable through traffic manager at $resolved"
   elif [ "$resolved" != "$ip" ]; then
     die "$API_HOST still resolves to $resolved after ${dns_waited}s; this group is at $ip.
        That is past any reasonable TTL, so it is not propagation — the record is
@@ -1975,7 +1991,7 @@ EOF
 
   log "waiting for the enclave to serve /attestation on $API_HOST"
   waited=0
-  until curl -fsS --max-time 10 --resolve "${API_HOST}:443:${ip}" \
+  until curl -fsS --max-time 10 --resolve "${API_HOST}:443:${connect_ip}" \
         "https://${API_HOST}/attestation" -o /dev/null 2>/dev/null; do
     if [ "$waited" -ge "${VERIFY_TIMEOUT_SECONDS:-600}" ]; then
       phase_logs
@@ -1995,11 +2011,28 @@ EOF
   log "verifying the live attestation against the pin the KEY requires"
   verify_attestation \
     --api-host "$API_HOST" \
-    --connect-ip "$ip" \
+    --connect-ip "$connect_ip" \
     --expected-maa-issuer "https://${MAA_ENDPOINT}" \
     --expected-hostdata "$expected_hostdata" \
     || die "attestation verification FAILED. The container group is running but has not proved
        it is the workload $SKR_KEY releases to. Do not put traffic on it."
+
+  # Check the client path only after the new origin has received its full
+  # readiness budget. Traffic Manager may return to this priority origin as
+  # soon as TCP 443 opens, before its HTTP endpoint is ready; checking earlier
+  # would spend a shorter public-path budget on ordinary enclave startup.
+  if [ "$is_tm_fronted" -eq 1 ]; then
+    log "checking the public traffic-manager attestation path for $API_HOST"
+    local public_waited=0
+    until curl -fsS --max-time 10 "https://${API_HOST}/attestation" -o /dev/null 2>/dev/null; do
+      if [ "$public_waited" -ge "${PUBLIC_PATH_VERIFY_TIMEOUT_SECONDS:-120}" ]; then
+        die "the new origin attests correctly, but traffic manager's public attestation path is unavailable;
+       refusing to narrow a deployment whose shared client endpoint is down"
+      fi
+      sleep 10
+      public_waited=$((public_waited + 10))
+    done
+  fi
 
   cat >&2 <<EOF
 

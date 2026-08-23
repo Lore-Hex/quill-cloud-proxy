@@ -1419,6 +1419,23 @@ class TestNarrowLive(DeployHarness):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.bound_pins(), [live])
+        self.assertIn("--connect-ip 10.0.0.9", self.read_state("verify.log"))
+
+    def test_refuses_to_narrow_when_live_group_has_no_ip(self) -> None:
+        live = self.healthy_deploy()
+        retired = "1" * 64
+        self.state_file("bound-hostdata").write_text(f"{live}\n{retired}")
+        self.state_file("group-ip").write_text("")
+        self.clear_mutations()
+
+        result = self.run_script(
+            "--apply", "narrow-live", VERIFY_ATTESTATION_CMD=self._verifier(succeeds=True)
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("has no IP", result.stderr)
+        self.assertEqual(sorted(self.bound_pins()), sorted([live, retired]))
+        self.assertFalse(self.state_file("verify.log").exists())
 
     def test_refuses_when_the_live_enclave_does_not_attest(self) -> None:
         """Narrowing to an UNVERIFIED measurement is strictly worse than the
@@ -1731,11 +1748,11 @@ class TestSharedHostnameForFailover(DeployHarness):
 
     def test_a_region_serves_its_own_name_and_the_shared_one(self) -> None:
         got = self._api_host(
-            API_HOST="api-azure-sea.trustedrouter.com",
+            API_HOST="api-azure-syd.trustedrouter.com",
             EXTRA_API_HOSTS="api-azure.trustedrouter.com",
         )
         self.assertEqual(
-            got, "api-azure-sea.trustedrouter.com,api-azure.trustedrouter.com"
+            got, "api-azure-syd.trustedrouter.com,api-azure.trustedrouter.com"
         )
 
     def test_unset_extras_leave_the_env_untouched(self) -> None:
@@ -1761,7 +1778,7 @@ class TestSharedHostnameForFailover(DeployHarness):
         name leaked into it, the deploy would try to create one record literally
         named 'a.example.com,b.example.com'."""
         self.healthy_deploy(
-            API_HOST="api-azure-sea.trustedrouter.com",
+            API_HOST="api-azure-syd.trustedrouter.com",
             EXTRA_API_HOSTS="api-azure.trustedrouter.com",
         )
         template = json.loads((self.work / "template.json").read_text())
@@ -1772,7 +1789,124 @@ class TestSharedHostnameForFailover(DeployHarness):
             for e in c["properties"]["environmentVariables"]
         }
         self.assertIn("api-azure.trustedrouter.com", env["QUILL_API_HOST"])
-        self.assertIn("api-azure-sea.trustedrouter.com", env["QUILL_API_HOST"])
+        self.assertIn("api-azure-syd.trustedrouter.com", env["QUILL_API_HOST"])
+
+    def test_verify_attests_new_group_not_traffic_manager_peer(self) -> None:
+        """A healthy peer may own the shared hostname during replacement.
+
+        Public DNS reachability and verification of the newly created group are
+        separate assertions. Dialing the peer makes the deploy attest the wrong
+        region and can either fail spuriously or narrow to an unverified group.
+        """
+        self.healthy_deploy()
+        peer_ip = "203.0.113.7"
+        group_ip = "10.0.0.9"
+        for name in ("dig", "host"):
+            resolver = self.bin / name
+            resolver.write_text(
+                "#!/usr/bin/env bash\n"
+                + (f'printf \'%s has address {peer_ip}\\n\' "$2"\n' if name == "host"
+                   else f"echo '{peer_ip}'\n")
+            )
+            resolver.chmod(0o755)
+
+        gcloud = self.bin / "gcloud"
+        gcloud.write_text(
+            "#!/usr/bin/env bash\n"
+            "echo 'trquill-azure-gw.trafficmanager.net.'\n"
+        )
+        gcloud.chmod(0o755)
+
+        curl = self.bin / "curl"
+        curl.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "$@" >> "$STUB_STATE/curl.log"\n'
+            "exit 0\n"
+        )
+        curl.chmod(0o755)
+
+        verifier = self.bin / "stub-verify"
+        verifier.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "$@" >> "$STUB_STATE/verify.log"\n'
+            "exit 0\n"
+        )
+        verifier.chmod(0o755)
+
+        result = self.run_script(
+            "--apply",
+            "verify",
+            API_HOST="api-azure.trustedrouter.com",
+            TRAFFIC_MANAGER_FRONTED_HOSTS="api-azure.trustedrouter.com",
+            VERIFY_ATTESTATION_CMD=str(verifier),
+            VERIFY_TIMEOUT_SECONDS="60",
+        )
+
+        # The hermetic policy hash is intentionally absent from the repository's
+        # production allowlist, so the final publication gate rejects it after
+        # live verification. The origin assertions below are the behavior under
+        # test.
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("MEASUREMENT NOT PUBLISHED", result.stderr)
+        self.assertIn(f"--resolve api-azure.trustedrouter.com:443:{group_ip}",
+                      self.read_state("curl.log"))
+        self.assertIn("https://api-azure.trustedrouter.com/attestation",
+                      self.read_state("curl.log"))
+        curl_calls = self.read_state("curl.log").splitlines()
+        direct = next(i for i, call in enumerate(curl_calls) if "--resolve" in call)
+        public = next(i for i, call in enumerate(curl_calls) if "--resolve" not in call)
+        self.assertLess(direct, public)
+        self.assertIn(f"--connect-ip {group_ip}", self.read_state("verify.log"))
+        self.assertNotIn(f"--connect-ip {peer_ip}", self.read_state("verify.log"))
+
+    def test_verify_rejects_unhealthy_public_path_after_origin_is_ready(self) -> None:
+        self.healthy_deploy()
+        curl = self.bin / "curl"
+        curl.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "$@" >> "$STUB_STATE/curl.log"\n'
+            '[[ "$*" != *"--resolve"* ]] && exit 22\n'
+            "exit 0\n"
+        )
+        curl.chmod(0o755)
+        verifier = self.bin / "stub-verify"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+
+        result = self.run_script(
+            "--apply",
+            "verify",
+            API_HOST="api-azure.trustedrouter.com",
+            TRAFFIC_MANAGER_FRONTED_HOSTS="api-azure.trustedrouter.com",
+            VERIFY_ATTESTATION_CMD=str(verifier),
+            PUBLIC_PATH_VERIFY_TIMEOUT_SECONDS="0",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("public attestation path is unavailable", result.stderr)
+        curl_calls = self.read_state("curl.log").splitlines()
+        direct = next(i for i, call in enumerate(curl_calls) if "--resolve" in call)
+        public = next(i for i, call in enumerate(curl_calls) if "--resolve" not in call)
+        self.assertLess(direct, public)
+
+    def test_verify_refuses_running_group_without_ip(self) -> None:
+        self.healthy_deploy()
+        self.state_file("group-ip").write_text("")
+        verifier = self.bin / "stub-verify"
+        verifier.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "$@" >> "$STUB_STATE/verify.log"\n'
+            "exit 0\n"
+        )
+        verifier.chmod(0o755)
+
+        result = self.run_script(
+            "--apply", "verify", VERIFY_ATTESTATION_CMD=str(verifier)
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Azure returned no IP", result.stderr)
+        self.assertFalse(self.state_file("verify.log").exists())
 
 
 class TestControlPlaneBoundary(DeployHarness):
