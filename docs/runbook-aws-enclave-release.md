@@ -22,7 +22,7 @@ there rather than here so the script and the truth cannot drift apart:
 |---|---|---|
 | platform | `linux/amd64` | the fleet is x86_64 `m5.xlarge`. `.github/workflows/deploy.yml` builds **arm64** and therefore cannot have produced the running image |
 | build tags | `cloud_aws,llm_multi` | `deploy-aws-nitro.sh` provisions **47** vsock tunnels — anthropic, openai, cerebras, deepseek, mistral, moonshot, z.ai, together. `internal/llm/aws.go` is `llm_bedrock`; those providers are all `llm_multi`. A Bedrock-only enclave could dial none of them |
-| TLS mode | `self-signed` | AWS mints its cert inside the TEE and clients verify by attestation — no CA in the trust path |
+| TLS mode | `acme` | the cert is still minted inside the TEE and still bound by attestation; ACME (GCS cache primary, DNS-01 fallback) makes the same leaf verify for CA-only clients, which canonical failover requires. Self-signed until 2026-08-23 |
 | API host | `api-aws.trustedrouter.com` | baked in, and therefore measured |
 
 The build tags were previously undocumented and had to be recovered by

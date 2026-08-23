@@ -57,7 +57,20 @@ RELEASE_TAG="${RELEASE_TAG:-aws-release-$(date -u +%Y%m%d-%H%M)}"
 # Changing any of these changes PCR0 and requires the bind-window procedure.
 PLATFORM="linux/amd64"                      # fleet is x86_64 m5.xlarge
 BUILD_TAGS="cloud_aws,llm_multi"            # see the header for the evidence
-QUILL_TLS_MODE="self-signed"                # AWS attests its own cert; no CA
+# acme, not self-signed, since 2026-08-23. The self-signed pin was honest
+# documentation of the live image when it was written (64a18a3 "read off the
+# live image"), but it froze a bring-up compromise into policy: the entire
+# ACME path -- the GCS cert cache, the storage/LE/Cloudflare vsock tunnels,
+# the DNS-01 renewer -- was already built, provisioned and running idle under
+# it. Attestation-only TLS also kept api-aws outside canonical failover:
+# every CA-verifying client (browsers, plain SDKs, the alias-failover pool)
+# fails the handshake by design.
+#
+# The trust model is unchanged where it matters: the attestation document
+# binds the leaf certificate minted inside the TEE regardless of who signed
+# it. Let's Encrypt makes that same leaf ALSO verify for clients that cannot
+# read an attestation -- exactly the posture GCP and Azure already ship.
+QUILL_TLS_MODE="acme"
 QUILL_API_HOST="api-aws.trustedrouter.com"
 # ---------------------------------------------------------------------------
 
