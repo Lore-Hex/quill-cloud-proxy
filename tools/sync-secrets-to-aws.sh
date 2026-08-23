@@ -117,6 +117,10 @@ SECRETS=(
   trustedrouter-reka-api-key
   trustedrouter-sail-research-api-key
   trustedrouter-mancer-api-key
+  trustedrouter-io-net-api-key
+  trustedrouter-scaleway-api-key
+  trustedrouter-featherless-api-key
+  trustedrouter-jina-api-key
   trustedrouter-tr-api-key-for-self-heal
   # The internal gateway token authenticates enclave→TR control-plane
   # calls (x-trustedrouter-internal-token header on /v1/internal/*).

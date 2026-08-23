@@ -340,6 +340,10 @@ configure_optional_provider_secret QUILL_UPSTAGE_SECRET trustedrouter-upstage-ap
 configure_optional_provider_secret QUILL_REKA_SECRET trustedrouter-reka-api-key
 configure_optional_provider_secret QUILL_SAIL_RESEARCH_SECRET trustedrouter-sail-research-api-key
 configure_optional_provider_secret QUILL_MANCER_SECRET trustedrouter-mancer-api-key
+configure_optional_provider_secret QUILL_IO_NET_SECRET trustedrouter-io-net-api-key
+configure_optional_provider_secret QUILL_SCALEWAY_SECRET trustedrouter-scaleway-api-key
+configure_optional_provider_secret QUILL_FEATHERLESS_SECRET trustedrouter-featherless-api-key
+configure_optional_provider_secret QUILL_JINA_SECRET trustedrouter-jina-api-key
 
 # Azure Foundry stays dark until its account key exists. An explicitly supplied
 # empty value also keeps it disabled; this prevents an unrelated gateway roll

@@ -93,6 +93,10 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "api.reka.ai", CID: 3, Port: 8062},
 	{Host: "api.sailresearch.com", CID: 3, Port: 8063},
 	{Host: "mancer.tech", CID: 3, Port: 8064},
+	{Host: "api.intelligence.io.solutions", CID: 3, Port: 8065},
+	{Host: "api.scaleway.ai", CID: 3, Port: 8066},
+	{Host: "api.featherless.ai", CID: 3, Port: 8067},
+	{Host: "api.jina.ai", CID: 3, Port: 8068},
 	// Chutes discovery and encrypted inference relay. Prompt bytes remain
 	// encrypted end-to-end between this enclave and the attested GPU worker.
 	{Host: "llm.chutes.ai", CID: 3, Port: 8049},

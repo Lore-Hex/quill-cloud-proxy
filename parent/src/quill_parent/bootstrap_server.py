@@ -152,6 +152,10 @@ _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("reka", "trustedrouter-reka-api-key"),
     ("sail-research", "trustedrouter-sail-research-api-key"),
     ("mancer", "trustedrouter-mancer-api-key"),
+    ("io-net", "trustedrouter-io-net-api-key"),
+    ("scaleway", "trustedrouter-scaleway-api-key"),
+    ("featherless", "trustedrouter-featherless-api-key"),
+    ("jina", "trustedrouter-jina-api-key"),
 )
 
 _PROMPT_KEYS: Final[tuple[tuple[str, str], ...]] = (

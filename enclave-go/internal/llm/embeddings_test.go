@@ -145,8 +145,13 @@ func TestMultiInvokeEmbeddingDispatch(t *testing.T) {
 	stub := func(p string) *openAICompatibleClient {
 		return &openAICompatibleClient{provider: p, baseURL: srv.URL, apiKey: "k", httpc: srv.Client()}
 	}
-	m := &multiClient{voyage: stub("voyage"), deepinfra: stub("deepinfra"), googleAIStudio: stub("google-ai-studio")}
-	for _, prov := range []string{"voyage", "deepinfra", "google-ai-studio", "gemini"} {
+	m := &multiClient{
+		direct:         map[string]*openAICompatibleClient{"jina": stub("jina")},
+		voyage:         stub("voyage"),
+		deepinfra:      stub("deepinfra"),
+		googleAIStudio: stub("google-ai-studio"),
+	}
+	for _, prov := range []string{"jina", "voyage", "deepinfra", "google-ai-studio", "gemini"} {
 		resp, err := m.InvokeEmbedding(context.Background(), &qtypes.EmbeddingRequest{Model: "x/y", Input: "hi"}, InvokeOptions{Provider: prov})
 		if err != nil {
 			t.Errorf("%s dispatch: %v", prov, err)

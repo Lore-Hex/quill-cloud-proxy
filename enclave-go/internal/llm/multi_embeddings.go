@@ -20,6 +20,9 @@ func (m *multiClient) InvokeEmbedding(
 	options ...InvokeOptions,
 ) (*qtypes.EmbeddingResponse, error) {
 	provider := normalizeDirectProvider(firstOptions(options).Provider)
+	if client := m.direct[provider]; client != nil {
+		return client.InvokeEmbedding(ctx, req, options...)
+	}
 	switch provider {
 	case "openai":
 		return m.openai.InvokeEmbedding(ctx, req, options...)
