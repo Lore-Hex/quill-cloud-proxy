@@ -52,11 +52,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import re
+import socket
 import ssl
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -76,16 +79,28 @@ AWS_ATTESTATION_URL = "https://api-aws.trustedrouter.com/attestation"
 # tampering. Every SERVING region must be polled.
 #
 # southeastasia (api-azure-sea) was retired on 2026-08-21 and its resource group
-# deleted; australiaeast replaced it. A retired region left in this tuple is not
-# harmless: the capture warns "unreachable" and carries on, so the published set
-# silently keeps whatever it captured last -- which was Singapore's hostdata,
-# for a region that no longer exists, while Sydney's real measurement went
-# unpublished and unverifiable.
-AZURE_ATTESTATION_URLS = (
-    "https://api-azure.trustedrouter.com/attestation",
-    "https://api-azure-syd.trustedrouter.com/attestation",
+# deleted; australiaeast replaced it. Every configured origin is mandatory so a
+# stale hostname or retired region fails capture instead of silently preserving
+# obsolete evidence.
+AZURE_ATTESTATION_ORIGINS = (
+    (
+        "https://api-azure.trustedrouter.com/attestation",
+        "quill-enclave-uaenorth.uaenorth.azurecontainer.io",
+        "https://trquilluaen.uaen.attest.azure.net",
+    ),
+    (
+        "https://api-azure-syd.trustedrouter.com/attestation",
+        "quill-enclave-australiaeast.australiaeast.azurecontainer.io",
+        "https://trquillsyd.eau.attest.azure.net",
+    ),
 )
+AZURE_ATTESTATION_URLS = tuple(origin[0] for origin in AZURE_ATTESTATION_ORIGINS)
 TIMEOUT_SECONDS = 25
+
+
+class AzureOriginIdentityError(ValueError):
+    """A regional origin answered with another region's attestation identity."""
+
 
 ATTESTED_GATEWAY_REPO = "https://github.com/Lore-Hex/quill-cloud-proxy"
 AWS_API_HOSTNAME = "api-aws.trustedrouter.com"
@@ -224,6 +239,51 @@ def _fetch(url: str, *, verify_tls: bool = True) -> bytes:
         return response.read()
 
 
+def _fetch_at_origin(url: str, origin_hostname: str) -> bytes:
+    """Fetch ``url`` from one named origin while retaining URL-host TLS SNI.
+
+    The UAE client hostname is Traffic Manager fronted, so a normal fetch may
+    reach Sydney during a UAE rollout. The ACI FQDN is stable across container
+    recreates; connecting through it while keeping the public API hostname for
+    TLS and Host verifies the intended regional origin without pinning an IP.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError(f"refusing to fetch non-HTTPS URL {url!r}")
+    if not origin_hostname:
+        raise ValueError("Azure attestation origin hostname is empty")
+
+    connection = http.client.HTTPSConnection(
+        parsed.hostname,
+        port=parsed.port or 443,
+        timeout=TIMEOUT_SECONDS,
+        context=ssl.create_default_context(),
+    )
+
+    def create_origin_connection(
+        address: tuple[str, int], timeout: float, source_address: tuple[str, int] | None
+    ) -> socket.socket:
+        return socket.create_connection(
+            (origin_hostname, address[1]), timeout=timeout, source_address=source_address
+        )
+
+    # HTTPSConnection keeps parsed.hostname as the TLS server name and Host
+    # header while this hook changes only the TCP destination.
+    connection._create_connection = create_origin_connection  # type: ignore[attr-defined]
+    path = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    try:
+        connection.request("GET", path, headers={"accept": "*/*", "connection": "close"})
+        response = connection.getresponse()
+        body = response.read()
+        if not 200 <= response.status < 300:
+            raise ValueError(
+                f"Azure attestation origin {origin_hostname!r} returned HTTP {response.status}"
+            )
+        return body
+    finally:
+        connection.close()
+
+
 def live_aws() -> dict[str, str]:
     """PCR0 and module id from the running Nitro enclave. Fails closed."""
     envelope = cbor2.loads(_fetch(AWS_ATTESTATION_URL, verify_tls=False))
@@ -278,9 +338,11 @@ def live_gcp() -> dict[str, str]:
     }
 
 
-def _azure_region(url: str) -> dict[str, str]:
+def _azure_region(
+    url: str, *, origin_hostname: str, expected_issuer: str
+) -> dict[str, str]:
     """One Azure region's measurement. Fails closed on anything unexpected."""
-    token = _fetch(url).decode("ascii").strip()
+    token = _fetch_at_origin(url, origin_hostname).decode("ascii").strip()
     parts = token.split(".")
     if len(parts) != 3:
         raise ValueError("Azure attestation is not a three-part JWT")
@@ -294,9 +356,15 @@ def _azure_region(url: str) -> dict[str, str]:
         raise ValueError("Azure attestation has no 32-byte hostdata; refusing to publish")
     if not isinstance(issuer, str) or not issuer:
         raise ValueError("Azure attestation has no issuer")
+    if issuer != expected_issuer:
+        raise AzureOriginIdentityError(
+            f"Azure origin {origin_hostname!r} returned issuer {issuer!r}; "
+            f"expected {expected_issuer!r}"
+        )
     launch = claims.get("x-ms-sevsnpvm-launchmeasurement")
     return {
         "url": url,
+        "origin_hostname": origin_hostname,
         "hostdata": hostdata,
         "issuer": issuer,
         "launch_measurement": launch if isinstance(launch, str) else "unknown",
@@ -305,25 +373,35 @@ def _azure_region(url: str) -> dict[str, str]:
 
 
 def live_azure() -> list[dict[str, str]]:
-    """Every reachable Azure region's measurement.
-
-    Returns one entry per region. A region that cannot be reached is omitted
-    rather than fatal — but omitting it must NOT narrow the published set, or a
-    transient outage in one region would silently de-publish a measurement that
-    is still serving traffic elsewhere. main() enforces that by refusing to
-    write when a region is unreachable unless --keep-accepted is in play.
-    """
+    """Every configured Azure region's measurement, or fail closed."""
     regions: list[dict[str, str]] = []
     errors: list[str] = []
-    for url in AZURE_ATTESTATION_URLS:
+    for url, origin_hostname, expected_issuer in AZURE_ATTESTATION_ORIGINS:
         try:
-            regions.append(_azure_region(url))
+            regions.append(
+                _azure_region(
+                    url,
+                    origin_hostname=origin_hostname,
+                    expected_issuer=expected_issuer,
+                )
+            )
+        except AzureOriginIdentityError:
+            # A reachable origin presenting another region's identity is not
+            # an outage. It is origin contamination or configuration drift,
+            # and preserving old pins must never make that publishable.
+            raise
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"{url}: {exc}")
-    if not regions:
-        raise ValueError("; ".join(errors) or "no Azure region answered")
-    for error in errors:
-        print(f"      WARNING unreachable region {error}", file=sys.stderr)
+            errors.append(f"{url} via {origin_hostname}: {exc}")
+    if errors:
+        raise ValueError(
+            "not every configured Azure origin answered: " + "; ".join(errors)
+        )
+    hostdata = {region["hostdata"] for region in regions}
+    if len(hostdata) != len(regions):
+        raise ValueError(
+            "Azure regional capture returned the same hostdata more than once; "
+            "refusing to treat duplicate backend evidence as distinct regions"
+        )
     return regions
 
 
@@ -487,6 +565,7 @@ def build_azure_record(
         "regions": [
             {
                 "attestation_url": region["url"],
+                "origin_hostname": region["origin_hostname"],
                 "hostdata": region["hostdata"],
                 "attestation_issuer": region["issuer"],
                 "launch_measurement": region["launch_measurement"],
