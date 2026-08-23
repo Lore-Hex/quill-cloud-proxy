@@ -30,12 +30,9 @@ import (
 //
 // This list is compiled into the binary, so it is inside the EIF and therefore
 // MEASURED BY PCR0. Adding a host later costs an image rebuild and a fleet-wide
-// re-pin of every PCR0 assertion, which is why both the AWS plane and the
-// canonical plane are listed now even though only one is primary: the expensive,
-// measured part is done once and generously, and which one is preferred stays
-// ordinary configuration that can change freely.
+// re-pin of every PCR0 assertion. Only the billing authority belongs here;
+// observer/status services must not receive money-path RPCs.
 var trControlPlaneTunnels = []vsockhttp.Tunnel{
-	{Host: "aws.trustedrouter.com", CID: 3, Port: 8048},
 	{Host: "trustedrouter.com", CID: 3, Port: 8040},
 }
 

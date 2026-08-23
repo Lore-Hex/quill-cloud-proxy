@@ -56,6 +56,18 @@ func TestVideoJobIDIsDeterministicAndAuthorizationScoped(t *testing.T) {
 	}
 }
 
+func TestAuthorizationForVideoJobPreservesBillingAuthority(t *testing.T) {
+	job := &trustedrouter.VideoJob{
+		AuthorizationID:         "auth-video",
+		ControlPlaneEndpoint:    2,
+		ControlPlaneEndpointSet: true,
+	}
+	auth := authorizationForVideoJob(job)
+	if !auth.ControlPlaneEndpointSet || auth.ControlPlaneEndpoint != 2 {
+		t.Fatalf("authorization authority = (%d, %t), want (2, true)", auth.ControlPlaneEndpoint, auth.ControlPlaneEndpointSet)
+	}
+}
+
 func TestVideoRequestFingerprintBindsContentWithoutExposingIt(t *testing.T) {
 	a := videoRequestFingerprint("secret-key", &video.CreateRequest{
 		Model: "minimax/hailuo-3", Prompt: "private prompt", Duration: 5,

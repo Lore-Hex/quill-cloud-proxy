@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import unittest
@@ -100,6 +101,37 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn('MAX_SURGE="${MAX_SURGE:-3}"', deploy)
         self.assertIn('MAX_UNAVAILABLE="${MAX_UNAVAILABLE:-0}"', deploy)
         self.assertIn('--update-policy-max-unavailable="$MAX_UNAVAILABLE"', deploy)
+
+    def test_gcp_gateway_rejects_observer_only_control_plane_overrides(self) -> None:
+        deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            'TR_CONTROL_PLANE_BASE_URL="${TR_CONTROL_PLANE_BASE_URL:-https://trustedrouter.com}"',
+            deploy,
+        )
+        self.assertIn("validate-control-plane-endpoints.py", deploy)
+
+    def test_aws_observer_hosts_follow_the_configured_regions(self) -> None:
+        script_path = ROOT / "tools" / "aws-control-plane-failover.sh"
+        script = script_path.read_text(encoding="utf-8")
+
+        self.assertIn('PRIMARY_HOST="aws-${PRIMARY_SLUG}.trustedrouter.com"', script)
+        self.assertIn('SECONDARY_HOST="aws-${SECONDARY_SLUG}.trustedrouter.com"', script)
+        self.assertNotIn("aws-euw1.trustedrouter.com", script)
+        self.assertNotIn("aws-euw3.trustedrouter.com", script)
+
+        completed = subprocess.run(
+            ["bash", str(script_path), "cert"],
+            cwd=ROOT,
+            env={**os.environ, "PRIMARY_REGION": "us-east-2"},
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("unknown region us-east-2", completed.stderr)
 
     def test_sao_paulo_uses_supported_amd_sev_profile(self) -> None:
         deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")

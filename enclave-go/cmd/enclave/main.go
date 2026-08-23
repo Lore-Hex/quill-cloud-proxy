@@ -134,6 +134,10 @@ func main() {
 	br := llm.New(boot) // build-tag-gated: AWS Bedrock by default, GCP Vertex with -tags gcp
 	imageProviderGateway = imagegen.NewRegistry(imageProviderKeys(boot), llm.NewProviderHTTPClient())
 	trGateway := trustedrouter.NewFromBootstrap(boot)
+	if configurationErr := trGateway.ProductionConfigurationError(); configurationErr != nil {
+		fmt.Fprintf(os.Stderr, "enclave.control_plane_configuration_rejected err=%q\n", configurationErr.Error())
+		os.Exit(1)
+	}
 	videoGateway = newVideoService(videoProviderKeys(boot), trGateway)
 	videoGateway.Start(ctx)
 	var byokSecrets *byokcache.Cache

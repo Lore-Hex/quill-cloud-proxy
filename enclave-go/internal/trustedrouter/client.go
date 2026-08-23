@@ -82,10 +82,12 @@ func ClientContextFromContext(ctx context.Context) *qtypes.ClientContext {
 }
 
 type Client struct {
-	// baseURLs is ordered: index 0 is this cloud's OWN control plane, later
-	// entries are fallbacks used only when an earlier one cannot be dialled.
-	// See endpoints.go for why only dial failures may advance it.
+	// baseURLs is ordered: index 0 is the configured billing authority, and
+	// later entries are fallbacks used only when an earlier one cannot be
+	// dialled. Observer/status services are never valid entries. See
+	// endpoints.go for why only dial failures may advance it.
 	baseURLs           []string
+	configurationError error
 	internalToken      string
 	httpc              *http.Client
 	region             string
@@ -99,19 +101,21 @@ type Client struct {
 }
 
 func NewFromEnv() *Client {
+	baseURLs, configurationError := parseControlPlaneEndpoints(os.Getenv("TR_CONTROL_PLANE_BASE_URL"))
 	return &Client{
-		baseURLs:       parseControlPlaneEndpoints(os.Getenv("TR_CONTROL_PLANE_BASE_URL")),
-		internalToken:  os.Getenv("TR_INTERNAL_GATEWAY_TOKEN"),
-		region:         os.Getenv("TR_REGION"),
-		httpc:          newControlPlaneHTTPClient(),
-		authorizeRetry: defaultAuthorizeRetryPolicy(),
+		baseURLs:           baseURLs,
+		configurationError: configurationError,
+		internalToken:      os.Getenv("TR_INTERNAL_GATEWAY_TOKEN"),
+		region:             os.Getenv("TR_REGION"),
+		httpc:              newControlPlaneHTTPClient(),
+		authorizeRetry:     defaultAuthorizeRetryPolicy(),
 	}
 }
 
 func NewFromBootstrap(boot *qtypes.BootstrapData) *Client {
-	baseURLs := parseControlPlaneEndpoints(os.Getenv("TR_CONTROL_PLANE_BASE_URL"))
-	if len(baseURLs) == 0 && boot != nil {
-		baseURLs = parseControlPlaneEndpoints(boot.TrustedRouterBaseURL)
+	baseURLs, configurationError := parseControlPlaneEndpoints(os.Getenv("TR_CONTROL_PLANE_BASE_URL"))
+	if configurationError == nil && len(baseURLs) == 0 && boot != nil {
+		baseURLs, configurationError = parseControlPlaneEndpoints(boot.TrustedRouterBaseURL)
 	}
 	internalToken := os.Getenv("TR_INTERNAL_GATEWAY_TOKEN")
 	if internalToken == "" && boot != nil {
@@ -122,11 +126,12 @@ func NewFromBootstrap(boot *qtypes.BootstrapData) *Client {
 		region = boot.Region
 	}
 	return &Client{
-		baseURLs:       baseURLs,
-		internalToken:  strings.TrimSpace(internalToken),
-		region:         region,
-		httpc:          newControlPlaneHTTPClient(),
-		authorizeRetry: defaultAuthorizeRetryPolicy(),
+		baseURLs:           baseURLs,
+		configurationError: configurationError,
+		internalToken:      strings.TrimSpace(internalToken),
+		region:             region,
+		httpc:              newControlPlaneHTTPClient(),
+		authorizeRetry:     defaultAuthorizeRetryPolicy(),
 	}
 }
 
@@ -134,16 +139,51 @@ func New(baseURL, internalToken string, httpc *http.Client) *Client {
 	if httpc == nil {
 		httpc = newControlPlaneHTTPClient()
 	}
+	baseURLs, configurationError := parseControlPlaneEndpoints(baseURL)
 	return &Client{
-		baseURLs:       parseControlPlaneEndpoints(baseURL),
-		internalToken:  internalToken,
-		httpc:          httpc,
-		authorizeRetry: defaultAuthorizeRetryPolicy(),
+		baseURLs:           baseURLs,
+		configurationError: configurationError,
+		internalToken:      internalToken,
+		httpc:              httpc,
+		authorizeRetry:     defaultAuthorizeRetryPolicy(),
 	}
 }
 
 func (c *Client) Enabled() bool {
-	return c != nil && len(c.baseURLs) > 0 && c.internalToken != ""
+	if c == nil {
+		return false
+	}
+	return c.configurationError != nil || (len(c.baseURLs) > 0 && c.internalToken != "")
+}
+
+// ConfigurationError reports a fail-closed control-plane configuration error.
+// Callers that own process startup should treat it as fatal so health checks
+// cannot stay green while every metered request is guaranteed to fail.
+func (c *Client) ConfigurationError() error {
+	if c == nil {
+		return nil
+	}
+	return c.configurationError
+}
+
+// ProductionConfigurationError rejects both malformed and absent billing
+// configuration. Local unit tests may construct a disabled Client explicitly,
+// but a deployed enclave must never turn a missing URL or token into the
+// legacy unmetered device-key path.
+func (c *Client) ProductionConfigurationError() error {
+	if c == nil {
+		return fmt.Errorf("trustedrouter: control-plane client is nil")
+	}
+	if c.configurationError != nil {
+		return c.configurationError
+	}
+	if len(c.baseURLs) == 0 {
+		return fmt.Errorf("trustedrouter: control-plane endpoint is required")
+	}
+	if strings.TrimSpace(c.internalToken) == "" {
+		return fmt.Errorf("trustedrouter: internal gateway token is required")
+	}
+	return nil
 }
 
 // PublicModels returns the public model catalog through the same attested
@@ -153,6 +193,9 @@ func (c *Client) Enabled() bool {
 // while a bounded stale copy keeps SDK discovery available during a brief
 // control-plane interruption.
 func (c *Client) PublicModels(ctx context.Context) ([]byte, error) {
+	if c != nil && c.configurationError != nil {
+		return nil, c.configurationError
+	}
 	if c == nil || len(c.baseURLs) == 0 {
 		return nil, fmt.Errorf("trustedrouter: no control-plane endpoint configured")
 	}
@@ -190,6 +233,9 @@ func (c *Client) fetchPublicModels(ctx context.Context) ([]byte, error) {
 // PublicImageModels returns the image-only capability catalog with the same
 // anonymous, bounded, stale-if-error semantics as PublicModels.
 func (c *Client) PublicImageModels(ctx context.Context) ([]byte, error) {
+	if c != nil && c.configurationError != nil {
+		return nil, c.configurationError
+	}
 	if c == nil || len(c.baseURLs) == 0 {
 		return nil, fmt.Errorf("trustedrouter: no control-plane endpoint configured")
 	}
@@ -243,6 +289,9 @@ func (c *Client) fetchPublicCatalog(
 	label string,
 	valid func([]byte) bool,
 ) ([]byte, error) {
+	if c != nil && c.configurationError != nil {
+		return nil, c.configurationError
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -297,8 +346,8 @@ func (c *Client) fetchPublicCatalog(
 	return nil, lastErr
 }
 
-// primaryBaseURL is this cloud's own control plane — the one used unless it
-// cannot be dialled at all.
+// primaryBaseURL is the configured billing authority used unless it cannot be
+// dialled at all.
 func (c *Client) primaryBaseURL() string {
 	if c == nil || len(c.baseURLs) == 0 {
 		return ""
@@ -332,6 +381,26 @@ type Authorization struct {
 	AdditionalCostReservationMicrodollars int                                `json:"additional_cost_reservation_microdollars"`
 	NativeBatchEligible                   bool                               `json:"native_batch_eligible"`
 	RouteType                             string                             `json:"-"`
+	// ControlPlaneEndpoint is enclave-local billing authority state. It is
+	// never accepted from or exposed to the control plane or client. A settle
+	// or refund must return to the same authority that created the hold.
+	ControlPlaneEndpoint    int  `json:"-"`
+	ControlPlaneEndpointSet bool `json:"-"`
+}
+
+func (a *Authorization) pinControlPlaneEndpoint(endpoint int) {
+	if a == nil || endpoint < 0 {
+		return
+	}
+	a.ControlPlaneEndpoint = endpoint
+	a.ControlPlaneEndpointSet = true
+}
+
+func (a *Authorization) pinnedControlPlaneEndpoint() int {
+	if a == nil || !a.ControlPlaneEndpointSet {
+		return -1
+	}
+	return a.ControlPlaneEndpoint
 }
 
 // KeyIdentity is metadata-only ownership information returned by the
@@ -564,9 +633,13 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	var decoded struct {
 		Data Authorization `json:"data"`
 	}
-	if err := c.postJSONWithRetry(ctx, "/internal/gateway/authorize", body, &decoded, c.authorizeRetry); err != nil {
+	controlPlaneEndpoint, err := c.postJSONWithRetryAtEndpoint(
+		ctx, "/internal/gateway/authorize", body, &decoded, c.authorizeRetry,
+	)
+	if err != nil {
 		return nil, err
 	}
+	decoded.Data.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.Data.RouteType = routeType
 	if routeType != "videos" && routeType != "images" && req.AdditionalCostReservationMicrodollars > 0 &&
 		decoded.Data.AdditionalCostReservationMicrodollars != req.AdditionalCostReservationMicrodollars {
@@ -674,9 +747,13 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	var decoded struct {
 		Data Authorization `json:"data"`
 	}
-	if err := c.postJSONWithRetry(ctx, "/internal/gateway/authorize", body, &decoded, c.authorizeRetry); err != nil {
+	controlPlaneEndpoint, err := c.postJSONWithRetryAtEndpoint(
+		ctx, "/internal/gateway/authorize", body, &decoded, c.authorizeRetry,
+	)
+	if err != nil {
 		return nil, err
 	}
+	decoded.Data.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.Data.RouteType = routeType
 	if req.Tags != nil && decoded.Data.RequestMetadataVersion < 1 {
 		_ = c.Refund(ctx, &decoded.Data, 503, "request_metadata_unavailable", 0.001, nil)
@@ -799,7 +876,9 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	var decoded struct {
 		Data SettleResult `json:"data"`
 	}
-	if err := c.postJSON(ctx, "/internal/gateway/settle", body, &decoded); err != nil {
+	if _, err := c.postJSONAtEndpoint(
+		ctx, "/internal/gateway/settle", body, &decoded, auth.pinnedControlPlaneEndpoint(),
+	); err != nil {
 		return nil, err
 	}
 	return &decoded.Data, nil
@@ -888,7 +967,9 @@ func (c *Client) refundDetailed(
 	var decoded struct {
 		Data SettleResult `json:"data"`
 	}
-	if err := c.postJSON(ctx, "/internal/gateway/refund", body, &decoded); err != nil {
+	if _, err := c.postJSONAtEndpoint(
+		ctx, "/internal/gateway/refund", body, &decoded, auth.pinnedControlPlaneEndpoint(),
+	); err != nil {
 		return nil, err
 	}
 	return &decoded.Data, nil
@@ -942,51 +1023,87 @@ func (c *Client) FetchImage(ctx context.Context, url string) (string, []byte, er
 // the server HAS processed the request and we merely failed to read the answer.
 // Re-sending that to a DIFFERENT plane with a DIFFERENT database (idempotency
 // keys do not travel between them) could reserve or bill twice.
-func (c *Client) postToFirstDialable(ctx context.Context, path string, body []byte) (*http.Response, error) {
-	if len(c.baseURLs) == 0 {
-		return nil, fmt.Errorf("trustedrouter: no control-plane endpoint configured")
+func (c *Client) postToControlPlane(
+	ctx context.Context,
+	path string,
+	body []byte,
+	pinnedEndpoint int,
+) (*http.Response, int, error) {
+	if c != nil && c.configurationError != nil {
+		return nil, -1, c.configurationError
 	}
-	for i, base := range c.baseURLs {
+	if len(c.baseURLs) == 0 {
+		return nil, -1, fmt.Errorf("trustedrouter: no control-plane endpoint configured")
+	}
+	start, end := 0, len(c.baseURLs)
+	if pinnedEndpoint >= 0 {
+		if pinnedEndpoint >= len(c.baseURLs) {
+			return nil, -1, fmt.Errorf("trustedrouter: invalid control-plane endpoint index %d", pinnedEndpoint)
+		}
+		start, end = pinnedEndpoint, pinnedEndpoint+1
+	}
+	for i := start; i < end; i++ {
+		base := c.baseURLs[i]
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
 		if err != nil {
-			return nil, err
+			return nil, -1, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(internalTokenHeader, c.internalToken)
 
 		resp, err := c.httpc.Do(req)
 		if err == nil {
-			if i > 0 {
+			if pinnedEndpoint < 0 && i > 0 {
 				// A silent fallback reads as health: the primary could be down
 				// for days while every request quietly succeeds on the standby.
 				fmt.Fprintf(os.Stderr,
 					"enclave.control_plane_failover path=%q endpoint_index=%d\n", path, i)
 			}
-			return resp, nil
+			return resp, i, nil
 		}
-		if !isDialFailure(err) || i == len(c.baseURLs)-1 {
-			return nil, fmt.Errorf("trustedrouter: post %s: %w", path, err)
+		if pinnedEndpoint >= 0 || !isDialFailure(err) || i == end-1 {
+			return nil, -1, fmt.Errorf("trustedrouter: post %s: %w", path, err)
 		}
 		fmt.Fprintf(os.Stderr,
 			"enclave.control_plane_undialable path=%q endpoint_index=%d err=%v\n", path, i, err)
 	}
-	return nil, fmt.Errorf("trustedrouter: post %s: no endpoint dialable", path)
+	return nil, -1, fmt.Errorf("trustedrouter: post %s: no endpoint dialable", path)
+}
+
+func (c *Client) postToFirstDialable(ctx context.Context, path string, body []byte) (*http.Response, error) {
+	resp, _, err := c.postToControlPlane(ctx, path, body, -1)
+	return resp, err
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, payload any, out any) error {
+	_, err := c.postJSONAtEndpoint(ctx, path, payload, out, -1)
+	return err
+}
+
+// postJSONAtEndpoint returns the endpoint that actually received the request.
+// Passing a non-negative endpoint pins the request to that authority. This is
+// load-bearing for authorization retries: idempotency is local to one billing
+// database, so a retry must never move after an authority has responded.
+func (c *Client) postJSONAtEndpoint(
+	ctx context.Context,
+	path string,
+	payload any,
+	out any,
+	pinnedEndpoint int,
+) (int, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return -1, err
 	}
-	resp, err := c.postToFirstDialable(ctx, path, body)
+	resp, selectedEndpoint, err := c.postToControlPlane(ctx, path, body, pinnedEndpoint)
 	if err != nil {
-		return err
+		return selectedEndpoint, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
-			return fmt.Errorf("trustedrouter: read %s error body: %w", path, readErr)
+			return selectedEndpoint, fmt.Errorf("trustedrouter: read %s error body: %w", path, readErr)
 		}
 		controlErr := &ControlPlaneError{
 			Path:       path,
@@ -1004,12 +1121,12 @@ func (c *Client) postJSON(ctx context.Context, path string, payload any, out any
 			controlErr.Message = strings.TrimSpace(envelope.Error.Message)
 			controlErr.Type = strings.TrimSpace(envelope.Error.Type)
 		}
-		return controlErr
+		return selectedEndpoint, controlErr
 	}
 	if out == nil {
-		return nil
+		return selectedEndpoint, nil
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return selectedEndpoint, json.NewDecoder(resp.Body).Decode(out)
 }
 
 // KeyInfo serves the /v1/key passthrough: agents read their own key's budget

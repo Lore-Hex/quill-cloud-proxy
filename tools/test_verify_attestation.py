@@ -485,20 +485,89 @@ class GCPLivenessModeTests(VerifierTestCase):
             self.verify(self.payload(digest="sha256:wrong"), require_exporter=False)
         self.assertIn("image_digest mismatch", str(raised.exception))
 
+    def test_present_but_empty_digest_pin_fails_closed(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "expected image digest pin is empty or malformed"):
+            VERIFIER.verify_gcp_jwt(
+                jwt_for_payload(self.payload()),
+                self.cert_der,
+                exporter=self.exporter,
+                expect_digest="",
+                nonce_hex=self.nonce_hex,
+                allow_debug=False,
+                require_exporter=False,
+            )
+
     def test_liveness_rejects_unbound_cert(self) -> None:
         with self.assertRaises(SystemExit) as raised:
             self.verify(self.payload(nonces=["00" * 32, self.nonce_hex]), require_exporter=False)
         self.assertIn("live TLS cert fingerprint is not bound", str(raised.exception))
 
 
+class GCPBindingStressVerificationTests(VerifierTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._orig_fetch = VERIFIER.fetch_attestation_same_tls_socket
+        self._orig_verify_signature = VERIFIER.verify_gcp_jwt_signature
+        self.debug_status = "disabled"
+        self.cert_der = b"stress leaf cert"
+        self.exporter = bytes.fromhex("cc" * 32)
+        self.digest = "sha256:stress-good"
+
+        def fake_fetch(_host, nonce_hex, _port, **_kwargs):
+            payload = {
+                "iss": VERIFIER.GCP_ISSUER,
+                "aud": [VERIFIER.GCP_AUDIENCE],
+                "image_digest": self.digest,
+                "dbgstat": self.debug_status,
+                "eat_nonce": [
+                    hashlib.sha256(self.cert_der).hexdigest(),
+                    self.exporter.hex(),
+                    nonce_hex,
+                ],
+            }
+            return self.cert_der, self.exporter, jwt_for_payload(payload), None, None
+
+        VERIFIER.fetch_attestation_same_tls_socket = fake_fetch
+
+    def tearDown(self) -> None:
+        if VERIFIER is not None:
+            VERIFIER.fetch_attestation_same_tls_socket = self._orig_fetch
+            VERIFIER.verify_gcp_jwt_signature = self._orig_verify_signature
+        super().tearDown()
+
+    def probe(self) -> dict:
+        return VERIFIER._probe_binding(
+            "api.trustedrouter.com",
+            443,
+            None,
+            True,
+            expect_digest=self.digest,
+        )
+
+    def test_rejects_unsigned_claims_even_when_all_bindings_match(self) -> None:
+        VERIFIER.verify_gcp_jwt_signature = lambda _blob: (_ for _ in ()).throw(
+            SystemExit("[FAIL] forged signature")
+        )
+        result = self.probe()
+        self.assertFalse(result["bound"])
+        self.assertIn("forged signature", result["binding_error"])
+
+    def test_rejects_debug_guest_even_when_all_bindings_match(self) -> None:
+        VERIFIER.verify_gcp_jwt_signature = lambda _blob: None
+        self.debug_status = "enabled"
+        result = self.probe()
+        self.assertFalse(result["bound"])
+        self.assertIn("debug status is enabled", result["binding_error"])
+
+
 @unittest.skipIf(VERIFIER is None, f"verifier not importable: {LOAD_ERROR}")
 class TestPCR0PinIsASet(unittest.TestCase):
     """A rolling EIF replacement spans two measurements; the pin must accept both.
 
-    This is what unblocks changing PCR0 at all. The AWS enclave's control-plane
-    allowlist is compiled into the binary and therefore measured, so pointing
-    AWS at its own control plane REQUIRES a new PCR0 — and rolling to it means a
-    window where both the published and the incoming measurement are live.
+    This is what unblocks changing PCR0 at all. The AWS enclave's network
+    allowlist is compiled into the binary and therefore measured, so changing
+    an allowed control-plane host REQUIRES a new PCR0 — and rolling to it means
+    a window where both the published and incoming measurement are live.
 
     The sharp edge worth pinning: under the old equality check, writing
     "old,new" failed BOTH, because neither equals the literal joined string. So
@@ -533,8 +602,11 @@ class TestPCR0PinIsASet(unittest.TestCase):
     def test_unpinned_does_not_check(self) -> None:
         # Absent pin means "not asserting a measurement", not "accept nothing".
         VERIFIER.check_pcr0_pin(self.OLD, None)
-        VERIFIER.check_pcr0_pin(self.OLD, "")
-        VERIFIER.check_pcr0_pin(self.OLD, "  ,  ")
+
+    def test_present_but_empty_pin_fails_closed(self) -> None:
+        for value in ("", "  ,  "):
+            with self.subTest(value=value), self.assertRaisesRegex(SystemExit, "empty or malformed"):
+                VERIFIER.check_pcr0_pin(self.OLD, value)
 
 
 if __name__ == "__main__":

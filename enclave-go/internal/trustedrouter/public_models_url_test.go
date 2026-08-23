@@ -19,7 +19,8 @@ func TestPublicModelsURLIsVersionedWhicheverBaseIsGiven(t *testing.T) {
 	for _, tc := range []struct{ base, want string }{
 		// What GCP actually ships. Produced .../models before this fix.
 		{"https://trustedrouter.com", "https://trustedrouter.com/v1/models"},
-		// What Azure and AWS ship.
+		// Defensive normalization for a legacy versioned value. Configuration
+		// validation now rejects this form before the client is constructed.
 		{"https://azure.trustedrouter.com/v1", "https://azure.trustedrouter.com/v1/models"},
 		// Trailing slashes in either form.
 		{"https://trustedrouter.com/", "https://trustedrouter.com/v1/models"},
