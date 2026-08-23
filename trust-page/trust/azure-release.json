@@ -43,7 +43,7 @@
     }
   ],
   "release_state": "multi-region",
-  "source_commit": "9bafe2f52137dc583990c5d35a8ab80a12b4cdb2",
+  "source_commit": "433a60b",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {

@@ -12,12 +12,12 @@
     "prompt_output_storage": false
   },
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-09df83a4c46fbbef0-enc01a02ad5fbb06f10",
+  "observed_module_id": "i-0b62f7e777a0db855-enc01a02ad1446d91b9",
   "pcr0": "edfd8939061a70331c3cba20c9f23f26e39d065cdd2dff2699d6e3477f7a72b097c517af3a534dd278a488517a4c1ecc",
   "platform": "aws-nitro-enclaves",
   "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "d9c8082ae7144053e7743115a6050e86f06bfbc1",
+  "source_commit": "433a60b",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
