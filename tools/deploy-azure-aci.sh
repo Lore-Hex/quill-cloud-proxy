@@ -290,12 +290,13 @@ QUILL_TRUSTEDROUTER_INTERNAL_SECRET="${QUILL_TRUSTEDROUTER_INTERNAL_SECRET:-trus
 QUILL_ACME_EMAIL="${QUILL_ACME_EMAIL:-acme-azure-${LOCATION}@trustedrouter.com}"
 QUILL_FIRST_BYTE_TIMEOUT_SECONDS="${QUILL_FIRST_BYTE_TIMEOUT_SECONDS:-20}"
 QUILL_HEALTH_PORT="${QUILL_HEALTH_PORT:-8081}"
-# TWO PLANES, azure first. The live containers have carried this ordered
-# list since the Azure control plane went up, but the default here still
-# said home-only — exactly the out-of-band drift the header forbids. The
-# enclave's postToFirstDialable walks the list in order, so the Azure plane
-# serves normally and a dead Azure plane fails over to home in-process.
-TR_CONTROL_PLANE_BASE_URL="${TR_CONTROL_PLANE_BASE_URL:-https://azure.trustedrouter.com/v1,https://trustedrouter.com/v1}"
+# Azure's public service is observer-only. It publishes status and catalog
+# data, but it is deliberately not a billing authority and must never receive
+# authorize or settle calls. Keep the canonical control plane as the measured
+# default. A future standalone Azure billing plane requires changing the
+# compiled allowlist as part of a reviewed gateway-image and attestation
+# rollout; an operator override alone is deliberately insufficient.
+TR_CONTROL_PLANE_BASE_URL="${TR_CONTROL_PLANE_BASE_URL:-https://trustedrouter.com}"
 # Fallback ACME CA (task #56, Azure leg). Directory is plain env (measured,
 # not secret); the EAB value rides the SEALED BUNDLE under the entry named
 # by QUILL_ACME_FALLBACK_EAB_SECRET (azure-seal-bundle.py binding). By the
@@ -337,6 +338,12 @@ verify_attestation() {
 log()  { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 die()  { printf '\n[FAIL] %s\n' "$*" >&2; exit 1; }
 note() { printf '        %s\n' "$*" >&2; }
+
+CONTROL_PLANE_VALIDATOR="$SCRIPT_DIR/validate-control-plane-endpoints.py"
+
+validate_control_plane_configuration() {
+  python3 "$CONTROL_PLANE_VALIDATOR" "$TR_CONTROL_PLANE_BASE_URL"
+}
 
 # run: execute (or, in dry-run, print) a mutating command.
 run() {
@@ -2059,6 +2066,15 @@ for arg in "$@"; do
   esac
 done
 [ "${#PHASES[@]}" -gt 0 ] || PHASES=(all)
+
+# Only phases that render the measured environment need this value. Keep
+# rollback, audit, logs, verify, and narrow available when recovering from a
+# bad override; blocking recovery on the bad value would compound the fault.
+for phase in "${PHASES[@]}"; do
+  case "$phase" in
+    all|template|print-env) validate_control_plane_configuration; break ;;
+  esac
+done
 
 # print-env is pure local computation: no Azure, no --apply, no workdir. It
 # exists so the sealer and the deploy cannot disagree about the measured env.

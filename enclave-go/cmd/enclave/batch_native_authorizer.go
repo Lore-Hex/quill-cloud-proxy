@@ -25,15 +25,17 @@ type batchNativeAuthorizer struct {
 }
 
 type batchNativeAuthorizationHandle struct {
-	AuthorizationID      string         `json:"authorization_id"`
-	Model                string         `json:"model"`
-	EndpointID           string         `json:"endpoint_id"`
-	EstimatedInputTokens int            `json:"estimated_input_tokens"`
-	RouteType            string         `json:"route_type"`
-	User                 string         `json:"user,omitempty"`
-	SessionID            string         `json:"session_id,omitempty"`
-	Trace                map[string]any `json:"trace,omitempty"`
-	Metadata             map[string]any `json:"metadata,omitempty"`
+	AuthorizationID         string         `json:"authorization_id"`
+	Model                   string         `json:"model"`
+	EndpointID              string         `json:"endpoint_id"`
+	EstimatedInputTokens    int            `json:"estimated_input_tokens"`
+	RouteType               string         `json:"route_type"`
+	User                    string         `json:"user,omitempty"`
+	SessionID               string         `json:"session_id,omitempty"`
+	Trace                   map[string]any `json:"trace,omitempty"`
+	Metadata                map[string]any `json:"metadata,omitempty"`
+	ControlPlaneEndpoint    int            `json:"control_plane_endpoint,omitempty"`
+	ControlPlaneEndpointSet bool           `json:"control_plane_endpoint_set,omitempty"`
 }
 
 type batchNativeAttribution struct {
@@ -324,23 +326,27 @@ func encodeBatchNativeHandle(
 		return nil, fmt.Errorf("native batch authorization is nil")
 	}
 	return json.Marshal(batchNativeAuthorizationHandle{
-		AuthorizationID:      authorization.AuthorizationID,
-		Model:                authorization.Model,
-		EndpointID:           authorization.EndpointID,
-		EstimatedInputTokens: estimatedInputTokens,
-		RouteType:            routeType,
-		User:                 attribution.User,
-		SessionID:            attribution.SessionID,
-		Trace:                attribution.Trace,
-		Metadata:             attribution.Metadata,
+		AuthorizationID:         authorization.AuthorizationID,
+		Model:                   authorization.Model,
+		EndpointID:              authorization.EndpointID,
+		EstimatedInputTokens:    estimatedInputTokens,
+		RouteType:               routeType,
+		User:                    attribution.User,
+		SessionID:               attribution.SessionID,
+		Trace:                   attribution.Trace,
+		Metadata:                attribution.Metadata,
+		ControlPlaneEndpoint:    authorization.ControlPlaneEndpoint,
+		ControlPlaneEndpointSet: authorization.ControlPlaneEndpointSet,
 	})
 }
 
 func (h batchNativeAuthorizationHandle) authorization() trustedrouter.Authorization {
 	return trustedrouter.Authorization{
-		AuthorizationID: h.AuthorizationID,
-		Model:           h.Model,
-		EndpointID:      h.EndpointID,
-		RouteType:       h.RouteType,
+		AuthorizationID:         h.AuthorizationID,
+		Model:                   h.Model,
+		EndpointID:              h.EndpointID,
+		RouteType:               h.RouteType,
+		ControlPlaneEndpoint:    h.ControlPlaneEndpoint,
+		ControlPlaneEndpointSet: h.ControlPlaneEndpointSet,
 	}
 }

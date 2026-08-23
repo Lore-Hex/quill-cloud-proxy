@@ -223,9 +223,11 @@ func compactSettlementRetryJob(job settlementRetryJob) settlementRetryJob {
 	}
 	if auth := job.authorization; auth != nil {
 		job.authorization = &trustedrouter.Authorization{
-			AuthorizationID: auth.AuthorizationID,
-			Model:           auth.Model,
-			EndpointID:      auth.EndpointID,
+			AuthorizationID:         auth.AuthorizationID,
+			Model:                   auth.Model,
+			EndpointID:              auth.EndpointID,
+			ControlPlaneEndpoint:    auth.ControlPlaneEndpoint,
+			ControlPlaneEndpointSet: auth.ControlPlaneEndpointSet,
 		}
 	}
 	job.usage.User = ""

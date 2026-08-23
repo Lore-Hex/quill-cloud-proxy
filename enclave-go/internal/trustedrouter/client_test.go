@@ -186,7 +186,7 @@ func TestGatewayRequestIDForwarding(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			payloads := make(map[string]map[string]any)
-			client := New("https://control.example", "internal", &http.Client{
+			client := New("https://trustedrouter.com", "internal", &http.Client{
 				Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 					var payload map[string]any
 					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -279,7 +279,7 @@ func TestClientContextForwardedOnlyOnSettleAndRefund(t *testing.T) {
 	run := func(context *qtypes.ClientContext) captured {
 		t.Helper()
 		var got captured
-		client := New("https://control.example", "internal", &http.Client{
+		client := New("https://trustedrouter.com", "internal", &http.Client{
 			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
@@ -666,7 +666,7 @@ func TestSettleMapsTrustedSyntheticAppSentinelToDefault(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var payload map[string]any
-			client := New("https://control.example", "internal", &http.Client{
+			client := New("https://trustedrouter.com", "internal", &http.Client{
 				Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 					if r.URL.Path != "/internal/gateway/settle" {
 						t.Fatalf("path = %s", r.URL.Path)

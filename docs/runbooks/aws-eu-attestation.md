@@ -1,5 +1,14 @@
 # AWS EU attested gateway — runbook
 
+> **Retired standby.** TrustedRouter currently runs no AWS prompt compute. If
+> this pool is deliberately reactivated, its enclave must use
+> `https://trustedrouter.com` as the billing authority; `aws.trustedrouter.com`
+> is an observer/status service only.
+>
+> The signed AWS release record documents the last published measurement; its
+> `release_state` describes the accepted measurement set, not active capacity.
+> A live attestation is always required to establish that capacity exists now.
+
 `api-aws.trustedrouter.com` is the attested Nitro Enclave gateway for the
 standalone EU deployment. It is a peer of `api.trustedrouter.com` (GCP
 Confidential Space), not a failover of it: separate database, separate
@@ -8,7 +17,7 @@ credits, separate TLS identity.
 | name | serves | where |
 | --- | --- | --- |
 | `api-aws.trustedrouter.com` | attested gateway (Nitro) | NLB → eu-west-1 ASG |
-| `aws.trustedrouter.com` | EU control plane / status page | App Runner `tr-eu`, eu-west-3 |
+| `aws.trustedrouter.com` | observer / status page | App Runner `tr-eu`, eu-west-3 |
 | `api.trustedrouter.com` | attested gateway (GCP) | GCP Confidential Space |
 
 Do not point the gateway name at the control plane or vice versa. The
@@ -91,7 +100,7 @@ independently. Attestation is self-contained inside the enclave; inference
 needs the enclave to authorize the caller's key against a control plane
 over vsock.
 
-The authorize call goes to `POST {control_plane}/v1/internal/gateway/authorize`
+The authorize call goes to `POST {control_plane}/internal/gateway/authorize`
 with header `x-trustedrouter-internal-token`, tunneled via **vsock port
 8040**. The token comes from Secrets Manager
 `quill/trustedrouter-internal-gateway-token` (same value Cloud Run consumes

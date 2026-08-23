@@ -38,6 +38,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+TR_CONTROL_PLANE_BASE_URL="${TR_CONTROL_PLANE_BASE_URL:-https://trustedrouter.com}"
+CONTROL_PLANE_VALIDATOR="$SCRIPT_DIR/validate-control-plane-endpoints.py"
 
 AWS_REGION="${AWS_REGION:-us-west-2}"
 PROJECT_TAG="${PROJECT_TAG:-quill-enclave}"
@@ -87,6 +89,7 @@ if ! command -v python3 >/dev/null 2>&1; then
   echo "FATAL: python3 is required to encode EC2 user data" >&2
   exit 1
 fi
+python3 "$CONTROL_PLANE_VALIDATOR" "$TR_CONTROL_PLANE_BASE_URL"
 
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 run() {
@@ -766,9 +769,6 @@ allowlist:
   # TR control plane (key lookup, settle, byok unwrap). Matches the
   # tunnel list in enclave-go/internal/trustedrouter/http_client_aws.go.
   - {address: trustedrouter.com,             port: 443}
-  # The AWS control plane. Preferred over the canonical one so an AWS
-  # request does not depend on another cloud being reachable.
-  - {address: aws.trustedrouter.com,         port: 443}
 YAML
 
 # Start one vsock-proxy process per upstream port. Each listens on
@@ -885,7 +885,6 @@ write_vsock_unit 8037 acme-v02.api.letsencrypt.org
 write_vsock_unit 8038 acme-staging-v02.api.letsencrypt.org
 # TR control plane (must match internal/trustedrouter/http_client_aws.go)
 write_vsock_unit 8040 trustedrouter.com
-write_vsock_unit 8048 aws.trustedrouter.com
 
 systemctl daemon-reload
 
@@ -901,15 +900,10 @@ aws ecr get-login-password --region ${AWS_REGION} \\
 #   QUILL_BOOTSTRAP_SERVER=true  — opt-in flag; off in dev/tests
 #   QUILL_SECRET_PREFIX          — defaults to "quill/" (matches sync-secrets-to-aws.sh)
 #   QUILL_GCP_SA_KMS_ALIAS       — wraps the cross-cloud SA key
-#   QUILL_TR_CONTROL_PLANE_BASE_URL — ORDERED, comma-separated. Passed
-#                                    through verbatim to the enclave as
-#                                    trustedrouter_base_url. First entry is the
-#                                    AWS control plane, so a normal AWS request
-#                                    never touches another cloud; the canonical
-#                                    plane is a floor, used only when the first
-#                                    cannot be DIALLED (see
-#                                    internal/trustedrouter/endpoints.go for why
-#                                    only dial failures may fail over).
+#   QUILL_TR_CONTROL_PLANE_BASE_URL — Passed through verbatim to the enclave
+#                                    as trustedrouter_base_url. The AWS public
+#                                    service is observer-only, so the canonical
+#                                    billing authority is the safe default.
 docker pull ${parent_repo_url}:${parent_tag}
 docker run -d --restart=always --name=quill-parent \\
   --network=host \\
@@ -919,7 +913,7 @@ docker run -d --restart=always --name=quill-parent \\
   -e QUILL_AWS_REGION=${AWS_REGION} \\
   -e QUILL_SECRET_PREFIX=quill/ \\
   -e QUILL_GCP_SA_KMS_ALIAS=alias/${PROJECT_TAG}-cmk \\
-  -e QUILL_TR_CONTROL_PLANE_BASE_URL=https://aws.trustedrouter.com/v1,https://trustedrouter.com/v1 \\
+  -e QUILL_TR_CONTROL_PLANE_BASE_URL=${TR_CONTROL_PLANE_BASE_URL} \\
   ${parent_repo_url}:${parent_tag}
 
 # 4b. Parent-pump container (Go) — listens on TCP :8444 and forwards

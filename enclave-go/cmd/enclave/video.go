@@ -236,7 +236,9 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		InputMode:          resolved.InputMode, DurationSeconds: resolved.DurationSeconds,
 		Resolution: resolved.Resolution, AspectRatio: resolved.AspectRatio,
 		GenerateAudio: resolved.GenerateAudio, Region: auth.Region,
-		Status: "submitting",
+		Status:                  "submitting",
+		ControlPlaneEndpoint:    auth.ControlPlaneEndpoint,
+		ControlPlaneEndpointSet: auth.ControlPlaneEndpointSet,
 	}
 	stored, err := s.control.PrepareVideoJob(ctx, job)
 	if err != nil {
@@ -251,12 +253,12 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 	selected, queued, err := s.queueVideoJob(ctx, resolved, routes)
 	if err != nil {
 		_ = s.control.Refund(ctx, auth, videoErrorStatus(err), "video_provider_error", 0.001, nil)
-		_, _ = s.control.UpdateVideoJob(ctx, stored.ID, "failed", "", "FAILED", "", "provider_error", 5)
+		_, _ = s.control.UpdateVideoJob(ctx, stored, "failed", "", "FAILED", "", "provider_error", 5)
 		writeVideoProviderError(conn, err, "video provider rejected the job")
 		return
 	}
 	stored, err = s.control.MarkVideoJobQueued(
-		ctx, stored.ID, queued.QueueID, selected.Provider, selected.EndpointID,
+		ctx, stored, queued.QueueID, selected.Provider, selected.EndpointID,
 		queued.ProviderModel, selected.QuotedMicrodollars, 5,
 	)
 	if err != nil {
@@ -450,7 +452,7 @@ func (s *videoService) serveContent(ctx context.Context, conn io.Writer, bearer,
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	if err := provider.Complete(cleanupCtx, job.ProviderModel, job.ProviderJobID); err == nil {
-		_ = s.control.MarkVideoJobCleaned(cleanupCtx, job.ID)
+		_ = s.control.MarkVideoJobCleaned(cleanupCtx, job)
 	}
 	cancel()
 }
@@ -464,7 +466,7 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 		if err := s.control.Refund(ctx, auth, 503, "video_submission_interrupted", 0.001, nil); err != nil {
 			return job, err
 		}
-		updated, err := s.control.UpdateVideoJob(ctx, job.ID, "failed", leaseOwner, "SUBMISSION_INTERRUPTED", "", "submission_interrupted", 5)
+		updated, err := s.control.UpdateVideoJob(ctx, job, "failed", leaseOwner, "SUBMISSION_INTERRUPTED", "", "submission_interrupted", 5)
 		if err != nil {
 			return job, err
 		}
@@ -487,7 +489,7 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 		if err := provider.Complete(ctx, job.ProviderModel, job.ProviderJobID); err != nil {
 			return job, err
 		}
-		if err := s.control.MarkVideoJobCleaned(ctx, job.ID); err != nil {
+		if err := s.control.MarkVideoJobCleaned(ctx, job); err != nil {
 			return job, err
 		}
 		job.CleanedAt = time.Now().UTC().Format(time.RFC3339)
@@ -499,13 +501,13 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 		if errors.As(err, &httpErr) && !httpErr.Retryable {
 			auth := authorizationForVideoJob(job)
 			_ = s.control.Refund(ctx, auth, httpErr.Status, "video_provider_error", 0.001, nil)
-			updated, updateErr := s.control.UpdateVideoJob(ctx, job.ID, "failed", leaseOwner, "FAILED", "", "provider_error", 5)
+			updated, updateErr := s.control.UpdateVideoJob(ctx, job, "failed", leaseOwner, "FAILED", "", "provider_error", 5)
 			if updateErr == nil {
 				return updated, nil
 			}
 		}
 		if leaseOwner != "" {
-			_, _ = s.control.UpdateVideoJob(ctx, job.ID, "in_progress", leaseOwner, "RETRY", "", "", 10)
+			_, _ = s.control.UpdateVideoJob(ctx, job, "in_progress", leaseOwner, "RETRY", "", "", 10)
 		}
 		return job, err
 	}
@@ -514,7 +516,7 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 	}
 	switch result.State {
 	case video.PollProcessing:
-		updated, err := s.control.UpdateVideoJob(ctx, job.ID, "in_progress", leaseOwner, result.ProviderStatus, "", "", 5)
+		updated, err := s.control.UpdateVideoJob(ctx, job, "in_progress", leaseOwner, result.ProviderStatus, "", "", 5)
 		if err != nil {
 			return job, err
 		}
@@ -524,7 +526,7 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 		if err := s.control.Refund(ctx, auth, 502, "video_provider_failed", 0.001, nil); err != nil {
 			return job, err
 		}
-		updated, err := s.control.UpdateVideoJob(ctx, job.ID, "failed", leaseOwner, result.ProviderStatus, "", "provider_failed", 5)
+		updated, err := s.control.UpdateVideoJob(ctx, job, "failed", leaseOwner, result.ProviderStatus, "", "provider_failed", 5)
 		if err != nil {
 			return job, err
 		}
@@ -543,7 +545,7 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 		if err != nil {
 			return job, err
 		}
-		updated, err := s.control.UpdateVideoJob(ctx, job.ID, "completed", leaseOwner, result.ProviderStatus, settled.GenerationID, "", 5)
+		updated, err := s.control.UpdateVideoJob(ctx, job, "completed", leaseOwner, result.ProviderStatus, settled.GenerationID, "", 5)
 		if err != nil {
 			return job, err
 		}
@@ -560,6 +562,8 @@ func authorizationForVideoJob(job *trustedrouter.VideoJob) *trustedrouter.Author
 		EndpointID: job.EndpointID, Provider: job.Provider,
 		AdditionalCostReservationMicrodollars: job.QuotedMicrodollars,
 		RouteType:                             "videos",
+		ControlPlaneEndpoint:                  job.ControlPlaneEndpoint,
+		ControlPlaneEndpointSet:               job.ControlPlaneEndpointSet,
 	}
 }
 

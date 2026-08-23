@@ -17,9 +17,9 @@ fixed order — that is what `deploy-azure-aci.sh`'s phases enforce.
 
 | | |
 |---|---|
-| regions | `uaenorth` (rg `TR-TEE-DUBAI`), `southeastasia` (rg `TR-TEE-SEA`) |
-| API hosts | `api-azure.trustedrouter.com`, `api-azure-sea.trustedrouter.com` |
-| control plane | Container App `tr-azure` (rg `tr-azure`) → `azure.trustedrouter.com` |
+| regions | `uaenorth` (rg `TR-TEE-DUBAI`), `australiaeast` (rg `tr-tee-sydney`) |
+| API hosts | `api-azure.trustedrouter.com`, `api-azure-syd.trustedrouter.com` |
+| observer/status | Container App `tr-azure-vnet` → `azure.trustedrouter.com` |
 | vault (shared) | `trquillkv` in `TR-TEE-DUBAI`, Premium |
 | wrapping key (shared) | `tr-bootstrap-wrap` — one clause per region's MAA authority |
 | bundle secret (shared) | `tr-bootstrap-bundle` |
@@ -143,8 +143,11 @@ env and therefore part of the measurement. Shred the values file afterwards.
 ### 3.4 Deploy
 
 ```bash
-LOCATION=<region> RESOURCE_GROUP=TR-TEE-<REGION> MAA_ENDPOINT=<attest host> API_HOST=<api host> QUILL_AZURE_BUNDLE_VERSION=<version> TR_CONTROL_PLANE_BASE_URL="https://azure.trustedrouter.com/v1,https://trustedrouter.com/v1" ./tools/deploy-azure-aci.sh --apply all
+LOCATION=<region> RESOURCE_GROUP=TR-TEE-<REGION> MAA_ENDPOINT=<attest host> API_HOST=<api host> QUILL_AZURE_BUNDLE_VERSION=<version> TR_CONTROL_PLANE_BASE_URL="https://trustedrouter.com" ./tools/deploy-azure-aci.sh --apply all
 ```
+
+`azure.trustedrouter.com` is the observer/status service, not a billing
+authority. Do not put it in `TR_CONTROL_PLANE_BASE_URL`.
 
 `all` runs `preflight → build → template → policy → bind → deploy → verify → narrow`. The
 order is load-bearing:

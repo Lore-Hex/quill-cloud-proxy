@@ -7,6 +7,7 @@ import gzip
 import importlib.util
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import unittest
@@ -51,6 +52,22 @@ class EncodeEC2UserDataTests(unittest.TestCase):
         compressed = encoder.compress_user_data(template.encode())
 
         self.assertLessEqual(len(compressed), encoder.MAX_USER_DATA_BYTES - 4096)
+
+    def test_nitro_gateway_uses_canonical_billing_authority(self) -> None:
+        script = DEPLOY_SCRIPT.read_text()
+        assignments = re.findall(
+            r"-e QUILL_TR_CONTROL_PLANE_BASE_URL=([^ \\\n]+)", script
+        )
+        self.assertEqual(assignments, ["${TR_CONTROL_PLANE_BASE_URL}"])
+        self.assertIn(
+            'TR_CONTROL_PLANE_BASE_URL="${TR_CONTROL_PLANE_BASE_URL:-https://trustedrouter.com}"',
+            script,
+        )
+        self.assertIn(
+            'python3 "$CONTROL_PLANE_VALIDATOR" "$TR_CONTROL_PLANE_BASE_URL"',
+            script,
+        )
+        self.assertNotIn("write_vsock_unit 8048", script)
 
     def test_cli_emits_one_base64_value_and_round_trips(self) -> None:
         payload = b"#!/bin/bash\necho ready\n" * 1_000

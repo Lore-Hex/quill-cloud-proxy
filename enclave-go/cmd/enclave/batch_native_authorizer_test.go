@@ -19,11 +19,13 @@ func TestBatchNativeHandlePersistsOnlySettlementAndAttributionFields(t *testing.
 	t.Parallel()
 
 	authorization := &trustedrouter.Authorization{
-		AuthorizationID: "auth-1",
-		WorkspaceID:     "workspace-sensitive",
-		APIKeyHash:      "key-hash-sensitive",
-		Model:           "openai/gpt-5.5",
-		EndpointID:      "openai-endpoint",
+		AuthorizationID:         "auth-1",
+		WorkspaceID:             "workspace-sensitive",
+		APIKeyHash:              "key-hash-sensitive",
+		Model:                   "openai/gpt-5.5",
+		EndpointID:              "openai-endpoint",
+		ControlPlaneEndpoint:    3,
+		ControlPlaneEndpointSet: true,
 		BYOKEncryptedSecret: &byokcache.EncryptedSecretEnvelope{
 			Ciphertext: "byok-sensitive",
 		},
@@ -64,7 +66,8 @@ func TestBatchNativeHandlePersistsOnlySettlementAndAttributionFields(t *testing.
 	}
 	frozen := decoded.authorization()
 	if frozen.AuthorizationID != "auth-1" || frozen.Model != "openai/gpt-5.5" ||
-		frozen.EndpointID != "openai-endpoint" || frozen.RouteType != nativeBatchChatRoute {
+		frozen.EndpointID != "openai-endpoint" || frozen.RouteType != nativeBatchChatRoute ||
+		frozen.ControlPlaneEndpoint != 3 || !frozen.ControlPlaneEndpointSet {
 		t.Fatalf("frozen authorization = %#v", frozen)
 	}
 	if decoded.EstimatedInputTokens != 123 {
@@ -131,7 +134,7 @@ func TestBatchNativeAuthorizePreservesOrdinaryBYOKRouting(t *testing.T) {
 		}, nil
 	})}
 	authorizer := &batchNativeAuthorizer{
-		gateway: trustedrouter.New("https://control.example", "internal", httpClient),
+		gateway: trustedrouter.New("https://trustedrouter.com", "internal", httpClient),
 	}
 	authorized, err := authorizer.Authorize(
 		t.Context(), strings.Repeat("a", 64), "/v1/chat/completions",
@@ -172,7 +175,7 @@ func TestBatchNativeAuthorizeClassifiesAmbiguousControlPlaneOutcomes(t *testing.
 				}, nil
 			})}
 			authorizer := &batchNativeAuthorizer{
-				gateway: trustedrouter.New("https://control.example", "internal", httpClient),
+				gateway: trustedrouter.New("https://trustedrouter.com", "internal", httpClient),
 			}
 			_, err := authorizer.Authorize(
 				t.Context(), strings.Repeat("a", 64), "/v1/chat/completions",
@@ -232,7 +235,7 @@ func TestBatchNativeSettlePreservesEncryptedAttribution(t *testing.T) {
 		t.Fatalf("marshal handle: %v", err)
 	}
 	authorizer := &batchNativeAuthorizer{
-		gateway: trustedrouter.New("https://control.example", "internal", httpClient),
+		gateway: trustedrouter.New("https://trustedrouter.com", "internal", httpClient),
 	}
 	settled, err := authorizer.Settle(
 		t.Context(),
@@ -283,7 +286,7 @@ func TestBatchNativeSettleClassifiesTerminalControlPlaneErrors(t *testing.T) {
 				}, nil
 			})}
 			authorizer := &batchNativeAuthorizer{
-				gateway: trustedrouter.New("https://control.example", "internal", httpClient),
+				gateway: trustedrouter.New("https://trustedrouter.com", "internal", httpClient),
 			}
 			handle, err := json.Marshal(batchNativeAuthorizationHandle{
 				AuthorizationID: "auth-1",
@@ -334,7 +337,7 @@ func TestBatchNativeSettleDoesNotTreatAmbiguousReplayAsRefund(t *testing.T) {
 		t.Fatalf("marshal handle: %v", err)
 	}
 	authorizer := &batchNativeAuthorizer{
-		gateway: trustedrouter.New("https://control.example", "internal", httpClient),
+		gateway: trustedrouter.New("https://trustedrouter.com", "internal", httpClient),
 	}
 	_, err = authorizer.Settle(
 		t.Context(), batchNativeAuthorization(handle), batchapi.NativeUsage{
@@ -372,7 +375,7 @@ func TestBatchNativeSettleTrustsExplicitOutcomeWithoutGenerationMirror(t *testin
 		t.Fatalf("marshal handle: %v", err)
 	}
 	authorizer := &batchNativeAuthorizer{
-		gateway: trustedrouter.New("https://control.example", "internal", httpClient),
+		gateway: trustedrouter.New("https://trustedrouter.com", "internal", httpClient),
 	}
 	usage, err := authorizer.Settle(
 		t.Context(), batchNativeAuthorization(handle), batchapi.NativeUsage{
@@ -451,7 +454,7 @@ func TestBatchNativeRefundDistinguishesRefundReplayFromSettlementWinner(t *testi
 				}, nil
 			})}
 
-			client := trustedrouter.New("https://control.example", "internal", httpClient)
+			client := trustedrouter.New("https://trustedrouter.com", "internal", httpClient)
 			authorizer := &batchNativeAuthorizer{gateway: client}
 			handle, err := json.Marshal(batchNativeAuthorizationHandle{
 				AuthorizationID: "auth-1",

@@ -72,12 +72,14 @@ func TestSettlementRetryQueueRetainsOnlyBillingState(t *testing.T) {
 		maxAttempts: 2,
 	}
 	authz := &trustedrouter.Authorization{
-		AuthorizationID:       "auth_retry",
-		WorkspaceID:           "workspace-private",
-		Model:                 "openai/gpt-4o-mini",
-		EndpointID:            "openai/gpt-4o-mini@openai/prepaid",
-		RouteCandidates:       []trustedrouter.RouteCandidate{{Provider: "openai"}},
-		BroadcastDestinations: []trustedrouter.BroadcastDestination{{ID: "private"}},
+		AuthorizationID:         "auth_retry",
+		WorkspaceID:             "workspace-private",
+		Model:                   "openai/gpt-4o-mini",
+		EndpointID:              "openai/gpt-4o-mini@openai/prepaid",
+		RouteCandidates:         []trustedrouter.RouteCandidate{{Provider: "openai"}},
+		BroadcastDestinations:   []trustedrouter.BroadcastDestination{{ID: "private"}},
+		ControlPlaneEndpoint:    1,
+		ControlPlaneEndpointSet: true,
 	}
 	usage := trustedrouter.Usage{
 		RequestID:     "request_retry",
@@ -104,7 +106,9 @@ func TestSettlementRetryQueueRetainsOnlyBillingState(t *testing.T) {
 	}
 	if queued.authorization.AuthorizationID != authz.AuthorizationID ||
 		queued.authorization.Model != authz.Model ||
-		queued.authorization.EndpointID != authz.EndpointID {
+		queued.authorization.EndpointID != authz.EndpointID ||
+		queued.authorization.ControlPlaneEndpoint != 1 ||
+		!queued.authorization.ControlPlaneEndpointSet {
 		t.Fatalf("billing authorization fields changed: %#v", queued.authorization)
 	}
 	if queued.authorization.WorkspaceID != "" ||
@@ -945,7 +949,7 @@ func TestServeOneResponsesRejectsUnsupportedNBeforeTrustedRouterAuthorization(t 
 	calls := map[string]int{}
 	var mu sync.Mutex
 	validated := make(chan struct{}, 1)
-	trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
+	trGateway := trustedrouter.New("https://trustedrouter.com", "internal-token", &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
@@ -1176,7 +1180,7 @@ func TestServeOneChatNonStreamingReturnsJSONAndSettles(t *testing.T) {
 func TestServeOneChatNormalizesMaxCompletionTokens(t *testing.T) {
 	bearer := "test-user-bearer"
 	var authorizeBody string
-	trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
+	trGateway := trustedrouter.New("https://trustedrouter.com", "internal-token", &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
@@ -1248,7 +1252,7 @@ func TestServeOneRejectsUnsupportedNBeforeTrustedRouterAuthorization(t *testing.
 	calls := map[string]int{}
 	var mu sync.Mutex
 	validated := make(chan struct{}, 1)
-	trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
+	trGateway := trustedrouter.New("https://trustedrouter.com", "internal-token", &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
@@ -7696,7 +7700,7 @@ func TestServeOneMessagesRejectsUnsupportedNBeforeTrustedRouterAuthorization(t *
 	calls := map[string]int{}
 	var mu sync.Mutex
 	validated := make(chan struct{}, 1)
-	trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
+	trGateway := trustedrouter.New("https://trustedrouter.com", "internal-token", &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
@@ -7791,7 +7795,7 @@ func TestServeOneMessagesRejectsOrchestrationBeforeTrustedRouterAuthorization(t 
 			validated := make(chan struct{}, 1)
 			calls := map[string]int{}
 			var mu sync.Mutex
-			trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
+			trGateway := trustedrouter.New("https://trustedrouter.com", "internal-token", &http.Client{
 				Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 					body, err := io.ReadAll(r.Body)
 					if err != nil {
@@ -8158,7 +8162,7 @@ func TestServeOneMessagesAcceptsLargeNativeVisionPayload(t *testing.T) {
 }
 
 func TestServeStreamingDoesNotRaceRequestModelSelection(t *testing.T) {
-	trGateway := trustedrouter.New("https://control.test", "internal-token", &http.Client{
+	trGateway := trustedrouter.New("https://trustedrouter.com", "internal-token", &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			if r.URL.Path != "/internal/gateway/settle" {
 				t.Fatalf("unexpected control-plane path %s", r.URL.Path)

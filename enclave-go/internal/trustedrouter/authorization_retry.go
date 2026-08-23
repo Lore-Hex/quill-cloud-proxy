@@ -60,6 +60,28 @@ func (c *Client) postJSONWithRetry(
 	out any,
 	policy retryPolicy,
 ) error {
+	_, err := c.postJSONWithRetryAtEndpoint(ctx, path, payload, out, policy)
+	return err
+}
+
+func (c *Client) postJSONWithRetryAtEndpoint(
+	ctx context.Context,
+	path string,
+	payload any,
+	out any,
+	policy retryPolicy,
+) (int, error) {
+	return c.postJSONWithRetryFromEndpoint(ctx, path, payload, out, policy, -1)
+}
+
+func (c *Client) postJSONWithRetryFromEndpoint(
+	ctx context.Context,
+	path string,
+	payload any,
+	out any,
+	policy retryPolicy,
+	pinnedEndpoint int,
+) (int, error) {
 	retryCtx := ctx
 	cancel := func() {}
 	if policy.totalBudget > 0 {
@@ -70,15 +92,18 @@ func (c *Client) postJSONWithRetry(
 	policy = normalizeRetryPolicy(policy)
 	var lastRetryableErr error
 	for attempt := 1; attempt <= policy.attempts; attempt++ {
-		err := c.postJSON(retryCtx, path, payload, out)
+		selectedEndpoint, err := c.postJSONAtEndpoint(retryCtx, path, payload, out, pinnedEndpoint)
+		if selectedEndpoint >= 0 {
+			pinnedEndpoint = selectedEndpoint
+		}
 		if err == nil {
-			return nil
+			return pinnedEndpoint, nil
 		}
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil && lastRetryableErr != nil {
-			return lastRetryableErr
+			return pinnedEndpoint, lastRetryableErr
 		}
 		if attempt == policy.attempts || !retryableAuthorizationError(err) {
-			return err
+			return pinnedEndpoint, err
 		}
 		lastRetryableErr = err
 
@@ -98,12 +123,12 @@ func (c *Client) postJSONWithRetry(
 		)
 		if err := policy.sleep(retryCtx, delay); err != nil {
 			if ctx.Err() != nil {
-				return ctx.Err()
+				return pinnedEndpoint, ctx.Err()
 			}
-			return lastRetryableErr
+			return pinnedEndpoint, lastRetryableErr
 		}
 	}
-	return fmt.Errorf("trustedrouter: retry loop exhausted")
+	return pinnedEndpoint, fmt.Errorf("trustedrouter: retry loop exhausted")
 }
 
 func normalizeRetryPolicy(policy retryPolicy) retryPolicy {

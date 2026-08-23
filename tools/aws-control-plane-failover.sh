@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AWS control-plane auto-failover: Global Accelerator -> per-region NLB -> Fargate.
+# AWS observer/status auto-failover: Global Accelerator -> per-region NLB -> Fargate.
 #
 # WHAT THIS REPLACES. aws.trustedrouter.com used to be a hand-edited CNAME to
 # ONE region's App Runner service. Losing that region meant a human noticing and
@@ -89,7 +89,18 @@ region_subnets() {
     *) echo "unknown region $1" >&2; return 1 ;;
   esac
 }
-region_slug() { case "$1" in eu-west-3) echo euw3 ;; eu-west-1) echo euw1 ;; esac; }
+region_slug() {
+  case "$1" in
+    eu-west-3) echo euw3 ;;
+    eu-west-1) echo euw1 ;;
+    *) echo "unknown region $1" >&2; return 1 ;;
+  esac
+}
+
+PRIMARY_SLUG="$(region_slug "$PRIMARY_REGION")"
+SECONDARY_SLUG="$(region_slug "$SECONDARY_REGION")"
+PRIMARY_HOST="aws-${PRIMARY_SLUG}.trustedrouter.com"
+SECONDARY_HOST="aws-${SECONDARY_SLUG}.trustedrouter.com"
 
 # ---------------------------------------------------------------------------
 # phase: cert — one ACM cert per region (NLB TLS termination is regional).
@@ -106,7 +117,7 @@ phase_cert() {
     log "$R: requesting ACM cert for ${HOSTNAME_APEX} (+ per-region SANs)"
     run aws acm request-certificate --region "$R" \
       --domain-name "$HOSTNAME_APEX" \
-      --subject-alternative-names "aws-euw1.trustedrouter.com" "aws-euw3.trustedrouter.com" \
+      --subject-alternative-names "$PRIMARY_HOST" "$SECONDARY_HOST" \
       --validation-method DNS \
       --tags Key=Project,Value=tr-eu Key=Purpose,Value=control-plane-failover
     note "publish the DNS validation CNAMEs in Cloud DNS, then re-run."
@@ -152,11 +163,11 @@ phase_regional() {
 # phase: dns — the ONLY phase that moves live traffic.
 # ---------------------------------------------------------------------------
 phase_dns() {
-  log "per-region hostnames (these are the enclave's failover endpoints)"
-  note "aws-euw1.trustedrouter.com -> eu-west-1 NLB"
-  note "aws-euw3.trustedrouter.com -> eu-west-3 NLB"
-  note "The enclave carries BOTH and fails over in-process, sub-second — it does"
-  note "not wait for GA's ~30s health check. That is the money path."
+  log "per-region observer/status hostnames"
+  note "$PRIMARY_HOST -> $PRIMARY_REGION NLB"
+  note "$SECONDARY_HOST -> $SECONDARY_REGION NLB"
+  note "These hosts are not billing authorities and must never receive"
+  note "gateway authorize or settle calls."
 
   log "apex cutover: ${HOSTNAME_APEX} -> GA static IPs"
   note "CNAME->A is a TYPE CHANGE: gcloud needs a transaction (remove + add), not update."
@@ -170,7 +181,7 @@ phase_dns() {
 phase_verify() {
   log "verifying every path"
   local fail=0
-  for H in "$HOSTNAME_APEX" aws-euw1.trustedrouter.com aws-euw3.trustedrouter.com; do
+  for H in "$HOSTNAME_APEX" "$PRIMARY_HOST" "$SECONDARY_HOST"; do
     local code
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://${H}/status.json" || echo 000)
     if [ "$code" = "200" ]; then note "OK   https://${H}/status.json -> 200"

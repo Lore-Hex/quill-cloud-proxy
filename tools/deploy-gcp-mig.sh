@@ -208,6 +208,9 @@ ACME_DNS_MANAGED_ZONE="${ACME_DNS_MANAGED_ZONE:-trustedrouter-com}"
 ACME_FALLBACK_DIRECTORY_URL="${ACME_FALLBACK_DIRECTORY_URL:-https://dv.acme-v02.api.pki.goog/directory}"
 ACME_FALLBACK_EAB_SECRET="${ACME_FALLBACK_EAB_SECRET:-trustedrouter-acme-gts-eab}"
 TR_CONTROL_PLANE_BASE_URL="${TR_CONTROL_PLANE_BASE_URL:-https://trustedrouter.com}"
+CONTROL_PLANE_VALIDATOR="$SCRIPT_DIR/validate-control-plane-endpoints.py"
+python3 "$CONTROL_PLANE_VALIDATOR" \
+  "$TR_CONTROL_PLANE_BASE_URL"
 # Time-to-first-byte budget per upstream attempt before the enclave cancels
 # and fails over. Default bumped 8s -> 20s on 2026-06-04: ~16 real Novita
 # models (baidu/ernie, deepseek-r1-distill, etc.) are served but cold-start

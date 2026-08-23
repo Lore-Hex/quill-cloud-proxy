@@ -331,7 +331,7 @@ func TestWriteHealthResponseInjectsDifferentRequestIDsOnKeepAlive(t *testing.T) 
 func TestServeOneUsesResponseRequestIDForSettlementOnly(t *testing.T) {
 	authorizePayloadCh := make(chan map[string]any, 1)
 	settlePayloadCh := make(chan map[string]any, 1)
-	trGateway := trustedrouter.New("https://control.example", "internal", &http.Client{
+	trGateway := trustedrouter.New("https://trustedrouter.com", "internal", &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			var payload map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -427,7 +427,7 @@ func TestServeOneUsesResponseRequestIDForSettlementOnly(t *testing.T) {
 func TestServeOneMalformedTRClientFallsBackToStainlessContext(t *testing.T) {
 	authorizePayloadCh := make(chan map[string]any, 1)
 	settlePayloadCh := make(chan map[string]any, 1)
-	trGateway := trustedrouter.New("https://control.example", "internal", &http.Client{
+	trGateway := trustedrouter.New("https://trustedrouter.com", "internal", &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			var payload map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -489,7 +489,7 @@ func TestServeOneMalformedTRClientFallsBackToStainlessContext(t *testing.T) {
 func TestServeOneRefundCarriesClientContext(t *testing.T) {
 	authorizePayloadCh := make(chan map[string]any, 1)
 	refundPayloadCh := make(chan map[string]any, 1)
-	trGateway := trustedrouter.New("https://control.example", "internal", &http.Client{
+	trGateway := trustedrouter.New("https://trustedrouter.com", "internal", &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			var payload map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -554,7 +554,7 @@ func TestServeOneRefundCarriesClientContext(t *testing.T) {
 func TestServeOneEmbeddingsSettlementCarriesClientContext(t *testing.T) {
 	authorizePayloadCh := make(chan map[string]any, 1)
 	settlePayloadCh := make(chan map[string]any, 1)
-	trGateway := trustedrouter.New("https://control.example", "internal", &http.Client{
+	trGateway := trustedrouter.New("https://trustedrouter.com", "internal", &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			var payload map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {

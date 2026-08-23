@@ -7,29 +7,140 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+
+	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 func TestParseControlPlaneEndpointsOrdersTrimsAndDedupes(t *testing.T) {
-	got := parseControlPlaneEndpoints(
-		" https://aws.trustedrouter.com/v1/ , https://trustedrouter.com/v1 ,, https://aws.trustedrouter.com/v1 ",
+	got, err := parseControlPlaneEndpoints(
+		" http://127.0.0.1:18080/ , https://trustedrouter.com ,, http://127.0.0.1:18080 ",
 	)
-	want := []string{"https://aws.trustedrouter.com/v1", "https://trustedrouter.com/v1"}
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"http://127.0.0.1:18080", "https://trustedrouter.com"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("index %d: got %q want %q (order is load-bearing — index 0 is this cloud's own plane)", i, got[i], want[i])
+			t.Fatalf("index %d: got %q want %q (order is load-bearing — index 0 is the primary authority)", i, got[i], want[i])
 		}
 	}
-	if len(parseControlPlaneEndpoints("   ")) != 0 {
+	blank, err := parseControlPlaneEndpoints("   ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blank) != 0 {
 		t.Error("a blank value must yield no endpoints, so Enabled() stays false")
 	}
 	// The single-value case must behave exactly as before this change.
-	if one := parseControlPlaneEndpoints("https://trustedrouter.com/v1"); len(one) != 1 {
+	one, err := parseControlPlaneEndpoints("https://trustedrouter.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one) != 1 {
 		t.Errorf("single endpoint must stay single, got %v", one)
+	}
+}
+
+func TestParseControlPlaneEndpointsRejectsObserverOnlyServices(t *testing.T) {
+	for _, value := range []string{
+		"https://azure.trustedrouter.com/v1",
+		"https://u@azure.trustedrouter.com:443/v1",
+		"https://trustedrouter.com,https://aws.trustedrouter.com/v1",
+		"https://aws-euw1.trustedrouter.com/v1",
+		"https://status-apac.trustedrouter.com/v1",
+		"https://STATUS.TRUSTEDROUTER.COM./v1",
+	} {
+		got, err := parseControlPlaneEndpoints(value)
+		if err == nil {
+			t.Errorf("observer endpoint %q must return a configuration error, got %v", value, got)
+		}
+		if len(got) != 0 {
+			t.Errorf("observer endpoint %q must reject the entire authority list, got %v", value, got)
+		}
+	}
+}
+
+func TestParseControlPlaneEndpointsRejectsUnsafeOrUnreviewedAuthorities(t *testing.T) {
+	for _, value := range []string{
+		"https://trustedrouter.com/v1",
+		"http://trustedrouter.com",
+		"https://trust.trustedrouter.com",
+		"https://www.trustedrouter.com",
+		"https://x.aws.trustedrouter.com",
+		"https://control.example",
+		"https://trustedrouter.com?next=observer",
+		"https://user@trustedrouter.com",
+		"https://trustedrouter.com|tee-env-QUILL_API_HOST=evil.example",
+		"://not-a-url",
+	} {
+		if got, err := parseControlPlaneEndpoints(value); err == nil || len(got) != 0 {
+			t.Errorf("unsafe endpoint %q must fail closed, got endpoints=%v err=%v", value, got, err)
+		}
+	}
+}
+
+type failIfCalledTransport struct{ t *testing.T }
+
+func (transport failIfCalledTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	transport.t.Helper()
+	transport.t.Fatal("invalid control-plane configuration must fail before network I/O")
+	return nil, errors.New("unreachable")
+}
+
+func TestObserverEndpointKeepsClientEnabledAndFailsClosed(t *testing.T) {
+	c := New(
+		"https://azure.trustedrouter.com,https://trustedrouter.com",
+		"internal-token",
+		&http.Client{Transport: failIfCalledTransport{t: t}},
+	)
+	if !c.Enabled() {
+		t.Fatal("invalid configured endpoint must not activate unmetered local mode")
+	}
+
+	var out map[string]any
+	err := c.postJSON(context.Background(), "/internal/gateway/authorize", map[string]string{}, &out)
+	if err == nil || !strings.Contains(err.Error(), "observer-only") {
+		t.Fatalf("money-path request must fail with the configuration error, got %v", err)
+	}
+	if _, err := c.PublicModels(context.Background()); err == nil || !strings.Contains(err.Error(), "observer-only") {
+		t.Fatalf("catalog request must fail with the configuration error, got %v", err)
+	}
+}
+
+func TestNewFromBootstrapValidatesTheBootstrapEndpoint(t *testing.T) {
+	t.Setenv("TR_CONTROL_PLANE_BASE_URL", "")
+	c := NewFromBootstrap(&qtypes.BootstrapData{
+		TrustedRouterBaseURL:       "https://azure.trustedrouter.com",
+		TrustedRouterInternalToken: "internal-token",
+	})
+	if !c.Enabled() {
+		t.Fatal("invalid bootstrap configuration must stay on the fail-closed metered path")
+	}
+	if err := c.ConfigurationError(); err == nil || !strings.Contains(err.Error(), "observer-only") {
+		t.Fatalf("bootstrap observer endpoint must be rejected, got %v", err)
+	}
+}
+
+func TestProductionConfigurationRequiresBillingAuthorityAndToken(t *testing.T) {
+	for name, client := range map[string]*Client{
+		"missing authority": New("", "internal-token", nil),
+		"missing token":     New("https://trustedrouter.com", "", nil),
+		"blank token":       New("https://trustedrouter.com", "   ", nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := client.ProductionConfigurationError(); err == nil {
+				t.Fatal("production configuration must fail closed")
+			}
+		})
+	}
+	if err := New("https://trustedrouter.com", "internal-token", nil).ProductionConfigurationError(); err != nil {
+		t.Fatalf("complete production configuration rejected: %v", err)
 	}
 }
 
@@ -197,10 +308,10 @@ func TestEnabledRequiresAtLeastOneEndpoint(t *testing.T) {
 	if New("", "token", nil).Enabled() {
 		t.Error("no endpoint means not enabled")
 	}
-	if !New("https://trustedrouter.com/v1", "token", nil).Enabled() {
+	if !New("https://trustedrouter.com", "token", nil).Enabled() {
 		t.Error("one endpoint plus a token means enabled")
 	}
-	if got := New("https://a.example/v1,https://b.example/v1", "t", nil).primaryBaseURL(); got != "https://a.example/v1" {
+	if got := New("http://127.0.0.1:1,http://127.0.0.1:2", "t", nil).primaryBaseURL(); got != "http://127.0.0.1:1" {
 		t.Errorf("primary must be the FIRST endpoint, got %q", got)
 	}
 }

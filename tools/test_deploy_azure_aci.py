@@ -1775,6 +1775,47 @@ class TestSharedHostnameForFailover(DeployHarness):
         self.assertIn("api-azure-sea.trustedrouter.com", env["QUILL_API_HOST"])
 
 
+class TestControlPlaneBoundary(DeployHarness):
+    """Azure's observer service must never receive money-path RPCs."""
+
+    def _control_plane_base_url(self, **env: str) -> str:
+        result = self.run_script("print-env", **env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["TR_CONTROL_PLANE_BASE_URL"]
+
+    def test_default_uses_the_canonical_billing_authority(self) -> None:
+        self.assertEqual(
+            self._control_plane_base_url(),
+            "https://trustedrouter.com",
+        )
+
+    def test_unreviewed_standalone_authority_is_rejected(self) -> None:
+        result = self.run_script(
+            "print-env",
+            TR_CONTROL_PLANE_BASE_URL="https://billing.azure.example",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not a reviewed billing authority", result.stderr)
+
+    def test_observer_override_is_rejected_before_rendering(self) -> None:
+        result = self.run_script(
+            "print-env",
+            TR_CONTROL_PLANE_BASE_URL="https://azure.trustedrouter.com",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("observer-only service", result.stderr)
+
+    def test_bad_override_does_not_block_recovery_phases(self) -> None:
+        for phase in ("audit", "logs", "rollback"):
+            with self.subTest(phase=phase):
+                result = self.run_script(
+                    phase,
+                    TR_CONTROL_PLANE_BASE_URL="https://azure.trustedrouter.com/v1",
+                )
+                self.assertNotIn("observer-only service", result.stderr)
+
+
 class TestAzureFoundryStaysDarkUntilItsKeyExists(DeployHarness):
     """bd5146a added the Azure Foundry provider to the enclave and gave GCP a
     probe (deploy-gcp-mig.sh: "Azure Foundry stays dark until its account key

@@ -105,7 +105,9 @@ from __future__ import annotations
 import argparse
 import base64
 import concurrent.futures
+import contextlib
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -288,7 +290,7 @@ def check_pcr0_pin(pcr0: str, expected_pcr0: str | None) -> None:
     string. So attempting a bind window without this turns the whole fleet red
     rather than accepting both measurements — the opposite of the intent.
     """
-    if not expected_pcr0:
+    if expected_pcr0 is None:
         return
     allowed = {
         value.strip().lower().removeprefix("0x")
@@ -296,7 +298,7 @@ def check_pcr0_pin(pcr0: str, expected_pcr0: str | None) -> None:
         if value.strip()
     }
     if not allowed:
-        return
+        sys.exit("[FAIL] expected PCR0 pin is empty or malformed")
     if pcr0.lower() not in allowed:
         sys.exit(
             "[FAIL] PCR0 mismatch:\n"
@@ -945,12 +947,14 @@ def verify_gcp_jwt(
     print(f"[ok] GCP audience contains {GCP_AUDIENCE}")
 
     digest = first_claim(payload, "image_digest", "submods.container.image_digest")
-    if expect_digest:
+    if expect_digest is not None:
         # --expect-digest may be a comma-separated SET: the published trust
         # digest PLUS the incoming release digest during a rolling deploy (so
         # the fleet, which legitimately spans two digests mid-roll, all
         # verifies). Pass if the attestation matches ANY allowed digest.
         allowed = {d.strip().lower() for d in expect_digest.split(",") if d.strip()}
+        if not allowed:
+            sys.exit("[FAIL] expected image digest pin is empty or malformed")
         if str(digest).lower() not in allowed:
             sys.exit(f"[FAIL] image_digest mismatch:\n  attestation: {digest}\n  expected one of: {sorted(allowed)}")
     if digest:
@@ -1734,6 +1738,7 @@ def _probe_binding(
     connect_ip: str | None,
     require_exporter: bool = True,
     *,
+    expect_digest: str | None = None,
     expect_issuer: str | None = None,
     expect_hostdata: str | None = None,
 ) -> dict[str, Any]:
@@ -1791,6 +1796,28 @@ def _probe_binding(
                 "binding_error": str(exc), "dbgstat": dbg, "digest": None,
             }
     else:
+        try:
+            # Stress mode is still an attestation verifier, not merely a
+            # claim-shape sampler. Suppress the normal per-token success
+            # narration because this path can validate hundreds of tokens.
+            with contextlib.redirect_stdout(io.StringIO()):
+                verify_gcp_jwt(
+                    blob,
+                    cert_der,
+                    exporter=exporter,
+                    expect_digest=expect_digest,
+                    nonce_hex=nonce_hex,
+                    allow_debug=False,
+                    require_exporter=require_exporter,
+                )
+        except (SystemExit, Exception) as exc:
+            return {
+                "host": host, "cloud": cloud, "served_fp": served_fp,
+                "exporter": exporter.hex().lower(), "nonce": nonce_hex.lower(),
+                "cert_bound": False, "exporter_bound": False,
+                "nonce_bound": False, "bound": False,
+                "binding_error": str(exc) or repr(exc), "dbgstat": [], "digest": None,
+            }
         nonces = gcp_nonce_values(payload)
         dbg = [str(v) for k, v in walk_values(payload) if k.lower() == "dbgstat"]
         digest = first_claim(payload, "image_digest", "submods.container.image_digest")
@@ -1847,7 +1874,8 @@ def binding_stress(
     for _ in range(rounds):
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as ex:
             futs = [ex.submit(_probe_binding, hosts[i % len(hosts)], port, connect_ip, require_exporter,
-                              expect_issuer=expect_issuer, expect_hostdata=expect_hostdata)
+                              expect_digest=expect_digest, expect_issuer=expect_issuer,
+                              expect_hostdata=expect_hostdata)
                     for i in range(concurrency)]
             for fut in concurrent.futures.as_completed(futs):
                 results.append(fut.result())

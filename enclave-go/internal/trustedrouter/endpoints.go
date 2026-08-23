@@ -3,8 +3,10 @@ package trustedrouter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -13,16 +15,13 @@ import (
 //
 // WHY THIS EXISTS
 //
-// Every enclave — on GCP, AWS and Azure alike — dialled the single canonical
-// control plane and failed CLOSED if it was unreachable: authorization is on the
-// request path (cmd/enclave/main.go, AuthorizeWithRoute), and an error there
-// ends the request. That made every cloud's availability a product of its own
-// uptime and the canonical plane's, which is exactly the shared dependency that
-// stops per-cloud numbers multiplying.
-//
-// Each cloud now runs its own control plane, so the fix has two halves: put the
-// cloud's OWN plane first, and let it fall through to another one instead of
-// dying.
+// Authorization is on the request path (cmd/enclave/main.go,
+// AuthorizeWithRoute), and an error there ends the request. Deployments
+// configure one canonical billing authority. Adding another production
+// authority requires a reviewed code and measurement change; public
+// observer/status services are not billing authorities and must never appear
+// here. The ordered form remains for local failover tests and that future
+// explicitly-reviewed deployment.
 //
 // WHEN FAILOVER IS SAFE — the only interesting question here
 //
@@ -89,23 +88,84 @@ func isDialFailure(err error) bool {
 // parseControlPlaneEndpoints splits the configured value into an ordered list.
 //
 // A single value keeps today's behaviour exactly. A comma-separated list is
-// tried in order, so the FIRST entry should be the plane belonging to this
-// cloud — that is what removes the cross-cloud dependency on the normal path,
-// with later entries serving only as a floor when the local one cannot be
-// dialled at all.
-func parseControlPlaneEndpoints(value string) []string {
+// tried in order, so the FIRST entry must be the intended billing authority,
+// with later entries used only when an earlier one cannot be dialled at all.
+func parseControlPlaneEndpoints(value string) ([]string, error) {
 	seen := make(map[string]struct{})
 	out := make([]string, 0, 2)
 	for _, part := range strings.Split(value, ",") {
-		url := strings.TrimRight(strings.TrimSpace(part), "/")
-		if url == "" {
+		endpoint := strings.TrimRight(strings.TrimSpace(part), "/")
+		if endpoint == "" {
 			continue
 		}
-		if _, dup := seen[url]; dup {
+		normalized, err := validateControlPlaneEndpoint(endpoint)
+		if err != nil {
+			return nil, err
+		}
+		if _, dup := seen[normalized]; dup {
 			continue
 		}
-		seen[url] = struct{}{}
-		out = append(out, url)
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
 	}
-	return out
+	return out, nil
+}
+
+type controlPlaneConfigurationError struct {
+	endpoint string
+	reason   string
+}
+
+func (e *controlPlaneConfigurationError) Error() string {
+	return fmt.Sprintf("trustedrouter: invalid control-plane endpoint %q: %s", e.endpoint, e.reason)
+}
+
+func validateControlPlaneEndpoint(raw string) (string, error) {
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" {
+		return "", &controlPlaneConfigurationError{endpoint: raw, reason: "must be an absolute URL"}
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", &controlPlaneConfigurationError{endpoint: raw, reason: "userinfo, query strings, and fragments are forbidden"}
+	}
+	if parsed.EscapedPath() != "" && parsed.EscapedPath() != "/" {
+		return "", &controlPlaneConfigurationError{endpoint: raw, reason: "the billing-authority URL must not contain a path (including /v1)"}
+	}
+
+	host := strings.ToLower(strings.TrimRight(parsed.Hostname(), "."))
+	if host == "" {
+		return "", &controlPlaneConfigurationError{endpoint: raw, reason: "hostname is required"}
+	}
+	port := parsed.Port()
+	if host == "trustedrouter.com" {
+		if parsed.Scheme != "https" || (port != "" && port != "443") {
+			return "", &controlPlaneConfigurationError{endpoint: raw, reason: "the canonical billing authority requires HTTPS on port 443"}
+		}
+		return "https://trustedrouter.com", nil
+	}
+
+	// Loopback is intentionally limited to tests and local development. Any
+	// additional production authority requires a reviewed code and measurement
+	// change instead of an operator-controlled URL override.
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+		return strings.TrimRight(raw, "/"), nil
+	}
+	if observerOnlyControlPlaneHost(host) {
+		return "", &controlPlaneConfigurationError{endpoint: raw, reason: "the host is an observer-only service"}
+	}
+	return "", &controlPlaneConfigurationError{endpoint: raw, reason: "the host is not a reviewed billing authority"}
+}
+
+func observerOnlyControlPlaneHost(host string) bool {
+	switch host {
+	case "aws.trustedrouter.com",
+		"azure.trustedrouter.com",
+		"status.trustedrouter.com":
+		return true
+	default:
+		return strings.HasSuffix(host, ".trustedrouter.com") &&
+			(strings.HasPrefix(host, "aws-") ||
+				strings.HasPrefix(host, "azure-") ||
+				strings.HasPrefix(host, "status-"))
+	}
 }
