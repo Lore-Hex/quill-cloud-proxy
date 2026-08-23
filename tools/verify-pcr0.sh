@@ -30,7 +30,7 @@ IMAGE_TAG="quill-enclave:verify-$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 # it. tools/test_verify_pcr0_build_args.py fails when the two drift apart.
 PLATFORM="linux/amd64"
 BUILD_TAGS="cloud_aws,llm_multi"
-QUILL_TLS_MODE="self-signed"
+QUILL_TLS_MODE="acme"
 QUILL_API_HOST="api-aws.trustedrouter.com"
 
 cd "$REPO_ROOT"
