@@ -169,6 +169,19 @@ SKR_MEMORY_GB="${SKR_MEMORY_GB:-2}"
 # match what tools/azure-seal-bundle.py was given.
 QUILL_GCP_PROJECT_ID="${QUILL_GCP_PROJECT_ID:-quill-cloud-proxy}"
 QUILL_DEVICE_KEYS_SECRET="${QUILL_DEVICE_KEYS_SECRET:-quill-device-keys}"
+# ---------------------------------------------------------------------------
+# PROVIDERS WITHOUT SEALED AZURE KEYS DEFAULT TO EMPTY. An empty name is how
+# secrets.go spells "not configured": the binding is skipped and render_env_json
+# omits the variable. Naming a secret the sealed bundle does not hold is FATAL
+# at bootstrap -- os.Exit(1) after a full SNP report and MAA exchange -- and it
+# took Dubai down on 2026-08-24 when a provider wave added bindings faster than
+# anyone sealed keys ("stepfun key: no entry ... in the bundle", 19 more
+# queued behind it). This is the same class as the Foundry crash of 08-23;
+# the guard is the same: the deploy only names what the bundle can serve, and
+# azure-seal-bundle.py's --deploy-env check refuses to seal a bundle that
+# would fail to boot once a name IS set. To enable a provider on Azure: seal
+# its key (tools/azure-sync-secrets.sh), then export its QUILL_*_SECRET.
+# ---------------------------------------------------------------------------
 QUILL_OPENROUTER_SECRET="${QUILL_OPENROUTER_SECRET:-quill-openrouter-key}"
 QUILL_ANTHROPIC_SECRET="${QUILL_ANTHROPIC_SECRET:-trustedrouter-anthropic-api-key}"
 QUILL_OPENAI_SECRET="${QUILL_OPENAI_SECRET:-trustedrouter-openai-api-key}"
@@ -242,31 +255,31 @@ QUILL_DIGITALOCEAN_SECRET="${QUILL_DIGITALOCEAN_SECRET:-trustedrouter-digitaloce
 QUILL_DATABRICKS_SECRET="${QUILL_DATABRICKS_SECRET:-trustedrouter-databricks-token}"
 QUILL_DATABRICKS_HOST_SECRET="${QUILL_DATABRICKS_HOST_SECRET:-trustedrouter-databricks-host}"
 QUILL_ENGY_SECRET="${QUILL_ENGY_SECRET:-trustedrouter-engy-api-key}"
-QUILL_STEPFUN_SECRET="${QUILL_STEPFUN_SECRET:-trustedrouter-stepfun-api-key}"
-QUILL_RELACE_SECRET="${QUILL_RELACE_SECRET:-trustedrouter-relace-api-key}"
-QUILL_DECART_SECRET="${QUILL_DECART_SECRET:-trustedrouter-decart-api-key}"
-QUILL_RECRAFT_SECRET="${QUILL_RECRAFT_SECRET:-trustedrouter-recraft-api-key}"
-QUILL_BFL_SECRET="${QUILL_BFL_SECRET:-trustedrouter-bfl-api-key}"
+QUILL_STEPFUN_SECRET="${QUILL_STEPFUN_SECRET:-}"
+QUILL_RELACE_SECRET="${QUILL_RELACE_SECRET:-}"
+QUILL_DECART_SECRET="${QUILL_DECART_SECRET:-}"
+QUILL_RECRAFT_SECRET="${QUILL_RECRAFT_SECRET:-}"
+QUILL_BFL_SECRET="${QUILL_BFL_SECRET:-}"
 # This provider wave is atomic on Azure: all logical names default on, and
 # azure-seal-bundle.py verifies every corresponding value before any container
 # group mutation. That deliberately converts a missing cloud copy into a
 # pre-deploy failure instead of a green enclave that 401s one provider later.
-QUILL_NEXTBIT_SECRET="${QUILL_NEXTBIT_SECRET:-trustedrouter-nextbit-api-key}"
-QUILL_AION_LABS_SECRET="${QUILL_AION_LABS_SECRET:-trustedrouter-aion-labs-api-key}"
-QUILL_SAMBANOVA_SECRET="${QUILL_SAMBANOVA_SECRET:-trustedrouter-sambanova-api-key}"
-QUILL_INCEPTION_SECRET="${QUILL_INCEPTION_SECRET:-trustedrouter-inception-api-key}"
-QUILL_AKASHML_SECRET="${QUILL_AKASHML_SECRET:-trustedrouter-akashml-api-key}"
-QUILL_ARCEE_SECRET="${QUILL_ARCEE_SECRET:-trustedrouter-arcee-api-key}"
-QUILL_UPSTAGE_SECRET="${QUILL_UPSTAGE_SECRET:-trustedrouter-upstage-api-key}"
-QUILL_REKA_SECRET="${QUILL_REKA_SECRET:-trustedrouter-reka-api-key}"
-QUILL_SAIL_RESEARCH_SECRET="${QUILL_SAIL_RESEARCH_SECRET:-trustedrouter-sail-research-api-key}"
-QUILL_MANCER_SECRET="${QUILL_MANCER_SECRET:-trustedrouter-mancer-api-key}"
-QUILL_IO_NET_SECRET="${QUILL_IO_NET_SECRET:-trustedrouter-io-net-api-key}"
-QUILL_SCALEWAY_SECRET="${QUILL_SCALEWAY_SECRET:-trustedrouter-scaleway-api-key}"
-QUILL_FEATHERLESS_SECRET="${QUILL_FEATHERLESS_SECRET:-trustedrouter-featherless-api-key}"
-QUILL_JINA_SECRET="${QUILL_JINA_SECRET:-trustedrouter-jina-api-key}"
-QUILL_SAKANA_SECRET="${QUILL_SAKANA_SECRET:-trustedrouter-sakana-api-key}"
-QUILL_NVIDIA_NIM_SECRET="${QUILL_NVIDIA_NIM_SECRET:-trustedrouter-nvidia-nim-api-key}"
+QUILL_NEXTBIT_SECRET="${QUILL_NEXTBIT_SECRET:-}"
+QUILL_AION_LABS_SECRET="${QUILL_AION_LABS_SECRET:-}"
+QUILL_SAMBANOVA_SECRET="${QUILL_SAMBANOVA_SECRET:-}"
+QUILL_INCEPTION_SECRET="${QUILL_INCEPTION_SECRET:-}"
+QUILL_AKASHML_SECRET="${QUILL_AKASHML_SECRET:-}"
+QUILL_ARCEE_SECRET="${QUILL_ARCEE_SECRET:-}"
+QUILL_UPSTAGE_SECRET="${QUILL_UPSTAGE_SECRET:-}"
+QUILL_REKA_SECRET="${QUILL_REKA_SECRET:-}"
+QUILL_SAIL_RESEARCH_SECRET="${QUILL_SAIL_RESEARCH_SECRET:-}"
+QUILL_MANCER_SECRET="${QUILL_MANCER_SECRET:-}"
+QUILL_IO_NET_SECRET="${QUILL_IO_NET_SECRET:-}"
+QUILL_SCALEWAY_SECRET="${QUILL_SCALEWAY_SECRET:-}"
+QUILL_FEATHERLESS_SECRET="${QUILL_FEATHERLESS_SECRET:-}"
+QUILL_JINA_SECRET="${QUILL_JINA_SECRET:-}"
+QUILL_SAKANA_SECRET="${QUILL_SAKANA_SECRET:-}"
+QUILL_NVIDIA_NIM_SECRET="${QUILL_NVIDIA_NIM_SECRET:-}"
 QUILL_EXA_SECRET="${QUILL_EXA_SECRET:-trustedrouter-exa-api-key}"
 QUILL_INCEPTRON_SECRET="${QUILL_INCEPTRON_SECRET:-trustedrouter-inceptron-api-key}"
 QUILL_KLING_SECRET="${QUILL_KLING_SECRET:-trustedrouter-kling-api-key}"
