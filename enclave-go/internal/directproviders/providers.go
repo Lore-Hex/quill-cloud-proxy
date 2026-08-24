@@ -37,6 +37,7 @@ var specs = [...]Spec{
 	{Provider: "scaleway", BaseURL: "https://api.scaleway.ai/v1", SecretEnv: "QUILL_SCALEWAY_SECRET", SecretName: "trustedrouter-scaleway-api-key", SecretLabel: "scaleway key"},
 	{Provider: "featherless", BaseURL: "https://api.featherless.ai/v1", SecretEnv: "QUILL_FEATHERLESS_SECRET", SecretName: "trustedrouter-featherless-api-key", SecretLabel: "featherless key"},
 	{Provider: "jina", BaseURL: "https://api.jina.ai/v1", SecretEnv: "QUILL_JINA_SECRET", SecretName: "trustedrouter-jina-api-key", SecretLabel: "jina key"},
+	{Provider: "sakana", BaseURL: "https://api.sakana.ai/v1", SecretEnv: "QUILL_SAKANA_SECRET", SecretName: "trustedrouter-sakana-api-key", SecretLabel: "sakana key"},
 }
 
 var byProvider = func() map[string]Spec {

@@ -156,6 +156,7 @@ _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("scaleway", "trustedrouter-scaleway-api-key"),
     ("featherless", "trustedrouter-featherless-api-key"),
     ("jina", "trustedrouter-jina-api-key"),
+    ("sakana", "trustedrouter-sakana-api-key"),
 )
 
 _PROMPT_KEYS: Final[tuple[tuple[str, str], ...]] = (

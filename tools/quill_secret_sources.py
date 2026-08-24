@@ -105,6 +105,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "SCALEWAY_SECRET_KEY": "trustedrouter-scaleway-api-key",
     "FEATHERLESS_API_KEY": "trustedrouter-featherless-api-key",
     "JINA_API_KEY": "trustedrouter-jina-api-key",
+    "SAKANA_API_KEY": "trustedrouter-sakana-api-key",
     "NVIDIA_NIM_API_KEY": "trustedrouter-nvidia-nim-api-key",
     "DECART_API_KEY": "trustedrouter-decart-api-key",
     "RECRAFT_API_KEY": "trustedrouter-recraft-api-key",

@@ -195,13 +195,32 @@ func (u *openAIStreamUsage) cachedTokens() int {
 	if u == nil {
 		return 0
 	}
+	cached := 0
 	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 {
-		return u.PromptTokensDetails.CachedTokens
+		cached = u.PromptTokensDetails.CachedTokens
+	} else if u.CachedTokensTop > 0 {
+		cached = u.CachedTokensTop
+	} else if u.PromptCacheHitTokens > 0 {
+		cached = u.PromptCacheHitTokens
 	}
-	if u.CachedTokensTop > 0 {
-		return u.CachedTokensTop
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.OrchestrationInputCachedTokens > 0 {
+		cached += u.PromptTokensDetails.OrchestrationInputCachedTokens
 	}
-	return u.PromptCacheHitTokens
+	return cached
+}
+
+// inputTokens includes provider-side orchestration input. Sakana's Fugu
+// routes report the final model prompt in prompt_tokens and the panel/router
+// work in prompt_tokens_details.orchestration_input_tokens; both are billable.
+func (u *openAIStreamUsage) inputTokens() int {
+	if u == nil {
+		return 0
+	}
+	input := u.PromptTokens
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.OrchestrationInputTokens > 0 {
+		input += u.PromptTokensDetails.OrchestrationInputTokens
+	}
+	return input
 }
 
 // outputTokens returns every provider-reported non-input token. Most OpenAI-
@@ -214,6 +233,9 @@ func (u *openAIStreamUsage) outputTokens() int {
 		return 0
 	}
 	output := u.CompletionTokens
+	if u.CompletionTokensDetails != nil && u.CompletionTokensDetails.OrchestrationOutputTokens > 0 {
+		output += u.CompletionTokensDetails.OrchestrationOutputTokens
+	}
 	if fromTotal := u.TotalTokens - u.PromptTokens; fromTotal > output {
 		output = fromTotal
 	}
@@ -236,11 +258,14 @@ func (u *openAIStreamUsage) reasoningTokens() int {
 }
 
 type openAIStreamUsageDetails struct {
-	ReasoningTokens int `json:"reasoning_tokens"`
+	ReasoningTokens           int `json:"reasoning_tokens"`
+	OrchestrationOutputTokens int `json:"orchestration_output_tokens"`
 }
 
 type openAIPromptTokenDetails struct {
-	CachedTokens int `json:"cached_tokens"`
+	CachedTokens                   int `json:"cached_tokens"`
+	OrchestrationInputTokens       int `json:"orchestration_input_tokens"`
+	OrchestrationInputCachedTokens int `json:"orchestration_input_cached_tokens"`
 }
 
 func writeAnthropicTextDelta(w io.Writer, text string) error {
@@ -334,7 +359,7 @@ func writeAnthropicStop(w io.Writer, stopReason string, usage *openAIStreamUsage
 		// adapter.TransformStreamCapture/CollectAnthropicText, which read
 		// whichever keys are present.
 		usageBody := map[string]any{
-			"input_tokens":  usage.PromptTokens,
+			"input_tokens":  usage.inputTokens(),
 			"output_tokens": usage.outputTokens(),
 		}
 		if reasoningTokens := usage.reasoningTokens(); reasoningTokens > 0 {
