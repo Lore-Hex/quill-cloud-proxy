@@ -243,8 +243,9 @@ func (u *openAIStreamUsage) priceTierInputTokens() int {
 }
 
 // inputTokens includes provider-side orchestration input. Sakana's Fugu
-// routes report the final model prompt in prompt_tokens and the panel/router
-// work in prompt_tokens_details.orchestration_input_tokens; both are billable.
+// routes report the user input sent to the first model in prompt_tokens and
+// the panel/router work in prompt_tokens_details.orchestration_input_tokens;
+// both are billable.
 func (u *openAIStreamUsage) inputTokens() int {
 	if u == nil {
 		return 0
