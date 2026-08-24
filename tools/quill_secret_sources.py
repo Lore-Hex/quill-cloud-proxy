@@ -107,6 +107,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "JINA_API_KEY": "trustedrouter-jina-api-key",
     "SAKANA_API_KEY": "trustedrouter-sakana-api-key",
     "NVIDIA_NIM_API_KEY": "trustedrouter-nvidia-nim-api-key",
+    "WANDB_API_KEY": "trustedrouter-wandb-api-key",
     "DECART_API_KEY": "trustedrouter-decart-api-key",
     "RECRAFT_API_KEY": "trustedrouter-recraft-api-key",
     "BFL_API_KEY": "trustedrouter-bfl-api-key",
