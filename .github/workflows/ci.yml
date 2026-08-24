@@ -133,6 +133,7 @@ jobs:
           python3 tools/test_signing_identity_matches_docs.py
           python3 tools/test_encode_ec2_user_data.py
           python3 tools/test_validate_control_plane_endpoints.py
+          python3 tools/test_azure_bundle_manifest.py
       # Separate step: this one is ~2 minutes where the others are seconds, so
       # a failure here should be legible as "the Azure deploy script broke"
       # rather than hiding at the bottom of a list. It stubs az, docker and the

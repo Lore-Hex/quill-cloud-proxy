@@ -85,6 +85,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -241,6 +242,152 @@ REQUIRED_ENV = (
 def fail(message: str) -> NoReturn:
     print(f"[FAIL] {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# The deploy/bundle manifest — the drift guard.
+#
+# deploy-azure-aci.sh names a QUILL_*_SECRET for every provider; the sealed
+# bundle holds a value for each of those NAMES. The two move on different
+# clocks: a provider PR edits the deploy script (and secrets.go) in one commit,
+# but the bundle only changes when someone re-seals. Between those events the
+# deploy can name a secret the pinned immutable bundle never held, and the
+# enclave dies at bootstrap -- AFTER an SNP report and an MAA exchange -- with
+# "no entry ... in the bundle". That is the Dubai (stepfun +18) and Foundry
+# outages; NVIDIA NIM was one rebase from being the next.
+#
+# The manifest is the checked-in shadow of the immutable bundle's NAME set. It
+# is regenerated from the bundle this tool actually seals (write_manifest, in
+# the --upload-secret path), so it cannot drift from a real seal, and CI reads
+# it to reject a deploy that demands a name it does not carry
+# (test_azure_bundle_manifest.py). Names, never values -- every name here is
+# already public in the deploy script and secrets.go.
+# ---------------------------------------------------------------------------
+
+_THIS_DIR = Path(__file__).resolve().parent
+MANIFEST_PATH = _THIS_DIR / "azure-bundle.manifest"
+DEPLOY_SCRIPT_PATH = _THIS_DIR / "deploy-azure-aci.sh"
+
+# QUILL_X_SECRET="${QUILL_X_SECRET:-<default>}" — the deploy's per-provider
+# default. A non-empty default is a NAME the enclave will demand from the
+# bundle; an empty one ("...:-}") is a provider deliberately left dark on Azure.
+_DEPLOY_DEFAULT = re.compile(
+    r'(QUILL_[A-Z0-9_]+_SECRET)="\$\{\1:-([^}]*)\}"'
+)
+
+
+def deploy_demanded_names(deploy_text: str) -> dict[str, str]:
+    """Map each QUILL_*_SECRET the deploy names non-empty to its bundle name.
+
+    Static parse of the deploy script rather than a run of it: the demanded
+    NAME set is a pure function of these default assignments, and reading them
+    needs neither `az` nor a container-group env, so CI can do it offline. The
+    back-reference in the pattern ties the default to its own variable, so a
+    line that resolves one var from another (none exist today) cannot smuggle a
+    name in under the wrong key.
+    """
+    demanded: dict[str, str] = {}
+    for env_name, default in _DEPLOY_DEFAULT.findall(deploy_text):
+        if default.strip():
+            demanded[env_name] = default
+    return demanded
+
+
+def read_manifest_names(manifest_text: str) -> set[str]:
+    """The provisioned bundle NAME set: every non-comment, non-blank line."""
+    return {
+        line.strip()
+        for line in manifest_text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+
+def read_manifest_version(manifest_text: str) -> str:
+    for line in manifest_text.splitlines():
+        marker = "# bundle-version:"
+        if line.startswith(marker):
+            return line[len(marker):].strip()
+    return "unknown"
+
+
+def check_deploy_against_manifest() -> int:
+    """Fail if the deploy names a secret the provisioned bundle cannot serve.
+
+    This is the merge-time twin of the boot-time "no entry ... in the bundle"
+    fatal. It runs offline in CI.
+    """
+    if not MANIFEST_PATH.is_file():
+        fail(f"no bundle manifest at {MANIFEST_PATH}")
+    if not DEPLOY_SCRIPT_PATH.is_file():
+        fail(f"no deploy script at {DEPLOY_SCRIPT_PATH}")
+    manifest_text = MANIFEST_PATH.read_text(encoding="utf-8")
+    provisioned = read_manifest_names(manifest_text)
+    version = read_manifest_version(manifest_text)
+    if not provisioned:
+        fail(f"{MANIFEST_PATH.name}: parsed no provisioned names — a guard that "
+             "matches nothing is worse than no guard")
+    demanded = deploy_demanded_names(DEPLOY_SCRIPT_PATH.read_text(encoding="utf-8"))
+    if not demanded:
+        fail(f"{DEPLOY_SCRIPT_PATH.name}: parsed no demanded secret names — did the "
+             "QUILL_*_SECRET default shape change? The guard would silently pass.")
+    unserved = sorted(
+        name for env, name in demanded.items() if name not in provisioned
+    )
+    if unserved:
+        lines = "\n".join(f"    {name}" for name in unserved)
+        fail(
+            f"deploy-azure-aci.sh names {len(unserved)} secret(s) the sealed Azure "
+            f"bundle (version {version}) does not carry:\n{lines}\n\n"
+            "  An enclave built from this deploy dies at bootstrap with "
+            '"no entry ... in the bundle" AFTER a full attestation round trip.\n'
+            "  Fix ONE of:\n"
+            "    * seal a new bundle that provisions these keys (regenerates this\n"
+            "      manifest + prints a new QUILL_AZURE_BUNDLE_VERSION to pin), or\n"
+            "    * leave the provider dark on Azure by defaulting its secret empty\n"
+            '      in deploy-azure-aci.sh:  QUILL_X_SECRET="${QUILL_X_SECRET:-}"'
+        )
+    print(
+        f"[ok] all {len(demanded)} deploy-named secrets are provisioned in the "
+        f"Azure bundle (version {version}, {len(provisioned)} names).",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def write_manifest(names: list[str], version: str) -> None:
+    """Rewrite the checked-in manifest from a freshly sealed bundle.
+
+    Called only on a real production seal (--upload-secret), so the manifest
+    tracks what was actually sealed rather than an operator's recollection.
+    """
+    header = (
+        "# azure-bundle.manifest — the logical secret names sealed into the\n"
+        "# PRODUCTION Azure bootstrap bundle. This is the checked-in shadow of an\n"
+        "# immutable Key Vault secret (tr-bootstrap-wrap in trquillkv): CI can read\n"
+        "# it, the live bundle it mirrors it cannot.\n"
+        "#\n"
+        "# WHY THIS FILE EXISTS. deploy-azure-aci.sh names a QUILL_*_SECRET for every\n"
+        "# provider. The sealed bundle contains a value for each NAME below. When the\n"
+        "# deploy names a secret the bundle lacks, the enclave dies at bootstrap with\n"
+        '# "no entry ... in the bundle" AFTER a full attestation round trip -- it took\n'
+        "# Dubai down on 2026-08-24 (stepfun + 18 more), the Foundry crash on 08-23,\n"
+        "# and NVIDIA NIM was one rebase away from being the next. test_azure_bundle_\n"
+        "# manifest.py fails CI when the deploy demands a name absent here, so that\n"
+        "# drift is caught at merge instead of at an enclave's death.\n"
+        "#\n"
+        "# DO NOT hand-edit. azure-seal-bundle.py --upload-secret rewrites it from the\n"
+        "# bundle it just sealed. To add a provider on Azure: provision its key, seal\n"
+        "# a new bundle (which regenerates this file and prints a new version), pin the\n"
+        "# new QUILL_AZURE_BUNDLE_VERSION, and commit this file in the same change.\n"
+        "#\n"
+        f"# bundle-version: {version}\n"
+    )
+    MANIFEST_PATH.write_text(header + "\n".join(sorted(names)) + "\n", encoding="utf-8")
+    print(
+        f"[ok] rewrote {MANIFEST_PATH.name} ({len(names)} names, version {version}). "
+        "Commit it in the same change as the deploy/version pin.",
+        file=sys.stderr,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -611,7 +758,7 @@ def _b64url(value: str) -> bytes:
     return base64.urlsafe_b64decode(padded)
 
 
-def upload_secret(vault: str, secret_name: str, envelope_text: str) -> None:
+def upload_secret(vault: str, secret_name: str, envelope_text: str) -> str:
     """Store the sealed blob as a Key Vault secret and print the new version.
 
     The value goes through a 0600 temp file rather than argv: it is only
@@ -649,6 +796,7 @@ def upload_secret(vault: str, secret_name: str, envelope_text: str) -> None:
         "Changing it changes the container group's env, which changes the CCE policy hash,\n"
         "which changes hostdata — so the SKR key must be re-bound (tools/deploy-azure-aci.sh bind).",
     )
+    return version
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +813,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--print-bindings",
         action="store_true",
         help="dump the binding table as JSON and exit (consumed by the Go drift test)",
+    )
+    parser.add_argument(
+        "--check-deploy-manifest",
+        action="store_true",
+        help="offline: fail if deploy-azure-aci.sh names a secret the checked-in "
+        "bundle manifest does not provision (consumed by CI). No Azure, no values.",
     )
     parser.add_argument(
         "--deploy-env",
@@ -700,6 +854,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.check_deploy_manifest:
+        return check_deploy_against_manifest()
 
     if args.print_bindings:
         json.dump(
@@ -771,7 +928,12 @@ def main(argv: list[str] | None = None) -> int:
             destination.chmod(0o600)
             print(f"[ok] wrote {destination}", file=sys.stderr)
     if args.upload_secret:
-        upload_secret(args.vault, args.upload_secret, envelope_text)
+        version = upload_secret(args.vault, args.upload_secret, envelope_text)
+        # A real production seal is the one moment the provisioned NAME set is
+        # known for certain, so regenerate the checked-in manifest from it. An
+        # offline seal (--out only, no upload) is a test or a dry run and leaves
+        # the manifest alone.
+        write_manifest(list(bundle.keys()), version)
     return 0
 
 

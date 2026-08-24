@@ -1,0 +1,83 @@
+# azure-bundle.manifest — the logical secret names sealed into the
+# PRODUCTION Azure bootstrap bundle. This is the checked-in shadow of an
+# immutable Key Vault secret (tr-bootstrap-wrap in trquillkv): CI can read
+# it, the live bundle it mirrors it cannot.
+#
+# WHY THIS FILE EXISTS. deploy-azure-aci.sh names a QUILL_*_SECRET for every
+# provider. The sealed bundle contains a value for each NAME below. When the
+# deploy names a secret the bundle lacks, the enclave dies at bootstrap with
+# "no entry ... in the bundle" AFTER a full attestation round trip -- it took
+# Dubai down on 2026-08-24 (stepfun + 18 more), the Foundry crash on 08-23,
+# and NVIDIA NIM was one rebase away from being the next. test_azure_bundle_
+# manifest.py fails CI when the deploy demands a name absent here, so that
+# drift is caught at merge instead of at an enclave's death.
+#
+# DO NOT hand-edit. azure-seal-bundle.py --upload-secret rewrites it from the
+# bundle it just sealed. To add a provider on Azure: provision its key, seal
+# a new bundle (which regenerates this file and prints a new version), pin the
+# new QUILL_AZURE_BUNDLE_VERSION, and commit this file in the same change.
+#
+# bundle-version: 1e923326e7e646e1b874700eae0a43ef
+quill-device-keys
+quill-openrouter-key
+tr-azure-acme-cache-key
+trustedrouter-acme-gts-eab
+trustedrouter-advisor-prompt-v1
+trustedrouter-advisor-worker-prompt-v1
+trustedrouter-alibaba-api-key
+trustedrouter-anthropic-api-key
+trustedrouter-atlas-cloud-api-key
+trustedrouter-azure-api-key
+trustedrouter-baseten-api-key
+trustedrouter-cerebras-api-key
+trustedrouter-chutes-api-key
+trustedrouter-cloudflare-workers-ai-api-token
+trustedrouter-cohere-api-key
+trustedrouter-crusoe-api-key
+trustedrouter-databricks-host
+trustedrouter-databricks-token
+trustedrouter-deepinfra-api-key
+trustedrouter-deepseek-api-key
+trustedrouter-digitalocean-api-key
+trustedrouter-engy-api-key
+trustedrouter-exa-api-key
+trustedrouter-fireworks-api-key
+trustedrouter-friendli-api-key
+trustedrouter-gemini-api-key
+trustedrouter-gmi-api-key
+trustedrouter-grok-api-key
+trustedrouter-inceptron-api-key
+trustedrouter-internal-gateway-token
+trustedrouter-kimi-api-key
+trustedrouter-kling-api-key
+trustedrouter-lightning-api-key
+trustedrouter-ltx-api-key
+trustedrouter-makora-api-key
+trustedrouter-minimax-api-key
+trustedrouter-mistral-api-key
+trustedrouter-morph-api-key
+trustedrouter-nebius-api-key
+trustedrouter-neurometric-api-key
+trustedrouter-novita-api-key
+trustedrouter-openai-api-key
+trustedrouter-openai-video-key
+trustedrouter-parasail-api-key
+trustedrouter-pearl-api-key
+trustedrouter-phala-confidential-api-key
+trustedrouter-runway-api-key
+trustedrouter-siliconflow-api-key
+trustedrouter-streamlake-api-key
+trustedrouter-synth-code-panel-prompt-v1
+trustedrouter-synth-code-synthesis-prompt-v1
+trustedrouter-synth-panel-prompt-v1
+trustedrouter-synth-synthesis-prompt-v1
+trustedrouter-telnyx-api-key
+trustedrouter-thinking-machines-api-key
+trustedrouter-tinfoil-api-key
+trustedrouter-together-api-key
+trustedrouter-venice-api-key
+trustedrouter-voyage-api-key
+trustedrouter-wafer-api-key
+trustedrouter-xiaomi-api-key
+trustedrouter-zai-api-key
+trustedrouter-zero-g-api-key
