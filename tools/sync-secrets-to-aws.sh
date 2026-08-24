@@ -122,6 +122,7 @@ SECRETS=(
   trustedrouter-featherless-api-key
   trustedrouter-jina-api-key
   trustedrouter-sakana-api-key
+  trustedrouter-nvidia-nim-api-key
   trustedrouter-tr-api-key-for-self-heal
   # The internal gateway token authenticates enclave→TR control-plane
   # calls (x-trustedrouter-internal-token header on /v1/internal/*).

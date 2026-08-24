@@ -109,6 +109,7 @@ SCALEWAY_SECRET="${SCALEWAY_SECRET:-trustedrouter-scaleway-api-key}"
 FEATHERLESS_SECRET="${FEATHERLESS_SECRET:-trustedrouter-featherless-api-key}"
 JINA_SECRET="${JINA_SECRET:-trustedrouter-jina-api-key}"
 SAKANA_SECRET="${SAKANA_SECRET:-trustedrouter-sakana-api-key}"
+NVIDIA_NIM_SECRET="${NVIDIA_NIM_SECRET:-trustedrouter-nvidia-nim-api-key}"
 DATABRICKS_SECRET="${DATABRICKS_SECRET:-trustedrouter-databricks-token}"
 DATABRICKS_HOST_SECRET="${DATABRICKS_HOST_SECRET:-trustedrouter-databricks-host}"
 ALIBABA_SECRET="${ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
@@ -252,6 +253,7 @@ for secret in \
   "$FEATHERLESS_SECRET" \
   "$JINA_SECRET" \
   "$SAKANA_SECRET" \
+  "$NVIDIA_NIM_SECRET" \
   "$DATABRICKS_SECRET" \
   "$DATABRICKS_HOST_SECRET" \
   "$ALIBABA_SECRET" \

@@ -1,6 +1,7 @@
 package directproviders
 
 import (
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -12,8 +13,8 @@ func TestSpecsAreValidAndImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := All()
-	if len(all) != 15 {
-		t.Fatalf("provider specs = %d, want 15", len(all))
+	if len(all) != 16 {
+		t.Fatalf("provider specs = %d, want 16", len(all))
 	}
 	original := all[0]
 	all[0].Provider = "mutated"
@@ -50,6 +51,9 @@ func TestCloudConfigurationsCoverEverySpec(t *testing.T) {
 	gcpBootstrap := read("../../../tools/deploy-gcp-bootstrap.sh")
 	azureDeploy := read("../../../tools/deploy-azure-aci.sh")
 	azureSealer := read("../../../tools/azure-seal-bundle.py")
+	dockerPolicy := read("../../Dockerfile.enclave.gcp.multi")
+	awsClient := read("../llm/http_client_aws.go")
+	awsDeploy := read("../../../tools/deploy-aws-nitro.sh")
 
 	parentBlock := regexp.MustCompile(`(?s)_DIRECT_PROVIDER_KEYS:.*?= \((.*?)\)\n\n`).FindStringSubmatch(awsParent)
 	if len(parentBlock) != 2 {
@@ -80,6 +84,21 @@ func TestCloudConfigurationsCoverEverySpec(t *testing.T) {
 			}
 			if path == "Azure sealer" && !strings.Contains(source, spec.SecretEnv) {
 				t.Errorf("Azure sealer is missing %s", spec.SecretEnv)
+			}
+		}
+		if !strings.Contains(dockerPolicy, spec.SecretEnv) {
+			t.Errorf("GCP image policy is missing %s", spec.SecretEnv)
+		}
+		parsed, err := url.Parse(spec.BaseURL)
+		if err != nil {
+			t.Fatalf("parse %s base URL: %v", spec.Provider, err)
+		}
+		for path, source := range map[string]string{
+			"AWS enclave client": awsClient,
+			"AWS parent deploy":  awsDeploy,
+		} {
+			if !strings.Contains(source, parsed.Hostname()) {
+				t.Errorf("%s is missing %s", path, parsed.Hostname())
 			}
 		}
 	}
