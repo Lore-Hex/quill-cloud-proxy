@@ -38,6 +38,7 @@ var specs = [...]Spec{
 	{Provider: "featherless", BaseURL: "https://api.featherless.ai/v1", SecretEnv: "QUILL_FEATHERLESS_SECRET", SecretName: "trustedrouter-featherless-api-key", SecretLabel: "featherless key"},
 	{Provider: "jina", BaseURL: "https://api.jina.ai/v1", SecretEnv: "QUILL_JINA_SECRET", SecretName: "trustedrouter-jina-api-key", SecretLabel: "jina key"},
 	{Provider: "sakana", BaseURL: "https://api.sakana.ai/v1", SecretEnv: "QUILL_SAKANA_SECRET", SecretName: "trustedrouter-sakana-api-key", SecretLabel: "sakana key"},
+	{Provider: "nvidia-nim", BaseURL: "https://integrate.api.nvidia.com/v1", SecretEnv: "QUILL_NVIDIA_NIM_SECRET", SecretName: "trustedrouter-nvidia-nim-api-key", SecretLabel: "NVIDIA NIM key"},
 }
 
 var byProvider = func() map[string]Spec {
