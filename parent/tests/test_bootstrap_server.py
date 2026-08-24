@@ -288,6 +288,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "sakana",
         "nvidia-nim",
         "wandb",
+        "nscale",
     }
     actual_direct = {provider for provider, _suffix in bootstrap_server._DIRECT_PROVIDER_KEYS}
     assert actual_direct == expected_direct

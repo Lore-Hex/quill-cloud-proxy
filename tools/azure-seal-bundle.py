@@ -210,6 +210,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_SAKANA_SECRET",), "sakana key", True),
     Binding(("QUILL_NVIDIA_NIM_SECRET",), "NVIDIA NIM key", True),
     Binding(("QUILL_WANDB_SECRET",), "W&B Inference key", True),
+    Binding(("QUILL_NSCALE_SECRET",), "Nscale service token", True),
 )
 
 # Envelope constants. These MUST equal envelopeAlg / envelopeVersion /

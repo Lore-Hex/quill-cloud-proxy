@@ -25,6 +25,7 @@ func TestModelRegistryIsExactAndDefensivelyCopied(t *testing.T) {
 		"black-forest-labs/flux-2-klein-9b",
 		"black-forest-labs/flux-2-max",
 		"black-forest-labs/flux-2-pro",
+		"black-forest-labs/flux.1-schnell",
 		"decart/lucy-image-2",
 		"google/gemini-3.1-flash-image",
 		"google/gemini-3.1-flash-image-preview",
@@ -142,6 +143,14 @@ func TestParseUsesModelSpecForNormalizedParameters(t *testing.T) {
 			wantQuote:  14_770,
 		},
 		{
+			name:       "nscale per megapixel fixed price",
+			body:       `{"model":"black-forest-labs/flux.1-schnell","prompt":"cat"}`,
+			wantRes:    "1K",
+			wantAspect: "1:1",
+			wantFormat: "png",
+			wantQuote:  1_440,
+		},
+		{
 			name:      "decart requires a reference",
 			body:      `{"model":"decart/lucy-image-2","prompt":"edit it"}`,
 			wantParam: "input_references",
@@ -230,6 +239,13 @@ func TestNativeProviderTranslationAndValidatedResponse(t *testing.T) {
 			width: 1024, height: 1024,
 			wantBody: map[string]any{"model": "recraftv4_1", "prompt": "cat", "n": float64(1), "response_format": "b64_json", "size": "1024x1024"},
 		},
+		{
+			name:     "nscale",
+			request:  `{"model":"black-forest-labs/flux.1-schnell","prompt":"cat"}`,
+			wantHost: "inference.api.nscale.com", managedKey: "nscale-key", wantMedia: "image/png",
+			width: 1024, height: 1024,
+			wantBody: map[string]any{"model": "black-forest-labs/FLUX.1-schnell", "prompt": "cat", "n": float64(1), "size": "1024x1024"},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			resolved, err := Parse([]byte(tt.request))
@@ -262,12 +278,17 @@ func TestNativeProviderTranslationAndValidatedResponse(t *testing.T) {
 				}, nil
 			})}
 			keys := ProviderKeys{}
-			if resolved.Spec.Provider == "openai" {
+			switch resolved.Spec.Provider {
+			case "openai":
 				keys.OpenAI = tt.managedKey
-			} else if resolved.Spec.Provider == "grok" {
+			case "grok":
 				keys.XAI = tt.managedKey
-			} else {
+			case "recraft":
 				keys.Recraft = tt.managedKey
+			case "nscale":
+				keys.Nscale = tt.managedKey
+			default:
+				t.Fatalf("unhandled provider %q", resolved.Spec.Provider)
 			}
 			result, err := NewRegistry(keys, client).Generate(context.Background(), resolved, "", "image-one")
 			if err != nil {
@@ -500,6 +521,14 @@ func TestNativeProviderOutputShapeMustMatchTheNormalizedRequest(t *testing.T) {
 		},
 		{
 			body:      `{"model":"black-forest-labs/flux-2-klein-4b","prompt":"cat"}`,
+			generated: GeneratedImage{Width: 1024, Height: 1024},
+		},
+		{
+			body:      `{"model":"black-forest-labs/flux.1-schnell","prompt":"cat"}`,
+			generated: GeneratedImage{Width: 2048, Height: 2048}, wantError: true,
+		},
+		{
+			body:      `{"model":"black-forest-labs/flux.1-schnell","prompt":"cat"}`,
 			generated: GeneratedImage{Width: 1024, Height: 1024},
 		},
 		{

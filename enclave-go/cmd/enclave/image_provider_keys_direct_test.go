@@ -12,9 +12,10 @@ func TestDirectImageProviderKeysIncludeProviderWave(t *testing.T) {
 	keys := imageProviderKeys(&types.BootstrapData{
 		OpenAIAPIKey: "openai", GrokAPIKey: "grok", DecartAPIKey: "decart",
 		RecraftAPIKey: "recraft", BFLAPIKey: "bfl",
+		ProviderAPIKeys: map[string]string{"nscale": "nscale"},
 	})
 	if keys.OpenAI != "openai" || keys.XAI != "grok" || keys.Decart != "decart" ||
-		keys.Recraft != "recraft" || keys.BFL != "bfl" {
+		keys.Recraft != "recraft" || keys.BFL != "bfl" || keys.Nscale != "nscale" {
 		t.Fatalf("direct image keys = %#v", keys)
 	}
 }

@@ -43,6 +43,7 @@ type ProviderKeys struct {
 	Decart  string
 	Recraft string
 	BFL     string
+	Nscale  string
 }
 
 type Registry struct {
@@ -94,7 +95,7 @@ func NewRegistry(keys ProviderKeys, client *http.Client) *Registry {
 		http: &clone,
 		keys: map[string]string{
 			"openai": keys.OpenAI, "grok": keys.XAI, "decart": keys.Decart,
-			"recraft": keys.Recraft, "bfl": keys.BFL,
+			"recraft": keys.Recraft, "bfl": keys.BFL, "nscale": keys.Nscale,
 		},
 	}
 }
@@ -276,6 +277,16 @@ func nativeRequest(resolved *ResolvedRequest) (string, map[string]any, error) {
 		}
 		base["size"] = size
 		return "https://external.api.recraft.ai/v1/images/generations", base, nil
+	case "nscale":
+		size := resolved.Spec.NativeSizes[resolved.AspectRatio]
+		if size == "" {
+			return "", nil, fmt.Errorf("Nscale model has no native size for %q", resolved.AspectRatio)
+		}
+		// Nscale does not accept response_format and documents b64_json as the
+		// only successful response shape for this endpoint.
+		delete(base, "response_format")
+		base["size"] = size
+		return "https://inference.api.nscale.com/v1/images/generations", base, nil
 	default:
 		return "", nil, fmt.Errorf("unsupported native image provider %q", resolved.Spec.Provider)
 	}
@@ -563,7 +574,7 @@ func validateOutputShape(resolved *ResolvedRequest, generated *GeneratedImage) e
 		if math.Abs(gotRatio-wantRatio)/wantRatio > 0.02 {
 			return fmt.Errorf("image provider returned dimensions outside the request")
 		}
-	case "bfl":
+	case "bfl", "nscale":
 		if generated.Width != 1024 || generated.Height != 1024 {
 			return fmt.Errorf("image provider returned dimensions outside the request")
 		}
