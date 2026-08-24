@@ -13,8 +13,8 @@ func TestSpecsAreValidAndImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := All()
-	if len(all) != 16 {
-		t.Fatalf("provider specs = %d, want 16", len(all))
+	if len(all) != 17 {
+		t.Fatalf("provider specs = %d, want 17", len(all))
 	}
 	original := all[0]
 	all[0].Provider = "mutated"
@@ -79,11 +79,12 @@ func TestCloudConfigurationsCoverEverySpec(t *testing.T) {
 			"Azure deploy":    azureDeploy,
 			"Azure sealer":    azureSealer,
 		} {
-			if !strings.Contains(source, spec.SecretName) && path != "Azure sealer" {
+			usesSealedEnvCoordinate := path == "Azure deploy" || path == "Azure sealer"
+			if !strings.Contains(source, spec.SecretName) && !usesSealedEnvCoordinate {
 				t.Errorf("%s is missing %s", path, spec.SecretName)
 			}
-			if path == "Azure sealer" && !strings.Contains(source, spec.SecretEnv) {
-				t.Errorf("Azure sealer is missing %s", spec.SecretEnv)
+			if usesSealedEnvCoordinate && !strings.Contains(source, spec.SecretEnv) {
+				t.Errorf("%s is missing %s", path, spec.SecretEnv)
 			}
 		}
 		if !strings.Contains(dockerPolicy, spec.SecretEnv) {

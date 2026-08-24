@@ -346,6 +346,7 @@ configure_optional_provider_secret QUILL_FEATHERLESS_SECRET trustedrouter-feathe
 configure_optional_provider_secret QUILL_JINA_SECRET trustedrouter-jina-api-key
 configure_optional_provider_secret QUILL_SAKANA_SECRET trustedrouter-sakana-api-key
 configure_optional_provider_secret QUILL_NVIDIA_NIM_SECRET trustedrouter-nvidia-nim-api-key
+configure_optional_provider_secret QUILL_WANDB_SECRET trustedrouter-wandb-api-key
 
 # Azure Foundry stays dark until its account key exists. An explicitly supplied
 # empty value also keeps it disabled; this prevents an unrelated gateway roll

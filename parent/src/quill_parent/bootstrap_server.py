@@ -158,6 +158,7 @@ _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("jina", "trustedrouter-jina-api-key"),
     ("sakana", "trustedrouter-sakana-api-key"),
     ("nvidia-nim", "trustedrouter-nvidia-nim-api-key"),
+    ("wandb", "trustedrouter-wandb-api-key"),
 )
 
 _PROMPT_KEYS: Final[tuple[tuple[str, str], ...]] = (

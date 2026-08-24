@@ -62,6 +62,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"reka", "reka/reka-edge-2603", "reka-edge-2603", "reka-edge-2603", false},
 		{"sail-research", "z-ai/glm-5.2", "zai-org/GLM-5.2-FP8", "zai-org/GLM-5.2-FP8", false},
 		{"mancer", "z-ai/glm-4.7", "glm-4.7", "glm-4.7", false},
+		{"wandb", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2", false},
 	}
 
 	for _, tt := range tests {
@@ -76,6 +77,9 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 				}
 				if r.Header.Get("User-Agent") != "TrustedRouter/1.0" {
 					t.Fatalf("user-agent = %q", r.Header.Get("User-Agent"))
+				}
+				if got := r.Header.Get("OpenAI-Project"); got != "" {
+					t.Fatalf("OpenAI-Project must be omitted for %s, got %q", tt.provider, got)
 				}
 				if tt.provider == "wafer" {
 					got := r.Header.Get("Wafer-ZDR")
@@ -339,6 +343,7 @@ func TestBootstrapDirectProviderClientsAreBoundedToCompiledHosts(t *testing.T) {
 		"reka":          "https://api.reka.ai/v1",
 		"sail-research": "https://api.sailresearch.com/v1",
 		"mancer":        "https://mancer.tech/oai/v1",
+		"wandb":         "https://api.inference.wandb.ai/v1",
 	}
 	keys := map[string]string{
 		"nextbit":       " key-nextbit ",
@@ -351,6 +356,7 @@ func TestBootstrapDirectProviderClientsAreBoundedToCompiledHosts(t *testing.T) {
 		"reka":          "key-reka",
 		"sail-research": "key-sail",
 		"mancer":        "key-mancer",
+		"wandb":         "key-wandb",
 		"evil":          "must-not-route",
 		"aion_labs":     "must-not-route",
 		"":              "must-not-route",
