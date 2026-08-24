@@ -206,6 +206,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_SCALEWAY_SECRET",), "scaleway key", True),
     Binding(("QUILL_FEATHERLESS_SECRET",), "featherless key", True),
     Binding(("QUILL_JINA_SECRET",), "jina key", True),
+    Binding(("QUILL_SAKANA_SECRET",), "sakana key", True),
 )
 
 # Envelope constants. These MUST equal envelopeAlg / envelopeVersion /

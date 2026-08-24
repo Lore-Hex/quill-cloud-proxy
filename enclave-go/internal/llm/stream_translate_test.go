@@ -301,6 +301,50 @@ func TestOpenAIStreamUsageCachedTokensPrecedence(t *testing.T) {
 	}
 }
 
+func TestOpenAIStreamUsageIncludesSakanaOrchestrationTokens(t *testing.T) {
+	usage := openAIStreamUsage{
+		PromptTokens:     5,
+		CompletionTokens: 22,
+		TotalTokens:      27,
+		PromptTokensDetails: &openAIPromptTokenDetails{
+			CachedTokens:                   2,
+			OrchestrationInputTokens:       1260,
+			OrchestrationInputCachedTokens: 1200,
+		},
+		CompletionTokensDetails: &openAIStreamUsageDetails{
+			ReasoningTokens:           3,
+			OrchestrationOutputTokens: 40,
+		},
+	}
+
+	if got := usage.inputTokens(); got != 1265 {
+		t.Fatalf("inputTokens() = %d, want 1265", got)
+	}
+	if got := usage.cachedTokens(); got != 1202 {
+		t.Fatalf("cachedTokens() = %d, want 1202", got)
+	}
+	if got := usage.outputTokens(); got != 62 {
+		t.Fatalf("outputTokens() = %d, want 62", got)
+	}
+}
+
+func TestTranslateOpenAIStreamSurfacesSakanaOrchestrationUsage(t *testing.T) {
+	var out bytes.Buffer
+	in := "data: " + `{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":22,"total_tokens":27,"prompt_tokens_details":{"cached_tokens":2,"orchestration_input_tokens":1260,"orchestration_input_cached_tokens":1200},"completion_tokens_details":{"reasoning_tokens":3,"orchestration_output_tokens":40}}}` + "\n\ndata: [DONE]\n\n"
+	if err := translateOpenAIStreamToAnthropic(strings.NewReader(in), &out); err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	for _, want := range []string{
+		`"input_tokens":1265`,
+		`"output_tokens":62`,
+		`"cache_read_input_tokens":1202`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %s in output: %s", want, out.String())
+		}
+	}
+}
+
 // DeepSeek (prompt_cache_hit_tokens) and Moonshot/Kimi (top-level cached_tokens)
 // report cache hits in non-OpenAI-standard fields; both must surface as
 // cache_read_input_tokens in the translated Anthropic stream.
