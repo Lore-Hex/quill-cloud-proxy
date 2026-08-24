@@ -1,7 +1,8 @@
 {
   "accepted_hostdata": [
-    "7bf4c26f006f8caaa213ebfca3d55e4e020aab8632d26eee219fa19813e7df0d",
-    "41c3fb34f817a9c605279d299f40190f8cb8f97af422b8220cd3df33d91b1888"
+    "65cec1ce6e38fd70ea90eb0363556f909e4856b8337b5b2f763748e3f4a4640a",
+    "41c3fb34f817a9c605279d299f40190f8cb8f97af422b8220cd3df33d91b1888",
+    "7bf4c26f006f8caaa213ebfca3d55e4e020aab8632d26eee219fa19813e7df0d"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
   "attestation_format": "microsoft-azure-attestation-jwt",
@@ -17,7 +18,7 @@
     "prompt_output_storage": false
   },
   "evidence_note": "MAA re-attests the SEV-SNP report; verifiers see Microsoft's assertion, not the raw hardware report or the AMD certificate chain.",
-  "hostdata": "7bf4c26f006f8caaa213ebfca3d55e4e020aab8632d26eee219fa19813e7df0d",
+  "hostdata": "65cec1ce6e38fd70ea90eb0363556f909e4856b8337b5b2f763748e3f4a4640a",
   "measurement_type": "sev-snp-hostdata-sha256",
   "platform": "azure-confidential-containers-sev-snp",
   "regions": [
@@ -25,7 +26,7 @@
       "attestation_issuer": "https://trquilluaen.uaen.attest.azure.net",
       "attestation_url": "https://api-azure.trustedrouter.com/attestation",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "7bf4c26f006f8caaa213ebfca3d55e4e020aab8632d26eee219fa19813e7df0d",
+      "hostdata": "65cec1ce6e38fd70ea90eb0363556f909e4856b8337b5b2f763748e3f4a4640a",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866",
       "origin_hostname": "quill-enclave-uaenorth.uaenorth.azurecontainer.io"
     },
@@ -39,7 +40,7 @@
     }
   ],
   "release_state": "multi-region",
-  "source_commit": "445d68c",
+  "source_commit": "4acaf9b",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
