@@ -223,6 +223,25 @@ func (u *openAIStreamUsage) cachedTokens() int {
 	return cached
 }
 
+// priceTierInputTokens preserves the provider-reported request context before
+// provider-side orchestration is added. Sakana prices Fugu by the initial
+// context window while billing the orchestration counters separately. Keep the
+// value internal to the gateway; client-facing usage remains OpenAI-shaped.
+func (u *openAIStreamUsage) priceTierInputTokens() int {
+	if u == nil || u.PromptTokensDetails == nil {
+		return 0
+	}
+	if u.PromptTokensDetails.OrchestrationInputTokens <= 0 &&
+		u.PromptTokensDetails.OrchestrationInputCachedTokens <= 0 {
+		return 0
+	}
+	prompt := u.PromptTokens
+	if cached := u.baseCachedTokens(); cached > prompt {
+		prompt = cached
+	}
+	return prompt
+}
+
 // inputTokens includes provider-side orchestration input. Sakana's Fugu
 // routes report the final model prompt in prompt_tokens and the panel/router
 // work in prompt_tokens_details.orchestration_input_tokens; both are billable.
@@ -395,6 +414,9 @@ func writeAnthropicStop(w io.Writer, stopReason string, usage *openAIStreamUsage
 		}
 		if cached := usage.cachedTokens(); cached > 0 {
 			usageBody["cache_read_input_tokens"] = cached
+		}
+		if tierInput := usage.priceTierInputTokens(); tierInput > 0 {
+			usageBody["price_tier_input_tokens"] = tierInput
 		}
 		if usage.ServiceTier != "" {
 			usageBody["service_tier"] = usage.ServiceTier

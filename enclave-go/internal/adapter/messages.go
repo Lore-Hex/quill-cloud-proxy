@@ -439,7 +439,12 @@ func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (St
 					finishReason = mapStopReason(reason)
 				}
 			}
-			mergeUsage(&usage, getMap(dataJSON, "usage"))
+			usageBody := getMap(dataJSON, "usage")
+			mergeUsage(&usage, usageBody)
+			// price_tier_input_tokens is an enclave-internal settlement signal,
+			// not part of the Anthropic Messages contract. Harvest it above, then
+			// remove it before relaying the event to the client.
+			delete(usageBody, "price_tier_input_tokens")
 		}
 
 		if passthrough {

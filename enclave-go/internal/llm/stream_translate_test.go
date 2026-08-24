@@ -326,6 +326,9 @@ func TestOpenAIStreamUsageIncludesSakanaOrchestrationTokens(t *testing.T) {
 	if got := usage.cachedTokens(); got != 1202 {
 		t.Fatalf("cachedTokens() = %d, want 1202", got)
 	}
+	if got := usage.priceTierInputTokens(); got != 5 {
+		t.Fatalf("priceTierInputTokens() = %d, want 5", got)
+	}
 	if got := usage.outputTokens(); got != 62 {
 		t.Fatalf("outputTokens() = %d, want 62", got)
 	}
@@ -355,6 +358,9 @@ func TestOpenAIStreamUsageMatchesLiveSakanaChatConvention(t *testing.T) {
 	}
 	if got := usage.cachedTokens(); got != 1263 {
 		t.Fatalf("cachedTokens() = %d, want 1263", got)
+	}
+	if got := usage.priceTierInputTokens(); got != 6 {
+		t.Fatalf("priceTierInputTokens() = %d, want 6", got)
 	}
 	if got := usage.outputTokens(); got != 22 {
 		t.Fatalf("outputTokens() = %d, want 22", got)
@@ -407,6 +413,7 @@ func TestTranslateOpenAIStreamSurfacesSakanaOrchestrationUsage(t *testing.T) {
 		`"input_tokens":1265`,
 		`"output_tokens":62`,
 		`"cache_read_input_tokens":1202`,
+		`"price_tier_input_tokens":5`,
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %s in output: %s", want, out.String())

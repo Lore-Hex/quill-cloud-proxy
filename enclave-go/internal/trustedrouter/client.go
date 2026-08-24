@@ -504,12 +504,14 @@ type Usage struct {
 	App           string
 	HTTPReferer   string
 	AppCategories []string
-	// Prompt-cache token counts when the provider reported them. Sent to
-	// settle for visibility (GatewaySettleRequest is extra="allow");
-	// cache-aware pricing is a control-plane follow-up — today cached
-	// input still bills at the full input rate.
-	CacheReadInputTokens       int
-	CacheCreationInputTokens   int
+	// Prompt-cache token counts when the provider reported them. The control
+	// plane normalizes provider conventions and applies the published cache
+	// rate during settlement.
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
+	// PriceTierInputTokens selects a provider's context-dependent rate while
+	// InputTokens remains the complete billable input count.
+	PriceTierInputTokens       int
 	AdditionalCostMicrodollars int
 	ServiceTier                string
 	VideoInputMode             string
@@ -869,6 +871,9 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	}
 	if usage.CacheCreationInputTokens > 0 {
 		body["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+	}
+	if usage.PriceTierInputTokens > 0 {
+		body["price_tier_input_tokens"] = usage.PriceTierInputTokens
 	}
 	if usage.ServiceTier != "" {
 		body["service_tier"] = usage.ServiceTier
