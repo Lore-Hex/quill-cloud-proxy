@@ -1,6 +1,6 @@
 {
   "accepted_pcr0s": [
-    "b307fff41aff3da8867f6b02ac968db3625ec8f1dd934340fd2116cbb56f505197b3e91ef8c1dc7c9d8c784d0a81c607"
+    "fe276f00f9df78fa624108b87430d1407fc102bd435916562ca5c2f044ab8e9ffe52f789fd513a82b2e043c19cf44d73"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -12,8 +12,8 @@
     "prompt_output_storage": false
   },
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0a8666bed664cb05a-enc01a030c870b16abc",
-  "pcr0": "b307fff41aff3da8867f6b02ac968db3625ec8f1dd934340fd2116cbb56f505197b3e91ef8c1dc7c9d8c784d0a81c607",
+  "observed_module_id": "i-099892a92617adf09-enc01a03437d0579ba2",
+  "pcr0": "fe276f00f9df78fa624108b87430d1407fc102bd435916562ca5c2f044ab8e9ffe52f789fd513a82b2e043c19cf44d73",
   "platform": "aws-nitro-enclaves",
   "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
