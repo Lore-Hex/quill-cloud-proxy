@@ -186,25 +186,39 @@ type openAIStreamUsage struct {
 	ServiceTier          string `json:"-"`
 }
 
-// cachedTokens returns the prompt-cache hit count, normalizing across the
-// field each provider reports it in. The OpenAI-standard nested placement
-// wins; then Moonshot/Kimi's top-level usage.cached_tokens; then DeepSeek's
-// prompt_cache_hit_tokens. The Gemini path sets PromptTokensDetails directly,
-// so it keeps taking precedence unchanged.
+// baseCachedTokens normalizes the non-orchestration cache field. The OpenAI-
+// standard nested placement wins; then Moonshot/Kimi's top-level field; then
+// DeepSeek's prompt_cache_hit_tokens.
+func (u *openAIStreamUsage) baseCachedTokens() int {
+	if u == nil {
+		return 0
+	}
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 {
+		return u.PromptTokensDetails.CachedTokens
+	}
+	if u.CachedTokensTop > 0 {
+		return u.CachedTokensTop
+	}
+	if u.PromptCacheHitTokens > 0 {
+		return u.PromptCacheHitTokens
+	}
+	return 0
+}
+
+// cachedTokens returns every provider-reported prompt-cache hit. Cached counts
+// are subsets of input; inputTokens conservatively expands malformed parent
+// counters so settlement never treats an impossible cache detail as a discount
+// on tokens that were never counted.
 func (u *openAIStreamUsage) cachedTokens() int {
 	if u == nil {
 		return 0
 	}
-	cached := 0
-	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 {
-		cached = u.PromptTokensDetails.CachedTokens
-	} else if u.CachedTokensTop > 0 {
-		cached = u.CachedTokensTop
-	} else if u.PromptCacheHitTokens > 0 {
-		cached = u.PromptCacheHitTokens
-	}
+	cached := u.baseCachedTokens()
 	if u.PromptTokensDetails != nil && u.PromptTokensDetails.OrchestrationInputCachedTokens > 0 {
 		cached += u.PromptTokensDetails.OrchestrationInputCachedTokens
+	}
+	if input := u.inputTokens(); cached > input {
+		return input
 	}
 	return cached
 }
@@ -217,8 +231,15 @@ func (u *openAIStreamUsage) inputTokens() int {
 		return 0
 	}
 	input := u.PromptTokens
-	if u.PromptTokensDetails != nil && u.PromptTokensDetails.OrchestrationInputTokens > 0 {
-		input += u.PromptTokensDetails.OrchestrationInputTokens
+	if cached := u.baseCachedTokens(); cached > input {
+		input = cached
+	}
+	if u.PromptTokensDetails != nil {
+		orchestrationInput := u.PromptTokensDetails.OrchestrationInputTokens
+		if cached := u.PromptTokensDetails.OrchestrationInputCachedTokens; cached > orchestrationInput {
+			orchestrationInput = cached
+		}
+		input += orchestrationInput
 	}
 	return input
 }
@@ -236,7 +257,10 @@ func (u *openAIStreamUsage) outputTokens() int {
 	if u.CompletionTokensDetails != nil && u.CompletionTokensDetails.OrchestrationOutputTokens > 0 {
 		output += u.CompletionTokensDetails.OrchestrationOutputTokens
 	}
-	if fromTotal := u.TotalTokens - u.PromptTokens; fromTotal > output {
+	// OpenAI-compatible providers disagree on whether total_tokens includes
+	// provider-side orchestration. Subtract every known input token so either
+	// convention can only contribute an otherwise-unclassified output residual.
+	if fromTotal := u.TotalTokens - u.inputTokens(); fromTotal > output {
 		output = fromTotal
 	}
 	return output
@@ -249,9 +273,13 @@ func (u *openAIStreamUsage) reasoningTokens() int {
 	if u.CompletionTokensDetails != nil && u.CompletionTokensDetails.ReasoningTokens > 0 {
 		return u.CompletionTokensDetails.ReasoningTokens
 	}
-	// When an upstream omits completion_tokens_details, the unexplained
-	// total-token residual is the only authoritative count for hidden work.
-	if residual := u.outputTokens() - u.CompletionTokens; residual > 0 {
+	// When an upstream omits reasoning_tokens, only output beyond all explicitly
+	// classified visible and orchestration output can represent hidden work.
+	classified := u.CompletionTokens
+	if u.CompletionTokensDetails != nil {
+		classified += u.CompletionTokensDetails.OrchestrationOutputTokens
+	}
+	if residual := u.outputTokens() - classified; residual > 0 {
 		return residual
 	}
 	return 0

@@ -305,7 +305,10 @@ func TestOpenAIStreamUsageIncludesSakanaOrchestrationTokens(t *testing.T) {
 	usage := openAIStreamUsage{
 		PromptTokens:     5,
 		CompletionTokens: 22,
-		TotalTokens:      27,
+		// Sakana documents total_tokens as including orchestration even though
+		// its live Chat API excluded it in captures on 2026-08-23. Exercise the
+		// documented convention here so orchestration input cannot become output.
+		TotalTokens: 1327,
 		PromptTokensDetails: &openAIPromptTokenDetails{
 			CachedTokens:                   2,
 			OrchestrationInputTokens:       1260,
@@ -326,11 +329,77 @@ func TestOpenAIStreamUsageIncludesSakanaOrchestrationTokens(t *testing.T) {
 	if got := usage.outputTokens(); got != 62 {
 		t.Fatalf("outputTokens() = %d, want 62", got)
 	}
+	if got := usage.reasoningTokens(); got != 3 {
+		t.Fatalf("reasoningTokens() = %d, want 3", got)
+	}
+}
+
+func TestOpenAIStreamUsageMatchesLiveSakanaChatConvention(t *testing.T) {
+	// Metadata-only fixture captured from a live streaming fugu-ultra-v1.1
+	// response on 2026-08-23. Chat total_tokens excludes the separately billable
+	// orchestration counters, and both cache fields are subsets of their inputs.
+	usage := openAIStreamUsage{
+		PromptTokens:     6,
+		CompletionTokens: 22,
+		TotalTokens:      28,
+		PromptTokensDetails: &openAIPromptTokenDetails{
+			CachedTokens:                   3,
+			OrchestrationInputTokens:       1260,
+			OrchestrationInputCachedTokens: 1260,
+		},
+		CompletionTokensDetails: &openAIStreamUsageDetails{},
+	}
+
+	if got := usage.inputTokens(); got != 1266 {
+		t.Fatalf("inputTokens() = %d, want 1266", got)
+	}
+	if got := usage.cachedTokens(); got != 1263 {
+		t.Fatalf("cachedTokens() = %d, want 1263", got)
+	}
+	if got := usage.outputTokens(); got != 22 {
+		t.Fatalf("outputTokens() = %d, want 22", got)
+	}
+	if got := usage.reasoningTokens(); got != 0 {
+		t.Fatalf("reasoningTokens() = %d, want 0", got)
+	}
+}
+
+func TestOpenAIStreamUsageConservativelyCountsMalformedCachedOrchestrationTokens(t *testing.T) {
+	usage := openAIStreamUsage{
+		PromptTokens: 5,
+		PromptTokensDetails: &openAIPromptTokenDetails{
+			CachedTokens:                   4,
+			OrchestrationInputCachedTokens: 100,
+		},
+	}
+	if got := usage.inputTokens(); got != 105 {
+		t.Fatalf("inputTokens() = %d, want conservative parent count 105", got)
+	}
+	if got := usage.cachedTokens(); got != 104 {
+		t.Fatalf("cachedTokens() = %d, want 104", got)
+	}
+}
+
+func TestOpenAIStreamUsageDoesNotCallOrchestrationOutputReasoning(t *testing.T) {
+	usage := openAIStreamUsage{
+		PromptTokens:     5,
+		CompletionTokens: 22,
+		TotalTokens:      67,
+		CompletionTokensDetails: &openAIStreamUsageDetails{
+			OrchestrationOutputTokens: 40,
+		},
+	}
+	if got := usage.outputTokens(); got != 62 {
+		t.Fatalf("outputTokens() = %d, want 62", got)
+	}
+	if got := usage.reasoningTokens(); got != 0 {
+		t.Fatalf("reasoningTokens() = %d, want 0", got)
+	}
 }
 
 func TestTranslateOpenAIStreamSurfacesSakanaOrchestrationUsage(t *testing.T) {
 	var out bytes.Buffer
-	in := "data: " + `{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":22,"total_tokens":27,"prompt_tokens_details":{"cached_tokens":2,"orchestration_input_tokens":1260,"orchestration_input_cached_tokens":1200},"completion_tokens_details":{"reasoning_tokens":3,"orchestration_output_tokens":40}}}` + "\n\ndata: [DONE]\n\n"
+	in := "data: " + `{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":22,"total_tokens":1327,"prompt_tokens_details":{"cached_tokens":2,"orchestration_input_tokens":1260,"orchestration_input_cached_tokens":1200},"completion_tokens_details":{"reasoning_tokens":3,"orchestration_output_tokens":40}}}` + "\n\ndata: [DONE]\n\n"
 	if err := translateOpenAIStreamToAnthropic(strings.NewReader(in), &out); err != nil {
 		t.Fatalf("translate: %v", err)
 	}
