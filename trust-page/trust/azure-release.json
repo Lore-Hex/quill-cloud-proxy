@@ -1,8 +1,7 @@
 {
   "accepted_hostdata": [
     "65cec1ce6e38fd70ea90eb0363556f909e4856b8337b5b2f763748e3f4a4640a",
-    "41c3fb34f817a9c605279d299f40190f8cb8f97af422b8220cd3df33d91b1888",
-    "7bf4c26f006f8caaa213ebfca3d55e4e020aab8632d26eee219fa19813e7df0d"
+    "dbdf84dfd7da695e07068adc3ebe6b4a5393a9832722c10363f25a48021d4986"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
   "attestation_format": "microsoft-azure-attestation-jwt",
@@ -34,7 +33,7 @@
       "attestation_issuer": "https://trquillsyd.eau.attest.azure.net",
       "attestation_url": "https://api-azure-syd.trustedrouter.com/attestation",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "41c3fb34f817a9c605279d299f40190f8cb8f97af422b8220cd3df33d91b1888",
+      "hostdata": "dbdf84dfd7da695e07068adc3ebe6b4a5393a9832722c10363f25a48021d4986",
       "launch_measurement": "6d6c354511d6f7c6d7504668903dc5bdc066a048b651840d8d03fb85299ebfa142fccf1d1b0baca496841bdf243619d4",
       "origin_hostname": "quill-enclave-australiaeast.australiaeast.azurecontainer.io"
     }
