@@ -26,8 +26,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/abuse"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/authcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
@@ -44,6 +46,25 @@ func TestParseRequestTargetNonce(t *testing.T) {
 	}
 	if !bytes.Equal(nonce, []byte{0x00, 0x11, 0x22}) {
 		t.Fatalf("nonce = %x, want 001122", nonce)
+	}
+}
+
+func TestNewEnclaveHTTPServerLeavesWriteTimeoutZeroForMinuteLongLLMStreamingAndReadTimeoutZeroForLargePrompts(t *testing.T) {
+	server := newEnclaveHTTPServer(http.NotFoundHandler())
+	if server.ReadHeaderTimeout != 10*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %s, want 10s", server.ReadHeaderTimeout)
+	}
+	if server.IdleTimeout != 120*time.Second {
+		t.Fatalf("IdleTimeout = %s, want 120s", server.IdleTimeout)
+	}
+	if server.MaxHeaderBytes != 64<<10 {
+		t.Fatalf("MaxHeaderBytes = %d, want %d", server.MaxHeaderBytes, 64<<10)
+	}
+	if server.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %s, want zero so long token streams survive", server.WriteTimeout)
+	}
+	if server.ReadTimeout != 0 {
+		t.Fatalf("ReadTimeout = %s, want zero so large prompt bodies survive", server.ReadTimeout)
 	}
 }
 
@@ -305,7 +326,7 @@ func (c *scriptedConn) Read(p []byte) (int, error)  { return c.read.Read(p) }
 func (c *scriptedConn) Write(p []byte) (int, error) { return c.writes.Write(p) }
 func (c *scriptedConn) Close() error                { return nil }
 func (c *scriptedConn) LocalAddr() net.Addr         { return testAddr("local") }
-func (c *scriptedConn) RemoteAddr() net.Addr        { return testAddr("remote") }
+func (c *scriptedConn) RemoteAddr() net.Addr        { return testAddr("192.0.2.10:44321") }
 func (c *scriptedConn) SetDeadline(time.Time) error { return nil }
 func (c *scriptedConn) SetReadDeadline(time.Time) error {
 	return nil
@@ -425,6 +446,50 @@ func TestServeOneAttestationBindsExporter(t *testing.T) {
 	}
 	if got := httpBody(t, out); got != hex.EncodeToString(exporter) {
 		t.Fatalf("body = %q, want exporter hex", got)
+	}
+}
+
+func TestServeOneAttestationBypassesFailedAuthLimiterEvenWhenSourceIsOverLimit(t *testing.T) {
+	oldGetAttestation := getAttestation
+	defer func() { getAttestation = oldGetAttestation }()
+	getAttestation = func(_, _, _, _ []byte) ([]byte, error) {
+		return []byte("attested"), nil
+	}
+
+	protector := abuse.NewProtector(
+		authcache.New(45*time.Second, 16),
+		abuse.NewLimiter(10, 1, 16),
+	)
+	seedCtx := abuse.WithDirectClientIP(t.Context(), testAddr("192.0.2.10:44321"))
+	seedCtx = abuse.WithRequestState(seedCtx, &abuse.RequestState{})
+	protector.AfterCredentialCheck(
+		seedCtx,
+		trustedrouter.LookupHash("invalid-key"),
+		&trustedrouter.ControlPlaneError{StatusCode: http.StatusUnauthorized, Type: "invalid_api_key"},
+	)
+
+	controlPlaneCalls := 0
+	gateway := trustedrouter.New("https://trustedrouter.com", "internal", &http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			controlPlaneCalls++
+			return nil, errors.New("attestation must not reach the control plane")
+		}),
+	})
+	gateway.SetCredentialGuard(protector)
+	conn := &attestationExporterConn{
+		scriptedConn: newScriptedConn("GET /attestation HTTP/1.1\r\nHost: test\r\n\r\n", []byte("leaf")),
+		exporter:     bytes.Repeat([]byte{0x42}, enclavetls.ExporterLength),
+	}
+	serveOne(context.Background(), conn, nil, nil, nil, []byte("devices"), gateway, nil)
+
+	if output := conn.writes.String(); !strings.Contains(output, "HTTP/1.1 200 OK") {
+		t.Fatalf("attestation was throttled: %s", output)
+	}
+	if controlPlaneCalls != 0 {
+		t.Fatalf("control-plane calls = %d, want 0", controlPlaneCalls)
+	}
+	if got := protector.Stats().RateLimitedRejects; got != 0 {
+		t.Fatalf("rate-limited rejects = %d, want 0; attestation consulted limiter", got)
 	}
 }
 
@@ -7393,6 +7458,31 @@ func TestReadRequestRejectsOversizedBodyBeforeAllocation(t *testing.T) {
 	_, _, _, _, _, _, err := readRequest(bufio.NewReader(server))
 	if !errors.Is(err, errBodyTooLarge) {
 		t.Fatalf("err = %v, want errBodyTooLarge", err)
+	}
+}
+
+func TestReadRequestClearsHeaderSlowlorisDeadlineBeforeReadingLargePromptBody(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	if err := server.SetReadDeadline(time.Now().Add(25 * time.Millisecond)); err != nil {
+		t.Fatalf("set header deadline: %v", err)
+	}
+	go func() {
+		_, _ = io.WriteString(client, "POST /v1/responses HTTP/1.1\r\nContent-Length: 2\r\n\r\n")
+		time.Sleep(75 * time.Millisecond)
+		_, _ = io.WriteString(client, "{}")
+	}()
+
+	_, _, _, _, _, body, err := readRequestWithHeadersRead(
+		bufio.NewReader(server),
+		func() { _ = server.SetReadDeadline(time.Time{}) },
+	)
+	if err != nil {
+		t.Fatalf("body inherited header deadline: %v", err)
+	}
+	if string(body) != "{}" {
+		t.Fatalf("body = %q, want {}", body)
 	}
 }
 

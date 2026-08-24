@@ -174,7 +174,11 @@ func (c *Client) MarkVideoJobQueued(
 }
 
 func (c *Client) LookupVideoJob(ctx context.Context, bearer, jobID string) (*VideoJob, error) {
-	body := map[string]any{"api_key_lookup_hash": requestLookupHash(ctx, bearer)}
+	lookupHash, err := c.beforeCredentialCheck(ctx, bearer)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{"api_key_lookup_hash": lookupHash}
 	path := "/internal/gateway/video/jobs/" + strings.TrimSpace(jobID) + "/lookup"
 	var lastErr error
 	for endpoint := range c.baseURLs {
@@ -183,6 +187,7 @@ func (c *Client) LookupVideoJob(ctx context.Context, bearer, jobID string) (*Vid
 		}
 		_, err := c.postJSONAtEndpoint(ctx, path, body, &decoded, endpoint)
 		if err == nil {
+			c.afterCredentialCheck(ctx, lookupHash, nil)
 			decoded.Data.pinControlPlaneEndpoint(endpoint)
 			return &decoded.Data, nil
 		}
@@ -194,9 +199,11 @@ func (c *Client) LookupVideoJob(ctx context.Context, bearer, jobID string) (*Vid
 		if isDialFailure(err) {
 			continue
 		}
+		c.afterCredentialCheck(ctx, lookupHash, err)
 		return nil, err
 	}
 	if lastErr != nil {
+		c.afterCredentialCheck(ctx, lookupHash, lastErr)
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("trustedrouter: no control-plane endpoint configured")

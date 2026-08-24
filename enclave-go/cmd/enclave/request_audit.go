@@ -98,14 +98,18 @@ func writeRequestEndLog(
 	responseBytes int,
 	elapsed time.Duration,
 	identity requestAuditIdentity,
+	outcome string,
 ) {
+	if outcome == "" {
+		outcome = outcomeForStatus(status)
+	}
 	fmt.Fprintf(w,
 		"enclave.request_end request_log_id=%q method=%q route=%q status=%d outcome=%q body_bytes=%d response_bytes=%d elapsed_ms=%d workspace_id=%q credential_id=%q credential_fingerprint=%q attribution=%q\n",
 		requestLogID,
 		method,
 		route,
 		status,
-		outcomeForStatus(status),
+		outcome,
 		bodyBytes,
 		responseBytes,
 		elapsed.Milliseconds(),

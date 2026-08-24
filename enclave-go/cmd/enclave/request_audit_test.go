@@ -10,8 +10,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/abuse"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
+
+func TestRequestEndLogsExplicitAbuseOutcomes(t *testing.T) {
+	for _, outcome := range []string{abuse.OutcomeCachedReject, abuse.OutcomeRateLimited} {
+		t.Run(outcome, func(t *testing.T) {
+			var logLine bytes.Buffer
+			writeRequestEndLog(
+				&logLine, "rlog-test", "POST", "/v1/responses",
+				http.StatusUnauthorized, 2, 2, time.Millisecond,
+				requestAuditIdentity{}, outcome,
+			)
+			if !strings.Contains(logLine.String(), `outcome="`+outcome+`"`) {
+				t.Fatalf("missing outcome %q: %s", outcome, logLine.String())
+			}
+		})
+	}
+}
 
 func TestRequestAuditResolvesWorkspaceForPreAuthorizationError(t *testing.T) {
 	const bearer = "synthetic-private-bearer-material"
@@ -65,6 +82,7 @@ func TestRequestAuditResolvesWorkspaceForPreAuthorizationError(t *testing.T) {
 		80,
 		12*time.Millisecond,
 		identity,
+		"",
 	)
 	logged := logLine.String()
 	for _, want := range []string{

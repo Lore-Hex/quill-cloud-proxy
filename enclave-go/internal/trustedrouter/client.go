@@ -92,12 +92,58 @@ type Client struct {
 	httpc              *http.Client
 	region             string
 	authorizeRetry     retryPolicy
+	credentialGuard    CredentialGuard
 	modelsMu           sync.Mutex
 	modelsBody         []byte
 	modelsFetched      time.Time
 	imageModelsMu      sync.Mutex
 	imageModelsBody    []byte
 	imageModelsFetched time.Time
+}
+
+// CredentialGuard lets the enclave reject repeated definitive credential
+// failures before they reach the control plane. Implementations receive only
+// the existing one-way API-key lookup hash, never the raw bearer.
+type CredentialGuard interface {
+	BeforeCredentialCheck(context.Context, string) error
+	AfterCredentialCheck(context.Context, string, error)
+}
+
+// SetCredentialGuard installs the in-enclave credential abuse control. Startup
+// calls this before the serving loop begins, so request goroutines only read it.
+func (c *Client) SetCredentialGuard(guard CredentialGuard) {
+	if c != nil {
+		c.credentialGuard = guard
+	}
+}
+
+// CheckCredential applies the cheap pre-control-plane half of the guard. The
+// public request router uses it for missing-bearer failures that never call an
+// authorization method; individual client methods repeat it defensively.
+func (c *Client) CheckCredential(ctx context.Context, bearer string) error {
+	_, err := c.beforeCredentialCheck(ctx, bearer)
+	return err
+}
+
+// ObserveCredentialResult records a definitive credential rejection that was
+// produced at the router's bearer gate rather than by a client method.
+func (c *Client) ObserveCredentialResult(ctx context.Context, bearer string, err error) {
+	lookupHash := requestLookupHash(ctx, bearer)
+	c.afterCredentialCheck(ctx, lookupHash, err)
+}
+
+func (c *Client) beforeCredentialCheck(ctx context.Context, bearer string) (string, error) {
+	lookupHash := requestLookupHash(ctx, bearer)
+	if c == nil || c.credentialGuard == nil {
+		return lookupHash, nil
+	}
+	return lookupHash, c.credentialGuard.BeforeCredentialCheck(ctx, lookupHash)
+}
+
+func (c *Client) afterCredentialCheck(ctx context.Context, lookupHash string, err error) {
+	if c != nil && c.credentialGuard != nil {
+		c.credentialGuard.AfterCredentialCheck(ctx, lookupHash, err)
+	}
 }
 
 func NewFromEnv() *Client {
@@ -541,8 +587,12 @@ func (c *Client) ValidateKey(ctx context.Context, bearer string, routeType strin
 // the enclave use this after writing the client response so requests rejected
 // before billing authorization remain attributable without creating a hold.
 func (c *Client) ValidateKeyInfo(ctx context.Context, bearer string, routeType string) (*KeyIdentity, error) {
+	lookupHash, err := c.beforeCredentialCheck(ctx, bearer)
+	if err != nil {
+		return nil, err
+	}
 	body := map[string]any{
-		"api_key_lookup_hash": requestLookupHash(ctx, bearer),
+		"api_key_lookup_hash": lookupHash,
 	}
 	if routeType != "" {
 		body["route_type"] = routeType
@@ -551,14 +601,20 @@ func (c *Client) ValidateKeyInfo(ctx context.Context, bearer string, routeType s
 		Data KeyIdentity `json:"data"`
 	}
 	if err := c.postJSON(ctx, "/internal/gateway/validate", body, &decoded); err != nil {
+		c.afterCredentialCheck(ctx, lookupHash, err)
 		return nil, err
 	}
+	c.afterCredentialCheck(ctx, lookupHash, nil)
 	return &decoded.Data, nil
 }
 
 func (c *Client) ResolveCustomModel(ctx context.Context, bearer string, model string, routeType string) (*Authorization, error) {
+	lookupHash, err := c.beforeCredentialCheck(ctx, bearer)
+	if err != nil {
+		return nil, err
+	}
 	body := map[string]any{
-		"api_key_lookup_hash": requestLookupHash(ctx, bearer),
+		"api_key_lookup_hash": lookupHash,
 		"model":               model,
 	}
 	if routeType != "" {
@@ -568,8 +624,10 @@ func (c *Client) ResolveCustomModel(ctx context.Context, bearer string, model st
 		Data Authorization `json:"data"`
 	}
 	if err := c.postJSON(ctx, "/internal/gateway/resolve-custom-model", body, &decoded); err != nil {
+		c.afterCredentialCheck(ctx, lookupHash, err)
 		return nil, err
 	}
+	c.afterCredentialCheck(ctx, lookupHash, nil)
 	return &decoded.Data, nil
 }
 
@@ -578,8 +636,12 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	if err != nil {
 		return nil, err
 	}
+	lookupHash, err := c.beforeCredentialCheck(ctx, bearer)
+	if err != nil {
+		return nil, err
+	}
 	body := map[string]any{
-		"api_key_lookup_hash":    requestLookupHash(ctx, bearer),
+		"api_key_lookup_hash":    lookupHash,
 		"model":                  req.Model,
 		"estimated_input_tokens": EstimateInputTokens(req),
 		"max_output_tokens":      outputTokenEstimate(req),
@@ -637,8 +699,10 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 		ctx, "/internal/gateway/authorize", body, &decoded, c.authorizeRetry,
 	)
 	if err != nil {
+		c.afterCredentialCheck(ctx, lookupHash, err)
 		return nil, err
 	}
+	c.afterCredentialCheck(ctx, lookupHash, nil)
 	decoded.Data.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.Data.RouteType = routeType
 	if routeType != "videos" && routeType != "images" && req.AdditionalCostReservationMicrodollars > 0 &&
@@ -711,8 +775,12 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	if err != nil {
 		return nil, err
 	}
+	lookupHash, err := c.beforeCredentialCheck(ctx, bearer)
+	if err != nil {
+		return nil, err
+	}
 	body := map[string]any{
-		"api_key_lookup_hash":    requestLookupHash(ctx, bearer),
+		"api_key_lookup_hash":    lookupHash,
 		"model":                  req.Model,
 		"estimated_input_tokens": inputTokens,
 		"max_output_tokens":      1,
@@ -751,8 +819,10 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 		ctx, "/internal/gateway/authorize", body, &decoded, c.authorizeRetry,
 	)
 	if err != nil {
+		c.afterCredentialCheck(ctx, lookupHash, err)
 		return nil, err
 	}
+	c.afterCredentialCheck(ctx, lookupHash, nil)
 	decoded.Data.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.Data.RouteType = routeType
 	if req.Tags != nil && decoded.Data.RequestMetadataVersion < 1 {
@@ -1136,20 +1206,47 @@ func (c *Client) postJSONAtEndpoint(
 // key's lookup hash + the internal gateway token. Returns the control-plane
 // status + JSON body verbatim (the caller allowlists statuses).
 func (c *Client) KeyInfo(ctx context.Context, bearer string) (int, []byte, error) {
+	lookupHash, err := c.beforeCredentialCheck(ctx, bearer)
+	if err != nil {
+		return 0, nil, err
+	}
 	payload, err := json.Marshal(map[string]string{
-		"api_key_lookup_hash": requestLookupHash(ctx, bearer),
+		"api_key_lookup_hash": lookupHash,
 	})
 	if err != nil {
 		return 0, nil, err
 	}
 	resp, err := c.postToFirstDialable(ctx, "/internal/gateway/key", payload)
 	if err != nil {
+		c.afterCredentialCheck(ctx, lookupHash, err)
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return 0, nil, fmt.Errorf("trustedrouter: read /internal/gateway/key body: %w", err)
+		err = fmt.Errorf("trustedrouter: read /internal/gateway/key body: %w", err)
+		c.afterCredentialCheck(ctx, lookupHash, err)
+		return 0, nil, err
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		controlErr := &ControlPlaneError{
+			Path:       "/internal/gateway/key",
+			StatusCode: resp.StatusCode,
+			Body:       string(body),
+		}
+		var envelope struct {
+			Error struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(body, &envelope) == nil {
+			controlErr.Message = strings.TrimSpace(envelope.Error.Message)
+			controlErr.Type = strings.TrimSpace(envelope.Error.Type)
+		}
+		c.afterCredentialCheck(ctx, lookupHash, controlErr)
+	} else {
+		c.afterCredentialCheck(ctx, lookupHash, nil)
 	}
 	return resp.StatusCode, body, nil
 }

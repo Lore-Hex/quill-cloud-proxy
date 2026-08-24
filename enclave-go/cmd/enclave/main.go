@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/abuse"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
 	batchapi "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/batch"
@@ -44,10 +45,9 @@ import (
 // EnclaveListenPort + newRawListener are provided by listener_aws.go
 // (vsock CID-LOCAL) or listener_gcp.go (plain TCP).
 
-// Anthropic-compatible vision payloads expand significantly once images are
-// base64-encoded inside JSON. Keep the request cap aligned with common upstream
-// multimodal API limits while still bounding enclave memory per connection.
-const maxRequestBodyBytes = 32 * 1024 * 1024
+// Ten MiB remains generous for prompt and base64 multimodal payloads while
+// bounding memory committed before a bearer has been authenticated.
+const maxRequestBodyBytes = 10 << 20
 
 // Confidential Space accepts each nonce string up to 74 bytes. Caller nonces
 // arrive as raw bytes here but are hex-encoded before launch, so 37 raw bytes
@@ -57,7 +57,7 @@ const maxAttestationNonceBytes = 37
 const maxAttestationsPerConn = 8
 const maxHealthRequestsPerConn = 128
 
-var requestReadTimeout = 30 * time.Second
+var requestReadTimeout = 10 * time.Second
 
 // Bound writes to clients that stop reading without limiting provider thinking
 // time or total streaming duration. The deadline is renewed for every write.
@@ -138,6 +138,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "enclave.control_plane_configuration_rejected err=%q\n", configurationErr.Error())
 		os.Exit(1)
 	}
+	authProtector := abuse.NewProtector(nil, nil)
+	trGateway.SetCredentialGuard(authProtector)
+	authProtector.StartStats(ctx, os.Stderr, time.Minute)
 	videoGateway = newVideoService(videoProviderKeys(boot), trGateway)
 	videoGateway.Start(ctx)
 	var byokSecrets *byokcache.Cache
@@ -390,17 +393,27 @@ func startHealthListener(port string) {
 	}
 	fmt.Fprintf(os.Stderr, "health listener up port=%s\n", port)
 	go func() {
-		srv := &http.Server{
-			ReadHeaderTimeout: 5 * time.Second,
-			Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		srv := newEnclaveHTTPServer(
+			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 				_, _ = io.WriteString(w, "ok\n")
 			}),
-		}
+		)
 		if err := srv.Serve(hl); err != nil {
 			fmt.Fprintf(os.Stderr, "health listener stopped port=%s: %v\n", port, err)
 		}
 	}()
+}
+
+func newEnclaveHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+		// Do not add WriteTimeout or a blanket ReadTimeout: LLM responses stream
+		// for minutes and authenticated request bodies may carry large prompts.
+	}
 }
 
 func serveOne(
@@ -413,6 +426,12 @@ func serveOne(
 	trGateway *trustedrouter.Client,
 	byokSecrets *byokcache.Cache,
 ) {
+	// Use only a literal IP from the direct socket peer. No trusted hop writes
+	// X-Forwarded-For, so the enclave never parses it; non-IP transports such as
+	// internal batch pipes cannot accidentally collapse into a shared bucket.
+	if !isBatchExecutionContext(ctx) {
+		ctx = abuse.WithDirectClientIP(ctx, conn.RemoteAddr())
+	}
 	statsConn := &responseStatsConn{Conn: conn}
 	conn = statsConn
 	defer conn.Close()
@@ -439,9 +458,10 @@ func serveOneRequest(
 ) (keepAlive bool) {
 	requestLogID := newRequestLogID()
 	statsConn.BeginRequest(requestLogID)
+	ctx = abuse.WithRequestState(ctx, &abuse.RequestState{})
 	ctx = trustedrouter.WithRequestLogID(ctx, requestLogID)
 
-	// Bound the TLS handshake + request read. The enclave terminates TLS
+	// Bound the TLS handshake + request headers. The enclave terminates TLS
 	// lazily (handshake deferred to the first read in readRequest), so a bare
 	// TCP connection that establishes and sends NO ClientHello — e.g. an L4
 	// load-balancer health probe — would otherwise pin this goroutine on a
@@ -472,13 +492,21 @@ func serveOneRequest(
 			responseBytes,
 			time.Since(requestStartedAt),
 			requestIdentity,
+			abuse.Outcome(ctx),
 		)
 	}()
 
-	method, path, bearer, idempotencyKey, attribution, body, err := readRequest(requestReader)
+	method, path, bearer, idempotencyKey, attribution, body, err := readRequestWithHeadersRead(
+		requestReader,
+		func() {
+			// Header slowloris protection must not become a blanket request-body
+			// timeout: authenticated clients may upload large prompt payloads.
+			_ = conn.SetReadDeadline(time.Time{})
+		},
+	)
 	processingStartedAt := time.Now()
-	// Request (and its TLS handshake) is fully read; drop the deadline so a
-	// long-running streamed response is never cut off.
+	// Also clear after header-read failures so an error response is not coupled
+	// to a stale read deadline. Response streaming has no total deadline.
 	_ = conn.SetReadDeadline(time.Time{})
 	requestMethod = method
 	if err != nil {
@@ -566,6 +594,12 @@ func serveOneRequest(
 	}
 
 	trEnabled := trGateway != nil && trGateway.Enabled()
+	if trEnabled {
+		if err := trGateway.CheckCredential(ctx, bearer); err != nil {
+			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
+			return
+		}
+	}
 	if !trEnabled {
 		device := reg.Lookup(bearer)
 		if device == nil {
@@ -574,6 +608,12 @@ func serveOneRequest(
 		}
 		_ = device // device_id can be reported via a counter-flush vsock RPC in V1.1
 	} else if bearer == "" {
+		invalid := &trustedrouter.ControlPlaneError{
+			StatusCode: http.StatusUnauthorized,
+			Type:       "invalid_api_key",
+			Message:    "Invalid API key",
+		}
+		trGateway.ObserveCredentialResult(ctx, bearer, invalid)
 		writeError(conn, 401, "Invalid API key")
 		return
 	}
@@ -618,7 +658,7 @@ func serveOneRequest(
 		}
 		status, keyBody, err := trGateway.KeyInfo(ctx, bearer)
 		if err != nil {
-			writeError(conn, 502, "control plane unavailable")
+			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "control plane unavailable"), "router", retryHeadersFromControlPlaneError(err))
 			return
 		}
 		// Only relay the control-plane body for an EXPECTED status. An

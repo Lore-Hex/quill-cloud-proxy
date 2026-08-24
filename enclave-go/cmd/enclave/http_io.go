@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -26,7 +27,7 @@ var getAttestation = attestation.Get
 
 const (
 	maxHTTPHeaderLineBytes = 16*1024 - 1
-	maxHTTPHeaderBytes     = 64 * 1024
+	maxHTTPHeaderBytes     = 64 << 10
 	maxHTTPHeaderCount     = 100
 )
 
@@ -228,6 +229,13 @@ type requestAttributionHeaders struct {
 // Attribution headers are retained inside the enclave and sent only to the
 // TrustedRouter control plane, never to model providers.
 func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string, attribution requestAttributionHeaders, body []byte, err error) {
+	return readRequestWithHeadersRead(br, nil)
+}
+
+func readRequestWithHeadersRead(
+	br *bufio.Reader,
+	headersRead func(),
+) (method, path, bearer, idempotencyKey string, attribution requestAttributionHeaders, body []byte, err error) {
 	statusLineBytes, err := readBoundedHTTPLine(br)
 	if err != nil {
 		return "", "", "", "", attribution, nil, err
@@ -333,10 +341,30 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 			contentLength = parsed
 		}
 	}
-	body = make([]byte, contentLength)
+	if headersRead != nil {
+		headersRead()
+	}
 	if contentLength > 0 {
-		if _, err := io.ReadFull(br, body); err != nil {
+		// Authentication happens after the request has been parsed. Keep the
+		// stdlib's MaxBytesReader at this unauthenticated boundary as a second
+		// guard behind the Content-Length precheck, including if body framing is
+		// extended later.
+		requestBody := http.MaxBytesReader(
+			nil,
+			io.NopCloser(io.LimitReader(br, int64(contentLength))),
+			int64(maxRequestBodyBytes),
+		)
+		defer requestBody.Close()
+		body, err = io.ReadAll(requestBody)
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return "", "", "", "", attribution, nil, errBodyTooLarge
+		}
+		if err != nil {
 			return "", "", "", "", attribution, nil, err
+		}
+		if len(body) != contentLength {
+			return "", "", "", "", attribution, nil, io.ErrUnexpectedEOF
 		}
 	}
 	return method, path, bearer, idempotencyKey, attribution, body, nil
