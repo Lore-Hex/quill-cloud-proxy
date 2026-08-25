@@ -58,10 +58,11 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 }
 
 type openAICompatibleRequest struct {
-	Model           string        `json:"model"`
-	Messages        []chatMessage `json:"messages"`
-	Stream          bool          `json:"stream"`
-	UserCacheSecret string        `json:"user_cache_secret,omitempty"`
+	Model             string        `json:"model"`
+	Messages          []chatMessage `json:"messages"`
+	Stream            bool          `json:"stream"`
+	UserCacheSecret   string        `json:"user_cache_secret,omitempty"`
+	SearchContextSize string        `json:"search_context_size,omitempty"`
 	// max_tokens vs max_completion_tokens: OpenAI's gpt-5.x family
 	// (gpt-5, gpt-5.1, ..., gpt-5.4, gpt-5.4-mini, gpt-5.4-nano,
 	// gpt-5.5, ...) REQUIRES `max_completion_tokens` and returns
@@ -266,7 +267,12 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	if err != nil {
 		return fmt.Errorf("llm/%s: marshal body: %w", provider, err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		baseURL+directChatCompletionsPath(provider),
+		bytes.NewReader(bodyBytes),
+	)
 	if err != nil {
 		return err
 	}
@@ -400,6 +406,12 @@ func buildOpenAICompatibleRequest(
 	}
 	if supportsStreamUsageOption(provider, upstreamID) {
 		reqBody.StreamOptions = &openAICompatibleStreamOptions{IncludeUsage: true}
+	}
+	if normalizeDirectProvider(provider) == "perplexity" {
+		// Perplexity's Sonar request fee depends on search context size. The
+		// control plane reserves the exact low-context fee, so the enclave must
+		// pin that same tier instead of accepting an account or API default.
+		reqBody.SearchContextSize = "low"
 	}
 	return reqBody
 }
@@ -1137,6 +1149,13 @@ func directBaseURL(provider string) string {
 	default:
 		return ""
 	}
+}
+
+func directChatCompletionsPath(provider string) string {
+	if spec, ok := directproviders.Lookup(normalizeDirectProvider(provider)); ok {
+		return spec.ChatPath()
+	}
+	return "/chat/completions"
 }
 
 func bootstrapDirectProviderAllowed(provider string) bool {

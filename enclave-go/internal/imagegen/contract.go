@@ -263,6 +263,7 @@ var modelSpecs = func() map[string]ModelSpec {
 		fixedSquareSpec("black-forest-labs/flux-2-pro", "bfl", "flux-2-pro", "jpeg", map[string]int{"1k": 30_000}),
 		fixedSquareSpec("black-forest-labs/flux-2-max", "bfl", "flux-2-max", "jpeg", map[string]int{"1k": 70_000}),
 		fixedSquareSpec("black-forest-labs/flux-2-flex", "bfl", "flux-2-flex", "jpeg", map[string]int{"1k": 50_000}),
+		fixedSquareSpec("krea/krea-2-medium", "krea", "krea/krea-2/medium", "", map[string]int{"1k": 30_000}),
 		decartSpec(),
 	}
 	result := make(map[string]ModelSpec, len(specs))

@@ -346,6 +346,7 @@ func TestBootstrapDirectProviderClientsAreBoundedToCompiledHosts(t *testing.T) {
 		"mancer":        "https://mancer.tech/oai/v1",
 		"wandb":         "https://api.inference.wandb.ai/v1",
 		"nscale":        "https://inference.api.nscale.com/v1",
+		"perplexity":    "https://api.perplexity.ai/v1",
 	}
 	keys := map[string]string{
 		"nextbit":       " key-nextbit ",
@@ -360,6 +361,8 @@ func TestBootstrapDirectProviderClientsAreBoundedToCompiledHosts(t *testing.T) {
 		"mancer":        "key-mancer",
 		"wandb":         "key-wandb",
 		"nscale":        "key-nscale",
+		"perplexity":    "key-perplexity",
+		"krea":          "media-only-key",
 		"evil":          "must-not-route",
 		"aion_labs":     "must-not-route",
 		"":              "must-not-route",
@@ -388,6 +391,9 @@ func TestBootstrapDirectProviderClientsAreBoundedToCompiledHosts(t *testing.T) {
 	}
 	if clients["evil"] != nil || directBaseURL("evil") != "" {
 		t.Fatal("unknown bootstrap provider acquired a routable client")
+	}
+	if clients["krea"] != nil {
+		t.Fatal("media-only Krea acquired a chat client")
 	}
 }
 

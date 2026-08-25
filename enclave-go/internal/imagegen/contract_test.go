@@ -29,6 +29,7 @@ func TestModelRegistryIsExactAndDefensivelyCopied(t *testing.T) {
 		"decart/lucy-image-2",
 		"google/gemini-3.1-flash-image",
 		"google/gemini-3.1-flash-image-preview",
+		"krea/krea-2-medium",
 		"openai/gpt-image-1",
 		"openai/gpt-image-1-mini",
 		"openai/gpt-image-2",
@@ -149,6 +150,13 @@ func TestParseUsesModelSpecForNormalizedParameters(t *testing.T) {
 			wantAspect: "1:1",
 			wantFormat: "png",
 			wantQuote:  1_440,
+		},
+		{
+			name:       "krea fixed price",
+			body:       `{"model":"krea/krea-2-medium","prompt":"cat"}`,
+			wantRes:    "1K",
+			wantAspect: "1:1",
+			wantQuote:  31_650,
 		},
 		{
 			name:      "decart requires a reference",
@@ -456,6 +464,95 @@ func TestDecartUsesValidatedMultipartImageInput(t *testing.T) {
 	}
 	if len(result.Images) != 1 || result.Images[0].MediaType != "image/png" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestKreaSubmitsPollsAndDownloadsModelResult(t *testing.T) {
+	resolved, err := Parse([]byte(`{"model":"krea/krea-2-medium","prompt":"cat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataURL := "data:image/png;base64," + testPNG(t, 1024, 1024)
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		response := func(status int, value any) (*http.Response, error) {
+			body, _ := json.Marshal(value)
+			return &http.Response{
+				StatusCode: status,
+				Body:       io.NopCloser(bytes.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		}
+		switch requests {
+		case 1:
+			if req.Method != http.MethodPost || req.URL.String() != "https://api.krea.ai/generate/image/krea/krea-2/medium" {
+				t.Fatalf("submit = %s %s", req.Method, req.URL)
+			}
+			if req.Header.Get("Authorization") != "Bearer krea-key" ||
+				req.Header.Get("Idempotency-Key") != "krea-one" ||
+				req.Header.Get("X-Api-Zero-Data-Retention") != "" {
+				t.Fatalf("submit headers = %#v", req.Header)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]any{
+				"prompt": "cat", "aspect_ratio": "1:1", "resolution": "1K",
+			}
+			if !reflect.DeepEqual(body, want) {
+				t.Fatalf("submit body = %#v, want %#v", body, want)
+			}
+			return response(200, map[string]any{"job_id": "job-one", "status": "queued"})
+		case 2:
+			if req.Method != http.MethodGet || req.URL.String() != "https://api.krea.ai/jobs/job-one" {
+				t.Fatalf("poll = %s %s", req.Method, req.URL)
+			}
+			if req.Header.Get("Authorization") != "Bearer krea-key" {
+				t.Fatalf("poll authorization = %q", req.Header.Get("Authorization"))
+			}
+			return response(200, map[string]any{
+				"job_id": "job-one", "status": "completed",
+				"result": map[string]any{"urls": []map[string]any{
+					{"type": "preview", "url": "data:image/png;base64,ignored"},
+					{"type": "model", "url": dataURL},
+				}},
+			})
+		default:
+			t.Fatalf("unexpected request %d: %s", requests, req.URL)
+			return nil, nil
+		}
+	})}
+	result, err := NewRegistry(ProviderKeys{Krea: "krea-key"}, client).Generate(
+		t.Context(), resolved, "", "krea-one",
+	)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if requests != 2 || len(result.Images) != 1 || result.Images[0].MediaType != "image/png" {
+		t.Fatalf("requests=%d result=%#v", requests, result)
+	}
+}
+
+func TestKreaResultURLShapesAndTerminalFailures(t *testing.T) {
+	for _, tt := range []struct {
+		raw  string
+		want string
+	}{
+		{raw: `{"urls":["https://cdn.example/image.png"]}`, want: "https://cdn.example/image.png"},
+		{raw: `{"urls":[{"type":"preview","url":"https://cdn.example/preview.png"},{"type":"model","url":"https://cdn.example/model.png"}]}`, want: "https://cdn.example/model.png"},
+		{raw: `{"urls":{"preview":"https://cdn.example/preview.png","model":"https://cdn.example/model.png"}}`, want: "https://cdn.example/model.png"},
+	} {
+		got, err := kreaResultURL(json.RawMessage(tt.raw))
+		if err != nil || got != tt.want {
+			t.Fatalf("kreaResultURL(%s) = %q, %v; want %q", tt.raw, got, err, tt.want)
+		}
+	}
+	for _, raw := range []string{`null`, `{}`, `{"urls":[]}`, `{"urls":{"model":""}}`} {
+		if got, err := kreaResultURL(json.RawMessage(raw)); err == nil {
+			t.Fatalf("accepted invalid Krea result %s as %q", raw, got)
+		}
 	}
 }
 

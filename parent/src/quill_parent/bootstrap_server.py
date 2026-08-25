@@ -189,6 +189,8 @@ _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("nvidia-nim", "trustedrouter-nvidia-nim-api-key"),
     ("wandb", "trustedrouter-wandb-api-key"),
     ("nscale", "trustedrouter-nscale-api-key"),
+    ("perplexity", "trustedrouter-perplexity-api-key"),
+    ("krea", "trustedrouter-krea-api-key"),
 )
 
 _PROMPT_KEYS: Final[tuple[tuple[str, str], ...]] = (
