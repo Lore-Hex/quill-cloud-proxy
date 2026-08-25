@@ -338,6 +338,7 @@ func TestTranslateOpenAIStreamSurfacesSakanaOrchestrationUsage(t *testing.T) {
 		`"input_tokens":1265`,
 		`"output_tokens":62`,
 		`"cache_read_input_tokens":1202`,
+		`"price_tier_input_tokens":5`,
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %s in output: %s", want, out.String())

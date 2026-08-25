@@ -23,6 +23,36 @@ event: message_stop
 data: {"type":"message_stop"}
 `
 
+const providerTierBearingStream = `event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"PONG"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":1265,"output_tokens":62,"cache_read_input_tokens":1202,"price_tier_input_tokens":5}}
+
+event: message_stop
+data: {"type":"message_stop"}
+`
+
+func TestProviderPriceTierInputRemainsPrivateSettlementMetadata(t *testing.T) {
+	var out bytes.Buffer
+	result, err := TransformStreamCaptureWithOptions(
+		strings.NewReader(providerTierBearingStream),
+		&out,
+		"id-tier",
+		"sakana-ai/fugu-ultra-v1.1",
+		true,
+	)
+	if err != nil {
+		t.Fatalf("TransformStreamCaptureWithOptions: %v", err)
+	}
+	if result.Usage == nil || result.Usage.PriceTierInputTokens != 5 {
+		t.Fatalf("PriceTierInputTokens = %#v, want 5", result.Usage)
+	}
+	if strings.Contains(out.String(), "price_tier_input_tokens") {
+		t.Fatalf("private settlement field leaked into public stream: %s", out.String())
+	}
+}
+
 // TestUsageChunkFoldsAnthropicCacheEndToEnd is the end-to-end guard: an Anthropic
 // cache-read stream must yield a stream_options.include_usage chunk whose
 // prompt_tokens is the FULL prompt (input 3 + cache_read 6034 = 6037) with

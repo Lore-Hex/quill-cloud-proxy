@@ -510,6 +510,10 @@ type StreamUsage struct {
 	OutputTokens    int
 	ReasoningTokens int // subset of OutputTokens; 0 when not reported
 	ServiceTier     string
+	// PriceTierInputTokens is the provider's original prompt count when its
+	// separately billable orchestration tokens must not select a context tier.
+	// It is an enclave-to-control-plane billing field and is never public output.
+	PriceTierInputTokens int
 	// Prompt-cache accounting. CacheReadInputTokens were served from the
 	// provider's prompt cache (Anthropic cache_read_input_tokens, OpenAI
 	// prompt_tokens_details.cached_tokens, Gemini cachedContentTokenCount);
@@ -920,10 +924,11 @@ func mergeUsage(usage **StreamUsage, m map[string]any) {
 	in := getInt(m, "input_tokens")
 	out := getInt(m, "output_tokens")
 	reasoning := getInt(m, "reasoning_tokens")
+	priceTierInput := getInt(m, "price_tier_input_tokens")
 	cacheRead := getInt(m, "cache_read_input_tokens")
 	cacheCreation := getInt(m, "cache_creation_input_tokens")
 	serviceTier := getString(m, "service_tier")
-	if in == 0 && out == 0 && reasoning == 0 && cacheRead == 0 && cacheCreation == 0 && serviceTier == "" {
+	if in == 0 && out == 0 && reasoning == 0 && priceTierInput == 0 && cacheRead == 0 && cacheCreation == 0 && serviceTier == "" {
 		return
 	}
 	if *usage == nil {
@@ -937,6 +942,9 @@ func mergeUsage(usage **StreamUsage, m map[string]any) {
 	}
 	if reasoning > 0 {
 		(*usage).ReasoningTokens = reasoning
+	}
+	if priceTierInput > 0 {
+		(*usage).PriceTierInputTokens = priceTierInput
 	}
 	if cacheRead > 0 {
 		(*usage).CacheReadInputTokens = cacheRead

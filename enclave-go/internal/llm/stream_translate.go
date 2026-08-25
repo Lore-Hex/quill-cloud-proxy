@@ -223,6 +223,18 @@ func (u *openAIStreamUsage) inputTokens() int {
 	return input
 }
 
+// priceTierInputTokens preserves the provider's original prompt count when
+// the request also incurred separately billable orchestration work. Sakana
+// selects Fugu's long-context tier from this count, not from the additive
+// orchestration tokens included by inputTokens.
+func (u *openAIStreamUsage) priceTierInputTokens() int {
+	if u == nil || u.PromptTokensDetails == nil ||
+		u.PromptTokensDetails.OrchestrationInputTokens <= 0 {
+		return 0
+	}
+	return u.PromptTokens
+}
+
 // outputTokens returns every provider-reported non-input token. Most OpenAI-
 // compatible providers include reasoning inside completion_tokens. Google AI
 // Studio currently reports visible tokens in completion_tokens while including
@@ -361,6 +373,9 @@ func writeAnthropicStop(w io.Writer, stopReason string, usage *openAIStreamUsage
 		usageBody := map[string]any{
 			"input_tokens":  usage.inputTokens(),
 			"output_tokens": usage.outputTokens(),
+		}
+		if tierInput := usage.priceTierInputTokens(); tierInput > 0 {
+			usageBody["price_tier_input_tokens"] = tierInput
 		}
 		if reasoningTokens := usage.reasoningTokens(); reasoningTokens > 0 {
 			usageBody["reasoning_tokens"] = reasoningTokens

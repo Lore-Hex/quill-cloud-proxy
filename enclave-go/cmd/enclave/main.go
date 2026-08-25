@@ -1666,13 +1666,15 @@ func resolvedModelForRequest(req *types.OpenAIChatRequest, options []llm.InvokeO
 // usageEstimated-for-settlement). Output is the signal: providers always
 // report both sides together, but if input is somehow missing we estimate
 // it and still flag the settlement as estimated.
-// applyCacheUsage copies provider-reported reasoning and prompt-cache token
-// counts into the settlement usage record (visibility only — pricing unchanged).
+// applyCacheUsage copies provider-reported usage details into settlement. Most
+// fields are visibility metadata; PriceTierInputTokens is a private billing
+// basis that the control plane admits only for a pinned provider contract.
 func applyCacheUsage(usage *trustedrouter.Usage, result adapter.StreamResult) {
 	if result.Usage == nil {
 		return
 	}
 	usage.ReasoningTokens = result.Usage.ReasoningTokens
+	usage.PriceTierInputTokens = result.Usage.PriceTierInputTokens
 	usage.CacheReadInputTokens = result.Usage.CacheReadInputTokens
 	usage.CacheCreationInputTokens = result.Usage.CacheCreationInputTokens
 	if tier, ok := canonicalServiceTier(result.Usage.ServiceTier); ok {
