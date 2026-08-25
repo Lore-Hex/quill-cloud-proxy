@@ -365,7 +365,7 @@ sys.stdout.write(str(v))
       --description "Published by the deploy (tools/sync-secrets-to-aws.sh --values). AWS Secrets Manager is this cloud's own store; no other cloud is read, at provisioning time or at runtime." \
       --secret-string "$value" \
       --region "$AWS_REGION" \
-      "${replica_args[@]}" \
+      ${replica_args[@]+"${replica_args[@]}"} \
       --tags 'Key=Source,Value=deploy' \
              "Key=SecretId,Value=${secret_id}" 2>&1 >/dev/null); then
       log "  FAIL: $(printf '%s' "$write_err" | head -1)"
