@@ -63,6 +63,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"sail-research", "z-ai/glm-5.2", "zai-org/GLM-5.2-FP8", "zai-org/GLM-5.2-FP8", false},
 		{"mancer", "z-ai/glm-4.7", "glm-4.7", "glm-4.7", false},
 		{"wandb", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2", false},
+		{"nscale", "openai/gpt-oss-120b", "openai/gpt-oss-120b", "openai/gpt-oss-120b", false},
 	}
 
 	for _, tt := range tests {
@@ -344,6 +345,7 @@ func TestBootstrapDirectProviderClientsAreBoundedToCompiledHosts(t *testing.T) {
 		"sail-research": "https://api.sailresearch.com/v1",
 		"mancer":        "https://mancer.tech/oai/v1",
 		"wandb":         "https://api.inference.wandb.ai/v1",
+		"nscale":        "https://inference.api.nscale.com/v1",
 	}
 	keys := map[string]string{
 		"nextbit":       " key-nextbit ",
@@ -357,6 +359,7 @@ func TestBootstrapDirectProviderClientsAreBoundedToCompiledHosts(t *testing.T) {
 		"sail-research": "key-sail",
 		"mancer":        "key-mancer",
 		"wandb":         "key-wandb",
+		"nscale":        "key-nscale",
 		"evil":          "must-not-route",
 		"aion_labs":     "must-not-route",
 		"":              "must-not-route",

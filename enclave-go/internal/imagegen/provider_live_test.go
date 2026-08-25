@@ -74,3 +74,28 @@ func TestLiveProviderWaveImageModels(t *testing.T) {
 		t.Logf("generated %s %dx%d", result.Images[0].MediaType, result.Images[0].Width, result.Images[0].Height)
 	})
 }
+
+func TestLiveNscaleImageModel(t *testing.T) {
+	if os.Getenv("TR_LIVE_PROVIDER_WAVE") != "1" {
+		t.Skip("set TR_LIVE_PROVIDER_WAVE=1 to run paid provider-wave image smokes")
+	}
+	key := os.Getenv("NSCALE_API_KEY")
+	if key == "" {
+		t.Skip("NSCALE_API_KEY not set")
+	}
+	resolved, err := Parse([]byte(`{"model":"black-forest-labs/flux.1-schnell","prompt":"A small solid blue square centered on a white background."}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
+	defer cancel()
+	result, err := NewRegistry(ProviderKeys{Nscale: key}, nil).Generate(
+		ctx, resolved, "", "nscale-provider-wave-live",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Images) != 1 || result.Images[0].Width != 1024 || result.Images[0].Height != 1024 {
+		t.Fatalf("invalid result metadata: %#v", result)
+	}
+}

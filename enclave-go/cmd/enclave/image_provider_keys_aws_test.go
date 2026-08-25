@@ -8,12 +8,13 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
-func TestAWSImageProviderKeysExcludeUntunneledProviderWave(t *testing.T) {
+func TestAWSImageProviderKeysIncludeOnlyTunneledProviderWave(t *testing.T) {
 	keys := imageProviderKeys(&types.BootstrapData{
 		OpenAIAPIKey: "openai", GrokAPIKey: "grok", DecartAPIKey: "decart",
 		RecraftAPIKey: "recraft", BFLAPIKey: "bfl",
+		ProviderAPIKeys: map[string]string{"nscale": "nscale"},
 	})
-	if keys.OpenAI != "openai" || keys.XAI != "grok" {
+	if keys.OpenAI != "openai" || keys.XAI != "grok" || keys.Nscale != "nscale" {
 		t.Fatalf("fixed-host AWS image keys = %#v", keys)
 	}
 	if keys.Decart != "" || keys.Recraft != "" || keys.BFL != "" {

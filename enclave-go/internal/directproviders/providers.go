@@ -40,6 +40,7 @@ var specs = [...]Spec{
 	{Provider: "sakana", BaseURL: "https://api.sakana.ai/v1", SecretEnv: "QUILL_SAKANA_SECRET", SecretName: "trustedrouter-sakana-api-key", SecretLabel: "sakana key"},
 	{Provider: "nvidia-nim", BaseURL: "https://integrate.api.nvidia.com/v1", SecretEnv: "QUILL_NVIDIA_NIM_SECRET", SecretName: "trustedrouter-nvidia-nim-api-key", SecretLabel: "NVIDIA NIM key"},
 	{Provider: "wandb", BaseURL: "https://api.inference.wandb.ai/v1", SecretEnv: "QUILL_WANDB_SECRET", SecretName: "trustedrouter-wandb-api-key", SecretLabel: "W&B Inference key"},
+	{Provider: "nscale", BaseURL: "https://inference.api.nscale.com/v1", SecretEnv: "QUILL_NSCALE_SECRET", SecretName: "trustedrouter-nscale-api-key", SecretLabel: "Nscale service token"},
 }
 
 var byProvider = func() map[string]Spec {

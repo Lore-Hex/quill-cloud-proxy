@@ -204,6 +204,19 @@ func recraftSpec(id, upstreamID, resolution, nativeSize string, price int) Model
 	}
 }
 
+func nscaleSpec() ModelSpec {
+	return ModelSpec{
+		ID: "black-forest-labs/flux.1-schnell", Provider: "nscale",
+		UpstreamID: "black-forest-labs/FLUX.1-schnell",
+		Pricing:    PricingFixed, SupportsStreaming: false, NMin: 1, NMax: 1,
+		Resolutions: []string{"1K"}, AspectRatios: []string{"1:1"},
+		OutputFormats: []string{"png"}, NativeSizes: map[string]string{"1:1": "1024x1024"},
+		// Nscale bills FLUX.1-schnell at $0.0013/megapixel. A 1024x1024
+		// output is 1.048576 megapixels, rounded up to the nearest microdollar.
+		FixedOutputPrices: map[string]int{"1k": 1_364},
+	}
+}
+
 func decartSpec() ModelSpec {
 	return ModelSpec{
 		ID: "decart/lucy-image-2", Provider: "decart", UpstreamID: "lucy-image-2",
@@ -244,6 +257,7 @@ var modelSpecs = func() map[string]ModelSpec {
 		recraftSpec("recraft/recraftv4", "recraftv4", "1K", "1024x1024", 40_000),
 		recraftSpec("recraft/recraftv3", "recraftv3", "1K", "1024x1024", 40_000),
 		recraftSpec("recraft/recraftv2", "recraftv2", "1K", "1024x1024", 22_000),
+		nscaleSpec(),
 		fixedSquareSpec("black-forest-labs/flux-2-klein-4b", "bfl", "flux-2-klein-4b", "jpeg", map[string]int{"1k": 14_000}),
 		fixedSquareSpec("black-forest-labs/flux-2-klein-9b", "bfl", "flux-2-klein-9b", "jpeg", map[string]int{"1k": 15_000}),
 		fixedSquareSpec("black-forest-labs/flux-2-pro", "bfl", "flux-2-pro", "jpeg", map[string]int{"1k": 30_000}),
