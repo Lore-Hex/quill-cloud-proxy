@@ -122,11 +122,8 @@ func newNearAIVerifier() (*nearAIVerifier, error) {
 			if err != nil || len(quote) == 0 {
 				return nil, errors.New("invalid Intel TDX quote encoding")
 			}
-			opts := tdxverify.DefaultOptions()
-			opts.GetCollateral = true
-			opts.CheckRevocations = true
 			return verifyTDXQuote(quote, func(raw []byte) error {
-				return tdxverify.RawTdxQuote(raw, opts)
+				return tdxverify.RawTdxQuote(raw, newTDXVerificationOptions())
 			})
 		},
 		verifyGPU: nras.verify,

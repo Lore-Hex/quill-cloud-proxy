@@ -111,10 +111,7 @@ func newChutesVerifier() (*chutesVerifier, error) {
 		nras:         newNRASVerifier(),
 		now:          time.Now,
 		verifyTDX: func(quote []byte) error {
-			opts := tdxverify.DefaultOptions()
-			opts.GetCollateral = true
-			opts.CheckRevocations = true
-			return tdxverify.RawTdxQuote(quote, opts)
+			return tdxverify.RawTdxQuote(quote, newTDXVerificationOptions())
 		},
 	}, nil
 }
