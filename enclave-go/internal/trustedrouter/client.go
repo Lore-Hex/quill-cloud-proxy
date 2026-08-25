@@ -537,15 +537,18 @@ type Usage struct {
 	FirstTokenSeconds float64
 	UsageEstimated    bool
 	ReasoningTokens   int
-	FinishReason      string
-	Streamed          bool
-	RouteType         string
-	SelectedModel     string
-	SelectedEndpoint  string
-	User              string
-	SessionID         string
-	Trace             map[string]any
-	Metadata          map[string]any
+	// PriceTierInputTokens is a provider-private billing basis admitted only
+	// for pinned contracts by the control plane. It never enters public usage.
+	PriceTierInputTokens int
+	FinishReason         string
+	Streamed             bool
+	RouteType            string
+	SelectedModel        string
+	SelectedEndpoint     string
+	User                 string
+	SessionID            string
+	Trace                map[string]any
+	Metadata             map[string]any
 	// Tags are frozen at authorize; settle never sends client-mutable tags.
 	App           string
 	HTTPReferer   string
@@ -933,6 +936,9 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	}
 	if usage.ReasoningTokens > 0 {
 		body["reasoning_tokens"] = usage.ReasoningTokens
+	}
+	if usage.PriceTierInputTokens > 0 {
+		body["price_tier_input_tokens"] = usage.PriceTierInputTokens
 	}
 	if usage.CacheReadInputTokens > 0 {
 		body["cache_read_input_tokens"] = usage.CacheReadInputTokens

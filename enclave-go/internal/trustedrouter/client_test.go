@@ -706,6 +706,42 @@ func TestSettleMapsTrustedSyntheticAppSentinelToDefault(t *testing.T) {
 	}
 }
 
+func TestSettleForwardsProviderPriceTierInputTokens(t *testing.T) {
+	var payload map[string]any
+	client := New("https://trustedrouter.com", "internal", &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/internal/gateway/settle" {
+				t.Fatalf("path = %s", r.URL.Path)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode settle body: %v", err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"data":{"generation_id":"gen_1","cost_microdollars":1}}`)),
+			}, nil
+		}),
+	})
+
+	_, err := client.Settle(t.Context(), &Authorization{
+		AuthorizationID: "auth_fugu",
+		Model:           "sakana-ai/fugu-ultra-v1.1",
+		EndpointID:      "sakana-ai/fugu-ultra-v1.1@sakana/prepaid",
+	}, Usage{
+		RequestID:            "req_fugu",
+		InputTokens:          1265,
+		OutputTokens:         62,
+		PriceTierInputTokens: 5,
+	})
+	if err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if got := payload["price_tier_input_tokens"]; got != float64(5) {
+		t.Fatalf("price_tier_input_tokens = %#v, want 5; payload=%#v", got, payload)
+	}
+}
+
 func TestAuthorizeRefundsAndFailsWhenControlPlaneLacksTagCapability(t *testing.T) {
 	refunds := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
