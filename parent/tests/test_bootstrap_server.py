@@ -264,6 +264,23 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "xiaomi_api_key",
         "stepfun_api_key",
         "relace_api_key",
+        # 2026-08-24 cross-cloud parity sweep — see test_aws_provider_parity.py.
+        "alibaba_api_key",
+        "atlas_cloud_api_key",
+        "chutes_api_key",
+        "cohere_api_key",
+        "digitalocean_api_key",
+        "engy_api_key",
+        "exa_api_key",
+        "inceptron_api_key",
+        "morph_api_key",
+        "neurometric_api_key",
+        "pearl_api_key",
+        "streamlake_api_key",
+        "telnyx_api_key",
+        "zero_g_api_key",
+        "databricks_token",
+        "databricks_host",
     }
     actual_fields = {field for field, _suffix in bootstrap_server._PROVIDER_KEYS}
     assert actual_fields == expected_fields, (

@@ -136,6 +136,34 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     # intentionally absent: the AWS enclave build does not expose media APIs.
     ("stepfun_api_key", "trustedrouter-stepfun-api-key"),
     ("relace_api_key", "trustedrouter-relace-api-key"),
+    # 2026-08-24 cross-cloud parity sweep. These chat/embeddings/util providers
+    # were in secrets.go (routable on GCP + Azure) but the AWS parent never
+    # fetched their keys, so they were silently dark on AWS -- the "boots
+    # healthy, 401s at runtime on one cloud" shape test_aws_provider_parity.py
+    # now guards. Media-only providers from the same waves stay absent by design
+    # (see the note above). Keys still have to be provisioned in AWS Secrets
+    # Manager; until then _read_one_secret returns None and the provider stays
+    # dark -- but it is now WIRED, not forgotten.
+    ("alibaba_api_key", "trustedrouter-alibaba-api-key"),
+    ("atlas_cloud_api_key", "trustedrouter-atlas-cloud-api-key"),
+    ("chutes_api_key", "trustedrouter-chutes-api-key"),
+    ("cohere_api_key", "trustedrouter-cohere-api-key"),
+    ("digitalocean_api_key", "trustedrouter-digitalocean-api-key"),
+    ("engy_api_key", "trustedrouter-engy-api-key"),
+    ("exa_api_key", "trustedrouter-exa-api-key"),
+    ("inceptron_api_key", "trustedrouter-inceptron-api-key"),
+    ("morph_api_key", "trustedrouter-morph-api-key"),
+    ("neurometric_api_key", "trustedrouter-neurometric-api-key"),
+    ("pearl_api_key", "trustedrouter-pearl-api-key"),
+    ("streamlake_api_key", "trustedrouter-streamlake-api-key"),
+    ("telnyx_api_key", "trustedrouter-telnyx-api-key"),
+    ("zero_g_api_key", "trustedrouter-zero-g-api-key"),
+    # Databricks needs both halves: a token AND the workspace host. The enclave
+    # reads boot.DatabricksToken + boot.DatabricksHost; one without the other
+    # cannot dispatch. (databricks_host is config, not a provider secret, but it
+    # rides the same fetch loop.)
+    ("databricks_token", "trustedrouter-databricks-token"),
+    ("databricks_host", "trustedrouter-databricks-host"),
 )
 
 # Simple provider-owned OpenAI-compatible endpoints share one bounded map in

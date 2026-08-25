@@ -107,6 +107,28 @@ SECRETS=(
   # excluded because the AWS enclave build has no media adapter.
   trustedrouter-stepfun-api-key
   trustedrouter-relace-api-key
+  # 2026-08-24 cross-cloud parity sweep — chat/embeddings/util providers that
+  # were served on GCP + Azure but never mirrored to AWS, so they were silently
+  # dark here. Wired into bootstrap_server._PROVIDER_KEYS and guarded by
+  # test_aws_provider_parity.py. Media-only providers (bfl/decart/kling/ltx/
+  # openai-video/recraft/runway) stay excluded by design — no AWS media adapter.
+  trustedrouter-alibaba-api-key
+  trustedrouter-atlas-cloud-api-key
+  trustedrouter-chutes-api-key
+  trustedrouter-cohere-api-key
+  trustedrouter-digitalocean-api-key
+  trustedrouter-engy-api-key
+  trustedrouter-exa-api-key
+  trustedrouter-inceptron-api-key
+  trustedrouter-morph-api-key
+  trustedrouter-neurometric-api-key
+  trustedrouter-pearl-api-key
+  trustedrouter-streamlake-api-key
+  trustedrouter-telnyx-api-key
+  trustedrouter-zero-g-api-key
+  # Databricks needs both the token and the workspace host.
+  trustedrouter-databricks-token
+  trustedrouter-databricks-host
   trustedrouter-nextbit-api-key
   trustedrouter-aion-labs-api-key
   trustedrouter-sambanova-api-key
