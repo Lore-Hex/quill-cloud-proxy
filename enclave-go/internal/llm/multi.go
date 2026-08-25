@@ -54,6 +54,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		phala:            newOpenAICompatible("phala", boot.PhalaAPIKey),
 		siliconflow:      newOpenAICompatible("siliconflow", boot.SiliconFlowAPIKey),
 		tinfoil:          newTinfoilAttested(boot.TinfoilAPIKey),
+		nearAI:           newNearAI(boot.NearAIAPIKey),
 		venice:           newOpenAICompatible("venice", boot.VeniceAPIKey),
 		parasail:         newOpenAICompatible("parasail", boot.ParasailAPIKey),
 		lightning:        newOpenAICompatible("lightning", boot.LightningAPIKey),
@@ -126,6 +127,7 @@ type multiClient struct {
 	phala               *openAICompatibleClient
 	siliconflow         *openAICompatibleClient
 	tinfoil             *openAICompatibleClient
+	nearAI              *nearAIClient
 	venice              *openAICompatibleClient
 	parasail            *openAICompatibleClient
 	lightning           *openAICompatibleClient
@@ -243,6 +245,8 @@ func (m *multiClient) InvokeStreaming(
 		// reused per-request. See newOpenAICompatible + tinfoil_attest.go
 		// for the verifier wiring.
 		return m.tinfoil.InvokeStreaming(ctx, req, body, out, options...)
+	case "near-ai":
+		return m.nearAI.InvokeStreaming(ctx, req, body, out, options...)
 	case "venice":
 		return m.venice.InvokeStreaming(ctx, req, body, out, options...)
 	case "parasail":

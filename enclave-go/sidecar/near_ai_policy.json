@@ -1,0 +1,82 @@
+[
+  {
+    "model": "deepseek-ai/DeepSeek-V4-Flash",
+    "domain": "dsv4-flash.completions.near.ai",
+    "compose_hash": "d98a2568546afce9ab53f7eb4d4b2058e5497e1efd05a8ad0934793043240ed7",
+    "deployment_file": "prod/dsv4-qwen38-glm51.yaml",
+    "deployment_commit": "1a7d6e548b1914dc38206d00da37898bde1b0a13",
+    "deployment_sha256": "c27ed3b357f44673e4a84ef89f4625e1009de619d83ffdaae27c1265f676f4bb"
+  },
+  {
+    "model": "google/gemma-4-31B-it",
+    "domain": "gemma-4-31b.completions.near.ai",
+    "compose_hash": "9385918de0a73b861ae833d99fb5be6f7e1c8a50487a835df4f277497c206825",
+    "deployment_file": "prod/dsv4-qwen36-gemma4.yaml",
+    "deployment_commit": "83c34077aa7ffe500bc08894a52b44e05ae4af86",
+    "deployment_sha256": "c6ef1271ffdaed7e936b271d371da944644d63f0c277fe84e29582f334119fec"
+  },
+  {
+    "model": "zai-org/GLM-5.1-FP8",
+    "domain": "glm-5-1.completions.near.ai",
+    "compose_hash": "d98a2568546afce9ab53f7eb4d4b2058e5497e1efd05a8ad0934793043240ed7",
+    "deployment_file": "prod/dsv4-qwen38-glm51.yaml",
+    "deployment_commit": "1a7d6e548b1914dc38206d00da37898bde1b0a13",
+    "deployment_sha256": "c27ed3b357f44673e4a84ef89f4625e1009de619d83ffdaae27c1265f676f4bb"
+  },
+  {
+    "model": "z-ai/glm-5.2",
+    "domain": "glm-5-2.completions.near.ai",
+    "compose_hash": "546161bcde5ef901652e7b5b774322e790748e725fbfb158d0f394153271bc86",
+    "deployment_file": "prod/GLM-5.2-W4AFP8-SGL-TP8.yaml",
+    "deployment_commit": "1a7d6e548b1914dc38206d00da37898bde1b0a13",
+    "deployment_sha256": "d11837e869090731b1420553bb321ac596b47e92c498bf36890d2963b4be85b1"
+  },
+  {
+    "model": "openai/gpt-oss-120b",
+    "domain": "gpt-oss-120b.completions.near.ai",
+    "compose_hash": "d4c89033fb55cdac9db00c775fbbbeff6319fba7249344b2dca99b23ff048479",
+    "deployment_file": "prod/small-models.yaml",
+    "deployment_commit": "7d631eb1267e3c7f2a63e34fdf5a66b438de38ca",
+    "deployment_sha256": "cb9040a3e32a0e9157baf26b804d95a3ec55b91d9ae87383e0acd4300490078e"
+  },
+  {
+    "model": "Qwen/Qwen3.6-27B-FP8",
+    "domain": "qwen3-6-27b.completions.near.ai",
+    "compose_hash": "9385918de0a73b861ae833d99fb5be6f7e1c8a50487a835df4f277497c206825",
+    "deployment_file": "prod/dsv4-qwen36-gemma4.yaml",
+    "deployment_commit": "83c34077aa7ffe500bc08894a52b44e05ae4af86",
+    "deployment_sha256": "c6ef1271ffdaed7e936b271d371da944644d63f0c277fe84e29582f334119fec"
+  },
+  {
+    "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+    "domain": "qwen3-6-35b.completions.near.ai",
+    "compose_hash": "9385918de0a73b861ae833d99fb5be6f7e1c8a50487a835df4f277497c206825",
+    "deployment_file": "prod/dsv4-qwen36-gemma4.yaml",
+    "deployment_commit": "83c34077aa7ffe500bc08894a52b44e05ae4af86",
+    "deployment_sha256": "c6ef1271ffdaed7e936b271d371da944644d63f0c277fe84e29582f334119fec"
+  },
+  {
+    "model": "Qwen/Qwen3.8-27B",
+    "domain": "qwen3-8-27b.completions.near.ai",
+    "compose_hash": "d98a2568546afce9ab53f7eb4d4b2058e5497e1efd05a8ad0934793043240ed7",
+    "deployment_file": "prod/dsv4-qwen38-glm51.yaml",
+    "deployment_commit": "1a7d6e548b1914dc38206d00da37898bde1b0a13",
+    "deployment_sha256": "c27ed3b357f44673e4a84ef89f4625e1009de619d83ffdaae27c1265f676f4bb"
+  },
+  {
+    "model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
+    "domain": "qwen3-vl-30b.completions.near.ai",
+    "compose_hash": "d4c89033fb55cdac9db00c775fbbbeff6319fba7249344b2dca99b23ff048479",
+    "deployment_file": "prod/small-models.yaml",
+    "deployment_commit": "7d631eb1267e3c7f2a63e34fdf5a66b438de38ca",
+    "deployment_sha256": "cb9040a3e32a0e9157baf26b804d95a3ec55b91d9ae87383e0acd4300490078e"
+  },
+  {
+    "model": "Qwen/Qwen3.5-122B-A10B",
+    "domain": "qwen35-122b.completions.near.ai",
+    "compose_hash": "66007399f064f058af68771c552bcae150c9f88622305631b5141da1aa2f7b7e",
+    "deployment_file": "prod/qwen35-dsv4-flash.yaml",
+    "deployment_commit": "bde3ddd87955fb6c304e70137463d813be866b33",
+    "deployment_sha256": "cb190fcba6b49ca2dd5092ed59e61cf1c26370aac50dc78416f8b50492858695"
+  }
+]

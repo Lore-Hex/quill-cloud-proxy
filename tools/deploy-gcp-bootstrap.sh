@@ -65,6 +65,7 @@ NOVITA_SECRET="${NOVITA_SECRET:-trustedrouter-novita-api-key}"
 PHALA_SECRET="${PHALA_SECRET:-trustedrouter-phala-confidential-api-key}"
 SILICONFLOW_SECRET="${SILICONFLOW_SECRET:-trustedrouter-siliconflow-api-key}"
 TINFOIL_SECRET="${TINFOIL_SECRET:-trustedrouter-tinfoil-api-key}"
+NEAR_AI_SECRET="${NEAR_AI_SECRET:-trustedrouter-near-ai-api-key}"
 VENICE_SECRET="${VENICE_SECRET:-trustedrouter-venice-api-key}"
 PARASAIL_SECRET="${PARASAIL_SECRET:-trustedrouter-parasail-api-key}"
 LIGHTNING_SECRET="${LIGHTNING_SECRET:-trustedrouter-lightning-api-key}"
@@ -211,6 +212,7 @@ for secret in \
   "$PHALA_SECRET" \
   "$SILICONFLOW_SECRET" \
   "$TINFOIL_SECRET" \
+  "$NEAR_AI_SECRET" \
   "$VENICE_SECRET" \
   "$PARASAIL_SECRET" \
   "$LIGHTNING_SECRET" \

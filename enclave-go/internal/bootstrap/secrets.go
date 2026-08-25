@@ -99,6 +99,7 @@ var secretBindings = func() []secretBinding {
 		{[]string{"QUILL_PHALA_SECRET"}, "phala key", true, func(b *types.BootstrapData, v string) { b.PhalaAPIKey = v }},
 		{[]string{"QUILL_SILICONFLOW_SECRET"}, "siliconflow key", true, func(b *types.BootstrapData, v string) { b.SiliconFlowAPIKey = v }},
 		{[]string{"QUILL_TINFOIL_SECRET"}, "tinfoil key", true, func(b *types.BootstrapData, v string) { b.TinfoilAPIKey = v }},
+		{[]string{"QUILL_NEAR_AI_SECRET"}, "near ai key", true, func(b *types.BootstrapData, v string) { b.NearAIAPIKey = v }},
 		{[]string{"QUILL_VENICE_SECRET"}, "venice key", true, func(b *types.BootstrapData, v string) { b.VeniceAPIKey = v }},
 		{[]string{"QUILL_PARASAIL_SECRET"}, "parasail key", true, func(b *types.BootstrapData, v string) { b.ParasailAPIKey = v }},
 		{[]string{"QUILL_LIGHTNING_SECRET"}, "lightning key", true, func(b *types.BootstrapData, v string) { b.LightningAPIKey = v }},

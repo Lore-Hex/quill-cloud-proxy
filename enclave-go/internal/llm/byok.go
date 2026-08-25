@@ -1181,11 +1181,10 @@ func directModelID(provider, model, upstreamModel string) string {
 				return mapped
 			}
 		}
-		if provider == "phala" {
-			// Phala's API also lists ordinary non-TEE pass-through models.
-			// Only explicitly mapped phala/* ids qualify for the confidential
-			// route and operator key. Fail closed instead of falling through to
-			// an author-stripped non-confidential model id.
+		if provider == "phala" || provider == "near-ai" {
+			// These providers expose confidential routes only through an exact
+			// reviewed model map. Fail closed instead of falling through to an
+			// author-stripped, unverified provider-native model id.
 			return ""
 		}
 	}
@@ -1262,7 +1261,7 @@ func providerUsesAuthorizedUpstreamModel(provider string) bool {
 
 func providerPreservesAuthorModelID(provider string) bool {
 	switch provider {
-	case "meta", "openrouter-exclusive", "novita", "nebius", "fireworks", "chutes", "digitalocean", "cloudflare-workers-ai", "inceptron", "atlas-cloud", "relace":
+	case "meta", "openrouter-exclusive", "novita", "nebius", "fireworks", "chutes", "near-ai", "digitalocean", "cloudflare-workers-ai", "inceptron", "atlas-cloud", "relace":
 		return true
 	default:
 		return false
@@ -1311,6 +1310,7 @@ var providerNativeModelMaps = map[string]map[string]string{
 	"deepinfra":        deepinfraModelMap,
 	"gmi":              gmiModelMap,
 	"tinfoil":          tinfoilModelMap,
+	"near-ai":          nearAIModelMap,
 	"novita":           novitaModelMap,
 	"phala":            phalaModelMap,
 	"venice":           veniceModelMap,
@@ -1792,6 +1792,8 @@ func normalizeDirectProvider(provider string) string {
 		return "siliconflow"
 	case "tinfoil", "tinfoil-sh":
 		return "tinfoil"
+	case "near", "near-ai", "nearai":
+		return "near-ai"
 	case "venice", "venice-ai":
 		return "venice"
 	case "parasail", "parasail-ai", "parasail-io":

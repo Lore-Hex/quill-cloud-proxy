@@ -110,6 +110,7 @@ type BootstrapData struct {
 	NebiusAPIKey                 string `json:"nebius_api_key,omitempty"`
 	MiniMaxAPIKey                string `json:"minimax_api_key,omitempty"`
 	ChutesAPIKey                 string `json:"chutes_api_key,omitempty"`
+	NearAIAPIKey                 string `json:"near_ai_api_key,omitempty"`
 	DigitalOceanAPIKey           string `json:"digitalocean_api_key,omitempty"`
 	CloudflareWorkersAIAPIKey    string `json:"cloudflare_workers_ai_api_key,omitempty"`
 	CloudflareWorkersAIAccountID string `json:"cloudflare_workers_ai_account_id,omitempty"`

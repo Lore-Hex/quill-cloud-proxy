@@ -285,6 +285,11 @@ func main() {
 		log.Fatalf("initialize Chutes verifier: %v", err)
 	}
 	chutesVerifySlots := make(chan struct{}, 4)
+	nearAIAttestor, err := newNearAIVerifier()
+	if err != nil {
+		log.Fatalf("initialize NEAR AI verifier: %v", err)
+	}
+	nearAIVerifySlots := make(chan struct{}, 4)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -360,6 +365,35 @@ func main() {
 		verified, err := chutesAttestor.verify(r.Context(), &request)
 		if err != nil {
 			log.Printf("chutes verification refused instance=%s reason=%v", truncate(request.Instance, 12), err)
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(verified)
+	})
+	mux.HandleFunc("/verify-near-ai", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		select {
+		case nearAIVerifySlots <- struct{}{}:
+			defer func() { <-nearAIVerifySlots }()
+		case <-r.Context().Done():
+			http.Error(w, "verification canceled", http.StatusRequestTimeout)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, nearAIMaxEvidenceBytes)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		var request nearAIVerificationRequest
+		if err := decoder.Decode(&request); err != nil {
+			http.Error(w, "invalid NEAR AI evidence request", http.StatusBadRequest)
+			return
+		}
+		verified, err := nearAIAttestor.verify(r.Context(), &request)
+		if err != nil {
+			log.Printf("near-ai verification refused model=%s domain=%s reason=%v", truncate(request.Model, 48), truncate(request.Domain, 64), err)
 			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
