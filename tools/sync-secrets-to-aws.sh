@@ -164,6 +164,8 @@ SECRETS=(
   trustedrouter-nvidia-nim-api-key
   trustedrouter-wandb-api-key
   trustedrouter-nscale-api-key
+  trustedrouter-perplexity-api-key
+  trustedrouter-krea-api-key
   trustedrouter-tr-api-key-for-self-heal
   # The internal gateway token authenticates enclave→TR control-plane
   # calls (x-trustedrouter-internal-token header on /v1/internal/*).

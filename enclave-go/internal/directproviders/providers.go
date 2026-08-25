@@ -15,11 +15,13 @@ import (
 
 // Spec is the complete enclave-side contract for one direct provider.
 type Spec struct {
-	Provider    string
-	BaseURL     string
-	SecretEnv   string
-	SecretName  string
-	SecretLabel string
+	Provider            string
+	BaseURL             string
+	ChatCompletionsPath string
+	MediaOnly           bool
+	SecretEnv           string
+	SecretName          string
+	SecretLabel         string
 }
 
 var specs = [...]Spec{
@@ -41,6 +43,8 @@ var specs = [...]Spec{
 	{Provider: "nvidia-nim", BaseURL: "https://integrate.api.nvidia.com/v1", SecretEnv: "QUILL_NVIDIA_NIM_SECRET", SecretName: "trustedrouter-nvidia-nim-api-key", SecretLabel: "NVIDIA NIM key"},
 	{Provider: "wandb", BaseURL: "https://api.inference.wandb.ai/v1", SecretEnv: "QUILL_WANDB_SECRET", SecretName: "trustedrouter-wandb-api-key", SecretLabel: "W&B Inference key"},
 	{Provider: "nscale", BaseURL: "https://inference.api.nscale.com/v1", SecretEnv: "QUILL_NSCALE_SECRET", SecretName: "trustedrouter-nscale-api-key", SecretLabel: "Nscale service token"},
+	{Provider: "perplexity", BaseURL: "https://api.perplexity.ai/v1", ChatCompletionsPath: "/sonar", SecretEnv: "QUILL_PERPLEXITY_SECRET", SecretName: "trustedrouter-perplexity-api-key", SecretLabel: "Perplexity key"},
+	{Provider: "krea", BaseURL: "https://api.krea.ai", MediaOnly: true, SecretEnv: "QUILL_KREA_SECRET", SecretName: "trustedrouter-krea-api-key", SecretLabel: "Krea key"},
 }
 
 var byProvider = func() map[string]Spec {
@@ -90,9 +94,27 @@ func Validate() error {
 		if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
 			return fmt.Errorf("direct providers: invalid HTTPS base URL for %q", spec.Provider)
 		}
+		path := spec.ChatCompletionsPath
+		if path == "" && !spec.MediaOnly {
+			path = "/chat/completions"
+		}
+		if spec.MediaOnly && spec.ChatCompletionsPath != "" {
+			return fmt.Errorf("direct providers: media-only provider %q has a chat path", spec.Provider)
+		}
+		if (!spec.MediaOnly && !strings.HasPrefix(path, "/")) || strings.Contains(path, "://") {
+			return fmt.Errorf("direct providers: invalid chat path for %q", spec.Provider)
+		}
 		providers[spec.Provider] = struct{}{}
 		envs[spec.SecretEnv] = struct{}{}
 		names[spec.SecretName] = struct{}{}
 	}
 	return nil
+}
+
+// ChatCompletionsPath returns the provider's compiled inference path.
+func (s Spec) ChatPath() string {
+	if s.ChatCompletionsPath != "" {
+		return s.ChatCompletionsPath
+	}
+	return "/chat/completions"
 }

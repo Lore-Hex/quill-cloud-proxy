@@ -81,6 +81,44 @@ func TestNewProviderDirectBaseURLs(t *testing.T) {
 	}
 }
 
+func TestPerplexityUsesSonarPathAndPinnedLowContext(t *testing.T) {
+	httpc := &http.Client{Transport: byokRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://api.perplexity.ai/v1/sonar" {
+			t.Fatalf("url = %q", req.URL.String())
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["model"] != "sonar" || payload["search_context_size"] != "low" {
+			t.Fatalf("payload = %#v", payload)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`data: {"id":"x","choices":[{"delta":{"content":"PONG"},"finish_reason":null}]}`,
+				``,
+				`data: {"id":"x","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+				``,
+				`data: [DONE]`,
+				``,
+			}, "\n"))),
+		}, nil
+	})}
+	err := invokeOpenAICompatibleStreamingWithClientOptions(
+		t.Context(), httpc, "perplexity", "https://api.perplexity.ai/v1", "key",
+		&qtypes.OpenAIChatRequest{Model: "perplexity/sonar"},
+		&qtypes.AnthropicMessagesRequest{
+			Messages: []qtypes.AnthropicMessage{{Role: "user", Content: "Reply PONG"}},
+		},
+		io.Discard, "sonar", openAICompatibleInvocationOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBuildOpenAICompatibleRequestCarriesInboundParams(t *testing.T) {
 	seed := 7
 	frequencyPenalty := 0.4

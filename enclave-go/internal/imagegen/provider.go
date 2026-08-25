@@ -14,6 +14,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ const (
 )
 
 const bflGenerationTimeout = 5 * time.Minute
+const kreaGenerationTimeout = 5 * time.Minute
 
 const (
 	bflInitialPollDelay = 500 * time.Millisecond
@@ -44,6 +46,7 @@ type ProviderKeys struct {
 	Recraft string
 	BFL     string
 	Nscale  string
+	Krea    string
 }
 
 type Registry struct {
@@ -96,6 +99,7 @@ func NewRegistry(keys ProviderKeys, client *http.Client) *Registry {
 		keys: map[string]string{
 			"openai": keys.OpenAI, "grok": keys.XAI, "decart": keys.Decart,
 			"recraft": keys.Recraft, "bfl": keys.BFL, "nscale": keys.Nscale,
+			"krea": keys.Krea,
 		},
 	}
 }
@@ -128,6 +132,9 @@ func (r *Registry) Generate(
 	}
 	if resolved.Spec.Provider == "decart" {
 		return r.generateDecart(ctx, resolved, key, idempotencyKey)
+	}
+	if resolved.Spec.Provider == "krea" {
+		return r.generateKrea(ctx, resolved, key, idempotencyKey)
 	}
 	endpoint, payload, err := nativeRequest(resolved)
 	if err != nil {
@@ -506,6 +513,169 @@ func (r *Registry) generateDecart(
 	return &Result{Created: time.Now().Unix(), Images: []GeneratedImage{*generated}}, nil
 }
 
+type kreaJob struct {
+	JobID  string          `json:"job_id"`
+	Status string          `json:"status"`
+	Result json.RawMessage `json:"result"`
+	Error  struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func (r *Registry) generateKrea(
+	ctx context.Context,
+	resolved *ResolvedRequest,
+	key, idempotencyKey string,
+) (*Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, kreaGenerationTimeout)
+	defer cancel()
+	payload := map[string]any{
+		"prompt":       resolved.Request.Prompt,
+		"aspect_ratio": resolved.AspectRatio,
+		"resolution":   resolved.Resolution,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode Krea request: %w", err)
+	}
+	endpoint := "https://api.krea.ai/generate/image/" + resolved.Spec.UpstreamID
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create Krea request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	responseBody, status, err := r.doLimited(req, maxProviderErrorBytes)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status > 299 {
+		return nil, decodeProviderError(status, responseBody)
+	}
+	var job kreaJob
+	if err := decodeExactJSON(responseBody, &job); err != nil || strings.TrimSpace(job.JobID) == "" {
+		return nil, fmt.Errorf("Krea returned an invalid job response")
+	}
+
+	pollDelay := bflInitialPollDelay
+	for {
+		if err := waitForImagePoll(ctx, pollDelay); err != nil {
+			return nil, err
+		}
+		pollURL := "https://api.krea.ai/jobs/" + url.PathEscape(strings.TrimSpace(job.JobID))
+		pollReq, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+		if requestErr != nil {
+			return nil, fmt.Errorf("create Krea poll request: %w", requestErr)
+		}
+		pollReq.Header.Set("Authorization", "Bearer "+key)
+		pollReq.Header.Set("Accept", "application/json")
+		pollBody, pollStatus, pollErr := r.doLimited(pollReq, maxProviderErrorBytes)
+		if pollErr != nil {
+			pollDelay = nextImagePollDelay(pollDelay)
+			continue
+		}
+		if pollStatus < 200 || pollStatus > 299 {
+			if pollStatus == http.StatusTooManyRequests || pollStatus >= 500 {
+				pollDelay = nextImagePollDelay(pollDelay)
+				continue
+			}
+			return nil, decodeProviderError(pollStatus, pollBody)
+		}
+		job = kreaJob{}
+		if err := decodeExactJSON(pollBody, &job); err != nil {
+			return nil, fmt.Errorf("Krea returned an invalid poll response")
+		}
+		switch strings.ToLower(strings.TrimSpace(job.Status)) {
+		case "completed":
+			resultURL, urlErr := kreaResultURL(job.Result)
+			if urlErr != nil {
+				return nil, urlErr
+			}
+			mediaType, imageBytes, loadErr := llm.LoadNormalizedImage(ctx, resultURL)
+			if loadErr != nil {
+				return nil, fmt.Errorf("load Krea result: %w", loadErr)
+			}
+			generated, validateErr := ValidateImage(
+				base64.StdEncoding.EncodeToString(imageBytes),
+				strings.TrimPrefix(mediaType, "image/"),
+			)
+			if validateErr != nil {
+				return nil, validateErr
+			}
+			if shapeErr := validateOutputShape(resolved, generated); shapeErr != nil {
+				return nil, shapeErr
+			}
+			return &Result{Created: time.Now().Unix(), Images: []GeneratedImage{*generated}}, nil
+		case "failed", "cancelled":
+			message := strings.TrimSpace(job.Error.Message)
+			if message == "" {
+				message = "Krea generation failed"
+			}
+			return nil, &ProviderError{StatusCode: http.StatusBadGateway, Message: message}
+		case "backlogged", "queued", "scheduled", "processing", "sampling", "intermediate-complete":
+			pollDelay = nextImagePollDelay(pollDelay)
+			continue
+		default:
+			return nil, fmt.Errorf("Krea returned an unknown job status")
+		}
+	}
+}
+
+func kreaResultURL(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "", fmt.Errorf("Krea completed without an image URL")
+	}
+	var result struct {
+		URLs json.RawMessage `json:"urls"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil || len(result.URLs) == 0 {
+		return "", fmt.Errorf("Krea returned an invalid result")
+	}
+	var stringsList []string
+	if json.Unmarshal(result.URLs, &stringsList) == nil {
+		for _, candidate := range stringsList {
+			if strings.TrimSpace(candidate) != "" {
+				return candidate, nil
+			}
+		}
+	}
+	var typed []struct {
+		Type string `json:"type"`
+		URL  string `json:"url"`
+	}
+	if json.Unmarshal(result.URLs, &typed) == nil {
+		for _, wanted := range []string{"model", "preview"} {
+			for _, candidate := range typed {
+				if candidate.Type == wanted && strings.TrimSpace(candidate.URL) != "" {
+					return candidate.URL, nil
+				}
+			}
+		}
+	}
+	var mapped map[string]string
+	if json.Unmarshal(result.URLs, &mapped) == nil {
+		if candidate := strings.TrimSpace(mapped["model"]); candidate != "" {
+			return candidate, nil
+		}
+		keys := make([]string, 0, len(mapped))
+		for key := range mapped {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if candidate := strings.TrimSpace(mapped[key]); candidate != "" {
+				return candidate, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("Krea completed without an image URL")
+}
+
 func (r *Registry) doLimited(req *http.Request, limit int) ([]byte, int, error) {
 	resp, err := r.http.Do(req)
 	if err != nil {
@@ -574,7 +744,7 @@ func validateOutputShape(resolved *ResolvedRequest, generated *GeneratedImage) e
 		if math.Abs(gotRatio-wantRatio)/wantRatio > 0.02 {
 			return fmt.Errorf("image provider returned dimensions outside the request")
 		}
-	case "bfl", "nscale":
+	case "bfl", "nscale", "krea":
 		if generated.Width != 1024 || generated.Height != 1024 {
 			return fmt.Errorf("image provider returned dimensions outside the request")
 		}

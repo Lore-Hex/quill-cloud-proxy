@@ -23,6 +23,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/directproviders"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -322,6 +323,9 @@ func newBootstrapDirectClients(keys map[string]string) map[string]*openAICompati
 	for rawProvider, apiKey := range keys {
 		provider := strings.TrimSpace(rawProvider)
 		if !bootstrapDirectProviderAllowed(provider) || strings.TrimSpace(apiKey) == "" {
+			continue
+		}
+		if spec, ok := directproviders.Lookup(provider); ok && spec.MediaOnly {
 			continue
 		}
 		clients[provider] = newOpenAICompatible(provider, apiKey)

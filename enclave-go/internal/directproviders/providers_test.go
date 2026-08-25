@@ -13,8 +13,8 @@ func TestSpecsAreValidAndImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := All()
-	if len(all) != 18 {
-		t.Fatalf("provider specs = %d, want 18", len(all))
+	if len(all) != 20 {
+		t.Fatalf("provider specs = %d, want 20", len(all))
 	}
 	original := all[0]
 	all[0].Provider = "mutated"
@@ -32,6 +32,17 @@ func TestLookupRequiresCanonicalSlug(t *testing.T) {
 	}
 	if spec, ok := Lookup("aion-labs"); !ok || spec.BaseURL != "https://api.aionlabs.ai/v1" {
 		t.Fatalf("Lookup(aion-labs) = %#v, %v", spec, ok)
+	}
+}
+
+func TestSpecializedProviderContracts(t *testing.T) {
+	perplexity, ok := Lookup("perplexity")
+	if !ok || perplexity.ChatPath() != "/sonar" || perplexity.MediaOnly {
+		t.Fatalf("Perplexity spec = %#v, ok=%v", perplexity, ok)
+	}
+	krea, ok := Lookup("krea")
+	if !ok || !krea.MediaOnly || krea.ChatCompletionsPath != "" {
+		t.Fatalf("Krea spec = %#v, ok=%v", krea, ok)
 	}
 }
 
