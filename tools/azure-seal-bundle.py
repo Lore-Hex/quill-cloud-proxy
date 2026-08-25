@@ -136,6 +136,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_PHALA_SECRET",), "phala key", True),
     Binding(("QUILL_SILICONFLOW_SECRET",), "siliconflow key", True),
     Binding(("QUILL_TINFOIL_SECRET",), "tinfoil key", True),
+    Binding(("QUILL_NEAR_AI_SECRET",), "near ai key", True),
     Binding(("QUILL_VENICE_SECRET",), "venice key", True),
     Binding(("QUILL_PARASAIL_SECRET",), "parasail key", True),
     Binding(("QUILL_LIGHTNING_SECRET",), "lightning key", True),

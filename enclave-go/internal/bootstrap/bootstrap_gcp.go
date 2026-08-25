@@ -133,6 +133,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	phalaSecret := os.Getenv("QUILL_PHALA_SECRET")
 	siliconflowSecret := os.Getenv("QUILL_SILICONFLOW_SECRET")
 	tinfoilSecret := os.Getenv("QUILL_TINFOIL_SECRET")
+	nearAISecret := os.Getenv("QUILL_NEAR_AI_SECRET")
 	veniceSecret := os.Getenv("QUILL_VENICE_SECRET")
 	// 2026-05-11 batch: parasail / lightning / gmi / deepinfra
 	parasailSecret := os.Getenv("QUILL_PARASAIL_SECRET")
@@ -210,6 +211,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		phalaSecret,
 		siliconflowSecret,
 		tinfoilSecret,
+		nearAISecret,
 		veniceSecret,
 		parasailSecret,
 		lightningSecret,
@@ -408,6 +410,13 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		tinfoilKey, err = fetchSecret(ctx, httpc, token, project, tinfoilSecret)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap/gcp: tinfoil key: %w", err)
+		}
+	}
+	var nearAIKey []byte
+	if nearAISecret != "" {
+		nearAIKey, err = fetchSecret(ctx, httpc, token, project, nearAISecret)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap/gcp: near ai key: %w", err)
 		}
 	}
 	var veniceKey []byte
@@ -770,6 +779,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		PhalaAPIKey:                  strings.TrimSpace(string(phalaKey)),
 		SiliconFlowAPIKey:            strings.TrimSpace(string(siliconflowKey)),
 		TinfoilAPIKey:                strings.TrimSpace(string(tinfoilKey)),
+		NearAIAPIKey:                 strings.TrimSpace(string(nearAIKey)),
 		VeniceAPIKey:                 strings.TrimSpace(string(veniceKey)),
 		ParasailAPIKey:               strings.TrimSpace(string(parasailKey)),
 		LightningAPIKey:              strings.TrimSpace(string(lightningKey)),

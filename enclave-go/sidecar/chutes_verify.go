@@ -24,7 +24,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/go-tdx-guest/abi"
 	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
 	tdxverify "github.com/google/go-tdx-guest/verify"
 )
@@ -112,10 +111,7 @@ func newChutesVerifier() (*chutesVerifier, error) {
 		nras:         newNRASVerifier(),
 		now:          time.Now,
 		verifyTDX: func(quote []byte) error {
-			opts := tdxverify.DefaultOptions()
-			opts.GetCollateral = true
-			opts.CheckRevocations = true
-			return tdxverify.RawTdxQuote(quote, opts)
+			return tdxverify.RawTdxQuote(quote, newTDXVerificationOptions())
 		},
 	}, nil
 }
@@ -224,20 +220,9 @@ func (v *chutesVerifier) verify(ctx context.Context, request *chutesVerification
 	if err != nil || len(quote) == 0 {
 		return nil, errors.New("invalid signed Intel TDX quote")
 	}
-	if err := v.verifyTDX(quote); err != nil {
-		return nil, fmt.Errorf("Intel TDX verification failed: %w", err)
-	}
-	parsed, err := abi.QuoteToProto(quote)
+	quoteBody, err := verifyTDXQuote(quote, v.verifyTDX)
 	if err != nil {
-		return nil, fmt.Errorf("parse verified Intel TDX quote: %w", err)
-	}
-	quoteV4, ok := parsed.(*tdxpb.QuoteV4)
-	if !ok || quoteV4.GetTdQuoteBody() == nil {
-		return nil, errors.New("verified Intel quote is not TDX QuoteV4")
-	}
-	quoteBody := quoteV4.GetTdQuoteBody()
-	if len(quoteBody.GetTdAttributes()) != 8 || quoteBody.GetTdAttributes()[0]&1 != 0 {
-		return nil, errors.New("Chutes TDX workload has debug mode enabled or invalid attributes")
+		return nil, fmt.Errorf("Chutes quote: %w", err)
 	}
 	if len(quoteBody.GetReportData()) != 64 {
 		return nil, errors.New("Chutes TDX report data has invalid length")

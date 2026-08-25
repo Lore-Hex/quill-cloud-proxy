@@ -246,6 +246,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "phala_api_key",
         "siliconflow_api_key",
         "tinfoil_api_key",
+        "near_ai_api_key",
         "venice_api_key",
         "parasail_api_key",
         "lightning_api_key",

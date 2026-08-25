@@ -108,6 +108,7 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("phala_api_key", "trustedrouter-phala-confidential-api-key"),
     ("siliconflow_api_key", "trustedrouter-siliconflow-api-key"),
     ("tinfoil_api_key", "trustedrouter-tinfoil-api-key"),
+    ("near_ai_api_key", "trustedrouter-near-ai-api-key"),
     ("venice_api_key", "trustedrouter-venice-api-key"),
     # 2026-05-11 batch — three new OpenAI-compatible providers, all
     # hosting google/gemma-4-31b-it among other open-weight models.

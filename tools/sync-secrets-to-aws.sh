@@ -95,6 +95,7 @@ SECRETS=(
   trustedrouter-phala-confidential-api-key
   trustedrouter-siliconflow-api-key
   trustedrouter-tinfoil-api-key
+  trustedrouter-near-ai-api-key
   trustedrouter-venice-api-key
   # 2026-05-11 batch.
   trustedrouter-parasail-api-key

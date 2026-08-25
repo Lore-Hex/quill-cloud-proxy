@@ -53,6 +53,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "SILICON_FLOW_API_KEY": "trustedrouter-siliconflow-api-key",
     "NOVITA_API_KEY": "trustedrouter-novita-api-key",
     "TINFOIL_API_KEY": "trustedrouter-tinfoil-api-key",
+    "NEAR_API_KEY": "trustedrouter-near-ai-api-key",
     "GROK_API_KEY": "trustedrouter-grok-api-key",
     "GMI_API_KEY": "trustedrouter-gmi-api-key",
     "XIAOMI_API_KEY": "trustedrouter-xiaomi-api-key",

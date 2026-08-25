@@ -261,11 +261,15 @@ func TestChutesVerifierAcceptsOnlyFullyBoundEvidence(t *testing.T) {
 	binding := sha256.Sum256([]byte(nonce + e2ePubkey))
 	nras := newNRASTestServer(t, now, hex.EncodeToString(binding[:]), true)
 	defer nras.server.Close()
+	verifyCalls := 0
 	verifier := &chutesVerifier{
 		measurements: []chutesMeasurement{*measurement},
 		nras:         nras.verifier(),
 		now:          func() time.Time { return now },
-		verifyTDX:    func([]byte) error { return nil },
+		verifyTDX: func([]byte) error {
+			verifyCalls++
+			return nil
+		},
 	}
 	result, err := verifier.verify(context.Background(), request)
 	if err != nil {
@@ -273,6 +277,9 @@ func TestChutesVerifierAcceptsOnlyFullyBoundEvidence(t *testing.T) {
 	}
 	if result.Policy != chutesVerificationPolicy || result.ExpiresAt.Sub(result.VerifiedAt) != chutesProofTTL {
 		t.Fatalf("unexpected verification result: %#v", result)
+	}
+	if verifyCalls != 1 {
+		t.Fatalf("Intel TDX verifier called %d times, want exactly once", verifyCalls)
 	}
 }
 
