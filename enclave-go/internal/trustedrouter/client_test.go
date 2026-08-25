@@ -637,6 +637,7 @@ func TestAuthorizeAndSettleCarryAttributionWithoutMutableSettleTags(t *testing.T
 		App:                        req.App,
 		HTTPReferer:                req.HTTPReferer,
 		AppCategories:              req.AppCategories,
+		PriceTierInputTokens:       6,
 		AdditionalCostMicrodollars: 7_000,
 	})
 	if err != nil {
@@ -650,6 +651,9 @@ func TestAuthorizeAndSettleCarryAttributionWithoutMutableSettleTags(t *testing.T
 	}
 	if settlePayload["additional_cost_microdollars"] != float64(7_000) {
 		t.Fatalf("settle additional cost = %#v", settlePayload)
+	}
+	if settlePayload["price_tier_input_tokens"] != float64(6) {
+		t.Fatalf("settle price tier input = %#v", settlePayload)
 	}
 }
 

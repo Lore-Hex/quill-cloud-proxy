@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
 
 // TestRealOrEstimatedTokensFullCacheHitKeepsRealZeroInput guards the
@@ -100,5 +101,18 @@ func TestRealOrEstimatedTokensNonAnthropicZeroInputWithCacheEstimates(t *testing
 	in, out, estimated := realOrEstimatedTokens(result, 512, 6)
 	if in != 512 || out != 6 || !estimated {
 		t.Fatalf("got (%d, %d, %v), want (512, 6, true)", in, out, estimated)
+	}
+}
+
+func TestApplyCacheUsageCopiesPrivatePriceTierBasis(t *testing.T) {
+	result := adapter.StreamResult{Usage: &adapter.StreamUsage{
+		InputTokens:          1266,
+		OutputTokens:         22,
+		PriceTierInputTokens: 6,
+	}}
+	var usage trustedrouter.Usage
+	applyCacheUsage(&usage, result)
+	if usage.PriceTierInputTokens != 6 {
+		t.Fatalf("PriceTierInputTokens = %d, want 6", usage.PriceTierInputTokens)
 	}
 }

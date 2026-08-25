@@ -377,6 +377,23 @@ func TestRelayAnthropicStreamSynthesizesFramingAndRemapsIndexes(t *testing.T) {
 	}
 }
 
+func TestRelayAnthropicStreamKeepsPriceTierInputPrivate(t *testing.T) {
+	synthetic := "event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":1266,"output_tokens":22,"price_tier_input_tokens":6}}` +
+		"\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	var out bytes.Buffer
+	result, err := RelayAnthropicStream(strings.NewReader(synthetic), &out, "msg_local", "fugu-ultra-v1.1")
+	if err != nil {
+		t.Fatalf("RelayAnthropicStream: %v", err)
+	}
+	if result.Usage == nil || result.Usage.PriceTierInputTokens != 6 {
+		t.Fatalf("captured usage = %#v, want private tier basis 6", result.Usage)
+	}
+	if strings.Contains(out.String(), "price_tier_input_tokens") {
+		t.Fatalf("client stream leaked private settlement field: %s", out.String())
+	}
+}
+
 func TestRelayAnthropicStreamEmitsValidAnthropicStopReasonsForGeminiStops(t *testing.T) {
 	valid := map[string]bool{
 		"end_turn":      true,
