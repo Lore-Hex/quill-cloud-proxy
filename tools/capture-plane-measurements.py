@@ -57,8 +57,10 @@ import json
 import re
 import socket
 import ssl
+import os
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -127,6 +129,131 @@ PROVENANCE_NONE = "none"
 
 def _provenance(source_commit: str) -> str:
     return PROVENANCE_NONE if source_commit == SOURCE_COMMIT_UNSET else PROVENANCE_ASSERTED
+
+
+# ---------------------------------------------------------------------------
+# Measurement CONSUMERS. Publishing a new measurement is not the end of a
+# roll: everything that PINS the old one must move too, or it keeps
+# distrusting a healthy fleet. The trust page updates here; the SKR/IAM pins
+# have their own narrow steps. The one consumer nothing updated was the AWS
+# control plane's synthetic monitor, which bakes TR_ATTESTATION_EXPECTED_PCR0
+# into the tr-eu App Runner service env at ITS deploy time -- so after the
+# 2026-08-22 ACME roll and again after the 08-24 abuse-hardening roll,
+# aws.trustedrouter.com/status sat on "Trust degraded" (pcr0_mismatch every
+# minute) for two days while every enclave was healthy. A monitor that cries
+# wolf on every roll is a monitor nobody believes during a real incident,
+# which is the exact property a status page exists to protect.
+#
+# So the capture now checks that consumer every run, and --repin-aws-monitor
+# fixes it in the same breath as the publish. "Could not ask" is reported as
+# exactly that -- it is not evidence the pin matches (the empty-result trap).
+# ---------------------------------------------------------------------------
+
+AWS_MONITOR_REGION = "eu-west-3"
+AWS_MONITOR_SERVICE_ARN = (
+    "arn:aws:apprunner:eu-west-3:330422590279:service/"
+    "tr-eu/5e56b7ea76024ff0abbdaf389f3e5e45"
+)
+AWS_MONITOR_PIN_ENV = "TR_ATTESTATION_EXPECTED_PCR0"
+
+
+def monitor_pin_verdict(live_pcr0: str, pin_value: str | None, pin_error: str | None) -> tuple[str, str]:
+    """Classify the AWS monitor's pin against the live PCR0.
+
+    Returns (state, message) with state one of "ok" / "mismatch" / "unknown".
+    Pure so the classification is testable without an AWS account; the caller
+    supplies either a pin value or the error that prevented reading one.
+    """
+    if pin_error is not None:
+        return (
+            "unknown",
+            "could not read the AWS monitor's PCR0 pin (NOT evidence it matches): "
+            + pin_error,
+        )
+    if pin_value is None or not pin_value.strip():
+        return ("unknown", "AWS monitor has no PCR0 pin set (binding-only mode)")
+    if pin_value.strip().lower() == live_pcr0.strip().lower():
+        return ("ok", "AWS monitor pin matches the live PCR0")
+    return (
+        "mismatch",
+        "AWS monitor pins "
+        + pin_value.strip()[:16]
+        + "... but the fleet serves "
+        + live_pcr0[:16]
+        + "...: aws.trustedrouter.com/status reports pcr0_mismatch every minute "
+        "until the pin moves. Re-run with --repin-aws-monitor, or update "
+        f"{AWS_MONITOR_PIN_ENV} on {AWS_MONITOR_SERVICE_ARN} by hand.",
+    )
+
+
+def _read_aws_monitor_pin() -> tuple[str | None, str | None]:
+    """(pin_value, error) from the live App Runner service env."""
+    try:
+        proc = subprocess.run(
+            [
+                "aws", "apprunner", "describe-service",
+                "--region", AWS_MONITOR_REGION,
+                "--service-arn", AWS_MONITOR_SERVICE_ARN,
+                "--query",
+                "Service.SourceConfiguration.ImageRepository"
+                ".ImageConfiguration.RuntimeEnvironmentVariables."
+                + AWS_MONITOR_PIN_ENV,
+                "--output", "text",
+            ],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except FileNotFoundError:
+        return None, "aws CLI not installed"
+    except subprocess.TimeoutExpired:
+        return None, "aws apprunner describe-service timed out"
+    if proc.returncode != 0:
+        return None, (proc.stderr or "describe-service failed").strip().splitlines()[0]
+    value = proc.stdout.strip()
+    # `--output text` spells JSON null as the literal string "None".
+    return (None if value in ("", "None") else value), None
+
+
+def repin_aws_monitor(new_pcr0: str) -> None:
+    """Point the monitor's pin at new_pcr0 via an in-place env patch.
+
+    Control-plane change only -- no enclave, no measurement, no attestation
+    surface. Reads the full SourceConfiguration, rewrites the ONE variable,
+    and submits it back; App Runner rolls the service in a few minutes and
+    the next probe cycle goes green.
+    """
+    describe = subprocess.run(
+        [
+            "aws", "apprunner", "describe-service",
+            "--region", AWS_MONITOR_REGION,
+            "--service-arn", AWS_MONITOR_SERVICE_ARN,
+            "--query", "Service.SourceConfiguration",
+            "--output", "json",
+        ],
+        capture_output=True, text=True, timeout=30, check=True,
+    )
+    config = json.loads(describe.stdout)
+    env = config["ImageRepository"]["ImageConfiguration"]["RuntimeEnvironmentVariables"]
+    env[AWS_MONITOR_PIN_ENV] = new_pcr0
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+        json.dump(config, handle)
+        config_path = handle.name
+    os.chmod(config_path, 0o600)
+    try:
+        subprocess.run(
+            [
+                "aws", "apprunner", "update-service",
+                "--region", AWS_MONITOR_REGION,
+                "--service-arn", AWS_MONITOR_SERVICE_ARN,
+                "--source-configuration", f"file://{config_path}",
+            ],
+            capture_output=True, text=True, timeout=60, check=True,
+        )
+    finally:
+        os.unlink(config_path)
+    print(
+        f"  repinned AWS monitor to {new_pcr0[:16]}...; App Runner rolls the "
+        "service in ~2-4 min, probes go green on the next cycle"
+    )
 
 
 def _git(*args: str) -> str | None:
@@ -621,6 +748,16 @@ def main() -> int:
             "envelope-format ordering gate treats as a refusal."
         ),
     )
+    parser.add_argument(
+        "--repin-aws-monitor",
+        action="store_true",
+        help=(
+            "when the AWS control plane's synthetic monitor pins a PCR0 other than the one "
+            "the fleet serves, update its pin in the same run (App Runner env change; no "
+            "enclave, no measurement). Without this flag a stale pin is reported loudly but "
+            "left alone."
+        ),
+    )
     args = parser.parse_args()
     commit = resolve_source_commit(args.source_commit)
 
@@ -646,6 +783,18 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         failures.append(f"Azure: {exc}")
         azure = None
+
+    if aws:
+        # The roll checklist's forgotten consumer: the AWS monitor's pin. A
+        # mismatch is reported on EVERY capture but fails nothing here — an
+        # Azure roll's publish must not be hostage to an AWS monitor env var.
+        # The AWS roll's own checklist (release-aws-enclave.sh) passes
+        # --repin-aws-monitor so the pin moves in the same command that
+        # publishes the measurement.
+        state, message = monitor_pin_verdict(aws["pcr0"], *_read_aws_monitor_pin())
+        print(f"AWS   monitor  {message}")
+        if state == "mismatch" and args.repin_aws_monitor:
+            repin_aws_monitor(aws["pcr0"])
 
     for failure in failures:
         print(f"FAILED {failure}", file=sys.stderr)

@@ -438,5 +438,47 @@ class PublishedRecordTests(unittest.TestCase):
             )
 
 
+class TestMonitorPinVerdict(unittest.TestCase):
+    """The AWS monitor's pin check must not confuse 'stale' with 'could not ask'.
+
+    A stale pin left the public AWS status page on "Trust degraded" for two
+    days (2026-08-23..25) across two measured rolls; the fix rides the roll via
+    --repin-aws-monitor. The verdict function is pure so these run without an
+    AWS account.
+    """
+
+    LIVE = "fe" * 48
+
+    def test_matching_pin_is_ok(self) -> None:
+        state, _ = capture.monitor_pin_verdict(self.LIVE, self.LIVE, None)
+        self.assertEqual(state, "ok")
+
+    def test_case_and_whitespace_do_not_fabricate_a_mismatch(self) -> None:
+        state, _ = capture.monitor_pin_verdict(self.LIVE, f"  {self.LIVE.upper()} ", None)
+        self.assertEqual(state, "ok")
+
+    def test_stale_pin_is_a_mismatch_naming_both_values_and_the_fix(self) -> None:
+        stale = "23" * 48
+        state, message = capture.monitor_pin_verdict(self.LIVE, stale, None)
+        self.assertEqual(state, "mismatch")
+        self.assertIn(stale[:16], message)
+        self.assertIn(self.LIVE[:16], message)
+        self.assertIn("--repin-aws-monitor", message)
+
+    def test_read_error_is_unknown_not_ok(self) -> None:
+        # The empty-result trap: an expired credential must never read as "the
+        # pin matches". It also must not read as a mismatch that triggers an
+        # automated repin against a value nobody actually saw.
+        state, message = capture.monitor_pin_verdict(self.LIVE, None, "ExpiredToken")
+        self.assertEqual(state, "unknown")
+        self.assertIn("NOT evidence", message)
+        self.assertIn("ExpiredToken", message)
+
+    def test_absent_pin_is_binding_only_not_a_mismatch(self) -> None:
+        state, message = capture.monitor_pin_verdict(self.LIVE, None, None)
+        self.assertEqual(state, "unknown")
+        self.assertIn("binding-only", message)
+
+
 if __name__ == "__main__":
     unittest.main()
