@@ -1,16 +1,18 @@
 {
   "accepted_image_digests": [
     "sha256:2a522c1b12c847fe5f104a8fd11747119169abd43d61e5d39380ad229c47dc03",
-    "sha256:ade1b638ebdb4aba19370ff7be1135b9137c50034b7ccd779db30c429339acc6"
+    "sha256:ade1b638ebdb4aba19370ff7be1135b9137c50034b7ccd779db30c429339acc6",
+    "sha256:42211d087aae06d87bf4f06f0fa268dd0f8924aa366f1a769b0e5e8e00479661"
   ],
   "accepted_image_references": [
     "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-e106265",
-    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-5b5d15e"
+    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-5b5d15e",
+    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-7878ec3"
   ],
   "api_base_url": "https://api.trustedrouter.com/v1",
   "attestation_audience": "quill-cloud",
   "attestation_issuer": "https://confidentialcomputing.googleapis.com",
-  "commit": "5b5d15e",
+  "commit": "7878ec3",
   "compliance": {
     "hipaa_readiness": "https://trustedrouter.com/legal/hipaa-readiness",
     "hipaa_status": "readiness_documentation_prepared_baa_required_for_phi",
@@ -26,12 +28,12 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "image_digest": "sha256:ade1b638ebdb4aba19370ff7be1135b9137c50034b7ccd779db30c429339acc6",
-  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-5b5d15e",
+  "image_digest": "sha256:42211d087aae06d87bf4f06f0fa268dd0f8924aa366f1a769b0e5e8e00479661",
+  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-7878ec3",
   "platform": "gcp-confidential-space",
   "release_state": "rolling",
   "released_by": "github-actions:deploy-enclave-gcp",
-  "source_commit": "5b5d15e",
+  "source_commit": "7878ec3",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "source_repositories": {
     "attested_gateway": "https://github.com/Lore-Hex/quill-cloud-proxy",
