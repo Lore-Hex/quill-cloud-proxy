@@ -51,6 +51,22 @@ set -euo pipefail
 AWS_REGION="${AWS_REGION:-us-west-2}"
 AWS_SECRET_PREFIX="${AWS_SECRET_PREFIX:-quill/}"   # AWS secret name = prefix + GCP secret id
 
+# Regions a NEWLY CREATED secret is replicated to, comma-separated. The serving
+# EU pair keeps eu-west-1 as the primary for quill/* with an eu-west-3 replica;
+# a new secret must be born with the same shape or the replica region's enclave
+# (which reads its OWN region's store) never sees it. Defaults to the pairing
+# the fleet actually runs; export AWS_REPLICA_REGIONS="" to create unreplicated.
+if [ "${AWS_REPLICA_REGIONS+x}" != "x" ]; then
+  case "$AWS_REGION" in
+    eu-west-1) AWS_REPLICA_REGIONS="eu-west-3" ;;
+    *)         AWS_REPLICA_REGIONS="" ;;
+  esac
+fi
+
+# Per-secret outcome tallies for the end-of-run summary (see mirror_one).
+REPLICA_SKIPS=0
+FAILED_SECRETS=()
+
 # Provider API key secrets that the multi-provider enclave consumes.
 # Each entry is the provider secret's stable logical name. The corresponding
 # env-var name the enclave reads is keyed off the same id (e.g.
@@ -303,23 +319,59 @@ sys.stdout.write(str(v))
     return
   fi
 
-  # AWS create-or-update pattern. Try create first; if it 409s, do an update.
+  # Per-secret failures must not kill the batch. This run is a mirror of ~90
+  # independent entries; under `set -e` a single poisoned entry used to abort
+  # everything after it — on 2026-08-24 quill/trustedrouter-synthetic-monitor-
+  # api-key (whose PRIMARY lives in eu-west-3, inverted from every other
+  # quill/* secret) failed PutSecretValue in eu-west-1 with "Operation not
+  # permitted on a replica secret" and silently starved every entry behind it.
+  # A replica-region rejection is EXPECTED here and not a failure: the value
+  # reaches that region through replication when the primary is written.
+  # Anything else is a real failure — counted, reported at the end, nonzero
+  # exit — but the rest of the batch still runs.
+  local write_err
   if aws secretsmanager describe-secret --secret-id "$aws_secret_name" \
        --region "$AWS_REGION" >/dev/null 2>&1; then
     log "  updating existing AWS secret"
-    aws secretsmanager put-secret-value \
+    if ! write_err=$(aws secretsmanager put-secret-value \
       --secret-id "$aws_secret_name" \
       --secret-string "$value" \
-      --region "$AWS_REGION" >/dev/null
+      --region "$AWS_REGION" 2>&1 >/dev/null); then
+      if [[ "$write_err" == *"replica secret"* ]]; then
+        log "  SKIP: replica here — its primary is in another region; the primary's sync covers it"
+        REPLICA_SKIPS=$((REPLICA_SKIPS + 1))
+      else
+        log "  FAIL: $(printf '%s' "$write_err" | head -1)"
+        FAILED_SECRETS+=("$secret_id")
+      fi
+      return
+    fi
   else
     log "  creating new AWS secret"
-    aws secretsmanager create-secret \
+    # New secrets must reach every region this cloud serves from, exactly like
+    # the existing quill/* set (primary in $AWS_REGION, replicas elsewhere).
+    # Without this, a fresh secret exists only in the primary region and the
+    # other region's enclave — which reads its OWN region's store — never sees
+    # it: the provider is silently dark on one region of the same cloud.
+    local replica_args=()
+    if [ -n "$AWS_REPLICA_REGIONS" ]; then
+      local r
+      for r in ${AWS_REPLICA_REGIONS//,/ }; do
+        replica_args+=(--add-replica-regions "Region=$r")
+      done
+    fi
+    if ! write_err=$(aws secretsmanager create-secret \
       --name "$aws_secret_name" \
       --description "Published by the deploy (tools/sync-secrets-to-aws.sh --values). AWS Secrets Manager is this cloud's own store; no other cloud is read, at provisioning time or at runtime." \
       --secret-string "$value" \
       --region "$AWS_REGION" \
+      "${replica_args[@]}" \
       --tags 'Key=Source,Value=deploy' \
-             "Key=SecretId,Value=${secret_id}" >/dev/null
+             "Key=SecretId,Value=${secret_id}" 2>&1 >/dev/null); then
+      log "  FAIL: $(printf '%s' "$write_err" | head -1)"
+      FAILED_SECRETS+=("$secret_id")
+      return
+    fi
   fi
 }
 
@@ -349,4 +401,12 @@ else
   done
 fi
 
+if [ "$REPLICA_SKIPS" -gt 0 ]; then
+  log "note: $REPLICA_SKIPS replica-region skip(s) — their primaries are synced from the primary's own region"
+fi
+if [ "${#FAILED_SECRETS[@]}" -gt 0 ]; then
+  log "FAILED (${#FAILED_SECRETS[@]}): ${FAILED_SECRETS[*]}"
+  log "The rest of the batch was still published; fix the above and re-run (idempotent)."
+  exit 1
+fi
 log "done"
