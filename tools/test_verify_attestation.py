@@ -148,7 +148,7 @@ def make_cert_der(dns_names: list[str], ip_addresses: list[str]) -> bytes:
     from cryptography.x509.oid import NameOID
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    now = datetime.datetime.now(datetime.UTC)
+    now = datetime.datetime.now(datetime.timezone.utc)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "unused.example")])
     san_values = [x509.DNSName(name) for name in dns_names]
     san_values.extend(x509.IPAddress(ipaddress.ip_address(value)) for value in ip_addresses)
@@ -173,7 +173,7 @@ def make_cert_pem_pair(dns_names: list[str], ip_addresses: list[str]) -> tuple[b
     from cryptography.x509.oid import NameOID
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    now = datetime.datetime.now(datetime.UTC)
+    now = datetime.datetime.now(datetime.timezone.utc)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "unused.example")])
     san_values = [x509.DNSName(name) for name in dns_names]
     san_values.extend(x509.IPAddress(ipaddress.ip_address(value)) for value in ip_addresses)
@@ -270,6 +270,128 @@ class GCPNonceBindingTests(VerifierTestCase):
             exporter_hex=exporter,
             nonce_hex=verifier_nonce,
         )
+
+    def test_extra_receipt_key_commitment_is_tolerated_by_membership_checks(self) -> None:
+        exporter = "aa" * 32
+        verifier_nonce = "bb" * 32
+        receipt_key_commitment = "cc" * 32
+        nonces = VERIFIER.gcp_nonce_values(
+            {"eat_nonce": ["dd" * 32, exporter, verifier_nonce, receipt_key_commitment]}
+        )
+
+        VERIFIER.require_gcp_fresh_exporter_binding(
+            nonces,
+            exporter_hex=exporter,
+            nonce_hex=verifier_nonce,
+        )
+
+
+class AzureRuntimeDataCompatibilityTests(VerifierTestCase):
+    def test_legacy_runtime_data_reconstruction_is_byte_identical(self) -> None:
+        fields = {
+            "leaf_fp": "aa",
+            "device_hash": "bb",
+            "channel_binding": "cc",
+            "nonce": "dd",
+        }
+
+        self.assertEqual(
+            VERIFIER.canonical_runtime_data_json(fields),
+            b'{"channel_binding":"cc","device_hash":"bb","leaf_fp":"aa","nonce":"dd"}',
+        )
+
+    def test_receipt_key_fingerprint_sorts_after_nonce_and_is_omitempty(self) -> None:
+        fields = {
+            "leaf_fp": "aa",
+            "device_hash": "bb",
+            "channel_binding": "cc",
+            "nonce": "dd",
+            "receipt_key_fp": "ee",
+        }
+
+        self.assertEqual(
+            VERIFIER.canonical_runtime_data_json(fields),
+            b'{"channel_binding":"cc","device_hash":"bb","leaf_fp":"aa",'
+            b'"nonce":"dd","receipt_key_fp":"ee"}',
+        )
+        fields["receipt_key_fp"] = ""
+        self.assertEqual(
+            VERIFIER.canonical_runtime_data_json(fields),
+            b'{"channel_binding":"cc","device_hash":"bb","leaf_fp":"aa","nonce":"dd"}',
+        )
+
+
+class AWSUserDataCompatibilityTests(VerifierTestCase):
+    EXPORTER = bytes.fromhex("aa" * 32)
+    NONCE_HEX = "bb" * 32
+    RECEIPT_KEY_COMMITMENT = bytes.fromhex("cc" * 32)
+
+    def check_user_data(self, user_data: bytes, *, require_exporter: bool) -> None:
+        original_parse = VERIFIER.parse_cose_payload
+        try:
+            VERIFIER.parse_cose_payload = lambda _blob: (
+                {"user_data": user_data, "nonce": bytes.fromhex(self.NONCE_HEX)},
+                b"payload",
+            )
+            VERIFIER._require_attestation_body_binds_exporter(
+                b"\x84cose",
+                self.EXPORTER,
+                self.NONCE_HEX,
+                "test",
+                require_exporter=require_exporter,
+            )
+        finally:
+            VERIFIER.parse_cose_payload = original_parse
+
+    def test_64_96_and_128_byte_shapes_are_accepted(self) -> None:
+        prefix = bytes(64)
+        self.check_user_data(prefix, require_exporter=False)
+        self.check_user_data(prefix + self.EXPORTER, require_exporter=True)
+        self.check_user_data(
+            prefix + self.EXPORTER + self.RECEIPT_KEY_COMMITMENT,
+            require_exporter=True,
+        )
+        self.check_user_data(
+            prefix + bytes(32) + self.RECEIPT_KEY_COMMITMENT,
+            require_exporter=False,
+        )
+
+    def test_absent_user_data_still_passes_liveness_mode(self) -> None:
+        """--no-require-exporter-binding is the DNS reconciler's rollout
+        liveness probe. Absent user_data passed there before the length
+        schema existed, and a receipts-driven shape change must not add a
+        failure to the deploy path."""
+        self.check_user_data(b"", require_exporter=False)
+        # Required-exporter mode still fails on empty user_data; the message
+        # is now the schema one rather than the missing-exporter one.
+        with self.assertRaisesRegex(SystemExit, "invalid length"):
+            self.check_user_data(b"", require_exporter=True)
+
+    def test_non_schema_lengths_are_rejected(self) -> None:
+        for length in (95, 127, 129):
+            with self.subTest(length=length), self.assertRaisesRegex(
+                SystemExit, "invalid length"
+            ):
+                self.check_user_data(bytes(length), require_exporter=False)
+
+    def test_128_byte_shape_reads_exporter_from_64_through_96(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "exporter mismatch"):
+            self.check_user_data(
+                bytes(64) + self.RECEIPT_KEY_COMMITMENT + self.EXPORTER,
+                require_exporter=True,
+            )
+
+    def test_128_byte_boot_time_zero_exporter_is_not_a_valid_match(self) -> None:
+        original_exporter = self.EXPORTER
+        try:
+            self.EXPORTER = bytes(32)
+            with self.assertRaisesRegex(SystemExit, "no TLS exporter"):
+                self.check_user_data(
+                    bytes(96) + self.RECEIPT_KEY_COMMITMENT,
+                    require_exporter=True,
+                )
+        finally:
+            self.EXPORTER = original_exporter
 
 
 def jwt_for_payload(payload: dict) -> bytes:

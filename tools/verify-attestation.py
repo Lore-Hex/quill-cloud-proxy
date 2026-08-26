@@ -191,11 +191,14 @@ _HEX_RE = re.compile(r"\A[0-9a-f]+\Z")
 # Field names from runtimeData in enclave-go/internal/attestation/attestation_azure.go,
 # in Go struct DECLARATION order — encoding/json emits them in that order and the
 # verifier has to reproduce those exact bytes to recheck REPORT_DATA.
-MAA_RUNTIME_FIELDS = ("leaf_fp", "device_hash", "channel_binding", "nonce")
-# channel_binding and nonce carry `omitempty`; leaf_fp and device_hash do not.
-MAA_RUNTIME_OMITEMPTY_FIELDS = ("channel_binding", "nonce")
+MAA_RUNTIME_FIELDS = ("leaf_fp", "device_hash", "channel_binding", "nonce", "receipt_key_fp")
+# The signed-inference-receipts project adds receipt_key_fp after nonce because
+# MAA re-serialises keys alphabetically. It is tolerated, not verified here;
+# omitempty keeps the legacy REPORT_DATA reconstruction byte-identical.
+MAA_RUNTIME_OMITEMPTY_FIELDS = ("channel_binding", "nonce", "receipt_key_fp")
 EXPORTER_LABEL = b"EXPORTER-Channel-Binding"
 EXPORTER_LENGTH = 32
+AWS_USER_DATA_LENGTHS = frozenset({64, 96, 128})
 _GCP_JWKS: dict[str, Any] | None = None
 _MAA_JWKS: dict[str, dict[str, Any]] = {}
 _TLS_IO_TIMEOUT_SECONDS = 15.0
@@ -483,6 +486,39 @@ def require_gcp_fresh_exporter_binding(
     )
 
 
+def aws_user_data_exporter(user_data: bytes, *, require_exporter: bool) -> bytes | None:
+    """Validate the AWS UserData shape and return its exporter when required.
+
+    Absent/empty user_data stays acceptable when the exporter is not required:
+    that is the --no-require-exporter-binding liveness mode the DNS reconciler
+    runs during rollouts, and it tolerated a missing user_data before this
+    helper existed. Tightening liveness mode would put a new failure on the
+    deploy path for a shape change that has nothing to do with liveness.
+    Non-empty user_data of a non-schema length is malformed and fails in every
+    mode.
+    """
+    if not user_data and not require_exporter:
+        return None
+    if len(user_data) not in AWS_USER_DATA_LENGTHS:
+        raise ValueError(
+            f"AWS attestation user_data has invalid length {len(user_data)}; "
+            f"expected one of {sorted(AWS_USER_DATA_LENGTHS)}"
+        )
+    if not require_exporter:
+        return None
+    if len(user_data) == 64:
+        raise ValueError("AWS attestation has no TLS exporter channel binding in user_data")
+
+    bound_exporter = user_data[64:96]
+    # The signed-inference-receipts project reserves [96:128] for its receipt
+    # key commitment. That commitment is tolerated, not verified here. A
+    # 128-byte boot-time document uses an all-zero exporter slot because no TLS
+    # session exists yet; never mistake that sentinel for a verified binding.
+    if len(user_data) == 128 and bound_exporter == bytes(EXPORTER_LENGTH):
+        raise ValueError("AWS attestation has no TLS exporter channel binding in user_data")
+    return bound_exporter
+
+
 def _new_pyopenssl_context(*, ca_trust: bool = True) -> SSL.Context:
     """Build the client TLS context.
 
@@ -686,10 +722,8 @@ def _require_attestation_body_binds_exporter(
             return
         payload, _ = parse_cose_payload(blob)
         user_data = payload.get("user_data") or b""
-        if require_exporter:
-            if len(user_data) < 96:
-                raise ValueError("AWS attestation has no TLS exporter channel binding in user_data")
-            bound_exporter = user_data[64:96]
+        bound_exporter = aws_user_data_exporter(user_data, require_exporter=require_exporter)
+        if bound_exporter is not None:
             if bound_exporter != exporter:
                 raise ValueError(
                     "AWS attestation exporter mismatch: "
@@ -1697,6 +1731,10 @@ def verify_aws_cbor(
     print(f"[ok] live cert SPKI matches AWS attestation ({hashlib.sha256(doc_spki).hexdigest()[:16]}...)")
 
     user_data = payload.get("user_data") or b""
+    try:
+        bound_exporter = aws_user_data_exporter(user_data, require_exporter=exporter is not None)
+    except ValueError as exc:
+        sys.exit(f"[FAIL] {exc}")
     cert_fp = hashlib.sha256(cert_der).hexdigest()
     if len(user_data) >= 32 and user_data[:32].hex() != cert_fp:
         sys.exit(
@@ -1712,9 +1750,7 @@ def verify_aws_cbor(
             sys.exit(f"[FAIL] device-blob mismatch:\n  attestation: {blob_fp}\n  expected:    {device_blob_sha}")
         print(f"[ok] device-blob hash matches {blob_fp[:16]}...")
     if exporter is not None:
-        if len(user_data) < 96:
-            sys.exit("[FAIL] AWS attestation has no TLS exporter channel binding in user_data")
-        bound_exporter = user_data[64:96]
+        assert bound_exporter is not None
         if bound_exporter != exporter:
             sys.exit(
                 "[FAIL] TLS exporter channel binding is not bound in AWS attestation:\n"
