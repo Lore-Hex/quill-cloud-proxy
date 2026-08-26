@@ -35,7 +35,7 @@ func b64(digest [32]byte) string {
 }
 
 func writeFile(dir, name string, data []byte) {
-	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "write %s: %v\n", name, err)
 		os.Exit(1)
 	}
