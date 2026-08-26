@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import datetime
 import hashlib
 import importlib.util
+import io
 import ipaddress
 import json
 import os
@@ -729,6 +731,314 @@ class TestPCR0PinIsASet(unittest.TestCase):
         for value in ("", "  ,  "):
             with self.subTest(value=value), self.assertRaisesRegex(SystemExit, "empty or malformed"):
                 VERIFIER.check_pcr0_pin(self.OLD, value)
+
+
+@unittest.skipIf(VERIFIER is None, f"verifier not importable: {LOAD_ERROR}")
+class ReceiptVerifierTests(unittest.TestCase):
+    def setUp(self) -> None:
+        if not REAL_CRYPTOGRAPHY:
+            self.skipTest("cryptography backend unavailable for Ed25519 receipt tests")
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        self.private_key = Ed25519PrivateKey.generate()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.original_gcp_signature_verifier = VERIFIER.verify_gcp_jwt_signature
+        VERIFIER.verify_gcp_jwt_signature = lambda _blob: None
+
+    def tearDown(self) -> None:
+        VERIFIER.verify_gcp_jwt_signature = self.original_gcp_signature_verifier
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def b64url(value: bytes) -> str:
+        return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+    @staticmethod
+    def compact_json(value: object) -> bytes:
+        return json.dumps(value, separators=(",", ":")).encode("utf-8")
+
+    def public_key_bytes(self, private_key=None) -> bytes:
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        key = private_key or self.private_key
+        return key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+    def commitment(self, public_key: bytes | None = None) -> bytes:
+        raw = public_key or self.public_key_bytes()
+        return hashlib.sha256(b"inference-receipt-key-v1\x00" + raw).digest()
+
+    def attestation(self, commitment: bytes | None = None) -> bytes:
+        return jwt_for_payload(
+            {
+                "iss": VERIFIER.GCP_ISSUER,
+                "aud": [VERIFIER.GCP_AUDIENCE],
+                "image_digest": "sha256:receipt-test",
+                "eat_nonce": ["11" * 32, (commitment or self.commitment()).hex()],
+                "dbgstat": "disabled",
+            }
+        )
+
+    def base_claims(self, *, issued_at: int | None = None) -> dict:
+        now = int(time.time()) if issued_at is None else issued_at
+        return {
+            "rv": 1,
+            "iss": "https://api.test.invalid",
+            "iat": now,
+            "jti": "chatcmpl-receipt-test",
+            "nonce": "nonce_123",
+            "route": "chat.completions",
+            "req": {"alg": "sha256", "hash": self.b64url(hashlib.sha256(b"request").digest()), "of": "body"},
+            "resp": {"alg": "sha256", "hash": self.b64url(hashlib.sha256(b"response").digest()), "of": "body"},
+            "model": {"requested": "m", "selected": "m", "provider": "p", "endpoint": "e"},
+            "upstream": {"tier": "tls-webpki"},
+        }
+
+    def sign_receipt(
+        self,
+        claims: dict,
+        *,
+        flattened: bool,
+        attestation: bytes,
+        header_updates: dict | None = None,
+    ) -> bytes:
+        public_key = self.public_key_bytes()
+        header = {
+            "alg": "EdDSA",
+            "typ": "inference-receipt+jws",
+            "kid": self.b64url(hashlib.sha256(public_key).digest()),
+            "jwk": {"kty": "OKP", "crv": "Ed25519", "x": self.b64url(public_key)},
+        }
+        if flattened:
+            header.update({"att": attestation.decode("ascii"), "att_kind": "gcp-cs-jwt"})
+        if header_updates:
+            header.update(header_updates)
+        protected = self.b64url(self.compact_json(header))
+        payload = self.b64url(self.compact_json(claims))
+        signature = self.b64url(self.private_key.sign(f"{protected}.{payload}".encode("ascii")))
+        if flattened:
+            return self.compact_json(
+                {"protected": protected, "payload": payload, "signature": signature}
+            )
+        return f"{protected}.{payload}.{signature}".encode("ascii")
+
+    def write(self, name: str, value: bytes) -> str:
+        path = self.root / name
+        path.write_bytes(value)
+        return str(path)
+
+    def args(
+        self,
+        receipt: bytes,
+        *,
+        attestation: bytes | None = None,
+        request_body: bytes | None = None,
+        response_body: bytes | None = None,
+        response_stream: bytes | None = None,
+        expected_nonce: str | None = None,
+        max_age_seconds: int | None = None,
+    ):
+        return types.SimpleNamespace(
+            verify_receipt=self.write("receipt.jws", receipt),
+            attestation=self.write("attestation.bin", attestation) if attestation is not None else None,
+            request_body=self.write("request.bin", request_body) if request_body is not None else None,
+            response_body=self.write("response.bin", response_body) if response_body is not None else None,
+            response_stream=self.write("stream.sse", response_stream) if response_stream is not None else None,
+            expected_nonce=expected_nonce,
+            max_age_seconds=max_age_seconds,
+            expect_digest=None,
+            allow_debug=False,
+            expected_pcr0=None,
+            expected_hostdata=None,
+            expected_maa_issuer=None,
+            device_blob_sha=None,
+        )
+
+    def verify(self, args) -> tuple[int, str]:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = VERIFIER.verify_receipt(args)
+        return result, output.getvalue()
+
+    def compact_body_fixture(self, *, claims: dict | None = None, attestation: bytes | None = None):
+        att = attestation or self.attestation()
+        receipt_claims = claims or self.base_claims()
+        receipt_claims["att_sha256"] = self.b64url(hashlib.sha256(att).digest())
+        receipt = self.sign_receipt(receipt_claims, flattened=False, attestation=att)
+        args = self.args(
+            receipt,
+            attestation=att,
+            request_body=b"request",
+            response_body=b"response",
+        )
+        return receipt, args
+
+    def stream_fixture(self, domain: str, *, claims_update=None):
+        att = self.attestation()
+        if domain == "sse-data-v1":
+            ordinary = [(b"", b'{"delta":"one"}'), (b"", b'{"delta":"two"}')]
+        else:
+            ordinary = [
+                (b"response.created", b'{"type":"response.created"}'),
+                (b"", b'{"type":"response.output_text.delta"}'),
+            ]
+        preimage = bytearray()
+        for name, payload in ordinary:
+            if domain == "sse-events-v1":
+                preimage.extend(name + b"\n")
+            preimage.extend(payload + b"\n")
+        claims = self.base_claims()
+        claims["route"] = "responses" if domain == "sse-events-v1" else "chat.completions"
+        claims["resp"] = {
+            "alg": "sha256",
+            "hash": self.b64url(hashlib.sha256(preimage).digest()),
+            "of": domain,
+            "events": len(ordinary),
+        }
+        if claims_update:
+            claims_update(claims)
+        receipt = self.sign_receipt(claims, flattened=True, attestation=att)
+        envelope = json.loads(receipt)
+        stream = bytearray()
+        for name, payload in ordinary:
+            if name:
+                stream.extend(b"event: " + name + b"\n")
+            stream.extend(b"data: " + payload + b"\n\n")
+        receipt_payload = self.compact_json(
+            {"object": "chat.completion.chunk", "choices": [], "inference_receipt": envelope}
+        )
+        stream.extend(b"data: " + receipt_payload + b"\n\ndata: [DONE]\n\n")
+        return receipt, bytes(stream), att
+
+    def test_compact_body_roundtrip_passes(self) -> None:
+        _receipt, args = self.compact_body_fixture()
+        result, output = self.verify(args)
+        self.assertEqual(result, 0, output)
+        self.assertIn("Receipt verification PASSED", output)
+
+    def test_flattened_stream_roundtrips_pass_in_both_domains(self) -> None:
+        for domain in ("sse-data-v1", "sse-events-v1"):
+            with self.subTest(domain=domain):
+                receipt, stream, _att = self.stream_fixture(domain)
+                result, output = self.verify(self.args(receipt, response_stream=stream))
+                self.assertEqual(result, 0, output)
+
+    def test_payload_and_claim_edits_with_stale_signatures_fail(self) -> None:
+        receipt, args = self.compact_body_fixture()
+        protected, payload, signature = receipt.decode("ascii").split(".")
+        raw_payload = bytearray(VERIFIER.b64url_decode(payload))
+        raw_payload[len(raw_payload) // 2] ^= 1
+        flipped = f"{protected}.{self.b64url(bytes(raw_payload))}.{signature}".encode("ascii")
+        args.verify_receipt = self.write("flipped.jws", flipped)
+        self.assertEqual(self.verify(args)[0], 1)
+
+        edited_claims = json.loads(VERIFIER.b64url_decode(payload))
+        edited_claims["nonce"] = "edited"
+        edited = f"{protected}.{self.b64url(self.compact_json(edited_claims))}.{signature}".encode("ascii")
+        args.verify_receipt = self.write("edited.jws", edited)
+        self.assertEqual(self.verify(args)[0], 1)
+
+    def test_wrong_kid_and_stripped_flattened_attestation_fail(self) -> None:
+        claims = self.base_claims()
+        att = self.attestation()
+        wrong_kid = self.sign_receipt(
+            claims,
+            flattened=True,
+            attestation=att,
+            header_updates={"kid": self.b64url(bytes(32))},
+        )
+        self.assertEqual(self.verify(self.args(wrong_kid))[0], 1)
+
+        valid, _stream, _att = self.stream_fixture("sse-data-v1")
+        envelope = json.loads(valid)
+        header = json.loads(VERIFIER.b64url_decode(envelope["protected"]))
+        del header["att"]
+        envelope["protected"] = self.b64url(self.compact_json(header))
+        stripped = self.compact_json(envelope)
+        self.assertEqual(self.verify(self.args(stripped))[0], 1)
+
+    def test_attestation_digest_mismatch_fails(self) -> None:
+        claims = self.base_claims()
+        claims["att_sha256"] = self.b64url(bytes(32))
+        att = self.attestation()
+        receipt = self.sign_receipt(claims, flattened=False, attestation=att)
+        result, output = self.verify(self.args(receipt, attestation=att))
+        self.assertEqual(result, 1)
+        self.assertIn("att_sha256 does not match", output)
+
+    def test_stream_position_payload_and_event_count_tampering_fail(self) -> None:
+        receipt, stream, _att = self.stream_fixture("sse-data-v1")
+        not_last = stream.replace(b"\ndata: [DONE]", b"\ndata: late\n\ndata: [DONE]")
+        self.assertEqual(self.verify(self.args(receipt, response_stream=not_last))[0], 1)
+
+        flipped = stream.replace(b'"delta":"one"', b'"delta":"One"', 1)
+        self.assertEqual(self.verify(self.args(receipt, response_stream=flipped))[0], 1)
+
+        off_receipt, off_stream, _att = self.stream_fixture(
+            "sse-data-v1", claims_update=lambda claims: claims["resp"].update(events=3)
+        )
+        self.assertEqual(self.verify(self.args(off_receipt, response_stream=off_stream))[0], 1)
+
+    def test_stream_rejects_multiline_data_and_non_data_event_fields(self) -> None:
+        receipt, stream, _att = self.stream_fixture("sse-data-v1")
+        multiline = stream.replace(
+            b'data: {"delta":"one"}\n\n',
+            b'data: {"delta":"one"}\ndata: second-line\n\n',
+            1,
+        )
+        result, output = self.verify(self.args(receipt, response_stream=multiline))
+        self.assertEqual(result, 1)
+        self.assertIn("multi-line data", output)
+
+        extra_field = stream.replace(
+            b'data: {"delta":"one"}',
+            b'id: forbidden\ndata: {"delta":"one"}',
+            1,
+        )
+        result, output = self.verify(self.args(receipt, response_stream=extra_field))
+        self.assertEqual(result, 1)
+        self.assertIn("non-data/event field", output)
+
+    def test_future_iat_and_invalid_tee_window_fail(self) -> None:
+        future_claims = self.base_claims(issued_at=int(time.time()) + 120)
+        _receipt, args = self.compact_body_fixture(claims=future_claims)
+        self.assertEqual(self.verify(args)[0], 1)
+
+        now = int(time.time())
+        tee_claims = self.base_claims(issued_at=now)
+        tee_claims["upstream"] = {
+            "tier": "tee-verified",
+            "verified_at": now - 10,
+            "verification_expires_at": now,
+        }
+        _receipt, args = self.compact_body_fixture(claims=tee_claims)
+        self.assertEqual(self.verify(args)[0], 1)
+
+    def test_nonce_and_max_age_gates_pass_and_fail(self) -> None:
+        claims = self.base_claims(issued_at=int(time.time()) - 20)
+        _receipt, args = self.compact_body_fixture(claims=claims)
+        args.expected_nonce = "nonce_123"
+        args.max_age_seconds = 30
+        self.assertEqual(self.verify(args)[0], 0)
+
+        args.expected_nonce = "wrong"
+        self.assertEqual(self.verify(args)[0], 1)
+        args.expected_nonce = "nonce_123"
+        args.max_age_seconds = 10
+        self.assertEqual(self.verify(args)[0], 1)
+
+    def test_commitment_membership_accepts_right_key_and_rejects_other_key(self) -> None:
+        _receipt, args = self.compact_body_fixture()
+        self.assertEqual(self.verify(args)[0], 0)
+
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        other_key = Ed25519PrivateKey.generate()
+        wrong_att = self.attestation(self.commitment(self.public_key_bytes(other_key)))
+        _receipt, wrong_args = self.compact_body_fixture(attestation=wrong_att)
+        result, output = self.verify(wrong_args)
+        self.assertEqual(result, 1)
+        self.assertIn("not a member", output)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # dependencies = ["cbor2>=5.5", "cryptography>=42", "pyOpenSSL>=22.0"]
-# requires-python = ">=3.11"
+# requires-python = ">=3.10"
 # ///
 """Verify a TrustedRouter/Quill attestation document end-to-end.
 
@@ -203,6 +203,354 @@ _GCP_JWKS: dict[str, Any] | None = None
 _MAA_JWKS: dict[str, dict[str, Any]] = {}
 _TLS_IO_TIMEOUT_SECONDS = 15.0
 _SAME_TLS_SOCKET_TIMEOUT_SECONDS = 40.0
+FUTURE_SAMPLE_SKEW_SECONDS = 60
+RECEIPT_TYPE = "inference-receipt+jws"
+RECEIPT_KEY_COMMITMENT_DOMAIN = b"inference-receipt-key-v1"
+RECEIPT_ATTESTATION_KINDS = frozenset(
+    {"gcp-cs-jwt", "aws-nitro-cose", "azure-maa-jwt"}
+)
+
+
+class ReceiptVerificationError(ValueError):
+    """A receipt failure that should be reported without a traceback."""
+
+
+def _receipt_pass(message: str) -> None:
+    print(f"[PASS] {message}")
+
+
+def _receipt_fail(message: str) -> None:
+    raise ReceiptVerificationError(message)
+
+
+def _b64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _receipt_b64url_decode(value: Any, what: str, *, expected_length: int | None = None) -> bytes:
+    if not isinstance(value, str) or not value:
+        _receipt_fail(f"{what} is not a non-empty base64url string")
+    if re.fullmatch(r"[A-Za-z0-9_-]+", value) is None:
+        _receipt_fail(f"{what} is not unpadded base64url")
+    try:
+        decoded = b64url_decode(value)
+    except Exception as exc:
+        _receipt_fail(f"{what} is not valid base64url: {exc}")
+    if _b64url_encode(decoded) != value:
+        _receipt_fail(f"{what} is not canonical unpadded base64url")
+    if expected_length is not None and len(decoded) != expected_length:
+        _receipt_fail(f"{what} is {len(decoded)} bytes; expected {expected_length}")
+    return decoded
+
+
+def _receipt_json_object(raw: bytes, what: str) -> dict[str, Any]:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                _receipt_fail(f"{what} has duplicate key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+    except ReceiptVerificationError:
+        raise
+    except Exception as exc:
+        _receipt_fail(f"{what} is not valid UTF-8 JSON: {exc}")
+    if not isinstance(value, dict):
+        _receipt_fail(f"{what} is not a JSON object")
+    return value
+
+
+def _receipt_int(value: Any, what: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        _receipt_fail(f"{what} must be an integer")
+    return value
+
+
+def _receipt_hash_record(claims: dict[str, Any], name: str) -> dict[str, Any]:
+    record = claims.get(name)
+    if not isinstance(record, dict):
+        _receipt_fail(f"{name} claim must be an object")
+    if record.get("alg") != "sha256":
+        _receipt_fail(f"{name}.alg must be 'sha256'")
+    _receipt_b64url_decode(record.get("hash"), f"{name}.hash", expected_length=32)
+    return record
+
+
+def parse_receipt_jws(blob: bytes) -> dict[str, Any]:
+    """Parse a compact or flattened receipt without trusting either JSON body."""
+    try:
+        serialized = blob.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        _receipt_fail(f"receipt file is not UTF-8: {exc}")
+    trimmed = serialized.strip()
+    if not trimmed:
+        _receipt_fail("receipt file is empty")
+
+    flattened = trimmed.startswith("{")
+    if flattened:
+        envelope = _receipt_json_object(trimmed.encode("utf-8"), "flattened JWS")
+        if set(envelope) != {"protected", "payload", "signature"}:
+            _receipt_fail(
+                "flattened JWS must contain exactly protected, payload, and signature"
+            )
+        parts = [envelope.get("protected"), envelope.get("payload"), envelope.get("signature")]
+        if not all(isinstance(part, str) and part for part in parts):
+            _receipt_fail("flattened JWS members must be non-empty strings")
+        protected, payload, signature = parts
+        serialized_envelope: Any = envelope
+    else:
+        if "\n" in trimmed or "\r" in trimmed:
+            _receipt_fail("compact JWS must occupy exactly one line")
+        parts = trimmed.split(".")
+        if len(parts) != 3 or any(not part for part in parts):
+            _receipt_fail("compact JWS must have exactly three non-empty segments")
+        protected, payload, signature = parts
+        serialized_envelope = trimmed
+
+    protected_raw = _receipt_b64url_decode(protected, "protected header")
+    payload_raw = _receipt_b64url_decode(payload, "JWS payload")
+    signature_raw = _receipt_b64url_decode(signature, "JWS signature", expected_length=64)
+    header = _receipt_json_object(protected_raw, "protected header")
+    claims = _receipt_json_object(payload_raw, "receipt claims")
+    _receipt_pass(f"parsed {'flattened' if flattened else 'compact'} JWS envelope")
+    return {
+        "flattened": flattened,
+        "protected": protected,
+        "payload": payload,
+        "signature": signature,
+        "signature_raw": signature_raw,
+        "header": header,
+        "claims": claims,
+        "serialized": serialized_envelope,
+    }
+
+
+def verify_receipt_protected_header(receipt: dict[str, Any]) -> bytes:
+    header = receipt["header"]
+    if header.get("alg") != "EdDSA":
+        _receipt_fail("protected header alg must be 'EdDSA'")
+    if header.get("typ") != RECEIPT_TYPE:
+        _receipt_fail(f"protected header typ must be {RECEIPT_TYPE!r}")
+    jwk = header.get("jwk")
+    if not isinstance(jwk, dict):
+        _receipt_fail("protected header jwk must be an object")
+    if set(jwk) != {"kty", "crv", "x"}:
+        _receipt_fail("protected header jwk must contain exactly kty, crv, and x")
+    if jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519":
+        _receipt_fail("protected header jwk must be an OKP Ed25519 key")
+    raw_public_key = _receipt_b64url_decode(
+        jwk.get("x"), "protected header jwk.x", expected_length=32
+    )
+    expected_kid = _b64url_encode(hashlib.sha256(raw_public_key).digest())
+    if header.get("kid") != expected_kid:
+        _receipt_fail("protected header kid does not match SHA-256 of the raw public key")
+
+    has_att = "att" in header
+    has_att_kind = "att_kind" in header
+    if receipt["flattened"]:
+        if not has_att or not isinstance(header.get("att"), str) or not header["att"]:
+            _receipt_fail("flattened receipt protected header has no embedded attestation")
+        if not has_att_kind or not isinstance(header.get("att_kind"), str) or not header["att_kind"]:
+            _receipt_fail("flattened receipt protected header has no att_kind")
+    elif has_att or has_att_kind:
+        _receipt_fail("compact receipt protected header must omit att and att_kind")
+    _receipt_pass("protected header, Ed25519 JWK, and kid are valid")
+    return raw_public_key
+
+
+def verify_receipt_signature(receipt: dict[str, Any], raw_public_key: bytes) -> None:
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+        public_key = Ed25519PublicKey.from_public_bytes(raw_public_key)
+        signing_input = f"{receipt['protected']}.{receipt['payload']}".encode("ascii")
+        public_key.verify(receipt["signature_raw"], signing_input)
+    except ReceiptVerificationError:
+        raise
+    except Exception as exc:
+        _receipt_fail(f"Ed25519 signature verification failed: {exc}")
+    _receipt_pass("Ed25519 signature is valid")
+
+
+def verify_receipt_claims(
+    claims: dict[str, Any],
+    *,
+    expected_nonce: str | None,
+    max_age_seconds: int | None,
+    now: float | None = None,
+) -> None:
+    if _receipt_int(claims.get("rv"), "rv") != 1:
+        _receipt_fail("rv must equal 1")
+    _receipt_pass("receipt version rv=1")
+
+    issued_at = _receipt_int(claims.get("iat"), "iat")
+    now_seconds = time.time() if now is None else now
+    if issued_at > now_seconds + FUTURE_SAMPLE_SKEW_SECONDS:
+        _receipt_fail(
+            f"iat is more than {FUTURE_SAMPLE_SKEW_SECONDS}s in the future"
+        )
+    if max_age_seconds is not None:
+        if max_age_seconds < 0:
+            _receipt_fail("--max-age-seconds must be non-negative")
+        if now_seconds - issued_at > max_age_seconds:
+            _receipt_fail(f"receipt is older than --max-age-seconds={max_age_seconds}")
+    _receipt_pass("iat is within the allowed time window")
+
+    if expected_nonce is not None:
+        if claims.get("nonce") != expected_nonce:
+            _receipt_fail("nonce does not match --expected-nonce")
+        _receipt_pass("nonce matches --expected-nonce")
+
+    upstream = claims.get("upstream")
+    if not isinstance(upstream, dict):
+        _receipt_fail("upstream claim must be an object")
+    tier = upstream.get("tier")
+    if not isinstance(tier, str) or not tier:
+        _receipt_fail("upstream.tier must be a non-empty string")
+    if tier == "tee-verified":
+        verified_at = _receipt_int(upstream.get("verified_at"), "upstream.verified_at")
+        expires_at = _receipt_int(
+            upstream.get("verification_expires_at"),
+            "upstream.verification_expires_at",
+        )
+        if not verified_at <= issued_at < expires_at:
+            _receipt_fail(
+                "tee-verified timing must satisfy verified_at <= iat < verification_expires_at"
+            )
+        _receipt_pass("tee-verified upstream evidence was valid at iat")
+    else:
+        _receipt_pass("upstream claim is structurally valid")
+
+
+def verify_receipt_file_hash(
+    claims: dict[str, Any], claim_name: str, path: str, expected_domain: str
+) -> None:
+    record = _receipt_hash_record(claims, claim_name)
+    if record.get("of") != expected_domain:
+        _receipt_fail(f"{claim_name}.of must be {expected_domain!r}")
+    try:
+        body = Path(path).read_bytes()
+    except OSError as exc:
+        _receipt_fail(f"cannot read {path!r}: {exc}")
+    actual = _b64url_encode(hashlib.sha256(body).digest())
+    if record.get("hash") != actual:
+        _receipt_fail(f"{claim_name}.hash does not match the exact bytes in {path!r}")
+    _receipt_pass(f"{claim_name}.hash matches exact {expected_domain} bytes")
+
+
+def _next_receipt_sse_event(stream: bytes, offset: int) -> tuple[bytes, int]:
+    nl = stream.find(b"\n\n", offset)
+    crlf = stream.find(b"\r\n\r\n", offset)
+    if nl < 0 and crlf < 0:
+        _receipt_fail("response stream has an incomplete SSE event tail")
+    if nl >= 0 and (crlf < 0 or nl < crlf):
+        return stream[offset:nl], nl + 2
+    return stream[offset:crlf], crlf + 4
+
+
+def _parse_receipt_sse_event(raw: bytes, index: int) -> tuple[bytes, bytes]:
+    name: bytes | None = None
+    payload: bytes | None = None
+    lines = raw.split(b"\n")
+    for original_line in lines:
+        line = original_line[:-1] if original_line.endswith(b"\r") else original_line
+        if line.startswith(b"data:"):
+            if payload is not None:
+                _receipt_fail(f"SSE event {index} has a multi-line data field")
+            payload = line[5:]
+            if payload.startswith(b" "):
+                payload = payload[1:]
+        elif line.startswith(b"event:"):
+            if name is not None:
+                _receipt_fail(f"SSE event {index} has multiple event fields")
+            name = line[6:]
+            if name.startswith(b" "):
+                name = name[1:]
+        else:
+            _receipt_fail(f"SSE event {index} contains a non-data/event field")
+    if payload is None:
+        _receipt_fail(f"SSE event {index} has no data field")
+    return b"" if name is None else name, payload
+
+
+def verify_receipt_stream(
+    claims: dict[str, Any], receipt: dict[str, Any], stream_path: str
+) -> None:
+    record = _receipt_hash_record(claims, "resp")
+    domain = record.get("of")
+    if domain not in {"sse-data-v1", "sse-events-v1"}:
+        _receipt_fail("resp.of must be 'sse-data-v1' or 'sse-events-v1' for --response-stream")
+    if not receipt["flattened"]:
+        _receipt_fail("a response stream must carry the flattened receipt being verified")
+    try:
+        stream = Path(stream_path).read_bytes()
+    except OSError as exc:
+        _receipt_fail(f"cannot read {stream_path!r}: {exc}")
+
+    events: list[tuple[bytes, bytes]] = []
+    offset = 0
+    while offset < len(stream):
+        raw, offset = _next_receipt_sse_event(stream, offset)
+        events.append(_parse_receipt_sse_event(raw, len(events) + 1))
+    if not events:
+        _receipt_fail("response stream contains no SSE events")
+
+    receipt_indexes: list[int] = []
+    done_indexes: list[int] = []
+    embedded_receipt: Any = None
+    for index, (_name, payload) in enumerate(events):
+        if payload == b"[DONE]":
+            done_indexes.append(index)
+            continue
+        try:
+            candidate = json.loads(payload.decode("utf-8"))
+        except Exception:
+            continue
+        if isinstance(candidate, dict) and "inference_receipt" in candidate:
+            receipt_indexes.append(index)
+            embedded_receipt = candidate["inference_receipt"]
+
+    if len(receipt_indexes) != 1:
+        _receipt_fail(f"response stream must contain exactly one receipt event; found {len(receipt_indexes)}")
+    if len(done_indexes) != 1:
+        _receipt_fail(f"response stream must contain exactly one [DONE] event; found {len(done_indexes)}")
+    receipt_index = receipt_indexes[0]
+    done_index = done_indexes[0]
+    if done_index != len(events) - 1 or receipt_index != done_index - 1:
+        _receipt_fail("receipt event is not the last data event immediately before [DONE]")
+    if embedded_receipt != receipt["serialized"]:
+        _receipt_fail("response stream embeds a different receipt than RECEIPT_FILE")
+    _receipt_pass("receipt event is last before [DONE] and matches RECEIPT_FILE")
+
+    hasher = hashlib.sha256()
+    hashed_events = 0
+    for index, (name, payload) in enumerate(events):
+        if index in {receipt_index, done_index}:
+            continue
+        if domain == "sse-data-v1":
+            if name:
+                _receipt_fail("sse-data-v1 stream contains a named event")
+        else:
+            hasher.update(name)
+            hasher.update(b"\n")
+        hasher.update(payload)
+        hasher.update(b"\n")
+        hashed_events += 1
+
+    expected_events = record.get("events")
+    if expected_events is not None:
+        if _receipt_int(expected_events, "resp.events") != hashed_events:
+            _receipt_fail(
+                f"resp.events is {expected_events}; captured stream has {hashed_events} hashed events"
+            )
+        _receipt_pass(f"resp.events matches {hashed_events} hashed events")
+    actual_hash = _b64url_encode(hasher.digest())
+    if record.get("hash") != actual_hash:
+        _receipt_fail("resp.hash does not match the captured SSE hash domain")
+    _receipt_pass(f"resp.hash matches {domain} over {hashed_events} events")
 
 
 def b64url_decode(value: str) -> bytes:
@@ -1760,6 +2108,250 @@ def verify_aws_cbor(
         print(f"[ok] TLS exporter channel binding bound in AWS user_data ({exporter.hex()[:16]}...)")
 
 
+def _verify_gcp_receipt_attestation(blob: bytes, args: argparse.Namespace) -> dict[str, Any]:
+    verify_gcp_jwt_signature(blob)
+    payload = parse_jwt_payload(blob)
+    if payload.get("iss") != GCP_ISSUER:
+        sys.exit(f"[FAIL] GCP issuer mismatch: {payload.get('iss')!r}")
+    audience = payload.get("aud")
+    audiences = audience if isinstance(audience, list) else [audience]
+    if GCP_AUDIENCE not in audiences:
+        sys.exit(f"[FAIL] GCP audience mismatch: {audience!r}")
+    digest = first_claim(payload, "image_digest", "submods.container.image_digest")
+    if args.expect_digest is not None:
+        allowed = {
+            value.strip().lower()
+            for value in args.expect_digest.split(",")
+            if value.strip()
+        }
+        if not allowed:
+            sys.exit("[FAIL] expected image digest pin is empty or malformed")
+        if str(digest).lower() not in allowed:
+            sys.exit(
+                f"[FAIL] image_digest mismatch: attestation={digest!r}, "
+                f"expected one of {sorted(allowed)}"
+            )
+    if args.device_blob_sha is not None:
+        expected_device = args.device_blob_sha.strip().lower()
+        if expected_device not in gcp_nonce_values(payload):
+            sys.exit("[FAIL] device-blob hash is not bound in GCP attestation")
+    if not args.allow_debug:
+        verify_no_gcp_debug(payload)
+    return payload
+
+
+def _verify_aws_receipt_attestation(blob: bytes, args: argparse.Namespace) -> dict[str, Any]:
+    payload, _ = parse_cose_payload(blob)
+    verify_cose_signature(blob)
+    try:
+        pcr0 = payload["pcrs"][0].hex()
+    except Exception as exc:
+        sys.exit(f"[FAIL] AWS attestation has no usable PCR0: {exc}")
+    check_pcr0_pin(pcr0, args.expected_pcr0)
+    if args.device_blob_sha is not None:
+        user_data = payload.get("user_data")
+        if not isinstance(user_data, (bytes, bytearray)) or len(user_data) < 64:
+            sys.exit("[FAIL] AWS attestation has no device-blob commitment in user_data")
+        if bytes(user_data[32:64]).hex() != args.device_blob_sha.strip().lower():
+            sys.exit("[FAIL] device-blob mismatch in AWS attestation user_data")
+    return payload
+
+
+def _verify_maa_receipt_attestation(blob: bytes, args: argparse.Namespace) -> dict[str, Any]:
+    verify_maa_jwt_signature(blob, expect_issuer=args.expected_maa_issuer)
+    payload = parse_jwt_payload(blob)
+    verify_maa_token_validity_window(payload)
+    require_maa_attestation_type(payload)
+    verify_maa_hostdata(payload, args.expected_hostdata)
+    fields, runtime_bytes = maa_runtime_data(payload)
+
+    report_data = payload.get("x-ms-sevsnpvm-reportdata")
+    if not isinstance(report_data, str) or not report_data.strip():
+        sys.exit("[FAIL] MAA token has no x-ms-sevsnpvm-reportdata claim")
+    claimed = report_data.strip().lower().removeprefix("0x")
+    if len(claimed) != 128:
+        sys.exit(
+            f"[FAIL] MAA x-ms-sevsnpvm-reportdata is not 64 bytes: {len(claimed)} hex chars"
+        )
+    expected = hashlib.sha256(runtime_bytes).hexdigest() + "0" * 64
+    if claimed != expected:
+        sys.exit("[FAIL] MAA REPORT_DATA does not commit to the echoed runtime data")
+    if args.device_blob_sha is not None:
+        got_device = str(fields.get("device_hash") or "").strip().lower()
+        if got_device != args.device_blob_sha.strip().lower():
+            sys.exit("[FAIL] device-blob mismatch in MAA runtime data")
+    if not args.allow_debug:
+        verify_no_maa_debug(payload)
+    return fields
+
+
+def _compact_receipt_attestation_kind(blob: bytes) -> str:
+    if looks_like_jwt(blob):
+        cloud = jwt_attestation_cloud(blob)
+        if cloud == "gcp":
+            return "gcp-cs-jwt"
+        if cloud == "maa":
+            return "azure-maa-jwt"
+        _receipt_fail(f"receipt attestation JWT routed to unsupported cloud {cloud!r}")
+    try:
+        parse_cose_payload(blob)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        _receipt_fail(f"compact receipt attestation is neither a routed JWT nor Nitro COSE: {exc}")
+    return "aws-nitro-cose"
+
+
+def receipt_attestation_document(
+    receipt: dict[str, Any], args: argparse.Namespace
+) -> tuple[str, bytes]:
+    claims = receipt["claims"]
+    if receipt["flattened"]:
+        if "att_sha256" in claims:
+            _receipt_fail("flattened receipt claims must omit att_sha256")
+        kind = receipt["header"].get("att_kind")
+        if kind not in RECEIPT_ATTESTATION_KINDS:
+            _receipt_fail(
+                f"unsupported attestation kind {kind!r}; no chain verifier is available"
+            )
+        embedded = receipt["header"]["att"]
+        if kind == "aws-nitro-cose":
+            blob = _receipt_b64url_decode(embedded, "embedded AWS Nitro attestation")
+        else:
+            try:
+                blob = embedded.encode("ascii")
+            except UnicodeEncodeError as exc:
+                _receipt_fail(f"embedded JWT attestation is not ASCII: {exc}")
+        if args.attestation is not None:
+            try:
+                supplied = Path(args.attestation).read_bytes()
+            except OSError as exc:
+                _receipt_fail(f"cannot read {args.attestation!r}: {exc}")
+            if supplied != blob:
+                _receipt_fail("--attestation does not match the flattened receipt's embedded attestation")
+            _receipt_pass("supplied attestation matches the embedded attestation")
+        _receipt_pass(f"loaded embedded {kind} attestation")
+        return kind, blob
+
+    if args.attestation is None:
+        _receipt_fail("compact receipt verification requires --attestation FILE")
+    try:
+        blob = Path(args.attestation).read_bytes()
+    except OSError as exc:
+        _receipt_fail(f"cannot read {args.attestation!r}: {exc}")
+    expected_digest = _receipt_b64url_decode(
+        claims.get("att_sha256"), "att_sha256", expected_length=32
+    )
+    actual_digest = hashlib.sha256(blob).digest()
+    if actual_digest != expected_digest:
+        _receipt_fail("att_sha256 does not match the exact --attestation file bytes")
+    _receipt_pass("att_sha256 matches the exact attestation file bytes")
+    kind = _compact_receipt_attestation_kind(blob)
+    return kind, blob
+
+
+def verify_receipt_attestation_chain(
+    kind: str, blob: bytes, args: argparse.Namespace
+) -> Any:
+    if kind == "gcp-cs-jwt":
+        reject_inapplicable_measurement_pins("gcp", args)
+        evidence = _verify_gcp_receipt_attestation(blob, args)
+    elif kind == "aws-nitro-cose":
+        reject_inapplicable_measurement_pins("aws", args)
+        evidence = _verify_aws_receipt_attestation(blob, args)
+    elif kind == "azure-maa-jwt":
+        reject_inapplicable_measurement_pins("maa", args)
+        evidence = _verify_maa_receipt_attestation(blob, args)
+    else:
+        _receipt_fail(
+            f"unsupported attestation kind {kind!r}; full chain verification cannot be performed"
+        )
+    _receipt_pass(f"{kind} attestation signature chain and evidence checks passed")
+    return evidence
+
+
+def verify_receipt_key_commitment(
+    kind: str, evidence: Any, raw_public_key: bytes
+) -> None:
+    commitment = hashlib.sha256(
+        RECEIPT_KEY_COMMITMENT_DOMAIN + b"\x00" + raw_public_key
+    ).digest()
+    commitment_hex = commitment.hex()
+
+    if kind == "gcp-cs-jwt":
+        if not isinstance(evidence, dict):
+            _receipt_fail("GCP attestation payload is not an object")
+        committed_values = set(gcp_nonce_values(evidence))
+        member = commitment_hex in committed_values
+    elif kind == "aws-nitro-cose":
+        if not isinstance(evidence, dict):
+            _receipt_fail("AWS attestation payload is not a map")
+        user_data = evidence.get("user_data")
+        if not isinstance(user_data, (bytes, bytearray)) or len(user_data) != 128:
+            length = len(user_data) if isinstance(user_data, (bytes, bytearray)) else "non-bytes"
+            _receipt_fail(
+                f"AWS receipt attestation user_data must be 128 bytes; got {length}"
+            )
+        committed_values = {
+            bytes(user_data[offset : offset + 32]) for offset in range(0, 128, 32)
+        }
+        member = commitment in committed_values
+    elif kind == "azure-maa-jwt":
+        if not isinstance(evidence, dict):
+            _receipt_fail("Azure runtime_data is not an object")
+        value = evidence.get("receipt_key_fp")
+        committed_values = {str(value).strip().lower()} if value is not None else set()
+        member = commitment_hex in committed_values
+    else:
+        _receipt_fail(f"unsupported attestation kind {kind!r} for key commitment")
+
+    if not member:
+        _receipt_fail("receipt public-key commitment is not a member of the attestation's committed values")
+    _receipt_pass("receipt public-key commitment is present in the attestation")
+
+
+def verify_receipt(args: argparse.Namespace) -> int:
+    try:
+        try:
+            receipt_blob = Path(args.verify_receipt).read_bytes()
+        except OSError as exc:
+            _receipt_fail(f"cannot read receipt file {args.verify_receipt!r}: {exc}")
+        receipt = parse_receipt_jws(receipt_blob)
+        raw_public_key = verify_receipt_protected_header(receipt)
+        verify_receipt_signature(receipt, raw_public_key)
+        verify_receipt_claims(
+            receipt["claims"],
+            expected_nonce=args.expected_nonce,
+            max_age_seconds=args.max_age_seconds,
+        )
+        if args.request_body is not None:
+            verify_receipt_file_hash(receipt["claims"], "req", args.request_body, "body")
+        if args.response_body is not None:
+            verify_receipt_file_hash(receipt["claims"], "resp", args.response_body, "body")
+        if args.response_stream is not None:
+            verify_receipt_stream(receipt["claims"], receipt, args.response_stream)
+
+        kind, attestation_blob = receipt_attestation_document(receipt, args)
+        evidence = verify_receipt_attestation_chain(kind, attestation_blob, args)
+        verify_receipt_key_commitment(kind, evidence, raw_public_key)
+    except ReceiptVerificationError as exc:
+        print(f"[FAIL] {exc}")
+        print("\nReceipt verification FAILED.")
+        return 1
+    except SystemExit as exc:
+        message = str(exc)
+        print(message if message.startswith("[FAIL]") else f"[FAIL] {message}")
+        print("\nReceipt verification FAILED.")
+        return 1
+    except Exception as exc:
+        print(f"[FAIL] receipt verification error: {exc}")
+        print("\nReceipt verification FAILED.")
+        return 1
+
+    print("\nReceipt verification PASSED.")
+    return 0
+
+
 def read_blob(path: str | None) -> bytes | None:
     if not path:
         return None
@@ -2035,6 +2627,43 @@ def reject_inapplicable_measurement_pins(cloud: str, args: argparse.Namespace) -
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("blob", nargs="?", help="attestation file path, '-' for stdin, or omit for live sampling")
+    parser.add_argument(
+        "--verify-receipt",
+        metavar="RECEIPT_FILE",
+        help="offline verification mode for a compact or flattened inference receipt",
+    )
+    parser.add_argument(
+        "--request-body",
+        metavar="FILE",
+        help="exact request body bytes to check against req.hash in receipt mode",
+    )
+    response_input = parser.add_mutually_exclusive_group()
+    response_input.add_argument(
+        "--response-body",
+        metavar="FILE",
+        help="exact non-streaming response body bytes to check against resp.hash",
+    )
+    response_input.add_argument(
+        "--response-stream",
+        metavar="FILE",
+        help="exact captured SSE response bytes to check against resp.hash",
+    )
+    parser.add_argument(
+        "--expected-nonce",
+        metavar="N",
+        help="require the receipt nonce claim to equal this value",
+    )
+    parser.add_argument(
+        "--max-age-seconds",
+        type=int,
+        metavar="S",
+        help="reject a receipt older than this many seconds",
+    )
+    parser.add_argument(
+        "--attestation",
+        metavar="FILE",
+        help="key-binding attestation required by compact receipt mode",
+    )
     parser.add_argument("--api-host", default="api.trustedrouter.com", help="API host to verify")
     parser.add_argument("--port", type=int, default=443)
     parser.add_argument(
@@ -2106,6 +2735,27 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     require_exporter = args.require_exporter_binding
+
+    receipt_only_values = (
+        args.request_body,
+        args.response_body,
+        args.response_stream,
+        args.expected_nonce,
+        args.max_age_seconds,
+        args.attestation,
+    )
+    if args.verify_receipt is not None:
+        if args.blob is not None:
+            print("[FAIL] positional attestation blob and --verify-receipt are mutually exclusive")
+            print("\nReceipt verification FAILED.")
+            return 1
+        if args.binding_stress:
+            print("[FAIL] --binding-stress and --verify-receipt are mutually exclusive")
+            print("\nReceipt verification FAILED.")
+            return 1
+        return verify_receipt(args)
+    if any(value is not None for value in receipt_only_values):
+        sys.exit("[FAIL] receipt verification options require --verify-receipt RECEIPT_FILE")
 
     if args.binding_stress:
         hosts = [h.strip() for h in args.binding_stress_hosts.split(",") if h.strip()]
