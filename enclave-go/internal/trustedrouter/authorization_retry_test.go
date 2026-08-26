@@ -240,9 +240,11 @@ func TestAuthorizeRetryBudgetReturnsOriginalControlPlaneError(t *testing.T) {
 
 	client := New(server.URL, "internal", server.Client())
 	client.authorizeRetry = retryPolicy{
-		attempts:    3,
-		maxDelay:    time.Second,
-		totalBudget: 10 * time.Millisecond,
+		attempts: 3,
+		maxDelay: time.Second,
+		// Leave enough time for the loopback request to complete under load;
+		// the injected sleep still deterministically exhausts the retry budget.
+		totalBudget: 100 * time.Millisecond,
 		sleep: func(ctx context.Context, _ time.Duration) error {
 			<-ctx.Done()
 			return ctx.Err()

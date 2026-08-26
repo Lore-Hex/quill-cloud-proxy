@@ -665,6 +665,9 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	if len(req.Models) > 0 {
 		body["models"] = req.Models
 	}
+	if req.AllowFallbacks != nil {
+		body["allow_fallbacks"] = *req.AllowFallbacks
+	}
 	if req.Provider != nil {
 		body["provider"] = req.Provider
 	}

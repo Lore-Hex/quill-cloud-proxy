@@ -767,6 +767,10 @@ func serveOneRequest(
 		writeError(conn, 404, "route not found")
 		return
 	}
+	if err := req.NormalizeFallbackRouting(); err != nil {
+		writeOpenAIError(conn, 400, err.Error(), "invalid_request_error", "bad_request", "allow_fallbacks")
+		return
+	}
 	req.IdempotencyKey = idempotencyKey
 	applyAttributionHeaders(&req, attribution)
 	if err := validateOrObserveRequestMetadata(&req, requestLogID); err != nil {
@@ -881,6 +885,33 @@ func serveOneRequest(
 			return
 		}
 		requestIdentity.bindAuthorization(authorization)
+		if err := validateAuthorizationRouting(&req, authorization); err != nil {
+			fmt.Fprintf(
+				os.Stderr,
+				"enclave.routing_integrity_failed request_log_id=%q requested_model=%q authorized_model=%q candidate_count=%d err=%q\n",
+				requestLogID,
+				req.Model,
+				authorization.Model,
+				len(authorization.RouteCandidates),
+				err,
+			)
+			_ = trGateway.Refund(
+				ctx,
+				authorization,
+				502,
+				"routing_integrity_error",
+				time.Since(requestStarted).Seconds(),
+				req.Metadata,
+			)
+			writeErrorWithSourceHeaders(
+				conn,
+				502,
+				"routing integrity check failed",
+				"router",
+				nil,
+			)
+			return
+		}
 		attachResolvedUserModel(authorization, resolvedCustomModel)
 		req.Models = nil
 		if isUserProvidedCustomModel(authorization) {
