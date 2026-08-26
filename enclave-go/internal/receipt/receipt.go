@@ -82,12 +82,13 @@ type protectedHeader struct {
 	Algorithm       string `json:"alg"`
 	Type            string `json:"typ"`
 	KID             string `json:"kid"`
-	JWK             jwk    `json:"jwk"`
+	JWK             JWK    `json:"jwk"`
 	Attestation     string `json:"att,omitempty"`
 	AttestationKind string `json:"att_kind,omitempty"`
 }
 
-type jwk struct {
+// JWK is the public Ed25519 signing key in receipt protected-header form.
+type JWK struct {
 	KeyType string `json:"kty"`
 	Curve   string `json:"crv"`
 	X       string `json:"x"`
@@ -138,6 +139,16 @@ func (s *Signer) Kid() string {
 	return rawBase64.EncodeToString(digest[:])
 }
 
+// JWK returns the public half of the signing key in receipt protected-header
+// form. It contains no private key material.
+func (s *Signer) JWK() JWK {
+	return JWK{
+		KeyType: "OKP",
+		Curve:   "Ed25519",
+		X:       rawBase64.EncodeToString(s.publicKey),
+	}
+}
+
 // SignCompact signs claims as a compact JWS without embedded attestation.
 func (s *Signer) SignCompact(claims Claims) (string, error) {
 	protected, payload, signature, err := s.sign(claims, protectedHeader{})
@@ -151,17 +162,9 @@ func (s *Signer) SignCompact(claims Claims) (string, error) {
 // material in the protected header. JWT attestations are embedded verbatim;
 // the binary Nitro COSE document is base64url-encoded.
 func (s *Signer) SignFlattened(claims Claims, attDoc []byte, attKind string) ([]byte, error) {
-	if len(attDoc) == 0 {
-		return nil, errors.New("receipt: attestation document is required")
-	}
-	var attestationValue string
-	switch attKind {
-	case "gcp-cs-jwt", "azure-maa-jwt":
-		attestationValue = string(attDoc)
-	case "aws-nitro-cose":
-		attestationValue = rawBase64.EncodeToString(attDoc)
-	default:
-		return nil, fmt.Errorf("receipt: unsupported attestation kind %q", attKind)
+	attestationValue, err := EncodeAttestation(attDoc, attKind)
+	if err != nil {
+		return nil, err
 	}
 	protected, payload, signature, err := s.sign(claims, protectedHeader{
 		Attestation:     attestationValue,
@@ -181,19 +184,32 @@ func (s *Signer) SignFlattened(claims Claims, attDoc []byte, attKind string) ([]
 	return serialized, nil
 }
 
+// EncodeAttestation returns an attestation document in the exact string form
+// used by a flattened receipt's protected header. JWTs remain verbatim while
+// binary Nitro COSE documents use unpadded base64url.
+func EncodeAttestation(attDoc []byte, attKind string) (string, error) {
+	if len(attDoc) == 0 {
+		return "", errors.New("receipt: attestation document is required")
+	}
+	switch attKind {
+	case "gcp-cs-jwt", "azure-maa-jwt":
+		return string(attDoc), nil
+	case "aws-nitro-cose":
+		return rawBase64.EncodeToString(attDoc), nil
+	default:
+		return "", fmt.Errorf("receipt: unsupported attestation kind %q", attKind)
+	}
+}
+
 func (s *Signer) sign(claims Claims, additions protectedHeader) (string, string, string, error) {
 	if s == nil || len(s.publicKey) != ed25519.PublicKeySize || len(s.privateKey) != ed25519.PrivateKeySize {
 		return "", "", "", errors.New("receipt: signer is not initialized")
 	}
 	header := protectedHeader{
-		Algorithm: "EdDSA",
-		Type:      receiptType,
-		KID:       s.Kid(),
-		JWK: jwk{
-			KeyType: "OKP",
-			Curve:   "Ed25519",
-			X:       rawBase64.EncodeToString(s.publicKey),
-		},
+		Algorithm:       "EdDSA",
+		Type:            receiptType,
+		KID:             s.Kid(),
+		JWK:             s.JWK(),
 		Attestation:     additions.Attestation,
 		AttestationKind: additions.AttestationKind,
 	}

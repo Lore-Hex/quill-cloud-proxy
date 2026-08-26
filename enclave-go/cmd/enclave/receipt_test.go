@@ -4,6 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -15,6 +19,116 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/receipt"
 )
+
+func TestReceiptKeyRouteServesStableEnvelope(t *testing.T) {
+	resetReceiptTestState(t)
+	signer, err := receipt.NewSigner()
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	receiptSigner = signer
+	attestationDocument := []byte("header.payload.signature")
+	if attestation.Kind == "aws-nitro-cose" {
+		attestationDocument = []byte{0xd2, 0x84, 0x43, 0xa1, 0x01, 0x26}
+	}
+	switch attestation.Kind {
+	case "gcp-cs-jwt", "aws-nitro-cose", "azure-maa-jwt":
+	default:
+		t.Fatalf("unexpected compiled attestation kind %q", attestation.Kind)
+	}
+	receiptAttestationCache.Store(&cachedReceiptAttestation{
+		document: append([]byte(nil), attestationDocument...),
+		kind:     attestation.Kind,
+	})
+
+	request := func() (*http.Response, []byte) {
+		t.Helper()
+		conn := newScriptedConn("GET /receipt-key HTTP/1.1\r\nHost: test\r\n\r\n", nil)
+		serveOne(context.Background(), conn, nil, nil, nil, []byte("devices"), nil, nil)
+		return readRawHTTPResponse(t, conn.writes.Bytes())
+	}
+	resp, body := request()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+	if bytes.Contains(body, []byte{'\n'}) {
+		t.Fatalf("envelope contains LF: %q", body)
+	}
+
+	var envelope receiptKeyEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if envelope.JWK.KeyType != "OKP" || envelope.JWK.Curve != "Ed25519" {
+		t.Fatalf("jwk = %#v", envelope.JWK)
+	}
+	publicKey, err := base64.RawURLEncoding.DecodeString(envelope.JWK.X)
+	if err != nil {
+		t.Fatalf("decode jwk.x: %v", err)
+	}
+	if len(publicKey) != ed25519.PublicKeySize {
+		t.Fatalf("decoded jwk.x length = %d, want %d", len(publicKey), ed25519.PublicKeySize)
+	}
+	digest := sha256.Sum256(publicKey)
+	if want := base64.RawURLEncoding.EncodeToString(digest[:]); envelope.KID != want {
+		t.Fatalf("kid = %q, want SHA-256(jwk.x) %q", envelope.KID, want)
+	}
+	if envelope.KID != signer.Kid() {
+		t.Fatalf("kid = %q, want signer kid %q", envelope.KID, signer.Kid())
+	}
+	wantAttestation := string(attestationDocument)
+	if attestation.Kind == "aws-nitro-cose" {
+		wantAttestation = base64.RawURLEncoding.EncodeToString(attestationDocument)
+	}
+	if envelope.Attestation != wantAttestation {
+		t.Fatalf("att = %q, want %q", envelope.Attestation, wantAttestation)
+	}
+	if envelope.AttestationKind != attestation.Kind {
+		t.Fatalf("att_kind = %q, want compiled kind %q", envelope.AttestationKind, attestation.Kind)
+	}
+	flattened, err := signer.SignFlattened(receipt.Claims{}, attestationDocument, attestation.Kind)
+	if err != nil {
+		t.Fatalf("SignFlattened: %v", err)
+	}
+	var flattenedEnvelope struct {
+		Protected string `json:"protected"`
+	}
+	if err := json.Unmarshal(flattened, &flattenedEnvelope); err != nil {
+		t.Fatalf("unmarshal flattened receipt: %v", err)
+	}
+	protectedJSON, err := base64.RawURLEncoding.DecodeString(flattenedEnvelope.Protected)
+	if err != nil {
+		t.Fatalf("decode flattened protected header: %v", err)
+	}
+	var protectedHeader struct {
+		Attestation     string `json:"att"`
+		AttestationKind string `json:"att_kind"`
+	}
+	if err := json.Unmarshal(protectedJSON, &protectedHeader); err != nil {
+		t.Fatalf("unmarshal flattened protected header: %v", err)
+	}
+	if envelope.Attestation != protectedHeader.Attestation || envelope.AttestationKind != protectedHeader.AttestationKind {
+		t.Fatalf("receipt-key attestation (%q, %q) differs from flattened header (%q, %q)", envelope.Attestation, envelope.AttestationKind, protectedHeader.Attestation, protectedHeader.AttestationKind)
+	}
+	wantBody := []byte(`{"kid":"` + envelope.KID + `","jwk":{"kty":"OKP","crv":"Ed25519","x":"` + envelope.JWK.X + `"},"att":"` + envelope.Attestation + `","att_kind":"` + envelope.AttestationKind + `"}`)
+	if !bytes.Equal(body, wantBody) {
+		t.Fatalf("body field order or encoding changed:\n got %s\nwant %s", body, wantBody)
+	}
+
+	secondResp, secondBody := request()
+	if secondResp.StatusCode != http.StatusOK {
+		t.Fatalf("second status = %d body=%s", secondResp.StatusCode, secondBody)
+	}
+	if !bytes.Equal(body, secondBody) {
+		t.Fatalf("envelope is not byte-stable:\nfirst  %s\nsecond %s", body, secondBody)
+	}
+}
 
 func TestReceiptAttestationRouteServesCachedDocument(t *testing.T) {
 	resetReceiptTestState(t)
@@ -65,11 +179,13 @@ func TestReceiptsOffReturns404AndKeepsLiveAttestationLegacyShaped(t *testing.T) 
 		t.Fatal("QUILL_RECEIPTS=off left receipt state enabled")
 	}
 
-	receiptConn := newScriptedConn("GET /receipt-attestation HTTP/1.1\r\nHost: test\r\n\r\n", nil)
-	serveOne(context.Background(), receiptConn, nil, nil, nil, []byte("devices"), nil, nil)
-	receiptResp, receiptBody := readRawHTTPResponse(t, receiptConn.writes.Bytes())
-	if receiptResp.StatusCode != http.StatusNotFound || !bytes.Contains(receiptBody, []byte(`"message":"route not found"`)) {
-		t.Fatalf("disabled response status=%d body=%s", receiptResp.StatusCode, receiptBody)
+	for _, path := range []string{"/receipt-attestation", "/receipt-key"} {
+		receiptConn := newScriptedConn("GET "+path+" HTTP/1.1\r\nHost: test\r\n\r\n", nil)
+		serveOne(context.Background(), receiptConn, nil, nil, nil, []byte("devices"), nil, nil)
+		receiptResp, receiptBody := readRawHTTPResponse(t, receiptConn.writes.Bytes())
+		if receiptResp.StatusCode != http.StatusNotFound || !bytes.Contains(receiptBody, []byte(`"message":"route not found"`)) {
+			t.Fatalf("disabled %s response status=%d body=%s", path, receiptResp.StatusCode, receiptBody)
+		}
 	}
 
 	getAttestation = func(_, _, _, channelBinding, receiptKeyFP []byte) ([]byte, error) {
@@ -89,6 +205,22 @@ func TestReceiptsOffReturns404AndKeepsLiveAttestationLegacyShaped(t *testing.T) 
 	liveResp, liveBody := readRawHTTPResponse(t, liveConn.writes.Bytes())
 	if liveResp.StatusCode != http.StatusOK || string(liveBody) != "legacy-live-attestation" {
 		t.Fatalf("legacy attestation status=%d body=%s", liveResp.StatusCode, liveBody)
+	}
+}
+
+func TestReceiptKeyRouteReturns503WhenAttestationCacheIsEmpty(t *testing.T) {
+	resetReceiptTestState(t)
+	signer, err := receipt.NewSigner()
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	receiptSigner = signer
+
+	conn := newScriptedConn("GET /receipt-key HTTP/1.1\r\nHost: test\r\n\r\n", nil)
+	serveOne(context.Background(), conn, nil, nil, nil, []byte("devices"), nil, nil)
+	resp, body := readRawHTTPResponse(t, conn.writes.Bytes())
+	if resp.StatusCode != http.StatusServiceUnavailable || !bytes.Contains(body, []byte(`"message":"receipt attestation unavailable"`)) {
+		t.Fatalf("empty-cache response status=%d body=%s", resp.StatusCode, body)
 	}
 }
 
