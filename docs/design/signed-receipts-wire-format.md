@@ -54,6 +54,26 @@ ill-charactered values are a 400. The header is never forwarded upstream.
   final data event before `data: [DONE]`. Verifiers MUST reject a receipt if
   any data event other than `[DONE]` follows it.
 
+### 2.3 Instance key discovery
+
+Anonymous `GET /receipt-key` publishes the current enclave instance's public
+receipt key and its cached key-binding attestation as single-line JSON with
+`Content-Type: application/json` and `Cache-Control: no-store`:
+
+```json
+{"kid":"<b64url SHA-256 of raw pubkey>","jwk":{"kty":"OKP","crv":"Ed25519","x":"<b64url pubkey>"},"att":"<JWT verbatim, or b64url COSE>","att_kind":"gcp-cs-jwt|aws-nitro-cose|azure-maa-jwt"}
+```
+
+The field order above is fixed. `att` uses exactly the same encoding as the
+flattened JWS protected header: GCP and Azure JWTs are verbatim, while the AWS
+Nitro COSE document is unpadded base64url. The endpoint has the same
+instance-scoped, no-caller-nonce, no-TLS-exporter semantics as the cached key
+attestation. It returns 503 until a key-binding document has been minted and
+404 when receipts are disabled.
+
+`GET /receipt-attestation` remains available for existing clients and serves
+the same cached document in its legacy raw form with `x-receipt-att-kind`.
+
 ## 3. Claims
 
 ```json

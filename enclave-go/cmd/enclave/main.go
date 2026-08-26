@@ -613,6 +613,13 @@ func serveOneRequest(
 		}
 		return serveReceiptAttestation(conn)
 	}
+	if method == "GET" && routePath == "/receipt-key" {
+		if receiptSigner == nil {
+			writeError(conn, 404, "route not found")
+			return false
+		}
+		return serveReceiptKey(conn)
+	}
 
 	// Public SDK discovery belongs on the documented API origin. The enclave
 	// relays only catalog metadata; prompt-bearing routes remain behind the

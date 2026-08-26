@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/big"
@@ -23,6 +24,14 @@ var receiptIssuer = "https://api.trustedrouter.com"
 type cachedReceiptAttestation struct {
 	document []byte
 	kind     string
+}
+
+// receiptKeyEnvelope declaration order is the fixed JSON wire order.
+type receiptKeyEnvelope struct {
+	KID             string      `json:"kid"`
+	JWK             receipt.JWK `json:"jwk"`
+	Attestation     string      `json:"att"`
+	AttestationKind string      `json:"att_kind"`
 }
 
 var receiptAttestationCache atomic.Pointer[cachedReceiptAttestation]
@@ -144,5 +153,33 @@ func serveReceiptAttestation(conn io.Writer) bool {
 		"HTTP/1.1 200 OK\r\nContent-Type: application/cbor\r\nContent-Length: %d\r\nCache-Control: no-store\r\nx-receipt-att-kind: %s\r\nConnection: keep-alive\r\n\r\n",
 		len(cached.document), cached.kind)
 	_, _ = conn.Write(cached.document)
+	return true
+}
+
+func serveReceiptKey(conn io.Writer) bool {
+	cached := receiptAttestationCache.Load()
+	if cached == nil || len(cached.document) == 0 {
+		writeError(conn, 503, "receipt attestation unavailable")
+		return false
+	}
+	attestationValue, err := receipt.EncodeAttestation(cached.document, cached.kind)
+	if err != nil {
+		writeError(conn, 503, "receipt attestation unavailable")
+		return false
+	}
+	body, err := json.Marshal(receiptKeyEnvelope{
+		KID:             receiptSigner.Kid(),
+		JWK:             receiptSigner.JWK(),
+		Attestation:     attestationValue,
+		AttestationKind: cached.kind,
+	})
+	if err != nil {
+		writeError(conn, 500, "receipt key unavailable")
+		return false
+	}
+	fmt.Fprintf(conn,
+		"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n",
+		len(body))
+	_, _ = conn.Write(body)
 	return true
 }

@@ -51,6 +51,17 @@ func TestKidDerivation(t *testing.T) {
 	}
 }
 
+func TestJWKReturnsProtectedHeaderPublicKey(t *testing.T) {
+	signer := signerWithPublicKey(bytesFromZeroTo31())
+	jwk := signer.JWK()
+	if jwk.KeyType != "OKP" || jwk.Curve != "Ed25519" {
+		t.Fatalf("JWK = %#v", jwk)
+	}
+	if want := rawBase64.EncodeToString(bytesFromZeroTo31()); jwk.X != want {
+		t.Fatalf("JWK x = %q, want %q", jwk.X, want)
+	}
+}
+
 func TestKeyCommitmentUsesExactDomainSeparatedPreimage(t *testing.T) {
 	signer := signerWithPublicKey(bytesFromZeroTo31())
 	const wantHex = "3358a1e1737773945f5429970b3fb3c107ce660aa1ae3e676488138d51a354f7"
