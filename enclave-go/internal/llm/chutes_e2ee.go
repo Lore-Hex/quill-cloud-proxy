@@ -81,7 +81,7 @@ type chutesE2EEClient struct {
 	nonceGroup singleflight.Group
 
 	proofMu    sync.RWMutex
-	proofCache map[string]time.Time
+	proofCache map[string]chutesVerificationResult
 	proofGroup singleflight.Group
 
 	verifyEvidence func(context.Context, *chutesEvidenceEnvelope) (*chutesVerificationResult, error)
@@ -96,7 +96,7 @@ func newChutesE2EE(apiKey string) *chutesE2EEClient {
 		now:            time.Now,
 		modelMap:       make(map[string]string),
 		noncePools:     make(map[string]*chutesNoncePool),
-		proofCache:     make(map[string]time.Time),
+		proofCache:     make(map[string]chutesVerificationResult),
 		verifyEvidence: verifyChutesEvidenceWithSidecar,
 	}
 }
@@ -155,13 +155,15 @@ func (c *chutesE2EEClient) InvokeStreaming(
 		}
 		excluded[invocation.instanceID] = struct{}{}
 
-		if err := c.verifyInvocation(ctx, apiKey, chuteID, invocation); err != nil {
+		verification, err := c.verifyInvocation(ctx, apiKey, chuteID, invocation)
+		if err != nil {
 			lastErr = err
 			failures = append(failures, "attestation")
 			continue
 		}
+		_ = WithUpstreamVerification(ctx, verification.Policy, verification.VerifiedAt, verification.ExpiresAt)
 		counted := &byteCountingWriter{writer: out}
-		err := c.invokeEncryptedStream(ctx, apiKey, chuteID, invocation, requestBody, counted)
+		err = c.invokeEncryptedStream(ctx, apiKey, chuteID, invocation, requestBody, counted)
 		if err == nil {
 			return nil
 		}
@@ -382,20 +384,20 @@ func (c *chutesE2EEClient) verifyInvocation(
 	ctx context.Context,
 	apiKey, chuteID string,
 	invocation *chutesInvocation,
-) error {
+) (*chutesVerificationResult, error) {
 	proofKey := chutesProofKey(invocation.instanceID, invocation.e2ePubkey)
 	c.proofMu.RLock()
-	expiresAt := c.proofCache[proofKey]
+	cached := c.proofCache[proofKey]
 	c.proofMu.RUnlock()
-	if c.now().Before(expiresAt) {
-		return nil
+	if c.now().Before(cached.ExpiresAt) {
+		return &cached, nil
 	}
-	_, err, _ := c.proofGroup.Do(proofKey, func() (any, error) {
+	verified, err, _ := c.proofGroup.Do(proofKey, func() (any, error) {
 		c.proofMu.RLock()
-		cachedUntil := c.proofCache[proofKey]
+		cachedResult := c.proofCache[proofKey]
 		c.proofMu.RUnlock()
-		if c.now().Before(cachedUntil) {
-			return nil, nil
+		if c.now().Before(cachedResult.ExpiresAt) {
+			return &cachedResult, nil
 		}
 		nonceBytes := make([]byte, 32)
 		if _, err := rand.Read(nonceBytes); err != nil {
@@ -419,11 +421,18 @@ func (c *chutesE2EEClient) verifyInvocation(
 			return nil, err
 		}
 		c.proofMu.Lock()
-		c.proofCache[proofKey] = result.ExpiresAt
+		c.proofCache[proofKey] = *result
 		c.proofMu.Unlock()
-		return nil, nil
+		return result, nil
 	})
-	return err
+	if err != nil {
+		return nil, err
+	}
+	result, ok := verified.(*chutesVerificationResult)
+	if !ok || result == nil {
+		return nil, errors.New("llm/chutes: attestation verification returned no result")
+	}
+	return result, nil
 }
 
 func (c *chutesE2EEClient) invokeEncryptedStream(

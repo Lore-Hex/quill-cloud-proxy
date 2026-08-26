@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 )
 
 var receiptSigner *receipt.Signer
+var receiptIssuer = "https://api.trustedrouter.com"
 
 type cachedReceiptAttestation struct {
 	document []byte
@@ -32,12 +34,17 @@ var receiptAttestationRemintInterval = 30 * time.Minute
 // initializeReceiptSigner runs only after entropy seeding and TLS setup. A
 // disabled receipt subsystem leaves both the signer and cache nil so all
 // existing attestation calls retain their legacy shape.
-func initializeReceiptSigner(ctx context.Context, tlsServer *enclavetls.Server, deviceBlob []byte) error {
+func initializeReceiptSigner(ctx context.Context, tlsServer *enclavetls.Server, deviceBlob []byte, apiHosts ...string) error {
 	receiptAttestationCache.Store(nil)
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("QUILL_RECEIPTS")), "off") {
 		receiptSigner = nil
 		return nil
 	}
+	issuer, err := configuredReceiptIssuer(apiHosts)
+	if err != nil {
+		return err
+	}
+	receiptIssuer = issuer
 
 	signer, err := receipt.NewSigner()
 	if err != nil {
@@ -51,6 +58,25 @@ func initializeReceiptSigner(ctx context.Context, tlsServer *enclavetls.Server, 
 	}
 	go runReceiptAttestationReminter(ctx, tlsServer, deviceBlob, commitment, os.Stderr)
 	return nil
+}
+
+func configuredReceiptIssuer(apiHosts []string) (string, error) {
+	issuer := strings.TrimSpace(os.Getenv("QUILL_RECEIPT_ISS"))
+	if issuer == "" && len(apiHosts) > 0 {
+		host, _, _ := strings.Cut(apiHosts[0], ",")
+		host = strings.TrimSpace(host)
+		if host != "" {
+			issuer = "https://" + host
+		}
+	}
+	if issuer == "" {
+		issuer = receiptIssuer
+	}
+	parsed, err := url.Parse(issuer)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", fmt.Errorf("receipt: QUILL_RECEIPT_ISS must be a canonical https origin")
+	}
+	return strings.TrimSuffix(issuer, "/"), nil
 }
 
 func currentReceiptLeafDER(tlsServer *enclavetls.Server) []byte {

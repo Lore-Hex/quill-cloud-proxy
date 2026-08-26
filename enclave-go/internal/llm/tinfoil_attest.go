@@ -198,8 +198,9 @@ import (
 )
 
 const (
-	tinfoilEnclaveHost = "inference.tinfoil.sh"
-	tinfoilAttestPath  = "/.well-known/tinfoil-attestation"
+	tinfoilEnclaveHost               = "inference.tinfoil.sh"
+	tinfoilAttestPath                = "/.well-known/tinfoil-attestation"
+	tinfoilReceiptVerificationPolicy = "tinfoil-snp-dual-source-v1"
 
 	// SEV-SNP guest report offsets, AMD SEV-SNP ABI §7.3 (Table 22).
 	// REPORT_DATA is at byte 0x50 and is 64 bytes long. The in-process
@@ -627,10 +628,13 @@ func (r *attestedRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	}
 	r.mu.RLock()
 	t := r.transport
+	verifiedAt := r.verifiedAt
+	expiresAt := r.expiresAt
 	r.mu.RUnlock()
 	if t == nil {
 		return nil, errors.New("tinfoil: verified transport unavailable")
 	}
+	_ = WithUpstreamVerification(req.Context(), tinfoilReceiptVerificationPolicy, verifiedAt, expiresAt)
 	resp, err := t.RoundTrip(req)
 	if err == nil || !errors.Is(err, errCertFingerprintMismatch) {
 		return resp, err
@@ -641,7 +645,10 @@ func (r *attestedRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	}
 	r.mu.RLock()
 	t = r.transport
+	verifiedAt = r.verifiedAt
+	expiresAt = r.expiresAt
 	r.mu.RUnlock()
+	_ = WithUpstreamVerification(req.Context(), tinfoilReceiptVerificationPolicy, verifiedAt, expiresAt)
 	return t.RoundTrip(req)
 }
 

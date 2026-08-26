@@ -638,6 +638,7 @@ type StreamDelta struct {
 }
 
 type StreamObserver func(StreamDelta)
+type StreamFinishHook func(created int64) error
 
 // TransformStreamCaptureWithOptions is TransformStreamCapture plus the
 // OpenAI stream_options.include_usage behavior: when emitUsageChunk is
@@ -657,6 +658,20 @@ func TransformStreamCaptureWithRouterMetadata(
 	model string,
 	emitUsageChunk bool,
 	routerMetadata map[string]any,
+) (StreamResult, error) {
+	return TransformStreamCaptureWithRouterMetadataAndFinishHook(
+		r, w, requestID, model, emitUsageChunk, routerMetadata, nil,
+	)
+}
+
+func TransformStreamCaptureWithRouterMetadataAndFinishHook(
+	r io.Reader,
+	w io.Writer,
+	requestID string,
+	model string,
+	emitUsageChunk bool,
+	routerMetadata map[string]any,
+	finishHook StreamFinishHook,
 ) (StreamResult, error) {
 	created := time.Now().Unix()
 	finishReason := "stop"
@@ -682,7 +697,7 @@ func TransformStreamCaptureWithRouterMetadata(
 		return writeChunk(w, requestID, model, created, map[string]any{"role": "assistant", "content": ""}, "")
 	}
 
-	finish := func() (StreamResult, error) {
+	finish := func(runHook bool) (StreamResult, error) {
 		if err := writeChunk(w, requestID, model, created, map[string]any{}, finishReason); err != nil {
 			return StreamResult{}, err
 		}
@@ -693,6 +708,11 @@ func TransformStreamCaptureWithRouterMetadata(
 		}
 		if len(routerMetadata) > 0 {
 			if err := writeRouterMetadataChunk(w, requestID, model, created, routerMetadata); err != nil {
+				return StreamResult{}, err
+			}
+		}
+		if runHook && finishHook != nil {
+			if err := finishHook(created); err != nil {
 				return StreamResult{}, err
 			}
 		}
@@ -845,13 +865,15 @@ func TransformStreamCaptureWithRouterMetadata(
 			// upstreams' include_usage final chunk.
 			mergeUsage(&usage, getMap(dataJSON, "usage"))
 		case "message_stop":
-			return finish()
+			return finish(true)
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return StreamResult{}, err
 	}
-	return finish()
+	// EOF without message_stop is a tolerated compatibility behavior for
+	// ordinary streams, but it is not a receipt-worthy clean terminator.
+	return finish(false)
 }
 
 func writeRouterMetadataChunk(

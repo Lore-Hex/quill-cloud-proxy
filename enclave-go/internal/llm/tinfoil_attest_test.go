@@ -148,6 +148,7 @@ func TestAttestedRoundTripperCurrentProofUsesPinnedTransport(t *testing.T) {
 	rt := &attestedRoundTripper{
 		transport:  upstream,
 		expected:   testTinfoilFP,
+		verifiedAt: now.Add(-time.Minute),
 		expiresAt:  now.Add(time.Minute),
 		codeDigest: "abcdef0123456789",
 		resolve: func(context.Context) (*sidecarPayload, error) {
@@ -162,7 +163,8 @@ func TestAttestedRoundTripperCurrentProofUsesPinnedTransport(t *testing.T) {
 		},
 		now: func() time.Time { return now },
 	}
-	req, err := http.NewRequest(http.MethodPost, "https://inference.tinfoil.sh/v1/chat/completions", nil)
+	requestContext := WithUpstreamVerification(context.Background(), "", time.Time{}, time.Time{})
+	req, err := http.NewRequestWithContext(requestContext, http.MethodPost, "https://inference.tinfoil.sh/v1/chat/completions", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,6 +176,10 @@ func TestAttestedRoundTripperCurrentProofUsesPinnedTransport(t *testing.T) {
 	defer resp.Body.Close()
 	if upstream.calls != 1 {
 		t.Fatalf("upstream RoundTrip calls = %d, want 1", upstream.calls)
+	}
+	verification, ok := FromContext(requestContext)
+	if !ok || verification.Policy != tinfoilReceiptVerificationPolicy || !verification.VerifiedAt.Equal(now.Add(-time.Minute)) || !verification.ExpiresAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("upstream verification = %+v ok=%v", verification, ok)
 	}
 }
 

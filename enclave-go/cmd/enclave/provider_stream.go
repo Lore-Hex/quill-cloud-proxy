@@ -76,6 +76,9 @@ func invokeProviderStream(
 		var attemptDuration time.Duration
 		var ttfbMs int64
 		for tryN := 0; ; tryN++ {
+			// A failed attested candidate must not lend its verification tier to a
+			// later plain-TLS fallback that actually serves the response.
+			ctx = llm.WithUpstreamVerification(ctx, "", time.Time{}, time.Time{})
 			attemptCtx, cancelAttempt := context.WithCancel(ctx)
 			var ttfbFired bool
 			ttfbTimer := time.AfterFunc(budget, func() {

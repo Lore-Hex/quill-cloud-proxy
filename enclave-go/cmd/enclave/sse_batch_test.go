@@ -188,6 +188,29 @@ func TestSSEBatchDoneAndCloseFlush(t *testing.T) {
 	})
 }
 
+func TestSSEBatchFlushDrainsWithoutClosing(t *testing.T) {
+	out := &lockedBuffer{}
+	w := newTestBatchWriter(out, time.Hour, 4096)
+	if _, err := w.Write([]byte(contentEvent("first") + contentEvent(" second") + contentEvent(" third"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if got := streamContent(t, out.String()); got != "first second third" {
+		t.Fatalf("flushed content=%q", got)
+	}
+	if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
+		t.Fatalf("write after Flush: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(out.String(), "data: [DONE]\n\n") {
+		t.Fatalf("output=%s", out.String())
+	}
+}
+
 func TestSSEBatchMalformedJSONPassesThroughRaw(t *testing.T) {
 	out := &lockedBuffer{}
 	w := newTestBatchWriter(out, time.Hour, 4096)

@@ -31,7 +31,12 @@ type sseBatchWriter struct {
 	closed           bool
 }
 
-func newSSEBatchWriter(w io.Writer) io.WriteCloser {
+type sseBatchWriteCloser interface {
+	io.WriteCloser
+	Flush() error
+}
+
+func newSSEBatchWriter(w io.Writer) sseBatchWriteCloser {
 	ms := envInt("TR_SSE_BATCH_MS", 40)
 	if ms <= 0 {
 		return nopWriteCloser{w: w}
@@ -56,6 +61,10 @@ func (n nopWriteCloser) Write(p []byte) (int, error) {
 }
 
 func (n nopWriteCloser) Close() error {
+	return nil
+}
+
+func (n nopWriteCloser) Flush() error {
 	return nil
 }
 
@@ -91,6 +100,33 @@ func (w *sseBatchWriter) Close() error {
 	}
 	w.closed = true
 	w.stopTimerLocked()
+	if w.err != nil {
+		return w.err
+	}
+	if err := w.flushLocked(); err != nil {
+		w.err = err
+		return err
+	}
+	if len(w.pendingInput) > 0 {
+		_, err := w.w.Write(w.pendingInput)
+		w.pendingInput = nil
+		if err != nil {
+			w.err = err
+		}
+		return err
+	}
+	return nil
+}
+
+// Flush drains all complete pending state without closing the writer. The
+// receipt finish hook uses this to make the digest cover post-coalescing bytes
+// before it seals the hash and injects the final receipt event.
+func (w *sseBatchWriter) Flush() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return io.ErrClosedPipe
+	}
 	if w.err != nil {
 		return w.err
 	}

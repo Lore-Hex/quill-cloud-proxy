@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -1639,6 +1640,58 @@ data: {"type":"message_stop"}
 	}
 	if strings.Contains(out.String(), `"usage"`) {
 		t.Fatalf("usage chunk emitted with no upstream usage: %s", out.String())
+	}
+}
+
+func TestTransformStreamFinishHookRunsOnlyForCleanTerminatorBeforeDone(t *testing.T) {
+	clean := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	var out bytes.Buffer
+	hookCalls := 0
+	_, err := TransformStreamCaptureWithRouterMetadataAndFinishHook(
+		strings.NewReader(clean), &out, "id1", "model1", false, nil,
+		func(_ int64) error {
+			hookCalls++
+			_, writeErr := io.WriteString(&out, "data: {\"hook\":true}\n\n")
+			return writeErr
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hookCalls != 1 || !strings.HasSuffix(out.String(), "data: {\"hook\":true}\n\ndata: [DONE]\n\n") {
+		t.Fatalf("hookCalls=%d output=%s", hookCalls, out.String())
+	}
+
+	out.Reset()
+	hookCalls = 0
+	truncated := strings.Split(clean, "event: message_stop")[0]
+	_, err = TransformStreamCaptureWithRouterMetadataAndFinishHook(
+		strings.NewReader(truncated), &out, "id1", "model1", false, nil,
+		func(_ int64) error { hookCalls++; return nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hookCalls != 0 {
+		t.Fatalf("truncated stream hookCalls=%d", hookCalls)
+	}
+}
+
+func TestTransformResponsesStreamFinishHookIsUnnamedBeforeDone(t *testing.T) {
+	clean := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	var out bytes.Buffer
+	_, err := TransformResponsesStreamWithFinishHook(
+		strings.NewReader(clean), &out, "resp_test", "model1", 1, nil, nil,
+		func(_ int64) error {
+			_, writeErr := io.WriteString(&out, "data: {\"hook\":true}\n\n")
+			return writeErr
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(out.String(), "data: {\"hook\":true}\n\ndata: [DONE]\n\n") {
+		t.Fatalf("output=%s", out.String())
 	}
 }
 

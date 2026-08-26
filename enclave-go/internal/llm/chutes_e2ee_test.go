@@ -332,8 +332,9 @@ func TestChutesClientSkipsUnverifiedInstanceAndNeverSendsPlaintext(t *testing.T)
 		}, nil
 	}
 	var out bytes.Buffer
+	requestContext := WithUpstreamVerification(context.Background(), "", time.Time{}, time.Time{})
 	err = client.InvokeStreaming(
-		context.Background(),
+		requestContext,
 		&qtypes.OpenAIChatRequest{Model: model},
 		&qtypes.AnthropicMessagesRequest{
 			Messages: []qtypes.AnthropicMessage{{Role: "user", Content: prompt}},
@@ -352,5 +353,9 @@ func TestChutesClientSkipsUnverifiedInstanceAndNeverSendsPlaintext(t *testing.T)
 	}
 	if !strings.Contains(out.String(), "PONG") {
 		t.Fatalf("translated stream did not contain response: %s", out.String())
+	}
+	verification, ok := FromContext(requestContext)
+	if !ok || verification.Policy != "chutes-tdx-nvidia-e2e-v1" || !verification.ExpiresAt.After(verification.VerifiedAt) {
+		t.Fatalf("upstream verification = %+v ok=%v", verification, ok)
 	}
 }
