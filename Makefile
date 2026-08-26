@@ -12,16 +12,16 @@ GO_TAGS := cloud_aws,llm_bedrock cloud_aws,llm_multi cloud_gcp,llm_vertex cloud_
 # ---- Go enclave -----------------------------------------------------------
 
 enclave-go-build:
-	cd $(ENCLAVE_DIR) && for tags in $(GO_TAGS); do go build -tags "$$tags" ./...; done
+	cd $(ENCLAVE_DIR) && set -e; for tags in $(GO_TAGS); do go build -tags "$$tags" ./...; done
 
 enclave-go-test:
-	cd $(ENCLAVE_DIR) && for tags in $(GO_TAGS); do go test -tags "$$tags" ./...; done
+	cd $(ENCLAVE_DIR) && set -e; for tags in $(GO_TAGS); do go test -tags "$$tags" ./...; done
 
 enclave-go-vet:
-	cd $(ENCLAVE_DIR) && for tags in $(GO_TAGS); do go vet -tags "$$tags" ./...; done
+	cd $(ENCLAVE_DIR) && set -e; for tags in $(GO_TAGS); do go vet -tags "$$tags" ./...; done
 
 enclave-go-lint:
-	cd $(ENCLAVE_DIR) && for tags in $(GO_TAGS); do \
+	cd $(ENCLAVE_DIR) && set -e; for tags in $(GO_TAGS); do \
 		if command -v golangci-lint >/dev/null 2>&1; then \
 			golangci-lint run --build-tags "$$tags"; \
 		else \

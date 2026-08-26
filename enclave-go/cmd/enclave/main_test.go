@@ -6802,6 +6802,160 @@ func TestNamedOrchestrationPresetsReturnNonEmptyThroughLocalGateway(t *testing.T
 	}
 }
 
+func TestServeOnePromotesTopLevelFallbackControlBeforeAuthorize(t *testing.T) {
+	trGateway, recorder, closeGateway := newFusionGatewayRecorder(t)
+	defer closeGateway()
+	serverConn, client := net.Pipe()
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveOne(
+			context.Background(), serverConn, auth.New(nil), &fakeStreamingLLM{},
+			nil, nil, trGateway, nil,
+		)
+	}()
+
+	requestBody := []byte(`{
+		"model":"openai/gpt-oss-20b",
+		"models":["google/gemini-2.0-flash-lite"],
+		"allow_fallbacks":false,
+		"stream":false,
+		"messages":[{"role":"user","content":"Reply with PONG"}],
+		"max_tokens":8
+	}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer local-integrity-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	responseBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, responseBody)
+	}
+
+	recorder.mu.Lock()
+	authorize := append([]map[string]any(nil), recorder.authorize...)
+	recorder.mu.Unlock()
+	if len(authorize) != 1 {
+		t.Fatalf("authorize calls = %d, want 1", len(authorize))
+	}
+	if _, exists := authorize[0]["models"]; exists {
+		t.Fatalf("disabled models array reached authorization: %#v", authorize[0]["models"])
+	}
+	provider, ok := authorize[0]["provider"].(map[string]any)
+	if !ok || provider["allow_fallbacks"] != false {
+		t.Fatalf("provider fallback control = %#v, want false", authorize[0]["provider"])
+	}
+
+	client.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveOne did not return")
+	}
+}
+
+func TestServeOneFailsBeforeProviderWhenNoFallbackAuthorizationChangesModel(t *testing.T) {
+	var mu sync.Mutex
+	refunds := 0
+	settles := 0
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"authorization_id": "auth_wrong_model",
+				"workspace_id":     "ws_1",
+				"api_key_hash":     "key_1",
+				"requested_model":  "openai/gpt-oss-20b",
+				"model":            "google/gemini-2.0-flash-lite",
+				"endpoint_id":      "google/gemini-2.0-flash-lite@test/prepaid",
+				"provider":         "test",
+				"usage_type":       "Credits",
+				"limit_usage_type": "Credits",
+				"route_candidates": []any{map[string]any{
+					"model":       "google/gemini-2.0-flash-lite",
+					"endpoint_id": "google/gemini-2.0-flash-lite@test/prepaid",
+					"provider":    "test",
+				}},
+			}})
+		case "/internal/gateway/refund":
+			mu.Lock()
+			refunds++
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"refunded": true}})
+		case "/internal/gateway/settle":
+			mu.Lock()
+			settles++
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"settled": true}})
+		default:
+			t.Fatalf("unexpected control-plane path %s", r.URL.Path)
+		}
+	}))
+	defer control.Close()
+
+	streamer := &fakeStreamingLLM{}
+	trGateway := trustedrouter.New(control.URL, "internal-token", control.Client())
+	serverConn, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
+	}()
+
+	requestBody := []byte(`{
+		"model":"openai/gpt-oss-20b",
+		"allow_fallbacks":false,
+		"stream":false,
+		"messages":[{"role":"user","content":"Reply with PONG"}],
+		"max_tokens":8
+	}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer local-integrity-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(requestBody),
+		requestBody,
+	); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	responseBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	client.Close()
+	<-done
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, responseBody)
+	}
+	if streamer.model != "" {
+		t.Fatalf("provider received wrong-model request: %q", streamer.model)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if refunds != 1 || settles != 0 {
+		t.Fatalf("refunds=%d settles=%d, want 1 and 0", refunds, settles)
+	}
+}
+
 func TestFusionZeusJudgeVersionsRemainImmutable(t *testing.T) {
 	tests := []struct {
 		model string

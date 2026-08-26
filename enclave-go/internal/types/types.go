@@ -5,6 +5,7 @@ package types
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -234,8 +235,12 @@ type ChatStreamOptions struct {
 
 // OpenAIChatRequest is the inbound shape we accept.
 type OpenAIChatRequest struct {
-	Model               string               `json:"model"`
-	Models              []string             `json:"models,omitempty"`
+	Model  string   `json:"model"`
+	Models []string `json:"models,omitempty"`
+	// AllowFallbacks accepts the top-level compatibility spelling used by
+	// several OpenAI-compatible clients. NormalizeFallbackRouting consumes it
+	// into Provider before authorization so it cannot leak to an upstream API.
+	AllowFallbacks      *bool                `json:"allow_fallbacks,omitempty"`
 	Messages            []OpenAIChatMessage  `json:"messages"`
 	Stream              bool                 `json:"stream,omitempty"`
 	StreamOptions       *ChatStreamOptions   `json:"stream_options,omitempty"`
@@ -311,6 +316,52 @@ func (r *OpenAIChatRequest) NormalizeMaxTokens() {
 	if r.MaxOutputTokens != nil {
 		r.MaxTokens = r.MaxOutputTokens
 	}
+}
+
+// NormalizeFallbackRouting turns the top-level compatibility field into the
+// canonical provider-routing control and removes disabled fallback models
+// before authorization. Applying this before model validation is essential:
+// a stale fallback must not reject or replace an explicitly requested primary.
+func (r *OpenAIChatRequest) NormalizeFallbackRouting() error {
+	if r == nil {
+		return nil
+	}
+	if r.AllowFallbacks != nil && r.Provider != nil && r.Provider.AllowFallbacks != nil &&
+		*r.AllowFallbacks != *r.Provider.AllowFallbacks {
+		return errors.New("allow_fallbacks conflicts with provider.allow_fallbacks")
+	}
+	if r.AllowFallbacks != nil {
+		if r.Provider == nil {
+			r.Provider = &ProviderRouting{}
+		}
+		value := *r.AllowFallbacks
+		r.Provider.AllowFallbacks = &value
+		// This is an enclave-only compatibility input. Provider routing already
+		// carries the canonical value for authorization and invocation policy.
+		r.AllowFallbacks = nil
+	}
+	if !r.FallbacksAllowed() {
+		if strings.TrimSpace(r.Model) == "" && len(r.Models) > 0 {
+			r.Model = strings.TrimSpace(r.Models[0])
+		}
+		r.Models = nil
+	}
+	return nil
+}
+
+// FallbacksAllowed returns the effective caller policy. The default remains
+// true for OpenRouter compatibility; an explicit false is fail-closed.
+func (r *OpenAIChatRequest) FallbacksAllowed() bool {
+	if r == nil {
+		return true
+	}
+	if r.Provider != nil && r.Provider.AllowFallbacks != nil {
+		return *r.Provider.AllowFallbacks
+	}
+	if r.AllowFallbacks != nil {
+		return *r.AllowFallbacks
+	}
+	return true
 }
 
 // StopSequences normalizes OpenAI's chat-completions stop value into the
