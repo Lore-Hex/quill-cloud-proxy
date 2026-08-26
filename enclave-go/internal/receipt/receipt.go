@@ -108,6 +108,21 @@ func NewSigner() (*Signer, error) {
 	return &Signer{publicKey: publicKey, privateKey: privateKey}, nil
 }
 
+// NewSignerFromSeed builds a deterministic signer from a 32-byte Ed25519
+// seed. It exists for parity-fixture generation and cross-implementation
+// tests only; the enclave boot path always uses NewSigner's crypto/rand key.
+func NewSignerFromSeed(seed []byte) (*Signer, error) {
+	if len(seed) != ed25519.SeedSize {
+		return nil, fmt.Errorf("receipt: seed must be %d bytes, got %d", ed25519.SeedSize, len(seed))
+	}
+	privateKey := ed25519.NewKeyFromSeed(seed)
+	publicKey, ok := privateKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return nil, errors.New("receipt: derived public key has unexpected type")
+	}
+	return &Signer{publicKey: publicKey, privateKey: privateKey}, nil
+}
+
 // KeyCommitment returns SHA-256("inference-receipt-key-v1" || 0x00 || pubkey).
 func (s *Signer) KeyCommitment() [32]byte {
 	preimage := make([]byte, 0, len(keyCommitmentDomain)+1+ed25519.PublicKeySize)
