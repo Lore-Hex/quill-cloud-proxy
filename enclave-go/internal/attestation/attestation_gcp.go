@@ -17,10 +17,12 @@
 //
 // We bind the workload's TLS leaf and live TLS session into the JWT by putting
 // the leaf fingerprint and RFC 9266 tls-exporter channel binding in the
-// Confidential Space nonce list, alongside the device-key blob hash and the
-// caller-supplied freshness nonce. Clients verify the JWT against Google's
-// public keys, check `image_digest` matches the published digest, and check the
-// live TLS cert's SHA-256 and SAME-session exporter appear in `nonces[]`.
+// Confidential Space nonce list, alongside the device-key blob hash, optional
+// receipt-key fingerprint, and caller-supplied freshness nonce. Server-derived
+// commitments precede the caller-controlled slot. Clients verify the JWT
+// against Google's public keys, check `image_digest` matches the published
+// digest, and check the live TLS cert's SHA-256 and SAME-session exporter
+// appear in `nonces[]`.
 // Nothing binds a relay's separate client-facing TLS session to the enclave's
 // exporter value, closing G6 while keeping the leaf binding as defense in depth.
 // Same binding chain as the AWS COSE document, with JWT signatures instead of
@@ -55,6 +57,8 @@ import (
 // launcher API only via this Unix socket.
 const teeserverSocketPath = "/run/container_launcher/teeserver.sock"
 const attestationTokenURL = "http://teeserver/v1/token" // #nosec G101 -- URL, not a secret.
+// Kind names the receipt wire format of documents minted by this backend.
+const Kind = "gcp-cs-jwt"
 
 var requestToken = requestTokenFromLauncher
 var launcherTokenMu sync.Mutex
@@ -65,8 +69,8 @@ var launcherTokenMu sync.Mutex
 //
 // nonce is optional client freshness. deviceBlob is hashed in to prove
 // the device-key list bound at boot (parallels AWS UserData[:32]).
-func Get(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte) ([]byte, error) {
-	reqBody := buildTokenRequest(leafDER, deviceBlob, nonce, channelBinding)
+func Get(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte, receiptKeyFP []byte) ([]byte, error) {
+	reqBody := buildTokenRequest(leafDER, deviceBlob, nonce, channelBinding, receiptKeyFP)
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -101,7 +105,7 @@ func MintOIDCToken(ctx context.Context, audience string) ([]byte, error) {
 	return requestToken(body)
 }
 
-func buildTokenRequest(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte) tokenRequest {
+func buildTokenRequest(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte, receiptKeyFP []byte) tokenRequest {
 	leafFP := sha256.Sum256(leafDER)
 	deviceHash := sha256.Sum256(deviceBlob)
 
@@ -115,6 +119,9 @@ func buildTokenRequest(leafDER []byte, deviceBlob []byte, nonce []byte, channelB
 	}
 	if len(channelBinding) > 0 {
 		reqBody.Nonces = append(reqBody.Nonces, hex.EncodeToString(channelBinding))
+	}
+	if receiptKeyFP != nil {
+		reqBody.Nonces = append(reqBody.Nonces, hex.EncodeToString(receiptKeyFP))
 	}
 	if len(nonce) > 0 {
 		reqBody.Nonces = append(reqBody.Nonces, hex.EncodeToString(nonce))

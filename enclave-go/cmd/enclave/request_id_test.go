@@ -173,7 +173,7 @@ func TestResponseStatsConnResetSnapshotClearsRequestID(t *testing.T) {
 
 func TestResponseWriterFamiliesInjectRequestID(t *testing.T) {
 	oldGetAttestation := getAttestation
-	getAttestation = func(_, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
 		return []byte{0xa1, 0x61, 0x61, 0x01}, nil
 	}
 	t.Cleanup(func() { getAttestation = oldGetAttestation })
