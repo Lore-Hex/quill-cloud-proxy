@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,9 @@ const (
 )
 
 var errHeadersTooLarge = errors.New("request headers too large")
+var errInvalidInferenceReceipt = errors.New("invalid x-inference-receipt header")
+
+var inferenceReceiptNoncePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,88}$`)
 
 var (
 	upstreamAPIKeyPattern = regexp.MustCompile(`(?i)\b(sk|rk)-[A-Za-z0-9_\-*]{4,}`)
@@ -223,6 +227,7 @@ type requestAttributionHeaders struct {
 	AppCategories      []string
 	OpenRouterMetadata bool
 	ClientContext      clientContextHeaders
+	InferenceReceipt   string
 }
 
 // readRequest reads a minimal HTTP/1.1 request: status line + headers + body.
@@ -298,6 +303,15 @@ func readRequestWithHeadersRead(
 			attribution.AppCategories = splitAttributionCategories(v)
 		case "x-openrouter-metadata", "x-openrouter-experimental-metadata":
 			attribution.OpenRouterMetadata = strings.EqualFold(v, "enabled")
+		case "x-inference-receipt":
+			// Disabled receipt support is intentionally indistinguishable from
+			// the pre-receipt server, including for malformed opt-in values.
+			if receiptSigner != nil {
+				if !inferenceReceiptNoncePattern.MatchString(v) {
+					return "", "", "", "", attribution, nil, errInvalidInferenceReceipt
+				}
+				attribution.InferenceReceipt = v
+			}
 		case "user-agent":
 			captureBoundedClientHeader(
 				&attribution.ClientContext.userAgent,
@@ -634,6 +648,24 @@ func orNilString(value string) any {
 func writeJSONResponse(w io.Writer, status int, body []byte) {
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
 		status, statusText(status), len(body))
+	w.Write(body)
+}
+
+func writeJSONResponseWithHeaders(w io.Writer, status int, body []byte, headers map[string]string) {
+	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n",
+		status, statusText(status), len(body))
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		value := headers[name]
+		if name != "" && value != "" && !strings.ContainsAny(name+value, "\r\n") {
+			fmt.Fprintf(w, "%s: %s\r\n", name, value)
+		}
+	}
+	io.WriteString(w, "Connection: close\r\n\r\n")
 	w.Write(body)
 }
 

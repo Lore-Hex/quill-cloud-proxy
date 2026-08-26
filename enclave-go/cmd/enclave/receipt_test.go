@@ -154,15 +154,31 @@ func TestReceiptAttestationMintFailureKeepsLastGood(t *testing.T) {
 	}
 }
 
+func TestConfiguredReceiptIssuerUsesExplicitCanonicalOrigin(t *testing.T) {
+	resetReceiptTestState(t)
+	t.Setenv("QUILL_RECEIPT_ISS", "https://api-aws.trustedrouter.com/")
+	issuer, err := configuredReceiptIssuer([]string{"api.quillrouter.com,api.trustedrouter.com"})
+	if err != nil || issuer != "https://api-aws.trustedrouter.com" {
+		t.Fatalf("issuer=%q err=%v", issuer, err)
+	}
+	t.Setenv("QUILL_RECEIPT_ISS", "https://api.trustedrouter.com/path")
+	if _, err := configuredReceiptIssuer(nil); err == nil {
+		t.Fatal("issuer with a path was accepted")
+	}
+}
+
 func resetReceiptTestState(t *testing.T) {
 	t.Helper()
 	oldSigner := receiptSigner
 	oldCached := receiptAttestationCache.Load()
+	oldIssuer := receiptIssuer
 	receiptSigner = nil
 	receiptAttestationCache.Store(nil)
+	receiptIssuer = "https://api.trustedrouter.com"
 	t.Cleanup(func() {
 		receiptSigner = oldSigner
 		receiptAttestationCache.Store(oldCached)
+		receiptIssuer = oldIssuer
 	})
 }
 

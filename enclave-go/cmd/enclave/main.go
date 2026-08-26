@@ -16,6 +16,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -210,8 +211,8 @@ func main() {
 	// = /attestation responds 503 (we have no cert to attest).
 	var tlsServer *enclavetls.Server
 
+	apiHost := getenv("QUILL_API_HOST", "api.quillrouter.com")
 	if os.Getenv("QUILL_ENCLAVE_TLS") == "true" {
-		apiHost := getenv("QUILL_API_HOST", "api.quillrouter.com")
 		mode := getenv("QUILL_TLS_MODE", "self-signed")
 		var err error
 		// Parsed BEFORE either path: a malformed EAB must stop the process
@@ -357,7 +358,7 @@ func main() {
 			}
 		}
 	}
-	if err := initializeReceiptSigner(ctx, tlsServer, deviceBlob); err != nil {
+	if err := initializeReceiptSigner(ctx, tlsServer, deviceBlob, apiHost); err != nil {
 		fmt.Fprintf(os.Stderr, "receipt signer initialization failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -525,6 +526,10 @@ func serveOneRequest(
 			writeError(conn, 431, "request headers too large")
 			return
 		}
+		if errors.Is(err, errInvalidInferenceReceipt) {
+			writeError(conn, 400, err.Error())
+			return
+		}
 		writeError(conn, 400, "could not read request")
 		return
 	}
@@ -536,6 +541,14 @@ func serveOneRequest(
 		ctx = trustedrouter.WithClientContext(ctx, clientContext)
 	}
 	requestBodyBytes = len(body)
+	receiptRequest := types.InferenceReceiptRequest{}
+	if receiptSigner != nil && attribution.InferenceReceipt != "" {
+		receiptRequest.Requested = true
+		receiptRequest.RequestBodySHA256 = sha256.Sum256(body)
+		if attribution.InferenceReceipt != "true" {
+			receiptRequest.NonceEcho = attribution.InferenceReceipt
+		}
+	}
 	requestBearer = bearer
 	requestIdentity.bindBearer(bearer)
 	routePath, nonce, err := parseRequestTarget(path)
@@ -761,6 +774,7 @@ func serveOneRequest(
 			return
 		}
 		req = *chatReq
+		req.InferenceReceipt = receiptRequest
 		req.NormalizeMaxTokens()
 		originalInput = responsesReq.Input
 	} else if routePath == "/v1/chat/completions" {
@@ -776,12 +790,14 @@ func serveOneRequest(
 			writeError(conn, 400, "invalid JSON")
 			return
 		}
+		req.InferenceReceipt = receiptRequest
 		req.NormalizeMaxTokens()
 		originalInput = req.Messages
 	} else {
 		writeError(conn, 404, "route not found")
 		return
 	}
+	requestedModel := req.Model
 	if err := req.NormalizeFallbackRouting(); err != nil {
 		writeOpenAIError(conn, 400, err.Error(), "invalid_request_error", "bad_request", "allow_fallbacks")
 		return
@@ -962,13 +978,13 @@ func serveOneRequest(
 	}
 	if !req.Stream {
 		if routeType == "responses" {
-			serveResponsesNonStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput, requestLogID)
+			serveResponsesNonStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput, requestLogID, requestedModel)
 			return
 		}
-		serveChatNonStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput, requestLogID)
+		serveChatNonStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput, requestLogID, requestedModel)
 		return
 	}
-	serveStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput, routeType, requestLogID)
+	serveStreaming(ctx, conn, br, &req, anthropicReq, invokeOptions, trGateway, authorization, byokSecrets, requestStarted, originalInput, routeType, requestLogID, requestedModel)
 	return
 }
 
@@ -1113,7 +1129,11 @@ func serveResponsesNonStreaming(
 	requestStarted time.Time,
 	originalInput any,
 	requestLogID string,
+	requestedModel string,
 ) {
+	if req.InferenceReceipt.Requested && receiptSigner != nil {
+		ctx = llm.WithUpstreamVerification(ctx, "", time.Time{}, time.Time{})
+	}
 	requestID := newResponseID()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
@@ -1198,7 +1218,11 @@ func serveResponsesNonStreaming(
 		writeSpentError(conn, 500, "responses encoding error")
 		return
 	}
-	writeJSONResponse(conn, 200, annotatedBody)
+	generationID := ""
+	if settlement != nil {
+		generationID = settlement.GenerationID
+	}
+	writeJSONResponseWithReceipt(ctx, conn, annotatedBody, req, "responses", requestID, generationID, requestedModel, selectedRoute, authorization)
 }
 
 func serveChatNonStreaming(
@@ -1214,7 +1238,11 @@ func serveChatNonStreaming(
 	requestStarted time.Time,
 	originalInput any,
 	requestLogID string,
+	requestedModel string,
 ) {
+	if req.InferenceReceipt.Requested && receiptSigner != nil {
+		ctx = llm.WithUpstreamVerification(ctx, "", time.Time{}, time.Time{})
+	}
 	requestID := newRequestID()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
@@ -1280,7 +1308,11 @@ func serveChatNonStreaming(
 		writeSpentError(conn, 500, "chat completion encoding error")
 		return
 	}
-	writeJSONResponse(conn, 200, annotatedBody)
+	generationID := ""
+	if settlement != nil {
+		generationID = settlement.GenerationID
+	}
+	writeJSONResponseWithReceipt(ctx, conn, annotatedBody, req, "chat.completions", requestID, generationID, requestedModel, selectedRoute, authorization)
 }
 
 func serveStreaming(
@@ -1297,7 +1329,12 @@ func serveStreaming(
 	originalInput any,
 	routeType string,
 	requestLogID string,
+	requestedModel string,
 ) {
+	receiptState, receiptEnabled := receiptState(req)
+	if receiptEnabled {
+		ctx = llm.WithUpstreamVerification(ctx, "", time.Time{}, time.Time{})
+	}
 	requestID := newRequestID()
 	if routeType == "responses" {
 		requestID = newResponseID()
@@ -1342,18 +1379,49 @@ func serveStreaming(
 	defer chunkW.Close()
 	statsW := newStreamStatsWriter(chunkW)
 	streamW := io.Writer(statsW)
-	var batchW io.WriteCloser
+	var hashW *receiptHashWriter
+	if receiptEnabled {
+		domain := "sse-data-v1"
+		if routeType == "responses" {
+			domain = "sse-events-v1"
+		}
+		hashW = newReceiptHashWriter(statsW, domain)
+		streamW = hashW
+	}
+	var batchW sseBatchWriteCloser
 	if routeType == "chat.completions" {
-		batchW = newSSEBatchWriter(statsW)
+		batchW = newSSEBatchWriter(streamW)
 		streamW = batchW
+	}
+	var finishHook adapter.StreamFinishHook
+	if receiptEnabled {
+		finishHook = func(created int64) error {
+			if batchW != nil {
+				if err := batchW.Flush(); err != nil {
+					return err
+				}
+			}
+			digest, eventCount := hashW.Seal()
+			if !hashW.Valid() {
+				return nil
+			}
+			domain := "sse-data-v1"
+			if routeType == "responses" {
+				domain = "sse-events-v1"
+			}
+			return writeStreamingReceiptEvent(
+				ctx, statsW, receiptState, req, routeType, requestID, responseModel, requestedModel,
+				selectedRoute, authorization, digest, domain, eventCount, created,
+			)
+		}
 	}
 
 	var result adapter.StreamResult
 	var err error
 	if routeType == "responses" {
-		result, err = adapter.TransformResponsesStream(pr, statsW, requestID, responseModel, trustedrouter.EstimateInputTokens(req), responseTextConfig(req), req.Response)
+		result, err = adapter.TransformResponsesStreamWithFinishHook(pr, streamW, requestID, responseModel, trustedrouter.EstimateInputTokens(req), responseTextConfig(req), req.Response, finishHook)
 	} else {
-		result, err = adapter.TransformStreamCaptureWithRouterMetadata(pr, streamW, requestID, responseModel, chatIncludeUsage(req), routerMetadata)
+		result, err = adapter.TransformStreamCaptureWithRouterMetadataAndFinishHook(pr, streamW, requestID, responseModel, chatIncludeUsage(req), routerMetadata, finishHook)
 	}
 	if batchW != nil {
 		if closeErr := batchW.Close(); err == nil {

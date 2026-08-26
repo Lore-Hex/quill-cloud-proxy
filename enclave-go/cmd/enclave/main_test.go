@@ -8456,6 +8456,7 @@ func TestServeStreamingDoesNotRaceRequestModelSelection(t *testing.T) {
 		nil,
 		"chat.completions",
 		"race-test",
+		"requested-model",
 	)
 	if !strings.Contains(out.String(), "HTTP/1.1 200 OK") {
 		t.Fatalf("stream response missing success head: %s", out.String())

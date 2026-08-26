@@ -233,6 +233,15 @@ type ChatStreamOptions struct {
 	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
+// InferenceReceiptRequest carries enclave-owned receipt opt-in state. It is
+// populated from the HTTP header and exact raw request bytes, never from JSON,
+// and therefore cannot be forwarded to a model provider by request marshaling.
+type InferenceReceiptRequest struct {
+	NonceEcho         string
+	RequestBodySHA256 [32]byte
+	Requested         bool
+}
+
 // OpenAIChatRequest is the inbound shape we accept.
 type OpenAIChatRequest struct {
 	Model  string   `json:"model"`
@@ -277,11 +286,12 @@ type OpenAIChatRequest struct {
 	IdempotencyKey      string               `json:"-"`
 	// RequestFingerprint is an enclave-generated, keyed digest used to bind
 	// asynchronous idempotency keys to content without exposing that content.
-	RequestFingerprint string   `json:"-"`
-	App                string   `json:"-"`
-	HTTPReferer        string   `json:"-"`
-	AppCategories      []string `json:"-"`
-	OpenRouterMetadata bool     `json:"-"`
+	RequestFingerprint string                  `json:"-"`
+	InferenceReceipt   InferenceReceiptRequest `json:"-"`
+	App                string                  `json:"-"`
+	HTTPReferer        string                  `json:"-"`
+	AppCategories      []string                `json:"-"`
+	OpenRouterMetadata bool                    `json:"-"`
 	// Image-generation controls are enclave-owned. They are populated only by
 	// POST /v1/images after strict validation and never accepted through the
 	// chat-completions JSON surface.

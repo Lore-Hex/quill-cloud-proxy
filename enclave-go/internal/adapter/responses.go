@@ -690,6 +690,19 @@ func TransformResponsesStream(
 	textConfig map[string]any,
 	meta *types.ResponseRequestMeta,
 ) (StreamResult, error) {
+	return TransformResponsesStreamWithFinishHook(r, w, responseID, model, inputTokens, textConfig, meta, nil)
+}
+
+func TransformResponsesStreamWithFinishHook(
+	r io.Reader,
+	w io.Writer,
+	responseID string,
+	model string,
+	inputTokens int,
+	textConfig map[string]any,
+	meta *types.ResponseRequestMeta,
+	finishHook StreamFinishHook,
+) (StreamResult, error) {
 	created := time.Now().Unix()
 	messageID := "msg_" + strings.TrimPrefix(responseID, "resp_")
 	finishReason := "stop"
@@ -987,7 +1000,7 @@ func TransformResponsesStream(
 					return StreamResult{}, err
 				}
 			}
-			return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex)
+			return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex, finishHook)
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
@@ -1002,7 +1015,7 @@ func TransformResponsesStream(
 			return StreamResult{}, err
 		}
 	}
-	return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex)
+	return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex, nil)
 }
 
 func finishResponsesStream(
@@ -1022,6 +1035,7 @@ func finishResponsesStream(
 	meta *types.ResponseRequestMeta,
 	messageStarted bool,
 	messageOutputIndex int,
+	finishHook StreamFinishHook,
 ) (StreamResult, error) {
 	outputTokens := estimateTextTokens(ResponsesOutputForUsage(StreamResult{Text: text, ToolCalls: toolCalls}))
 	cachedTokens := 0
@@ -1086,6 +1100,11 @@ func finishResponsesStream(
 	}})
 	for _, event := range events {
 		if err := writeResponseEventSeq(w, seq, event.name, event.body); err != nil {
+			return StreamResult{}, err
+		}
+	}
+	if finishHook != nil {
+		if err := finishHook(created); err != nil {
 			return StreamResult{}, err
 		}
 	}
