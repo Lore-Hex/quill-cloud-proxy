@@ -418,7 +418,7 @@ func TestServeOneAttestationBindsExporter(t *testing.T) {
 	callerNonce := []byte{0xaa}
 	exporter := bytes.Repeat([]byte{0x42}, enclavetls.ExporterLength)
 
-	getAttestation = func(leaf, device, nonce, channelBinding []byte) ([]byte, error) {
+	getAttestation = func(leaf, device, nonce, channelBinding, receiptKeyFP []byte) ([]byte, error) {
 		if !bytes.Equal(leaf, leafDER) {
 			t.Fatalf("leaf = %q, want %q", leaf, leafDER)
 		}
@@ -430,6 +430,9 @@ func TestServeOneAttestationBindsExporter(t *testing.T) {
 		}
 		if !bytes.Equal(channelBinding, exporter) {
 			t.Fatalf("channelBinding = %x, want %x", channelBinding, exporter)
+		}
+		if receiptKeyFP != nil {
+			t.Fatalf("legacy /attestation receiptKeyFP = %x, want nil", receiptKeyFP)
 		}
 		return []byte(hex.EncodeToString(channelBinding)), nil
 	}
@@ -452,7 +455,7 @@ func TestServeOneAttestationBindsExporter(t *testing.T) {
 func TestServeOneAttestationBypassesFailedAuthLimiterEvenWhenSourceIsOverLimit(t *testing.T) {
 	oldGetAttestation := getAttestation
 	defer func() { getAttestation = oldGetAttestation }()
-	getAttestation = func(_, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
 		return []byte("attested"), nil
 	}
 
@@ -497,7 +500,7 @@ func TestServeOneAttestationRejectsMultipleNonceParameters(t *testing.T) {
 	oldGetAttestation := getAttestation
 	defer func() { getAttestation = oldGetAttestation }()
 
-	getAttestation = func(_, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
 		t.Fatal("getAttestation must not be called for duplicate nonce params")
 		return nil, nil
 	}
@@ -521,7 +524,7 @@ func TestServeOneAttestationRejectsOversizedNonceWith400(t *testing.T) {
 	oldGetAttestation := getAttestation
 	defer func() { getAttestation = oldGetAttestation }()
 
-	getAttestation = func(_, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
 		t.Fatal("getAttestation must not be called for an oversized caller nonce")
 		return nil, nil
 	}
@@ -546,7 +549,7 @@ func TestServeOneAttestationTLSExporterErrorFailsClosed(t *testing.T) {
 	oldGetAttestation := getAttestation
 	defer func() { getAttestation = oldGetAttestation }()
 
-	getAttestation = func(_, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
 		t.Fatal("getAttestation must not be called without an exporter binding")
 		return nil, nil
 	}
@@ -569,7 +572,7 @@ func TestServeOneAttestationEmptyExporterFailsClosed(t *testing.T) {
 	oldGetAttestation := getAttestation
 	defer func() { getAttestation = oldGetAttestation }()
 
-	getAttestation = func(_, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
 		t.Fatal("getAttestation must not be called without a non-empty exporter binding")
 		return nil, nil
 	}
@@ -713,7 +716,10 @@ func TestServeOneReusesReaderForPipelinedAttestationRequests(t *testing.T) {
 func stubAttestationBody(t *testing.T) {
 	t.Helper()
 	oldGetAttestation := getAttestation
-	getAttestation = func(_ []byte, deviceBlob []byte, nonce []byte, channelBinding []byte) ([]byte, error) {
+	getAttestation = func(_ []byte, deviceBlob []byte, nonce []byte, channelBinding []byte, receiptKeyFP []byte) ([]byte, error) {
+		if receiptKeyFP != nil {
+			t.Fatalf("legacy /attestation receiptKeyFP = %x, want nil", receiptKeyFP)
+		}
 		return []byte(fmt.Sprintf("device=%s nonce=%x exporter=%x", deviceBlob, nonce, channelBinding)), nil
 	}
 	t.Cleanup(func() { getAttestation = oldGetAttestation })

@@ -37,6 +37,9 @@ import (
 	"github.com/hf/nsm/response"
 )
 
+// Kind names the receipt wire format of documents minted by this backend.
+const Kind = "aws-nitro-cose"
+
 func MintOIDCToken(context.Context, string) ([]byte, error) {
 	return nil, errors.New("attestation: Confidential Space OIDC tokens are unavailable on AWS")
 }
@@ -58,21 +61,22 @@ var openNSMSession = func() (nsmSession, error) {
 //	verify "the cert in this TLS handshake is the cert this PCR0 attests
 //	to."
 //
-// UserData: a 64- or 96-byte structure encoding additional layer-7 commitments —
+// UserData: a 64-, 96-, or 128-byte structure encoding layer-7 commitments —
 //
-//	{ sha256(leaf cert) || sha256(device-key blob) [|| tls-exporter] }.
+//	{ sha256(leaf cert) || sha256(device-key blob) [|| tls-exporter [|| receipt-key fingerprint]] }.
 //	The device-key hash
 //	binds the attestation to the exact set of authorized bearer tokens
 //	currently loaded in memory; rotating the device blob produces a new
 //	attestation, so a recipient can be sure their bearer token isn't
 //	silently being honoured by a stale cached set. The exporter is a distinct
 //	RFC 9266 commitment to the live TLS session, not caller-controlled nonce
-//	material.
+//	material. With a receipt key, its exporter slot is zero-filled when this
+//	document is not tied to a live channel.
 //
 // Nonce: caller-supplied freshness — the doc was generated for *their*
 //
 //	request, not replayed.
-func Get(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte) ([]byte, error) {
+func Get(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte, receiptKeyFP []byte) ([]byte, error) {
 	leaf, err := x509.ParseCertificate(leafDER)
 	if err != nil {
 		return nil, fmt.Errorf("attestation: parse leaf: %w", err)
@@ -85,19 +89,37 @@ func Get(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte)
 		return nil, fmt.Errorf("attestation: marshal public key: %w", err)
 	}
 
-	// 64 or 96 bytes: cert fingerprint || device-blob fingerprint
-	// [|| RFC 9266 exporter]. The exporter is already 32 bytes of keying
-	// material derived from the enclave's live TLS session.
+	// Legacy calls remain exactly 64 or 96 bytes. Receipt-key calls are fixed
+	// at 128 bytes: cert || device || exporter-or-zeros || receipt key.
 	certFP := sha256.Sum256(leafDER)
 	var blobFP [32]byte
 	if deviceBlob != nil {
 		blobFP = sha256.Sum256(deviceBlob)
 	}
-	userData := make([]byte, 0, 96)
+	userDataCapacity := 96
+	if receiptKeyFP != nil {
+		if len(receiptKeyFP) != sha256.Size {
+			return nil, fmt.Errorf("attestation: receipt key fingerprint must be %d bytes", sha256.Size)
+		}
+		if len(channelBinding) != 0 && len(channelBinding) != sha256.Size {
+			return nil, fmt.Errorf("attestation: channel binding must be %d bytes when binding a receipt key", sha256.Size)
+		}
+		userDataCapacity = 128
+	}
+	userData := make([]byte, 0, userDataCapacity)
 	userData = append(userData, certFP[:]...)
 	userData = append(userData, blobFP[:]...)
-	if len(channelBinding) > 0 {
-		userData = append(userData, channelBinding...)
+	if receiptKeyFP == nil {
+		if len(channelBinding) > 0 {
+			userData = append(userData, channelBinding...)
+		}
+	} else {
+		if len(channelBinding) == 0 {
+			userData = append(userData, make([]byte, sha256.Size)...)
+		} else {
+			userData = append(userData, channelBinding...)
+		}
+		userData = append(userData, receiptKeyFP...)
 	}
 
 	sess, err := openNSMSession()

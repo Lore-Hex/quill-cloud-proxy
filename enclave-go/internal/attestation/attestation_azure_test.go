@@ -32,7 +32,7 @@ func TestBuildTokenRequestBindsAllFourInputs(t *testing.T) {
 	nonce := []byte("client-nonce")
 	binding := []byte("channel-binding")
 
-	req, err := buildTokenRequest(leaf, device, nonce, binding)
+	req, err := buildTokenRequest(leaf, device, nonce, binding, nil)
 	if err != nil {
 		t.Fatalf("buildTokenRequest: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestRuntimeDataKeysAreSortedSoAVerifierCanRecompute(t *testing.T) {
 	// order, so a verifier recomputing sha256 over the echoed object can only
 	// ever produce the sorted form. Emitting sorted bytes is what makes the
 	// two sides agree. Measured against real SEV-SNP hardware 2026-08-03.
-	req, err := buildTokenRequest([]byte("l"), []byte("d"), []byte("n"), []byte("c"))
+	req, err := buildTokenRequest([]byte("l"), []byte("d"), []byte("n"), []byte("c"), []byte("r"))
 	if err != nil {
 		t.Fatalf("buildTokenRequest: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestNoReportDataIsSent(t *testing.T) {
 	// zero bytes and ignores anything we supply. An earlier draft sent a
 	// SHA-512 digest, which no verifier could ever have reproduced from a real
 	// token. Sending nothing keeps the one authority for that value.
-	req, err := buildTokenRequest([]byte("l"), []byte("d"), []byte("n"), []byte("c"))
+	req, err := buildTokenRequest([]byte("l"), []byte("d"), []byte("n"), []byte("c"), nil)
 	if err != nil {
 		t.Fatalf("buildTokenRequest: %v", err)
 	}
@@ -115,7 +115,9 @@ func TestNoReportDataIsSent(t *testing.T) {
 }
 
 func TestOptionalFieldsAreOmittedWhenAbsent(t *testing.T) {
-	req, err := buildTokenRequest([]byte("l"), []byte("d"), nil, nil)
+	leaf := []byte("l")
+	device := []byte("d")
+	req, err := buildTokenRequest(leaf, device, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildTokenRequest: %v", err)
 	}
@@ -123,22 +125,55 @@ func TestOptionalFieldsAreOmittedWhenAbsent(t *testing.T) {
 	if rd.Nonce != "" || rd.ChannelBinding != "" {
 		t.Errorf("absent inputs should stay empty, got nonce=%q binding=%q", rd.Nonce, rd.ChannelBinding)
 	}
+	if rd.ReceiptKeyFP != "" {
+		t.Errorf("absent receipt fingerprint should stay empty, got %q", rd.ReceiptKeyFP)
+	}
+	raw, err := base64.StdEncoding.DecodeString(req.RuntimeData)
+	if err != nil {
+		t.Fatalf("decode runtime_data: %v", err)
+	}
+	leafFP := sha256.Sum256(leaf)
+	deviceHash := sha256.Sum256(device)
+	want := []byte(`{"device_hash":"` + hex.EncodeToString(deviceHash[:]) + `","leaf_fp":"` + hex.EncodeToString(leafFP[:]) + `"}`)
+	if !bytes.Equal(raw, want) {
+		t.Fatalf("runtime_data = %s, want exact legacy bytes %s", raw, want)
+	}
+}
+
+func TestReceiptKeyFingerprintIsLastAndOmittedOnlyWhenNil(t *testing.T) {
+	receiptFP := []byte("receipt-key-fingerprint")
+	req, err := buildTokenRequest([]byte("l"), []byte("d"), []byte("n"), []byte("c"), receiptFP)
+	if err != nil {
+		t.Fatalf("buildTokenRequest: %v", err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(req.RuntimeData)
+	if err != nil {
+		t.Fatalf("decode runtime_data: %v", err)
+	}
+	if !bytes.HasSuffix(raw, []byte(`,"receipt_key_fp":"`+hex.EncodeToString(receiptFP)+`"}`)) {
+		t.Fatalf("receipt_key_fp is not the final runtime_data field: %s", raw)
+	}
+	rd := decodeRuntimeData(t, req)
+	if rd.ReceiptKeyFP != hex.EncodeToString(receiptFP) {
+		t.Fatalf("receipt_key_fp = %q", rd.ReceiptKeyFP)
+	}
 }
 
 func TestBindingIsSensitiveToEveryInput(t *testing.T) {
 	// A digest that ignored one input would let that value be swapped after
 	// the fact without invalidating the report.
-	base, err := buildTokenRequest([]byte("l"), []byte("d"), []byte("n"), []byte("c"))
+	base, err := buildTokenRequest([]byte("l"), []byte("d"), []byte("n"), []byte("c"), []byte("r"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, mutated := range map[string]struct{ l, d, n, c []byte }{
-		"leaf":    {[]byte("L"), []byte("d"), []byte("n"), []byte("c")},
-		"device":  {[]byte("l"), []byte("D"), []byte("n"), []byte("c")},
-		"nonce":   {[]byte("l"), []byte("d"), []byte("N"), []byte("c")},
-		"binding": {[]byte("l"), []byte("d"), []byte("n"), []byte("C")},
+	for name, mutated := range map[string]struct{ l, d, n, c, r []byte }{
+		"leaf":        {[]byte("L"), []byte("d"), []byte("n"), []byte("c"), []byte("r")},
+		"device":      {[]byte("l"), []byte("D"), []byte("n"), []byte("c"), []byte("r")},
+		"nonce":       {[]byte("l"), []byte("d"), []byte("N"), []byte("c"), []byte("r")},
+		"binding":     {[]byte("l"), []byte("d"), []byte("n"), []byte("C"), []byte("r")},
+		"receipt key": {[]byte("l"), []byte("d"), []byte("n"), []byte("c"), []byte("R")},
 	} {
-		other, err := buildTokenRequest(mutated.l, mutated.d, mutated.n, mutated.c)
+		other, err := buildTokenRequest(mutated.l, mutated.d, mutated.n, mutated.c, mutated.r)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -163,7 +198,7 @@ func TestGetPropagatesTokenBytes(t *testing.T) {
 	defer func() { requestToken = original }()
 	requestToken = func(_ []byte) ([]byte, error) { return []byte("jwt-bytes"), nil }
 
-	got, err := Get([]byte("l"), []byte("d"), nil, nil)
+	got, err := Get([]byte("l"), []byte("d"), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}

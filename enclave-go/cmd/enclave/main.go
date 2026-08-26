@@ -357,6 +357,10 @@ func main() {
 			}
 		}
 	}
+	if err := initializeReceiptSigner(ctx, tlsServer, deviceBlob); err != nil {
+		fmt.Fprintf(os.Stderr, "receipt signer initialization failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	// LB health endpoint. The serving port (:443) terminates TLS inside the
 	// enclave, so the GCP passthrough-NLB's TCP/SSL health probe to :443 does
@@ -584,6 +588,17 @@ func serveOneRequest(
 		// exporter was attested. Bound repeated attestations so keep-alive
 		// cannot become an unbounded anonymous request loop.
 		return *attestationCount < maxAttestationsPerConn
+	}
+
+	// Receipt key attestation is anonymous and instance-scoped. Unlike the
+	// live /attestation flow it binds no TLS exporter and accepts no caller
+	// nonce: the cached document certifies the boot-local signing key.
+	if method == "GET" && routePath == "/receipt-attestation" {
+		if receiptSigner == nil {
+			writeError(conn, 404, "route not found")
+			return false
+		}
+		return serveReceiptAttestation(conn)
 	}
 
 	// Public SDK discovery belongs on the documented API origin. The enclave

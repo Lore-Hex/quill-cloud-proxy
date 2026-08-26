@@ -479,7 +479,7 @@ func serveAttestation(conn io.Writer, leafDER, deviceBlob, nonce, channelBinding
 		writeError(conn, 503, "TLS not enabled in this enclave; attestation requires a bound cert")
 		return false
 	}
-	doc, err := getAttestation(leafDER, deviceBlob, nonce, channelBinding)
+	doc, err := getAttestation(leafDER, deviceBlob, nonce, channelBinding, nil)
 	if err != nil {
 		writeError(conn, 500, "attestation: "+err.Error())
 		return false

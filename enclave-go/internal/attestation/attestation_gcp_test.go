@@ -3,6 +3,7 @@
 package attestation
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -20,27 +21,26 @@ func TestGetIncludesChannelBindingNonce(t *testing.T) {
 	deviceBlob := []byte("devices")
 	callerNonce := []byte("caller")
 	channelBinding := []byte("tls-exporter")
-	token := getWithCapturedNonces(t, leafDER, deviceBlob, callerNonce, channelBinding)
+	token := getWithCapturedNonces(t, leafDER, deviceBlob, callerNonce, channelBinding, nil)
 	nonces := fakeJWTNonces(t, token)
 
 	leafFP := sha256.Sum256(leafDER)
 	deviceHash := sha256.Sum256(deviceBlob)
-	for _, want := range []string{
+	wantNonces := []string{
 		hex.EncodeToString(leafFP[:]),
 		hex.EncodeToString(deviceHash[:]),
 		hex.EncodeToString(channelBinding),
 		hex.EncodeToString(callerNonce),
-	} {
-		if !slices.Contains(nonces, want) {
-			t.Fatalf("nonce %s absent from %v", want, nonces)
-		}
+	}
+	if !slices.Equal(nonces, wantNonces) {
+		t.Fatalf("nonces = %v, want exact legacy ordering %v", nonces, wantNonces)
 	}
 }
 
 func TestGetNilChannelBindingPreservesLegacyNonceShape(t *testing.T) {
 	leafDER := []byte("leaf")
 	deviceBlob := []byte("devices")
-	token := getWithCapturedNonces(t, leafDER, deviceBlob, nil, nil)
+	token := getWithCapturedNonces(t, leafDER, deviceBlob, nil, nil, nil)
 	nonces := fakeJWTNonces(t, token)
 
 	leafFP := sha256.Sum256(leafDER)
@@ -61,7 +61,7 @@ func TestGetNilChannelBindingPreservesLegacyNonceShape(t *testing.T) {
 func TestGetKeepsCallerNonceDistinctFromExporter(t *testing.T) {
 	attackerNonce := []byte("attacker-controlled")
 	serverExporter := []byte("server-derived-exporter")
-	token := getWithCapturedNonces(t, []byte("leaf"), []byte("devices"), attackerNonce, serverExporter)
+	token := getWithCapturedNonces(t, []byte("leaf"), []byte("devices"), attackerNonce, serverExporter, nil)
 	nonces := fakeJWTNonces(t, token)
 
 	exporterHex := hex.EncodeToString(serverExporter)
@@ -74,6 +74,43 @@ func TestGetKeepsCallerNonceDistinctFromExporter(t *testing.T) {
 	}
 	if slices.Index(nonces, exporterHex) >= slices.Index(nonces, attackerHex) {
 		t.Fatalf("exporter nonce must be committed before caller nonce: %v", nonces)
+	}
+}
+
+func TestReceiptKeyFingerprintFollowsServerBindingsAndPrecedesCallerNonce(t *testing.T) {
+	leafDER := []byte("leaf")
+	deviceBlob := []byte("devices")
+	exporter := []byte("server-exporter")
+	receiptFP := bytes.Repeat([]byte{0x7c}, sha256.Size)
+	callerNonce := []byte("caller-nonce")
+
+	tests := []struct {
+		name     string
+		exporter []byte
+		caller   []byte
+	}{
+		{name: "all slots", exporter: exporter, caller: callerNonce},
+		{name: "no exporter", caller: callerNonce},
+		{name: "no caller nonce", exporter: exporter},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			token := getWithCapturedNonces(t, leafDER, deviceBlob, test.caller, test.exporter, receiptFP)
+			nonces := fakeJWTNonces(t, token)
+			leafFP := sha256.Sum256(leafDER)
+			deviceHash := sha256.Sum256(deviceBlob)
+			want := []string{hex.EncodeToString(leafFP[:]), hex.EncodeToString(deviceHash[:])}
+			if test.exporter != nil {
+				want = append(want, hex.EncodeToString(test.exporter))
+			}
+			want = append(want, hex.EncodeToString(receiptFP))
+			if test.caller != nil {
+				want = append(want, hex.EncodeToString(test.caller))
+			}
+			if !slices.Equal(nonces, want) {
+				t.Fatalf("nonces = %v, want ordered %v", nonces, want)
+			}
+		})
 	}
 }
 
@@ -100,7 +137,7 @@ func TestGetSerializesLauncherTokenRequests(t *testing.T) {
 	errs := make(chan error, 2)
 	callGet := func(nonce string) {
 		defer wg.Done()
-		_, err := Get([]byte("leaf"), []byte("devices"), []byte(nonce), []byte("exporter"))
+		_, err := Get([]byte("leaf"), []byte("devices"), []byte(nonce), []byte("exporter"), nil)
 		errs <- err
 	}
 
@@ -154,7 +191,7 @@ func TestMintOIDCTokenUsesSTSAudienceWithoutCallerContent(t *testing.T) {
 	}
 }
 
-func getWithCapturedNonces(t *testing.T, leafDER, deviceBlob, nonce, channelBinding []byte) []byte {
+func getWithCapturedNonces(t *testing.T, leafDER, deviceBlob, nonce, channelBinding, receiptKeyFP []byte) []byte {
 	t.Helper()
 	oldRequestToken := requestToken
 	defer func() { requestToken = oldRequestToken }()
@@ -167,7 +204,7 @@ func getWithCapturedNonces(t *testing.T, leafDER, deviceBlob, nonce, channelBind
 		return fakeJWT(t, req.Nonces), nil
 	}
 
-	token, err := Get(leafDER, deviceBlob, nonce, channelBinding)
+	token, err := Get(leafDER, deviceBlob, nonce, channelBinding, receiptKeyFP)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}

@@ -4,6 +4,7 @@ package attestation
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"testing"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
@@ -49,7 +50,7 @@ func TestGetBindsExporterInAWSUserData(t *testing.T) {
 		}, nil
 	}
 
-	doc, err := Get(srv.Certificate.Certificate[0], []byte("devices"), nonce, exporter)
+	doc, err := Get(srv.Certificate.Certificate[0], []byte("devices"), nonce, exporter, nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -75,4 +76,98 @@ func TestGetBindsExporterInAWSUserData(t *testing.T) {
 	if bytes.Equal(boundExporter, captured.Nonce) {
 		t.Fatal("exporter binding was conflated with the NSM Nonce field")
 	}
+}
+
+func TestNilReceiptKeyFingerprintPreservesLegacyAWSUserDataBytes(t *testing.T) {
+	srv, err := enclavetls.NewSelfSigned("test.quill.local")
+	if err != nil {
+		t.Fatalf("NewSelfSigned: %v", err)
+	}
+	leafDER := srv.Certificate.Certificate[0]
+	deviceBlob := []byte("devices")
+	certFP := sha256.Sum256(leafDER)
+	deviceHash := sha256.Sum256(deviceBlob)
+	legacy64 := append(append([]byte(nil), certFP[:]...), deviceHash[:]...)
+	exporter := bytes.Repeat([]byte{0x5a}, sha256.Size)
+
+	for _, test := range []struct {
+		name     string
+		exporter []byte
+		want     []byte
+	}{
+		{name: "64 byte legacy shape", want: legacy64},
+		{name: "96 byte legacy shape", exporter: exporter, want: append(append([]byte(nil), legacy64...), exporter...)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			captured := captureAWSAttestationRequest(t, leafDER, deviceBlob, nil, test.exporter, nil)
+			if !bytes.Equal(captured.UserData, test.want) {
+				t.Fatalf("user_data = %x, want exact legacy bytes %x", captured.UserData, test.want)
+			}
+		})
+	}
+}
+
+func TestReceiptKeyFingerprintUsesFixed128ByteAWSLayout(t *testing.T) {
+	srv, err := enclavetls.NewSelfSigned("test.quill.local")
+	if err != nil {
+		t.Fatalf("NewSelfSigned: %v", err)
+	}
+	leafDER := srv.Certificate.Certificate[0]
+	deviceBlob := []byte("devices")
+	receiptFP := bytes.Repeat([]byte{0x7c}, sha256.Size)
+	exporter := bytes.Repeat([]byte{0x5a}, sha256.Size)
+
+	for _, test := range []struct {
+		name         string
+		exporter     []byte
+		wantExporter []byte
+	}{
+		{name: "exporter present", exporter: exporter, wantExporter: exporter},
+		{name: "exporter absent is zero filled", wantExporter: make([]byte, sha256.Size)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			captured := captureAWSAttestationRequest(t, leafDER, deviceBlob, nil, test.exporter, receiptFP)
+			if len(captured.UserData) != 128 {
+				t.Fatalf("user_data length = %d, want 128", len(captured.UserData))
+			}
+			certFP := sha256.Sum256(leafDER)
+			deviceHash := sha256.Sum256(deviceBlob)
+			if !bytes.Equal(captured.UserData[:32], certFP[:]) {
+				t.Fatalf("cert slot = %x, want %x", captured.UserData[:32], certFP)
+			}
+			if !bytes.Equal(captured.UserData[32:64], deviceHash[:]) {
+				t.Fatalf("device slot = %x, want %x", captured.UserData[32:64], deviceHash)
+			}
+			if !bytes.Equal(captured.UserData[64:96], test.wantExporter) {
+				t.Fatalf("exporter slot = %x, want %x", captured.UserData[64:96], test.wantExporter)
+			}
+			if !bytes.Equal(captured.UserData[96:128], receiptFP) {
+				t.Fatalf("receipt slot = %x, want %x", captured.UserData[96:128], receiptFP)
+			}
+		})
+	}
+}
+
+func captureAWSAttestationRequest(t *testing.T, leafDER, deviceBlob, nonce, exporter, receiptFP []byte) *request.Attestation {
+	t.Helper()
+	var captured *request.Attestation
+	oldOpenNSMSession := openNSMSession
+	openNSMSession = func() (nsmSession, error) {
+		return fakeNSMSession{send: func(req request.Request) (response.Response, error) {
+			var ok bool
+			captured, ok = req.(*request.Attestation)
+			if !ok {
+				t.Fatalf("request = %T, want *request.Attestation", req)
+			}
+			return response.Response{Attestation: &response.Attestation{Document: []byte("signed-doc")}}, nil
+		}}, nil
+	}
+	t.Cleanup(func() { openNSMSession = oldOpenNSMSession })
+	if _, err := Get(leafDER, deviceBlob, nonce, exporter, receiptFP); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("NSM attestation request was not captured")
+	}
+	return captured
 }

@@ -30,10 +30,11 @@
 // SEV-SNP gives 64 bytes of REPORT_DATA. We do NOT compute it: the sidecar
 // does, as sha256(runtime_data) followed by 32 zero bytes. Any report_data we
 // send is ignored. The pre-image is what we control, and it carries the same
-// four inputs the other backends bind — TLS leaf fingerprint, device blob,
-// client nonce, and the channel binding that ties the attestation to the live
-// TLS session. MAA echoes the pre-image back in the token so a verifier can
-// recompute the digest and confirm the report commits to these exact values.
+// inputs the other backends bind — TLS leaf fingerprint, device blob, client
+// nonce, the channel binding that ties the attestation to the live TLS session,
+// and (when enabled) the receipt-key fingerprint. MAA echoes the pre-image back
+// in the token so a verifier can recompute the digest and confirm the report
+// commits to these exact values.
 //
 // FIELD ORDER IS LOAD-BEARING, and not for style reasons. MAA does not echo
 // runtime_data as the bytes we sent; it re-serialises it as a JSON object with
@@ -91,6 +92,9 @@ import (
 // future sidecar moves it again.
 const defaultSidecarURL = "http://localhost:8080/attest/maa"
 
+// Kind names the receipt wire format of documents minted by this backend.
+const Kind = "azure-maa-jwt"
+
 func sidecarURL() string {
 	if v := os.Getenv("QUILL_AZURE_ATTESTATION_URL"); v != "" {
 		return v
@@ -107,8 +111,8 @@ var requestToken = requestTokenFromSidecar
 // Get returns the raw MAA JWT bytes for the cmd/enclave handler to forward as
 // Content-Type: application/jwt. The signature matches the GCP and AWS
 // variants so cmd/enclave/main.go compiles unchanged under any build tag.
-func Get(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte) ([]byte, error) {
-	reqBody, err := buildTokenRequest(leafDER, deviceBlob, nonce, channelBinding)
+func Get(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte, receiptKeyFP []byte) ([]byte, error) {
+	reqBody, err := buildTokenRequest(leafDER, deviceBlob, nonce, channelBinding, receiptKeyFP)
 	if err != nil {
 		return nil, err
 	}
@@ -133,9 +137,10 @@ type runtimeData struct {
 	DeviceHash      string `json:"device_hash"`
 	LeafFingerprint string `json:"leaf_fp"`
 	Nonce           string `json:"nonce,omitempty"`
+	ReceiptKeyFP    string `json:"receipt_key_fp,omitempty"`
 }
 
-func buildTokenRequest(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte) (tokenRequest, error) {
+func buildTokenRequest(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte, receiptKeyFP []byte) (tokenRequest, error) {
 	leafFP := sha256.Sum256(leafDER)
 	deviceHash := sha256.Sum256(deviceBlob)
 
@@ -148,6 +153,9 @@ func buildTokenRequest(leafDER []byte, deviceBlob []byte, nonce []byte, channelB
 	}
 	if len(nonce) > 0 {
 		rd.Nonce = hex.EncodeToString(nonce)
+	}
+	if receiptKeyFP != nil {
+		rd.ReceiptKeyFP = hex.EncodeToString(receiptKeyFP)
 	}
 
 	// encoding/json emits struct fields in declaration order, and the fields
