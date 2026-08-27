@@ -9,12 +9,14 @@ import (
 	"encoding/hex"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/sys/unix"
 )
 
 // TestNewSelfSigned_ValidCert checks the issued cert is parseable, has the
@@ -608,12 +610,45 @@ func (p *pipeListener) Addr() net.Addr { return pipeAddr{} }
 
 func (p *pipeListener) dial() (net.Conn, error) {
 	c1, c2 := net.Pipe()
+	return p.offer(c1, c2)
+}
+
+// dialBuffered uses a kernel-buffered local socket pair. TLS 1.3 writes its
+// session ticket after the handshake, so the synchronous net.Pipe transport
+// can otherwise deadlock until a deadline when the client has not begun its
+// next read yet.
+func (p *pipeListener) dialBuffered() (net.Conn, error) {
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+	if err != nil {
+		return nil, err
+	}
+	files := []*os.File{
+		os.NewFile(uintptr(fds[0]), "tls-client"),
+		os.NewFile(uintptr(fds[1]), "tls-server"),
+	}
+	client, err := net.FileConn(files[0])
+	if err != nil {
+		_ = files[0].Close()
+		_ = files[1].Close()
+		return nil, err
+	}
+	server, err := net.FileConn(files[1])
+	_ = files[0].Close()
+	_ = files[1].Close()
+	if err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+	return p.offer(client, server)
+}
+
+func (p *pipeListener) offer(client, server net.Conn) (net.Conn, error) {
 	select {
-	case p.ch <- c2:
-		return c1, nil
+	case p.ch <- server:
+		return client, nil
 	case <-p.closed:
-		_ = c1.Close()
-		_ = c2.Close()
+		_ = client.Close()
+		_ = server.Close()
 		return nil, net.ErrClosed
 	}
 }
@@ -632,194 +667,264 @@ func (c fakeTLSStateConn) ConnectionState() tls.ConnectionState {
 	return c.state
 }
 
-// TestResumedSessionNeverAttestsAnotherHostnamesLeaf pins the defect that was
-// reproduced live on three GCP replicas: with several ACME certificates in one
-// process, a TLS 1.3 session-resumed (PSK) handshake bound /attestation to
-// whichever hostname most recently completed a FULL handshake, not the one the
-// client actually used.
-//
-// Mechanism: Accept() pre-seeded every connection's leaf from the process-global
-// leafDER, and Go's TLS 1.3 server never calls GetCertificate on a resumed
-// handshake, so the pre-seed survived and became the attested leaf.
-//
-// This test deliberately leaves session tickets ENABLED, even though NewACME now
-// disables them. Disabling tickets makes the bug unreachable, so a test that
-// relied on it would pass for the wrong reason and stop protecting anything the
-// moment someone re-enabled resumption. What is asserted here is the underlying
-// property — a connection never reports a leaf it was not served — which the
-// pre-seed gating provides on its own.
-//
-// Fail-closed is a pass: a resumed connection reporting NO leaf makes
-// /attestation return 503, which is correct. Reporting the WRONG leaf is the
-// failure.
-func TestResumedSessionNeverAttestsAnotherHostnamesLeaf(t *testing.T) {
-	hostA, hostB := "api.trustedrouter.com", "api.uptimerouter.com"
-	certA, err := NewSelfSigned(hostA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certB, err := NewSelfSigned(hostB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	derA := certA.Certificate.Certificate[0]
-	derB := certB.Certificate.Certificate[0]
+type resumptionHandshake struct {
+	serverLeaf []byte
+	clientLeaf []byte
+	resumed    bool
+}
 
-	// A multi-certificate server, mirroring what NewACME builds: per-SNI
-	// GetCertificate that also updates the process-global leaf. singleCert
-	// stays false, which is the whole point.
-	srv := &Server{}
-	srv.tlsConfig = &tls.Config{
-		MinVersion:             tls.VersionTLS13,
-		NextProtos:             []string{"http/1.1"},
-		SessionTicketsDisabled: false, // deliberately on; see comment above
-		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			cert := &certA.Certificate
-			if hello.ServerName == hostB {
-				cert = &certB.Certificate
-			}
+type resumptionHarness struct {
+	t      *testing.T
+	server *Server
+	inner  *pipeListener
+	tls    net.Listener
+	roots  *x509.CertPool
+}
+
+func newResumptionHarness(
+	t *testing.T,
+	certificates []*tls.Certificate,
+	getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error),
+) *resumptionHarness {
+	t.Helper()
+	srv := &Server{singleCert: true} // recreate the pre-c54e90d6 global pre-seed
+	base := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		NextProtos: []string{"http/1.1"},
+	}
+	base.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		cert, err := getCertificate(hello)
+		if err == nil && cert != nil && len(cert.Certificate) > 0 {
 			if setter, ok := hello.Conn.(selectedLeafSetter); ok {
 				setter.setSelectedLeafDER(cert.Certificate[0])
 			}
 			srv.setLeafDER(cert.Certificate[0])
-			return cert, nil
-		},
+		}
+		return cert, err
 	}
+	enablePerSNIResumption(base)
+	srv.tlsConfig = base
 
-	// A real loopback listener, NOT newPipeListener: net.Pipe is unbuffered and
-	// synchronous, so the server's TLS 1.3 NewSessionTicket write blocks until
-	// the client happens to read, and the exchange only completes when the
-	// deadlines fire. The test still passed that way — via timeouts, in 15s —
-	// which would also have hidden a genuine hang. TCP gives kernel buffering
-	// and the same test runs in milliseconds.
-	innerL, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer innerL.Close()
-	tlsL := srv.Wrap(innerL)
+	inner := newPipeListener(t)
+	t.Cleanup(func() { _ = inner.Close() })
 
-	pool := x509.NewCertPool()
-	for _, der := range [][]byte{derA, derB} {
-		leaf, err := x509.ParseCertificate(der)
+	roots := x509.NewCertPool()
+	for _, cert := range certificates {
+		leaf, err := x509.ParseCertificate(cert.Certificate[0])
 		if err != nil {
 			t.Fatalf("parse leaf: %v", err)
 		}
-		pool.AddCert(leaf)
+		roots.AddCert(leaf)
 	}
+	return &resumptionHarness{t: t, server: srv, inner: inner, tls: srv.Wrap(inner), roots: roots}
+}
 
-	// One client config across all three connections, so the session cache can
-	// actually offer a ticket back.
-	clientCfg := &tls.Config{
-		RootCAs:            pool,
+func (h *resumptionHarness) dial(sni string, cache tls.ClientSessionCache) resumptionHandshake {
+	return h.dialWithConfig(sni, cache, false)
+}
+
+func (h *resumptionHarness) dialWithoutHostnameValidation(sni string, cache tls.ClientSessionCache) resumptionHandshake {
+	return h.dialWithConfig(sni, cache, true)
+}
+
+func (h *resumptionHarness) dialWithConfig(
+	sni string,
+	cache tls.ClientSessionCache,
+	insecureSkipVerify bool,
+) resumptionHandshake {
+	h.t.Helper()
+	serverLeaf := make(chan []byte, 1)
+	go func() {
+		conn, err := h.tls.Accept()
+		if err != nil {
+			serverLeaf <- nil
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := io.ReadFull(conn, []byte{0}); err != nil {
+			serverLeaf <- nil
+			return
+		}
+		if _, err := conn.Write([]byte{1}); err != nil {
+			serverLeaf <- nil
+			return
+		}
+		serverLeaf <- SelectedLeafDER(conn)
+	}()
+
+	raw, err := h.inner.dialBuffered()
+	if err != nil {
+		h.t.Fatalf("dial: %v", err)
+	}
+	client := tls.Client(raw, &tls.Config{
+		RootCAs:            h.roots,
+		ServerName:         sni,
 		MinVersion:         tls.VersionTLS13,
 		NextProtos:         []string{"http/1.1"},
-		ClientSessionCache: tls.NewLRUClientSessionCache(8),
+		ClientSessionCache: cache,
+		InsecureSkipVerify: insecureSkipVerify, // #nosec G402 -- test client for the in-test self-signed server; verification is the property under test elsewhere
+	})
+	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := client.Handshake(); err != nil {
+		h.t.Fatalf("handshake %s: %v", sni, err)
 	}
-
-	// dial completes one connection and returns what the SERVER believes this
-	// connection's leaf was, plus whether the client resumed.
-	dial := func(sni string) (serverLeaf []byte, resumed bool) {
-		t.Helper()
-		serverLeafCh := make(chan []byte, 1)
-		go func() {
-			conn, err := tlsL.Accept()
-			if err != nil {
-				serverLeafCh <- nil
-				return
-			}
-			defer conn.Close()
-			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-			buf := []byte{0}
-			_, _ = conn.Read(buf)
-			_, _ = conn.Write([]byte{1})
-			serverLeafCh <- SelectedLeafDER(conn)
-		}()
-
-		raw, err := net.Dial("tcp", innerL.Addr().String())
-		if err != nil {
-			t.Fatalf("dial: %v", err)
-		}
-		cfg := clientCfg.Clone()
-		cfg.ServerName = sni
-		cfg.ClientSessionCache = clientCfg.ClientSessionCache
-		c := tls.Client(raw, cfg)
-		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-		if err := c.Handshake(); err != nil {
-			t.Fatalf("handshake %s: %v", sni, err)
-		}
-		// Exchange a byte each way: TLS 1.3 delivers the session ticket after
-		// the handshake, so without a read the client never caches one.
-		if _, err := c.Write([]byte{1}); err != nil {
-			t.Fatalf("write %s: %v", sni, err)
-		}
-		ack := []byte{0}
-		_, _ = c.Read(ack)
-		resumed = c.ConnectionState().DidResume
-		_ = c.Close()
-		return <-serverLeafCh, resumed
+	if _, err := client.Write([]byte{1}); err != nil {
+		h.t.Fatalf("write %s: %v", sni, err)
 	}
-
-	// 1. Full handshake to A — this is the session we will later resume.
-	if leaf, _ := dial(hostA); !bytes.Equal(leaf, derA) {
-		t.Fatalf("full handshake to %s did not bind its own leaf", hostA)
+	if _, err := io.ReadFull(client, []byte{0}); err != nil {
+		h.t.Fatalf("read %s: %v", sni, err)
 	}
-	// 2. Full handshake to B — drives the process-global leaf to B's.
-	if leaf, _ := dial(hostB); !bytes.Equal(leaf, derB) {
-		t.Fatalf("full handshake to %s did not bind its own leaf", hostB)
-	}
-	if !bytes.Equal(srv.CurrentLeafDER(), derB) {
-		t.Fatalf("precondition failed: process-global leaf should now be %s's", hostB)
-	}
-
-	// 3. Back to A. If the client resumes, GetCertificate is skipped.
-	leaf, resumed := dial(hostA)
-	if !resumed {
-		t.Skip("client did not resume, so the resumption path was not exercised")
-	}
-	if bytes.Equal(leaf, derB) {
-		t.Fatalf(
-			"resumed session to %s attested %s's certificate — the exact live "+
-				"defect: Accept() pre-seeded the process-global leaf and the "+
-				"resumed handshake never called GetCertificate to correct it",
-			hostA, hostB,
-		)
-	}
-	if leaf != nil && !bytes.Equal(leaf, derA) {
-		t.Fatalf("resumed session to %s attested an unrecognised certificate", hostA)
+	state := client.ConnectionState()
+	_ = client.Close()
+	return resumptionHandshake{
+		serverLeaf: <-serverLeaf,
+		clientLeaf: state.PeerCertificates[0].Raw,
+		resumed:    state.DidResume,
 	}
 }
 
-// TestACMEDisablesResumptionAndSelfSignedDoesNot pins the two settings the fix
-// depends on, so a future edit that flips either is caught here rather than in
-// production.
-//
-// The asymmetry is load-bearing and not stylistic: NewSelfSigned installs its
-// cert via Certificates and never calls GetCertificate at all, so Accept()'s
-// pre-seed is the ONLY writer of the per-connection leaf on that path. Gating
-// the pre-seed off for it would leave SelectedLeafDER nil on every AWS Nitro
-// connection, 503 /attestation fleet-wide, and get the fleet drained from DNS by
-// reconcile-enclave-dns.py, which health-gates on exactly that endpoint.
-func TestACMEDisablesResumptionAndSelfSignedDoesNot(t *testing.T) {
-	selfSigned, err := NewSelfSigned("api.trustedrouter.com")
+// TestResumedSessionNeverAttestsAnotherHostnamesLeaf is the exact live
+// c54e90d6 sequence: full A, full B (overwriting the process-global leaf), then
+// resume A. The harness deliberately restores the old global pre-seed so this
+// turns red with B's leaf if the GetConfigForClient isolation is removed.
+func TestResumedSessionNeverAttestsAnotherHostnamesLeaf(t *testing.T) {
+	hostA, hostB := "api.trustedrouter.com", "api.uptimerouter.com"
+	serverA, err := NewSelfSigned(hostA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !selfSigned.singleCert {
-		t.Error("self-signed server must be singleCert: its one cert carries every SAN, " +
-			"and the Accept() pre-seed is that path's only leaf writer")
+	serverB, err := NewSelfSigned(hostB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certA, certB := &serverA.Certificate, &serverB.Certificate
+	h := newResumptionHarness(t, []*tls.Certificate{certA, certB}, func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		if hello.ServerName == hostB {
+			return certB, nil
+		}
+		return certA, nil
+	})
+	cache := tls.NewLRUClientSessionCache(8)
+
+	if got := h.dial(hostA, cache); got.resumed || !bytes.Equal(got.serverLeaf, certA.Certificate[0]) {
+		t.Fatalf("full A = resumed %v, leaf %x", got.resumed, sha256.Sum256(got.serverLeaf))
+	}
+	if got := h.dial(hostB, cache); got.resumed || !bytes.Equal(got.serverLeaf, certB.Certificate[0]) {
+		t.Fatalf("full B = resumed %v, leaf %x", got.resumed, sha256.Sum256(got.serverLeaf))
+	}
+	if !bytes.Equal(h.server.CurrentLeafDER(), certB.Certificate[0]) {
+		t.Fatal("precondition failed: B did not overwrite the process-global leaf")
 	}
 
-	acme, err := NewACME("api.trustedrouter.com,api.uptimerouter.com", "", "memory", "", "", nil)
+	got := h.dial(hostA, cache)
+	if !got.resumed {
+		t.Fatal("same-hostname TLS 1.3 session did not resume")
+	}
+	if !bytes.Equal(got.clientLeaf, certA.Certificate[0]) || !bytes.Equal(got.serverLeaf, certA.Certificate[0]) {
+		t.Fatalf("resumed A leaf mismatch: client_is_A=%v server_is_A=%v server_is_B=%v",
+			bytes.Equal(got.clientLeaf, certA.Certificate[0]),
+			bytes.Equal(got.serverLeaf, certA.Certificate[0]),
+			bytes.Equal(got.serverLeaf, certB.Certificate[0]))
+	}
+}
+
+// oneSessionCache deliberately ignores crypto/tls's per-host cache key. The
+// cross-SNI test also disables the test client's hostname check, which would
+// otherwise decline to offer A's ticket for B before the server sees it. The
+// server must reject the adversarially offered ticket and handshake B in full.
+type oneSessionCache struct {
+	state *tls.ClientSessionState
+}
+
+func (c *oneSessionCache) Get(string) (*tls.ClientSessionState, bool) {
+	return c.state, c.state != nil
+}
+
+func (c *oneSessionCache) Put(_ string, state *tls.ClientSessionState) {
+	c.state = state
+}
+
+func TestSessionTicketCannotResumeAcrossSNI(t *testing.T) {
+	hostA, hostB := "api.trustedrouter.com", "api.uptimerouter.com"
+	serverA, err := NewSelfSigned(hostA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if acme.singleCert {
-		t.Error("ACME server must NOT be singleCert: autocert issues one cert per SNI name")
+	serverB, err := NewSelfSigned(hostB)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !acme.tlsConfig.SessionTicketsDisabled {
-		t.Error("ACME server must disable session tickets: Go's TLS 1.3 server skips " +
-			"GetCertificate on a resumed handshake, so nothing would record which " +
-			"certificate that session was actually served")
+	certA, certB := &serverA.Certificate, &serverB.Certificate
+	h := newResumptionHarness(t, []*tls.Certificate{certA, certB}, func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		if hello.ServerName == hostB {
+			return certB, nil
+		}
+		return certA, nil
+	})
+	cache := new(oneSessionCache)
+	_ = h.dialWithoutHostnameValidation(hostA, cache)
+
+	got := h.dialWithoutHostnameValidation(hostB, cache)
+	if got.resumed {
+		t.Fatal("B resumed a TLS session ticket minted for A")
 	}
+	if !bytes.Equal(got.clientLeaf, certB.Certificate[0]) || !bytes.Equal(got.serverLeaf, certB.Certificate[0]) {
+		t.Fatal("cross-SNI ticket rejection did not fall back to B's exact leaf")
+	}
+}
+
+func TestLeafRotationInvalidatesOldSessionTickets(t *testing.T) {
+	host := "api.trustedrouter.com"
+	serverV1, err := NewSelfSigned(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverV2, err := NewSelfSigned(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certV1, certV2 := &serverV1.Certificate, &serverV2.Certificate
+	active := certV1
+	h := newResumptionHarness(t, []*tls.Certificate{certV1, certV2}, func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		return active, nil
+	})
+	cache := tls.NewLRUClientSessionCache(8)
+	_ = h.dial(host, cache)
+
+	active = certV2
+	rotated := h.dial(host, cache)
+	if rotated.resumed {
+		t.Fatal("pre-rotation ticket resumed after the hostname's leaf changed")
+	}
+	if !bytes.Equal(rotated.serverLeaf, certV2.Certificate[0]) {
+		t.Fatal("post-rotation handshake did not bind the new leaf")
+	}
+	if got := h.dial(host, cache); !got.resumed || !bytes.Equal(got.serverLeaf, certV2.Certificate[0]) {
+		t.Fatal("a ticket minted after rotation did not resume against the new leaf")
+	}
+}
+
+func TestACMEResumptionKillSwitch(t *testing.T) {
+	t.Run("default is per-SNI resumption", func(t *testing.T) {
+		t.Setenv("QUILL_TLS_RESUMPTION", "")
+		server, err := NewACME("api.trustedrouter.com,api.uptimerouter.com", "", "memory", "", "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if server.tlsConfig.SessionTicketsDisabled || server.tlsConfig.GetConfigForClient == nil {
+			t.Fatal("ACME per-SNI resumption is not enabled by default")
+		}
+	})
+
+	t.Run("off restores disabled tickets", func(t *testing.T) {
+		t.Setenv("QUILL_TLS_RESUMPTION", "off")
+		server, err := NewACME("api.trustedrouter.com,api.uptimerouter.com", "", "memory", "", "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !server.tlsConfig.SessionTicketsDisabled || server.tlsConfig.GetConfigForClient != nil {
+			t.Fatal("QUILL_TLS_RESUMPTION=off did not restore disabled tickets")
+		}
+	})
 }
