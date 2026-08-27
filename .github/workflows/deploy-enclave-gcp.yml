@@ -138,6 +138,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # need history for the auto-commit + push back
+          # Trust-artifact commits push directly to protected main. The
+          # default GITHUB_TOKEN (github-actions bot) is blocked by the
+          # required status checks; this fine-grained admin PAT bypasses
+          # them (enforce_admins is off). Owner-provisioned secret.
+          token: ${{ secrets.TRUST_PUSH_TOKEN }}
 
       - id: set-vars
         run: |
@@ -323,6 +328,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main   # pull the auto-commit just made
+          token: ${{ secrets.TRUST_PUSH_TOKEN }}
       - name: Authenticate to GCP via WIF
         uses: google-github-actions/auth@v2
         with:
