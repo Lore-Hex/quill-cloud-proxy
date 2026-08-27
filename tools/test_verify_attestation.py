@@ -837,7 +837,13 @@ class ReceiptVerifierTests(unittest.TestCase):
         response_stream: bytes | None = None,
         expected_nonce: str | None = None,
         max_age_seconds: int | None = None,
+        expected_issuer: str | None = "https://api.test.invalid",
+        allow_unbound: bool = True,
     ):
+        # allow_unbound defaults True in the FACTORY only: most existing
+        # tests target one layer (signature, claims, stream) in isolation.
+        # The default-refusal behavior itself is pinned by the dedicated
+        # binding tests below with allow_unbound=False.
         return types.SimpleNamespace(
             verify_receipt=self.write("receipt.jws", receipt),
             attestation=self.write("attestation.bin", attestation) if attestation is not None else None,
@@ -846,6 +852,8 @@ class ReceiptVerifierTests(unittest.TestCase):
             response_stream=self.write("stream.sse", response_stream) if response_stream is not None else None,
             expected_nonce=expected_nonce,
             max_age_seconds=max_age_seconds,
+            expected_issuer=expected_issuer,
+            allow_unbound=allow_unbound,
             expect_digest=None,
             allow_debug=False,
             expected_pcr0=None,
@@ -1039,6 +1047,48 @@ class ReceiptVerifierTests(unittest.TestCase):
         result, output = self.verify(wrong_args)
         self.assertEqual(result, 1)
         self.assertIn("not a member", output)
+
+
+class ReceiptFailClosedTests(ReceiptVerifierTests):
+    def test_unbound_verification_refused_by_default(self):
+        receipt, _stream, _att = self.stream_fixture("sse-data-v1")
+        code, output = self.verify(self.args(receipt, allow_unbound=False))
+        self.assertEqual(code, 1)
+        self.assertIn("binding check failed", output)
+        self.assertIn("--allow-unbound", output)
+
+    def test_partial_binding_refused_by_default(self):
+        receipt, stream, _att = self.stream_fixture("sse-data-v1")
+        code, output = self.verify(
+            self.args(receipt, response_stream=stream, allow_unbound=False)
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("missing --request-body", output)
+
+    def test_expected_issuer_is_required(self):
+        receipt, _stream, _att = self.stream_fixture("sse-data-v1")
+        code, output = self.verify(self.args(receipt, expected_issuer=None))
+        self.assertEqual(code, 1)
+        self.assertIn("--expected-issuer is required", output)
+
+    def test_issuer_mismatch_refused(self):
+        receipt, stream, _att = self.stream_fixture("sse-data-v1")
+        code, output = self.verify(
+            self.args(receipt, response_stream=stream, expected_issuer="https://evil.example")
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("iss check failed", output)
+
+    def test_issuer_normalization_accepts_case_and_default_port(self):
+        receipt, stream, _att = self.stream_fixture("sse-data-v1")
+        _code, output = self.verify(
+            self.args(
+                receipt,
+                response_stream=stream,
+                expected_issuer="HTTPS://API.TEST.INVALID:443/",
+            )
+        )
+        self.assertIn("iss matches --expected-issuer", output)
 
 
 if __name__ == "__main__":
