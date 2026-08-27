@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamcert"
 )
 
 func TestPooledHTTPClientUsesTunedTransport(t *testing.T) {
@@ -11,9 +13,13 @@ func TestPooledHTTPClientUsesTunedTransport(t *testing.T) {
 	if client.Timeout != 30*time.Second {
 		t.Fatalf("timeout = %s, want 30s", client.Timeout)
 	}
-	transport, ok := client.Transport.(*http.Transport)
+	tracked, ok := client.Transport.(*upstreamcert.Transport)
 	if !ok {
-		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
+		t.Fatalf("transport = %T, want *upstreamcert.Transport", client.Transport)
+	}
+	transport, ok := tracked.Base.(*http.Transport)
+	if !ok {
+		t.Fatalf("base transport = %T, want *http.Transport", tracked.Base)
 	}
 	if !transport.ForceAttemptHTTP2 {
 		t.Fatal("ForceAttemptHTTP2 = false, want true")
@@ -26,5 +32,8 @@ func TestPooledHTTPClientUsesTunedTransport(t *testing.T) {
 	}
 	if transport.IdleConnTimeout <= 0 {
 		t.Fatal("IdleConnTimeout must be positive")
+	}
+	if transport.DialTLSContext == nil {
+		t.Fatal("DialTLSContext must capture the serving TLS connection")
 	}
 }

@@ -61,6 +61,8 @@ func receiptClaims(
 			VerifiedAt:            verified.VerifiedAt.Unix(),
 			VerificationExpiresAt: verified.ExpiresAt.Unix(),
 		}
+	} else if certSHA256, ok := llm.UpstreamCertSHA256FromContext(ctx); ok {
+		upstream.CertSHA256 = certSHA256
 	}
 	claims := receipt.Claims{
 		RV:         1,

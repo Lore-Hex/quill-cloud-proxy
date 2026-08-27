@@ -150,10 +150,21 @@ func serveReceiptAttestation(conn io.Writer) bool {
 		return false
 	}
 	fmt.Fprintf(conn,
-		"HTTP/1.1 200 OK\r\nContent-Type: application/cbor\r\nContent-Length: %d\r\nCache-Control: no-store\r\nx-receipt-att-kind: %s\r\nConnection: keep-alive\r\n\r\n",
-		len(cached.document), cached.kind)
+		"HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %d\r\nCache-Control: no-store\r\nx-receipt-att-kind: %s\r\nConnection: keep-alive\r\n\r\n",
+		receiptAttestationContentType(cached.kind), len(cached.document), cached.kind)
 	_, _ = conn.Write(cached.document)
 	return true
+}
+
+func receiptAttestationContentType(kind string) string {
+	switch kind {
+	case "gcp-cs-jwt", "azure-maa-jwt":
+		return "application/jwt"
+	case "aws-nitro-cose":
+		return "application/cbor"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func serveReceiptKey(conn io.Writer) bool {

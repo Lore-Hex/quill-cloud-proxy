@@ -148,6 +148,15 @@ request. They never name a privacy property.
   this request) is included when per-request attribution is certain and
   omitted otherwise — never guessed.
 
+### 5.1 `cert_sha256`
+
+For `tls-webpki`, `cert_sha256` is SHA-256 over the DER bytes of the peer leaf
+certificate on the TLS connection that served this specific request, encoded
+as unpadded base64url. Connection pooling, retries, and redirects do not relax
+that binding: if the serving connection cannot be attributed with certainty,
+the claim is omitted. It is never guessed from a newly dialed or previously
+used connection, and it is never present on a `tee-verified` upstream block.
+
 ## 6. JWS envelope
 
 Protected header:

@@ -152,14 +152,36 @@ func TestReceiptAttestationRouteServesCachedDocument(t *testing.T) {
 	if !bytes.Equal(body, wantDocument) {
 		t.Fatalf("body = %q, want cached document %q", body, wantDocument)
 	}
-	if got := resp.Header.Get("Content-Type"); got != "application/cbor" {
-		t.Fatalf("Content-Type = %q", got)
+	wantContentType := map[string]string{
+		"gcp-cs-jwt":     "application/jwt",
+		"azure-maa-jwt":  "application/jwt",
+		"aws-nitro-cose": "application/cbor",
+	}[attestation.Kind]
+	if got := resp.Header.Get("Content-Type"); got != wantContentType {
+		t.Fatalf("Content-Type = %q, want %q for %q", got, wantContentType, attestation.Kind)
 	}
 	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q", got)
 	}
 	if got := resp.Header.Get("x-receipt-att-kind"); got != attestation.Kind {
 		t.Fatalf("x-receipt-att-kind = %q, want %q", got, attestation.Kind)
+	}
+}
+
+func TestReceiptAttestationContentTypePerKind(t *testing.T) {
+	for _, tc := range []struct {
+		kind string
+		want string
+	}{
+		{kind: "gcp-cs-jwt", want: "application/jwt"},
+		{kind: "azure-maa-jwt", want: "application/jwt"},
+		{kind: "aws-nitro-cose", want: "application/cbor"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			if got := receiptAttestationContentType(tc.kind); got != tc.want {
+				t.Fatalf("content type = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
