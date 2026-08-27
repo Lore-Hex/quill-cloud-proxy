@@ -114,6 +114,23 @@ def release_payload(
             "client_telemetry_content_free": True,
             "client_telemetry_disclosure": CLIENT_TELEMETRY_DISCLOSURE_URL,
         },
+        # Signed inference receipts are a property of this gateway build:
+        # the same release that ships the signing binary generates this
+        # block, so "advertises receipts" cannot drift from "runs a signing
+        # build". A release that removes emission must remove this block in
+        # the same diff.
+        "receipts": {
+            "spec": "inference-receipt/1",
+            "accepted_specs": ["inference-receipt/1"],
+            "algorithms": ["EdDSA"],
+            "delivery": {
+                "non_streaming": "x-inference-receipt response header (compact JWS)",
+                "streaming": "final chat.completion.chunk inference_receipt (flattened JWS)",
+            },
+            "key_commitment": "attestation",
+            "key_log": "https://trustedrouter.com/.well-known/inference-receipt-keys",
+            "documentation": "https://trustedrouter.com/docs/receipts",
+        },
         "compliance": {
             "legal_packet": LEGAL_PACKET_URL,
             "procurement_json": PROCUREMENT_JSON_URL,
