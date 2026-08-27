@@ -279,6 +279,25 @@ def _receipt_hash_record(claims: dict[str, Any], name: str) -> dict[str, Any]:
     return record
 
 
+def _canonical_https_origin(value: str, what: str) -> str:
+    """Normalize to scheme://host[:port] and reject anything but https."""
+    from urllib.parse import urlsplit
+
+    if not value:
+        _receipt_fail(f"{what} check failed: empty origin")
+    parts = urlsplit(value if "://" in value else "https://" + value)
+    if parts.scheme != "https":
+        _receipt_fail(f"{what} check failed: origin must use https")
+    if not parts.hostname:
+        _receipt_fail(f"{what} check failed: origin has no host")
+    if parts.path not in ("", "/") or parts.query or parts.fragment or parts.username:
+        _receipt_fail(f"{what} check failed: origin must be scheme://host[:port] only")
+    host = parts.hostname.lower()
+    if parts.port and parts.port != 443:
+        return f"https://{host}:{parts.port}"
+    return f"https://{host}"
+
+
 def parse_receipt_jws(blob: bytes) -> dict[str, Any]:
     """Parse a compact or flattened receipt without trusting either JSON body."""
     try:
@@ -2317,6 +2336,36 @@ def verify_receipt(args: argparse.Namespace) -> int:
         except OSError as exc:
             _receipt_fail(f"cannot read receipt file {args.verify_receipt!r}: {exc}")
         receipt = parse_receipt_jws(receipt_blob)
+        # Spec §8.1: bind or refuse — a verification holding neither the
+        # request nor any response bytes proves only that some key signed
+        # some digests. Refuse by default.
+        if not args.allow_unbound:
+            missing = []
+            if args.request_body is None:
+                missing.append("--request-body")
+            if args.response_body is None and args.response_stream is None:
+                missing.append("--response-body/--response-stream")
+            if missing:
+                _receipt_fail(
+                    "binding check failed: missing "
+                    + " and ".join(missing)
+                    + " (pass --allow-unbound for signature-only inspection)"
+                )
+        # Spec §8.1: pin the issuer. iss is attacker-writable until compared
+        # against a caller-supplied expectation; this tool never fetches
+        # anything from it.
+        if args.expected_issuer is None:
+            _receipt_fail("--expected-issuer is required (spec §8.1)")
+        expected_origin = _canonical_https_origin(args.expected_issuer, "--expected-issuer")
+        claimed_origin = _canonical_https_origin(
+            str(receipt["claims"].get("iss", "")), "iss"
+        )
+        if claimed_origin != expected_origin:
+            _receipt_fail(
+                f"iss check failed: receipt issuer {claimed_origin!r} does not "
+                f"equal --expected-issuer {expected_origin!r}"
+            )
+        _receipt_pass("iss matches --expected-issuer")
         raw_public_key = verify_receipt_protected_header(receipt)
         verify_receipt_signature(receipt, raw_public_key)
         verify_receipt_claims(
@@ -2652,6 +2701,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--expected-nonce",
         metavar="N",
         help="require the receipt nonce claim to equal this value",
+    )
+    parser.add_argument(
+        "--expected-issuer",
+        metavar="ORIGIN",
+        help="required https origin the receipt iss claim must equal (spec §8.1)",
+    )
+    parser.add_argument(
+        "--allow-unbound",
+        action="store_true",
+        help="explicitly permit verification without request/response bytes "
+        "(signature-only; proves nothing about your traffic)",
     )
     parser.add_argument(
         "--max-age-seconds",
