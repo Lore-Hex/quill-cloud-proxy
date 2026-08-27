@@ -1141,6 +1141,7 @@ func serveUserModelStreaming(
 			clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
 	}
+	clientWriter.complete(chunked)
 }
 
 func newUserModelRequestID(routeType string) string {
@@ -1316,6 +1317,14 @@ func (w *synchronizedUserModelWriter) close(chunked *chunkedWriter) {
 	}
 }
 
+func (w *synchronizedUserModelWriter) complete(chunked *chunkedWriter) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.writeErr == nil {
+		w.writeErr = chunked.Complete()
+	}
+}
+
 func writeUserModelKeepalives(
 	state *userModelDispatchState,
 	dispatchDone <-chan struct{},
@@ -1468,7 +1477,7 @@ func writeUserModelBufferedErrorWithHeaders(
 			},
 		})
 	}
-	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n", failure.callerStatus, statusText(failure.callerStatus), len(body))
+	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: %s\r\n", failure.callerStatus, statusText(failure.callerStatus), len(body), responseConnection(w))
 	for name, value := range headers {
 		if value != "" {
 			fmt.Fprintf(w, "%s: %s\r\n", name, value)

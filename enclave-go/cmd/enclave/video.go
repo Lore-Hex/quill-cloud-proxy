@@ -446,8 +446,11 @@ func (s *videoService) serveContent(ctx context.Context, conn io.Writer, bearer,
 	}
 	chunked := newChunkedWriter(conn)
 	_, copyErr := io.Copy(chunked, result.Body)
-	closeErr := chunked.Close()
-	if copyErr != nil || closeErr != nil {
+	if copyErr != nil {
+		_ = chunked.Close()
+		return
+	}
+	if closeErr := chunked.Complete(); closeErr != nil {
 		return
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -636,9 +639,10 @@ func writeVideoJobResponse(conn io.Writer, status int, job *trustedrouter.VideoJ
 
 func writeVideoResponseHead(conn io.Writer, contentType, jobID string) error {
 	_, err := fmt.Fprintf(conn,
-		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: %s\r\nContent-Disposition: attachment; filename=%q\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
+		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: %s\r\nContent-Disposition: attachment; filename=%q\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: %s\r\n\r\n",
 		contentType,
 		jobID+".mp4",
+		responseConnection(conn),
 	)
 	return err
 }

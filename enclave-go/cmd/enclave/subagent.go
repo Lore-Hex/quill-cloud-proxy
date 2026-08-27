@@ -428,6 +428,7 @@ func serveSubagentStreaming(
 		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, usage, advisorTotalCostMicrodollars(controllers, workers), subagentProviderUsage(details))
 	}
 	_, _ = statsW.Write([]byte("data: [DONE]\n\n"))
+	_ = chunkW.Complete()
 	fmt.Fprintf(os.Stderr,
 		"subagent.request_end request_log_id=%q request_id=%q mode=stream outcome=%q subagent_call_count=%d selected_model=%q elapsed_ms=%d\n",
 		requestLogID, requestID, "success", callCount, responseModel, time.Since(started).Milliseconds(),

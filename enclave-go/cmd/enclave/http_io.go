@@ -30,10 +30,18 @@ const (
 	maxHTTPHeaderLineBytes = 16*1024 - 1
 	maxHTTPHeaderBytes     = 64 << 10
 	maxHTTPHeaderCount     = 100
+	// A bufio.Reader may read beyond the current request body. Preserve legal
+	// pipelining, but bound how much already-read data can cross a response
+	// boundary before the next request is parsed.
+	maxHTTPBufferedCarryoverBytes = 8 << 10
 )
 
 var errHeadersTooLarge = errors.New("request headers too large")
 var errInvalidInferenceReceipt = errors.New("invalid x-inference-receipt header")
+var errAmbiguousRequestFraming = errors.New("ambiguous request framing")
+var errUnsupportedRequestTransferEncoding = errors.New("request transfer-encoding is not supported")
+var errMalformedRequestHeaders = errors.New("malformed request headers")
+var errMalformedRequestLine = errors.New("malformed request line")
 
 var inferenceReceiptNoncePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,88}$`)
 
@@ -49,6 +57,8 @@ type responseStatsConn struct {
 	status        int
 	responseBytes int
 	requestID     string
+	keepAlive     bool
+	reusable      bool
 }
 
 func (c *responseStatsConn) Write(p []byte) (int, error) {
@@ -81,11 +91,18 @@ func (c *responseStatsConn) Write(p []byte) (int, error) {
 	c.mu.Unlock()
 
 	n, err := c.Conn.Write(wireBytes)
+	if err == nil && n != len(wireBytes) {
+		err = io.ErrShortWrite
+	}
 	c.mu.Lock()
 	if c.status == 0 {
 		c.status = parseHTTPStatus(p)
 	}
 	c.responseBytes += n
+	if err != nil {
+		c.keepAlive = false
+		c.reusable = false
+	}
 	c.mu.Unlock()
 	if injectedHeaderBytes == 0 {
 		return n, err
@@ -124,6 +141,34 @@ func (c *responseStatsConn) BeginRequest(requestID string) {
 	c.status = 0
 	c.responseBytes = 0
 	c.requestID = requestID
+	c.keepAlive = false
+	c.reusable = false
+}
+
+func (c *responseStatsConn) SetResponseKeepAlive(keepAlive bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.keepAlive = keepAlive
+	c.reusable = keepAlive
+}
+
+func (c *responseStatsConn) ResponseKeepAlive() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.keepAlive
+}
+
+func (c *responseStatsConn) DisableResponseReuse() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.keepAlive = false
+	c.reusable = false
+}
+
+func (c *responseStatsConn) ResponseReusable() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reusable
 }
 
 func (c *responseStatsConn) SelectedLeafDER() []byte {
@@ -228,6 +273,8 @@ type requestAttributionHeaders struct {
 	OpenRouterMetadata bool
 	ClientContext      clientContextHeaders
 	InferenceReceipt   string
+	httpVersion        string
+	connectionClose    bool
 }
 
 // readRequest reads a minimal HTTP/1.1 request: status line + headers + body.
@@ -246,14 +293,19 @@ func readRequestWithHeadersRead(
 		return "", "", "", "", attribution, nil, err
 	}
 	headerBytes := len(statusLineBytes)
-	statusLine := string(statusLineBytes)
-	parts := strings.Fields(statusLine)
-	if len(parts) >= 2 {
-		method = parts[0]
-		path = parts[1]
+	statusLine := strings.TrimSuffix(string(statusLineBytes), "\r\n")
+	parts := strings.Split(statusLine, " ")
+	if len(parts) != 3 || !validHTTPHeaderFieldName(parts[0]) || !validHTTPRequestTarget(parts[1]) ||
+		(parts[2] != "HTTP/1.1" && parts[2] != "HTTP/1.0") {
+		return "", "", "", "", attribution, nil, errMalformedRequestLine
 	}
+	method = parts[0]
+	path = parts[1]
+	attribution.httpVersion = parts[2]
 
 	contentLength := 0
+	contentLengthSeen := false
+	transferEncodingSeen := false
 	headerCount := 0
 	for {
 		lineBytes, err := readBoundedHTTPLine(br)
@@ -264,8 +316,7 @@ func readRequestWithHeadersRead(
 		if headerBytes > maxHTTPHeaderBytes {
 			return "", "", "", "", attribution, nil, errHeadersTooLarge
 		}
-		line := string(lineBytes)
-		line = strings.TrimRight(line, "\r\n")
+		line := strings.TrimSuffix(string(lineBytes), "\r\n")
 		if line == "" {
 			break
 		}
@@ -274,11 +325,20 @@ func readRequestWithHeadersRead(
 			return "", "", "", "", attribution, nil, errHeadersTooLarge
 		}
 		k, v, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
+		if !ok || !validHTTPHeaderFieldName(k) {
+			return "", "", "", "", attribution, nil, errMalformedRequestHeaders
 		}
-		v = strings.TrimSpace(v)
+		if !validHTTPHeaderFieldValue(v) {
+			return "", "", "", "", attribution, nil, errMalformedRequestHeaders
+		}
+		v = strings.Trim(v, " \t")
 		switch strings.ToLower(k) {
+		case "connection":
+			for _, token := range strings.Split(v, ",") {
+				if strings.EqualFold(strings.TrimSpace(token), "close") {
+					attribution.connectionClose = true
+				}
+			}
 		case "authorization":
 			if strings.HasPrefix(v, "Bearer ") {
 				bearer = v[len("Bearer "):]
@@ -345,7 +405,14 @@ func readRequestWithHeadersRead(
 				&attribution.ClientContext.trClientTooLong,
 			)
 		case "content-length":
-			parsed, parseErr := strconv.Atoi(v)
+			// Multiple Content-Length fields are refused even when their values
+			// agree. Accepting duplicates creates parser-differential ambiguity
+			// across intermediaries and is unnecessary on this raw HTTP path.
+			if contentLengthSeen {
+				return "", "", "", "", attribution, nil, errAmbiguousRequestFraming
+			}
+			contentLengthSeen = true
+			parsed, parseErr := parseHTTPContentLength(v)
 			if parseErr != nil || parsed < 0 {
 				return "", "", "", "", attribution, nil, fmt.Errorf("invalid content-length")
 			}
@@ -353,7 +420,21 @@ func readRequestWithHeadersRead(
 				return "", "", "", "", attribution, nil, errBodyTooLarge
 			}
 			contentLength = parsed
+		case "transfer-encoding":
+			transferEncodingSeen = true
 		}
+	}
+	// Never choose between Content-Length and Transfer-Encoding. Different
+	// parsers make different choices, which is the classic request-smuggling
+	// primitive; reject the connection before reading or reusing any body.
+	if contentLengthSeen && transferEncodingSeen {
+		return "", "", "", "", attribution, nil, errAmbiguousRequestFraming
+	}
+	// This hand-rolled reader supports only fixed-length request bodies. In
+	// particular, chunked request bodies are refused instead of guessed at or
+	// accidentally reinterpreted as the next request on a reused connection.
+	if transferEncodingSeen {
+		return "", "", "", "", attribution, nil, errUnsupportedRequestTransferEncoding
 	}
 	if headersRead != nil {
 		headersRead()
@@ -384,6 +465,58 @@ func readRequestWithHeadersRead(
 	return method, path, bearer, idempotencyKey, attribution, body, nil
 }
 
+func validHTTPHeaderFieldName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			continue
+		}
+		switch c {
+		case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validHTTPHeaderFieldValue(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] < ' ' && value[i] != '\t' || value[i] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func validHTTPRequestTarget(target string) bool {
+	if target == "" {
+		return false
+	}
+	for i := 0; i < len(target); i++ {
+		if target[i] < '!' || target[i] > '~' {
+			return false
+		}
+	}
+	return true
+}
+
+func parseHTTPContentLength(value string) (int, error) {
+	if value == "" {
+		return 0, errAmbiguousRequestFraming
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return 0, errAmbiguousRequestFraming
+		}
+	}
+	return strconv.Atoi(value)
+}
+
 func captureBoundedStainlessHeader(destination *string, set *bool, value string, raw *clientContextHeaders) {
 	tooLong := 0
 	captureBoundedClientHeader(destination, set, value, maxClientStainlessValueBytes, &tooLong)
@@ -406,6 +539,11 @@ func readBoundedHTTPLine(br *bufio.Reader) ([]byte, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	// Bare LF is not accepted. Allowing multiple line-ending grammars is a
+	// parser differential that can turn one intermediary request into two.
+	if !bytes.HasSuffix(line, []byte("\r\n")) {
+		return nil, errMalformedRequestHeaders
 	}
 	return line, nil
 }
@@ -490,17 +628,19 @@ func isUnsupportedResponsesEndpoint(method, routePath string) bool {
 // a client-supplied freshness token so the doc is provably not a replay.
 func serveAttestation(conn io.Writer, leafDER, deviceBlob, nonce, channelBinding []byte) bool {
 	if leafDER == nil {
+		disableResponseReuse(conn)
 		writeError(conn, 503, "TLS not enabled in this enclave; attestation requires a bound cert")
 		return false
 	}
 	doc, err := getAttestation(leafDER, deviceBlob, nonce, channelBinding, nil)
 	if err != nil {
+		disableResponseReuse(conn)
 		writeError(conn, 500, "attestation: "+err.Error())
 		return false
 	}
 	fmt.Fprintf(conn,
-		"HTTP/1.1 200 OK\r\nContent-Type: application/cbor\r\nContent-Length: %d\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n",
-		len(doc))
+		"HTTP/1.1 200 OK\r\nContent-Type: application/cbor\r\nContent-Length: %d\r\nCache-Control: no-store\r\nConnection: %s\r\n\r\n",
+		len(doc), responseConnection(conn))
 	conn.Write(doc)
 	return true
 }
@@ -596,8 +736,8 @@ func writeErrorWithSourceHeaders(w io.Writer, status int, message, source string
 	body, _ := json.Marshal(map[string]any{
 		"error": map[string]any{"status": status, "message": message, "source": source},
 	})
-	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n",
-		status, statusText(status), len(body))
+	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: %s\r\n",
+		status, statusText(status), len(body), responseConnection(w))
 	for name, value := range extra {
 		if value != "" {
 			fmt.Fprintf(w, "%s: %s\r\n", name, value)
@@ -633,8 +773,8 @@ func writeOpenAIError(w io.Writer, status int, message, errType, code, param str
 			"source":  "router",
 		},
 	})
-	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
-		status, statusText(status), len(body))
+	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: %s\r\n\r\n",
+		status, statusText(status), len(body), responseConnection(w))
 	w.Write(body)
 }
 
@@ -646,8 +786,8 @@ func orNilString(value string) any {
 }
 
 func writeJSONResponse(w io.Writer, status int, body []byte) {
-	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
-		status, statusText(status), len(body))
+	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: %s\r\n\r\n",
+		status, statusText(status), len(body), responseConnection(w))
 	w.Write(body)
 }
 
@@ -665,7 +805,7 @@ func writeJSONResponseWithHeaders(w io.Writer, status int, body []byte, headers 
 			fmt.Fprintf(w, "%s: %s\r\n", name, value)
 		}
 	}
-	io.WriteString(w, "Connection: close\r\n\r\n")
+	fmt.Fprintf(w, "Connection: %s\r\n\r\n", responseConnection(w))
 	w.Write(body)
 }
 
@@ -674,9 +814,32 @@ func writeResponseHead(w io.Writer, status int, contentType string) error {
 		contentType = "text/event-stream"
 	}
 	_, err := fmt.Fprintf(w,
-		"HTTP/1.1 %d %s\r\nTransfer-Encoding: chunked\r\nContent-Type: %s\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nConnection: close\r\n\r\n",
-		status, statusText(status), contentType)
+		"HTTP/1.1 %d %s\r\nTransfer-Encoding: chunked\r\nContent-Type: %s\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nConnection: %s\r\n\r\n",
+		status, statusText(status), contentType, responseConnection(w))
 	return err
+}
+
+type responseKeepAliveController interface {
+	ResponseKeepAlive() bool
+	DisableResponseReuse()
+}
+
+func responseKeepAlive(w io.Writer) bool {
+	controller, ok := w.(responseKeepAliveController)
+	return ok && controller.ResponseKeepAlive()
+}
+
+func responseConnection(w io.Writer) string {
+	if responseKeepAlive(w) {
+		return "keep-alive"
+	}
+	return "close"
+}
+
+func disableResponseReuse(w io.Writer) {
+	if controller, ok := w.(responseKeepAliveController); ok {
+		controller.DisableResponseReuse()
+	}
 }
 
 func statusText(status int) string {
@@ -714,12 +877,23 @@ func statusText(status int) string {
 
 // chunkedWriter wraps a net.Conn writer with HTTP/1.1 chunked transfer-encoding.
 type chunkedWriter struct {
-	w io.Writer
+	w                    io.Writer
+	mu                   sync.Mutex
+	requireCleanComplete bool
+	complete             bool
+	closed               bool
 }
 
-func newChunkedWriter(w io.Writer) *chunkedWriter { return &chunkedWriter{w: w} }
+func newChunkedWriter(w io.Writer) *chunkedWriter {
+	return &chunkedWriter{w: w, requireCleanComplete: responseKeepAlive(w)}
+}
 
 func (c *chunkedWriter) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return 0, io.ErrClosedPipe
+	}
 	if len(p) == 0 {
 		return 0, nil
 	}
@@ -727,6 +901,9 @@ func (c *chunkedWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	n, err := c.w.Write(p)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
 	if err != nil {
 		return n, err
 	}
@@ -737,8 +914,54 @@ func (c *chunkedWriter) Write(p []byte) (int, error) {
 }
 
 func (c *chunkedWriter) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closeLocked()
+}
+
+func (c *chunkedWriter) closeLocked() error {
+	if c.closed {
+		return nil
+	}
+	c.closed = true
+	if c.requireCleanComplete && !c.complete {
+		// On a persistent response, absence of an explicit clean-completion
+		// signal means the stream may be truncated. Suppress the terminal chunk
+		// and make the connection non-reusable so clients observe unexpected EOF.
+		if controller, ok := c.w.(responseKeepAliveController); ok {
+			controller.DisableResponseReuse()
+		}
+		return nil
+	}
 	_, err := c.w.Write([]byte("0\r\n\r\n"))
 	return err
+}
+
+// Complete writes the terminal zero chunk. Callers must use it only after the
+// upstream stream and all local transforms have ended successfully.
+func (c *chunkedWriter) Complete() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.complete = true
+	err := c.closeLocked()
+	if err != nil {
+		if controller, ok := c.w.(responseKeepAliveController); ok {
+			controller.DisableResponseReuse()
+		}
+	}
+	return err
+}
+
+// Abort leaves the chunked message deliberately incomplete and prevents this
+// connection from carrying another response.
+func (c *chunkedWriter) Abort() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.closed = true
+	disableResponseReuse(c.w)
 }
 
 // newRequestID returns "chatcmpl-<32 hex>" with no allocations beyond the buffer.
@@ -852,8 +1075,8 @@ func writeAnthropicErrorWithSourceHeaders(
 			"source":  source,
 		},
 	})
-	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n",
-		status, statusText(status), len(body))
+	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: %s\r\n",
+		status, statusText(status), len(body), responseConnection(w))
 	for name, value := range extra {
 		if value != "" {
 			fmt.Fprintf(w, "%s: %s\r\n", name, value)

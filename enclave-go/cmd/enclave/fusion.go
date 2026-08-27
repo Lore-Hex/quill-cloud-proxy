@@ -1377,6 +1377,7 @@ func serveFusionStreaming(
 		_ = writeFusionStreamError(statsW, requestID, req.Model, created, err)
 		return
 	}
+	_ = chunkW.Complete()
 	_, _, _ = panel, judge, requestID
 }
 
@@ -2285,6 +2286,7 @@ func serveFusionFinalStreamingAttempt(
 			clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
 	}
+	_ = chunkW.Complete()
 	return true, nil
 }
 

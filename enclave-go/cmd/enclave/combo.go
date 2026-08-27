@@ -175,6 +175,7 @@ func serveSelectorStreaming(
 		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, selected, fusionTotalCostMicrodollars(panel, selectorAttempts), fusionProviderUsage(details))
 	}
 	_, _ = statsW.Write([]byte("data: [DONE]\n\n"))
+	_ = chunkW.Complete()
 	_ = originalInput
 }
 
@@ -421,6 +422,7 @@ func serveMapReduceStreaming(
 		_ = writeFusionStreamUsage(statsW, requestID, responseModel, created, result, mapReduceCostMicrodollars(details, result), fusionProviderUsage(responseDetails))
 	}
 	_, _ = statsW.Write([]byte("data: [DONE]\n\n"))
+	_ = chunkW.Complete()
 }
 
 type mapReduceRunDetails struct {
