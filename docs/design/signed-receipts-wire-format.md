@@ -208,6 +208,25 @@ remains the `/attestation` + RFC 9266 + fresh-nonce flow.
 Steps 1–3 and 5–6 are fully offline; step 4 needs only the published trust
 material, the same dependency all attestation verification already has.
 
+### 8.1 Verifier requirements (fail-closed)
+
+Two rules found the hard way by third-party integration; conforming
+verifier APIs MUST enforce both by default:
+
+- **Bind or refuse.** A verification that is given neither the request
+  bytes nor any response bytes proves only that some key signed some
+  digests — it ties the receipt to nothing. Verifiers MUST require the
+  request binding and a response binding by default and fail loudly when
+  either is absent; signature-only inspection is permitted only behind an
+  explicit opt-out.
+- **Pin the issuer; never follow it.** `iss` is an attacker-writable
+  string until checked: verifiers MUST compare it against a caller-pinned
+  expected origin (exact canonical https origin match). Key and
+  attestation material MUST come from configuration or caller-supplied
+  bytes — NEVER from an endpoint derived from the receipt's own `iss`,
+  which is circular: a forgery simply names a host serving its matching
+  forged key.
+
 ## 9. What a receipt does NOT prove
 
 - **Not a confidentiality proof.** A relay that forwarded your traffic holds a
