@@ -736,10 +736,15 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+          token: ${{ secrets.TRUST_PUSH_TOKEN }}
+      # 2026-08-27: The PAT bypasses classic protection via its admin exemption;
+      # the deploy key is the bypass actor if main moves to a ruleset. The
+      # build-and-release job uses the same dual path.
       - name: Publish only the fully rolled-out digest in source artifacts
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
+          TR_TRUST_PUSH_DEPLOY_KEY: ${{ secrets.TR_TRUST_PUSH_DEPLOY_KEY }}
         run: |
           set -euo pipefail
           git pull --rebase origin main
@@ -755,7 +760,17 @@ jobs:
             echo "final trust-page artifacts unchanged"
           else
             git commit -m "[bot] finalize enclave release ${IMAGE_DIGEST}"
-            git push origin HEAD:main
+            if [[ -n "${TR_TRUST_PUSH_DEPLOY_KEY}" ]]; then
+              install -m 600 /dev/null "$RUNNER_TEMP/trust_push_key"
+              printf '%s\n' "$TR_TRUST_PUSH_DEPLOY_KEY" > "$RUNNER_TEMP/trust_push_key"
+              # Pinned from GitHub Docs, "GitHub's SSH key fingerprints":
+              # https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
+              printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$RUNNER_TEMP/trust_push_known_hosts"
+              export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/trust_push_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/trust_push_known_hosts"
+              git push git@github.com:Lore-Hex/quill-cloud-proxy.git HEAD:main
+            else
+              git push origin HEAD:main
+            fi
           fi
 
   # Publish and verify the single final digest through the same reusable path
