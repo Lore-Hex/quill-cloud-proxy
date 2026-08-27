@@ -132,6 +132,26 @@ type trackingListener struct {
 	server *Server
 }
 
+type sniConfigSlot struct {
+	serverName         string
+	publicKeyAlgorithm x509.PublicKeyAlgorithm
+}
+
+type sniConfigEntry struct {
+	leafHash [sha256.Size]byte
+	config   *tls.Config
+}
+
+// sniConfigCache owns immutable configs whose ticket keys are scoped to one
+// SNI name and one current leaf. The public-key algorithm is part of the slot
+// so RSA-only and ECDSA-capable clients for the same name do not continually
+// rotate each other's keys.
+type sniConfigCache struct {
+	base    *tls.Config
+	mu      sync.Mutex
+	configs map[sniConfigSlot]sniConfigEntry
+}
+
 // NewSelfSigned generates an ECDSA P-256 keypair + a self-signed cert with
 // `dnsName` as Subject Alternative Name. dnsName may be a comma-separated
 // list when one regional gateway must serve both canonical and regional SNI.
@@ -302,15 +322,91 @@ func NewACMEWithCache(
 	// exporters are EMS-dependent.
 	tlsConfig.MinVersion = tls.VersionTLS13
 	tlsConfig.NextProtos = []string{"http/1.1", acme.ALPNProto}
-	// Session resumption is what makes the multi-certificate case unsafe: Go's
-	// TLS 1.3 server skips GetCertificate on a PSK handshake, so nothing would
-	// record which cert this session actually used. Disabling tickets forces a
-	// full handshake per NEW connection — one extra round trip, negligible
-	// under keep-alive — and in exchange every connection's attested leaf is
-	// the one it was actually served.
-	tlsConfig.SessionTicketsDisabled = true
+	if tlsResumptionDisabled() {
+		// Emergency rollback to the behavior introduced by c54e90d6.
+		tlsConfig.SessionTicketsDisabled = true
+	} else {
+		enablePerSNIResumption(tlsConfig)
+	}
 	srv.tlsConfig = tlsConfig
 	return srv, nil
+}
+
+func tlsResumptionDisabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("QUILL_TLS_RESUMPTION")), "off")
+}
+
+// enablePerSNIResumption makes certificate selection happen in
+// GetConfigForClient, which Go calls before it considers a TLS 1.3 PSK. The
+// returned config has an explicit ticket key unique to the SNI and current
+// leaf, so a ticket cannot cross either boundary. GetCertificate remains on
+// the base config for direct callers and diagnostics.
+func enablePerSNIResumption(base *tls.Config) {
+	getCertificate := base.GetCertificate
+	cache := &sniConfigCache{
+		base:    base,
+		configs: make(map[sniConfigSlot]sniConfigEntry),
+	}
+	base.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		cert, err := getCertificate(hello)
+		if err != nil {
+			return nil, err
+		}
+		return cache.configForClient(hello, cert)
+	}
+}
+
+func (c *sniConfigCache) configForClient(hello *tls.ClientHelloInfo, cert *tls.Certificate) (*tls.Config, error) {
+	if cert == nil || len(cert.Certificate) == 0 {
+		return nil, fmt.Errorf("enclavetls: certificate has no leaf")
+	}
+
+	leaf := cert.Leaf
+	if leaf == nil {
+		var err error
+		leaf, err = x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			return nil, fmt.Errorf("enclavetls: parse selected leaf: %w", err)
+		}
+	}
+
+	// TLS-ALPN-01 certificates are transient validation tokens, not serving
+	// identities. Never mint resumable sessions for them.
+	if len(hello.SupportedProtos) == 1 && hello.SupportedProtos[0] == acme.ALPNProto {
+		config := c.configWithCertificate(cert)
+		config.SessionTicketsDisabled = true
+		return config, nil
+	}
+
+	slot := sniConfigSlot{
+		serverName:         strings.ToLower(strings.TrimSuffix(hello.ServerName, ".")),
+		publicKeyAlgorithm: leaf.PublicKeyAlgorithm,
+	}
+	leafHash := sha256.Sum256(cert.Certificate[0])
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.configs[slot]; ok && entry.leafHash == leafHash {
+		return entry.config, nil
+	}
+
+	var ticketKey [32]byte
+	if _, err := rand.Read(ticketKey[:]); err != nil {
+		return nil, fmt.Errorf("enclavetls: generate session ticket key: %w", err)
+	}
+	config := c.configWithCertificate(cert)
+	config.SetSessionTicketKeys([][32]byte{ticketKey})
+	c.configs[slot] = sniConfigEntry{leafHash: leafHash, config: config}
+	return config, nil
+}
+
+func (c *sniConfigCache) configWithCertificate(cert *tls.Certificate) *tls.Config {
+	config := c.base.Clone()
+	config.Certificates = []tls.Certificate{*cert}
+	config.GetCertificate = nil
+	config.GetConfigForClient = nil
+	config.SessionTicketsDisabled = false
+	return config
 }
 
 func splitDNSNames(value string) []string {
