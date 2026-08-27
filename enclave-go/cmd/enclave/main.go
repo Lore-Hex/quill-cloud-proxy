@@ -25,7 +25,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/abuse"
@@ -59,6 +61,90 @@ const maxAttestationsPerConn = 8
 const maxHealthRequestsPerConn = 128
 
 var requestReadTimeout = 10 * time.Second
+
+const (
+	defaultKeepAliveIdleTimeout = 60 * time.Second
+	defaultKeepAliveMaxRequests = 200
+)
+
+type keepAliveMode uint8
+
+const (
+	keepAliveLegacy keepAliveMode = iota
+	keepAliveOff
+	keepAliveOn
+)
+
+type keepAliveConfig struct {
+	mode        keepAliveMode
+	idleTimeout time.Duration
+	maxRequests int
+}
+
+func loadKeepAliveConfig() keepAliveConfig {
+	config := keepAliveConfig{
+		mode:        keepAliveLegacy,
+		idleTimeout: requestReadTimeout,
+		maxRequests: defaultKeepAliveMaxRequests,
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("QUILL_KEEPALIVE"))) {
+	case "on", "true", "1":
+		config.mode = keepAliveOn
+		config.idleTimeout = defaultKeepAliveIdleTimeout
+	case "off", "false", "0":
+		config.mode = keepAliveOff
+	}
+	if config.mode == keepAliveOn {
+		if parsed, err := time.ParseDuration(strings.TrimSpace(os.Getenv("QUILL_KEEPALIVE_IDLE_TIMEOUT"))); err == nil && parsed > 0 {
+			config.idleTimeout = parsed
+		}
+	}
+	if parsed, err := strconv.Atoi(strings.TrimSpace(os.Getenv("QUILL_KEEPALIVE_MAX_REQUESTS"))); err == nil && parsed > 0 {
+		config.maxRequests = parsed
+	}
+	return config
+}
+
+// requestDeadlineConn gives an idle persistent connection its longer idle
+// budget, then switches to the ordinary per-request header deadline as soon as
+// the first new byte arrives. If a pipelined request is already buffered, the
+// serve loop applies the header deadline directly without waiting for Read.
+type requestDeadlineConn struct {
+	net.Conn
+	mu                    sync.Mutex
+	headerTimeout         time.Duration
+	waitingForRequestByte bool
+}
+
+func (c *requestDeadlineConn) ArmIdle(idleTimeout, headerTimeout time.Duration) {
+	c.mu.Lock()
+	c.headerTimeout = headerTimeout
+	c.waitingForRequestByte = true
+	c.mu.Unlock()
+	_ = c.Conn.SetReadDeadline(time.Now().Add(idleTimeout))
+}
+
+func (c *requestDeadlineConn) ArmHeader(headerTimeout time.Duration) {
+	c.mu.Lock()
+	c.waitingForRequestByte = false
+	c.mu.Unlock()
+	_ = c.Conn.SetReadDeadline(time.Now().Add(headerTimeout))
+}
+
+func (c *requestDeadlineConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.mu.Lock()
+		waiting := c.waitingForRequestByte
+		c.waitingForRequestByte = false
+		headerTimeout := c.headerTimeout
+		c.mu.Unlock()
+		if waiting {
+			_ = c.Conn.SetReadDeadline(time.Now().Add(headerTimeout))
+		}
+	}
+	return n, err
+}
 
 // Bound writes to clients that stop reading without limiting provider thinking
 // time or total streaming duration. The deadline is renewed for every write.
@@ -441,11 +527,36 @@ func serveOne(
 	conn = statsConn
 	defer conn.Close()
 
-	requestReader := bufio.NewReaderSize(conn, maxHTTPHeaderLineBytes+1)
+	config := loadKeepAliveConfig()
+	deadlineConn := &requestDeadlineConn{Conn: conn}
+	requestReader := bufio.NewReaderSize(deadlineConn, maxHTTPHeaderLineBytes+1)
 	attestationCount := 0
 	healthRequestCount := 0
-	for serveOneRequest(ctx, conn, statsConn, requestReader, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount, &healthRequestCount) {
+	requestCount := 0
+	for {
+		armRequestReadDeadline(deadlineConn, requestReader, requestCount, config)
+		if !serveOneRequest(ctx, conn, statsConn, requestReader, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount, &healthRequestCount, &requestCount, config) {
+			break
+		}
+		// Pipelined bytes are legal, but bound the amount carried across a
+		// response boundary. Anything larger is refused by closing instead of
+		// allowing attacker-controlled buffered state to grow across requests.
+		if requestReader.Buffered() > maxHTTPBufferedCarryoverBytes {
+			break
+		}
 	}
+}
+
+func armRequestReadDeadline(conn *requestDeadlineConn, reader *bufio.Reader, requestCount int, config keepAliveConfig) {
+	// Legacy persistent endpoints had one requestReadTimeout budget starting at
+	// loop entry. Preserve that exact default. Only the explicitly enabled
+	// general keep-alive mode separates a 60s idle wait from the ordinary
+	// per-request header budget that starts on the first byte.
+	if requestCount == 0 || reader.Buffered() > 0 || config.mode != keepAliveOn {
+		conn.ArmHeader(requestReadTimeout)
+		return
+	}
+	conn.ArmIdle(config.idleTimeout, requestReadTimeout)
 }
 
 func serveOneRequest(
@@ -460,22 +571,13 @@ func serveOneRequest(
 	byokSecrets *byokcache.Cache,
 	attestationCount *int,
 	healthRequestCount *int,
+	requestCount *int,
+	keepAliveConfig keepAliveConfig,
 ) (keepAlive bool) {
 	requestLogID := newRequestLogID()
 	statsConn.BeginRequest(requestLogID)
 	ctx = abuse.WithRequestState(ctx, &abuse.RequestState{})
 	ctx = trustedrouter.WithRequestLogID(ctx, requestLogID)
-
-	// Bound the TLS handshake + request headers. The enclave terminates TLS
-	// lazily (handshake deferred to the first read in readRequest), so a bare
-	// TCP connection that establishes and sends NO ClientHello — e.g. an L4
-	// load-balancer health probe — would otherwise pin this goroutine on a
-	// blocking handshake read forever, never reaching the deferred Close. That
-	// leaves the probe connection half-open instead of cleanly closed, which a
-	// GCP passthrough-NLB TCP health check reads as unhealthy. A deadline makes
-	// such probes time out and close cleanly (FIN). Cleared once the request is
-	// read so streaming responses are never truncated.
-	_ = conn.SetReadDeadline(time.Now().Add(requestReadTimeout))
 
 	requestStartedAt := time.Now()
 	requestMethod := "unknown"
@@ -499,6 +601,9 @@ func serveOneRequest(
 			requestIdentity,
 			abuse.Outcome(ctx),
 		)
+		if keepAlive && !statsConn.ResponseReusable() {
+			keepAlive = false
+		}
 	}()
 
 	method, path, bearer, idempotencyKey, attribution, body, err := readRequestWithHeadersRead(
@@ -532,6 +637,13 @@ func serveOneRequest(
 		}
 		writeError(conn, 400, "could not read request")
 		return
+	}
+	(*requestCount)++
+	requestAllowsPersistence := attribution.httpVersion == "HTTP/1.1" && !attribution.connectionClose
+	if keepAliveConfig.mode == keepAliveOn && requestAllowsPersistence && *requestCount < keepAliveConfig.maxRequests {
+		keepAlive = true
+		statsConn.SetResponseKeepAlive(true)
+		ctx = withStrictStreamFraming(ctx)
 	}
 	clientContext, droppedClientContext := parseClientContext(attribution.ClientContext)
 	for _, reason := range droppedClientContext {
@@ -574,7 +686,11 @@ func serveOneRequest(
 	// prompt path.
 	if method == "GET" && routePath == "/health" {
 		(*healthRequestCount)++
-		keepAlive = *healthRequestCount < maxHealthRequestsPerConn
+		keepAlive = keepAliveConfig.mode != keepAliveOff &&
+			requestAllowsPersistence &&
+			*healthRequestCount < maxHealthRequestsPerConn &&
+			(keepAliveConfig.mode != keepAliveOn || *requestCount < keepAliveConfig.maxRequests)
+		statsConn.SetResponseKeepAlive(keepAlive)
 		writeHealthResponse(conn, keepAlive, processingStartedAt)
 		return keepAlive
 	}
@@ -593,6 +709,15 @@ func serveOneRequest(
 			writeError(conn, 503, "attestation: exporter channel binding unavailable")
 			return
 		}
+		responseKeepAlive := keepAliveConfig.mode != keepAliveOff &&
+			requestAllowsPersistence &&
+			(keepAliveConfig.mode != keepAliveOn ||
+				(*requestCount < keepAliveConfig.maxRequests && *attestationCount+1 < maxAttestationsPerConn))
+		keepAlive = responseKeepAlive && *attestationCount+1 < maxAttestationsPerConn
+		// Legacy /attestation advertised keep-alive even on its final bounded
+		// response and then closed. Preserve that quirk while unset; enabled mode
+		// truthfully advertises close at either configured bound.
+		statsConn.SetResponseKeepAlive(responseKeepAlive)
 		if !serveAttestation(conn, leafDER, deviceBlob, nonce, exporter) {
 			return
 		}
@@ -600,7 +725,7 @@ func serveOneRequest(
 		// G6 pinning requires the prompt to ride the same TLS session whose
 		// exporter was attested. Bound repeated attestations so keep-alive
 		// cannot become an unbounded anonymous request loop.
-		return *attestationCount < maxAttestationsPerConn
+		return keepAlive
 	}
 
 	// Receipt key attestation is anonymous and instance-scoped. Unlike the
@@ -611,14 +736,26 @@ func serveOneRequest(
 			writeError(conn, 404, "route not found")
 			return false
 		}
-		return serveReceiptAttestation(conn)
+		keepAlive = keepAliveConfig.mode != keepAliveOff && requestAllowsPersistence &&
+			(keepAliveConfig.mode != keepAliveOn || *requestCount < keepAliveConfig.maxRequests)
+		statsConn.SetResponseKeepAlive(keepAlive)
+		if !serveReceiptAttestation(conn) {
+			return false
+		}
+		return keepAlive
 	}
 	if method == "GET" && routePath == "/receipt-key" {
 		if receiptSigner == nil {
 			writeError(conn, 404, "route not found")
 			return false
 		}
-		return serveReceiptKey(conn)
+		keepAlive = keepAliveConfig.mode != keepAliveOff && requestAllowsPersistence &&
+			(keepAliveConfig.mode != keepAliveOn || *requestCount < keepAliveConfig.maxRequests)
+		statsConn.SetResponseKeepAlive(keepAlive)
+		if !serveReceiptKey(conn) {
+			return false
+		}
+		return keepAlive
 	}
 
 	// Public SDK discovery belongs on the documented API origin. The enclave
@@ -1497,6 +1634,7 @@ func serveStreaming(
 			clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
 	}
+	_ = chunkW.Complete()
 }
 
 func serveMessages(
@@ -1750,6 +1888,7 @@ func serveMessages(
 			clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
 	}
+	_ = chunkW.Complete()
 }
 
 // chatIncludeUsage reports whether the client asked for the OpenAI

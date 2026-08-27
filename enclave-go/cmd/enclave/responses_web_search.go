@@ -181,7 +181,9 @@ func maybeServeResponsesWebSearch(
 	logResponsesWebSearchEnd(requestLogID, started, outcome, nil)
 	if err := emitter.Finish(outcome); err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_web_search_stream_failed request_log_id=%q err=%v\n", requestLogID, err)
+		return true
 	}
+	_ = chunked.Complete()
 	return true
 }
 

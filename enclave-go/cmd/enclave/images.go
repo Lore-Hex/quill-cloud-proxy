@@ -316,7 +316,7 @@ func serveImages(
 			"media_type": imageResult.mediaType, "created": created, "usage": responseUsage,
 		})
 		_, _ = fmt.Fprintf(chunked, "data: %s\n\ndata: [DONE]\n\n", payload)
-		_ = chunked.Close()
+		_ = chunked.Complete()
 		return
 	}
 	payload, err := json.Marshal(map[string]any{
@@ -437,7 +437,7 @@ func serveNativeImageAuthorized(
 			_, _ = fmt.Fprintf(chunked, "data: %s\n\n", payload)
 		}
 		_, _ = io.WriteString(chunked, "data: [DONE]\n\n")
-		_ = chunked.Close()
+		_ = chunked.Complete()
 		return
 	}
 	payload, err := json.Marshal(map[string]any{

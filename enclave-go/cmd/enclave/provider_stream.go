@@ -18,6 +18,28 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
+type strictStreamFramingContextKey struct{}
+
+func withStrictStreamFraming(ctx context.Context) context.Context {
+	return context.WithValue(ctx, strictStreamFramingContextKey{}, true)
+}
+
+func strictStreamFraming(ctx context.Context) bool {
+	enabled, _ := ctx.Value(strictStreamFramingContextKey{}).(bool)
+	return enabled
+}
+
+func finishProviderPipeWithError(ctx context.Context, pw *io.PipeWriter, err error) {
+	if strictStreamFraming(ctx) {
+		_ = pw.CloseWithError(err)
+		return
+	}
+	// Legacy close-delimited responses surface an SSE error event and then a
+	// clean pipe EOF. Preserve that behavior unless persistent framing is on.
+	emitErrorAsAnthropicSSE(pw, err)
+	_ = pw.Close()
+}
+
 func invokeProviderStream(
 	ctx context.Context,
 	br llm.Client,
@@ -58,8 +80,7 @@ func invokeProviderStream(
 				_ = pw.CloseWithError(lastErr)
 				return
 			}
-			emitErrorAsAnthropicSSE(pw, err)
-			_ = pw.Close()
+			finishProviderPipeWithError(ctx, pw, lastErr)
 			return
 		}
 		// The TTFB budget exists to fall over to the next candidate fast; the LAST
@@ -171,8 +192,7 @@ func invokeProviderStream(
 				_ = pw.CloseWithError(lastErr)
 				return
 			}
-			emitErrorAsAnthropicSSE(pw, err)
-			_ = pw.Close()
+			finishProviderPipeWithError(ctx, pw, lastErr)
 			return
 		}
 	}

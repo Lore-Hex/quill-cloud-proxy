@@ -927,6 +927,7 @@ func serveAdvisorStreaming(
 		}
 	}
 	_, _ = statsW.Write([]byte("data: [DONE]\n\n"))
+	_ = chunkW.Complete()
 	fmt.Fprintf(os.Stderr,
 		"advisor.request_end request_log_id=%q request_id=%q mode=stream outcome=%q advice_call_count=%d advice_budget_exhausted=%t selected_model=%q elapsed_ms=%d\n",
 		requestLogID, requestID, "success", adviceCalls, budgetExhausted, responseModel, time.Since(requestStarted).Milliseconds(),

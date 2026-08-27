@@ -141,8 +141,8 @@ func filterPublicModelsByOutputModalities(body []byte, rawTarget string) ([]byte
 func writePublicModelsResponse(w io.Writer, body []byte) {
 	fmt.Fprintf(
 		w,
-		"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nCache-Control: public, max-age=60, stale-if-error=300\r\nAccess-Control-Allow-Origin: *\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
-		len(body),
+		"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nCache-Control: public, max-age=60, stale-if-error=300\r\nAccess-Control-Allow-Origin: *\r\nX-Content-Type-Options: nosniff\r\nConnection: %s\r\n\r\n",
+		len(body), responseConnection(w),
 	)
 	_, _ = w.Write(body)
 }

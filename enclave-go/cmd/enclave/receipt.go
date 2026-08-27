@@ -146,12 +146,13 @@ func jitteredReceiptAttestationInterval(base time.Duration) time.Duration {
 func serveReceiptAttestation(conn io.Writer) bool {
 	cached := receiptAttestationCache.Load()
 	if cached == nil || len(cached.document) == 0 {
+		disableResponseReuse(conn)
 		writeError(conn, 503, "receipt attestation unavailable")
 		return false
 	}
 	fmt.Fprintf(conn,
-		"HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %d\r\nCache-Control: no-store\r\nx-receipt-att-kind: %s\r\nConnection: keep-alive\r\n\r\n",
-		receiptAttestationContentType(cached.kind), len(cached.document), cached.kind)
+		"HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %d\r\nCache-Control: no-store\r\nx-receipt-att-kind: %s\r\nConnection: %s\r\n\r\n",
+		receiptAttestationContentType(cached.kind), len(cached.document), cached.kind, responseConnection(conn))
 	_, _ = conn.Write(cached.document)
 	return true
 }
@@ -170,11 +171,13 @@ func receiptAttestationContentType(kind string) string {
 func serveReceiptKey(conn io.Writer) bool {
 	cached := receiptAttestationCache.Load()
 	if cached == nil || len(cached.document) == 0 {
+		disableResponseReuse(conn)
 		writeError(conn, 503, "receipt attestation unavailable")
 		return false
 	}
 	attestationValue, err := receipt.EncodeAttestation(cached.document, cached.kind)
 	if err != nil {
+		disableResponseReuse(conn)
 		writeError(conn, 503, "receipt attestation unavailable")
 		return false
 	}
@@ -185,12 +188,13 @@ func serveReceiptKey(conn io.Writer) bool {
 		AttestationKind: cached.kind,
 	})
 	if err != nil {
+		disableResponseReuse(conn)
 		writeError(conn, 500, "receipt key unavailable")
 		return false
 	}
 	fmt.Fprintf(conn,
-		"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n",
-		len(body))
+		"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nCache-Control: no-store\r\nConnection: %s\r\n\r\n",
+		len(body), responseConnection(conn))
 	_, _ = conn.Write(body)
 	return true
 }

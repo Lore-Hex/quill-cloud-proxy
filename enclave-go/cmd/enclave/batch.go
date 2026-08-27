@@ -115,6 +115,7 @@ func writePreparedBatch(ctx context.Context, w io.Writer, prepared *batchapi.Pre
 		return err
 	}
 	chunked := newChunkedWriter(w)
+	defer chunked.Abort()
 	if _, err := chunked.Write(append(prefix[:len(prefix)-1], []byte(`,"results":[`)...)); err != nil {
 		return err
 	}
@@ -147,7 +148,7 @@ func writePreparedBatch(ctx context.Context, w io.Writer, prepared *batchapi.Pre
 	if _, err := chunked.Write(append([]byte(`],"error":`), append(errorJSON, '}')...)); err != nil {
 		return err
 	}
-	return chunked.Close()
+	return chunked.Complete()
 }
 
 func writeBatchJSON(w io.Writer, status int, value any) {
