@@ -240,7 +240,11 @@ jobs:
           echo "accepted_digests=${accepted}" >> "$GITHUB_OUTPUT"
           echo "accepted_references=${accepted_references}" >> "$GITHUB_OUTPUT"
 
+      # 2026-08-27: ruleset bypass_actors cannot express the implicit GitHub
+      # Actions app, so this org-owned deploy key is the main-ruleset bypass actor.
       - name: Commit trust artifacts back to main
+        env:
+          TR_TRUST_PUSH_DEPLOY_KEY: ${{ secrets.TR_TRUST_PUSH_DEPLOY_KEY }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -250,6 +254,18 @@ jobs:
             exit 0
           fi
           git commit -m "[bot] enclave release ${SHA}: digest ${DIGEST}"
+          push_remote=origin
+          rebase_target=origin/main
+          if [[ -n "${TR_TRUST_PUSH_DEPLOY_KEY}" ]]; then
+            install -m 600 /dev/null "$RUNNER_TEMP/trust_push_key"
+            printf '%s\n' "$TR_TRUST_PUSH_DEPLOY_KEY" > "$RUNNER_TEMP/trust_push_key"
+            # Pinned from GitHub Docs, "GitHub's SSH key fingerprints":
+            # https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
+            printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$RUNNER_TEMP/trust_push_known_hosts"
+            export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/trust_push_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/trust_push_known_hosts"
+            push_remote=git@github.com:Lore-Hex/quill-cloud-proxy.git
+            rebase_target=FETCH_HEAD
+          fi
           # main can move under us. `concurrency` queues a second deploy rather
           # than cancelling it, and that run checked out its OWN sha — so by the
           # time it pushes, the earlier run's release commit is already on main
@@ -259,17 +275,17 @@ jobs:
           # skipped and a "completed" pipeline ships nothing. Observed for real
           # on 2026-08-08. Rebase and retry instead.
           for attempt in 1 2 3; do
-            if git push origin HEAD:main; then
+            if git push "$push_remote" HEAD:main; then
               exit 0
             fi
             echo "push rejected (attempt ${attempt}); rebasing onto origin/main"
-            git fetch origin main
+            git fetch "$push_remote" main
             # -X theirs keeps the commit being REPLAYED, which is ours: these
             # artifacts describe the image THIS run just built. During a rebase
             # the sense is inverted from what you would expect — upstream is
             # "ours" — so -X ours here would silently discard our digest and
             # publish a trust page for the wrong image.
-            if ! git rebase -X theirs origin/main; then
+            if ! git rebase -X theirs "$rebase_target"; then
               git rebase --abort || true
               echo "could not rebase trust artifacts onto origin/main"
               exit 1
