@@ -763,7 +763,7 @@ func (h *resumptionHarness) dialWithConfig(
 		MinVersion:         tls.VersionTLS13,
 		NextProtos:         []string{"http/1.1"},
 		ClientSessionCache: cache,
-		InsecureSkipVerify: insecureSkipVerify, // test-only: see cross-SNI case
+		InsecureSkipVerify: insecureSkipVerify, // #nosec G402 -- test client for the in-test self-signed server; verification is the property under test elsewhere
 	})
 	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := client.Handshake(); err != nil {
