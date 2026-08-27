@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/receipt"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamcert"
 )
 
 func enableReceiptEmissionForTest(t *testing.T) []byte {
@@ -89,6 +91,69 @@ func TestNonStreamingReceiptCarriesProviderVerification(t *testing.T) {
 	claims := decodeReceiptClaims(t, []byte(resp.Header.Get("x-inference-receipt")))
 	if claims.Upstream.Tier != "tee-verified" || claims.Upstream.Policy != provider.policy || claims.Upstream.VerifiedAt != verifiedAt.Unix() || claims.Upstream.VerificationExpiresAt != expiresAt.Unix() {
 		t.Fatalf("upstream claims=%+v", claims.Upstream)
+	}
+}
+
+func TestReceiptClaimsCarryCertainWebPKICertAndOmitItForTEE(t *testing.T) {
+	leafDER := []byte("serving-leaf-der")
+	digest := sha256.Sum256(leafDER)
+	wantFingerprint := base64.RawURLEncoding.EncodeToString(digest[:])
+
+	buildClaims := func(t *testing.T, ctx context.Context) receipt.Claims {
+		t.Helper()
+		clientConn, serverConn := net.Pipe()
+		defer clientConn.Close()
+		defer serverConn.Close()
+		registry := &upstreamcert.Registry{}
+		registry.Record(clientConn, leafDER)
+		transport := &upstreamcert.Transport{
+			Registry: registry,
+			Base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				trace := httptrace.ContextClientTrace(req.Context())
+				trace.GotConn(httptrace.GotConnInfo{Conn: clientConn})
+				return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: req}, nil
+			}),
+		}
+		upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://provider.invalid", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := transport.RoundTrip(upstreamReq)
+		if err != nil {
+			t.Fatalf("RoundTrip: %v", err)
+		}
+		_ = response.Body.Close()
+		return receiptClaims(
+			ctx,
+			&types.OpenAIChatRequest{Model: "requested"},
+			"chat.completions",
+			"response-id",
+			"",
+			"requested",
+			newSelectedRouteTracker(),
+			nil,
+			sha256.Sum256(nil),
+			"body",
+			nil,
+			nil,
+		)
+	}
+
+	tlsContext := llm.WithUpstreamVerification(context.Background(), "", time.Time{}, time.Time{})
+	tlsClaims := buildClaims(t, tlsContext)
+	if tlsClaims.Upstream.Tier != "tls-webpki" || tlsClaims.Upstream.CertSHA256 != wantFingerprint {
+		t.Fatalf("tls upstream = %+v, want fingerprint %q", tlsClaims.Upstream, wantFingerprint)
+	}
+	_ = llm.WithUpstreamVerification(tlsContext, "", time.Time{}, time.Time{})
+	if fingerprint, ok := llm.UpstreamCertSHA256FromContext(tlsContext); ok {
+		t.Fatalf("fallback reset retained cert_sha256 %q", fingerprint)
+	}
+
+	verifiedAt := time.Unix(1_788_000_000, 0)
+	teeContext := llm.WithUpstreamVerification(context.Background(), "test-tee-policy", verifiedAt, verifiedAt.Add(time.Minute))
+	teeClaims := buildClaims(t, teeContext)
+	if teeClaims.Upstream.Tier != "tee-verified" || teeClaims.Upstream.CertSHA256 != "" {
+		t.Fatalf("tee upstream must omit cert_sha256: %+v", teeClaims.Upstream)
 	}
 }
 

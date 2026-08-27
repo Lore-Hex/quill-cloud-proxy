@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamcert"
 	"github.com/mdlayher/vsock"
 )
 
@@ -33,31 +34,45 @@ type Tunnel struct {
 // configured hostnames over vsock instead of TCP. Anything not in the list
 // fails closed (we want only the AWS endpoints to be reachable).
 func NewTransport(tunnels []Tunnel) *http.Transport {
+	transport, _ := newTransport(tunnels)
+	return transport
+}
+
+func newTransport(tunnels []Tunnel) (*http.Transport, *upstreamcert.Registry) {
 	hostMap := make(map[string]Tunnel, len(tunnels))
 	for _, t := range tunnels {
 		hostMap[strings.ToLower(t.Host)] = t
 	}
-	return &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, _, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, err
-			}
-			t, ok := hostMap[strings.ToLower(host)]
-			if !ok {
-				return nil, &UnconfiguredHostError{Host: host}
-			}
-			return vsock.Dial(t.CID, t.Port, nil)
-		},
-		TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
-		ForceAttemptHTTP2: true,
+	dialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		t, ok := hostMap[strings.ToLower(host)]
+		if !ok {
+			return nil, &UnconfiguredHostError{Host: host}
+		}
+		return vsock.Dial(t.CID, t.Port, nil)
 	}
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"h2", "http/1.1"},
+	}
+	registry := &upstreamcert.Registry{}
+	return &http.Transport{
+		DialContext:         dialContext,
+		DialTLSContext:      registry.DialTLSContext(dialContext, tlsConfig, 10*time.Second),
+		TLSClientConfig:     tlsConfig,
+		ForceAttemptHTTP2:   true,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}, registry
 }
 
 // NewClient returns an http.Client wrapping the vsock transport.
 func NewClient(tunnels []Tunnel) *http.Client {
+	transport, registry := newTransport(tunnels)
 	return &http.Client{
-		Transport: NewTransport(tunnels),
+		Transport: &upstreamcert.Transport{Base: transport, Registry: registry},
 		Timeout:   600 * time.Second, // Bedrock streams can be long
 	}
 }

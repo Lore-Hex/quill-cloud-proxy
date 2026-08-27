@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamcert"
 )
 
 // UpstreamVerification is the per-request TEE verification result that a
@@ -29,6 +31,8 @@ func WithUpstreamVerification(ctx context.Context, policy string, verifiedAt, ex
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = upstreamcert.WithCarrier(ctx)
+	upstreamcert.Reset(ctx)
 	value := UpstreamVerification{Policy: policy, VerifiedAt: verifiedAt, ExpiresAt: expiresAt}
 	if carrier, ok := ctx.Value(upstreamVerificationContextKey{}).(*upstreamVerificationCarrier); ok && carrier != nil {
 		carrier.mu.Lock()
@@ -38,6 +42,12 @@ func WithUpstreamVerification(ctx context.Context, policy string, verifiedAt, ex
 	}
 	carrier := &upstreamVerificationCarrier{value: value}
 	return context.WithValue(ctx, upstreamVerificationContextKey{}, carrier)
+}
+
+// UpstreamCertSHA256FromContext returns the certainly-attributed WebPKI leaf
+// fingerprint for the request, if one was observed.
+func UpstreamCertSHA256FromContext(ctx context.Context) (string, bool) {
+	return upstreamcert.FromContext(ctx)
 }
 
 // FromContext returns a structurally complete verification record. Receipt
