@@ -1,14 +1,8 @@
 {
   "accepted_image_digests": [
-    "sha256:bdfb6b742fe3280667b71340904ac27eef0af46e20a646a144fe8bd702e54ca3",
-    "sha256:c134d05c76eb152fe08ea8bd310b381907f7624ecc37e1e67a610101ff8bafbb",
-    "sha256:a3c2619f30d20ec01f85b35fd6c8cd432befbf2bc2a194a1e08d95fc57d82eb8",
     "sha256:c1f6e0d024b0e7950d983ca5e61c5ad4c48557f38ffdd5fe96683148ba10612d"
   ],
   "accepted_image_references": [
-    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-4cbb553",
-    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-7a4379b",
-    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-5466e32",
     "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-9995392"
   ],
   "api_base_url": "https://api.trustedrouter.com/v1",
