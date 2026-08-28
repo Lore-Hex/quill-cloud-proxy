@@ -118,9 +118,10 @@ jobs:
         run: |
           set -o pipefail
           python3 tools/check-public-tls.py --minimum-days 14 2>&1 | tee /tmp/tls-output.txt
-        # api-aws.trustedrouter.com is deliberately absent from the probed set:
-        # it serves an attested self-signed certificate and cannot pass public-CA
-        # validation. See tools/check-public-tls.py ATTESTED_SELF_SIGNED_HOSTS.
+        # api-aws.trustedrouter.com is probed here since the dns01-renewal
+        # release moved it to ACME inside the enclave. Its independent
+        # certificate-to-attestation binding remains covered by
+        # verify-trust-freshness.yml.
 
       - name: Collect TLS problems
         if: always()

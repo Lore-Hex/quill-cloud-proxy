@@ -21,9 +21,9 @@
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
-    "certificate_binding": "user_data[0:64]=certificate fingerprint, user_data[64:96]=TLS exporter channel binding",
+    "certificate_binding": "user_data[0:32]=SHA-256 of the served certificate (DER), user_data[64:96]=TLS exporter channel binding",
     "hostname": "api-aws.trustedrouter.com",
-    "mode": "attested-self-signed-inside-enclave"
+    "mode": "acme-inside-nitro-enclave"
   },
   "transparency": {
     "bundle": "aws-release.json.bundle",

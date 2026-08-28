@@ -278,7 +278,7 @@ def trust_html(release: dict[str, Any]) -> str:
       <div class="panel">
         <h2>AWS &middot; Nitro Enclaves</h2>
         <p>Measures the enclave image file into PCR0 (SHA-384). Compare <code>pcr0</code> in <a href="/trust/aws-release.json">aws-release.json</a> against PCR0 in a live attestation document. Rebuild it yourself with <code>tools/verify-pcr0.sh</code>.</p>
-        <p>This plane serves a certificate generated inside the enclave, not one from a public CA. Its fingerprint and the TLS exporter value are bound into the attestation's <code>user_data</code>, so the connection you are on is the connection that was attested. Chain validation is replaced by that binding, not dropped.</p>
+        <p>This plane obtains a Let's Encrypt certificate via ACME dns01 inside the enclave, so WebPKI chain validation works normally. The certificate's SHA-256 and the TLS exporter value are also bound into the attestation's <code>user_data</code>, so the connection you are on is the connection that was attested.</p>
         <p><code>https://api-aws.trustedrouter.com/attestation</code></p>
       </div>
       <div class="panel">

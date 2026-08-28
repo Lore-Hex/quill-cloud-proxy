@@ -18,6 +18,8 @@ SPEC.loader.exec_module(TLS_CHECK)
 class PublicTLSCheckTests(unittest.TestCase):
     def test_default_hosts_cover_operational_aliases(self) -> None:
         self.assertIn("api.trustedrouter.com", TLS_CHECK.DEFAULT_HOSTS)
+        self.assertIn("api-aws.trustedrouter.com", TLS_CHECK.DEFAULT_HOSTS)
+        self.assertNotIn("api-aws.trustedrouter.com", TLS_CHECK.ATTESTED_SELF_SIGNED_HOSTS)
         self.assertIn("allyrouter.com", TLS_CHECK.DEFAULT_HOSTS)
         self.assertIn("status.allyrouter.com", TLS_CHECK.DEFAULT_HOSTS)
         self.assertIn("trust.allyrouter.com", TLS_CHECK.DEFAULT_HOSTS)
