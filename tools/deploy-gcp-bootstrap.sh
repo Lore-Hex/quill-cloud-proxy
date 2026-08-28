@@ -131,6 +131,7 @@ SYNTH_CODE_SYNTHESIS_PROMPT_SECRET="${SYNTH_CODE_SYNTHESIS_PROMPT_SECRET:-truste
 ADVISOR_WORKER_PROMPT_SECRET="${ADVISOR_WORKER_PROMPT_SECRET:-trustedrouter-advisor-worker-prompt-v1}"
 ADVISOR_PROMPT_SECRET="${ADVISOR_PROMPT_SECRET:-trustedrouter-advisor-prompt-v1}"
 INTERNAL_GATEWAY_SECRET="${INTERNAL_GATEWAY_SECRET:-trustedrouter-internal-gateway-token}"
+SPEND_LEASE_ISSUER_CONFIG_SECRET="${SPEND_LEASE_ISSUER_CONFIG_SECRET:-trustedrouter-spend-lease-issuer-config}"
 DEVICE_KEYS_SECRET="${DEVICE_KEYS_SECRET:-quill-device-keys}"
 
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
@@ -280,6 +281,7 @@ for secret in \
   "$ADVISOR_WORKER_PROMPT_SECRET" \
   "$ADVISOR_PROMPT_SECRET" \
   "$INTERNAL_GATEWAY_SECRET" \
+  "$SPEND_LEASE_ISSUER_CONFIG_SECRET" \
   "$DEVICE_KEYS_SECRET"; do
   if [ -z "$secret" ]; then
     continue

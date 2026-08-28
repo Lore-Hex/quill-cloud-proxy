@@ -30,6 +30,8 @@ def test_gcp_multi_launch_policy_allows_deployed_env_overrides() -> None:
     assert "QUILL_ALIBABA_SECRET" in allowed_envs
     assert "QUILL_AZURE_SECRET" in metadata_envs
     assert "QUILL_AZURE_SECRET" in allowed_envs
+    assert "QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET" in metadata_envs
+    assert "QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET" in allowed_envs
     for name in ("QUILL_LTX_SECRET", "QUILL_RUNWAY_SECRET", "QUILL_KLING_SECRET"):
         assert name in metadata_envs
         assert name in allowed_envs
@@ -127,6 +129,30 @@ def test_gcp_bootstrap_grants_workload_access_to_engy_secret() -> None:
     assert 'if [ "${QUILL_ENGY_SECRET+x}" != "x" ]; then' in deploy
     assert "gc secrets describe trustedrouter-engy-api-key" in deploy
     assert 'ENGY_TEE_ENV="|tee-env-QUILL_ENGY_SECRET=${QUILL_ENGY_SECRET}"' in deploy
+
+
+def test_spend_lease_issuer_config_secret_name_is_granted_and_injected() -> None:
+    bootstrap = (REPO_ROOT / "tools" / "deploy-gcp-bootstrap.sh").read_text()
+    deploy = (REPO_ROOT / "tools" / "deploy-gcp-mig.sh").read_text()
+    secret_name = "trustedrouter-spend-lease-issuer-config"
+
+    assert (
+        'SPEND_LEASE_ISSUER_CONFIG_SECRET="'
+        '${SPEND_LEASE_ISSUER_CONFIG_SECRET:-'
+        f'{secret_name}}}"'
+    ) in bootstrap
+    assert '"$SPEND_LEASE_ISSUER_CONFIG_SECRET" \\' in bootstrap
+    assert (
+        'QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET="'
+        '${QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET:-'
+        f'{secret_name}}}"'
+    ) in deploy
+    assert (
+        'SPEND_LEASE_ISSUER_CONFIG_TEE_ENV="'
+        '|tee-env-QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET='
+        '${QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET}"'
+    ) in deploy
+    assert "${SPEND_LEASE_ISSUER_CONFIG_TEE_ENV}" in deploy
 
 
 def test_provider_wave_secrets_are_injected_only_after_existence_check() -> None:
