@@ -100,6 +100,17 @@ type flattenedJWS struct {
 	Signature string `json:"signature"`
 }
 
+// JWSParts is the format-only result of parsing a compact or flattened JWS.
+// Relying parties must apply their own header, key, signature, and claims
+// policy; in particular, they must not trust an embedded JWK merely because it
+// was decoded here.
+type JWSParts struct {
+	ProtectedJSON []byte
+	PayloadJSON   []byte
+	Signature     []byte
+	SigningInput  []byte
+}
+
 // NewSigner generates a fresh Ed25519 keypair from crypto/rand.
 func NewSigner() (*Signer, error) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -147,6 +158,16 @@ func (s *Signer) JWK() JWK {
 		Curve:   "Ed25519",
 		X:       rawBase64.EncodeToString(s.publicKey),
 	}
+}
+
+// SignDigest signs one already-domain-separated SHA-256 digest with the
+// boot-local receipt key. It exists for protocols that bind the same attested
+// boot identity without exposing or serializing the private key.
+func (s *Signer) SignDigest(digest [sha256.Size]byte) ([]byte, error) {
+	if s == nil || len(s.privateKey) != ed25519.PrivateKeySize {
+		return nil, errors.New("receipt: signer is not initialized")
+	}
+	return ed25519.Sign(s.privateKey, digest[:]), nil
 }
 
 // SignCompact signs claims as a compact JWS without embedded attestation.
@@ -231,27 +252,12 @@ func (s *Signer) sign(claims Claims, additions protectedHeader) (string, string,
 // Verify verifies either compact or flattened JWS produced by Signer. It is a
 // small test helper, not a relying-party attestation or claims verifier.
 func Verify(serialized []byte) error {
-	var protected, payload, signature string
-	trimmed := strings.TrimSpace(string(serialized))
-	if strings.HasPrefix(trimmed, "{") {
-		var flattened flattenedJWS
-		if err := json.Unmarshal([]byte(trimmed), &flattened); err != nil {
-			return fmt.Errorf("receipt: unmarshal flattened JWS: %w", err)
-		}
-		protected, payload, signature = flattened.Protected, flattened.Payload, flattened.Signature
-	} else {
-		parts := strings.Split(trimmed, ".")
-		if len(parts) != 3 {
-			return fmt.Errorf("receipt: compact JWS has %d parts", len(parts))
-		}
-		protected, payload, signature = parts[0], parts[1], parts[2]
-	}
-	headerJSON, err := rawBase64.DecodeString(protected)
+	parts, err := ParseJWS(serialized)
 	if err != nil {
-		return fmt.Errorf("receipt: decode protected header: %w", err)
+		return err
 	}
 	var header protectedHeader
-	if err := json.Unmarshal(headerJSON, &header); err != nil {
+	if err := json.Unmarshal(parts.ProtectedJSON, &header); err != nil {
 		return fmt.Errorf("receipt: unmarshal protected header: %w", err)
 	}
 	if header.Algorithm != "EdDSA" || header.Type != receiptType || header.JWK.KeyType != "OKP" || header.JWK.Curve != "Ed25519" {
@@ -265,12 +271,46 @@ func Verify(serialized []byte) error {
 	if header.KID != rawBase64.EncodeToString(digest[:]) {
 		return errors.New("receipt: kid does not match public key")
 	}
-	signatureBytes, err := rawBase64.DecodeString(signature)
-	if err != nil {
-		return fmt.Errorf("receipt: decode signature: %w", err)
-	}
-	if !ed25519.Verify(ed25519.PublicKey(publicKey), []byte(protected+"."+payload), signatureBytes) {
+	if !ed25519.Verify(ed25519.PublicKey(publicKey), parts.SigningInput, parts.Signature) {
 		return errors.New("receipt: signature verification failed")
 	}
 	return nil
+}
+
+// ParseJWS decodes JWS serialization and base64url fields without making any
+// trust decision. This is the receipt package's reusable FORMAT seam.
+func ParseJWS(serialized []byte) (JWSParts, error) {
+	var protected, payload, signature string
+	trimmed := strings.TrimSpace(string(serialized))
+	if strings.HasPrefix(trimmed, "{") {
+		var flattened flattenedJWS
+		if err := json.Unmarshal([]byte(trimmed), &flattened); err != nil {
+			return JWSParts{}, fmt.Errorf("receipt: unmarshal flattened JWS: %w", err)
+		}
+		protected, payload, signature = flattened.Protected, flattened.Payload, flattened.Signature
+	} else {
+		parts := strings.Split(trimmed, ".")
+		if len(parts) != 3 {
+			return JWSParts{}, fmt.Errorf("receipt: compact JWS has %d parts", len(parts))
+		}
+		protected, payload, signature = parts[0], parts[1], parts[2]
+	}
+	headerJSON, err := rawBase64.DecodeString(protected)
+	if err != nil {
+		return JWSParts{}, fmt.Errorf("receipt: decode protected header: %w", err)
+	}
+	payloadJSON, err := rawBase64.DecodeString(payload)
+	if err != nil {
+		return JWSParts{}, fmt.Errorf("receipt: decode payload: %w", err)
+	}
+	signatureBytes, err := rawBase64.DecodeString(signature)
+	if err != nil {
+		return JWSParts{}, fmt.Errorf("receipt: decode signature: %w", err)
+	}
+	return JWSParts{
+		ProtectedJSON: headerJSON,
+		PayloadJSON:   payloadJSON,
+		Signature:     signatureBytes,
+		SigningInput:  []byte(protected + "." + payload),
+	}, nil
 }

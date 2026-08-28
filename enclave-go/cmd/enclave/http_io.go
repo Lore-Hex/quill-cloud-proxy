@@ -366,7 +366,7 @@ func readRequestWithHeadersRead(
 		case "x-inference-receipt":
 			// Disabled receipt support is intentionally indistinguishable from
 			// the pre-receipt server, including for malformed opt-in values.
-			if receiptSigner != nil {
+			if inferenceReceiptsEnabled() {
 				if !inferenceReceiptNoncePattern.MatchString(v) {
 					return "", "", "", "", attribution, nil, errInvalidInferenceReceipt
 				}

@@ -10,6 +10,7 @@ sm_client_factory / kms_client_factory escape hatches.
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 from typing import Any
 
@@ -167,6 +168,35 @@ def test_build_payload_propagates_tr_control_plane_url() -> None:
     payload = _build_payload(sm=sm, kms=kms, tr_url="https://api-us-central1.quillrouter.com/v1")
     assert payload["trustedrouter_base_url"] == "https://api-us-central1.quillrouter.com/v1"
     assert payload["trustedrouter_internal_token"] == "tr_internal_token_FAKE"
+
+
+def test_build_payload_loads_inert_spend_lease_issuer_config() -> None:
+    manifest = {"issuers": [{"iss": "https://issuer.example", "keys": []}]}
+    sm = _StubSecretsManager(
+        {
+            "quill/trustedrouter-aws-cross-cloud-sa-key": base64.b64encode(
+                _FAKE_KMS_CIPHERTEXT
+            ).decode("ascii"),
+            "quill/trustedrouter-spend-lease-issuer-config": json.dumps(manifest),
+        }
+    )
+    kms = _StubKMS({_FAKE_KMS_CIPHERTEXT: _FAKE_SA_KEY.encode("utf-8")})
+
+    payload = _build_payload(sm=sm, kms=kms)
+
+    assert payload["spend_lease_issuer_config"] == manifest
+    assert "spend_lease_shadow" not in payload
+
+
+def test_build_payload_keeps_invalid_inert_spend_lease_config_nonfatal() -> None:
+    sm = _StubSecretsManager({"quill/trustedrouter-spend-lease-issuer-config": "not-json"})
+    kms = _StubKMS({})
+
+    payload = _build_payload(sm=sm, kms=kms)
+
+    assert "spend_lease_issuer_config" not in payload
+    assert payload["spend_lease_config_error"].startswith("issuer config:")
+    assert "spend_lease_shadow" not in payload
 
 
 def test_build_payload_omits_gcp_sa_key_when_absent() -> None:

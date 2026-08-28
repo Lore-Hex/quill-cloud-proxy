@@ -104,6 +104,20 @@ class TestDeployNamesOnlyProvisionedSecrets(unittest.TestCase):
         # diverge into a green test beside a red gate or vice versa.
         self.assertEqual(sealer.check_deploy_against_manifest(), 0)
 
+    def test_spend_lease_issuer_config_defaults_dark_until_resealed(self) -> None:
+        # The binding must be registered in the measured env, but the current
+        # immutable production bundle does not contain this entry yet. Keeping
+        # the default empty preserves bootability while still allowing an
+        # operator to opt in after re-sealing a bundle with the manifest.
+        self.assertIn(
+            'QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET="${QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET:-}"',
+            self.deploy_text,
+        )
+        self.assertNotIn(
+            "QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET",
+            self.demanded,
+        )
+
 
 class TestDeployParseIsHonest(unittest.TestCase):
     """The parse must distinguish a named secret from a deliberately dark one."""

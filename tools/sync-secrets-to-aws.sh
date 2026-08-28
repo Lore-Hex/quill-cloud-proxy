@@ -115,6 +115,9 @@ SECRETS=(
   trustedrouter-synth-synthesis-prompt-v1
   trustedrouter-synth-code-panel-prompt-v1
   trustedrouter-synth-code-synthesis-prompt-v1
+  # Resolved into BootstrapData for parity, but inert until the AWS attestation
+  # verifier reaches Stage A parity with GCP.
+  trustedrouter-spend-lease-issuer-config
   # Voyage AI — embeddings only (OpenAI-shaped /v1/embeddings). Mirrored so the
   # AWS Nitro enclave's parent bootstrap can fetch the same key as GCP.
   trustedrouter-voyage-api-key

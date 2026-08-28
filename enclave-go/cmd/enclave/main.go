@@ -444,10 +444,11 @@ func main() {
 			}
 		}
 	}
-	if err := initializeReceiptSigner(ctx, tlsServer, deviceBlob, apiHost); err != nil {
+	if err := initializeReceiptSignerWithSpendLease(ctx, tlsServer, deviceBlob, boot.SpendLeaseShadow, spendLeaseIssuerConfigNonce(boot), apiHost); err != nil {
 		fmt.Fprintf(os.Stderr, "receipt signer initialization failed: %v\n", err)
 		os.Exit(1)
 	}
+	initializeSpendLeaseShadow(ctx, trGateway, boot)
 
 	// LB health endpoint. The serving port (:443) terminates TLS inside the
 	// enclave, so the GCP passthrough-NLB's TCP/SSL health probe to :443 does
@@ -654,7 +655,7 @@ func serveOneRequest(
 	}
 	requestBodyBytes = len(body)
 	receiptRequest := types.InferenceReceiptRequest{}
-	if receiptSigner != nil && attribution.InferenceReceipt != "" {
+	if inferenceReceiptsEnabled() && attribution.InferenceReceipt != "" {
 		receiptRequest.Requested = true
 		receiptRequest.RequestBodySHA256 = sha256.Sum256(body)
 		if attribution.InferenceReceipt != "true" {
@@ -732,7 +733,7 @@ func serveOneRequest(
 	// live /attestation flow it binds no TLS exporter and accepts no caller
 	// nonce: the cached document certifies the boot-local signing key.
 	if method == "GET" && routePath == "/receipt-attestation" {
-		if receiptSigner == nil {
+		if !inferenceReceiptsEnabled() {
 			writeError(conn, 404, "route not found")
 			return false
 		}
@@ -745,7 +746,7 @@ func serveOneRequest(
 		return keepAlive
 	}
 	if method == "GET" && routePath == "/receipt-key" {
-		if receiptSigner == nil {
+		if !inferenceReceiptsEnabled() {
 			writeError(conn, 404, "route not found")
 			return false
 		}
@@ -1275,7 +1276,7 @@ func serveResponsesNonStreaming(
 	requestLogID string,
 	requestedModel string,
 ) {
-	if req.InferenceReceipt.Requested && receiptSigner != nil {
+	if req.InferenceReceipt.Requested && inferenceReceiptsEnabled() {
 		ctx = llm.WithUpstreamVerification(ctx, "", time.Time{}, time.Time{})
 	}
 	requestID := newResponseID()
@@ -1384,7 +1385,7 @@ func serveChatNonStreaming(
 	requestLogID string,
 	requestedModel string,
 ) {
-	if req.InferenceReceipt.Requested && receiptSigner != nil {
+	if req.InferenceReceipt.Requested && inferenceReceiptsEnabled() {
 		ctx = llm.WithUpstreamVerification(ctx, "", time.Time{}, time.Time{})
 	}
 	requestID := newRequestID()

@@ -305,6 +305,11 @@ QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SECRET="${QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SE
 QUILL_ADVISOR_WORKER_PROMPT_SECRET="${QUILL_ADVISOR_WORKER_PROMPT_SECRET:-trustedrouter-advisor-worker-prompt-v1}"
 QUILL_ADVISOR_PROMPT_SECRET="${QUILL_ADVISOR_PROMPT_SECRET:-trustedrouter-advisor-prompt-v1}"
 QUILL_TRUSTEDROUTER_INTERNAL_SECRET="${QUILL_TRUSTEDROUTER_INTERNAL_SECRET:-trustedrouter-internal-gateway-token}"
+# The current sealed production bundle predates the spend-lease issuer
+# manifest. Register the pointer, but default it dark until that bundle is
+# re-sealed; an explicit name is validated by azure-seal-bundle.py before any
+# container-group mutation.
+QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET="${QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET:-}"
 
 # Azure owns its certificate cache. The managed identity sees only ciphertext;
 # the encryption key is one entry in the SKR-protected bundle and is never an
@@ -584,7 +589,8 @@ for name in (
     "QUILL_SYNTH_PANEL_PROMPT_SECRET", "QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET",
     "QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET", "QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SECRET",
     "QUILL_ADVISOR_WORKER_PROMPT_SECRET", "QUILL_ADVISOR_PROMPT_SECRET",
-    "QUILL_TRUSTEDROUTER_INTERNAL_SECRET", "QUILL_ACME_FALLBACK_EAB_SECRET",
+    "QUILL_TRUSTEDROUTER_INTERNAL_SECRET", "QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET",
+    "QUILL_ACME_FALLBACK_EAB_SECRET",
 ):
     value = os.environ.get(name, "")
     # An empty value is how this deploy says "provider not configured".
@@ -648,7 +654,8 @@ export MAA_ENDPOINT VAULT SKR_KEY BUNDLE_SECRET LOCATION API_HOST EXTRA_API_HOST
   QUILL_XIAOMI_SECRET QUILL_SYNTH_PANEL_PROMPT_SECRET \
   QUILL_SYNTH_SYNTHESIS_PROMPT_SECRET QUILL_SYNTH_CODE_PANEL_PROMPT_SECRET \
   QUILL_SYNTH_CODE_SYNTHESIS_PROMPT_SECRET QUILL_ADVISOR_WORKER_PROMPT_SECRET \
-  QUILL_ADVISOR_PROMPT_SECRET QUILL_TRUSTEDROUTER_INTERNAL_SECRET
+  QUILL_ADVISOR_PROMPT_SECRET QUILL_TRUSTEDROUTER_INTERNAL_SECRET \
+  QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET
 
 # An unpinned bundle is a real hole, not a style preference, so on --apply this
 # REFUSES rather than warns.

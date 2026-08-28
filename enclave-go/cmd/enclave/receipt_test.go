@@ -18,6 +18,8 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/attestation"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/receipt"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
+	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 func TestReceiptKeyRouteServesStableEnvelope(t *testing.T) {
@@ -230,6 +232,30 @@ func TestReceiptsOffReturns404AndKeepsLiveAttestationLegacyShaped(t *testing.T) 
 	}
 }
 
+func TestSpendLeaseBootKeyDoesNotReenablePublicReceipts(t *testing.T) {
+	resetReceiptTestState(t)
+	t.Setenv("QUILL_RECEIPTS", "off")
+	oldGetAttestation := getAttestation
+	defer func() { getAttestation = oldGetAttestation }()
+	getAttestation = func(_, _, _, _, receiptKeyFP []byte) ([]byte, error) {
+		if len(receiptKeyFP) != sha256.Size {
+			t.Fatalf("receipt key fingerprint length = %d", len(receiptKeyFP))
+		}
+		return []byte("spend-lease-boot-evidence"), nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := initializeReceiptSignerWithSpendLease(ctx, nil, []byte("devices"), true, nil, "api.example"); err != nil {
+		t.Fatal(err)
+	}
+	if receiptSigner == nil {
+		t.Fatal("spend-lease shadow did not get a boot signer")
+	}
+	if inferenceReceiptsEnabled() {
+		t.Fatal("spend-lease boot signer re-enabled public inference receipts")
+	}
+}
+
 func TestReceiptKeyRouteReturns503WhenAttestationCacheIsEmpty(t *testing.T) {
 	resetReceiptTestState(t)
 	signer, err := receipt.NewSigner()
@@ -308,6 +334,36 @@ func TestReceiptAttestationMintFailureKeepsLastGood(t *testing.T) {
 	}
 }
 
+func TestSpendLeaseIssuerConfigIsBoundIntoBootReceiptAttestation(t *testing.T) {
+	resetReceiptTestState(t)
+	oldGetAttestation := getAttestation
+	defer func() { getAttestation = oldGetAttestation }()
+	config := json.RawMessage(`{"version":1,"keys":[]}`)
+	boot := &qtypes.BootstrapData{SpendLeaseShadow: true, SpendLeaseIssuerConfig: config}
+	nonce := spendLeaseIssuerConfigNonce(boot)
+	want := spendlease.IssuerConfigCommitment(config)
+	if !bytes.Equal(nonce, want[:]) {
+		t.Fatalf("config nonce = %x, want %x", nonce, want)
+	}
+	getAttestation = func(_, _, gotNonce, channelBinding, receiptKeyFP []byte) ([]byte, error) {
+		if !bytes.Equal(gotNonce, want[:]) {
+			t.Fatalf("attestation nonce = %x, want issuer config commitment %x", gotNonce, want)
+		}
+		if channelBinding != nil || len(receiptKeyFP) != sha256.Size {
+			t.Fatalf("channel binding=%x receipt key fp len=%d", channelBinding, len(receiptKeyFP))
+		}
+		return []byte("bound-attestation"), nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := initializeReceiptSignerWithSpendLease(ctx, nil, []byte("devices"), true, nonce, "api.example"); err != nil {
+		t.Fatal(err)
+	}
+	if cached := receiptAttestationCache.Load(); cached == nil || string(cached.document) != "bound-attestation" {
+		t.Fatalf("cached attestation = %#v", cached)
+	}
+}
+
 func TestConfiguredReceiptIssuerUsesExplicitCanonicalOrigin(t *testing.T) {
 	resetReceiptTestState(t)
 	t.Setenv("QUILL_RECEIPT_ISS", "https://api-aws.trustedrouter.com/")
@@ -326,13 +382,16 @@ func resetReceiptTestState(t *testing.T) {
 	oldSigner := receiptSigner
 	oldCached := receiptAttestationCache.Load()
 	oldIssuer := receiptIssuer
+	oldPublicEnabled := receiptPublicEnabled
 	receiptSigner = nil
 	receiptAttestationCache.Store(nil)
 	receiptIssuer = "https://api.trustedrouter.com"
+	receiptPublicEnabled = true
 	t.Cleanup(func() {
 		receiptSigner = oldSigner
 		receiptAttestationCache.Store(oldCached)
 		receiptIssuer = oldIssuer
+		receiptPublicEnabled = oldPublicEnabled
 	})
 }
 

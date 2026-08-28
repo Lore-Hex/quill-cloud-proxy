@@ -20,6 +20,7 @@ import (
 
 var receiptSigner *receipt.Signer
 var receiptIssuer = "https://api.trustedrouter.com"
+var receiptPublicEnabled = true
 
 type cachedReceiptAttestation struct {
 	document []byte
@@ -41,11 +42,17 @@ var receiptAttestationCache atomic.Pointer[cachedReceiptAttestation]
 var receiptAttestationRemintInterval = 30 * time.Minute
 
 // initializeReceiptSigner runs only after entropy seeding and TLS setup. A
-// disabled receipt subsystem leaves both the signer and cache nil so all
-// existing attestation calls retain their legacy shape.
+// A disabled public receipt subsystem leaves both signer and cache nil unless
+// spend-lease shadow needs the same boot identity; in that case the key exists
+// only for control-plane boot auth and public receipt behavior stays disabled.
 func initializeReceiptSigner(ctx context.Context, tlsServer *enclavetls.Server, deviceBlob []byte, apiHosts ...string) error {
+	return initializeReceiptSignerWithSpendLease(ctx, tlsServer, deviceBlob, false, nil, apiHosts...)
+}
+
+func initializeReceiptSignerWithSpendLease(ctx context.Context, tlsServer *enclavetls.Server, deviceBlob []byte, spendLeaseNeedsSigner bool, launchConfigNonce []byte, apiHosts ...string) error {
 	receiptAttestationCache.Store(nil)
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("QUILL_RECEIPTS")), "off") {
+	receiptPublicEnabled = !strings.EqualFold(strings.TrimSpace(os.Getenv("QUILL_RECEIPTS")), "off")
+	if !receiptPublicEnabled && !spendLeaseNeedsSigner {
 		receiptSigner = nil
 		return nil
 	}
@@ -62,11 +69,17 @@ func initializeReceiptSigner(ctx context.Context, tlsServer *enclavetls.Server, 
 	receiptSigner = signer
 	commitment := signer.KeyCommitment()
 	leafDER := currentReceiptLeafDER(tlsServer)
-	if err := remintReceiptAttestation(leafDER, deviceBlob, commitment[:]); err != nil {
+	if err := remintReceiptAttestationBound(leafDER, deviceBlob, commitment[:], launchConfigNonce); err != nil {
 		fmt.Fprintf(os.Stderr, "receipt.attestation_initial_mint_failed err=%q\n", err.Error())
 	}
-	go runReceiptAttestationReminter(ctx, tlsServer, deviceBlob, commitment, os.Stderr)
+	if ctx.Err() == nil {
+		go runReceiptAttestationReminterBound(ctx, tlsServer, deviceBlob, commitment, launchConfigNonce, os.Stderr)
+	}
 	return nil
+}
+
+func inferenceReceiptsEnabled() bool {
+	return receiptPublicEnabled && receiptSigner != nil
 }
 
 func configuredReceiptIssuer(apiHosts []string) (string, error) {
@@ -96,7 +109,11 @@ func currentReceiptLeafDER(tlsServer *enclavetls.Server) []byte {
 }
 
 func remintReceiptAttestation(leafDER, deviceBlob, receiptKeyFP []byte) error {
-	document, err := getAttestation(leafDER, deviceBlob, nil, nil, receiptKeyFP)
+	return remintReceiptAttestationBound(leafDER, deviceBlob, receiptKeyFP, nil)
+}
+
+func remintReceiptAttestationBound(leafDER, deviceBlob, receiptKeyFP, launchConfigNonce []byte) error {
+	document, err := getAttestation(leafDER, deviceBlob, launchConfigNonce, nil, receiptKeyFP)
 	if err != nil {
 		return err
 	}
@@ -114,6 +131,17 @@ func runReceiptAttestationReminter(
 	receiptKeyFP [32]byte,
 	logWriter io.Writer,
 ) {
+	runReceiptAttestationReminterBound(ctx, tlsServer, deviceBlob, receiptKeyFP, nil, logWriter)
+}
+
+func runReceiptAttestationReminterBound(
+	ctx context.Context,
+	tlsServer *enclavetls.Server,
+	deviceBlob []byte,
+	receiptKeyFP [32]byte,
+	launchConfigNonce []byte,
+	logWriter io.Writer,
+) {
 	for {
 		timer := time.NewTimer(jitteredReceiptAttestationInterval(receiptAttestationRemintInterval))
 		select {
@@ -122,7 +150,7 @@ func runReceiptAttestationReminter(
 			return
 		case <-timer.C:
 		}
-		if err := remintReceiptAttestation(currentReceiptLeafDER(tlsServer), deviceBlob, receiptKeyFP[:]); err != nil {
+		if err := remintReceiptAttestationBound(currentReceiptLeafDER(tlsServer), deviceBlob, receiptKeyFP[:], launchConfigNonce); err != nil {
 			fmt.Fprintf(logWriter, "receipt.attestation_remint_failed err=%q\n", err.Error())
 		}
 	}

@@ -188,6 +188,10 @@ func TestSecretBindingsAssignDistinctFields(t *testing.T) {
 						hit = append(hit, fieldName+"["+key.String()+"]")
 					}
 				}
+			case reflect.Slice:
+				if field.Type().Elem().Kind() == reflect.Uint8 && string(field.Bytes()) == marker {
+					hit = append(hit, fieldName)
+				}
 			}
 		}
 		if len(hit) != 1 {
@@ -211,8 +215,8 @@ func TestSecretBindingsAssignDistinctFields(t *testing.T) {
 // TestSealerBindingTableMatchesSecretBindings enforce the other two corners of
 // that triangle.
 func TestSecretBindingsTableIsWellFormed(t *testing.T) {
-	if len(secretBindings) != 87 {
-		t.Errorf("secretBindings has %d entries, want 87", len(secretBindings))
+	if len(secretBindings) != 88 {
+		t.Errorf("secretBindings has %d entries, want 88", len(secretBindings))
 	}
 	providers := 0
 	envs := map[string]string{}

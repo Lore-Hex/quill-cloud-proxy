@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -99,6 +100,7 @@ type Client struct {
 	imageModelsMu      sync.Mutex
 	imageModelsBody    []byte
 	imageModelsFetched time.Time
+	spendLease         *spendLeaseProtocol
 }
 
 // CredentialGuard lets the enclave reject repeated definitive credential
@@ -426,6 +428,7 @@ type Authorization struct {
 	RequestMetadataVersion                int                                `json:"request_metadata_version"`
 	AdditionalCostReservationMicrodollars int                                `json:"additional_cost_reservation_microdollars"`
 	NativeBatchEligible                   bool                               `json:"native_batch_eligible"`
+	SpendLease                            *spendlease.Response               `json:"spend_lease,omitempty"`
 	RouteType                             string                             `json:"-"`
 	// ControlPlaneEndpoint is enclave-local billing authority state. It is
 	// never accepted from or exposed to the control plane or client. A settle
@@ -698,22 +701,17 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	if len(req.AppCategories) > 0 {
 		body["app_categories"] = req.AppCategories
 	}
-	var decoded struct {
-		Data Authorization `json:"data"`
-	}
-	controlPlaneEndpoint, err := c.postJSONWithRetryAtEndpoint(
-		ctx, "/internal/gateway/authorize", body, &decoded, c.authorizeRetry,
-	)
+	decoded, controlPlaneEndpoint, err := c.authorizeAtDecodeSeam(ctx, lookupHash, body, spendLeaseRequestForChat(c.region, routeType, req))
 	if err != nil {
 		c.afterCredentialCheck(ctx, lookupHash, err)
 		return nil, err
 	}
 	c.afterCredentialCheck(ctx, lookupHash, nil)
-	decoded.Data.pinControlPlaneEndpoint(controlPlaneEndpoint)
-	decoded.Data.RouteType = routeType
+	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
+	decoded.RouteType = routeType
 	if routeType != "videos" && routeType != "images" && req.AdditionalCostReservationMicrodollars > 0 &&
-		decoded.Data.AdditionalCostReservationMicrodollars != req.AdditionalCostReservationMicrodollars {
-		_ = c.Refund(ctx, &decoded.Data, 503, "hosted_tool_billing_unavailable", 0.001, nil)
+		decoded.AdditionalCostReservationMicrodollars != req.AdditionalCostReservationMicrodollars {
+		_ = c.Refund(ctx, decoded, 503, "hosted_tool_billing_unavailable", 0.001, nil)
 		return nil, &ControlPlaneError{
 			Path:       "/internal/gateway/authorize",
 			StatusCode: 503,
@@ -721,8 +719,8 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 			Message:    "hosted-tool billing is not available on the active control plane",
 		}
 	}
-	if routeType == "videos" && decoded.Data.AdditionalCostReservationMicrodollars <= 0 {
-		_ = c.Refund(ctx, &decoded.Data, 503, "video_billing_unavailable", 0.001, nil)
+	if routeType == "videos" && decoded.AdditionalCostReservationMicrodollars <= 0 {
+		_ = c.Refund(ctx, decoded, 503, "video_billing_unavailable", 0.001, nil)
 		return nil, &ControlPlaneError{
 			Path:       "/internal/gateway/authorize",
 			StatusCode: 503,
@@ -731,8 +729,8 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 		}
 	}
 	if routeType == "images" && req.AdditionalCostReservationMicrodollars > 0 &&
-		decoded.Data.AdditionalCostReservationMicrodollars != req.AdditionalCostReservationMicrodollars {
-		_ = c.Refund(ctx, &decoded.Data, 503, "image_billing_unavailable", 0.001, nil)
+		decoded.AdditionalCostReservationMicrodollars != req.AdditionalCostReservationMicrodollars {
+		_ = c.Refund(ctx, decoded, 503, "image_billing_unavailable", 0.001, nil)
 		return nil, &ControlPlaneError{
 			Path:       "/internal/gateway/authorize",
 			StatusCode: 503,
@@ -740,8 +738,8 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 			Message:    "fixed-price image billing is not available on the active control plane",
 		}
 	}
-	if req.Tags != nil && decoded.Data.RequestMetadataVersion < 1 {
-		_ = c.Refund(ctx, &decoded.Data, 503, "request_metadata_unavailable", 0.001, nil)
+	if req.Tags != nil && decoded.RequestMetadataVersion < 1 {
+		_ = c.Refund(ctx, decoded, 503, "request_metadata_unavailable", 0.001, nil)
 		return nil, &ControlPlaneError{
 			Path:       "/internal/gateway/authorize",
 			StatusCode: 503,
@@ -749,10 +747,10 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 			Message:    "request tagging is not available on the active control plane",
 		}
 	}
-	if decoded.Data.RequestMetadataVersion >= 1 {
-		req.Tags = qtypes.NewRequestTags(decoded.Data.Tags)
+	if decoded.RequestMetadataVersion >= 1 {
+		req.Tags = qtypes.NewRequestTags(decoded.Tags)
 	}
-	return &decoded.Data, nil
+	return decoded, nil
 }
 
 // AuthorizeEmbeddings authorizes a POST /v1/embeddings request. Embeddings
@@ -818,21 +816,20 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	if len(req.AppCategories) > 0 {
 		body["app_categories"] = req.AppCategories
 	}
-	var decoded struct {
-		Data Authorization `json:"data"`
-	}
-	controlPlaneEndpoint, err := c.postJSONWithRetryAtEndpoint(
-		ctx, "/internal/gateway/authorize", body, &decoded, c.authorizeRetry,
-	)
+	maxTokens := int64(1)
+	decoded, controlPlaneEndpoint, err := c.authorizeAtDecodeSeam(ctx, lookupHash, body, spendlease.EstimateRequest{
+		Model: req.Model, RouteType: routeType, Region: c.region,
+		EstimatedInputTokens: int64(inputTokens), MaxTokens: &maxTokens,
+	})
 	if err != nil {
 		c.afterCredentialCheck(ctx, lookupHash, err)
 		return nil, err
 	}
 	c.afterCredentialCheck(ctx, lookupHash, nil)
-	decoded.Data.pinControlPlaneEndpoint(controlPlaneEndpoint)
-	decoded.Data.RouteType = routeType
-	if req.Tags != nil && decoded.Data.RequestMetadataVersion < 1 {
-		_ = c.Refund(ctx, &decoded.Data, 503, "request_metadata_unavailable", 0.001, nil)
+	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
+	decoded.RouteType = routeType
+	if req.Tags != nil && decoded.RequestMetadataVersion < 1 {
+		_ = c.Refund(ctx, decoded, 503, "request_metadata_unavailable", 0.001, nil)
 		return nil, &ControlPlaneError{
 			Path:       "/internal/gateway/authorize",
 			StatusCode: 503,
@@ -840,10 +837,10 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 			Message:    "request tagging is not available on the active control plane",
 		}
 	}
-	if decoded.Data.RequestMetadataVersion >= 1 {
-		req.Tags = qtypes.NewRequestTags(decoded.Data.Tags)
+	if decoded.RequestMetadataVersion >= 1 {
+		req.Tags = qtypes.NewRequestTags(decoded.Tags)
 	}
-	return &decoded.Data, nil
+	return decoded, nil
 }
 
 type SettleResult struct {
@@ -1108,6 +1105,16 @@ func (c *Client) postToControlPlane(
 	body []byte,
 	pinnedEndpoint int,
 ) (*http.Response, int, error) {
+	return c.postToControlPlaneWithBootAuth(ctx, path, body, pinnedEndpoint, "")
+}
+
+func (c *Client) postToControlPlaneWithBootAuth(
+	ctx context.Context,
+	path string,
+	body []byte,
+	pinnedEndpoint int,
+	bootAuthHeader string,
+) (*http.Response, int, error) {
 	if c != nil && c.configurationError != nil {
 		return nil, -1, c.configurationError
 	}
@@ -1129,6 +1136,9 @@ func (c *Client) postToControlPlane(
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(internalTokenHeader, c.internalToken)
+		if bootAuthHeader != "" {
+			req.Header.Set(spendlease.BootAuthHeader, bootAuthHeader)
+		}
 
 		resp, err := c.httpc.Do(req)
 		if err == nil {
@@ -1174,7 +1184,28 @@ func (c *Client) postJSONAtEndpoint(
 	if err != nil {
 		return -1, err
 	}
-	resp, selectedEndpoint, err := c.postToControlPlane(ctx, path, body, pinnedEndpoint)
+	return c.postJSONBytesAtEndpoint(ctx, path, body, out, pinnedEndpoint)
+}
+
+func (c *Client) postJSONBytesAtEndpoint(
+	ctx context.Context,
+	path string,
+	body []byte,
+	out any,
+	pinnedEndpoint int,
+) (int, error) {
+	return c.postJSONBytesWithBootAuthAtEndpoint(ctx, path, body, out, pinnedEndpoint, "")
+}
+
+func (c *Client) postJSONBytesWithBootAuthAtEndpoint(
+	ctx context.Context,
+	path string,
+	body []byte,
+	out any,
+	pinnedEndpoint int,
+	bootAuthHeader string,
+) (int, error) {
+	resp, selectedEndpoint, err := c.postToControlPlaneWithBootAuth(ctx, path, body, pinnedEndpoint, bootAuthHeader)
 	if err != nil {
 		return selectedEndpoint, err
 	}

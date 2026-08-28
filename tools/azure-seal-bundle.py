@@ -193,6 +193,9 @@ BINDINGS: tuple[Binding, ...] = (
         False,
     ),
     Binding(("QUILL_TRUSTEDROUTER_INTERNAL_SECRET",), "trustedrouter internal token", False),
+    # Resolved for cross-cloud parity but inert in Stage A: Azure does not set
+    # SpendLeaseShadow until its attestation verifier reaches GCP parity.
+    Binding(("QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET",), "spend lease issuer config", False),
     Binding(("QUILL_ACME_FALLBACK_EAB_SECRET",), "acme fallback eab", False),
     Binding(("QUILL_NEXTBIT_SECRET",), "nextbit key", True),
     Binding(("QUILL_AION_LABS_SECRET",), "aion labs key", True),
