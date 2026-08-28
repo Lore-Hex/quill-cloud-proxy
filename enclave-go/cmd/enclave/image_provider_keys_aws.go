@@ -9,10 +9,12 @@ import (
 
 func imageProviderKeys(boot *types.BootstrapData) imagegen.ProviderKeys {
 	// Nitro can enable only providers whose fixed hosts exist in the measured
-	// parent tunnel allowlist. Keep the new direct providers dark until those
-	// tunnels and any result-delivery hosts are explicitly added and attested.
+	// parent tunnel allowlist. Riverflow's fixed API host is tunneled; result
+	// URLs use the authenticated control-plane image fetcher, which repeats the
+	// same SSRF, byte, format, dimension, and pixel checks as the direct path.
 	return imagegen.ProviderKeys{
 		OpenAI: boot.OpenAIAPIKey, XAI: boot.GrokAPIKey,
-		Nscale: boot.ProviderAPIKeys["nscale"],
+		Nscale:    boot.ProviderAPIKeys["nscale"],
+		Riverflow: boot.ProviderAPIKeys["riverflow"],
 	}
 }

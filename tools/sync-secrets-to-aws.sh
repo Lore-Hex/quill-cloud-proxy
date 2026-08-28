@@ -169,6 +169,10 @@ SECRETS=(
   trustedrouter-nscale-api-key
   trustedrouter-perplexity-api-key
   trustedrouter-krea-api-key
+  trustedrouter-vultr-api-key
+  trustedrouter-darkbloom-api-key
+  trustedrouter-baidu-api-key
+  trustedrouter-riverflow-api-key
   trustedrouter-tr-api-key-for-self-heal
   # The internal gateway token authenticates enclave→TR control-plane
   # calls (x-trustedrouter-internal-token header on /v1/internal/*).

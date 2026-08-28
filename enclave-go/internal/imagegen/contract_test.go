@@ -14,6 +14,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
+	"os"
 	"reflect"
 	"testing"
 )
@@ -41,6 +42,7 @@ func TestModelRegistryIsExactAndDefensivelyCopied(t *testing.T) {
 		"recraft/recraftv4_1_utility",
 		"recraft/recraftv4_1_utility_pro",
 		"recraft/recraftv4_pro",
+		"riverflow/riverflow-2-fast",
 		"x-ai/grok-imagine-image-2.0",
 		"x-ai/grok-imagine-image-quality",
 	}
@@ -535,6 +537,99 @@ func TestKreaSubmitsPollsAndDownloadsModelResult(t *testing.T) {
 	}
 }
 
+func TestRiverflowSubmitsPollsValidatesReceiptAndDownloadsResult(t *testing.T) {
+	resolved, err := Parse([]byte(`{"model":"riverflow/riverflow-2-fast","prompt":"cat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataURL := "data:image/webp;base64," + testWebP(t, "testdata/riverflow-1024.webp")
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		response := func(status int, value any) (*http.Response, error) {
+			body, _ := json.Marshal(value)
+			return &http.Response{
+				StatusCode: status, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header),
+			}, nil
+		}
+		switch requests {
+		case 1:
+			if req.Method != http.MethodPost || req.URL.String() != "https://design-api.sourceful.com/v2/generations/t2i" {
+				t.Fatalf("submit = %s %s", req.Method, req.URL)
+			}
+			if req.Header.Get("X-API-Key") != "riverflow-key" {
+				t.Fatalf("submit headers = %#v", req.Header)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]any{
+				"model": "riverflow-2-fast", "instruction": "cat",
+				"idempotencyKey": "riverflow-one", "resolution": "1K",
+			}
+			if !reflect.DeepEqual(body, want) {
+				t.Fatalf("submit body = %#v, want %#v", body, want)
+			}
+			return response(201, map[string]any{"data": map[string]any{"jobId": "job-one", "status": "queued"}, "error": nil})
+		case 2:
+			if req.Method != http.MethodGet || req.URL.String() != "https://design-api.sourceful.com/v2/generations/job-one" {
+				t.Fatalf("poll = %s %s", req.Method, req.URL)
+			}
+			if req.Header.Get("X-API-Key") != "riverflow-key" {
+				t.Fatalf("poll headers = %#v", req.Header)
+			}
+			return response(200, map[string]any{
+				"data": map[string]any{
+					"job": map[string]any{
+						"id": "job-one", "status": "completed",
+						"cost": map[string]any{"currency": "USD", "taskCost": 0.02},
+					},
+					"artifacts": []map[string]any{{"type": "image", "status": "ready", "url": dataURL}},
+				},
+				"error": nil,
+			})
+		default:
+			t.Fatalf("unexpected request %d: %s", requests, req.URL)
+			return nil, nil
+		}
+	})}
+	result, err := NewRegistry(ProviderKeys{Riverflow: "riverflow-key"}, client).Generate(
+		t.Context(), resolved, "", "riverflow-one",
+	)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if requests != 2 || len(result.Images) != 1 || result.Images[0].Width != 1024 ||
+		result.Images[0].MediaType != "image/webp" {
+		t.Fatalf("requests=%d result=%#v", requests, result)
+	}
+}
+
+func TestRiverflowReceiptUsesExactMicrodollars(t *testing.T) {
+	for _, tt := range []struct {
+		raw  string
+		want int
+		ok   bool
+	}{
+		{raw: "0.02", want: 20_000, ok: true},
+		{raw: "0.020000", want: 20_000, ok: true},
+		{raw: "0.0200001", ok: false},
+		{raw: "1e1000000", ok: false},
+		{raw: "9999999999999999999999999", ok: false},
+		{raw: "0", ok: false},
+		{raw: "not-money", ok: false},
+	} {
+		got, err := exactUSDMicrodollars(json.Number(tt.raw))
+		if tt.ok && (err != nil || got != tt.want) {
+			t.Fatalf("exactUSDMicrodollars(%q) = %d, %v; want %d", tt.raw, got, err, tt.want)
+		}
+		if !tt.ok && err == nil {
+			t.Fatalf("exactUSDMicrodollars(%q) accepted %d", tt.raw, got)
+		}
+	}
+}
+
 func TestKreaResultURLShapesAndTerminalFailures(t *testing.T) {
 	for _, tt := range []struct {
 		raw  string
@@ -764,6 +859,15 @@ func testPNG(t *testing.T, width, height int) string {
 		t.Fatal(err)
 	}
 	return base64.StdEncoding.EncodeToString(out.Bytes())
+}
+
+func testWebP(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(data)
 }
 
 func testJPEGBytes(t *testing.T, width, height int) []byte {

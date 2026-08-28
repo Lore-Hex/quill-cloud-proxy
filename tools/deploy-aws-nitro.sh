@@ -825,6 +825,10 @@ allowlist:
   - {address: inference.api.nscale.com,         port: 443}
   - {address: api.perplexity.ai,                port: 443}
   - {address: api.krea.ai,                      port: 443}
+  - {address: api.vultrinference.com,           port: 443}
+  - {address: api.darkbloom.dev,                port: 443}
+  - {address: qianfan.baidubce.com,             port: 443}
+  - {address: design-api.sourceful.com,         port: 443}
   # GCP cross-cloud APIs — auth + Spanner + Bigtable + GCS (ACME cache)
   # + KMS (BYOK envelope-unwrap when an AWS-side request lands with a
   # customer-provided GCP-KMS-wrapped envelope).
@@ -956,6 +960,10 @@ write_vsock_unit 8072 api.inference.wandb.ai
 write_vsock_unit 8073 inference.api.nscale.com
 write_vsock_unit 8074 api.perplexity.ai
 write_vsock_unit 8075 api.krea.ai
+write_vsock_unit 8076 api.vultrinference.com
+write_vsock_unit 8077 api.darkbloom.dev
+write_vsock_unit 8078 qianfan.baidubce.com
+write_vsock_unit 8079 design-api.sourceful.com
 write_vsock_unit 8049 llm.chutes.ai
 write_vsock_unit 8050 api.chutes.ai
 write_vsock_unit 8051 api.trustedservices.intel.com

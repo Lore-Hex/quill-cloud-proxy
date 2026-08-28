@@ -45,6 +45,10 @@ var specs = [...]Spec{
 	{Provider: "nscale", BaseURL: "https://inference.api.nscale.com/v1", SecretEnv: "QUILL_NSCALE_SECRET", SecretName: "trustedrouter-nscale-api-key", SecretLabel: "Nscale service token"},
 	{Provider: "perplexity", BaseURL: "https://api.perplexity.ai/v1", ChatCompletionsPath: "/sonar", SecretEnv: "QUILL_PERPLEXITY_SECRET", SecretName: "trustedrouter-perplexity-api-key", SecretLabel: "Perplexity key"},
 	{Provider: "krea", BaseURL: "https://api.krea.ai", MediaOnly: true, SecretEnv: "QUILL_KREA_SECRET", SecretName: "trustedrouter-krea-api-key", SecretLabel: "Krea key"},
+	{Provider: "vultr", BaseURL: "https://api.vultrinference.com/v1", SecretEnv: "QUILL_VULTR_SECRET", SecretName: "trustedrouter-vultr-api-key", SecretLabel: "Vultr inference key"},
+	{Provider: "darkbloom", BaseURL: "https://api.darkbloom.dev/v1", SecretEnv: "QUILL_DARKBLOOM_SECRET", SecretName: "trustedrouter-darkbloom-api-key", SecretLabel: "Darkbloom key"},
+	{Provider: "baidu", BaseURL: "https://qianfan.baidubce.com/v2", SecretEnv: "QUILL_BAIDU_SECRET", SecretName: "trustedrouter-baidu-api-key", SecretLabel: "Baidu Qianfan key"},
+	{Provider: "riverflow", BaseURL: "https://design-api.sourceful.com", MediaOnly: true, SecretEnv: "QUILL_RIVERFLOW_SECRET", SecretName: "trustedrouter-riverflow-api-key", SecretLabel: "Riverflow key"},
 }
 
 var byProvider = func() map[string]Spec {

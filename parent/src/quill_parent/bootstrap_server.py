@@ -191,6 +191,10 @@ _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("nscale", "trustedrouter-nscale-api-key"),
     ("perplexity", "trustedrouter-perplexity-api-key"),
     ("krea", "trustedrouter-krea-api-key"),
+    ("vultr", "trustedrouter-vultr-api-key"),
+    ("darkbloom", "trustedrouter-darkbloom-api-key"),
+    ("baidu", "trustedrouter-baidu-api-key"),
+    ("riverflow", "trustedrouter-riverflow-api-key"),
 )
 
 _PROMPT_KEYS: Final[tuple[tuple[str, str], ...]] = (

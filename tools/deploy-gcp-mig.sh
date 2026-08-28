@@ -368,6 +368,10 @@ configure_optional_provider_secret QUILL_WANDB_SECRET trustedrouter-wandb-api-ke
 configure_optional_provider_secret QUILL_NSCALE_SECRET trustedrouter-nscale-api-key
 configure_optional_provider_secret QUILL_PERPLEXITY_SECRET trustedrouter-perplexity-api-key
 configure_optional_provider_secret QUILL_KREA_SECRET trustedrouter-krea-api-key
+configure_optional_provider_secret QUILL_VULTR_SECRET trustedrouter-vultr-api-key
+configure_optional_provider_secret QUILL_DARKBLOOM_SECRET trustedrouter-darkbloom-api-key
+configure_optional_provider_secret QUILL_BAIDU_SECRET trustedrouter-baidu-api-key
+configure_optional_provider_secret QUILL_RIVERFLOW_SECRET trustedrouter-riverflow-api-key
 
 # Azure Foundry stays dark until its account key exists. An explicitly supplied
 # empty value also keeps it disabled; this prevents an unrelated gateway roll

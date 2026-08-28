@@ -339,6 +339,10 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "nscale",
         "perplexity",
         "krea",
+        "vultr",
+        "darkbloom",
+        "baidu",
+        "riverflow",
     }
     actual_direct = {provider for provider, _suffix in bootstrap_server._DIRECT_PROVIDER_KEYS}
     assert actual_direct == expected_direct

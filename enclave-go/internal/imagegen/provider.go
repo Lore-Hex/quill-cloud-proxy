@@ -33,6 +33,7 @@ const (
 
 const bflGenerationTimeout = 5 * time.Minute
 const kreaGenerationTimeout = 5 * time.Minute
+const riverflowGenerationTimeout = 5 * time.Minute
 
 const (
 	bflInitialPollDelay = 500 * time.Millisecond
@@ -40,13 +41,14 @@ const (
 )
 
 type ProviderKeys struct {
-	OpenAI  string
-	XAI     string
-	Decart  string
-	Recraft string
-	BFL     string
-	Nscale  string
-	Krea    string
+	OpenAI    string
+	XAI       string
+	Decart    string
+	Recraft   string
+	BFL       string
+	Nscale    string
+	Krea      string
+	Riverflow string
 }
 
 type Registry struct {
@@ -99,7 +101,8 @@ func NewRegistry(keys ProviderKeys, client *http.Client) *Registry {
 		keys: map[string]string{
 			"openai": keys.OpenAI, "grok": keys.XAI, "decart": keys.Decart,
 			"recraft": keys.Recraft, "bfl": keys.BFL, "nscale": keys.Nscale,
-			"krea": keys.Krea,
+			"krea":      keys.Krea,
+			"riverflow": keys.Riverflow,
 		},
 	}
 }
@@ -135,6 +138,9 @@ func (r *Registry) Generate(
 	}
 	if resolved.Spec.Provider == "krea" {
 		return r.generateKrea(ctx, resolved, key, idempotencyKey)
+	}
+	if resolved.Spec.Provider == "riverflow" {
+		return r.generateRiverflow(ctx, resolved, key, idempotencyKey)
 	}
 	endpoint, payload, err := nativeRequest(resolved)
 	if err != nil {
@@ -676,6 +682,181 @@ func kreaResultURL(raw json.RawMessage) (string, error) {
 	return "", fmt.Errorf("Krea completed without an image URL")
 }
 
+type riverflowPollResponse struct {
+	Data struct {
+		Job struct {
+			ID               string `json:"id"`
+			Status           string `json:"status"`
+			LastErrorMessage string `json:"lastErrorMessage"`
+			Cost             struct {
+				Currency string      `json:"currency"`
+				TaskCost json.Number `json:"taskCost"`
+			} `json:"cost"`
+		} `json:"job"`
+		Artifacts []struct {
+			Type   string `json:"type"`
+			Status string `json:"status"`
+			URL    string `json:"url"`
+		} `json:"artifacts"`
+	} `json:"data"`
+}
+
+func (r *Registry) generateRiverflow(
+	ctx context.Context,
+	resolved *ResolvedRequest,
+	key, idempotencyKey string,
+) (*Result, error) {
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		return nil, fmt.Errorf("Riverflow requires an idempotency key")
+	}
+	ctx, cancel := context.WithTimeout(ctx, riverflowGenerationTimeout)
+	defer cancel()
+	payload := map[string]any{
+		"model": resolved.Spec.UpstreamID, "instruction": resolved.Request.Prompt,
+		"idempotencyKey": idempotencyKey, "resolution": resolved.Resolution,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode Riverflow request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, "https://design-api.sourceful.com/v2/generations/t2i", bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create Riverflow request: %w", err)
+	}
+	req.Header.Set("X-API-Key", key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	responseBody, status, err := r.doLimited(req, maxProviderErrorBytes)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status > 299 {
+		return nil, decodeProviderError(status, responseBody)
+	}
+	var submitted struct {
+		Data struct {
+			JobID  string `json:"jobId"`
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	if err := decodeExactJSON(responseBody, &submitted); err != nil || strings.TrimSpace(submitted.Data.JobID) == "" {
+		return nil, fmt.Errorf("Riverflow returned an invalid job response")
+	}
+
+	pollDelay := bflInitialPollDelay
+	for {
+		if err := waitForImagePoll(ctx, pollDelay); err != nil {
+			return nil, err
+		}
+		pollURL := "https://design-api.sourceful.com/v2/generations/" + url.PathEscape(submitted.Data.JobID)
+		pollReq, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+		if requestErr != nil {
+			return nil, fmt.Errorf("create Riverflow poll request: %w", requestErr)
+		}
+		pollReq.Header.Set("X-API-Key", key)
+		pollReq.Header.Set("Accept", "application/json")
+		pollBody, pollStatus, pollErr := r.doLimited(pollReq, maxProviderErrorBytes)
+		if pollErr != nil {
+			pollDelay = nextImagePollDelay(pollDelay)
+			continue
+		}
+		if pollStatus < 200 || pollStatus > 299 {
+			if pollStatus == http.StatusTooManyRequests || pollStatus >= 500 {
+				pollDelay = nextImagePollDelay(pollDelay)
+				continue
+			}
+			return nil, decodeProviderError(pollStatus, pollBody)
+		}
+		var polled riverflowPollResponse
+		if err := decodeExactJSON(pollBody, &polled); err != nil {
+			return nil, fmt.Errorf("Riverflow returned an invalid poll response")
+		}
+		if strings.TrimSpace(polled.Data.Job.ID) != submitted.Data.JobID {
+			return nil, fmt.Errorf("Riverflow returned a mismatched job response")
+		}
+		switch strings.ToLower(strings.TrimSpace(polled.Data.Job.Status)) {
+		case "completed", "succeeded", "success":
+			receipt, receiptErr := exactUSDMicrodollars(polled.Data.Job.Cost.TaskCost)
+			if receiptErr != nil || !strings.EqualFold(polled.Data.Job.Cost.Currency, "USD") ||
+				receipt != resolved.FixedProviderCostMicrodollars() {
+				return nil, fmt.Errorf("Riverflow receipt does not match the authorized price")
+			}
+			for _, artifact := range polled.Data.Artifacts {
+				if !strings.EqualFold(artifact.Type, "image") ||
+					!strings.EqualFold(artifact.Status, "ready") || strings.TrimSpace(artifact.URL) == "" {
+					continue
+				}
+				_, imageBytes, loadErr := llm.LoadNormalizedImage(ctx, artifact.URL)
+				if loadErr != nil {
+					return nil, fmt.Errorf("load Riverflow result: %w", loadErr)
+				}
+				generated, validateErr := ValidateImage(
+					base64.StdEncoding.EncodeToString(imageBytes), resolved.Format,
+				)
+				if validateErr != nil {
+					return nil, validateErr
+				}
+				if shapeErr := validateOutputShape(resolved, generated); shapeErr != nil {
+					return nil, shapeErr
+				}
+				return &Result{Created: time.Now().Unix(), Images: []GeneratedImage{*generated}}, nil
+			}
+			return nil, fmt.Errorf("Riverflow completed without a ready image")
+		case "failed", "cancelled", "canceled", "error":
+			message := strings.TrimSpace(polled.Data.Job.LastErrorMessage)
+			if message == "" {
+				message = "Riverflow generation failed"
+			}
+			return nil, &ProviderError{StatusCode: http.StatusBadGateway, Message: message}
+		case "created", "queued", "pending", "processing", "running", "generating":
+			pollDelay = nextImagePollDelay(pollDelay)
+			continue
+		default:
+			return nil, fmt.Errorf("Riverflow returned an unknown job status")
+		}
+	}
+}
+
+func exactUSDMicrodollars(value json.Number) (int, error) {
+	raw := strings.TrimSpace(value.String())
+	if raw == "" || len(raw) > 24 || strings.ContainsAny(raw, "+-eE/") {
+		return 0, fmt.Errorf("invalid USD amount")
+	}
+	parts := strings.Split(raw, ".")
+	if len(parts) > 2 || parts[0] == "" {
+		return 0, fmt.Errorf("invalid USD amount")
+	}
+	whole, err := strconv.ParseUint(parts[0], 10, 63)
+	if err != nil || whole > uint64(math.MaxInt)/1_000_000 {
+		return 0, fmt.Errorf("invalid USD amount")
+	}
+	fraction := ""
+	if len(parts) == 2 {
+		fraction = parts[1]
+	}
+	if len(fraction) > 6 {
+		return 0, fmt.Errorf("USD amount is not an exact microdollar value")
+	}
+	for len(fraction) < 6 {
+		fraction += "0"
+	}
+	fractionalMicrodollars := uint64(0)
+	if fraction != "" {
+		fractionalMicrodollars, err = strconv.ParseUint(fraction, 10, 32)
+		if err != nil {
+			return 0, fmt.Errorf("invalid USD amount")
+		}
+	}
+	microdollars := whole*1_000_000 + fractionalMicrodollars
+	if microdollars == 0 || microdollars > uint64(math.MaxInt) {
+		return 0, fmt.Errorf("USD amount is outside the supported range")
+	}
+	return int(microdollars), nil
+}
+
 func (r *Registry) doLimited(req *http.Request, limit int) ([]byte, int, error) {
 	resp, err := r.http.Do(req)
 	if err != nil {
@@ -705,7 +886,7 @@ func decodeExactJSON(raw []byte, target any) error {
 
 func validateOutputShape(resolved *ResolvedRequest, generated *GeneratedImage) error {
 	switch resolved.Spec.Provider {
-	case "openai", "recraft":
+	case "openai", "recraft", "riverflow":
 		if resolved.AspectRatio == "" || resolved.AspectRatio == "auto" {
 			return nil
 		}

@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -202,6 +203,20 @@ func TestNormalizeImageBytesRejectsHugeDimensionsBeforeDecode(t *testing.T) {
 	_, _, err = normalizeImageBytes("image/png", pngHeaderWithDimensions(t, 5000, 5000))
 	if err == nil || !strings.Contains(err.Error(), "image dimensions too large") {
 		t.Fatalf("err = %v, want pixel cap error", err)
+	}
+}
+
+func TestNormalizeImageBytesAcceptsValidatedWebP(t *testing.T) {
+	data, err := os.ReadFile("testdata/tiny.webp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaType, normalized, err := normalizeImageBytes("image/webp", data)
+	if err != nil {
+		t.Fatalf("normalizeImageBytes: %v", err)
+	}
+	if mediaType != "image/webp" || !bytes.Equal(normalized, data) {
+		t.Fatalf("mediaType=%q bytes_preserved=%t", mediaType, bytes.Equal(normalized, data))
 	}
 }
 

@@ -11,7 +11,8 @@ func imageProviderKeys(boot *types.BootstrapData) imagegen.ProviderKeys {
 	return imagegen.ProviderKeys{
 		OpenAI: boot.OpenAIAPIKey, XAI: boot.GrokAPIKey,
 		Decart: boot.DecartAPIKey, Recraft: boot.RecraftAPIKey, BFL: boot.BFLAPIKey,
-		Nscale: boot.ProviderAPIKeys["nscale"],
-		Krea:   boot.ProviderAPIKeys["krea"],
+		Nscale:    boot.ProviderAPIKeys["nscale"],
+		Krea:      boot.ProviderAPIKeys["krea"],
+		Riverflow: boot.ProviderAPIKeys["riverflow"],
 	}
 }

@@ -57,7 +57,7 @@ func newImageFetchRequest(ctx context.Context, rawURL string) (*http.Request, er
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "image/png,image/jpeg")
+	req.Header.Set("Accept", "image/png,image/jpeg,image/webp")
 	req.Header.Set("User-Agent", "TrustedRouter-ImageFetcher/1.0 (+https://trustedrouter.com)")
 	return req, nil
 }
