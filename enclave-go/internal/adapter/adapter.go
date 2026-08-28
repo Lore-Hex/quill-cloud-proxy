@@ -640,6 +640,8 @@ type StreamDelta struct {
 type StreamObserver func(StreamDelta)
 type StreamFinishHook func(created int64) error
 
+var errEmptyUpstreamResponse = errors.New("adapter: empty upstream response")
+
 // TransformStreamCaptureWithOptions is TransformStreamCapture plus the
 // OpenAI stream_options.include_usage behavior: when emitUsageChunk is
 // true and the upstream reported usage, a final chunk with empty
@@ -682,6 +684,7 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 	var toolBlockOrder []int
 	thinkingByIndex := map[int]*ThinkingBlock{}
 	var thinkingOrder []int
+	sawUpstreamBytes := false
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
@@ -731,6 +734,7 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 	}
 
 	for scanner.Scan() {
+		sawUpstreamBytes = true
 		block := scanner.Bytes()
 		eventName, dataJSON := parseSSEBlock(block)
 		if dataJSON == nil {
@@ -870,6 +874,9 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return StreamResult{}, err
+	}
+	if !sawUpstreamBytes {
+		return StreamResult{}, errEmptyUpstreamResponse
 	}
 	// EOF without message_stop is a tolerated compatibility behavior for
 	// ordinary streams, but it is not a receipt-worthy clean terminator.

@@ -1492,13 +1492,13 @@ func serveStreaming(
 		defer close(providerDone)
 		invokeProviderStream(ctx, br, &providerReq, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
 	}()
-	if trGateway != nil && trGateway.Enabled() && len(invokeOptions) > 1 {
-		select {
-		case <-selectedRoute.Ready():
-		case <-providerDone:
-		}
-	} else if len(invokeOptions) > 0 {
-		selectedRoute.Select(invokeOptions[0])
+	// Do not send the streaming 200/SSE head until either a provider has
+	// produced its first byte or every pre-output retry/fallback has failed.
+	// Once the head is client-visible, invokeProviderStream must stay on the
+	// selected attempt; retrying after that boundary could splice responses.
+	select {
+	case <-selectedRoute.Ready():
+	case <-providerDone:
 	}
 	streamModel := selectedRoute.Model(req.Model, authorization)
 	if streamModel != "" {
@@ -1822,13 +1822,11 @@ func serveMessages(
 		defer close(providerDone)
 		invokeProviderStream(ctx, br, &providerReq, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID, true, true)
 	}()
-	if trEnabled && len(invokeOptions) > 1 {
-		select {
-		case <-selectedRoute.Ready():
-		case <-providerDone:
-		}
-	} else if len(invokeOptions) > 0 {
-		selectedRoute.Select(invokeOptions[0])
+	// Keep the HTTP success head behind the same first-provider-byte boundary
+	// as the OpenAI-compatible streaming path above.
+	select {
+	case <-selectedRoute.Ready():
+	case <-providerDone:
 	}
 	if streamModel := selectedRoute.Model(req.Model, authorization); streamModel != "" {
 		req.Model = streamModel

@@ -355,6 +355,7 @@ func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (St
 	var usage *StreamUsage
 	toolCallsByIndex := map[int]*types.ToolCall{}
 	var toolOrder []int
+	sawUpstreamBytes := false
 
 	writeEvent := func(name string, payload map[string]any) error {
 		body, err := json.Marshal(payload)
@@ -395,6 +396,7 @@ func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (St
 	}
 
 	for scanner.Scan() {
+		sawUpstreamBytes = true
 		raw := scanner.Bytes()
 		eventName, dataJSON := parseSSEBlock(raw)
 		if dataJSON == nil {
@@ -534,6 +536,9 @@ func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (St
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return StreamResult{}, err
+	}
+	if !sawUpstreamBytes {
+		return StreamResult{}, errEmptyUpstreamResponse
 	}
 	return relayResult(captured.String(), finishReason, usage, toolCallsByIndex, toolOrder), nil
 }

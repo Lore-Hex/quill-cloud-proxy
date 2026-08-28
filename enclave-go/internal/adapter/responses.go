@@ -522,10 +522,12 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal 
 	var toolOrder []int
 	thinkingByIndex := map[int]*ThinkingBlock{}
 	var thinkingOrder []int
+	sawUpstreamBytes := false
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
 	scanner.Split(splitDoubleNewline)
 	for scanner.Scan() {
+		sawUpstreamBytes = true
 		eventName, dataJSON := parseSSEBlock(scanner.Bytes())
 		if dataJSON == nil {
 			continue
@@ -606,6 +608,9 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal 
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return StreamResult{}, err
+	}
+	if !sawUpstreamBytes {
+		return StreamResult{}, errEmptyUpstreamResponse
 	}
 	if requireTerminal {
 		return StreamResult{}, fmt.Errorf("adapter: truncated SSE before message_stop")
@@ -716,18 +721,19 @@ func TransformResponsesStreamWithFinishHook(
 	var thinkingOrder []int
 	var usage *StreamUsage
 	seq := 0
-	if err := writeResponseEventSeq(w, &seq, "response.created", map[string]any{
-		"type":     "response.created",
-		"response": responsesObject(responseID, model, "", nil, inputTokens, 0, 0, 0, created, "in_progress", textConfig, meta),
-	}); err != nil {
-		return StreamResult{}, err
+	startResponse := func() error {
+		if err := writeResponseEventSeq(w, &seq, "response.created", map[string]any{
+			"type":     "response.created",
+			"response": responsesObject(responseID, model, "", nil, inputTokens, 0, 0, 0, created, "in_progress", textConfig, meta),
+		}); err != nil {
+			return err
+		}
+		return writeResponseEventSeq(w, &seq, "response.in_progress", map[string]any{
+			"type":     "response.in_progress",
+			"response": responsesObject(responseID, model, "", nil, inputTokens, 0, 0, 0, created, "in_progress", textConfig, meta),
+		})
 	}
-	if err := writeResponseEventSeq(w, &seq, "response.in_progress", map[string]any{
-		"type":     "response.in_progress",
-		"response": responsesObject(responseID, model, "", nil, inputTokens, 0, 0, 0, created, "in_progress", textConfig, meta),
-	}); err != nil {
-		return StreamResult{}, err
-	}
+	sawUpstreamBytes := false
 	nextOutputIndex := 0
 	messageOutputIndex := 0
 	messageStarted := false
@@ -830,6 +836,14 @@ func TransformResponsesStreamWithFinishHook(
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
 	scanner.Split(splitDoubleNewline)
 	for scanner.Scan() {
+		if !sawUpstreamBytes {
+			sawUpstreamBytes = true
+			// Do not commit Responses SSE output until the provider has produced
+			// data; an empty EOF must remain retryable upstream of this adapter.
+			if err := startResponse(); err != nil {
+				return StreamResult{}, err
+			}
+		}
 		eventName, dataJSON := parseSSEBlock(scanner.Bytes())
 		if dataJSON == nil {
 			continue
@@ -1005,6 +1019,9 @@ func TransformResponsesStreamWithFinishHook(
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		return StreamResult{}, err
+	}
+	if !sawUpstreamBytes {
+		return StreamResult{}, errEmptyUpstreamResponse
 	}
 	toolCalls := orderedToolCalls(toolCallsByIndex, toolOrder)
 	if err := finishReasoning(); err != nil {
