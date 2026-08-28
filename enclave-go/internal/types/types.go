@@ -46,10 +46,11 @@ type BootstrapData struct {
 	// plaintext VM metadata.
 	TrustedRouterBaseURL       string `json:"trustedrouter_base_url,omitempty"`
 	TrustedRouterInternalToken string `json:"trustedrouter_internal_token,omitempty"`
-	// Spend-lease Stage A configuration is fetched inside GCP Confidential
-	// Space from the Secret Manager blob named by attested launch config.
-	// Fetch/parse failures are carried as dormant-feature diagnostics and must
-	// never turn an additive shadow feature into a boot failure.
+	// Spend-lease Stage A configuration is fetched from each cloud's native
+	// secret path. Only GCP currently sets SpendLeaseShadow; Azure and AWS carry
+	// the issuer config inertly until their attestation verifiers reach parity.
+	// GCP fetch/parse failures are carried as dormant-feature diagnostics and
+	// must never turn an additive shadow feature into a boot failure.
 	SpendLeaseShadow         bool            `json:"spend_lease_shadow,omitempty"`
 	SpendLeaseIssuerConfig   json.RawMessage `json:"spend_lease_issuer_config,omitempty"`
 	SpendLeaseConfigError    string          `json:"spend_lease_config_error,omitempty"`

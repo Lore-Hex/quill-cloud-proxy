@@ -150,6 +150,14 @@ var secretBindings = func() []secretBinding {
 		{[]string{"QUILL_ADVISOR_WORKER_PROMPT_SECRET", "QUILL_SOCRATES_WORKER_PROMPT_SECRET"}, "advisor worker prompt", false, func(b *types.BootstrapData, v string) { b.AdvisorWorkerPrompt = v }},
 		{[]string{"QUILL_ADVISOR_PROMPT_SECRET", "QUILL_SOCRATES_ADVISOR_PROMPT_SECRET"}, "advisor prompt", false, func(b *types.BootstrapData, v string) { b.AdvisorPrompt = v }},
 		{[]string{"QUILL_TRUSTEDROUTER_INTERNAL_SECRET"}, "trustedrouter internal token", false, func(b *types.BootstrapData, v string) { b.TrustedRouterInternalToken = v }},
+		// Azure resolves the Stage A issuer manifest for cross-cloud secret
+		// parity, but deliberately does not enable SpendLeaseShadow. Design
+		// record v8 excludes Azure issuance and soak evidence until its
+		// attestation verifier reaches parity with GCP, so the config remains
+		// inert here.
+		{[]string{"QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET"}, "spend lease issuer config", false, func(b *types.BootstrapData, v string) {
+			b.SpendLeaseIssuerConfig = append(json.RawMessage(nil), v...)
+		}},
 		// "<kid>:<base64url-hmac>" for the fallback ACME CA; one entry so the
 		// halves rotate together. Optional: absent simply leaves the fallback
 		// CA (if any) registering without EAB.

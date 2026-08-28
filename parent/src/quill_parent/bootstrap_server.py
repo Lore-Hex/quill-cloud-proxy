@@ -213,6 +213,12 @@ _GCP_SA_KEY_SECRET_SUFFIX: Final[str] = "trustedrouter-aws-cross-cloud-sa-key"
 # by tools/sync-secrets-to-aws.sh.
 _TR_INTERNAL_TOKEN_SECRET_SUFFIX: Final[str] = "trustedrouter-internal-gateway-token"
 
+# Stage A does not enable spend-lease registration on AWS: Nitro attestation
+# verification must reach parity with GCP first. Still resolve and carry the
+# issuer manifest so the three cloud bootstrap paths cannot drift. Missing is
+# valid while the feature is dormant, just like a missing optional provider.
+_SPEND_LEASE_ISSUER_CONFIG_SECRET_SUFFIX: Final[str] = "trustedrouter-spend-lease-issuer-config"
+
 # DNS-01 ACME fallback path (enclave-go/internal/enclavetls/dns01.go).
 # Token is scoped Zone:DNS:Edit on quillrouter.com. Zone ID is a
 # stable 32-char hex string; we store it as a separate secret rather
@@ -377,6 +383,20 @@ def _build_bootstrap_data(
         payload["trustedrouter_internal_token"] = tr_token.strip()
     if tr_control_plane_base_url:
         payload["trustedrouter_base_url"] = tr_control_plane_base_url
+
+    # Resolve the config for cross-cloud parity, but deliberately do not set
+    # spend_lease_shadow. json.loads preserves BootstrapData's RawMessage wire
+    # shape rather than double-encoding the manifest as a JSON string.
+    spend_lease_config = _read_one_secret(
+        sm_client, f"{secret_prefix}{_SPEND_LEASE_ISSUER_CONFIG_SECRET_SUFFIX}"
+    )
+    if spend_lease_config:
+        try:
+            payload["spend_lease_issuer_config"] = json.loads(spend_lease_config)
+        except json.JSONDecodeError as exc:
+            # The feature is dormant on AWS, so a malformed optional manifest
+            # is diagnostic data, not permission to take bootstrap down.
+            payload["spend_lease_config_error"] = f"issuer config: {exc}"
 
     # 4. Cloudflare credentials for the DNS-01 ACME fallback. Both
     # are optional — if either is missing, the enclave's DNS-01
