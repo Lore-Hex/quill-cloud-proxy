@@ -463,12 +463,11 @@ def resolve_source_commit(explicit: str | None = None) -> str:
 def _fetch(url: str, *, verify_tls: bool = True) -> bytes:
     context: ssl.SSLContext | None = None
     if not verify_tls:
-        # The AWS enclave serves a certificate it generated itself — that is the
-        # design, not a defect, and there is no chain to validate. What replaces
-        # chain validation is the binding in the attestation's user_data, which
-        # this script does not check. So treat the result as an unauthenticated
-        # read: sufficient to record what is running, NOT sufficient to
-        # authenticate the enclave. Use tools/verify-attestation.py for that.
+        # Reserved for attested-cert-only standalone enclaves. What replaces
+        # chain validation there is the binding in the attestation's user_data,
+        # which this script does not check. Treat such a result as an
+        # unauthenticated read; use tools/verify-attestation.py to authenticate
+        # the enclave.
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
@@ -528,7 +527,7 @@ def _fetch_at_origin(url: str, origin_hostname: str) -> bytes:
 
 def live_aws() -> dict[str, str]:
     """PCR0 and module id from the running Nitro enclave. Fails closed."""
-    envelope = cbor2.loads(_fetch(AWS_ATTESTATION_URL, verify_tls=False))
+    envelope = cbor2.loads(_fetch(AWS_ATTESTATION_URL))
     if not isinstance(envelope, list) or len(envelope) != 4:
         raise ValueError("AWS attestation is not a 4-element COSE_Sign1 envelope")
     document = cbor2.loads(envelope[2])
@@ -743,10 +742,10 @@ def build_aws_record(
         "attestation_root": AWS_ATTESTATION_ROOT,
         "api_base_url": f"https://{AWS_API_HOSTNAME}/v1",
         "tls": {
-            "mode": "attested-self-signed-inside-enclave",
+            "mode": "acme-inside-nitro-enclave",
             "hostname": AWS_API_HOSTNAME,
             "certificate_binding": (
-                "user_data[0:64]=certificate fingerprint, "
+                "user_data[0:32]=SHA-256 of the served certificate (DER), "
                 "user_data[64:96]=TLS exporter channel binding"
             ),
         },

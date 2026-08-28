@@ -201,6 +201,12 @@ class SourceCommitTests(unittest.TestCase):
         record = capture.build_aws_record(AWS_LIVE, keep=False, source_commit="1a2b3c4")
 
         self.assertEqual(record["source_commit"], "1a2b3c4")
+        self.assertEqual(record["tls"]["mode"], "acme-inside-nitro-enclave")
+        self.assertEqual(
+            record["tls"]["certificate_binding"],
+            "user_data[0:32]=SHA-256 of the served certificate (DER), "
+            "user_data[64:96]=TLS exporter channel binding",
+        )
 
     def test_azure_record_carries_the_source_commit(self) -> None:
         record = capture.build_azure_record(AZURE_LIVE, keep=False, source_commit="1a2b3c4")

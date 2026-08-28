@@ -38,20 +38,22 @@ DEFAULT_HOSTS = (
     "api-us-east4.quillrouter.com",
     "api-europe-west4.quillrouter.com",
     "api-southamerica-east1.quillrouter.com",
+    "api-aws.trustedrouter.com",
     "api-azure.trustedrouter.com",
 )
 
 
-# Hosts that MUST NOT be probed here, with the reason, so nobody adds them back.
+# Hosts that MUST NOT be probed here, with the reason, so nobody adds them back
+# without changing the trust model they ship.
 #
 # This check validates against the public CA trust store. That is the right test
-# for every name above, and the wrong test for a host whose certificate is
-# deliberately self-signed inside an enclave and bound to its attestation
-# document: `ssl.create_default_context()` rejects it by design, on every run,
-# forever.
+# for every name above. It is the wrong test only for a host whose certificate
+# is deliberately self-signed inside an enclave: `ssl.create_default_context()`
+# rejects that certificate by design, on every run, forever.
 #
 # api-aws.trustedrouter.com was added to DEFAULT_HOSTS on 2026-08-10 (PR #143)
-# together with the per-region names. The PR verified the new names "all
+# together with the per-region names, while it still served a self-signed
+# certificate. The PR verified the new names "all
 # resolving", which is a different property from "serves a publicly-issued
 # certificate" — only the first was checked. Every scheduled run from
 # 2026-08-11 onward failed on it, 40 consecutive red runs, which is what a
@@ -59,19 +61,15 @@ DEFAULT_HOSTS = (
 # red/green signal stopped carrying information, and a genuine NS drift or
 # expiry warning in the same run would not have changed what it reported.
 #
-# The AWS plane's TLS is not unchecked. Its declared mode is published at
-# trust/aws-release.json as "attested-self-signed-inside-enclave", and
-# verify-trust-freshness.yml compares the live attestation against the
-# published measurement twice daily — which is a stronger check than chain
-# validation, not a weaker one.
+# The dns01-renewal release changed that on 2026-08-23. The AWS mode is now
+# "acme-inside-nitro-enclave": ACME dns01 obtains a Let's Encrypt certificate
+# inside the enclave. api-aws therefore belongs back in DEFAULT_HOSTS so its
+# WebPKI chain and expiry are monitored like the others. The stronger check is
+# unchanged: verify-trust-freshness.yml still verifies the live attestation's
+# binding to the certificate served on the TLS connection.
 #
-# Re-adding a host here is correct only once its trust record stops declaring
-# an attested self-signed mode.
-ATTESTED_SELF_SIGNED_HOSTS = frozenset(
-    {
-        "api-aws.trustedrouter.com",
-    }
-)
+# There are no public hosts shipping the attested-self-signed mode now.
+ATTESTED_SELF_SIGNED_HOSTS: frozenset[str] = frozenset()
 
 
 def certificate_expiry(cert: Mapping[str, object]) -> datetime:
