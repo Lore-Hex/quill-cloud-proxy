@@ -75,6 +75,8 @@
 //	QUILL_ADVISOR_WORKER_PROMPT_SECRET        name of the secret holding the advisor worker prompt
 //	QUILL_ADVISOR_PROMPT_SECRET               name of the secret holding the advisor prompt
 //	QUILL_TRUSTEDROUTER_INTERNAL_SECRET optional Secret Manager secret name
+//	QUILL_SPEND_LEASE_SHADOW             "on" enables Stage A shadow protocol
+//	QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET optional issuer-manifest secret name
 package bootstrap
 
 import (
@@ -109,6 +111,11 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	devicesSecret := os.Getenv("QUILL_DEVICE_KEYS_SECRET")
 	if devicesSecret == "" {
 		return nil, fmt.Errorf("bootstrap/gcp: QUILL_DEVICE_KEYS_SECRET not set")
+	}
+	spendLeaseShadow := strings.EqualFold(strings.TrimSpace(os.Getenv("QUILL_SPEND_LEASE_SHADOW")), "on")
+	spendLeaseConfigSecret := ""
+	if spendLeaseShadow {
+		spendLeaseConfigSecret = strings.TrimSpace(os.Getenv("QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET"))
 	}
 	// Each build target needs at least one provider secret set, but bootstrap
 	// doesn't know which build it's serving — so we fetch whatever env vars
@@ -745,6 +752,19 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		}
 		internalGatewayToken = string(value)
 	}
+	var spendLeaseIssuerConfig []byte
+	var spendLeaseConfigError string
+	if spendLeaseShadow {
+		if spendLeaseConfigSecret == "" {
+			spendLeaseConfigError = "QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET not set"
+		} else {
+			spendLeaseIssuerConfig, err = fetchSecret(ctx, httpc, token, project, spendLeaseConfigSecret)
+			if err != nil {
+				spendLeaseConfigError = fmt.Sprintf("issuer config: %v", err)
+				spendLeaseIssuerConfig = nil
+			}
+		}
+	}
 	// "<kid>:<hmac>" for the fallback ACME CA (see types.ACMEFallbackEAB).
 	// Optional, same shape as the internal token above: unset env means no
 	// fallback EAB; a SET env with a missing secret fails the boot loudly.
@@ -823,6 +843,9 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		ExaAPIKey:                    strings.TrimSpace(string(exaKey)),
 		TrustedRouterBaseURL:         os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken:   strings.TrimSpace(internalGatewayToken),
+		SpendLeaseShadow:             spendLeaseShadow,
+		SpendLeaseIssuerConfig:       append(json.RawMessage(nil), spendLeaseIssuerConfig...),
+		SpendLeaseConfigError:        spendLeaseConfigError,
 		ACMEFallbackEAB:              strings.TrimSpace(acmeFallbackEAB),
 		SynthPanelPrompt:             strings.TrimSpace(string(synthPanelPrompt)),
 		SynthSynthesisPrompt:         strings.TrimSpace(string(synthSynthesisPrompt)),

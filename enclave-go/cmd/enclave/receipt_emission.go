@@ -24,7 +24,7 @@ type receiptEmissionState struct {
 }
 
 func receiptState(req *types.OpenAIChatRequest) (receiptEmissionState, bool) {
-	if req == nil || !req.InferenceReceipt.Requested || receiptSigner == nil {
+	if req == nil || !req.InferenceReceipt.Requested || !inferenceReceiptsEnabled() {
 		return receiptEmissionState{}, false
 	}
 	cached := receiptAttestationCache.Load()

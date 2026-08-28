@@ -46,13 +46,20 @@ type BootstrapData struct {
 	// plaintext VM metadata.
 	TrustedRouterBaseURL       string `json:"trustedrouter_base_url,omitempty"`
 	TrustedRouterInternalToken string `json:"trustedrouter_internal_token,omitempty"`
-	SynthPanelPrompt           string `json:"synth_panel_prompt,omitempty"`
-	SynthSynthesisPrompt       string `json:"synth_synthesis_prompt,omitempty"`
-	SynthCodePanelPrompt       string `json:"synth_code_panel_prompt,omitempty"`
-	SynthCodeSynthesisPrompt   string `json:"synth_code_synthesis_prompt,omitempty"`
-	AdvisorWorkerPrompt        string `json:"advisor_worker_prompt,omitempty"`
-	AdvisorPrompt              string `json:"advisor_prompt,omitempty"`
-	ExaAPIKey                  string `json:"exa_api_key,omitempty"`
+	// Spend-lease Stage A configuration is fetched inside GCP Confidential
+	// Space from the Secret Manager blob named by attested launch config.
+	// Fetch/parse failures are carried as dormant-feature diagnostics and must
+	// never turn an additive shadow feature into a boot failure.
+	SpendLeaseShadow         bool            `json:"spend_lease_shadow,omitempty"`
+	SpendLeaseIssuerConfig   json.RawMessage `json:"spend_lease_issuer_config,omitempty"`
+	SpendLeaseConfigError    string          `json:"spend_lease_config_error,omitempty"`
+	SynthPanelPrompt         string          `json:"synth_panel_prompt,omitempty"`
+	SynthSynthesisPrompt     string          `json:"synth_synthesis_prompt,omitempty"`
+	SynthCodePanelPrompt     string          `json:"synth_code_panel_prompt,omitempty"`
+	SynthCodeSynthesisPrompt string          `json:"synth_code_synthesis_prompt,omitempty"`
+	AdvisorWorkerPrompt      string          `json:"advisor_worker_prompt,omitempty"`
+	AdvisorPrompt            string          `json:"advisor_prompt,omitempty"`
+	ExaAPIKey                string          `json:"exa_api_key,omitempty"`
 
 	// Anthropic direct (only populated for the llm_anthropic build target).
 	// Same trust posture as the OpenRouter key — pulled from Secret Manager

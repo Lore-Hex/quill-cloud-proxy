@@ -1,0 +1,45 @@
+[
+  {
+    "name": "positive_prices_floor_to_one_micro",
+    "request": {"model":"m","route_type":"chat.completions","region":"us","service_tier":"","estimated_input_tokens":1,"max_tokens":1},
+    "catalog": {"version":"fixture-v1","candidates":[{"endpoint_id":"e1","model":"m","provider":"p","region":"us","route_type":"chat.completions","service_tier":"","price_tier_max_input_tokens":null,"input_price_micro_per_mtok":1,"output_price_micro_per_mtok":1,"request_price_micro":0,"cache_read_micro_per_mtok":0,"cache_write_micro_per_mtok":0}]},
+    "expected_micro": 1
+  },
+  {
+    "name": "half_up_rounding",
+    "request": {"model":"m","route_type":"responses","region":"us","service_tier":"priority","estimated_input_tokens":1,"max_tokens":1},
+    "catalog": {"version":"fixture-v1","candidates":[{"endpoint_id":"e1","model":"m","provider":"p","region":"us","route_type":"responses","service_tier":"priority","price_tier_max_input_tokens":null,"input_price_micro_per_mtok":500000,"output_price_micro_per_mtok":1499999,"request_price_micro":3,"cache_read_micro_per_mtok":0,"cache_write_micro_per_mtok":0}]},
+    "expected_micro": 5
+  },
+  {
+    "name": "first_matching_tier_then_max_across_endpoints",
+    "request": {"model":"m","route_type":"chat.completions","region":"us","service_tier":"","estimated_input_tokens":50,"max_tokens":2},
+    "catalog": {"version":"fixture-v1","candidates":[
+      {"endpoint_id":"e1","model":"m","provider":"p1","region":"us","route_type":"chat.completions","service_tier":"","price_tier_max_input_tokens":100,"input_price_micro_per_mtok":1000000,"output_price_micro_per_mtok":0,"request_price_micro":0,"cache_read_micro_per_mtok":0,"cache_write_micro_per_mtok":0},
+      {"endpoint_id":"e1","model":"m","provider":"p1","region":"us","route_type":"chat.completions","service_tier":"","price_tier_max_input_tokens":null,"input_price_micro_per_mtok":9000000,"output_price_micro_per_mtok":0,"request_price_micro":0,"cache_read_micro_per_mtok":0,"cache_write_micro_per_mtok":0},
+      {"endpoint_id":"e2","model":"m","provider":"p2","region":"us","route_type":"chat.completions","service_tier":"","price_tier_max_input_tokens":null,"input_price_micro_per_mtok":1500000,"output_price_micro_per_mtok":1000000,"request_price_micro":5,"cache_read_micro_per_mtok":0,"cache_write_micro_per_mtok":0}
+    ]},
+    "expected_micro": 82
+  },
+  {
+    "name": "provider_pin_is_exact",
+    "request": {"model":"m","provider_constraints":["p1"],"route_type":"chat.completions","region":"us","service_tier":"","estimated_input_tokens":10,"max_tokens":1},
+    "catalog": {"version":"fixture-v1","candidates":[
+      {"endpoint_id":"e1","model":"m","provider":"p1","region":"us","route_type":"chat.completions","service_tier":"","price_tier_max_input_tokens":null,"input_price_micro_per_mtok":1000000,"output_price_micro_per_mtok":0,"request_price_micro":0,"cache_read_micro_per_mtok":0,"cache_write_micro_per_mtok":0},
+      {"endpoint_id":"e2","model":"m","provider":"p2","region":"us","route_type":"chat.completions","service_tier":"","price_tier_max_input_tokens":null,"input_price_micro_per_mtok":9000000,"output_price_micro_per_mtok":0,"request_price_micro":0,"cache_read_micro_per_mtok":0,"cache_write_micro_per_mtok":0}
+    ]},
+    "expected_micro": 10
+  },
+  {
+    "name": "default_output_estimate_is_512",
+    "request": {"model":"m","route_type":"responses","region":"us","service_tier":"","estimated_input_tokens":0,"max_tokens":null},
+    "catalog": {"version":"fixture-v1","candidates":[{"endpoint_id":"e1","model":"m","provider":"p","region":"us","route_type":"responses","service_tier":"","price_tier_max_input_tokens":null,"input_price_micro_per_mtok":0,"output_price_micro_per_mtok":1000000,"request_price_micro":0,"cache_read_micro_per_mtok":0,"cache_write_micro_per_mtok":0}]},
+    "expected_micro": 512
+  },
+  {
+    "name": "no_exact_applicable_candidate",
+    "request": {"model":"m","route_type":"responses","region":"eu","service_tier":"","estimated_input_tokens":10,"max_tokens":1},
+    "catalog": {"version":"fixture-v1","candidates":[{"endpoint_id":"e1","model":"m","provider":"p","region":"us","route_type":"responses","service_tier":"","price_tier_max_input_tokens":null,"input_price_micro_per_mtok":1000000,"output_price_micro_per_mtok":1000000,"request_price_micro":0,"cache_read_micro_per_mtok":0,"cache_write_micro_per_mtok":0}]},
+    "expected_micro": null
+  }
+]

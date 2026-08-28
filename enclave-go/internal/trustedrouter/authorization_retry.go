@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -82,6 +83,33 @@ func (c *Client) postJSONWithRetryFromEndpoint(
 	policy retryPolicy,
 	pinnedEndpoint int,
 ) (int, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return pinnedEndpoint, err
+	}
+	return c.postJSONBytesWithRetryFromEndpoint(ctx, path, body, out, policy, pinnedEndpoint, "")
+}
+
+func (c *Client) postJSONBytesWithRetryAtEndpoint(
+	ctx context.Context,
+	path string,
+	body []byte,
+	out any,
+	policy retryPolicy,
+	bootAuthHeader string,
+) (int, error) {
+	return c.postJSONBytesWithRetryFromEndpoint(ctx, path, body, out, policy, -1, bootAuthHeader)
+}
+
+func (c *Client) postJSONBytesWithRetryFromEndpoint(
+	ctx context.Context,
+	path string,
+	body []byte,
+	out any,
+	policy retryPolicy,
+	pinnedEndpoint int,
+	bootAuthHeader string,
+) (int, error) {
 	retryCtx := ctx
 	cancel := func() {}
 	if policy.totalBudget > 0 {
@@ -91,8 +119,12 @@ func (c *Client) postJSONWithRetryFromEndpoint(
 
 	policy = normalizeRetryPolicy(policy)
 	var lastRetryableErr error
+	// body and bootAuthHeader were produced together before the loop and are
+	// reused verbatim for every attempt.
 	for attempt := 1; attempt <= policy.attempts; attempt++ {
-		selectedEndpoint, err := c.postJSONAtEndpoint(retryCtx, path, payload, out, pinnedEndpoint)
+		selectedEndpoint, err := c.postJSONBytesWithBootAuthAtEndpoint(
+			retryCtx, path, body, out, pinnedEndpoint, bootAuthHeader,
+		)
 		if selectedEndpoint >= 0 {
 			pinnedEndpoint = selectedEndpoint
 		}
