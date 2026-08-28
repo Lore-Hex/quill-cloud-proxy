@@ -20,6 +20,8 @@ import (
 
 type strictStreamFramingContextKey struct{}
 
+var errEmptyUpstreamResponse = errors.New("empty upstream response")
+
 func withStrictStreamFraming(ctx context.Context) context.Context {
 	return context.WithValue(ctx, strictStreamFramingContextKey{}, true)
 }
@@ -76,6 +78,7 @@ func invokeProviderStream(
 				"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
 				requestLogID, requestID, i+1, i, time.Since(overallStart).Milliseconds(), errorClass(err),
 			)
+			selectedRoute.SignalReadyWithoutSelection()
 			if trEnabled {
 				_ = pw.CloseWithError(lastErr)
 				return
@@ -120,6 +123,13 @@ func invokeProviderStream(
 				},
 			}
 			err = br.InvokeStreaming(attemptCtx, req, anthropicReq, candidateWriter, option)
+			if err == nil && candidateWriter.BytesWritten() == 0 {
+				// A write attempt selects the route (and lets the caller commit the
+				// response head) before the underlying writer reports its byte count.
+				// Preserve that commitment separately while converting a zero-byte
+				// clean completion into a retryable upstream failure.
+				err = errEmptyUpstreamResponse
+			}
 			attemptDuration = time.Since(attemptStart)
 			ttfbTimer.Stop()
 			cancelAttempt()
@@ -153,11 +163,11 @@ func invokeProviderStream(
 			// explicitly allowed. Orchestration calls disable this so 429/5xx moves
 			// immediately to the next route/model instead of waiting on same-provider
 			// backoff.
-			if err == nil || candidateWriter.BytesWritten() > 0 || !allowTransientRetries || !isLast || !useLongLastCandidateBudget ||
+			if err == nil || candidateWriter.ResponseCommitted() || !allowTransientRetries || !isLast || !useLongLastCandidateBudget ||
 				tryN >= maxTransientUpstreamRetries || !isTransientUpstreamError(err) {
 				break
 			}
-			time.Sleep(transientUpstreamBackoff(tryN))
+			sleepBeforeTransientRetry(transientUpstreamBackoff(tryN))
 		}
 
 		if err == nil {
@@ -183,11 +193,12 @@ func invokeProviderStream(
 			return
 		}
 		lastErr = withInvokeAttemptError(err, option)
-		if !trEnabled || candidateWriter.BytesWritten() > 0 || i == len(options)-1 || !retryableInvokeError(err) {
+		if !trEnabled || candidateWriter.ResponseCommitted() || i == len(options)-1 || !retryableInvokeError(err) {
 			fmt.Fprintf(os.Stderr,
 				"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
 				requestLogID, requestID, i+1, i, time.Since(overallStart).Milliseconds(), errorClass(err),
 			)
+			selectedRoute.SignalReadyWithoutSelection()
 			if trEnabled {
 				_ = pw.CloseWithError(lastErr)
 				return
@@ -201,9 +212,11 @@ func invokeProviderStream(
 			"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
 			requestLogID, requestID, len(options), len(options)-1, time.Since(overallStart).Milliseconds(), errorClass(lastErr),
 		)
+		selectedRoute.SignalReadyWithoutSelection()
 		_ = pw.CloseWithError(lastErr)
 		return
 	}
+	selectedRoute.SignalReadyWithoutSelection()
 	_ = pw.Close()
 }
 
@@ -316,6 +329,15 @@ func (t *selectedRouteTracker) Select(option llm.InvokeOptions) {
 		t.provider = option.Provider
 	}
 	t.mu.Unlock()
+	t.once.Do(func() {
+		close(t.ready)
+	})
+}
+
+func (t *selectedRouteTracker) SignalReadyWithoutSelection() {
+	if t == nil {
+		return
+	}
 	t.once.Do(func() {
 		close(t.ready)
 	})
@@ -465,6 +487,8 @@ var finalCandidateFirstByteBudget = func() time.Duration {
 // the first output byte, so it never duplicates output or double-bills.
 const maxTransientUpstreamRetries = 2
 
+var sleepBeforeTransientRetry = time.Sleep
+
 func transientUpstreamBackoff(tryN int) time.Duration {
 	switch {
 	case tryN <= 0:
@@ -480,6 +504,9 @@ func transientUpstreamBackoff(tryN int) time.Duration {
 // on the SAME provider (rate limit, 5xx, dropped connection). 4xx (malformed),
 // client cancellation, and ttfb timeouts are not retried here.
 func isTransientUpstreamError(err error) bool {
+	if errors.Is(err, errEmptyUpstreamResponse) {
+		return true
+	}
 	switch errorClass(err) {
 	case "upstream_5xx", "rate_limited":
 		return true
@@ -496,12 +523,14 @@ type routeSelectingWriter struct {
 	tracker     *selectedRouteTracker
 	option      llm.InvokeOptions
 	bytes       int
+	committed   bool
 	onFirstByte func()
 	firstByte   sync.Once
 }
 
 func (w *routeSelectingWriter) Write(p []byte) (int, error) {
 	if len(p) > 0 {
+		w.committed = true
 		w.tracker.Select(w.option)
 		if w.onFirstByte != nil {
 			w.firstByte.Do(w.onFirstByte)
@@ -510,6 +539,10 @@ func (w *routeSelectingWriter) Write(p []byte) (int, error) {
 	n, err := w.w.Write(p)
 	w.bytes += n
 	return n, err
+}
+
+func (w *routeSelectingWriter) ResponseCommitted() bool {
+	return w != nil && w.committed
 }
 
 func (w *routeSelectingWriter) BytesWritten() int {
