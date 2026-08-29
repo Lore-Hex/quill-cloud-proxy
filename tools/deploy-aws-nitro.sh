@@ -826,6 +826,7 @@ allowlist:
   - {address: api.perplexity.ai,                port: 443}
   - {address: api.krea.ai,                      port: 443}
   - {address: api.vultrinference.com,           port: 443}
+  - {address: router.huggingface.co,             port: 443}
   - {address: api.darkbloom.dev,                port: 443}
   - {address: qianfan.baidubce.com,             port: 443}
   - {address: design-api.sourceful.com,         port: 443}
@@ -964,6 +965,7 @@ write_vsock_unit 8076 api.vultrinference.com
 write_vsock_unit 8077 api.darkbloom.dev
 write_vsock_unit 8078 qianfan.baidubce.com
 write_vsock_unit 8079 design-api.sourceful.com
+write_vsock_unit 8082 router.huggingface.co
 write_vsock_unit 8049 llm.chutes.ai
 write_vsock_unit 8050 api.chutes.ai
 write_vsock_unit 8051 api.trustedservices.intel.com

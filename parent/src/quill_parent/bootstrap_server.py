@@ -192,6 +192,7 @@ _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("perplexity", "trustedrouter-perplexity-api-key"),
     ("krea", "trustedrouter-krea-api-key"),
     ("vultr", "trustedrouter-vultr-api-key"),
+    ("huggingface", "trustedrouter-huggingface-api-key"),
     ("darkbloom", "trustedrouter-darkbloom-api-key"),
     ("baidu", "trustedrouter-baidu-api-key"),
     ("riverflow", "trustedrouter-riverflow-api-key"),

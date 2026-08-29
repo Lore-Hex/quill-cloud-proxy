@@ -170,6 +170,7 @@ SECRETS=(
   trustedrouter-perplexity-api-key
   trustedrouter-krea-api-key
   trustedrouter-vultr-api-key
+  trustedrouter-huggingface-api-key
   trustedrouter-darkbloom-api-key
   trustedrouter-baidu-api-key
   trustedrouter-riverflow-api-key

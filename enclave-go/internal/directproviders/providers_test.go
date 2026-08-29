@@ -13,14 +13,27 @@ func TestSpecsAreValidAndImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := All()
-	if len(all) != 24 {
-		t.Fatalf("provider specs = %d, want 24", len(all))
+	if len(all) != 25 {
+		t.Fatalf("provider specs = %d, want 25", len(all))
 	}
 	original := all[0]
 	all[0].Provider = "mutated"
 	got, ok := Lookup(original.Provider)
 	if !ok || got != original {
 		t.Fatalf("All exposed mutable package state: got %#v, ok=%v", got, ok)
+	}
+}
+
+func TestHuggingFaceUsesPinnedRouterAndDedicatedSecret(t *testing.T) {
+	spec, ok := Lookup("huggingface")
+	if !ok {
+		t.Fatal("huggingface provider is not registered")
+	}
+	if spec.BaseURL != "https://router.huggingface.co/v1" {
+		t.Fatalf("huggingface base URL = %q", spec.BaseURL)
+	}
+	if spec.SecretEnv != "QUILL_HUGGING_FACE_SECRET" || spec.SecretName != "trustedrouter-huggingface-api-key" {
+		t.Fatalf("huggingface secret coordinates = %q, %q", spec.SecretEnv, spec.SecretName)
 	}
 }
 

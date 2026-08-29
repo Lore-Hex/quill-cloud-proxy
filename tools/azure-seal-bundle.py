@@ -218,6 +218,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_PERPLEXITY_SECRET",), "Perplexity key", True),
     Binding(("QUILL_KREA_SECRET",), "Krea key", True),
     Binding(("QUILL_VULTR_SECRET",), "Vultr inference key", True),
+    Binding(("QUILL_HUGGING_FACE_SECRET",), "Hugging Face key", True),
     Binding(("QUILL_DARKBLOOM_SECRET",), "Darkbloom key", True),
     Binding(("QUILL_BAIDU_SECRET",), "Baidu Qianfan key", True),
     Binding(("QUILL_RIVERFLOW_SECRET",), "Riverflow key", True),
