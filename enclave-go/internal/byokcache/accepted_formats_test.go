@@ -42,8 +42,8 @@ import (
 // seals it and require (*Cache).Resolve — the same entry point settlement.go
 // calls on the prompt path — to return the plaintext. A format is accepted iff
 // a real round trip through the real entry point succeeds. All four evasions
-// above turn into a failed round trip, so the regenerated declaration says V1
-// and the deploy gate blocks.
+// above turn into a failed round trip, so the regenerated declaration omits
+// the current format and the deploy gate blocks.
 //
 // WHAT BINDS THE DECLARATION TO THE SOURCE
 // ----------------------------------------
@@ -92,6 +92,7 @@ const acceptedFormatsFile = "accepted_formats.json"
 // would publish a declaration naming every candidate, and "accepts everything"
 // is the one answer that makes the downstream gate useless.
 const probeControlAlgorithm = "TR-BYOK-ENVELOPE-AES-256-GCM-PROBE-NOT-A-FORMAT"
+const retiredV1Format = "TR-BYOK-ENVELOPE-AES-256-GCM-V1"
 
 const (
 	probeWorkspace = "ws-probe"
@@ -127,21 +128,29 @@ var writerAAD = map[string]func(namespace, workspaceID, contextName string) []by
 	},
 }
 
+func retiredV1WriterAAD(_namespace, workspaceID, contextName string) []byte {
+	return []byte("trustedrouter:byok:" + workspaceID + ":" + contextName)
+}
+
 type acceptedFormatsDeclaration struct {
-	Schema          string            `json:"schema"`
-	Package         string            `json:"package"`
-	Accepted        []string          `json:"accepted"`
-	RejectedControl string            `json:"rejected_control"`
-	Probe           string            `json:"probe"`
-	Generator       string            `json:"generator"`
-	SourceSHA256    map[string]string `json:"source_sha256"`
+	Schema            string            `json:"schema"`
+	Package           string            `json:"package"`
+	Accepted          []string          `json:"accepted"`
+	AcceptedProvider  []string          `json:"accepted_provider"`
+	AcceptedUserModel []string          `json:"accepted_user_model"`
+	RejectedProvider  []string          `json:"rejected_provider"`
+	RejectedUserModel []string          `json:"rejected_user_model"`
+	RejectedControl   string            `json:"rejected_control"`
+	Probe             string            `json:"probe"`
+	Generator         string            `json:"generator"`
+	SourceSHA256      map[string]string `json:"source_sha256"`
 }
 
 const (
 	declarationSchema  = "trustedrouter/byok-accepted-formats/v1"
 	declarationPackage = "enclave-go/internal/byokcache"
-	declarationProbe   = "seal provider and user-model envelopes with the control plane's " +
-		"associated data, then require both enclave resolve paths to return the plaintext"
+	declarationProbe   = "seal current and retired provider and user-model envelopes with the " +
+		"control plane's associated data; record acceptance and rejection for each enclave path"
 	declarationGenerator = "go test ./internal/byokcache -run 'TestAcceptedFormatsDeclaration|TestProbe' " +
 		"-args -update-accepted-formats"
 )
@@ -226,9 +235,10 @@ func roundTripsUserModel(t *testing.T, algorithm string, associated []byte) bool
 	return true
 }
 
-func observedAccepted(t *testing.T) []string {
+func observedAcceptance(t *testing.T) ([]string, []string) {
 	t.Helper()
-	accepted := []string{}
+	providerAccepted := []string{}
+	userModelAccepted := []string{}
 	for name, algorithm := range declaredAlgorithms(t) {
 		seal, ok := writerAAD[algorithm]
 		if !ok {
@@ -240,17 +250,35 @@ func observedAccepted(t *testing.T) []string {
 				name, algorithm,
 			)
 		}
-		providerAccepted := roundTripsProvider(
+		providerRoundTrips := roundTripsProvider(
 			t, algorithm, seal(namespaceProvider, probeWorkspace, probeProvider),
 		)
-		userModelAccepted := roundTripsUserModel(
+		userModelRoundTrips := roundTripsUserModel(
 			t, algorithm, seal(namespaceUserModel, probeWorkspace, probePurpose),
 		)
-		if providerAccepted && userModelAccepted {
+		if providerRoundTrips {
+			providerAccepted = append(providerAccepted, algorithm)
+		}
+		if userModelRoundTrips {
+			userModelAccepted = append(userModelAccepted, algorithm)
+		}
+	}
+	sort.Strings(providerAccepted)
+	sort.Strings(userModelAccepted)
+	return providerAccepted, userModelAccepted
+}
+
+func acceptedByEveryPath(provider, userModel []string) []string {
+	userModelSet := make(map[string]struct{}, len(userModel))
+	for _, algorithm := range userModel {
+		userModelSet[algorithm] = struct{}{}
+	}
+	accepted := make([]string, 0, len(provider))
+	for _, algorithm := range provider {
+		if _, ok := userModelSet[algorithm]; ok {
 			accepted = append(accepted, algorithm)
 		}
 	}
-	sort.Strings(accepted)
 	return accepted
 }
 
@@ -290,7 +318,8 @@ func sourceHashes(t *testing.T) map[string]string {
 }
 
 func TestAcceptedFormatsDeclarationMatchesBehaviour(t *testing.T) {
-	accepted := observedAccepted(t)
+	providerAccepted, userModelAccepted := observedAcceptance(t)
+	accepted := acceptedByEveryPath(providerAccepted, userModelAccepted)
 	if len(accepted) == 0 {
 		t.Fatal("no declared algorithm round-trips; either this build reads nothing or the probe is broken")
 	}
@@ -305,15 +334,44 @@ func TestAcceptedFormatsDeclarationMatchesBehaviour(t *testing.T) {
 			probeControlAlgorithm,
 		)
 	}
+	if roundTripsUserModel(
+		t,
+		probeControlAlgorithm,
+		writerAAD[AlgorithmV2](namespaceUserModel, probeWorkspace, probePurpose),
+	) {
+		t.Fatalf(
+			"the control algorithm %q round-tripped on the user-model path; the probe "+
+				"cannot distinguish acceptance from rejection",
+			probeControlAlgorithm,
+		)
+	}
+	if roundTripsProvider(
+		t,
+		retiredV1Format,
+		retiredV1WriterAAD(namespaceProvider, probeWorkspace, probeProvider),
+	) {
+		t.Fatalf("the retired provider format %q still round-trips", retiredV1Format)
+	}
+	if roundTripsUserModel(
+		t,
+		retiredV1Format,
+		retiredV1WriterAAD(namespaceUserModel, probeWorkspace, probePurpose),
+	) {
+		t.Fatalf("the retired user-model format %q still round-trips", retiredV1Format)
+	}
 
 	want := acceptedFormatsDeclaration{
-		Schema:          declarationSchema,
-		Package:         declarationPackage,
-		Accepted:        accepted,
-		RejectedControl: probeControlAlgorithm,
-		Probe:           declarationProbe,
-		Generator:       declarationGenerator,
-		SourceSHA256:    sourceHashes(t),
+		Schema:            declarationSchema,
+		Package:           declarationPackage,
+		Accepted:          accepted,
+		AcceptedProvider:  providerAccepted,
+		AcceptedUserModel: userModelAccepted,
+		RejectedProvider:  []string{retiredV1Format},
+		RejectedUserModel: []string{retiredV1Format},
+		RejectedControl:   probeControlAlgorithm,
+		Probe:             declarationProbe,
+		Generator:         declarationGenerator,
+		SourceSHA256:      sourceHashes(t),
 	}
 	encoded, err := json.MarshalIndent(want, "", "  ")
 	if err != nil {

@@ -4,11 +4,23 @@
   "accepted": [
     "TR-BYOK-ENVELOPE-AES-256-GCM-V2"
   ],
+  "accepted_provider": [
+    "TR-BYOK-ENVELOPE-AES-256-GCM-V2"
+  ],
+  "accepted_user_model": [
+    "TR-BYOK-ENVELOPE-AES-256-GCM-V2"
+  ],
+  "rejected_provider": [
+    "TR-BYOK-ENVELOPE-AES-256-GCM-V1"
+  ],
+  "rejected_user_model": [
+    "TR-BYOK-ENVELOPE-AES-256-GCM-V1"
+  ],
   "rejected_control": "TR-BYOK-ENVELOPE-AES-256-GCM-PROBE-NOT-A-FORMAT",
-  "probe": "seal provider and user-model envelopes with the control plane's associated data, then require both enclave resolve paths to return the plaintext",
+  "probe": "seal current and retired provider and user-model envelopes with the control plane's associated data; record acceptance and rejection for each enclave path",
   "generator": "go test ./internal/byokcache -run 'TestAcceptedFormatsDeclaration|TestProbe' -args -update-accepted-formats",
   "source_sha256": {
-    "accepted_formats_test.go": "70c4189700eb9d4017a5e04b2914d0d357cafe20ffe586c264688f31b77ea616",
+    "accepted_formats_test.go": "41154800b11ae8e4549e3785e16d0c08979fba33f8b155825fe0aaf07362f221",
     "cache.go": "d3b983d541e690d5144238268411035e2214e0372a7332397daf86f62141eca1",
     "confidential_space_token.go": "9b7b0f5bdd5a3fbd6cc06b90fb73b062e7b7766dce893d5d59dac8c86210ab6c",
     "confidential_space_token_other.go": "9744c64218561ec6546bac3cc644272beb74205d98d0d712ddd75bdaf4b40057",
