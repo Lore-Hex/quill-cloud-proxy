@@ -103,6 +103,10 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "inference.api.nscale.com", CID: 3, Port: 8073},
 	{Host: "api.perplexity.ai", CID: 3, Port: 8074},
 	{Host: "api.krea.ai", CID: 3, Port: 8075},
+	{Host: "api.vultrinference.com", CID: 3, Port: 8076},
+	{Host: "api.darkbloom.dev", CID: 3, Port: 8077},
+	{Host: "qianfan.baidubce.com", CID: 3, Port: 8078},
+	{Host: "design-api.sourceful.com", CID: 3, Port: 8079},
 	// Chutes discovery and encrypted inference relay. Prompt bytes remain
 	// encrypted end-to-end between this enclave and the attested GPU worker.
 	{Host: "llm.chutes.ai", CID: 3, Port: 8049},

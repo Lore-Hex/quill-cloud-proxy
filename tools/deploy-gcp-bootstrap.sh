@@ -115,6 +115,10 @@ WANDB_SECRET="${WANDB_SECRET:-trustedrouter-wandb-api-key}"
 NSCALE_SECRET="${NSCALE_SECRET:-trustedrouter-nscale-api-key}"
 PERPLEXITY_SECRET="${PERPLEXITY_SECRET:-trustedrouter-perplexity-api-key}"
 KREA_SECRET="${KREA_SECRET:-trustedrouter-krea-api-key}"
+VULTR_SECRET="${VULTR_SECRET:-trustedrouter-vultr-api-key}"
+DARKBLOOM_SECRET="${DARKBLOOM_SECRET:-trustedrouter-darkbloom-api-key}"
+BAIDU_SECRET="${BAIDU_SECRET:-trustedrouter-baidu-api-key}"
+RIVERFLOW_SECRET="${RIVERFLOW_SECRET:-trustedrouter-riverflow-api-key}"
 DATABRICKS_SECRET="${DATABRICKS_SECRET:-trustedrouter-databricks-token}"
 DATABRICKS_HOST_SECRET="${DATABRICKS_HOST_SECRET:-trustedrouter-databricks-host}"
 ALIBABA_SECRET="${ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
@@ -265,6 +269,10 @@ for secret in \
   "$NSCALE_SECRET" \
   "$PERPLEXITY_SECRET" \
   "$KREA_SECRET" \
+  "$VULTR_SECRET" \
+  "$DARKBLOOM_SECRET" \
+  "$BAIDU_SECRET" \
+  "$RIVERFLOW_SECRET" \
   "$DATABRICKS_SECRET" \
   "$DATABRICKS_HOST_SECRET" \
   "$ALIBABA_SECRET" \

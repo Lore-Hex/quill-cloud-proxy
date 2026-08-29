@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	_ "golang.org/x/image/webp"
 )
 
 const (
@@ -286,6 +287,16 @@ func normalizeImageBytesUnchecked(mediaType string, data []byte) (string, []byte
 			return "", nil, fmt.Errorf("llm/image: encode png: %w", err)
 		}
 		return mediaType, out.Bytes(), nil
+	case "image/webp":
+		if err := validateImageConfig(data); err != nil {
+			return "", nil, err
+		}
+		if _, _, err := image.Decode(bytes.NewReader(data)); err != nil {
+			return "", nil, fmt.Errorf("llm/image: decode webp: %w", err)
+		}
+		// x/image/webp is decode-only. Preserve the validated WebP bytes so
+		// image-generation routes can honor their promised output format.
+		return mediaType, data, nil
 	default:
 		return "", nil, fmt.Errorf("llm/image: unsupported image media type")
 	}

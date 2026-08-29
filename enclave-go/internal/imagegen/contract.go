@@ -226,6 +226,16 @@ func decartSpec() ModelSpec {
 	}
 }
 
+func riverflowSpec() ModelSpec {
+	return ModelSpec{
+		ID: "riverflow/riverflow-2-fast", Provider: "riverflow", UpstreamID: "riverflow-2-fast",
+		Pricing: PricingFixed, SupportsStreaming: false, NMin: 1, NMax: 1,
+		Resolutions: []string{"1K"}, AspectRatios: []string{"1:1"},
+		OutputFormats: []string{"webp"}, NativeSizes: map[string]string{"1:1": "1024x1024"},
+		FixedOutputPrices: map[string]int{"1k": 20_000},
+	}
+}
+
 var modelSpecs = func() map[string]ModelSpec {
 	classicShapes := []nativeImageShape{
 		{AspectRatio: "1:1", Size: "1024x1024"},
@@ -264,6 +274,7 @@ var modelSpecs = func() map[string]ModelSpec {
 		fixedSquareSpec("black-forest-labs/flux-2-max", "bfl", "flux-2-max", "jpeg", map[string]int{"1k": 70_000}),
 		fixedSquareSpec("black-forest-labs/flux-2-flex", "bfl", "flux-2-flex", "jpeg", map[string]int{"1k": 50_000}),
 		fixedSquareSpec("krea/krea-2-medium", "krea", "krea/krea-2/medium", "", map[string]int{"1k": 30_000}),
+		riverflowSpec(),
 		decartSpec(),
 	}
 	result := make(map[string]ModelSpec, len(specs))
