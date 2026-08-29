@@ -653,6 +653,30 @@ func TestAuthorizeAndSettleCarryAttributionWithoutMutableSettleTags(t *testing.T
 	}
 }
 
+func TestAuthorizeCarriesEnclaveDerivedRequestedParameters(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode authorize: %v", err)
+		}
+		_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_1","workspace_id":"ws_1","api_key_hash":"key_1","model":"test/model","endpoint_id":"test/model@test/prepaid","provider":"test","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "internal", server.Client())
+	_, err := client.Authorize(t.Context(), "sk-test", &qtypes.OpenAIChatRequest{
+		Model:               "test/model",
+		RequestedParameters: []string{"temperature", "tools"},
+	})
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	got, ok := payload["requested_parameters"].([]any)
+	if !ok || len(got) != 2 || got[0] != "temperature" || got[1] != "tools" {
+		t.Fatalf("requested_parameters = %#v", payload["requested_parameters"])
+	}
+}
+
 func TestSettleMapsTrustedSyntheticAppSentinelToDefault(t *testing.T) {
 	tests := []struct {
 		name string

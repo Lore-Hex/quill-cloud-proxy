@@ -263,6 +263,10 @@ type OpenAIChatRequest struct {
 	StreamOptions       *ChatStreamOptions   `json:"stream_options,omitempty"`
 	Temperature         *float64             `json:"temperature,omitempty"`
 	TopP                *float64             `json:"top_p,omitempty"`
+	TopK                *int                 `json:"top_k,omitempty"`
+	TopA                *float64             `json:"top_a,omitempty"`
+	MinP                *float64             `json:"min_p,omitempty"`
+	RepetitionPenalty   *float64             `json:"repetition_penalty,omitempty"`
 	MaxTokens           *int                 `json:"max_tokens,omitempty"`
 	MaxCompletionTokens *int                 `json:"max_completion_tokens,omitempty"`
 	MaxOutputTokens     *int                 `json:"max_output_tokens,omitempty"`
@@ -274,6 +278,9 @@ type OpenAIChatRequest struct {
 	LogitBias           map[string]float64   `json:"logit_bias,omitempty"`
 	Logprobs            *bool                `json:"logprobs,omitempty"`
 	TopLogprobs         *int                 `json:"top_logprobs,omitempty"`
+	Prediction          any                  `json:"prediction,omitempty"`
+	PromptCacheKey      string               `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions  map[string]any       `json:"prompt_cache_options,omitempty"`
 	Reasoning           any                  `json:"reasoning,omitempty"`
 	ReasoningEffort     string               `json:"reasoning_effort,omitempty"`
 	ServiceTier         string               `json:"service_tier,omitempty"`
@@ -300,6 +307,9 @@ type OpenAIChatRequest struct {
 	HTTPReferer        string                  `json:"-"`
 	AppCategories      []string                `json:"-"`
 	OpenRouterMetadata bool                    `json:"-"`
+	// RequestedParameters is derived by the enclave's strict request validator
+	// and sent only to the control plane for require_parameters routing.
+	RequestedParameters []string `json:"-"`
 	// Image-generation controls are enclave-owned. They are populated only by
 	// POST /v1/images after strict validation and never accepted through the
 	// chat-completions JSON surface.
@@ -459,6 +469,9 @@ type OpenAIResponsesRequest struct {
 	Stream               bool             `json:"stream,omitempty"`
 	Temperature          *float64         `json:"temperature,omitempty"`
 	TopP                 *float64         `json:"top_p,omitempty"`
+	TopK                 *int             `json:"top_k,omitempty"`
+	FrequencyPenalty     *float64         `json:"frequency_penalty,omitempty"`
+	PresencePenalty      *float64         `json:"presence_penalty,omitempty"`
 	MaxOutputTokens      *int             `json:"max_output_tokens,omitempty"`
 	MaxTokens            *int             `json:"max_tokens,omitempty"`
 	Provider             *ProviderRouting `json:"provider,omitempty"`
@@ -475,9 +488,11 @@ type OpenAIResponsesRequest struct {
 	Modalities           []string         `json:"modalities,omitempty"`
 	N                    *int             `json:"n,omitempty"`
 	ParallelToolCalls    *bool            `json:"parallel_tool_calls,omitempty"`
+	Plugins              []any            `json:"plugins,omitempty"`
 	PreviousResponseID   string           `json:"previous_response_id,omitempty"`
 	Prompt               any              `json:"prompt,omitempty"`
 	PromptCacheKey       string           `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions   map[string]any   `json:"prompt_cache_options,omitempty"`
 	PromptCacheRetention string           `json:"prompt_cache_retention,omitempty"`
 	Reasoning            any              `json:"reasoning,omitempty"`
 	SafetyIdentifier     string           `json:"safety_identifier,omitempty"`
@@ -548,23 +563,29 @@ type ToolCall struct {
 }
 
 // ProviderRouting mirrors the OpenRouter provider-routing object closely
-// enough to preserve caller intent without committing the gateway to every
-// future OpenRouter knob. Unknown fields are intentionally ignored at the
-// enclave boundary to keep the auditable surface small.
+// enough to preserve caller intent. The HTTP boundary validates this object
+// against an explicit allowlist before unmarshalling, so unknown fields never
+// become silent no-ops.
 type ProviderRouting struct {
-	Order             StringList     `json:"order,omitempty"`
-	AllowFallbacks    *bool          `json:"allow_fallbacks,omitempty"`
-	RequireParameters *bool          `json:"require_parameters,omitempty"`
-	DataCollection    string         `json:"data_collection,omitempty"`
-	MinPrivacy        string         `json:"min_privacy,omitempty"`
-	Jurisdiction      string         `json:"jurisdiction,omitempty"`
-	Usage             string         `json:"usage,omitempty"`
-	Only              StringList     `json:"only,omitempty"`
-	Ignore            StringList     `json:"ignore,omitempty"`
-	Quantizations     StringList     `json:"quantizations,omitempty"`
-	Sort              any            `json:"sort,omitempty"`
-	MaxPrice          map[string]any `json:"max_price,omitempty"`
-	Options           map[string]any `json:"options,omitempty"`
+	Order               StringList     `json:"order,omitempty"`
+	AllowFallbacks      *bool          `json:"allow_fallbacks,omitempty"`
+	RequireParameters   *bool          `json:"require_parameters,omitempty"`
+	DataCollection      string         `json:"data_collection,omitempty"`
+	MinPrivacy          string         `json:"min_privacy,omitempty"`
+	Jurisdiction        string         `json:"jurisdiction,omitempty"`
+	Country             string         `json:"country,omitempty"`
+	HeadquartersCountry string         `json:"headquarters_country,omitempty"`
+	ProviderCountry     string         `json:"provider_country,omitempty"`
+	Usage               string         `json:"usage,omitempty"`
+	UsageType           string         `json:"usage_type,omitempty"`
+	Billing             string         `json:"billing,omitempty"`
+	Only                StringList     `json:"only,omitempty"`
+	Ignore              StringList     `json:"ignore,omitempty"`
+	Quantizations       StringList     `json:"quantizations,omitempty"`
+	Sort                any            `json:"sort,omitempty"`
+	MaxPrice            map[string]any `json:"max_price,omitempty"`
+	ZDR                 *bool          `json:"zdr,omitempty"`
+	Options             map[string]any `json:"options,omitempty"`
 }
 
 // StringList accepts either OpenRouter's normal array form or a

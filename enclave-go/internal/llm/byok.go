@@ -76,11 +76,19 @@ type openAICompatibleRequest struct {
 	Temperature         *float64            `json:"temperature,omitempty"`
 	TopP                *float64            `json:"top_p,omitempty"`
 	TopK                *int                `json:"top_k,omitempty"`
+	TopA                *float64            `json:"top_a,omitempty"`
+	MinP                *float64            `json:"min_p,omitempty"`
+	RepetitionPenalty   *float64            `json:"repetition_penalty,omitempty"`
 	Seed                *int                `json:"seed,omitempty"`
 	FrequencyPenalty    *float64            `json:"frequency_penalty,omitempty"`
 	PresencePenalty     *float64            `json:"presence_penalty,omitempty"`
 	LogitBias           map[string]float64  `json:"logit_bias,omitempty"`
+	Logprobs            *bool               `json:"logprobs,omitempty"`
+	TopLogprobs         *int                `json:"top_logprobs,omitempty"`
 	Stop                any                 `json:"stop,omitempty"`
+	Prediction          any                 `json:"prediction,omitempty"`
+	PromptCacheKey      string              `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions  map[string]any      `json:"prompt_cache_options,omitempty"`
 	ResponseFormat      any                 `json:"response_format,omitempty"`
 	Tools               []any               `json:"tools,omitempty"`
 	ToolChoice          any                 `json:"tool_choice,omitempty"`
@@ -361,6 +369,9 @@ func buildOpenAICompatibleRequest(
 		}
 		reqBody.Reasoning = req.Reasoning
 		reqBody.ReasoningEffort = req.ReasoningEffort
+		reqBody.TopA = req.TopA
+		reqBody.MinP = req.MinP
+		reqBody.RepetitionPenalty = req.RepetitionPenalty
 		reqBody.Tools = req.Tools
 		reqBody.ToolChoice = req.ToolChoice
 		reqBody.ParallelToolCalls = req.ParallelTools
@@ -368,7 +379,12 @@ func buildOpenAICompatibleRequest(
 		reqBody.FrequencyPenalty = req.FrequencyPenalty
 		reqBody.PresencePenalty = req.PresencePenalty
 		reqBody.LogitBias = req.LogitBias
+		reqBody.Logprobs = req.Logprobs
+		reqBody.TopLogprobs = req.TopLogprobs
 		reqBody.Stop = req.Stop
+		reqBody.Prediction = req.Prediction
+		reqBody.PromptCacheKey = req.PromptCacheKey
+		reqBody.PromptCacheOptions = req.PromptCacheOptions
 		if len(req.ResponseFormat) > 0 {
 			reqBody.ResponseFormat = req.ResponseFormat
 		}

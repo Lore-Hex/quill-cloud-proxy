@@ -937,6 +937,18 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 	if raw == nil {
 		return config, nil
 	}
+	for name := range raw {
+		if _, ok := fusionParameterFields[name]; !ok {
+			return config, &adapter.AdapterError{
+				Status: 400, Message: "unknown trustedrouter/fusion parameter", Context: name,
+			}
+		}
+	}
+	if tools, ok := raw["tools"]; ok && tools != nil {
+		return config, &adapter.AdapterError{
+			Status: 501, Message: "not_supported_in_alpha", Context: "plugins.fusion.tools",
+		}
+	}
 	if enabled, ok := raw["enabled"]; ok {
 		value, ok := enabled.(bool)
 		if !ok {
@@ -1146,6 +1158,23 @@ func parseFusionParameters(raw map[string]any) (fusionConfig, error) {
 		}
 	}
 	return config, nil
+}
+
+var fusionParameterFields = map[string]struct{}{
+	"analysis_models": {}, "enabled": {}, "fallback_final_models": {},
+	"fallback_judges": {}, "final_instructions": {}, "final_models": {},
+	"final_prompt": {}, "id": {}, "judge_models": {}, "judges": {},
+	"mapper_instructions": {}, "mapper_model": {}, "mapper_models": {},
+	"mapper_prompt": {}, "max_completion_tokens": {}, "max_parts": {},
+	"max_tool_calls": {}, "mode": {}, "model": {}, "panel_prompt": {},
+	"parallel_instructions": {}, "parallel_model": {}, "parallel_models": {},
+	"parallel_prompt": {}, "preset": {}, "reduce_instructions": {},
+	"reduce_prompt": {}, "reducer_instructions": {}, "reducer_model": {},
+	"reducer_models": {}, "reducer_prompt": {}, "selection_strategy": {},
+	"selector_instructions": {}, "selector_model": {}, "selector_models": {},
+	"selector_prompt": {}, "strategy": {}, "synthesis_instructions": {},
+	"synthesis_models": {}, "synthesis_prompt": {}, "synthesizer_models": {},
+	"tools": {}, "type": {}, "worker_instructions": {}, "worker_prompt": {},
 }
 
 func mergeFusionConfig(base, override fusionConfig) fusionConfig {

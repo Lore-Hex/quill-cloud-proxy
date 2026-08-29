@@ -30,6 +30,32 @@ func TestRequestEndLogsExplicitAbuseOutcomes(t *testing.T) {
 	}
 }
 
+func TestRequestContractRejectionLogIsMetadataOnlyAndBounded(t *testing.T) {
+	var logLine bytes.Buffer
+	parameter := strings.Repeat("future_option", 30)
+	writeRequestContractRejection(
+		&logLine,
+		"rlog-contract",
+		"/v1/chat/completions",
+		http.StatusBadRequest,
+		parameter,
+	)
+	logged := logLine.String()
+	for _, want := range []string{
+		`enclave.request_contract_rejected`,
+		`request_log_id="rlog-contract"`,
+		`route="/v1/chat/completions"`,
+		`status=400`,
+	} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("contract log missing %q: %s", want, logged)
+		}
+	}
+	if strings.Contains(logged, parameter) || len(logged) > 320 {
+		t.Fatalf("contract log was not bounded: %s", logged)
+	}
+}
+
 func TestRequestAuditResolvesWorkspaceForPreAuthorizationError(t *testing.T) {
 	const bearer = "synthetic-private-bearer-material"
 	var payload map[string]any

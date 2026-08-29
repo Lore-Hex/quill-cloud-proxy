@@ -7084,6 +7084,123 @@ func TestParseFusionParametersRejectsInvalidPanelPrompt(t *testing.T) {
 	}
 }
 
+func TestParseFusionParametersRejectsSilentNoOps(t *testing.T) {
+	for _, tc := range []struct {
+		parameters  map[string]any
+		wantStatus  int
+		wantContext string
+	}{
+		{map[string]any{"future_fusion_option": true}, 400, "future_fusion_option"},
+		{map[string]any{"tools": []any{map[string]any{"type": "openrouter:web_search"}}}, 501, "plugins.fusion.tools"},
+	} {
+		_, err := parseFusionParameters(tc.parameters)
+		var aerr *adapter.AdapterError
+		if !errors.As(err, &aerr) || aerr.Status != tc.wantStatus || aerr.Context != tc.wantContext {
+			t.Fatalf("parameters %#v: error = %#v, want status %d context %q", tc.parameters, err, tc.wantStatus, tc.wantContext)
+		}
+	}
+}
+
+func TestParseChatRequestRejectsUnknownAndUnsupportedOptionsBeforeAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		body        string
+		wantStatus  int
+		wantContext string
+	}{
+		{`{"model":"m","messages":[{"role":"user","content":"hi"}],"future_option":true}`, 400, "future_option"},
+		{`{"model":"m","messages":[{"role":"user","content":"hi"}],"plugins":[{"id":"web"}]}`, 501, "plugins.web"},
+	} {
+		_, err := parseChatRequest([]byte(tc.body))
+		var aerr *adapter.AdapterError
+		if !errors.As(err, &aerr) || aerr.Status != tc.wantStatus || aerr.Context != tc.wantContext {
+			t.Fatalf("body %s: error = %#v, want status %d context %q", tc.body, err, tc.wantStatus, tc.wantContext)
+		}
+	}
+}
+
+func TestParseChatRequestCapturesRequireParametersCapabilities(t *testing.T) {
+	req, err := parseChatRequest([]byte(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"hi"}],
+		"temperature":0.3,
+		"max_completion_tokens":20,
+		"provider":{"require_parameters":true}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(req.RequestedParameters, []string{"max_tokens", "temperature"}) {
+		t.Fatalf("requested parameters = %#v", req.RequestedParameters)
+	}
+}
+
+func TestParseChatRequestPreservesProviderCompatibilityAliases(t *testing.T) {
+	req, err := parseChatRequest([]byte(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"hi"}],
+		"provider":{
+			"billing":"credits",
+			"usage_type":"prepaid",
+			"country":"us",
+			"headquarters_country":"us",
+			"provider_country":"us"
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Provider == nil || req.Provider.Billing != "credits" ||
+		req.Provider.UsageType != "prepaid" || req.Provider.Country != "us" ||
+		req.Provider.HeadquartersCountry != "us" || req.Provider.ProviderCountry != "us" {
+		t.Fatalf("provider aliases were not preserved: %#v", req.Provider)
+	}
+}
+
+func TestServeOneReturnsExactRejectedOptionInOpenAIError(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantParam  string
+	}{
+		{"unknown", `{"model":"m","messages":[{"role":"user","content":"hi"}],"future_option":true}`, 400, "future_option"},
+		{"unsupported", `{"model":"m","messages":[{"role":"user","content":"hi"}],"plugins":[{"id":"web"}]}`, 501, "plugins.web"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const bearer = "sk-test"
+			server, client := net.Pipe()
+			defer client.Close()
+			go serveOne(context.Background(), server, registryForBearer(bearer), &fakeStreamingLLM{}, nil, nil, nil, nil)
+
+			_, err := fmt.Fprintf(
+				client,
+				"POST /v1/chat/completions HTTP/1.1\r\nHost: api.trustedrouter.com\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+				bearer,
+				len(tc.body),
+				tc.body,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, responseBody := readHTTPResponseBody(t, bufio.NewReader(client))
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, body = %s", resp.StatusCode, responseBody)
+			}
+			var payload struct {
+				Error struct {
+					Param string `json:"param"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(responseBody), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Error.Param != tc.wantParam {
+				t.Fatalf("error.param = %q, want %q", payload.Error.Param, tc.wantParam)
+			}
+		})
+	}
+}
+
 func TestServeOneResponsesNonStreamingFailsClosedWhenSettleFails(t *testing.T) {
 	bearer := "test-user-bearer"
 	var settleCalled bool
