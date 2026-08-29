@@ -340,6 +340,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "perplexity",
         "krea",
         "vultr",
+        "huggingface",
         "darkbloom",
         "baidu",
         "riverflow",
