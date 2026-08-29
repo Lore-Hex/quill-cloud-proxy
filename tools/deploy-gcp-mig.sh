@@ -324,10 +324,12 @@ fi
 # optional providers, so either can remain dark without emitting an empty name.
 ENGY_TEE_ENV="${PEARL_TEE_ENV}${ENGY_TEE_ENV}"
 
-# Provider-wave secrets are independently optional. A named-but-missing secret
-# makes Confidential Space fail closed at boot, so only place a pointer in VM
-# metadata after Secret Manager confirms that secret exists. Explicitly setting
-# an environment variable to the empty string keeps that provider dark.
+# Most provider-wave secrets are independently optional. A named-but-missing
+# secret makes Confidential Space fail closed at boot, so optional providers
+# only receive a VM metadata pointer after Secret Manager confirms the secret
+# exists. Providers already published as routable use the required helper below:
+# their rollout must fail before touching healthy instances instead of silently
+# deploying an enclave that cannot serve an advertised route.
 PROVIDER_WAVE_TEE_ENV=""
 configure_optional_provider_secret() {
   local env_name="$1"
@@ -342,6 +344,24 @@ configure_optional_provider_secret() {
   if [ -n "$configured" ]; then
     PROVIDER_WAVE_TEE_ENV="${PROVIDER_WAVE_TEE_ENV}|tee-env-${env_name}=${configured}"
   fi
+}
+configure_required_provider_secret() {
+  local env_name="$1"
+  local default_secret="$2"
+  local configured="$default_secret"
+  if [ "${!env_name+x}" = "x" ]; then
+    configured="${!env_name}"
+  fi
+  if [ -z "$configured" ]; then
+    echo "FATAL: ${env_name} cannot be empty for a published provider" >&2
+    exit 1
+  fi
+  if ! gc secrets describe "$configured" >/dev/null 2>&1; then
+    echo "FATAL: required provider secret ${configured} does not exist" >&2
+    exit 1
+  fi
+  printf -v "$env_name" '%s' "$configured"
+  PROVIDER_WAVE_TEE_ENV="${PROVIDER_WAVE_TEE_ENV}|tee-env-${env_name}=${configured}"
 }
 configure_optional_provider_secret QUILL_STEPFUN_SECRET trustedrouter-stepfun-api-key
 configure_optional_provider_secret QUILL_RELACE_SECRET trustedrouter-relace-api-key
@@ -366,7 +386,7 @@ configure_optional_provider_secret QUILL_SAKANA_SECRET trustedrouter-sakana-api-
 configure_optional_provider_secret QUILL_NVIDIA_NIM_SECRET trustedrouter-nvidia-nim-api-key
 configure_optional_provider_secret QUILL_WANDB_SECRET trustedrouter-wandb-api-key
 configure_optional_provider_secret QUILL_NSCALE_SECRET trustedrouter-nscale-api-key
-configure_optional_provider_secret QUILL_PERPLEXITY_SECRET trustedrouter-perplexity-api-key
+configure_required_provider_secret QUILL_PERPLEXITY_SECRET trustedrouter-perplexity-api-key
 configure_optional_provider_secret QUILL_KREA_SECRET trustedrouter-krea-api-key
 configure_optional_provider_secret QUILL_VULTR_SECRET trustedrouter-vultr-api-key
 configure_optional_provider_secret QUILL_HUGGING_FACE_SECRET trustedrouter-huggingface-api-key

@@ -11,6 +11,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RolloutSafetyTests(unittest.TestCase):
+    def test_published_perplexity_route_requires_runtime_secret(self) -> None:
+        deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("configure_required_provider_secret()", deploy)
+        self.assertIn(
+            "configure_required_provider_secret QUILL_PERPLEXITY_SECRET "
+            "trustedrouter-perplexity-api-key",
+            deploy,
+        )
+        self.assertNotIn(
+            "configure_optional_provider_secret QUILL_PERPLEXITY_SECRET",
+            deploy,
+        )
+        self.assertIn(
+            'FATAL: required provider secret ${configured} does not exist',
+            deploy,
+        )
+
     def test_workflow_uses_persistent_drains_for_every_region(self) -> None:
         workflow = (
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
