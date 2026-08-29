@@ -21,14 +21,9 @@ import (
 )
 
 const (
-	// Algorithm is the original envelope format. Its associated data is
-	// colon-joined and not injective; see aad below.
-	Algorithm = "TR-BYOK-ENVELOPE-AES-256-GCM-V1"
-
-	// AlgorithmV2 length-prefixes the associated data and adds a namespace
-	// component. The control plane starts writing these only after every
-	// enclave region can read them — a v2 envelope reaching a build that only
-	// knows v1 is a hard failure for that customer's BYOK key.
+	// AlgorithmV2 length-prefixes the associated data and adds a namespace.
+	// V1 read support was removed only after every standalone cloud attested
+	// that no V1 envelope remained.
 	AlgorithmV2 = "TR-BYOK-ENVELOPE-AES-256-GCM-V2"
 
 	// The enclave opens provider BYOK keys and owner-supplied model endpoint
@@ -118,7 +113,14 @@ func (c *Cache) Resolve(
 	cacheKey string,
 	envelope EncryptedSecretEnvelope,
 ) (string, bool, error) {
-	return c.resolve(ctx, namespaceProvider, workspaceID, provider, cacheKey, envelope)
+	if strings.ContainsRune(workspaceID, '\x00') || strings.ContainsRune(provider, '\x00') {
+		return "", false, errors.New("byokcache: provider cache identity contains a NUL byte")
+	}
+	derivedKey := Fingerprint(workspaceID, provider, envelope)
+	if cacheKey != "" && cacheKey != derivedKey {
+		return "", false, errors.New("byokcache: supplied cache key does not match envelope binding")
+	}
+	return c.resolve(ctx, namespaceProvider, workspaceID, provider, derivedKey, envelope)
 }
 
 // ResolveUserModel opens an owner endpoint credential under the user_model
@@ -159,12 +161,19 @@ func (c *Cache) resolve(
 	if c == nil {
 		return "", false, errors.New("byokcache: nil cache")
 	}
-	if cacheKey == "" {
-		cacheKey = Fingerprint(workspaceID, contextName, envelope)
+	// Validate the wire format before lookup. Cache identity is a performance
+	// detail and must never let a relabeled or retired envelope bypass the
+	// format gate on a hit.
+	if envelope.Algorithm != AlgorithmV2 {
+		return "", false, fmt.Errorf(
+			"byokcache: unsupported envelope algorithm %q", envelope.Algorithm,
+		)
 	}
-	// Namespace the lookup key even when a legacy provider caller supplies its
-	// own cache key. Otherwise a provider entry could bypass user_model AAD
-	// verification merely by colliding with the enclave-derived fingerprint.
+	if cacheKey == "" {
+		return "", false, errors.New("byokcache: empty enclave-derived cache key")
+	}
+	// Namespace the enclave-derived lookup key. A provider entry cannot bypass
+	// user_model AAD verification by colliding with that family's fingerprint.
 	cacheKey = namespace + "\x00" + cacheKey
 
 	now := c.now()
@@ -333,33 +342,34 @@ func Fingerprint(workspaceID string, provider string, envelope EncryptedSecretEn
 		_, _ = digest.Write([]byte(part))
 		_, _ = digest.Write([]byte{0})
 	}
+	// "v1" versions the cache-key serialization, not the encrypted-envelope
+	// format. It remains stable so a rolling enclave update does not create a
+	// second cache identity for the same V2 envelope.
 	return "byokcache:v1:" + hex.EncodeToString(digest.Sum(nil))
 }
 
 func userModelFingerprint(ownerWorkspaceID, purpose string, envelope EncryptedSecretEnvelope) (string, error) {
-	ciphertext, err := decodeB64(envelope.Ciphertext)
-	if err != nil {
-		return "", fmt.Errorf("byokcache: fingerprint ciphertext: %w", err)
-	}
 	identity, err := aadV2(namespaceUserModel, ownerWorkspaceID, purpose)
 	if err != nil {
 		return "", err
 	}
-	ciphertextHash := sha256.Sum256(ciphertext)
 	digest := sha256.New()
-	_, _ = digest.Write(identity)
-	_, _ = digest.Write(ciphertextHash[:])
+	parts := [][]byte{
+		identity,
+		[]byte(envelope.Algorithm),
+		[]byte(envelope.KeyRef),
+		[]byte(envelope.EncryptedDEK),
+		[]byte(envelope.DEKNonce),
+		[]byte(envelope.Ciphertext),
+		[]byte(envelope.Nonce),
+	}
+	var length [8]byte
+	for _, part := range parts {
+		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
+		_, _ = digest.Write(length[:])
+		_, _ = digest.Write(part)
+	}
 	return "byokcache:user-model:v1:" + hex.EncodeToString(digest.Sum(nil)), nil
-}
-
-// aad builds the v1 associated data.
-//
-// Colon-joined with no escaping and no length prefix, so component boundaries
-// are ambiguous: ("a:b","c") and ("a","b:c") produce identical bytes. That is
-// the defect v2 exists to fix. Kept because envelopes written before the
-// migration are still v1 and must keep opening.
-func aad(workspaceID, provider string) []byte {
-	return []byte(fmt.Sprintf("trustedrouter:byok:%s:%s", workspaceID, provider))
 }
 
 // aadV2 builds the v2 associated data: length-prefixed, so no choice of
@@ -399,27 +409,17 @@ func aadV2(namespace, workspaceID, context string) ([]byte, error) {
 	return out, nil
 }
 
-// envelopeAAD selects the associated data for an envelope's declared format.
-//
-// Provider envelopes retain v1 compatibility; user-model endpoint/signing
-// secrets were introduced after v2 and must never lose their namespace. The
-// control family remains control-plane-only and is deliberately rejected.
+// envelopeAAD accepts only the current format. The control family remains
+// control-plane-only and is deliberately rejected.
 func envelopeAAD(algorithm, namespace, workspaceID, contextName string) ([]byte, error) {
-	switch algorithm {
-	case Algorithm:
-		if namespace != namespaceProvider {
-			return nil, fmt.Errorf("byokcache: namespace %q requires a v2 envelope", namespace)
-		}
-		return aad(workspaceID, contextName), nil
-	case AlgorithmV2:
-		switch namespace {
-		case namespaceProvider, namespaceUserModel:
-			return aadV2(namespace, workspaceID, contextName)
-		default:
-			return nil, fmt.Errorf("byokcache: unsupported envelope namespace %q", namespace)
-		}
-	default:
+	if algorithm != AlgorithmV2 {
 		return nil, fmt.Errorf("byokcache: unsupported envelope algorithm %q", algorithm)
+	}
+	switch namespace {
+	case namespaceProvider, namespaceUserModel:
+		return aadV2(namespace, workspaceID, contextName)
+	default:
+		return nil, fmt.Errorf("byokcache: unsupported envelope namespace %q", namespace)
 	}
 }
 

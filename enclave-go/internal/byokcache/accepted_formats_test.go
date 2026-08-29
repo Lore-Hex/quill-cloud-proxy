@@ -42,8 +42,8 @@ import (
 // seals it and require (*Cache).Resolve — the same entry point settlement.go
 // calls on the prompt path — to return the plaintext. A format is accepted iff
 // a real round trip through the real entry point succeeds. All four evasions
-// above turn into a failed round trip, so the regenerated declaration says V1
-// and the deploy gate blocks.
+// above turn into a failed round trip, so the regenerated declaration omits
+// the current format and the deploy gate blocks.
 //
 // WHAT BINDS THE DECLARATION TO THE SOURCE
 // ----------------------------------------
@@ -92,10 +92,12 @@ const acceptedFormatsFile = "accepted_formats.json"
 // would publish a declaration naming every candidate, and "accepts everything"
 // is the one answer that makes the downstream gate useless.
 const probeControlAlgorithm = "TR-BYOK-ENVELOPE-AES-256-GCM-PROBE-NOT-A-FORMAT"
+const retiredV1Format = "TR-BYOK-ENVELOPE-AES-256-GCM-V1"
 
 const (
 	probeWorkspace = "ws-probe"
 	probeProvider  = "openai"
+	probePurpose   = "user_model_signing"
 	probeSecret    = "probe-plaintext-not-a-credential" //nolint:gosec // fixture
 )
 
@@ -111,14 +113,13 @@ var updateAcceptedFormats = flag.Bool(
 // change to aadV2 would change both sides at once and the round trip would keep
 // succeeding while every envelope the control plane actually wrote stopped
 // opening. These bytes are quill-router's byok_crypto.py, transcribed.
-var writerAAD = map[string]func(workspaceID, provider string) []byte{
-	Algorithm: func(workspaceID, provider string) []byte {
-		return []byte("trustedrouter:byok:" + workspaceID + ":" + provider)
-	},
-	AlgorithmV2: func(workspaceID, provider string) []byte {
+var writerAAD = map[string]func(namespace, workspaceID, contextName string) []byte{
+	AlgorithmV2: func(namespace, workspaceID, contextName string) []byte {
 		out := make([]byte, 0, 64)
 		var length [4]byte
-		for _, part := range []string{"trustedrouter/byok/v2", "provider", workspaceID, provider} {
+		for _, part := range []string{
+			"trustedrouter/byok/v2", namespace, workspaceID, contextName,
+		} {
 			binary.BigEndian.PutUint32(length[:], uint32(len(part))) //nolint:gosec // fixture lengths
 			out = append(out, length[:]...)
 			out = append(out, part...)
@@ -127,49 +128,63 @@ var writerAAD = map[string]func(workspaceID, provider string) []byte{
 	},
 }
 
+func retiredV1WriterAAD(_namespace, workspaceID, contextName string) []byte {
+	return []byte("trustedrouter:byok:" + workspaceID + ":" + contextName)
+}
+
 type acceptedFormatsDeclaration struct {
-	Schema          string            `json:"schema"`
-	Package         string            `json:"package"`
-	Accepted        []string          `json:"accepted"`
-	RejectedControl string            `json:"rejected_control"`
-	Probe           string            `json:"probe"`
-	Generator       string            `json:"generator"`
-	SourceSHA256    map[string]string `json:"source_sha256"`
+	Schema            string            `json:"schema"`
+	Package           string            `json:"package"`
+	Accepted          []string          `json:"accepted"`
+	AcceptedProvider  []string          `json:"accepted_provider"`
+	AcceptedUserModel []string          `json:"accepted_user_model"`
+	RejectedProvider  []string          `json:"rejected_provider"`
+	RejectedUserModel []string          `json:"rejected_user_model"`
+	RejectedControl   string            `json:"rejected_control"`
+	Probe             string            `json:"probe"`
+	Generator         string            `json:"generator"`
+	SourceSHA256      map[string]string `json:"source_sha256"`
 }
 
 const (
 	declarationSchema  = "trustedrouter/byok-accepted-formats/v1"
 	declarationPackage = "enclave-go/internal/byokcache"
-	declarationProbe   = "seal an envelope with the control plane's own associated data, " +
-		"then require (*Cache).Resolve to return the plaintext"
-	declarationGenerator = "go test ./internal/byokcache -run TestAcceptedFormatsDeclaration " +
+	declarationProbe   = "seal current and retired provider and user-model envelopes with the " +
+		"control plane's associated data; record acceptance and rejection for each enclave path"
+	declarationGenerator = "go test ./internal/byokcache -run 'TestAcceptedFormatsDeclaration|TestProbe' " +
 		"-args -update-accepted-formats"
 )
 
-var algorithmConstRE = regexp.MustCompile(`(?m)^\s*(Algorithm\w*)\s*=\s*"([^"]+)"`)
+var algorithmConstRE = regexp.MustCompile(
+	`(?m)^\s*(Algorithm[A-Za-z0-9_]*)\s*=\s*"([^"]+)"`,
+)
 
-// declaredAlgorithms reads cache.go for the algorithm constants this package
-// declares. Every one of them must be probed: a constant added without a probe
-// is a format whose acceptance nobody measured, and the declaration would
-// silently omit it.
+// declaredAlgorithms reads every non-test source file in this package for
+// algorithm constants. Every one of them must be probed: a constant added
+// without a probe is a format whose acceptance nobody measured, and the
+// declaration would silently omit it.
 func declaredAlgorithms(t *testing.T) map[string]string {
 	t.Helper()
-	source, err := os.ReadFile("cache.go")
-	if err != nil {
-		t.Fatalf("read cache.go: %v", err)
-	}
 	declared := map[string]string{}
-	for _, match := range algorithmConstRE.FindAllStringSubmatch(string(source), -1) {
-		declared[match[1]] = match[2]
+	for name, source := range packageSources(t) {
+		for _, match := range algorithmConstRE.FindAllStringSubmatch(string(source), -1) {
+			if previous, ok := declared[match[1]]; ok && previous != match[2] {
+				t.Fatalf(
+					"algorithm constant %s has conflicting values %q and %q (latest in %s)",
+					match[1], previous, match[2], name,
+				)
+			}
+			declared[match[1]] = match[2]
+		}
 	}
 	if len(declared) == 0 {
-		t.Fatal("cache.go declares no Algorithm* constant; this probe cannot enumerate formats")
+		t.Fatal("package declares no Algorithm* constant; this probe cannot enumerate formats")
 	}
 	return declared
 }
 
 // roundTrips is the whole definition of "accepted": seal, resolve, compare.
-func roundTrips(t *testing.T, algorithm string, associated []byte) bool {
+func probeEnvelope(t *testing.T, algorithm string, associated []byte) EncryptedSecretEnvelope {
 	t.Helper()
 	block, err := aes.NewCipher(fixedDEK())
 	if err != nil {
@@ -180,7 +195,7 @@ func roundTrips(t *testing.T, algorithm string, associated []byte) bool {
 		t.Fatalf("gcm: %v", err)
 	}
 	nonce := []byte("123456789012")
-	envelope := EncryptedSecretEnvelope{
+	return EncryptedSecretEnvelope{
 		Algorithm:    algorithm,
 		KeyRef:       "projects/p/locations/l/keyRings/r/cryptoKeys/k",
 		EncryptedDEK: base64.URLEncoding.EncodeToString([]byte("wrapped-dek")),
@@ -190,6 +205,11 @@ func roundTrips(t *testing.T, algorithm string, associated []byte) bool {
 		),
 		Nonce: base64.URLEncoding.EncodeToString(nonce),
 	}
+}
+
+func roundTripsProvider(t *testing.T, algorithm string, associated []byte) bool {
+	t.Helper()
+	envelope := probeEnvelope(t, algorithm, associated)
 	cache := New(Options{Unwrapper: &fakeUnwrapper{dek: fixedDEK()}})
 	secret, _, err := cache.Resolve(t.Context(), probeWorkspace, probeProvider, "", envelope)
 	if err != nil {
@@ -201,9 +221,24 @@ func roundTrips(t *testing.T, algorithm string, associated []byte) bool {
 	return true
 }
 
-func observedAccepted(t *testing.T) []string {
+func roundTripsUserModel(t *testing.T, algorithm string, associated []byte) bool {
 	t.Helper()
-	accepted := []string{}
+	envelope := probeEnvelope(t, algorithm, associated)
+	cache := New(Options{Unwrapper: &fakeUnwrapper{dek: fixedDEK()}})
+	secret, _, err := cache.ResolveUserModel(t.Context(), probeWorkspace, probePurpose, envelope)
+	if err != nil {
+		return false
+	}
+	if secret != probeSecret {
+		t.Fatalf("%s resolved to %q, not the sealed user-model plaintext", algorithm, secret)
+	}
+	return true
+}
+
+func observedAcceptance(t *testing.T) ([]string, []string) {
+	t.Helper()
+	providerAccepted := []string{}
+	userModelAccepted := []string{}
 	for name, algorithm := range declaredAlgorithms(t) {
 		seal, ok := writerAAD[algorithm]
 		if !ok {
@@ -215,60 +250,128 @@ func observedAccepted(t *testing.T) []string {
 				name, algorithm,
 			)
 		}
-		if roundTrips(t, algorithm, seal(probeWorkspace, probeProvider)) {
+		providerRoundTrips := roundTripsProvider(
+			t, algorithm, seal(namespaceProvider, probeWorkspace, probeProvider),
+		)
+		userModelRoundTrips := roundTripsUserModel(
+			t, algorithm, seal(namespaceUserModel, probeWorkspace, probePurpose),
+		)
+		if providerRoundTrips {
+			providerAccepted = append(providerAccepted, algorithm)
+		}
+		if userModelRoundTrips {
+			userModelAccepted = append(userModelAccepted, algorithm)
+		}
+	}
+	sort.Strings(providerAccepted)
+	sort.Strings(userModelAccepted)
+	return providerAccepted, userModelAccepted
+}
+
+func acceptedByEveryPath(provider, userModel []string) []string {
+	userModelSet := make(map[string]struct{}, len(userModel))
+	for _, algorithm := range userModel {
+		userModelSet[algorithm] = struct{}{}
+	}
+	accepted := make([]string, 0, len(provider))
+	for _, algorithm := range provider {
+		if _, ok := userModelSet[algorithm]; ok {
 			accepted = append(accepted, algorithm)
 		}
 	}
-	sort.Strings(accepted)
 	return accepted
 }
 
-func sourceHashes(t *testing.T) map[string]string {
+func packageSources(t *testing.T) map[string][]byte {
 	t.Helper()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read package dir: %v", err)
 	}
-	hashes := map[string]string{}
+	sources := map[string][]byte{}
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") ||
+			(strings.HasSuffix(name, "_test.go") && name != "accepted_formats_test.go") {
 			continue
 		}
 		body, err := os.ReadFile(filepath.Clean(name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
+		sources[name] = body
+	}
+	if len(sources) == 0 {
+		t.Fatal("no non-test .go files found; the declaration would pin nothing")
+	}
+	return sources
+}
+
+func sourceHashes(t *testing.T) map[string]string {
+	t.Helper()
+	hashes := map[string]string{}
+	for name, body := range packageSources(t) {
 		sum := sha256.Sum256(body)
 		hashes[name] = hex.EncodeToString(sum[:])
-	}
-	if len(hashes) == 0 {
-		t.Fatal("no non-test .go files found; the declaration would pin nothing")
 	}
 	return hashes
 }
 
 func TestAcceptedFormatsDeclarationMatchesBehaviour(t *testing.T) {
-	accepted := observedAccepted(t)
+	providerAccepted, userModelAccepted := observedAcceptance(t)
+	accepted := acceptedByEveryPath(providerAccepted, userModelAccepted)
 	if len(accepted) == 0 {
 		t.Fatal("no declared algorithm round-trips; either this build reads nothing or the probe is broken")
 	}
-	if roundTrips(t, probeControlAlgorithm, writerAAD[AlgorithmV2](probeWorkspace, probeProvider)) {
+	if roundTripsProvider(
+		t,
+		probeControlAlgorithm,
+		writerAAD[AlgorithmV2](namespaceProvider, probeWorkspace, probeProvider),
+	) {
 		t.Fatalf(
 			"the control algorithm %q round-tripped. This probe cannot tell an accepted format "+
 				"from a rejected one, so nothing it declares means anything.",
 			probeControlAlgorithm,
 		)
 	}
+	if roundTripsUserModel(
+		t,
+		probeControlAlgorithm,
+		writerAAD[AlgorithmV2](namespaceUserModel, probeWorkspace, probePurpose),
+	) {
+		t.Fatalf(
+			"the control algorithm %q round-tripped on the user-model path; the probe "+
+				"cannot distinguish acceptance from rejection",
+			probeControlAlgorithm,
+		)
+	}
+	if roundTripsProvider(
+		t,
+		retiredV1Format,
+		retiredV1WriterAAD(namespaceProvider, probeWorkspace, probeProvider),
+	) {
+		t.Fatalf("the retired provider format %q still round-trips", retiredV1Format)
+	}
+	if roundTripsUserModel(
+		t,
+		retiredV1Format,
+		retiredV1WriterAAD(namespaceUserModel, probeWorkspace, probePurpose),
+	) {
+		t.Fatalf("the retired user-model format %q still round-trips", retiredV1Format)
+	}
 
 	want := acceptedFormatsDeclaration{
-		Schema:          declarationSchema,
-		Package:         declarationPackage,
-		Accepted:        accepted,
-		RejectedControl: probeControlAlgorithm,
-		Probe:           declarationProbe,
-		Generator:       declarationGenerator,
-		SourceSHA256:    sourceHashes(t),
+		Schema:            declarationSchema,
+		Package:           declarationPackage,
+		Accepted:          accepted,
+		AcceptedProvider:  providerAccepted,
+		AcceptedUserModel: userModelAccepted,
+		RejectedProvider:  []string{retiredV1Format},
+		RejectedUserModel: []string{retiredV1Format},
+		RejectedControl:   probeControlAlgorithm,
+		Probe:             declarationProbe,
+		Generator:         declarationGenerator,
+		SourceSHA256:      sourceHashes(t),
 	}
 	encoded, err := json.MarshalIndent(want, "", "  ")
 	if err != nil {
@@ -307,30 +410,46 @@ func TestAcceptedFormatsDeclarationMatchesBehaviour(t *testing.T) {
 // refuses v2 must produce an accepted set without v2. This drives the same
 // round-trip helper the declaration is generated from.
 func TestProbeSeesARejectedFormat(t *testing.T) {
-	if roundTrips(t, AlgorithmV2, writerAAD[Algorithm](probeWorkspace, probeProvider)) {
+	if roundTripsProvider(t, AlgorithmV2, retiredV1AAD(probeWorkspace, probeProvider)) {
 		t.Fatal("a v2 envelope sealed under v1 associated data must not open")
 	}
-	if !roundTrips(t, AlgorithmV2, writerAAD[AlgorithmV2](probeWorkspace, probeProvider)) {
+	if !roundTripsProvider(
+		t,
+		AlgorithmV2,
+		writerAAD[AlgorithmV2](namespaceProvider, probeWorkspace, probeProvider),
+	) {
 		t.Fatal("a correctly sealed v2 envelope must open; the probe is broken")
+	}
+	if !roundTripsUserModel(
+		t,
+		AlgorithmV2,
+		writerAAD[AlgorithmV2](namespaceUserModel, probeWorkspace, probePurpose),
+	) {
+		t.Fatal("a correctly sealed V2 user-model envelope must open; the probe is broken")
 	}
 }
 
-// A case label with no working body is the whole point of generating this
-// declaration rather than parsing it, so the equivalence is asserted here:
-// `case AlgorithmV2:` is present in cache.go AND the control algorithm — which
-// has no case label — does not resolve. What the probe reads is Resolve's
-// result. Rejecting inside the case body, guarding ahead of the switch,
-// rejecting in the caller, and renaming the dispatch all reach it as the same
-// thing: an error instead of a plaintext.
+// A declared constant with no working read path is the whole point of
+// generating this declaration from behavior rather than syntax. This test
+// keeps the contrast explicit: V2 is declared and resolves, while an
+// undeclared control format reaches the same entry point and does not.
 func TestProbeReadsResolveNotSyntax(t *testing.T) {
-	source, err := os.ReadFile("cache.go")
-	if err != nil {
-		t.Fatalf("read cache.go: %v", err)
+	declared := declaredAlgorithms(t)
+	if declared["AlgorithmV2"] != AlgorithmV2 {
+		t.Fatalf("AlgorithmV2 is not declared as %q", AlgorithmV2)
 	}
-	if !strings.Contains(string(source), "case AlgorithmV2:") {
-		t.Skip("cache.go no longer has a v2 case label; this assertion has nothing to contrast")
+	if !roundTripsProvider(
+		t,
+		AlgorithmV2,
+		writerAAD[AlgorithmV2](namespaceProvider, probeWorkspace, probeProvider),
+	) {
+		t.Fatal("the declared V2 format did not resolve")
 	}
-	if roundTrips(t, probeControlAlgorithm, writerAAD[AlgorithmV2](probeWorkspace, probeProvider)) {
-		t.Fatal("an algorithm with no case label must not resolve")
+	if roundTripsProvider(
+		t,
+		probeControlAlgorithm,
+		writerAAD[AlgorithmV2](namespaceProvider, probeWorkspace, probeProvider),
+	) {
+		t.Fatal("an undeclared control algorithm resolved")
 	}
 }

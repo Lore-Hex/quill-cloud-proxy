@@ -18,6 +18,8 @@ import (
 // Not a credential; a fixed plaintext so the round trip asserts something.
 const testProviderSecret = "opaque-test-plaintext" //nolint:gosec // fixture, not a credential
 
+const retiredV1Algorithm = "TR-BYOK-ENVELOPE-AES-256-GCM-V1"
+
 const pythonVectorProviderWs1OpenAI = "0000001574727573746564726f757465722f62796f6b2f76320000000870726f76696465720000000477732d31000000066f70656e6169"
 
 const pythonVectorUserModelWs1Signing = "0000001574727573746564726f757465722f62796f6b2f76320000000a757365725f6d6f64656c0000000477732d3100000012757365725f6d6f64656c5f7369676e696e67"
@@ -58,17 +60,6 @@ func TestAADv2IsInjective(t *testing.T) {
 	}
 }
 
-// The v1 collisions, pinned so the contrast is explicit and so nobody
-// "simplifies" v2 back toward a delimiter-joined form.
-func TestAADv1IsNotInjective(t *testing.T) {
-	if string(aad("a:b", "c")) != string(aad("a", "b:c")) {
-		t.Fatal("expected the documented v1 collision; if this fails, v1 changed")
-	}
-	if string(mustAADv2(t, "provider", "a:b", "c")) == string(mustAADv2(t, "provider", "a", "b:c")) {
-		t.Fatal("v2 inherited the v1 collision")
-	}
-}
-
 // A namespace separates the secret families even when the context strings match
 // exactly. The enclave only ever passes "provider", but the encoding has to
 // carry the distinction or the control plane's separation is not real.
@@ -79,12 +70,8 @@ func TestAADv2SeparatesNamespaces(t *testing.T) {
 }
 
 func TestEnvelopeAADSelectsByAlgorithm(t *testing.T) {
-	v1, err := envelopeAAD(Algorithm, namespaceProvider, "w", "p")
-	if err != nil {
-		t.Fatalf("v1: %v", err)
-	}
-	if string(v1) != string(aad("w", "p")) {
-		t.Fatal("v1 envelopes must use the v1 AAD")
+	if _, err := envelopeAAD(retiredV1Algorithm, namespaceProvider, "w", "p"); err == nil {
+		t.Fatal("a retired v1 envelope must be rejected")
 	}
 
 	v2, err := envelopeAAD(AlgorithmV2, namespaceProvider, "w", "p")
@@ -93,6 +80,12 @@ func TestEnvelopeAADSelectsByAlgorithm(t *testing.T) {
 	}
 	if string(v2) != string(mustAADv2(t, namespaceProvider, "w", "p")) {
 		t.Fatal("v2 envelopes must use the v2 AAD with the provider namespace")
+	}
+
+	// Control secrets are intentionally decrypted only by the control plane.
+	// Even a current-format control envelope must never become enclave input.
+	if _, err := envelopeAAD(AlgorithmV2, "control", "w", "p"); err == nil {
+		t.Fatal("a control-secret envelope must be rejected by the enclave")
 	}
 
 	// An unknown algorithm must still be refused rather than defaulted.
@@ -121,7 +114,15 @@ func TestResolveUserModelIsV2OnlyAndNamespaceBound(t *testing.T) {
 		t.Fatalf("second resolve = (cached=%v, err=%v)", cached, err)
 	}
 
-	v1 := sealWith(t, Algorithm, aad("owner-ws", "user_model_signing"), testProviderSecret)
+	relabeled := envelope
+	relabeled.Algorithm = retiredV1Algorithm
+	if _, _, err := cache.ResolveUserModel(
+		context.Background(), "owner-ws", "user_model_signing", relabeled,
+	); err == nil {
+		t.Fatal("a cached V2 user-model envelope opened after being relabeled V1")
+	}
+
+	v1 := sealWith(t, retiredV1Algorithm, retiredV1AAD("owner-ws", "user_model_signing"), testProviderSecret)
 	if _, _, err := cache.ResolveUserModel(
 		context.Background(), "owner-ws", "user_model_signing", v1,
 	); err == nil {
@@ -132,6 +133,31 @@ func TestResolveUserModelIsV2OnlyAndNamespaceBound(t *testing.T) {
 		context.Background(), "owner-ws", "user_model_signing", providerAAD,
 	); err == nil {
 		t.Fatal("provider-namespace envelope unexpectedly opened as a user-model secret")
+	}
+}
+
+func TestUserModelRewrapCannotReuseCachedPlaintext(t *testing.T) {
+	associated := mustAADv2(t, namespaceUserModel, "owner-ws", "user_model_signing")
+	envelope := sealWith(t, AlgorithmV2, associated, testProviderSecret)
+	unwrapper := &fakeUnwrapper{dek: fixedDEK()}
+	cache := New(Options{Unwrapper: unwrapper})
+
+	if _, cached, err := cache.ResolveUserModel(
+		context.Background(), "owner-ws", "user_model_signing", envelope,
+	); err != nil || cached {
+		t.Fatalf("prime user-model cache = (cached=%v, err=%v)", cached, err)
+	}
+
+	rewrapped := envelope
+	rewrapped.KeyRef = envelope.KeyRef + "/rotated"
+	rewrapped.EncryptedDEK = base64.URLEncoding.EncodeToString([]byte("rewrapped-dek"))
+	if _, cached, err := cache.ResolveUserModel(
+		context.Background(), "owner-ws", "user_model_signing", rewrapped,
+	); err != nil || cached {
+		t.Fatalf("rewrapped user-model resolve = (cached=%v, err=%v)", cached, err)
+	}
+	if unwrapper.calls != 2 {
+		t.Fatalf("unwrapper calls = %d, want 2", unwrapper.calls)
 	}
 }
 
@@ -147,8 +173,14 @@ func TestUserModelCacheCannotAliasProviderCacheKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if secret, _, err := cache.Resolve(
+	if _, _, err := cache.Resolve(
 		context.Background(), "owner-ws", "user_model_signing", collidingKey, providerEnvelope,
+	); err == nil {
+		t.Fatal("provider resolve accepted a user-model-derived cache key")
+	}
+	providerKey := Fingerprint("owner-ws", "user_model_signing", providerEnvelope)
+	if secret, _, err := cache.Resolve(
+		context.Background(), "owner-ws", "user_model_signing", providerKey, providerEnvelope,
 	); err != nil || secret != "provider-secret" {
 		t.Fatalf("prime provider cache = (%q, %v)", secret, err)
 	}
@@ -160,31 +192,67 @@ func TestUserModelCacheCannotAliasProviderCacheKey(t *testing.T) {
 	}
 }
 
-// End to end: a v2 envelope sealed exactly as the control plane will seal it
-// must open, and v1 envelopes must keep opening. This is the property that
-// makes step 2 of the migration safe to ship.
-func TestResolveOpensBothEnvelopeFormats(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		algorithm string
-		aad       []byte
-	}{
-		{"v1 keeps working", Algorithm, aad("ws-1", "openai")},
-		{"v2 opens", AlgorithmV2, mustAADv2(t, namespaceProvider, "ws-1", "openai")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			envelope := sealWith(t, tc.algorithm, tc.aad, testProviderSecret)
-			cache := New(Options{Unwrapper: &fakeUnwrapper{dek: fixedDEK()}})
+// End to end: a v2 envelope sealed exactly as the control plane seals it opens.
+func TestResolveOpensV2Envelope(t *testing.T) {
+	envelope := sealWith(
+		t, AlgorithmV2, mustAADv2(t, namespaceProvider, "ws-1", "openai"), testProviderSecret,
+	)
+	cache := New(Options{Unwrapper: &fakeUnwrapper{dek: fixedDEK()}})
 
-			secret, _, err := cache.Resolve(
-				context.Background(), "ws-1", "openai", "cache-key", envelope)
-			if err != nil {
-				t.Fatalf("resolve: %v", err)
-			}
-			if secret != testProviderSecret {
-				t.Fatalf("got %q", secret)
-			}
-		})
+	secret, _, err := cache.Resolve(
+		context.Background(), "ws-1", "openai", "", envelope)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if secret != testProviderSecret {
+		t.Fatalf("got %q", secret)
+	}
+}
+
+func TestResolveRejectsRetiredV1EnvelopeBeforeUnwrap(t *testing.T) {
+	envelope := sealWith(
+		t,
+		retiredV1Algorithm,
+		retiredV1AAD("ws-1", "openai"),
+		testProviderSecret,
+	)
+	unwrapper := &fakeUnwrapper{dek: fixedDEK()}
+	cache := New(Options{Unwrapper: unwrapper})
+
+	if _, _, err := cache.Resolve(
+		context.Background(), "ws-1", "openai", "", envelope,
+	); err == nil {
+		t.Fatal("a retired v1 envelope unexpectedly opened")
+	}
+	if unwrapper.calls != 0 {
+		t.Fatalf("retired format reached the DEK unwrapper %d times", unwrapper.calls)
+	}
+}
+
+func TestResolveRejectsRelabeledCachedProviderEnvelope(t *testing.T) {
+	envelope := sealWith(
+		t,
+		AlgorithmV2,
+		mustAADv2(t, namespaceProvider, "ws-1", "openai"),
+		testProviderSecret,
+	)
+	unwrapper := &fakeUnwrapper{dek: fixedDEK()}
+	cache := New(Options{Unwrapper: unwrapper})
+
+	if _, cached, err := cache.Resolve(
+		context.Background(), "ws-1", "openai", "", envelope,
+	); err != nil || cached {
+		t.Fatalf("prime provider cache = (cached=%v, err=%v)", cached, err)
+	}
+	relabeled := envelope
+	relabeled.Algorithm = retiredV1Algorithm
+	if _, _, err := cache.Resolve(
+		context.Background(), "ws-1", "openai", "", relabeled,
+	); err == nil {
+		t.Fatal("a cached V2 provider envelope opened after being relabeled V1")
+	}
+	if unwrapper.calls != 1 {
+		t.Fatalf("relabeled format reached the DEK unwrapper; calls = %d", unwrapper.calls)
 	}
 }
 
@@ -192,11 +260,11 @@ func TestResolveOpensBothEnvelopeFormats(t *testing.T) {
 // cosmetic — both formats would be interchangeable and the collision would
 // survive.
 func TestV2EnvelopeDoesNotOpenUnderV1AAD(t *testing.T) {
-	envelope := sealWith(t, AlgorithmV2, aad("ws-1", "openai"), testProviderSecret)
+	envelope := sealWith(t, AlgorithmV2, retiredV1AAD("ws-1", "openai"), testProviderSecret)
 	cache := New(Options{Unwrapper: &fakeUnwrapper{dek: fixedDEK()}})
 
 	if _, _, err := cache.Resolve(
-		context.Background(), "ws-1", "openai", "k", envelope); err == nil {
+		context.Background(), "ws-1", "openai", "", envelope); err == nil {
 		t.Fatal("a v2 envelope sealed under v1 AAD must fail to open")
 	}
 }
@@ -230,4 +298,8 @@ func mustAADv2(t *testing.T, namespace, workspaceID, context string) []byte {
 		t.Fatalf("aadV2(%q,%q,%q): %v", namespace, workspaceID, context, err)
 	}
 	return out
+}
+
+func retiredV1AAD(workspaceID, context string) []byte {
+	return []byte("trustedrouter:byok:" + workspaceID + ":" + context)
 }

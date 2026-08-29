@@ -110,6 +110,19 @@ func invokeOptionsForAuthorization(
 		if candidate.UsageType == "" {
 			candidate.UsageType = authorization.UsageType
 		}
+		// A retired or unknown encrypted-key format is an authorization
+		// integrity failure, not ordinary provider unavailability. Do not skip
+		// it and silently serve a later credits route under different key
+		// custody and billing semantics.
+		if strings.EqualFold(candidate.UsageType, "BYOK") &&
+			candidate.BYOKEncryptedSecret != nil &&
+			candidate.BYOKEncryptedSecret.Algorithm != byokcache.AlgorithmV2 {
+			return nil, fmt.Errorf(
+				"authorized BYOK route %s uses unsupported encrypted secret envelope algorithm %q",
+				candidate.EndpointID,
+				candidate.BYOKEncryptedSecret.Algorithm,
+			)
+		}
 		providerKey, err := providerAPIKeyForRoute(ctx, cache, authorization.WorkspaceID, candidate)
 		if err != nil {
 			unavailable = append(unavailable, fmt.Sprintf("%s: %v", candidate.EndpointID, err))
