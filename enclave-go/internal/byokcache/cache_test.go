@@ -58,6 +58,58 @@ func TestResolveUsesKMSOnceWithinTTL(t *testing.T) {
 	}
 }
 
+func TestResolveRejectsControlPlaneCacheKeyMismatchBeforeUnwrap(t *testing.T) {
+	unwrapper := &fakeUnwrapper{dek: fixedDEK()}
+	cache := New(Options{Unwrapper: unwrapper})
+	envelope := testEnvelope(t, "workspace-1", "cerebras", "workspace-1-secret")
+
+	if _, _, err := cache.Resolve(
+		t.Context(), "workspace-1", "cerebras", "control-plane-chosen-key", envelope,
+	); err == nil || !strings.Contains(err.Error(), "does not match envelope binding") {
+		t.Fatalf("mismatched cache key error = %v", err)
+	}
+	if unwrapper.calls != 0 {
+		t.Fatalf("mismatched cache key reached the DEK unwrapper %d times", unwrapper.calls)
+	}
+}
+
+func TestProviderCacheKeyCannotAliasAcrossWorkspaces(t *testing.T) {
+	unwrapper := &fakeUnwrapper{dek: fixedDEK()}
+	cache := New(Options{Unwrapper: unwrapper})
+	first := testEnvelope(t, "workspace-1", "cerebras", "workspace-1-secret")
+	firstKey := Fingerprint("workspace-1", "cerebras", first)
+	if _, _, err := cache.Resolve(
+		t.Context(), "workspace-1", "cerebras", firstKey, first,
+	); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+
+	second := testEnvelope(t, "workspace-2", "cerebras", "workspace-2-secret")
+	if _, _, err := cache.Resolve(
+		t.Context(), "workspace-2", "cerebras", firstKey, second,
+	); err == nil || !strings.Contains(err.Error(), "does not match envelope binding") {
+		t.Fatalf("cross-workspace alias error = %v", err)
+	}
+	if unwrapper.calls != 1 {
+		t.Fatalf("cross-workspace alias reached the DEK unwrapper; calls = %d", unwrapper.calls)
+	}
+}
+
+func TestProviderCacheRejectsNULDelimitedIdentityBeforeUnwrap(t *testing.T) {
+	unwrapper := &fakeUnwrapper{dek: fixedDEK()}
+	cache := New(Options{Unwrapper: unwrapper})
+	envelope := testEnvelope(t, "workspace-1", "cerebras", "secret")
+
+	if _, _, err := cache.Resolve(
+		t.Context(), "workspace-1\x00cerebras", "", "", envelope,
+	); err == nil || !strings.Contains(err.Error(), "contains a NUL byte") {
+		t.Fatalf("NUL-delimited identity error = %v", err)
+	}
+	if unwrapper.calls != 0 {
+		t.Fatalf("NUL-delimited identity reached the DEK unwrapper %d times", unwrapper.calls)
+	}
+}
+
 func TestResolveExpiresAfterTTL(t *testing.T) {
 	now := time.Unix(100, 0)
 	unwrapper := &fakeUnwrapper{dek: fixedDEK()}
@@ -164,7 +216,7 @@ func TestRotationCacheKeyForcesDecryptAndNewSecret(t *testing.T) {
 
 func TestFingerprintMatchesControlPlaneAlgorithm(t *testing.T) {
 	envelope := EncryptedSecretEnvelope{
-		Algorithm:    Algorithm,
+		Algorithm:    AlgorithmV2,
 		KeyRef:       "projects/test/locations/us/keyRings/tr/cryptoKeys/byok",
 		EncryptedDEK: "wrapped-dek",
 		DEKNonce:     "dek-nonce-123",
@@ -172,7 +224,7 @@ func TestFingerprintMatchesControlPlaneAlgorithm(t *testing.T) {
 		Nonce:        "nonce",
 	}
 	got := Fingerprint("workspace-1", "cerebras", envelope)
-	want := "byokcache:v1:8503c4b9574a775e56ee2ccfffcad2d958b995073685ee6b8b70c57ea983a1b0"
+	want := "byokcache:v1:e490fdd7a7a46f4b1bc885a65657de443f9963895ef2054d51310935b70dccd4"
 	if got != want {
 		t.Fatalf("Fingerprint = %q, want %q", got, want)
 	}
@@ -228,10 +280,13 @@ func testEnvelope(t *testing.T, workspaceID, provider, secret string) EncryptedS
 		t.Fatal(err)
 	}
 	nonce := []byte("123456789012")
-	aad := aad(workspaceID, provider)
+	aad, err := aadV2(namespaceProvider, workspaceID, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ciphertext := gcm.Seal(nil, nonce, []byte(secret), aad)
 	return EncryptedSecretEnvelope{
-		Algorithm:    Algorithm,
+		Algorithm:    AlgorithmV2,
 		KeyRef:       "projects/test/locations/us/keyRings/tr/cryptoKeys/byok",
 		EncryptedDEK: base64.URLEncoding.EncodeToString([]byte("wrapped-dek")),
 		DEKNonce:     base64.URLEncoding.EncodeToString([]byte("dek-nonce-123")),
