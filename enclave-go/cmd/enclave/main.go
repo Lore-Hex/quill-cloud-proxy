@@ -902,6 +902,7 @@ func serveOneRequest(
 			}
 			var aerr *adapter.AdapterError
 			if asAdapterErr(err, &aerr) {
+				writeRequestContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context)
 				writeAdapterOpenAIError(conn, aerr)
 				return
 			}
@@ -912,6 +913,7 @@ func serveOneRequest(
 		if err != nil {
 			var aerr *adapter.AdapterError
 			if asAdapterErr(err, &aerr) {
+				writeRequestContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context)
 				writeAdapterOpenAIError(conn, aerr)
 				return
 			}
@@ -927,14 +929,22 @@ func serveOneRequest(
 			writeError(conn, 404, "route not found")
 			return
 		}
-		if err := json.Unmarshal(body, &req); err != nil {
+		chatReq, err := parseChatRequest(body)
+		if err != nil {
 			if message, ok := tagValidationMessage(err); ok {
 				writeOpenAIError(conn, 400, message, "invalid_request_error", "invalid_tags", "tags")
+				return
+			}
+			var aerr *adapter.AdapterError
+			if asAdapterErr(err, &aerr) {
+				writeRequestContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context)
+				writeAdapterOpenAIError(conn, aerr)
 				return
 			}
 			writeError(conn, 400, "invalid JSON")
 			return
 		}
+		req = *chatReq
 		req.InferenceReceipt = receiptRequest
 		req.NormalizeMaxTokens()
 		originalInput = req.Messages
@@ -1160,6 +1170,23 @@ func parseResponsesRequest(body []byte) (*types.OpenAIResponsesRequest, error) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
+	return &req, nil
+}
+
+func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	validation, err := adapter.ValidateChatRequestFields(raw)
+	if err != nil {
+		return nil, err
+	}
+	var req types.OpenAIChatRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, err
+	}
+	req.RequestedParameters = validation.RequestedParameters
 	return &req, nil
 }
 

@@ -130,9 +130,15 @@ AWS and Azure records are produced separately by
 The GCP OpenRouter workload accepts OpenAI-compatible `model`, `models`, and
 `provider` request fields. It retries the next model candidate before streaming
 if OpenRouter returns `429` or `5xx`, forwards provider preferences such as
-`order`, `only`, `ignore`, `allow_fallbacks`, `sort`, and `max_price`, and
+`order`, `only`, `ignore`, `allow_fallbacks`, `sort`, `max_price`,
+`require_parameters`, and `zdr`, and
 keeps `provider.data_collection` pinned to `deny` for the hosted no-retention
 claim even if a caller asks for a weaker setting.
+
+The request boundary is allowlist-based. Unknown request/provider/plugin fields
+return `400` with the exact field in `error.param`; known OpenRouter controls
+that this release cannot honor return `501 not_supported_in_alpha` before
+authorization. This prevents compatibility fields from becoming silent no-ops.
 
 ## Responses web search
 

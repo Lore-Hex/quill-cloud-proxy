@@ -674,6 +674,9 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	if req.Provider != nil {
 		body["provider"] = req.Provider
 	}
+	if len(req.RequestedParameters) > 0 {
+		body["requested_parameters"] = req.RequestedParameters
+	}
 	if modalities := qtypes.RequestInputModalities(req); len(modalities) > 0 {
 		body["input_modalities"] = modalities
 	}

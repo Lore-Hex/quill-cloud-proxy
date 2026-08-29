@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,7 +25,11 @@ func RejectUnsupportedResponsesInputTokenFields(raw map[string]json.RawMessage) 
 
 var supportedResponsesCreateFields = map[string]struct{}{
 	"background":             {},
+	"cache_control":          {},
 	"conversation":           {},
+	"debug":                  {},
+	"frequency_penalty":      {},
+	"image_config":           {},
 	"include":                {},
 	"input":                  {},
 	"instructions":           {},
@@ -37,16 +42,21 @@ var supportedResponsesCreateFields = map[string]struct{}{
 	"models":                 {},
 	"n":                      {},
 	"parallel_tool_calls":    {},
+	"plugins":                {},
+	"presence_penalty":       {},
 	"previous_response_id":   {},
 	"prompt":                 {},
 	"prompt_cache_key":       {},
+	"prompt_cache_options":   {},
 	"prompt_cache_retention": {},
 	"provider":               {},
 	"reasoning":              {},
+	"route":                  {},
 	"safety_identifier":      {},
 	"service_tier":           {},
 	"session_id":             {},
 	"store":                  {},
+	"stop_server_tools_when": {},
 	"stream":                 {},
 	"stream_options":         {},
 	"temperature":            {},
@@ -54,12 +64,18 @@ var supportedResponsesCreateFields = map[string]struct{}{
 	"text":                   {},
 	"tool_choice":            {},
 	"tools":                  {},
+	"top_k":                  {},
 	"top_logprobs":           {},
 	"top_p":                  {},
 	"trace":                  {},
 	"truncation":             {},
 	"user":                   {},
 	"usage":                  {},
+}
+
+var unsupportedResponsesCreateFields = map[string]struct{}{
+	"cache_control": {}, "debug": {}, "image_config": {}, "route": {},
+	"stop_server_tools_when": {},
 }
 
 var supportedResponsesInputTokenFields = map[string]struct{}{
@@ -83,7 +99,10 @@ var supportedResponsesInputTokenFields = map[string]struct{}{
 func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]struct{}) error {
 	for key, value := range raw {
 		if _, ok := allowed[key]; !ok && presentNonNull(value) {
-			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: key}
+			return unknownRequestParameter(key)
+		}
+		if _, unsupported := unsupportedResponsesCreateFields[key]; unsupported && presentNonNull(value) {
+			return unsupportedRequestParameter(key)
 		}
 	}
 	for _, field := range []string{"conversation", "previous_response_id", "prompt"} {
@@ -102,6 +121,16 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 	}
 	if value, ok := raw["reasoning"]; ok {
 		if err := validateReasoningConfig(value); err != nil {
+			return err
+		}
+	}
+	if value, ok := raw["plugins"]; ok {
+		if err := validateChatPlugins(value); err != nil {
+			return err
+		}
+	}
+	if value, ok := raw["provider"]; ok {
+		if err := validateProviderRouting(value); err != nil {
 			return err
 		}
 	}
@@ -212,26 +241,33 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 		maxTokens = req.MaxTokens
 	}
 	return &types.OpenAIChatRequest{
-		Model:          req.Model,
-		Models:         req.Models,
-		Messages:       messages,
-		Stream:         req.Stream,
-		Temperature:    req.Temperature,
-		TopP:           req.TopP,
-		MaxTokens:      maxTokens,
-		N:              req.N,
-		Provider:       req.Provider,
-		Metadata:       req.Metadata,
-		Trace:          req.Trace,
-		User:           req.User,
-		SessionID:      req.SessionID,
-		Tags:           types.CloneRequestTags(req.Tags),
-		ResponseFormat: responseFormat,
-		Tools:          tools,
-		ToolChoice:     toolChoice,
-		ParallelTools:  req.ParallelToolCalls,
-		Reasoning:      req.Reasoning,
-		ServiceTier:    req.ServiceTier,
+		Model:               req.Model,
+		Models:              req.Models,
+		Messages:            messages,
+		Stream:              req.Stream,
+		Temperature:         req.Temperature,
+		TopP:                req.TopP,
+		TopK:                req.TopK,
+		FrequencyPenalty:    req.FrequencyPenalty,
+		PresencePenalty:     req.PresencePenalty,
+		MaxTokens:           maxTokens,
+		N:                   req.N,
+		Provider:            req.Provider,
+		Plugins:             req.Plugins,
+		PromptCacheKey:      req.PromptCacheKey,
+		PromptCacheOptions:  req.PromptCacheOptions,
+		Metadata:            req.Metadata,
+		Trace:               req.Trace,
+		User:                req.User,
+		SessionID:           req.SessionID,
+		Tags:                types.CloneRequestTags(req.Tags),
+		ResponseFormat:      responseFormat,
+		Tools:               tools,
+		ToolChoice:          toolChoice,
+		ParallelTools:       req.ParallelToolCalls,
+		Reasoning:           req.Reasoning,
+		ServiceTier:         req.ServiceTier,
+		RequestedParameters: responsesRequestedParameters(req, responseFormat, tools),
 		Response: &types.ResponseRequestMeta{
 			Include:              req.Include,
 			Modalities:           req.Modalities,
@@ -254,6 +290,56 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 			WebSearch:            webSearch,
 		},
 	}, nil
+}
+
+func responsesRequestedParameters(
+	req *types.OpenAIResponsesRequest,
+	responseFormat map[string]any,
+	tools []any,
+) []string {
+	requested := make(map[string]struct{})
+	if req.Temperature != nil {
+		requested["temperature"] = struct{}{}
+	}
+	if req.TopP != nil {
+		requested["top_p"] = struct{}{}
+	}
+	if req.TopK != nil {
+		requested["top_k"] = struct{}{}
+	}
+	if req.FrequencyPenalty != nil {
+		requested["frequency_penalty"] = struct{}{}
+	}
+	if req.PresencePenalty != nil {
+		requested["presence_penalty"] = struct{}{}
+	}
+	if req.MaxOutputTokens != nil || req.MaxTokens != nil {
+		requested["max_tokens"] = struct{}{}
+	}
+	if req.Reasoning != nil {
+		requested["reasoning"] = struct{}{}
+	}
+	if len(responseFormat) > 0 {
+		requested["response_format"] = struct{}{}
+	}
+	if len(tools) > 0 {
+		requested["tools"] = struct{}{}
+	}
+	if req.ToolChoice != nil {
+		requested["tool_choice"] = struct{}{}
+	}
+	if req.ParallelToolCalls != nil {
+		requested["parallel_tool_calls"] = struct{}{}
+	}
+	if strings.TrimSpace(req.PromptCacheKey) != "" {
+		requested["prompt_cache_key"] = struct{}{}
+	}
+	parameters := make([]string, 0, len(requested))
+	for parameter := range requested {
+		parameters = append(parameters, parameter)
+	}
+	sort.Strings(parameters)
+	return parameters
 }
 
 func responseInputMessages(input any) ([]types.OpenAIChatMessage, error) {

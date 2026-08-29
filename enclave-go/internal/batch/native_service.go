@@ -436,10 +436,12 @@ func nativeRetentionAllowed(job job, requests []Request) bool {
 
 var nativeChatRequestFields = map[string]struct{}{
 	"model": {}, "messages": {}, "stream": {}, "stream_options": {},
-	"temperature": {}, "top_p": {}, "max_tokens": {},
+	"temperature": {}, "top_p": {}, "top_k": {}, "top_a": {}, "min_p": {},
+	"repetition_penalty": {}, "max_tokens": {},
 	"max_completion_tokens": {}, "max_output_tokens": {}, "stop": {},
 	"seed": {}, "frequency_penalty": {}, "presence_penalty": {}, "n": {},
-	"logit_bias": {}, "logprobs": {}, "top_logprobs": {}, "reasoning": {},
+	"logit_bias": {}, "logprobs": {}, "top_logprobs": {}, "prediction": {},
+	"prompt_cache_key": {}, "prompt_cache_options": {}, "reasoning": {},
 	"reasoning_effort": {}, "service_tier": {}, "provider": {}, "metadata": {},
 	"trace": {}, "user": {}, "session_id": {}, "tags": {},
 	"response_format": {}, "tools": {}, "tool_choice": {},

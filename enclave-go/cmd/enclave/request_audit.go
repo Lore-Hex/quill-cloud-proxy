@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
+
+const maxRejectedParameterLogBytes = 160
 
 const errorIdentityLookupTimeout = 750 * time.Millisecond
 
@@ -117,5 +120,30 @@ func writeRequestEndLog(
 		identity.credentialID,
 		identity.credentialFingerprint,
 		identity.attribution,
+	)
+}
+
+// writeRequestContractRejection records only the bounded option name and
+// status. It deliberately excludes the request body and field value. The
+// enclave has no Sentry SDK; operators can alert on this metadata log without
+// exporting prompts or outputs from the trusted path.
+func writeRequestContractRejection(
+	w io.Writer,
+	requestLogID string,
+	route string,
+	status int,
+	parameter string,
+) {
+	parameter = strings.TrimSpace(parameter)
+	if len(parameter) > maxRejectedParameterLogBytes {
+		parameter = parameter[:maxRejectedParameterLogBytes]
+	}
+	fmt.Fprintf(
+		w,
+		"enclave.request_contract_rejected request_log_id=%q route=%q status=%d parameter=%q\n",
+		requestLogID,
+		route,
+		status,
+		parameter,
 	)
 }

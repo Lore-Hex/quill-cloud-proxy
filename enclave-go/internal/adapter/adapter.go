@@ -102,6 +102,7 @@ func ToAnthropic(req *types.OpenAIChatRequest, defaultModel string) (*types.Anth
 		MaxTokensExplicit: req.MaxTokens != nil,
 		Temperature:       req.Temperature,
 		TopP:              req.TopP,
+		TopK:              req.TopK,
 		StopSequences:     req.StopSequences(),
 		Metadata:          anthropicUserIDMetadata(req.Metadata),
 	}

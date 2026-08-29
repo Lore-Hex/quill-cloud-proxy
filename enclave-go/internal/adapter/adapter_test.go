@@ -602,6 +602,29 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 	}
 }
 
+func TestRejectUnsupportedResponsesFieldsDistinguishesUnknownFromKnown(t *testing.T) {
+	for _, tc := range []struct {
+		body        string
+		wantStatus  int
+		wantContext string
+	}{
+		{`{"model":"m","input":"hi","future_response_option":true}`, 400, "future_response_option"},
+		{`{"model":"m","input":"hi","debug":{"echo_upstream_body":true}}`, 501, "debug"},
+		{`{"model":"m","input":"hi","plugins":[{"id":"web"}]}`, 501, "plugins.web"},
+		{`{"model":"m","input":"hi","provider":{"future_router_option":true}}`, 400, "provider.future_router_option"},
+	} {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(tc.body), &raw); err != nil {
+			t.Fatal(err)
+		}
+		err := RejectUnsupportedResponsesFields(raw)
+		var aerr *AdapterError
+		if !errors.As(err, &aerr) || aerr.Status != tc.wantStatus || aerr.Context != tc.wantContext {
+			t.Fatalf("body %s: error = %#v, want status %d context %q", tc.body, err, tc.wantStatus, tc.wantContext)
+		}
+	}
+}
+
 func TestResponsesLegacyUsageIncludeIsAcceptedAsNoOp(t *testing.T) {
 	for _, body := range []string{
 		`{"model":"m","input":"hi","usage":{"include":true}}`,
@@ -615,6 +638,30 @@ func TestResponsesLegacyUsageIncludeIsAcceptedAsNoOp(t *testing.T) {
 		if err := RejectUnsupportedResponsesFields(raw); err != nil {
 			t.Fatalf("legacy usage.include rejected for %s: %v", body, err)
 		}
+	}
+}
+
+func TestResponsesToChatCapturesRequestedParameters(t *testing.T) {
+	temperature := 0.2
+	topK := 20
+	parallel := true
+	req := &types.OpenAIResponsesRequest{
+		Model:             "test/model",
+		Input:             "hi",
+		Temperature:       &temperature,
+		TopK:              &topK,
+		ParallelToolCalls: &parallel,
+		Tools: []any{map[string]any{
+			"type": "function", "name": "lookup", "parameters": map[string]any{"type": "object"},
+		}},
+	}
+	chat, err := ResponsesToChat(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"parallel_tool_calls", "temperature", "tools", "top_k"}
+	if !reflect.DeepEqual(chat.RequestedParameters, want) {
+		t.Fatalf("requested parameters = %#v, want %#v", chat.RequestedParameters, want)
 	}
 }
 

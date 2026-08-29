@@ -181,10 +181,13 @@ func TestBuildOpenAICompatibleRequestCarriesInboundParams(t *testing.T) {
 	if err := json.Unmarshal(encoded, &payload); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	for _, key := range []string{"n", "logprobs", "top_logprobs"} {
+	for _, key := range []string{"n"} {
 		if _, ok := payload[key]; ok {
 			t.Fatalf("%s present in payload: %s", key, encoded)
 		}
+	}
+	if payload["logprobs"] != true || payload["top_logprobs"] != float64(topLogprobs) {
+		t.Fatalf("logprobs fields were not forwarded: %s", encoded)
 	}
 }
 
@@ -488,6 +491,45 @@ func TestBuildOpenAICompatibleRequestOmitsRouterOnlyMetadata(t *testing.T) {
 	} {
 		if strings.Contains(string(body), forbidden) {
 			t.Fatalf("provider payload leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestBuildOpenAICompatibleRequestForwardsSupportedOpenRouterParameters(t *testing.T) {
+	topA := 0.7
+	minP := 0.05
+	repetitionPenalty := 1.1
+	logprobs := true
+	topLogprobs := 3
+	topK := 40
+	req := &qtypes.OpenAIChatRequest{
+		TopA:               &topA,
+		MinP:               &minP,
+		RepetitionPenalty:  &repetitionPenalty,
+		Logprobs:           &logprobs,
+		TopLogprobs:        &topLogprobs,
+		Prediction:         map[string]any{"type": "content", "content": "prefix"},
+		PromptCacheKey:     "tenant-cache",
+		PromptCacheOptions: map[string]any{"retention": "24h"},
+	}
+	body := &qtypes.AnthropicMessagesRequest{TopK: &topK}
+
+	got := buildOpenAICompatibleRequest("deepinfra", "test/model", req, body, nil)
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for field := range map[string]struct{}{
+		"top_a": {}, "min_p": {}, "repetition_penalty": {}, "logprobs": {},
+		"top_logprobs": {}, "prediction": {}, "prompt_cache_key": {},
+		"prompt_cache_options": {}, "top_k": {},
+	} {
+		if _, ok := payload[field]; !ok {
+			t.Fatalf("missing %s in upstream payload: %s", field, encoded)
 		}
 	}
 }
