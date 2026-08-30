@@ -115,6 +115,9 @@ WANDB_SECRET="${WANDB_SECRET:-trustedrouter-wandb-api-key}"
 NSCALE_SECRET="${NSCALE_SECRET:-trustedrouter-nscale-api-key}"
 PERPLEXITY_SECRET="${PERPLEXITY_SECRET:-trustedrouter-perplexity-api-key}"
 KREA_SECRET="${KREA_SECRET:-trustedrouter-krea-api-key}"
+FAL_SECRET="${FAL_SECRET:-trustedrouter-fal-api-key}"
+BYTEPLUS_SECRET="${BYTEPLUS_SECRET:-trustedrouter-byteplus-api-key}"
+TENCENT_SECRET="${TENCENT_SECRET:-trustedrouter-tencent-tokenhub-api-key}"
 VULTR_SECRET="${VULTR_SECRET:-trustedrouter-vultr-api-key}"
 HUGGING_FACE_SECRET="${HUGGING_FACE_SECRET:-trustedrouter-huggingface-api-key}"
 DARKBLOOM_SECRET="${DARKBLOOM_SECRET:-trustedrouter-darkbloom-api-key}"
@@ -270,6 +273,9 @@ for secret in \
   "$NSCALE_SECRET" \
   "$PERPLEXITY_SECRET" \
   "$KREA_SECRET" \
+  "$FAL_SECRET" \
+  "$BYTEPLUS_SECRET" \
+  "$TENCENT_SECRET" \
   "$VULTR_SECRET" \
   "$HUGGING_FACE_SECRET" \
   "$DARKBLOOM_SECRET" \

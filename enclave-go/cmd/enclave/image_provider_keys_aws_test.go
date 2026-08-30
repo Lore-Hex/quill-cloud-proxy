@@ -13,11 +13,11 @@ func TestAWSImageProviderKeysIncludeOnlyTunneledProviderWave(t *testing.T) {
 		OpenAIAPIKey: "openai", GrokAPIKey: "grok", DecartAPIKey: "decart",
 		RecraftAPIKey: "recraft", BFLAPIKey: "bfl",
 		ProviderAPIKeys: map[string]string{
-			"nscale": "nscale", "krea": "must-remain-dark", "riverflow": "riverflow",
+			"nscale": "nscale", "krea": "must-remain-dark", "fal": "fal", "riverflow": "riverflow",
 		},
 	})
 	if keys.OpenAI != "openai" || keys.XAI != "grok" || keys.Nscale != "nscale" ||
-		keys.Riverflow != "riverflow" {
+		keys.FAL != "fal" || keys.Riverflow != "riverflow" {
 		t.Fatalf("fixed-host AWS image keys = %#v", keys)
 	}
 	if keys.Decart != "" || keys.Recraft != "" || keys.BFL != "" || keys.Krea != "" {

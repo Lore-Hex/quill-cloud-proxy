@@ -27,6 +27,7 @@ const (
 	maxProviderResponseBytes = 160 << 20
 	maxProviderErrorBytes    = 64 << 10
 	maxGeneratedImageBytes   = 32 << 20
+	maxInlineImageResponse   = maxGeneratedImageBytes*4/3 + (1 << 20)
 	maxGeneratedDimension    = 12_288
 	maxGeneratedPixels       = 19_000_000
 )
@@ -34,6 +35,7 @@ const (
 const bflGenerationTimeout = 5 * time.Minute
 const kreaGenerationTimeout = 5 * time.Minute
 const riverflowGenerationTimeout = 5 * time.Minute
+const falGenerationTimeout = 5 * time.Minute
 
 const (
 	bflInitialPollDelay = 500 * time.Millisecond
@@ -48,6 +50,7 @@ type ProviderKeys struct {
 	BFL       string
 	Nscale    string
 	Krea      string
+	FAL       string
 	Riverflow string
 }
 
@@ -102,6 +105,7 @@ func NewRegistry(keys ProviderKeys, client *http.Client) *Registry {
 			"openai": keys.OpenAI, "grok": keys.XAI, "decart": keys.Decart,
 			"recraft": keys.Recraft, "bfl": keys.BFL, "nscale": keys.Nscale,
 			"krea":      keys.Krea,
+			"fal":       keys.FAL,
 			"riverflow": keys.Riverflow,
 		},
 	}
@@ -138,6 +142,9 @@ func (r *Registry) Generate(
 	}
 	if resolved.Spec.Provider == "krea" {
 		return r.generateKrea(ctx, resolved, key, idempotencyKey)
+	}
+	if resolved.Spec.Provider == "fal" {
+		return r.generateFAL(ctx, resolved, key, idempotencyKey)
 	}
 	if resolved.Spec.Provider == "riverflow" {
 		return r.generateRiverflow(ctx, resolved, key, idempotencyKey)
@@ -236,6 +243,86 @@ func (r *Registry) Generate(
 			TotalTokens: total,
 		},
 	}, nil
+}
+
+func (r *Registry) generateFAL(
+	ctx context.Context,
+	resolved *ResolvedRequest,
+	key, idempotencyKey string,
+) (*Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, falGenerationTimeout)
+	defer cancel()
+	payload := map[string]any{
+		"prompt":                resolved.Request.Prompt,
+		"image_size":            map[string]int{"width": 1024, "height": 1024},
+		"num_images":            1,
+		"num_inference_steps":   4,
+		"enable_safety_checker": true,
+		"output_format":         "png",
+		"acceleration":          "none",
+		// Data URIs avoid a second provider-hosted result fetch and avoid
+		// trusting a provider-selected result hostname.
+		"sync_mode": true,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode FAL request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		"https://fal.run/fal-ai/flux/schnell",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create FAL request: %w", err)
+	}
+	req.Header.Set("Authorization", "Key "+key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	responseBody, status, err := r.doLimitedByStatus(
+		req,
+		maxInlineImageResponse,
+		maxProviderErrorBytes,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status > 299 {
+		return nil, decodeProviderError(status, responseBody)
+	}
+	var response struct {
+		Images []struct {
+			URL         string `json:"url"`
+			Width       int    `json:"width"`
+			Height      int    `json:"height"`
+			ContentType string `json:"content_type"`
+		} `json:"images"`
+		NSFW []bool `json:"has_nsfw_concepts"`
+	}
+	if err := decodeExactJSON(responseBody, &response); err != nil || len(response.Images) != 1 {
+		return nil, fmt.Errorf("FAL returned an invalid image response")
+	}
+	item := response.Images[0]
+	if item.Width != 1024 || item.Height != 1024 || item.ContentType != "image/png" ||
+		len(response.NSFW) != 1 || response.NSFW[0] {
+		return nil, fmt.Errorf("FAL returned an invalid image result")
+	}
+	header, encoded, ok := strings.Cut(strings.TrimSpace(item.URL), ",")
+	if !ok || header != "data:image/png;base64" || encoded == "" {
+		return nil, fmt.Errorf("FAL did not return the requested private image payload")
+	}
+	generated, err := ValidateImage(encoded, "png")
+	if err != nil {
+		return nil, err
+	}
+	if err := validateOutputShape(resolved, generated); err != nil {
+		return nil, err
+	}
+	return &Result{Created: time.Now().Unix(), Images: []GeneratedImage{*generated}}, nil
 }
 
 func nativeRequest(resolved *ResolvedRequest) (string, map[string]any, error) {
@@ -858,11 +945,22 @@ func exactUSDMicrodollars(value json.Number) (int, error) {
 }
 
 func (r *Registry) doLimited(req *http.Request, limit int) ([]byte, int, error) {
+	return r.doLimitedByStatus(req, limit, limit)
+}
+
+func (r *Registry) doLimitedByStatus(
+	req *http.Request,
+	successLimit, errorLimit int,
+) ([]byte, int, error) {
 	resp, err := r.http.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("call image provider: %w", err)
 	}
 	defer resp.Body.Close()
+	limit := successLimit
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		limit = errorLimit
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("read image provider response: %w", err)
@@ -925,7 +1023,7 @@ func validateOutputShape(resolved *ResolvedRequest, generated *GeneratedImage) e
 		if math.Abs(gotRatio-wantRatio)/wantRatio > 0.02 {
 			return fmt.Errorf("image provider returned dimensions outside the request")
 		}
-	case "bfl", "nscale", "krea":
+	case "bfl", "nscale", "krea", "fal":
 		if generated.Width != 1024 || generated.Height != 1024 {
 			return fmt.Errorf("image provider returned dimensions outside the request")
 		}
