@@ -1011,6 +1011,11 @@ func serveOneRequest(
 	) {
 		return
 	}
+	if routeType == "chat.completions" && !isUserProvidedCustomModel(resolvedCustomModel) && maybeServeChatWebSearch(
+		ctx, conn, &req, br, trGateway, byokSecrets, bearer, requestLogID,
+	) {
+		return
+	}
 
 	if handled, err := maybeServeAdvisor(ctx, conn, br, &req, trGateway, byokSecrets, bearer, originalInput, requestLogID); handled {
 		if err != nil {
@@ -1186,6 +1191,9 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
+	if err := adapter.ConfigureChatWebSearch(&req); err != nil {
+		return nil, err
+	}
 	req.RequestedParameters = validation.RequestedParameters
 	return &req, nil
 }
@@ -1353,6 +1361,9 @@ func serveResponsesNonStreaming(
 		req.Model = selectedModel
 	}
 	responseModel := customModelResponseModel(req.Model, authorization)
+	if req.Response != nil && (len(result.Citations) > 0 || len(result.SearchResults) > 0) {
+		req.Response.OutputAnnotations = responsesAnnotationsFromProviderProvenance(result)
+	}
 	var body bytes.Buffer
 	if err := adapter.WriteResponsesResponse(&body, requestID, responseModel, result.Text, result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(), responseTextConfig(req), req.Response); err != nil {
 		writeSpentError(conn, 500, "responses encoding error")
@@ -1444,7 +1455,11 @@ func serveChatNonStreaming(
 	}
 	responseModel := customModelResponseModel(req.Model, authorization)
 	var body bytes.Buffer
-	if err := adapter.WriteChatCompletionResponse(&body, requestID, responseModel, result.Text, adapter.JoinThinking(result.Thinking), result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(), result.FinishReason); err != nil {
+	if err := adapter.WriteChatCompletionResponseWithProvenance(
+		&body, requestID, responseModel, result.Text, adapter.JoinThinking(result.Thinking),
+		result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(),
+		result.FinishReason, result.Citations, result.SearchResults,
+	); err != nil {
 		writeSpentError(conn, 500, "chat completion encoding error")
 		return
 	}
@@ -1485,6 +1500,25 @@ func serveChatNonStreaming(
 		generationID = settlement.GenerationID
 	}
 	writeJSONResponseWithReceipt(ctx, conn, annotatedBody, req, "chat.completions", requestID, generationID, requestedModel, selectedRoute, authorization)
+}
+
+func responsesAnnotationsFromProviderProvenance(result adapter.StreamResult) []map[string]any {
+	chatAnnotations := adapter.ChatCitationAnnotations(result.Text, result.Citations, result.SearchResults)
+	out := make([]map[string]any, 0, len(chatAnnotations))
+	for _, annotation := range chatAnnotations {
+		citation, _ := annotation["url_citation"].(map[string]any)
+		if citation == nil {
+			continue
+		}
+		item := map[string]any{"type": "url_citation"}
+		for _, key := range []string{"url", "title", "start_index", "end_index"} {
+			if value, ok := citation[key]; ok {
+				item[key] = value
+			}
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func serveStreaming(

@@ -67,6 +67,7 @@ func annotateResponsesWebSearchUsage(body []byte, outcome responsesWebSearchOutc
 	usage["cost_microdollars"] = totalCost
 	usage["total_cost_microdollars"] = totalCost
 	usage["provider_usage"] = providerUsage
+	usage["server_tool_use"] = map[string]any{"web_search_requests": len(outcome.WebCalls)}
 	applyUsageProviderSummary(usage, providerUsage)
 	payload["trustedrouter"] = map[string]any{"routing": providerUsage}
 	return json.Marshal(payload)
@@ -481,6 +482,7 @@ func annotateResponsesWebSearchObject(payload map[string]any, outcome responsesW
 	usage["cost_microdollars"] = totalCost
 	usage["total_cost_microdollars"] = totalCost
 	usage["provider_usage"] = providerUsage
+	usage["server_tool_use"] = map[string]any{"web_search_requests": len(outcome.WebCalls)}
 	applyUsageProviderSummary(usage, providerUsage)
 	payload["trustedrouter"] = map[string]any{"routing": providerUsage}
 }

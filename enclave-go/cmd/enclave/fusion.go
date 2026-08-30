@@ -2473,6 +2473,9 @@ func writeFusionStreamUsage(w io.Writer, requestID string, model string, created
 	}
 	if len(providerUsage) > 0 && len(providerUsage[0]) > 0 {
 		usage["provider_usage"] = providerUsage[0]
+		if searches, ok := providerUsage[0]["web_search_call_count"]; ok {
+			usage["server_tool_use"] = map[string]any{"web_search_requests": searches}
+		}
 		applyUsageProviderSummary(usage, providerUsage[0])
 	}
 	if result.Result.Usage != nil && result.Result.Usage.ReasoningTokens > 0 {

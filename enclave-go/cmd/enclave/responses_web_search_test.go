@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
@@ -88,6 +89,18 @@ type fakeResponsesWebSearcher struct {
 	errors  []error
 	queries []string
 	options []websearch.SearchOptions
+}
+
+type recordingWebSearcher struct {
+	mu      sync.Mutex
+	options map[string]websearch.SearchOptions
+}
+
+func (searcher *recordingWebSearcher) Search(_ context.Context, query string, options websearch.SearchOptions) (websearch.Result, error) {
+	searcher.mu.Lock()
+	searcher.options[query] = options
+	searcher.mu.Unlock()
+	return websearch.Result{CostMicrodollars: 1}, nil
 }
 
 func (searcher *fakeResponsesWebSearcher) Search(_ context.Context, query string, options websearch.SearchOptions) (websearch.Result, error) {
@@ -186,14 +199,17 @@ func TestExecuteResponsesWebSearchRunsBoundedToolLoopAndAccountsSubcalls(t *test
 		t.Fatalf("routes = %#v", runner.routes)
 	}
 	plannerReq := runner.requests[0]
-	if plannerReq.AdditionalCostReservationMicrodollars != maxWebSearchCostPerCallMicrodollars || plannerReq.AdditionalCostMicrodollars != 7 {
+	if plannerReq.AdditionalCostReservationMicrodollars != 7_000 || plannerReq.AdditionalCostMicrodollars != 7 {
 		t.Fatalf("planner cost reservation/actual = %d/%d", plannerReq.AdditionalCostReservationMicrodollars, plannerReq.AdditionalCostMicrodollars)
 	}
 	if got := searcher.queries[0]; got != "trusted router release" {
 		t.Fatalf("query = %q", got)
 	}
-	if got := searcher.options[0].SearchType; got != "instant" {
-		t.Fatalf("search type = %q, want instant", got)
+	if got := searcher.options[0].SearchType; got != "auto" {
+		t.Fatalf("search type = %q, want auto", got)
+	}
+	if got := searcher.options[0].MaxCharacters; got != 5_000 {
+		t.Fatalf("max characters = %d, want 5000", got)
 	}
 	if outcome.InputTokens != 42 || outcome.OutputTokens != 12 || outcome.ModelCostMicrodollars != 40 || outcome.TotalCostMicrodollars != 47 {
 		t.Fatalf("aggregated usage = %#v", outcome)
@@ -271,6 +287,55 @@ func TestExecuteResponsesWebSearchRejectsProviderCostAboveReservedBound(t *testi
 	_, err := executeResponsesWebSearch(context.Background(), webSearchTestRequest(), runner, searcher, "root", nil)
 	if err == nil || !strings.Contains(err.Error(), "cost exceeded") {
 		t.Fatalf("error = %v, want bounded cost failure", err)
+	}
+}
+
+func TestRunPlannedWebSearchEnforcesTotalResultBudgetAcrossCalls(t *testing.T) {
+	searcher := &recordingWebSearcher{options: map[string]websearch.SearchOptions{}}
+	queries := []plannedWebSearch{
+		{PublicID: "ws_1", Query: "first"},
+		{PublicID: "ws_2", Query: "second"},
+		{PublicID: "ws_3", Query: "third"},
+	}
+	config := &types.ResponseWebSearchConfig{MaxResults: 10, MaxTotalResults: 5, MaxCalls: 3}
+
+	_, cost, _, _, _, err := runPlannedWebSearch(context.Background(), queries, config, searcher, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cost != 3 {
+		t.Fatalf("cost = %d, want 3", cost)
+	}
+	want := map[string]int{"first": 2, "second": 2, "third": 1}
+	total := 0
+	for query, count := range want {
+		got := searcher.options[query].NumResults
+		if got != count {
+			t.Fatalf("%s results = %d, want %d", query, got, count)
+		}
+		total += got
+	}
+	if total != config.MaxTotalResults {
+		t.Fatalf("distributed result budget = %d, want %d", total, config.MaxTotalResults)
+	}
+}
+
+func TestWebSearchReservationUsesPublishedExaModeAndResultPricing(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *types.ResponseWebSearchConfig
+		want   int
+	}{
+		{name: "auto default results", config: &types.ResponseWebSearchConfig{Mode: "auto", MaxCalls: 30, MaxResults: 5}, want: 210_000},
+		{name: "deep extra results", config: &types.ResponseWebSearchConfig{Mode: "deep", MaxCalls: 2, MaxResults: 25}, want: 54_000},
+		{name: "total results also caps possible calls", config: &types.ResponseWebSearchConfig{Mode: "deep-reasoning", MaxCalls: 30, MaxResults: 5, MaxTotalResults: 3}, want: 45_000},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := webSearchReservationMicrodollars(test.config); got != test.want {
+				t.Fatalf("reservation = %d, want %d", got, test.want)
+			}
+		})
 	}
 }
 
@@ -444,6 +509,9 @@ func TestServeOneResponsesWebSearchEndToEnd(t *testing.T) {
 	if usage["total_cost_microdollars"] != float64(9) || providerUsage["web_search_cost_microdollars"] != float64(7) {
 		t.Fatalf("response usage = %#v", usage)
 	}
+	if usage["server_tool_use"].(map[string]any)["web_search_requests"] != float64(1) {
+		t.Fatalf("server tool usage = %#v", usage["server_tool_use"])
+	}
 	recorder.mu.Lock()
 	authorizeCount := len(recorder.authorize)
 	settleCount := len(recorder.settle)
@@ -454,10 +522,129 @@ func TestServeOneResponsesWebSearchEndToEnd(t *testing.T) {
 	}
 	plannerAuthorize := recorder.authorize[0]
 	plannerSettle := recorder.settle[0]
-	if plannerAuthorize["route_type"] != "responses.web_search.planner" || plannerAuthorize["additional_cost_reservation_microdollars"] != float64(3*maxWebSearchCostPerCallMicrodollars) {
+	if plannerAuthorize["route_type"] != "responses.web_search.planner" || plannerAuthorize["additional_cost_reservation_microdollars"] != float64(21_000) {
 		t.Fatalf("planner authorize = %#v", plannerAuthorize)
 	}
 	if plannerSettle["route_type"] != "responses.web_search.planner" || plannerSettle["additional_cost_microdollars"] != float64(7) {
 		t.Fatalf("planner settle = %#v", plannerSettle)
+	}
+}
+
+func TestServeOneChatWebSearchEndToEnd(t *testing.T) {
+	previousSearcher := enclaveWebSearchClient
+	enclaveWebSearchClient = &fakeResponsesWebSearcher{results: []websearch.Result{{
+		CostMicrodollars: 7,
+		Sources: []websearch.Source{{
+			Title: "Release", URL: "https://example.com/release", Snippet: "The release is live.",
+		}},
+	}}}
+	t.Cleanup(func() { enclaveWebSearchClient = previousSearcher })
+
+	trGateway, recorder, closeGateway := newFusionGatewayRecorder(t)
+	defer closeGateway()
+	server, client := net.Pipe()
+	defer client.Close()
+	go serveOne(context.Background(), server, auth.New(nil), webSearchScriptedLLM{}, nil, nil, trGateway, nil)
+
+	requestBody := []byte(`{
+		"model":"test/model",
+		"messages":[{"role":"user","content":"What changed?"}],
+		"tools":[{"type":"openrouter:web_search","parameters":{"engine":"exa","max_results":3,"max_uses":1}}]
+	}`)
+	if _, err := fmt.Fprintf(
+		client,
+		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer test-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		len(requestBody), requestBody,
+	); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.StatusCode, body)
+	}
+	for _, expected := range []string{
+		`"citations"`, `"search_results"`, `"annotations"`,
+		"https://example.com/release", `"provider_usage"`,
+	} {
+		if !bytes.Contains(body, []byte(expected)) {
+			t.Fatalf("response missing %q: %s", expected, body)
+		}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	usage := payload["usage"].(map[string]any)
+	providerUsage := usage["provider_usage"].(map[string]any)
+	if usage["total_cost_microdollars"] != float64(9) || providerUsage["web_search_cost_microdollars"] != float64(7) {
+		t.Fatalf("usage = %#v", usage)
+	}
+	if usage["server_tool_use"].(map[string]any)["web_search_requests"] != float64(1) {
+		t.Fatalf("server tool usage = %#v", usage["server_tool_use"])
+	}
+	recorder.mu.Lock()
+	authorizeCount := len(recorder.authorize)
+	settleCount := len(recorder.settle)
+	plannerAuthorize := recorder.authorize[0]
+	plannerSettle := recorder.settle[0]
+	recorder.mu.Unlock()
+	if authorizeCount != 2 || settleCount != 2 {
+		t.Fatalf("gateway calls authorize=%d settle=%d", authorizeCount, settleCount)
+	}
+	if plannerAuthorize["route_type"] != "chat.completions.web_search.planner" ||
+		plannerAuthorize["additional_cost_reservation_microdollars"] != float64(7_000) {
+		t.Fatalf("planner authorize = %#v", plannerAuthorize)
+	}
+	if plannerSettle["route_type"] != "chat.completions.web_search.planner" ||
+		plannerSettle["additional_cost_microdollars"] != float64(7) {
+		t.Fatalf("planner settle = %#v", plannerSettle)
+	}
+}
+
+func TestChatWebSearchStreamingCompletesWithCitationsAndUsage(t *testing.T) {
+	runner := &fakeResponsesWebSearchRunner{results: []fusionCallResult{
+		webSearchPlannerCall("streaming web search"),
+		webSearchFinalCall("Current answer."),
+	}}
+	searcher := &fakeResponsesWebSearcher{results: []websearch.Result{{
+		CostMicrodollars: 7,
+		Sources:          []websearch.Source{{Title: "Source", URL: "https://example.com/source", Snippet: "Evidence"}},
+	}}}
+	req := webSearchTestRequest()
+	req.Stream = true
+	req.StreamOptions = &types.ChatStreamOptions{IncludeUsage: true}
+	req.Response.WebSearch.RouteType = "chat.completions.web_search"
+	var output bytes.Buffer
+	emitter := newChatWebSearchEmitter(&output, "chatcmpl_test", req.Model, req)
+	if err := emitter.Start(); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := executeResponsesWebSearch(context.Background(), req, runner, searcher, "root", emitter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := emitter.Finish(outcome); err != nil {
+		t.Fatal(err)
+	}
+	stream := output.String()
+	for _, expected := range []string{
+		`"role":"assistant"`, `"reasoning_content"`, `"annotations"`,
+		`"citations"`, `"provider_usage"`, `"server_tool_use"`,
+		`"web_search_requests":1`, "https://example.com/source", "data: [DONE]",
+	} {
+		if !strings.Contains(stream, expected) {
+			t.Fatalf("stream missing %q:\n%s", expected, stream)
+		}
+	}
+	if strings.Index(stream, `"citations"`) > strings.Index(stream, `"finish_reason":"stop"`) {
+		t.Fatalf("citation chunk was emitted after finish chunk:\n%s", stream)
+	}
+	if strings.Count(stream, "data: [DONE]") != 1 {
+		t.Fatalf("stream completion count is wrong:\n%s", stream)
 	}
 }

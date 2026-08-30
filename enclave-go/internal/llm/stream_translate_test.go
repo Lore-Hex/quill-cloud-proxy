@@ -73,6 +73,33 @@ func TestTranslateOpenAIStreamRelaysActualServiceTier(t *testing.T) {
 	}
 }
 
+// Perplexity Sonar places source provenance beside choices. The provider
+// repeats these fields on streamed chunks, so the OpenAI-to-Anthropic
+// normalization boundary must retain them for the public response adapter.
+func TestTranslateOpenAIStreamRelaysCitationsAndSearchResults(t *testing.T) {
+	upstream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"The current answer[1]."},"finish_reason":null}],"citations":["https://gov.example/current"],"search_results":[{"title":"Official current page","url":"https://gov.example/current","date":"2026-08-29","snippet":"Current official information."}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"stop"}],"citations":["https://gov.example/current"]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := translateOpenAIStreamToAnthropic(strings.NewReader(upstream), &out); err != nil {
+		t.Fatalf("translateOpenAIStreamToAnthropic: %v", err)
+	}
+	body := out.String()
+	for _, want := range []string{
+		`"trustedrouter_citations":["https://gov.example/current"]`,
+		`"title":"Official current page"`,
+		`"snippet":"Current official information."`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("provider provenance lost; missing %s in translated stream: %s", want, body)
+		}
+	}
+}
+
 func TestTranslateOpenAIStreamInfersUnclassifiedReasoningFromTotalTokens(t *testing.T) {
 	upstream := strings.Join([]string{
 		`data: {"choices":[{"delta":{"content":"PONG"},"finish_reason":"stop"}]}`,

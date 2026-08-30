@@ -8,7 +8,7 @@ import "testing"
 func TestOpenRouterRequestContractCoverage(t *testing.T) {
 	chatFields := []string{
 		"cache_control", "debug", "frequency_penalty", "image_config", "logit_bias",
-		"logprobs", "max_completion_tokens", "max_tokens", "messages", "metadata",
+		"logprobs", "max_completion_tokens", "max_tokens", "max_tool_calls", "messages", "metadata",
 		"min_p", "modalities", "model", "models", "parallel_tool_calls", "plugins",
 		"prediction", "presence_penalty", "prompt_cache_key", "prompt_cache_options",
 		"provider", "reasoning", "reasoning_effort", "repetition_penalty",
