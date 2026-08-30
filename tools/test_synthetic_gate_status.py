@@ -110,6 +110,24 @@ class SyntheticGateStatusTests(unittest.TestCase):
                 check["effective_status"] = "down"
         self.assertEqual(self.evaluate(checks), "down")
 
+    def test_control_plane_health_failure_does_not_block_enclave_deploy(self) -> None:
+        checks = complete_samples("us-central1") + complete_samples("europe-west4")
+        checks.append(sample("us-central1", "control_plane_health", status="down"))
+
+        self.assertEqual(self.evaluate(checks), "up")
+
+    def test_sdk_pong_failure_stays_fail_closed_with_control_plane_failure(self) -> None:
+        checks = complete_samples("us-central1") + complete_samples("europe-west4")
+        checks.append(sample("us-central1", "control_plane_health", status="down"))
+        for check in checks:
+            if (
+                check["target_region"] == "us-central1"
+                and check["probe_type"] == "openai_sdk_pong"
+            ):
+                check["effective_status"] = "down"
+
+        self.assertEqual(self.evaluate(checks), "down")
+
 
 if __name__ == "__main__":
     unittest.main()

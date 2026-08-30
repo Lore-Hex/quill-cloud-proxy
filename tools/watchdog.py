@@ -47,6 +47,12 @@ from typing import Iterable
 # so the operator can tell "no signal" apart from "all healthy."
 SEVERITY = {"up": 0, "degraded": 1, "down": 2}
 INVERSE_SEVERITY = {0: "up", 1: "degraded", 2: "down"}
+# Only router-owned regional signals can justify rolling back an enclave.
+# Provider-effective PONGs remain visible on public status and still block the
+# immediate deploy gate, but a later upstream outage must not drain or replace
+# an otherwise healthy region. A region with no router-owned rows returns
+# `unknown`, never `up`.
+WATCHDOG_PROBES = frozenset({"attestation_nonce", "tls_health"})
 
 
 def cache_busted_status_url(url: str, nonce: int | None = None) -> str:
@@ -87,9 +93,12 @@ def fetch_per_region(url: str, regions: Iterable[str], timeout: int = 10) -> dic
     for index, check in enumerate(checks):
         target = (check or {}).get("target_region")
         status = (check or {}).get("effective_status") or (check or {}).get("status")
+        probe_type = str((check or {}).get("probe_type") or "")
         if not target or not status:
             continue
         if target not in regions:
+            continue
+        if probe_type not in WATCHDOG_PROBES:
             continue
         sev = SEVERITY.get(str(status).lower())
         if sev is None:
@@ -98,7 +107,7 @@ def fetch_per_region(url: str, regions: Iterable[str], timeout: int = 10) -> dic
         dimension = (
             str(target),
             str((check or {}).get("monitor_region") or ""),
-            str((check or {}).get("probe_type") or ""),
+            probe_type,
             str((check or {}).get("target") or ""),
         )
         freshness = (str((check or {}).get("created_at") or ""), index)
