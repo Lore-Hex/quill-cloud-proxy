@@ -44,11 +44,23 @@ FOREIGN_AUTHORITY = "https://trquillsea.sasia.attest.azure.net"
 SCRIPT = REPO_ROOT / "tools" / "deploy-azure-aci.sh"
 SEALER = REPO_ROOT / "tools" / "azure-seal-bundle.py"
 AZURE_BUNDLE_MANIFEST = REPO_ROOT / "tools" / "azure-bundle.manifest"
-BUNDLE_VERSION = next(
-    line.removeprefix("# bundle-version: ").strip()
-    for line in AZURE_BUNDLE_MANIFEST.read_text().splitlines()
-    if line.startswith("# bundle-version: ")
-)
+
+
+def _read_bundle_version() -> str:
+    versions = [
+        line.removeprefix("# bundle-version: ").strip()
+        for line in AZURE_BUNDLE_MANIFEST.read_text().splitlines()
+        if line.startswith("# bundle-version: ")
+    ]
+    if len(versions) != 1:
+        raise AssertionError(
+            "tools/azure-bundle.manifest must contain exactly one "
+            "'# bundle-version: <hex>' declaration"
+        )
+    return versions[0]
+
+
+BUNDLE_VERSION = _read_bundle_version()
 
 # ---------------------------------------------------------------------------
 # the stubs
@@ -254,7 +266,7 @@ if argv[:2] == ["container", "show"]:
     if query == "confidentialComputeProperties.ccePolicy":
         print("" if flag("show-omits-policy") else read("deployed-policy"))
     elif query == "containers[?name=='quill-enclave'] | [0].instanceView.restartCount":
-        print(read("group-restarts", "0"))
+        print("" if flag("missing-gateway-restarts") else read("group-restarts", "0"))
     elif query == "instanceView.state":
         print(read("group-state", "Running"))
     elif query == "ipAddress.ip":
@@ -553,6 +565,25 @@ class TestAzureCloudBoundaryPreflight(DeployHarness):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("bundle pin/manifest mismatch", result.stderr)
         self.assertIn(BUNDLE_VERSION, result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+    def test_dry_run_rejects_a_bundle_pin_manifest_mismatch(self) -> None:
+        result = self.run_script(
+            "preflight",
+            QUILL_AZURE_BUNDLE_VERSION="0" * 32,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bundle pin/manifest mismatch", result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+    def test_build_rejects_a_bundle_pin_manifest_mismatch_before_mutation(self) -> None:
+        result = self.run_script(
+            "--apply",
+            "build",
+            QUILL_AZURE_BUNDLE_VERSION="0" * 32,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bundle pin/manifest mismatch", result.stderr)
         self.assertEqual(self.mutations(), [])
 
     def test_runtime_enabled_secret_must_exist_in_the_bundle_manifest(self) -> None:
@@ -1092,10 +1123,10 @@ class TestUnpinnedBundleIsRefused(DeployHarness):
         """A pin the CCE policy does not measure is decoration: the container
         could be started with a different bundle version and still attest."""
         import json as _json
-        result = self.run_script("print-env", QUILL_AZURE_BUNDLE_VERSION="pinnedbundle0123456789abcdef0123")
+        result = self.run_script("print-env", QUILL_AZURE_BUNDLE_VERSION=BUNDLE_VERSION)
         self.assertEqual(result.returncode, 0, result.stderr[-800:])
         env = _json.loads(result.stdout)
-        self.assertEqual(env.get("QUILL_AZURE_BUNDLE_VERSION"), "pinnedbundle0123456789abcdef0123")
+        self.assertEqual(env.get("QUILL_AZURE_BUNDLE_VERSION"), BUNDLE_VERSION)
 
 
 class TestPolicyPullIsDryRunSafe(DeployHarness):
@@ -1498,6 +1529,32 @@ class TestNarrowLive(DeployHarness):
         self.assertIn("https://" + os.environ.get(
             "MAA_ENDPOINT", "trquilluaen.uaen.attest.azure.net"), recorded)
 
+    def test_default_verifier_uses_the_committed_script_lock(self) -> None:
+        self.assertTrue(
+            (REPO_ROOT / "tools" / "verify-attestation.py.lock").is_file(),
+            "--locked is only meaningful when the script lock is committed",
+        )
+        self.healthy_deploy()
+        uv = self.bin / "uv"
+        uv.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "$@" >> "$STUB_STATE/uv.log"\n'
+            "exit 0\n"
+        )
+        uv.chmod(0o755)
+
+        result = self.run_script(
+            "--apply",
+            "narrow-live",
+            VERIFY_ATTESTATION_CMD="",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        invocation = self.read_state("uv.log")
+        self.assertIn("run --locked --script", invocation)
+        self.assertIn("tools/verify-attestation.py", invocation)
+        self.assertIn("--expected-maa-issuer", invocation)
+
     def test_dry_run_does_not_narrow(self) -> None:
         live = self.healthy_deploy()
         retired = "1" * 64
@@ -1647,6 +1704,15 @@ class TestACrashLoopFailsFast(DeployHarness):
         )
 
         self.assertNotIn("crash-looping", result.stderr)
+
+    def test_missing_gateway_restart_count_fails_closed(self) -> None:
+        self.healthy_deploy()
+        self.state_file("missing-gateway-restarts").touch()
+
+        result = self.run_script("--apply", "verify")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no numeric restart count for 'quill-enclave'", result.stderr)
 
 
 class TestDnsIsAPreconditionNotAnAssumption(DeployHarness):
