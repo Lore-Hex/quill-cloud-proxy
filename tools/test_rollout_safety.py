@@ -102,6 +102,35 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn('MAX_UNAVAILABLE="${MAX_UNAVAILABLE:-0}"', deploy)
         self.assertIn('--update-policy-max-unavailable="$MAX_UNAVAILABLE"', deploy)
 
+    def test_gcp_deploy_envs_are_allowed_by_measured_image(self) -> None:
+        deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
+        dockerfile = (
+            ROOT / "enclave-go" / "Dockerfile.enclave.gcp.multi"
+        ).read_text(encoding="utf-8")
+
+        label_match = re.search(
+            r'LABEL "tee\.launch_policy\.allow_env_override"="([^"]+)"',
+            dockerfile,
+        )
+        self.assertIsNotNone(label_match, "GCP image env allowlist label is missing")
+        allowed = set(label_match.group(1).split(","))
+
+        explicit_envs = set(re.findall(r"tee-env-([A-Z][A-Z0-9_]+)=", deploy))
+        optional_envs = set(
+            re.findall(
+                r"^configure_optional_provider_secret\s+([A-Z][A-Z0-9_]+)\s+",
+                deploy,
+                re.MULTILINE,
+            )
+        )
+        deployed = explicit_envs | optional_envs
+        self.assertTrue(deployed, "GCP deploy env discovery is vacuous")
+        self.assertEqual(
+            deployed - allowed,
+            set(),
+            "deploy metadata contains env overrides rejected by Confidential Space",
+        )
+
     def test_gcp_gateway_rejects_observer_only_control_plane_overrides(self) -> None:
         deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(
             encoding="utf-8"
