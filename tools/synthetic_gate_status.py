@@ -11,10 +11,15 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 
+# These are the request-path signals attributable to an enclave rollout.
+# The SDK PONGs traverse control-plane authorization, so a real control-plane
+# outage still blocks here. `control_plane_health` is intentionally excluded:
+# it is a separate service SLO, and rollback runs directly through GitHub/GCP.
+# A stale or misconfigured control-plane /health URL must not roll back a
+# healthy enclave revision.
 REQUIRED_PROBES = frozenset(
     {
         "attestation_nonce",
-        "control_plane_health",
         "openai_sdk_pong",
         "responses_pong",
         "tls_health",

@@ -34,7 +34,7 @@ class WatchdogStateTests(unittest.TestCase):
     def test_fetch_requires_a_fresh_status_snapshot(self) -> None:
         payload = io.BytesIO(
             b'{"data":{"current":{"checks":[{"target_region":"us-central1",'
-            b'"effective_status":"up"}]}}}'
+            b'"probe_type":"tls_health","effective_status":"up"}]}}}'
         )
         with mock.patch.object(
             watchdog.urllib.request, "urlopen", return_value=payload
@@ -53,10 +53,10 @@ class WatchdogStateTests(unittest.TestCase):
         payload = io.BytesIO(
             b'{"data":{"current":{"checks":['
             b'{"target_region":"us-central1","monitor_region":"europe-west4",'
-            b'"probe_type":"openai_sdk_pong","target":"canonical",'
+            b'"probe_type":"tls_health","target":"us-central1",'
             b'"created_at":"2026-07-27T22:47:00Z","effective_status":"down"},'
             b'{"target_region":"us-central1","monitor_region":"europe-west4",'
-            b'"probe_type":"openai_sdk_pong","target":"canonical",'
+            b'"probe_type":"tls_health","target":"us-central1",'
             b'"created_at":"2026-07-27T22:48:00Z","effective_status":"up"}'
             b"]}}}"
         )
@@ -68,6 +68,46 @@ class WatchdogStateTests(unittest.TestCase):
             )
 
         self.assertEqual(result, {"us-central1": "up"})
+
+    def test_fetch_ignores_provider_failure_when_gateway_is_up(self) -> None:
+        payload = io.BytesIO(
+            b'{"data":{"current":{"checks":['
+            b'{"target_region":"us-central1","monitor_region":"us-central1",'
+            b'"probe_type":"tls_health","target":"us-central1",'
+            b'"created_at":"2026-07-27T22:48:00Z","effective_status":"up"},'
+            b'{"target_region":"us-central1","monitor_region":"us-central1",'
+            b'"probe_type":"attestation_nonce","target":"us-central1",'
+            b'"created_at":"2026-07-27T22:48:00Z","effective_status":"up"},'
+            b'{"target_region":"us-central1","monitor_region":"us-central1",'
+            b'"probe_type":"openai_sdk_pong","target":"us-central1",'
+            b'"created_at":"2026-07-27T22:49:00Z","effective_status":"down"}'
+            b"]}}}"
+        )
+        with mock.patch.object(
+            watchdog.urllib.request, "urlopen", return_value=payload
+        ):
+            result = watchdog.fetch_per_region(
+                "https://trustedrouter.com/status.json", ["us-central1"]
+            )
+
+        self.assertEqual(result, {"us-central1": "up"})
+
+    def test_fetch_returns_unknown_when_only_provider_probes_exist(self) -> None:
+        payload = io.BytesIO(
+            b'{"data":{"current":{"checks":['
+            b'{"target_region":"us-central1","monitor_region":"us-central1",'
+            b'"probe_type":"openai_sdk_pong","target":"us-central1",'
+            b'"created_at":"2026-07-27T22:49:00Z","effective_status":"up"}'
+            b"]}}}"
+        )
+        with mock.patch.object(
+            watchdog.urllib.request, "urlopen", return_value=payload
+        ):
+            result = watchdog.fetch_per_region(
+                "https://trustedrouter.com/status.json", ["us-central1"]
+            )
+
+        self.assertEqual(result, {"us-central1": "unknown"})
 
     def test_fetch_keeps_newest_failure_and_worst_current_dimension(self) -> None:
         payload = io.BytesIO(
