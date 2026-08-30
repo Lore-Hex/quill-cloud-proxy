@@ -81,6 +81,9 @@ func TestExaClientSearchUsesBoundedAuthenticatedRequest(t *testing.T) {
 		t.Fatalf("userLocation = %#v", requestBody["userLocation"])
 	}
 	contents, ok := requestBody["contents"].(map[string]any)
+	if !ok {
+		t.Fatalf("contents = %#v", requestBody["contents"])
+	}
 	highlights, ok := contents["highlights"].(map[string]any)
 	if !ok || highlights["query"] != "current fact" || highlights["maxCharacters"] != float64(15_000) {
 		t.Fatalf("contents = %#v", requestBody["contents"])
