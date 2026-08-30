@@ -125,6 +125,9 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 		}
 	}
 	if value, ok := raw["plugins"]; ok {
+		if err := rejectResponsesWebPlugin(value); err != nil {
+			return err
+		}
 		if err := validateChatPlugins(value); err != nil {
 			return err
 		}
@@ -196,6 +199,27 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 			if err := json.Unmarshal(include, &enabled); err != nil {
 				return &AdapterError{Status: 400, Message: "usage.include must be a boolean", Context: "usage.include"}
 			}
+		}
+	}
+	return nil
+}
+
+func rejectResponsesWebPlugin(value json.RawMessage) error {
+	if !presentNonNull(value) {
+		return nil
+	}
+	var plugins []map[string]json.RawMessage
+	if err := json.Unmarshal(value, &plugins); err != nil {
+		return nil // validateChatPlugins returns the stable shape error.
+	}
+	for _, plugin := range plugins {
+		if pluginDisabled(plugin) {
+			continue
+		}
+		var id string
+		_ = json.Unmarshal(plugin["id"], &id)
+		if strings.EqualFold(strings.TrimSpace(id), "web") {
+			return unsupportedRequestParameter("plugins.web")
 		}
 	}
 	return nil
@@ -604,6 +628,8 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal 
 	finishReason := "stop"
 	var captured strings.Builder
 	var usage *StreamUsage
+	var citations []string
+	var searchResults []types.ProviderSearchResult
 	toolCallsByIndex := map[int]*types.ToolCall{}
 	var toolOrder []int
 	thinkingByIndex := map[int]*ThinkingBlock{}
@@ -688,8 +714,9 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal 
 				}
 			}
 			mergeUsage(&usage, getMap(dataJSON, "usage"))
+			citations, searchResults = providerProvenanceFromInternalEvent(dataJSON, citations, searchResults)
 		case "message_stop":
-			return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage}, nil
+			return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage, Citations: citations, SearchResults: searchResults}, nil
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
@@ -701,7 +728,7 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal 
 	if requireTerminal {
 		return StreamResult{}, fmt.Errorf("adapter: truncated SSE before message_stop")
 	}
-	return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage}, nil
+	return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage, Citations: citations, SearchResults: searchResults}, nil
 }
 
 func WriteResponsesResponse(
@@ -806,6 +833,8 @@ func TransformResponsesStreamWithFinishHook(
 	thinkingByIndex := map[int]*ThinkingBlock{}
 	var thinkingOrder []int
 	var usage *StreamUsage
+	var citations []string
+	var searchResults []types.ProviderSearchResult
 	seq := 0
 	startResponse := func() error {
 		if err := writeResponseEventSeq(w, &seq, "response.created", map[string]any{
@@ -1087,10 +1116,12 @@ func TransformResponsesStreamWithFinishHook(
 				}
 			}
 			mergeUsage(&usage, getMap(dataJSON, "usage"))
+			citations, searchResults = providerProvenanceFromInternalEvent(dataJSON, citations, searchResults)
 			if meta != nil && usage != nil && usage.ServiceTier != "" {
 				meta.ActualServiceTier = usage.ServiceTier
 			}
 		case "message_stop":
+			applyResponsesProviderProvenance(meta, captured.String(), citations, searchResults)
 			toolCalls := orderedToolCalls(toolCallsByIndex, toolOrder)
 			if err := finishReasoning(); err != nil {
 				return StreamResult{}, err
@@ -1100,7 +1131,9 @@ func TransformResponsesStreamWithFinishHook(
 					return StreamResult{}, err
 				}
 			}
-			return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex, finishHook)
+			result, err := finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex, finishHook)
+			result.Citations, result.SearchResults = citations, searchResults
+			return result, err
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
@@ -1118,7 +1151,37 @@ func TransformResponsesStreamWithFinishHook(
 			return StreamResult{}, err
 		}
 	}
-	return finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex, nil)
+	applyResponsesProviderProvenance(meta, captured.String(), citations, searchResults)
+	result, err := finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex, nil)
+	result.Citations, result.SearchResults = citations, searchResults
+	return result, err
+}
+
+func applyResponsesProviderProvenance(
+	meta *types.ResponseRequestMeta,
+	text string,
+	citations []string,
+	searchResults []types.ProviderSearchResult,
+) {
+	if meta == nil {
+		return
+	}
+	chatAnnotations := ChatCitationAnnotations(text, citations, searchResults)
+	annotations := make([]map[string]any, 0, len(chatAnnotations))
+	for _, annotation := range chatAnnotations {
+		citation, _ := annotation["url_citation"].(map[string]any)
+		if citation == nil {
+			continue
+		}
+		item := map[string]any{"type": "url_citation"}
+		for _, key := range []string{"url", "title", "start_index", "end_index"} {
+			if value, ok := citation[key]; ok {
+				item[key] = value
+			}
+		}
+		annotations = append(annotations, item)
+	}
+	meta.OutputAnnotations = annotations
 }
 
 func finishResponsesStream(
@@ -1163,6 +1226,7 @@ func finishResponsesStream(
 		body map[string]any
 	}{}
 	if messageStarted {
+		annotations := responseOutputAnnotations(meta)
 		events = append(events, []struct {
 			name string
 			body map[string]any
@@ -1179,7 +1243,7 @@ func finishResponsesStream(
 				"item_id":       messageID,
 				"output_index":  messageOutputIndex,
 				"content_index": 0,
-				"part":          map[string]any{"type": "output_text", "text": text, "annotations": []any{}},
+				"part":          map[string]any{"type": "output_text", "text": text, "annotations": annotations},
 			}},
 			{"response.output_item.done", map[string]any{
 				"type":         "response.output_item.done",
@@ -1189,7 +1253,7 @@ func finishResponsesStream(
 					"type":    "message",
 					"status":  "completed",
 					"role":    "assistant",
-					"content": []map[string]any{{"type": "output_text", "text": text, "annotations": []any{}}},
+					"content": []map[string]any{{"type": "output_text", "text": text, "annotations": annotations}},
 				},
 			}},
 		}...)
@@ -1213,6 +1277,13 @@ func finishResponsesStream(
 	}
 	_, err := w.Write([]byte("data: [DONE]\n\n"))
 	return StreamResult{Text: text, FinishReason: finishReason, ToolCalls: toolCalls, Thinking: thinking, Usage: usage}, err
+}
+
+func responseOutputAnnotations(meta *types.ResponseRequestMeta) []map[string]any {
+	if meta == nil || len(meta.OutputAnnotations) == 0 {
+		return []map[string]any{}
+	}
+	return meta.OutputAnnotations
 }
 
 func responsesObject(
@@ -1793,7 +1864,10 @@ func parseResponsesWebSearchTool(tool map[string]any) (*types.ResponseWebSearchC
 			return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools." + key}
 		}
 	}
-	config := &types.ResponseWebSearchConfig{ToolType: toolType, SearchContextSize: "medium"}
+	config := &types.ResponseWebSearchConfig{
+		ToolType: toolType, RouteType: "responses.web_search", Engine: "exa",
+		Mode: "auto", SearchContextSize: "medium", MaxResults: 5,
+	}
 	if size := strings.TrimSpace(stringValue(tool["search_context_size"])); size != "" {
 		switch size {
 		case "low", "medium", "high":

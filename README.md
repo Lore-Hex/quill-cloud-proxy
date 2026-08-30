@@ -140,7 +140,45 @@ return `400` with the exact field in `error.param`; known OpenRouter controls
 that this release cannot honor return `501 not_supported_in_alpha` before
 authorization. This prevents compatibility fields from becoming silent no-ops.
 
-## Responses web search
+## Web search and citations
+
+The attested `POST /v1/chat/completions` path supports OpenRouter's current
+`openrouter:web_search` server tool and deprecated `plugins: [{"id":"web"}]`
+surface. Search runs through Exa inside the enclave. Current tool parameters
+include mode, per-call and total result limits, search-call limits, context
+size, exact character limits, and domain filters. Unknown parameters return a
+field-specific `400`; known engines or controls that are not implemented return
+`501 not_supported_in_alpha`.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-tr-...",
+    base_url="https://api.trustedrouter.com/v1",
+)
+
+completion = client.chat.completions.create(
+    model="google/gemini-3.5-flash",
+    messages=[{"role": "user", "content": "What changed in Python this week?"}],
+    tools=[{
+        "type": "openrouter:web_search",
+        "parameters": {
+            "engine": "exa",
+            "max_results": 5,
+            "max_uses": 3,
+            "allowed_domains": ["python.org"],
+        },
+    }],
+)
+print(completion.choices[0].message.annotations)
+```
+
+Search-native providers such as Perplexity may return top-level `citations` and
+`search_results`. TrustedRouter preserves both and also emits OpenRouter-style
+`choices[0].message.annotations`, including numbered references such as `[3]`.
+Streaming sends the provenance chunk before the terminal finish chunk and
+`[DONE]`.
 
 The attested `POST /v1/responses` path supports OpenAI-compatible hosted web
 search with `web_search` and the legacy `web_search_preview` alias. TrustedRouter

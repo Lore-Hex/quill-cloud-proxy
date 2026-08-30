@@ -3,6 +3,8 @@ package adapter
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 func rawChatRequest(t *testing.T, body string) map[string]json.RawMessage {
@@ -39,16 +41,6 @@ func TestValidateChatRequestNeverSilentlyIgnoresUnsupportedOpenRouterFeatures(t 
 		context string
 	}{
 		{
-			name:    "web search options",
-			body:    `{"model":"test/model","messages":[{"role":"user","content":"hi"}],"web_search_options":{"search_context_size":"high"}}`,
-			context: "web_search_options",
-		},
-		{
-			name:    "web plugin",
-			body:    `{"model":"test/model","messages":[{"role":"user","content":"hi"}],"plugins":[{"id":"web"}]}`,
-			context: "plugins.web",
-		},
-		{
 			name:    "response healing plugin",
 			body:    `{"model":"test/model","messages":[{"role":"user","content":"hi"}],"plugins":[{"id":"response-healing"}]}`,
 			context: "plugins.response-healing",
@@ -68,6 +60,107 @@ func TestValidateChatRequestNeverSilentlyIgnoresUnsupportedOpenRouterFeatures(t 
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := ValidateChatRequestFields(rawChatRequest(t, tc.body))
 			assertRequestFieldError(t, err, 501, tc.context)
+		})
+	}
+}
+
+func TestConfigureChatWebSearchSupportsCurrentOpenRouterTool(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Tools: []any{map[string]any{
+			"type": "openrouter:web_search",
+			"parameters": map[string]any{
+				"engine": "exa", "mode": "fast", "max_results": float64(7),
+				"max_uses": float64(2), "search_context_size": "high",
+				"allowed_domains": []any{"gov.uk"},
+			},
+		}},
+	}
+	if err := ConfigureChatWebSearch(req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Response == nil || req.Response.WebSearch == nil {
+		t.Fatal("web search config missing")
+	}
+	config := req.Response.WebSearch
+	if config.RouteType != "chat.completions.web_search" || config.Engine != "exa" || config.Mode != "fast" ||
+		config.MaxResults != 7 || config.MaxCalls != 2 || config.SearchContextSize != "high" ||
+		len(config.AllowedDomains) != 1 || config.AllowedDomains[0] != "gov.uk" {
+		t.Fatalf("config = %#v", config)
+	}
+	if len(req.Tools) != 1 {
+		t.Fatalf("tools = %#v", req.Tools)
+	}
+	tool := req.Tools[0].(map[string]any)
+	function := tool["function"].(map[string]any)
+	if tool["type"] != "function" || function["name"] != TrustedRouterWebSearchFunction {
+		t.Fatalf("normalized tool = %#v", tool)
+	}
+}
+
+func TestConfigureChatWebSearchDefaultsToOpenRouterToolCallBudget(t *testing.T) {
+	req := &types.OpenAIChatRequest{Tools: []any{map[string]any{"type": "openrouter:web_search"}}}
+	if err := ConfigureChatWebSearch(req); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Response.WebSearch.MaxCalls; got != 30 {
+		t.Fatalf("default max calls = %d, want 30", got)
+	}
+}
+
+func TestConfigureChatWebSearchSupportsLegacyWebPluginAndOptions(t *testing.T) {
+	req := &types.OpenAIChatRequest{
+		Plugins: []any{map[string]any{
+			"id": "web", "engine": "exa", "max_results": float64(4),
+			"include_domains": []any{"example.com"}, "search_prompt": "Prefer primary sources.",
+		}},
+		WebSearchOptions: map[string]any{"search_context_size": "low"},
+	}
+	if err := ConfigureChatWebSearch(req); err != nil {
+		t.Fatal(err)
+	}
+	config := req.Response.WebSearch
+	if config.ToolType != "web_plugin" || !config.ForceSearch || config.MaxCalls != 1 ||
+		config.MaxResults != 4 || config.SearchContextSize != "low" || config.SearchPrompt != "Prefer primary sources." {
+		t.Fatalf("config = %#v", config)
+	}
+	choice := req.ToolChoice.(map[string]any)
+	if choice["type"] != "function" {
+		t.Fatalf("tool choice = %#v", choice)
+	}
+}
+
+func TestConfigureChatWebSearchRejectsUnknownOrUnsupportedOptions(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		req     *types.OpenAIChatRequest
+		status  int
+		context string
+	}{
+		{
+			name: "unknown parameter",
+			req: &types.OpenAIChatRequest{Tools: []any{map[string]any{
+				"type": "openrouter:web_search", "parameters": map[string]any{"future": true},
+			}}},
+			status: 400, context: "tools.parameters.future",
+		},
+		{
+			name: "unsupported engine",
+			req: &types.OpenAIChatRequest{Tools: []any{map[string]any{
+				"type": "openrouter:web_search", "parameters": map[string]any{"engine": "native"},
+			}}},
+			status: 501, context: "tools.parameters.engine",
+		},
+		{
+			name: "location cannot be a no-op",
+			req: &types.OpenAIChatRequest{Tools: []any{map[string]any{
+				"type": "openrouter:web_search", "parameters": map[string]any{"user_location": map[string]any{"country": "US"}},
+			}}},
+			status: 501, context: "tools.parameters.user_location",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := ConfigureChatWebSearch(test.req)
+			assertRequestFieldError(t, err, test.status, test.context)
 		})
 	}
 }

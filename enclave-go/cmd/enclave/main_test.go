@@ -7108,13 +7108,26 @@ func TestParseChatRequestRejectsUnknownAndUnsupportedOptionsBeforeAuthorization(
 		wantContext string
 	}{
 		{`{"model":"m","messages":[{"role":"user","content":"hi"}],"future_option":true}`, 400, "future_option"},
-		{`{"model":"m","messages":[{"role":"user","content":"hi"}],"plugins":[{"id":"web"}]}`, 501, "plugins.web"},
 	} {
 		_, err := parseChatRequest([]byte(tc.body))
 		var aerr *adapter.AdapterError
 		if !errors.As(err, &aerr) || aerr.Status != tc.wantStatus || aerr.Context != tc.wantContext {
 			t.Fatalf("body %s: error = %#v, want status %d context %q", tc.body, err, tc.wantStatus, tc.wantContext)
 		}
+	}
+}
+
+func TestParseChatRequestConfiguresWebSearchBeforeAuthorization(t *testing.T) {
+	req, err := parseChatRequest([]byte(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"openrouter:web_search","parameters":{"engine":"exa","max_results":3}}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Response == nil || req.Response.WebSearch == nil || req.Response.WebSearch.MaxResults != 3 {
+		t.Fatalf("request = %#v", req)
 	}
 }
 
@@ -7164,7 +7177,6 @@ func TestServeOneReturnsExactRejectedOptionInOpenAIError(t *testing.T) {
 		wantParam  string
 	}{
 		{"unknown", `{"model":"m","messages":[{"role":"user","content":"hi"}],"future_option":true}`, 400, "future_option"},
-		{"unsupported", `{"model":"m","messages":[{"role":"user","content":"hi"}],"plugins":[{"id":"web"}]}`, 501, "plugins.web"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const bearer = "sk-test"

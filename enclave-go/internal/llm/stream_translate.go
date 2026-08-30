@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -45,6 +46,8 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 	var usage *openAIStreamUsage
 	serviceTier := ""
 	thinkingStarted := false
+	var citations []string
+	var searchResults []qtypes.ProviderSearchResult
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -56,8 +59,10 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 		}
 
 		var chunk struct {
-			ServiceTier string `json:"service_tier"`
-			Choices     []struct {
+			ServiceTier   string                        `json:"service_tier"`
+			Citations     []string                      `json:"citations"`
+			SearchResults []qtypes.ProviderSearchResult `json:"search_results"`
+			Choices       []struct {
 				Delta struct {
 					Content string `json:"content"`
 					// Several Chinese OpenAI-compatible providers (Z.AI/Zhipu,
@@ -92,6 +97,8 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 		if chunk.ServiceTier != "" {
 			serviceTier = chunk.ServiceTier
 		}
+		citations = mergeProviderCitations(citations, chunk.Citations)
+		searchResults = mergeProviderSearchResults(searchResults, chunk.SearchResults)
 		if chunk.Usage != nil {
 			usage = chunk.Usage
 		}
@@ -158,7 +165,7 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 			return err
 		}
 	}
-	return writeAnthropicStop(w, stopReason, usage)
+	return writeAnthropicStop(w, stopReason, usage, citations, searchResults)
 }
 
 type openAIToolCallAccumulator struct {
@@ -359,10 +366,22 @@ func writeAnthropicToolStop(w io.Writer, index int) error {
 	return err
 }
 
-func writeAnthropicStop(w io.Writer, stopReason string, usage *openAIStreamUsage) error {
+func writeAnthropicStop(
+	w io.Writer,
+	stopReason string,
+	usage *openAIStreamUsage,
+	citations []string,
+	searchResults []qtypes.ProviderSearchResult,
+) error {
 	mDelta := map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": stopReason},
+	}
+	if len(citations) > 0 {
+		mDelta["trustedrouter_citations"] = citations
+	}
+	if len(searchResults) > 0 {
+		mDelta["trustedrouter_search_results"] = searchResults
 	}
 	if usage != nil {
 		// Relay the upstream-reported usage on the synthetic message_delta.
@@ -394,6 +413,72 @@ func writeAnthropicStop(w io.Writer, stopReason string, usage *openAIStreamUsage
 	}
 	_, err := fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	return err
+}
+
+func mergeProviderCitations(existing, incoming []string) []string {
+	seen := make(map[string]struct{}, len(existing)+len(incoming))
+	out := make([]string, 0, len(existing)+len(incoming))
+	for _, values := range [][]string{existing, incoming} {
+		for _, raw := range values {
+			clean := safeProviderCitationURL(raw)
+			if clean == "" {
+				continue
+			}
+			if _, duplicate := seen[clean]; duplicate {
+				continue
+			}
+			seen[clean] = struct{}{}
+			out = append(out, clean)
+			if len(out) >= 50 {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func mergeProviderSearchResults(existing, incoming []qtypes.ProviderSearchResult) []qtypes.ProviderSearchResult {
+	seen := make(map[string]struct{}, len(existing)+len(incoming))
+	out := make([]qtypes.ProviderSearchResult, 0, len(existing)+len(incoming))
+	for _, values := range [][]qtypes.ProviderSearchResult{existing, incoming} {
+		for _, result := range values {
+			result.URL = safeProviderCitationURL(result.URL)
+			if result.URL == "" {
+				continue
+			}
+			if _, duplicate := seen[result.URL]; duplicate {
+				continue
+			}
+			seen[result.URL] = struct{}{}
+			result.Title = truncateProviderMetadata(result.Title, 512)
+			result.Date = truncateProviderMetadata(result.Date, 128)
+			result.LastUpdated = truncateProviderMetadata(result.LastUpdated, 128)
+			result.Snippet = truncateProviderMetadata(result.Snippet, 8192)
+			result.Source = truncateProviderMetadata(result.Source, 64)
+			out = append(out, result)
+			if len(out) >= 50 {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func safeProviderCitationURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return ""
+	}
+	parsed.User = nil
+	return truncateProviderMetadata(parsed.String(), 4096)
+}
+
+func truncateProviderMetadata(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit]
 }
 
 func mapOpenAIFinishReason(reason string) string {

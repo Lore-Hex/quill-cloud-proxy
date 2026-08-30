@@ -7,13 +7,16 @@ package adapter
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -472,6 +475,11 @@ type StreamResult struct {
 	Text         string
 	FinishReason string
 	ToolCalls    []types.ToolCall
+	// Citations and SearchResults preserve provider-native search provenance
+	// (for example Perplexity Sonar's top-level response fields) through the
+	// enclave's normalized stream. They are returned to the caller only.
+	Citations     []string
+	SearchResults []types.ProviderSearchResult
 	// Thinking holds extended-thinking blocks (in order, before any text /
 	// tool_use), reassembled from the upstream SSE. opus-4.7+ emits these
 	// when output_config.effort is set; Anthropic requires them replayed
@@ -602,6 +610,63 @@ func WriteChatCompletionResponse(
 	return err
 }
 
+// WriteChatCompletionResponseWithProvenance preserves search-native provider
+// metadata while also emitting OpenRouter's standardized message.annotations
+// shape. The original writer remains the common response builder for ordinary
+// completions so existing callers cannot diverge on usage or tool-call fields.
+func WriteChatCompletionResponseWithProvenance(
+	w io.Writer,
+	requestID string,
+	model string,
+	text string,
+	reasoning string,
+	toolCalls []types.ToolCall,
+	inputTokens int,
+	outputTokens int,
+	usage *StreamUsage,
+	created int64,
+	finishReason string,
+	citations []string,
+	searchResults []types.ProviderSearchResult,
+) error {
+	var base bytes.Buffer
+	if err := WriteChatCompletionResponse(
+		&base, requestID, model, text, reasoning, toolCalls,
+		inputTokens, outputTokens, usage, created, finishReason,
+	); err != nil {
+		return err
+	}
+	if len(citations) == 0 && len(searchResults) == 0 {
+		_, err := w.Write(base.Bytes())
+		return err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(base.Bytes(), &payload); err != nil {
+		return err
+	}
+	cleanCitations, cleanResults := normalizeProviderProvenance(citations, searchResults)
+	if len(cleanCitations) > 0 {
+		payload["citations"] = cleanCitations
+	}
+	if len(cleanResults) > 0 {
+		payload["search_results"] = cleanResults
+	}
+	choices, _ := payload["choices"].([]any)
+	if len(choices) > 0 {
+		choice, _ := choices[0].(map[string]any)
+		message, _ := choice["message"].(map[string]any)
+		if annotations := ChatCitationAnnotations(text, cleanCitations, cleanResults); len(annotations) > 0 {
+			message["annotations"] = annotations
+		}
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(encoded)
+	return err
+}
+
 func chatToolCalls(toolCalls []types.ToolCall) []map[string]any {
 	out := make([]map[string]any, 0, len(toolCalls))
 	for i, call := range toolCalls {
@@ -685,6 +750,8 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 	var toolBlockOrder []int
 	thinkingByIndex := map[int]*ThinkingBlock{}
 	var thinkingOrder []int
+	var citations []string
+	var searchResults []types.ProviderSearchResult
 	sawUpstreamBytes := false
 
 	scanner := bufio.NewScanner(r)
@@ -702,6 +769,16 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 	}
 
 	finish := func(runHook bool) (StreamResult, error) {
+		if len(citations) > 0 || len(searchResults) > 0 {
+			if err := sendRole(); err != nil {
+				return StreamResult{}, err
+			}
+			if err := writeProviderProvenanceChunk(
+				w, requestID, model, created, captured.String(), citations, searchResults,
+			); err != nil {
+				return StreamResult{}, err
+			}
+		}
 		if err := writeChunk(w, requestID, model, created, map[string]any{}, finishReason); err != nil {
 			return StreamResult{}, err
 		}
@@ -721,7 +798,11 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 			}
 		}
 		_, err := w.Write([]byte("data: [DONE]\n\n"))
-		result := StreamResult{Text: captured.String(), FinishReason: finishReason, Usage: usage, Thinking: orderedThinking(thinkingByIndex, thinkingOrder)}
+		result := StreamResult{
+			Text: captured.String(), FinishReason: finishReason, Usage: usage,
+			Thinking:  orderedThinking(thinkingByIndex, thinkingOrder),
+			Citations: append([]string(nil), citations...), SearchResults: append([]types.ProviderSearchResult(nil), searchResults...),
+		}
 		for _, blockIndex := range toolBlockOrder {
 			call := toolByBlock[blockIndex]
 			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
@@ -869,6 +950,7 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 			// input_tokens/reasoning_tokens relayed from OpenAI-compatible
 			// upstreams' include_usage final chunk.
 			mergeUsage(&usage, getMap(dataJSON, "usage"))
+			citations, searchResults = providerProvenanceFromInternalEvent(dataJSON, citations, searchResults)
 		case "message_stop":
 			return finish(true)
 		}
@@ -882,6 +964,190 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 	// EOF without message_stop is a tolerated compatibility behavior for
 	// ordinary streams, but it is not a receipt-worthy clean terminator.
 	return finish(false)
+}
+
+func providerProvenanceFromInternalEvent(
+	event map[string]any,
+	citations []string,
+	searchResults []types.ProviderSearchResult,
+) ([]string, []types.ProviderSearchResult) {
+	if raw, ok := event["trustedrouter_citations"].([]any); ok {
+		for _, item := range raw {
+			if value, ok := item.(string); ok {
+				citations = append(citations, value)
+			}
+		}
+	}
+	if raw, ok := event["trustedrouter_search_results"].([]any); ok {
+		for _, item := range raw {
+			encoded, err := json.Marshal(item)
+			if err != nil {
+				continue
+			}
+			var result types.ProviderSearchResult
+			if json.Unmarshal(encoded, &result) == nil {
+				searchResults = append(searchResults, result)
+			}
+		}
+	}
+	return normalizeProviderProvenance(citations, searchResults)
+}
+
+func normalizeProviderProvenance(
+	citations []string,
+	searchResults []types.ProviderSearchResult,
+) ([]string, []types.ProviderSearchResult) {
+	cleanCitations := make([]string, 0, min(len(citations)+len(searchResults), 50))
+	seenCitations := map[string]struct{}{}
+	citationCandidates := append([]string(nil), citations...)
+	for _, result := range searchResults {
+		citationCandidates = append(citationCandidates, result.URL)
+	}
+	for _, raw := range citationCandidates {
+		clean := safeCitationURL(raw)
+		if clean == "" {
+			continue
+		}
+		if _, duplicate := seenCitations[clean]; duplicate {
+			continue
+		}
+		seenCitations[clean] = struct{}{}
+		cleanCitations = append(cleanCitations, clean)
+		if len(cleanCitations) >= 50 {
+			break
+		}
+	}
+	cleanResults := make([]types.ProviderSearchResult, 0, min(len(searchResults), 50))
+	seenResults := map[string]struct{}{}
+	for _, result := range searchResults {
+		result.URL = safeCitationURL(result.URL)
+		if result.URL == "" {
+			continue
+		}
+		if _, duplicate := seenResults[result.URL]; duplicate {
+			continue
+		}
+		seenResults[result.URL] = struct{}{}
+		result.Title = truncateCitationMetadata(result.Title, 512)
+		result.Date = truncateCitationMetadata(result.Date, 128)
+		result.LastUpdated = truncateCitationMetadata(result.LastUpdated, 128)
+		result.Snippet = truncateCitationMetadata(result.Snippet, 8192)
+		result.Source = truncateCitationMetadata(result.Source, 64)
+		cleanResults = append(cleanResults, result)
+		if len(cleanResults) >= 50 {
+			break
+		}
+	}
+	return cleanCitations, cleanResults
+}
+
+func safeCitationURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return ""
+	}
+	parsed.User = nil
+	return truncateCitationMetadata(parsed.String(), 4096)
+}
+
+func truncateCitationMetadata(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit]
+}
+
+// ChatCitationAnnotations maps numbered provider references ([1], [2], ...)
+// and directly rendered source URLs to OpenRouter's Chat annotation schema.
+func ChatCitationAnnotations(
+	text string,
+	citations []string,
+	searchResults []types.ProviderSearchResult,
+) []map[string]any {
+	byURL := make(map[string]types.ProviderSearchResult, len(searchResults))
+	for _, result := range searchResults {
+		byURL[result.URL] = result
+	}
+	annotations := []map[string]any{}
+	for index, citation := range citations {
+		appendOccurrences := func(needle string) {
+			from := 0
+			for {
+				relative := strings.Index(text[from:], needle)
+				if relative < 0 {
+					break
+				}
+				startByte := from + relative
+				endByte := startByte + len(needle)
+				result := byURL[citation]
+				urlCitation := map[string]any{
+					"url": citation, "title": result.Title,
+					"start_index": utf8.RuneCountInString(text[:startByte]),
+					"end_index":   utf8.RuneCountInString(text[:endByte]),
+				}
+				if result.Snippet != "" {
+					urlCitation["content"] = result.Snippet
+				}
+				annotations = append(annotations, map[string]any{
+					"type": "url_citation", "url_citation": urlCitation,
+				})
+				from = endByte
+			}
+		}
+		appendOccurrences(fmt.Sprintf("[%d]", index+1))
+		if citation != "" {
+			appendOccurrences(citation)
+		}
+	}
+	return annotations
+}
+
+func writeProviderProvenanceChunk(
+	w io.Writer,
+	id string,
+	model string,
+	created int64,
+	text string,
+	citations []string,
+	searchResults []types.ProviderSearchResult,
+) error {
+	cleanCitations, cleanResults := normalizeProviderProvenance(citations, searchResults)
+	payload := map[string]any{
+		"id": id, "object": "chat.completion.chunk", "created": created, "model": model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"delta":         map[string]any{"annotations": ChatCitationAnnotations(text, cleanCitations, cleanResults)},
+			"finish_reason": nil,
+		}},
+	}
+	if len(cleanCitations) > 0 {
+		payload["citations"] = cleanCitations
+	}
+	if len(cleanResults) > 0 {
+		payload["search_results"] = cleanResults
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "data: %s\n\n", body)
+	return err
+}
+
+// WriteProviderProvenanceChunk exposes the normalized OpenRouter citation
+// chunk to enclave-owned orchestration handlers. Callers must emit it before
+// the terminal finish chunk and [DONE].
+func WriteProviderProvenanceChunk(
+	w io.Writer,
+	id string,
+	model string,
+	created int64,
+	text string,
+	citations []string,
+	searchResults []types.ProviderSearchResult,
+) error {
+	return writeProviderProvenanceChunk(w, id, model, created, text, citations, searchResults)
 }
 
 func writeRouterMetadataChunk(

@@ -294,6 +294,8 @@ type OpenAIChatRequest struct {
 	Tools               []any                `json:"tools,omitempty"`
 	Plugins             []any                `json:"plugins,omitempty"`
 	ToolChoice          any                  `json:"tool_choice,omitempty"`
+	MaxToolCalls        *int                 `json:"max_tool_calls,omitempty"`
+	WebSearchOptions    map[string]any       `json:"web_search_options,omitempty"`
 	ParallelTools       *bool                `json:"parallel_tool_calls,omitempty"`
 	Depth               *int                 `json:"depth,omitempty"`
 	Response            *ResponseRequestMeta `json:"-"`
@@ -533,7 +535,13 @@ type ResponseRequestMeta struct {
 
 type ResponseWebSearchConfig struct {
 	ToolType          string
+	RouteType         string
+	Engine            string
+	Mode              string
 	SearchContextSize string
+	MaxResults        int
+	MaxTotalResults   int
+	MaxCharacters     int
 	AllowedDomains    []string
 	BlockedDomains    []string
 	UserCountry       string
@@ -542,6 +550,8 @@ type ResponseWebSearchConfig struct {
 	UserTimezone      string
 	MaxCalls          int
 	IncludeSources    bool
+	ForceSearch       bool
+	SearchPrompt      string
 }
 
 type ResponseWebSearchCall struct {
@@ -551,8 +561,22 @@ type ResponseWebSearchCall struct {
 }
 
 type ResponseWebSearchSource struct {
-	Title string
-	URL   string
+	Title   string
+	URL     string
+	Content string
+}
+
+// ProviderSearchResult is provenance returned beside an OpenAI-compatible
+// completion by search-native providers such as Perplexity. It is carried only
+// inside the attested request path and surfaced to the caller; it is never sent
+// to the control plane or durable telemetry.
+type ProviderSearchResult struct {
+	Title       string `json:"title,omitempty"`
+	URL         string `json:"url"`
+	Date        string `json:"date,omitempty"`
+	LastUpdated string `json:"last_updated,omitempty"`
+	Snippet     string `json:"snippet,omitempty"`
+	Source      string `json:"source,omitempty"`
 }
 
 type ToolCall struct {

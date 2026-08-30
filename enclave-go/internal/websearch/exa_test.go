@@ -65,6 +65,7 @@ func TestExaClientSearchUsesBoundedAuthenticatedRequest(t *testing.T) {
 	result, err := client.Search(context.Background(), "current fact", SearchOptions{
 		NumResults:     5,
 		SearchType:     "fast",
+		MaxCharacters:  15_000,
 		IncludeDomains: []string{"example.com"},
 		ExcludeDomains: []string{"spam.example"},
 		UserLocation:   "US",
@@ -80,7 +81,8 @@ func TestExaClientSearchUsesBoundedAuthenticatedRequest(t *testing.T) {
 		t.Fatalf("userLocation = %#v", requestBody["userLocation"])
 	}
 	contents, ok := requestBody["contents"].(map[string]any)
-	if !ok || contents["highlights"] != true {
+	highlights, ok := contents["highlights"].(map[string]any)
+	if !ok || highlights["query"] != "current fact" || highlights["maxCharacters"] != float64(15_000) {
 		t.Fatalf("contents = %#v", requestBody["contents"])
 	}
 	if result.RequestID != "exa_req_1" || result.CostMicrodollars != 7001 || len(result.Sources) != 1 {

@@ -22,12 +22,12 @@ import (
 const (
 	defaultExaEndpoint = "https://api.exa.ai/search"
 	defaultNumResults  = 5
-	maxNumResults      = 10
-	maxResponseBytes   = 2 << 20
+	maxNumResults      = 25
+	maxResponseBytes   = 4 << 20
 	MaxQueryBytes      = 4096
 	MaxTitleBytes      = 512
-	MaxSnippetBytes    = 8192
-	maxTotalSnippetLen = 48 << 10
+	MaxSnippetBytes    = 100_000
+	maxTotalSnippetLen = 1536 << 10
 	maxCostNumberBytes = 64
 	maxCostExponent    = 18
 )
@@ -41,6 +41,7 @@ type ExaOptions struct {
 type SearchOptions struct {
 	NumResults     int
 	SearchType     string
+	MaxCharacters  int
 	IncludeDomains []string
 	ExcludeDomains []string
 	UserLocation   string
@@ -129,12 +130,17 @@ func (c *ExaClient) Search(ctx context.Context, query string, options SearchOpti
 	if searchType == "" {
 		searchType = "fast"
 	}
+	highlights := any(true)
+	if options.MaxCharacters > 0 {
+		maxCharacters := min(options.MaxCharacters, MaxSnippetBytes)
+		highlights = map[string]any{"query": query, "maxCharacters": maxCharacters}
+	}
 	payload := map[string]any{
 		"query":      query,
 		"type":       searchType,
 		"numResults": numResults,
 		"contents": map[string]any{
-			"highlights": true,
+			"highlights": highlights,
 		},
 	}
 	if len(options.IncludeDomains) > 0 {

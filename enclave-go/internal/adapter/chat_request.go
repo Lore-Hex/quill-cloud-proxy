@@ -17,7 +17,7 @@ var chatRequestFields = map[string]struct{}{
 	// OpenRouter ChatRequest fields from https://openrouter.ai/openapi.json.
 	"cache_control": {}, "debug": {}, "frequency_penalty": {}, "image_config": {},
 	"logit_bias": {}, "logprobs": {}, "max_completion_tokens": {}, "max_tokens": {},
-	"messages": {}, "metadata": {}, "min_p": {}, "modalities": {}, "model": {},
+	"max_tool_calls": {}, "messages": {}, "metadata": {}, "min_p": {}, "modalities": {}, "model": {},
 	"models": {}, "parallel_tool_calls": {}, "plugins": {}, "prediction": {},
 	"presence_penalty": {}, "prompt_cache_key": {}, "prompt_cache_options": {},
 	"provider": {}, "reasoning": {}, "reasoning_effort": {}, "repetition_penalty": {},
@@ -31,7 +31,7 @@ var chatRequestFields = map[string]struct{}{
 
 var unsupportedChatFields = map[string]struct{}{
 	"cache_control": {}, "debug": {}, "image_config": {}, "route": {},
-	"stop_server_tools_when": {}, "web_search_options": {},
+	"stop_server_tools_when": {},
 }
 
 var providerRoutingFields = map[string]struct{}{
@@ -51,13 +51,13 @@ var unsupportedProviderRoutingFields = map[string]struct{}{
 }
 
 var supportedPluginIDs = map[string]struct{}{
-	"fusion": {}, "map_reduce": {}, "mapreduce": {}, "selector": {}, "synth": {},
+	"fusion": {}, "map_reduce": {}, "mapreduce": {}, "selector": {}, "synth": {}, "web": {},
 }
 
 var knownUnsupportedPluginIDs = map[string]struct{}{
 	"auto-beta-router": {}, "auto-router": {}, "context-compression": {},
 	"file-parser": {}, "moderation": {}, "pareto-router": {}, "response-healing": {},
-	"web": {}, "web-fetch": {},
+	"web-fetch": {},
 }
 
 var endpointCapabilityFields = map[string]string{

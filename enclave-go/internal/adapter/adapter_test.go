@@ -982,6 +982,31 @@ func TestCollectAnthropicTextCapturesToolUse(t *testing.T) {
 	}
 }
 
+func TestCollectAnthropicTextCapturesProviderProvenance(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Current answer[1]."}}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"trustedrouter_citations":["https://gov.example/current"],"trustedrouter_search_results":[{"title":"Official page","url":"https://gov.example/current","snippet":"Official evidence."}]}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n"))
+
+	result, err := CollectAnthropicText(stream)
+	if err != nil {
+		t.Fatalf("CollectAnthropicText: %v", err)
+	}
+	if len(result.Citations) != 1 || result.Citations[0] != "https://gov.example/current" {
+		t.Fatalf("citations = %#v", result.Citations)
+	}
+	if len(result.SearchResults) != 1 || result.SearchResults[0].Title != "Official page" {
+		t.Fatalf("search results = %#v", result.SearchResults)
+	}
+}
+
 func TestCollectAnthropicTextCapturesThinking(t *testing.T) {
 	// opus-4.7+ emits a thinking block (text + signature) before tool_use when
 	// output_config.effort is set. The non-streaming reassembly must capture it
@@ -1072,6 +1097,77 @@ func TestWriteChatCompletionResponseIncludesReasoningFromThinking(t *testing.T) 
 	}
 	if got := message["reasoning_content"]; got != wantReasoning {
 		t.Fatalf("reasoning_content = %#v, want %q", got, wantReasoning)
+	}
+}
+
+func TestWriteChatCompletionResponsePreservesProviderProvenance(t *testing.T) {
+	var out bytes.Buffer
+	if err := WriteChatCompletionResponseWithProvenance(
+		&out,
+		"chatcmpl_cited",
+		"perplexity/sonar",
+		"The current answer[1].",
+		"",
+		nil,
+		12,
+		8,
+		nil,
+		123,
+		"stop",
+		[]string{"https://gov.example/current"},
+		[]types.ProviderSearchResult{{
+			Title: "Official current page", URL: "https://gov.example/current", Snippet: "Current official information.",
+		}},
+	); err != nil {
+		t.Fatalf("WriteChatCompletionResponseWithProvenance: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	citations := payload["citations"].([]any)
+	if len(citations) != 1 || citations[0] != "https://gov.example/current" {
+		t.Fatalf("top-level citations = %#v", citations)
+	}
+	message := payload["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	annotations := message["annotations"].([]any)
+	if len(annotations) != 1 {
+		t.Fatalf("annotations = %#v", annotations)
+	}
+	citation := annotations[0].(map[string]any)["url_citation"].(map[string]any)
+	if citation["url"] != "https://gov.example/current" || citation["title"] != "Official current page" ||
+		citation["start_index"] != float64(18) || citation["end_index"] != float64(21) {
+		t.Fatalf("url citation = %#v", citation)
+	}
+}
+
+func TestStreamingChatEmitsProviderProvenanceBeforeDone(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Answer[1]."}}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"trustedrouter_citations":["https://example.com/source"],"trustedrouter_search_results":[{"title":"Source","url":"https://example.com/source"}]}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n"))
+	var out bytes.Buffer
+	result, err := TransformStreamCapture(stream, &out, "chatcmpl_stream", "perplexity/sonar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Citations) != 1 {
+		t.Fatalf("result citations = %#v", result.Citations)
+	}
+	body := out.String()
+	if !strings.Contains(body, `"annotations":[{"type":"url_citation"`) ||
+		!strings.Contains(body, `"citations":["https://example.com/source"]`) {
+		t.Fatalf("stream provenance missing: %s", body)
+	}
+	if strings.Index(body, `"citations"`) > strings.Index(body, `data: [DONE]`) {
+		t.Fatalf("provenance arrived after DONE: %s", body)
 	}
 }
 
@@ -1371,6 +1467,35 @@ func TestTransformResponsesStreamEmitsReasoningTextEvents(t *testing.T) {
 	}
 	if len(result.Thinking) != 1 || result.Thinking[0].Text != "raw response thinking" {
 		t.Fatalf("thinking = %#v, want raw response thinking", result.Thinking)
+	}
+}
+
+func TestTransformResponsesStreamPreservesProviderCitations(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Current fact [1]"}}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"trustedrouter_citations":["https://gov.example/current"],"trustedrouter_search_results":[{"title":"Official source","url":"https://gov.example/current","snippet":"Current fact"}]}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n"))
+	meta := &types.ResponseRequestMeta{}
+	var out bytes.Buffer
+	result, err := TransformResponsesStream(stream, &out, "resp_test", "perplexity/sonar", 10, nil, meta)
+	if err != nil {
+		t.Fatalf("TransformResponsesStream: %v", err)
+	}
+	if len(result.Citations) != 1 || result.Citations[0] != "https://gov.example/current" {
+		t.Fatalf("result provenance = %#v", result)
+	}
+	body := out.String()
+	for _, want := range []string{`"type":"url_citation"`, `"url":"https://gov.example/current"`, `"title":"Official source"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("Responses stream missing %q: %s", want, body)
+		}
 	}
 }
 

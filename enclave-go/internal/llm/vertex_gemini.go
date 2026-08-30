@@ -642,7 +642,7 @@ func translateGeminiStreamToAnthropicMode(r io.Reader, w io.Writer, strict bool)
 	if sawTool {
 		stopReason = "tool_use"
 	}
-	return writeAnthropicStop(w, stopReason, usage)
+	return writeAnthropicStop(w, stopReason, usage, nil, nil)
 }
 
 // geminiSignatureDelimiter stashes a Gemini-3 functionCall thought_signature
