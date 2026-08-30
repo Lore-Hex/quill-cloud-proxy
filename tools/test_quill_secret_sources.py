@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -14,6 +15,24 @@ SPEC.loader.exec_module(MODULE)
 
 
 class QuillSecretSourcesTests(unittest.TestCase):
+    def test_every_direct_provider_secret_has_an_operator_key_source(self) -> None:
+        registry = (
+            SCRIPT.parents[1]
+            / "enclave-go"
+            / "internal"
+            / "directproviders"
+            / "providers.go"
+        ).read_text()
+        direct_provider_secrets = set(
+            re.findall(r'SecretName:\s*"([^"]+)"', registry)
+        )
+        mapped_secrets = set(MODULE.PROVIDER_KEY_ALIASES.values())
+        for aliases in MODULE.COPIED_KEY_ALIASES.values():
+            mapped_secrets.update(aliases)
+
+        self.assertTrue(direct_provider_secrets)
+        self.assertEqual(direct_provider_secrets - mapped_secrets, set())
+
     def test_new_provider_keys_are_copied_to_cloud_local_names(self) -> None:
         cases = {
             "ALIBABA_API_KEY": "trustedrouter-alibaba-api-key",
@@ -22,6 +41,8 @@ class QuillSecretSourcesTests(unittest.TestCase):
             "DATABRICKS_TOKEN": "trustedrouter-databricks-token",
             "ENGY_API_KEY": "trustedrouter-engy-api-key",
             "PEARL_RESEARCH_API_KEY": "trustedrouter-pearl-api-key",
+            "FAL_API_KEY": "trustedrouter-fal-api-key",
+            "TENCENT_API_KEY": "trustedrouter-tencent-tokenhub-api-key",
             "TELNYX_API_KEY": "trustedrouter-telnyx-api-key",
             "ZERO_G_ALL_API_KEY": "trustedrouter-zero-g-api-key",
         }
