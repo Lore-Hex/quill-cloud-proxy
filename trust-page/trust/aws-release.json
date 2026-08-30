@@ -1,5 +1,6 @@
 {
   "accepted_pcr0s": [
+    "c03f9c8f9b2aa0435fcac115be58d11fdd9cc522569989d803390e7d859cd85ed1c2df5190c3d6b40fc23beb16e6442c",
     "fe276f00f9df78fa624108b87430d1407fc102bd435916562ca5c2f044ab8e9ffe52f789fd513a82b2e043c19cf44d73"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
@@ -12,12 +13,12 @@
     "prompt_output_storage": false
   },
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-099892a92617adf09-enc01a03437d0579ba2",
-  "pcr0": "fe276f00f9df78fa624108b87430d1407fc102bd435916562ca5c2f044ab8e9ffe52f789fd513a82b2e043c19cf44d73",
+  "observed_module_id": "i-0f80320d49e480ed0-enc1a05349d8266165",
+  "pcr0": "c03f9c8f9b2aa0435fcac115be58d11fdd9cc522569989d803390e7d859cd85ed1c2df5190c3d6b40fc23beb16e6442c",
   "platform": "aws-nitro-enclaves",
-  "release_state": "current",
+  "release_state": "rolling",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "445d68c",
+  "source_commit": "c289559",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
