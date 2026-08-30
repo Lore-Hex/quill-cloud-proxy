@@ -169,6 +169,9 @@ SECRETS=(
   trustedrouter-nscale-api-key
   trustedrouter-perplexity-api-key
   trustedrouter-krea-api-key
+  trustedrouter-fal-api-key
+  trustedrouter-byteplus-api-key
+  trustedrouter-tencent-tokenhub-api-key
   trustedrouter-vultr-api-key
   trustedrouter-huggingface-api-key
   trustedrouter-darkbloom-api-key

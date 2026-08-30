@@ -16,6 +16,7 @@ import (
 	"net/http/cookiejar"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -28,6 +29,7 @@ func TestModelRegistryIsExactAndDefensivelyCopied(t *testing.T) {
 		"black-forest-labs/flux-2-pro",
 		"black-forest-labs/flux.1-schnell",
 		"decart/lucy-image-2",
+		"fal/flux-1-schnell",
 		"google/gemini-3.1-flash-image",
 		"google/gemini-3.1-flash-image-preview",
 		"krea/krea-2-medium",
@@ -537,6 +539,72 @@ func TestKreaSubmitsPollsAndDownloadsModelResult(t *testing.T) {
 	}
 }
 
+func TestFALReturnsPrivateValidatedImage(t *testing.T) {
+	resolved, err := Parse([]byte(`{"model":"fal/flux-1-schnell","prompt":"cat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataURL := "data:image/png;base64," + testPNG(t, 1024, 1024)
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPost || req.URL.String() != "https://fal.run/fal-ai/flux/schnell" {
+			t.Fatalf("request = %s %s", req.Method, req.URL)
+		}
+		if req.Header.Get("Authorization") != "Key fal-key" ||
+			req.Header.Get("Idempotency-Key") != "fal-one" {
+			t.Fatalf("headers = %#v", req.Header)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["sync_mode"] != true || body["output_format"] != "png" ||
+			body["num_images"] != float64(1) {
+			t.Fatalf("body = %#v", body)
+		}
+		response, _ := json.Marshal(map[string]any{
+			"images": []map[string]any{{
+				"url": dataURL, "width": 1024, "height": 1024, "content_type": "image/png",
+			}},
+			"has_nsfw_concepts": []bool{false},
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(response)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	result, err := NewRegistry(ProviderKeys{FAL: "fal-key"}, client).Generate(
+		t.Context(), resolved, "", "fal-one",
+	)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(result.Images) != 1 || result.Images[0].Width != 1024 ||
+		result.Images[0].Height != 1024 || result.Images[0].MediaType != "image/png" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestFALErrorResponseUsesSmallLimit(t *testing.T) {
+	resolved, err := Parse([]byte(`{"model":"fal/flux-1-schnell","prompt":"cat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Body:       io.NopCloser(bytes.NewReader(bytes.Repeat([]byte("x"), maxProviderErrorBytes+1))),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	_, err = NewRegistry(ProviderKeys{FAL: "fal-key"}, client).Generate(
+		t.Context(), resolved, "", "",
+	)
+	if err == nil || !strings.Contains(err.Error(), "response exceeds the output limit") {
+		t.Fatalf("Generate error = %v", err)
+	}
+}
+
 func TestRiverflowSubmitsPollsValidatesReceiptAndDownloadsResult(t *testing.T) {
 	resolved, err := Parse([]byte(`{"model":"riverflow/riverflow-2-fast","prompt":"cat"}`))
 	if err != nil {
@@ -721,6 +789,14 @@ func TestNativeProviderOutputShapeMustMatchTheNormalizedRequest(t *testing.T) {
 		},
 		{
 			body:      `{"model":"black-forest-labs/flux.1-schnell","prompt":"cat"}`,
+			generated: GeneratedImage{Width: 1024, Height: 1024},
+		},
+		{
+			body:      `{"model":"fal/flux-1-schnell","prompt":"cat"}`,
+			generated: GeneratedImage{Width: 2048, Height: 2048}, wantError: true,
+		},
+		{
+			body:      `{"model":"fal/flux-1-schnell","prompt":"cat"}`,
 			generated: GeneratedImage{Width: 1024, Height: 1024},
 		},
 		{

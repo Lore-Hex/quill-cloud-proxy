@@ -13,8 +13,8 @@ func TestSpecsAreValidAndImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := All()
-	if len(all) != 25 {
-		t.Fatalf("provider specs = %d, want 25", len(all))
+	if len(all) != 28 {
+		t.Fatalf("provider specs = %d, want 28", len(all))
 	}
 	original := all[0]
 	all[0].Provider = "mutated"
@@ -56,6 +56,10 @@ func TestSpecializedProviderContracts(t *testing.T) {
 	krea, ok := Lookup("krea")
 	if !ok || !krea.MediaOnly || krea.ChatCompletionsPath != "" {
 		t.Fatalf("Krea spec = %#v, ok=%v", krea, ok)
+	}
+	fal, ok := Lookup("fal")
+	if !ok || !fal.MediaOnly || fal.ChatCompletionsPath != "" {
+		t.Fatalf("FAL spec = %#v, ok=%v", fal, ok)
 	}
 	riverflow, ok := Lookup("riverflow")
 	if !ok || !riverflow.MediaOnly || riverflow.ChatCompletionsPath != "" {
