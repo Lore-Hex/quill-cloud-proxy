@@ -272,6 +272,8 @@ if argv[:2] == ["container", "show"]:
             print("ERROR: transient Azure control-plane failure", file=sys.stderr)
             sys.exit(1)
         print("" if flag("missing-gateway-restarts") else read("group-restarts", "0"))
+    elif query == "length(containers[?name=='quill-enclave'])":
+        print("0" if flag("missing-gateway-container") else "1")
     elif query == "instanceView.state":
         print(read("group-state", "Running"))
     elif query == "ipAddress.ip":
@@ -387,6 +389,13 @@ class DeployHarness(unittest.TestCase):
             path = self.bin / name
             path.write_text(source)
             path.chmod(0o755)
+        uv = self.bin / "uv"
+        uv.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "$@" >> "$STUB_STATE/uv.log"\n'
+            "exit 0\n"
+        )
+        uv.chmod(0o755)
 
         self.state = root / "state"
         self.state.mkdir()
@@ -543,6 +552,26 @@ class TestDeployGuardAuthenticatesTheTemplate(DeployHarness):
             live_policy_before,
             "the running container group must be untouched",
         )
+
+    def test_deploy_rejects_a_stale_template_bundle_pin(self) -> None:
+        self.healthy_deploy()
+        template_path = self.work / "template.json"
+        template = json.loads(template_path.read_text())
+        for resource in template["resources"]:
+            for container in resource["properties"]["containers"]:
+                if container["name"] != "quill-enclave":
+                    continue
+                for item in container["properties"]["environmentVariables"]:
+                    if item["name"] == "QUILL_AZURE_BUNDLE_VERSION":
+                        item["value"] = "0" * 32
+        template_path.write_text(json.dumps(template))
+        self.clear_mutations()
+
+        result = self.run_script("--apply", "deploy")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("template bundle pin/manifest mismatch", result.stderr)
+        self.assertEqual(self.mutations(), [])
 
     def test_phases_typed_out_of_order_cannot_deploy_an_unbound_workload(self) -> None:
         """`--apply deploy bind` runs deploy first; the key still pins the old
@@ -1756,7 +1785,7 @@ class TestACrashLoopFailsFast(DeployHarness):
 
     def test_missing_gateway_restart_count_fails_closed(self) -> None:
         self.healthy_deploy()
-        self.state_file("missing-gateway-restarts").touch()
+        self.state_file("missing-gateway-container").touch()
 
         result = self.run_script(
             "--apply", "verify", MAX_RESTART_READ_FAILURES="1"
@@ -1764,6 +1793,28 @@ class TestACrashLoopFailsFast(DeployHarness):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("restart count could not be verified", result.stderr)
+
+    def test_null_restart_count_for_present_container_reaches_live_probe(self) -> None:
+        self.healthy_deploy()
+        self.state_file("missing-gateway-restarts").touch()
+        gcloud = self.bin / "gcloud"
+        gcloud.write_text("#!/usr/bin/env bash\nexit 0\n")
+        gcloud.chmod(0o755)
+        curl = self.bin / "curl"
+        curl.write_text("#!/usr/bin/env bash\nexit 0\n")
+        curl.chmod(0o755)
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+
+        result = self.run_script(
+            "--apply", "verify", VERIFY_ATTESTATION_CMD=str(verifier)
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restartCount is not populated yet", result.stderr)
+        self.assertIn("MEASUREMENT NOT PUBLISHED", result.stderr)
+        self.assertNotIn("restart count could not be verified", result.stderr)
 
     def test_transient_restart_query_failures_are_retried(self) -> None:
         self.healthy_deploy()

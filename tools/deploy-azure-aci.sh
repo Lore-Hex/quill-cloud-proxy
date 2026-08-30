@@ -721,7 +721,11 @@ attestation_verifier_is_required_for_phase() {
 }
 
 validate_attestation_verifier_runtime() {
-  [ -z "$VERIFY_ATTESTATION_CMD" ] || return 0
+  if [ -n "$VERIFY_ATTESTATION_CMD" ]; then
+    [ "$APPLY" != "1" ] \
+      || log "WARNING: using non-default attestation verifier command: $VERIFY_ATTESTATION_CMD"
+    return 0
+  fi
 
   local phase needs_verifier=1
   for phase in "${PHASES[@]:-all}"; do
@@ -945,6 +949,62 @@ validate_bundle_manifest_source() {
   if [ "$APPLY" = "1" ] && [ "${ALLOW_AZURE_BUNDLE_MANIFEST_OVERRIDE:-0}" != "1" ]; then
     die "Refusing an overridden Azure bundle manifest under --apply. Commit the generated manifest, or set ALLOW_AZURE_BUNDLE_MANIFEST_OVERRIDE=1 for an explicit reviewed exception."
   fi
+}
+
+validate_template_bundle_manifest() {
+  [ -r "$WORKDIR/template.json" ] || die "run the template phase first"
+
+  python3 - "$AZURE_BUNDLE_MANIFEST" "$WORKDIR/template.json" "$QUILL_AZURE_BUNDLE_VERSION" "$ENCLAVE_CONTAINER_NAME" <<'PY' \
+    || die "The saved template's bundle pin or secret names do not match the reviewed immutable bundle manifest. Re-run template and policy with the pinned bundle before deploying."
+import json
+import sys
+
+manifest_path, template_path, expected_pin, container_name = sys.argv[1:]
+manifest_lines = [line.strip() for line in open(manifest_path, encoding="utf-8")]
+versions = [
+    line.removeprefix("# bundle-version: ")
+    for line in manifest_lines
+    if line.startswith("# bundle-version: ")
+]
+if len(versions) != 1:
+    raise SystemExit("manifest must contain exactly one bundle version")
+manifest_version = versions[0]
+manifest_names = {
+    line for line in manifest_lines if line and not line.startswith("#")
+}
+
+template = json.load(open(template_path, encoding="utf-8"))
+containers = [
+    container
+    for resource in template.get("resources", [])
+    for container in resource.get("properties", {}).get("containers", [])
+    if container.get("name") == container_name
+]
+if len(containers) != 1:
+    raise SystemExit(f"template has {len(containers)} containers named {container_name!r}")
+env = {
+    item.get("name"): item.get("value", "")
+    for item in containers[0].get("properties", {}).get("environmentVariables", [])
+}
+artifact_pin = str(env.get("QUILL_AZURE_BUNDLE_VERSION", "")).strip()
+if artifact_pin != expected_pin or artifact_pin != manifest_version:
+    raise SystemExit(
+        "template bundle pin/manifest mismatch: "
+        f"template={artifact_pin or '<unset>'}, shell={expected_pin or '<unset>'}, "
+        f"manifest={manifest_version or '<unset>'}"
+    )
+required = {
+    str(value).strip()
+    for name, value in env.items()
+    if name.startswith("QUILL_")
+    and name.endswith("_SECRET")
+    and name != "QUILL_AZURE_BUNDLE_SECRET"
+    and str(value).strip()
+}
+missing = sorted(required - manifest_names)
+if missing:
+    raise SystemExit("template names absent from bundle: " + ", ".join(missing))
+PY
 }
 
 validate_selected_bundle_manifest() {
@@ -1812,6 +1872,11 @@ if raw:
 # ---------------------------------------------------------------------------
 phase_deploy() {
   [ -f "$WORKDIR/template.json" ] || die "run the template phase first"
+  if [ -n "$QUILL_AZURE_BUNDLE_VERSION" ]; then
+    validate_template_bundle_manifest
+  else
+    note "Template bundle-manifest validation skipped for the explicitly allowed floating-bundle deploy."
+  fi
 
   # THE GUARD AUTHENTICATES THE ARTIFACT IT IS ABOUT TO SUBMIT.
   #
@@ -1966,7 +2031,7 @@ phase_verify() {
   fi
 
   log "phase verify: waiting for $CONTAINER_GROUP to run"
-  local state="" ip="" fqdn="" restarts="" waited=0 restart_read_failures=0 restart_read_ok=0
+  local state="" ip="" fqdn="" restarts="" waited=0 restart_read_failures=0 restart_read_ok=0 container_count=""
   while [ "$waited" -lt "${VERIFY_TIMEOUT_SECONDS:-600}" ]; do
     state="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
       --query "instanceView.state" -o tsv 2>/dev/null || true)"
@@ -1988,12 +2053,28 @@ phase_verify() {
     # and deserves a different message. The threshold is 2 rather than 1 because
     # a single restart during a cold start is normal.
     restart_read_ok=0
-    if restarts="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
+    if ! container_count="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
+      --query "length(containers[?name=='${ENCLAVE_CONTAINER_NAME}'])" -o tsv 2>/dev/null)"; then
+      restart_read_failures=$((restart_read_failures + 1))
+      log "Azure container-presence query failed (${restart_read_failures}/${MAX_RESTART_READ_FAILURES:-3})"
+    elif [ "$container_count" != "1" ]; then
+      restart_read_failures=$((restart_read_failures + 1))
+      log "Azure did not report exactly one '$ENCLAVE_CONTAINER_NAME' container (${restart_read_failures}/${MAX_RESTART_READ_FAILURES:-3})"
+    elif restarts="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
       --query "containers[?name=='${ENCLAVE_CONTAINER_NAME}'] | [0].instanceView.restartCount" -o tsv 2>/dev/null)"; then
       case "$restarts" in
-        ''|*[!0-9]*)
+        '')
+          # ACI can report the group Running before instanceView is populated.
+          # Container presence plus the subsequent live attestation probe are
+          # the safety checks; an absent counter at this instant means zero
+          # observed restarts, not an absent enclave.
+          restart_read_failures=0
+          restart_read_ok=1
+          restarts=0
+          log "Azure restartCount is not populated yet; container exists, continuing to the live readiness and attestation probes" ;;
+        *[!0-9]*)
           restart_read_failures=$((restart_read_failures + 1))
-          log "Azure has not returned a numeric restart count for '$ENCLAVE_CONTAINER_NAME' (${restart_read_failures}/${MAX_RESTART_READ_FAILURES:-3})" ;;
+          log "Azure returned a non-numeric restart count for '$ENCLAVE_CONTAINER_NAME' (${restart_read_failures}/${MAX_RESTART_READ_FAILURES:-3})" ;;
         *)
           restart_read_failures=0
           restart_read_ok=1
@@ -2035,6 +2116,10 @@ phase_verify() {
     sleep "${VERIFY_POLL_SECONDS:-10}"
     waited=$((waited + ${VERIFY_POLL_SECONDS:-10}))
   done
+  if [ "$state" = "Running" ] && [ "$restart_read_ok" != "1" ]; then
+    phase_logs
+    die "container group reached Running, but the enclave container and restart counter were never verified. Refusing to continue. Resume with: --apply verify narrow"
+  fi
   if [ "$state" != "Running" ]; then
     phase_logs
     die "container group did not reach Running within ${VERIFY_TIMEOUT_SECONDS:-600}s (state='$state').
