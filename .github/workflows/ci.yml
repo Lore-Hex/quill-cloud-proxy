@@ -140,6 +140,8 @@ jobs:
       # resolver onto PATH and touches no network.
       - name: Test the Azure ACI deploy script
         run: python3 tools/test_deploy_azure_aci.py
+      - name: Verify the attestation dependency lock
+        run: uv lock --check --script tools/verify-attestation.py
       - name: Assert trust page contains no <script> tags
         run: |
           if grep -qi '<script' trust-page/index.html; then

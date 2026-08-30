@@ -266,6 +266,11 @@ if argv[:2] == ["container", "show"]:
     if query == "confidentialComputeProperties.ccePolicy":
         print("" if flag("show-omits-policy") else read("deployed-policy"))
     elif query == "containers[?name=='quill-enclave'] | [0].instanceView.restartCount":
+        failures = int(read("restart-query-failures", "0"))
+        if failures > 0:
+            write("restart-query-failures", str(failures - 1))
+            print("ERROR: transient Azure control-plane failure", file=sys.stderr)
+            sys.exit(1)
         print("" if flag("missing-gateway-restarts") else read("group-restarts", "0"))
     elif query == "instanceView.state":
         print(read("group-state", "Running"))
@@ -559,7 +564,7 @@ class TestAzureCloudBoundaryPreflight(DeployHarness):
     def test_bundle_pin_must_match_the_checked_in_manifest(self) -> None:
         result = self.run_script(
             "--apply",
-            "preflight",
+            "template",
             QUILL_AZURE_BUNDLE_VERSION="0" * 32,
         )
         self.assertNotEqual(result.returncode, 0)
@@ -569,7 +574,7 @@ class TestAzureCloudBoundaryPreflight(DeployHarness):
 
     def test_dry_run_rejects_a_bundle_pin_manifest_mismatch(self) -> None:
         result = self.run_script(
-            "preflight",
+            "template",
             QUILL_AZURE_BUNDLE_VERSION="0" * 32,
         )
         self.assertNotEqual(result.returncode, 0)
@@ -589,11 +594,35 @@ class TestAzureCloudBoundaryPreflight(DeployHarness):
     def test_runtime_enabled_secret_must_exist_in_the_bundle_manifest(self) -> None:
         result = self.run_script(
             "--apply",
-            "preflight",
+            "template",
             QUILL_STEPFUN_SECRET="trustedrouter-unsealed-stepfun-key",
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing bundle names: trustedrouter-unsealed-stepfun-key", result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+    def test_print_env_can_describe_the_next_bundle_before_it_is_sealed(self) -> None:
+        result = self.run_script(
+            "print-env",
+            QUILL_STEPFUN_SECRET="trustedrouter-unsealed-stepfun-key",
+            QUILL_AZURE_BUNDLE_VERSION="0" * 32,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout)["QUILL_STEPFUN_SECRET"],
+            "trustedrouter-unsealed-stepfun-key",
+        )
+
+    def test_apply_refuses_a_silent_manifest_override(self) -> None:
+        manifest = self.state / "override.manifest"
+        manifest.write_text(AZURE_BUNDLE_MANIFEST.read_text())
+        result = self.run_script(
+            "--apply",
+            "template",
+            AZURE_BUNDLE_MANIFEST=str(manifest),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Refusing an overridden Azure bundle manifest", result.stderr)
         self.assertEqual(self.mutations(), [])
 
     def test_gcp_runtime_configuration_is_rejected_before_mutation(self) -> None:
@@ -1555,6 +1584,26 @@ class TestNarrowLive(DeployHarness):
         self.assertIn("tools/verify-attestation.py", invocation)
         self.assertIn("--expected-maa-issuer", invocation)
 
+    def test_stale_attestation_lock_fails_before_all_mutations(self) -> None:
+        uv = self.bin / "uv"
+        uv.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "$@" >> "$STUB_STATE/uv.log"\n'
+            "exit 1\n"
+        )
+        uv.chmod(0o755)
+
+        result = self.run_script(
+            "--apply",
+            "all",
+            VERIFY_ATTESTATION_CMD="",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("lock is missing or stale", result.stderr)
+        self.assertEqual(self.mutations(), [])
+        self.assertIn("lock --check --script", self.read_state("uv.log"))
+
     def test_dry_run_does_not_narrow(self) -> None:
         live = self.healthy_deploy()
         retired = "1" * 64
@@ -1709,10 +1758,39 @@ class TestACrashLoopFailsFast(DeployHarness):
         self.healthy_deploy()
         self.state_file("missing-gateway-restarts").touch()
 
-        result = self.run_script("--apply", "verify")
+        result = self.run_script(
+            "--apply", "verify", MAX_RESTART_READ_FAILURES="1"
+        )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("no numeric restart count for 'quill-enclave'", result.stderr)
+        self.assertIn("restart count could not be verified", result.stderr)
+
+    def test_transient_restart_query_failures_are_retried(self) -> None:
+        self.healthy_deploy()
+        self.state_file("restart-query-failures").write_text("2")
+        gcloud = self.bin / "gcloud"
+        gcloud.write_text("#!/usr/bin/env bash\nexit 0\n")
+        gcloud.chmod(0o755)
+        curl = self.bin / "curl"
+        curl.write_text("#!/usr/bin/env bash\nexit 0\n")
+        curl.chmod(0o755)
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+
+        result = self.run_script(
+            "--apply",
+            "verify",
+            VERIFY_ATTESTATION_CMD=str(verifier),
+            VERIFY_TIMEOUT_SECONDS="5",
+            VERIFY_POLL_SECONDS="1",
+        )
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("MEASUREMENT NOT PUBLISHED", result.stderr)
+        self.assertIn("Azure restart-count query failed (1/3)", result.stderr)
+        self.assertIn("Azure restart-count query failed (2/3)", result.stderr)
+        self.assertNotIn("restart count could not be verified", result.stderr)
 
 
 class TestDnsIsAPreconditionNotAnAssumption(DeployHarness):
@@ -2101,6 +2179,7 @@ class TestAzureFoundryStaysDarkUntilItsKeyExists(DeployHarness):
             self._azure_secret(
                 QUILL_AZURE_SECRET="trustedrouter-azure-api-key",
                 AZURE_BUNDLE_MANIFEST=str(manifest),
+                ALLOW_AZURE_BUNDLE_MANIFEST_OVERRIDE="1",
             ),
             "trustedrouter-azure-api-key",
         )

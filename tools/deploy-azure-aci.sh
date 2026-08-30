@@ -351,7 +351,8 @@ QUILL_ACME_FALLBACK_EAB_SECRET="${QUILL_ACME_FALLBACK_EAB_SECRET:-trustedrouter-
 QUILL_AZURE_BUNDLE_VERSION="${QUILL_AZURE_BUNDLE_VERSION:-}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AZURE_BUNDLE_MANIFEST="${AZURE_BUNDLE_MANIFEST:-$REPO_ROOT/tools/azure-bundle.manifest}"
+DEFAULT_AZURE_BUNDLE_MANIFEST="$REPO_ROOT/tools/azure-bundle.manifest"
+AZURE_BUNDLE_MANIFEST="${AZURE_BUNDLE_MANIFEST:-$DEFAULT_AZURE_BUNDLE_MANIFEST}"
 WORKDIR="${WORKDIR:-${TMPDIR:-/tmp}/quill-azure-aci-${CONTAINER_GROUP}}"
 APPLY=0
 
@@ -378,9 +379,7 @@ verify_attestation() {
     # decides whether the new enclave is genuine.
     uv run --locked --script "$REPO_ROOT/tools/verify-attestation.py" "$@"
   else
-    python3 -c 'import cbor2, cryptography, OpenSSL' >/dev/null 2>&1 \
-      || die "attestation verifier dependencies are unavailable. Install uv or the PEP 723 dependencies declared by tools/verify-attestation.py."
-    python3 "$REPO_ROOT/tools/verify-attestation.py" "$@"
+    die "uv is required to run the attestation verifier from its committed lockfile"
   fi
 }
 
@@ -709,9 +708,34 @@ export MAA_ENDPOINT VAULT SKR_KEY BUNDLE_SECRET LOCATION API_HOST EXTRA_API_HOST
 # it does not apply gets routed around where it does.
 bundle_pin_is_required_for_phase() {
   case "$1" in
-    preflight|build|template|policy|deploy|all|print-env) return 0 ;;
+    build|template|policy|deploy|all) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+attestation_verifier_is_required_for_phase() {
+  case "$1" in
+    verify|narrow-live|all) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_attestation_verifier_runtime() {
+  [ -z "$VERIFY_ATTESTATION_CMD" ] || return 0
+
+  local phase needs_verifier=1
+  for phase in "${PHASES[@]:-all}"; do
+    if attestation_verifier_is_required_for_phase "$phase"; then
+      needs_verifier=0
+      break
+    fi
+  done
+  [ "$needs_verifier" = "0" ] || return 0
+
+  command -v uv >/dev/null 2>&1 \
+    || die "uv is required to run the attestation verifier from its committed lockfile"
+  uv lock --check --script "$REPO_ROOT/tools/verify-attestation.py" >/dev/null 2>&1 \
+    || die "tools/verify-attestation.py.lock is missing or stale. Run 'uv lock --script tools/verify-attestation.py', review the dependency change, and commit the lock before deploying."
 }
 
 warn_unpinned_bundle() {
@@ -878,14 +902,16 @@ validate_pinned_bundle_manifest() {
   [ -r "$AZURE_BUNDLE_MANIFEST" ] \
     || die "Azure bundle manifest is missing: $AZURE_BUNDLE_MANIFEST"
 
-  local manifest_version active_env
-  manifest_version="$(sed -n 's/^# bundle-version: \([0-9a-f][0-9a-f]*\)$/\1/p' "$AZURE_BUNDLE_MANIFEST" | head -1)"
-  [ -n "$manifest_version" ] \
-    || die "Azure bundle manifest has no '# bundle-version: <hex>' declaration"
+  local manifest_version manifest_version_count active_env
+  manifest_version_count="$(grep -Ec '^# bundle-version: [0-9a-f]+$' "$AZURE_BUNDLE_MANIFEST" || true)"
+  [ "$manifest_version_count" = "1" ] \
+    || die "Azure bundle manifest must contain exactly one '# bundle-version: <hex>' declaration"
+  manifest_version="$(sed -n 's/^# bundle-version: \([0-9a-f][0-9a-f]*\)$/\1/p' "$AZURE_BUNDLE_MANIFEST")"
   [ "$QUILL_AZURE_BUNDLE_VERSION" = "$manifest_version" ] \
     || die "Azure bundle pin/manifest mismatch: deploy pins ${QUILL_AZURE_BUNDLE_VERSION:-<unset>} but $AZURE_BUNDLE_MANIFEST records $manifest_version. Re-seal with tools/azure-sync-secrets.sh, then pin and commit the emitted version before deploying."
 
-  active_env="$(render_env_json "")"
+  active_env="$(render_env_json "")" \
+    || die "could not render the measured Azure environment for bundle-manifest validation"
   python3 - "$AZURE_BUNDLE_MANIFEST" "$active_env" <<'PY' \
     || die "Azure deploy names a secret absent from the pinned bundle manifest. Re-seal before deploying."
 import json
@@ -912,6 +938,15 @@ if missing:
 PY
 }
 
+validate_bundle_manifest_source() {
+  [ "$AZURE_BUNDLE_MANIFEST" != "$DEFAULT_AZURE_BUNDLE_MANIFEST" ] || return 0
+
+  log "WARNING: Azure bundle manifest override: $AZURE_BUNDLE_MANIFEST"
+  if [ "$APPLY" = "1" ] && [ "${ALLOW_AZURE_BUNDLE_MANIFEST_OVERRIDE:-0}" != "1" ]; then
+    die "Refusing an overridden Azure bundle manifest under --apply. Commit the generated manifest, or set ALLOW_AZURE_BUNDLE_MANIFEST_OVERRIDE=1 for an explicit reviewed exception."
+  fi
+}
+
 validate_selected_bundle_manifest() {
   local phase needs_manifest=1
   for phase in "${PHASES[@]:-all}"; do
@@ -921,6 +956,8 @@ validate_selected_bundle_manifest() {
     fi
   done
   [ "$needs_manifest" = "0" ] || return 0
+
+  validate_bundle_manifest_source
 
   # A deliberate floating-bundle deploy cannot be compared with an immutable
   # manifest. warn_unpinned_bundle already makes this fatal unless the explicit
@@ -1929,7 +1966,7 @@ phase_verify() {
   fi
 
   log "phase verify: waiting for $CONTAINER_GROUP to run"
-  local state="" ip="" fqdn="" restarts="" waited=0
+  local state="" ip="" fqdn="" restarts="" waited=0 restart_read_failures=0 restart_read_ok=0
   while [ "$waited" -lt "${VERIFY_TIMEOUT_SECONDS:-600}" ]; do
     state="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
       --query "instanceView.state" -o tsv 2>/dev/null || true)"
@@ -1950,26 +1987,37 @@ phase_verify() {
     # workload cannot start, which is a different failure from "slow to start"
     # and deserves a different message. The threshold is 2 rather than 1 because
     # a single restart during a cold start is normal.
-    restarts="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
-      --query "containers[?name=='${ENCLAVE_CONTAINER_NAME}'] | [0].instanceView.restartCount" -o tsv 2>/dev/null || true)"
-    case "$restarts" in
-      ''|*[!0-9]*)
-        if [ "$state" = "Running" ]; then
-          phase_logs
-          die "container group is Running but Azure returned no numeric restart count for '$ENCLAVE_CONTAINER_NAME'. Refusing to wait with crash-loop detection disabled."
-        fi ;;
-      *)
-        if [ "$restarts" -ge "${MAX_START_RESTARTS:-2}" ]; then
-          phase_logs
-          die "the enclave has restarted $restarts times without serving — it is crash-looping,
+    restart_read_ok=0
+    if restarts="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
+      --query "containers[?name=='${ENCLAVE_CONTAINER_NAME}'] | [0].instanceView.restartCount" -o tsv 2>/dev/null)"; then
+      case "$restarts" in
+        ''|*[!0-9]*)
+          restart_read_failures=$((restart_read_failures + 1))
+          log "Azure has not returned a numeric restart count for '$ENCLAVE_CONTAINER_NAME' (${restart_read_failures}/${MAX_RESTART_READ_FAILURES:-3})" ;;
+        *)
+          restart_read_failures=0
+          restart_read_ok=1
+          if [ "$restarts" -ge "${MAX_START_RESTARTS:-2}" ]; then
+            phase_logs
+            die "the enclave has restarted $restarts times without serving — it is crash-looping,
        not starting slowly. A Key Vault 403 in the log above means the release policy
        does not match this workload's measurement. The key currently accepts
        $(printf '%s' "$accepted" | tr '\n' ' ')."
-        fi ;;
-    esac
+          fi ;;
+      esac
+    else
+      restart_read_failures=$((restart_read_failures + 1))
+      log "Azure restart-count query failed (${restart_read_failures}/${MAX_RESTART_READ_FAILURES:-3})"
+    fi
+
+    if [ "$state" = "Running" ] && [ "$restart_read_failures" -ge "${MAX_RESTART_READ_FAILURES:-3}" ]; then
+      phase_logs
+      die "container group is Running but its restart count could not be verified after $restart_read_failures polls. Refusing to continue with crash-loop detection disabled. After Azure recovers, resume with: --apply verify narrow"
+    fi
 
     case "$state" in
-      Running) break ;;
+      Running)
+        [ "$restart_read_ok" = "1" ] && break ;;
       # Succeeded and Stopped are the states of the failure this whole script
       # exists to prevent. `Terminated` is a CONTAINER state, not a group state:
       # a group whose containers exited under restartPolicy=Never reports
@@ -1984,8 +2032,8 @@ phase_verify() {
        and bind phases, then redeploy. The key currently accepts $(printf '%s' "$accepted" | tr '\n' ' ')." ;;
     esac
 
-    sleep 10
-    waited=$((waited + 10))
+    sleep "${VERIFY_POLL_SECONDS:-10}"
+    waited=$((waited + ${VERIFY_POLL_SECONDS:-10}))
   done
   if [ "$state" != "Running" ]; then
     phase_logs
@@ -2266,6 +2314,7 @@ if [ "$APPLY" != "1" ]; then
 fi
 warn_unpinned_bundle
 validate_selected_bundle_manifest
+validate_attestation_verifier_runtime
 log "workdir: $WORKDIR"
 mkdir -p "$WORKDIR"
 acquire_workdir_lock
