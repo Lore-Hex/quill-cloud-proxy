@@ -131,6 +131,11 @@ AZURE_ACME_STORAGE_RESOURCE_GROUP="${AZURE_ACME_STORAGE_RESOURCE_GROUP:-TR-TEE-D
 AZURE_ACME_STORAGE_CONTAINER="${AZURE_ACME_STORAGE_CONTAINER:-acme-cache}"
 QUILL_AZURE_ACME_CACHE_KEY_SECRET="${QUILL_AZURE_ACME_CACHE_KEY_SECRET:-tr-azure-acme-cache-key}"
 CONTAINER_GROUP="${CONTAINER_GROUP:-quill-enclave-${LOCATION}}"
+# Container names are part of the measured ARM template. Keep the verifier and
+# log collector on the same constants so a rename cannot silently disable
+# crash-loop detection.
+SKR_CONTAINER_NAME="skr-sidecar"
+ENCLAVE_CONTAINER_NAME="quill-enclave"
 DNS_LABEL="${DNS_LABEL:-${CONTAINER_GROUP}}"
 API_HOST="${API_HOST:-api-azure.trustedrouter.com}"
 # Additional SNI names this region serves, comma-separated.
@@ -346,6 +351,8 @@ QUILL_ACME_FALLBACK_EAB_SECRET="${QUILL_ACME_FALLBACK_EAB_SECRET:-trustedrouter-
 QUILL_AZURE_BUNDLE_VERSION="${QUILL_AZURE_BUNDLE_VERSION:-}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEFAULT_AZURE_BUNDLE_MANIFEST="$REPO_ROOT/tools/azure-bundle.manifest"
+AZURE_BUNDLE_MANIFEST="${AZURE_BUNDLE_MANIFEST:-$DEFAULT_AZURE_BUNDLE_MANIFEST}"
 WORKDIR="${WORKDIR:-${TMPDIR:-/tmp}/quill-azure-aci-${CONTAINER_GROUP}}"
 APPLY=0
 
@@ -366,8 +373,13 @@ verify_attestation() {
   if [ -n "$VERIFY_ATTESTATION_CMD" ]; then
     # shellcheck disable=SC2086
     $VERIFY_ATTESTATION_CMD "$@"
+  elif command -v uv >/dev/null 2>&1; then
+    # The adjacent script lock pins package versions and artifact hashes. Do
+    # not let a deploy resolve a fresh dependency graph for the verifier that
+    # decides whether the new enclave is genuine.
+    uv run --locked --script "$REPO_ROOT/tools/verify-attestation.py" "$@"
   else
-    python3 "$REPO_ROOT/tools/verify-attestation.py" "$@"
+    die "uv is required to run the attestation verifier from its committed lockfile"
   fi
 }
 
@@ -696,9 +708,38 @@ export MAA_ENDPOINT VAULT SKR_KEY BUNDLE_SECRET LOCATION API_HOST EXTRA_API_HOST
 # it does not apply gets routed around where it does.
 bundle_pin_is_required_for_phase() {
   case "$1" in
-    build|template|policy|deploy|all|print-env) return 0 ;;
+    build|template|policy|deploy|all) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+attestation_verifier_is_required_for_phase() {
+  case "$1" in
+    verify|narrow-live|all) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_attestation_verifier_runtime() {
+  if [ -n "$VERIFY_ATTESTATION_CMD" ]; then
+    [ "$APPLY" != "1" ] \
+      || log "WARNING: using non-default attestation verifier command: $VERIFY_ATTESTATION_CMD"
+    return 0
+  fi
+
+  local phase needs_verifier=1
+  for phase in "${PHASES[@]:-all}"; do
+    if attestation_verifier_is_required_for_phase "$phase"; then
+      needs_verifier=0
+      break
+    fi
+  done
+  [ "$needs_verifier" = "0" ] || return 0
+
+  command -v uv >/dev/null 2>&1 \
+    || die "uv is required to run the attestation verifier from its committed lockfile"
+  uv lock --check --script "$REPO_ROOT/tools/verify-attestation.py" >/dev/null 2>&1 \
+    || die "tools/verify-attestation.py.lock is missing or stale. Run 'uv lock --script tools/verify-attestation.py', review the dependency change, and commit the lock before deploying."
 }
 
 warn_unpinned_bundle() {
@@ -851,6 +892,144 @@ print(len(found))
   log "phase preflight: Azure-local cache is private, seeded, and this region's identity can write it"
 }
 
+# The Key Vault bundle is immutable and pinned by version in the measured
+# container environment. Its checked-in manifest is the only non-secret record
+# of which exact version contains which names. A pin that disagrees with the
+# manifest means the deploy is about to ask an older bundle for newer secret
+# coordinates; the enclave then attests successfully, gets the bundle, and
+# exits during bootstrap. Catch that before bind/delete, while the old region is
+# still healthy. This is not theoretical: on 2026-08-30 the checked-in name list
+# had already advanced with provider commits while Sydney still pinned an older
+# sealed version. Comparing only adjacent name lists hid the drift; comparing
+# the immutable version catches it.
+validate_pinned_bundle_manifest() {
+  [ -r "$AZURE_BUNDLE_MANIFEST" ] \
+    || die "Azure bundle manifest is missing: $AZURE_BUNDLE_MANIFEST"
+
+  local manifest_version manifest_version_count active_env
+  manifest_version_count="$(grep -Ec '^# bundle-version: [0-9a-f]+$' "$AZURE_BUNDLE_MANIFEST" || true)"
+  [ "$manifest_version_count" = "1" ] \
+    || die "Azure bundle manifest must contain exactly one '# bundle-version: <hex>' declaration"
+  manifest_version="$(sed -n 's/^# bundle-version: \([0-9a-f][0-9a-f]*\)$/\1/p' "$AZURE_BUNDLE_MANIFEST")"
+  [ "$QUILL_AZURE_BUNDLE_VERSION" = "$manifest_version" ] \
+    || die "Azure bundle pin/manifest mismatch: deploy pins ${QUILL_AZURE_BUNDLE_VERSION:-<unset>} but $AZURE_BUNDLE_MANIFEST records $manifest_version. Re-seal with tools/azure-sync-secrets.sh, then pin and commit the emitted version before deploying."
+
+  active_env="$(render_env_json "")" \
+    || die "could not render the measured Azure environment for bundle-manifest validation"
+  python3 - "$AZURE_BUNDLE_MANIFEST" "$active_env" <<'PY' \
+    || die "Azure deploy names a secret absent from the pinned bundle manifest. Re-seal before deploying."
+import json
+import sys
+
+env = json.loads(sys.argv[2])
+manifest = {
+    line.strip()
+    for line in open(sys.argv[1], encoding="utf-8")
+    if line.strip() and not line.lstrip().startswith("#")
+}
+required = {
+    str(value).strip()
+    for name, value in env.items()
+    if name.startswith("QUILL_")
+    and name.endswith("_SECRET")
+    and name != "QUILL_AZURE_BUNDLE_SECRET"
+    and str(value).strip()
+}
+missing = sorted(required - manifest)
+if missing:
+    print("missing bundle names: " + ", ".join(missing), file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
+validate_bundle_manifest_source() {
+  [ "$AZURE_BUNDLE_MANIFEST" != "$DEFAULT_AZURE_BUNDLE_MANIFEST" ] || return 0
+
+  log "WARNING: Azure bundle manifest override: $AZURE_BUNDLE_MANIFEST"
+  if [ "$APPLY" = "1" ] && [ "${ALLOW_AZURE_BUNDLE_MANIFEST_OVERRIDE:-0}" != "1" ]; then
+    die "Refusing an overridden Azure bundle manifest under --apply. Commit the generated manifest, or set ALLOW_AZURE_BUNDLE_MANIFEST_OVERRIDE=1 for an explicit reviewed exception."
+  fi
+}
+
+validate_template_bundle_manifest() {
+  [ -r "$WORKDIR/template.json" ] || die "run the template phase first"
+
+  python3 - "$AZURE_BUNDLE_MANIFEST" "$WORKDIR/template.json" "$QUILL_AZURE_BUNDLE_VERSION" "$ENCLAVE_CONTAINER_NAME" <<'PY' \
+    || die "The saved template's bundle pin or secret names do not match the reviewed immutable bundle manifest. Re-run template and policy with the pinned bundle before deploying."
+import json
+import sys
+
+manifest_path, template_path, expected_pin, container_name = sys.argv[1:]
+manifest_lines = [line.strip() for line in open(manifest_path, encoding="utf-8")]
+versions = [
+    line.removeprefix("# bundle-version: ")
+    for line in manifest_lines
+    if line.startswith("# bundle-version: ")
+]
+if len(versions) != 1:
+    raise SystemExit("manifest must contain exactly one bundle version")
+manifest_version = versions[0]
+manifest_names = {
+    line for line in manifest_lines if line and not line.startswith("#")
+}
+
+template = json.load(open(template_path, encoding="utf-8"))
+containers = [
+    container
+    for resource in template.get("resources", [])
+    for container in resource.get("properties", {}).get("containers", [])
+    if container.get("name") == container_name
+]
+if len(containers) != 1:
+    raise SystemExit(f"template has {len(containers)} containers named {container_name!r}")
+env = {
+    item.get("name"): item.get("value", "")
+    for item in containers[0].get("properties", {}).get("environmentVariables", [])
+}
+artifact_pin = str(env.get("QUILL_AZURE_BUNDLE_VERSION", "")).strip()
+if artifact_pin != expected_pin or artifact_pin != manifest_version:
+    raise SystemExit(
+        "template bundle pin/manifest mismatch: "
+        f"template={artifact_pin or '<unset>'}, shell={expected_pin or '<unset>'}, "
+        f"manifest={manifest_version or '<unset>'}"
+    )
+required = {
+    str(value).strip()
+    for name, value in env.items()
+    if name.startswith("QUILL_")
+    and name.endswith("_SECRET")
+    and name != "QUILL_AZURE_BUNDLE_SECRET"
+    and str(value).strip()
+}
+missing = sorted(required - manifest_names)
+if missing:
+    raise SystemExit("template names absent from bundle: " + ", ".join(missing))
+PY
+}
+
+validate_selected_bundle_manifest() {
+  local phase needs_manifest=1
+  for phase in "${PHASES[@]:-all}"; do
+    if bundle_pin_is_required_for_phase "$phase"; then
+      needs_manifest=0
+      break
+    fi
+  done
+  [ "$needs_manifest" = "0" ] || return 0
+
+  validate_bundle_manifest_source
+
+  # A deliberate floating-bundle deploy cannot be compared with an immutable
+  # manifest. warn_unpinned_bundle already makes this fatal unless the explicit
+  # escape hatch is set; keep the escape hatch coherent rather than pretending
+  # the current version has been validated.
+  if [ -z "$QUILL_AZURE_BUNDLE_VERSION" ]; then
+    note "Bundle manifest validation skipped because this run deliberately uses the floating current version."
+    return 0
+  fi
+  validate_pinned_bundle_manifest
+}
+
 # ---------------------------------------------------------------------------
 # phase: build
 # ---------------------------------------------------------------------------
@@ -943,6 +1122,7 @@ phase_template() {
   ENCLAVE_CPU="$ENCLAVE_CPU" ENCLAVE_MEMORY_GB="$ENCLAVE_MEMORY_GB" \
   SKR_CPU="$SKR_CPU" SKR_MEMORY_GB="$SKR_MEMORY_GB" \
   QUILL_HEALTH_PORT="$QUILL_HEALTH_PORT" LOCATION="$LOCATION" \
+  SKR_CONTAINER_NAME="$SKR_CONTAINER_NAME" ENCLAVE_CONTAINER_NAME="$ENCLAVE_CONTAINER_NAME" \
   python3 - "$WORKDIR/container-env.json" "$WORKDIR/template.json" <<'PY'
 import base64, json, os, sys
 
@@ -965,7 +1145,7 @@ health_port = int(os.environ["QUILL_HEALTH_PORT"])
 image = f'{os.environ["ACR_LOGIN_SERVER"]}/{os.environ["IMAGE_REPO"]}@{os.environ["IMAGE_DIGEST"]}'
 
 skr_container = {
-    "name": "skr-sidecar",
+    "name": os.environ["SKR_CONTAINER_NAME"],
     "properties": {
         "image": os.environ["SKR_IMAGE"],
         # The sidecar is reached ONLY over the container group's loopback, on
@@ -987,7 +1167,7 @@ if command:
     skr_container["properties"]["command"] = [command]
 
 enclave_container = {
-    "name": "quill-enclave",
+    "name": os.environ["ENCLAVE_CONTAINER_NAME"],
     "properties": {
         "image": image,
         "ports": [{"protocol": "TCP", "port": 443}, {"protocol": "TCP", "port": health_port}],
@@ -1692,6 +1872,11 @@ if raw:
 # ---------------------------------------------------------------------------
 phase_deploy() {
   [ -f "$WORKDIR/template.json" ] || die "run the template phase first"
+  if [ -n "$QUILL_AZURE_BUNDLE_VERSION" ]; then
+    validate_template_bundle_manifest
+  else
+    note "Template bundle-manifest validation skipped for the explicitly allowed floating-bundle deploy."
+  fi
 
   # THE GUARD AUTHENTICATES THE ARTIFACT IT IS ABOUT TO SUBMIT.
   #
@@ -1846,7 +2031,7 @@ phase_verify() {
   fi
 
   log "phase verify: waiting for $CONTAINER_GROUP to run"
-  local state="" ip="" fqdn="" restarts="" waited=0
+  local state="" ip="" fqdn="" restarts="" waited=0 restart_read_failures=0 restart_read_ok=0 container_count=""
   while [ "$waited" -lt "${VERIFY_TIMEOUT_SECONDS:-600}" ]; do
     state="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
       --query "instanceView.state" -o tsv 2>/dev/null || true)"
@@ -1867,22 +2052,53 @@ phase_verify() {
     # workload cannot start, which is a different failure from "slow to start"
     # and deserves a different message. The threshold is 2 rather than 1 because
     # a single restart during a cold start is normal.
-    restarts="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
-      --query "containers[0].instanceView.restartCount" -o tsv 2>/dev/null || true)"
-    case "$restarts" in
-      ''|*[!0-9]*) : ;;
-      *)
-        if [ "$restarts" -ge "${MAX_START_RESTARTS:-2}" ]; then
-          phase_logs
-          die "the enclave has restarted $restarts times without serving — it is crash-looping,
+    restart_read_ok=0
+    if ! container_count="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
+      --query "length(containers[?name=='${ENCLAVE_CONTAINER_NAME}'])" -o tsv 2>/dev/null)"; then
+      restart_read_failures=$((restart_read_failures + 1))
+      log "Azure container-presence query failed (${restart_read_failures}/${MAX_RESTART_READ_FAILURES:-3})"
+    elif [ "$container_count" != "1" ]; then
+      restart_read_failures=$((restart_read_failures + 1))
+      log "Azure did not report exactly one '$ENCLAVE_CONTAINER_NAME' container (${restart_read_failures}/${MAX_RESTART_READ_FAILURES:-3})"
+    elif restarts="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
+      --query "containers[?name=='${ENCLAVE_CONTAINER_NAME}'] | [0].instanceView.restartCount" -o tsv 2>/dev/null)"; then
+      case "$restarts" in
+        '')
+          # ACI can report the group Running before instanceView is populated.
+          # Container presence plus the subsequent live attestation probe are
+          # the safety checks; an absent counter at this instant means zero
+          # observed restarts, not an absent enclave.
+          restart_read_failures=0
+          restart_read_ok=1
+          restarts=0
+          log "Azure restartCount is not populated yet; container exists, continuing to the live readiness and attestation probes" ;;
+        *[!0-9]*)
+          restart_read_failures=$((restart_read_failures + 1))
+          log "Azure returned a non-numeric restart count for '$ENCLAVE_CONTAINER_NAME' (${restart_read_failures}/${MAX_RESTART_READ_FAILURES:-3})" ;;
+        *)
+          restart_read_failures=0
+          restart_read_ok=1
+          if [ "$restarts" -ge "${MAX_START_RESTARTS:-2}" ]; then
+            phase_logs
+            die "the enclave has restarted $restarts times without serving — it is crash-looping,
        not starting slowly. A Key Vault 403 in the log above means the release policy
        does not match this workload's measurement. The key currently accepts
        $(printf '%s' "$accepted" | tr '\n' ' ')."
-        fi ;;
-    esac
+          fi ;;
+      esac
+    else
+      restart_read_failures=$((restart_read_failures + 1))
+      log "Azure restart-count query failed (${restart_read_failures}/${MAX_RESTART_READ_FAILURES:-3})"
+    fi
+
+    if [ "$state" = "Running" ] && [ "$restart_read_failures" -ge "${MAX_RESTART_READ_FAILURES:-3}" ]; then
+      phase_logs
+      die "container group is Running but its restart count could not be verified after $restart_read_failures polls. Refusing to continue with crash-loop detection disabled. After Azure recovers, resume with: --apply verify narrow"
+    fi
 
     case "$state" in
-      Running) break ;;
+      Running)
+        [ "$restart_read_ok" = "1" ] && break ;;
       # Succeeded and Stopped are the states of the failure this whole script
       # exists to prevent. `Terminated` is a CONTAINER state, not a group state:
       # a group whose containers exited under restartPolicy=Never reports
@@ -1897,9 +2113,13 @@ phase_verify() {
        and bind phases, then redeploy. The key currently accepts $(printf '%s' "$accepted" | tr '\n' ' ')." ;;
     esac
 
-    sleep 10
-    waited=$((waited + 10))
+    sleep "${VERIFY_POLL_SECONDS:-10}"
+    waited=$((waited + ${VERIFY_POLL_SECONDS:-10}))
   done
+  if [ "$state" = "Running" ] && [ "$restart_read_ok" != "1" ]; then
+    phase_logs
+    die "container group reached Running, but the enclave container and restart counter were never verified. Refusing to continue. Resume with: --apply verify narrow"
+  fi
   if [ "$state" != "Running" ]; then
     phase_logs
     die "container group did not reach Running within ${VERIFY_TIMEOUT_SECONDS:-600}s (state='$state').
@@ -2133,7 +2353,7 @@ EOF
 }
 
 phase_logs() {
-  for container in skr-sidecar quill-enclave; do
+  for container in "$SKR_CONTAINER_NAME" "$ENCLAVE_CONTAINER_NAME"; do
     printf '\n===== %s =====\n' "$container" >&2
     az_cli container logs --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
       --container-name "$container" >&2 2>/dev/null || note "(no logs)"
@@ -2168,6 +2388,7 @@ done
 # exists so the sealer and the deploy cannot disagree about the measured env.
 if [ "${PHASES[0]}" = "print-env" ]; then
   warn_unpinned_bundle
+  validate_selected_bundle_manifest
   render_env_json "$(resolve_mi_client_id)"
   exit 0
 fi
@@ -2177,6 +2398,8 @@ if [ "$APPLY" != "1" ]; then
   note "(build/template/policy still write \$WORKDIR — that is what produces a reviewable template.)"
 fi
 warn_unpinned_bundle
+validate_selected_bundle_manifest
+validate_attestation_verifier_runtime
 log "workdir: $WORKDIR"
 mkdir -p "$WORKDIR"
 acquire_workdir_lock

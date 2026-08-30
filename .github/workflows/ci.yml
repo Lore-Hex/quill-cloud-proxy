@@ -112,6 +112,9 @@ jobs:
           # published enclave. A shallow checkout makes older release commits
           # appear invalid even when they are ancestors of main.
           fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.2"
       # capture-plane-measurements.py imports cbor2 at module scope to parse
       # the Nitro COSE attestation; same install verify-trust-freshness.yml does.
       - run: pip install cbor2
@@ -138,6 +141,8 @@ jobs:
       # a failure here should be legible as "the Azure deploy script broke"
       # rather than hiding at the bottom of a list. It stubs az, docker and the
       # resolver onto PATH and touches no network.
+      - name: Verify the attestation dependency lock
+        run: uv lock --check --script tools/verify-attestation.py
       - name: Test the Azure ACI deploy script
         run: python3 tools/test_deploy_azure_aci.py
       - name: Assert trust page contains no <script> tags

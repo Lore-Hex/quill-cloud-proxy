@@ -1,6 +1,7 @@
 {
   "accepted_hostdata": [
     "65cec1ce6e38fd70ea90eb0363556f909e4856b8337b5b2f763748e3f4a4640a",
+    "a4cc07caf5e24377a72c4b444616d57dc318047ab75851656dcb47ea0f5b01c6",
     "dbdf84dfd7da695e07068adc3ebe6b4a5393a9832722c10363f25a48021d4986"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
@@ -33,13 +34,13 @@
       "attestation_issuer": "https://trquillsyd.eau.attest.azure.net",
       "attestation_url": "https://api-azure-syd.trustedrouter.com/attestation",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "dbdf84dfd7da695e07068adc3ebe6b4a5393a9832722c10363f25a48021d4986",
-      "launch_measurement": "6d6c354511d6f7c6d7504668903dc5bdc066a048b651840d8d03fb85299ebfa142fccf1d1b0baca496841bdf243619d4",
+      "hostdata": "a4cc07caf5e24377a72c4b444616d57dc318047ab75851656dcb47ea0f5b01c6",
+      "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866",
       "origin_hostname": "quill-enclave-australiaeast.australiaeast.azurecontainer.io"
     }
   ],
   "release_state": "multi-region",
-  "source_commit": "4acaf9b",
+  "source_commit": "8c64d23ac589ba8b30037fc93d02d3f3c010aa21",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {

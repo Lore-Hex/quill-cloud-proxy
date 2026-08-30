@@ -43,6 +43,24 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 FOREIGN_AUTHORITY = "https://trquillsea.sasia.attest.azure.net"
 SCRIPT = REPO_ROOT / "tools" / "deploy-azure-aci.sh"
 SEALER = REPO_ROOT / "tools" / "azure-seal-bundle.py"
+AZURE_BUNDLE_MANIFEST = REPO_ROOT / "tools" / "azure-bundle.manifest"
+
+
+def _read_bundle_version() -> str:
+    versions = [
+        line.removeprefix("# bundle-version: ").strip()
+        for line in AZURE_BUNDLE_MANIFEST.read_text().splitlines()
+        if line.startswith("# bundle-version: ")
+    ]
+    if len(versions) != 1:
+        raise AssertionError(
+            "tools/azure-bundle.manifest must contain exactly one "
+            "'# bundle-version: <hex>' declaration"
+        )
+    return versions[0]
+
+
+BUNDLE_VERSION = _read_bundle_version()
 
 # ---------------------------------------------------------------------------
 # the stubs
@@ -247,8 +265,15 @@ if argv[:2] == ["container", "show"]:
         sys.exit(3)
     if query == "confidentialComputeProperties.ccePolicy":
         print("" if flag("show-omits-policy") else read("deployed-policy"))
-    elif query == "containers[0].instanceView.restartCount":
-        print(read("group-restarts", "0"))
+    elif query == "containers[?name=='quill-enclave'] | [0].instanceView.restartCount":
+        failures = int(read("restart-query-failures", "0"))
+        if failures > 0:
+            write("restart-query-failures", str(failures - 1))
+            print("ERROR: transient Azure control-plane failure", file=sys.stderr)
+            sys.exit(1)
+        print("" if flag("missing-gateway-restarts") else read("group-restarts", "0"))
+    elif query == "length(containers[?name=='quill-enclave'])":
+        print("0" if flag("missing-gateway-container") else "1")
     elif query == "instanceView.state":
         print(read("group-state", "Running"))
     elif query == "ipAddress.ip":
@@ -364,6 +389,13 @@ class DeployHarness(unittest.TestCase):
             path = self.bin / name
             path.write_text(source)
             path.chmod(0o755)
+        uv = self.bin / "uv"
+        uv.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "$@" >> "$STUB_STATE/uv.log"\n'
+            "exit 0\n"
+        )
+        uv.chmod(0o755)
 
         self.state = root / "state"
         self.state.mkdir()
@@ -428,7 +460,7 @@ class DeployHarness(unittest.TestCase):
             # pin guard before reaching the behaviour it actually names.
             # env_overrides is applied after this, so a test can still pass
             # QUILL_AZURE_BUNDLE_VERSION="" to exercise the refusal itself.
-            QUILL_AZURE_BUNDLE_VERSION="stubbundleversion0123456789abcdef",
+            QUILL_AZURE_BUNDLE_VERSION=BUNDLE_VERSION,
             VERIFY_TIMEOUT_SECONDS="1",
             # DNS-specific tests exercise the direct per-region path. The
             # production default remains Traffic Manager for the shared name.
@@ -521,6 +553,26 @@ class TestDeployGuardAuthenticatesTheTemplate(DeployHarness):
             "the running container group must be untouched",
         )
 
+    def test_deploy_rejects_a_stale_template_bundle_pin(self) -> None:
+        self.healthy_deploy()
+        template_path = self.work / "template.json"
+        template = json.loads(template_path.read_text())
+        for resource in template["resources"]:
+            for container in resource["properties"]["containers"]:
+                if container["name"] != "quill-enclave":
+                    continue
+                for item in container["properties"]["environmentVariables"]:
+                    if item["name"] == "QUILL_AZURE_BUNDLE_VERSION":
+                        item["value"] = "0" * 32
+        template_path.write_text(json.dumps(template))
+        self.clear_mutations()
+
+        result = self.run_script("--apply", "deploy")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("template bundle pin/manifest mismatch", result.stderr)
+        self.assertEqual(self.mutations(), [])
+
     def test_phases_typed_out_of_order_cannot_deploy_an_unbound_workload(self) -> None:
         """`--apply deploy bind` runs deploy first; the key still pins the old
         measurement, and the guard has to notice from the template alone."""
@@ -538,6 +590,70 @@ class TestDeployGuardAuthenticatesTheTemplate(DeployHarness):
 
 
 class TestAzureCloudBoundaryPreflight(DeployHarness):
+    def test_bundle_pin_must_match_the_checked_in_manifest(self) -> None:
+        result = self.run_script(
+            "--apply",
+            "template",
+            QUILL_AZURE_BUNDLE_VERSION="0" * 32,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bundle pin/manifest mismatch", result.stderr)
+        self.assertIn(BUNDLE_VERSION, result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+    def test_dry_run_rejects_a_bundle_pin_manifest_mismatch(self) -> None:
+        result = self.run_script(
+            "template",
+            QUILL_AZURE_BUNDLE_VERSION="0" * 32,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bundle pin/manifest mismatch", result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+    def test_build_rejects_a_bundle_pin_manifest_mismatch_before_mutation(self) -> None:
+        result = self.run_script(
+            "--apply",
+            "build",
+            QUILL_AZURE_BUNDLE_VERSION="0" * 32,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bundle pin/manifest mismatch", result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+    def test_runtime_enabled_secret_must_exist_in_the_bundle_manifest(self) -> None:
+        result = self.run_script(
+            "--apply",
+            "template",
+            QUILL_STEPFUN_SECRET="trustedrouter-unsealed-stepfun-key",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing bundle names: trustedrouter-unsealed-stepfun-key", result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+    def test_print_env_can_describe_the_next_bundle_before_it_is_sealed(self) -> None:
+        result = self.run_script(
+            "print-env",
+            QUILL_STEPFUN_SECRET="trustedrouter-unsealed-stepfun-key",
+            QUILL_AZURE_BUNDLE_VERSION="0" * 32,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout)["QUILL_STEPFUN_SECRET"],
+            "trustedrouter-unsealed-stepfun-key",
+        )
+
+    def test_apply_refuses_a_silent_manifest_override(self) -> None:
+        manifest = self.state / "override.manifest"
+        manifest.write_text(AZURE_BUNDLE_MANIFEST.read_text())
+        result = self.run_script(
+            "--apply",
+            "template",
+            AZURE_BUNDLE_MANIFEST=str(manifest),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Refusing an overridden Azure bundle manifest", result.stderr)
+        self.assertEqual(self.mutations(), [])
+
     def test_gcp_runtime_configuration_is_rejected_before_mutation(self) -> None:
         for name, value in (
             ("GOOGLE_APPLICATION_CREDENTIALS", "/tmp/google.json"),
@@ -1065,10 +1181,10 @@ class TestUnpinnedBundleIsRefused(DeployHarness):
         """A pin the CCE policy does not measure is decoration: the container
         could be started with a different bundle version and still attest."""
         import json as _json
-        result = self.run_script("print-env", QUILL_AZURE_BUNDLE_VERSION="pinnedbundle0123456789abcdef0123")
+        result = self.run_script("print-env", QUILL_AZURE_BUNDLE_VERSION=BUNDLE_VERSION)
         self.assertEqual(result.returncode, 0, result.stderr[-800:])
         env = _json.loads(result.stdout)
-        self.assertEqual(env.get("QUILL_AZURE_BUNDLE_VERSION"), "pinnedbundle0123456789abcdef0123")
+        self.assertEqual(env.get("QUILL_AZURE_BUNDLE_VERSION"), BUNDLE_VERSION)
 
 
 class TestPolicyPullIsDryRunSafe(DeployHarness):
@@ -1471,6 +1587,52 @@ class TestNarrowLive(DeployHarness):
         self.assertIn("https://" + os.environ.get(
             "MAA_ENDPOINT", "trquilluaen.uaen.attest.azure.net"), recorded)
 
+    def test_default_verifier_uses_the_committed_script_lock(self) -> None:
+        self.assertTrue(
+            (REPO_ROOT / "tools" / "verify-attestation.py.lock").is_file(),
+            "--locked is only meaningful when the script lock is committed",
+        )
+        self.healthy_deploy()
+        uv = self.bin / "uv"
+        uv.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "$@" >> "$STUB_STATE/uv.log"\n'
+            "exit 0\n"
+        )
+        uv.chmod(0o755)
+
+        result = self.run_script(
+            "--apply",
+            "narrow-live",
+            VERIFY_ATTESTATION_CMD="",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        invocation = self.read_state("uv.log")
+        self.assertIn("run --locked --script", invocation)
+        self.assertIn("tools/verify-attestation.py", invocation)
+        self.assertIn("--expected-maa-issuer", invocation)
+
+    def test_stale_attestation_lock_fails_before_all_mutations(self) -> None:
+        uv = self.bin / "uv"
+        uv.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "$@" >> "$STUB_STATE/uv.log"\n'
+            "exit 1\n"
+        )
+        uv.chmod(0o755)
+
+        result = self.run_script(
+            "--apply",
+            "all",
+            VERIFY_ATTESTATION_CMD="",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("lock is missing or stale", result.stderr)
+        self.assertEqual(self.mutations(), [])
+        self.assertIn("lock --check --script", self.read_state("uv.log"))
+
     def test_dry_run_does_not_narrow(self) -> None:
         live = self.healthy_deploy()
         retired = "1" * 64
@@ -1600,6 +1762,11 @@ class TestACrashLoopFailsFast(DeployHarness):
         self.assertIn("crash-looping", result.stderr)
         self.assertIn("not starting slowly", result.stderr)
         self.assertIn("403", result.stderr, "the deciding log line must be shown")
+        self.assertIn(
+            "containers[?name=='quill-enclave'] | [0].instanceView.restartCount",
+            self.read_state("az.log"),
+            "restart detection must inspect the gateway by name, not sidecar position",
+        )
 
     def test_one_restart_during_a_cold_start_is_tolerated(self) -> None:
         """A single restart while coming up is normal; failing on it would make
@@ -1615,6 +1782,66 @@ class TestACrashLoopFailsFast(DeployHarness):
         )
 
         self.assertNotIn("crash-looping", result.stderr)
+
+    def test_missing_gateway_restart_count_fails_closed(self) -> None:
+        self.healthy_deploy()
+        self.state_file("missing-gateway-container").touch()
+
+        result = self.run_script(
+            "--apply", "verify", MAX_RESTART_READ_FAILURES="1"
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restart count could not be verified", result.stderr)
+
+    def test_null_restart_count_for_present_container_reaches_live_probe(self) -> None:
+        self.healthy_deploy()
+        self.state_file("missing-gateway-restarts").touch()
+        gcloud = self.bin / "gcloud"
+        gcloud.write_text("#!/usr/bin/env bash\nexit 0\n")
+        gcloud.chmod(0o755)
+        curl = self.bin / "curl"
+        curl.write_text("#!/usr/bin/env bash\nexit 0\n")
+        curl.chmod(0o755)
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+
+        result = self.run_script(
+            "--apply", "verify", VERIFY_ATTESTATION_CMD=str(verifier)
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restartCount is not populated yet", result.stderr)
+        self.assertIn("MEASUREMENT NOT PUBLISHED", result.stderr)
+        self.assertNotIn("restart count could not be verified", result.stderr)
+
+    def test_transient_restart_query_failures_are_retried(self) -> None:
+        self.healthy_deploy()
+        self.state_file("restart-query-failures").write_text("2")
+        gcloud = self.bin / "gcloud"
+        gcloud.write_text("#!/usr/bin/env bash\nexit 0\n")
+        gcloud.chmod(0o755)
+        curl = self.bin / "curl"
+        curl.write_text("#!/usr/bin/env bash\nexit 0\n")
+        curl.chmod(0o755)
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+
+        result = self.run_script(
+            "--apply",
+            "verify",
+            VERIFY_ATTESTATION_CMD=str(verifier),
+            VERIFY_TIMEOUT_SECONDS="5",
+            VERIFY_POLL_SECONDS="1",
+        )
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("MEASUREMENT NOT PUBLISHED", result.stderr)
+        self.assertIn("Azure restart-count query failed (1/3)", result.stderr)
+        self.assertIn("Azure restart-count query failed (2/3)", result.stderr)
+        self.assertNotIn("restart count could not be verified", result.stderr)
 
 
 class TestDnsIsAPreconditionNotAnAssumption(DeployHarness):
@@ -1992,9 +2219,19 @@ class TestAzureFoundryStaysDarkUntilItsKeyExists(DeployHarness):
 
     def test_an_operator_can_opt_in_once_the_bundle_has_the_key(self) -> None:
         """Opting in must actually reach the measured env, or Foundry would
-        stay dark forever and nobody would notice."""
+        stay dark forever and nobody would notice. The runtime guard also
+        requires the pinned bundle's manifest to prove that opt-in is real."""
+        manifest = self.state / "bundle-with-foundry.manifest"
+        manifest.write_text(
+            AZURE_BUNDLE_MANIFEST.read_text()
+            + "trustedrouter-azure-api-key\n"
+        )
         self.assertEqual(
-            self._azure_secret(QUILL_AZURE_SECRET="trustedrouter-azure-api-key"),
+            self._azure_secret(
+                QUILL_AZURE_SECRET="trustedrouter-azure-api-key",
+                AZURE_BUNDLE_MANIFEST=str(manifest),
+                ALLOW_AZURE_BUNDLE_MANIFEST_OVERRIDE="1",
+            ),
             "trustedrouter-azure-api-key",
         )
 
