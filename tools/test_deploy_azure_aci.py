@@ -43,6 +43,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 FOREIGN_AUTHORITY = "https://trquillsea.sasia.attest.azure.net"
 SCRIPT = REPO_ROOT / "tools" / "deploy-azure-aci.sh"
 SEALER = REPO_ROOT / "tools" / "azure-seal-bundle.py"
+AZURE_BUNDLE_MANIFEST = REPO_ROOT / "tools" / "azure-bundle.manifest"
+BUNDLE_VERSION = next(
+    line.removeprefix("# bundle-version: ").strip()
+    for line in AZURE_BUNDLE_MANIFEST.read_text().splitlines()
+    if line.startswith("# bundle-version: ")
+)
 
 # ---------------------------------------------------------------------------
 # the stubs
@@ -247,7 +253,7 @@ if argv[:2] == ["container", "show"]:
         sys.exit(3)
     if query == "confidentialComputeProperties.ccePolicy":
         print("" if flag("show-omits-policy") else read("deployed-policy"))
-    elif query == "containers[0].instanceView.restartCount":
+    elif query == "containers[?name=='quill-enclave'] | [0].instanceView.restartCount":
         print(read("group-restarts", "0"))
     elif query == "instanceView.state":
         print(read("group-state", "Running"))
@@ -428,7 +434,7 @@ class DeployHarness(unittest.TestCase):
             # pin guard before reaching the behaviour it actually names.
             # env_overrides is applied after this, so a test can still pass
             # QUILL_AZURE_BUNDLE_VERSION="" to exercise the refusal itself.
-            QUILL_AZURE_BUNDLE_VERSION="stubbundleversion0123456789abcdef",
+            QUILL_AZURE_BUNDLE_VERSION=BUNDLE_VERSION,
             VERIFY_TIMEOUT_SECONDS="1",
             # DNS-specific tests exercise the direct per-region path. The
             # production default remains Traffic Manager for the shared name.
@@ -538,6 +544,27 @@ class TestDeployGuardAuthenticatesTheTemplate(DeployHarness):
 
 
 class TestAzureCloudBoundaryPreflight(DeployHarness):
+    def test_bundle_pin_must_match_the_checked_in_manifest(self) -> None:
+        result = self.run_script(
+            "--apply",
+            "preflight",
+            QUILL_AZURE_BUNDLE_VERSION="0" * 32,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bundle pin/manifest mismatch", result.stderr)
+        self.assertIn(BUNDLE_VERSION, result.stderr)
+        self.assertEqual(self.mutations(), [])
+
+    def test_runtime_enabled_secret_must_exist_in_the_bundle_manifest(self) -> None:
+        result = self.run_script(
+            "--apply",
+            "preflight",
+            QUILL_STEPFUN_SECRET="trustedrouter-unsealed-stepfun-key",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing bundle names: trustedrouter-unsealed-stepfun-key", result.stderr)
+        self.assertEqual(self.mutations(), [])
+
     def test_gcp_runtime_configuration_is_rejected_before_mutation(self) -> None:
         for name, value in (
             ("GOOGLE_APPLICATION_CREDENTIALS", "/tmp/google.json"),
@@ -1600,6 +1627,11 @@ class TestACrashLoopFailsFast(DeployHarness):
         self.assertIn("crash-looping", result.stderr)
         self.assertIn("not starting slowly", result.stderr)
         self.assertIn("403", result.stderr, "the deciding log line must be shown")
+        self.assertIn(
+            "containers[?name=='quill-enclave'] | [0].instanceView.restartCount",
+            self.read_state("az.log"),
+            "restart detection must inspect the gateway by name, not sidecar position",
+        )
 
     def test_one_restart_during_a_cold_start_is_tolerated(self) -> None:
         """A single restart while coming up is normal; failing on it would make
@@ -1992,9 +2024,18 @@ class TestAzureFoundryStaysDarkUntilItsKeyExists(DeployHarness):
 
     def test_an_operator_can_opt_in_once_the_bundle_has_the_key(self) -> None:
         """Opting in must actually reach the measured env, or Foundry would
-        stay dark forever and nobody would notice."""
+        stay dark forever and nobody would notice. The runtime guard also
+        requires the pinned bundle's manifest to prove that opt-in is real."""
+        manifest = self.state / "bundle-with-foundry.manifest"
+        manifest.write_text(
+            AZURE_BUNDLE_MANIFEST.read_text()
+            + "trustedrouter-azure-api-key\n"
+        )
         self.assertEqual(
-            self._azure_secret(QUILL_AZURE_SECRET="trustedrouter-azure-api-key"),
+            self._azure_secret(
+                QUILL_AZURE_SECRET="trustedrouter-azure-api-key",
+                AZURE_BUNDLE_MANIFEST=str(manifest),
+            ),
             "trustedrouter-azure-api-key",
         )
 

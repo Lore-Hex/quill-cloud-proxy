@@ -346,6 +346,7 @@ QUILL_ACME_FALLBACK_EAB_SECRET="${QUILL_ACME_FALLBACK_EAB_SECRET:-trustedrouter-
 QUILL_AZURE_BUNDLE_VERSION="${QUILL_AZURE_BUNDLE_VERSION:-}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+AZURE_BUNDLE_MANIFEST="${AZURE_BUNDLE_MANIFEST:-$REPO_ROOT/tools/azure-bundle.manifest}"
 WORKDIR="${WORKDIR:-${TMPDIR:-/tmp}/quill-azure-aci-${CONTAINER_GROUP}}"
 APPLY=0
 
@@ -366,7 +367,15 @@ verify_attestation() {
   if [ -n "$VERIFY_ATTESTATION_CMD" ]; then
     # shellcheck disable=SC2086
     $VERIFY_ATTESTATION_CMD "$@"
+  elif command -v uv >/dev/null 2>&1; then
+    # verify-attestation.py declares its runtime dependencies in a PEP 723
+    # header. Running it with bare python works only on operator machines that
+    # happen to have cbor2/cryptography installed globally, which turned a
+    # healthy Sydney rollout into a failed verification gate on 2026-08-30.
+    uv run --script "$REPO_ROOT/tools/verify-attestation.py" "$@"
   else
+    python3 -c 'import cbor2, cryptography, OpenSSL' >/dev/null 2>&1 \
+      || die "attestation verifier dependencies are unavailable. Install uv or the PEP 723 dependencies declared by tools/verify-attestation.py."
     python3 "$REPO_ROOT/tools/verify-attestation.py" "$@"
   fi
 }
@@ -766,6 +775,7 @@ phase_preflight() {
   fi
 
   require_tool az
+  validate_pinned_bundle_manifest
   local account_json account_id mi_principal role_count container_url container_json
   account_json="$(az_cli storage account show \
     --resource-group "$AZURE_ACME_STORAGE_RESOURCE_GROUP" \
@@ -849,6 +859,53 @@ print(len(found))
     || die "${RESOURCE_GROUP}/${IDENTITY_NAME} lacks Storage Blob Data Contributor on ${AZURE_ACME_STORAGE_ACCOUNT}"
 
   log "phase preflight: Azure-local cache is private, seeded, and this region's identity can write it"
+}
+
+# The Key Vault bundle is immutable and pinned by version in the measured
+# container environment. Its checked-in manifest is the only non-secret record
+# of which exact version contains which names. A pin that disagrees with the
+# manifest means the deploy is about to ask an older bundle for newer secret
+# coordinates; the enclave then attests successfully, gets the bundle, and
+# exits during bootstrap. Catch that before bind/delete, while the old region is
+# still healthy.
+validate_pinned_bundle_manifest() {
+  [ -r "$AZURE_BUNDLE_MANIFEST" ] \
+    || die "Azure bundle manifest is missing: $AZURE_BUNDLE_MANIFEST"
+
+  local manifest_version active_env
+  manifest_version="$(sed -n 's/^# bundle-version: \([0-9a-f][0-9a-f]*\)$/\1/p' "$AZURE_BUNDLE_MANIFEST" | head -1)"
+  [ -n "$manifest_version" ] \
+    || die "Azure bundle manifest has no '# bundle-version: <hex>' declaration"
+  [ "$QUILL_AZURE_BUNDLE_VERSION" = "$manifest_version" ] \
+    || die "Azure bundle pin/manifest mismatch: deploy pins ${QUILL_AZURE_BUNDLE_VERSION:-<unset>} but $AZURE_BUNDLE_MANIFEST records $manifest_version. Re-seal with tools/azure-sync-secrets.sh, then pin and commit the emitted version before deploying."
+
+  mkdir -p "$WORKDIR"
+  active_env="$WORKDIR/preflight-container-env.json"
+  render_env_json "" > "$active_env"
+  python3 - "$active_env" "$AZURE_BUNDLE_MANIFEST" <<'PY' \
+    || die "Azure deploy names a secret absent from the pinned bundle manifest. Re-seal before deploying."
+import json
+import sys
+
+env = json.load(open(sys.argv[1], encoding="utf-8"))
+manifest = {
+    line.strip()
+    for line in open(sys.argv[2], encoding="utf-8")
+    if line.strip() and not line.lstrip().startswith("#")
+}
+required = {
+    value
+    for name, value in env.items()
+    if name.startswith("QUILL_")
+    and name.endswith("_SECRET")
+    and name != "QUILL_AZURE_BUNDLE_SECRET"
+    and str(value).strip()
+}
+missing = sorted(required - manifest)
+if missing:
+    print("missing bundle names: " + ", ".join(missing), file=sys.stderr)
+    raise SystemExit(1)
+PY
 }
 
 # ---------------------------------------------------------------------------
@@ -1868,7 +1925,7 @@ phase_verify() {
     # and deserves a different message. The threshold is 2 rather than 1 because
     # a single restart during a cold start is normal.
     restarts="$(az_cli container show --resource-group "$RESOURCE_GROUP" --name "$CONTAINER_GROUP" \
-      --query "containers[0].instanceView.restartCount" -o tsv 2>/dev/null || true)"
+      --query "containers[?name=='quill-enclave'] | [0].instanceView.restartCount" -o tsv 2>/dev/null || true)"
     case "$restarts" in
       ''|*[!0-9]*) : ;;
       *)
