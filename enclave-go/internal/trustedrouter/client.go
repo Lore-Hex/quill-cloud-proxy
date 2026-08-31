@@ -30,6 +30,8 @@ const trustedSyntheticApp = "TrustedRouter Synthetic"
 
 const imageOutputTokenEstimate = 1290
 
+const signedReceiptTotalFeeBasisPoints = 1200
+
 const (
 	publicModelsFreshTTL = 5 * time.Minute
 	publicModelsStaleTTL = 30 * time.Minute
@@ -427,6 +429,7 @@ type Authorization struct {
 	Tags                                  qtypes.TagMap                      `json:"tags"`
 	RequestMetadataVersion                int                                `json:"request_metadata_version"`
 	AdditionalCostReservationMicrodollars int                                `json:"additional_cost_reservation_microdollars"`
+	ReceiptFeeBasisPoints                 int                                `json:"receipt_fee_basis_points"`
 	NativeBatchEligible                   bool                               `json:"native_batch_eligible"`
 	SpendLease                            *spendlease.Response               `json:"spend_lease,omitempty"`
 	RouteType                             string                             `json:"-"`
@@ -659,6 +662,9 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	if req.RequestFingerprint != "" {
 		body["request_fingerprint"] = req.RequestFingerprint
 	}
+	if req.InferenceReceipt.Requested {
+		body["inference_receipt"] = true
+	}
 	if req.AdditionalCostReservationMicrodollars > 0 {
 		body["additional_cost_reservation_microdollars"] = req.AdditionalCostReservationMicrodollars
 	}
@@ -712,6 +718,15 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	c.afterCredentialCheck(ctx, lookupHash, nil)
 	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.RouteType = routeType
+	if req.InferenceReceipt.Requested && decoded.ReceiptFeeBasisPoints != signedReceiptTotalFeeBasisPoints {
+		_ = c.Refund(ctx, decoded, 503, "receipt_billing_unavailable", 0.001, nil)
+		return nil, &ControlPlaneError{
+			Path:       "/internal/gateway/authorize",
+			StatusCode: 503,
+			Type:       "receipt_billing_unavailable",
+			Message:    "signed-receipt billing is not available on the active control plane",
+		}
+	}
 	if routeType != "videos" && routeType != "images" && req.AdditionalCostReservationMicrodollars > 0 &&
 		decoded.AdditionalCostReservationMicrodollars != req.AdditionalCostReservationMicrodollars {
 		_ = c.Refund(ctx, decoded, 503, "hosted_tool_billing_unavailable", 0.001, nil)

@@ -171,6 +171,61 @@ func TestAuthorizeSendsLookupHashAndNoPromptContent(t *testing.T) {
 	if payload["additional_cost_reservation_microdollars"] != float64(300_000) {
 		t.Fatalf("additional cost reservation = %v", payload["additional_cost_reservation_microdollars"])
 	}
+	if _, ok := payload["inference_receipt"]; ok {
+		t.Fatalf("ordinary authorize unexpectedly requested receipt billing: %#v", payload)
+	}
+}
+
+func TestAuthorizeSendsAndRequiresSignedReceiptBilling(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		response   string
+		wantErr    bool
+		wantRefund bool
+	}{
+		{
+			name:     "supported",
+			response: `{"data":{"authorization_id":"auth_receipt","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","receipt_fee_basis_points":1200,"route_candidates":[]}}`,
+		},
+		{
+			name:       "old control plane fails closed",
+			response:   `{"data":{"authorization_id":"auth_receipt","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"openai/gpt-4o-mini@openai/prepaid","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`,
+			wantErr:    true,
+			wantRefund: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var authorizePayload map[string]any
+			refunded := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/internal/gateway/refund" {
+					refunded = true
+					_, _ = io.WriteString(w, `{"data":{"status":"refunded"}}`)
+					return
+				}
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &authorizePayload)
+				_, _ = io.WriteString(w, test.response)
+			}))
+			defer server.Close()
+
+			client := New(server.URL, "internal", server.Client())
+			_, err := client.Authorize(t.Context(), "sk-tr-v1-secret", &qtypes.OpenAIChatRequest{
+				Model:            "openai/gpt-4o-mini",
+				Messages:         []qtypes.OpenAIChatMessage{{Role: "user", Content: "hello"}},
+				InferenceReceipt: qtypes.InferenceReceiptRequest{Requested: true},
+			})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Authorize error = %v, wantErr %v", err, test.wantErr)
+			}
+			if authorizePayload["inference_receipt"] != true {
+				t.Fatalf("inference_receipt = %v", authorizePayload["inference_receipt"])
+			}
+			if refunded != test.wantRefund {
+				t.Fatalf("refunded = %v, want %v", refunded, test.wantRefund)
+			}
+		})
+	}
 }
 
 func TestGatewayRequestIDForwarding(t *testing.T) {
