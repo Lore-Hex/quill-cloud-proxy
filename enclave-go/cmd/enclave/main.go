@@ -25,9 +25,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/abuse"
@@ -153,7 +155,12 @@ var responseWriteTimeout = 30 * time.Second
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stop()
 
 	// 0. Seed the kernel's CSPRNG from the NSM hardware RNG before any
 	// crypto/rand consumer (TLS keypair, request IDs, x509 serials) reads
@@ -462,12 +469,44 @@ func main() {
 		startHealthListener(hp)
 	}
 
+	err = serveUntilCanceled(ctx, listener, func(conn net.Conn) {
+		serveOne(ctx, conn, registry, br, tlsServer, deviceBlob, trGateway, byokSecrets)
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "enclave listener stopped unexpectedly: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stderr, "enclave.shutdown_complete")
+}
+
+// serveUntilCanceled keeps normal rollout termination distinct from a serving
+// failure. Compute Engine sends SIGTERM before deleting a managed instance;
+// canceling the process context closes Accept and lets main return zero. A
+// listener failure without cancellation remains fatal and recoverable.
+func serveUntilCanceled(
+	ctx context.Context,
+	listener net.Listener,
+	handle func(net.Conn),
+) error {
+	closeWatcherDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = listener.Close()
+		case <-closeWatcherDone:
+		}
+	}()
+	defer close(closeWatcherDone)
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			continue
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("accept: %w", err)
 		}
-		go serveOne(ctx, conn, registry, br, tlsServer, deviceBlob, trGateway, byokSecrets)
+		go handle(conn)
 	}
 }
 

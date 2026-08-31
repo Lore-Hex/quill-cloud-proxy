@@ -114,7 +114,7 @@ def test_azure_foundry_secret_is_granted_and_activated_only_when_present() -> No
     assert 'AZURE_SECRET="${AZURE_SECRET:-trustedrouter-azure-api-key}"' in bootstrap
     assert '"$AZURE_SECRET" \\' in bootstrap
     assert 'if [ "${QUILL_AZURE_SECRET+x}" != "x" ]; then' in deploy
-    assert "gc secrets describe trustedrouter-azure-api-key" in deploy
+    assert "secret_inventory_has trustedrouter-azure-api-key" in deploy
     assert 'AZURE_TEE_ENV="|tee-env-QUILL_AZURE_SECRET=${QUILL_AZURE_SECRET}"' in deploy
 
 
@@ -127,7 +127,7 @@ def test_gcp_bootstrap_grants_workload_access_to_engy_secret() -> None:
 
     deploy = (REPO_ROOT / "tools" / "deploy-gcp-mig.sh").read_text()
     assert 'if [ "${QUILL_ENGY_SECRET+x}" != "x" ]; then' in deploy
-    assert "gc secrets describe trustedrouter-engy-api-key" in deploy
+    assert "secret_inventory_has trustedrouter-engy-api-key" in deploy
     assert 'ENGY_TEE_ENV="|tee-env-QUILL_ENGY_SECRET=${QUILL_ENGY_SECRET}"' in deploy
 
 
