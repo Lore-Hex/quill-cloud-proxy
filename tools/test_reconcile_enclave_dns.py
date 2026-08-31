@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
 import unittest
 from unittest import mock
 
@@ -106,6 +107,74 @@ class TrustDigestTests(unittest.TestCase):
             self.assertRaisesRegex(SystemExit, "trust digest set looks wrong"),
         ):
             reconciler.trust_digests()
+
+
+class ReleaseDigestFallbackTests(unittest.TestCase):
+    def test_recent_release_lookup_retries_transient_failure(self) -> None:
+        digest = "sha256:" + "a" * 64
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr="unavailable")
+        succeeded = subprocess.CompletedProcess([], 0, stdout=digest + "\n", stderr="")
+        with (
+            mock.patch.object(
+                reconciler.subprocess,
+                "run",
+                side_effect=[failed, succeeded],
+            ) as run,
+            mock.patch.object(reconciler.time, "sleep") as sleep,
+        ):
+            self.assertEqual(reconciler.recent_release_digests(), [digest])
+
+        self.assertEqual(run.call_count, 2)
+        command = run.call_args_list[0].args[0]
+        self.assertEqual(command[1:5], ["artifacts", "docker", "images", "list"])
+        self.assertIn("--include-tags", command)
+        sleep.assert_called_once_with(0.5)
+
+    def test_stable_fleet_never_reads_artifact_registry(self) -> None:
+        fleet = [
+            {"name": "one", "zone": "us-central1-a", "region": "us-central1", "ip": "1"},
+            {"name": "two", "zone": "us-east4-a", "region": "us-east4", "ip": "2"},
+        ]
+        trusted = ["sha256:" + "1" * 64]
+        with (
+            mock.patch.object(reconciler, "attest", return_value=True) as attest,
+            mock.patch.object(reconciler, "recent_release_digests") as recent,
+        ):
+            results, allowed = reconciler.attest_fleet_with_release_fallback(fleet, trusted)
+
+        self.assertTrue(all(ok for _instance, ok in results))
+        self.assertEqual(allowed, trusted)
+        self.assertEqual(attest.call_count, 2)
+        recent.assert_not_called()
+
+    def test_only_failed_instances_retry_with_recent_release_digest(self) -> None:
+        fleet = [
+            {"name": "old", "zone": "us-central1-a", "region": "us-central1", "ip": "1"},
+            {"name": "new", "zone": "us-east4-a", "region": "us-east4", "ip": "2"},
+        ]
+        trusted = "sha256:" + "1" * 64
+        recent = "sha256:" + "2" * 64
+
+        def verify(ip: str, digests: str, _api_host: str = reconciler.API_HOST) -> bool:
+            if ip == "1":
+                return True
+            return recent in digests
+
+        with (
+            mock.patch.object(reconciler, "attest", side_effect=verify) as attest,
+            mock.patch.object(
+                reconciler,
+                "recent_release_digests",
+                return_value=[recent],
+            ) as lookup,
+        ):
+            results, allowed = reconciler.attest_fleet_with_release_fallback(fleet, [trusted])
+
+        self.assertTrue(all(ok for _instance, ok in results))
+        self.assertEqual(allowed, [trusted, recent])
+        self.assertEqual(attest.call_count, 3)
+        self.assertEqual(attest.call_args_list[-1].args[:2], ("2", f"{trusted},{recent}"))
+        lookup.assert_called_once_with()
 
 
 class CanonicalMirrorTests(unittest.TestCase):
