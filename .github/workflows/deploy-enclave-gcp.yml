@@ -251,6 +251,23 @@ jobs:
         env:
           TR_TRUST_PUSH_DEPLOY_KEY: ${{ secrets.TR_TRUST_PUSH_DEPLOY_KEY }}
         run: |
+          regenerate_trust_artifacts_after_rebase() {
+            local accepted accepted_references
+            accepted="$(cat trust-page/accepted-image-digests-gcp.txt)"
+            accepted_references="$(cat trust-page/accepted-image-references-gcp.txt)"
+            python3 tools/write-trust-artifacts.py \
+              --out-dir trust-page \
+              --commit "${SHA}" \
+              --image-reference "${IMAGE_REF}" \
+              --image-digest "${DIGEST}" \
+              --accepted-image-digests "${accepted}" \
+              --accepted-image-references "${accepted_references}"
+            git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust
+            if ! git diff --cached --quiet; then
+              git commit --amend --no-edit
+            fi
+          }
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust
@@ -295,6 +312,13 @@ jobs:
               echo "could not rebase trust artifacts onto origin/main"
               exit 1
             fi
+            # Trust files are derived as a set. A concurrent finalizer can
+            # change only release_state on the new base while that field was
+            # unchanged in this commit, leaving a multi-digest allowlist
+            # mislabeled "current" after an otherwise clean rebase. Rebuild
+            # every derived file from the rebased allowlist and amend before
+            # the next push attempt.
+            regenerate_trust_artifacts_after_rebase
           done
           echo "trust artifacts could not be pushed after 3 attempts"
           exit 1

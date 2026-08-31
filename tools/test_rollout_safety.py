@@ -445,6 +445,21 @@ class RolloutSafetyTests(unittest.TestCase):
             workflow,
         )
 
+    def test_trust_artifacts_are_regenerated_after_rebase(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+
+        helper = workflow.index("regenerate_trust_artifacts_after_rebase()")
+        rebase = workflow.index('git rebase -X theirs "$rebase_target"')
+        regenerate = workflow.index(
+            "regenerate_trust_artifacts_after_rebase", helper + 1
+        )
+        self.assertLess(helper, rebase)
+        self.assertLess(rebase, regenerate)
+        self.assertIn("python3 tools/write-trust-artifacts.py", workflow[helper:rebase])
+        self.assertIn("git commit --amend --no-edit", workflow[helper:rebase])
+
     def test_transition_and_final_pages_artifacts_have_unique_names(self) -> None:
         deploy_workflow = (
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
