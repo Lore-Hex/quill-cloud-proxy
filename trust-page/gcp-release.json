@@ -47,7 +47,7 @@
     "key_log": "https://trustedrouter.com/.well-known/inference-receipt-keys",
     "spec": "inference-receipt/1"
   },
-  "release_state": "current",
+  "release_state": "rolling",
   "released_by": "github-actions:deploy-enclave-gcp",
   "source_commit": "f60c9bd",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
