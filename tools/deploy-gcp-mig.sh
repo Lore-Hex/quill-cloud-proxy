@@ -285,12 +285,29 @@ TEE_CONTAINER_LOG_REDIRECT="${TEE_CONTAINER_LOG_REDIRECT:-true}"
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 gc() { gcloud --project "$PROJECT_ID" "$@"; }
 
+# Read the secret inventory once. Secret Manager records a failed GetSecret as
+# an ERROR audit entry, so probing every optional provider with `describe`
+# makes an intentionally dark provider look like a production failure. Keep
+# this read fail-closed: under `set -e`, a permission or API failure aborts the
+# rollout before any template or MIG is changed.
+SECRET_MANAGER_INVENTORY="$(gc secrets list --format='value(name)')"
+secret_inventory_has() {
+  local requested="$1"
+  local listed
+  while IFS= read -r listed; do
+    if [ "${listed##*/}" = "$requested" ]; then
+      return 0
+    fi
+  done <<< "$SECRET_MANAGER_INVENTORY"
+  return 1
+}
+
 # 0G is a dark onboarding until its key exists. An explicitly supplied empty
 # value disables it; otherwise deployments discover the canonical secret once
 # scripts/deploy/secrets.sh provisions it.
 if [ "${QUILL_ZERO_G_SECRET+x}" != "x" ]; then
   QUILL_ZERO_G_SECRET=""
-  if gc secrets describe trustedrouter-zero-g-api-key >/dev/null 2>&1; then
+  if secret_inventory_has trustedrouter-zero-g-api-key; then
     QUILL_ZERO_G_SECRET="trustedrouter-zero-g-api-key"
   fi
 fi
@@ -303,7 +320,7 @@ fi
 # deploys healthy while provider onboarding is prepared or credentials rotate.
 if [ "${QUILL_ENGY_SECRET+x}" != "x" ]; then
   QUILL_ENGY_SECRET=""
-  if gc secrets describe trustedrouter-engy-api-key >/dev/null 2>&1; then
+  if secret_inventory_has trustedrouter-engy-api-key; then
     QUILL_ENGY_SECRET="trustedrouter-engy-api-key"
   fi
 fi
@@ -316,7 +333,7 @@ fi
 # publishes Pearl routes after this secret-backed gateway support is deployed.
 if [ "${QUILL_PEARL_SECRET+x}" != "x" ]; then
   QUILL_PEARL_SECRET=""
-  if gc secrets describe trustedrouter-pearl-api-key >/dev/null 2>&1; then
+  if secret_inventory_has trustedrouter-pearl-api-key; then
     QUILL_PEARL_SECRET="trustedrouter-pearl-api-key"
   fi
 fi
@@ -339,7 +356,7 @@ configure_optional_provider_secret() {
   local configured=""
   if [ "${!env_name+x}" = "x" ]; then
     configured="${!env_name}"
-  elif gc secrets describe "$default_secret" >/dev/null 2>&1; then
+  elif secret_inventory_has "$default_secret"; then
     configured="$default_secret"
   fi
   printf -v "$env_name" '%s' "$configured"
@@ -386,7 +403,7 @@ configure_optional_provider_secret QUILL_RIVERFLOW_SECRET trustedrouter-riverflo
 # from failing at bootstrap while provider credentials are being provisioned.
 if [ "${QUILL_AZURE_SECRET+x}" != "x" ]; then
   QUILL_AZURE_SECRET=""
-  if gc secrets describe trustedrouter-azure-api-key >/dev/null 2>&1; then
+  if secret_inventory_has trustedrouter-azure-api-key; then
     QUILL_AZURE_SECRET="trustedrouter-azure-api-key"
   fi
 fi
@@ -399,13 +416,13 @@ fi
 # Keep the provider dark until the pair exists, and never deploy a partial pair.
 if [ "${QUILL_DATABRICKS_SECRET+x}" != "x" ]; then
   QUILL_DATABRICKS_SECRET=""
-  if gc secrets describe trustedrouter-databricks-token >/dev/null 2>&1; then
+  if secret_inventory_has trustedrouter-databricks-token; then
     QUILL_DATABRICKS_SECRET="trustedrouter-databricks-token"
   fi
 fi
 if [ "${QUILL_DATABRICKS_HOST_SECRET+x}" != "x" ]; then
   QUILL_DATABRICKS_HOST_SECRET=""
-  if gc secrets describe trustedrouter-databricks-host >/dev/null 2>&1; then
+  if secret_inventory_has trustedrouter-databricks-host; then
     QUILL_DATABRICKS_HOST_SECRET="trustedrouter-databricks-host"
   fi
 fi

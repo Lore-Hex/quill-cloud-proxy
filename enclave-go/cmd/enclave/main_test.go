@@ -725,6 +725,49 @@ func stubAttestationBody(t *testing.T) {
 	t.Cleanup(func() { getAttestation = oldGetAttestation })
 }
 
+func TestServeUntilCanceledTreatsRolloutShutdownAsSuccess(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- serveUntilCanceled(ctx, listener, func(conn net.Conn) {
+			_ = conn.Close()
+		})
+	}()
+
+	cancel()
+	select {
+	case serveErr := <-done:
+		if serveErr != nil {
+			t.Fatalf("serveUntilCanceled after cancellation: %v", serveErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for canceled listener to stop")
+	}
+}
+
+func TestServeUntilCanceledReportsUnexpectedListenerFailure(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	err = serveUntilCanceled(
+		context.Background(),
+		listener,
+		func(conn net.Conn) { _ = conn.Close() },
+	)
+	if err == nil || !strings.Contains(err.Error(), "accept:") {
+		t.Fatalf("serveUntilCanceled error = %v, want accept failure", err)
+	}
+}
+
 func startTLSServeOneLoopback(t *testing.T, reg *auth.Registry, br llm.Client) (string, string, *tls.Config) {
 	t.Helper()
 	tlsServer, err := enclavetls.NewSelfSigned("test.quill.local")

@@ -395,6 +395,18 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("QUILL_*_SECRET|ACME_FALLBACK_EAB_SECRET", deploy)
         self.assertIn('--service-account "${WORKLOAD_SA}"', deploy)
 
+    def test_optional_secrets_use_one_fail_closed_inventory_read(self) -> None:
+        deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
+
+        self.assertEqual(deploy.count("gc secrets list --format='value(name)'"), 1)
+        self.assertIn('SECRET_MANAGER_INVENTORY="$(gc secrets list', deploy)
+        self.assertIn("secret_inventory_has()", deploy)
+        self.assertIn('secret_inventory_has "$default_secret"', deploy)
+        self.assertNotRegex(
+            deploy,
+            r"gc secrets describe (?:\"\$default_secret\"|trustedrouter-)",
+        )
+
     def test_recovery_and_secret_preflight_changes_trigger_deployment(self) -> None:
         workflow = (
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
