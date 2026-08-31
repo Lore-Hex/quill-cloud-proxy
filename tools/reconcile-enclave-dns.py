@@ -49,6 +49,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 
@@ -221,17 +222,42 @@ def recent_release_digests() -> list[str]:
     the still-good fleet and blocks the next rollout. Keeping this window short
     preserves a bounded release set while letting operators recover. Best-effort:
     [] (→ trust digest only) if AR can't be read."""
-    try:
-        out = subprocess.run(
-            ["gcloud", "artifacts", "docker", "images", "list", AR_IMAGE,
-             "--include-tags", "--filter", "tags~gcp-release",
-             "--sort-by=~UPDATE_TIME", "--limit", str(ACCEPT_RECENT_RELEASE_DIGESTS),
-             "--format=value(version)", "--project", PROJECT],
-            capture_output=True, text=True, timeout=30,
-        ).stdout.strip()
-        return [line for line in out.splitlines() if line.startswith("sha256:")]
-    except Exception:
-        return []
+    command = [
+        "gcloud", "artifacts", "docker", "images", "list", AR_IMAGE,
+        "--include-tags",
+        "--filter", "tags~gcp-release",
+        "--sort-by=~UPDATE_TIME",
+        "--limit", str(ACCEPT_RECENT_RELEASE_DIGESTS),
+        "--format=value(version)",
+        "--project", PROJECT,
+    ]
+    for attempt in range(3):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            log(
+                "reconcile: recent release tag lookup failed "
+                f"attempt={attempt + 1}/3 error={type(exc).__name__}"
+            )
+        else:
+            if result.returncode == 0:
+                return [
+                    line
+                    for line in result.stdout.strip().splitlines()
+                    if line.startswith("sha256:")
+                ]
+            log(
+                "reconcile: recent release tag lookup failed "
+                f"attempt={attempt + 1}/3 exit={result.returncode}"
+            )
+        if attempt < 2:
+            time.sleep(0.5 * (2**attempt))
+    return []
 
 
 def attest(ip: str, digest: str, api_host: str = API_HOST) -> bool:
@@ -258,6 +284,36 @@ def attest(ip: str, digest: str, api_host: str = API_HOST) -> bool:
         # of the whole reconcile — every other instance must still be evaluated.
         log(f"  [probe-error] {ip}: {type(e).__name__}: {e}")
         return False
+
+
+def _attest_instances(
+    fleet: list[dict],
+    digest: str,
+) -> list[tuple[dict, bool]]:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
+        return list(ex.map(lambda instance: (instance, attest(instance["ip"], digest)), fleet))
+
+
+def attest_fleet_with_release_fallback(
+    fleet: list[dict],
+    trusted: list[str],
+) -> tuple[list[tuple[dict, bool]], list[str]]:
+    """Attest against signed trust first; consult Artifact Registry only on failure."""
+    allowed = list(dict.fromkeys(trusted))
+    results = _attest_instances(fleet, ",".join(allowed))
+    failed_indices = [index for index, (_instance, ok) in enumerate(results) if not ok]
+    if not failed_indices:
+        return results, allowed
+
+    expanded = list(dict.fromkeys([*allowed, *recent_release_digests()]))
+    if expanded == allowed:
+        return results, allowed
+
+    failed_instances = [fleet[index] for index in failed_indices]
+    retries = _attest_instances(failed_instances, ",".join(expanded))
+    for index, (_instance, ok) in zip(failed_indices, retries, strict=True):
+        results[index] = (fleet[index], ok)
+    return results, expanded
 
 
 def current_dns_record(
@@ -608,24 +664,21 @@ def main() -> int:
         print("\n".join(sorted(persistent_drain_regions())))
         return 0
 
-    # DNS membership is gated on attestation against a SET of acceptable
-    # digests: the published trust digest PLUS recent release images in Artifact
-    # Registry. Keeps the fleet servable across the entire rollout window and
-    # lets the operator recover when a prior rollout published trust artifacts
-    # but failed before the MIG reached that digest.
+    # DNS membership is gated first on the signed trust digest set. Artifact
+    # Registry is a recovery-only fallback: consult it only when a live instance
+    # fails the signed set, rather than scanning release history every two
+    # minutes during steady state.
     trusted = trust_digests()
-    allowed = list(dict.fromkeys([*trusted, *recent_release_digests()]))
-    digest = ",".join(allowed)
     fleet = discover_instances()
-    log(f"reconcile: {len(fleet)} running enclave instances; accepting digest(s) "
-        + " + ".join(d[:23] + "…" for d in allowed))
     if not fleet:
         sys.exit("[FAIL] no running enclave instances discovered")
 
-    # Attest all instances concurrently.
+    results, allowed = attest_fleet_with_release_fallback(fleet, trusted)
+    digest = ",".join(allowed)
+    log(f"reconcile: {len(fleet)} running enclave instances; accepting digest(s) "
+        + " + ".join(d[:23] + "…" for d in allowed))
+
     healthy: list[dict] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
-        results = list(ex.map(lambda i: (i, attest(i["ip"], digest)), fleet))
     by_region: dict[str, list[str]] = {}
     for inst, ok in results:
         mark = "ok " if ok else "FAIL"
