@@ -323,17 +323,16 @@ jobs:
           echo "trust artifacts could not be pushed after 3 attempts"
           exit 1
 
-  publish-transition-trust-page:
+  verify-transition-trust-page:
     needs: build-and-release
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    uses: ./.github/workflows/publish-trust-page.yml
-    with:
-      artifact_name: github-pages-transition
-      expected_digests: ${{ needs.build-and-release.outputs.accepted_digests }}
-      expected_references: ${{ needs.build-and-release.outputs.accepted_references }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for exact public transition trust set
+        env:
+          EXPECTED_DIGESTS: ${{ needs.build-and-release.outputs.accepted_digests }}
+          EXPECTED_REFERENCES: ${{ needs.build-and-release.outputs.accepted_references }}
+        run: tools/wait-trust-page-set.sh "${EXPECTED_DIGESTS}" "${EXPECTED_REFERENCES}"
 
   grant-batch-image-access:
     needs: build-and-release
@@ -361,8 +360,8 @@ jobs:
         run: bash tools/reconcile-gcp-batch-image-access.sh grant "${IMAGE_DIGEST}"
 
   rollout:
-    needs: [build-and-release, grant-batch-image-access, publish-transition-trust-page]
-    if: ${{ needs.grant-batch-image-access.result == 'success' && needs.publish-transition-trust-page.result == 'success' }}
+    needs: [build-and-release, grant-batch-image-access, verify-transition-trust-page]
+    if: ${{ needs.grant-batch-image-access.result == 'success' && needs.verify-transition-trust-page.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -797,16 +796,17 @@ jobs:
             fi
           fi
 
-  # Publish and verify the single final digest through the same reusable path
-  # used for the pre-rollout transition set.
-  publish-trust-page:
+  # Trust-artifact commits trigger the standalone Pages publisher. Depend on
+  # the public invariant instead of one particular publisher run: GitHub
+  # concurrency replaces older pending jobs when a third publish arrives.
+  # The exact public set remains the release gate either way.
+  verify-final-trust-page:
     needs: [build-and-release, finalize-trust-artifacts]
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    uses: ./.github/workflows/publish-trust-page.yml
-    with:
-      artifact_name: github-pages-final
-      expected_digests: ${{ needs.build-and-release.outputs.image_digest }}
-      expected_references: ${{ needs.build-and-release.outputs.image_ref }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for exact public final trust set
+        env:
+          EXPECTED_DIGESTS: ${{ needs.build-and-release.outputs.image_digest }}
+          EXPECTED_REFERENCES: ${{ needs.build-and-release.outputs.image_ref }}
+        run: tools/wait-trust-page-set.sh "${EXPECTED_DIGESTS}" "${EXPECTED_REFERENCES}"

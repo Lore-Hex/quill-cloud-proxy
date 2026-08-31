@@ -420,16 +420,16 @@ class RolloutSafetyTests(unittest.TestCase):
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
         ).read_text(encoding="utf-8")
 
-        transition = workflow.index("\n  publish-transition-trust-page:")
+        transition = workflow.index("\n  verify-transition-trust-page:")
         rollout = workflow.index("\n  rollout:")
         finalize = workflow.index("\n  finalize-trust-artifacts:")
-        publish_final = workflow.index("\n  publish-trust-page:", finalize)
+        verify_final = workflow.index("\n  verify-final-trust-page:", finalize)
 
         self.assertLess(transition, rollout)
         self.assertLess(rollout, finalize)
-        self.assertLess(finalize, publish_final)
+        self.assertLess(finalize, verify_final)
         self.assertIn(
-            "needs: [build-and-release, grant-batch-image-access, publish-transition-trust-page]",
+            "needs: [build-and-release, grant-batch-image-access, verify-transition-trust-page]",
             workflow,
         )
         self.assertIn('--accepted-image-digests "${previous}"', workflow)
@@ -437,13 +437,18 @@ class RolloutSafetyTests(unittest.TestCase):
             '--accepted-image-references "${previous_references}"', workflow
         )
         self.assertIn(
-            "expected_references: ${{ needs.build-and-release.outputs.accepted_references }}",
+            'tools/wait-trust-page-set.sh "${EXPECTED_DIGESTS}" "${EXPECTED_REFERENCES}"',
             workflow,
         )
         self.assertIn(
             "needs: [build-and-release, finalize-trust-artifacts]",
             workflow,
         )
+        self.assertIn(
+            "EXPECTED_DIGESTS: ${{ needs.build-and-release.outputs.image_digest }}",
+            workflow,
+        )
+        self.assertNotIn("\n  publish-transition-trust-page:", workflow)
 
     def test_trust_artifacts_are_regenerated_after_rebase(self) -> None:
         workflow = (
@@ -460,7 +465,7 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("python3 tools/write-trust-artifacts.py", workflow[helper:rebase])
         self.assertIn("git commit --amend --no-edit", workflow[helper:rebase])
 
-    def test_transition_and_final_pages_artifacts_have_unique_names(self) -> None:
+    def test_public_trust_verifiers_are_independent_of_publish_job_identity(self) -> None:
         deploy_workflow = (
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
         ).read_text(encoding="utf-8")
@@ -468,10 +473,9 @@ class RolloutSafetyTests(unittest.TestCase):
             ROOT / ".github" / "workflows" / "publish-trust-page.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(
-            deploy_workflow.count("artifact_name: github-pages-transition"), 1
-        )
-        self.assertEqual(deploy_workflow.count("artifact_name: github-pages-final"), 1)
+        self.assertEqual(deploy_workflow.count("tools/wait-trust-page-set.sh"), 2)
+        self.assertNotIn("artifact_name: github-pages-transition", deploy_workflow)
+        self.assertNotIn("artifact_name: github-pages-final", deploy_workflow)
         self.assertEqual(
             publish_workflow.count("${{ inputs.artifact_name || 'github-pages' }}"),
             3,
