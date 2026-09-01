@@ -27,6 +27,15 @@ class DnsReconcilerSchedulerTests(unittest.TestCase):
         workflow = WORKFLOW.read_text()
 
         self.assertIn("SCHEDULER_NAME: enclave-dns-reconciler-tick", workflow)
+        self.assertIn("BUILD_REGION: us-central1", workflow)
+        self.assertIn("LOCK_BUCKET_REGION: us-central1", workflow)
+        self.assertIn("JOB_REGION: us-east4", workflow)
+        self.assertIn("SCHEDULER_REGION: us-central1", workflow)
+        self.assertIn(
+            'run_uri="https://${JOB_REGION}-run.googleapis.com/',
+            workflow,
+        )
+        self.assertNotIn("  REGION: us-central1", workflow)
         self.assertIn('SCHEDULER_SCHEDULE: "*/2 * * * *"', workflow)
         self.assertIn("--max-retry-attempts=3", workflow)
         self.assertIn("--min-backoff=5s", workflow)
