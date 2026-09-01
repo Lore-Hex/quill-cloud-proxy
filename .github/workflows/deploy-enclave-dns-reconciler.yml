@@ -30,6 +30,8 @@ env:
   SCHEDULER_NAME: enclave-dns-reconciler-tick
   SCHEDULER_SCHEDULE: "*/2 * * * *"
   SCHEDULER_SERVICE_ACCOUNT: enclave-dns-reconciler-invoker@quill-cloud-proxy.iam.gserviceaccount.com
+  RECONCILER_SERVICE_ACCOUNT: enclave-dns-reconciler@quill-cloud-proxy.iam.gserviceaccount.com
+  LOCK_BUCKET: quill-cloud-proxy-enclave-dns-reconciler-state
 
 jobs:
   test-build-deploy:
@@ -55,6 +57,34 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      - name: Reconcile the single-flight state bucket
+        run: |
+          set -euo pipefail
+          if ! gcloud storage buckets describe "gs://${LOCK_BUCKET}" \
+            --project="${PROJECT_ID}" >/dev/null 2>&1; then
+            gcloud storage buckets create "gs://${LOCK_BUCKET}" \
+              --project="${PROJECT_ID}" \
+              --location="${REGION}" \
+              --default-storage-class=STANDARD \
+              --uniform-bucket-level-access \
+              --public-access-prevention \
+              --soft-delete-duration=0 \
+              --quiet
+          fi
+          gcloud storage buckets update "gs://${LOCK_BUCKET}" \
+            --project="${PROJECT_ID}" \
+            --uniform-bucket-level-access \
+            --public-access-prevention \
+            --no-versioning \
+            --clear-soft-delete \
+            --quiet
+          gcloud storage buckets add-iam-policy-binding "gs://${LOCK_BUCKET}" \
+            --project="${PROJECT_ID}" \
+            --member="serviceAccount:${RECONCILER_SERVICE_ACCOUNT}" \
+            --role=roles/storage.objectUser \
+            --condition=None \
+            --quiet
+
       - name: Build immutable reconciler image
         id: image
         run: |
@@ -79,7 +109,8 @@ jobs:
           gcloud run jobs update "${JOB_NAME}" \
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
-            --image="${{ steps.image.outputs.ref }}"
+            --image="${{ steps.image.outputs.ref }}" \
+            --update-env-vars="QUILL_RECONCILE_LOCK_BUCKET=${LOCK_BUCKET}"
 
           run_uri="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${JOB_NAME}:run"
           retry_flags=(
@@ -148,11 +179,23 @@ jobs:
             sleep 5
           done
           test -n "${scheduler_execution}"
-
-      - name: Verify the reconciler job
-        run: |
-          set -euo pipefail
-          gcloud run jobs execute "${JOB_NAME}" \
-            --project="${PROJECT_ID}" \
-            --region="${REGION}" \
-            --wait
+          for _ in $(seq 1 72); do
+            status="$(gcloud run jobs executions describe "${scheduler_execution}" \
+              --project="${PROJECT_ID}" \
+              --region="${REGION}" \
+              --format='value(status.conditions[0].status)')"
+            case "${status}" in
+              True)
+                exit 0
+                ;;
+              False)
+                gcloud run jobs executions describe "${scheduler_execution}" \
+                  --project="${PROJECT_ID}" \
+                  --region="${REGION}"
+                exit 1
+                ;;
+            esac
+            sleep 5
+          done
+          echo "Timed out waiting for ${scheduler_execution}" >&2
+          exit 1

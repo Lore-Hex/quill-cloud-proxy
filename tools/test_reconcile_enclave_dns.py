@@ -51,6 +51,164 @@ class GcloudReadTests(unittest.TestCase):
             reconciler.gcloud_json(["dns", "record-sets", "list"])
 
 
+class ReconcileLeaseTests(unittest.TestCase):
+    def test_first_execution_acquires_atomic_object(self) -> None:
+        with (
+            mock.patch.object(reconciler, "RECONCILE_LOCK_BUCKET", "lock-bucket"),
+            mock.patch.object(
+                reconciler,
+                "_storage_access_token",
+                return_value="token",
+            ),
+            mock.patch.object(
+                reconciler,
+                "_read_reconcile_lock",
+                return_value=None,
+            ),
+            mock.patch.object(
+                reconciler,
+                "_write_reconcile_lock",
+                return_value=7,
+            ) as write,
+            mock.patch.dict(
+                reconciler.os.environ,
+                {"CLOUD_RUN_EXECUTION": "execution-one"},
+            ),
+        ):
+            lease = reconciler.acquire_reconcile_lease(now=100.0)
+
+        self.assertEqual(
+            lease,
+            reconciler.ReconcileLease(
+                owner="execution-one",
+                generation=7,
+                acquired_at=100.0,
+            ),
+        )
+        payload = write.call_args.args[1]
+        self.assertEqual(payload["owner"], "execution-one")
+        self.assertEqual(payload["state"], "running")
+        self.assertEqual(payload["expires_at"], 340.0)
+        self.assertEqual(write.call_args.kwargs["if_generation_match"], 0)
+
+    def test_active_owner_makes_concurrent_execution_exit_cleanly(self) -> None:
+        active = {
+            "owner": "execution-one",
+            "state": "running",
+            "expires_at": 200.0,
+        }
+        with (
+            mock.patch.object(reconciler, "RECONCILE_LOCK_BUCKET", "lock-bucket"),
+            mock.patch.object(
+                reconciler,
+                "_storage_access_token",
+                return_value="token",
+            ),
+            mock.patch.object(
+                reconciler,
+                "_read_reconcile_lock",
+                return_value=(active, 4),
+            ),
+            mock.patch.object(reconciler, "_delete_reconcile_lock") as delete,
+            mock.patch.object(reconciler, "_write_reconcile_lock") as write,
+        ):
+            lease = reconciler.acquire_reconcile_lease(now=100.0)
+
+        self.assertIsNone(lease)
+        delete.assert_not_called()
+        write.assert_not_called()
+
+    def test_expired_owner_is_replaced_with_generation_preconditions(self) -> None:
+        expired = {
+            "owner": "dead-execution",
+            "state": "running",
+            "expires_at": 99.0,
+        }
+        with (
+            mock.patch.object(reconciler, "RECONCILE_LOCK_BUCKET", "lock-bucket"),
+            mock.patch.object(
+                reconciler,
+                "_storage_access_token",
+                return_value="token",
+            ),
+            mock.patch.object(
+                reconciler,
+                "_read_reconcile_lock",
+                return_value=(expired, 4),
+            ),
+            mock.patch.object(
+                reconciler,
+                "_delete_reconcile_lock",
+                return_value=True,
+            ) as delete,
+            mock.patch.object(
+                reconciler,
+                "_write_reconcile_lock",
+                return_value=8,
+            ),
+            mock.patch.dict(
+                reconciler.os.environ,
+                {"CLOUD_RUN_EXECUTION": "execution-two"},
+            ),
+        ):
+            lease = reconciler.acquire_reconcile_lease(now=100.0)
+
+        self.assertIsNotNone(lease)
+        self.assertEqual(lease.owner, "execution-two")
+        self.assertEqual(lease.generation, 8)
+        delete.assert_called_once_with("token", 4)
+
+    def test_successful_completion_preserves_minimum_start_interval(self) -> None:
+        lease = reconciler.ReconcileLease(
+            owner="execution-one",
+            generation=7,
+            acquired_at=100.0,
+        )
+        with (
+            mock.patch.object(reconciler, "RECONCILE_LOCK_BUCKET", "lock-bucket"),
+            mock.patch.object(
+                reconciler,
+                "_storage_access_token",
+                return_value="token",
+            ),
+            mock.patch.object(reconciler.time, "time", return_value=120.0),
+            mock.patch.object(
+                reconciler,
+                "_write_reconcile_lock",
+                return_value=8,
+            ) as write,
+        ):
+            reconciler.finish_reconcile_lease(lease, succeeded=True)
+
+        payload = write.call_args.args[1]
+        self.assertEqual(payload["state"], "cooldown")
+        self.assertEqual(payload["expires_at"], 190.0)
+        self.assertEqual(write.call_args.kwargs["if_generation_match"], 7)
+
+    def test_lost_ownership_cannot_release_another_execution(self) -> None:
+        lease = reconciler.ReconcileLease(
+            owner="execution-one",
+            generation=7,
+            acquired_at=100.0,
+        )
+        with (
+            mock.patch.object(reconciler, "RECONCILE_LOCK_BUCKET", "lock-bucket"),
+            mock.patch.object(
+                reconciler,
+                "_storage_access_token",
+                return_value="token",
+            ),
+            mock.patch.object(reconciler.time, "time", return_value=120.0),
+            mock.patch.object(
+                reconciler,
+                "_write_reconcile_lock",
+                return_value=None,
+            ),
+            self.assertRaisesRegex(RuntimeError, "ownership changed"),
+        ):
+            reconciler.finish_reconcile_lease(lease, succeeded=True)
+
+
 class AttestationProbeTests(unittest.TestCase):
     def test_dns_membership_uses_one_fresh_nonce_sample(self) -> None:
         completed = mock.Mock(returncode=0, stdout="", stderr="")
