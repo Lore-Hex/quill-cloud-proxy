@@ -379,7 +379,7 @@ jobs:
           # Install it explicitly so a non-interactive runner never pauses to
           # ask whether it may install the component mid-rollout.
           install_components: beta
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
 
       - name: Authenticate to AWS for backup-domain DNS
         uses: aws-actions/configure-aws-credentials@v4
