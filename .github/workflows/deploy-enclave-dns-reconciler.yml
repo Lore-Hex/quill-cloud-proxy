@@ -24,7 +24,10 @@ permissions:
 
 env:
   PROJECT_ID: quill-cloud-proxy
-  REGION: us-central1
+  BUILD_REGION: us-central1
+  LOCK_BUCKET_REGION: us-central1
+  JOB_REGION: us-east4
+  SCHEDULER_REGION: us-central1
   IMAGE_REPOSITORY: us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-dns-reconciler
   JOB_NAME: enclave-dns-reconciler
   SCHEDULER_NAME: enclave-dns-reconciler-tick
@@ -64,7 +67,7 @@ jobs:
             --project="${PROJECT_ID}" >/dev/null 2>&1; then
             gcloud storage buckets create "gs://${LOCK_BUCKET}" \
               --project="${PROJECT_ID}" \
-              --location="${REGION}" \
+              --location="${LOCK_BUCKET_REGION}" \
               --default-storage-class=STANDARD \
               --uniform-bucket-level-access \
               --public-access-prevention \
@@ -93,7 +96,7 @@ jobs:
           image="${IMAGE_REPOSITORY}:${tag}"
           gcloud builds submit \
             --project="${PROJECT_ID}" \
-            --region="${REGION}" \
+            --region="${BUILD_REGION}" \
             --config=tools/cloudbuild.reconciler.yaml \
             --substitutions="_IMAGE=${image},_SOURCE_REVISION=${GITHUB_SHA}" \
             tools
@@ -108,11 +111,11 @@ jobs:
           set -euo pipefail
           gcloud run jobs update "${JOB_NAME}" \
             --project="${PROJECT_ID}" \
-            --region="${REGION}" \
+            --region="${JOB_REGION}" \
             --image="${{ steps.image.outputs.ref }}" \
             --update-env-vars="QUILL_RECONCILE_LOCK_BUCKET=${LOCK_BUCKET}"
 
-          run_uri="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${JOB_NAME}:run"
+          run_uri="https://${JOB_REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${JOB_NAME}:run"
           retry_flags=(
             # Four total attempts finish within 85 seconds even when every
             # HTTP attempt consumes Cloud Scheduler's 15-second minimum
@@ -127,10 +130,10 @@ jobs:
           trap 'rm -f "${describe_error}"' EXIT
           if gcloud scheduler jobs describe "${SCHEDULER_NAME}" \
             --project="${PROJECT_ID}" \
-            --location="${REGION}" >/dev/null 2>"${describe_error}"; then
+            --location="${SCHEDULER_REGION}" >/dev/null 2>"${describe_error}"; then
             gcloud scheduler jobs update http "${SCHEDULER_NAME}" \
               --project="${PROJECT_ID}" \
-              --location="${REGION}" \
+              --location="${SCHEDULER_REGION}" \
               --schedule="${SCHEDULER_SCHEDULE}" \
               --uri="${run_uri}" \
               --http-method=POST \
@@ -144,7 +147,7 @@ jobs:
             fi
             gcloud scheduler jobs create http "${SCHEDULER_NAME}" \
               --project="${PROJECT_ID}" \
-              --location="${REGION}" \
+              --location="${SCHEDULER_REGION}" \
               --schedule="${SCHEDULER_SCHEDULE}" \
               --uri="${run_uri}" \
               --http-method=POST \
@@ -158,18 +161,18 @@ jobs:
           before="$(gcloud run jobs executions list \
             --job="${JOB_NAME}" \
             --project="${PROJECT_ID}" \
-            --region="${REGION}" \
+            --region="${JOB_REGION}" \
             --limit=1 \
             --format='value(metadata.name)')"
           gcloud scheduler jobs run "${SCHEDULER_NAME}" \
             --project="${PROJECT_ID}" \
-            --location="${REGION}"
+            --location="${SCHEDULER_REGION}"
           scheduler_execution=""
           for _ in $(seq 1 24); do
             latest="$(gcloud run jobs executions list \
               --job="${JOB_NAME}" \
               --project="${PROJECT_ID}" \
-              --region="${REGION}" \
+              --region="${JOB_REGION}" \
               --limit=1 \
               --format='value(metadata.name)')"
             if [ -n "${latest}" ] && [ "${latest}" != "${before}" ]; then
@@ -182,7 +185,7 @@ jobs:
           for _ in $(seq 1 72); do
             status="$(gcloud run jobs executions describe "${scheduler_execution}" \
               --project="${PROJECT_ID}" \
-              --region="${REGION}" \
+              --region="${JOB_REGION}" \
               --format='value(status.conditions[0].status)')"
             case "${status}" in
               True)
@@ -191,7 +194,7 @@ jobs:
               False)
                 gcloud run jobs executions describe "${scheduler_execution}" \
                   --project="${PROJECT_ID}" \
-                  --region="${REGION}"
+                  --region="${JOB_REGION}"
                 exit 1
                 ;;
             esac
