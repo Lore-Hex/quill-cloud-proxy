@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 import subprocess
 import unittest
+from pathlib import Path
 from unittest import mock
 
 
@@ -13,6 +13,77 @@ SPEC = importlib.util.spec_from_file_location("reconcile_enclave_dns", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 reconciler = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(reconciler)
+
+
+class GcloudReadTests(unittest.TestCase):
+    def test_transient_failure_is_retried_and_then_parsed(self) -> None:
+        failed = mock.Mock(returncode=1, stdout="", stderr="UNAVAILABLE")
+        succeeded = mock.Mock(returncode=0, stdout='[{"name": "ok"}]', stderr="")
+        with (
+            mock.patch.object(
+                reconciler.subprocess,
+                "run",
+                side_effect=[failed, succeeded],
+            ) as run,
+            mock.patch.object(reconciler.time, "sleep") as sleep,
+        ):
+            result = reconciler.gcloud_json(["dns", "record-sets", "list"])
+
+        self.assertEqual(result, [{"name": "ok"}])
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            run.call_args.kwargs["timeout"],
+            reconciler.GCLOUD_TIMEOUT_SECONDS,
+        )
+        sleep.assert_called_once_with(0.5)
+
+    def test_persistent_failure_surfaces_the_last_gcloud_error(self) -> None:
+        failed = mock.Mock(returncode=1, stdout="", stderr="backend unavailable")
+        with (
+            mock.patch.object(
+                reconciler.subprocess,
+                "run",
+                return_value=failed,
+            ),
+            mock.patch.object(reconciler.time, "sleep"),
+            self.assertRaisesRegex(RuntimeError, "backend unavailable"),
+        ):
+            reconciler.gcloud_json(["dns", "record-sets", "list"])
+
+
+class AttestationProbeTests(unittest.TestCase):
+    def test_dns_membership_uses_one_fresh_nonce_sample(self) -> None:
+        completed = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch.object(
+            reconciler.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            self.assertTrue(
+                reconciler.attest("203.0.113.10", "sha256:" + "1" * 64)
+            )
+
+        command = run.call_args.args[0]
+        samples_index = command.index("--samples")
+        self.assertEqual(
+            command[samples_index + 1],
+            str(reconciler.ATTESTATION_SAMPLES),
+        )
+        self.assertEqual(reconciler.ATTESTATION_SAMPLES, 1)
+        self.assertEqual(
+            run.call_args.kwargs["timeout"],
+            reconciler.ATTESTATION_TIMEOUT_SECONDS,
+        )
+
+    def test_attestation_timeout_fails_closed_for_only_that_instance(self) -> None:
+        with mock.patch.object(
+            reconciler.subprocess,
+            "run",
+            side_effect=reconciler.subprocess.TimeoutExpired("uv", 30),
+        ):
+            self.assertFalse(
+                reconciler.attest("203.0.113.10", "sha256:" + "1" * 64)
+            )
 
 
 class PersistentDrainTests(unittest.TestCase):
