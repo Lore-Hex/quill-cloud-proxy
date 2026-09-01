@@ -58,6 +58,12 @@ DNS_ZONE = os.environ.get("QUILL_DNS_ZONE", "quillrouter-com")
 API_HOST = os.environ.get("QUILL_API_HOST", "api.quillrouter.com")
 RECORD = API_HOST.rstrip(".") + "."
 TTL = int(os.environ.get("QUILL_DNS_TTL", "60"))
+GCLOUD_ATTEMPTS = int(os.environ.get("QUILL_GCLOUD_ATTEMPTS", "3"))
+GCLOUD_TIMEOUT_SECONDS = float(os.environ.get("QUILL_GCLOUD_TIMEOUT_SECONDS", "10"))
+ATTESTATION_SAMPLES = int(os.environ.get("QUILL_ATTESTATION_SAMPLES", "1"))
+ATTESTATION_TIMEOUT_SECONDS = float(
+    os.environ.get("QUILL_ATTESTATION_TIMEOUT_SECONDS", "30")
+)
 
 
 def parse_canonical_mirrors(value: str) -> list[tuple[str, str]]:
@@ -173,11 +179,50 @@ def log(msg: str) -> None:
 
 
 def gcloud_json(args: list[str]) -> object:
-    out = subprocess.run(
-        ["gcloud", *args, "--project", PROJECT, "--format=json"],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    return json.loads(out or "[]")
+    """Run a bounded read with retries and preserve the useful error text.
+
+    The reconciler is a fail-closed control loop, but one transient metadata,
+    token, or Google API timeout must not discard a complete attestation pass.
+    Every attempt is bounded so retries cannot outlive the Cloud Run job.
+    """
+    if GCLOUD_ATTEMPTS < 1:
+        raise ValueError("QUILL_GCLOUD_ATTEMPTS must be positive")
+    if GCLOUD_TIMEOUT_SECONDS <= 0:
+        raise ValueError("QUILL_GCLOUD_TIMEOUT_SECONDS must be positive")
+
+    command = ["gcloud", *args, "--project", PROJECT, "--format=json"]
+    last_error = "unknown gcloud failure"
+    for attempt in range(1, GCLOUD_ATTEMPTS + 1):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=GCLOUD_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        else:
+            if result.returncode == 0:
+                try:
+                    return json.loads(result.stdout or "[]")
+                except json.JSONDecodeError as exc:
+                    last_error = f"invalid JSON: {exc}"
+            else:
+                last_error = (result.stderr or result.stdout).strip() or (
+                    f"exit status {result.returncode}"
+                )
+        log(
+            "reconcile: gcloud read failed "
+            f"attempt={attempt}/{GCLOUD_ATTEMPTS} error={last_error[:500]}"
+        )
+        if attempt < GCLOUD_ATTEMPTS:
+            time.sleep(0.5 * (2 ** (attempt - 1)))
+    raise RuntimeError(
+        f"gcloud {' '.join(args[:3])} failed after {GCLOUD_ATTEMPTS} attempts: "
+        f"{last_error}"
+    )
 
 
 def discover_instances() -> list[dict]:
@@ -273,9 +318,9 @@ def attest(ip: str, digest: str, api_host: str = API_HOST) -> bool:
         p = subprocess.run(
             ["uv", "run", "--script", str(VERIFIER),
              "--api-host", api_host, "--connect-ip", ip,
-             "--expect-digest", digest, "--samples", "2",
+             "--expect-digest", digest, "--samples", str(ATTESTATION_SAMPLES),
              "--no-require-exporter-binding"],
-            capture_output=True, text=True, timeout=45,
+            capture_output=True, text=True, timeout=ATTESTATION_TIMEOUT_SECONDS,
         )
         return p.returncode == 0
     except (subprocess.TimeoutExpired, OSError) as e:
