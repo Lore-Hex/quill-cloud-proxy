@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import json
 import os
 import re
@@ -50,8 +51,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
+from typing import Iterator, NamedTuple
 
 PROJECT = os.environ.get("QUILL_PROJECT", "quill-cloud-proxy")
 DNS_ZONE = os.environ.get("QUILL_DNS_ZONE", "quillrouter-com")
@@ -64,6 +69,32 @@ ATTESTATION_SAMPLES = int(os.environ.get("QUILL_ATTESTATION_SAMPLES", "1"))
 ATTESTATION_TIMEOUT_SECONDS = float(
     os.environ.get("QUILL_ATTESTATION_TIMEOUT_SECONDS", "30")
 )
+RECONCILE_LOCK_BUCKET = os.environ.get("QUILL_RECONCILE_LOCK_BUCKET", "").strip()
+RECONCILE_LOCK_OBJECT = os.environ.get(
+    "QUILL_RECONCILE_LOCK_OBJECT",
+    "enclave-dns-reconciler/singleflight.json",
+).strip()
+RECONCILE_LOCK_LEASE_SECONDS = float(
+    os.environ.get("QUILL_RECONCILE_LOCK_LEASE_SECONDS", "240")
+)
+RECONCILE_MIN_INTERVAL_SECONDS = float(
+    os.environ.get("QUILL_RECONCILE_MIN_INTERVAL_SECONDS", "90")
+)
+RECONCILE_FAILURE_COOLDOWN_SECONDS = float(
+    os.environ.get("QUILL_RECONCILE_FAILURE_COOLDOWN_SECONDS", "30")
+)
+_METADATA_TOKEN_URL = (
+    "http://metadata.google.internal/computeMetadata/v1/instance/"
+    "service-accounts/default/token"
+)
+_STORAGE_API = "https://storage.googleapis.com/storage/v1"
+_STORAGE_UPLOAD_API = "https://storage.googleapis.com/upload/storage/v1"
+
+
+class ReconcileLease(NamedTuple):
+    owner: str
+    generation: int
+    acquired_at: float
 
 
 def parse_canonical_mirrors(value: str) -> list[tuple[str, str]]:
@@ -176,6 +207,225 @@ _DRAIN_VERSION = "v1"
 
 def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+
+
+def _storage_access_token() -> str:
+    request = urllib.request.Request(
+        _METADATA_TOKEN_URL,
+        headers={"Metadata-Flavor": "Google"},
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        payload = json.loads(response.read())
+    token = payload.get("access_token")
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("metadata server returned no storage access token")
+    return token
+
+
+def _storage_request(
+    url: str,
+    *,
+    token: str,
+    method: str = "GET",
+    body: bytes | None = None,
+) -> tuple[int, bytes]:
+    headers = {"Authorization": f"Bearer {token}"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return int(response.status), response.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+
+
+def _lock_object_url(*, media: bool = False, generation: int | None = None) -> str:
+    bucket = urllib.parse.quote(RECONCILE_LOCK_BUCKET, safe="")
+    name = urllib.parse.quote(RECONCILE_LOCK_OBJECT, safe="")
+    query: dict[str, str] = {}
+    if media:
+        query["alt"] = "media"
+    if generation is not None:
+        query["generation"] = str(generation)
+    suffix = "?" + urllib.parse.urlencode(query) if query else ""
+    return f"{_STORAGE_API}/b/{bucket}/o/{name}{suffix}"
+
+
+def _read_reconcile_lock(token: str) -> tuple[dict[str, object], int] | None:
+    status, raw_metadata = _storage_request(_lock_object_url(), token=token)
+    if status == 404:
+        return None
+    if status != 200:
+        raise RuntimeError(f"lock metadata read failed with HTTP {status}")
+    metadata = json.loads(raw_metadata)
+    generation = int(metadata["generation"])
+    status, raw_payload = _storage_request(
+        _lock_object_url(media=True, generation=generation),
+        token=token,
+    )
+    if status in {404, 412}:
+        return None
+    if status != 200:
+        raise RuntimeError(f"lock payload read failed with HTTP {status}")
+    payload = json.loads(raw_payload)
+    if not isinstance(payload, dict):
+        raise RuntimeError("reconcile lock payload must be a JSON object")
+    owner = payload.get("owner")
+    expires_at = payload.get("expires_at")
+    if not isinstance(owner, str) or not owner:
+        raise RuntimeError("reconcile lock payload has no owner")
+    if not isinstance(expires_at, (int, float)):
+        raise RuntimeError("reconcile lock payload has no numeric expiry")
+    return payload, generation
+
+
+def _write_reconcile_lock(
+    token: str,
+    payload: dict[str, object],
+    *,
+    if_generation_match: int,
+) -> int | None:
+    bucket = urllib.parse.quote(RECONCILE_LOCK_BUCKET, safe="")
+    query = urllib.parse.urlencode(
+        {
+            "uploadType": "media",
+            "name": RECONCILE_LOCK_OBJECT,
+            "ifGenerationMatch": str(if_generation_match),
+        }
+    )
+    status, raw = _storage_request(
+        f"{_STORAGE_UPLOAD_API}/b/{bucket}/o?{query}",
+        token=token,
+        method="POST",
+        body=json.dumps(payload, sort_keys=True).encode(),
+    )
+    if status == 412:
+        return None
+    if status not in {200, 201}:
+        raise RuntimeError(f"lock write failed with HTTP {status}")
+    metadata = json.loads(raw)
+    return int(metadata["generation"])
+
+
+def _delete_reconcile_lock(token: str, generation: int) -> bool:
+    url = _lock_object_url() + "?" + urllib.parse.urlencode(
+        {"ifGenerationMatch": str(generation)}
+    )
+    status, _raw = _storage_request(url, token=token, method="DELETE")
+    if status in {404, 412}:
+        return False
+    if status not in {200, 204}:
+        raise RuntimeError(f"stale lock delete failed with HTTP {status}")
+    return True
+
+
+def acquire_reconcile_lease(*, now: float | None = None) -> ReconcileLease | None:
+    if not RECONCILE_LOCK_BUCKET:
+        return ReconcileLease(owner="lock-disabled", generation=0, acquired_at=0)
+    if not RECONCILE_LOCK_OBJECT:
+        raise ValueError("QUILL_RECONCILE_LOCK_OBJECT must not be empty")
+    if RECONCILE_LOCK_LEASE_SECONDS <= 180:
+        raise ValueError("reconcile lock lease must exceed the 180-second job timeout")
+    if RECONCILE_MIN_INTERVAL_SECONDS < 0:
+        raise ValueError("reconcile minimum interval must not be negative")
+    if RECONCILE_FAILURE_COOLDOWN_SECONDS < 0:
+        raise ValueError("reconcile failure cooldown must not be negative")
+
+    acquired_at = time.time() if now is None else now
+    owner = os.environ.get("CLOUD_RUN_EXECUTION") or (
+        f"manual-{os.getpid()}-{uuid.uuid4().hex}"
+    )
+    token = _storage_access_token()
+    for _attempt in range(3):
+        current = _read_reconcile_lock(token)
+        if current is not None:
+            payload, generation = current
+            expires_at = float(payload["expires_at"])
+            if expires_at > acquired_at:
+                log(
+                    "reconcile: single-flight skip; "
+                    f"owner={payload['owner']} state={payload.get('state', 'unknown')} "
+                    f"expires_in={expires_at - acquired_at:.1f}s"
+                )
+                return None
+            if not _delete_reconcile_lock(token, generation):
+                continue
+
+        payload = {
+            "owner": owner,
+            "state": "running",
+            "acquired_at": acquired_at,
+            "expires_at": acquired_at + RECONCILE_LOCK_LEASE_SECONDS,
+        }
+        generation = _write_reconcile_lock(
+            token,
+            payload,
+            if_generation_match=0,
+        )
+        if generation is not None:
+            log(f"reconcile: single-flight acquired owner={owner}")
+            return ReconcileLease(
+                owner=owner,
+                generation=generation,
+                acquired_at=acquired_at,
+            )
+    log("reconcile: single-flight contention; another execution won")
+    return None
+
+
+def finish_reconcile_lease(lease: ReconcileLease, *, succeeded: bool) -> None:
+    if not RECONCILE_LOCK_BUCKET:
+        return
+    now = time.time()
+    expires_at = (
+        max(now, lease.acquired_at + RECONCILE_MIN_INTERVAL_SECONDS)
+        if succeeded
+        else now + RECONCILE_FAILURE_COOLDOWN_SECONDS
+    )
+    payload = {
+        "owner": lease.owner,
+        "state": "cooldown" if succeeded else "failed",
+        "acquired_at": lease.acquired_at,
+        "completed_at": now,
+        "expires_at": expires_at,
+    }
+    token = _storage_access_token()
+    generation = _write_reconcile_lock(
+        token,
+        payload,
+        if_generation_match=lease.generation,
+    )
+    if generation is None:
+        raise RuntimeError("reconcile lease ownership changed before completion")
+    log(
+        "reconcile: single-flight released into "
+        f"{'cooldown' if succeeded else 'failure cooldown'} "
+        f"for {max(0.0, expires_at - now):.1f}s"
+    )
+
+
+@contextlib.contextmanager
+def reconcile_singleflight() -> Iterator[bool]:
+    lease = acquire_reconcile_lease()
+    if lease is None:
+        yield False
+        return
+    try:
+        yield True
+    except BaseException:
+        try:
+            finish_reconcile_lease(lease, succeeded=False)
+        except Exception as exc:
+            log(f"reconcile: failed to close failed lease: {exc}")
+        raise
+    else:
+        finish_reconcile_lease(lease, succeeded=True)
 
 
 def gcloud_json(args: list[str]) -> object:
@@ -671,7 +921,7 @@ def reconcile_regional(
             log(f"  regional {record} APPLIED")
 
 
-def main() -> int:
+def _main_unlocked() -> int:
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--dry-run", action="store_true",
@@ -779,6 +1029,20 @@ def main() -> int:
             drained_regions=persistent_excludes,
         )
     return 0
+
+
+def main() -> int:
+    drain_flags = {
+        "--set-drain-region",
+        "--clear-drain-region",
+        "--list-drain-regions",
+    }
+    if any(arg.split("=", 1)[0] in drain_flags for arg in sys.argv[1:]):
+        return _main_unlocked()
+    with reconcile_singleflight() as acquired:
+        if not acquired:
+            return 0
+        return _main_unlocked()
 
 
 if __name__ == "__main__":

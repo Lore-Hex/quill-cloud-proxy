@@ -57,6 +57,25 @@ class DnsReconcilerSchedulerTests(unittest.TestCase):
         )
         self.assertIn("gcloud scheduler jobs run", workflow)
         self.assertIn("gcloud run jobs executions list", workflow)
+        self.assertIn("gcloud run jobs executions describe", workflow)
+        self.assertNotIn("gcloud run jobs execute", workflow)
+
+    def test_reconciler_has_a_bucket_scoped_singleflight_lease(self) -> None:
+        workflow = WORKFLOW.read_text()
+
+        self.assertIn(
+            "LOCK_BUCKET: quill-cloud-proxy-enclave-dns-reconciler-state",
+            workflow,
+        )
+        self.assertIn("--role=roles/storage.objectUser", workflow)
+        self.assertIn(
+            "--member=\"serviceAccount:${RECONCILER_SERVICE_ACCOUNT}\"",
+            workflow,
+        )
+        self.assertIn(
+            "--update-env-vars=\"QUILL_RECONCILE_LOCK_BUCKET=${LOCK_BUCKET}\"",
+            workflow,
+        )
 
 
 if __name__ == "__main__":
