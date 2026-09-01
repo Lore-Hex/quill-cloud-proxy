@@ -193,7 +193,7 @@ jobs:
           name: ${{ inputs.artifact_name || 'github-pages' }}
           path: trust-page/
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
         with:
           artifact_name: ${{ inputs.artifact_name || 'github-pages' }}
         # Pages deployments fail transiently (deployment conflicts, API
@@ -205,7 +205,7 @@ jobs:
         run: sleep 45
       - id: deployment_retry
         if: steps.deployment.outcome == 'failure'
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
         with:
           artifact_name: ${{ inputs.artifact_name || 'github-pages' }}
       - name: Verify live page matches repo artifacts
