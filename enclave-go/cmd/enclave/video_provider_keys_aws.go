@@ -8,9 +8,7 @@ import (
 )
 
 func videoProviderKeys(boot *types.BootstrapData) video.ProviderKeys {
-	// Nitro's egress transport deliberately exposes only fixed, audited TLS
-	// tunnel hosts. Native video providers return short-lived CDN hostnames,
-	// so enabling them here could queue and bill a job whose content cannot be
-	// relayed. Venice returns video through its fixed API host and remains safe.
-	return video.ProviderKeys{Venice: boot.VeniceAPIKey}
+	// Nitro exposes only fixed, audited TLS tunnel hosts. fal H3 Max is safe on
+	// this path because sync_mode returns the MP4 inline through queue.fal.run.
+	return video.ProviderKeys{Venice: boot.VeniceAPIKey, FAL: boot.ProviderAPIKeys["fal"]}
 }

@@ -111,6 +111,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "fal.run", CID: 3, Port: 8080},
 	{Host: "ark.ap-southeast.bytepluses.com", CID: 3, Port: 8081},
 	{Host: "tokenhub-intl.tencentcloudmaas.com", CID: 3, Port: 8083},
+	{Host: "queue.fal.run", CID: 3, Port: 8084},
 	// Chutes discovery and encrypted inference relay. Prompt bytes remain
 	// encrypted end-to-end between this enclave and the attested GPU worker.
 	{Host: "llm.chutes.ai", CID: 3, Port: 8049},

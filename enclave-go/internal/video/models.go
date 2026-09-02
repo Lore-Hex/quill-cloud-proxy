@@ -155,6 +155,18 @@ var models = map[string]Model{
 		AllowedAspectRatios:   []string{"16:9", "21:9", "4:3", "1:1", "3:4", "9:16"},
 		ImageUsesSourceAspect: true,
 	},
+	"minimax/h3-max": {
+		ID: "minimax/h3-max", Name: "MiniMax H3 Max",
+		Description:     "fal's post-trained MiniMax H3 Max for fast text and image video generation with native audio.",
+		DefaultDuration: 5, DefaultResolution: "768p", DefaultAspectRatio: "16:9",
+		TextProviderModel:  "minimax/h3-max/text-to-video",
+		ImageProviderModel: "minimax/h3-max/image-to-video",
+		AudioAlwaysOn:      true, SupportsImage: true,
+		PromptCharacterLimit: 10_000, MinimumDuration: 5, MaximumDuration: 15,
+		AllowedResolutions:    []string{"480p", "768p"},
+		AllowedAspectRatios:   []string{"21:9", "16:9", "4:3", "1:1", "3:4", "9:16"},
+		ImageUsesSourceAspect: true, DirectOnly: true,
+	},
 	"google/veo-3.1": {
 		ID: "google/veo-3.1", Name: "Google Veo 3.1",
 		Description:     "Google Veo 3.1 full-quality video generation with synchronized audio.",
@@ -345,6 +357,7 @@ func Models() []Model {
 		"decart/lucy-2.5", "decart/lucy-vton-3.5", "decart/lucy-restyle-2",
 		"lightricks/ltx-2.3-fast", "lightricks/ltx-2.3",
 		"google/gemini-omni-flash", "minimax/hailuo-3",
+		"minimax/h3-max",
 	}
 	out := make([]Model, 0, len(order))
 	for _, id := range order {

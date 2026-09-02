@@ -24,6 +24,7 @@ func TestVideoModelsIncludeLaunchAndExpansionSet(t *testing.T) {
 		"lightricks/ltx-2.3-fast":     false,
 		"google/gemini-omni-flash":    false,
 		"minimax/hailuo-3":            false,
+		"minimax/h3-max":              false,
 		"x-ai/grok-imagine-video":     false,
 		"decart/lucy-2.5":             false,
 		"decart/lucy-vton-3.5":        false,
@@ -36,6 +37,9 @@ func TestVideoModelsIncludeLaunchAndExpansionSet(t *testing.T) {
 		want[model.ID] = true
 		if model.ID == "minimax/hailuo-3" && model.Name != "MiniMax Hailuo 3 (H3)" {
 			t.Fatalf("H3 display name = %q", model.Name)
+		}
+		if model.ID == "minimax/h3-max" && model.Name != "MiniMax H3 Max" {
+			t.Fatalf("H3 Max display name = %q", model.Name)
 		}
 	}
 	for id, seen := range want {
@@ -304,7 +308,7 @@ func TestModelsJSONIsTruthfulAboutProviderPrivacy(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Data) != 20 {
+	if len(payload.Data) != 21 {
 		t.Fatalf("model count = %d", len(payload.Data))
 	}
 	for _, row := range payload.Data {
@@ -330,6 +334,13 @@ func TestModelsJSONIsTruthfulAboutProviderPrivacy(t *testing.T) {
 			}
 			if row.TrustedRouter["audio_mode"] != "always" {
 				t.Fatalf("H3 audio mode = %#v", row.TrustedRouter["audio_mode"])
+			}
+		case "minimax/h3-max":
+			if modalities != "text,image" {
+				t.Fatalf("H3 Max modalities = %q", modalities)
+			}
+			if row.TrustedRouter["audio_mode"] != "always" {
+				t.Fatalf("H3 Max audio mode = %#v", row.TrustedRouter["audio_mode"])
 			}
 		}
 	}

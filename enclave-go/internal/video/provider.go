@@ -62,6 +62,7 @@ func QueueTimeout(provider Provider) time.Duration {
 
 type ProviderKeys struct {
 	Venice     string
+	FAL        string
 	Google     string
 	MiniMax    string
 	AtlasCloud string
@@ -80,6 +81,7 @@ type Registry struct {
 
 func NewRegistry(keys ProviderKeys, httpc *http.Client) *Registry {
 	return NewRegistryWithProviders(
+		NewFALVideoClient(keys.FAL, httpc),
 		NewGoogleVeoClient(keys.Google, httpc),
 		NewMiniMaxClient(keys.MiniMax, httpc),
 		NewAtlasCloudVideoClient(keys.AtlasCloud, httpc),
@@ -157,6 +159,8 @@ func directProviderForModel(modelID string) string {
 		return "google-ai-studio"
 	case "minimax/hailuo-3":
 		return "minimax"
+	case "minimax/h3-max":
+		return "fal"
 	case "x-ai/grok-imagine-video":
 		return "grok"
 	case "alibaba/wan-2.7":
