@@ -13,9 +13,9 @@ func TestDirectVideoProviderKeysIncludeConfiguredNativeProviders(t *testing.T) {
 		VeniceAPIKey: "venice", GeminiAPIKey: "google", MiniMaxAPIKey: "minimax",
 		GrokAPIKey: "xai", AlibabaAPIKey: "alibaba", LTXAPIKey: "ltx",
 		RunwayAPIKey: "runway", OpenAIVideoAPIKey: "openai-video", KlingAPIKey: "kling",
-		AtlasCloudAPIKey: "atlas-cloud",
+		AtlasCloudAPIKey: "atlas-cloud", ProviderAPIKeys: map[string]string{"fal": "fal"},
 	})
-	if keys.Venice == "" || keys.Google == "" || keys.MiniMax == "" || keys.XAI == "" ||
+	if keys.Venice == "" || keys.FAL == "" || keys.Google == "" || keys.MiniMax == "" || keys.XAI == "" ||
 		keys.Alibaba == "" || keys.LTX == "" || keys.Runway == "" || keys.OpenAI == "" ||
 		keys.Kling == "" || keys.AtlasCloud == "" {
 		t.Fatalf("configured direct provider key was dropped: %#v", keys)

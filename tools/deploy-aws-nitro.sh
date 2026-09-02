@@ -833,6 +833,7 @@ allowlist:
   - {address: fal.run,                          port: 443}
   - {address: ark.ap-southeast.bytepluses.com,  port: 443}
   - {address: tokenhub-intl.tencentcloudmaas.com, port: 443}
+  - {address: queue.fal.run,                    port: 443}
   # GCP cross-cloud APIs — auth + Spanner + Bigtable + GCS (ACME cache)
   # + KMS (BYOK envelope-unwrap when an AWS-side request lands with a
   # customer-provided GCP-KMS-wrapped envelope).
@@ -971,6 +972,7 @@ write_vsock_unit 8079 design-api.sourceful.com
 write_vsock_unit 8080 fal.run
 write_vsock_unit 8081 ark.ap-southeast.bytepluses.com
 write_vsock_unit 8083 tokenhub-intl.tencentcloudmaas.com
+write_vsock_unit 8084 queue.fal.run
 write_vsock_unit 8082 router.huggingface.co
 write_vsock_unit 8049 llm.chutes.ai
 write_vsock_unit 8050 api.chutes.ai
