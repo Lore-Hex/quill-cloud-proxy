@@ -821,6 +821,20 @@ func TransformResponsesStreamWithFinishHook(
 	meta *types.ResponseRequestMeta,
 	finishHook StreamFinishHook,
 ) (StreamResult, error) {
+	return TransformResponsesStreamControlled(r, w, responseID, model, inputTokens, textConfig, meta, finishHook, nil)
+}
+
+func TransformResponsesStreamControlled(
+	r io.Reader,
+	w io.Writer,
+	responseID string,
+	model string,
+	inputTokens int,
+	textConfig map[string]any,
+	meta *types.ResponseRequestMeta,
+	finishHook StreamFinishHook,
+	control *StreamControl,
+) (StreamResult, error) {
 	created := time.Now().Unix()
 	messageID := "msg_" + strings.TrimPrefix(responseID, "resp_")
 	finishReason := "stop"
@@ -946,11 +960,156 @@ func TransformResponsesStreamWithFinishHook(
 			},
 		})
 	}
+	emitSemantic := func(delta StreamDelta, emit func(string) error) error {
+		slices := []string{delta.Text}
+		if control != nil {
+			slices = SemanticSlices(delta.Text)
+		}
+		for _, slice := range slices {
+			delta.Text = slice
+			if control != nil && control.BeforeSlice != nil {
+				if err := control.BeforeSlice(delta); err != nil {
+					return err
+				}
+			}
+			if err := emit(slice); err != nil {
+				return err
+			}
+			if control != nil && control.AfterSlice != nil {
+				if err := control.AfterSlice(delta); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+
+	controlledFinish := func(termination *ControlledTermination) (StreamResult, error) {
+		toolCalls := orderedToolCalls(toolCallsByIndex, toolOrder)
+		result := StreamResult{
+			Text: captured.String(), FinishReason: termination.FinishReason,
+			ToolCalls: toolCalls, Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage,
+			Citations: citations, SearchResults: searchResults,
+		}
+		emit := func() error {
+			items := make([]map[string]any, nextOutputIndex)
+			annotations := responseOutputAnnotations(meta)
+			toolBlockAtOutput := make(map[int]int, len(toolOrder))
+			for _, blockIndex := range toolOrder {
+				toolBlockAtOutput[toolOutputIndexes[blockIndex]] = blockIndex
+			}
+			for outputIndex := 0; outputIndex < nextOutputIndex; outputIndex++ {
+				if reasoningStarted && outputIndex == reasoningOutputIndex {
+					text := reasoningCaptured.String()
+					if err := writeResponseEventSeq(w, &seq, "response.reasoning_text.done", map[string]any{
+						"type": "response.reasoning_text.done", "item_id": reasoningID,
+						"output_index": outputIndex, "content_index": 0, "text": text,
+					}); err != nil {
+						return err
+					}
+					if err := writeResponseEventSeq(w, &seq, "response.content_part.done", map[string]any{
+						"type": "response.content_part.done", "item_id": reasoningID,
+						"output_index": outputIndex, "content_index": 0,
+						"part": map[string]any{"type": "reasoning_text", "text": text},
+					}); err != nil {
+						return err
+					}
+					item := map[string]any{"id": reasoningID, "type": "reasoning", "status": "incomplete", "summary": []map[string]any{{"type": "reasoning_text", "text": text}}}
+					items[outputIndex] = item
+					if err := writeResponseEventSeq(w, &seq, "response.output_item.done", map[string]any{
+						"type": "response.output_item.done", "response_id": responseID, "output_index": outputIndex, "item": item,
+					}); err != nil {
+						return err
+					}
+					continue
+				}
+				if messageStarted && outputIndex == messageOutputIndex {
+					text := captured.String()
+					if err := writeResponseEventSeq(w, &seq, "response.output_text.done", map[string]any{
+						"type": "response.output_text.done", "item_id": messageID,
+						"output_index": outputIndex, "content_index": 0, "text": text,
+					}); err != nil {
+						return err
+					}
+					part := map[string]any{"type": "output_text", "text": text, "annotations": annotations}
+					if err := writeResponseEventSeq(w, &seq, "response.content_part.done", map[string]any{
+						"type": "response.content_part.done", "item_id": messageID,
+						"output_index": outputIndex, "content_index": 0, "part": part,
+					}); err != nil {
+						return err
+					}
+					item := map[string]any{"id": messageID, "type": "message", "status": "incomplete", "role": "assistant", "content": []map[string]any{part}}
+					items[outputIndex] = item
+					if err := writeResponseEventSeq(w, &seq, "response.output_item.done", map[string]any{
+						"type": "response.output_item.done", "output_index": outputIndex, "item": item,
+					}); err != nil {
+						return err
+					}
+					continue
+				}
+				blockIndex, ok := toolBlockAtOutput[outputIndex]
+				if !ok {
+					continue
+				}
+				call := toolCallsByIndex[blockIndex]
+				if call == nil {
+					continue
+				}
+				item := responseFunctionCallItem(responseID, outputIndex, *call)
+				if !toolDone[blockIndex] {
+					item["status"] = "incomplete"
+					if err := writeResponseEventSeq(w, &seq, "response.function_call_arguments.done", map[string]any{
+						"type":    "response.function_call_arguments.done",
+						"item_id": call.ID, "output_index": outputIndex, "name": call.Name, "arguments": call.Arguments,
+					}); err != nil {
+						return err
+					}
+					if err := writeResponseEventSeq(w, &seq, "response.output_item.done", map[string]any{
+						"type": "response.output_item.done", "response_id": responseID,
+						"output_index": outputIndex, "item": item,
+					}); err != nil {
+						return err
+					}
+				}
+				items[outputIndex] = item
+			}
+			compactItems := make([]map[string]any, 0, len(items))
+			for _, item := range items {
+				if item != nil {
+					compactItems = append(compactItems, item)
+				}
+			}
+			response := responsesObject(responseID, model, "", nil, inputTokens, 0, 0, 0, created, "incomplete", textConfig, meta)
+			response["output"] = compactItems
+			response["incomplete_details"] = map[string]any{"reason": map[bool]string{true: "max_output_tokens", false: "server_error"}[termination.TRFinishReason == "cap_reached"]}
+			response["tr_finish_reason"] = termination.TRFinishReason
+			if err := writeResponseEventSeq(w, &seq, "response.incomplete", map[string]any{"type": "response.incomplete", "response": response}); err != nil {
+				return err
+			}
+			if finishHook != nil {
+				if err := finishHook(created); err != nil {
+					return err
+				}
+			}
+			_, err := w.Write([]byte("data: [DONE]\n\n"))
+			return err
+		}
+		terminal := StreamTerminal{Result: result, Created: created, FinishReason: termination.FinishReason, TRFinishReason: termination.TRFinishReason, Emit: emit}
+		if control != nil && control.BeforeTerminal != nil {
+			return result, control.BeforeTerminal(terminal)
+		}
+		return result, emit()
+	}
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
 	scanner.Split(splitDoubleNewline)
 	for scanner.Scan() {
+		if control != nil && control.Termination != nil {
+			if termination := control.Termination(); termination != nil {
+				return controlledFinish(termination)
+			}
+		}
 		if !sawUpstreamBytes {
 			sawUpstreamBytes = true
 			// Do not commit Responses SSE output until the provider has produced
@@ -964,6 +1123,13 @@ func TransformResponsesStreamWithFinishHook(
 			continue
 		}
 		switch eventName {
+		case "message_start":
+			if control != nil {
+				mergeMessageStartUsage(&usage, getMap(dataJSON, "message"))
+				if control.ObserveUsage != nil {
+					control.ObserveUsage(usage)
+				}
+			}
 		case "content_block_start":
 			block := getMap(dataJSON, "content_block")
 			if block == nil {
@@ -1026,17 +1192,20 @@ func TransformResponsesStreamWithFinishHook(
 				if deltaText == "" {
 					continue
 				}
-				if err := startMessage(); err != nil {
-					return StreamResult{}, err
-				}
-				captured.WriteString(deltaText)
-				if err := writeResponseEventSeq(w, &seq, "response.output_text.delta", map[string]any{
-					"type":          "response.output_text.delta",
-					"item_id":       messageID,
-					"output_index":  messageOutputIndex,
-					"content_index": 0,
-					"delta":         deltaText,
+				if err := emitSemantic(StreamDelta{Type: "text_delta", Index: getInt(dataJSON, "index"), Text: deltaText}, func(slice string) error {
+					if err := startMessage(); err != nil {
+						return err
+					}
+					captured.WriteString(slice)
+					return writeResponseEventSeq(w, &seq, "response.output_text.delta", map[string]any{
+						"type": "response.output_text.delta", "item_id": messageID,
+						"output_index": messageOutputIndex, "content_index": 0, "delta": slice,
+					})
 				}); err != nil {
+					var termination *ControlledTermination
+					if errors.As(err, &termination) {
+						return controlledFinish(termination)
+					}
 					return StreamResult{}, err
 				}
 			case "thinking_delta":
@@ -1045,20 +1214,23 @@ func TransformResponsesStreamWithFinishHook(
 					continue
 				}
 				blockIndex := getInt(dataJSON, "index")
-				if tb := thinkingByIndex[blockIndex]; tb != nil {
-					tb.Text += deltaText
-				}
-				if err := startReasoning(); err != nil {
-					return StreamResult{}, err
-				}
-				reasoningCaptured.WriteString(deltaText)
-				if err := writeResponseEventSeq(w, &seq, "response.reasoning_text.delta", map[string]any{
-					"type":          "response.reasoning_text.delta",
-					"item_id":       reasoningID,
-					"output_index":  reasoningOutputIndex,
-					"content_index": 0,
-					"delta":         deltaText,
+				if err := emitSemantic(StreamDelta{Type: "thinking_delta", Index: blockIndex, Text: deltaText}, func(slice string) error {
+					if err := startReasoning(); err != nil {
+						return err
+					}
+					if tb := thinkingByIndex[blockIndex]; tb != nil {
+						tb.Text += slice
+					}
+					reasoningCaptured.WriteString(slice)
+					return writeResponseEventSeq(w, &seq, "response.reasoning_text.delta", map[string]any{
+						"type": "response.reasoning_text.delta", "item_id": reasoningID,
+						"output_index": reasoningOutputIndex, "content_index": 0, "delta": slice,
+					})
 				}); err != nil {
+					var termination *ControlledTermination
+					if errors.As(err, &termination) {
+						return controlledFinish(termination)
+					}
 					return StreamResult{}, err
 				}
 			case "signature_delta":
@@ -1073,14 +1245,17 @@ func TransformResponsesStreamWithFinishHook(
 					continue
 				}
 				deltaText := getString(delta, "partial_json")
-				call.Arguments += deltaText
-				if err := writeResponseEventSeq(w, &seq, "response.function_call_arguments.delta", map[string]any{
-					"type":         "response.function_call_arguments.delta",
-					"response_id":  responseID,
-					"item_id":      call.ID,
-					"output_index": toolOutputIndexes[blockIndex],
-					"delta":        deltaText,
+				if err := emitSemantic(StreamDelta{Type: "input_json_delta", Index: blockIndex, Text: deltaText}, func(slice string) error {
+					call.Arguments += slice
+					return writeResponseEventSeq(w, &seq, "response.function_call_arguments.delta", map[string]any{
+						"type": "response.function_call_arguments.delta", "response_id": responseID,
+						"item_id": call.ID, "output_index": toolOutputIndexes[blockIndex], "delta": slice,
+					})
 				}); err != nil {
+					var termination *ControlledTermination
+					if errors.As(err, &termination) {
+						return controlledFinish(termination)
+					}
 					return StreamResult{}, err
 				}
 			}
@@ -1092,13 +1267,17 @@ func TransformResponsesStreamWithFinishHook(
 			}
 			toolDone[blockIndex] = true
 			outputIndex := toolOutputIndexes[blockIndex]
-			if err := writeResponseEventSeq(w, &seq, "response.function_call_arguments.done", map[string]any{
+			done := map[string]any{
 				"type":         "response.function_call_arguments.done",
 				"response_id":  responseID,
 				"item_id":      call.ID,
 				"output_index": outputIndex,
 				"arguments":    call.Arguments,
-			}); err != nil {
+			}
+			if control != nil {
+				done["name"] = call.Name
+			}
+			if err := writeResponseEventSeq(w, &seq, "response.function_call_arguments.done", done); err != nil {
 				return StreamResult{}, err
 			}
 			if err := writeResponseEventSeq(w, &seq, "response.output_item.done", map[string]any{
@@ -1116,6 +1295,9 @@ func TransformResponsesStreamWithFinishHook(
 				}
 			}
 			mergeUsage(&usage, getMap(dataJSON, "usage"))
+			if control != nil && control.ObserveUsage != nil {
+				control.ObserveUsage(usage)
+			}
 			citations, searchResults = providerProvenanceFromInternalEvent(dataJSON, citations, searchResults)
 			if meta != nil && usage != nil && usage.ServiceTier != "" {
 				meta.ActualServiceTier = usage.ServiceTier
@@ -1131,13 +1313,23 @@ func TransformResponsesStreamWithFinishHook(
 					return StreamResult{}, err
 				}
 			}
-			result, err := finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex, finishHook)
+			result, err := finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex, finishHook, control)
 			result.Citations, result.SearchResults = citations, searchResults
 			return result, err
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		if control != nil && control.Termination != nil {
+			if termination := control.Termination(); termination != nil {
+				return controlledFinish(termination)
+			}
+		}
 		return StreamResult{}, err
+	}
+	if control != nil && control.Termination != nil {
+		if termination := control.Termination(); termination != nil {
+			return controlledFinish(termination)
+		}
 	}
 	if !sawUpstreamBytes {
 		return StreamResult{}, errEmptyUpstreamResponse
@@ -1152,7 +1344,7 @@ func TransformResponsesStreamWithFinishHook(
 		}
 	}
 	applyResponsesProviderProvenance(meta, captured.String(), citations, searchResults)
-	result, err := finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex, nil)
+	result, err := finishResponsesStream(w, &seq, responseID, messageID, model, captured.String(), toolCalls, orderedThinking(thinkingByIndex, thinkingOrder), usage, inputTokens, created, finishReason, textConfig, meta, messageStarted, messageOutputIndex, nil, control)
 	result.Citations, result.SearchResults = citations, searchResults
 	return result, err
 }
@@ -1202,6 +1394,7 @@ func finishResponsesStream(
 	messageStarted bool,
 	messageOutputIndex int,
 	finishHook StreamFinishHook,
+	control *StreamControl,
 ) (StreamResult, error) {
 	outputTokens := estimateTextTokens(ResponsesOutputForUsage(StreamResult{Text: text, ToolCalls: toolCalls}))
 	cachedTokens := 0
@@ -1265,18 +1458,32 @@ func finishResponsesStream(
 		"type":     "response.completed",
 		"response": responsesObject(responseID, model, text, toolCalls, inputTokens, outputTokens, cachedTokens, reasoningTokens, created, "completed", textConfig, meta),
 	}})
-	for _, event := range events {
+	result := StreamResult{Text: text, FinishReason: finishReason, ToolCalls: toolCalls, Thinking: thinking, Usage: usage}
+	// Output-part/item closing events are not the terminal sentinel. Preserve
+	// their established order, then let Stage D own only response.completed
+	// and [DONE].
+	for _, event := range events[:len(events)-1] {
 		if err := writeResponseEventSeq(w, seq, event.name, event.body); err != nil {
 			return StreamResult{}, err
 		}
 	}
-	if finishHook != nil {
-		if err := finishHook(created); err != nil {
-			return StreamResult{}, err
+	terminalEvent := events[len(events)-1]
+	emit := func() error {
+		if err := writeResponseEventSeq(w, seq, terminalEvent.name, terminalEvent.body); err != nil {
+			return err
 		}
+		if finishHook != nil {
+			if err := finishHook(created); err != nil {
+				return err
+			}
+		}
+		_, err := w.Write([]byte("data: [DONE]\n\n"))
+		return err
 	}
-	_, err := w.Write([]byte("data: [DONE]\n\n"))
-	return StreamResult{Text: text, FinishReason: finishReason, ToolCalls: toolCalls, Thinking: thinking, Usage: usage}, err
+	if control != nil && control.BeforeTerminal != nil {
+		return result, control.BeforeTerminal(StreamTerminal{Result: result, Created: created, FinishReason: finishReason, Emit: emit})
+	}
+	return result, emit()
 }
 
 func responseOutputAnnotations(meta *types.ResponseRequestMeta) []map[string]any {

@@ -35,6 +35,17 @@ func settleAndBroadcast(
 	if err != nil {
 		return nil, err
 	}
+	// A reaped snapshot owns the authorization's generation. A late enclave
+	// settle is classified as lost and must not attach current response content
+	// to the snapshot generation returned by the router.
+	if stageDDispositionLost(result) {
+		return result, nil
+	}
+	// An intent_durable response has committed the retry intent but does not
+	// yet name a generation to broadcast.
+	if result.GenerationID == "" {
+		return result, nil
+	}
 	contentBroadcasts.Enqueue(broadcast.Job{
 		Cache: secretCache,
 		// DevProof G5: never honor content-broadcast destinations from the

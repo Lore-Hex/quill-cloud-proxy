@@ -103,6 +103,7 @@ type Client struct {
 	imageModelsBody    []byte
 	imageModelsFetched time.Time
 	spendLease         *spendLeaseProtocol
+	stageDBootSigner   spendlease.DigestSigner
 }
 
 // CredentialGuard lets the enclave reject repeated definitive credential
@@ -434,6 +435,9 @@ type Authorization struct {
 	ReceiptFeeBasisPoints                 int                                `json:"receipt_fee_basis_points"`
 	NativeBatchEligible                   bool                               `json:"native_batch_eligible"`
 	SpendLease                            *spendlease.Response               `json:"spend_lease,omitempty"`
+	StageD                                StageDEligibility                  `json:"stage_d"`
+	CandidatePrices                       []CandidatePrice                   `json:"candidate_prices"`
+	CapMicro                              int64                              `json:"cap_micro"`
 	RouteType                             string                             `json:"-"`
 	// ControlPlaneEndpoint is enclave-local billing authority state. It is
 	// never accepted from or exposed to the control plane or client. A settle
@@ -520,6 +524,7 @@ type ControlPlaneError struct {
 	StatusCode int
 	Message    string
 	Type       string
+	Reason     string
 	Body       string
 	// Retry-After from the control plane (e.g. a per-key window spend limit
 	// 429 carries seconds-until-the-window-resets). Relayed to the client so
@@ -660,6 +665,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 		"region":                 c.region,
 		"route_type":             routeType,
 		"idempotency_key":        idempotencyKey,
+		"stream":                 req.Stream,
 	}
 	if req.RequestFingerprint != "" {
 		body["request_fingerprint"] = req.RequestFingerprint
@@ -878,6 +884,7 @@ type SettleResult struct {
 	Settled              bool    `json:"settled"`
 	AlreadySettled       bool    `json:"already_settled"`
 	FinalizationOutcome  string  `json:"finalization_outcome"`
+	Disposition          string  `json:"disposition"`
 }
 
 func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (*SettleResult, error) {
@@ -1245,11 +1252,13 @@ func (c *Client) postJSONBytesWithBootAuthAtEndpoint(
 			Error struct {
 				Message string `json:"message"`
 				Type    string `json:"type"`
+				Reason  string `json:"reason"`
 			} `json:"error"`
 		}
 		if json.Unmarshal(errBody, &envelope) == nil {
 			controlErr.Message = strings.TrimSpace(envelope.Error.Message)
 			controlErr.Type = strings.TrimSpace(envelope.Error.Type)
+			controlErr.Reason = strings.TrimSpace(envelope.Error.Reason)
 		}
 		return selectedEndpoint, controlErr
 	}
