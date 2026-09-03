@@ -1,0 +1,1 @@
+{"id":"chatcmpl-probe","choices":[{"message":{"content":"PONG"},"finish_reason":"stop"}]}

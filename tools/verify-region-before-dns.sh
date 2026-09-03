@@ -9,8 +9,10 @@
 #   1. Verify every new VM directly through the already-issued canonical SNI.
 #   2. Atomically replace the unpublished cold CNAME with one verified VM IP.
 #   3. Let that VM obtain the regional certificate with TLS-ALPN-01.
-#   4. Verify attestation and a real settled PONG on every VM through the new
-#      regional SNI.
+#   4. Verify attestation, a real settled PONG, and a terminal SSE stream on
+#      every VM through the new regional SNI. If the selected instance
+#      template enables QUILL_USAGE_HEARTBEAT, the settled authorization must
+#      also prove a heartbeat from that VM's boot key.
 #
 # The caller may publish the full regional A set only after this script exits
 # successfully. Any failure after step 2 atomically restores the cold CNAME.
@@ -19,6 +21,10 @@
 #
 # Usage: verify-region-before-dns.sh <region> <instance-name-filter> <image-digest>
 set -euo pipefail
+
+TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/stage-d-gate-lib.sh
+source "${TOOLS_DIR}/stage-d-gate-lib.sh"
 
 REGION="${1:?usage: verify-region-before-dns.sh <region> <instance-name-filter> <image-digest>}"
 FILTER="${2:?missing instance-name-filter}"
@@ -32,15 +38,44 @@ DNS_TTL="${QUILL_DNS_TTL:-60}"
 MIN_INSTANCES="${MIN_REGION_INSTANCES:-2}"
 REGIONAL_CERT_ATTEMPTS="${REGIONAL_CERT_ATTEMPTS:-10}"
 REGIONAL_CERT_RETRY_SLEEP="${REGIONAL_CERT_RETRY_SLEEP:-15}"
-SMOKE_KEY="${SMOKE_TEST_API_KEY:-}"
+MIG="${FILTER%-}"
+AUTHORIZATION_LOOKUP_BASE_URL="${STAGE_D_AUTHORIZATION_LOOKUP_BASE_URL:-https://trustedrouter.com}"
 
-if [ -z "${SMOKE_KEY}" ]; then
-  SMOKE_KEY="$(gcloud secrets versions access latest \
-    --secret=trustedrouter-synthetic-monitor-api-key \
+template_url="$(gcloud compute instance-groups managed describe "${MIG}" \
+  --region="${REGION}" --project="${PROJECT}" \
+  --format='value(instanceTemplate)')"
+template_name="${template_url##*/}"
+if [ -z "${template_name}" ]; then
+  echo "${REGION}: could not resolve the selected instance template" >&2
+  exit 1
+fi
+template_json="$(gcloud compute instance-templates describe "${template_name}" \
+  --project="${PROJECT}" --format=json)"
+HEARTBEAT_FLAG="$(jq -r \
+  '[.properties.metadata.items[]? | select(.key == "tee-env-QUILL_USAGE_HEARTBEAT") | .value] | if length == 0 then "off" elif length == 1 then .[0] else "duplicate" end' \
+  <<<"${template_json}")"
+case "${HEARTBEAT_FLAG}" in
+  on|off) ;;
+  *)
+    echo "${REGION}: selected template ${template_name} has invalid QUILL_USAGE_HEARTBEAT metadata '${HEARTBEAT_FLAG}'" >&2
+    exit 1
+    ;;
+esac
+echo "${REGION}: selected template ${template_name} has QUILL_USAGE_HEARTBEAT=${HEARTBEAT_FLAG}"
+
+stage_d_select_probe_key "${HEARTBEAT_FLAG}" "${PROJECT}" "${REGION}"
+
+# This is an existing gateway-to-router credential, not the client probe key.
+# It is used only to read the content-free authorization facts needed by the
+# gate after the public stream has settled.
+INTERNAL_GATEWAY_TOKEN="${TRUSTEDROUTER_INTERNAL_TOKEN:-}"
+if [ -z "${INTERNAL_GATEWAY_TOKEN}" ]; then
+  INTERNAL_GATEWAY_TOKEN="$(gcloud secrets versions access latest \
+    --secret=trustedrouter-internal-gateway-token \
     --project="${PROJECT}" 2>/dev/null || true)"
 fi
-if [ -z "${SMOKE_KEY}" ]; then
-  echo "${REGION}: synthetic monitor key is unavailable; failing closed" >&2
+if [ -z "${INTERNAL_GATEWAY_TOKEN}" ]; then
+  echo "${REGION}: internal authorization lookup token is unavailable; failing closed" >&2
   exit 1
 fi
 
@@ -61,7 +96,8 @@ if [ "${#ips[@]}" -lt "${MIN_INSTANCES}" ]; then
   exit 1
 fi
 
-response_file="$(mktemp "${TMPDIR:-/tmp}/tr-region-canary-XXXXXX.json")"
+response_dir="$(mktemp -d "${TMPDIR:-/tmp}/tr-region-canary-XXXXXX")"
+response_file="${response_dir}/response.json"
 promoted_cold_alias=0
 cname_value=""
 cname_ttl=""
@@ -153,13 +189,109 @@ restore_cold_alias() {
 on_exit() {
   local status=$?
   trap - EXIT
-  rm -f "${response_file}"
+  rm -rf "${response_dir}"
   if [ "${status}" -ne 0 ] && [ "${promoted_cold_alias}" = "1" ]; then
     restore_cold_alias || true
   fi
   exit "${status}"
 }
 trap on_exit EXIT
+
+verify_streaming_authorization() {
+  local host="$1" ip="$2" stage="$3"
+  local suffix headers stream receipt evidence code request_log_id expected_boot_kid=""
+  local idempotency_key attempt lookup_url content_type evidence_state
+  local timeout_seconds deadline remaining retry_sleep
+  suffix="${stage}-${ip//./-}"
+  headers="${response_dir}/${suffix}.headers"
+  stream="${response_dir}/${suffix}.sse"
+  receipt="${response_dir}/${suffix}.receipt-key.json"
+  evidence="${response_dir}/${suffix}.authorization.json"
+
+  if [ "${HEARTBEAT_FLAG}" = "on" ]; then
+    curl --silent --show-error --fail \
+      --noproxy "${host}" \
+      --connect-timeout 10 --max-time 30 \
+      --resolve "${host}:443:${ip}" \
+      --output "${receipt}" \
+      "https://${host}/receipt-key"
+    expected_boot_kid="$(jq -er '.kid | select(type == "string" and length > 0)' "${receipt}")"
+  fi
+
+  echo "${REGION}: running ${stage} direct streaming canary on ${ip} (Stage D evidence ${HEARTBEAT_FLAG})"
+  idempotency_key="stage-d-region-canary-${GITHUB_RUN_ID:-manual}-${REGION}-${stage}-${ip//./-}"
+  code="000"
+  if ! code="$(curl \
+    --silent --show-error --no-buffer \
+    --noproxy "${host}" \
+    --connect-timeout 10 --max-time 90 \
+    --resolve "${host}:443:${ip}" \
+    --dump-header "${headers}" \
+    --output "${stream}" \
+    --write-out '%{http_code}' \
+    -H "authorization: Bearer ${STAGE_D_PROBE_KEY}" \
+    -H "content-type: application/json" \
+    -H "idempotency-key: ${idempotency_key}" \
+    -d '{"model":"trustedrouter/monitor","messages":[{"role":"user","content":"reply exactly PONG"}],"max_tokens":32,"stream":true}' \
+    "https://${host}/v1/chat/completions")" || [ "${code}" != "200" ]; then
+    echo "${REGION}: ${stage} streaming canary on ${ip} returned HTTP ${code}" >&2
+    return 1
+  fi
+  content_type="$(tr -d '\r' <"${headers}" | awk -F ': *' 'tolower($1) == "content-type" { value=tolower($2) } END { print value }')"
+  if [[ "${content_type}" != text/event-stream* ]]; then
+    echo "${REGION}: ${stage} streaming canary on ${ip} was not text/event-stream" >&2
+    return 1
+  fi
+  python3 tools/verify-stage-d-stream.py stream "${stream}"
+
+  request_log_id="$(tr -d '\r' <"${headers}" | awk -F ': *' 'tolower($1) == "x-request-id" { value=$2 } END { print value }')"
+  if ! [[ "${request_log_id}" =~ ^rlog_[0-9a-f]{32}$ ]]; then
+    echo "${REGION}: ${stage} stream returned no valid x-request-id" >&2
+    return 1
+  fi
+  lookup_url="${AUTHORIZATION_LOOKUP_BASE_URL}/internal/gateway/authorizations/by-gateway-request-id/${request_log_id}"
+  timeout_seconds="${STAGE_D_EVIDENCE_TIMEOUT_SECONDS:-60}"
+  retry_sleep="${STAGE_D_EVIDENCE_RETRY_SLEEP:-2}"
+  deadline=$((SECONDS + timeout_seconds))
+  attempt=0
+  while [ "${SECONDS}" -lt "${deadline}" ]; do
+    attempt=$((attempt + 1))
+    remaining=$((deadline - SECONDS))
+    code="000"
+    if code="$(curl \
+      --silent --show-error \
+      --connect-timeout 5 --max-time "${remaining}" \
+      --output "${evidence}" \
+      --write-out '%{http_code}' \
+      -H "x-trustedrouter-internal-token: ${INTERNAL_GATEWAY_TOKEN}" \
+      "${lookup_url}")" && [ "${code}" = "200" ]; then
+      if ! evidence_state="$(stage_d_evidence_state \
+        "${evidence}" "${request_log_id}" "${HEARTBEAT_FLAG}" \
+        "${expected_boot_kid}")"; then
+        echo "${REGION}: ${stage} stream on ${ip} returned invalid settled authorization evidence" >&2
+        return 1
+      fi
+      if [ "${evidence_state}" = "valid" ]; then
+        echo "${REGION}: ${stage} stream on ${ip} has settled local_typed authorization evidence"
+        return 0
+      fi
+    fi
+    remaining=$((deadline - SECONDS))
+    if [ "${remaining}" -lt 0 ]; then
+      remaining=0
+    fi
+    echo "${REGION}: ${stage} authorization evidence attempt ${attempt} is not settled (HTTP ${code}; ${remaining}s remain)" >&2
+    if [ "${remaining}" -gt 0 ]; then
+      if [ "${retry_sleep}" -gt "${remaining}" ]; then
+        sleep "${remaining}"
+      else
+        sleep "${retry_sleep}"
+      fi
+    fi
+  done
+  echo "${REGION}: ${stage} stream on ${ip} did not settle within ${timeout_seconds}s" >&2
+  return 1
+}
 
 verify_instance() {
   local host="$1" ip="$2" attempts="$3" stage="$4"
@@ -194,7 +326,7 @@ verify_instance() {
       --resolve "${host}:443:${ip}" \
       --output "${response_file}" \
       --write-out '%{http_code}' \
-      -H "authorization: Bearer ${SMOKE_KEY}" \
+      -H "authorization: Bearer ${STAGE_D_PROBE_KEY}" \
       -H "content-type: application/json" \
       -H "idempotency-key: ${idempotency_key}" \
       -d '{"model":"trustedrouter/monitor","messages":[{"role":"user","content":"reply exactly PONG"}],"max_tokens":32}' \
@@ -219,6 +351,9 @@ content = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
 if str(content).strip() != "PONG":
     raise SystemExit("direct inference canary did not return exact PONG")
 PY
+  if [ "${stage}" = "regional" ]; then
+    verify_streaming_authorization "${host}" "${ip}" "${stage}"
+  fi
 }
 
 # This gate runs before any DNS mutation. It proves the exact image, live TLS
@@ -252,4 +387,4 @@ done
 # immediately after this script independently re-attests the regional SNI and
 # expands it to the complete healthy regional set.
 promoted_cold_alias=0
-echo "${REGION}: ${#ips[@]} instances passed bootstrap and regional attestation/inference canaries"
+echo "${REGION}: ${#ips[@]} instances passed bootstrap and regional attestation/inference/streaming canaries"

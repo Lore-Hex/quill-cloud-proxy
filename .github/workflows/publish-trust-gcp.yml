@@ -24,6 +24,7 @@ on:
       - "trust-page/trust/image-reference-gcp.txt"
       - "trust-page/trust/accepted-image-digests-gcp.txt"
       - "trust-page/trust/accepted-image-references-gcp.txt"
+      - "trust-page/gcp/stage-d-accepted.json"
       - ".github/workflows/publish-trust-gcp.yml"
   workflow_dispatch: {}
 
@@ -48,7 +49,12 @@ jobs:
           COSIGN_YES: "true"
         run: |
           set -euo pipefail
-          for f in trust-page/trust/gcp-release.json trust-page/trust/image-digest-gcp.txt trust-page/trust/image-reference-gcp.txt trust-page/trust/accepted-image-digests-gcp.txt trust-page/trust/accepted-image-references-gcp.txt; do
+          # The workflow-file change may run once before the first deploy has
+          # created this new artifact. Every policy-triggered run includes it.
+          for f in trust-page/trust/gcp-release.json trust-page/trust/image-digest-gcp.txt trust-page/trust/image-reference-gcp.txt trust-page/trust/accepted-image-digests-gcp.txt trust-page/trust/accepted-image-references-gcp.txt trust-page/gcp/stage-d-accepted.json; do
+            if [ "$f" = trust-page/gcp/stage-d-accepted.json ] && [ ! -f "$f" ]; then
+              continue
+            fi
             test -f "$f" || { echo "missing $f" >&2; exit 1; }
             cosign sign-blob --bundle "$f.bundle" "$f"
           done
@@ -59,7 +65,10 @@ jobs:
           # If these files were signed elsewhere, this fails — which is the
           # property the whole design rests on, so it is asserted, not assumed.
           identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish-trust-gcp.yml@${GITHUB_REF}"
-          for f in trust-page/trust/gcp-release.json trust-page/trust/image-digest-gcp.txt trust-page/trust/image-reference-gcp.txt trust-page/trust/accepted-image-digests-gcp.txt trust-page/trust/accepted-image-references-gcp.txt; do
+          for f in trust-page/trust/gcp-release.json trust-page/trust/image-digest-gcp.txt trust-page/trust/image-reference-gcp.txt trust-page/trust/accepted-image-digests-gcp.txt trust-page/trust/accepted-image-references-gcp.txt trust-page/gcp/stage-d-accepted.json; do
+            if [ "$f" = trust-page/gcp/stage-d-accepted.json ] && [ ! -f "$f" ]; then
+              continue
+            fi
             cosign verify-blob \
               --bundle "$f.bundle" \
               --certificate-identity "$identity" \
@@ -91,6 +100,7 @@ jobs:
           # Another plane's workflow may have pushed first; rebase rather than
           # fail, since these commits only ever touch disjoint bundle files.
           for attempt in 1 2 3; do
+            echo "bundle push attempt ${attempt}/3"
             git pull --rebase --quiet origin main && git push origin HEAD:main && exit 0
             sleep 5
           done
