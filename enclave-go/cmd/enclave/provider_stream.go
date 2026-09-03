@@ -580,8 +580,11 @@ func retryableInvokeError(err error) bool {
 	return err != nil
 }
 
-func writeStreamingProviderError(w io.Writer, routeType, requestID, model string, err error) error {
+func writeStreamingProviderError(w io.Writer, routeType, requestID, model string, err error, hideDetails bool) error {
 	status, message := upstreamErrorResponse(err)
+	if hideDetails && !isClientInputError(err) {
+		message = "upstream provider error"
+	}
 	source := "provider"
 	errType := "provider_error"
 	if isClientInputError(err) {

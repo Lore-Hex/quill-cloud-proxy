@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
 
 type testClientInputError struct {
@@ -76,6 +78,40 @@ func TestUpstreamErrorResponseClassifiesClientInputError(t *testing.T) {
 	}
 }
 
+func TestPrivateProxyErrorMessageDoesNotRevealBackingProvider(t *testing.T) {
+	t.Parallel()
+
+	err := errors.New(`llm/mistral: http 429: model mistralai/mistral-large is overloaded`)
+	_, message := upstreamErrorResponse(err)
+	message = publicProviderErrorMessage(message, err, &trustedrouter.Authorization{
+		ResponseModel:      "trustedrouter/archimedes-1.0",
+		HidePublicMetadata: true,
+	})
+	if message != "upstream provider error" {
+		t.Fatalf("message = %q", message)
+	}
+}
+
+func TestPrivateProxyStreamingErrorDoesNotRevealBackingProvider(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	err := errors.New(`llm/mistral: http 429: model mistralai/mistral-large is overloaded`)
+	if writeErr := writeStreamingProviderError(
+		&buf,
+		"chat.completions",
+		"chatcmpl-private",
+		"trustedrouter/archimedes-1.0",
+		err,
+		true,
+	); writeErr != nil {
+		t.Fatalf("writeStreamingProviderError: %v", writeErr)
+	}
+	if strings.Contains(buf.String(), "mistral") || !strings.Contains(buf.String(), "upstream provider error") {
+		t.Fatalf("private proxy streaming error leaked backing route: %s", buf.String())
+	}
+}
+
 func TestClassifiedOpenAIErrorUsesRouterSourceForClientInput(t *testing.T) {
 	var buf bytes.Buffer
 	err := &testClientInputError{err: errors.New("llm/image: invalid PNG data")}
@@ -93,7 +129,7 @@ func TestClassifiedOpenAIErrorUsesRouterSourceForClientInput(t *testing.T) {
 func TestWriteStreamingClientInputErrorUsesRouterSource(t *testing.T) {
 	var buf bytes.Buffer
 	err := &testClientInputError{err: errors.New("llm/image: invalid PNG data")}
-	if writeErr := writeStreamingProviderError(&buf, "responses", "resp_test", "model", err); writeErr != nil {
+	if writeErr := writeStreamingProviderError(&buf, "responses", "resp_test", "model", err, false); writeErr != nil {
 		t.Fatalf("writeStreamingProviderError: %v", writeErr)
 	}
 	if !strings.Contains(buf.String(), `"source":"router"`) ||
@@ -127,7 +163,7 @@ func TestUpstreamErrorResponseScrubsAndTruncatesUpstreamBody(t *testing.T) {
 func TestWriteStreamingProviderErrorEnrichesChatCompletionsFrame(t *testing.T) {
 	var buf bytes.Buffer
 	err := fmt.Errorf(`llm/upstream: http 404: {"error":"model not found"}`)
-	if writeErr := writeStreamingProviderError(&buf, "chat.completions", "chatcmpl-test", "missing-model", err); writeErr != nil {
+	if writeErr := writeStreamingProviderError(&buf, "chat.completions", "chatcmpl-test", "missing-model", err, false); writeErr != nil {
 		t.Fatalf("write error: %v", writeErr)
 	}
 
@@ -157,7 +193,7 @@ func TestWriteStreamingProviderErrorEnrichesChatCompletionsFrame(t *testing.T) {
 
 func TestWriteStreamingProviderErrorNilMatchesLegacyGenericFrame(t *testing.T) {
 	var buf bytes.Buffer
-	if err := writeStreamingProviderError(&buf, "chat.completions", "chatcmpl-test", "model", nil); err != nil {
+	if err := writeStreamingProviderError(&buf, "chat.completions", "chatcmpl-test", "model", nil, false); err != nil {
 		t.Fatalf("write error: %v", err)
 	}
 	const legacy = "data: {\"error\":{\"message\":\"provider error\",\"source\":\"provider\",\"type\":\"provider_error\"}}\n\ndata: [DONE]\n\n"

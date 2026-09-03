@@ -49,6 +49,11 @@ func annotateSettledResponseMetadata(
 	if settlement != nil && settlement.Provider != "" {
 		selectedProvider = settlement.Provider
 	}
+	if hidesPublicRouteMetadata(authorization) {
+		selectedModel = authorizationResponseModel(selectedModel, authorization)
+		selectedProvider = "trustedrouter"
+		selectedEndpoint = ""
+	}
 	candidateCount := routeCandidateCount(authorization, invokeOptions)
 	attemptCount := 0
 	fallbackCount := 0
@@ -112,7 +117,7 @@ func annotateSettledResponseMetadata(
 		if settlement.UsageType != "" {
 			routeUsage["usage_type"] = settlement.UsageType
 		}
-		if settlement.Region != "" {
+		if settlement.Region != "" && !hidesPublicRouteMetadata(authorization) {
 			routeUsage["region"] = settlement.Region
 		}
 	}
@@ -137,7 +142,11 @@ func annotateSettledResponseMetadata(
 // mode to response shapes that do not pass through the chat metadata adapter
 // (currently native Messages and embeddings). Batch aggregation can then use
 // one response-level accounting contract for every supported API shape.
-func annotateSettlementOnlyUsage(body []byte, settlement *trustedrouter.SettleResult) ([]byte, error) {
+func annotateSettlementOnlyUsage(
+	body []byte,
+	settlement *trustedrouter.SettleResult,
+	authorization *trustedrouter.Authorization,
+) ([]byte, error) {
 	if settlement == nil || len(body) == 0 {
 		return body, nil
 	}
@@ -159,13 +168,19 @@ func annotateSettlementOnlyUsage(body []byte, settlement *trustedrouter.SettleRe
 	if settlement.UsageType != "" {
 		providerUsage["usage_type"] = settlement.UsageType
 	}
-	if settlement.Model != "" {
-		providerUsage["selected_model"] = settlement.Model
+	selectedModel := settlement.Model
+	selectedProvider := settlement.Provider
+	if hidesPublicRouteMetadata(authorization) {
+		selectedModel = authorizationResponseModel(selectedModel, authorization)
+		selectedProvider = "trustedrouter"
 	}
-	if settlement.Provider != "" {
-		providerUsage["selected_provider"] = settlement.Provider
+	if selectedModel != "" {
+		providerUsage["selected_model"] = selectedModel
 	}
-	if settlement.Region != "" {
+	if selectedProvider != "" {
+		providerUsage["selected_provider"] = selectedProvider
+	}
+	if settlement.Region != "" && !hidesPublicRouteMetadata(authorization) {
 		providerUsage["region"] = settlement.Region
 	}
 	providerUsage["contains_prompt_or_completion"] = false
@@ -173,11 +188,16 @@ func annotateSettlementOnlyUsage(body []byte, settlement *trustedrouter.SettleRe
 	return json.Marshal(payload)
 }
 
-func annotateBatchSettlementOnlyUsage(ctx context.Context, body []byte, settlement *trustedrouter.SettleResult) ([]byte, error) {
+func annotateBatchSettlementOnlyUsage(
+	ctx context.Context,
+	body []byte,
+	settlement *trustedrouter.SettleResult,
+	authorization *trustedrouter.Authorization,
+) ([]byte, error) {
 	if !isBatchExecutionContext(ctx) {
 		return body, nil
 	}
-	return annotateSettlementOnlyUsage(body, settlement)
+	return annotateSettlementOnlyUsage(body, settlement, authorization)
 }
 
 func openRouterRoutingMetadata(
@@ -217,13 +237,16 @@ func openRouterRoutingMetadata(
 	selectedModelInternal := selectedModel
 	selectedProviderInternal := selectedProvider
 	selectedEndpointInternal := selectedEndpoint
-	customModelID := ""
-	if authorization != nil && authorization.CustomModel != nil {
-		customModelID = strings.TrimSpace(authorization.CustomModel.ID)
+	privateModelID := ""
+	if hidesPublicRouteMetadata(authorization) {
+		privateModelID = authorizationResponseModel(requested, authorization)
 	}
-	if customModelID != "" {
-		requested = customModelID
-		selectedModel = customModelID
+	if authorization != nil && authorization.CustomModel != nil {
+		privateModelID = strings.TrimSpace(authorization.CustomModel.ID)
+	}
+	if privateModelID != "" {
+		requested = privateModelID
+		selectedModel = privateModelID
 		selectedProvider = "trustedrouter"
 		selectedEndpoint = ""
 	}
@@ -251,8 +274,8 @@ func openRouterRoutingMetadata(
 		if route.endpoint == "" {
 			selected = route.model == selectedModelInternal && route.provider == selectedProviderInternal
 		}
-		if customModelID != "" {
-			model = customModelID
+		if privateModelID != "" {
+			model = privateModelID
 			provider = "trustedrouter"
 		}
 		available = append(available, map[string]any{
@@ -282,7 +305,7 @@ func openRouterRoutingMetadata(
 			"available": available,
 		},
 	}
-	if customModelID == "" {
+	if privateModelID == "" {
 		metadata["region"] = region
 		metadata["is_byok"] = strings.EqualFold(usageType, "BYOK")
 	}
