@@ -21,13 +21,18 @@ const (
 var settlementRetries = newSettlementRetryQueueFromEnv()
 
 type settlementRetryJob struct {
-	trGateway     *trustedrouter.Client
-	authorization *trustedrouter.Authorization
-	usage         trustedrouter.Usage
-	requestLogID  string
-	clientContext *types.ClientContext
-	attempt       int
-	enqueuedAt    time.Time
+	trGateway      *trustedrouter.Client
+	authorization  *trustedrouter.Authorization
+	usage          trustedrouter.Usage
+	requestLogID   string
+	clientContext  *types.ClientContext
+	attempt        int
+	enqueuedAt     time.Time
+	kind           string
+	refundStatus   int
+	refundType     string
+	refundElapsed  float64
+	refundMetadata map[string]any
 }
 
 type settlementRetryQueue struct {
@@ -175,8 +180,22 @@ func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJ
 	// gateway_request_id the first attempt would have.
 	retryContext := trustedrouter.WithRequestLogID(ctx, job.requestLogID)
 	retryContext = trustedrouter.WithClientContext(retryContext, job.clientContext)
-	_, err := job.trGateway.Settle(retryContext, job.authorization, job.usage)
+	var result *trustedrouter.SettleResult
+	var err error
+	if job.kind == "refund" {
+		result, err = job.trGateway.RefundDetailed(retryContext, job.authorization, job.refundStatus, job.refundType, job.refundElapsed, job.refundMetadata)
+	} else {
+		result, err = job.trGateway.Settle(retryContext, job.authorization, job.usage)
+	}
 	if err == nil {
+		if job.kind == "refund" && stageDDispositionLost(result) {
+			fmt.Fprintf(os.Stderr, "enclave.stage_d_refund_lost request_log_id=%q auth_id=%q disposition=%q\n", job.requestLogID, authorizationID(job.authorization), result.Disposition)
+			return
+		}
+		if job.kind != "refund" && stageDDispositionLost(result) {
+			logStageDSettleLost(job.authorization, result, "retry")
+			return
+		}
 		fmt.Fprintf(os.Stderr,
 			"enclave.settlement_retry_success request_log_id=%q request_id=%q auth_id=%q attempt=%d age_ms=%d\n",
 			job.requestLogID,
@@ -226,6 +245,7 @@ func compactSettlementRetryJob(job settlementRetryJob) settlementRetryJob {
 			AuthorizationID:         auth.AuthorizationID,
 			Model:                   auth.Model,
 			EndpointID:              auth.EndpointID,
+			RouteType:               auth.RouteType,
 			ControlPlaneEndpoint:    auth.ControlPlaneEndpoint,
 			ControlPlaneEndpointSet: auth.ControlPlaneEndpointSet,
 		}
@@ -237,6 +257,7 @@ func compactSettlementRetryJob(job settlementRetryJob) settlementRetryJob {
 	job.usage.App = ""
 	job.usage.HTTPReferer = ""
 	job.usage.AppCategories = nil
+	job.refundMetadata = nil
 	return job
 }
 

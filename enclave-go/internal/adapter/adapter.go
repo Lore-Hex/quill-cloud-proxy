@@ -706,6 +706,66 @@ type StreamDelta struct {
 type StreamObserver func(StreamDelta)
 type StreamFinishHook func(created int64) error
 
+const MAX_METER_CHUNK_TOKENS = 64
+const MaxMeterChunkTokens = MAX_METER_CHUNK_TOKENS
+
+// StreamControl is installed only for router-declared Stage D cohort streams.
+// BeforeSlice runs before a semantic UTF-8 slice becomes client-visible;
+// BeforeTerminal owns the final protocol event and may synchronously settle
+// before calling Emit.
+type StreamControl struct {
+	BeforeSlice    func(StreamDelta) error
+	AfterSlice     func(StreamDelta) error
+	ObserveUsage   func(*StreamUsage)
+	Termination    func() *ControlledTermination
+	BeforeTerminal func(StreamTerminal) error
+}
+
+type StreamTerminal struct {
+	Result         StreamResult
+	Created        int64
+	FinishReason   string
+	TRFinishReason string
+	Emit           func() error
+}
+
+// ControlledTermination asks an adapter to stop consuming provider output and
+// close the client protocol through its terminal sentinel.
+type ControlledTermination struct {
+	FinishReason   string
+	TRFinishReason string
+}
+
+func (e *ControlledTermination) Error() string {
+	if e == nil {
+		return ""
+	}
+	return "adapter: controlled stream termination: " + e.TRFinishReason
+}
+
+// SemanticSlices splits before JSON/SSE encoding and never cuts inside a UTF-8
+// sequence. The byte bound is exact for the Stage D bytes/4 meter.
+func SemanticSlices(text string) []string {
+	if text == "" {
+		return nil
+	}
+	const maxBytes = MaxMeterChunkTokens * 4
+	result := make([]string, 0, (len(text)+maxBytes-1)/maxBytes)
+	for len(text) > 0 {
+		end := min(len(text), maxBytes)
+		for end > 0 && end < len(text) && !utf8.RuneStart(text[end]) {
+			end--
+		}
+		if end == 0 {
+			_, size := utf8.DecodeRuneInString(text)
+			end = size
+		}
+		result = append(result, text[:end])
+		text = text[end:]
+	}
+	return result
+}
+
 var errEmptyUpstreamResponse = errors.New("adapter: empty upstream response")
 
 // TransformStreamCaptureWithOptions is TransformStreamCapture plus the
@@ -741,6 +801,19 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 	routerMetadata map[string]any,
 	finishHook StreamFinishHook,
 ) (StreamResult, error) {
+	return TransformStreamCaptureControlled(r, w, requestID, model, emitUsageChunk, routerMetadata, finishHook, nil)
+}
+
+func TransformStreamCaptureControlled(
+	r io.Reader,
+	w io.Writer,
+	requestID string,
+	model string,
+	emitUsageChunk bool,
+	routerMetadata map[string]any,
+	finishHook StreamFinishHook,
+	control *StreamControl,
+) (StreamResult, error) {
 	created := time.Now().Unix()
 	finishReason := "stop"
 	roleSent := false
@@ -768,7 +841,7 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 		return writeChunk(w, requestID, model, created, map[string]any{"role": "assistant", "content": ""}, "")
 	}
 
-	finish := func(runHook bool) (StreamResult, error) {
+	finish := func(runHook bool, termination *ControlledTermination) (StreamResult, error) {
 		if len(citations) > 0 || len(searchResults) > 0 {
 			if err := sendRole(); err != nil {
 				return StreamResult{}, err
@@ -779,25 +852,6 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 				return StreamResult{}, err
 			}
 		}
-		if err := writeChunk(w, requestID, model, created, map[string]any{}, finishReason); err != nil {
-			return StreamResult{}, err
-		}
-		if emitUsageChunk && usage != nil {
-			if err := writeUsageChunk(w, requestID, model, created, usage); err != nil {
-				return StreamResult{}, err
-			}
-		}
-		if len(routerMetadata) > 0 {
-			if err := writeRouterMetadataChunk(w, requestID, model, created, routerMetadata); err != nil {
-				return StreamResult{}, err
-			}
-		}
-		if runHook && finishHook != nil {
-			if err := finishHook(created); err != nil {
-				return StreamResult{}, err
-			}
-		}
-		_, err := w.Write([]byte("data: [DONE]\n\n"))
 		result := StreamResult{
 			Text: captured.String(), FinishReason: finishReason, Usage: usage,
 			Thinking:  orderedThinking(thinkingByIndex, thinkingOrder),
@@ -812,10 +866,78 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 				Arguments: call.args.String(),
 			})
 		}
-		return result, err
+		terminalFinishReason := finishReason
+		trFinishReason := ""
+		if termination != nil {
+			terminalFinishReason = termination.FinishReason
+			trFinishReason = termination.TRFinishReason
+			result.FinishReason = terminalFinishReason
+		}
+		emit := func() error {
+			var err error
+			if trFinishReason == "" {
+				err = writeChunk(w, requestID, model, created, map[string]any{}, terminalFinishReason)
+			} else {
+				err = writeTerminalChunk(w, requestID, model, created, terminalFinishReason, trFinishReason)
+			}
+			if err != nil {
+				return err
+			}
+			if emitUsageChunk && usage != nil {
+				if err := writeUsageChunk(w, requestID, model, created, usage); err != nil {
+					return err
+				}
+			}
+			if len(routerMetadata) > 0 {
+				if err := writeRouterMetadataChunk(w, requestID, model, created, routerMetadata); err != nil {
+					return err
+				}
+			}
+			if runHook && finishHook != nil {
+				if err := finishHook(created); err != nil {
+					return err
+				}
+			}
+			_, err = w.Write([]byte("data: [DONE]\n\n"))
+			return err
+		}
+		if control != nil && control.BeforeTerminal != nil {
+			err := control.BeforeTerminal(StreamTerminal{Result: result, Created: created, FinishReason: terminalFinishReason, TRFinishReason: trFinishReason, Emit: emit})
+			return result, err
+		}
+		return result, emit()
+	}
+
+	emitSemantic := func(delta StreamDelta, emit func(string) error) error {
+		slices := []string{delta.Text}
+		if control != nil {
+			slices = SemanticSlices(delta.Text)
+		}
+		for _, slice := range slices {
+			delta.Text = slice
+			if control != nil && control.BeforeSlice != nil {
+				if err := control.BeforeSlice(delta); err != nil {
+					return err
+				}
+			}
+			if err := emit(slice); err != nil {
+				return err
+			}
+			if control != nil && control.AfterSlice != nil {
+				if err := control.AfterSlice(delta); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	}
 
 	for scanner.Scan() {
+		if control != nil && control.Termination != nil {
+			if termination := control.Termination(); termination != nil {
+				return finish(true, termination)
+			}
+		}
 		sawUpstreamBytes = true
 		block := scanner.Bytes()
 		eventName, dataJSON := parseSSEBlock(block)
@@ -827,6 +949,9 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 			// Native Anthropic streams report input_tokens up front:
 			// {"type":"message_start","message":{...,"usage":{"input_tokens":N,...}}}
 			mergeMessageStartUsage(&usage, getMap(dataJSON, "message"))
+			if control != nil && control.ObserveUsage != nil {
+				control.ObserveUsage(usage)
+			}
 		case "content_block_start":
 			blockJSON := getMap(dataJSON, "content_block")
 			if blockJSON == nil {
@@ -884,11 +1009,17 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 				if deltaText == "" {
 					continue
 				}
-				_, _ = captured.WriteString(deltaText)
-				if err := sendRole(); err != nil {
-					return StreamResult{}, err
-				}
-				if err := writeChunk(w, requestID, model, created, map[string]any{"content": deltaText}, ""); err != nil {
+				if err := emitSemantic(StreamDelta{Type: "text_delta", Index: getInt(dataJSON, "index"), Text: deltaText}, func(slice string) error {
+					if err := sendRole(); err != nil {
+						return err
+					}
+					_, _ = captured.WriteString(slice)
+					return writeChunk(w, requestID, model, created, map[string]any{"content": slice}, "")
+				}); err != nil {
+					var termination *ControlledTermination
+					if errors.As(err, &termination) {
+						return finish(true, termination)
+					}
 					return StreamResult{}, err
 				}
 			case "thinking_delta":
@@ -897,17 +1028,21 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 					continue
 				}
 				blockIndex := getInt(dataJSON, "index")
-				if tb := thinkingByIndex[blockIndex]; tb != nil {
-					tb.Text += deltaText
-				}
-				if err := sendRole(); err != nil {
-					return StreamResult{}, err
-				}
-				if err := writeChunk(w, requestID, model, created, map[string]any{
-					"reasoning":         deltaText,
-					"reasoning_content": deltaText,
-					"thinking":          deltaText,
-				}, ""); err != nil {
+				if err := emitSemantic(StreamDelta{Type: "thinking_delta", Index: blockIndex, Text: deltaText}, func(slice string) error {
+					if err := sendRole(); err != nil {
+						return err
+					}
+					if tb := thinkingByIndex[blockIndex]; tb != nil {
+						tb.Text += slice
+					}
+					return writeChunk(w, requestID, model, created, map[string]any{
+						"reasoning": slice, "reasoning_content": slice, "thinking": slice,
+					}, "")
+				}); err != nil {
+					var termination *ControlledTermination
+					if errors.As(err, &termination) {
+						return finish(true, termination)
+					}
 					return StreamResult{}, err
 				}
 			case "signature_delta":
@@ -928,13 +1063,16 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 				if partial == "" {
 					continue
 				}
-				call.args.WriteString(partial)
-				if err := writeChunk(w, requestID, model, created, map[string]any{
-					"tool_calls": []map[string]any{{
-						"index":    call.openAIIndex,
-						"function": map[string]any{"arguments": partial},
-					}},
-				}, ""); err != nil {
+				if err := emitSemantic(StreamDelta{Type: "input_json_delta", Index: getInt(dataJSON, "index"), Text: partial}, func(slice string) error {
+					call.args.WriteString(slice)
+					return writeChunk(w, requestID, model, created, map[string]any{
+						"tool_calls": []map[string]any{{"index": call.openAIIndex, "function": map[string]any{"arguments": slice}}},
+					}, "")
+				}); err != nil {
+					var termination *ControlledTermination
+					if errors.As(err, &termination) {
+						return finish(true, termination)
+					}
 					return StreamResult{}, err
 				}
 			}
@@ -950,20 +1088,33 @@ func TransformStreamCaptureWithRouterMetadataAndFinishHook(
 			// input_tokens/reasoning_tokens relayed from OpenAI-compatible
 			// upstreams' include_usage final chunk.
 			mergeUsage(&usage, getMap(dataJSON, "usage"))
+			if control != nil && control.ObserveUsage != nil {
+				control.ObserveUsage(usage)
+			}
 			citations, searchResults = providerProvenanceFromInternalEvent(dataJSON, citations, searchResults)
 		case "message_stop":
-			return finish(true)
+			return finish(true, nil)
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		if control != nil && control.Termination != nil {
+			if termination := control.Termination(); termination != nil {
+				return finish(true, termination)
+			}
+		}
 		return StreamResult{}, err
+	}
+	if control != nil && control.Termination != nil {
+		if termination := control.Termination(); termination != nil {
+			return finish(true, termination)
+		}
 	}
 	if !sawUpstreamBytes {
 		return StreamResult{}, errEmptyUpstreamResponse
 	}
 	// EOF without message_stop is a tolerated compatibility behavior for
 	// ordinary streams, but it is not a receipt-worthy clean terminator.
-	return finish(false)
+	return finish(false, nil)
 }
 
 func providerProvenanceFromInternalEvent(
@@ -1442,6 +1593,22 @@ func writeChunk(
 		return err
 	}
 	_, err = w.Write([]byte("\n\n"))
+	return err
+}
+
+func writeTerminalChunk(w io.Writer, id, model string, created int64, finishReason, trFinishReason string) error {
+	chunk := map[string]any{
+		"id": id, "object": "chat.completion.chunk", "created": created, "model": model,
+		"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": orNil(finishReason)}},
+	}
+	if trFinishReason != "" {
+		chunk["tr_finish_reason"] = trFinishReason
+	}
+	body, err := json.Marshal(chunk)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "data: %s\n\n", body)
 	return err
 }
 

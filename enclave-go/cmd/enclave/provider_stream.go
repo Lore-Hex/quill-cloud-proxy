@@ -301,6 +301,7 @@ type selectedRouteTracker struct {
 	endpoint string
 	provider string
 	attempts int
+	selected bool
 	routes   []routeAttempt
 }
 
@@ -319,6 +320,7 @@ func (t *selectedRouteTracker) Select(option llm.InvokeOptions) {
 		return
 	}
 	t.mu.Lock()
+	t.selected = true
 	if t.model == "" && option.Model != "" {
 		t.model = option.Model
 	}
@@ -332,6 +334,15 @@ func (t *selectedRouteTracker) Select(option llm.InvokeOptions) {
 	t.once.Do(func() {
 		close(t.ready)
 	})
+}
+
+func (t *selectedRouteTracker) HasSelection() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.selected
 }
 
 func (t *selectedRouteTracker) SignalReadyWithoutSelection() {

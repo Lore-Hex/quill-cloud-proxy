@@ -43,6 +43,59 @@ func (c *Client) ConfigureSpendLeaseShadow(signer *receipt.Signer, verifier *spe
 	}
 }
 
+// ConfigureStageDBoot installs the boot identity used to sign heartbeat and
+// disposition calls without enabling the Stage A authorize echo.
+func (c *Client) ConfigureStageDBoot(signer *receipt.Signer) {
+	if c != nil && signer != nil {
+		c.stageDBootSigner = signer
+	}
+}
+
+func (c *Client) stageDBootDigestSigner() spendlease.DigestSigner {
+	if c == nil {
+		return nil
+	}
+	if c.stageDBootSigner != nil {
+		return c.stageDBootSigner
+	}
+	if c.spendLease != nil {
+		return c.spendLease.signer
+	}
+	return nil
+}
+
+// StartStageDBootRegistration registers the same attested boot key used by
+// Stage A, but does not activate any lease echo or local lease state.
+func (c *Client) StartStageDBootRegistration(ctx context.Context, signer *receipt.Signer, evidence BootRegistrationEvidence) {
+	if c == nil || signer == nil {
+		return
+	}
+	go func() {
+		if evidence.Attestation == "" || evidence.AttestationKind == "" {
+			fmt.Fprintln(os.Stderr, "stage_d.boot_registration_failed reason=attestation_unavailable")
+			return
+		}
+		payload := bootRegistrationRequest{
+			KID: signer.Kid(), ReceiptPublicKey: signer.JWK(),
+			AttestationEvidence: evidence.Attestation, AttestationKind: evidence.AttestationKind,
+		}
+		var decoded struct {
+			Data struct {
+				Verified bool `json:"verified"`
+			} `json:"data"`
+		}
+		if err := c.postJSONWithRetry(ctx, spendlease.RegisterPath, payload, &decoded, c.authorizeRetry); err != nil {
+			fmt.Fprintf(os.Stderr, "stage_d.boot_registration_failed err=%q\n", err.Error())
+			return
+		}
+		if !decoded.Data.Verified {
+			fmt.Fprintln(os.Stderr, "stage_d.boot_registration_failed reason=boot_not_verified")
+			return
+		}
+		fmt.Fprintf(os.Stderr, "stage_d.boot_registered kid=%q\n", signer.Kid())
+	}()
+}
+
 // StartSpendLeaseBootRegistration is intentionally asynchronous and
 // non-fatal. The existing retry policy supplies bounded exponential backoff;
 // any final failure leaves ShadowState's registration gate closed.
@@ -97,8 +150,8 @@ func (c *Client) authorizeAtDecodeSeam(
 		return nil, -1, err
 	}
 	bootAuthHeader := ""
-	if c.spendLease != nil {
-		bootAuth, err := spendlease.SignAuthorize(c.spendLease.signer, http.MethodPost, spendlease.AuthorizePath, bodyBytes)
+	if signer := c.stageDBootDigestSigner(); signer != nil {
+		bootAuth, err := spendlease.SignAuthorize(signer, http.MethodPost, spendlease.AuthorizePath, bodyBytes)
 		if err != nil {
 			return nil, -1, err
 		}

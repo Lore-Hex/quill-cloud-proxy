@@ -451,11 +451,18 @@ func main() {
 			}
 		}
 	}
-	if err := initializeReceiptSignerWithSpendLease(ctx, tlsServer, deviceBlob, boot.SpendLeaseShadow, spendLeaseIssuerConfigNonce(boot), apiHost); err != nil {
+	stageDConfig := stageDConfigFromEnv()
+	fmt.Fprintf(os.Stderr, "enclave.stage_d_flags usage_heartbeat=%t terminate_at_cap=%t heartbeat_budget_ms=%d settle_before_terminal_ms=%d\n",
+		stageDConfig.usageHeartbeat, stageDConfig.terminateAtCap, stageDConfig.heartbeatBudget.Milliseconds(), stageDConfig.settleBeforeTerminal.Milliseconds())
+	if err := initializeReceiptSignerWithSpendLease(ctx, tlsServer, deviceBlob, boot.SpendLeaseShadow || stageDConfig.usageHeartbeat, spendLeaseIssuerConfigNonce(boot), apiHost); err != nil {
 		fmt.Fprintf(os.Stderr, "receipt signer initialization failed: %v\n", err)
 		os.Exit(1)
 	}
 	initializeSpendLeaseShadow(ctx, trGateway, boot)
+	if stageDConfig.usageHeartbeat && !boot.SpendLeaseShadow && trGateway != nil && receiptSigner != nil {
+		trGateway.ConfigureStageDBoot(receiptSigner)
+		trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence())
+	}
 
 	// LB health endpoint. The serving port (:443) terminates TLS inside the
 	// enclave, so the GCP passthrough-NLB's TCP/SSL health probe to :443 does
@@ -1578,6 +1585,8 @@ func serveStreaming(
 	requestLogID string,
 	requestedModel string,
 ) {
+	stageDConfig := stageDConfigFromEnv()
+	stageDEligible := stageDStreamEligible(stageDConfig, authorization, req, routeType)
 	receiptState, receiptEnabled := receiptState(req)
 	if receiptEnabled {
 		ctx = llm.WithUpstreamVerification(ctx, "", time.Time{}, time.Time{})
@@ -1586,13 +1595,15 @@ func serveStreaming(
 	if routeType == "responses" {
 		requestID = newResponseID()
 	}
+	providerCtx, cancelProvider := context.WithCancel(ctx)
+	defer cancelProvider()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
 	providerDone := make(chan struct{})
 	providerReq := *req
 	go func() {
 		defer close(providerDone)
-		invokeProviderStream(ctx, br, &providerReq, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
+		invokeProviderStream(providerCtx, br, &providerReq, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
 	}()
 	// Do not send the streaming 200/SSE head until either a provider has
 	// produced its first byte or every pre-output retry/fallback has failed.
@@ -1605,6 +1616,30 @@ func serveStreaming(
 	streamModel := selectedRoute.Model(req.Model, authorization)
 	if streamModel != "" {
 		req.Model = streamModel
+	}
+	var stageDController *stageDController
+	if stageDEligible && selectedRoute.HasSelection() {
+		selectedEndpoint := selectedRoute.Endpoint("", authorization)
+		if selectedEndpoint == "" || trGateway == nil {
+			cancelProvider()
+			err := fmt.Errorf("stage_d: selected endpoint or gateway unavailable")
+			_ = pr.CloseWithError(err)
+			fmt.Fprintf(os.Stderr, "enclave.stage_d_preheader_refused request_log_id=%q auth_id=%q err=%q\n", requestLogID, authorizationID(authorization), errorClass(err))
+			writeOpenAIError(conn, 503, "usage heartbeat unavailable", "server_error", "heartbeat_unavailable", "")
+			return
+		}
+		stageDController = newStageDController(
+			ctx, trGateway, authorization, cancelProvider, func(err error) { _ = pr.CloseWithError(err) }, stageDConfig, requestStarted,
+			selectedEndpoint, trustedrouter.EstimateInputTokens(req),
+		)
+		if err := stageDController.preHeader(); err != nil {
+			cancelProvider()
+			_ = pr.CloseWithError(err)
+			fmt.Fprintf(os.Stderr, "enclave.stage_d_preheader_refused request_log_id=%q auth_id=%q err=%q\n", requestLogID, authorizationID(authorization), errorClass(err))
+			writeOpenAIError(conn, 503, "usage heartbeat unavailable", "server_error", "heartbeat_unavailable", "")
+			return
+		}
+		defer stageDController.stopCadence()
 	}
 	responseModel := authorizationResponseModel(req.Model, authorization)
 	var routerMetadata map[string]any
@@ -1665,10 +1700,77 @@ func serveStreaming(
 
 	var result adapter.StreamResult
 	var err error
+	var stageDControl *adapter.StreamControl
+	if stageDController != nil {
+		stageDControl = &adapter.StreamControl{
+			BeforeSlice: stageDController.beforeSlice,
+			AfterSlice: func(delta adapter.StreamDelta) error {
+				// Stage D meters client-visible bytes. Chat batching can retain an
+				// encoded slice after Write returns, so make it visible before
+				// advancing the canonical meter or allowing another slice.
+				if batchW != nil {
+					if err := batchW.Flush(); err != nil {
+						return err
+					}
+				}
+				return stageDController.afterSlice(delta)
+			},
+			ObserveUsage: stageDController.observeUsage,
+			Termination:  stageDController.termination,
+			BeforeTerminal: func(terminal adapter.StreamTerminal) error {
+				stageDController.stopCadence()
+				usage := stageDController.terminalUsage(
+					terminal, requestID, routeType,
+					selectedRoute.Model(req.Model, authorization), req,
+					statsW.FirstWriteSeconds(requestStarted),
+				)
+				settleCtx, settleCancel := context.WithTimeout(ctx, stageDConfig.settleBeforeTerminal)
+				settlement, settleErr := settleAndBroadcast(
+					settleCtx, trGateway, authorization, secretCache, usage, req,
+					originalInput, adapter.ResponsesOutputForUsage(terminal.Result),
+				)
+				settleCancel()
+				if stageDDispositionLost(settlement) {
+					logStageDSettleLost(authorization, settlement, "settle")
+				}
+				if stageDController.heartbeatLostReason == trustedrouter.HeartbeatAlreadyTerminal {
+					logStageDSettleLost(authorization, settlement, "heartbeat_already_terminal")
+				}
+				if settleErr != nil {
+					if stageDTimeout(settleErr) {
+						lookupCtx, lookupCancel := context.WithTimeout(ctx, stageDConfig.settleBeforeTerminal)
+						disposition, lookupErr := trGateway.Disposition(lookupCtx, authorization)
+						lookupCancel()
+						if lookupErr == nil && disposition != nil && disposition.Disposition == trustedrouter.DispositionReapedSnapshot {
+							logStageDSettleLost(authorization, &trustedrouter.SettleResult{Disposition: disposition.Disposition}, "disposition_lookup")
+						}
+					}
+					fmt.Fprintf(os.Stderr, "enclave.stream_settle_failed request_log_id=%q request_id=%q model=%q route_type=%q err=%v\n", requestLogID, requestID, req.Model, routeType, settleErr)
+					settlementRetries.Enqueue(settlementRetryJob{
+						trGateway: trGateway, authorization: authorization, usage: usage,
+						requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
+					})
+				}
+				return terminal.Emit()
+			},
+		}
+	}
 	if routeType == "responses" {
-		result, err = adapter.TransformResponsesStreamWithFinishHook(pr, streamW, requestID, responseModel, trustedrouter.EstimateInputTokens(req), responseTextConfig(req), req.Response, finishHook)
+		if stageDControl != nil {
+			result, err = adapter.TransformResponsesStreamControlled(pr, streamW, requestID, responseModel, trustedrouter.EstimateInputTokens(req), responseTextConfig(req), req.Response, finishHook, stageDControl)
+		} else {
+			result, err = adapter.TransformResponsesStreamWithFinishHook(pr, streamW, requestID, responseModel, trustedrouter.EstimateInputTokens(req), responseTextConfig(req), req.Response, finishHook)
+		}
 	} else {
-		result, err = adapter.TransformStreamCaptureWithRouterMetadataAndFinishHook(pr, streamW, requestID, responseModel, chatIncludeUsage(req), routerMetadata, finishHook)
+		if stageDControl != nil {
+			result, err = adapter.TransformStreamCaptureControlled(pr, streamW, requestID, responseModel, chatIncludeUsage(req), routerMetadata, finishHook, stageDControl)
+		} else {
+			result, err = adapter.TransformStreamCaptureWithRouterMetadataAndFinishHook(pr, streamW, requestID, responseModel, chatIncludeUsage(req), routerMetadata, finishHook)
+		}
+	}
+	if stageDController != nil {
+		_ = pr.Close()
+		stageDController.stopCadence()
 	}
 	if batchW != nil {
 		if closeErr := batchW.Close(); err == nil {
@@ -1679,11 +1781,36 @@ func serveStreaming(
 		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
 		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
+			if stageDController != nil && statsW.BytesWritten() > 0 {
+				refundAuthorization := authorization
+				if authorization != nil {
+					selected := *authorization
+					selected.Model = selectedRoute.Model(req.Model, authorization)
+					selected.EndpointID = selectedRoute.Endpoint("", authorization)
+					refundAuthorization = &selected
+				}
+				refundResult, refundErr := trGateway.RefundDetailed(ctx, refundAuthorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
+				if stageDDispositionLost(refundResult) {
+					fmt.Fprintf(os.Stderr, "enclave.stage_d_refund_lost request_log_id=%q auth_id=%q disposition=%q\n", requestLogID, authorizationID(refundAuthorization), refundResult.Disposition)
+				}
+				if refundErr != nil {
+					settlementRetries.Enqueue(settlementRetryJob{
+						trGateway: trGateway, authorization: refundAuthorization, requestLogID: requestLogID,
+						clientContext: trustedrouter.ClientContextFromContext(ctx), kind: "refund",
+						refundStatus: status, refundType: failureReason(err), refundElapsed: time.Since(requestStarted).Seconds(), refundMetadata: req.Metadata,
+					})
+				}
+			} else {
+				_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
+			}
 		}
 		if routeType == "responses" || statsW.BytesWritten() == 0 {
 			_ = writeStreamingProviderError(statsW, routeType, requestID, responseModel, err, hidesPublicRouteMetadata(authorization))
 		}
+		return
+	}
+	if stageDController != nil {
+		_ = chunkW.Complete()
 		return
 	}
 	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
