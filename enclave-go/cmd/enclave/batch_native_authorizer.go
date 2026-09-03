@@ -59,6 +59,7 @@ func (a *batchNativeAuthorizer) Authorize(
 	if err != nil {
 		return batchapi.NativeAuthorization{}, err
 	}
+	ctx = trustedrouter.WithAuthorizationInvocation(ctx)
 	var authorization *trustedrouter.Authorization
 	var estimatedInput int
 	var routeType string

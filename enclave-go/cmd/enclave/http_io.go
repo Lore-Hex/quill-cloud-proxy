@@ -779,6 +779,55 @@ func writeOpenAIError(w io.Writer, status int, message, errType, code, param str
 	w.Write(body)
 }
 
+func idempotencyReplayError(err error) (*trustedrouter.ControlPlaneError, bool) {
+	var controlErr *trustedrouter.ControlPlaneError
+	if !errors.As(err, &controlErr) || controlErr.StatusCode != http.StatusConflict ||
+		controlErr.Type != "idempotency_replay" {
+		return nil, false
+	}
+	return controlErr, true
+}
+
+func writeGatewayAuthorizationError(w io.Writer, err error) {
+	if controlErr, ok := idempotencyReplayError(err); ok {
+		writeOpenAIError(
+			w, http.StatusConflict, controlErr.Message,
+			"idempotency_replay", "idempotency_replay", "",
+		)
+		return
+	}
+	writeErrorWithSourceHeaders(
+		w,
+		statusFromControlPlaneError(err),
+		messageFromControlPlaneError(err, "gateway authorization failed"),
+		"router",
+		retryHeadersFromControlPlaneError(err),
+	)
+}
+
+func writeAnthropicGatewayAuthorizationError(w io.Writer, err error) {
+	if controlErr, ok := idempotencyReplayError(err); ok {
+		body, _ := json.Marshal(map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":    "idempotency_replay",
+				"code":    "idempotency_replay",
+				"message": controlErr.Message,
+				"source":  "router",
+			},
+		})
+		writeJSONResponse(w, http.StatusConflict, body)
+		return
+	}
+	writeAnthropicErrorWithSourceHeaders(
+		w,
+		statusFromControlPlaneError(err),
+		messageFromControlPlaneError(err, "gateway authorization failed"),
+		"router",
+		retryHeadersFromControlPlaneError(err),
+	)
+}
+
 func orNilString(value string) any {
 	if value == "" {
 		return nil

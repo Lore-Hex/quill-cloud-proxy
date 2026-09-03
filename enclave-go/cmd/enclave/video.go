@@ -217,7 +217,7 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		reservationMicrodollars,
 	)
 	if err != nil {
-		writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
+		writeGatewayAuthorizationError(conn, err)
 		return
 	}
 	routes := authorizedVideoRoutes(auth, quotes)

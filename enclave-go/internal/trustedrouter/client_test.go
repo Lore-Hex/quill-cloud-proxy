@@ -3,6 +3,7 @@ package trustedrouter
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"go/ast"
@@ -331,6 +332,7 @@ func TestClientContextForwardedOnlyOnSettleAndRefund(t *testing.T) {
 		settle    map[string]any
 		refund    map[string]any
 	}
+	invocationCtx := WithAuthorizationInvocation(t.Context())
 	run := func(context *qtypes.ClientContext) captured {
 		t.Helper()
 		var got captured
@@ -365,11 +367,12 @@ func TestClientContextForwardedOnlyOnSettleAndRefund(t *testing.T) {
 				}, nil
 			}),
 		})
-		ctx := WithClientContext(t.Context(), context)
+		ctx := WithClientContext(invocationCtx, context)
 		req := &qtypes.OpenAIChatRequest{
-			Model:          "openai/gpt-4o-mini",
-			Messages:       []qtypes.OpenAIChatMessage{{Role: "user", Content: "hello"}},
-			IdempotencyKey: "idem-client-context",
+			Model:    "openai/gpt-4o-mini",
+			Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "hello"}},
+			// Leave the key absent so each call receives a fresh random key. Reusing
+			// one key in this shared invocation would make its second claim fail.
 		}
 		auth, err := client.Authorize(ctx, "sk-test", req)
 		if err != nil {
@@ -387,15 +390,41 @@ func TestClientContextForwardedOnlyOnSettleAndRefund(t *testing.T) {
 
 	without := run(nil)
 	with := run(clientContext)
-	if !bytes.Equal(with.authorize, without.authorize) {
-		t.Fatalf("authorize body changed with client context:\nwithout=%s\nwith=%s", without.authorize, with.authorize)
+	var withoutAuthorize, withAuthorize map[string]any
+	if err := json.Unmarshal(without.authorize, &withoutAuthorize); err != nil {
+		t.Fatalf("decode authorize without client context: %v", err)
 	}
-	var authorize map[string]any
-	if err := json.Unmarshal(with.authorize, &authorize); err != nil {
-		t.Fatalf("decode authorize: %v", err)
+	if err := json.Unmarshal(with.authorize, &withAuthorize); err != nil {
+		t.Fatalf("decode authorize with client context: %v", err)
 	}
-	if _, ok := authorize["client"]; ok {
-		t.Fatalf("authorize body contains client: %#v", authorize)
+	withoutKey, withoutKeyOK := withoutAuthorize["idempotency_key"].(string)
+	withKey, withKeyOK := withAuthorize["idempotency_key"].(string)
+	if !withoutKeyOK || !withKeyOK || withoutKey == withKey {
+		t.Fatalf("generated idempotency keys = (%q, %q), want distinct strings", withoutKey, withKey)
+	}
+	delete(withoutAuthorize, "idempotency_key")
+	delete(withAuthorize, "idempotency_key")
+	withoutComparable, err := json.Marshal(withoutAuthorize)
+	if err != nil {
+		t.Fatalf("re-encode authorize without client context: %v", err)
+	}
+	withComparable, err := json.Marshal(withAuthorize)
+	if err != nil {
+		t.Fatalf("re-encode authorize with client context: %v", err)
+	}
+	if !bytes.Equal(withComparable, withoutComparable) {
+		t.Fatalf("authorize body changed with client context:\nwithout=%s\nwith=%s", withoutComparable, withComparable)
+	}
+	invocationNonce, ok := withAuthorize["invocation_nonce"].(string)
+	decodedNonce, decodeErr := hex.DecodeString(invocationNonce)
+	if !ok || decodeErr != nil || len(invocationNonce) != 32 || len(decodedNonce) != 16 {
+		t.Fatalf("authorize invocation_nonce = %#v, want 32 hex characters", withAuthorize["invocation_nonce"])
+	}
+	if withoutAuthorize["invocation_nonce"] != invocationNonce {
+		t.Fatalf("authorize invocation_nonce changed within invocation: without=%#v with=%q", withoutAuthorize["invocation_nonce"], invocationNonce)
+	}
+	if _, ok := withAuthorize["client"]; ok {
+		t.Fatalf("authorize body contains client: %#v", withAuthorize)
 	}
 
 	wantClient := make(map[string]any)

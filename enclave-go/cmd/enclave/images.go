@@ -196,7 +196,7 @@ func serveImages(
 	}
 	authorization, err := trGateway.AuthorizeWithRoute(ctx, bearer, req, "images")
 	if err != nil {
-		writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
+		writeGatewayAuthorizationError(conn, err)
 		return
 	}
 	invokeOptions, err := invokeOptionsForAuthorization(ctx, secretCache, authorization)

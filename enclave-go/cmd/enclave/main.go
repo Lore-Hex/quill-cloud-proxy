@@ -625,6 +625,7 @@ func serveOneRequest(
 	statsConn.BeginRequest(requestLogID)
 	ctx = abuse.WithRequestState(ctx, &abuse.RequestState{})
 	ctx = trustedrouter.WithRequestLogID(ctx, requestLogID)
+	ctx = trustedrouter.WithAuthorizationInvocation(ctx)
 
 	requestStartedAt := time.Now()
 	requestMethod := "unknown"
@@ -1118,7 +1119,7 @@ func serveOneRequest(
 	if trEnabled {
 		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, &req, routeType)
 		if err != nil {
-			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
+			writeGatewayAuthorizationError(conn, err)
 			return
 		}
 		requestIdentity.bindAuthorization(authorization)
@@ -1957,7 +1958,7 @@ func serveMessages(
 	if trEnabled {
 		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, req, "messages")
 		if err != nil {
-			writeAnthropicErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
+			writeAnthropicGatewayAuthorizationError(conn, err)
 			return
 		}
 		attachResolvedUserModel(authorization, resolvedCustomModel)
