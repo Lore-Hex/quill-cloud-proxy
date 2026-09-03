@@ -35,7 +35,11 @@
 # ===========
 # - For every secret we mirror, this script either creates the AWS
 #   secret (if absent) or updates the existing version (if present).
-# - The AWS region is fixed at us-west-2 (the failover compute region).
+# - The AWS region defaults to eu-west-1, the primary for the quill/* secrets
+#   that replicate-secrets-to-region.sh mirrors into eu-west-3 (a newly created
+#   secret is born with that replica shape below). us-west-2 was the original
+#   landing zone; nothing runs there and its 93 copies were never read once
+#   (deleted 2026-09 with a 7-day recovery window).
 # - Re-running this script after an operator key rotation publishes the new
 #   value to AWS within one run.
 #
@@ -48,7 +52,7 @@
 
 set -euo pipefail
 
-AWS_REGION="${AWS_REGION:-us-west-2}"
+AWS_REGION="${AWS_REGION:-eu-west-1}"
 AWS_SECRET_PREFIX="${AWS_SECRET_PREFIX:-quill/}"   # AWS secret name = prefix + GCP secret id
 
 # Regions a NEWLY CREATED secret is replicated to, comma-separated. The serving

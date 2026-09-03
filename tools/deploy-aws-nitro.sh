@@ -676,8 +676,14 @@ phase_compute() {
   local vpc_id subnet_ids
   vpc_id=$(aws ec2 describe-security-groups --region "$AWS_REGION" \
     --group-ids "$sg_id" --query "SecurityGroups[0].VpcId" --output text)
+  # Public subnets only. Enclave hosts have no NAT of their own: they get a
+  # public IP from the subnet and egress through the internet gateway, the
+  # way eu-west-1 has always run. Picking every subnet in the VPC put Paris's
+  # hosts into the two tr-eu-private-* subnets that aws-private-egress.sh
+  # created for App Runner, which made two NAT gateways ($76/mo) load-bearing
+  # for hosts that never needed them (2026-09).
   subnet_ids=$(aws ec2 describe-subnets --region "$AWS_REGION" \
-    --filters "Name=vpc-id,Values=${vpc_id}" \
+    --filters "Name=vpc-id,Values=${vpc_id}" "Name=map-public-ip-on-launch,Values=true" \
     --query "Subnets[].SubnetId" --output text | tr '\t' ',')
   log "  VPC: $vpc_id  subnets: $subnet_ids"
 
