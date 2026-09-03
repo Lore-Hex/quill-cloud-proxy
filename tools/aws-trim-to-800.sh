@@ -4,8 +4,8 @@
 #   bash aws-trim-to-800.sh <phase> [DRY_RUN=1]
 # Phases (in the order they should run):
 #   status            print the live state of everything this script touches
-#   asg-ireland       quill-enclave-asg eu-west-1 desired 2 -> 1
-#   asg-paris         quill-enclave-asg eu-west-3 desired 2 -> 1, subnets -> the 3 public ones, instance refresh
+#   asg-ireland       quill-enclave-asg eu-west-1 -> ENCLAVE_DESIRED hosts (default 2)
+#   asg-paris         quill-enclave-asg eu-west-3 -> ENCLAVE_DESIRED hosts, subnets -> the 3 public ones, instance refresh
 #   secrets-usw2      schedule deletion (7-day recovery) of the 93 standalone quill/* secrets in us-west-2
 #   orphans-use1      us-east-1: NAT with 0 bytes/7d + its EIP + the Bedrock endpoint in an empty VPC
 #   ses-pool          delete the MANAGED dedicated-IP pool no configuration set uses ($15/mo)
@@ -21,6 +21,14 @@ DRY_RUN="${DRY_RUN:-0}"
 ACCT=330422590279
 run() { if [ "$DRY_RUN" = 1 ]; then echo "DRY: $*"; else echo "+ $*"; "$@"; fi; }
 log() { printf '\n=== %s\n' "$*"; }
+
+# Hosts per enclave ASG. TWO, deliberately: one host per region is enough to
+# serve, and the second is the backup that keeps a host loss from emptying the
+# region for the ~5 minutes the ASG needs to replace it. The trim originally
+# went to one and was reversed the same day ("the backup important"), so this
+# is a named constant and min-size is set with it -- min was 0, which let a
+# desired-capacity change silently stand as the new floor.
+ENCLAVE_DESIRED="${ENCLAVE_DESIRED:-2}"
 
 PARIS_PUBLIC_SUBNETS="subnet-06e58bd9bca166a94,subnet-0113faa4984c68f5d,subnet-0267452d36af54676"
 PARIS_PRIVATE_SUBNETS="subnet-02c00be7f803c5ec9 subnet-02bf657680a20cc32"
@@ -52,13 +60,13 @@ status)
 
 asg-ireland)
   log "eu-west-1 before"; asg_desired eu-west-1
-  run aws autoscaling update-auto-scaling-group --region eu-west-1 --auto-scaling-group-name quill-enclave-asg --desired-capacity 1
+  run aws autoscaling update-auto-scaling-group --region eu-west-1 --auto-scaling-group-name quill-enclave-asg --desired-capacity "$ENCLAVE_DESIRED" --min-size "$ENCLAVE_DESIRED"
   log "eu-west-1 after"; asg_desired eu-west-1
   ;;
 
 asg-paris)
   log "eu-west-3 before"; asg_desired eu-west-3
-  run aws autoscaling update-auto-scaling-group --region eu-west-3 --auto-scaling-group-name quill-enclave-asg --desired-capacity 1 --vpc-zone-identifier "$PARIS_PUBLIC_SUBNETS"
+  run aws autoscaling update-auto-scaling-group --region eu-west-3 --auto-scaling-group-name quill-enclave-asg --desired-capacity "$ENCLAVE_DESIRED" --min-size "$ENCLAVE_DESIRED" --vpc-zone-identifier "$PARIS_PUBLIC_SUBNETS"
   log "instance refresh so the surviving host relaunches in a public subnet (replacement launched first)"
   run aws autoscaling start-instance-refresh --region eu-west-3 --auto-scaling-group-name quill-enclave-asg --preferences '{"MinHealthyPercentage":100,"MaxHealthyPercentage":200,"InstanceWarmup":300}'
   log "eu-west-3 after"; asg_desired eu-west-3
