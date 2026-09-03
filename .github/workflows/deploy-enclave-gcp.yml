@@ -464,7 +464,7 @@ jobs:
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          QUILL_USAGE_HEARTBEAT: "on"
+          QUILL_USAGE_HEARTBEAT: "off"
           # us-central1 serves the canonical global convenience hostname, the
           # explicit regional SDK retry hostname, api.trustedrouter.com, and
           # api.allyrouter.com, and api.uptimerouter.com. The enclave ACME
@@ -611,7 +611,7 @@ jobs:
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          QUILL_USAGE_HEARTBEAT: "on"
+          QUILL_USAGE_HEARTBEAT: "off"
           PREV_TEMPLATE: ${{ steps.prev.outputs.europe_west4_template }}
           PREV_DRAIN_STATE: ${{ steps.prev.outputs.europe_west4_drain_state }}
         run: |
@@ -637,7 +637,7 @@ jobs:
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          QUILL_USAGE_HEARTBEAT: "on"
+          QUILL_USAGE_HEARTBEAT: "off"
           PREV_TEMPLATE: ${{ steps.prev.outputs.us_east4_template }}
           PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_east4_drain_state }}
         run: |
@@ -663,7 +663,7 @@ jobs:
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          QUILL_USAGE_HEARTBEAT: "on"
+          QUILL_USAGE_HEARTBEAT: "off"
           PREV_TEMPLATE: ${{ steps.prev.outputs.southamerica_east1_template }}
           PREV_DRAIN_STATE: ${{ steps.prev.outputs.southamerica_east1_drain_state }}
         run: |
