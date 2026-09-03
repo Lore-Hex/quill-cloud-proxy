@@ -113,7 +113,12 @@ func applyCustomModelPromptToMessages(
 	}
 }
 
-func customModelResponseModel(fallback string, authorization *trustedrouter.Authorization) string {
+func authorizationResponseModel(fallback string, authorization *trustedrouter.Authorization) string {
+	if authorization != nil {
+		if modelID := strings.TrimSpace(authorization.ResponseModel); modelID != "" {
+			return modelID
+		}
+	}
 	if authorization != nil && authorization.CustomModel != nil {
 		modelID := strings.TrimSpace(authorization.CustomModel.ID)
 		if modelID != "" {
@@ -121,6 +126,10 @@ func customModelResponseModel(fallback string, authorization *trustedrouter.Auth
 		}
 	}
 	return fallback
+}
+
+func hidesPublicRouteMetadata(authorization *trustedrouter.Authorization) bool {
+	return authorization != nil && authorization.HidePublicMetadata
 }
 
 func requestResponseModel(req *types.OpenAIChatRequest, fallback string) string {

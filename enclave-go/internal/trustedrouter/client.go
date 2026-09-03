@@ -416,6 +416,8 @@ type Authorization struct {
 	ProviderName                          string                             `json:"provider_name"`
 	WaferZDRRequired                      bool                               `json:"wafer_zdr_required"`
 	RequestedModel                        string                             `json:"requested_model"`
+	ResponseModel                         string                             `json:"response_model"`
+	HidePublicMetadata                    bool                               `json:"hide_public_metadata"`
 	Region                                string                             `json:"region"`
 	UsageType                             string                             `json:"usage_type"`
 	LimitUsageType                        string                             `json:"limit_usage_type"`

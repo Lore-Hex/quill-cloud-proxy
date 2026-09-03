@@ -64,6 +64,15 @@ func receiptClaims(
 	} else if certSHA256, ok := llm.UpstreamCertSHA256FromContext(ctx); ok {
 		upstream.CertSHA256 = certSHA256
 	}
+	selectedModel := selectedRoute.Model(req.Model, authorization)
+	selectedProvider := selectedRoute.Provider("", authorization)
+	selectedEndpoint := selectedRoute.Endpoint("", authorization)
+	if hidesPublicRouteMetadata(authorization) {
+		selectedModel = authorizationResponseModel(selectedModel, authorization)
+		selectedProvider = "trustedrouter"
+		selectedEndpoint = ""
+		upstream = receipt.Upstream{Tier: upstream.Tier}
+	}
 	claims := receipt.Claims{
 		RV:         1,
 		Issuer:     receiptIssuer,
@@ -85,9 +94,9 @@ func receiptClaims(
 		},
 		Model: receipt.Model{
 			Requested: requestedModel,
-			Selected:  selectedRoute.Model(req.Model, authorization),
-			Provider:  selectedRoute.Provider("", authorization),
-			Endpoint:  selectedRoute.Endpoint("", authorization),
+			Selected:  selectedModel,
+			Provider:  selectedProvider,
+			Endpoint:  selectedEndpoint,
 		},
 		Upstream: upstream,
 	}

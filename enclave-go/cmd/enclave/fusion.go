@@ -2270,7 +2270,7 @@ func serveFusionFinalStreamingAttempt(
 			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		if statsW.BytesWritten() == 0 {
-			_ = writeStreamingProviderError(statsW, "chat.completions", responseID, req.Model, err)
+			_ = writeStreamingProviderError(statsW, "chat.completions", responseID, req.Model, err, false)
 		}
 		return true, err
 	}

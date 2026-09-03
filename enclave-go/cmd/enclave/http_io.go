@@ -22,6 +22,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/attestation"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
 
 var getAttestation = attestation.Get
@@ -1012,6 +1013,17 @@ func upstreamErrorResponse(err error) (int, string) {
 		}
 	}
 	return 502, "provider error"
+}
+
+func publicProviderErrorMessage(
+	message string,
+	err error,
+	authorization *trustedrouter.Authorization,
+) string {
+	if hidesPublicRouteMetadata(authorization) && !isClientInputError(err) {
+		return "upstream provider error"
+	}
+	return message
 }
 
 type clientInputError interface {

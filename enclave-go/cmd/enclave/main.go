@@ -1362,6 +1362,7 @@ func serveResponsesNonStreaming(
 		fmt.Fprintf(os.Stderr, "enclave.responses_collect_failed model=%q err=%v\n", req.Model, err)
 		// Surface the real upstream status+message instead of an opaque 502.
 		status, message := upstreamErrorResponse(err)
+		message = publicProviderErrorMessage(message, err, authorization)
 		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
@@ -1399,7 +1400,7 @@ func serveResponsesNonStreaming(
 	if selectedModel != "" {
 		req.Model = selectedModel
 	}
-	responseModel := customModelResponseModel(req.Model, authorization)
+	responseModel := authorizationResponseModel(req.Model, authorization)
 	if req.Response != nil && (len(result.Citations) > 0 || len(result.SearchResults) > 0) {
 		req.Response.OutputAnnotations = responsesAnnotationsFromProviderProvenance(result)
 	}
@@ -1476,6 +1477,7 @@ func serveChatNonStreaming(
 		// large for this model") instead of an opaque 502, matching the streaming
 		// path. upstreamErrorResponse falls back to 502 if it can't classify.
 		status, message := upstreamErrorResponse(err)
+		message = publicProviderErrorMessage(message, err, authorization)
 		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
@@ -1492,7 +1494,7 @@ func serveChatNonStreaming(
 	if selectedModel != "" {
 		req.Model = selectedModel
 	}
-	responseModel := customModelResponseModel(req.Model, authorization)
+	responseModel := authorizationResponseModel(req.Model, authorization)
 	var body bytes.Buffer
 	if err := adapter.WriteChatCompletionResponseWithProvenance(
 		&body, requestID, responseModel, result.Text, adapter.JoinThinking(result.Thinking),
@@ -1604,7 +1606,7 @@ func serveStreaming(
 	if streamModel != "" {
 		req.Model = streamModel
 	}
-	responseModel := customModelResponseModel(req.Model, authorization)
+	responseModel := authorizationResponseModel(req.Model, authorization)
 	var routerMetadata map[string]any
 	if req.OpenRouterMetadata {
 		routerMetadata = openRouterRoutingMetadata(authorization, selectedRoute)
@@ -1680,7 +1682,7 @@ func serveStreaming(
 			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
 		if routeType == "responses" || statsW.BytesWritten() == 0 {
-			_ = writeStreamingProviderError(statsW, routeType, requestID, responseModel, err)
+			_ = writeStreamingProviderError(statsW, routeType, requestID, responseModel, err, hidesPublicRouteMetadata(authorization))
 		}
 		return
 	}
@@ -1864,6 +1866,7 @@ func serveMessages(
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.messages_collect_failed model=%q err=%v\n", req.Model, err)
 			status, message := upstreamErrorResponse(err)
+			message = publicProviderErrorMessage(message, err, authorization)
 			if trEnabled {
 				_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 			}
@@ -1880,7 +1883,7 @@ func serveMessages(
 		if selectedModel != "" {
 			req.Model = selectedModel
 		}
-		responseModel := customModelResponseModel(req.Model, authorization)
+		responseModel := authorizationResponseModel(req.Model, authorization)
 		var envelope bytes.Buffer
 		if err := adapter.WriteMessagesResponse(&envelope, messageID, responseModel, result, inputTokens, outputTokens); err != nil {
 			writeAnthropicError(conn, 500, "messages encoding error")
@@ -1907,7 +1910,7 @@ func serveMessages(
 			writeAnthropicError(conn, 502, "settlement failed")
 			return
 		}
-		responseBody, err := annotateBatchSettlementOnlyUsage(ctx, envelope.Bytes(), settlement)
+		responseBody, err := annotateBatchSettlementOnlyUsage(ctx, envelope.Bytes(), settlement, authorization)
 		if err != nil {
 			writeAnthropicError(conn, 500, "messages encoding error")
 			return
@@ -1931,7 +1934,7 @@ func serveMessages(
 	if streamModel := selectedRoute.Model(req.Model, authorization); streamModel != "" {
 		req.Model = streamModel
 	}
-	responseModel := customModelResponseModel(req.Model, authorization)
+	responseModel := authorizationResponseModel(req.Model, authorization)
 	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
 		_ = pr.Close()
 		return
@@ -1949,6 +1952,7 @@ func serveMessages(
 		}
 		if statsW.BytesWritten() == 0 {
 			_, message := upstreamErrorResponse(err)
+			message = publicProviderErrorMessage(message, err, authorization)
 			_ = writeAnthropicStreamError(statsW, message)
 		}
 		return

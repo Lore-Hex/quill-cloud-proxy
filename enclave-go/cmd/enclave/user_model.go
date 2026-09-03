@@ -949,7 +949,7 @@ func serveUserModelBuffered(
 		trustedrouter.EstimateInputTokens(req),
 		trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
 	)
-	responseModel := customModelResponseModel(authorization.Model, authorization)
+	responseModel := authorizationResponseModel(authorization.Model, authorization)
 	var responseBody bytes.Buffer
 	var encodeErr error
 	switch routeType {
@@ -994,7 +994,7 @@ func serveUserModelBuffered(
 		return
 	}
 	if routeType == "messages" {
-		annotated, annotationErr := annotateBatchSettlementOnlyUsage(ctx, responseBody.Bytes(), settlement)
+		annotated, annotationErr := annotateBatchSettlementOnlyUsage(ctx, responseBody.Bytes(), settlement, authorization)
 		if annotationErr != nil {
 			writeUserModelBufferedSpentError(conn, routeType, internalUserModelError(annotationErr))
 			return
@@ -1029,7 +1029,7 @@ func serveUserModelStreaming(
 	requestLogID string,
 ) {
 	requestID := newUserModelRequestID(routeType)
-	responseModel := customModelResponseModel(authorization.Model, authorization)
+	responseModel := authorizationResponseModel(authorization.Model, authorization)
 	if err := writeResponseHead(conn, http.StatusOK, "text/event-stream"); err != nil {
 		failure := clientClosedUserModelError(err)
 		refundUserModel(ctx, trGateway, authorization, failure, nil, req.Metadata)

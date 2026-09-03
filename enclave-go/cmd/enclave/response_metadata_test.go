@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
@@ -104,6 +105,90 @@ func TestOpenRouterRoutingMetadataMasksCustomModelAndUnattemptedTopology(t *test
 	}
 }
 
+func TestPrivateProxyResponseMetadataMasksBackingRoute(t *testing.T) {
+	t.Parallel()
+
+	const (
+		alias    = "trustedrouter/archimedes-1.0"
+		backing  = "mistralai/mistral-large"
+		provider = "mistral"
+		endpoint = "credits:mistral:mistralai/mistral-large"
+	)
+	authorization := &trustedrouter.Authorization{
+		RequestedModel:     alias,
+		ResponseModel:      alias,
+		HidePublicMetadata: true,
+		Model:              backing,
+		Provider:           provider,
+		EndpointID:         endpoint,
+		UsageType:          "Credits",
+		Region:             "us-central1",
+	}
+	tracker := newSelectedRouteTracker()
+	option := llm.InvokeOptions{Model: backing, Provider: provider, EndpointID: endpoint}
+	tracker.RecordCandidateAttempt(option)
+	tracker.Select(option)
+
+	annotated, err := annotateSettledResponseMetadata(
+		[]byte(`{"id":"chatcmpl_private","model":"trustedrouter/archimedes-1.0","usage":{"prompt_tokens":11,"completion_tokens":3}}`),
+		authorization,
+		&trustedrouter.SettleResult{
+			CostMicrodollars: 17,
+			UsageType:        "Credits",
+			Model:            backing,
+			Provider:         provider,
+			Region:           "us-central1",
+		},
+		tracker,
+		[]llm.InvokeOptions{option},
+		adapter.StreamResult{},
+		true,
+	)
+	if err != nil {
+		t.Fatalf("annotateSettledResponseMetadata: %v", err)
+	}
+	encoded := string(annotated)
+	for _, forbidden := range []string{backing, endpoint, `"selected_provider":"mistral"`, "us-central1"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("private proxy metadata leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if !strings.Contains(encoded, alias) || !strings.Contains(encoded, `"selected_provider":"trustedrouter"`) {
+		t.Fatalf("private proxy metadata was not masked: %s", encoded)
+	}
+}
+
+func TestPrivateProxyBatchUsageMasksBackingRoute(t *testing.T) {
+	t.Parallel()
+
+	authorization := &trustedrouter.Authorization{
+		ResponseModel:      "trustedrouter/archimedes-1.0",
+		HidePublicMetadata: true,
+		Model:              "mistralai/mistral-large",
+		Provider:           "mistral",
+	}
+	annotated, err := annotateSettlementOnlyUsage(
+		[]byte(`{"id":"msg_private","usage":{"input_tokens":2,"output_tokens":1}}`),
+		&trustedrouter.SettleResult{
+			CostMicrodollars: 9,
+			UsageType:        "Credits",
+			Model:            "mistralai/mistral-large",
+			Provider:         "mistral",
+		},
+		authorization,
+	)
+	if err != nil {
+		t.Fatalf("annotateSettlementOnlyUsage: %v", err)
+	}
+	encoded := string(annotated)
+	if strings.Contains(encoded, "mistralai/mistral-large") || strings.Contains(encoded, `"selected_provider":"mistral"`) {
+		t.Fatalf("private proxy batch usage leaked backing route: %s", encoded)
+	}
+	if !strings.Contains(encoded, "trustedrouter/archimedes-1.0") || !strings.Contains(encoded, `"selected_provider":"trustedrouter"`) {
+		t.Fatalf("private proxy batch usage was not masked: %s", encoded)
+	}
+}
+
 func TestAnnotateSettlementOnlyUsageAddsIntegerCostWithoutContent(t *testing.T) {
 	t.Parallel()
 
@@ -114,7 +199,7 @@ func TestAnnotateSettlementOnlyUsageAddsIntegerCostWithoutContent(t *testing.T) 
 		Model:            "anthropic/claude-sonnet",
 		Provider:         "anthropic",
 		Region:           "us-central1",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("annotateSettlementOnlyUsage: %v", err)
 	}
@@ -142,7 +227,7 @@ func TestBatchSettlementUsageDoesNotChangeOrdinaryResponses(t *testing.T) {
 
 	body := []byte(`{"id":"msg_ordinary","usage":{"input_tokens":2,"output_tokens":1}}`)
 	settlement := &trustedrouter.SettleResult{CostMicrodollars: 9, UsageType: "Credits"}
-	ordinary, err := annotateBatchSettlementOnlyUsage(context.Background(), body, settlement)
+	ordinary, err := annotateBatchSettlementOnlyUsage(context.Background(), body, settlement, nil)
 	if err != nil {
 		t.Fatalf("ordinary response: %v", err)
 	}
@@ -151,7 +236,7 @@ func TestBatchSettlementUsageDoesNotChangeOrdinaryResponses(t *testing.T) {
 	}
 
 	batchCtx := context.WithValue(context.Background(), batchExecutionContextKey{}, true)
-	annotated, err := annotateBatchSettlementOnlyUsage(batchCtx, body, settlement)
+	annotated, err := annotateBatchSettlementOnlyUsage(batchCtx, body, settlement, nil)
 	if err != nil {
 		t.Fatalf("batch response: %v", err)
 	}

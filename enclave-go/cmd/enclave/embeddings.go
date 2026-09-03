@@ -173,7 +173,7 @@ func serveEmbeddings(
 		writeSpentError(conn, 500, "embeddings encoding error")
 		return
 	}
-	out, err = annotateBatchSettlementOnlyUsage(ctx, out, settlement)
+	out, err = annotateBatchSettlementOnlyUsage(ctx, out, settlement, authorization)
 	if err != nil {
 		writeSpentError(conn, 500, "embeddings encoding error")
 		return

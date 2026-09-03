@@ -94,6 +94,58 @@ func TestNonStreamingReceiptCarriesProviderVerification(t *testing.T) {
 	}
 }
 
+func TestPrivateProxyReceiptMasksBackingRoute(t *testing.T) {
+	t.Parallel()
+
+	const (
+		alias    = "trustedrouter/archimedes-1.0"
+		backing  = "mistralai/mistral-large"
+		provider = "mistral"
+		endpoint = "credits:mistral:mistralai/mistral-large"
+	)
+	authorization := &trustedrouter.Authorization{
+		RequestedModel:     alias,
+		ResponseModel:      alias,
+		HidePublicMetadata: true,
+		Model:              backing,
+		Provider:           provider,
+		EndpointID:         endpoint,
+	}
+	tracker := newSelectedRouteTracker()
+	tracker.Select(llm.InvokeOptions{Model: backing, Provider: provider, EndpointID: endpoint})
+	verifiedAt := time.Unix(1_788_000_000, 0)
+	ctx := llm.WithUpstreamVerification(
+		context.Background(),
+		"mistral-private-policy",
+		verifiedAt,
+		verifiedAt.Add(5*time.Minute),
+	)
+	claims := receiptClaims(
+		ctx,
+		&types.OpenAIChatRequest{Model: alias},
+		"chat.completions",
+		"response-id",
+		"generation-id",
+		alias,
+		tracker,
+		authorization,
+		sha256.Sum256(nil),
+		"body",
+		nil,
+		nil,
+	)
+
+	if claims.Model.Requested != alias || claims.Model.Selected != alias {
+		t.Fatalf("receipt model = %+v", claims.Model)
+	}
+	if claims.Model.Provider != "trustedrouter" || claims.Model.Endpoint != "" {
+		t.Fatalf("receipt leaked backing route: %+v", claims.Model)
+	}
+	if claims.Upstream.Tier != "tee-verified" || claims.Upstream.Policy != "" || claims.Upstream.VerifiedAt != 0 || claims.Upstream.VerificationExpiresAt != 0 || claims.Upstream.CertSHA256 != "" {
+		t.Fatalf("receipt leaked backing verification details: %+v", claims.Upstream)
+	}
+}
+
 func TestReceiptClaimsCarryCertainWebPKICertAndOmitItForTEE(t *testing.T) {
 	leafDER := []byte("serving-leaf-der")
 	digest := sha256.Sum256(leafDER)
