@@ -3458,6 +3458,10 @@ func writeFusionError(ctx context.Context, conn io.Writer, trGateway *trustedrou
 		writeError(conn, aerr.Status, aerr.Message)
 		return
 	}
+	if _, ok := idempotencyReplayError(err); ok {
+		writeGatewayAuthorizationError(conn, err)
+		return
+	}
 	writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "fusion failed"), "router", retryHeadersFromControlPlaneError(err))
 }
 

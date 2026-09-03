@@ -140,6 +140,14 @@ func (c *Client) authorizeAtDecodeSeam(
 	body map[string]any,
 	estimateRequest spendlease.EstimateRequest,
 ) (*Authorization, int, error) {
+	invocation := authorizationInvocationFromContext(ctx)
+	invocationNonce, err := invocation.invocationNonce()
+	if err != nil {
+		return nil, -1, err
+	}
+	// Always overwrite this field at the last body-construction seam. No
+	// caller-controlled request field can select or influence the nonce.
+	body["invocation_nonce"] = invocationNonce
 	if c.spendLease != nil {
 		body["spend_lease_echo"] = c.spendLease.state.BeforeRequest(lookupHash, estimateRequest, time.Now())
 	}
@@ -166,6 +174,17 @@ func (c *Client) authorizeAtDecodeSeam(
 	if err != nil {
 		return nil, controlPlaneEndpoint, err
 	}
+	idempotencyKey, _ := body["idempotency_key"].(string)
+	if decoded.Data.IdempotentReplay && decoded.Data.InvocationNonce != invocationNonce {
+		return nil, controlPlaneEndpoint, idempotencyReplayConflict()
+	}
+	// A retry is still inside the transport loop above, so the first successful
+	// decode claims this key exactly once for the public invocation. A later
+	// authorize call in the same invocation cannot turn a same-nonce replay into
+	// a second provider dispatch.
+	if !invocation.claim(idempotencyKey) {
+		return nil, controlPlaneEndpoint, idempotencyReplayConflict()
+	}
 	if c.spendLease != nil && decoded.Data.SpendLease != nil {
 		if err := c.spendLease.state.HandleResponse(lookupHash, decoded.Data.WorkspaceID, decoded.Data.SpendLease, time.Now()); err != nil {
 			// Stage A artifacts are advisory. Verification failure is fail-closed
@@ -176,6 +195,16 @@ func (c *Client) authorizeAtDecodeSeam(
 		decoded.Data.SpendLease = nil // never retain or accidentally log token material
 	}
 	return &decoded.Data, controlPlaneEndpoint, nil
+}
+
+func idempotencyReplayConflict() error {
+	return &ControlPlaneError{
+		Path:       spendlease.AuthorizePath,
+		StatusCode: http.StatusConflict,
+		Message:    "The idempotency key has already been used by another invocation.",
+		Type:       "idempotency_replay",
+		Reason:     "idempotency_replay",
+	}
 }
 
 func spendLeaseRequestForChat(region, routeType string, req *qtypes.OpenAIChatRequest) spendlease.EstimateRequest {

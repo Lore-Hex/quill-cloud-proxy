@@ -408,6 +408,8 @@ func (c *Client) primaryBaseURL() string {
 
 type Authorization struct {
 	AuthorizationID                       string                             `json:"authorization_id"`
+	IdempotentReplay                      bool                               `json:"idempotent_replay"`
+	InvocationNonce                       string                             `json:"invocation_nonce"`
 	WorkspaceID                           string                             `json:"workspace_id"`
 	APIKeyHash                            string                             `json:"api_key_hash"`
 	Model                                 string                             `json:"model"`

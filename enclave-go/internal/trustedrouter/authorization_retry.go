@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,6 +32,60 @@ type retryPolicy struct {
 	maxDelay    time.Duration
 	totalBudget time.Duration
 	sleep       func(context.Context, time.Duration) error
+}
+
+type authorizationInvocationContextKey struct{}
+
+type authorizationInvocation struct {
+	once    sync.Once
+	nonce   string
+	err     error
+	mu      sync.Mutex
+	claimed map[string]struct{}
+}
+
+// WithAuthorizationInvocation marks a context as one public invocation. The
+// nonce itself is generated lazily at the authorize decode seam, remains
+// enclave-local, and is shared by every authorization made for that invocation.
+func WithAuthorizationInvocation(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, authorizationInvocationContextKey{}, &authorizationInvocation{})
+}
+
+func authorizationInvocationFromContext(ctx context.Context) *authorizationInvocation {
+	if ctx != nil {
+		if invocation, _ := ctx.Value(authorizationInvocationContextKey{}).(*authorizationInvocation); invocation != nil {
+			return invocation
+		}
+	}
+	return &authorizationInvocation{}
+}
+
+func (i *authorizationInvocation) invocationNonce() (string, error) {
+	i.once.Do(func() {
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			i.err = fmt.Errorf("trustedrouter: generate invocation nonce: %w", err)
+			return
+		}
+		i.nonce = hex.EncodeToString(random[:])
+	})
+	return i.nonce, i.err
+}
+
+func (i *authorizationInvocation) claim(idempotencyKey string) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.claimed == nil {
+		i.claimed = make(map[string]struct{})
+	}
+	if _, exists := i.claimed[idempotencyKey]; exists {
+		return false
+	}
+	i.claimed[idempotencyKey] = struct{}{}
+	return true
 }
 
 func defaultAuthorizeRetryPolicy() retryPolicy {
