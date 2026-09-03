@@ -34,6 +34,12 @@ on:
       - "tools/wait-canonical-drained.sh"
       - "tools/wait-region-attested.sh"
       - "tools/verify-region-before-dns.sh"
+      - "tools/verify-stage-d-stream.py"
+      - "tools/stage-d-gate-lib.sh"
+      - "tools/write-stage-d-policy.py"
+      - "tools/wait-stage-d-policy.sh"
+      - "tools/tests/test-stage-d-gates.sh"
+      - "tools/testdata/stage-d-evidence-lookup.json"
       - "tools/wait-region-synthetic-up.sh"
       - "tools/synthetic_gate_status.py"
       - "tools/watchdog.py"
@@ -124,6 +130,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.24"
+      - name: Test Stage D publication and streaming gates (offline)
+        working-directory: .
+        run: tools/tests/test-stage-d-gates.sh
       - run: go test -tags 'cloud_gcp,llm_multi' ./...
 
   build-and-release:
@@ -134,6 +143,7 @@ jobs:
       image_digest: ${{ steps.resolve-digest.outputs.image_digest }}
       accepted_digests: ${{ steps.write-trust.outputs.accepted_digests }}
       accepted_references: ${{ steps.write-trust.outputs.accepted_references }}
+      stage_d_policy_sha256: ${{ steps.stage-d-transition.outputs.policy_sha256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -149,12 +159,16 @@ jobs:
           SHA="$(git rev-parse --short HEAD)"
           IMAGE_TAG="gcp-release-${SHA}"
           IMAGE_REF="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPO}/${IMAGE_NAME}:${IMAGE_TAG}"
-          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
-          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
-          echo "SHA=${SHA}" >> "$GITHUB_ENV"
-          echo "IMAGE_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
-          echo "IMAGE_REF=${IMAGE_REF}" >> "$GITHUB_ENV"
+          {
+            echo "sha=${SHA}"
+            echo "image_tag=${IMAGE_TAG}"
+            echo "image_ref=${IMAGE_REF}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "SHA=${SHA}"
+            echo "IMAGE_TAG=${IMAGE_TAG}"
+            echo "IMAGE_REF=${IMAGE_REF}"
+          } >> "$GITHUB_ENV"
 
       - name: Authenticate to GCP via WIF
         uses: google-github-actions/auth@v3
@@ -163,6 +177,10 @@ jobs:
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
 
       - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
 
       - name: Configure docker auth (for image describe)
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
@@ -227,6 +245,86 @@ jobs:
           echo "image_digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "DIGEST=${DIGEST}" >> "$GITHUB_ENV"
 
+      - id: stage-d-transition
+        name: Build verified transitional Stage D accepted set
+        run: |
+          set -euo pipefail
+          work_dir="$(mktemp -d "${RUNNER_TEMP}/stage-d-transition-XXXXXX")"
+          trap 'rm -rf "${work_dir}"' EXIT
+          previous_policy="${work_dir}/stage-d-accepted.json"
+          previous_bundle="${previous_policy}.bundle"
+          base="https://trust.trustedrouter.com/gcp/stage-d-accepted.json"
+          payload_code="$(curl -sS --connect-timeout 5 --max-time 20 \
+            -o "${previous_policy}" -w '%{http_code}' \
+            "${base}?nocache=${GITHUB_RUN_ID}-payload")"
+          bundle_code="$(curl -sS --connect-timeout 5 --max-time 20 \
+            -o "${previous_bundle}" -w '%{http_code}' \
+            "${base}.bundle?nocache=${GITHUB_RUN_ID}-bundle")"
+          previous_args=()
+          if [ "${payload_code}" = "200" ] && [ "${bundle_code}" = "200" ]; then
+            identity="https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-gcp.yml@refs/heads/main"
+            cosign verify-blob \
+              --bundle "${previous_bundle}" \
+              --certificate-identity "${identity}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "${previous_policy}"
+            python3 tools/write-stage-d-policy.py --validate "${previous_policy}"
+            previous_args+=(--accepted-policy "${previous_policy}")
+          elif [ "${payload_code}" = "404" ] && [ "${bundle_code}" = "404" ]; then
+            echo "no Stage D policy is published yet; bootstrapping from every running MIG template"
+          else
+            echo "published Stage D payload/bundle is inconsistent (HTTP ${payload_code}/${bundle_code}); refusing to roll" >&2
+            exit 1
+          fi
+
+          running_digests="${work_dir}/running-digests.txt"
+          : > "${running_digests}"
+          for pair in \
+            "us-central1:quill-enclave-mig-us" \
+            "europe-west4:quill-enclave-mig-eu" \
+            "us-east4:quill-enclave-mig-useast4" \
+            "southamerica-east1:quill-enclave-mig-sa"; do
+            region="${pair%%:*}"
+            mig="${pair##*:}"
+            mapfile -t running_templates < <(
+              gcloud compute instance-groups managed list-instances "${mig}" \
+                --region="${region}" --project="${PROJECT_ID}" \
+                --filter='instanceStatus=RUNNING' \
+                --format='value(version.instanceTemplate)' | sed '/^[[:space:]]*$/d' | sort -u
+            )
+            if [ "${#running_templates[@]}" -eq 0 ]; then
+              echo "${region}: no running MIG template found; refusing to publish an incomplete transition set" >&2
+              exit 1
+            fi
+            for template_url in "${running_templates[@]}"; do
+              template="${template_url##*/}"
+              image_ref="$(gcloud compute instance-templates describe "${template}" \
+                --project="${PROJECT_ID}" --format=json | \
+                jq -er '.properties.metadata.items[] | select(.key == "tee-image-reference") | .value')"
+              if [[ "${image_ref}" == *@sha256:* ]]; then
+                running_digest="${image_ref##*@}"
+              else
+                running_digest="$(gcloud artifacts docker images describe "${image_ref}" \
+                  --project="${PROJECT_ID}" --format='value(image_summary.digest)')"
+              fi
+              if ! [[ "${running_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                echo "${region}: template ${template} has no valid immutable image digest" >&2
+                exit 1
+              fi
+              printf '%s\n' "${running_digest}" >> "${running_digests}"
+            done
+          done
+          sort -u -o "${running_digests}" "${running_digests}"
+          python3 tools/write-stage-d-policy.py \
+            --output trust-page/gcp/stage-d-accepted.json \
+            --github-run-number "${GITHUB_RUN_NUMBER}" \
+            --kind transitional \
+            --issued-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --incoming-digest "${DIGEST}" \
+            --running-digest-file "${running_digests}" \
+            "${previous_args[@]}"
+          echo "policy_sha256=$(sha256sum trust-page/gcp/stage-d-accepted.json | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
       - id: write-trust
         name: Write transitional trust-page artifacts
         run: |
@@ -262,7 +360,7 @@ jobs:
               --image-digest "${DIGEST}" \
               --accepted-image-digests "${accepted}" \
               --accepted-image-references "${accepted_references}"
-            git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust
+            git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust trust-page/gcp/stage-d-accepted.json
             if ! git diff --cached --quiet; then
               git commit --amend --no-edit
             fi
@@ -270,7 +368,7 @@ jobs:
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust
+          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust trust-page/gcp/stage-d-accepted.json
           if git diff --cached --quiet; then
             echo "trust-page artifacts unchanged; nothing to commit"
             exit 0
@@ -328,6 +426,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
+      - name: Wait for exact signed public transitional Stage D policy
+        env:
+          EXPECTED_POLICY_SHA256: ${{ needs.build-and-release.outputs.stage_d_policy_sha256 }}
+        run: |
+          set -euo pipefail
+          actual="$(sha256sum trust-page/gcp/stage-d-accepted.json | awk '{print $1}')"
+          [ "${actual}" = "${EXPECTED_POLICY_SHA256}" ] || {
+            echo "main does not contain the transitional policy committed by this run" >&2
+            exit 1
+          }
+          tools/wait-stage-d-policy.sh trust-page/gcp/stage-d-accepted.json
       - name: Wait for exact public transition trust set
         env:
           EXPECTED_DIGESTS: ${{ needs.build-and-release.outputs.accepted_digests }}
@@ -363,6 +477,11 @@ jobs:
     needs: [build-and-release, grant-batch-image-access, verify-transition-trust-page]
     if: ${{ needs.grant-batch-image-access.result == 'success' && needs.verify-transition-trust-page.result == 'success' }}
     runs-on: ubuntu-latest
+    # Dedicated heartbeat-capable, local-typed key. Provision the GitHub
+    # secret STAGE_D_PROBE_API_KEY in the Stage D pilot workspace; it must not
+    # belong to the regional-quota workspace. This workflow never creates it.
+    env:
+      STAGE_D_PROBE_API_KEY: ${{ secrets.STAGE_D_PROBE_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -519,6 +638,17 @@ jobs:
         timeout-minutes: 14
         run: bash tools/wait-region-attested.sh quill-enclave-mig-us- us-central1
 
+      - name: Blocking per-instance streaming gate (us-central1)
+        # This is intentionally before DNS restoration and is also exercised
+        # by recover-gcp-region.sh against the previous template. The verifier
+        # reads QUILL_USAGE_HEARTBEAT from that selected template: on requires
+        # positive Stage D evidence; off requires plain terminal streaming.
+        timeout-minutes: 12
+        run: |
+          bash tools/verify-region-before-dns.sh \
+            us-central1 quill-enclave-mig-us- \
+            "${{ needs.build-and-release.outputs.image_digest }}"
+
       - name: Reconcile DNS before us-central1 canary
         env:
           QUILL_RECONCILE_APPLY: "1"
@@ -562,8 +692,8 @@ jobs:
           QUILL_REGIONAL_SUFFIX: quillrouter.com
         run: |
           case "${PREV_DRAIN_STATE}" in
-            active) drain_operation=clear ;;
-            drained) drain_operation=set ;;
+            active) drain_operation="clear" ;;
+            drained) drain_operation="set" ;;
             *)
               echo "us-central1: invalid pre-rollout drain state '${PREV_DRAIN_STATE}'; refusing to mutate DNS" >&2
               exit 1
@@ -716,28 +846,20 @@ jobs:
       - name: Smoke test enclave inference (non-blocking)
         # Non-blocking: MIG health checks gate the rollout. This smoke
         # confirms the public SDK path with the dedicated synthetic
-        # monitor key/model, and every request is bounded so a slow
+        # Stage D probe key/model, and every request is bounded so a slow
         # provider cannot pin the deploy job indefinitely.
-        # GHA quirk: secrets can't be used in a top-level `if:`
-        # expression, so we gate via env var and fall back to Secret
-        # Manager when the GitHub secret is not configured.
-        env:
-          SMOKE_KEY: ${{ secrets.SMOKE_TEST_API_KEY }}
+        # The blocking gate selects its key according to the template flag.
+        # This redundant diagnostic runs only after the dedicated key lands.
         continue-on-error: true
         run: |
-          if [ -z "${SMOKE_KEY}" ]; then
-            SMOKE_KEY="$(gcloud secrets versions access latest \
-              --secret=trustedrouter-synthetic-monitor-api-key \
-              --project=quill-cloud-proxy 2>/dev/null || true)"
-          fi
-          if [ -z "${SMOKE_KEY}" ]; then
-            echo "smoke skipped: no SMOKE_TEST_API_KEY or synthetic monitor secret"
+          if [ -z "${STAGE_D_PROBE_API_KEY}" ]; then
+            echo "smoke skipped: STAGE_D_PROBE_API_KEY is not provisioned yet"
             exit 0
           fi
           for attempt in $(seq 1 3); do
             response=$(curl -sw "\n%{http_code}" \
               --silent --show-error --max-time 60 \
-              -H "authorization: Bearer ${SMOKE_KEY}" \
+              -H "authorization: Bearer ${STAGE_D_PROBE_API_KEY}" \
               -H "content-type: application/json" \
               -d '{"model":"trustedrouter/monitor","messages":[{"role":"user","content":"reply exactly PONG"}],"max_tokens":32}' \
               https://api.quillrouter.com/v1/chat/completions || true)
@@ -753,11 +875,15 @@ jobs:
           # exit 0 — non-blocking
 
   # A failed rollout may leave old and new measured workloads serving in
-  # different regions, so its transition allowlist must remain published.
-  # Collapse to the target digest only after every regional gate succeeds.
+  # different regions, so its transition allowlist and transitional Stage D
+  # document must remain published. Recovery/rollback deliberately has no
+  # path to this job: it never publishes a final Stage D document. Collapse
+  # to the target digest only after every regional gate succeeds.
   finalize-trust-artifacts:
     needs: [build-and-release, rollout]
     runs-on: ubuntu-latest
+    outputs:
+      stage_d_policy_sha256: ${{ steps.finalize.outputs.policy_sha256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -767,7 +893,8 @@ jobs:
       # 2026-08-27: The PAT bypasses classic protection via its admin exemption;
       # the deploy key is the bypass actor if main moves to a ruleset. The
       # build-and-release job uses the same dual path.
-      - name: Publish only the fully rolled-out digest in source artifacts
+      - id: finalize
+        name: Publish only the fully rolled-out digest in source artifacts
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
@@ -780,9 +907,17 @@ jobs:
             --commit "${IMAGE_REF##*gcp-release-}" \
             --image-reference "${IMAGE_REF}" \
             --image-digest "${IMAGE_DIGEST}"
+          python3 tools/write-stage-d-policy.py \
+            --output trust-page/gcp/stage-d-accepted.json \
+            --github-run-number "${GITHUB_RUN_NUMBER}" \
+            --kind final \
+            --issued-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --incoming-digest "${IMAGE_DIGEST}" \
+            --accepted-policy trust-page/gcp/stage-d-accepted.json
+          echo "policy_sha256=$(sha256sum trust-page/gcp/stage-d-accepted.json | awk '{print $1}')" >> "$GITHUB_OUTPUT"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust
+          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust trust-page/gcp/stage-d-accepted.json
           if git diff --cached --quiet; then
             echo "final trust-page artifacts unchanged"
           else
@@ -809,6 +944,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
+      - name: Wait for exact signed public final Stage D policy
+        env:
+          EXPECTED_POLICY_SHA256: ${{ needs.finalize-trust-artifacts.outputs.stage_d_policy_sha256 }}
+        run: |
+          set -euo pipefail
+          actual="$(sha256sum trust-page/gcp/stage-d-accepted.json | awk '{print $1}')"
+          [ "${actual}" = "${EXPECTED_POLICY_SHA256}" ] || {
+            echo "main does not contain the final policy committed by this run" >&2
+            exit 1
+          }
+          tools/wait-stage-d-policy.sh trust-page/gcp/stage-d-accepted.json
       - name: Wait for exact public final trust set
         env:
           EXPECTED_DIGESTS: ${{ needs.build-and-release.outputs.image_digest }}
