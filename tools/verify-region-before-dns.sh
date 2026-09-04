@@ -40,6 +40,7 @@ REGIONAL_CERT_ATTEMPTS="${REGIONAL_CERT_ATTEMPTS:-10}"
 REGIONAL_CERT_RETRY_SLEEP="${REGIONAL_CERT_RETRY_SLEEP:-15}"
 MIG="${FILTER%-}"
 AUTHORIZATION_LOOKUP_BASE_URL="${STAGE_D_AUTHORIZATION_LOOKUP_BASE_URL:-https://trustedrouter.com}"
+STAGE_D_MISSING_EVIDENCE_ROUTE_WARNED=0
 
 template_url="$(gcloud compute instance-groups managed describe "${MIG}" \
   --region="${REGION}" --project="${PROJECT}" \
@@ -201,7 +202,7 @@ verify_streaming_authorization() {
   local host="$1" ip="$2" stage="$3"
   local suffix headers stream receipt evidence code request_log_id expected_boot_kid=""
   local idempotency_key attempt lookup_url content_type evidence_state
-  local timeout_seconds deadline remaining retry_sleep
+  local timeout_seconds deadline remaining retry_sleep lookup_succeeded
   suffix="${stage}-${ip//./-}"
   headers="${response_dir}/${suffix}.headers"
   stream="${response_dir}/${suffix}.sse"
@@ -258,13 +259,17 @@ verify_streaming_authorization() {
     attempt=$((attempt + 1))
     remaining=$((deadline - SECONDS))
     code="000"
+    lookup_succeeded=0
     if code="$(curl \
       --silent --show-error \
       --connect-timeout 5 --max-time "${remaining}" \
       --output "${evidence}" \
       --write-out '%{http_code}' \
       -H "x-trustedrouter-internal-token: ${INTERNAL_GATEWAY_TOKEN}" \
-      "${lookup_url}")" && [ "${code}" = "200" ]; then
+      "${lookup_url}")"; then
+      lookup_succeeded=1
+    fi
+    if [ "${lookup_succeeded}" = "1" ] && [ "${code}" = "200" ]; then
       if ! evidence_state="$(stage_d_evidence_state \
         "${evidence}" "${request_log_id}" "${HEARTBEAT_FLAG}" \
         "${expected_boot_kid}")"; then
@@ -275,6 +280,11 @@ verify_streaming_authorization() {
         echo "${REGION}: ${stage} stream on ${ip} has settled local_typed authorization evidence"
         return 0
       fi
+    fi
+    if [ "${lookup_succeeded}" = "1" ] && \
+        stage_d_accept_missing_evidence_route \
+          "${HEARTBEAT_FLAG}" "${code}" "${REGION}" "${stage}"; then
+      return 0
     fi
     remaining=$((deadline - SECONDS))
     if [ "${remaining}" -lt 0 ]; then

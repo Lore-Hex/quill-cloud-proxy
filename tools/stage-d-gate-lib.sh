@@ -23,6 +23,18 @@ stage_d_select_probe_key() {
   fi
 }
 
+stage_d_accept_missing_evidence_route() {
+  local heartbeat_flag="$1" http_code="$2" region="$3" stage="$4"
+
+  if [ "${heartbeat_flag}" != "off" ] || [ "${http_code}" != "404" ]; then
+    return 1
+  fi
+  if [ "${STAGE_D_MISSING_EVIDENCE_ROUTE_WARNED:-0}" != "1" ]; then
+    echo "WARNING: ${region}: ${stage} authorization evidence route /internal/gateway/authorizations/by-gateway-request-id/{x-request-id} returned HTTP 404 while the selected template has QUILL_USAGE_HEARTBEAT=off; passing the gate on plain streaming health alone" >&2
+    STAGE_D_MISSING_EVIDENCE_ROUTE_WARNED=1
+  fi
+}
+
 stage_d_evidence_state() {
   local evidence_file="$1" gateway_request_id="$2"
   local heartbeat_flag="$3" expected_boot_kid="$4"
