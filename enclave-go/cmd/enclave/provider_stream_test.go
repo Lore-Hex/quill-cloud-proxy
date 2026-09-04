@@ -37,6 +37,59 @@ type blockingFirstByteClient struct {
 	release chan struct{}
 }
 
+type stageCCancelClient struct {
+	started             chan struct{}
+	done                chan struct{}
+	speculativeResponse string
+	redispatchResponse  string
+
+	mu                    sync.Mutex
+	attempts              []llm.InvokeOptions
+	speculativeWriteBytes int
+}
+
+func (c *stageCCancelClient) InvokeStreaming(
+	ctx context.Context,
+	_ *types.OpenAIChatRequest,
+	_ *types.AnthropicMessagesRequest,
+	out io.Writer,
+	options ...llm.InvokeOptions,
+) error {
+	option := llm.InvokeOptions{}
+	if len(options) > 0 {
+		option = options[0]
+	}
+	c.mu.Lock()
+	c.attempts = append(c.attempts, option)
+	attempt := len(c.attempts)
+	c.mu.Unlock()
+
+	if attempt == 1 {
+		close(c.started)
+		if c.speculativeResponse != "" {
+			written, _ := io.WriteString(out, c.speculativeResponse)
+			c.mu.Lock()
+			c.speculativeWriteBytes = written
+			c.mu.Unlock()
+		}
+		<-ctx.Done()
+		close(c.done)
+		return ctx.Err()
+	}
+	_, err := io.WriteString(out, c.redispatchResponse)
+	return err
+}
+
+func (c *stageCCancelClient) snapshot() ([]string, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	endpoints := make([]string, 0, len(c.attempts))
+	for _, attempt := range c.attempts {
+		endpoints = append(endpoints, attempt.EndpointID)
+	}
+	return endpoints, c.speculativeWriteBytes
+}
+
 func (c *blockingFirstByteClient) InvokeStreaming(
 	_ context.Context,
 	_ *types.OpenAIChatRequest,
@@ -121,6 +174,36 @@ func runProviderStreamTest(
 	body, err := io.ReadAll(pr)
 	<-done
 	return body, err, selected
+}
+
+func TestStageCMarkerlessCancellationCanRedispatchOrdinaryCandidate(t *testing.T) {
+	client := &scriptedProviderStreamClient{invoke: func(_ llm.InvokeOptions, out io.Writer) error {
+		_, err := io.WriteString(out, providerStreamTestResponse)
+		return err
+	}}
+	local := startProviderInvocation(
+		context.Background(), client,
+		&types.OpenAIChatRequest{Model: "model-a"}, &types.AnthropicMessagesRequest{},
+		[]llm.InvokeOptions{{Model: "model-a", Provider: "provider-a", EndpointID: "snapshot"}},
+		true, nil, "stage-c-unmarked-test",
+	)
+	<-local.selectedRoute.Ready()
+	local.abort(errors.New("unmarked authorization"))
+	<-local.done
+	ordinary := startProviderInvocation(
+		context.Background(), client,
+		&types.OpenAIChatRequest{Model: "model-b"}, &types.AnthropicMessagesRequest{},
+		[]llm.InvokeOptions{{Model: "model-b", Provider: "provider-b", EndpointID: "ordinary"}},
+		true, nil, "stage-c-unmarked-test",
+	)
+	body, err := io.ReadAll(ordinary.reader)
+	if err != nil || string(body) != providerStreamTestResponse {
+		t.Fatalf("ordinary redispatch body=%q err=%v", body, err)
+	}
+	<-ordinary.done
+	if got := strings.Join(client.endpoints(), ","); got != "snapshot,ordinary" {
+		t.Fatalf("candidate attempts=%q", got)
+	}
 }
 
 // Mutation guard: deleting the err==nil/zero-byte conversion in
@@ -358,6 +441,53 @@ func TestServeStreamingDoesNotWriteSuccessHeadBeforeProviderFirstByte(t *testing
 	}
 	if got := out.String(); !strings.Contains(got, "HTTP/1.1 200 OK") || !strings.Contains(got, "data: [DONE]") {
 		t.Fatalf("completed stream = %q, want success head and terminal event", got)
+	}
+}
+
+func TestStageCProviderPipeBlocksFirstByteUntilReserveGate(t *testing.T) {
+	started := make(chan struct{})
+	writeReturned := make(chan struct{})
+	client := &scriptedProviderStreamClient{invoke: func(_ llm.InvokeOptions, out io.Writer) error {
+		close(started)
+		_, err := io.WriteString(out, providerStreamTestResponse)
+		close(writeReturned)
+		return err
+	}}
+	invocation := startProviderInvocation(
+		context.Background(), client,
+		&types.OpenAIChatRequest{Model: "model-a"}, &types.AnthropicMessagesRequest{},
+		[]llm.InvokeOptions{{Model: "model-a", EndpointID: "endpoint-a"}}, true, nil, "stage-c-gate-test",
+	)
+	defer invocation.cancel()
+	<-started
+	select {
+	case <-writeReturned:
+		t.Fatal("provider first byte passed the unbuffered gate before reserve resolution")
+	case <-time.After(20 * time.Millisecond):
+	}
+	if _, err := io.ReadAll(invocation.reader); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-writeReturned:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not finish after the gate opened")
+	}
+}
+
+func TestStageCRejectedReserveCancelsSpeculativeProvider(t *testing.T) {
+	client := &stageCCancelClient{started: make(chan struct{}), done: make(chan struct{})}
+	invocation := startProviderInvocation(
+		context.Background(), client,
+		&types.OpenAIChatRequest{Model: "model-a"}, &types.AnthropicMessagesRequest{},
+		[]llm.InvokeOptions{{Model: "model-a", EndpointID: "endpoint-a"}}, true, nil, "stage-c-cancel-test",
+	)
+	<-client.started
+	invocation.abort(errors.New("admission_rejected"))
+	select {
+	case <-client.done:
+	case <-time.After(time.Second):
+		t.Fatal("speculative provider was not cancelled on reserve rejection")
 	}
 }
 

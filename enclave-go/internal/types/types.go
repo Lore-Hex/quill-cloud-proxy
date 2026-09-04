@@ -52,6 +52,7 @@ type BootstrapData struct {
 	// GCP fetch/parse failures are carried as dormant-feature diagnostics and
 	// must never turn an additive shadow feature into a boot failure.
 	SpendLeaseShadow         bool            `json:"spend_lease_shadow,omitempty"`
+	SpendLeaseLocalAdmission bool            `json:"spend_lease_local_admission,omitempty"`
 	SpendLeaseIssuerConfig   json.RawMessage `json:"spend_lease_issuer_config,omitempty"`
 	SpendLeaseConfigError    string          `json:"spend_lease_config_error,omitempty"`
 	SynthPanelPrompt         string          `json:"synth_panel_prompt,omitempty"`

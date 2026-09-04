@@ -452,14 +452,15 @@ func main() {
 		}
 	}
 	stageDConfig := stageDConfigFromEnv()
+	fmt.Fprintf(os.Stderr, "spend_lease.local_admission_flag enabled=%t\n", boot.SpendLeaseLocalAdmission)
 	fmt.Fprintf(os.Stderr, "enclave.stage_d_flags usage_heartbeat=%t terminate_at_cap=%t heartbeat_budget_ms=%d settle_before_terminal_ms=%d\n",
 		stageDConfig.usageHeartbeat, stageDConfig.terminateAtCap, stageDConfig.heartbeatBudget.Milliseconds(), stageDConfig.settleBeforeTerminal.Milliseconds())
-	if err := initializeReceiptSignerWithSpendLease(ctx, tlsServer, deviceBlob, boot.SpendLeaseShadow || stageDConfig.usageHeartbeat, spendLeaseIssuerConfigNonce(boot), apiHost); err != nil {
+	if err := initializeReceiptSignerWithSpendLease(ctx, tlsServer, deviceBlob, boot.SpendLeaseShadow || boot.SpendLeaseLocalAdmission || stageDConfig.usageHeartbeat, spendLeaseIssuerConfigNonce(boot), apiHost); err != nil {
 		fmt.Fprintf(os.Stderr, "receipt signer initialization failed: %v\n", err)
 		os.Exit(1)
 	}
 	initializeSpendLeaseShadow(ctx, trGateway, boot)
-	if stageDConfig.usageHeartbeat && !boot.SpendLeaseShadow && trGateway != nil && receiptSigner != nil {
+	if stageDConfig.usageHeartbeat && !boot.SpendLeaseShadow && !boot.SpendLeaseLocalAdmission && trGateway != nil && receiptSigner != nil {
 		trGateway.ConfigureStageDBoot(receiptSigner)
 		trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence())
 	}
@@ -1116,13 +1117,26 @@ func serveOneRequest(
 		}
 	}
 	requestStarted := time.Now()
+	var spendLeasePlan *trustedrouter.SpendLeaseAdmissionPlan
+	var spendLeaseReserveRequest *types.OpenAIChatRequest
 	if trEnabled {
-		authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, &req, routeType)
+		spendLeasePlan, err = trGateway.PrepareSpendLeaseAdmission(ctx, bearer, &req, routeType, requestStarted)
 		if err != nil {
 			writeGatewayAuthorizationError(conn, err)
 			return
 		}
-		requestIdentity.bindAuthorization(authorization)
+		if spendLeasePlan != nil {
+			reserveRequest := req
+			spendLeaseReserveRequest = &reserveRequest
+			authorization = spendLeasePlan.Local
+		} else {
+			authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, &req, routeType)
+			if err != nil {
+				writeGatewayAuthorizationError(conn, err)
+				return
+			}
+			requestIdentity.bindAuthorization(authorization)
+		}
 		if err := validateAuthorizationRouting(&req, authorization); err != nil {
 			fmt.Fprintf(
 				os.Stderr,
@@ -1133,14 +1147,14 @@ func serveOneRequest(
 				len(authorization.RouteCandidates),
 				err,
 			)
-			_ = trGateway.Refund(
-				ctx,
-				authorization,
-				502,
-				"routing_integrity_error",
-				time.Since(requestStarted).Seconds(),
-				req.Metadata,
-			)
+			if spendLeasePlan != nil {
+				spendLeasePlan.Cancel()
+			} else {
+				_ = trGateway.Refund(
+					ctx, authorization, 502, "routing_integrity_error",
+					time.Since(requestStarted).Seconds(), req.Metadata,
+				)
+			}
 			writeErrorWithSourceHeaders(
 				conn,
 				502,
@@ -1153,6 +1167,9 @@ func serveOneRequest(
 		attachResolvedUserModel(authorization, resolvedCustomModel)
 		req.Models = nil
 		if isUserProvidedCustomModel(authorization) {
+			if spendLeasePlan != nil {
+				spendLeasePlan.Cancel()
+			}
 			req.Model = authorization.Model
 			serveUserModel(
 				ctx, conn, &req, rawUserModelBody, userModelAnthropicReq, routeType, trGateway,
@@ -1162,7 +1179,11 @@ func serveOneRequest(
 		}
 		invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)
 		if err != nil {
-			_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), req.Metadata)
+			if spendLeasePlan != nil {
+				spendLeasePlan.Cancel()
+			} else {
+				_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), req.Metadata)
+			}
 			writeError(conn, 502, "BYOK provider key unavailable")
 			return
 		}
@@ -1175,6 +1196,9 @@ func serveOneRequest(
 	applyCustomModelPrompt(&req, authorization)
 	anthropicReq, err := adapter.ToAnthropic(&req, "claude-opus-4-7")
 	if err != nil {
+		if spendLeasePlan != nil {
+			spendLeasePlan.Cancel()
+		}
 		var aerr *adapter.AdapterError
 		if asAdapterErr(err, &aerr) {
 			writeError(conn, aerr.Status, aerr.Message)
@@ -1182,6 +1206,69 @@ func serveOneRequest(
 		}
 		writeError(conn, 500, "adapter error")
 		return
+	}
+	if spendLeasePlan != nil {
+		speculative := startProviderInvocation(
+			ctx, br, &req, anthropicReq, invokeOptions, true, authorization, requestLogID,
+		)
+		reserved, marked, reserveErr := trGateway.ReserveSpendLeaseAdmission(ctx, spendLeasePlan, spendLeaseReserveRequest)
+		if reserveErr != nil {
+			speculative.abort(reserveErr)
+			writeGatewayAuthorizationError(conn, reserveErr)
+			return
+		}
+		if !marked {
+			speculative.abort(errors.New("spend-lease admission response was unmarked"))
+			authorization = reserved
+			req = *spendLeaseReserveRequest
+			requestIdentity.bindAuthorization(authorization)
+			if err := validateAuthorizationRouting(&req, authorization); err != nil {
+				_ = trGateway.Refund(ctx, authorization, 502, "routing_integrity_error", time.Since(requestStarted).Seconds(), req.Metadata)
+				writeErrorWithSourceHeaders(conn, 502, "routing integrity check failed", "router", nil)
+				return
+			}
+			invokeOptions, err = invokeOptionsForAuthorization(ctx, byokSecrets, authorization)
+			if err != nil {
+				_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), req.Metadata)
+				writeError(conn, 502, "BYOK provider key unavailable")
+				return
+			}
+			if len(invokeOptions) > 0 && invokeOptions[0].Model != "" {
+				req.Model = invokeOptions[0].Model
+			} else {
+				req.Model = authorization.Model
+			}
+			anthropicReq, err = adapter.ToAnthropic(&req, "claude-opus-4-7")
+			if err != nil {
+				_ = trGateway.Refund(ctx, authorization, 400, "adapter_error", time.Since(requestStarted).Seconds(), req.Metadata)
+				writeError(conn, 400, "adapter error")
+				return
+			}
+		} else {
+			authorization = reserved
+			requestIdentity.bindAuthorization(authorization)
+			if err := validateAuthorizationRouting(&req, authorization); err != nil {
+				speculative.abort(err)
+				_ = trGateway.Refund(ctx, authorization, 502, "routing_integrity_error", time.Since(requestStarted).Seconds(), req.Metadata)
+				writeErrorWithSourceHeaders(conn, 502, "routing integrity check failed", "router", nil)
+				return
+			}
+			ctx = withProviderInvocation(ctx, speculative)
+		}
+		if req.Tags != nil && authorization.RequestMetadataVersion < 1 {
+			if marked {
+				speculative.abort(errors.New("request metadata unavailable"))
+			}
+			_ = trGateway.Refund(ctx, authorization, 503, "request_metadata_unavailable", time.Since(requestStarted).Seconds(), req.Metadata)
+			writeGatewayAuthorizationError(conn, &trustedrouter.ControlPlaneError{
+				Path: "/internal/gateway/authorize", StatusCode: 503, Type: "request_metadata_unavailable",
+				Message: "request tagging is not available on the active control plane",
+			})
+			return
+		}
+		if authorization.RequestMetadataVersion >= 1 {
+			req.Tags = types.NewRequestTags(authorization.Tags)
+		}
 	}
 	if !req.Stream {
 		if routeType == "responses" {
@@ -1362,9 +1449,19 @@ func serveResponsesNonStreaming(
 		ctx = llm.WithUpstreamVerification(ctx, "", time.Time{}, time.Time{})
 	}
 	requestID := newResponseID()
-	pr, pw := io.Pipe()
-	selectedRoute := newSelectedRouteTracker()
-	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
+	invocation := providerInvocationFromContext(ctx)
+	var pr *io.PipeReader
+	var selectedRoute *selectedRouteTracker
+	if invocation != nil {
+		defer invocation.cancel()
+		pr = invocation.reader
+		selectedRoute = invocation.selectedRoute
+	} else {
+		var pw *io.PipeWriter
+		pr, pw = io.Pipe()
+		selectedRoute = newSelectedRouteTracker()
+		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
+	}
 	result, err := adapter.CollectAnthropicText(pr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_collect_failed model=%q err=%v\n", req.Model, err)
@@ -1475,9 +1572,19 @@ func serveChatNonStreaming(
 		ctx = llm.WithUpstreamVerification(ctx, "", time.Time{}, time.Time{})
 	}
 	requestID := newRequestID()
-	pr, pw := io.Pipe()
-	selectedRoute := newSelectedRouteTracker()
-	go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
+	invocation := providerInvocationFromContext(ctx)
+	var pr *io.PipeReader
+	var selectedRoute *selectedRouteTracker
+	if invocation != nil {
+		defer invocation.cancel()
+		pr = invocation.reader
+		selectedRoute = invocation.selectedRoute
+	} else {
+		var pw *io.PipeWriter
+		pr, pw = io.Pipe()
+		selectedRoute = newSelectedRouteTracker()
+		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
+	}
 	result, err := adapter.CollectAnthropicText(pr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_collect_failed model=%q err=%v\n", req.Model, err)
@@ -1596,16 +1703,15 @@ func serveStreaming(
 	if routeType == "responses" {
 		requestID = newResponseID()
 	}
-	providerCtx, cancelProvider := context.WithCancel(ctx)
+	invocation := providerInvocationFromContext(ctx)
+	if invocation == nil {
+		invocation = startProviderInvocation(ctx, br, req, anthropicReq, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, requestLogID)
+	}
+	cancelProvider := invocation.cancel
 	defer cancelProvider()
-	pr, pw := io.Pipe()
-	selectedRoute := newSelectedRouteTracker()
-	providerDone := make(chan struct{})
-	providerReq := *req
-	go func() {
-		defer close(providerDone)
-		invokeProviderStream(providerCtx, br, &providerReq, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
-	}()
+	pr := invocation.reader
+	selectedRoute := invocation.selectedRoute
+	providerDone := invocation.done
 	// Do not send the streaming 200/SSE head until either a provider has
 	// produced its first byte or every pre-output retry/fallback has failed.
 	// Once the head is client-visible, invokeProviderStream must stay on the

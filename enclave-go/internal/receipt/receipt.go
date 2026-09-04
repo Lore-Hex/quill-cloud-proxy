@@ -170,6 +170,18 @@ func (s *Signer) SignDigest(digest [sha256.Size]byte) ([]byte, error) {
 	return ed25519.Sign(s.privateKey, digest[:]), nil
 }
 
+// SignMessage signs an exact protocol message with the boot-local receipt key.
+// It is intentionally narrower than exposing the private key: callers retain
+// ownership of their domain separation and serialization, while the attested
+// key remains enclave-local. Compact JWS protocols use this because EdDSA signs
+// the protected64 + "." + payload64 bytes directly, not a caller-hashed digest.
+func (s *Signer) SignMessage(message []byte) ([]byte, error) {
+	if s == nil || len(s.privateKey) != ed25519.PrivateKeySize {
+		return nil, errors.New("receipt: signer is not initialized")
+	}
+	return ed25519.Sign(s.privateKey, message), nil
+}
+
 // SignCompact signs claims as a compact JWS without embedded attestation.
 func (s *Signer) SignCompact(claims Claims) (string, error) {
 	protected, payload, signature, err := s.sign(claims, protectedHeader{})

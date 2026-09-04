@@ -437,6 +437,8 @@ type Authorization struct {
 	ReceiptFeeBasisPoints                 int                                `json:"receipt_fee_basis_points"`
 	NativeBatchEligible                   bool                               `json:"native_batch_eligible"`
 	SpendLease                            *spendlease.Response               `json:"spend_lease,omitempty"`
+	SpendLeaseAdmission                   *spendlease.AdmissionMarker        `json:"spend_lease_admission,omitempty"`
+	SpendLeaseRemainingMicro              *int64                             `json:"spend_lease_remaining_micro,omitempty"`
 	StageD                                StageDEligibility                  `json:"stage_d"`
 	CandidatePrices                       []CandidatePrice                   `json:"candidate_prices"`
 	CapMicro                              int64                              `json:"cap_micro"`
@@ -595,6 +597,72 @@ func (c *Client) Authorize(ctx context.Context, bearer string, req *qtypes.OpenA
 	return c.AuthorizeWithRoute(ctx, bearer, req, "chat.completions")
 }
 
+func chatAuthorizeBody(c *Client, lookupHash, idempotencyKey string, req *qtypes.OpenAIChatRequest, routeType string) map[string]any {
+	body := map[string]any{
+		"api_key_lookup_hash":    lookupHash,
+		"model":                  req.Model,
+		"estimated_input_tokens": EstimateInputTokens(req),
+		"max_output_tokens":      outputTokenEstimate(req),
+		"max_tokens":             req.MaxTokens,
+		"region":                 c.region,
+		"route_type":             routeType,
+		"idempotency_key":        idempotencyKey,
+		"stream":                 req.Stream,
+	}
+	if req.RequestFingerprint != "" {
+		body["request_fingerprint"] = req.RequestFingerprint
+	}
+	if req.InferenceReceipt.Requested {
+		body["inference_receipt"] = true
+	}
+	if req.AdditionalCostReservationMicrodollars > 0 {
+		body["additional_cost_reservation_microdollars"] = req.AdditionalCostReservationMicrodollars
+	}
+	if req.ServiceTier != "" {
+		body["service_tier"] = req.ServiceTier
+	}
+	if len(req.Models) > 0 {
+		body["models"] = req.Models
+	}
+	if req.AllowFallbacks != nil {
+		body["allow_fallbacks"] = *req.AllowFallbacks
+	}
+	if req.Provider != nil {
+		body["provider"] = req.Provider
+	}
+	if len(req.RequestedParameters) > 0 {
+		body["requested_parameters"] = req.RequestedParameters
+	}
+	if modalities := qtypes.RequestInputModalities(req); len(modalities) > 0 {
+		body["input_modalities"] = modalities
+	}
+	if req.User != "" {
+		body["user"] = req.User
+	}
+	if req.SessionID != "" {
+		body["session_id"] = req.SessionID
+	}
+	if req.Trace != nil {
+		body["trace"] = req.Trace
+	}
+	if req.Metadata != nil {
+		body["metadata"] = req.Metadata
+	}
+	if req.Tags != nil {
+		body["tags"] = req.Tags.Values()
+	}
+	if req.App != "" {
+		body["app"] = req.App
+	}
+	if req.HTTPReferer != "" {
+		body["http_referer"] = req.HTTPReferer
+	}
+	if len(req.AppCategories) > 0 {
+		body["app_categories"] = req.AppCategories
+	}
+	return body
+}
+
 func (c *Client) ValidateKey(ctx context.Context, bearer string, routeType string) error {
 	_, err := c.ValidateKeyInfo(ctx, bearer, routeType)
 	return err
@@ -658,68 +726,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	if err != nil {
 		return nil, err
 	}
-	body := map[string]any{
-		"api_key_lookup_hash":    lookupHash,
-		"model":                  req.Model,
-		"estimated_input_tokens": EstimateInputTokens(req),
-		"max_output_tokens":      outputTokenEstimate(req),
-		"max_tokens":             req.MaxTokens,
-		"region":                 c.region,
-		"route_type":             routeType,
-		"idempotency_key":        idempotencyKey,
-		"stream":                 req.Stream,
-	}
-	if req.RequestFingerprint != "" {
-		body["request_fingerprint"] = req.RequestFingerprint
-	}
-	if req.InferenceReceipt.Requested {
-		body["inference_receipt"] = true
-	}
-	if req.AdditionalCostReservationMicrodollars > 0 {
-		body["additional_cost_reservation_microdollars"] = req.AdditionalCostReservationMicrodollars
-	}
-	if req.ServiceTier != "" {
-		body["service_tier"] = req.ServiceTier
-	}
-	if len(req.Models) > 0 {
-		body["models"] = req.Models
-	}
-	if req.AllowFallbacks != nil {
-		body["allow_fallbacks"] = *req.AllowFallbacks
-	}
-	if req.Provider != nil {
-		body["provider"] = req.Provider
-	}
-	if len(req.RequestedParameters) > 0 {
-		body["requested_parameters"] = req.RequestedParameters
-	}
-	if modalities := qtypes.RequestInputModalities(req); len(modalities) > 0 {
-		body["input_modalities"] = modalities
-	}
-	if req.User != "" {
-		body["user"] = req.User
-	}
-	if req.SessionID != "" {
-		body["session_id"] = req.SessionID
-	}
-	if req.Trace != nil {
-		body["trace"] = req.Trace
-	}
-	if req.Metadata != nil {
-		body["metadata"] = req.Metadata
-	}
-	if req.Tags != nil {
-		body["tags"] = req.Tags.Values()
-	}
-	if req.App != "" {
-		body["app"] = req.App
-	}
-	if req.HTTPReferer != "" {
-		body["http_referer"] = req.HTTPReferer
-	}
-	if len(req.AppCategories) > 0 {
-		body["app_categories"] = req.AppCategories
-	}
+	body := chatAuthorizeBody(c, lookupHash, idempotencyKey, req, routeType)
 	decoded, controlPlaneEndpoint, err := c.authorizeAtDecodeSeam(ctx, lookupHash, body, spendLeaseRequestForChat(c.region, routeType, req))
 	if err != nil {
 		c.afterCredentialCheck(ctx, lookupHash, err)

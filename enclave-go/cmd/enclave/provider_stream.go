@@ -19,8 +19,61 @@ import (
 )
 
 type strictStreamFramingContextKey struct{}
+type providerInvocationContextKey struct{}
 
 var errEmptyUpstreamResponse = errors.New("empty upstream response")
+
+type providerInvocation struct {
+	reader        *io.PipeReader
+	selectedRoute *selectedRouteTracker
+	done          chan struct{}
+	cancel        context.CancelFunc
+}
+
+func startProviderInvocation(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	anthropicReq *types.AnthropicMessagesRequest,
+	invokeOptions []llm.InvokeOptions,
+	trEnabled bool,
+	authorization *trustedrouter.Authorization,
+	requestLogID string,
+) *providerInvocation {
+	providerCtx, cancel := context.WithCancel(ctx)
+	pr, pw := io.Pipe()
+	selectedRoute := newSelectedRouteTracker()
+	done := make(chan struct{})
+	providerReq := *req
+	go func() {
+		defer close(done)
+		invokeProviderStream(providerCtx, br, &providerReq, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID, true, true)
+	}()
+	return &providerInvocation{reader: pr, selectedRoute: selectedRoute, done: done, cancel: cancel}
+}
+
+func (i *providerInvocation) abort(err error) {
+	if i == nil {
+		return
+	}
+	i.cancel()
+	_ = i.reader.CloseWithError(err)
+}
+
+func withProviderInvocation(ctx context.Context, invocation *providerInvocation) context.Context {
+	if invocation == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, providerInvocationContextKey{}, invocation)
+}
+
+func providerInvocationFromContext(ctx context.Context) *providerInvocation {
+	if ctx == nil {
+		return nil
+	}
+	invocation, _ := ctx.Value(providerInvocationContextKey{}).(*providerInvocation)
+	return invocation
+}
 
 func withStrictStreamFraming(ctx context.Context) context.Context {
 	return context.WithValue(ctx, strictStreamFramingContextKey{}, true)
