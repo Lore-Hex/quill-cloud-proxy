@@ -2,8 +2,8 @@
 # Restore one drained GCP gateway region to its previously verified template.
 set -euo pipefail
 
-if [ "$#" -lt 5 ] || [ "$#" -gt 6 ]; then
-  echo "usage: $0 <region> <mig> <instance-filter> <api-hosts> <previous-template> [active|drained]" >&2
+if [ "$#" -lt 5 ] || [ "$#" -gt 7 ]; then
+  echo "usage: $0 <region> <mig> <instance-filter> <api-hosts> <previous-template> [active|drained] [none|operator|rollout:run-id]" >&2
   exit 2
 fi
 
@@ -13,6 +13,7 @@ instance_filter="$3"
 api_hosts="$4"
 previous_template="$5"
 final_drain_state="${6-active}"
+final_drain_origin="${7-none}"
 project="${QUILL_GCP_PROJECT_ID:-quill-cloud-proxy}"
 primary_host="${QUILL_API_HOST:-api.trustedrouter.com}"
 dns_zone="${QUILL_DNS_ZONE:-trustedrouter-com}"
@@ -22,19 +23,26 @@ if [ -z "${previous_template}" ]; then
   echo "${region}: no previous template recorded; refusing to mutate DNS or the MIG" >&2
   exit 1
 fi
-case "${final_drain_state}" in
-  active|drained) ;;
-  *)
-    echo "${region}: invalid final drain state '${final_drain_state}'" >&2
-    exit 2
-    ;;
-esac
+# shellcheck source=tools/enclave-rollout-drain-lib.sh
+source tools/enclave-rollout-drain-lib.sh
+restore_drain_operation="$(rollout_restore_drain_operation \
+  "${region}" "${final_drain_state}" "${final_drain_origin}")" || exit $?
+: "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 
 update_drain() {
   local operation="$1"
+  local origin="${2:-rollout}"
+  local -a drain_args
+  if [ "${operation}" = "set" ]; then
+    drain_args=(--set-drain-region "${region}" --drain-origin "${origin}")
+    if [ "${origin}" = "rollout" ]; then
+      drain_args+=(--github-run-id "${GITHUB_RUN_ID}")
+    fi
+  else
+    drain_args=(--clear-drain-region "${region}")
+  fi
   QUILL_API_HOST="${primary_host}" QUILL_DNS_ZONE="${dns_zone}" \
-    uv run --script tools/reconcile-enclave-dns.py \
-      "--${operation}-drain-region" "${region}"
+    uv run --script tools/reconcile-enclave-dns.py "${drain_args[@]}"
 }
 
 reconcile_gcp_dns() {
@@ -76,7 +84,7 @@ on_exit() {
   trap - EXIT
   if [ "${status}" -ne 0 ] && [ "${recovery_complete}" -ne 1 ]; then
     echo "${region}: recovery failed; preserving the canonical rollout drain" >&2
-    update_drain set >/dev/null 2>&1 || true
+    update_drain set rollout >/dev/null 2>&1 || true
     reconcile_gcp_dns >/dev/null 2>&1 || true
   fi
   exit "${status}"
@@ -86,7 +94,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 echo "${region}: enforcing canonical drain before rollback"
-update_drain set
+update_drain set rollout
 reconcile_gcp_dns
 # Backup-domain reconciliation must not prevent restoration of the enclave.
 sync_backup_dns || echo "${region}: backup DNS drain sync failed; continuing rollback" >&2
@@ -118,9 +126,9 @@ bash tools/verify-region-before-dns.sh \
 # remains excluded from canonical traffic, then restore its pre-rollout drain
 # state. An intentionally drained region must never be enabled by recovery.
 reconcile_gcp_dns
-if [ "${final_drain_state}" = "drained" ]; then
-  echo "${region}: rollback verified; preserving pre-rollout canonical drain"
-  update_drain set
+if [ "${restore_drain_operation}" = "set" ]; then
+  echo "${region}: rollback verified; restoring operator canonical drain"
+  update_drain set operator
 else
   echo "${region}: rollback verified; clearing rollout drain"
   update_drain clear
@@ -128,4 +136,4 @@ fi
 reconcile_gcp_dns
 sync_backup_dns
 recovery_complete=1
-echo "${region}: previous template restored, attested, and drain state restored to ${final_drain_state}"
+echo "${region}: previous template restored, attested, and drain state restored to ${final_drain_state}/${final_drain_origin}"

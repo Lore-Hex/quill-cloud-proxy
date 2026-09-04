@@ -13,8 +13,16 @@ SCRIPT = ROOT / "tools" / "recover-gcp-region.sh"
 
 class RecoverGCPRegionTests(unittest.TestCase):
     def run_recovery(
-        self, *, fail_verify: bool = False, final_drain_state: str = "active"
+        self,
+        *,
+        fail_verify: bool = False,
+        final_drain_state: str = "active",
+        final_drain_origin: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], str]:
+        if final_drain_origin is None:
+            final_drain_origin = (
+                "operator" if final_drain_state == "drained" else "none"
+            )
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
             bin_dir = temp / "bin"
@@ -59,6 +67,7 @@ class RecoverGCPRegionTests(unittest.TestCase):
                 {
                     "COMMAND_LOG": str(command_log),
                     "FAIL_VERIFY": "1" if fail_verify else "0",
+                    "GITHUB_RUN_ID": "33807667585",
                     "PATH": f"{bin_dir}:/usr/bin:/bin",
                 }
             )
@@ -73,6 +82,7 @@ class RecoverGCPRegionTests(unittest.TestCase):
                         "api.trustedrouter.com,api-europe-west4.quillrouter.com",
                         "old-template",
                         final_drain_state,
+                        final_drain_origin,
                     ],
                     cwd=ROOT,
                     env=env,
@@ -143,7 +153,7 @@ class RecoverGCPRegionTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertEqual(commands, "")
-        self.assertIn("invalid final drain state", completed.stderr)
+        self.assertIn("invalid pre-rollout drain state/origin", completed.stderr)
 
     def test_missing_previous_template_never_mutates_dns_or_mig(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -163,6 +173,7 @@ class RecoverGCPRegionTests(unittest.TestCase):
             env.update(
                 {
                     "COMMAND_LOG": str(command_log),
+                    "GITHUB_RUN_ID": "33807667585",
                     "PATH": f"{bin_dir}:/usr/bin:/bin",
                 }
             )

@@ -39,12 +39,15 @@ on:
       - "tools/write-stage-d-policy.py"
       - "tools/wait-stage-d-policy.sh"
       - "tools/tests/test-stage-d-gates.sh"
+      - "tools/tests/test-enclave-rollout-drains.sh"
       - "tools/testdata/stage-d-evidence-lookup.json"
       - "tools/wait-region-synthetic-up.sh"
       - "tools/synthetic_gate_status.py"
       - "tools/watchdog.py"
       - "tools/roll-secondary-region.sh"
       - "tools/recover-gcp-region.sh"
+      - "tools/enclave-rollout-drain-lib.sh"
+      - "tools/cleanup-enclave-rollout-drains.sh"
       - "tools/verify-gcp-runtime-secret-access.py"
       - ".github/workflows/deploy-enclave-gcp.yml"
       # Note: trust-page/** is intentionally NOT in this list. Trust
@@ -133,6 +136,11 @@ jobs:
       - name: Test Stage D publication and streaming gates (offline)
         working-directory: .
         run: tools/tests/test-stage-d-gates.sh
+      - name: Test rollout drain recovery (offline)
+        working-directory: .
+        run: |
+          python3 tools/test_reconcile_enclave_dns.py PersistentDrainTests
+          tools/tests/test-enclave-rollout-drains.sh
       - run: go test -tags 'cloud_gcp,llm_multi' ./...
 
   build-and-release:
@@ -533,12 +541,16 @@ jobs:
             echo "could not read pre-rollout drain state; refusing to roll" >&2
             exit 1
           fi
-          while IFS= read -r drain_region; do
-            if [ -n "${drain_region}" ] && \
-                ! [[ "${drain_region}" =~ ^[a-z][a-z0-9-]{1,62}$ ]]; then
-              echo "invalid drain-list entry '${drain_region}'; refusing to roll" >&2
+          declare -A drain_origins=()
+          while IFS=$'\t' read -r drain_region drain_origin extra; do
+            [ -z "${drain_region}" ] && continue
+            if [ -n "${extra}" ] || \
+                ! [[ "${drain_region}" =~ ^[a-z][a-z0-9-]{1,62}$ ]] || \
+                ! [[ "${drain_origin}" =~ ^(operator|rollout:[1-9][0-9]*)$ ]]; then
+              echo "invalid drain-list entry '${drain_region}' '${drain_origin}'; refusing to roll" >&2
               exit 1
             fi
+            drain_origins["${drain_region}"]="${drain_origin}"
           done <<<"${drains}"
           for pair in "us-central1:quill-enclave-mig-us" "europe-west4:quill-enclave-mig-eu" "us-east4:quill-enclave-mig-useast4" "southamerica-east1:quill-enclave-mig-sa"; do
             region="${pair%%:*}"
@@ -550,12 +562,14 @@ jobs:
             key="${region//-/_}_template"
             echo "${key}=${tmpl_short}" >> "$GITHUB_OUTPUT"
             drain_state="active"
-            if printf '%s\n' "${drains}" | grep -Fxq "${region}"; then
+            drain_origin="${drain_origins[${region}]:-none}"
+            if [ "${drain_origin}" != "none" ]; then
               drain_state="drained"
             fi
             echo "${region//-/_}_drain_state=${drain_state}" >> "$GITHUB_OUTPUT"
+            echo "${region//-/_}_drain_origin=${drain_origin}" >> "$GITHUB_OUTPUT"
             echo "  pre-rollout ${region}: ${tmpl_short:-<none>}"
-            echo "  pre-rollout ${region} drain state: ${drain_state}"
+            echo "  pre-rollout ${region} drain state: ${drain_state}/${drain_origin}"
           done
 
       # Staged regional rollout. Before touching any region, drain it from the
@@ -574,7 +588,9 @@ jobs:
           QUILL_REGIONAL_SUFFIX: quillrouter.com
         run: |
           uv run --script tools/reconcile-enclave-dns.py \
-            --set-drain-region us-central1
+            --set-drain-region us-central1 \
+            --drain-origin rollout \
+            --github-run-id "${GITHUB_RUN_ID}"
           uv run --script tools/reconcile-enclave-dns.py --apply
           python3 tools/sync-route53-api-aliases.py --apply
           bash tools/wait-canonical-drained.sh us-central1
@@ -684,6 +700,7 @@ jobs:
         if: ${{ steps.canary_us.outcome == 'success' }}
         env:
           PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_central1_drain_state }}
+          PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.us_central1_drain_origin }}
           QUILL_RECONCILE_APPLY: "1"
           QUILL_API_HOST: api.trustedrouter.com
           QUILL_DNS_ZONE: trustedrouter-com
@@ -691,16 +708,16 @@ jobs:
           QUILL_REGIONAL_ZONE: quillrouter-com
           QUILL_REGIONAL_SUFFIX: quillrouter.com
         run: |
-          case "${PREV_DRAIN_STATE}" in
-            active) drain_operation="clear" ;;
-            drained) drain_operation="set" ;;
-            *)
-              echo "us-central1: invalid pre-rollout drain state '${PREV_DRAIN_STATE}'; refusing to mutate DNS" >&2
-              exit 1
-              ;;
-          esac
-          uv run --script tools/reconcile-enclave-dns.py \
-            "--${drain_operation}-drain-region" us-central1
+          source tools/enclave-rollout-drain-lib.sh
+          drain_operation="$(rollout_restore_drain_operation \
+            us-central1 "${PREV_DRAIN_STATE}" "${PREV_DRAIN_ORIGIN}")"
+          if [ "${drain_operation}" = "set" ]; then
+            uv run --script tools/reconcile-enclave-dns.py \
+              --set-drain-region us-central1 --drain-origin operator
+          else
+            uv run --script tools/reconcile-enclave-dns.py \
+              --clear-drain-region us-central1
+          fi
           uv run --script tools/reconcile-enclave-dns.py --apply
           python3 tools/sync-route53-api-aliases.py --apply
 
@@ -716,6 +733,7 @@ jobs:
         env:
           PREV_US: ${{ steps.prev.outputs.us_central1_template }}
           PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_central1_drain_state }}
+          PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.us_central1_drain_origin }}
         run: |
           bash tools/recover-gcp-region.sh \
             us-central1 \
@@ -723,7 +741,8 @@ jobs:
             quill-enclave-mig-us- \
             api.quillrouter.com,api-us-central1.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_US}" \
-            "${PREV_DRAIN_STATE}"
+            "${PREV_DRAIN_STATE}" \
+            "${PREV_DRAIN_ORIGIN}"
           exit 1
 
       # AWS OIDC credentials are temporary and cannot refresh in place. Each
@@ -744,6 +763,7 @@ jobs:
           QUILL_USAGE_HEARTBEAT: "off"
           PREV_TEMPLATE: ${{ steps.prev.outputs.europe_west4_template }}
           PREV_DRAIN_STATE: ${{ steps.prev.outputs.europe_west4_drain_state }}
+          PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.europe_west4_drain_origin }}
         run: |
           bash tools/roll-secondary-region.sh \
             europe-west4 \
@@ -754,7 +774,8 @@ jobs:
             "${PREV_TEMPLATE}" \
             c3-standard-4 \
             TDX \
-            "${PREV_DRAIN_STATE}"
+            "${PREV_DRAIN_STATE}" \
+            "${PREV_DRAIN_ORIGIN}"
 
       - name: Refresh AWS credentials for US East backup-domain DNS
         uses: aws-actions/configure-aws-credentials@v4
@@ -770,6 +791,7 @@ jobs:
           QUILL_USAGE_HEARTBEAT: "off"
           PREV_TEMPLATE: ${{ steps.prev.outputs.us_east4_template }}
           PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_east4_drain_state }}
+          PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.us_east4_drain_origin }}
         run: |
           bash tools/roll-secondary-region.sh \
             us-east4 \
@@ -780,7 +802,8 @@ jobs:
             "${PREV_TEMPLATE}" \
             c3-standard-4 \
             TDX \
-            "${PREV_DRAIN_STATE}"
+            "${PREV_DRAIN_STATE}" \
+            "${PREV_DRAIN_ORIGIN}"
 
       - name: Refresh AWS credentials for São Paulo backup-domain DNS
         uses: aws-actions/configure-aws-credentials@v4
@@ -796,6 +819,7 @@ jobs:
           QUILL_USAGE_HEARTBEAT: "off"
           PREV_TEMPLATE: ${{ steps.prev.outputs.southamerica_east1_template }}
           PREV_DRAIN_STATE: ${{ steps.prev.outputs.southamerica_east1_drain_state }}
+          PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.southamerica_east1_drain_origin }}
         run: |
           bash tools/roll-secondary-region.sh \
             southamerica-east1 \
@@ -806,7 +830,8 @@ jobs:
             "${PREV_TEMPLATE}" \
             n2d-standard-4 \
             SEV \
-            "${PREV_DRAIN_STATE}"
+            "${PREV_DRAIN_STATE}" \
+            "${PREV_DRAIN_ORIGIN}"
 
       # No cross-region "final watchdog" step. Each region's health is
       # gated by its own per-region canary above (us-central1 canary
@@ -873,6 +898,16 @@ jobs:
           done
           echo "smoke didn't observe a 200 within bounded retry window"
           # exit 0 — non-blocking
+
+      - name: Clear healthy rollout-created canonical drains
+        if: always()
+        env:
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
+          QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
+        run: bash tools/cleanup-enclave-rollout-drains.sh
 
   # A failed rollout may leave old and new measured workloads serving in
   # different regions, so its transition allowlist and transitional Stage D

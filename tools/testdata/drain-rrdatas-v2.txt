@@ -1,0 +1,1 @@
+"v2;europe-west4=operator;southamerica-east1=rollout:33800000001;us-central1=rollout:33807667585;us-east4=operator"
