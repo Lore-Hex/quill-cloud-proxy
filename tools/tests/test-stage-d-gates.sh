@@ -60,6 +60,36 @@ PY
 # this offline test runnable on developer machines that do not.
 # shellcheck source=tools/stage-d-gate-lib.sh
 source tools/stage-d-gate-lib.sh
+
+# A previous template with heartbeat off predates the evidence route. Recovery
+# selects that template before invoking the same verifier, so its recorded 404
+# must take the compatibility branch after streaming itself has passed.
+recorded_404_code="$(awk 'NR == 1 { print $2 }' \
+  tools/testdata/stage-d-evidence-route-not-found.http)"
+STAGE_D_MISSING_EVIDENCE_ROUTE_WARNED=0
+{
+  stage_d_accept_missing_evidence_route \
+    off "${recorded_404_code}" fixture-region recovery
+  stage_d_accept_missing_evidence_route \
+    off "${recorded_404_code}" fixture-region recovery
+} 2>"${tmp}/404-off.err"
+[ "$(wc -l <"${tmp}/404-off.err")" -eq 1 ]
+grep -Fq '/internal/gateway/authorizations/by-gateway-request-id/{x-request-id}' \
+  "${tmp}/404-off.err"
+grep -Fq 'passing the gate on plain streaming health alone' "${tmp}/404-off.err"
+if stage_d_accept_missing_evidence_route \
+    on "${recorded_404_code}" fixture-region rollout 2>"${tmp}/404-on.err"; then
+  echo "evidence-route 404 unexpectedly passed with heartbeat on" >&2
+  exit 1
+fi
+[ ! -s "${tmp}/404-on.err" ]
+if stage_d_accept_missing_evidence_route \
+    off 503 fixture-region recovery 2>"${tmp}/503-off.err"; then
+  echo "non-404 evidence lookup unexpectedly took the compatibility branch" >&2
+  exit 1
+fi
+[ ! -s "${tmp}/503-off.err" ]
+
 if command -v jq >/dev/null 2>&1; then
   [ "$(stage_d_evidence_state tools/testdata/stage-d-evidence-lookup.json \
     "${fixture_request_id}" on "${fixture_boot_kid}")" = "valid" ]
@@ -119,6 +149,15 @@ fi
 grep -Fq "/internal/gateway/authorizations/by-gateway-request-id/\${request_log_id}" tools/verify-region-before-dns.sh
 grep -Fq 'STAGE_D_EVIDENCE_TIMEOUT_SECONDS:-60' tools/verify-region-before-dns.sh
 grep -Fq '.data.authorization_kind != "local_typed"' tools/stage-d-gate-lib.sh
+grep -Fq 'stage_d_accept_missing_evidence_route' tools/verify-region-before-dns.sh
+
+# Recovery binds the previous template before invoking the verifier; the
+# verifier then reads the heartbeat flag from that selected template.
+recovery=tools/recover-gcp-region.sh
+template_restore_line="$(grep -nF "set-instance-template \"\${mig}\"" "${recovery}" | cut -d: -f1)"
+recovery_gate_line="$(grep -nF 'bash tools/verify-region-before-dns.sh' "${recovery}" | cut -d: -f1)"
+[ "${template_restore_line}" -lt "${recovery_gate_line}" ]
+grep -Fq 'select(.key == "tee-env-QUILL_USAGE_HEARTBEAT")' tools/verify-region-before-dns.sh
 
 # Final publication is structurally unreachable from recovery: only the
 # finalize job writes kind=final, and it requires the whole rollout job.
