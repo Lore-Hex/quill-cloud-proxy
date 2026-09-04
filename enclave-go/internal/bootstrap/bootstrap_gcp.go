@@ -76,6 +76,7 @@
 //	QUILL_ADVISOR_PROMPT_SECRET               name of the secret holding the advisor prompt
 //	QUILL_TRUSTEDROUTER_INTERNAL_SECRET optional Secret Manager secret name
 //	QUILL_SPEND_LEASE_SHADOW             "on" enables Stage A shadow protocol
+//	SPEND_LEASE_LOCAL_ADMISSION           "on" enables Stage C local admission
 //	QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET optional issuer-manifest secret name
 package bootstrap
 
@@ -113,8 +114,9 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		return nil, fmt.Errorf("bootstrap/gcp: QUILL_DEVICE_KEYS_SECRET not set")
 	}
 	spendLeaseShadow := strings.EqualFold(strings.TrimSpace(os.Getenv("QUILL_SPEND_LEASE_SHADOW")), "on")
+	spendLeaseLocalAdmission := strings.EqualFold(strings.TrimSpace(os.Getenv("SPEND_LEASE_LOCAL_ADMISSION")), "on")
 	spendLeaseConfigSecret := ""
-	if spendLeaseShadow {
+	if spendLeaseShadow || spendLeaseLocalAdmission {
 		spendLeaseConfigSecret = strings.TrimSpace(os.Getenv("QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET"))
 	}
 	// Each build target needs at least one provider secret set, but bootstrap
@@ -754,7 +756,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	}
 	var spendLeaseIssuerConfig []byte
 	var spendLeaseConfigError string
-	if spendLeaseShadow {
+	if spendLeaseShadow || spendLeaseLocalAdmission {
 		if spendLeaseConfigSecret == "" {
 			spendLeaseConfigError = "QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET not set"
 		} else {
@@ -844,6 +846,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		TrustedRouterBaseURL:         os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken:   strings.TrimSpace(internalGatewayToken),
 		SpendLeaseShadow:             spendLeaseShadow,
+		SpendLeaseLocalAdmission:     spendLeaseLocalAdmission,
 		SpendLeaseIssuerConfig:       append(json.RawMessage(nil), spendLeaseIssuerConfig...),
 		SpendLeaseConfigError:        spendLeaseConfigError,
 		ACMEFallbackEAB:              strings.TrimSpace(acmeFallbackEAB),

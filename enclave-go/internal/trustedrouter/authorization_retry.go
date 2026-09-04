@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
 )
 
 const (
@@ -23,7 +25,7 @@ const (
 	// A control-plane transaction has a 20-second wall-clock budget. Bound
 	// the complete retry loop below the old 30-second per-attempt HTTP timeout
 	// so retries cannot amplify one contention event into a minute-long stall.
-	defaultAuthorizeBudget = 28 * time.Second
+	defaultAuthorizeBudget = spendlease.ReserveBudget
 )
 
 type retryPolicy struct {

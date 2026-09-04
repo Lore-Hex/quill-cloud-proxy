@@ -192,12 +192,20 @@ QUILL_TRUSTEDROUTER_INTERNAL_SECRET="${QUILL_TRUSTEDROUTER_INTERNAL_SECRET:-trus
 # leases are authoritative=false and admission behavior is unchanged on every
 # request. To revert, set QUILL_SPEND_LEASE_SHADOW=off and redeploy.
 QUILL_SPEND_LEASE_SHADOW="${QUILL_SPEND_LEASE_SHADOW:-on}"
+# Stage C is opt-in per deploy and intentionally absent from workflows. Omit
+# the tee env entirely while off, matching the existing Stage D flag pattern.
+SPEND_LEASE_LOCAL_ADMISSION="${SPEND_LEASE_LOCAL_ADMISSION:-off}"
+SPEND_LEASE_LOCAL_ADMISSION_TEE_ENV=""
+if [ "${SPEND_LEASE_LOCAL_ADMISSION}" = "on" ]; then
+  SPEND_LEASE_LOCAL_ADMISSION_TEE_ENV="|tee-env-SPEND_LEASE_LOCAL_ADMISSION=${SPEND_LEASE_LOCAL_ADMISSION}"
+fi
 # Stage D flags are opt-in. To revert either flag, set it to off and redeploy.
 QUILL_USAGE_HEARTBEAT="${QUILL_USAGE_HEARTBEAT:-off}"
 USAGE_HEARTBEAT_TEE_ENV=""
 if [ "${QUILL_USAGE_HEARTBEAT}" = "on" ]; then
   USAGE_HEARTBEAT_TEE_ENV="|tee-env-QUILL_USAGE_HEARTBEAT=${QUILL_USAGE_HEARTBEAT}"
 fi
+USAGE_HEARTBEAT_TEE_ENV="${SPEND_LEASE_LOCAL_ADMISSION_TEE_ENV}${USAGE_HEARTBEAT_TEE_ENV}"
 QUILL_TERMINATE_AT_CAP="${QUILL_TERMINATE_AT_CAP:-off}"
 TERMINATE_AT_CAP_TEE_ENV=""
 if [ "${QUILL_TERMINATE_AT_CAP}" = "on" ]; then

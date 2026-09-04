@@ -14,9 +14,14 @@ import (
 )
 
 type spendLeaseProtocol struct {
-	signer        spendlease.DigestSigner
+	signer        spendLeaseBootSigner
 	state         *spendlease.ShadowState
 	verifierReady bool
+}
+
+type spendLeaseBootSigner interface {
+	spendlease.DigestSigner
+	spendlease.MessageSigner
 }
 
 type BootRegistrationEvidence struct {
@@ -41,6 +46,16 @@ func (c *Client) ConfigureSpendLeaseShadow(signer *receipt.Signer, verifier *spe
 		signer: signer, state: spendlease.NewShadowState(verifier, signer.Kid()),
 		verifierReady: verifier != nil,
 	}
+}
+
+// ConfigureSpendLeaseLocalAdmission makes authoritative verification and CAS
+// admission consequential. Callers pass the separately allowlisted, default-
+// off GCP boot flag; setting it false preserves Stage A behavior exactly.
+func (c *Client) ConfigureSpendLeaseLocalAdmission(enabled bool) {
+	if c == nil || c.spendLease == nil || c.spendLease.state == nil {
+		return
+	}
+	c.spendLease.state.SetLocalAdmission(enabled)
 }
 
 // ConfigureStageDBoot installs the boot identity used to sign heartbeat and
@@ -140,6 +155,16 @@ func (c *Client) authorizeAtDecodeSeam(
 	body map[string]any,
 	estimateRequest spendlease.EstimateRequest,
 ) (*Authorization, int, error) {
+	return c.authorizeAtDecodeSeamWithAdmission(ctx, lookupHash, body, estimateRequest, nil)
+}
+
+func (c *Client) authorizeAtDecodeSeamWithAdmission(
+	ctx context.Context,
+	lookupHash string,
+	body map[string]any,
+	estimateRequest spendlease.EstimateRequest,
+	admission *spendlease.Admission,
+) (*Authorization, int, error) {
 	invocation := authorizationInvocationFromContext(ctx)
 	invocationNonce, err := invocation.invocationNonce()
 	if err != nil {
@@ -148,7 +173,10 @@ func (c *Client) authorizeAtDecodeSeam(
 	// Always overwrite this field at the last body-construction seam. No
 	// caller-controlled request field can select or influence the nonce.
 	body["invocation_nonce"] = invocationNonce
-	if c.spendLease != nil {
+	if admission != nil {
+		body["spend_lease_echo"] = admission.Echo
+		body["spend_lease_admission"] = admission.Receipt
+	} else if c.spendLease != nil {
 		body["spend_lease_echo"] = c.spendLease.state.BeforeRequest(lookupHash, estimateRequest, time.Now())
 	}
 	// Marshal once: SignAuthorize and the retry transport share this exact

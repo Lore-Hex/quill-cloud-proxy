@@ -82,6 +82,9 @@ func TestVerifierAcceptRejectMatrix(t *testing.T) {
 		if got, want := lease.Deadline.Sub(now), MaximumTTL+Skew; got != want {
 			t.Fatalf("deadline = %v after receipt, want %v", got, want)
 		}
+		if got, want := lease.AdmitUntil.Sub(now), MaximumTTL-AdmissionMargin; got != want {
+			t.Fatalf("admit-until = %v after receipt, want %v", got, want)
+		}
 	})
 
 	t.Run("expired", func(t *testing.T) {

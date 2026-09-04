@@ -12,7 +12,7 @@ import (
 )
 
 func initializeSpendLeaseShadow(ctx context.Context, gateway *trustedrouter.Client, boot *types.BootstrapData) {
-	if boot == nil || !boot.SpendLeaseShadow || gateway == nil || receiptSigner == nil {
+	if boot == nil || (!boot.SpendLeaseShadow && !boot.SpendLeaseLocalAdmission) || gateway == nil || receiptSigner == nil {
 		return
 	}
 	var verifier *spendlease.Verifier
@@ -29,11 +29,12 @@ func initializeSpendLeaseShadow(ctx context.Context, gateway *trustedrouter.Clie
 	// the flag-on dormant echo and boot signature. Invalid issuer config can
 	// never accidentally become authority.
 	gateway.ConfigureSpendLeaseShadow(receiptSigner, verifier)
+	gateway.ConfigureSpendLeaseLocalAdmission(boot.SpendLeaseLocalAdmission)
 	gateway.StartSpendLeaseBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence())
 }
 
 func spendLeaseIssuerConfigNonce(boot *types.BootstrapData) []byte {
-	if boot == nil || !boot.SpendLeaseShadow || len(boot.SpendLeaseIssuerConfig) == 0 {
+	if boot == nil || (!boot.SpendLeaseShadow && !boot.SpendLeaseLocalAdmission) || len(boot.SpendLeaseIssuerConfig) == 0 {
 		return nil
 	}
 	commitment := spendlease.IssuerConfigCommitment(boot.SpendLeaseIssuerConfig)

@@ -12,6 +12,7 @@ const (
 	grantExhausted
 	grantExpired
 	grantTerminal
+	grantAdmissionDisabled
 )
 
 type grant struct {
@@ -29,15 +30,27 @@ type slot struct {
 // an explicit gate: registration failure leaves echo/signing enabled but all
 // grant accounting dormant.
 type ShadowState struct {
-	verifier   *Verifier
-	bootKID    string
-	registered atomic.Bool
-	mu         sync.Mutex
-	slots      map[string]*slot
+	verifier       *Verifier
+	bootKID        string
+	registered     atomic.Bool
+	localAdmission atomic.Bool
+	mu             sync.Mutex
+	slots          map[string]*slot
+	inFlight       map[string]struct{}
 }
 
 func NewShadowState(verifier *Verifier, bootKID string) *ShadowState {
-	return &ShadowState{verifier: verifier, bootKID: bootKID, slots: make(map[string]*slot)}
+	return &ShadowState{verifier: verifier, bootKID: bootKID, slots: make(map[string]*slot), inFlight: make(map[string]struct{})}
+}
+
+func (s *ShadowState) SetLocalAdmission(enabled bool) {
+	if s != nil {
+		s.localAdmission.Store(enabled)
+	}
+}
+
+func (s *ShadowState) LocalAdmissionEnabled() bool {
+	return s != nil && s.localAdmission.Load()
 }
 
 func (s *ShadowState) SetRegistered(registered bool) {
@@ -85,6 +98,26 @@ func (s *ShadowState) BeforeRequest(keyHash string, request EstimateRequest, now
 		return base
 	}
 	base.EnclaveEstimateMicro = estimate
+	// Consequential authoritative grants are decremented only by TryAdmit,
+	// which also binds a receipt and an in-flight scope. A request that missed
+	// any local Stage C precondition must take synchronous authorize without a
+	// second, receipt-less decrement here.
+	if current.lease.Claims.Authoritative && s.localAdmission.Load() {
+		remaining = current.remaining.Load()
+		base.RemainingMicro = int64Pointer(remaining)
+		would := false
+		base.WouldAdmit = &would
+		switch {
+		case remaining <= 0:
+			current.status.CompareAndSwap(grantActive, grantExhausted)
+			base.State = "exhausted"
+		case remaining < *estimate:
+			base.State = "insufficient"
+		default:
+			base.State = "active"
+		}
+		return base
+	}
 	for {
 		remaining = current.remaining.Load()
 		base.RemainingMicro = int64Pointer(remaining)
@@ -113,6 +146,147 @@ func (s *ShadowState) BeforeRequest(keyHash string, request EstimateRequest, now
 	}
 }
 
+// TryAdmit performs the Stage C consequential decrement. Every locally visible
+// failure returns nil so the caller takes the unchanged synchronous authorize
+// path. Once the CAS succeeds the decrement is deliberately never restored:
+// rejection and version-skew paths are conservative by design.
+func (s *ShadowState) TryAdmit(
+	keyHash string,
+	idempotencyKey string,
+	routingPolicyHash string,
+	request EstimateRequest,
+	now time.Time,
+	signer MessageSigner,
+) (*Admission, error) {
+	if s == nil || !s.localAdmission.Load() || !s.registered.Load() || signer == nil || signer.Kid() == "" || idempotencyKey == "" {
+		return nil, nil
+	}
+	entry := s.lookup(keyHash, false)
+	if entry == nil {
+		return nil, nil
+	}
+	current := entry.current.Load()
+	if current == nil {
+		return nil, nil
+	}
+	claims := current.lease.Claims
+	if !claims.Authoritative || !claims.LocalAdmissionAllowed || claims.BootKID != s.bootKID || claims.RoutingPolicyHash != routingPolicyHash ||
+		now.UnixMilli() < claims.IssuedAt*1000 || !now.Before(current.lease.AdmitUntil) {
+		return nil, nil
+	}
+	if current.status.Load() != grantActive {
+		return nil, nil
+	}
+	estimate, err := Estimate(claims.Catalog, request)
+	if err != nil || estimate == nil {
+		return nil, err
+	}
+	idempotencyHash := IdempotencyKeyHash(idempotencyKey)
+	scope := claims.WorkspaceID + "#" + claims.KeyHash + "#" + idempotencyHash
+	if !s.claimScope(scope) {
+		return nil, nil
+	}
+	release := func() { s.releaseScope(scope) }
+	for {
+		if current.status.Load() != grantActive {
+			release()
+			return nil, nil
+		}
+		remaining := current.remaining.Load()
+		if remaining <= 0 {
+			current.status.CompareAndSwap(grantActive, grantExhausted)
+			release()
+			return nil, nil
+		}
+		if remaining < *estimate {
+			release()
+			return nil, nil
+		}
+		remainingAfter := remaining - *estimate
+		if !current.remaining.CompareAndSwap(remaining, remainingAfter) {
+			continue
+		}
+		if remainingAfter == 0 {
+			current.status.CompareAndSwap(grantActive, grantExhausted)
+		}
+		echoWouldAdmit := true
+		echo := Echo{
+			LeaseID: &claims.LeaseID, State: "active", RemainingMicro: int64Pointer(remaining),
+			EnclaveEstimateMicro: int64Pointer(*estimate), CatalogVersion: &claims.Catalog.Version,
+			WouldAdmit: &echoWouldAdmit,
+		}
+		receipt, signErr := SignAdmissionReceipt(signer, AdmissionReceiptClaims{
+			Version: 1, LeaseID: claims.LeaseID, Generation: claims.Generation,
+			KeyHash: claims.KeyHash, WorkspaceID: claims.WorkspaceID, BootKID: claims.BootKID,
+			IdempotencyKeySHA256: idempotencyHash, RoutingPolicyHash: claims.RoutingPolicyHash,
+			EnclaveEstimateMicro: *estimate, RemainingAfterMicro: remainingAfter,
+			AdmittedAtMS: now.UnixMilli(),
+		})
+		if signErr != nil {
+			release()
+			return nil, signErr
+		}
+		return &Admission{
+			Receipt: receipt, ReceiptHash: AdmissionReceiptHash(receipt), Scope: scope,
+			Lease: current.lease, EstimateMicro: *estimate, RemainingAfterMicro: remainingAfter,
+			Echo: echo, release: release,
+		}, nil
+	}
+}
+
+func (s *ShadowState) claimScope(scope string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.inFlight[scope]; exists {
+		return false
+	}
+	s.inFlight[scope] = struct{}{}
+	return true
+}
+
+func (s *ShadowState) releaseScope(scope string) {
+	s.mu.Lock()
+	delete(s.inFlight, scope)
+	s.mu.Unlock()
+}
+
+// ObserveReserve folds authoritative ledger state into the enclave's upper
+// bound. It never raises remaining, even if responses complete out of order.
+func (s *ShadowState) ObserveReserve(keyHash, leaseID string, generation int64, ledgerRemaining *int64, reason string, marked bool) {
+	if s == nil {
+		return
+	}
+	entry := s.lookup(keyHash, false)
+	if entry == nil {
+		return
+	}
+	current := entry.current.Load()
+	if current == nil || current.lease.Claims.LeaseID != leaseID || current.lease.Claims.Generation != generation {
+		return
+	}
+	if !marked || reason == "not_accepting" || reason == "boot_not_accepted" {
+		current.status.Store(grantAdmissionDisabled)
+		return
+	}
+	if reason == "capacity" {
+		current.remaining.Store(0)
+		current.status.Store(grantExhausted)
+		return
+	}
+	if ledgerRemaining == nil || *ledgerRemaining < 0 {
+		return
+	}
+	for {
+		local := current.remaining.Load()
+		if *ledgerRemaining >= local || current.remaining.CompareAndSwap(local, *ledgerRemaining) {
+			break
+		}
+	}
+	if current.remaining.Load() == 0 {
+		current.status.CompareAndSwap(grantActive, grantExhausted)
+	}
+}
+
 func (s *ShadowState) HandleResponse(keyHash, workspaceID string, response *Response, receivedAt time.Time) error {
 	if s == nil || response == nil || response.Token == nil || *response.Token == "" {
 		return nil
@@ -120,7 +294,7 @@ func (s *ShadowState) HandleResponse(keyHash, workspaceID string, response *Resp
 	if s.verifier == nil {
 		return errors.New("spendlease: verifier is unavailable")
 	}
-	lease, err := s.verifier.VerifyShadowAt(*response.Token, receivedAt)
+	lease, err := s.verifier.VerifyForStateAt(*response.Token, receivedAt, s.localAdmission.Load())
 	if err != nil {
 		return err
 	}
@@ -191,6 +365,8 @@ func stateName(status int32) string {
 		return "expired"
 	case grantTerminal:
 		return "terminal"
+	case grantAdmissionDisabled:
+		return "admission-disabled"
 	default:
 		return "active"
 	}

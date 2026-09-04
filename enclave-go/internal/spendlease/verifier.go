@@ -15,6 +15,7 @@ import (
 )
 
 var leaseUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type configuredKey struct {
 	publicKey ed25519.PublicKey
@@ -110,7 +111,8 @@ func (v *Verifier) VerifyAt(token string, receivedAt time.Time) (VerifiedLease, 
 	}
 	wallReceived := time.Unix(receivedAt.Unix(), int64(receivedAt.Nanosecond()))
 	deadline := receivedAt.Add(time.Unix(claims.ExpiresAt, 0).Add(Skew).Sub(wallReceived))
-	return VerifiedLease{Claims: claims, Deadline: deadline}, nil
+	admitUntil := receivedAt.Add(time.Unix(claims.ExpiresAt, 0).Add(-AdmissionMargin).Sub(wallReceived))
+	return VerifiedLease{Claims: claims, Deadline: deadline, AdmitUntil: admitUntil}, nil
 }
 
 // VerifyShadow is the Stage A authority gate. It deliberately rejects a
@@ -127,11 +129,18 @@ func (v *Verifier) VerifyShadow(token string) (VerifiedLease, error) {
 }
 
 func (v *Verifier) VerifyShadowAt(token string, receivedAt time.Time) (VerifiedLease, error) {
+	return v.VerifyForStateAt(token, receivedAt, false)
+}
+
+// VerifyForStateAt keeps authoritative grants cryptographically inert unless
+// the local-admission flag was measured into this GCP boot. Non-authoritative
+// Stage A grants are accepted in either mode.
+func (v *Verifier) VerifyForStateAt(token string, receivedAt time.Time, localAdmission bool) (VerifiedLease, error) {
 	lease, err := v.VerifyAt(token, receivedAt)
 	if err != nil {
 		return VerifiedLease{}, err
 	}
-	if lease.Claims.Authoritative {
+	if lease.Claims.Authoritative && !localAdmission {
 		return VerifiedLease{}, errors.New("spendlease: authoritative grant refused in Stage A")
 	}
 	return lease, nil
@@ -143,6 +152,9 @@ func validateClaims(c Claims, key configuredKey, now time.Time) error {
 	}
 	if c.Cohort != Cohort || c.CapMicro <= 0 || c.Generation <= 0 || c.IssuedAt <= 0 || c.ExpiresAt <= c.IssuedAt {
 		return errors.New("spendlease: invalid grant claims")
+	}
+	if c.LocalAdmissionAllowed && (!c.Authoritative || !sha256Hex.MatchString(c.RoutingPolicyHash)) {
+		return errors.New("spendlease: invalid local-admission claims")
 	}
 	if time.Duration(c.ExpiresAt-c.IssuedAt)*time.Second > MaximumTTL {
 		return errors.New("spendlease: lease TTL exceeds Stage A maximum")
@@ -166,6 +178,9 @@ func validateClaims(c Claims, key configuredKey, now time.Time) error {
 			candidate.CacheReadMicroPerMTok < 0 || candidate.CacheWriteMicroPerMTok < 0 ||
 			(candidate.PriceTierMaxInputTokens != nil && *candidate.PriceTierMaxInputTokens < 0) {
 			return errors.New("spendlease: invalid catalog candidate")
+		}
+		if c.LocalAdmissionAllowed && (candidate.UpstreamModel == "" || candidate.UsageType != "Credits") {
+			return errors.New("spendlease: invalid local-admission candidate")
 		}
 	}
 	return nil
