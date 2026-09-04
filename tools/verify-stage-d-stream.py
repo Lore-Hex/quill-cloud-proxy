@@ -20,7 +20,7 @@ EVIDENCE_KEYS = {
     "stage_d_boot_kid",
     "heartbeat_seq",
 }
-AUTHORIZATION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+AUTHORIZATION_ID_RE = re.compile(r"^gwa-[0-9a-f]{32}$")
 GATEWAY_REQUEST_ID_RE = re.compile(r"^rlog_[0-9a-f]{32}$")
 
 
@@ -100,6 +100,7 @@ def validate_evidence(
     expected_gateway_request_id: str,
     expected_boot_kid: str,
     require_stage_d: bool,
+    probe_key_in_use: bool,
 ) -> None:
     authorization = _authorization(payload)
     if authorization["gateway_request_id"] != expected_gateway_request_id:
@@ -107,10 +108,18 @@ def validate_evidence(
     if not authorization["settled"]:
         raise ValueError("authorization is not settled")
     kind = authorization["authorization_kind"]
-    if kind != "local_typed":
+    if (require_stage_d or probe_key_in_use) and kind != "local_typed":
         raise ValueError(
             "Stage D probe key must resolve to a local-typed authorization, "
             f"not {kind!r}"
+        )
+    if not (require_stage_d or probe_key_in_use) and kind not in {
+        "local_typed",
+        "regional_lease",
+    }:
+        raise ValueError(
+            "synthetic monitor key must resolve to a local-typed or regional-lease "
+            f"authorization, not {kind!r}"
         )
     if not require_stage_d:
         return
@@ -136,6 +145,7 @@ def parse_args() -> argparse.Namespace:
     evidence.add_argument("--expected-gateway-request-id", required=True)
     evidence.add_argument("--expected-boot-kid", required=True)
     evidence.add_argument("--require-stage-d", choices=("on", "off"), required=True)
+    evidence.add_argument("--probe-key-in-use", choices=("on", "off"), required=True)
     return parser.parse_args()
 
 
@@ -150,6 +160,7 @@ def main() -> None:
         expected_gateway_request_id=args.expected_gateway_request_id,
         expected_boot_kid=args.expected_boot_kid,
         require_stage_d=args.require_stage_d == "on",
+        probe_key_in_use=args.probe_key_in_use == "on",
     )
 
 

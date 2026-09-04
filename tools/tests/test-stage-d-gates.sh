@@ -35,7 +35,20 @@ fixture_request_id="rlog_00112233445566778899aabbccddeeff"
 fixture_boot_kid="gcp-b1c0f84d-0001"
 python3 tools/verify-stage-d-stream.py evidence tools/testdata/stage-d-evidence-lookup.json \
   --expected-gateway-request-id "${fixture_request_id}" \
-  --expected-boot-kid "${fixture_boot_kid}" --require-stage-d on
+  --expected-boot-kid "${fixture_boot_kid}" --require-stage-d on \
+  --probe-key-in-use on
+python3 tools/verify-stage-d-stream.py evidence \
+  tools/testdata/stage-d-evidence-regional-quota.json \
+  --expected-gateway-request-id "${fixture_request_id}" \
+  --expected-boot-kid "" --require-stage-d off --probe-key-in-use off
+if python3 tools/verify-stage-d-stream.py evidence \
+  tools/testdata/stage-d-evidence-regional-quota.json \
+  --expected-gateway-request-id "${fixture_request_id}" \
+  --expected-boot-kid "" --require-stage-d off --probe-key-in-use on \
+  2>/dev/null; then
+  echo "regional-lease evidence unexpectedly passed with the Stage D probe key" >&2
+  exit 1
+fi
 python3 - tools/testdata/stage-d-evidence-lookup.json "${tmp}" <<'PY'
 import copy
 import json
@@ -46,7 +59,7 @@ fixture = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 out = pathlib.Path(sys.argv[2])
 for name, updates in {
     "pending": {"settled": False},
-    "regional": {"authorization_kind": "regional_lease"},
+    "bare-id": {"authorization_id": "0123456789abcdef0123456789abcdef"},
     "legacy": {"authorization_kind": "legacy"},
     "no-heartbeat": {"heartbeat_seq": 0},
 }.items():
@@ -92,25 +105,38 @@ fi
 
 if command -v jq >/dev/null 2>&1; then
   [ "$(stage_d_evidence_state tools/testdata/stage-d-evidence-lookup.json \
-    "${fixture_request_id}" on "${fixture_boot_kid}")" = "valid" ]
+    "${fixture_request_id}" on "${fixture_boot_kid}" on)" = "valid" ]
   [ "$(stage_d_evidence_state tools/testdata/stage-d-evidence-lookup.json \
-    "${fixture_request_id}" off wrong-boot-kid)" = "valid" ]
+    "${fixture_request_id}" off wrong-boot-kid on)" = "valid" ]
+  [ "$(stage_d_evidence_state tools/testdata/stage-d-evidence-lookup.json \
+    "${fixture_request_id}" off wrong-boot-kid off)" = "valid" ]
   [ "$(stage_d_evidence_state "${tmp}/pending.json" \
-    "${fixture_request_id}" on "${fixture_boot_kid}")" = "pending" ]
-  if stage_d_evidence_state "${tmp}/regional.json" \
-    "${fixture_request_id}" off wrong-boot-kid >/dev/null 2>&1 || \
-    stage_d_evidence_state "${tmp}/legacy.json" \
-      "${fixture_request_id}" off wrong-boot-kid >/dev/null 2>&1; then
-    echo "a non-local_typed probe key unexpectedly passed" >&2
+    "${fixture_request_id}" on "${fixture_boot_kid}" on)" = "pending" ]
+  if stage_d_evidence_state "${tmp}/bare-id.json" \
+    "${fixture_request_id}" on "${fixture_boot_kid}" on >/dev/null 2>&1; then
+    echo "bare hexadecimal authorization_id unexpectedly passed" >&2
+    exit 1
+  fi
+  [ "$(stage_d_evidence_state \
+    tools/testdata/stage-d-evidence-regional-quota.json \
+    "${fixture_request_id}" off wrong-boot-kid off)" = "valid" ]
+  if stage_d_evidence_state tools/testdata/stage-d-evidence-regional-quota.json \
+    "${fixture_request_id}" off wrong-boot-kid on >/dev/null 2>&1; then
+    echo "regional-lease evidence unexpectedly passed with the Stage D probe key" >&2
+    exit 1
+  fi
+  if stage_d_evidence_state "${tmp}/legacy.json" \
+    "${fixture_request_id}" off wrong-boot-kid off >/dev/null 2>&1; then
+    echo "an unsupported synthetic-monitor authorization kind unexpectedly passed" >&2
     exit 1
   fi
   if stage_d_evidence_state "${tmp}/no-heartbeat.json" \
-    "${fixture_request_id}" on "${fixture_boot_kid}" >/dev/null 2>&1; then
+    "${fixture_request_id}" on "${fixture_boot_kid}" on >/dev/null 2>&1; then
     echo "missing heartbeat evidence unexpectedly passed with the flag on" >&2
     exit 1
   fi
   [ "$(stage_d_evidence_state "${tmp}/no-heartbeat.json" \
-    "${fixture_request_id}" off wrong-boot-kid)" = "valid" ]
+    "${fixture_request_id}" off wrong-boot-kid on)" = "valid" ]
 fi
 
 # Missing dedicated-key landing behavior depends on the selected template.
@@ -123,6 +149,8 @@ gcloud() {
 stage_d_select_probe_key off fixture-project fixture-region 2>"${tmp}/off-missing.err"
 fallback_warning="$(<"${tmp}/off-missing.err")"
 [ "${STAGE_D_PROBE_KEY}" = "fallback-monitor-key" ]
+[ "${STAGE_D_PROBE_KEY_NAME}" = "trustedrouter-synthetic-monitor-api-key" ]
+[ "${STAGE_D_PROBE_KEY_IN_USE}" = "off" ]
 grep -Fq 'WARNING: fixture-region: STAGE_D_PROBE_API_KEY is unavailable' <<<"${fallback_warning}"
 grep -Fq 'plain streaming health and settled authorization only' <<<"${fallback_warning}"
 
@@ -138,6 +166,14 @@ fi
 [ ! -e "${tmp}/legacy-key-touched" ]
 grep -Fq 'QUILL_USAGE_HEARTBEAT=on; failing closed' "${tmp}/on-missing.err"
 
+# A provisioned Stage D key remains authoritative even when heartbeat checks
+# are disabled by the selected template.
+STAGE_D_PROBE_API_KEY=dedicated-probe-key
+stage_d_select_probe_key off fixture-project fixture-region
+[ "${STAGE_D_PROBE_KEY}" = "dedicated-probe-key" ]
+[ "${STAGE_D_PROBE_KEY_NAME}" = "STAGE_D_PROBE_API_KEY" ]
+[ "${STAGE_D_PROBE_KEY_IN_USE}" = "on" ]
+
 # This policy-publication PR is inert. The later flag PR deliberately removes
 # this guard when it enables the pilot in decision-77 order.
 workflow=.github/workflows/deploy-enclave-gcp.yml
@@ -148,7 +184,7 @@ fi
 [ "$(grep -Ec '^[[:space:]]+QUILL_USAGE_HEARTBEAT: "off"$' "${workflow}")" = "4" ]
 grep -Fq "/internal/gateway/authorizations/by-gateway-request-id/\${request_log_id}" tools/verify-region-before-dns.sh
 grep -Fq 'STAGE_D_EVIDENCE_TIMEOUT_SECONDS:-60' tools/verify-region-before-dns.sh
-grep -Fq '.data.authorization_kind != "local_typed"' tools/stage-d-gate-lib.sh
+grep -Fq '.data.authorization_kind != "regional_lease"' tools/stage-d-gate-lib.sh
 grep -Fq 'stage_d_accept_missing_evidence_route' tools/verify-region-before-dns.sh
 
 # Recovery binds the previous template before invoking the verifier; the
