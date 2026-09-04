@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	stageCMarkerlessBearer      = "sk-stage-c-markerless"
+	stageCMarkerlessBearer      = "sk-stage-c-markerless" //nolint:gosec // deterministic public test fixture, not a credential
 	stageCMarkerlessModel       = "openai/gpt-4o-mini"
 	stageCLocalEndpoint         = "openai/gpt-4o-mini@local-snapshot/prepaid"
 	stageCReservedEndpoint      = "openai/gpt-4o-mini@reserved-router/prepaid"

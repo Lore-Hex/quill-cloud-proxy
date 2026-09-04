@@ -260,10 +260,10 @@ func TestStageCReceiptBearingAuthorizeEmitsEnclaveCanonicalBytes(t *testing.T) {
 
 	requestPath := filepath.Join("testdata", "stage_c", "receipt_bearing_authorize_request.json")
 	bootAuthPath := filepath.Join("testdata", "stage_c", "receipt_bearing_authorize_boot_auth.txt")
-	if err := os.WriteFile(requestPath, sent, 0o644); err != nil {
+	if err := os.WriteFile(requestPath, sent, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(bootAuthPath, []byte(sentBootAuth), 0o644); err != nil {
+	if err := os.WriteFile(bootAuthPath, []byte(sentBootAuth), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fmt.Println(requestPath)
