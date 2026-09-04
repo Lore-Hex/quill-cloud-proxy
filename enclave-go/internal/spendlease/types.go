@@ -90,8 +90,9 @@ type VerifiedLease struct {
 }
 
 type Response struct {
-	Token       *string `json:"token"`
-	LeaseStatus string  `json:"lease_status"`
+	Token          *string `json:"token"`
+	LeaseStatus    string  `json:"lease_status"`
+	RemainingMicro *int64  `json:"remaining_micro,omitempty"`
 }
 
 type Echo struct {
@@ -118,20 +119,20 @@ type EstimateRequest struct {
 	MaxTokens            *int64   `json:"max_tokens"`
 }
 
-// AdmissionReceiptClaims is declaration-ordered to pin the compact-JWS wire
-// payload shared with the router. Integers intentionally remain JSON integers.
+// AdmissionReceiptClaims is declaration-ordered by JSON name to pin the
+// router's canonical compact-JWS payload. Integers remain JSON integers.
 type AdmissionReceiptClaims struct {
-	Version              int    `json:"v"`
-	LeaseID              string `json:"lease_id"`
-	Generation           int64  `json:"gen"`
-	KeyHash              string `json:"key_hash"`
-	WorkspaceID          string `json:"workspace_id"`
-	BootKID              string `json:"boot_kid"`
-	IdempotencyKeySHA256 string `json:"idempotency_key_sha256"`
-	RoutingPolicyHash    string `json:"routing_policy_hash"`
-	EnclaveEstimateMicro int64  `json:"enclave_estimate_micro"`
-	RemainingAfterMicro  int64  `json:"remaining_after_micro"`
 	AdmittedAtMS         int64  `json:"admitted_at_ms"`
+	BootKID              string `json:"boot_kid"`
+	EnclaveEstimateMicro int64  `json:"enclave_estimate_micro"`
+	Generation           int64  `json:"gen"`
+	IdempotencyKeySHA256 string `json:"idempotency_key_sha256"`
+	KeyHash              string `json:"key_hash"`
+	LeaseID              string `json:"lease_id"`
+	RemainingAfterMicro  int64  `json:"remaining_after_micro"`
+	RoutingPolicyHash    string `json:"routing_policy_hash"`
+	Version              int    `json:"v"`
+	WorkspaceID          string `json:"workspace_id"`
 }
 
 // Admission is the immutable result of one consequential CAS decrement.

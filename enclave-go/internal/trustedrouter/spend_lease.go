@@ -170,14 +170,15 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 	if err != nil {
 		return nil, -1, err
 	}
-	// Always overwrite this field at the last body-construction seam. No
-	// caller-controlled request field can select or influence the nonce.
-	body["invocation_nonce"] = invocationNonce
 	if admission != nil {
-		body["spend_lease_echo"] = admission.Echo
-		body["spend_lease_admission"] = admission.Receipt
+		body = admissionAuthorizeBody(c, lookupHash, body, admission)
 	} else if c.spendLease != nil {
+		// Always overwrite this field at the last ordinary-authorize seam. No
+		// caller-controlled request field can select or influence the nonce.
+		body["invocation_nonce"] = invocationNonce
 		body["spend_lease_echo"] = c.spendLease.state.BeforeRequest(lookupHash, estimateRequest, time.Now())
+	} else {
+		body["invocation_nonce"] = invocationNonce
 	}
 	// Marshal once: SignAuthorize and the retry transport share this exact
 	// slice, so the digest cannot drift from the bytes put on the wire.
@@ -213,6 +214,9 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 	if !invocation.claim(idempotencyKey) {
 		return nil, controlPlaneEndpoint, idempotencyReplayConflict()
 	}
+	if admission != nil && decoded.Data.SpendLease != nil && decoded.Data.SpendLeaseRemainingMicro == nil {
+		decoded.Data.SpendLeaseRemainingMicro = decoded.Data.SpendLease.RemainingMicro
+	}
 	if c.spendLease != nil && decoded.Data.SpendLease != nil {
 		if err := c.spendLease.state.HandleResponse(lookupHash, decoded.Data.WorkspaceID, decoded.Data.SpendLease, time.Now()); err != nil {
 			// Stage A artifacts are advisory. Verification failure is fail-closed
@@ -223,6 +227,53 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 		decoded.Data.SpendLease = nil // never retain or accidentally log token material
 	}
 	return &decoded.Data, controlPlaneEndpoint, nil
+}
+
+// admissionAuthorizeBody narrows a locally admitted reserve to the router's
+// canonical Stage-C request contract. The receipt and boot proof replace the
+// ordinary invocation nonce and advisory echo for this path.
+func admissionAuthorizeBody(c *Client, lookupHash string, ordinary map[string]any, admission *spendlease.Admission) map[string]any {
+	body := map[string]any{
+		"api_key_hash":           lookupHash,
+		"estimated_input_tokens": ordinary["estimated_input_tokens"],
+		"idempotency_key":        ordinary["idempotency_key"],
+		"max_tokens":             ordinary["max_tokens"],
+		"model":                  ordinary["model"],
+		"region":                 c.region,
+		"route_type":             ordinary["route_type"],
+		"spend_lease_admission":  admission.Receipt,
+	}
+	if provider, ok := ordinary["provider"].(*qtypes.ProviderRouting); ok && provider != nil {
+		canonicalProvider := map[string]any{}
+		if provider.AllowFallbacks != nil {
+			canonicalProvider["allow_fallbacks"] = *provider.AllowFallbacks
+		}
+		if provider.DataCollection != "" {
+			canonicalProvider["data_collection"] = provider.DataCollection
+		}
+		if len(provider.Ignore) > 0 {
+			canonicalProvider["ignore"] = provider.Ignore
+		}
+		if len(provider.Only) > 0 {
+			canonicalProvider["only"] = provider.Only
+		}
+		if len(provider.Order) > 0 {
+			canonicalProvider["order"] = provider.Order
+		}
+		if provider.RequireParameters != nil {
+			canonicalProvider["require_parameters"] = *provider.RequireParameters
+		}
+		if provider.Usage != "" {
+			canonicalProvider["usage"] = provider.Usage
+		}
+		body["provider"] = canonicalProvider
+	}
+	for _, field := range []string{"allow_fallbacks", "requested_parameters", "service_tier"} {
+		if value, ok := ordinary[field]; ok {
+			body[field] = value
+		}
+	}
+	return body
 }
 
 func idempotencyReplayConflict() error {

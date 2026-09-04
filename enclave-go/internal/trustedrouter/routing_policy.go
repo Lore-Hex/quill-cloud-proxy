@@ -14,21 +14,22 @@ import (
 // the synchronous router remains authoritative for selection.
 const priorityEligibilityMaxInputTokens = 32_768
 
-// normalizedRoutingInputs is serialized through a map so encoding/json emits
-// lexicographically sorted keys, matching the router's canonical JSON. This is
-// only an applicability check: the router recomputes and enforces the hash.
+// normalizedRoutingInputs reproduces the router-owned canonical normalization
+// for the narrow Stage-C pilot cohort. Inputs whose router normalization cannot
+// be represented exactly here are ineligible and take synchronous authorize.
 func normalizedRoutingInputs(req *qtypes.OpenAIChatRequest, routeType, region string) ([]byte, bool) {
 	if req == nil || (routeType != "chat.completions" && routeType != "responses") || len(req.Models) != 0 ||
 		req.InferenceReceipt.Requested || req.AdditionalCostReservationMicrodollars != 0 ||
 		req.ResponseModel != "" || strings.HasPrefix(req.Model, "trustedrouter/") {
 		return nil, false
 	}
-	inputTokens := EstimateInputTokens(req)
-	if inputTokens > priorityEligibilityMaxInputTokens {
+	if EstimateInputTokens(req) > priorityEligibilityMaxInputTokens {
 		return nil, false
 	}
 	provider := req.Provider
-	if provider == nil || provider.Sort != nil || len(provider.Options) != 0 || len(provider.Quantizations) != 0 {
+	if provider == nil || provider.Sort != nil || len(provider.Options) != 0 || len(provider.Quantizations) != 0 ||
+		provider.MinPrivacy != "" || provider.Country != "" || provider.HeadquartersCountry != "" ||
+		provider.ProviderCountry != "" || provider.ZDR != nil {
 		return nil, false
 	}
 	usageType := firstNonEmpty(provider.Usage, provider.UsageType, provider.Billing)
@@ -42,37 +43,81 @@ func normalizedRoutingInputs(req *qtypes.OpenAIChatRequest, routeType, region st
 	if req.AllowFallbacks != nil {
 		allowFallbacks = *req.AllowFallbacks
 	}
-	maxPrice := provider.MaxPrice
-	if maxPrice == nil {
-		maxPrice = map[string]any{}
+	promptPrice, completionPrice, ok := normalizedMaximumPrices(provider.MaxPrice)
+	if !ok {
+		return nil, false
+	}
+	var jurisdiction any
+	if value := strings.ToLower(strings.TrimSpace(provider.Jurisdiction)); value != "" {
+		jurisdiction = value
+	}
+	preferences := map[string]any{
+		"allow_fallbacks": allowFallbacks,
+		"data_collection": strings.ToLower(strings.TrimSpace(provider.DataCollection)),
+		"ignore":          normalizedStrings(provider.Ignore),
+		"max_completion_price_microdollars_per_million_tokens": completionPrice,
+		"max_prompt_price_microdollars_per_million_tokens":     promptPrice,
+		"min_privacy_rank":      0,
+		"only":                  normalizedStrings(provider.Only),
+		"order":                 normalizedStrings(provider.Order),
+		"privacy_requirements":  []string{},
+		"provider_jurisdiction": jurisdiction,
+		"requested_parameters":  normalizedStrings(req.RequestedParameters),
+		"require_parameters":    provider.RequireParameters != nil && *provider.RequireParameters,
+		"sort":                  nil,
+		"sort_partition":        "model",
+		"usage_type":            "Credits",
+	}
+	var serviceTier any
+	if value := strings.ToLower(strings.TrimSpace(req.ServiceTier)); value != "" {
+		serviceTier = value
 	}
 	canonical := map[string]any{
-		"allow_fallbacks":      allowFallbacks,
-		"country":              strings.ToLower(strings.TrimSpace(provider.Country)),
-		"data_collection":      strings.ToLower(strings.TrimSpace(provider.DataCollection)),
-		"headquarters_country": strings.ToLower(strings.TrimSpace(provider.HeadquartersCountry)),
-		"ignore":               normalizedStrings(provider.Ignore),
-		"jurisdiction":         strings.ToLower(strings.TrimSpace(provider.Jurisdiction)),
-		"max_price":            maxPrice,
-		"min_privacy":          strings.ToLower(strings.TrimSpace(provider.MinPrivacy)),
-		"model":                req.Model,
-		"only":                 normalizedStrings(provider.Only),
-		"order":                normalizedStrings(provider.Order),
-		"priority_eligible":    true,
-		"provider_country":     strings.ToLower(strings.TrimSpace(provider.ProviderCountry)),
-		"region":               region,
-		"requested_parameters": normalizedStrings(req.RequestedParameters),
-		"require_parameters":   provider.RequireParameters,
-		"route_type":           routeType,
-		"service_tier":         strings.ToLower(strings.TrimSpace(req.ServiceTier)),
-		"usage_type":           "credits",
-		"zdr":                  provider.ZDR,
+		"fallback_policy":             allowFallbacks,
+		"model_ids":                   []string{req.Model},
+		"models_fallback_present":     false,
+		"preferences":                 preferences,
+		"priority_eligibility_bucket": "eligible",
+		"region":                      region,
+		"route_type":                  routeType,
+		"service_tier":                serviceTier,
+		"usage_type":                  "Credits",
 	}
 	body, err := json.Marshal(canonical)
 	if err != nil {
 		return nil, false
 	}
 	return body, true
+}
+
+func normalizedMaximumPrices(maxPrice map[string]any) (prompt, completion any, ok bool) {
+	if len(maxPrice) == 0 {
+		return nil, nil, true
+	}
+	for key, value := range maxPrice {
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "prompt", "input":
+			if prompt != nil {
+				return nil, nil, false
+			}
+			prompt = value
+		case "completion", "output":
+			if completion != nil {
+				return nil, nil, false
+			}
+			completion = value
+		default:
+			return nil, nil, false
+		}
+	}
+	return prompt, completion, true
+}
+
+// RoutingPolicyHash computes the router-canonical Stage-C routing-policy hash.
+// The boolean is false when the request is outside the locally admissible
+// cohort and must take synchronous authorization.
+func RoutingPolicyHash(req *qtypes.OpenAIChatRequest, routeType, region string) (string, bool) {
+	return routingPolicyHash(req, routeType, region)
 }
 
 func routingPolicyHash(req *qtypes.OpenAIChatRequest, routeType, region string) (string, bool) {

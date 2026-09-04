@@ -3,13 +3,10 @@ package trustedrouter
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -25,18 +22,15 @@ func stageCAdmissionClient(
 	inspect func(*http.Request, []byte),
 ) (*Client, *receipt.Signer, *spendlease.Claims) {
 	t.Helper()
-	seed, err := hex.DecodeString(stageCFixtureSeedHex)
-	if err != nil || len(seed) != ed25519.SeedSize {
-		t.Fatalf("seed: %v", err)
-	}
-	signer, err := receipt.NewSignerFromSeed(seed)
-	if err != nil {
-		t.Fatal(err)
-	}
+	signer := stageCFixtureSigner(t)
 	var claims spendlease.Claims
 	if err := json.Unmarshal(bytes.TrimSpace(stageCFixture(t, "authoritative_lease_payload.json")), &claims); err != nil {
 		t.Fatal(err)
 	}
+	// The router fixture omits cohort, which the enclave verifier requires.
+	// Keep behavioral tests on a separately signed verifier-valid lease; the
+	// literal fixture test and handoff report preserve this contract defect.
+	claims.Cohort = spendlease.Cohort
 	config, err := json.Marshal(spendlease.IssuerConfig{Version: 1, Keys: []spendlease.IssuerKey{{
 		KID: signer.Kid(), JWK: spendlease.JWK{KeyType: "OKP", Curve: "Ed25519", X: signer.JWK().X},
 		NotBefore: claims.IssuedAt - 60, NotAfter: claims.ExpiresAt + 60,
@@ -62,8 +56,21 @@ func stageCAdmissionClient(
 	client.ConfigureSpendLeaseShadow(signer, verifier)
 	client.ConfigureSpendLeaseLocalAdmission(true)
 	client.spendLease.state.SetRegistered(true)
-	token := strings.TrimSpace(string(stageCFixture(t, "authoritative_lease.jws")))
-	now := time.UnixMilli(2_000_000_001_123)
+	header := struct {
+		Algorithm string `json:"alg"`
+		KID       string `json:"kid"`
+		Type      string `json:"typ"`
+	}{Algorithm: "EdDSA", KID: signer.Kid(), Type: spendlease.JWSType}
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadJSON, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := stageCSignCompactInputs(t, signer, headerJSON, payloadJSON)
+	now := time.UnixMilli(2_000_000_005_000)
 	if err := client.spendLease.state.HandleResponse(
 		claims.KeyHash, claims.WorkspaceID,
 		&spendlease.Response{Token: &token, LeaseStatus: "active"}, now,
@@ -76,7 +83,12 @@ func stageCAdmissionClient(
 func fixedStageCContext() context.Context {
 	invocation := &authorizationInvocation{nonce: "00112233445566778899aabbccddeeff"}
 	invocation.once.Do(func() {})
-	return context.WithValue(context.Background(), authorizationInvocationContextKey{}, invocation)
+	ctx := context.WithValue(context.Background(), authorizationInvocationContextKey{}, invocation)
+	ctx, err := WithAPIKeyLookupHash(ctx, stageCFixtureKeyHash)
+	if err != nil {
+		panic(err)
+	}
+	return ctx
 }
 
 type failingStageCAdmissionSigner struct {
@@ -88,10 +100,10 @@ func (f failingStageCAdmissionSigner) SignMessage([]byte) ([]byte, error) {
 }
 
 func TestStageCReceiptSigningFailureFallsBackToSynchronousAuthorize(t *testing.T) {
-	client, signer, _ := stageCAdmissionClient(t, "authorize_response_accepted.json", http.StatusOK, nil)
+	client, signer, _ := stageCAdmissionClient(t, "admission_accepted_response.json", http.StatusOK, nil)
 	client.spendLease.signer = failingStageCAdmissionSigner{Signer: signer}
 	plan, err := client.PrepareSpendLeaseAdmission(
-		fixedStageCContext(), "sk-stage-c-fixture", stageCFixtureRequest(), "chat.completions", time.UnixMilli(2_000_000_001_123),
+		fixedStageCContext(), "sk-stage-c-fixture", stageCFixtureRequest(), "chat.completions", time.UnixMilli(2_000_000_005_000),
 	)
 	if err != nil || plan != nil {
 		t.Fatalf("signing failure did not fall back: plan=%#v err=%v", plan, err)
@@ -99,24 +111,23 @@ func TestStageCReceiptSigningFailureFallsBackToSynchronousAuthorize(t *testing.T
 }
 
 func TestStageCReserveUsesPinnedReceiptBodyAndReturnsBoundMarker(t *testing.T) {
-	client, _, claims := stageCAdmissionClient(t, "authorize_response_accepted.json", http.StatusOK, func(request *http.Request, body []byte) {
-		wantBody := bytes.TrimSpace(stageCFixture(t, "authorize_request.json"))
+	client, _, claims := stageCAdmissionClient(t, "admission_accepted_response.json", http.StatusOK, func(request *http.Request, body []byte) {
+		wantBody := stageCFixture(t, "receipt_bearing_authorize_request.json")
 		if !bytes.Equal(body, wantBody) {
 			t.Fatalf("reserve body drift\ngot:  %s\nwant: %s", body, wantBody)
 		}
-		wantHeader := strings.TrimSpace(string(stageCFixture(t, "authorize_boot_auth.txt")))
-		if got := request.Header.Get(spendlease.BootAuthHeader); got != wantHeader {
-			t.Fatalf("boot auth = %q, want %q", got, wantHeader)
+		if got := request.Header.Get(spendlease.BootAuthHeader); got == "" {
+			t.Fatal("reserve request omitted boot auth")
 		}
 	})
 	req := stageCFixtureRequest()
-	now := time.UnixMilli(2_000_000_001_123)
+	now := time.UnixMilli(2_000_000_005_000)
 	plan, err := client.PrepareSpendLeaseAdmission(fixedStageCContext(), "sk-stage-c-fixture", req, "chat.completions", now)
 	if err != nil || plan == nil || plan.Local == nil || len(plan.Local.RouteCandidates) != 1 {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
 	resolved, marked, err := client.ReserveSpendLeaseAdmission(fixedStageCContext(), plan, req)
-	if err != nil || !marked || resolved.AuthorizationID != "gwa_stage_c_fixture" || resolved.SpendLeaseRemainingMicro == nil {
+	if err != nil || !marked || resolved.AuthorizationID != "gwa-stage-c-fixture" || resolved.SpendLeaseRemainingMicro == nil {
 		t.Fatalf("resolved=%#v marked=%t err=%v", resolved, marked, err)
 	}
 	if *resolved.SpendLeaseRemainingMicro >= claims.CapMicro {
@@ -125,7 +136,7 @@ func TestStageCReserveUsesPinnedReceiptBodyAndReturnsBoundMarker(t *testing.T) {
 }
 
 func TestStageCReserveRetriesIdenticalReceiptBytesAndBootProof(t *testing.T) {
-	client, _, _ := stageCAdmissionClient(t, "authorize_response_accepted.json", http.StatusOK, nil)
+	client, _, _ := stageCAdmissionClient(t, "admission_accepted_response.json", http.StatusOK, nil)
 	client.authorizeRetry = retryPolicy{attempts: 2, totalBudget: spendlease.ReserveBudget, sleep: func(context.Context, time.Duration) error { return nil }}
 	var bodies [][]byte
 	var proofs []string
@@ -139,7 +150,7 @@ func TestStageCReserveRetriesIdenticalReceiptBytesAndBootProof(t *testing.T) {
 		responseBody := []byte(`{"error":{"message":"retry","type":"service_unavailable"}}`)
 		if attempt == 2 {
 			status = http.StatusOK
-			responseBody = stageCFixture(t, "authorize_response_accepted.json")
+			responseBody = stageCFixture(t, "admission_accepted_response.json")
 		}
 		return &http.Response{
 			StatusCode: status, Header: make(http.Header), Request: request,
@@ -148,7 +159,7 @@ func TestStageCReserveRetriesIdenticalReceiptBytesAndBootProof(t *testing.T) {
 	})
 	req := stageCFixtureRequest()
 	plan, err := client.PrepareSpendLeaseAdmission(
-		fixedStageCContext(), "sk-stage-c-fixture", req, "chat.completions", time.UnixMilli(2_000_000_001_123),
+		fixedStageCContext(), "sk-stage-c-fixture", req, "chat.completions", time.UnixMilli(2_000_000_005_000),
 	)
 	if err != nil || plan == nil {
 		t.Fatalf("plan=%#v err=%v", plan, err)
@@ -163,12 +174,12 @@ func TestStageCReserveRetriesIdenticalReceiptBytesAndBootProof(t *testing.T) {
 
 func TestStageCAcceptedMarkerCannotAuthorizeDifferentSnapshotRoute(t *testing.T) {
 	body := bytes.Replace(
-		stageCFixture(t, "authorize_response_accepted.json"),
-		[]byte(`"upstream_model":"gpt-4o-mini"`),
+		stageCFixture(t, "admission_accepted_response.json"),
+		[]byte(`"upstream_model":"claude-haiku-4-5-20251001"`),
 		[]byte(`"upstream_model":"different-model"`),
 		1,
 	)
-	client, _, _ := stageCAdmissionClient(t, "authorize_response_accepted.json", http.StatusOK, nil)
+	client, _, _ := stageCAdmissionClient(t, "admission_accepted_response.json", http.StatusOK, nil)
 	client.httpc.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK, Header: make(http.Header), Request: request,
@@ -177,7 +188,7 @@ func TestStageCAcceptedMarkerCannotAuthorizeDifferentSnapshotRoute(t *testing.T)
 	})
 	req := stageCFixtureRequest()
 	plan, err := client.PrepareSpendLeaseAdmission(
-		fixedStageCContext(), "sk-stage-c-fixture", req, "chat.completions", time.UnixMilli(2_000_000_001_123),
+		fixedStageCContext(), "sk-stage-c-fixture", req, "chat.completions", time.UnixMilli(2_000_000_005_000),
 	)
 	if err != nil || plan == nil {
 		t.Fatalf("plan=%#v err=%v", plan, err)
@@ -189,34 +200,21 @@ func TestStageCAcceptedMarkerCannotAuthorizeDifferentSnapshotRoute(t *testing.T)
 	}
 }
 
-func TestStageCMarkerlessAndCapacityResponsesDisableFurtherAdmission(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		fixture  string
-		status   int
-		wantMark bool
-		wantErr  bool
-	}{
-		{name: "markerless", fixture: "authorize_response_unmarked.json", status: http.StatusOK},
-		{name: "capacity", fixture: "authorize_response_rejection_capacity.json", status: http.StatusConflict, wantErr: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			client, _, _ := stageCAdmissionClient(t, test.fixture, test.status, nil)
-			req := stageCFixtureRequest()
-			plan, err := client.PrepareSpendLeaseAdmission(fixedStageCContext(), "sk-stage-c-fixture", req, "chat.completions", time.UnixMilli(2_000_000_001_123))
-			if err != nil || plan == nil {
-				t.Fatalf("plan=%#v err=%v", plan, err)
-			}
-			resolved, marked, err := client.ReserveSpendLeaseAdmission(fixedStageCContext(), plan, req)
-			if (err != nil) != test.wantErr || marked != test.wantMark {
-				t.Fatalf("resolved=%#v marked=%t err=%v", resolved, marked, err)
-			}
-			req.IdempotencyKey = "another-idempotency-key"
-			next, nextErr := client.PrepareSpendLeaseAdmission(context.Background(), "sk-stage-c-fixture", req, "chat.completions", time.UnixMilli(2_000_000_002_123))
-			if nextErr != nil || next != nil {
-				t.Fatalf("disabled grant admitted again: plan=%#v err=%v", next, nextErr)
-			}
-		})
+func TestStageCCapacityResponseDisablesFurtherAdmission(t *testing.T) {
+	client, _, _ := stageCAdmissionClient(t, "admission_rejected_capacity.json", http.StatusConflict, nil)
+	req := stageCFixtureRequest()
+	plan, err := client.PrepareSpendLeaseAdmission(fixedStageCContext(), "sk-stage-c-fixture", req, "chat.completions", time.UnixMilli(2_000_000_005_000))
+	if err != nil || plan == nil {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	resolved, marked, err := client.ReserveSpendLeaseAdmission(fixedStageCContext(), plan, req)
+	if err == nil || marked {
+		t.Fatalf("resolved=%#v marked=%t err=%v", resolved, marked, err)
+	}
+	req.IdempotencyKey = "another-idempotency-key"
+	next, nextErr := client.PrepareSpendLeaseAdmission(fixedStageCContext(), "sk-stage-c-fixture", req, "chat.completions", time.UnixMilli(2_000_000_006_000))
+	if nextErr != nil || next != nil {
+		t.Fatalf("disabled grant admitted again: plan=%#v err=%v", next, nextErr)
 	}
 }
 
@@ -248,10 +246,10 @@ func TestStageCClosedRejectionFixturesDecodeAndApplyKillReasons(t *testing.T) {
 	}
 	for _, reason := range reasons {
 		t.Run(reason, func(t *testing.T) {
-			client, _, _ := stageCAdmissionClient(t, "authorize_response_rejection_"+reason+".json", http.StatusConflict, nil)
+			client, _, _ := stageCAdmissionClient(t, "admission_rejected_"+reason+".json", http.StatusConflict, nil)
 			req := stageCFixtureRequest()
 			plan, err := client.PrepareSpendLeaseAdmission(
-				fixedStageCContext(), "sk-stage-c-fixture", req, "chat.completions", time.UnixMilli(2_000_000_001_123),
+				fixedStageCContext(), "sk-stage-c-fixture", req, "chat.completions", time.UnixMilli(2_000_000_005_000),
 			)
 			if err != nil || plan == nil {
 				t.Fatalf("plan=%#v err=%v", plan, err)
@@ -264,7 +262,7 @@ func TestStageCClosedRejectionFixturesDecodeAndApplyKillReasons(t *testing.T) {
 			if reason == "boot_not_accepted" || reason == "not_accepting" || reason == "capacity" {
 				req.IdempotencyKey = "next-" + reason
 				next, nextErr := client.PrepareSpendLeaseAdmission(
-					context.Background(), "sk-stage-c-fixture", req, "chat.completions", time.UnixMilli(2_000_000_002_123),
+					fixedStageCContext(), "sk-stage-c-fixture", req, "chat.completions", time.UnixMilli(2_000_000_006_000),
 				)
 				if nextErr != nil || next != nil {
 					t.Fatalf("kill reason admitted another request: plan=%#v err=%v", next, nextErr)

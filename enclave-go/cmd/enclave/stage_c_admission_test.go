@@ -5,9 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,7 +31,7 @@ const (
 	stageCLocalEndpoint         = "openai/gpt-4o-mini@local-snapshot/prepaid"
 	stageCReservedEndpoint      = "openai/gpt-4o-mini@reserved-router/prepaid"
 	stageCMarkerlessWorkspaceID = "ws_stage_c_markerless"
-	stageCMarkerlessRequestBody = `{"model":"openai/gpt-4o-mini","stream":false,"messages":[{"role":"user","content":"markerless"}],"max_tokens":64,"provider":{"only":["local-snapshot"],"usage":"credits","allow_fallbacks":false,"data_collection":"deny","zdr":true}}`
+	stageCMarkerlessRequestBody = `{"model":"openai/gpt-4o-mini","stream":false,"messages":[{"role":"user","content":"markerless"}],"max_tokens":64,"provider":{"only":["local-snapshot"],"usage":"credits","allow_fallbacks":false,"data_collection":"deny"}}`
 )
 
 type stageCMarkerlessLeaseHeader struct {
@@ -71,7 +69,11 @@ func TestServeOneStageCUnmarkedReserveCancelsBeforeRedispatch(t *testing.T) {
 				if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 					return nil, err
 				}
-				if body["spend_lease_admission"] == nil {
+				reserve, err := stageCMarkerlessReserveBody(body)
+				if err != nil {
+					return nil, err
+				}
+				if !reserve {
 					return stageCMarkerlessHTTPResponse(request, map[string]any{"data": leaseResponse})
 				}
 				reserveCalls.Add(1)
@@ -238,19 +240,45 @@ func stageCMarkerlessLease(t *testing.T) (string, *receipt.Signer, *spendlease.V
 
 func stageCMarkerlessPolicyHash(t *testing.T) string {
 	t.Helper()
-	canonical := map[string]any{
-		"allow_fallbacks": false, "country": "", "data_collection": "deny", "headquarters_country": "",
-		"ignore": []string{}, "jurisdiction": "", "max_price": map[string]any{}, "min_privacy": "",
-		"model": stageCMarkerlessModel, "only": []string{"local-snapshot"}, "order": []string{},
-		"priority_eligible": true, "provider_country": "", "region": "", "requested_parameters": []string{"max_tokens"},
-		"require_parameters": nil, "route_type": "chat.completions", "service_tier": "", "usage_type": "credits", "zdr": true,
+	hash, eligible := trustedrouter.RoutingPolicyHash(
+		stageCMarkerlessRequest(t, "markerless-lease-policy"),
+		"chat.completions",
+		"",
+	)
+	if !eligible {
+		t.Fatal("markerless lease request is not eligible for Stage-C routing normalization")
 	}
-	body, err := json.Marshal(canonical)
-	if err != nil {
-		t.Fatal(err)
+	return hash
+}
+
+func stageCMarkerlessReserveBody(body map[string]any) (bool, error) {
+	receipt, reserve := body["spend_lease_admission"]
+	if !reserve {
+		return false, nil
 	}
-	digest := sha256.Sum256(body)
-	return hex.EncodeToString(digest[:])
+	if receipt, ok := receipt.(string); !ok || receipt == "" {
+		return false, fmt.Errorf("canonical reserve body has invalid spend_lease_admission: %#v", receipt)
+	}
+	wantProvider := map[string]any{
+		"allow_fallbacks": false,
+		"data_collection": "deny",
+		"only":            []any{"local-snapshot"},
+		"usage":           "credits",
+	}
+	wantRequestedParameters := []any{"max_tokens"}
+	if body["api_key_hash"] != trustedrouter.LookupHash(stageCMarkerlessBearer) ||
+		body["model"] != stageCMarkerlessModel || body["route_type"] != "chat.completions" ||
+		body["region"] != "" || body["max_tokens"] != float64(64) ||
+		!reflect.DeepEqual(body["provider"], wantProvider) ||
+		!reflect.DeepEqual(body["requested_parameters"], wantRequestedParameters) {
+		return false, fmt.Errorf("unexpected canonical reserve body: %#v", body)
+	}
+	for _, ordinaryOnly := range []string{"api_key_lookup_hash", "invocation_nonce", "max_output_tokens", "spend_lease_echo", "stream"} {
+		if _, present := body[ordinaryOnly]; present {
+			return false, fmt.Errorf("canonical reserve body retained %q: %#v", ordinaryOnly, body)
+		}
+	}
+	return true, nil
 }
 
 func stageCMarkerlessAuthorization(authorizationID, endpointID, provider string) map[string]any {

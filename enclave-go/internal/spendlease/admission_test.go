@@ -34,7 +34,7 @@ func TestAdmissionReceiptUsesExactProtectedHeaderAndEd25519Message(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantHeader := fmt.Sprintf(`{"alg":"EdDSA","typ":"spend_lease_admission+jws","kid":%q}`, signer.Kid())
+	wantHeader := fmt.Sprintf(`{"alg":"EdDSA","kid":%q,"typ":"spend_lease_admission+jws"}`, signer.Kid())
 	if string(parts.ProtectedJSON) != wantHeader || strings.Contains(string(parts.ProtectedJSON), `"jwk"`) {
 		t.Fatalf("protected header = %s, want %s without jwk", parts.ProtectedJSON, wantHeader)
 	}

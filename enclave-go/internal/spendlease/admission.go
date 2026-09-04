@@ -15,8 +15,8 @@ type MessageSigner interface {
 
 type admissionProtectedHeader struct {
 	Algorithm string `json:"alg"`
-	Type      string `json:"typ"`
 	KID       string `json:"kid"`
+	Type      string `json:"typ"`
 }
 
 func SignAdmissionReceipt(signer MessageSigner, claims AdmissionReceiptClaims) (string, error) {
