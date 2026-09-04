@@ -25,7 +25,7 @@ for ((attempt = 1; attempt <= attempts; attempt++)); do
   if curl -fsS --connect-timeout 5 --max-time 15 -o "${payload}" "${url}" &&
      curl -fsS --connect-timeout 5 --max-time 15 -o "${bundle}" "${bundle_url}" &&
      cmp -s "${expected_file}" "${payload}" &&
-     cosign verify-blob \
+     cosign verify-blob --new-bundle-format \
        --bundle "${bundle}" \
        --certificate-identity "${identity}" \
        --certificate-oidc-issuer "${issuer}" \

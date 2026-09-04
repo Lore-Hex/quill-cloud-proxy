@@ -167,7 +167,9 @@ grep -Fq 'trust-page/gcp/stage-d-accepted.json; do' .github/workflows/publish-tr
 grep -Fq "cosign sign-blob --bundle \"\$f.bundle\" \"\$f\"" .github/workflows/publish-trust-gcp.yml
 stage_d_sign_block="$(grep -A5 -F "if [ \"\$f\" = \"\$stage_d_policy\" ]; then" .github/workflows/publish-trust-gcp.yml)"
 grep -Fq "cosign sign-blob --new-bundle-format --bundle \"\$f.bundle\" \"\$f\"" <<<"${stage_d_sign_block}"
-[ "$(grep -Fc -- '--new-bundle-format' .github/workflows/publish-trust-gcp.yml)" = "1" ]
+grep -Fq 'cosign verify-blob --new-bundle-format' .github/workflows/publish-trust-gcp.yml
+grep -Fq 'cosign verify-blob --new-bundle-format' .github/workflows/deploy-enclave-gcp.yml
+grep -Fq 'cosign verify-blob --new-bundle-format' tools/wait-stage-d-policy.sh
 grep -Fq -- "--certificate-identity \"\$identity\"" .github/workflows/publish-trust-gcp.yml
 if grep -Eq 'write-stage-d-policy|--kind[[:space:]]+final' tools/recover-gcp-region.sh tools/roll-secondary-region.sh; then
   echo "a recovery path can publish a final Stage D policy" >&2
