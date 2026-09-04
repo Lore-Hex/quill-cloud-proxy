@@ -44,7 +44,7 @@ class StageDStreamTests(unittest.TestCase):
         ).hexdigest()
         self.assertEqual(
             digest,
-            "2bc7b029a6047752f6760a06d8bdab551dc52db2943087f864aad6acdf882b41",
+            "e44d18cd36d390da041d51b427cbac4e98d28a0316059529948516bd568e4eb0",
         )
 
     def test_literal_evidence_fixture_on_requires_matching_boot_and_heartbeat(self) -> None:
@@ -54,6 +54,7 @@ class StageDStreamTests(unittest.TestCase):
             expected_gateway_request_id="rlog_00112233445566778899aabbccddeeff",
             expected_boot_kid="gcp-b1c0f84d-0001",
             require_stage_d=True,
+            probe_key_in_use=True,
         )
         with self.assertRaisesRegex(ValueError, "boot kid"):
             stream.validate_evidence(
@@ -61,6 +62,7 @@ class StageDStreamTests(unittest.TestCase):
                 expected_gateway_request_id="rlog_00112233445566778899aabbccddeeff",
                 expected_boot_kid="another-boot",
                 require_stage_d=True,
+                probe_key_in_use=True,
             )
         no_heartbeat = copy.deepcopy(evidence)
         no_heartbeat["data"]["heartbeat_seq"] = 0
@@ -70,9 +72,10 @@ class StageDStreamTests(unittest.TestCase):
                 expected_gateway_request_id="rlog_00112233445566778899aabbccddeeff",
                 expected_boot_kid="gcp-b1c0f84d-0001",
                 require_stage_d=True,
+                probe_key_in_use=True,
             )
 
-    def test_evidence_off_requires_settled_and_exact_local_typed_kind_only(self) -> None:
+    def test_evidence_off_requires_settled_and_key_appropriate_kind(self) -> None:
         evidence = self.evidence("stage-d-evidence-lookup.json")
         evidence["data"]["stage_d_boot_kid"] = None
         evidence["data"]["heartbeat_seq"] = None
@@ -81,6 +84,14 @@ class StageDStreamTests(unittest.TestCase):
             expected_gateway_request_id="rlog_00112233445566778899aabbccddeeff",
             expected_boot_kid="",
             require_stage_d=False,
+            probe_key_in_use=True,
+        )
+        stream.validate_evidence(
+            evidence,
+            expected_gateway_request_id="rlog_00112233445566778899aabbccddeeff",
+            expected_boot_kid="",
+            require_stage_d=False,
+            probe_key_in_use=False,
         )
         evidence["data"]["settled"] = False
         with self.assertRaisesRegex(ValueError, "not settled"):
@@ -89,18 +100,34 @@ class StageDStreamTests(unittest.TestCase):
                 expected_gateway_request_id="rlog_00112233445566778899aabbccddeeff",
                 expected_boot_kid="",
                 require_stage_d=False,
+                probe_key_in_use=True,
             )
         evidence["data"]["settled"] = True
-        for wrong_kind in ("regional_lease", "legacy"):
-            with self.subTest(wrong_kind=wrong_kind):
-                evidence["data"]["authorization_kind"] = wrong_kind
-                with self.assertRaisesRegex(ValueError, "local-typed"):
-                    stream.validate_evidence(
-                        evidence,
-                        expected_gateway_request_id="rlog_00112233445566778899aabbccddeeff",
-                        expected_boot_kid="",
-                        require_stage_d=False,
-                    )
+        regional = self.evidence("stage-d-evidence-regional-quota.json")
+        stream.validate_evidence(
+            regional,
+            expected_gateway_request_id="rlog_00112233445566778899aabbccddeeff",
+            expected_boot_kid="",
+            require_stage_d=False,
+            probe_key_in_use=False,
+        )
+        with self.assertRaisesRegex(ValueError, "local-typed"):
+            stream.validate_evidence(
+                regional,
+                expected_gateway_request_id="rlog_00112233445566778899aabbccddeeff",
+                expected_boot_kid="",
+                require_stage_d=False,
+                probe_key_in_use=True,
+            )
+        regional["data"]["authorization_kind"] = "legacy"
+        with self.assertRaisesRegex(ValueError, "regional-lease"):
+            stream.validate_evidence(
+                regional,
+                expected_gateway_request_id="rlog_00112233445566778899aabbccddeeff",
+                expected_boot_kid="",
+                require_stage_d=False,
+                probe_key_in_use=False,
+            )
 
     def test_evidence_rejects_aliases_and_nonliteral_keys(self) -> None:
         evidence = self.evidence("stage-d-evidence-lookup.json")
@@ -111,6 +138,19 @@ class StageDStreamTests(unittest.TestCase):
                 expected_gateway_request_id="rlog_00112233445566778899aabbccddeeff",
                 expected_boot_kid="gcp-b1c0f84d-0001",
                 require_stage_d=True,
+                probe_key_in_use=True,
+            )
+
+    def test_evidence_rejects_bare_hex_authorization_id(self) -> None:
+        evidence = self.evidence("stage-d-evidence-lookup.json")
+        evidence["data"]["authorization_id"] = "0123456789abcdef0123456789abcdef"
+        with self.assertRaisesRegex(ValueError, "invalid authorization_id"):
+            stream.validate_evidence(
+                evidence,
+                expected_gateway_request_id="rlog_00112233445566778899aabbccddeeff",
+                expected_boot_kid="gcp-b1c0f84d-0001",
+                require_stage_d=True,
+                probe_key_in_use=True,
             )
 
 

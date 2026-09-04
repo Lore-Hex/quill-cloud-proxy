@@ -202,6 +202,7 @@ verify_streaming_authorization() {
   local host="$1" ip="$2" stage="$3"
   local suffix headers stream receipt evidence code request_log_id expected_boot_kid=""
   local idempotency_key attempt lookup_url content_type evidence_state
+  local authorization_kind
   local timeout_seconds deadline remaining retry_sleep lookup_succeeded
   suffix="${stage}-${ip//./-}"
   headers="${response_dir}/${suffix}.headers"
@@ -272,12 +273,13 @@ verify_streaming_authorization() {
     if [ "${lookup_succeeded}" = "1" ] && [ "${code}" = "200" ]; then
       if ! evidence_state="$(stage_d_evidence_state \
         "${evidence}" "${request_log_id}" "${HEARTBEAT_FLAG}" \
-        "${expected_boot_kid}")"; then
+        "${expected_boot_kid}" "${STAGE_D_PROBE_KEY_IN_USE}")"; then
         echo "${REGION}: ${stage} stream on ${ip} returned invalid settled authorization evidence" >&2
         return 1
       fi
       if [ "${evidence_state}" = "valid" ]; then
-        echo "${REGION}: ${stage} stream on ${ip} has settled local_typed authorization evidence"
+        authorization_kind="$(jq -er '.data.authorization_kind' "${evidence}")"
+        echo "${REGION}: ${stage} stream on ${ip} used ${STAGE_D_PROBE_KEY_NAME} and has settled ${authorization_kind} authorization evidence"
         return 0
       fi
     fi
