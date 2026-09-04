@@ -191,7 +191,7 @@ ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS = {
     ).split(",")
     if r.strip()
 }
-# A persistent rollout drain is shared by the deploy workflow and the scheduled
+# A persistent canonical drain is shared by the deploy workflow and scheduled
 # Cloud Run reconciler. Without it, a scheduler tick can re-add a region that a
 # canary rollout deliberately removed from canonical DNS. The TXT record lives
 # in the same managed zone and uses the same DNS-admin permission as A-record
@@ -202,7 +202,9 @@ DRAIN_RECORD = os.environ.get(
 )
 DRAIN_TTL = int(os.environ.get("QUILL_DRAIN_TTL", "30"))
 _REGION_RE = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
-_DRAIN_VERSION = "v1"
+_DRAIN_VERSION = "v2"
+_LEGACY_DRAIN_VERSION = "v1"
+_DRAIN_ORIGIN_RE = re.compile(r"^(?:operator|rollout:[1-9][0-9]*)$")
 
 
 def log(msg: str) -> None:
@@ -644,30 +646,65 @@ def current_dns_txt(zone: str, record: str) -> list[str]:
     return []
 
 
-def parse_drain_rrdatas(rrdatas: list[str]) -> set[str]:
-    """Decode the single versioned TXT value used for persistent drains."""
+def parse_drain_rrdatas(rrdatas: list[str]) -> dict[str, str]:
+    """Decode the single versioned TXT value used for persistent drains.
+
+    Version 1 carried only region names. Treat every such entry as an operator
+    drain so upgrading this controller can never re-enable an existing drain.
+    """
     if not rrdatas:
-        return set()
+        return {}
     if len(rrdatas) != 1:
         raise RuntimeError(
             f"{DRAIN_RECORD} must contain exactly one TXT value, got {len(rrdatas)}"
         )
     payload = rrdatas[0].strip().strip('"')
     parts = payload.split(";")
-    if not parts or parts[0] != _DRAIN_VERSION:
+    if not parts or parts[0] not in {_LEGACY_DRAIN_VERSION, _DRAIN_VERSION}:
         raise RuntimeError(f"{DRAIN_RECORD} has unsupported payload {payload!r}")
-    regions = {part for part in parts[1:] if part}
-    invalid = sorted(region for region in regions if not _REGION_RE.fullmatch(region))
+
+    drains: dict[str, str] = {}
+    if parts[0] == _LEGACY_DRAIN_VERSION:
+        drains = {part: "operator" for part in parts[1:] if part}
+    else:
+        for entry in parts[1:]:
+            if not entry:
+                continue
+            region, separator, origin = entry.partition("=")
+            if not separator or region in drains:
+                raise RuntimeError(
+                    f"{DRAIN_RECORD} has invalid drain entry {entry!r}"
+                )
+            drains[region] = origin
+
+    invalid = sorted(region for region in drains if not _REGION_RE.fullmatch(region))
     if invalid:
         raise RuntimeError(f"{DRAIN_RECORD} has invalid region(s): {invalid}")
-    return regions
+    invalid_origins = sorted(
+        f"{region}={origin}"
+        for region, origin in drains.items()
+        if not _DRAIN_ORIGIN_RE.fullmatch(origin)
+    )
+    if invalid_origins:
+        raise RuntimeError(
+            f"{DRAIN_RECORD} has invalid drain origin(s): {invalid_origins}"
+        )
+    return drains
 
 
-def encode_drain_rrdatas(regions: set[str]) -> list[str]:
-    invalid = sorted(region for region in regions if not _REGION_RE.fullmatch(region))
+def encode_drain_rrdatas(drains: dict[str, str]) -> list[str]:
+    invalid = sorted(region for region in drains if not _REGION_RE.fullmatch(region))
     if invalid:
         raise ValueError(f"invalid drain region(s): {invalid}")
-    payload = ";".join([_DRAIN_VERSION, *sorted(regions)])
+    invalid_origins = sorted(
+        f"{region}={origin}"
+        for region, origin in drains.items()
+        if not _DRAIN_ORIGIN_RE.fullmatch(origin)
+    )
+    if invalid_origins:
+        raise ValueError(f"invalid drain origin(s): {invalid_origins}")
+    entries = [f"{region}={drains[region]}" for region in sorted(drains)]
+    payload = ";".join([_DRAIN_VERSION, *entries])
     return [f'"{payload}"']
 
 
@@ -697,20 +734,35 @@ def set_dns_txt(zone: str, record: str, rrdatas: list[str]) -> None:
             )
 
 
-def persistent_drain_regions() -> set[str]:
+def persistent_drains() -> dict[str, str]:
     return parse_drain_rrdatas(current_dns_txt(DNS_ZONE, DRAIN_RECORD))
 
 
-def update_persistent_drain(region: str, *, enabled: bool) -> set[str]:
+def persistent_drain_regions() -> set[str]:
+    return set(persistent_drains())
+
+
+def update_persistent_drain(
+    region: str,
+    *,
+    enabled: bool,
+    origin: str = "operator",
+) -> dict[str, str]:
     if not _REGION_RE.fullmatch(region):
         raise ValueError(f"invalid drain region: {region!r}")
-    regions = persistent_drain_regions()
+    if not _DRAIN_ORIGIN_RE.fullmatch(origin):
+        raise ValueError(f"invalid drain origin: {origin!r}")
+    drains = persistent_drains()
     if enabled:
-        regions.add(region)
+        # A rollout must never overwrite an operator's intentional drain.
+        # An explicit operator drain, however, takes ownership from a stale
+        # rollout entry and remains until an operator clears it.
+        if origin == "operator" or drains.get(region) != "operator":
+            drains[region] = origin
     else:
-        regions.discard(region)
-    set_dns_txt(DNS_ZONE, DRAIN_RECORD, encode_drain_rrdatas(regions))
-    return regions
+        drains.pop(region, None)
+    set_dns_txt(DNS_ZONE, DRAIN_RECORD, encode_drain_rrdatas(drains))
+    return drains
 
 
 def replace_cname_with_ips(
@@ -940,24 +992,80 @@ def _main_unlocked() -> int:
     g.add_argument(
         "--list-drain-regions",
         action="store_true",
-        help="print the persistent canonical-DNS drain set",
+        help="print REGION<TAB>ORIGIN for the persistent drain set",
+    )
+    ap.add_argument(
+        "--drain-origin",
+        choices=("operator", "rollout"),
+        default="operator",
+        help="origin for --set-drain-region (default: operator)",
+    )
+    ap.add_argument(
+        "--github-run-id",
+        help="GitHub run ID required when --drain-origin=rollout",
+    )
+    ap.add_argument(
+        "--regions-only",
+        action="store_true",
+        help="with --list-drain-regions, print only region names",
     )
     args = ap.parse_args()
 
     if args.set_drain_region:
-        regions = update_persistent_drain(args.set_drain_region, enabled=True)
-        log("persistent canonical drains: " + ", ".join(sorted(regions)))
-        return 0
-    if args.clear_drain_region:
-        regions = update_persistent_drain(args.clear_drain_region, enabled=False)
+        if args.drain_origin == "rollout":
+            if not args.github_run_id or not re.fullmatch(
+                r"[1-9][0-9]*", args.github_run_id
+            ):
+                ap.error(
+                    "--drain-origin=rollout requires a numeric --github-run-id"
+                )
+            origin = f"rollout:{args.github_run_id}"
+        else:
+            if args.github_run_id:
+                ap.error("--github-run-id requires --drain-origin=rollout")
+            origin = "operator"
+        drains = update_persistent_drain(
+            args.set_drain_region,
+            enabled=True,
+            origin=origin,
+        )
         log(
             "persistent canonical drains: "
-            + (", ".join(sorted(regions)) if regions else "<none>")
+            + ", ".join(f"{region} ({drains[region]})" for region in sorted(drains))
+        )
+        return 0
+    if args.clear_drain_region:
+        if args.drain_origin != "operator" or args.github_run_id:
+            ap.error("--drain-origin/--github-run-id require --set-drain-region")
+        drains = update_persistent_drain(args.clear_drain_region, enabled=False)
+        log(
+            "persistent canonical drains: "
+            + (
+                ", ".join(
+                    f"{region} ({drains[region]})" for region in sorted(drains)
+                )
+                if drains
+                else "<none>"
+            )
         )
         return 0
     if args.list_drain_regions:
-        print("\n".join(sorted(persistent_drain_regions())))
+        if args.drain_origin != "operator" or args.github_run_id:
+            ap.error("--drain-origin/--github-run-id require --set-drain-region")
+        drains = persistent_drains()
+        if args.regions_only:
+            print("\n".join(sorted(drains)))
+        else:
+            print(
+                "\n".join(
+                    f"{region}\t{drains[region]}" for region in sorted(drains)
+                )
+            )
         return 0
+    if args.regions_only:
+        ap.error("--regions-only requires --list-drain-regions")
+    if args.drain_origin != "operator" or args.github_run_id:
+        ap.error("--drain-origin/--github-run-id require --set-drain-region")
 
     # DNS membership is gated first on the signed trust digest set. Artifact
     # Registry is a recovery-only fallback: consult it only when a live instance
@@ -982,7 +1090,8 @@ def _main_unlocked() -> int:
             healthy.append(inst)
             by_region.setdefault(inst["region"], []).append(inst["ip"])
 
-    persistent_excludes = persistent_drain_regions()
+    persistent = persistent_drains()
+    persistent_excludes = set(persistent)
     canonical_excludes = EXCLUDE_CANONICAL_REGIONS | persistent_excludes
     canonical_healthy = [
         i for i in healthy if i["region"] not in canonical_excludes
@@ -997,8 +1106,11 @@ def _main_unlocked() -> int:
         )
     if persistent_excludes:
         log(
-            "reconcile: persistent rollout drains "
-            + ", ".join(sorted(persistent_excludes))
+            "reconcile: persistent drains "
+            + ", ".join(
+                f"{region} ({persistent[region]})"
+                for region in sorted(persistent)
+            )
         )
 
     if len(healthy_ips) < MIN_HEALTHY:

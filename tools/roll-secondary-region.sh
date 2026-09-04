@@ -4,8 +4,8 @@
 # each invocation so a long multi-region deploy cannot outlive one AWS session.
 set -euo pipefail
 
-if [ "$#" -ne 9 ]; then
-  echo "usage: $0 <region> <mig> <instance-filter> <short-name> <api-hosts> <previous-template> <machine-type> <confidential-type> <active|drained>" >&2
+if [ "$#" -ne 10 ]; then
+  echo "usage: $0 <region> <mig> <instance-filter> <short-name> <api-hosts> <previous-template> <machine-type> <confidential-type> <active|drained> <none|operator|rollout:run-id>" >&2
   exit 2
 fi
 
@@ -18,20 +18,16 @@ previous_template="$6"
 machine_type="$7"
 confidential_type="$8"
 prior_drain_state="$9"
+prior_drain_origin="${10}"
 
-case "${prior_drain_state}" in
-  active) ;;
-  drained)
-    echo "::warning::${region} was already drained before this rollout; it will remain drained after success or recovery"
-    ;;
-  *)
-    echo "${region}: invalid pre-rollout drain state '${prior_drain_state}'; refusing to mutate" >&2
-    exit 2
-    ;;
-esac
+# shellcheck source=tools/enclave-rollout-drain-lib.sh
+source tools/enclave-rollout-drain-lib.sh
+restore_drain_operation="$(rollout_restore_drain_operation \
+  "${region}" "${prior_drain_state}" "${prior_drain_origin}")" || exit $?
 
 : "${IMAGE_REF:?IMAGE_REF is required}"
 : "${IMAGE_DIGEST:?IMAGE_DIGEST is required}"
+: "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 
 lock_dir="$(mktemp -d "${TMPDIR:-/tmp}/tr-secondary-rollout-XXXXXX")"
 drain_started=0
@@ -45,7 +41,8 @@ on_exit() {
     echo "${region}: rollout failed; restoring and verifying the previous template" >&2
     if ! bash tools/recover-gcp-region.sh \
       "${region}" "${mig}" "${instance_filter}" "${api_hosts}" \
-      "${previous_template}" "${prior_drain_state}"; then
+      "${previous_template}" "${prior_drain_state}" \
+      "${prior_drain_origin}"; then
       echo "${region}: automatic recovery failed; region remains drained" >&2
     fi
   fi
@@ -75,13 +72,22 @@ reconcile_dns() {
 update_drain() {
   local operation="$1"
   local target_region="$2"
+  local origin="${3:-rollout}"
   local lock="${lock_dir}/dns-reconcile.lock"
+  local -a drain_args
   (
     flock 9
+    if [ "${operation}" = "set" ]; then
+      drain_args=(--set-drain-region "${target_region}" --drain-origin "${origin}")
+      if [ "${origin}" = "rollout" ]; then
+        drain_args+=(--github-run-id "${GITHUB_RUN_ID}")
+      fi
+    else
+      drain_args=(--clear-drain-region "${target_region}")
+    fi
     QUILL_API_HOST=api.trustedrouter.com \
     QUILL_DNS_ZONE=trustedrouter-com \
-      uv run --script tools/reconcile-enclave-dns.py \
-        "--${operation}-drain-region" "${target_region}"
+      uv run --script tools/reconcile-enclave-dns.py "${drain_args[@]}"
   ) 9>"${lock}"
 }
 
@@ -133,7 +139,7 @@ export CONF_COMPUTE_TYPE="${confidential_type}"
 echo "::group::secondary rollout ${region}"
 echo "draining ${region} from canonical API DNS"
 drain_started=1
-rollout_step update_drain set "${region}"
+rollout_step update_drain set "${region}" rollout
 rollout_step reconcile_dns
 rollout_step bash tools/wait-canonical-drained.sh "${region}"
 rollout_step bash tools/deploy-gcp-mig.sh "${region}"
@@ -169,9 +175,9 @@ else
   exit 1
 fi
 
-if [ "${prior_drain_state}" = "drained" ]; then
-  echo "keeping ${region} drained from canonical API DNS"
-  rollout_step update_drain set "${region}"
+if [ "${restore_drain_operation}" = "set" ]; then
+  echo "restoring operator drain for ${region}"
+  rollout_step update_drain set "${region}" operator
 else
   echo "re-adding ${region} to canonical API DNS"
   rollout_step update_drain clear "${region}"

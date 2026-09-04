@@ -1,0 +1,2 @@
+europe-west4	operator
+us-central1	rollout:33800000001

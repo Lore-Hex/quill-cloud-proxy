@@ -25,7 +25,9 @@ class RolloutSafetyTests(unittest.TestCase):
             "${{ steps.prev.outputs.us_central1_drain_state }}",
             workflow,
         )
-        self.assertIn('"--${drain_operation}-drain-region" us-central1', workflow)
+        self.assertIn("rollout_restore_drain_operation", workflow)
+        self.assertIn("--drain-origin rollout", workflow)
+        self.assertIn('--github-run-id "${GITHUB_RUN_ID}"', workflow)
         capture_start = workflow.index("      - name: Capture pre-rollout templates")
         capture_end = workflow.index(
             "\n\n      # Staged regional rollout", capture_start
@@ -34,9 +36,11 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("QUILL_API_HOST=api.trustedrouter.com", capture)
         self.assertIn("QUILL_DNS_ZONE=trustedrouter-com", capture)
         self.assertIn("--list-drain-regions", capture)
+        self.assertIn("drain_origins", capture)
         self.assertIn('update_drain set "${region}"', secondary)
         self.assertIn('update_drain clear "${region}"', secondary)
         self.assertIn('prior_drain_state="$9"', secondary)
+        self.assertIn('prior_drain_origin="${10}"', secondary)
         self.assertIn(
             "PREV_DRAIN_STATE: "
             "${{ steps.prev.outputs.europe_west4_drain_state }}",
@@ -51,6 +55,13 @@ class RolloutSafetyTests(unittest.TestCase):
             "${{ steps.prev.outputs.southamerica_east1_drain_state }}",
             workflow,
         )
+        for region_key in (
+            "us_central1",
+            "europe_west4",
+            "us_east4",
+            "southamerica_east1",
+        ):
+            self.assertIn(f"steps.prev.outputs.{region_key}_drain_origin", workflow)
         self.assertNotIn("QUILL_EXCLUDE_CANONICAL_REGIONS:", workflow)
 
     def test_secondary_rejects_unknown_drain_state_before_mutation(self) -> None:
@@ -67,6 +78,7 @@ class RolloutSafetyTests(unittest.TestCase):
                 "c3-standard-4",
                 "TDX",
                 "",
+                "none",
             ],
             cwd=ROOT,
             capture_output=True,
@@ -360,6 +372,7 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("bash tools/recover-gcp-region.sh", secondary)
         self.assertIn("prior_drain_state", secondary)
         self.assertIn('"${previous_template}" "${prior_drain_state}"', secondary)
+        self.assertIn('"${prior_drain_origin}"', secondary)
         self.assertIn("pre-rollout canonical drain state", secondary)
         self.assertIn("trap 'exit 130' INT", secondary)
         self.assertIn("trap 'exit 143' TERM", secondary)
@@ -372,6 +385,7 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("verify-region-before-dns.sh", recovery)
         self.assertIn('update_drain clear', recovery)
         self.assertIn('final_drain_state="${6-active}"', recovery)
+        self.assertIn('final_drain_origin="${7-none}"', recovery)
         self.assertIn('update_drain set', recovery)
         self.assertLess(
             recovery.index('update_drain set'),
@@ -384,6 +398,13 @@ class RolloutSafetyTests(unittest.TestCase):
 
         self.assertIn("us_central1_drain_state", workflow)
         self.assertIn("Restore us-central1 canonical drain state", workflow)
+        self.assertIn("Clear healthy rollout-created canonical drains", workflow)
+        cleanup_start = workflow.index(
+            "      - name: Clear healthy rollout-created canonical drains"
+        )
+        cleanup = workflow[cleanup_start:]
+        self.assertIn("if: always()", cleanup)
+        self.assertIn("cleanup-enclave-rollout-drains.sh", cleanup)
 
     def test_deploy_preflights_runtime_access_to_every_referenced_secret(self) -> None:
         deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")

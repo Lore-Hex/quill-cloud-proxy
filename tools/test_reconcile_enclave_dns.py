@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -247,26 +250,66 @@ class AttestationProbeTests(unittest.TestCase):
 class PersistentDrainTests(unittest.TestCase):
     def test_drain_payload_round_trips_deterministically(self) -> None:
         encoded = reconciler.encode_drain_rrdatas(
-            {"us-east4", "europe-west4", "us-central1"}
+            {
+                "us-east4": "operator",
+                "europe-west4": "rollout:33807667585",
+                "us-central1": "rollout:33807667585",
+            }
         )
 
         self.assertEqual(
             encoded,
-            ['"v1;europe-west4;us-central1;us-east4"'],
+            [
+                '"v2;europe-west4=rollout:33807667585;'
+                'us-central1=rollout:33807667585;us-east4=operator"'
+            ],
         )
         self.assertEqual(
             reconciler.parse_drain_rrdatas(encoded),
-            {"us-east4", "europe-west4", "us-central1"},
+            {
+                "us-east4": "operator",
+                "europe-west4": "rollout:33807667585",
+                "us-central1": "rollout:33807667585",
+            },
         )
 
+    def test_recorded_legacy_payload_is_read_as_operator_drains(self) -> None:
+        fixture = (
+            Path(__file__).with_name("testdata") / "drain-rrdatas-v1.txt"
+        ).read_text(encoding="utf-8").strip()
+
+        self.assertEqual(
+            reconciler.parse_drain_rrdatas([fixture]),
+            {"southamerica-east1": "operator", "us-east4": "operator"},
+        )
+
+    def test_recorded_mixed_operator_and_rollout_payload(self) -> None:
+        fixture = (
+            Path(__file__).with_name("testdata") / "drain-rrdatas-v2.txt"
+        ).read_text(encoding="utf-8").strip()
+
+        drains = reconciler.parse_drain_rrdatas([fixture])
+
+        self.assertEqual(drains["europe-west4"], "operator")
+        self.assertEqual(drains["us-central1"], "rollout:33807667585")
+        self.assertEqual(drains["southamerica-east1"], "rollout:33800000001")
+        self.assertEqual(drains["us-east4"], "operator")
+
     def test_empty_versioned_payload_means_no_drains(self) -> None:
-        self.assertEqual(reconciler.parse_drain_rrdatas(['"v1"']), set())
+        self.assertEqual(reconciler.parse_drain_rrdatas(['"v1"']), {})
+        self.assertEqual(reconciler.parse_drain_rrdatas(['"v2"']), {})
 
     def test_malformed_drain_payload_fails_closed(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "unsupported payload"):
             reconciler.parse_drain_rrdatas(['"us-central1"'])
         with self.assertRaisesRegex(RuntimeError, "invalid region"):
             reconciler.parse_drain_rrdatas(['"v1;US_CENTRAL1"'])
+        with self.assertRaisesRegex(RuntimeError, "invalid drain origin"):
+            reconciler.parse_drain_rrdatas(['"v2;us-central1=human"'])
+        with self.assertRaisesRegex(RuntimeError, "invalid drain entry"):
+            reconciler.parse_drain_rrdatas(
+                ['"v2;us-central1=operator;us-central1=rollout:33807667585"']
+            )
         with self.assertRaisesRegex(RuntimeError, "exactly one TXT"):
             reconciler.parse_drain_rrdatas(['"v1;us-central1"', '"v1;us-east4"'])
 
@@ -274,8 +317,8 @@ class PersistentDrainTests(unittest.TestCase):
         with (
             mock.patch.object(
                 reconciler,
-                "persistent_drain_regions",
-                return_value={"europe-west4"},
+                "persistent_drains",
+                return_value={"europe-west4": "operator"},
             ),
             mock.patch.object(reconciler, "set_dns_txt") as set_dns_txt,
         ):
@@ -284,19 +327,44 @@ class PersistentDrainTests(unittest.TestCase):
                 enabled=True,
             )
 
-        self.assertEqual(regions, {"europe-west4", "us-central1"})
+        self.assertEqual(
+            regions,
+            {"europe-west4": "operator", "us-central1": "operator"},
+        )
         set_dns_txt.assert_called_once_with(
             reconciler.DNS_ZONE,
             reconciler.DRAIN_RECORD,
-            ['"v1;europe-west4;us-central1"'],
+            ['"v2;europe-west4=operator;us-central1=operator"'],
+        )
+
+    def test_rollout_set_does_not_overwrite_operator_origin(self) -> None:
+        with (
+            mock.patch.object(
+                reconciler,
+                "persistent_drains",
+                return_value={"us-central1": "operator"},
+            ),
+            mock.patch.object(reconciler, "set_dns_txt") as set_dns_txt,
+        ):
+            drains = reconciler.update_persistent_drain(
+                "us-central1",
+                enabled=True,
+                origin="rollout:33807667585",
+            )
+
+        self.assertEqual(drains, {"us-central1": "operator"})
+        set_dns_txt.assert_called_once_with(
+            reconciler.DNS_ZONE,
+            reconciler.DRAIN_RECORD,
+            ['"v2;us-central1=operator"'],
         )
 
     def test_clear_drain_keeps_marker_with_empty_version(self) -> None:
         with (
             mock.patch.object(
                 reconciler,
-                "persistent_drain_regions",
-                return_value={"us-central1"},
+                "persistent_drains",
+                return_value={"us-central1": "rollout:33807667585"},
             ),
             mock.patch.object(reconciler, "set_dns_txt") as set_dns_txt,
         ):
@@ -305,11 +373,74 @@ class PersistentDrainTests(unittest.TestCase):
                 enabled=False,
             )
 
-        self.assertEqual(regions, set())
+        self.assertEqual(regions, {})
         set_dns_txt.assert_called_once_with(
             reconciler.DNS_ZONE,
             reconciler.DRAIN_RECORD,
-            ['"v1"'],
+            ['"v2"'],
+        )
+
+    def test_list_prints_origins_and_regions_only_preserves_legacy_output(
+        self,
+    ) -> None:
+        drains = {
+            "us-central1": "rollout:33807667585",
+            "europe-west4": "operator",
+        }
+        with (
+            mock.patch.object(reconciler, "persistent_drains", return_value=drains),
+            mock.patch.object(
+                sys,
+                "argv",
+                [str(SCRIPT), "--list-drain-regions"],
+            ),
+            contextlib.redirect_stdout(io.StringIO()) as output,
+        ):
+            self.assertEqual(reconciler._main_unlocked(), 0)
+        self.assertEqual(
+            output.getvalue(),
+            "europe-west4\toperator\nus-central1\trollout:33807667585\n",
+        )
+
+        with (
+            mock.patch.object(reconciler, "persistent_drains", return_value=drains),
+            mock.patch.object(
+                sys,
+                "argv",
+                [str(SCRIPT), "--list-drain-regions", "--regions-only"],
+            ),
+            contextlib.redirect_stdout(io.StringIO()) as output,
+        ):
+            self.assertEqual(reconciler._main_unlocked(), 0)
+        self.assertEqual(output.getvalue(), "europe-west4\nus-central1\n")
+
+    def test_rollout_cli_records_the_github_run_id(self) -> None:
+        with (
+            mock.patch.object(
+                reconciler,
+                "update_persistent_drain",
+                return_value={"us-central1": "rollout:33807667585"},
+            ) as update,
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    str(SCRIPT),
+                    "--set-drain-region",
+                    "us-central1",
+                    "--drain-origin",
+                    "rollout",
+                    "--github-run-id",
+                    "33807667585",
+                ],
+            ),
+        ):
+            self.assertEqual(reconciler._main_unlocked(), 0)
+
+        update.assert_called_once_with(
+            "us-central1",
+            enabled=True,
+            origin="rollout:33807667585",
         )
 
 
