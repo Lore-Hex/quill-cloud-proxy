@@ -27,10 +27,6 @@ func stageCAdmissionClient(
 	if err := json.Unmarshal(bytes.TrimSpace(stageCFixture(t, "authoritative_lease_payload.json")), &claims); err != nil {
 		t.Fatal(err)
 	}
-	// The router fixture omits cohort, which the enclave verifier requires.
-	// Keep behavioral tests on a separately signed verifier-valid lease; the
-	// literal fixture test and handoff report preserve this contract defect.
-	claims.Cohort = spendlease.Cohort
 	config, err := json.Marshal(spendlease.IssuerConfig{Version: 1, Keys: []spendlease.IssuerKey{{
 		KID: signer.Kid(), JWK: spendlease.JWK{KeyType: "OKP", Curve: "Ed25519", X: signer.JWK().X},
 		NotBefore: claims.IssuedAt - 60, NotAfter: claims.ExpiresAt + 60,

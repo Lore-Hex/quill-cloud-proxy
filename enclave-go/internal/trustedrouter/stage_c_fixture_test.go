@@ -128,32 +128,7 @@ func TestStageCAdmissionReceiptVerifiesWithRouterJWK(t *testing.T) {
 	}
 }
 
-func TestStageCAuthoritativeLeaseMissingCohortIsRejectedAsInvalidGrantClaims(t *testing.T) {
-	var claims spendlease.Claims
-	if err := json.Unmarshal(stageCFixture(t, "authoritative_lease_payload.json"), &claims); err != nil {
-		t.Fatal(err)
-	}
-	if claims.Cohort != "" {
-		t.Skip("canonical lease now carries cohort")
-	}
-	_, err := stageCLeaseVerifier(t).VerifyAt(
-		string(stageCFixture(t, "authoritative_lease_compact.jws")),
-		time.Unix(2_000_000_005, 0),
-	)
-	const want = "spendlease: invalid grant claims"
-	if err == nil || err.Error() != want {
-		t.Fatalf("canonical lease verifier error = %v, want %q", err, want)
-	}
-}
-
-func TestStageCAuthoritativeLeaseWithCohortVerifies(t *testing.T) {
-	var claims spendlease.Claims
-	if err := json.Unmarshal(stageCFixture(t, "authoritative_lease_payload.json"), &claims); err != nil {
-		t.Fatal(err)
-	}
-	if claims.Cohort == "" {
-		t.Skip("awaiting regenerated canonical lease fixture with cohort")
-	}
+func TestStageCAuthoritativeLeaseVerifiesWithRouterJWK(t *testing.T) {
 	lease, err := stageCLeaseVerifier(t).VerifyAt(
 		string(stageCFixture(t, "authoritative_lease_compact.jws")),
 		time.Unix(2_000_000_005, 0),
@@ -161,8 +136,49 @@ func TestStageCAuthoritativeLeaseWithCohortVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lease.Claims.Cohort != spendlease.Cohort {
-		t.Fatalf("canonical lease cohort = %q, want %q", lease.Claims.Cohort, spendlease.Cohort)
+	if got, want := lease.Claims.Cohort, "credits-chat-v1"; got != want {
+		t.Fatalf("canonical lease cohort = %q, want %q", got, want)
+	}
+	if !lease.Claims.Authoritative {
+		t.Fatal("canonical lease is not authoritative")
+	}
+	if !lease.Claims.LocalAdmissionAllowed {
+		t.Fatal("canonical lease does not allow local admission")
+	}
+	if got, want := lease.Claims.RoutingPolicyHash, strings.TrimSpace(string(stageCFixture(t, "normalized_routing_inputs.sha256"))); got != want {
+		t.Fatalf("canonical lease routing policy hash = %q, want %q", got, want)
+	}
+	if got, want := lease.Claims.BootKID, "Vkdap1RjR0wChd9dvyvKtz2mUTWIOem3dIGy6rEHcIw"; got != want {
+		t.Fatalf("canonical lease boot kid = %q, want %q", got, want)
+	}
+}
+
+func TestStageCAuthoritativeLeaseWithoutCohortIsRejectedAsInvalidGrantClaims(t *testing.T) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(stageCFixture(t, "authoritative_lease_payload.json"), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := payload["cohort"]; !ok {
+		t.Fatal("canonical lease payload omitted cohort")
+	}
+	delete(payload, "cohort")
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := stageCSignCompactInputs(
+		t,
+		stageCFixtureSigner(t),
+		stageCFixture(t, "authoritative_lease_protected_header.json"),
+		payloadJSON,
+	)
+	_, err = stageCLeaseVerifier(t).VerifyAt(
+		token,
+		time.Unix(2_000_000_005, 0),
+	)
+	const want = "spendlease: invalid grant claims"
+	if err == nil || err.Error() != want {
+		t.Fatalf("cohort-less lease verifier error = %v, want %q", err, want)
 	}
 }
 
@@ -292,9 +308,12 @@ func stageCFixtureSigner(t *testing.T) *receipt.Signer {
 
 func stageCLeaseVerifier(t *testing.T) *spendlease.Verifier {
 	t.Helper()
-	signer := stageCFixtureSigner(t)
+	var jwk spendlease.JWK
+	if err := json.Unmarshal(stageCFixture(t, "admission_receipt_verification_jwk.json"), &jwk); err != nil {
+		t.Fatal(err)
+	}
 	config, err := json.Marshal(spendlease.IssuerConfig{Version: 1, Keys: []spendlease.IssuerKey{{
-		KID: signer.Kid(), JWK: spendlease.JWK{KeyType: "OKP", Curve: "Ed25519", X: signer.JWK().X},
+		KID: "Vkdap1RjR0wChd9dvyvKtz2mUTWIOem3dIGy6rEHcIw", JWK: jwk,
 		NotBefore: 1_999_999_940, NotAfter: 2_000_000_120,
 	}}})
 	if err != nil {
