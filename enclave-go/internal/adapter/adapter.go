@@ -888,7 +888,7 @@ func TransformStreamCaptureControlled(
 				return err
 			}
 			if emitUsageChunk && (usage != nil || len(usageFields) > 0) {
-				if err := writeUsageChunkWithFields(w, requestID, model, created, usage, usageFields); err != nil {
+				if err := writeUsageChunk(w, requestID, model, created, usage, usageFields); err != nil {
 					return err
 				}
 			}
@@ -1466,11 +1466,7 @@ func chatCompletionUsage(inputTokens, outputTokens, cachedTokens, cacheCreationT
 
 // writeUsageChunk writes the stream_options.include_usage final chunk:
 // empty choices, populated usage — matching OpenAI's documented shape.
-func writeUsageChunk(w io.Writer, id, model string, created int64, usage *StreamUsage) error {
-	return writeUsageChunkWithFields(w, id, model, created, usage, nil)
-}
-
-func writeUsageChunkWithFields(w io.Writer, id, model string, created int64, usage *StreamUsage, fields map[string]any) error {
+func writeUsageChunk(w io.Writer, id, model string, created int64, usage *StreamUsage, fields map[string]any) error {
 	if usage == nil {
 		usage = &StreamUsage{}
 	}
