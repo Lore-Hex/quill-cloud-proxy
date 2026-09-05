@@ -310,7 +310,7 @@ output "verification_commands" {
     for ns in ns-cloud-d1.googledomains.com ns-cloud-d2.googledomains.com; do
       echo "  via $ns:"
       for ep in api api-europe-west4 api-us-east4 api-us-central1 \
-                api-asia-northeast1 api-asia-southeast1 api-southamerica-east1; do
+                api-asia-northeast1 api-asia-southeast1; do
         echo "    $ep.quillrouter.com → $(dig +short "$ep.quillrouter.com" @$ns | head -1)"
       done
     done

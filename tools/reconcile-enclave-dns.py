@@ -58,6 +58,24 @@ import uuid
 from pathlib import Path
 from typing import Iterator, NamedTuple
 
+GCP_ENCLAVE_INVENTORY = Path(__file__).with_name("gcp-enclave-migs.txt")
+
+
+def gcp_enclave_regions() -> frozenset[str]:
+    """Return regions allowed to contribute to canonical or regional DNS."""
+    regions: list[str] = []
+    for line in GCP_ENCLAVE_INVENTORY.read_text(encoding="utf-8").splitlines():
+        region, separator, mig = line.partition(":")
+        if not separator or not region or not mig:
+            raise ValueError(f"invalid GCP enclave inventory entry: {line!r}")
+        regions.append(region)
+    if not regions or len(regions) != len(set(regions)):
+        raise ValueError("GCP enclave inventory must contain unique regions")
+    return frozenset(regions)
+
+
+GCP_ENCLAVE_REGIONS = gcp_enclave_regions()
+
 PROJECT = os.environ.get("QUILL_PROJECT", "quill-cloud-proxy")
 DNS_ZONE = os.environ.get("QUILL_DNS_ZONE", "quillrouter-com")
 API_HOST = os.environ.get("QUILL_API_HOST", "api.quillrouter.com")
@@ -478,7 +496,7 @@ def gcloud_json(args: list[str]) -> object:
 
 
 def discover_instances() -> list[dict]:
-    """RUNNING enclave instances (any region) with an external IP."""
+    """RUNNING inventoried enclave instances with an external IP."""
     rows = gcloud_json([
         "compute", "instances", "list",
         "--filter", f"tags.items={ENCLAVE_TAG} AND status=RUNNING",
@@ -494,9 +512,16 @@ def discover_instances() -> list[dict]:
             if ip:
                 break
         zone = (r.get("zone") or "").rsplit("/", 1)[-1]
+        region = zone.rsplit("-", 1)[0]
+        if region not in GCP_ENCLAVE_REGIONS:
+            log(
+                f"reconcile: ignoring {r['name']} in non-inventory region "
+                f"{region}"
+            )
+            continue
         if ip:
             fleet.append({"name": r["name"], "zone": zone,
-                          "region": zone.rsplit("-", 1)[0], "ip": ip})
+                          "region": region, "ip": ip})
     return fleet
 
 
@@ -898,7 +923,9 @@ def attest_regional_instances(
     RemoteProtocolError failures during deploys.
     """
     regional_candidates = [
-        (inst, regional_host(inst["region"])) for inst in healthy
+        (inst, regional_host(inst["region"]))
+        for inst in healthy
+        if inst["region"] in GCP_ENCLAVE_REGIONS
     ]
     if not regional_candidates:
         return {}
@@ -940,7 +967,10 @@ def reconcile_regional(
     or fewer than the floor when it currently has more, is left at last-good
     rather than blanked/shrunk. Growing a record is always allowed."""
     drained = drained_regions or set()
-    for region in sorted(by_region):
+    ignored_regions = set(by_region) - GCP_ENCLAVE_REGIONS
+    for region in sorted(ignored_regions):
+        log(f"  regional {region}: retired/non-inventory region ignored")
+    for region in sorted(set(by_region) & GCP_ENCLAVE_REGIONS):
         ips = sorted(set(by_region[region]))
         if not ips:
             continue  # never publish/blank to an empty record

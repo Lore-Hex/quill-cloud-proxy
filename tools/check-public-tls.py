@@ -7,7 +7,29 @@ import argparse
 import socket
 import ssl
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Mapping
+
+
+GCP_ENCLAVE_INVENTORY = Path(__file__).with_name("gcp-enclave-migs.txt")
+
+
+def gcp_enclave_regions() -> tuple[str, ...]:
+    """Return the rollout inventory's configured GCP enclave regions."""
+    regions: list[str] = []
+    for line in GCP_ENCLAVE_INVENTORY.read_text(encoding="utf-8").splitlines():
+        region, separator, mig = line.partition(":")
+        if not separator or not region or not mig:
+            raise ValueError(f"invalid GCP enclave inventory entry: {line!r}")
+        regions.append(region)
+    if not regions or len(regions) != len(set(regions)):
+        raise ValueError("GCP enclave inventory must contain unique regions")
+    return tuple(regions)
+
+
+GCP_REGIONAL_HOSTS = tuple(
+    f"api-{region}.quillrouter.com" for region in gcp_enclave_regions()
+)
 
 
 DEFAULT_HOSTS = (
@@ -34,10 +56,7 @@ DEFAULT_HOSTS = (
     # someone there. Probe the regions directly (GCP regions publish
     # api-<region>.quillrouter.com via the DNS reconciler; AWS/Azure use
     # their cloud-scoped trustedrouter.com names).
-    "api-us-central1.quillrouter.com",
-    "api-us-east4.quillrouter.com",
-    "api-europe-west4.quillrouter.com",
-    "api-southamerica-east1.quillrouter.com",
+    *GCP_REGIONAL_HOSTS,
     "api-aws.trustedrouter.com",
     "api-azure.trustedrouter.com",
 )

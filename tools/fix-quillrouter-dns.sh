@@ -13,8 +13,8 @@
 #   - api-us-central1.quillrouter.com   CNAME → api.quillrouter.com.
 #   - api-asia-northeast1.quillrouter.com    CNAME → api.quillrouter.com.
 #   - api-asia-southeast1.quillrouter.com    CNAME → api.quillrouter.com.
-#   - api-southamerica-east1 is intentionally NOT repaired here. It is a live,
-#     attestation-reconciled regional A record after the São Paulo rollout.
+#   - api-southamerica-east1 is intentionally NOT repaired here. The São Paulo
+#     enclave region is retired; see tools/dns/README.md for stale-A cleanup.
 #
 # Plus apex NS list needs all 6 nameservers so Cloud-DNS-cached
 # resolvers can rotate to Cloudflare during a Cloud DNS outage.
@@ -28,7 +28,7 @@
 #
 # Verification after running:
 #   for ep in api api-europe-west4 api-us-east4 api-us-central1 \
-#             api-asia-northeast1 api-asia-southeast1 api-southamerica-east1; do
+#             api-asia-northeast1 api-asia-southeast1; do
 #     echo "  $ep.quillrouter.com:"
 #     for ns in ns-cloud-d1.googledomains.com brynne.ns.cloudflare.com; do
 #       echo "    via $ns → $(dig +short $ep.quillrouter.com @$ns)"
@@ -98,7 +98,7 @@ echo
 echo "Verification (5-second wait for propagation):"
 sleep 5
 for ep in api api-europe-west4 api-us-east4 api-us-central1 \
-          api-asia-northeast1 api-asia-southeast1 api-southamerica-east1; do
+          api-asia-northeast1 api-asia-southeast1; do
   echo "  $ep.quillrouter.com:"
   for ns in ns-cloud-d1.googledomains.com brynne.ns.cloudflare.com; do
     answer=$(dig +short "$ep.quillrouter.com" "@$ns" | head -3 | tr '\n' ' ')

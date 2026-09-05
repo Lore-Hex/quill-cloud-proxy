@@ -125,10 +125,19 @@ done
 terraform import 'google_dns_record_set.quill_apex_ns'  projects/quill-cloud-proxy/managedZones/quillrouter-com/rrsets/quillrouter.com./NS
 ```
 
-`api-southamerica-east1.quillrouter.com` is intentionally absent from the
-cold-alias set. The attestation reconciler owns it as a dynamic region-only A
-record and atomically replaces the former cold CNAME after the first direct
-São Paulo attestation and inference canary passes.
+`api-southamerica-east1.quillrouter.com` is intentionally absent from both the
+Terraform cold-alias set and `tools/gcp-enclave-migs.txt`: São Paulo is retired,
+so neither Terraform nor the attestation reconciler should recreate its
+region-only A record. The stale record still containing `35.247.235.153` and
+`34.95.210.115` must be deleted once by an authenticated operator (do not add it
+to Terraform):
+
+```bash
+gcloud dns record-sets delete api-southamerica-east1.quillrouter.com. \
+  --type=A \
+  --zone=quillrouter-com \
+  --project=quill-cloud-proxy
+```
 
 ## Don'ts
 

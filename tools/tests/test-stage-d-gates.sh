@@ -177,11 +177,12 @@ stage_d_select_probe_key off fixture-project fixture-region
 # This policy-publication PR is inert. The later flag PR deliberately removes
 # this guard when it enables the pilot in decision-77 order.
 workflow=.github/workflows/deploy-enclave-gcp.yml
+inventory=tools/gcp-enclave-migs.txt
 if grep -En "(tee-env-)?QUILL_(USAGE_HEARTBEAT|TERMINATE_AT_CAP)(=|:[[:space:]]+)[\"']?on([\"']|[|[:space:]]|$)" "${workflow}"; then
   echo "Stage D runtime flag is enabled in the inert policy-publication workflow" >&2
   exit 1
 fi
-configured_migs="$(sed -nE 's/^[[:space:]]*GCP_ENCLAVE_MIGS: "([^"]+)"$/\1/p' "${workflow}")"
+configured_migs="$(tr '\n' ' ' < "${inventory}")"
 [ -n "${configured_migs}" ]
 configured_region_count="$(wc -w <<<"${configured_migs}" | tr -d '[:space:]')"
 heartbeat_off_count="$(grep -Ec '^[[:space:]]+QUILL_USAGE_HEARTBEAT: "off"$' "${workflow}")"

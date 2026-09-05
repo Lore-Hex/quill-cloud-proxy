@@ -17,7 +17,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && ln -s /root/.local/bin/uv /usr/local/bin/uv
 
 WORKDIR /app
-COPY verify-attestation.py aws-nitro-root.pem reconcile-enclave-dns.py /app/tools/
+COPY verify-attestation.py aws-nitro-root.pem reconcile-enclave-dns.py gcp-enclave-migs.txt /app/tools/
 # Warm the uv dep cache into the image so each scheduled run is fast.
 RUN uv run --script /app/tools/verify-attestation.py --help >/dev/null 2>&1 || true
 

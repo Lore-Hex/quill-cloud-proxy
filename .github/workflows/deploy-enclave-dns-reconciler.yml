@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "tools/reconcile-enclave-dns.py"
+      - "tools/gcp-enclave-migs.txt"
       - "tools/test_reconcile_enclave_dns.py"
       - "tools/test_dns_reconciler_scheduler.py"
       - "tools/verify-attestation.py"
