@@ -16,6 +16,29 @@ SPEC.loader.exec_module(TLS_CHECK)
 
 
 class PublicTLSCheckTests(unittest.TestCase):
+    def test_gcp_probe_hosts_equal_rollout_inventory(self) -> None:
+        inventory_regions = tuple(
+            line.partition(":")[0]
+            for line in (Path(__file__).with_name("gcp-enclave-migs.txt"))
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+        expected_hosts = tuple(
+            f"api-{region}.quillrouter.com" for region in inventory_regions
+        )
+        probed_gcp_hosts = tuple(
+            host
+            for host in TLS_CHECK.DEFAULT_HOSTS
+            if host.startswith("api-") and host.endswith(".quillrouter.com")
+        )
+
+        self.assertEqual(TLS_CHECK.GCP_REGIONAL_HOSTS, expected_hosts)
+        self.assertEqual(probed_gcp_hosts, expected_hosts)
+        self.assertNotIn(
+            "api-southamerica-east1.quillrouter.com",
+            TLS_CHECK.DEFAULT_HOSTS,
+        )
+
     def test_default_hosts_cover_operational_aliases(self) -> None:
         self.assertIn("api.trustedrouter.com", TLS_CHECK.DEFAULT_HOSTS)
         self.assertIn("api-aws.trustedrouter.com", TLS_CHECK.DEFAULT_HOSTS)

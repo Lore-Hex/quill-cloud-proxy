@@ -54,6 +54,27 @@ class GcloudReadTests(unittest.TestCase):
             reconciler.gcloud_json(["dns", "record-sets", "list"])
 
 
+class GcpEnclaveInventoryTests(unittest.TestCase):
+    def test_discovery_excludes_regions_absent_from_rollout_inventory(self) -> None:
+        rows = [
+            {
+                "name": "active",
+                "zone": "projects/p/zones/us-central1-a",
+                "networkInterfaces": [{"accessConfigs": [{"natIP": "203.0.113.1"}]}],
+            },
+            {
+                "name": "retired",
+                "zone": "projects/p/zones/southamerica-east1-a",
+                "networkInterfaces": [{"accessConfigs": [{"natIP": "203.0.113.2"}]}],
+            },
+        ]
+        with mock.patch.object(reconciler, "gcloud_json", return_value=rows):
+            fleet = reconciler.discover_instances()
+
+        self.assertEqual([instance["name"] for instance in fleet], ["active"])
+        self.assertNotIn("southamerica-east1", reconciler.GCP_ENCLAVE_REGIONS)
+
+
 class ReconcileLeaseTests(unittest.TestCase):
     def test_first_execution_acquires_atomic_object(self) -> None:
         with (
@@ -615,7 +636,7 @@ class RegionalDnsPromotionTests(unittest.TestCase):
     def test_cname_to_a_uses_one_cloud_dns_transaction(self) -> None:
         completed = mock.Mock(returncode=0, stdout="", stderr="")
         cname = {
-            "name": "api-southamerica-east1.quillrouter.com.",
+            "name": "api-us-east4.quillrouter.com.",
             "type": "CNAME",
             "ttl": 300,
             "rrdatas": ["api.quillrouter.com."],
@@ -628,7 +649,7 @@ class RegionalDnsPromotionTests(unittest.TestCase):
         ) as run:
             reconciler.replace_cname_with_ips(
                 "quillrouter-com",
-                "api-southamerica-east1.quillrouter.com.",
+                "api-us-east4.quillrouter.com.",
                 cname,
                 ["203.0.113.10", "203.0.113.11"],
             )
@@ -666,7 +687,7 @@ class RegionalDnsPromotionTests(unittest.TestCase):
         ):
             reconciler.set_dns_ips(
                 "quillrouter-com",
-                "api-southamerica-east1.quillrouter.com.",
+                "api-us-east4.quillrouter.com.",
                 ["203.0.113.10"],
             )
 
@@ -689,9 +710,9 @@ class RegionalDnsPromotionTests(unittest.TestCase):
             mock.patch.object(reconciler, "set_dns_ips") as set_ips,
         ):
             reconciler.reconcile_regional(
-                {"southamerica-east1": ["203.0.113.10"]},
+                {"us-east4": ["203.0.113.10"]},
                 True,
-                drained_regions={"southamerica-east1"},
+                drained_regions={"us-east4"},
             )
 
         current_ips.assert_not_called()
@@ -707,7 +728,7 @@ class RegionalDnsPromotionTests(unittest.TestCase):
             mock.patch.object(
                 reconciler,
                 "ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS",
-                {"southamerica-east1"},
+                {"us-east4"},
             ),
             mock.patch.object(
                 reconciler,
@@ -718,16 +739,31 @@ class RegionalDnsPromotionTests(unittest.TestCase):
             mock.patch.object(reconciler, "set_dns_ips") as set_ips,
         ):
             reconciler.reconcile_regional(
-                {"southamerica-east1": ["203.0.113.10"]},
+                {"us-east4": ["203.0.113.10"]},
                 True,
-                drained_regions={"southamerica-east1"},
+                drained_regions={"us-east4"},
             )
 
         set_ips.assert_called_once_with(
             reconciler.REGIONAL_ZONE,
-            "api-southamerica-east1.quillrouter.com.",
+            "api-us-east4.quillrouter.com.",
             ["203.0.113.10"],
         )
+
+    def test_retired_region_is_never_reconciled(self) -> None:
+        with (
+            mock.patch.object(reconciler, "current_dns_record") as current_record,
+            mock.patch.object(reconciler, "current_dns_ips") as current_ips,
+            mock.patch.object(reconciler, "set_dns_ips") as set_ips,
+        ):
+            reconciler.reconcile_regional(
+                {"southamerica-east1": ["35.247.235.153", "34.95.210.115"]},
+                True,
+            )
+
+        current_record.assert_not_called()
+        current_ips.assert_not_called()
+        set_ips.assert_not_called()
 
 
 if __name__ == "__main__":

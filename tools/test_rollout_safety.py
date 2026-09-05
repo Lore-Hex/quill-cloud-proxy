@@ -170,6 +170,8 @@ class RolloutSafetyTests(unittest.TestCase):
 
     def test_gcp_rollout_inventory_matches_deployed_regions(self) -> None:
         deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
+        inventory_path = ROOT / "tools" / "gcp-enclave-migs.txt"
+        inventory = inventory_path.read_text(encoding="utf-8").splitlines()
         workflow = (
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
         ).read_text(encoding="utf-8")
@@ -180,13 +182,19 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn('CONF_COMPUTE_TYPE}" != "SEV"', deploy)
         self.assertIn('"${MACHINE_TYPE}" != n2d-*', deploy)
         self.assertIn("CONF_COMPUTE_TYPE=SEV_SNP is not supported", deploy)
-        self.assertIn(
-            'GCP_ENCLAVE_MIGS: "us-central1:quill-enclave-mig-us '
-            "europe-west4:quill-enclave-mig-eu "
-            'us-east4:quill-enclave-mig-useast4"',
-            workflow,
+        self.assertEqual(
+            inventory,
+            [
+                "us-central1:quill-enclave-mig-us",
+                "europe-west4:quill-enclave-mig-eu",
+                "us-east4:quill-enclave-mig-useast4",
+            ],
         )
-        self.assertEqual(workflow.count("for pair in ${GCP_ENCLAVE_MIGS}; do"), 2)
+        self.assertNotIn("southamerica-east1", inventory_path.read_text())
+        self.assertNotIn('GCP_ENCLAVE_MIGS: "', workflow)
+        self.assertEqual(workflow.count("< tools/gcp-enclave-migs.txt"), 2)
+        self.assertEqual(workflow.count("while IFS=: read -r region mig; do"), 2)
+        self.assertIn('expected="$(sort -u tools/gcp-enclave-migs.txt)"', workflow)
         self.assertNotIn("quill-enclave-mig-sa", workflow)
         self.assertNotIn("api-southamerica-east1.quillrouter.com", workflow)
         self.assertNotIn("Roll São Paulo GCP MIG", workflow)
@@ -204,7 +212,10 @@ class RolloutSafetyTests(unittest.TestCase):
         stage_d_tests = (
             ROOT / "tools" / "tests" / "test-stage-d-gates.sh"
         ).read_text(encoding="utf-8")
-        self.assertIn('configured_migs="$(sed -nE', stage_d_tests)
+        self.assertIn(
+            'configured_migs="$(tr \'\\n\' \' \' < "${inventory}")"',
+            stage_d_tests,
+        )
         self.assertIn(
             '[ "${heartbeat_off_count}" = "${configured_region_count}" ]',
             stage_d_tests,

@@ -29,6 +29,7 @@ on:
       - "enclave-go/**"
       - "tools/release-gcp.sh"
       - "tools/deploy-gcp-mig.sh"
+      - "tools/gcp-enclave-migs.txt"
       - "tools/reconcile-enclave-dns.py"
       - "tools/verify-attestation.py"
       - "tools/wait-canonical-drained.sh"
@@ -72,9 +73,6 @@ env:
   ARTIFACT_REPO: quill
   IMAGE_NAME: enclave-multi
   DOCKERFILE: Dockerfile.enclave.gcp.multi
-  # Canonical inventory for trust-policy discovery and rollback capture.
-  # Keep region-specific rollout steps below explicit so they remain serial.
-  GCP_ENCLAVE_MIGS: "us-central1:quill-enclave-mig-us europe-west4:quill-enclave-mig-eu us-east4:quill-enclave-mig-useast4"
 
 jobs:
   # Full-repo CI gate: ci.yml (every build-tag variant + the parent
@@ -196,7 +194,7 @@ jobs:
       - name: Verify GCP enclave MIG inventory
         run: |
           set -euo pipefail
-          expected="$(printf '%s\n' ${GCP_ENCLAVE_MIGS} | sort -u)"
+          expected="$(sort -u tools/gcp-enclave-migs.txt)"
           actual="$(
             gcloud compute instance-groups managed list \
               --project="${PROJECT_ID}" \
@@ -308,9 +306,7 @@ jobs:
 
           running_digests="${work_dir}/running-digests.txt"
           : > "${running_digests}"
-          for pair in ${GCP_ENCLAVE_MIGS}; do
-            region="${pair%%:*}"
-            mig="${pair##*:}"
+          while IFS=: read -r region mig; do
             mapfile -t running_templates < <(
               gcloud compute instance-groups managed list-instances "${mig}" \
                 --region="${region}" --project="${PROJECT_ID}" \
@@ -338,7 +334,7 @@ jobs:
               fi
               printf '%s\n' "${running_digest}" >> "${running_digests}"
             done
-          done
+          done < tools/gcp-enclave-migs.txt
           sort -u -o "${running_digests}" "${running_digests}"
           python3 tools/write-stage-d-policy.py \
             --output trust-page/gcp/stage-d-accepted.json \
@@ -569,9 +565,7 @@ jobs:
             fi
             drain_origins["${drain_region}"]="${drain_origin}"
           done <<<"${drains}"
-          for pair in ${GCP_ENCLAVE_MIGS}; do
-            region="${pair%%:*}"
-            mig="${pair##*:}"
+          while IFS=: read -r region mig; do
             tmpl=$(gcloud compute instance-groups managed describe "$mig" \
               --region="$region" --project=quill-cloud-proxy \
               --format='value(versions[0].instanceTemplate)' 2>/dev/null || true)
@@ -587,7 +581,7 @@ jobs:
             echo "${region//-/_}_drain_origin=${drain_origin}" >> "$GITHUB_OUTPUT"
             echo "  pre-rollout ${region}: ${tmpl_short:-<none>}"
             echo "  pre-rollout ${region} drain state: ${drain_state}/${drain_origin}"
-          done
+          done < tools/gcp-enclave-migs.txt
 
       # Staged regional rollout. Before touching any region, drain it from the
       # canonical API DNS answer and wait one TTL. The regional hostname may be
