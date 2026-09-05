@@ -522,7 +522,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
 
       - name: Authenticate to AWS for backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -731,7 +731,7 @@ jobs:
 
       - name: Refresh AWS credentials for primary recovery
         if: ${{ always() && (failure() || steps.canary_us.outcome == 'failure') }}
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -758,7 +758,7 @@ jobs:
       # immediately before every region instead of reusing the session created
       # near the start of this long-running job.
       - name: Refresh AWS credentials for Europe backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -786,7 +786,7 @@ jobs:
             "${PREV_DRAIN_ORIGIN}"
 
       - name: Refresh AWS credentials for US East backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
