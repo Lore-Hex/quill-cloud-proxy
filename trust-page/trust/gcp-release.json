@@ -1,14 +1,16 @@
 {
   "accepted_image_digests": [
-    "sha256:b30674d2f7d03593b5900f2d174b68a1cf9c763985544002a6a8793c64c82035"
+    "sha256:b30674d2f7d03593b5900f2d174b68a1cf9c763985544002a6a8793c64c82035",
+    "sha256:f829cd3d77265bbc9cee9c58d2339f9a7be0c51ff76a9c8a25a6c62434984c6e"
   ],
   "accepted_image_references": [
-    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-907bfb4"
+    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-907bfb4",
+    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-bd7024c"
   ],
   "api_base_url": "https://api.trustedrouter.com/v1",
   "attestation_audience": "quill-cloud",
   "attestation_issuer": "https://confidentialcomputing.googleapis.com",
-  "commit": "907bfb4",
+  "commit": "bd7024c",
   "compliance": {
     "hipaa_readiness": "https://trustedrouter.com/legal/hipaa-readiness",
     "hipaa_status": "readiness_documentation_prepared_baa_required_for_phi",
@@ -24,8 +26,8 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "image_digest": "sha256:b30674d2f7d03593b5900f2d174b68a1cf9c763985544002a6a8793c64c82035",
-  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-907bfb4",
+  "image_digest": "sha256:f829cd3d77265bbc9cee9c58d2339f9a7be0c51ff76a9c8a25a6c62434984c6e",
+  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-bd7024c",
   "platform": "gcp-confidential-space",
   "receipts": {
     "accepted_specs": [
@@ -43,9 +45,9 @@
     "key_log": "https://trustedrouter.com/.well-known/inference-receipt-keys",
     "spec": "inference-receipt/1"
   },
-  "release_state": "current",
+  "release_state": "rolling",
   "released_by": "github-actions:deploy-enclave-gcp",
-  "source_commit": "907bfb4",
+  "source_commit": "bd7024c",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "source_repositories": {
     "attested_gateway": "https://github.com/Lore-Hex/quill-cloud-proxy",
