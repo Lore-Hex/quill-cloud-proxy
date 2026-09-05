@@ -709,7 +709,7 @@ type StreamFinishHook func(created int64) error
 const MAX_METER_CHUNK_TOKENS = 64
 const MaxMeterChunkTokens = MAX_METER_CHUNK_TOKENS
 
-// StreamControl is installed only for router-declared Stage D cohort streams.
+// StreamControl supports metered slices and final settlement metadata.
 // BeforeSlice runs before a semantic UTF-8 slice becomes client-visible;
 // BeforeTerminal owns the final protocol event and may synchronously settle
 // before calling Emit.
@@ -722,7 +722,10 @@ type StreamControl struct {
 }
 
 type StreamTerminal struct {
-	Result         StreamResult
+	Result StreamResult
+	// UsageFields is metadata supplied by the trusted caller before Emit. It is
+	// never populated from provider deltas, and is covered by the receipt hook.
+	UsageFields    map[string]any
 	Created        int64
 	FinishReason   string
 	TRFinishReason string
@@ -873,6 +876,7 @@ func TransformStreamCaptureControlled(
 			trFinishReason = termination.TRFinishReason
 			result.FinishReason = terminalFinishReason
 		}
+		usageFields := map[string]any{}
 		emit := func() error {
 			var err error
 			if trFinishReason == "" {
@@ -883,8 +887,8 @@ func TransformStreamCaptureControlled(
 			if err != nil {
 				return err
 			}
-			if emitUsageChunk && usage != nil {
-				if err := writeUsageChunk(w, requestID, model, created, usage); err != nil {
+			if emitUsageChunk && (usage != nil || len(usageFields) > 0) {
+				if err := writeUsageChunkWithFields(w, requestID, model, created, usage, usageFields); err != nil {
 					return err
 				}
 			}
@@ -902,7 +906,7 @@ func TransformStreamCaptureControlled(
 			return err
 		}
 		if control != nil && control.BeforeTerminal != nil {
-			err := control.BeforeTerminal(StreamTerminal{Result: result, Created: created, FinishReason: terminalFinishReason, TRFinishReason: trFinishReason, Emit: emit})
+			err := control.BeforeTerminal(StreamTerminal{Result: result, UsageFields: usageFields, Created: created, FinishReason: terminalFinishReason, TRFinishReason: trFinishReason, Emit: emit})
 			return result, err
 		}
 		return result, emit()
@@ -910,7 +914,7 @@ func TransformStreamCaptureControlled(
 
 	emitSemantic := func(delta StreamDelta, emit func(string) error) error {
 		slices := []string{delta.Text}
-		if control != nil {
+		if control != nil && (control.BeforeSlice != nil || control.AfterSlice != nil) {
 			slices = SemanticSlices(delta.Text)
 		}
 		for _, slice := range slices {
@@ -1463,7 +1467,17 @@ func chatCompletionUsage(inputTokens, outputTokens, cachedTokens, cacheCreationT
 // writeUsageChunk writes the stream_options.include_usage final chunk:
 // empty choices, populated usage — matching OpenAI's documented shape.
 func writeUsageChunk(w io.Writer, id, model string, created int64, usage *StreamUsage) error {
+	return writeUsageChunkWithFields(w, id, model, created, usage, nil)
+}
+
+func writeUsageChunkWithFields(w io.Writer, id, model string, created int64, usage *StreamUsage, fields map[string]any) error {
+	if usage == nil {
+		usage = &StreamUsage{}
+	}
 	usageBody := chatCompletionUsage(usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.CacheCreationInputTokens, usage.ReasoningTokens, usage.InputExcludesCache)
+	for key, value := range fields {
+		usageBody[key] = value
+	}
 	chunk := map[string]any{
 		"id":      id,
 		"object":  "chat.completion.chunk",

@@ -574,11 +574,14 @@ func TestServeStreamingStageDSettlesBeforeTerminalForEveryDisposition(t *testing
 			}}
 			conn := &stageDTerminalOrderConn{settled: &settled}
 			serveStreaming(t.Context(), conn, provider,
-				&types.OpenAIChatRequest{Model: "model", Stream: true}, &types.AnthropicMessagesRequest{},
+				&types.OpenAIChatRequest{Model: "model", Stream: true, StreamOptions: &types.ChatStreamOptions{IncludeUsage: true}}, &types.AnthropicMessagesRequest{},
 				[]llm.InvokeOptions{{Model: "model", EndpointID: "anthropic/test"}}, gateway, stageDStreamingAuthorization(), nil,
 				time.Now(), nil, "chat.completions", "stage-d-settle", "model")
 			if !settled.Load() || !strings.Contains(conn.String(), "data: [DONE]") {
 				t.Fatalf("settled=%t body=%s", settled.Load(), conn.String())
+			}
+			if !strings.Contains(conn.String(), `"cost_microdollars":`) {
+				t.Fatalf("missing settled usage for %s: %s", disposition, conn.String())
 			}
 		})
 	}
