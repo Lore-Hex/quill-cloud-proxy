@@ -72,6 +72,9 @@ env:
   ARTIFACT_REPO: quill
   IMAGE_NAME: enclave-multi
   DOCKERFILE: Dockerfile.enclave.gcp.multi
+  # Canonical inventory for trust-policy discovery and rollback capture.
+  # Keep region-specific rollout steps below explicit so they remain serial.
+  GCP_ENCLAVE_MIGS: "us-central1:quill-enclave-mig-us europe-west4:quill-enclave-mig-eu us-east4:quill-enclave-mig-useast4"
 
 jobs:
   # Full-repo CI gate: ci.yml (every build-tag variant + the parent
@@ -190,6 +193,24 @@ jobs:
         with:
           cosign-release: v2.4.1
 
+      - name: Verify GCP enclave MIG inventory
+        run: |
+          set -euo pipefail
+          expected="$(printf '%s\n' ${GCP_ENCLAVE_MIGS} | sort -u)"
+          actual="$(
+            gcloud compute instance-groups managed list \
+              --project="${PROJECT_ID}" \
+              --filter='name~^quill-enclave-mig-' \
+              --format=json | \
+              jq -r '.[] | "\(.region | split("/")[-1]):\(.name)"' | \
+              sort -u
+          )"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "configured GCP enclave MIG inventory does not match production" >&2
+            diff -u <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}") || true
+            exit 1
+          fi
+
       - name: Configure docker auth (for image describe)
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
@@ -287,11 +308,7 @@ jobs:
 
           running_digests="${work_dir}/running-digests.txt"
           : > "${running_digests}"
-          for pair in \
-            "us-central1:quill-enclave-mig-us" \
-            "europe-west4:quill-enclave-mig-eu" \
-            "us-east4:quill-enclave-mig-useast4" \
-            "southamerica-east1:quill-enclave-mig-sa"; do
+          for pair in ${GCP_ENCLAVE_MIGS}; do
             region="${pair%%:*}"
             mig="${pair##*:}"
             mapfile -t running_templates < <(
@@ -552,7 +569,7 @@ jobs:
             fi
             drain_origins["${drain_region}"]="${drain_origin}"
           done <<<"${drains}"
-          for pair in "us-central1:quill-enclave-mig-us" "europe-west4:quill-enclave-mig-eu" "us-east4:quill-enclave-mig-useast4" "southamerica-east1:quill-enclave-mig-sa"; do
+          for pair in ${GCP_ENCLAVE_MIGS}; do
             region="${pair%%:*}"
             mig="${pair##*:}"
             tmpl=$(gcloud compute instance-groups managed describe "$mig" \
@@ -606,10 +623,7 @@ jobs:
           # manager whitelists every SNI
           # value and issues separate cached certs as needed; TLS still
           # terminates only inside the attested workload.
-          # Include the new São Paulo SNI on the already-serving fleet so its
-          # cold CNAME can complete ACME TLS-ALPN issuance into the shared GCS
-          # cache before the regional A record is promoted.
-          API_HOST: api.quillrouter.com,api-us-central1.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com
+          API_HOST: api.quillrouter.com,api-us-central1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com
           # REGION_SHORT must match the existing prod MIG suffix —
           # `quill-enclave-mig-us`, not `quill-enclave-mig-uscentral1`.
           REGION_SHORT: us
@@ -739,7 +753,7 @@ jobs:
             us-central1 \
             quill-enclave-mig-us \
             quill-enclave-mig-us- \
-            api.quillrouter.com,api-us-central1.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
+            api.quillrouter.com,api-us-central1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_US}" \
             "${PREV_DRAIN_STATE}" \
             "${PREV_DRAIN_ORIGIN}"
@@ -770,7 +784,7 @@ jobs:
             quill-enclave-mig-eu \
             quill-enclave-mig-eu- \
             eu \
-            api.quillrouter.com,api-europe-west4.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
+            api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_TEMPLATE}" \
             c3-standard-4 \
             TDX \
@@ -798,38 +812,10 @@ jobs:
             quill-enclave-mig-useast4 \
             quill-enclave-mig-useast4- \
             useast4 \
-            api.quillrouter.com,api-us-east4.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
+            api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_TEMPLATE}" \
             c3-standard-4 \
             TDX \
-            "${PREV_DRAIN_STATE}" \
-            "${PREV_DRAIN_ORIGIN}"
-
-      - name: Refresh AWS credentials for São Paulo backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: us-east-1
-
-      - name: Roll São Paulo GCP MIG
-        timeout-minutes: 55
-        env:
-          IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
-          IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          QUILL_USAGE_HEARTBEAT: "off"
-          PREV_TEMPLATE: ${{ steps.prev.outputs.southamerica_east1_template }}
-          PREV_DRAIN_STATE: ${{ steps.prev.outputs.southamerica_east1_drain_state }}
-          PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.southamerica_east1_drain_origin }}
-        run: |
-          bash tools/roll-secondary-region.sh \
-            southamerica-east1 \
-            quill-enclave-mig-sa \
-            quill-enclave-mig-sa- \
-            sa \
-            api.quillrouter.com,api-southamerica-east1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
-            "${PREV_TEMPLATE}" \
-            n2d-standard-4 \
-            SEV \
             "${PREV_DRAIN_STATE}" \
             "${PREV_DRAIN_ORIGIN}"
 
