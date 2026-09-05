@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/directproviders"
@@ -116,13 +117,11 @@ type openAICompatibleStreamOptions struct {
 }
 
 // requiresMaxCompletionTokens returns true for OpenAI models, including
-// OpenAI-family deployments served through Azure Foundry, that
-// reject the legacy `max_tokens` parameter. Currently the gpt-5.x
-// family (and the o-series via the same Responses-style param naming
-// — though we mostly route those through the Responses API). Match
-// is intentionally loose: any model id that starts with `gpt-5`,
-// `o1`, `o3`, or `o4` (with optional vendor prefix) flips the
-// parameter name. Add more as OpenAI ships new families.
+// OpenAI-family deployments served through Azure Foundry, that reject the
+// legacy `max_tokens` parameter. GPT generations 5 and newer share the modern
+// contract; parsing the major version avoids a new production incompatibility
+// every time OpenAI increments the generation. The o-series uses the same
+// parameter spelling, though it is normally reached through Responses.
 func requiresMaxCompletionTokens(provider, modelID string) bool {
 	normalizedProvider := normalizeDirectProvider(provider)
 	if normalizedProvider != "openai" && normalizedProvider != "azure" {
@@ -133,7 +132,20 @@ func requiresMaxCompletionTokens(provider, modelID string) bool {
 	if i := strings.Index(m, "/"); i >= 0 {
 		m = m[i+1:]
 	}
-	for _, prefix := range []string{"gpt-5", "o1", "o3", "o4"} {
+	if strings.HasPrefix(m, "gpt-") {
+		version := strings.TrimPrefix(m, "gpt-")
+		end := 0
+		for end < len(version) && version[end] >= '0' && version[end] <= '9' {
+			end++
+		}
+		if end > 0 {
+			major, err := strconv.Atoi(version[:end])
+			if err == nil && major >= 5 {
+				return true
+			}
+		}
+	}
+	for _, prefix := range []string{"o1", "o3", "o4"} {
 		if strings.HasPrefix(m, prefix) {
 			return true
 		}
