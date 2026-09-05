@@ -50,16 +50,10 @@ class RolloutSafetyTests(unittest.TestCase):
             "PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_east4_drain_state }}",
             workflow,
         )
-        self.assertIn(
-            "PREV_DRAIN_STATE: "
-            "${{ steps.prev.outputs.southamerica_east1_drain_state }}",
-            workflow,
-        )
         for region_key in (
             "us_central1",
             "europe_west4",
             "us_east4",
-            "southamerica_east1",
         ):
             self.assertIn(f"steps.prev.outputs.{region_key}_drain_origin", workflow)
         self.assertNotIn("QUILL_EXCLUDE_CANONICAL_REGIONS:", workflow)
@@ -174,32 +168,38 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("unknown region us-east-2", completed.stderr)
 
-    def test_sao_paulo_uses_supported_amd_sev_profile(self) -> None:
+    def test_gcp_rollout_inventory_matches_deployed_regions(self) -> None:
         deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
         workflow = (
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
         ).read_text(encoding="utf-8")
 
+        # Retain the SEV guard for an intentional future AMD region, but do not
+        # let a retired MIG block trust publication or reappear in a rollout.
         self.assertIn('if [ "${REGION}" = "southamerica-east1" ]', deploy)
         self.assertIn('CONF_COMPUTE_TYPE}" != "SEV"', deploy)
         self.assertIn('"${MACHINE_TYPE}" != n2d-*', deploy)
         self.assertIn("CONF_COMPUTE_TYPE=SEV_SNP is not supported", deploy)
-        self.assertIn("southamerica-east1:quill-enclave-mig-sa", workflow)
-        sa_start = workflow.index(
-            "          bash tools/roll-secondary-region.sh \\\n"
-            "            southamerica-east1"
+        self.assertIn(
+            'GCP_ENCLAVE_MIGS: "us-central1:quill-enclave-mig-us '
+            "europe-west4:quill-enclave-mig-eu "
+            'us-east4:quill-enclave-mig-useast4"',
+            workflow,
         )
-        sa_end = workflow.index("\n\n      # No cross-region", sa_start)
-        sa_call = workflow[sa_start:sa_end]
-        self.assertIn("quill-enclave-mig-sa", sa_call)
-        self.assertIn("api-southamerica-east1.quillrouter.com", sa_call)
-        self.assertIn("n2d-standard-4", sa_call)
-        self.assertIn("SEV", sa_call)
-        self.assertGreaterEqual(
-            workflow.count("api-southamerica-east1.quillrouter.com"),
-            4,
-            "all earlier regional rolls must answer the new SNI for ACME bootstrap",
+        self.assertEqual(workflow.count("for pair in ${GCP_ENCLAVE_MIGS}; do"), 2)
+        self.assertNotIn("quill-enclave-mig-sa", workflow)
+        self.assertNotIn("api-southamerica-east1.quillrouter.com", workflow)
+        self.assertNotIn("Roll São Paulo GCP MIG", workflow)
+
+        inventory_check = workflow.index(
+            "      - name: Verify GCP enclave MIG inventory"
         )
+        image_build = workflow.index("      - name: Build enclave image via Cloud Build")
+        self.assertLess(inventory_check, image_build)
+        inventory_step = workflow[inventory_check:image_build]
+        self.assertIn("gcloud compute instance-groups managed list", inventory_step)
+        self.assertIn("--filter='name~^quill-enclave-mig-'", inventory_step)
+        self.assertIn('if [ "${actual}" != "${expected}" ]', inventory_step)
 
     def test_new_region_is_canaried_before_dns_and_global_traffic(self) -> None:
         function = (ROOT / "tools" / "roll-secondary-region.sh").read_text(
@@ -270,9 +270,8 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("set -euo pipefail", function)
         europe = workflow.index("      - name: Roll Europe GCP MIG")
         us_east = workflow.index("      - name: Roll US East GCP MIG")
-        sao_paulo = workflow.index("      - name: Roll São Paulo GCP MIG")
         self.assertLess(europe, us_east)
-        self.assertLess(us_east, sao_paulo)
+        self.assertNotIn("Roll São Paulo GCP MIG", workflow)
 
     def test_each_secondary_rollout_refreshes_route53_credentials(self) -> None:
         workflow = (
@@ -287,10 +286,6 @@ class RolloutSafetyTests(unittest.TestCase):
             (
                 "Refresh AWS credentials for US East backup-domain DNS",
                 "Roll US East GCP MIG",
-            ),
-            (
-                "Refresh AWS credentials for São Paulo backup-domain DNS",
-                "Roll São Paulo GCP MIG",
             ),
         )
         previous_roll = -1
