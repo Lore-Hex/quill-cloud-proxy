@@ -1849,6 +1849,31 @@ func TestTransformStreamFinishHookRunsOnlyForCleanTerminatorBeforeDone(t *testin
 	}
 }
 
+func TestChatTerminalUsageIsEmittedBeforeReceiptHook(t *testing.T) {
+	clean := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	var out bytes.Buffer
+	hookCalls := 0
+	_, err := TransformStreamCaptureControlled(strings.NewReader(clean), &out, "id", "model", true, nil,
+		func(_ int64) error {
+			hookCalls++
+			if !strings.Contains(out.String(), `"cost_microdollars":17`) || strings.Contains(out.String(), "[DONE]") {
+				t.Fatalf("receipt must include settled usage, before DONE: %s", out.String())
+			}
+			return nil
+		},
+		&StreamControl{BeforeTerminal: func(terminal StreamTerminal) error {
+			terminal.UsageFields["cost_microdollars"] = 17
+			terminal.UsageFields["prompt_tokens"] = 2
+			terminal.UsageFields["completion_tokens"] = 2
+			terminal.UsageFields["total_tokens"] = 4
+			return terminal.Emit()
+		}},
+	)
+	if err != nil || hookCalls != 1 || !strings.HasSuffix(out.String(), "data: [DONE]\n\n") {
+		t.Fatalf("err=%v hookCalls=%d stream=%s", err, hookCalls, out.String())
+	}
+}
+
 func TestTransformResponsesStreamFinishHookIsUnnamedBeforeDone(t *testing.T) {
 	clean := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 	var out bytes.Buffer
