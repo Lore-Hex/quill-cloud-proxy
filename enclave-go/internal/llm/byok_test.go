@@ -957,9 +957,9 @@ func TestProviderSpecificTemperatureOmission(t *testing.T) {
 	if got := openAICompatibleTemperature("openai", "gpt-4o-mini", &zero); got == nil || *got != 0 {
 		t.Fatalf("OpenAI temperature = %v, want 0", got)
 	}
-	// gpt-5.x / o-series reject temperature != 1; must be omitted (this is what
+	// GPT 5+ / o-series reject temperature != 1; must be omitted (this is what
 	// 400'd the Fusion panel's gpt-5.5 panelist).
-	for _, m := range []string{"gpt-5.5", "openai/gpt-5.5", "gpt-5.4-mini", "o3"} {
+	for _, m := range []string{"gpt-5.5", "openai/gpt-5.5", "gpt-5.4-mini", "gpt-6-astra", "openai/gpt-6-astra", "o3"} {
 		if got := openAICompatibleTemperature("openai", m, &zero); got != nil {
 			t.Fatalf("OpenAI %s temperature = %v, want omitted", m, *got)
 		}
@@ -986,6 +986,96 @@ func TestProviderSpecificTemperatureOmission(t *testing.T) {
 	hot := 1.7
 	if got := anthropicTemperature("claude-sonnet-4-6", &hot); got == nil || *got != 1.0 {
 		t.Fatalf("Claude Sonnet high temperature = %v, want 1.0", got)
+	}
+}
+
+func TestOpenAIGPTGenerationsUseModernCompletionTokenField(t *testing.T) {
+	t.Parallel()
+
+	maxTokens := 32
+	temperature := 0.0
+	for _, tc := range []struct {
+		name     string
+		provider string
+		model    string
+	}{
+		{name: "astra direct", provider: "openai", model: "gpt-6-astra"},
+		{name: "astra canonical id", provider: "openai", model: "openai/gpt-6-astra"},
+		{name: "future generation", provider: "openai", model: "gpt-10"},
+		{name: "azure astra deployment", provider: "azure", model: "gpt-6-astra"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := buildOpenAICompatibleRequest(
+				tc.provider,
+				tc.model,
+				&qtypes.OpenAIChatRequest{},
+				&qtypes.AnthropicMessagesRequest{
+					MaxTokens:         maxTokens,
+					MaxTokensExplicit: true,
+					Temperature:       &temperature,
+				},
+				nil,
+			)
+			if got.MaxCompletionTokens != maxTokens || got.MaxTokens != 0 {
+				t.Fatalf(
+					"token fields = (max_tokens=%d, max_completion_tokens=%d), want (0, %d)",
+					got.MaxTokens,
+					got.MaxCompletionTokens,
+					maxTokens,
+				)
+			}
+			if got.Temperature != nil {
+				t.Fatalf("temperature = %v, want omitted", *got.Temperature)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		provider string
+		model    string
+	}{
+		{provider: "openai", model: "gpt-4o-mini"},
+		{provider: "openai", model: "gpt-oss-120b"},
+		{provider: "deepinfra", model: "openai/gpt-6-astra"},
+	} {
+		if requiresMaxCompletionTokens(tc.provider, tc.model) {
+			t.Fatalf("requiresMaxCompletionTokens(%q, %q) = true", tc.provider, tc.model)
+		}
+	}
+}
+
+func TestGPT6AstraResponsesUsesModernCompletionTokenField(t *testing.T) {
+	t.Parallel()
+
+	maxOutputTokens := 32
+	chat, err := adapter.ResponsesToChat(&qtypes.OpenAIResponsesRequest{
+		Model:           "openai/gpt-6-astra",
+		Input:           "Reply with exactly PONG",
+		MaxOutputTokens: &maxOutputTokens,
+	})
+	if err != nil {
+		t.Fatalf("ResponsesToChat: %v", err)
+	}
+	body, err := adapter.ToAnthropic(chat, chat.Model)
+	if err != nil {
+		t.Fatalf("ToAnthropic: %v", err)
+	}
+	wire := buildOpenAICompatibleRequest("openai", "gpt-6-astra", chat, body, nil)
+	encoded, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatalf("marshal provider request: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("decode provider request: %v", err)
+	}
+	if payload["max_completion_tokens"] != float64(maxOutputTokens) {
+		t.Fatalf("max_completion_tokens = %#v, want %d; payload=%s", payload["max_completion_tokens"], maxOutputTokens, encoded)
+	}
+	if _, ok := payload["max_tokens"]; ok {
+		t.Fatalf("legacy max_tokens must be absent; payload=%s", encoded)
 	}
 }
 
