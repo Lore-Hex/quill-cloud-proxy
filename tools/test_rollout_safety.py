@@ -201,6 +201,20 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("--filter='name~^quill-enclave-mig-'", inventory_step)
         self.assertIn('if [ "${actual}" != "${expected}" ]', inventory_step)
 
+        stage_d_tests = (
+            ROOT / "tools" / "tests" / "test-stage-d-gates.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('configured_migs="$(sed -nE', stage_d_tests)
+        self.assertIn(
+            '[ "${heartbeat_off_count}" = "${configured_region_count}" ]',
+            stage_d_tests,
+        )
+        self.assertNotIn(
+            "grep -Ec '^[[:space:]]+QUILL_USAGE_HEARTBEAT: \"off\"$' "
+            '"${workflow}")" = "4"',
+            stage_d_tests,
+        )
+
     def test_new_region_is_canaried_before_dns_and_global_traffic(self) -> None:
         function = (ROOT / "tools" / "roll-secondary-region.sh").read_text(
             encoding="utf-8"

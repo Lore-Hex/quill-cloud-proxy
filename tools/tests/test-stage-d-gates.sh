@@ -181,7 +181,11 @@ if grep -En "(tee-env-)?QUILL_(USAGE_HEARTBEAT|TERMINATE_AT_CAP)(=|:[[:space:]]+
   echo "Stage D runtime flag is enabled in the inert policy-publication workflow" >&2
   exit 1
 fi
-[ "$(grep -Ec '^[[:space:]]+QUILL_USAGE_HEARTBEAT: "off"$' "${workflow}")" = "4" ]
+configured_migs="$(sed -nE 's/^[[:space:]]*GCP_ENCLAVE_MIGS: "([^"]+)"$/\1/p' "${workflow}")"
+[ -n "${configured_migs}" ]
+configured_region_count="$(wc -w <<<"${configured_migs}" | tr -d '[:space:]')"
+heartbeat_off_count="$(grep -Ec '^[[:space:]]+QUILL_USAGE_HEARTBEAT: "off"$' "${workflow}")"
+[ "${heartbeat_off_count}" = "${configured_region_count}" ]
 grep -Fq "/internal/gateway/authorizations/by-gateway-request-id/\${request_log_id}" tools/verify-region-before-dns.sh
 grep -Fq 'STAGE_D_EVIDENCE_TIMEOUT_SECONDS:-60' tools/verify-region-before-dns.sh
 grep -Fq '.data.authorization_kind != "regional_lease"' tools/stage-d-gate-lib.sh
