@@ -177,6 +177,17 @@ jobs:
                       f"trust-page/{name} and trust-page/trust/{name} disagree. "
                       "Whichever a reader fetched, one of them is wrong."
                   )
+          for name in ("gcp/stage-d-accepted.json", "gcp/stage-d-accepted.json.bundle"):
+              top = Path("trust-page") / name
+              nested = trust / name
+              assert top.is_file() and nested.is_file(), (
+                  f"trust-page/{name} and trust-page/trust/{name} must both exist. "
+                  "Whichever a reader fetched, both paths must be published."
+              )
+              assert top.read_bytes() == nested.read_bytes(), (
+                  f"trust-page/{name} and trust-page/trust/{name} disagree. "
+                  "Whichever a reader fetched, one of them is wrong."
+              )
           print("AWS and Azure trust records are internally consistent")
           print("GCP artifacts agree across both published paths")
           PY
@@ -242,8 +253,13 @@ jobs:
           # months with nothing published at all.
           base="https://trust.trustedrouter.com"
           missing=0
+          # Static validation requires identical Stage D documents and bundles.
+          # Compare all four live files to those bytes so neither URL can silently
+          # disappear or serve a different policy or detached signature.
           for f in trust/gcp-release.json trust/aws-release.json trust/azure-release.json \
-                   trust/pcr0-aws.txt trust/hostdata-azure.txt pcr0.txt; do
+                   trust/pcr0-aws.txt trust/hostdata-azure.txt pcr0.txt \
+                   gcp/stage-d-accepted.json trust/gcp/stage-d-accepted.json \
+                   gcp/stage-d-accepted.json.bundle trust/gcp/stage-d-accepted.json.bundle; do
             for attempt in $(seq 1 20); do
               code="$(curl -s -o /tmp/body -w '%{http_code}' "${base}/${f}?nocache=${GITHUB_RUN_ID}-${attempt}")"
               [ "$code" = "200" ] && break
@@ -259,7 +275,7 @@ jobs:
               missing=$((missing+1))
             fi
           done
-          # Bundles are checked for existence, not content: a published record
+          # Other bundles are checked for existence, not content: a published record
           # whose signature is missing cannot be verified by anyone, which makes
           # the transparency story on the page untrue.
           for f in trust/gcp-release.json trust/aws-release.json trust/azure-release.json; do

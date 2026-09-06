@@ -25,6 +25,7 @@ on:
       - "trust-page/trust/accepted-image-digests-gcp.txt"
       - "trust-page/trust/accepted-image-references-gcp.txt"
       - "trust-page/gcp/stage-d-accepted.json"
+      - "trust-page/trust/gcp/stage-d-accepted.json"
       - ".github/workflows/publish-trust-gcp.yml"
   workflow_dispatch: {}
 
@@ -62,6 +63,12 @@ jobs:
               # protobuf JSON. Incident: the legacy bundle left its accepted
               # digest set empty, blocking enclave boots and spend leases.
               cosign sign-blob --new-bundle-format --bundle "$f.bundle" "$f"
+              # The router resolves this policy relative to /trust/gcp-release.json.
+              # Publish the same signed bytes at both paths; signing twice would
+              # produce different bundles even for an identical document.
+              mkdir -p trust-page/trust/gcp
+              cp "$f" trust-page/trust/gcp/stage-d-accepted.json
+              cp "$f.bundle" trust-page/trust/gcp/stage-d-accepted.json.bundle
             else
               cosign sign-blob --bundle "$f.bundle" "$f"
             fi
@@ -79,6 +86,8 @@ jobs:
               continue
             fi
             if [ "$f" = "$stage_d_policy" ]; then
+              cmp "$f" trust-page/trust/gcp/stage-d-accepted.json
+              cmp "$f.bundle" trust-page/trust/gcp/stage-d-accepted.json.bundle
               cosign verify-blob --new-bundle-format \
                 --bundle "$f.bundle" \
                 --certificate-identity "$identity" \
@@ -109,13 +118,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -- 'trust-page/**/*.bundle' 'trust-page/*.bundle' || true
+          if [ -f trust-page/gcp/stage-d-accepted.json ]; then
+            git add -- trust-page/trust/gcp/stage-d-accepted.json
+          fi
           if git diff --cached --quiet; then
             echo "no bundle changes"
             exit 0
           fi
           git commit -m "[bot] sign gcp trust artifacts"
           # Another plane's workflow may have pushed first; rebase rather than
-          # fail, since these commits only ever touch disjoint bundle files.
+          # fail, since these commits touch disjoint per-plane artifacts.
           for attempt in 1 2 3; do
             echo "bundle push attempt ${attempt}/3"
             git pull --rebase --quiet origin main && git push origin HEAD:main && exit 0
