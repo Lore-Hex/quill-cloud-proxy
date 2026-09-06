@@ -87,7 +87,7 @@ jobs:
         working-directory: parent
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
       - name: Sync
@@ -112,7 +112,7 @@ jobs:
           # published enclave. A shallow checkout makes older release commits
           # appear invalid even when they are ancestors of main.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           version: "0.11.2"
       # capture-plane-measurements.py imports cbor2 at module scope to parse
