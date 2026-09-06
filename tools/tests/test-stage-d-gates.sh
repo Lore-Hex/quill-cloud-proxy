@@ -6,6 +6,7 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${root}"
 
 python3 tools/test_stage_d_policy.py
+python3 tools/test_stage_d_publication.py
 python3 tools/test_stage_d_stream.py
 python3 tools/test_wait_stage_d_policy.py
 
