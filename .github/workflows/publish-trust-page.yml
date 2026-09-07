@@ -180,6 +180,11 @@ jobs:
           for name in ("gcp/stage-d-accepted.json", "gcp/stage-d-accepted.json.bundle"):
               top = Path("trust-page") / name
               nested = trust / name
+              # A bundle arrives one commit after its document by design, in
+              # publish-trust-gcp.yml. Documents must always exist and agree;
+              # compare bundles only when both exist, including stale pairs.
+              if name.endswith(".bundle") and not (top.is_file() and nested.is_file()):
+                  continue
               assert top.is_file() and nested.is_file(), (
                   f"trust-page/{name} and trust-page/trust/{name} must both exist. "
                   "Whichever a reader fetched, both paths must be published."
@@ -253,7 +258,8 @@ jobs:
           # months with nothing published at all.
           base="https://trust.trustedrouter.com"
           missing=0
-          # Static validation requires identical Stage D documents and bundles.
+          # Static validation requires identical Stage D documents and, when
+          # both exist, bundles. The live check still requires all four URLs.
           # Compare all four live files to those bytes so neither URL can silently
           # disappear or serve a different policy or detached signature.
           for f in trust/gcp-release.json trust/aws-release.json trust/azure-release.json \
