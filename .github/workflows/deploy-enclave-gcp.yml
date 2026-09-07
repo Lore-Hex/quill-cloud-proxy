@@ -344,6 +344,9 @@ jobs:
             --incoming-digest "${DIGEST}" \
             --running-digest-file "${running_digests}" \
             "${previous_args[@]}"
+          mkdir -p trust-page/trust/gcp
+          cp trust-page/gcp/stage-d-accepted.json trust-page/trust/gcp/stage-d-accepted.json
+          cmp trust-page/gcp/stage-d-accepted.json trust-page/trust/gcp/stage-d-accepted.json
           echo "policy_sha256=$(sha256sum trust-page/gcp/stage-d-accepted.json | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - id: write-trust
@@ -381,7 +384,7 @@ jobs:
               --image-digest "${DIGEST}" \
               --accepted-image-digests "${accepted}" \
               --accepted-image-references "${accepted_references}"
-            git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust trust-page/gcp/stage-d-accepted.json
+            git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust trust-page/gcp/stage-d-accepted.json trust-page/trust/gcp/stage-d-accepted.json
             if ! git diff --cached --quiet; then
               git commit --amend --no-edit
             fi
@@ -389,7 +392,7 @@ jobs:
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust trust-page/gcp/stage-d-accepted.json
+          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust trust-page/gcp/stage-d-accepted.json trust-page/trust/gcp/stage-d-accepted.json
           if git diff --cached --quiet; then
             echo "trust-page artifacts unchanged; nothing to commit"
             exit 0
@@ -929,10 +932,13 @@ jobs:
             --issued-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --incoming-digest "${IMAGE_DIGEST}" \
             --accepted-policy trust-page/gcp/stage-d-accepted.json
+          mkdir -p trust-page/trust/gcp
+          cp trust-page/gcp/stage-d-accepted.json trust-page/trust/gcp/stage-d-accepted.json
+          cmp trust-page/gcp/stage-d-accepted.json trust-page/trust/gcp/stage-d-accepted.json
           echo "policy_sha256=$(sha256sum trust-page/gcp/stage-d-accepted.json | awk '{print $1}')" >> "$GITHUB_OUTPUT"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust trust-page/gcp/stage-d-accepted.json
+          git add trust-page/image-digest-gcp.txt trust-page/image-reference-gcp.txt trust-page/accepted-image-digests-gcp.txt trust-page/accepted-image-references-gcp.txt trust-page/gcp-release.json trust-page/index.html trust-page/trust trust-page/gcp/stage-d-accepted.json trust-page/trust/gcp/stage-d-accepted.json
           if git diff --cached --quiet; then
             echo "final trust-page artifacts unchanged"
           else
