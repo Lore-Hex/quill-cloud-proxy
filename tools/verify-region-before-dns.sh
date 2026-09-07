@@ -347,6 +347,10 @@ verify_instance() {
       break
     fi
     echo "${REGION}: ${stage} inference attempt ${attempt}/3 on ${ip} returned HTTP ${code}" >&2
+    # The status alone cannot tell a refused key from a refused model from a
+    # refused workspace, and this gate blocks the rollout when it fails. The
+    # body is the router's own error envelope; it carries no credential.
+    echo "${REGION}: ${stage} inference attempt ${attempt}/3 body: $(head -c 400 "${response_file}" | tr -d '\n')" >&2
     sleep 5
   done
   if [ "${completed}" != "1" ]; then
