@@ -987,8 +987,9 @@ func (c *chunkedWriter) closeLocked() error {
 	return err
 }
 
-// Complete writes the terminal zero chunk. Callers must use it only after the
-// upstream stream and all local transforms have ended successfully.
+// Complete writes the terminal zero chunk after successful output or an
+// explicitly delivered terminal failure event. Never use it for an unframed
+// upstream or client-write failure.
 func (c *chunkedWriter) Complete() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
