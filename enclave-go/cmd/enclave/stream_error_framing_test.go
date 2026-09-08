@@ -33,6 +33,10 @@ func TestExplicitProviderFailureCompletesHTTPFraming(t *testing.T) {
 					case "/internal/gateway/settle":
 						settlements.Add(1)
 						_, _ = io.WriteString(w, `{"data":{}}`)
+					case "/internal/gateway/validate":
+						// The subsequent 404 has no authorization, so request-end
+						// attribution performs its own identity lookup.
+						_, _ = io.WriteString(w, `{"data":{"workspace_id":"ws_1","api_key_hash":"key_1"}}`)
 					default:
 						t.Errorf("unexpected control-plane path %s", r.URL.Path)
 						http.NotFound(w, r)
@@ -41,9 +45,16 @@ func TestExplicitProviderFailureCompletesHTTPFraming(t *testing.T) {
 				defer control.Close()
 				gateway := trustedrouter.New(control.URL, "internal-token", control.Client())
 				server, client := net.Pipe()
-				defer client.Close()
+				done := make(chan struct{})
+				defer func() {
+					_ = client.Close()
+					<-done
+				}()
 				_ = client.SetDeadline(time.Now().Add(5 * time.Second))
-				go serveOne(context.Background(), server, auth.New(nil), &failingStreamingLLM{}, nil, nil, gateway, nil)
+				go func() {
+					defer close(done)
+					serveOne(context.Background(), server, auth.New(nil), &failingStreamingLLM{}, nil, nil, gateway, nil)
+				}()
 				input := `"messages":[{"role":"user","content":"private input"}]`
 				if route == "responses" {
 					input = `"input":"private input"`
