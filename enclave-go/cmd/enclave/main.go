@@ -1960,7 +1960,12 @@ func serveStreaming(
 			}
 		}
 		if routeType == "responses" || statsW.BytesWritten() == 0 {
-			_ = writeStreamingProviderError(statsW, routeType, requestID, responseModel, err, hidesPublicRouteMetadata(authorization))
+			if writeErr := writeStreamingProviderError(statsW, routeType, requestID, responseModel, err, hidesPublicRouteMetadata(authorization)); writeErr == nil {
+				// An explicit terminal SSE failure is a complete HTTP message,
+				// not a truncated successful stream. Preserve chunk framing only
+				// when the error and terminal event were both delivered.
+				_ = chunkW.Complete()
+			}
 		}
 		return
 	}
