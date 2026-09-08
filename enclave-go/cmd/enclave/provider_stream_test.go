@@ -367,13 +367,14 @@ func TestInvokeProviderStreamSwallowedZeroByteWriteFailsWithoutFallback(t *testi
 	pr, pw := io.Pipe()
 	_ = pr.CloseWithError(errors.New("client stopped reading after response head"))
 
-	logs := captureProviderStreamStderr(t, func() {
+	logs := captureProviderStreamStderr(t, func() *providerInvocation {
 		invokeProviderStream(
 			context.Background(), client,
 			&types.OpenAIChatRequest{Model: "requested-model"},
 			&types.AnthropicMessagesRequest{}, pw, options,
 			true, nil, newSelectedRouteTracker(), "swallowed-write-test", false, false,
 		)
+		return nil // invokeProviderStream runs synchronously here.
 	})
 
 	if got := strings.Join(client.endpoints(), ","); got != "committed" {
@@ -384,7 +385,9 @@ func TestInvokeProviderStreamSwallowedZeroByteWriteFailsWithoutFallback(t *testi
 	}
 }
 
-func captureProviderStreamStderr(t *testing.T, fn func()) string {
+// fn must start any provider invocation inside the capture scope and return it
+// after serving the stream. Return nil only for synchronous provider calls.
+func captureProviderStreamStderr(t *testing.T, fn func() *providerInvocation) string {
 	t.Helper()
 	oldStderr := os.Stderr
 	r, w, err := os.Pipe()
@@ -398,7 +401,15 @@ func captureProviderStreamStderr(t *testing.T, fn func()) string {
 		_ = w.Close()
 	}()
 
-	fn()
+	if invocation := fn(); invocation != nil {
+		// serveStreaming cancels the provider on return, but its final stderr
+		// writes can still be in flight. Join it before closing or restoring stderr.
+		select {
+		case <-invocation.done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("provider invocation did not finish before restoring captured stderr")
+		}
+	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("close captured stderr: %v", err)
 	}
@@ -408,6 +419,44 @@ func captureProviderStreamStderr(t *testing.T, fn func()) string {
 		t.Fatalf("read captured stderr: %v", err)
 	}
 	return string(captured)
+}
+
+func TestCaptureProviderStreamStderrWaitsForProviderCompletion(t *testing.T) {
+	streamReturned := make(chan struct{})
+	const lateLog = "provider log after serveStreaming returned\n"
+	client := &scriptedProviderStreamClient{invoke: func(_ llm.InvokeOptions, out io.Writer) error {
+		_, err := io.WriteString(out, providerStreamTestResponse)
+		// Hold the invocation open until serveStreaming has returned, then log
+		// from that goroutine to exercise the capture helper's completion wait.
+		<-streamReturned
+		_, _ = io.WriteString(os.Stderr, lateLog)
+		return err
+	}}
+	var out bytes.Buffer
+	logs := captureProviderStreamStderr(t, func() *providerInvocation {
+		ctx := t.Context()
+		req := &types.OpenAIChatRequest{Model: "model-a", Stream: true}
+		anthropicReq := &types.AnthropicMessagesRequest{}
+		options := []llm.InvokeOptions{{Model: "model-a", EndpointID: "normal"}}
+		invocation := startProviderInvocation(ctx, client, req, anthropicReq, options, false, nil, "capture-wait-test")
+		// Also join during cleanup so removing the helper's wait as a negative
+		// control still lets the detector observe the late log before test exit.
+		t.Cleanup(func() {
+			select {
+			case <-invocation.done:
+			case <-time.After(5 * time.Second):
+				t.Error("provider invocation did not finish during cleanup")
+			}
+		})
+		serveStreaming(withProviderInvocation(ctx, invocation), &out, client,
+			req, anthropicReq, options, nil, nil, nil, time.Now(), nil,
+			"chat.completions", "capture-wait-test", "model-a")
+		close(streamReturned)
+		return invocation
+	})
+	if !strings.Contains(logs, lateLog) || !strings.Contains(logs, "enclave.invoke_complete") {
+		t.Fatalf("logs = %q, want provider logs emitted after serveStreaming returned", logs)
+	}
 }
 
 func TestServeStreamingDoesNotWriteSuccessHeadBeforeProviderFirstByte(t *testing.T) {
