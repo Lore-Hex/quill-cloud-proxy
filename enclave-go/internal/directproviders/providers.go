@@ -43,6 +43,7 @@ var specs = [...]Spec{
 	{Provider: "nvidia-nim", BaseURL: "https://integrate.api.nvidia.com/v1", SecretEnv: "QUILL_NVIDIA_NIM_SECRET", SecretName: "trustedrouter-nvidia-nim-api-key", SecretLabel: "NVIDIA NIM key"},
 	{Provider: "wandb", BaseURL: "https://api.inference.wandb.ai/v1", SecretEnv: "QUILL_WANDB_SECRET", SecretName: "trustedrouter-wandb-api-key", SecretLabel: "W&B Inference key"},
 	{Provider: "nscale", BaseURL: "https://inference.api.nscale.com/v1", SecretEnv: "QUILL_NSCALE_SECRET", SecretName: "trustedrouter-nscale-api-key", SecretLabel: "Nscale service token"},
+	{Provider: "confidential-ai", BaseURL: "https://api.confidential.ai/v1", SecretEnv: "QUILL_CONFIDENTIAL_AI_SECRET", SecretName: "trustedrouter-confidential-ai-api-key", SecretLabel: "Confidential AI service token"},
 	{Provider: "perplexity", BaseURL: "https://api.perplexity.ai/v1", ChatCompletionsPath: "/sonar", SecretEnv: "QUILL_PERPLEXITY_SECRET", SecretName: "trustedrouter-perplexity-api-key", SecretLabel: "Perplexity key"},
 	{Provider: "krea", BaseURL: "https://api.krea.ai", MediaOnly: true, SecretEnv: "QUILL_KREA_SECRET", SecretName: "trustedrouter-krea-api-key", SecretLabel: "Krea key"},
 	{Provider: "fal", BaseURL: "https://fal.run", MediaOnly: true, SecretEnv: "QUILL_FAL_SECRET", SecretName: "trustedrouter-fal-api-key", SecretLabel: "FAL key"},

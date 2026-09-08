@@ -113,6 +113,7 @@ SAKANA_SECRET="${SAKANA_SECRET:-trustedrouter-sakana-api-key}"
 NVIDIA_NIM_SECRET="${NVIDIA_NIM_SECRET:-trustedrouter-nvidia-nim-api-key}"
 WANDB_SECRET="${WANDB_SECRET:-trustedrouter-wandb-api-key}"
 NSCALE_SECRET="${NSCALE_SECRET:-trustedrouter-nscale-api-key}"
+CONFIDENTIAL_AI_SECRET="${CONFIDENTIAL_AI_SECRET:-trustedrouter-confidential-ai-api-key}"
 PERPLEXITY_SECRET="${PERPLEXITY_SECRET:-trustedrouter-perplexity-api-key}"
 KREA_SECRET="${KREA_SECRET:-trustedrouter-krea-api-key}"
 FAL_SECRET="${FAL_SECRET:-trustedrouter-fal-api-key}"
@@ -271,6 +272,7 @@ for secret in \
   "$NVIDIA_NIM_SECRET" \
   "$WANDB_SECRET" \
   "$NSCALE_SECRET" \
+  "$CONFIDENTIAL_AI_SECRET" \
   "$PERPLEXITY_SECRET" \
   "$KREA_SECRET" \
   "$FAL_SECRET" \
