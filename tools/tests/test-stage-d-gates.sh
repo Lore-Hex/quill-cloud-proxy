@@ -175,19 +175,97 @@ stage_d_select_probe_key off fixture-project fixture-region
 [ "${STAGE_D_PROBE_KEY_NAME}" = "STAGE_D_PROBE_API_KEY" ]
 [ "${STAGE_D_PROBE_KEY_IN_USE}" = "on" ]
 
-# This policy-publication PR is inert. The later flag PR deliberately removes
-# this guard when it enables the pilot in decision-77 order.
+# Termination is a separate Stage D stage and remains unconditionally disarmed.
 workflow=.github/workflows/deploy-enclave-gcp.yml
 inventory=tools/gcp-enclave-migs.txt
-if grep -En "(tee-env-)?QUILL_(USAGE_HEARTBEAT|TERMINATE_AT_CAP)(=|:[[:space:]]+)[\"']?on([\"']|[|[:space:]]|$)" "${workflow}"; then
-  echo "Stage D runtime flag is enabled in the inert policy-publication workflow" >&2
+heartbeat_regions=tools/stage-d-heartbeat-regions.txt
+if grep -En "(tee-env-)?QUILL_TERMINATE_AT_CAP(=|:[[:space:]]+)[\"']?on([\"']|[|[:space:]]|$)" "${workflow}"; then
+  echo "QUILL_TERMINATE_AT_CAP=on is unconditionally forbidden in the workflow" >&2
   exit 1
 fi
-configured_migs="$(tr '\n' ' ' < "${inventory}")"
-[ -n "${configured_migs}" ]
-configured_region_count="$(wc -w <<<"${configured_migs}" | tr -d '[:space:]')"
-heartbeat_off_count="$(grep -Ec '^[[:space:]]+QUILL_USAGE_HEARTBEAT: "off"$' "${workflow}")"
-[ "${heartbeat_off_count}" = "${configured_region_count}" ]
+# Parse the supported step/env layout strictly, without a YAML dependency.
+# Scan every assignment, including shell/metadata forms, so an on outside a
+# region's own step env cannot escape the allowlist. Unknown layouts fail shut.
+heartbeat_counts="$(python3 - "${workflow}" "${inventory}" "${heartbeat_regions}" <<'PY'
+import pathlib
+import re
+import sys
+
+
+def require(condition, message):
+    if not condition:
+        raise SystemExit(f"Stage D heartbeat bijection: {message}")
+
+
+workflow, inventory, heartbeat_file = map(pathlib.Path, sys.argv[1:])
+configured_list = [line.split(":")[0] for line in inventory.read_text().splitlines()]
+configured = set(configured_list)
+require(configured and len(configured) == len(configured_list), "invalid MIG inventory")
+declared_text = heartbeat_file.read_text()
+declared_list = declared_text.splitlines()
+require(not declared_text or declared_text.endswith("\n"), "allowlist needs a final newline")
+require(all(re.fullmatch(r"[a-z]+(?:-[a-z]+)+[0-9]+", r) for r in declared_list),
+        "allowlist must contain one region per line, without comments or blanks")
+declared = set(declared_list)
+require(len(declared) == len(declared_list), "duplicate heartbeat region")
+require(declared <= configured, f"unconfigured heartbeat regions: {sorted(declared - configured)}")
+
+lines = workflow.read_text().splitlines()
+steps = {}
+current_step = None
+for number, line in enumerate(lines):
+    # A new step or enclosing YAML key ends the previous step; comments do not.
+    if line.strip() and not line.lstrip().startswith("#"):
+        indent = len(line) - len(line.lstrip())
+        if current_step is not None and indent <= current_step[1]:
+            current_step = None
+        match = re.fullmatch(r"(\s*)- name: (.+)", line)
+        if match:
+            current_step = (number, len(match[1]), match[2])
+    if current_step is not None:
+        steps[number] = current_step
+
+observed = {}
+for number, line in enumerate(lines):
+    if not re.search(r"(?:tee-env-)?QUILL_USAGE_HEARTBEAT(?:=|:\s+)", line):
+        continue
+    step = steps.get(number)
+    require(step is not None, f"line {number + 1}: heartbeat outside a named step")
+    start, indent, name = step
+    value = re.fullmatch(r' {%d}QUILL_USAGE_HEARTBEAT: "(on|off)"' % (indent + 4), line)
+    require(value is not None, f"line {number + 1}: heartbeat must be a literal step env")
+    parent = next((prior for prior in reversed(lines[start:number])
+                   if prior.strip() and not prior.lstrip().startswith("#")
+                   and len(prior) - len(prior.lstrip()) < indent + 4), "")
+    require(parent == " " * (indent + 2) + "env:", f"{name}: heartbeat is not in step env")
+    block = "\n".join(lines[n] for n, owner in steps.items() if owner == step)
+    regions = set()
+    primary = re.fullmatch(r"Roll the GCP MIG \(([^()]+)\)", name)
+    if primary:
+        regions.add(primary[1])
+    templates = re.findall(
+        r"^ {%d}PREV_TEMPLATE: \$\{\{ steps\.prev\.outputs\.([a-z0-9_]+)_template \}\}$"
+        % (indent + 4), block, re.MULTILINE)
+    regions.update(region.replace("_", "-") for region in templates)
+    require(name.startswith("Roll ") and "GCP MIG" in name and len(regions) == 1,
+            f"{name}: cannot determine a unique rollout region")
+    region = regions.pop()
+    require(region in configured, f"{name}: unknown MIG region {region}")
+    require(region not in observed, f"{region}: duplicate heartbeat flag")
+    observed[region] = value[1]
+
+on_regions = {region for region, value in observed.items() if value == "on"}
+off_regions = {region for region, value in observed.items() if value == "off"}
+require(on_regions == declared,
+        f"declared regions not on: {sorted(declared - on_regions)}; "
+        f"undeclared regions on: {sorted(on_regions - declared)}")
+require(off_regions == configured - declared,
+        f"expected off regions {sorted(configured - declared)}, got {sorted(off_regions)}")
+print(len(on_regions), len(off_regions), len(configured))
+PY
+)"
+read -r heartbeat_on_count heartbeat_off_count configured_region_count <<<"${heartbeat_counts}"
+[ "$((heartbeat_on_count + heartbeat_off_count))" -eq "${configured_region_count}" ]
 grep -Fq "/internal/gateway/authorizations/by-gateway-request-id/\${request_log_id}" tools/verify-region-before-dns.sh
 grep -Fq 'STAGE_D_EVIDENCE_TIMEOUT_SECONDS:-60' tools/verify-region-before-dns.sh
 grep -Fq '.data.authorization_kind != "regional_lease"' tools/stage-d-gate-lib.sh

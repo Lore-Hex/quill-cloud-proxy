@@ -4,8 +4,10 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -209,22 +211,119 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("--filter='name~^quill-enclave-mig-'", inventory_step)
         self.assertIn('if [ "${actual}" != "${expected}" ]', inventory_step)
 
-        stage_d_tests = (
-            ROOT / "tools" / "tests" / "test-stage-d-gates.sh"
-        ).read_text(encoding="utf-8")
+    def test_stage_d_heartbeat_gate_contract(self) -> None:
+        stage_d_tests = (ROOT / "tools/tests/test-stage-d-gates.sh").read_text()
+        # Pin membership, association, uniqueness, completeness, and execution;
+        # changing rollout policy must not quietly disable any of these checks.
+        required_guards = (
+            'heartbeat_regions=tools/stage-d-heartbeat-regions.txt',
+            'heartbeat_counts="$(python3 - "${workflow}" "${inventory}" "${heartbeat_regions}"',
+            'raise SystemExit(f"Stage D heartbeat bijection: {message}")',
+            'require(declared <= configured,',
+            'require(len(declared) == len(declared_list),',
+            'require(step is not None,',
+            'require(value is not None,',
+            'require(parent == " " * (indent + 2) + "env:",',
+            'require(name.startswith("Roll ") and "GCP MIG" in name and len(regions) == 1,',
+            'require(region in configured,',
+            'require(region not in observed,',
+            'require(on_regions == declared,',
+            'require(off_regions == configured - declared,',
+            'print(len(on_regions), len(off_regions), len(configured))',
+            '[ "$((heartbeat_on_count + heartbeat_off_count))" -eq "${configured_region_count}" ]',
+        )
+        missing_guards = [guard for guard in required_guards if guard not in stage_d_tests]
+        self.assertEqual(missing_guards, [], "Stage D heartbeat shell gate was weakened")
+
+    def test_stage_d_termination_is_unconditionally_refused(self) -> None:
+        stage_d_tests = (ROOT / "tools/tests/test-stage-d-gates.sh").read_text()
         self.assertIn(
-            'configured_migs="$(tr \'\\n\' \' \' < "${inventory}")"',
+            r'''if grep -En "(tee-env-)?QUILL_TERMINATE_AT_CAP(=|:[[:space:]]+)[\"']?on([\"']|[|[:space:]]|$)" "${workflow}"; then
+  echo "QUILL_TERMINATE_AT_CAP=on is unconditionally forbidden in the workflow" >&2
+  exit 1
+fi''',
             stage_d_tests,
         )
-        self.assertIn(
-            '[ "${heartbeat_off_count}" = "${configured_region_count}" ]',
-            stage_d_tests,
+        self.assertNotIn("QUILL_(USAGE_HEARTBEAT|TERMINATE_AT_CAP)", stage_d_tests)
+
+    def test_stage_d_contract_assertion_rejects_weakened_gate(self) -> None:
+        # Exercise the contract test itself: deleting its assertion must be red,
+        # even though a Python test with no assertions would otherwise pass.
+        stage_d_tests = (ROOT / "tools/tests/test-stage-d-gates.sh").read_text()
+        for guard in (
+            'require(on_regions == declared,',
+            'require(off_regions == configured - declared,',
+            'require(declared <= configured,',
+            'require(region not in observed,',
+            'require(name.startswith("Roll ") and "GCP MIG" in name and len(regions) == 1,',
+        ):
+            with self.subTest(guard=guard):
+                self.assertIn(guard, stage_d_tests)
+                with mock.patch.object(Path, "read_text", return_value=stage_d_tests.replace(guard, "", 1)):
+                    with self.assertRaises(AssertionError):
+                        self.test_stage_d_heartbeat_gate_contract()
+
+    def test_recovery_heartbeat_uses_selected_template_not_workflow_env(self) -> None:
+        verifier = (ROOT / "tools/verify-region-before-dns.sh").read_text()
+        recovery = (ROOT / "tools/recover-gcp-region.sh").read_text()
+        secondary = (ROOT / "tools/roll-secondary-region.sh").read_text()
+        self.assertLess(
+            recovery.index('set-instance-template "${mig}"'),
+            recovery.index('bash tools/verify-region-before-dns.sh'),
         )
-        self.assertNotIn(
-            "grep -Ec '^[[:space:]]+QUILL_USAGE_HEARTBEAT: \"off\"$' "
-            '"${workflow}")" = "4"',
-            stage_d_tests,
-        )
+        self.assertIn('--template="${previous_template}"', recovery)
+        self.assertIn('"${previous_template}" "${prior_drain_state}"', secondary)
+        self.assertIn('bash tools/recover-gcp-region.sh', secondary)
+
+        # Execute the real verifier through template selection and probe-key
+        # gating. Later network probes have their own recorded-response tests.
+        boundary = "# This is an existing gateway-to-router credential"
+        self.assertIn(boundary, verifier)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            script = temp / "verify-region-before-dns.sh"
+            script.write_text(verifier.split(boundary, 1)[0])
+            (temp / "stage-d-gate-lib.sh").write_text(
+                (ROOT / "tools/stage-d-gate-lib.sh").read_text()
+            )
+            gcloud = temp / "gcloud"
+            gcloud.write_text('''#!/bin/bash
+set -eu
+case "$*" in
+  "compute instance-groups managed describe "*)
+    echo "https://example.invalid/instanceTemplates/previous-template" ;;
+  "compute instance-templates describe previous-template "*)
+    printf '{"properties":{"metadata":{"items":[{"key":"tee-env-QUILL_USAGE_HEARTBEAT","value":"%s"}]}}}\n' "$TEMPLATE_HEARTBEAT" ;;
+  "secrets versions access latest --secret=trustedrouter-synthetic-monitor-api-key "*)
+    echo fallback-monitor-key ;;
+  *) echo "unexpected gcloud call: $*" >&2; exit 1 ;;
+esac
+''')
+            gcloud.chmod(0o755)
+            for template_flag, workflow_flag in (("off", "on"), ("on", "off")):
+                with self.subTest(template_flag=template_flag, workflow_flag=workflow_flag):
+                    env = {
+                        **os.environ,
+                        "PATH": f"{temp}:{os.environ['PATH']}",
+                        "TEMPLATE_HEARTBEAT": template_flag,
+                        "QUILL_USAGE_HEARTBEAT": workflow_flag,
+                        "HEARTBEAT_FLAG": workflow_flag,
+                    }
+                    env.pop("STAGE_D_PROBE_API_KEY", None)
+                    completed = subprocess.run(
+                        ["bash", str(script), "us-central1", "quill-enclave-mig-us-", "fixture-digest"],
+                        env=env, capture_output=True, text=True, timeout=5,
+                    )
+                    self.assertIn(
+                        f"selected template previous-template has QUILL_USAGE_HEARTBEAT={template_flag}",
+                        completed.stdout,
+                    )
+                    if template_flag == "off":
+                        self.assertEqual(completed.returncode, 0, completed.stderr)
+                        self.assertIn("plain streaming health and settled authorization only", completed.stderr)
+                    else:
+                        self.assertNotEqual(completed.returncode, 0)
+                        self.assertIn("QUILL_USAGE_HEARTBEAT=on; failing closed", completed.stderr)
 
     def test_new_region_is_canaried_before_dns_and_global_traffic(self) -> None:
         function = (ROOT / "tools" / "roll-secondary-region.sh").read_text(

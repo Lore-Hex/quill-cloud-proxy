@@ -30,6 +30,7 @@ on:
       - "tools/release-gcp.sh"
       - "tools/deploy-gcp-mig.sh"
       - "tools/gcp-enclave-migs.txt"
+      - "tools/stage-d-heartbeat-regions.txt"
       - "tools/reconcile-enclave-dns.py"
       - "tools/verify-attestation.py"
       - "tools/wait-canonical-drained.sh"
@@ -613,7 +614,7 @@ jobs:
         env:
           IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
-          QUILL_USAGE_HEARTBEAT: "off"
+          QUILL_USAGE_HEARTBEAT: "on"
           # us-central1 serves the canonical global convenience hostname, the
           # explicit regional SDK retry hostname, api.trustedrouter.com, and
           # api.allyrouter.com, and api.uptimerouter.com. The enclave ACME
