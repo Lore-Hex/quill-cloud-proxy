@@ -607,11 +607,17 @@ func TestServeStreamingStageDClassifiesReapedSnapshotAsSettleLostAndCompletes(t 
 		return err
 	}}
 	var out bytes.Buffer
-	logs := captureProviderStreamStderr(t, func() {
-		serveStreaming(t.Context(), &out, provider,
-			&types.OpenAIChatRequest{Model: "model", Stream: true}, &types.AnthropicMessagesRequest{},
-			[]llm.InvokeOptions{{Model: "model", EndpointID: "anthropic/test"}}, gateway, stageDStreamingAuthorization(), nil,
+	logs := captureProviderStreamStderr(t, func() *providerInvocation {
+		ctx := t.Context()
+		req := &types.OpenAIChatRequest{Model: "model", Stream: true}
+		anthropicReq := &types.AnthropicMessagesRequest{}
+		options := []llm.InvokeOptions{{Model: "model", EndpointID: "anthropic/test"}}
+		authorization := stageDStreamingAuthorization()
+		invocation := startProviderInvocation(ctx, provider, req, anthropicReq, options, gateway.Enabled(), authorization, "stage-d-reaped-snapshot")
+		serveStreaming(withProviderInvocation(ctx, invocation), &out, provider,
+			req, anthropicReq, options, gateway, authorization, nil,
 			time.Now(), nil, "chat.completions", "stage-d-reaped-snapshot", "model")
+		return invocation
 	})
 
 	if settleCount.Load() != 1 {
