@@ -29,6 +29,7 @@ func TestLiveProviderWaveChatModels(t *testing.T) {
 		{provider: "stepfun", key: os.Getenv("STEPFUN_API_KEY"), model: "step-3.7-flash"},
 		{provider: "relace", key: os.Getenv("RELACE_API_KEY"), model: "deepseek-ai/DeepSeek-V4-Flash-0731"},
 		{provider: "relace", key: os.Getenv("RELACE_API_KEY"), model: "moonshotai/kimi-k3"},
+		{provider: "confidential-ai", key: os.Getenv("CONFIDENTIAL_AI_API_KEY"), model: "deepseek-ai/DeepSeek-V4-Flash-0731"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider+"/"+tt.model, func(t *testing.T) {

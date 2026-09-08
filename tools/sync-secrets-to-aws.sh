@@ -171,6 +171,7 @@ SECRETS=(
   trustedrouter-nvidia-nim-api-key
   trustedrouter-wandb-api-key
   trustedrouter-nscale-api-key
+  trustedrouter-confidential-ai-api-key
   trustedrouter-perplexity-api-key
   trustedrouter-krea-api-key
   trustedrouter-fal-api-key
