@@ -244,8 +244,11 @@ func (v *chutesVerifier) verify(ctx context.Context, request *chutesVerification
 	if err := json.Unmarshal([]byte(signed.Evidence.NVTrustEvidence), &gpuEvidence); err != nil {
 		return nil, fmt.Errorf("decode signed NVIDIA evidence: %w", err)
 	}
-	if len(gpuEvidence) != measurement.GPUCount {
-		return nil, fmt.Errorf("NVIDIA evidence count %d does not match pinned policy %d", len(gpuEvidence), measurement.GPUCount)
+	// The pinned measurement describes the server, not the chute's allocation.
+	// Chutes signs evidence filtered by CHUTES_NVIDIA_DEVICES for this instance.
+	// Require a nonempty set within server capacity, then verify every GPU below.
+	if len(gpuEvidence) < 1 || len(gpuEvidence) > measurement.GPUCount {
+		return nil, fmt.Errorf("NVIDIA instance evidence count %d is outside pinned server capacity 1..%d", len(gpuEvidence), measurement.GPUCount)
 	}
 	if err := v.nras.verify(ctx, hex.EncodeToString(expectedBinding[:]), gpuEvidence, measurement.ExpectedGPUs); err != nil {
 		return nil, err
@@ -656,6 +659,13 @@ func matchesExpectedGPU(actual string, expected []string) bool {
 		case "b200":
 			aliases = append(aliases, "gb100")
 		case "pro6000":
+			// Live NRAS reports GB20X for RTX PRO 6000. This is a literal
+			// NVIDIA attestation label, not a wildcard for GB20* devices or
+			// independent proof of a retail SKU. The TDX profile and all
+			// signed GPU integrity claims remain mandatory.
+			if normalizedActual == "gb20x" {
+				return true
+			}
 			aliases = append(aliases, "gb202")
 		case "b300":
 			aliases = append(aliases, "gb300")

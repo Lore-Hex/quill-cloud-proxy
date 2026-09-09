@@ -203,6 +203,7 @@ func makeChutesVerificationRequest(
 	mrtd []byte,
 	rtmrs [][]byte,
 	debug bool,
+	evidenceCounts ...int,
 ) (*chutesVerificationRequest, *chutesMeasurement) {
 	t.Helper()
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -218,7 +219,14 @@ func makeChutesVerificationRequest(
 	certBinding := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	reportData := append(append([]byte(nil), binding[:]...), certBinding[:]...)
 	quote := makeTestQuote(t, mrtd, rtmrs, reportData, debug)
-	gpus := []chutesGPUEvidence{{Certificate: "gpu-cert", Evidence: "gpu-evidence", Arch: "HOPPER"}}
+	evidenceCount := 1
+	if len(evidenceCounts) > 0 {
+		evidenceCount = evidenceCounts[0]
+	}
+	gpus := make([]chutesGPUEvidence, evidenceCount)
+	for index := range gpus {
+		gpus[index] = chutesGPUEvidence{Certificate: "gpu-cert", Evidence: "gpu-evidence", Arch: "HOPPER"}
+	}
 	gpuJSON, _ := json.Marshal(gpus)
 	signed := signedChutesEvidence{Nonce: nonce}
 	signed.Evidence.TDXQuote = base64.StdEncoding.EncodeToString(quote)
@@ -310,6 +318,36 @@ func TestChutesVerifierAcceptsMissingRedundantInstanceLabel(t *testing.T) {
 	}
 	if _, err := verifier.verify(context.Background(), request); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestChutesVerifierUsesServerGPUCountAsCapacity(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		count   int
+		wantErr bool
+	}{
+		{"single GPU workload on eight GPU server", 1, false},
+		{"empty evidence", 0, true},
+		{"more evidence than server GPUs", 9, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Unix(1_800_000_000, 0)
+			nonce := strings.Repeat("ab", 32)
+			pubkey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 1184))
+			mrtd := bytes.Repeat([]byte{1}, 48)
+			rtmrs := [][]byte{bytes.Repeat([]byte{2}, 48), bytes.Repeat([]byte{3}, 48), bytes.Repeat([]byte{4}, 48), bytes.Repeat([]byte{5}, 48)}
+			request, measurement := makeChutesVerificationRequest(t, now, nonce, pubkey, mrtd, rtmrs, false, test.count)
+			measurement.GPUCount = 8
+			binding := sha256.Sum256([]byte(nonce + pubkey))
+			nras := newNRASTestServer(t, now, hex.EncodeToString(binding[:]), true)
+			defer nras.server.Close()
+			verifier := &chutesVerifier{measurements: []chutesMeasurement{*measurement}, nras: nras.verifier(), now: func() time.Time { return now }, verifyTDX: func([]byte) error { return nil }}
+			_, err := verifier.verify(context.Background(), request)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("evidence count %d on server capacity 8: %v", test.count, err)
+			}
+		})
 	}
 }
 
@@ -504,6 +542,10 @@ func TestMatchesExpectedGPUPreservesExplicitSKUToDieMappings(t *testing.T) {
 		"H200 uses GH100 die":          {actual: "GH100 A01 GSP BROM", expected: "h200", want: true},
 		"B200 uses GB100 die":          {actual: "GB100", expected: "b200", want: true},
 		"RTX Pro 6000 uses GB202 die":  {actual: "GB202", expected: "pro_6000", want: true},
+		"RTX Pro 6000 NRAS hwmodel":    {actual: "GB20X", expected: "pro_6000", want: true},
+		"GB20X is not a wildcard":      {actual: "GB203", expected: "pro_6000", want: false},
+		"GB20X suffix is rejected":     {actual: "GB20X unknown", expected: "pro_6000", want: false},
+		"GB20X cannot satisfy H200":    {actual: "GB20X", expected: "h200", want: false},
 		"B300 uses GB300 die":          {actual: "GB300", expected: "b300", want: true},
 		"other Hopper SKU is rejected": {actual: "GH100", expected: "b200", want: false},
 		"unlisted die is rejected":     {actual: "GB10B", expected: "pro_6000", want: false},
