@@ -280,6 +280,9 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 		return fmt.Errorf("llm/%s: missing authorized upstream model", provider)
 	}
 	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
+	if explicitHybridThinkingConflict(provider, req, reqBody) {
+		return &upstreamHTTPError{status: http.StatusBadRequest, body: "reasoning on is not supported with tools on this provider route"}
+	}
 	if normalizeDirectProvider(provider) == "tinfoil" {
 		reqBody.UserCacheSecret = strings.TrimSpace(options.providerCacheScope)
 	}
@@ -400,6 +403,7 @@ func buildOpenAICompatibleRequest(
 		if len(req.ResponseFormat) > 0 {
 			reqBody.ResponseFormat = req.ResponseFormat
 		}
+		applyHybridReasoningControl(provider, req, &reqBody)
 		if kimiToolsNeedThinkingDisabled(provider, upstreamID, req.Tools) {
 			reqBody.Thinking = map[string]string{"type": "disabled"}
 		}
