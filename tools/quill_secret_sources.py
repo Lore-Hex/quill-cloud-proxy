@@ -111,6 +111,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "WANDB_API_KEY": "trustedrouter-wandb-api-key",
     "NSCALE_API_KEY": "trustedrouter-nscale-api-key",
     "CONFIDENTIAL_AI_API_KEY": "trustedrouter-confidential-ai-api-key",
+    "SCALEDOWN_API_KEY": "trustedrouter-scaledown-api-key",
     "PERPLEXITY_API_KEY": "trustedrouter-perplexity-api-key",
     "KREA_API_KEY": "trustedrouter-krea-api-key",
     "FAL_API_KEY": "trustedrouter-fal-api-key",

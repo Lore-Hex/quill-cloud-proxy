@@ -173,6 +173,13 @@ func (m *multiClient) InvokeStreaming(
 ) error {
 	option := firstOptions(options)
 	provider := normalizeDirectProvider(option.Provider)
+	if provider == "scaledown" {
+		client := m.direct[provider]
+		if client == nil {
+			return fmt.Errorf("llm/scaledown: missing provider credentials")
+		}
+		return client.InvokeStreaming(ctx, req, body, out, options...)
+	}
 	if googleAIStudioNeedsNativeImage(req, option) &&
 		(provider == "google-ai-studio" || (provider == "gemini" && strings.TrimSpace(option.ProviderAPIKey) != "")) {
 		return m.aiStudioNative.InvokeStreaming(ctx, req, body, out, options...)

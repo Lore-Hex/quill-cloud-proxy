@@ -1499,6 +1499,7 @@ func serveResponsesNonStreaming(
 		result,
 		trustedrouter.EstimateInputTokens(req),
 		trustedrouter.EstimateOutputTokens(outputForUsage),
+		selectedRoute.Model(req.Model, authorization),
 	)
 	selectedModel := selectedRoute.Model(req.Model, authorization)
 	selectedEndpoint := selectedRoute.Endpoint("", authorization)
@@ -1603,6 +1604,7 @@ func serveChatNonStreaming(
 		result,
 		trustedrouter.EstimateInputTokens(req),
 		trustedrouter.EstimateOutputTokens(result.Text),
+		selectedRoute.Model(req.Model, authorization),
 	)
 	selectedModel := selectedRoute.Model(req.Model, authorization)
 	selectedEndpoint := selectedRoute.Endpoint("", authorization)
@@ -1812,6 +1814,7 @@ func serveStreaming(
 		inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
 			result, trustedrouter.EstimateInputTokens(req),
 			trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
+			selectedRoute.Model(req.Model, authorization),
 		)
 		usage := trustedrouter.Usage{
 			RequestID: requestID, InputTokens: inputTokens, OutputTokens: outputTokens,
@@ -2114,6 +2117,7 @@ func serveMessages(
 			result,
 			trustedrouter.EstimateInputTokens(req),
 			trustedrouter.EstimateOutputTokens(result.Text),
+			selectedRoute.Model(req.Model, authorization),
 		)
 		selectedModel := selectedRoute.Model(req.Model, authorization)
 		selectedEndpoint := selectedRoute.Endpoint("", authorization)
@@ -2198,6 +2202,7 @@ func serveMessages(
 		result,
 		trustedrouter.EstimateInputTokens(req),
 		trustedrouter.EstimateOutputTokens(result.Text),
+		selectedRoute.Model(req.Model, authorization),
 	)
 	usage := trustedrouter.Usage{
 		RequestID:         messageID,
@@ -2329,7 +2334,10 @@ func requestedServiceTierForSettlement(req *types.OpenAIChatRequest) string {
 	}
 }
 
-func realOrEstimatedTokens(result adapter.StreamResult, estimatedInput, estimatedOutput int) (int, int, bool) {
+func realOrEstimatedTokens(result adapter.StreamResult, estimatedInput, estimatedOutput int, selectedModels ...string) (int, int, bool) {
+	if len(selectedModels) == 1 && llm.InputOnlyModel(selectedModels[0]) && result.Usage != nil && result.Usage.InputTokens > 0 && result.Usage.OutputTokens == 0 {
+		return result.Usage.InputTokens, 0, false
+	}
 	if result.Usage == nil || result.Usage.OutputTokens <= 0 {
 		return estimatedInput, estimatedOutput, true
 	}

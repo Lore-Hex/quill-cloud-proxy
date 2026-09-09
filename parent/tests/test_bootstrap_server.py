@@ -338,6 +338,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "wandb",
         "nscale",
         "confidential-ai",
+        "scaledown",
         "perplexity",
         "krea",
         "fal",
