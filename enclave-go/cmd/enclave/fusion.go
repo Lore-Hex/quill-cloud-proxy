@@ -1941,6 +1941,7 @@ func runFusionCallValidatedObservedAttempt(
 		result,
 		trustedrouter.EstimateInputTokens(req),
 		trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
+		selectedRoute.Model(req.Model, authz),
 	)
 	selectedModel := selectedRoute.Model(req.Model, authz)
 	selectedEndpoint := selectedRoute.Endpoint("", authz)
@@ -2278,6 +2279,7 @@ func serveFusionFinalStreamingAttempt(
 		result,
 		trustedrouter.EstimateInputTokens(req),
 		trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
+		selectedRoute.Model(req.Model, authorization),
 	)
 	usage := trustedrouter.Usage{
 		RequestID:         responseID,

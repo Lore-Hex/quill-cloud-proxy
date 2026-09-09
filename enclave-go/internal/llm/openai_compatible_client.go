@@ -72,6 +72,9 @@ func (c *openAICompatibleClient) InvokeStreaming(
 	out io.Writer,
 	options ...InvokeOptions,
 ) error {
+	if c.provider == "scaledown" {
+		return c.invokeScaleDown(ctx, req, out, firstOptions(options))
+	}
 	if handled, err := invokeBYOKStreaming(ctx, req, body, out, firstOptions(options)); handled {
 		return err
 	}

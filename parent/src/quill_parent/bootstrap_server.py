@@ -190,6 +190,7 @@ _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("wandb", "trustedrouter-wandb-api-key"),
     ("nscale", "trustedrouter-nscale-api-key"),
     ("confidential-ai", "trustedrouter-confidential-ai-api-key"),
+    ("scaledown", "trustedrouter-scaledown-api-key"),
     ("perplexity", "trustedrouter-perplexity-api-key"),
     ("krea", "trustedrouter-krea-api-key"),
     ("fal", "trustedrouter-fal-api-key"),

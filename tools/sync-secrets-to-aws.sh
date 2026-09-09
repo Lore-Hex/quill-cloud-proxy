@@ -172,6 +172,7 @@ SECRETS=(
   trustedrouter-wandb-api-key
   trustedrouter-nscale-api-key
   trustedrouter-confidential-ai-api-key
+  trustedrouter-scaledown-api-key
   trustedrouter-perplexity-api-key
   trustedrouter-krea-api-key
   trustedrouter-fal-api-key

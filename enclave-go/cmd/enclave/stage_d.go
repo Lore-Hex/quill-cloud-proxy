@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -366,8 +367,11 @@ func (c *stageDController) terminalUsage(terminal adapter.StreamTerminal, reques
 	c.mu.Unlock()
 	input, output, estimated := meteredInput, meteredOutput, true
 	providerExact := terminal.Result.Usage != nil && terminal.Result.Usage.OutputTokens > 0
+	if terminal.Result.Usage != nil && terminal.Result.Usage.InputTokens > 0 && terminal.Result.Usage.OutputTokens == 0 && llm.InputOnlyModel(selectedModel) {
+		providerExact = true
+	}
 	if providerExact {
-		input, output, estimated = realOrEstimatedTokens(terminal.Result, meteredInput, meteredOutput)
+		input, output, estimated = realOrEstimatedTokens(terminal.Result, meteredInput, meteredOutput, selectedModel)
 	}
 	finishReason := terminal.FinishReason
 	if terminal.TRFinishReason != "" {

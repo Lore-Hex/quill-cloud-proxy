@@ -102,6 +102,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "api.inference.wandb.ai", CID: 3, Port: 8072},
 	{Host: "inference.api.nscale.com", CID: 3, Port: 8073},
 	{Host: "api.confidential.ai", CID: 3, Port: 8085},
+	{Host: "api.scaledown.xyz", CID: 3, Port: 8086},
 	{Host: "api.perplexity.ai", CID: 3, Port: 8074},
 	{Host: "api.krea.ai", CID: 3, Port: 8075},
 	{Host: "api.vultrinference.com", CID: 3, Port: 8076},
