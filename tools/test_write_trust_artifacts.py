@@ -21,6 +21,26 @@ NEW_REF = "example/image:new"
 
 
 class TrustArtifactTests(unittest.TestCase):
+    def test_agent_prompt_is_first_and_script_free_on_both_static_pages(self) -> None:
+        release = trust.release_payload("abc123", NEW_REF, NEW)
+        pages = {
+            "generated": trust.trust_html(release),
+            "published": (SCRIPT.parent.parent / "trust-page/index.html").read_text(),
+        }
+        for name, page in pages.items():
+            with self.subTest(page=name):
+                self.assertIn('aria-labelledby="agent-verify-title"', page)
+                self.assertLess(
+                    page.index('aria-labelledby="agent-verify-title"'),
+                    page.index('<section class="hero">'),
+                )
+                self.assertIn("Use https://trust.trustedrouter.com to verify https://trustedrouter.com with", page)
+                self.assertIn("fresh, TLS-bound attestation", page)
+                self.assertIn("published source and build provenance", page)
+                self.assertIn("model-provider privacy claims", page)
+                self.assertIn("anything you cannot verify", page)
+                self.assertNotIn("<script", page.lower())
+
     def test_current_release_accepts_only_target_digest(self) -> None:
         release = trust.release_payload("abc123", NEW_REF, NEW)
 

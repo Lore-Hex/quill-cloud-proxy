@@ -185,6 +185,10 @@ def trust_html(release: dict[str, Any]) -> str:
     .mark {{ width:30px; height:30px; border-radius:7px; background:linear-gradient(135deg,#2c6ecb,#19a06d); display:grid; place-items:center; font-size:13px; color:#fff; }}
     .links {{ display:flex; gap:14px; flex-wrap:wrap; font-size:14px; }}
     .wrap {{ max-width:1120px; margin:0 auto; padding:34px 22px 56px; display:grid; gap:18px; }}
+    .agent-verify {{ padding:0 0 24px; border-bottom:1px solid var(--line); min-width:0; }}
+    .agent-verify h2 {{ font-size:22px; line-height:1.3; margin:0 0 18px; text-wrap:balance; }}
+    .agent-prompt {{ margin:0; border-left:3px solid var(--green); padding:4px 0 4px 18px; }}
+    .agent-prompt p {{ color:var(--ink); margin:0; font-size:17px; line-height:1.65; overflow-wrap:anywhere; }}
     .hero {{ display:grid; grid-template-columns:minmax(0,1.15fr) minmax(300px,.85fr); gap:20px; align-items:start; }}
     h1 {{ font-size:42px; line-height:1.08; margin:0 0 12px; letter-spacing:0; }}
     h2 {{ font-size:17px; margin:0 0 12px; letter-spacing:0; }}
@@ -220,6 +224,10 @@ def trust_html(release: dict[str, Any]) -> str:
     </nav>
   </header>
   <main class="wrap">
+    <section class="agent-verify" aria-labelledby="agent-verify-title">
+      <h2 id="agent-verify-title">Ask your agent to verify TrustedRouter</h2>
+      <blockquote class="agent-prompt"><p id="trust-agent-prompt">Use https://trust.trustedrouter.com to verify https://trustedrouter.com with fresh, TLS-bound attestation. Trace the running build to published source and build provenance. Separate router protections from model-provider privacy claims. Report verified evidence, failures, and anything you cannot verify.</p></blockquote>
+    </section>
     <section class="hero">
       <div class="panel">
         <p class="status"><span class="dot"></span>Trust boundary</p>
