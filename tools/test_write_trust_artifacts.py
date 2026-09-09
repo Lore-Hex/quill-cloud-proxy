@@ -34,7 +34,7 @@ class TrustArtifactTests(unittest.TestCase):
                     page.index('aria-labelledby="agent-verify-title"'),
                     page.index('<section class="hero">'),
                 )
-                self.assertIn("Verify https://trustedrouter.com using https://trust.trustedrouter.com.", page)
+                self.assertIn("Use https://trust.trustedrouter.com to verify https://trustedrouter.com with", page)
                 self.assertIn("fresh, TLS-bound attestation", page)
                 self.assertIn("published source and build provenance", page)
                 self.assertIn("model-provider privacy claims", page)
