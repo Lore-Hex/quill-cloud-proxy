@@ -36,8 +36,13 @@ type receiptAttestationDocument struct {
 }
 
 const (
-	receiptAttestationHistoryCapacity    = 64
-	receiptKeyAttestationHistoryCapacity = 8
+	receiptAttestationHistoryCapacity = 64
+	// 32 previous documents ≈ 16 hours at the 30-minute re-mint cadence (~650 KB on the
+	// wire, under the router collector's 2 MB cap). The collector runs every 5
+	// minutes, so a version leaves this window only after ~190 chances to be logged;
+	// the 64-entry ring behind /receipt-attestation?sha256= covers the rest of the
+	// instance's life.
+	receiptKeyAttestationHistoryCapacity = 32
 )
 
 type receiptKeyAttestation struct {
@@ -141,12 +146,28 @@ func remintReceiptAttestationBound(leafDER, deviceBlob, receiptKeyFP, launchConf
 	current := newReceiptAttestationDocument(document, attestation.Kind)
 	for {
 		previousCache := receiptAttestationCache.Load()
+		// A re-mint that produced the byte-identical document is a no-op: pushing it
+		// would spend a history slot on nothing and evict a document some receipt
+		// still pins. History holds distinct hashes only, newest first.
+		if previousCache != nil && previousCache.sha256 == current.sha256 {
+			return nil
+		}
 		next := &cachedReceiptAttestation{receiptAttestationDocument: current}
 		if previousCache != nil && len(previousCache.document) > 0 {
-			previousCount := min(1+len(previousCache.previous), receiptAttestationHistoryCapacity)
-			next.previous = make([]receiptAttestationDocument, previousCount)
-			next.previous[0] = previousCache.receiptAttestationDocument
-			copy(next.previous[1:], previousCache.previous)
+			candidates := make([]receiptAttestationDocument, 0, 1+len(previousCache.previous))
+			candidates = append(candidates, previousCache.receiptAttestationDocument)
+			candidates = append(candidates, previousCache.previous...)
+			seen := map[string]bool{current.sha256: true}
+			for _, candidate := range candidates {
+				if seen[candidate.sha256] {
+					continue
+				}
+				seen[candidate.sha256] = true
+				next.previous = append(next.previous, candidate)
+				if len(next.previous) == receiptAttestationHistoryCapacity {
+					break
+				}
+			}
 		}
 		if receiptAttestationCache.CompareAndSwap(previousCache, next) {
 			return nil

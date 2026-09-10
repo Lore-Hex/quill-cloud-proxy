@@ -258,3 +258,15 @@ document at `GET <iss>/.well-known/inference-receipt-keys` (append-only
 `{kid, jwk, att?, att_kind?, not_before, not_after, revoked}`), and
 conformance requires only that the advertised key verifies the receipts. TEE
 evidence upgrades a listing from self-declared to hardware-anchored.
+
+### Durability of pinned documents
+A compact receipt pins the document current at signing. The enclave keeps that
+document reachable two ways: `GET /receipt-attestation?sha256=` serves any of the last
+64 distinct documents for the life of the instance, and `GET /receipt-key` publishes the
+newest 32 previous documents (`att_history`) for the control plane's collector, which runs
+every 5 minutes (Cloud Scheduler `trusted-router-receipt-key-collect`, `*/5 * * * *`) and
+appends every `(kid, att_sha256)` it sees to the permanent key log. At the 30-minute
+re-mint cadence a version therefore stays collectable for ~16 hours, so the log misses a
+version only if the collector is down for that long, or an instance is terminated within
+one collector interval of a re-mint. Identical re-mints do not consume a slot.
+

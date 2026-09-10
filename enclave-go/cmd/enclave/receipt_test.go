@@ -286,7 +286,7 @@ func TestReceiptAttestationRouteServesCurrentAndHistoryBySHA256(t *testing.T) {
 	}
 }
 
-func TestReceiptKeyRouteIncludesNewestEightHistoricalAttestations(t *testing.T) {
+func TestReceiptKeyRouteIncludesNewestHistoricalAttestationsUpToTheCap(t *testing.T) {
 	resetReceiptTestState(t)
 	signer, err := receipt.NewSigner()
 	if err != nil {
@@ -302,7 +302,9 @@ func TestReceiptKeyRouteIncludesNewestEightHistoricalAttestations(t *testing.T) 
 		next++
 		return document, nil
 	}
-	for i := 0; i < 10; i++ {
+	// More distinct documents than the cap, so the envelope must truncate to the newest.
+	total := receiptKeyAttestationHistoryCapacity + 8
+	for i := 0; i < total; i++ {
 		if err := remintReceiptAttestation(nil, nil, bytes.Repeat([]byte{1}, sha256.Size)); err != nil {
 			t.Fatal(err)
 		}
@@ -318,7 +320,7 @@ func TestReceiptKeyRouteIncludesNewestEightHistoricalAttestations(t *testing.T) 
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		t.Fatal(err)
 	}
-	current := []byte("attestation-10")
+	current := []byte(fmt.Sprintf("attestation-%d", total))
 	wantEncodedCurrent, err := receipt.EncodeAttestation(current, attestation.Kind)
 	if err != nil {
 		t.Fatal(err)
@@ -330,7 +332,7 @@ func TestReceiptKeyRouteIncludesNewestEightHistoricalAttestations(t *testing.T) 
 		t.Fatalf("att_history length = %d, want %d", got, receiptKeyAttestationHistoryCapacity)
 	}
 	for i, entry := range envelope.AttestationHistory {
-		wantDocument := []byte(fmt.Sprintf("attestation-%d", 9-i))
+		wantDocument := []byte(fmt.Sprintf("attestation-%d", total-1-i))
 		wantAttestation, err := receipt.EncodeAttestation(wantDocument, attestation.Kind)
 		if err != nil {
 			t.Fatal(err)
