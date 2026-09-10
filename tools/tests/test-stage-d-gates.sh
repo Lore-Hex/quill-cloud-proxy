@@ -278,6 +278,7 @@ while read -r flag on_count off_count configured_region_count; do
   [ "$((on_count + off_count))" -eq "${configured_region_count}" ]
 done <<<"${stage_d_counts}"
 grep -Fq "/internal/gateway/authorizations/by-gateway-request-id/\${request_log_id}" tools/verify-region-before-dns.sh
+python3 tools/tests/test_stage_d_terminate_regions.py
 grep -Fq 'STAGE_D_EVIDENCE_TIMEOUT_SECONDS:-60' tools/verify-region-before-dns.sh
 grep -Fq '.data.authorization_kind != "regional_lease"' tools/stage-d-gate-lib.sh
 grep -Fq 'stage_d_accept_missing_evidence_route' tools/verify-region-before-dns.sh

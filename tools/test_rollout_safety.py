@@ -317,16 +317,18 @@ class RolloutSafetyTests(unittest.TestCase):
 
     def test_m2_undeclared_terminate_must_be_off(self) -> None:
         inputs = self._stage_d_inputs()
-        self._set_stage_d_flag(inputs, "Roll Europe GCP MIG", "QUILL_TERMINATE_AT_CAP", "on")
+        path = "tools/stage-d-terminate-regions.txt"
+        inputs[path] = inputs[path].replace("europe-west4\n", "")
         self._assert_stage_d_mutation_red(inputs, "undeclared regions on: ['europe-west4']")
 
     def test_m3_terminate_is_associated_with_its_rollout_region(self) -> None:
         inputs = self._stage_d_inputs()
         # Swap on/off: global counts stay identical, but ownership is wrong.
+        path = "tools/stage-d-terminate-regions.txt"
+        inputs[path] = inputs[path].replace("us-east4\n", "")
         self._set_stage_d_flag(inputs, "Roll the GCP MIG (us-central1)", "QUILL_TERMINATE_AT_CAP", "off")
-        self._set_stage_d_flag(inputs, "Roll Europe GCP MIG", "QUILL_TERMINATE_AT_CAP", "on")
         self._assert_stage_d_mutation_red(
-            inputs, "declared regions not on: ['us-central1']; undeclared regions on: ['europe-west4']"
+            inputs, "declared regions not on: ['us-central1']; undeclared regions on: ['us-east4']"
         )
 
     def test_m4_terminate_requires_declared_heartbeat(self) -> None:
