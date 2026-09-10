@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,16 +25,35 @@ var receiptIssuer = "https://api.trustedrouter.com"
 var receiptPublicEnabled = true
 
 type cachedReceiptAttestation struct {
+	receiptAttestationDocument
+	previous []receiptAttestationDocument
+}
+
+type receiptAttestationDocument struct {
 	document []byte
 	kind     string
+	sha256   string
+}
+
+const (
+	receiptAttestationHistoryCapacity    = 64
+	receiptKeyAttestationHistoryCapacity = 8
+)
+
+type receiptKeyAttestation struct {
+	Attestation       string `json:"att"`
+	AttestationKind   string `json:"att_kind"`
+	AttestationSHA256 string `json:"att_sha256"`
 }
 
 // receiptKeyEnvelope declaration order is the fixed JSON wire order.
 type receiptKeyEnvelope struct {
-	KID             string      `json:"kid"`
-	JWK             receipt.JWK `json:"jwk"`
-	Attestation     string      `json:"att"`
-	AttestationKind string      `json:"att_kind"`
+	KID                string                  `json:"kid"`
+	JWK                receipt.JWK             `json:"jwk"`
+	Attestation        string                  `json:"att"`
+	AttestationKind    string                  `json:"att_kind"`
+	AttestationSHA256  string                  `json:"att_sha256"`
+	AttestationHistory []receiptKeyAttestation `json:"att_history"`
 }
 
 var receiptAttestationCache atomic.Pointer[cachedReceiptAttestation]
@@ -117,11 +138,37 @@ func remintReceiptAttestationBound(leafDER, deviceBlob, receiptKeyFP, launchConf
 	if err != nil {
 		return err
 	}
-	receiptAttestationCache.Store(&cachedReceiptAttestation{
+	current := newReceiptAttestationDocument(document, attestation.Kind)
+	for {
+		previousCache := receiptAttestationCache.Load()
+		next := &cachedReceiptAttestation{receiptAttestationDocument: current}
+		if previousCache != nil && len(previousCache.document) > 0 {
+			previousCount := min(1+len(previousCache.previous), receiptAttestationHistoryCapacity)
+			next.previous = make([]receiptAttestationDocument, previousCount)
+			next.previous[0] = previousCache.receiptAttestationDocument
+			copy(next.previous[1:], previousCache.previous)
+		}
+		if receiptAttestationCache.CompareAndSwap(previousCache, next) {
+			return nil
+		}
+	}
+}
+
+func newCachedReceiptAttestation(document []byte, kind string) *cachedReceiptAttestation {
+	return &cachedReceiptAttestation{receiptAttestationDocument: newReceiptAttestationDocument(document, kind)}
+}
+
+func newReceiptAttestationDocument(document []byte, kind string) receiptAttestationDocument {
+	return receiptAttestationDocument{
 		document: append([]byte(nil), document...),
-		kind:     attestation.Kind,
-	})
-	return nil
+		kind:     kind,
+		sha256:   receiptAttestationDigest(document),
+	}
+}
+
+func receiptAttestationDigest(document []byte) string {
+	digest := sha256.Sum256(document)
+	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
 func runReceiptAttestationReminter(
@@ -171,18 +218,65 @@ func jitteredReceiptAttestationInterval(base time.Duration) time.Duration {
 	return base - span + time.Duration(randomOffset.Int64())
 }
 
-func serveReceiptAttestation(conn io.Writer) bool {
+func serveReceiptAttestation(conn io.Writer, requestTarget string) bool {
 	cached := receiptAttestationCache.Load()
 	if cached == nil || len(cached.document) == 0 {
 		disableResponseReuse(conn)
 		writeError(conn, 503, "receipt attestation unavailable")
 		return false
 	}
+	wantedSHA256, byHash, err := receiptAttestationSHA256Query(requestTarget)
+	if err != nil {
+		disableResponseReuse(conn)
+		writeError(conn, 400, "invalid receipt attestation sha256")
+		return false
+	}
+	document := cached.receiptAttestationDocument
+	if byHash {
+		found := document.sha256 == wantedSHA256
+		if !found {
+			for _, previous := range cached.previous {
+				if previous.sha256 == wantedSHA256 {
+					document = previous
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			disableResponseReuse(conn)
+			writeError(conn, 404, "unknown receipt attestation")
+			return false
+		}
+	}
 	fmt.Fprintf(conn,
 		"HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %d\r\nCache-Control: no-store\r\nx-receipt-att-kind: %s\r\nConnection: %s\r\n\r\n",
-		receiptAttestationContentType(cached.kind), len(cached.document), cached.kind, responseConnection(conn))
-	_, _ = conn.Write(cached.document)
+		receiptAttestationContentType(document.kind), len(document.document), document.kind, responseConnection(conn))
+	_, _ = conn.Write(document.document)
 	return true
+}
+
+func receiptAttestationSHA256Query(requestTarget string) (string, bool, error) {
+	target, err := url.ParseRequestURI(requestTarget)
+	if err != nil {
+		return "", false, err
+	}
+	query, err := url.ParseQuery(target.RawQuery)
+	if err != nil {
+		return "", false, err
+	}
+	values, present := query["sha256"]
+	if !present {
+		return "", false, nil
+	}
+	if len(values) != 1 {
+		return "", false, fmt.Errorf("receipt attestation sha256 must appear once")
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(values[0])
+	if err != nil || len(decoded) != sha256.Size || base64.RawURLEncoding.EncodeToString(decoded) != values[0] {
+		return "", false, fmt.Errorf("receipt attestation sha256 must be unpadded base64url of 32 bytes")
+	}
+	return values[0], true, nil
 }
 
 func receiptAttestationContentType(kind string) string {
@@ -209,11 +303,28 @@ func serveReceiptKey(conn io.Writer) bool {
 		writeError(conn, 503, "receipt attestation unavailable")
 		return false
 	}
+	historyCount := min(len(cached.previous), receiptKeyAttestationHistoryCapacity)
+	history := make([]receiptKeyAttestation, historyCount)
+	for i, previous := range cached.previous[:historyCount] {
+		encoded, err := receipt.EncodeAttestation(previous.document, previous.kind)
+		if err != nil {
+			disableResponseReuse(conn)
+			writeError(conn, 503, "receipt attestation unavailable")
+			return false
+		}
+		history[i] = receiptKeyAttestation{
+			Attestation:       encoded,
+			AttestationKind:   previous.kind,
+			AttestationSHA256: previous.sha256,
+		}
+	}
 	body, err := json.Marshal(receiptKeyEnvelope{
-		KID:             receiptSigner.Kid(),
-		JWK:             receiptSigner.JWK(),
-		Attestation:     attestationValue,
-		AttestationKind: cached.kind,
+		KID:                receiptSigner.Kid(),
+		JWK:                receiptSigner.JWK(),
+		Attestation:        attestationValue,
+		AttestationKind:    cached.kind,
+		AttestationSHA256:  cached.sha256,
+		AttestationHistory: history,
 	})
 	if err != nil {
 		disableResponseReuse(conn)

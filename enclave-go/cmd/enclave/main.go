@@ -788,7 +788,7 @@ func serveOneRequest(
 		keepAlive = keepAliveConfig.mode != keepAliveOff && requestAllowsPersistence &&
 			(keepAliveConfig.mode != keepAliveOn || *requestCount < keepAliveConfig.maxRequests)
 		statsConn.SetResponseKeepAlive(keepAlive)
-		if !serveReceiptAttestation(conn) {
+		if !serveReceiptAttestation(conn, path) {
 			return false
 		}
 		return keepAlive

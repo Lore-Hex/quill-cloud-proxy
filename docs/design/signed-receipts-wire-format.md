@@ -46,8 +46,10 @@ ill-charactered values are a 400. The header is never forwarded upstream.
 - **Non-streaming:** response header `x-inference-receipt: <compact JWS>`.
   Compact form omits the attestation document (header-size budgets); the
   `att_sha256` claim pins the exact document, fetchable at
-  `GET /receipt-attestation` on the same origin while the instance lives and
-  from the key log forever.
+  `GET /receipt-attestation?sha256=<att_sha256>` on the same origin while it is
+  retained and from the key log forever. The instance retains the current
+  document plus the newest 64 previous documents. At the nominal 30-minute
+  re-mint cadence, that historical window is approximately 32 hours.
 - **Streaming:** one additional `chat.completion.chunk` with `"choices": []`
   and top-level key `inference_receipt` whose value is a flattened JWS with
   the attestation document embedded in the protected header. It MUST be the
@@ -61,18 +63,25 @@ receipt key and its cached key-binding attestation as single-line JSON with
 `Content-Type: application/json` and `Cache-Control: no-store`:
 
 ```json
-{"kid":"<b64url SHA-256 of raw pubkey>","jwk":{"kty":"OKP","crv":"Ed25519","x":"<b64url pubkey>"},"att":"<JWT verbatim, or b64url COSE>","att_kind":"gcp-cs-jwt|aws-nitro-cose|azure-maa-jwt"}
+{"kid":"<b64url SHA-256 of raw pubkey>","jwk":{"kty":"OKP","crv":"Ed25519","x":"<b64url pubkey>"},"att":"<JWT verbatim, or b64url COSE>","att_kind":"gcp-cs-jwt|aws-nitro-cose|azure-maa-jwt","att_sha256":"<b64url SHA-256 of raw att>","att_history":[{"att":"<encoded as above>","att_kind":"<kind>","att_sha256":"<b64url SHA-256 of raw att>"}]}
 ```
 
 The field order above is fixed. `att` uses exactly the same encoding as the
 flattened JWS protected header: GCP and Azure JWTs are verbatim, while the AWS
-Nitro COSE document is unpadded base64url. The endpoint has the same
-instance-scoped, no-caller-nonce, no-TLS-exporter semantics as the cached key
-attestation. It returns 503 until a key-binding document has been minted and
-404 when receipts are disabled.
+Nitro COSE document is unpadded base64url. `att_sha256` is the unpadded
+base64url SHA-256 of the raw current document, before any COSE base64 encoding.
+`att_history` contains up to the newest eight previous documents, newest first,
+so a bounded collector response can preserve documents re-minted between
+polls. The instance itself retains up to 64 previous documents. The endpoint
+has the same instance-scoped, no-caller-nonce, no-TLS-exporter semantics as the
+cached key attestation. It returns 503 until a key-binding document has been
+minted and 404 when receipts are disabled.
 
 `GET /receipt-attestation` remains available for existing clients and serves
-the same cached document in its legacy raw form with `x-receipt-att-kind`.
+the current cached document in its legacy raw form with
+`x-receipt-att-kind`. Supplying `?sha256=<b64url SHA-256>` selects the matching
+raw current or retained document. A malformed hash returns 400; a valid but
+unknown hash returns 404 `unknown receipt attestation`.
 
 ## 3. Claims
 
@@ -196,9 +205,10 @@ remains the `/attestation` + RFC 9266 + fresh-nonce flow.
 ## 8. Verification procedure (offline)
 
 1. Verify the JWS signature with header `jwk`; check `kid = B64URL(SHA-256(x))`.
-2. Obtain the attestation: embedded `att`, or (compact) fetch by `att_sha256`
-   from `/receipt-attestation` or the key log; verify its signature chain to
-   the cloud root (issuer-routed, never shape-routed).
+2. Obtain the attestation: embedded `att`, or (compact) fetch the exact pinned
+   document from `/receipt-attestation?sha256=<att_sha256>` or the key log;
+   verify its raw bytes hash to `att_sha256`, then verify its signature chain
+   to the cloud root (issuer-routed, never shape-routed).
 3. Check `C ∈` committed slots (§7).
 4. Extract the measurement and require membership in the published release
    history (`/trust/*-release.json` and the accepted-measurement files).
