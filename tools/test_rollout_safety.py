@@ -211,14 +211,25 @@ class RolloutSafetyTests(unittest.TestCase):
         self.assertIn("--filter='name~^quill-enclave-mig-'", inventory_step)
         self.assertIn('if [ "${actual}" != "${expected}" ]', inventory_step)
 
-    def test_stage_d_heartbeat_gate_contract(self) -> None:
+    def test_stage_d_region_gate_contract(self) -> None:
         stage_d_tests = (ROOT / "tools/tests/test-stage-d-gates.sh").read_text()
         # Pin membership, association, uniqueness, completeness, and execution;
         # changing rollout policy must not quietly disable any of these checks.
         required_guards = (
             'heartbeat_regions=tools/stage-d-heartbeat-regions.txt',
-            'heartbeat_counts="$(python3 - "${workflow}" "${inventory}" "${heartbeat_regions}"',
-            'raise SystemExit(f"Stage D heartbeat bijection: {message}")',
+            'terminate_regions=tools/stage-d-terminate-regions.txt',
+            'stage_d_counts="$(python3 - "${workflow}" "${inventory}" "${heartbeat_regions}" "${terminate_regions}"',
+            'raise SystemExit(f"Stage D region bijection: {message}")',
+            '("QUILL_USAGE_HEARTBEAT", heartbeat_file),',
+            '("QUILL_TERMINATE_AT_CAP", terminate_file),',
+            'for flag, declared_file in flag_files:',
+            'declared_by_flag[flag] = declared',
+            'heartbeat = declared_by_flag["QUILL_USAGE_HEARTBEAT"]',
+            'terminate = declared_by_flag["QUILL_TERMINATE_AT_CAP"]',
+            'require(terminate <= heartbeat,',
+            'for flag, declared in declared_by_flag.items():',
+            'require(not declared_text or declared_text.endswith("\\n"),',
+            'require(all(re.fullmatch(r"[a-z]+(?:-[a-z]+)+[0-9]+", r) for r in declared_list),',
             'require(declared <= configured,',
             'require(len(declared) == len(declared_list),',
             'require(step is not None,',
@@ -229,22 +240,13 @@ class RolloutSafetyTests(unittest.TestCase):
             'require(region not in observed,',
             'require(on_regions == declared,',
             'require(off_regions == configured - declared,',
-            'print(len(on_regions), len(off_regions), len(configured))',
-            '[ "$((heartbeat_on_count + heartbeat_off_count))" -eq "${configured_region_count}" ]',
+            'print(flag, len(on_regions), len(off_regions), len(configured))',
+            'while read -r flag on_count off_count configured_region_count; do',
+            '[ "$((on_count + off_count))" -eq "${configured_region_count}" ]',
+            'done <<<"${stage_d_counts}"',
         )
         missing_guards = [guard for guard in required_guards if guard not in stage_d_tests]
-        self.assertEqual(missing_guards, [], "Stage D heartbeat shell gate was weakened")
-
-    def test_stage_d_termination_is_unconditionally_refused(self) -> None:
-        stage_d_tests = (ROOT / "tools/tests/test-stage-d-gates.sh").read_text()
-        self.assertIn(
-            r'''if grep -En "(tee-env-)?QUILL_TERMINATE_AT_CAP(=|:[[:space:]]+)[\"']?on([\"']|[|[:space:]]|$)" "${workflow}"; then
-  echo "QUILL_TERMINATE_AT_CAP=on is unconditionally forbidden in the workflow" >&2
-  exit 1
-fi''',
-            stage_d_tests,
-        )
-        self.assertNotIn("QUILL_(USAGE_HEARTBEAT|TERMINATE_AT_CAP)", stage_d_tests)
+        self.assertEqual(missing_guards, [], "Stage D regional shell gate was weakened")
 
     def test_stage_d_contract_assertion_rejects_weakened_gate(self) -> None:
         # Exercise the contract test itself: deleting its assertion must be red,
@@ -261,7 +263,136 @@ fi''',
                 self.assertIn(guard, stage_d_tests)
                 with mock.patch.object(Path, "read_text", return_value=stage_d_tests.replace(guard, "", 1)):
                     with self.assertRaises(AssertionError):
-                        self.test_stage_d_heartbeat_gate_contract()
+                        self.test_stage_d_region_gate_contract()
+
+    def _stage_d_inputs(self) -> dict[str, str]:
+        return {
+            path: (ROOT / path).read_text()
+            for path in (
+                ".github/workflows/deploy-enclave-gcp.yml",
+                "tools/gcp-enclave-migs.txt",
+                "tools/stage-d-heartbeat-regions.txt",
+                "tools/stage-d-terminate-regions.txt",
+            )
+        }
+
+    def _run_stage_d_region_gate(self, inputs: dict[str, str]) -> subprocess.CompletedProcess:
+        # Execute the actual shell block (including Python invocation and exit
+        # propagation) against isolated files. Never mutate the working tree.
+        shell = (ROOT / "tools/tests/test-stage-d-gates.sh").read_text()
+        start = shell.index("workflow=.github/workflows/deploy-enclave-gcp.yml\n")
+        end = shell.index('\ngrep -Fq "/internal/gateway/', start)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for name, text in inputs.items():
+                path = Path(temp_dir) / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text)
+            return subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", shell[start:end] + '\nprintf "%s\\n" "${stage_d_counts}"'],
+                cwd=temp_dir, capture_output=True, text=True, timeout=5,
+            )
+
+    def _assert_stage_d_mutation_red(self, inputs: dict[str, str], message: str) -> None:
+        baseline = self._run_stage_d_region_gate(self._stage_d_inputs())
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        mutated = self._run_stage_d_region_gate(inputs)
+        self.assertNotEqual(mutated.returncode, 0, "mutated Stage D gate unexpectedly green")
+        self.assertIn(message, mutated.stderr)
+
+    def _set_stage_d_flag(self, inputs: dict[str, str], step: str, flag: str, value: str) -> None:
+        path = ".github/workflows/deploy-enclave-gcp.yml"
+        workflow = inputs[path]
+        start = workflow.index(f"      - name: {step}\n")
+        end = workflow.index("\n      - name:", start + 1)
+        block, count = re.subn(
+            rf'({flag}: ")(on|off)(")', rf'\g<1>{value}\3', workflow[start:end]
+        )
+        self.assertEqual(count, 1)
+        inputs[path] = workflow[:start] + block + workflow[end:]
+
+    def test_m1_declared_terminate_must_be_on(self) -> None:
+        inputs = self._stage_d_inputs()
+        self._set_stage_d_flag(inputs, "Roll the GCP MIG (us-central1)", "QUILL_TERMINATE_AT_CAP", "off")
+        self._assert_stage_d_mutation_red(inputs, "QUILL_TERMINATE_AT_CAP: declared regions not on: ['us-central1']")
+
+    def test_m2_undeclared_terminate_must_be_off(self) -> None:
+        inputs = self._stage_d_inputs()
+        self._set_stage_d_flag(inputs, "Roll Europe GCP MIG", "QUILL_TERMINATE_AT_CAP", "on")
+        self._assert_stage_d_mutation_red(inputs, "undeclared regions on: ['europe-west4']")
+
+    def test_m3_terminate_is_associated_with_its_rollout_region(self) -> None:
+        inputs = self._stage_d_inputs()
+        # Swap on/off: global counts stay identical, but ownership is wrong.
+        self._set_stage_d_flag(inputs, "Roll the GCP MIG (us-central1)", "QUILL_TERMINATE_AT_CAP", "off")
+        self._set_stage_d_flag(inputs, "Roll Europe GCP MIG", "QUILL_TERMINATE_AT_CAP", "on")
+        self._assert_stage_d_mutation_red(
+            inputs, "declared regions not on: ['us-central1']; undeclared regions on: ['europe-west4']"
+        )
+
+    def test_m4_terminate_requires_declared_heartbeat(self) -> None:
+        inputs = self._stage_d_inputs()
+        path = "tools/stage-d-heartbeat-regions.txt"
+        inputs[path] = inputs[path].replace("us-central1\n", "")
+        self._assert_stage_d_mutation_red(inputs, "termination requires heartbeat in declared regions: ['us-central1']")
+        # Also isolate the invariant: fixing heartbeat's own bijection must
+        # still refuse termination without heartbeat in that region.
+        self._set_stage_d_flag(inputs, "Roll the GCP MIG (us-central1)", "QUILL_USAGE_HEARTBEAT", "off")
+        self._assert_stage_d_mutation_red(inputs, "termination requires heartbeat in declared regions: ['us-central1']")
+
+    def test_m5_declared_regions_must_be_configured(self) -> None:
+        for stage in ("heartbeat", "terminate"):
+            with self.subTest(stage=stage):
+                inputs = self._stage_d_inputs()
+                inputs[f"tools/stage-d-{stage}-regions.txt"] += "asia-east1\n"
+                self._assert_stage_d_mutation_red(inputs, "unconfigured regions: ['asia-east1']")
+
+    def test_m6_heartbeat_bijection_is_still_enforced(self) -> None:
+        inputs = self._stage_d_inputs()
+        self._set_stage_d_flag(inputs, "Roll the GCP MIG (us-central1)", "QUILL_USAGE_HEARTBEAT", "off")
+        self._assert_stage_d_mutation_red(inputs, "QUILL_USAGE_HEARTBEAT: declared regions not on: ['us-central1']")
+
+    def test_m7_contract_rejects_neutered_cross_flag_invariant(self) -> None:
+        self.test_stage_d_region_gate_contract()
+        shell = (ROOT / "tools/tests/test-stage-d-gates.sh").read_text()
+        guard = "require(terminate <= heartbeat,"
+        self.assertEqual(shell.count(guard), 1)
+        mutated = shell.replace(guard, "require(True,", 1)
+        with mock.patch.object(Path, "read_text", return_value=mutated):
+            with self.assertRaisesRegex(AssertionError, "Stage D regional shell gate was weakened"):
+                self.test_stage_d_region_gate_contract()
+
+    def test_stage_d_empty_declarations_allow_all_flags_off(self) -> None:
+        inputs = self._stage_d_inputs()
+        for stage in ("heartbeat", "terminate"):
+            inputs[f"tools/stage-d-{stage}-regions.txt"] = ""
+        path = ".github/workflows/deploy-enclave-gcp.yml"
+        inputs[path] = re.sub(r'(QUILL_(?:USAGE_HEARTBEAT|TERMINATE_AT_CAP): )"on"', r'\1"off"', inputs[path])
+        completed = self._run_stage_d_region_gate(inputs)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.splitlines(), ["QUILL_USAGE_HEARTBEAT 0 3 3", "QUILL_TERMINATE_AT_CAP 0 3 3"])
+
+    def test_stage_d_declared_files_trigger_deploy(self) -> None:
+        workflow = (ROOT / ".github/workflows/deploy-enclave-gcp.yml").read_text()
+        push_paths = workflow.split("  push:\n", 1)[1].split("\njobs:", 1)[0]
+        for stage in ("heartbeat", "terminate"):
+            self.assertIn(f'      - "tools/stage-d-{stage}-regions.txt"', push_paths)
+
+    def test_stage_d_flags_are_forwarded_to_instance_metadata(self) -> None:
+        deploy = (ROOT / "tools/deploy-gcp-mig.sh").read_text()
+        start = deploy.index("# Stage D flags are opt-in.")
+        end = deploy.index("# This value is a Secret Manager NAME", start)
+        metadata = next(line for line in deploy.splitlines() if line.startswith('  --metadata="'))
+        for flag in ("USAGE_HEARTBEAT", "TERMINATE_AT_CAP"):
+            self.assertIn(f"${{{flag}_TEE_ENV}}", metadata)
+            for value in ("on", "off"):
+                with self.subTest(flag=flag, value=value):
+                    completed = subprocess.run(
+                        ["bash", "-euo", "pipefail", "-c", deploy[start:end] + f'\nprintf "%s" "${{{flag}_TEE_ENV}}"'],
+                        env={**os.environ, "SPEND_LEASE_LOCAL_ADMISSION_TEE_ENV": "", f"QUILL_{flag}": value},
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    self.assertEqual(completed.stdout, f"|tee-env-QUILL_{flag}=on" if value == "on" else "")
 
     def test_recovery_heartbeat_uses_selected_template_not_workflow_env(self) -> None:
         verifier = (ROOT / "tools/verify-region-before-dns.sh").read_text()
