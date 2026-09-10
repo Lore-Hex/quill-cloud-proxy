@@ -70,7 +70,7 @@ The field order above is fixed. `att` uses exactly the same encoding as the
 flattened JWS protected header: GCP and Azure JWTs are verbatim, while the AWS
 Nitro COSE document is unpadded base64url. `att_sha256` is the unpadded
 base64url SHA-256 of the raw current document, before any COSE base64 encoding.
-`att_history` contains up to the newest eight previous documents, newest first,
+`att_history` contains up to the newest 32 previous documents, newest first,
 so a bounded collector response can preserve documents re-minted between
 polls. The instance itself retains up to 64 previous documents. The endpoint
 has the same instance-scoped, no-caller-nonce, no-TLS-exporter semantics as the
@@ -263,10 +263,24 @@ evidence upgrades a listing from self-declared to hardware-anchored.
 A compact receipt pins the document current at signing. The enclave keeps that
 document reachable two ways: `GET /receipt-attestation?sha256=` serves any of the last
 64 distinct documents for the life of the instance, and `GET /receipt-key` publishes the
-newest 32 previous documents (`att_history`) for the control plane's collector, which runs
-every 5 minutes (Cloud Scheduler `trusted-router-receipt-key-collect`, `*/5 * * * *`) and
-appends every `(kid, att_sha256)` it sees to the permanent key log. At the 30-minute
-re-mint cadence a version therefore stays collectable for ~16 hours, so the log misses a
-version only if the collector is down for that long, or an instance is terminated within
-one collector interval of a re-mint. Identical re-mints do not consume a slot.
+newest 32 previous documents (`att_history`) for the control plane's collector
+(Cloud Scheduler `trusted-router-receipt-key-collect`, `*/5 * * * *`), which appends
+every `(kid, att_sha256)` it sees to the permanent key log. Identical re-mints do not
+consume a slot.
 
+The window, precisely: a document leaves `/receipt-key` after its 33rd distinct
+successor — nominally 16h30m after mint, or 14h51m–18h09m with the ±10% re-mint
+jitter. Two conditions bound what the permanent log can miss:
+
+- **Collector outage.** The log misses a version only if collection fails for the
+  whole window above. This REQUIRES a control plane that verifies history entries
+  for signature, chain and key commitment but accepts an expired `exp` on them (they
+  are past documents by definition); a collector that applies the current-document
+  freshness check to history caps recovery at the attestation token lifetime
+  (~1 hour) instead. Router change: "the receipt-key log keeps every attestation
+  version".
+- **Instance termination.** An instance that dies between a mint and the collector's
+  first successful persistence of that document loses it: the `*/5` schedule bounds
+  the next scheduled start to under five minutes; dispatch, fetch, validation and
+  persistence add latency. Receipts signed in that gap verify only while the
+  instance lives.
