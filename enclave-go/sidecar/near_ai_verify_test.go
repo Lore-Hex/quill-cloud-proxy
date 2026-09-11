@@ -38,6 +38,10 @@ func newNearAITestCase(t *testing.T) *nearAITestCase {
 		DeploymentFile:   "prod/glm-5.2.yaml",
 		DeploymentCommit: strings.Repeat("22", 20),
 		DeploymentSHA256: strings.Repeat("33", 32),
+		BootMeasurements: &nearAIBootMeasurements{
+			MRTD: strings.Repeat("11", 48), RTMR0: strings.Repeat("22", 48),
+			RTMR1: strings.Repeat("33", 48), RTMR2: strings.Repeat("44", 48),
+		},
 	}
 	nonceHex := strings.Repeat("aa", 32)
 	nonce, _ := hex.DecodeString(nonceHex)
@@ -103,6 +107,19 @@ func newNearAITestCase(t *testing.T) *nearAITestCase {
 	report.Info.AppName = nearAIAppName
 	report.Info.ComposeHash = policy.ComposeHash
 	report.Info.OSImageHash = nearAIOSImageHash
+	report.EventLog = []nearAIRuntimeEvent{
+		{IMR: 3, EventType: 0x08000001, Event: "compose-hash", EventPayload: policy.ComposeHash},
+		{IMR: 3, EventType: 0x08000001, Event: "os-image-hash", EventPayload: nearAIOSImageHash},
+		{IMR: 3, EventType: 0x08000001, Event: "system-ready"},
+	}
+	rtmr3, err := replayNearAIRuntimeEvents(report.EventLog, policy.ComposeHash, nearAIOSImageHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []*tdxpb.TDQuoteBody{modelBody, managerBody} {
+		body.MrTd = bytes.Repeat([]byte{0x11}, 48)
+		body.Rtmrs = [][]byte{bytes.Repeat([]byte{0x22}, 48), bytes.Repeat([]byte{0x33}, 48), bytes.Repeat([]byte{0x44}, 48), append([]byte{}, rtmr3...)}
+	}
 
 	verifier := &nearAIVerifier{
 		policies: map[string][]nearAIPolicy{nearAIPolicyKey(policy.Model, policy.Domain): {policy}},
@@ -159,6 +176,39 @@ func TestNearAIVerifierAcceptsFullyBoundDirectEvidence(t *testing.T) {
 	}
 }
 
+func TestNearAIRejectsUnreviewedBootMeasurements(t *testing.T) {
+	for _, quote := range []string{"model", "manager"} {
+		t.Run(quote, func(t *testing.T) {
+			c := newNearAITestCase(t)
+			// Older releases silently ignored this policy field and accepted any
+			// booted guest that could repeat the expected untrusted OS metadata.
+			raw, _ := json.Marshal(c.policy)
+			var fields map[string]any
+			_ = json.Unmarshal(raw, &fields)
+			fields["boot_measurements"] = map[string]any{
+				"mrtd":  strings.Repeat("11", 48),
+				"rtmr0": strings.Repeat("22", 48),
+				"rtmr1": strings.Repeat("33", 48),
+				"rtmr2": strings.Repeat("44", 48),
+			}
+			raw, _ = json.Marshal(fields)
+			_ = json.Unmarshal(raw, &c.policy)
+			for _, body := range []*tdxpb.TDQuoteBody{c.modelBody, c.managerBody} {
+				body.MrTd = bytes.Repeat([]byte{0x11}, 48)
+			}
+			body := c.modelBody
+			if quote == "manager" {
+				body = c.managerBody
+			}
+			body.MrTd[0] ^= 1
+			c.verifier.policies[nearAIPolicyKey(c.policy.Model, c.policy.Domain)] = []nearAIPolicy{c.policy}
+			if _, err := c.verifier.verify(context.Background(), c.request); err == nil {
+				t.Fatal("accepted a quoted boot measurement outside the reviewed policy")
+			}
+		})
+	}
+}
+
 func TestNearAIRejectsUnreviewedPartialDeploymentHistory(t *testing.T) {
 	c := newNearAITestCase(t)
 	// Decode through JSON so this regression proves older releases silently
@@ -196,11 +246,18 @@ func TestNearAIVerifiesEachPoolMemberAndItsOwnOSPin(t *testing.T) {
 		second.DeploymentActionsSHA256 = c.report.ComposeManager.ActionsHash
 		c.verifier.policies, _ = validateNearAIPolicies([]nearAIPolicy{first, second})
 		c.report.Info.ComposeHash = compose
+		c.report.EventLog[0].EventPayload = compose
 		c.modelBody.MrConfigId = nearAITestMRConfig(compose)
 		c.managerBody.MrConfigId = nearAITestMRConfig(compose)
 		if compose == second.ComposeHash {
 			c.report.Info.AppName, c.report.Info.OSImageHash = second.AppName, second.OSImageHash
 		}
+		c.report.EventLog[1].EventPayload = c.report.Info.OSImageHash
+		rtmr3, err := replayNearAIRuntimeEvents(c.report.EventLog, compose, c.report.Info.OSImageHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.modelBody.Rtmrs[3], c.managerBody.Rtmrs[3] = rtmr3, rtmr3
 		c.encodeReport(t)
 		if _, err := c.verifier.verify(context.Background(), c.request); err != nil {
 			t.Fatal(err)

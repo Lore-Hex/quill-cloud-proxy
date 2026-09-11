@@ -42,26 +42,28 @@ type nearAIVerificationResponse struct {
 }
 
 type nearAIPolicy struct {
-	Model                   string `json:"model"`
-	Domain                  string `json:"domain"`
-	ComposeHash             string `json:"compose_hash"`
-	DeploymentFile          string `json:"deployment_file"`
-	DeploymentCommit        string `json:"deployment_commit"`
-	DeploymentSHA256        string `json:"deployment_sha256"`
-	DeploymentActionsSHA256 string `json:"deployment_actions_sha256,omitempty"`
-	AppName                 string `json:"app_name,omitempty"`
-	OSImageHash             string `json:"os_image_hash,omitempty"`
+	Model                   string                  `json:"model"`
+	Domain                  string                  `json:"domain"`
+	ComposeHash             string                  `json:"compose_hash"`
+	DeploymentFile          string                  `json:"deployment_file"`
+	DeploymentCommit        string                  `json:"deployment_commit"`
+	DeploymentSHA256        string                  `json:"deployment_sha256"`
+	DeploymentActionsSHA256 string                  `json:"deployment_actions_sha256,omitempty"`
+	AppName                 string                  `json:"app_name,omitempty"`
+	OSImageHash             string                  `json:"os_image_hash,omitempty"`
+	BootMeasurements        *nearAIBootMeasurements `json:"boot_measurements,omitempty"`
 }
 
 type nearAIReport struct {
-	ModelName        string `json:"model_name"`
-	RequestNonce     string `json:"request_nonce"`
-	SigningAddress   string `json:"signing_address"`
-	SigningPublicKey string `json:"signing_public_key"`
-	SigningAlgorithm string `json:"signing_algo"`
-	TLSFingerprint   string `json:"tls_cert_fingerprint"`
-	IntelQuote       string `json:"intel_quote"`
-	NVIDIAPayload    string `json:"nvidia_payload"`
+	ModelName        string               `json:"model_name"`
+	RequestNonce     string               `json:"request_nonce"`
+	SigningAddress   string               `json:"signing_address"`
+	SigningPublicKey string               `json:"signing_public_key"`
+	SigningAlgorithm string               `json:"signing_algo"`
+	TLSFingerprint   string               `json:"tls_cert_fingerprint"`
+	IntelQuote       string               `json:"intel_quote"`
+	NVIDIAPayload    string               `json:"nvidia_payload"`
+	EventLog         []nearAIRuntimeEvent `json:"event_log"`
 	Info             struct {
 		AppName     string `json:"app_name"`
 		ComposeHash string `json:"compose_hash"`
@@ -143,6 +145,11 @@ func validateNearAIPolicies(entries []nearAIPolicy) (map[string][]nearAIPolicy, 
 	}
 	policies := make(map[string][]nearAIPolicy, len(entries))
 	for _, entry := range entries {
+		if entry.BootMeasurements != nil {
+			if err := entry.BootMeasurements.validate(); err != nil {
+				return nil, err
+			}
+		}
 		if (entry.AppName == "") != (entry.OSImageHash == "") {
 			return nil, errors.New("NEAR AI app and OS pins must be specified together")
 		}
@@ -250,8 +257,15 @@ func (v *nearAIVerifier) verify(ctx context.Context, request *nearAIVerification
 	if !matchesNearAIMRConfig(topBody.GetMrConfigId(), policy.ComposeHash) {
 		return nil, errors.New("NEAR AI model quote does not bind the pinned workload compose hash")
 	}
+	rtmr3, err := replayNearAIRuntimeEvents(report.EventLog, policy.ComposeHash, osImage)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyNearAIBoot(topBody, policy.BootMeasurements, rtmr3); err != nil {
+		return nil, fmt.Errorf("NEAR AI model quote: %w", err)
+	}
 
-	if err := v.verifyComposeManager(report.ComposeManager, request.Nonce, nonce, policy); err != nil {
+	if err := v.verifyComposeManager(report.ComposeManager, request.Nonce, nonce, policy, rtmr3); err != nil {
 		return nil, err
 	}
 	if err := v.verifyNVIDIA(ctx, report.NVIDIAPayload, request.Nonce); err != nil {
@@ -271,6 +285,7 @@ func (v *nearAIVerifier) verifyComposeManager(
 	nonceHex string,
 	nonce []byte,
 	policy nearAIPolicy,
+	rtmr3 []byte,
 ) error {
 	if evidence.Nonce != nonceHex || len(evidence.Actions) == 0 {
 		return errors.New("NEAR AI compose-manager evidence is incomplete or has a nonce mismatch")
@@ -299,6 +314,9 @@ func (v *nearAIVerifier) verifyComposeManager(
 	}
 	if !bytes.Equal(body.GetReportData(), reportData) || !matchesNearAIMRConfig(body.GetMrConfigId(), policy.ComposeHash) {
 		return errors.New("NEAR AI compose-manager quote does not bind the action log, nonce, and workload")
+	}
+	if err := verifyNearAIBoot(body, policy.BootMeasurements, rtmr3); err != nil {
+		return fmt.Errorf("NEAR AI compose-manager quote: %w", err)
 	}
 
 	var actions []nearAIDeploymentAction

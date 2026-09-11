@@ -43,3 +43,34 @@ hosts report an `OutOfDate` TDX module and remain blocked, not repinned.
 The action-history pin is deliberately strict: later changes must be reviewed.
 The companion control-plane release adds sustained-failure and catalog-expiry
 Sentry alerts so fail-closed drift is actionable instead of silent.
+
+## Independent boot measurements
+
+The original verifier compared untrusted `info.os_image_hash` but did not check
+the quoted boot registers. A regression first demonstrated acceptance of changed
+MRTD values on both model and compose-manager quotes. Both paths now require
+independently calculated MRTD/RTMR0/RTMR1/RTMR2 and replayed RTMR3; old policies
+without reviewed boot measurements fail closed per route.
+
+Reproduction used `Dstack-TEE/dstack` v0.5.11, commit
+`40eaf35e6b3f112998d01569f2a26110baab123b`, with the OS archive above. The ACPI
+utility came from the digest-pinned image documented by dstack:
+`dstacktee/dstack-kms@sha256:11ac59f524a22462ccd2152219b0bec48a28ceb734e32500152d4abefab7a62a`.
+It ran locally with no network, read-only filesystem and dropped capabilities.
+
+```sh
+dstack-mr measure --cpu 64 --memory 2199023255552 \
+  --pci-hole64-size 1125899906842624 --num-gpus 8 --num-nvswitches 4 \
+  --hotplug-off true --qemu-version 9.2.1 --json \
+  dstack-nvidia-0.5.11/metadata.json
+```
+
+All four calculated registers match both GLM pool members and are recorded in
+`near_ai_policy.json`. RTMR3 is independently replayed from runtime event names,
+types and decoded payloads, not provider-supplied digests. It must bind the
+reviewed compose and OS hashes and a completed boot; both signed quotes must
+match the replay. Instance IDs can change without weakening the OS pins.
+
+Full sidecar and five AWS/GCP/Azure Go test variants pass. Fresh Intel/NVIDIA
+verification passes for both pool members with these checks enabled. Local
+Claude CLI Opus review was retried but its OAuth session could not refresh.
