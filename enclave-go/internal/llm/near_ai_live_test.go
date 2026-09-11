@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -25,13 +26,22 @@ func TestLiveNearAIDirectAttestedPong(t *testing.T) {
 	}
 	model := strings.TrimSpace(os.Getenv("TR_LIVE_NEAR_AI_MODEL"))
 	if model == "" {
-		model = "z-ai/glm-5.2"
+		model = "z-ai/glm-5.3-flash"
 	}
-	maxTokens := 8
+	maxTokens := 512
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	client := newNearAI(apiKey)
+	verify := client.verifyEvidence
+	client.verifyEvidence = func(ctx context.Context, envelope *nearAIEvidenceEnvelope) (*nearAIVerificationResult, error) {
+		var report struct {
+			Info map[string]json.RawMessage `json:"info"`
+		}
+		_ = json.Unmarshal(envelope.Evidence, &report)
+		t.Logf("workload app=%s compose=%s os=%s", report.Info["app_name"], report.Info["compose_hash"], report.Info["os_image_hash"])
+		return verify(ctx, envelope)
+	}
 	var output bytes.Buffer
 	err := client.InvokeStreaming(
 		ctx,

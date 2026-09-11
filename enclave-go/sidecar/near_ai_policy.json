@@ -2,10 +2,33 @@
   {
     "model": "deepseek-ai/DeepSeek-V4-Flash",
     "domain": "dsv4-flash.completions.near.ai",
-    "compose_hash": "d98a2568546afce9ab53f7eb4d4b2058e5497e1efd05a8ad0934793043240ed7",
-    "deployment_file": "prod/dsv4-qwen38-glm51.yaml",
-    "deployment_commit": "1a7d6e548b1914dc38206d00da37898bde1b0a13",
-    "deployment_sha256": "c27ed3b357f44673e4a84ef89f4625e1009de619d83ffdaae27c1265f676f4bb"
+    "compose_hash": "2c650eae81601afade86d1aa5ad898473b992081998026bb42ee1524ce99ee38",
+    "deployment_file": "prod/GLM-5.1-DSV4-Migration.yaml",
+    "deployment_commit": "e14107901d202215ab44eb027eb4792047d5ec83",
+    "deployment_sha256": "2db74d72aea666868a778a4e5c3635ac8940cf0d53095c42d3282f60b115b8d7",
+    "deployment_actions_sha256": "b666a8e93a4660aec86f033f6722dcef28c0a357a1347960cd8de1fd7475a068"
+  },
+  {
+    "model": "z-ai/glm-5.3-flash",
+    "domain": "glm-5-3-flash.completions.near.ai",
+    "compose_hash": "533e43fd215d56ec6cd719adb5defe6615f7ba6ae0b018e832f7c8dadf2e25d4",
+    "deployment_file": "prod/GLM-5.3-Flash-SGL-TP4.yaml",
+    "deployment_commit": "e14107901d202215ab44eb027eb4792047d5ec83",
+    "deployment_sha256": "2878b9c4c6db512a7538dc4e8981fd5acae72cdaace7794509f48161bcce08e3",
+    "deployment_actions_sha256": "46dc40881cb7c5b7186028659c4f3b13c92cdfb84ed3bdbb1e7ccd2601d7dd9f",
+    "app_name": "dstack-nvidia-0.5.11",
+    "os_image_hash": "a6eafc5f007f642d8ea90c7fa8881f1e6715720ccb531941a28218f4f26d7b02"
+  },
+  {
+    "model": "z-ai/glm-5.3-flash",
+    "domain": "glm-5-3-flash.completions.near.ai",
+    "compose_hash": "c82b1a2eaf6996154a5f39ae621643f034b082d5e51edd3d2ba6009273881d86",
+    "deployment_file": "prod/GLM-5.3-Flash-SGL-TP4.yaml",
+    "deployment_commit": "e14107901d202215ab44eb027eb4792047d5ec83",
+    "deployment_sha256": "2878b9c4c6db512a7538dc4e8981fd5acae72cdaace7794509f48161bcce08e3",
+    "deployment_actions_sha256": "289be605cf690d627fb146c83d6c192fdd1b48b863f6b03c46432279b2422afb",
+    "app_name": "dstack-nvidia-0.5.11",
+    "os_image_hash": "a6eafc5f007f642d8ea90c7fa8881f1e6715720ccb531941a28218f4f26d7b02"
   },
   {
     "model": "google/gemma-4-31B-it",

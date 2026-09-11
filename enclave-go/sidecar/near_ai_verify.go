@@ -42,12 +42,15 @@ type nearAIVerificationResponse struct {
 }
 
 type nearAIPolicy struct {
-	Model            string `json:"model"`
-	Domain           string `json:"domain"`
-	ComposeHash      string `json:"compose_hash"`
-	DeploymentFile   string `json:"deployment_file"`
-	DeploymentCommit string `json:"deployment_commit"`
-	DeploymentSHA256 string `json:"deployment_sha256"`
+	Model                   string `json:"model"`
+	Domain                  string `json:"domain"`
+	ComposeHash             string `json:"compose_hash"`
+	DeploymentFile          string `json:"deployment_file"`
+	DeploymentCommit        string `json:"deployment_commit"`
+	DeploymentSHA256        string `json:"deployment_sha256"`
+	DeploymentActionsSHA256 string `json:"deployment_actions_sha256,omitempty"`
+	AppName                 string `json:"app_name,omitempty"`
+	OSImageHash             string `json:"os_image_hash,omitempty"`
 }
 
 type nearAIReport struct {
@@ -92,7 +95,7 @@ type nearAINVIDIAPayload struct {
 }
 
 type nearAIVerifier struct {
-	policies    map[string]nearAIPolicy
+	policies    map[string][]nearAIPolicy
 	nras        *nrasVerifier
 	now         func() time.Time
 	verifyQuote func(string) (*tdxpb.TDQuoteBody, error)
@@ -134,12 +137,22 @@ func nearAIPolicyKey(model, domain string) string {
 	return model + "\x00" + strings.ToLower(domain)
 }
 
-func validateNearAIPolicies(entries []nearAIPolicy) (map[string]nearAIPolicy, error) {
+func validateNearAIPolicies(entries []nearAIPolicy) (map[string][]nearAIPolicy, error) {
 	if len(entries) == 0 {
 		return nil, errors.New("pinned NEAR AI policy is empty")
 	}
-	policies := make(map[string]nearAIPolicy, len(entries))
+	policies := make(map[string][]nearAIPolicy, len(entries))
 	for _, entry := range entries {
+		if (entry.AppName == "") != (entry.OSImageHash == "") {
+			return nil, errors.New("NEAR AI app and OS pins must be specified together")
+		}
+		for _, pin := range []string{entry.OSImageHash, entry.DeploymentActionsSHA256} {
+			if pin != "" {
+				if _, err := strictHex32(pin, "NEAR AI optional policy pin"); err != nil {
+					return nil, err
+				}
+			}
+		}
 		if strings.TrimSpace(entry.Model) == "" || strings.TrimSpace(entry.Domain) == "" ||
 			!strings.HasSuffix(strings.ToLower(entry.Domain), ".completions.near.ai") ||
 			strings.ContainsAny(entry.Domain, "/:@") {
@@ -164,10 +177,12 @@ func validateNearAIPolicies(entries []nearAIPolicy) (map[string]nearAIPolicy, er
 			return nil, fmt.Errorf("pinned NEAR AI deployment file is invalid for %s", entry.Model)
 		}
 		key := nearAIPolicyKey(entry.Model, entry.Domain)
-		if _, exists := policies[key]; exists {
-			return nil, fmt.Errorf("duplicate NEAR AI policy for %s", entry.Model)
+		for _, existing := range policies[key] {
+			if existing.ComposeHash == entry.ComposeHash {
+				return nil, fmt.Errorf("duplicate NEAR AI policy for %s", entry.Model)
+			}
 		}
-		policies[key] = entry
+		policies[key] = append(policies[key], entry)
 	}
 	return policies, nil
 }
@@ -176,7 +191,7 @@ func (v *nearAIVerifier) verify(ctx context.Context, request *nearAIVerification
 	if request == nil || len(request.Evidence) == 0 {
 		return nil, errors.New("incomplete NEAR AI verification request")
 	}
-	policy, ok := v.policies[nearAIPolicyKey(request.Model, request.Domain)]
+	candidates, ok := v.policies[nearAIPolicyKey(request.Model, request.Domain)]
 	if !ok {
 		return nil, errors.New("NEAR AI model and direct domain are not pinned in this TrustedRouter release")
 	}
@@ -193,6 +208,16 @@ func (v *nearAIVerifier) verify(ctx context.Context, request *nearAIVerification
 	if err := json.Unmarshal(request.Evidence, &report); err != nil {
 		return nil, fmt.Errorf("decode NEAR AI attestation report: %w", err)
 	}
+	var policy nearAIPolicy
+	for _, candidate := range candidates {
+		if candidate.ComposeHash == report.Info.ComposeHash {
+			policy = candidate
+			break
+		}
+	}
+	if policy.Model == "" {
+		return nil, errors.New("NEAR AI workload identity is outside the pinned policy")
+	}
 	if report.ModelName != policy.Model || report.RequestNonce != request.Nonce ||
 		!strings.EqualFold(report.TLSFingerprint, request.TLSFingerprint) {
 		return nil, errors.New("NEAR AI report model, nonce, or TLS fingerprint mismatch")
@@ -204,7 +229,11 @@ func (v *nearAIVerifier) verify(ctx context.Context, request *nearAIVerification
 	if err != nil {
 		return nil, err
 	}
-	if report.Info.AppName != nearAIAppName || report.Info.OSImageHash != nearAIOSImageHash ||
+	appName, osImage := policy.AppName, policy.OSImageHash
+	if appName == "" {
+		appName, osImage = nearAIAppName, nearAIOSImageHash
+	}
+	if report.Info.AppName != appName || report.Info.OSImageHash != osImage ||
 		report.Info.ComposeHash != policy.ComposeHash {
 		return nil, errors.New("NEAR AI workload identity is outside the pinned policy")
 	}
@@ -253,6 +282,11 @@ func (v *nearAIVerifier) verifyComposeManager(
 	actionsDigest := sha256.Sum256(canonical)
 	if !strings.EqualFold(hex.EncodeToString(actionsDigest[:]), evidence.ActionsHash) {
 		return errors.New("NEAR AI deployment action log hash mismatch")
+	}
+	// A compose_up can change only an exporter or registrar. Pinning that last
+	// file alone cannot establish the versions of all active inference services.
+	if policy.DeploymentActionsSHA256 != "" && hex.EncodeToString(actionsDigest[:]) != policy.DeploymentActionsSHA256 {
+		return errors.New("NEAR AI deployment history is outside the reviewed policy")
 	}
 	reportData, err := hex.DecodeString(evidence.ReportData)
 	if err != nil || len(reportData) != 64 || !bytes.Equal(reportData[:32], actionsDigest[:]) ||
