@@ -36,8 +36,57 @@ func enableReceiptEmissionForTest(t *testing.T) []byte {
 	document := []byte("receipt-emission-key-binding-attestation")
 	receiptSigner = signer
 	receiptIssuer = "https://api.test.invalid"
-	receiptAttestationCache.Store(&cachedReceiptAttestation{document: document, kind: attestation.Kind})
+	receiptAttestationCache.Store(newCachedReceiptAttestation(document, attestation.Kind))
 	return document
+}
+
+func TestCompactReceiptAttestationRemainsResolvableAfterRemint(t *testing.T) {
+	document := enableReceiptEmissionForTest(t)
+	req := &types.OpenAIChatRequest{
+		Model: "requested-model",
+		InferenceReceipt: types.InferenceReceiptRequest{
+			Requested:         true,
+			RequestBodySHA256: sha256.Sum256([]byte("request")),
+		},
+	}
+	var rawResponse bytes.Buffer
+	writeJSONResponseWithReceipt(
+		context.Background(),
+		&rawResponse,
+		[]byte(`{"id":"response-before-remint"}`),
+		req,
+		"chat.completions",
+		"response-before-remint",
+		"generation-before-remint",
+		req.Model,
+		newSelectedRouteTracker(),
+		nil,
+	)
+	resp, _ := readRawHTTPResponse(t, rawResponse.Bytes())
+	claims := decodeReceiptClaims(t, []byte(resp.Header.Get("x-inference-receipt")))
+	if claims.AttSHA256 != receiptAttestationDigest(document) {
+		t.Fatalf("receipt att_sha256 = %q, want %q", claims.AttSHA256, receiptAttestationDigest(document))
+	}
+
+	oldGetAttestation := getAttestation
+	defer func() { getAttestation = oldGetAttestation }()
+	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
+		return []byte("replacement-key-binding-attestation"), nil
+	}
+	if err := remintReceiptAttestation(nil, nil, bytes.Repeat([]byte{1}, sha256.Size)); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := newScriptedConn("GET /receipt-attestation?sha256="+claims.AttSHA256+" HTTP/1.1\r\nHost: test\r\n\r\n", nil)
+	serveOne(context.Background(), conn, nil, nil, nil, nil, nil, nil)
+	attestationResponse, servedDocument := readRawHTTPResponse(t, conn.writes.Bytes())
+	if attestationResponse.StatusCode != http.StatusOK {
+		t.Fatalf("historical attestation status=%d body=%s", attestationResponse.StatusCode, servedDocument)
+	}
+	servedDigest := sha256.Sum256(servedDocument)
+	if got := base64.RawURLEncoding.EncodeToString(servedDigest[:]); got != claims.AttSHA256 {
+		t.Fatalf("served attestation hash = %q, want receipt claim %q", got, claims.AttSHA256)
+	}
 }
 
 func TestReadRequestInferenceReceiptValidationAndDisabledIgnore(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sync/atomic"
@@ -38,10 +39,7 @@ func TestReceiptKeyRouteServesStableEnvelope(t *testing.T) {
 	default:
 		t.Fatalf("unexpected compiled attestation kind %q", attestation.Kind)
 	}
-	receiptAttestationCache.Store(&cachedReceiptAttestation{
-		document: append([]byte(nil), attestationDocument...),
-		kind:     attestation.Kind,
-	})
+	receiptAttestationCache.Store(newCachedReceiptAttestation(attestationDocument, attestation.Kind))
 
 	request := func() (*http.Response, []byte) {
 		t.Helper()
@@ -94,6 +92,13 @@ func TestReceiptKeyRouteServesStableEnvelope(t *testing.T) {
 	if envelope.AttestationKind != attestation.Kind {
 		t.Fatalf("att_kind = %q, want compiled kind %q", envelope.AttestationKind, attestation.Kind)
 	}
+	wantAttestationSHA256 := receiptAttestationDigest(attestationDocument)
+	if envelope.AttestationSHA256 != wantAttestationSHA256 {
+		t.Fatalf("att_sha256 = %q, want %q", envelope.AttestationSHA256, wantAttestationSHA256)
+	}
+	if len(envelope.AttestationHistory) != 0 {
+		t.Fatalf("att_history = %#v, want empty", envelope.AttestationHistory)
+	}
 	flattened, err := signer.SignFlattened(receipt.Claims{}, attestationDocument, attestation.Kind)
 	if err != nil {
 		t.Fatalf("SignFlattened: %v", err)
@@ -118,7 +123,7 @@ func TestReceiptKeyRouteServesStableEnvelope(t *testing.T) {
 	if envelope.Attestation != protectedHeader.Attestation || envelope.AttestationKind != protectedHeader.AttestationKind {
 		t.Fatalf("receipt-key attestation (%q, %q) differs from flattened header (%q, %q)", envelope.Attestation, envelope.AttestationKind, protectedHeader.Attestation, protectedHeader.AttestationKind)
 	}
-	wantBody := []byte(`{"kid":"` + envelope.KID + `","jwk":{"kty":"OKP","crv":"Ed25519","x":"` + envelope.JWK.X + `"},"att":"` + envelope.Attestation + `","att_kind":"` + envelope.AttestationKind + `"}`)
+	wantBody := []byte(`{"kid":"` + envelope.KID + `","jwk":{"kty":"OKP","crv":"Ed25519","x":"` + envelope.JWK.X + `"},"att":"` + envelope.Attestation + `","att_kind":"` + envelope.AttestationKind + `","att_sha256":"` + envelope.AttestationSHA256 + `","att_history":[]}`)
 	if !bytes.Equal(body, wantBody) {
 		t.Fatalf("body field order or encoding changed:\n got %s\nwant %s", body, wantBody)
 	}
@@ -140,10 +145,7 @@ func TestReceiptAttestationRouteServesCachedDocument(t *testing.T) {
 	}
 	receiptSigner = signer
 	wantDocument := []byte("cached-key-binding-document")
-	receiptAttestationCache.Store(&cachedReceiptAttestation{
-		document: append([]byte(nil), wantDocument...),
-		kind:     attestation.Kind,
-	})
+	receiptAttestationCache.Store(newCachedReceiptAttestation(wantDocument, attestation.Kind))
 
 	conn := newScriptedConn("GET /receipt-attestation HTTP/1.1\r\nHost: test\r\n\r\n", nil)
 	serveOne(context.Background(), conn, nil, nil, nil, []byte("devices"), nil, nil)
@@ -167,6 +169,177 @@ func TestReceiptAttestationRouteServesCachedDocument(t *testing.T) {
 	}
 	if got := resp.Header.Get("x-receipt-att-kind"); got != attestation.Kind {
 		t.Fatalf("x-receipt-att-kind = %q, want %q", got, attestation.Kind)
+	}
+}
+
+func TestReceiptAttestationHistoryRetainsNewestFirstAndCapsMemory(t *testing.T) {
+	resetReceiptTestState(t)
+	oldGetAttestation := getAttestation
+	defer func() { getAttestation = oldGetAttestation }()
+
+	const documentSize = 20 * 1024
+	initial := bytes.Repeat([]byte{0}, documentSize)
+	receiptAttestationCache.Store(newCachedReceiptAttestation(initial, attestation.Kind))
+	remint := 0
+	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
+		remint++
+		document := bytes.Repeat([]byte{byte(remint)}, documentSize)
+		return document, nil
+	}
+
+	for i := 1; i <= receiptAttestationHistoryCapacity+6; i++ {
+		if err := remintReceiptAttestation(nil, nil, bytes.Repeat([]byte{1}, sha256.Size)); err != nil {
+			t.Fatalf("remint %d: %v", i, err)
+		}
+		cached := receiptAttestationCache.Load()
+		if got, want := len(cached.previous), min(i, receiptAttestationHistoryCapacity); got != want {
+			t.Fatalf("after %d re-mints history length = %d, want %d", i, got, want)
+		}
+		if got := cached.document[0]; got != byte(i) {
+			t.Fatalf("after %d re-mints current marker = %d", i, got)
+		}
+		for historyIndex, previous := range cached.previous {
+			wantMarker := byte(i - historyIndex - 1)
+			if got := previous.document[0]; got != wantMarker {
+				t.Fatalf("after %d re-mints history[%d] marker = %d, want %d", i, historyIndex, got, wantMarker)
+			}
+			if previous.sha256 != receiptAttestationDigest(previous.document) {
+				t.Fatalf("after %d re-mints history[%d] hash = %q", i, historyIndex, previous.sha256)
+			}
+		}
+	}
+
+	cached := receiptAttestationCache.Load()
+	retainedBytes := 0
+	for _, previous := range cached.previous {
+		retainedBytes += len(previous.document)
+	}
+	if retainedBytes != receiptAttestationHistoryCapacity*documentSize {
+		t.Fatalf("historical document bytes = %d, want bounded %d", retainedBytes, receiptAttestationHistoryCapacity*documentSize)
+	}
+}
+
+func TestReceiptAttestationRouteServesCurrentAndHistoryBySHA256(t *testing.T) {
+	resetReceiptTestState(t)
+	signer, err := receipt.NewSigner()
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	receiptSigner = signer
+
+	documents := [][]byte{[]byte("attestation-0"), []byte("attestation-1"), []byte("attestation-2")}
+	receiptAttestationCache.Store(newCachedReceiptAttestation(documents[0], attestation.Kind))
+	oldGetAttestation := getAttestation
+	defer func() { getAttestation = oldGetAttestation }()
+	next := 1
+	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
+		document := documents[next]
+		next++
+		return document, nil
+	}
+	for range documents[1:] {
+		if err := remintReceiptAttestation(nil, nil, bytes.Repeat([]byte{1}, sha256.Size)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, document := range documents {
+		wantHash := receiptAttestationDigest(document)
+		conn := newScriptedConn("GET /receipt-attestation?sha256="+wantHash+" HTTP/1.1\r\nHost: test\r\n\r\n", nil)
+		serveOne(context.Background(), conn, nil, nil, nil, nil, nil, nil)
+		resp, body := readRawHTTPResponse(t, conn.writes.Bytes())
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("hash %q status = %d body=%s", wantHash, resp.StatusCode, body)
+		}
+		if !bytes.Equal(body, document) {
+			t.Fatalf("hash %q body = %q, want %q", wantHash, body, document)
+		}
+		servedDigest := sha256.Sum256(body)
+		if got := base64.RawURLEncoding.EncodeToString(servedDigest[:]); got != wantHash {
+			t.Fatalf("served body hash = %q, want query %q", got, wantHash)
+		}
+	}
+
+	unknown := receiptAttestationDigest([]byte("unknown-attestation"))
+	conn := newScriptedConn("GET /receipt-attestation?sha256="+unknown+" HTTP/1.1\r\nHost: test\r\n\r\n", nil)
+	serveOne(context.Background(), conn, nil, nil, nil, nil, nil, nil)
+	resp, body := readRawHTTPResponse(t, conn.writes.Bytes())
+	if resp.StatusCode != http.StatusNotFound || !bytes.Contains(body, []byte(`"message":"unknown receipt attestation"`)) {
+		t.Fatalf("unknown hash status=%d body=%s", resp.StatusCode, body)
+	}
+
+	for _, malformed := range []string{
+		"",
+		"not-base64!",
+		base64.RawURLEncoding.EncodeToString([]byte("too-short")),
+		"%GG",
+		unknown + "&sha256=" + unknown,
+	} {
+		t.Run(fmt.Sprintf("malformed_%d", len(malformed)), func(t *testing.T) {
+			conn := newScriptedConn("GET /receipt-attestation?sha256="+malformed+" HTTP/1.1\r\nHost: test\r\n\r\n", nil)
+			serveOne(context.Background(), conn, nil, nil, nil, nil, nil, nil)
+			resp, body := readRawHTTPResponse(t, conn.writes.Bytes())
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("malformed hash %q status=%d body=%s", malformed, resp.StatusCode, body)
+			}
+		})
+	}
+}
+
+func TestReceiptKeyRouteIncludesNewestHistoricalAttestationsUpToTheCap(t *testing.T) {
+	resetReceiptTestState(t)
+	signer, err := receipt.NewSigner()
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	receiptSigner = signer
+	receiptAttestationCache.Store(newCachedReceiptAttestation([]byte("attestation-0"), attestation.Kind))
+	oldGetAttestation := getAttestation
+	defer func() { getAttestation = oldGetAttestation }()
+	next := 1
+	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
+		document := []byte(fmt.Sprintf("attestation-%d", next))
+		next++
+		return document, nil
+	}
+	// More distinct documents than the cap, so the envelope must truncate to the newest.
+	total := receiptKeyAttestationHistoryCapacity + 8
+	for i := 0; i < total; i++ {
+		if err := remintReceiptAttestation(nil, nil, bytes.Repeat([]byte{1}, sha256.Size)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	conn := newScriptedConn("GET /receipt-key HTTP/1.1\r\nHost: test\r\n\r\n", nil)
+	serveOne(context.Background(), conn, nil, nil, nil, nil, nil, nil)
+	resp, body := readRawHTTPResponse(t, conn.writes.Bytes())
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var envelope receiptKeyEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	current := []byte(fmt.Sprintf("attestation-%d", total))
+	wantEncodedCurrent, err := receipt.EncodeAttestation(current, attestation.Kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Attestation != wantEncodedCurrent || envelope.AttestationSHA256 != receiptAttestationDigest(current) {
+		t.Fatalf("current att=%q sha256=%q", envelope.Attestation, envelope.AttestationSHA256)
+	}
+	if got := len(envelope.AttestationHistory); got != receiptKeyAttestationHistoryCapacity {
+		t.Fatalf("att_history length = %d, want %d", got, receiptKeyAttestationHistoryCapacity)
+	}
+	for i, entry := range envelope.AttestationHistory {
+		wantDocument := []byte(fmt.Sprintf("attestation-%d", total-1-i))
+		wantAttestation, err := receipt.EncodeAttestation(wantDocument, attestation.Kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entry.Attestation != wantAttestation || entry.AttestationKind != attestation.Kind || entry.AttestationSHA256 != receiptAttestationDigest(wantDocument) {
+			t.Fatalf("att_history[%d] = %#v", i, entry)
+		}
 	}
 }
 
@@ -281,7 +454,7 @@ func TestReceiptAttestationReminterSwapsAtomicPointer(t *testing.T) {
 		receiptAttestationRemintInterval = oldInterval
 	}()
 
-	initial := &cachedReceiptAttestation{document: []byte("old"), kind: attestation.Kind}
+	initial := newCachedReceiptAttestation([]byte("old"), attestation.Kind)
 	receiptAttestationCache.Store(initial)
 	var calls atomic.Int32
 	getAttestation = func(_, _, nonce, channelBinding, receiptKeyFP []byte) ([]byte, error) {
@@ -321,7 +494,7 @@ func TestReceiptAttestationMintFailureKeepsLastGood(t *testing.T) {
 	resetReceiptTestState(t)
 	oldGetAttestation := getAttestation
 	defer func() { getAttestation = oldGetAttestation }()
-	lastGood := &cachedReceiptAttestation{document: []byte("last-good"), kind: attestation.Kind}
+	lastGood := newCachedReceiptAttestation([]byte("last-good"), attestation.Kind)
 	receiptAttestationCache.Store(lastGood)
 	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
 		return nil, errors.New("issuer unavailable")
