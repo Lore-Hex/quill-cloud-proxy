@@ -17,7 +17,13 @@
     "deployment_sha256": "2878b9c4c6db512a7538dc4e8981fd5acae72cdaace7794509f48161bcce08e3",
     "deployment_actions_sha256": "46dc40881cb7c5b7186028659c4f3b13c92cdfb84ed3bdbb1e7ccd2601d7dd9f",
     "app_name": "dstack-nvidia-0.5.11",
-    "os_image_hash": "a6eafc5f007f642d8ea90c7fa8881f1e6715720ccb531941a28218f4f26d7b02"
+    "os_image_hash": "a6eafc5f007f642d8ea90c7fa8881f1e6715720ccb531941a28218f4f26d7b02",
+    "boot_measurements": {
+      "mrtd": "df4d77c857de652bd0fafa343a2026b51071ee03773d076d283abf1a7d36ff91ffa279ee4a617ac664f7e2a2c8d5891b",
+      "rtmr0": "bc122d143ab768565ba5c3774ff5f03a63c89a4df7c1f5ea38d3bd173409d14f8cbdcc36d40e703cccb996a9d9687590",
+      "rtmr1": "ff61e68fa04516b1813d2d478397a97a58f9ccc402b6d96fb73f5e5104a4acf155913caec99a0c19afc16ae0f3a77726",
+      "rtmr2": "4d662c04766145dfe084fd014969b19c387afe9bb1d4f972c6968d28a7a8b4937c414603a2cf446105eddce67a86f9ce"
+    }
   },
   {
     "model": "z-ai/glm-5.3-flash",
@@ -28,7 +34,13 @@
     "deployment_sha256": "2878b9c4c6db512a7538dc4e8981fd5acae72cdaace7794509f48161bcce08e3",
     "deployment_actions_sha256": "289be605cf690d627fb146c83d6c192fdd1b48b863f6b03c46432279b2422afb",
     "app_name": "dstack-nvidia-0.5.11",
-    "os_image_hash": "a6eafc5f007f642d8ea90c7fa8881f1e6715720ccb531941a28218f4f26d7b02"
+    "os_image_hash": "a6eafc5f007f642d8ea90c7fa8881f1e6715720ccb531941a28218f4f26d7b02",
+    "boot_measurements": {
+      "mrtd": "df4d77c857de652bd0fafa343a2026b51071ee03773d076d283abf1a7d36ff91ffa279ee4a617ac664f7e2a2c8d5891b",
+      "rtmr0": "bc122d143ab768565ba5c3774ff5f03a63c89a4df7c1f5ea38d3bd173409d14f8cbdcc36d40e703cccb996a9d9687590",
+      "rtmr1": "ff61e68fa04516b1813d2d478397a97a58f9ccc402b6d96fb73f5e5104a4acf155913caec99a0c19afc16ae0f3a77726",
+      "rtmr2": "4d662c04766145dfe084fd014969b19c387afe9bb1d4f972c6968d28a7a8b4937c414603a2cf446105eddce67a86f9ce"
+    }
   },
   {
     "model": "google/gemma-4-31B-it",
