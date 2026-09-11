@@ -105,7 +105,7 @@ func newNearAITestCase(t *testing.T) *nearAITestCase {
 	report.Info.OSImageHash = nearAIOSImageHash
 
 	verifier := &nearAIVerifier{
-		policies: map[string]nearAIPolicy{nearAIPolicyKey(policy.Model, policy.Domain): policy},
+		policies: map[string][]nearAIPolicy{nearAIPolicyKey(policy.Model, policy.Domain): {policy}},
 		now:      func() time.Time { return now },
 		verifyQuote: func(encoded string) (*tdxpb.TDQuoteBody, error) {
 			switch encoded {
@@ -156,6 +156,60 @@ func TestNearAIVerifierAcceptsFullyBoundDirectEvidence(t *testing.T) {
 	}
 	if result.Policy != nearAIVerificationPolicy || result.ExpiresAt.Sub(result.VerifiedAt) != nearAIProofTTL {
 		t.Fatalf("unexpected verification result: %#v", result)
+	}
+}
+
+func TestNearAIRejectsUnreviewedPartialDeploymentHistory(t *testing.T) {
+	c := newNearAITestCase(t)
+	// Decode through JSON so this regression proves older releases silently
+	// ignored the new constraint, instead of merely failing to compile.
+	raw, _ := json.Marshal(c.policy)
+	var fields map[string]any
+	_ = json.Unmarshal(raw, &fields)
+	fields["deployment_actions_sha256"] = strings.Repeat("ff", 32)
+	raw, _ = json.Marshal(fields)
+	_ = json.Unmarshal(raw, &c.policy)
+	c.verifier.policies[nearAIPolicyKey(c.policy.Model, c.policy.Domain)] = []nearAIPolicy{c.policy}
+	if _, err := c.verifier.verify(context.Background(), c.request); err == nil {
+		t.Fatal("accepted a deployment history outside the reviewed policy")
+	}
+}
+
+func TestNearAIPolicyAcceptsDistinctReviewedPoolMembers(t *testing.T) {
+	first := newNearAITestCase(t).policy
+	second := first
+	second.ComposeHash = strings.Repeat("44", 32)
+	if _, err := validateNearAIPolicies([]nearAIPolicy{first, second}); err != nil {
+		t.Fatalf("distinct reviewed workloads sharing one model/domain must coexist: %v", err)
+	}
+}
+
+func TestNearAIVerifiesEachPoolMemberAndItsOwnOSPin(t *testing.T) {
+	for _, compose := range []string{strings.Repeat("11", 32), strings.Repeat("44", 32)} {
+		c := newNearAITestCase(t)
+		first := c.policy
+		second := first
+		second.ComposeHash = strings.Repeat("44", 32)
+		second.AppName = "reviewed-other-os"
+		second.OSImageHash = strings.Repeat("55", 32)
+		first.DeploymentActionsSHA256 = c.report.ComposeManager.ActionsHash
+		second.DeploymentActionsSHA256 = c.report.ComposeManager.ActionsHash
+		c.verifier.policies, _ = validateNearAIPolicies([]nearAIPolicy{first, second})
+		c.report.Info.ComposeHash = compose
+		c.modelBody.MrConfigId = nearAITestMRConfig(compose)
+		c.managerBody.MrConfigId = nearAITestMRConfig(compose)
+		if compose == second.ComposeHash {
+			c.report.Info.AppName, c.report.Info.OSImageHash = second.AppName, second.OSImageHash
+		}
+		c.encodeReport(t)
+		if _, err := c.verifier.verify(context.Background(), c.request); err != nil {
+			t.Fatal(err)
+		}
+		c.report.Info.OSImageHash = strings.Repeat("66", 32)
+		c.encodeReport(t)
+		if _, err := c.verifier.verify(context.Background(), c.request); err == nil {
+			t.Fatal("accepted unreviewed OS")
+		}
 	}
 }
 
