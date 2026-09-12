@@ -121,6 +121,7 @@ jobs:
       - name: Test deploy gate helpers
         run: |
           python3 tools/test_synthetic_gate_status.py
+          python3 tools/test_provider_probe_status.py
           python3 tools/test_watchdog.py
           python3 tools/test_verify_attestation.py
           python3 tools/test_check_public_tls.py

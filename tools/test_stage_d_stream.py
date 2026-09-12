@@ -17,6 +17,17 @@ SPEC.loader.exec_module(stream)
 
 
 class StageDStreamTests(unittest.TestCase):
+    def test_provider_terminal_is_separate_but_router_errors_block(self) -> None:
+        for source in ["provider", "router", None]:
+            raw = b"data: " + json.dumps({"error": {"source": source}}).encode() + b"\n\ndata: [DONE]\n\n"
+            if source == "provider":
+                stream.validate_stream(raw)
+                with self.assertRaisesRegex(ValueError, "terminal"):
+                    stream.validate_stream(raw.split(b"data: [DONE]")[0])
+            else:
+                with self.assertRaisesRegex(ValueError, "router or unclassified"):
+                    stream.validate_stream(raw)
+
     def test_accepts_done_terminal(self) -> None:
         stream.validate_stream((DATA / "stage-d-stream-done.sse").read_bytes())
 

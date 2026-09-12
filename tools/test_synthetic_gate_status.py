@@ -40,6 +40,27 @@ def complete_samples(monitor: str) -> list[dict[str, object]]:
 
 
 class SyntheticGateStatusTests(unittest.TestCase):
+    def test_explicit_provider_failures_do_not_block_fresh_gate(self) -> None:
+        checks = complete_samples("us-central1") + complete_samples("europe-west4")
+        for check in checks:
+            if check["probe_type"] in {"openai_sdk_pong", "responses_pong"}:
+                check.update(effective_status="down", error_type="provider_error", http_status=503)
+        self.assertEqual(self.evaluate(checks), "up")
+
+    def test_provider_attribution_cannot_excuse_trust_or_missing_http_response(self) -> None:
+        for probe, status, http_status in [
+            ("attestation_nonce", "down", 503),
+            ("openai_sdk_pong", "trust_degraded", 503),
+            ("openai_sdk_pong", "down", None),
+            ("openai_sdk_pong", "down", 200),
+        ]:
+            with self.subTest(probe=probe, status=status, http_status=http_status):
+                checks = complete_samples("us-central1") + complete_samples("europe-west4")
+                for check in checks:
+                    if check["probe_type"] == probe:
+                        check.update(effective_status=status, error_type="provider_error", http_status=http_status)
+                self.assertEqual(self.evaluate(checks), "down")
+
     def evaluate(self, checks: list[dict[str, object]]) -> str:
         started_at = gate._timestamp("2026-07-17T01:00:00Z")
         self.assertIsNotNone(started_at)

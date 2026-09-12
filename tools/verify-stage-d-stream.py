@@ -47,6 +47,11 @@ def validate_stream(raw: bytes) -> None:
             raise ValueError("stream contains an invalid JSON data field") from exc
         if not isinstance(chunk, dict):
             raise ValueError("stream JSON chunk must be an object")
+        if "error" in chunk:
+            error = chunk["error"]
+            if not isinstance(error, dict) or error.get("source") != "provider":
+                raise ValueError("stream contains a router or unclassified error")
+            print("WARNING: provider stream failed; durable billing evidence still required")
         choices = chunk.get("choices")
         if isinstance(choices, list):
             for choice in choices:
