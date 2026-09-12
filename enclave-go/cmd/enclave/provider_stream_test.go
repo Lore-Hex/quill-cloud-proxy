@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -389,36 +390,65 @@ func TestInvokeProviderStreamSwallowedZeroByteWriteFailsWithoutFallback(t *testi
 // after serving the stream. Return nil only for synchronous provider calls.
 func captureProviderStreamStderr(t *testing.T, fn func() *providerInvocation) string {
 	t.Helper()
-	oldStderr := os.Stderr
-	r, w, err := os.Pipe()
+	file, err := os.CreateTemp(t.TempDir(), "stderr-")
 	if err != nil {
 		t.Fatalf("capture stderr: %v", err)
 	}
-	os.Stderr = w
-	defer func() {
-		os.Stderr = oldStderr
-		_ = r.Close()
-		_ = w.Close()
-	}()
+	defer file.Close()
+	stderrFD := int(os.Stderr.Fd())
+	originalFD, err := syscall.Dup(stderrFD)
+	if err != nil {
+		t.Fatalf("duplicate stderr: %v", err)
+	}
+	defer syscall.Close(originalFD)
+	restored := false
+	restore := func() {
+		if !restored {
+			if err := syscall.Dup2(originalFD, stderrFD); err != nil {
+				t.Errorf("restore stderr: %v", err)
+			}
+			restored = true
+		}
+	}
+	defer restore()
+	// Other requests can finish logging after their tests return. Redirect the
+	// descriptor, never the shared os.Stderr pointer those goroutines read.
+	if err := syscall.Dup2(int(file.Fd()), stderrFD); err != nil {
+		t.Fatalf("redirect stderr: %v", err)
+	}
 
 	if invocation := fn(); invocation != nil {
 		// serveStreaming cancels the provider on return, but its final stderr
-		// writes can still be in flight. Join it before closing or restoring stderr.
+		// writes can still be in flight. Join it before restoring stderr.
 		select {
 		case <-invocation.done:
 		case <-time.After(5 * time.Second):
 			t.Fatal("provider invocation did not finish before restoring captured stderr")
 		}
 	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close captured stderr: %v", err)
+	restore()
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("rewind captured stderr: %v", err)
 	}
-	os.Stderr = oldStderr
-	captured, err := io.ReadAll(r)
+	captured, err := io.ReadAll(file)
 	if err != nil {
 		t.Fatalf("read captured stderr: %v", err)
 	}
 	return string(captured)
+}
+
+func TestCaptureProviderStreamStderrKeepsProcessPointerStable(t *testing.T) {
+	original := os.Stderr
+	logs := captureProviderStreamStderr(t, func() *providerInvocation {
+		if os.Stderr != original {
+			t.Fatal("capture replaced os.Stderr while unrelated providers may still be logging")
+		}
+		_, _ = io.WriteString(os.Stderr, "stable stderr pointer\n")
+		return nil
+	})
+	if !strings.Contains(logs, "stable stderr pointer\n") {
+		t.Fatalf("missing captured log: %q", logs)
+	}
 }
 
 func TestCaptureProviderStreamStderrWaitsForProviderCompletion(t *testing.T) {
