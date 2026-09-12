@@ -202,7 +202,7 @@ verify_streaming_authorization() {
   local host="$1" ip="$2" stage="$3"
   local suffix headers stream receipt evidence code request_log_id expected_boot_kid=""
   local idempotency_key attempt lookup_url content_type evidence_state
-  local authorization_kind
+  local authorization_kind provider_failure=0 classification=0
   local timeout_seconds deadline remaining retry_sleep lookup_succeeded
   suffix="${stage}-${ip//./-}"
   headers="${response_dir}/${suffix}.headers"
@@ -235,16 +235,28 @@ verify_streaming_authorization() {
     -H "content-type: application/json" \
     -H "idempotency-key: ${idempotency_key}" \
     -d '{"model":"trustedrouter/monitor","messages":[{"role":"user","content":"reply exactly PONG"}],"max_tokens":32,"stream":true}' \
-    "https://${host}/v1/chat/completions")" || [ "${code}" != "200" ]; then
-    echo "${REGION}: ${stage} streaming canary on ${ip} returned HTTP ${code}" >&2
+    "https://${host}/v1/chat/completions")"; then
+    echo "${REGION}: ${stage} streaming canary on ${ip} had a transport failure" >&2
     return 1
   fi
-  content_type="$(tr -d '\r' <"${headers}" | awk -F ': *' 'tolower($1) == "content-type" { value=tolower($2) } END { print value }')"
-  if [[ "${content_type}" != text/event-stream* ]]; then
-    echo "${REGION}: ${stage} streaming canary on ${ip} was not text/event-stream" >&2
-    return 1
+  if [ "${code}" != "200" ]; then
+    python3 "${TOOLS_DIR}/provider_probe_status.py" "${code}" "${stream}" || classification=$?
+    if [ "${classification}" = "3" ]; then
+      provider_failure=1
+      echo "WARNING: ${REGION}: ${stage} provider failure (HTTP ${code}); checking durable authorization evidence" >&2
+    else
+      echo "${REGION}: ${stage} streaming canary on ${ip} returned HTTP ${code}" >&2
+      return 1
+    fi
   fi
-  python3 tools/verify-stage-d-stream.py stream "${stream}"
+  if [ "${provider_failure}" != "1" ]; then
+    content_type="$(tr -d '\r' <"${headers}" | awk -F ': *' 'tolower($1) == "content-type" { value=tolower($2) } END { print value }')"
+    if [[ "${content_type}" != text/event-stream* ]]; then
+      echo "${REGION}: ${stage} streaming canary on ${ip} was not text/event-stream" >&2
+      return 1
+    fi
+    python3 tools/verify-stage-d-stream.py stream "${stream}"
+  fi
 
   request_log_id="$(tr -d '\r' <"${headers}" | awk -F ': *' 'tolower($1) == "x-request-id" { value=$2 } END { print value }')"
   if ! [[ "${request_log_id}" =~ ^rlog_[0-9a-f]{32}$ ]]; then
@@ -307,7 +319,7 @@ verify_streaming_authorization() {
 
 verify_instance() {
   local host="$1" ip="$2" attempts="$3" stage="$4"
-  local attested=0 completed=0 code="000" idempotency_key attempt
+  local attested=0 completed=0 code="000" idempotency_key attempt classification
 
   echo "${REGION}: verifying ${stage} attestation on ${ip} with SNI ${host}"
   for attempt in $(seq 1 "${attempts}"); do
@@ -342,31 +354,26 @@ verify_instance() {
       -H "content-type: application/json" \
       -H "idempotency-key: ${idempotency_key}" \
       -d '{"model":"trustedrouter/monitor","messages":[{"role":"user","content":"reply exactly PONG"}],"max_tokens":32}' \
-      "https://${host}/v1/chat/completions")" && [ "${code}" = "200" ]; then
-      completed=1
-      break
+      "https://${host}/v1/chat/completions")"; then
+      classification=0
+      python3 "${TOOLS_DIR}/provider_probe_status.py" "${code}" "${response_file}" || classification=$?
+      if [ "${classification}" = "0" ]; then
+        completed=1
+        break
+      fi
+      if [ "${classification}" = "3" ]; then
+        echo "WARNING: ${REGION}: ${stage} provider failure (HTTP ${code}); router attestation verified, billing gate still required" >&2
+        completed=1
+        break
+      fi
     fi
     echo "${REGION}: ${stage} inference attempt ${attempt}/3 on ${ip} returned HTTP ${code}" >&2
-    # The status alone cannot tell a refused key from a refused model from a
-    # refused workspace, and this gate blocks the rollout when it fails. The
-    # body is the router's own error envelope; it carries no credential.
-    echo "${REGION}: ${stage} inference attempt ${attempt}/3 body: $(head -c 400 "${response_file}" | tr -d '\n')" >&2
     sleep 5
   done
   if [ "${completed}" != "1" ]; then
     echo "${REGION}: ${stage} direct inference canary on ${ip} did not succeed" >&2
     return 1
   fi
-  python3 - "${response_file}" <<'PY'
-import json
-import pathlib
-import sys
-
-payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-content = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
-if str(content).strip() != "PONG":
-    raise SystemExit("direct inference canary did not return exact PONG")
-PY
   if [ "${stage}" = "regional" ]; then
     verify_streaming_authorization "${host}" "${ip}" "${stage}"
   fi
@@ -403,4 +410,4 @@ done
 # immediately after this script independently re-attests the regional SNI and
 # expands it to the complete healthy regional set.
 promoted_cold_alias=0
-echo "${REGION}: ${#ips[@]} instances passed bootstrap and regional attestation/inference/streaming canaries"
+echo "${REGION}: ${#ips[@]} instances passed router canaries; provider failures, if any, reported separately"

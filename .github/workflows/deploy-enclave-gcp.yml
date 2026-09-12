@@ -46,6 +46,7 @@ on:
       - "tools/testdata/stage-d-evidence-lookup.json"
       - "tools/wait-region-synthetic-up.sh"
       - "tools/synthetic_gate_status.py"
+      - "tools/provider_probe_status.py"
       - "tools/watchdog.py"
       - "tools/roll-secondary-region.sh"
       - "tools/recover-gcp-region.sh"

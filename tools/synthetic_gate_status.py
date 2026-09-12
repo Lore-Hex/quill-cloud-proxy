@@ -10,6 +10,8 @@ import sys
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from provider_probe_status import is_provider_probe_failure
+
 
 # These are the request-path signals attributable to an enclave rollout.
 # The SDK PONGs traverse control-plane authorization, so a real control-plane
@@ -47,8 +49,9 @@ def evaluate_region(
 
     Every required probe must have a sample created after ``started_at`` from
     every expected monitor region. Old failures cannot poison a new rollout,
-    and a single fast health sample cannot release the gate before inference
-    and attestation have also succeeded.
+    and a single fast health sample cannot release the gate before the request
+    path and attestation respond. Explicit provider failures are advisory;
+    unknown, transport, router, and trust failures still block the gate.
     """
 
     expected_monitors = {item.strip() for item in monitor_regions if item.strip()}
@@ -89,6 +92,10 @@ def evaluate_region(
         status = str(
             raw_check.get("effective_status") or raw_check.get("status") or ""
         ).lower()
+        if is_provider_probe_failure(raw_check):
+            # This is a gate verdict, not a mutation of the public sample.
+            status = "up"
+            print(f"provider health separate: {region} {key[0]} {key[1]}", file=sys.stderr)
         prior = latest.get(key)
         if prior is None or created_at > prior[0]:
             latest[key] = (created_at, status)
