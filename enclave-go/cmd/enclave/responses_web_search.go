@@ -703,7 +703,7 @@ func preflightResponsesWebSearchPrivacy(
 
 func isWebSearchRestrictedModel(modelID string) bool {
 	model := strings.ToLower(strings.TrimSpace(modelID))
-	for _, prefix := range []string{"trustedrouter/zdr", "trustedrouter/e2e", "trustedrouter/confidential", "trustedrouter/eu"} {
+	for _, prefix := range []string{"trustedrouter/zdr", "trustedrouter/e2e", "trustedrouter/confidential", "trustedrouter/eu", "trustedrouter/green"} {
 		if model == prefix || strings.HasPrefix(model, prefix+"-") || strings.HasPrefix(model, prefix+"/") {
 			return true
 		}
