@@ -39,7 +39,7 @@ func TestLiveRegoloStreaming(t *testing.T) {
 			if err != nil || strings.TrimSpace(visible) != "PONG" {
 				t.Fatalf("PONG mismatch: %d visible bytes, %d stream bytes, parse error=%v", len(visible), out.Len(), err)
 			}
-			inputTokens, outputTokens := 0, 0
+			inputTokens, outputTokens, reasoningTokens := 0, 0, 0
 			for _, line := range strings.Split(out.String(), "\n") {
 				if !strings.HasPrefix(line, "data: ") {
 					continue
@@ -51,19 +51,24 @@ func TestLiveRegoloStreaming(t *testing.T) {
 						} `json:"usage"`
 					} `json:"message"`
 					Usage struct {
-						InputTokens  int `json:"input_tokens"`
-						OutputTokens int `json:"output_tokens"`
+						InputTokens     int `json:"input_tokens"`
+						OutputTokens    int `json:"output_tokens"`
+						ReasoningTokens int `json:"reasoning_tokens"`
 					} `json:"usage"`
 				}
 				if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event) == nil {
 					inputTokens = max(inputTokens, event.Message.Usage.InputTokens, event.Usage.InputTokens)
 					outputTokens = max(outputTokens, event.Usage.OutputTokens)
+					reasoningTokens = max(reasoningTokens, event.Usage.ReasoningTokens)
 				}
 			}
 			if inputTokens <= 0 || outputTokens <= 0 {
 				t.Fatalf("stream lacks positive billable usage: input=%d output=%d", inputTokens, outputTokens)
 			}
-			t.Logf("PONG and usage received (%d stream bytes)", out.Len())
+			if reasoningTokens > 0 && outputTokens <= reasoningTokens {
+				t.Fatalf("billable output omits visible or reasoning tokens: output=%d reasoning=%d", outputTokens, reasoningTokens)
+			}
+			t.Logf("PONG and usage received: input=%d output=%d reasoning=%d", inputTokens, outputTokens, reasoningTokens)
 		})
 	}
 }

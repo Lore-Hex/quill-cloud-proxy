@@ -327,7 +327,7 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 		}
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
-	return translateOpenAIStreamToAnthropic(resp.Body, out)
+	return translateOpenAIStreamToAnthropicForProvider(resp.Body, out, normalizeDirectProvider(provider))
 }
 
 func buildOpenAICompatibleRequest(
