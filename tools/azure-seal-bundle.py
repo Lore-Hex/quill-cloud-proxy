@@ -217,6 +217,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_NSCALE_SECRET",), "Nscale service token", True),
     Binding(("QUILL_REGOLO_SECRET",), "Regolo key", True),
     Binding(("QUILL_CONFIDENTIAL_AI_SECRET",), "Confidential AI service token", True),
+    Binding(("QUILL_REDPILL_SECRET",), "RedPill API key", True),
     Binding(("QUILL_SCALEDOWN_SECRET",), "ScaleDown inference key", True),
     Binding(("QUILL_PERPLEXITY_SECRET",), "Perplexity key", True),
     Binding(("QUILL_KREA_SECRET",), "Krea key", True),

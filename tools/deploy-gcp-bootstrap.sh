@@ -115,6 +115,7 @@ WANDB_SECRET="${WANDB_SECRET:-trustedrouter-wandb-api-key}"
 NSCALE_SECRET="${NSCALE_SECRET:-trustedrouter-nscale-api-key}"
 REGOLO_SECRET="${REGOLO_SECRET:-trustedrouter-regolo-api-key}"
 CONFIDENTIAL_AI_SECRET="${CONFIDENTIAL_AI_SECRET:-trustedrouter-confidential-ai-api-key}"
+REDPILL_SECRET="${REDPILL_SECRET:-trustedrouter-redpill-api-key}"
 SCALEDOWN_SECRET="${SCALEDOWN_SECRET:-trustedrouter-scaledown-api-key}"
 PERPLEXITY_SECRET="${PERPLEXITY_SECRET:-trustedrouter-perplexity-api-key}"
 KREA_SECRET="${KREA_SECRET:-trustedrouter-krea-api-key}"
@@ -276,6 +277,7 @@ for secret in \
   "$NSCALE_SECRET" \
   "$REGOLO_SECRET" \
   "$CONFIDENTIAL_AI_SECRET" \
+  "$REDPILL_SECRET" \
   "$SCALEDOWN_SECRET" \
   "$PERPLEXITY_SECRET" \
   "$KREA_SECRET" \

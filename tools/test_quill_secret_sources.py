@@ -40,6 +40,8 @@ class QuillSecretSourcesTests(unittest.TestCase):
             "ATLAS_CLOUD_API_KEY": "trustedrouter-atlas-cloud-api-key",
             "DATABRICKS_TOKEN": "trustedrouter-databricks-token",
             "ENGY_API_KEY": "trustedrouter-engy-api-key",
+            "REDPILL_API_KEY": "trustedrouter-redpill-api-key",
+            "PHALA_CONFIDENTIAL_API_KEY": "trustedrouter-phala-confidential-api-key",
             "PEARL_RESEARCH_API_KEY": "trustedrouter-pearl-api-key",
             "FAL_API_KEY": "trustedrouter-fal-api-key",
             "TENCENT_API_KEY": "trustedrouter-tencent-tokenhub-api-key",
@@ -59,6 +61,20 @@ class QuillSecretSourcesTests(unittest.TestCase):
             )
             self.assertEqual(missing, [])
             self.assertEqual(set(values), set(cases.values()))
+
+    def test_redpill_is_wired_in_every_cloud_without_reusing_phala(self) -> None:
+        root = SCRIPT.parents[1]
+        for relative, marker in {
+            "tools/deploy-gcp-mig.sh": "QUILL_REDPILL_SECRET trustedrouter-redpill-api-key",
+            "tools/deploy-gcp-bootstrap.sh": "REDPILL_SECRET",
+            "tools/deploy-azure-aci.sh": "QUILL_REDPILL_SECRET",
+            "tools/azure-seal-bundle.py": "QUILL_REDPILL_SECRET",
+            "tools/azure-bundle.manifest": "trustedrouter-redpill-api-key",
+            "tools/sync-secrets-to-aws.sh": "trustedrouter-redpill-api-key",
+            "enclave-go/Dockerfile.enclave.gcp.multi": "QUILL_REDPILL_SECRET",
+        }.items():
+            with self.subTest(path=relative):
+                self.assertIn(marker, (root / relative).read_text())
 
     def test_openai_key_is_copied_for_chat_and_video(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

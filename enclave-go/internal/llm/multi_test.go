@@ -65,6 +65,7 @@ func TestMultiClientDispatchesPrepaidOpenAICompatibleProviders(t *testing.T) {
 		{"wandb", "z-ai/glm-5.2", "zai-org/GLM-5.2", "zai-org/GLM-5.2", false},
 		{"nscale", "openai/gpt-oss-120b", "openai/gpt-oss-120b", "openai/gpt-oss-120b", false},
 		{"confidential-ai", "deepseek/deepseek-v4-flash-0731", "deepseek-ai/DeepSeek-V4-Flash-0731", "deepseek-ai/DeepSeek-V4-Flash-0731", false},
+		{"redpill", "z-ai/glm-5.3", "z-ai/glm-5.3", "z-ai/glm-5.3", false},
 	}
 
 	for _, tt := range tests {

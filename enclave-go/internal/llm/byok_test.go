@@ -1003,6 +1003,9 @@ func TestOpenAIGPTGenerationsUseModernCompletionTokenField(t *testing.T) {
 		{name: "astra canonical id", provider: "openai", model: "openai/gpt-6-astra"},
 		{name: "future generation", provider: "openai", model: "gpt-10"},
 		{name: "azure astra deployment", provider: "azure", model: "gpt-6-astra"},
+		{name: "redpill luna", provider: "redpill", model: "openai/gpt-5.6-luna"},
+		{name: "redpill astra", provider: "redpill", model: "openai/gpt-6-astra"},
+		{name: "redpill o3", provider: "redpill", model: "openai/o3"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1038,6 +1041,8 @@ func TestOpenAIGPTGenerationsUseModernCompletionTokenField(t *testing.T) {
 		{provider: "openai", model: "gpt-4o-mini"},
 		{provider: "openai", model: "gpt-oss-120b"},
 		{provider: "deepinfra", model: "openai/gpt-6-astra"},
+		{provider: "redpill", model: "openai/gpt-oss-120b"},
+		{provider: "redpill", model: "z-ai/glm-5.3"},
 	} {
 		if requiresMaxCompletionTokens(tc.provider, tc.model) {
 			t.Fatalf("requiresMaxCompletionTokens(%q, %q) = true", tc.provider, tc.model)

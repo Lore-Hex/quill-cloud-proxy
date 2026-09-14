@@ -173,6 +173,7 @@ SECRETS=(
   trustedrouter-nscale-api-key
   trustedrouter-regolo-api-key
   trustedrouter-confidential-ai-api-key
+  trustedrouter-redpill-api-key
   trustedrouter-scaledown-api-key
   trustedrouter-perplexity-api-key
   trustedrouter-krea-api-key
