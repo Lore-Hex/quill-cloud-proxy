@@ -37,6 +37,10 @@ func HTTPStatusFromError(err error) (status int, ok bool) {
 // translateOpenAIStreamToAnthropic reads OpenAI Chat Completions SSE chunks
 // and writes native Anthropic SSE events for the existing adapter pipeline.
 func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
+	return translateOpenAIStreamToAnthropicForProvider(r, w, "")
+}
+
+func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provider string) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 
@@ -101,6 +105,12 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 		searchResults = mergeProviderSearchResults(searchResults, chunk.SearchResults)
 		if chunk.Usage != nil {
 			usage = chunk.Usage
+			// Regolo's SSE totals exclude separately reported reasoning, unlike
+			// its non-streaming JSON. Normalize each fresh cumulative report once.
+			if provider == "regolo" && usage.CompletionTokensDetails != nil {
+				usage.CompletionTokens += max(usage.CompletionTokensDetails.ReasoningTokens, 0)
+				usage.TotalTokens = max(usage.TotalTokens, usage.PromptTokens+usage.CompletionTokens)
+			}
 		}
 		if usage == nil && serviceTier != "" {
 			usage = &openAIStreamUsage{}
