@@ -30,6 +30,9 @@ func TestLiveProviderWaveChatModels(t *testing.T) {
 		{provider: "relace", key: os.Getenv("RELACE_API_KEY"), model: "deepseek-ai/DeepSeek-V4-Flash-0731"},
 		{provider: "relace", key: os.Getenv("RELACE_API_KEY"), model: "moonshotai/kimi-k3"},
 		{provider: "confidential-ai", key: os.Getenv("CONFIDENTIAL_AI_API_KEY"), model: "deepseek-ai/DeepSeek-V4-Flash-0731"},
+		{provider: "redpill", key: os.Getenv("REDPILL_API_KEY"), model: "openai/gpt-oss-120b"},
+		{provider: "redpill", key: os.Getenv("REDPILL_API_KEY"), model: "z-ai/glm-5.3-flash"},
+		{provider: "redpill", key: os.Getenv("REDPILL_API_KEY"), model: "openai/gpt-5.6-luna"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider+"/"+tt.model, func(t *testing.T) {
@@ -39,7 +42,8 @@ func TestLiveProviderWaveChatModels(t *testing.T) {
 			maxTokens := 256
 			req := &qtypes.OpenAIChatRequest{Model: tt.model, MaxTokens: &maxTokens}
 			body := &qtypes.AnthropicMessagesRequest{
-				MaxTokens: maxTokens,
+				MaxTokens:         maxTokens,
+				MaxTokensExplicit: true,
 				Messages: []qtypes.AnthropicMessage{
 					{Role: "user", Content: "Reply exactly PONG."},
 				},

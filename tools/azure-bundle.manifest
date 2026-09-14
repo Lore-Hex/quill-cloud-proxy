@@ -33,6 +33,7 @@ trustedrouter-chutes-api-key
 trustedrouter-cloudflare-workers-ai-api-token
 trustedrouter-cohere-api-key
 trustedrouter-confidential-ai-api-key
+trustedrouter-redpill-api-key
 trustedrouter-crusoe-api-key
 trustedrouter-databricks-host
 trustedrouter-databricks-token

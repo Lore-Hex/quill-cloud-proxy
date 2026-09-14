@@ -50,6 +50,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "TOGETHER_API_KEY": "trustedrouter-together-api-key",
     "VENICE_API_KEY": "trustedrouter-venice-api-key",
     "PHALA_CONFIDENTIAL_API_KEY": "trustedrouter-phala-confidential-api-key",
+    "REDPILL_API_KEY": "trustedrouter-redpill-api-key",
     "SILICON_FLOW_API_KEY": "trustedrouter-siliconflow-api-key",
     "NOVITA_API_KEY": "trustedrouter-novita-api-key",
     "TINFOIL_API_KEY": "trustedrouter-tinfoil-api-key",
