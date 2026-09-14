@@ -215,6 +215,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_NVIDIA_NIM_SECRET",), "NVIDIA NIM key", True),
     Binding(("QUILL_WANDB_SECRET",), "W&B Inference key", True),
     Binding(("QUILL_NSCALE_SECRET",), "Nscale service token", True),
+    Binding(("QUILL_REGOLO_SECRET",), "Regolo key", True),
     Binding(("QUILL_CONFIDENTIAL_AI_SECRET",), "Confidential AI service token", True),
     Binding(("QUILL_SCALEDOWN_SECRET",), "ScaleDown inference key", True),
     Binding(("QUILL_PERPLEXITY_SECRET",), "Perplexity key", True),

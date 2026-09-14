@@ -113,6 +113,7 @@ SAKANA_SECRET="${SAKANA_SECRET:-trustedrouter-sakana-api-key}"
 NVIDIA_NIM_SECRET="${NVIDIA_NIM_SECRET:-trustedrouter-nvidia-nim-api-key}"
 WANDB_SECRET="${WANDB_SECRET:-trustedrouter-wandb-api-key}"
 NSCALE_SECRET="${NSCALE_SECRET:-trustedrouter-nscale-api-key}"
+REGOLO_SECRET="${REGOLO_SECRET:-trustedrouter-regolo-api-key}"
 CONFIDENTIAL_AI_SECRET="${CONFIDENTIAL_AI_SECRET:-trustedrouter-confidential-ai-api-key}"
 SCALEDOWN_SECRET="${SCALEDOWN_SECRET:-trustedrouter-scaledown-api-key}"
 PERPLEXITY_SECRET="${PERPLEXITY_SECRET:-trustedrouter-perplexity-api-key}"
@@ -273,6 +274,7 @@ for secret in \
   "$NVIDIA_NIM_SECRET" \
   "$WANDB_SECRET" \
   "$NSCALE_SECRET" \
+  "$REGOLO_SECRET" \
   "$CONFIDENTIAL_AI_SECRET" \
   "$SCALEDOWN_SECRET" \
   "$PERPLEXITY_SECRET" \

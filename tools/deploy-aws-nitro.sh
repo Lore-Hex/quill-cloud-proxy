@@ -829,6 +829,7 @@ allowlist:
   - {address: integrate.api.nvidia.com,         port: 443}
   - {address: api.inference.wandb.ai,           port: 443}
   - {address: inference.api.nscale.com,         port: 443}
+  - {address: api.regolo.ai,                   port: 443}
   - {address: api.confidential.ai,             port: 443}
   - {address: api.scaledown.xyz,               port: 443}
   - {address: api.perplexity.ai,                port: 443}
@@ -971,6 +972,7 @@ write_vsock_unit 8070 api.sakana.ai
 write_vsock_unit 8071 integrate.api.nvidia.com
 write_vsock_unit 8072 api.inference.wandb.ai
 write_vsock_unit 8073 inference.api.nscale.com
+write_vsock_unit 8087 api.regolo.ai
 write_vsock_unit 8085 api.confidential.ai
 write_vsock_unit 8086 api.scaledown.xyz
 write_vsock_unit 8074 api.perplexity.ai

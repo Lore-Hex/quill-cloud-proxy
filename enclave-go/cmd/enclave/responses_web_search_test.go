@@ -375,6 +375,7 @@ func TestResponsesWebSearchPrivacyFailsClosed(t *testing.T) {
 		provider *types.ProviderRouting
 	}{
 		{name: "zdr alias", model: "trustedrouter/zdr"},
+		{name: "renewable inference alias", model: "trustedrouter/green"},
 		{name: "e2e alias", model: "trustedrouter/e2e"},
 		{name: "confidential alias", model: "trustedrouter/confidential"},
 		{name: "eu alias", model: "trustedrouter/eu"},
