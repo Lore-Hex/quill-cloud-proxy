@@ -433,14 +433,24 @@ func vertexGeminiThinkingConfig(modelID string, req *qtypes.OpenAIChatRequest) m
 		return map[string]any{"thinkingLevel": "high"}
 	}
 	if effort := vertexGeminiReasoningEffort(req); effort != "" && !vertexGeminiImageModel(modelID) {
-		switch effort {
-		case "none", "off", "disable", "disabled", "minimal", "low":
-			if is25 {
-				return map[string]any{"thinkingBudget": 0}
+		if is25 {
+			// Match Google's documented OpenAI compatibility mapping.
+			budgets := map[string]int{"none": 0, "off": 0, "disabled": 0, "disable": 0,
+				"minimal": 1024, "low": 1024, "medium": 8192, "high": 24576}
+			if budget, ok := budgets[effort]; ok {
+				return map[string]any{"thinkingBudget": budget}
 			}
+		}
+		switch effort {
+		case "none", "off", "disable", "disabled":
 			return map[string]any{"thinkingLevel": "low"}
-		case "high":
-			return map[string]any{"thinkingLevel": "high"}
+		case "minimal":
+			if strings.Contains(modelID, "pro") || geminiVersionAtLeast(modelID, 3, 7) {
+				return map[string]any{"thinkingLevel": "low"}
+			}
+			return map[string]any{"thinkingLevel": "minimal"}
+		case "low", "medium", "high":
+			return map[string]any{"thinkingLevel": effort}
 		}
 	}
 	if !strings.Contains(modelID, "flash") || vertexGeminiImageModel(modelID) {

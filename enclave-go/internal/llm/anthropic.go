@@ -145,7 +145,7 @@ func (c *anthropicClient) InvokeStreaming(
 	// the resolved upstream model id and `stream: true`.
 	// Credits and BYOK share one explicit provider projection so router-only
 	// metadata cannot diverge across the two Anthropic paths.
-	reqBody := buildAnthropicWireRequest(model, messages, body)
+	reqBody := buildAnthropicWireRequest(model, messages, anthropicChatReasoningBody(model, req, body))
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("llm/%s: marshal body: %w", c.provider, err)

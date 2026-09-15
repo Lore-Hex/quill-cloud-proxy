@@ -1,6 +1,41 @@
 package llm
 
-import qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+import (
+	"strings"
+
+	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+)
+
+func chatReasoningEffort(req *qtypes.OpenAIChatRequest) string {
+	if req == nil {
+		return ""
+	}
+	if value := strings.TrimSpace(req.ReasoningEffort); value != "" {
+		return strings.ToLower(value)
+	}
+	values, _ := req.Reasoning.(map[string]any)
+	value, _ := values["effort"].(string)
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func applyChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, body *qtypes.AnthropicMessagesRequest, wire *openAICompatibleRequest) {
+	effort := chatReasoningEffort(req)
+	if effort == "" {
+		return
+	}
+	// The shared Anthropic projection synthesizes a budget for old Claude
+	// models. It is not a native thinking configuration for other providers.
+	if body != nil && !body.NativeContent {
+		if thinking, ok := wire.Thinking.(map[string]any); ok && thinking["budget_tokens"] != nil {
+			wire.Thinking = nil
+		}
+	}
+	switch normalizeDirectProvider(provider) {
+	case "openai", "gemini", "google-ai-studio", "deepseek", "zai", "kimi", "mistral", "alibaba":
+		wire.ReasoningEffort = effort
+		wire.Reasoning = nil
+	}
+}
 
 // Native hybrid-model switches are not OpenAI reasoning objects or Anthropic
 // token budgets. In particular, forwarding enabled:false unchanged can be

@@ -312,9 +312,8 @@ func TestBuildGoogleAIStudioRequestNormalizesGemini37MinimalThinking(t *testing.
 			&qtypes.AnthropicMessagesRequest{},
 			nil,
 		)
-		reasoning := got.Reasoning.(map[string]any)
-		if reasoning["effort"] != "low" || reasoning["exclude"] != true {
-			t.Fatalf("reasoning = %#v, want low effort and preserved fields", reasoning)
+		if got.ReasoningEffort != "low" || got.Reasoning != nil {
+			t.Fatalf("effort=%q reasoning=%#v, want native low without unsupported reasoning object", got.ReasoningEffort, got.Reasoning)
 		}
 		if original["effort"] != "minimal" {
 			t.Fatalf("caller reasoning mutated: %#v", original)

@@ -200,7 +200,7 @@ func TestVertexGeminiHonorsExplicitLowReasoningForPro(t *testing.T) {
 		t.Fatalf("gemini pro reasoning object thinkingConfig = %#v", got)
 	}
 	req = &qtypes.OpenAIChatRequest{ReasoningEffort: "low"}
-	if got := vertexGeminiThinkingConfig("gemini-2.5-flash", req); got["thinkingBudget"] != 0 {
+	if got := vertexGeminiThinkingConfig("gemini-2.5-flash", req); got["thinkingBudget"] != 1024 {
 		t.Fatalf("gemini 2.5 explicit low thinkingConfig = %#v", got)
 	}
 }

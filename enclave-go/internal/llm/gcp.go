@@ -176,7 +176,7 @@ func (c *gcpClient) InvokeStreaming(
 	// Build the Vertex-shaped request body. Identical to Anthropic's
 	// Messages API except `anthropic_version` is in the body and `model`
 	// goes into the URL.
-	reqBody := buildVertexAnthropicWireRequest(modelID, messages, body)
+	reqBody := buildVertexAnthropicWireRequest(modelID, messages, anthropicChatReasoningBody(modelID, req, body))
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("llm/gcp: marshal body: %w", err)

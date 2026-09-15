@@ -43,7 +43,7 @@ func (c *awsClient) InvokeStreaming(
 	if err != nil {
 		return err
 	}
-	return c.br.InvokeStreaming(ctx, id, converted, out)
+	return c.br.InvokeStreaming(ctx, id, anthropicChatReasoningBody(req.Model, req, converted), out)
 }
 
 func New(boot *qtypes.BootstrapData) Client {
