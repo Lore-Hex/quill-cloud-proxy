@@ -52,7 +52,7 @@ func New(boot *qtypes.BootstrapData) Client {
 		fireworks:        newOpenAICompatible("fireworks", boot.FireworksAPIKey),
 		grok:             newOpenAICompatible("grok", boot.GrokAPIKey),
 		novita:           newOpenAICompatible("novita", boot.NovitaAPIKey),
-		phala:            newOpenAICompatible("phala", boot.PhalaAPIKey),
+		phala:            newPhala(boot.PhalaAPIKey),
 		siliconflow:      newOpenAICompatible("siliconflow", boot.SiliconFlowAPIKey),
 		tinfoil:          newTinfoilAttested(boot.TinfoilAPIKey),
 		nearAI:           newNearAI(boot.NearAIAPIKey),
@@ -125,7 +125,7 @@ type multiClient struct {
 	fireworks           *openAICompatibleClient
 	grok                *openAICompatibleClient
 	novita              *openAICompatibleClient
-	phala               *openAICompatibleClient
+	phala               *phalaClient
 	siliconflow         *openAICompatibleClient
 	tinfoil             *openAICompatibleClient
 	nearAI              *nearAIClient
@@ -190,6 +190,9 @@ func (m *multiClient) InvokeStreaming(
 	// Chutes API edge and silently lose the E2E guarantee.
 	if provider == "chutes" && strings.TrimSpace(option.ProviderAPIKey) != "" {
 		return m.chutes.InvokeStreaming(ctx, req, body, out, options...)
+	}
+	if provider == "phala" {
+		return m.phala.InvokeStreaming(ctx, req, body, out, options...)
 	}
 	if handled, err := invokeBYOKStreaming(ctx, req, body, out, option); handled {
 		return err

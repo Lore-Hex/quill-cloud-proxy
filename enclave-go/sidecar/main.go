@@ -371,6 +371,11 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(verified)
 	})
+	phalaAttestor, err := newPhalaVerifier()
+	if err != nil {
+		log.Fatalf("initialize Phala verifier: %v", err)
+	}
+	mux.HandleFunc("/verify-phala", phalaVerificationHandler(phalaAttestor))
 	mux.HandleFunc("/verify-near-ai", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,6 +38,8 @@ func invokeBYOKStreaming(
 	}
 	provider := normalizeDirectProvider(options.Provider)
 	switch {
+	case provider == "phala":
+		return true, newPhala(options.ProviderAPIKey).InvokeStreaming(ctx, req, body, out, options)
 	case provider == "anthropic":
 		return true, invokeAnthropicBYOKStreaming(ctx, req, body, out, options.ProviderAPIKey, options.UpstreamModel)
 	case isOpenAICompatibleBYOKProvider(provider):
@@ -265,6 +268,9 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	upstreamModel string,
 	options openAICompatibleInvocationOptions,
 ) error {
+	if normalizeDirectProvider(provider) == "phala" {
+		return errors.New("llm/phala: generic HTTPS transport forbidden; use attested ACI")
+	}
 	if strings.TrimSpace(apiKey) == "" {
 		return fmt.Errorf("llm/%s: missing api key", provider)
 	}
@@ -1081,18 +1087,8 @@ func directBaseURL(provider string) string {
 		// LLM API is under /openai/v1; /v3 is Novita's non-LLM resource API.
 		return "https://api.novita.ai/openai/v1"
 	case "phala":
-		// Phala confidential AI — Intel TDX + NVIDIA CC TEEs.
-		// `api.redpill.ai` is what Phala's official docs use (Yan @
-		// Phala confirmed 2026-05-13 that `api.red-pill.ai` is an
-		// alias that also works; we normalized on the no-hyphen form
-		// across every reference in the codebase so the AWS vsock-
-		// proxy host filter, parent bootstrap, and scraper URL all
-		// agree).
-		//
-		// We route exclusively to the GPU-TEE-attested tier via the
-		// `phala/<bare>` model id form (see phalaModelMap below).
-		// The upstream-pass-through tier uses a different (redpill)
-		// key TR doesn't have.
+		// Retained for catalog/batch URL resolution. Chat must use phalaClient:
+		// neither this hostname nor a phala/ model prefix proves attestation.
 		return "https://api.redpill.ai/v1"
 	case "siliconflow":
 		// SiliconFlow Chinese serverless inference (200+ open-weight

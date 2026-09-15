@@ -3,12 +3,17 @@ module github.com/Lore-Hex/quill-cloud-proxy/enclave-go-sidecar
 go 1.25.5
 
 require (
+	github.com/Lore-Hex/quill-cloud-proxy/enclave-go v0.0.0
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
+	github.com/google/go-tdx-guest v0.3.1
 	github.com/mdlayher/vsock v1.2.1
 	github.com/tinfoilsh/tinfoil-go/verifier v0.12.0
-	github.com/google/go-tdx-guest v0.3.1
+	golang.org/x/crypto v0.46.0
 )
 
 replace github.com/tinfoilsh/tinfoil-go/verifier => ../third_party/tinfoil-verifier
+
+replace github.com/Lore-Hex/quill-cloud-proxy/enclave-go => ..
 
 require (
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
@@ -71,7 +76,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.38.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/mod v0.31.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
