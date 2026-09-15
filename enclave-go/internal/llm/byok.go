@@ -403,6 +403,7 @@ func buildOpenAICompatibleRequest(
 		if len(req.ResponseFormat) > 0 {
 			reqBody.ResponseFormat = req.ResponseFormat
 		}
+		applyChatReasoningEffort(provider, req, body, &reqBody)
 		applyHybridReasoningControl(provider, req, &reqBody)
 		if kimiToolsNeedThinkingDisabled(provider, upstreamID, req.Tools) {
 			reqBody.Thinking = map[string]string{"type": "disabled"}
@@ -735,7 +736,7 @@ func invokeAnthropicCompatibleStreamingWithClient(
 	if strings.TrimSpace(modelID) == "" {
 		return fmt.Errorf("llm/%s: missing authorized upstream model", provider)
 	}
-	reqBody := buildAnthropicWireRequest(modelID, messages, body)
+	reqBody := buildAnthropicWireRequest(modelID, messages, anthropicChatReasoningBody(modelID, req, body))
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("llm/%s: marshal anthropic body: %w", provider, err)
