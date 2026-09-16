@@ -131,6 +131,7 @@ jobs:
           python3 tools/test_reconcile_enclave_dns.py
           python3 tools/test_dns_reconciler_scheduler.py
           python3 tools/test_rollout_safety.py
+          python3 tools/test_verify_gcp_runtime_secret_access.py
           python3 tools/test_verify_pcr0_build_args.py
           python3 tools/test_nitro_root_pin.py
           python3 tools/test_mirror_independence.py

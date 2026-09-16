@@ -13,6 +13,36 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RolloutSafetyTests(unittest.TestCase):
+    def test_canary_keys_are_fresh_per_invocation_and_stable_within_retries(self) -> None:
+        source = (ROOT / "tools/verify-region-before-dns.sh").read_text()
+        namespace = next(
+            line for line in source.splitlines() if line.startswith("CANARY_RUN_ID=")
+        )
+        assignments = re.findall(r'^  idempotency_key=".+"$', source, re.MULTILINE)
+        self.assertEqual(len(assignments), 2)
+        script = "\n".join([
+            "set -euo pipefail", "REGION=us-east4", "stage=regional", "ip=192.0.2.1",
+            namespace,
+            *[
+                line + '\nprintf "%s\\n%s\\n" "$idempotency_key" "$idempotency_key"'
+                for line in assignments
+            ],
+        ])
+        env = {**os.environ, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
+
+        def keys() -> list[str]:
+            return subprocess.run(
+                ["bash", "-c", script], env=env, check=True,
+                capture_output=True, text=True,
+            ).stdout.splitlines()
+
+        first, second = keys(), keys()
+        self.assertEqual(first[0], first[1])
+        self.assertEqual(first[2], first[3])
+        self.assertNotEqual(first[0], first[2])
+        self.assertTrue(set(first).isdisjoint(second))
+        self.assertTrue(all(len(key) < 200 for key in first))
+
     def test_workflow_uses_persistent_drains_for_every_region(self) -> None:
         workflow = (
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
