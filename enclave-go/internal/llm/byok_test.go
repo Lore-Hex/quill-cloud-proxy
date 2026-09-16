@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1002,6 +1003,9 @@ func TestOpenAIGPTGenerationsUseModernCompletionTokenField(t *testing.T) {
 		{name: "astra canonical id", provider: "openai", model: "openai/gpt-6-astra"},
 		{name: "future generation", provider: "openai", model: "gpt-10"},
 		{name: "azure astra deployment", provider: "azure", model: "gpt-6-astra"},
+		{name: "lightning GPT 5.4", provider: "lightning", model: "openai/gpt-5.4-2026-03-05"},
+		{name: "lightning alias", provider: "lightning-ai", model: "openai/gpt-5.4-2026-03-05"},
+		{name: "lightning o series", provider: "lightning", model: "openai/o3"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1037,10 +1041,58 @@ func TestOpenAIGPTGenerationsUseModernCompletionTokenField(t *testing.T) {
 		{provider: "openai", model: "gpt-4o-mini"},
 		{provider: "openai", model: "gpt-oss-120b"},
 		{provider: "deepinfra", model: "openai/gpt-6-astra"},
+		{provider: "lightning", model: "openai/gpt-4"},
+		{provider: "lightning", model: "lightning-ai/gpt-oss-120b"},
+		{provider: "lightning", model: "google/gemini-2.5-pro"},
 	} {
 		if requiresMaxCompletionTokens(tc.provider, tc.model) {
 			t.Fatalf("requiresMaxCompletionTokens(%q, %q) = true", tc.provider, tc.model)
 		}
+	}
+}
+
+func TestLightningGPT54CompletionBudgetWire(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explicit=%t", explicit), func(t *testing.T) {
+			maxTokens := 37
+			req := &qtypes.OpenAIChatRequest{
+				Model:    "openai/gpt-5.4-2026-03-05",
+				Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "PONG"}},
+			}
+			if explicit {
+				req.MaxTokens = &maxTokens
+			}
+			body, err := adapter.ToAnthropic(req, req.Model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			client := &http.Client{Transport: byokRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				called = true
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				if _, ok := payload["max_tokens"]; ok {
+					t.Errorf("legacy token field sent to Lightning GPT 5.4: %v", payload)
+				}
+				budget, present := payload["max_completion_tokens"]
+				if present != explicit || (explicit && budget != float64(maxTokens)) {
+					t.Errorf("max_completion_tokens=%v present=%t explicit=%t", budget, present, explicit)
+				}
+				if payload["model"] != req.Model {
+					t.Errorf("model changed: %v", payload["model"])
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("data: [DONE]\n\n"))}, nil
+			})}
+			var out bytes.Buffer
+			if err := invokeOpenAICompatibleStreamingWithClient(context.Background(), client, "lightning", "https://lightning.example/v1", "test-key", req, body, &out, req.Model); err != nil {
+				t.Fatal(err)
+			}
+			if !called {
+				t.Fatal("provider request was not sent")
+			}
+		})
 	}
 }
 
