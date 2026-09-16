@@ -184,6 +184,7 @@ func TestServeNativeOpenAIImageSettlesTokenUsageBeforeCompletionStream(t *testin
 			"data":    []map[string]any{{"b64_json": jpegBase64(t, 1536, 864)}},
 			"usage": map[string]any{
 				"input_tokens": 21, "output_tokens": 85, "total_tokens": 106,
+				"input_tokens_details": map[string]any{"text_tokens": 21, "image_tokens": 0, "cached_tokens": 10},
 			},
 		})
 		return &http.Response{
@@ -222,6 +223,7 @@ func TestServeNativeOpenAIImageSettlesTokenUsageBeforeCompletionStream(t *testin
 		t.Fatalf("authorize = %#v", authorize)
 	}
 	if settle["actual_input_tokens"] != float64(21) ||
+		settle["cache_read_input_tokens"] != float64(10) ||
 		settle["actual_output_tokens"] != float64(85) ||
 		settle["additional_cost_microdollars"] != nil || settle["streamed"] != true {
 		t.Fatalf("settle = %#v", settle)
