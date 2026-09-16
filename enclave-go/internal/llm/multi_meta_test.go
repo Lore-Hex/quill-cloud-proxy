@@ -74,3 +74,40 @@ func TestMultiClientWiresExclusiveRouteThroughOpenRouterKey(t *testing.T) {
 		t.Fatalf("arbitrary OpenRouter model error = %v", err)
 	}
 }
+
+func TestOpenRouterCatalogRoutesStayExplicitlyAllowlisted(t *testing.T) {
+	for _, provider := range []string{"openrouter", "openrouter-exclusive"} {
+		t.Run(provider, func(t *testing.T) {
+			if got := directBaseURL(provider); got != "https://openrouter.ai/api/v1" {
+				t.Fatalf("baseURL = %q", got)
+			}
+			for _, model := range []string{"stealth/union-alpha", "bytedance-seed/seed-2-1-turbo", "stealth/ox-alpha"} {
+				if got := DirectModelID(provider, model, model); got != model {
+					t.Fatalf("DirectModelID = %q, want %q", got, model)
+				}
+				if !openRouterExclusiveModelAllowed(model, model) {
+					t.Fatalf("catalog route %q is not allowlisted", model)
+				}
+			}
+			// The catalog slug must reach the same guard, not generic aggregator
+			// discovery or the BYOK path. No HTTP client is needed for rejection.
+			client := &multiClient{}
+			for _, upstream := range []string{"openai/gpt-5.5", "stealth/not-approved"} {
+				err := client.InvokeStreaming(t.Context(),
+					&qtypes.OpenAIChatRequest{Model: "stealth/union-alpha"},
+					&qtypes.AnthropicMessagesRequest{}, &bytes.Buffer{},
+					InvokeOptions{Provider: provider, UpstreamModel: upstream, UsageType: "Credits"})
+				if err == nil || !strings.Contains(err.Error(), "model is not allowlisted") {
+					t.Fatalf("unapproved upstream %q: %v", upstream, err)
+				}
+			}
+			err := client.InvokeStreaming(t.Context(),
+				&qtypes.OpenAIChatRequest{Model: "stealth/union-alpha"},
+				&qtypes.AnthropicMessagesRequest{}, &bytes.Buffer{},
+				InvokeOptions{Provider: provider, UpstreamModel: "stealth/union-alpha", ProviderAPIKey: "caller-key"})
+			if err == nil || !strings.Contains(err.Error(), "llm/byok: unsupported provider") {
+				t.Fatalf("OpenRouter BYOK must remain unsupported: %v", err)
+			}
+		})
+	}
+}

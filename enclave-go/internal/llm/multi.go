@@ -209,7 +209,9 @@ func (m *multiClient) InvokeStreaming(
 		return m.openai.InvokeStreaming(ctx, req, body, out, options...)
 	case "meta":
 		return m.meta.InvokeStreaming(ctx, req, body, out, options...)
-	case "openrouter-exclusive":
+	case "openrouter", "openrouter-exclusive":
+		// The public catalog uses openrouter; older authorizations used the
+		// exclusive slug. Both share the same explicitly restricted adapter.
 		modelID := ""
 		if req != nil {
 			modelID = req.Model
