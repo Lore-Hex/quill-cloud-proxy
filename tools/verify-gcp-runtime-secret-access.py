@@ -8,6 +8,7 @@ import concurrent.futures
 import json
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -42,15 +43,39 @@ def missing_secret_access(
 
 
 def gcloud_json(args: list[str]) -> dict[str, Any]:
-    completed = subprocess.run(
-        ["gcloud", *args, "--format=json"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        raise RuntimeError(detail or f"gcloud exited {completed.returncode}")
+    # These are read-only policy fetches. Retry transport failures, never an
+    # unproven policy or a permission denial, before allowing any MIG mutation.
+    for attempt in range(3):
+        try:
+            completed = subprocess.run(
+                ["gcloud", *args, "--format=json"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            detail = "gcloud IAM policy read timed out"
+            transient = True
+        else:
+            if completed.returncode == 0:
+                break
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            detail = detail or f"gcloud exited {completed.returncode}"
+            transient = any(
+                marker in detail.lower()
+                for marker in (
+                    "connection reset",
+                    "connection aborted",
+                    "timed out",
+                    "temporarily unavailable",
+                    "service_unavailable",
+                    "http 503",
+                )
+            )
+        if not transient or attempt == 2:
+            raise RuntimeError(detail)
+        time.sleep(2**attempt)
     try:
         value = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:

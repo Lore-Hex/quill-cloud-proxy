@@ -41,6 +41,9 @@ REGIONAL_CERT_RETRY_SLEEP="${REGIONAL_CERT_RETRY_SLEEP:-15}"
 MIG="${FILTER%-}"
 AUTHORIZATION_LOOKUP_BASE_URL="${STAGE_D_AUTHORIZATION_LOOKUP_BASE_URL:-https://trustedrouter.com}"
 STAGE_D_MISSING_EVIDENCE_ROUTE_WARNED=0
+# IPs can be reused across workflow retries and rollback boots. Keep retries
+# within this invocation idempotent, but require fresh evidence for each gate.
+CANARY_RUN_ID="${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
 
 template_url="$(gcloud compute instance-groups managed describe "${MIG}" \
   --region="${REGION}" --project="${PROJECT}" \
@@ -221,7 +224,7 @@ verify_streaming_authorization() {
   fi
 
   echo "${REGION}: running ${stage} direct streaming canary on ${ip} (Stage D evidence ${HEARTBEAT_FLAG})"
-  idempotency_key="stage-d-region-canary-${GITHUB_RUN_ID:-manual}-${REGION}-${stage}-${ip//./-}"
+  idempotency_key="stage-d-region-canary-${CANARY_RUN_ID}-${REGION}-${stage}-${ip//./-}"
   code="000"
   if ! code="$(curl \
     --silent --show-error --no-buffer \
@@ -340,7 +343,7 @@ verify_instance() {
   fi
 
   echo "${REGION}: running ${stage} direct inference canary on ${ip}"
-  idempotency_key="region-canary-${GITHUB_RUN_ID:-manual}-${REGION}-${stage}-${ip//./-}"
+  idempotency_key="region-canary-${CANARY_RUN_ID}-${REGION}-${stage}-${ip//./-}"
   for attempt in 1 2 3; do
     code="000"
     if code="$(curl \
