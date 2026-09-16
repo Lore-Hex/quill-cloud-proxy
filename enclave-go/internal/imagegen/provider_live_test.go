@@ -99,3 +99,28 @@ func TestLiveNscaleImageModel(t *testing.T) {
 		t.Fatalf("invalid result metadata: %#v", result)
 	}
 }
+
+func TestLiveOpenAI25ImageModels(t *testing.T) {
+	if os.Getenv("TR_LIVE_PROVIDER_WAVE") != "1" || os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("requires explicit paid smoke opt-in and OpenAI key")
+	}
+	registry := NewRegistry(ProviderKeys{OpenAI: os.Getenv("OPENAI_API_KEY")}, nil)
+	for _, model := range []string{"openai/gpt-image-2.5-flare", "openai/gpt-image-2.5-sunburst"} {
+		t.Run(model, func(t *testing.T) {
+			resolved, err := Parse([]byte(`{"model":"` + model + `","prompt":"A red square on white.","quality":"low","size":"1024x1024"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+			defer cancel()
+			result, err := registry.Generate(ctx, resolved, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Images) != 1 || result.Images[0].Width != 1024 || result.Images[0].Height != 1024 || result.Usage.InputTokens <= 0 || result.Usage.OutputTokens <= 0 {
+				t.Fatal("invalid image metadata or usage")
+			}
+			t.Logf("validated image and usage: %+v", result.Usage)
+		})
+	}
+}

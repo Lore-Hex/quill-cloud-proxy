@@ -172,6 +172,14 @@ func openAISpec(id string, shapes []nativeImageShape, backgrounds []string) Mode
 	}
 }
 
+func openAI25Spec(id string, shapes []nativeImageShape) ModelSpec {
+	spec := openAISpec(id, shapes, []string{"auto", "transparent", "opaque"})
+	spec.NMax = 1
+	// Edits need modality-specific input billing before they can be enabled.
+	spec.Qualities = []string{"auto", "low", "medium", "high", "xhigh", "max"}
+	return spec
+}
+
 func xaiSpec(id string, qualities []string, prices map[string]int) ModelSpec {
 	return ModelSpec{
 		ID: id, Provider: "grok", UpstreamID: strings.TrimPrefix(id, "x-ai/"),
@@ -268,6 +276,8 @@ var modelSpecs = func() map[string]ModelSpec {
 		openAISpec("openai/gpt-image-1-mini", classicShapes, []string{"auto", "transparent", "opaque"}),
 		openAISpec("openai/gpt-image-1", classicShapes, []string{"auto", "transparent", "opaque"}),
 		openAISpec("openai/gpt-image-2", gpt2Shapes, []string{"auto", "opaque"}),
+		openAI25Spec("openai/gpt-image-2.5-flare", gpt2Shapes),
+		openAI25Spec("openai/gpt-image-2.5-sunburst", gpt2Shapes),
 		xaiSpec("x-ai/grok-imagine-image-quality", nil, map[string]int{"1k": 50_000, "2k": 70_000}),
 		xaiSpec("x-ai/grok-imagine-image-2.0", []string{"low", "medium"}, map[string]int{
 			"low_1k": 40_000, "low_2k": 60_000, "medium_1k": 60_000, "medium_2k": 80_000,
@@ -579,6 +589,11 @@ func (r *ResolvedRequest) MaxOutputTokens() int {
 		return googleOutputTokensByResolution[r.Resolution]
 	}
 	if r.Spec.Pricing == PricingOpenAITokens {
+		if strings.HasPrefix(r.Spec.ID, "openai/gpt-image-2.5-") {
+			// The 2.5 quality ladder includes xhigh/max. Reserve separately
+			// from older GPT Image models and settle only reported usage.
+			return 32_768 * r.N
+		}
 		// All normalized OpenAI sizes are at most 1536 px on the long edge.
 		// Eight thousand covers the high-quality output-token ceiling for those
 		// native sizes without placing a punitive 20k-token hold on every image.

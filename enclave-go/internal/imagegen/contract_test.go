@@ -36,6 +36,8 @@ func TestModelRegistryIsExactAndDefensivelyCopied(t *testing.T) {
 		"openai/gpt-image-1",
 		"openai/gpt-image-1-mini",
 		"openai/gpt-image-2",
+		"openai/gpt-image-2.5-flare",
+		"openai/gpt-image-2.5-sunburst",
 		"recraft/recraftv2",
 		"recraft/recraftv3",
 		"recraft/recraftv4",
@@ -235,7 +237,7 @@ func TestNativeProviderTranslationAndValidatedResponse(t *testing.T) {
 			request:  `{"model":"openai/gpt-image-2","prompt":"cat","aspect_ratio":"16:9","quality":"high","output_format":"png","output_compression":72,"n":2,"provider":{"options":{"openai":{"moderation":"auto"}}}}`,
 			wantHost: "api.openai.com", managedKey: "openai-key", wantMedia: "image/png",
 			width: 1536, height: 864,
-			wantBody: map[string]any{"model": "gpt-image-2", "prompt": "cat", "n": float64(2), "response_format": "b64_json", "size": "1536x864", "quality": "high", "output_format": "png", "moderation": "auto"},
+			wantBody: map[string]any{"model": "gpt-image-2", "prompt": "cat", "n": float64(2), "size": "1536x864", "quality": "high", "output_format": "png", "moderation": "auto"},
 		},
 		{
 			name:     "xai",

@@ -67,9 +67,10 @@ type GeneratedImage struct {
 }
 
 type Usage struct {
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
+	InputTokens       int
+	OutputTokens      int
+	TotalTokens       int
+	CachedInputTokens int
 }
 
 type Result struct {
@@ -195,9 +196,10 @@ func (r *Registry) Generate(
 			B64JSON string `json:"b64_json"`
 		} `json:"data"`
 		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-			TotalTokens  int `json:"total_tokens"`
+			InputTokens  int                      `json:"input_tokens"`
+			OutputTokens int                      `json:"output_tokens"`
+			TotalTokens  int                      `json:"total_tokens"`
+			InputDetails *openAIImageInputDetails `json:"input_tokens_details"`
 		} `json:"usage"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(responseBody))
@@ -235,13 +237,22 @@ func (r *Registry) Generate(
 	if total == 0 {
 		total = upstream.Usage.InputTokens + upstream.Usage.OutputTokens
 	}
+	usage := Usage{
+		InputTokens: upstream.Usage.InputTokens, OutputTokens: upstream.Usage.OutputTokens,
+		TotalTokens: total,
+	}
+	if resolved.Spec.Pricing == PricingOpenAITokens {
+		if err := applyOpenAIImageUsage(&usage, upstream.Usage.InputDetails); err != nil {
+			return nil, err
+		}
+		if usage.OutputTokens > resolved.MaxOutputTokens() {
+			return nil, fmt.Errorf("image usage exceeds the authorized output limit")
+		}
+	}
 	return &Result{
 		Created: created,
 		Images:  images,
-		Usage: Usage{
-			InputTokens: upstream.Usage.InputTokens, OutputTokens: upstream.Usage.OutputTokens,
-			TotalTokens: total,
-		},
+		Usage:   usage,
 	}, nil
 }
 
@@ -332,6 +343,8 @@ func nativeRequest(resolved *ResolvedRequest) (string, map[string]any, error) {
 	}
 	switch resolved.Spec.Provider {
 	case "openai":
+		// GPT Image models always return base64; response_format is DALL-E-only.
+		delete(base, "response_format")
 		if resolved.AspectRatio != "" && resolved.AspectRatio != "auto" {
 			size, ok := resolved.Spec.NativeSizes[resolved.AspectRatio]
 			if !ok {

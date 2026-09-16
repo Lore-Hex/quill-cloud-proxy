@@ -401,7 +401,8 @@ func serveNativeImageAuthorized(
 	}
 	usage := trustedrouter.Usage{
 		RequestID: newRequestID(), InputTokens: result.Usage.InputTokens,
-		OutputTokens: result.Usage.OutputTokens, AdditionalCostMicrodollars: additionalCost,
+		CacheReadInputTokens: result.Usage.CachedInputTokens,
+		OutputTokens:         result.Usage.OutputTokens, AdditionalCostMicrodollars: additionalCost,
 		ElapsedSeconds: maxDurationSeconds(time.Since(started), 0.001),
 		FinishReason:   "stop", Streamed: nativeRequest.Request.Stream, RouteType: "images",
 		SelectedModel: option.Model, SelectedEndpoint: option.EndpointID,
@@ -424,6 +425,7 @@ func serveNativeImageAuthorized(
 		"total_tokens":      result.Usage.TotalTokens,
 		"cost":              settlement.Cost,
 	}
+	responseUsage["prompt_tokens_details"] = map[string]any{"cached_tokens": result.Usage.CachedInputTokens}
 	if nativeRequest.Request.Stream {
 		if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
 			return
