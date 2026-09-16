@@ -87,6 +87,7 @@ curl() {
                 env = {
                     **os.environ, "TOOLS_DIR": str(ROOT / "tools"), "response_dir": temp,
                     "REGION": "us-central1", "HEARTBEAT_FLAG": "on",
+                    "CANARY_RUN_ID": "test-invocation",
                     "STAGE_D_PROBE_KEY": "test-only", "STAGE_D_PROBE_KEY_IN_USE": "on",
                     "STAGE_D_PROBE_KEY_NAME": "test-only", "TEST_SOURCE": origin,
                     "TEST_EVIDENCE": str(evidence_path), "INTERNAL_GATEWAY_TOKEN": "test-only",
