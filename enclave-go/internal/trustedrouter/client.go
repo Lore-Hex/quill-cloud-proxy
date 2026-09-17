@@ -714,10 +714,18 @@ func (c *Client) ResolveCustomModel(ctx context.Context, bearer string, model st
 		return nil, err
 	}
 	c.afterCredentialCheck(ctx, lookupHash, nil)
+	if err := validateConfidentialAuthorization(ctx, &decoded.Data); err != nil {
+		return nil, err
+	}
 	return &decoded.Data, nil
 }
 
 func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest, routeType string) (*Authorization, error) {
+	if ConfidentialOnly(ctx) {
+		if err := ValidateConfidentialRouting(req.Provider); err != nil {
+			return nil, err
+		}
+	}
 	idempotencyKey, err := authorizationIdempotencyKey(req.IdempotencyKey)
 	if err != nil {
 		return nil, err
@@ -735,6 +743,10 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	c.afterCredentialCheck(ctx, lookupHash, nil)
 	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.RouteType = routeType
+	if err := validateConfidentialAuthorization(ctx, decoded); err != nil {
+		_ = c.Refund(ctx, decoded, err.StatusCode, err.Type, 0.001, nil)
+		return nil, err
+	}
 	if req.InferenceReceipt.Requested && decoded.ReceiptFeeBasisPoints != signedReceiptTotalFeeBasisPoints {
 		_ = c.Refund(ctx, decoded, 503, "receipt_billing_unavailable", 0.001, nil)
 		return nil, &ControlPlaneError{

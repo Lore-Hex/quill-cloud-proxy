@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import unittest
 from pathlib import Path
@@ -17,12 +18,77 @@ SPEC.loader.exec_module(SYNC)
 
 
 class Route53AliasSyncTests(unittest.TestCase):
+    def test_delegation_failure_still_reconciles_ordinary_aliases(self) -> None:
+        with (
+            mock.patch.object(SYNC, "parse_args", return_value=mock.Mock(apply=True)),
+            mock.patch.object(SYNC, "provision_confidential_challenge_delegations", side_effect=RuntimeError("DNS unavailable")),
+            mock.patch.object(SYNC, "source_ips", return_value=["34.1.1.1", "34.1.1.2"]),
+            mock.patch.object(SYNC, "current_alias_ips", return_value=[]),
+            mock.patch.object(SYNC, "apply_alias") as publish,
+        ):
+            self.assertEqual(SYNC.main(), 1)
+        self.assertEqual(publish.call_count, len(SYNC.ALIASES))
+
+    def test_certificate_delegations_never_publish_api_membership(self) -> None:
+        with (
+            mock.patch.object(SYNC, "current_alias_record", return_value=None),
+            mock.patch.object(SYNC, "run_json", return_value={}) as run,
+        ):
+            SYNC.provision_confidential_challenge_delegations(apply=True)
+        self.assertEqual(run.call_count, 2)
+        for call in run.call_args_list:
+            command = call.args[0]
+            batch = json.loads(command[command.index("--change-batch") + 1])
+            record = batch["Changes"][0]["ResourceRecordSet"]
+            self.assertEqual(record["Type"], "CNAME")
+            owner = record["Name"].split(".")[3]
+            self.assertEqual(record["Name"], f"_acme-challenge.api.confidential.{owner}.com.")
+            self.assertEqual(record["ResourceRecords"], [{"Value": f"_acme-challenge.api-confidential-{owner}.trustedrouter.com."}])
+
+    def test_certificate_delegations_are_idempotent(self) -> None:
+        def current(alias, record_type):
+            self.assertEqual(record_type, "CNAME")
+            owner = alias.name.split(".")[3]
+            return {"ResourceRecords": [{"Value": f"_acme-challenge.api-confidential-{owner}.trustedrouter.com."}]}
+        with (
+            mock.patch.object(SYNC, "current_alias_record", side_effect=current),
+            mock.patch.object(SYNC, "run_json") as run,
+        ):
+            SYNC.provision_confidential_challenge_delegations(apply=True)
+        run.assert_not_called()
+
     def test_aliases_are_independent_direct_records(self) -> None:
         names = {alias.name for alias in SYNC.ALIASES}
         self.assertEqual(
             names,
-            {"api.allyrouter.com.", "api.uptimerouter.com."},
+            {"api.allyrouter.com.", "api.uptimerouter.com.",
+             "api.confidential.allyrouter.com.", "api.confidential.uptimerouter.com."},
         )
+
+    def test_confidential_aliases_use_only_policy_qualified_source(self) -> None:
+        for alias in SYNC.ALIASES:
+            if ".confidential." in alias.name:
+                self.assertEqual(alias.source, "api.confidential.trustedrouter.com.")
+        with mock.patch.object(SYNC, "run_json", return_value=[]):
+            self.assertEqual(SYNC.source_ips(SYNC.CONFIDENTIAL_SOURCE_RECORD), [])
+            with self.assertRaises(ValueError):
+                SYNC.source_ips()
+
+    def test_confidential_removal_uses_exact_record_not_last_good(self) -> None:
+        alias = SYNC.ALIASES[0]
+        current = {"Name": alias.name, "Type": "A", "TTL": 300,
+                   "ResourceRecords": [{"Value": "34.11.89.24"}]}
+        with (
+            mock.patch.object(SYNC, "current_alias_record", return_value=current),
+            mock.patch.object(SYNC, "run_json", return_value={"ChangeInfo": {"Id": "change"}}) as run,
+        ):
+            SYNC.apply_alias(alias, [])
+        import json
+        command = run.call_args.args[0]
+        batch = json.loads(command[command.index("--change-batch") + 1])
+        self.assertEqual(batch["Changes"], [{"Action": "DELETE", "ResourceRecordSet": current}])
+        with self.assertRaises(ValueError):
+            SYNC.apply_alias(SYNC.AliasRecord("zone", "api.allyrouter.com."), [])
 
     def test_normalizes_and_sorts_public_ipv4(self) -> None:
         self.assertEqual(

@@ -81,6 +81,18 @@ type tlsConnectionStateReader interface {
 	ConnectionState() tls.ConnectionState
 }
 
+// SelectedServerName reads the authenticated connection's ClientHello name,
+// not the mutable HTTP Host header. Wrappers must preserve this accessor.
+func SelectedServerName(conn net.Conn) string {
+	if reader, ok := conn.(interface{ SelectedServerName() string }); ok {
+		return reader.SelectedServerName()
+	}
+	if reader, ok := conn.(tlsConnectionStateReader); ok {
+		return reader.ConnectionState().ServerName
+	}
+	return ""
+}
+
 type selectedLeafConn struct {
 	net.Conn
 	mu      sync.RWMutex

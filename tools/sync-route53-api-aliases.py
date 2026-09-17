@@ -16,11 +16,13 @@ import argparse
 import ipaddress
 import json
 import subprocess
+import sys
 from typing import Any, NamedTuple
 
 PROJECT = "quill-cloud-proxy"
 SOURCE_ZONE = "trustedrouter-com"
 SOURCE_RECORD = "api.trustedrouter.com."
+CONFIDENTIAL_SOURCE_RECORD = "api.confidential.trustedrouter.com."
 TTL = 60
 MIN_HEALTHY = 2
 
@@ -28,9 +30,12 @@ MIN_HEALTHY = 2
 class AliasRecord(NamedTuple):
     zone_id: str
     name: str
+    source: str = SOURCE_RECORD
 
 
 ALIASES = (
+    AliasRecord("Z09662142UE0IQL51B13V", "api.confidential.allyrouter.com.", CONFIDENTIAL_SOURCE_RECORD),
+    AliasRecord("Z00893363GIOMU7Z8647K", "api.confidential.uptimerouter.com.", CONFIDENTIAL_SOURCE_RECORD),
     AliasRecord("Z09662142UE0IQL51B13V", "api.allyrouter.com."),
     AliasRecord("Z00893363GIOMU7Z8647K", "api.uptimerouter.com."),
 )
@@ -79,7 +84,7 @@ def normalized_ipv4(
     return result
 
 
-def source_ips() -> list[str]:
+def source_ips(record: str = SOURCE_RECORD) -> list[str]:
     rows = run_json(
         [
             "gcloud",
@@ -91,7 +96,7 @@ def source_ips() -> list[str]:
             "--zone",
             SOURCE_ZONE,
             "--name",
-            SOURCE_RECORD,
+            record,
             "--type",
             "A",
             "--format=json",
@@ -102,17 +107,19 @@ def source_ips() -> list[str]:
     for row in rows:
         if (
             isinstance(row, dict)
-            and row.get("name") == SOURCE_RECORD
+            and row.get("name") == record
             and row.get("type") == "A"
         ):
             values = row.get("rrdatas")
             if not isinstance(values, list):
                 raise ValueError("canonical A record has invalid rrdatas")
-            return normalized_ipv4(values)
-    raise ValueError(f"canonical A record {SOURCE_RECORD} was not found")
+            return normalized_ipv4(values, minimum=0 if record == CONFIDENTIAL_SOURCE_RECORD else MIN_HEALTHY)
+    if record == CONFIDENTIAL_SOURCE_RECORD:
+        return []
+    raise ValueError(f"canonical A record {record} was not found")
 
 
-def current_alias_ips(alias: AliasRecord) -> list[str]:
+def current_alias_record(alias: AliasRecord, record_type: str = "A") -> dict[str, Any] | None:
     payload = run_json(
         [
             "aws",
@@ -123,7 +130,7 @@ def current_alias_ips(alias: AliasRecord) -> list[str]:
             "--start-record-name",
             alias.name,
             "--start-record-type",
-            "A",
+            record_type,
             "--max-items",
             "1",
             "--output",
@@ -132,9 +139,16 @@ def current_alias_ips(alias: AliasRecord) -> list[str]:
     )
     rows = payload.get("ResourceRecordSets", []) if isinstance(payload, dict) else []
     if not rows or not isinstance(rows[0], dict):
-        return []
+        return None
     row = rows[0]
-    if row.get("Name") != alias.name or row.get("Type") != "A":
+    if row.get("Name") != alias.name or row.get("Type") != record_type:
+        return None
+    return row
+
+
+def current_alias_ips(alias: AliasRecord) -> list[str]:
+    row = current_alias_record(alias)
+    if row is None:
         return []
     resources = row.get("ResourceRecords", [])
     if not isinstance(resources, list):
@@ -161,6 +175,16 @@ def change_batch(alias: AliasRecord, ips: list[str]) -> dict[str, object]:
 
 
 def apply_alias(alias: AliasRecord, ips: list[str]) -> str:
+    if ips:
+        batch = change_batch(alias, ips)
+    else:
+        if alias.source != CONFIDENTIAL_SOURCE_RECORD:
+            raise ValueError("refusing to delete ordinary API alias")
+        current = current_alias_record(alias)
+        if current is None:
+            return "already absent"
+        batch = {"Comment": "Remove unqualified confidential API membership",
+                 "Changes": [{"Action": "DELETE", "ResourceRecordSet": current}]}
     payload = run_json(
         [
             "aws",
@@ -169,7 +193,7 @@ def apply_alias(alias: AliasRecord, ips: list[str]) -> str:
             "--hosted-zone-id",
             alias.zone_id,
             "--change-batch",
-            json.dumps(change_batch(alias, ips), separators=(",", ":")),
+            json.dumps(batch, separators=(",", ":")),
             "--output",
             "json",
         ]
@@ -191,11 +215,42 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def provision_confidential_challenge_delegations(*, apply: bool) -> None:
+    for alias in ALIASES:
+        if alias.source != CONFIDENTIAL_SOURCE_RECORD:
+            continue
+        owner = alias.name.removeprefix("api.confidential.").removesuffix(".com.")
+        name = "_acme-challenge." + alias.name
+        target = f"_acme-challenge.api-confidential-{owner}.trustedrouter.com."
+        current = current_alias_record(AliasRecord(alias.zone_id, name), "CNAME")
+        if current and current.get("ResourceRecords") == [{"Value": target}]:
+            continue
+        if apply:
+            run_json([
+                "aws", "route53", "change-resource-record-sets", "--hosted-zone-id", alias.zone_id,
+                "--change-batch", json.dumps({"Comment": "Enclave DNS-01 certificate delegation",
+                    "Changes": [{"Action": "UPSERT", "ResourceRecordSet": {
+                        "Name": name, "Type": "CNAME", "TTL": TTL,
+                        "ResourceRecords": [{"Value": target}],
+                    }}]}), "--output", "json",
+            ])
+        print(f"certificate delegation {name} -> {target} ({'applied' if apply else 'dry run'})")
+
+
 def main() -> int:
     args = parse_args()
-    ips = source_ips()
+    delegation_failed = False
+    try:
+        provision_confidential_challenge_delegations(apply=args.apply)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        delegation_failed = True
+        print(f"confidential certificate delegation failed: {exc}", file=sys.stderr)
+    sources: dict[str, list[str]] = {}
     changed = False
     for alias in ALIASES:
+        if alias.source not in sources:
+            sources[alias.source] = source_ips(alias.source)
+        ips = sources[alias.source]
         current = current_alias_ips(alias)
         if current == ips:
             print(f"{alias.name} already matches attested canonical set ({len(ips)} A)")
@@ -207,7 +262,7 @@ def main() -> int:
             print(f"{alias.name} update submitted: {change_id}")
     if changed and not args.apply:
         print("dry run only; pass --apply to update Route53")
-    return 0
+    return 1 if delegation_failed else 0
 
 
 if __name__ == "__main__":

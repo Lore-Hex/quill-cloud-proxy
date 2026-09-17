@@ -1138,7 +1138,10 @@ def fetch_attestation_same_tls_socket(
     require_pin: bool = True,
     ca_trust: bool = True,
     timeout: float = _SAME_TLS_SOCKET_TIMEOUT_SECONDS,
+    confidential_host: str | None = None,
 ) -> tuple[bytes, bytes, bytes, str | None, bytes | None]:
+    if confidential_host and require_pin:
+        raise ValueError("confidential DNS probe requires liveness mode; run pinning verification separately")
     # connect_ip lets a caller (e.g. the DNS reconciler) attest a SPECIFIC
     # instance by IP while still presenting/validating the canonical hostname
     # (SNI + cert SAN + Host header stay `host`). Without it, host is dialed.
@@ -1189,6 +1192,20 @@ def fetch_attestation_same_tls_socket(
             "first",
             require_exporter=require_exporter,
         )
+        if confidential_host:
+            # A deployment may attest correctly but predate hostname privacy
+            # enforcement. Probe before publishing a new confidential DNS name,
+            # on the SAME attested connection, without credentials or prompts.
+            probe = confidential_policy_probe(confidential_host)
+            _ssl_send_all(raw, conn, probe, deadline=deadline, what="confidential policy probe")
+            probe_status, _probe_headers, probe_body = _read_http_response(
+                conn, raw, "confidential policy probe", deadline=deadline,
+            )
+            verify_confidential_policy_response(probe_status, probe_body)
+            # The intentional error can close the connection. Its attestation
+            # still binds to the response on this socket; use a separate normal
+            # invocation for repeated exporter/pinning stress verification.
+            return cert_der, exporter, body, None, None
         if not require_pin:
             return cert_der, exporter, body, None, None
 
@@ -1237,6 +1254,32 @@ def fetch_attestation_same_tls_socket(
             pass
         conn.close()
     return cert_der, exporter, body, followup_nonce_hex, followup_body
+
+
+CONFIDENTIAL_API_HOSTS = frozenset(
+    f"api.confidential.{domain}"
+    for domain in ("trustedrouter.com", "quillrouter.com", "allyrouter.com", "uptimerouter.com")
+)
+
+
+def confidential_policy_probe(host: str) -> bytes:
+    if host not in CONFIDENTIAL_API_HOSTS:
+        raise ValueError("unknown confidential API hostname")
+    body = b'{"provider":{"min_privacy":"any"}}'
+    return (
+        f"POST /v1/chat/completions HTTP/1.1\r\nHost: {host}\r\n"
+        f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode("ascii") + body
+
+
+def verify_confidential_policy_response(status: str, body: bytes) -> None:
+    try:
+        code = json.loads(body)["error"]["code"]
+    except (ValueError, KeyError, TypeError):
+        code = None
+    if " 400 " not in status or code != "confidential_privacy_required":
+        sys.exit("[FAIL] enclave does not enforce the confidential hostname privacy requirement")
 
 
 def fetch_live_cert_der(
@@ -2769,6 +2812,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="liveness/identity mode for DNS reconciliation: require digest, cert, fresh nonce, and dbgstat checks, but make the TLS exporter optional and skip the same-socket pin follow-up",
     )
+    parser.add_argument("--require-confidential-host", choices=sorted(CONFIDENTIAL_API_HOSTS),
+                        help="DNS liveness mode only: require a pre-auth privacy rejection on the same attested socket")
     parser.add_argument(
         "--attested-cert-only",
         dest="ca_trust",
@@ -2795,6 +2840,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     require_exporter = args.require_exporter_binding
+
+    if args.require_confidential_host and (require_exporter or args.blob or args.binding_stress or args.verify_receipt):
+        sys.exit("[FAIL] --require-confidential-host requires live --no-require-exporter-binding mode")
 
     receipt_only_values = (
         args.request_body,
@@ -2886,6 +2934,7 @@ def main() -> int:
             require_exporter=require_exporter,
             require_pin=require_exporter,
             ca_trust=args.ca_trust,
+            confidential_host=args.require_confidential_host,
         )
         print(f"\nSample {sample}/{args.samples}:")
         if looks_like_jwt(live_blob):

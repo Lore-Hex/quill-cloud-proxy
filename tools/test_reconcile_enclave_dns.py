@@ -54,6 +54,87 @@ class GcloudReadTests(unittest.TestCase):
             reconciler.gcloud_json(["dns", "record-sets", "list"])
 
 
+class ConfidentialDNSPolicyTests(unittest.TestCase):
+    def test_only_policy_qualified_instances_published(self) -> None:
+        fleet = [{"ip": "34.1.1.1"}, {"ip": "34.2.2.2"}]
+        with (
+            mock.patch.object(reconciler, "API_HOST", "api.trustedrouter.com"),
+            mock.patch.object(reconciler, "attest", side_effect=lambda ip, *_args, **_kwargs: ip == "34.2.2.2") as attest,
+            mock.patch.object(reconciler, "reconcile_dns_record") as publish,
+        ):
+            reconciler.reconcile_confidential(fleet, "sha256:release", apply=True)
+        self.assertEqual(publish.call_count, 2)
+        for call in publish.call_args_list:
+            self.assertEqual(call.args[2], ["34.2.2.2"])
+        for call in attest.call_args_list:
+            self.assertEqual(call.kwargs["confidential_host"], call.kwargs["api_host"])
+            self.assertIn(call.kwargs["api_host"], reconciler.CONFIDENTIAL_HOSTS)
+        self.assertEqual(attest.call_count, 8)
+
+    def test_candidate_without_one_mirror_certificate_is_not_published(self) -> None:
+        with (
+            mock.patch.object(reconciler, "API_HOST", "api.trustedrouter.com"),
+            mock.patch.object(reconciler, "attest", side_effect=lambda *_args, **kw: kw["api_host"] != "api.confidential.allyrouter.com"),
+            mock.patch.object(reconciler, "reconcile_dns_record") as publish,
+            mock.patch.object(reconciler, "current_dns_ips", return_value=[]),
+        ):
+            reconciler.reconcile_confidential([{"ip": "34.1.1.1"}], "sha256:release", apply=True)
+        publish.assert_not_called()
+
+    def test_challenge_delegation_does_not_publish_inference_addresses(self) -> None:
+        with (
+            mock.patch.object(reconciler, "API_HOST", "api.trustedrouter.com"),
+            mock.patch.object(reconciler, "current_dns_record", return_value=None),
+            mock.patch.object(reconciler.subprocess, "run") as run,
+        ):
+            reconciler.provision_confidential_challenge_delegation(apply=True)
+        command = run.call_args.args[0]
+        self.assertIn("CNAME", command)
+        self.assertIn("_acme-challenge.api.confidential.quillrouter.com.", command)
+        self.assertIn("_acme-challenge.api-confidential-quillrouter.trustedrouter.com.", command)
+
+    def test_confidential_dns_failures_do_not_skip_ordinary_updates(self) -> None:
+        fleet = [{"ip": "34.1.1.1", "name": "one", "region": "us-central1"},
+                 {"ip": "34.1.1.2", "name": "two", "region": "us-east4"}]
+        for operation in ("provision_confidential_challenge_delegation", "reconcile_confidential"):
+            with (
+                self.subTest(operation=operation),
+                mock.patch.object(sys, "argv", [str(SCRIPT), "--apply"]),
+                mock.patch.object(reconciler, "provision_confidential_challenge_delegation"),
+                mock.patch.object(reconciler, "reconcile_confidential"),
+                mock.patch.object(reconciler, operation, side_effect=subprocess.TimeoutExpired("gcloud", 10)),
+                mock.patch.object(reconciler, "trust_digests", return_value=["sha256:release"]),
+                mock.patch.object(reconciler, "discover_instances", return_value=fleet),
+                mock.patch.object(reconciler, "attest_fleet_with_release_fallback", return_value=([(item, True) for item in fleet], ["sha256:release"])),
+                mock.patch.object(reconciler, "persistent_drains", return_value={}),
+                mock.patch.object(reconciler, "EXCLUDE_CANONICAL_REGIONS", set()),
+                mock.patch.object(reconciler, "reconcile_dns_record") as publish,
+                mock.patch.object(reconciler, "PUBLISH_REGIONAL", False),
+            ):
+                self.assertEqual(reconciler._main_unlocked(), 1)
+                publish.assert_any_call(reconciler.DNS_ZONE, reconciler.RECORD,
+                                        ["34.1.1.1", "34.1.1.2"], apply=True, label="canonical")
+
+    def test_zero_qualified_instances_removes_unsafe_records(self) -> None:
+        with (
+            mock.patch.object(reconciler, "API_HOST", "api.trustedrouter.com"),
+            mock.patch.object(reconciler, "current_dns_ips", return_value=["34.1.1.1"]),
+            mock.patch.object(reconciler.subprocess, "run") as run,
+        ):
+            reconciler.reconcile_confidential([], "sha256:release", apply=False)
+            run.assert_not_called()
+            reconciler.reconcile_confidential([], "sha256:release", apply=True)
+        self.assertEqual(run.call_count, 2)
+        for call in run.call_args_list:
+            self.assertIn("delete", call.args[0])
+            self.assertTrue(call.kwargs["check"])
+
+    def test_verifier_gets_policy_probe_flag(self) -> None:
+        with mock.patch.object(reconciler.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertTrue(reconciler.attest("34.1.1.1", "sha256:release", confidential_host="api.confidential.trustedrouter.com"))
+        self.assertIn("--require-confidential-host", run.call_args.args[0])
+
+
 class GcpEnclaveInventoryTests(unittest.TestCase):
     def test_discovery_excludes_regions_absent_from_rollout_inventory(self) -> None:
         rows = [

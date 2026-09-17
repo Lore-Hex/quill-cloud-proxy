@@ -25,6 +25,7 @@ import (
 // the gateway cannot faithfully proxy are rejected in MessagesToAnthropic
 // rather than silently dropped.
 type AnthropicNativeRequest struct {
+	Provider      *types.ProviderRouting     `json:"provider,omitempty"`
 	Model         string                     `json:"model"`
 	Messages      []types.AnthropicMessage   `json:"messages"`
 	System        any                        `json:"system,omitempty"`
@@ -179,6 +180,7 @@ func MessagesToChatShim(req *AnthropicNativeRequest) *types.OpenAIChatRequest {
 		messages = append(messages, types.OpenAIChatMessage{Role: m.Role, Content: m.Content})
 	}
 	return &types.OpenAIChatRequest{
+		Provider:    req.Provider,
 		Model:       req.Model,
 		Messages:    messages,
 		Stream:      req.Stream,

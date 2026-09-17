@@ -582,7 +582,7 @@ def recent_release_digests() -> list[str]:
     return []
 
 
-def attest(ip: str, digest: str, api_host: str = API_HOST) -> bool:
+def attest(ip: str, digest: str, api_host: str = API_HOST, *, confidential_host: str | None = None) -> bool:
     """True iff the instance at `ip` passes full attestation for `api_host`."""
     try:
         # DNS membership gates on image-digest attestation identity + liveness:
@@ -596,7 +596,8 @@ def attest(ip: str, digest: str, api_host: str = API_HOST) -> bool:
             ["uv", "run", "--script", str(VERIFIER),
              "--api-host", api_host, "--connect-ip", ip,
              "--expect-digest", digest, "--samples", str(ATTESTATION_SAMPLES),
-             "--no-require-exporter-binding"],
+             "--no-require-exporter-binding",
+             *(["--require-confidential-host", confidential_host] if confidential_host else [])],
             capture_output=True, text=True, timeout=ATTESTATION_TIMEOUT_SECONDS,
         )
         return p.returncode == 0
@@ -906,6 +907,66 @@ def reconcile_dns_record(
         log(f"reconcile: DRY-RUN {label} {record} (pass --apply to change DNS)")
 
 
+CONFIDENTIAL_HOSTS = tuple(
+    f"api.confidential.{domain}.com"
+    for domain in ("trustedrouter", "quillrouter", "allyrouter", "uptimerouter")
+)
+
+
+def provision_confidential_challenge_delegation(*, apply: bool) -> None:
+    # Bootstrap certificates via DNS-01 BEFORE publishing any API A record.
+    # The other two mirror zones are managed by sync-route53-api-aliases.py.
+    if API_HOST not in {"api.trustedrouter.com", "api.quillrouter.com"}:
+        return
+    record = "_acme-challenge.api.confidential.quillrouter.com."
+    target = "_acme-challenge.api-confidential-quillrouter.trustedrouter.com."
+    current = current_dns_record("quillrouter-com", record, "CNAME")
+    if current and current.get("rrdatas") == [target]:
+        return
+    log(f"reconcile: confidential certificate delegation {record} -> {target}")
+    if apply:
+        subprocess.run(
+            ["gcloud", "dns", "record-sets", "update" if current else "create", record,
+             "--zone", "quillrouter-com", "--project", PROJECT, "--type", "CNAME",
+             "--ttl", str(TTL), "--rrdatas", target],
+            check=True, capture_output=True, text=True, timeout=GCLOUD_TIMEOUT_SECONDS,
+        )
+
+
+def reconcile_confidential(healthy: list[dict], digest: str, *, apply: bool) -> None:
+    """Never mirror old attested binaries that lack confidential-host enforcement.
+
+    Rollout drains also apply here. Unlike the general liveness records, an
+    empty policy-qualified set removes the record rather than retaining an
+    unsafe last-good set. A failed probe cannot relax the privacy guarantee.
+    """
+    if API_HOST not in {"api.trustedrouter.com", "api.quillrouter.com"}:
+        return
+    host = CONFIDENTIAL_HOSTS[0]
+    checks = [(instance["ip"], name) for instance in healthy for name in CONFIDENTIAL_HOSTS]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+        eligible = list(executor.map(
+            lambda check: (check[0], attest(check[0], digest, api_host=check[1], confidential_host=check[1])),
+            checks,
+        ))
+    failed = {ip for ip, ok in eligible if not ok}
+    ips = sorted({ip for ip, ok in eligible if ok} - failed)
+    for zone, record in (
+        ("trustedrouter-com", host + "."),
+        ("quillrouter-com", "api.confidential.quillrouter.com."),
+    ):
+        if ips:
+            reconcile_dns_record(zone, record, ips, apply=apply, label="confidential-only")
+        elif current_dns_ips(zone, record):
+            log(f"reconcile: confidential-only {record} has no qualified instances; removing A record")
+            if apply:
+                subprocess.run(
+                    ["gcloud", "dns", "record-sets", "delete", record, "--zone", zone,
+                     "--project", PROJECT, "--type", "A", "--quiet"],
+                    check=True, capture_output=True, text=True, timeout=GCLOUD_TIMEOUT_SECONDS,
+                )
+
+
 def regional_host(region: str) -> str:
     return f"api-{region}.{REGIONAL_SUFFIX}".rstrip(".")
 
@@ -1101,6 +1162,12 @@ def _main_unlocked() -> int:
     # Registry is a recovery-only fallback: consult it only when a live instance
     # fails the signed set, rather than scanning release history every two
     # minutes during steady state.
+    confidential_failed = False
+    try:
+        provision_confidential_challenge_delegation(apply=args.apply)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        confidential_failed = True
+        log(f"reconcile: confidential certificate delegation failed: {exc}")
     trusted = trust_digests()
     fleet = discover_instances()
     if not fleet:
@@ -1143,6 +1210,12 @@ def _main_unlocked() -> int:
             )
         )
 
+    try:
+        reconcile_confidential(canonical_healthy, digest, apply=args.apply)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        confidential_failed = True
+        log(f"reconcile: confidential membership update failed: {exc}")
+
     if len(healthy_ips) < MIN_HEALTHY:
         sys.exit(f"[FAIL] only {len(healthy_ips)} healthy (< MIN_HEALTHY={MIN_HEALTHY}); "
                  "refusing to shrink DNS — leaving last-good record in place")
@@ -1170,7 +1243,8 @@ def _main_unlocked() -> int:
             args.apply,
             drained_regions=persistent_excludes,
         )
-    return 0
+    # Surface failures to monitoring, but only after ordinary DNS is reconciled.
+    return 1 if confidential_failed else 0
 
 
 def main() -> int:

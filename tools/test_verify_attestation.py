@@ -422,7 +422,7 @@ class PyOpenSSLLoopbackTransportTests(VerifierTestCase):
             "Python ssl TLS 1.3 support is unavailable",
         )
 
-    def loopback_client_context(self):
+    def loopback_client_context(self, *, ca_trust=True):
         ctx = VERIFIER.SSL.Context(VERIFIER.SSL.TLS_CLIENT_METHOD)
         if hasattr(ctx, "set_min_proto_version") and hasattr(VERIFIER.SSL, "TLS1_3_VERSION"):
             ctx.set_min_proto_version(VERIFIER.SSL.TLS1_3_VERSION)
@@ -467,13 +467,39 @@ class PyOpenSSLLoopbackTransportTests(VerifierTestCase):
                         + body
                     )
                     tls.sendall(response)
+                    if getattr(self, "probe_response", None) is not None:
+                        probe = bytearray()
+                        while b"\r\n\r\n" not in probe:
+                            chunk = tls.recv(4096)
+                            if not chunk:
+                                raise EOFError("client did not send the policy probe on the attested socket")
+                            probe.extend(chunk)
+                        self.assertIn(b"Host: api.confidential.trustedrouter.com\r\n", probe)
+                        probe_body = self.probe_response
+                        tls.sendall(
+                            b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n"
+                            + f"Content-Length: {len(probe_body)}\r\n\r\n".encode("ascii")
+                            + probe_body
+                        )
         except BaseException as exc:
             errors.append(exc)
 
     def test_same_socket_fetch_retries_timeout_mode_tls_io(self) -> None:
+        self.exercise_same_socket_fetch()
+
+    def test_confidential_policy_probe_uses_attested_tls_socket(self) -> None:
+        self.probe_response = b'{"error":{"code":"confidential_privacy_required"}}'
+        self.exercise_same_socket_fetch()
+
+    def test_old_binary_rejection_does_not_qualify_for_confidential_dns(self) -> None:
+        self.probe_response = b'{"error":{"code":"invalid_api_key"}}'
+        with self.assertRaisesRegex(SystemExit, "does not enforce"):
+            self.exercise_same_socket_fetch()
+
+    def exercise_same_socket_fetch(self) -> None:
         cert_pem, key_pem = make_cert_pem_pair(["localhost"], [])
         nonce_hex = "12" * 32
-        body = jwt_for_payload({"eat_nonce": [nonce_hex]})
+        body = jwt_for_payload({"iss": VERIFIER.GCP_ISSUER, "eat_nonce": [nonce_hex]})
         server_errors: list[BaseException] = []
         thread: threading.Thread | None = None
         unreturned_client_raw: socket.socket | None = None
@@ -535,6 +561,7 @@ class PyOpenSSLLoopbackTransportTests(VerifierTestCase):
                             require_exporter=False,
                             require_pin=False,
                             timeout=5.0,
+                            confidential_host=("api.confidential.trustedrouter.com" if getattr(self, "probe_response", None) is not None else None),
                         )
                     )
             finally:
@@ -625,6 +652,38 @@ class GCPLivenessModeTests(VerifierTestCase):
         with self.assertRaises(SystemExit) as raised:
             self.verify(self.payload(nonces=["00" * 32, self.nonce_hex]), require_exporter=False)
         self.assertIn("live TLS cert fingerprint is not bound", str(raised.exception))
+
+
+class ConfidentialPolicyProbeTests(VerifierTestCase):
+    def test_probe_has_no_auth_or_prompt_and_checks_host(self) -> None:
+        for host in VERIFIER.CONFIDENTIAL_API_HOSTS:
+            request = VERIFIER.confidential_policy_probe(host)
+            self.assertIn(f"Host: {host}\r\n".encode(), request)
+            self.assertNotIn(b"Authorization", request)
+            self.assertNotIn(b"messages", request)
+            self.assertIn(b'"min_privacy":"any"', request)
+        with self.assertRaises(ValueError):
+            VERIFIER.confidential_policy_probe("api.confidential.trustedrouter.com\r\nX: bad")
+
+    def test_only_specific_pre_auth_rejection_proves_policy(self) -> None:
+        good = b'{"error":{"code":"confidential_privacy_required"}}'
+        VERIFIER.verify_confidential_policy_response("HTTP/1.1 400 Bad Request", good)
+        for status, body in [
+            ("HTTP/1.1 401 Unauthorized", good),
+            ("HTTP/1.1 200 OK", good),
+            ("HTTP/1.1 400 Bad Request", b'{"error":{"code":"bad_request"}}'),
+            ("HTTP/1.1 400 Bad Request", b'[]'),
+            ("HTTP/1.1 400 Bad Request", b'not-json'),
+        ]:
+            with self.assertRaises(SystemExit):
+                VERIFIER.verify_confidential_policy_response(status, body)
+
+    def test_probe_cannot_silently_replace_strict_pin_verification(self) -> None:
+        with self.assertRaises(ValueError):
+            VERIFIER.fetch_attestation_same_tls_socket(
+                "api.trustedrouter.com", "ab" * 32,
+                confidential_host="api.confidential.trustedrouter.com",
+            )
 
 
 class GCPBindingStressVerificationTests(VerifierTestCase):

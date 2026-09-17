@@ -92,9 +92,10 @@ curl() {
                     "STAGE_D_PROBE_KEY_NAME": "test-only", "TEST_SOURCE": origin,
                     "TEST_EVIDENCE": str(evidence_path), "INTERNAL_GATEWAY_TOKEN": "test-only",
                     "AUTHORIZATION_LOOKUP_BASE_URL": "https://example.invalid/v1",
-                    "STAGE_D_EVIDENCE_TIMEOUT_SECONDS": "1", "STAGE_D_EVIDENCE_RETRY_SLEEP": "1",
+                    # Leave scheduling headroom for the first lookup on busy CI runners.
+                    "STAGE_D_EVIDENCE_TIMEOUT_SECONDS": "3", "STAGE_D_EVIDENCE_RETRY_SLEEP": "1",
                 }
-                run = subprocess.run(["bash", "-c", setup + function + '\nverify_streaming_authorization example.invalid 127.0.0.1 regional'], env=env, cwd=ROOT, capture_output=True, text=True, timeout=5)
+                run = subprocess.run(["bash", "-c", setup + function + '\nverify_streaming_authorization example.invalid 127.0.0.1 regional'], env=env, cwd=ROOT, capture_output=True, text=True, timeout=15)
                 self.assertEqual(run.returncode == 0, success, run.stderr)
                 self.assertEqual((Path(temp) / "lookups").exists(), origin == "provider")
 

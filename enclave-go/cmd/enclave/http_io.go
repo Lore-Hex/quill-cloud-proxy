@@ -180,6 +180,10 @@ func (c *responseStatsConn) SelectedExporter() ([]byte, error) {
 	return enclavetls.SelectedExporter(c.Conn)
 }
 
+func (c *responseStatsConn) SelectedServerName() string {
+	return enclavetls.SelectedServerName(c.Conn)
+}
+
 func parseHTTPStatus(p []byte) int {
 	if !bytes.HasPrefix(p, []byte("HTTP/")) {
 		return 0
@@ -267,6 +271,7 @@ func maxDurationSeconds(duration time.Duration, floor float64) float64 {
 }
 
 type requestAttributionHeaders struct {
+	Host               string
 	SessionID          string
 	HTTPReferer        string
 	App                string
@@ -306,6 +311,7 @@ func readRequestWithHeadersRead(
 
 	contentLength := 0
 	contentLengthSeen := false
+	hostSeen := false
 	transferEncodingSeen := false
 	headerCount := 0
 	for {
@@ -334,6 +340,12 @@ func readRequestWithHeadersRead(
 		}
 		v = strings.Trim(v, " \t")
 		switch strings.ToLower(k) {
+		case "host":
+			if hostSeen {
+				return "", "", "", "", attribution, nil, errMalformedRequestHeaders
+			}
+			hostSeen = true
+			attribution.Host = v
 		case "connection":
 			for _, token := range strings.Split(v, ",") {
 				if strings.EqualFold(strings.TrimSpace(token), "close") {
