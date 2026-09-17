@@ -665,6 +665,10 @@ func validateResponsesWebSearchPrivacy(req *types.OpenAIChatRequest) *adapter.Ad
 		return webSearchPrivacyError()
 	}
 	if req.Provider != nil {
+		privacy := strings.ToLower(strings.TrimSpace(req.Provider.MinPrivacy))
+		if (privacy != "" && privacy != "any") || (req.Provider.ZDR != nil && *req.Provider.ZDR) {
+			return webSearchPrivacyError()
+		}
 		if strings.EqualFold(strings.TrimSpace(req.Provider.DataCollection), "deny") || strings.EqualFold(strings.TrimSpace(req.Provider.Jurisdiction), "eu") {
 			return webSearchPrivacyError()
 		}

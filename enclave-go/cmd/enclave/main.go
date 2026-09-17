@@ -34,6 +34,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/abuse"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/apihosts"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
 	batchapi "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/batch"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bootstrap"
@@ -304,7 +305,7 @@ func main() {
 	// = /attestation responds 503 (we have no cert to attest).
 	var tlsServer *enclavetls.Server
 
-	apiHost := getenv("QUILL_API_HOST", "api.quillrouter.com")
+	apiHost := apihosts.WithConfidentialAliases(getenv("QUILL_API_HOST", "api.quillrouter.com"))
 	if os.Getenv("QUILL_ENCLAVE_TLS") == "true" {
 		mode := getenv("QUILL_TLS_MODE", "self-signed")
 		var err error
@@ -726,6 +727,13 @@ func serveOneRequest(
 		len(body),
 		requestIdentity,
 	)
+	if apihosts.Confidential(attribution.Host) || apihosts.Confidential(enclavetls.SelectedServerName(conn)) {
+		ctx = trustedrouter.WithConfidentialOnly(ctx)
+		if err := validateConfidentialHostRequest(method, routePath, body, trGateway); err != nil {
+			writeConfidentialHostError(conn, routePath, err)
+			return
+		}
+	}
 
 	// Public liveness is deliberately computed entirely inside the enclave.
 	// It does not authenticate, read storage, call the control plane, mint an

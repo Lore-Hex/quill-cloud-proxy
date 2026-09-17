@@ -54,6 +54,41 @@ class GcloudReadTests(unittest.TestCase):
             reconciler.gcloud_json(["dns", "record-sets", "list"])
 
 
+class ConfidentialDNSPolicyTests(unittest.TestCase):
+    def test_only_policy_qualified_instances_published(self) -> None:
+        fleet = [{"ip": "34.1.1.1"}, {"ip": "34.2.2.2"}]
+        with (
+            mock.patch.object(reconciler, "API_HOST", "api.trustedrouter.com"),
+            mock.patch.object(reconciler, "attest", side_effect=lambda ip, *_args, **_kwargs: ip == "34.2.2.2") as attest,
+            mock.patch.object(reconciler, "reconcile_dns_record") as publish,
+        ):
+            reconciler.reconcile_confidential(fleet, "sha256:release", apply=True)
+        self.assertEqual(publish.call_count, 2)
+        for call in publish.call_args_list:
+            self.assertEqual(call.args[2], ["34.2.2.2"])
+        for call in attest.call_args_list:
+            self.assertEqual(call.kwargs["confidential_host"], "api.confidential.trustedrouter.com")
+
+    def test_zero_qualified_instances_removes_unsafe_records(self) -> None:
+        with (
+            mock.patch.object(reconciler, "API_HOST", "api.trustedrouter.com"),
+            mock.patch.object(reconciler, "current_dns_ips", return_value=["34.1.1.1"]),
+            mock.patch.object(reconciler.subprocess, "run") as run,
+        ):
+            reconciler.reconcile_confidential([], "sha256:release", apply=False)
+            run.assert_not_called()
+            reconciler.reconcile_confidential([], "sha256:release", apply=True)
+        self.assertEqual(run.call_count, 2)
+        for call in run.call_args_list:
+            self.assertIn("delete", call.args[0])
+            self.assertTrue(call.kwargs["check"])
+
+    def test_verifier_gets_policy_probe_flag(self) -> None:
+        with mock.patch.object(reconciler.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertTrue(reconciler.attest("34.1.1.1", "sha256:release", confidential_host="api.confidential.trustedrouter.com"))
+        self.assertIn("--require-confidential-host", run.call_args.args[0])
+
+
 class GcpEnclaveInventoryTests(unittest.TestCase):
     def test_discovery_excludes_regions_absent_from_rollout_inventory(self) -> None:
         rows = [

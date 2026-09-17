@@ -718,6 +718,11 @@ func (c *Client) ResolveCustomModel(ctx context.Context, bearer string, model st
 }
 
 func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qtypes.OpenAIChatRequest, routeType string) (*Authorization, error) {
+	if ConfidentialOnly(ctx) {
+		if err := ValidateConfidentialRouting(req.Provider); err != nil {
+			return nil, err
+		}
+	}
 	idempotencyKey, err := authorizationIdempotencyKey(req.IdempotencyKey)
 	if err != nil {
 		return nil, err

@@ -768,9 +768,12 @@ func TestServeUntilCanceledReportsUnexpectedListenerFailure(t *testing.T) {
 	}
 }
 
-func startTLSServeOneLoopback(t *testing.T, reg *auth.Registry, br llm.Client) (string, string, *tls.Config) {
+func startTLSServeOneLoopback(t *testing.T, reg *auth.Registry, br llm.Client, hostnames ...string) (string, string, *tls.Config) {
 	t.Helper()
-	tlsServer, err := enclavetls.NewSelfSigned("test.quill.local")
+	if len(hostnames) == 0 {
+		hostnames = []string{"test.quill.local"}
+	}
+	tlsServer, err := enclavetls.NewSelfSigned(strings.Join(hostnames, ","))
 	if err != nil {
 		t.Fatalf("NewSelfSigned: %v", err)
 	}
@@ -804,7 +807,7 @@ func startTLSServeOneLoopback(t *testing.T, reg *auth.Registry, br llm.Client) (
 	pool.AddCert(leaf)
 	return network, inner.Addr().String(), &tls.Config{
 		RootCAs:    pool,
-		ServerName: "test.quill.local",
+		ServerName: hostnames[0],
 		MinVersion: tls.VersionTLS13,
 	}
 }

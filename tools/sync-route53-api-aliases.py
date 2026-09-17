@@ -21,6 +21,7 @@ from typing import Any, NamedTuple
 PROJECT = "quill-cloud-proxy"
 SOURCE_ZONE = "trustedrouter-com"
 SOURCE_RECORD = "api.trustedrouter.com."
+CONFIDENTIAL_SOURCE_RECORD = "api.confidential.trustedrouter.com."
 TTL = 60
 MIN_HEALTHY = 2
 
@@ -28,9 +29,12 @@ MIN_HEALTHY = 2
 class AliasRecord(NamedTuple):
     zone_id: str
     name: str
+    source: str = SOURCE_RECORD
 
 
 ALIASES = (
+    AliasRecord("Z09662142UE0IQL51B13V", "api.confidential.allyrouter.com.", CONFIDENTIAL_SOURCE_RECORD),
+    AliasRecord("Z00893363GIOMU7Z8647K", "api.confidential.uptimerouter.com.", CONFIDENTIAL_SOURCE_RECORD),
     AliasRecord("Z09662142UE0IQL51B13V", "api.allyrouter.com."),
     AliasRecord("Z00893363GIOMU7Z8647K", "api.uptimerouter.com."),
 )
@@ -79,7 +83,7 @@ def normalized_ipv4(
     return result
 
 
-def source_ips() -> list[str]:
+def source_ips(record: str = SOURCE_RECORD) -> list[str]:
     rows = run_json(
         [
             "gcloud",
@@ -91,7 +95,7 @@ def source_ips() -> list[str]:
             "--zone",
             SOURCE_ZONE,
             "--name",
-            SOURCE_RECORD,
+            record,
             "--type",
             "A",
             "--format=json",
@@ -102,17 +106,19 @@ def source_ips() -> list[str]:
     for row in rows:
         if (
             isinstance(row, dict)
-            and row.get("name") == SOURCE_RECORD
+            and row.get("name") == record
             and row.get("type") == "A"
         ):
             values = row.get("rrdatas")
             if not isinstance(values, list):
                 raise ValueError("canonical A record has invalid rrdatas")
-            return normalized_ipv4(values)
-    raise ValueError(f"canonical A record {SOURCE_RECORD} was not found")
+            return normalized_ipv4(values, minimum=0 if record == CONFIDENTIAL_SOURCE_RECORD else MIN_HEALTHY)
+    if record == CONFIDENTIAL_SOURCE_RECORD:
+        return []
+    raise ValueError(f"canonical A record {record} was not found")
 
 
-def current_alias_ips(alias: AliasRecord) -> list[str]:
+def current_alias_record(alias: AliasRecord) -> dict[str, Any] | None:
     payload = run_json(
         [
             "aws",
@@ -132,9 +138,16 @@ def current_alias_ips(alias: AliasRecord) -> list[str]:
     )
     rows = payload.get("ResourceRecordSets", []) if isinstance(payload, dict) else []
     if not rows or not isinstance(rows[0], dict):
-        return []
+        return None
     row = rows[0]
     if row.get("Name") != alias.name or row.get("Type") != "A":
+        return None
+    return row
+
+
+def current_alias_ips(alias: AliasRecord) -> list[str]:
+    row = current_alias_record(alias)
+    if row is None:
         return []
     resources = row.get("ResourceRecords", [])
     if not isinstance(resources, list):
@@ -161,6 +174,16 @@ def change_batch(alias: AliasRecord, ips: list[str]) -> dict[str, object]:
 
 
 def apply_alias(alias: AliasRecord, ips: list[str]) -> str:
+    if ips:
+        batch = change_batch(alias, ips)
+    else:
+        if alias.source != CONFIDENTIAL_SOURCE_RECORD:
+            raise ValueError("refusing to delete ordinary API alias")
+        current = current_alias_record(alias)
+        if current is None:
+            return "already absent"
+        batch = {"Comment": "Remove unqualified confidential API membership",
+                 "Changes": [{"Action": "DELETE", "ResourceRecordSet": current}]}
     payload = run_json(
         [
             "aws",
@@ -169,7 +192,7 @@ def apply_alias(alias: AliasRecord, ips: list[str]) -> str:
             "--hosted-zone-id",
             alias.zone_id,
             "--change-batch",
-            json.dumps(change_batch(alias, ips), separators=(",", ":")),
+            json.dumps(batch, separators=(",", ":")),
             "--output",
             "json",
         ]
@@ -193,9 +216,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    ips = source_ips()
+    sources: dict[str, list[str]] = {}
     changed = False
     for alias in ALIASES:
+        if alias.source not in sources:
+            sources[alias.source] = source_ips(alias.source)
+        ips = sources[alias.source]
         current = current_alias_ips(alias)
         if current == ips:
             print(f"{alias.name} already matches attested canonical set ({len(ips)} A)")

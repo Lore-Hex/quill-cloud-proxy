@@ -21,8 +21,34 @@ class Route53AliasSyncTests(unittest.TestCase):
         names = {alias.name for alias in SYNC.ALIASES}
         self.assertEqual(
             names,
-            {"api.allyrouter.com.", "api.uptimerouter.com."},
+            {"api.allyrouter.com.", "api.uptimerouter.com.",
+             "api.confidential.allyrouter.com.", "api.confidential.uptimerouter.com."},
         )
+
+    def test_confidential_aliases_use_only_policy_qualified_source(self) -> None:
+        for alias in SYNC.ALIASES:
+            if ".confidential." in alias.name:
+                self.assertEqual(alias.source, "api.confidential.trustedrouter.com.")
+        with mock.patch.object(SYNC, "run_json", return_value=[]):
+            self.assertEqual(SYNC.source_ips(SYNC.CONFIDENTIAL_SOURCE_RECORD), [])
+            with self.assertRaises(ValueError):
+                SYNC.source_ips()
+
+    def test_confidential_removal_uses_exact_record_not_last_good(self) -> None:
+        alias = SYNC.ALIASES[0]
+        current = {"Name": alias.name, "Type": "A", "TTL": 300,
+                   "ResourceRecords": [{"Value": "34.11.89.24"}]}
+        with (
+            mock.patch.object(SYNC, "current_alias_record", return_value=current),
+            mock.patch.object(SYNC, "run_json", return_value={"ChangeInfo": {"Id": "change"}}) as run,
+        ):
+            SYNC.apply_alias(alias, [])
+        import json
+        command = run.call_args.args[0]
+        batch = json.loads(command[command.index("--change-batch") + 1])
+        self.assertEqual(batch["Changes"], [{"Action": "DELETE", "ResourceRecordSet": current}])
+        with self.assertRaises(ValueError):
+            SYNC.apply_alias(SYNC.AliasRecord("zone", "api.allyrouter.com."), [])
 
     def test_normalizes_and_sorts_public_ipv4(self) -> None:
         self.assertEqual(
