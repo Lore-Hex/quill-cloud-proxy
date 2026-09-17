@@ -18,6 +18,17 @@ SPEC.loader.exec_module(SYNC)
 
 
 class Route53AliasSyncTests(unittest.TestCase):
+    def test_delegation_failure_still_reconciles_ordinary_aliases(self) -> None:
+        with (
+            mock.patch.object(SYNC, "parse_args", return_value=mock.Mock(apply=True)),
+            mock.patch.object(SYNC, "provision_confidential_challenge_delegations", side_effect=RuntimeError("DNS unavailable")),
+            mock.patch.object(SYNC, "source_ips", return_value=["34.1.1.1", "34.1.1.2"]),
+            mock.patch.object(SYNC, "current_alias_ips", return_value=[]),
+            mock.patch.object(SYNC, "apply_alias") as publish,
+        ):
+            self.assertEqual(SYNC.main(), 1)
+        self.assertEqual(publish.call_count, len(SYNC.ALIASES))
+
     def test_certificate_delegations_never_publish_api_membership(self) -> None:
         with (
             mock.patch.object(SYNC, "current_alias_record", return_value=None),

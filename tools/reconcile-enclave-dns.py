@@ -1162,7 +1162,12 @@ def _main_unlocked() -> int:
     # Registry is a recovery-only fallback: consult it only when a live instance
     # fails the signed set, rather than scanning release history every two
     # minutes during steady state.
-    provision_confidential_challenge_delegation(apply=args.apply)
+    confidential_failed = False
+    try:
+        provision_confidential_challenge_delegation(apply=args.apply)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        confidential_failed = True
+        log(f"reconcile: confidential certificate delegation failed: {exc}")
     trusted = trust_digests()
     fleet = discover_instances()
     if not fleet:
@@ -1205,7 +1210,11 @@ def _main_unlocked() -> int:
             )
         )
 
-    reconcile_confidential(canonical_healthy, digest, apply=args.apply)
+    try:
+        reconcile_confidential(canonical_healthy, digest, apply=args.apply)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        confidential_failed = True
+        log(f"reconcile: confidential membership update failed: {exc}")
 
     if len(healthy_ips) < MIN_HEALTHY:
         sys.exit(f"[FAIL] only {len(healthy_ips)} healthy (< MIN_HEALTHY={MIN_HEALTHY}); "
@@ -1234,7 +1243,8 @@ def _main_unlocked() -> int:
             args.apply,
             drained_regions=persistent_excludes,
         )
-    return 0
+    # Surface failures to monitoring, but only after ordinary DNS is reconciled.
+    return 1 if confidential_failed else 0
 
 
 def main() -> int:

@@ -93,6 +93,28 @@ class ConfidentialDNSPolicyTests(unittest.TestCase):
         self.assertIn("_acme-challenge.api.confidential.quillrouter.com.", command)
         self.assertIn("_acme-challenge.api-confidential-quillrouter.trustedrouter.com.", command)
 
+    def test_confidential_dns_failures_do_not_skip_ordinary_updates(self) -> None:
+        fleet = [{"ip": "34.1.1.1", "name": "one", "region": "us-central1"},
+                 {"ip": "34.1.1.2", "name": "two", "region": "us-east4"}]
+        for operation in ("provision_confidential_challenge_delegation", "reconcile_confidential"):
+            with (
+                self.subTest(operation=operation),
+                mock.patch.object(sys, "argv", [str(SCRIPT), "--apply"]),
+                mock.patch.object(reconciler, "provision_confidential_challenge_delegation"),
+                mock.patch.object(reconciler, "reconcile_confidential"),
+                mock.patch.object(reconciler, operation, side_effect=subprocess.TimeoutExpired("gcloud", 10)),
+                mock.patch.object(reconciler, "trust_digests", return_value=["sha256:release"]),
+                mock.patch.object(reconciler, "discover_instances", return_value=fleet),
+                mock.patch.object(reconciler, "attest_fleet_with_release_fallback", return_value=([(item, True) for item in fleet], ["sha256:release"])),
+                mock.patch.object(reconciler, "persistent_drains", return_value={}),
+                mock.patch.object(reconciler, "EXCLUDE_CANONICAL_REGIONS", set()),
+                mock.patch.object(reconciler, "reconcile_dns_record") as publish,
+                mock.patch.object(reconciler, "PUBLISH_REGIONAL", False),
+            ):
+                self.assertEqual(reconciler._main_unlocked(), 1)
+                publish.assert_any_call(reconciler.DNS_ZONE, reconciler.RECORD,
+                                        ["34.1.1.1", "34.1.1.2"], apply=True, label="canonical")
+
     def test_zero_qualified_instances_removes_unsafe_records(self) -> None:
         with (
             mock.patch.object(reconciler, "API_HOST", "api.trustedrouter.com"),

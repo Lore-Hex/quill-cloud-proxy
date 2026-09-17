@@ -16,6 +16,7 @@ import argparse
 import ipaddress
 import json
 import subprocess
+import sys
 from typing import Any, NamedTuple
 
 PROJECT = "quill-cloud-proxy"
@@ -238,7 +239,12 @@ def provision_confidential_challenge_delegations(*, apply: bool) -> None:
 
 def main() -> int:
     args = parse_args()
-    provision_confidential_challenge_delegations(apply=args.apply)
+    delegation_failed = False
+    try:
+        provision_confidential_challenge_delegations(apply=args.apply)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        delegation_failed = True
+        print(f"confidential certificate delegation failed: {exc}", file=sys.stderr)
     sources: dict[str, list[str]] = {}
     changed = False
     for alias in ALIASES:
@@ -256,7 +262,7 @@ def main() -> int:
             print(f"{alias.name} update submitted: {change_id}")
     if changed and not args.apply:
         print("dry run only; pass --apply to update Route53")
-    return 0
+    return 1 if delegation_failed else 0
 
 
 if __name__ == "__main__":
