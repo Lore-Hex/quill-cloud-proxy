@@ -414,8 +414,9 @@ func main() {
 				}
 				isSharedName := i > 0
 				enclavetls.StartDNS01Renewer(ctx, enclavetls.DNS01Config{
-					DNSName:        dnsName,
-					AllowBootstrap: isSharedName,
+					ChallengeRecord: apihosts.ChallengeRecord(dnsName, strings.TrimSpace(os.Getenv("QUILL_ACME_DNS_MANAGED_ZONE"))),
+					DNSName:         dnsName,
+					AllowBootstrap:  isSharedName,
 					// Cloud DNS when the zone is configured, Cloudflare
 					// otherwise. trustedrouter.com is served by Cloud DNS, so
 					// without this the DNS-01 fallback cannot touch the zone

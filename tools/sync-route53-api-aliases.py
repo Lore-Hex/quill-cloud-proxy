@@ -118,7 +118,7 @@ def source_ips(record: str = SOURCE_RECORD) -> list[str]:
     raise ValueError(f"canonical A record {record} was not found")
 
 
-def current_alias_record(alias: AliasRecord) -> dict[str, Any] | None:
+def current_alias_record(alias: AliasRecord, record_type: str = "A") -> dict[str, Any] | None:
     payload = run_json(
         [
             "aws",
@@ -129,7 +129,7 @@ def current_alias_record(alias: AliasRecord) -> dict[str, Any] | None:
             "--start-record-name",
             alias.name,
             "--start-record-type",
-            "A",
+            record_type,
             "--max-items",
             "1",
             "--output",
@@ -140,7 +140,7 @@ def current_alias_record(alias: AliasRecord) -> dict[str, Any] | None:
     if not rows or not isinstance(rows[0], dict):
         return None
     row = rows[0]
-    if row.get("Name") != alias.name or row.get("Type") != "A":
+    if row.get("Name") != alias.name or row.get("Type") != record_type:
         return None
     return row
 
@@ -214,8 +214,31 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def provision_confidential_challenge_delegations(*, apply: bool) -> None:
+    for alias in ALIASES:
+        if alias.source != CONFIDENTIAL_SOURCE_RECORD:
+            continue
+        owner = alias.name.removeprefix("api.confidential.").removesuffix(".com.")
+        name = "_acme-challenge." + alias.name
+        target = f"_acme-challenge.api-confidential-{owner}.trustedrouter.com."
+        current = current_alias_record(AliasRecord(alias.zone_id, name), "CNAME")
+        if current and current.get("ResourceRecords") == [{"Value": target}]:
+            continue
+        if apply:
+            run_json([
+                "aws", "route53", "change-resource-record-sets", "--hosted-zone-id", alias.zone_id,
+                "--change-batch", json.dumps({"Comment": "Enclave DNS-01 certificate delegation",
+                    "Changes": [{"Action": "UPSERT", "ResourceRecordSet": {
+                        "Name": name, "Type": "CNAME", "TTL": TTL,
+                        "ResourceRecords": [{"Value": target}],
+                    }}]}), "--output", "json",
+            ])
+        print(f"certificate delegation {name} -> {target} ({'applied' if apply else 'dry run'})")
+
+
 def main() -> int:
     args = parse_args()
+    provision_confidential_challenge_delegations(apply=args.apply)
     sources: dict[str, list[str]] = {}
     changed = False
     for alias in ALIASES:

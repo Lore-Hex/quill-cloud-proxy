@@ -341,7 +341,7 @@ func readRequestWithHeadersRead(
 		v = strings.Trim(v, " \t")
 		switch strings.ToLower(k) {
 		case "host":
-			if hostSeen || v == "" {
+			if hostSeen {
 				return "", "", "", "", attribution, nil, errMalformedRequestHeaders
 			}
 			hostSeen = true

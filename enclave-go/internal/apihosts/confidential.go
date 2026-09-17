@@ -26,6 +26,20 @@ func Confidential(authority string) bool {
 	return false
 }
 
+// ChallengeRecord delegates only the new mirror-name challenges to the zone
+// the enclave already controls. No private TLS key leaves the enclave.
+func ChallengeRecord(name, managedZone string) string {
+	if managedZone != "trustedrouter-com" {
+		return ""
+	}
+	for _, domain := range publicDomains[1:] {
+		if hostname(name) == "api.confidential."+domain {
+			return "_acme-challenge.api-confidential-" + strings.TrimSuffix(domain, ".com") + ".trustedrouter.com"
+		}
+	}
+	return ""
+}
+
 // WithConfidentialAliases preserves the primary certificate name and only adds
 // aliases for public domains this deployment already serves.
 func WithConfidentialAliases(configured string) string {

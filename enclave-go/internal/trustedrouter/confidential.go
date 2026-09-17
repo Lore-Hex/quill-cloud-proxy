@@ -2,6 +2,7 @@ package trustedrouter
 
 import (
 	"context"
+	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -26,6 +27,14 @@ func ValidateConfidentialRouting(provider *qtypes.ProviderRouting) *ControlPlane
 			Type:       "confidential_privacy_required",
 			Message:    `This hostname requires provider.min_privacy="confidential". No ordinary provider fallback is permitted.`,
 		}
+	}
+	return nil
+}
+
+func validateConfidentialAuthorization(ctx context.Context, authorization *Authorization) *ControlPlaneError {
+	if ConfidentialOnly(ctx) && authorization != nil && authorization.CustomModel != nil &&
+		strings.EqualFold(strings.TrimSpace(authorization.CustomModel.Kind), "user_provided") {
+		return &ControlPlaneError{StatusCode: 400, Type: "confidential_route_unsupported", Message: "User-provided endpoints are not verified confidential routes."}
 	}
 	return nil
 }

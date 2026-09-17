@@ -67,7 +67,31 @@ class ConfidentialDNSPolicyTests(unittest.TestCase):
         for call in publish.call_args_list:
             self.assertEqual(call.args[2], ["34.2.2.2"])
         for call in attest.call_args_list:
-            self.assertEqual(call.kwargs["confidential_host"], "api.confidential.trustedrouter.com")
+            self.assertEqual(call.kwargs["confidential_host"], call.kwargs["api_host"])
+            self.assertIn(call.kwargs["api_host"], reconciler.CONFIDENTIAL_HOSTS)
+        self.assertEqual(attest.call_count, 8)
+
+    def test_candidate_without_one_mirror_certificate_is_not_published(self) -> None:
+        with (
+            mock.patch.object(reconciler, "API_HOST", "api.trustedrouter.com"),
+            mock.patch.object(reconciler, "attest", side_effect=lambda *_args, **kw: kw["api_host"] != "api.confidential.allyrouter.com"),
+            mock.patch.object(reconciler, "reconcile_dns_record") as publish,
+            mock.patch.object(reconciler, "current_dns_ips", return_value=[]),
+        ):
+            reconciler.reconcile_confidential([{"ip": "34.1.1.1"}], "sha256:release", apply=True)
+        publish.assert_not_called()
+
+    def test_challenge_delegation_does_not_publish_inference_addresses(self) -> None:
+        with (
+            mock.patch.object(reconciler, "API_HOST", "api.trustedrouter.com"),
+            mock.patch.object(reconciler, "current_dns_record", return_value=None),
+            mock.patch.object(reconciler.subprocess, "run") as run,
+        ):
+            reconciler.provision_confidential_challenge_delegation(apply=True)
+        command = run.call_args.args[0]
+        self.assertIn("CNAME", command)
+        self.assertIn("_acme-challenge.api.confidential.quillrouter.com.", command)
+        self.assertIn("_acme-challenge.api-confidential-quillrouter.trustedrouter.com.", command)
 
     def test_zero_qualified_instances_removes_unsafe_records(self) -> None:
         with (

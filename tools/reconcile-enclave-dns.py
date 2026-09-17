@@ -907,6 +907,32 @@ def reconcile_dns_record(
         log(f"reconcile: DRY-RUN {label} {record} (pass --apply to change DNS)")
 
 
+CONFIDENTIAL_HOSTS = tuple(
+    f"api.confidential.{domain}.com"
+    for domain in ("trustedrouter", "quillrouter", "allyrouter", "uptimerouter")
+)
+
+
+def provision_confidential_challenge_delegation(*, apply: bool) -> None:
+    # Bootstrap certificates via DNS-01 BEFORE publishing any API A record.
+    # The other two mirror zones are managed by sync-route53-api-aliases.py.
+    if API_HOST not in {"api.trustedrouter.com", "api.quillrouter.com"}:
+        return
+    record = "_acme-challenge.api.confidential.quillrouter.com."
+    target = "_acme-challenge.api-confidential-quillrouter.trustedrouter.com."
+    current = current_dns_record("quillrouter-com", record, "CNAME")
+    if current and current.get("rrdatas") == [target]:
+        return
+    log(f"reconcile: confidential certificate delegation {record} -> {target}")
+    if apply:
+        subprocess.run(
+            ["gcloud", "dns", "record-sets", "update" if current else "create", record,
+             "--zone", "quillrouter-com", "--project", PROJECT, "--type", "CNAME",
+             "--ttl", str(TTL), "--rrdatas", target],
+            check=True, capture_output=True, text=True, timeout=GCLOUD_TIMEOUT_SECONDS,
+        )
+
+
 def reconcile_confidential(healthy: list[dict], digest: str, *, apply: bool) -> None:
     """Never mirror old attested binaries that lack confidential-host enforcement.
 
@@ -916,13 +942,15 @@ def reconcile_confidential(healthy: list[dict], digest: str, *, apply: bool) -> 
     """
     if API_HOST not in {"api.trustedrouter.com", "api.quillrouter.com"}:
         return
-    host = "api.confidential.trustedrouter.com"
+    host = CONFIDENTIAL_HOSTS[0]
+    checks = [(instance["ip"], name) for instance in healthy for name in CONFIDENTIAL_HOSTS]
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
         eligible = list(executor.map(
-            lambda instance: (instance["ip"], attest(instance["ip"], digest, confidential_host=host)),
-            healthy,
+            lambda check: (check[0], attest(check[0], digest, api_host=check[1], confidential_host=check[1])),
+            checks,
         ))
-    ips = sorted({ip for ip, ok in eligible if ok})
+    failed = {ip for ip, ok in eligible if not ok}
+    ips = sorted({ip for ip, ok in eligible if ok} - failed)
     for zone, record in (
         ("trustedrouter-com", host + "."),
         ("quillrouter-com", "api.confidential.quillrouter.com."),
@@ -1134,6 +1162,7 @@ def _main_unlocked() -> int:
     # Registry is a recovery-only fallback: consult it only when a live instance
     # fails the signed set, rather than scanning release history every two
     # minutes during steady state.
+    provision_confidential_challenge_delegation(apply=args.apply)
     trusted = trust_digests()
     fleet = discover_instances()
     if not fleet:

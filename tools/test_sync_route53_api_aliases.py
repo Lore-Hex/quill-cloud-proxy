@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import unittest
 from pathlib import Path
@@ -17,6 +18,34 @@ SPEC.loader.exec_module(SYNC)
 
 
 class Route53AliasSyncTests(unittest.TestCase):
+    def test_certificate_delegations_never_publish_api_membership(self) -> None:
+        with (
+            mock.patch.object(SYNC, "current_alias_record", return_value=None),
+            mock.patch.object(SYNC, "run_json", return_value={}) as run,
+        ):
+            SYNC.provision_confidential_challenge_delegations(apply=True)
+        self.assertEqual(run.call_count, 2)
+        for call in run.call_args_list:
+            command = call.args[0]
+            batch = json.loads(command[command.index("--change-batch") + 1])
+            record = batch["Changes"][0]["ResourceRecordSet"]
+            self.assertEqual(record["Type"], "CNAME")
+            owner = record["Name"].split(".")[3]
+            self.assertEqual(record["Name"], f"_acme-challenge.api.confidential.{owner}.com.")
+            self.assertEqual(record["ResourceRecords"], [{"Value": f"_acme-challenge.api-confidential-{owner}.trustedrouter.com."}])
+
+    def test_certificate_delegations_are_idempotent(self) -> None:
+        def current(alias, record_type):
+            self.assertEqual(record_type, "CNAME")
+            owner = alias.name.split(".")[3]
+            return {"ResourceRecords": [{"Value": f"_acme-challenge.api-confidential-{owner}.trustedrouter.com."}]}
+        with (
+            mock.patch.object(SYNC, "current_alias_record", side_effect=current),
+            mock.patch.object(SYNC, "run_json") as run,
+        ):
+            SYNC.provision_confidential_challenge_delegations(apply=True)
+        run.assert_not_called()
+
     def test_aliases_are_independent_direct_records(self) -> None:
         names = {alias.name for alias in SYNC.ALIASES}
         self.assertEqual(

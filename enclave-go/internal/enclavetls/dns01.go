@@ -56,6 +56,9 @@ import (
 // time. All fields are required unless noted. Created in cmd/enclave/
 // main.go from BootstrapData + the env-baked ACME config.
 type DNS01Config struct {
+	// ChallengeRecord optionally names a pre-provisioned DNS-01 CNAME target.
+	// The CA still validates DNSName and follows its public challenge delegation.
+	ChallengeRecord    string
 	DNSName            string         // e.g. "api.quillrouter.com"
 	Email              string         // ACME account email
 	DirectoryURL       string         // empty → LE prod
@@ -374,6 +377,9 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 
 		provider := cfg.provider()
 		recordName := challengeRecordName(cfg.DNSName)
+		if cfg.ChallengeRecord != "" {
+			recordName = cfg.ChallengeRecord
+		}
 		recordID, err := provider.AddTXT(ctx, recordName, token)
 		if err != nil {
 			return fmt.Errorf("%s TXT add: %w", provider.Name(), err)

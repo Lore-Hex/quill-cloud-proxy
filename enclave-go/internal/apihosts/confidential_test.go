@@ -33,3 +33,21 @@ func TestWithConfidentialAliases(t *testing.T) {
 		t.Fatal("expanded a non-public domain")
 	}
 }
+
+func TestChallengeDelegations(t *testing.T) {
+	for _, owner := range []string{"quillrouter", "allyrouter", "uptimerouter"} {
+		host := "api.confidential." + owner + ".com"
+		want := "_acme-challenge.api-confidential-" + owner + ".trustedrouter.com"
+		if got := ChallengeRecord(host, "trustedrouter-com"); got != want {
+			t.Fatalf("%s: %s", host, got)
+		}
+		if got := ChallengeRecord(host, "other-zone"); got != "" {
+			t.Fatal("delegation outside the configured zone")
+		}
+	}
+	for _, host := range []string{"api.trustedrouter.com", "api.confidential.trustedrouter.com", "untrusted.example"} {
+		if ChallengeRecord(host, "trustedrouter-com") != "" {
+			t.Fatal("ordinary challenge modified")
+		}
+	}
+}

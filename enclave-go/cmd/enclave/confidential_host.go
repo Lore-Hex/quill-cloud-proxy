@@ -40,8 +40,15 @@ func validateConfidentialHostRequest(method, path string, body []byte, gateway *
 }
 
 func writeConfidentialHostError(w io.Writer, path string, err *trustedrouter.ControlPlaneError) {
+	errorType := "invalid_request_error"
+	if err.StatusCode >= 500 {
+		errorType = "server_error"
+		if path == "/v1/messages" {
+			errorType = "api_error"
+		}
+	}
 	errorBody := map[string]any{"error": map[string]any{
-		"type": "invalid_request_error", "code": err.Type, "message": err.Message,
+		"type": errorType, "code": err.Type, "message": err.Message,
 		"status": err.StatusCode, "source": "router",
 	}}
 	if path == "/v1/messages" {
