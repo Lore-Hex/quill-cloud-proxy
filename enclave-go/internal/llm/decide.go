@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +14,8 @@ import (
 )
 
 // DecideClient is implemented by gateway clients that can reach a HOSTED
-// decision model (POST {baseURL}/evaluate). Like EmbeddingClient it is kept
+// decision model (the vendor's POST {baseURL}/systemone, or a relay's POST
+// {baseURL}/evaluate). Like EmbeddingClient it is kept
 // off the Client interface so single-backend builds need not implement it; the
 // route does a runtime type assertion and 501s otherwise.
 type DecideClient interface {
@@ -36,9 +38,91 @@ type DecideResponse struct {
 	OutputTokens int
 }
 
-// maxDecideResponseBytes bounds the upstream body: 64 questions x 255 options
-// of short numeric entries fits comfortably; anything larger is not a decision.
-const maxDecideResponseBytes = 4 << 20
+// maxDecideResponseBytes bounds the upstream body at twice the largest answer
+// decide.Parse admits, leaving room for the envelope, usage, and a host that
+// pretty-prints. The two are tied so a request that was accepted can never be
+// one whose correct answer is then discarded as oversized -- after the vendor
+// has been paid for it.
+const maxDecideResponseBytes = 2 * decide.MaxAnswerBytes
+
+// DecideError is the ONLY error InvokeDecide returns, and it is content-free by
+// construction: a class from a closed vocabulary, the provider, and for an HTTP
+// failure the status. It never holds an upstream body or a decoder message.
+// Both can echo the caller's state (a vendor 422 quotes the request; a decode
+// error quotes the offending literal), and this enclave does not write request
+// content to a log. There is nothing here to redact because nothing was kept.
+type DecideError struct {
+	Provider string
+	Class    string
+	Status   int // upstream HTTP status; 0 when the failure was not an HTTP response
+}
+
+// DecideError classes.
+const (
+	DecideErrConfig    = "config"          // no key, base URL or transport for this provider
+	DecideErrCanceled  = "canceled"        // our context was cancelled
+	DecideErrDeadline  = "deadline"        // our context timed out
+	DecideErrTransport = "transport"       // the request never got an HTTP response
+	DecideErrHTTP      = "http_status"     // a response that was not 200; see Status
+	DecideErrTooLarge  = "response_size"   // body above maxDecideResponseBytes
+	DecideErrDecode    = "response_decode" // body is not the documented JSON
+	DecideErrDuplicate = "duplicate_key"   // body repeats a JSON key
+)
+
+func (e *DecideError) Error() string {
+	if e.Status != 0 {
+		return fmt.Sprintf("llm/%s: decide %s %d", e.Provider, e.Class, e.Status)
+	}
+	return fmt.Sprintf("llm/%s: decide %s", e.Provider, e.Class)
+}
+
+// DecideErrorClass is the loggable description of an InvokeDecide failure. A
+// foreign error is "unknown": its text is never returned, because nothing is
+// known about what it holds.
+func DecideErrorClass(err error) string {
+	var failed *DecideError
+	if !errors.As(err, &failed) {
+		return "unknown"
+	}
+	if failed.Status != 0 {
+		return fmt.Sprintf("%s_%d", failed.Class, failed.Status)
+	}
+	return failed.Class
+}
+
+// DecideErrorStatus is the upstream HTTP status behind err, if there was one.
+func DecideErrorStatus(err error) (int, bool) {
+	var failed *DecideError
+	if errors.As(err, &failed) && failed.Status != 0 {
+		return failed.Status, true
+	}
+	return 0, false
+}
+
+func decideTransportError(ctx context.Context, provider string, err error) *DecideError {
+	switch {
+	case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+		return &DecideError{Provider: provider, Class: DecideErrCanceled}
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return &DecideError{Provider: provider, Class: DecideErrDeadline}
+	}
+	return &DecideError{Provider: provider, Class: DecideErrTransport}
+}
+
+// decodeDecideBody unmarshals an upstream body that has already been checked
+// for repeated keys, returning content-free errors for both failures.
+func decodeDecideBody(provider string, raw []byte, into any) error {
+	if err := decide.CheckNoDuplicateKeys(raw); err != nil {
+		if decide.ViolationKind(err) == decide.KindDuplicate {
+			return &DecideError{Provider: provider, Class: DecideErrDuplicate}
+		}
+		return &DecideError{Provider: provider, Class: DecideErrDecode}
+	}
+	if err := json.Unmarshal(raw, into); err != nil {
+		return &DecideError{Provider: provider, Class: DecideErrDecode}
+	}
+	return nil
+}
 
 func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRequest, options ...InvokeOptions) (*DecideResponse, error) {
 	option := firstOptions(options)
@@ -46,15 +130,12 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 	if option.Provider != "" {
 		provider = normalizeDirectProvider(option.Provider)
 	}
-	if strings.TrimSpace(c.apiKey) == "" {
-		return nil, fmt.Errorf("llm/%s: missing api key", provider)
-	}
-	if strings.TrimSpace(c.baseURL) == "" {
-		return nil, fmt.Errorf("llm/%s: missing base URL", provider)
+	if strings.TrimSpace(c.apiKey) == "" || strings.TrimSpace(c.baseURL) == "" {
+		return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
 	}
 	httpc, err := c.resolveHTTPClient()
 	if err != nil {
-		return nil, fmt.Errorf("llm/%s: http client unavailable: %w", provider, err)
+		return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
 	}
 	model := req.Model
 	if upstream := strings.TrimSpace(option.UpstreamModel); upstream != "" {
@@ -79,8 +160,8 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 			OutputTokens int `json:"outputTokens"`
 		} `json:"usage"`
 	}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("llm/%s: decode decide response: %w", provider, err)
+	if err := decodeDecideBody(provider, raw, &parsed); err != nil {
+		return nil, err
 	}
 	return &DecideResponse{Answers: parsed.Answers, InputTokens: parsed.Usage.InputTokens, OutputTokens: parsed.Usage.OutputTokens}, nil
 }
@@ -88,11 +169,11 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 func postDecideJSON(ctx context.Context, httpc *http.Client, provider, url, apiKey string, body any) ([]byte, error) {
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("llm/%s: marshal body: %w", provider, err)
+		return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, err
+		return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -102,19 +183,21 @@ func postDecideJSON(ctx context.Context, httpc *http.Client, provider, url, apiK
 	}
 	resp, err := httpc.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("llm/%s: invoke: %w", provider, err)
+		return nil, decideTransportError(ctx, provider, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
+		// The body is drained for connection reuse and then DROPPED. A vendor
+		// 4xx quotes the request it rejected, so the status is all we keep.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, &DecideError{Provider: provider, Class: DecideErrHTTP, Status: resp.StatusCode}
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxDecideResponseBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("llm/%s: read decide response: %w", provider, err)
+		return nil, decideTransportError(ctx, provider, err)
 	}
 	if len(raw) > maxDecideResponseBytes {
-		return nil, fmt.Errorf("llm/%s: decide response exceeds %d bytes", provider, maxDecideResponseBytes)
+		return nil, &DecideError{Provider: provider, Class: DecideErrTooLarge}
 	}
 	return raw, nil
 }
@@ -153,17 +236,20 @@ func invokeTypeSafeSystemOne(ctx context.Context, httpc *http.Client, baseURL, a
 			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
 	}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("llm/%s: decode systemone response: %w", typeSafeProvider, err)
+	if err := decodeDecideBody(typeSafeProvider, raw, &parsed); err != nil {
+		return nil, err
 	}
-	// Translate names only. Whether the result honours the contract is for
-	// decide.Verify to say, exactly as it does for every other backend; extra
-	// vendor fields (confidence, legend) are not part of the public contract.
+	// Translate NAMES only, and carry every answer field across. Whether the
+	// result honours the contract is for decide.Verify to say, exactly as it
+	// does for every other backend -- which it can only do if it sees what the
+	// vendor sent. Dropping choice/score/probabilities from a "noul" answer
+	// here would turn a self-contradictory answer into a clean boolean. Vendor
+	// metadata (confidence, legend) is not part of the public contract.
 	answers := make(map[string]decide.Answer, len(parsed.Answers))
 	for name, answer := range parsed.Answers {
-		translated := decide.Answer{Type: answer.Type, Choice: answer.Choice, Score: answer.Score, Probabilities: answer.Probabilities}
+		translated := decide.Answer{Type: answer.Type, Probability: answer.Noul, Choice: answer.Choice, Score: answer.Score, Probabilities: answer.Probabilities}
 		if answer.Type == typeSafeBoolean {
-			translated = decide.Answer{Type: decide.TypeBoolean, Probability: answer.Noul}
+			translated.Type = decide.TypeBoolean
 		}
 		answers[name] = translated
 	}

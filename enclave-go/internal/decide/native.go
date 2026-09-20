@@ -37,10 +37,23 @@ import (
 // schemas, and a request that large belongs on the hosted model anyway.
 const MaxNativeSchemaProperties = 1000
 
-// nativeMassTolerance is looser than Verify's: a chat model asked for a
-// distribution often rounds each entry, so the raw sum drifts. It is
-// normalized here and then held to Verify's strict bound.
-const nativeMassTolerance = 0.25
+// How far from 1 a chat model's distribution may sum before it stops being
+// sloppy arithmetic and becomes a wrong answer depends on what is missing.
+//
+// When the model gave EVERY option a number, the sum being off is only
+// sloppiness (0.9 / 0.1 / 0.1): the ratios it stated are all there, and
+// normalizing keeps them. That case gets the loose bound.
+//
+// When it OMITTED options, an omission is read as probability 0, which is only
+// believable if what it did give already accounts for everything. Under a loose
+// bound {"q0_o0": 75} -- three quarters of a distribution, the rest simply
+// absent -- was "normalized" into certainty. So that case gets the rounding
+// bound: two decimals are off by at most 0.005 per option.
+const nativeCompleteMassTolerance = 0.25
+
+func nativeSparseMassTolerance(options int) float64 {
+	return math.Min(0.10, 0.02+0.005*float64(options))
+}
 
 // NativeSystemPrompt is deliberately GENERAL. It states what any decision
 // function should do and nothing about any particular domain. An earlier draft
@@ -200,8 +213,11 @@ func oneLine(text string) string {
 // ExtractNative coerces a native model's raw text into candidate answers. The
 // caller MUST still run Verify on the result; this function only settles form.
 func ExtractNative(specs []Spec, text string) (map[string]Answer, error) {
-	object, err := firstJSONObject(text)
+	object, err := answerObject(text, len(specs))
 	if err != nil {
+		return nil, err
+	}
+	if err := CheckNoDuplicateKeys([]byte(object)); err != nil {
 		return nil, err
 	}
 	decoder := json.NewDecoder(strings.NewReader(object))
@@ -251,13 +267,70 @@ func ExtractNative(specs []Spec, text string) (map[string]Answer, error) {
 	return answers, nil
 }
 
-// firstJSONObject returns the first balanced {...} in text, skipping code
-// fences and prose around it. Braces inside JSON strings do not count.
-func firstJSONObject(text string) (string, error) {
-	start := strings.IndexByte(text, '{')
-	if start < 0 {
-		return "", violation("native output contains no JSON object").as(KindNotJSON)
+// maxObjectScanStarts bounds the search below. Each failed start rescans the
+// rest of the text, so an output of nothing but "{" would otherwise be
+// quadratic.
+const maxObjectScanStarts = 64
+
+// answerObject returns THE answer in a native model's text: the one top-level
+// JSON object that carries question aliases. Code fences and prose around it
+// are form and are skipped.
+//
+// It does not take the first object it sees. STATE is caller-supplied text the
+// model may quote, so `STATE said {"q0":0.01}. My answer is {"q0":0.99}` holds
+// two answer-shaped objects, and which one the model meant is a guess. Two
+// that differ are a violation (the request is retried); identical repeats are
+// one answer said twice.
+func answerObject(text string, questions int) (string, error) {
+	var found []string
+	starts := 0
+	for i := 0; i < len(text); i++ {
+		if text[i] != '{' {
+			continue
+		}
+		if starts++; starts > maxObjectScanStarts {
+			return "", violation("native output has too many JSON fragments").as(KindNotJSON)
+		}
+		end, ok := balancedObjectEnd(text, i)
+		if !ok {
+			continue // a stray brace in prose: try the next one
+		}
+		candidate := text[i : end+1]
+		var keys map[string]json.RawMessage
+		if json.Unmarshal([]byte(candidate), &keys) != nil {
+			continue
+		}
+		i = end // nested objects belong to this one
+		if !hasQuestionAlias(keys, questions) {
+			continue
+		}
+		var compact bytes.Buffer
+		if json.Compact(&compact, []byte(candidate)) != nil {
+			continue
+		}
+		if len(found) > 0 && found[0] != compact.String() {
+			return "", violation("native output holds more than one answer").as(KindAmbiguous)
+		}
+		found = append(found, compact.String())
 	}
+	if len(found) == 0 {
+		return "", violation("native output contains no answer object").as(KindNotJSON)
+	}
+	return found[0], nil
+}
+
+func hasQuestionAlias(keys map[string]json.RawMessage, questions int) bool {
+	for qi := 0; qi < questions; qi++ {
+		if _, ok := keys[fmt.Sprintf("q%d", qi)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// balancedObjectEnd returns the index of the brace closing the object that
+// opens at start. Braces inside JSON strings do not count.
+func balancedObjectEnd(text string, start int) (int, bool) {
 	depth, inString, escaped := 0, false, false
 	for i := start; i < len(text); i++ {
 		c := text[i]
@@ -277,20 +350,33 @@ func firstJSONObject(text string) (string, error) {
 		case c == '}':
 			depth--
 			if depth == 0 {
-				return text[start : i+1], nil
+				return i, true
 			}
 		}
 	}
-	return "", violation("native output has an unterminated JSON object").as(KindNotJSON)
+	return 0, false
 }
 
-// booleanEntry accepts {"probability": v} or a bare v.
+// booleanEntry accepts a bare v or {"probability": v}. Commentary beside it
+// ("why": ...) is form and is ignored. A field that carries some OTHER type's
+// answer is not: {"probability":0.9,"type":"score","score":0.1} says two
+// things, and picking the probability out of it would be choosing for the model.
 func booleanEntry(entry json.RawMessage) (float64, error) {
 	var object map[string]json.RawMessage
 	if json.Unmarshal(entry, &object) == nil && object != nil {
 		value, ok := object["probability"]
 		if !ok {
 			return 0, kinded(KindCount, `missing "probability"`)
+		}
+		for key, other := range object {
+			switch key {
+			case "score", "choice", "probabilities", "noul":
+				return 0, kinded(KindType, "boolean answer carries another type's field")
+			case "type":
+				if strings.TrimSpace(string(other)) != `"boolean"` {
+					return 0, kinded(KindType, "boolean answer declares another type")
+				}
+			}
 		}
 		entry = value
 	}
@@ -318,21 +404,32 @@ func distributionEntry(qi int, spec Spec, entry json.RawMessage) ([]float64, err
 	if err := json.Unmarshal(entry, &object); err != nil || object == nil {
 		return nil, kinded(KindType, "expected an object of option probabilities")
 	}
-	index := make(map[string]int, 2*len(spec.Options))
+	// Two ways to name an option, kept apart: the alias the prompt asked for,
+	// and the option's own name (choice) or index (score). A caller may name an
+	// option "q0_o0", which is also another option's alias; a key with two
+	// different readings is refused rather than resolved by map order.
+	aliases := make(map[string]int, len(spec.Options))
+	names := make(map[string]int, len(spec.Options))
 	for oi, option := range spec.Options {
-		index[optionAlias(qi, oi)] = oi
+		aliases[optionAlias(qi, oi)] = oi
 		if spec.Type == TypeChoice {
-			index[option] = oi
+			names[option] = oi
 		} else {
-			index[fmt.Sprintf("%d", oi)] = oi
+			names[fmt.Sprintf("%d", oi)] = oi
 		}
 	}
 	values := make([]float64, len(spec.Options))
 	seen := make([]bool, len(spec.Options))
-	anyPercent := false
+	bare := 0
 	for key, rawValue := range object {
-		oi, ok := index[key]
-		if !ok {
+		oi, byAlias := aliases[key]
+		named, byName := names[key]
+		switch {
+		case byAlias && byName && oi != named:
+			return nil, kinded(KindAmbiguous, "key %q is one option's alias and another's name", key)
+		case byName && !byAlias:
+			oi = named
+		case !byAlias:
 			return nil, kinded(KindOptions, "unknown option %q", key)
 		}
 		if seen[oi] {
@@ -345,21 +442,32 @@ func distributionEntry(qi int, spec Spec, entry json.RawMessage) ([]float64, err
 		if p < 0 {
 			return nil, kinded(KindRange, "%q is negative", key)
 		}
-		anyPercent = anyPercent || percent
+		// An explicit % scales ITS OWN value. It says nothing about the
+		// others: "80%" beside 0.2 is 0.8 and 0.2, not 0.8 and 0.002.
+		if percent {
+			p /= 100
+		} else {
+			bare++
+		}
 		values[oi], seen[oi] = p, true
 	}
 	total := 0.0
 	for _, p := range values {
 		total += p
 	}
-	// A distribution written as percentages sums to ~100, not ~1.
-	if anyPercent || math.Abs(total-100) <= 100*nativeMassTolerance {
+	tolerance := nativeCompleteMassTolerance
+	if len(object) < len(spec.Options) {
+		tolerance = nativeSparseMassTolerance(len(spec.Options))
+	}
+	// Bare numbers that sum to ~100 are percentages without the sign. Only
+	// when EVERY value is bare: a mix has no single scale to infer.
+	if bare == len(object) && math.Abs(total-100) <= 100*tolerance {
 		for oi := range values {
 			values[oi] /= 100
 		}
 		total /= 100
 	}
-	if math.Abs(total-1) > nativeMassTolerance {
+	if math.Abs(total-1) > tolerance {
 		return nil, kinded(KindMass, "probabilities sum to %.3f, not 1", total)
 	}
 	for oi := range values {

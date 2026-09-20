@@ -148,19 +148,108 @@ func TestInvokeDecideNeverTrustsAHostedAnswer(t *testing.T) {
 	}
 }
 
+// secretState is the caller's content. It is what no error may carry: a vendor
+// quotes the request it rejects, and a decoder quotes the literal it choked on.
+const secretState = "PRIVATE-STATE charged twice"
+
+// assertContentFree fails if err could put request or response content in a
+// log: it must be a *DecideError, its class must come from the closed
+// vocabulary, and neither its text nor its class may hold any of `forbidden`.
+func assertContentFree(t *testing.T, label string, err error, wantClass string, forbidden ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: no error", label)
+	}
+	failed, ok := err.(*DecideError)
+	if !ok {
+		t.Fatalf("%s: error is %T, want *DecideError (anything else may hold upstream text)", label, err)
+	}
+	if failed.Class != wantClass {
+		t.Fatalf("%s: class = %q, want %q", label, failed.Class, wantClass)
+	}
+	for _, secret := range forbidden {
+		for _, surface := range []string{err.Error(), DecideErrorClass(err)} {
+			if strings.Contains(surface, secret) {
+				t.Fatalf("%s: %q leaked into %q", label, secret, surface)
+			}
+		}
+	}
+}
+
 func TestInvokeDecideSurfacesUpstreamStatusWithoutLeakingIt(t *testing.T) {
 	req, _ := hostedRequest(t)
-	for _, status := range []int{401, 422, 429, 529} {
-		client := hostedServer(t, "/systemone", nil, `{"error":"validation failed for state: charged twice"}`, status)
+	echo := `{"error":"validation failed for state: ` + secretState + `"}`
+	// 201 is here on purpose: not an error status, not a 200, and its body is
+	// dropped like the rest.
+	for _, status := range []int{201, 401, 422, 429, 529} {
+		client := hostedServer(t, "/systemone", nil, echo, status)
 		client.provider = "typesafe"
 		_, err := client.InvokeDecide(context.Background(), req, InvokeOptions{Provider: "typesafe"})
-		if err == nil {
-			t.Fatalf("status %d returned no error", status)
-		}
-		got, ok := HTTPStatusFromError(err)
+		assertContentFree(t, http.StatusText(status), err, DecideErrHTTP, secretState, "validation failed")
+		got, ok := DecideErrorStatus(err)
 		if !ok || got != status {
 			t.Errorf("status %d surfaced as %d (ok=%v); billing classifies refunds by it", status, got, ok)
 		}
+	}
+}
+
+func TestInvokeDecideDecodeFailuresCarryNoContent(t *testing.T) {
+	req, _ := hostedRequest(t)
+	for label, tc := range map[string]struct {
+		path, provider, body, class string
+	}{
+		// encoding/json quotes the literal it cannot fit into a float64.
+		"relay number overflow":  {"/evaluate", "vercel-ai-gateway", `{"answers":{"refund":{"type":"boolean","probability":1e999931337}}}`, DecideErrDecode},
+		"vendor number overflow": {"/systemone", "typesafe", `{"answers":{"refund":{"type":"noul","noul":1e999931337}}}`, DecideErrDecode},
+		"vendor wrong shape":     {"/systemone", "typesafe", `{"answers":"` + secretState + `"}`, DecideErrDecode},
+		"relay truncated":        {"/evaluate", "vercel-ai-gateway", `{"answers":{"refund":{"type":"boolean","probability":0.9`, DecideErrDecode},
+		// Go keeps the LAST of two equal keys without a word: 0.9 here.
+		"relay duplicate answer":  {"/evaluate", "vercel-ai-gateway", `{"answers":{"refund":{"type":"boolean","probability":0.1},"refund":{"type":"boolean","probability":0.9}}}`, DecideErrDuplicate},
+		"vendor duplicate option": {"/systemone", "typesafe", `{"answers":{"route":{"type":"choice","choice":"billing","probabilities":{"billing":0.1,"billing":0.9,"shipping":0.1}}}}`, DecideErrDuplicate},
+	} {
+		client := hostedServer(t, tc.path, nil, tc.body, 200)
+		client.provider = tc.provider
+		_, err := client.InvokeDecide(context.Background(), req, InvokeOptions{Provider: tc.provider})
+		assertContentFree(t, label, err, tc.class, secretState, "999931337", "billing")
+	}
+}
+
+func TestTypeSafeAnswerThatSaysTwoThingsReachesVerifyIntact(t *testing.T) {
+	req, specs := hostedRequest(t)
+	// A "noul" that also carries a score and a choice. Translation used to keep
+	// only the noul, handing Verify a clean boolean it had no reason to refuse.
+	client := hostedServer(t, "/systemone", nil, `{"answers":{
+	  "refund":{"type":"noul","noul":0.9,"score":0.1,"choice":"x","probabilities":{"x":1}},
+	  "route":{"type":"choice","choice":"billing","confidence":0.8,"probabilities":{"billing":0.9,"shipping":0.1}},
+	  "urgency":{"type":"score","score":0.8,"confidence":0.7,"legend":{"0":"low","1":"high"},"probabilities":{"0":0.2,"1":0.8}}},
+	  "usage":{"input_tokens":12,"output_tokens":null}}`, 200)
+	client.provider = "typesafe"
+	resp, err := client.InvokeDecide(context.Background(), req, InvokeOptions{Provider: "typesafe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = decide.Verify(specs, resp.Answers)
+	if got := decide.ViolationKind(err); got != decide.KindType {
+		t.Fatalf("kind = %q (%v), want %q", got, err, decide.KindType)
+	}
+}
+
+func TestInvokeDecideReportsCancellationAsItsOwnClass(t *testing.T) {
+	req, _ := hostedRequest(t)
+	client := hostedServer(t, "/systemone", nil, `{}`, 200)
+	client.provider = "typesafe"
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := client.InvokeDecide(ctx, req, InvokeOptions{Provider: "typesafe"})
+	assertContentFree(t, "cancelled before the call", err, DecideErrCanceled)
+}
+
+func TestDecideErrorClassNeverReturnsForeignText(t *testing.T) {
+	if got := DecideErrorClass(io.ErrUnexpectedEOF); got != "unknown" {
+		t.Fatalf("class of a foreign error = %q, want unknown", got)
+	}
+	if got := DecideErrorClass(&upstreamHTTPError{status: 422, body: secretState}); got != "unknown" {
+		t.Fatalf("class of a body-carrying error = %q, want unknown", got)
 	}
 }
 
@@ -169,11 +258,9 @@ func TestInvokeDecideBoundsTheResponse(t *testing.T) {
 	huge := `{"answers":{},"padding":"` + strings.Repeat("x", maxDecideResponseBytes) + `"}`
 	client := hostedServer(t, "/evaluate", nil, huge, 200)
 	client.provider = "vercel-ai-gateway"
-	if _, err := client.InvokeDecide(context.Background(), req, InvokeOptions{Provider: "vercel-ai-gateway"}); err == nil {
-		t.Fatal("an oversized hosted response was accepted")
-	}
+	_, err := client.InvokeDecide(context.Background(), req, InvokeOptions{Provider: "vercel-ai-gateway"})
+	assertContentFree(t, "oversized hosted response", err, DecideErrTooLarge)
 	noKey := &openAICompatibleClient{provider: "typesafe", baseURL: "https://example.invalid/v1"}
-	if _, err := noKey.InvokeDecide(context.Background(), req, InvokeOptions{}); err == nil {
-		t.Fatal("a client with no API key made a request")
-	}
+	_, err = noKey.InvokeDecide(context.Background(), req, InvokeOptions{})
+	assertContentFree(t, "client with no API key", err, DecideErrConfig)
 }

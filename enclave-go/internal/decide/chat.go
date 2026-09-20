@@ -146,6 +146,10 @@ func NativeChatRequest(model string, state json.RawMessage, specs []Spec, native
 	if options.wantsReasoning() {
 		maxTokens += reasoningTokenBudget
 	}
+	// The computed budget obeys the same ceiling as a caller's own max_tokens:
+	// a schema near the property limit plus the reasoning allowance would
+	// otherwise ask a host for more than this route ever promises to.
+	maxTokens = min(maxTokens, maxNativeTokens)
 	if options.MaxTokens != nil {
 		if *options.MaxTokens < 16 || *options.MaxTokens > maxNativeTokens {
 			return nil, bad("max_tokens", "max_tokens must be between 16 and %d", maxNativeTokens)

@@ -3,21 +3,25 @@
 // probabilities out. It is deliberately free of I/O so every rule here can be
 // tested exhaustively.
 //
-// Two backends produce answers: a hosted decision model (TypeSafe AI's Jev via
-// Vercel AI Gateway) and a native path that drives an ordinary chat model with
-// strict structured output. NEITHER is trusted. Whatever comes back passes
+// Two backends produce answers: a hosted decision model (TypeSafe AI's Jev, at
+// TypeSafe's own API with Vercel AI Gateway as the failover relay) and a native
+// path that drives an ordinary chat model with strict structured output.
+// NEITHER is trusted. Whatever comes back passes
 // through Verify, which checks it against the request question by question, so
 // a caller can never receive an answer whose shape, option set, or probability
 // mass differs from what a decision model is contracted to return.
 package decide
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -25,10 +29,16 @@ const (
 	TypeChoice  = "choice"
 	TypeScore   = "score"
 
-	MaxQuestions   = 64
-	MaxOptions     = 255 // the hosted model's documented ceiling
-	MaxNameLen     = 128
-	MaxTextLen     = 8192
+	MaxQuestions = 64
+	MaxOptions   = 255 // the hosted model's documented ceiling
+	MaxNameLen   = 128
+	MaxTextLen   = 8192
+	// MaxAnswerBytes bounds the WORST-CASE answer a request can legitimately
+	// produce (see answerBytesUpperBound). The gateway reads at most twice this
+	// from a hosted model, so a request that passes Parse can never be one
+	// whose correct answer is then thrown away as oversized -- after the vendor
+	// has already been paid for it.
+	MaxAnswerBytes = 2 << 20
 	probabilityTol = 1e-6
 	// A model that reports probabilities summing to 0.97 or 1.04 is rounding;
 	// one that reports 0.4 is wrong. Normalize the former, reject the latter.
@@ -94,8 +104,8 @@ func Parse(questions map[string]Question) ([]Spec, error) {
 	specs := make([]Spec, 0, len(names))
 	for _, name := range names {
 		param := "questions." + name
-		if strings.TrimSpace(name) == "" || len(name) > MaxNameLen {
-			return nil, bad("questions", "question names must be 1-%d characters", MaxNameLen)
+		if !validName(name) {
+			return nil, bad("questions", "question names must be 1-%d characters with no control characters", MaxNameLen)
 		}
 		q := questions[name]
 		if len(q.Instructions) > MaxTextLen {
@@ -128,8 +138,8 @@ func Parse(questions map[string]Question) ([]Spec, error) {
 				return nil, bad(param+".criteria", "a choice question needs 2-%d options, got %d", MaxOptions, len(options))
 			}
 			for option, description := range options {
-				if strings.TrimSpace(option) == "" || len(option) > MaxNameLen {
-					return nil, bad(param+".criteria", "option names must be 1-%d characters", MaxNameLen)
+				if !validName(option) {
+					return nil, bad(param+".criteria", "option names must be 1-%d characters with no control characters", MaxNameLen)
 				}
 				if len(description) > MaxTextLen {
 					return nil, bad(param+".criteria", "option descriptions exceed %d characters", MaxTextLen)
@@ -157,7 +167,42 @@ func Parse(questions map[string]Question) ([]Spec, error) {
 		}
 		specs = append(specs, spec)
 	}
+	if bound := answerBytesUpperBound(specs); bound > MaxAnswerBytes {
+		return nil, bad("questions", "questions are too large: their answer could reach %d bytes, above the %d byte limit; use fewer or shorter options", bound, MaxAnswerBytes)
+	}
 	return specs, nil
+}
+
+// validName accepts a question or option name: non-blank, bounded, and free of
+// control characters. A name is echoed into prompts and upstream JSON, where a
+// control character has no legitimate use and escapes to six bytes.
+func validName(name string) bool {
+	if strings.TrimSpace(name) == "" || len(name) > MaxNameLen {
+		return false
+	}
+	return !strings.ContainsFunc(name, unicode.IsControl)
+}
+
+// answerBytesUpperBound is the largest JSON answer these questions can yield
+// from any backend. Every byte of a name may escape to six on the wire (a JSON
+// \uXXXX), a probability needs at most 32 bytes with its punctuation, and a
+// hosted score answer also echoes each level label back as its legend.
+func answerBytesUpperBound(specs []Spec) int {
+	const perAnswer, perNumber = 96, 32
+	wire := func(text string) int { return 6*len(text) + 2 }
+	total := 64
+	for _, spec := range specs {
+		total += wire(spec.Name) + perAnswer
+		for index, option := range spec.Options {
+			if spec.Type == TypeScore {
+				total += len(fmt.Sprintf("%d", index)) + 2 + perNumber // probability
+				total += wire(option) + 8                              // legend
+				continue
+			}
+			total += 2*wire(option) + perNumber // probability key, and once as `choice`
+		}
+	}
+	return total
 }
 
 func hasJSON(raw json.RawMessage) bool {
@@ -189,6 +234,8 @@ const (
 	KindOptions   = "option_set"        // an option missing, invented, or given twice
 	KindMass      = "probability_mass"  // a distribution that does not sum to ~1
 	KindDerived   = "derived_value"     // choice is not the argmax, or score is not the mean
+	KindAmbiguous = "ambiguous_output"  // two different answers in one output, or a key with two readings
+	KindDuplicate = "duplicate_key"     // a JSON key given twice: the decoder would silently keep the last
 	kindUnlabeled = "contract"
 )
 
@@ -252,7 +299,7 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 			if answer.Probability != nil || answer.Score != nil {
 				return nil, violation("choice answer %q carries fields of another type", spec.Name).as(KindType)
 			}
-			dist, err := distribution(spec.Options, answer.Probabilities)
+			dist, _, err := distribution(spec.Options, answer.Probabilities)
 			if err != nil {
 				return nil, violation("choice answer %q: %v", spec.Name, err).as(kindOf(err))
 			}
@@ -276,7 +323,7 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 			for i := range spec.Options {
 				rungs[i] = fmt.Sprintf("%d", i)
 			}
-			dist, err := distribution(rungs, answer.Probabilities)
+			dist, reportedMass, err := distribution(rungs, answer.Probabilities)
 			if err != nil {
 				return nil, violation("score answer %q: %v", spec.Name, err).as(kindOf(err))
 			}
@@ -287,8 +334,15 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 			if answer.Score == nil {
 				return nil, violation("score answer %q has no score", spec.Name).as(KindDerived)
 			}
-			// The hosted model rounds score to two decimals.
-			if math.IsNaN(*answer.Score) || math.Abs(*answer.Score-expected) > 0.05+massTolerance*float64(len(rungs)-1) {
+			// The backend's own score must agree with its own distribution.
+			// Honest disagreement has two sources, and the allowance is
+			// exactly their size: renormalizing mass that was off by d moves
+			// the mean by at most d x (n-1), and rounding the probabilities
+			// moves it by a little more (1% of the scale is generous). What is
+			// left over is a backend contradicting itself.
+			scale := float64(len(rungs) - 1)
+			allowed := 0.05 + scale*(math.Abs(reportedMass-1)+0.01)
+			if math.IsNaN(*answer.Score) || math.Abs(*answer.Score-expected) > allowed {
 				return nil, violation("score answer %q reports %.4f but its distribution implies %.4f", spec.Name, *answer.Score, expected).as(KindDerived)
 			}
 			score := math.Round(expected*100) / 100
@@ -308,31 +362,89 @@ func unit(p float64) (float64, error) {
 	return math.Min(1, math.Max(0, p)), nil
 }
 
-func distribution(keys []string, raw map[string]float64) (map[string]float64, error) {
+// distribution returns the normalized distribution and the mass it had as
+// reported, before normalization.
+func distribution(keys []string, raw map[string]float64) (map[string]float64, float64, error) {
 	if len(raw) != len(keys) {
-		return nil, kinded(KindOptions, "expected probabilities for %d options, got %d", len(keys), len(raw))
+		return nil, 0, kinded(KindOptions, "expected probabilities for %d options, got %d", len(keys), len(raw))
 	}
 	total := 0.0
 	clean := make(map[string]float64, len(keys))
 	for _, key := range keys {
 		value, ok := raw[key]
 		if !ok {
-			return nil, kinded(KindOptions, "no probability for %q", key)
+			return nil, 0, kinded(KindOptions, "no probability for %q", key)
 		}
 		p, err := unit(value)
 		if err != nil {
-			return nil, kinded(kindOf(err), "option %q: %v", key, err)
+			return nil, 0, kinded(kindOf(err), "option %q: %v", key, err)
 		}
 		clean[key] = p
 		total += p
 	}
 	if math.Abs(total-1) > massTolerance {
-		return nil, kinded(KindMass, "probabilities sum to %.4f, not 1", total)
+		return nil, 0, kinded(KindMass, "probabilities sum to %.4f, not 1", total)
 	}
 	for key := range clean {
 		clean[key] /= total
 	}
-	return clean, nil
+	return clean, total, nil
+}
+
+// CheckNoDuplicateKeys rejects JSON in which any object repeats a key, at any
+// depth. Go's decoder keeps the LAST value and says nothing, so without this
+// `{"q0":0.1,"q0":0.9}` would verify as 0.9: an answer chosen by the decoder
+// rather than given by the model. It reads tokens only and holds no values.
+func CheckNoDuplicateKeys(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	type frame struct {
+		keys      map[string]bool // nil for an array
+		expectKey bool
+	}
+	var stack []frame
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			// A token stream that simply stops is a truncated document: EOF
+			// is only success once every object and array has closed.
+			if len(stack) != 0 {
+				return violation("output is truncated JSON").as(KindNotJSON)
+			}
+			return nil
+		}
+		if err != nil {
+			return violation("output is not valid JSON").as(KindNotJSON)
+		}
+		top := len(stack) - 1
+		if delim, isDelim := token.(json.Delim); isDelim {
+			switch delim {
+			case '{':
+				stack = append(stack, frame{keys: map[string]bool{}, expectKey: true})
+			case '[':
+				stack = append(stack, frame{})
+			default: // '}' or ']'
+				stack = stack[:top]
+				if top > 0 && stack[top-1].keys != nil {
+					stack[top-1].expectKey = true
+				}
+			}
+			continue
+		}
+		if top < 0 || stack[top].keys == nil {
+			continue // a scalar at the top level or inside an array
+		}
+		if stack[top].expectKey {
+			key, _ := token.(string)
+			if stack[top].keys[key] {
+				return violation("a JSON key is given twice").as(KindDuplicate)
+			}
+			stack[top].keys[key] = true
+			stack[top].expectKey = false
+			continue
+		}
+		stack[top].expectKey = true // that was the value of the last key
+	}
 }
 
 // argmax breaks ties by key order so the result is deterministic.

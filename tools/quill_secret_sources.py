@@ -120,6 +120,12 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "TENCENT_API_KEY": "trustedrouter-tencent-tokenhub-api-key",
     "VULTR_API_KEY": "trustedrouter-vultr-api-key",
     "HUGGING_FACE_API_KEY": "trustedrouter-huggingface-api-key",
+    # One decision model (typesafe-ai/jev), two hosts: the vendor, and the relay
+    # the gateway fails over to. The operator file calls the relay key
+    # VERCEL_API_KEY; the longer name is what the control plane's secrets.sh reads.
+    "TYPESAFE_API_KEY": "trustedrouter-typesafe-api-key",
+    "VERCEL_AI_GATEWAY_API_KEY": "trustedrouter-vercel-ai-gateway-api-key",
+    "VERCEL_API_KEY": "trustedrouter-vercel-ai-gateway-api-key",
     "DARKBLOOM_API_KEY": "trustedrouter-darkbloom-api-key",
     "BAIDU_API_KEY": "trustedrouter-baidu-api-key",
     "RIVERFLOW_API_KEY": "trustedrouter-riverflow-api-key",

@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/decide"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
@@ -21,6 +22,51 @@ const decideRouteType = "decide"
 // A native model that fails verification gets one more attempt. Both attempts
 // spent tokens and both are billed; a third is not worth the latency.
 const nativeDecisionAttempts = 2
+
+// decideFinalizeTimeout bounds a settle or refund made after the request's own
+// context may already be gone.
+const decideFinalizeTimeout = 10 * time.Second
+
+// hostedTemplateTokenAllowance is room for whatever fixed prompt a hosted
+// decision model wraps around the request before counting its input.
+const hostedTemplateTokenAllowance = 4096
+
+// finalizeContext is for the settle or refund that closes an authorization. It
+// keeps the request's values and drops its cancellation: a draining gateway
+// cancels in-flight requests, and a refund sent on a cancelled context is a
+// refund that never leaves, stranding the hold until the control plane reaps
+// it. Same shape as the image route's refund.
+func finalizeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), decideFinalizeTimeout)
+}
+
+// controlPlaneErrorClass describes a settle/refund/authorize failure for a log
+// without ever returning the error's own text.
+func controlPlaneErrorClass(err error) string {
+	var controlErr *trustedrouter.ControlPlaneError
+	switch {
+	case errors.As(err, &controlErr) && controlErr.StatusCode > 0:
+		return fmt.Sprintf("control_plane_%d", controlErr.StatusCode)
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	}
+	return "control_plane_unreachable"
+}
+
+// nativeFailureStatus maps a failed native attempt to the caller's status. Only
+// the CONTROL PLANE may speak to the caller in 4xx: its 401/402/429 are about
+// the caller's own key and credits. A provider's 401 or 403 is about OUR key,
+// and relaying it would tell the caller their credentials are bad. The shared
+// classifier reads "http 401" out of any error text, so it is not used here.
+func nativeFailureStatus(err error) int {
+	var controlErr *trustedrouter.ControlPlaneError
+	if errors.As(err, &controlErr) && controlErr.StatusCode > 0 {
+		return controlErr.StatusCode
+	}
+	return 502
+}
 
 type decideRequest struct {
 	Model     string                     `json:"model"`
@@ -116,14 +162,22 @@ func serveDecide(
 		return
 	}
 	if decide.HostedModels[req.Model] {
-		// A hosted decision model has no thinking to turn on, no token budget
-		// and one host. Saying so beats silently ignoring the parameter.
-		for param, set := range map[string]bool{
-			"reasoning": req.Reasoning != nil, "reasoning_effort": req.ReasoningEffort != "",
-			"max_tokens": req.MaxTokens != nil, "provider": req.Provider != nil,
+		// A hosted decision model has no thinking to turn on and no token
+		// budget, and its hosts are the vendor and its relay in that order.
+		// Saying so beats silently ignoring the parameter. "Set" means a value
+		// that asks for something: null, "" and stream:false are how clients
+		// spell "unset", and rejecting them would break every SDK that always
+		// serializes its defaults. A fixed order keeps the message stable when
+		// more than one is set.
+		for _, param := range []struct {
+			name string
+			set  bool
+		}{
+			{"reasoning", req.Reasoning != nil}, {"reasoning_effort", req.ReasoningEffort != ""},
+			{"max_tokens", req.MaxTokens != nil}, {"provider", req.Provider != nil},
 		} {
-			if set {
-				writeOpenAIError(conn, 400, param+" is not supported by hosted decision model "+req.Model, "invalid_request_error", "bad_request", param)
+			if param.set {
+				writeOpenAIError(conn, 400, param.name+" is not supported by hosted decision model "+req.Model, "invalid_request_error", "bad_request", param.name)
 				return
 			}
 		}
@@ -174,14 +228,21 @@ func serveHostedDecide(
 		}
 		invokeOptions, err = invokeOptionsForAuthorization(ctx, secretCache, authorization)
 		if err != nil {
-			_ = trGateway.Refund(ctx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), nil)
+			refundCtx, cancel := finalizeContext(ctx)
+			_ = trGateway.Refund(refundCtx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), nil)
+			cancel()
 			writeError(conn, 502, "provider key unavailable")
 			return
 		}
 	}
 	refund := func(status int, errorType string) {
-		if trEnabled {
-			_ = trGateway.Refund(ctx, authorization, status, errorType, time.Since(requestStarted).Seconds(), nil)
+		if !trEnabled {
+			return
+		}
+		refundCtx, cancel := finalizeContext(ctx)
+		defer cancel()
+		if err := trGateway.Refund(refundCtx, authorization, status, errorType, time.Since(requestStarted).Seconds(), nil); err != nil {
+			fmt.Fprintf(os.Stderr, "enclave.decide_refund_failed model=%q error_class=%q\n", req.Model, controlPlaneErrorClass(err))
 		}
 	}
 	decider, ok := br.(llm.DecideClient)
@@ -209,16 +270,18 @@ func serveHostedDecide(
 			served = candidate
 			break
 		}
-		// errorClass, never err: an upstream error body can echo the request.
+		// The class, never err. InvokeDecide's errors hold no upstream text by
+		// construction, and DecideErrorClass returns "unknown" for anything
+		// else rather than its message.
 		fmt.Fprintf(os.Stderr, "enclave.decide_host_failed model=%q provider=%q attempt=%d of=%d error_class=%q\n",
-			publicModel, candidate.Provider, index+1, len(candidates), errorClass(err))
+			publicModel, candidate.Provider, index+1, len(candidates), llm.DecideErrorClass(err))
 		if ctx.Err() != nil {
 			break
 		}
 	}
 	if err != nil {
 		refundStatus := 502
-		if status, hasStatus := llm.HTTPStatusFromError(err); hasStatus {
+		if status, hasStatus := llm.DecideErrorStatus(err); hasStatus {
 			refundStatus = status
 		}
 		refund(refundStatus, "provider_error")
@@ -241,6 +304,16 @@ func serveHostedDecide(
 	if billedInput <= 0 {
 		billedInput = inputTokens
 	}
+	// The count is the vendor's word and is what the caller pays for, so it is
+	// held to what this request could possibly have cost: a token is at least
+	// one byte of input, plus the vendor's own fixed template. A response
+	// claiming more (a bug, or 9223372036854775807) is billed at the ceiling
+	// and says so in the log.
+	if ceiling := len(req.State) + len(questionBytes) + hostedTemplateTokenAllowance; billedInput > ceiling {
+		fmt.Fprintf(os.Stderr, "enclave.decide_usage_clamped model=%q provider=%q reported_input_tokens=%d ceiling=%d\n",
+			publicModel, served.Provider, billedInput, ceiling)
+		billedInput = ceiling
+	}
 	var settlement *trustedrouter.SettleResult
 	if trEnabled {
 		servedEndpoint := served.EndpointID
@@ -254,9 +327,11 @@ func serveHostedDecide(
 			User: attribution.User, SessionID: attribution.SessionID, Trace: attribution.Trace, Metadata: attribution.Metadata,
 			App: attribution.App, HTTPReferer: attribution.HTTPReferer, AppCategories: append([]string(nil), attribution.AppCategories...),
 		}
-		settlement, err = trGateway.Settle(ctx, authorization, usage)
+		settleCtx, cancelSettle := finalizeContext(ctx)
+		settlement, err = trGateway.Settle(settleCtx, authorization, usage)
+		cancelSettle()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "enclave.decide_settle_failed model=%q error_class=%q\n", publicModel, errorClass(err))
+			fmt.Fprintf(os.Stderr, "enclave.decide_settle_failed model=%q error_class=%q\n", publicModel, controlPlaneErrorClass(err))
 			writeSpentError(conn, 502, "settlement failed")
 			return
 		}
@@ -298,6 +373,13 @@ func serveNativeDecide(
 	usage := decideUsage{}
 	var lastSettlement *trustedrouter.SettleResult
 	var lastAuthorization *trustedrouter.Authorization
+	// spent: has any provider run for this request? It decides whether a
+	// failure tells the client not to retry. Token counts cannot answer that:
+	// an attempt can settle with input_tokens 0 (everything read from cache),
+	// and an attempt whose SETTLEMENT failed ran a provider and returned no
+	// usage at all. So it is tracked directly: an attempt that settled, or a
+	// provider that was seen producing output.
+	spent := false
 	for attempt := 1; attempt <= nativeDecisionAttempts; attempt++ {
 		attemptReq := *chatReq
 		// Each attempt is its own billed generation, so each needs its own key.
@@ -306,17 +388,20 @@ func serveNativeDecide(
 			attemptKey = fmt.Sprintf("%s:decide-retry-%d", idempotencyKey, attempt)
 		}
 		attemptReq.IdempotencyKey = attemptKey
-		call, err := runFusionCall(ctx, br, &attemptReq, trGateway, secretCache, bearer, decideRouteType, attemptKey, requestLogID, nil, false)
+		sawOutput := func(adapter.StreamDelta) { spent = true }
+		call, err := runFusionCallObserved(ctx, br, &attemptReq, trGateway, secretCache, bearer, decideRouteType, attemptKey, requestLogID, nil, false, sawOutput, false)
 		if err != nil {
 			// Authorization or provider failure: runFusionCall has already
 			// refunded. Nothing about a retry would differ, so surface it.
-			if usage.InputTokens > 0 {
-				writeSpentError(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "provider error"))
+			status, message := nativeFailureStatus(err), messageFromControlPlaneError(err, "provider error")
+			if spent {
+				writeSpentError(conn, status, message)
 				return
 			}
-			writeError(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "provider error"))
+			writeError(conn, status, message)
 			return
 		}
+		spent = true
 		usage.InputTokens += call.InputTokens
 		usage.OutputTokens += call.OutputTokens
 		lastSettlement = call.SettlementResult
