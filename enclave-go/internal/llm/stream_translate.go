@@ -27,6 +27,10 @@ func (e *upstreamHTTPError) Error() string {
 // status). Used by the gateway's provider-failover logic to decide which
 // failures are worth retrying on the next authorized provider.
 func HTTPStatusFromError(err error) (status int, ok bool) {
+	var inputLimit *EmbeddingInputLimitError
+	if errors.As(err, &inputLimit) {
+		return 400, true
+	}
 	var httpErr *upstreamHTTPError
 	if errors.As(err, &httpErr) {
 		return httpErr.status, true
