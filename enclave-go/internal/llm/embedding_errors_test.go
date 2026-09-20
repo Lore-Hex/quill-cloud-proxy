@@ -76,3 +76,30 @@ func TestEmbeddingAdapterPreservesInputAndClassifiesProviderRejection(t *testing
 		t.Fatal("customer input leaked into safe error")
 	}
 }
+
+func TestEmbeddingRequestLimitClassification(t *testing.T) {
+	message := "Invalid 'input': maximum request size is 300000 tokens per request."
+	for _, tc := range []struct {
+		name, message string
+		wantLimit     bool
+	}{
+		{"observed", message, true},
+		{"echoed_input", message + " PRIVATE-INPUT", false},
+		{"zero", strings.Replace(message, "300000", "0", 1), false},
+		{"negative", strings.Replace(message, "300000", "-1", 1), false},
+		{"overflow", strings.Replace(message, "300000", "99999999999999999999", 1), false},
+		{"wrong_scope", strings.Replace(message, "'input'", "'input[0]'", 1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]any{"error": map[string]string{"type": "invalid_request_error", "message": tc.message}})
+			err := classifyEmbeddingHTTPError("openai", 400, body)
+			var limit *EmbeddingInputLimitError
+			if errors.As(err, &limit) != tc.wantLimit {
+				t.Fatalf("unexpected classification: %v", err)
+			}
+			if tc.wantLimit && (limit.MaxTokens != 300000 || !limit.RequestLimit || !strings.Contains(limit.Error(), "in total") || !strings.Contains(limit.Error(), "batches")) {
+				t.Fatalf("incorrect request-level limit: %v", limit)
+			}
+		})
+	}
+}

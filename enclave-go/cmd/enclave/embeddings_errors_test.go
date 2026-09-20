@@ -30,6 +30,7 @@ func TestEmbeddingErrorsRefundOnceAndNeverExposeInput(t *testing.T) {
 		status int
 	}{
 		{"input_limit", fmt.Errorf("wrapped: %w", &llm.EmbeddingInputLimitError{MaxTokens: 8192}), 400},
+		{"request_limit", fmt.Errorf("wrapped: %w", &llm.EmbeddingInputLimitError{MaxTokens: 300000, RequestLimit: true}), 400},
 		{"unknown", errors.New("provider echoed PRIVATE-STATE in error body"), 502},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -51,8 +52,14 @@ func TestEmbeddingErrorsRefundOnceAndNeverExposeInput(t *testing.T) {
 			if !strings.Contains(stderr, `request_log_id="log-embed"`) {
 				t.Fatal("missing correlation id")
 			}
-			if tc.status == 400 && (!strings.Contains(out.String(), "8192") || !strings.Contains(out.String(), "embedding_input_too_long")) {
+			if tc.status == 400 && !strings.Contains(out.String(), "embedding_input_too_long") {
 				t.Fatal("missing actionable, stable input error")
+			}
+			if tc.name == "input_limit" && !strings.Contains(out.String(), "8192") {
+				t.Fatal("missing per-input limit")
+			}
+			if tc.name == "request_limit" && (!strings.Contains(out.String(), "300000") || !strings.Contains(out.String(), "batches")) {
+				t.Fatal("missing batch limit")
 			}
 		})
 	}
