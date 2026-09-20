@@ -48,11 +48,13 @@ const MaxNativeSchemaProperties = 1000
 // believable if what it did give already accounts for everything. Under a loose
 // bound {"q0_o0": 75} -- three quarters of a distribution, the rest simply
 // absent -- was "normalized" into certainty. So that case gets the rounding
-// bound: two decimals are off by at most 0.005 per option.
+// bound, and rounding happens to the values that were WRITTEN: two decimals are
+// off by at most 0.005 each. Counting the options instead let one lone 0.91 out
+// of sixteen pass as certainty, with nine points of mass unaccounted for.
 const nativeCompleteMassTolerance = 0.25
 
-func nativeSparseMassTolerance(options int) float64 {
-	return math.Min(0.10, 0.02+0.005*float64(options))
+func nativeSparseMassTolerance(supplied int) float64 {
+	return math.Min(0.10, 0.02+0.005*float64(supplied))
 }
 
 // NativeSystemPrompt is deliberately GENERAL. It states what any decision
@@ -217,9 +219,6 @@ func ExtractNative(specs []Spec, text string) (map[string]Answer, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := CheckNoDuplicateKeys([]byte(object)); err != nil {
-		return nil, err
-	}
 	decoder := json.NewDecoder(strings.NewReader(object))
 	decoder.UseNumber()
 	var raw map[string]json.RawMessage
@@ -272,17 +271,30 @@ func ExtractNative(specs []Spec, text string) (map[string]Answer, error) {
 // quadratic.
 const maxObjectScanStarts = 64
 
-// answerObject returns THE answer in a native model's text: the one top-level
-// JSON object that carries question aliases. Code fences and prose around it
-// are form and are skipped.
+// Bounds on the descent into one top-level object while looking for the answer.
+const (
+	maxAnswerDepth = 6
+	maxAnswerNodes = 512
+)
+
+// answerObject returns THE answer in a native model's text: the one JSON
+// object that carries question aliases. Code fences, prose around it, and a
+// wrapper such as {"answer": {...}} are form and are looked through.
 //
 // It does not take the first object it sees. STATE is caller-supplied text the
 // model may quote, so `STATE said {"q0":0.01}. My answer is {"q0":0.99}` holds
-// two answer-shaped objects, and which one the model meant is a guess. Two
-// that differ are a violation (the request is retried); identical repeats are
-// one answer said twice.
+// two answers, and which one the model meant is a guess. So every object that
+// carries a question alias counts, at ANY depth -- a first version looked only
+// at top-level objects and returned the quoted 0.01 when the real answer came
+// wrapped as {"answer":{"q0":0.99}}. Candidates that differ are a violation
+// (the request is retried). Candidates equal in VALUE are one answer said
+// twice, whatever their key order or number formatting.
+//
+// A candidate counts even when it is not a well-formed answer. Ignoring the
+// malformed ones would mean that `STATE said {"q0":0.01}. Answer: {"q0":"high"}`
+// returns the quoted object, because it is the only one that parses.
 func answerObject(text string, questions int) (string, error) {
-	var found []string
+	var found []json.RawMessage
 	starts := 0
 	for i := 0; i < len(text); i++ {
 		if text[i] != '{' {
@@ -295,28 +307,82 @@ func answerObject(text string, questions int) (string, error) {
 		if !ok {
 			continue // a stray brace in prose: try the next one
 		}
-		candidate := text[i : end+1]
-		var keys map[string]json.RawMessage
-		if json.Unmarshal([]byte(candidate), &keys) != nil {
+		candidate := json.RawMessage(text[i : end+1])
+		if !json.Valid(candidate) {
 			continue
 		}
 		i = end // nested objects belong to this one
-		if !hasQuestionAlias(keys, questions) {
-			continue
+		// On the ORIGINAL text, wrapper included: decoding below keeps only the
+		// last of two equal keys, so {"answer":{..0.1..},"answer":{..0.9..}}
+		// would otherwise surface as a single, decoder-chosen answer.
+		if err := CheckNoDuplicateKeys(candidate); err != nil {
+			return "", err
 		}
-		var compact bytes.Buffer
-		if json.Compact(&compact, []byte(candidate)) != nil {
-			continue
-		}
-		if len(found) > 0 && found[0] != compact.String() {
-			return "", violation("native output holds more than one answer").as(KindAmbiguous)
-		}
-		found = append(found, compact.String())
+		nodes := maxAnswerNodes
+		collectAnswers(candidate, questions, maxAnswerDepth, &nodes, &found)
 	}
 	if len(found) == 0 {
 		return "", violation("native output contains no answer object").as(KindNotJSON)
 	}
-	return found[0], nil
+	first := canonicalJSON(found[0])
+	for _, other := range found[1:] {
+		if canonicalJSON(other) != first {
+			return "", violation("native output holds more than one answer").as(KindAmbiguous)
+		}
+	}
+	return string(found[0]), nil
+}
+
+// collectAnswers appends every object at or under raw that carries a question
+// alias. An answer object is not descended into: what is under it is its own.
+func collectAnswers(raw json.RawMessage, questions, depth int, nodes *int, found *[]json.RawMessage) {
+	if depth < 0 || *nodes <= 0 {
+		return
+	}
+	*nodes--
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return
+	}
+	switch trimmed[0] {
+	case '{':
+		var object map[string]json.RawMessage
+		if json.Unmarshal(trimmed, &object) != nil {
+			return
+		}
+		if hasQuestionAlias(object, questions) {
+			*found = append(*found, trimmed)
+			return
+		}
+		for _, value := range object {
+			collectAnswers(value, questions, depth-1, nodes, found)
+		}
+	case '[':
+		var items []json.RawMessage
+		if json.Unmarshal(trimmed, &items) != nil {
+			return
+		}
+		for _, item := range items {
+			collectAnswers(item, questions, depth-1, nodes, found)
+		}
+	}
+}
+
+// canonicalJSON renders raw so that two documents equal in value compare equal
+// as strings: keys sorted, numbers normalized (0.80 and 0.8 agree). It is used
+// ONLY to compare candidates; extraction always reads the original text. A
+// document that will not round-trip (a number beyond float64) is returned
+// as written, which can only make two candidates look different.
+func canonicalJSON(raw json.RawMessage) string {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return string(raw)
+	}
+	out, err := json.Marshal(value)
+	if err != nil {
+		return string(raw)
+	}
+	return string(out)
 }
 
 func hasQuestionAlias(keys map[string]json.RawMessage, questions int) bool {
@@ -369,6 +435,9 @@ func booleanEntry(entry json.RawMessage) (float64, error) {
 			return 0, kinded(KindCount, `missing "probability"`)
 		}
 		for key, other := range object {
+			if strings.TrimSpace(string(other)) == "null" {
+				continue // an absent value spelled out; hosted decoding treats it the same
+			}
 			switch key {
 			case "score", "choice", "probabilities", "noul":
 				return 0, kinded(KindType, "boolean answer carries another type's field")
@@ -457,7 +526,7 @@ func distributionEntry(qi int, spec Spec, entry json.RawMessage) ([]float64, err
 	}
 	tolerance := nativeCompleteMassTolerance
 	if len(object) < len(spec.Options) {
-		tolerance = nativeSparseMassTolerance(len(spec.Options))
+		tolerance = nativeSparseMassTolerance(len(object))
 	}
 	// Bare numbers that sum to ~100 are percentages without the sign. Only
 	// when EVERY value is bare: a mix has no single scale to infer.

@@ -2,6 +2,7 @@ package decide
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -113,8 +114,70 @@ type NativeOptions struct {
 	Provider        *types.ProviderRouting // replaces the tuned provider pin
 }
 
-func (o NativeOptions) wantsReasoning() bool {
-	return o.Reasoning != nil || o.ReasoningEffort != ""
+// reasoningEfforts are the settings every reasoning host understands. "none"
+// is accepted from a caller and means what leaving it out means.
+var reasoningEfforts = map[string]bool{"minimal": true, "low": true, "medium": true, "high": true}
+
+// reasoningEffort reduces whatever the caller sent to ONE validated effort
+// word, or "" for no reasoning. Two reasons it is not forwarded as given. The
+// `reasoning` OBJECT is not portable -- Cerebras answers 400 to it, so
+// `"reasoning": {"effort": "high"}` on trev-1.0 failed at the host -- while the
+// effort string is understood everywhere. And a value nobody validates is
+// rejected by the HOST, which this route must report as its own 502: the
+// caller's typo has to be caught here, where it can be a 400 that names it.
+func (o NativeOptions) reasoningEffort() (string, error) {
+	return RequestedReasoning(o.Reasoning, o.ReasoningEffort)
+}
+
+// RequestedReasoning is reasoningEffort for a caller that has not built
+// NativeOptions: the route uses it to tell "asks for reasoning" from the many
+// ways of writing "does not" (absent, null, false, "", "none").
+func RequestedReasoning(reasoning any, reasoningEffort string) (string, error) {
+	o := NativeOptions{Reasoning: reasoning, ReasoningEffort: reasoningEffort}
+	effort, param := strings.ToLower(strings.TrimSpace(o.ReasoningEffort)), "reasoning_effort"
+	switch requested := o.Reasoning.(type) {
+	case nil:
+	case bool:
+		if requested && effort == "" {
+			effort = "medium"
+		}
+	case string:
+		if effort == "" {
+			effort, param = strings.ToLower(strings.TrimSpace(requested)), "reasoning"
+		}
+	case map[string]any:
+		for key, value := range requested {
+			switch key {
+			case "effort":
+				text, ok := value.(string)
+				if !ok {
+					return "", bad("reasoning.effort", "reasoning.effort must be a string")
+				}
+				if effort == "" {
+					effort, param = strings.ToLower(strings.TrimSpace(text)), "reasoning.effort"
+				}
+			case "enabled":
+				enabled, ok := value.(bool)
+				if !ok {
+					return "", bad("reasoning.enabled", "reasoning.enabled must be true or false")
+				}
+				if enabled && effort == "" {
+					effort = "medium"
+				}
+			default:
+				return "", bad("reasoning."+key, `reasoning accepts "effort" and "enabled"`)
+			}
+		}
+	default:
+		return "", bad("reasoning", `reasoning must be true, an effort, or {"effort": ...}`)
+	}
+	if effort == "" || effort == "none" {
+		return "", nil
+	}
+	if !reasoningEfforts[effort] {
+		return "", bad(param, `reasoning effort must be "minimal", "low", "medium" or "high"`)
+	}
+	return effort, nil
 }
 
 const (
@@ -142,8 +205,12 @@ func NativeChatRequest(model string, state json.RawMessage, specs []Spec, native
 	for _, spec := range specs {
 		properties += 1 + len(spec.Options)
 	}
+	effort, err := options.reasoningEffort()
+	if err != nil {
+		return nil, err
+	}
 	maxTokens := 256 + 24*properties + native.ExtraTokens
-	if options.wantsReasoning() {
+	if effort != "" {
 		maxTokens += reasoningTokenBudget
 	}
 	// The computed budget obeys the same ceiling as a caller's own max_tokens:
@@ -180,9 +247,10 @@ func NativeChatRequest(model string, state json.RawMessage, specs []Spec, native
 		}
 	}
 	switch {
-	case options.wantsReasoning():
-		req.Reasoning = options.Reasoning
-		req.ReasoningEffort = options.ReasoningEffort
+	case effort != "":
+		// The caller turned reasoning on: the one validated word, never the
+		// object it may have arrived in.
+		req.ReasoningEffort = effort
 	case native.ReasoningEffort != "":
 		// The effort STRING only. The `reasoning` object is not portable:
 		// Cerebras answers HTTP 400 "property 'reasoning' is unsupported", and

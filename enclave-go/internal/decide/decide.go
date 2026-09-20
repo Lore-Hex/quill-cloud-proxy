@@ -20,6 +20,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -184,25 +185,56 @@ func validName(name string) bool {
 }
 
 // answerBytesUpperBound is the largest JSON answer these questions can yield
-// from any backend. Every byte of a name may escape to six on the wire (a JSON
-// \uXXXX), a probability needs at most 32 bytes with its punctuation, and a
-// hosted score answer also echoes each level label back as its legend.
+// from any backend: each name at its worst-case wire length, a probability at
+// 32 bytes with its punctuation, the chosen option once per choice question,
+// and, for a score, each level label echoed back as the hosted `legend`.
+//
+// It has to be an upper bound without being a wild one. A first version charged
+// every byte of every name six times over and counted each option twice, which
+// put 64 questions of 255 plain `category_000` options at 2.9 MB and refused a
+// batch whose real answer is 280 KB.
 func answerBytesUpperBound(specs []Spec) int {
 	const perAnswer, perNumber = 96, 32
-	wire := func(text string) int { return 6*len(text) + 2 }
 	total := 64
 	for _, spec := range specs {
-		total += wire(spec.Name) + perAnswer
+		total += wireLen(spec.Name) + perAnswer
+		longest := 0
 		for index, option := range spec.Options {
 			if spec.Type == TypeScore {
-				total += len(fmt.Sprintf("%d", index)) + 2 + perNumber // probability
-				total += wire(option) + 8                              // legend
+				total += len(strconv.Itoa(index)) + 2 + perNumber // probability
+				total += wireLen(option) + 8                      // legend
 				continue
 			}
-			total += 2*wire(option) + perNumber // probability key, and once as `choice`
+			total += wireLen(option) + perNumber
+			longest = max(longest, wireLen(option))
 		}
+		total += longest // `choice`
 	}
 	return total
+}
+
+// wireLen is the most bytes text can occupy as a JSON string, whichever encoder
+// wrote it: quotes, a two-byte escape for `"` and `\`, and \uXXXX for the
+// characters SOME encoder escapes that way -- Go for < > &, every encoder for
+// control characters, an ASCII-only encoder (Python's default) for anything
+// outside ASCII, as a surrogate pair beyond the BMP.
+func wireLen(text string) int {
+	n := 2
+	for _, r := range text {
+		switch {
+		case r == '"' || r == '\\':
+			n += 2
+		case r < 0x20 || r == 0x7f || r == '<' || r == '>' || r == '&':
+			n += 6
+		case r < 0x80:
+			n++
+		case r <= 0xFFFF:
+			n += 6
+		default:
+			n += 12
+		}
+	}
+	return n
 }
 
 func hasJSON(raw json.RawMessage) bool {
@@ -323,7 +355,7 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 			for i := range spec.Options {
 				rungs[i] = fmt.Sprintf("%d", i)
 			}
-			dist, reportedMass, err := distribution(rungs, answer.Probabilities)
+			dist, reported, err := distribution(rungs, answer.Probabilities)
 			if err != nil {
 				return nil, violation("score answer %q: %v", spec.Name, err).as(kindOf(err))
 			}
@@ -334,14 +366,30 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 			if answer.Score == nil {
 				return nil, violation("score answer %q has no score", spec.Name).as(KindDerived)
 			}
-			// The backend's own score must agree with its own distribution.
-			// Honest disagreement has two sources, and the allowance is
-			// exactly their size: renormalizing mass that was off by d moves
-			// the mean by at most d x (n-1), and rounding the probabilities
-			// moves it by a little more (1% of the scale is generous). What is
-			// left over is a backend contradicting itself.
-			scale := float64(len(rungs) - 1)
-			allowed := 0.05 + scale*(math.Abs(reportedMass-1)+0.01)
+			// The backend's own score must agree with its own distribution, up
+			// to what honest arithmetic explains. There are exactly two sources,
+			// and the allowance is their size, not a guess:
+			//
+			//   renormalizing  the mean of p/m is the mean of p over m, so mass
+			//                  m moves it by exactly mean x |1-m|;
+			//   rounding       probabilities written to k decimals are each off
+			//                  by at most half a unit, which moves the mean by at
+			//                  most 0.5e-k x (0+1+...+(n-1)).
+			//
+			// The second term grows with the SQUARE of the scale, and that is
+			// not slack: 0.9 on level 0 of 255 with 0.0004 on every other level
+			// has a mean near 13 and rounds, at three decimals, to "all mass on
+			// 0". A backend reporting that with score 13 is not contradicting
+			// itself. On the scales people actually use the same rule is tight:
+			// five levels at two decimals allows 0.10.
+			//
+			// What is returned is always the mean of the returned distribution,
+			// so an answer that passes is self-consistent either way. Wrongly
+			// refusing a good answer costs the caller a 502; this check exists to
+			// catch a backend that is broken, not to referee rounding.
+			levels := float64(len(rungs))
+			halfUnit := 0.5 * math.Pow(10, -float64(reported.decimals))
+			allowed := 0.05 + expected*math.Abs(1-reported.mass) + halfUnit*levels*(levels-1)/2
 			if math.IsNaN(*answer.Score) || math.Abs(*answer.Score-expected) > allowed {
 				return nil, violation("score answer %q reports %.4f but its distribution implies %.4f", spec.Name, *answer.Score, expected).as(KindDerived)
 			}
@@ -362,33 +410,45 @@ func unit(p float64) (float64, error) {
 	return math.Min(1, math.Max(0, p)), nil
 }
 
-// distribution returns the normalized distribution and the mass it had as
-// reported, before normalization.
-func distribution(keys []string, raw map[string]float64) (map[string]float64, float64, error) {
+// asReported describes a distribution before normalization: the mass it summed
+// to, and the most decimal places any probability was written with (clamped to
+// 2..6: nobody rounds coarser than cents, and beyond six the term vanishes).
+type asReported struct {
+	mass     float64
+	decimals int
+}
+
+// distribution returns the normalized distribution and how it was reported.
+func distribution(keys []string, raw map[string]float64) (map[string]float64, asReported, error) {
+	none := asReported{}
 	if len(raw) != len(keys) {
-		return nil, 0, kinded(KindOptions, "expected probabilities for %d options, got %d", len(keys), len(raw))
+		return nil, none, kinded(KindOptions, "expected probabilities for %d options, got %d", len(keys), len(raw))
 	}
+	decimals := 2
 	total := 0.0
 	clean := make(map[string]float64, len(keys))
 	for _, key := range keys {
 		value, ok := raw[key]
 		if !ok {
-			return nil, 0, kinded(KindOptions, "no probability for %q", key)
+			return nil, none, kinded(KindOptions, "no probability for %q", key)
 		}
 		p, err := unit(value)
 		if err != nil {
-			return nil, 0, kinded(kindOf(err), "option %q: %v", key, err)
+			return nil, none, kinded(kindOf(err), "option %q: %v", key, err)
+		}
+		if _, fraction, found := strings.Cut(strconv.FormatFloat(value, 'f', -1, 64), "."); found {
+			decimals = max(decimals, len(fraction))
 		}
 		clean[key] = p
 		total += p
 	}
 	if math.Abs(total-1) > massTolerance {
-		return nil, 0, kinded(KindMass, "probabilities sum to %.4f, not 1", total)
+		return nil, none, kinded(KindMass, "probabilities sum to %.4f, not 1", total)
 	}
 	for key := range clean {
 		clean[key] /= total
 	}
-	return clean, total, nil
+	return clean, asReported{mass: total, decimals: min(decimals, 6)}, nil
 }
 
 // CheckNoDuplicateKeys rejects JSON in which any object repeats a key, at any

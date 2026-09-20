@@ -203,9 +203,11 @@ func TestNativeDecideOptionsReachTheModelAndAnyChatModelWorks(t *testing.T) {
 		t.Fatalf("status %d: %v", status, payload)
 	}
 	sent := backend.requests[0]
-	reasoning, _ := sent.Reasoning.(map[string]any)
-	if reasoning["effort"] != "high" {
-		t.Fatalf("caller reasoning not forwarded: %v", sent.Reasoning)
+	// As the effort STRING, which every host understands. The object the
+	// caller wrote is not portable (Cerebras answers 400 to it), so it is
+	// reduced to the one validated word and never forwarded.
+	if sent.ReasoningEffort != "high" || sent.Reasoning != nil {
+		t.Fatalf("caller reasoning must reach the model as the effort word: effort=%q object=%v", sent.ReasoningEffort, sent.Reasoning)
 	}
 	if sent.Provider == nil || strings.Join(sent.Provider.Only, ",") != "anthropic" {
 		t.Fatalf("caller provider not forwarded: %+v", sent.Provider)

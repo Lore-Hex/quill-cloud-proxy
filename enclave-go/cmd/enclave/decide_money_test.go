@@ -305,3 +305,83 @@ func TestNativeDecideNeverRelaysAProvidersAuthFailure(t *testing.T) {
 		t.Fatalf("control-plane 401 reached the caller as %d", status)
 	}
 }
+
+// silentLLM is a provider that RAN and said nothing a text-delta observer can
+// see: usage, a stop, no content -- a filtered completion, for instance.
+type silentLLM struct{}
+
+func (silentLLM) InvokeStreaming(_ context.Context, _ *types.OpenAIChatRequest, _ *types.AnthropicMessagesRequest, out io.Writer, _ ...llm.InvokeOptions) error {
+	_, err := fmt.Fprint(out, `event: message_start
+data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":400,"output_tokens":0}}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`)
+	return err
+}
+
+func TestNativeDecideCountsAModelThatRanAndSaidNothing(t *testing.T) {
+	// No text delta ever arrives, so an observer-based "did it run?" says no;
+	// then settlement fails and the 503 went out inviting a retry of a call
+	// the provider had already been paid for.
+	plane := &faultyControlPlane{settleStatus: func(int) int { return 503 }}
+	status, raw := rawDecide(context.Background(), silentLLM{}, plane.serve(t), nativeBody)
+	if status < 500 || !saysDoNotRetry(raw) {
+		t.Fatalf("status %d, do-not-retry=%v\n%s", status, saysDoNotRetry(raw), raw)
+	}
+}
+
+func TestDecideKeepsTheControlPlanesRetryAfter(t *testing.T) {
+	// A 429 for a per-key window says when the window resets. Dropping the
+	// header leaves an agent to back off blindly.
+	limited := func(hosted bool) *trustedrouter.Client {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(429)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"key window limit reached","type":"rate_limit"}}`)
+		}))
+		t.Cleanup(server.Close)
+		return trustedrouter.New(server.URL, "internal-token", server.Client())
+	}
+	for label, body := range map[string]string{"native": nativeBody, "hosted": fmt.Sprintf(hostedBody, "")} {
+		status, raw := rawDecide(context.Background(), &cancellingDecider{answers: hostedAnswers()}, limited(label == "hosted"), body)
+		head := strings.ToLower(strings.SplitN(raw, "\r\n\r\n", 2)[0])
+		if status != 429 || !strings.Contains(head, "retry-after: 120") {
+			t.Errorf("%s: status %d, headers:\n%s", label, status, head)
+		}
+		if saysDoNotRetry(raw) {
+			t.Errorf("%s: nothing ran, a retry after the window is exactly right", label)
+		}
+	}
+}
+
+func TestNativeDecideLogsNothingAProviderSaid(t *testing.T) {
+	// The shared provider path logs errorClass(err), which fell back to the
+	// first 80 characters of the message.
+	plane := &faultyControlPlane{}
+	backend := &usageScriptedLLM{fail: fmt.Errorf("vendor rejected state: %s", privateState)}
+	stderr := captureStderr(t, func() {
+		rawDecide(context.Background(), backend, plane.serve(t), nativeBody)
+	})
+	if strings.Contains(stderr, "PRIVATE-STATE") || strings.Contains(stderr, "vendor rejected") {
+		t.Fatalf("stderr carries what the provider said:\n%s", stderr)
+	}
+}
+
+func TestHostedDecideAcceptsEveryWayOfNotAskingToReason(t *testing.T) {
+	for _, unset := range []string{`"reasoning":false,`, `"reasoning_effort":"none",`, `"reasoning":{"enabled":false},`} {
+		plane := &faultyControlPlane{hosted: true}
+		if status, raw := rawDecide(context.Background(), &cancellingDecider{answers: hostedAnswers(), tokens: 61}, plane.serve(t), fmt.Sprintf(hostedBody, unset)); status != 200 {
+			t.Errorf("%s: %d %s", unset, status, raw)
+		}
+	}
+	// Malformed is not "unset": it is refused, never silently dropped.
+	plane := &faultyControlPlane{hosted: true}
+	if status, _ := rawDecide(context.Background(), &cancellingDecider{answers: hostedAnswers()}, plane.serve(t), fmt.Sprintf(hostedBody, `"reasoning_effort":"banana",`)); status != 400 {
+		t.Errorf("a malformed effort on a hosted model: %d, want 400", status)
+	}
+}

@@ -340,10 +340,57 @@ func errorClass(err error) string {
 	case strings.Contains(strings.ToLower(msg), "http 4"):
 		return "upstream_4xx"
 	}
-	if len(msg) > 80 {
-		msg = msg[:80]
+	// Anything else used to be logged as the first 80 characters of the
+	// message. An error's text is whatever its author put there -- a vendor's
+	// rejection quoting the prompt, a decoder quoting the literal it choked on
+	// -- and this enclave does not write prompts to a log. So the fallback is a
+	// fixed word for the transport conditions worth telling apart, and
+	// otherwise the error's Go TYPES, which say where it came from and hold
+	// nothing anyone typed.
+	lower := strings.ToLower(msg)
+	for _, known := range transportErrorClasses {
+		if strings.Contains(lower, known.marker) {
+			return known.class
+		}
 	}
-	return strings.ReplaceAll(msg, "\n", " ")
+	return "other:" + errorTypeChain(err)
+}
+
+// transportErrorClasses maps a marker in an error's text to the FIXED word
+// logged for it. What is logged is always a string from this table, never text
+// from the error, so matching on a marker is safe whatever else the message
+// holds. Ordered: the first match wins. The gateway's own conditions come
+// first and keep the exact values they have always been logged under, because
+// alerts and a test match on them.
+var transportErrorClasses = []struct{ marker, class string }{
+	{"empty upstream response", "empty upstream response"},
+	{"first-byte budget exceeded", "user_model_first_byte_timeout"},
+	{"thinking budget exceeded", "thinking_budget_exceeded"},
+	{"attestation verification required", "attestation_required"},
+	{"cert fingerprint mismatch", "cert_fingerprint_mismatch"},
+	{"peer pid mismatch", "sidecar_pid_mismatch"},
+	{"unexpected eof", "unexpected_eof"},
+	{"connection reset", "conn_reset"},
+	{"connection refused", "conn_refused"},
+	{"broken pipe", "broken_pipe"},
+	{"i/o timeout", "io_timeout"},
+	{"no such host", "dns_no_such_host"},
+	{"certificate", "tls_certificate"},
+	{"handshake", "tls_handshake"},
+	{"goaway", "http2_goaway"},
+	{"stream error", "http2_stream_error"},
+	{"eof", "eof"},
+}
+
+// errorTypeChain names the Go type at each level of err's Unwrap chain, e.g.
+// "*url.Error>*net.OpError>*os.SyscallError". Types only, at most four deep.
+func errorTypeChain(err error) string {
+	var names []string
+	for depth := 0; err != nil && depth < 4; depth++ {
+		names = append(names, fmt.Sprintf("%T", err))
+		err = errors.Unwrap(err)
+	}
+	return strings.Join(names, ">")
 }
 
 type selectedRouteTracker struct {

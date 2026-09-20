@@ -9,7 +9,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/decide"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
@@ -66,6 +65,47 @@ func nativeFailureStatus(err error) int {
 		return controlErr.StatusCode
 	}
 	return 502
+}
+
+// writeDecideFailure writes a failure that may have come from the control
+// plane, keeping what the control plane said about WHEN to come back: a 429
+// for a per-key window carries the seconds until it resets, and an agent that
+// is not told backs off blindly. spent adds x-should-retry: false.
+func writeDecideFailure(conn io.Writer, status int, message string, err error, spent bool) {
+	headers := retryHeadersFromControlPlaneError(err)
+	if spent {
+		if headers == nil {
+			headers = map[string]string{}
+		}
+		headers[shouldRetryHeader] = "false"
+	}
+	writeErrorWithSourceHeaders(conn, status, message, "router", headers)
+}
+
+// ranRecorder wraps the model client for one native attempt and records whether
+// a provider produced ANY bytes. That, and not "did a text delta arrive", is
+// what "a model ran" means: a completion that is filtered, or carries usage and
+// no content, produces no delta and is billed all the same. Only
+// InvokeStreaming is forwarded, which is all the provider path calls.
+type ranRecorder struct {
+	inner llm.Client
+	ran   *bool
+}
+
+func (r ranRecorder) InvokeStreaming(ctx context.Context, req *types.OpenAIChatRequest, anthropicReq *types.AnthropicMessagesRequest, out io.Writer, options ...llm.InvokeOptions) error {
+	return r.inner.InvokeStreaming(ctx, req, anthropicReq, ranWriter{out, r.ran}, options...)
+}
+
+type ranWriter struct {
+	out io.Writer
+	ran *bool
+}
+
+func (w ranWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		*w.ran = true
+	}
+	return w.out.Write(p)
 }
 
 type decideRequest struct {
@@ -169,11 +209,16 @@ func serveDecide(
 		// spell "unset", and rejecting them would break every SDK that always
 		// serializes its defaults. A fixed order keeps the message stable when
 		// more than one is set.
+		// reasoning:false and reasoning_effort:"none" ask for what a hosted
+		// model already does, so they are unset too; a malformed value still
+		// counts as set and is refused here rather than silently dropped.
+		effort, reasoningErr := decide.RequestedReasoning(req.Reasoning, req.ReasoningEffort)
+		asksToReason := effort != "" || reasoningErr != nil
 		for _, param := range []struct {
 			name string
 			set  bool
 		}{
-			{"reasoning", req.Reasoning != nil}, {"reasoning_effort", req.ReasoningEffort != ""},
+			{"reasoning", asksToReason && req.Reasoning != nil}, {"reasoning_effort", asksToReason && req.ReasoningEffort != ""},
 			{"max_tokens", req.MaxTokens != nil}, {"provider", req.Provider != nil},
 		} {
 			if param.set {
@@ -223,15 +268,7 @@ func serveHostedDecide(
 		var err error
 		authorization, err = trGateway.AuthorizeEmbeddingsWithRoute(ctx, bearer, authReq, inputTokens, decideRouteType)
 		if err != nil {
-			writeError(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"))
-			return
-		}
-		invokeOptions, err = invokeOptionsForAuthorization(ctx, secretCache, authorization)
-		if err != nil {
-			refundCtx, cancel := finalizeContext(ctx)
-			_ = trGateway.Refund(refundCtx, authorization, 502, "byok_secret_error", time.Since(requestStarted).Seconds(), nil)
-			cancel()
-			writeError(conn, 502, "provider key unavailable")
+			writeDecideFailure(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), err, false)
 			return
 		}
 	}
@@ -243,6 +280,15 @@ func serveHostedDecide(
 		defer cancel()
 		if err := trGateway.Refund(refundCtx, authorization, status, errorType, time.Since(requestStarted).Seconds(), nil); err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.decide_refund_failed model=%q error_class=%q\n", req.Model, controlPlaneErrorClass(err))
+		}
+	}
+	if trEnabled {
+		var err error
+		invokeOptions, err = invokeOptionsForAuthorization(ctx, secretCache, authorization)
+		if err != nil {
+			refund(502, "byok_secret_error")
+			writeError(conn, 502, "provider key unavailable")
+			return
 		}
 	}
 	decider, ok := br.(llm.DecideClient)
@@ -378,7 +424,7 @@ func serveNativeDecide(
 	// an attempt can settle with input_tokens 0 (everything read from cache),
 	// and an attempt whose SETTLEMENT failed ran a provider and returned no
 	// usage at all. So it is tracked directly: an attempt that settled, or a
-	// provider that was seen producing output.
+	// provider that was seen producing output (see ranRecorder).
 	spent := false
 	for attempt := 1; attempt <= nativeDecisionAttempts; attempt++ {
 		attemptReq := *chatReq
@@ -388,17 +434,11 @@ func serveNativeDecide(
 			attemptKey = fmt.Sprintf("%s:decide-retry-%d", idempotencyKey, attempt)
 		}
 		attemptReq.IdempotencyKey = attemptKey
-		sawOutput := func(adapter.StreamDelta) { spent = true }
-		call, err := runFusionCallObserved(ctx, br, &attemptReq, trGateway, secretCache, bearer, decideRouteType, attemptKey, requestLogID, nil, false, sawOutput, false)
+		call, err := runFusionCall(ctx, ranRecorder{br, &spent}, &attemptReq, trGateway, secretCache, bearer, decideRouteType, attemptKey, requestLogID, nil, false)
 		if err != nil {
 			// Authorization or provider failure: runFusionCall has already
 			// refunded. Nothing about a retry would differ, so surface it.
-			status, message := nativeFailureStatus(err), messageFromControlPlaneError(err, "provider error")
-			if spent {
-				writeSpentError(conn, status, message)
-				return
-			}
-			writeError(conn, status, message)
+			writeDecideFailure(conn, nativeFailureStatus(err), messageFromControlPlaneError(err, "provider error"), err, spent)
 			return
 		}
 		spent = true
