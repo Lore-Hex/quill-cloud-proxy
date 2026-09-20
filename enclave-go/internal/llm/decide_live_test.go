@@ -28,6 +28,11 @@ import (
 // decide.NativeModels:
 //
 //	TR_LIVE_DECIDE_CANDIDATES='model|provider|upstream|effort|format;...'
+//
+// Build with BOTH live tags (the stream reader is shared with the provider-wave
+// probe), and a multi-provider cloud build:
+//
+//	go test -tags "live_decide live_provider_wave llm_multi cloud_gcp" ./internal/llm/ -run TestLiveDecide -v
 
 const liveQuestions = `{
  "refund":  {"type":"boolean","instructions":"Is the customer asking for money back or for a charge to be reversed?"},
