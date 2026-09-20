@@ -123,6 +123,7 @@ BYTEPLUS_SECRET="${BYTEPLUS_SECRET:-trustedrouter-byteplus-api-key}"
 TENCENT_SECRET="${TENCENT_SECRET:-trustedrouter-tencent-tokenhub-api-key}"
 VULTR_SECRET="${VULTR_SECRET:-trustedrouter-vultr-api-key}"
 HUGGING_FACE_SECRET="${HUGGING_FACE_SECRET:-trustedrouter-huggingface-api-key}"
+VERCEL_AI_GATEWAY_SECRET="${VERCEL_AI_GATEWAY_SECRET:-trustedrouter-vercel-ai-gateway-api-key}"
 DARKBLOOM_SECRET="${DARKBLOOM_SECRET:-trustedrouter-darkbloom-api-key}"
 BAIDU_SECRET="${BAIDU_SECRET:-trustedrouter-baidu-api-key}"
 RIVERFLOW_SECRET="${RIVERFLOW_SECRET:-trustedrouter-riverflow-api-key}"
@@ -284,6 +285,7 @@ for secret in \
   "$TENCENT_SECRET" \
   "$VULTR_SECRET" \
   "$HUGGING_FACE_SECRET" \
+  "$VERCEL_AI_GATEWAY_SECRET" \
   "$DARKBLOOM_SECRET" \
   "$BAIDU_SECRET" \
   "$RIVERFLOW_SECRET" \

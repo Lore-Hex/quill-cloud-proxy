@@ -13,8 +13,8 @@ func TestSpecsAreValidAndImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := All()
-	if len(all) != 31 {
-		t.Fatalf("provider specs = %d, want 31", len(all))
+	if len(all) != 32 {
+		t.Fatalf("provider specs = %d, want 32", len(all))
 	}
 	original := all[0]
 	all[0].Provider = "mutated"
@@ -134,5 +134,19 @@ func TestCloudConfigurationsCoverEverySpec(t *testing.T) {
 				t.Errorf("%s is missing %s", path, parsed.Hostname())
 			}
 		}
+	}
+}
+
+func TestVercelAIGatewayCarriesTheHostedDecisionModel(t *testing.T) {
+	spec, ok := Lookup("vercel-ai-gateway")
+	if !ok {
+		t.Fatal("vercel-ai-gateway provider is not registered")
+	}
+	// InvokeDecide posts {BaseURL}/evaluate, so the base must end at /v1.
+	if spec.BaseURL != "https://ai-gateway.vercel.sh/v1" {
+		t.Fatalf("vercel-ai-gateway base URL = %q", spec.BaseURL)
+	}
+	if spec.SecretEnv != "QUILL_VERCEL_AI_GATEWAY_SECRET" || spec.SecretName != "trustedrouter-vercel-ai-gateway-api-key" {
+		t.Fatalf("vercel-ai-gateway secret coordinates = %q, %q", spec.SecretEnv, spec.SecretName)
 	}
 }

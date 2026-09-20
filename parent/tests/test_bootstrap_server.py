@@ -347,6 +347,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "tencent",
         "vultr",
         "huggingface",
+        "vercel-ai-gateway",
         "darkbloom",
         "baidu",
         "riverflow",

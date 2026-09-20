@@ -53,6 +53,8 @@ var specs = [...]Spec{
 	{Provider: "tencent", BaseURL: "https://tokenhub-intl.tencentcloudmaas.com/v1", SecretEnv: "QUILL_TENCENT_SECRET", SecretName: "trustedrouter-tencent-tokenhub-api-key", SecretLabel: "Tencent TokenHub key"},
 	{Provider: "vultr", BaseURL: "https://api.vultrinference.com/v1", SecretEnv: "QUILL_VULTR_SECRET", SecretName: "trustedrouter-vultr-api-key", SecretLabel: "Vultr inference key"},
 	{Provider: "huggingface", BaseURL: "https://router.huggingface.co/v1", SecretEnv: "QUILL_HUGGING_FACE_SECRET", SecretName: "trustedrouter-huggingface-api-key", SecretLabel: "Hugging Face key"},
+	// Carried for one modality: TypeSafe AI's Jev decision model on POST {base}/evaluate.
+	{Provider: "vercel-ai-gateway", BaseURL: "https://ai-gateway.vercel.sh/v1", SecretEnv: "QUILL_VERCEL_AI_GATEWAY_SECRET", SecretName: "trustedrouter-vercel-ai-gateway-api-key", SecretLabel: "Vercel AI Gateway key"},
 	{Provider: "darkbloom", BaseURL: "https://api.darkbloom.dev/v1", SecretEnv: "QUILL_DARKBLOOM_SECRET", SecretName: "trustedrouter-darkbloom-api-key", SecretLabel: "Darkbloom key"},
 	{Provider: "baidu", BaseURL: "https://qianfan.baidubce.com/v2", SecretEnv: "QUILL_BAIDU_SECRET", SecretName: "trustedrouter-baidu-api-key", SecretLabel: "Baidu Qianfan key"},
 	{Provider: "riverflow", BaseURL: "https://design-api.sourceful.com", MediaOnly: true, SecretEnv: "QUILL_RIVERFLOW_SECRET", SecretName: "trustedrouter-riverflow-api-key", SecretLabel: "Riverflow key"},

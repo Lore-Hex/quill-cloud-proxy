@@ -181,6 +181,7 @@ SECRETS=(
   trustedrouter-tencent-tokenhub-api-key
   trustedrouter-vultr-api-key
   trustedrouter-huggingface-api-key
+  trustedrouter-vercel-ai-gateway-api-key
   trustedrouter-darkbloom-api-key
   trustedrouter-baidu-api-key
   trustedrouter-riverflow-api-key
