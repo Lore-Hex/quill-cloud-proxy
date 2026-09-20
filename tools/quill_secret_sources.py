@@ -39,6 +39,10 @@ from pathlib import Path
 #: here, and the failure is a provider silently missing from a cloud rather than
 #: an error. Anything not in this table is simply not a bundle input.
 PROVIDER_KEY_ALIASES: dict[str, str] = {
+    "REDPILL_API_KEY": "trustedrouter-redpill-api-key",
+    "META_API_KEY": "trustedrouter-meta-direct-api-key",
+    "GENERAL_COMPUTE_KEY": "trustedrouter-general-compute-api-key",
+    "INFOMANIAK_API_KEY": "trustedrouter-infomaniak-api-key",
     "CLAUDE_API_KEY": "trustedrouter-anthropic-api-key",
     "CHATGPT_API_KEY": "trustedrouter-openai-api-key",
     "GEMINI_API_KEY": "trustedrouter-gemini-api-key",

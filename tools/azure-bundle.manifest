@@ -17,7 +17,7 @@
 # a new bundle (which regenerates this file and prints a new version), pin the
 # new QUILL_AZURE_BUNDLE_VERSION, and commit this file in the same change.
 #
-# bundle-version: 5e554cb23fcd4f9d8dc3d2a0d0fe8aea
+# bundle-version: 4e0e7838167c4318bba19cb3d0246548
 quill-device-keys
 quill-openrouter-key
 tr-azure-acme-cache-key
@@ -44,15 +44,18 @@ trustedrouter-exa-api-key
 trustedrouter-fireworks-api-key
 trustedrouter-friendli-api-key
 trustedrouter-gemini-api-key
+trustedrouter-general-compute-api-key
 trustedrouter-gmi-api-key
 trustedrouter-grok-api-key
 trustedrouter-inceptron-api-key
+trustedrouter-infomaniak-api-key
 trustedrouter-internal-gateway-token
 trustedrouter-kimi-api-key
 trustedrouter-kling-api-key
 trustedrouter-lightning-api-key
 trustedrouter-ltx-api-key
 trustedrouter-makora-api-key
+trustedrouter-meta-direct-api-key
 trustedrouter-minimax-api-key
 trustedrouter-mistral-api-key
 trustedrouter-morph-api-key
@@ -65,6 +68,7 @@ trustedrouter-openai-video-key
 trustedrouter-parasail-api-key
 trustedrouter-pearl-api-key
 trustedrouter-phala-confidential-api-key
+trustedrouter-redpill-api-key
 trustedrouter-runway-api-key
 trustedrouter-scaledown-api-key
 trustedrouter-siliconflow-api-key
