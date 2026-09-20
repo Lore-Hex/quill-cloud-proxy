@@ -1008,6 +1008,10 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	return &decoded.Data, nil
 }
 
+// refundDeadline bounds a refund now that it no longer inherits the request's
+// cancellation (see refundDetailed).
+const refundDeadline = 10 * time.Second
+
 func (c *Client) Refund(ctx context.Context, auth *Authorization, status int, errorType string, elapsedSeconds float64, metadata map[string]any) error {
 	_, err := c.RefundDetailed(ctx, auth, status, errorType, elapsedSeconds, metadata)
 	return err
@@ -1054,6 +1058,20 @@ func (c *Client) refundDetailed(
 	if status < 100 {
 		status = 502
 	}
+	// A refund closes an authorization, so it must LEAVE, whatever has happened
+	// to the request it belongs to. A draining gateway cancels in-flight
+	// requests, and a refund sent on a cancelled context never leaves the
+	// process: the caller's hold is stranded until the control plane reaps it.
+	// This used to be each call site's job, and review found sites that had
+	// not done it three rounds running (Fusion's, the key-resolution one, the
+	// version-skew ones in this file). It is a property of a refund, so it
+	// lives here: the request's values are kept, its cancellation is dropped,
+	// and the call gets its own deadline.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refundDeadline)
+	defer cancel()
 	if errorType == "" {
 		errorType = "provider_error"
 	}

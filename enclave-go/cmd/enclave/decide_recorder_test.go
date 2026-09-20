@@ -58,3 +58,60 @@ func TestGenerationRecorderReadsEventLinesAndNothingElse(t *testing.T) {
 		t.Error("an empty completion counted as a generation")
 	}
 }
+
+func TestGenerationRecorderIgnoresWhatFollowsTheStop(t *testing.T) {
+	// Once the stream has reached its stop the generation is complete, and what
+	// follows is ignored -- in one write or in a later one. Read at the settle
+	// hook, a late error used to count only if it happened to arrive before the
+	// hook looked, so billing depended on chunk timing.
+	answer := adapter.StreamResult{Text: `{"q0":0.9}`, FinishReason: "stop"}
+	const delta = "event: content_block_delta\ndata: {}\n\n"
+	const stop = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	const lateError = "event: error\ndata: {\"type\":\"error\"}\n\n"
+	for label, g := range map[string]*generationRecorder{
+		"a stop, then an error, one write":  recorded(delta + stop + lateError),
+		"a stop, then an error, two writes": recorded(delta+stop, lateError),
+	} {
+		if err := g.complete(answer); err != nil {
+			t.Errorf("%s: a complete generation was refused: %v", label, err)
+		}
+	}
+	// An error BEFORE the stop is still a provider that failed.
+	if err := recorded(delta + lateError + stop).complete(answer); err == nil {
+		t.Error("an error before the stop counted as a finished generation")
+	}
+}
+
+func TestGenerationRecorderIsSafeWhileTheProviderIsStillWriting(t *testing.T) {
+	// The collector returns at message_stop, so the settle hook reads while the
+	// provider goroutine may still be writing. Run under -race.
+	//
+	// The one field both sides touch is sawStop, and it is written exactly once,
+	// so the reader has to be READING IT when that happens: it spins on the hook
+	// for the whole life of the writer, and the whole thing is repeated. (Two
+	// earlier versions of this test passed with the lock removed: one let the
+	// reader finish first, the other had the writer write a field the hook
+	// short-circuits past.)
+	for round := 0; round < 200; round++ {
+		g := &generationRecorder{}
+		written := make(chan struct{})
+		go func() {
+			defer close(written)
+			for i := 0; i < 20; i++ {
+				g.Write([]byte("event: content_block_delta\ndata: {}\n\n"))
+			}
+			g.Write([]byte("event: message_stop\ndata: {}\n\n"))
+		}()
+		for reading := true; reading; {
+			select {
+			case <-written:
+				reading = false
+			default:
+				_ = g.complete(adapter.StreamResult{Text: "x", FinishReason: "stop"})
+			}
+		}
+		if err := g.complete(adapter.StreamResult{Text: "x", FinishReason: "stop"}); err != nil {
+			t.Fatalf("round %d: a finished stream was refused: %v", round, err)
+		}
+	}
+}

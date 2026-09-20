@@ -1828,12 +1828,9 @@ func runFusionCallValidatedObserved(
 	return runFusionCallValidatedObservedAttempt(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, observer, streamed, true, 0)
 }
 
-// refundFusionCall closes an authorization that will not be settled. It runs on
-// a context that keeps the request's values and DROPS its cancellation, with
-// its own deadline: a draining gateway cancels in-flight requests, and a refund
-// sent on a cancelled context never leaves the process, which strands the
-// caller's hold until the control plane reaps it. Same shape as the image
-// route's refund and the hosted decide path.
+// refundFusionCall closes an authorization that will not be settled. The
+// control-plane client sends every refund on a context of its own, so a
+// cancelled request cannot strand the hold (trustedrouter.Client.refundDetailed).
 func refundFusionCall(ctx context.Context, trGateway *trustedrouter.Client, authz *trustedrouter.Authorization, status int, reason string, started time.Time, metadata map[string]any) {
 	refundFusionCallAfter(ctx, trGateway, authz, status, reason, time.Since(started).Seconds(), metadata)
 }
@@ -1844,9 +1841,7 @@ func refundFusionCallAfter(ctx context.Context, trGateway *trustedrouter.Client,
 	if trGateway == nil || !trGateway.Enabled() {
 		return
 	}
-	refundCtx, cancel := finalizeContext(ctx)
-	defer cancel()
-	_ = trGateway.Refund(refundCtx, authz, status, reason, elapsedSeconds, metadata)
+	_ = trGateway.Refund(ctx, authz, status, reason, elapsedSeconds, metadata)
 }
 
 // settlementAttemptedError marks a failure that happened AFTER the provider

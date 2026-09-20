@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
@@ -32,11 +33,11 @@ const decideFinalizeTimeout = 10 * time.Second
 // decision model wraps around the request before counting its input.
 const hostedTemplateTokenAllowance = 4096
 
-// finalizeContext is for the settle or refund that closes an authorization. It
+// finalizeContext is for the hosted SETTLE that closes an authorization. It
 // keeps the request's values and drops its cancellation: a draining gateway
-// cancels in-flight requests, and a refund sent on a cancelled context is a
-// refund that never leaves, stranding the hold until the control plane reaps
-// it. Same shape as the image route's refund.
+// cancels in-flight requests, and the vendor has already been paid by then.
+// (Refunds need no such care at the call site: the control-plane client sends
+// every refund on a context of its own.)
 func finalizeContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), decideFinalizeTimeout)
 }
@@ -74,6 +75,10 @@ var errNoGeneration = errors.New("decide: the provider produced no complete gene
 // at its first byte and never moves to another after that, so within an attempt
 // only one host ever writes here.
 type generationRecorder struct {
+	// The provider goroutine writes while the settle hook reads, and may still
+	// be writing when it does: the collector returns at `message_stop`, not at
+	// the end of the stream.
+	mu       sync.Mutex
 	line     []byte // the current line, up to eventLinePrefix bytes of it
 	overflow bool   // the current line is longer than that
 	sawStop  bool
@@ -83,6 +88,14 @@ type generationRecorder struct {
 const eventLinePrefix = 64
 
 func (g *generationRecorder) Write(p []byte) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.sawStop {
+		// The generation is complete. Whatever follows -- a late error event, a
+		// client error -- changes nothing the caller was owed, and must not make
+		// billing depend on whether it arrived before or after the hook looked.
+		return
+	}
 	for _, c := range p {
 		if c != '\n' {
 			if len(g.line) < eventLinePrefix {
@@ -96,6 +109,7 @@ func (g *generationRecorder) Write(p []byte) {
 			switch strings.TrimRight(string(g.line), "\r ") {
 			case "event: message_stop":
 				g.sawStop = true
+				return
 			case "event: error":
 				g.sawError = true
 			}
@@ -116,6 +130,8 @@ func (g *generationRecorder) Write(p []byte) {
 // everything has arrived -- delivered a complete generation. The answer is
 // used and billed once; the late error changes nothing the caller was owed.
 func (g *generationRecorder) complete(result adapter.StreamResult) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if !g.sawStop || g.sawError || strings.TrimSpace(result.Text) == "" {
 		return errNoGeneration
 	}
@@ -347,9 +363,8 @@ func serveHostedDecide(
 		if !trEnabled {
 			return
 		}
-		refundCtx, cancel := finalizeContext(ctx)
-		defer cancel()
-		if err := trGateway.Refund(refundCtx, authorization, status, errorType, time.Since(requestStarted).Seconds(), nil); err != nil {
+		// The client sends every refund on a context of its own.
+		if err := trGateway.Refund(ctx, authorization, status, errorType, time.Since(requestStarted).Seconds(), nil); err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.decide_refund_failed model=%q error_class=%q\n", req.Model, controlPlaneErrorClass(err))
 		}
 	}
