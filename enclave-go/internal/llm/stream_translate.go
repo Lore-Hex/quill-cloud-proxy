@@ -81,6 +81,7 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 					// reasoning_content without mixing it into the visible
 					// assistant answer.
 					ReasoningContent string `json:"reasoning_content"`
+					Reasoning        string `json:"reasoning"`
 					ToolCalls        []struct {
 						Index    int    `json:"index"`
 						ID       string `json:"id"`
@@ -127,18 +128,25 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 		}
 		choice := chunk.Choices[0]
 
-		if choice.Delta.Content != "" {
-			if err := writeAnthropicTextDelta(w, choice.Delta.Content); err != nil {
-				return err
-			}
-		} else if choice.Delta.ReasoningContent != "" {
+		// Parasail and Cerebras use reasoning; other providers use
+		// reasoning_content. Prefer the latter if both aliases are populated.
+		reasoning := choice.Delta.ReasoningContent
+		if reasoning == "" {
+			reasoning = choice.Delta.Reasoning
+		}
+		if reasoning != "" {
 			if !thinkingStarted {
 				thinkingStarted = true
 				if err := writeAnthropicThinkingStart(w, 0); err != nil {
 					return err
 				}
 			}
-			if err := writeAnthropicThinkingDelta(w, 0, choice.Delta.ReasoningContent); err != nil {
+			if err := writeAnthropicThinkingDelta(w, 0, reasoning); err != nil {
+				return err
+			}
+		}
+		if choice.Delta.Content != "" {
+			if err := writeAnthropicTextDelta(w, choice.Delta.Content); err != nil {
 				return err
 			}
 		}
