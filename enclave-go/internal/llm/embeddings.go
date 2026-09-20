@@ -105,7 +105,7 @@ func invokeOpenAICompatibleEmbeddings(
 		if readErr != nil {
 			return nil, fmt.Errorf("llm/%s: read error body: %w", provider, readErr)
 		}
-		return nil, &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
+		return nil, classifyEmbeddingHTTPError(provider, resp.StatusCode, errBody)
 	}
 	var parsed struct {
 		Data []struct {

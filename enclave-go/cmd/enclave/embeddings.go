@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -119,9 +120,8 @@ func serveEmbeddings(
 
 	resp, err := embedder.InvokeEmbedding(ctx, &req, invokeOptions...)
 	if err != nil {
-		// Classify for billing (real upstream status when present); the
-		// client always sees 502 to avoid leaking upstream specifics, same
-		// as the chat path. Detail goes to stderr only (no input text).
+		// Billing keeps the upstream status. Only a recognized, sanitized
+		// input-limit error is safe to expose as a non-retryable client error.
 		refundStatus := 502
 		if status, hasStatus := llm.HTTPStatusFromError(err); hasStatus {
 			refundStatus = status
@@ -129,7 +129,14 @@ func serveEmbeddings(
 		if trEnabled {
 			_ = trGateway.Refund(ctx, authorization, refundStatus, "provider_error", time.Since(requestStarted).Seconds(), nil)
 		}
-		fmt.Fprintf(os.Stderr, "enclave.embeddings_failed model=%q err=%v\n", req.Model, err)
+		var inputLimit *llm.EmbeddingInputLimitError
+		if errors.As(err, &inputLimit) {
+			fmt.Fprintf(os.Stderr, "enclave.embeddings_failed request_log_id=%q model=%q upstream_status=%d error_class=input_limit\n", requestLogID, req.Model, refundStatus)
+			writeOpenAIError(conn, 400, inputLimit.Error(), "invalid_request_error", "embedding_input_too_long", "input")
+			return
+		}
+		// Provider error bodies can echo customer input; never write them to logs.
+		fmt.Fprintf(os.Stderr, "enclave.embeddings_failed request_log_id=%q model=%q upstream_status=%d error_class=provider_error\n", requestLogID, req.Model, refundStatus)
 		writeProviderError(conn, 502, "provider error")
 		return
 	}
