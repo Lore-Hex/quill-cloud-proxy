@@ -56,19 +56,45 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 	if err != nil {
 		return nil, fmt.Errorf("llm/%s: http client unavailable: %w", provider, err)
 	}
-	wire := *req
+	model := req.Model
 	if upstream := strings.TrimSpace(option.UpstreamModel); upstream != "" {
-		wire.Model = upstream
+		model = upstream
 	}
-	bodyBytes, err := json.Marshal(wire)
-	if err != nil {
-		return nil, fmt.Errorf("llm/%s: marshal body: %w", provider, err)
+	// Two hosts serve the same decision model with different wire shapes. The
+	// caller sees neither: both are translated to decide.Answer and then held
+	// to the same decide.Verify.
+	if provider == typeSafeProvider {
+		return invokeTypeSafeSystemOne(ctx, httpc, c.baseURL, c.apiKey, model, req)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/evaluate", bytes.NewReader(bodyBytes))
+	wire := *req
+	wire.Model = model
+	raw, err := postDecideJSON(ctx, httpc, provider, c.baseURL+"/evaluate", c.apiKey, wire)
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	var parsed struct {
+		Answers map[string]decide.Answer `json:"answers"`
+		Usage   struct {
+			InputTokens  int `json:"inputTokens"`
+			OutputTokens int `json:"outputTokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("llm/%s: decode decide response: %w", provider, err)
+	}
+	return &DecideResponse{Answers: parsed.Answers, InputTokens: parsed.Usage.InputTokens, OutputTokens: parsed.Usage.OutputTokens}, nil
+}
+
+func postDecideJSON(ctx context.Context, httpc *http.Client, provider, url, apiKey string, body any) ([]byte, error) {
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("llm/%s: marshal body: %w", provider, err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
 	if httpc == nil {
@@ -90,15 +116,56 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 	if len(raw) > maxDecideResponseBytes {
 		return nil, fmt.Errorf("llm/%s: decide response exceeds %d bytes", provider, maxDecideResponseBytes)
 	}
+	return raw, nil
+}
+
+// typeSafeProvider is TypeSafe AI's own API (POST {base}/systemone): the model
+// vendor directly, so the request crosses one third party instead of two.
+const typeSafeProvider = "typesafe"
+
+// TypeSafe names the yes/no primitive "noul" and returns its probability in a
+// field of the same name. Everything else lines up with the public contract.
+const typeSafeBoolean = "noul"
+
+func invokeTypeSafeSystemOne(ctx context.Context, httpc *http.Client, baseURL, apiKey, model string, req *DecideRequest) (*DecideResponse, error) {
+	questions := make(map[string]decide.Question, len(req.Questions))
+	for name, question := range req.Questions {
+		if question.Type == decide.TypeBoolean {
+			question.Type = typeSafeBoolean
+		}
+		questions[name] = question
+	}
+	wire := DecideRequest{Model: model, State: req.State, Questions: questions}
+	raw, err := postDecideJSON(ctx, httpc, typeSafeProvider, baseURL+"/systemone", apiKey, wire)
+	if err != nil {
+		return nil, err
+	}
 	var parsed struct {
-		Answers map[string]decide.Answer `json:"answers"`
-		Usage   struct {
-			InputTokens  int `json:"inputTokens"`
-			OutputTokens int `json:"outputTokens"`
+		Answers map[string]struct {
+			Type          string             `json:"type"`
+			Noul          *float64           `json:"noul"`
+			Choice        *string            `json:"choice"`
+			Score         *float64           `json:"score"`
+			Probabilities map[string]float64 `json:"probabilities"`
+		} `json:"answers"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("llm/%s: decode decide response: %w", provider, err)
+		return nil, fmt.Errorf("llm/%s: decode systemone response: %w", typeSafeProvider, err)
 	}
-	return &DecideResponse{Answers: parsed.Answers, InputTokens: parsed.Usage.InputTokens, OutputTokens: parsed.Usage.OutputTokens}, nil
+	// Translate names only. Whether the result honours the contract is for
+	// decide.Verify to say, exactly as it does for every other backend; extra
+	// vendor fields (confidence, legend) are not part of the public contract.
+	answers := make(map[string]decide.Answer, len(parsed.Answers))
+	for name, answer := range parsed.Answers {
+		translated := decide.Answer{Type: answer.Type, Choice: answer.Choice, Score: answer.Score, Probabilities: answer.Probabilities}
+		if answer.Type == typeSafeBoolean {
+			translated = decide.Answer{Type: decide.TypeBoolean, Probability: answer.Noul}
+		}
+		answers[name] = translated
+	}
+	return &DecideResponse{Answers: answers, InputTokens: parsed.Usage.InputTokens, OutputTokens: parsed.Usage.OutputTokens}, nil
 }

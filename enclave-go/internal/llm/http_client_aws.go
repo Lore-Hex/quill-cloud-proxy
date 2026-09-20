@@ -112,6 +112,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "design-api.sourceful.com", CID: 3, Port: 8079},
 	{Host: "router.huggingface.co", CID: 3, Port: 8082},
 	{Host: "ai-gateway.vercel.sh", CID: 3, Port: 8088},
+	{Host: "api.typesafe.ai", CID: 3, Port: 8089},
 	{Host: "fal.run", CID: 3, Port: 8080},
 	{Host: "ark.ap-southeast.bytepluses.com", CID: 3, Port: 8081},
 	{Host: "tokenhub-intl.tencentcloudmaas.com", CID: 3, Port: 8083},

@@ -190,14 +190,38 @@ func serveHostedDecide(
 		writeError(conn, 501, "decision models are not supported by this gateway build")
 		return
 	}
-	upstream, err := decider.InvokeDecide(ctx, &llm.DecideRequest{Model: req.Model, State: req.State, Questions: req.Questions}, invokeOptions...)
+	// A hosted decision model can have more than one host (the vendor's own
+	// API first, a relay second). Walk the authorized candidates in order, the
+	// same way chat does: nothing has been written to the caller yet, so moving
+	// to the next host on ANY upstream failure can neither duplicate output nor
+	// double-bill. Settlement names whichever host actually served.
+	candidates := invokeOptions
+	if len(candidates) == 0 {
+		candidates = []llm.InvokeOptions{{}}
+	}
+	wire := &llm.DecideRequest{Model: req.Model, State: req.State, Questions: req.Questions}
+	var upstream *llm.DecideResponse
+	var served llm.InvokeOptions
+	var err error
+	for index, candidate := range candidates {
+		upstream, err = decider.InvokeDecide(ctx, wire, candidate)
+		if err == nil {
+			served = candidate
+			break
+		}
+		// errorClass, never err: an upstream error body can echo the request.
+		fmt.Fprintf(os.Stderr, "enclave.decide_host_failed model=%q provider=%q attempt=%d of=%d error_class=%q\n",
+			publicModel, candidate.Provider, index+1, len(candidates), errorClass(err))
+		if ctx.Err() != nil {
+			break
+		}
+	}
 	if err != nil {
 		refundStatus := 502
 		if status, hasStatus := llm.HTTPStatusFromError(err); hasStatus {
 			refundStatus = status
 		}
 		refund(refundStatus, "provider_error")
-		fmt.Fprintf(os.Stderr, "enclave.decide_failed model=%q err=%v\n", publicModel, err)
 		writeProviderError(conn, 502, "provider error")
 		return
 	}
@@ -206,7 +230,10 @@ func serveHostedDecide(
 	answers, err := decide.Verify(specs, upstream.Answers)
 	if err != nil {
 		refund(502, "decide_verification_failed")
-		fmt.Fprintf(os.Stderr, "enclave.decide_verification_failed model=%q backend=hosted err=%v\n", publicModel, err)
+		// The violation KIND only: the reason names the caller's own questions
+		// and options, and request content never reaches a log.
+		fmt.Fprintf(os.Stderr, "enclave.decide_verification_failed model=%q backend=hosted provider=%q kind=%q\n",
+			publicModel, served.Provider, decide.ViolationKind(err))
 		writeProviderError(conn, 502, "decision model returned an invalid answer")
 		return
 	}
@@ -216,16 +243,20 @@ func serveHostedDecide(
 	}
 	var settlement *trustedrouter.SettleResult
 	if trEnabled {
+		servedEndpoint := served.EndpointID
+		if servedEndpoint == "" {
+			servedEndpoint = authorization.EndpointID
+		}
 		usage := trustedrouter.Usage{
 			RequestID: newRequestID(), InputTokens: billedInput, OutputTokens: 0, // output is not metered
 			ElapsedSeconds: maxDurationSeconds(time.Since(requestStarted), 0.001), UsageEstimated: upstream.InputTokens <= 0,
-			FinishReason: "stop", RouteType: decideRouteType, SelectedModel: publicModel, SelectedEndpoint: authorization.EndpointID,
+			FinishReason: "stop", RouteType: decideRouteType, SelectedModel: publicModel, SelectedEndpoint: servedEndpoint,
 			User: attribution.User, SessionID: attribution.SessionID, Trace: attribution.Trace, Metadata: attribution.Metadata,
 			App: attribution.App, HTTPReferer: attribution.HTTPReferer, AppCategories: append([]string(nil), attribution.AppCategories...),
 		}
 		settlement, err = trGateway.Settle(ctx, authorization, usage)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "enclave.decide_settle_failed model=%q err=%v\n", publicModel, err)
+			fmt.Fprintf(os.Stderr, "enclave.decide_settle_failed model=%q error_class=%q\n", publicModel, errorClass(err))
 			writeSpentError(conn, 502, "settlement failed")
 			return
 		}
@@ -299,7 +330,8 @@ func serveNativeDecide(
 			writeDecideResponse(ctx, conn, decideResponse{Model: req.Model, Answers: answers, Usage: usage}, lastSettlement, lastAuthorization)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "enclave.decide_verification_failed model=%q backend=native attempt=%d err=%v\n", req.Model, attempt, err)
+		fmt.Fprintf(os.Stderr, "enclave.decide_verification_failed model=%q backend=native attempt=%d kind=%q\n",
+			req.Model, attempt, decide.ViolationKind(err))
 	}
 	writeSpentError(conn, 502, "decision model returned an invalid answer")
 }

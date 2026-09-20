@@ -3,6 +3,7 @@ package decide
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -207,25 +208,25 @@ func ExtractNative(specs []Spec, text string) (map[string]Answer, error) {
 	decoder.UseNumber()
 	var raw map[string]json.RawMessage
 	if err := decoder.Decode(&raw); err != nil {
-		return nil, violation("native output is not a JSON object: %v", err)
+		return nil, violation("native output is not a JSON object: %v", err).as(KindNotJSON)
 	}
 	answers := make(map[string]Answer, len(specs))
 	for qi, spec := range specs {
 		entry, ok := raw[fmt.Sprintf("q%d", qi)]
 		if !ok {
-			return nil, violation("native output has no q%d", qi)
+			return nil, violation("native output has no q%d", qi).as(KindCount)
 		}
 		if spec.Type == TypeBoolean {
 			p, err := booleanEntry(entry)
 			if err != nil {
-				return nil, violation("q%d: %v", qi, err)
+				return nil, violation("q%d: %v", qi, err).as(kindOf(err))
 			}
 			answers[spec.Name] = Answer{Type: TypeBoolean, Probability: &p}
 			continue
 		}
 		values, err := distributionEntry(qi, spec, entry)
 		if err != nil {
-			return nil, violation("q%d: %v", qi, err)
+			return nil, violation("q%d: %v", qi, err).as(kindOf(err))
 		}
 		dist := make(map[string]float64, len(values))
 		best, expected := 0, 0.0
@@ -255,7 +256,7 @@ func ExtractNative(specs []Spec, text string) (map[string]Answer, error) {
 func firstJSONObject(text string) (string, error) {
 	start := strings.IndexByte(text, '{')
 	if start < 0 {
-		return "", violation("native output contains no JSON object")
+		return "", violation("native output contains no JSON object").as(KindNotJSON)
 	}
 	depth, inString, escaped := 0, false, false
 	for i := start; i < len(text); i++ {
@@ -280,7 +281,7 @@ func firstJSONObject(text string) (string, error) {
 			}
 		}
 	}
-	return "", violation("native output has an unterminated JSON object")
+	return "", violation("native output has an unterminated JSON object").as(KindNotJSON)
 }
 
 // booleanEntry accepts {"probability": v} or a bare v.
@@ -289,7 +290,7 @@ func booleanEntry(entry json.RawMessage) (float64, error) {
 	if json.Unmarshal(entry, &object) == nil && object != nil {
 		value, ok := object["probability"]
 		if !ok {
-			return 0, fmt.Errorf(`missing "probability"`)
+			return 0, kinded(KindCount, `missing "probability"`)
 		}
 		entry = value
 	}
@@ -315,7 +316,7 @@ func booleanEntry(entry json.RawMessage) (float64, error) {
 func distributionEntry(qi int, spec Spec, entry json.RawMessage) ([]float64, error) {
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(entry, &object); err != nil || object == nil {
-		return nil, fmt.Errorf("expected an object of option probabilities")
+		return nil, kinded(KindType, "expected an object of option probabilities")
 	}
 	index := make(map[string]int, 2*len(spec.Options))
 	for oi, option := range spec.Options {
@@ -332,17 +333,17 @@ func distributionEntry(qi int, spec Spec, entry json.RawMessage) ([]float64, err
 	for key, rawValue := range object {
 		oi, ok := index[key]
 		if !ok {
-			return nil, fmt.Errorf("unknown option %q", key)
+			return nil, kinded(KindOptions, "unknown option %q", key)
 		}
 		if seen[oi] {
-			return nil, fmt.Errorf("option %q given twice", key)
+			return nil, kinded(KindOptions, "option %q given twice", key)
 		}
 		p, percent, err := looseNumber(rawValue)
 		if err != nil {
-			return nil, fmt.Errorf("%q: %v", key, err)
+			return nil, kinded(kindOf(err), "%q: %v", key, err)
 		}
 		if p < 0 {
-			return nil, fmt.Errorf("%q is negative", key)
+			return nil, kinded(KindRange, "%q is negative", key)
 		}
 		anyPercent = anyPercent || percent
 		values[oi], seen[oi] = p, true
@@ -359,11 +360,11 @@ func distributionEntry(qi int, spec Spec, entry json.RawMessage) ([]float64, err
 		total /= 100
 	}
 	if math.Abs(total-1) > nativeMassTolerance {
-		return nil, fmt.Errorf("probabilities sum to %.3f, not 1", total)
+		return nil, kinded(KindMass, "probabilities sum to %.3f, not 1", total)
 	}
 	for oi := range values {
 		if values[oi] > 1 {
-			return nil, fmt.Errorf("%s is %v, outside [0,1]", optionAlias(qi, oi), values[oi])
+			return nil, kinded(KindRange, "%s is %v, outside [0,1]", optionAlias(qi, oi), values[oi])
 		}
 		values[oi] /= total
 	}
@@ -383,7 +384,7 @@ func looseNumber(raw json.RawMessage) (value float64, percent bool, err error) {
 	if strings.HasPrefix(trimmed, `"`) {
 		var text string
 		if err := json.Unmarshal(raw, &text); err != nil {
-			return 0, false, fmt.Errorf("unreadable value")
+			return 0, false, kinded(KindNumber, "unreadable value")
 		}
 		trimmed = strings.TrimSpace(text)
 		if strings.HasSuffix(trimmed, "%") {
@@ -393,7 +394,28 @@ func looseNumber(raw json.RawMessage) (value float64, percent bool, err error) {
 	}
 	parsed, parseErr := json.Number(trimmed).Float64()
 	if parseErr != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
-		return 0, false, fmt.Errorf("%q is not a number", trimmed)
+		return 0, false, kinded(KindNumber, "%q is not a number", trimmed)
 	}
 	return parsed, percent, nil
+}
+
+// kindError is a plain error that remembers which violation kind it is, so the
+// extractor's helpers can stay ordinary functions.
+type kindError struct {
+	kind string
+	msg  string
+}
+
+func (e *kindError) Error() string { return e.msg }
+
+func kinded(kind, format string, args ...any) error {
+	return &kindError{kind: kind, msg: fmt.Sprintf(format, args...)}
+}
+
+func kindOf(err error) string {
+	var k *kindError
+	if errors.As(err, &k) {
+		return k.kind
+	}
+	return kindUnlabeled
 }

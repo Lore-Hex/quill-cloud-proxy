@@ -200,6 +200,7 @@ _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("vultr", "trustedrouter-vultr-api-key"),
     ("huggingface", "trustedrouter-huggingface-api-key"),
     ("vercel-ai-gateway", "trustedrouter-vercel-ai-gateway-api-key"),
+    ("typesafe", "trustedrouter-typesafe-api-key"),
     ("darkbloom", "trustedrouter-darkbloom-api-key"),
     ("baidu", "trustedrouter-baidu-api-key"),
     ("riverflow", "trustedrouter-riverflow-api-key"),

@@ -13,8 +13,8 @@ func TestSpecsAreValidAndImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := All()
-	if len(all) != 32 {
-		t.Fatalf("provider specs = %d, want 32", len(all))
+	if len(all) != 33 {
+		t.Fatalf("provider specs = %d, want 33", len(all))
 	}
 	original := all[0]
 	all[0].Provider = "mutated"
@@ -148,5 +148,22 @@ func TestVercelAIGatewayCarriesTheHostedDecisionModel(t *testing.T) {
 	}
 	if spec.SecretEnv != "QUILL_VERCEL_AI_GATEWAY_SECRET" || spec.SecretName != "trustedrouter-vercel-ai-gateway-api-key" {
 		t.Fatalf("vercel-ai-gateway secret coordinates = %q, %q", spec.SecretEnv, spec.SecretName)
+	}
+}
+
+func TestTypeSafeIsTheVendorHostForTheDecisionModel(t *testing.T) {
+	spec, ok := Lookup("typesafe")
+	if !ok {
+		t.Fatal("typesafe provider is not registered")
+	}
+	// InvokeDecide posts {BaseURL}/systemone, so the base must end at /v1.
+	if spec.BaseURL != "https://api.typesafe.ai/v1" {
+		t.Fatalf("typesafe base URL = %q", spec.BaseURL)
+	}
+	if spec.SecretEnv != "QUILL_TYPESAFE_SECRET" || spec.SecretName != "trustedrouter-typesafe-api-key" {
+		t.Fatalf("typesafe secret coordinates = %q, %q", spec.SecretEnv, spec.SecretName)
+	}
+	if spec.MediaOnly {
+		t.Fatal("typesafe must get a direct client, or the decide route has nothing to call")
 	}
 }

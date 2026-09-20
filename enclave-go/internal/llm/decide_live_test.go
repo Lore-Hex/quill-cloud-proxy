@@ -250,44 +250,55 @@ func TestLiveDecideNative(t *testing.T) {
 }
 
 func TestLiveDecideHostedJev(t *testing.T) {
-	key := os.Getenv("VERCEL_AI_GATEWAY_API_KEY")
-	if key == "" {
-		t.Skip("set VERCEL_AI_GATEWAY_API_KEY")
+	// The same model through both of its hosts: TypeSafe's own API, and Vercel
+	// AI Gateway, which relays it. Each must survive the second pass.
+	hosts := []struct{ provider, keyEnv, baseURL, upstream string }{
+		{"typesafe", "TYPESAFE_API_KEY", "https://api.typesafe.ai/v1", "jev-latest"},
+		{"vercel-ai-gateway", "VERCEL_AI_GATEWAY_API_KEY", "https://ai-gateway.vercel.sh/v1", "typesafe-ai/jev"},
 	}
 	questions, specs := liveSpecs(t)
-	client := &openAICompatibleClient{provider: "vercel-ai-gateway", baseURL: directBaseURL("vercel-ai-gateway"), apiKey: key}
-	passed, total, inTok := 0, 0, 0
-	var latencies []int
-	for index, tc := range liveCases {
-		state, _ := json.Marshal(tc.state)
-		ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-		started := time.Now()
-		resp, err := client.InvokeDecide(ctx, &DecideRequest{Model: "typesafe-ai/jev", State: state, Questions: questions})
-		cancel()
-		if err != nil {
-			t.Fatalf("case %d: hosted call failed: %v", index, err)
-		}
-		latencies = append(latencies, int(time.Since(started).Milliseconds()))
-		if resp.InputTokens <= 0 {
-			t.Errorf("case %d: no input tokens reported; billing would fall back to an estimate", index)
-		}
-		inTok += resp.InputTokens
-		verified, err := decide.Verify(specs, resp.Answers)
-		if err != nil {
-			raw, _ := json.Marshal(resp.Answers)
-			t.Fatalf("case %d: second pass rejected the hosted model's own output: %v\n%s", index, err, raw)
-		}
-		p, n, misses := tc.score(verified)
-		passed, total = passed+p, total+n
-		if len(misses) > 0 {
-			t.Logf("case %d missed %v", index, misses)
-		}
-	}
-	sort.Ints(latencies)
-	t.Logf("RESULT %-38s valid=%d/%d judgment=%d/%d latency_ms(median=%d max=%d) tokens/decision(in=%d out=0 billed)",
-		"typesafe-ai/jev@vercel-ai-gateway", len(liveCases), len(liveCases), passed, total,
-		latencies[len(latencies)/2], latencies[len(latencies)-1], inTok/len(liveCases))
-	if passed*100 < total*85 {
-		t.Errorf("judgment %d/%d is below 85%%", passed, total)
+	for _, host := range hosts {
+		t.Run(host.provider, func(t *testing.T) {
+			key := os.Getenv(host.keyEnv)
+			if key == "" {
+				t.Skipf("set %s", host.keyEnv)
+			}
+			client := &openAICompatibleClient{provider: host.provider, baseURL: host.baseURL, apiKey: key}
+			passed, total, inTok := 0, 0, 0
+			var latencies []int
+			for index, tc := range liveCases {
+				state, _ := json.Marshal(tc.state)
+				ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+				started := time.Now()
+				resp, err := client.InvokeDecide(ctx, &DecideRequest{Model: "typesafe-ai/jev", State: state, Questions: questions},
+					InvokeOptions{Provider: host.provider, UpstreamModel: host.upstream})
+				cancel()
+				if err != nil {
+					t.Fatalf("case %d: hosted call failed: %v", index, err)
+				}
+				latencies = append(latencies, int(time.Since(started).Milliseconds()))
+				if resp.InputTokens <= 0 {
+					t.Errorf("case %d: no input tokens reported; billing would fall back to an estimate", index)
+				}
+				inTok += resp.InputTokens
+				verified, err := decide.Verify(specs, resp.Answers)
+				if err != nil {
+					raw, _ := json.Marshal(resp.Answers)
+					t.Fatalf("case %d: second pass rejected the hosted model's own output: %v\n%s", index, err, raw)
+				}
+				p, n, misses := tc.score(verified)
+				passed, total = passed+p, total+n
+				if len(misses) > 0 {
+					t.Logf("case %d missed %v", index, misses)
+				}
+			}
+			sort.Ints(latencies)
+			t.Logf("RESULT %-38s valid=%d/%d judgment=%d/%d latency_ms(median=%d max=%d) tokens/decision(in=%d out=0 billed)",
+				"typesafe-ai/jev@"+host.provider, len(liveCases), len(liveCases), passed, total,
+				latencies[len(latencies)/2], latencies[len(latencies)-1], inTok/len(liveCases))
+			if passed*100 < total*85 {
+				t.Errorf("judgment %d/%d is below 85%%", passed, total)
+			}
+		})
 	}
 }

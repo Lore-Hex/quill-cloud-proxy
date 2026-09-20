@@ -837,6 +837,7 @@ allowlist:
   - {address: api.vultrinference.com,           port: 443}
   - {address: router.huggingface.co,             port: 443}
   - {address: ai-gateway.vercel.sh,              port: 443}
+  - {address: api.typesafe.ai,                   port: 443}
   - {address: api.darkbloom.dev,                port: 443}
   - {address: qianfan.baidubce.com,             port: 443}
   - {address: design-api.sourceful.com,         port: 443}
@@ -988,6 +989,7 @@ write_vsock_unit 8083 tokenhub-intl.tencentcloudmaas.com
 write_vsock_unit 8084 queue.fal.run
 write_vsock_unit 8082 router.huggingface.co
 write_vsock_unit 8088 ai-gateway.vercel.sh
+write_vsock_unit 8089 api.typesafe.ai
 write_vsock_unit 8049 llm.chutes.ai
 write_vsock_unit 8050 api.chutes.ai
 write_vsock_unit 8051 api.trustedservices.intel.com

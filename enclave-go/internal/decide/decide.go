@@ -13,6 +13,7 @@ package decide
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -166,12 +167,48 @@ func hasJSON(raw json.RawMessage) bool {
 
 // VerifyError reports that a backend's answers violate the decision contract.
 // It is never shown to the caller verbatim; the gateway retries or fails.
-type VerifyError struct{ Reason string }
+//
+// Reason names the caller's own questions and options, so it is for tests and
+// local debugging only. Kind is one of a fixed set of words and is the ONLY
+// part that may be written to a log: request content never reaches one.
+type VerifyError struct {
+	Kind   string
+	Reason string
+}
 
 func (e *VerifyError) Error() string { return "decision output failed verification: " + e.Reason }
 
+// Violation kinds. Fixed strings: safe to log, enough to tell a model that
+// cannot follow the format from one that answers outside the option set.
+const (
+	KindNotJSON   = "not_json"          // no JSON object, or an unterminated one
+	KindCount     = "answer_count"      // a question unanswered, or an extra answer
+	KindType      = "answer_type"       // wrong answer type, or fields of another type
+	KindNumber    = "not_a_number"      // a word, null, or object where a number belongs
+	KindRange     = "probability_range" // outside [0,1], negative, NaN or infinite
+	KindOptions   = "option_set"        // an option missing, invented, or given twice
+	KindMass      = "probability_mass"  // a distribution that does not sum to ~1
+	KindDerived   = "derived_value"     // choice is not the argmax, or score is not the mean
+	kindUnlabeled = "contract"
+)
+
 func violation(format string, args ...any) *VerifyError {
-	return &VerifyError{Reason: fmt.Sprintf(format, args...)}
+	return &VerifyError{Kind: kindUnlabeled, Reason: fmt.Sprintf(format, args...)}
+}
+
+func (e *VerifyError) as(kind string) *VerifyError {
+	e.Kind = kind
+	return e
+}
+
+// ViolationKind is the loggable category of err, or "" if err is not a
+// verification failure.
+func ViolationKind(err error) string {
+	var failed *VerifyError
+	if errors.As(err, &failed) {
+		return failed.Kind
+	}
+	return ""
 }
 
 // Verify is the second pass. It accepts answers from ANY backend and returns a
@@ -190,50 +227,50 @@ func violation(format string, args ...any) *VerifyError {
 // that disagrees with the recomputation is a violation, not an override.
 func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) {
 	if len(answers) != len(specs) {
-		return nil, violation("expected %d answers, got %d", len(specs), len(answers))
+		return nil, violation("expected %d answers, got %d", len(specs), len(answers)).as(KindCount)
 	}
 	out := make(map[string]Answer, len(specs))
 	for _, spec := range specs {
 		answer, ok := answers[spec.Name]
 		if !ok {
-			return nil, violation("no answer for question %q", spec.Name)
+			return nil, violation("no answer for question %q", spec.Name).as(KindCount)
 		}
 		if answer.Type != spec.Type {
-			return nil, violation("question %q is %s but the answer is %q", spec.Name, spec.Type, answer.Type)
+			return nil, violation("question %q is %s but the answer is %q", spec.Name, spec.Type, answer.Type).as(KindType)
 		}
 		switch spec.Type {
 		case TypeBoolean:
 			if answer.Probability == nil || answer.Choice != nil || answer.Score != nil || answer.Probabilities != nil {
-				return nil, violation("boolean answer %q must carry only a probability", spec.Name)
+				return nil, violation("boolean answer %q must carry only a probability", spec.Name).as(KindType)
 			}
 			p, err := unit(*answer.Probability)
 			if err != nil {
-				return nil, violation("boolean answer %q: %v", spec.Name, err)
+				return nil, violation("boolean answer %q: %v", spec.Name, err).as(kindOf(err))
 			}
 			out[spec.Name] = Answer{Type: TypeBoolean, Probability: &p}
 		case TypeChoice:
 			if answer.Probability != nil || answer.Score != nil {
-				return nil, violation("choice answer %q carries fields of another type", spec.Name)
+				return nil, violation("choice answer %q carries fields of another type", spec.Name).as(KindType)
 			}
 			dist, err := distribution(spec.Options, answer.Probabilities)
 			if err != nil {
-				return nil, violation("choice answer %q: %v", spec.Name, err)
+				return nil, violation("choice answer %q: %v", spec.Name, err).as(kindOf(err))
 			}
 			best := argmax(spec.Options, dist)
 			if answer.Choice == nil {
-				return nil, violation("choice answer %q has no choice", spec.Name)
+				return nil, violation("choice answer %q has no choice", spec.Name).as(KindDerived)
 			}
 			if _, declared := dist[*answer.Choice]; !declared {
-				return nil, violation("choice answer %q picked undeclared option %q", spec.Name, *answer.Choice)
+				return nil, violation("choice answer %q picked undeclared option %q", spec.Name, *answer.Choice).as(KindOptions)
 			}
 			if dist[*answer.Choice] < dist[best]-probabilityTol {
-				return nil, violation("choice answer %q picked %q but %q has higher probability", spec.Name, *answer.Choice, best)
+				return nil, violation("choice answer %q picked %q but %q has higher probability", spec.Name, *answer.Choice, best).as(KindDerived)
 			}
 			choice := *answer.Choice
 			out[spec.Name] = Answer{Type: TypeChoice, Choice: &choice, Probabilities: dist}
 		case TypeScore:
 			if answer.Probability != nil || answer.Choice != nil {
-				return nil, violation("score answer %q carries fields of another type", spec.Name)
+				return nil, violation("score answer %q carries fields of another type", spec.Name).as(KindType)
 			}
 			rungs := make([]string, len(spec.Options))
 			for i := range spec.Options {
@@ -241,18 +278,18 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 			}
 			dist, err := distribution(rungs, answer.Probabilities)
 			if err != nil {
-				return nil, violation("score answer %q: %v", spec.Name, err)
+				return nil, violation("score answer %q: %v", spec.Name, err).as(kindOf(err))
 			}
 			expected := 0.0
 			for i, rung := range rungs {
 				expected += float64(i) * dist[rung]
 			}
 			if answer.Score == nil {
-				return nil, violation("score answer %q has no score", spec.Name)
+				return nil, violation("score answer %q has no score", spec.Name).as(KindDerived)
 			}
 			// The hosted model rounds score to two decimals.
 			if math.IsNaN(*answer.Score) || math.Abs(*answer.Score-expected) > 0.05+massTolerance*float64(len(rungs)-1) {
-				return nil, violation("score answer %q reports %.4f but its distribution implies %.4f", spec.Name, *answer.Score, expected)
+				return nil, violation("score answer %q reports %.4f but its distribution implies %.4f", spec.Name, *answer.Score, expected).as(KindDerived)
 			}
 			score := math.Round(expected*100) / 100
 			out[spec.Name] = Answer{Type: TypeScore, Score: &score, Probabilities: dist}
@@ -263,34 +300,34 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 
 func unit(p float64) (float64, error) {
 	if math.IsNaN(p) || math.IsInf(p, 0) {
-		return 0, fmt.Errorf("probability is not finite")
+		return 0, kinded(KindRange, "probability is not finite")
 	}
 	if p < -probabilityTol || p > 1+probabilityTol {
-		return 0, fmt.Errorf("probability %v is outside [0,1]", p)
+		return 0, kinded(KindRange, "probability %v is outside [0,1]", p)
 	}
 	return math.Min(1, math.Max(0, p)), nil
 }
 
 func distribution(keys []string, raw map[string]float64) (map[string]float64, error) {
 	if len(raw) != len(keys) {
-		return nil, fmt.Errorf("expected probabilities for %d options, got %d", len(keys), len(raw))
+		return nil, kinded(KindOptions, "expected probabilities for %d options, got %d", len(keys), len(raw))
 	}
 	total := 0.0
 	clean := make(map[string]float64, len(keys))
 	for _, key := range keys {
 		value, ok := raw[key]
 		if !ok {
-			return nil, fmt.Errorf("no probability for %q", key)
+			return nil, kinded(KindOptions, "no probability for %q", key)
 		}
 		p, err := unit(value)
 		if err != nil {
-			return nil, fmt.Errorf("option %q: %v", key, err)
+			return nil, kinded(kindOf(err), "option %q: %v", key, err)
 		}
 		clean[key] = p
 		total += p
 	}
 	if math.Abs(total-1) > massTolerance {
-		return nil, fmt.Errorf("probabilities sum to %.4f, not 1", total)
+		return nil, kinded(KindMass, "probabilities sum to %.4f, not 1", total)
 	}
 	for key := range clean {
 		clean[key] /= total

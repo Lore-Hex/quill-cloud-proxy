@@ -225,6 +225,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_TENCENT_SECRET",), "Tencent TokenHub key", True),
     Binding(("QUILL_VULTR_SECRET",), "Vultr inference key", True),
     Binding(("QUILL_HUGGING_FACE_SECRET",), "Hugging Face key", True),
+    Binding(("QUILL_TYPESAFE_SECRET",), "TypeSafe AI key", True),
     Binding(("QUILL_VERCEL_AI_GATEWAY_SECRET",), "Vercel AI Gateway key", True),
     Binding(("QUILL_DARKBLOOM_SECRET",), "Darkbloom key", True),
     Binding(("QUILL_BAIDU_SECRET",), "Baidu Qianfan key", True),

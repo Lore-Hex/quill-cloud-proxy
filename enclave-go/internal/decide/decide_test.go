@@ -137,8 +137,8 @@ func TestVerifyRejectsEveryContractViolation(t *testing.T) {
 		mutate(answers)
 		if _, err := Verify(specs, answers); err == nil {
 			t.Errorf("%s: verified", name)
-		} else if _, ok := err.(*VerifyError); !ok {
-			t.Errorf("%s: want *VerifyError, got %T", name, err)
+		} else if kind := ViolationKind(err); kind == "" || kind == kindUnlabeled {
+			t.Errorf("%s: violation has no loggable kind (%q): %v", name, kind, err)
 		}
 	}
 }
@@ -281,9 +281,44 @@ func TestExtractNativeNeverInventsAnAnswer(t *testing.T) {
 		}
 		if err == nil {
 			t.Errorf("%s: accepted", name)
-		} else if _, ok := err.(*VerifyError); !ok {
-			t.Errorf("%s: want *VerifyError, got %T", name, err)
+			continue
 		}
+		kind := ViolationKind(err)
+		if kind == "" || kind == kindUnlabeled {
+			t.Errorf("%s: violation has no loggable kind (%q): %v", name, kind, err)
+		}
+		// The kind is what reaches a log. It must never carry request content.
+		for _, leak := range []string{"legal", "billing", "q1_o0", "refund", "likely", "high"} {
+			if strings.Contains(kind, leak) {
+				t.Errorf("%s: kind %q carries request content", name, kind)
+			}
+		}
+	}
+}
+
+func TestViolationKindsAreSpecific(t *testing.T) {
+	specs := questions(t, triage)
+	rest := `,"q1":{"q1_o0":1,"q1_o1":0,"q1_o2":0},"q2":{"q2_o0":0,"q2_o1":0,"q2_o2":1}}`
+	cases := map[string]string{
+		`I think they want a refund.`:                                            KindNotJSON,
+		`{"q0":0.9,"q1":{"q1_o0":1,"q1_o1":0,"q1_o2":0}}`:                        KindCount,
+		`{"q0":"likely"` + rest:                                                  KindNumber,
+		`{"q0":1.5` + rest:                                                       KindRange,
+		`{"q0":0.9,"q1":{"q1_o0":0.5,"legal":0.5},"q2":{"q2_o2":1}}`:             KindOptions,
+		`{"q0":0.9,"q1":{"q1_o0":0.9,"q1_o1":0.9,"q1_o2":0.9},"q2":{"q2_o2":1}}`: KindMass,
+		`{"q0":0.9,"q1":[1,0,0],"q2":{"q2_o2":1}}`:                               KindType,
+	}
+	for text, want := range cases {
+		answers, err := ExtractNative(specs, text)
+		if err == nil {
+			_, err = Verify(specs, answers)
+		}
+		if got := ViolationKind(err); got != want {
+			t.Errorf("%s -> kind %q, want %q (%v)", text, got, want, err)
+		}
+	}
+	if ViolationKind(nil) != "" || ViolationKind(fmt.Errorf("other")) != "" {
+		t.Error("a non-verification error reported a kind")
 	}
 }
 
