@@ -387,7 +387,9 @@ var transportErrorClasses = []struct{ marker, class string }{
 func errorTypeChain(err error) string {
 	var names []string
 	for depth := 0; err != nil && depth < 4; depth++ {
-		names = append(names, fmt.Sprintf("%T", err))
+		if _, marker := err.(*settlementAttemptedError); !marker {
+			names = append(names, fmt.Sprintf("%T", err))
+		}
 		err = errors.Unwrap(err)
 	}
 	return strings.Join(names, ">")

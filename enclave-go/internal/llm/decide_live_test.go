@@ -212,6 +212,24 @@ func TestLiveDecideNative(t *testing.T) {
 					t.Fatalf("case %d: provider call failed: %v", index, err)
 				}
 				latencies = append(latencies, int(time.Since(started).Milliseconds()))
+				// The route refunds any native attempt whose stream lacks a
+				// terminal `event: message_stop` line or carries an
+				// `event: error` line (cmd/enclave generationRecorder). If a real
+				// host's stream were shaped differently, EVERY decision on it
+				// would be refunded and fail, so that assumption is checked here
+				// against the real thing.
+				stops, errorEvents := 0, 0
+				for _, line := range strings.Split(out.String(), "\n") {
+					switch strings.TrimRight(line, "\r ") {
+					case "event: message_stop":
+						stops++
+					case "event: error":
+						errorEvents++
+					}
+				}
+				if stops != 1 || errorEvents != 0 {
+					t.Fatalf("case %d: stream has %d message_stop and %d error event lines; the route would refund this attempt", index, stops, errorEvents)
+				}
 				in, o := liveUsage(out.Bytes())
 				inTok, outTok = inTok+in, outTok+o
 				text, err := providerWaveVisibleText(out.Bytes())

@@ -1828,6 +1828,21 @@ func runFusionCallValidatedObserved(
 	return runFusionCallValidatedObservedAttempt(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, observer, streamed, true, 0)
 }
 
+// refundFusionCall closes an authorization that will not be settled. It runs on
+// a context that keeps the request's values and DROPS its cancellation, with
+// its own deadline: a draining gateway cancels in-flight requests, and a refund
+// sent on a cancelled context never leaves the process, which strands the
+// caller's hold until the control plane reaps it. Same shape as the image
+// route's refund and the hosted decide path.
+func refundFusionCall(ctx context.Context, trGateway *trustedrouter.Client, authz *trustedrouter.Authorization, status int, reason string, started time.Time, metadata map[string]any) {
+	if trGateway == nil || !trGateway.Enabled() {
+		return
+	}
+	refundCtx, cancel := finalizeContext(ctx)
+	defer cancel()
+	_ = trGateway.Refund(refundCtx, authz, status, reason, time.Since(started).Seconds(), metadata)
+}
+
 // settlementAttemptedError marks a failure that happened AFTER the provider
 // produced a complete result: settlement was attempted and did not succeed.
 // That is the one thing a caller of this function cannot otherwise tell from
@@ -1869,9 +1884,7 @@ func runFusionCallValidatedObservedAttempt(
 	}
 	anthropicReq, err := adapter.ToAnthropic(req, req.Model)
 	if err != nil {
-		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authz, 400, "fusion_adapter_error", time.Since(requestStarted).Seconds(), req.Metadata)
-		}
+		refundFusionCall(ctx, trGateway, authz, 400, "fusion_adapter_error", requestStarted, req.Metadata)
 		return fusionCallResult{}, err
 	}
 	invokeCtx := ctx
@@ -1906,9 +1919,7 @@ func runFusionCallValidatedObservedAttempt(
 	go invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
 	result, err := adapter.CollectAnthropicTextWithObserver(pr, collectObserver)
 	if guard != nil && guard.Tripped() {
-		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authz, 502, "fusion_overthinking_budget", time.Since(requestStarted).Seconds(), req.Metadata)
-		}
+		refundFusionCall(ctx, trGateway, authz, 502, "fusion_overthinking_budget", requestStarted, req.Metadata)
 		if overthinking.allowRescue {
 			rescueReq := fusionOverthinkingRescueRequest(req, routeType, guard.Reasoning())
 			rescue, rescueErr := runFusionCallValidatedObservedAttempt(ctx, br, rescueReq, trGateway, secretCache, bearer, routeType, idempotencyKey+":rescue", requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, observer, streamed, false, 0)
@@ -1926,26 +1937,20 @@ func runFusionCallValidatedObservedAttempt(
 		return fusionCallResult{}, &fusionModelFallbackError{err: &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth model exceeded unproductive thinking budget", Context: routeType}}
 	}
 	if err != nil {
-		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authz, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
-		}
+		refundFusionCall(ctx, trGateway, authz, 502, "provider_error", requestStarted, req.Metadata)
 		return fusionCallResult{}, fusionProviderErrorForOrchestrationFallback(err, routeType, req, authz, selectedRoute, options)
 	}
 	rawText := result.Text
 	if strings.HasPrefix(routeType, "fusion.") {
 		result.Text = fusionVisibleAnswer(result.Text)
 		if routeType == "fusion.final" && strings.TrimSpace(result.Text) == "" && len(result.ToolCalls) == 0 {
-			if trGateway != nil && trGateway.Enabled() {
-				_ = trGateway.Refund(ctx, authz, 502, "empty_output", time.Since(requestStarted).Seconds(), req.Metadata)
-			}
+			refundFusionCall(ctx, trGateway, authz, 502, "empty_output", requestStarted, req.Metadata)
 			return fusionCallResult{}, &fusionModelFallbackError{err: &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final model returned an empty visible answer", Context: "fusion.final"}}
 		}
 	}
 	if validateBeforeSettle != nil {
 		if err := validateBeforeSettle(result); err != nil {
-			if trGateway != nil && trGateway.Enabled() {
-				_ = trGateway.Refund(ctx, authz, statusFromControlPlaneError(err), "fusion_validation_error", time.Since(requestStarted).Seconds(), req.Metadata)
-			}
+			refundFusionCall(ctx, trGateway, authz, statusFromControlPlaneError(err), "fusion_validation_error", requestStarted, req.Metadata)
 			return fusionCallResult{}, err
 		}
 	}

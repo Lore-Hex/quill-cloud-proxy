@@ -290,6 +290,10 @@ const maxObjectScanStarts = 64
 //     or something else entirely): not an answer;
 //   - a key that is not a question holds an object or array: refused, because
 //     {"q0":0.01,"answer":{"q0":0.99}} says two things. Commentary is a scalar.
+//   - more than maxObjectScanStarts (64) opening braces are examined: refused.
+//     That is part of the rule, not an accident of it: each failed candidate
+//     costs a rescan, and output with sixty-four brace fragments in it is not
+//     an answer worth a quadratic search.
 func answerObject(text string, questions int) (string, error) {
 	var objects []string
 	starts := 0

@@ -239,7 +239,9 @@ func ViolationKind(err error) string {
 //   - choice: `probabilities` keyed by EXACTLY the declared options, each in
 //     [0,1], mass ~1; `choice` is a declared option and is the argmax;
 //   - score: `probabilities` keyed by EXACTLY "0".."n-1", mass ~1; a `score`
-//     is present and lies in [0, n-1].
+//     is present and lies in [0, n-1], give or take float error (1e-6): a
+//     backend summing 0.1 + 0.2 + 0.7 on a two-point scale may report
+//     1.0000000000000002, and that is not off the scale.
 //
 // Mass within massTolerance of 1 is renormalized (models round); anything
 // further off is rejected rather than silently repaired.
@@ -291,7 +293,10 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 			if _, declared := dist[*answer.Choice]; !declared {
 				return nil, violation("choice answer %q picked undeclared option %q", spec.Name, *answer.Choice).as(KindOptions)
 			}
-			if dist[*answer.Choice] < dist[best]-probabilityTol {
+			// Exact. Honest rounding can only turn an order into a tie, never
+			// reverse it, and a tie accepts either option; so there is no
+			// tolerance to justify here, and 0.4999996 does not beat 0.5000004.
+			if dist[*answer.Choice] < dist[best] {
 				return nil, violation("choice answer %q picked %q but %q has higher probability", spec.Name, *answer.Choice, best).as(KindDerived)
 			}
 			choice := *answer.Choice
@@ -423,7 +428,7 @@ func CheckNoDuplicateKeys(raw []byte) error {
 func argmax(keys []string, dist map[string]float64) string {
 	best := keys[0]
 	for _, key := range keys[1:] {
-		if dist[key] > dist[best]+probabilityTol {
+		if dist[key] > dist[best] {
 			best = key
 		}
 	}

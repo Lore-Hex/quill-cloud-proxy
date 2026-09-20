@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/decide"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
@@ -52,6 +54,89 @@ func controlPlaneErrorClass(err error) string {
 		return "deadline"
 	}
 	return "control_plane_unreachable"
+}
+
+// errNoGeneration says a native attempt ended without a generation to judge
+// (see generationRecorder.complete). That is the PROVIDER failing, not the
+// model answering badly, and it is treated as such: refunded, and tried again.
+var errNoGeneration = errors.New("decide: the provider produced no complete generation")
+
+// generationRecorder watches ONE native attempt's provider stream for the two
+// facts the shared collector throws away: whether the stream reached its
+// terminal `message_stop`, and whether it carried an `error` event. The
+// collector starts from finish_reason "stop" and has no case for `error`, so a
+// stream that simply ends -- a provider dying mid-answer -- comes back looking
+// like a finished generation and is SETTLED: the caller pays for a failure.
+//
+// It reads SSE `event:` lines only. Model text cannot forge one: it travels
+// inside a JSON string on a `data:` line, where a newline is the two characters
+// `\n`. One recorder serves one attempt. The provider loop commits to a host
+// at its first byte and never moves to another after that, so within an attempt
+// only one host ever writes here.
+type generationRecorder struct {
+	line     []byte // the current line, up to eventLinePrefix bytes of it
+	overflow bool   // the current line is longer than that
+	sawStop  bool
+	sawError bool
+}
+
+const eventLinePrefix = 64
+
+func (g *generationRecorder) Write(p []byte) {
+	for _, c := range p {
+		if c != '\n' {
+			if len(g.line) < eventLinePrefix {
+				g.line = append(g.line, c)
+			} else {
+				g.overflow = true
+			}
+			continue
+		}
+		if !g.overflow {
+			switch strings.TrimRight(string(g.line), "\r ") {
+			case "event: message_stop":
+				g.sawStop = true
+			case "event: error":
+				g.sawError = true
+			}
+		}
+		g.line, g.overflow = g.line[:0], false
+	}
+}
+
+// complete is the validate-before-settle hook. A model that ran to a finish
+// and answered in the wrong form is NOT rejected here: that attempt is billed,
+// as documented. What is rejected -- and so refunded, and tried again -- is a
+// provider that did not finish: no terminal event, an error event, or a finish
+// with nothing written at all (a filtered or errored completion that a stream
+// translator closed with a synthetic stop).
+func (g *generationRecorder) complete(result adapter.StreamResult) error {
+	if !g.sawStop || g.sawError || strings.TrimSpace(result.Text) == "" {
+		return errNoGeneration
+	}
+	return nil
+}
+
+// recordingClient is the model client for one native attempt, with its output
+// passed by the recorder. Only InvokeStreaming is forwarded, which is all the
+// provider loop calls.
+type recordingClient struct {
+	inner    llm.Client
+	recorder *generationRecorder
+}
+
+func (r recordingClient) InvokeStreaming(ctx context.Context, req *types.OpenAIChatRequest, anthropicReq *types.AnthropicMessagesRequest, out io.Writer, options ...llm.InvokeOptions) error {
+	return r.inner.InvokeStreaming(ctx, req, anthropicReq, recordedWriter{out, r.recorder}, options...)
+}
+
+type recordedWriter struct {
+	out      io.Writer
+	recorder *generationRecorder
+}
+
+func (w recordedWriter) Write(p []byte) (int, error) {
+	w.recorder.Write(p)
+	return w.out.Write(p)
 }
 
 // nativeFailureStatus maps a failed native attempt to the caller's status. Only
@@ -187,7 +272,14 @@ func serveDecide(
 		// model already does, so they are unset too; a malformed value still
 		// counts as set and is refused here rather than silently dropped.
 		effort, reasoningErr := decide.RequestedReasoning(req.Reasoning, req.ReasoningEffort)
-		asksToReason := effort != "" || reasoningErr != nil
+		var malformed *decide.Error
+		if errors.As(reasoningErr, &malformed) {
+			// Name the field that is wrong, as a native model would: the
+			// caller's typo is the same typo on any model.
+			writeOpenAIError(conn, 400, malformed.Message, "invalid_request_error", "bad_request", malformed.Param)
+			return
+		}
+		asksToReason := effort != ""
 		for _, param := range []struct {
 			name string
 			set  bool
@@ -304,6 +396,9 @@ func serveHostedDecide(
 		fmt.Fprintf(os.Stderr, "enclave.decide_host_failed model=%q provider=%q attempt=%d of=%d error_class=%q\n",
 			publicModel, candidate.Provider, index+1, len(candidates), llm.DecideErrorClass(err))
 		if ctx.Err() != nil {
+			// The remaining hosts were never asked, so nobody can say they
+			// would have refused it too.
+			refusedAsInvalid = false
 			break
 		}
 	}
@@ -330,7 +425,9 @@ func serveHostedDecide(
 		// and options, and request content never reaches a log.
 		fmt.Fprintf(os.Stderr, "enclave.decide_verification_failed model=%q backend=hosted provider=%q kind=%q\n",
 			publicModel, served.Provider, decide.ViolationKind(err))
-		writeProviderError(conn, 502, "decision model returned an invalid answer")
+		// The caller is refunded, but the vendor ran and was paid, and asking
+		// again buys the same answer: do not retry.
+		writeSpentProviderError(conn, 502, "decision model returned an invalid answer")
 		return
 	}
 	billedInput := upstream.InputTokens
@@ -425,12 +522,25 @@ func serveNativeDecide(
 			attemptKey = fmt.Sprintf("%s:decide-retry-%d", idempotencyKey, attempt)
 		}
 		attemptReq.IdempotencyKey = attemptKey
-		call, err := runFusionCall(ctx, br, &attemptReq, trGateway, secretCache, bearer, decideRouteType, attemptKey, requestLogID, nil, false)
+		recorder := &generationRecorder{}
+		call, err := runFusionCallValidated(ctx, recordingClient{br, recorder}, &attemptReq, trGateway, secretCache, bearer, decideRouteType, attemptKey, requestLogID, nil, false, recorder.complete, true)
 		if err != nil {
-			// Authorization or provider failure: runFusionCall has already
-			// refunded. Nothing about a retry would differ, so surface it.
 			var afterResult *settlementAttemptedError
-			spent = spent || errors.As(err, &afterResult)
+			var verdict *trustedrouter.ControlPlaneError
+			atSettlement := errors.As(err, &afterResult)
+			// A PROVIDER failing -- an error mid-stream, a stream that just
+			// ends, a finish with nothing written -- has been refunded by the
+			// shared call and nothing has reached the caller, so it gets the
+			// other attempt, which may land on a host that is up. (Failures
+			// before a host's first byte already failed over inside the call.)
+			// A control-plane verdict is different: no credit, a key limit, a
+			// failed settlement. Asking again changes nothing, so it is
+			// surfaced.
+			if !atSettlement && !errors.As(err, &verdict) && attempt < nativeDecisionAttempts {
+				fmt.Fprintf(os.Stderr, "enclave.decide_no_generation model=%q attempt=%d error_class=%q\n", req.Model, attempt, errorClass(err))
+				continue
+			}
+			spent = spent || atSettlement
 			writeDecideFailure(conn, nativeFailureStatus(err), messageFromControlPlaneError(err, "provider error"), err, spent)
 			return
 		}

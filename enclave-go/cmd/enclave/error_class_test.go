@@ -61,6 +61,11 @@ func TestErrorClassKeepsWhatOperatorsReadItFor(t *testing.T) {
 	if got := errorClass(nil); got != "" {
 		t.Errorf("nil error: %q", got)
 	}
+	// The settlement marker says WHEN a failure happened, not where it came
+	// from, so it is not part of the chain.
+	if got := errorClass(&settlementAttemptedError{fmt.Errorf("outer: %w", errors.New("inner"))}); got != "other:*fmt.wrapError>*errors.errorString" {
+		t.Errorf("type chain through the settlement marker = %q", got)
+	}
 	// An error nobody anticipated still says where it came from.
 	if got := errorClass(fmt.Errorf("outer: %w", errors.New("inner"))); got != "other:*fmt.wrapError>*errors.errorString" {
 		t.Errorf("type chain = %q", got)

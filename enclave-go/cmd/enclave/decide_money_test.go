@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/decide"
@@ -28,7 +29,10 @@ type faultyControlPlane struct {
 	authorizeStatus func(call int) int
 	settleStatus    func(call int) int
 	hosted          bool
-	log             controlPlaneLog
+	// nativeCandidates, when set, is the route_candidates JSON array a native
+	// authorization returns, so a test can exercise failover between hosts.
+	nativeCandidates string
+	log              controlPlaneLog
 }
 
 func (f *faultyControlPlane) serve(t *testing.T) *trustedrouter.Client {
@@ -62,8 +66,12 @@ func (f *faultyControlPlane) serve(t *testing.T) *trustedrouter.Client {
 				  {"endpoint_id":"typesafe-ai/jev@vercel-ai-gateway/prepaid","model":"typesafe-ai/jev","upstream_model":"typesafe-ai/jev","provider":"vercel-ai-gateway","usage_type":"Credits"}]}}`)
 				return
 			}
-			_, _ = fmt.Fprintf(w, `{"data":{"authorization_id":"auth_%d","workspace_id":"ws_1","api_key_hash":"key_1","model":%q,"endpoint_id":"e@p/prepaid","provider":"cerebras","upstream_model":"gpt-oss-120b","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`,
-				len(f.log.authorize), body["model"])
+			candidates := f.nativeCandidates
+			if candidates == "" {
+				candidates = "[]"
+			}
+			_, _ = fmt.Fprintf(w, `{"data":{"authorization_id":"auth_%d","workspace_id":"ws_1","api_key_hash":"key_1","model":%q,"endpoint_id":"e@p/prepaid","provider":"cerebras","upstream_model":"gpt-oss-120b","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":%s}}`,
+				len(f.log.authorize), body["model"], candidates)
 		case "/internal/gateway/settle":
 			f.log.settle = append(f.log.settle, body)
 			if f.settleStatus != nil && fail(f.settleStatus(len(f.log.settle))) {
@@ -295,8 +303,9 @@ func TestNativeDecideNeverRelaysAProvidersAuthFailure(t *testing.T) {
 		if status != 502 {
 			t.Fatalf("vendor %d reached the caller as %d: %s", vendorStatus, status, raw)
 		}
-		if plane.log.refund != 1 {
-			t.Fatalf("vendor %d: refund=%d, want 1", vendorStatus, plane.log.refund)
+		// Both attempts fail the same way; each authorization is refunded.
+		if len(plane.log.authorize) != nativeDecisionAttempts || plane.log.refund != len(plane.log.authorize) || len(plane.log.settle) != 0 {
+			t.Fatalf("vendor %d: authorize=%d refund=%d settle=%d, want every authorization refunded", vendorStatus, len(plane.log.authorize), plane.log.refund, len(plane.log.settle))
 		}
 	}
 	// The control plane's own 401 IS about the caller's key, and is relayed.
@@ -324,14 +333,143 @@ data: {"type":"message_stop"}
 	return err
 }
 
-func TestNativeDecideCountsAModelThatRanAndSaidNothing(t *testing.T) {
-	// No text delta ever arrives, so an observer-based "did it run?" says no;
-	// then settlement fails and the 503 went out inviting a retry of a call
-	// the provider had already been paid for.
-	plane := &faultyControlPlane{settleStatus: func(int) int { return 503 }}
+func TestNativeDecideRefundsAProviderThatProducedNoGeneration(t *testing.T) {
+	// A finish with no text at all is the provider failing (a filtered or
+	// errored completion closed with a synthetic stop), not the model answering
+	// badly. It used to be SETTLED: billed, retried, billed again, and then the
+	// caller was told not to retry. Now each such attempt is refunded.
+	plane := &faultyControlPlane{}
 	status, raw := rawDecide(context.Background(), silentLLM{}, plane.serve(t), nativeBody)
-	if status < 500 || !saysDoNotRetry(raw) {
+	if status != 502 || saysDoNotRetry(raw) {
+		t.Fatalf("status %d, do-not-retry=%v: nothing was generated or billed\n%s", status, saysDoNotRetry(raw), raw)
+	}
+	if len(plane.log.authorize) != 2 || plane.log.refund != 2 || len(plane.log.settle) != 0 {
+		t.Fatalf("authorize=%d refund=%d settle=%d, want 2/2/0", len(plane.log.authorize), plane.log.refund, len(plane.log.settle))
+	}
+}
+
+// truncatedThenGood dies mid-answer on its first call (a text delta, then the
+// stream simply ends: no stop reason, no message_stop) and answers on the next.
+type truncatedThenGood struct{ calls int }
+
+func (b *truncatedThenGood) InvokeStreaming(_ context.Context, _ *types.OpenAIChatRequest, _ *types.AnthropicMessagesRequest, out io.Writer, _ ...llm.InvokeOptions) error {
+	b.calls++
+	if b.calls == 1 {
+		_, err := fmt.Fprint(out, `event: message_start
+data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":400,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{\"q0\":"}}
+
+event: error
+data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}
+
+`)
+		return err
+	}
+	return (&usageScriptedLLM{replies: []string{goodNative}, inputTokens: 400}).InvokeStreaming(context.Background(), nil, nil, out)
+}
+
+func TestNativeDecideRefundsAStreamThatDiedMidAnswerAndTriesAgain(t *testing.T) {
+	plane := &faultyControlPlane{}
+	backend := &truncatedThenGood{}
+	status, raw := rawDecide(context.Background(), backend, plane.serve(t), nativeBody)
+	if status != 200 {
+		t.Fatalf("status %d\n%s", status, raw)
+	}
+	// The dead stream is refunded, never settled; only the answer is billed.
+	if backend.calls != 2 || plane.log.refund != 1 || len(plane.log.settle) != 1 {
+		t.Fatalf("calls=%d refund=%d settle=%d, want 2/1/1", backend.calls, plane.log.refund, len(plane.log.settle))
+	}
+	var payload struct {
+		Usage decideUsage `json:"usage"`
+	}
+	_ = json.Unmarshal([]byte(strings.SplitN(raw, "\r\n\r\n", 2)[1]), &payload)
+	if payload.Usage.InputTokens != 400 {
+		t.Fatalf("usage counts the refunded attempt: %+v", payload.Usage)
+	}
+}
+
+// cancelledMidCall cancels the request and fails the way a provider client
+// does when its context goes away.
+type cancelledMidCall struct{ cancel context.CancelFunc }
+
+func (c cancelledMidCall) InvokeStreaming(ctx context.Context, _ *types.OpenAIChatRequest, _ *types.AnthropicMessagesRequest, _ io.Writer, _ ...llm.InvokeOptions) error {
+	c.cancel()
+	return context.Canceled
+}
+
+func TestNativeDecideRefundsAfterTheRequestWasCancelled(t *testing.T) {
+	// The shared call refunded on the request's own context, so once that was
+	// cancelled the refund never left: a hold stranded until it is reaped.
+	plane := &faultyControlPlane{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rawDecide(ctx, cancelledMidCall{cancel}, plane.serve(t), nativeBody)
+	if len(plane.log.authorize) != 1 || plane.log.refund != 1 || len(plane.log.settle) != 0 {
+		t.Fatalf("authorize=%d refund=%d settle=%d, want 1/1/0", len(plane.log.authorize), plane.log.refund, len(plane.log.settle))
+	}
+}
+
+func TestHostedDecideAnInvalidAnswerTellsTheClientNotToRetry(t *testing.T) {
+	// The vendor ran and was paid; asking again buys the same invalid answer.
+	p, choice := 0.97, "billing"
+	invalid := map[string]decide.Answer{
+		"refund": {Type: decide.TypeBoolean, Probability: &p},
+		"route":  {Type: decide.TypeChoice, Choice: &choice, Probabilities: map[string]float64{"billing": 0.2, "shipping": 0.2}},
+	}
+	plane := &faultyControlPlane{hosted: true}
+	status, raw := rawDecide(context.Background(), &cancellingDecider{answers: invalid, tokens: 61}, plane.serve(t), fmt.Sprintf(hostedBody, ""))
+	if status != 502 || !saysDoNotRetry(raw) {
 		t.Fatalf("status %d, do-not-retry=%v\n%s", status, saysDoNotRetry(raw), raw)
+	}
+	if plane.log.refund != 1 || len(plane.log.settle) != 0 {
+		t.Fatalf("refund=%d settle=%d, want the caller refunded", plane.log.refund, len(plane.log.settle))
+	}
+}
+
+// refusesThenCancels is the first host refusing the request as the gateway
+// starts to drain: the second host is never asked.
+type refusesThenCancels struct {
+	cancel context.CancelFunc
+	called int
+}
+
+func (r *refusesThenCancels) InvokeStreaming(context.Context, *types.OpenAIChatRequest, *types.AnthropicMessagesRequest, io.Writer, ...llm.InvokeOptions) error {
+	panic("the hosted decision path must never call the chat client")
+}
+
+func (r *refusesThenCancels) InvokeDecide(context.Context, *llm.DecideRequest, ...llm.InvokeOptions) (*llm.DecideResponse, error) {
+	r.called++
+	r.cancel()
+	return nil, &llm.DecideError{Provider: "typesafe", Class: llm.DecideErrHTTP, Status: 422}
+}
+
+func TestHostedDecideAnInterruptedFailoverIsNotTheCallersFault(t *testing.T) {
+	plane := &faultyControlPlane{hosted: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	backend := &refusesThenCancels{cancel: cancel}
+	status, raw := rawDecide(ctx, backend, plane.serve(t), fmt.Sprintf(hostedBody, ""))
+	// One host said 422 and the other was never asked. "Every host refused it"
+	// is not something anyone knows, and a 400 would make a drain permanent.
+	if backend.called != 1 || status != 502 {
+		t.Fatalf("hosts asked=%d status=%d, want 1 and 502\n%s", backend.called, status, raw)
+	}
+	if plane.log.refund != 1 {
+		t.Fatalf("refund=%d, want 1", plane.log.refund)
+	}
+}
+
+func TestHostedDecideNamesTheMalformedReasoningField(t *testing.T) {
+	plane := &faultyControlPlane{hosted: true}
+	body := fmt.Sprintf(hostedBody, `"reasoning":{"enabled":false,"zeta":1,"alpha":1},`)
+	status, raw := rawDecide(context.Background(), &cancellingDecider{answers: hostedAnswers()}, plane.serve(t), body)
+	if status != 400 || !strings.Contains(raw, `"param":"reasoning.alpha"`) {
+		t.Fatalf("status %d: %s", status, raw)
+	}
+	if len(plane.log.authorize) != 0 {
+		t.Fatal("a malformed request was authorized")
 	}
 }
 
@@ -404,8 +542,8 @@ func TestNativeDecideInvitesARetryWhenNoResultWasEverProduced(t *testing.T) {
 	if status != 502 || saysDoNotRetry(raw) {
 		t.Fatalf("status %d, do-not-retry=%v: nothing was produced, a retry is right\n%s", status, saysDoNotRetry(raw), raw)
 	}
-	if plane.log.refund != 1 || len(plane.log.settle) != 0 {
-		t.Fatalf("refund=%d settle=%d, want 1/0", plane.log.refund, len(plane.log.settle))
+	if len(plane.log.authorize) != nativeDecisionAttempts || plane.log.refund != len(plane.log.authorize) || len(plane.log.settle) != 0 {
+		t.Fatalf("authorize=%d refund=%d settle=%d, want every authorization refunded", len(plane.log.authorize), plane.log.refund, len(plane.log.settle))
 	}
 }
 
@@ -458,5 +596,80 @@ func TestHostedDecideARequestEveryHostRefusesIsTheCallers400(t *testing.T) {
 		if saysDoNotRetry(raw) {
 			t.Errorf("%s: no answer was produced, so nothing says do-not-retry", label)
 		}
+	}
+}
+
+// errorsMidStreamThenAnswers writes an error event and FAILS on its first call,
+// as a provider client does when the host dies mid-answer, and answers on the
+// next call.
+type errorsMidStreamThenAnswers struct{ calls int }
+
+func (b *errorsMidStreamThenAnswers) InvokeStreaming(_ context.Context, _ *types.OpenAIChatRequest, _ *types.AnthropicMessagesRequest, out io.Writer, _ ...llm.InvokeOptions) error {
+	b.calls++
+	if b.calls == 1 {
+		_, _ = io.WriteString(out, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\n\n")
+		return fmt.Errorf("llm/upstream: http 529: overloaded")
+	}
+	return (&usageScriptedLLM{replies: []string{goodNative}, inputTokens: 400}).InvokeStreaming(context.Background(), nil, nil, out)
+}
+
+func TestNativeDecideGivesAFailedProviderTheOtherAttempt(t *testing.T) {
+	// The provider loop commits to a host at its first byte, so a host that dies
+	// AFTER that cannot fail over inside the attempt. It is refunded, nothing
+	// has reached the caller, and the second attempt is the failover. It used to
+	// end the request: only a stream that ended QUIETLY got the second attempt.
+	plane := &faultyControlPlane{}
+	backend := &errorsMidStreamThenAnswers{}
+	status, raw := rawDecide(context.Background(), backend, plane.serve(t), nativeBody)
+	if status != 200 || backend.calls != 2 {
+		t.Fatalf("status %d after %d provider calls\n%s", status, backend.calls, raw)
+	}
+	if len(plane.log.authorize) != 2 || plane.log.refund != 1 || len(plane.log.settle) != 1 {
+		t.Fatalf("authorize=%d refund=%d settle=%d, want 2/1/1", len(plane.log.authorize), plane.log.refund, len(plane.log.settle))
+	}
+	// A control-plane verdict is NOT retried: asking again changes nothing.
+	denied := &faultyControlPlane{authorizeStatus: func(int) int { return 402 }}
+	status, _ = rawDecide(context.Background(), &errorsMidStreamThenAnswers{}, denied.serve(t), nativeBody)
+	if status != 402 || len(denied.log.authorize) != 1 {
+		t.Fatalf("status %d after %d authorizations, want 402 after exactly one", status, len(denied.log.authorize))
+	}
+}
+
+func TestNativeDecideNeverRegeneratesAfterSettlementWasAttempted(t *testing.T) {
+	// Settlement fails at the TRANSPORT level: the connection drops, so there is
+	// no control-plane verdict to read, and the generation may well have been
+	// recorded. That must not look like "a provider failure, try again": a
+	// second generation would be paid for on top of the first.
+	// Atomic: the settle handler hijacks its connection and never responds, so
+	// nothing orders its writes before the reads below.
+	var authorizations, settles atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch {
+		case strings.HasSuffix(request.URL.Path, "/authorize"):
+			call := authorizations.Add(1)
+			_, _ = fmt.Fprintf(w, `{"data":{"authorization_id":"auth_%d","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-oss-20b","endpoint_id":"e@p/prepaid","provider":"deepinfra","upstream_model":"gpt-oss-20b","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`, call)
+		case strings.HasSuffix(request.URL.Path, "/settle"):
+			settles.Add(1)
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("test server cannot hijack")
+			}
+			conn, _, _ := hijacker.Hijack()
+			_ = conn.Close() // no response at all
+		default:
+			_, _ = fmt.Fprint(w, `{"data":{"refunded":true}}`)
+		}
+	}))
+	t.Cleanup(server.Close)
+	backend := &usageScriptedLLM{replies: []string{goodNative, goodNative}, inputTokens: 400}
+	status, raw := rawDecide(context.Background(), backend, trustedrouter.New(server.URL, "internal-token", server.Client()), nativeBody)
+	if backend.calls != 1 || authorizations.Load() != 1 {
+		t.Fatalf("provider calls=%d authorizations=%d, want exactly one of each: the answer was generated once", backend.calls, authorizations.Load())
+	}
+	if status < 500 || !saysDoNotRetry(raw) {
+		t.Fatalf("status %d, do-not-retry=%v\n%s", status, saysDoNotRetry(raw), raw)
+	}
+	if settles.Load() == 0 {
+		t.Fatal("fixture: settlement was never attempted")
 	}
 }

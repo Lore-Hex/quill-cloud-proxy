@@ -425,3 +425,26 @@ func TestCallerReasoningBecomesOneValidatedEffortWord(t *testing.T) {
 		}
 	}
 }
+
+func TestVerifyChoiceIsExactlyAnArgmax(t *testing.T) {
+	specs := questions(t, `{"pick":{"type":"choice","instructions":"Pick.","criteria":{"a":"A","b":"B"}}}`)
+	verify := func(choice string, a, b float64) error {
+		_, err := Verify(specs, map[string]Answer{"pick": {Type: TypeChoice, Choice: &choice, Probabilities: map[string]float64{"a": a, "b": b}}})
+		return err
+	}
+	// A float tolerance here let "a" stand as the choice while "b" was larger.
+	wantKind(t, "a chosen, b larger by 8e-7", verify("a", 0.4999996, 0.5000004), KindDerived)
+	if err := verify("b", 0.4999996, 0.5000004); err != nil {
+		t.Fatalf("the argmax itself: %v", err)
+	}
+	// Rounding can only turn an order into a tie, and a tie accepts either.
+	for _, choice := range []string{"a", "b"} {
+		if err := verify(choice, 0.5, 0.5); err != nil {
+			t.Fatalf("a tie, choosing %s: %v", choice, err)
+		}
+	}
+	// ...including a tie that is only exact after normalizing a rounded mass.
+	if err := verify("a", 0.49, 0.49); err != nil {
+		t.Fatalf("a tie at mass 0.98: %v", err)
+	}
+}
