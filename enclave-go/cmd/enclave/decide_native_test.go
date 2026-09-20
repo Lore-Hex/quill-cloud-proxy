@@ -403,3 +403,120 @@ func TestHostedDecideRefundsWhenEveryHostIsDown(t *testing.T) {
 		t.Fatalf("called=%v settle=%d refund=%d; nothing was delivered, so refund once and never settle", backend.called, len(log.settle), log.refund)
 	}
 }
+
+func TestEveryNamedDecisionModelIsDrivenOnItsOwnHostAndAnswersUnderItsName(t *testing.T) {
+	// The control plane RESOLVES a name: authorize answers with the concrete chat
+	// model, its host and its upstream id. The fake used elsewhere echoes the
+	// requested model back, so against it "the response keeps the name" could
+	// not fail -- returning the authorized model would have passed too.
+	type resolved struct{ hosts, model, provider, upstream string }
+	for name, want := range map[string]resolved{
+		decide.TrevModelID: {"cerebras,sambanova,fireworks,together", "openai/gpt-oss-120b", "cerebras", "gpt-oss-120b"},
+		decide.GevModelID:  {"google-ai-studio", "google/gemini-3.1-flash-lite", "google-ai-studio", "gemini-3.1-flash-lite"},
+		decide.DevModelID:  {"deepinfra", "deepseek/deepseek-v4.1-flash", "deepinfra", "deepseek-ai/DeepSeek-V4.1-Flash"},
+		decide.OevModelID:  {"deepinfra", "openai/gpt-oss-20b", "deepinfra", "openai/gpt-oss-20b"},
+		decide.MevModelID:  {"deepinfra", "google/gemma-4-e4b-it", "deepinfra", "google/gemma-4-E4B-it"},
+	} {
+		var authorized, settled []map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			raw, _ := io.ReadAll(request.Body)
+			var body map[string]any
+			_ = json.Unmarshal(raw, &body)
+			switch request.URL.Path {
+			case "/internal/gateway/authorize":
+				authorized = append(authorized, body)
+				_, _ = fmt.Fprintf(w, `{"data":{"authorization_id":"auth_1","workspace_id":"ws_1","api_key_hash":"key_1","model":%q,"response_model":%q,"hide_public_metadata":true,"endpoint_id":%q,"provider":%q,"upstream_model":%q,"usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`,
+					want.model, name, want.model+"@"+want.provider+"/prepaid", want.provider, want.upstream)
+			case "/internal/gateway/settle":
+				settled = append(settled, body)
+				// Settlement answers with the concrete model and host, as the
+				// control plane does. Placeholders here would let a response
+				// that copied them out pass the "reveals nothing" check below.
+				_, _ = fmt.Fprintf(w, `{"data":{"settled":true,"generation_id":"gen_1","cost_microdollars":360,"model":%q,"provider":%q,"region":"us-central1"}}`, want.model, want.provider)
+			default:
+				t.Fatalf("%s: unexpected control-plane path %s", name, request.URL.Path)
+			}
+		}))
+		gateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+		backend := &scriptedLLM{replies: []string{goodNative}}
+		body := fmt.Sprintf(`{"model":%q,"state":%q,"questions":{
+		  "refund":{"type":"boolean","instructions":"Is a refund requested?"},
+		  "route":{"type":"choice","instructions":"Route it.","criteria":{"billing":"charges","shipping":"delivery"}}}}`, name, privateState)
+		var out bytes.Buffer
+		serveDecide(context.Background(), &out, backend, []byte(body), gateway, true, "sk-tr-test-bearer", nil, "idem-n", requestAttributionHeaders{}, "log-n")
+		server.Close()
+		raw := out.String()
+		if !strings.HasPrefix(raw, "HTTP/1.1 200") {
+			t.Fatalf("%s: %s", name, raw)
+		}
+		var payload map[string]any
+		_ = json.Unmarshal([]byte(strings.SplitN(raw, "\r\n\r\n", 2)[1]), &payload)
+
+		// What the caller sees: the name, and nothing of what is behind it.
+		if payload["model"] != name {
+			t.Errorf("%s: response model = %v", name, payload["model"])
+		}
+		for _, hidden := range []string{want.model, want.upstream, want.provider} {
+			if strings.Contains(raw, hidden) {
+				t.Errorf("%s: the response reveals %q:\n%s", name, hidden, raw)
+			}
+		}
+		// What the control plane is asked: the NAME (resolving it is its job), on
+		// exactly the name's hosts, in order.
+		if len(authorized) != 1 || authorized[0]["model"] != name || authorized[0]["route_type"] != decideRouteType {
+			t.Fatalf("%s: authorized as %v", name, authorized)
+		}
+		// Read off the authorize BODY: the control plane filters candidates by
+		// what arrives there, and this fake routes to the right host whatever it
+		// is sent, so the chat request alone would not show a wrong list.
+		preferences, _ := authorized[0]["provider"].(map[string]any)
+		for _, field := range []string{"only", "order"} {
+			if got := joinedStrings(preferences[field]); got != want.hosts {
+				t.Errorf("%s: authorize provider.%s = %q, want exactly %q in order", name, field, got, want.hosts)
+			}
+		}
+		sent := backend.requests[0]
+		// What the PROVIDER is asked: the concrete model the control plane
+		// resolved, on its host, under its upstream id. Provider-specific request
+		// shaping keys on these, so they must not be the name.
+		if sent.Model != want.model {
+			t.Errorf("%s: provider request model = %q, want the resolved %q", name, sent.Model, want.model)
+		}
+		if len(backend.options) != 1 || len(backend.options[0]) == 0 {
+			t.Fatalf("%s: no invoke options recorded", name)
+		}
+		if option := backend.options[0][0]; option.Provider != want.provider || option.UpstreamModel != want.upstream {
+			t.Errorf("%s: invoked %s/%s, want %s/%s", name, option.Provider, option.UpstreamModel, want.provider, want.upstream)
+		}
+		// What is SETTLED: this authorization, against the concrete model and
+		// endpoint that served it (the name has no price of its own), for the
+		// tokens the provider reported.
+		if len(settled) != 1 {
+			t.Fatalf("%s: settle=%d", name, len(settled))
+		}
+		for field, expected := range map[string]any{
+			"authorization_id":     "auth_1",
+			"selected_model":       want.model,
+			"selected_endpoint":    want.model + "@" + want.provider + "/prepaid",
+			"actual_input_tokens":  float64(400),
+			"actual_output_tokens": float64(60),
+			"route_type":           decideRouteType,
+			"status":               "success",
+		} {
+			if settled[0][field] != expected {
+				t.Errorf("%s: settle %s = %v, want %v", name, field, settled[0][field], expected)
+			}
+		}
+	}
+}
+
+// joinedStrings renders a decoded JSON array of strings as "a,b,c".
+func joinedStrings(value any) string {
+	items, _ := value.([]any)
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		text, _ := item.(string)
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, ",")
+}

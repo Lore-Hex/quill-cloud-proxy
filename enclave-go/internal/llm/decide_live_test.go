@@ -80,6 +80,11 @@ var liveUpstream = map[string]string{
 	"google/gemma-4-e4b-it":        "google/gemma-4-E4B-it",
 	"deepseek/deepseek-v4.1-flash": "deepseek-ai/DeepSeek-V4.1-Flash",
 	decide.TrevModelID:             "gpt-oss-120b",
+	// A name calls the same upstream as the chat model behind it.
+	decide.GevModelID: "gemini-3.1-flash-lite",
+	decide.DevModelID: "deepseek-ai/DeepSeek-V4.1-Flash",
+	decide.OevModelID: "openai/gpt-oss-20b",
+	decide.MevModelID: "google/gemma-4-E4B-it",
 }
 
 func liveCandidates(t *testing.T) []liveCandidate {

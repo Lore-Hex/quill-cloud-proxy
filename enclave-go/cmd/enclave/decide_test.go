@@ -169,6 +169,20 @@ func TestNativeModelListIsPinned(t *testing.T) {
 		"openai/gpt-oss-20b":           "deepinfra",
 		"google/gemma-4-e4b-it":        "deepinfra",
 		"deepseek/deepseek-v4.1-flash": "deepinfra",
+		// Each name is driven exactly as the chat model behind it.
+		decide.GevModelID: "google-ai-studio",
+		decide.DevModelID: "deepinfra",
+		decide.OevModelID: "deepinfra",
+		decide.MevModelID: "deepinfra",
+	}
+	for name, behind := range map[string]string{
+		decide.GevModelID: "google/gemini-3.1-flash-lite", decide.DevModelID: "deepseek/deepseek-v4.1-flash",
+		decide.OevModelID: "openai/gpt-oss-20b", decide.MevModelID: "google/gemma-4-e4b-it",
+	} {
+		named, plain := decide.NativeModels[name], decide.NativeModels[behind]
+		if named.ReasoningEffort != plain.ReasoningEffort || named.Format != plain.Format || named.ExtraTokens != plain.ExtraTokens || named.Temperature != plain.Temperature {
+			t.Errorf("%s is not driven like %s: %+v vs %+v", name, behind, named, plain)
+		}
 	}
 	if len(decide.NativeModels) != len(want) {
 		t.Fatalf("native models = %d, want %d", len(decide.NativeModels), len(want))

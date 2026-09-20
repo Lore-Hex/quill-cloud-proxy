@@ -43,10 +43,19 @@ var HostedModels = map[string]bool{
 	"typesafe-ai/jev": true,
 }
 
-// TrevModelID is TrustedRouter's own named decision model: the fastest tuned
-// configuration measured, presented under one stable name so callers do not
-// have to track which open model and host currently wins.
-const TrevModelID = "trustedrouter/trev-1.0"
+// TrustedRouter's named decision models: one short, stable name per tuned
+// configuration, so a caller picks "the fast one" or "the cheap one" without
+// tracking which open model and host currently wins. They rhyme with Jev, the
+// hosted model they sit beside; the first letter is the family.
+//
+// TrevModelID is the flagship: the fastest tuned configuration measured.
+const (
+	TrevModelID = "trustedrouter/trev-1.0" // gpt-oss-120b, on the chain below
+	GevModelID  = "trustedrouter/gev-1.0"  // Gemini 3.1 Flash Lite
+	DevModelID  = "trustedrouter/dev-1.0"  // DeepSeek V4.1 Flash
+	OevModelID  = "trustedrouter/oev-1.0"  // gpt-oss-20b
+	MevModelID  = "trustedrouter/mev-1.0"  // Gemma 4 E4B, the cheapest
+)
 
 // TrevProviders is trev-1.0's host chain, fastest first, with the measured
 // median for one decision. Slower hosts of the same model were left out
@@ -88,14 +97,26 @@ var TrevProviders = []string{
 // as the DeepSeek host (5x cheaper, but a 75-second worst case; a caller who
 // wants it can ask for it with `provider`).
 //
+// A NAME and the chat model behind it are driven identically: the name is a
+// convenience, and the control plane resolves it to the concrete model and
+// enforces its host. One definition serves both, so they cannot drift apart.
+// (NativeChatRequest copies the host list for every request it builds.)
+//
 // The ids here must match NATIVE_DECISION_MODEL_PROVIDERS in the control
 // plane's catalog_data.py, which is what /v1/models advertises.
+var (
+	geminiFlashLite = NativeModel{Providers: []string{"google-ai-studio"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatSchema}
+	deepSeekFlash   = NativeModel{Providers: []string{"deepinfra"}, Temperature: &zeroTemperature, Format: FormatPrompt}
+	gptOSS20B       = NativeModel{Providers: []string{"deepinfra"}, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatSchema}
+	gemma4E4B       = NativeModel{Providers: []string{"deepinfra"}, Temperature: &zeroTemperature, Format: FormatPrompt}
+)
+
 var NativeModels = map[string]NativeModel{
-	TrevModelID:                    {Providers: TrevProviders, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatPrompt},
-	"google/gemini-3.1-flash-lite": {Providers: []string{"google-ai-studio"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatSchema},
-	"openai/gpt-oss-20b":           {Providers: []string{"deepinfra"}, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatSchema},
-	"google/gemma-4-e4b-it":        {Providers: []string{"deepinfra"}, Temperature: &zeroTemperature, Format: FormatPrompt},
-	"deepseek/deepseek-v4.1-flash": {Providers: []string{"deepinfra"}, Temperature: &zeroTemperature, Format: FormatPrompt},
+	TrevModelID: {Providers: TrevProviders, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatPrompt},
+	GevModelID:  geminiFlashLite, "google/gemini-3.1-flash-lite": geminiFlashLite,
+	DevModelID: deepSeekFlash, "deepseek/deepseek-v4.1-flash": deepSeekFlash,
+	OevModelID: gptOSS20B, "openai/gpt-oss-20b": gptOSS20B,
+	MevModelID: gemma4E4B, "google/gemma-4-e4b-it": gemma4E4B,
 }
 
 // GenericNativeModel drives ANY other chat model: nothing is assumed about the
