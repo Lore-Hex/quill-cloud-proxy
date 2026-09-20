@@ -28,6 +28,12 @@ const (
 	TypeBoolean = "boolean"
 	TypeChoice  = "choice"
 	TypeScore   = "score"
+	// TypeNoul is TypeSafe's own name for the yes/no question, and the one
+	// OpenRouter's Decisions API uses. It is a SPELLING of boolean: accepted on
+	// the way in, and used on the way out for the questions asked with it (see
+	// CanonicalQuestions and InAskedSpelling). Nothing between -- prompts, host
+	// requests, verification -- ever sees it.
+	TypeNoul = "noul"
 
 	MaxQuestions = 64
 	// The hosted model's documented ceilings, applied to EVERY model so that a
@@ -54,9 +60,12 @@ type Question struct {
 }
 
 // Answer is one typed answer. Exactly the fields for its Type are populated.
+// Noul is set only by InAskedSpelling, on an answer about to leave; an answer
+// that ARRIVES with it is refused by Verify like any other foreign field.
 type Answer struct {
 	Type          string             `json:"type"`
 	Probability   *float64           `json:"probability,omitempty"`
+	Noul          *float64           `json:"noul,omitempty"`
 	Choice        *string            `json:"choice,omitempty"`
 	Score         *float64           `json:"score,omitempty"`
 	Probabilities map[string]float64 `json:"probabilities,omitempty"`
@@ -84,6 +93,50 @@ type Spec struct {
 	// or score level labels in the caller's order.
 	Options      []string
 	Descriptions map[string]string // choice option / boolean side -> description
+}
+
+// CanonicalQuestions returns the questions with every "noul" spelled "boolean",
+// and the names of the ones that were asked as "noul" so they can be answered
+// the same way. The caller's map is not modified.
+func CanonicalQuestions(questions map[string]Question) (map[string]Question, map[string]bool) {
+	var asked map[string]bool
+	for name, question := range questions {
+		if question.Type == TypeNoul {
+			if asked == nil {
+				asked = make(map[string]bool)
+			}
+			asked[name] = true
+		}
+	}
+	if asked == nil {
+		return questions, nil
+	}
+	canonical := make(map[string]Question, len(questions))
+	for name, question := range questions {
+		if asked[name] {
+			question.Type = TypeBoolean
+		}
+		canonical[name] = question
+	}
+	return canonical, asked
+}
+
+// InAskedSpelling re-spells VERIFIED answers for the questions asked as "noul":
+// {"type":"noul","noul":p}, exactly the shape TypeSafe and OpenRouter return,
+// so a client written against either reads this response unchanged. Answers to
+// questions asked as "boolean" are untouched.
+func InAskedSpelling(answers map[string]Answer, askedNoul map[string]bool) map[string]Answer {
+	if len(askedNoul) == 0 {
+		return answers
+	}
+	out := make(map[string]Answer, len(answers))
+	for name, answer := range answers {
+		if askedNoul[name] && answer.Type == TypeBoolean {
+			answer = Answer{Type: TypeNoul, Noul: answer.Probability}
+		}
+		out[name] = answer
+	}
+	return out
 }
 
 // Parse validates the questions object and returns specs in a stable order.
@@ -270,7 +323,7 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 		}
 		switch spec.Type {
 		case TypeBoolean:
-			if answer.Probability == nil || answer.Choice != nil || answer.Score != nil || answer.Probabilities != nil {
+			if answer.Probability == nil || answer.Noul != nil || answer.Choice != nil || answer.Score != nil || answer.Probabilities != nil {
 				return nil, violation("boolean answer %q must carry only a probability", spec.Name).as(KindType)
 			}
 			p, err := unit(*answer.Probability)
@@ -279,7 +332,7 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 			}
 			out[spec.Name] = Answer{Type: TypeBoolean, Probability: &p}
 		case TypeChoice:
-			if answer.Probability != nil || answer.Score != nil {
+			if answer.Probability != nil || answer.Noul != nil || answer.Score != nil {
 				return nil, violation("choice answer %q carries fields of another type", spec.Name).as(KindType)
 			}
 			dist, err := distribution(spec.Options, answer.Probabilities)
@@ -302,7 +355,7 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 			choice := *answer.Choice
 			out[spec.Name] = Answer{Type: TypeChoice, Choice: &choice, Probabilities: dist}
 		case TypeScore:
-			if answer.Probability != nil || answer.Choice != nil {
+			if answer.Probability != nil || answer.Noul != nil || answer.Choice != nil {
 				return nil, violation("score answer %q carries fields of another type", spec.Name).as(KindType)
 			}
 			rungs := make([]string, len(spec.Options))

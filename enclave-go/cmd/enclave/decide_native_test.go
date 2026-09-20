@@ -411,11 +411,14 @@ func TestEveryNamedDecisionModelIsDrivenOnItsOwnHostAndAnswersUnderItsName(t *te
 	// not fail -- returning the authorized model would have passed too.
 	type resolved struct{ hosts, model, provider, upstream string }
 	for name, want := range map[string]resolved{
-		decide.TrevModelID: {"cerebras,sambanova,fireworks,together", "openai/gpt-oss-120b", "cerebras", "gpt-oss-120b"},
-		decide.GevModelID:  {"google-ai-studio", "google/gemini-3.1-flash-lite", "google-ai-studio", "gemini-3.1-flash-lite"},
-		decide.DevModelID:  {"deepinfra", "deepseek/deepseek-v4.1-flash", "deepinfra", "deepseek-ai/DeepSeek-V4.1-Flash"},
-		decide.OevModelID:  {"deepinfra", "openai/gpt-oss-20b", "deepinfra", "openai/gpt-oss-20b"},
-		decide.MevModelID:  {"deepinfra", "google/gemma-4-e4b-it", "deepinfra", "google/gemma-4-E4B-it"},
+		decide.TrevModelID:   {"cerebras,sambanova,fireworks,together", "openai/gpt-oss-120b", "cerebras", "gpt-oss-120b"},
+		decide.GevModelID:    {"google-ai-studio", "google/gemini-3.1-flash-lite", "google-ai-studio", "gemini-3.1-flash-lite"},
+		decide.DevModelID:    {"deepinfra", "deepseek/deepseek-v4.1-flash", "deepinfra", "deepseek-ai/DeepSeek-V4.1-Flash"},
+		decide.OevModelID:    {"deepinfra", "openai/gpt-oss-20b", "deepinfra", "openai/gpt-oss-20b"},
+		decide.GemmevModelID: {"deepinfra", "google/gemma-4-e4b-it", "deepinfra", "google/gemma-4-E4B-it"},
+		decide.MevModelID:    {"inception", "inception/mercury-2", "inception", "mercury-2"},
+		decide.ZevModelID:    {"fireworks,baseten", "z-ai/glm-5.2-fast", "fireworks", "accounts/fireworks/routers/glm-5p2-fast"},
+		decide.LevModelID:    {"sambanova,parasail,together", "meta-llama/llama-3.3-70b-instruct", "sambanova", "Meta-Llama-3.3-70B-Instruct"},
 	} {
 		var authorized, settled []map[string]any
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {

@@ -51,10 +51,15 @@ var HostedModels = map[string]bool{
 // TrevModelID is the flagship: the fastest tuned configuration measured.
 const (
 	TrevModelID = "trustedrouter/trev-1.0" // gpt-oss-120b, on the chain below
+	MevModelID  = "trustedrouter/mev-1.0"  // Mercury 2, the fastest native and the cheapest fast one
+	ZevModelID  = "trustedrouter/zev-1.0"  // GLM 5.2 Fast
+	LevModelID  = "trustedrouter/lev-1.0"  // Llama 3.3 70B, the steadiest tail
 	GevModelID  = "trustedrouter/gev-1.0"  // Gemini 3.1 Flash Lite
 	DevModelID  = "trustedrouter/dev-1.0"  // DeepSeek V4.1 Flash
 	OevModelID  = "trustedrouter/oev-1.0"  // gpt-oss-20b
-	MevModelID  = "trustedrouter/mev-1.0"  // Gemma 4 E4B, the cheapest
+	// Gemma 4 E4B, the cheapest. It was mev-1.0 for a few hours on 2026-09-20,
+	// before Mercury took that name.
+	GemmevModelID = "trustedrouter/gemmev-1.0"
 )
 
 // TrevProviders is trev-1.0's host chain, fastest first, with the measured
@@ -90,12 +95,31 @@ var TrevProviders = []string{
 // only OpenAI route is bring-your-own-key, so most customers could not call it.
 // It remains reachable through GenericNativeModel for a caller with a key.
 //
+// The three sub-half-second entries after trev, each measured four times
+// (8 tickets a run, every output valid):
+//
+//   - Mercury 2 (mev-1.0) on Inception with reasoning OFF: 275-310 ms median,
+//     the cheapest of the fast ones, 28/29 on every run (it over-rates the
+//     urgency of one ticket; at "low" effort it is 29/29 in ~600 ms, which a
+//     caller can ask for). It was first REJECTED for "3 of 8 outputs cut
+//     short". That was this table's mistake, not the model's: Mercury reasons
+//     by default, and with no effort set the reasoning ate the token budget.
+//   - GLM 5.2 Fast (zev-1.0) on Fireworks 340-468 ms, Baseten 616 ms: 29/29,
+//     and about four times trev's price per decision.
+//   - Llama 3.3 70B (lev-1.0) on SambaNova 371-450 ms with the tightest tail
+//     (worst case 565 ms), then Parasail 927 ms, Together 1576 ms: 29/29. It
+//     does not reason, so there is no effort to set. Novita answered 429.
+//
 // Rejected on the same evidence: openai/gpt-5-nano (hedges at "minimal" effort,
 // truncates its JSON at "low" because reasoning eats the token budget),
-// google/gemini-2.5-flash-lite (closed to new AI Studio users), GLM 5.3 Flash
-// (29/29 but 3.7-8 s on wafer), Mercury 2 (3 of 8 outputs cut short), and engy
-// as the DeepSeek host (5x cheaper, but a 75-second worst case; a caller who
-// wants it can ask for it with `provider`).
+// google/gemini-2.5-flash-lite (closed to new AI Studio users), and engy as the
+// DeepSeek host (5x cheaper, but a 75-second worst case; a caller who wants it
+// can ask for it with `provider`). GLM 5.3 Flash cannot turn thinking OFF (Z.ai
+// and Fireworks both refuse the request), so a decision takes 2-19 s on every
+// host measured: Baseten 2.1 s, Together 4.3 s, Nebius 4.8 s, DeepInfra 18.8 s.
+// Qwen 3.8 27B on Cerebras was the fastest native measured (216-301 ms, 29/29)
+// and was left out by choice: its other hosts take 4-9 s, so it would have no
+// usable fallback behind a heavily rate-limited host.
 //
 // A NAME and the chat model behind it are driven identically: the name is a
 // convenience, and the control plane resolves it to the concrete model and
@@ -109,6 +133,9 @@ var (
 	deepSeekFlash   = NativeModel{Providers: []string{"deepinfra"}, Temperature: &zeroTemperature, Format: FormatPrompt}
 	gptOSS20B       = NativeModel{Providers: []string{"deepinfra"}, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatSchema}
 	gemma4E4B       = NativeModel{Providers: []string{"deepinfra"}, Temperature: &zeroTemperature, Format: FormatPrompt}
+	mercury2        = NativeModel{Providers: []string{"inception"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
+	glm52Fast       = NativeModel{Providers: []string{"fireworks", "baseten"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
+	llama33         = NativeModel{Providers: []string{"sambanova", "parasail", "together"}, Temperature: &zeroTemperature, Format: FormatPrompt}
 )
 
 var NativeModels = map[string]NativeModel{
@@ -116,7 +143,10 @@ var NativeModels = map[string]NativeModel{
 	GevModelID:  geminiFlashLite, "google/gemini-3.1-flash-lite": geminiFlashLite,
 	DevModelID: deepSeekFlash, "deepseek/deepseek-v4.1-flash": deepSeekFlash,
 	OevModelID: gptOSS20B, "openai/gpt-oss-20b": gptOSS20B,
-	MevModelID: gemma4E4B, "google/gemma-4-e4b-it": gemma4E4B,
+	GemmevModelID: gemma4E4B, "google/gemma-4-e4b-it": gemma4E4B,
+	MevModelID: mercury2, "inception/mercury-2": mercury2,
+	ZevModelID: glm52Fast, "z-ai/glm-5.2-fast": glm52Fast,
+	LevModelID: llama33, "meta-llama/llama-3.3-70b-instruct": llama33,
 }
 
 // GenericNativeModel drives ANY other chat model: nothing is assumed about the

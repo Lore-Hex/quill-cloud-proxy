@@ -216,6 +216,10 @@ type decideRequest struct {
 	Metadata        map[string]any         `json:"metadata,omitempty"`
 	Trace           map[string]any         `json:"trace,omitempty"`
 	Tags            *types.RequestTags     `json:"tags,omitempty"`
+
+	// askedNoul names the questions the caller spelled "noul". Questions holds
+	// them as "boolean"; the answers go back in the caller's spelling.
+	askedNoul map[string]bool
 }
 
 type decideUsage struct {
@@ -229,8 +233,32 @@ type decideResponse struct {
 	Usage   decideUsage              `json:"usage"`
 }
 
-// serveDecide handles POST /v1/decide (alias /v1/evaluate): shared state plus
-// typed questions in, typed answers with probabilities out. Non-streaming.
+// isDecidePath reports whether path is the decide route. Its name is
+// POST /api/alpha/decide: "alpha" because the contract may still change, and
+// "decide" because that is what it does. Everything else is an alias, so that
+// an existing client -- of this gateway's first path, or of another gateway's
+// path for the same {model, state, questions} contract -- is a base-URL change
+// away:
+//
+//	/api/decide            the name, for when it leaves alpha
+//	/v1/decide             where this route was first published
+//	/v1/evaluate           Vercel AI Gateway and the AI SDK
+//	/api/alpha/decisions   OpenRouter's Decisions API, in alpha
+//	/api/decisions         the same, for when it leaves alpha
+//
+// A client of the last two asks its yes/no questions as "noul" (TypeSafe's
+// word); see decide.CanonicalQuestions for how that is accepted and answered.
+func isDecidePath(path string) bool {
+	switch path {
+	case "/api/alpha/decide", "/api/decide", "/v1/decide", "/v1/evaluate", "/api/alpha/decisions", "/api/decisions":
+		return true
+	}
+	return false
+}
+
+// serveDecide handles POST /api/alpha/decide and its aliases (isDecidePath): shared
+// state plus typed questions in, typed answers with probabilities out.
+// Non-streaming.
 // The state is sent ONLY to the upstream model, never to the control plane or
 // a log. Whichever backend answers, the result passes decide.Verify before a
 // byte reaches the caller.
@@ -264,6 +292,9 @@ func serveDecide(
 		writeOpenAIError(conn, 400, "decision models do not stream", "invalid_request_error", "bad_request", "stream")
 		return
 	}
+	// "noul" is a spelling, not a type: everything below sees "boolean", and
+	// the answers are re-spelled for the questions that asked with it.
+	req.Questions, req.askedNoul = decide.CanonicalQuestions(req.Questions)
 	specs, err := decide.Parse(req.Questions)
 	if err == nil {
 		_, err = decide.StateText(req.State)
@@ -501,7 +532,7 @@ func serveHostedDecide(
 			return
 		}
 	}
-	writeDecideResponse(ctx, conn, decideResponse{Model: publicModel, Answers: answers, Usage: decideUsage{InputTokens: billedInput, OutputTokens: upstream.OutputTokens}}, settlement, authorization)
+	writeDecideResponse(ctx, conn, decideResponse{Model: publicModel, Answers: decide.InAskedSpelling(answers, req.askedNoul), Usage: decideUsage{InputTokens: billedInput, OutputTokens: upstream.OutputTokens}}, settlement, authorization)
 }
 
 func serveNativeDecide(
@@ -598,7 +629,7 @@ func serveNativeDecide(
 			answers, err = decide.Verify(specs, answers)
 		}
 		if err == nil {
-			writeDecideResponse(ctx, conn, decideResponse{Model: req.Model, Answers: answers, Usage: usage}, lastSettlement, lastAuthorization)
+			writeDecideResponse(ctx, conn, decideResponse{Model: req.Model, Answers: decide.InAskedSpelling(answers, req.askedNoul), Usage: usage}, lastSettlement, lastAuthorization)
 			return
 		}
 		fmt.Fprintf(os.Stderr, "enclave.decide_verification_failed model=%q backend=native attempt=%d kind=%q\n",

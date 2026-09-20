@@ -170,14 +170,20 @@ func TestNativeModelListIsPinned(t *testing.T) {
 		"google/gemma-4-e4b-it":        "deepinfra",
 		"deepseek/deepseek-v4.1-flash": "deepinfra",
 		// Each name is driven exactly as the chat model behind it.
-		decide.GevModelID: "google-ai-studio",
-		decide.DevModelID: "deepinfra",
-		decide.OevModelID: "deepinfra",
-		decide.MevModelID: "deepinfra",
+		decide.GevModelID:    "google-ai-studio",
+		decide.DevModelID:    "deepinfra",
+		decide.OevModelID:    "deepinfra",
+		decide.GemmevModelID: "deepinfra",
+		// The three fast ones, and the chat models behind them.
+		decide.MevModelID: "inception", "inception/mercury-2": "inception",
+		decide.ZevModelID: "fireworks,baseten", "z-ai/glm-5.2-fast": "fireworks,baseten",
+		decide.LevModelID: "sambanova,parasail,together", "meta-llama/llama-3.3-70b-instruct": "sambanova,parasail,together",
 	}
 	for name, behind := range map[string]string{
 		decide.GevModelID: "google/gemini-3.1-flash-lite", decide.DevModelID: "deepseek/deepseek-v4.1-flash",
-		decide.OevModelID: "openai/gpt-oss-20b", decide.MevModelID: "google/gemma-4-e4b-it",
+		decide.OevModelID: "openai/gpt-oss-20b", decide.GemmevModelID: "google/gemma-4-e4b-it",
+		decide.MevModelID: "inception/mercury-2", decide.ZevModelID: "z-ai/glm-5.2-fast",
+		decide.LevModelID: "meta-llama/llama-3.3-70b-instruct",
 	} {
 		named, plain := decide.NativeModels[name], decide.NativeModels[behind]
 		if named.ReasoningEffort != plain.ReasoningEffort || named.Format != plain.Format || named.ExtraTokens != plain.ExtraTokens || named.Temperature != plain.Temperature {

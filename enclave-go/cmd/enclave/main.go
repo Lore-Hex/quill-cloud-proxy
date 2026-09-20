@@ -848,9 +848,8 @@ func serveOneRequest(
 		return
 	}
 
-	// /v1/evaluate is the path Vercel AI Gateway and the AI SDK use for the
-	// same contract; serving both keeps an existing client a base-URL change.
-	if routePath == "/v1/decide" || routePath == "/v1/evaluate" {
+	// /api/alpha/decide, and the other paths it answers to.
+	if isDecidePath(routePath) {
 		if method != "POST" {
 			writeError(conn, 404, "route not found")
 			return
