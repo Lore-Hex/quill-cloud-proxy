@@ -166,9 +166,14 @@ func NativeChatRequest(model string, state json.RawMessage, specs []Spec, native
 		req.Provider = options.Provider
 	case len(native.Providers) > 0:
 		// Fallback is allowed only AMONG the pinned hosts, in their order.
+		// Two separate copies: the tuned table is shared by every request, and
+		// Only and Order must not alias each other either.
 		fallbacks := len(native.Providers) > 1
-		pinned := types.StringList(append([]string(nil), native.Providers...))
-		req.Provider = &types.ProviderRouting{Only: pinned, Order: pinned, AllowFallbacks: &fallbacks}
+		req.Provider = &types.ProviderRouting{
+			Only:           types.StringList(append([]string(nil), native.Providers...)),
+			Order:          types.StringList(append([]string(nil), native.Providers...)),
+			AllowFallbacks: &fallbacks,
+		}
 	}
 	switch {
 	case options.wantsReasoning():

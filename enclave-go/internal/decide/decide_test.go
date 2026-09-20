@@ -377,6 +377,12 @@ func TestNativeOptionsOverrideTheTunedDefaults(t *testing.T) {
 		t.Fatalf("trev must be prompt-format at low effort: %+v", trev)
 	}
 
+	// The tuned table is shared across requests: a request must get copies.
+	trev.Provider.Only[0], trev.Provider.Order[1] = "mutated", "mutated"
+	if TrevProviders[0] != "cerebras" || TrevProviders[1] != "sambanova" || trev.Provider.Order[0] != "cerebras" {
+		t.Fatalf("a request aliases the shared host chain: %v", TrevProviders)
+	}
+
 	// An untuned model: nothing pinned, nothing assumed, room to think.
 	generic, _ := NativeChatRequest("anthropic/claude-opus-5", state, specs, GenericNativeModel, NativeOptions{})
 	if generic.Provider != nil || generic.Reasoning != nil || generic.ReasoningEffort != "" || generic.ResponseFormat != nil || generic.Temperature != nil {

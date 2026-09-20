@@ -225,7 +225,8 @@ func TestLiveDecideNative(t *testing.T) {
 				p, n, misses := tc.score(answers)
 				passed, total = passed+p, total+n
 				if len(misses) > 0 {
-					t.Logf("case %d missed %v", index, misses)
+					encoded, _ := json.Marshal(answers)
+					t.Logf("case %d missed %v | state=%q | answers=%s", index, misses, tc.state, encoded)
 				}
 			}
 			sort.Ints(latencies)
