@@ -385,3 +385,78 @@ func TestHostedDecideAcceptsEveryWayOfNotAskingToReason(t *testing.T) {
 		t.Errorf("a malformed effort on a hosted model: %d, want 400", status)
 	}
 }
+
+// keepaliveThenFail is a provider that sends bytes and then dies before any
+// generation: an SSE comment, then a dropped connection.
+type keepaliveThenFail struct{}
+
+func (keepaliveThenFail) InvokeStreaming(_ context.Context, _ *types.OpenAIChatRequest, _ *types.AnthropicMessagesRequest, out io.Writer, _ ...llm.InvokeOptions) error {
+	_, _ = io.WriteString(out, ": keepalive\n\n")
+	return io.ErrUnexpectedEOF
+}
+
+func TestNativeDecideInvitesARetryWhenNoResultWasEverProduced(t *testing.T) {
+	// Bytes are not a result. A version that watched the provider's writes sent
+	// x-should-retry: false here, telling the client not to retry a call that
+	// produced nothing and was refunded.
+	plane := &faultyControlPlane{}
+	status, raw := rawDecide(context.Background(), keepaliveThenFail{}, plane.serve(t), nativeBody)
+	if status != 502 || saysDoNotRetry(raw) {
+		t.Fatalf("status %d, do-not-retry=%v: nothing was produced, a retry is right\n%s", status, saysDoNotRetry(raw), raw)
+	}
+	if plane.log.refund != 1 || len(plane.log.settle) != 0 {
+		t.Fatalf("refund=%d settle=%d, want 1/0", plane.log.refund, len(plane.log.settle))
+	}
+}
+
+func TestHostedDecideSettlementFailureKeepsRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if strings.HasSuffix(request.URL.Path, "/settle") {
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(429)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"settlement is rate limited","type":"rate_limit"}}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_h","workspace_id":"ws_1","api_key_hash":"key_1",
+		 "model":"typesafe-ai/jev","endpoint_id":"typesafe-ai/jev@typesafe/prepaid","provider":"typesafe","upstream_model":"jev-latest",
+		 "usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+	}))
+	t.Cleanup(server.Close)
+	gateway := trustedrouter.New(server.URL, "internal-token", server.Client())
+	status, raw := rawDecide(context.Background(), &cancellingDecider{answers: hostedAnswers(), tokens: 61}, gateway, fmt.Sprintf(hostedBody, ""))
+	head := strings.ToLower(strings.SplitN(raw, "\r\n\r\n", 2)[0])
+	// The vendor ran, so: do not retry blindly -- and here is when settlement
+	// will take it.
+	if status != 502 || !saysDoNotRetry(raw) || !strings.Contains(head, "retry-after: 120") {
+		t.Fatalf("status %d, headers:\n%s", status, head)
+	}
+}
+
+func TestHostedDecideARequestEveryHostRefusesIsTheCallers400(t *testing.T) {
+	refused := func(status int) error {
+		return &llm.DecideError{Provider: "p", Class: llm.DecideErrHTTP, Status: status}
+	}
+	for label, tc := range map[string]struct {
+		failing map[string]error
+		want    int
+	}{
+		"both refuse it as invalid":       {map[string]error{"typesafe": refused(422), "vercel-ai-gateway": refused(400)}, 400},
+		"too large for both":              {map[string]error{"typesafe": refused(413), "vercel-ai-gateway": refused(413)}, 400},
+		"one refuses, one is down":        {map[string]error{"typesafe": refused(422), "vercel-ai-gateway": refused(503)}, 502},
+		"our key is bad (never a 4xx)":    {map[string]error{"typesafe": refused(401), "vercel-ai-gateway": refused(403)}, 502},
+		"rate limited everywhere":         {map[string]error{"typesafe": refused(429), "vercel-ai-gateway": refused(429)}, 502},
+		"one refuses, one never answered": {map[string]error{"typesafe": refused(422), "vercel-ai-gateway": &llm.DecideError{Provider: "p", Class: llm.DecideErrTransport}}, 502},
+	} {
+		plane := &faultyControlPlane{hosted: true}
+		status, raw := rawDecide(context.Background(), &hostScriptedDecider{failing: tc.failing}, plane.serve(t), fmt.Sprintf(hostedBody, ""))
+		if status != tc.want {
+			t.Errorf("%s: status %d, want %d\n%s", label, status, tc.want, raw)
+		}
+		if plane.log.refund != 1 || len(plane.log.settle) != 0 {
+			t.Errorf("%s: refund=%d settle=%d, want 1/0", label, plane.log.refund, len(plane.log.settle))
+		}
+		if saysDoNotRetry(raw) {
+			t.Errorf("%s: no answer was produced, so nothing says do-not-retry", label)
+		}
+	}
+}

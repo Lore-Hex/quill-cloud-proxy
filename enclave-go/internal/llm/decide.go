@@ -38,12 +38,15 @@ type DecideResponse struct {
 	OutputTokens int
 }
 
-// maxDecideResponseBytes bounds the upstream body at twice the largest answer
-// decide.Parse admits, leaving room for the envelope, usage, and a host that
-// pretty-prints. The two are tied so a request that was accepted can never be
-// one whose correct answer is then discarded as oversized -- after the vendor
-// has been paid for it.
-const maxDecideResponseBytes = 2 * decide.MaxAnswerBytes
+// maxDecideResponseBytes bounds the upstream body. It must never be smaller
+// than a CORRECT answer to a request the host accepted: the host has been paid
+// by then, and discarding its answer buys a second paid call and a refund. The
+// host bounds the request for us -- TypeSafe takes 64k tokens per request, a
+// few hundred KB of questions at most -- and an answer is that text once or
+// twice over (option names as keys, labels echoed as a legend), at worst
+// \uXXXX-escaped by whatever encoder the host uses. 8 MiB clears that with
+// room; a request-side size estimate was tried instead and was wrong both ways.
+const maxDecideResponseBytes = 8 << 20
 
 // DecideError is the ONLY error InvokeDecide returns, and it is content-free by
 // construction: a class from a closed vocabulary, the provider, and for an HTTP

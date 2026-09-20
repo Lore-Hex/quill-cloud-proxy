@@ -128,9 +128,13 @@ func TestVerifyRejectsEveryContractViolation(t *testing.T) {
 		"score wrong rung keys": func(a map[string]Answer) {
 			a["urgency"] = Answer{Type: TypeScore, Score: f(1.7), Probabilities: map[string]float64{"low": 0.1, "medium": 0.1, "high": 0.8}}
 		},
-		"score disagrees with distribution": func(a map[string]Answer) { x := a["urgency"]; x.Score = f(0.2); a["urgency"] = x },
-		"score missing":                     func(a map[string]Answer) { x := a["urgency"]; x.Score = nil; a["urgency"] = x },
-		"score with choice":                 func(a map[string]Answer) { x := a["urgency"]; x.Choice = s("high"); a["urgency"] = x },
+		// Not "score disagrees with its distribution": the returned score is
+		// always the distribution's mean, so there is nothing to disagree with.
+		// What a backend's score may not be is off the scale.
+		"score above the scale": func(a map[string]Answer) { x := a["urgency"]; x.Score = f(2.5); a["urgency"] = x },
+		"score below the scale": func(a map[string]Answer) { x := a["urgency"]; x.Score = f(-0.5); a["urgency"] = x },
+		"score missing":         func(a map[string]Answer) { x := a["urgency"]; x.Score = nil; a["urgency"] = x },
+		"score with choice":     func(a map[string]Answer) { x := a["urgency"]; x.Choice = s("high"); a["urgency"] = x },
 	}
 	for name, mutate := range mutations {
 		answers := valid()

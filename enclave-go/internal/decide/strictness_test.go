@@ -26,19 +26,50 @@ func wantKind(t *testing.T, label string, err error, kind string) {
 const oneBoolean = `{"sure":{"type":"boolean","instructions":"Is it?"}}`
 const threeWay = `{"pick":{"type":"choice","instructions":"Pick.","criteria":{"a":"A","b":"B","c":"C"}}}`
 
-func TestExtractNativeRefusesTwoDifferentAnswers(t *testing.T) {
+func TestExtractNativeTakesExactlyOneObjectOrNothing(t *testing.T) {
 	specs := questions(t, oneBoolean)
-	// STATE is caller text the model may quote. Taking the first object would
-	// return 0.01, the opposite of the answer.
-	_, err := ExtractNative(specs, `STATE contained {"q0":0.01}. My answer is {"q0":0.99}`)
-	wantKind(t, "quoted state then answer", err, KindAmbiguous)
-
+	// STATE is caller text the model may quote. Every arrangement below once
+	// returned the QUOTED 0.01 under some version of "find the real answer":
+	// first-object-wins; top-level-only search (the answer was in a wrapper); a
+	// depth or node budget that ran out before the answer; an answer inside a
+	// JSON string; a second answer nested under the first.
 	for label, text := range map[string]string{
-		"said twice":            `{"q0":0.99} Final: {"q0": 0.99}`,
+		"quoted then answered":        `STATE contained {"q0":0.01}. My answer is {"q0":0.99}`,
+		"answer in a wrapper":         `STATE contained {"q0":0.01}. My answer is {"answer":{"q0":0.99}}`,
+		"answer in a string":          `STATE said {"q0":0.01}. My answer is {"answer":"{\"q0\":0.99}"}`,
+		"answer wrapped seven deep":   `{"q0":0.01} then {"a":{"b":{"c":{"d":{"e":{"f":{"g":{"q0":0.99}}}}}}}}`,
+		"said twice":                  `{"q0":0.99} Final: {"q0": 0.99}`,
+		"said twice, reformatted":     `{"q0":0.5} and {"q0":0.50000000000000001}`,
+		"an unrelated object as well": `Config {"temperature":0} gives {"q0":0.99}`,
+		"an unusable second object":   `{"q0":0.9} Debug: {"q0":"request-id"}`,
+	} {
+		_, err := ExtractNative(specs, text)
+		wantKind(t, label, err, KindAmbiguous)
+	}
+	// A second answer hidden UNDER the first, or behind a long array.
+	_, err := ExtractNative(specs, `{"q0":0.01,"answer":{"q0":0.99}}`)
+	wantKind(t, "a structure under a non-question key", err, KindAmbiguous)
+	_, err = ExtractNative(specs, `{"answer":{"q0":0.99}}`)
+	wantKind(t, "a wrapper alone: the answer is not at the top of the one object", err, KindAmbiguous)
+	padded := `{"q0":0.01,"items":[` + strings.Repeat("0,", 600) + `{"q0":0.99}]}`
+	_, err = ExtractNative(specs, padded)
+	wantKind(t, "an answer behind 600 array items", err, KindAmbiguous)
+	// One object that is not the answer is not an answer.
+	for label, text := range map[string]string{
+		"something else":    `{"temperature":0}`,
+		"no object at all":  `I think it is likely.`,
+		"an unclosed brace": `{"q0":0.99`,
+	} {
+		_, err := ExtractNative(specs, text)
+		wantKind(t, label, err, KindNotJSON)
+	}
+	// Form around the one object is still form.
+	for label, text := range map[string]string{
 		"stray brace in prose":  "Use { carefully. Answer: {\"q0\":0.99}",
-		"unrelated object":      `Config {"temperature":0} gives {"q0":0.99}`,
 		"fenced":                "```json\n{\"q0\":0.99}\n```",
 		"brace inside a string": `{"note":"a } and a { brace","q0":0.99}`,
+		"scalar commentary":     `{"q0":0.99,"confidence":"high","checked":true,"n":3,"extra":null}`,
+		"in an array":           `[{"q0":0.99}]`,
 	} {
 		answers, err := ExtractNative(specs, text)
 		if err != nil {
@@ -181,122 +212,78 @@ func scoreSpec(t *testing.T, levels int) []Spec {
 	return questions(t, `{"rate":{"type":"score","instructions":"Rate.","criteria":`+string(raw)+`}}`)
 }
 
-func TestVerifyScoreAllowsWhatArithmeticExplainsAndNothingElse(t *testing.T) {
-	verifyScore := func(levels int, probabilities map[string]float64, score float64) error {
-		_, err := Verify(scoreSpec(t, levels), map[string]Answer{"rate": {Type: TypeScore, Score: &score, Probabilities: probabilities}})
-		return err
-	}
-	// Five levels at two decimals, mean 2.0. Rounding moves the mean by at most
-	// 0.005 x (0+1+2+3+4) = 0.05, plus 0.05 for the score's own rounding.
-	five := map[string]float64{"0": 0.1, "1": 0.2, "2": 0.4, "3": 0.2, "4": 0.1}
-	for _, score := range []float64{2.0, 2.08, 1.92} {
-		if err := verifyScore(5, five, score); err != nil {
-			t.Errorf("score %v against a mean of 2.0: %v", score, err)
+func TestVerifyReturnsTheMeanOfTheDistributionWhateverTheBackendReported(t *testing.T) {
+	five := scoreSpec(t, 5)
+	dist := map[string]float64{"0": 0.1, "1": 0.2, "2": 0.4, "3": 0.2, "4": 0.1} // mean 2.0
+	// The distribution is the answer. The score handed back is always ITS mean,
+	// so the caller's answer is self-consistent whatever the backend's own
+	// `score` said. There is no allowance to tune: three versions of one were
+	// each wrong in both directions.
+	for _, reported := range []float64{2.0, 2.08, 0, 3.5, 4} {
+		out, err := Verify(five, map[string]Answer{"rate": {Type: TypeScore, Score: &reported, Probabilities: dist}})
+		if err != nil {
+			t.Fatalf("reported %v: %v", reported, err)
+		}
+		if got := *out["rate"].Score; got != 2.0 {
+			t.Fatalf("reported %v: returned %v, want the distribution's mean 2.0", reported, got)
 		}
 	}
-	for _, score := range []float64{2.2, 1.8, 3.5} {
-		wantKind(t, fmt.Sprintf("score %v against a mean of 2.0", score), verifyScore(5, five, score), KindDerived)
+	// What a score may never be: absent, not a number, or off the scale.
+	for label, reported := range map[string]float64{"below the scale": -0.25, "above the scale": 4.01, "NaN": math.NaN()} {
+		score := reported
+		_, err := Verify(five, map[string]Answer{"rate": {Type: TypeScore, Score: &score, Probabilities: dist}})
+		wantKind(t, label, err, KindRange)
 	}
-	// Written to six decimals there is no rounding left to blame.
-	precise := map[string]float64{"0": 0.100001, "1": 0.2, "2": 0.399999, "3": 0.2, "4": 0.1}
-	wantKind(t, "precise probabilities, score off by 0.08", verifyScore(5, precise, 2.08), KindDerived)
+	_, err := Verify(five, map[string]Answer{"rate": {Type: TypeScore, Probabilities: dist}})
+	wantKind(t, "no score at all", err, KindDerived)
 
-	// TypeSafe's own documented example.
-	if err := verifyScore(3, map[string]float64{"0": 0.05, "1": 0.3, "2": 0.65}, 1.6); err != nil {
-		t.Errorf("the vendor's documented answer: %v", err)
+	// The vendor's own documented example, and a rounded mass.
+	if _, err := Verify(scoreSpec(t, 3), map[string]Answer{"rate": {Type: TypeScore, Score: f(1.6), Probabilities: map[string]float64{"0": 0.05, "1": 0.3, "2": 0.65}}}); err != nil {
+		t.Fatalf("the vendor's documented answer: %v", err)
 	}
-	// Twenty levels truly at 0.0451 / 0.0549, each written as 0.05: the score
-	// computed from the true values is 9.99, the written ones imply 9.5. That
-	// is rounding, and a tighter first version of this check refused it.
-	twenty := map[string]float64{}
-	for i := 0; i < 20; i++ {
-		twenty[fmt.Sprintf("%d", i)] = 0.05
-	}
-	if err := verifyScore(20, twenty, 9.99); err != nil {
-		t.Errorf("twenty rounded levels: %v", err)
-	}
-	wantKind(t, "twenty rounded levels, score 12", verifyScore(20, twenty, 12), KindDerived)
-
-	// Mass 0.97: the score was computed from the raw probabilities, ours from
-	// the normalized ones. They differ by exactly mean x |1 - mass|.
-	raw := map[string]float64{"0": 0, "1": 0, "2": 0.17, "3": 0.5, "4": 0.3}
+	raw := map[string]float64{"0": 0, "1": 0, "2": 0.17, "3": 0.5, "4": 0.3} // mass 0.97
 	reported := 2*0.17 + 3*0.5 + 4*0.3
-	out, err := Verify(scoreSpec(t, 5), map[string]Answer{"rate": {Type: TypeScore, Score: &reported, Probabilities: raw}})
+	out, err := Verify(five, map[string]Answer{"rate": {Type: TypeScore, Score: &reported, Probabilities: raw}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := *out["rate"].Score, math.Round(reported/0.97*100)/100; got != want {
 		t.Fatalf("score = %v, want the mean of the RETURNED distribution %v", got, want)
 	}
-	// ...and mass error buys slack in proportion to the MEAN, not to the scale.
-	// All of 0.951 on level 0 has mean 0, so renormalizing cannot move it at
-	// all: 0.2 is a contradiction. Charging the scale instead, (n-1) x |1-m|,
-	// allowed 0.25 here -- and 15 on a 255-level scale.
-	low := map[string]float64{"0": 0.951, "1": 0, "2": 0, "3": 0, "4": 0}
-	wantKind(t, "mass on level 0, score 0.2", verifyScore(5, low, 0.2), KindDerived)
-	if err := verifyScore(5, low, 0.04); err != nil {
-		t.Errorf("score 0.04 is the score's own rounding: %v", err)
-	}
 }
 
-func TestParseBoundsTheWorstCaseAnswer(t *testing.T) {
-	// 64 questions x 255 options with 48-byte names passed Parse, and a CORRECT
-	// answer then exceeded what the gateway would read: the vendor was paid,
-	// the answer discarded, the next host tried, and the caller refunded.
-	qs := map[string]Question{}
-	for q := 0; q < MaxQuestions; q++ {
-		options := map[string]string{}
-		for o := 0; o < MaxOptions; o++ {
-			options[fmt.Sprintf("%s%03d", strings.Repeat("<", 45), o)] = "x"
+func TestParseAppliesTheHostedModelsLimitsToEveryModel(t *testing.T) {
+	// A request written against one decision model must run on any other, so
+	// the vendor's documented ceilings are the contract: 255 options, 10 levels.
+	levels := func(n int) map[string]Question {
+		labels := make([]string, n)
+		for i := range labels {
+			labels[i] = fmt.Sprintf("level %d", i)
 		}
-		criteria, _ := json.Marshal(options)
-		qs[fmt.Sprintf("question-%02d", q)] = Question{Type: TypeChoice, Instructions: "Pick.", Criteria: criteria}
+		criteria, _ := json.Marshal(labels)
+		return map[string]Question{"rate": {Type: TypeScore, Instructions: "Rate.", Criteria: criteria}}
 	}
-	_, err := Parse(qs)
+	if _, err := Parse(levels(MaxScoreLevels)); err != nil {
+		t.Fatalf("%d levels: %v", MaxScoreLevels, err)
+	}
+	_, err := Parse(levels(MaxScoreLevels + 1))
 	invalid, ok := err.(*Error)
-	if !ok || invalid.Param != "questions" || !strings.Contains(invalid.Message, "too large") {
-		t.Fatalf("got %v, want a too-large *Error on questions", err)
+	if !ok || invalid.Param != "questions.rate.criteria" {
+		t.Fatalf("%d levels: got %v, want a *Error on the criteria", MaxScoreLevels+1, err)
 	}
-
-	// ...without refusing a large batch of ordinary names. A first version
-	// charged every byte six times and counted each option twice: this request,
-	// whose real answer is about 280 KB, was refused at 2.9 MB.
-	plain := map[string]Question{}
+	// A full-size batch of ordinary names is an ordinary request. (A size
+	// estimate in Parse once refused this one.)
+	batch := map[string]Question{}
 	for q := 0; q < MaxQuestions; q++ {
 		options := map[string]string{}
 		for o := 0; o < MaxOptions; o++ {
 			options[fmt.Sprintf("category_%03d", o)] = ""
 		}
 		criteria, _ := json.Marshal(options)
-		plain[fmt.Sprintf("question-%02d", q)] = Question{Type: TypeChoice, Instructions: "Pick.", Criteria: criteria}
+		batch[fmt.Sprintf("question-%02d", q)] = Question{Type: TypeChoice, Instructions: "Pick.", Criteria: criteria}
 	}
-	plainSpecs, err := Parse(plain)
-	if err != nil {
-		t.Fatalf("64 x 255 plain options refused: %v", err)
-	}
-	full := map[string]Answer{}
-	for _, spec := range plainSpecs {
-		dist := map[string]float64{}
-		for _, option := range spec.Options {
-			dist[option] = 0.00392156862745098
-		}
-		choice := spec.Options[0]
-		full[spec.Name] = Answer{Type: TypeChoice, Choice: &choice, Probabilities: dist}
-	}
-	encodedFull, _ := json.Marshal(full)
-	if bound := answerBytesUpperBound(plainSpecs); len(encodedFull) > bound {
-		t.Fatalf("a real answer is %d bytes, above its own upper bound %d", len(encodedFull), bound)
-	}
-
-	// The bound is an UPPER bound: whatever Parse admits, its verified answer fits.
-	specs := questions(t, triage)
-	answers, err := Verify(specs, valid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, _ := json.Marshal(answers)
-	if bound := answerBytesUpperBound(specs); len(encoded) > bound || bound > MaxAnswerBytes {
-		t.Fatalf("answer is %d bytes, bound %d, limit %d", len(encoded), bound, MaxAnswerBytes)
+	if _, err := Parse(batch); err != nil {
+		t.Fatalf("64 x 255 plain options: %v", err)
 	}
 }
 
@@ -316,16 +303,16 @@ func TestParseRejectsControlCharactersInNames(t *testing.T) {
 }
 
 func TestNativeChatRequestNeverAsksForMoreThanTheCeiling(t *testing.T) {
-	// Four score questions of 249 levels sit just under the schema limit. With
+	// Four choice questions of 248 options sit just under the schema limit. With
 	// the generic and reasoning allowances the computed budget was 34,400.
-	levels := make([]string, 249)
-	for i := range levels {
-		levels[i] = fmt.Sprintf("level %d", i)
+	options := map[string]string{}
+	for i := 0; i < 248; i++ {
+		options[fmt.Sprintf("option-%03d", i)] = "x"
 	}
-	criteria, _ := json.Marshal(levels)
+	criteria, _ := json.Marshal(options)
 	qs := map[string]Question{}
 	for i := 0; i < 4; i++ {
-		qs[fmt.Sprintf("rate%d", i)] = Question{Type: TypeScore, Instructions: "Rate.", Criteria: criteria}
+		qs[fmt.Sprintf("pick%d", i)] = Question{Type: TypeChoice, Instructions: "Pick.", Criteria: criteria}
 	}
 	specs, err := Parse(qs)
 	if err != nil {
@@ -335,68 +322,9 @@ func TestNativeChatRequestNeverAsksForMoreThanTheCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.MaxTokens == nil || *req.MaxTokens > maxNativeTokens {
-		t.Fatalf("max_tokens = %v, above the %d this route promises", req.MaxTokens, maxNativeTokens)
+	if req.MaxTokens == nil || *req.MaxTokens != maxNativeTokens {
+		t.Fatalf("max_tokens = %v, want it held at the %d this route promises", *req.MaxTokens, maxNativeTokens)
 	}
-}
-
-func TestWireLenIsAtLeastWhatGoWrites(t *testing.T) {
-	// An upper bound that undercounts is not one. Go's encoder is the reference
-	// for the characters it escapes; the rest are bounded above it.
-	for _, text := range []string{"plain", `q"uo\\te`, "<tag>&amp;", "caf\u00e9", "\U0001F600 grin", "tab\there", "\x7f"} {
-		encoded, _ := json.Marshal(text)
-		if got := wireLen(text); got < len(encoded) {
-			t.Errorf("wireLen(%q) = %d, but Go writes %d bytes", text, got, len(encoded))
-		}
-	}
-}
-
-func TestExtractNativeFindsTheAnswerAtAnyDepth(t *testing.T) {
-	specs := questions(t, oneBoolean)
-	// The real answer is wrapped. Looking only at top-level objects, the quoted
-	// 0.01 was the only candidate and was returned.
-	_, err := ExtractNative(specs, `STATE contained {"q0":0.01}. My answer is {"answer":{"q0":0.99}}`)
-	wantKind(t, "quoted state, then a wrapped answer", err, KindAmbiguous)
-	_, err = ExtractNative(specs, `{"echo":{"q0":0.01},"final":[{"q0":0.99}]}`)
-	wantKind(t, "two answers inside one wrapper", err, KindAmbiguous)
-
-	for label, text := range map[string]string{
-		"wrapped":         `{"answer":{"q0":0.99}}`,
-		"wrapped deeper":  `{"result":{"decision":[{"q0":0.99}]}}`,
-		"wrapped + prose": "Here you go: {\"answer\": {\"q0\": 0.99}} Hope that helps.",
-	} {
-		answers, err := ExtractNative(specs, text)
-		if err != nil {
-			t.Fatalf("%s: %v", label, err)
-		}
-		if got := *answers["sure"].Probability; got != 0.99 {
-			t.Fatalf("%s: probability = %v", label, got)
-		}
-	}
-	// A wrapper cannot hide a repeated key either: decoding keeps the last.
-	_, err = ExtractNative(specs, `{"answer":{"q0":0.1},"answer":{"q0":0.9}}`)
-	wantKind(t, "wrapper key given twice", err, KindDuplicate)
-}
-
-func TestExtractNativeComparesRepeatedAnswersByValue(t *testing.T) {
-	specs := questions(t, `{"a":{"type":"boolean","instructions":"A?"},"b":{"type":"boolean","instructions":"B?"}}`)
-	for label, text := range map[string]string{
-		"keys reordered":      `{"q0":0.8,"q1":0.2} Final: {"q1":0.2,"q0":0.8}`,
-		"numbers reformatted": `{"q0":0.80,"q1":0.2} Final: {"q0":0.8,"q1":0.20}`,
-	} {
-		answers, err := ExtractNative(specs, text)
-		if err != nil {
-			t.Fatalf("%s: %v", label, err)
-		}
-		if *answers["a"].Probability != 0.8 || *answers["b"].Probability != 0.2 {
-			t.Fatalf("%s: got %+v", label, answers)
-		}
-	}
-	// A second object that is NOT a usable answer still counts. Dropping it
-	// would make `STATE said {"q0":0.01,"q1":0.5}. Answer: {"q0":"high",...}`
-	// return the quoted object, as the only one that parses.
-	_, err := ExtractNative(specs, `{"q0":0.9,"q1":0.1} Debug: {"q0":"request-id"}`)
-	wantKind(t, "a second, unusable q-object", err, KindAmbiguous)
 }
 
 func TestExtractNativeBooleanTreatsNullAsAbsent(t *testing.T) {
@@ -441,23 +369,32 @@ func TestCallerReasoningBecomesOneValidatedEffortWord(t *testing.T) {
 		options NativeOptions
 		want    string
 	}{
-		"effort string":         {NativeOptions{ReasoningEffort: "high"}, "high"},
-		"effort, odd case":      {NativeOptions{ReasoningEffort: " High "}, "high"},
-		"object with effort":    {NativeOptions{Reasoning: map[string]any{"effort": "medium"}}, "medium"},
-		"object enabled":        {NativeOptions{Reasoning: map[string]any{"enabled": true}}, "medium"},
-		"bare true":             {NativeOptions{Reasoning: true}, "medium"},
-		"bare word":             {NativeOptions{Reasoning: "minimal"}, "minimal"},
-		"string beats object":   {NativeOptions{ReasoningEffort: "low", Reasoning: map[string]any{"effort": "high"}}, "low"},
+		"effort string":       {NativeOptions{ReasoningEffort: "high"}, "high"},
+		"effort, odd case":    {NativeOptions{ReasoningEffort: " High "}, "high"},
+		"object with effort":  {NativeOptions{Reasoning: map[string]any{"effort": "medium"}}, "medium"},
+		"object enabled":      {NativeOptions{Reasoning: map[string]any{"enabled": true}}, "medium"},
+		"bare true":           {NativeOptions{Reasoning: true}, "medium"},
+		"bare word":           {NativeOptions{Reasoning: "minimal"}, "minimal"},
+		"string beats object": {NativeOptions{ReasoningEffort: "low", Reasoning: map[string]any{"effort": "high"}}, "low"},
+		// Both keys at once. Ranging over the map made this "medium" or "high" by
+		// chance; the loop below runs it enough times to see either.
+		"enabled with effort": {NativeOptions{Reasoning: map[string]any{"enabled": true, "effort": "high"}}, "high"},
+		// An explicit off wins over an effort beside it: the tuned default stays.
+		"disabled with effort":  {NativeOptions{Reasoning: map[string]any{"enabled": false, "effort": "high"}}, "low"},
+		"false with an effort":  {NativeOptions{Reasoning: false, ReasoningEffort: "high"}, "low"},
+		"null fields":           {NativeOptions{Reasoning: map[string]any{"enabled": nil, "effort": "high"}}, "high"},
 		"none keeps the tuned":  {NativeOptions{ReasoningEffort: "none"}, "low"},
 		"false keeps the tuned": {NativeOptions{Reasoning: false}, "low"},
 		"disabled object":       {NativeOptions{Reasoning: map[string]any{"enabled": false}}, "low"},
 	} {
-		req, err := build(tc.options)
-		if err != nil {
-			t.Fatalf("%s: %v", label, err)
-		}
-		if req.ReasoningEffort != tc.want || req.Reasoning != nil {
-			t.Errorf("%s: effort=%q reasoning=%v, want effort %q and no object", label, req.ReasoningEffort, req.Reasoning, tc.want)
+		for run := 0; run < 40; run++ { // map order is random per range
+			req, err := build(tc.options)
+			if err != nil {
+				t.Fatalf("%s: %v", label, err)
+			}
+			if req.ReasoningEffort != tc.want || req.Reasoning != nil {
+				t.Fatalf("%s (run %d): effort=%q reasoning=%v, want effort %q and no object", label, run, req.ReasoningEffort, req.Reasoning, tc.want)
+			}
 		}
 	}
 	// A value the host would reject is OUR 400, naming the field. Left to the
@@ -471,13 +408,20 @@ func TestCallerReasoningBecomesOneValidatedEffortWord(t *testing.T) {
 		"effort not a string":   {NativeOptions{Reasoning: map[string]any{"effort": 3.0}}, "reasoning.effort"},
 		"enabled not a bool":    {NativeOptions{Reasoning: map[string]any{"enabled": "yes"}}, "reasoning.enabled"},
 		"unknown key":           {NativeOptions{Reasoning: map[string]any{"max_tokens": 2000.0}}, "reasoning.max_tokens"},
-		"a number":              {NativeOptions{Reasoning: 3.0}, "reasoning"},
-		"an unknown bare word":  {NativeOptions{Reasoning: "banana"}, "reasoning"},
+		// A bad effort is refused even when `enabled` would have decided first.
+		"bad effort beside enabled":       {NativeOptions{Reasoning: map[string]any{"enabled": true, "effort": "banana"}}, "reasoning.effort"},
+		"bad effort beside disabled":      {NativeOptions{Reasoning: map[string]any{"enabled": false, "effort": "banana"}}, "reasoning.effort"},
+		"bad field beside an object":      {NativeOptions{ReasoningEffort: "banana", Reasoning: map[string]any{"effort": "high"}}, "reasoning_effort"},
+		"two unknown keys, first by name": {NativeOptions{Reasoning: map[string]any{"zeta": 1.0, "alpha": 1.0}}, "reasoning.alpha"},
+		"a number":                        {NativeOptions{Reasoning: 3.0}, "reasoning"},
+		"an unknown bare word":            {NativeOptions{Reasoning: "banana"}, "reasoning"},
 	} {
-		_, err := build(tc.options)
-		invalid, ok := err.(*Error)
-		if !ok || invalid.Param != tc.param {
-			t.Errorf("%s: got %v, want a *Error on %s", label, err, tc.param)
+		for run := 0; run < 40; run++ {
+			_, err := build(tc.options)
+			invalid, ok := err.(*Error)
+			if !ok || invalid.Param != tc.param {
+				t.Fatalf("%s (run %d): got %v, want a *Error on %s", label, run, err, tc.param)
+			}
 		}
 	}
 }

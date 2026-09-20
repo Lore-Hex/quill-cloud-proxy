@@ -271,30 +271,27 @@ func ExtractNative(specs []Spec, text string) (map[string]Answer, error) {
 // quadratic.
 const maxObjectScanStarts = 64
 
-// Bounds on the descent into one top-level object while looking for the answer.
-const (
-	maxAnswerDepth = 6
-	maxAnswerNodes = 512
-)
-
-// answerObject returns THE answer in a native model's text: the one JSON
-// object that carries question aliases. Code fences, prose around it, and a
-// wrapper such as {"answer": {...}} are form and are looked through.
+// answerObject returns the answer in a native model's text, under one rule:
+// the output holds EXACTLY ONE JSON object, and that object is the answer.
+// Code fences and prose around it are form and are ignored.
 //
-// It does not take the first object it sees. STATE is caller-supplied text the
-// model may quote, so `STATE said {"q0":0.01}. My answer is {"q0":0.99}` holds
-// two answers, and which one the model meant is a guess. So every object that
-// carries a question alias counts, at ANY depth -- a first version looked only
-// at top-level objects and returned the quoted 0.01 when the real answer came
-// wrapped as {"answer":{"q0":0.99}}. Candidates that differ are a violation
-// (the request is retried). Candidates equal in VALUE are one answer said
-// twice, whatever their key order or number formatting.
+// The model was told to output one JSON object. STATE is caller-supplied text
+// it may quote, so `STATE said {"q0":0.01}. My answer is {"q0":0.99}` holds two
+// objects, and which one it meant is a guess. Earlier versions tried to guess
+// well: take the first object; then take the one carrying question keys; then
+// search wrappers to any depth within a budget and compare candidates by value.
+// Each was shown to return the QUOTED object for some arrangement of wrappers,
+// strings, budgets or number formats. The rule that cannot be argued with is
+// the one that does not choose: two objects, or an answer that is not at the
+// top level of the one object, is a violation, and the request is retried.
 //
-// A candidate counts even when it is not a well-formed answer. Ignoring the
-// malformed ones would mean that `STATE said {"q0":0.01}. Answer: {"q0":"high"}`
-// returns the quoted object, because it is the only one that parses.
+//   - more than one JSON object anywhere in the output: ambiguous;
+//   - the one object carries no question key at its top level (it is a wrapper,
+//     or something else entirely): not an answer;
+//   - a key that is not a question holds an object or array: refused, because
+//     {"q0":0.01,"answer":{"q0":0.99}} says two things. Commentary is a scalar.
 func answerObject(text string, questions int) (string, error) {
-	var found []json.RawMessage
+	var objects []string
 	starts := 0
 	for i := 0; i < len(text); i++ {
 		if text[i] != '{' {
@@ -307,91 +304,44 @@ func answerObject(text string, questions int) (string, error) {
 		if !ok {
 			continue // a stray brace in prose: try the next one
 		}
-		candidate := json.RawMessage(text[i : end+1])
-		if !json.Valid(candidate) {
+		if candidate := text[i : end+1]; json.Valid([]byte(candidate)) {
+			objects = append(objects, candidate)
+			i = end // what is nested in it belongs to it
+		}
+	}
+	switch len(objects) {
+	case 0:
+		return "", violation("native output contains no JSON object").as(KindNotJSON)
+	case 1:
+	default:
+		return "", violation("native output holds %d JSON objects, not one", len(objects)).as(KindAmbiguous)
+	}
+	object := objects[0]
+	if err := CheckNoDuplicateKeys([]byte(object)); err != nil {
+		return "", err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(object), &keys); err != nil {
+		return "", violation("native output is not a JSON object").as(KindNotJSON)
+	}
+	aliases := make(map[string]bool, questions)
+	for qi := 0; qi < questions; qi++ {
+		aliases[fmt.Sprintf("q%d", qi)] = true
+	}
+	answered := false
+	for key, value := range keys {
+		if aliases[key] {
+			answered = true
 			continue
 		}
-		i = end // nested objects belong to this one
-		// On the ORIGINAL text, wrapper included: decoding below keeps only the
-		// last of two equal keys, so {"answer":{..0.1..},"answer":{..0.9..}}
-		// would otherwise surface as a single, decoder-chosen answer.
-		if err := CheckNoDuplicateKeys(candidate); err != nil {
-			return "", err
-		}
-		nodes := maxAnswerNodes
-		collectAnswers(candidate, questions, maxAnswerDepth, &nodes, &found)
-	}
-	if len(found) == 0 {
-		return "", violation("native output contains no answer object").as(KindNotJSON)
-	}
-	first := canonicalJSON(found[0])
-	for _, other := range found[1:] {
-		if canonicalJSON(other) != first {
-			return "", violation("native output holds more than one answer").as(KindAmbiguous)
+		if trimmed := bytes.TrimSpace(value); len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+			return "", violation("native output nests a structure under a key that is not a question").as(KindAmbiguous)
 		}
 	}
-	return string(found[0]), nil
-}
-
-// collectAnswers appends every object at or under raw that carries a question
-// alias. An answer object is not descended into: what is under it is its own.
-func collectAnswers(raw json.RawMessage, questions, depth int, nodes *int, found *[]json.RawMessage) {
-	if depth < 0 || *nodes <= 0 {
-		return
+	if !answered {
+		return "", violation("the JSON object in the native output answers no question").as(KindNotJSON)
 	}
-	*nodes--
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 {
-		return
-	}
-	switch trimmed[0] {
-	case '{':
-		var object map[string]json.RawMessage
-		if json.Unmarshal(trimmed, &object) != nil {
-			return
-		}
-		if hasQuestionAlias(object, questions) {
-			*found = append(*found, trimmed)
-			return
-		}
-		for _, value := range object {
-			collectAnswers(value, questions, depth-1, nodes, found)
-		}
-	case '[':
-		var items []json.RawMessage
-		if json.Unmarshal(trimmed, &items) != nil {
-			return
-		}
-		for _, item := range items {
-			collectAnswers(item, questions, depth-1, nodes, found)
-		}
-	}
-}
-
-// canonicalJSON renders raw so that two documents equal in value compare equal
-// as strings: keys sorted, numbers normalized (0.80 and 0.8 agree). It is used
-// ONLY to compare candidates; extraction always reads the original text. A
-// document that will not round-trip (a number beyond float64) is returned
-// as written, which can only make two candidates look different.
-func canonicalJSON(raw json.RawMessage) string {
-	var value any
-	if json.Unmarshal(raw, &value) != nil {
-		return string(raw)
-	}
-	out, err := json.Marshal(value)
-	if err != nil {
-		return string(raw)
-	}
-	return string(out)
-}
-
-func hasQuestionAlias(keys map[string]json.RawMessage, questions int) bool {
-	for qi := 0; qi < questions; qi++ {
-		if _, ok := keys[fmt.Sprintf("q%d", qi)]; ok {
-			return true
-		}
-	}
-	return false
+	return object, nil
 }
 
 // balancedObjectEnd returns the index of the brace closing the object that

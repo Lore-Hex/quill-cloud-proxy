@@ -2,6 +2,7 @@ package decide
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -125,6 +126,14 @@ var reasoningEfforts = map[string]bool{"minimal": true, "low": true, "medium": t
 // effort string is understood everywhere. And a value nobody validates is
 // rejected by the HOST, which this route must report as its own 502: the
 // caller's typo has to be caught here, where it can be a 400 that names it.
+//
+// The contract, in full: `reasoning_effort` is an effort word. `reasoning` is
+// true, false, an effort word, or an object with `effort` and/or `enabled`.
+// Every effort word present is validated, whether or not it ends up used. An
+// explicit `enabled: false` (or `reasoning: false`) turns reasoning off
+// whatever else is said; otherwise `reasoning_effort` wins over
+// `reasoning.effort`, and `enabled: true` alone means "medium". A thinking
+// TOKEN budget is not part of this route: `max_tokens` raises the whole budget.
 func (o NativeOptions) reasoningEffort() (string, error) {
 	return RequestedReasoning(o.Reasoning, o.ReasoningEffort)
 }
@@ -133,49 +142,68 @@ func (o NativeOptions) reasoningEffort() (string, error) {
 // NativeOptions: the route uses it to tell "asks for reasoning" from the many
 // ways of writing "does not" (absent, null, false, "", "none").
 func RequestedReasoning(reasoning any, reasoningEffort string) (string, error) {
-	o := NativeOptions{Reasoning: reasoning, ReasoningEffort: reasoningEffort}
-	effort, param := strings.ToLower(strings.TrimSpace(o.ReasoningEffort)), "reasoning_effort"
-	switch requested := o.Reasoning.(type) {
+	word := func(param, text string) (string, error) {
+		effort := strings.ToLower(strings.TrimSpace(text))
+		if effort == "" || effort == "none" || reasoningEfforts[effort] {
+			return effort, nil
+		}
+		return "", bad(param, `reasoning effort must be "minimal", "low", "medium", "high" or "none"`)
+	}
+	fromField, err := word("reasoning_effort", reasoningEffort)
+	if err != nil {
+		return "", err
+	}
+	fromObject, enabled, disabled := "", false, false
+	switch requested := reasoning.(type) {
 	case nil:
 	case bool:
-		if requested && effort == "" {
-			effort = "medium"
-		}
+		enabled, disabled = requested, !requested
 	case string:
-		if effort == "" {
-			effort, param = strings.ToLower(strings.TrimSpace(requested)), "reasoning"
+		if fromObject, err = word("reasoning", requested); err != nil {
+			return "", err
 		}
 	case map[string]any:
-		for key, value := range requested {
-			switch key {
-			case "effort":
-				text, ok := value.(string)
-				if !ok {
-					return "", bad("reasoning.effort", "reasoning.effort must be a string")
-				}
-				if effort == "" {
-					effort, param = strings.ToLower(strings.TrimSpace(text)), "reasoning.effort"
-				}
-			case "enabled":
-				enabled, ok := value.(bool)
-				if !ok {
-					return "", bad("reasoning.enabled", "reasoning.enabled must be true or false")
-				}
-				if enabled && effort == "" {
-					effort = "medium"
-				}
-			default:
-				return "", bad("reasoning."+key, `reasoning accepts "effort" and "enabled"`)
+		// Fixed order, never the map's: a first version ranged over it, so
+		// {"enabled":true,"effort":"high"} was "medium" or "high" by chance and
+		// a bad effort could go unvalidated.
+		unknown := make([]string, 0, len(requested))
+		for key := range requested {
+			if key != "effort" && key != "enabled" {
+				unknown = append(unknown, key)
 			}
 		}
+		if len(unknown) > 0 {
+			sort.Strings(unknown)
+			return "", bad("reasoning."+unknown[0], `reasoning accepts "effort" and "enabled"`)
+		}
+		if value, present := requested["effort"]; present && value != nil {
+			text, ok := value.(string)
+			if !ok {
+				return "", bad("reasoning.effort", "reasoning.effort must be a string")
+			}
+			if fromObject, err = word("reasoning.effort", text); err != nil {
+				return "", err
+			}
+		}
+		if value, present := requested["enabled"]; present && value != nil {
+			flag, ok := value.(bool)
+			if !ok {
+				return "", bad("reasoning.enabled", "reasoning.enabled must be true or false")
+			}
+			enabled, disabled = flag, !flag
+		}
 	default:
-		return "", bad("reasoning", `reasoning must be true, an effort, or {"effort": ...}`)
+		return "", bad("reasoning", `reasoning must be true, false, an effort word, or {"effort": ..., "enabled": ...}`)
 	}
-	if effort == "" || effort == "none" {
+	effort := fromField
+	if effort == "" {
+		effort = fromObject
+	}
+	switch {
+	case disabled || effort == "none":
 		return "", nil
-	}
-	if !reasoningEfforts[effort] {
-		return "", bad(param, `reasoning effort must be "minimal", "low", "medium" or "high"`)
+	case effort == "" && enabled:
+		return "medium", nil
 	}
 	return effort, nil
 }

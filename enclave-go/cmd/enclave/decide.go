@@ -82,32 +82,6 @@ func writeDecideFailure(conn io.Writer, status int, message string, err error, s
 	writeErrorWithSourceHeaders(conn, status, message, "router", headers)
 }
 
-// ranRecorder wraps the model client for one native attempt and records whether
-// a provider produced ANY bytes. That, and not "did a text delta arrive", is
-// what "a model ran" means: a completion that is filtered, or carries usage and
-// no content, produces no delta and is billed all the same. Only
-// InvokeStreaming is forwarded, which is all the provider path calls.
-type ranRecorder struct {
-	inner llm.Client
-	ran   *bool
-}
-
-func (r ranRecorder) InvokeStreaming(ctx context.Context, req *types.OpenAIChatRequest, anthropicReq *types.AnthropicMessagesRequest, out io.Writer, options ...llm.InvokeOptions) error {
-	return r.inner.InvokeStreaming(ctx, req, anthropicReq, ranWriter{out, r.ran}, options...)
-}
-
-type ranWriter struct {
-	out io.Writer
-	ran *bool
-}
-
-func (w ranWriter) Write(p []byte) (int, error) {
-	if len(p) > 0 {
-		*w.ran = true
-	}
-	return w.out.Write(p)
-}
-
 type decideRequest struct {
 	Model     string                     `json:"model"`
 	State     json.RawMessage            `json:"state"`
@@ -310,11 +284,19 @@ func serveHostedDecide(
 	var upstream *llm.DecideResponse
 	var served llm.InvokeOptions
 	var err error
+	// refusedAsInvalid: did EVERY host that answered refuse the request itself
+	// (400, 413, 422)? Then it is the caller's request that is wrong -- too
+	// long for the model, say -- and a 502 would tell them to retry something
+	// that can never work. One host failing any other way leaves it unknown.
+	refusedAsInvalid := true
 	for index, candidate := range candidates {
 		upstream, err = decider.InvokeDecide(ctx, wire, candidate)
 		if err == nil {
 			served = candidate
 			break
+		}
+		if status, _ := llm.DecideErrorStatus(err); status != 400 && status != 413 && status != 422 {
+			refusedAsInvalid = false
 		}
 		// The class, never err. InvokeDecide's errors hold no upstream text by
 		// construction, and DecideErrorClass returns "unknown" for anything
@@ -329,6 +311,11 @@ func serveHostedDecide(
 		refundStatus := 502
 		if status, hasStatus := llm.DecideErrorStatus(err); hasStatus {
 			refundStatus = status
+		}
+		if refusedAsInvalid {
+			refund(refundStatus, "provider_rejected_request")
+			writeOpenAIError(conn, 400, "the decision model rejected this request as invalid; it may exceed the model's input limit", "invalid_request_error", "provider_rejected_request", "")
+			return
 		}
 		refund(refundStatus, "provider_error")
 		writeProviderError(conn, 502, "provider error")
@@ -378,7 +365,7 @@ func serveHostedDecide(
 		cancelSettle()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.decide_settle_failed model=%q error_class=%q\n", publicModel, controlPlaneErrorClass(err))
-			writeSpentError(conn, 502, "settlement failed")
+			writeDecideFailure(conn, 502, "settlement failed", err, true)
 			return
 		}
 	}
@@ -419,12 +406,16 @@ func serveNativeDecide(
 	usage := decideUsage{}
 	var lastSettlement *trustedrouter.SettleResult
 	var lastAuthorization *trustedrouter.Authorization
-	// spent: has any provider run for this request? It decides whether a
-	// failure tells the client not to retry. Token counts cannot answer that:
-	// an attempt can settle with input_tokens 0 (everything read from cache),
-	// and an attempt whose SETTLEMENT failed ran a provider and returned no
-	// usage at all. So it is tracked directly: an attempt that settled, or a
-	// provider that was seen producing output (see ranRecorder).
+	// spent: did a provider already produce a complete result for this
+	// request? That is what x-should-retry: false means (see writeSpentError):
+	// re-sending would generate, and pay for, that result again. It is true
+	// once an attempt has returned a result, and when an attempt fails AT
+	// settlement, which only happens after one. It is not inferred from
+	// anything else. Token counts were wrong (an attempt can settle with
+	// input_tokens 0, all cache reads); so were text deltas (a filtered
+	// completion has none) and bytes written (a keepalive before any
+	// generation is bytes). A provider that fails mid-stream produced no
+	// result, is refunded, and retrying it is exactly right.
 	spent := false
 	for attempt := 1; attempt <= nativeDecisionAttempts; attempt++ {
 		attemptReq := *chatReq
@@ -434,10 +425,12 @@ func serveNativeDecide(
 			attemptKey = fmt.Sprintf("%s:decide-retry-%d", idempotencyKey, attempt)
 		}
 		attemptReq.IdempotencyKey = attemptKey
-		call, err := runFusionCall(ctx, ranRecorder{br, &spent}, &attemptReq, trGateway, secretCache, bearer, decideRouteType, attemptKey, requestLogID, nil, false)
+		call, err := runFusionCall(ctx, br, &attemptReq, trGateway, secretCache, bearer, decideRouteType, attemptKey, requestLogID, nil, false)
 		if err != nil {
 			// Authorization or provider failure: runFusionCall has already
 			// refunded. Nothing about a retry would differ, so surface it.
+			var afterResult *settlementAttemptedError
+			spent = spent || errors.As(err, &afterResult)
 			writeDecideFailure(conn, nativeFailureStatus(err), messageFromControlPlaneError(err, "provider error"), err, spent)
 			return
 		}

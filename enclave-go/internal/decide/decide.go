@@ -20,7 +20,6 @@ import (
 	"io"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode"
 )
@@ -31,15 +30,13 @@ const (
 	TypeScore   = "score"
 
 	MaxQuestions = 64
-	MaxOptions   = 255 // the hosted model's documented ceiling
-	MaxNameLen   = 128
-	MaxTextLen   = 8192
-	// MaxAnswerBytes bounds the WORST-CASE answer a request can legitimately
-	// produce (see answerBytesUpperBound). The gateway reads at most twice this
-	// from a hosted model, so a request that passes Parse can never be one
-	// whose correct answer is then thrown away as oversized -- after the vendor
-	// has already been paid for it.
-	MaxAnswerBytes = 2 << 20
+	// The hosted model's documented ceilings, applied to EVERY model so that a
+	// request written against one decision model runs on any other: a choice
+	// takes up to 255 options, a score up to 10 levels.
+	MaxOptions     = 255
+	MaxScoreLevels = 10
+	MaxNameLen     = 128
+	MaxTextLen     = 8192
 	probabilityTol = 1e-6
 	// A model that reports probabilities summing to 0.97 or 1.04 is rounding;
 	// one that reports 0.4 is wrong. Normalize the former, reject the latter.
@@ -154,8 +151,8 @@ func Parse(questions map[string]Question) ([]Spec, error) {
 			if !hasJSON(q.Criteria) || json.Unmarshal(q.Criteria, &levels) != nil {
 				return nil, bad(param+".criteria", "score criteria must be an array of level labels ordered lowest to highest")
 			}
-			if len(levels) < 2 || len(levels) > MaxOptions {
-				return nil, bad(param+".criteria", "a score question needs 2-%d levels, got %d", MaxOptions, len(levels))
+			if len(levels) < 2 || len(levels) > MaxScoreLevels {
+				return nil, bad(param+".criteria", "a score question needs 2-%d levels, got %d", MaxScoreLevels, len(levels))
 			}
 			for _, level := range levels {
 				if strings.TrimSpace(level) == "" || len(level) > MaxTextLen {
@@ -168,9 +165,6 @@ func Parse(questions map[string]Question) ([]Spec, error) {
 		}
 		specs = append(specs, spec)
 	}
-	if bound := answerBytesUpperBound(specs); bound > MaxAnswerBytes {
-		return nil, bad("questions", "questions are too large: their answer could reach %d bytes, above the %d byte limit; use fewer or shorter options", bound, MaxAnswerBytes)
-	}
 	return specs, nil
 }
 
@@ -182,59 +176,6 @@ func validName(name string) bool {
 		return false
 	}
 	return !strings.ContainsFunc(name, unicode.IsControl)
-}
-
-// answerBytesUpperBound is the largest JSON answer these questions can yield
-// from any backend: each name at its worst-case wire length, a probability at
-// 32 bytes with its punctuation, the chosen option once per choice question,
-// and, for a score, each level label echoed back as the hosted `legend`.
-//
-// It has to be an upper bound without being a wild one. A first version charged
-// every byte of every name six times over and counted each option twice, which
-// put 64 questions of 255 plain `category_000` options at 2.9 MB and refused a
-// batch whose real answer is 280 KB.
-func answerBytesUpperBound(specs []Spec) int {
-	const perAnswer, perNumber = 96, 32
-	total := 64
-	for _, spec := range specs {
-		total += wireLen(spec.Name) + perAnswer
-		longest := 0
-		for index, option := range spec.Options {
-			if spec.Type == TypeScore {
-				total += len(strconv.Itoa(index)) + 2 + perNumber // probability
-				total += wireLen(option) + 8                      // legend
-				continue
-			}
-			total += wireLen(option) + perNumber
-			longest = max(longest, wireLen(option))
-		}
-		total += longest // `choice`
-	}
-	return total
-}
-
-// wireLen is the most bytes text can occupy as a JSON string, whichever encoder
-// wrote it: quotes, a two-byte escape for `"` and `\`, and \uXXXX for the
-// characters SOME encoder escapes that way -- Go for < > &, every encoder for
-// control characters, an ASCII-only encoder (Python's default) for anything
-// outside ASCII, as a surrogate pair beyond the BMP.
-func wireLen(text string) int {
-	n := 2
-	for _, r := range text {
-		switch {
-		case r == '"' || r == '\\':
-			n += 2
-		case r < 0x20 || r == 0x7f || r == '<' || r == '>' || r == '&':
-			n += 6
-		case r < 0x80:
-			n++
-		case r <= 0xFFFF:
-			n += 6
-		default:
-			n += 12
-		}
-	}
-	return n
 }
 
 func hasJSON(raw json.RawMessage) bool {
@@ -297,13 +238,21 @@ func ViolationKind(err error) string {
 //   - boolean: only `probability`, finite, within [0,1];
 //   - choice: `probabilities` keyed by EXACTLY the declared options, each in
 //     [0,1], mass ~1; `choice` is a declared option and is the argmax;
-//   - score: `probabilities` keyed by EXACTLY "0".."n-1", mass ~1; `score` is
-//     their expectation and lies in [0, n-1].
+//   - score: `probabilities` keyed by EXACTLY "0".."n-1", mass ~1; a `score`
+//     is present and lies in [0, n-1].
 //
 // Mass within massTolerance of 1 is renormalized (models round); anything
-// further off is rejected rather than silently repaired. Derived fields
-// (choice, score) are recomputed from the distribution, and a backend value
-// that disagrees with the recomputation is a violation, not an override.
+// further off is rejected rather than silently repaired.
+//
+// The DISTRIBUTION is the answer; `choice` and `score` are derived from it. A
+// backend's `choice` must be an argmax of its own distribution (exact, so there
+// is nothing to tune). Its `score` is NOT compared with the distribution's
+// mean: the score returned is always the mean this function computes, for
+// every backend, so the caller's answer is self-consistent by construction.
+// Three versions of a "does the vendor's score agree with its probabilities"
+// allowance were each shown wrong in both directions, because the vendor rounds
+// both and rounding on a 10-level scale is as large as any disagreement worth
+// catching. A check whose every setting is wrong is not a check.
 func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) {
 	if len(answers) != len(specs) {
 		return nil, violation("expected %d answers, got %d", len(specs), len(answers)).as(KindCount)
@@ -331,7 +280,7 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 			if answer.Probability != nil || answer.Score != nil {
 				return nil, violation("choice answer %q carries fields of another type", spec.Name).as(KindType)
 			}
-			dist, _, err := distribution(spec.Options, answer.Probabilities)
+			dist, err := distribution(spec.Options, answer.Probabilities)
 			if err != nil {
 				return nil, violation("choice answer %q: %v", spec.Name, err).as(kindOf(err))
 			}
@@ -355,7 +304,7 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 			for i := range spec.Options {
 				rungs[i] = fmt.Sprintf("%d", i)
 			}
-			dist, reported, err := distribution(rungs, answer.Probabilities)
+			dist, err := distribution(rungs, answer.Probabilities)
 			if err != nil {
 				return nil, violation("score answer %q: %v", spec.Name, err).as(kindOf(err))
 			}
@@ -366,32 +315,9 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 			if answer.Score == nil {
 				return nil, violation("score answer %q has no score", spec.Name).as(KindDerived)
 			}
-			// The backend's own score must agree with its own distribution, up
-			// to what honest arithmetic explains. There are exactly two sources,
-			// and the allowance is their size, not a guess:
-			//
-			//   renormalizing  the mean of p/m is the mean of p over m, so mass
-			//                  m moves it by exactly mean x |1-m|;
-			//   rounding       probabilities written to k decimals are each off
-			//                  by at most half a unit, which moves the mean by at
-			//                  most 0.5e-k x (0+1+...+(n-1)).
-			//
-			// The second term grows with the SQUARE of the scale, and that is
-			// not slack: 0.9 on level 0 of 255 with 0.0004 on every other level
-			// has a mean near 13 and rounds, at three decimals, to "all mass on
-			// 0". A backend reporting that with score 13 is not contradicting
-			// itself. On the scales people actually use the same rule is tight:
-			// five levels at two decimals allows 0.10.
-			//
-			// What is returned is always the mean of the returned distribution,
-			// so an answer that passes is self-consistent either way. Wrongly
-			// refusing a good answer costs the caller a 502; this check exists to
-			// catch a backend that is broken, not to referee rounding.
-			levels := float64(len(rungs))
-			halfUnit := 0.5 * math.Pow(10, -float64(reported.decimals))
-			allowed := 0.05 + expected*math.Abs(1-reported.mass) + halfUnit*levels*(levels-1)/2
-			if math.IsNaN(*answer.Score) || math.Abs(*answer.Score-expected) > allowed {
-				return nil, violation("score answer %q reports %.4f but its distribution implies %.4f", spec.Name, *answer.Score, expected).as(KindDerived)
+			top := float64(len(rungs) - 1)
+			if math.IsNaN(*answer.Score) || *answer.Score < -probabilityTol || *answer.Score > top+probabilityTol {
+				return nil, violation("score answer %q reports %v, outside [0,%v]", spec.Name, *answer.Score, top).as(KindRange)
 			}
 			score := math.Round(expected*100) / 100
 			out[spec.Name] = Answer{Type: TypeScore, Score: &score, Probabilities: dist}
@@ -410,45 +336,31 @@ func unit(p float64) (float64, error) {
 	return math.Min(1, math.Max(0, p)), nil
 }
 
-// asReported describes a distribution before normalization: the mass it summed
-// to, and the most decimal places any probability was written with (clamped to
-// 2..6: nobody rounds coarser than cents, and beyond six the term vanishes).
-type asReported struct {
-	mass     float64
-	decimals int
-}
-
-// distribution returns the normalized distribution and how it was reported.
-func distribution(keys []string, raw map[string]float64) (map[string]float64, asReported, error) {
-	none := asReported{}
+func distribution(keys []string, raw map[string]float64) (map[string]float64, error) {
 	if len(raw) != len(keys) {
-		return nil, none, kinded(KindOptions, "expected probabilities for %d options, got %d", len(keys), len(raw))
+		return nil, kinded(KindOptions, "expected probabilities for %d options, got %d", len(keys), len(raw))
 	}
-	decimals := 2
 	total := 0.0
 	clean := make(map[string]float64, len(keys))
 	for _, key := range keys {
 		value, ok := raw[key]
 		if !ok {
-			return nil, none, kinded(KindOptions, "no probability for %q", key)
+			return nil, kinded(KindOptions, "no probability for %q", key)
 		}
 		p, err := unit(value)
 		if err != nil {
-			return nil, none, kinded(kindOf(err), "option %q: %v", key, err)
-		}
-		if _, fraction, found := strings.Cut(strconv.FormatFloat(value, 'f', -1, 64), "."); found {
-			decimals = max(decimals, len(fraction))
+			return nil, kinded(kindOf(err), "option %q: %v", key, err)
 		}
 		clean[key] = p
 		total += p
 	}
 	if math.Abs(total-1) > massTolerance {
-		return nil, none, kinded(KindMass, "probabilities sum to %.4f, not 1", total)
+		return nil, kinded(KindMass, "probabilities sum to %.4f, not 1", total)
 	}
 	for key := range clean {
 		clean[key] /= total
 	}
-	return clean, asReported{mass: total, decimals: min(decimals, 6)}, nil
+	return clean, nil
 }
 
 // CheckNoDuplicateKeys rejects JSON in which any object repeats a key, at any

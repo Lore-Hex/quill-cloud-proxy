@@ -1828,6 +1828,18 @@ func runFusionCallValidatedObserved(
 	return runFusionCallValidatedObservedAttempt(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, observer, streamed, true, 0)
 }
 
+// settlementAttemptedError marks a failure that happened AFTER the provider
+// produced a complete result: settlement was attempted and did not succeed.
+// That is the one thing a caller of this function cannot otherwise tell from
+// the error -- an authorization failure and a settlement failure are both
+// control-plane errors -- and it is exactly what x-should-retry needs to know.
+// Identity only: the message is the inner error's and Unwrap exposes it, so
+// every errors.As / errors.Is on the result behaves as before.
+type settlementAttemptedError struct{ err error }
+
+func (e *settlementAttemptedError) Error() string { return e.err.Error() }
+func (e *settlementAttemptedError) Unwrap() error { return e.err }
+
 func runFusionCallValidatedObservedAttempt(
 	ctx context.Context,
 	br llm.Client,
@@ -1972,7 +1984,7 @@ func runFusionCallValidatedObservedAttempt(
 	}
 	settleResult, err := settleAndBroadcast(ctx, trGateway, authz, secretCache, usage, req, inputForBroadcast, outputForBroadcast)
 	if err != nil {
-		return fusionCallResult{}, err
+		return fusionCallResult{}, &settlementAttemptedError{err}
 	}
 	elapsedMS := time.Since(requestStarted).Milliseconds()
 	if selectedModel == "" && authz != nil {
