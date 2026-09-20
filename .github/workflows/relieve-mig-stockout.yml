@@ -1,0 +1,202 @@
+# Operator-triggered. Moves one region's enclave VMs out of a ZONE that has no
+# capacity, so that the deploy workflow can roll that region again.
+#
+# Why (2026-09-20): the enclave groups roll with the SUBSTITUTE replacement
+# method, and Google creates each replacement in the SAME zone as the VM it
+# replaces, capacity or not (a BALANCED shape does not change that for an
+# update). us-central1-c ran out of c3-standard-4 TDX; the rollout's 15-minute
+# stable wait timed out and every deploy of a healthy build was rolled back.
+# Google's documented mitigation is to get the VM out of the constrained zone.
+# tools/relieve-mig-stockout.py does it add-first: a replacement is added and
+# must ATTEST, asked for by name, before the VM in the dead zone is deleted.
+#
+# The tool keeps no state and never CHOOSES a VM to delete. If a run fails, is
+# cancelled, or its runner dies before the deletion, the group is simply left
+# one VM larger, which is safe. Run this again with the same inputs and it
+# resumes; or use mode "remove-vm" to delete the extra VM you name, which it
+# does only after proving that the VMs left behind attest.
+#
+# It shares the deploy workflow's concurrency group, so it can never run while a
+# rollout (or a scheduled DNS reconcile) is touching the same groups.
+#
+# DNS. A VM that is about to be deleted is first taken out of the canonical
+# answer, exactly the way a deploy does it: a ROLLOUT-origin drain of the region
+# (tools/reconcile-enclave-dns.py never lets one overwrite an operator's drain),
+# then one TTL of waiting. The drain is set only once the replacement attests,
+# so the region is out of the answer for minutes, not for the whole run. It is
+# cleared by the deploy's own finalizer, tools/cleanup-enclave-rollout-drains.sh,
+# which clears a rollout-origin drain of ANY run, but only for a region whose
+# group is stable and whose VMs all attest. So a drain this run could not clear
+# (a dead runner) is cleared by the next run of this workflow or the next
+# deploy, and meanwhile the other regions serve, as they do during every deploy.
+name: Relieve enclave MIG zone stockout
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: Region whose group has a VM in a zone with no capacity
+        required: true
+        type: choice
+        options: [us-central1, europe-west4, us-east4]
+      zone:
+        description: The zone with no capacity, e.g. us-central1-c
+        required: true
+        type: string
+      target_size:
+        description: The size the group is meant to have (TARGET_SIZE in tools/deploy-gcp-mig.sh)
+        required: true
+        default: "2"
+        type: string
+      mode:
+        description: relieve (start or resume), or remove-vm (delete the one VM named below)
+        required: true
+        default: relieve
+        type: choice
+        options: [relieve, remove-vm]
+      vm:
+        description: "remove-vm only: the VM to delete, e.g. quill-enclave-mig-us-ab12"
+        required: false
+        type: string
+
+concurrency:
+  group: deploy-enclave-gcp
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # Workload Identity Federation
+  contents: read
+
+jobs:
+  relieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      REGION: ${{ inputs.region }}
+      ZONE: ${{ inputs.zone }}
+      TARGET_SIZE: ${{ inputs.target_size }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: Authenticate to AWS for backup-domain DNS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Resolve the group
+        id: group
+        run: |
+          set -euo pipefail
+          mig="$(awk -F: -v region="${REGION}" '$1 == region {print $2}' tools/gcp-enclave-migs.txt)"
+          if [ -z "${mig}" ]; then
+            echo "no enclave group is listed for ${REGION} in tools/gcp-enclave-migs.txt" >&2
+            exit 1
+          fi
+          echo "mig=${mig}" >> "$GITHUB_OUTPUT"
+          echo "group: ${mig}"
+
+      - name: Check the inputs
+        env:
+          MODE: ${{ inputs.mode }}
+          VM: ${{ inputs.vm }}
+        run: |
+          set -euo pipefail
+          if [ "${MODE}" = "remove-vm" ] && [ -z "${VM}" ]; then
+            echo "mode remove-vm needs the vm input" >&2
+            exit 2
+          fi
+
+      - name: Add the replacement and wait until it attests
+        id: prepare
+        if: ${{ inputs.mode == 'relieve' }}
+        env:
+          MIG: ${{ steps.group.outputs.mig }}
+        # Exit 2 = refused, nothing changed. Exit 1 = failed; nothing was
+        # deleted, and the group may be enlarged, which is safe: run this again.
+        # Prints "nothing" when no VM of the group is in the zone.
+        run: |
+          set -euo pipefail
+          outcome="$(python3 tools/relieve-mig-stockout.py relieve \
+            "${MIG}" "${REGION}" "${ZONE}" --target-size "${TARGET_SIZE}" --prepare-only)"
+          echo "outcome: ${outcome}"
+          echo "outcome=${outcome}" >> "$GITHUB_OUTPUT"
+
+      - name: Drain the region from canonical API DNS
+        if: ${{ steps.prepare.outputs.outcome == 'ready' || inputs.mode == 'remove-vm' }}
+        env:
+          QUILL_RECONCILE_APPLY: "1"
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
+          QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
+        run: |
+          set -euo pipefail
+          uv run --script tools/reconcile-enclave-dns.py \
+            --set-drain-region "${REGION}" \
+            --drain-origin rollout \
+            --github-run-id "${GITHUB_RUN_ID}"
+          uv run --script tools/reconcile-enclave-dns.py --apply
+          python3 tools/sync-route53-api-aliases.py --apply
+          bash tools/wait-canonical-drained.sh "${REGION}"
+
+      - name: Delete the VM in the zone
+        if: ${{ steps.prepare.outputs.outcome == 'ready' }}
+        env:
+          MIG: ${{ steps.group.outputs.mig }}
+        # The same command without --prepare-only: it resumes, proves afresh
+        # that every VM outside the zone attests, deletes, and verifies.
+        run: |
+          python3 tools/relieve-mig-stockout.py relieve \
+            "${MIG}" "${REGION}" "${ZONE}" --target-size "${TARGET_SIZE}"
+
+      - name: Remove the named VM
+        if: ${{ inputs.mode == 'remove-vm' }}
+        env:
+          MIG: ${{ steps.group.outputs.mig }}
+          VM: ${{ inputs.vm }}
+        run: |
+          python3 tools/relieve-mig-stockout.py remove-vm \
+            "${MIG}" "${REGION}" "${VM}" --target-size "${TARGET_SIZE}"
+
+      - name: Refresh AWS credentials for the final DNS pass
+        if: ${{ always() && steps.group.outcome == 'success' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Clear the drain if the region is healthy, and reconcile DNS
+        # The deploy's finalizer. It clears rollout-origin drains (this run's or
+        # a stale one) only for a region whose group is stable and whose VMs all
+        # attest, never an operator's drain, and it applies DNS either way: the
+        # deleted VM's address goes, the replacement's is published.
+        if: ${{ always() && steps.group.outcome == 'success' }}
+        env:
+          QUILL_API_HOST: api.trustedrouter.com
+          QUILL_DNS_ZONE: trustedrouter-com
+          QUILL_PUBLISH_REGIONAL: "1"
+          QUILL_REGIONAL_ZONE: quillrouter-com
+          QUILL_REGIONAL_SUFFIX: quillrouter.com
+        run: |
+          status=0
+          bash tools/cleanup-enclave-rollout-drains.sh || status=$?
+          python3 tools/sync-route53-api-aliases.py --apply || status=$?
+          exit "${status}"
+
+      - name: Show the result
+        if: ${{ always() && steps.group.outcome == 'success' }}
+        run: |
+          gcloud compute instance-groups managed list-instances "${{ steps.group.outputs.mig }}" \
+            --region="${REGION}" --project=quill-cloud-proxy \
+            --format='table(instance.basename(),instance.scope().segment(0),instanceStatus,currentAction,version.instanceTemplate.basename())'
+          gcloud compute instance-groups managed describe "${{ steps.group.outputs.mig }}" \
+            --region="${REGION}" --project=quill-cloud-proxy \
+            --format='value(targetSize,status.isStable,distributionPolicy.targetShape)'
