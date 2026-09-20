@@ -247,7 +247,7 @@ func TestVerifyReturnsTheMeanOfTheDistributionWhateverTheBackendReported(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := *out["rate"].Score, math.Round(reported/0.97*100)/100; got != want {
+	if got, want := *out["rate"].Score, math.Round(reported/0.97*1e6)/1e6; got != want {
 		t.Fatalf("score = %v, want the mean of the RETURNED distribution %v", got, want)
 	}
 }
@@ -446,5 +446,27 @@ func TestVerifyChoiceIsExactlyAnArgmax(t *testing.T) {
 	// ...including a tie that is only exact after normalizing a rounded mass.
 	if err := verify("a", 0.49, 0.49); err != nil {
 		t.Fatalf("a tie at mass 0.98: %v", err)
+	}
+}
+
+func TestVerifyKeepsASmallMeanSmallNotZero(t *testing.T) {
+	// Rounded to two decimals this mean came back as 0: a different answer to
+	// anyone thresholding on the score.
+	reported := 0.004
+	out, err := Verify(scoreSpec(t, 2), map[string]Answer{"rate": {Type: TypeScore, Score: &reported, Probabilities: map[string]float64{"0": 0.996, "1": 0.004}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := *out["rate"].Score; got != 0.004 {
+		t.Fatalf("score = %v, want the distribution's mean 0.004", got)
+	}
+	// ...while float noise is still not handed to the caller.
+	third := 1.0 / 3.0
+	out, err = Verify(scoreSpec(t, 3), map[string]Answer{"rate": {Type: TypeScore, Score: f(1), Probabilities: map[string]float64{"0": third, "1": third, "2": third}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := *out["rate"].Score; got != 1 {
+		t.Fatalf("score = %.17g, want exactly 1", got)
 	}
 }

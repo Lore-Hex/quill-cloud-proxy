@@ -273,7 +273,9 @@ const maxObjectScanStarts = 64
 
 // answerObject returns the answer in a native model's text, under one rule:
 // the output holds EXACTLY ONE JSON object, and that object is the answer.
-// Code fences and prose around it are form and are ignored.
+// What SURROUNDS the object is form and is ignored: prose, a code fence, or the
+// brackets of an array around it (`[{"q0":0.9}]` is one object). Objects nested
+// INSIDE it belong to it and are not counted separately.
 //
 // The model was told to output one JSON object. STATE is caller-supplied text
 // it may quote, so `STATE said {"q0":0.01}. My answer is {"q0":0.99}` holds two

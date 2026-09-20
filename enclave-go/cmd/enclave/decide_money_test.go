@@ -673,3 +673,119 @@ func TestNativeDecideNeverRegeneratesAfterSettlementWasAttempted(t *testing.T) {
 		t.Fatal("fixture: settlement was never attempted")
 	}
 }
+
+// refusesAndCancelsOnTheLast refuses on every host, and the request's context
+// goes away as the LAST one answers.
+type refusesAndCancelsOnTheLast struct {
+	cancel context.CancelFunc
+	hosts  int
+	called int
+}
+
+func (r *refusesAndCancelsOnTheLast) InvokeStreaming(context.Context, *types.OpenAIChatRequest, *types.AnthropicMessagesRequest, io.Writer, ...llm.InvokeOptions) error {
+	panic("the hosted decision path must never call the chat client")
+}
+
+func (r *refusesAndCancelsOnTheLast) InvokeDecide(context.Context, *llm.DecideRequest, ...llm.InvokeOptions) (*llm.DecideResponse, error) {
+	r.called++
+	if r.called == r.hosts {
+		r.cancel()
+	}
+	return nil, &llm.DecideError{Provider: "p", Class: llm.DecideErrHTTP, Status: 422}
+}
+
+func TestHostedDecideEveryHostRefusingIsA400EvenIfTheRequestIsThenCancelled(t *testing.T) {
+	// Both hosts were asked and both said 422. A cancellation arriving with the
+	// last answer changes nothing about that. (Clearing the verdict on ANY
+	// cancellation made this a 502.)
+	plane := &faultyControlPlane{hosted: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	backend := &refusesAndCancelsOnTheLast{cancel: cancel, hosts: 2}
+	status, raw := rawDecide(ctx, backend, plane.serve(t), fmt.Sprintf(hostedBody, ""))
+	if backend.called != 2 || status != 400 {
+		t.Fatalf("hosts asked=%d status=%d, want 2 and 400\n%s", backend.called, status, raw)
+	}
+	if plane.log.refund != 1 {
+		t.Fatalf("refund=%d, want 1 (and it must leave despite the cancellation)", plane.log.refund)
+	}
+}
+
+// cancelAfterAuthorize is the control-plane transport for a request whose
+// context is cancelled the moment its authorization has been fully received:
+// what a draining gateway does to a request that is between two steps.
+type cancelAfterAuthorize struct {
+	inner  http.RoundTripper
+	cancel context.CancelFunc
+}
+
+func (c cancelAfterAuthorize) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := c.inner.RoundTrip(request)
+	if err != nil || !strings.HasSuffix(request.URL.Path, "/authorize") {
+		return response, err
+	}
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	response.Body = io.NopCloser(bytes.NewReader(body)) // already in memory: reading it cannot fail
+	c.cancel()
+	return response, nil
+}
+
+func TestNativeDecideRefundsAKeyFailureAfterTheRequestWasCancelled(t *testing.T) {
+	// A bring-your-own-key route whose key cannot be resolved is refunded by the
+	// shared authorize step -- on the request's own context, until now, so a
+	// cancellation between the two steps stranded the hold.
+	var refunds atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if strings.HasSuffix(request.URL.Path, "/refund") {
+			refunds.Add(1)
+			_, _ = fmt.Fprint(w, `{"data":{"refunded":true}}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"data":{"authorization_id":"auth_b","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-oss-20b","endpoint_id":"e@p/byok","provider":"deepinfra","upstream_model":"gpt-oss-20b","usage_type":"BYOK","limit_usage_type":"BYOK","route_candidates":[]}}`)
+	}))
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &http.Client{Transport: cancelAfterAuthorize{inner: server.Client().Transport, cancel: cancel}}
+	backend := &usageScriptedLLM{replies: []string{goodNative, goodNative}, inputTokens: 400}
+	status, raw := rawDecide(ctx, backend, trustedrouter.New(server.URL, "internal-token", client), nativeBody)
+	if backend.calls != 0 {
+		t.Fatalf("fixture: the key should not have resolved, yet a provider was called %d times", backend.calls)
+	}
+	if status < 500 {
+		t.Fatalf("status %d\n%s", status, raw)
+	}
+	if got := refunds.Load(); got == 0 {
+		t.Fatal("no refund reached the control plane: the hold is stranded until it is reaped")
+	}
+}
+
+// stopsThenErrors delivers a complete answer and its terminal event, and only
+// then fails: an HTTP body that ends badly after everything has arrived.
+type stopsThenErrors struct{ calls int }
+
+func (b *stopsThenErrors) InvokeStreaming(_ context.Context, _ *types.OpenAIChatRequest, _ *types.AnthropicMessagesRequest, out io.Writer, _ ...llm.InvokeOptions) error {
+	b.calls++
+	if err := (&usageScriptedLLM{replies: []string{goodNative}, inputTokens: 400}).InvokeStreaming(context.Background(), nil, nil, out); err != nil {
+		return err
+	}
+	return io.ErrUnexpectedEOF
+}
+
+func TestNativeDecideUsesACompleteGenerationDespiteALateTransportError(t *testing.T) {
+	// Deliberate, and written down so it stays that way: the generation reached
+	// `message_stop`, so it is complete. The answer is used and billed once.
+	plane := &faultyControlPlane{}
+	backend := &stopsThenErrors{}
+	status, raw := rawDecide(context.Background(), backend, plane.serve(t), nativeBody)
+	if status != 200 || backend.calls != 1 {
+		t.Fatalf("status %d after %d provider calls\n%s", status, backend.calls, raw)
+	}
+	if len(plane.log.settle) != 1 || plane.log.refund != 0 {
+		t.Fatalf("settle=%d refund=%d, want 1/0", len(plane.log.settle), plane.log.refund)
+	}
+}

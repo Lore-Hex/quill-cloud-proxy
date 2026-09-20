@@ -324,7 +324,10 @@ func Verify(specs []Spec, answers map[string]Answer) (map[string]Answer, error) 
 			if math.IsNaN(*answer.Score) || *answer.Score < -probabilityTol || *answer.Score > top+probabilityTol {
 				return nil, violation("score answer %q reports %v, outside [0,%v]", spec.Name, *answer.Score, top).as(KindRange)
 			}
-			score := math.Round(expected*100) / 100
+			// Six decimals: enough to drop float noise (1.5999999999999999), not
+			// enough to move the value. Two decimals turned a mean of 0.004 into
+			// 0, which is a different answer to anyone thresholding on it.
+			score := math.Round(expected*1e6) / 1e6
 			out[spec.Name] = Answer{Type: TypeScore, Score: &score, Probabilities: dist}
 		}
 	}

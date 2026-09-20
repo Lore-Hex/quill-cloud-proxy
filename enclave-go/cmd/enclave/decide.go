@@ -110,6 +110,11 @@ func (g *generationRecorder) Write(p []byte) {
 // provider that did not finish: no terminal event, an error event, or a finish
 // with nothing written at all (a filtered or errored completion that a stream
 // translator closed with a synthetic stop).
+//
+// The converse is deliberate too. A provider client that returns an error
+// AFTER its stream reached `message_stop` -- the HTTP body ending badly once
+// everything has arrived -- delivered a complete generation. The answer is
+// used and billed once; the late error changes nothing the caller was owed.
 func (g *generationRecorder) complete(result adapter.StreamResult) error {
 	if !g.sawStop || g.sawError || strings.TrimSpace(result.Text) == "" {
 		return errNoGeneration
@@ -396,9 +401,12 @@ func serveHostedDecide(
 		fmt.Fprintf(os.Stderr, "enclave.decide_host_failed model=%q provider=%q attempt=%d of=%d error_class=%q\n",
 			publicModel, candidate.Provider, index+1, len(candidates), llm.DecideErrorClass(err))
 		if ctx.Err() != nil {
-			// The remaining hosts were never asked, so nobody can say they
-			// would have refused it too.
-			refusedAsInvalid = false
+			// Hosts that were never asked cannot be said to have refused it.
+			// When this WAS the last host, every one of them has spoken, and a
+			// cancellation arriving with its answer changes nothing.
+			if index < len(candidates)-1 {
+				refusedAsInvalid = false
+			}
 			break
 		}
 	}

@@ -1835,12 +1835,18 @@ func runFusionCallValidatedObserved(
 // caller's hold until the control plane reaps it. Same shape as the image
 // route's refund and the hosted decide path.
 func refundFusionCall(ctx context.Context, trGateway *trustedrouter.Client, authz *trustedrouter.Authorization, status int, reason string, started time.Time, metadata map[string]any) {
+	refundFusionCallAfter(ctx, trGateway, authz, status, reason, time.Since(started).Seconds(), metadata)
+}
+
+// refundFusionCallAfter is refundFusionCall for a caller that reports its own
+// elapsed time.
+func refundFusionCallAfter(ctx context.Context, trGateway *trustedrouter.Client, authz *trustedrouter.Authorization, status int, reason string, elapsedSeconds float64, metadata map[string]any) {
 	if trGateway == nil || !trGateway.Enabled() {
 		return
 	}
 	refundCtx, cancel := finalizeContext(ctx)
 	defer cancel()
-	_ = trGateway.Refund(refundCtx, authz, status, reason, time.Since(started).Seconds(), metadata)
+	_ = trGateway.Refund(refundCtx, authz, status, reason, elapsedSeconds, metadata)
 }
 
 // settlementAttemptedError marks a failure that happened AFTER the provider
@@ -2052,9 +2058,7 @@ func serveFusionFinalStreaming(
 		}
 		anthropicReq, err := adapter.ToAnthropic(finalReq, finalReq.Model)
 		if err != nil {
-			if trGateway != nil && trGateway.Enabled() {
-				_ = trGateway.Refund(ctx, authz, 400, "fusion_adapter_error", 0.001, finalReq.Metadata)
-			}
+			refundFusionCallAfter(ctx, trGateway, authz, 400, "fusion_adapter_error", 0.001, finalReq.Metadata)
 			lastErr = err
 			continue
 		}
@@ -2262,9 +2266,7 @@ func serveFusionFinalStreamingAttempt(
 		n, err = pr.Read(first)
 	}
 	if err != nil {
-		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
-		}
+		refundFusionCallAfter(ctx, trGateway, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		_ = pr.Close()
 		return false, err
 	}
@@ -2284,9 +2286,7 @@ func serveFusionFinalStreamingAttempt(
 	result, err := adapter.TransformStreamCaptureWithOptions(reader, statsW, responseID, req.Model, chatIncludeUsage(req))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
-		if trGateway != nil && trGateway.Enabled() {
-			_ = trGateway.Refund(ctx, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
-		}
+		refundFusionCallAfter(ctx, trGateway, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		if statsW.BytesWritten() == 0 {
 			_ = writeStreamingProviderError(statsW, "chat.completions", responseID, req.Model, err, false)
 		}
@@ -2574,7 +2574,7 @@ func authorizeFusionCall(
 	}
 	options, err := invokeOptionsForAuthorization(ctx, secretCache, authz)
 	if err != nil {
-		_ = trGateway.Refund(ctx, authz, 502, "byok_secret_error", 0.001, req.Metadata)
+		refundFusionCallAfter(ctx, trGateway, authz, 502, "byok_secret_error", 0.001, req.Metadata)
 		return authz, nil, err
 	}
 	return authz, options, nil
