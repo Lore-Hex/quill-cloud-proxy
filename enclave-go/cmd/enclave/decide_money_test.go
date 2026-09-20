@@ -789,3 +789,42 @@ func TestNativeDecideUsesACompleteGenerationDespiteALateTransportError(t *testin
 		t.Fatalf("settle=%d refund=%d, want 1/0", len(plane.log.settle), plane.log.refund)
 	}
 }
+
+// diesAfterTheStopLine finishes a generation -- text, then the stop event's
+// `event:` line -- and then the transport fails before the event's data line.
+type diesAfterTheStopLine struct{ calls int }
+
+func (b *diesAfterTheStopLine) InvokeStreaming(_ context.Context, _ *types.OpenAIChatRequest, _ *types.AnthropicMessagesRequest, out io.Writer, _ ...llm.InvokeOptions) error {
+	b.calls++
+	text, _ := json.Marshal(goodNative)
+	_, _ = fmt.Fprintf(out, `event: message_start
+data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":400,"output_tokens":0}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%s}}
+
+event: message_stop
+`, text)
+	return io.ErrUnexpectedEOF
+}
+
+func TestNativeDecideRemembersAGenerationThatFinishedAndWasLost(t *testing.T) {
+	// The shared collector reports the transport error and drops the text, so
+	// each attempt is refunded and the other runs. But a generation was finished
+	// and paid for both times, and the final 502 used to invite a third.
+	plane := &faultyControlPlane{}
+	backend := &diesAfterTheStopLine{}
+	status, raw := rawDecide(context.Background(), backend, plane.serve(t), nativeBody)
+	if status != 502 || !saysDoNotRetry(raw) {
+		t.Fatalf("status %d, do-not-retry=%v\n%s", status, saysDoNotRetry(raw), raw)
+	}
+	if backend.calls != nativeDecisionAttempts || plane.log.refund != nativeDecisionAttempts || len(plane.log.settle) != 0 {
+		t.Fatalf("calls=%d refund=%d settle=%d: the caller is billed for nothing", backend.calls, plane.log.refund, len(plane.log.settle))
+	}
+	// A provider that never finished anything still invites the retry.
+	unfinished := &faultyControlPlane{}
+	status, raw = rawDecide(context.Background(), keepaliveThenFail{}, unfinished.serve(t), nativeBody)
+	if status != 502 || saysDoNotRetry(raw) {
+		t.Fatalf("status %d, do-not-retry=%v: nothing was ever generated", status, saysDoNotRetry(raw))
+	}
+}

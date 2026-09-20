@@ -83,6 +83,7 @@ type generationRecorder struct {
 	overflow bool   // the current line is longer than that
 	sawStop  bool
 	sawError bool
+	sawDelta bool // a content delta arrived: the generation wrote something
 }
 
 const eventLinePrefix = 64
@@ -112,6 +113,8 @@ func (g *generationRecorder) Write(p []byte) {
 				return
 			case "event: error":
 				g.sawError = true
+			case "event: content_block_delta":
+				g.sawDelta = true
 			}
 		}
 		g.line, g.overflow = g.line[:0], false
@@ -136,6 +139,15 @@ func (g *generationRecorder) complete(result adapter.StreamResult) error {
 		return errNoGeneration
 	}
 	return nil
+}
+
+// finishedGeneration reports whether the provider's stream carried a whole
+// generation -- content, no error, its terminal event -- whether or not anyone
+// then managed to read it. A stop with nothing before it is not one.
+func (g *generationRecorder) finishedGeneration() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.sawStop && g.sawDelta && !g.sawError
 }
 
 // recordingClient is the model client for one native attempt, with its output
@@ -559,6 +571,14 @@ func serveNativeDecide(
 			// A control-plane verdict is different: no credit, a key limit, a
 			// failed settlement. Asking again changes nothing, so it is
 			// surfaced.
+			// One thin case sits between "finished" and "failed": the transport
+			// dies after the provider's `event: message_stop` line and before
+			// the collector has the event's data. The collector reports a
+			// transport error and drops the text, so the attempt is refunded and
+			// the other one runs like any provider failure -- but a generation
+			// WAS finished and paid for, so if this request ends in failure the
+			// client is told not to regenerate it.
+			spent = spent || recorder.finishedGeneration()
 			if !atSettlement && !errors.As(err, &verdict) && attempt < nativeDecisionAttempts {
 				fmt.Fprintf(os.Stderr, "enclave.decide_no_generation model=%q attempt=%d error_class=%q\n", req.Model, attempt, errorClass(err))
 				continue

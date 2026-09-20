@@ -115,3 +115,26 @@ func TestGenerationRecorderIsSafeWhileTheProviderIsStillWriting(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerationRecorderKnowsAFinishedGenerationFromItsParts(t *testing.T) {
+	// "A finished generation" decides whether a lost attempt tells the client not
+	// to regenerate it, so each of its three parts has to matter.
+	const delta = "event: content_block_delta\ndata: {}\n\n"
+	const stop = "event: message_stop\ndata: {}\n\n"
+	const failure = "event: error\ndata: {}\n\n"
+	for label, tc := range map[string]struct {
+		stream string
+		want   bool
+	}{
+		"content, then the stop":            {delta + stop, true},
+		"the stop line alone, data missing": {delta + "event: message_stop\n", true},
+		"a stop with nothing before it":     {stop, false},
+		"content and no stop":               {delta, false},
+		"content, an error, then a stop":    {delta + failure + stop, false},
+		"an error after the stop":           {delta + stop + failure, true},
+	} {
+		if got := recorded(tc.stream).finishedGeneration(); got != tc.want {
+			t.Errorf("%s: finishedGeneration = %v, want %v", label, got, tc.want)
+		}
+	}
+}
