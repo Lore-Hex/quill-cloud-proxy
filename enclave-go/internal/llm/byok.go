@@ -1844,8 +1844,10 @@ func normalizeDirectProvider(provider string) string {
 		return "grok"
 	case "novita", "novita-ai":
 		return "novita"
-	case "phala", "redpill", "red-pill":
+	case "phala":
 		return "phala"
+	case "redpill", "red-pill":
+		return "redpill"
 	case "silicon-flow", "siliconflow":
 		return "siliconflow"
 	case "tinfoil", "tinfoil-sh":

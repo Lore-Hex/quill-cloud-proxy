@@ -25,6 +25,10 @@ type Spec struct {
 }
 
 var specs = [...]Spec{
+	{Provider: "redpill", BaseURL: "https://api.redpill.ai/v1", SecretEnv: "QUILL_REDPILL_SECRET", SecretName: "trustedrouter-redpill-api-key", SecretLabel: "Redpill key"},
+	{Provider: "meta-direct", BaseURL: "https://api.meta.ai/v1", SecretEnv: "QUILL_META_DIRECT_SECRET", SecretName: "trustedrouter-meta-direct-api-key", SecretLabel: "Meta direct key"},
+	{Provider: "general-compute", BaseURL: "https://api.generalcompute.com/v1", SecretEnv: "QUILL_GENERAL_COMPUTE_SECRET", SecretName: "trustedrouter-general-compute-api-key", SecretLabel: "General Compute key"},
+	{Provider: "infomaniak", BaseURL: "https://api.infomaniak.com/2/ai/111565/openai/v1", SecretEnv: "QUILL_INFOMANIAK_SECRET", SecretName: "trustedrouter-infomaniak-api-key", SecretLabel: "Infomaniak key"},
 	{Provider: "nextbit", BaseURL: "https://api.nextbit256.com/v1", SecretEnv: "QUILL_NEXTBIT_SECRET", SecretName: "trustedrouter-nextbit-api-key", SecretLabel: "nextbit key"},
 	{Provider: "aion-labs", BaseURL: "https://api.aionlabs.ai/v1", SecretEnv: "QUILL_AION_LABS_SECRET", SecretName: "trustedrouter-aion-labs-api-key", SecretLabel: "aion labs key"},
 	{Provider: "sambanova", BaseURL: "https://api.sambanova.ai/v1", SecretEnv: "QUILL_SAMBANOVA_SECRET", SecretName: "trustedrouter-sambanova-api-key", SecretLabel: "sambanova key"},
