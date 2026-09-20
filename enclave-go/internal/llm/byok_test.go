@@ -1006,6 +1006,9 @@ func TestOpenAIGPTGenerationsUseModernCompletionTokenField(t *testing.T) {
 		{name: "lightning GPT 5.4", provider: "lightning", model: "openai/gpt-5.4-2026-03-05"},
 		{name: "lightning alias", provider: "lightning-ai", model: "openai/gpt-5.4-2026-03-05"},
 		{name: "lightning o series", provider: "lightning", model: "openai/o3"},
+		{name: "redpill GPT 5.6", provider: "redpill", model: "openai/gpt-5.6-sol"},
+		{name: "redpill future GPT", provider: "redpill", model: "openai/gpt-10"},
+		{name: "redpill o series", provider: "redpill", model: "openai/o3"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1040,6 +1043,9 @@ func TestOpenAIGPTGenerationsUseModernCompletionTokenField(t *testing.T) {
 	}{
 		{provider: "openai", model: "gpt-4o-mini"},
 		{provider: "openai", model: "gpt-oss-120b"},
+		{provider: "redpill", model: "openai/gpt-oss-120b"},
+		{provider: "redpill", model: "openai/gpt-4o"},
+		{provider: "redpill", model: "z-ai/glm-5.3"},
 		{provider: "deepinfra", model: "openai/gpt-6-astra"},
 		{provider: "lightning", model: "openai/gpt-4"},
 		{provider: "lightning", model: "lightning-ai/gpt-oss-120b"},

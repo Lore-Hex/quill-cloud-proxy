@@ -117,14 +117,14 @@ type openAICompatibleStreamOptions struct {
 }
 
 // requiresMaxCompletionTokens returns true for OpenAI models, including
-// OpenAI-family deployments served through Azure Foundry or Lightning, that reject the
+// OpenAI-family deployments served through Azure, Lightning, or Redpill, that reject the
 // legacy `max_tokens` parameter. GPT generations 5 and newer share the modern
 // contract; parsing the major version avoids a new production incompatibility
 // every time OpenAI increments the generation. The o-series uses the same
 // parameter spelling, though it is normally reached through Responses.
 func requiresMaxCompletionTokens(provider, modelID string) bool {
 	normalizedProvider := normalizeDirectProvider(provider)
-	if normalizedProvider != "openai" && normalizedProvider != "azure" && normalizedProvider != "lightning" {
+	if normalizedProvider != "openai" && normalizedProvider != "azure" && normalizedProvider != "lightning" && normalizedProvider != "redpill" {
 		return false
 	}
 	m := strings.ToLower(modelID)
