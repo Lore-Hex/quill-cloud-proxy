@@ -320,6 +320,10 @@ def test_build_payload_iterates_all_known_providers() -> None:
 
     expected_direct = {
         "regolo",
+        "redpill",
+        "meta-direct",
+        "general-compute",
+        "infomaniak",
         "nextbit",
         "aion-labs",
         "sambanova",

@@ -838,6 +838,9 @@ allowlist:
   - {address: router.huggingface.co,             port: 443}
   - {address: ai-gateway.vercel.sh,              port: 443}
   - {address: api.typesafe.ai,                   port: 443}
+  - {address: api.meta.ai,                       port: 443}
+  - {address: api.generalcompute.com,            port: 443}
+  - {address: api.infomaniak.com,                port: 443}
   - {address: api.darkbloom.dev,                port: 443}
   - {address: qianfan.baidubce.com,             port: 443}
   - {address: design-api.sourceful.com,         port: 443}
@@ -975,6 +978,9 @@ write_vsock_unit 8071 integrate.api.nvidia.com
 write_vsock_unit 8072 api.inference.wandb.ai
 write_vsock_unit 8073 inference.api.nscale.com
 write_vsock_unit 8087 api.regolo.ai
+write_vsock_unit 8090 api.meta.ai
+write_vsock_unit 8091 api.generalcompute.com
+write_vsock_unit 8092 api.infomaniak.com
 write_vsock_unit 8085 api.confidential.ai
 write_vsock_unit 8086 api.scaledown.xyz
 write_vsock_unit 8074 api.perplexity.ai

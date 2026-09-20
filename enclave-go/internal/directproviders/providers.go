@@ -25,10 +25,6 @@ type Spec struct {
 }
 
 var specs = [...]Spec{
-	{Provider: "redpill", BaseURL: "https://api.redpill.ai/v1", SecretEnv: "QUILL_REDPILL_SECRET", SecretName: "trustedrouter-redpill-api-key", SecretLabel: "Redpill key"},
-	{Provider: "meta-direct", BaseURL: "https://api.meta.ai/v1", SecretEnv: "QUILL_META_DIRECT_SECRET", SecretName: "trustedrouter-meta-direct-api-key", SecretLabel: "Meta direct key"},
-	{Provider: "general-compute", BaseURL: "https://api.generalcompute.com/v1", SecretEnv: "QUILL_GENERAL_COMPUTE_SECRET", SecretName: "trustedrouter-general-compute-api-key", SecretLabel: "General Compute key"},
-	{Provider: "infomaniak", BaseURL: "https://api.infomaniak.com/2/ai/111565/openai/v1", SecretEnv: "QUILL_INFOMANIAK_SECRET", SecretName: "trustedrouter-infomaniak-api-key", SecretLabel: "Infomaniak key"},
 	{Provider: "nextbit", BaseURL: "https://api.nextbit256.com/v1", SecretEnv: "QUILL_NEXTBIT_SECRET", SecretName: "trustedrouter-nextbit-api-key", SecretLabel: "nextbit key"},
 	{Provider: "aion-labs", BaseURL: "https://api.aionlabs.ai/v1", SecretEnv: "QUILL_AION_LABS_SECRET", SecretName: "trustedrouter-aion-labs-api-key", SecretLabel: "aion labs key"},
 	{Provider: "sambanova", BaseURL: "https://api.sambanova.ai/v1", SecretEnv: "QUILL_SAMBANOVA_SECRET", SecretName: "trustedrouter-sambanova-api-key", SecretLabel: "sambanova key"},
@@ -48,6 +44,10 @@ var specs = [...]Spec{
 	{Provider: "wandb", BaseURL: "https://api.inference.wandb.ai/v1", SecretEnv: "QUILL_WANDB_SECRET", SecretName: "trustedrouter-wandb-api-key", SecretLabel: "W&B Inference key"},
 	{Provider: "nscale", BaseURL: "https://inference.api.nscale.com/v1", SecretEnv: "QUILL_NSCALE_SECRET", SecretName: "trustedrouter-nscale-api-key", SecretLabel: "Nscale service token"},
 	{Provider: "regolo", BaseURL: "https://api.regolo.ai/v1", SecretEnv: "QUILL_REGOLO_SECRET", SecretName: "trustedrouter-regolo-api-key", SecretLabel: "Regolo key"},
+	{Provider: "redpill", BaseURL: "https://api.redpill.ai/v1", SecretEnv: "QUILL_REDPILL_SECRET", SecretName: "trustedrouter-redpill-api-key", SecretLabel: "Redpill key"},
+	{Provider: "meta-direct", BaseURL: "https://api.meta.ai/v1", SecretEnv: "QUILL_META_DIRECT_SECRET", SecretName: "trustedrouter-meta-direct-api-key", SecretLabel: "Meta direct key"},
+	{Provider: "general-compute", BaseURL: "https://api.generalcompute.com/v1", SecretEnv: "QUILL_GENERAL_COMPUTE_SECRET", SecretName: "trustedrouter-general-compute-api-key", SecretLabel: "General Compute key"},
+	{Provider: "infomaniak", BaseURL: "https://api.infomaniak.com/2/ai/111565/openai/v1", SecretEnv: "QUILL_INFOMANIAK_SECRET", SecretName: "trustedrouter-infomaniak-api-key", SecretLabel: "Infomaniak key"},
 	{Provider: "confidential-ai", BaseURL: "https://api.confidential.ai/v1", SecretEnv: "QUILL_CONFIDENTIAL_AI_SECRET", SecretName: "trustedrouter-confidential-ai-api-key", SecretLabel: "Confidential AI service token"},
 	{Provider: "scaledown", BaseURL: "https://api.scaledown.xyz", SecretEnv: "QUILL_SCALEDOWN_SECRET", SecretName: "trustedrouter-scaledown-api-key", SecretLabel: "ScaleDown inference key"},
 	{Provider: "perplexity", BaseURL: "https://api.perplexity.ai/v1", ChatCompletionsPath: "/sonar", SecretEnv: "QUILL_PERPLEXITY_SECRET", SecretName: "trustedrouter-perplexity-api-key", SecretLabel: "Perplexity key"},
