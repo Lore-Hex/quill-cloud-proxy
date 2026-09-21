@@ -162,6 +162,8 @@ func main() {
 		syscall.SIGTERM,
 	)
 	defer stop()
+	settlementContext, stopSettlement := context.WithCancel(context.Background())
+	defer stopSettlement()
 
 	// 0. Seed the kernel's CSPRNG from the NSM hardware RNG before any
 	// crypto/rand consumer (TLS keypair, request IDs, x509 serials) reads
@@ -242,7 +244,7 @@ func main() {
 	var byokSecrets *byokcache.Cache
 	if trGateway.Enabled() {
 		byokSecrets = newBYOKSecretCache()
-		settlementRetries.Start(ctx)
+		settlementRetries.Start(settlementContext)
 		batchConfig, batchEnabled := productionBatchConfig()
 		if batchEnabled {
 			kmsHTTP := byokcache.NewVsockKMSClient()
@@ -477,12 +479,19 @@ func main() {
 	// the clear. GCP sets QUILL_HEALTH_PORT=8081 and points the LB health check
 	// (and a firewall allow for 35.191.0.0/16,130.211.0.0/22) at it.
 	if hp := strings.TrimSpace(os.Getenv("QUILL_HEALTH_PORT")); hp != "" {
-		startHealthListener(hp)
+		startHealthListener(ctx, hp)
 	}
 
-	err = serveUntilCanceled(ctx, listener, func(conn net.Conn) {
-		serveOne(ctx, conn, registry, br, tlsServer, deviceBlob, trGateway, byokSecrets)
+	err = serveUntilCanceled(ctx, listener, func(requestContext context.Context, conn net.Conn) {
+		serveOne(requestContext, conn, registry, br, tlsServer, deviceBlob, trGateway, byokSecrets)
 	})
+	if trGateway.Enabled() {
+		flushContext, stopFlush := context.WithTimeout(context.Background(), 3*time.Second)
+		if flushErr := settlementRetries.WaitForIdle(flushContext); flushErr != nil {
+			fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_pending queued=%d err=%q\n", len(settlementRetries.jobs), flushErr.Error())
+		}
+		stopFlush()
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave listener stopped unexpectedly: %v\n", err)
 		os.Exit(1)
@@ -490,44 +499,13 @@ func main() {
 	fmt.Fprintln(os.Stderr, "enclave.shutdown_complete")
 }
 
-// serveUntilCanceled keeps normal rollout termination distinct from a serving
-// failure. Compute Engine sends SIGTERM before deleting a managed instance;
-// canceling the process context closes Accept and lets main return zero. A
-// listener failure without cancellation remains fatal and recoverable.
-func serveUntilCanceled(
-	ctx context.Context,
-	listener net.Listener,
-	handle func(net.Conn),
-) error {
-	closeWatcherDone := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = listener.Close()
-		case <-closeWatcherDone:
-		}
-	}()
-	defer close(closeWatcherDone)
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return fmt.Errorf("accept: %w", err)
-		}
-		go handle(conn)
-	}
-}
-
 // startHealthListener binds a plaintext HTTP liveness endpoint on the given
-// port and serves 200 on every path. It runs in its own goroutine so it never
+// port and serves 200 while accepting work, or 503 during shutdown. It runs in its own goroutine so it never
 // blocks the main serve loop. The endpoint returns no request-derived or
 // secret data (no prompt logging, no attestation) — it exists solely so the
 // load balancer can health-check the instance without traversing the TLS
 // listener on :443.
-func startHealthListener(port string) {
+func startHealthListener(ctx context.Context, port string) {
 	hl, err := net.Listen("tcp", net.JoinHostPort("", port)) // #nosec G102 -- liveness-only, no sensitive data.
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "health listener bind failed port=%s: %v\n", port, err)
@@ -535,12 +513,7 @@ func startHealthListener(port string) {
 	}
 	fmt.Fprintf(os.Stderr, "health listener up port=%s\n", port)
 	go func() {
-		srv := newEnclaveHTTPServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				_, _ = io.WriteString(w, "ok\n")
-			}),
-		)
+		srv := newEnclaveHTTPServer(shutdownHealthHandler(ctx))
 		if err := srv.Serve(hl); err != nil {
 			fmt.Fprintf(os.Stderr, "health listener stopped port=%s: %v\n", port, err)
 		}
@@ -585,6 +558,9 @@ func serveOne(
 	healthRequestCount := 0
 	requestCount := 0
 	for {
+		if !markConnectionIdle(ctx) {
+			break
+		}
 		armRequestReadDeadline(deadlineConn, requestReader, requestCount, config)
 		if !serveOneRequest(ctx, conn, statsConn, requestReader, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount, &healthRequestCount, &requestCount, config) {
 			break
@@ -625,6 +601,7 @@ func serveOneRequest(
 	requestCount *int,
 	keepAliveConfig keepAliveConfig,
 ) (keepAlive bool) {
+	defer markConnectionIdle(ctx)
 	requestLogID := newRequestLogID()
 	statsConn.BeginRequest(requestLogID)
 	ctx = abuse.WithRequestState(ctx, &abuse.RequestState{})
@@ -688,6 +665,9 @@ func serveOneRequest(
 			return
 		}
 		writeError(conn, 400, "could not read request")
+		return
+	}
+	if !beginConnectionRequest(ctx) {
 		return
 	}
 	(*requestCount)++
