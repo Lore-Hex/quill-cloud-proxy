@@ -752,6 +752,25 @@ esac
         self.assertIn('- "tools/recover-gcp-region.sh"', workflow)
         self.assertIn('- "tools/verify-gcp-runtime-secret-access.py"', workflow)
 
+    def test_rollout_scripts_match_the_built_image_source(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+        rollout = workflow.split("\n  rollout:\n", 1)[1].split(
+            "\n  finalize-trust-artifacts:\n", 1
+        )[0]
+        checkout = rollout.split("- uses: actions/checkout@v4", 1)[1].split(
+            "\n      - ", 1
+        )[0]
+        # Moving main injected a new env into an older measured image, which
+        # Confidential Space rejected before the workload could start.
+        self.assertEqual(
+            re.findall(r"^          ref: (.+)$", checkout, re.MULTILINE),
+            ["${{ github.sha }}"],
+        )
+        self.assertIn("persist-credentials: false", checkout)
+        self.assertNotIn("TRUST_PUSH_TOKEN", checkout)
+
     def test_public_allowlist_is_published_before_rollout_and_collapsed_after(self) -> None:
         workflow = (
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"

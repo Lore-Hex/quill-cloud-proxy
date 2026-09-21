@@ -516,7 +516,7 @@ jobs:
           # that the built Confidential Space image does not allow. Trust
           # publication is verified separately against its signed public URL.
           ref: ${{ github.sha }}
-          token: ${{ secrets.TRUST_PUSH_TOKEN }}
+          persist-credentials: false
       - name: Authenticate to GCP via WIF
         uses: google-github-actions/auth@v3
         with:
