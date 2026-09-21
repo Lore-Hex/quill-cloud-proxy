@@ -11,9 +11,19 @@ region_mig() {
     us-central1) printf '%s\t%s\n' quill-enclave-mig-us quill-enclave-mig-us- ;;
     europe-west4) printf '%s\t%s\n' quill-enclave-mig-eu quill-enclave-mig-eu- ;;
     us-east4) printf '%s\t%s\n' quill-enclave-mig-useast4 quill-enclave-mig-useast4- ;;
+    us-west1) printf '%s\t%s\n' quill-enclave-mig-uswest1 quill-enclave-mig-uswest1- ;;
     southamerica-east1) printf '%s\t%s\n' quill-enclave-mig-sa quill-enclave-mig-sa- ;;
     *) return 1 ;;
   esac
+}
+
+# A region still listed here is being bootstrapped (docs/runbooks/README.md,
+# "Adding a gateway region").
+pending_inventory="${QUILL_GCP_ENCLAVE_PENDING_INVENTORY:-tools/gcp-enclave-migs-pending.txt}"
+
+is_pending_region() {
+  [ -f "${pending_inventory}" ] && \
+    grep -q -x -E "$1:[a-z][a-z0-9-]*" "${pending_inventory}"
 }
 
 list_drains() {
@@ -51,6 +61,19 @@ while IFS=$'\t' read -r region origin extra; do
     continue
   fi
   [[ "${origin}" == rollout:* ]] || continue
+
+  if is_pending_region "${region}"; then
+    # This finalizer's idea of healthy is a stable MIG whose VMs answer
+    # /attestation. A first-time region's bootstrap gate asks for more (a
+    # settled stream and Stage D evidence through the regional SNI), and the
+    # rollout drain is what makes the reconciler hold the region's cold CNAME.
+    # The region's own rollout step clears the drain when that gate passes, so
+    # a drain that is still here belongs to a rollout that did not finish:
+    # clearing it would publish VMs that failed the gate. It costs nothing to
+    # keep, because a pending region never serves canonical traffic.
+    echo "::warning::${region} is pending; keeping its ${origin} drain until its own rollout step succeeds"
+    continue
+  fi
 
   if ! mapping="$(region_mig "${region}")"; then
     report_uncleared "${region}" "${origin}"

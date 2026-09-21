@@ -1,3 +1,4 @@
 us-central1
 europe-west4
 us-east4
+us-west1

@@ -62,9 +62,29 @@ substitutions.
 
 Script needs the region as a positional arg. **Fix:** the workflow
 rolls all four GCP regions explicitly — `us-central1`, `europe-west4`,
-`us-east4`, and `southamerica-east1` — each as its own staged step. If a new region is added, add a
-rollout step to `.github/workflows/deploy-enclave-gcp.yml` (and the reconciler
-will pick the region up automatically once its instances attest).
+`us-east4`, and `us-west1`, in that order — each as its own staged step
+(`southamerica-east1` is retired). A new region needs more than a rollout step:
+the reconciler ignores a region that neither inventory lists, a region whose MIG
+does not exist yet starts in `tools/gcp-enclave-migs-pending.txt` (regional
+hostname only), and it gets canonical traffic only once it is in
+`tools/gcp-enclave-migs.txt`. Follow README → "Adding a gateway region".
+
+### 4b. Build job: `configured GCP enclave MIG inventory does not match production`
+
+`tools/gcp_enclave_inventory.py check` compares production's
+`quill-enclave-mig-*` MIGs with the two inventory files before anything is
+built, and prints which rule broke:
+
+- **`production MIG <region>:<mig> is in neither inventory`** — someone created
+  a MIG by hand, or a retired one was never deleted. Delete it, or list it
+  (pending if it is being bootstrapped).
+- **`main inventory MIG <region>:<mig> does not exist in production`** — a
+  serving region's MIG is gone, or a region was added to
+  `tools/gcp-enclave-migs.txt` before its first deploy. Only
+  `tools/gcp-enclave-migs-pending.txt` may name a MIG that does not exist yet.
+
+The rollout job repeats the listing in "Capture pre-rollout templates" and
+refuses to roll on the same mismatch.
 
 ### 5. Rollout: `set API_HOST=...`
 
@@ -92,7 +112,11 @@ LB was trialed and torn down 2026-06-19). DNS membership is owned by the
 `enclave-dns-reconciler` job: it attests each instance by IP and publishes only
 the ones that pass. So
 "new instance not in DNS" means **the reconciler hasn't attested it healthy** —
-either it's still booting, or it fails attestation. Check both directly:
+either it's still booting, or it fails attestation. (One exception is by design:
+a region listed only in `tools/gcp-enclave-migs-pending.txt` is published under
+`api-<region>.quillrouter.com` and never in `api.trustedrouter.com`; the
+reconciler logs `pending regions get regional DNS only, never canonical`.)
+Check both directly:
 
 ```bash
 # A) Does the reconciler see + accept it? (its log lists each instance ok/FAIL)
@@ -176,9 +200,10 @@ Symptom: `gcloud compute instance-groups managed describe` shows
 The MIGs have **no autohealing** (the reconciler is the health authority), so
 this is *not* a health-check kill-loop. A genuinely stuck roll is almost always
 **Confidential VM capacity**: the surge instance can't be created
-(`c3`/TDX in the existing three regions and `n2d`/SEV in São Paulo can stock
-out independently) — check
-`list-errors` for a stockout. If instead the new VMs came up but won't attest,
+(`c3`/TDX can stock out independently in each of the four regions, and zone by
+zone) — check
+`list-errors` for a stockout, and see the "Relieve enclave MIG zone stockout"
+workflow for moving a region's VMs out of the zone that has none. If instead the new VMs came up but won't attest,
 fix that first (see #6). To force a clean replace cycle once the cause is fixed:
 
 ```bash

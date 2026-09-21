@@ -43,6 +43,11 @@
 #
 #   IMAGE_REF=... API_HOST=api-europe-west4.quillrouter.com \
 #     ./tools/deploy-gcp-mig.sh europe-west4
+#
+#   # A region whose MIG does not exist yet: name its zones (see MIG_ZONES).
+#   IMAGE_REF=... API_HOST=api-us-west1.quillrouter.com \
+#   MIG_ZONES=us-west1-a,us-west1-b \
+#     ./tools/deploy-gcp-mig.sh us-west1
 
 set -euo pipefail
 
@@ -78,6 +83,32 @@ MAX_UNAVAILABLE="${MAX_UNAVAILABLE:-0}"
 # until the reconciler catches up. The reconciler runs throughout this window
 # and publishes each replacement only after real attestation succeeds.
 MIN_READY="${MIN_READY:-600s}"
+# Zones for a NEW regional MIG, comma-separated (MIG_ZONES=us-west1-a,us-west1-b).
+# Without --zones Google picks three zones for a regional group and does not
+# look at what the template needs. That is how us-central1 came to span zone f,
+# which has no Intel TDX hosts at all, and on 2026-09-20/21 one stocked-out zone
+# blocked every deploy for 22 hours. Name only zones that offer the confidential
+# machine type. Read on CREATE only: this script never changes the zones of a
+# MIG that already exists.
+MIG_ZONES="${MIG_ZONES:-}"
+MIG_ZONE_ARGS=()
+if [ -n "${MIG_ZONES}" ]; then
+  IFS=, read -r -a mig_zone_list <<<"${MIG_ZONES}"
+  for mig_zone in "${mig_zone_list[@]}"; do
+    if ! [[ "${mig_zone}" =~ ^${REGION}-[a-z]$ ]]; then
+      echo "MIG_ZONES entry '${mig_zone}' is not a zone of ${REGION}" >&2
+      exit 1
+    fi
+  done
+  # Compute Engine rejects a fixed surge that is neither 0 nor at least one VM
+  # per zone. Say so here, before a template is created for a MIG that cannot be.
+  if [[ "${MAX_SURGE}" =~ ^[1-9][0-9]*$ ]] && \
+      [ "${MAX_SURGE}" -lt "${#mig_zone_list[@]}" ]; then
+    echo "MAX_SURGE=${MAX_SURGE} is below the ${#mig_zone_list[@]} zones in MIG_ZONES" >&2
+    exit 1
+  fi
+  MIG_ZONE_ARGS+=(--zones="$(IFS=,; printf '%s' "${mig_zone_list[*]}")")
+fi
 
 IMAGE_REF="${IMAGE_REF:?set IMAGE_REF=us-central1-docker.pkg.dev/.../enclave-anthropic:gcp-release-XXX}"
 API_HOST="${API_HOST:?set API_HOST=api.quillrouter.com (or api-${REGION}.quillrouter.com)}"
@@ -560,14 +591,29 @@ if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/
   # `rolling-action replace` after it recreates the newly rolled instances a
   # second time, doubling deployment time and capacity pressure.
 else
-  log "creating MIG $MIG_NAME (size=$TARGET_SIZE)"
+  log "creating MIG $MIG_NAME (size=$TARGET_SIZE, zones=${MIG_ZONES:-chosen by Google})"
+  if [ -z "${MIG_ZONES}" ]; then
+    log "WARNING: MIG_ZONES is unset; Google may place $MIG_NAME in a zone that cannot host ${CONF_COMPUTE_TYPE} ${MACHINE_TYPE}"
+  fi
   # No --health-check / autohealing on create — see the update branch above.
   # Health is owned by the attesting DNS reconciler, not the MIG.
+  #
+  # BALANCED with redistribution off is the capacity-tolerant pair, the same
+  # one tools/relieve-mig-stockout.py sets: when the group creates or adds a VM
+  # it uses a listed zone that has Confidential VM capacity instead of insisting
+  # on an even spread (EVEN, the default), and it never moves a serving VM to
+  # even the zones out. It does not rescue a rolling update, where SUBSTITUTE
+  # still makes each replacement in the old VM's zone; that is what
+  # relieve-mig-stockout.py is for. us-central1 was switched to this shape by
+  # hand after 2026-09-20; new regions start with it.
   gc beta compute instance-groups managed create "$MIG_NAME" \
     --base-instance-name="$MIG_NAME" \
     --template="$TEMPLATE" \
     --size="$TARGET_SIZE" \
     --region="$REGION" \
+    "${MIG_ZONE_ARGS[@]}" \
+    --target-distribution-shape=balanced \
+    --instance-redistribution-type=none \
     --update-policy-type=proactive \
     --update-policy-max-surge="$MAX_SURGE" \
     --update-policy-max-unavailable="$MAX_UNAVAILABLE" \

@@ -106,4 +106,61 @@ if grep -Fq -- '--clear-drain-region' "${command_log}"; then
   exit 1
 fi
 
+# A PENDING region's rollout drain is what holds its cold CNAME, and only its
+# own rollout step may clear it (when the bootstrap gate passes). Stable and
+# attesting is not that gate: a first deployment whose streaming or Stage D
+# check failed is stable and attests, and clearing its drain here would let the
+# reconciler publish it. The finalizer leaves it alone and says so.
+printf 'us-west1\trollout:33807667585\n' >"${test_root}/us-west1-list.txt"
+printf 'us-west1:quill-enclave-mig-uswest1\n' >"${test_root}/pending.txt"
+: >"${command_log}"
+PATH="${test_root}/bin:/usr/bin:/bin" \
+COMMAND_LOG="${command_log}" \
+DRAIN_LIST_FIXTURE="${test_root}/us-west1-list.txt" \
+QUILL_GCP_ENCLAVE_PENDING_INVENTORY="${test_root}/pending.txt" \
+STABLE=1 ATTESTED=1 GITHUB_RUN_ID=33807667585 \
+  /bin/bash tools/cleanup-enclave-rollout-drains.sh >"${cleanup_output}" 2>&1
+if grep -Fq -- '--clear-drain-region' "${command_log}"; then
+  echo "a pending region's bootstrap drain was cleared by the finalizer" >&2
+  exit 1
+fi
+grep -Fq '::warning::us-west1 is pending; keeping its rollout:33807667585 drain' "${cleanup_output}"
+# Production reads the repository's pending file by default. Only the PATH is
+# pinned here, never the file's content: the promotion commit empties the file,
+# and this test must still pass then.
+grep -Fq 'QUILL_GCP_ENCLAVE_PENDING_INVENTORY:-tools/gcp-enclave-migs-pending.txt' \
+  tools/cleanup-enclave-rollout-drains.sh
+
+# Once promoted (no longer in the pending file) us-west1 is finalized like the
+# other regions, so the finalizer has to know its MIG.
+: >"${test_root}/no-pending.txt"
+: >"${command_log}"
+PATH="${test_root}/bin:/usr/bin:/bin" \
+COMMAND_LOG="${command_log}" \
+DRAIN_LIST_FIXTURE="${test_root}/us-west1-list.txt" \
+QUILL_GCP_ENCLAVE_PENDING_INVENTORY="${test_root}/no-pending.txt" \
+STABLE=1 ATTESTED=1 GITHUB_RUN_ID=33807667585 \
+  /bin/bash tools/cleanup-enclave-rollout-drains.sh >"${cleanup_output}" 2>&1
+grep -Fq -- 'wait-until quill-enclave-mig-uswest1 --region=us-west1 ' "${command_log}"
+grep -Fq -- 'wait-region-attested.sh quill-enclave-mig-uswest1- us-west1 rollout-drain cleanup' \
+  "${command_log}"
+grep -Fq -- '--clear-drain-region us-west1' "${command_log}"
+
+printf 'asia-east1\trollout:33807667585\n' >"${test_root}/unmapped-list.txt"
+: >"${command_log}"
+if PATH="${test_root}/bin:/usr/bin:/bin" \
+    COMMAND_LOG="${command_log}" \
+    DRAIN_LIST_FIXTURE="${test_root}/unmapped-list.txt" \
+    STABLE=1 ATTESTED=1 GITHUB_RUN_ID=33807667585 \
+      /bin/bash tools/cleanup-enclave-rollout-drains.sh \
+        >"${cleanup_output}" 2>&1; then
+  echo "a region with no known MIG was unexpectedly cleared" >&2
+  exit 1
+fi
+if grep -Fq -- '--clear-drain-region' "${command_log}"; then
+  echo "a region with no known MIG invoked the clear command" >&2
+  exit 1
+fi
+grep -Fq '::error::asia-east1 remains drained' "${cleanup_output}"
+
 echo "enclave rollout drain tests passed"

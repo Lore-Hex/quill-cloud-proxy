@@ -97,17 +97,17 @@ Run [enclave-deploy-monitoring-checklist.md](./enclave-deploy-monitoring-checkli
 
 9. Use the regional endpoint for urgent verification or traffic steering while the standard workflow completes EU and publishes trust.
 
-## EU + us-east4 Follow-Up
+## EU + us-east4 + us-west1 Follow-Up
 
-After US is healthy, roll the other two regions with the same released digest.
+After US is healthy, roll the other three regions with the same released digest.
 Once each region's instances attest, the reconciler adds them to DNS on its own
 (within a reconcile cycle + TTL ≈ 3 min); force it with
 `gcloud run jobs execute enclave-dns-reconciler --region=us-central1 --project=quill-cloud-proxy`.
 
 **Note the per-region machine profile and that `API_HOST` must include the
 canonical names** (regional-only `API_HOST` makes the region fail attestation —
-see enclave-deploy-debugging.md #5). `REGION_SHORT` must be `eu`/`useast4` (not
-the dashes-stripped `europewest4`).
+see enclave-deploy-debugging.md #5). `REGION_SHORT` must be `eu`/`useast4`/`uswest1`
+(not the dashes-stripped `europewest4`).
 
 ```bash
 # europe-west4 (n2d / SEV-SNP — the deploy-gcp-mig.sh defaults)
@@ -128,6 +128,17 @@ export API_HOST="api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrou
 bash tools/deploy-gcp-mig.sh us-east4
 gcloud compute instance-groups managed wait-until quill-enclave-mig-useast4 \
   --region=us-east4 --project=quill-cloud-proxy --stable
+
+# us-west1 (c3 / TDX). Only once its MIG exists: do NOT create a region by hand.
+# The first deploy is the workflow's bootstrap path (README, "Adding a gateway
+# region"), which verifies every VM before its hostname points anywhere. For an
+# existing MIG, MIG_ZONES is not needed: it is read only on creation.
+export REGION_SHORT=uswest1
+export MACHINE_TYPE=c3-standard-4 CONF_COMPUTE_TYPE=TDX
+export API_HOST="api.quillrouter.com,api-us-west1.quillrouter.com,api.trustedrouter.com"
+bash tools/deploy-gcp-mig.sh us-west1
+gcloud compute instance-groups managed wait-until quill-enclave-mig-uswest1 \
+  --region=us-west1 --project=quill-cloud-proxy --stable
 ```
 
 After any manual roll, note that `deploy-gcp-mig.sh` **re-creates the retired LB

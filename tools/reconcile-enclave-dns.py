@@ -59,22 +59,73 @@ from pathlib import Path
 from typing import Iterator, NamedTuple
 
 GCP_ENCLAVE_INVENTORY = Path(__file__).with_name("gcp-enclave-migs.txt")
+# Regions that are being bootstrapped (docs/runbooks/README.md, "Adding a
+# gateway region"). The first-time-region design needs this reconciler to know
+# such a region from its first rollout: it holds the cold CNAME while the
+# rollout drain is set, promotes it only when the workflow says the direct
+# canary passed, and afterwards keeps api-<region> equal to the attested VMs.
+# Left out, the regional name would sit on the one bootstrap IP for ever, and a
+# re-roll would leave it on a deleted VM.
+GCP_ENCLAVE_PENDING_INVENTORY = Path(__file__).with_name(
+    "gcp-enclave-migs-pending.txt"
+)
 
 
-def gcp_enclave_regions() -> frozenset[str]:
-    """Return regions allowed to contribute to canonical or regional DNS."""
+def _inventory_regions(path: Path) -> list[str]:
     regions: list[str] = []
-    for line in GCP_ENCLAVE_INVENTORY.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         region, separator, mig = line.partition(":")
         if not separator or not region or not mig:
             raise ValueError(f"invalid GCP enclave inventory entry: {line!r}")
         regions.append(region)
+    return regions
+
+
+def gcp_enclave_regions() -> frozenset[str]:
+    """Return regions allowed to contribute to canonical or regional DNS."""
+    regions = _inventory_regions(GCP_ENCLAVE_INVENTORY)
     if not regions or len(regions) != len(set(regions)):
         raise ValueError("GCP enclave inventory must contain unique regions")
     return frozenset(regions)
 
 
+def gcp_enclave_pending_regions(serving: frozenset[str]) -> frozenset[str]:
+    """Return regions that get a regional record but never canonical traffic."""
+    # No file means no pending regions: an image or checkout from before the
+    # file existed must behave exactly as it did then.
+    if not GCP_ENCLAVE_PENDING_INVENTORY.exists():
+        return frozenset()
+    regions = _inventory_regions(GCP_ENCLAVE_PENDING_INVENTORY)
+    if len(regions) != len(set(regions)):
+        raise ValueError("pending GCP enclave inventory must contain unique regions")
+    # "Serves canonical traffic" and "must never serve it" cannot both hold, and
+    # guessing which one was meant is how an unverified region gets traffic.
+    both = sorted(serving.intersection(regions))
+    if both:
+        raise ValueError(
+            f"GCP enclave region(s) listed as both serving and pending: {both}"
+        )
+    return frozenset(regions)
+
+
 GCP_ENCLAVE_REGIONS = gcp_enclave_regions()
+GCP_ENCLAVE_PENDING_REGIONS = gcp_enclave_pending_regions(GCP_ENCLAVE_REGIONS)
+
+
+def known_enclave_regions() -> frozenset[str]:
+    """Regions whose instances are attested and whose regional name is published."""
+    return GCP_ENCLAVE_REGIONS | GCP_ENCLAVE_PENDING_REGIONS
+
+
+def canonical_excluded_regions() -> set[str]:
+    """Regions kept out of the canonical answer whatever their health.
+
+    A pending region joins QUILL_EXCLUDE_CANONICAL_REGIONS here, at the one
+    place the canonical set is filtered, so it cannot be re-admitted by leaving
+    that variable unset. Promotion into the main inventory is the only way in.
+    """
+    return EXCLUDE_CANONICAL_REGIONS | GCP_ENCLAVE_PENDING_REGIONS
+
 
 PROJECT = os.environ.get("QUILL_PROJECT", "quill-cloud-proxy")
 DNS_ZONE = os.environ.get("QUILL_DNS_ZONE", "quillrouter-com")
@@ -496,11 +547,12 @@ def gcloud_json(args: list[str]) -> object:
 
 
 def discover_instances() -> list[dict]:
-    """RUNNING inventoried enclave instances with an external IP."""
+    """RUNNING enclave instances, in a serving or pending region, with an external IP."""
     rows = gcloud_json([
         "compute", "instances", "list",
         "--filter", f"tags.items={ENCLAVE_TAG} AND status=RUNNING",
     ])
+    known_regions = known_enclave_regions()
     fleet = []
     for r in rows:
         ip = None
@@ -513,7 +565,7 @@ def discover_instances() -> list[dict]:
                 break
         zone = (r.get("zone") or "").rsplit("/", 1)[-1]
         region = zone.rsplit("-", 1)[0]
-        if region not in GCP_ENCLAVE_REGIONS:
+        if region not in known_regions:
             log(
                 f"reconcile: ignoring {r['name']} in non-inventory region "
                 f"{region}"
@@ -983,10 +1035,11 @@ def attest_regional_instances(
     api-<region>.quillrouter.com at that point creates regional-only
     RemoteProtocolError failures during deploys.
     """
+    known_regions = known_enclave_regions()
     regional_candidates = [
         (inst, regional_host(inst["region"]))
         for inst in healthy
-        if inst["region"] in GCP_ENCLAVE_REGIONS
+        if inst["region"] in known_regions
     ]
     if not regional_candidates:
         return {}
@@ -1028,10 +1081,13 @@ def reconcile_regional(
     or fewer than the floor when it currently has more, is left at last-good
     rather than blanked/shrunk. Growing a record is always allowed."""
     drained = drained_regions or set()
-    ignored_regions = set(by_region) - GCP_ENCLAVE_REGIONS
+    # A pending region is published here like a serving one: same cold-CNAME
+    # hold, same promotion override, same floor. Only canonical DNS differs.
+    known_regions = known_enclave_regions()
+    ignored_regions = set(by_region) - known_regions
     for region in sorted(ignored_regions):
         log(f"  regional {region}: retired/non-inventory region ignored")
-    for region in sorted(set(by_region) & GCP_ENCLAVE_REGIONS):
+    for region in sorted(set(by_region) & known_regions):
         ips = sorted(set(by_region[region]))
         if not ips:
             continue  # never publish/blank to an empty record
@@ -1189,13 +1245,18 @@ def _main_unlocked() -> int:
 
     persistent = persistent_drains()
     persistent_excludes = set(persistent)
-    canonical_excludes = EXCLUDE_CANONICAL_REGIONS | persistent_excludes
+    canonical_excludes = canonical_excluded_regions() | persistent_excludes
     canonical_healthy = [
         i for i in healthy if i["region"] not in canonical_excludes
     ]
     healthy_ips = sorted({i["ip"] for i in canonical_healthy})
     regions = sorted(by_region)
     log(f"reconcile: {len(healthy_ips)} healthy across {len(regions)} regions {regions}")
+    if GCP_ENCLAVE_PENDING_REGIONS:
+        log(
+            "reconcile: pending regions get regional DNS only, never canonical: "
+            + ", ".join(sorted(GCP_ENCLAVE_PENDING_REGIONS))
+        )
     if canonical_excludes:
         log(
             "reconcile: excluding from canonical "

@@ -6,8 +6,10 @@ import importlib.util
 import io
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -154,6 +156,289 @@ class GcpEnclaveInventoryTests(unittest.TestCase):
 
         self.assertEqual([instance["name"] for instance in fleet], ["active"])
         self.assertNotIn("southamerica-east1", reconciler.GCP_ENCLAVE_REGIONS)
+
+    def pending_regions(self, contents: str | None) -> frozenset[str]:
+        serving = frozenset({"us-central1", "europe-west4", "us-east4"})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "gcp-enclave-migs-pending.txt"
+            if contents is not None:
+                path.write_text(contents, encoding="utf-8")
+            with mock.patch.object(reconciler, "GCP_ENCLAVE_PENDING_INVENTORY", path):
+                return reconciler.gcp_enclave_pending_regions(serving)
+
+    def test_pending_inventory_is_parsed_like_the_main_one(self) -> None:
+        self.assertEqual(
+            self.pending_regions("us-west1:quill-enclave-mig-uswest1\n"),
+            frozenset({"us-west1"}),
+        )
+        # After promotion the file stays in place, empty.
+        self.assertEqual(self.pending_regions(""), frozenset())
+        for contents, message in (
+            ("us-west1\n", "invalid GCP enclave inventory entry"),
+            ("# bootstrapping\n", "invalid GCP enclave inventory entry"),
+            ("us-west1:a\nus-west1:b\n", "must contain unique regions"),
+        ):
+            with self.subTest(contents=contents):
+                with self.assertRaisesRegex(ValueError, message):
+                    self.pending_regions(contents)
+
+    def test_region_cannot_be_both_serving_and_pending(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, r"both serving and pending: \['us-east4'\]"
+        ):
+            self.pending_regions(
+                "us-west1:quill-enclave-mig-uswest1\n"
+                "us-east4:quill-enclave-mig-useast4\n"
+            )
+
+    def test_absent_pending_inventory_means_no_pending_regions(self) -> None:
+        # An image or checkout from before the file existed.
+        self.assertEqual(self.pending_regions(None), frozenset())
+        with mock.patch.object(reconciler, "GCP_ENCLAVE_PENDING_REGIONS", frozenset()):
+            self.assertEqual(
+                reconciler.known_enclave_regions(), reconciler.GCP_ENCLAVE_REGIONS
+            )
+            self.assertEqual(
+                reconciler.canonical_excluded_regions(),
+                reconciler.EXCLUDE_CANONICAL_REGIONS,
+            )
+
+    def test_repository_inventories_load(self) -> None:
+        self.assertTrue(reconciler.GCP_ENCLAVE_REGIONS)
+        self.assertFalse(
+            reconciler.GCP_ENCLAVE_REGIONS & reconciler.GCP_ENCLAVE_PENDING_REGIONS
+        )
+
+
+def _instance(name: str, zone: str, ip: str) -> dict:
+    return {
+        "name": name,
+        "zone": f"projects/p/zones/{zone}",
+        "networkInterfaces": [{"accessConfigs": [{"natIP": ip}]}],
+    }
+
+
+# Captured from the reconciler as it was before pending regions existed
+# (origin/main at cf22daf), driven by PendingRegionTests.reconcile() below.
+WITHOUT_PENDING_LOG = """\
+reconcile: ignoring west in non-inventory region us-west1
+reconcile: ignoring retired in non-inventory region southamerica-east1
+reconcile: 2 running enclave instances; accepting digest(s) sha256:release…
+  [ok ] us-central1    203.0.113.1     central
+  [ok ] us-east4       203.0.113.2     east
+reconcile: 2 healthy across 2 regions ['us-central1', 'us-east4']
+reconcile: canonical api.trustedrouter.com. [] -> ['203.0.113.1', '203.0.113.2']
+reconcile: APPLIED canonical api.trustedrouter.com.
+reconcile: compatibility mirror api.quillrouter.com. [] -> ['203.0.113.1', '203.0.113.2']
+reconcile: APPLIED compatibility mirror api.quillrouter.com.
+  [regional ok ] us-central1    203.0.113.1     api-us-central1.quillrouter.com
+  [regional ok ] us-east4       203.0.113.2     api-us-east4.quillrouter.com
+  regional api-us-central1.quillrouter.com. [] -> ['203.0.113.1']
+  regional api-us-central1.quillrouter.com. APPLIED
+  regional api-us-east4.quillrouter.com. [] -> ['203.0.113.2']
+  regional api-us-east4.quillrouter.com. APPLIED
+"""
+
+class PendingRegionTests(unittest.TestCase):
+    """A region being bootstrapped: a regional record like any region's, and
+    never canonical traffic. Drives the real _main_unlocked(); only gcloud
+    reads, attestation and DNS writes are faked."""
+
+    CENTRAL, EAST, WEST, RETIRED = (
+        "203.0.113.1", "203.0.113.2", "203.0.113.3", "203.0.113.4",
+    )
+    ROWS = [
+        _instance("central", "us-central1-a", CENTRAL),
+        _instance("east", "us-east4-b", EAST),
+        _instance("west", "us-west1-a", WEST),
+        _instance("retired", "southamerica-east1-a", RETIRED),
+    ]
+    SERVING = frozenset({"us-central1", "europe-west4", "us-east4"})
+    PENDING = frozenset({"us-west1"})
+    WEST_RECORD = "api-us-west1.quillrouter.com."
+
+    def reconcile(
+        self,
+        *,
+        pending: frozenset[str],
+        serving: frozenset[str] = SERVING,
+        env_excluded: frozenset[str] = frozenset(),
+        drains: dict[str, str] | None = None,
+        cold_cnames: tuple[str, ...] = (),
+        allow_promotion: frozenset[str] = frozenset(),
+        unhealthy: tuple[str, ...] = (),
+    ) -> SimpleNamespace:
+        def gcloud_json(args: list[str]) -> list[dict]:
+            if args[:3] == ["compute", "instances", "list"]:
+                return self.ROWS
+            self.assertEqual(args[:3], ["dns", "record-sets", "list"])
+            record = args[args.index("--name") + 1]
+            record_type = args[args.index("--type") + 1]
+            if record_type == "CNAME" and record in cold_cnames:
+                return [{"name": record, "type": "CNAME", "ttl": 300,
+                         "rrdatas": ["api.quillrouter.com."]}]
+            return []
+
+        writes: dict[str, list[str]] = {}
+        constants = {
+            "GCP_ENCLAVE_REGIONS": serving,
+            "GCP_ENCLAVE_PENDING_REGIONS": pending,
+            # Empty is what an unset QUILL_EXCLUDE_CANONICAL_REGIONS parses to.
+            "EXCLUDE_CANONICAL_REGIONS": set(env_excluded),
+            "ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS": set(allow_promotion),
+            "DNS_ZONE": "trustedrouter-com",
+            "RECORD": "api.trustedrouter.com.",
+            "CANONICAL_MIRRORS": [("quillrouter-com", "api.quillrouter.com.")],
+            "PUBLISH_REGIONAL": True,
+            "REGIONAL_ZONE": "quillrouter-com",
+            "REGIONAL_SUFFIX": "quillrouter.com",
+            "MIN_HEALTHY": 2,
+            "MIN_HEALTHY_REGIONAL": 1,
+        }
+        fakes = {
+            "gcloud_json": gcloud_json,
+            "trust_digests": lambda: ["sha256:release"],
+            "attest": lambda ip, digest, *args, **kwargs: ip not in unhealthy,
+            # Consulted when an instance fails attestation; the real one runs gcloud.
+            "recent_release_digests": lambda: [],
+            "persistent_drains": lambda: dict(drains or {}),
+            "provision_confidential_challenge_delegation": lambda **kwargs: None,
+            "set_dns_ips": lambda zone, record, ips: writes.__setitem__(record, list(ips)),
+        }
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(sys, "argv", [str(SCRIPT), "--apply"]))
+            # Everything that would shell out is faked above. Anything that
+            # still tries is a hole in this harness, not something to run.
+            stack.enter_context(mock.patch.object(
+                reconciler.subprocess, "run",
+                side_effect=AssertionError("the reconcile harness must not run a subprocess"),
+            ))
+            for name, value in constants.items():
+                stack.enter_context(mock.patch.object(reconciler, name, value))
+            for name, fake in fakes.items():
+                stack.enter_context(mock.patch.object(reconciler, name, side_effect=fake))
+            confidential = stack.enter_context(
+                mock.patch.object(reconciler, "reconcile_confidential")
+            )
+            log = stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            try:
+                code: object = reconciler._main_unlocked()
+            except SystemExit as exc:
+                code = exc.code
+        return SimpleNamespace(
+            code=code,
+            writes=writes,
+            log=log.getvalue(),
+            confidential=[
+                instance["ip"] for call in confidential.call_args_list
+                for instance in call.args[0]
+            ],
+        )
+
+    def test_pending_vm_gets_its_regional_record_and_never_canonical(self) -> None:
+        # env_excluded is empty: nothing but the pending inventory keeps it out.
+        result = self.reconcile(pending=self.PENDING)
+
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(result.writes["api.trustedrouter.com."], [self.CENTRAL, self.EAST])
+        self.assertEqual(result.writes["api.quillrouter.com."], [self.CENTRAL, self.EAST])
+        self.assertEqual(result.confidential, [self.CENTRAL, self.EAST])
+        self.assertEqual(result.writes[self.WEST_RECORD], [self.WEST])
+        self.assertEqual(
+            result.log.count(
+                "reconcile: pending regions get regional DNS only, never canonical: us-west1\n"
+            ),
+            1,
+        )
+        self.assertIn("reconcile: excluding from canonical us-west1\n", result.log)
+        # A region in neither inventory is still ignored everywhere.
+        self.assertIn(
+            "reconcile: ignoring retired in non-inventory region southamerica-east1\n",
+            result.log,
+        )
+        self.assertNotIn(self.RETIRED, [ip for ips in result.writes.values() for ip in ips])
+        self.assertNotIn("api-southamerica-east1.quillrouter.com.", result.writes)
+
+    def test_the_same_vm_is_canonical_once_its_region_is_serving(self) -> None:
+        # Positive control: nothing else about this VM keeps it out of canonical.
+        result = self.reconcile(pending=frozenset(), serving=self.SERVING | self.PENDING)
+
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(
+            result.writes["api.trustedrouter.com."], [self.CENTRAL, self.EAST, self.WEST]
+        )
+        self.assertEqual(result.confidential, [self.CENTRAL, self.EAST, self.WEST])
+        self.assertNotIn("pending regions", result.log)
+
+    def test_pending_vm_cannot_hold_up_the_canonical_floor(self) -> None:
+        result = self.reconcile(pending=self.PENDING, unhealthy=(self.EAST,))
+
+        self.assertIn("only 1 healthy (< MIN_HEALTHY=2)", str(result.code))
+        self.assertEqual(result.writes, {})
+        # Positive control: as a serving region its VM would count.
+        counted = self.reconcile(
+            pending=frozenset(), serving=self.SERVING | self.PENDING, unhealthy=(self.EAST,)
+        )
+        self.assertEqual(counted.code, 0, counted.log)
+        self.assertEqual(counted.writes["api.trustedrouter.com."], [self.CENTRAL, self.WEST])
+
+    def test_pending_region_obeys_the_cold_cname_hold_and_its_override(self) -> None:
+        held = self.reconcile(
+            pending=self.PENDING,
+            drains={"us-west1": "rollout:33807667585"},
+            cold_cnames=(self.WEST_RECORD,),
+        )
+        self.assertEqual(held.code, 0, held.log)
+        self.assertNotIn(self.WEST_RECORD, held.writes)
+        self.assertIn(
+            f"regional {self.WEST_RECORD}: rollout drain holds cold CNAME", held.log
+        )
+
+        promoted = self.reconcile(
+            pending=self.PENDING,
+            drains={"us-west1": "rollout:33807667585"},
+            cold_cnames=(self.WEST_RECORD,),
+            allow_promotion=frozenset({"us-west1"}),
+        )
+        self.assertEqual(promoted.writes[self.WEST_RECORD], [self.WEST])
+        for result in (held, promoted):
+            self.assertEqual(
+                result.writes["api.trustedrouter.com."], [self.CENTRAL, self.EAST]
+            )
+
+    def test_regional_sni_is_probed_for_a_pending_region_and_no_unknown_one(self) -> None:
+        healthy = [
+            {"name": "west", "region": "us-west1", "ip": self.WEST},
+            {"name": "retired", "region": "southamerica-east1", "ip": self.RETIRED},
+        ]
+        with (
+            mock.patch.object(reconciler, "GCP_ENCLAVE_REGIONS", self.SERVING),
+            mock.patch.object(reconciler, "GCP_ENCLAVE_PENDING_REGIONS", self.PENDING),
+            mock.patch.object(reconciler, "REGIONAL_SUFFIX", "quillrouter.com"),
+            mock.patch.object(reconciler, "attest", return_value=True) as attest,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            by_region = reconciler.attest_regional_instances(healthy, "sha256:release")
+
+        self.assertEqual(by_region, {"us-west1": [self.WEST]})
+        attest.assert_called_once_with(
+            self.WEST, "sha256:release", "api-us-west1.quillrouter.com"
+        )
+
+    def test_without_a_pending_inventory_nothing_changes(self) -> None:
+        # The complete log and every DNS write of the reconciler as it was
+        # before pending regions existed, for this fleet. us-west1 is then just
+        # another region in neither inventory.
+        result = self.reconcile(pending=frozenset())
+
+        self.assertEqual(result.code, 0)
+        self.assertEqual(result.writes, {
+            "api.trustedrouter.com.": [self.CENTRAL, self.EAST],
+            "api.quillrouter.com.": [self.CENTRAL, self.EAST],
+            "api-us-central1.quillrouter.com.": [self.CENTRAL],
+            "api-us-east4.quillrouter.com.": [self.EAST],
+        })
+        self.assertEqual(result.log, WITHOUT_PENDING_LOG)
 
 
 class ReconcileLeaseTests(unittest.TestCase):

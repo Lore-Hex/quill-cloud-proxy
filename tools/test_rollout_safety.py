@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -82,10 +84,15 @@ class RolloutSafetyTests(unittest.TestCase):
             "PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_east4_drain_state }}",
             workflow,
         )
+        self.assertIn(
+            "PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_west1_drain_state }}",
+            workflow,
+        )
         for region_key in (
             "us_central1",
             "europe_west4",
             "us_east4",
+            "us_west1",
         ):
             self.assertIn(f"steps.prev.outputs.{region_key}_drain_origin", workflow)
         self.assertNotIn("QUILL_EXCLUDE_CANONICAL_REGIONS:", workflow)
@@ -222,11 +229,28 @@ class RolloutSafetyTests(unittest.TestCase):
                 "us-east4:quill-enclave-mig-useast4",
             ],
         )
+        # A region being bootstrapped. Promotion moves this line into the list
+        # above (docs/runbooks/README.md, "Adding a gateway region").
+        self.assertEqual(
+            (ROOT / "tools" / "gcp-enclave-migs-pending.txt")
+            .read_text(encoding="utf-8")
+            .splitlines(),
+            ["us-west1:quill-enclave-mig-uswest1"],
+        )
         self.assertNotIn("southamerica-east1", inventory_path.read_text())
         self.assertNotIn('GCP_ENCLAVE_MIGS: "', workflow)
-        self.assertEqual(workflow.count("< tools/gcp-enclave-migs.txt"), 2)
-        self.assertEqual(workflow.count("while IFS=: read -r region mig; do"), 2)
-        self.assertIn('expected="$(sort -u tools/gcp-enclave-migs.txt)"', workflow)
+        # Both rollout loops read the pending-aware tool's output. Reading the
+        # main inventory directly would skip a first-time region's MIG.
+        self.assertNotIn("< tools/gcp-enclave-migs.txt", workflow)
+        self.assertEqual(
+            workflow.count("while IFS=: read -r region mig inventory_state; do"), 2
+        )
+        self.assertEqual(
+            workflow.count("python3 tools/gcp_enclave_inventory.py list-existing"), 1
+        )
+        self.assertEqual(
+            workflow.count("python3 tools/gcp_enclave_inventory.py list-all"), 1
+        )
         self.assertNotIn("quill-enclave-mig-sa", workflow)
         self.assertNotIn("api-southamerica-east1.quillrouter.com", workflow)
         self.assertNotIn("Roll São Paulo GCP MIG", workflow)
@@ -239,16 +263,623 @@ class RolloutSafetyTests(unittest.TestCase):
         inventory_step = workflow[inventory_check:image_build]
         self.assertIn("gcloud compute instance-groups managed list", inventory_step)
         self.assertIn("--filter='name~^quill-enclave-mig-'", inventory_step)
-        self.assertIn('if [ "${actual}" != "${expected}" ]', inventory_step)
+        self.assertIn(
+            'python3 tools/gcp_enclave_inventory.py check --actual-file "${actual_migs}"',
+            inventory_step,
+        )
+
+    def _inventoried_migs(self) -> list[tuple[str, str]]:
+        # Main and pending: both are rolled, so both need every per-region list.
+        migs = []
+        for name in ("gcp-enclave-migs.txt", "gcp-enclave-migs-pending.txt"):
+            for line in (ROOT / "tools" / name).read_text().splitlines():
+                region, _, mig = line.partition(":")
+                migs.append((region, mig))
+        self.assertGreaterEqual(len(migs), 4)
+        return migs
+
+    def _workflow_shell(self, step: str, first_line: str, stop_before: str) -> str:
+        """Return lines of one step's `run: |` block, as the runner would see them."""
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+        start = workflow.index(first_line, workflow.index(f"      - name: {step}\n"))
+        body = workflow[start : workflow.index(stop_before, start + 1)].splitlines()
+        self.assertTrue(all(not line or line.startswith(" " * 10) for line in body))
+        script = "\n".join(line[10:] for line in body) + "\n"
+        self.assertNotIn("${{", script, "the shell must not need Actions interpolation")
+        return script
+
+    def _run_workflow_shell(
+        self,
+        script: str,
+        production: list[dict[str, str]] | None,
+        *,
+        project: str,
+        main: str,
+        pending: str,
+    ) -> tuple[subprocess.CompletedProcess[str], str, str]:
+        """Run real workflow shell against a fake gcloud.
+
+        Everything else is real: bash, jq, sort and the inventory tool, reading
+        fixture inventories from an isolated checkout-shaped directory.
+        """
+        self.assertIsNotNone(
+            shutil.which("jq"), "jq is required: the shell under test runs gcloud's JSON through it"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            (temp / "tools").mkdir()
+            shutil.copy(ROOT / "tools" / "gcp_enclave_inventory.py", temp / "tools")
+            (temp / "tools" / "gcp-enclave-migs.txt").write_text(main)
+            (temp / "tools" / "gcp-enclave-migs-pending.txt").write_text(pending)
+            (temp / "step.sh").write_text(script)
+            (temp / "bin").mkdir()
+            gcloud = temp / "bin" / "gcloud"
+            gcloud.write_text('''#!/bin/bash
+set -eu
+if [ "$*" != "compute instance-groups managed list --project=${EXPECTED_PROJECT} --filter=name~^quill-enclave-mig- --format=json" ]; then
+  echo "unexpected gcloud call: $*" >&2
+  exit 1
+fi
+if [ "${GCLOUD_FAILS}" = 1 ]; then
+  echo "ERROR: (gcloud.compute.instance-groups.managed.list) simulated failure" >&2
+  exit 1
+fi
+printf '%s\\n' "${GCLOUD_JSON}"
+''')
+            gcloud.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{temp / 'bin'}:{os.environ['PATH']}",
+                "PROJECT_ID": "fixture-project",
+                "EXPECTED_PROJECT": project,
+                "RUNNER_TEMP": str(temp),
+                "GITHUB_ENV": str(temp / "github-env"),
+                "GCLOUD_FAILS": "1" if production is None else "0",
+                "GCLOUD_JSON": json.dumps(production or []),
+            }
+            # GitHub runs an unspecified-shell step as `bash -e {0}`.
+            completed = subprocess.run(
+                ["bash", "-e", str(temp / "step.sh")],
+                cwd=temp, env=env, capture_output=True, text=True, timeout=30,
+            )
+            github_env = temp / "github-env"
+            listing = temp / "gcp-enclave-migs-actual.txt"
+            return (
+                completed,
+                github_env.read_text() if github_env.exists() else "",
+                listing.read_text() if listing.exists() else "",
+            )
+
+    @staticmethod
+    def _listed_mig(region: str, name: str) -> dict[str, str]:
+        return {
+            "name": name,
+            "region": f"https://www.googleapis.com/compute/v1/projects/p/regions/{region}",
+        }
+
+    def _run_inventory_step(
+        self, production: list[dict[str, str]] | None, *, main: str, pending: str
+    ) -> tuple[subprocess.CompletedProcess[str], str, str]:
+        # The whole step: from the first line of its `run: |` to the next step.
+        script = self._workflow_shell(
+            "Verify GCP enclave MIG inventory", "          set -euo pipefail\n", "\n      - "
+        )
+        self.assertIn("gcp_enclave_inventory.py check", script)
+        return self._run_workflow_shell(
+            script, production, project="fixture-project", main=main, pending=pending
+        )
+
+    def test_inventory_step_tolerates_only_an_absent_pending_mig(self) -> None:
+        mig = self._listed_mig
+        serving = [
+            mig("us-east4", "quill-enclave-mig-useast4"),
+            mig("us-central1", "quill-enclave-mig-us"),
+            mig("europe-west4", "quill-enclave-mig-eu"),
+        ]
+        west = mig("us-west1", "quill-enclave-mig-uswest1")
+        main = (
+            "us-central1:quill-enclave-mig-us\n"
+            "europe-west4:quill-enclave-mig-eu\n"
+            "us-east4:quill-enclave-mig-useast4\n"
+        )
+        pending = "us-west1:quill-enclave-mig-uswest1\n"
+
+        completed, github_env, listing = self._run_inventory_step(
+            serving, main=main, pending=pending
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn(
+            "pending and not created yet us-west1:quill-enclave-mig-uswest1",
+            completed.stdout,
+        )
+        self.assertEqual(
+            listing,
+            "europe-west4:quill-enclave-mig-eu\n"
+            "us-central1:quill-enclave-mig-us\n"
+            "us-east4:quill-enclave-mig-useast4\n",
+        )
+        # The Stage D step reads this listing through the exported path.
+        self.assertRegex(
+            github_env, r"^GCP_ENCLAVE_MIGS_ACTUAL=.+/gcp-enclave-migs-actual\.txt\n$"
+        )
+
+        completed, _, _ = self._run_inventory_step(
+            [*serving, west], main=main, pending=pending
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn(
+            "pending and present us-west1:quill-enclave-mig-uswest1", completed.stdout
+        )
+
+        refusals = (
+            # Positive control: the same production is refused when the absent
+            # MIG is listed as serving, so it is the pending file that forgives.
+            (serving, main + pending, "",
+             "main inventory MIG us-west1:quill-enclave-mig-uswest1 does not exist"),
+            ([*serving, mig("southamerica-east1", "quill-enclave-mig-sa")], main, pending,
+             "production MIG southamerica-east1:quill-enclave-mig-sa is in neither inventory"),
+            (serving[:2], main, pending,
+             "main inventory MIG europe-west4:quill-enclave-mig-eu does not exist"),
+            ([], main, pending,
+             "main inventory MIG us-central1:quill-enclave-mig-us does not exist"),
+        )
+        for production, main_text, pending_text, message in refusals:
+            with self.subTest(message=message):
+                completed, github_env, _ = self._run_inventory_step(
+                    production, main=main_text, pending=pending_text
+                )
+                self.assertEqual(completed.returncode, 1, completed.stdout)
+                self.assertIn(message, completed.stderr)
+                self.assertEqual(github_env, "")
+
+        # A zonal group under the enclave prefix has no region: jq fails on it
+        # and pipefail carries that to the step. A failed listing does the same.
+        zonal = {"name": "quill-enclave-mig-zonal", "zone": "projects/p/zones/us-central1-a"}
+        for production in ([*serving, zonal], None):
+            with self.subTest(production=production):
+                completed, github_env, _ = self._run_inventory_step(
+                    production, main=main, pending=pending
+                )
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertNotIn("matches production", completed.stdout)
+                self.assertEqual(github_env, "")
+
+    def test_capture_step_lists_production_again_before_it_rolls(self) -> None:
+        # The capture loop itself needs bash 4 (an associative array of drain
+        # origins). Its listing does not, so run that for real and show what the
+        # loop would iterate; the loop's pending branch is pinned in the next test.
+        listing = self._workflow_shell(
+            "Capture pre-rollout templates (for rollback)",
+            "          # List production again",
+            "          while IFS=: read -r region mig inventory_state; do\n",
+        )
+        script = (
+            listing
+            + "while IFS=: read -r region mig inventory_state; do\n"
+            + '  echo "${region} ${mig} ${inventory_state}"\n'
+            + 'done < "${mig_dir}/rollout.txt"\n'
+        )
+        mig = self._listed_mig
+        serving = [
+            mig("us-central1", "quill-enclave-mig-us"),
+            mig("europe-west4", "quill-enclave-mig-eu"),
+            mig("us-east4", "quill-enclave-mig-useast4"),
+        ]
+        main = (
+            "us-central1:quill-enclave-mig-us\n"
+            "europe-west4:quill-enclave-mig-eu\n"
+            "us-east4:quill-enclave-mig-useast4\n"
+        )
+        pending = "us-west1:quill-enclave-mig-uswest1\n"
+
+        def run(production: list[dict[str, str]] | None) -> subprocess.CompletedProcess[str]:
+            return self._run_workflow_shell(
+                script, production, project="quill-cloud-proxy", main=main, pending=pending
+            )[0]
+
+        first_deploy = run(serving)
+        self.assertEqual(first_deploy.returncode, 0, first_deploy.stderr)
+        self.assertEqual(
+            first_deploy.stdout.splitlines(),
+            [
+                "us-central1 quill-enclave-mig-us main",
+                "europe-west4 quill-enclave-mig-eu main",
+                "us-east4 quill-enclave-mig-useast4 main",
+                # Still iterated, so its (empty) template and its drain state
+                # reach the US West step.
+                "us-west1 quill-enclave-mig-uswest1 absent",
+            ],
+        )
+        later_deploy = run([*serving, mig("us-west1", "quill-enclave-mig-uswest1")])
+        self.assertEqual(later_deploy.returncode, 0, later_deploy.stderr)
+        self.assertEqual(
+            later_deploy.stdout.splitlines()[-1], "us-west1 quill-enclave-mig-uswest1 pending"
+        )
+
+        for production in (
+            [*serving, mig("asia-east1", "quill-enclave-mig-asia")],
+            serving[:2],
+            [],
+            None,
+        ):
+            with self.subTest(production=production):
+                refused = run(production)
+                self.assertEqual(refused.returncode, 1, refused.stdout)
+                self.assertEqual(refused.stdout, "")
+                self.assertIn(
+                    "production's enclave MIGs do not match the inventories; refusing to roll",
+                    refused.stderr,
+                )
+
+    def test_rollout_loops_take_a_pending_region_from_the_inventory_tool(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+
+        stage_d = workflow[
+            workflow.index("      - id: stage-d-transition") : workflow.index(
+                "      - id: write-trust"
+            )
+        ]
+        self.assertIn(
+            "python3 tools/gcp_enclave_inventory.py list-existing \\\n"
+            '            --actual-file "${GCP_ENCLAVE_MIGS_ACTUAL}" > "${rollout_migs}"',
+            stage_d,
+        )
+        self.assertIn('done < "${rollout_migs}"', stage_d)
+        # A process substitution would hide a failure of the tool and hand the
+        # loop an empty list, which publishes an empty transition set.
+        self.assertNotIn("<(python3 tools/gcp_enclave_inventory.py", workflow)
+        # A failed listing must not read as "nothing running": for a pending
+        # region that answer is accepted, so a failed read of a pending region
+        # that IS running would drop its digest from the transition set. The
+        # listing therefore runs as a plain command whose status is checked,
+        # never inside a process substitution.
+        listing = stage_d.index(
+            'if ! gcloud compute instance-groups managed list-instances "${mig}" \\\n'
+        )
+        listing_refusal = stage_d.index("could not list ${mig}'s instances; refusing")
+        self.assertNotIn(
+            "< <(\n              gcloud compute instance-groups managed list-instances",
+            stage_d,
+        )
+        self.assertIn('> "${running_listing}"; then', stage_d[listing:listing_refusal])
+        self.assertIn("exit 1", stage_d[listing_refusal : listing_refusal + 200])
+
+        no_templates = stage_d.index('if [ "${#running_templates[@]}" -eq 0 ]; then')
+        pending_branch = stage_d.index('if [ "${inventory_state}" = "pending" ]; then')
+        refusal = stage_d.index("no running MIG template found; refusing")
+        self.assertLess(listing_refusal, no_templates)
+        self.assertLess(no_templates, pending_branch)
+        self.assertLess(pending_branch, refusal)
+        self.assertIn("continue", stage_d[pending_branch:refusal])
+
+        capture_start = workflow.index("      - name: Capture pre-rollout templates")
+        capture = workflow[
+            capture_start : workflow.index("\n\n      # Staged regional rollout", capture_start)
+        ]
+        self.assertIn("gcloud compute instance-groups managed list", capture)
+        self.assertIn("--filter='name~^quill-enclave-mig-'", capture)
+        self.assertIn("python3 tools/gcp_enclave_inventory.py list-all", capture)
+        self.assertIn("do not match the inventories; refusing to roll", capture)
+        self.assertIn('done < "${mig_dir}/rollout.txt"', capture)
+        # No describe for a MIG that is not there: its empty previous template
+        # is the first-deployment signal, and its drain state is still emitted.
+        absent = capture.index('if [ "${inventory_state}" != "absent" ]; then')
+        describe = capture.index("gcloud compute instance-groups managed describe")
+        drain_state = capture.index('echo "${region//-/_}_drain_state=')
+        self.assertLess(capture.index('tmpl=""'), absent)
+        self.assertLess(absent, describe)
+        self.assertLess(describe, drain_state)
+
+    def test_pending_inventory_reaches_the_rollout_and_the_regional_reconciler(self) -> None:
+        workflow = (ROOT / ".github/workflows/deploy-enclave-gcp.yml").read_text()
+        push_paths = workflow.split("  push:\n", 1)[1].split("\njobs:", 1)[0]
+        self.assertIn('      - "tools/gcp-enclave-migs-pending.txt"', push_paths)
+        self.assertIn('      - "tools/gcp_enclave_inventory.py"', push_paths)
+        self.assertIn(
+            "python3 tools/test_gcp_enclave_inventory.py",
+            (ROOT / ".github/workflows/ci.yml").read_text(),
+        )
+
+        # The reconciler knows a pending region from its first rollout: it holds
+        # and promotes the cold CNAME and then keeps api-<region> on the attested
+        # VMs. What that may and may not publish is tested in
+        # test_reconcile_enclave_dns.py; here, that the file reaches both places
+        # the reconciler runs. The scheduled one reads it from its image, so a
+        # change to the file has to rebuild that image.
+        reconciler = (ROOT / "tools/reconcile-enclave-dns.py").read_text()
+        self.assertIn('"gcp-enclave-migs-pending.txt"', reconciler)
+        # One filter decides the canonical answer, and it cannot be built
+        # without the pending regions.
+        self.assertEqual(reconciler.count("EXCLUDE_CANONICAL_REGIONS |"), 1)
+        self.assertIn(
+            "    return EXCLUDE_CANONICAL_REGIONS | GCP_ENCLAVE_PENDING_REGIONS\n", reconciler
+        )
+        self.assertIn(
+            "    canonical_excludes = canonical_excluded_regions() | persistent_excludes\n",
+            reconciler,
+        )
+        copied = [
+            line.split()
+            for line in (ROOT / "tools/Dockerfile.reconciler").read_text().splitlines()
+            if line.startswith("COPY ") and "reconcile-enclave-dns.py" in line
+        ]
+        self.assertEqual(len(copied), 1)
+        # Same directory as the script: it resolves both files next to itself.
+        self.assertEqual(copied[0][-1], "/app/tools/")
+        self.assertIn("gcp-enclave-migs.txt", copied[0])
+        self.assertIn("gcp-enclave-migs-pending.txt", copied[0])
+        reconciler_deploy = (
+            ROOT / ".github/workflows/deploy-enclave-dns-reconciler.yml"
+        ).read_text()
+        reconciler_paths = reconciler_deploy.split("  push:\n", 1)[1].split(
+            "\n  workflow_dispatch:", 1
+        )[0]
+        for inventory in ("gcp-enclave-migs.txt", "gcp-enclave-migs-pending.txt"):
+            self.assertIn(f'      - "tools/{inventory}"', reconciler_paths)
+
+        # The certificate-expiry check stays on the serving regions: a pending
+        # region may legitimately have no VM, and so no certificate, yet.
+        tls_check = (ROOT / "tools/check-public-tls.py").read_text()
+        self.assertIn('with_name("gcp-enclave-migs.txt")', tls_check)
+        self.assertNotIn("pending", tls_check)
+
+    def test_every_inventoried_region_is_known_to_the_per_region_lists(self) -> None:
+        cleanup = (ROOT / "tools/cleanup-enclave-rollout-drains.sh").read_text()
+        start = cleanup.index("region_mig() {\n")
+        function = cleanup[start : cleanup.index("\n}\n", start) + 3]
+        stockout = (ROOT / ".github/workflows/relieve-mig-stockout.yml").read_text()
+        region_input = stockout[stockout.index("      region:\n") : stockout.index("      zone:\n")]
+        options = re.search(r"^        options: \[(.+)\]$", region_input, re.MULTILINE)
+        self.assertIsNotNone(options)
+        assert options is not None
+
+        migs = self._inventoried_migs()
+        self.assertEqual(
+            sorted(options.group(1).split(", ")), sorted(region for region, _ in migs)
+        )
+        self.assertIn(
+            'mig="$(python3 tools/gcp_enclave_inventory.py mig-for-region "${REGION}")"',
+            stockout,
+        )
+        for region, mig in migs:
+            with self.subTest(region=region):
+                completed = subprocess.run(
+                    ["bash", "-c", f'{function}\nregion_mig "{region}"'],
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(completed.stdout, f"{mig}\t{mig}-\n")
+
+    def test_us_west_rollout_mirrors_us_east_and_names_its_zones(self) -> None:
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+
+        def step(name: str) -> str:
+            start = workflow.index(f"      - name: {name}\n")
+            return workflow[start : workflow.index("\n\n", start)]
+
+        zones = "          MIG_ZONES: us-west1-a,us-west1-b"
+        west = step("Roll US West GCP MIG").splitlines()
+        self.assertEqual(west.count(zones), 1)
+        self.assertLess(west.index("        env:"), west.index(zones))
+        self.assertLess(west.index(zones), west.index("        run: |"))
+        # Apart from its zones (and the comments explaining them), the step is
+        # the US East step with the region renamed.
+        renamed = (
+            step("Roll US East GCP MIG")
+            .replace("US East", "US West")
+            .replace("us-east4", "us-west1")
+            .replace("us_east4", "us_west1")
+            .replace("useast4", "uswest1")
+        )
+        self.assertEqual(
+            [line for line in west if line != zones and not line.lstrip().startswith("#")],
+            renamed.splitlines(),
+        )
+        for expected in (
+            "timeout-minutes: 55",
+            "            us-west1 \\",
+            "            quill-enclave-mig-uswest1 \\",
+            "            quill-enclave-mig-uswest1- \\",
+            "            uswest1 \\",
+            "            api.quillrouter.com,api-us-west1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \\",
+            "            c3-standard-4 \\",
+            "            TDX \\",
+        ):
+            self.assertIn(expected, "\n".join(west))
+
+    def _mig_zone_args(self, **env: str) -> subprocess.CompletedProcess[str]:
+        deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
+        start = deploy.index("# Zones for a NEW regional MIG")
+        block = deploy[start : deploy.index('\nIMAGE_REF="${IMAGE_REF:?', start)]
+        default_surge = re.search(r'^MAX_SURGE="\$\{MAX_SURGE:-(\d+)\}"$', deploy, re.MULTILINE)
+        self.assertIsNotNone(default_surge)
+        assert default_surge is not None
+        return subprocess.run(
+            ["bash", "-euo", "pipefail", "-c",
+             block + '\nprintf "%s\\n" "${#MIG_ZONE_ARGS[@]}" ${MIG_ZONE_ARGS[@]+"${MIG_ZONE_ARGS[@]}"}'],
+            env={
+                "PATH": os.environ["PATH"],
+                "TMPDIR": tempfile.gettempdir(),
+                "REGION": "us-west1",
+                "MAX_SURGE": default_surge.group(1),
+                **env,
+            },
+            capture_output=True, text=True, timeout=5,
+        )
+
+    def test_mig_zones_are_validated_before_anything_is_created(self) -> None:
+        deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
+        self.assertLess(
+            deploy.index("# Zones for a NEW regional MIG"),
+            deploy.index("gc compute instance-templates create"),
+        )
+
+        unset = self._mig_zone_args()
+        self.assertEqual((unset.returncode, unset.stdout), (0, "0\n"), unset.stderr)
+        for value, expected in (
+            ("us-west1-a,us-west1-b", "--zones=us-west1-a,us-west1-b"),
+            ("us-west1-b", "--zones=us-west1-b"),
+            ("us-west1-a,", "--zones=us-west1-a"),
+        ):
+            with self.subTest(value=value):
+                completed = self._mig_zone_args(MIG_ZONES=value)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(completed.stdout, f"1\n{expected}\n")
+
+        for value, message in (
+            # The zone that cannot host TDX belongs to another region's MIG.
+            ("us-central1-f", "MIG_ZONES entry 'us-central1-f' is not a zone of us-west1"),
+            ("us-west1-a,,us-west1-b", "MIG_ZONES entry '' is not a zone of us-west1"),
+            ("us-west1-a, us-west1-b", "MIG_ZONES entry ' us-west1-b' is not a zone of us-west1"),
+            ("us-west1", "MIG_ZONES entry 'us-west1' is not a zone of us-west1"),
+            ("us-west1-a;rm", "is not a zone of us-west1"),
+        ):
+            with self.subTest(value=value):
+                completed = self._mig_zone_args(MIG_ZONES=value)
+                self.assertEqual(completed.returncode, 1, completed.stdout)
+                self.assertEqual(completed.stdout, "")
+                self.assertIn(message, completed.stderr)
+
+        too_small = self._mig_zone_args(MIG_ZONES="us-west1-a,us-west1-b", MAX_SURGE="1")
+        self.assertEqual(too_small.returncode, 1, too_small.stdout)
+        self.assertIn("MAX_SURGE=1 is below the 2 zones in MIG_ZONES", too_small.stderr)
+        no_surge = self._mig_zone_args(MIG_ZONES="us-west1-a,us-west1-b", MAX_SURGE="0")
+        self.assertEqual(no_surge.returncode, 0, no_surge.stderr)
+
+        # The zones the workflow names for us-west1 pass with the default surge.
+        workflow = (ROOT / ".github/workflows/deploy-enclave-gcp.yml").read_text()
+        named = re.findall(r"^          MIG_ZONES: (\S+)$", workflow, re.MULTILINE)
+        self.assertEqual(named, ["us-west1-a,us-west1-b"])
+        completed = self._mig_zone_args(MIG_ZONES=named[0])
+        self.assertEqual(completed.stdout, f"1\n--zones={named[0]}\n", completed.stderr)
+
+    def test_only_a_new_mig_gets_zones_and_the_capacity_tolerant_shape(self) -> None:
+        deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
+        branch = deploy.index('if gc compute instance-groups managed describe "$MIG_NAME"')
+        otherwise = deploy.index("\nelse\n", branch)
+        update = deploy[branch:otherwise]
+        create = deploy[otherwise : deploy.index("\nfi\n", otherwise)]
+        self.assertIn("gc beta compute instance-groups managed update", update)
+        self.assertIn("gc beta compute instance-groups managed create", create)
+
+        for flag in (
+            '    "${MIG_ZONE_ARGS[@]}" \\\n',
+            "    --target-distribution-shape=balanced \\\n",
+            "    --instance-redistribution-type=none \\\n",
+        ):
+            with self.subTest(flag=flag):
+                self.assertIn(flag, create)
+                # An existing MIG keeps its zones and shape: changing them is an
+                # operator decision (tools/relieve-mig-stockout.py), not a deploy's.
+                self.assertNotIn(flag.strip(" \\\n"), update)
+
+    def _roll_us_west1(
+        self, previous_template: str
+    ) -> tuple[subprocess.CompletedProcess[str], str]:
+        """Run the real secondary rollout for us-west1 with every child stubbed."""
+        self.assertIsNotNone(shutil.which("jq"), "jq is required by the script under test")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            bin_dir = temp / "bin"
+            bin_dir.mkdir()
+            command_log = temp / "commands.log"
+            stubs = {
+                # Children of the real script. What deploy-gcp-mig.sh would see
+                # in its environment is the point of this test.
+                "bash": '#!/bin/bash\necho "bash $* MIG_ZONES=${MIG_ZONES:-<unset>}" >> "${COMMAND_LOG}"\n',
+                "uv": '#!/bin/bash\necho "uv $*" >> "${COMMAND_LOG}"\n',
+                "python3": '#!/bin/bash\necho "python3 $*" >> "${COMMAND_LOG}"\n',
+                "gcloud": '#!/bin/bash\necho "gcloud $*" >> "${COMMAND_LOG}"\n',
+                # No synthetic target for the new region yet.
+                "curl": "#!/bin/bash\necho '{\"regions\": [{\"target_region\": \"us-east4\"}]}'\n",
+                "flock": "#!/bin/bash\nexit 0\n",
+            }
+            for name, body in stubs.items():
+                path = bin_dir / name
+                path.write_text(body, encoding="utf-8")
+                path.chmod(0o755)
+
+            completed = subprocess.run(
+                [
+                    "/bin/bash", str(ROOT / "tools" / "roll-secondary-region.sh"),
+                    "us-west1", "quill-enclave-mig-uswest1", "quill-enclave-mig-uswest1-",
+                    "uswest1", "api.quillrouter.com,api-us-west1.quillrouter.com",
+                    previous_template, "c3-standard-4", "TDX", "active", "none",
+                ],
+                cwd=ROOT,
+                env={
+                    "PATH": f"{bin_dir}:/usr/bin:/bin",
+                    "TMPDIR": tempfile.gettempdir(),
+                    "COMMAND_LOG": str(command_log),
+                    "GITHUB_RUN_ID": "33807667585",
+                    "IMAGE_REF": "registry.example/enclave:new",
+                    "IMAGE_DIGEST": "sha256:" + "a" * 64,
+                    "MIG_ZONES": "us-west1-a,us-west1-b",
+                },
+                capture_output=True, text=True, timeout=30,
+            )
+            commands = command_log.read_text(encoding="utf-8") if command_log.exists() else ""
+        return completed, commands
+
+    def test_first_time_region_inherits_mig_zones_and_takes_the_bootstrap_path(self) -> None:
+        # What the capture step hands over while the pending MIG does not exist.
+        completed, commands = self._roll_us_west1(previous_template="")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + commands)
+        self.assertIn(
+            "bash tools/deploy-gcp-mig.sh us-west1 MIG_ZONES=us-west1-a,us-west1-b\n",
+            commands,
+        )
+        self.assertIn(
+            "us-west1: first deployment has no synthetic target yet", completed.stdout
+        )
+        self.assertIn("us-west1 rollout healthy", completed.stdout)
+        # An empty previous template must never reach recovery or a rollback.
+        self.assertNotIn("recover-gcp-region.sh", commands)
+        self.assertLess(
+            commands.index("verify-region-before-dns.sh us-west1 quill-enclave-mig-uswest1-"),
+            commands.index("--clear-drain-region us-west1"),
+        )
+
+    def test_pending_region_with_a_previous_template_still_needs_a_synthetic_target(self) -> None:
+        # Once the pending MIG exists, the capture step reports its template and
+        # the bootstrap exemption is gone: with no synthetic target the rollout
+        # fails closed and recovers. docs/runbooks/README.md ("Adding a gateway
+        # region") tells the operator what to do before retrying.
+        completed, commands = self._roll_us_west1(previous_template="quill-enclave-tpl-uswest1-001")
+
+        self.assertEqual(completed.returncode, 1, completed.stdout)
+        self.assertIn(
+            "us-west1: existing region is missing from synthetic status; failing closed",
+            completed.stderr,
+        )
+        self.assertNotIn("first deployment has no synthetic target yet", completed.stdout)
+        self.assertNotIn("--clear-drain-region us-west1", commands)
+        self.assertIn(
+            "bash tools/recover-gcp-region.sh us-west1 quill-enclave-mig-uswest1 "
+            "quill-enclave-mig-uswest1- api.quillrouter.com,api-us-west1.quillrouter.com "
+            "quill-enclave-tpl-uswest1-001 active none",
+            commands,
+        )
 
     def test_stage_d_region_gate_contract(self) -> None:
         stage_d_tests = (ROOT / "tools/tests/test-stage-d-gates.sh").read_text()
         # Pin membership, association, uniqueness, completeness, and execution;
         # changing rollout policy must not quietly disable any of these checks.
         required_guards = (
+            'inventory=tools/gcp-enclave-migs.txt',
+            'pending_inventory=tools/gcp-enclave-migs-pending.txt',
             'heartbeat_regions=tools/stage-d-heartbeat-regions.txt',
             'terminate_regions=tools/stage-d-terminate-regions.txt',
-            'stage_d_counts="$(python3 - "${workflow}" "${inventory}" "${heartbeat_regions}" "${terminate_regions}"',
+            'stage_d_counts="$(python3 - "${workflow}" "${inventory}" "${pending_inventory}" "${heartbeat_regions}" "${terminate_regions}"',
+            'for source in (inventory, pending_inventory)',
+            'require(configured and len(configured) == len(configured_list), "invalid MIG inventory")',
             'raise SystemExit(f"Stage D region bijection: {message}")',
             '("QUILL_USAGE_HEARTBEAT", heartbeat_file),',
             '("QUILL_TERMINATE_AT_CAP", terminate_file),',
@@ -301,6 +932,7 @@ class RolloutSafetyTests(unittest.TestCase):
             for path in (
                 ".github/workflows/deploy-enclave-gcp.yml",
                 "tools/gcp-enclave-migs.txt",
+                "tools/gcp-enclave-migs-pending.txt",
                 "tools/stage-d-heartbeat-regions.txt",
                 "tools/stage-d-terminate-regions.txt",
             )
@@ -401,7 +1033,36 @@ class RolloutSafetyTests(unittest.TestCase):
         inputs[path] = re.sub(r'(QUILL_(?:USAGE_HEARTBEAT|TERMINATE_AT_CAP): )"on"', r'\1"off"', inputs[path])
         completed = self._run_stage_d_region_gate(inputs)
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.splitlines(), ["QUILL_USAGE_HEARTBEAT 0 3 3", "QUILL_TERMINATE_AT_CAP 0 3 3"])
+        self.assertEqual(completed.stdout.splitlines(), ["QUILL_USAGE_HEARTBEAT 0 4 4", "QUILL_TERMINATE_AT_CAP 0 4 4"])
+
+    def test_m8_pending_region_is_configured_by_the_pending_inventory(self) -> None:
+        # Moves us-east4, which stays in the main inventory, so this keeps
+        # holding once us-west1 is promoted and the pending file is empty again.
+        main = "tools/gcp-enclave-migs.txt"
+        pending = "tools/gcp-enclave-migs-pending.txt"
+        line = "us-east4:quill-enclave-mig-useast4\n"
+
+        moved = self._stage_d_inputs()
+        self.assertEqual(moved[main].count(line), 1)
+        moved[main] = moved[main].replace(line, "")
+        moved[pending] += line
+        completed = self._run_stage_d_region_gate(moved)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.splitlines(), ["QUILL_USAGE_HEARTBEAT 4 0 4", "QUILL_TERMINATE_AT_CAP 4 0 4"])
+
+        # A pending region's flags answer to the same declarations.
+        self._set_stage_d_flag(moved, "Roll US East GCP MIG", "QUILL_USAGE_HEARTBEAT", "off")
+        self._assert_stage_d_mutation_red(moved, "QUILL_USAGE_HEARTBEAT: declared regions not on: ['us-east4']")
+
+        # Positive control: in neither file, the same region is unconfigured.
+        dropped = self._stage_d_inputs()
+        dropped[main] = dropped[main].replace(line, "")
+        self._assert_stage_d_mutation_red(dropped, "unconfigured regions: ['us-east4']")
+
+        # One region cannot be both "must exist" and "may be absent".
+        doubled = self._stage_d_inputs()
+        doubled[pending] += line
+        self._assert_stage_d_mutation_red(doubled, "invalid MIG inventory")
 
     def test_stage_d_declared_files_trigger_deploy(self) -> None:
         workflow = (ROOT / ".github/workflows/deploy-enclave-gcp.yml").read_text()
@@ -557,7 +1218,20 @@ esac
         self.assertIn("set -euo pipefail", function)
         europe = workflow.index("      - name: Roll Europe GCP MIG")
         us_east = workflow.index("      - name: Roll US East GCP MIG")
+        us_west = workflow.index("      - name: Roll US West GCP MIG")
         self.assertLess(europe, us_east)
+        # The region that may still be bootstrapping rolls last, so its first
+        # deploy cannot hold up the regions that already serve.
+        self.assertLess(us_east, us_west)
+        self.assertEqual(
+            re.findall(r"^      - name: (Roll .*GCP MIG.*)$", workflow, re.MULTILINE),
+            [
+                "Roll the GCP MIG (us-central1)",
+                "Roll Europe GCP MIG",
+                "Roll US East GCP MIG",
+                "Roll US West GCP MIG",
+            ],
+        )
         self.assertNotIn("Roll São Paulo GCP MIG", workflow)
 
     def test_each_secondary_rollout_refreshes_route53_credentials(self) -> None:
@@ -573,6 +1247,10 @@ esac
             (
                 "Refresh AWS credentials for US East backup-domain DNS",
                 "Roll US East GCP MIG",
+            ),
+            (
+                "Refresh AWS credentials for US West backup-domain DNS",
+                "Roll US West GCP MIG",
             ),
         )
         previous_roll = -1

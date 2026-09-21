@@ -38,7 +38,7 @@ on:
         description: Region whose group has a VM in a zone with no capacity
         required: true
         type: choice
-        options: [us-central1, europe-west4, us-east4]
+        options: [us-central1, europe-west4, us-east4, us-west1]
       zone:
         description: The zone with no capacity, e.g. us-central1-c
         required: true
@@ -92,11 +92,15 @@ jobs:
 
       - name: Resolve the group
         id: group
+        # Both inventories: a region still being bootstrapped (listed in
+        # tools/gcp-enclave-migs-pending.txt) can hit a zone stockout too, and
+        # its first rollout cannot finish until it is relieved. The tool prints
+        # why and exits non-zero when neither file lists the region.
         run: |
           set -euo pipefail
-          mig="$(awk -F: -v region="${REGION}" '$1 == region {print $2}' tools/gcp-enclave-migs.txt)"
+          mig="$(python3 tools/gcp_enclave_inventory.py mig-for-region "${REGION}")"
           if [ -z "${mig}" ]; then
-            echo "no enclave group is listed for ${REGION} in tools/gcp-enclave-migs.txt" >&2
+            echo "no enclave group is listed for ${REGION}" >&2
             exit 1
           fi
           echo "mig=${mig}" >> "$GITHUB_OUTPUT"

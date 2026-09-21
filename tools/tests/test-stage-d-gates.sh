@@ -178,12 +178,16 @@ stage_d_select_probe_key off fixture-project fixture-region
 # Both Stage D flags must match their declared regional rollout exactly.
 workflow=.github/workflows/deploy-enclave-gcp.yml
 inventory=tools/gcp-enclave-migs.txt
+# A region being bootstrapped has a rollout step, and so Stage D flags, before
+# its MIG is promoted into the main inventory. Its flags answer to the same
+# bijection as a serving region's, so "configured" is both files.
+pending_inventory=tools/gcp-enclave-migs-pending.txt
 heartbeat_regions=tools/stage-d-heartbeat-regions.txt
 terminate_regions=tools/stage-d-terminate-regions.txt
 # Parse the supported step/env layout strictly, without a YAML dependency.
 # Scan every assignment, including shell/metadata forms, so an on outside a
 # region's own step env cannot escape the allowlist. Unknown layouts fail shut.
-stage_d_counts="$(python3 - "${workflow}" "${inventory}" "${heartbeat_regions}" "${terminate_regions}" <<'PY'
+stage_d_counts="$(python3 - "${workflow}" "${inventory}" "${pending_inventory}" "${heartbeat_regions}" "${terminate_regions}" <<'PY'
 import pathlib
 import re
 import sys
@@ -194,8 +198,10 @@ def require(condition, message):
         raise SystemExit(f"Stage D region bijection: {message}")
 
 
-workflow, inventory, heartbeat_file, terminate_file = map(pathlib.Path, sys.argv[1:])
-configured_list = [line.split(":")[0] for line in inventory.read_text().splitlines()]
+workflow, inventory, pending_inventory, heartbeat_file, terminate_file = map(pathlib.Path, sys.argv[1:])
+configured_list = [line.split(":")[0]
+                   for source in (inventory, pending_inventory)
+                   for line in source.read_text().splitlines()]
 configured = set(configured_list)
 require(configured and len(configured) == len(configured_list), "invalid MIG inventory")
 flag_files = (

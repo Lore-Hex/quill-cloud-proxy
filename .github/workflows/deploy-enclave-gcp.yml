@@ -30,6 +30,8 @@ on:
       - "tools/release-gcp.sh"
       - "tools/deploy-gcp-mig.sh"
       - "tools/gcp-enclave-migs.txt"
+      - "tools/gcp-enclave-migs-pending.txt"
+      - "tools/gcp_enclave_inventory.py"
       - "tools/stage-d-heartbeat-regions.txt"
       - "tools/stage-d-terminate-regions.txt"
       - "tools/reconcile-enclave-dns.py"
@@ -195,22 +197,30 @@ jobs:
           cosign-release: v2.4.1
 
       - name: Verify GCP enclave MIG inventory
+        # tools/gcp-enclave-migs.txt lists the regions that serve: every MIG in
+        # it must exist. tools/gcp-enclave-migs-pending.txt lists a region that
+        # is being bootstrapped: its MIG may be absent, because the rollout job
+        # below is what creates it. A production MIG that neither file names
+        # still fails closed. The data files cannot hold comments, so the
+        # procedure lives in docs/runbooks/README.md ("Adding a gateway
+        # region"), including the later commit that promotes a pending region
+        # by moving its line into the main inventory. Until then the DNS
+        # reconciler maintains the region's own hostname and keeps the region
+        # out of the canonical answer.
         run: |
           set -euo pipefail
-          expected="$(sort -u tools/gcp-enclave-migs.txt)"
-          actual="$(
-            gcloud compute instance-groups managed list \
-              --project="${PROJECT_ID}" \
-              --filter='name~^quill-enclave-mig-' \
-              --format=json | \
-              jq -r '.[] | "\(.region | split("/")[-1]):\(.name)"' | \
-              sort -u
-          )"
-          if [ "${actual}" != "${expected}" ]; then
-            echo "configured GCP enclave MIG inventory does not match production" >&2
-            diff -u <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}") || true
-            exit 1
-          fi
+          actual_migs="${RUNNER_TEMP}/gcp-enclave-migs-actual.txt"
+          gcloud compute instance-groups managed list \
+            --project="${PROJECT_ID}" \
+            --filter='name~^quill-enclave-mig-' \
+            --format=json | \
+            jq -r '.[] | "\(.region | split("/")[-1]):\(.name)"' | \
+            sort -u > "${actual_migs}"
+          python3 tools/gcp_enclave_inventory.py check --actual-file "${actual_migs}"
+          # The Stage D step below reads the same listing. Nothing else can
+          # change the MIG set while this job runs: deploys and the stockout
+          # workflow share one concurrency group.
+          echo "GCP_ENCLAVE_MIGS_ACTUAL=${actual_migs}" >> "$GITHUB_ENV"
 
       - name: Configure docker auth (for image describe)
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
@@ -309,14 +319,37 @@ jobs:
 
           running_digests="${work_dir}/running-digests.txt"
           : > "${running_digests}"
-          while IFS=: read -r region mig; do
-            mapfile -t running_templates < <(
-              gcloud compute instance-groups managed list-instances "${mig}" \
+          # Every main-inventory MIG, plus a pending (first-time) region's MIG
+          # once it exists. Written to a file before the loop: a process
+          # substitution would swallow a failure of the tool and leave the loop
+          # with nothing to read, which would publish an empty transition set.
+          rollout_migs="${work_dir}/rollout-migs.txt"
+          python3 tools/gcp_enclave_inventory.py list-existing \
+            --actual-file "${GCP_ENCLAVE_MIGS_ACTUAL}" > "${rollout_migs}"
+          while IFS=: read -r region mig inventory_state; do
+            # The listing goes to a file and its exit status is checked. Inside
+            # a process substitution a failed gcloud reads as an empty list,
+            # and for a pending region an empty list is an accepted answer
+            # ("nothing running yet"): a failed read of a pending region that
+            # IS running would leave its digest out of the transition set.
+            running_listing="${work_dir}/running-templates-${region}.txt"
+            if ! gcloud compute instance-groups managed list-instances "${mig}" \
                 --region="${region}" --project="${PROJECT_ID}" \
                 --filter='instanceStatus=RUNNING' \
-                --format='value(version.instanceTemplate)' | sed '/^[[:space:]]*$/d' | sort -u
-            )
+                --format='value(version.instanceTemplate)' > "${running_listing}"; then
+              echo "${region}: could not list ${mig}'s instances; refusing to publish an incomplete transition set" >&2
+              exit 1
+            fi
+            mapfile -t running_templates < <(sed '/^[[:space:]]*$/d' "${running_listing}" | sort -u)
             if [ "${#running_templates[@]}" -eq 0 ]; then
+              # A pending region whose first rollout failed or stocked out has
+              # a MIG with nothing running. It serves no canonical traffic, so
+              # it cannot make the set incomplete; when it does run something,
+              # that digest is added below like any other region's.
+              if [ "${inventory_state}" = "pending" ]; then
+                echo "${region}: pending region has no running MIG template yet; nothing to add"
+                continue
+              fi
               echo "${region}: no running MIG template found; refusing to publish an incomplete transition set" >&2
               exit 1
             fi
@@ -337,7 +370,7 @@ jobs:
               fi
               printf '%s\n' "${running_digest}" >> "${running_digests}"
             done
-          done < tools/gcp-enclave-migs.txt
+          done < "${rollout_migs}"
           sort -u -o "${running_digests}" "${running_digests}"
           python3 tools/write-stage-d-policy.py \
             --output trust-page/gcp/stage-d-accepted.json \
@@ -574,10 +607,35 @@ jobs:
             fi
             drain_origins["${drain_region}"]="${drain_origin}"
           done <<<"${drains}"
-          while IFS=: read -r region mig; do
-            tmpl=$(gcloud compute instance-groups managed describe "$mig" \
-              --region="$region" --project=quill-cloud-proxy \
-              --format='value(versions[0].instanceTemplate)' 2>/dev/null || true)
+          # List production again instead of trusting the build job's check:
+          # this job starts long after it, and a re-run of only this job never
+          # ran it. No pipes here, because this step has no pipefail; an empty
+          # or partial listing cannot pass either way, since the tool refuses
+          # when a main-inventory MIG is missing from it.
+          mig_dir="$(mktemp -d "${RUNNER_TEMP}/gcp-enclave-migs-XXXXXX")"
+          if ! gcloud compute instance-groups managed list \
+                --project=quill-cloud-proxy \
+                --filter='name~^quill-enclave-mig-' \
+                --format=json > "${mig_dir}/actual.json" || \
+              ! jq -r '.[] | "\(.region | split("/")[-1]):\(.name)"' \
+                "${mig_dir}/actual.json" > "${mig_dir}/actual.txt" || \
+              ! python3 tools/gcp_enclave_inventory.py list-all \
+                --actual-file "${mig_dir}/actual.txt" > "${mig_dir}/rollout.txt"; then
+            echo "production's enclave MIGs do not match the inventories; refusing to roll" >&2
+            exit 1
+          fi
+          while IFS=: read -r region mig inventory_state; do
+            tmpl=""
+            # A pending MIG that does not exist yet has no previous template.
+            # The empty value is what sends tools/roll-secondary-region.sh down
+            # its first-deployment path, and what makes recovery refuse to
+            # touch a region that has nothing to roll back to. Its drain state
+            # is still captured below like every other region's.
+            if [ "${inventory_state}" != "absent" ]; then
+              tmpl=$(gcloud compute instance-groups managed describe "$mig" \
+                --region="$region" --project=quill-cloud-proxy \
+                --format='value(versions[0].instanceTemplate)' 2>/dev/null || true)
+            fi
             tmpl_short=$(basename "$tmpl")
             key="${region//-/_}_template"
             echo "${key}=${tmpl_short}" >> "$GITHUB_OUTPUT"
@@ -590,7 +648,7 @@ jobs:
             echo "${region//-/_}_drain_origin=${drain_origin}" >> "$GITHUB_OUTPUT"
             echo "  pre-rollout ${region}: ${tmpl_short:-<none>}"
             echo "  pre-rollout ${region} drain state: ${drain_state}/${drain_origin}"
-          done < tools/gcp-enclave-migs.txt
+          done < "${mig_dir}/rollout.txt"
 
       # Staged regional rollout. Before touching any region, drain it from the
       # canonical API DNS answer and wait one TTL. The regional hostname may be
@@ -838,6 +896,45 @@ jobs:
             quill-enclave-mig-useast4- \
             useast4 \
             api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
+            "${PREV_TEMPLATE}" \
+            c3-standard-4 \
+            TDX \
+            "${PREV_DRAIN_STATE}" \
+            "${PREV_DRAIN_ORIGIN}"
+
+      - name: Refresh AWS credentials for US West backup-domain DNS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # Rolled last: while us-west1 is listed in
+      # tools/gcp-enclave-migs-pending.txt this step is what creates its MIG,
+      # and a first-time region must not be able to hold up the three that
+      # already serve.
+      - name: Roll US West GCP MIG
+        timeout-minutes: 55
+        env:
+          IMAGE_REF: ${{ needs.build-and-release.outputs.image_ref }}
+          IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
+          QUILL_USAGE_HEARTBEAT: "on"
+          QUILL_TERMINATE_AT_CAP: "on"
+          PREV_TEMPLATE: ${{ steps.prev.outputs.us_west1_template }}
+          PREV_DRAIN_STATE: ${{ steps.prev.outputs.us_west1_drain_state }}
+          PREV_DRAIN_ORIGIN: ${{ steps.prev.outputs.us_west1_drain_origin }}
+          # Read by tools/deploy-gcp-mig.sh (a child of the script below, so it
+          # inherits this) only when it CREATES the MIG. us-west1 offers Intel
+          # TDX c3 in zones a and b only, and a regional MIG left to Google gets
+          # three zones chosen without regard to that: us-central1 got zone f,
+          # which has no TDX hosts at all.
+          MIG_ZONES: us-west1-a,us-west1-b
+        run: |
+          bash tools/roll-secondary-region.sh \
+            us-west1 \
+            quill-enclave-mig-uswest1 \
+            quill-enclave-mig-uswest1- \
+            uswest1 \
+            api.quillrouter.com,api-us-west1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_TEMPLATE}" \
             c3-standard-4 \
             TDX \
