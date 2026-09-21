@@ -637,7 +637,15 @@ jobs:
         # naturally flap as instances cycle. Timeout caps a stuck
         # rollout — the MIG intentionally holds replacements ready for 10 min
         # so attested DNS can publish them before deleting the old generation.
-        timeout-minutes: 15
+        #
+        # The budget covers TWO readiness holds in a row, like the secondary
+        # regions' (tools/roll-secondary-region.sh). A regional MIG surges one
+        # VM per ZONE, so when both VMs sit in the same zone the replacements
+        # are made one after the other: about 23 minutes. That became the
+        # normal case here on 2026-09-21: us-central1-c had no capacity, and
+        # us-central1-f cannot host Intel TDX at all, which leaves zone b for
+        # both VMs. The old 15-minute cap only fit two replacements in parallel.
+        timeout-minutes: 45
         env:
           QUILL_RECONCILE_APPLY: "1"
           QUILL_API_HOST: api.trustedrouter.com
@@ -647,13 +655,14 @@ jobs:
           QUILL_REGIONAL_SUFFIX: quillrouter.com
         run: |
           set -euo pipefail
-          for i in $(seq 1 90); do
+          wait_rounds=120
+          for i in $(seq 1 "${wait_rounds}"); do
             if gcloud compute instance-groups managed wait-until quill-enclave-mig-us \
               --region=us-central1 --project=quill-cloud-proxy --stable --timeout=10; then
               uv run --script tools/reconcile-enclave-dns.py --apply
               exit 0
             fi
-            echo "us-central1 still rolling; refreshing attested DNS membership (${i}/90)"
+            echo "us-central1 still rolling; refreshing attested DNS membership (${i}/${wait_rounds})"
             uv run --script tools/reconcile-enclave-dns.py --apply || true
             sleep 5
           done
@@ -710,6 +719,16 @@ jobs:
         id: canary_us
         continue-on-error: true
         run: python3 tools/watchdog.py --regions us-central1 --duration-min 3 --rollback-after 3 --skip-baseline --initial-grace-sec 60
+
+      # The session from the start of this job is an hour old at most. With the
+      # stable wait now allowed two readiness holds, the primary phase can come
+      # close to that, and the restore below writes Route 53.
+      - name: Refresh AWS credentials before restoring us-central1
+        if: ${{ steps.canary_us.outcome == 'success' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
 
       - name: Restore us-central1 canonical drain state
         if: ${{ steps.canary_us.outcome == 'success' }}
