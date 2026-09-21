@@ -228,6 +228,9 @@ func TestStageDResponsesCapClosuresAreSchemaCompleteAndSequenced(t *testing.T) {
 				},
 				BeforeTerminal: func(terminal StreamTerminal) error {
 					created = terminal.Created
+					if terminal.UsageFields != nil {
+						t.Fatal("Responses usage annotation must be explicitly opted into")
+					}
 					settled = true
 					return terminal.Emit()
 				},

@@ -349,6 +349,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "huggingface",
         "vercel-ai-gateway",
         "typesafe",
+        "telluvian",
         "darkbloom",
         "baidu",
         "riverflow",

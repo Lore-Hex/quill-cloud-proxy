@@ -124,6 +124,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     # the gateway fails over to. The operator file calls the relay key
     # VERCEL_API_KEY; the longer name is what the control plane's secrets.sh reads.
     "TYPESAFE_API_KEY": "trustedrouter-typesafe-api-key",
+    "TELLUVIAN_API_KEY": "trustedrouter-telluvian-api-key",
     "VERCEL_AI_GATEWAY_API_KEY": "trustedrouter-vercel-ai-gateway-api-key",
     "VERCEL_API_KEY": "trustedrouter-vercel-ai-gateway-api-key",
     "DARKBLOOM_API_KEY": "trustedrouter-darkbloom-api-key",

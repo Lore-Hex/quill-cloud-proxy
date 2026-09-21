@@ -320,7 +320,7 @@ func isGenericAdvisorPrimitive(model string) bool {
 }
 
 func isOrchestrationModel(model string) bool {
-	return isAdvisorOrchestrationModel(model) || isFusionModel(model) || isSubagentModel(model)
+	return model == polyphemusModel || isAdvisorOrchestrationModel(model) || isFusionModel(model) || isSubagentModel(model)
 }
 
 func maybeServeAdvisor(
