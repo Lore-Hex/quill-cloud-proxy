@@ -112,8 +112,9 @@ func resolveSelectedModel(body []byte, recommendation string) (string, error) {
 		Data []struct {
 			ID string `json:"id"`
 			TR struct {
-				Chat    bool `json:"supports_chat"`
-				Credits bool `json:"prepaid_available"`
+				Chat      bool  `json:"supports_chat"`
+				Credits   bool  `json:"prepaid_available"`
+				Responses *bool `json:"supports_responses"`
 			} `json:"trustedrouter"`
 		} `json:"data"`
 	}
@@ -122,7 +123,7 @@ func resolveSelectedModel(body []byte, recommendation string) (string, error) {
 	}
 	matches := make(map[string]bool)
 	for _, model := range catalog.Data {
-		if !model.TR.Chat || !model.TR.Credits || strings.HasPrefix(model.ID, "trustedrouter/") || isOrchestrationModel(model.ID) {
+		if !model.TR.Chat || !model.TR.Credits || (model.TR.Responses != nil && !*model.TR.Responses) || strings.HasPrefix(model.ID, "trustedrouter/") || isOrchestrationModel(model.ID) {
 			continue
 		}
 		_, suffix, _ := strings.Cut(model.ID, "/")
@@ -206,7 +207,7 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 			return ctx, polyphemusError(502, "Model selection refund pending; do not replay this request")
 		}
 		if err := ctx.Err(); err != nil {
-			return ctx, err
+			return ctx, polyphemusError(499, "Request cancelled before fallback")
 		}
 		receipt := &polyphemusReceipt{ElapsedMS: elapsed.Milliseconds(), SelectedModel: "trustedrouter/auto", SelectorCalls: calls, FallbackReason: reason}
 		fmt.Fprintf(os.Stderr, "enclave.polyphemus.fallback request_log_id=%q reason=%q\n", requestLogID, reason)

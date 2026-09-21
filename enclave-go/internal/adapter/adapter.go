@@ -714,11 +714,13 @@ const MaxMeterChunkTokens = MAX_METER_CHUNK_TOKENS
 // BeforeTerminal owns the final protocol event and may synchronously settle
 // before calling Emit.
 type StreamControl struct {
-	BeforeSlice    func(StreamDelta) error
-	AfterSlice     func(StreamDelta) error
-	ObserveUsage   func(*StreamUsage)
-	Termination    func() *ControlledTermination
-	BeforeTerminal func(StreamTerminal) error
+	// Opt-in: existing Responses callers retain their original usage payload.
+	ExposeResponsesUsage bool
+	BeforeSlice          func(StreamDelta) error
+	AfterSlice           func(StreamDelta) error
+	ObserveUsage         func(*StreamUsage)
+	Termination          func() *ControlledTermination
+	BeforeTerminal       func(StreamTerminal) error
 }
 
 type StreamTerminal struct {

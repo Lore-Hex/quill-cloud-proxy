@@ -1941,7 +1941,18 @@ func serveStreaming(
 					})
 				}
 				if settleErr == nil {
-					annotateChatTerminalUsage(terminal, settlement, usage)
+					if routeType == "responses" {
+						if settlement != nil && terminal.UsageFields != nil {
+							terminal.UsageFields["cost_microdollars"] = settlement.CostMicrodollars
+							if terminal.TRFinishReason != "" {
+								terminal.UsageFields["input_tokens"] = usage.InputTokens
+								terminal.UsageFields["output_tokens"] = usage.OutputTokens
+								terminal.UsageFields["total_tokens"] = usage.InputTokens + usage.OutputTokens
+							}
+						}
+					} else {
+						annotateChatTerminalUsage(terminal, settlement, usage)
+					}
 				}
 				return terminal.Emit()
 			},
@@ -1983,6 +1994,9 @@ func serveStreaming(
 		}
 	}
 	if routeType == "responses" {
+		if stageDControl != nil && polyphemusReceiptFromContext(ctx) != nil {
+			stageDControl.ExposeResponsesUsage = true
+		}
 		if stageDControl != nil {
 			result, err = adapter.TransformResponsesStreamControlled(pr, streamW, requestID, responseModel, trustedrouter.EstimateInputTokens(req), responseTextConfig(req), req.Response, finishHook, stageDControl)
 		} else {

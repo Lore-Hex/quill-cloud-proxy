@@ -238,6 +238,10 @@ func TestPolyphemusResolvesOnlyUniqueConcreteModels(t *testing.T) {
 	if _, err := resolveSelectedModel([]byte(ambiguous), "gemini-3.8-flash"); err == nil {
 		t.Fatal("ambiguous suffix accepted")
 	}
+	chatOnly := strings.Replace(selectionTestCatalog, `"supports_chat":true`, `"supports_chat":true,"supports_responses":false`, 1)
+	if _, err := resolveSelectedModel([]byte(chatOnly), "gemini-3.8-flash"); err == nil {
+		t.Fatal("explicitly unsupported Responses target accepted")
+	}
 }
 
 func TestPolyphemusRejectsWrongRouteAndImage(t *testing.T) {

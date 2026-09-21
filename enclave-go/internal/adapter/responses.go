@@ -985,7 +985,10 @@ func TransformResponsesStreamControlled(
 	}
 
 	controlledFinish := func(termination *ControlledTermination) (StreamResult, error) {
-		usageFields := map[string]any{}
+		var usageFields map[string]any
+		if control != nil && control.ExposeResponsesUsage {
+			usageFields = map[string]any{}
+		}
 		toolCalls := orderedToolCalls(toolCallsByIndex, toolOrder)
 		result := StreamResult{
 			Text: captured.String(), FinishReason: termination.FinishReason,
@@ -1479,8 +1482,11 @@ func finishResponsesStream(
 		}
 	}
 	terminalEvent := events[len(events)-1]
-	response := terminalEvent.body["response"].(map[string]any)
-	usageFields := response["usage"].(map[string]any)
+	var usageFields map[string]any
+	if control != nil && control.ExposeResponsesUsage {
+		response, _ := terminalEvent.body["response"].(map[string]any)
+		usageFields, _ = response["usage"].(map[string]any)
+	}
 	emit := func() error {
 		if err := writeResponseEventSeq(w, seq, terminalEvent.name, terminalEvent.body); err != nil {
 			return err
