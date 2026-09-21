@@ -17,7 +17,7 @@
 # a new bundle (which regenerates this file and prints a new version), pin the
 # new QUILL_AZURE_BUNDLE_VERSION, and commit this file in the same change.
 #
-# bundle-version: 5e554cb23fcd4f9d8dc3d2a0d0fe8aea
+# bundle-version: ed3bc17b16f041cdbfd6031d6ebea874
 quill-device-keys
 quill-openrouter-key
 tr-azure-acme-cache-key
@@ -73,6 +73,7 @@ trustedrouter-synth-code-panel-prompt-v1
 trustedrouter-synth-code-synthesis-prompt-v1
 trustedrouter-synth-panel-prompt-v1
 trustedrouter-synth-synthesis-prompt-v1
+trustedrouter-telluvian-api-key
 trustedrouter-telnyx-api-key
 trustedrouter-thinking-machines-api-key
 trustedrouter-tinfoil-api-key
