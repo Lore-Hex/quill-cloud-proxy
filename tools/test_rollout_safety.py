@@ -227,15 +227,17 @@ class RolloutSafetyTests(unittest.TestCase):
                 "us-central1:quill-enclave-mig-us",
                 "europe-west4:quill-enclave-mig-eu",
                 "us-east4:quill-enclave-mig-useast4",
+                "us-west1:quill-enclave-mig-uswest1",
             ],
         )
-        # A region being bootstrapped. Promotion moves this line into the list
-        # above (docs/runbooks/README.md, "Adding a gateway region").
+        # No region is being bootstrapped. A new one starts here and promotion
+        # moves its line into the list above (docs/runbooks/README.md, "Adding a
+        # gateway region"). us-west1 was promoted on 2026-09-21.
         self.assertEqual(
             (ROOT / "tools" / "gcp-enclave-migs-pending.txt")
             .read_text(encoding="utf-8")
             .splitlines(),
-            ["us-west1:quill-enclave-mig-uswest1"],
+            [],
         )
         self.assertNotIn("southamerica-east1", inventory_path.read_text())
         self.assertNotIn('GCP_ENCLAVE_MIGS: "', workflow)

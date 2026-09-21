@@ -1,3 +1,4 @@
 us-central1:quill-enclave-mig-us
 europe-west4:quill-enclave-mig-eu
 us-east4:quill-enclave-mig-useast4
+us-west1:quill-enclave-mig-uswest1

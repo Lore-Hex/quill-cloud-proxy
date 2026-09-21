@@ -1,1 +1,0 @@
-us-west1:quill-enclave-mig-uswest1
