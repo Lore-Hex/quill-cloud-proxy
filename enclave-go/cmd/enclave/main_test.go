@@ -733,7 +733,7 @@ func TestServeUntilCanceledTreatsRolloutShutdownAsSuccess(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- serveUntilCanceled(ctx, listener, func(conn net.Conn) {
+		done <- serveUntilCanceled(ctx, listener, func(_ context.Context, conn net.Conn) {
 			_ = conn.Close()
 		})
 	}()
@@ -761,7 +761,7 @@ func TestServeUntilCanceledReportsUnexpectedListenerFailure(t *testing.T) {
 	err = serveUntilCanceled(
 		context.Background(),
 		listener,
-		func(conn net.Conn) { _ = conn.Close() },
+		func(_ context.Context, conn net.Conn) { _ = conn.Close() },
 	)
 	if err == nil || !strings.Contains(err.Error(), "accept:") {
 		t.Fatalf("serveUntilCanceled error = %v, want accept failure", err)

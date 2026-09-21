@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
@@ -36,6 +37,8 @@ type settlementRetryJob struct {
 }
 
 type settlementRetryQueue struct {
+	startOnce   sync.Once
+	idleChecks  chan chan bool
 	jobs        chan settlementRetryJob
 	maxAttempts int
 	baseDelay   time.Duration
@@ -72,7 +75,35 @@ func (q *settlementRetryQueue) Start(ctx context.Context) {
 	if !q.Enabled() {
 		return
 	}
-	go q.run(ctx)
+	q.startOnce.Do(func() {
+		q.idleChecks = make(chan chan bool)
+		go q.run(ctx)
+	})
+}
+
+// Call only after request handlers have drained. The worker acknowledges
+// between attempts, so an in-flight settlement is never mistaken for an empty
+// queue. Retries stay bounded by the caller's shutdown deadline.
+func (q *settlementRetryQueue) WaitForIdle(ctx context.Context) error {
+	if !q.Enabled() {
+		return nil
+	}
+	for {
+		check := make(chan bool, 1)
+		select {
+		case q.idleChecks <- check:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		select {
+		case idle := <-check:
+			if idle {
+				return nil
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 func (q *settlementRetryQueue) Enqueue(job settlementRetryJob) bool {
@@ -155,6 +186,8 @@ func (q *settlementRetryQueue) run(ctx context.Context) {
 			return
 		case job := <-q.jobs:
 			q.process(ctx, job)
+		case check := <-q.idleChecks:
+			check <- len(q.jobs) == 0
 		}
 	}
 }
