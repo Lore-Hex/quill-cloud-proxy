@@ -24,13 +24,16 @@ func TestServeChatStorePolicy(t *testing.T) {
 		store  string
 		stream bool
 		status int
+		route  string
 	}{
-		{"nonstream", "false", false, 200},
-		{"stream", "false", true, 200},
-		{"null-default", "null", false, 200},
-		{"storage-unsupported", "true", false, 501},
-		{"storage-unsupported-stream", "true", true, 501},
-		{"malformed", `"false"`, true, 400},
+		{"nonstream", "false", false, 200, "/v1/chat/completions"},
+		{"stream", "false", true, 200, "/v1/chat/completions"},
+		{"null-default", "null", false, 200, "/v1/chat/completions"},
+		{"storage-unsupported", "true", false, 501, "/v1/chat/completions"},
+		{"storage-unsupported-stream", "true", true, 501, "/v1/chat/completions"},
+		{"malformed", `"false"`, true, 400, "/v1/chat/completions"},
+		{"responses-storage-unsupported", "true", false, 501, "/v1/responses"},
+		{"responses-storage-unsupported-stream", "true", true, 501, "/v1/responses"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var authorizations, settlements, unexpected atomic.Int32
@@ -47,6 +50,19 @@ func TestServeChatStorePolicy(t *testing.T) {
 					settlements.Add(1)
 					_, _ = io.WriteString(w, `{"data":{"settled":true,"generation_id":"gen_store","cost_microdollars":12,"model":"openai/gpt-4o-mini","provider":"openai","region":"us-central1"}}`)
 				case "/internal/gateway/validate":
+					var payload struct {
+						Rejection struct {
+							Status    int    `json:"status"`
+							Parameter string `json:"parameter"`
+							RequestID string `json:"request_id"`
+						} `json:"contract_rejection"`
+					}
+					if err := json.Unmarshal(body, &payload); err != nil {
+						t.Error(err)
+					}
+					if payload.Rejection.Status != tc.status || payload.Rejection.Parameter != "store" || !strings.HasPrefix(payload.Rejection.RequestID, "rlog_") {
+						t.Errorf("missing rejection metadata: %s", body)
+					}
 					_, _ = io.WriteString(w, `{"data":{"workspace_id":"ws_1","api_key_hash":"key_1"}}`)
 				default:
 					unexpected.Add(1)
@@ -65,7 +81,10 @@ func TestServeChatStorePolicy(t *testing.T) {
 				serveOne(context.Background(), server, auth.New(nil), streamer, nil, nil, gateway, nil)
 			}()
 			body := fmt.Sprintf(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"private-chat-content"}],"max_tokens":32,"store":%s,"stream":%t,"stream_options":{"include_usage":true}}`, tc.store, tc.stream)
-			_, err := fmt.Fprintf(client, "POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer sk-private-test-bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+			if tc.route == "/v1/responses" {
+				body = fmt.Sprintf(`{"model":"openai/gpt-4o-mini","input":"private-chat-content","store":%s,"stream":%t}`, tc.store, tc.stream)
+			}
+			_, err := fmt.Fprintf(client, "POST %s HTTP/1.1\r\nAuthorization: Bearer sk-private-test-bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", tc.route, len(body), body)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -86,7 +105,11 @@ func TestServeChatStorePolicy(t *testing.T) {
 					t.Fatal("rejected store policy invoked a provider or billed")
 				}
 				var payload struct{ Error struct{ Param string } }
-				if err := json.Unmarshal([]byte(responseBody), &payload); err != nil || payload.Error.Param != "store" {
+				wantParam := "store"
+				if tc.route == "/v1/responses" {
+					wantParam = "store=true"
+				}
+				if err := json.Unmarshal([]byte(responseBody), &payload); err != nil || payload.Error.Param != wantParam {
 					t.Fatalf("missing store error: %s", responseBody)
 				}
 				return

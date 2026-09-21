@@ -56,6 +56,32 @@ func TestRequestContractRejectionLogIsMetadataOnlyAndBounded(t *testing.T) {
 	}
 }
 
+func TestRequestContractRejectionLogUsesPublicCategoriesOnly(t *testing.T) {
+	for _, tc := range []struct{ parameter, category string }{
+		{"store", "store"},
+		{"store=true", "store"},
+		{"tools.private-customer-value", "tools"},
+		{"input[123].private-customer-value", "input"},
+		{"private-customer-value", "other"},
+		{"sk-tr-v1-private-credential", "other"},
+		{"alice@example.com", "other"},
+	} {
+		t.Run(tc.parameter, func(t *testing.T) {
+			var logLine bytes.Buffer
+			writeRequestContractRejection(&logLine, "rlog-contract", "/v1/responses", 501, tc.parameter)
+			logged := logLine.String()
+			if !strings.Contains(logged, `parameter="`+tc.category+`"`) {
+				t.Fatalf("missing safe category %q: %s", tc.category, logged)
+			}
+			for _, secret := range []string{"private-customer-value", "sk-tr-v1-", "alice@", "=true"} {
+				if strings.Contains(logged, secret) {
+					t.Fatalf("private parameter data reached log: %s", logged)
+				}
+			}
+		})
+	}
+}
+
 func TestRequestAuditResolvesWorkspaceForPreAuthorizationError(t *testing.T) {
 	const bearer = "synthetic-private-bearer-material"
 	var payload map[string]any

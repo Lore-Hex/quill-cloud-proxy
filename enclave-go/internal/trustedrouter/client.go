@@ -668,8 +668,8 @@ func (c *Client) ValidateKey(ctx context.Context, bearer string, routeType strin
 	return err
 }
 
-// ValidateKeyInfo performs the same side-effect-free key validation as
-// ValidateKey and returns the verified workspace/key identity. Error paths in
+// ValidateKeyInfo performs the same no-hold key validation as ValidateKey
+// and returns the verified workspace/key identity. Error paths in
 // the enclave use this after writing the client response so requests rejected
 // before billing authorization remain attributable without creating a hold.
 func (c *Client) ValidateKeyInfo(ctx context.Context, bearer string, routeType string) (*KeyIdentity, error) {
@@ -683,6 +683,7 @@ func (c *Client) ValidateKeyInfo(ctx context.Context, bearer string, routeType s
 	if routeType != "" {
 		body["route_type"] = routeType
 	}
+	addContractRejection(ctx, body, routeType)
 	var decoded struct {
 		Data KeyIdentity `json:"data"`
 	}
