@@ -219,6 +219,7 @@ func main() {
 	configureFusionPrompts(boot)
 	configureAdvisorPrompts(boot)
 	configureResponsesWebSearch(boot.ExaAPIKey)
+	configureModelSelector(boot.ProviderAPIKeys["telluvian"])
 
 	// 2. Build registries. Capture a canonical hash of the device list
 	// so /attestation can include it in the document's UserData — clients
@@ -1073,6 +1074,26 @@ func serveOneRequest(
 		}
 	}
 
+	if req.Model == polyphemusModel {
+		if err := validatePolyphemus(&req, routeType); err != nil {
+			writeAdapterOpenAIError(conn, err)
+			return
+		}
+		if trGateway == nil || !trGateway.Enabled() {
+			writeError(conn, 503, "Polyphemus requires the TrustedRouter gateway")
+			return
+		}
+		ctx, err = preparePolyphemus(ctx, &req, trGateway, enclaveModelSelector, bearer, requestLogID)
+		if err != nil {
+			var aerr *adapter.AdapterError
+			if asAdapterErr(err, &aerr) {
+				writeAdapterOpenAIError(conn, aerr)
+			} else {
+				writeGatewayAuthorizationError(conn, err)
+			}
+			return
+		}
+	}
 	if routeType == "responses" && !isUserProvidedCustomModel(resolvedCustomModel) && maybeServeResponsesWebSearch(
 		ctx, conn, &req, br, trGateway, byokSecrets, bearer, requestLogID,
 	) {
@@ -1526,6 +1547,9 @@ func serveResponsesNonStreaming(
 		req.Model = selectedModel
 	}
 	responseModel := authorizationResponseModel(req.Model, authorization)
+	if polyphemusReceiptFromContext(ctx) != nil {
+		responseModel = polyphemusModel
+	}
 	if req.Response != nil && (len(result.Citations) > 0 || len(result.SearchResults) > 0) {
 		req.Response.OutputAnnotations = responsesAnnotationsFromProviderProvenance(result)
 	}
@@ -1561,6 +1585,9 @@ func serveResponsesNonStreaming(
 		return
 	}
 	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result, req.OpenRouterMetadata)
+	if err == nil {
+		annotatedBody, err = annotatePolyphemusResponse(ctx, annotatedBody)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_metadata_failed model=%q err=%v\n", req.Model, err)
 		writeSpentError(conn, 500, "responses encoding error")
@@ -1770,6 +1797,9 @@ func serveStreaming(
 		defer stageDController.stopCadence()
 	}
 	responseModel := authorizationResponseModel(req.Model, authorization)
+	if polyphemusReceiptFromContext(ctx) != nil {
+		responseModel = polyphemusModel
+	}
 	var routerMetadata map[string]any
 	if req.OpenRouterMetadata {
 		routerMetadata = openRouterRoutingMetadata(authorization, selectedRoute)
@@ -1931,6 +1961,26 @@ func serveStreaming(
 			annotateChatTerminalUsage(terminal, settlement, usage)
 			return terminal.Emit()
 		}}
+	}
+	if routeType == "responses" && polyphemusReceiptFromContext(ctx) != nil {
+		if stageDControl == nil {
+			stageDControl = &adapter.StreamControl{BeforeTerminal: func(terminal adapter.StreamTerminal) error {
+				settledBeforeTerminal = true
+				settlement, _ := settleStream(terminal.Result)
+				if settlement != nil {
+					terminal.UsageFields["cost_microdollars"] = settlement.CostMicrodollars
+				}
+				annotatePolyphemusUsage(ctx, terminal.UsageFields)
+				return terminal.Emit()
+			}}
+		} else {
+			before := stageDControl.BeforeTerminal
+			stageDControl.BeforeTerminal = func(terminal adapter.StreamTerminal) error {
+				emit := terminal.Emit
+				terminal.Emit = func() error { annotatePolyphemusUsage(ctx, terminal.UsageFields); return emit() }
+				return before(terminal)
+			}
+		}
 	}
 	if routeType == "responses" {
 		if stageDControl != nil {

@@ -985,6 +985,7 @@ func TransformResponsesStreamControlled(
 	}
 
 	controlledFinish := func(termination *ControlledTermination) (StreamResult, error) {
+		usageFields := map[string]any{}
 		toolCalls := orderedToolCalls(toolCallsByIndex, toolOrder)
 		result := StreamResult{
 			Text: captured.String(), FinishReason: termination.FinishReason,
@@ -1080,6 +1081,16 @@ func TransformResponsesStreamControlled(
 				}
 			}
 			response := responsesObject(responseID, model, "", nil, inputTokens, 0, 0, 0, created, "incomplete", textConfig, meta)
+			if len(usageFields) > 0 {
+				responseUsage, _ := response["usage"].(map[string]any)
+				if responseUsage == nil {
+					responseUsage = map[string]any{}
+					response["usage"] = responseUsage
+				}
+				for key, value := range usageFields {
+					responseUsage[key] = value
+				}
+			}
 			response["output"] = compactItems
 			response["incomplete_details"] = map[string]any{"reason": map[bool]string{true: "max_output_tokens", false: "server_error"}[termination.TRFinishReason == "cap_reached"]}
 			response["tr_finish_reason"] = termination.TRFinishReason
@@ -1094,7 +1105,7 @@ func TransformResponsesStreamControlled(
 			_, err := w.Write([]byte("data: [DONE]\n\n"))
 			return err
 		}
-		terminal := StreamTerminal{Result: result, Created: created, FinishReason: termination.FinishReason, TRFinishReason: termination.TRFinishReason, Emit: emit}
+		terminal := StreamTerminal{Result: result, UsageFields: usageFields, Created: created, FinishReason: termination.FinishReason, TRFinishReason: termination.TRFinishReason, Emit: emit}
 		if control != nil && control.BeforeTerminal != nil {
 			return result, control.BeforeTerminal(terminal)
 		}
@@ -1468,6 +1479,8 @@ func finishResponsesStream(
 		}
 	}
 	terminalEvent := events[len(events)-1]
+	response := terminalEvent.body["response"].(map[string]any)
+	usageFields := response["usage"].(map[string]any)
 	emit := func() error {
 		if err := writeResponseEventSeq(w, seq, terminalEvent.name, terminalEvent.body); err != nil {
 			return err
@@ -1481,7 +1494,7 @@ func finishResponsesStream(
 		return err
 	}
 	if control != nil && control.BeforeTerminal != nil {
-		return result, control.BeforeTerminal(StreamTerminal{Result: result, Created: created, FinishReason: finishReason, Emit: emit})
+		return result, control.BeforeTerminal(StreamTerminal{Result: result, UsageFields: usageFields, Created: created, FinishReason: finishReason, Emit: emit})
 	}
 	return result, emit()
 }
