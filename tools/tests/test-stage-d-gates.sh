@@ -177,6 +177,18 @@ stage_d_select_probe_key off fixture-project fixture-region
 
 # Both Stage D flags must match their declared regional rollout exactly.
 workflow=.github/workflows/deploy-enclave-gcp.yml
+python3 - "${workflow}" <<'PY'
+import pathlib
+import re
+import sys
+
+workflow = pathlib.Path(sys.argv[1]).read_text()
+rollout = workflow.split("\n  rollout:\n", 1)[1].split("\n  finalize-trust-artifacts:\n", 1)[0]
+checkout = rollout.split("- uses: actions/checkout@v4", 1)[1].split("\n      - name:", 1)[0]
+assert re.search(r"^          ref: \$\{\{ github\.sha \}\}$", checkout, re.M), (
+    "rollout scripts must match the built image's source SHA, not moving main"
+)
+PY
 inventory=tools/gcp-enclave-migs.txt
 heartbeat_regions=tools/stage-d-heartbeat-regions.txt
 terminate_regions=tools/stage-d-terminate-regions.txt
