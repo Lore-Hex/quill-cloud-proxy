@@ -112,9 +112,22 @@ else
   echo "${region}: previous template is already selected"
 fi
 
+# Two readiness holds in a row: a group whose VMs share a zone is rolled back
+# one VM at a time (one surge VM per zone), about 23 minutes. 1200 seconds only
+# fit a rollback that could replace both VMs in parallel, so for a same-zone
+# pair (us-east4 since before 2026-09, us-central1 since 2026-09-21) this wait
+# used to give up while the rollback was still on its way to succeeding.
+#
+# NOT solved here: the secondary regions run this script from the EXIT trap of
+# tools/roll-secondary-region.sh, inside that workflow step's 55-minute cap. A
+# secondary that fails late (after about minute 28) cannot finish a sequential
+# rollback before the cap kills the step, with this value or the old one; the
+# group still finishes rolling back on its own and the region stays drained
+# until a later run's drain finalizer clears it. The fix is to give secondary
+# recovery its own workflow step with fresh AWS credentials.
 gcloud compute instance-groups managed wait-until "${mig}" \
   --region="${region}" --project="${project}" \
-  --stable --timeout="${ROLLBACK_STABLE_TIMEOUT:-1200}"
+  --stable --timeout="${ROLLBACK_STABLE_TIMEOUT:-2400}"
 bash tools/wait-region-attested.sh "${instance_filter}" "${region} rollback"
 
 previous_digest="$(resolve_template_digest "${previous_template}")"

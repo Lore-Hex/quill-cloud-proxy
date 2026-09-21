@@ -635,6 +635,40 @@ esac
         self.assertIn('seq 1 "${wait_rounds}"', secondary)
         self.assertIn("(${i}/${wait_rounds})", secondary)
 
+    def test_primary_stability_wait_and_rollback_cover_two_readiness_holds(self) -> None:
+        # One surge VM per zone: two VMs in ONE zone are replaced one after the
+        # other, each held ready for MIN_READY (600 s). 2026-09-21: the primary
+        # step's 15-minute cap failed a healthy rollout at the second hold.
+        workflow = (
+            ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
+        ).read_text(encoding="utf-8")
+        deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")
+        recovery = (ROOT / "tools" / "recover-gcp-region.sh").read_text(
+            encoding="utf-8"
+        )
+        min_ready = re.search(r'MIN_READY="?\$\{MIN_READY:-(\d+)s?\}"?', deploy)
+        self.assertIsNotNone(min_ready, "MIN_READY default not found in deploy-gcp-mig.sh")
+        assert min_ready is not None
+        two_holds = 2 * int(min_ready.group(1))
+
+        step = workflow.split("- name: Wait for us-central1 MIG to be stable", 1)[1]
+        step = step.split("\n      - name:", 1)[0]
+        cap = re.search(r"timeout-minutes: (\d+)", step)
+        rounds = re.search(r"wait_rounds=(\d+)", step)
+        self.assertIsNotNone(cap)
+        self.assertIsNotNone(rounds)
+        assert cap is not None and rounds is not None
+        # Headroom for two boots and the DNS refresh in each round.
+        self.assertGreaterEqual(int(cap.group(1)) * 60, two_holds + 900)
+        # A round is at least 15 s (wait-until --timeout=10, then sleep 5).
+        self.assertGreaterEqual(int(rounds.group(1)) * 15, two_holds + 300)
+        self.assertIn('seq 1 "${wait_rounds}"', step)
+
+        rollback = re.search(r"ROLLBACK_STABLE_TIMEOUT:-(\d+)", recovery)
+        self.assertIsNotNone(rollback)
+        assert rollback is not None
+        self.assertGreaterEqual(int(rollback.group(1)), two_holds + 900)
+
     def test_primary_and_secondary_failures_restore_verified_previous_template(self) -> None:
         workflow = (
             ROOT / ".github" / "workflows" / "deploy-enclave-gcp.yml"
