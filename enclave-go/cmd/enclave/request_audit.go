@@ -23,6 +23,8 @@ type requestAuditIdentity struct {
 	workspaceID           string
 	credentialID          string
 	attribution           string
+	rejectionStatus       int
+	rejectionParameter    string
 }
 
 func (identity *requestAuditIdentity) bindBearer(bearer string) {
@@ -63,6 +65,7 @@ func (identity *requestAuditIdentity) resolveFailure(
 	}
 	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), errorIdentityLookupTimeout)
 	defer cancel()
+	lookupCtx = trustedrouter.WithContractRejection(lookupCtx, identity.rejectionStatus, identity.rejectionParameter)
 	verified, err := gateway.ValidateKeyInfo(lookupCtx, bearer, route)
 	if err != nil || verified == nil || verified.WorkspaceID == "" {
 		identity.attribution = "unresolved"
@@ -71,6 +74,14 @@ func (identity *requestAuditIdentity) resolveFailure(
 	identity.workspaceID = verified.WorkspaceID
 	identity.credentialID = verified.APIKeyHash
 	identity.attribution = "validation"
+}
+
+func (identity *requestAuditIdentity) recordContractRejection(
+	w io.Writer, requestLogID string, route string, status int, parameter string,
+) {
+	identity.rejectionStatus = status
+	identity.rejectionParameter = parameter
+	writeRequestContractRejection(w, requestLogID, route, status, parameter)
 }
 
 func writeRequestStartLog(
@@ -125,8 +136,8 @@ func writeRequestEndLog(
 
 // writeRequestContractRejection records only the bounded option name and
 // status. It deliberately excludes the request body and field value. The
-// enclave has no Sentry SDK; operators can alert on this metadata log without
-// exporting prompts or outputs from the trusted path.
+// enclave has no Sentry SDK. recordContractRejection also attaches a sanitized
+// category to the existing post-response lookup for a control-plane warning.
 func writeRequestContractRejection(
 	w io.Writer,
 	requestLogID string,
