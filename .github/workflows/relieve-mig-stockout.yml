@@ -82,7 +82,7 @@ jobs:
         with:
           workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
           service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v3
       - uses: astral-sh/setup-uv@v5
       - name: Authenticate to AWS for backup-domain DNS
         uses: aws-actions/configure-aws-credentials@v4
