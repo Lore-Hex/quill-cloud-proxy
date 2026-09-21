@@ -512,8 +512,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main   # pull the auto-commit just made
-          token: ${{ secrets.TRUST_PUSH_TOKEN }}
+          # Match the image source, not a newer main containing runtime envs
+          # that the built Confidential Space image does not allow. Trust
+          # publication is verified separately against its signed public URL.
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Authenticate to GCP via WIF
         uses: google-github-actions/auth@v3
         with:
