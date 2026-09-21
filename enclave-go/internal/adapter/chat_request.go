@@ -26,7 +26,7 @@ var chatRequestFields = map[string]struct{}{
 	"temperature": {}, "tool_choice": {}, "tools": {}, "top_a": {}, "top_k": {},
 	"top_logprobs": {}, "top_p": {}, "trace": {}, "user": {}, "web_search_options": {},
 	// TrustedRouter compatibility/extensions already supported by the gateway.
-	"allow_fallbacks": {}, "depth": {}, "max_output_tokens": {}, "n": {}, "tags": {},
+	"allow_fallbacks": {}, "depth": {}, "max_output_tokens": {}, "n": {}, "store": {}, "tags": {},
 }
 
 var unsupportedChatFields = map[string]struct{}{
@@ -106,6 +106,17 @@ func ValidateChatRequestFields(raw map[string]json.RawMessage) (ChatRequestValid
 		}
 		if capability, ok := endpointCapabilityFields[key]; ok {
 			requested[capability] = struct{}{}
+		}
+	}
+	// OpenAI-compatible clients send store=false. Honor that policy locally;
+	// it is not a provider capability and must never enable content retention.
+	if value, ok := raw["store"]; ok {
+		var store *bool
+		if err := json.Unmarshal(value, &store); err != nil {
+			return ChatRequestValidation{}, &AdapterError{Status: 400, Message: "store must be a boolean", Context: "store"}
+		}
+		if store != nil && *store {
+			return ChatRequestValidation{}, unsupportedRequestParameter("store")
 		}
 	}
 	if value, ok := raw["modalities"]; ok {
