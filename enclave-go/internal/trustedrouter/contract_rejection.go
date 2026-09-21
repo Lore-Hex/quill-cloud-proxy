@@ -36,15 +36,21 @@ func WithContractRejection(ctx context.Context, status int, parameter string) co
 	if requestID == "" {
 		return ctx
 	}
+	return context.WithValue(ctx, contractRejectionContextKey{}, contractRejection{
+		Status: status, Parameter: ContractParameterCategory(parameter), RequestID: requestID,
+	})
+}
+
+// ContractParameterCategory bounds both logs and the control-plane envelope.
+func ContractParameterCategory(parameter string) string {
+	parameter = strings.TrimSpace(parameter)
 	if end := strings.IndexAny(parameter, ".[="); end >= 0 {
 		parameter = parameter[:end]
 	}
 	if _, known := contractParameterCategories[parameter]; !known {
-		parameter = "other"
+		return "other"
 	}
-	return context.WithValue(ctx, contractRejectionContextKey{}, contractRejection{
-		Status: status, Parameter: parameter, RequestID: requestID,
-	})
+	return parameter
 }
 
 func addContractRejection(ctx context.Context, body map[string]any, route string) {

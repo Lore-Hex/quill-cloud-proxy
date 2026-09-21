@@ -4,13 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
-
-const maxRejectedParameterLogBytes = 160
 
 const errorIdentityLookupTimeout = 750 * time.Millisecond
 
@@ -80,7 +77,7 @@ func (identity *requestAuditIdentity) recordContractRejection(
 	w io.Writer, requestLogID string, route string, status int, parameter string,
 ) {
 	identity.rejectionStatus = status
-	identity.rejectionParameter = parameter
+	identity.rejectionParameter = trustedrouter.ContractParameterCategory(parameter)
 	writeRequestContractRejection(w, requestLogID, route, status, parameter)
 }
 
@@ -145,10 +142,7 @@ func writeRequestContractRejection(
 	status int,
 	parameter string,
 ) {
-	parameter = strings.TrimSpace(parameter)
-	if len(parameter) > maxRejectedParameterLogBytes {
-		parameter = parameter[:maxRejectedParameterLogBytes]
-	}
+	parameter = trustedrouter.ContractParameterCategory(parameter)
 	fmt.Fprintf(
 		w,
 		"enclave.request_contract_rejected request_log_id=%q route=%q status=%d parameter=%q\n",
