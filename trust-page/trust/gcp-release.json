@@ -1,18 +1,8 @@
 {
   "accepted_image_digests": [
-    "sha256:ac4c0b9095ea381c7c16303827a1c6ee1561a3cf6b423d52322c49d53212c33c",
-    "sha256:ba3b21b329777a6019f8951858c121ff0e64c263c9322909da46ebbd7a5be964",
-    "sha256:059be7b43984876f3f573adb124792b2767cbbe5e2a0517aed287c54841ae368",
-    "sha256:d5ed072a270ed9f763ad15f682b5ece2d0e805b00395de3b0aacf85c9b08f551",
-    "sha256:c90a7ce6796cc3ea4a5298a88515890d1ea45b9783c0a547b3b3d9f705938418",
     "sha256:2a8cd7df1d511bd092c2a43a830324b4a7702e5bffc28f51cb9fc5354155a239"
   ],
   "accepted_image_references": [
-    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-b6e5015",
-    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-1a03c16e",
-    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-e07401b6",
-    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-ebe0eb84",
-    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-04b56652",
     "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-e1a68494"
   ],
   "api_base_url": "https://api.trustedrouter.com/v1",
@@ -53,7 +43,7 @@
     "key_log": "https://trustedrouter.com/.well-known/inference-receipt-keys",
     "spec": "inference-receipt/1"
   },
-  "release_state": "rolling",
+  "release_state": "current",
   "released_by": "github-actions:deploy-enclave-gcp",
   "source_commit": "e1a68494",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
