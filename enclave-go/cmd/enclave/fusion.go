@@ -535,7 +535,10 @@ func fusionBuiltInPrompts(codeModel bool) (string, string) {
 type fusionCallResult struct {
 	Result           adapter.StreamResult
 	Model            string
+	Provider         string
 	Endpoint         string
+	AttemptCount     int
+	FallbackCount    int
 	RouteType        string
 	RawText          string
 	InputTokens      int
@@ -1874,7 +1877,7 @@ func runFusionCallValidatedObservedAttempt(
 	streamed bool,
 	allowOverthinkingRescue bool,
 	invokeTimeout time.Duration,
-) (fusionCallResult, error) {
+) (call fusionCallResult, callErr error) {
 	requestStarted := time.Now()
 	authz, options, err := authorizeFusionCall(ctx, req, trGateway, secretCache, bearer, routeType, idempotencyKey)
 	if err != nil {
@@ -1908,6 +1911,12 @@ func runFusionCallValidatedObservedAttempt(
 	defer cancelInvoke()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
+	// Preserve actual upstream attempts even on errors, so callers can aggregate
+	// refunded calls and retries. A rescue contributes its own counts as well.
+	defer func() {
+		call.AttemptCount += selectedRoute.AttemptCount()
+		call.FallbackCount += selectedRoute.FallbackCount()
+	}()
 	collectObserver := observer
 	var guard *fusionOverthinkingGuard
 	if overthinking.enabled {
@@ -1925,7 +1934,7 @@ func runFusionCallValidatedObservedAttempt(
 			rescueReq := fusionOverthinkingRescueRequest(req, routeType, guard.Reasoning())
 			rescue, rescueErr := runFusionCallValidatedObservedAttempt(ctx, br, rescueReq, trGateway, secretCache, bearer, routeType, idempotencyKey+":rescue", requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, observer, streamed, false, 0)
 			if rescueErr != nil {
-				return fusionCallResult{}, rescueErr
+				return rescue, rescueErr
 			}
 			rescue.Rescue = &fusionOverthinkingRescue{
 				RouteType:      routeType,
@@ -2002,6 +2011,7 @@ func runFusionCallValidatedObservedAttempt(
 	return fusionCallResult{
 		Result:           result,
 		Model:            selectedModel,
+		Provider:         selectedRoute.Provider("", authz),
 		Endpoint:         selectedEndpoint,
 		RouteType:        routeType,
 		RawText:          rawText,

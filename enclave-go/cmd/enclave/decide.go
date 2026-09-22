@@ -573,6 +573,7 @@ func serveNativeDecide(
 		return
 	}
 	usage := decideUsage{}
+	upstreamAttempts, fallbackAttempts := 0, 0
 	var lastSettlement *trustedrouter.SettleResult
 	var lastAuthorization *trustedrouter.Authorization
 	// spent: did a provider already produce a complete result for this
@@ -596,6 +597,10 @@ func serveNativeDecide(
 		attemptReq.IdempotencyKey = attemptKey
 		recorder := &generationRecorder{}
 		call, err := runFusionCallValidated(ctx, recordingClient{br, recorder}, &attemptReq, trGateway, secretCache, bearer, decideRouteType, attemptKey, requestLogID, nil, false, recorder.complete, true)
+		// Use the shared chat route tracker's counts, including refunded calls;
+		// decision iterations themselves are not upstream attempts or fallbacks.
+		upstreamAttempts += call.AttemptCount
+		fallbackAttempts += call.FallbackCount
 		if err != nil {
 			var afterResult *settlementAttemptedError
 			var verdict *trustedrouter.ControlPlaneError
@@ -635,12 +640,9 @@ func serveNativeDecide(
 			answers, err = decide.Verify(specs, answers)
 		}
 		if err == nil {
-			// The shared call can fail over internally without exposing its count.
-			// Report the decision attempts, including refunded ones, but do not
-			// invent a provider fallback count from those retries.
 			writeDecideResponse(ctx, conn, decideResponse{Model: req.Model, Answers: decide.InAskedSpelling(answers, req.askedNoul), Usage: usage}, lastSettlement, lastAuthorization, decideRoutingMetadata{
-				Served:         llm.InvokeOptions{Model: call.Model, EndpointID: call.Endpoint},
-				CandidateCount: routeCandidateCount(call.Authorization, nil), AttemptCount: attempt,
+				Served:         llm.InvokeOptions{Model: call.Model, Provider: call.Provider, EndpointID: call.Endpoint},
+				CandidateCount: routeCandidateCount(call.Authorization, nil), AttemptCount: upstreamAttempts, FallbackCount: &fallbackAttempts,
 			})
 			return
 		}

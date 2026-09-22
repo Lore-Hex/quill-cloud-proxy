@@ -22,6 +22,7 @@ import (
 // Anthropic-shaped stream every provider client writes.
 type scriptedLLM struct {
 	replies  []string
+	errors   []error
 	requests []*types.OpenAIChatRequest
 	options  [][]llm.InvokeOptions
 }
@@ -32,6 +33,9 @@ func (s *scriptedLLM) InvokeStreaming(_ context.Context, req *types.OpenAIChatRe
 	s.options = append(s.options, options)
 	if index >= len(s.replies) {
 		return fmt.Errorf("scriptedLLM: unexpected call %d", index+1)
+	}
+	if index < len(s.errors) && s.errors[index] != nil {
+		return s.errors[index]
 	}
 	text, _ := json.Marshal(s.replies[index])
 	_, err := fmt.Fprintf(out, `event: message_start
@@ -53,9 +57,11 @@ data: {"type":"message_stop"}
 const privateState = "PRIVATE-STATE charged twice for order A-1"
 
 type controlPlaneLog struct {
-	authorize []map[string]any
-	settle    []map[string]any
-	refund    int
+	authorize              []map[string]any
+	settle                 []map[string]any
+	refund                 int
+	authorizationResponses []string
+	settlementResponses    []string
 }
 
 func fakeDecideControlPlane(t *testing.T, log *controlPlaneLog, provider string) *httptest.Server {
@@ -75,10 +81,18 @@ func fakeDecideControlPlane(t *testing.T, log *controlPlaneLog, provider string)
 		switch request.URL.Path {
 		case "/internal/gateway/authorize":
 			log.authorize = append(log.authorize, body)
+			if len(log.authorizationResponses) > 0 {
+				_, _ = fmt.Fprint(w, log.authorizationResponses[len(log.authorize)-1])
+				return
+			}
 			_, _ = fmt.Fprintf(w, `{"data":{"authorization_id":"auth_%d","workspace_id":"ws_1","api_key_hash":"key_1","model":%q,"endpoint_id":"e@p/prepaid","provider":%q,"upstream_model":"gpt-oss-120b","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`,
 				len(log.authorize), body["model"], provider)
 		case "/internal/gateway/settle":
 			log.settle = append(log.settle, body)
+			if len(log.settlementResponses) > 0 {
+				_, _ = fmt.Fprint(w, log.settlementResponses[len(log.settle)-1])
+				return
+			}
 			_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"gen_1","cost_microdollars":360,"model":"m","provider":"p","region":"us-central1"}}`)
 		case "/internal/gateway/refund":
 			log.refund++
@@ -113,6 +127,26 @@ func runNativeDecide(t *testing.T, model string, extra string, backend *scripted
 
 const goodNative = `{"q0":0.97,"q1":{"q1_o0":0.9,"q1_o1":0.1}}`
 
+func nativeRouteAuthorization(attempt string, hidden, fallback bool) string {
+	provider := "cerebras"
+	if attempt == "second" {
+		provider = "sambanova"
+	}
+	route := fmt.Sprintf(`{"model":%q,"provider":%q,"endpoint_id":%q,"upstream_model":"gpt-oss-120b","usage_type":"Credits"}`, attempt, provider, attempt+"@"+provider+"/prepaid")
+	candidates := route
+	model, endpoint := attempt, attempt+"@"+provider+"/prepaid"
+	if fallback {
+		candidates = `{"model":"failed-model","provider":"fireworks","endpoint_id":"failed@fireworks/prepaid","upstream_model":"gpt-oss-120b","usage_type":"Credits"},` + route
+		model, provider, endpoint = "failed-model", "fireworks", "failed@fireworks/prepaid"
+	}
+	return fmt.Sprintf(`{"data":{"authorization_id":%q,"workspace_id":"ws_1","api_key_hash":"key_1","model":%q,"provider":%q,"endpoint_id":%q,"upstream_model":"gpt-oss-120b","usage_type":"Credits","limit_usage_type":"Credits","response_model":%q,"hide_public_metadata":%t,"route_candidates":[%s]}}`,
+		"auth_"+attempt, model, provider, endpoint, "public-"+attempt, hidden, candidates)
+}
+
+func nativeRouteSettlement(attempt, provider string) string {
+	return fmt.Sprintf(`{"data":{"settled":true,"generation_id":%q,"cost_microdollars":360,"model":%q,"provider":%q,"region":"us-central1"}}`, "gen_"+attempt, "settled-"+attempt, provider)
+}
+
 func TestNativeDecideBillsAsOneChatCallAndReturnsTheContractShape(t *testing.T) {
 	backend := &scriptedLLM{replies: []string{goodNative}}
 	log := &controlPlaneLog{}
@@ -120,7 +154,7 @@ func TestNativeDecideBillsAsOneChatCallAndReturnsTheContractShape(t *testing.T) 
 	if status != 200 {
 		t.Fatalf("status %d: %v", status, payload)
 	}
-	assertDecideRouting(t, payload, `{"selected_model":"m","selected_provider":"p","selected_endpoint":"e@p/prepaid","fallback_candidate_count":1,"upstream_attempt_count":1}`)
+	assertDecideRouting(t, payload, `{"selected_model":"m","selected_provider":"p","selected_endpoint":"e@p/prepaid","fallback_candidate_count":1,"upstream_attempt_count":1,"fallback_attempt_count":0}`)
 	// The caller sees the NAME they asked for, never the backing model.
 	if payload["model"] != decide.TrevModelID {
 		t.Fatalf("response model = %v", payload["model"])
@@ -162,12 +196,15 @@ func TestNativeDecideBillsAsOneChatCallAndReturnsTheContractShape(t *testing.T) 
 func TestNativeDecideRetriesOnceWhenTheSecondPassRejectsTheAnswer(t *testing.T) {
 	// First reply is fluent and wrong in form: a word where a number belongs.
 	backend := &scriptedLLM{replies: []string{`{"q0":"likely","q1":{"q1_o0":1,"q1_o1":0}}`, "```json\n" + goodNative + "\n```"}}
-	log := &controlPlaneLog{}
+	log := &controlPlaneLog{
+		authorizationResponses: []string{nativeRouteAuthorization("first", false, false), nativeRouteAuthorization("second", false, false)},
+		settlementResponses:    []string{nativeRouteSettlement("first", "billed-first"), nativeRouteSettlement("second", "billed-second")},
+	}
 	status, payload := runNativeDecide(t, "openai/gpt-oss-20b", "", backend, log)
 	if status != 200 {
 		t.Fatalf("status %d: %v", status, payload)
 	}
-	assertDecideRouting(t, payload, `{"selected_model":"m","selected_provider":"p","selected_endpoint":"e@p/prepaid","fallback_candidate_count":1,"upstream_attempt_count":2}`)
+	assertDecideRouting(t, payload, `{"selected_model":"settled-second","selected_provider":"billed-second","selected_endpoint":"second@sambanova/prepaid","fallback_candidate_count":1,"upstream_attempt_count":2,"fallback_attempt_count":0}`)
 	if len(backend.requests) != 2 || len(log.authorize) != 2 || len(log.settle) != 2 {
 		t.Fatalf("calls=%d authorize=%d settle=%d; both attempts spend tokens and both are billed", len(backend.requests), len(log.authorize), len(log.settle))
 	}
@@ -178,6 +215,65 @@ func TestNativeDecideRetriesOnceWhenTheSecondPassRejectsTheAnswer(t *testing.T) 
 	usage, _ := payload["usage"].(map[string]any)
 	if usage["inputTokens"] != float64(800) || usage["outputTokens"] != float64(120) {
 		t.Fatalf("usage must report both attempts: %v", usage)
+	}
+}
+
+func TestNativeDecideCountsUpstreamAttemptsAndKeepsTheServedProvider(t *testing.T) {
+	down := fmt.Errorf("llm/upstream: http 503: unavailable")
+	for _, tc := range []struct {
+		name     string
+		replies  []string
+		errors   []error
+		refunds  int
+		settles  int
+		attempts int
+	}{
+		{"internal failover", []string{"", goodNative}, []error{down, nil}, 0, 1, 2},
+		{"invalid answer then failover again", []string{"", "invalid", "", goodNative}, []error{down, nil, down, nil}, 0, 2, 4},
+		{"refunded call then failover again", []string{"", "", "", goodNative}, []error{down, down, down, nil}, 1, 1, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &scriptedLLM{replies: tc.replies, errors: tc.errors}
+			log := &controlPlaneLog{
+				authorizationResponses: []string{nativeRouteAuthorization("first", false, true), nativeRouteAuthorization("second", false, true)},
+				// Missing settlement provider must retain the answering candidate's
+				// provider, including when it differs from the authorization's first route.
+				settlementResponses: []string{`{"data":{"settled":true}}`, `{"data":{"settled":true}}`},
+			}
+			status, payload := runNativeDecide(t, "openai/gpt-oss-20b", "", backend, log)
+			if status != 200 {
+				t.Fatalf("status %d: %v", status, payload)
+			}
+			model, provider := "first", "cerebras"
+			if tc.attempts == 4 {
+				model, provider = "second", "sambanova"
+			}
+			assertDecideRouting(t, payload, fmt.Sprintf(`{"selected_model":%q,"selected_provider":%q,"selected_endpoint":%q,"fallback_candidate_count":2,"upstream_attempt_count":%d,"fallback_attempt_count":%d}`, model, provider, model+"@"+provider+"/prepaid", tc.attempts, tc.attempts/2))
+			if len(backend.requests) != tc.attempts || log.refund != tc.refunds || len(log.settle) != tc.settles {
+				t.Fatalf("calls=%d refunds=%d settlements=%d", len(backend.requests), log.refund, len(log.settle))
+			}
+		})
+	}
+}
+
+func TestNativeDecidePrivacyUsesTheAnsweringAttemptsAuthorization(t *testing.T) {
+	for _, hideSecond := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hide_second_%t", hideSecond), func(t *testing.T) {
+			backend := &scriptedLLM{replies: []string{"invalid", goodNative}}
+			log := &controlPlaneLog{
+				authorizationResponses: []string{nativeRouteAuthorization("first", !hideSecond, false), nativeRouteAuthorization("second", hideSecond, false)},
+				settlementResponses:    []string{nativeRouteSettlement("first", "billed-first"), nativeRouteSettlement("second", "billed-second")},
+			}
+			status, payload := runNativeDecide(t, "openai/gpt-oss-20b", "", backend, log)
+			if status != 200 {
+				t.Fatalf("status %d: %v", status, payload)
+			}
+			want := `{"selected_model":"settled-second","selected_provider":"billed-second","selected_endpoint":"second@sambanova/prepaid","fallback_candidate_count":1,"upstream_attempt_count":2,"fallback_attempt_count":0}`
+			if hideSecond {
+				want = `{"selected_model":"public-second","selected_provider":"trustedrouter","fallback_candidate_count":1,"upstream_attempt_count":2,"fallback_attempt_count":0}`
+			}
+			assertDecideRouting(t, payload, want)
+		})
 	}
 }
 
@@ -310,12 +406,12 @@ func hostedControlPlane(t *testing.T, log *controlPlaneLog) *httptest.Server {
 			 "model":"typesafe-ai/jev","endpoint_id":"typesafe-ai/jev@typesafe/prepaid","provider":"typesafe","upstream_model":"jev-latest",
 			 "usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[
 			  {"endpoint_id":"typesafe-ai/jev@typesafe/prepaid","model":"typesafe-ai/jev","upstream_model":"jev-latest","provider":"typesafe","usage_type":"Credits"},
-			  {"endpoint_id":"typesafe-ai/jev@vercel-ai-gateway/prepaid","model":"typesafe-ai/jev","upstream_model":"typesafe-ai/jev","provider":"vercel-ai-gateway","usage_type":"Credits"}]}}`)
+			  {"endpoint_id":"typesafe-ai/jev-relay@vercel-ai-gateway/prepaid","model":"typesafe-ai/jev-relay","upstream_model":"typesafe-ai/jev","provider":"vercel-ai-gateway","usage_type":"Credits"}]}}`)
 		case "/internal/gateway/settle":
 			log.settle = append(log.settle, body)
-			_, host, _ := strings.Cut(body["selected_endpoint"].(string), "@")
+			model, host, _ := strings.Cut(body["selected_endpoint"].(string), "@")
 			provider, _, _ := strings.Cut(host, "/")
-			_, _ = fmt.Fprintf(w, `{"data":{"settled":true,"generation_id":"gen_h","cost_microdollars":20,"model":"typesafe-ai/jev","provider":%q,"region":"us-central1"}}`, provider)
+			_, _ = fmt.Fprintf(w, `{"data":{"settled":true,"generation_id":"gen_h","cost_microdollars":20,"model":%q,"provider":%q,"region":"us-central1"}}`, model, provider)
 		case "/internal/gateway/refund":
 			log.refund++
 			_, _ = fmt.Fprint(w, `{"data":{"refunded":true}}`)
@@ -385,14 +481,14 @@ func TestHostedDecideFailsOverToTheRelayAndSettlesAgainstIt(t *testing.T) {
 	if status != 200 {
 		t.Fatalf("status %d: %v", status, payload)
 	}
-	assertDecideRouting(t, payload, `{"selected_model":"typesafe-ai/jev","selected_provider":"vercel-ai-gateway","selected_endpoint":"typesafe-ai/jev@vercel-ai-gateway/prepaid","fallback_candidate_count":2,"upstream_attempt_count":2,"fallback_attempt_count":1}`)
+	assertDecideRouting(t, payload, `{"selected_model":"typesafe-ai/jev-relay","selected_provider":"vercel-ai-gateway","selected_endpoint":"typesafe-ai/jev-relay@vercel-ai-gateway/prepaid","fallback_candidate_count":2,"upstream_attempt_count":2,"fallback_attempt_count":1}`)
 	if strings.Join(backend.called, ",") != "typesafe,vercel-ai-gateway" {
 		t.Fatalf("hosts called = %v", backend.called)
 	}
 	if len(log.settle) != 1 || log.refund != 0 {
 		t.Fatalf("settle=%d refund=%d; one answer was delivered, so exactly one settlement", len(log.settle), log.refund)
 	}
-	if got := log.settle[0]["selected_endpoint"]; got != "typesafe-ai/jev@vercel-ai-gateway/prepaid" {
+	if got := log.settle[0]["selected_endpoint"]; got != "typesafe-ai/jev-relay@vercel-ai-gateway/prepaid" {
 		t.Fatalf("settled against %v, not the host that served", got)
 	}
 }
@@ -460,7 +556,7 @@ func TestEveryNamedDecisionModelIsDrivenOnItsOwnHostAndAnswersUnderItsName(t *te
 		}
 		var payload map[string]any
 		_ = json.Unmarshal([]byte(strings.SplitN(raw, "\r\n\r\n", 2)[1]), &payload)
-		assertDecideRouting(t, payload, fmt.Sprintf(`{"selected_model":%q,"selected_provider":"trustedrouter","fallback_candidate_count":1,"upstream_attempt_count":1}`, name))
+		assertDecideRouting(t, payload, fmt.Sprintf(`{"selected_model":%q,"selected_provider":"trustedrouter","fallback_candidate_count":1,"upstream_attempt_count":1,"fallback_attempt_count":0}`, name))
 		if strings.Contains(raw, "us-central1") || strings.Contains(raw, `"region"`) {
 			t.Errorf("%s: the response reveals the region: %s", name, raw)
 		}
