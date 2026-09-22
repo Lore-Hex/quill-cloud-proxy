@@ -65,7 +65,8 @@ on:
 concurrency:
   group: deploy-enclave-gcp
   cancel-in-progress: false
-  # DNS reconciliation shares this lock; never let it evict a pending release.
+  # Retain accepted releases in order, including successive main pushes.
+  # DNS/operator work must not evict a pending release from this shared lock.
   queue: max
 
 permissions:

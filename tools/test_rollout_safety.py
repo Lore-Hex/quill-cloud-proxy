@@ -23,6 +23,8 @@ class RolloutSafetyTests(unittest.TestCase):
             if path.suffix not in {".yml", ".yaml"}:
                 continue
             workflow = yaml.safe_load(path.read_text())
+            if not isinstance(workflow, dict):
+                continue
             scopes = [("workflow", workflow), *workflow.get("jobs", {}).items()]
             for scope, settings in scopes:
                 concurrency = settings.get("concurrency", {})
