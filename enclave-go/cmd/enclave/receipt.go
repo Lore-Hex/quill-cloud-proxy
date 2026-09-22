@@ -67,6 +67,11 @@ var receiptAttestationCache atomic.Pointer[cachedReceiptAttestation]
 // production's half-hour refresh cadence. Each actual wait is jittered by 10%.
 var receiptAttestationRemintInterval = 30 * time.Minute
 
+const (
+	receiptAttestationRetryInitial = 5 * time.Second
+	receiptAttestationRetryMaximum = time.Minute
+)
+
 // initializeReceiptSigner runs only after entropy seeding and TLS setup. A
 // A disabled public receipt subsystem leaves both signer and cache nil unless
 // spend-lease shadow needs the same boot identity; in that case the key exists
@@ -210,18 +215,49 @@ func runReceiptAttestationReminterBound(
 	launchConfigNonce []byte,
 	logWriter io.Writer,
 ) {
+	delay := receiptAttestationRemintInterval
+	if cached := receiptAttestationCache.Load(); cached == nil || len(cached.document) == 0 {
+		delay = receiptAttestationRetryInitial
+	}
+	failures := 0
 	for {
-		timer := time.NewTimer(jitteredReceiptAttestationInterval(receiptAttestationRemintInterval))
+		timer := time.NewTimer(jitteredReceiptAttestationInterval(delay))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
 		}
-		if err := remintReceiptAttestationBound(currentReceiptLeafDER(tlsServer), deviceBlob, receiptKeyFP[:], launchConfigNonce); err != nil {
-			fmt.Fprintf(logWriter, "receipt.attestation_remint_failed err=%q\n", err.Error())
+		if ctx.Err() != nil {
+			return
 		}
+		if err := remintReceiptAttestationBound(currentReceiptLeafDER(tlsServer), deviceBlob, receiptKeyFP[:], launchConfigNonce); err != nil {
+			if failures < 5 {
+				failures++
+			}
+			// Waiting another normal half-hour after a transient issuer timeout
+			// can expire the last-good document. Retry without replacing it or
+			// changing any verifier's signature, binding, or expiry checks.
+			delay = receiptAttestationRetryDelay(failures)
+			fmt.Fprintf(logWriter, "receipt.attestation_remint_failed retry_ms=%d err=%q\n", delay.Milliseconds(), err.Error())
+			continue
+		}
+		if failures > 0 {
+			fmt.Fprintln(logWriter, "receipt.attestation_remint_recovered")
+		}
+		failures = 0
+		delay = receiptAttestationRemintInterval
 	}
+}
+
+func receiptAttestationRetryDelay(failures int) time.Duration {
+	if failures <= 1 {
+		return receiptAttestationRetryInitial
+	}
+	if failures >= 5 {
+		return receiptAttestationRetryMaximum
+	}
+	return receiptAttestationRetryInitial << (failures - 1)
 }
 
 func jitteredReceiptAttestationInterval(base time.Duration) time.Duration {
