@@ -34,6 +34,7 @@ type retryPolicy struct {
 	maxDelay    time.Duration
 	totalBudget time.Duration
 	sleep       func(context.Context, time.Duration) error
+	retryable   func(error) bool
 }
 
 type authorizationInvocationContextKey struct{}
@@ -175,6 +176,10 @@ func (c *Client) postJSONBytesWithRetryFromEndpoint(
 	defer cancel()
 
 	policy = normalizeRetryPolicy(policy)
+	shouldRetry := policy.retryable
+	if shouldRetry == nil {
+		shouldRetry = retryableAuthorizationError
+	}
 	var lastRetryableErr error
 	// body and bootAuthHeader were produced together before the loop and are
 	// reused verbatim for every attempt.
@@ -191,7 +196,7 @@ func (c *Client) postJSONBytesWithRetryFromEndpoint(
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil && lastRetryableErr != nil {
 			return pinnedEndpoint, lastRetryableErr
 		}
-		if attempt == policy.attempts || !retryableAuthorizationError(err) {
+		if attempt == policy.attempts || !shouldRetry(err) {
 			return pinnedEndpoint, err
 		}
 		lastRetryableErr = err
