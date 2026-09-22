@@ -34,9 +34,6 @@ func retryableSettlementError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	if retryableAuthorizationError(err) {
-		return true
-	}
 	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }

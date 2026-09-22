@@ -89,7 +89,7 @@ func TestSettleRetryIsBoundedAndDoesNotRetryPermanentErrors(t *testing.T) {
 		{"bad request", nil, 400, 1},
 		{"forbidden", nil, 403, 1},
 		{"conflict", nil, 409, 1},
-		{"unavailable", nil, 503, 3},
+		{"unavailable remains with durable retry queue", nil, 503, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			attempts := 0
