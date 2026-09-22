@@ -19,22 +19,48 @@ class RolloutSafetyTests(unittest.TestCase):
         import yaml
 
         participants = set()
-        for path in (ROOT / ".github/workflows").glob("*.yml"):
+        for path in (ROOT / ".github/workflows").iterdir():
+            if path.suffix not in {".yml", ".yaml"}:
+                continue
             workflow = yaml.safe_load(path.read_text())
-            concurrency = workflow.get("concurrency", {})
-            if not isinstance(concurrency, dict):
-                continue
-            if concurrency.get("group") != "deploy-enclave-gcp":
-                continue
-            participants.add(path.name)
-            with self.subTest(workflow=path.name):
-                self.assertIs(concurrency.get("cancel-in-progress"), False)
-                self.assertEqual(concurrency.get("queue"), "max")
-        self.assertGreaterEqual(participants, {
+            scopes = [("workflow", workflow), *workflow.get("jobs", {}).items()]
+            for scope, settings in scopes:
+                concurrency = settings.get("concurrency", {})
+                group = (
+                    concurrency if isinstance(concurrency, str)
+                    else concurrency.get("group", "")
+                )
+                if group.lower() != "deploy-enclave-gcp":
+                    continue
+                participants.add(path.name)
+                with self.subTest(workflow=path.name, scope=scope):
+                    self.assertIsInstance(
+                        concurrency, dict, "String shorthand evicts pending releases"
+                    )
+                    self.assertIs(concurrency.get("cancel-in-progress"), False)
+                    self.assertEqual(concurrency.get("queue"), "max")
+        expected = {
             "deploy-enclave-gcp.yml",
             "reconcile-enclave-dns.yml",
             "relieve-mig-stockout.yml",
-        })
+        }
+        self.assertEqual(
+            expected - participants, set(), "Missing mutation-lock participants"
+        )
+
+    def test_dns_schedules_coalesce_before_waiting_on_the_shared_lock(self) -> None:
+        import yaml
+
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/reconcile-enclave-dns.yml").read_text()
+        )
+        scheduler = workflow["concurrency"]
+        self.assertEqual(scheduler["group"], "reconcile-enclave-dns")
+        self.assertIs(scheduler["cancel-in-progress"], False)
+        self.assertEqual(scheduler.get("queue", "single"), "single")
+        mutation = workflow["jobs"]["reconcile"]["concurrency"]
+        self.assertEqual(mutation["group"], "deploy-enclave-gcp")
+        self.assertEqual(mutation["queue"], "max")
 
     def test_canary_keys_are_fresh_per_invocation_and_stable_within_retries(self) -> None:
         source = (ROOT / "tools/verify-region-before-dns.sh").read_text()

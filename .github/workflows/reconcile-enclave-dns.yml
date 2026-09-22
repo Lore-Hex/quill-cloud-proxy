@@ -6,12 +6,9 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  # This mutates the same canonical/regional DNS records as the enclave deploy
-  # workflow. Keep it in the same queue so a scheduled reconcile cannot undo an
-  # intentional deploy-time canonical drain while a regional MIG is rolling.
-  group: deploy-enclave-gcp
+  # Coalesce repeated schedules while one run waits for the mutation lock.
+  group: reconcile-enclave-dns
   cancel-in-progress: false
-  queue: max
 
 permissions:
   contents: read
@@ -19,6 +16,12 @@ permissions:
 
 jobs:
   reconcile:
+    # Share the deploy lock only at the job level. Keep at most one DNS job
+    # waiting here without cancelling pending releases or replaying a backlog.
+    concurrency:
+      group: deploy-enclave-gcp
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

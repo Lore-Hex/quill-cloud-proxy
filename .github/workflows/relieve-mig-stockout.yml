@@ -62,6 +62,7 @@ on:
 concurrency:
   group: deploy-enclave-gcp
   cancel-in-progress: false
+  # Manual only; the tool rechecks live state and no-ops after relief.
   queue: max
 
 permissions:
