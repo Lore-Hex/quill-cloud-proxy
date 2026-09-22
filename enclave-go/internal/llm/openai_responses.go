@@ -44,29 +44,42 @@ func buildOpenAIResponsesRequest(req openAICompatibleRequest) (map[string]any, e
 	if err != nil {
 		return nil, err
 	}
-	var out map[string]any
-	if err := json.Unmarshal(encoded, &out); err != nil {
+	var normalized map[string]any
+	if err := json.Unmarshal(encoded, &normalized); err != nil {
 		return nil, err
 	}
-	for _, field := range []string{"stop", "seed", "prediction", "frequency_penalty", "presence_penalty", "logit_bias", "logprobs", "top_logprobs", "top_k", "top_a", "min_p", "repetition_penalty", "prompt_cache_options"} {
-		if _, present := out[field]; present {
+	out := map[string]any{"store": false}
+	// New chat/provider-specific fields cannot silently enter the Responses
+	// wire. Converted fields are handled below; everything else fails closed.
+	for field, value := range normalized {
+		switch field {
+		case "model", "stream", "temperature", "top_p", "tools", "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier":
+			out[field] = value
+		case "messages", "max_tokens", "max_completion_tokens", "stream_options", "reasoning_effort", "reasoning", "response_format":
+		default:
 			return nil, responsesInputError(field)
 		}
 	}
-	for _, field := range []string{"messages", "max_tokens", "max_completion_tokens", "stream_options", "thinking", "reasoning_effort", "reasoning", "response_format"} {
-		delete(out, field)
+	limit := req.MaxCompletionTokens
+	if limit == 0 {
+		limit = req.MaxTokens
 	}
-	out["store"] = false
-	if req.MaxCompletionTokens > 0 {
-		out["max_output_tokens"] = req.MaxCompletionTokens
+	if limit > 0 {
+		out["max_output_tokens"] = limit
 	}
-	if req.ReasoningEffort != "" {
-		out["reasoning"] = map[string]any{"effort": req.ReasoningEffort}
+	reasoning, err := responsesReasoning(req)
+	if err != nil {
+		return nil, err
 	}
+	out["reasoning"] = reasoning
 	input := make([]any, 0, len(req.Messages))
 	for _, message := range req.Messages {
 		if message.Role == "tool" {
-			input = append(input, map[string]any{"type": "function_call_output", "call_id": message.ToolCallID, "output": message.Content})
+			output, ok := message.Content.(string)
+			if !ok || strings.TrimSpace(message.ToolCallID) == "" {
+				return nil, responsesInputError("tool result")
+			}
+			input = append(input, map[string]any{"type": "function_call_output", "call_id": message.ToolCallID, "output": output})
 			continue
 		}
 		content, err := responsesMessageContent(message.Role, message.Content)
@@ -78,7 +91,13 @@ func buildOpenAIResponsesRequest(req openAICompatibleRequest) (map[string]any, e
 		}
 		for _, call := range message.ToolCalls {
 			function, _ := call["function"].(map[string]any)
-			input = append(input, map[string]any{"type": "function_call", "call_id": call["id"], "name": function["name"], "arguments": function["arguments"]})
+			id, _ := call["id"].(string)
+			name, _ := function["name"].(string)
+			arguments, ok := function["arguments"].(string)
+			if strings.TrimSpace(id) == "" || strings.TrimSpace(name) == "" || !ok || !json.Valid([]byte(arguments)) {
+				return nil, responsesInputError("tool call history")
+			}
+			input = append(input, map[string]any{"type": "function_call", "call_id": id, "name": name, "arguments": arguments})
 		}
 	}
 	out["input"] = input
@@ -125,12 +144,52 @@ func buildOpenAIResponsesRequest(req openAICompatibleRequest) (map[string]any, e
 	return out, nil
 }
 
+func responsesReasoning(req openAICompatibleRequest) (map[string]any, error) {
+	out := map[string]any{"summary": "auto"}
+	if req.Reasoning != nil {
+		values, ok := req.Reasoning.(map[string]any)
+		if !ok {
+			return nil, responsesInputError("reasoning")
+		}
+		for key, value := range values {
+			switch key {
+			case "effort", "summary":
+				out[key] = value
+			default:
+				return nil, responsesInputError("reasoning option")
+			}
+		}
+	}
+	if req.ReasoningEffort != "" {
+		out["effort"] = req.ReasoningEffort
+	}
+	if out["effort"] == "none" {
+		// None has no reasoning to summarize. Preserve explicit summary values
+		// for the provider to validate rather than silently override them.
+		values, _ := req.Reasoning.(map[string]any)
+		if _, explicit := values["summary"]; !explicit {
+			delete(out, "summary")
+		}
+	}
+	return out, nil
+}
+
 func responsesMessageContent(role string, content any) (any, error) {
 	if content == nil {
 		return nil, nil
 	}
 	if text, ok := content.(string); ok {
 		return text, nil
+	}
+	switch parts := content.(type) {
+	case []any:
+		if len(parts) == 0 {
+			return nil, nil
+		}
+	case []map[string]any:
+		if len(parts) == 0 {
+			return nil, nil
+		}
 	}
 	blocks, ok := anthropicContentBlocks(content)
 	if !ok {

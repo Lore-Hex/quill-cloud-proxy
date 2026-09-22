@@ -290,6 +290,11 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	path := directChatCompletionsPath(provider)
 	nativeResponses := useOpenAIResponses(provider, reqBody)
 	if nativeResponses {
+		// Chat normalization retains effort only. Responses also understands
+		// summary preferences; validate the original object in its wire builder.
+		if req != nil {
+			reqBody.Reasoning = req.Reasoning
+		}
 		payload, err = buildOpenAIResponsesRequest(reqBody)
 		if err != nil {
 			return err

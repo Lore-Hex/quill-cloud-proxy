@@ -113,10 +113,10 @@ func TestOpenAIResponsesWireForChatAndResponses(t *testing.T) {
 		for _, publicResponses := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/responses=%t", model, publicResponses), func(t *testing.T) {
 				limit := 256
-				req := &qtypes.OpenAIChatRequest{Model: model, Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "weather"}}, Tools: responsesTestTool(), Reasoning: map[string]any{"effort": "high"}, MaxTokens: &limit}
+				req := &qtypes.OpenAIChatRequest{Model: model, Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "weather"}}, Tools: responsesTestTool(), Reasoning: map[string]any{"effort": "high", "summary": "detailed"}, MaxTokens: &limit}
 				if publicResponses {
 					var err error
-					req, err = adapter.ResponsesToChat(&qtypes.OpenAIResponsesRequest{Model: model, Input: "weather", Tools: []any{map[string]any{"type": "function", "name": "weather", "parameters": map[string]any{"type": "object", "properties": map[string]any{}}}}, Reasoning: map[string]any{"effort": "high"}, MaxOutputTokens: &limit})
+					req, err = adapter.ResponsesToChat(&qtypes.OpenAIResponsesRequest{Model: model, Input: "weather", Tools: []any{map[string]any{"type": "function", "name": "weather", "parameters": map[string]any{"type": "object", "properties": map[string]any{}}}}, Reasoning: map[string]any{"effort": "high", "summary": "detailed"}, MaxOutputTokens: &limit})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -135,6 +135,9 @@ func TestOpenAIResponsesWireForChatAndResponses(t *testing.T) {
 					}
 					if wire["store"] != false || wire["max_output_tokens"] != float64(limit) || wire["reasoning"].(map[string]any)["effort"] != "high" {
 						t.Fatalf("wire lost contract: %#v", wire)
+					}
+					if wire["reasoning"].(map[string]any)["summary"] != "detailed" {
+						t.Fatal("explicit reasoning summary dropped")
 					}
 					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(responsesTestSSE(responsesTestTerminal)))}, nil
 				})}
@@ -265,6 +268,43 @@ func TestOpenAIResponsesRejectsUnsupportedOptionsWithoutDroppingThem(t *testing.
 	req.Tools = []any{map[string]any{"type": "web_search"}}
 	if _, err := buildOpenAIResponsesRequest(req); err == nil {
 		t.Fatal("leaked unbudgeted hosted tool")
+	}
+}
+
+func TestOpenAIResponsesHardening(t *testing.T) {
+	for _, req := range []openAICompatibleRequest{
+		{UserCacheSecret: "PRIVATE"},
+		{SearchContextSize: "high"},
+		{ChatTemplateKwargs: &chatTemplateKwargs{}},
+		{Thinking: map[string]any{"type": "enabled"}},
+		{Reasoning: map[string]any{"max_tokens": 100}},
+		{Messages: []chatMessage{{Role: "tool", Content: 12, ToolCallID: "call"}}},
+		{Messages: []chatMessage{{Role: "tool", Content: "result"}}},
+		{Messages: []chatMessage{{Role: "assistant", ToolCalls: []map[string]any{{"id": "call"}}}}},
+		{Messages: []chatMessage{{Role: "assistant", ToolCalls: []map[string]any{{"id": "call", "function": map[string]any{"name": "tool", "arguments": "invalid"}}}}}},
+	} {
+		if _, err := buildOpenAIResponsesRequest(req); err == nil || strings.Contains(err.Error(), "PRIVATE") {
+			t.Fatalf("invalid input accepted or leaked: %v", err)
+		}
+	}
+	for _, choice := range []string{"auto", "none", "required"} {
+		got, err := buildOpenAIResponsesRequest(openAICompatibleRequest{
+			MaxTokens: 500, ToolChoice: choice, Reasoning: map[string]any{"summary": "concise"},
+			Messages: []chatMessage{{Role: "assistant", Content: []any{}}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got["max_output_tokens"] != 500 || got["tool_choice"] != choice || len(got["input"].([]any)) != 0 || got["reasoning"].(map[string]any)["summary"] != "concise" {
+			t.Fatalf("option or empty-message semantics lost: %#v", got)
+		}
+	}
+	got, err := buildOpenAIResponsesRequest(openAICompatibleRequest{ReasoningEffort: "none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := got["reasoning"].(map[string]any)["summary"]; exists {
+		t.Fatal("requested a summary with reasoning off")
 	}
 }
 
