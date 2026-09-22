@@ -286,14 +286,29 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	if normalizeDirectProvider(provider) == "tinfoil" {
 		reqBody.UserCacheSecret = strings.TrimSpace(options.providerCacheScope)
 	}
-	bodyBytes, err := json.Marshal(reqBody)
+	var payload any = reqBody
+	path := directChatCompletionsPath(provider)
+	nativeResponses := useOpenAIResponses(provider, reqBody)
+	if nativeResponses {
+		// Chat normalization retains effort only. Responses also understands
+		// summary preferences; validate the original object in its wire builder.
+		if req != nil {
+			reqBody.Reasoning = req.Reasoning
+		}
+		payload, err = buildOpenAIResponsesRequest(reqBody)
+		if err != nil {
+			return err
+		}
+		path = "/responses"
+	}
+	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("llm/%s: marshal body: %w", provider, err)
 	}
 	httpReq, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		baseURL+directChatCompletionsPath(provider),
+		baseURL+path,
 		bytes.NewReader(bodyBytes),
 	)
 	if err != nil {
@@ -326,6 +341,9 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 			return fmt.Errorf("llm/%s: read error body: %w", provider, readErr)
 		}
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
+	}
+	if nativeResponses {
+		return translateOpenAIResponsesStream(resp.Body, out)
 	}
 	return translateOpenAIStreamToAnthropicForProvider(resp.Body, out, normalizeDirectProvider(provider))
 }
