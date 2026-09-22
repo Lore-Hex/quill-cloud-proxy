@@ -65,6 +65,9 @@ on:
 concurrency:
   group: deploy-enclave-gcp
   cancel-in-progress: false
+  # Retain accepted releases in order, including successive main pushes.
+  # DNS/operator work must not evict a pending release from this shared lock.
+  queue: max
 
 permissions:
   actions: read     # for the CI-green gate (gh run list)
