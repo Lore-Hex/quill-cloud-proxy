@@ -375,6 +375,47 @@ print("cce policy hash: %s" % digest)
 '''
 
 
+# ---------------------------------------------------------------------------
+# the hermetic PATH
+# ---------------------------------------------------------------------------
+# Commands this harness MODELS. A stub stands in for each. The az and docker
+# stubs record every invocation and the tests assert on what they recorded;
+# the dig and host stubs only answer, because nothing asserts on resolver
+# calls.
+MODELLED_COMMANDS = ("az", "docker", "uv", "dig", "host")
+
+# Commands no test may reach, because reaching one means reaching the real
+# world. The harness puts a stub of every one of these on PATH ahead of the
+# machine's own, so the name resolves to a refusal no matter where the real
+# binary is installed (/opt/homebrew/bin here, /usr/bin on a CI runner, a snap
+# on Ubuntu) -- the deny is by NAME, which is the only thing a script's
+# `command -v` and a bare `gcloud ...` actually look up.
+#
+# `gcloud` and `curl` are the two the deploy script itself invokes today. The
+# rest are the neighbouring cloud CLIs an operator's machine carries: a future
+# line of shell that reaches for one of them must add a stub that models it
+# here rather than discovering production through a unit test.
+FORBIDDEN_COMMANDS = ("gcloud", "gsutil", "bq", "aws", "curl", "wget")
+
+# Records the attempt AND fails, so a leak is a red test rather than a note in
+# a log nobody reads. The recording is what the guard in tearDown asserts on:
+# an exit code alone would be swallowed where the deploy script tolerates a
+# failure, as its two `gcloud dns record-sets describe` calls do with
+# `|| true`.
+FORBIDDEN_STUB = r'''#!/usr/bin/env bash
+name="$(basename "$0")"
+printf '%s %s\n' "$name" "$*" >> "${STUB_STATE:?}/forbidden.log"
+cat >&2 <<EOF
+stub $name: this test tried to run $name, which is shadowed here.
+  $name $*
+Nothing in this suite may talk to the world. If this test needs $name, opt in
+explicitly (allow_gcloud / allow_curl) so the response it gets is one the test
+chose.
+EOF
+exit 1
+'''
+
+
 class DeployHarness(unittest.TestCase):
     """One stubbed Azure per test."""
 
@@ -426,6 +467,30 @@ class DeployHarness(unittest.TestCase):
                    else 'printf \'%s\\n\' "$ip"\n')
             )
             path.chmod(0o755)
+        # EVERY remaining cloud CLI is shadowed by a refusal, so the hermetic
+        # case is the DEFAULT one and reaching the world takes an explicit
+        # opt-in. It used to be the other way round: the stub directory went
+        # first on PATH but the machine's own directories stayed behind it, so
+        # a test that never thought about gcloud got the real one: two did,
+        # and two more dialled the real api-azure.trustedrouter.com.
+        for name in FORBIDDEN_COMMANDS:
+            path = self.bin / name
+            path.write_text(FORBIDDEN_STUB)
+            path.chmod(0o755)
+
+        # Second, independent line: point each cloud CLI's config at somewhere
+        # this test owns (CLOUDSDK_CONFIG and AZURE_CONFIG_DIR at throwaway
+        # directories, the AWS credential files at /dev/null). The shadow is
+        # what stops a real call; this only removes the stored-credential path
+        # behind it, since the environment is passed through and an inherited
+        # auth override would still authenticate. CLOUDSDK_CONFIG also gives
+        # the guard below its corroborating signal: gcloud writes logs/ there
+        # as it runs, so that directory appearing means the real binary ran.
+        self.cloudsdk_config = root / "cloudsdk"
+        self.cloudsdk_config.mkdir()
+        self.azure_config = root / "azure-config"
+        self.azure_config.mkdir()
+
         self.work = root / "work"
         self.work.mkdir()
         # phase_policy refuses to let docker create the operator's credential
@@ -433,9 +498,93 @@ class DeployHarness(unittest.TestCase):
         self.home = root / "home"
         (self.home / ".azure").mkdir(parents=True)
 
+    def tearDown(self) -> None:
+        self.assert_hermetic()
+
+    # -- the hermetic guard -------------------------------------------------
+
+    def assert_hermetic(self) -> None:
+        """Fail the test that ran a shadowed cloud CLI, naming the call.
+
+        Runs after every test that inherits DeployHarness. A test that MEANS
+        to trip the shadow drains the record with drain_forbidden_attempts()
+        first.
+        """
+        log = self._forbidden_log()
+        attempts = [line for line in log.read_text().splitlines() if line.strip()] if log.exists() else []
+        self.assertEqual(
+            attempts,
+            [],
+            "this test ran a cloud CLI nothing stubbed for it. The shadow refused "
+            "the call; before the shadow existed it would have reached the real "
+            "binary:\n  "
+            + "\n  ".join(attempts),
+        )
+        # gcloud writes CLOUDSDK_CONFIG/logs/<date>/<time>.log as it runs,
+        # including when it fails on "no active account", so this directory
+        # appearing means the REAL binary ran. The converse is weaker --
+        # CLOUDSDK_CORE_DISABLE_FILE_LOGGING would suppress it -- which is why
+        # the recorded-attempt check above, not this one, is the primary
+        # evidence.
+        logs = self.cloudsdk_config / "logs"
+        self.assertFalse(
+            logs.is_dir(),
+            f"the REAL gcloud executed: it wrote {logs}. The PATH shadow did not hold.",
+        )
+
+    def _forbidden_log(self) -> Path:
+        return self.state / "forbidden.log"
+
+    def drain_forbidden_attempts(self) -> list[str]:
+        """Read and CLEAR the record of shadowed calls.
+
+        For the tests that deliberately trip the shadow: draining is what keeps
+        assert_hermetic from failing them for the thing they are proving.
+        """
+        path = self._forbidden_log()
+        attempts = [line for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+        path.write_text("")
+        return attempts
+
+    # -- opting in to a command ---------------------------------------------
+
+    def allow_gcloud(self, *, succeeds: bool = True, stdout: str = "") -> Path:
+        """Replace the shadowed `gcloud` with one this test drives.
+
+        Before the shadow, a test without this opt-in could reach whatever
+        gcloud the machine had: unauthenticated in CI, so the call failed at
+        the wrong step, and authenticated on a developer box, where the DNS
+        block's create would have been a real write to the production zone.
+        """
+        stub = self.bin / "gcloud"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "$@" >> "$STUB_STATE/gcloud.log"\n'
+            + (f"printf '%s\\n' '{stdout}'\n" if stdout else "")
+            + ("exit 0\n" if succeeds
+               else "echo 'ERROR: You do not currently have an active account selected.' >&2\nexit 1\n")
+        )
+        stub.chmod(0o755)
+        return stub
+
+    def allow_curl(self, body: str = "exit 0\n") -> Path:
+        """Replace the shadowed `curl` with one this test drives.
+
+        Every invocation lands in curl.log; `body` decides the answer. Without
+        this the readiness loop dialled the real api-azure.trustedrouter.com.
+        """
+        stub = self.bin / "curl"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "$@" >> "$STUB_STATE/curl.log"\n'
+            + body
+        )
+        stub.chmod(0o755)
+        return stub
+
     # -- driving the script -------------------------------------------------
 
-    def run_script(self, *args: str, **env_overrides: str) -> subprocess.CompletedProcess[str]:
+    def script_env(self, **env_overrides: str) -> dict[str, str]:
         env = dict(os.environ)
         # The developer workstation may be authenticated to several clouds.
         # Keep each test hermetic; individual tests can opt a forbidden value
@@ -452,6 +601,12 @@ class DeployHarness(unittest.TestCase):
             HOME=str(self.home),
             STUB_STATE=str(self.state),
             WORKDIR=str(self.work),
+            # Per-test config stores: no stored login to pick up, and gcloud's
+            # own logs/ under CLOUDSDK_CONFIG becomes a tell that it ran.
+            CLOUDSDK_CONFIG=str(self.cloudsdk_config),
+            AZURE_CONFIG_DIR=str(self.azure_config),
+            AWS_SHARED_CREDENTIALS_FILE=os.devnull,
+            AWS_CONFIG_FILE=os.devnull,
             # One provider secret, so render_env_json has something to emit and
             # the enclave-side "at least one provider" rule is satisfied.
             QUILL_OPENROUTER_SECRET="quill-openrouter-key",
@@ -467,11 +622,14 @@ class DeployHarness(unittest.TestCase):
             TRAFFIC_MANAGER_FRONTED_HOSTS="",
         )
         env.update(env_overrides)
+        return env
+
+    def run_script(self, *args: str, **env_overrides: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["bash", str(SCRIPT), *args],
             capture_output=True,
             text=True,
-            env=env,
+            env=self.script_env(**env_overrides),
             timeout=300,
         )
 
@@ -1773,6 +1931,11 @@ class TestACrashLoopFailsFast(DeployHarness):
         the deploy flaky, and a flaky gate gets bypassed."""
         self.healthy_deploy()
         self.state_file("group-restarts").write_text("1")
+        # This test is about the restart counter, but the path it drives runs
+        # to the end of phase_verify -- through the DNS reconcile and the
+        # readiness probe. Both are opted in so the run stays in this harness.
+        self.allow_gcloud()
+        self.allow_curl()
         verifier = self.bin / "stub-verify-ok"
         verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
         verifier.chmod(0o755)
@@ -1797,12 +1960,8 @@ class TestACrashLoopFailsFast(DeployHarness):
     def test_null_restart_count_for_present_container_reaches_live_probe(self) -> None:
         self.healthy_deploy()
         self.state_file("missing-gateway-restarts").touch()
-        gcloud = self.bin / "gcloud"
-        gcloud.write_text("#!/usr/bin/env bash\nexit 0\n")
-        gcloud.chmod(0o755)
-        curl = self.bin / "curl"
-        curl.write_text("#!/usr/bin/env bash\nexit 0\n")
-        curl.chmod(0o755)
+        self.allow_gcloud()
+        self.allow_curl()
         verifier = self.bin / "stub-verify-ok"
         verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
         verifier.chmod(0o755)
@@ -1819,12 +1978,8 @@ class TestACrashLoopFailsFast(DeployHarness):
     def test_transient_restart_query_failures_are_retried(self) -> None:
         self.healthy_deploy()
         self.state_file("restart-query-failures").write_text("2")
-        gcloud = self.bin / "gcloud"
-        gcloud.write_text("#!/usr/bin/env bash\nexit 0\n")
-        gcloud.chmod(0o755)
-        curl = self.bin / "curl"
-        curl.write_text("#!/usr/bin/env bash\nexit 0\n")
-        curl.chmod(0o755)
+        self.allow_gcloud()
+        self.allow_curl()
         verifier = self.bin / "stub-verify-ok"
         verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
         verifier.chmod(0o755)
@@ -1856,15 +2011,8 @@ class TestDnsIsAPreconditionNotAnAssumption(DeployHarness):
     """
 
     def _gcloud(self, *, succeeds: bool = True) -> None:
-        """The DNS writer. Real gcloud on PATH is unauthenticated in CI, which
-        made every one of these tests die at the wrong step."""
-        stub = self.bin / "gcloud"
-        stub.write_text(
-            "#!/usr/bin/env bash\n"
-            + ("exit 0\n" if succeeds
-               else "echo 'ERROR: You do not currently have an active account selected.' >&2\nexit 1\n")
-        )
-        stub.chmod(0o755)
+        """The DNS writer, opted in. The harness shadows gcloud by default."""
+        self.allow_gcloud(succeeds=succeeds)
 
     def _resolver(self, address: str) -> Path:
         # Overwrite BOTH, not just dig. resolve_api_host prefers dig and falls
@@ -1921,6 +2069,10 @@ class TestDnsIsAPreconditionNotAnAssumption(DeployHarness):
         """
         self.healthy_deploy()
         self._gcloud()
+        # Past the DNS gate the deploy polls /attestation. Unstubbed that dialled
+        # the real api-azure.trustedrouter.com and spent two 10s network timeouts
+        # before failing, which is what made this test take 49 seconds.
+        self.allow_curl()
         # Old answer first, then the new one — a resolver mid-propagation.
         counter = self.state / "dig-calls"
         stub = self.bin / "dig"
@@ -1949,6 +2101,7 @@ class TestDnsIsAPreconditionNotAnAssumption(DeployHarness):
     def test_a_correct_record_does_not_stop_the_wait(self) -> None:
         self.healthy_deploy()
         self._gcloud()
+        self.allow_curl()
         self._resolver("10.0.0.9")
         verifier = self.bin / "stub-verify-ok"
         verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
@@ -2037,20 +2190,10 @@ class TestSharedHostnameForFailover(DeployHarness):
             )
             resolver.chmod(0o755)
 
-        gcloud = self.bin / "gcloud"
-        gcloud.write_text(
-            "#!/usr/bin/env bash\n"
-            "echo 'trquill-azure-gw.trafficmanager.net.'\n"
-        )
-        gcloud.chmod(0o755)
-
-        curl = self.bin / "curl"
-        curl.write_text(
-            "#!/usr/bin/env bash\n"
-            'echo "$@" >> "$STUB_STATE/curl.log"\n'
-            "exit 0\n"
-        )
-        curl.chmod(0o755)
+        # The name is already the CNAME production holds, so the script takes
+        # the traffic-manager branch and reconciles nothing.
+        self.allow_gcloud(stdout="trquill-azure-gw.trafficmanager.net.")
+        self.allow_curl()
 
         verifier = self.bin / "stub-verify"
         verifier.write_text(
@@ -2088,14 +2231,11 @@ class TestSharedHostnameForFailover(DeployHarness):
 
     def test_verify_rejects_unhealthy_public_path_after_origin_is_ready(self) -> None:
         self.healthy_deploy()
-        curl = self.bin / "curl"
-        curl.write_text(
-            "#!/usr/bin/env bash\n"
-            'echo "$@" >> "$STUB_STATE/curl.log"\n'
-            '[[ "$*" != *"--resolve"* ]] && exit 22\n'
-            "exit 0\n"
-        )
-        curl.chmod(0o755)
+        # The origin answers; the shared public path does not.
+        self.allow_curl('[[ "$*" != *"--resolve"* ]] && exit 22\nexit 0\n')
+        # A TM-fronted API_HOST sends the script down the CNAME branch, which
+        # queried production's zone through the real gcloud until this opt-in.
+        self.allow_gcloud(stdout="trquill-azure-gw.trafficmanager.net.")
         verifier = self.bin / "stub-verify"
         verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
         verifier.chmod(0o755)
@@ -2247,6 +2387,140 @@ class TestAzureFoundryStaysDarkUntilItsKeyExists(DeployHarness):
         green light. This pins the absence of that probe."""
         script = SCRIPT.read_text()
         self.assertNotIn("keyvault secret show", script)
+
+
+class TestTheHarnessCannotReachARealCloudCLI(DeployHarness):
+    """A unit test must not be able to change production DNS.
+
+    It could. DeployHarness put its stub directory first on PATH and left the
+    machine's own directories behind it, so a test that never thought about
+    gcloud found the REAL one -- and phase_verify's DNS block is reached by a
+    test that drives `verify` through a Running group without aborting first.
+    Four did: two reached gcloud
+    (one through `gcloud dns record-sets create api-azure.trustedrouter.com.
+    --project quill-cloud-proxy --zone trustedrouter-com --type A --ttl 120
+    --rrdatas 10.0.0.9`, a WRITE to the production zone) and two dialled the
+    real api-azure.trustedrouter.com.
+
+    That was harmless only because the machine it ran on had no active gcloud
+    account: pointing CLOUDSDK_CONFIG at an empty directory left gcloud's own
+    logs there recording all three calls, each failing with "You do not
+    currently have an active account selected". On a developer box with a live
+    login, or a CI job that authenticated in an earlier step, `create` would
+    have been answered. Today it would probably be rejected because a CNAME
+    already occupies that name -- but the `update` branch beside it needs only
+    an A record to exist, and it would have gone through.
+
+    So the safety cannot rest on which tests remembered to stub, nor on nobody
+    being logged in. These tests pin the properties that make it structural.
+    """
+
+    # The commands the deploy script itself shells out to. Named here rather
+    # than read from FORBIDDEN_COMMANDS on purpose: a test that iterates the
+    # list under test cannot notice that list losing an entry.
+    MUST_BE_SHADOWED = ("gcloud", "curl")
+
+    def test_the_dns_block_cannot_execute_the_real_gcloud(self) -> None:
+        """The path that issued the production write, nothing opted in."""
+        self.healthy_deploy()
+
+        result = self.run_script("--apply", "verify")
+
+        # 1. The real binary did not run: the shadowed stub recorded the
+        #    attempt instead, and no logs/ appeared under CLOUDSDK_CONFIG,
+        #    which gcloud writes as it runs (unless file logging is
+        #    disabled).
+        self.assertFalse(
+            (self.cloudsdk_config / "logs").is_dir(),
+            "the REAL gcloud ran against the production zone from a unit test",
+        )
+        # 2. Positive control: the reason it did not run is that this harness
+        #    shadowed it, not that the deploy happened to take another path.
+        attempts = self.drain_forbidden_attempts()
+        self.assertTrue(
+            any(line.startswith("gcloud dns record-sets") for line in attempts),
+            f"the deploy never reached the DNS block, so this proves nothing: {attempts}",
+        )
+        # 3. And the deploy stopped there rather than carrying on as if DNS
+        #    had been reconciled.
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("HALF-FINISHED", result.stderr)
+
+    def test_every_cloud_cli_resolves_inside_the_stub_directory(self) -> None:
+        """`command -v` is what the script asks, so it is what this asserts.
+
+        Shadowing by NAME is what makes the guarantee hold on a machine whose
+        gcloud lives somewhere this file has never heard of.
+        """
+        for name in self.MUST_BE_SHADOWED:
+            self.assertIn(
+                name, FORBIDDEN_COMMANDS,
+                f"the deploy script invokes {name}; dropping it from the deny list "
+                "hands the next test the real one",
+            )
+        env = self.script_env()
+        for name in self.MUST_BE_SHADOWED + FORBIDDEN_COMMANDS + MODELLED_COMMANDS:
+            with self.subTest(command=name):
+                resolved = subprocess.run(
+                    ["bash", "-c", f"command -v {name}"],
+                    capture_output=True, text=True, env=env,
+                ).stdout.strip()
+                self.assertEqual(
+                    resolved,
+                    str(self.bin / name),
+                    f"{name} resolves outside the harness; a test could reach the real one",
+                )
+
+    def test_the_cloud_clis_are_given_empty_credential_stores(self) -> None:
+        """Belt to the shadow's braces: the config stores point at this test.
+
+        A CLI that slipped through finds an empty CLOUDSDK_CONFIG and
+        AZURE_CONFIG_DIR and AWS credential files at /dev/null, so it cannot
+        pick up a stored login. It is not a credential guarantee on its own:
+        script_env passes the environment through, and an inherited
+        CLOUDSDK_AUTH_ACCESS_TOKEN or CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE
+        would still authenticate. The shadow is what makes the call impossible;
+        this only removes the stored-credential path behind it.
+        """
+        env = self.script_env()
+        root = Path(self._tmp.name)
+        self.assertEqual(env["CLOUDSDK_CONFIG"], str(self.cloudsdk_config))
+        self.assertEqual(env["AZURE_CONFIG_DIR"], str(self.azure_config))
+        for name in ("CLOUDSDK_CONFIG", "AZURE_CONFIG_DIR"):
+            self.assertTrue(
+                Path(env[name]).is_relative_to(root),
+                f"{name} must be a directory this test owns and discards",
+            )
+            self.assertEqual(list(Path(env[name]).iterdir()), [], f"{name} must start empty")
+        self.assertEqual(env["AWS_SHARED_CREDENTIALS_FILE"], os.devnull)
+        self.assertEqual(env["AWS_CONFIG_FILE"], os.devnull)
+        self.assertNotIn("GOOGLE_APPLICATION_CREDENTIALS", env)
+
+    def test_the_guard_reports_a_leak_rather_than_passing_quietly(self) -> None:
+        """A guard nobody has watched fail is a comment.
+
+        Both halves of assert_hermetic are checked against planted evidence,
+        because it runs after every test that inherits DeployHarness -- the
+        ones that execute the deploy script -- and a silent guard would hand
+        back the confidence it exists to earn. They are checked separately:
+        a recorded attempt fails before the log-directory check is reached.
+        """
+        self._forbidden_log().write_text("gcloud dns record-sets create api-azure...\n")
+        with self.assertRaises(self.failureException) as caught:
+            self.assert_hermetic()
+        self.assertIn("gcloud dns record-sets create", str(caught.exception))
+        self.assertEqual(
+            self.drain_forbidden_attempts(), ["gcloud dns record-sets create api-azure..."]
+        )
+        self.assert_hermetic()
+
+        (self.cloudsdk_config / "logs" / "2026.09.21").mkdir(parents=True)
+        with self.assertRaises(self.failureException) as caught:
+            self.assert_hermetic()
+        self.assertIn("the REAL gcloud executed", str(caught.exception))
+        (self.cloudsdk_config / "logs" / "2026.09.21").rmdir()
+        (self.cloudsdk_config / "logs").rmdir()
+        self.assert_hermetic()
 
 
 if __name__ == "__main__":

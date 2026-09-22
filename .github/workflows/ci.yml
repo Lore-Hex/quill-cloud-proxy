@@ -145,7 +145,12 @@ jobs:
       # Separate step: this one is ~2 minutes where the others are seconds, so
       # a failure here should be legible as "the Azure deploy script broke"
       # rather than hiding at the bottom of a list. It stubs az, docker and the
-      # resolver onto PATH and touches no network.
+      # resolver onto PATH, shadows every other cloud CLI (gcloud, curl, ...)
+      # with a stub that records and refuses, and points CLOUDSDK_CONFIG and
+      # AZURE_CONFIG_DIR at throwaway directories and the AWS credential files
+      # at /dev/null — so it touches no network even on a runner that
+      # authenticated earlier in the job.
+      # TestTheHarnessCannotReachARealCloudCLI is what keeps that true.
       - name: Verify the attestation dependency lock
         run: uv lock --check --script tools/verify-attestation.py
       - name: Test the Azure ACI deploy script
