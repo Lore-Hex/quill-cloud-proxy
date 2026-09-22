@@ -354,6 +354,51 @@ func tokenCountFromUsage(usage map[string]any, keys ...string) int {
 	return 0
 }
 
+type decideRoutingMetadata struct {
+	Served         llm.InvokeOptions
+	CandidateCount int
+	AttemptCount   int
+	FallbackCount  *int
+}
+
+func decideTrustedRouterRouting(authorization *trustedrouter.Authorization, settlement *trustedrouter.SettleResult, routing decideRoutingMetadata) map[string]any {
+	selectedModel := routing.Served.Model
+	selectedProvider := routing.Served.Provider
+	selectedEndpoint := routing.Served.EndpointID
+	if settlement != nil {
+		if settlement.Model != "" {
+			selectedModel = settlement.Model
+		}
+		if settlement.Provider != "" {
+			selectedProvider = settlement.Provider
+		}
+	}
+	// A native decision may wrap an upstream chat model, so missing provider
+	// metadata alone does not establish that TrustedRouter served it itself.
+	if hidesPublicRouteMetadata(authorization) {
+		selectedModel = authorizationResponseModel(selectedModel, authorization)
+		selectedProvider = "trustedrouter"
+		selectedEndpoint = ""
+	}
+	routeUsage := map[string]any{
+		"selected_model":    selectedModel,
+		"selected_provider": selectedProvider,
+		"selected_endpoint": selectedEndpoint,
+	}
+	// Zero attempts/candidates here mean unknown; a known zero fallbacks is
+	// meaningful and is retained, as on chat responses.
+	if routing.CandidateCount > 0 {
+		routeUsage["fallback_candidate_count"] = routing.CandidateCount
+	}
+	if routing.AttemptCount > 0 {
+		routeUsage["upstream_attempt_count"] = routing.AttemptCount
+	}
+	if routing.FallbackCount != nil {
+		routeUsage["fallback_attempt_count"] = *routing.FallbackCount
+	}
+	return mergeTrustedRouterRouting(nil, pruneEmptyProviderUsage(routeUsage))
+}
+
 func mergeTrustedRouterRouting(existing any, routeUsage map[string]any) map[string]any {
 	out, _ := existing.(map[string]any)
 	if out == nil {

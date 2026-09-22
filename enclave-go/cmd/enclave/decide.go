@@ -228,9 +228,10 @@ type decideUsage struct {
 }
 
 type decideResponse struct {
-	Model   string                   `json:"model"`
-	Answers map[string]decide.Answer `json:"answers"`
-	Usage   decideUsage              `json:"usage"`
+	Model         string                   `json:"model"`
+	Answers       map[string]decide.Answer `json:"answers"`
+	Usage         decideUsage              `json:"usage"`
+	TrustedRouter map[string]any           `json:"trustedrouter"`
 }
 
 // isDecidePath reports whether path is the decide route. Its name is
@@ -444,7 +445,9 @@ func serveHostedDecide(
 	// long for the model, say -- and a 502 would tell them to retry something
 	// that can never work. One host failing any other way leaves it unknown.
 	refusedAsInvalid := true
+	attemptCount := 0
 	for index, candidate := range candidates {
+		attemptCount++
 		upstream, err = decider.InvokeDecide(ctx, wire, candidate)
 		if err == nil {
 			served = candidate
@@ -532,7 +535,10 @@ func serveHostedDecide(
 			return
 		}
 	}
-	writeDecideResponse(ctx, conn, decideResponse{Model: publicModel, Answers: decide.InAskedSpelling(answers, req.askedNoul), Usage: decideUsage{InputTokens: billedInput, OutputTokens: upstream.OutputTokens}}, settlement, authorization)
+	fallbackCount := attemptCount - 1
+	writeDecideResponse(ctx, conn, decideResponse{Model: publicModel, Answers: decide.InAskedSpelling(answers, req.askedNoul), Usage: decideUsage{InputTokens: billedInput, OutputTokens: upstream.OutputTokens}}, settlement, authorization, decideRoutingMetadata{
+		Served: served, CandidateCount: len(candidates), AttemptCount: attemptCount, FallbackCount: &fallbackCount,
+	})
 }
 
 func serveNativeDecide(
@@ -567,6 +573,7 @@ func serveNativeDecide(
 		return
 	}
 	usage := decideUsage{}
+	upstreamAttempts, fallbackAttempts := 0, 0
 	var lastSettlement *trustedrouter.SettleResult
 	var lastAuthorization *trustedrouter.Authorization
 	// spent: did a provider already produce a complete result for this
@@ -590,6 +597,10 @@ func serveNativeDecide(
 		attemptReq.IdempotencyKey = attemptKey
 		recorder := &generationRecorder{}
 		call, err := runFusionCallValidated(ctx, recordingClient{br, recorder}, &attemptReq, trGateway, secretCache, bearer, decideRouteType, attemptKey, requestLogID, nil, false, recorder.complete, true)
+		// Use the shared chat route tracker's counts, including refunded calls;
+		// decision iterations themselves are not upstream attempts or fallbacks.
+		upstreamAttempts += call.AttemptCount
+		fallbackAttempts += call.FallbackCount
 		if err != nil {
 			var afterResult *settlementAttemptedError
 			var verdict *trustedrouter.ControlPlaneError
@@ -629,7 +640,10 @@ func serveNativeDecide(
 			answers, err = decide.Verify(specs, answers)
 		}
 		if err == nil {
-			writeDecideResponse(ctx, conn, decideResponse{Model: req.Model, Answers: decide.InAskedSpelling(answers, req.askedNoul), Usage: usage}, lastSettlement, lastAuthorization)
+			writeDecideResponse(ctx, conn, decideResponse{Model: req.Model, Answers: decide.InAskedSpelling(answers, req.askedNoul), Usage: usage}, lastSettlement, lastAuthorization, decideRoutingMetadata{
+				Served:         llm.InvokeOptions{Model: call.Model, Provider: call.Provider, EndpointID: call.Endpoint},
+				CandidateCount: call.CandidateCount, AttemptCount: upstreamAttempts, FallbackCount: &fallbackAttempts,
+			})
 			return
 		}
 		fmt.Fprintf(os.Stderr, "enclave.decide_verification_failed model=%q backend=native attempt=%d kind=%q\n",
@@ -656,7 +670,11 @@ func nativeDecideChatRequest(req *decideRequest, specs []decide.Spec, native dec
 	return chatReq, nil
 }
 
-func writeDecideResponse(ctx context.Context, conn io.Writer, resp decideResponse, settlement *trustedrouter.SettleResult, authorization *trustedrouter.Authorization) {
+func writeDecideResponse(ctx context.Context, conn io.Writer, resp decideResponse, settlement *trustedrouter.SettleResult, authorization *trustedrouter.Authorization, routing decideRoutingMetadata) {
+	if routing.Served.Model == "" {
+		routing.Served.Model = resp.Model
+	}
+	resp.TrustedRouter = decideTrustedRouterRouting(authorization, settlement, routing)
 	out, err := json.Marshal(resp)
 	if err == nil {
 		out, err = annotateBatchSettlementOnlyUsage(ctx, out, settlement, authorization)
