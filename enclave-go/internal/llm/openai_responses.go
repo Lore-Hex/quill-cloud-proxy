@@ -18,7 +18,7 @@ func useOpenAIResponses(provider string, req openAICompatibleRequest) bool {
 	}
 	model := strings.TrimPrefix(strings.ToLower(req.Model), "openai/")
 	switch model {
-	case "gpt-6-sol", "gpt-6-luna", "gpt-6-astra":
+	case "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra":
 	default:
 		return false
 	}
