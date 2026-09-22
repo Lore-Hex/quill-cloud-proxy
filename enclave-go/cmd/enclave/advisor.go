@@ -22,6 +22,7 @@ import (
 const trustedRouterSocrates10Model = "trustedrouter/socrates-1.0"
 const trustedRouterSocrates11Model = "trustedrouter/socrates-1.1"
 const trustedRouterSocrates20Model = "trustedrouter/socrates-2.0"
+const trustedRouterSocrates30Model = "trustedrouter/socrates-3.0"
 const trustedRouterSocratesModel = "trustedrouter/socrates"
 const trustedRouterAdvisorModel = "trustedrouter/advisor"
 const trustedRouterAristotle10Model = "trustedrouter/aristotle-1.0"
@@ -30,6 +31,7 @@ const trustedRouterAristotle20Model = "trustedrouter/aristotle-2.0"
 const trustedRouterAristotleModel = "trustedrouter/aristotle"
 const trustedRouterPlato10Model = "trustedrouter/plato-1.0"
 const trustedRouterPlato30Model = "trustedrouter/plato-3.0"
+const trustedRouterPlato40Model = "trustedrouter/plato-4.0"
 const trustedRouterPlatoModel = "trustedrouter/plato"
 const trustedRouterPlatoPro10Model = "trustedrouter/plato-pro-1.0"
 const trustedRouterPlatoPro20Model = "trustedrouter/plato-pro-2.0"
@@ -82,6 +84,13 @@ var socrates20WorkerModels = []string{
 	"minimax/minimax-m3",
 	"z-ai/glm-5.2-fast",
 	deepSeekV4Pro0813Model,
+}
+
+var socrates30WorkerModels = []string{
+	"xiaomi/mimo-v2.6-pro-ultraspeed",
+	mimo26ProModel,
+	deepSeekV41FlashModel,
+	"z-ai/glm-5.3",
 }
 
 var defaultAdvisorModels = []string{
@@ -195,7 +204,13 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 			WorkerModels:  []string{"deepseek/deepseek-v4-flash"},
 			AdvisorModels: []string{trustedRouterPlatoPro10Model},
 		}, true
-	case trustedRouterPlatoModel, trustedRouterPlato30Model:
+	case trustedRouterPlatoModel, trustedRouterPlato40Model:
+		return advisorConfig{
+			Enabled:       true,
+			WorkerModels:  []string{mimo26ProModel, deepSeekV41FlashModel, "z-ai/glm-5.3"},
+			AdvisorModels: []string{trustedRouterPrometheus40Model},
+		}, true
+	case trustedRouterPlato30Model:
 		return advisorConfig{
 			Enabled:       true,
 			WorkerModels:  []string{deepSeekV4Pro0813Model},
@@ -225,7 +240,13 @@ func advisorPresetForModel(model string) (advisorConfig, bool) {
 			WorkerModels:  append([]string(nil), socrates11WorkerModels...),
 			AdvisorModels: []string{trustedRouterZeus10Model},
 		}, true
-	case trustedRouterSocratesModel, trustedRouterSocrates20Model:
+	case trustedRouterSocratesModel, trustedRouterSocrates30Model:
+		return advisorConfig{
+			Enabled:       true,
+			WorkerModels:  append([]string(nil), socrates30WorkerModels...),
+			AdvisorModels: []string{trustedRouterZeus30Model},
+		}, true
+	case trustedRouterSocrates20Model:
 		return advisorConfig{
 			Enabled:       true,
 			WorkerModels:  append([]string(nil), socrates20WorkerModels...),
@@ -366,6 +387,7 @@ func maybeServeAdvisor(
 		req.InternalBillingProfile = config.BillingProfile
 	}
 	forceProviderJurisdiction(req, config.ProviderJurisdiction)
+	req.InternalLongContextCombo = req.InternalLongContextCombo || isLongContextCombo(req.Model)
 	if err := rejectAdvisorToolCollision(req.Tools, req.ToolChoice); err != nil {
 		return true, err
 	}
@@ -1450,7 +1472,18 @@ func advisorNeedsCompactedContext(advisorModel string, messages []types.OpenAICh
 }
 
 func advisorContextLimitTokens(model string) int {
+	if isLongContextCombo(model) {
+		return 1_000_000
+	}
 	switch strings.ToLower(strings.TrimSpace(model)) {
+	case mimo26ProModel, "xiaomi/mimo-v2.6-pro-ultraspeed", "z-ai/glm-5.3", deepSeekV41FlashModel:
+		return 1_048_576
+	case "qwen/qwen3.8-2.4t-a95b", "anthropic/claude-fable-5.1":
+		return 1_000_000
+	case "openai/gpt-6-astra":
+		return 922_000 // The separate maximum input limit, not its total window.
+	case "google/gemini-3.8-flash":
+		return 1_048_576
 	case "openai/gpt-oss-120b":
 		return 131_072
 	case "google/gemma-4-31b-it":
