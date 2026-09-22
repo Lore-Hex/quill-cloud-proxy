@@ -239,101 +239,217 @@ reconcile: APPLIED compatibility mirror api.quillrouter.com.
   regional api-us-east4.quillrouter.com. APPLIED
 """
 
+CENTRAL, EAST, WEST, RETIRED = (
+    "203.0.113.1", "203.0.113.2", "203.0.113.3", "203.0.113.4",
+)
+FLEET_ROWS = [
+    _instance("central", "us-central1-a", CENTRAL),
+    _instance("east", "us-east4-b", EAST),
+    _instance("west", "us-west1-a", WEST),
+    _instance("retired", "southamerica-east1-a", RETIRED),
+]
+SERVING = frozenset({"us-central1", "europe-west4", "us-east4"})
+PENDING = frozenset({"us-west1"})
+WEST_RECORD = "api-us-west1.quillrouter.com."
+
+
+def run_reconcile(
+    *,
+    pending: frozenset[str],
+    serving: frozenset[str] = SERVING,
+    env_excluded: frozenset[str] = frozenset(),
+    drains: dict[str, str] | None = None,
+    drain_reads: list[dict[str, str]] | None = None,
+    drain_during_attestation: tuple[str, dict[str, str]] | None = None,
+    drain_during_dns_read: tuple[str, dict[str, str], int] | None = None,
+    drain_during_command: tuple[tuple[str, ...], dict[str, str]] | None = None,
+    fail_command: tuple[str, ...] | None = None,
+    cold_cnames: tuple[str, ...] = (),
+    allow_promotion: frozenset[str] = frozenset(),
+    unhealthy: tuple[str, ...] = (),
+    real_confidential: bool = False,
+    lease: bool = False,
+) -> SimpleNamespace:
+    """Drive the real main() over FLEET_ROWS with --apply. Only gcloud reads,
+    attestation and the gcloud subprocesses that change DNS are faked: the
+    write helpers (set_dns_ips, replace_cname_with_ips) run for real and every
+    `gcloud dns record-sets` change they issue is recorded in `writes`.
+
+    `drains` is what every read of the persistent drain record returns.
+    `drain_reads` instead scripts the reads in order (the last value repeats).
+    `drain_during_attestation` = (host substring, drains): from the first
+    attestation of a host containing that substring on, every drain read
+    returns those drains. `drain_during_dns_read` = (record, drains, nth) does
+    the same from that record's nth read of its current A rrdatas on. On the
+    ordinary A-record path — what the canonical and mirror tests drive — a
+    record is read twice before it changes: once to see whether anything
+    differs, once inside set_dns_ips. The second is the LAST read before the
+    guard and the write, so nth=2 injects as late as anything can there. A
+    cold CNAME's promotion is not that path: it leaves through the
+    transaction after ONE A read, so inject into that one with
+    `drain_during_command` instead.
+    `drain_during_command` = (gcloud argv prefix after "record-sets", drains)
+    does it when that change command is issued, e.g. ("transaction", "add"):
+    a drain landing inside a DNS transaction, after it was prepared and
+    before it is executed. All three are the race: a deploy setting a drain
+    while this pass is busy elsewhere. `fail_command` is the same kind of
+    prefix and makes that gcloud call exit non-zero, which is what sends
+    set_dns_ips into its opposite-verb retry.
+    `real_confidential` runs the real confidential phase instead of recording
+    what it was given. `lease` enables the single-flight lease with the GCS
+    calls faked; `finished` then records how the lease was released."""
+    scripted = list(drain_reads) if drain_reads is not None else [dict(drains or {})]
+    reads: list[dict[str, str]] = []
+    flipped: list[dict[str, str]] = []
+    a_reads: dict[str, int] = {}
+
+    def gcloud_json(args: list[str]) -> list[dict]:
+        if args[:3] == ["compute", "instances", "list"]:
+            return FLEET_ROWS
+        if args[:3] != ["dns", "record-sets", "list"]:
+            raise AssertionError(f"unexpected gcloud read: {args}")
+        record = args[args.index("--name") + 1]
+        record_type = args[args.index("--type") + 1]
+        if drain_during_dns_read is not None and record_type == "A":
+            if record == drain_during_dns_read[0]:
+                a_reads[record] = a_reads.get(record, 0) + 1
+                if a_reads[record] >= drain_during_dns_read[2]:
+                    flipped.append(dict(drain_during_dns_read[1]))
+        if record_type == "CNAME" and record in cold_cnames:
+            return [{"name": record, "type": "CNAME", "ttl": 300,
+                     "rrdatas": ["api.quillrouter.com."]}]
+        return []
+
+    def persistent_drains() -> dict[str, str]:
+        if flipped:
+            value = dict(flipped[-1])
+        else:
+            value = dict(scripted[min(len(reads), len(scripted) - 1)])
+        reads.append(value)
+        return value
+
+    def attest(ip: str, digest: str, *args: object, **kwargs: object) -> bool:
+        host = kwargs.get("api_host") or (args[0] if args else reconciler.API_HOST)
+        if drain_during_attestation is not None and drain_during_attestation[0] in str(host):
+            flipped.append(dict(drain_during_attestation[1]))
+        return ip not in unhealthy
+
+    writes: dict[str, list[str]] = {}
+    commands: list[list[str]] = []
+    pending_transaction: dict[str, list[str]] = {}
+
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        # The only subprocesses a pass may start are DNS changes, and only the
+        # four verbs below. Anything else — another read smuggled in here,
+        # another tool — fails the test rather than passing silently.
+        commands.append(list(argv))
+        if argv[:3] != ["gcloud", "dns", "record-sets"]:
+            raise AssertionError(f"the reconcile harness must not run {argv}")
+        verb = argv[3]
+        if verb not in {"update", "create", "delete", "transaction"} or (
+            verb == "transaction" and argv[4] not in {"start", "remove", "add", "execute"}
+        ):
+            raise AssertionError(f"unexpected DNS command in a pass: {argv}")
+        if drain_during_command is not None:
+            prefix = drain_during_command[0]
+            if tuple(argv[3:3 + len(prefix)]) == prefix:
+                flipped.append(dict(drain_during_command[1]))
+        if fail_command is not None and tuple(argv[3:3 + len(fail_command)]) == fail_command:
+            # What sends set_dns_ips into its retry: the record's existence
+            # flipped under it, so the verb it chose was the wrong one.
+            return subprocess.CompletedProcess(argv, 1, "", "record already exists")
+        # Record the membership each call publishes; a delete publishes the
+        # empty set, and a transaction publishes nothing until `execute`.
+        if verb in {"update", "create"}:
+            writes[argv[4]] = argv[argv.index("--rrdatas") + 1].split(",")
+        elif verb == "delete":
+            writes[argv[4]] = []
+        elif argv[4] == "add":
+            pending_transaction[argv[argv.index("--name") + 1]] = list(argv[5:argv.index("--name")])
+        elif argv[4] == "execute":
+            writes.update(pending_transaction)
+            pending_transaction.clear()
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    constants = {
+        "GCP_ENCLAVE_REGIONS": serving,
+        "GCP_ENCLAVE_PENDING_REGIONS": pending,
+        # Empty is what an unset QUILL_EXCLUDE_CANONICAL_REGIONS parses to.
+        "EXCLUDE_CANONICAL_REGIONS": set(env_excluded),
+        "ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS": set(allow_promotion),
+        "API_HOST": "api.trustedrouter.com",
+        "DNS_ZONE": "trustedrouter-com",
+        "RECORD": "api.trustedrouter.com.",
+        "CANONICAL_MIRRORS": [("quillrouter-com", "api.quillrouter.com.")],
+        "PUBLISH_REGIONAL": True,
+        "REGIONAL_ZONE": "quillrouter-com",
+        "REGIONAL_SUFFIX": "quillrouter.com",
+        "MIN_HEALTHY": 2,
+        "MIN_HEALTHY_REGIONAL": 1,
+        # Without a lease bucket main() runs the pass and returns its code.
+        "RECONCILE_LOCK_BUCKET": "lock-bucket" if lease else "",
+    }
+    finished: list[tuple[str, bool]] = []
+    fakes = {
+        "gcloud_json": gcloud_json,
+        "trust_digests": lambda: ["sha256:release"],
+        "attest": attest,
+        # Consulted when an instance fails attestation; the real one runs gcloud.
+        "recent_release_digests": lambda: [],
+        "persistent_drains": persistent_drains,
+        "provision_confidential_challenge_delegation": lambda **kwargs: None,
+    }
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(sys, "argv", [str(SCRIPT), "--apply"]))
+        stack.enter_context(mock.patch.object(reconciler.subprocess, "run", side_effect=run))
+        for name, value in constants.items():
+            stack.enter_context(mock.patch.object(reconciler, name, value))
+        for name, fake in fakes.items():
+            stack.enter_context(mock.patch.object(reconciler, name, side_effect=fake))
+        confidential = (
+            None if real_confidential
+            else stack.enter_context(mock.patch.object(reconciler, "reconcile_confidential"))
+        )
+        if lease:
+            stack.enter_context(mock.patch.object(
+                reconciler, "acquire_reconcile_lease",
+                return_value=reconciler.ReconcileLease("execution-one", 7, 100.0),
+            ))
+            stack.enter_context(mock.patch.object(
+                reconciler, "finish_reconcile_lease",
+                side_effect=lambda lease, *, succeeded: finished.append((lease.owner, succeeded)),
+            ))
+        log = stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+        try:
+            code: object = reconciler.main()
+        except SystemExit as exc:
+            code = exc.code
+    return SimpleNamespace(
+        code=code,
+        writes=writes,
+        commands=commands,
+        log=log.getvalue(),
+        drain_reads=reads,
+        finished=finished,
+        confidential=[] if confidential is None else [
+            instance["ip"] for call in confidential.call_args_list
+            for instance in call.args[0]
+        ],
+    )
+
+
 class PendingRegionTests(unittest.TestCase):
     """A region being bootstrapped: a regional record like any region's, and
     never canonical traffic. Drives the real _main_unlocked(); only gcloud
     reads, attestation and DNS writes are faked."""
 
-    CENTRAL, EAST, WEST, RETIRED = (
-        "203.0.113.1", "203.0.113.2", "203.0.113.3", "203.0.113.4",
-    )
-    ROWS = [
-        _instance("central", "us-central1-a", CENTRAL),
-        _instance("east", "us-east4-b", EAST),
-        _instance("west", "us-west1-a", WEST),
-        _instance("retired", "southamerica-east1-a", RETIRED),
-    ]
-    SERVING = frozenset({"us-central1", "europe-west4", "us-east4"})
-    PENDING = frozenset({"us-west1"})
-    WEST_RECORD = "api-us-west1.quillrouter.com."
+    CENTRAL, EAST, WEST, RETIRED = CENTRAL, EAST, WEST, RETIRED
+    SERVING = SERVING
+    PENDING = PENDING
+    WEST_RECORD = WEST_RECORD
 
-    def reconcile(
-        self,
-        *,
-        pending: frozenset[str],
-        serving: frozenset[str] = SERVING,
-        env_excluded: frozenset[str] = frozenset(),
-        drains: dict[str, str] | None = None,
-        cold_cnames: tuple[str, ...] = (),
-        allow_promotion: frozenset[str] = frozenset(),
-        unhealthy: tuple[str, ...] = (),
-    ) -> SimpleNamespace:
-        def gcloud_json(args: list[str]) -> list[dict]:
-            if args[:3] == ["compute", "instances", "list"]:
-                return self.ROWS
-            self.assertEqual(args[:3], ["dns", "record-sets", "list"])
-            record = args[args.index("--name") + 1]
-            record_type = args[args.index("--type") + 1]
-            if record_type == "CNAME" and record in cold_cnames:
-                return [{"name": record, "type": "CNAME", "ttl": 300,
-                         "rrdatas": ["api.quillrouter.com."]}]
-            return []
-
-        writes: dict[str, list[str]] = {}
-        constants = {
-            "GCP_ENCLAVE_REGIONS": serving,
-            "GCP_ENCLAVE_PENDING_REGIONS": pending,
-            # Empty is what an unset QUILL_EXCLUDE_CANONICAL_REGIONS parses to.
-            "EXCLUDE_CANONICAL_REGIONS": set(env_excluded),
-            "ALLOW_DRAINED_REGIONAL_PROMOTION_REGIONS": set(allow_promotion),
-            "DNS_ZONE": "trustedrouter-com",
-            "RECORD": "api.trustedrouter.com.",
-            "CANONICAL_MIRRORS": [("quillrouter-com", "api.quillrouter.com.")],
-            "PUBLISH_REGIONAL": True,
-            "REGIONAL_ZONE": "quillrouter-com",
-            "REGIONAL_SUFFIX": "quillrouter.com",
-            "MIN_HEALTHY": 2,
-            "MIN_HEALTHY_REGIONAL": 1,
-        }
-        fakes = {
-            "gcloud_json": gcloud_json,
-            "trust_digests": lambda: ["sha256:release"],
-            "attest": lambda ip, digest, *args, **kwargs: ip not in unhealthy,
-            # Consulted when an instance fails attestation; the real one runs gcloud.
-            "recent_release_digests": lambda: [],
-            "persistent_drains": lambda: dict(drains or {}),
-            "provision_confidential_challenge_delegation": lambda **kwargs: None,
-            "set_dns_ips": lambda zone, record, ips: writes.__setitem__(record, list(ips)),
-        }
-        with contextlib.ExitStack() as stack:
-            stack.enter_context(mock.patch.object(sys, "argv", [str(SCRIPT), "--apply"]))
-            # Everything that would shell out is faked above. Anything that
-            # still tries is a hole in this harness, not something to run.
-            stack.enter_context(mock.patch.object(
-                reconciler.subprocess, "run",
-                side_effect=AssertionError("the reconcile harness must not run a subprocess"),
-            ))
-            for name, value in constants.items():
-                stack.enter_context(mock.patch.object(reconciler, name, value))
-            for name, fake in fakes.items():
-                stack.enter_context(mock.patch.object(reconciler, name, side_effect=fake))
-            confidential = stack.enter_context(
-                mock.patch.object(reconciler, "reconcile_confidential")
-            )
-            log = stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
-            try:
-                code: object = reconciler._main_unlocked()
-            except SystemExit as exc:
-                code = exc.code
-        return SimpleNamespace(
-            code=code,
-            writes=writes,
-            log=log.getvalue(),
-            confidential=[
-                instance["ip"] for call in confidential.call_args_list
-                for instance in call.args[0]
-            ],
-        )
+    def reconcile(self, **kwargs: object) -> SimpleNamespace:
+        return run_reconcile(**kwargs)  # type: ignore[arg-type]
 
     def test_pending_vm_gets_its_regional_record_and_never_canonical(self) -> None:
         # env_excluded is empty: nothing but the pending inventory keeps it out.
@@ -439,6 +555,237 @@ class PendingRegionTests(unittest.TestCase):
             "api-us-east4.quillrouter.com.": [self.EAST],
         })
         self.assertEqual(result.log, WITHOUT_PENDING_LOG)
+
+
+class DrainSnapshotTests(unittest.TestCase):
+    """The drain set is read once per pass, and a deploy or the stockout-relief
+    workflow can set or clear a drain at any later moment of that pass. Those
+    workflows hold the deploy concurrency group, which keeps them apart from
+    each other and from the scheduled GitHub reconcile; the Cloud Run job runs
+    outside it, and `--set-drain-region` never takes the reconcile lease, so
+    nothing keeps a workflow's drain apart from a Cloud Run pass. Every
+    mutating gcloud call therefore re-reads the drains immediately before it
+    runs, every attempt of it. These drive the real main() with the drain
+    flipped from inside an attestation round, from inside the read of the
+    record about to be changed, or from inside a failed first attempt."""
+
+    CANONICAL = ("api.trustedrouter.com.", "api.quillrouter.com.")
+    CONFIDENTIAL = ("api.confidential.trustedrouter.com.", "api.confidential.quillrouter.com.")
+    DRAIN = {"us-east4": "rollout:35669248961"}
+
+    def test_a_drain_set_during_the_confidential_round_stops_the_pass_before_any_write(self) -> None:
+        # The snapshot sees nothing drained. While this pass attests the
+        # confidential hosts, the deploy drains us-east4. The first change of
+        # the pass is a confidential record; its re-read sees the drain.
+        result = run_reconcile(
+            pending=frozenset(),
+            drain_during_attestation=("api.confidential.", self.DRAIN),
+            real_confidential=True,
+        )
+
+        self.assertEqual(result.code, 1)
+        self.assertEqual(result.writes, {})
+        self.assertEqual(result.commands, [])
+        self.assertEqual(len(result.drain_reads), 2)
+        self.assertIn(
+            "reconcile: REFUSED: persistent drains changed during this pass: "
+            "<none> -> us-east4 (rollout:35669248961).",
+            result.log,
+        )
+        self.assertIn("the next pass reads the new set", result.log)
+
+    def test_the_same_pass_writes_everything_when_the_drains_hold_still(self) -> None:
+        # Positive control: identical fleet, readings that never change.
+        result = run_reconcile(pending=frozenset(), real_confidential=True)
+
+        self.assertEqual(result.code, 0, result.log)
+        for record in self.CANONICAL + self.CONFIDENTIAL:
+            self.assertEqual(result.writes[record], [CENTRAL, EAST], record)
+        self.assertEqual(result.writes["api-us-central1.quillrouter.com."], [CENTRAL])
+        self.assertEqual(result.writes["api-us-east4.quillrouter.com."], [EAST])
+        # One snapshot, then one re-read per change: six records were written.
+        self.assertEqual(len(result.drain_reads), 1 + 6)
+        self.assertNotIn("REFUSED", result.log)
+
+    def test_a_drain_that_lands_during_the_read_before_the_canonical_write(self) -> None:
+        # The confidential records were written while the snapshot was still
+        # true. Then the deploy drains us-east4 during the SECOND read of the
+        # canonical record's current rrdatas: the one inside set_dns_ips,
+        # which is the last read before the guard and the write. A check any
+        # earlier than that would miss this one.
+        result = run_reconcile(
+            pending=frozenset(),
+            drain_during_dns_read=("api.trustedrouter.com.", self.DRAIN, 2),
+            real_confidential=True,
+        )
+
+        self.assertEqual(result.code, 1)
+        self.assertEqual(sorted(result.writes), sorted(self.CONFIDENTIAL))
+        self.assertIn("reconcile: REFUSED: persistent drains changed", result.log)
+
+    def test_a_drain_that_lands_during_the_read_before_the_mirror_write(self) -> None:
+        # Between the canonical write and its mirror's write there is another
+        # read; a drain landing there must stop the mirror rather than publish
+        # a set the pass already knows is stale. The two names then disagree
+        # until a later pass reconciles both, which need not be the next one:
+        # a pass that finds fewer than MIN_HEALTHY undrained instances exits
+        # before writing either record.
+        result = run_reconcile(
+            pending=frozenset(),
+            drain_during_dns_read=("api.quillrouter.com.", self.DRAIN, 2),
+        )
+
+        self.assertEqual(result.code, 1)
+        self.assertEqual(sorted(result.writes), ["api.trustedrouter.com."])
+        self.assertIn("reconcile: REFUSED", result.log)
+
+    def test_a_drain_that_lands_during_a_failed_first_attempt_stops_the_retry(self) -> None:
+        # set_dns_ips picks update or create from a read, and if the record's
+        # existence flipped under it that call fails and it tries the other
+        # verb. The retry is a second change, seconds later, and the reason it
+        # happens — someone else just changed this record — is exactly when a
+        # drain may have been set too. Here the canonical create fails and the
+        # drain lands with it: the retry must not publish.
+        result = run_reconcile(
+            pending=frozenset(),
+            fail_command=("create", "api.trustedrouter.com."),
+            drain_during_command=(("create", "api.trustedrouter.com."), self.DRAIN),
+        )
+
+        self.assertEqual(result.code, 1)
+        self.assertEqual(result.writes, {})
+        self.assertEqual(
+            [argv[3] for argv in result.commands if argv[4] == "api.trustedrouter.com."],
+            ["create"],
+            "the retry never ran",
+        )
+        self.assertIn("reconcile: REFUSED", result.log)
+        # Positive control: the same failed first attempt, no drain — the
+        # retry runs with the other verb and publishes.
+        retried = run_reconcile(
+            pending=frozenset(), fail_command=("create", "api.trustedrouter.com.")
+        )
+        self.assertEqual(retried.code, 0, retried.log)
+        self.assertEqual(retried.writes["api.trustedrouter.com."], [CENTRAL, EAST])
+        self.assertEqual(
+            [argv[3] for argv in retried.commands if argv[4] == "api.trustedrouter.com."],
+            ["create", "update"],
+        )
+
+    def test_a_drain_set_during_the_regional_round_stops_every_regional_write(self) -> None:
+        # The snapshot sees nothing drained; the deploy drains us-west1 while
+        # this pass is attesting the regional hosts. The first regional
+        # change (us-central1, in sorted order) re-reads, sees it, and stops:
+        # no regional record is touched, including the cold CNAME the drain
+        # is meant to hold.
+        result = run_reconcile(
+            pending=PENDING,
+            cold_cnames=(WEST_RECORD,),
+            drain_during_attestation=("api-us-west1.", {"us-west1": "rollout:35669248961"}),
+        )
+
+        self.assertEqual(result.code, 1)
+        self.assertEqual(sorted(result.writes), sorted(self.CANONICAL))
+        self.assertIn("reconcile: REFUSED", result.log)
+        # Positive control: with the drains still clear the CNAME is promoted.
+        promoted = run_reconcile(pending=PENDING, cold_cnames=(WEST_RECORD,))
+        self.assertEqual(promoted.code, 0, promoted.log)
+        self.assertEqual(promoted.writes[WEST_RECORD], [WEST])
+        self.assertTrue(any(argv[3:5] == ["transaction", "execute"] for argv in promoted.commands))
+
+    def test_a_drain_that_lands_inside_the_promotion_transaction_is_caught_before_execute(self) -> None:
+        # A first-time region's cold CNAME becomes an A record in one DNS
+        # transaction: start, remove, add, execute. Nothing changes in the
+        # zone before execute, so that is where the last re-read belongs. Here
+        # the deploy drains us-west1 after the transaction was prepared.
+        result = run_reconcile(
+            pending=PENDING,
+            cold_cnames=(WEST_RECORD,),
+            drain_during_command=(("transaction", "add"), {"us-west1": "rollout:35669248961"}),
+        )
+
+        self.assertEqual(result.code, 1)
+        self.assertEqual(
+            sorted(result.writes),
+            sorted(self.CANONICAL + ("api-us-central1.quillrouter.com.", "api-us-east4.quillrouter.com.")),
+        )
+        self.assertNotIn(WEST_RECORD, result.writes)
+        self.assertTrue(any(argv[3:5] == ["transaction", "add"] for argv in result.commands))
+        self.assertFalse(any(argv[3:5] == ["transaction", "execute"] for argv in result.commands))
+        self.assertIn("reconcile: REFUSED", result.log)
+
+    def test_a_drain_cleared_during_the_pass_is_refused_the_same_way(self) -> None:
+        # The other direction: the finalizer clears a drain mid-pass. Writing
+        # would only keep the region out for one more pass, but the rule has
+        # no direction: readings that differ mean the pass does not know what
+        # it computed from, so it writes nothing.
+        result = run_reconcile(
+            pending=frozenset(),
+            drains=self.DRAIN,
+            drain_during_attestation=("api.confidential.", {}),
+            real_confidential=True,
+        )
+
+        self.assertEqual(result.code, 1)
+        self.assertEqual(result.writes, {})
+        self.assertIn("us-east4 (rollout:35669248961) -> <none>", result.log)
+
+    def test_a_removal_of_the_confidential_record_re_reads_too(self) -> None:
+        # No instance qualifies for the confidential hosts, and the record
+        # exists: the pass deletes it. That delete is a change like any other.
+        with (
+            mock.patch.object(reconciler, "API_HOST", "api.trustedrouter.com"),
+            mock.patch.object(reconciler, "attest", return_value=False),
+            mock.patch.object(reconciler, "current_dns_ips", return_value=["34.1.1.1"]),
+            mock.patch.object(reconciler, "persistent_drains", return_value=self.DRAIN),
+            mock.patch.object(reconciler.subprocess, "run") as run,
+            reconciler.pinned_drains({}),
+            self.assertRaises(reconciler.DrainsChangedError),
+        ):
+            reconciler.reconcile_confidential([{"ip": "34.1.1.1"}], "sha256:release", apply=True)
+        run.assert_not_called()
+
+    def test_an_origin_change_alone_counts_as_a_change(self) -> None:
+        with self.assertRaises(reconciler.DrainsChangedError) as raised, mock.patch.object(
+            reconciler, "persistent_drains", return_value={"us-east4": "operator"}
+        ):
+            reconciler.require_drains_unchanged({"us-east4": "rollout:1"})
+        self.assertIn("us-east4 (rollout:1) -> us-east4 (operator)", str(raised.exception))
+        # Not a RuntimeError: the confidential phase's except clause treats
+        # those as a failed confidential update and carries on, which is
+        # exactly what must not happen here.
+        self.assertNotIsInstance(raised.exception, RuntimeError)
+        with mock.patch.object(reconciler, "persistent_drains", return_value={"us-east4": "rollout:1"}):
+            reconciler.require_drains_unchanged({"us-east4": "rollout:1"})
+
+    def test_outside_a_pass_the_write_helpers_do_not_read_drains(self) -> None:
+        # The drain flags and direct callers write with nothing pinned.
+        with (
+            mock.patch.object(reconciler, "persistent_drains") as drains,
+            mock.patch.object(reconciler, "current_dns_record", return_value=None),
+            mock.patch.object(reconciler, "current_dns_ips", return_value=[]),
+            mock.patch.object(reconciler.subprocess, "run", return_value=mock.Mock(returncode=0)),
+        ):
+            reconciler.set_dns_ips("zone", "api.example.", ["203.0.113.9"])
+        drains.assert_not_called()
+
+    def test_a_refusal_releases_the_lease_as_a_failure(self) -> None:
+        # Through main() with the lease enabled: the refusal must end the
+        # lease in its failure cooldown, not the success interval, so the
+        # next execution may retry sooner.
+        result = run_reconcile(
+            pending=frozenset(),
+            drain_during_attestation=("api.confidential.", self.DRAIN),
+            real_confidential=True,
+            lease=True,
+        )
+        self.assertEqual(result.code, 1)
+        self.assertEqual(result.writes, {})
+        self.assertEqual(result.finished, [("execution-one", False)])
+        # Positive control: a pass that writes releases it as a success.
+        clean = run_reconcile(pending=frozenset(), real_confidential=True, lease=True)
+        self.assertEqual(clean.code, 0, clean.log)
+        self.assertEqual(clean.finished, [("execution-one", True)])
 
 
 class ReconcileLeaseTests(unittest.TestCase):

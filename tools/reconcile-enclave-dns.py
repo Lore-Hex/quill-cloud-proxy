@@ -820,6 +820,73 @@ def persistent_drain_regions() -> set[str]:
     return set(persistent_drains())
 
 
+class DrainsChangedError(Exception):
+    """The persistent drain set changed after this pass read it.
+
+    Deliberately not a RuntimeError: the confidential phase's except clause in
+    _main_unlocked treats a RuntimeError as a failed confidential update and
+    carries on to the ordinary records. A stale drain snapshot is not that;
+    nothing computed from it may be written.
+    """
+
+
+def _describe_drains(drains: dict[str, str]) -> str:
+    if not drains:
+        return "<none>"
+    return ", ".join(f"{region} ({drains[region]})" for region in sorted(drains))
+
+
+def require_drains_unchanged(snapshot: dict[str, str]) -> None:
+    """Re-read the persistent drains and refuse if they differ from `snapshot`.
+
+    A pass reads the drains once and then spends tens of seconds attesting
+    (23-40 s between that read and its canonical write in every two-minute
+    pass, job logs 2026-09-22). A deploy or the stockout-relief workflow can
+    set a drain in that time: their `--set-drain-region` never takes the
+    reconcile lease, and this job runs outside the workflows' concurrency
+    group, so nothing else keeps the two apart. A pass that wrote the answer
+    it had computed from the old snapshot put the drained region's VMs back
+    into canonical DNS just after the drain.
+
+    So the drains are re-read immediately before each mutating gcloud call,
+    every attempt of it. What is left between a re-read being answered and
+    that call's change landing is the rest of the read's round trip plus the
+    call itself, which is untimed for an A-record create or update and for a
+    transaction's execute (the confidential delete does pass a timeout);
+    Cloud DNS has no conditional write to close it. If the
+    reading differs from the snapshot, in either direction, the pass writes
+    nothing more: it does not know which of its inputs the change invalidated,
+    and the next pass, normally the next two-minute tick, reads the new set.
+    """
+    current = persistent_drains()
+    if current != snapshot:
+        raise DrainsChangedError(
+            "persistent drains changed during this pass: "
+            f"{_describe_drains(snapshot)} -> {_describe_drains(current)}"
+        )
+
+
+# The snapshot the current pass computed its membership from, while its
+# writes run; None outside a pass (the drain flags, direct callers).
+_PINNED_DRAINS: dict[str, str] | None = None
+
+
+@contextlib.contextmanager
+def pinned_drains(snapshot: dict[str, str]) -> Iterator[None]:
+    """Make every membership write in this block re-check `snapshot` first."""
+    global _PINNED_DRAINS
+    _PINNED_DRAINS = dict(snapshot)
+    try:
+        yield
+    finally:
+        _PINNED_DRAINS = None
+
+
+def _check_pinned_drains() -> None:
+    if _PINNED_DRAINS is not None:
+        require_drains_unchanged(_PINNED_DRAINS)
+
+
 def update_persistent_drain(
     region: str,
     *,
@@ -888,6 +955,9 @@ def replace_cname_with_ips(
             "--type", "A",
             "--ttl", str(TTL),
         ])
+        # The transaction file is local until this call; nothing has changed
+        # in the zone yet, so this is the last moment the drains can be checked.
+        _check_pinned_drains()
         _run(["execute"])
 
 
@@ -920,6 +990,11 @@ def set_dns_ips(zone: str, record: str, ips: list[str]) -> None:
     cur = current_dns_ips(zone, record)
 
     def _run(verb: str):
+        # Inside the runner, so the retry below is checked as well: it is a
+        # second attempt to change the record, seconds later, and the reason it
+        # exists — the record changed under us — is exactly when a drain may
+        # have been set too.
+        _check_pinned_drains()
         return subprocess.run(
             ["gcloud", "dns", "record-sets", verb, record,
              "--zone", zone, "--project", PROJECT,
@@ -1012,6 +1087,7 @@ def reconcile_confidential(healthy: list[dict], digest: str, *, apply: bool) -> 
         elif current_dns_ips(zone, record):
             log(f"reconcile: confidential-only {record} has no qualified instances; removing A record")
             if apply:
+                _check_pinned_drains()
                 subprocess.run(
                     ["gcloud", "dns", "record-sets", "delete", record, "--zone", zone,
                      "--project", PROJECT, "--type", "A", "--quiet"],
@@ -1243,6 +1319,11 @@ def _main_unlocked() -> int:
             healthy.append(inst)
             by_region.setdefault(inst["region"], []).append(inst["ip"])
 
+    # One snapshot of the drains feeds every write below. The attestation
+    # rounds between here and those writes take tens of seconds, and a deploy
+    # can set a drain meanwhile, so every write re-reads and compares first
+    # (pinned_drains -> _check_pinned_drains); a pass whose snapshot went
+    # stale stops there.
     persistent = persistent_drains()
     persistent_excludes = set(persistent)
     canonical_excludes = canonical_excluded_regions() | persistent_excludes
@@ -1272,38 +1353,49 @@ def _main_unlocked() -> int:
         )
 
     try:
-        reconcile_confidential(canonical_healthy, digest, apply=args.apply)
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
-        confidential_failed = True
-        log(f"reconcile: confidential membership update failed: {exc}")
+        with pinned_drains(persistent):
+            try:
+                reconcile_confidential(canonical_healthy, digest, apply=args.apply)
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+                confidential_failed = True
+                log(f"reconcile: confidential membership update failed: {exc}")
 
-    if len(healthy_ips) < MIN_HEALTHY:
-        sys.exit(f"[FAIL] only {len(healthy_ips)} healthy (< MIN_HEALTHY={MIN_HEALTHY}); "
-                 "refusing to shrink DNS — leaving last-good record in place")
+            if len(healthy_ips) < MIN_HEALTHY:
+                sys.exit(f"[FAIL] only {len(healthy_ips)} healthy (< MIN_HEALTHY={MIN_HEALTHY}); "
+                         "refusing to shrink DNS — leaving last-good record in place")
 
-    reconcile_dns_record(
-        DNS_ZONE,
-        RECORD,
-        healthy_ips,
-        apply=args.apply,
-        label="canonical",
-    )
-    for mirror_zone, mirror_record in CANONICAL_MIRRORS:
-        reconcile_dns_record(
-            mirror_zone,
-            mirror_record,
-            healthy_ips,
-            apply=args.apply,
-            label="compatibility mirror",
+            reconcile_dns_record(
+                DNS_ZONE,
+                RECORD,
+                healthy_ips,
+                apply=args.apply,
+                label="canonical",
+            )
+            for mirror_zone, mirror_record in CANONICAL_MIRRORS:
+                reconcile_dns_record(
+                    mirror_zone,
+                    mirror_record,
+                    healthy_ips,
+                    apply=args.apply,
+                    label="compatibility mirror",
+                )
+
+            if PUBLISH_REGIONAL:
+                regional_by_region = attest_regional_instances(healthy, digest)
+                reconcile_regional(
+                    regional_by_region,
+                    args.apply,
+                    drained_regions=persistent_excludes,
+                )
+    except DrainsChangedError as exc:
+        log(
+            f"reconcile: REFUSED: {exc}. A drain was set or cleared after this "
+            "pass read the drain set, so nothing more is written from that "
+            "snapshot; the next pass reads the new set."
         )
-
-    if PUBLISH_REGIONAL:
-        regional_by_region = attest_regional_instances(healthy, digest)
-        reconcile_regional(
-            regional_by_region,
-            args.apply,
-            drained_regions=persistent_excludes,
-        )
+        # Raised, not returned: main() turns it into exit 1 after the lease
+        # has been released through its failure path.
+        raise
     # Surface failures to monitoring, but only after ordinary DNS is reconciled.
     return 1 if confidential_failed else 0
 
@@ -1316,10 +1408,16 @@ def main() -> int:
     }
     if any(arg.split("=", 1)[0] in drain_flags for arg in sys.argv[1:]):
         return _main_unlocked()
-    with reconcile_singleflight() as acquired:
-        if not acquired:
-            return 0
-        return _main_unlocked()
+    try:
+        with reconcile_singleflight() as acquired:
+            if not acquired:
+                return 0
+            return _main_unlocked()
+    except DrainsChangedError:
+        # The lease was released with succeeded=False on the way out, so the
+        # next execution may retry after the failure cooldown, not the
+        # success interval.
+        return 1
 
 
 if __name__ == "__main__":
