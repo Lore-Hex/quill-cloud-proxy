@@ -15,6 +15,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RolloutSafetyTests(unittest.TestCase):
+    def test_shared_deploy_lock_queues_without_evicting_pending_releases(self) -> None:
+        import yaml
+
+        participants = set()
+        for path in (ROOT / ".github/workflows").glob("*.yml"):
+            workflow = yaml.safe_load(path.read_text())
+            concurrency = workflow.get("concurrency", {})
+            if not isinstance(concurrency, dict):
+                continue
+            if concurrency.get("group") != "deploy-enclave-gcp":
+                continue
+            participants.add(path.name)
+            with self.subTest(workflow=path.name):
+                self.assertIs(concurrency.get("cancel-in-progress"), False)
+                self.assertEqual(concurrency.get("queue"), "max")
+        self.assertGreaterEqual(participants, {
+            "deploy-enclave-gcp.yml",
+            "reconcile-enclave-dns.yml",
+            "relieve-mig-stockout.yml",
+        })
+
     def test_canary_keys_are_fresh_per_invocation_and_stable_within_retries(self) -> None:
         source = (ROOT / "tools/verify-region-before-dns.sh").read_text()
         namespace = next(

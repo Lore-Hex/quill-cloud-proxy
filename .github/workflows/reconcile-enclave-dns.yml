@@ -11,6 +11,7 @@ concurrency:
   # intentional deploy-time canonical drain while a regional MIG is rolling.
   group: deploy-enclave-gcp
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read

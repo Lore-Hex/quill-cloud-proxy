@@ -65,6 +65,8 @@ on:
 concurrency:
   group: deploy-enclave-gcp
   cancel-in-progress: false
+  # DNS reconciliation shares this lock; never let it evict a pending release.
+  queue: max
 
 permissions:
   actions: read     # for the CI-green gate (gh run list)
