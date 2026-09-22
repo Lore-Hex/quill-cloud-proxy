@@ -29,7 +29,7 @@ func responsesTestSSE(events ...string) string {
 const responsesTestTerminal = `{"type":"response.completed","response":{"service_tier":"default","usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":60},"output_tokens":30,"output_tokens_details":{"reasoning_tokens":20},"total_tokens":130}}}`
 
 func TestOpenAIResponsesRoutingIsScoped(t *testing.T) {
-	for _, model := range []string{"gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "openai/gpt-6-sol"} {
+	for _, model := range []string{"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "openai/gpt-6-sol"} {
 		for _, effort := range []string{"", "none", "low", "high", "max"} {
 			req := openAICompatibleRequest{Model: model, Tools: responsesTestTool(), ReasoningEffort: effort}
 			if !useOpenAIResponses("openai", req) {
@@ -48,7 +48,7 @@ func TestOpenAIResponsesRoutingIsScoped(t *testing.T) {
 			t.Fatal("tool history without new tools must remain on Responses")
 		}
 	}
-	for _, model := range []string{"gpt-5.6-sol", "gpt-6-sol-pro", "gpt-7", "gpt-oss-120b"} {
+	for _, model := range []string{"gpt-5.5", "gpt-6-sol-pro", "gpt-7", "gpt-oss-120b"} {
 		if useOpenAIResponses("openai", openAICompatibleRequest{Model: model, Tools: responsesTestTool()}) {
 			t.Fatalf("changed unverified model %s", model)
 		}
@@ -317,7 +317,7 @@ func TestOpenAIResponsesLiveToolLoop(t *testing.T) {
 	if key == "" {
 		t.Fatal("missing OPENAI_API_KEY")
 	}
-	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
+	for _, model := range []string{"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-sol", "gpt-6-luna"} {
 		t.Run(model, func(t *testing.T) {
 			limit := 512
 			req := &qtypes.OpenAIChatRequest{
