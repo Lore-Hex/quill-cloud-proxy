@@ -1001,9 +1001,7 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	var decoded struct {
 		Data SettleResult `json:"data"`
 	}
-	if _, err := c.postJSONAtEndpoint(
-		ctx, "/internal/gateway/settle", body, &decoded, auth.pinnedControlPlaneEndpoint(),
-	); err != nil {
+	if err := c.postSettlementJSON(ctx, auth, body, &decoded); err != nil {
 		return nil, err
 	}
 	return &decoded.Data, nil
