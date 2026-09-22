@@ -642,7 +642,7 @@ func serveNativeDecide(
 		if err == nil {
 			writeDecideResponse(ctx, conn, decideResponse{Model: req.Model, Answers: decide.InAskedSpelling(answers, req.askedNoul), Usage: usage}, lastSettlement, lastAuthorization, decideRoutingMetadata{
 				Served:         llm.InvokeOptions{Model: call.Model, Provider: call.Provider, EndpointID: call.Endpoint},
-				CandidateCount: routeCandidateCount(call.Authorization, nil), AttemptCount: upstreamAttempts, FallbackCount: &fallbackAttempts,
+				CandidateCount: call.CandidateCount, AttemptCount: upstreamAttempts, FallbackCount: &fallbackAttempts,
 			})
 			return
 		}

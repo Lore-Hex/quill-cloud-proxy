@@ -537,6 +537,7 @@ type fusionCallResult struct {
 	Model            string
 	Provider         string
 	Endpoint         string
+	CandidateCount   int
 	AttemptCount     int
 	FallbackCount    int
 	RouteType        string
@@ -1914,6 +1915,10 @@ func runFusionCallValidatedObservedAttempt(
 	// Preserve actual upstream attempts even on errors, so callers can aggregate
 	// refunded calls and retries. A rescue contributes its own counts as well.
 	defer func() {
+		// Count filtered invoke options, retaining a rescue's own candidate list.
+		if call.CandidateCount == 0 {
+			call.CandidateCount = len(options)
+		}
 		call.AttemptCount += selectedRoute.AttemptCount()
 		call.FallbackCount += selectedRoute.FallbackCount()
 	}()

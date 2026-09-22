@@ -256,6 +256,31 @@ func TestNativeDecideCountsUpstreamAttemptsAndKeepsTheServedProvider(t *testing.
 	}
 }
 
+func TestNativeDecideCountsOnlyCandidatesWithAvailableKeys(t *testing.T) {
+	t.Setenv("DECIDE_TEST_UNAVAILABLE_BYOK_KEY", "")
+	backend := &scriptedLLM{replies: []string{goodNative}}
+	log := &controlPlaneLog{
+		authorizationResponses: []string{`{"data":{"authorization_id":"auth_filtered","workspace_id":"ws_1","api_key_hash":"key_1",
+			"model":"openai/gpt-oss-20b","provider":"cerebras","endpoint_id":"first@cerebras/byok","usage_type":"BYOK","limit_usage_type":"Credits",
+			"route_candidates":[
+				{"model":"openai/gpt-oss-20b","provider":"cerebras","endpoint_id":"first@cerebras/byok","usage_type":"BYOK","byok_secret_ref":"env://DECIDE_TEST_UNAVAILABLE_BYOK_KEY"},
+				{"model":"openai/gpt-oss-20b","provider":"sambanova","endpoint_id":"second@sambanova/prepaid","usage_type":"Credits"}]}}`},
+		settlementResponses: []string{`{"data":{"settled":true}}`},
+	}
+	// The first candidate's secret is unavailable, so only the credits route runs.
+	status, payload := runNativeDecide(t, "openai/gpt-oss-20b", "", backend, log)
+	if status != 200 {
+		t.Fatalf("status %d: %v", status, payload)
+	}
+	assertDecideRouting(t, payload, `{"selected_model":"openai/gpt-oss-20b","selected_provider":"sambanova","selected_endpoint":"second@sambanova/prepaid","fallback_candidate_count":1,"upstream_attempt_count":1,"fallback_attempt_count":0}`)
+	if len(backend.options) != 1 || len(backend.options[0]) != 1 || backend.options[0][0].EndpointID != "second@sambanova/prepaid" {
+		t.Fatalf("invoke options = %v; only the credits candidate should be called", backend.options)
+	}
+	if len(log.authorize) != 1 || len(log.settle) != 1 || log.refund != 0 {
+		t.Fatalf("authorize=%d settle=%d refund=%d", len(log.authorize), len(log.settle), log.refund)
+	}
+}
+
 func TestNativeDecidePrivacyUsesTheAnsweringAttemptsAuthorization(t *testing.T) {
 	for _, hideSecond := range []bool{false, true} {
 		t.Run(fmt.Sprintf("hide_second_%t", hideSecond), func(t *testing.T) {
