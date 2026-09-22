@@ -228,9 +228,10 @@ type decideUsage struct {
 }
 
 type decideResponse struct {
-	Model   string                   `json:"model"`
-	Answers map[string]decide.Answer `json:"answers"`
-	Usage   decideUsage              `json:"usage"`
+	Model         string                   `json:"model"`
+	Answers       map[string]decide.Answer `json:"answers"`
+	Usage         decideUsage              `json:"usage"`
+	TrustedRouter map[string]any           `json:"trustedrouter"`
 }
 
 // isDecidePath reports whether path is the decide route. Its name is
@@ -444,7 +445,9 @@ func serveHostedDecide(
 	// long for the model, say -- and a 502 would tell them to retry something
 	// that can never work. One host failing any other way leaves it unknown.
 	refusedAsInvalid := true
+	attemptCount := 0
 	for index, candidate := range candidates {
+		attemptCount++
 		upstream, err = decider.InvokeDecide(ctx, wire, candidate)
 		if err == nil {
 			served = candidate
@@ -532,7 +535,10 @@ func serveHostedDecide(
 			return
 		}
 	}
-	writeDecideResponse(ctx, conn, decideResponse{Model: publicModel, Answers: decide.InAskedSpelling(answers, req.askedNoul), Usage: decideUsage{InputTokens: billedInput, OutputTokens: upstream.OutputTokens}}, settlement, authorization)
+	fallbackCount := attemptCount - 1
+	writeDecideResponse(ctx, conn, decideResponse{Model: publicModel, Answers: decide.InAskedSpelling(answers, req.askedNoul), Usage: decideUsage{InputTokens: billedInput, OutputTokens: upstream.OutputTokens}}, settlement, authorization, decideRoutingMetadata{
+		Served: served, CandidateCount: len(candidates), AttemptCount: attemptCount, FallbackCount: &fallbackCount,
+	})
 }
 
 func serveNativeDecide(
@@ -629,7 +635,13 @@ func serveNativeDecide(
 			answers, err = decide.Verify(specs, answers)
 		}
 		if err == nil {
-			writeDecideResponse(ctx, conn, decideResponse{Model: req.Model, Answers: decide.InAskedSpelling(answers, req.askedNoul), Usage: usage}, lastSettlement, lastAuthorization)
+			// The shared call can fail over internally without exposing its count.
+			// Report the decision attempts, including refunded ones, but do not
+			// invent a provider fallback count from those retries.
+			writeDecideResponse(ctx, conn, decideResponse{Model: req.Model, Answers: decide.InAskedSpelling(answers, req.askedNoul), Usage: usage}, lastSettlement, lastAuthorization, decideRoutingMetadata{
+				Served:         llm.InvokeOptions{Model: call.Model, EndpointID: call.Endpoint},
+				CandidateCount: routeCandidateCount(call.Authorization, nil), AttemptCount: attempt,
+			})
 			return
 		}
 		fmt.Fprintf(os.Stderr, "enclave.decide_verification_failed model=%q backend=native attempt=%d kind=%q\n",
@@ -656,7 +668,11 @@ func nativeDecideChatRequest(req *decideRequest, specs []decide.Spec, native dec
 	return chatReq, nil
 }
 
-func writeDecideResponse(ctx context.Context, conn io.Writer, resp decideResponse, settlement *trustedrouter.SettleResult, authorization *trustedrouter.Authorization) {
+func writeDecideResponse(ctx context.Context, conn io.Writer, resp decideResponse, settlement *trustedrouter.SettleResult, authorization *trustedrouter.Authorization, routing decideRoutingMetadata) {
+	if routing.Served.Model == "" {
+		routing.Served.Model = resp.Model
+	}
+	resp.TrustedRouter = decideTrustedRouterRouting(authorization, settlement, routing)
 	out, err := json.Marshal(resp)
 	if err == nil {
 		out, err = annotateBatchSettlementOnlyUsage(ctx, out, settlement, authorization)

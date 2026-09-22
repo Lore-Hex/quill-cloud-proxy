@@ -120,6 +120,7 @@ func TestNativeDecideBillsAsOneChatCallAndReturnsTheContractShape(t *testing.T) 
 	if status != 200 {
 		t.Fatalf("status %d: %v", status, payload)
 	}
+	assertDecideRouting(t, payload, `{"selected_model":"m","selected_provider":"p","selected_endpoint":"e@p/prepaid","fallback_candidate_count":1,"upstream_attempt_count":1}`)
 	// The caller sees the NAME they asked for, never the backing model.
 	if payload["model"] != decide.TrevModelID {
 		t.Fatalf("response model = %v", payload["model"])
@@ -166,6 +167,7 @@ func TestNativeDecideRetriesOnceWhenTheSecondPassRejectsTheAnswer(t *testing.T) 
 	if status != 200 {
 		t.Fatalf("status %d: %v", status, payload)
 	}
+	assertDecideRouting(t, payload, `{"selected_model":"m","selected_provider":"p","selected_endpoint":"e@p/prepaid","fallback_candidate_count":1,"upstream_attempt_count":2}`)
 	if len(backend.requests) != 2 || len(log.authorize) != 2 || len(log.settle) != 2 {
 		t.Fatalf("calls=%d authorize=%d settle=%d; both attempts spend tokens and both are billed", len(backend.requests), len(log.authorize), len(log.settle))
 	}
@@ -311,7 +313,9 @@ func hostedControlPlane(t *testing.T, log *controlPlaneLog) *httptest.Server {
 			  {"endpoint_id":"typesafe-ai/jev@vercel-ai-gateway/prepaid","model":"typesafe-ai/jev","upstream_model":"typesafe-ai/jev","provider":"vercel-ai-gateway","usage_type":"Credits"}]}}`)
 		case "/internal/gateway/settle":
 			log.settle = append(log.settle, body)
-			_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"gen_h","cost_microdollars":20,"model":"typesafe-ai/jev","provider":"p","region":"us-central1"}}`)
+			_, host, _ := strings.Cut(body["selected_endpoint"].(string), "@")
+			provider, _, _ := strings.Cut(host, "/")
+			_, _ = fmt.Fprintf(w, `{"data":{"settled":true,"generation_id":"gen_h","cost_microdollars":20,"model":"typesafe-ai/jev","provider":%q,"region":"us-central1"}}`, provider)
 		case "/internal/gateway/refund":
 			log.refund++
 			_, _ = fmt.Fprint(w, `{"data":{"refunded":true}}`)
@@ -358,6 +362,7 @@ func TestHostedDecidePrefersTheVendorAndBillsInputOnly(t *testing.T) {
 	if status != 200 {
 		t.Fatalf("status %d: %v", status, payload)
 	}
+	assertDecideRouting(t, payload, `{"selected_model":"typesafe-ai/jev","selected_provider":"typesafe","selected_endpoint":"typesafe-ai/jev@typesafe/prepaid","fallback_candidate_count":2,"upstream_attempt_count":1,"fallback_attempt_count":0}`)
 	if strings.Join(backend.called, ",") != "typesafe" {
 		t.Fatalf("hosts called = %v; the relay must not be touched when the vendor answers", backend.called)
 	}
@@ -380,6 +385,7 @@ func TestHostedDecideFailsOverToTheRelayAndSettlesAgainstIt(t *testing.T) {
 	if status != 200 {
 		t.Fatalf("status %d: %v", status, payload)
 	}
+	assertDecideRouting(t, payload, `{"selected_model":"typesafe-ai/jev","selected_provider":"vercel-ai-gateway","selected_endpoint":"typesafe-ai/jev@vercel-ai-gateway/prepaid","fallback_candidate_count":2,"upstream_attempt_count":2,"fallback_attempt_count":1}`)
 	if strings.Join(backend.called, ",") != "typesafe,vercel-ai-gateway" {
 		t.Fatalf("hosts called = %v", backend.called)
 	}
@@ -454,6 +460,10 @@ func TestEveryNamedDecisionModelIsDrivenOnItsOwnHostAndAnswersUnderItsName(t *te
 		}
 		var payload map[string]any
 		_ = json.Unmarshal([]byte(strings.SplitN(raw, "\r\n\r\n", 2)[1]), &payload)
+		assertDecideRouting(t, payload, fmt.Sprintf(`{"selected_model":%q,"selected_provider":"trustedrouter","fallback_candidate_count":1,"upstream_attempt_count":1}`, name))
+		if strings.Contains(raw, "us-central1") || strings.Contains(raw, `"region"`) {
+			t.Errorf("%s: the response reveals the region: %s", name, raw)
+		}
 
 		// What the caller sees: the name, and nothing of what is behind it.
 		if payload["model"] != name {

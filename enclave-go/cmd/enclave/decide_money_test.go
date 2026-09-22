@@ -388,6 +388,11 @@ func TestNativeDecideRefundsAStreamThatDiedMidAnswerAndTriesAgain(t *testing.T) 
 	if payload.Usage.InputTokens != 400 {
 		t.Fatalf("usage counts the refunded attempt: %+v", payload.Usage)
 	}
+	var response map[string]any
+	if err := json.Unmarshal([]byte(strings.SplitN(raw, "\r\n\r\n", 2)[1]), &response); err != nil {
+		t.Fatal(err)
+	}
+	assertDecideRouting(t, response, `{"selected_model":"m","selected_provider":"p","selected_endpoint":"e@p/prepaid","fallback_candidate_count":1,"upstream_attempt_count":2}`)
 }
 
 // cancelledMidCall cancels the request and fails the way a provider client
