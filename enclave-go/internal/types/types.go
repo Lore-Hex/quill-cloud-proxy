@@ -328,6 +328,8 @@ type OpenAIChatRequest struct {
 	// They never cross the public request JSON boundary.
 	InternalPreferredProviders []string `json:"-"`
 	InternalBillingProfile     string   `json:"-"`
+	// Inherited by nested calls; only named, enclave-owned 1M presets enable it.
+	InternalLongContextCombo bool `json:"-"`
 }
 
 // NormalizeMaxTokens folds the OpenAI-chat (`max_completion_tokens`) and

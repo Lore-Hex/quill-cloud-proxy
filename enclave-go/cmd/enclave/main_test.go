@@ -5289,8 +5289,8 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:    trustedRouterPlatoModel,
-			workers:  []string{deepSeekV4Pro0813Model},
-			advisors: []string{trustedRouterPrometheus30Model},
+			workers:  []string{mimo26ProModel, deepSeekV41FlashModel, "z-ai/glm-5.3"},
+			advisors: []string{trustedRouterPrometheus40Model},
 		},
 		{
 			model:    trustedRouterPlatoPro10Model,
@@ -5334,8 +5334,8 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 		},
 		{
 			model:    trustedRouterSocratesModel,
-			workers:  []string{"xiaomi/mimo-v2.5-pro-ultraspeed", "minimax/minimax-m3", "z-ai/glm-5.2-fast", deepSeekV4Pro0813Model},
-			advisors: []string{trustedRouterZeus20Model},
+			workers:  socrates30WorkerModels,
+			advisors: []string{trustedRouterZeus30Model},
 		},
 		{
 			model:        trustedRouterOpenPatcherA1Model,
@@ -6367,8 +6367,10 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 		code   bool
 	}{
 		{trustedRouterIrisModel, "budget-3.0", fusionIris30Panel, false},
-		{trustedRouterPrometheusModel, "quality-3.0", fusionPrometheus30Panel, false},
-		{trustedRouterZeusModel, "frontier-2.0", fusionFrontierPanel, false},
+		{trustedRouterPrometheusModel, "quality-4.0", fusionPrometheus40Panel, false},
+		{trustedRouterZeusModel, "frontier-3.0", fusionZeus30Panel, false},
+		{trustedRouterPrometheus40Model, "quality-4.0", fusionPrometheus40Panel, false},
+		{trustedRouterZeus30Model, "frontier-3.0", fusionZeus30Panel, false},
 		{trustedRouterIris10Model, "budget-1.0", fusionIris10Panel, false},
 		{trustedRouterIris20Model, "budget-2.0", fusionIris20Panel, false},
 		{trustedRouterIris30Model, "budget-3.0", fusionIris30Panel, false},
@@ -6469,10 +6471,10 @@ func TestPrometheusVersionsPinOldAndNewDeepSeekReleases(t *testing.T) {
 		},
 		{
 			model:      trustedRouterPrometheusModel,
-			preset:     "quality-3.0",
-			panel:      fusionPrometheus30Panel,
-			wantJudges: []string{deepSeekV4Pro0813Model, "minimax/minimax-m3", fusionKimiK3},
-			wantFinal:  []string{deepSeekV4Pro0813Model, fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"},
+			preset:     "quality-4.0",
+			panel:      fusionPrometheus40Panel,
+			wantJudges: fusionSeptember26JudgeModels,
+			wantFinal:  fusionSeptember26FinalModels,
 		},
 	}
 	for _, tt := range tests {
@@ -7013,7 +7015,7 @@ func TestFusionZeusJudgeVersionsRemainImmutable(t *testing.T) {
 		model string
 		want  []string
 	}{
-		{trustedRouterZeusModel, []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"}},
+		{trustedRouterZeusModel, fusionSeptember26JudgeModels},
 		{trustedRouterZeus20Model, []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"}},
 		{trustedRouterZeus10Model, []string{"z-ai/glm-5.2"}},
 		{trustedRouterZeus10MiniModel, []string{"z-ai/glm-5.2"}},
@@ -8741,13 +8743,19 @@ func newFusionGatewayRecorder(t *testing.T) (*trustedrouter.Client, *fusionGatew
 			recorder.authorize = append(recorder.authorize, payload)
 			authID := len(recorder.authorize)
 			recorder.mu.Unlock()
+			provider := "test"
+			if policy, ok := payload["provider"].(map[string]any); ok {
+				if only, ok := policy["only"].([]any); ok && len(only) > 0 {
+					provider, _ = only[0].(string)
+				}
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
 				"authorization_id":       fmt.Sprintf("auth_fusion_%d", authID),
 				"workspace_id":           "ws_1",
 				"api_key_hash":           "key_1",
 				"model":                  model,
-				"endpoint_id":            model + "@test/prepaid",
-				"provider":               "test",
+				"endpoint_id":            model + "@" + provider + "/prepaid",
+				"provider":               provider,
 				"usage_type":             "Credits",
 				"limit_usage_type":       "Credits",
 				"route_candidates":       []any{},

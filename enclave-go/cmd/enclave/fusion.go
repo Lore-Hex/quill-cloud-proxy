@@ -32,9 +32,11 @@ const trustedRouterPrometheus10Model = "trustedrouter/prometheus-1.0"
 const trustedRouterPrometheus101MModel = "trustedrouter/prometheus-1.0-1m"
 const trustedRouterPrometheus20Model = "trustedrouter/prometheus-2.0"
 const trustedRouterPrometheus30Model = "trustedrouter/prometheus-3.0"
+const trustedRouterPrometheus40Model = "trustedrouter/prometheus-4.0"
 const trustedRouterZeus10Model = "trustedrouter/zeus-1.0"
 const trustedRouterZeus10MiniModel = "trustedrouter/zeus-1.0-mini"
 const trustedRouterZeus20Model = "trustedrouter/zeus-2.0"
+const trustedRouterZeus30Model = "trustedrouter/zeus-3.0"
 const trustedRouterIrisCodeModel = "trustedrouter/iris-code"
 const trustedRouterPrometheusCodeModel = "trustedrouter/prometheus-code"
 const trustedRouterZeusCodeModel = "trustedrouter/zeus-code"
@@ -70,6 +72,8 @@ const fusionFinalRescueMaxTokens = 1600
 const fusionSynthCodeMetadataKey = "trustedrouter_synth_code"
 const deepSeekV4Pro0423Model = "deepseek/deepseek-v4-pro-0423"
 const deepSeekV4Pro0813Model = "deepseek/deepseek-v4-pro-0813"
+const deepSeekV41FlashModel = "deepseek/deepseek-v4.1-flash"
+const mimo26ProModel = "xiaomi/mimo-v2.6-pro"
 
 var errFusionOverthinkingBudget = errors.New("trustedrouter/synth thinking budget exceeded")
 
@@ -141,6 +145,39 @@ var fusionPrometheus30Panel = []string{
 	"z-ai/glm-5.2",
 	deepSeekV4Pro0813Model,
 	"xiaomi/mimo-v2.5-pro",
+}
+
+var fusionPrometheus40Panel = []string{
+	mimo26ProModel,
+	"z-ai/glm-5.3",
+	fusionKimiK3,
+	deepSeekV41FlashModel,
+	"minimax/minimax-m3",
+	"qwen/qwen3.8-2.4t-a95b",
+}
+
+var fusionZeus30Panel = []string{
+	"openai/gpt-6-astra",
+	"anthropic/claude-fable-5.1",
+	"google/gemini-3.8-flash",
+	mimo26ProModel,
+	"z-ai/glm-5.3",
+	fusionKimiK3,
+	deepSeekV41FlashModel,
+}
+
+var fusionSeptember26FinalModels = []string{
+	mimo26ProModel,
+	fusionKimiK3,
+	"z-ai/glm-5.3",
+	deepSeekV41FlashModel,
+}
+
+var fusionSeptember26JudgeModels = []string{
+	mimo26ProModel,
+	deepSeekV41FlashModel,
+	"z-ai/glm-5.3",
+	fusionKimiK3,
 }
 
 var fusionBudgetPanel = []string{
@@ -266,9 +303,11 @@ func isFusionModel(model string) bool {
 		trustedRouterPrometheus101MModel,
 		trustedRouterPrometheus20Model,
 		trustedRouterPrometheus30Model,
+		trustedRouterPrometheus40Model,
 		trustedRouterZeus10Model,
 		trustedRouterZeus10MiniModel,
 		trustedRouterZeus20Model,
+		trustedRouterZeus30Model,
 		trustedRouterIrisCodeModel,
 		trustedRouterPrometheusCodeModel,
 		trustedRouterZeusCodeModel,
@@ -332,13 +371,15 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 		return "quality", append([]string(nil), fusionQualityPanel...), true
 	case trustedRouterPrometheus101MModel:
 		return "quality-1m", append([]string(nil), fusionQuality1MPanel...), true
-	case trustedRouterPrometheusModel,
-		trustedRouterPrometheus30Model:
+	case trustedRouterPrometheusModel, trustedRouterPrometheus40Model:
+		return "quality-4.0", append([]string(nil), fusionPrometheus40Panel...), true
+	case trustedRouterPrometheus30Model:
 		return "quality-3.0", append([]string(nil), fusionPrometheus30Panel...), true
 	case trustedRouterPrometheus20Model:
 		return "quality-2.0", append([]string(nil), fusionPrometheus20Panel...), true
-	case trustedRouterZeusModel,
-		trustedRouterZeus20Model,
+	case trustedRouterZeusModel, trustedRouterZeus30Model:
+		return "frontier-3.0", append([]string(nil), fusionZeus30Panel...), true
+	case trustedRouterZeus20Model,
 		trustedRouterZeusCodeModel:
 		return "frontier-2.0", append([]string(nil), fusionFrontierPanel...), true
 	case trustedRouterZeus10Model,
@@ -363,8 +404,9 @@ func fusionPresetPanelForModel(model string) (string, []string, bool) {
 
 func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case trustedRouterPrometheusModel,
-		trustedRouterPrometheus30Model:
+	case trustedRouterPrometheusModel, trustedRouterPrometheus40Model, trustedRouterZeusModel, trustedRouterZeus30Model:
+		return append([]string(nil), fusionSeptember26FinalModels...), true
+	case trustedRouterPrometheus30Model:
 		return []string{deepSeekV4Pro0813Model, fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
 	case trustedRouterPrometheus20Model:
 		return []string{fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
@@ -379,8 +421,7 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 		trustedRouterIris20Model,
 		trustedRouterIrisCode10Model:
 		return []string{"z-ai/glm-5.2", "minimax/minimax-m3"}, true
-	case trustedRouterZeusModel,
-		trustedRouterZeus20Model:
+	case trustedRouterZeus20Model:
 		return []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
 	case trustedRouterZeus10Model,
 		trustedRouterZeus10MiniModel,
@@ -403,8 +444,9 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 
 func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case trustedRouterPrometheusModel,
-		trustedRouterPrometheus30Model:
+	case trustedRouterPrometheusModel, trustedRouterPrometheus40Model, trustedRouterZeusModel, trustedRouterZeus30Model:
+		return append([]string(nil), fusionSeptember26JudgeModels...), true
+	case trustedRouterPrometheus30Model:
 		return []string{deepSeekV4Pro0813Model, "minimax/minimax-m3", fusionKimiK3}, true
 	case trustedRouterPrometheus20Model:
 		return []string{"minimax/minimax-m3", fusionKimiK3}, true
@@ -420,8 +462,7 @@ func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 	case trustedRouterIris10Model,
 		trustedRouterIrisCode10Model:
 		return []string{fusionCodeKimi, "minimax/minimax-m3"}, true
-	case trustedRouterZeusModel,
-		trustedRouterZeus20Model:
+	case trustedRouterZeus20Model:
 		return []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
 	case trustedRouterZeus10Model,
 		trustedRouterZeus10MiniModel,
@@ -718,6 +759,7 @@ func maybeServeFusion(
 		return true, &adapter.AdapterError{Status: 503, Message: "trustedrouter/synth requires the TrustedRouter control plane", Context: "trustedrouter/synth"}
 	}
 	forceProviderJurisdiction(req, config.ProviderJurisdiction)
+	req.InternalLongContextCombo = req.InternalLongContextCombo || isLongContextCombo(req.Model)
 	config.Mode = fusionModeForRequest(req.Model, config.Mode)
 	if config.Mode == fusionModeMapReduce {
 		if err := normalizeMapReduceConfig(&config, req.Model); err != nil {
@@ -2572,6 +2614,9 @@ func authorizeFusionCall(
 	idempotencyKey string,
 ) (*trustedrouter.Authorization, []llm.InvokeOptions, error) {
 	subReq := *req
+	if err := constrainLongContextComboRoute(&subReq); err != nil {
+		return nil, nil, err
+	}
 	subReq.IdempotencyKey = partnerInternalIdempotencyKey(req, idempotencyKey)
 	billingRoute := partnerInternalBillingRoute(req, routeType)
 	authz, err := trGateway.AuthorizeWithRoute(ctx, bearer, &subReq, billingRoute)
@@ -2585,6 +2630,10 @@ func authorizeFusionCall(
 	options, err := invokeOptionsForAuthorization(ctx, secretCache, authz)
 	if err != nil {
 		refundFusionCallAfter(ctx, trGateway, authz, 502, "byok_secret_error", 0.001, req.Metadata)
+		return authz, nil, err
+	}
+	if err := validateLongContextComboOptions(&subReq, options); err != nil {
+		refundFusionCallAfter(ctx, trGateway, authz, 502, "combo_route_integrity_error", 0.001, req.Metadata)
 		return authz, nil, err
 	}
 	return authz, options, nil
