@@ -21,23 +21,33 @@ import (
 )
 
 func TestServeOnePolyphemusResponses(t *testing.T) {
-	for _, tc := range []struct{ stream, fallback bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+	for _, tc := range []struct{ stream, fallback, session bool }{
+		{false, false, false}, {true, false, false}, {false, true, false}, {true, true, false},
+		{false, false, true}, {true, false, true}, {false, true, true}, {true, true, true},
+	} {
 		t.Run(fmt.Sprint(tc), func(t *testing.T) {
 			stream := tc.stream
 			selectorCost := 50
 			selectorTokens := 0
+			sessionID := ""
+			if tc.session {
+				sessionID = "private-conversation-id"
+			}
 			if tc.fallback {
 				selectorCost = 0
 			}
 			original := enclaveModelSelector
 			t.Cleanup(func() { enclaveModelSelector = original })
 			var mu sync.Mutex
-			enclaveModelSelector = selectionStub(func(_ context.Context, messages string, perf float64) (*llm.ModelSelection, error) {
+			enclaveModelSelector = selectionStub(func(_ context.Context, messages string, perf float64, selectorSessionID string) (*llm.ModelSelection, error) {
 				mu.Lock()
 				selectorTokens = len(messages) / 4
 				mu.Unlock()
 				if !strings.Contains(messages, "PRIVATE INPUT") || perf != .9 {
 					t.Error("incorrect selection request")
+				}
+				if selectorSessionID != polyphemusSelectorSessionID("test-user-bearer", sessionID) || strings.Contains(messages, "private-conversation-id") {
+					t.Error("session was not scoped or leaked into selector context")
 				}
 				if tc.fallback {
 					return nil, errors.New("selector unavailable")
@@ -57,6 +67,9 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 				case "/v1/models", "/models":
 					_, _ = io.WriteString(w, selectionTestCatalog)
 				case "/internal/gateway/authorize":
+					if sessionID != "" && data["session_id"] != sessionID {
+						t.Error("lost original session attribution")
+					}
 					route, _ := data["route_type"].(string)
 					mu.Lock()
 					admissions = append(admissions, route)
@@ -103,7 +116,7 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 			defer client.Close()
 			_ = client.SetDeadline(time.Now().Add(10 * time.Second))
 			go serveOne(context.Background(), serverConn, auth.New(nil), &fakeStreamingLLM{}, nil, nil, gateway, nil)
-			body := fmt.Sprintf(`{"model":"trustedrouter/polyphemus-1.0","input":"PRIVATE INPUT","max_output_tokens":32,"stream":%t}`, stream)
+			body := fmt.Sprintf(`{"model":"trustedrouter/polyphemus-1.0","input":"PRIVATE INPUT","max_output_tokens":32,"stream":%t,"session_id":%q}`, stream, sessionID)
 			_, err := fmt.Fprintf(client, "POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer test-user-bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
 			if err != nil {
 				t.Fatal(err)
@@ -148,6 +161,9 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 				t.Fatalf("wrong total: %#v", usage)
 			}
 			providerUsage, _ := usage["provider_usage"].(map[string]any)
+			if providerUsage["selector_session_supplied"] != tc.session {
+				t.Fatalf("missing session request metadata: %#v", providerUsage)
+			}
 			if providerUsage["selector_cost_microdollars"] != float64(selectorCost) || providerUsage["generation_cost_microdollars"] != float64(12) {
 				t.Fatalf("wrong breakdown: %#v", providerUsage)
 			}
