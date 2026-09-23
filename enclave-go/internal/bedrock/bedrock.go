@@ -42,6 +42,12 @@ type anthropicBedrockWireRequest struct {
 	OutputConfig     any                         `json:"output_config,omitempty"`
 }
 
+// BuildRequestShape exposes the production native projection for
+// authorization-versus-wire checks at the orchestration boundary.
+func BuildRequestShape(body *qtypes.AnthropicMessagesRequest) any {
+	return buildAnthropicBedrockWireRequest(body)
+}
+
 func buildAnthropicBedrockWireRequest(body *qtypes.AnthropicMessagesRequest) anthropicBedrockWireRequest {
 	system := any(body.System)
 	if body.SystemRaw != nil {

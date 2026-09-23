@@ -2697,8 +2697,11 @@ func authorizeFusionCall(
 		if limit := trGateway.CachedModelOutputLimit(req.Model); limit > 0 && limit < *req.MaxTokens {
 			req.MaxTokens = &limit
 		}
-		// This is a total output allowance, including thinking. Shape inherited
-		// hints before authorization so native adapters cannot expand that hold.
+	}
+	if req.MaxTokens != nil && *req.MaxTokens > 0 {
+		// Every explicit inner allowance includes thinking, regardless of route.
+		// In particular, keep the caller's final-answer cap instead of raising
+		// it to accommodate inherited reasoning. Unset final limits stay unset.
 		adapter.ConstrainReasoningBudget(req, *req.MaxTokens)
 		req.MaxCompletionTokens = nil
 		req.MaxOutputTokens = nil

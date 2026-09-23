@@ -93,6 +93,12 @@ func (c *vertexGeminiClient) InvokeStreaming(
 	return translateGeminiStreamToAnthropic(resp.Body, out)
 }
 
+// BuildGeminiRequestShape exposes the production native projection for
+// authorization-versus-wire checks at the orchestration boundary.
+func BuildGeminiRequestShape(ctx context.Context, req *qtypes.OpenAIChatRequest, body *qtypes.AnthropicMessagesRequest, modelID string) (map[string]any, error) {
+	return vertexGeminiPayload(ctx, req, body, modelID)
+}
+
 func vertexGeminiPayload(
 	ctx context.Context,
 	req *qtypes.OpenAIChatRequest,

@@ -689,6 +689,12 @@ type anthropicWireRequest struct {
 	Stream        bool                        `json:"stream"`
 }
 
+// BuildAnthropicRequestShape exposes the production chat-to-native projection
+// for authorization-versus-wire checks at the orchestration boundary.
+func BuildAnthropicRequestShape(modelID string, req *qtypes.OpenAIChatRequest, body *qtypes.AnthropicMessagesRequest) any {
+	return buildAnthropicWireRequest(modelID, body.Messages, anthropicChatReasoningBody(modelID, req, body))
+}
+
 func buildAnthropicWireRequest(
 	modelID string,
 	messages []qtypes.AnthropicMessage,
