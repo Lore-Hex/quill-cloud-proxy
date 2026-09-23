@@ -285,7 +285,7 @@ func annotatePolyphemusUsage(ctx context.Context, usage map[string]any) {
 	providerUsage["selector_calls"] = receipt.SelectorCalls
 	providerUsage["selector_cost_microdollars"] = receipt.CostMicrodollars
 	providerUsage["selector_input_tokens"] = receipt.InputTokens
-	providerUsage["selector_usage_estimated"] = receipt.FallbackReason == ""
+	providerUsage["selector_usage_estimated"] = true
 	providerUsage["selector_token_basis"] = "serialized_context_utf8_bytes_div_4"
 	providerUsage["selector_upstream_cost_known"] = false
 	providerUsage["selector_elapsed_ms"] = receipt.ElapsedMS

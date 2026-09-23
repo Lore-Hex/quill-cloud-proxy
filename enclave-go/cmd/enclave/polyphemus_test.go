@@ -209,7 +209,7 @@ func TestPolyphemusSelectorFailuresFallBackToAutoWithoutFee(t *testing.T) {
 			if usage["cost_microdollars"] != 37 || meta["selector_cost_microdollars"] != 0 || meta["selector_fallback_model"] != "trustedrouter/auto" {
 				t.Fatal("charged failed selection", usage)
 			}
-			if meta["selector_input_tokens"] != 0 || meta["selector_usage_estimated"] != false {
+			if meta["selector_input_tokens"] != 0 || meta["selector_usage_estimated"] != true {
 				t.Fatal("billed tokens on selector failure", meta)
 			}
 			encoded, _ := json.Marshal(meta)
