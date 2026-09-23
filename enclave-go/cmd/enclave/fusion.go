@@ -16,6 +16,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -1935,10 +1936,13 @@ func runFusionCallValidatedObservedAttempt(
 		return fusionCallResult{}, err
 	}
 	invokeCtx := ctx
+	if strings.HasPrefix(routeType, "fusion.") {
+		invokeCtx = streamhttp.WithFusionTimeout(invokeCtx)
+	}
 	cancelInvoke := func() {}
 	if invokeTimeout > 0 {
 		var cancel context.CancelFunc
-		invokeCtx, cancel = context.WithTimeout(ctx, invokeTimeout)
+		invokeCtx, cancel = context.WithTimeout(invokeCtx, invokeTimeout)
 		cancelInvoke = cancel
 	}
 	overthinking := fusionOverthinkingConfig(req.Model, routeType, allowOverthinkingRescue, fusionIsSynthCodeSubrequest(req))
@@ -2305,6 +2309,7 @@ func serveFusionFinalStreamingAttempt(
 	requestLogID string,
 	useLongLastCandidateBudget bool,
 ) (bool, error) {
+	ctx = streamhttp.WithFusionTimeout(ctx)
 	responseID := newRequestID()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
@@ -3254,15 +3259,11 @@ func fusionInnerMaxTokens(req *types.OpenAIChatRequest, configured int) *int {
 		value := configured
 		return &value
 	}
-	if req.MaxTokens != nil && *req.MaxTokens > 0 {
-		value := *req.MaxTokens
-		if value > 2048 {
-			value = 2048
-		}
-		return &value
-	}
-	value := 1200
-	return &value
+	// Reasoning models spend this budget on thinking as well as visible text.
+	// The old 2048 clamp / 1200 default could exhaust it before any answer.
+	// Preserve direct-call semantics, including an omitted limit; authorization
+	// estimates the resulting subrequest through the same path as a direct call.
+	return req.MaxTokens
 }
 
 func fusionMetadata(input map[string]any, stage string, model string) map[string]any {

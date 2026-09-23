@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/directproviders"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -330,7 +331,7 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	if httpc == nil {
 		httpc = defaultHTTPClient()
 	}
-	resp, err := httpc.Do(httpReq)
+	resp, err := streamhttp.Do(httpc, httpReq)
 	if err != nil {
 		return fmt.Errorf("llm/%s: invoke: %w", provider, err)
 	}
@@ -776,7 +777,7 @@ func invokeAnthropicCompatibleStreamingWithClient(
 	if httpc == nil {
 		httpc = defaultHTTPClient()
 	}
-	resp, err := httpc.Do(httpReq)
+	resp, err := streamhttp.Do(httpc, httpReq)
 	if err != nil {
 		return fmt.Errorf("llm/%s: anthropic invoke: %w", provider, err)
 	}

@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -77,7 +78,7 @@ func (c *vertexGeminiClient) InvokeStreaming(
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
 
-	resp, err := c.auth.httpc.Do(httpReq)
+	resp, err := streamhttp.Do(c.auth.httpc, httpReq)
 	if err != nil {
 		return fmt.Errorf("llm/vertex-gemini: invoke: %w", err)
 	}

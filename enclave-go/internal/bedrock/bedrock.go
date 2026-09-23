@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/vsockhttp"
 )
@@ -103,7 +104,7 @@ func New(boot *qtypes.BootstrapData) *Client {
 	cfg := aws.Config{
 		Region:           boot.Region,
 		Credentials:      creds,
-		HTTPClient:       httpClient,
+		HTTPClient:       streamhttp.Client{Base: httpClient},
 		RetryMaxAttempts: 2,
 	}
 	return &Client{br: bedrockruntime.NewFromConfig(cfg)}

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"golang.org/x/sync/singleflight"
 )
@@ -465,7 +466,7 @@ func (c *chutesE2EEClient) invokeEncryptedStream(
 	req.Header.Set("X-E2E-Stream", "true")
 	req.Header.Set("X-E2E-Path", "/v1/chat/completions")
 	req.Header.Set("X-E2EE-Usage-Passthrough", "true")
-	resp, err := c.httpc.Do(req)
+	resp, err := streamhttp.Do(c.httpc, req)
 	if err != nil {
 		return fmt.Errorf("llm/chutes: encrypted invoke: %w", err)
 	}

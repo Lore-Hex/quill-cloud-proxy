@@ -32,6 +32,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -194,7 +195,7 @@ func (c *gcpClient) InvokeStreaming(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	resp, err := c.httpc.Do(httpReq)
+	resp, err := streamhttp.Do(c.httpc, httpReq)
 	if err != nil {
 		return fmt.Errorf("llm/gcp: invoke: %w", err)
 	}
