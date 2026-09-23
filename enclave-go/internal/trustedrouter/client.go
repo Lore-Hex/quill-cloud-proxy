@@ -106,6 +106,41 @@ type Client struct {
 	stageDBootSigner   spendlease.DigestSigner
 }
 
+// CachedModelOutputLimit returns a known output cap from the public catalog
+// already held by this enclave. It never fetches on the inference path. Zero
+// means unknown (including absent/null limits), not unlimited provider output.
+// Do not confuse context_length, which includes input, with an output cap.
+func (c *Client) CachedModelOutputLimit(model string) int {
+	if c == nil {
+		return 0
+	}
+	c.modelsMu.Lock()
+	defer c.modelsMu.Unlock()
+	var catalog struct {
+		Data []struct {
+			ID              string `json:"id"`
+			MaxOutputTokens int    `json:"max_output_tokens"`
+			TopProvider     struct {
+				MaxCompletionTokens int `json:"max_completion_tokens"`
+			} `json:"top_provider"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(c.modelsBody, &catalog) != nil {
+		return 0
+	}
+	limit := 0
+	for _, row := range catalog.Data {
+		if row.ID == model {
+			for _, n := range []int{row.MaxOutputTokens, row.TopProvider.MaxCompletionTokens} {
+				if n > 0 && (limit == 0 || n < limit) {
+					limit = n
+				}
+			}
+		}
+	}
+	return limit
+}
+
 // CredentialGuard lets the enclave reject repeated definitive credential
 // failures before they reach the control plane. Implementations receive only
 // the existing one-way API-key lookup hash, never the raw bearer.

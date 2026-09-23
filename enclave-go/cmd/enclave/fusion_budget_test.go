@@ -28,15 +28,15 @@ func TestFusionInnerMaxTokens(t *testing.T) {
 	}{
 		{"override", intPtrMainTest(60000), 32000, intPtrMainTest(32000)},
 		{"override without caller", nil, 32000, intPtrMainTest(32000)},
-		{"above old clamp", intPtrMainTest(60000), 0, intPtrMainTest(60000)},
-		{"small caller", intPtrMainTest(100), 0, intPtrMainTest(100)},
-		{"unset", nil, 0, nil},
-		{"explicit zero", intPtrMainTest(0), 0, intPtrMainTest(0)},
+		{"above old clamp", intPtrMainTest(60000), 0, intPtrMainTest(32768)},
+		{"small caller", intPtrMainTest(100), 0, intPtrMainTest(32768)},
+		{"unset", nil, 0, intPtrMainTest(32768)},
+		{"explicit zero", intPtrMainTest(0), 0, intPtrMainTest(32768)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			req := &types.OpenAIChatRequest{MaxTokens: tt.caller}
 			// The former 1200 default / 2048 clamp starved reasoning before visible text.
-			if got := fusionInnerMaxTokens(req, tt.configured); !reflect.DeepEqual(got, tt.want) {
+			if got := fusionInnerMaxTokens(tt.configured); !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("got %v, want %v", got, tt.want)
 			}
 			for _, inner := range []*types.OpenAIChatRequest{fusionPanelRequest(req, "model/panel", 0, tt.configured, ""), fusionJudgeRequest(req, "model/judge", nil, tt.configured)} {
@@ -49,10 +49,13 @@ func TestFusionInnerMaxTokens(t *testing.T) {
 }
 
 // Like a reasoning provider, this fake returns no visible answer when thinking
-// consumes the completion budget. Unset uses the provider's sufficient default.
+// consumes the completion budget. Missing bounds are rejected.
 type reasoningBudgetLLM struct{ fusionEchoLLM }
 
 func (f *reasoningBudgetLLM) InvokeStreaming(ctx context.Context, req *types.OpenAIChatRequest, body *types.AnthropicMessagesRequest, out io.Writer, options ...llm.InvokeOptions) error {
+	if req.MaxTokens == nil && req.Metadata["trustedrouter_fusion_stage"] != "final" {
+		return fmt.Errorf("unfunded inner request")
+	}
 	if req.MaxTokens != nil && *req.MaxTokens <= 2048 {
 		empty := fusionEchoLLM{thinking: true, textByModel: map[string]string{req.Model: ""}}
 		return empty.InvokeStreaming(ctx, req, body, out, options...)
@@ -67,10 +70,10 @@ func TestFusionReasoningBudgetEndToEnd(t *testing.T) {
 		estimate               int
 		status                 int
 	}{
-		{"caller", `,"max_tokens":16000`, "", float64(16000), float64(16000), 16000, 200},
+		{"caller", `,"max_tokens":16000`, "", float64(32768), float64(16000), 32768, 200},
 		{"override", `,"max_tokens":16000`, `,"max_completion_tokens":32000`, float64(32000), float64(16000), 32000, 200},
-		{"unset", "", "", nil, nil, 512, 200},
-		{"explicit insufficient budget preserves empty handling", `,"max_tokens":2048`, "", float64(2048), float64(2048), 2048, 502},
+		{"unset", "", "", float64(32768), nil, 32768, 200},
+		{"explicit insufficient override preserves empty handling", `,"max_tokens":16000`, `,"max_completion_tokens":2048`, float64(2048), float64(16000), 2048, 502},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			gateway, recorder := newFusionBudgetGateway(t)
@@ -113,6 +116,7 @@ func TestFusionReasoningBudgetEndToEnd(t *testing.T) {
 				want, estimate := tt.inner, tt.estimate
 				if call["route_type"] == "fusion.final" {
 					want = tt.final
+					estimate = 512
 					if want != nil {
 						estimate = int(want.(float64))
 					}

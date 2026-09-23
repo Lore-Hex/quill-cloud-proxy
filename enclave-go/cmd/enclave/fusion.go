@@ -66,6 +66,11 @@ const maxMapReduceParts = 8
 const defaultMapReduceParts = 4
 const maxFusionSynthesisPromptBytes = 4000
 const maxFusionPanelPromptBytes = 4000
+
+// fusionPanelReasoningTokens raises each default inner output reservation from
+// 2,048 to 32,768 tokens (16x), priced per member, independently of the caller
+// limit on the final answer. Every inner request sends this explicit bound.
+const fusionPanelReasoningTokens = 32768
 const fusionPanelThinkingTokenBudget = 1000
 const fusionFinalThinkingTokenBudget = 2000
 const fusionPanelRescueMaxTokens = 800
@@ -1530,6 +1535,24 @@ func runFusionPanelObserved(
 	streamCreated int64,
 	observerFactory func(stage string, index int, model string) adapter.StreamObserver,
 ) ([]fusionCallResult, error) {
+	// Hold the whole panel before any provider runs. Sequential authorizations
+	// enforce the aggregate balance even if a provider would answer very briefly.
+	// On admission failure, release earlier holds and refuse the panel as a unit.
+	requests := make([]*types.OpenAIChatRequest, len(config.AnalysisModels))
+	authorizations := make([]fusionCallAuthorization, len(requests))
+	for i, model := range config.AnalysisModels {
+		requests[i] = fusionPanelRequest(req, model, i, config.MaxCompletionTokens, config.PanelPrompt, config.BuiltInPanelPrompt)
+		fusionMarkSynthCodeRequest(requests[i], config.CodeModel)
+		var err error
+		authorizations[i].started = time.Now()
+		authorizations[i].authz, authorizations[i].options, err = authorizeFusionCall(ctx, requests[i], trGateway, secretCache, bearer, "fusion.panel", fmt.Sprintf("%s:panel:%d", requestID, i))
+		if err != nil {
+			for j := 0; j < i; j++ {
+				refundFusionCallAfter(ctx, trGateway, authorizations[j].authz, statusFromControlPlaneError(err), "fusion_panel_admission_failed", time.Since(authorizations[j].started).Seconds(), requests[j].Metadata)
+			}
+			return nil, err
+		}
+	}
 	panel := make([]fusionCallResult, len(config.AnalysisModels))
 	successes := make([]bool, len(config.AnalysisModels))
 	errs := make([]error, len(config.AnalysisModels))
@@ -1553,8 +1576,7 @@ func runFusionPanelObserved(
 				"index": i,
 				"model": model,
 			})
-			panelReq := fusionPanelRequest(req, model, i, config.MaxCompletionTokens, config.PanelPrompt, config.BuiltInPanelPrompt)
-			fusionMarkSynthCodeRequest(panelReq, config.CodeModel)
+			panelReq := requests[i]
 			var observer adapter.StreamObserver
 			if observerFactory != nil {
 				if baseObserver := observerFactory("panel", i, model); baseObserver != nil {
@@ -1565,7 +1587,7 @@ func runFusionPanelObserved(
 					}
 				}
 			}
-			result, err := runFusionCallObserved(ctx, br, panelReq, trGateway, secretCache, bearer, "fusion.panel", fmt.Sprintf("%s:panel:%d", requestID, i), requestLogID, nil, false, observer, streamW != nil)
+			result, err := runAuthorizedFusionCallAttempt(ctx, br, panelReq, trGateway, secretCache, bearer, "fusion.panel", fmt.Sprintf("%s:panel:%d", requestID, i), requestLogID, nil, false, nil, true, observer, streamW != nil, true, 0, authorizations[i])
 			if err != nil {
 				errs[i] = err
 				fmt.Fprintf(os.Stderr,
@@ -1903,6 +1925,15 @@ type settlementAttemptedError struct{ err error }
 func (e *settlementAttemptedError) Error() string { return e.err.Error() }
 func (e *settlementAttemptedError) Unwrap() error { return e.err }
 
+// A panel owns these holds between admission and invocation; other callers
+// prepare one immediately before invoking. Preserve authorization latency in
+// the per-call timing reported to settlement and orchestration details.
+type fusionCallAuthorization struct {
+	authz   *trustedrouter.Authorization
+	options []llm.InvokeOptions
+	started time.Time
+}
+
 func runFusionCallValidatedObservedAttempt(
 	ctx context.Context,
 	br llm.Client,
@@ -1927,6 +1958,30 @@ func runFusionCallValidatedObservedAttempt(
 	if err != nil {
 		return fusionCallResult{}, err
 	}
+	return runAuthorizedFusionCallAttempt(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, observer, streamed, allowOverthinkingRescue, invokeTimeout, fusionCallAuthorization{authz, options, requestStarted})
+}
+
+func runAuthorizedFusionCallAttempt(
+	ctx context.Context,
+	br llm.Client,
+	req *types.OpenAIChatRequest,
+	trGateway *trustedrouter.Client,
+	secretCache *byokcache.Cache,
+	bearer string,
+	routeType string,
+	idempotencyKey string,
+	requestLogID string,
+	originalInput any,
+	broadcastContent bool,
+	validateBeforeSettle func(adapter.StreamResult) error,
+	useLongLastCandidateBudget bool,
+	observer adapter.StreamObserver,
+	streamed bool,
+	allowOverthinkingRescue bool,
+	invokeTimeout time.Duration,
+	authorization fusionCallAuthorization,
+) (call fusionCallResult, callErr error) {
+	authz, options, requestStarted := authorization.authz, authorization.options, authorization.started
 	if len(options) > 0 && options[0].Model != "" {
 		req.Model = options[0].Model
 	}
@@ -2618,6 +2673,14 @@ func authorizeFusionCall(
 	routeType string,
 	idempotencyKey string,
 ) (*trustedrouter.Authorization, []llm.InvokeOptions, error) {
+	if strings.HasPrefix(routeType, "fusion.") && routeType != "fusion.final" {
+		if req.MaxTokens == nil || *req.MaxTokens <= 0 {
+			req.MaxTokens = fusionInnerMaxTokens(0)
+		}
+		if limit := trGateway.CachedModelOutputLimit(req.Model); limit > 0 && limit < *req.MaxTokens {
+			req.MaxTokens = &limit
+		}
+	}
 	subReq := *req
 	if err := constrainLongContextComboRoute(&subReq); err != nil {
 		return nil, nil, err
@@ -2663,7 +2726,7 @@ func fusionPanelRequest(req *types.OpenAIChatRequest, model string, index int, m
 	}
 	out.Plugins = nil
 	out.ResponseFormat = nil
-	out.MaxTokens = fusionInnerMaxTokens(req, maxCompletionTokens)
+	out.MaxTokens = fusionInnerMaxTokens(maxCompletionTokens)
 	basePrompt := ""
 	if len(builtInPrompt) > 0 {
 		basePrompt = strings.TrimSpace(builtInPrompt[0])
@@ -2693,7 +2756,7 @@ func fusionJudgeRequest(req *types.OpenAIChatRequest, model string, panel []fusi
 	out.ToolChoice = nil
 	out.Plugins = nil
 	out.ResponseFormat = map[string]any{"type": "json_object"}
-	out.MaxTokens = fusionInnerMaxTokens(req, maxCompletionTokens)
+	out.MaxTokens = fusionInnerMaxTokens(maxCompletionTokens)
 	out.Messages = []types.OpenAIChatMessage{
 		{
 			Role:    "system",
@@ -3254,16 +3317,12 @@ func fusionSplitLiteralThinking(text string) (string, string) {
 	return visible.String(), thinking.String()
 }
 
-func fusionInnerMaxTokens(req *types.OpenAIChatRequest, configured int) *int {
+func fusionInnerMaxTokens(configured int) *int {
+	value := fusionPanelReasoningTokens
 	if configured > 0 {
-		value := configured
-		return &value
+		value = configured
 	}
-	// Reasoning models spend this budget on thinking as well as visible text.
-	// The old 2048 clamp / 1200 default could exhaust it before any answer.
-	// Preserve direct-call semantics, including an omitted limit; authorization
-	// estimates the resulting subrequest through the same path as a direct call.
-	return req.MaxTokens
+	return &value
 }
 
 func fusionMetadata(input map[string]any, stage string, model string) map[string]any {

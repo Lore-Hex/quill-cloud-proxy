@@ -63,8 +63,12 @@ func TestFusionOpenAICompatibleHTTPBudget(t *testing.T) {
 				if wire["stream"] != true {
 					t.Fatal("collected fusion call must stream upstream")
 				}
-				if _, ok := wire["max_tokens"]; ok {
-					t.Fatalf("unset max_tokens sent: %#v", wire)
+				if fusion {
+					if wire["max_tokens"] != float64(32768) {
+						t.Fatalf("explicit fusion bound missing: %#v", wire)
+					}
+				} else if _, ok := wire["max_tokens"]; ok {
+					t.Fatalf("unset direct max_tokens sent: %#v", wire)
 				}
 				deadline, ok := r.Context().Deadline()
 				if !ok || (fusion && time.Until(deadline) < 29*time.Minute) {
@@ -93,6 +97,10 @@ func TestFusionOpenAICompatibleHTTPBudget(t *testing.T) {
 				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: pr}, nil
 			})}
 			req := &types.OpenAIChatRequest{Model: "deepseek/test", Stream: false, Messages: []types.OpenAIChatMessage{{Role: "user", Content: "hard problem"}}}
+			if fusion {
+				limit := 32768
+				req.MaxTokens = &limit
+			}
 			body, err := adapter.ToAnthropic(req, req.Model)
 			if err != nil {
 				t.Fatal(err)
