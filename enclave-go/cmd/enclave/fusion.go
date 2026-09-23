@@ -2120,8 +2120,18 @@ func runAuthorizedFusionCallAttempt(
 		inputForBroadcast = originalInput
 		outputForBroadcast = result.Text
 	}
-	settleResult, err := settleAndBroadcast(ctx, trGateway, authz, secretCache, usage, req, inputForBroadcast, outputForBroadcast)
+	// Generation has completed and must be billed even if the caller disconnects.
+	settleCtx, cancelSettle := finalizeContext(ctx)
+	settleResult, err := settleAndBroadcast(settleCtx, trGateway, authz, secretCache, usage, req, inputForBroadcast, outputForBroadcast)
+	cancelSettle()
 	if err != nil {
+		settlementRetries.Enqueue(settlementRetryJob{
+			trGateway:     trGateway,
+			authorization: authz,
+			usage:         usage,
+			requestLogID:  requestLogID,
+			clientContext: trustedrouter.ClientContextFromContext(ctx),
+		})
 		return fusionCallResult{}, &settlementAttemptedError{err}
 	}
 	elapsedMS := time.Since(requestStarted).Milliseconds()
@@ -2446,14 +2456,17 @@ func serveFusionFinalStreamingAttempt(
 	}
 	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
-	if _, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, adapter.ResponsesOutputForUsage(result)); err != nil {
+	settleCtx, cancelSettle := finalizeContext(ctx)
+	_, settleErr := settleAndBroadcast(settleCtx, trGateway, authorization, secretCache, usage, req, originalInput, adapter.ResponsesOutputForUsage(result))
+	cancelSettle()
+	if settleErr != nil {
 		fmt.Fprintf(os.Stderr,
 			"enclave.stream_settle_failed request_log_id=%q request_id=%q model=%q route_type=%q err=%v\n",
 			requestLogID,
 			responseID,
 			req.Model,
 			"fusion.final",
-			err,
+			settleErr,
 		)
 		settlementRetries.Enqueue(settlementRetryJob{
 			trGateway:     trGateway,

@@ -24,13 +24,18 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 	for _, tc := range []struct{ stream, fallback bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
 		t.Run(fmt.Sprint(tc), func(t *testing.T) {
 			stream := tc.stream
-			selectorCost := 1
+			selectorCost := 50
+			selectorTokens := 0
 			if tc.fallback {
 				selectorCost = 0
 			}
 			original := enclaveModelSelector
 			t.Cleanup(func() { enclaveModelSelector = original })
+			var mu sync.Mutex
 			enclaveModelSelector = selectionStub(func(_ context.Context, messages string, perf float64) (*llm.ModelSelection, error) {
+				mu.Lock()
+				selectorTokens = len(messages) / 4
+				mu.Unlock()
 				if !strings.Contains(messages, "PRIVATE INPUT") || perf != .9 {
 					t.Error("incorrect selection request")
 				}
@@ -39,7 +44,6 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 				}
 				return &llm.ModelSelection{Model: "gemini-3.8-flash"}, nil
 			})
-			var mu sync.Mutex
 			admissions, settlements := []string{}, []string{}
 			refunds := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -73,9 +77,13 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 					route, _ := data["route_type"].(string)
 					mu.Lock()
 					settlements = append(settlements, route)
+					meteredTokens := selectorTokens
 					mu.Unlock()
 					if route == polyphemusSelectRoute {
-						_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"selection","cost_microdollars":1,"model":"trustedrouter/polyphemus-1.0","provider":"telluvian"}}`)
+						if data["actual_input_tokens"] != float64(meteredTokens) || data["actual_output_tokens"] != float64(0) || data["usage_estimated"] != true {
+							t.Errorf("incorrect selector meter: %#v", data)
+						}
+						_, _ = fmt.Fprintf(w, `{"data":{"settled":true,"generation_id":"selection","cost_microdollars":%d,"model":"trustedrouter/polyphemus-1.0","provider":"telluvian"}}`, selectorCost)
 					} else {
 						_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"generation","cost_microdollars":12,"model":"google/gemini-3.8-flash","provider":"google-ai-studio"}}`)
 					}
@@ -133,12 +141,24 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 				t.Fatalf("wrong response: %s", output)
 			}
 			usage, _ := payload["usage"].(map[string]any)
+			if usage["input_tokens"] != float64(2) || usage["output_tokens"] != float64(2) {
+				t.Fatalf("selector corrupted generation tokens: %#v", usage)
+			}
 			if usage["cost_microdollars"] != float64(12+selectorCost) {
 				t.Fatalf("wrong total: %#v", usage)
 			}
 			providerUsage, _ := usage["provider_usage"].(map[string]any)
 			if providerUsage["selector_cost_microdollars"] != float64(selectorCost) || providerUsage["generation_cost_microdollars"] != float64(12) {
 				t.Fatalf("wrong breakdown: %#v", providerUsage)
+			}
+			mu.Lock()
+			billedSelectorTokens := selectorTokens
+			mu.Unlock()
+			if tc.fallback {
+				billedSelectorTokens = 0
+			}
+			if providerUsage["selector_input_tokens"] != float64(billedSelectorTokens) || providerUsage["selector_usage_estimated"] != true {
+				t.Fatalf("incorrect selector metering disclosure: %#v", providerUsage)
 			}
 			mu.Lock()
 			defer mu.Unlock()
