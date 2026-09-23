@@ -58,6 +58,10 @@ func selectionTestRequest() *types.OpenAIChatRequest {
 func TestPolyphemusSelectorSessionIsStableOpaqueAndKeyIsolated(t *testing.T) {
 	const session = "private conversation / \u65e5\u672c\u8a9e"
 	first := polyphemusSelectorSessionID("test-key-one", session)
+	// Independently computed HMAC vector pins the namespace, key and UUID bits.
+	if first != "2e7dc99b-4abb-8bfd-869b-7192416a0130" {
+		t.Fatal("stable session derivation changed")
+	}
 	guid := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	if !guid.MatchString(first) || strings.Contains(first, session) || strings.Contains(first, "test-key") {
 		t.Fatalf("not an opaque UUIDv8: %q", first)
