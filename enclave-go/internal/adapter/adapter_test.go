@@ -2165,3 +2165,24 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+func TestConstrainReasoningBudget(t *testing.T) {
+	for _, total := range []int{1, 800, 1024, 1025, 8192, 32768, 60000} {
+		for _, hint := range []any{map[string]any{"max_tokens": float64(32768)}, map[string]any{"thinking_budget": 60000, "budget_tokens": 90000}, map[string]any{"budget_tokens": json.Number("60000")}, map[string]any{"max_tokens": -1}, map[string]any{"type": "adaptive"}, map[string]any{"effort": "high"}, true, "high", nil} {
+			before, _ := json.Marshal(hint)
+			req := &types.OpenAIChatRequest{MaxTokens: &total, Reasoning: hint, ReasoningEffort: "high", Messages: []types.OpenAIChatMessage{{Role: "user", Content: "problem"}}}
+			ConstrainReasoningBudget(req, total)
+			body, err := ToAnthropic(req, "model/test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body.AnthropicDispatchMaxTokens() != total {
+				t.Fatalf("total=%d hint=%v wire=%d", total, hint, body.AnthropicDispatchMaxTokens())
+			}
+			after, _ := json.Marshal(hint)
+			if string(before) != string(after) {
+				t.Fatalf("parent reasoning mutated: %s -> %s", before, after)
+			}
+		}
+	}
+}

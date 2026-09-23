@@ -1535,23 +1535,40 @@ func runFusionPanelObserved(
 	streamCreated int64,
 	observerFactory func(stage string, index int, model string) adapter.StreamObserver,
 ) ([]fusionCallResult, error) {
-	// Hold the whole panel before any provider runs. Sequential authorizations
-	// enforce the aggregate balance even if a provider would answer very briefly.
-	// On admission failure, release earlier holds and refuse the panel as a unit.
+	// Acquire holds concurrently, then wait for every admission result before
+	// dispatch or cleanup. In particular, a late success after another member's
+	// failure still owns a hold that must be refunded.
 	requests := make([]*types.OpenAIChatRequest, len(config.AnalysisModels))
 	authorizations := make([]fusionCallAuthorization, len(requests))
+	admissionErrors := make([]error, len(requests))
+	var admission sync.WaitGroup
 	for i, model := range config.AnalysisModels {
 		requests[i] = fusionPanelRequest(req, model, i, config.MaxCompletionTokens, config.PanelPrompt, config.BuiltInPanelPrompt)
 		fusionMarkSynthCodeRequest(requests[i], config.CodeModel)
-		var err error
-		authorizations[i].started = time.Now()
-		authorizations[i].authz, authorizations[i].options, err = authorizeFusionCall(ctx, requests[i], trGateway, secretCache, bearer, "fusion.panel", fmt.Sprintf("%s:panel:%d", requestID, i))
+		admission.Add(1)
+		go func(i int) {
+			defer admission.Done()
+			authorizations[i].started = time.Now()
+			authorizations[i].authz, authorizations[i].options, admissionErrors[i] = authorizeFusionCall(ctx, requests[i], trGateway, secretCache, bearer, "fusion.panel", fmt.Sprintf("%s:panel:%d", requestID, i))
+		}(i)
+	}
+	admission.Wait()
+	var admissionErr error
+	for _, err := range admissionErrors {
 		if err != nil {
-			for j := 0; j < i; j++ {
-				refundFusionCallAfter(ctx, trGateway, authorizations[j].authz, statusFromControlPlaneError(err), "fusion_panel_admission_failed", time.Since(authorizations[j].started).Seconds(), requests[j].Metadata)
-			}
-			return nil, err
+			admissionErr = err
+			break
 		}
+	}
+	if admissionErr != nil {
+		for i := range authorizations {
+			// authorizeFusionCall already refunds a hold if its post-authorization
+			// option validation fails. Only successful admissions remain ours.
+			if admissionErrors[i] == nil {
+				refundFusionCallAfter(ctx, trGateway, authorizations[i].authz, statusFromControlPlaneError(admissionErr), "fusion_panel_admission_failed", time.Since(authorizations[i].started).Seconds(), requests[i].Metadata)
+			}
+		}
+		return nil, admissionErr
 	}
 	panel := make([]fusionCallResult, len(config.AnalysisModels))
 	successes := make([]bool, len(config.AnalysisModels))
@@ -2680,6 +2697,11 @@ func authorizeFusionCall(
 		if limit := trGateway.CachedModelOutputLimit(req.Model); limit > 0 && limit < *req.MaxTokens {
 			req.MaxTokens = &limit
 		}
+		// This is a total output allowance, including thinking. Shape inherited
+		// hints before authorization so native adapters cannot expand that hold.
+		adapter.ConstrainReasoningBudget(req, *req.MaxTokens)
+		req.MaxCompletionTokens = nil
+		req.MaxOutputTokens = nil
 	}
 	subReq := *req
 	if err := constrainLongContextComboRoute(&subReq); err != nil {

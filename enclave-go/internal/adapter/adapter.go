@@ -151,10 +151,56 @@ func anthropicUserIDMetadata(m map[string]any) map[string]any {
 	return map[string]any{"user_id": v}
 }
 
+// ConstrainReasoningBudget makes an orchestration-owned total output allowance
+// include thinking. Ordinary caller requests retain the adapter's historical
+// behavior. Copy the reasoning object: inner requests share it with their parent.
+func ConstrainReasoningBudget(req *types.OpenAIChatRequest, total int) {
+	if req == nil || total <= 0 {
+		return
+	}
+	req.InternalOutputTokenLimit = total
+	original, ok := req.Reasoning.(map[string]any)
+	if !ok {
+		return
+	}
+	reasoning := map[string]any{}
+	for key, value := range original {
+		reasoning[key] = value
+	}
+	for _, key := range []string{"max_tokens", "thinking_budget", "budget_tokens"} {
+		if raw, exists := original[key]; exists {
+			budget := intFromAny(raw)
+			if budget < 0 || budget >= total {
+				budget = total - 1
+			}
+			// Anthropic requires at least 1,024 thinking tokens plus visible
+			// output. Small rescue/configured budgets disable explicit thinking.
+			if total <= 1024 {
+				budget = 0
+				reasoning["enabled"] = false
+				delete(reasoning, "type")
+				delete(reasoning, "effort")
+				req.ReasoningEffort = "none"
+			}
+			delete(reasoning, "thinking_budget")
+			delete(reasoning, "budget_tokens")
+			reasoning["max_tokens"] = budget
+			req.Reasoning = reasoning
+			return
+		}
+	}
+}
+
 func anthropicThinkingFromChat(req *types.OpenAIChatRequest, maxTokens int) any {
 	budget, ok := anthropicThinkingBudget(req)
 	if !ok {
 		return nil
+	}
+	if limit := req.InternalOutputTokenLimit; limit > 0 {
+		if limit <= 1024 {
+			return nil
+		}
+		budget = min(budget, limit-1)
 	}
 	if budget <= 0 {
 		return nil

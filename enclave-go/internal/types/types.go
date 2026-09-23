@@ -330,6 +330,11 @@ type OpenAIChatRequest struct {
 	InternalBillingProfile     string   `json:"-"`
 	// Inherited by nested calls; only named, enclave-owned 1M presets enable it.
 	InternalLongContextCombo bool `json:"-"`
+
+	// InternalOutputTokenLimit marks a funded orchestration allowance that
+	// includes reasoning. Adapters must fit derived thinking budgets inside it.
+	// Never accepted from the public wire.
+	InternalOutputTokenLimit int `json:"-"`
 }
 
 // NormalizeMaxTokens folds the OpenAI-chat (`max_completion_tokens`) and

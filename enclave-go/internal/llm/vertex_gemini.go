@@ -221,7 +221,9 @@ func vertexGeminiPayload(
 		// The normalized image route promises an image-only result. Gemini's
 		// current GenerateContent contract configures that through responseFormat
 		// (not the older preview-only imageConfig spelling).
-		delete(generationConfig, "maxOutputTokens")
+		if req.InternalOutputTokenLimit <= 0 {
+			delete(generationConfig, "maxOutputTokens")
+		}
 		generationConfig["responseModalities"] = []string{"IMAGE"}
 		generationConfig["candidateCount"] = 1
 		image := map[string]any{
@@ -234,8 +236,11 @@ func vertexGeminiPayload(
 		// Gemini counts generated image data against maxOutputTokens. Common
 		// chat SDK defaults such as 128 or 1024 can therefore return HTTP 200
 		// with an empty image. Let the image model choose its native output
-		// budget; TrustedRouter's authorization and billing limits still apply.
-		delete(generationConfig, "maxOutputTokens")
+		// budget for ordinary calls. Funded inner calls must retain their
+		// explicit total even when the selected model can emit images.
+		if req.InternalOutputTokenLimit <= 0 {
+			delete(generationConfig, "maxOutputTokens")
+		}
 		generationConfig["responseModalities"] = []string{"TEXT", "IMAGE"}
 		generationConfig["candidateCount"] = 1
 	}
@@ -416,7 +421,16 @@ func vertexGeminiImageModel(modelID string) bool {
 	return strings.Contains(modelID, "image")
 }
 
-func vertexGeminiThinkingConfig(modelID string, req *qtypes.OpenAIChatRequest) map[string]any {
+func vertexGeminiThinkingConfig(modelID string, req *qtypes.OpenAIChatRequest) (config map[string]any) {
+	// Preserve model-specific effort/level mapping, but constrain numeric
+	// budgets (including dynamic thinking) to a funded inner total.
+	defer func() {
+		if req != nil && req.InternalOutputTokenLimit > 0 {
+			if budget, ok := config["thinkingBudget"].(int); ok && (budget < 0 || budget >= req.InternalOutputTokenLimit) {
+				config["thinkingBudget"] = req.InternalOutputTokenLimit - 1
+			}
+		}
+	}()
 	modelID = strings.ToLower(modelID)
 	is25 := strings.HasPrefix(modelID, "gemini-2.5")
 	// Explicit numeric thinking budget (OpenRouter-style `reasoning.max_tokens`),
