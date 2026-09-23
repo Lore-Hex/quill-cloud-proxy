@@ -21,7 +21,7 @@ const polyphemusModel = "trustedrouter/polyphemus-1.0"
 const polyphemusSelectRoute = "responses.polyphemus.select"
 
 type modelSelector interface {
-	Select(context.Context, string, float64) (*llm.ModelSelection, error)
+	Select(context.Context, string, float64, string) (*llm.ModelSelection, error)
 }
 
 var enclaveModelSelector modelSelector
@@ -48,6 +48,7 @@ type polyphemusReceipt struct {
 	SelectorCalls    int
 	FallbackReason   string
 	InputTokens      int
+	SessionSupplied  bool
 }
 
 type polyphemusContextKey struct{}
@@ -59,6 +60,21 @@ func polyphemusReceiptFromContext(ctx context.Context) *polyphemusReceipt {
 
 func polyphemusError(status int, message string) *adapter.AdapterError {
 	return &adapter.AdapterError{Status: status, Message: message, Context: "polyphemus"}
+}
+
+// All customers share the operator's Telluvian key. Scope conversation IDs to
+// the caller's API key without exposing either value upstream. UUIDv8 carries
+// the domain-separated HMAC; no per-instance session state is needed.
+func polyphemusSelectorSessionID(bearer, sessionID string) string {
+	if bearer == "" || sessionID == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(bearer))
+	_, _ = mac.Write([]byte("trustedrouter/telluvian/session/v1\x00" + sessionID))
+	id := mac.Sum(nil)[:16]
+	id[6] = (id[6] & 0x0f) | 0x80
+	id[8] = (id[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
 }
 
 func validatePolyphemus(req *types.OpenAIChatRequest, routeType string) *adapter.AdapterError {
@@ -200,6 +216,7 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 		_ = gateway.Refund(ctx, auth, 502, "routing_integrity_error", 0, req.Metadata)
 		return ctx, polyphemusError(502, "Polyphemus selection routing integrity check failed")
 	}
+	selectorSessionID := polyphemusSelectorSessionID(bearer, req.SessionID)
 	started := time.Now()
 	// Provider failures may fall back; admission/privacy/billing failures never do.
 	fallback := func(reason string, calls int) (context.Context, error) {
@@ -215,14 +232,14 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 		if err := ctx.Err(); err != nil {
 			return ctx, polyphemusError(499, "Request cancelled before fallback")
 		}
-		receipt := &polyphemusReceipt{ElapsedMS: elapsed.Milliseconds(), SelectedModel: "trustedrouter/auto", SelectorCalls: calls, FallbackReason: reason}
+		receipt := &polyphemusReceipt{ElapsedMS: elapsed.Milliseconds(), SelectedModel: "trustedrouter/auto", SelectorCalls: calls, FallbackReason: reason, SessionSupplied: calls > 0 && selectorSessionID != ""}
 		fmt.Fprintf(os.Stderr, "enclave.polyphemus.fallback request_log_id=%q reason=%q\n", requestLogID, reason)
 		return continuePolyphemus(ctx, req, receipt, stageKey, selectReq.RequestFingerprint), nil
 	}
 	if selector == nil {
 		return fallback("model_selector_unavailable", 0)
 	}
-	selection, err := selector.Select(ctx, string(payload), .9)
+	selection, err := selector.Select(ctx, string(payload), .9, selectorSessionID)
 	selectorElapsedMS := time.Since(started).Milliseconds()
 	if err != nil || selection == nil {
 		return fallback("model_selection_failed", 1)
@@ -250,7 +267,7 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	if settlement == nil || settlement.CostMicrodollars < 1 || stageDDispositionLost(settlement) {
 		return ctx, polyphemusError(502, "Model selection settlement did not complete")
 	}
-	receipt := &polyphemusReceipt{CostMicrodollars: settlement.CostMicrodollars, ElapsedMS: selectorElapsedMS, SelectedModel: model, GenerationID: settlement.GenerationID, SelectorCalls: 1, InputTokens: selectorInputTokens}
+	receipt := &polyphemusReceipt{CostMicrodollars: settlement.CostMicrodollars, ElapsedMS: selectorElapsedMS, SelectedModel: model, GenerationID: settlement.GenerationID, SelectorCalls: 1, InputTokens: selectorInputTokens, SessionSupplied: selectorSessionID != ""}
 	// Preserve caller reasoning if specified; otherwise apply the recommendation.
 	if req.Reasoning == nil && req.ReasoningEffort == "" {
 		req.ReasoningEffort = selection.Reasoning.Effort
@@ -283,6 +300,7 @@ func annotatePolyphemusUsage(ctx context.Context, usage map[string]any) {
 	providerUsage["router"] = "polyphemus"
 	providerUsage["selector_provider"] = "telluvian"
 	providerUsage["selector_calls"] = receipt.SelectorCalls
+	providerUsage["selector_session_supplied"] = receipt.SessionSupplied
 	providerUsage["selector_cost_microdollars"] = receipt.CostMicrodollars
 	providerUsage["selector_input_tokens"] = receipt.InputTokens
 	providerUsage["selector_usage_estimated"] = true

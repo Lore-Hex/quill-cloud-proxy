@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -14,10 +16,10 @@ import (
 
 const selectionTestCatalog = `{"data":[{"id":"google/gemini-3.8-flash","trustedrouter":{"supports_chat":true,"prepaid_available":true}}]}`
 
-type selectionStub func(context.Context, string, float64) (*llm.ModelSelection, error)
+type selectionStub func(context.Context, string, float64, string) (*llm.ModelSelection, error)
 
-func (s selectionStub) Select(ctx context.Context, messages string, perf float64) (*llm.ModelSelection, error) {
-	return s(ctx, messages, perf)
+func (s selectionStub) Select(ctx context.Context, messages string, perf float64, sessionID string) (*llm.ModelSelection, error) {
+	return s(ctx, messages, perf, sessionID)
 }
 
 type selectionGatewayStub struct {
@@ -53,6 +55,75 @@ func selectionTestRequest() *types.OpenAIChatRequest {
 	return &types.OpenAIChatRequest{Model: polyphemusModel, Response: &types.ResponseRequestMeta{}, Messages: []types.OpenAIChatMessage{{Role: "user", Content: "PRIVATE TASK"}}, IdempotencyKey: "same-root"}
 }
 
+func TestPolyphemusSelectorSessionIsStableOpaqueAndKeyIsolated(t *testing.T) {
+	const session = "private conversation / \u65e5\u672c\u8a9e"
+	first := polyphemusSelectorSessionID("test-key-one", session)
+	// Independently computed HMAC vector pins the namespace, key and UUID bits.
+	if first != "2e7dc99b-4abb-8bfd-869b-7192416a0130" {
+		t.Fatal("stable session derivation changed")
+	}
+	guid := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	if !guid.MatchString(first) || strings.Contains(first, session) || strings.Contains(first, "test-key") {
+		t.Fatalf("not an opaque UUIDv8: %q", first)
+	}
+	if got := polyphemusSelectorSessionID("test-key-one", session); got != first {
+		t.Fatal("same conversation changed identity")
+	}
+	for _, pair := range [][2]string{{"test-key-two", session}, {"test-key-one", session + "2"}} {
+		if got := polyphemusSelectorSessionID(pair[0], pair[1]); got == first || !guid.MatchString(got) {
+			t.Fatal("different keys or conversations share identity")
+		}
+	}
+	for _, pair := range [][2]string{{"test-key-one", ""}, {"", session}, {"", ""}} {
+		if got := polyphemusSelectorSessionID(pair[0], pair[1]); got != "" {
+			t.Fatal("missing caller or session created a shared identity")
+		}
+	}
+}
+
+func TestPolyphemusConversationSessionSurvivesNewTurnsAndStageIDs(t *testing.T) {
+	const session = "private-conversation-id"
+	const bearer = "test-key-one"
+	wantSession := polyphemusSelectorSessionID(bearer, session)
+	gateway := &selectionGatewayStub{}
+	calls := 0
+	selector := selectionStub(func(_ context.Context, messages string, _ float64, sessionID string) (*llm.ModelSelection, error) {
+		calls++
+		if sessionID != wantSession || strings.Contains(messages, session) || strings.Contains(messages, wantSession) {
+			t.Fatal("session changed between turns or entered metered context")
+		}
+		return &llm.ModelSelection{Model: "gemini-3.8-flash", SessionID: "untrusted-echo"}, nil
+	})
+	for turn := 0; turn < 2; turn++ {
+		req := selectionTestRequest()
+		req.SessionID = session
+		req.IdempotencyKey = fmt.Sprintf("turn-%d", turn)
+		req.Messages[0].Content = fmt.Sprintf("Synthetic task turn %d", turn)
+		ctx, err := preparePolyphemus(context.Background(), req, gateway, selector, bearer, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.SessionID != session || gateway.usage.SessionID != session || gateway.request.SessionID != session {
+			t.Fatal("changed caller session or ledger attribution")
+		}
+		usage := map[string]any{"cost_microdollars": 10}
+		annotatePolyphemusUsage(ctx, usage)
+		metadata := usage["provider_usage"].(map[string]any)
+		if metadata["selector_session_supplied"] != true || usage["cost_microdollars"] != 11 {
+			t.Fatal("session changed billing or lacks supplied flag")
+		}
+		encoded, _ := json.Marshal(usage)
+		for _, private := range []string{session, wantSession, bearer, "untrusted-echo"} {
+			if strings.Contains(string(encoded), private) {
+				t.Fatal("session identifier or credential leaked to usage")
+			}
+		}
+	}
+	if calls != 2 || gateway.admitted != 2 || gateway.settled != 2 || gateway.refunded != 0 {
+		t.Fatal("session changed per-turn billing lifecycle")
+	}
+}
+
 func TestPolyphemusSelectionUsesSharedBillingAndPreservesRequest(t *testing.T) {
 	req := selectionTestRequest()
 	req.Messages[0].Content = "PRIVATE TASK \u65e5\u672c\u8a9e"
@@ -60,13 +131,16 @@ func TestPolyphemusSelectionUsesSharedBillingAndPreservesRequest(t *testing.T) {
 	gateway := &selectionGatewayStub{}
 	calls := 0
 	selectorTokens := 0
-	selector := selectionStub(func(_ context.Context, messages string, perf float64) (*llm.ModelSelection, error) {
+	selector := selectionStub(func(_ context.Context, messages string, perf float64, sessionID string) (*llm.ModelSelection, error) {
 		calls++
 		if gateway.admitted != 1 || gateway.settled != 0 {
 			t.Fatal("provider called before admission")
 		}
 		if !strings.Contains(messages, "PRIVATE TASK") || !strings.Contains(messages, "read_file") || perf != .9 {
 			t.Fatal("lost selection context")
+		}
+		if sessionID != "" {
+			t.Fatal("one-shot request acquired a session")
 		}
 		selectorTokens = len(messages) / 4
 		out := &llm.ModelSelection{Model: "gemini-3.8-flash"}
@@ -126,7 +200,7 @@ func TestPolyphemusFailuresNeverGenerateOrDoubleCharge(t *testing.T) {
 				gateway.settleErr = errors.New("lost response")
 			}
 			calls := 0
-			selector := selectionStub(func(context.Context, string, float64) (*llm.ModelSelection, error) {
+			selector := selectionStub(func(context.Context, string, float64, string) (*llm.ModelSelection, error) {
 				calls++
 				if stage == "selection" {
 					return nil, errors.New("private provider body")
@@ -165,7 +239,7 @@ func TestPolyphemusSelectorFailuresFallBackToAutoWithoutFee(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			var selector modelSelector = selectionStub(func(context.Context, string, float64) (*llm.ModelSelection, error) {
+			var selector modelSelector = selectionStub(func(context.Context, string, float64, string) (*llm.ModelSelection, error) {
 				switch stage {
 				case "timeout":
 					return nil, context.DeadlineExceeded
@@ -228,7 +302,7 @@ func TestPolyphemusRejectsPrivacyAndByokBeforeAdmission(t *testing.T) {
 		req := selectionTestRequest()
 		req.Provider = provider
 		gateway := &selectionGatewayStub{}
-		_, err := preparePolyphemus(context.Background(), req, gateway, selectionStub(func(context.Context, string, float64) (*llm.ModelSelection, error) {
+		_, err := preparePolyphemus(context.Background(), req, gateway, selectionStub(func(context.Context, string, float64, string) (*llm.ModelSelection, error) {
 			t.Fatal("private context sent")
 			return nil, nil
 		}), "key", "test")
