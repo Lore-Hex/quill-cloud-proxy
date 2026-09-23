@@ -47,6 +47,7 @@ type polyphemusReceipt struct {
 	GenerationID     string
 	SelectorCalls    int
 	FallbackReason   string
+	InputTokens      int
 }
 
 type polyphemusContextKey struct{}
@@ -177,8 +178,13 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 		selectReq.Provider = &types.ProviderRouting{}
 	}
 	selectReq.Provider.Usage = "credits"
-	// The selector has no token meter; its authorization reserves one fixed
-	// request charge, not the downstream generation's output allowance.
+	// Meter only the exact context sent to Model Select, including tools. Its
+	// API reports no usage, so use the shared estimate and label it explicitly.
+	// The authorization estimate adds message overhead and safely covers this
+	// smaller settlement count. No prompt is sent to the control plane.
+	selectorInputTokens := types.ContentTokenEstimate(string(payload))
+	selectReq.Messages = []types.OpenAIChatMessage{{Role: "user", Content: string(payload)}}
+	selectReq.Tools = nil
 	one := 1
 	selectReq.MaxTokens, selectReq.MaxCompletionTokens, selectReq.MaxOutputTokens = &one, nil, nil
 	selectReq.InferenceReceipt = types.InferenceReceiptRequest{}
@@ -226,6 +232,7 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 		return fallback("invalid_model_selection", 1)
 	}
 	usage := trustedrouter.Usage{
+		InputTokens: selectorInputTokens, UsageEstimated: true,
 		RequestID: rootID, SelectedModel: polyphemusModel, SelectedEndpoint: auth.EndpointID,
 		RouteType: polyphemusSelectRoute, FinishReason: "stop", ElapsedSeconds: time.Since(started).Seconds(),
 		User: req.User, SessionID: req.SessionID, Trace: req.Trace, Metadata: req.Metadata,
@@ -243,7 +250,7 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	if settlement == nil || settlement.CostMicrodollars < 1 || stageDDispositionLost(settlement) {
 		return ctx, polyphemusError(502, "Model selection settlement did not complete")
 	}
-	receipt := &polyphemusReceipt{CostMicrodollars: settlement.CostMicrodollars, ElapsedMS: selectorElapsedMS, SelectedModel: model, GenerationID: settlement.GenerationID, SelectorCalls: 1}
+	receipt := &polyphemusReceipt{CostMicrodollars: settlement.CostMicrodollars, ElapsedMS: selectorElapsedMS, SelectedModel: model, GenerationID: settlement.GenerationID, SelectorCalls: 1, InputTokens: selectorInputTokens}
 	// Preserve caller reasoning if specified; otherwise apply the recommendation.
 	if req.Reasoning == nil && req.ReasoningEffort == "" {
 		req.ReasoningEffort = selection.Reasoning.Effort
@@ -277,6 +284,9 @@ func annotatePolyphemusUsage(ctx context.Context, usage map[string]any) {
 	providerUsage["selector_provider"] = "telluvian"
 	providerUsage["selector_calls"] = receipt.SelectorCalls
 	providerUsage["selector_cost_microdollars"] = receipt.CostMicrodollars
+	providerUsage["selector_input_tokens"] = receipt.InputTokens
+	providerUsage["selector_usage_estimated"] = true
+	providerUsage["selector_token_basis"] = "serialized_context_utf8_bytes_div_4"
 	providerUsage["selector_upstream_cost_known"] = false
 	providerUsage["selector_elapsed_ms"] = receipt.ElapsedMS
 	if receipt.FallbackReason != "" {
