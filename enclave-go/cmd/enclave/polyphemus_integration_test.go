@@ -24,13 +24,15 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 	for _, tc := range []struct{ stream, fallback bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
 		t.Run(fmt.Sprint(tc), func(t *testing.T) {
 			stream := tc.stream
-			selectorCost := 1
+			selectorCost := 50
+			selectorTokens := 0
 			if tc.fallback {
 				selectorCost = 0
 			}
 			original := enclaveModelSelector
 			t.Cleanup(func() { enclaveModelSelector = original })
 			enclaveModelSelector = selectionStub(func(_ context.Context, messages string, perf float64) (*llm.ModelSelection, error) {
+				selectorTokens = len(messages) / 4
 				if !strings.Contains(messages, "PRIVATE INPUT") || perf != .9 {
 					t.Error("incorrect selection request")
 				}
@@ -75,7 +77,10 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 					settlements = append(settlements, route)
 					mu.Unlock()
 					if route == polyphemusSelectRoute {
-						_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"selection","cost_microdollars":1,"model":"trustedrouter/polyphemus-1.0","provider":"telluvian"}}`)
+						if data["actual_input_tokens"] != float64(selectorTokens) || data["actual_output_tokens"] != float64(0) || data["usage_estimated"] != true {
+							t.Errorf("incorrect selector meter: %#v", data)
+						}
+						_, _ = fmt.Fprintf(w, `{"data":{"settled":true,"generation_id":"selection","cost_microdollars":%d,"model":"trustedrouter/polyphemus-1.0","provider":"telluvian"}}`, selectorCost)
 					} else {
 						_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"generation","cost_microdollars":12,"model":"google/gemini-3.8-flash","provider":"google-ai-studio"}}`)
 					}
@@ -133,12 +138,22 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 				t.Fatalf("wrong response: %s", output)
 			}
 			usage, _ := payload["usage"].(map[string]any)
+			if usage["input_tokens"] != float64(2) || usage["output_tokens"] != float64(2) {
+				t.Fatalf("selector corrupted generation tokens: %#v", usage)
+			}
 			if usage["cost_microdollars"] != float64(12+selectorCost) {
 				t.Fatalf("wrong total: %#v", usage)
 			}
 			providerUsage, _ := usage["provider_usage"].(map[string]any)
 			if providerUsage["selector_cost_microdollars"] != float64(selectorCost) || providerUsage["generation_cost_microdollars"] != float64(12) {
 				t.Fatalf("wrong breakdown: %#v", providerUsage)
+			}
+			billedSelectorTokens := selectorTokens
+			if tc.fallback {
+				billedSelectorTokens = 0
+			}
+			if providerUsage["selector_input_tokens"] != float64(billedSelectorTokens) || providerUsage["selector_usage_estimated"] != !tc.fallback {
+				t.Fatalf("incorrect selector metering disclosure: %#v", providerUsage)
 			}
 			mu.Lock()
 			defer mu.Unlock()

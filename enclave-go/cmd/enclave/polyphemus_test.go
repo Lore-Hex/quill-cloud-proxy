@@ -55,9 +55,11 @@ func selectionTestRequest() *types.OpenAIChatRequest {
 
 func TestPolyphemusSelectionUsesSharedBillingAndPreservesRequest(t *testing.T) {
 	req := selectionTestRequest()
-	req.Tools = []any{map[string]any{"type": "function", "function": map[string]any{"name": "read_file"}}}
+	req.Messages[0].Content = "PRIVATE TASK \u65e5\u672c\u8a9e"
+	req.Tools = []any{map[string]any{"type": "function", "function": map[string]any{"name": "read_file", "description": strings.Repeat("large schema ", 1000)}}}
 	gateway := &selectionGatewayStub{}
 	calls := 0
+	selectorTokens := 0
 	selector := selectionStub(func(_ context.Context, messages string, perf float64) (*llm.ModelSelection, error) {
 		calls++
 		if gateway.admitted != 1 || gateway.settled != 0 {
@@ -66,6 +68,7 @@ func TestPolyphemusSelectionUsesSharedBillingAndPreservesRequest(t *testing.T) {
 		if !strings.Contains(messages, "PRIVATE TASK") || !strings.Contains(messages, "read_file") || perf != .9 {
 			t.Fatal("lost selection context")
 		}
+		selectorTokens = len(messages) / 4
 		out := &llm.ModelSelection{Model: "gemini-3.8-flash"}
 		out.Reasoning.Effort = "high"
 		return out, nil
@@ -77,8 +80,14 @@ func TestPolyphemusSelectionUsesSharedBillingAndPreservesRequest(t *testing.T) {
 	if calls != 1 || gateway.settled != 1 || gateway.refunded != 0 {
 		t.Fatalf("calls=%d settled=%d refunds=%d", calls, gateway.settled, gateway.refunded)
 	}
-	if gateway.usage.InputTokens != 0 || gateway.usage.OutputTokens != 0 || gateway.usage.RouteType != polyphemusSelectRoute {
-		t.Fatal("invented selector token usage")
+	if gateway.usage.InputTokens != selectorTokens || !gateway.usage.UsageEstimated || gateway.usage.OutputTokens != 0 || gateway.usage.RouteType != polyphemusSelectRoute {
+		t.Fatal("incorrect or undisclosed selector token estimate")
+	}
+	if trustedrouter.EstimateInputTokens(gateway.request) < selectorTokens || len(gateway.request.Tools) != 0 {
+		t.Fatal("selector admission did not cover serialized tools/context")
+	}
+	if selectorTokens < 3000 || req.Messages[0].Content != "PRIVATE TASK \u65e5\u672c\u8a9e" {
+		t.Fatal("large tool schema was unmetered or generation context changed")
 	}
 	if req.Model != "google/gemini-3.8-flash" || req.ResponseModel != polyphemusModel || req.ReasoningEffort != "high" || len(req.Tools) != 1 || req.Provider.Usage != "credits" {
 		t.Fatalf("bad continuation: %#v", req)
@@ -94,6 +103,10 @@ func TestPolyphemusSelectionUsesSharedBillingAndPreservesRequest(t *testing.T) {
 	annotatePolyphemusUsage(ctx, usage)
 	if usage["cost_microdollars"] != 38 || usage["input_tokens"] != 10 {
 		t.Fatalf("wrong total: %#v", usage)
+	}
+	meta := usage["provider_usage"].(map[string]any)
+	if meta["selector_input_tokens"] != selectorTokens || meta["selector_usage_estimated"] != true || meta["selector_upstream_cost_known"] != false {
+		t.Fatal("missing selector metering disclosure", meta)
 	}
 	encoded, _ := json.Marshal(usage)
 	if strings.Contains(string(encoded), "PRIVATE") || strings.Contains(string(encoded), "private-key") {
@@ -195,6 +208,9 @@ func TestPolyphemusSelectorFailuresFallBackToAutoWithoutFee(t *testing.T) {
 			meta := usage["provider_usage"].(map[string]any)
 			if usage["cost_microdollars"] != 37 || meta["selector_cost_microdollars"] != 0 || meta["selector_fallback_model"] != "trustedrouter/auto" {
 				t.Fatal("charged failed selection", usage)
+			}
+			if meta["selector_input_tokens"] != 0 || meta["selector_usage_estimated"] != false {
+				t.Fatal("billed tokens on selector failure", meta)
 			}
 			encoded, _ := json.Marshal(meta)
 			if strings.Contains(string(encoded), "PRIVATE") {
