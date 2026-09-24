@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -77,7 +78,7 @@ func (c *vertexGeminiClient) InvokeStreaming(
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
 
-	resp, err := c.auth.httpc.Do(httpReq)
+	resp, err := streamhttp.Do(c.auth.httpc, httpReq)
 	if err != nil {
 		return fmt.Errorf("llm/vertex-gemini: invoke: %w", err)
 	}
@@ -90,6 +91,12 @@ func (c *vertexGeminiClient) InvokeStreaming(
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
 	return translateGeminiStreamToAnthropic(resp.Body, out)
+}
+
+// BuildGeminiRequestShape exposes the production native projection for
+// authorization-versus-wire checks at the orchestration boundary.
+func BuildGeminiRequestShape(ctx context.Context, req *qtypes.OpenAIChatRequest, body *qtypes.AnthropicMessagesRequest, modelID string) (map[string]any, error) {
+	return vertexGeminiPayload(ctx, req, body, modelID)
 }
 
 func vertexGeminiPayload(
@@ -220,7 +227,9 @@ func vertexGeminiPayload(
 		// The normalized image route promises an image-only result. Gemini's
 		// current GenerateContent contract configures that through responseFormat
 		// (not the older preview-only imageConfig spelling).
-		delete(generationConfig, "maxOutputTokens")
+		if req.InternalOutputTokenLimit <= 0 {
+			delete(generationConfig, "maxOutputTokens")
+		}
 		generationConfig["responseModalities"] = []string{"IMAGE"}
 		generationConfig["candidateCount"] = 1
 		image := map[string]any{
@@ -233,8 +242,11 @@ func vertexGeminiPayload(
 		// Gemini counts generated image data against maxOutputTokens. Common
 		// chat SDK defaults such as 128 or 1024 can therefore return HTTP 200
 		// with an empty image. Let the image model choose its native output
-		// budget; TrustedRouter's authorization and billing limits still apply.
-		delete(generationConfig, "maxOutputTokens")
+		// budget for ordinary calls. Funded inner calls must retain their
+		// explicit total even when the selected model can emit images.
+		if req.InternalOutputTokenLimit <= 0 {
+			delete(generationConfig, "maxOutputTokens")
+		}
 		generationConfig["responseModalities"] = []string{"TEXT", "IMAGE"}
 		generationConfig["candidateCount"] = 1
 	}
@@ -415,7 +427,16 @@ func vertexGeminiImageModel(modelID string) bool {
 	return strings.Contains(modelID, "image")
 }
 
-func vertexGeminiThinkingConfig(modelID string, req *qtypes.OpenAIChatRequest) map[string]any {
+func vertexGeminiThinkingConfig(modelID string, req *qtypes.OpenAIChatRequest) (config map[string]any) {
+	// Preserve model-specific effort/level mapping, but constrain numeric
+	// budgets (including dynamic thinking) to a funded inner total.
+	defer func() {
+		if req != nil && req.InternalOutputTokenLimit > 0 {
+			if budget, ok := config["thinkingBudget"].(int); ok && (budget < 0 || budget >= req.InternalOutputTokenLimit) {
+				config["thinkingBudget"] = req.InternalOutputTokenLimit - 1
+			}
+		}
+	}()
 	modelID = strings.ToLower(modelID)
 	is25 := strings.HasPrefix(modelID, "gemini-2.5")
 	// Explicit numeric thinking budget (OpenRouter-style `reasoning.max_tokens`),

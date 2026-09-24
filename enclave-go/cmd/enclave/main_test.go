@@ -3904,8 +3904,7 @@ func TestFusionOverthinkingConfigRequiresSynthCode(t *testing.T) {
 }
 
 func TestFusionCodePanelGLMOverthinkingRunsSameModelRescue(t *testing.T) {
-	trGateway, recorder, closeServer := newFusionGatewayRecorder(t)
-	defer closeServer()
+	trGateway, recorder := newFusionBudgetGateway(t)
 
 	streamer := &fusionEchoLLM{
 		overthinkModels:   map[string]bool{"z-ai/glm-5.2": true},
@@ -3961,8 +3960,7 @@ func TestFusionCodePanelGLMOverthinkingRunsSameModelRescue(t *testing.T) {
 }
 
 func TestFusionCodeFinalGLMOverthinkingRunsRescueBeforeModelFallback(t *testing.T) {
-	trGateway, recorder, closeServer := newFusionGatewayRecorder(t)
-	defer closeServer()
+	trGateway, recorder := newFusionBudgetGateway(t)
 
 	streamer := &fusionEchoLLM{
 		overthinkModels:   map[string]bool{"z-ai/glm-5.2": true},

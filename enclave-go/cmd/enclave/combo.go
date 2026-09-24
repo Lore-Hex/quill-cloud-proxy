@@ -254,7 +254,7 @@ func selectorRequest(req *types.OpenAIChatRequest, model string, panel []fusionC
 	out.ToolChoice = nil
 	out.Plugins = nil
 	out.ResponseFormat = map[string]any{"type": "json_object"}
-	out.MaxTokens = fusionInnerMaxTokens(req, config.MaxCompletionTokens)
+	out.MaxTokens = fusionInnerMaxTokens(config.MaxCompletionTokens)
 	instruction := "You are the TrustedRouter Selector. Choose the single best panel answer for the original user request. Return only JSON: {\"selected_index\": <1-based integer>, \"rationale\": \"brief reason\"}. Do not rewrite, summarize, or improve the selected answer."
 	if custom := strings.TrimSpace(config.SelectorPrompt); custom != "" {
 		instruction += "\n\nAdditional caller selector instructions:\n" + custom
@@ -663,7 +663,7 @@ func mapReduceMapperRequest(req *types.OpenAIChatRequest, model string, config f
 	out.ToolChoice = nil
 	out.Plugins = nil
 	out.ResponseFormat = map[string]any{"type": "json_object"}
-	out.MaxTokens = fusionInnerMaxTokens(req, config.MaxCompletionTokens)
+	out.MaxTokens = fusionInnerMaxTokens(config.MaxCompletionTokens)
 	instruction := fmt.Sprintf("You are the TrustedRouter MapReduce mapper. Divide the original request into 1 to %d independent parts that can be answered in parallel. Return only JSON with shape {\"parts\":[{\"title\":\"short title\",\"prompt\":\"self-contained task for this part\"}]}. Do not solve the parts.", config.MaxParts)
 	if custom := strings.TrimSpace(config.MapperPrompt); custom != "" {
 		instruction += "\n\nAdditional caller mapper instructions:\n" + custom
@@ -688,7 +688,7 @@ func mapReducePartRequest(req *types.OpenAIChatRequest, model string, part mapRe
 	}
 	out.Plugins = nil
 	out.ResponseFormat = nil
-	out.MaxTokens = fusionInnerMaxTokens(req, config.MaxCompletionTokens)
+	out.MaxTokens = fusionInnerMaxTokens(config.MaxCompletionTokens)
 	system := fmt.Sprintf("You are TrustedRouter MapReduce parallel worker %d. Solve only the assigned part. Return a self-contained answer for that part.", index+1)
 	if len(out.Tools) > 0 {
 		system += "\n\nIf the next correct step is a provided function call, emit the tool call directly instead of describing it."
@@ -717,7 +717,7 @@ func mapReduceReducerRequest(req *types.OpenAIChatRequest, model string, plan ma
 	}
 	out.Plugins = nil
 	out.ResponseFormat = req.ResponseFormat
-	out.MaxTokens = fusionInnerMaxTokens(req, config.MaxCompletionTokens)
+	out.MaxTokens = fusionInnerMaxTokens(config.MaxCompletionTokens)
 	instruction := "You are the TrustedRouter MapReduce reducer. Combine the parallel part answers into one coherent final answer for the original request. Preserve correctness, remove duplication, and do not mention internal orchestration unless the user asked."
 	if len(out.Tools) > 0 {
 		instruction += "\n\nIf the next correct action is a provided function call, emit the tool call directly instead of describing it in text. Return visible text only when no tool call is needed."

@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/vsockhttp"
 )
@@ -39,6 +40,12 @@ type anthropicBedrockWireRequest struct {
 	Metadata         map[string]any              `json:"metadata,omitempty"`
 	TopK             *int                        `json:"top_k,omitempty"`
 	OutputConfig     any                         `json:"output_config,omitempty"`
+}
+
+// BuildRequestShape exposes the production native projection for
+// authorization-versus-wire checks at the orchestration boundary.
+func BuildRequestShape(body *qtypes.AnthropicMessagesRequest) any {
+	return buildAnthropicBedrockWireRequest(body)
 }
 
 func buildAnthropicBedrockWireRequest(body *qtypes.AnthropicMessagesRequest) anthropicBedrockWireRequest {
@@ -103,7 +110,7 @@ func New(boot *qtypes.BootstrapData) *Client {
 	cfg := aws.Config{
 		Region:           boot.Region,
 		Credentials:      creds,
-		HTTPClient:       httpClient,
+		HTTPClient:       streamhttp.Client{Base: httpClient},
 		RetryMaxAttempts: 2,
 	}
 	return &Client{br: bedrockruntime.NewFromConfig(cfg)}

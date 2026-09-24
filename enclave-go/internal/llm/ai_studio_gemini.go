@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -86,7 +87,7 @@ func (c *aiStudioGeminiClient) InvokeStreaming(
 	if httpc == nil {
 		httpc = defaultHTTPClient()
 	}
-	resp, err := httpc.Do(httpReq)
+	resp, err := streamhttp.Do(httpc, httpReq)
 	if err != nil {
 		return fmt.Errorf("llm/google-ai-studio: invoke: %w", err)
 	}
