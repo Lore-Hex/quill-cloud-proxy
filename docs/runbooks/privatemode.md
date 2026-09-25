@@ -40,6 +40,11 @@ Pins reviewed on 2026-09-25:
 Pins are not themselves proof that a deployment passed: preserve independent
 policy reproduction results and regional inference results with the release.
 
+Independent reproduction passed for all nine policy hashes in Cloud Build
+`f291e343-c4a0-4580-b90c-6ea549ba5046` (2026-09-25, us-central1). The public
+generated manifest is retained at
+`gs://44325983244.cloudbuild-logs.googleusercontent.com/privatemode-policy-audit/f291e343-c4a0-4580-b90c-6ea549ba5046/generated-manifest.json`.
+
 ## Isolation, Usage, And Operations
 
 The child receives no inherited API keys or cloud credentials. Its request key
@@ -58,6 +63,15 @@ allows 60 seconds for the listener, removes dead clients, and restarts with 1-60
 backoff. Other providers do not wait for it. Alert on repeated proxy exits and
 existing provider synthetic failures; never auto-promote a new manifest to
 recover a failed probe.
+
+Once per enclave boot, three fixed synthetic requests verify the encrypted
+path for each pinned model, including real usage and exact PONG output.
+Each is capped at 1,024 output tokens and 180 seconds, with no retries; these
+are operator costs, never customer settlements. They run asynchronously and
+do not block other providers. Only `privatemode.encrypted_probe` metadata
+(model, success, HTTP status, input/output counts) is logged, never content.
+Require fresh success events for the new image in each serving region while
+the public routes remain dark. A proxy restart does not repeat paid probes.
 
 Prompt-cache salt is derived from the authorized workspace scope. Different
 workspaces never deliberately share a salt; missing scope uses an explicit
