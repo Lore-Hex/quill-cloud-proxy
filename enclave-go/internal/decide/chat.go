@@ -73,6 +73,19 @@ var TrevProviders = []string{
 	"together",  // 1125 ms
 }
 
+// DevProviders is dev-1.0's (and DeepSeek V4.1 Flash's) host chain, fastest
+// first. Medians were measured over three passes of the labeled live eval
+// through TrustedRouter's decide route with each host pinned: all three hosts
+// scored 87/87 checks with 24/24 valid outputs. Like trev, the gateway moves to
+// the next host on any upstream error before the first output byte, 429 included.
+// Land quill-router's dev-decision-chain first: authorize intersects request
+// "only" with its chain, so the old enclave's ["deepinfra"] remains valid.
+var DevProviders = []string{
+	"wafer",     // 1371 ms p50
+	"deepinfra", // 1858 ms p50
+	"wandb",     // 1987 ms p50
+}
+
 // Each TUNED entry was chosen from a paid live eval
 // (internal/llm/decide_live_test.go) scoring judgment on labeled tickets,
 // structural validity, latency and cost -- not from a capability table.
@@ -130,7 +143,7 @@ var TrevProviders = []string{
 // plane's catalog_data.py, which is what /v1/models advertises.
 var (
 	geminiFlashLite = NativeModel{Providers: []string{"google-ai-studio"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatSchema}
-	deepSeekFlash   = NativeModel{Providers: []string{"deepinfra"}, Temperature: &zeroTemperature, Format: FormatPrompt}
+	deepSeekFlash   = NativeModel{Providers: DevProviders, Temperature: &zeroTemperature, Format: FormatPrompt}
 	gptOSS20B       = NativeModel{Providers: []string{"deepinfra"}, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatSchema}
 	gemma4E4B       = NativeModel{Providers: []string{"deepinfra"}, Temperature: &zeroTemperature, Format: FormatPrompt}
 	mercury2        = NativeModel{Providers: []string{"inception"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}

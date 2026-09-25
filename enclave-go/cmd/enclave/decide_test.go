@@ -168,10 +168,10 @@ func TestNativeModelListIsPinned(t *testing.T) {
 		"google/gemini-3.1-flash-lite": "google-ai-studio",
 		"openai/gpt-oss-20b":           "deepinfra",
 		"google/gemma-4-e4b-it":        "deepinfra",
-		"deepseek/deepseek-v4.1-flash": "deepinfra",
+		"deepseek/deepseek-v4.1-flash": "wafer,deepinfra,wandb",
 		// Each name is driven exactly as the chat model behind it.
 		decide.GevModelID:    "google-ai-studio",
-		decide.DevModelID:    "deepinfra",
+		decide.DevModelID:    "wafer,deepinfra,wandb",
 		decide.OevModelID:    "deepinfra",
 		decide.GemmevModelID: "deepinfra",
 		// The three fast ones, and the chat models behind them.
@@ -193,10 +193,35 @@ func TestNativeModelListIsPinned(t *testing.T) {
 	if len(decide.NativeModels) != len(want) {
 		t.Fatalf("native models = %d, want %d", len(decide.NativeModels), len(want))
 	}
+	specs, err := decide.Parse(map[string]decide.Question{
+		"ready": {Type: "boolean", Instructions: "Is it ready?"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for model, providers := range want {
-		if got := strings.Join(decide.NativeModels[model].Providers, ","); got != providers {
-			t.Errorf("%s pinned to %q, want %q", model, got, providers)
-		}
+		t.Run(model, func(t *testing.T) {
+			if got := strings.Join(decide.NativeModels[model].Providers, ","); got != providers {
+				t.Errorf("pinned to %q, want %q", got, providers)
+			}
+			req, err := decide.NativeChatRequest(model, json.RawMessage(`"ready"`), specs, decide.NativeModels[model], decide.NativeOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if req.Provider == nil {
+				t.Fatal("missing provider routing")
+			}
+			if got := strings.Join(req.Provider.Only, ","); got != providers {
+				t.Errorf("provider.only = %q, want %q", got, providers)
+			}
+			if got := strings.Join(req.Provider.Order, ","); got != providers {
+				t.Errorf("provider.order = %q, want %q", got, providers)
+			}
+			wantFallbacks := strings.Contains(providers, ",")
+			if req.Provider.AllowFallbacks == nil || *req.Provider.AllowFallbacks != wantFallbacks {
+				t.Errorf("provider.allow_fallbacks = %v, want %t", req.Provider.AllowFallbacks, wantFallbacks)
+			}
+		})
 	}
 }
 
