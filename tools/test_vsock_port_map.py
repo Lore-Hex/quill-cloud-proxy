@@ -37,6 +37,7 @@ GO_TUNNEL_FILES = [
     ROOT / "enclave-go" / "internal" / "enclavetls" / "gcscache_http_aws.go",
     ROOT / "enclave-go" / "internal" / "trustedrouter" / "http_client_aws.go",
     ROOT / "enclave-go" / "sidecar" / "vsock_transport.go",
+    ROOT / "enclave-go" / "internal" / "privatemode" / "network_aws.go",
 ]
 
 failures: list[str] = []
@@ -70,7 +71,7 @@ def enclave_tunnels() -> dict[str, list[tuple[int, str]]]:
         ):
             found.setdefault(host, []).append((int(port), path.name))
         # Map form: "x": 1234,
-        for host, port in re.findall(r'"([a-z0-9.-]+\.[a-z]{2,})":\s*(\d+)\s*,', text):
+        for host, port in re.findall(r'"([a-z0-9.-]+\.[a-z]{2,})(?::443)?":\s*(\d+)\s*,', text):
             found.setdefault(host, []).append((int(port), path.name))
     return found
 

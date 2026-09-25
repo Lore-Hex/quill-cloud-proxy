@@ -320,6 +320,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
 
     expected_direct = {
         "regolo",
+        "privatemode",
         "nextbit",
         "aion-labs",
         "sambanova",

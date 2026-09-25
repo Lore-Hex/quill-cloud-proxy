@@ -133,6 +133,9 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 	if option.Provider != "" {
 		provider = normalizeDirectProvider(option.Provider)
 	}
+	if c.provider == "privatemode" || provider == "privatemode" {
+		return nil, &DecideError{Provider: "privatemode", Class: DecideErrConfig}
+	}
 	if strings.TrimSpace(c.apiKey) == "" || strings.TrimSpace(c.baseURL) == "" {
 		return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
 	}

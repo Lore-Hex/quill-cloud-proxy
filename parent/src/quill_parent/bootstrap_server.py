@@ -172,6 +172,7 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
 # neither this parent nor a secret value can select an arbitrary hostname.
 _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("regolo", "trustedrouter-regolo-api-key"),
+    ("privatemode", "trustedrouter-privatemode-api-key"),
     ("nextbit", "trustedrouter-nextbit-api-key"),
     ("aion-labs", "trustedrouter-aion-labs-api-key"),
     ("sambanova", "trustedrouter-sambanova-api-key"),
