@@ -17,18 +17,29 @@ def record_ips(record: dict) -> list[str]:
         values = record.get("rrdatas")
     else:
         policy = record["routingPolicy"]
-        if not isinstance(policy, dict) or set(policy) - {"geo", "kind"}:
+        if not isinstance(policy, dict) or set(policy) - {"geo", "healthCheck", "kind"}:
             raise ValueError("unsupported DNS routing policy")
         geo = policy.get("geo")
         if not isinstance(geo, dict) or not isinstance(geo.get("items"), list):
             raise ValueError("invalid GEO items")
         values = []
         for item in geo["items"]:
-            if (not isinstance(item, dict) or not item.get("location")
-                    or "healthCheckedTargets" in item
-                    or not isinstance(item.get("rrdatas"), list)):
-                raise ValueError("invalid GEO item rrdatas")
-            values.extend(item["rrdatas"])
+            if not isinstance(item, dict) or not item.get("location"):
+                raise ValueError("invalid GEO item")
+            targets = item.get("healthCheckedTargets")
+            if targets is not None:
+                if (not isinstance(targets, dict)
+                        or set(targets) - {"externalEndpoints", "kind"}
+                        or not isinstance(targets.get("externalEndpoints"), list)):
+                    raise ValueError("invalid GEO external endpoints")
+                values.extend(targets["externalEndpoints"])
+            if "rrdatas" in item:
+                if not isinstance(item["rrdatas"], list):
+                    raise ValueError("invalid GEO item rrdatas")
+                values.extend(item["rrdatas"])
+            elif targets is None:
+                raise ValueError("missing GEO targets")
+
     if not isinstance(values, list) or any(not isinstance(ip, str) or not ip for ip in values):
         raise ValueError("invalid A record rrdatas")
     return list(values)

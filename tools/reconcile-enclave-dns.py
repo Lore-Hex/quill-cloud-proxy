@@ -18,7 +18,8 @@ attestation intact). A dead/unhealthy instance is dropped from DNS within a
 reconcile cycle + TTL; the MIG recreates dead VMs; other regions keep serving.
 
 It is intentionally NOT in the serving path: if this reconciler stops, DNS
-freezes at the last-good set (no new failover, but serving continues).
+freezes membership at the last-good set. In GEO mode Cloud DNS independently
+checks TCP liveness and fails over between the admitted locations.
 
 DEFERRED (review 2026-06-21): the v5 source tidy-ups live here, but the
 DEPLOYED reconciler image is still v4 — behavior is unchanged by the tidy-ups,
@@ -59,6 +60,7 @@ from pathlib import Path
 from typing import Iterator, NamedTuple
 
 from cloud_dns_records import record_ips
+from dns_geo_health import verify_health_check
 
 GCP_ENCLAVE_INVENTORY = Path(__file__).with_name("gcp-enclave-migs.txt")
 # Regions that are being bootstrapped (docs/runbooks/README.md, "Adding a
@@ -137,6 +139,7 @@ TTL = int(os.environ.get("QUILL_DNS_TTL", "60"))
 # Independent of the enclave/billing rollout. All writers must use the same
 # value; unset/0 preserves the existing flat canonical answer.
 CANONICAL_GEO = os.environ.get("QUILL_CANONICAL_GEO", "0") == "1"
+GEO_HEALTH_CHECK = os.environ.get("QUILL_GEO_HEALTH_CHECK", "").strip()
 GCLOUD_ATTEMPTS = int(os.environ.get("QUILL_GCLOUD_ATTEMPTS", "3"))
 GCLOUD_TIMEOUT_SECONDS = float(os.environ.get("QUILL_GCLOUD_TIMEOUT_SECONDS", "10"))
 ATTESTATION_SAMPLES = int(os.environ.get("QUILL_ATTESTATION_SAMPLES", "1"))
@@ -1024,9 +1027,10 @@ def reconcile_dns_record(
     *,
     apply: bool,
     label: str,
+    current_ips: list[str] | None = None,
 ) -> None:
     """Reconcile one canonical or compatibility record to one healthy set."""
-    current = sorted(current_dns_ips(zone, record))
+    current = sorted(current_dns_ips(zone, record) if current_ips is None else current_ips)
     if current == healthy_ips:
         log(f"reconcile: {label} {record} already correct ({len(healthy_ips)} A)")
         return
@@ -1044,14 +1048,31 @@ def canonical_geo_record(record: str, healthy: list[dict]) -> dict:
     by_region: dict[str, set[str]] = {}
     for instance in healthy:
         by_region.setdefault(instance["region"], set()).add(instance["ip"])
-    items = [{"location": region, "rrdatas": sorted(ips)}
+    items = [{"location": region, "healthCheckedTargets": {"externalEndpoints": sorted(ips)}}
              for region, ips in sorted(by_region.items()) if ips]
     if not items:
         raise ValueError("refusing to publish an empty GEO policy")
-    # No Cloud DNS healthCheck/healthCheckedTargets: serving-socket attestation
-    # remains the health authority. Never fence clients into a failed region.
+    # Attestation controls admission; native TCP liveness survives a stopped
+    # reconciler. Never fence clients into a failed region.
     return {"name": record, "type": "A", "ttl": TTL,
-            "routingPolicy": {"geo": {"enableFencing": False, "items": items}}}
+            "routingPolicy": {"healthCheck": GEO_HEALTH_CHECK,
+                              "geo": {"enableFencing": False, "items": items}}}
+
+
+def verify_geo_zones(healthy: list[dict]) -> None:
+    """External endpoint checks require public DNS; enforce DNSSEC item limit."""
+    counts: dict[str, set[str]] = {}
+    for instance in healthy:
+        counts.setdefault(instance["region"], set()).add(instance["ip"])
+    for zone in sorted({DNS_ZONE} | {zone for zone, _ in CANONICAL_MIRRORS}):
+        config = gcloud_json(["dns", "managed-zones", "describe", zone])
+        if not isinstance(config, dict) or config.get("visibility") != "public":
+            raise ValueError("GEO external health checks require a public managed zone")
+        dnssec = config.get("dnssecConfig", {}).get("state")
+        if dnssec not in {"off", "on"}:
+            raise ValueError("GEO requires a known managed-zone DNSSEC state")
+        if dnssec == "on" and any(len(ips) > 1 for ips in counts.values()):
+            raise ValueError("DNSSEC allows at most one health-checked IP per GEO item")
 
 
 def _dns_record_data(value):
@@ -1074,7 +1095,14 @@ def _same_dns_record(current: dict | None, desired: dict) -> bool:
         if geo is not None:
             geo.setdefault("enableFencing", False)
             for item in geo.get("items", []):
-                item["rrdatas"] = sorted(item.get("rrdatas", []))
+                if "rrdatas" in item:
+                    if item["rrdatas"]:
+                        item["rrdatas"] = sorted(item["rrdatas"])
+                    else:
+                        item.pop("rrdatas")
+                targets = item.get("healthCheckedTargets")
+                if targets and "externalEndpoints" in targets:
+                    targets["externalEndpoints"] = sorted(targets["externalEndpoints"])
             geo["items"] = sorted(geo.get("items", []), key=lambda item: item["location"])
     else:
         current["rrdatas"] = sorted(current.get("rrdatas", []))
@@ -1139,7 +1167,8 @@ def reconcile_canonical_record(
     current = current_dns_record(zone, record, "A")
     if not CANONICAL_GEO and not (current and "routingPolicy" in current):
         # Preserve the default flat writer and logs, including its race retry.
-        reconcile_dns_record(zone, record, healthy_ips, apply=apply, label=label)
+        reconcile_dns_record(zone, record, healthy_ips, apply=apply, label=label,
+                             current_ips=record_ips(current) if current else [])
         return
     desired = (canonical_geo_record(record, healthy) if CANONICAL_GEO else
                {"name": record, "type": "A", "ttl": TTL, "rrdatas": healthy_ips})
@@ -1480,9 +1509,13 @@ def _main_unlocked() -> int:
                 confidential_failed = True
                 log(f"reconcile: confidential membership update failed: {exc}")
 
-            if not healthy_ips or len(healthy_ips) < MIN_HEALTHY:
+            if not healthy_ips or (not CANONICAL_GEO and len(healthy_ips) < MIN_HEALTHY):
                 sys.exit(f"[FAIL] only {len(healthy_ips)} healthy (< MIN_HEALTHY={MIN_HEALTHY}); "
                          "refusing to shrink DNS — leaving last-good record in place")
+
+            if CANONICAL_GEO:
+                verify_health_check(GEO_HEALTH_CHECK, PROJECT, gcloud_json)
+                verify_geo_zones(canonical_healthy)
 
             reconcile_canonical_record(
                 DNS_ZONE,

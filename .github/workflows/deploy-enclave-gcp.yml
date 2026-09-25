@@ -78,6 +78,7 @@ permissions:
 
 env:
   QUILL_CANONICAL_GEO: ${{ vars.QUILL_CANONICAL_GEO || '0' }}
+  QUILL_GEO_HEALTH_CHECK: ${{ vars.QUILL_GEO_HEALTH_CHECK }}
   PROJECT_ID: quill-cloud-proxy
   REGION: us-central1
   ARTIFACT_REPO: quill

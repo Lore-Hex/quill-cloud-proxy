@@ -82,7 +82,7 @@ class DnsReconcilerSchedulerTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "--update-env-vars=\"QUILL_RECONCILE_LOCK_BUCKET=${LOCK_BUCKET},QUILL_CANONICAL_GEO=${QUILL_CANONICAL_GEO}\"",
+            "--update-env-vars=\"QUILL_RECONCILE_LOCK_BUCKET=${LOCK_BUCKET},QUILL_CANONICAL_GEO=${QUILL_CANONICAL_GEO},QUILL_GEO_HEALTH_CHECK=${QUILL_GEO_HEALTH_CHECK}\"",
             workflow,
         )
 

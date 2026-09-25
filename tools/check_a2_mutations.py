@@ -25,8 +25,7 @@ MUTATIONS = [
     ("GeoCanonicalTests::test_geo_shape_and_both_mirrors", RECONCILER,
      '"enableFencing": False, "items": items', '"enableFencing": True, "items": items'),
     ("GeoCanonicalTests::test_geo_shape_and_both_mirrors", RECONCILER,
-     '"routingPolicy": {"geo": {"enableFencing": False, "items": items}}',
-     '"routingPolicy": {"healthCheck": "unexpected", "geo": {"enableFencing": False, "items": items}}'),
+     '"healthCheck": GEO_HEALTH_CHECK,', '"healthCheck": "unexpected",'),
     ("GeoCanonicalTests::test_geo_shape_and_both_mirrors", RECONCILER,
      'for mirror_zone, mirror_record in CANONICAL_MIRRORS:', 'for mirror_zone, mirror_record in []:'),
     ("GeoCanonicalTests::test_geo_shape_and_both_mirrors", RECONCILER,
@@ -37,13 +36,13 @@ MUTATIONS = [
     ("GeoCanonicalTests::test_dead_region_is_omitted_and_regional_records_stay_flat", RECONCILER,
      '            if PUBLISH_REGIONAL:', '            if PUBLISH_REGIONAL and not CANONICAL_GEO:'),
     ("GeoCanonicalTests::test_empty_policy_refused_even_with_zero_minimum", RECONCILER,
-     'if not healthy_ips or len(healthy_ips) < MIN_HEALTHY:', 'if len(healthy_ips) < MIN_HEALTHY:'),
+     'if not healthy_ips or (not CANONICAL_GEO and len(healthy_ips) < MIN_HEALTHY):', 'if len(healthy_ips) < MIN_HEALTHY:'),
     ("GeoCanonicalTests::test_empty_policy_refused_even_with_zero_minimum", RECONCILER,
      '    if not items:\n', '    if False:\n'),
     ("GeoCanonicalTests::test_empty_policy_refused_even_with_zero_minimum", RECONCILER,
      '    if not record_ips(desired):', '    if False:'),
-    ("GeoCanonicalTests::test_minimum_guard_keeps_last_good_geo", RECONCILER,
-     'if not healthy_ips or len(healthy_ips) < MIN_HEALTHY:', 'if not healthy_ips:'),
+    ("GeoCanonicalTests::test_one_survivor_removes_dead_region_below_minimum", RECONCILER,
+     'if not healthy_ips or (not CANONICAL_GEO and len(healthy_ips) < MIN_HEALTHY):', 'if not healthy_ips or len(healthy_ips) < MIN_HEALTHY:'),
     ("GeoCanonicalTests::test_flat_to_geo_is_one_change_even_when_membership_matches", RECONCILER,
      'if not CANONICAL_GEO and not (current and "routingPolicy" in current):',
      'if not (current and "routingPolicy" in current):'),
@@ -97,7 +96,7 @@ MUTATIONS = [
     ("GeoReaderTests::test_unknown_or_malformed_policies_fail_closed", PARSER,
      'raise ValueError("unsupported DNS routing policy")', 'return []'),
     ("GeoReaderTests::test_shell_drain_gate_cannot_mistake_geo_for_empty", PARSER,
-     '            values.extend(item["rrdatas"])', '            pass'),
+     '                values.extend(targets["externalEndpoints"])', '                pass'),
     ("GeoReaderTests::test_shell_drain_gate_fails_on_missing_record", PARSER,
      'raise ValueError(f"expected exactly one A record for {name}")', 'return []'),
     ("GeoReaderTests::test_azure_deploy_refuses_canonical_or_mirror_dns_ownership", "tools/deploy-azure-aci.sh",
@@ -109,9 +108,54 @@ for workflow in ("reconcile-enclave-dns.yml", "deploy-enclave-gcp.yml", "relieve
                       "QUILL_CANONICAL_GEO: ${{ vars.QUILL_CANONICAL_GEO || '0' }}", "QUILL_CANONICAL_GEO: '0'"))
 MUTATIONS.extend([
     ("GeoReaderTests::test_workflow_writers_share_setting_and_image_contains_parser", "tools/Dockerfile.reconciler",
-     'reconcile-enclave-dns.py cloud_dns_records.py gcp-enclave-migs.txt', 'reconcile-enclave-dns.py gcp-enclave-migs.txt'),
-    ("GeoReaderTests::test_workflow_writers_share_setting_and_image_contains_parser", "tools/dns/main.tf",
-     'ignore_changes = [rrdatas, ttl, routing_policy]', 'ignore_changes = [rrdatas, ttl]'),
+     'reconcile-enclave-dns.py cloud_dns_records.py dns_geo_health.py gcp-enclave-migs.txt', 'reconcile-enclave-dns.py dns_geo_health.py gcp-enclave-migs.txt'),
+
+])
+
+MUTATIONS.extend([
+    ("GeoCanonicalTests::test_off_reads_each_unchanged_canonical_once_and_needs_no_check", RECONCILER,
+     'current_ips=record_ips(current) if current else []', 'current_ips=None'),
+    ("GeoCanonicalTests::test_off_reads_each_unchanged_canonical_once_and_needs_no_check", RECONCILER,
+     'if not healthy_ips or (not CANONICAL_GEO and len(healthy_ips) < MIN_HEALTHY):', 'if not healthy_ips:'),
+    ("GeoCanonicalTests::test_health_check_validation_refuses_missing_or_misconfigured_before_geo_write", RECONCILER,
+     'verify_health_check(GEO_HEALTH_CHECK, PROJECT, gcloud_json)', 'pass'),
+    ("GeoCanonicalTests::test_operator_creation_is_explicit_and_verified", "tools/dns_geo_health.py",
+     '    if args.create:', '    if True:'),
+    ("GeoCanonicalTests::test_operator_creation_is_explicit_and_verified", "tools/dns_geo_health.py",
+     '"--port=443"', '"--port=80"'),
+    ("GeoCanonicalTests::test_operator_creation_is_explicit_and_verified", "tools/dns_geo_health.py",
+     '    verify_health_check(url, args.project, read)', '    pass'),
+])
+for before in (
+    'if not url.startswith(prefix) or not re.fullmatch(r"[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?", name):',
+    'if not isinstance(check, dict):',
+    'if any(check.get(key) != value for key, value in expected.items()) or check.get("region"):',
+    'if sorted(check.get("sourceRegions", [])) != sorted(SOURCE_REGIONS):',
+):
+    MUTATIONS.append(("GeoCanonicalTests::test_health_check_validation_refuses_missing_or_misconfigured_before_geo_write",
+                      "tools/dns_geo_health.py", before, 'if False:'))
+MUTATIONS.append(("GeoCanonicalTests::test_health_check_validation_refuses_missing_or_misconfigured_before_geo_write",
+                  "tools/dns_geo_health.py", 'tcp.get("port") != 443', 'False'))
+for workflow in ("reconcile-enclave-dns.yml", "deploy-enclave-gcp.yml", "relieve-mig-stockout.yml", "deploy-enclave-dns-reconciler.yml"):
+    MUTATIONS.append(("GeoReaderTests::test_workflow_writers_share_setting_and_image_contains_parser",
+                      ".github/workflows/" + workflow,
+                      "QUILL_GEO_HEALTH_CHECK: ${{ vars.QUILL_GEO_HEALTH_CHECK }}", "QUILL_GEO_HEALTH_CHECK: ''"))
+
+for before, after in (
+    ('verify_geo_zones(canonical_healthy)', 'pass'),
+    ('if dnssec == "on" and any(len(ips) > 1 for ips in counts.values()):', 'if False:'),
+    ('if dnssec not in {"off", "on"}:', 'if False:'),
+    ('config.get("visibility") != "public"', 'False'),
+    ('{DNS_ZONE} | {zone for zone, _ in CANONICAL_MIRRORS}', '{DNS_ZONE}'),
+):
+    MUTATIONS.append(("GeoCanonicalTests::test_geo_zone_constraints_are_checked_for_both_names",
+                      RECONCILER, before, after))
+
+MUTATIONS.extend([
+    ("GeoReaderTests::test_reconciler_reads_flat_and_geo_for_either_name", PARSER,
+     '                values.extend(item["rrdatas"])', '                pass'),
+    ("GeoReaderTests::test_unknown_or_malformed_policies_fail_closed", PARSER,
+     'or set(targets) - {"externalEndpoints", "kind"}', 'or False'),
 ])
 
 
@@ -123,7 +167,7 @@ def main() -> None:
     covered = {case[0] for case in MUTATIONS}
     assert covered == expected, f"mutation coverage mismatch: {covered ^ expected}"
     files = {case[1] for case in MUTATIONS} | {
-        TESTS, "tools/gcp-enclave-migs.txt", "tools/gcp-enclave-migs-pending.txt",
+        TESTS, "tools/dns_geo_health.py", "tools/gcp-enclave-migs.txt", "tools/gcp-enclave-migs-pending.txt",
         "tools/wait-canonical-drained.sh",
     }
     with tempfile.TemporaryDirectory(prefix="a2-mutations-") as tmp:

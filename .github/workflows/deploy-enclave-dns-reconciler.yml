@@ -6,6 +6,7 @@ on:
     paths:
       - "tools/reconcile-enclave-dns.py"
       - "tools/cloud_dns_records.py"
+      - "tools/dns_geo_health.py"
       - "tools/gcp-enclave-migs.txt"
       # Baked into the image too: adding, promoting or dropping a pending
       # region has to reach the scheduled reconciler, not just the deploy's.
@@ -29,6 +30,7 @@ permissions:
 
 env:
   QUILL_CANONICAL_GEO: ${{ vars.QUILL_CANONICAL_GEO || '0' }}
+  QUILL_GEO_HEALTH_CHECK: ${{ vars.QUILL_GEO_HEALTH_CHECK }}
   PROJECT_ID: quill-cloud-proxy
   BUILD_REGION: us-central1
   LOCK_BUCKET_REGION: us-central1
@@ -119,7 +121,7 @@ jobs:
             --project="${PROJECT_ID}" \
             --region="${JOB_REGION}" \
             --image="${{ steps.image.outputs.ref }}" \
-            --update-env-vars="QUILL_RECONCILE_LOCK_BUCKET=${LOCK_BUCKET},QUILL_CANONICAL_GEO=${QUILL_CANONICAL_GEO}"
+            --update-env-vars="QUILL_RECONCILE_LOCK_BUCKET=${LOCK_BUCKET},QUILL_CANONICAL_GEO=${QUILL_CANONICAL_GEO},QUILL_GEO_HEALTH_CHECK=${QUILL_GEO_HEALTH_CHECK}"
 
           run_uri="https://${JOB_REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${JOB_NAME}:run"
           retry_flags=(

@@ -16,6 +16,7 @@ permissions:
 
 env:
   QUILL_CANONICAL_GEO: ${{ vars.QUILL_CANONICAL_GEO || '0' }}
+  QUILL_GEO_HEALTH_CHECK: ${{ vars.QUILL_GEO_HEALTH_CHECK }}
 
 jobs:
   reconcile:

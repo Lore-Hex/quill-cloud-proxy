@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from cloud_dns_records import listed_record_ips, record_ips
+import dns_geo_health
 
 
 def setUpModule() -> None:
@@ -44,6 +45,14 @@ SPEC = importlib.util.spec_from_file_location("reconcile_enclave_dns", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 reconciler = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(reconciler)
+
+
+HEALTH_URL = dns_geo_health.health_check_url(reconciler.PROJECT, "canonical-dns-tcp")
+HEALTH_CHECK = {"name": "canonical-dns-tcp", "kind": "compute#healthCheck",
+               "selfLink": HEALTH_URL, "type": "TCP", "checkIntervalSec": 30,
+               "timeoutSec": 5, "healthyThreshold": 2, "unhealthyThreshold": 2,
+               "sourceRegions": ["us-east1", "europe-west1", "asia-east1"],
+               "tcpHealthCheck": {"port": 443}}
 
 
 class GcloudReadTests(unittest.TestCase):
@@ -142,7 +151,7 @@ class ConfidentialDNSPolicyTests(unittest.TestCase):
             ):
                 self.assertEqual(reconciler._main_unlocked(), 1)
                 publish.assert_any_call(reconciler.DNS_ZONE, reconciler.RECORD,
-                                        ["34.1.1.1", "34.1.1.2"], apply=True, label="canonical")
+                                        ["34.1.1.1", "34.1.1.2"], apply=True, label="canonical", current_ips=[])
 
     def test_zero_qualified_instances_removes_unsafe_records(self) -> None:
         with (
@@ -286,6 +295,9 @@ def run_reconcile(
     geo: bool = False,
     initial_dns: dict[str, dict] | None = None,
     minimum: int = 2,
+    health_check=HEALTH_CHECK,
+    health_url=HEALTH_URL,
+    zone_config=None,
     serving: frozenset[str] = SERVING,
     env_excluded: frozenset[str] = frozenset(),
     drains: dict[str, str] | None = None,
@@ -338,13 +350,18 @@ def run_reconcile(
     def gcloud_json(args: list[str]) -> list[dict]:
         if args[:3] == ["compute", "instances", "list"]:
             return FLEET_ROWS
+        if args[:3] == ["dns", "managed-zones", "describe"]:
+            return zone_config if zone_config is not None else {"visibility": "public", "dnssecConfig": {"state": "off"}}
+        if args[:3] == ["compute", "health-checks", "describe"]:
+            return health_check
         if args[:3] != ["dns", "record-sets", "list"]:
             raise AssertionError(f"unexpected gcloud read: {args}")
         record = args[args.index("--name") + 1]
         record_type = args[args.index("--type") + 1]
+        if record_type == "A":
+            a_reads[record] = a_reads.get(record, 0) + 1
         if drain_during_dns_read is not None and record_type == "A":
             if record == drain_during_dns_read[0]:
-                a_reads[record] = a_reads.get(record, 0) + 1
                 if a_reads[record] >= drain_during_dns_read[2]:
                     flipped.append(dict(drain_during_dns_read[1]))
         if record_type == "CNAME" and record in cold_cnames:
@@ -420,6 +437,7 @@ def run_reconcile(
     constants = {
         "GCP_ENCLAVE_REGIONS": serving,
         "CANONICAL_GEO": geo,
+        "GEO_HEALTH_CHECK": health_url,
         "GCP_ENCLAVE_PENDING_REGIONS": pending,
         # Empty is what an unset QUILL_EXCLUDE_CANONICAL_REGIONS parses to.
         "EXCLUDE_CANONICAL_REGIONS": set(env_excluded),
@@ -478,6 +496,7 @@ def run_reconcile(
         commands=commands,
         changes=changes,
         dns=dns,
+        a_reads=a_reads,
         log=log.getvalue(),
         drain_reads=reads,
         finished=finished,
@@ -1530,6 +1549,11 @@ class RegionalDnsPromotionTests(unittest.TestCase):
 
 
 class GeoCanonicalTests(unittest.TestCase):
+    def setUp(self):
+        patch = mock.patch.object(reconciler, "GEO_HEALTH_CHECK", HEALTH_URL)
+        patch.start()
+        self.addCleanup(patch.stop)
+
     CANONICAL = "api.trustedrouter.com."
     MIRROR = "api.quillrouter.com."
 
@@ -1540,11 +1564,11 @@ class GeoCanonicalTests(unittest.TestCase):
 
     @staticmethod
     def geo_record(name, items=None):
-        return {"name": name, "type": "A", "ttl": 60, "routingPolicy": {"geo": {
+        return {"name": name, "type": "A", "ttl": 60, "routingPolicy": {"healthCheck": HEALTH_URL, "geo": {
             "enableFencing": False,
             "items": items if items is not None else [
-                {"location": "us-central1", "rrdatas": [CENTRAL]},
-                {"location": "us-east4", "rrdatas": [EAST]},
+                {"location": "us-central1", "healthCheckedTargets": {"externalEndpoints": [CENTRAL]}},
+                {"location": "us-east4", "healthCheckedTargets": {"externalEndpoints": [EAST]}},
             ],
         }}}
 
@@ -1562,7 +1586,7 @@ class GeoCanonicalTests(unittest.TestCase):
             {"region": "us-central1", "ip": CENTRAL},
         ])
         self.assertEqual(record["routingPolicy"]["geo"]["items"], [
-            {"location": "us-central1", "rrdatas": [CENTRAL, EAST]},
+            {"location": "us-central1", "healthCheckedTargets": {"externalEndpoints": [CENTRAL, EAST]}},
         ])
 
     def test_dead_region_is_omitted_and_regional_records_stay_flat(self):
@@ -1570,8 +1594,8 @@ class GeoCanonicalTests(unittest.TestCase):
         result = run_reconcile(pending=frozenset(), serving=SERVING | PENDING,
                                geo=True, unhealthy=(EAST,), initial_dns=old)
         expected = self.geo_record(self.CANONICAL, [
-            {"location": "us-central1", "rrdatas": [CENTRAL]},
-            {"location": "us-west1", "rrdatas": [WEST]},
+            {"location": "us-central1", "healthCheckedTargets": {"externalEndpoints": [CENTRAL]}},
+            {"location": "us-west1", "healthCheckedTargets": {"externalEndpoints": [WEST]}},
         ])
         self.assertEqual(result.dns[self.CANONICAL], expected)
         self.assertEqual(result.changes[0][1]["deletions"], [old[self.CANONICAL]])
@@ -1595,13 +1619,98 @@ class GeoCanonicalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "empty canonical"):
             reconciler.replace_dns_record("zone", self.geo_record(self.CANONICAL, []))
 
-    def test_minimum_guard_keeps_last_good_geo(self):
-        old = self.geo_record(self.CANONICAL)
-        result = run_reconcile(pending=PENDING, geo=True, unhealthy=(EAST,),
-                               initial_dns={self.CANONICAL: old})
+    def test_one_survivor_removes_dead_region_below_minimum(self):
+        old = {name: self.geo_record(name) for name in (self.CANONICAL, self.MIRROR)}
+        for failed, location, survivor in ((EAST, "us-central1", CENTRAL),
+                                           (CENTRAL, "us-east4", EAST)):
+            with self.subTest(failed=failed):
+                result = run_reconcile(pending=PENDING, geo=True, unhealthy=(failed,), initial_dns=old)
+                self.assertEqual(result.code, 0)
+                self.assertEqual(len(result.changes), 2)
+                for name in old:
+                    self.assertEqual(result.dns[name], self.geo_record(name, [
+                        {"location": location, "healthCheckedTargets": {"externalEndpoints": [survivor]}}]))
+                again = run_reconcile(pending=PENDING, geo=True, unhealthy=(failed,), initial_dns=result.dns)
+                self.assertEqual(again.code, 0)
+                self.assertEqual(again.changes, [])
+
+    def test_off_reads_each_unchanged_canonical_once_and_needs_no_check(self):
+        old = {name: self.flat(name) for name in (self.CANONICAL, self.MIRROR)}
+        result = run_reconcile(pending=PENDING, initial_dns=old, health_url="", health_check=None)
+        self.assertEqual(result.code, 0)
+        self.assertEqual(result.changes, [])
+        for name in old:
+            self.assertEqual(result.a_reads[name], 1)
+        result = run_reconcile(pending=PENDING, unhealthy=(EAST,), initial_dns=old)
         self.assertIn("MIN_HEALTHY=2", str(result.code))
         self.assertEqual(result.changes, [])
-        self.assertEqual(result.dns[self.CANONICAL], old)
+
+    def test_health_check_validation_refuses_missing_or_misconfigured_before_geo_write(self):
+        bad = [None, {}, dict(HEALTH_CHECK, type="HTTPS"), dict(HEALTH_CHECK, region="us-east1"),
+               dict(HEALTH_CHECK, selfLink=HEALTH_URL.replace("global", "regions/us-east1")),
+               dict(HEALTH_CHECK, sourceRegions=["us-east1"]),
+               dict(HEALTH_CHECK, sourceRegions=["us-east1"] * 3),
+               dict(HEALTH_CHECK, checkIntervalSec=5), dict(HEALTH_CHECK, timeoutSec=60),
+               dict(HEALTH_CHECK, healthyThreshold=10), dict(HEALTH_CHECK, unhealthyThreshold=10),
+               dict(HEALTH_CHECK, kind="compute#httpHealthCheck"),
+               dict(HEALTH_CHECK, httpHealthCheck={"port": 443})]
+        bad += [dict(HEALTH_CHECK, tcpHealthCheck=dict(port=443, **extra)) for extra in (
+            {"portName": "https"}, {"portSpecification": "USE_SERVING_PORT"},
+            {"proxyHeader": "PROXY_V1"}, {"request": "hello"}, {"response": "hello"})]
+        bad.append(dict(HEALTH_CHECK, tcpHealthCheck={"port": 80}))
+        for check in bad:
+            with self.subTest(check=check):
+                with mock.patch.object(reconciler, "reconcile_canonical_record") as publish:
+                    with self.assertRaises(ValueError):
+                        run_reconcile(pending=PENDING, geo=True, health_check=check)
+                    publish.assert_not_called()
+        for url in ("", "https://example.com/check", HEALTH_URL.replace("global", "regions/us-east1"),
+                    HEALTH_URL.replace(reconciler.PROJECT, "different-project")):
+            with self.subTest(url=url), mock.patch.object(reconciler, "gcloud_json") as read:
+                with self.assertRaises(ValueError):
+                    dns_geo_health.verify_health_check(url, reconciler.PROJECT, read)
+                read.assert_not_called()
+        with mock.patch.object(reconciler, "verify_health_check", side_effect=RuntimeError("read denied")):
+            with self.assertRaisesRegex(RuntimeError, "read denied"):
+                run_reconcile(pending=PENDING, geo=True)
+
+    def test_geo_zone_constraints_are_checked_for_both_names(self):
+        for config in ({}, {"visibility": "private", "dnssecConfig": {"state": "off"}},
+                       {"visibility": "public"}):
+            with self.subTest(config=config), self.assertRaises(ValueError):
+                run_reconcile(pending=PENDING, geo=True, zone_config=config)
+        fleet = [{"region": "us-central1", "ip": CENTRAL}, {"region": "us-central1", "ip": EAST}]
+        public = {"visibility": "public", "dnssecConfig": {"state": "off"}}
+        signed = {"visibility": "public", "dnssecConfig": {"state": "on"}}
+        with (mock.patch.object(reconciler, "DNS_ZONE", "first"),
+              mock.patch.object(reconciler, "CANONICAL_MIRRORS", [("second", self.MIRROR)]),
+              mock.patch.object(reconciler, "gcloud_json", side_effect=[public, signed]) as read):
+            with self.assertRaisesRegex(ValueError, "at most one"):
+                reconciler.verify_geo_zones(fleet)
+            self.assertEqual(read.call_count, 2)
+        result = run_reconcile(pending=PENDING, geo=True, zone_config=signed)
+        self.assertEqual(result.code, 0)
+        self.assertEqual(len(result.changes), 2)
+
+    def test_operator_creation_is_explicit_and_verified(self):
+        for create in (False, True):
+            argv = ["dns_geo_health.py", "--project", reconciler.PROJECT]
+            if create:
+                argv.append("--create")
+            response = SimpleNamespace(stdout=json.dumps(HEALTH_CHECK))
+            with (mock.patch.object(sys, "argv", argv),
+                  mock.patch.object(subprocess, "run", return_value=response) as run,
+                  contextlib.redirect_stdout(io.StringIO()) as output):
+                dns_geo_health.main()
+            self.assertEqual(output.getvalue().strip(), HEALTH_URL)
+            self.assertEqual(run.call_count, 2 if create else 1)
+            self.assertEqual(run.call_args.args[0][1:5],
+                             ["compute", "health-checks", "describe", "canonical-dns-tcp"])
+            if create:
+                command = run.call_args_list[0].args[0]
+                for flag in ("--global", "--port=443", "--check-interval=30s", "--timeout=5s",
+                             "--source-regions=us-east1,europe-west1,asia-east1"):
+                    self.assertIn(flag, command)
 
     def test_flat_to_geo_is_one_change_even_when_membership_matches(self):
         old = {name: self.flat(name) for name in (self.CANONICAL, self.MIRROR)}
@@ -1781,16 +1890,24 @@ class GeoReaderTests(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
+    @staticmethod
+    def legacy_geo(name):
+        row = GeoCanonicalTests.geo_record(name)
+        row["routingPolicy"].pop("healthCheck")
+        for item in row["routingPolicy"]["geo"]["items"]:
+            item["rrdatas"] = item.pop("healthCheckedTargets")["externalEndpoints"]
+        return row
+
     def test_reconciler_reads_flat_and_geo_for_either_name(self):
         for name in (GeoCanonicalTests.CANONICAL, GeoCanonicalTests.MIRROR):
-            for row in (GeoCanonicalTests.flat(name), GeoCanonicalTests.geo_record(name)):
+            for row in (GeoCanonicalTests.flat(name), GeoCanonicalTests.geo_record(name), self.legacy_geo(name)):
                 with (self.subTest(name=name, row=row),
                       mock.patch.object(reconciler, "gcloud_json", return_value=[row])):
                     self.assertEqual(reconciler.current_dns_ips("zone", name), [CENTRAL, EAST])
 
     def test_route53_copies_complete_flat_and_geo_membership(self):
         sync = self.load_script("sync-route53-api-aliases")
-        for shape in (GeoCanonicalTests.flat, GeoCanonicalTests.geo_record):
+        for shape in (GeoCanonicalTests.flat, GeoCanonicalTests.geo_record, self.legacy_geo):
             row = shape(sync.SOURCE_RECORD)
             # Route53 additionally requires public (not documentation) IPv4.
             row = json.loads(json.dumps(row).replace(CENTRAL, "34.1.1.1").replace(EAST, "34.2.2.2"))
@@ -1798,6 +1915,14 @@ class GeoReaderTests(unittest.TestCase):
                 self.assertEqual(sync.source_ips(), ["34.1.1.1", "34.2.2.2"])
 
     def test_unknown_or_malformed_policies_fail_closed(self):
+        invalid_targets = [{"externalEndpoints": "34.1.1.1"}, {"internalLoadBalancers": []},
+                           {"externalEndpoints": ["34.1.1.1"], "internalLoadBalancers": []},
+                           {"externalEndpoints": [None]}]
+        for targets in invalid_targets:
+            row = GeoCanonicalTests.geo_record(GeoCanonicalTests.CANONICAL)
+            row["routingPolicy"]["geo"]["items"][0]["healthCheckedTargets"] = targets
+            with self.subTest(targets=targets), self.assertRaises(ValueError):
+                record_ips(row)
         for row in ({}, {"routingPolicy": {"wrr": {"items": []}}},
                     {"routingPolicy": {"geo": {"items": "broken"}}},
                     {"routingPolicy": {"geo": {"items": [{"location": "us-central1"}]}}},
@@ -1828,7 +1953,7 @@ source tools/wait-canonical-drained.sh us-east4
                               capture_output=True, text=True)
 
     def test_shell_drain_gate_cannot_mistake_geo_for_empty(self):
-        for shape in (GeoCanonicalTests.flat, GeoCanonicalTests.geo_record):
+        for shape in (GeoCanonicalTests.flat, GeoCanonicalTests.geo_record, self.legacy_geo):
             row = shape(GeoCanonicalTests.CANONICAL)
             result = self.run_drain([row])
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
@@ -1860,6 +1985,7 @@ source tools/wait-canonical-drained.sh us-east4
         for name in ("reconcile-enclave-dns.yml", "deploy-enclave-gcp.yml",
                      "relieve-mig-stockout.yml", "deploy-enclave-dns-reconciler.yml"):
             source = (root / ".github/workflows" / name).read_text()
+            self.assertIn("QUILL_GEO_HEALTH_CHECK: ${{ vars.QUILL_GEO_HEALTH_CHECK }}", source)
             self.assertIn("QUILL_CANONICAL_GEO: ${{ vars.QUILL_CANONICAL_GEO || '0' }}", source)
         deploy = (root / ".github/workflows/deploy-enclave-dns-reconciler.yml").read_text()
         self.assertIn("QUILL_CANONICAL_GEO=${QUILL_CANONICAL_GEO}", deploy)
@@ -1867,8 +1993,8 @@ source tools/wait-canonical-drained.sh us-east4
         docker = SCRIPT.with_name("Dockerfile.reconciler").read_text()
         self.assertTrue(any(line.startswith("COPY ") and "cloud_dns_records.py" in line
                             for line in docker.splitlines()))
-        tf = (root / "tools/dns/main.tf").read_text()
-        self.assertIn("ignore_changes = [rrdatas, ttl, routing_policy]", tf)
+        self.assertIn("dns_geo_health.py", docker)
+        self.assertIn("QUILL_GEO_HEALTH_CHECK=${QUILL_GEO_HEALTH_CHECK}", deploy)
 
 
 if __name__ == "__main__":

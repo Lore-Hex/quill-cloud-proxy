@@ -20,7 +20,7 @@ WORKDIR /app
 # Both inventories: the pending one names regions that get a regional record but
 # never canonical traffic. Without it this image would treat such a region as
 # unknown and leave its regional name on whatever the rollout last wrote.
-COPY verify-attestation.py aws-nitro-root.pem reconcile-enclave-dns.py cloud_dns_records.py gcp-enclave-migs.txt gcp-enclave-migs-pending.txt /app/tools/
+COPY verify-attestation.py aws-nitro-root.pem reconcile-enclave-dns.py cloud_dns_records.py dns_geo_health.py gcp-enclave-migs.txt gcp-enclave-migs-pending.txt /app/tools/
 # Warm the uv dep cache into the image so each scheduled run is fast.
 RUN uv run --script /app/tools/verify-attestation.py --help >/dev/null 2>&1 || true
 
