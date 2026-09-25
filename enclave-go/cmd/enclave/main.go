@@ -234,7 +234,18 @@ func main() {
 	registry := auth.New(boot.Devices)
 	deviceBlob, _ := json.Marshal(boot.Devices)
 	if strings.TrimSpace(boot.ProviderAPIKeys["privatemode"]) != "" {
-		go privatemode.Supervise(ctx, llm.ConfigurePrivatemode)
+		var probeOnce sync.Once
+		go privatemode.Supervise(ctx, func(client *http.Client) {
+			llm.ConfigurePrivatemode(client)
+			if client != nil && os.Getenv("QUILL_PRIVATEMODE_BOOT_PROBE") != "off" {
+				probeOnce.Do(func() {
+					go llm.ProbePrivatemode(ctx, boot.ProviderAPIKeys["privatemode"], func(result llm.PrivatemodeProbeResult) {
+						recordPrivatemodeProbe(result)
+						_ = json.NewEncoder(os.Stderr).Encode(result)
+					})
+				})
+			}
+		})
 	}
 	br := llm.New(boot) // build-tag-gated: AWS Bedrock by default, GCP Vertex with -tags gcp
 	imageProviderGateway = imagegen.NewRegistry(imageProviderKeys(boot), llm.NewProviderHTTPClient())

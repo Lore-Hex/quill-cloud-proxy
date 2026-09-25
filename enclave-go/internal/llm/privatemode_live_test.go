@@ -39,40 +39,11 @@ func TestLivePrivatemodePackagedStreaming(t *testing.T) {
 
 func livePrivatemodeModel(t *testing.T, ctx context.Context, key, model string) {
 	t.Helper()
-	maxTokens := 1024
-	req := &qtypes.OpenAIChatRequest{Model: model, MaxTokens: &maxTokens, ReasoningEffort: "low"}
-	body := &qtypes.AnthropicMessagesRequest{MaxTokens: maxTokens, MaxTokensExplicit: true,
-		Messages: []qtypes.AnthropicMessage{{Role: "user", Content: "Reply with exactly PONG and nothing else."}}}
-	var out bytes.Buffer
-	err := newOpenAICompatible("privatemode", key).InvokeStreaming(ctx, req, body, &out,
-		InvokeOptions{Provider: "privatemode", UpstreamModel: model, ProviderCacheScope: "isolated-live-probe-workspace"})
-	if err != nil {
-		t.Fatalf("encrypted stream failed: %v", err)
+	result := probePrivatemodeModel(ctx, key, model)
+	if !result.Success {
+		t.Fatalf("encrypted probe failed: %+v", result)
 	}
-	input, output := 0, 0
-	for _, line := range strings.Split(out.String(), "\n") {
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		var event struct {
-			Usage struct {
-				Input  int `json:"input_tokens"`
-				Output int `json:"output_tokens"`
-			} `json:"usage"`
-		}
-		if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event) == nil {
-			input = max(input, event.Usage.Input)
-			output = max(output, event.Usage.Output)
-		}
-	}
-	if input <= 0 || output <= 0 {
-		t.Fatalf("missing billable usage input=%d output=%d", input, output)
-	}
-	visible, err := providerWaveVisibleText(out.Bytes())
-	if err != nil || strings.TrimSpace(visible) != "PONG" {
-		t.Fatalf("unexpected output: visible_bytes=%d parse_error=%v input=%d output=%d length_stop=%v", len(visible), err, input, output, bytes.Contains(out.Bytes(), []byte(`"stop_reason":"max_tokens"`)))
-	}
-	t.Logf("encrypted PONG and billable usage verified: input=%d output=%d", input, output)
+	t.Logf("encrypted PONG and billable usage verified: input=%d output=%d", result.InputTokens, result.OutputTokens)
 }
 
 func assertPrivatemodeUnprivileged(t *testing.T) {
