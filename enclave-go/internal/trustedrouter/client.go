@@ -1251,7 +1251,9 @@ func (c *Client) postToControlPlaneWithBootAuth(
 			return resp, i, nil
 		}
 		if pinnedEndpoint >= 0 || !isDialFailure(err) || i == end-1 {
-			return nil, -1, fmt.Errorf("trustedrouter: post %s: %w", path, err)
+			// This may be a lost acknowledgement. Receipt-aware retries must
+			// retain the selected authority even without response headers.
+			return nil, i, fmt.Errorf("trustedrouter: post %s: %w", path, err)
 		}
 		fmt.Fprintf(os.Stderr,
 			"enclave.control_plane_undialable path=%q endpoint_index=%d err=%v\n", path, i, err)

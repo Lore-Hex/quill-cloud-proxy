@@ -160,7 +160,7 @@ func stageCPrimeMarkerlessLease(t *testing.T, gateway *trustedrouter.Client) {
 			t.Fatalf("prime spend lease: %v", err)
 		}
 		probe := stageCMarkerlessRequest(t, fmt.Sprintf("markerless-probe-%d", attempt))
-		plan, err := gateway.PrepareSpendLeaseAdmission(context.Background(), stageCMarkerlessBearer, probe, "chat.completions", time.Now())
+		plan, err := gateway.PrepareSpendLeaseAdmission(trustedrouter.WithAuthorizationInvocation(context.Background()), stageCMarkerlessBearer, probe, "chat.completions", time.Now())
 		if err != nil {
 			t.Fatalf("probe local admission: %v", err)
 		}
@@ -296,4 +296,90 @@ func stageCMarkerlessHTTPResponse(request *http.Request, value any) (*http.Respo
 		return nil, err
 	}
 	return replayHTTPResponse(request, http.StatusOK, string(body)), nil
+}
+
+func TestServeOneStageCLostAckReplayExecutesAndFinalizesOnce(t *testing.T) {
+	provider := &replayCountingProvider{}
+	token, signer, verifier := stageCMarkerlessLease(t)
+	prime := stageCMarkerlessAuthorization("prime", stageCLocalEndpoint, "local-snapshot")
+	prime["spend_lease"] = map[string]any{"token": token, "lease_status": "active"}
+	var attempts, allocations, finalizations atomic.Int32
+	var originalBody []byte
+	var originalProof string
+	var stored map[string]any
+	gateway := trustedrouter.New("https://trustedrouter.com", "internal-token", &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case spendlease.RegisterPath:
+			return replayHTTPResponse(r, 200, `{"data":{"verified":true}}`), nil
+		case spendlease.AuthorizePath:
+			raw, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, err
+			}
+			var body map[string]any
+			if err := json.Unmarshal(raw, &body); err != nil {
+				return nil, err
+			}
+			receipt, ok := body["spend_lease_admission"].(string)
+			if !ok {
+				return stageCMarkerlessHTTPResponse(r, map[string]any{"data": prime})
+			}
+			if body["invocation_nonce"] != nil {
+				t.Error("Stage C sent an ordinary nonce")
+			}
+			if attempts.Add(1) == 1 {
+				allocations.Add(1)
+				originalBody = append([]byte(nil), raw...)
+				originalProof = r.Header.Get(spendlease.BootAuthHeader)
+				stored = stageCMarkerlessAuthorization("original-committed", stageCLocalEndpoint, "local-snapshot")
+				stored["requested_model"] = stageCMarkerlessModel
+				stored["route_candidates"] = []any{map[string]any{"endpoint_id": stageCLocalEndpoint, "model": stageCMarkerlessModel, "upstream_model": "gpt-4o-mini", "provider": "local-snapshot", "usage_type": "Credits"}}
+				stored["spend_lease_admission"] = map[string]any{"accepted": true, "receipt_hash": spendlease.AdmissionReceiptHash(receipt)}
+				stored["spend_lease"] = map[string]any{"token": token, "lease_status": "active", "remaining_micro": 9900}
+				stored["invocation_nonce"] = body["invocation_nonce"] // original absent nonce, as the router stores it
+				return nil, io.ErrUnexpectedEOF
+			}
+			if !bytes.Equal(raw, originalBody) || originalProof == "" || r.Header.Get(spendlease.BootAuthHeader) != originalProof {
+				t.Error("reserve retry changed body/proof")
+			}
+			stored["idempotent_replay"] = true
+			stored["stage_d"] = map[string]any{"eligible": false, "reason": "replayed"}
+			return stageCMarkerlessHTTPResponse(r, map[string]any{"data": stored})
+		case "/internal/gateway/settle":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				return nil, err
+			}
+			if body["authorization_id"] != "original-committed" {
+				t.Errorf("wrong finalization: %v", body["authorization_id"])
+			}
+			finalizations.Add(1)
+			return replayHTTPResponse(r, 200, `{"data":{"settled":true,"generation_id":"gen-lost-ack","cost_microdollars":1,"model":"openai/gpt-4o-mini","provider":"local-snapshot"}}`), nil
+		default:
+			t.Errorf("unexpected router operation: %s", r.URL.Path)
+			return replayHTTPResponse(r, 404, `{}`), nil
+		}
+	})})
+	gateway.ConfigureSpendLeaseShadow(signer, verifier)
+	gateway.ConfigureSpendLeaseLocalAdmission(true)
+	gateway.StartSpendLeaseBootRegistration(context.Background(), signer, trustedrouter.BootRegistrationEvidence{Attestation: "test", AttestationKind: "test"})
+	stageCPrimeMarkerlessLease(t, gateway)
+	raw := fmt.Sprintf("POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nIdempotency-Key: lost-ack-public\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", stageCMarkerlessBearer, len(stageCMarkerlessRequestBody), stageCMarkerlessRequestBody)
+	conn := newScriptedConn(raw, nil)
+	serveOne(context.Background(), conn, auth.New(nil), provider, nil, nil, gateway, nil)
+	response, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(conn.writes.Bytes())), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != 200 || !bytes.Contains(body, []byte(`"content":"ok"`)) {
+		t.Fatalf("status=%d body=%s", response.StatusCode, body)
+	}
+	if attempts.Load() != 2 || allocations.Load() != 1 || provider.dispatches.Load() != 1 || finalizations.Load() != 1 {
+		t.Fatalf("attempt/allocation/provider/finalize=%d/%d/%d/%d", attempts.Load(), allocations.Load(), provider.dispatches.Load(), finalizations.Load())
+	}
 }

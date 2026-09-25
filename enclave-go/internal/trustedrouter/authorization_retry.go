@@ -45,6 +45,7 @@ type authorizationInvocation struct {
 	err     error
 	mu      sync.Mutex
 	claimed map[string]struct{}
+	plans   map[string]*SpendLeaseAdmissionPlan
 }
 
 // WithAuthorizationInvocation marks a context as one public invocation. The
@@ -57,11 +58,17 @@ func WithAuthorizationInvocation(ctx context.Context) context.Context {
 	return context.WithValue(ctx, authorizationInvocationContextKey{}, &authorizationInvocation{})
 }
 
-func authorizationInvocationFromContext(ctx context.Context) *authorizationInvocation {
+func explicitAuthorizationInvocation(ctx context.Context) *authorizationInvocation {
 	if ctx != nil {
-		if invocation, _ := ctx.Value(authorizationInvocationContextKey{}).(*authorizationInvocation); invocation != nil {
-			return invocation
-		}
+		invocation, _ := ctx.Value(authorizationInvocationContextKey{}).(*authorizationInvocation)
+		return invocation
+	}
+	return nil
+}
+
+func authorizationInvocationFromContext(ctx context.Context) *authorizationInvocation {
+	if invocation := explicitAuthorizationInvocation(ctx); invocation != nil {
+		return invocation
 	}
 	return &authorizationInvocation{}
 }
@@ -78,9 +85,12 @@ func (i *authorizationInvocation) invocationNonce() (string, error) {
 	return i.nonce, i.err
 }
 
-func (i *authorizationInvocation) claim(idempotencyKey string) bool {
+func (i *authorizationInvocation) claimPlan(idempotencyKey string, plan *SpendLeaseAdmissionPlan) bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if registered := i.plans[idempotencyKey]; registered != plan {
+		return false
+	}
 	if i.claimed == nil {
 		i.claimed = make(map[string]struct{})
 	}

@@ -3,8 +3,10 @@ package trustedrouter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -163,26 +165,29 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 	lookupHash string,
 	body map[string]any,
 	estimateRequest spendlease.EstimateRequest,
-	admission *spendlease.Admission,
+	plan *SpendLeaseAdmissionPlan,
 ) (*Authorization, int, error) {
 	invocation := authorizationInvocationFromContext(ctx)
 	invocationNonce, err := invocation.invocationNonce()
 	if err != nil {
 		return nil, -1, err
 	}
-	if admission != nil {
-		body = admissionAuthorizeBody(c, lookupHash, body, admission)
-	} else if c.spendLease != nil {
+	if plan == nil && c.spendLease != nil {
 		// Always overwrite this field at the last ordinary-authorize seam. No
 		// caller-controlled request field can select or influence the nonce.
 		body["invocation_nonce"] = invocationNonce
 		body["spend_lease_echo"] = c.spendLease.state.BeforeRequest(lookupHash, estimateRequest, time.Now())
-	} else {
+	} else if plan == nil {
 		body["invocation_nonce"] = invocationNonce
 	}
 	// Marshal once: SignAuthorize and the retry transport share this exact
 	// slice, so the digest cannot drift from the bytes put on the wire.
-	bodyBytes, err := json.Marshal(body)
+	var bodyBytes []byte
+	if plan != nil {
+		bodyBytes = plan.body
+	} else {
+		bodyBytes, err = json.Marshal(body)
+	}
 	if err != nil {
 		return nil, -1, err
 	}
@@ -194,28 +199,63 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 		}
 		bootAuthHeader = bootAuth.HeaderValue()
 	}
+	var wire struct {
+		Data json.RawMessage `json:"data"`
+	}
 	var decoded struct {
 		Data Authorization `json:"data"`
 	}
+	var out any = &decoded
+	policy := c.authorizeRetry
+	if plan != nil {
+		out = &wire
+		policy.retryable = retryableAdmissionAuthorizationError
+	}
 	controlPlaneEndpoint, err := c.postJSONBytesWithRetryAtEndpoint(
-		ctx, spendlease.AuthorizePath, bodyBytes, &decoded, c.authorizeRetry, bootAuthHeader,
+		ctx, spendlease.AuthorizePath, bodyBytes, out, policy, bootAuthHeader,
 	)
 	if err != nil {
 		return nil, controlPlaneEndpoint, err
 	}
-	idempotencyKey, _ := body["idempotency_key"].(string)
-	if decoded.Data.IdempotentReplay && decoded.Data.InvocationNonce != invocationNonce {
-		return nil, controlPlaneEndpoint, idempotencyReplayConflict()
+	if plan != nil {
+		// Decode the marker separately: null, scalars and bad member types are
+		// malformed acceptance, never a markerless version-skew response.
+		var data struct {
+			*Authorization
+			Marker json.RawMessage `json:"spend_lease_admission"`
+		}
+		data.Authorization = &decoded.Data
+		err = json.Unmarshal(wire.Data, &data)
+		if data.Marker != nil {
+			if err != nil || json.Unmarshal(data.Marker, &decoded.Data.SpendLeaseAdmission) != nil || decoded.Data.SpendLeaseAdmission == nil {
+				return nil, controlPlaneEndpoint, invalidAdmissionResponse()
+			}
+		}
 	}
-	// A retry is still inside the transport loop above, so the first successful
-	// decode claims this key exactly once for the public invocation. A later
-	// authorize call in the same invocation cannot turn a same-nonce replay into
-	// a second provider dispatch.
-	if !invocation.claim(idempotencyKey) {
-		return nil, controlPlaneEndpoint, idempotencyReplayConflict()
+	if err != nil {
+		return nil, controlPlaneEndpoint, err
 	}
-	if admission != nil && decoded.Data.SpendLease != nil && decoded.Data.SpendLeaseRemainingMicro == nil {
+	if plan != nil && decoded.Data.SpendLease != nil && decoded.Data.SpendLeaseRemainingMicro == nil {
 		decoded.Data.SpendLeaseRemainingMicro = decoded.Data.SpendLease.RemainingMicro
+	}
+	marked := plan != nil && decoded.Data.SpendLeaseAdmission != nil
+	if marked {
+		// Receipt identity can replace the stored nonce only after all checks.
+		if err := plan.validateAcceptance(&decoded.Data); err != nil {
+			return nil, controlPlaneEndpoint, err
+		}
+	}
+	idempotencyKey, _ := body["idempotency_key"].(string)
+	if plan != nil {
+		idempotencyKey = plan.key
+	}
+	if !marked && decoded.Data.IdempotentReplay && decoded.Data.InvocationNonce != invocationNonce {
+		return nil, controlPlaneEndpoint, idempotencyReplayConflict()
+	}
+	// Transport retries precede this single claim; validation failures cannot
+	// acquire dispatch rights. Ordinary calls cannot steal a prepared plan.
+	if !invocation.claimPlan(idempotencyKey, plan) {
+		return nil, controlPlaneEndpoint, idempotencyReplayConflict()
 	}
 	if c.spendLease != nil && decoded.Data.SpendLease != nil {
 		if err := c.spendLease.state.HandleResponse(lookupHash, decoded.Data.WorkspaceID, decoded.Data.SpendLease, time.Now()); err != nil {
@@ -304,4 +344,15 @@ func spendLeaseRequestForChat(region, routeType string, req *qtypes.OpenAIChatRe
 		request.ProviderConstraints = append([]string(nil), req.Provider.Order...)
 	}
 	return request
+}
+
+// Only receipt-bearing reserves recover transport-level lost acknowledgements.
+// The selected authority is pinned even when it failed before sending headers.
+func retryableAdmissionAuthorizationError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var transportErr *url.Error
+	return retryableAuthorizationError(err) || errors.As(err, &transportErr) ||
+		retryableSettlementError(err)
 }
