@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -227,47 +226,25 @@ func TestStageCAuthorizeResponseFixturesDecodeWithEnclaveTypes(t *testing.T) {
 }
 
 func TestStageCReceiptBearingAuthorizeEmitsEnclaveCanonicalBytes(t *testing.T) {
-	signer := stageCFixtureSigner(t)
 	var sent []byte
 	var sentBootAuth string
-	client := New("http://127.0.0.1:18080", "internal", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		sent, _ = io.ReadAll(request.Body)
-		sentBootAuth = request.Header.Get(spendlease.BootAuthHeader)
-		if sentBootAuth == "" {
-			t.Fatal("receipt-bearing authorize omitted boot auth")
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Request:    request,
-			Body:       io.NopCloser(bytes.NewReader(stageCFixture(t, "admission_accepted_response.json"))),
-		}, nil
-	})})
-	client.region = "us-central1"
-	client.stageDBootSigner = signer
+	client, _, _ := stageCAdmissionClient(t, "admission_accepted_response.json", http.StatusOK,
+		func(request *http.Request, body []byte) {
+			sent = append([]byte(nil), body...)
+			sentBootAuth = request.Header.Get(spendlease.BootAuthHeader)
+		})
+	ctx := fixedStageCContext()
 	req := stageCFixtureRequest()
-	body := chatAuthorizeBody(client, stageCFixtureKeyHash, req.IdempotencyKey, req, "chat.completions")
-	admission := &spendlease.Admission{Receipt: strings.TrimSpace(string(stageCFixture(t, "admission_receipt_compact.jws")))}
-	got, _, err := client.authorizeAtDecodeSeamWithAdmission(
-		fixedStageCContext(), stageCFixtureKeyHash, body, spendLeaseRequestForChat(client.region, "chat.completions", req), admission,
-	)
-	if err != nil {
-		t.Fatal(err)
+	plan, err := client.PrepareSpendLeaseAdmission(ctx, "sk-stage-c-fixture", req, "chat.completions", time.UnixMilli(2_000_000_005_000))
+	if err != nil || plan == nil {
+		t.Fatalf("plan=%v err=%v", plan, err)
 	}
-	if got.AuthorizationID != "gwa-stage-c-fixture" {
-		t.Fatalf("authorization id = %q", got.AuthorizationID)
+	got, marked, err := client.ReserveSpendLeaseAdmission(ctx, plan, req)
+	if err != nil || !marked || got.AuthorizationID != "gwa-stage-c-fixture" {
+		t.Fatalf("authorization=%v marked=%v err=%v", got, marked, err)
 	}
-
-	requestPath := filepath.Join("testdata", "stage_c", "receipt_bearing_authorize_request.json")
-	bootAuthPath := filepath.Join("testdata", "stage_c", "receipt_bearing_authorize_boot_auth.txt")
-	if err := os.WriteFile(requestPath, sent, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(bootAuthPath, []byte(sentBootAuth), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	fmt.Println(requestPath)
-	fmt.Println(bootAuthPath)
+	assertFixtureBytes(t, "receipt_bearing_authorize_request.json", sent)
+	assertFixtureBytes(t, "receipt_bearing_authorize_boot_auth.txt", []byte(sentBootAuth))
 
 	reSigned, err := spendlease.SignAuthorize(
 		stageCFixtureSigner(t),

@@ -2,6 +2,7 @@ package trustedrouter
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -16,6 +17,13 @@ type SpendLeaseAdmissionPlan struct {
 	lookupHash string
 	routeType  string
 	Local      *Authorization
+	// Private snapshots and registry identity never come from caller receipts.
+	owner   *authorizationInvocation
+	client  *Client
+	key     string
+	body    []byte
+	frozen  *Authorization
+	entered bool // guarded by owner.mu; retained after Release/Cancel
 }
 
 func (p *SpendLeaseAdmissionPlan) ReceiptHash() string {
@@ -27,6 +35,11 @@ func (p *SpendLeaseAdmissionPlan) ReceiptHash() string {
 
 func (p *SpendLeaseAdmissionPlan) Cancel() {
 	if p != nil && p.admission != nil {
+		if p.owner != nil {
+			p.owner.mu.Lock()
+			p.entered = true
+			p.owner.mu.Unlock()
+		}
 		p.admission.Release()
 	}
 }
@@ -55,6 +68,11 @@ func (c *Client) PrepareSpendLeaseAdmission(
 	if c == nil || c.spendLease == nil || c.spendLease.state == nil || !c.spendLease.state.LocalAdmissionEnabled() || req == nil {
 		return nil, nil
 	}
+	// Without an explicit shared scope, keep the ordinary synchronous path.
+	owner := explicitAuthorizationInvocation(ctx)
+	if owner == nil {
+		return nil, nil
+	}
 	policyHash, eligible := routingPolicyHash(req, routeType, c.region)
 	if !eligible {
 		return nil, nil
@@ -62,6 +80,11 @@ func (c *Client) PrepareSpendLeaseAdmission(
 	idempotencyKey, err := authorizationIdempotencyKey(req.IdempotencyKey)
 	if err != nil {
 		return nil, err
+	}
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if _, used := owner.claimed[idempotencyKey]; used || owner.plans[idempotencyKey] != nil {
+		return nil, idempotencyReplayConflict()
 	}
 	req.IdempotencyKey = idempotencyKey
 	lookupHash := requestLookupHash(ctx, bearer)
@@ -91,9 +114,23 @@ func (c *Client) PrepareSpendLeaseAdmission(
 		admission.Release()
 		return nil, nil
 	}
-	return &SpendLeaseAdmissionPlan{
+	body, err := json.Marshal(admissionAuthorizeBody(c, lookupHash,
+		chatAuthorizeBody(c, lookupHash, idempotencyKey, req, routeType), admission))
+	if err != nil {
+		admission.Release()
+		return nil, err
+	}
+	frozen := *local
+	frozen.RouteCandidates = append([]RouteCandidate(nil), local.RouteCandidates...)
+	plan := &SpendLeaseAdmissionPlan{
 		admission: admission, lookupHash: lookupHash, routeType: routeType, Local: local,
-	}, nil
+		owner: owner, client: c, key: idempotencyKey, body: body, frozen: &frozen,
+	}
+	if owner.plans == nil {
+		owner.plans = make(map[string]*SpendLeaseAdmissionPlan)
+	}
+	owner.plans[idempotencyKey] = plan
+	return plan, nil
 }
 
 func localAuthorization(admission *spendlease.Admission, request spendlease.EstimateRequest) (*Authorization, bool) {
@@ -131,6 +168,7 @@ func localAuthorization(admission *spendlease.Admission, request spendlease.Esti
 		WorkspaceID: claims.WorkspaceID, APIKeyHash: claims.KeyHash,
 		Model: first.Model, UpstreamModel: first.UpstreamModel, EndpointID: first.EndpointID,
 		Provider: first.Provider, ProviderName: first.ProviderName, UsageType: first.UsageType,
+		Region: request.Region, RequestedModel: request.Model,
 		LimitUsageType: "Credits", WaferZDRRequired: first.WaferZDRRequired,
 		RouteCandidates: candidates, RouteType: request.RouteType,
 	}, true
@@ -160,6 +198,9 @@ func (c *Client) ReserveSpendLeaseAdmission(
 	if c == nil || plan == nil || plan.admission == nil || req == nil {
 		return nil, false, errors.New("trustedrouter: invalid spend-lease admission plan")
 	}
+	if !plan.enterReserve(ctx, c, req.IdempotencyKey) {
+		return nil, false, idempotencyReplayConflict()
+	}
 	defer plan.admission.Release()
 	reserveCtx := ctx
 	cancel := func() {}
@@ -167,9 +208,8 @@ func (c *Client) ReserveSpendLeaseAdmission(
 		reserveCtx, cancel = context.WithDeadline(ctx, deadline)
 	}
 	defer cancel()
-	body := chatAuthorizeBody(c, plan.lookupHash, req.IdempotencyKey, req, plan.routeType)
 	decoded, endpoint, err := c.authorizeAtDecodeSeamWithAdmission(
-		reserveCtx, plan.lookupHash, body, spendLeaseRequestForChat(c.region, plan.routeType, req), plan.admission,
+		reserveCtx, plan.lookupHash, nil, spendlease.EstimateRequest{}, plan,
 	)
 	if err != nil {
 		reason := admissionRejectionReason(err)
@@ -193,21 +233,6 @@ func (c *Client) ReserveSpendLeaseAdmission(
 		fmt.Fprintf(os.Stderr, "spend_lease.admission_unmarked lease_id=%q authorization_id=%q\n", plan.admission.Lease.Claims.LeaseID, decoded.AuthorizationID)
 		return decoded, false, nil
 	}
-	if !marker.Accepted || marker.ReceiptHash != plan.admission.ReceiptHash || decoded.AuthorizationID == "" ||
-		decoded.SpendLeaseRemainingMicro == nil || *decoded.SpendLeaseRemainingMicro < 0 ||
-		*decoded.SpendLeaseRemainingMicro > plan.admission.Lease.Claims.CapMicro ||
-		!admissionAuthorizationMatches(plan.Local, decoded) {
-		c.spendLease.state.ObserveReserve(
-			plan.lookupHash, plan.admission.Lease.Claims.LeaseID, plan.admission.Lease.Claims.Generation,
-			nil, "receipt_invalid", true,
-		)
-		err := &ControlPlaneError{
-			Path: spendlease.AuthorizePath, StatusCode: 502, Type: "admission_rejected", Reason: "receipt_invalid",
-			Message: "invalid spend-lease admission response",
-		}
-		fmt.Fprintf(os.Stderr, "spend_lease.admission_aborted lease_id=%q reason=%q\n", plan.admission.Lease.Claims.LeaseID, "receipt_invalid")
-		return nil, false, err
-	}
 	c.spendLease.state.ObserveReserve(
 		plan.lookupHash, plan.admission.Lease.Claims.LeaseID, plan.admission.Lease.Claims.Generation,
 		decoded.SpendLeaseRemainingMicro, "", true,
@@ -225,6 +250,10 @@ func admissionAuthorizationMatches(local, reserved *Authorization) bool {
 		reserved.APIKeyHash != local.APIKeyHash || reserved.Model != local.Model ||
 		reserved.UpstreamModel != local.UpstreamModel || reserved.EndpointID != local.EndpointID ||
 		reserved.Provider != local.Provider || reserved.UsageType != "Credits" ||
+		reserved.Region != local.Region || reserved.RequestedModel != local.RequestedModel ||
+		reserved.ResponseModel != "" || reserved.HidePublicMetadata || reserved.CustomModel != nil ||
+		reserved.AdditionalCostReservationMicrodollars != 0 || reserved.ReceiptFeeBasisPoints != 0 ||
+		reserved.BYOKSecretRef != "" || reserved.BYOKEncryptedSecret != nil || reserved.BYOKCacheKey != "" || reserved.BYOKProvider != "" ||
 		reserved.LimitUsageType != "Credits" || reserved.WaferZDRRequired != local.WaferZDRRequired ||
 		len(reserved.RouteCandidates) != len(local.RouteCandidates) {
 		return false
@@ -234,7 +263,8 @@ func admissionAuthorizationMatches(local, reserved *Authorization) bool {
 		got := reserved.RouteCandidates[index]
 		if got.EndpointID != want.EndpointID || got.Model != want.Model || got.UpstreamModel != want.UpstreamModel ||
 			got.Provider != want.Provider || got.UsageType != want.UsageType ||
-			got.WaferZDRRequired != want.WaferZDRRequired {
+			got.WaferZDRRequired != want.WaferZDRRequired ||
+			got.BYOKSecretRef != "" || got.BYOKEncryptedSecret != nil || got.BYOKCacheKey != "" || got.BYOKProvider != "" {
 			return false
 		}
 	}
@@ -250,4 +280,39 @@ func admissionRejectionReason(err error) string {
 		return "reserve_timeout"
 	}
 	return "reserve_error"
+}
+
+// enterReserve rejects copied/rebound plans and repeated operations before I/O.
+// The registry and tombstone outlive the admission's in-flight scope.
+func (p *SpendLeaseAdmissionPlan) enterReserve(ctx context.Context, client *Client, key string) bool {
+	owner := explicitAuthorizationInvocation(ctx)
+	if owner == nil || owner != p.owner || client != p.client || key != p.key {
+		return false
+	}
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	_, claimed := owner.claimed[p.key]
+	if owner.plans[p.key] != p || p.entered || claimed {
+		return false
+	}
+	p.entered = true
+	return true
+}
+
+func (p *SpendLeaseAdmissionPlan) validateAcceptance(a *Authorization) error {
+	marker := a.SpendLeaseAdmission
+	if marker == nil || !marker.Accepted || marker.ReceiptHash != p.admission.ReceiptHash || a.AuthorizationID == "" ||
+		a.SpendLeaseRemainingMicro == nil || *a.SpendLeaseRemainingMicro < 0 ||
+		*a.SpendLeaseRemainingMicro > p.admission.Lease.Claims.CapMicro ||
+		!admissionAuthorizationMatches(p.frozen, a) {
+		return invalidAdmissionResponse()
+	}
+	return nil
+}
+
+func invalidAdmissionResponse() error {
+	return &ControlPlaneError{
+		Path: spendlease.AuthorizePath, StatusCode: 502, Type: "admission_rejected", Reason: "receipt_invalid",
+		Message: "invalid spend-lease admission response",
+	}
 }
