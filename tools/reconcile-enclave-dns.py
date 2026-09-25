@@ -58,6 +58,8 @@ import uuid
 from pathlib import Path
 from typing import Iterator, NamedTuple
 
+from cloud_dns_records import record_ips
+
 GCP_ENCLAVE_INVENTORY = Path(__file__).with_name("gcp-enclave-migs.txt")
 # Regions that are being bootstrapped (docs/runbooks/README.md, "Adding a
 # gateway region"). The first-time-region design needs this reconciler to know
@@ -132,6 +134,9 @@ DNS_ZONE = os.environ.get("QUILL_DNS_ZONE", "quillrouter-com")
 API_HOST = os.environ.get("QUILL_API_HOST", "api.quillrouter.com")
 RECORD = API_HOST.rstrip(".") + "."
 TTL = int(os.environ.get("QUILL_DNS_TTL", "60"))
+# Independent of the enclave/billing rollout. All writers must use the same
+# value; unset/0 preserves the existing flat canonical answer.
+CANONICAL_GEO = os.environ.get("QUILL_CANONICAL_GEO", "0") == "1"
 GCLOUD_ATTEMPTS = int(os.environ.get("QUILL_GCLOUD_ATTEMPTS", "3"))
 GCLOUD_TIMEOUT_SECONDS = float(os.environ.get("QUILL_GCLOUD_TIMEOUT_SECONDS", "10"))
 ATTESTATION_SAMPLES = int(os.environ.get("QUILL_ATTESTATION_SAMPLES", "1"))
@@ -709,7 +714,7 @@ def current_dns_record(
 def current_dns_ips(zone: str, record: str) -> list[str]:
     row = current_dns_record(zone, record, "A")
     if row is not None:
-        return list(row.get("rrdatas", []))
+        return record_ips(row)
     return []
 
 
@@ -1029,6 +1034,121 @@ def reconcile_dns_record(
     log(f"reconcile: {label} {record} {current} -> {healthy_ips}")
     if apply:
         set_dns_ips(zone, record, healthy_ips)
+        log(f"reconcile: APPLIED {label} {record}")
+    else:
+        log(f"reconcile: DRY-RUN {label} {record} (pass --apply to change DNS)")
+
+
+def canonical_geo_record(record: str, healthy: list[dict]) -> dict:
+    """Group the already attested, drain/exclusion-filtered canonical fleet."""
+    by_region: dict[str, set[str]] = {}
+    for instance in healthy:
+        by_region.setdefault(instance["region"], set()).add(instance["ip"])
+    items = [{"location": region, "rrdatas": sorted(ips)}
+             for region, ips in sorted(by_region.items()) if ips]
+    if not items:
+        raise ValueError("refusing to publish an empty GEO policy")
+    # No Cloud DNS healthCheck/healthCheckedTargets: serving-socket attestation
+    # remains the health authority. Never fence clients into a failed region.
+    return {"name": record, "type": "A", "ttl": TTL,
+            "routingPolicy": {"geo": {"enableFencing": False, "items": items}}}
+
+
+def _dns_record_data(value):
+    """Strip output-only DNS metadata, preserving the exact old data for CAS."""
+    if isinstance(value, dict):
+        return {key: _dns_record_data(item) for key, item in value.items()
+                if key not in {"kind", "signatureRrdatas"}}
+    if isinstance(value, list):
+        return [_dns_record_data(item) for item in value]
+    return value
+
+
+def _same_dns_record(current: dict | None, desired: dict) -> bool:
+    if current is None:
+        return False
+    current = _dns_record_data(current)
+    if "routingPolicy" in current:
+        current.pop("rrdatas", None)  # API may serialize an empty repeated field
+        geo = current["routingPolicy"].get("geo")
+        if geo is not None:
+            geo.setdefault("enableFencing", False)
+            for item in geo.get("items", []):
+                item["rrdatas"] = sorted(item.get("rrdatas", []))
+            geo["items"] = sorted(geo.get("items", []), key=lambda item: item["location"])
+    else:
+        current["rrdatas"] = sorted(current.get("rrdatas", []))
+    return current == desired
+
+
+def submit_dns_change(zone: str, change: dict) -> None:
+    """One atomic Cloud DNS changes.create, authenticated like the CLI reads.
+
+    gcloud's transaction YAML reader (including SDK 575) discards routingPolicy.
+    Send the native API shape instead. Never issue a standalone delete. On an
+    ambiguous transport failure the next pass re-reads the authoritative set.
+    """
+    token = subprocess.run(
+        ["gcloud", "auth", "print-access-token", "--project", PROJECT],
+        check=True, capture_output=True, text=True, timeout=GCLOUD_TIMEOUT_SECONDS,
+    ).stdout.strip()
+    if not token:
+        raise RuntimeError("gcloud returned no DNS access token")
+    url = ("https://dns.googleapis.com/dns/v1/projects/"
+           + urllib.parse.quote(PROJECT, safe="") + "/managedZones/"
+           + urllib.parse.quote(zone, safe="") + "/changes")
+    request = urllib.request.Request(
+        url, data=json.dumps(change).encode(), method="POST",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    # Token acquisition can take time; check immediately before the mutation.
+    _check_pinned_drains()
+    with urllib.request.urlopen(request, timeout=GCLOUD_TIMEOUT_SECONDS) as response:
+        result = json.load(response)
+    if not result.get("id"):
+        raise RuntimeError("Cloud DNS returned no change ID; re-read before retrying")
+
+
+def replace_dns_record(zone: str, desired: dict) -> None:
+    """Replace either A shape in one atomic change, with one conflict re-read."""
+    if not record_ips(desired):
+        raise ValueError("refusing to publish an empty canonical record")
+    for attempt in range(2):
+        current = current_dns_record(zone, desired["name"], "A")
+        if _same_dns_record(current, desired):
+            return
+        if current is None:
+            current = current_dns_record(zone, desired["name"], "CNAME")
+        change = {"additions": [desired],
+                  "deletions": [_dns_record_data(current)] if current is not None else []}
+        _check_pinned_drains()
+        try:
+            submit_dns_change(zone, change)
+            return
+        except urllib.error.HTTPError as exc:
+            # An exact deletion mismatch/concurrent change is safe: Cloud DNS
+            # rejects the ENTIRE change. Re-read once, never delete separately.
+            if attempt or exc.code not in {409, 412}:
+                raise
+
+
+def reconcile_canonical_record(
+    zone: str, record: str, healthy_ips: list[str], healthy: list[dict],
+    *, apply: bool, label: str,
+) -> None:
+    current = current_dns_record(zone, record, "A")
+    if not CANONICAL_GEO and not (current and "routingPolicy" in current):
+        # Preserve the default flat writer and logs, including its race retry.
+        reconcile_dns_record(zone, record, healthy_ips, apply=apply, label=label)
+        return
+    desired = (canonical_geo_record(record, healthy) if CANONICAL_GEO else
+               {"name": record, "type": "A", "ttl": TTL, "rrdatas": healthy_ips})
+    if _same_dns_record(current, desired):
+        log(f"reconcile: {label} {record} already correct")
+        return
+    log(f"reconcile: {label} {record} -> {json.dumps(desired, sort_keys=True)}")
+    if apply:
+        replace_dns_record(zone, desired)
         log(f"reconcile: APPLIED {label} {record}")
     else:
         log(f"reconcile: DRY-RUN {label} {record} (pass --apply to change DNS)")
@@ -1360,22 +1480,24 @@ def _main_unlocked() -> int:
                 confidential_failed = True
                 log(f"reconcile: confidential membership update failed: {exc}")
 
-            if len(healthy_ips) < MIN_HEALTHY:
+            if not healthy_ips or len(healthy_ips) < MIN_HEALTHY:
                 sys.exit(f"[FAIL] only {len(healthy_ips)} healthy (< MIN_HEALTHY={MIN_HEALTHY}); "
                          "refusing to shrink DNS — leaving last-good record in place")
 
-            reconcile_dns_record(
+            reconcile_canonical_record(
                 DNS_ZONE,
                 RECORD,
                 healthy_ips,
+                canonical_healthy,
                 apply=args.apply,
                 label="canonical",
             )
             for mirror_zone, mirror_record in CANONICAL_MIRRORS:
-                reconcile_dns_record(
+                reconcile_canonical_record(
                     mirror_zone,
                     mirror_record,
                     healthy_ips,
+                    canonical_healthy,
                     apply=args.apply,
                     label="compatibility mirror",
                 )

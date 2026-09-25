@@ -17,6 +17,7 @@ RECORD="${API_HOST%.}."
 TTL_WAIT_SECONDS="${QUILL_DRAIN_TTL_SECONDS:-75}"
 MAX_ROUNDS="${QUILL_DRAIN_MAX_ROUNDS:-36}"
 SLEEP_SECONDS="${QUILL_DRAIN_SLEEP_SECONDS:-5}"
+TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 region_ips() {
   gcloud compute instances list \
@@ -33,10 +34,8 @@ canonical_ips() {
     --zone="${DNS_ZONE}" \
     --name="${RECORD}" \
     --type=A \
-    --format='value(rrdatas[])' \
-    | tr ';' '\n' \
-    | sed '/^$/d' \
-    | sort -u
+    --format=json \
+    | python3 "${TOOLS_DIR}/cloud_dns_records.py" "${RECORD}"
 }
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/tr-drain-XXXXXX")"

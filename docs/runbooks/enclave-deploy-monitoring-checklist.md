@@ -37,8 +37,10 @@ gh run list --workflow=deploy-enclave-gcp.yml --repo Lore-Hex/quill-cloud-proxy 
 ```
 
 Capture current traffic. The primary record is now **`api.trustedrouter.com`**
-(A, reconciler-managed, zone `trustedrouter-com`); `api.quillrouter.com` is a
-CNAME to it.
+(A, reconciler-managed, zone `trustedrouter-com`); `api.quillrouter.com` is its
+permanent A-record mirror in `quillrouter-com`. With `QUILL_CANONICAL_GEO=1`,
+both use GEO routing: `dig` shows only the resolver/client location's answer,
+not the whole fleet. Inspect `--format=json` for all GEO items.
 
 ```bash
 dig @8.8.8.8 +short api.trustedrouter.com A
@@ -152,13 +154,14 @@ it lags:
 
 ```bash
 # Force a reconcile and read its verdict per instance (ok / FAIL)
-gcloud run jobs execute enclave-dns-reconciler --region=us-central1 --project=quill-cloud-proxy --wait
+gcloud run jobs execute enclave-dns-reconciler --region=us-east4 --project=quill-cloud-proxy --wait
 gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="enclave-dns-reconciler"' \
   --project=quill-cloud-proxy --limit=20 --freshness=10m --format='value(textPayload)'
 
 # Then confirm the published A record matches the healthy new IPs
 gcloud dns record-sets list --zone=trustedrouter-com --project=quill-cloud-proxy \
-  --name=api.trustedrouter.com. --type=A --format='value(rrdatas[].list())'
+  --name=api.trustedrouter.com. --type=A --format=json \
+  | python3 tools/cloud_dns_records.py api.trustedrouter.com.
 ```
 
 If a new instance passes `/attestation` directly but the reconciler marks it FAIL,

@@ -138,6 +138,14 @@ SKR_CONTAINER_NAME="skr-sidecar"
 ENCLAVE_CONTAINER_NAME="quill-enclave"
 DNS_LABEL="${DNS_LABEL:-${CONTAINER_GROUP}}"
 API_HOST="${API_HOST:-api-azure.trustedrouter.com}"
+# These names belong exclusively to the attesting GCP fleet reconciler. Never
+# interpret a GEO answer as an absent per-ACI record or overwrite it with one IP.
+case "${API_HOST%.}" in
+  api.trustedrouter.com|api.quillrouter.com)
+    echo "API_HOST is fleet-managed; use an Azure-specific hostname" >&2
+    exit 2
+    ;;
+esac
 # Additional SNI names this region serves, comma-separated.
 #
 # API_HOST stays a SINGLE name because it drives the DNS record this deploy

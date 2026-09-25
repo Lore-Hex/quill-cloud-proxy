@@ -39,6 +39,7 @@ DEFAULT_HOSTS = (
     "eu.trustedrouter.com",
     "trust.trustedrouter.com",
     "api.trustedrouter.com",
+    "api.quillrouter.com",
     "allyrouter.com",
     "www.allyrouter.com",
     "status.allyrouter.com",
@@ -99,6 +100,8 @@ def certificate_expiry(cert: Mapping[str, object]) -> datetime:
 
 
 def probe_expiry(host: str, *, timeout_seconds: float = 10.0) -> datetime:
+    # Standard DNS resolution works for flat and GEO A records. This samples
+    # the resolver/ECS-selected location; DEFAULT_HOSTS also probes each region.
     context = ssl.create_default_context()
     with socket.create_connection((host, 443), timeout=timeout_seconds) as raw:
         with context.wrap_socket(raw, server_hostname=host) as tls:

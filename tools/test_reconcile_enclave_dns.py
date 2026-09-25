@@ -4,6 +4,9 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import json
+import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -11,6 +14,29 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+
+from cloud_dns_records import listed_record_ips, record_ips
+
+
+def setUpModule() -> None:
+    # Any missed mock must fail here, never reach credentials or the network.
+    real_run = subprocess.run
+
+    def offline_run(command, *args, **kwargs):
+        if isinstance(command, str) or Path(command[0]).name not in {"bash", "python3", "python", Path(sys.executable).name}:
+            raise AssertionError(f"unmocked external command: {command}")
+        return real_run(command, *args, **kwargs)
+
+    for patch in (mock.patch.object(reconciler, "CANONICAL_GEO", False),
+                  mock.patch.object(subprocess, "run", side_effect=offline_run),
+                  mock.patch.object(socket.socket, "connect", side_effect=AssertionError("unmocked network"))):
+        patch.start()
+        unittest.addModuleCleanup(patch.stop)
+
+
+def tearDownModule() -> None:
+    # pytest invokes unittest module hooks but does not run its cleanup stack.
+    unittest.doModuleCleanups()
 
 
 SCRIPT = Path(__file__).with_name("reconcile-enclave-dns.py")
@@ -110,6 +136,7 @@ class ConfidentialDNSPolicyTests(unittest.TestCase):
                 mock.patch.object(reconciler, "attest_fleet_with_release_fallback", return_value=([(item, True) for item in fleet], ["sha256:release"])),
                 mock.patch.object(reconciler, "persistent_drains", return_value={}),
                 mock.patch.object(reconciler, "EXCLUDE_CANONICAL_REGIONS", set()),
+                mock.patch.object(reconciler, "current_dns_record", return_value=None),
                 mock.patch.object(reconciler, "reconcile_dns_record") as publish,
                 mock.patch.object(reconciler, "PUBLISH_REGIONAL", False),
             ):
@@ -256,6 +283,9 @@ WEST_RECORD = "api-us-west1.quillrouter.com."
 def run_reconcile(
     *,
     pending: frozenset[str],
+    geo: bool = False,
+    initial_dns: dict[str, dict] | None = None,
+    minimum: int = 2,
     serving: frozenset[str] = SERVING,
     env_excluded: frozenset[str] = frozenset(),
     drains: dict[str, str] | None = None,
@@ -302,6 +332,8 @@ def run_reconcile(
     reads: list[dict[str, str]] = []
     flipped: list[dict[str, str]] = []
     a_reads: dict[str, int] = {}
+    dns = dict(initial_dns or {})
+    changes: list[tuple[str, dict]] = []
 
     def gcloud_json(args: list[str]) -> list[dict]:
         if args[:3] == ["compute", "instances", "list"]:
@@ -318,6 +350,8 @@ def run_reconcile(
         if record_type == "CNAME" and record in cold_cnames:
             return [{"name": record, "type": "CNAME", "ttl": 300,
                      "rrdatas": ["api.quillrouter.com."]}]
+        if record_type == "A" and record in dns:
+            return [dns[record]]
         return []
 
     def persistent_drains() -> dict[str, str]:
@@ -337,6 +371,18 @@ def run_reconcile(
     writes: dict[str, list[str]] = {}
     commands: list[list[str]] = []
     pending_transaction: dict[str, list[str]] = {}
+
+    def submit_dns_change(zone: str, change: dict) -> None:
+        changes.append((zone, change))
+        # Model changes.create: validate all deletions before publishing the
+        # replacement in ONE step. The record is never observably absent.
+        for old in change["deletions"]:
+            if old != dns.get(old["name"]):
+                raise AssertionError("atomic deletion must match old record")
+        for new in change["additions"]:
+            assert record_ips(new), "cannot publish empty membership"
+            dns[new["name"]] = new
+            writes[new["name"]] = sorted(record_ips(new))
 
     def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         # The only subprocesses a pass may start are DNS changes, and only the
@@ -373,6 +419,7 @@ def run_reconcile(
 
     constants = {
         "GCP_ENCLAVE_REGIONS": serving,
+        "CANONICAL_GEO": geo,
         "GCP_ENCLAVE_PENDING_REGIONS": pending,
         # Empty is what an unset QUILL_EXCLUDE_CANONICAL_REGIONS parses to.
         "EXCLUDE_CANONICAL_REGIONS": set(env_excluded),
@@ -384,7 +431,7 @@ def run_reconcile(
         "PUBLISH_REGIONAL": True,
         "REGIONAL_ZONE": "quillrouter-com",
         "REGIONAL_SUFFIX": "quillrouter.com",
-        "MIN_HEALTHY": 2,
+        "MIN_HEALTHY": minimum,
         "MIN_HEALTHY_REGIONAL": 1,
         # Without a lease bucket main() runs the pass and returns its code.
         "RECONCILE_LOCK_BUCKET": "lock-bucket" if lease else "",
@@ -392,6 +439,7 @@ def run_reconcile(
     finished: list[tuple[str, bool]] = []
     fakes = {
         "gcloud_json": gcloud_json,
+        "submit_dns_change": submit_dns_change,
         "trust_digests": lambda: ["sha256:release"],
         "attest": attest,
         # Consulted when an instance fails attestation; the real one runs gcloud.
@@ -428,6 +476,8 @@ def run_reconcile(
         code=code,
         writes=writes,
         commands=commands,
+        changes=changes,
+        dns=dns,
         log=log.getvalue(),
         drain_reads=reads,
         finished=finished,
@@ -1477,6 +1527,348 @@ class RegionalDnsPromotionTests(unittest.TestCase):
         current_record.assert_not_called()
         current_ips.assert_not_called()
         set_ips.assert_not_called()
+
+
+class GeoCanonicalTests(unittest.TestCase):
+    CANONICAL = "api.trustedrouter.com."
+    MIRROR = "api.quillrouter.com."
+
+    @staticmethod
+    def flat(name, ips=None):
+        return {"name": name, "type": "A", "ttl": 60,
+                "rrdatas": [CENTRAL, EAST] if ips is None else ips}
+
+    @staticmethod
+    def geo_record(name, items=None):
+        return {"name": name, "type": "A", "ttl": 60, "routingPolicy": {"geo": {
+            "enableFencing": False,
+            "items": items if items is not None else [
+                {"location": "us-central1", "rrdatas": [CENTRAL]},
+                {"location": "us-east4", "rrdatas": [EAST]},
+            ],
+        }}}
+
+    def test_geo_shape_and_both_mirrors(self):
+        result = run_reconcile(pending=PENDING, geo=True)
+        self.assertEqual(result.code, 0)
+        self.assertEqual(result.changes, [
+            ("trustedrouter-com", {"additions": [self.geo_record(self.CANONICAL)], "deletions": []}),
+            ("quillrouter-com", {"additions": [self.geo_record(self.MIRROR)], "deletions": []}),
+        ])
+        # The same region gets one item, with sorted/deduplicated healthy IPs.
+        record = reconciler.canonical_geo_record(self.CANONICAL, [
+            {"region": "us-central1", "ip": EAST},
+            {"region": "us-central1", "ip": CENTRAL},
+            {"region": "us-central1", "ip": CENTRAL},
+        ])
+        self.assertEqual(record["routingPolicy"]["geo"]["items"], [
+            {"location": "us-central1", "rrdatas": [CENTRAL, EAST]},
+        ])
+
+    def test_dead_region_is_omitted_and_regional_records_stay_flat(self):
+        old = {name: self.geo_record(name) for name in (self.CANONICAL, self.MIRROR)}
+        result = run_reconcile(pending=frozenset(), serving=SERVING | PENDING,
+                               geo=True, unhealthy=(EAST,), initial_dns=old)
+        expected = self.geo_record(self.CANONICAL, [
+            {"location": "us-central1", "rrdatas": [CENTRAL]},
+            {"location": "us-west1", "rrdatas": [WEST]},
+        ])
+        self.assertEqual(result.dns[self.CANONICAL], expected)
+        self.assertEqual(result.changes[0][1]["deletions"], [old[self.CANONICAL]])
+        self.assertEqual(result.writes[WEST_RECORD], [WEST])
+        self.assertEqual(result.writes["api-us-central1.quillrouter.com."], [CENTRAL])
+        self.assertNotIn("api-us-east4.quillrouter.com.", result.writes)
+        self.assertTrue(all(command[3] == "create" and "--rrdatas" in command
+                            for command in result.commands))
+        self.assertEqual({change["additions"][0]["name"] for _, change in result.changes},
+                         {self.CANONICAL, self.MIRROR})
+
+    def test_empty_policy_refused_even_with_zero_minimum(self):
+        old = self.geo_record(self.CANONICAL)
+        result = run_reconcile(pending=PENDING, geo=True, minimum=0,
+                               unhealthy=(CENTRAL, EAST, WEST), initial_dns={self.CANONICAL: old})
+        self.assertIn("refusing to shrink DNS", str(result.code))
+        self.assertEqual(result.changes, [])
+        self.assertEqual(result.dns[self.CANONICAL], old)
+        with self.assertRaisesRegex(ValueError, "empty GEO"):
+            reconciler.canonical_geo_record(self.CANONICAL, [])
+        with self.assertRaisesRegex(ValueError, "empty canonical"):
+            reconciler.replace_dns_record("zone", self.geo_record(self.CANONICAL, []))
+
+    def test_minimum_guard_keeps_last_good_geo(self):
+        old = self.geo_record(self.CANONICAL)
+        result = run_reconcile(pending=PENDING, geo=True, unhealthy=(EAST,),
+                               initial_dns={self.CANONICAL: old})
+        self.assertIn("MIN_HEALTHY=2", str(result.code))
+        self.assertEqual(result.changes, [])
+        self.assertEqual(result.dns[self.CANONICAL], old)
+
+    def test_flat_to_geo_is_one_change_even_when_membership_matches(self):
+        old = {name: self.flat(name) for name in (self.CANONICAL, self.MIRROR)}
+        result = run_reconcile(pending=PENDING, geo=True, initial_dns=old)
+        self.assertEqual(len(result.changes), 2)
+        for _, change in result.changes:
+            name = change["additions"][0]["name"]
+            self.assertEqual(change, {"deletions": [old[name]],
+                                      "additions": [self.geo_record(name)]})
+        self.assertFalse(any(command[3] == "delete" for command in result.commands))
+
+    def test_geo_to_flat_is_one_change_even_when_membership_matches(self):
+        old = {name: self.geo_record(name) for name in (self.CANONICAL, self.MIRROR)}
+        result = run_reconcile(pending=PENDING, geo=False, initial_dns=old)
+        self.assertEqual(len(result.changes), 2)
+        for _, change in result.changes:
+            name = change["additions"][0]["name"]
+            self.assertEqual(change, {"deletions": [old[name]], "additions": [self.flat(name)]})
+            self.assertEqual(result.dns[name], self.flat(name))
+        self.assertFalse(any(command[3] == "delete" for command in result.commands))
+
+    def test_geo_drains_pending_and_exclusions_apply_before_grouping(self):
+        for kwargs in ({"pending": PENDING},
+                       {"pending": frozenset(), "env_excluded": PENDING},
+                       {"pending": frozenset(), "drains": {"us-west1": "operator"}}):
+            with self.subTest(kwargs=kwargs):
+                serving = SERVING if kwargs["pending"] else SERVING | PENDING
+                result = run_reconcile(geo=True, serving=serving, **kwargs)
+                self.assertEqual(result.dns[self.CANONICAL], self.geo_record(self.CANONICAL))
+                self.assertEqual(result.dns[self.MIRROR], self.geo_record(self.MIRROR))
+                self.assertEqual(result.writes[WEST_RECORD], [WEST])
+                self.assertNotIn(WEST, result.confidential)
+
+    def test_default_off_keeps_original_flat_output(self):
+        # Import with no setting so this tests the actual environment default.
+        with mock.patch.dict(os.environ, {}, clear=True):
+            spec = importlib.util.spec_from_file_location("geo_default", SCRIPT)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        self.assertFalse(module.CANONICAL_GEO)
+        result = run_reconcile(pending=frozenset(), geo=module.CANONICAL_GEO)
+        self.assertEqual(result.log, WITHOUT_PENDING_LOG)
+        self.assertEqual(result.changes, [])
+
+    def test_geo_idempotence_ttl_and_location_membership_are_compared(self):
+        old = self.geo_record(self.CANONICAL)
+        old["kind"] = "dns#resourceRecordSet"
+        old["rrdatas"] = []
+        old["routingPolicy"]["geo"].pop("enableFencing")
+        old["routingPolicy"]["geo"]["items"].reverse()
+        with (mock.patch.object(reconciler, "CANONICAL_GEO", True),
+              mock.patch.object(reconciler, "current_dns_record", return_value=old),
+              mock.patch.object(reconciler, "replace_dns_record") as replace):
+            fleet = [{"region": "us-central1", "ip": CENTRAL}, {"region": "us-east4", "ip": EAST}]
+            reconciler.reconcile_canonical_record("zone", self.CANONICAL, [CENTRAL, EAST],
+                                                  fleet, apply=True, label="canonical")
+            replace.assert_not_called()
+            # Same flat IP union but assigned to different locations must update.
+            fleet[0]["region"], fleet[1]["region"] = "us-east4", "us-central1"
+            reconciler.reconcile_canonical_record("zone", self.CANONICAL, [CENTRAL, EAST],
+                                                  fleet, apply=True, label="canonical")
+            self.assertEqual(replace.call_count, 1)
+            fleet = [{"region": "us-central1", "ip": CENTRAL}, {"region": "us-east4", "ip": EAST}]
+            old["ttl"] = 300
+            reconciler.reconcile_canonical_record("zone", self.CANONICAL, [CENTRAL, EAST],
+                                                  fleet, apply=True, label="canonical")
+            self.assertEqual(replace.call_args.args[1]["ttl"], 60)
+            self.assertEqual(replace.call_count, 2)
+
+    def test_dry_run_never_submits_geo_or_shape_switch(self):
+        for enabled, old in ((True, self.flat(self.CANONICAL)),
+                             (False, self.geo_record(self.CANONICAL))):
+            with (self.subTest(enabled=enabled),
+                  mock.patch.object(reconciler, "CANONICAL_GEO", enabled),
+                  mock.patch.object(reconciler, "current_dns_record", return_value=old),
+                  mock.patch.object(reconciler, "replace_dns_record") as replace):
+                reconciler.reconcile_canonical_record("zone", self.CANONICAL, [CENTRAL, EAST],
+                    [{"region": "us-central1", "ip": CENTRAL}, {"region": "us-east4", "ip": EAST}],
+                    apply=False, label="canonical")
+                replace.assert_not_called()
+
+    def test_changed_drain_prevents_atomic_write_and_releases_failed_lease(self):
+        result = run_reconcile(pending=PENDING, geo=True, lease=True,
+                              drain_during_dns_read=(self.CANONICAL, {"us-east4": "operator"}, 2))
+        self.assertEqual(result.code, 1)
+        self.assertEqual(result.changes, [])
+        self.assertEqual(result.finished, [("execution-one", False)])
+
+    def test_atomic_api_request_contains_exact_deletion_and_no_standalone_delete(self):
+        old = self.geo_record(self.CANONICAL)
+        old["ttl"] = 300
+        desired = self.flat(self.CANONICAL)
+        requests = []
+        def post(request, **kwargs):
+            requests.append(request)
+            return contextlib.closing(io.BytesIO(b'{"id":"123","status":"pending"}'))
+        with (mock.patch.object(reconciler, "current_dns_record", return_value=old),
+              mock.patch.object(reconciler.subprocess, "run", return_value=SimpleNamespace(stdout="token\n")) as run,
+              mock.patch.object(reconciler.urllib.request, "urlopen", side_effect=post),
+              mock.patch.object(reconciler, "_check_pinned_drains") as guard):
+            reconciler.replace_dns_record("trustedrouter-com", desired)
+        self.assertEqual(len(requests), 1)
+        request = requests[0]
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(request.full_url, "https://dns.googleapis.com/dns/v1/projects/"
+                         + reconciler.PROJECT + "/managedZones/trustedrouter-com/changes")
+        self.assertEqual(json.loads(request.data), {"deletions": [old], "additions": [desired]})
+        self.assertEqual(request.get_header("Authorization"), "Bearer token")
+        self.assertEqual(run.call_args.args[0][:3], ["gcloud", "auth", "print-access-token"])
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(guard.call_count, 2)
+
+    def test_drain_set_during_token_fetch_blocks_post(self):
+        def token(*args, **kwargs):
+            drains["us-east4"] = "operator"
+            return SimpleNamespace(stdout="token")
+        drains = {}
+        with (mock.patch.object(reconciler, "persistent_drains", side_effect=lambda: dict(drains)),
+              mock.patch.object(reconciler.subprocess, "run", side_effect=token),
+              mock.patch.object(reconciler.urllib.request, "urlopen") as post,
+              reconciler.pinned_drains({}),
+              self.assertRaises(reconciler.DrainsChangedError)):
+            reconciler.submit_dns_change("zone", {"additions": [self.flat(self.CANONICAL)], "deletions": []})
+        post.assert_not_called()
+
+    def test_conflict_retries_with_fresh_exact_record_and_is_bounded(self):
+        old = self.flat(self.CANONICAL)
+        drifted = self.flat(self.CANONICAL, [CENTRAL, WEST])
+        drifted["ttl"] = 300
+        desired = self.geo_record(self.CANONICAL)
+        conflict = reconciler.urllib.error.HTTPError("url", 412, "preconditionFailed", {}, None)
+        with (mock.patch.object(reconciler, "current_dns_record", side_effect=[old, drifted]),
+              mock.patch.object(reconciler, "submit_dns_change", side_effect=[conflict, None]) as submit):
+            reconciler.replace_dns_record("zone", desired)
+        self.assertEqual([call.args[1]["deletions"] for call in submit.call_args_list], [[old], [drifted]])
+        with (mock.patch.object(reconciler, "current_dns_record", return_value=old),
+              mock.patch.object(reconciler, "submit_dns_change", side_effect=conflict) as submit,
+              self.assertRaises(reconciler.urllib.error.HTTPError)):
+            reconciler.replace_dns_record("zone", desired)
+        self.assertEqual(submit.call_count, 2)
+
+    def test_ambiguous_failure_never_deletes_or_blindly_retries(self):
+        old = self.flat(self.CANONICAL)
+        desired = self.geo_record(self.CANONICAL)
+        with (mock.patch.object(reconciler, "current_dns_record", return_value=old),
+              mock.patch.object(reconciler, "submit_dns_change", side_effect=TimeoutError("ambiguous")) as submit,
+              self.assertRaises(TimeoutError)):
+            reconciler.replace_dns_record("zone", desired)
+        self.assertEqual(submit.call_count, 1)
+        self.assertEqual(submit.call_args.args[1], {"deletions": [old], "additions": [desired]})
+        with (mock.patch.object(reconciler, "current_dns_record", return_value=desired),
+              mock.patch.object(reconciler, "submit_dns_change") as submit):
+            reconciler.replace_dns_record("zone", desired)
+        submit.assert_not_called()
+
+    def test_geo_keeps_release_digest_fallback(self):
+        # The rejected signed-set probe is rescued by the existing release
+        # fallback; its result must contribute to GEO like any attested VM.
+        original = reconciler.attest_fleet_with_release_fallback
+        def fallback(fleet, trusted):
+            def attest(ip, digest, *args, **kwargs):
+                return ip != EAST or "sha256:recent" in digest
+            with (mock.patch.object(reconciler, "attest", side_effect=attest),
+                  mock.patch.object(reconciler, "recent_release_digests", return_value=["sha256:recent"])):
+                return original(fleet, trusted)
+        with mock.patch.object(reconciler, "attest_fleet_with_release_fallback", side_effect=fallback):
+            result = run_reconcile(pending=PENDING, geo=True)
+        self.assertEqual(result.code, 0)
+        self.assertEqual(result.dns[self.CANONICAL], self.geo_record(self.CANONICAL))
+
+
+class GeoReaderTests(unittest.TestCase):
+    @staticmethod
+    def load_script(name):
+        spec = importlib.util.spec_from_file_location(name.replace("-", "_"), SCRIPT.with_name(name + ".py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_reconciler_reads_flat_and_geo_for_either_name(self):
+        for name in (GeoCanonicalTests.CANONICAL, GeoCanonicalTests.MIRROR):
+            for row in (GeoCanonicalTests.flat(name), GeoCanonicalTests.geo_record(name)):
+                with (self.subTest(name=name, row=row),
+                      mock.patch.object(reconciler, "gcloud_json", return_value=[row])):
+                    self.assertEqual(reconciler.current_dns_ips("zone", name), [CENTRAL, EAST])
+
+    def test_route53_copies_complete_flat_and_geo_membership(self):
+        sync = self.load_script("sync-route53-api-aliases")
+        for shape in (GeoCanonicalTests.flat, GeoCanonicalTests.geo_record):
+            row = shape(sync.SOURCE_RECORD)
+            # Route53 additionally requires public (not documentation) IPv4.
+            row = json.loads(json.dumps(row).replace(CENTRAL, "34.1.1.1").replace(EAST, "34.2.2.2"))
+            with mock.patch.object(sync, "run_json", return_value=[row]):
+                self.assertEqual(sync.source_ips(), ["34.1.1.1", "34.2.2.2"])
+
+    def test_unknown_or_malformed_policies_fail_closed(self):
+        for row in ({}, {"routingPolicy": {"wrr": {"items": []}}},
+                    {"routingPolicy": {"geo": {"items": "broken"}}},
+                    {"routingPolicy": {"geo": {"items": [{"location": "us-central1"}]}}},
+                    {"rrdatas": "34.1.1.1"}):
+            with self.subTest(row=row), self.assertRaises(ValueError):
+                record_ips(row)
+        for rows in ([], [GeoCanonicalTests.flat(GeoCanonicalTests.CANONICAL, [])],
+                     [GeoCanonicalTests.geo_record(GeoCanonicalTests.CANONICAL, [])]):
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                listed_record_ips(rows, GeoCanonicalTests.CANONICAL)
+
+    def run_drain(self, row):
+        # Run the actual shell gate with local shell functions replacing cloud
+        # reads/sleep. No cloud executable or network is reachable from this test.
+        script = '''
+function gcloud() {
+  if [ "$1" = compute ]; then printf '%s\\n' "$TEST_REGION_IP";
+  else printf '%s\\n' "$TEST_RECORD"; fi
+}
+function sleep() { :; }
+export -f gcloud sleep
+source tools/wait-canonical-drained.sh us-east4
+'''
+        env = dict(os.environ, TEST_REGION_IP=EAST, TEST_RECORD=json.dumps(row),
+                   QUILL_DRAIN_TTL_SECONDS="0", QUILL_DRAIN_MAX_ROUNDS="1", QUILL_DRAIN_SLEEP_SECONDS="0",
+                   QUILL_API_HOST=GeoCanonicalTests.CANONICAL.rstrip("."))
+        return subprocess.run(["bash", "-c", script], env=env, cwd=SCRIPT.parent.parent,
+                              capture_output=True, text=True)
+
+    def test_shell_drain_gate_cannot_mistake_geo_for_empty(self):
+        for shape in (GeoCanonicalTests.flat, GeoCanonicalTests.geo_record):
+            row = shape(GeoCanonicalTests.CANONICAL)
+            result = self.run_drain([row])
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("did not drain", result.stderr)
+            if "routingPolicy" in row:
+                row["routingPolicy"]["geo"]["items"].pop()
+            else:
+                row["rrdatas"].remove(EAST)
+            result = self.run_drain([row])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("absent from authoritative", result.stdout)
+
+    def test_shell_drain_gate_fails_on_missing_record(self):
+        result = self.run_drain([])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("absent from authoritative", result.stdout)
+
+    def test_azure_deploy_refuses_canonical_or_mirror_dns_ownership(self):
+        for host in ("api.trustedrouter.com", "api.quillrouter.com."):
+            # Execute only the configuration prefix before any cloud operation.
+            prefix = SCRIPT.with_name("deploy-azure-aci.sh").read_text().split("# Additional SNI names")[0]
+            result = subprocess.run(["bash", "-c", prefix], env=dict(os.environ, API_HOST=host),
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("fleet-managed", result.stderr)
+
+    def test_workflow_writers_share_setting_and_image_contains_parser(self):
+        root = SCRIPT.parent.parent
+        for name in ("reconcile-enclave-dns.yml", "deploy-enclave-gcp.yml",
+                     "relieve-mig-stockout.yml", "deploy-enclave-dns-reconciler.yml"):
+            source = (root / ".github/workflows" / name).read_text()
+            self.assertIn("QUILL_CANONICAL_GEO: ${{ vars.QUILL_CANONICAL_GEO || '0' }}", source)
+        deploy = (root / ".github/workflows/deploy-enclave-dns-reconciler.yml").read_text()
+        self.assertIn("QUILL_CANONICAL_GEO=${QUILL_CANONICAL_GEO}", deploy)
+        self.assertIn('"tools/cloud_dns_records.py"', deploy)
+        docker = SCRIPT.with_name("Dockerfile.reconciler").read_text()
+        self.assertTrue(any(line.startswith("COPY ") and "cloud_dns_records.py" in line
+                            for line in docker.splitlines()))
+        tf = (root / "tools/dns/main.tf").read_text()
+        self.assertIn("ignore_changes = [rrdatas, ttl, routing_policy]", tf)
 
 
 if __name__ == "__main__":

@@ -258,6 +258,11 @@ resource "google_dns_record_set" "quill_api_a" {
   ttl          = 300
   managed_zone = local.quill_cloud_dns_zone
   rrdatas      = [local.quill_canonical_api_ip]
+  // The attesting reconciler owns membership, TTL and the flat/GEO shape.
+  // Terraform must not restore the historical bootstrap IP after a refresh.
+  lifecycle {
+    ignore_changes = [rrdatas, ttl, routing_policy]
+  }
 }
 
 resource "google_dns_record_set" "quill_api_eu_a" {
