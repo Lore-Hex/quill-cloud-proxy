@@ -142,6 +142,7 @@ jobs:
           python3 tools/test_validate_control_plane_endpoints.py
           python3 tools/test_azure_bundle_manifest.py
           python3 tools/test_relieve_mig_stockout.py
+          python3 tools/test_ensure_trustedrouter_control_host_cert.py
       # Separate step: this one is ~2 minutes where the others are seconds, so
       # a failure here should be legible as "the Azure deploy script broke"
       # rather than hiding at the bottom of a list. It stubs az, docker and the

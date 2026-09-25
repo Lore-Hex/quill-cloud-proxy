@@ -59,9 +59,12 @@ the authoritative parent-zone NS set.
 DNS only gets the hostname to the load balancer. The Google-managed
 certificates on `trusted-router-control-https-proxy` must also cover the
 new hostname, or browsers will reject TLS. Every independently hosted
-hostname must have its own certificate. In particular, never combine
-`trustedrouter.com` with `trust.trustedrouter.com`: the trust site is hosted
-on GitHub Pages, so GCP cannot renew a shared certificate. After adding a
+hostname must have its own classic certificate. In particular, never combine
+`trustedrouter.com` with `trust.trustedrouter.com` in one classic certificate:
+the trust site is hosted on GitHub Pages, so GCP cannot renew a shared
+load-balancer-authorized certificate. This rule does not apply to the
+certificate map described below, whose DNS-authorized certificates renew
+wherever a hostname is hosted. After adding a
 record such as `eu.trustedrouter.com`, run:
 
 ```bash
@@ -72,6 +75,17 @@ GCLOUD_ACCOUNT=<account-with-compute-ssl-permissions> \
 The account needs `compute.sslCertificates.create` and
 `compute.targetHttpsProxies.update`. The deploy service account used for
 DNS may not have those permissions.
+
+When the proxy has a Certificate Manager certificate map (quill-router
+`infra/control_lb_certificate_map.tf`), it serves the map's certificates and
+ignores its classic ones. The map's `trustedrouter.com` and
+`*.trustedrouter.com` entries use a DNS-authorized certificate, which renews
+wherever the hostname is hosted. The script then creates and attaches no
+certificate: it succeeds when the hostname has an `ACTIVE` map entry with an
+`ACTIVE` certificate and fails otherwise. In that case the account needs
+`compute.targetHttpsProxies.get`, `certificatemanager.certmapentries.list` and
+`certificatemanager.certs.list` instead of the permissions above. A hostname the
+map does not cover is added in quill-router's `infra/`, not with this script.
 
 `eu.trustedrouter.com` uses the control-plane global load balancer and must be
 included on the GCP HTTPS proxy certificate.
