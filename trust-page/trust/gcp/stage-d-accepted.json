@@ -1,11 +1,10 @@
 {
   "schema": "tr.stage-d-accepted/1",
   "plane": "gcp",
-  "sequence": 982,
-  "kind": "transitional",
-  "issued_at": "2026-09-25T01:11:57Z",
+  "sequence": 983,
+  "kind": "final",
+  "issued_at": "2026-09-25T03:47:43Z",
   "image_digests": [
-    "sha256:38bd587c4102e119cf13b24b8572002a01ef2c04f66224695b8c8a009aa8e7cb",
-    "sha256:db40aa252fba8bdf4363edb53532a552a4fb28680b1b11b3e7199883d2e40f4f"
+    "sha256:38bd587c4102e119cf13b24b8572002a01ef2c04f66224695b8c8a009aa8e7cb"
   ]
 }
