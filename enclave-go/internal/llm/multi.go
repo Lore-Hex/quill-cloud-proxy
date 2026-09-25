@@ -173,10 +173,10 @@ func (m *multiClient) InvokeStreaming(
 ) error {
 	option := firstOptions(options)
 	provider := normalizeDirectProvider(option.Provider)
-	if provider == "scaledown" {
+	if provider == "scaledown" || provider == "privatemode" {
 		client := m.direct[provider]
 		if client == nil {
-			return fmt.Errorf("llm/scaledown: missing provider credentials")
+			return fmt.Errorf("llm/%s: missing provider credentials", provider)
 		}
 		return client.InvokeStreaming(ctx, req, body, out, options...)
 	}

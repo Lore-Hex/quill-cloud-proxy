@@ -49,6 +49,9 @@ func (c *openAICompatibleClient) InvokeEmbedding(
 	if option.Provider != "" {
 		provider = normalizeDirectProvider(option.Provider)
 	}
+	if c.provider == "privatemode" || provider == "privatemode" {
+		return nil, fmt.Errorf("llm/privatemode: only attested chat inference is supported")
+	}
 	apiKey := c.apiKey
 	baseURL := c.baseURL
 	// BYOK: the customer's key (resolved upstream) overrides the bootstrap

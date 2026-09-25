@@ -17,7 +17,7 @@
 # a new bundle (which regenerates this file and prints a new version), pin the
 # new QUILL_AZURE_BUNDLE_VERSION, and commit this file in the same change.
 #
-# bundle-version: ed3bc17b16f041cdbfd6031d6ebea874
+# bundle-version: 6749e31753114f5c9960094790fe233c
 quill-device-keys
 quill-openrouter-key
 tr-azure-acme-cache-key
@@ -65,6 +65,7 @@ trustedrouter-openai-video-key
 trustedrouter-parasail-api-key
 trustedrouter-pearl-api-key
 trustedrouter-phala-confidential-api-key
+trustedrouter-privatemode-api-key
 trustedrouter-runway-api-key
 trustedrouter-scaledown-api-key
 trustedrouter-siliconflow-api-key

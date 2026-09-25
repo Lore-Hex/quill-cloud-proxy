@@ -25,6 +25,8 @@ type Spec struct {
 }
 
 var specs = [...]Spec{
+	// Secret registry only: inference is intercepted by the pinned E2EE adapter.
+	{Provider: "privatemode", BaseURL: "https://api.privatemode.ai/v1", SecretEnv: "QUILL_PRIVATEMODE_SECRET", SecretName: "trustedrouter-privatemode-api-key", SecretLabel: "Privatemode key"},
 	// Polyphemus uses /modelSelect only, never a Telluvian generation route.
 	{Provider: "telluvian", BaseURL: "https://api.telluvian.ai/v1", SecretEnv: "QUILL_TELLUVIAN_SECRET", SecretName: "trustedrouter-telluvian-api-key", SecretLabel: "Telluvian selector key"},
 	{Provider: "nextbit", BaseURL: "https://api.nextbit256.com/v1", SecretEnv: "QUILL_NEXTBIT_SECRET", SecretName: "trustedrouter-nextbit-api-key", SecretLabel: "nextbit key"},

@@ -43,6 +43,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/entropy"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/imagegen"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/privatemode"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"golang.org/x/crypto/acme/autocert"
@@ -156,6 +157,9 @@ var responseWriteTimeout = 30 * time.Second
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
+	if privatemode.ProxyEntrypoint() {
+		return
+	}
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -229,6 +233,9 @@ func main() {
 	// silent rotation produces a new attestation.
 	registry := auth.New(boot.Devices)
 	deviceBlob, _ := json.Marshal(boot.Devices)
+	if strings.TrimSpace(boot.ProviderAPIKeys["privatemode"]) != "" {
+		go privatemode.Supervise(ctx, llm.ConfigurePrivatemode)
+	}
 	br := llm.New(boot) // build-tag-gated: AWS Bedrock by default, GCP Vertex with -tags gcp
 	imageProviderGateway = imagegen.NewRegistry(imageProviderKeys(boot), llm.NewProviderHTTPClient())
 	trGateway := trustedrouter.NewFromBootstrap(boot)

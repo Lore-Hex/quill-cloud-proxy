@@ -78,7 +78,11 @@ RUN cd sidecar && go mod download \
 RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 
 # ─── Scratch runtime, both binaries ─────────────────────────────────────────
+# Vendor-distributed proxy, pinned for both supply chain and verifier behavior.
+FROM ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.57.0@sha256:77e8f378d5151d6abf36e02c7b8622996dcc4ded09b4ef4860b538a5dcc557c6 AS privatemode
+
 FROM scratch
+COPY --from=privatemode /bin/privatemode-proxy /privatemode-proxy
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /out/rootfs/ /
 COPY --from=builder /out/quill-enclave /quill-enclave

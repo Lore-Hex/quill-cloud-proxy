@@ -54,6 +54,7 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	var usage *openAIStreamUsage
 	serviceTier := ""
 	thinkingStarted := false
+	sawDone, sawFinish := false, false
 	var citations []string
 	var searchResults []qtypes.ProviderSearchResult
 	for scanner.Scan() {
@@ -63,6 +64,7 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 		}
 		payload := line[len("data: "):]
 		if payload == "[DONE]" {
+			sawDone = true
 			break
 		}
 
@@ -101,6 +103,9 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			Usage *openAIStreamUsage `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			if provider == "privatemode" {
+				return fmt.Errorf("llm/privatemode: malformed encrypted response chunk")
+			}
 			continue
 		}
 		if chunk.ServiceTier != "" {
@@ -175,11 +180,15 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			}
 		}
 		if choice.FinishReason != nil && *choice.FinishReason != "" {
+			sawFinish = true
 			stopReason = mapOpenAIFinishReason(*choice.FinishReason)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("llm/openai-stream: scan: %w", err)
+	}
+	if provider == "privatemode" && (!sawDone || !sawFinish || usage == nil || usage.PromptTokens <= 0 || usage.CompletionTokens < 0) {
+		return fmt.Errorf("llm/privatemode: incomplete encrypted stream or missing billable usage")
 	}
 
 	for _, index := range toolOrder {

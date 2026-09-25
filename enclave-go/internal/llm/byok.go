@@ -64,6 +64,7 @@ type openAICompatibleRequest struct {
 	Messages          []chatMessage `json:"messages"`
 	Stream            bool          `json:"stream"`
 	UserCacheSecret   string        `json:"user_cache_secret,omitempty"`
+	CacheSalt         string        `json:"cache_salt,omitempty"`
 	SearchContextSize string        `json:"search_context_size,omitempty"`
 	// max_tokens vs max_completion_tokens: OpenAI's gpt-5.x family
 	// (gpt-5, gpt-5.1, ..., gpt-5.4, gpt-5.4-mini, gpt-5.4-nano,
@@ -287,6 +288,11 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	if normalizeDirectProvider(provider) == "tinfoil" {
 		reqBody.UserCacheSecret = strings.TrimSpace(options.providerCacheScope)
 	}
+	if normalizeDirectProvider(provider) == "privatemode" {
+		if err := preparePrivatemodeWire(req, body, &reqBody, options.providerCacheScope); err != nil {
+			return err
+		}
+	}
 	var payload any = reqBody
 	path := directChatCompletionsPath(provider)
 	nativeResponses := useOpenAIResponses(provider, reqBody)
@@ -337,6 +343,11 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if normalizeDirectProvider(provider) == "privatemode" {
+			// The untrusted edge can return plaintext errors. Preserve status
+			// for fallback/retry policy, but never trust or echo its body.
+			return &upstreamHTTPError{status: resp.StatusCode, body: "Privatemode encrypted upstream request failed"}
+		}
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
 			return fmt.Errorf("llm/%s: read error body: %w", provider, readErr)
