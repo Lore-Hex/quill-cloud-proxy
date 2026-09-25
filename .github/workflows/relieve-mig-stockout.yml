@@ -91,7 +91,7 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
       - uses: astral-sh/setup-uv@v5
       - name: Authenticate to AWS for backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -178,7 +178,7 @@ jobs:
 
       - name: Refresh AWS credentials for the final DNS pass
         if: ${{ always() && steps.group.outcome == 'success' }}
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
