@@ -343,6 +343,11 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if normalizeDirectProvider(provider) == "privatemode" {
+			// The untrusted edge can return plaintext errors. Preserve status
+			// for fallback/retry policy, but never trust or echo its body.
+			return &upstreamHTTPError{status: resp.StatusCode, body: "Privatemode encrypted upstream request failed"}
+		}
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
 			return fmt.Errorf("llm/%s: read error body: %w", provider, readErr)

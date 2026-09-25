@@ -88,6 +88,23 @@ func TestPrivatemodeOtherAPIsNeverUsePublicEndpoint(t *testing.T) {
 	}
 }
 
+func TestPrivatemodeDoesNotEchoUntrustedErrors(t *testing.T) {
+	defer ConfigurePrivatemode(nil)
+	for _, status := range []int{400, 401, 429, 500, 503} {
+		ConfigurePrivatemode(&http.Client{Transport: byokRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("sensitive-untrusted-error-body"))}, nil
+		})})
+		err := newOpenAICompatible("privatemode", "synthetic-key").InvokeStreaming(t.Context(),
+			&qtypes.OpenAIChatRequest{Model: "openai/gpt-oss-120b"},
+			&qtypes.AnthropicMessagesRequest{MaxTokens: 16, Messages: []qtypes.AnthropicMessage{{Role: "user", Content: "synthetic"}}},
+			io.Discard, InvokeOptions{Provider: "privatemode", UpstreamModel: "gpt-oss-120b"})
+		got, ok := HTTPStatusFromError(err)
+		if !ok || got != status || strings.Contains(err.Error(), "sensitive-untrusted") {
+			t.Fatalf("error status lost or body leaked: %v", err)
+		}
+	}
+}
+
 func TestPrivatemodeReasoningAndCacheScope(t *testing.T) {
 	for _, tc := range []struct {
 		model, effort string

@@ -13,6 +13,12 @@ so the client does not need NVIDIA egress tunnels. This is deployment-level
 attestation, not a per-response cryptographic assertion of model identity.
 Ordinary provider HTTPS is used only for metadata discovery, never inference.
 
+Encryption does not hide all routing metadata. Privatemode's API edge sees
+model/account information, estimated input length, and cache-sharding headers.
+Scoped caching creates a stable workspace pseudonym (a truncated hash, not the
+workspace ID) and shared-prefix structure for long inputs. Request contents
+remain encrypted; do not claim traffic unlinkability or hidden token lengths.
+
 The embedded manifest is immutable (`WorkloadOwnerKeyDigests=[]`). No runtime
 CDN refresh is permitted. Invalid attestation, changed measurements, certificate
 revocation, an absent proxy, or an unreviewed native model fails closed. There
@@ -42,7 +48,8 @@ sealed memfds. The temporary directory holds only public attestation collateral.
 Vendor stdout/stderr are discarded. Lifecycle events contain version, manifest
 hash, exit code, and restart delay, not prompt, response, thinking, or keys.
 Do not forward raw vendor errors: they may incorporate untrusted upstream
-response bodies. Request-stage failures use the shared redacted provider path.
+response bodies. Request-stage HTTP failures preserve the status for fallback
+and retry but replace the body with a fixed provider error.
 
 `privatemode.proxy_listening` is local readiness, not an attestation-success
 claim. Upstream attestation happens lazily when a request supplies credentials;
