@@ -74,12 +74,12 @@
       <aside class="panel">
         <h2>GCP workload release</h2>
         <div class="kv">
-          <div><div class="label">Source commit</div><div class="value">bbac7d8b</div></div>
-          <div><div class="label">Image</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-bbac7d8b</div></div>
-          <div><div class="label">Accepted image references</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-bbac7d8b</div></div>
-          <div><div class="label">Target digest</div><div class="value">sha256:63724a9f372d07b35f1e56faa8568f5141543e054fb711494e993d1af8b099e9</div></div>
-          <div><div class="label">Release state</div><div class="value">current</div></div>
-          <div><div class="label">Accepted measured digests</div><div class="value">sha256:63724a9f372d07b35f1e56faa8568f5141543e054fb711494e993d1af8b099e9</div></div>
+          <div><div class="label">Source commit</div><div class="value">f224fbf7</div></div>
+          <div><div class="label">Image</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-f224fbf7</div></div>
+          <div><div class="label">Accepted image references</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-5a332b45, us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-f5e54dad, us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-bbac7d8b, us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-f224fbf7</div></div>
+          <div><div class="label">Target digest</div><div class="value">sha256:b4d7381cf04f9a179f3c8ab4da399078b688495dc2418c6bf70ff99b5532ae30</div></div>
+          <div><div class="label">Release state</div><div class="value">rolling</div></div>
+          <div><div class="label">Accepted measured digests</div><div class="value">sha256:db40aa252fba8bdf4363edb53532a552a4fb28680b1b11b3e7199883d2e40f4f, sha256:38bd587c4102e119cf13b24b8572002a01ef2c04f66224695b8c8a009aa8e7cb, sha256:63724a9f372d07b35f1e56faa8568f5141543e054fb711494e993d1af8b099e9, sha256:b4d7381cf04f9a179f3c8ab4da399078b688495dc2418c6bf70ff99b5532ae30</div></div>
           <div><div class="label">Attested gateway repo</div><div class="value"><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Lore-Hex/quill-cloud-proxy</a></div></div>
           <div><div class="label">API base</div><div class="value">https://api.trustedrouter.com/v1</div></div>
         </div>
@@ -176,15 +176,21 @@
       <h2>Machine-readable release</h2>
       <pre>{
   &quot;accepted_image_digests&quot;: [
-    &quot;sha256:63724a9f372d07b35f1e56faa8568f5141543e054fb711494e993d1af8b099e9&quot;
+    &quot;sha256:db40aa252fba8bdf4363edb53532a552a4fb28680b1b11b3e7199883d2e40f4f&quot;,
+    &quot;sha256:38bd587c4102e119cf13b24b8572002a01ef2c04f66224695b8c8a009aa8e7cb&quot;,
+    &quot;sha256:63724a9f372d07b35f1e56faa8568f5141543e054fb711494e993d1af8b099e9&quot;,
+    &quot;sha256:b4d7381cf04f9a179f3c8ab4da399078b688495dc2418c6bf70ff99b5532ae30&quot;
   ],
   &quot;accepted_image_references&quot;: [
-    &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-bbac7d8b&quot;
+    &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-5a332b45&quot;,
+    &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-f5e54dad&quot;,
+    &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-bbac7d8b&quot;,
+    &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-f224fbf7&quot;
   ],
   &quot;api_base_url&quot;: &quot;https://api.trustedrouter.com/v1&quot;,
   &quot;attestation_audience&quot;: &quot;quill-cloud&quot;,
   &quot;attestation_issuer&quot;: &quot;https://confidentialcomputing.googleapis.com&quot;,
-  &quot;commit&quot;: &quot;bbac7d8b&quot;,
+  &quot;commit&quot;: &quot;f224fbf7&quot;,
   &quot;compliance&quot;: {
     &quot;hipaa_readiness&quot;: &quot;https://trustedrouter.com/legal/hipaa-readiness&quot;,
     &quot;hipaa_status&quot;: &quot;readiness_documentation_prepared_baa_required_for_phi&quot;,
@@ -200,8 +206,8 @@
     &quot;control_plane_prompt_access&quot;: false,
     &quot;prompt_output_storage&quot;: false
   },
-  &quot;image_digest&quot;: &quot;sha256:63724a9f372d07b35f1e56faa8568f5141543e054fb711494e993d1af8b099e9&quot;,
-  &quot;image_reference&quot;: &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-bbac7d8b&quot;,
+  &quot;image_digest&quot;: &quot;sha256:b4d7381cf04f9a179f3c8ab4da399078b688495dc2418c6bf70ff99b5532ae30&quot;,
+  &quot;image_reference&quot;: &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-f224fbf7&quot;,
   &quot;platform&quot;: &quot;gcp-confidential-space&quot;,
   &quot;receipts&quot;: {
     &quot;accepted_specs&quot;: [
@@ -219,9 +225,9 @@
     &quot;key_log&quot;: &quot;https://trustedrouter.com/.well-known/inference-receipt-keys&quot;,
     &quot;spec&quot;: &quot;inference-receipt/1&quot;
   },
-  &quot;release_state&quot;: &quot;current&quot;,
+  &quot;release_state&quot;: &quot;rolling&quot;,
   &quot;released_by&quot;: &quot;github-actions:deploy-enclave-gcp&quot;,
-  &quot;source_commit&quot;: &quot;bbac7d8b&quot;,
+  &quot;source_commit&quot;: &quot;f224fbf7&quot;,
   &quot;source_repo&quot;: &quot;https://github.com/Lore-Hex/quill-cloud-proxy&quot;,
   &quot;source_repositories&quot;: {
     &quot;attested_gateway&quot;: &quot;https://github.com/Lore-Hex/quill-cloud-proxy&quot;,
