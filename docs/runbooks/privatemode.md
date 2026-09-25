@@ -128,6 +128,29 @@ plaintext provider to work around a failed verification or unavailable cloud.
 
 ## Pin Updates
 
+### 2026-09-25 AWS And Azure Rollout Evidence
+
+Enclave source `3c0cb55932768a4ee78ad512e6da71c380465f3e` was deployed
+before catalog activation. Each replacement host returned successful encrypted
+boot probes for all three pinned models with nonzero input/output usage.
+
+- AWS Paris: instance refresh `bf72fe33-9831-4da5-805b-bc9440445ed6`
+  completed; hosts `i-0ca2894db26b3ee70` and `i-013f86cbdd7007491` passed.
+- AWS Dublin: instance refresh `f0f4c291-bbf4-4d65-8dff-bfaa8f0202de`
+  completed; hosts `i-0e836fc468f1e11a7` and `i-0d659cbcee0a5a82f` passed.
+  Six fresh, nonce/channel-bound Nitro attestation samples through each
+  regional load balancer accepted only the new PCR0. Both active ECS monitor
+  pins were narrowed to that PCR0 after the rolls completed.
+- Azure Dubai and Sydney: stable container groups passed encrypted probes and
+  nonce/channel-bound MAA attestation. Traffic Manager targets are the stable
+  groups; Sydney's direct regional DNS is restored to its stable group. The
+  bootstrap key-release policy now accepts only the two new regional hostdata
+  values, preserving each region's issuer binding.
+
+The AWS and Azure trust records hold the exact resulting measurements.
+This evidence does not assert catalog activation or completion of the separate
+GCP workflow, and does not bypass the control-plane cross-cloud bake gate.
+
 New discovery results do not extend the encrypted model allowlist. Repeat the
 review/reproduction/probe gates for every vendor release, update Docker pins,
 the embedded manifest and its tests together, and roll the enclave before
