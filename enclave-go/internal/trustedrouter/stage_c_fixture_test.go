@@ -253,7 +253,7 @@ func TestStageCReceiptBearingAuthorizeEmitsEnclaveCanonicalBytes(t *testing.T) {
 			"receipt_bearing_authorize_request.json":  sent,
 			"receipt_bearing_authorize_boot_auth.txt": []byte(sentBootAuth),
 		} {
-			if err := os.WriteFile(filepath.Join("testdata", "stage_c", name), body, 0644); err != nil {
+			if err := writeStageCWireFixture(filepath.Join("testdata", "stage_c", name), body); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -393,3 +393,26 @@ func equalStrings(left, right []string) bool {
 }
 
 func intPointer(value int) *int { return &value }
+
+func writeStageCWireFixture(path string, body []byte) error {
+	return os.WriteFile(path, body, 0o600)
+}
+
+func TestStageCWireFixturePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fixture.json")
+	want := []byte(`{"fixture":true}`)
+	if err := writeStageCWireFixture(path, want); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("fixture permissions = %04o, want 0600", got)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("fixture bytes = %q, err = %v", got, err)
+	}
+}

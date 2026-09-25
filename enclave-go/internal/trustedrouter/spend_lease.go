@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/receipt"
@@ -337,7 +336,7 @@ func idempotencyReplayConflict() error {
 
 func spendLeaseRequestForChat(region, routeType string, req *qtypes.OpenAIChatRequest) spendlease.EstimateRequest {
 	request := spendlease.EstimateRequest{
-		Model: req.Model, RouteType: routeType, Region: region, ServiceTier: strings.ToLower(strings.TrimSpace(req.ServiceTier)),
+		Model: req.Model, RouteType: routeType, Region: region, ServiceTier: req.ServiceTier,
 		EstimatedInputTokens: int64(EstimateInputTokens(req)),
 	}
 	if req.MaxTokens != nil {

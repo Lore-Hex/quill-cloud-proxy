@@ -158,14 +158,27 @@ func stageCPrimeMarkerlessLease(t *testing.T, gateway *trustedrouter.Client) {
 
 func stageCPrimeLeaseForRoute(t *testing.T, gateway *trustedrouter.Client, route string) {
 	t.Helper()
+	stageCPrimeLeaseForRouteAndTier(t, gateway, route, "", false)
+}
+
+func stageCPrimeLeaseForRouteAndTier(t *testing.T, gateway *trustedrouter.Client, route, tier string, tierPresent bool) {
+	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for attempt := 0; time.Now().Before(deadline); attempt++ {
 		prime := stageCMarkerlessRequest(t, fmt.Sprintf("markerless-prime-%d", attempt))
+		prime.ServiceTier = tier
+		if tierPresent && route == "chat.completions" {
+			prime.RequestedParameters = append(prime.RequestedParameters, "service_tier")
+		}
 		ctx := trustedrouter.WithAuthorizationInvocation(context.Background())
 		if _, err := gateway.AuthorizeWithRoute(ctx, stageCMarkerlessBearer, prime, route); err != nil {
 			t.Fatalf("prime spend lease: %v", err)
 		}
 		probe := stageCMarkerlessRequest(t, fmt.Sprintf("markerless-probe-%d", attempt))
+		probe.ServiceTier = tier
+		if tierPresent && route == "chat.completions" {
+			probe.RequestedParameters = append(probe.RequestedParameters, "service_tier")
+		}
 		plan, err := gateway.PrepareSpendLeaseAdmission(trustedrouter.WithAuthorizationInvocation(context.Background()), stageCMarkerlessBearer, probe, route, time.Now())
 		if err != nil {
 			t.Fatalf("probe local admission: %v", err)
@@ -200,7 +213,17 @@ func stageCMarkerlessLease(t *testing.T) (string, *receipt.Signer, *spendlease.V
 
 func stageCLeaseForRoute(t *testing.T, route string) (string, *receipt.Signer, *spendlease.Verifier) {
 	t.Helper()
-	policyHash, eligible := trustedrouter.RoutingPolicyHash(stageCMarkerlessRequest(t, "lease-policy"), route, "")
+	return stageCLeaseForRouteAndTier(t, route, "", false)
+}
+
+func stageCLeaseForRouteAndTier(t *testing.T, route, tier string, tierPresent bool) (string, *receipt.Signer, *spendlease.Verifier) {
+	t.Helper()
+	req := stageCMarkerlessRequest(t, "lease-policy")
+	req.ServiceTier = tier
+	if tierPresent && route == "chat.completions" {
+		req.RequestedParameters = append(req.RequestedParameters, "service_tier")
+	}
+	policyHash, eligible := trustedrouter.RoutingPolicyHash(req, route, "")
 	if !eligible {
 		t.Fatal("fixture route ineligible")
 	}
@@ -217,7 +240,7 @@ func stageCLeaseForRoute(t *testing.T, route string) (string, *receipt.Signer, *
 		IssuedAt: now.Add(-time.Second).Unix(), ExpiresAt: now.Add(59 * time.Second).Unix(), BootKID: signer.Kid(),
 		Catalog: spendlease.Catalog{Version: "stage-c-markerless", Candidates: []spendlease.Candidate{{
 			EndpointID: stageCLocalEndpoint, Model: stageCMarkerlessModel, UpstreamModel: "gpt-4o-mini",
-			Provider: "local-snapshot", UsageType: "Credits", Region: "", RouteType: route,
+			Provider: "local-snapshot", UsageType: "Credits", Region: "", RouteType: route, ServiceTier: tier,
 			InputPriceMicroPerMTok: 150000, OutputPriceMicroPerMTok: 600000, CacheReadMicroPerMTok: 75000,
 		}}},
 	}
@@ -422,6 +445,11 @@ func TestServeOneStageCLocalMissMatrixAuthorizesBeforeProvider(t *testing.T) {
 		value any
 	}{
 		{"non_streaming", "stream", false},
+		{"whitespace_only", "service_tier", " \t\n"},
+		{"padded_default", "service_tier", " default "},
+		{"uppercase_default", "service_tier", "DEFAULT"},
+		{"mixed_case_default", "service_tier", " DeFaUlT "},
+		{"overlength_default", "service_tier", strings.Repeat(" ", 21) + "default"},
 		{"priority", "service_tier", "priority"},
 		{"auto", "service_tier", "auto"},
 		{"priority_normalized", "service_tier", " PrIoRiTy "},
@@ -436,7 +464,16 @@ func TestServeOneStageCLocalMissMatrixAuthorizesBeforeProvider(t *testing.T) {
 		for _, route := range []string{"chat.completions", "responses"} {
 			t.Run(route+"/"+tc.name, func(t *testing.T) {
 				provider := &replayCountingProvider{}
-				token, signer, verifier := stageCLeaseForRoute(t, route)
+				// Acquire a matching canonical grant before submitting the raw tier.
+				grantTier := ""
+				if tc.field == "service_tier" {
+					grantTier = strings.ToLower(strings.TrimSpace(tc.value.(string)))
+				}
+				// Priority/auto/unknown cases retain the ordinary baseline grant.
+				if grantTier != "default" {
+					grantTier = ""
+				}
+				token, signer, verifier := stageCLeaseForRouteAndTier(t, route, grantTier, tc.field == "service_tier")
 				prime := stageCMarkerlessAuthorization("prime", stageCLocalEndpoint, "local-snapshot")
 				prime["spend_lease"] = map[string]any{"token": token, "lease_status": "active"}
 				var ready atomic.Bool
@@ -457,6 +494,9 @@ func TestServeOneStageCLocalMissMatrixAuthorizesBeforeProvider(t *testing.T) {
 						if body["stream"] != (tc.name != "non_streaming") || body["route_type"] != route || body["spend_lease_admission"] != nil || body["invocation_nonce"] == nil {
 							t.Errorf("non-streaming public request attempted admission or lost stream/nonce: %v", body)
 						}
+						if tc.field == "service_tier" && body["service_tier"] != tc.value {
+							t.Errorf("ordinary authorization changed raw tier: %v", body["service_tier"])
+						}
 						if provider.dispatches.Load() != 0 {
 							t.Error("provider speculation started before ordinary authorization")
 						}
@@ -472,7 +512,7 @@ func TestServeOneStageCLocalMissMatrixAuthorizesBeforeProvider(t *testing.T) {
 				gateway.ConfigureSpendLeaseShadow(signer, verifier)
 				gateway.ConfigureSpendLeaseLocalAdmission(true)
 				gateway.StartSpendLeaseBootRegistration(context.Background(), signer, trustedrouter.BootRegistrationEvidence{Attestation: "test", AttestationKind: "test"})
-				stageCPrimeLeaseForRoute(t, gateway, route)
+				stageCPrimeLeaseForRouteAndTier(t, gateway, route, grantTier, tc.field == "service_tier")
 				ready.Store(true)
 				body := stageCMarkerlessRequestBody
 				path := "/v1/chat/completions"

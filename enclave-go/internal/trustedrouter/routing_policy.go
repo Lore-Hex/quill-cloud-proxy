@@ -158,9 +158,9 @@ func admissionWireMissReason(req *qtypes.OpenAIChatRequest) string {
 	if !req.Stream {
 		return "not_streaming"
 	}
-	// The router normalizes requested tiers with strip/lower. Its chat cap
-	// rejects priority and auto; unknown tiers stay on ordinary validation too.
-	if tier := strings.ToLower(strings.TrimSpace(req.ServiceTier)); tier != "" && tier != "default" {
+	// Only byte-exact absent/default tiers may consume local capacity. Leave
+	// all other raw values to ordinary authorization and router validation.
+	if tier := req.ServiceTier; tier != "" && tier != "default" {
 		return "cap_not_enforceable"
 	}
 	p := req.Provider

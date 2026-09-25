@@ -18,20 +18,21 @@ import (
 // including deliberately over-advertised grants to test the enclave's own guard.
 func TestStageCColdGrantTierCapabilityReplayMatrix(t *testing.T) {
 	for _, route := range []string{"chat.completions", "responses"} {
-		for _, tier := range []string{"", "default", " DeFaUlT ", "priority", "auto", " PrIoRiTy ", " AUTO ", "flex", "scale", "standard", "unknown"} {
+		for _, tier := range []string{"", "default", " \t\n", " default ", "DEFAULT", " DeFaUlT ", strings.Repeat(" ", 21) + "default", "priority", "auto", " PrIoRiTy ", " AUTO ", "flex", "scale", "standard", "unknown"} {
 			for _, capability := range []bool{false, true} {
 				for _, stream := range []bool{false, true} {
 					t.Run(fmt.Sprintf("%s/tier=%q/capability=%t/stream=%t", route, tier, capability, stream), func(t *testing.T) {
 						req := stageCFixtureRequest()
 						req.ServiceTier, req.Stream = tier, stream
-						c, signer, claims := stageCAdmissionClientForRequest(t, "admission_accepted_response.json", 200, nil, route, req, func(c *spendlease.Claims) { c.LocalAdmissionAllowed = capability })
+						grantRequest := *req
+						grantRequest.ServiceTier = strings.ToLower(strings.TrimSpace(tier))
+						c, signer, claims := stageCAdmissionClientForRequest(t, "admission_accepted_response.json", 200, nil, route, &grantRequest, func(c *spendlease.Claims) { c.LocalAdmissionAllowed = capability })
 						observed := &observedStageCSigner{Signer: signer}
 						c.spendLease.signer = observed
 						before := stageCCapacity(t, c)
 						ctx := fixedStageCContext()
 						p, err := c.PrepareSpendLeaseAdmission(ctx, "sk-stage-c-fixture", req, route, time.UnixMilli(2_000_000_005_000))
-						normalized := strings.ToLower(strings.TrimSpace(tier))
-						eligible := capability && stream && (normalized == "" || normalized == "default")
+						eligible := capability && stream && (tier == "" || tier == "default")
 						if err != nil || (p != nil) != eligible {
 							t.Fatalf("eligible=%t plan=%v err=%v", eligible, p, err)
 						}

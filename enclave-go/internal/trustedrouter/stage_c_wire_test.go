@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -58,6 +59,11 @@ func TestStageCWireMissBeforeCapacityOrSigning(t *testing.T) {
 		name, reason string
 		edit         func(*qtypes.OpenAIChatRequest)
 	}{
+		{"whitespace_only", "cap_not_enforceable", func(r *qtypes.OpenAIChatRequest) { r.ServiceTier = " \t\n" }},
+		{"padded_default", "cap_not_enforceable", func(r *qtypes.OpenAIChatRequest) { r.ServiceTier = " default " }},
+		{"uppercase_default", "cap_not_enforceable", func(r *qtypes.OpenAIChatRequest) { r.ServiceTier = "DEFAULT" }},
+		{"mixed_case_default", "cap_not_enforceable", func(r *qtypes.OpenAIChatRequest) { r.ServiceTier = " DeFaUlT " }},
+		{"overlength_default", "cap_not_enforceable", func(r *qtypes.OpenAIChatRequest) { r.ServiceTier = strings.Repeat(" ", 21) + "default" }},
 		{"priority", "cap_not_enforceable", func(r *qtypes.OpenAIChatRequest) { r.ServiceTier = "priority" }},
 		{"auto", "cap_not_enforceable", func(r *qtypes.OpenAIChatRequest) { r.ServiceTier = "auto" }},
 		{"priority_normalized", "cap_not_enforceable", func(r *qtypes.OpenAIChatRequest) { r.ServiceTier = " \tPrIoRiTy\n" }},
@@ -93,8 +99,9 @@ func TestStageCWireMissBeforeCapacityOrSigning(t *testing.T) {
 			t.Run(route+"/"+tc.name, func(t *testing.T) {
 				req := stageCFixtureRequest()
 				tc.edit(req)
-				grantRequest := req
-				c, signer, claims := stageCAdmissionClientForRequest(t, "admission_accepted_response.json", http.StatusOK, nil, route, grantRequest, nil)
+				grantRequest := *req
+				grantRequest.ServiceTier = strings.ToLower(strings.TrimSpace(req.ServiceTier))
+				c, signer, claims := stageCAdmissionClientForRequest(t, "admission_accepted_response.json", http.StatusOK, nil, route, &grantRequest, nil)
 				observed := &observedStageCSigner{Signer: signer}
 				c.spendLease.signer = observed
 				ctx := fixedStageCContext()

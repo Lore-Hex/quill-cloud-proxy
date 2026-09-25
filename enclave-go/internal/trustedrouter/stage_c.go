@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
@@ -93,6 +94,8 @@ func (c *Client) PrepareSpendLeaseAdmission(
 	req.IdempotencyKey = idempotencyKey
 	lookupHash := requestLookupHash(ctx, bearer)
 	estimateRequest := spendLeaseRequestForChat(c.region, routeType, req)
+	// Keep admission catalog normalization out of the shared Stage A builder.
+	estimateRequest.ServiceTier = strings.ToLower(strings.TrimSpace(req.ServiceTier))
 	admission, err := c.spendLease.state.TryAdmit(
 		lookupHash, idempotencyKey, policyHash, estimateRequest, now, c.spendLease.signer,
 	)

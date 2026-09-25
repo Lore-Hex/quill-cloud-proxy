@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,7 +42,7 @@ func stageCAdmissionClientForRequest(t *testing.T, responseFixture string, statu
 	{
 		for i := range claims.Catalog.Candidates {
 			claims.Catalog.Candidates[i].RouteType = route
-			claims.Catalog.Candidates[i].ServiceTier = spendLeaseRequestForChat("us-central1", route, req).ServiceTier
+			claims.Catalog.Candidates[i].ServiceTier = strings.ToLower(strings.TrimSpace(req.ServiceTier))
 		}
 		var eligible bool
 		claims.RoutingPolicyHash, eligible = routingPolicyHash(req, route, "us-central1")
