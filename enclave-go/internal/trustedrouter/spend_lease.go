@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/receipt"
@@ -19,6 +20,7 @@ type spendLeaseProtocol struct {
 	signer        spendLeaseBootSigner
 	state         *spendlease.ShadowState
 	verifierReady bool
+	now           func() time.Time
 }
 
 type spendLeaseBootSigner interface {
@@ -46,7 +48,7 @@ func (c *Client) ConfigureSpendLeaseShadow(signer *receipt.Signer, verifier *spe
 	}
 	c.spendLease = &spendLeaseProtocol{
 		signer: signer, state: spendlease.NewShadowState(verifier, signer.Kid()),
-		verifierReady: verifier != nil,
+		verifierReady: verifier != nil, now: time.Now,
 	}
 }
 
@@ -176,7 +178,7 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 		// Always overwrite this field at the last ordinary-authorize seam. No
 		// caller-controlled request field can select or influence the nonce.
 		body["invocation_nonce"] = invocationNonce
-		body["spend_lease_echo"] = c.spendLease.state.BeforeRequest(lookupHash, estimateRequest, time.Now())
+		body["spend_lease_echo"] = c.spendLease.state.BeforeRequest(lookupHash, estimateRequest, c.spendLease.now())
 	} else if plan == nil {
 		body["invocation_nonce"] = invocationNonce
 	}
@@ -258,11 +260,17 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 		return nil, controlPlaneEndpoint, idempotencyReplayConflict()
 	}
 	if c.spendLease != nil && decoded.Data.SpendLease != nil {
-		if err := c.spendLease.state.HandleResponse(lookupHash, decoded.Data.WorkspaceID, decoded.Data.SpendLease, time.Now()); err != nil {
+		var leaseErr error
+		if c.spendLease.state.LocalAdmissionEnabled() {
+			leaseErr = c.spendLease.state.HandleAdmissionResponse(lookupHash, decoded.Data.APIKeyHash, decoded.Data.WorkspaceID, decoded.Data.SpendLease, c.spendLease.now())
+		} else {
+			leaseErr = c.spendLease.state.HandleResponse(lookupHash, decoded.Data.WorkspaceID, decoded.Data.SpendLease, c.spendLease.now())
+		}
+		if leaseErr != nil {
 			// Stage A artifacts are advisory. Verification failure is fail-closed
 			// to lease-less shadow accounting, never a failure of today's paid
 			// synchronous authorization.
-			fmt.Fprintf(os.Stderr, "spendlease.response_rejected err=%q\n", err.Error())
+			fmt.Fprintf(os.Stderr, "spendlease.response_rejected err=%q\n", leaseErr.Error())
 		}
 		decoded.Data.SpendLease = nil // never retain or accidentally log token material
 	}
@@ -274,7 +282,7 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 // ordinary invocation nonce and advisory echo for this path.
 func admissionAuthorizeBody(c *Client, lookupHash string, ordinary map[string]any, admission *spendlease.Admission) map[string]any {
 	body := map[string]any{
-		"api_key_hash":           lookupHash,
+		"api_key_lookup_hash":    lookupHash,
 		"estimated_input_tokens": ordinary["estimated_input_tokens"],
 		"idempotency_key":        ordinary["idempotency_key"],
 		"max_tokens":             ordinary["max_tokens"],
@@ -282,6 +290,7 @@ func admissionAuthorizeBody(c *Client, lookupHash string, ordinary map[string]an
 		"region":                 c.region,
 		"route_type":             ordinary["route_type"],
 		"spend_lease_admission":  admission.Receipt,
+		"stream":                 ordinary["stream"],
 	}
 	if provider, ok := ordinary["provider"].(*qtypes.ProviderRouting); ok && provider != nil {
 		canonicalProvider := map[string]any{}
@@ -328,7 +337,7 @@ func idempotencyReplayConflict() error {
 
 func spendLeaseRequestForChat(region, routeType string, req *qtypes.OpenAIChatRequest) spendlease.EstimateRequest {
 	request := spendlease.EstimateRequest{
-		Model: req.Model, RouteType: routeType, Region: region, ServiceTier: req.ServiceTier,
+		Model: req.Model, RouteType: routeType, Region: region, ServiceTier: strings.ToLower(strings.TrimSpace(req.ServiceTier)),
 		EstimatedInputTokens: int64(EstimateInputTokens(req)),
 	}
 	if req.MaxTokens != nil {

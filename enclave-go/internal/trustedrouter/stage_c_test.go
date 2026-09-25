@@ -22,10 +22,37 @@ func stageCAdmissionClient(
 	inspect func(*http.Request, []byte),
 ) (*Client, *receipt.Signer, *spendlease.Claims) {
 	t.Helper()
+	return stageCAdmissionClientForRoute(t, responseFixture, status, inspect, "chat.completions")
+}
+
+func stageCAdmissionClientForRoute(t *testing.T, responseFixture string, status int, inspect func(*http.Request, []byte), route string) (*Client, *receipt.Signer, *spendlease.Claims) {
+	t.Helper()
+	return stageCAdmissionClientForRequest(t, responseFixture, status, inspect, route, stageCFixtureRequest(), nil)
+}
+
+// Grants enter only through the ordinary decoder and production response/state boundary.
+func stageCAdmissionClientForRequest(t *testing.T, responseFixture string, status int, inspect func(*http.Request, []byte), route string, req *qtypes.OpenAIChatRequest, edit func(*spendlease.Claims), editResponse ...func(map[string]any)) (*Client, *receipt.Signer, *spendlease.Claims) {
+	t.Helper()
 	signer := stageCFixtureSigner(t)
 	var claims spendlease.Claims
 	if err := json.Unmarshal(bytes.TrimSpace(stageCFixture(t, "authoritative_lease_payload.json")), &claims); err != nil {
 		t.Fatal(err)
+	}
+	{
+		for i := range claims.Catalog.Candidates {
+			claims.Catalog.Candidates[i].RouteType = route
+			claims.Catalog.Candidates[i].ServiceTier = spendLeaseRequestForChat("us-central1", route, req).ServiceTier
+		}
+		var eligible bool
+		claims.RoutingPolicyHash, eligible = routingPolicyHash(req, route, "us-central1")
+		if !eligible {
+			// Unsupported preferences still acquire an advisory grant, but cannot
+			// use it locally. Give that grant the ordinary baseline route policy.
+			claims.RoutingPolicyHash, _ = routingPolicyHash(stageCFixtureRequest(), route, "us-central1")
+		}
+	}
+	if edit != nil {
+		edit(&claims)
 	}
 	config, err := json.Marshal(spendlease.IssuerConfig{Version: 1, Keys: []spendlease.IssuerKey{{
 		KID: signer.Kid(), JWK: spendlease.JWK{KeyType: "OKP", Curve: "Ed25519", X: signer.JWK().X},
@@ -66,13 +93,41 @@ func stageCAdmissionClient(
 		t.Fatal(err)
 	}
 	token := stageCSignCompactInputs(t, signer, headerJSON, payloadJSON)
-	now := time.UnixMilli(2_000_000_005_000)
-	if err := client.spendLease.state.HandleResponse(
-		claims.KeyHash, claims.WorkspaceID,
-		&spendlease.Response{Token: &token, LeaseStatus: "active"}, now,
-	); err != nil {
-		t.Fatal(err)
+	client.spendLease.now = func() time.Time { return time.UnixMilli(2_000_000_005_000) }
+	reserveTransport := client.httpc.Transport
+	coldCalls := 0
+	client.httpc.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		coldCalls++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["api_key_lookup_hash"] != stageCFixtureLookupHash || body["api_key_hash"] != nil || body["spend_lease_admission"] != nil || body["invocation_nonce"] == nil {
+			t.Fatalf("invalid ordinary acquisition: %v", body)
+		}
+		data := map[string]any{
+			"request_metadata_version": 1, "authorization_id": "cold-grant", "api_key_hash": claims.KeyHash, "workspace_id": claims.WorkspaceID,
+			"spend_lease": map[string]any{"token": token, "lease_status": "active"},
+		}
+		for _, edit := range editResponse {
+			edit(data)
+		}
+		raw, err := json.Marshal(map[string]any{"data": data})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return replayResponse(r, raw), nil
+	})
+	cold := *req
+	cold.IdempotencyKey = "cold-grant"
+	got, err := client.AuthorizeWithRoute(fixedStageCContext(), "sk-stage-c-fixture", &cold, route)
+	if err != nil || got == nil || coldCalls != 1 {
+		t.Fatalf("ordinary grant: auth=%v calls=%d err=%v", got, coldCalls, err)
 	}
+	if stageCFixtureLookupHash == claims.KeyHash {
+		t.Fatal("fixture identities conflated")
+	}
+	client.httpc.Transport = reserveTransport
 	return client, signer, &claims
 }
 
@@ -80,7 +135,7 @@ func fixedStageCContext() context.Context {
 	invocation := &authorizationInvocation{nonce: "00112233445566778899aabbccddeeff"}
 	invocation.once.Do(func() {})
 	ctx := context.WithValue(context.Background(), authorizationInvocationContextKey{}, invocation)
-	ctx, err := WithAPIKeyLookupHash(ctx, stageCFixtureKeyHash)
+	ctx, err := WithAPIKeyLookupHash(ctx, stageCFixtureLookupHash)
 	if err != nil {
 		panic(err)
 	}
@@ -243,7 +298,7 @@ func TestStageCPolicyEligibilityFailsClosed(t *testing.T) {
 func TestStageCClosedRejectionFixturesDecodeAndApplyKillReasons(t *testing.T) {
 	reasons := []string{
 		"receipt_invalid", "boot_not_accepted", "boot_mismatch", "lease_not_open", "window", "policy_mismatch",
-		"estimate_mismatch", "capacity", "hold_refused", "scope_conflict", "reuse_lost", "not_accepting",
+		"estimate_mismatch", "capacity", "hold_refused", "scope_conflict", "reuse_lost", "not_accepting", "not_streaming", "cap_not_enforceable",
 	}
 	for _, reason := range reasons {
 		t.Run(reason, func(t *testing.T) {

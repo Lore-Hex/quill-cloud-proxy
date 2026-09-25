@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"io"
 	"net/http"
 	"os"
@@ -21,7 +22,9 @@ import (
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
-const stageCFixtureKeyHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+var updateStageCWireFixtures = flag.Bool("update-stage-c-wire-fixtures", false, "regenerate the enclave request and boot proof from the real builder/signer")
+
+const stageCFixtureLookupHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 func TestStageCFixtureSetUsesRouterCanonicalNames(t *testing.T) {
 	want := []string{
@@ -34,6 +37,8 @@ func TestStageCFixtureSetUsesRouterCanonicalNames(t *testing.T) {
 		"admission_rejected_boot_mismatch.json",
 		"admission_rejected_boot_not_accepted.json",
 		"admission_rejected_capacity.json",
+		"admission_rejected_cap_not_enforceable.json",
+		"admission_rejected_not_streaming.json",
 		"admission_rejected_estimate_mismatch.json",
 		"admission_rejected_hold_refused.json",
 		"admission_rejected_lease_not_open.json",
@@ -208,7 +213,7 @@ func TestStageCAuthorizeResponseFixturesDecodeWithEnclaveTypes(t *testing.T) {
 
 	reasons := []string{
 		"receipt_invalid", "boot_not_accepted", "boot_mismatch", "lease_not_open", "window", "policy_mismatch",
-		"estimate_mismatch", "capacity", "hold_refused", "scope_conflict", "reuse_lost", "not_accepting",
+		"estimate_mismatch", "capacity", "hold_refused", "scope_conflict", "reuse_lost", "not_accepting", "not_streaming", "cap_not_enforceable",
 	}
 	for _, reason := range reasons {
 		t.Run(reason, func(t *testing.T) {
@@ -242,6 +247,40 @@ func TestStageCReceiptBearingAuthorizeEmitsEnclaveCanonicalBytes(t *testing.T) {
 	got, marked, err := client.ReserveSpendLeaseAdmission(ctx, plan, req)
 	if err != nil || !marked || got.AuthorizationID != "gwa-stage-c-fixture" {
 		t.Fatalf("authorization=%v marked=%v err=%v", got, marked, err)
+	}
+	if *updateStageCWireFixtures {
+		for name, body := range map[string][]byte{
+			"receipt_bearing_authorize_request.json":  sent,
+			"receipt_bearing_authorize_boot_auth.txt": []byte(sentBootAuth),
+		} {
+			if err := os.WriteFile(filepath.Join("testdata", "stage_c", name), body, 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var body map[string]any
+	if err := json.Unmarshal(sent, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["api_key_lookup_hash"] != stageCFixtureLookupHash || body["stream"] != true {
+		t.Fatalf("lookup/public stream lost: %s", sent)
+	}
+	for _, field := range []string{"api_key_hash", "invocation_nonce", "spend_lease_echo"} {
+		if _, exists := body[field]; exists {
+			t.Fatalf("unexpected %s", field)
+		}
+	}
+	parts, err := receipt.ParseJWS([]byte(plan.admission.Receipt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receiptClaims spendlease.AdmissionReceiptClaims
+	if err := json.Unmarshal(parts.PayloadJSON, &receiptClaims); err != nil {
+		t.Fatal(err)
+	}
+	storedID := plan.admission.Lease.Claims.KeyHash
+	if storedID == stageCFixtureLookupHash || receiptClaims.KeyHash != storedID || got.APIKeyHash != storedID {
+		t.Fatalf("lookup/stored identity conflated: lookup=%s stored=%s receipt=%s response=%s", stageCFixtureLookupHash, storedID, receiptClaims.KeyHash, got.APIKeyHash)
 	}
 	assertFixtureBytes(t, "receipt_bearing_authorize_request.json", sent)
 	assertFixtureBytes(t, "receipt_bearing_authorize_boot_auth.txt", []byte(sentBootAuth))
@@ -306,7 +345,8 @@ func stageCLeaseVerifier(t *testing.T) *spendlease.Verifier {
 func stageCFixtureRequest() *qtypes.OpenAIChatRequest {
 	providerFallbacks := false
 	return &qtypes.OpenAIChatRequest{
-		Model: "anthropic/claude-haiku-4.5",
+		Model:  "anthropic/claude-haiku-4.5",
+		Stream: true,
 		Messages: []qtypes.OpenAIChatMessage{{
 			Role:    "user",
 			Content: strings.Repeat("x", 384),
