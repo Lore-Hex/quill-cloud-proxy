@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Offline source-extracted router serializer harness; no router imports/writes.
+"""Legacy serializer drift check only; NOT integrated Stage C acceptance proof.
+
+Authoritative fixture regeneration belongs to amended router R0 through its real
+route/commit/lost-ack harness (docs/design/stage-c-wire-reconciliation.md).
+Do not use this seeded AST harness to bless response or Stage D contract changes.
+
+Offline source-extracted router serializer harness; no router imports/writes.
 
 Run with the read-only router checkout as argv[1]. Uses literal existing Stage C
 state and real unmodified function ASTs, substituting only storage/catalog/config

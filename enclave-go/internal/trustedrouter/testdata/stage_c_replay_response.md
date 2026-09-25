@@ -56,3 +56,15 @@ Every field, including nested fields, is accounted for:
 
 The false frozen `wafer_zdr_required` is omitted by `:3004-3009,4862-4866`.
 Replay Stage D suppression omits `candidate_prices` and `cap_micro`.
+
+## Reconciliation evidence boundary
+
+The approved `docs/design/stage-c-wire-reconciliation.md` supersedes this seeded
+AST oracle as acceptance evidence. This literal and the accepted response are
+legacy serializer/decoder fixtures, not outputs from a passing integrated R0.
+Keep all fields when comparing canonical responses. The amended router candidate
+must produce accepted and replay literals through the real route after commit,
+then copy both byte-for-byte here (landing order item 4). Do not silently remove
+Stage D pricing/cap fields or regenerate this legacy fixture to bless drift.
+The Go transport-loss tests consume the exact current replay literal at both
+boundaries; they prove enclave decoding/ownership, not router allocation safety.

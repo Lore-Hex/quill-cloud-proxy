@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
@@ -68,6 +69,10 @@ func (c *Client) PrepareSpendLeaseAdmission(
 	if c == nil || c.spendLease == nil || c.spendLease.state == nil || !c.spendLease.state.LocalAdmissionEnabled() || req == nil {
 		return nil, nil
 	}
+	if reason := admissionWireMissReason(req); reason != "" {
+		fmt.Fprintf(os.Stderr, "spend_lease.admission_local_declined reason=%q\n", reason)
+		return nil, nil
+	}
 	// Without an explicit shared scope, keep the ordinary synchronous path.
 	owner := explicitAuthorizationInvocation(ctx)
 	if owner == nil {
@@ -89,6 +94,8 @@ func (c *Client) PrepareSpendLeaseAdmission(
 	req.IdempotencyKey = idempotencyKey
 	lookupHash := requestLookupHash(ctx, bearer)
 	estimateRequest := spendLeaseRequestForChat(c.region, routeType, req)
+	// Keep admission catalog normalization out of the shared Stage A builder.
+	estimateRequest.ServiceTier = strings.ToLower(strings.TrimSpace(req.ServiceTier))
 	admission, err := c.spendLease.state.TryAdmit(
 		lookupHash, idempotencyKey, policyHash, estimateRequest, now, c.spendLease.signer,
 	)

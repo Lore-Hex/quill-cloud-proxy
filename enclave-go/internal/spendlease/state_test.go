@@ -335,3 +335,68 @@ func TestShadowStateRetainsLiveGrantUntilTerminal(t *testing.T) {
 		t.Fatalf("terminal grant was not replaced by newer generation: %#v", echo)
 	}
 }
+
+func TestStageCAdmissionResponseSeparatesLookupAndStoredBinding(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	issuer, verifier := newTestIssuer(t, now)
+	const lookup = "lookup-identity"
+	for _, tc := range []struct {
+		name                    string
+		enabled, authoritative  bool
+		stored, workspace, boot string
+		accept                  bool
+	}{
+		{"distinct", true, true, "key-1", "ws-1", "boot", true},
+		{"wrong_stored", true, true, lookup, "ws-1", "boot", false},
+		{"missing_stored", true, true, "", "ws-1", "boot", false},
+		{"wrong_workspace", true, true, "key-1", "other", "boot", false},
+		{"missing_workspace", true, true, "key-1", "", "boot", false},
+		{"wrong_boot", true, true, "key-1", "ws-1", "other", false},
+		{"flag_off", false, true, "key-1", "ws-1", "boot", false},
+		{"stage_a_binding_unchanged", true, false, "key-1", "ws-1", "boot", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claims := validTestClaims(now)
+			claims.Authoritative = tc.authoritative
+			claims.BootKID = "boot"
+			token := signTestLease(t, issuer, claims, JWSType, issuer.kid, JWK{KeyType: "OKP", Curve: "Ed25519", X: base64.RawURLEncoding.EncodeToString(issuer.public)})
+			state := NewShadowState(verifier, tc.boot)
+			state.SetLocalAdmission(tc.enabled)
+			state.SetRegistered(true)
+			err := state.HandleAdmissionResponse(lookup, tc.stored, tc.workspace, &Response{Token: &token, LeaseStatus: "active"}, now)
+			if (err == nil) != tc.accept {
+				t.Fatalf("accept=%t error=%v", tc.accept, err)
+			}
+			entry := state.lookup(lookup, false)
+			if !tc.accept {
+				if entry != nil {
+					t.Fatal("rejected grant populated lookup state")
+				}
+				return
+			}
+			if entry == nil || entry.current.Load() == nil || entry.current.Load().lease.Claims.KeyHash != claims.KeyHash {
+				t.Fatal("stored claims not retained under lookup identity")
+			}
+			if state.lookup(claims.KeyHash, false) != nil {
+				t.Fatal("state indexed by stored identity")
+			}
+		})
+	}
+}
+
+func TestStageCAdmissionResponseRejectsMissingLookup(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	issuer, verifier := newTestIssuer(t, now)
+	claims := validTestClaims(now)
+	claims.Authoritative = true
+	token := signTestLease(t, issuer, claims, JWSType, issuer.kid, JWK{KeyType: "OKP", Curve: "Ed25519", X: base64.RawURLEncoding.EncodeToString(issuer.public)})
+	state := NewShadowState(verifier, claims.BootKID)
+	state.SetLocalAdmission(true)
+	state.SetRegistered(true)
+	if err := state.HandleAdmissionResponse("", claims.KeyHash, claims.WorkspaceID, &Response{Token: &token, LeaseStatus: "active"}, now); err == nil {
+		t.Fatal("missing lookup accepted")
+	}
+	if len(state.slots) != 0 {
+		t.Fatal("missing lookup populated state")
+	}
+}

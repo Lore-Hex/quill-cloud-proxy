@@ -288,6 +288,20 @@ func (s *ShadowState) ObserveReserve(keyHash, leaseID string, generation int64, 
 }
 
 func (s *ShadowState) HandleResponse(keyHash, workspaceID string, response *Response, receivedAt time.Time) error {
+	return s.handleResponse(keyHash, keyHash, workspaceID, response, receivedAt)
+}
+
+// HandleAdmissionResponse binds authoritative claims to the router-resolved
+// stored key identity while indexing local admission state by lookup identity.
+// Keep the Stage A binding unchanged when local admission is disabled.
+func (s *ShadowState) HandleAdmissionResponse(lookupHash, storedKeyID, workspaceID string, response *Response, receivedAt time.Time) error {
+	if !s.LocalAdmissionEnabled() {
+		return s.HandleResponse(lookupHash, workspaceID, response, receivedAt)
+	}
+	return s.handleResponse(lookupHash, storedKeyID, workspaceID, response, receivedAt)
+}
+
+func (s *ShadowState) handleResponse(lookupHash, keyHash, workspaceID string, response *Response, receivedAt time.Time) error {
 	if s == nil || response == nil || response.Token == nil || *response.Token == "" {
 		return nil
 	}
@@ -298,13 +312,20 @@ func (s *ShadowState) HandleResponse(keyHash, workspaceID string, response *Resp
 	if err != nil {
 		return err
 	}
+	if lease.Claims.Authoritative && (lookupHash == "" || keyHash == "" || workspaceID == "") {
+		return errors.New("spendlease: missing grant binding")
+	}
+	// Non-authoritative grants retain the existing Stage A binding.
+	if !lease.Claims.Authoritative {
+		keyHash = lookupHash
+	}
 	if lease.Claims.KeyHash != keyHash || lease.Claims.BootKID != s.bootKID || (workspaceID != "" && lease.Claims.WorkspaceID != workspaceID) {
 		return errors.New("spendlease: grant binding mismatch")
 	}
 	if !s.registered.Load() {
 		return nil
 	}
-	entry := s.lookup(keyHash, true)
+	entry := s.lookup(lookupHash, true)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 	current := entry.current.Load()

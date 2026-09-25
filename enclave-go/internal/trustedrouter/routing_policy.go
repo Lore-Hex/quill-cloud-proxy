@@ -150,3 +150,31 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
+
+// admissionWireMissReason runs before TryAdmit: the narrow reserve serializer
+// must preserve the public stream bit and every supplied routing/attribution
+// field. Richer requests retain the ordinary authorization path.
+func admissionWireMissReason(req *qtypes.OpenAIChatRequest) string {
+	if !req.Stream {
+		return "not_streaming"
+	}
+	// Only byte-exact absent/default tiers may consume local capacity. Leave
+	// all other raw values to ordinary authorization and router validation.
+	if tier := req.ServiceTier; tier != "" && tier != "default" {
+		return "cap_not_enforceable"
+	}
+	p := req.Provider
+	if p == nil || !strings.EqualFold(strings.TrimSpace(p.Usage), "credits") ||
+		p.UsageType != "" || p.Billing != "" || len(p.MaxPrice) != 0 || p.Jurisdiction != "" ||
+		p.Sort != nil || len(p.Options) != 0 || len(p.Quantizations) != 0 ||
+		p.MinPrivacy != "" || p.Country != "" || p.HeadquartersCountry != "" ||
+		p.ProviderCountry != "" || p.ZDR != nil {
+		return "unsupported_provider_preferences"
+	}
+	if req.User != "" || req.SessionID != "" || req.Trace != nil || req.Metadata != nil ||
+		req.Tags != nil || req.App != "" || req.HTTPReferer != "" || len(req.AppCategories) != 0 ||
+		req.RequestFingerprint != "" {
+		return "unsupported_attribution"
+	}
+	return ""
+}

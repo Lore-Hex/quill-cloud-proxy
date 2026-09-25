@@ -62,11 +62,24 @@ func TestStageCReserveCommitThenResponseLostRouterReplay(t *testing.T) {
 		t.Run(boundary, func(t *testing.T) {
 			// The first authority is undialable; a lost acknowledgement at the second
 			// must pin retries AND finalization there even if the primary recovers.
-			c, _, _ := stageCAdmissionClient(t, "admission_accepted_response.json", 200, nil)
+			c, signer, claims := stageCAdmissionClient(t, "admission_accepted_response.json", 200, nil)
 			c.baseURLs = []string{"http://authority-primary", "http://authority-committed"}
 			c.authorizeRetry = retryPolicy{attempts: 2, sleep: func(context.Context, time.Duration) error { return nil }}
+			observed := &observedStageCSigner{Signer: signer}
+			c.spendLease.signer = observed
+			before := stageCCapacity(t, c)
 			ctx := fixedStageCContext()
 			p, req := prepareReplayPlan(t, c, ctx)
+			afterPrepare := stageCCapacity(t, c)
+			if before != claims.CapMicro || afterPrepare != before-p.admission.EstimateMicro || observed.messages.Load() != 1 || observed.digests.Load() != 0 {
+				t.Fatalf("prepare capacity/signing: before=%d after=%d estimate=%d receipt=%d boot=%d", before, afterPrepare, p.admission.EstimateMicro, observed.messages.Load(), observed.digests.Load())
+			}
+			checkRetryState := func() {
+				t.Helper()
+				if remaining := stageCCapacity(t, c); remaining != afterPrepare || observed.messages.Load() != 1 || observed.digests.Load() != 1 {
+					t.Fatalf("retry spent capacity or re-signed: remaining=%d want=%d receipt=%d boot=%d", remaining, afterPrepare, observed.messages.Load(), observed.digests.Load())
+				}
+			}
 			var firstBody []byte
 			var firstProof string
 			allocations, attempts, finalizations := 0, 0, 0
@@ -80,6 +93,7 @@ func TestStageCReserveCommitThenResponseLostRouterReplay(t *testing.T) {
 					return nil, &dialFailure{err: errors.New("connection refused")}
 				}
 				if r.URL.Path == spendlease.AuthorizePath {
+					checkRetryState()
 					attempts++
 					if attempts == 1 {
 						if !bytes.Equal(b, stageCFixture(t, "receipt_bearing_authorize_request.json")) {
@@ -120,6 +134,7 @@ func TestStageCReserveCommitThenResponseLostRouterReplay(t *testing.T) {
 			if err != nil || !marked || a == nil || a.AuthorizationID != committedID || !a.IdempotentReplay || a.InvocationNonce != "" {
 				t.Fatalf("lost ack: auth=%v marked=%v err=%v", a, marked, err)
 			}
+			checkRetryState()
 			if !a.ControlPlaneEndpointSet || a.ControlPlaneEndpoint != 1 {
 				t.Fatalf("wrong authority: %+v", a)
 			}
@@ -147,7 +162,7 @@ func TestStageCPlanOwnershipAndTombstones(t *testing.T) {
 			})
 			ctx := fixedStageCContext()
 			if name == "no_invocation" {
-				noOwner, err := WithAPIKeyLookupHash(context.Background(), stageCFixtureKeyHash)
+				noOwner, err := WithAPIKeyLookupHash(context.Background(), stageCFixtureLookupHash)
 				if err != nil {
 					t.Fatal(err)
 				}

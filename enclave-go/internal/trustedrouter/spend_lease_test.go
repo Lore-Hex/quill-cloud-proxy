@@ -356,3 +356,107 @@ func (value *countingJSONValue) MarshalJSON() ([]byte, error) {
 	value.calls++
 	return []byte(`"counted"`), nil
 }
+
+// Stage A must compare raw tiers and emit the same advisory echo while local
+// admission is disabled, even when router normalization would match a catalog.
+func TestSpendLeaseLocalAdmissionOffPreservesRawTierEcho(t *testing.T) {
+	for _, route := range []string{"chat.completions", "responses"} {
+		t.Run(route, func(t *testing.T) {
+			signer := stageCFixtureSigner(t)
+			now := time.UnixMilli(2_000_000_005_000)
+			var claims spendlease.Claims
+			if err := json.Unmarshal(stageCFixture(t, "authoritative_lease_payload.json"), &claims); err != nil {
+				t.Fatal(err)
+			}
+			claims.Authoritative, claims.LocalAdmissionAllowed = false, false
+			claims.KeyHash = stageCFixtureLookupHash
+			claims.RoutingPolicyHash = ""
+			for i := range claims.Catalog.Candidates {
+				claims.Catalog.Candidates[i].ServiceTier = "default"
+				claims.Catalog.Candidates[i].RouteType = route
+			}
+			config, err := json.Marshal(spendlease.IssuerConfig{Version: 1, Keys: []spendlease.IssuerKey{{
+				KID: signer.Kid(), JWK: spendlease.JWK{KeyType: "OKP", Curve: "Ed25519", X: signer.JWK().X},
+				NotBefore: claims.IssuedAt - 60, NotAfter: claims.ExpiresAt + 60,
+			}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			verifier, err := spendlease.NewVerifier(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": signer.Kid(), "typ": spendlease.JWSType})
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := json.Marshal(claims)
+			if err != nil {
+				t.Fatal(err)
+			}
+			token := stageCSignCompactInputs(t, signer, header, payload)
+			var bodies []map[string]json.RawMessage
+			client := New("https://trustedrouter.com", "internal", &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				var body map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				bodies = append(bodies, body)
+				data := map[string]any{"authorization_id": "ordinary", "workspace_id": claims.WorkspaceID}
+				if len(bodies) == 1 {
+					data["spend_lease"] = spendlease.Response{Token: &token, LeaseStatus: "active"}
+				}
+				raw, err := json.Marshal(map[string]any{"data": data})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return replayResponse(r, raw), nil
+			})})
+			client.region = "us-central1"
+			client.ConfigureSpendLeaseShadow(signer, verifier)
+			client.ConfigureSpendLeaseLocalAdmission(false)
+			client.spendLease.state.SetRegistered(true)
+			client.spendLease.now = func() time.Time { return now }
+			req := stageCFixtureRequest()
+			req.ServiceTier = "default"
+			if _, err := client.AuthorizeWithRoute(fixedStageCContext(), "sk-stage-c-fixture", req, route); err != nil {
+				t.Fatal(err)
+			}
+			before := stageCCapacity(t, client)
+			if before != claims.CapMicro {
+				t.Fatalf("cold grant capacity = %d, want %d", before, claims.CapMicro)
+			}
+			req.ServiceTier = " DeFaUlT "
+			if _, err := client.AuthorizeWithRoute(fixedStageCContext(), "sk-stage-c-fixture", req, route); err != nil {
+				t.Fatal(err)
+			}
+			// This literal is the pre-PR Stage A wire echo, including null estimate.
+			wantEcho := `{"lease_id":"00000000-0000-4000-8000-000000000067","state":"no-applicable-lease","remaining_micro":1000000,"enclave_estimate_micro":null,"catalog_version":"spend-lease-catalog-v1:cb46fe1ece15e430ef5411a40d4326d402f8d89460c3ad611bed2219859a0f89","would_admit":false}`
+			if got := string(bodies[1]["spend_lease_echo"]); got != wantEcho {
+				t.Errorf("flag-off echo = %s, want %s", got, wantEcho)
+			}
+			if got := string(bodies[1]["service_tier"]); got != `" DeFaUlT "` {
+				t.Errorf("flag-off raw tier changed: %s", got)
+			}
+			if after := stageCCapacity(t, client); after != before {
+				t.Errorf("flag-off unmatched tier spent shadow capacity: before=%d after=%d", before, after)
+			}
+			// A byte-exact match still spends shadow capacity, proving the grant is
+			// usable and the negative case did not merely bypass Stage A entirely.
+			req.ServiceTier = "default"
+			if _, err := client.AuthorizeWithRoute(fixedStageCContext(), "sk-stage-c-fixture", req, route); err != nil {
+				t.Fatal(err)
+			}
+			var matched spendlease.Echo
+			if err := json.Unmarshal(bodies[2]["spend_lease_echo"], &matched); err != nil {
+				t.Fatal(err)
+			}
+			if matched.State != "active" || matched.WouldAdmit == nil || !*matched.WouldAdmit || matched.EnclaveEstimateMicro == nil {
+				t.Fatalf("exact default did not match Stage A catalog: %+v", matched)
+			}
+			if after := stageCCapacity(t, client); after != before-*matched.EnclaveEstimateMicro {
+				t.Fatalf("exact default capacity = %d, want %d", after, before-*matched.EnclaveEstimateMicro)
+			}
+		})
+	}
+}
