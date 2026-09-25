@@ -114,8 +114,12 @@ func TestPrivatemodeReasoningAndCacheScope(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if first.CacheSalt != same.CacheSalt || first.CacheSalt == other.CacheSalt || absent.CacheSalt != "" {
+	if first.CacheSalt != same.CacheSalt || first.CacheSalt == other.CacheSalt || len(absent.CacheSalt) != 64 {
 		t.Fatal("cache isolation failed")
+	}
+	anotherAbsent := openAICompatibleRequest{}
+	if err := preparePrivatemodeWire(nil, nil, &anotherAbsent, ""); err != nil || anotherAbsent.CacheSalt == absent.CacheSalt {
+		t.Fatal("unscoped requests must not share a cache")
 	}
 	off := &qtypes.OpenAIChatRequest{Reasoning: map[string]any{"enabled": false}}
 	if err := preparePrivatemodeWire(off, nil, &first, "one"); err == nil {

@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -68,10 +69,16 @@ func preparePrivatemodeWire(req *qtypes.OpenAIChatRequest, body *qtypes.Anthropi
 	wire.Thinking, wire.Reasoning = nil, nil
 	wire.ReasoningEffort = effort
 	// Scope is generated from the authorized workspace, never client input.
-	// An absent scope leaves the vendor's fresh-per-request salt in place.
+	// Without a scope, use an independent salt so no two requests share a cache.
 	if scope = strings.TrimSpace(scope); scope != "" {
 		digest := sha256.Sum256([]byte("privatemode-cache-v1\x00" + scope))
 		wire.CacheSalt = hex.EncodeToString(digest[:])
+	} else {
+		var salt [32]byte
+		if _, err := rand.Read(salt[:]); err != nil {
+			return errors.New("llm/privatemode: cannot isolate prompt cache")
+		}
+		wire.CacheSalt = hex.EncodeToString(salt[:])
 	}
 	return nil
 }

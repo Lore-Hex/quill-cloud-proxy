@@ -18,24 +18,23 @@ func TestLiveManifestMismatchFailsClosed(t *testing.T) {
 	if key == "" {
 		t.Skip("set PRIVATEMODE_API_KEY for encrypted negative-control test")
 	}
-	original := manifest
-	defer func() { manifest = original }()
 	var expected map[string]any
 	if err := json.Unmarshal(manifest, &expected); err != nil {
 		t.Fatal(err)
 	}
-	for policy := range expected["Policies"].(map[string]any) {
-		delete(expected["Policies"].(map[string]any), policy)
-		break
+	const coordinatorPolicy = "490970ca782cf78d0822a539408f5273cc8f9c9e2aa6354202fddb6ec3d77629"
+	policies := expected["Policies"].(map[string]any)
+	if _, exists := policies[coordinatorPolicy]; !exists {
+		t.Fatal("negative control coordinator policy no longer matches pinned release")
 	}
-	var err error
-	manifest, err = json.Marshal(expected)
+	delete(policies, coordinatorPolicy)
+	incorrectManifest, err := json.Marshal(expected)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
-	client, err := Start(ctx)
+	client, _, err := startProcessWithManifest(ctx, incorrectManifest)
 	if err != nil {
 		t.Fatal(err)
 	}

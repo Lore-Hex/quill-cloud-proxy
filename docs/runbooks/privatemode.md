@@ -5,7 +5,12 @@
 The vendor proxy runs inside the measured enclave image, as UID/GID 65532,
 without effective capabilities and with `no_new_privs`. The enclave talks to it
 over ephemeral, certificate-pinned loopback TLS. The proxy verifies the remote
-CPU/GPU workloads and encrypts inference before bytes leave the enclave.
+Contrast deployment and encrypts inference before bytes leave the enclave.
+The pinned remote attestation agent verifies its GPUs; its inference proxy
+enforces our MAC-authenticated policy accepting only good NVIDIA OCSP status.
+Those NVIDIA OCSP/RIM fetches occur at the remote workload, not in our proxy,
+so the client does not need NVIDIA egress tunnels. This is deployment-level
+attestation, not a per-response cryptographic assertion of model identity.
 Ordinary provider HTTPS is used only for metadata discovery, never inference.
 
 The embedded manifest is immutable (`WorkloadOwnerKeyDigests=[]`). No runtime
@@ -36,16 +41,20 @@ arrives only in Authorization over pinned loopback TLS. Cert/key/manifest use
 sealed memfds. The temporary directory holds only public attestation collateral.
 Vendor stdout/stderr are discarded. Lifecycle events contain version, manifest
 hash, exit code, and restart delay, not prompt, response, thinking, or keys.
+Do not forward raw vendor errors: they may incorporate untrusted upstream
+response bodies. Request-stage failures use the shared redacted provider path.
 
 `privatemode.proxy_listening` is local readiness, not an attestation-success
-claim. The supervisor removes dead clients and restarts with 1-60 second
+claim. Upstream attestation happens lazily when a request supplies credentials;
+the local readiness check does not wait for a collateral fetch. The supervisor
+allows 60 seconds for the listener, removes dead clients, and restarts with 1-60 second
 backoff. Other providers do not wait for it. Alert on repeated proxy exits and
 existing provider synthetic failures; never auto-promote a new manifest to
 recover a failed probe.
 
 Prompt-cache salt is derived from the authorized workspace scope. Different
-workspaces never deliberately share a salt; missing scope uses the vendor's
-fresh-per-request default. Usage, cached input and reasoning follow the shared
+workspaces never deliberately share a salt; missing scope uses an explicit
+cryptographically random per-request salt. Usage, cached input and reasoning follow the shared
 streaming and settlement pipeline. Missing usage or a truncated stream cannot
 produce a successful terminal event. GLM accepts low/high/max effort; GPT OSS
 accepts low/medium/high. Unsupported explicit settings return an error rather
@@ -67,6 +76,12 @@ than silently using maximum effort.
    operator source into each cloud. AWS uses `sync-secrets-to-aws.sh` with its
    regional replica; Azure uses `azure-sync-secrets.sh` and its sealed bundle.
    Azure's `QUILL_PRIVATEMODE_SECRET` stays empty until that bundle is sealed.
+   The staged Azure bundle is `6749e31753114f5c9960094790fe233c` (67 entries,
+   all previous names preserved). Set `QUILL_AZURE_BUNDLE_VERSION` to that
+   immutable version and `QUILL_PRIVATEMODE_SECRET=trustedrouter-privatemode-api-key`
+   for its measured deployment; retain existing provider bindings including
+   `QUILL_TELLUVIAN_SECRET=trustedrouter-telluvian-api-key`. Rebind the SKR policy
+   through the deploy tool after rendering the new measured environment.
 5. Deploy measured images through the reviewed regional drain/health/attestation
    workflows. AWS also needs its four allowlisted TLS tunnels. Verify real
    encrypted requests in every serving region; a successful local Docker probe

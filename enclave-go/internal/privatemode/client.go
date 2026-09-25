@@ -83,7 +83,7 @@ func localClient(cert *x509.Certificate) *http.Client {
 			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", proxyAddress)
 		},
 		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 90 * time.Second,
+		ResponseHeaderTimeout: 180 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
 		MaxIdleConnsPerHost:   64,
 	}

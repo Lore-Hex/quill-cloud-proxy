@@ -33,6 +33,7 @@ func ProxyEntrypoint() bool {
 	if os.Geteuid() != 65532 || os.Getegid() != 65532 || unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != nil {
 		os.Exit(1)
 	}
+	// #nosec G204 -- fixed measured binary; only our launcher supplies these arguments, never a request or shell.
 	if err := syscall.Exec(proxyBinary, append([]string{proxyBinary}, os.Args[2:]...), os.Environ()); err != nil {
 		os.Exit(1)
 	}
@@ -40,6 +41,10 @@ func ProxyEntrypoint() bool {
 }
 
 func startProcess(ctx context.Context) (*http.Client, <-chan struct{}, error) {
+	return startProcessWithManifest(ctx, manifest)
+}
+
+func startProcessWithManifest(ctx context.Context, expectedManifest []byte) (*http.Client, <-chan struct{}, error) {
 	if _, err := os.Stat(proxyBinary); err != nil {
 		return nil, nil, errors.New("privatemode: proxy binary unavailable")
 	}
@@ -53,7 +58,7 @@ func startProcess(ctx context.Context) (*http.Client, <-chan struct{}, error) {
 			_ = f.Close()
 		}
 	}()
-	for _, data := range [][]byte{certPEM, keyPEM, manifest} {
+	for _, data := range [][]byte{certPEM, keyPEM, expectedManifest} {
 		f, err := sealedFile(data)
 		if err != nil {
 			return nil, nil, err
@@ -82,6 +87,7 @@ func startProcess(ctx context.Context) (*http.Client, <-chan struct{}, error) {
 		return nil, nil, err
 	}
 	client := localClient(cert)
+	// #nosec G204 -- fixed launcher and flags; workspace is a private MkdirTemp path, not caller input.
 	cmd := exec.CommandContext(ctx, "/quill-enclave", "--privatemode-proxy-child",
 		"--listen-address=127.0.0.1", "--port=18489",
 		"--apiEndpoint=api.privatemode.ai",
@@ -110,7 +116,7 @@ func startProcess(ctx context.Context) (*http.Client, <-chan struct{}, error) {
 		fmt.Fprintf(os.Stderr, "privatemode.proxy_exit exit_code=%d\n", cmd.ProcessState.ExitCode())
 		close(done)
 	}()
-	deadline := time.NewTimer(10 * time.Second)
+	deadline := time.NewTimer(60 * time.Second)
 	defer deadline.Stop()
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
@@ -139,7 +145,7 @@ func startProcess(ctx context.Context) (*http.Client, <-chan struct{}, error) {
 				continue
 			}
 			cleanup = false
-			fmt.Fprintf(os.Stderr, "privatemode.proxy_listening version=v1.57.0 manifest=%x\n", sha256.Sum256(manifest))
+			fmt.Fprintf(os.Stderr, "privatemode.proxy_listening version=v1.57.0 manifest=%x\n", sha256.Sum256(expectedManifest))
 			return client, done, nil
 		}
 	}
