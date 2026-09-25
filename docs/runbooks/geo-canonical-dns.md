@@ -1,7 +1,24 @@
 A2 revision: geographic canonical enclave DNS
 ============================================
 
-Round 3 revision of `cc6366e9b13fbead74bc5b328a10bc1a854fcd0a` / PR #374 on `geo-canonical-dns`. No network, gcloud execution, cloud mutation, deployment or push was performed during this revision. GEO remains OFF by default. Git staging was attempted once and denied because `.git/index.lock` cannot be created (`Operation not permitted`); changes remain in the tree.
+Round 4 revision of `839b55898aaba1792bbaa8d8fb50fb6a7230da5c` / PR #374 on `geo-canonical-dns`. No network, gcloud execution, cloud mutation, deployment or push was performed during this revision. GEO remains OFF by default.
+
+Round 4: publish degraded survivors below the minimum
+----------------------------------------------------
+
+**P1 fixed:** removed the extra `MIN_HEALTHY` guard on degraded GEO publication. With an invalid attached health check, any nonempty set of attested, eligible survivors replaces both existing canonical names with flat A records, even below the configured minimum. Persistent drains, environment exclusions and pending regions still filter that set. The shared zero-IP guard and OFF's minimum guard, failure message and publication path are unchanged.
+
+The regression now uses the default `MIN_HEALTHY=2`: publish central/east GEO, invalidate the attached check to TCP/80, lose east before the next pass, and let only central attest. Both names must become flat `[central]`, with exact old-record deletions. It also checks continued degraded membership updates and idempotence. Three additional tests keep east attesting and independently drain, exclude or mark east pending; each must still publish only central at the default floor. An OFF floor snapshot pins the pre-fix failure text, log bytes, empty command serialization and retained records for valid, missing and TCP/80 checks. Zero survivors remain refused at minima 2 and 0.
+
+All four finding scenarios failed against the reviewed code before the fix (`4 failed, 97 deselected in 0.34s`). The mutation runner restores the degraded floor separately for each scenario, bypasses each east filter separately, and removes OFF's floor or alters its failure message. It continues to mutate disposable copies only and requires the named test to fail.
+
+Round 4 verification (offline):
+
+- Six tools test files, using the full command in **Offline verification** below: `178 passed, 114 subtests passed in 8.62s`
+- `python3 tools/check_a2_mutations.py`: `91 mutants killed; all 38 new tests covered; checkout untouched`
+- `git diff --check`: exit 0.
+- Git staging failed with `Unable to create .../.git/index.lock: Operation not permitted`; no commit was possible. The four changed files remain in the working tree. No network, real gcloud or push occurred.
+
 
 Round 3: invalid attached health check
 --------------------------------------
@@ -10,7 +27,7 @@ Round 3: invalid attached health check
 
 The fallback uses the same filtered, sorted, deduplicated survivor set as OFF and the same flat record shape. Both the initial GEO-to-flat replacement and later degraded flat membership updates use the existing exact-deletion `changes.create` path. TTL/policy from the old record remain in the deletion. It retains pinned-drain checks, dry-run behavior and bounded conflict handling. Each record is atomic; separate zones remain separate changes. Every pass revalidates the check, so restoring TCP/443 and the reviewed configuration automatically resumes GEO without changing the feature flag or storing a degradation marker.
 
-**Minimum behavior:** degraded flat publication obeys OFF's `MIN_HEALTHY` floor and never publishes zero IPs, even with a zero minimum. Below the floor it preserves the last record, exactly like OFF. The central-survives/east-dies regression scenario uses `MIN_HEALTHY=1`; with a configured floor of 2, one survivor is insufficient for flat publication. Valid GEO retains its existing one-survivor exception. Pending regions, environment exclusions and persistent drains are applied before either publication shape.
+**Minimum behavior (corrected in round 4):** valid and degraded GEO both publish any nonempty eligible survivor set regardless of `MIN_HEALTHY`. OFF alone retains its floor. Neither mode publishes zero IPs, even with a zero minimum. Pending regions, environment exclusions and persistent drains are applied before either publication shape. Round 3's degraded floor and `minimum=1` regression masked unsafe retention; the default-floor regressions above replace that behavior.
 
 Seven new tests cover valid GEO → TCP/80 → east failure, continued flat updates as survivors change, repeated degraded alerts, restored-check recovery, deleted/404/timeout/wrong-protocol/misconfigured checks, exact deletion with an old TTL, filtering/minimum/zero behavior, dry-run/concurrent drains, either missing canonical name, and byte-identical OFF logs and command serialization. The mutation runner adds 22 regressions on disposable copies; each must fail its named test. The validation-refusal test now verifies refusal of new publication plus failure status and reason, while existing records recover.
 
@@ -21,7 +38,7 @@ Round 3 verification (offline):
 - `git diff --check`: exit 0.
 - Git staging failed with `Unable to create .../.git/index.lock: Operation not permitted`; no commit was possible. All four changed files remain in the working tree. No network, real gcloud, deployment or push occurred.
 
-Earlier finding disposition (updated for round 3)
+Earlier finding disposition (updated for round 4)
 ------------------------------------------------
 
 - **P1-1 fixed:** GEO ignores the `MIN_HEALTHY` floor whenever at least one eligible healthy canonical IP remains. The zero-IP case still preserves the last record, including with `MIN_HEALTHY=0`. The unsafe `test_minimum_guard_keeps_last_good_geo` was replaced by a test starting with one central and one eastern enclave, failing either region, checking both permanent names reduce to the surviving region, and repeating the pass. OFF retains its existing floor, writer, logs and ordering.
@@ -97,9 +114,9 @@ Offline verification
 All tests used the existing interpreter `/private/tmp/gatecost-revert-base/.venv/bin/python3`; nothing was installed/downloaded. Reconciler tests reject unmocked external commands and socket connections. The operator script was tested only with mocked subprocess calls. Mutations run only in disposable copies and require the named test to fail, not merely collection/import failure.
 
 - Requested six-file suite: `python3 -m pytest -q -p no:cacheprovider tools/test_reconcile_enclave_dns.py tools/test_sync_route53_api_aliases.py tools/test_check_public_tls.py tools/test_dns_reconciler_scheduler.py tools/test_recover_gcp_region.py tools/test_rollout_safety.py`
-  - `174 passed, 111 subtests passed in 9.25s`
+  - `178 passed, 114 subtests passed in 8.62s`
 - `python3 tools/check_a2_mutations.py`
-  - `83 mutants killed; all 34 new tests covered; checkout untouched`
+  - `91 mutants killed; all 38 new tests covered; checkout untouched`
 - `git diff --check`: exit 0. The historical ownership-patch check cannot be repeated: `tools/dns/reconciler-ownership.patch` is absent (the attempted check reported that missing file).
 
 The mutation tests cover every A2 GEO test, including degraded flat fallback, recovery, deleted checks, flat safeguards and byte-identical OFF behavior, as well as the earlier survivor, OFF-read-count, resource-validation, operator-provisioning and DNSSEC/zone tests. During development, mutation testing exposed an invalid-URL assertion that was masked by a later selfLink check; the test now proves malformed URLs are rejected before any resource read. A workflow assertion was updated to include the new health-check environment variable while retaining the lock-bucket assertion.

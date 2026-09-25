@@ -1526,11 +1526,8 @@ def _main_unlocked() -> int:
                     geo_degraded = True
                     log(f"reconcile: ERROR: GEO health check invalid: {exc}; "
                         "reconciling existing canonical records as flat attested survivors")
-            # The filtered survivor set is shared with OFF. Its minimum also
-            # applies when degrading to flat; healthy GEO keeps its own floor.
-            if geo_degraded and len(healthy_ips) < MIN_HEALTHY:
-                sys.exit(f"[FAIL] only {len(healthy_ips)} healthy (< MIN_HEALTHY={MIN_HEALTHY}); "
-                         "refusing to shrink DNS — leaving last-good record in place")
+            # Degraded GEO must remove unsafe membership even below the floor.
+            # The guard above still enforces nonempty survivors and OFF's floor.
             if CANONICAL_GEO and not geo_degraded:
                 verify_geo_zones(canonical_healthy)
 

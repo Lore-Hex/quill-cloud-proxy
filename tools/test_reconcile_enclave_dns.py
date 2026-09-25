@@ -1682,17 +1682,18 @@ class GeoCanonicalTests(unittest.TestCase):
             self.assertIn("read denied", result.log)
 
     def test_invalid_attached_check_removes_dead_east_and_keeps_reconciling_flat(self):
-        initial = run_reconcile(pending=PENDING, geo=True, minimum=1)
+        initial = run_reconcile(pending=PENDING, geo=True)
         self.assertEqual(initial.code, 0)
         for name in (self.CANONICAL, self.MIRROR):
             self.assertEqual(initial.dns[name], self.geo_record(name))
         bad = dict(HEALTH_CHECK, tcpHealthCheck={"port": 80})
         previous = initial.dns
-        # First invalidate the attached check, then lose east. Later lose
+        # Default MIN_HEALTHY=2: invalidate the attached check, then lose east
+        # before the next pass. Only central attests. Later lose
         # central instead: degraded flat records must keep following attestation.
-        for unhealthy, ips in (((), [CENTRAL, EAST]), ((EAST,), [CENTRAL]),
-                               ((CENTRAL,), [EAST])):
-            result = run_reconcile(pending=PENDING, geo=True, minimum=1,
+        for unhealthy, ips in (((EAST, WEST), [CENTRAL]),
+                               ((CENTRAL, WEST), [EAST])):
+            result = run_reconcile(pending=PENDING, geo=True,
                                    health_check=bad, unhealthy=unhealthy, initial_dns=previous)
             self.assertEqual(result.code, 1)
             self.assertIn("ERROR: GEO health check invalid:", result.log)
@@ -1705,16 +1706,45 @@ class GeoCanonicalTests(unittest.TestCase):
                 self.assertEqual(result.dns[name], self.flat(name, ips))
                 self.assertFalse(any(name in command for command in result.commands))
             previous = result.dns
-        again = run_reconcile(pending=PENDING, geo=True, minimum=1, health_check=bad,
-                              unhealthy=(CENTRAL,), initial_dns=previous)
+        again = run_reconcile(pending=PENDING, geo=True, health_check=bad,
+                              unhealthy=(CENTRAL, WEST), initial_dns=previous)
         self.assertEqual(again.code, 1)
         self.assertEqual(again.changes, [])
         self.assertIn("ERROR: GEO health check invalid:", again.log)
-        # The finding's exact order: invalidate, then lose east before the next pass.
-        result = run_reconcile(pending=PENDING, geo=True, minimum=1, health_check=bad,
-                               unhealthy=(EAST,), initial_dns=initial.dns)
+
+    def assert_degraded_east_filtered(self, **filters):
+        initial = run_reconcile(pending=PENDING, geo=True)
+        self.assertEqual(initial.code, 0)
+        for name in (self.CANONICAL, self.MIRROR):
+            self.assertEqual(initial.dns[name], self.geo_record(name))
+        options = dict(pending=PENDING, geo=True,
+                       health_check=dict(HEALTH_CHECK, tcpHealthCheck={"port": 80}))
+        options.update(filters)
+        # East still attests: only the named filter can remove it. The default
+        # floor must not freeze the old GEO or later degraded flat membership.
+        result = run_reconcile(**options, initial_dns=initial.dns)
+        self.assertEqual(result.code, 1)
+        self.assertIn("ERROR: GEO health check invalid:", result.log)
+        self.assertEqual(result.changes, [
+            (zone, {"deletions": [initial.dns[name]],
+                    "additions": [self.flat(name, [CENTRAL])]})
+            for zone, name in (("trustedrouter-com", self.CANONICAL),
+                               ("quillrouter-com", self.MIRROR))])
         for name in (self.CANONICAL, self.MIRROR):
             self.assertEqual(result.dns[name], self.flat(name, [CENTRAL]))
+        again = run_reconcile(**options, initial_dns=result.dns)
+        self.assertEqual(again.code, 1)
+        self.assertEqual(again.changes, [])
+        self.assertEqual(again.dns, result.dns)
+
+    def test_invalid_attached_check_removes_drained_east_below_minimum(self):
+        self.assert_degraded_east_filtered(drains={"us-east4": "operator"})
+
+    def test_invalid_attached_check_removes_excluded_east_below_minimum(self):
+        self.assert_degraded_east_filtered(env_excluded=frozenset({"us-east4"}))
+
+    def test_invalid_attached_check_removes_pending_east_below_minimum(self):
+        self.assert_degraded_east_filtered(pending=PENDING | {"us-east4"})
 
     def test_fixed_health_check_resumes_geo_from_degraded_flat(self):
         old = {name: self.geo_record(name) for name in (self.CANONICAL, self.MIRROR)}
@@ -1754,7 +1784,7 @@ class GeoCanonicalTests(unittest.TestCase):
                     for zone, name in (("trustedrouter-com", self.CANONICAL),
                                        ("quillrouter-com", self.MIRROR))])
 
-    def test_degraded_flat_uses_flat_filters_and_minimum_including_zero(self):
+    def test_degraded_flat_uses_flat_filters_and_refuses_zero(self):
         old = {name: self.geo_record(name) for name in (self.CANONICAL, self.MIRROR)}
         for filters in ({"pending": PENDING},
                         {"pending": frozenset(), "serving": SERVING | PENDING, "env_excluded": PENDING},
@@ -1768,7 +1798,8 @@ class GeoCanonicalTests(unittest.TestCase):
                 for name in old:
                     self.assertEqual(flat.writes[name], [CENTRAL, EAST])
                     self.assertEqual(degraded.dns[name], self.flat(name, flat.writes[name]))
-        for minimum, unhealthy in ((2, (EAST,)), (0, (CENTRAL, EAST, WEST))):
+        unhealthy = (CENTRAL, EAST, WEST)
+        for minimum in (2, 0):
             with self.subTest(minimum=minimum):
                 flat = run_reconcile(pending=PENDING, minimum=minimum, unhealthy=unhealthy)
                 degraded = run_reconcile(pending=PENDING, geo=True, minimum=minimum,
@@ -1815,6 +1846,33 @@ class GeoCanonicalTests(unittest.TestCase):
                 self.assertEqual(json.dumps(result.commands).encode(), json.dumps(baseline.commands).encode())
                 self.assertEqual(result.writes, baseline.writes)
                 self.assertEqual(result.changes, [])
+
+    def test_off_floor_keeps_byte_identical_failure_and_logs(self):
+        # Snapshot from 839b558 with the default floor and only central eligible.
+        expected_log = """\
+reconcile: ignoring retired in non-inventory region southamerica-east1
+reconcile: 3 running enclave instances; accepting digest(s) sha256:release…
+  [ok ] us-central1    203.0.113.1     central
+  [FAIL] us-east4       203.0.113.2     east
+  [ok ] us-west1       203.0.113.3     west
+reconcile: 1 healthy across 2 regions ['us-central1', 'us-west1']
+reconcile: pending regions get regional DNS only, never canonical: us-west1
+reconcile: excluding from canonical us-west1
+"""
+        old = {name: self.flat(name) for name in (self.CANONICAL, self.MIRROR)}
+        for check in (HEALTH_CHECK, None, dict(HEALTH_CHECK, tcpHealthCheck={"port": 80})):
+            with self.subTest(check=check), mock.patch.object(
+                    reconciler, "verify_health_check", side_effect=AssertionError("OFF read health check")):
+                result = run_reconcile(pending=PENDING, unhealthy=(EAST,),
+                                       initial_dns=old, health_check=check)
+                self.assertEqual(str(result.code).encode(), (
+                    "[FAIL] only 1 healthy (< MIN_HEALTHY=2); refusing to shrink DNS — "
+                    "leaving last-good record in place").encode())
+                self.assertEqual(result.log.encode(), expected_log.encode())
+                self.assertEqual(json.dumps(result.commands).encode(), b"[]")
+                self.assertEqual(result.changes, [])
+                self.assertEqual(result.writes, {})
+                self.assertEqual(result.dns, old)
 
     def test_geo_zone_constraints_are_checked_for_both_names(self):
         for config in ({}, {"visibility": "private", "dnssecConfig": {"state": "off"}},

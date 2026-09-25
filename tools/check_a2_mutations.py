@@ -181,16 +181,14 @@ MUTATIONS.extend([
     ("GeoCanonicalTests::test_deleted_or_misconfigured_attached_check_degrades_both_names", RECONCILER,
      '"deletions": [_dns_record_data(current)] if current is not None else []',
      '"deletions": [dict(_dns_record_data(current), ttl=TTL)] if current is not None else []'),
-    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_minimum_including_zero", RECONCILER,
-     'if geo_degraded and len(healthy_ips) < MIN_HEALTHY:', 'if False:'),
-    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_minimum_including_zero", RECONCILER,
+    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_refuses_zero", RECONCILER,
      'if not healthy_ips or (not CANONICAL_GEO and len(healthy_ips) < MIN_HEALTHY):',
      'if not CANONICAL_GEO and len(healthy_ips) < MIN_HEALTHY:'),
-    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_minimum_including_zero", RECONCILER,
+    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_refuses_zero", RECONCILER,
      'return EXCLUDE_CANONICAL_REGIONS | GCP_ENCLAVE_PENDING_REGIONS', 'return EXCLUDE_CANONICAL_REGIONS'),
-    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_minimum_including_zero", RECONCILER,
+    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_refuses_zero", RECONCILER,
      'return EXCLUDE_CANONICAL_REGIONS | GCP_ENCLAVE_PENDING_REGIONS', 'return GCP_ENCLAVE_PENDING_REGIONS'),
-    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_minimum_including_zero", RECONCILER,
+    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_refuses_zero", RECONCILER,
      'canonical_excludes = canonical_excluded_regions() | persistent_excludes',
      'canonical_excludes = canonical_excluded_regions()'),
     ("GeoCanonicalTests::test_degraded_flat_honors_dry_run_and_concurrent_drains", RECONCILER,
@@ -205,6 +203,34 @@ MUTATIONS.extend([
      '            if CANONICAL_GEO:\n                try:', '            if True:\n                try:'),
     ("GeoCanonicalTests::test_off_with_invalid_check_keeps_byte_identical_logs_and_commands", RECONCILER,
      'if not CANONICAL_GEO and not (current and "routingPolicy" in current):', 'if False:'),
+])
+
+
+# Round 4: every nonempty degraded survivor set bypasses the GEO minimum.
+# Restore the rejected guard independently for the exact finding and each filter.
+for test in (
+    "test_invalid_attached_check_removes_dead_east_and_keeps_reconciling_flat",
+    "test_invalid_attached_check_removes_drained_east_below_minimum",
+    "test_invalid_attached_check_removes_excluded_east_below_minimum",
+    "test_invalid_attached_check_removes_pending_east_below_minimum",
+):
+    MUTATIONS.append(("GeoCanonicalTests::" + test, RECONCILER,
+                      '            if CANONICAL_GEO and not geo_degraded:',
+                      '            if geo_degraded and len(healthy_ips) < MIN_HEALTHY:\n'
+                      '                sys.exit("regressed degraded floor")\n'
+                      '            if CANONICAL_GEO and not geo_degraded:'))
+MUTATIONS.extend([
+    ("GeoCanonicalTests::test_invalid_attached_check_removes_drained_east_below_minimum", RECONCILER,
+     'canonical_excludes = canonical_excluded_regions() | persistent_excludes',
+     'canonical_excludes = canonical_excluded_regions()'),
+    ("GeoCanonicalTests::test_invalid_attached_check_removes_excluded_east_below_minimum", RECONCILER,
+     'return EXCLUDE_CANONICAL_REGIONS | GCP_ENCLAVE_PENDING_REGIONS', 'return GCP_ENCLAVE_PENDING_REGIONS'),
+    ("GeoCanonicalTests::test_invalid_attached_check_removes_pending_east_below_minimum", RECONCILER,
+     'return EXCLUDE_CANONICAL_REGIONS | GCP_ENCLAVE_PENDING_REGIONS', 'return EXCLUDE_CANONICAL_REGIONS'),
+    ("GeoCanonicalTests::test_off_floor_keeps_byte_identical_failure_and_logs", RECONCILER,
+     'if not healthy_ips or (not CANONICAL_GEO and len(healthy_ips) < MIN_HEALTHY):', 'if not healthy_ips:'),
+    ("GeoCanonicalTests::test_off_floor_keeps_byte_identical_failure_and_logs", RECONCILER,
+     'refusing to shrink DNS — leaving last-good record in place', 'refusing to shrink DNS'),
 ])
 
 
