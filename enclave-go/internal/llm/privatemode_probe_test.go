@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -31,14 +32,19 @@ func TestPrivatemodeBootProbeIsBoundedAndMetadataOnly(t *testing.T) {
 			}
 			return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
 		})}
+		ConfigurePrivatemode(client)
+		t.Cleanup(func() { ConfigurePrivatemode(nil) })
 		var results []PrivatemodeProbeResult
-		ProbePrivatemode(t.Context(), client, "synthetic-key", func(r PrivatemodeProbeResult) { results = append(results, r) })
+		ProbePrivatemode(t.Context(), "synthetic-key", func(r PrivatemodeProbeResult) { results = append(results, r) })
 		if calls != 3 || len(results) != 3 {
 			t.Fatal("probe retried or exceeded model budget")
 		}
 		for _, r := range results {
 			if r.Success != (status == 200) || (status != 200 && r.HTTPStatus != status) {
 				t.Fatalf("unexpected probe result: %+v", r)
+			}
+			if (r.Success && r.Reason != "ok") || (!r.Success && r.Reason != "http") {
+				t.Fatalf("unexpected reason: %+v", r)
 			}
 		}
 		encoded, _ := json.Marshal(results)
@@ -50,7 +56,7 @@ func TestPrivatemodeBootProbeIsBoundedAndMetadataOnly(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	ProbePrivatemode(ctx, nil, "", func(PrivatemodeProbeResult) { t.Fatal("canceled probe executed") })
+	ProbePrivatemode(ctx, "", func(PrivatemodeProbeResult) { t.Fatal("canceled probe executed") })
 }
 
 func TestPrivatemodeProbeBoundsMemory(t *testing.T) {
@@ -60,5 +66,55 @@ func TestPrivatemodeProbeBoundsMemory(t *testing.T) {
 	}
 	if _, err := b.Write([]byte{0}); err == nil {
 		t.Fatal("unbounded probe output")
+	}
+}
+
+func TestPrivatemodeProbeFailureCategories(t *testing.T) {
+	t.Cleanup(func() { ConfigurePrivatemode(nil) })
+	ConfigurePrivatemode(nil)
+	if got := probePrivatemodeModel(t.Context(), "key", "glm-5.3"); got.Reason != "configuration" || got.Success {
+		t.Fatalf("missing configured proxy succeeded: %+v", got)
+	}
+	for _, tc := range []struct {
+		name, text, want string
+		transport        bool
+		truncated        bool
+		canceled         bool
+		zeroOutput       bool
+	}{
+		{name: "punctuation", text: "\"pong.\"", want: "ok"},
+		{name: "markdown", text: "**PONG**", want: "ok"},
+		{name: "wrong text", text: "unrelated", want: "text"},
+		{name: "transport", want: "transport", transport: true},
+		{name: "truncated", want: "stream", truncated: true},
+		{name: "canceled", want: "timeout_or_cancel", canceled: true},
+		{name: "usage", text: "PONG", want: "usage", zeroOutput: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ConfigurePrivatemode(&http.Client{Transport: byokRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				if tc.transport {
+					return nil, &url.Error{Op: "POST", URL: "redacted", Err: io.EOF}
+				}
+				content, _ := json.Marshal(tc.text)
+				body := "data: {\"choices\":[{\"delta\":{\"content\":" + string(content) + "},\"finish_reason\":\"stop\"}]}\n\n"
+				if !tc.truncated {
+					tokens := "4"
+					if tc.zeroOutput {
+						tokens = "0"
+					}
+					body += "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":21,\"completion_tokens\":" + tokens + "}}\n\ndata: [DONE]\n\n"
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.canceled {
+				cancel()
+			}
+			got := probePrivatemodeModel(ctx, "key", "glm-5.3")
+			if got.Reason != tc.want || got.Success != (tc.want == "ok") {
+				t.Fatalf("got %+v, want %s", got, tc.want)
+			}
+		})
 	}
 }

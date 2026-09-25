@@ -39,7 +39,7 @@ func TestLivePrivatemodePackagedStreaming(t *testing.T) {
 
 func livePrivatemodeModel(t *testing.T, ctx context.Context, key, model string) {
 	t.Helper()
-	result := probePrivatemodeModel(ctx, privateModeHTTPClient.Load(), key, model)
+	result := probePrivatemodeModel(ctx, key, model)
 	if !result.Success {
 		t.Fatalf("encrypted probe failed: %+v", result)
 	}

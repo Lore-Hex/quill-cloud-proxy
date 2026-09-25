@@ -65,13 +65,25 @@ existing provider synthetic failures; never auto-promote a new manifest to
 recover a failed probe.
 
 Once per enclave boot, three fixed synthetic requests verify the encrypted
-path for each pinned model, including real usage and exact PONG output.
+path for each pinned model, including real usage and PONG output (allowing
+case, quotes and trailing punctuation).
 Each is capped at 1,024 output tokens and 180 seconds, with no retries; these
 are operator costs, never customer settlements. They run asynchronously and
 do not block other providers. Only `privatemode.encrypted_probe` metadata
-(model, success, HTTP status, input/output counts) is logged, never content.
+(model, success, fixed-vocabulary reason, HTTP status, input/output counts)
+is logged, never content. The same bounded results are available as
+`privatemode_probes` on `/health`, including on non-debug Nitro. Health reads
+only this in-memory snapshot; it never triggers a provider call. Its `status`
+remains enclave liveness, not provider readiness. Check each new instance and
+its attestation/image identity, not an arbitrary load-balanced health response.
+This is intentionally public operational metadata about public vendor model IDs,
+not a secrecy boundary. "Dark" means not selectable/billable in the catalog;
+it does not hide the open-source integration or its synthetic health evidence.
 Require fresh success events for the new image in each serving region while
 the public routes remain dark. A proxy restart does not repeat paid probes.
+These costs apply per instance, not per region. Once regional evidence is
+captured, `QUILL_PRIVATEMODE_BOOT_PROBE=off` in the measured deployment disables
+future boot probes; this does not change request-time encryption or verification.
 
 Prompt-cache salt is derived from the authorized workspace scope. Different
 workspaces never deliberately share a salt; missing scope uses an explicit

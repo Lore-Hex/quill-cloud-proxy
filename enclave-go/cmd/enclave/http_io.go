@@ -660,6 +660,14 @@ func serveAttestation(conn io.Writer, leafDER, deviceBlob, nonce, channelBinding
 
 func writeHealthResponse(w io.Writer, keepAlive bool, processingStartedAt time.Time) {
 	body := []byte(`{"status":"ok"}`)
+	if results := privatemodeProbeResults.Load(); results != nil {
+		if encoded, err := json.Marshal(struct {
+			Status string `json:"status"`
+			Probes any    `json:"privatemode_probes"`
+		}{Status: "ok", Probes: *results}); err == nil {
+			body = encoded
+		}
+	}
 	connection := "close"
 	if keepAlive {
 		connection = "keep-alive"

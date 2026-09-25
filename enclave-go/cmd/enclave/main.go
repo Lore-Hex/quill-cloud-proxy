@@ -237,9 +237,10 @@ func main() {
 		var probeOnce sync.Once
 		go privatemode.Supervise(ctx, func(client *http.Client) {
 			llm.ConfigurePrivatemode(client)
-			if client != nil {
+			if client != nil && os.Getenv("QUILL_PRIVATEMODE_BOOT_PROBE") != "off" {
 				probeOnce.Do(func() {
-					go llm.ProbePrivatemode(ctx, client, boot.ProviderAPIKeys["privatemode"], func(result llm.PrivatemodeProbeResult) {
+					go llm.ProbePrivatemode(ctx, boot.ProviderAPIKeys["privatemode"], func(result llm.PrivatemodeProbeResult) {
+						recordPrivatemodeProbe(result)
 						_ = json.NewEncoder(os.Stderr).Encode(result)
 					})
 				})
