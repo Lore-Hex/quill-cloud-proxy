@@ -158,6 +158,55 @@ MUTATIONS.extend([
      'or set(targets) - {"externalEndpoints", "kind"}', 'or False'),
 ])
 
+# Round 3: check failure must change publication shape, not freeze membership.
+for before, after in (
+    ('                    geo_degraded = True', '                    raise'),
+    ('if CANONICAL_GEO and not force_flat else', 'if CANONICAL_GEO else'),
+    ('if force_flat and current is None:', 'if force_flat and (current is None or "routingPolicy" not in current):'),
+    ('                force_flat=geo_degraded,\n            )', '                force_flat=False,\n            )'),
+    ('                    force_flat=geo_degraded,', '                    force_flat=False,'),
+    ('return 1 if confidential_failed or geo_degraded else 0', 'return 1 if confidential_failed else 0'),
+    ('log(f"reconcile: ERROR: GEO health check invalid: {exc}; "',
+     'log(f"reconcile: GEO fallback; "'),
+    ('"deletions": [_dns_record_data(current)] if current is not None else []', '"deletions": []'),
+    ('        if ok:\n            healthy.append(inst)', '        if True:\n            healthy.append(inst)'),
+):
+    MUTATIONS.append(("GeoCanonicalTests::test_invalid_attached_check_removes_dead_east_and_keeps_reconciling_flat",
+                      RECONCILER, before, after))
+MUTATIONS.extend([
+    ("GeoCanonicalTests::test_fixed_health_check_resumes_geo_from_degraded_flat", RECONCILER,
+     'if CANONICAL_GEO and not force_flat else', 'if CANONICAL_GEO and not force_flat and current is None else'),
+    ("GeoCanonicalTests::test_deleted_or_misconfigured_attached_check_degrades_both_names", RECONCILER,
+     '                    geo_degraded = True', '                    raise'),
+    ("GeoCanonicalTests::test_deleted_or_misconfigured_attached_check_degrades_both_names", RECONCILER,
+     '"deletions": [_dns_record_data(current)] if current is not None else []',
+     '"deletions": [dict(_dns_record_data(current), ttl=TTL)] if current is not None else []'),
+    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_minimum_including_zero", RECONCILER,
+     'if geo_degraded and len(healthy_ips) < MIN_HEALTHY:', 'if False:'),
+    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_minimum_including_zero", RECONCILER,
+     'if not healthy_ips or (not CANONICAL_GEO and len(healthy_ips) < MIN_HEALTHY):',
+     'if not CANONICAL_GEO and len(healthy_ips) < MIN_HEALTHY:'),
+    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_minimum_including_zero", RECONCILER,
+     'return EXCLUDE_CANONICAL_REGIONS | GCP_ENCLAVE_PENDING_REGIONS', 'return EXCLUDE_CANONICAL_REGIONS'),
+    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_minimum_including_zero", RECONCILER,
+     'return EXCLUDE_CANONICAL_REGIONS | GCP_ENCLAVE_PENDING_REGIONS', 'return GCP_ENCLAVE_PENDING_REGIONS'),
+    ("GeoCanonicalTests::test_degraded_flat_uses_flat_filters_and_minimum_including_zero", RECONCILER,
+     'canonical_excludes = canonical_excluded_regions() | persistent_excludes',
+     'canonical_excludes = canonical_excluded_regions()'),
+    ("GeoCanonicalTests::test_degraded_flat_honors_dry_run_and_concurrent_drains", RECONCILER,
+     '    if apply:\n        replace_dns_record(zone, desired)',
+     '    if True:\n        replace_dns_record(zone, desired)'),
+    ("GeoCanonicalTests::test_degraded_flat_honors_dry_run_and_concurrent_drains", RECONCILER,
+     '        _check_pinned_drains()\n        try:\n            submit_dns_change',
+     '        try:\n            submit_dns_change'),
+    ("GeoCanonicalTests::test_invalid_check_does_not_block_existing_when_other_name_is_absent", RECONCILER,
+     'if force_flat and current is None:', 'if False:'),
+    ("GeoCanonicalTests::test_off_with_invalid_check_keeps_byte_identical_logs_and_commands", RECONCILER,
+     '            if CANONICAL_GEO:\n                try:', '            if True:\n                try:'),
+    ("GeoCanonicalTests::test_off_with_invalid_check_keeps_byte_identical_logs_and_commands", RECONCILER,
+     'if not CANONICAL_GEO and not (current and "routingPolicy" in current):', 'if False:'),
+])
+
 
 def main() -> None:
     tree = ast.parse((ROOT / TESTS).read_text())

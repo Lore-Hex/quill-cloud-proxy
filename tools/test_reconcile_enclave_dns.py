@@ -297,6 +297,7 @@ def run_reconcile(
     minimum: int = 2,
     health_check=HEALTH_CHECK,
     health_url=HEALTH_URL,
+    apply: bool = True,
     zone_config=None,
     serving: frozenset[str] = SERVING,
     env_excluded: frozenset[str] = frozenset(),
@@ -353,6 +354,8 @@ def run_reconcile(
         if args[:3] == ["dns", "managed-zones", "describe"]:
             return zone_config if zone_config is not None else {"visibility": "public", "dnssecConfig": {"state": "off"}}
         if args[:3] == ["compute", "health-checks", "describe"]:
+            if isinstance(health_check, Exception):
+                raise health_check
             return health_check
         if args[:3] != ["dns", "record-sets", "list"]:
             raise AssertionError(f"unexpected gcloud read: {args}")
@@ -466,7 +469,7 @@ def run_reconcile(
         "provision_confidential_challenge_delegation": lambda **kwargs: None,
     }
     with contextlib.ExitStack() as stack:
-        stack.enter_context(mock.patch.object(sys, "argv", [str(SCRIPT), "--apply"]))
+        stack.enter_context(mock.patch.object(sys, "argv", [str(SCRIPT), "--apply" if apply else "--dry-run"]))
         stack.enter_context(mock.patch.object(reconciler.subprocess, "run", side_effect=run))
         for name, value in constants.items():
             stack.enter_context(mock.patch.object(reconciler, name, value))
@@ -1660,10 +1663,12 @@ class GeoCanonicalTests(unittest.TestCase):
         bad.append(dict(HEALTH_CHECK, tcpHealthCheck={"port": 80}))
         for check in bad:
             with self.subTest(check=check):
-                with mock.patch.object(reconciler, "reconcile_canonical_record") as publish:
-                    with self.assertRaises(ValueError):
-                        run_reconcile(pending=PENDING, geo=True, health_check=check)
-                    publish.assert_not_called()
+                result = run_reconcile(pending=PENDING, geo=True, health_check=check)
+                self.assertEqual(result.code, 1)
+                self.assertEqual(result.changes, [])
+                self.assertNotIn(self.CANONICAL, result.writes)
+                self.assertNotIn(self.MIRROR, result.writes)
+                self.assertIn("ERROR: GEO health check invalid:", result.log)
         for url in ("", "https://example.com/check", HEALTH_URL.replace("global", "regions/us-east1"),
                     HEALTH_URL.replace(reconciler.PROJECT, "different-project")):
             with self.subTest(url=url), mock.patch.object(reconciler, "gcloud_json") as read:
@@ -1671,8 +1676,145 @@ class GeoCanonicalTests(unittest.TestCase):
                     dns_geo_health.verify_health_check(url, reconciler.PROJECT, read)
                 read.assert_not_called()
         with mock.patch.object(reconciler, "verify_health_check", side_effect=RuntimeError("read denied")):
-            with self.assertRaisesRegex(RuntimeError, "read denied"):
-                run_reconcile(pending=PENDING, geo=True)
+            result = run_reconcile(pending=PENDING, geo=True)
+            self.assertEqual(result.code, 1)
+            self.assertEqual(result.changes, [])
+            self.assertIn("read denied", result.log)
+
+    def test_invalid_attached_check_removes_dead_east_and_keeps_reconciling_flat(self):
+        initial = run_reconcile(pending=PENDING, geo=True, minimum=1)
+        self.assertEqual(initial.code, 0)
+        for name in (self.CANONICAL, self.MIRROR):
+            self.assertEqual(initial.dns[name], self.geo_record(name))
+        bad = dict(HEALTH_CHECK, tcpHealthCheck={"port": 80})
+        previous = initial.dns
+        # First invalidate the attached check, then lose east. Later lose
+        # central instead: degraded flat records must keep following attestation.
+        for unhealthy, ips in (((), [CENTRAL, EAST]), ((EAST,), [CENTRAL]),
+                               ((CENTRAL,), [EAST])):
+            result = run_reconcile(pending=PENDING, geo=True, minimum=1,
+                                   health_check=bad, unhealthy=unhealthy, initial_dns=previous)
+            self.assertEqual(result.code, 1)
+            self.assertIn("ERROR: GEO health check invalid:", result.log)
+            self.assertIn("TCP connect-only on fixed port 443", result.log)
+            self.assertEqual(result.changes, [
+                (zone, {"deletions": [previous[name]], "additions": [self.flat(name, ips)]})
+                for zone, name in (("trustedrouter-com", self.CANONICAL),
+                                   ("quillrouter-com", self.MIRROR))])
+            for name in (self.CANONICAL, self.MIRROR):
+                self.assertEqual(result.dns[name], self.flat(name, ips))
+                self.assertFalse(any(name in command for command in result.commands))
+            previous = result.dns
+        again = run_reconcile(pending=PENDING, geo=True, minimum=1, health_check=bad,
+                              unhealthy=(CENTRAL,), initial_dns=previous)
+        self.assertEqual(again.code, 1)
+        self.assertEqual(again.changes, [])
+        self.assertIn("ERROR: GEO health check invalid:", again.log)
+        # The finding's exact order: invalidate, then lose east before the next pass.
+        result = run_reconcile(pending=PENDING, geo=True, minimum=1, health_check=bad,
+                               unhealthy=(EAST,), initial_dns=initial.dns)
+        for name in (self.CANONICAL, self.MIRROR):
+            self.assertEqual(result.dns[name], self.flat(name, [CENTRAL]))
+
+    def test_fixed_health_check_resumes_geo_from_degraded_flat(self):
+        old = {name: self.geo_record(name) for name in (self.CANONICAL, self.MIRROR)}
+        degraded = run_reconcile(pending=PENDING, geo=True, minimum=1, initial_dns=old,
+                                 unhealthy=(EAST,), health_check=None)
+        self.assertEqual(degraded.code, 1)
+        for name in old:
+            self.assertEqual(degraded.dns[name], self.flat(name, [CENTRAL]))
+        fixed = run_reconcile(pending=PENDING, geo=True, minimum=1,
+                              unhealthy=(EAST,), initial_dns=degraded.dns)
+        self.assertEqual(fixed.code, 0)
+        self.assertNotIn("ERROR", fixed.log)
+        self.assertEqual(len(fixed.changes), 2)
+        for _, change in fixed.changes:
+            name = change["additions"][0]["name"]
+            self.assertEqual(change, {"deletions": [self.flat(name, [CENTRAL])],
+                                      "additions": [self.geo_record(name, [
+                {"location": "us-central1", "healthCheckedTargets": {"externalEndpoints": [CENTRAL]}}])]})
+
+    def test_deleted_or_misconfigured_attached_check_degrades_both_names(self):
+        for check, reason in (
+            (None, "missing"), (RuntimeError("health check not found (404)"), "not found (404)"),
+            (subprocess.TimeoutExpired("health-check describe", 30), "timed out"),
+            (dict(HEALTH_CHECK, type="HTTPS"), "reviewed global TCP configuration"),
+            (dict(HEALTH_CHECK, sourceRegions=["us-east1"]), "three reviewed source regions"),
+        ):
+            with self.subTest(check=check):
+                old = {name: self.geo_record(name) for name in (self.CANONICAL, self.MIRROR)}
+                for record in old.values():
+                    record["ttl"] = 300
+                result = run_reconcile(pending=PENDING, geo=True, minimum=1,
+                                       initial_dns=old, unhealthy=(EAST,), health_check=check)
+                self.assertEqual(result.code, 1)
+                self.assertIn(reason, result.log)
+                self.assertEqual(result.changes, [
+                    (zone, {"deletions": [old[name]], "additions": [self.flat(name, [CENTRAL])]})
+                    for zone, name in (("trustedrouter-com", self.CANONICAL),
+                                       ("quillrouter-com", self.MIRROR))])
+
+    def test_degraded_flat_uses_flat_filters_and_minimum_including_zero(self):
+        old = {name: self.geo_record(name) for name in (self.CANONICAL, self.MIRROR)}
+        for filters in ({"pending": PENDING},
+                        {"pending": frozenset(), "serving": SERVING | PENDING, "env_excluded": PENDING},
+                        {"pending": frozenset(), "serving": SERVING | PENDING,
+                         "drains": {"us-west1": "operator"}}):
+            with self.subTest(filters=filters):
+                flat = run_reconcile(**filters)
+                degraded = run_reconcile(**filters, geo=True, initial_dns=old, health_check=None)
+                self.assertEqual(degraded.code, 1)
+                self.assertEqual(len(degraded.changes), 2)
+                for name in old:
+                    self.assertEqual(flat.writes[name], [CENTRAL, EAST])
+                    self.assertEqual(degraded.dns[name], self.flat(name, flat.writes[name]))
+        for minimum, unhealthy in ((2, (EAST,)), (0, (CENTRAL, EAST, WEST))):
+            with self.subTest(minimum=minimum):
+                flat = run_reconcile(pending=PENDING, minimum=minimum, unhealthy=unhealthy)
+                degraded = run_reconcile(pending=PENDING, geo=True, minimum=minimum,
+                                         unhealthy=unhealthy, initial_dns=old, health_check=None)
+                self.assertEqual(degraded.code, flat.code)
+                self.assertIn("refusing to shrink DNS", str(degraded.code))
+                self.assertEqual(degraded.changes, [])
+                for name in old:
+                    self.assertEqual(degraded.dns[name], old[name])
+
+    def test_degraded_flat_honors_dry_run_and_concurrent_drains(self):
+        old = {name: self.geo_record(name) for name in (self.CANONICAL, self.MIRROR)}
+        preview = run_reconcile(pending=PENDING, geo=True, initial_dns=old,
+                                health_check=None, apply=False)
+        self.assertEqual(preview.code, 1)
+        self.assertEqual(preview.changes, [])
+        self.assertEqual(preview.commands, [])
+        self.assertIn("DRY-RUN canonical", preview.log)
+        result = run_reconcile(pending=PENDING, geo=True, initial_dns=old, health_check=None,
+                               lease=True, drain_during_dns_read=(self.CANONICAL, {"us-east4": "operator"}, 2))
+        self.assertEqual(result.changes, [])
+        self.assertEqual(result.code, 1)
+        self.assertEqual(result.finished, [("execution-one", False)])
+
+    def test_invalid_check_does_not_block_existing_when_other_name_is_absent(self):
+        # Either ordering: an absent primary must not prevent mirror recovery.
+        for name in (self.CANONICAL, self.MIRROR):
+            with self.subTest(name=name):
+                result = run_reconcile(pending=PENDING, geo=True, minimum=1, health_check=None,
+                                       unhealthy=(EAST,), initial_dns={name: self.geo_record(name)})
+                self.assertEqual(result.code, 1)
+                self.assertEqual(len(result.changes), 1)
+                self.assertEqual(result.dns, {name: self.flat(name, [CENTRAL])})
+                self.assertIn("REFUSED new canonical", result.log)
+
+    def test_off_with_invalid_check_keeps_byte_identical_logs_and_commands(self):
+        baseline = run_reconcile(pending=frozenset())
+        for check in (None, dict(HEALTH_CHECK, tcpHealthCheck={"port": 80})):
+            with self.subTest(check=check), mock.patch.object(
+                    reconciler, "verify_health_check", side_effect=AssertionError("OFF read health check")):
+                result = run_reconcile(pending=frozenset(), geo=False, health_check=check)
+                self.assertEqual(result.code, 0)
+                self.assertEqual(result.log.encode(), WITHOUT_PENDING_LOG.encode())
+                self.assertEqual(json.dumps(result.commands).encode(), json.dumps(baseline.commands).encode())
+                self.assertEqual(result.writes, baseline.writes)
+                self.assertEqual(result.changes, [])
 
     def test_geo_zone_constraints_are_checked_for_both_names(self):
         for config in ({}, {"visibility": "private", "dnssecConfig": {"state": "off"}},

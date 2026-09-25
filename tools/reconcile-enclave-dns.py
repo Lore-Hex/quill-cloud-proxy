@@ -1162,15 +1162,20 @@ def replace_dns_record(zone: str, desired: dict) -> None:
 
 def reconcile_canonical_record(
     zone: str, record: str, healthy_ips: list[str], healthy: list[dict],
-    *, apply: bool, label: str,
+    *, apply: bool, label: str, force_flat: bool = False,
 ) -> None:
     current = current_dns_record(zone, record, "A")
+    # Also maintain previously degraded flat records on subsequent passes;
+    # no persistent marker is needed. Missing records wait for a valid check.
+    if force_flat and current is None:
+        log(f"reconcile: REFUSED new canonical {record}: GEO health check invalid")
+        return
     if not CANONICAL_GEO and not (current and "routingPolicy" in current):
         # Preserve the default flat writer and logs, including its race retry.
         reconcile_dns_record(zone, record, healthy_ips, apply=apply, label=label,
                              current_ips=record_ips(current) if current else [])
         return
-    desired = (canonical_geo_record(record, healthy) if CANONICAL_GEO else
+    desired = (canonical_geo_record(record, healthy) if CANONICAL_GEO and not force_flat else
                {"name": record, "type": "A", "ttl": TTL, "rrdatas": healthy_ips})
     if _same_dns_record(current, desired):
         log(f"reconcile: {label} {record} already correct")
@@ -1513,8 +1518,20 @@ def _main_unlocked() -> int:
                 sys.exit(f"[FAIL] only {len(healthy_ips)} healthy (< MIN_HEALTHY={MIN_HEALTHY}); "
                          "refusing to shrink DNS — leaving last-good record in place")
 
+            geo_degraded = False
             if CANONICAL_GEO:
-                verify_health_check(GEO_HEALTH_CHECK, PROJECT, gcloud_json)
+                try:
+                    verify_health_check(GEO_HEALTH_CHECK, PROJECT, gcloud_json)
+                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+                    geo_degraded = True
+                    log(f"reconcile: ERROR: GEO health check invalid: {exc}; "
+                        "reconciling existing canonical records as flat attested survivors")
+            # The filtered survivor set is shared with OFF. Its minimum also
+            # applies when degrading to flat; healthy GEO keeps its own floor.
+            if geo_degraded and len(healthy_ips) < MIN_HEALTHY:
+                sys.exit(f"[FAIL] only {len(healthy_ips)} healthy (< MIN_HEALTHY={MIN_HEALTHY}); "
+                         "refusing to shrink DNS — leaving last-good record in place")
+            if CANONICAL_GEO and not geo_degraded:
                 verify_geo_zones(canonical_healthy)
 
             reconcile_canonical_record(
@@ -1524,6 +1541,7 @@ def _main_unlocked() -> int:
                 canonical_healthy,
                 apply=args.apply,
                 label="canonical",
+                force_flat=geo_degraded,
             )
             for mirror_zone, mirror_record in CANONICAL_MIRRORS:
                 reconcile_canonical_record(
@@ -1533,6 +1551,7 @@ def _main_unlocked() -> int:
                     canonical_healthy,
                     apply=args.apply,
                     label="compatibility mirror",
+                    force_flat=geo_degraded,
                 )
 
             if PUBLISH_REGIONAL:
@@ -1552,7 +1571,7 @@ def _main_unlocked() -> int:
         # has been released through its failure path.
         raise
     # Surface failures to monitoring, but only after ordinary DNS is reconciled.
-    return 1 if confidential_failed else 0
+    return 1 if confidential_failed or geo_degraded else 0
 
 
 def main() -> int:
