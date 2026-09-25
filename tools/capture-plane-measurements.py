@@ -558,6 +558,8 @@ def live_gcp() -> dict[str, str]:
     attestation against the published record, so the plane carrying every prompt
     was the only one with no drift check at all.
     """
+    # HTTPS uses ordinary DNS for either flat or GEO A records. This observes
+    # one selected enclave, not complete fleet membership (discovery does that).
     token = _fetch(GCP_ATTESTATION_URL).decode("ascii").strip()
     parts = token.split(".")
     if len(parts) != 3:

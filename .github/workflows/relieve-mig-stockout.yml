@@ -69,6 +69,10 @@ permissions:
   id-token: write # Workload Identity Federation
   contents: read
 
+env:
+  QUILL_CANONICAL_GEO: ${{ vars.QUILL_CANONICAL_GEO || '0' }}
+  QUILL_GEO_HEALTH_CHECK: ${{ vars.QUILL_GEO_HEALTH_CHECK }}
+
 jobs:
   relieve:
     runs-on: ubuntu-latest

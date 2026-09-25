@@ -14,6 +14,10 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  QUILL_CANONICAL_GEO: ${{ vars.QUILL_CANONICAL_GEO || '0' }}
+  QUILL_GEO_HEALTH_CHECK: ${{ vars.QUILL_GEO_HEALTH_CHECK }}
+
 jobs:
   reconcile:
     # Share the deploy lock only at the job level. Keep at most one DNS job

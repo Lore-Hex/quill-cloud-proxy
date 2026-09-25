@@ -19,6 +19,8 @@ import subprocess
 import sys
 from typing import Any, NamedTuple
 
+from cloud_dns_records import record_ips
+
 PROJECT = "quill-cloud-proxy"
 SOURCE_ZONE = "trustedrouter-com"
 SOURCE_RECORD = "api.trustedrouter.com."
@@ -110,9 +112,9 @@ def source_ips(record: str = SOURCE_RECORD) -> list[str]:
             and row.get("name") == record
             and row.get("type") == "A"
         ):
-            values = row.get("rrdatas")
-            if not isinstance(values, list):
-                raise ValueError("canonical A record has invalid rrdatas")
+            # Copy the complete attested membership, not one GEO location.
+            # Independent Route53 backups intentionally remain flat A records.
+            values = record_ips(row)
             return normalized_ipv4(values, minimum=0 if record == CONFIDENTIAL_SOURCE_RECORD else MIN_HEALTHY)
     if record == CONFIDENTIAL_SOURCE_RECORD:
         return []
