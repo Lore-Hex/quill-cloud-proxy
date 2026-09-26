@@ -122,6 +122,7 @@ func annotateSettledResponseMetadata(
 		}
 	}
 	routeUsage = pruneEmptyProviderUsage(routeUsage)
+	annotateInferenceLocation(usage, authorization, selectedEndpoint, selectedProvider, selectedModel)
 	usage["provider_usage"] = routeUsage
 	payload["trustedrouter"] = mergeTrustedRouterRouting(payload["trustedrouter"], routeUsage)
 	if includeOpenRouterMetadata {

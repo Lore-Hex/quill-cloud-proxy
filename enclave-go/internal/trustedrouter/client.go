@@ -442,6 +442,7 @@ func (c *Client) primaryBaseURL() string {
 }
 
 type Authorization struct {
+	InferenceLocation                     *InferenceLocationMetadata         `json:"inference_location,omitempty"`
 	AuthorizationID                       string                             `json:"authorization_id"`
 	IdempotentReplay                      bool                               `json:"idempotent_replay"`
 	InvocationNonce                       string                             `json:"invocation_nonce"`
@@ -533,6 +534,7 @@ type CustomModel struct {
 }
 
 type RouteCandidate struct {
+	InferenceLocation   *InferenceLocationMetadata         `json:"inference_location,omitempty"`
 	EndpointID          string                             `json:"endpoint_id"`
 	Model               string                             `json:"model"`
 	UpstreamModel       string                             `json:"upstream_model"`
@@ -544,6 +546,20 @@ type RouteCandidate struct {
 	BYOKEncryptedSecret *byokcache.EncryptedSecretEnvelope `json:"byok_encrypted_secret"`
 	BYOKCacheKey        string                             `json:"byok_cache_key"`
 	BYOKProvider        string                             `json:"byok_provider"`
+}
+
+// InferenceLocationMetadata describes advertised availability, not proof of
+// the machine that served a request. Gateway Region is deliberately separate.
+type InferenceLocationMetadata struct {
+	AdvertisedRegions             []string `json:"advertised_regions"`
+	AdvertisedRegionScope         string   `json:"advertised_region_scope"`
+	CatalogUpdatedAt              *string  `json:"catalog_updated_at"`
+	ProviderDeclaredLocations     []string `json:"provider_declared_locations"`
+	ProviderDeclarationReviewedOn *string  `json:"provider_declaration_reviewed_on"`
+	ServingRegion                 *string  `json:"serving_region"`
+	ServingRegionStatus           string   `json:"serving_region_status"`
+	RegionPinningEnforced         bool     `json:"region_pinning_enforced"`
+	DocumentationURL              string   `json:"documentation_url"`
 }
 
 type BroadcastDestination struct {
