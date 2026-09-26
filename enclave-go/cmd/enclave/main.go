@@ -1991,6 +1991,7 @@ func serveStreaming(
 			}
 		}
 	}
+	stageDControl = withInferenceLocation(stageDControl, authorization, selectedRoute)
 	if routeType == "responses" {
 		if stageDControl != nil && polyphemusReceiptFromContext(ctx) != nil {
 			stageDControl.ExposeResponsesUsage = true
