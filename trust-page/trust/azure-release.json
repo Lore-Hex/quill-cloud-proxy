@@ -1,7 +1,5 @@
 {
   "accepted_hostdata": [
-    "3f5c6974ee303812f88378c83f142eb51c7ec0947509aa84bd2b5e59a0260c71",
-    "a93e56514aa1b33459d1259c85f8e5cde4ba16f2018eb7cd3b090a75dbe4fc5b",
     "1b6d04c7b8bed4ccbf372c0803aa07710a529be9b9c815e20d88dcb9c51089be",
     "f21ac89db6c13c78fc66e56f75ecfa37778714e9521150d57e1eb08325baa314"
   ],
@@ -19,7 +17,7 @@
     "prompt_output_storage": false
   },
   "evidence_note": "MAA re-attests the SEV-SNP report; verifiers see Microsoft's assertion, not the raw hardware report or the AMD certificate chain.",
-  "hostdata": "3f5c6974ee303812f88378c83f142eb51c7ec0947509aa84bd2b5e59a0260c71",
+  "hostdata": "1b6d04c7b8bed4ccbf372c0803aa07710a529be9b9c815e20d88dcb9c51089be",
   "measurement_type": "sev-snp-hostdata-sha256",
   "platform": "azure-confidential-containers-sev-snp",
   "regions": [
@@ -27,7 +25,7 @@
       "attestation_issuer": "https://trquilluaen.uaen.attest.azure.net",
       "attestation_url": "https://api-azure.trustedrouter.com/attestation",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "3f5c6974ee303812f88378c83f142eb51c7ec0947509aa84bd2b5e59a0260c71",
+      "hostdata": "1b6d04c7b8bed4ccbf372c0803aa07710a529be9b9c815e20d88dcb9c51089be",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866",
       "origin_hostname": "quill-enclave-uaenorth.uaenorth.azurecontainer.io"
     },
@@ -35,7 +33,7 @@
       "attestation_issuer": "https://trquillsyd.eau.attest.azure.net",
       "attestation_url": "https://api-azure-syd.trustedrouter.com/attestation",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "a93e56514aa1b33459d1259c85f8e5cde4ba16f2018eb7cd3b090a75dbe4fc5b",
+      "hostdata": "f21ac89db6c13c78fc66e56f75ecfa37778714e9521150d57e1eb08325baa314",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866",
       "origin_hostname": "quill-enclave-australiaeast.australiaeast.azurecontainer.io"
     }

@@ -169,7 +169,9 @@ smoke results, not throughput or uptime guarantees.
 
 ### 2026-09-26 Azure Secret Rotation Window
 
-The Confidential AI credential rotation resealed the Azure bundle
+The Confidential AI credential rotation resealed the Azure bundle as
+`44f442fa31e84e2b853a7c84a3b1a546`, replacing
+`6749e31753114f5c9960094790fe233c`,
 without changing its 67 secret names or the enclave image. The only change to
 the 85 environment values rendered by `deploy-azure-aci.sh print-env` is
 `QUILL_AZURE_BUNDLE_VERSION`. Isolated
@@ -198,7 +200,37 @@ reload. Traffic Manager and Sydney's regional DNS initially remain on the
 stable groups. After the signed accepted set is published, switch to verified
 temporary origins, drain old connections, recreate and verify the stable
 origins, return DNS, and only then narrow the policy and published records.
-Do not run the capture producer without `--keep-accepted` during this window.
+During temporary-origin routing, the per-region fields describe the named
+stable origins; clients must validate live measurements against
+`accepted_hostdata`, not the outgoing scalar. Re-capture with `--keep-accepted`
+after verifying recreated stable origins if any outgoing workload still serves.
+An unreachable stable origin makes capture fail closed even with that flag;
+restore and verify both origins before publishing, rather than manufacturing a
+partial record. Omit `--keep-accepted` only after both outgoing workloads are
+gone, both stable replacements are verified, and DNS has returned to them.
+
+### 2026-09-26 Azure Rotation Completion
+
+The first DNS cutover completed by 03:05:10 UTC. The outgoing stable groups
+remained available for the full 30-minute drain before recreation, starting at
+03:36 UTC in Dubai and 03:41 UTC in Sydney. Both replacements used the same
+image and policy as their verified temporary counterparts. Exact-origin MAA
+verification passed signature, issuer, hostdata, non-debug, fresh nonce, and
+same-TLS-channel binding checks. All three encrypted Privatemode boot probes
+passed in each replacement. Confidential AI non-streaming inference in Dubai
+and streaming inference in Sydney returned nonempty synthetic output, integer
+usage, and a positive settled charge through the intended provider.
+
+Traffic Manager returned to the stable origins and Sydney's regional DNS was
+updated by 03:46:51 UTC; both stable targets were Online. Regional `narrow-live`
+completed at 03:47:51 UTC with exactly the incoming Dubai and Sydney
+measurements above, preserving each issuer binding. The final public record
+was generated from both stable origins without `--keep-accepted`, retaining
+the actual image source `3c0cb55932768a4ee78ad512e6da71c380465f3e`.
+Temporary origins must remain available until at least 04:16:51 UTC for the
+return-DNS drain; narrowing is safe before their deletion because they carry
+the same two incoming measurements. This record does not assert their cleanup
+or completion of the separate GCP rollout.
 
 New discovery results do not extend the encrypted model allowlist. Repeat the
 review/reproduction/probe gates for every vendor release, update Docker pins,
