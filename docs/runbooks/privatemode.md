@@ -109,7 +109,7 @@ than silently using maximum effort.
    operator source into each cloud. AWS uses `sync-secrets-to-aws.sh` with its
    regional replica; Azure uses `azure-sync-secrets.sh` and its sealed bundle.
    Azure's `QUILL_PRIVATEMODE_SECRET` stays empty until that bundle is sealed.
-   The staged Azure bundle is `6749e31753114f5c9960094790fe233c` (67 entries,
+   The staged Azure bundle is `44f442fa31e84e2b853a7c84a3b1a546` (67 entries,
    all previous names preserved). Set `QUILL_AZURE_BUNDLE_VERSION` to that
    immutable version and `QUILL_PRIVATEMODE_SECRET=trustedrouter-privatemode-api-key`
    for its measured deployment; retain existing provider bindings including
@@ -150,6 +150,31 @@ boot probes for all three pinned models with nonzero input/output usage.
 The AWS and Azure trust records hold the exact resulting measurements.
 This evidence does not assert catalog activation or completion of the separate
 GCP workflow, and does not bypass the control-plane cross-cloud bake gate.
+
+### 2026-09-26 Public API Verification
+
+GCP enclave workflow `36176398643` and catalog deployment `36195743126`
+completed successfully. The catalog change is quill-router PR #1336.
+All three pinned models passed real streaming and non-streaming requests to
+`api.trustedrouter.com`, with `provider.only=["privatemode"]`,
+`allow_fallbacks=false`, and `min_privacy="confidential"`. All three
+non-streaming generation records matched the returned token counts and settled
+cost exactly. Streaming responses included usage, selected-provider metadata,
+and `[DONE]`.
+
+Three repeated synthetic GPT OSS requests used 7,102 input tokens. The second
+and third reported 7,088 cached tokens; their total charges were 411 and 409
+microdollars, versus 3,863 microdollars on the first request. These are bounded
+smoke results, not throughput or uptime guarantees.
+
+The subsequent Confidential AI credential rotation resealed the Azure bundle
+without changing its 67 secret names or the enclave image. The only change to
+the 85 measured environment values is `QUILL_AZURE_BUNDLE_VERSION`. Isolated
+Dubai and Sydney replacements passed pinned MAA signature, non-debuggable
+workload, nonce, and TLS-channel checks before publication of their transition
+measurements. Both also passed real Confidential AI inference, including a
+streaming Sydney request. This key rotation does not change Confidential AI's
+provider E2EE eligibility.
 
 New discovery results do not extend the encrypted model allowlist. Repeat the
 review/reproduction/probe gates for every vendor release, update Docker pins,
