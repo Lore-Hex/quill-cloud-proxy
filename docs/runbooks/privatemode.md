@@ -167,14 +167,38 @@ and third reported 7,088 cached tokens; their total charges were 411 and 409
 microdollars, versus 3,863 microdollars on the first request. These are bounded
 smoke results, not throughput or uptime guarantees.
 
-The subsequent Confidential AI credential rotation resealed the Azure bundle
+### 2026-09-26 Azure Secret Rotation Window
+
+The Confidential AI credential rotation resealed the Azure bundle
 without changing its 67 secret names or the enclave image. The only change to
-the 85 measured environment values is `QUILL_AZURE_BUNDLE_VERSION`. Isolated
+the 85 environment values rendered by `deploy-azure-aci.sh print-env` is
+`QUILL_AZURE_BUNDLE_VERSION`. Isolated
 Dubai and Sydney replacements passed pinned MAA signature, non-debuggable
 workload, nonce, and TLS-channel checks before publication of their transition
 measurements. Both also passed real Confidential AI inference, including a
 streaming Sydney request. This key rotation does not change Confidential AI's
 provider E2EE eligibility.
+
+During the transition, the signed record retains the stable serving origins
+and outgoing Dubai scalar pin. Only `accepted_hostdata` widens. Temporary
+origins `quill-enclave-uaenorth-key0926.uaenorth.azurecontainer.io` and
+`quill-enclave-australiaeast-key0926.australiaeast.azurecontainer.io` are
+verified cutover targets, not permanent replacements for the producer's
+configured stable origin names. The accepted set is:
+
+- Outgoing Dubai: `3f5c6974ee303812f88378c83f142eb51c7ec0947509aa84bd2b5e59a0260c71`.
+- Outgoing Sydney: `a93e56514aa1b33459d1259c85f8e5cde4ba16f2018eb7cd3b090a75dbe4fc5b`.
+- Incoming Dubai: `1b6d04c7b8bed4ccbf372c0803aa07710a529be9b9c815e20d88dcb9c51089be`.
+- Incoming Sydney: `f21ac89db6c13c78fc66e56f75ecfa37778714e9521150d57e1eb08325baa314`.
+
+The SKR release policy also accepts all four, with each region's issuer
+binding preserved. Both old and new Confidential AI keys authenticated during
+preflight; do not revoke the old key before the running fleet finishes its
+reload. Traffic Manager and Sydney's regional DNS initially remain on the
+stable groups. After the signed accepted set is published, switch to verified
+temporary origins, drain old connections, recreate and verify the stable
+origins, return DNS, and only then narrow the policy and published records.
+Do not run the capture producer without `--keep-accepted` during this window.
 
 New discovery results do not extend the encrypted model allowlist. Repeat the
 review/reproduction/probe gates for every vendor release, update Docker pins,
