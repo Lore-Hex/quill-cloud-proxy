@@ -46,8 +46,7 @@ var providerRoutingFields = map[string]struct{}{
 }
 
 var unsupportedProviderRoutingFields = map[string]struct{}{
-	"enforce_distillable_text": {}, "options": {}, "preferred_max_latency": {},
-	"preferred_min_throughput": {}, "quantizations": {},
+	"enforce_distillable_text": {}, "options": {}, "quantizations": {},
 }
 
 var supportedPluginIDs = map[string]struct{}{
