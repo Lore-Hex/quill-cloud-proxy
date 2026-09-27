@@ -8,6 +8,7 @@ import (
 
 func TestVideoModelsIncludeLaunchAndExpansionSet(t *testing.T) {
 	want := map[string]bool{
+		"bytedance/seedance-2.5":      false,
 		"bytedance/seedance-2.0":      false,
 		"bytedance/seedance-2.0-fast": false,
 		"google/veo-3.1":              false,
@@ -54,6 +55,7 @@ func TestResolveExpandedModelsUsesExactDirectProviderIDs(t *testing.T) {
 		model string
 		want  string
 	}{
+		{model: "bytedance/seedance-2.5", want: "seedance-2-5-text-to-video-basic"},
 		{model: "google/veo-3.1", want: "veo3.1-full-text-to-video"},
 		{model: "google/veo-3.1-fast", want: "veo3.1-fast-text-to-video"},
 		{model: "openai/sora-2", want: "sora-2-text-to-video"},
@@ -84,6 +86,7 @@ func TestResolveExpandedModelsUsesExactImageProviderIDs(t *testing.T) {
 		model string
 		want  string
 	}{
+		{model: "bytedance/seedance-2.5", want: "seedance-2-5-image-to-video-basic"},
 		{model: "google/veo-3.1", want: "veo3.1-full-image-to-video"},
 		{model: "google/veo-3.1-fast", want: "veo3.1-fast-image-to-video"},
 		{model: "openai/sora-2", want: "sora-2-image-to-video"},
@@ -308,7 +311,7 @@ func TestModelsJSONIsTruthfulAboutProviderPrivacy(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Data) != 21 {
+	if len(payload.Data) != 22 {
 		t.Fatalf("model count = %d", len(payload.Data))
 	}
 	for _, row := range payload.Data {
@@ -324,6 +327,10 @@ func TestModelsJSONIsTruthfulAboutProviderPrivacy(t *testing.T) {
 		}
 		modalities := strings.Join(row.Architecture.InputModalities, ",")
 		switch row.ID {
+		case "bytedance/seedance-2.5":
+			if modalities != "text,image,audio" {
+				t.Fatalf("Seedance 2.5 modalities = %q", modalities)
+			}
 		case "google/gemini-omni-flash":
 			if modalities != "text,image" {
 				t.Fatalf("omni modalities = %q", modalities)

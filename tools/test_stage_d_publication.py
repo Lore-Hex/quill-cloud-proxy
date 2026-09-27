@@ -112,6 +112,8 @@ class StageDPublicationTests(unittest.TestCase):
             DIGEST="sha256:" + "a" * 64,
             IMAGE_DIGEST="sha256:" + "a" * 64,
             IMAGE_REF="example.invalid/enclave:gcp-release-0123456",
+            RUNNING_DIGESTS="sha256:" + "b" * 64,
+            RUNNING_REFERENCES="example.invalid/enclave:gcp-release-previous",
             TR_TRUST_PUSH_DEPLOY_KEY="",
         )
         # Run real local Git, but never contact a remote from these workflow steps.
@@ -171,6 +173,55 @@ class StageDPublicationTests(unittest.TestCase):
 
     def test_transitional_release_commits_document_and_mirror_together(self) -> None:
         self.check_release_commit("transitional")
+
+    def test_transition_preserves_running_release_missing_from_queued_checkout(self) -> None:
+        self.prepare_release("transitional", False)
+        running = "sha256:" + "e" * 64
+        reference = "example.invalid/enclave:gcp-release-earlier-queued-run"
+        self.env.update(RUNNING_DIGESTS=running, RUNNING_REFERENCES=reference)
+        self.assert_passed(self.run_step(
+            "deploy-enclave-gcp.yml", "Write transitional trust-page artifacts"
+        ))
+        release = json.loads((self.root / "trust-page/gcp-release.json").read_text())
+        self.assertIn(running, release["accepted_image_digests"])
+        self.assertIn(reference, release["accepted_image_references"])
+        self.assertIn(self.env["DIGEST"], release["accepted_image_digests"])
+        self.assertEqual(release["release_state"], "rolling")
+        for name in ("accepted-image-digests-gcp.txt", "accepted-image-references-gcp.txt", "gcp-release.json"):
+            self.assertEqual((self.root / "trust-page" / name).read_bytes(),
+                             (self.root / "trust-page/trust" / name).read_bytes())
+
+    def test_transition_refuses_missing_running_inventory(self) -> None:
+        self.prepare_release("transitional", False)
+        for variable in ("RUNNING_DIGESTS", "RUNNING_REFERENCES"):
+            with self.subTest(variable=variable):
+                value = self.env.pop(variable)
+                before = (self.root / "trust-page/gcp-release.json").read_bytes()
+                result = self.run_step("deploy-enclave-gcp.yml", "Write transitional trust-page artifacts")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(before, (self.root / "trust-page/gcp-release.json").read_bytes())
+                self.env[variable] = value
+
+    def test_running_inventory_outputs_feed_transitional_allowlist(self) -> None:
+        self.prepare_release("transitional", False)
+        digest = "sha256:" + "e" * 64
+        reference = "example.invalid/enclave:gcp-release-running"
+        (self.root / "running-digests.txt").write_text(digest + "\n" + digest + "\n")
+        (self.root / "running-references.txt").write_text(reference + "\n" + reference + "\n")
+        script = workflow_step("deploy-enclave-gcp.yml", "Build verified transitional Stage D accepted set")
+        start = script.index('sort -u -o "${running_digests}"')
+        end = script.index("python3 tools/write-stage-d-policy.py \\\n", start)
+        self.assert_passed(self.run_script(
+            'set -euo pipefail\nrunning_digests=running-digests.txt\n'
+            'running_references=running-references.txt\n' + script[start:end]
+        ))
+        outputs = dict(line.split("=", 1) for line in (self.root / "output").read_text().splitlines())
+        self.assertEqual(outputs["running_digests"], digest)
+        self.assertEqual(outputs["running_references"], reference)
+        workflow = (ROOT / ".github/workflows/deploy-enclave-gcp.yml").read_text()
+        self.assertIn('printf \'%s\\n\' "${image_ref}" >> "${running_references}"', workflow)
+        self.assertIn("RUNNING_DIGESTS: ${{ steps.stage-d-transition.outputs.running_digests }}", workflow)
+        self.assertIn("RUNNING_REFERENCES: ${{ steps.stage-d-transition.outputs.running_references }}", workflow)
 
     def test_final_release_commits_document_and_mirror_together(self) -> None:
         self.check_release_commit("final")

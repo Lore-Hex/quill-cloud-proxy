@@ -163,6 +163,16 @@ jobs:
           # Each plane document is published at trust-page/<name> and
           # trust-page/trust/<name>; the S3 mirror's publisher runs the same check.
           python3 tools/check-trust-copies.py trust-page
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.6.5
+      # A commit that changes a document still carries its previous bundle
+      # until the plane's signer re-signs it. Publish nothing while any bundle
+      # does not sign its document: the last good site stays live, and the
+      # signer's completion runs this workflow again (workflow_run above), so a
+      # run that stops here on such a commit is expected.
+      - name: Verify each bundle signs its document
+        run: python3 tools/check-trust-signatures.py trust-page
       # NOT signed here. Each plane's record is signed by its own workflow, and
       # those bundles are committed to the repo, so this job publishes them
       # unchanged. Signing here as well is what broke the property: the page

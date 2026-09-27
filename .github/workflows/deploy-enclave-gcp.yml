@@ -324,7 +324,9 @@ jobs:
           fi
 
           running_digests="${work_dir}/running-digests.txt"
+          running_references="${work_dir}/running-references.txt"
           : > "${running_digests}"
+          : > "${running_references}"
           # Every main-inventory MIG, plus a pending (first-time) region's MIG
           # once it exists. Written to a file before the loop: a process
           # substitution would swallow a failure of the tool and leave the loop
@@ -375,9 +377,13 @@ jobs:
                 exit 1
               fi
               printf '%s\n' "${running_digest}" >> "${running_digests}"
+              printf '%s\n' "${image_ref}" >> "${running_references}"
             done
           done < "${rollout_migs}"
           sort -u -o "${running_digests}" "${running_digests}"
+          sort -u -o "${running_references}" "${running_references}"
+          echo "running_digests=$(paste -sd, "${running_digests}")" >> "$GITHUB_OUTPUT"
+          echo "running_references=$(paste -sd, "${running_references}")" >> "$GITHUB_OUTPUT"
           python3 tools/write-stage-d-policy.py \
             --output trust-page/gcp/stage-d-accepted.json \
             --github-run-number "${GITHUB_RUN_NUMBER}" \
@@ -393,10 +399,17 @@ jobs:
 
       - id: write-trust
         name: Write transitional trust-page artifacts
+        env:
+          RUNNING_DIGESTS: ${{ steps.stage-d-transition.outputs.running_digests }}
+          RUNNING_REFERENCES: ${{ steps.stage-d-transition.outputs.running_references }}
         run: |
           set -euo pipefail
           previous="$(cat trust-page/accepted-image-digests-gcp.txt 2>/dev/null || cat trust-page/image-digest-gcp.txt)"
           previous_references="$(cat trust-page/accepted-image-references-gcp.txt 2>/dev/null || cat trust-page/image-reference-gcp.txt)"
+          # A queued checkout predates the preceding deployment's finalizer.
+          # Preserve the same running inventory that the Stage D policy uses.
+          previous="${previous},${RUNNING_DIGESTS:?running image inventory is required}"
+          previous_references="${previous_references},${RUNNING_REFERENCES:?running reference inventory is required}"
           python3 tools/write-trust-artifacts.py \
             --out-dir trust-page \
             --commit "${SHA}" \
