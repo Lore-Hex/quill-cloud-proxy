@@ -308,7 +308,7 @@ func NewACMEWithCache(
 
 	srv := &Server{singleCert: false}
 	tlsConfig := manager.TLSConfig()
-	managerGetCertificate := tlsConfig.GetCertificate
+	managerGetCertificate := confidentialCertificateGetter(dnsNames, cache, tlsConfig.GetCertificate)
 	tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		cert, err := getCertificateWithECDSAFallback(managerGetCertificate, hello)
 		if err != nil {

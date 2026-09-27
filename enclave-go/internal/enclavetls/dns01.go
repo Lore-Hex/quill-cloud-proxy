@@ -227,7 +227,7 @@ func registerFallbackAccount(ctx context.Context, cfg DNS01Config, ca DNS01CA) e
 	if err != nil {
 		return fmt.Errorf("acme account key: %w", err)
 	}
-	client := &acme.Client{Key: accountKey, HTTPClient: cfg.HTTPClient}
+	client := &acme.Client{Key: accountKey, HTTPClient: cfg.HTTPClient, RetryBackoff: dns01RetryBackoff}
 	if ca.DirectoryURL != "" {
 		client.DirectoryURL = ca.DirectoryURL
 	}
@@ -252,7 +252,10 @@ func preRegisterFallbackCAs(ctx context.Context, cfg DNS01Config, alreadyDone bo
 	}
 	done := true
 	for _, ca := range cfg.FallbackCAs {
-		if err := registerCA(ctx, cfg, ca); err != nil {
+		attempt, cancel := context.WithTimeout(ctx, time.Minute)
+		err := registerCA(attempt, cfg, ca)
+		cancel()
+		if err != nil {
 			fmt.Fprintf(maybeStderr,
 				"dns01_renewer.fallback_preregister_failed directory=%s err=%v\n",
 				ca.DirectoryURL, err,
@@ -288,7 +291,14 @@ func runDNS01Orders(ctx context.Context, cfg DNS01Config) error {
 	cas = append(cas, cfg.FallbackCAs...)
 	var errs []error
 	for index, ca := range cas {
-		err := orderCA(ctx, cfg, ca)
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(errs, err)...)
+		}
+		// Bound a whole order, not only individual HTTP calls. A CA's retry
+		// loop must never consume the lifetime of the fallback renewer.
+		attempt, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		err := orderCA(attempt, cfg, ca)
+		cancel()
 		if err == nil {
 			if index > 0 {
 				fmt.Fprintf(maybeStderr,
@@ -311,6 +321,16 @@ func runDNS01Orders(ctx context.Context, cfg DNS01Config) error {
 	return errors.Join(errs...)
 }
 
+// A paused CA can return Retry-After measured in days. Yield to the backup
+// instead of sleeping inside acme.Client forever. The next renewer tick retries.
+func dns01RetryBackoff(n int, _ *http.Request, resp *http.Response) time.Duration {
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 || n > 3 {
+		return -1
+	}
+	// Keep bounded bad-nonce retries; these are normal ACME protocol recovery.
+	return time.Duration(n) * 100 * time.Millisecond
+}
+
 // runDNS01Order executes one full DNS-01 ACME order against ONE CA, leaving
 // the cert in Cache when successful. All on-the-wire pieces (ACME directory,
 // Cloudflare API) go through cfg.HTTPClient so the same vsock-tunneled
@@ -329,8 +349,9 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 		return fmt.Errorf("acme account key: %w", err)
 	}
 	client := &acme.Client{
-		Key:        accountKey,
-		HTTPClient: cfg.HTTPClient,
+		Key:          accountKey,
+		HTTPClient:   cfg.HTTPClient,
+		RetryBackoff: dns01RetryBackoff,
 	}
 	if ca.DirectoryURL != "" {
 		client.DirectoryURL = ca.DirectoryURL
@@ -389,7 +410,9 @@ func runDNS01Order(ctx context.Context, cfg DNS01Config, ca DNS01CA) error {
 		// across consecutive orders, so leaving stale records around
 		// is operationally bad.
 		defer func() {
-			if delErr := provider.RemoveTXT(ctx, recordID); delErr != nil {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			if delErr := provider.RemoveTXT(cleanup, recordID); delErr != nil {
 				fmt.Fprintf(maybeStderr,
 					"dns01_renewer.txt_cleanup_failed record_id=%s err=%v\n",
 					recordID, delErr,
