@@ -81,6 +81,21 @@ type RequestMetadata struct {
 }
 
 var models = map[string]Model{
+	"bytedance/seedance-2.5": {
+		ID: "bytedance/seedance-2.5", Name: "ByteDance Seedance 2.5",
+		Description:     "Seedance 2.5 text, image, and reference video generation with optional audio.",
+		DefaultDuration: 5, DefaultResolution: "720p", DefaultAspectRatio: "16:9",
+		TextProviderModel:      "seedance-2-5-text-to-video-basic",
+		ImageProviderModel:     "seedance-2-5-image-to-video-basic",
+		ReferenceProviderModel: "seedance-2-5-reference-to-video-basic",
+		SupportsAudio:          true, SupportsImage: true, SupportsReferences: true,
+		SupportsAudioReference: true,
+		// Venice's live catalog does not enable video references for this route.
+		PromptCharacterLimit: 15_000, MinimumDuration: 4, MaximumDuration: 30,
+		AllowedResolutions:    []string{"480p", "720p", "1080p"},
+		AllowedAspectRatios:   []string{"21:9", "16:9", "4:3", "1:1", "3:4", "9:16"},
+		ImageUsesSourceAspect: true,
+	},
 	"bytedance/seedance-2.0": {
 		ID: "bytedance/seedance-2.0", Name: "ByteDance Seedance 2.0",
 		Description:     "Seedance 2.0 text, image, and reference video generation.",
@@ -349,6 +364,7 @@ var models = map[string]Model{
 func Models() []Model {
 	order := []string{
 		"x-ai/grok-imagine-video",
+		"bytedance/seedance-2.5",
 		"bytedance/seedance-2.0-fast", "bytedance/seedance-2.0",
 		"google/veo-3.1-fast", "google/veo-3.1",
 		"openai/sora-2", "openai/sora-2-pro", "runway/gen-4.5",
