@@ -32,6 +32,10 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_TRUST_PUBLISH_ROLE_ARN }}
           aws-region: us-east-1
+      # tools/publish-trust-s3.sh verifies every bundle before it syncs.
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.6.5
       - name: Publish independent S3 trust mirror
         run: bash tools/publish-trust-s3.sh
       - name: Verify mirror matches repository artifacts
@@ -39,9 +43,18 @@ jobs:
           set -euo pipefail
           base="https://trust.quill.lorehex.co"
           missing=0
+          # Each record and, where it has one, its bundle: sync uploads object by
+          # object, so a run cut short can leave a document beside the old bundle.
+          files=()
           for f in trust/gcp-release.json trust/aws-release.json trust/azure-release.json \
                    trust/image-digest-gcp.txt trust/pcr0-aws.txt trust/hostdata-azure.txt \
                    aws-release.json azure-release.json pcr0.txt mirrors.json; do
+            files+=("$f")
+            if [ -f "trust-page/${f}.bundle" ]; then
+              files+=("${f}.bundle")
+            fi
+          done
+          for f in "${files[@]}"; do
             matched=0
             for attempt in $(seq 1 30); do
               if curl -fsS "${base}/${f}?nocache=${GITHUB_RUN_ID}-${attempt}" -o /tmp/live \

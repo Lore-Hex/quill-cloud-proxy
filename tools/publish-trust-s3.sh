@@ -16,6 +16,7 @@ do
   test -f "${source_dir}/${required}"
 done
 python3 "$(dirname "$0")/check-trust-copies.py" "${source_dir}"
+python3 "$(dirname "$0")/check-trust-signatures.py" "${source_dir}"
 
 # Let the AWS CLI infer each MIME type. The legacy deploy forced every object
 # to text/html, including JSON and measurement files. --delete makes the mirror

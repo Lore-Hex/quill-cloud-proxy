@@ -10,7 +10,8 @@ publisher before syncing, and CI on every commit.
 The rule: each document in REQUIRED exists at both paths, and every file that
 exists at both paths, bundles included, is byte-identical at both. A bundle may
 exist at one path only, because a new document's bundle lands one commit after
-it.
+it. The tree may hold no symbolic link: the publishers follow links, which
+this check does not walk.
 
 Run: python3 tools/check-trust-copies.py [trust-page]
 """
@@ -38,7 +39,10 @@ REQUIRED = (
 
 def problems(site: Path) -> list[str]:
     nested_root = site / "trust"
-    found = [
+    # The publishers follow symbolic links, which the walk below does not
+    # descend into, so the tree may hold none.
+    found = [f"{path} is a symbolic link" for path in sorted(site.rglob("*")) if path.is_symlink()]
+    found += [
         f"missing {path}"
         for name in REQUIRED
         for path in (site / name, nested_root / name)

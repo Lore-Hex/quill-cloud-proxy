@@ -168,11 +168,50 @@ class MirrorIndependence(unittest.TestCase):
             for line in scripts["tools/publish-trust-s3.sh"].splitlines()
             if line.strip() and not line.lstrip().startswith("#")
         ]
-        check_line = next((i for i, line in enumerate(script) if "check-trust-copies.py" in line), None)
         sync_line = next((i for i, line in enumerate(script) if line.startswith("aws s3 sync")), None)
-        self.assertIsNotNone(check_line, "tools/publish-trust-s3.sh does not run the copy check")
         self.assertIsNotNone(sync_line)
-        self.assertLess(check_line, sync_line)
+        for checker in ("check-trust-copies.py", "check-trust-signatures.py"):
+            check_line = next((i for i, line in enumerate(script) if checker in line), None)
+            self.assertIsNotNone(check_line, f"tools/publish-trust-s3.sh does not run {checker}")
+            self.assertLess(check_line, sync_line)
+        # Both workflows install cosign before the step that needs it, and Pages
+        # checks the signatures before it uploads anything.
+        self.assertLess(
+            _step(publisher, "sigstore/cosign-installer"), _step(publisher, "bash tools/publish-trust-s3.sh")
+        )
+        pages = workflows[".github/workflows/publish-trust-page.yml"]
+        self.assertLess(
+            _step(pages, "sigstore/cosign-installer"),
+            _step(pages, "python3 tools/check-trust-signatures.py trust-page"),
+        )
+        self.assertLess(
+            _step(pages, "python3 tools/check-trust-signatures.py trust-page"),
+            _step(pages, "actions/upload-pages-artifact"),
+        )
+        # Those steps always run, and the cosign they use is one that checks the
+        # identity of a legacy bundle (GHSA-fx35-mq7g-6g98: fixed in 2.6.5).
+        for workflow, command in (
+            (publisher, "sigstore/cosign-installer"),
+            (publisher, "bash tools/publish-trust-s3.sh"),
+            (pages, "sigstore/cosign-installer"),
+            (pages, "python3 tools/check-trust-signatures.py trust-page"),
+        ):
+            (job,) = workflow["jobs"].values()
+            step = job["steps"][_step(workflow, command)]
+            self.assertNotIn("if", step, command)
+            self.assertFalse(step.get("continue-on-error"), command)
+            if command == "sigstore/cosign-installer":
+                version = str(step["with"]["cosign-release"]).removeprefix("v")
+                self.assertGreaterEqual(tuple(int(part) for part in version.split(".")), (2, 6, 5))
+
+
+def _step(workflow: dict, command: str) -> int:
+    """The index of the single job's first step that uses or runs command."""
+    (job,) = workflow["jobs"].values()
+    for index, step in enumerate(job["steps"]):
+        if str(step.get("uses", "")).startswith(command) or command in _code(step.get("run", "")):
+            return index
+    raise AssertionError(f"no step uses or runs {command}")
 
 
 def _code(text: str) -> str:

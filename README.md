@@ -123,6 +123,16 @@ paragraph was wrong in a way that mattered:
 Both publishers refuse a tree in which a file published at `trust-page/<name>`
 and `trust-page/trust/<name>` differs between the two
 (`tools/check-trust-copies.py`).
+They also refuse a tree in which any bundle does not sign the document beside
+it under its plane's identity (`tools/check-trust-signatures.py`). A commit that
+changes a document still carries its previous bundle, so that commit's
+publish stops there and the last good site stays live; the plane's signer
+re-signs it, and the signer's completion publishes the document and its new
+bundle together.
+Pages replaces the whole site in one deployment. The S3 sync uploads object
+by object, so while it runs a changed document can sit beside its old bundle;
+`publish-trust-s3.yml` then compares each record and its bundle on the mirror
+with main and fails if they differ.
 
 AWS and Azure records are produced separately by
 `tools/capture-plane-measurements.py` from live attestations, and signed by

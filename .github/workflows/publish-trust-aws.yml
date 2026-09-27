@@ -23,6 +23,7 @@ on:
       - "trust-page/trust/pcr0-aws.txt"
       - "trust-page/trust/accepted-pcr0s-aws.txt"
       - "trust-page/pcr0.txt"
+      - "trust-page/trust/retractions/*.json"
       - ".github/workflows/publish-trust-aws.yml"
   workflow_dispatch: {}
 
