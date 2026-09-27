@@ -78,7 +78,9 @@ func TestPhaseTimerExactAndReadOrder(t *testing.T) {
 	}
 	assertPhaseSum(t, timer, elapsed)
 	c.advance(100)
-	invocation = timer.InvokeStart()
+	late := timer.InvokeStart()
+	timer.FirstByte(late)
+	timer.InvokeComplete(late)
 	if got := timer.Snapshot(); got != want || timer.End() != elapsed {
 		t.Fatalf("frozen fields=%+v", got)
 	}
