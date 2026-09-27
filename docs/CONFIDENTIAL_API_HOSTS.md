@@ -50,7 +50,7 @@ Example policy-readiness probe (no credentials or prompt):
 
 ```sh
 uv run --script tools/verify-attestation.py \
-  --api-host api.trustedrouter.com --connect-ip <candidate-ip> \
+  --api-host api.confidential.trustedrouter.com --connect-ip <candidate-ip> \
   --expect-digest sha256:<approved-image> --no-require-exporter-binding \
   --require-confidential-host api.confidential.trustedrouter.com
 ```
@@ -72,3 +72,35 @@ Requests without those settings are unchanged. Transport/attestation failures
 cannot qualify a DNS member. Withdrawing the confidential record when nothing
 qualifies deliberately prioritizes fail-closed privacy over last-good serving;
 it does not alter the ordinary hostnames' last-good availability behavior.
+
+## Certificate bootstrap prerequisites
+
+Confidential names use DNS-01 only. A cache miss must not initiate TLS-ALPN
+issuance: the CA cannot reach a name that is deliberately absent from DNS until
+its attestation and privacy policy pass. The shared cache remains enclave-owned;
+never issue the certificate on an operator laptop or export its private key.
+
+The workload identity needs `dns.changes.create`, `dns.resourceRecordSets.create`
+and `dns.resourceRecordSets.delete`. Bind a custom role with only these permissions
+on `trustedrouter-com`, conditioned on Change resources or these exact TXT records:
+
+- `_acme-challenge.api.confidential.trustedrouter.com.`
+- `_acme-challenge.api-confidential-quillrouter.trustedrouter.com.`
+- `_acme-challenge.api-confidential-allyrouter.trustedrouter.com.`
+- `_acme-challenge.api-confidential-uptimerouter.trustedrouter.com.`
+
+Do not grant project-wide DNS administration or alter the read-only ops identity.
+Cloud DNS checks each record modification as well as the enclosing Change;
+ordinary A records and zone administration must be denied by the condition.
+See [Google's per-record IAM guidance](https://codelabs.developers.google.com/codelabs/cloud-dns-per-rrset-iam).
+
+A CA 429 yields to the configured backup instead of sleeping through its
+Retry-After indefinitely. Each complete order has an eight-minute deadline;
+registration has a one-minute deadline. Failed certificate bootstrap is distinct
+from ordinary gateway availability. Zero confidential-ready instances produces
+an explicit error log after withdrawing unsafe confidential A records; it must
+not prevent ordinary DNS reconciliation or the rollout that repairs bootstrap.
+
+Before telling clients this origin is ready, verify public DNS, strict TLS-bound
+`/attestation`, `/receipt-key` (including the receipt-key attestation), and
+missing/weaker privacy rejection on Chat Completions, Responses and Messages.

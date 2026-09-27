@@ -167,6 +167,18 @@ class ConfidentialDNSPolicyTests(unittest.TestCase):
             self.assertIn("delete", call.args[0])
             self.assertTrue(call.kwargs["check"])
 
+    def test_missing_confidential_dns_is_not_a_silent_success(self) -> None:
+        with (
+            mock.patch.object(reconciler, "API_HOST", "api.trustedrouter.com"),
+            mock.patch.object(reconciler, "attest", return_value=False),
+            mock.patch.object(reconciler, "current_dns_ips", return_value=[]),
+            mock.patch.object(reconciler.subprocess, "run") as run,
+            mock.patch.object(reconciler, "log") as log,
+        ):
+            reconciler.reconcile_confidential([{"ip": "34.1.1.1"}], "sha256:release", apply=True)
+            run.assert_not_called()
+            log.assert_any_call("reconcile: ERROR: no policy-qualified confidential gateway; confidential DNS remains fail-closed")
+
     def test_verifier_gets_policy_probe_flag(self) -> None:
         with mock.patch.object(reconciler.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
             self.assertTrue(reconciler.attest("34.1.1.1", "sha256:release", confidential_host="api.confidential.trustedrouter.com"))

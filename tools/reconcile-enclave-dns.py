@@ -1232,6 +1232,7 @@ def reconcile_confidential(healthy: list[dict], digest: str, *, apply: bool) -> 
         ))
     failed = {ip for ip, ok in eligible if not ok}
     ips = sorted({ip for ip, ok in eligible if ok} - failed)
+    log(f"reconcile: confidential readiness qualified={len(ips)}/{len(healthy)}")
     for zone, record in (
         ("trustedrouter-com", host + "."),
         ("quillrouter-com", "api.confidential.quillrouter.com."),
@@ -1247,6 +1248,8 @@ def reconcile_confidential(healthy: list[dict], digest: str, *, apply: bool) -> 
                      "--project", PROJECT, "--type", "A", "--quiet"],
                     check=True, capture_output=True, text=True, timeout=GCLOUD_TIMEOUT_SECONDS,
                 )
+    if not ips:
+        log("reconcile: ERROR: no policy-qualified confidential gateway; confidential DNS remains fail-closed")
 
 
 def regional_host(region: str) -> str:
