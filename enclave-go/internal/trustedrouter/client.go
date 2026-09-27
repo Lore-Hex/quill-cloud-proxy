@@ -442,6 +442,8 @@ func (c *Client) primaryBaseURL() string {
 }
 
 type Authorization struct {
+	cacheAffinityKey                      string
+	cacheAffinityExplicit                 bool
 	InferenceLocation                     *InferenceLocationMetadata         `json:"inference_location,omitempty"`
 	AuthorizationID                       string                             `json:"authorization_id"`
 	IdempotentReplay                      bool                               `json:"idempotent_replay"`
@@ -663,6 +665,10 @@ func chatAuthorizeBody(c *Client, lookupHash, idempotencyKey string, req *qtypes
 	if req.RequestFingerprint != "" {
 		body["request_fingerprint"] = req.RequestFingerprint
 	}
+	if key, explicit := cacheAffinity(lookupHash, req, routeType); key != "" {
+		body["cache_affinity_key"] = key
+		body["cache_affinity_explicit"] = explicit
+	}
 	if req.InferenceReceipt.Requested {
 		body["inference_receipt"] = true
 	}
@@ -794,6 +800,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	}
 	c.afterCredentialCheck(ctx, lookupHash, nil)
 	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
+	decoded.cacheAffinityKey, decoded.cacheAffinityExplicit = cacheAffinity(lookupHash, req, routeType)
 	decoded.RouteType = routeType
 	if err := validateConfidentialAuthorization(ctx, decoded); err != nil {
 		_ = c.Refund(ctx, decoded, err.StatusCode, err.Type, 0.001, nil)
@@ -996,6 +1003,10 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	}
 	if requestLogID := requestLogIDFromContext(ctx); requestLogID != "" {
 		body["gateway_request_id"] = requestLogID
+	}
+	if auth.cacheAffinityKey != "" {
+		body["cache_affinity_key"] = auth.cacheAffinityKey
+		body["cache_affinity_explicit"] = auth.cacheAffinityExplicit
 	}
 	if clientContext := ClientContextFromContext(ctx); clientContext != nil && clientContext.Validate() == nil {
 		body["client"] = clientContext.AsBody()

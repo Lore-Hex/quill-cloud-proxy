@@ -28,6 +28,7 @@ func normalizedRoutingInputs(req *qtypes.OpenAIChatRequest, routeType, region st
 	}
 	provider := req.Provider
 	if provider == nil || provider.Sort != nil || len(provider.Options) != 0 || len(provider.Quantizations) != 0 ||
+		provider.PreferredMaxLatency != nil || provider.PreferredMinThroughput != nil ||
 		provider.MinPrivacy != "" || provider.Country != "" || provider.HeadquartersCountry != "" ||
 		provider.ProviderCountry != "" || provider.ZDR != nil {
 		return nil, false
@@ -167,6 +168,7 @@ func admissionWireMissReason(req *qtypes.OpenAIChatRequest) string {
 	if p == nil || !strings.EqualFold(strings.TrimSpace(p.Usage), "credits") ||
 		p.UsageType != "" || p.Billing != "" || len(p.MaxPrice) != 0 || p.Jurisdiction != "" ||
 		p.Sort != nil || len(p.Options) != 0 || len(p.Quantizations) != 0 ||
+		p.PreferredMaxLatency != nil || p.PreferredMinThroughput != nil ||
 		p.MinPrivacy != "" || p.Country != "" || p.HeadquartersCountry != "" ||
 		p.ProviderCountry != "" || p.ZDR != nil {
 		return "unsupported_provider_preferences"

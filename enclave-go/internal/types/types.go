@@ -599,25 +599,27 @@ type ToolCall struct {
 // against an explicit allowlist before unmarshalling, so unknown fields never
 // become silent no-ops.
 type ProviderRouting struct {
-	Order               StringList     `json:"order,omitempty"`
-	AllowFallbacks      *bool          `json:"allow_fallbacks,omitempty"`
-	RequireParameters   *bool          `json:"require_parameters,omitempty"`
-	DataCollection      string         `json:"data_collection,omitempty"`
-	MinPrivacy          string         `json:"min_privacy,omitempty"`
-	Jurisdiction        string         `json:"jurisdiction,omitempty"`
-	Country             string         `json:"country,omitempty"`
-	HeadquartersCountry string         `json:"headquarters_country,omitempty"`
-	ProviderCountry     string         `json:"provider_country,omitempty"`
-	Usage               string         `json:"usage,omitempty"`
-	UsageType           string         `json:"usage_type,omitempty"`
-	Billing             string         `json:"billing,omitempty"`
-	Only                StringList     `json:"only,omitempty"`
-	Ignore              StringList     `json:"ignore,omitempty"`
-	Quantizations       StringList     `json:"quantizations,omitempty"`
-	Sort                any            `json:"sort,omitempty"`
-	MaxPrice            map[string]any `json:"max_price,omitempty"`
-	ZDR                 *bool          `json:"zdr,omitempty"`
-	Options             map[string]any `json:"options,omitempty"`
+	Order                  StringList     `json:"order,omitempty"`
+	AllowFallbacks         *bool          `json:"allow_fallbacks,omitempty"`
+	RequireParameters      *bool          `json:"require_parameters,omitempty"`
+	DataCollection         string         `json:"data_collection,omitempty"`
+	MinPrivacy             string         `json:"min_privacy,omitempty"`
+	Jurisdiction           string         `json:"jurisdiction,omitempty"`
+	Country                string         `json:"country,omitempty"`
+	HeadquartersCountry    string         `json:"headquarters_country,omitempty"`
+	ProviderCountry        string         `json:"provider_country,omitempty"`
+	Usage                  string         `json:"usage,omitempty"`
+	UsageType              string         `json:"usage_type,omitempty"`
+	Billing                string         `json:"billing,omitempty"`
+	Only                   StringList     `json:"only,omitempty"`
+	Ignore                 StringList     `json:"ignore,omitempty"`
+	Quantizations          StringList     `json:"quantizations,omitempty"`
+	PreferredMaxLatency    any            `json:"preferred_max_latency,omitempty"`
+	PreferredMinThroughput any            `json:"preferred_min_throughput,omitempty"`
+	Sort                   any            `json:"sort,omitempty"`
+	MaxPrice               map[string]any `json:"max_price,omitempty"`
+	ZDR                    *bool          `json:"zdr,omitempty"`
+	Options                map[string]any `json:"options,omitempty"`
 }
 
 // StringList accepts either OpenRouter's normal array form or a
