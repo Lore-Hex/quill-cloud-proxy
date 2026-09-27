@@ -44,7 +44,7 @@ jobs:
           fetch-depth: 0   # the source_commit check resolves an arbitrary sha
       - uses: sigstore/cosign-installer@v3
         with:
-          cosign-release: v2.4.1
+          cosign-release: v2.6.5
       # source_commit is what makes a measurement mappable to source. This
       # record carried no such key at all until tools/capture-plane-measurements.py
       # started writing one, so a PCR0 published here named a build nobody

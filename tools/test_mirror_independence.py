@@ -188,8 +188,8 @@ class MirrorIndependence(unittest.TestCase):
             _step(pages, "python3 tools/check-trust-signatures.py trust-page"),
             _step(pages, "actions/upload-pages-artifact"),
         )
-        # Those steps always run, and the cosign they use is one that checks the
-        # identity of a legacy bundle (GHSA-fx35-mq7g-6g98: fixed in 2.6.5).
+        # Those steps always run. The cosign version the trust workflows install
+        # is checked in tools/test_check_trust_signatures.py.
         for workflow, command in (
             (publisher, "sigstore/cosign-installer"),
             (publisher, "bash tools/publish-trust-s3.sh"),
@@ -200,9 +200,6 @@ class MirrorIndependence(unittest.TestCase):
             step = job["steps"][_step(workflow, command)]
             self.assertNotIn("if", step, command)
             self.assertFalse(step.get("continue-on-error"), command)
-            if command == "sigstore/cosign-installer":
-                version = str(step["with"]["cosign-release"]).removeprefix("v")
-                self.assertGreaterEqual(tuple(int(part) for part in version.split(".")), (2, 6, 5))
 
 
 def _step(workflow: dict, command: str) -> int:

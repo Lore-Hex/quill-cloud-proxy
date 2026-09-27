@@ -470,6 +470,50 @@ class TheRepository(unittest.TestCase):
                 )
                 self.assertEqual(parsed.returncode, 0)
 
+    def test_the_trust_workflows_install_a_cosign_patched_for_legacy_bundles(self) -> None:
+        # GHSA-fx35-mq7g-6g98: cosign up to 2.6.4, and 3.x up to 3.1.2, skips the
+        # identity check for a legacy bundle holding a bare public key; fixed in
+        # 2.6.5 and 3.1.3. These five workflows sign or verify the legacy record
+        # bundles, so the cosign release each asks the installer for must be
+        # patched. (The installer's own bootstrap cosign checks that release's
+        # detached signature with a pinned key, not a bundle.)
+        # deploy-enclave-gcp.yml verifies only the Stage D policy, with
+        # --new-bundle-format, which the advisory does not affect; its pin moves
+        # with the next enclave release, since editing it starts a deploy.
+        for name in (
+            "publish-trust-gcp.yml",
+            "publish-trust-aws.yml",
+            "publish-trust-azure.yml",
+            "publish-trust-page.yml",
+            "publish-trust-s3.yml",
+        ):
+            workflow = yaml.safe_load((REPO / ".github/workflows" / name).read_text())
+            releases = [
+                str(step.get("with", {}).get("cosign-release", ""))
+                for job in workflow["jobs"].values()
+                for step in job.get("steps", [])
+                # GitHub resolves action names case-insensitively.
+                if str(step.get("uses", "")).lower().startswith("sigstore/cosign-installer")
+            ]
+            with self.subTest(workflow=name):
+                self.assertTrue(releases)
+                for release in releases:
+                    self.assertTrue(_patched(release), f"{name} installs cosign {release!r}")
+
+    def test_the_patched_version_rule(self) -> None:
+        for release, patched in (
+            ("v2.4.1", False), ("v2.6.4", False), ("v2.6.5", True), ("v2.7.0", True),
+            ("v3.0.2", False), ("v3.1.2", False), ("v3.1.3", True), ("v3.2.0", True),
+            ("v4.0.0", True), ("v1.13.1", False), ("", False), ("latest", False),
+            # int() alone would accept each of these as a patched version.
+            ("v2.6.+5", False), ("v2.6.5_0", False), ("v3.-1.0", False), ("v2.6. 5", False),
+            ("v2.6.\u0665", False), ("v2.6.5 ", False),
+            # Not written v<major>.<minor>.<patch>: the pin must be rewritten.
+            ("2.6.5", False), ("v2.6.5-rc.1", False),
+        ):
+            with self.subTest(release=release):
+                self.assertEqual(_patched(release), patched)
+
     def test_each_signer_signs_only_what_the_table_gives_its_plane(self) -> None:
         # A signer that starts signing a new document must add it to SIGNED_BY
         # under its own plane, or the publishers would refuse its bundle.
@@ -495,6 +539,17 @@ class TheRepository(unittest.TestCase):
                 with self.subTest(plane=plane, document=document):
                     self.assertEqual(check.plane_of(document), plane)
                     self.assertIn(f"trust-page/{document}", triggers)
+
+
+def _patched(release: str) -> bool:
+    """Whether a cosign release is fixed for GHSA-fx35-mq7g-6g98: 2.6.5 on 2.x,
+    3.1.3 on 3.x, anything later. A release not written v<major>.<minor>.<patch>
+    in ASCII digits (unpinned, a pre-release, anything else) is not."""
+    match = re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", release)
+    if match is None:
+        return False
+    version = tuple(int(part) for part in match.groups())
+    return version >= (2, 6, 5) and not (3, 0, 0) <= version < (3, 1, 3)
 
 
 if __name__ == "__main__":
