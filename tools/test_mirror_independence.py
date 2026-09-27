@@ -15,9 +15,12 @@ Run: python3 tools/test_mirror_independence.py
 from __future__ import annotations
 
 import json
+import subprocess
 import unittest
 from collections import Counter
 from pathlib import Path
+
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MIRRORS = REPO_ROOT / "trust-page" / "mirrors.json"
@@ -93,6 +96,99 @@ class MirrorIndependence(unittest.TestCase):
         self.assertNotIn("\n  push:\n", freshness)
         self.assertIn('s3://${bucket}/', script)
         self.assertIn("--delete", script)
+
+    def test_publish_trust_s3_yml_is_the_only_writer_of_the_s3_mirror(self) -> None:
+        # aws s3 sync skips a same-size file whose local copy is older than the
+        # S3 copy, so a sync from an older checkout, or one racing another
+        # writer, can upload a file's root copy and skip its trust/ copy. Only
+        # publish-trust-s3.yml writes the mirror: one run at a time, from a
+        # checkout of main. Nothing here is executed; the files are read, and
+        # workflows are parsed as YAML.
+        tracked = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+        ).stdout.split("\0")
+        workflows = {
+            name: yaml.safe_load((REPO_ROOT / name).read_text())
+            for name in tracked
+            if name.startswith(".github/") and name.endswith((".yml", ".yaml"))
+        }
+        scripts = {
+            name: (REPO_ROOT / name).read_text(errors="replace")
+            for name in tracked
+            if (name == "Makefile" or name.endswith((".sh", ".py")))
+            and not Path(name).name.startswith("test_")
+        }
+
+        # One script holds the S3 commands. Comment lines, including those in a
+        # workflow step's shell, run nothing.
+        self.assertEqual(
+            sorted(
+                [name for name, text in scripts.items() if "aws s3" in _code(text)]
+                + [
+                    name
+                    for name, doc in workflows.items()
+                    if any("aws s3" in _code(value) for _, value in _strings(doc))
+                ]
+            ),
+            ["tools/publish-trust-s3.sh"],
+        )
+        # One workflow step runs it. A workflow's path filters name it without
+        # running it, and no script names it outside a comment.
+        runs = [
+            (name, path)
+            for name, doc in workflows.items()
+            for path, value in _strings(doc)
+            if "publish-trust-s3.sh" in _code(value) and "paths" not in path
+        ]
+        self.assertEqual(len(runs), 1, runs)
+        self.assertEqual(runs[0][0], ".github/workflows/publish-trust-s3.yml")
+        self.assertEqual(runs[0][1][-1], "run")
+        self.assertEqual(
+            [name for name, text in scripts.items() if "publish-trust-s3.sh" in _code(text)],
+            [],
+        )
+        # That workflow runs one at a time, from main.
+        publisher = workflows[".github/workflows/publish-trust-s3.yml"]
+        self.assertEqual(
+            publisher.get("concurrency"),
+            {"group": "trust-s3-deployment", "cancel-in-progress": False},
+        )
+        (job,) = publisher["jobs"].values()
+        self.assertEqual(
+            [
+                step.get("with", {}).get("ref")
+                for step in job["steps"]
+                if str(step.get("uses", "")).startswith("actions/checkout")
+            ],
+            ["main"],
+        )
+        # It refuses a tree whose two copies of a file differ, before syncing.
+        script = [
+            line.strip()
+            for line in scripts["tools/publish-trust-s3.sh"].splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        check_line = next((i for i, line in enumerate(script) if "check-trust-copies.py" in line), None)
+        sync_line = next((i for i, line in enumerate(script) if line.startswith("aws s3 sync")), None)
+        self.assertIsNotNone(check_line, "tools/publish-trust-s3.sh does not run the copy check")
+        self.assertIsNotNone(sync_line)
+        self.assertLess(check_line, sync_line)
+
+
+def _code(text: str) -> str:
+    """text without its comment lines."""
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def _strings(node: object, path: tuple = ()) -> list[tuple[tuple, str]]:
+    """Each string in a parsed YAML document, with the keys and indexes leading to it."""
+    if isinstance(node, str):
+        return [(path, node)]
+    if isinstance(node, dict):
+        return [item for key, value in node.items() for item in _strings(value, (*path, str(key)))]
+    if isinstance(node, list):
+        return [item for index, value in enumerate(node) for item in _strings(value, (*path, index))]
+    return []
 
 
 if __name__ == "__main__":

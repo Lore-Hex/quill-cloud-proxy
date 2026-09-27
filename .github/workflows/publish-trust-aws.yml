@@ -106,6 +106,14 @@ jobs:
             test -f "$f" || { echo "missing $f" >&2; exit 1; }
             cosign sign-blob --bundle "$f.bundle" "$f"
           done
+          # trust-page/ carries a byte-identical copy of each record, as it does
+          # for GCP. A record names its bundle relative to itself, so each copy
+          # gets the same bundle beside it.
+          for f in trust-page/trust/aws-release.json trust-page/trust/pcr0-aws.txt trust-page/trust/accepted-pcr0s-aws.txt; do
+            top="trust-page/$(basename "$f")"
+            cmp "$f" "$top" || { echo "$top differs from $f" >&2; exit 1; }
+            cp "$f.bundle" "$top.bundle"
+          done
           # Retractions are signed under the SAME identity as the records they
           # correct, and land in the same append-only log. The log already holds
           # a signed statement of ours that was false; it cannot be removed, so
@@ -127,6 +135,14 @@ jobs:
               --certificate-identity "$identity" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               "$f"
+          done
+          for f in trust-page/trust/aws-release.json trust-page/trust/pcr0-aws.txt trust-page/trust/accepted-pcr0s-aws.txt; do
+            top="trust-page/$(basename "$f")"
+            cosign verify-blob \
+              --bundle "$top.bundle" \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$top"
           done
           echo "all aws artifacts verify under $identity"
       # Commit the bundles so they reach the PUBLISHED surface. Uploading them

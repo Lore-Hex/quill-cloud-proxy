@@ -15,12 +15,17 @@ for required in \
 do
   test -f "${source_dir}/${required}"
 done
+python3 "$(dirname "$0")/check-trust-copies.py" "${source_dir}"
 
 # Let the AWS CLI infer each MIME type. The legacy deploy forced every object
 # to text/html, including JSON and measurement files. --delete makes the mirror
-# an exact copy while the exclusion keeps the local build helper out of public
-# storage.
+# an exact copy.
+#
+# publish-trust-s3.yml is the mirror's one publisher: it runs this script, one
+# run at a time, from a fresh checkout of main. aws s3 sync skips a same-size
+# file whose local copy is older than the S3 copy, so a sync from an older
+# checkout, or one racing another writer, can upload a file's root copy and
+# skip its trust/ copy.
 aws s3 sync "${source_dir}/" "s3://${bucket}/" \
-  --exclude "build.sh" \
   --delete \
   --cache-control "max-age=60, public"

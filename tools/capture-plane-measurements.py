@@ -846,6 +846,30 @@ def _write(path: Path, content: str) -> None:
     print(f"  wrote {path.relative_to(REPO_ROOT)}")
 
 
+def _publish(name: str, content: str) -> None:
+    """Write one plane file to trust-page/trust/ and, identically, to trust-page/.
+
+    trust-page/trust/<name> is the record path mirrors.json lists. trust-page/
+    carries a byte-identical copy of every plane's files, as it always has for
+    GCP, so https://trust.trustedrouter.com/<name> answers for all three planes.
+    publish-trust-page.yml refuses to publish when a pair differs.
+    """
+    _write(TRUST_DIR / name, content)
+    _write(TRUST_DIR.parent / name, content)
+
+
+def write_aws_files(record: dict[str, Any]) -> None:
+    _publish("aws-release.json", json.dumps(record, indent=2, sort_keys=True) + "\n")
+    _publish("pcr0-aws.txt", record["pcr0"] + "\n")
+    _publish("accepted-pcr0s-aws.txt", ",".join(record["accepted_pcr0s"]) + "\n")
+
+
+def write_azure_files(record: dict[str, Any]) -> None:
+    _publish("azure-release.json", json.dumps(record, indent=2, sort_keys=True) + "\n")
+    _publish("hostdata-azure.txt", record["hostdata"] + "\n")
+    _publish("accepted-hostdata-azure.txt", ",".join(record["accepted_hostdata"]) + "\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write", action="store_true", help="write the trust-page records")
@@ -943,14 +967,12 @@ def main() -> int:
 
     if aws:
         record = build_aws_record(aws, keep=args.keep_accepted, source_commit=commit)
-        _write(TRUST_DIR / "aws-release.json", json.dumps(record, indent=2, sort_keys=True) + "\n")
-        _write(TRUST_DIR / "pcr0-aws.txt", record["pcr0"] + "\n")
-        _write(TRUST_DIR / "accepted-pcr0s-aws.txt", ",".join(record["accepted_pcr0s"]) + "\n")
+        write_aws_files(record)
         # trust-page/pcr0.txt is the legacy path, live at
-        # https://trust.trustedrouter.com/pcr0.txt and copied to S3 by both the
-        # Makefile and deploy.yml. It is the file that served a wrong value for
-        # months. Writing it from the same source as the canonical record is the
-        # point: two paths that can drift apart is how this broke the first time.
+        # https://trust.trustedrouter.com/pcr0.txt and on the S3 mirror. It is
+        # the file that served a wrong value for months. Writing it from the
+        # same source as the canonical record is the point: two paths that can
+        # drift apart is how this broke the first time.
         _write(REPO_ROOT / "trust-page" / "pcr0.txt", record["pcr0"] + "\n")
     if azure:
         if len(azure) < len(AZURE_ATTESTATION_URLS) and not args.keep_accepted:
@@ -965,14 +987,7 @@ def main() -> int:
             )
             return 1
         record = build_azure_record(azure, keep=args.keep_accepted, source_commit=commit)
-        _write(
-            TRUST_DIR / "azure-release.json", json.dumps(record, indent=2, sort_keys=True) + "\n"
-        )
-        _write(TRUST_DIR / "hostdata-azure.txt", record["hostdata"] + "\n")
-        _write(
-            TRUST_DIR / "accepted-hostdata-azure.txt",
-            ",".join(record["accepted_hostdata"]) + "\n",
-        )
+        write_azure_files(record)
     return 1 if failures else 0
 
 

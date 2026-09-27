@@ -112,14 +112,17 @@ precise about which surface gets what, because a previous version of this
 paragraph was wrong in a way that mattered:
 
 * `trust.trustedrouter.com` (GitHub Pages) is the surface the trust page links
-  to. `publish-trust-page.yml` deploys it and, since 2026-08-15, signs every
-  published file there. Before that it signed nothing, so every `.bundle` URL a
-  reader followed from the trust page returned 404 while this README told them
-  the proofs were published.
-* `trust.quill.lorehex.co` (S3 + CloudFront) is the mirror. `deploy.yml` syncs
-  and signs it — but that workflow is `workflow_dispatch` only, and the AWS
-  runbook forbids running it, so in practice nothing republished that mirror
-  for months.
+  to. `publish-trust-page.yml` deploys it and signs nothing: each plane's
+  files are signed by that plane's `publish-trust-{gcp,aws,azure}.yml`, which
+  commits the bundles, and Pages publishes them unchanged.
+* `trust.quill.lorehex.co` (S3 + CloudFront) is the mirror.
+  `publish-trust-s3.yml` publishes it after each Pages publish, one run at a
+  time from a checkout of main, and nothing else writes to it.
+  `gh workflow run publish-trust-s3.yml --ref main` runs it on demand.
+
+Both publishers refuse a tree in which a file published at `trust-page/<name>`
+and `trust-page/trust/<name>` differs between the two
+(`tools/check-trust-copies.py`).
 
 AWS and Azure records are produced separately by
 `tools/capture-plane-measurements.py` from live attestations, and signed by

@@ -1,0 +1,37 @@
+{
+  "accepted_pcr0s": [
+    "2df863e0b35b34ea74c9a5e62b68abef0d87f42f20e1221ca38c1829f8514173cdd6d847cd0a6240cf43582e464a35a2"
+  ],
+  "api_base_url": "https://api-aws.trustedrouter.com/v1",
+  "attestation_format": "cose-sign1-nitro-attestation-document",
+  "attestation_root": "https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip",
+  "data_policy": {
+    "client_telemetry_content_free": true,
+    "client_telemetry_disclosure": "https://trustedrouter.com/docs/telemetry",
+    "control_plane_prompt_access": false,
+    "prompt_output_storage": false
+  },
+  "measurement_type": "nitro-pcr0-sha384",
+  "observed_module_id": "i-0ca2894db26b3ee70-enc01a0da09733c70fd",
+  "pcr0": "2df863e0b35b34ea74c9a5e62b68abef0d87f42f20e1221ca38c1829f8514173cdd6d847cd0a6240cf43582e464a35a2",
+  "platform": "aws-nitro-enclaves",
+  "release_state": "current",
+  "reproduce": "tools/verify-pcr0.sh",
+  "source_commit": "3c0cb55932768a4ee78ad512e6da71c380465f3e",
+  "source_commit_provenance": "operator-asserted",
+  "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
+  "tls": {
+    "certificate_binding": "user_data[0:32]=SHA-256 of the served certificate (DER), user_data[64:96]=TLS exporter channel binding",
+    "hostname": "api-aws.trustedrouter.com",
+    "mode": "acme-inside-nitro-enclave"
+  },
+  "transparency": {
+    "bundle": "aws-release.json.bundle",
+    "certificate_identity": "https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-aws.yml@refs/heads/main",
+    "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
+    "newest_check": "The signature proves who wrote this record and when, not that it is the newest one. Search the transparency log for the identity above; the log is append-only, so a newer entry cannot be hidden from you. The bundle carries a Signed Entry Timestamp but no inclusion proof, so confirming log membership requires querying Rekor.",
+    "running_check": "Neither the signature nor the log says this measurement is still what is RUNNING \u2014 an unchanged deployment should carry an old signature, so age is not drift. Fetch a live attestation from api_base_url and compare it against the accepted set in this record.",
+    "transparency_log": "https://rekor.sigstore.dev",
+    "verify": "cosign verify-blob --bundle aws-release.json.bundle --certificate-identity https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-aws.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com aws-release.json"
+  }
+}

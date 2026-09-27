@@ -216,6 +216,39 @@ class SourceCommitTests(unittest.TestCase):
         # record rather than only in prose.
         self.assertEqual(len(record["regions"]), 2)
 
+    def test_plane_files_are_written_identically_to_both_published_paths(self) -> None:
+        # https://trust.trustedrouter.com/<name> and /trust/<name> both answer
+        # for every plane, and publish-trust-page.yml refuses a pair that differs.
+        original_root, original_trust_dir = capture.REPO_ROOT, capture.TRUST_DIR
+        with tempfile.TemporaryDirectory() as directory:
+            capture.REPO_ROOT = Path(directory)
+            capture.TRUST_DIR = Path(directory) / "trust-page" / "trust"
+            try:
+                capture.write_aws_files(
+                    {"pcr0": "ab" * 48, "accepted_pcr0s": ["ab" * 48, "cd" * 48]}
+                )
+                capture.write_azure_files(
+                    {"hostdata": "44" * 32, "accepted_hostdata": ["44" * 32]}
+                )
+                page = Path(directory) / "trust-page"
+                names = (
+                    "aws-release.json",
+                    "pcr0-aws.txt",
+                    "accepted-pcr0s-aws.txt",
+                    "azure-release.json",
+                    "hostdata-azure.txt",
+                    "accepted-hostdata-azure.txt",
+                )
+                for name in names:
+                    self.assertEqual(
+                        (page / name).read_bytes(), (page / "trust" / name).read_bytes(), name
+                    )
+                self.assertEqual(
+                    (page / "accepted-pcr0s-aws.txt").read_text(), "ab" * 48 + "," + "cd" * 48 + "\n"
+                )
+            finally:
+                capture.REPO_ROOT, capture.TRUST_DIR = original_root, original_trust_dir
+
     def test_azure_issuer_census_drops_retired_regions(self) -> None:
         original_trust_dir = capture.TRUST_DIR
         with tempfile.TemporaryDirectory() as directory:
