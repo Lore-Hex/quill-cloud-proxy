@@ -11,6 +11,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -118,7 +119,11 @@ func serveEmbeddings(
 		return
 	}
 
+	phases := requesttiming.FromContext(ctx)
+	invocation := phases.InvokeStart()
 	resp, err := embedder.InvokeEmbedding(ctx, &req, invokeOptions...)
+	// The embedding interface exposes no first-byte timestamp.
+	phases.InvokeComplete(invocation)
 	if err != nil {
 		// Billing keeps the upstream status. Only a recognized, sanitized
 		// input-limit error is safe to expose as a non-retryable client error.

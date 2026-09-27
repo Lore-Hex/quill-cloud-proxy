@@ -21,6 +21,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -285,6 +286,9 @@ func dispatchUserModel(
 		httpReq.Header.Set("Authorization", "Bearer "+endpointKey)
 	}
 
+	phases := requesttiming.FromContext(ctx)
+	invocation := phases.InvokeStart()
+	defer phases.InvokeComplete(invocation)
 	response, err := doUserModelRequestBefore(
 		totalCtx, cancelTotal, httpClient, httpReq, state.startedAt.Add(firstByteTimeout),
 	)
@@ -325,6 +329,7 @@ func dispatchUserModel(
 		}
 		return malformedUserModelError(model, err)
 	}
+	phases.FirstByte(invocation)
 	state.markFirstByte()
 	reader := io.MultiReader(bytes.NewReader(first), ownerBody)
 	if model.SupportsStreaming {

@@ -44,6 +44,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/imagegen"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/privatemode"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"golang.org/x/crypto/acme/autocert"
@@ -627,6 +628,11 @@ func serveOneRequest(
 	ctx = trustedrouter.WithAuthorizationInvocation(ctx)
 
 	requestStartedAt := time.Now()
+	phases := requesttiming.FromContext(ctx)
+	if phases == nil {
+		phases = requesttiming.New(requestStartedAt, nil)
+		ctx = requesttiming.WithTimer(ctx, phases)
+	}
 	requestMethod := "unknown"
 	requestRoute := "unknown"
 	requestBodyBytes := 0
@@ -644,9 +650,10 @@ func serveOneRequest(
 			status,
 			requestBodyBytes,
 			responseBytes,
-			time.Since(requestStartedAt),
+			phases.End(),
 			requestIdentity,
 			abuse.Outcome(ctx),
+			phases.Snapshot(),
 		)
 		if keepAlive && !statsConn.ResponseReusable() {
 			keepAlive = false
@@ -719,6 +726,7 @@ func serveOneRequest(
 		writeError(conn, 400, err.Error())
 		return
 	}
+	phases.Start()
 	writeRequestStartLog(
 		os.Stderr,
 		requestLogID,

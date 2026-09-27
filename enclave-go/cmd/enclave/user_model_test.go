@@ -23,6 +23,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -470,8 +471,10 @@ func TestDispatchUserModelSendsSignedAllowlistedBodyAndAdaptsBothOwnerShapes(t *
 
 	for _, supportsStreaming := range []bool{true, false} {
 		t.Run(map[bool]string{true: "owner-sse", false: "owner-buffered"}[supportsStreaming], func(t *testing.T) {
+			clock := &phaseAuditClock{now: time.Unix(1000, 0)}
 			var received map[string]any
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				clock.advance(5)
 				if r.URL.Path != "/v1/chat/completions" {
 					t.Errorf("path = %s", r.URL.Path)
 				}
@@ -524,8 +527,15 @@ func TestDispatchUserModelSendsSignedAllowlistedBodyAndAdaptsBothOwnerShapes(t *
 			}
 			state := newUserModelDispatchState()
 			var internal bytes.Buffer
-			if err := dispatchUserModel(t.Context(), state, req, raw, nil, model, cache, &internal); err != nil {
+			phases := requesttiming.New(clock.Now(), clock.Now)
+			phases.Start()
+			ctx := requesttiming.WithTimer(t.Context(), phases)
+			if err := dispatchUserModel(ctx, state, req, raw, nil, model, cache, &internal); err != nil {
 				t.Fatalf("dispatchUserModel: %v", err)
+			}
+			phases.End()
+			if got := phases.Snapshot(); got.UpstreamMS != 5 || got.TTFBMS != 5 || got.SettleOutcome != "skipped" {
+				t.Fatalf("user model phases = %+v", got)
 			}
 			result, err := adapter.CollectAnthropicText(bytes.NewReader(internal.Bytes()))
 			if err != nil || result.Text != "owner answer" {

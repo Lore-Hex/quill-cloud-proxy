@@ -14,6 +14,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -114,6 +115,7 @@ func invokeProviderStream(
 		options = []llm.InvokeOptions{{Model: req.Model}}
 	}
 	overallStart := time.Now()
+	phases := requesttiming.FromContext(ctx)
 	requestID := authorizationRequestID(authorization)
 	var lastErr error
 	var winningProvider, winningModel, winningEndpoint string
@@ -169,13 +171,16 @@ func invokeProviderStream(
 				w:       pw,
 				tracker: selectedRoute,
 				option:  option,
+				phases:  phases,
 				onFirstByte: func() {
 					ttfb = time.Since(attemptStart)
 					ttfbCaptured = true
 					ttfbTimer.Stop()
 				},
 			}
+			candidateWriter.invocation = phases.InvokeStart()
 			err = br.InvokeStreaming(attemptCtx, req, anthropicReq, candidateWriter, option)
+			phases.InvokeComplete(candidateWriter.invocation)
 			if err == nil && candidateWriter.BytesWritten() == 0 {
 				// A write attempt selects the route (and lets the caller commit the
 				// response head) before the underlying writer reports its byte count.
@@ -220,7 +225,9 @@ func invokeProviderStream(
 				tryN >= maxTransientUpstreamRetries || !isTransientUpstreamError(err) {
 				break
 			}
+			retryStart := phases.Now()
 			sleepBeforeTransientRetry(transientUpstreamBackoff(tryN))
+			phases.RetryWaitDone(retryStart)
 		}
 
 		if err == nil {
@@ -638,11 +645,15 @@ type routeSelectingWriter struct {
 	bytes       int
 	committed   bool
 	onFirstByte func()
+	phases      *requesttiming.Timer
+	invocation  *requesttiming.Invocation
 	firstByte   sync.Once
 }
 
 func (w *routeSelectingWriter) Write(p []byte) (int, error) {
 	if len(p) > 0 {
+		// Publish timing before selection wakes a handler that can disconnect.
+		w.phases.FirstByte(w.invocation)
 		w.committed = true
 		w.tracker.Select(w.option)
 		if w.onFirstByte != nil {

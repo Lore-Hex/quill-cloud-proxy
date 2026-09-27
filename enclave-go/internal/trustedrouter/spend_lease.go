@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/receipt"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -168,6 +169,8 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 	estimateRequest spendlease.EstimateRequest,
 	plan *SpendLeaseAdmissionPlan,
 ) (*Authorization, int, error) {
+	authorizeStarted := requesttiming.FromContext(ctx).Now()
+	defer requesttiming.FromContext(ctx).AuthorizeDone(authorizeStarted)
 	invocation := authorizationInvocationFromContext(ctx)
 	invocationNonce, err := invocation.invocationNonce()
 	if err != nil {
