@@ -220,7 +220,7 @@ def trust_html(release: dict[str, Any]) -> str:
   <header>
     <nav>
       <a class="brand" href="https://trustedrouter.com"><span class="mark">TR</span><span>TrustedRouter</span></a>
-      <div class="links"><a href="{CONTROL_PLANE_REPO}">Control repo</a><a href="{ATTESTED_GATEWAY_REPO}">Gateway repo</a><a href="{CLOUD_INFRA_REPO}">Infra repo</a><a href="{QUILL_REPO}">Quill repo</a><a href="{LEGAL_PACKET_URL}">Legal</a><a href="/trust/gcp-release.json">gcp-release.json</a><a href="{API_REFERENCE_URL}">API docs</a><a href="https://trustedrouter.com">Console</a></div>
+      <div class="links"><a href="{CONTROL_PLANE_REPO}">Control repo</a><a href="{ATTESTED_GATEWAY_REPO}">Gateway repo</a><a href="{CLOUD_INFRA_REPO}">Infra repo</a><a href="{LEGAL_PACKET_URL}">Legal</a><a href="/trust/gcp-release.json">gcp-release.json</a><a href="{API_REFERENCE_URL}">API docs</a><a href="https://trustedrouter.com">Console</a></div>
     </nav>
   </header>
   <main class="wrap">
@@ -324,7 +324,6 @@ def trust_html(release: dict[str, Any]) -> str:
           <div><a href="{CONTROL_PLANE_REPO}">Lore-Hex/quill-router</a><p>Control plane, billing, keys, compatibility routes, dashboard, and trust page.</p></div>
           <div><a href="{ATTESTED_GATEWAY_REPO}">Lore-Hex/quill-cloud-proxy</a><p>Attested prompt gateway, release digest, and Confidential Space verification path.</p></div>
           <div><a href="{CLOUD_INFRA_REPO}">Lore-Hex/quill-cloud-infra</a><p>Cloud deployment scripts, measured workload bringup, and trust publication flow.</p></div>
-          <div><a href="{QUILL_REPO}">Lore-Hex/quill</a><p>Open-source Quill client, device, bootstrap, and attestation-facing code.</p></div>
           <div><a href="{PYTHON_SDK_REPO}">Lore-Hex/trusted-router-py</a><p>Python SDK repository for attestation-aware client helpers.</p></div>
           <div><a href="{JAVASCRIPT_SDK_REPO}">Lore-Hex/trusted-router-js</a><p>JavaScript SDK repository for browser and Node integrations.</p></div>
         </div>
