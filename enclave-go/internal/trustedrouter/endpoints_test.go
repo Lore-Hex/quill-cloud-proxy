@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -192,9 +195,15 @@ func TestFallsThroughWhenThePrimaryCannotBeDialled(t *testing.T) {
 	defer secondary.Close()
 
 	c := testClient(unreachable + "," + secondary.URL)
+	phases := requesttiming.New(time.Now(), nil)
+	ctx := requesttiming.WithTimer(context.Background(), phases)
 	var out map[string]any
-	if err := c.postJSON(context.Background(), "/internal/gateway/authorize", map[string]string{"a": "b"}, &out); err != nil {
+	if err := c.postJSON(ctx, "/internal/gateway/authorize", map[string]string{"a": "b"}, &out); err != nil {
 		t.Fatalf("expected fallthrough to the secondary, got %v", err)
+	}
+	phases.End()
+	if got := phases.Snapshot(); got.AuthorizeAttempts != 2 || got.CPEndpoint != "127.0.0.1" {
+		t.Fatalf("authorize failover phases = %+v", got)
 	}
 	if atomic.LoadInt32(&hits) != 1 {
 		t.Fatalf("secondary should have served exactly once, got %d", hits)
@@ -313,5 +322,47 @@ func TestEnabledRequiresAtLeastOneEndpoint(t *testing.T) {
 	}
 	if got := New("http://127.0.0.1:1,http://127.0.0.1:2", "t", nil).primaryBaseURL(); got != "http://127.0.0.1:1" {
 		t.Errorf("primary must be the FIRST endpoint, got %q", got)
+	}
+}
+
+func TestAuthorizeTimingUsesActualFailoverHost(t *testing.T) {
+	phases := requesttiming.New(time.Now(), nil)
+	ctx := requesttiming.WithTimer(t.Context(), phases)
+	client := New("https://trustedrouter.com,http://127.0.0.1:8888", "internal", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Hostname() == "trustedrouter.com" {
+			return nil, &dialFailure{err: errors.New("synthetic dial failure")}
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Request: req}, nil
+	})})
+	var out map[string]any
+	if err := client.postJSON(ctx, "/internal/gateway/authorize", map[string]string{}, &out); err != nil {
+		t.Fatal(err)
+	}
+	phases.End()
+	if got := phases.Snapshot(); got.AuthorizeAttempts != 2 || got.CPEndpoint != "127.0.0.1" {
+		t.Fatalf("failover phases = %+v", got)
+	}
+}
+
+func TestSettleTimingPanicIsFailed(t *testing.T) {
+	now := time.Unix(1000, 0)
+	phases := requesttiming.New(now, func() time.Time { return now })
+	ctx := requesttiming.WithTimer(t.Context(), phases)
+	sentinel := &struct{}{}
+	client := New("https://trustedrouter.com", "internal", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		now = now.Add(7 * time.Millisecond)
+		panic(sentinel)
+	})})
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		_, _ = client.Settle(ctx, &Authorization{AuthorizationID: "auth-panic"}, Usage{})
+	}()
+	if recovered != sentinel {
+		t.Fatalf("panic was swallowed or changed: %v", recovered)
+	}
+	phases.End()
+	if got := phases.Snapshot(); got.SettleOutcome != "failed" || got.SettleMS != 7 {
+		t.Fatalf("panic settlement=%+v", got)
 	}
 }

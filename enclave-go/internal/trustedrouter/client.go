@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -967,7 +968,19 @@ type SettleResult struct {
 	Disposition          string  `json:"disposition"`
 }
 
-func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (*SettleResult, error) {
+func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (result *SettleResult, err error) {
+	phases := requesttiming.FromContext(ctx)
+	settleStarted := phases.Now()
+	defer func() {
+		outcome := "failed"
+		if err == nil && result != nil {
+			outcome = "ok"
+			if result.Disposition == DispositionIntentDurable {
+				outcome = "deferred"
+			}
+		}
+		phases.SettleDone(settleStarted, outcome)
+	}()
 	if auth == nil {
 		return nil, fmt.Errorf("trustedrouter: nil authorization")
 	}
@@ -1267,6 +1280,9 @@ func (c *Client) postToControlPlaneWithBootAuth(
 			req.Header.Set(spendlease.BootAuthHeader, bootAuthHeader)
 		}
 
+		if path == "/internal/gateway/authorize" {
+			requesttiming.FromContext(ctx).AuthorizeAttempt(req.URL.String())
+		}
 		resp, err := c.httpc.Do(req)
 		if err == nil {
 			if pinnedEndpoint < 0 && i > 0 {

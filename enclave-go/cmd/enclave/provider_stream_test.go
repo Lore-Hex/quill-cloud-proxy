@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -598,5 +599,135 @@ func TestServeStreamingEmptyProviderDoesNotDeadlockBeforeHead(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "HTTP/1.1 200 OK") || !strings.Contains(got, "empty upstream response") {
 		t.Fatalf("failed stream = %q, want legacy SSE provider failure", got)
+	}
+}
+
+func TestInvokeProviderStreamRetryPhaseTimings(t *testing.T) {
+	clock := &phaseAuditClock{now: time.Unix(1000, 0)}
+	phases := requesttiming.New(clock.Now(), clock.Now)
+	phases.Start()
+	attempts, sleeps := 0, 0
+	client := &scriptedProviderStreamClient{invoke: func(_ llm.InvokeOptions, out io.Writer) error {
+		attempts++
+		clock.advance(100)
+		if attempts == 1 {
+			return io.ErrUnexpectedEOF
+		}
+		_, err := io.WriteString(out, providerStreamTestResponse)
+		return err
+	}}
+	oldSleep := sleepBeforeTransientRetry
+	sleepBeforeTransientRetry = func(wait time.Duration) {
+		sleeps++
+		if wait != time.Second {
+			t.Errorf("retry wait=%s, want 1s", wait)
+		}
+		clock.advance(1000)
+	}
+	t.Cleanup(func() { sleepBeforeTransientRetry = oldSleep })
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		invokeProviderStream(requesttiming.WithTimer(t.Context(), phases), client,
+			&types.OpenAIChatRequest{Model: "model-a"}, &types.AnthropicMessagesRequest{}, pw,
+			[]llm.InvokeOptions{{Model: "model-a", EndpointID: "retry"}},
+			true, nil, newSelectedRouteTracker(), "retry-timing-test", true, true)
+	}()
+	body, err := io.ReadAll(pr)
+	<-done
+	if err != nil || string(body) != providerStreamTestResponse || attempts != 2 || sleeps != 1 {
+		t.Fatalf("response=%q err=%v attempts=%d sleeps=%d", body, err, attempts, sleeps)
+	}
+	elapsed := phases.End()
+	f := phases.Snapshot()
+	if f.UpstreamMS != 200 || f.RetryWaitMS != 1000 || f.RouteMS != 0 || f.ReceiptMS != 0 || f.UpstreamPartial != 0 || f.TTFBMS != 100 || elapsed != 1200*time.Millisecond {
+		t.Fatalf("retry phases=%+v elapsed=%s", f, elapsed)
+	}
+	sum := f.AcceptToStartMS + f.AuthorizeMS + f.RouteMS + f.UpstreamMS + f.RetryWaitMS + f.SettleMS + f.ReceiptMS
+	if sum != elapsed.Milliseconds() {
+		t.Fatalf("phase sum=%d elapsed=%s", sum, elapsed)
+	}
+	var log bytes.Buffer
+	writeRequestEndLog(&log, "retry-timing-test", "POST", "/v1/chat/completions", 200, 0, len(body), elapsed, requestAuditIdentity{}, "ok", f)
+	if got := parseAuditEvent(t, log.String(), "enclave.request_end")["retry_wait_ms"]; got != "1000" {
+		t.Fatalf("logged retry_wait_ms=%q", got)
+	}
+}
+
+// Fusion panels and Combo calls through Fusion share a context while invoking
+// this wrapper concurrently. Keep both provider lifetimes under
+// explicit control so the request can end with B still running.
+func TestInvokeProviderStreamOverlappingPhaseTimings(t *testing.T) {
+	clock := &phaseAuditClock{now: time.Unix(1000, 0)}
+	phases := requesttiming.New(clock.Now(), clock.Now)
+	phases.Start()
+	ctx := requesttiming.WithTimer(t.Context(), phases)
+	startedA, startedB := make(chan struct{}), make(chan struct{})
+	writeA, wroteA := make(chan struct{}), make(chan struct{})
+	finishA, finishB := make(chan struct{}), make(chan struct{})
+	type response struct {
+		body string
+		err  error
+	}
+	responses := make(chan response, 2)
+	start := func(client *scriptedProviderStreamClient) <-chan struct{} {
+		pr, pw := io.Pipe()
+		go func() {
+			defer pr.Close()
+			body, err := io.ReadAll(pr)
+			responses <- response{string(body), err}
+		}()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			invokeProviderStream(ctx, client, &types.OpenAIChatRequest{Model: "model-a"},
+				&types.AnthropicMessagesRequest{}, pw,
+				[]llm.InvokeOptions{{Model: "model-a"}}, true, nil,
+				newSelectedRouteTracker(), "overlap-timing-test", true, false)
+		}()
+		return done
+	}
+	doneA := start(&scriptedProviderStreamClient{invoke: func(_ llm.InvokeOptions, out io.Writer) error {
+		close(startedA)
+		<-writeA
+		_, err := io.WriteString(out, providerStreamTestResponse)
+		close(wroteA)
+		<-finishA
+		return err
+	}})
+	<-startedA
+	clock.advance(10)
+	doneB := start(&scriptedProviderStreamClient{invoke: func(_ llm.InvokeOptions, out io.Writer) error {
+		close(startedB)
+		<-finishB
+		_, err := io.WriteString(out, providerStreamTestResponse)
+		return err
+	}})
+	<-startedB
+	clock.advance(10)
+	close(writeA)
+	<-wroteA
+	clock.advance(10)
+	close(finishA)
+	<-doneA
+	clock.advance(10)
+	elapsed := phases.End()
+	before := phases.Snapshot()
+	clock.advance(100)
+	close(finishB)
+	<-doneB
+	for i := 0; i < 2; i++ {
+		got := <-responses
+		if got.err != nil || got.body != providerStreamTestResponse {
+			t.Fatalf("response=%q err=%v", got.body, got.err)
+		}
+	}
+	if before.UpstreamMS != 40 || before.TTFBMS != 20 || before.UpstreamPartial != 1 || before.ReceiptMS != 0 || elapsed != 40*time.Millisecond {
+		t.Fatalf("overlapping provider calls=%+v elapsed=%s", before, elapsed)
+	}
+	if after := phases.Snapshot(); after != before || phases.End() != elapsed {
+		t.Fatalf("late completion changed snapshot: %+v -> %+v", before, after)
 	}
 }
