@@ -41,6 +41,18 @@ class TrustArtifactTests(unittest.TestCase):
                 self.assertIn("anything you cannot verify", page)
                 self.assertNotIn("<script", page.lower())
 
+    def test_neither_static_page_links_the_private_quill_repo(self) -> None:
+        # Lore-Hex/quill is private, so a link to it is a 404 for every visitor.
+        release = trust.release_payload("abc123", NEW_REF, NEW)
+        pages = {
+            "generated": trust.trust_html(release),
+            "published": (SCRIPT.parent.parent / "trust-page/index.html").read_text(),
+        }
+        for name, page in pages.items():
+            with self.subTest(page=name):
+                self.assertIn('href="https://github.com/Lore-Hex/quill-router"', page)
+                self.assertNotIn('href="https://github.com/Lore-Hex/quill"', page)
+
     def test_current_release_accepts_only_target_digest(self) -> None:
         release = trust.release_payload("abc123", NEW_REF, NEW)
 

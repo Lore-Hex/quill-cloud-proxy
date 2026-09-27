@@ -56,7 +56,7 @@
   <header>
     <nav>
       <a class="brand" href="https://trustedrouter.com"><span class="mark">TR</span><span>TrustedRouter</span></a>
-      <div class="links"><a href="https://github.com/Lore-Hex/quill-router">Control repo</a><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Gateway repo</a><a href="https://github.com/Lore-Hex/quill-cloud-infra">Infra repo</a><a href="https://github.com/Lore-Hex/quill">Quill repo</a><a href="https://trustedrouter.com/legal">Legal</a><a href="/trust/gcp-release.json">gcp-release.json</a><a href="https://trustedrouter.com/api/reference">API docs</a><a href="https://trustedrouter.com">Console</a></div>
+      <div class="links"><a href="https://github.com/Lore-Hex/quill-router">Control repo</a><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Gateway repo</a><a href="https://github.com/Lore-Hex/quill-cloud-infra">Infra repo</a><a href="https://trustedrouter.com/legal">Legal</a><a href="/trust/gcp-release.json">gcp-release.json</a><a href="https://trustedrouter.com/api/reference">API docs</a><a href="https://trustedrouter.com">Console</a></div>
     </nav>
   </header>
   <main class="wrap">
@@ -76,10 +76,10 @@
         <div class="kv">
           <div><div class="label">Source commit</div><div class="value">57d8f81c</div></div>
           <div><div class="label">Image</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-57d8f81c</div></div>
-          <div><div class="label">Accepted image references</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-63c3e94e, us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-90076427, us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-57d8f81c</div></div>
+          <div><div class="label">Accepted image references</div><div class="value">us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-57d8f81c</div></div>
           <div><div class="label">Target digest</div><div class="value">sha256:9cbe506cde44cc5654418c316f87e9b34c13eddc737cf4ebc8d1b0c947507ee5</div></div>
-          <div><div class="label">Release state</div><div class="value">rolling</div></div>
-          <div><div class="label">Accepted measured digests</div><div class="value">sha256:8d31ba16d707ebb937b3f6555a96e00f2acc7e966b1126a0efdf6624037ecfc0, sha256:7c548da2653cbb46572636ac4be5f5af58491bd335ff5ecbfcfff4ea7b6afb0f, sha256:9cbe506cde44cc5654418c316f87e9b34c13eddc737cf4ebc8d1b0c947507ee5</div></div>
+          <div><div class="label">Release state</div><div class="value">current</div></div>
+          <div><div class="label">Accepted measured digests</div><div class="value">sha256:9cbe506cde44cc5654418c316f87e9b34c13eddc737cf4ebc8d1b0c947507ee5</div></div>
           <div><div class="label">Attested gateway repo</div><div class="value"><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Lore-Hex/quill-cloud-proxy</a></div></div>
           <div><div class="label">API base</div><div class="value">https://api.trustedrouter.com/v1</div></div>
         </div>
@@ -160,7 +160,6 @@
           <div><a href="https://github.com/Lore-Hex/quill-router">Lore-Hex/quill-router</a><p>Control plane, billing, keys, compatibility routes, dashboard, and trust page.</p></div>
           <div><a href="https://github.com/Lore-Hex/quill-cloud-proxy">Lore-Hex/quill-cloud-proxy</a><p>Attested prompt gateway, release digest, and Confidential Space verification path.</p></div>
           <div><a href="https://github.com/Lore-Hex/quill-cloud-infra">Lore-Hex/quill-cloud-infra</a><p>Cloud deployment scripts, measured workload bringup, and trust publication flow.</p></div>
-          <div><a href="https://github.com/Lore-Hex/quill">Lore-Hex/quill</a><p>Open-source Quill client, device, bootstrap, and attestation-facing code.</p></div>
           <div><a href="https://github.com/Lore-Hex/trusted-router-py">Lore-Hex/trusted-router-py</a><p>Python SDK repository for attestation-aware client helpers.</p></div>
           <div><a href="https://github.com/Lore-Hex/trusted-router-js">Lore-Hex/trusted-router-js</a><p>JavaScript SDK repository for browser and Node integrations.</p></div>
         </div>
@@ -176,13 +175,9 @@
       <h2>Machine-readable release</h2>
       <pre>{
   &quot;accepted_image_digests&quot;: [
-    &quot;sha256:8d31ba16d707ebb937b3f6555a96e00f2acc7e966b1126a0efdf6624037ecfc0&quot;,
-    &quot;sha256:7c548da2653cbb46572636ac4be5f5af58491bd335ff5ecbfcfff4ea7b6afb0f&quot;,
     &quot;sha256:9cbe506cde44cc5654418c316f87e9b34c13eddc737cf4ebc8d1b0c947507ee5&quot;
   ],
   &quot;accepted_image_references&quot;: [
-    &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-63c3e94e&quot;,
-    &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-90076427&quot;,
     &quot;us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-57d8f81c&quot;
   ],
   &quot;api_base_url&quot;: &quot;https://api.trustedrouter.com/v1&quot;,
@@ -223,7 +218,7 @@
     &quot;key_log&quot;: &quot;https://trustedrouter.com/.well-known/inference-receipt-keys&quot;,
     &quot;spec&quot;: &quot;inference-receipt/1&quot;
   },
-  &quot;release_state&quot;: &quot;rolling&quot;,
+  &quot;release_state&quot;: &quot;current&quot;,
   &quot;released_by&quot;: &quot;github-actions:deploy-enclave-gcp&quot;,
   &quot;source_commit&quot;: &quot;57d8f81c&quot;,
   &quot;source_repo&quot;: &quot;https://github.com/Lore-Hex/quill-cloud-proxy&quot;,

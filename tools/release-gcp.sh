@@ -7,8 +7,8 @@
 #   3. Update trust-page/image-digest-gcp.txt, image-reference-gcp.txt,
 #      and gcp-release.json for commit review/signing/publish.
 #
-# Optional:
-#   PUBLISH_TRUST=1 uploads the trust files to s3://$TRUST_BUCKET.
+# It uploads nothing to the trust mirror: publish-trust-s3.yml publishes it
+# from main once the files are committed.
 
 set -euo pipefail
 
@@ -25,7 +25,6 @@ IMAGE_NAME="${IMAGE_NAME:-enclave-openrouter}"
 DOCKERFILE="${DOCKERFILE:-Dockerfile.enclave.gcp.multi}"
 COMMIT="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 IMAGE_TAG="${IMAGE_TAG:-gcp-release-$COMMIT}"
-TRUST_BUCKET="${TRUST_BUCKET:-trust.quill.lorehex.co}"
 
 ARTIFACT_HOST="$REGION-docker.pkg.dev"
 IMAGE_REF="$ARTIFACT_HOST/$PROJECT_ID/$ARTIFACT_REPO/$IMAGE_NAME:$IMAGE_TAG"
@@ -62,27 +61,6 @@ python3 "$REPO_ROOT/tools/write-trust-artifacts.py" \
   --commit "$COMMIT" \
   --image-reference "$IMAGE_REF" \
   --image-digest "$IMAGE_DIGEST"
-
-if [[ "${PUBLISH_TRUST:-0}" == "1" ]]; then
-  log "publishing GCP trust files to s3://$TRUST_BUCKET"
-  aws s3 cp "$REPO_ROOT/trust-page/image-digest-gcp.txt" "s3://$TRUST_BUCKET/image-digest-gcp.txt" \
-    --cache-control "max-age=60, public" \
-    --content-type "text/plain; charset=utf-8"
-  aws s3 cp "$REPO_ROOT/trust-page/image-reference-gcp.txt" "s3://$TRUST_BUCKET/image-reference-gcp.txt" \
-    --cache-control "max-age=60, public" \
-    --content-type "text/plain; charset=utf-8"
-  aws s3 cp "$REPO_ROOT/trust-page/accepted-image-digests-gcp.txt" "s3://$TRUST_BUCKET/accepted-image-digests-gcp.txt" \
-    --cache-control "max-age=60, public" \
-    --content-type "text/plain; charset=utf-8"
-  aws s3 cp "$REPO_ROOT/trust-page/accepted-image-references-gcp.txt" "s3://$TRUST_BUCKET/accepted-image-references-gcp.txt" \
-    --cache-control "max-age=60, public" \
-    --content-type "text/plain; charset=utf-8"
-  aws s3 cp "$REPO_ROOT/trust-page/gcp-release.json" "s3://$TRUST_BUCKET/gcp-release.json" \
-    --cache-control "max-age=60, public" \
-    --content-type "application/json"
-  aws s3 sync "$REPO_ROOT/trust-page/trust/" "s3://$TRUST_BUCKET/trust/" \
-    --cache-control "max-age=60, public"
-fi
 
 cat <<EOF
 GCP release ready.

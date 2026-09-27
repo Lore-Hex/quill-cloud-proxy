@@ -43,6 +43,9 @@ class StageDPublicationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         shutil.copytree(ROOT / "trust-page", self.root / "trust-page")
+        # publish-trust-page.yml's validation step runs the shared copy check.
+        (self.root / "tools").mkdir()
+        shutil.copy2(ROOT / "tools/check-trust-copies.py", self.root / "tools")
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.env = {
@@ -276,7 +279,10 @@ class StageDPublicationTests(unittest.TestCase):
                     result = self.run_step(workflow, step)
                     self.assertNotEqual(result.returncode, 0, result.stdout)
                     self.assertIn(
-                        "must both exist" if mutation == "missing" else "disagree",
+                        f"missing trust-page/{name}"
+                        if mutation == "missing"
+                        else f"trust-page/{name.removeprefix('trust/')} and "
+                        f"trust-page/trust/{name.removeprefix('trust/')} differ",
                         result.stderr,
                     )
                     path.write_bytes(original)

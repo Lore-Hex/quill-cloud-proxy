@@ -108,6 +108,14 @@ jobs:
             test -f "$f" || { echo "missing $f" >&2; exit 1; }
             cosign sign-blob --bundle "$f.bundle" "$f"
           done
+          # trust-page/ carries a byte-identical copy of each record, as it does
+          # for GCP. A record names its bundle relative to itself, so each copy
+          # gets the same bundle beside it.
+          for f in trust-page/trust/azure-release.json trust-page/trust/hostdata-azure.txt trust-page/trust/accepted-hostdata-azure.txt; do
+            top="trust-page/$(basename "$f")"
+            cmp "$f" "$top" || { echo "$top differs from $f" >&2; exit 1; }
+            cp "$f.bundle" "$top.bundle"
+          done
       - name: Verify each signature under THIS workflow's identity
         run: |
           set -euo pipefail
@@ -121,6 +129,14 @@ jobs:
               --certificate-identity "$identity" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               "$f"
+          done
+          for f in trust-page/trust/azure-release.json trust-page/trust/hostdata-azure.txt trust-page/trust/accepted-hostdata-azure.txt; do
+            top="trust-page/$(basename "$f")"
+            cosign verify-blob \
+              --bundle "$top.bundle" \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$top"
           done
           echo "all azure artifacts verify under $identity"
       # Commit the bundles so they reach the PUBLISHED surface. Uploading them

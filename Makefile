@@ -1,10 +1,9 @@
-.PHONY: sync lint format format-check typecheck test check run-mock clean docker-build docker-push deploy-trust gcp-release enclave-go-build deploy-script-test
+.PHONY: sync lint format format-check typecheck test check run-mock clean docker-build docker-push gcp-release enclave-go-build deploy-script-test
 
 ENCLAVE_DIR  := enclave-go
 PARENT_DIR   := parent
 REGISTRY     := 330422590279.dkr.ecr.us-east-1.amazonaws.com
 REPO         := quill-cloud-proxy
-TRUST_BUCKET := trust.quill.lorehex.co
 GOLANGCI_LINT_VERSION := v1.64.8
 GOLANGCI_LINT_MODULE := github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 GO_TAGS := cloud_aws,llm_bedrock cloud_aws,llm_multi cloud_gcp,llm_vertex cloud_gcp,llm_multi cloud_azure,llm_multi
@@ -73,13 +72,6 @@ docker-push:
 	docker buildx build --platform linux/arm64 --push -t $(REGISTRY)/$(REPO):parent-latest  -f $(PARENT_DIR)/Dockerfile.parent $(PARENT_DIR)
 
 # ---- Trust page -----------------------------------------------------------
-
-deploy-trust:
-	aws s3 sync trust-page/ s3://$(TRUST_BUCKET)/ --exclude "build.sh" --cache-control "max-age=60, public" --content-type "text/html; charset=utf-8"
-	aws s3 cp trust-page/pcr0.txt s3://$(TRUST_BUCKET)/pcr0.txt --cache-control "max-age=60, public" --content-type "text/plain; charset=utf-8"
-	aws s3 cp trust-page/image-digest-gcp.txt s3://$(TRUST_BUCKET)/image-digest-gcp.txt --cache-control "max-age=60, public" --content-type "text/plain; charset=utf-8"
-	aws s3 cp trust-page/image-reference-gcp.txt s3://$(TRUST_BUCKET)/image-reference-gcp.txt --cache-control "max-age=60, public" --content-type "text/plain; charset=utf-8"
-	aws s3 cp trust-page/gcp-release.json s3://$(TRUST_BUCKET)/gcp-release.json --cache-control "max-age=60, public" --content-type "application/json"
 
 gcp-release:
 	./tools/release-gcp.sh

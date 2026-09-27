@@ -41,7 +41,7 @@ jobs:
           missing=0
           for f in trust/gcp-release.json trust/aws-release.json trust/azure-release.json \
                    trust/image-digest-gcp.txt trust/pcr0-aws.txt trust/hostdata-azure.txt \
-                   pcr0.txt mirrors.json; do
+                   aws-release.json azure-release.json pcr0.txt mirrors.json; do
             matched=0
             for attempt in $(seq 1 30); do
               if curl -fsS "${base}/${f}?nocache=${GITHUB_RUN_ID}-${attempt}" -o /tmp/live \

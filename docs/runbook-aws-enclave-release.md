@@ -106,8 +106,9 @@ still in the pinned set at that stage, which is the reason step 5 comes last.
 ## What must NOT be done
 
 * **Do not run `.github/workflows/deploy.yml`.** It builds arm64, which this
-  fleet cannot execute, and it also republishes trust artifacts and moves the
-  `enclave-latest` alias as a side effect.
+  fleet cannot execute, and it moves the `enclave-latest` alias as a side
+  effect. It used to sign and republish trust artifacts too; it no longer
+  touches them.
 
   This instruction is correct, but for a long time it was the *only* thing said
   about trust artifacts here — and since `deploy.yml` was the only workflow that
