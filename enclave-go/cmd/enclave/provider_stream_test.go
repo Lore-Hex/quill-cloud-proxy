@@ -646,8 +646,8 @@ func TestInvokeProviderStreamRetryPhaseTimings(t *testing.T) {
 		t.Fatalf("retry phases=%+v elapsed=%s", f, elapsed)
 	}
 	sum := f.AcceptToStartMS + f.AuthorizeMS + f.RouteMS + f.UpstreamMS + f.RetryWaitMS + f.SettleMS + f.ReceiptMS
-	if sum != elapsed.Milliseconds() {
-		t.Fatalf("phase sum=%d elapsed=%s", sum, elapsed)
+	if sum != f.RequestMS {
+		t.Fatalf("phase sum=%d request=%d", sum, f.RequestMS)
 	}
 	var log bytes.Buffer
 	writeRequestEndLog(&log, "retry-timing-test", "POST", "/v1/chat/completions", 200, 0, len(body), elapsed, requestAuditIdentity{}, "ok", f)

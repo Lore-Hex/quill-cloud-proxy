@@ -348,7 +348,7 @@ func TestRequestEndPhaseTimings(t *testing.T) {
 			})
 			end := parseAuditEvent(t, logs, "enclave.request_end")
 			nums := map[string]int64{}
-			for _, key := range []string{"accept_to_start_ms", "authorize_ms", "authorize_attempts", "route_ms", "upstream_ms", "upstream_partial", "ttfb_ms", "retry_wait_ms", "settle_ms", "receipt_ms", "elapsed_ms"} {
+			for _, key := range []string{"idle_wait_ms", "request_ms", "accept_to_start_ms", "authorize_ms", "authorize_attempts", "route_ms", "upstream_ms", "upstream_partial", "ttfb_ms", "retry_wait_ms", "settle_ms", "receipt_ms", "elapsed_ms"} {
 				value, exists := end[key]
 				if !exists {
 					t.Fatalf("missing %s: %v", key, end)
@@ -391,8 +391,8 @@ func TestRequestEndPhaseTimings(t *testing.T) {
 				t.Fatalf("ttfb=%d want %d", nums["ttfb_ms"], wantTTFB)
 			}
 			sum := nums["accept_to_start_ms"] + nums["authorize_ms"] + nums["route_ms"] + nums["upstream_ms"] + nums["retry_wait_ms"] + nums["settle_ms"] + nums["receipt_ms"]
-			if sum != nums["elapsed_ms"] {
-				t.Fatalf("phase sum=%d elapsed=%d: %v", sum, nums["elapsed_ms"], end)
+			if sum != nums["request_ms"] || nums["idle_wait_ms"] != 0 || nums["request_ms"] != nums["elapsed_ms"] {
+				t.Fatalf("phase sum=%d request=%d: %v", sum, nums["request_ms"], end)
 			}
 			for _, secret := range []string{"private-bearer", "private-internal-key", "private-input", "Hello world"} {
 				if strings.Contains(logs, secret) {
