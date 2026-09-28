@@ -9,16 +9,22 @@ different bytes, so both publishers run this first and publish nothing when it
 fails: publish-trust-page.yml before Pages, and the S3 mirror's publisher before
 syncing. The signer's completion runs publish-trust-page.yml again.
 
-The rule: every bundle under trust-page/ sits beside a document that one
-plane's signer signs (SIGNED_BY), holds exactly one signing certificate that
-`openssl x509` parses and no bare public key, and `cosign verify-blob` accepts
-the document with that bundle under that plane's workflow identity. A bundle
+The rule: every document one plane's signer signs (SIGNED_BY) sits beside its
+bundle, and every bundle under trust-page/ sits beside a document that one
+plane's signer signs, is in the format that signer writes for it
+(PROTOBUF), holds exactly one signing certificate that `openssl x509` parses
+and no bare public key, and `cosign verify-blob` accepts the document with that
+bundle under that plane's workflow identity. A bundle
 beside a document no signer signs fails, since no identity can be chosen for
 it. The tree may hold no symbolic link, since the publishers follow links
 this check does not walk. cosign up to 2.6.4 accepted a legacy bundle holding
 a public key without checking the identity (GHSA-fx35-mq7g-6g98); the
 publishers install 2.6.5, and the certificate check refuses such a bundle
 before cosign sees it.
+
+tools/wait-stage-d-policy.sh, and deploy-enclave-gcp.yml before it builds the
+transitional Stage D set, run this on the Stage D policy and bundle they fetch
+from the trust page, laid out at the path the page serves them from.
 
 Run: python3 tools/check-trust-signatures.py [trust-page]
 """
@@ -71,6 +77,11 @@ SIGNED_BY = {
         "accepted-hostdata-azure.txt",
     ),
 }
+# The documents whose signer writes a protobuf bundle (--new-bundle-format): the
+# GCP signer's Stage D policy and its copy. Every other bundle is a legacy
+# bundle. The path decides the format, so a bundle cannot choose how it is
+# verified.
+PROTOBUF = ("gcp/stage-d-accepted.json", "trust/gcp/stage-d-accepted.json")
 
 
 def _glob(pattern: str) -> re.Pattern[str]:
@@ -121,11 +132,15 @@ def _certificate_der(bundle: dict) -> bytes | None:
         return None
 
 
-def _verify(bundle: Path, document: Path, plane: str, cosign: str, openssl: str) -> str | None:
+def _verify(
+    bundle: Path, document: Path, plane: str, new_format: bool, cosign: str, openssl: str
+) -> str | None:
     try:
         content = json.loads(bundle.read_text())
     except ValueError:
         return f"{bundle} is not a cosign bundle"
+    if isinstance(content, dict) and ("mediaType" in content) != new_format:
+        return f"{bundle} is not a {'protobuf' if new_format else 'legacy'} bundle"
     der = _certificate_der(content) if isinstance(content, dict) else None
     try:
         parsed = der is not None and subprocess.run(
@@ -138,7 +153,6 @@ def _verify(bundle: Path, document: Path, plane: str, cosign: str, openssl: str)
         return f"cannot verify {bundle}: {openssl} is not installed"
     if not parsed:
         return f"{bundle} carries no signing certificate"
-    new_format = "mediaType" in content
     command = [cosign, "verify-blob"]
     if new_format:
         command.append("--new-bundle-format")
@@ -168,6 +182,16 @@ def problems(site: Path, cosign: str = "cosign", openssl: str = "openssl") -> li
     found = [
         f"{path} is a symbolic link" for path in sorted(site.rglob("*")) if path.is_symlink()
     ]
+    # A tree holding a signed document without its bundle would otherwise pass
+    # with nothing verified.
+    found += [
+        f"{path} has no bundle beside it"
+        for path in sorted(site.rglob("*"))
+        if path.is_file()
+        and not path.name.endswith(".bundle")
+        and plane_of(path.relative_to(site).as_posix()) is not None
+        and not path.with_name(path.name + ".bundle").is_file()
+    ]
     for bundle in sorted(site.rglob("*.bundle")):
         document = bundle.with_name(bundle.name.removesuffix(".bundle"))
         relative = document.relative_to(site).as_posix()
@@ -176,7 +200,9 @@ def problems(site: Path, cosign: str = "cosign", openssl: str = "openssl") -> li
             found.append(f"{bundle}: no signer signs {relative}")
         elif not document.is_file():
             found.append(f"{bundle}: {document} is missing")
-        elif (problem := _verify(bundle, document, plane, cosign, openssl)) is not None:
+        elif (
+            problem := _verify(bundle, document, plane, relative in PROTOBUF, cosign, openssl)
+        ) is not None:
             found.append(problem)
     return found
 

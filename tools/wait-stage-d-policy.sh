@@ -8,29 +8,29 @@ expected_file="${1:?expected committed Stage D policy path is required}"
 attempts="${TR_STAGE_D_POLICY_VERIFY_ATTEMPTS:-60}"
 sleep_seconds="${TR_STAGE_D_POLICY_VERIFY_SLEEP_SECONDS:-15}"
 base_url="${TR_TRUST_PAGE_BASE_URL:-https://trust.trustedrouter.com}"
-identity="https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-gcp.yml@refs/heads/main"
-issuer="https://token.actions.githubusercontent.com"
 cache_key="${GITHUB_RUN_ID:-local}-$$"
 
 python3 tools/write-stage-d-policy.py --validate "${expected_file}"
 work_dir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/stage-d-policy-verify-XXXXXX")"
 trap 'rm -rf "${work_dir}"' EXIT
+# Each fetched pair sits at the path the trust page serves it from, so
+# tools/check-trust-signatures.py checks it as the publishers check what they
+# publish: a protobuf bundle holding a signing certificate, which cosign
+# verifies under publish-trust-gcp.yml's identity.
+site="${work_dir}/site"
+payload="${site}/gcp/stage-d-accepted.json"
+bundle="${payload}.bundle"
+mkdir -p "${site}/gcp"
 
 for ((attempt = 1; attempt <= attempts; attempt++)); do
-  payload="${work_dir}/stage-d-accepted.json"
-  bundle="${payload}.bundle"
   rm -f "${payload}" "${bundle}"
   url="${base_url}/gcp/stage-d-accepted.json?nocache=${cache_key}-${attempt}"
   bundle_url="${base_url}/gcp/stage-d-accepted.json.bundle?nocache=${cache_key}-${attempt}"
   if curl -fsS --connect-timeout 5 --max-time 15 -o "${payload}" "${url}" &&
      curl -fsS --connect-timeout 5 --max-time 15 -o "${bundle}" "${bundle_url}" &&
      cmp -s "${expected_file}" "${payload}" &&
-     cosign verify-blob --new-bundle-format \
-       --bundle "${bundle}" \
-       --certificate-identity "${identity}" \
-       --certificate-oidc-issuer "${issuer}" \
-       "${payload}" >/dev/null; then
-    echo "public Stage D policy matches the committed bytes and verifies under ${identity}"
+     python3 tools/check-trust-signatures.py "${site}" >/dev/null; then
+    echo "public Stage D policy matches the committed bytes and its bundle verifies under publish-trust-gcp.yml"
     exit 0
   fi
   echo "attempt ${attempt}/${attempts}: exact signed Stage D policy has not converged"

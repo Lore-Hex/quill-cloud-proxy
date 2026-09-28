@@ -253,6 +253,20 @@ class CheckTrustSignatures(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("pcr0.txt is missing", result.stderr)
 
+    def test_a_signed_document_without_its_bundle_is_refused(self) -> None:
+        # Nothing would be verified for it, so it must not pass either.
+        for document in ("trust/pcr0-aws.txt", "gcp/stage-d-accepted.json", RETRACTION):
+            with self.subTest(document=document):
+                path = self.site / document
+                path.with_name(path.name + ".bundle").unlink()
+
+                result = self.check()
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"{document} has no bundle beside it", result.stderr)
+                sign(path, check.plane_of(document))
+                self.assertEqual(self.check().returncode, 0)
+
     def test_a_bundle_that_is_not_a_bundle_is_refused(self) -> None:
         (self.site / "hostdata-azure.txt.bundle").write_text("not json\n")
 
@@ -280,6 +294,41 @@ class CheckTrustSignatures(unittest.TestCase):
                 self.assertIn(f"{document}.bundle carries no signing certificate", result.stderr)
                 self.assertNotIn(document, set(self.verifications()))
                 sign(self.site / document, plane)
+
+    def test_a_bundle_in_the_other_format_is_refused_without_asking_cosign(self) -> None:
+        # The path decides the format: the Stage D policy's signer writes a
+        # protobuf bundle and every other signer a legacy one. The fake cosign
+        # would accept each of these, verifying the format the bundle claims.
+        protobuf = {
+            "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+            "verificationMaterial": {"certificate": {"rawBytes": CERTIFICATE_DER}},
+        }
+        for document, form, fields in (
+            ("gcp/stage-d-accepted.json", "protobuf", {"cert": CERTIFICATE}),
+            ("trust/gcp/stage-d-accepted.json", "protobuf", {"cert": CERTIFICATE}),
+            ("trust/pcr0-aws.txt", "legacy", protobuf),
+        ):
+            with self.subTest(document=document):
+                plane = check.plane_of(document)
+                path = self.site / document
+                path.with_name(path.name + ".bundle").write_text(
+                    json.dumps(
+                        {
+                            "fake_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                            "fake_identity": IDENTITY.format(plane=plane),
+                            **fields,
+                        }
+                    )
+                )
+                self.cosign_log.write_text("")
+
+                result = self.check()
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"{document}.bundle is not a {form} bundle", result.stderr)
+                self.assertNotIn(document, set(self.verifications()))
+                sign(path, plane)
+                self.assertEqual(self.check().returncode, 0)
 
     def test_text_around_the_one_certificate_block_is_ignored(self) -> None:
         # As a PEM parser ignores it; the block itself is what must be a certificate.
@@ -459,6 +508,27 @@ class TheRepository(unittest.TestCase):
             document = bundle.relative_to(REPO / "trust-page").as_posix().removesuffix(".bundle")
             with self.subTest(document=document):
                 self.assertIsNotNone(check.plane_of(document))
+
+    def test_every_published_document_a_signer_signs_has_its_bundle(self) -> None:
+        site = REPO / "trust-page"
+        documents = [
+            path
+            for path in sorted(site.rglob("*"))
+            if path.is_file()
+            and not path.name.endswith(".bundle")
+            and check.plane_of(path.relative_to(site).as_posix()) is not None
+        ]
+        self.assertTrue(documents)
+        for path in documents:
+            with self.subTest(document=path.relative_to(site).as_posix()):
+                self.assertTrue(path.with_name(path.name + ".bundle").is_file())
+
+    def test_every_published_bundle_is_in_the_format_its_signer_writes(self) -> None:
+        for bundle in sorted((REPO / "trust-page").rglob("*.bundle")):
+            document = bundle.relative_to(REPO / "trust-page").as_posix().removesuffix(".bundle")
+            with self.subTest(document=document):
+                content = json.loads(bundle.read_text())
+                self.assertEqual("mediaType" in content, document in check.PROTOBUF)
 
     def test_every_published_bundle_carries_a_certificate(self) -> None:
         for bundle in sorted((REPO / "trust-page").rglob("*.bundle")):

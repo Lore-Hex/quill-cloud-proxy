@@ -306,8 +306,14 @@ grep -Fq "cosign sign-blob --bundle \"\$f.bundle\" \"\$f\"" .github/workflows/pu
 stage_d_sign_block="$(grep -A5 -F "if [ \"\$f\" = \"\$stage_d_policy\" ]; then" .github/workflows/publish-trust-gcp.yml)"
 grep -Fq "cosign sign-blob --new-bundle-format --bundle \"\$f.bundle\" \"\$f\"" <<<"${stage_d_sign_block}"
 grep -Fq 'cosign verify-blob --new-bundle-format' .github/workflows/publish-trust-gcp.yml
-grep -Fq 'cosign verify-blob --new-bundle-format' .github/workflows/deploy-enclave-gcp.yml
-grep -Fq 'cosign verify-blob --new-bundle-format' tools/wait-stage-d-policy.sh
+# The deploy path verifies each Stage D policy it fetches only through the
+# publishers' checker, which verifies that path's bundle as a protobuf bundle.
+grep -Fq 'python3 tools/check-trust-signatures.py "${previous_site}"' .github/workflows/deploy-enclave-gcp.yml
+grep -Fq 'python3 tools/check-trust-signatures.py "${site}"' tools/wait-stage-d-policy.sh
+if grep -Fq 'cosign verify-blob' .github/workflows/deploy-enclave-gcp.yml tools/wait-stage-d-policy.sh; then
+  echo "the deploy path verifies a fetched Stage D bundle outside tools/check-trust-signatures.py" >&2
+  exit 1
+fi
 grep -Fq -- "--certificate-identity \"\$identity\"" .github/workflows/publish-trust-gcp.yml
 if grep -Eq 'write-stage-d-policy|--kind[[:space:]]+final' tools/recover-gcp-region.sh tools/roll-secondary-region.sh; then
   echo "a recovery path can publish a final Stage D policy" >&2

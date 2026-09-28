@@ -297,8 +297,12 @@ jobs:
           set -euo pipefail
           work_dir="$(mktemp -d "${RUNNER_TEMP}/stage-d-transition-XXXXXX")"
           trap 'rm -rf "${work_dir}"' EXIT
-          previous_policy="${work_dir}/stage-d-accepted.json"
+          # The live policy sits at the path the trust page serves it from, so
+          # tools/check-trust-signatures.py checks it as the publishers do.
+          previous_site="${work_dir}/site"
+          previous_policy="${previous_site}/gcp/stage-d-accepted.json"
           previous_bundle="${previous_policy}.bundle"
+          mkdir -p "${previous_site}/gcp"
           base="https://trust.trustedrouter.com/gcp/stage-d-accepted.json"
           payload_code="$(curl -sS --connect-timeout 5 --max-time 20 \
             -o "${previous_policy}" -w '%{http_code}' \
@@ -308,12 +312,7 @@ jobs:
             "${base}.bundle?nocache=${GITHUB_RUN_ID}-bundle")"
           previous_args=()
           if [ "${payload_code}" = "200" ] && [ "${bundle_code}" = "200" ]; then
-            identity="https://github.com/Lore-Hex/quill-cloud-proxy/.github/workflows/publish-trust-gcp.yml@refs/heads/main"
-            cosign verify-blob --new-bundle-format \
-              --bundle "${previous_bundle}" \
-              --certificate-identity "${identity}" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              "${previous_policy}"
+            python3 tools/check-trust-signatures.py "${previous_site}"
             python3 tools/write-stage-d-policy.py --validate "${previous_policy}"
             previous_args+=(--accepted-policy "${previous_policy}")
           elif [ "${payload_code}" = "404" ] && [ "${bundle_code}" = "404" ]; then
