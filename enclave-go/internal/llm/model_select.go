@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/decide"
+	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 const telluvianSelectorURL = "https://api.telluvian.ai/v1/modelSelect"
@@ -66,23 +67,29 @@ func NewTelluvianSelector(key string, client *http.Client) (*TelluvianSelector, 
 var selectionModelPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._+-]*(/[a-zA-Z0-9][a-zA-Z0-9._+-]*)?$`)
 var selectionSessionPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+// SelectionControls are Telluvian's routing controls; see types.PolyphemusOptions.
+type SelectionControls = qtypes.PolyphemusOptions
+
+const MinSelectionXPerf = qtypes.MinPolyphemusXPerf
+
 // Select executes exactly one paid attempt. Neither 429 nor ambiguous network
 // errors are retried, because the selector has no documented idempotency API.
-func (s *TelluvianSelector) Select(ctx context.Context, messages string, xPerf float64, sessionID string) (*ModelSelection, error) {
+func (s *TelluvianSelector) Select(ctx context.Context, messages string, controls SelectionControls, sessionID string) (*ModelSelection, error) {
 	if s == nil || s.http == nil || s.key == "" {
 		return nil, &SelectionError{Class: "configuration"}
 	}
-	if strings.TrimSpace(messages) == "" || len(messages) > maxSelectionInputBytes || !(xPerf >= 0 && xPerf <= 1) {
+	if strings.TrimSpace(messages) == "" || len(messages) > maxSelectionInputBytes || controls.Validate() != "" {
 		return nil, &SelectionError{Class: "invalid_request"}
 	}
 	if sessionID != "" && !selectionSessionPattern.MatchString(sessionID) {
 		return nil, &SelectionError{Class: "invalid_request"}
 	}
 	body, err := json.Marshal(struct {
-		Messages  string  `json:"messages"`
-		XPerf     float64 `json:"xPerf"`
-		SessionID string  `json:"sessionId,omitempty"`
-	}{Messages: messages, XPerf: xPerf, SessionID: sessionID})
+		Messages  string `json:"messages"`
+		XPerf     any    `json:"xPerf"`
+		ModelZoo  string `json:"modelZoo,omitempty"`
+		SessionID string `json:"sessionId,omitempty"`
+	}{Messages: messages, XPerf: controls.XPerf, ModelZoo: controls.ModelZoo, SessionID: sessionID})
 	if err != nil {
 		return nil, &SelectionError{Class: "invalid_request"}
 	}

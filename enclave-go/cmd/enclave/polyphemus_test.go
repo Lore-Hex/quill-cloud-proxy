@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -16,9 +17,9 @@ import (
 
 const selectionTestCatalog = `{"data":[{"id":"google/gemini-3.8-flash","trustedrouter":{"supports_chat":true,"prepaid_available":true}}]}`
 
-type selectionStub func(context.Context, string, float64, string) (*llm.ModelSelection, error)
+type selectionStub func(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error)
 
-func (s selectionStub) Select(ctx context.Context, messages string, perf float64, sessionID string) (*llm.ModelSelection, error) {
+func (s selectionStub) Select(ctx context.Context, messages string, perf llm.SelectionControls, sessionID string) (*llm.ModelSelection, error) {
 	return s(ctx, messages, perf, sessionID)
 }
 
@@ -87,7 +88,7 @@ func TestPolyphemusConversationSessionSurvivesNewTurnsAndStageIDs(t *testing.T) 
 	wantSession := polyphemusSelectorSessionID(bearer, session)
 	gateway := &selectionGatewayStub{}
 	calls := 0
-	selector := selectionStub(func(_ context.Context, messages string, _ float64, sessionID string) (*llm.ModelSelection, error) {
+	selector := selectionStub(func(_ context.Context, messages string, _ llm.SelectionControls, sessionID string) (*llm.ModelSelection, error) {
 		calls++
 		if sessionID != wantSession || strings.Contains(messages, session) || strings.Contains(messages, wantSession) {
 			t.Fatal("session changed between turns or entered metered context")
@@ -131,12 +132,12 @@ func TestPolyphemusSelectionUsesSharedBillingAndPreservesRequest(t *testing.T) {
 	gateway := &selectionGatewayStub{}
 	calls := 0
 	selectorTokens := 0
-	selector := selectionStub(func(_ context.Context, messages string, perf float64, sessionID string) (*llm.ModelSelection, error) {
+	selector := selectionStub(func(_ context.Context, messages string, perf llm.SelectionControls, sessionID string) (*llm.ModelSelection, error) {
 		calls++
 		if gateway.admitted != 1 || gateway.settled != 0 {
 			t.Fatal("provider called before admission")
 		}
-		if !strings.Contains(messages, "PRIVATE TASK") || !strings.Contains(messages, "read_file") || perf != 1.0 || polyphemusXPerf != 1.0 {
+		if !strings.Contains(messages, "PRIVATE TASK") || !strings.Contains(messages, "read_file") || perf.XPerf != 1.0 || perf.ModelZoo != "" || polyphemusXPerf != 1.0 {
 			t.Fatal("lost selection context")
 		}
 		if sessionID != "" {
@@ -200,7 +201,7 @@ func TestPolyphemusFailuresNeverGenerateOrDoubleCharge(t *testing.T) {
 				gateway.settleErr = errors.New("lost response")
 			}
 			calls := 0
-			selector := selectionStub(func(context.Context, string, float64, string) (*llm.ModelSelection, error) {
+			selector := selectionStub(func(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error) {
 				calls++
 				if stage == "selection" {
 					return nil, errors.New("private provider body")
@@ -239,7 +240,7 @@ func TestPolyphemusSelectorFailuresFallBackToAutoWithoutFee(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			var selector modelSelector = selectionStub(func(context.Context, string, float64, string) (*llm.ModelSelection, error) {
+			var selector modelSelector = selectionStub(func(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error) {
 				switch stage {
 				case "timeout":
 					return nil, context.DeadlineExceeded
@@ -302,7 +303,7 @@ func TestPolyphemusRejectsPrivacyAndByokBeforeAdmission(t *testing.T) {
 		req := selectionTestRequest()
 		req.Provider = provider
 		gateway := &selectionGatewayStub{}
-		_, err := preparePolyphemus(context.Background(), req, gateway, selectionStub(func(context.Context, string, float64, string) (*llm.ModelSelection, error) {
+		_, err := preparePolyphemus(context.Background(), req, gateway, selectionStub(func(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error) {
 			t.Fatal("private context sent")
 			return nil, nil
 		}), "key", "test")
@@ -342,5 +343,74 @@ func TestPolyphemusRejectsWrongRouteAndImage(t *testing.T) {
 	req.Messages[0].Content = []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://private.test/image"}}}
 	if validatePolyphemus(req, "responses") == nil {
 		t.Fatal("image accepted")
+	}
+}
+
+func TestPolyphemusCallerControlsReachTheSelectorOnly(t *testing.T) {
+	for _, tc := range []struct {
+		options  *types.PolyphemusOptions
+		wantPerf any
+		wantZoo  string
+	}{
+		{nil, polyphemusXPerf, ""},
+		{&types.PolyphemusOptions{}, polyphemusXPerf, ""},
+		{&types.PolyphemusOptions{XPerf: 0.5}, 0.5, ""},
+		{&types.PolyphemusOptions{XPerf: "openai/gpt-6-astra", ModelZoo: "openai/*,anthropic/claude-opus*"}, "openai/gpt-6-astra", "openai/*,anthropic/claude-opus*"},
+		{&types.PolyphemusOptions{ModelZoo: "meta/muse*"}, polyphemusXPerf, "meta/muse*"},
+	} {
+		req := selectionTestRequest()
+		req.Polyphemus = tc.options
+		gateway := &selectionGatewayStub{}
+		var got llm.SelectionControls
+		selector := selectionStub(func(_ context.Context, _ string, controls llm.SelectionControls, _ string) (*llm.ModelSelection, error) {
+			got = controls
+			return &llm.ModelSelection{Model: "gemini-3.8-flash"}, nil
+		})
+		if _, err := preparePolyphemus(context.Background(), req, gateway, selector, "key", "test"); err != nil {
+			t.Fatal(err)
+		}
+		if got.XPerf != tc.wantPerf || got.ModelZoo != tc.wantZoo {
+			t.Fatalf("%#v: selector got %#v", tc.options, got)
+		}
+		if gateway.request.Polyphemus != nil || req.Polyphemus != nil {
+			t.Fatal("selector controls leaked into admission or the chosen model's request")
+		}
+	}
+}
+
+func TestPolyphemusControlsAreBoundIntoTheRequestFingerprint(t *testing.T) {
+	fingerprint := func(options *types.PolyphemusOptions) string {
+		req := selectionTestRequest()
+		req.Polyphemus = options
+		gateway := &selectionGatewayStub{}
+		selector := selectionStub(func(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error) {
+			return &llm.ModelSelection{Model: "gemini-3.8-flash"}, nil
+		})
+		if _, err := preparePolyphemus(context.Background(), req, gateway, selector, "key", "test"); err != nil {
+			t.Fatal(err)
+		}
+		return gateway.request.RequestFingerprint
+	}
+	// One idempotency key replayed with different controls must not look identical.
+	if fingerprint(nil) == fingerprint(&types.PolyphemusOptions{XPerf: 0.5}) {
+		t.Fatal("changing x_perf did not change the request fingerprint")
+	}
+}
+
+func TestPolyphemusOptionsGoThroughTheRealResponsesParser(t *testing.T) {
+	good := `{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{"x_perf":0.9,"model_zoo":"openai/*"}}`
+	req, err := parseResponsesRequest([]byte(good))
+	if err != nil || req.Polyphemus == nil || req.Polyphemus.ModelZoo != "openai/*" {
+		t.Fatalf("parse: %v %#v", err, req)
+	}
+	for body, context := range map[string]string{
+		`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{"modelZoo":"openai/*"}}`: "polyphemus.modelZoo",
+		`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":[1]}`:                     "polyphemus",
+	} {
+		_, err := parseResponsesRequest([]byte(body))
+		var aerr *adapter.AdapterError
+		if !errors.As(err, &aerr) || aerr.Context != context {
+			t.Fatalf("%s: got %v, want rejection on %s", body, err, context)
+		}
 	}
 }

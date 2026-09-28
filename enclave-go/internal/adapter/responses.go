@@ -43,6 +43,7 @@ var supportedResponsesCreateFields = map[string]struct{}{
 	"n":                      {},
 	"parallel_tool_calls":    {},
 	"plugins":                {},
+	"polyphemus":             {},
 	"presence_penalty":       {},
 	"previous_response_id":   {},
 	"prompt":                 {},
@@ -108,6 +109,11 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 	for _, field := range []string{"conversation", "previous_response_id", "prompt"} {
 		if value, ok := raw[field]; ok && presentNonNull(value) {
 			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: field}
+		}
+	}
+	if value, ok := raw["polyphemus"]; ok && presentNonNull(value) {
+		if err := validatePolyphemusFields(value); err != nil {
+			return err
 		}
 	}
 	if boolField(raw, "store") {
@@ -226,6 +232,9 @@ func rejectResponsesWebPlugin(value json.RawMessage) error {
 }
 
 func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatRequest, error) {
+	if err := validatePolyphemusOptions(req); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(req.Model) == "" {
 		return nil, &AdapterError{Status: 400, Message: "model is required"}
 	}
@@ -284,6 +293,7 @@ func ResponsesToChat(req *types.OpenAIResponsesRequest) (*types.OpenAIChatReques
 		Trace:               req.Trace,
 		User:                req.User,
 		SessionID:           req.SessionID,
+		Polyphemus:          req.Polyphemus,
 		Tags:                types.CloneRequestTags(req.Tags),
 		ResponseFormat:      responseFormat,
 		Tools:               tools,
@@ -2409,4 +2419,43 @@ func validateResponsesInputValue(value any) error {
 		}
 	}
 	return nil
+}
+
+// PolyphemusModel is the only model that reads the `polyphemus` request object.
+const PolyphemusModel = "trustedrouter/polyphemus-1.0"
+
+// validatePolyphemusFields rejects unknown keys inside `polyphemus`, which JSON
+// decoding would otherwise drop silently.
+func validatePolyphemusFields(value json.RawMessage) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return &AdapterError{Status: 400, Message: "polyphemus must be an object", Context: "polyphemus"}
+	}
+	for key := range raw {
+		if key != "x_perf" && key != "model_zoo" {
+			return unknownRequestParameter("polyphemus." + key)
+		}
+	}
+	return nil
+}
+
+func validatePolyphemusOptions(req *types.OpenAIResponsesRequest) error {
+	if req.Polyphemus == nil {
+		return nil
+	}
+	if req.Model != PolyphemusModel {
+		return &AdapterError{Status: 400, Message: "polyphemus options apply only to model " + PolyphemusModel, Context: "polyphemus"}
+	}
+	options := *req.Polyphemus
+	if options.XPerf == nil {
+		options.XPerf = types.MaxPolyphemusXPerf // any valid value; only model_zoo is checked here
+	}
+	switch field := options.Validate(); field {
+	case "":
+		return nil
+	case "x_perf":
+		return &AdapterError{Status: 400, Message: "polyphemus.x_perf must be a number from 0.1 to 1 or a model id", Context: "polyphemus.x_perf"}
+	default:
+		return &AdapterError{Status: 400, Message: "polyphemus.model_zoo must be comma-separated model patterns", Context: "polyphemus." + field}
+	}
 }
