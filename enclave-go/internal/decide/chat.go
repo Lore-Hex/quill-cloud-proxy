@@ -57,8 +57,9 @@ const (
 	GevModelID  = "trustedrouter/gev-1.0"  // Gemini 3.1 Flash Lite
 	DevModelID  = "trustedrouter/dev-1.0"  // DeepSeek V4.1 Flash
 	OevModelID  = "trustedrouter/oev-1.0"  // gpt-oss-20b
-	// Gemma 4 E4B, the cheapest. It was mev-1.0 for a few hours on 2026-09-20,
-	// before Mercury took that name.
+	// Gemma 4 26B A4B since 2026-09-28, when DeepInfra dropped Gemma 4 E4B, the
+	// model it named until then. The name was mev-1.0 for a few hours on
+	// 2026-09-20, before Mercury took that name.
 	GemmevModelID = "trustedrouter/gemmev-1.0"
 )
 
@@ -100,8 +101,12 @@ var DevProviders = []string{
 //     model and enforces the same chain; this entry is how it is DRIVEN.
 //     Prompt format on purpose: a host-enforced schema is billed as input
 //     (766 vs 476 tokens) and was slower.
-//   - Gemma 4 E4B is prompt-only because DeepInfra answers HTTP 405 to
-//     json_schema for it -- and it scores 29/29 without.
+//   - Gemma 4 26B A4B (gemmev-1.0 since 2026-09-28, when DeepInfra, the only
+//     host of Gemma 4 E4B, dropped it) is prompt-only, as E4B was, and scores
+//     29/29 that way: W&B 1387 ms median, nextbit 1587 ms, io.net 1738 ms, each
+//     24/24 valid over three passes. SiliconFlow passed at 2034 ms but would
+//     raise the advertised price 40%; Makora, Scaleway and Cloudflare think by
+//     default (about 1,000 output tokens a decision) and were left out.
 //
 // Every pinned host must offer a CREDITS route in the control plane's catalog.
 // openai/gpt-5.4-nano passed the eval (27/29, ~1 s) and was still left out: its
@@ -145,10 +150,16 @@ var (
 	geminiFlashLite = NativeModel{Providers: []string{"google-ai-studio"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatSchema}
 	deepSeekFlash   = NativeModel{Providers: DevProviders, Temperature: &zeroTemperature, Format: FormatPrompt}
 	gptOSS20B       = NativeModel{Providers: []string{"deepinfra"}, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatSchema}
-	gemma4E4B       = NativeModel{Providers: []string{"deepinfra"}, Temperature: &zeroTemperature, Format: FormatPrompt}
-	mercury2        = NativeModel{Providers: []string{"inception"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
-	glm52Fast       = NativeModel{Providers: []string{"fireworks", "baseten"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
-	llama33         = NativeModel{Providers: []string{"sambanova", "parasail", "together"}, Temperature: &zeroTemperature, Format: FormatPrompt}
+	// DeepInfra is listed only for the move: until the control plane's catalog
+	// moves gemmev-1.0 too, authorize's chain for the name is DeepInfra alone,
+	// still serving Gemma 4 E4B (deprecated there on 2026-10-01), and this list
+	// must overlap it. Authorize keeps only its own chain's hosts, in its own
+	// order, so the extra host never widens the new chain. Remove it once
+	// catalog_data.py's chain (W&B, nextbit, io.net) is live.
+	gemma426BA4B = NativeModel{Providers: []string{"wandb", "nextbit", "io-net", "deepinfra"}, Temperature: &zeroTemperature, Format: FormatPrompt}
+	mercury2     = NativeModel{Providers: []string{"inception"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
+	glm52Fast    = NativeModel{Providers: []string{"fireworks", "baseten"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
+	llama33      = NativeModel{Providers: []string{"sambanova", "parasail", "together"}, Temperature: &zeroTemperature, Format: FormatPrompt}
 )
 
 var NativeModels = map[string]NativeModel{
@@ -156,7 +167,7 @@ var NativeModels = map[string]NativeModel{
 	GevModelID:  geminiFlashLite, "google/gemini-3.1-flash-lite": geminiFlashLite,
 	DevModelID: deepSeekFlash, "deepseek/deepseek-v4.1-flash": deepSeekFlash,
 	OevModelID: gptOSS20B, "openai/gpt-oss-20b": gptOSS20B,
-	GemmevModelID: gemma4E4B, "google/gemma-4-e4b-it": gemma4E4B,
+	GemmevModelID: gemma426BA4B, "google/gemma-4-26b-a4b-it": gemma426BA4B,
 	MevModelID: mercury2, "inception/mercury-2": mercury2,
 	ZevModelID: glm52Fast, "z-ai/glm-5.2-fast": glm52Fast,
 	LevModelID: llama33, "meta-llama/llama-3.3-70b-instruct": llama33,

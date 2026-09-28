@@ -71,20 +71,21 @@ var liveKeyEnv = map[string]string{
 	"cerebras": "CEREBRAS_API_KEY", "sambanova": "SAMBANOVA_API_KEY", "inception": "INCEPTION_API_KEY",
 	"morph": "MORPH_API_KEY", "zai": "ZAI_API_KEY", "together": "TOGETHER_API_KEY", "fireworks": "FIREWORKS_API_KEY",
 	"baseten": "BASETEN_API_KEY", "parasail": "PARASAIL_API_KEY", "gmi": "GMI_API_KEY", "novita": "NOVITA_API_KEY",
+	"wandb": "WANDB_API_KEY", "nextbit": "NEXTBIT_API_KEY", "io-net": "IO_NET_API_KEY",
 }
 
 // liveUpstream is the provider-native id for each shipped native model.
 var liveUpstream = map[string]string{
 	"google/gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
 	"openai/gpt-oss-20b":           "openai/gpt-oss-20b",
-	"google/gemma-4-e4b-it":        "google/gemma-4-E4B-it",
+	"google/gemma-4-26b-a4b-it":    "google/gemma-4-26B-A4B-it",
 	"deepseek/deepseek-v4.1-flash": "deepseek-ai/DeepSeek-V4.1-Flash",
 	decide.TrevModelID:             "gpt-oss-120b",
 	// A name calls the same upstream as the chat model behind it.
 	decide.GevModelID:                   "gemini-3.1-flash-lite",
 	decide.DevModelID:                   "deepseek-ai/DeepSeek-V4.1-Flash",
 	decide.OevModelID:                   "openai/gpt-oss-20b",
-	decide.GemmevModelID:                "google/gemma-4-E4B-it",
+	decide.GemmevModelID:                "google/gemma-4-26B-A4B-it",
 	"inception/mercury-2":               "mercury-2",
 	"z-ai/glm-5.2-fast":                 "accounts/fireworks/routers/glm-5p2-fast",
 	"meta-llama/llama-3.3-70b-instruct": "Meta-Llama-3.3-70B-Instruct",

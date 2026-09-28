@@ -167,13 +167,13 @@ func TestNativeModelListIsPinned(t *testing.T) {
 		decide.TrevModelID:             "cerebras,sambanova,fireworks,together",
 		"google/gemini-3.1-flash-lite": "google-ai-studio",
 		"openai/gpt-oss-20b":           "deepinfra",
-		"google/gemma-4-e4b-it":        "deepinfra",
+		"google/gemma-4-26b-a4b-it":    "wandb,nextbit,io-net,deepinfra",
 		"deepseek/deepseek-v4.1-flash": "wafer,deepinfra,wandb",
 		// Each name is driven exactly as the chat model behind it.
 		decide.GevModelID:    "google-ai-studio",
 		decide.DevModelID:    "wafer,deepinfra,wandb",
 		decide.OevModelID:    "deepinfra",
-		decide.GemmevModelID: "deepinfra",
+		decide.GemmevModelID: "wandb,nextbit,io-net,deepinfra",
 		// The three fast ones, and the chat models behind them.
 		decide.MevModelID: "inception", "inception/mercury-2": "inception",
 		decide.ZevModelID: "fireworks,baseten", "z-ai/glm-5.2-fast": "fireworks,baseten",
@@ -181,7 +181,7 @@ func TestNativeModelListIsPinned(t *testing.T) {
 	}
 	for name, behind := range map[string]string{
 		decide.GevModelID: "google/gemini-3.1-flash-lite", decide.DevModelID: "deepseek/deepseek-v4.1-flash",
-		decide.OevModelID: "openai/gpt-oss-20b", decide.GemmevModelID: "google/gemma-4-e4b-it",
+		decide.OevModelID: "openai/gpt-oss-20b", decide.GemmevModelID: "google/gemma-4-26b-a4b-it",
 		decide.MevModelID: "inception/mercury-2", decide.ZevModelID: "z-ai/glm-5.2-fast",
 		decide.LevModelID: "meta-llama/llama-3.3-70b-instruct",
 	} {
