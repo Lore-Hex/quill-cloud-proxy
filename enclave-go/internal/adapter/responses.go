@@ -98,6 +98,16 @@ var supportedResponsesInputTokenFields = map[string]struct{}{
 }
 
 func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]struct{}) error {
+	// `polyphemus` is judged by PRESENCE, not presentNonNull: `null` and `{}` must not
+	// slip past an endpoint that does not accept it and then decode into options.
+	if value, ok := raw["polyphemus"]; ok {
+		if _, accepted := allowed["polyphemus"]; !accepted {
+			return unknownRequestParameter("polyphemus")
+		}
+		if err := validatePolyphemusFields(value); err != nil {
+			return err
+		}
+	}
 	for key, value := range raw {
 		if _, ok := allowed[key]; !ok && presentNonNull(value) {
 			return unknownRequestParameter(key)
@@ -109,11 +119,6 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 	for _, field := range []string{"conversation", "previous_response_id", "prompt"} {
 		if value, ok := raw[field]; ok && presentNonNull(value) {
 			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: field}
-		}
-	}
-	if value, ok := raw["polyphemus"]; ok && presentNonNull(value) {
-		if err := validatePolyphemusFields(value); err != nil {
-			return err
 		}
 	}
 	if boolField(raw, "store") {
@@ -2424,19 +2429,41 @@ func validateResponsesInputValue(value any) error {
 // PolyphemusModel is the only model that reads the `polyphemus` request object.
 const PolyphemusModel = "trustedrouter/polyphemus-1.0"
 
-// validatePolyphemusFields rejects unknown keys inside `polyphemus`, which JSON
-// decoding would otherwise drop silently.
+// validatePolyphemusFields checks the raw JSON before struct decoding, which would
+// drop unknown keys, turn `null` into "omitted", and report a wrong type as a
+// generic "invalid JSON". Every rejection names its field.
 func validatePolyphemusFields(value json.RawMessage) error {
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(value, &raw); err != nil {
+	if err := json.Unmarshal(value, &raw); err != nil || raw == nil {
 		return &AdapterError{Status: 400, Message: "polyphemus must be an object", Context: "polyphemus"}
 	}
-	for key := range raw {
-		if key != "x_perf" && key != "model_zoo" {
+	for key, field := range raw {
+		switch key {
+		case "x_perf":
+			var text string
+			var number float64
+			if isJSONNull(field) || (json.Unmarshal(field, &text) != nil && (!isJSONNumber(field) || json.Unmarshal(field, &number) != nil)) {
+				return &AdapterError{Status: 400, Message: "polyphemus.x_perf must be a number from 0.1 to 1 or a model id", Context: "polyphemus.x_perf"}
+			}
+		case "model_zoo":
+			var text string
+			if isJSONNull(field) || json.Unmarshal(field, &text) != nil {
+				return &AdapterError{Status: 400, Message: "polyphemus.model_zoo must be comma-separated model patterns", Context: "polyphemus.model_zoo"}
+			}
+		default:
 			return unknownRequestParameter("polyphemus." + key)
 		}
 	}
 	return nil
+}
+
+func isJSONNull(value json.RawMessage) bool {
+	return strings.TrimSpace(string(value)) == "null"
+}
+
+func isJSONNumber(value json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(value))
+	return trimmed != "" && (trimmed[0] == '-' || (trimmed[0] >= '0' && trimmed[0] <= '9'))
 }
 
 func validatePolyphemusOptions(req *types.OpenAIResponsesRequest) error {

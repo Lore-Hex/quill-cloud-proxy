@@ -53,6 +53,13 @@ func TestPolyphemusOptionsAreRejectedPrecisely(t *testing.T) {
 		{`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{"model_zoo":"openai/*,"}}`, "polyphemus.model_zoo"},
 		{`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{"xPerf":1}}`, "polyphemus.xPerf"},
 		{`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":"fast"}`, "polyphemus"},
+		{`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":null}`, "polyphemus"},
+		{`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{"x_perf":null}}`, "polyphemus.x_perf"},
+		{`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{"model_zoo":null}}`, "polyphemus.model_zoo"},
+		{`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{"model_zoo":{}}}`, "polyphemus.model_zoo"},
+		{`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{"model_zoo":7}}`, "polyphemus.model_zoo"},
+		{`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{"x_perf":1e999}}`, "polyphemus.x_perf"},
+		{`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{"x_perf":{"a":1}}}`, "polyphemus.x_perf"},
 	} {
 		_, err := polyphemusResponsesRequest(t, tc.body)
 		if err == nil {
@@ -67,5 +74,27 @@ func TestPolyphemusOptionsAreRejectedPrecisely(t *testing.T) {
 		if !errors.As(err, &aerr) || aerr.Status != 400 || aerr.Context != tc.context {
 			t.Fatalf("%s: got %v, want 400 on %s", tc.body, err, tc.context)
 		}
+	}
+}
+
+func TestPolyphemusIsRejectedByPresenceWhereUnsupported(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{}}`,
+		`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":null}`,
+	} {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(body), &raw); err != nil {
+			t.Fatal(err)
+		}
+		err := RejectUnsupportedResponsesInputTokenFields(raw)
+		var aerr *AdapterError
+		if !errors.As(err, &aerr) || aerr.Status != 400 || aerr.Context != "polyphemus" {
+			t.Fatalf("input_tokens accepted %s: %v", body, err)
+		}
+	}
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal([]byte(`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{}}`), &raw)
+	if err := validateResponsesFields(raw, supportedResponsesCreateFields); err != nil {
+		t.Fatalf("an empty options object on /v1/responses means defaults: %v", err)
 	}
 }

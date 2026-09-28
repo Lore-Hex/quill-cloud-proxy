@@ -395,6 +395,9 @@ func TestPolyphemusControlsAreBoundIntoTheRequestFingerprint(t *testing.T) {
 	if fingerprint(nil) == fingerprint(&types.PolyphemusOptions{XPerf: 0.5}) {
 		t.Fatal("changing x_perf did not change the request fingerprint")
 	}
+	if fingerprint(nil) == fingerprint(&types.PolyphemusOptions{ModelZoo: "openai/*"}) {
+		t.Fatal("changing model_zoo did not change the request fingerprint")
+	}
 }
 
 func TestPolyphemusOptionsGoThroughTheRealResponsesParser(t *testing.T) {
@@ -406,11 +409,28 @@ func TestPolyphemusOptionsGoThroughTheRealResponsesParser(t *testing.T) {
 	for body, context := range map[string]string{
 		`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{"modelZoo":"openai/*"}}`: "polyphemus.modelZoo",
 		`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":[1]}`:                     "polyphemus",
+		`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{"model_zoo":{}}}`:        "polyphemus.model_zoo",
+		`{"model":"trustedrouter/polyphemus-1.0","input":"hi","polyphemus":{"x_perf":1e999}}`:        "polyphemus.x_perf",
 	} {
 		_, err := parseResponsesRequest([]byte(body))
 		var aerr *adapter.AdapterError
 		if !errors.As(err, &aerr) || aerr.Context != context {
 			t.Fatalf("%s: got %v, want rejection on %s", body, err, context)
 		}
+	}
+}
+
+func TestPolyphemusFallbackAlsoClearsCallerControls(t *testing.T) {
+	req := selectionTestRequest()
+	req.Polyphemus = &types.PolyphemusOptions{XPerf: 0.5, ModelZoo: "openai/*"}
+	gateway := &selectionGatewayStub{}
+	selector := selectionStub(func(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error) {
+		return nil, errors.New("selector unavailable")
+	})
+	if _, err := preparePolyphemus(context.Background(), req, gateway, selector, "key", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if req.Model != "trustedrouter/auto" || req.Polyphemus != nil {
+		t.Fatalf("fallback kept caller controls: model=%s options=%#v", req.Model, req.Polyphemus)
 	}
 }
