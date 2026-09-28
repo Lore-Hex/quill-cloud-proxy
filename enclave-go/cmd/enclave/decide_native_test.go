@@ -305,7 +305,7 @@ func TestNativeDecidePrivacyUsesTheAnsweringAttemptsAuthorization(t *testing.T) 
 func TestNativeDecideNeverReturnsAnAnswerItCouldNotVerify(t *testing.T) {
 	backend := &scriptedLLM{replies: []string{"I think they want a refund.", `{"q0":0.9,"q1":{"q1_o0":0.9,"q1_o1":0.9}}`}}
 	log := &controlPlaneLog{}
-	status, payload := runNativeDecide(t, "google/gemma-4-e4b-it", "", backend, log)
+	status, payload := runNativeDecide(t, "google/gemma-4-26b-a4b-it", "", backend, log)
 	if status != 502 {
 		t.Fatalf("status %d, want 502: %v", status, payload)
 	}
@@ -541,9 +541,10 @@ func TestEveryNamedDecisionModelIsDrivenOnItsOwnHostAndAnswersUnderItsName(t *te
 		decide.TrevModelID: {"cerebras,sambanova,fireworks,together", "openai/gpt-oss-120b", "cerebras", "gpt-oss-120b"},
 		decide.GevModelID:  {"google-ai-studio", "google/gemini-3.1-flash-lite", "google-ai-studio", "gemini-3.1-flash-lite"},
 		// Authorize may select any host in the chain; exercise DeepInfra here.
-		decide.DevModelID:    {"wafer,deepinfra,wandb", "deepseek/deepseek-v4.1-flash", "deepinfra", "deepseek-ai/DeepSeek-V4.1-Flash"},
-		decide.OevModelID:    {"deepinfra", "openai/gpt-oss-20b", "deepinfra", "openai/gpt-oss-20b"},
-		decide.GemmevModelID: {"deepinfra", "google/gemma-4-e4b-it", "deepinfra", "google/gemma-4-E4B-it"},
+		decide.DevModelID: {"wafer,deepinfra,wandb", "deepseek/deepseek-v4.1-flash", "deepinfra", "deepseek-ai/DeepSeek-V4.1-Flash"},
+		decide.OevModelID: {"deepinfra", "openai/gpt-oss-20b", "deepinfra", "openai/gpt-oss-20b"},
+		// And nextbit here: its native id for the same model looks nothing alike.
+		decide.GemmevModelID: {"wandb,nextbit,io-net,deepinfra", "google/gemma-4-26b-a4b-it", "nextbit", "gemma4:26b-a4b"},
 		decide.MevModelID:    {"inception", "inception/mercury-2", "inception", "mercury-2"},
 		decide.ZevModelID:    {"fireworks,baseten", "z-ai/glm-5.2-fast", "fireworks", "accounts/fireworks/routers/glm-5p2-fast"},
 		decide.LevModelID:    {"sambanova,parasail,together", "meta-llama/llama-3.3-70b-instruct", "sambanova", "Meta-Llama-3.3-70B-Instruct"},

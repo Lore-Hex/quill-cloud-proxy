@@ -39,11 +39,11 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 			original := enclaveModelSelector
 			t.Cleanup(func() { enclaveModelSelector = original })
 			var mu sync.Mutex
-			enclaveModelSelector = selectionStub(func(_ context.Context, messages string, perf float64, selectorSessionID string) (*llm.ModelSelection, error) {
+			enclaveModelSelector = selectionStub(func(_ context.Context, messages string, perf llm.SelectionControls, selectorSessionID string) (*llm.ModelSelection, error) {
 				mu.Lock()
 				selectorTokens = len(messages) / 4
 				mu.Unlock()
-				if !strings.Contains(messages, "PRIVATE INPUT") || perf != .9 {
+				if !strings.Contains(messages, "PRIVATE INPUT") || perf.XPerf != polyphemusXPerf {
 					t.Error("incorrect selection request")
 				}
 				if selectorSessionID != polyphemusSelectorSessionID("test-user-bearer", sessionID) || strings.Contains(messages, "private-conversation-id") {

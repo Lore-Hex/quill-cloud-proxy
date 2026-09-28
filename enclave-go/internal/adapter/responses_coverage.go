@@ -38,6 +38,7 @@ var ResponsesCreateFieldCoverage = []ResponsesCoverageItem{
 	{Path: "model", Kind: "stateless-real"},
 	{Path: "models", Kind: "stateless-real"},
 	{Path: "parallel_tool_calls", Kind: "stateless-real"},
+	{Path: "polyphemus", Kind: "stateless-real"},
 	{Path: "previous_response_id", Kind: "explicit-stub"},
 	{Path: "prompt", Kind: "explicit-stub"},
 	{Path: "prompt_cache_key", Kind: "stateless-real"},

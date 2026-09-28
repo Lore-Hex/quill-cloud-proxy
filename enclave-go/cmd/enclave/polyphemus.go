@@ -17,11 +17,19 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
-const polyphemusModel = "trustedrouter/polyphemus-1.0"
+const polyphemusModel = adapter.PolyphemusModel
+
+// polyphemusXPerf is the default for Telluvian's quality bar when the caller
+// sends no polyphemus.x_perf: pick the cheapest model at or above this
+// level, where 1.0 is Telluvian's fixed reference (openai/gpt-6-astra's published level;
+// see telluvian.ai/docs/model-zoo). The probe may still choose a cheaper model when it
+// predicts comparable success on the request. At 0.9 it chose deepseek-v4-flash
+// (published 0.36) for every SimpleQA-Verified question tried and missed all four.
+const polyphemusXPerf = 1.0
 const polyphemusSelectRoute = "responses.polyphemus.select"
 
 type modelSelector interface {
-	Select(context.Context, string, float64, string) (*llm.ModelSelection, error)
+	Select(context.Context, string, llm.SelectionControls, string) (*llm.ModelSelection, error)
 }
 
 var enclaveModelSelector modelSelector
@@ -180,6 +188,7 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 		rootID = newResponseID()
 	}
 	selectReq := cloneChatRequest(req)
+	selectReq.Polyphemus = nil // selector controls go to Telluvian, not to admission
 	rootDigest := sha256.Sum256([]byte(rootID))
 	stageKey := hex.EncodeToString(rootDigest[:])
 	selectReq.IdempotencyKey = "polyphemus-select:" + stageKey
@@ -189,6 +198,15 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	}
 	mac := hmac.New(sha256.New, []byte(bearer))
 	_, _ = mac.Write(canonical)
+	if req.Polyphemus != nil {
+		// The field is never serialized, so the canonical JSON above omits it; bind it here.
+		options, _ := json.Marshal(struct {
+			XPerf    any    `json:"x_perf,omitempty"`
+			ModelZoo string `json:"model_zoo,omitempty"`
+		}{req.Polyphemus.XPerf, req.Polyphemus.ModelZoo})
+		_, _ = mac.Write([]byte("\x00polyphemus\x00"))
+		_, _ = mac.Write(options)
+	}
 	selectReq.RequestFingerprint = hex.EncodeToString(mac.Sum(nil))
 	if selectReq.Provider == nil {
 		selectReq.Provider = &types.ProviderRouting{}
@@ -239,7 +257,7 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	if selector == nil {
 		return fallback("model_selector_unavailable", 0)
 	}
-	selection, err := selector.Select(ctx, string(payload), .9, selectorSessionID)
+	selection, err := selector.Select(ctx, string(payload), polyphemusSelectionControls(req), selectorSessionID)
 	selectorElapsedMS := time.Since(started).Milliseconds()
 	if err != nil || selection == nil {
 		return fallback("model_selection_failed", 1)
@@ -277,6 +295,7 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 }
 
 func continuePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, receipt *polyphemusReceipt, stageKey, fingerprint string) context.Context {
+	req.Polyphemus = nil // never forwarded to the chosen model
 	req.Model = receipt.SelectedModel
 	req.ResponseModel = polyphemusModel
 	if req.Provider == nil {
@@ -340,4 +359,17 @@ func annotatePolyphemusResponse(ctx context.Context, body []byte) ([]byte, error
 		payload["trustedrouter"] = mergeTrustedRouterRouting(payload["trustedrouter"], usage["provider_usage"].(map[string]any))
 	}
 	return json.Marshal(payload)
+}
+
+// polyphemusSelectionControls applies the caller's polyphemus options over the
+// defaults. The responses adapter has already validated them.
+func polyphemusSelectionControls(req *types.OpenAIChatRequest) llm.SelectionControls {
+	controls := llm.SelectionControls{XPerf: polyphemusXPerf}
+	if options := req.Polyphemus; options != nil {
+		if options.XPerf != nil {
+			controls.XPerf = options.XPerf
+		}
+		controls.ModelZoo = options.ModelZoo
+	}
+	return controls
 }
