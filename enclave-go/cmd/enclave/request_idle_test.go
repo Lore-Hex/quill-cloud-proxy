@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +44,46 @@ func (c *idleTimingConn) Write(p []byte) (int, error) {
 	return c.scriptedConn.Write(p)
 }
 
+func parseAuditEventForRequest(t *testing.T, logs, event, requestLogID string) map[string]string {
+	t.Helper()
+	if requestLogID == "" {
+		t.Fatal("cannot select audit event with an empty request_log_id")
+	}
+	var selected map[string]string
+	matches := 0
+	for _, line := range strings.Split(logs, "\n") {
+		if !strings.HasPrefix(line, event+" ") {
+			continue
+		}
+		fields := parseAuditEvent(t, line, event)
+		if fields["request_log_id"] == requestLogID {
+			selected = fields
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("expected exactly one %s with request_log_id=%q; found %d in capture:\n%s", event, requestLogID, matches, logs)
+	}
+	return selected
+}
+
+func TestParseAuditEventForRequestIgnoresForeignLines(t *testing.T) {
+	logs := captureProviderStreamStderr(t, func() *providerInvocation {
+		_, err := io.WriteString(os.Stderr, "enclave.request_end request_log_id=\"foreign-request\" idle_wait_ms=0 status=500\n"+
+			"enclave.request_accept request_log_id=\"own-request\"\n"+
+			"enclave.request_end request_log_id=\"own-request\" idle_wait_ms=1179 status=200\n"+
+			"enclave.request_end request_log_id=\"another-request\" idle_wait_ms=23 status=400\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return nil
+	})
+	end := parseAuditEventForRequest(t, logs, "enclave.request_end", "own-request")
+	if end["request_log_id"] != "own-request" || end["idle_wait_ms"] != "1179" || end["status"] != "200" {
+		t.Fatalf("selected foreign request_end: %v", end)
+	}
+}
+
 func TestRequestEndIdleSplit(t *testing.T) {
 	const header = "GET /health HTTP/1.1\r\nHost: test.quill.local\r\nContent-Length: 2\r\n\r\n"
 	for _, mode := range []keepAliveMode{keepAliveOn, keepAliveLegacy} {
@@ -69,13 +111,21 @@ func TestRequestEndIdleSplit(t *testing.T) {
 					phases := requesttiming.New(clock.Now(), clock.Now)
 					ctx := requesttiming.WithTimer(context.Background(), phases)
 					armRequestReadDeadline(deadlines, reader, requests, config)
+					responseStart := base.writes.Len()
 					logs := captureProviderStreamStderr(t, func() *providerInvocation {
 						if !serveOneRequest(ctx, stats, stats, reader, deadlines, auth.New(nil), &panicStreamingLLM{t: t}, nil, nil, nil, &attestations, &health, &requests, config) {
 							t.Error("health request closed reusable connection")
 						}
 						return nil
 					})
-					end := parseAuditEvent(t, logs, "enclave.request_end")
+					// Write clears stats.requestID when injecting the response headers.
+					// Read this request's ID from its response, not the shared stderr capture.
+					response, _ := readRawHTTPResponse(t, base.writes.Bytes()[responseStart:])
+					requestLogID := response.Header.Get("x-request-id")
+					if requestLogID == "" {
+						t.Fatal("health response missing x-request-id")
+					}
+					end := parseAuditEventForRequest(t, logs, "enclave.request_end", requestLogID)
 					want := map[string]string{"idle_wait_ms": "0", "accept_to_start_ms": "35", "request_ms": "57", "elapsed_ms": "57"}
 					if i == 1 {
 						want = map[string]string{"idle_wait_ms": "1179", "accept_to_start_ms": "12", "request_ms": "34", "elapsed_ms": "1213"}
