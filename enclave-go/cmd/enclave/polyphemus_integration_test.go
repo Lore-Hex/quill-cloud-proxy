@@ -43,7 +43,7 @@ func TestServeOnePolyphemusResponses(t *testing.T) {
 				mu.Lock()
 				selectorTokens = len(messages) / 4
 				mu.Unlock()
-				if !strings.Contains(messages, "PRIVATE INPUT") || perf != .9 {
+				if !strings.Contains(messages, "PRIVATE INPUT") || perf != polyphemusXPerf {
 					t.Error("incorrect selection request")
 				}
 				if selectorSessionID != polyphemusSelectorSessionID("test-user-bearer", sessionID) || strings.Contains(messages, "private-conversation-id") {

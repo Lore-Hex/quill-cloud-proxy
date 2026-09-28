@@ -18,6 +18,13 @@ import (
 )
 
 const polyphemusModel = "trustedrouter/polyphemus-1.0"
+
+// polyphemusXPerf is Telluvian's quality bar: pick the cheapest model at or above this
+// level, where 1.0 is Telluvian's fixed reference (openai/gpt-6-astra's published level;
+// see telluvian.ai/docs/model-zoo). The probe may still choose a cheaper model when it
+// predicts comparable success on the request. At 0.9 it chose deepseek-v4-flash
+// (published 0.36) for every SimpleQA-Verified question tried and missed all four.
+const polyphemusXPerf = 1.0
 const polyphemusSelectRoute = "responses.polyphemus.select"
 
 type modelSelector interface {
@@ -239,7 +246,7 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	if selector == nil {
 		return fallback("model_selector_unavailable", 0)
 	}
-	selection, err := selector.Select(ctx, string(payload), .9, selectorSessionID)
+	selection, err := selector.Select(ctx, string(payload), polyphemusXPerf, selectorSessionID)
 	selectorElapsedMS := time.Since(started).Milliseconds()
 	if err != nil || selection == nil {
 		return fallback("model_selection_failed", 1)

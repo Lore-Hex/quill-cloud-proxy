@@ -136,7 +136,7 @@ func TestPolyphemusSelectionUsesSharedBillingAndPreservesRequest(t *testing.T) {
 		if gateway.admitted != 1 || gateway.settled != 0 {
 			t.Fatal("provider called before admission")
 		}
-		if !strings.Contains(messages, "PRIVATE TASK") || !strings.Contains(messages, "read_file") || perf != .9 {
+		if !strings.Contains(messages, "PRIVATE TASK") || !strings.Contains(messages, "read_file") || perf != 1.0 || polyphemusXPerf != 1.0 {
 			t.Fatal("lost selection context")
 		}
 		if sessionID != "" {
