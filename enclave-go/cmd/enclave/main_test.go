@@ -1913,7 +1913,12 @@ func TestRunFusionPanelRunsMembersInParallel(t *testing.T) {
 	defer server.Close()
 
 	trGateway := trustedrouter.New(server.URL, "internal-token", server.Client())
-	streamer := &fusionEchoLLM{delay: 200 * time.Millisecond}
+	rendezvous := newCallRendezvous(3)
+	streamer := &fusionEchoLLM{rendezvousByModel: map[string]*callRendezvous{
+		"model/a": rendezvous,
+		"model/b": rendezvous,
+		"model/c": rendezvous,
+	}}
 	req := &types.OpenAIChatRequest{
 		Model:    "trustedrouter/synth",
 		Messages: []types.OpenAIChatMessage{{Role: "user", Content: "compare"}},
@@ -1923,9 +1928,7 @@ func TestRunFusionPanelRunsMembersInParallel(t *testing.T) {
 		MaxCompletionTokens: 32,
 	}
 
-	started := time.Now()
 	panel, err := runFusionPanel(context.Background(), streamer, req, config, trGateway, nil, "bearer", "req_parallel", "log_parallel")
-	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("runFusionPanel: %v", err)
 	}
@@ -1937,8 +1940,8 @@ func TestRunFusionPanelRunsMembersInParallel(t *testing.T) {
 			t.Fatalf("panel[%d].Model = %q, want %q; panel=%#v", i, panel[i].Model, want, panel)
 		}
 	}
-	if elapsed >= 500*time.Millisecond {
-		t.Fatalf("panel took %s; members appear to be serial instead of parallel", elapsed)
+	if missed := rendezvous.missed(); missed != 0 {
+		t.Fatalf("%d panel call(s) gave up waiting for the other members to start; members appear to be serial instead of parallel", missed)
 	}
 }
 
@@ -2045,6 +2048,7 @@ func TestServeOneTrustedRouterMapReduceRunsPartsInParallelAndUsesStagePrompts(t 
 	trGateway, recorder, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
 
+	parts := newCallRendezvous(3)
 	streamer := &fusionEchoLLM{
 		textByModel: map[string]string{
 			"model/mapper":  `{"parts":[{"title":"Alpha","prompt":"Part Alpha"},{"title":"Beta","prompt":"Part Beta"},{"title":"Gamma","prompt":"Part Gamma"}]}`,
@@ -2055,14 +2059,13 @@ func TestServeOneTrustedRouterMapReduceRunsPartsInParallelAndUsesStagePrompts(t 
 			"Part Beta":  "beta result",
 			"Part Gamma": "gamma result",
 		},
-		delayByModel: map[string]time.Duration{"model/parallel": 200 * time.Millisecond},
+		rendezvousByModel: map[string]*callRendezvous{"model/parallel": parts},
 	}
 	serverConn, client := net.Pipe()
 	defer client.Close()
 	go serveOne(context.Background(), serverConn, auth.New(nil), streamer, nil, nil, trGateway, nil)
 
 	requestBody := []byte(`{"model":"trustedrouter/mapreduce","stream":false,"messages":[{"role":"user","content":"solve a multi-part problem"}],"tools":[{"type":"trustedrouter:mapreduce","parameters":{"mapper_models":["model/mapper"],"parallel_models":["model/parallel"],"reducer_models":["model/reducer"],"max_parts":3,"mapper_prompt":"split into exactly three parts","parallel_prompt":"answer with concise evidence","reducer_prompt":"merge without duplication","max_completion_tokens":64}}],"max_tokens":64}`)
-	started := time.Now()
 	if _, err := fmt.Fprintf(
 		client,
 		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer bearer\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
@@ -2080,12 +2083,11 @@ func TestServeOneTrustedRouterMapReduceRunsPartsInParallelAndUsesStagePrompts(t 
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
-	elapsed := time.Since(started)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d body=%s", resp.StatusCode, bodyBytes)
 	}
-	if elapsed >= 500*time.Millisecond {
-		t.Fatalf("mapreduce took %s; parallel parts appear to be serial", elapsed)
+	if missed := parts.missed(); missed != 0 {
+		t.Fatalf("%d part call(s) gave up waiting for the other parts to start; parallel parts appear to be serial", missed)
 	}
 	var response struct {
 		Model   string `json:"model"`
@@ -4254,10 +4256,11 @@ func TestRunAdvisorAutoInitialAdviceExplicit(t *testing.T) {
 func TestRunAdvisorAdviceRunsAdvisorsInParallel(t *testing.T) {
 	trGateway, _, cleanup := newFusionGatewayRecorder(t)
 	defer cleanup()
+	rendezvous := newCallRendezvous(2)
 	streamer := &advisorScriptedLLM{
-		delayByModel: map[string]time.Duration{
-			"advisor/slow-a": 90 * time.Millisecond,
-			"advisor/slow-b": 90 * time.Millisecond,
+		rendezvousByModel: map[string]*callRendezvous{
+			"advisor/slow-a": rendezvous,
+			"advisor/slow-b": rendezvous,
 		},
 	}
 	req := &types.OpenAIChatRequest{
@@ -4267,12 +4270,10 @@ func TestRunAdvisorAdviceRunsAdvisorsInParallel(t *testing.T) {
 	config := testAdvisorConfig(t)
 	config.AdvisorModels = []string{"advisor/slow-a", "advisor/slow-b"}
 
-	started := time.Now()
 	text, attempts := runAdvisorAdvice(context.Background(), streamer, req, config, req.Messages, trGateway, nil, "bearer", "req_advisor_parallel_advice", "log_advisor_parallel_advice", nil, nil, 0, nil)
-	elapsed := time.Since(started)
 
-	if elapsed >= 170*time.Millisecond {
-		t.Fatalf("advisors appear serial, elapsed=%s", elapsed)
+	if missed := rendezvous.missed(); missed != 0 {
+		t.Fatalf("advisors appear serial: %d advisor call(s) gave up waiting for the other advisor to start", missed)
 	}
 	if len(attempts) != 2 {
 		t.Fatalf("attempts = %d, want 2", len(attempts))
@@ -8797,6 +8798,47 @@ func newFusionGatewayRecorder(t *testing.T) (*trustedrouter.Client, *fusionGatew
 	return trustedrouter.New(server.URL, "internal-token", server.Client()), recorder, server.Close
 }
 
+// callRendezvous holds each scripted provider call until the expected number
+// of calls have all started, so a test proves the calls overlapped instead of
+// inferring it from elapsed time, which a loaded machine stretches. A serial
+// caller cannot start the next call while one is held, so the held call gives
+// up after a generous timeout and is counted as missed instead of hanging.
+type callRendezvous struct {
+	mu      sync.Mutex
+	pending int
+	all     chan struct{}
+	misses  int
+}
+
+func newCallRendezvous(calls int) *callRendezvous {
+	return &callRendezvous{pending: calls, all: make(chan struct{})}
+}
+
+func (r *callRendezvous) wait(ctx context.Context) error {
+	r.mu.Lock()
+	r.pending--
+	if r.pending == 0 {
+		close(r.all)
+	}
+	r.mu.Unlock()
+	select {
+	case <-r.all:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(5 * time.Second):
+		r.mu.Lock()
+		r.misses++
+		r.mu.Unlock()
+	}
+	return nil
+}
+
+func (r *callRendezvous) missed() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.misses
+}
+
 type fusionEchoLLM struct {
 	mu                        sync.Mutex
 	calls                     []fusionEchoCall
@@ -8808,8 +8850,7 @@ type fusionEchoLLM struct {
 	rescueTextByModel         map[string]string
 	overthinkModels           map[string]bool
 	thinking                  bool
-	delay                     time.Duration
-	delayByModel              map[string]time.Duration
+	rendezvousByModel         map[string]*callRendezvous
 }
 
 type libertyEndToEndLLM struct {
@@ -8849,6 +8890,7 @@ type advisorScriptedLLM struct {
 	cacheReadByModel       map[string]int
 	failModels             map[string]bool
 	delayByModel           map[string]time.Duration
+	rendezvousByModel      map[string]*callRendezvous
 }
 
 type subagentScriptedLLM struct {
@@ -8895,6 +8937,11 @@ func (s *advisorScriptedLLM) InvokeStreaming(
 	out io.Writer,
 	_ ...llm.InvokeOptions,
 ) error {
+	if rendezvous := s.rendezvousByModel[req.Model]; rendezvous != nil {
+		if err := rendezvous.wait(ctx); err != nil {
+			return err
+		}
+	}
 	if s.delayByModel != nil && s.delayByModel[req.Model] > 0 {
 		select {
 		case <-time.After(s.delayByModel[req.Model]):
@@ -9030,15 +9077,9 @@ func (f *fusionEchoLLM) InvokeStreaming(
 	if len(options) > 0 {
 		option = options[0]
 	}
-	delay := f.delay
-	if f.delayByModel != nil && f.delayByModel[req.Model] > 0 {
-		delay = f.delayByModel[req.Model]
-	}
-	if delay > 0 {
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return ctx.Err()
+	if rendezvous := f.rendezvousByModel[req.Model]; rendezvous != nil {
+		if err := rendezvous.wait(ctx); err != nil {
+			return err
 		}
 	}
 	f.mu.Lock()
