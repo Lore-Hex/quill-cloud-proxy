@@ -179,15 +179,31 @@ func TestNativeModelListIsPinned(t *testing.T) {
 		decide.ZevModelID: "fireworks,baseten", "z-ai/glm-5.2-fast": "fireworks,baseten",
 		decide.LevModelID: "sambanova,parasail,together", "meta-llama/llama-3.3-70b-instruct": "sambanova,parasail,together",
 	}
-	for name, behind := range map[string]string{
-		decide.GevModelID: "google/gemini-3.1-flash-lite", decide.DevModelID: "deepseek/deepseek-v4.1-flash",
-		decide.OevModelID: "openai/gpt-oss-20b", decide.GemmevModelID: "google/gemma-4-26b-a4b-it",
-		decide.MevModelID: "inception/mercury-2", decide.ZevModelID: "z-ai/glm-5.2-fast",
-		decide.LevModelID: "meta-llama/llama-3.3-70b-instruct",
+	// A name's reasoning setting and output format are part of what it
+	// promises (changing them ships a new version), so they are pinned
+	// literally, as its hosts are. Comparing a name only with the chat model
+	// behind it would let the two drift together.
+	type drive struct{ behind, effort, format string }
+	for name, want := range map[string]drive{
+		decide.TrevModelID:   {"", "low", decide.FormatPrompt},
+		decide.GevModelID:    {"google/gemini-3.1-flash-lite", "none", decide.FormatSchema},
+		decide.DevModelID:    {"deepseek/deepseek-v4.1-flash", "", decide.FormatPrompt},
+		decide.OevModelID:    {"openai/gpt-oss-20b", "low", decide.FormatSchema},
+		decide.GemmevModelID: {"google/gemma-4-26b-a4b-it", "", decide.FormatPrompt},
+		decide.MevModelID:    {"inception/mercury-2", "none", decide.FormatPrompt},
+		decide.ZevModelID:    {"z-ai/glm-5.2-fast", "none", decide.FormatPrompt},
+		decide.LevModelID:    {"meta-llama/llama-3.3-70b-instruct", "", decide.FormatPrompt},
 	} {
-		named, plain := decide.NativeModels[name], decide.NativeModels[behind]
+		named := decide.NativeModels[name]
+		if named.ReasoningEffort != want.effort || named.Format != want.format || named.ExtraTokens != 0 || named.Temperature == nil || *named.Temperature != 0 {
+			t.Errorf("%s is driven as %+v, want reasoning %q, format %q, temperature 0 and no extra tokens", name, named, want.effort, want.format)
+		}
+		if want.behind == "" {
+			continue
+		}
+		plain := decide.NativeModels[want.behind]
 		if named.ReasoningEffort != plain.ReasoningEffort || named.Format != plain.Format || named.ExtraTokens != plain.ExtraTokens || named.Temperature != plain.Temperature {
-			t.Errorf("%s is not driven like %s: %+v vs %+v", name, behind, named, plain)
+			t.Errorf("%s is not driven like %s: %+v vs %+v", name, want.behind, named, plain)
 		}
 	}
 	if len(decide.NativeModels) != len(want) {
