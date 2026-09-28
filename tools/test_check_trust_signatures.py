@@ -470,34 +470,37 @@ class TheRepository(unittest.TestCase):
                 )
                 self.assertEqual(parsed.returncode, 0)
 
-    def test_the_trust_workflows_install_a_cosign_patched_for_legacy_bundles(self) -> None:
+    def test_every_workflow_installs_a_cosign_patched_for_legacy_bundles(self) -> None:
         # GHSA-fx35-mq7g-6g98: cosign up to 2.6.4, and 3.x up to 3.1.2, skips the
         # identity check for a legacy bundle holding a bare public key; fixed in
-        # 2.6.5 and 3.1.3. These five workflows sign or verify the legacy record
-        # bundles, so the cosign release each asks the installer for must be
-        # patched. (The installer's own bootstrap cosign checks that release's
-        # detached signature with a pinned key, not a bundle.)
-        # deploy-enclave-gcp.yml verifies only the Stage D policy, with
-        # --new-bundle-format, which the advisory does not affect; its pin moves
-        # with the next enclave release, since editing it starts a deploy.
+        # 2.6.5 and 3.1.3. The cosign release every workflow asks the installer
+        # for must be patched. (The installer's own bootstrap cosign checks that
+        # release's detached signature with a pinned key, not a bundle.)
+        installers = {}
+        workflows = REPO / ".github/workflows"
+        for path in sorted([*workflows.glob("*.yml"), *workflows.glob("*.yaml")]):
+            workflow = yaml.safe_load(path.read_text())
+            installers[path.name] = [
+                str((step.get("with") or {}).get("cosign-release", ""))
+                for job in workflow["jobs"].values()
+                for step in job.get("steps", [])
+                # GitHub resolves action names case-insensitively.
+                if str(step.get("uses", "")).lower().startswith("sigstore/cosign-installer")
+            ]
+        # The workflows that sign or verify bundles each install cosign.
         for name in (
             "publish-trust-gcp.yml",
             "publish-trust-aws.yml",
             "publish-trust-azure.yml",
             "publish-trust-page.yml",
             "publish-trust-s3.yml",
+            "deploy-enclave-gcp.yml",
         ):
-            workflow = yaml.safe_load((REPO / ".github/workflows" / name).read_text())
-            releases = [
-                str(step.get("with", {}).get("cosign-release", ""))
-                for job in workflow["jobs"].values()
-                for step in job.get("steps", [])
-                # GitHub resolves action names case-insensitively.
-                if str(step.get("uses", "")).lower().startswith("sigstore/cosign-installer")
-            ]
             with self.subTest(workflow=name):
-                self.assertTrue(releases)
-                for release in releases:
+                self.assertTrue(installers[name])
+        for name, releases in installers.items():
+            for release in releases:
+                with self.subTest(workflow=name, release=release):
                     self.assertTrue(_patched(release), f"{name} installs cosign {release!r}")
 
     def test_the_patched_version_rule(self) -> None:

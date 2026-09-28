@@ -188,8 +188,8 @@ class MirrorIndependence(unittest.TestCase):
             _step(pages, "python3 tools/check-trust-signatures.py trust-page"),
             _step(pages, "actions/upload-pages-artifact"),
         )
-        # Those steps always run. The cosign version the trust workflows install
-        # is checked in tools/test_check_trust_signatures.py.
+        # Those steps always run. The cosign version every workflow installs is
+        # checked in tools/test_check_trust_signatures.py.
         for workflow, command in (
             (publisher, "sigstore/cosign-installer"),
             (publisher, "bash tools/publish-trust-s3.sh"),

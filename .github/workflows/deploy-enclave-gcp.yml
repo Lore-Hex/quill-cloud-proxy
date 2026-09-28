@@ -200,7 +200,7 @@ jobs:
 
       - uses: sigstore/cosign-installer@v3
         with:
-          cosign-release: v2.4.1
+          cosign-release: v2.6.5
 
       - name: Verify GCP enclave MIG inventory
         # tools/gcp-enclave-migs.txt lists the regions that serve: every MIG in
@@ -509,7 +509,7 @@ jobs:
           ref: main
       - uses: sigstore/cosign-installer@v3
         with:
-          cosign-release: v2.4.1
+          cosign-release: v2.6.5
       - name: Wait for exact signed public transitional Stage D policy
         env:
           EXPECTED_POLICY_SHA256: ${{ needs.build-and-release.outputs.stage_d_policy_sha256 }}
@@ -1113,7 +1113,7 @@ jobs:
           ref: main
       - uses: sigstore/cosign-installer@v3
         with:
-          cosign-release: v2.4.1
+          cosign-release: v2.6.5
       - name: Wait for exact signed public final Stage D policy
         env:
           EXPECTED_POLICY_SHA256: ${{ needs.finalize-trust-artifacts.outputs.stage_d_policy_sha256 }}
