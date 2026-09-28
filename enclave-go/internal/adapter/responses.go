@@ -100,6 +100,13 @@ var supportedResponsesInputTokenFields = map[string]struct{}{
 func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]struct{}) error {
 	// `polyphemus` is judged by PRESENCE, not presentNonNull: `null` and `{}` must not
 	// slip past an endpoint that does not accept it and then decode into options.
+	for key := range raw {
+		// encoding/json matches keys case-insensitively; a variant would be a second,
+		// unvalidated spelling of the same field.
+		if key != "polyphemus" && strings.EqualFold(key, "polyphemus") {
+			return unknownRequestParameter(key)
+		}
+	}
 	if value, ok := raw["polyphemus"]; ok {
 		if _, accepted := allowed["polyphemus"]; !accepted {
 			return unknownRequestParameter("polyphemus")
@@ -2485,4 +2492,34 @@ func validatePolyphemusOptions(req *types.OpenAIResponsesRequest) error {
 	default:
 		return &AdapterError{Status: 400, Message: "polyphemus.model_zoo must be comma-separated model patterns", Context: "polyphemus." + field}
 	}
+}
+
+// PolyphemusOptionsFromRaw builds the options from the same raw map that
+// validateResponsesFields checked, so validation and use cannot disagree about
+// duplicate keys, key case or null. The struct field is never JSON-decoded.
+func PolyphemusOptionsFromRaw(raw map[string]json.RawMessage) (*types.PolyphemusOptions, error) {
+	value, ok := raw["polyphemus"]
+	if !ok {
+		return nil, nil
+	}
+	if err := validatePolyphemusFields(value); err != nil {
+		return nil, err
+	}
+	var members map[string]json.RawMessage
+	_ = json.Unmarshal(value, &members)
+	options := &types.PolyphemusOptions{}
+	if field, ok := members["x_perf"]; ok {
+		var text string
+		if json.Unmarshal(field, &text) == nil {
+			options.XPerf = text
+		} else {
+			var number float64
+			_ = json.Unmarshal(field, &number)
+			options.XPerf = number
+		}
+	}
+	if field, ok := members["model_zoo"]; ok {
+		_ = json.Unmarshal(field, &options.ModelZoo)
+	}
+	return options, nil
 }

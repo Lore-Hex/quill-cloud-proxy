@@ -398,6 +398,12 @@ func TestPolyphemusControlsAreBoundIntoTheRequestFingerprint(t *testing.T) {
 	if fingerprint(nil) == fingerprint(&types.PolyphemusOptions{ModelZoo: "openai/*"}) {
 		t.Fatal("changing model_zoo did not change the request fingerprint")
 	}
+	if fingerprint(&types.PolyphemusOptions{XPerf: 0.5}) == fingerprint(&types.PolyphemusOptions{XPerf: 0.6}) {
+		t.Fatal("two different x_perf values share a fingerprint")
+	}
+	if fingerprint(&types.PolyphemusOptions{ModelZoo: "openai/*"}) == fingerprint(&types.PolyphemusOptions{ModelZoo: "anthropic/*"}) {
+		t.Fatal("two different model_zoo values share a fingerprint")
+	}
 }
 
 func TestPolyphemusOptionsGoThroughTheRealResponsesParser(t *testing.T) {

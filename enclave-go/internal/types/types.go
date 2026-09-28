@@ -292,8 +292,9 @@ type OpenAIChatRequest struct {
 	SessionID           string              `json:"session_id,omitempty"`
 	Tags                *RequestTags        `json:"tags,omitempty"`
 	// Polyphemus carries the caller's selector controls. It is consumed by model
-	// selection and cleared before the chosen model is called.
-	Polyphemus       *PolyphemusOptions   `json:"polyphemus,omitempty"`
+	// selection and cleared before the chosen model is called. Never JSON-decoded:
+	// adapter.PolyphemusOptionsFromRaw builds it from the validated raw object.
+	Polyphemus       *PolyphemusOptions   `json:"-"`
 	ResponseFormat   map[string]any       `json:"response_format,omitempty"`
 	Tools            []any                `json:"tools,omitempty"`
 	Plugins          []any                `json:"plugins,omitempty"`
@@ -493,7 +494,7 @@ type OpenAIResponsesRequest struct {
 	User                 string             `json:"user,omitempty"`
 	SessionID            string             `json:"session_id,omitempty"`
 	Tags                 *RequestTags       `json:"tags,omitempty"`
-	Polyphemus           *PolyphemusOptions `json:"polyphemus,omitempty"`
+	Polyphemus           *PolyphemusOptions `json:"-"` // see OpenAIChatRequest.Polyphemus
 	Store                *bool              `json:"store,omitempty"`
 	Background           *bool              `json:"background,omitempty"`
 	Conversation         any                `json:"conversation,omitempty"`

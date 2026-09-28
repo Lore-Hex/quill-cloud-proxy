@@ -1355,6 +1355,11 @@ func parseResponsesRequest(body []byte) (*types.OpenAIResponsesRequest, error) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
+	options, err := adapter.PolyphemusOptionsFromRaw(raw)
+	if err != nil {
+		return nil, err
+	}
+	req.Polyphemus = options
 	return &req, nil
 }
 

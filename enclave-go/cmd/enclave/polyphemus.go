@@ -198,6 +198,15 @@ func preparePolyphemus(ctx context.Context, req *types.OpenAIChatRequest, gatewa
 	}
 	mac := hmac.New(sha256.New, []byte(bearer))
 	_, _ = mac.Write(canonical)
+	if req.Polyphemus != nil {
+		// The field is never serialized, so the canonical JSON above omits it; bind it here.
+		options, _ := json.Marshal(struct {
+			XPerf    any    `json:"x_perf,omitempty"`
+			ModelZoo string `json:"model_zoo,omitempty"`
+		}{req.Polyphemus.XPerf, req.Polyphemus.ModelZoo})
+		_, _ = mac.Write([]byte("\x00polyphemus\x00"))
+		_, _ = mac.Write(options)
+	}
 	selectReq.RequestFingerprint = hex.EncodeToString(mac.Sum(nil))
 	if selectReq.Provider == nil {
 		selectReq.Provider = &types.ProviderRouting{}
