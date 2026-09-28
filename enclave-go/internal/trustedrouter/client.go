@@ -443,6 +443,14 @@ func (c *Client) primaryBaseURL() string {
 }
 
 type Authorization struct {
+	// Optional settlement metadata is parsed only. No capability, including
+	// "async", activates a new request path in this PR. Preserve future snapshots
+	// as raw JSON so an unknown contract cannot break synchronous authorization.
+	GenerationID                          string          `json:"generation_id,omitempty"`
+	SettlementMode                        string          `json:"settlement_mode,omitempty"`
+	BillingSnapshot                       json.RawMessage `json:"billing_snapshot,omitempty"`
+	SettlementTicket                      string          `json:"settlement_ticket,omitempty"`
+	SettlementStatusURL                   string          `json:"settlement_status_url,omitempty"`
 	cacheAffinityKey                      string
 	cacheAffinityExplicit                 bool
 	InferenceLocation                     *InferenceLocationMetadata         `json:"inference_location,omitempty"`
