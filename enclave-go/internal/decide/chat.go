@@ -142,7 +142,8 @@ var DevProviders = []string{
 // A NAME and the chat model behind it are driven identically: the name is a
 // convenience, and the control plane resolves it to the concrete model and
 // enforces its host. One definition serves both, so they cannot drift apart.
-// (NativeChatRequest copies the host list for every request it builds.)
+// (NativeChatRequest copies the host list for every request it builds.) The
+// one exception is gemmev-1.0's extra host while it moves, below.
 //
 // The ids here must match NATIVE_DECISION_MODEL_PROVIDERS in the control
 // plane's catalog_data.py, which is what /v1/models advertises.
@@ -150,16 +151,18 @@ var (
 	geminiFlashLite = NativeModel{Providers: []string{"google-ai-studio"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatSchema}
 	deepSeekFlash   = NativeModel{Providers: DevProviders, Temperature: &zeroTemperature, Format: FormatPrompt}
 	gptOSS20B       = NativeModel{Providers: []string{"deepinfra"}, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatSchema}
-	// DeepInfra is listed only for the move: until the control plane's catalog
-	// moves gemmev-1.0 too, authorize's chain for the name is DeepInfra alone,
-	// still serving Gemma 4 E4B (deprecated there on 2026-10-01), and this list
-	// must overlap it. Authorize keeps only its own chain's hosts, in its own
-	// order, so the extra host never widens the new chain. Remove it once
-	// catalog_data.py's chain (W&B, nextbit, io.net) is live.
-	gemma426BA4B = NativeModel{Providers: []string{"wandb", "nextbit", "io-net", "deepinfra"}, Temperature: &zeroTemperature, Format: FormatPrompt}
-	mercury2     = NativeModel{Providers: []string{"inception"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
-	glm52Fast    = NativeModel{Providers: []string{"fireworks", "baseten"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
-	llama33      = NativeModel{Providers: []string{"sambanova", "parasail", "together"}, Temperature: &zeroTemperature, Format: FormatPrompt}
+	gemma426BA4B    = NativeModel{Providers: []string{"wandb", "nextbit", "io-net"}, Temperature: &zeroTemperature, Format: FormatPrompt}
+	// gemmev-1.0 is driven as gemma426BA4B, plus DeepInfra for the move only.
+	// Until a cloud's control plane moves the name too, its chain there is
+	// DeepInfra alone, still serving Gemma 4 E4B (deprecated there on
+	// 2026-10-01), and this list must overlap it. Authorize keeps only the
+	// name's own chain, in its own order, so DeepInfra never widens the new one.
+	// The bare model does not get it: nothing but this table limits ITS hosts.
+	// Remove once every cloud's control plane has catalog_data.py's chain.
+	gemmevDuringMove = NativeModel{Providers: []string{"wandb", "nextbit", "io-net", "deepinfra"}, Temperature: gemma426BA4B.Temperature, Format: gemma426BA4B.Format}
+	mercury2         = NativeModel{Providers: []string{"inception"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
+	glm52Fast        = NativeModel{Providers: []string{"fireworks", "baseten"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
+	llama33          = NativeModel{Providers: []string{"sambanova", "parasail", "together"}, Temperature: &zeroTemperature, Format: FormatPrompt}
 )
 
 var NativeModels = map[string]NativeModel{
@@ -167,7 +170,7 @@ var NativeModels = map[string]NativeModel{
 	GevModelID:  geminiFlashLite, "google/gemini-3.1-flash-lite": geminiFlashLite,
 	DevModelID: deepSeekFlash, "deepseek/deepseek-v4.1-flash": deepSeekFlash,
 	OevModelID: gptOSS20B, "openai/gpt-oss-20b": gptOSS20B,
-	GemmevModelID: gemma426BA4B, "google/gemma-4-26b-a4b-it": gemma426BA4B,
+	GemmevModelID: gemmevDuringMove, "google/gemma-4-26b-a4b-it": gemma426BA4B,
 	MevModelID: mercury2, "inception/mercury-2": mercury2,
 	ZevModelID: glm52Fast, "z-ai/glm-5.2-fast": glm52Fast,
 	LevModelID: llama33, "meta-llama/llama-3.3-70b-instruct": llama33,

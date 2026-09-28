@@ -167,12 +167,13 @@ func TestNativeModelListIsPinned(t *testing.T) {
 		decide.TrevModelID:             "cerebras,sambanova,fireworks,together",
 		"google/gemini-3.1-flash-lite": "google-ai-studio",
 		"openai/gpt-oss-20b":           "deepinfra",
-		"google/gemma-4-26b-a4b-it":    "wandb,nextbit,io-net,deepinfra",
+		"google/gemma-4-26b-a4b-it":    "wandb,nextbit,io-net",
 		"deepseek/deepseek-v4.1-flash": "wafer,deepinfra,wandb",
 		// Each name is driven exactly as the chat model behind it.
-		decide.GevModelID:    "google-ai-studio",
-		decide.DevModelID:    "wafer,deepinfra,wandb",
-		decide.OevModelID:    "deepinfra",
+		decide.GevModelID: "google-ai-studio",
+		decide.DevModelID: "wafer,deepinfra,wandb",
+		decide.OevModelID: "deepinfra",
+		// Plus DeepInfra while the name moves off Gemma 4 E4B (chat.go).
 		decide.GemmevModelID: "wandb,nextbit,io-net,deepinfra",
 		// The three fast ones, and the chat models behind them.
 		decide.MevModelID: "inception", "inception/mercury-2": "inception",
