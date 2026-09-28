@@ -78,14 +78,14 @@ var liveKeyEnv = map[string]string{
 var liveUpstream = map[string]string{
 	"google/gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
 	"openai/gpt-oss-20b":           "openai/gpt-oss-20b",
-	"google/gemma-4-26b-a4b-it":    "google/gemma-4-26B-A4B-it",
+	"google/gemma-4-26b-a4b-it":    "gemma4:26b-a4b",
 	"deepseek/deepseek-v4.1-flash": "deepseek-ai/DeepSeek-V4.1-Flash",
 	decide.TrevModelID:             "gpt-oss-120b",
 	// A name calls the same upstream as the chat model behind it.
 	decide.GevModelID:                   "gemini-3.1-flash-lite",
 	decide.DevModelID:                   "deepseek-ai/DeepSeek-V4.1-Flash",
 	decide.OevModelID:                   "openai/gpt-oss-20b",
-	decide.GemmevModelID:                "google/gemma-4-26B-A4B-it",
+	decide.GemmevModelID:                "gemma4:26b-a4b",
 	"inception/mercury-2":               "mercury-2",
 	"z-ai/glm-5.2-fast":                 "accounts/fireworks/routers/glm-5p2-fast",
 	"meta-llama/llama-3.3-70b-instruct": "Meta-Llama-3.3-70B-Instruct",
