@@ -1978,6 +1978,9 @@ func runFusionCallValidatedObservedAttempt(
 	return runAuthorizedFusionCallAttempt(ctx, br, req, trGateway, secretCache, bearer, routeType, idempotencyKey, requestLogID, originalInput, broadcastContent, validateBeforeSettle, useLongLastCandidateBudget, observer, streamed, allowOverthinkingRescue, invokeTimeout, fusionCallAuthorization{authz, options, requestStarted})
 }
 
+// fusionProviderDrainTimeout bounds the wait for a canceled provider goroutine.
+var fusionProviderDrainTimeout = 5 * time.Second
+
 func runAuthorizedFusionCallAttempt(
 	ctx context.Context,
 	br llm.Client,
@@ -2039,7 +2042,11 @@ func runAuthorizedFusionCallAttempt(
 		})
 		collectObserver = guard.Observe
 	}
-	go invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
+	providerDone := make(chan struct{})
+	go func() {
+		defer close(providerDone)
+		invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
+	}()
 	result, err := adapter.CollectAnthropicTextRetainingUsage(pr, collectObserver)
 	// The collector can stop before the provider (including at message_stop).
 	// Release a blocked Write before canceling the remaining upstream work.
@@ -2049,6 +2056,12 @@ func runAuthorizedFusionCallAttempt(
 	}
 	_ = pr.CloseWithError(closeErr)
 	cancelInvoke()
+	// Let the provider goroutine finish (it honours the cancel) so no attempt
+	// outlives the call that owns it; bounded in case a provider ignores ctx.
+	select {
+	case <-providerDone:
+	case <-time.After(fusionProviderDrainTimeout):
+	}
 	if guard != nil && guard.Tripped() {
 		refundFusionCall(ctx, trGateway, authz, 502, "fusion_overthinking_budget", requestStarted, req.Metadata)
 		if overthinking.allowRescue {
