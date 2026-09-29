@@ -2039,7 +2039,11 @@ func runAuthorizedFusionCallAttempt(
 		})
 		collectObserver = guard.Observe
 	}
-	go invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
+	providerDone := make(chan struct{})
+	go func() {
+		defer close(providerDone)
+		invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
+	}()
 	result, err := adapter.CollectAnthropicTextRetainingUsage(pr, collectObserver)
 	// The collector can stop before the provider (including at message_stop).
 	// Release a blocked Write before canceling the remaining upstream work.
@@ -2049,6 +2053,9 @@ func runAuthorizedFusionCallAttempt(
 	}
 	_ = pr.CloseWithError(closeErr)
 	cancelInvoke()
+	// Cancellation is only a signal. Join after unblocking the writer so all
+	// attempt accounting and logs finish before validation, rescue, or return.
+	<-providerDone
 	if guard != nil && guard.Tripped() {
 		refundFusionCall(ctx, trGateway, authz, 502, "fusion_overthinking_budget", requestStarted, req.Metadata)
 		if overthinking.allowRescue {

@@ -343,24 +343,26 @@ func TestNativeDecideOptionsReachTheModelAndAnyChatModelWorks(t *testing.T) {
 	}
 }
 
-// captureStderr runs fn and returns everything it wrote to os.Stderr.
+// captureStderr is for calls that finish their provider invocations before returning.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
+	return captureProviderStreamStderr(t, func() *providerInvocation {
+		fn()
+		return nil
+	})
+}
+
+func TestCaptureStderrKeepsProcessPointerStable(t *testing.T) {
 	original := os.Stderr
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
+	logs := captureStderr(t, func() {
+		if os.Stderr != original {
+			t.Error("capture replaced os.Stderr while other providers may still be logging")
+		}
+		_, _ = io.WriteString(os.Stderr, "stable stderr pointer\n")
+	})
+	if os.Stderr != original || !strings.Contains(logs, "stable stderr pointer\n") {
+		t.Fatalf("stderr capture/restore failed: %q", logs)
 	}
-	os.Stderr = writer
-	done := make(chan string)
-	go func() {
-		raw, _ := io.ReadAll(reader)
-		done <- string(raw)
-	}()
-	fn()
-	os.Stderr = original
-	_ = writer.Close()
-	return <-done
 }
 
 func TestDecideLogsNeverCarryRequestContent(t *testing.T) {
@@ -377,6 +379,15 @@ func TestDecideLogsNeverCarryRequestContent(t *testing.T) {
 	})
 	if status != 502 {
 		t.Fatalf("status %d, want 502", status)
+	}
+	// Include each invocation's final logs in the privacy check, not just the
+	// synchronous verification logs. No attempt may outlive the capture.
+	for _, id := range []string{"auth_1", "auth_2"} {
+		for _, event := range []string{"enclave.invoke_attempt", "enclave.invoke_complete"} {
+			if want := fmt.Sprintf(`%s request_log_id="log-1" request_id=%q`, event, id); strings.Count(stderr, want) != 1 {
+				t.Errorf("stderr must contain exactly one %s", want)
+			}
+		}
 	}
 	for _, leaked := range []string{"PRIVATE-STATE", "SECRET-MODEL-WORDS", "SECRET-INVENTED-OPTION", "Is a refund requested", "billing", "charges"} {
 		if strings.Contains(stderr, leaked) {
