@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -284,22 +287,135 @@ func parseAuditEvent(t *testing.T, logs, event string) map[string]string {
 		if event == "enclave.request_end" && len(line) >= 2048 {
 			t.Fatalf("oversized request_end: %d bytes", len(line))
 		}
-		fields := map[string]string{}
-		for _, match := range auditFieldPattern.FindAllStringSubmatch(line, -1) {
-			value := match[2]
-			if strings.HasPrefix(value, `"`) {
-				var err error
-				value, err = strconv.Unquote(value)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			fields[match[1]] = value
+		fields, err := parseAuditFields(line)
+		if err != nil {
+			t.Fatal(err)
 		}
 		return fields
 	}
 	t.Fatalf("missing %s in %s", event, logs)
 	return nil
+}
+
+func parseAuditFields(line string) (map[string]string, error) {
+	fields := map[string]string{}
+	for _, match := range auditFieldPattern.FindAllStringSubmatch(line, -1) {
+		value := match[2]
+		if strings.HasPrefix(value, `"`) {
+			var err error
+			value, err = strconv.Unquote(value)
+			if err != nil {
+				return nil, err
+			}
+		}
+		fields[match[1]] = value
+	}
+	return fields, nil
+}
+
+func selectAuditEventForRequest(logs, event, requestLogID string) (fields map[string]string, matches int) {
+	if requestLogID == "" {
+		return nil, 0
+	}
+	for _, line := range strings.Split(logs, "\n") {
+		if !strings.HasPrefix(line, event+" ") {
+			continue
+		}
+		parsed, err := parseAuditFields(line)
+		if err == nil && parsed["request_log_id"] == requestLogID {
+			fields = parsed
+			matches++
+		}
+	}
+	return fields, matches
+}
+
+func parseAuditEventForRequest(t *testing.T, logs, event, requestLogID string) map[string]string {
+	t.Helper()
+	if requestLogID == "" {
+		t.Fatal("cannot select audit event with an empty request_log_id")
+	}
+	// Preserve the existing size and field-parsing diagnostics for every event
+	// line, including foreign requests, before selecting this request's event.
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.HasPrefix(line, event+" ") {
+			parseAuditEvent(t, line, event)
+		}
+	}
+	selected, matches := selectAuditEventForRequest(logs, event, requestLogID)
+	if matches != 1 {
+		t.Fatalf("expected exactly one %s with request_log_id=%q; found %d in capture:\n%s", event, requestLogID, matches, logs)
+	}
+	return selected
+}
+
+func TestSelectAuditEventForRequest(t *testing.T) {
+	const own = `enclave.request_end request_log_id="own-request" idle_wait_ms=1179 status=200`
+	const foreign = `enclave.request_end request_log_id="foreign-request" idle_wait_ms=0 status=500`
+	const otherEvent = `enclave.request_accept request_log_id="own-request"`
+	wantOwn := map[string]string{"request_log_id": "own-request", "idle_wait_ms": "1179", "status": "200"}
+	for _, tc := range []struct {
+		name, logs, requestLogID string
+		wantFields               map[string]string
+		wantMatches              int
+	}{
+		{name: "zero", logs: foreign + "\n" + otherEvent, requestLogID: "own-request"},
+		{name: "one", logs: own, requestLogID: "own-request", wantFields: wantOwn, wantMatches: 1},
+		{name: "duplicate", logs: own + "\n" + own, requestLogID: "own-request", wantFields: wantOwn, wantMatches: 2},
+		{name: "own_first", logs: own + "\n" + foreign + "\n" + otherEvent, requestLogID: "own-request", wantFields: wantOwn, wantMatches: 1},
+		{name: "own_middle", logs: foreign + "\n" + own + "\n" + otherEvent, requestLogID: "own-request", wantFields: wantOwn, wantMatches: 1},
+		{name: "own_last", logs: foreign + "\n" + otherEvent + "\n" + own, requestLogID: "own-request", wantFields: wantOwn, wantMatches: 1},
+		{name: "empty_id", logs: own + "\n" + `enclave.request_end request_log_id="" status=200` + "\n" + `enclave.request_end status=200`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fields, matches := selectAuditEventForRequest(tc.logs, "enclave.request_end", tc.requestLogID)
+			if (fields == nil) != (tc.wantFields == nil) || !maps.Equal(fields, tc.wantFields) || matches != tc.wantMatches {
+				t.Fatalf("selection = (%v, %d), want (%v, %d)", fields, matches, tc.wantFields, tc.wantMatches)
+			}
+		})
+	}
+}
+
+func TestParseAuditEventForRequestRejectsDuplicate(t *testing.T) {
+	// Fatal exits the test goroutine, so exercise the real wrapper in a child
+	// test process and assert both its failure and its diagnostic.
+	const childEnv = "QUILL_TEST_DUPLICATE_AUDIT_EVENT"
+	if os.Getenv(childEnv) == "1" {
+		const line = `enclave.request_end request_log_id="own-request" status=200`
+		parseAuditEventForRequest(t, line+"\n"+line, "enclave.request_end", "own-request")
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestParseAuditEventForRequestRejectsDuplicate$", "-test.count=1")
+	cmd.Env = append(os.Environ(), childEnv+"=1")
+	output, err := cmd.CombinedOutput()
+	if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 1 {
+		t.Fatalf("duplicate audit event: expected child test failure, got %v:\n%s", err, output)
+	}
+	const want = `expected exactly one enclave.request_end with request_log_id="own-request"; found 2 in capture:`
+	if !strings.Contains(string(output), want) {
+		t.Fatalf("duplicate audit event: missing diagnostic %q:\n%s", want, output)
+	}
+}
+
+func TestParseAuditEventForRequestIgnoresForeignLines(t *testing.T) {
+	logs := captureProviderStreamStderr(t, func() *providerInvocation {
+		_, err := io.WriteString(os.Stderr, "enclave.request_end request_log_id=\"foreign-request\" idle_wait_ms=0 status=500\n"+
+			"enclave.request_accept request_log_id=\"own-request\"\n"+
+			"enclave.request_end request_log_id=\"own-request\" idle_wait_ms=1179 status=200\n"+
+			"enclave.request_end request_log_id=\"another-request\" idle_wait_ms=23 status=400\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return nil
+	})
+	end := parseAuditEventForRequest(t, logs, "enclave.request_end", "own-request")
+	if end["request_log_id"] != "own-request" || end["idle_wait_ms"] != "1179" || end["status"] != "200" {
+		t.Fatalf("selected foreign request_end: %v", end)
+	}
 }
 
 func TestRequestEndPhaseTimings(t *testing.T) {
@@ -343,10 +459,20 @@ func TestRequestEndPhaseTimings(t *testing.T) {
 			raw := fmt.Sprintf("POST /v1/%s HTTP/1.1\r\nAuthorization: Bearer private-bearer\r\nIdempotency-Key: phase-test\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", tc.route, len(tc.body), tc.body)
 			conn := &phaseAuditConn{newScriptedConn(raw, nil), clock, phases}
 			logs := captureProviderStreamStderr(t, func() *providerInvocation {
+				// A foreign request can finish inside this process-wide stderr capture.
+				if _, err := io.WriteString(os.Stderr, "enclave.request_end request_log_id=\"foreign-phase-request\" status=200 idle_wait_ms=0 request_ms=52 accept_to_start_ms=8 authorize_ms=10 authorize_attempts=1 route_ms=0 upstream_ms=16 upstream_partial=0 ttfb_ms=16 retry_wait_ms=0 settle_ms=10 receipt_ms=8 elapsed_ms=52 settle_outcome=\"ok\" cp_endpoint=\"trustedrouter.com\"\n"); err != nil {
+					t.Fatal(err)
+				}
 				serveOne(ctx, conn, registryForBearer("private-bearer"), &phaseAuditLLM{clock: clock}, nil, nil, gateway, nil)
 				return nil // successful provider EOF follows invoke_complete
 			})
-			end := parseAuditEvent(t, logs, "enclave.request_end")
+			// responseStatsConn clears its requestID when injecting the response headers.
+			response, _ := readRawHTTPResponse(t, conn.writes.Bytes())
+			requestLogID := response.Header.Get("x-request-id")
+			if requestLogID == "" {
+				t.Fatal("response missing x-request-id")
+			}
+			end := parseAuditEventForRequest(t, logs, "enclave.request_end", requestLogID)
 			nums := map[string]int64{}
 			for _, key := range []string{"idle_wait_ms", "request_ms", "accept_to_start_ms", "authorize_ms", "authorize_attempts", "route_ms", "upstream_ms", "upstream_partial", "ttfb_ms", "retry_wait_ms", "settle_ms", "receipt_ms", "elapsed_ms"} {
 				value, exists := end[key]
@@ -399,7 +525,6 @@ func TestRequestEndPhaseTimings(t *testing.T) {
 					t.Fatalf("secret in audit log: %s", secret)
 				}
 			}
-			response, _ := readRawHTTPResponse(t, conn.writes.Bytes())
 			wantStatus := 200
 			if tc.settle == "failed" {
 				wantStatus = 502
@@ -412,19 +537,52 @@ func TestRequestEndPhaseTimings(t *testing.T) {
 }
 
 func TestRequestEndPhaseTimingsRejectedBeforeInvoke(t *testing.T) {
-	conn := newScriptedConn("POST /v1/chat/completions HTTP/1.1\r\nContent-Length: 1\r\nConnection: close\r\n\r\n{", nil)
-	logs := captureProviderStreamStderr(t, func() *providerInvocation {
-		serveOne(context.Background(), conn, auth.New(nil), &fakeStreamingLLM{}, nil, nil, nil, nil)
-		return nil
-	})
-	end := parseAuditEvent(t, logs, "enclave.request_end")
-	for _, key := range []string{"authorize_ms", "authorize_attempts", "route_ms", "upstream_ms", "ttfb_ms", "retry_wait_ms", "settle_ms", "receipt_ms"} {
-		if end[key] != "0" {
-			t.Fatalf("missing phase %s=%q", key, end[key])
-		}
-	}
-	if end["settle_outcome"] != "skipped" || end["cp_endpoint"] != "" {
-		t.Fatalf("missing phases: %v", end)
+	for _, tc := range []struct {
+		name       string
+		bearer     string
+		registry   *auth.Registry
+		wantStatus int
+	}{
+		{name: "unauthenticated", registry: auth.New(nil), wantStatus: http.StatusUnauthorized},
+		{name: "malformed_body", bearer: "private-bearer", registry: registryForBearer("private-bearer"), wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &phaseAuditClock{now: time.Unix(1000, 0)}
+			ctx := requesttiming.WithTimer(context.Background(), requesttiming.New(clock.Now(), clock.Now))
+			var authorization string
+			if tc.bearer != "" {
+				authorization = "Authorization: Bearer " + tc.bearer + "\r\n"
+			}
+			conn := newScriptedConn("POST /v1/chat/completions HTTP/1.1\r\n"+authorization+"Content-Length: 1\r\nConnection: close\r\n\r\n{", nil)
+			logs := captureProviderStreamStderr(t, func() *providerInvocation {
+				// Make first-match selection fail even without a concurrent foreign writer.
+				if _, err := fmt.Fprintf(os.Stderr, "enclave.request_end request_log_id=%q status=%d authorize_ms=10 authorize_attempts=1 route_ms=0 upstream_ms=0 ttfb_ms=0 retry_wait_ms=0 settle_ms=0 receipt_ms=0 settle_outcome=%q cp_endpoint=%q\n", "foreign-rejected-"+tc.name, tc.wantStatus, "skipped", "trustedrouter.com"); err != nil {
+					t.Fatal(err)
+				}
+				serveOne(ctx, conn, tc.registry, &fakeStreamingLLM{}, nil, nil, nil, nil)
+				return nil
+			})
+			response, _ := readRawHTTPResponse(t, conn.writes.Bytes())
+			if response.StatusCode != tc.wantStatus {
+				t.Fatalf("response=%d want %d", response.StatusCode, tc.wantStatus)
+			}
+			requestLogID := response.Header.Get("x-request-id")
+			if requestLogID == "" {
+				t.Fatal("rejected response missing x-request-id")
+			}
+			end := parseAuditEventForRequest(t, logs, "enclave.request_end", requestLogID)
+			if end["status"] != strconv.Itoa(tc.wantStatus) {
+				t.Fatalf("request_end status=%q want %d", end["status"], tc.wantStatus)
+			}
+			for _, key := range []string{"authorize_ms", "authorize_attempts", "idle_wait_ms", "request_ms", "accept_to_start_ms", "route_ms", "upstream_ms", "upstream_partial", "ttfb_ms", "retry_wait_ms", "settle_ms", "receipt_ms"} {
+				if end[key] != "0" {
+					t.Fatalf("missing phase %s=%q", key, end[key])
+				}
+			}
+			if end["settle_outcome"] != "skipped" || end["cp_endpoint"] != "" {
+				t.Fatalf("missing phases: %v", end)
+			}
+		})
 	}
 }
 

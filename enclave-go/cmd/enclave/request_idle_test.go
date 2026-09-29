@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"context"
 	"io"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -42,46 +40,6 @@ func (c *idleTimingConn) Read(p []byte) (int, error) {
 func (c *idleTimingConn) Write(p []byte) (int, error) {
 	c.clock.advance(11)
 	return c.scriptedConn.Write(p)
-}
-
-func parseAuditEventForRequest(t *testing.T, logs, event, requestLogID string) map[string]string {
-	t.Helper()
-	if requestLogID == "" {
-		t.Fatal("cannot select audit event with an empty request_log_id")
-	}
-	var selected map[string]string
-	matches := 0
-	for _, line := range strings.Split(logs, "\n") {
-		if !strings.HasPrefix(line, event+" ") {
-			continue
-		}
-		fields := parseAuditEvent(t, line, event)
-		if fields["request_log_id"] == requestLogID {
-			selected = fields
-			matches++
-		}
-	}
-	if matches != 1 {
-		t.Fatalf("expected exactly one %s with request_log_id=%q; found %d in capture:\n%s", event, requestLogID, matches, logs)
-	}
-	return selected
-}
-
-func TestParseAuditEventForRequestIgnoresForeignLines(t *testing.T) {
-	logs := captureProviderStreamStderr(t, func() *providerInvocation {
-		_, err := io.WriteString(os.Stderr, "enclave.request_end request_log_id=\"foreign-request\" idle_wait_ms=0 status=500\n"+
-			"enclave.request_accept request_log_id=\"own-request\"\n"+
-			"enclave.request_end request_log_id=\"own-request\" idle_wait_ms=1179 status=200\n"+
-			"enclave.request_end request_log_id=\"another-request\" idle_wait_ms=23 status=400\n")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return nil
-	})
-	end := parseAuditEventForRequest(t, logs, "enclave.request_end", "own-request")
-	if end["request_log_id"] != "own-request" || end["idle_wait_ms"] != "1179" || end["status"] != "200" {
-		t.Fatalf("selected foreign request_end: %v", end)
-	}
 }
 
 func TestRequestEndIdleSplit(t *testing.T) {
