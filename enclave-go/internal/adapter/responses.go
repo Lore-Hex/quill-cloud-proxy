@@ -637,16 +637,24 @@ func CollectAnthropicText(r io.Reader) (StreamResult, error) {
 }
 
 func CollectAnthropicTextWithObserver(r io.Reader, observer StreamObserver) (StreamResult, error) {
-	return collectAnthropicText(r, observer, false)
+	return collectAnthropicText(r, observer, false, false)
+}
+
+// CollectAnthropicTextRetainingUsage is CollectAnthropicTextWithObserver for a
+// caller that bills interrupted generations: on a transport error it returns the
+// usage the provider already reported (with no text), so metered work can be
+// settled. Other callers (e.g. native decide) deliberately refund on that error.
+func CollectAnthropicTextRetainingUsage(r io.Reader, observer StreamObserver) (StreamResult, error) {
+	return collectAnthropicText(r, observer, false, true)
 }
 
 // CollectAnthropicTextStrict is for transactional media routes: a clean EOF
 // without message_stop is a failed generation, never a billable partial image.
 func CollectAnthropicTextStrict(r io.Reader) (StreamResult, error) {
-	return collectAnthropicText(r, nil, true)
+	return collectAnthropicText(r, nil, true, false)
 }
 
-func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal bool) (StreamResult, error) {
+func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal, retainUsageOnError bool) (StreamResult, error) {
 	finishReason := "stop"
 	var captured strings.Builder
 	var usage *StreamUsage
@@ -746,6 +754,10 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal 
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		if retainUsageOnError {
+			// Metered usage for partial billing, never an interrupted answer.
+			return StreamResult{Usage: usage}, err
+		}
 		return StreamResult{}, err
 	}
 	if !sawUpstreamBytes {

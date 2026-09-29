@@ -2040,7 +2040,7 @@ func runAuthorizedFusionCallAttempt(
 		collectObserver = guard.Observe
 	}
 	go invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
-	result, err := adapter.CollectAnthropicTextWithObserver(pr, collectObserver)
+	result, err := adapter.CollectAnthropicTextRetainingUsage(pr, collectObserver)
 	// The collector can stop before the provider (including at message_stop).
 	// Release a blocked Write before canceling the remaining upstream work.
 	closeErr := err
@@ -2067,30 +2067,44 @@ func runAuthorizedFusionCallAttempt(
 		}
 		return fusionCallResult{}, &fusionModelFallbackError{err: &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth model exceeded unproductive thinking budget", Context: routeType}}
 	}
-	if err != nil {
+	providerErr := err
+	// Only orchestration inner calls bill an interrupted generation's metered usage
+	// (their deadlines cancel mid-stream). Other routes on this path, e.g. native
+	// decide, deliberately refund a transport error.
+	partialBillable := strings.HasPrefix(routeType, "fusion.") || strings.HasPrefix(routeType, "advisor.")
+	if providerErr != nil && (!partialBillable || result.Usage == nil || (result.Usage.InputTokens <= 0 && result.Usage.OutputTokens <= 0)) {
 		refundFusionCall(ctx, trGateway, authz, 502, "provider_error", requestStarted, req.Metadata)
-		return fusionCallResult{}, fusionProviderErrorForOrchestrationFallback(err, routeType, req, authz, selectedRoute, options)
+		return fusionCallResult{}, fusionProviderErrorForOrchestrationFallback(providerErr, routeType, req, authz, selectedRoute, options)
 	}
 	rawText := result.Text
-	if strings.HasPrefix(routeType, "fusion.") {
+	if providerErr == nil && strings.HasPrefix(routeType, "fusion.") {
 		result.Text = fusionVisibleAnswer(result.Text)
 		if routeType == "fusion.final" && strings.TrimSpace(result.Text) == "" && len(result.ToolCalls) == 0 {
 			refundFusionCall(ctx, trGateway, authz, 502, "empty_output", requestStarted, req.Metadata)
 			return fusionCallResult{}, &fusionModelFallbackError{err: &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final model returned an empty visible answer", Context: "fusion.final"}}
 		}
 	}
-	if validateBeforeSettle != nil {
+	if providerErr == nil && validateBeforeSettle != nil {
 		if err := validateBeforeSettle(result); err != nil {
 			refundFusionCall(ctx, trGateway, authz, statusFromControlPlaneError(err), "fusion_validation_error", requestStarted, req.Metadata)
 			return fusionCallResult{}, err
 		}
 	}
-	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
-		result,
-		trustedrouter.EstimateInputTokens(req),
-		trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
-		selectedRoute.Model(req.Model, authz),
-	)
+	var inputTokens, outputTokens int
+	var usageEstimated bool
+	if providerErr != nil {
+		// An interrupted stream is still billable when the provider reported
+		// usage. Preserve those counts and mark the settlement as partial.
+		inputTokens, outputTokens = result.Usage.InputTokens, result.Usage.OutputTokens
+		usageEstimated = true
+	} else {
+		inputTokens, outputTokens, usageEstimated = realOrEstimatedTokens(
+			result,
+			trustedrouter.EstimateInputTokens(req),
+			trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
+			selectedRoute.Model(req.Model, authz),
+		)
+	}
 	selectedModel := selectedRoute.Model(req.Model, authz)
 	selectedEndpoint := selectedRoute.Endpoint("", authz)
 	usage := trustedrouter.Usage{
@@ -2114,11 +2128,11 @@ func runAuthorizedFusionCallAttempt(
 	applyCacheUsage(&usage, result)
 	var inputForBroadcast any
 	var outputForBroadcast string
-	if broadcastContent {
+	if providerErr == nil && broadcastContent {
 		inputForBroadcast = originalInput
 		outputForBroadcast = result.Text
 	}
-	// Generation has completed and must be billed even if the caller disconnects.
+	// Completed or partially metered work must be billed even if the caller disconnects.
 	settleCtx, cancelSettle := finalizeContext(ctx)
 	settleResult, err := settleAndBroadcast(settleCtx, trGateway, authz, secretCache, usage, req, inputForBroadcast, outputForBroadcast)
 	cancelSettle()
@@ -2130,7 +2144,13 @@ func runAuthorizedFusionCallAttempt(
 			requestLogID:  requestLogID,
 			clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
+		if providerErr != nil {
+			err = errors.Join(providerErr, err)
+		}
 		return fusionCallResult{}, &settlementAttemptedError{err}
+	}
+	if providerErr != nil {
+		return fusionCallResult{}, fusionProviderErrorForOrchestrationFallback(providerErr, routeType, req, authz, selectedRoute, options)
 	}
 	elapsedMS := time.Since(requestStarted).Milliseconds()
 	if selectedModel == "" && authz != nil {

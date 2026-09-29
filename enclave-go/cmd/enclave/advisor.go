@@ -704,7 +704,7 @@ func advisorPromptsRequired() bool {
 }
 
 func advisorRequestError(ctx context.Context, err error) error {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return &adapter.AdapterError{Status: 504, Message: "advisor request deadline exceeded", Context: "advisor"}
 	}
 	return err
@@ -896,9 +896,12 @@ func serveAdvisorStreaming(
 			req.Metadata,
 		)
 		if config.HidePublicMetadata {
-			_ = writeHiddenAdvisorStreamError(statsW, requestID, req.Model, created)
+			err = writeHiddenAdvisorStreamError(statsW, requestID, req.Model, created)
 		} else {
-			_ = writeAdvisorStreamError(statsW, requestID, req.Model, created, err, workerAttempts, advisorAttempts)
+			err = writeAdvisorStreamError(statsW, requestID, req.Model, created, err, workerAttempts, advisorAttempts)
+		}
+		if err == nil {
+			_ = chunkW.Complete()
 		}
 		return
 	}
@@ -916,9 +919,12 @@ func serveAdvisorStreaming(
 	err = advisorRequestError(ctx, err)
 	if err != nil {
 		if config.HidePublicMetadata {
-			_ = writeHiddenAdvisorStreamError(statsW, requestID, req.Model, created)
+			err = writeHiddenAdvisorStreamError(statsW, requestID, req.Model, created)
 		} else {
-			_ = writeAdvisorStreamError(statsW, requestID, req.Model, created, err, workerAttempts, advisorAttempts)
+			err = writeAdvisorStreamError(statsW, requestID, req.Model, created, err, workerAttempts, advisorAttempts)
+		}
+		if err == nil {
+			_ = chunkW.Complete()
 		}
 		return
 	}
