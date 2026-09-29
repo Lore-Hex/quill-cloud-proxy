@@ -58,6 +58,7 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	sawDone, sawFinish := false, false
 	var citations []string
 	var searchResults []qtypes.ProviderSearchResult
+	var decision map[string]any
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -74,6 +75,7 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			ServiceTier   string                        `json:"service_tier"`
 			Citations     []string                      `json:"citations"`
 			SearchResults []qtypes.ProviderSearchResult `json:"search_results"`
+			Decision      json.RawMessage               `json:"decision"`
 			Choices       []struct {
 				Delta struct {
 					Error   *json.RawMessage `json:"error"`
@@ -130,6 +132,12 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 		}
 		citations = mergeProviderCitations(citations, chunk.Citations)
 		searchResults = mergeProviderSearchResults(searchResults, chunk.SearchResults)
+		if provider == "neurometric" && len(chunk.Decision) > 0 && len(chunk.Decision) <= 64*1024 {
+			var value map[string]any
+			if json.Unmarshal(chunk.Decision, &value) == nil && value != nil {
+				decision = value
+			}
+		}
 		if chunk.Usage != nil {
 			usage = chunk.Usage
 			// Regolo's SSE totals exclude separately reported reasoning, unlike
@@ -216,7 +224,7 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			return err
 		}
 	}
-	return writeAnthropicStop(w, stopReason, usage, citations, searchResults)
+	return writeAnthropicStop(w, stopReason, usage, citations, searchResults, decision)
 }
 
 type openAIToolCallAccumulator struct {
@@ -423,6 +431,7 @@ func writeAnthropicStop(
 	usage *openAIStreamUsage,
 	citations []string,
 	searchResults []qtypes.ProviderSearchResult,
+	decision map[string]any,
 ) error {
 	mDelta := map[string]any{
 		"type":  "message_delta",
@@ -433,6 +442,9 @@ func writeAnthropicStop(
 	}
 	if len(searchResults) > 0 {
 		mDelta["trustedrouter_search_results"] = searchResults
+	}
+	if decision != nil {
+		mDelta["trustedrouter_decision"] = decision
 	}
 	if usage != nil {
 		// Relay the upstream-reported usage on the synthetic message_delta.

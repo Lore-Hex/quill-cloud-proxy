@@ -351,7 +351,7 @@ func translateOpenAIResponsesStream(r io.Reader, w io.Writer) error {
 				PromptTokens: usage.InputTokens, CompletionTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens,
 				PromptTokensDetails: usage.InputDetails, CompletionTokensDetails: usage.OutputDetails,
 				ServiceTier: event.Response.ServiceTier,
-			}, nil, nil)
+			}, nil, nil, nil)
 		}
 		if err != nil {
 			return err
