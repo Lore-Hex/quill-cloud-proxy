@@ -343,24 +343,26 @@ func TestNativeDecideOptionsReachTheModelAndAnyChatModelWorks(t *testing.T) {
 	}
 }
 
-// captureStderr runs fn and returns everything it wrote to os.Stderr.
+// captureStderr is for calls that finish their provider invocations before returning.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
+	return captureProviderStreamStderr(t, func() *providerInvocation {
+		fn()
+		return nil
+	})
+}
+
+func TestCaptureStderrKeepsProcessPointerStable(t *testing.T) {
 	original := os.Stderr
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
+	logs := captureStderr(t, func() {
+		if os.Stderr != original {
+			t.Error("capture replaced os.Stderr while other providers may still be logging")
+		}
+		_, _ = io.WriteString(os.Stderr, "stable stderr pointer\n")
+	})
+	if os.Stderr != original || !strings.Contains(logs, "stable stderr pointer\n") {
+		t.Fatalf("stderr capture/restore failed: %q", logs)
 	}
-	os.Stderr = writer
-	done := make(chan string)
-	go func() {
-		raw, _ := io.ReadAll(reader)
-		done <- string(raw)
-	}()
-	fn()
-	os.Stderr = original
-	_ = writer.Close()
-	return <-done
 }
 
 func TestDecideLogsNeverCarryRequestContent(t *testing.T) {
