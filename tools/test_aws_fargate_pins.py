@@ -223,6 +223,22 @@ class PinUpdateTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 pins.pin_task_definition(payload, NEW)
 
+    def test_empty_or_absent_tags_are_omitted_from_registration(self):
+        for has_tags in (True, False):
+            with self.subTest(has_tags=has_tags):
+                payload = self.payload()
+                if has_tags:
+                    payload["tags"] = []
+                else:
+                    del payload["tags"]
+                before = copy.deepcopy(payload)
+                result = pins.pin_task_definition(payload, NEW)
+                self.assertNotIn("tags", result)
+                self.assertEqual(
+                    result["containerDefinitions"][0]["environment"][0]["value"], NEW
+                )
+                self.assertEqual(payload, before)
+
     def test_failed_roll_restores_and_verifies_previous_definition(self):
         snapshot = {
             k: fixture()["describe-services"]["services"][0][k]
