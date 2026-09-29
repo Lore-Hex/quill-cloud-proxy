@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"net/http"
 	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -31,7 +32,7 @@ func applyChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, bo
 		}
 	}
 	switch normalizeDirectProvider(provider) {
-	case "openai", "gemini", "google-ai-studio", "deepseek", "zai", "kimi", "mistral", "alibaba":
+	case "openai", "gemini", "google-ai-studio", "deepseek", "zai", "kimi", "mistral", "alibaba", "tencent":
 		wire.ReasoningEffort = effort
 		wire.Reasoning = nil
 	}
@@ -45,7 +46,7 @@ func applyHybridReasoningControl(provider string, req *qtypes.OpenAIChatRequest,
 		return
 	}
 	switch normalizeDirectProvider(provider) {
-	case "zai", "deepseek", "kimi":
+	case "zai", "deepseek", "kimi", "tencent":
 	default:
 		return
 	}
@@ -60,14 +61,55 @@ func applyHybridReasoningControl(provider string, req *qtypes.OpenAIChatRequest,
 	mode := "disabled"
 	if enabled {
 		mode = "enabled"
+		// TokenHub's MiniMax M3 supports adaptive, not enabled.
+		if normalizeDirectProvider(provider) == "tencent" && wire.Model == "minimax-m3" {
+			mode = "adaptive"
+		}
 	}
 	wire.Thinking = map[string]string{"type": mode}
 	wire.Reasoning = nil
+	if normalizeDirectProvider(provider) == "tencent" && enabled && (wire.Model == "kimi-k3" || wire.Model == "kimi-k2.8-preview") {
+		// These always-thinking Kimi models use effort, not thinking.type.
+		wire.Thinking = nil
+		if wire.ReasoningEffort == "" {
+			wire.ReasoningEffort = "high"
+			if wire.Model == "kimi-k2.8-preview" {
+				wire.ReasoningEffort = "max"
+			}
+		}
+	}
 	// An explicit Off cannot coexist with an effort that turns thinking back
 	// on. On keeps a separately supplied effort for providers that accept it.
 	if !enabled {
 		wire.ReasoningEffort = ""
 	}
+}
+
+func validateTencentThinking(wire openAICompatibleRequest) error {
+	mode := ""
+	switch thinking := wire.Thinking.(type) {
+	case map[string]string:
+		mode = thinking["type"]
+	case map[string]any:
+		mode, _ = thinking["type"].(string)
+	}
+	// Reject unsupported explicit controls rather than silently turning thinking
+	// back on. Native IDs remain opaque; these are documented exact model IDs.
+	switch wire.Model {
+	case "glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "kimi-k2.7-code", "kimi-k2.7-code-highspeed":
+		if mode == "disabled" {
+			return &upstreamHTTPError{status: http.StatusBadRequest, body: "Tencent TokenHub model does not support disabling thinking"}
+		}
+	case "kimi-k3", "kimi-k2.8-preview":
+		if wire.Thinking != nil {
+			return &upstreamHTTPError{status: http.StatusBadRequest, body: "Tencent TokenHub model is always thinking; use reasoning_effort instead of thinking"}
+		}
+	case "minimax-m3":
+		if mode == "enabled" {
+			return &upstreamHTTPError{status: http.StatusBadRequest, body: "Tencent TokenHub MiniMax M3 requires adaptive or disabled thinking"}
+		}
+	}
+	return nil
 }
 
 func explicitHybridThinkingConflict(provider string, req *qtypes.OpenAIChatRequest, wire openAICompatibleRequest) bool {

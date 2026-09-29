@@ -54,6 +54,8 @@ var specs = [...]Spec{
 	{Provider: "krea", BaseURL: "https://api.krea.ai", MediaOnly: true, SecretEnv: "QUILL_KREA_SECRET", SecretName: "trustedrouter-krea-api-key", SecretLabel: "Krea key"},
 	{Provider: "fal", BaseURL: "https://fal.run", MediaOnly: true, SecretEnv: "QUILL_FAL_SECRET", SecretName: "trustedrouter-fal-api-key", SecretLabel: "FAL key"},
 	{Provider: "byteplus", BaseURL: "https://ark.ap-southeast.bytepluses.com/api/v3", SecretEnv: "QUILL_BYTEPLUS_SECRET", SecretName: "trustedrouter-byteplus-api-key", SecretLabel: "BytePlus ModelArk key"},
+	// Singapore/global TokenHub, not the separate Token Plan subscription API.
+	// https://www.tencentcloud.com/document/product/1300/78941
 	{Provider: "tencent", BaseURL: "https://tokenhub-intl.tencentcloudmaas.com/v1", SecretEnv: "QUILL_TENCENT_SECRET", SecretName: "trustedrouter-tencent-tokenhub-api-key", SecretLabel: "Tencent TokenHub key"},
 	{Provider: "vultr", BaseURL: "https://api.vultrinference.com/v1", SecretEnv: "QUILL_VULTR_SECRET", SecretName: "trustedrouter-vultr-api-key", SecretLabel: "Vultr inference key"},
 	{Provider: "huggingface", BaseURL: "https://router.huggingface.co/v1", SecretEnv: "QUILL_HUGGING_FACE_SECRET", SecretName: "trustedrouter-huggingface-api-key", SecretLabel: "Hugging Face key"},

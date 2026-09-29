@@ -52,7 +52,7 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "google-ai-studio", "zai", "together",
 		"fireworks", "grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
 		"parasail", "lightning", "gmi", "deepinfra", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer",
-		"crusoe", "makora", "nebius", "minimax", "xiaomi", "digitalocean", "stepfun", "relace":
+		"crusoe", "makora", "nebius", "minimax", "xiaomi", "digitalocean", "stepfun", "relace", "tencent":
 		return true
 	default:
 		return false
@@ -126,6 +126,11 @@ type openAICompatibleStreamOptions struct {
 // parameter spelling, though it is normally reached through Responses.
 func requiresMaxCompletionTokens(provider, modelID string) bool {
 	normalizedProvider := normalizeDirectProvider(provider)
+	if normalizedProvider == "tencent" {
+		// Tencent's Kimi guide documents this spelling for K3. This does not
+		// assert that TokenHub rejects the legacy max_tokens alias.
+		return modelID == "kimi-k3"
+	}
 	if normalizedProvider != "openai" && normalizedProvider != "azure" && normalizedProvider != "lightning" {
 		return false
 	}
@@ -170,9 +175,21 @@ func invokeOpenAICompatibleBYOKStreaming(
 	out io.Writer,
 	options InvokeOptions,
 ) error {
+	return invokeOpenAICompatibleBYOKStreamingWithClient(ctx, defaultHTTPClient(), provider, req, body, out, options)
+}
+
+func invokeOpenAICompatibleBYOKStreamingWithClient(
+	ctx context.Context,
+	httpc *http.Client,
+	provider string,
+	req *qtypes.OpenAIChatRequest,
+	body *qtypes.AnthropicMessagesRequest,
+	out io.Writer,
+	options InvokeOptions,
+) error {
 	return invokeOpenAICompatibleStreamingWithClientOptions(
 		ctx,
-		defaultHTTPClient(),
+		httpc,
 		provider,
 		directBaseURL(provider),
 		options.ProviderAPIKey,
@@ -282,6 +299,11 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 		return fmt.Errorf("llm/%s: missing authorized upstream model", provider)
 	}
 	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
+	if normalizeDirectProvider(provider) == "tencent" {
+		if err := validateTencentThinking(reqBody); err != nil {
+			return err
+		}
+	}
 	if explicitHybridThinkingConflict(provider, req, reqBody) {
 		return &upstreamHTTPError{status: http.StatusBadRequest, body: "reasoning on is not supported with tools on this provider route"}
 	}
@@ -609,6 +631,12 @@ func openAICompatibleTemperature(provider, modelID string, temperature *float64)
 
 func kimiUsesFixedSampling(provider, modelID string) bool {
 	model := strings.ToLower(strings.TrimSpace(modelID))
+	if normalizeDirectProvider(provider) == "tencent" {
+		switch modelID {
+		case "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.8-preview":
+			return true
+		}
+	}
 	// Azure Foundry exposes the same Moonshot checkpoints under deployment
 	// names that replace the version dots with dashes. Keep this exact to the
 	// three authorized Azure deployment ids: substring matching here would
@@ -1233,6 +1261,11 @@ func bootstrapDirectProviderAllowed(provider string) bool {
 }
 
 func directModelID(provider, model, upstreamModel string) string {
+	if provider == "tencent" {
+		// TokenHub's /models IDs (including namespaced/custom endpoints) are
+		// opaque. Only use the authorized endpoint_model_id, never an alias.
+		return strings.TrimSpace(upstreamModel)
+	}
 	model = stripOpenRouterModelVariant(model)
 	upstreamModel = stripOpenRouterModelVariant(strings.TrimSpace(upstreamModel))
 	if _, exactCatalogIDRequired := directproviders.Lookup(provider); exactCatalogIDRequired && upstreamModel == "" {

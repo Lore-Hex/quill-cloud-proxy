@@ -800,6 +800,18 @@ class TestAzureCloudBoundaryPreflight(DeployHarness):
             "trustedrouter-unsealed-stepfun-key",
         )
 
+    def test_tencent_stays_dark_until_the_bundle_is_resealed(self) -> None:
+        result = self.run_script("print-env", QUILL_TENCENT_SECRET="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(json.loads(result.stdout).get("QUILL_TENCENT_SECRET"))
+        result = self.run_script(
+            "--apply", "template",
+            QUILL_TENCENT_SECRET="trustedrouter-unsealed-tencent-tokenhub-key",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing bundle names: trustedrouter-unsealed-tencent-tokenhub-key", result.stderr)
+        self.assertEqual(self.mutations(), [])
+
     def test_apply_refuses_a_silent_manifest_override(self) -> None:
         manifest = self.state / "override.manifest"
         manifest.write_text(AZURE_BUNDLE_MANIFEST.read_text())
