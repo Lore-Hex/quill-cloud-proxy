@@ -1670,10 +1670,10 @@ func serveChatNonStreaming(
 	}
 	responseModel := authorizationResponseModel(req.Model, authorization)
 	var body bytes.Buffer
-	if err := adapter.WriteChatCompletionResponseWithProvenance(
+	if err := adapter.WriteChatCompletionResponseWithProviderMetadata(
 		&body, requestID, responseModel, result.Text, adapter.JoinThinking(result.Thinking),
 		result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(),
-		result.FinishReason, result.Citations, result.SearchResults,
+		result.FinishReason, result.Citations, result.SearchResults, result.Decision,
 	); err != nil {
 		writeSpentError(conn, 500, "chat completion encoding error")
 		return

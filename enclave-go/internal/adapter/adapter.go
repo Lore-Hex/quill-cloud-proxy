@@ -526,6 +526,9 @@ type StreamResult struct {
 	// enclave's normalized stream. They are returned to the caller only.
 	Citations     []string
 	SearchResults []types.ProviderSearchResult
+	// Decision is provider answer data, not telemetry. Never put it in Usage,
+	// settlement, routing metadata or logs: labels may contain customer data.
+	Decision map[string]any
 	// Thinking holds extended-thinking blocks (in order, before any text /
 	// tool_use), reassembled from the upstream SSE. opus-4.7+ emits these
 	// when output_config.effort is set; Anthropic requires them replayed
@@ -656,11 +659,11 @@ func WriteChatCompletionResponse(
 	return err
 }
 
-// WriteChatCompletionResponseWithProvenance preserves search-native provider
-// metadata while also emitting OpenRouter's standardized message.annotations
+// WriteChatCompletionResponseWithProviderMetadata preserves provider response
+// extensions while also emitting OpenRouter's standardized message.annotations
 // shape. The original writer remains the common response builder for ordinary
 // completions so existing callers cannot diverge on usage or tool-call fields.
-func WriteChatCompletionResponseWithProvenance(
+func WriteChatCompletionResponseWithProviderMetadata(
 	w io.Writer,
 	requestID string,
 	model string,
@@ -674,6 +677,7 @@ func WriteChatCompletionResponseWithProvenance(
 	finishReason string,
 	citations []string,
 	searchResults []types.ProviderSearchResult,
+	decision map[string]any,
 ) error {
 	var base bytes.Buffer
 	if err := WriteChatCompletionResponse(
@@ -682,7 +686,7 @@ func WriteChatCompletionResponseWithProvenance(
 	); err != nil {
 		return err
 	}
-	if len(citations) == 0 && len(searchResults) == 0 {
+	if len(citations) == 0 && len(searchResults) == 0 && decision == nil {
 		_, err := w.Write(base.Bytes())
 		return err
 	}
@@ -696,6 +700,9 @@ func WriteChatCompletionResponseWithProvenance(
 	}
 	if len(cleanResults) > 0 {
 		payload["search_results"] = cleanResults
+	}
+	if decision != nil {
+		payload["decision"] = decision
 	}
 	choices, _ := payload["choices"].([]any)
 	if len(choices) > 0 {
@@ -876,6 +883,7 @@ func TransformStreamCaptureControlled(
 	var thinkingOrder []int
 	var citations []string
 	var searchResults []types.ProviderSearchResult
+	var decision map[string]any
 	sawUpstreamBytes := false
 
 	scanner := bufio.NewScanner(r)
@@ -905,6 +913,7 @@ func TransformStreamCaptureControlled(
 		}
 		result := StreamResult{
 			Text: captured.String(), FinishReason: finishReason, Usage: usage,
+			Decision:  decision,
 			Thinking:  orderedThinking(thinkingByIndex, thinkingOrder),
 			Citations: append([]string(nil), citations...), SearchResults: append([]types.ProviderSearchResult(nil), searchResults...),
 		}
@@ -926,6 +935,11 @@ func TransformStreamCaptureControlled(
 		}
 		usageFields := map[string]any{}
 		emit := func() error {
+			if decision != nil {
+				if err := writeDecisionChunk(w, requestID, model, created, decision); err != nil {
+					return err
+				}
+			}
 			var err error
 			if trFinishReason == "" {
 				err = writeChunk(w, requestID, model, created, map[string]any{}, terminalFinishReason)
@@ -1144,6 +1158,9 @@ func TransformStreamCaptureControlled(
 				control.ObserveUsage(usage)
 			}
 			citations, searchResults = providerProvenanceFromInternalEvent(dataJSON, citations, searchResults)
+			if value := getMap(dataJSON, "trustedrouter_decision"); value != nil {
+				decision = value
+			}
 		case "message_stop":
 			return finish(true, nil)
 		}
@@ -1304,6 +1321,20 @@ func ChatCitationAnnotations(
 		}
 	}
 	return annotations
+}
+
+func writeDecisionChunk(w io.Writer, id, model string, created int64, decision map[string]any) error {
+	payload := map[string]any{
+		"id": id, "object": "chat.completion.chunk", "created": created, "model": model,
+		"choices":  []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": nil}},
+		"decision": decision,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "data: %s\n\n", body)
+	return err
 }
 
 func writeProviderProvenanceChunk(

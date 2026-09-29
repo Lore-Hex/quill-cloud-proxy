@@ -222,5 +222,5 @@ func (c *openAICompatibleClient) invokeScaleDown(ctx context.Context, req *qtype
 	}
 	// Input-only metering is intentional, including summarization. These are
 	// upstream-reported billable tokens, not a local estimate of the JSON output.
-	return writeAnthropicStop(out, "end_turn", &openAIStreamUsage{PromptTokens: *result.InputTokens, TotalTokens: *result.InputTokens}, nil, nil)
+	return writeAnthropicStop(out, "end_turn", &openAIStreamUsage{PromptTokens: *result.InputTokens, TotalTokens: *result.InputTokens}, nil, nil, nil)
 }

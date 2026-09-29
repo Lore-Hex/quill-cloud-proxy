@@ -299,6 +299,14 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 		return fmt.Errorf("llm/%s: missing authorized upstream model", provider)
 	}
 	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
+	// Wharf omits decision confidence/probabilities from SSE. Fetch this small
+	// task result once as JSON, then use the same response pipeline for both
+	// caller modes. Other Neurometric models keep incremental upstream streams.
+	decisionCompletion := normalizeDirectProvider(provider) == "neurometric" && upstreamID == "neurometric/structured-decisions"
+	if decisionCompletion {
+		reqBody.Stream = false
+		reqBody.StreamOptions = nil
+	}
 	if normalizeDirectProvider(provider) == "tencent" {
 		if err := validateTencentThinking(reqBody); err != nil {
 			return err
@@ -350,6 +358,9 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	if decisionCompletion {
+		httpReq.Header.Set("Accept", "application/json")
+	}
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
 	if normalizeDirectProvider(provider) == "wafer" &&
 		(options.waferZDRRequired || legacyWaferModelSupportsZDR(upstreamID)) {
@@ -378,6 +389,9 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	}
 	if nativeResponses {
 		return translateOpenAIResponsesStream(resp.Body, out)
+	}
+	if decisionCompletion {
+		return translateOpenAICompletionToAnthropic(resp.Body, out, normalizeDirectProvider(provider))
 	}
 	return translateOpenAIStreamToAnthropicForProvider(resp.Body, out, normalizeDirectProvider(provider))
 }

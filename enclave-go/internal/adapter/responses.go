@@ -652,6 +652,7 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal 
 	var usage *StreamUsage
 	var citations []string
 	var searchResults []types.ProviderSearchResult
+	var decision map[string]any
 	toolCallsByIndex := map[int]*types.ToolCall{}
 	var toolOrder []int
 	thinkingByIndex := map[int]*ThinkingBlock{}
@@ -737,8 +738,11 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal 
 			}
 			mergeUsage(&usage, getMap(dataJSON, "usage"))
 			citations, searchResults = providerProvenanceFromInternalEvent(dataJSON, citations, searchResults)
+			if value := getMap(dataJSON, "trustedrouter_decision"); value != nil {
+				decision = value
+			}
 		case "message_stop":
-			return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage, Citations: citations, SearchResults: searchResults}, nil
+			return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage, Citations: citations, SearchResults: searchResults, Decision: decision}, nil
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
@@ -750,7 +754,7 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal 
 	if requireTerminal {
 		return StreamResult{}, fmt.Errorf("adapter: truncated SSE before message_stop")
 	}
-	return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage, Citations: citations, SearchResults: searchResults}, nil
+	return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage, Citations: citations, SearchResults: searchResults, Decision: decision}, nil
 }
 
 func WriteResponsesResponse(
