@@ -378,6 +378,15 @@ func TestDecideLogsNeverCarryRequestContent(t *testing.T) {
 	if status != 502 {
 		t.Fatalf("status %d, want 502", status)
 	}
+	// Include each invocation's final logs in the privacy check, not just the
+	// synchronous verification logs. No attempt may outlive the capture.
+	for _, id := range []string{"auth_1", "auth_2"} {
+		for _, event := range []string{"enclave.invoke_attempt", "enclave.invoke_complete"} {
+			if want := fmt.Sprintf(`%s request_log_id="log-1" request_id=%q`, event, id); strings.Count(stderr, want) != 1 {
+				t.Errorf("stderr must contain exactly one %s", want)
+			}
+		}
+	}
 	for _, leaked := range []string{"PRIVATE-STATE", "SECRET-MODEL-WORDS", "SECRET-INVENTED-OPTION", "Is a refund requested", "billing", "charges"} {
 		if strings.Contains(stderr, leaked) {
 			t.Errorf("stderr carries request or model content %q:\n%s", leaked, stderr)
