@@ -241,7 +241,8 @@ def pin_task_definition(payload: dict, pins: str) -> dict:
     entries[0]["value"] = pins
     for field in READONLY_FIELDS:
         definition.pop(field, None)
-    if "tags" in payload:
+    # DescribeTaskDefinition can return []; ECS rejects registering empty tags.
+    if payload.get("tags"):
         definition["tags"] = copy.deepcopy(payload["tags"])
     return definition
 
