@@ -37,6 +37,7 @@
 # Usage:
 #   bash tools/release-aws-enclave.sh                    # dry run, prints the plan
 #   bash tools/release-aws-enclave.sh --apply            # build + push
+#   bash tools/release-aws-enclave.sh --verify-only      # existing image; no rebuild/push
 #   RELEASE_TAG=aws-release-20260806-cp bash tools/release-aws-enclave.sh --apply
 #
 # This script does NOT roll the fleet. Publishing an image is additive and
@@ -46,7 +47,13 @@
 set -euo pipefail
 
 APPLY=0
-[ "${1:-}" = "--apply" ] && APPLY=1
+VERIFY_ONLY=0
+case "${1:-}" in
+  --apply) APPLY=1 ;;
+  --verify-only) VERIFY_ONLY=1 ;;
+  "") ;;
+  *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
+esac
 
 ACCOUNT="${ACCOUNT:-330422590279}"
 REGIONS="${REGIONS:-eu-west-1 eu-west-3}"
@@ -86,6 +93,16 @@ run() {
 }
 
 cd "$(dirname "$0")/.."
+
+verify_aws() {
+  say "Checking live AWS measurement and both healthy serving Fargate pin sets..."
+  python3 tools/capture-plane-measurements.py --plane aws --check-published
+}
+
+if [ "$VERIFY_ONLY" -eq 1 ]; then
+  verify_aws
+  exit 0
+fi
 
 say "AWS enclave release"
 say "  tag        : ${RELEASE_TAG}"
@@ -148,57 +165,26 @@ say "  2. refresh ONE eu-west-3 instance"
 say "  3. read its PCR0 from a live attestation"
 say "  4. publish old+new PCR0 (the pin is a SET — qcp#112 / router#459)"
 say "  5. refresh the rest, verify, then narrow the pin to the new value"
-say "  6. re-pin the AWS synthetic monitor (--repin-aws-monitor does it)"
+say "Both Fargate consumers must accept old+new in step 4, before rolling further."
 say ""
 say "Step 4 is the one that got skipped for months, and it is skippable because"
 say "it lives in a runbook rather than in this script. Capture it here instead:"
 say ""
-say "    python3 tools/capture-plane-measurements.py --write --keep-accepted \\"
-say "        --repin-aws-monitor"
+say "    python3 tools/capture-plane-measurements.py --plane aws --write --keep-accepted \\"
+say "        --repin-aws-monitor --source-commit ${COMMIT} --aws-forward-port <SSM-local-port>"
 say "    # then commit trust-page/, which fires publish-trust-aws.yml"
 say ""
-say "--repin-aws-monitor moves the tr-eu App Runner monitor's expected-PCR0"
-say "pin to what the fleet now serves. The monitor bakes that pin into its"
-say "service env, so every measured roll that skips this step leaves"
-say "aws.trustedrouter.com/status on 'Trust degraded' (pcr0_mismatch every"
-say "minute) against a healthy fleet — it sat that way 2026-08-23..25 across"
-say "two rolls. A status page that cries wolf on every roll is one nobody"
-say "believes during a real incident."
+say "--repin-aws-monitor updates tr-cp-euw1 and tr-cp-euw3 sequentially and"
+say "verifies serving tasks/targets before continuing. App Runner is retired."
+say "Authenticate the exact candidate through tools/verify-attestation.py first."
 say ""
 say "--keep-accepted during the roll, so the outgoing PCR0 stays acceptable"
 say "while instances are still serving it. Narrow only after the last one is"
 say "refreshed. Running it WITHOUT --keep-accepted mid-roll publishes a set that"
 say "rejects the instances that have not rolled yet."
 
-# Refuse to exit 0 while the published measurement disagrees with what is
-# running. An operator-run release whose publish step lives only in prose is
-# the most likely rot vector in this whole arrangement — that is precisely how
-# trust-page/pcr0.txt kept a value matching no running enclave from the initial
-# commit onward. Exiting non-zero here does not undo the image push; it just
-# refuses to call the release finished while the public record is wrong.
-say ""
-say "checking the published AWS measurement against a live attestation..."
-if python3 "$(dirname "$0")/../tools/capture-plane-measurements.py" >/dev/null 2>&1; then
-  published="$(cat "$(dirname "$0")/../trust-page/trust/accepted-pcr0s-aws.txt" 2>/dev/null || echo "")"
-  running="$(python3 - <<'PY' 2>/dev/null || true
-import subprocess, re, sys, pathlib
-out = subprocess.run(
-    [sys.executable, str(pathlib.Path(__file__).parent / "capture-plane-measurements.py")],
-    capture_output=True, text=True,
-).stdout
-match = re.search(r"AWS   PCR0     ([0-9a-f]{96})", out)
-print(match.group(1) if match else "")
-PY
-)"
-  if [ -n "$running" ] && [ -n "$published" ] && [[ ",$published," != *",$running,"* ]]; then
-    say ""
-    say "RELEASE NOT COMPLETE: the running AWS enclave measures"
-    say "  $running"
-    say "which is not in the published set"
-    say "  $published"
-    say ""
-    say "Publish it before calling this done:"
-    say "  python3 tools/capture-plane-measurements.py --write --keep-accepted"
-    exit 1
-  fi
+# Image publication is not fleet completion. For an apply, failed or unknown
+# live evidence must still return nonzero. The dry run does not contact clouds.
+if [ "$APPLY" -eq 1 ]; then
+  verify_aws
 fi

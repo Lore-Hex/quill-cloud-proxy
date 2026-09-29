@@ -57,16 +57,15 @@ import json
 import re
 import socket
 import ssl
-import os
 import subprocess
 import sys
-import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 import cbor2
+import aws_fargate_pins
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TRUST_DIR = REPO_ROOT / "trust-page" / "trust"
@@ -131,244 +130,51 @@ def _provenance(source_commit: str) -> str:
     return PROVENANCE_NONE if source_commit == SOURCE_COMMIT_UNSET else PROVENANCE_ASSERTED
 
 
-# ---------------------------------------------------------------------------
-# Measurement CONSUMERS. Publishing a new measurement is not the end of a
-# roll: everything that PINS the old one must move too, or it keeps
-# distrusting a healthy fleet. The trust page updates here; the SKR/IAM pins
-# have their own narrow steps. The one consumer nothing updated was the AWS
-# control plane's synthetic monitor, which bakes TR_ATTESTATION_EXPECTED_PCR0
-# into the tr-eu App Runner service env at ITS deploy time -- so after the
-# 2026-08-22 ACME roll and again after the 08-24 abuse-hardening roll,
-# aws.trustedrouter.com/status sat on "Trust degraded" (pcr0_mismatch every
-# minute) for two days while every enclave was healthy. A monitor that cries
-# wolf on every roll is a monitor nobody believes during a real incident,
-# which is the exact property a status page exists to protect.
-#
-# So the capture now checks that consumer every run, and --repin-aws-monitor
-# fixes it in the same breath as the publish. "Could not ask" is reported as
-# exactly that -- it is not evidence the pin matches (the empty-result trap).
-# ---------------------------------------------------------------------------
-
-AWS_MONITOR_REGION = "eu-west-3"
-AWS_MONITOR_SERVICE_ARN = (
-    "arn:aws:apprunner:eu-west-3:330422590279:service/"
-    "tr-eu/5e56b7ea76024ff0abbdaf389f3e5e45"
-)
-AWS_MONITOR_PIN_ENV = "TR_ATTESTATION_EXPECTED_PCR0"
-
-# A PCR0 re-pin has THREE control-plane surfaces, not one: the App Runner
-# monitor above AND both Fargate API task definitions. On 2026-08-24 the
-# App Runner pin was fixed, the status page went green, and the Fargate pair
-# silently kept judging the fleet against the two-rolls-old pin -- caught
-# only because reference notes from 08-06 said "three surfaces" out loud.
-# The green page is evidence about the surface the probes run on, nothing
-# more. So every surface is enumerated HERE, checked every run, and repinned
-# together; a fourth surface added elsewhere without a row in this table is
-# the next recurrence.
-AWS_FARGATE_PIN_SURFACES = (
-    ("eu-west-1", "tr-cp", "tr-cp-euw1"),
-    ("eu-west-3", "tr-cp", "tr-cp-euw3"),
-)
+# The serving monitor and API pin consumers are the two Fargate services.
+# App Runner tr-eu was retired; never fall back to a deleted legacy surface.
+AWS_FARGATE_PIN_SURFACES = aws_fargate_pins.SURFACES
 
 
 def monitor_pin_verdict(live_pcr0: str, pin_value: str | None, pin_error: str | None) -> tuple[str, str]:
-    """Classify the AWS monitor's pin against the live PCR0.
-
-    Returns (state, message) with state one of "ok" / "mismatch" / "unknown".
-    Pure so the classification is testable without an AWS account; the caller
-    supplies either a pin value or the error that prevented reading one.
-    """
+    """Compare required PCR0s with a serving surface's accepted set."""
     if pin_error is not None:
-        return (
-            "unknown",
-            "could not read the AWS monitor's PCR0 pin (NOT evidence it matches): "
-            + pin_error,
-        )
+        return ("unknown", "could not read the AWS monitor's PCR0 pin (NOT evidence it matches): " + pin_error)
     if pin_value is None or not pin_value.strip():
         return ("unknown", "AWS monitor has no PCR0 pin set (binding-only mode)")
-    if pin_value.strip().lower() == live_pcr0.strip().lower():
-        return ("ok", "AWS monitor pin matches the live PCR0")
+    try:
+        required = aws_fargate_pins.pin_set(live_pcr0)
+        accepted = aws_fargate_pins.pin_set(pin_value)
+    except ValueError:
+        return ("unknown", "missing or malformed AWS PCR0 set")
+    if required <= accepted:
+        return ("ok", "AWS monitor pin accepts every required PCR0")
     return (
         "mismatch",
-        "pins "
-        + pin_value.strip()[:16]
-        + "... but the fleet serves "
-        + live_pcr0[:16]
-        + "...: this surface judges a healthy fleet against a stale "
-        "measurement until the pin moves. Re-run with --repin-aws-monitor "
-        "to move every pin surface in one pass.",
+        f"pins {pin_value.strip()[:16]}... but requires {live_pcr0[:16]}...; "
+        "use --repin-aws-monitor with --keep-accepted during a transition.",
     )
 
 
-def _read_aws_monitor_pin() -> tuple[str | None, str | None]:
-    """(pin_value, error) from the live App Runner service env."""
-    try:
-        proc = subprocess.run(
-            [
-                "aws", "apprunner", "describe-service",
-                "--region", AWS_MONITOR_REGION,
-                "--service-arn", AWS_MONITOR_SERVICE_ARN,
-                "--query",
-                "Service.SourceConfiguration.ImageRepository"
-                ".ImageConfiguration.RuntimeEnvironmentVariables."
-                + AWS_MONITOR_PIN_ENV,
-                "--output", "text",
-            ],
-            capture_output=True, text=True, timeout=30, check=False,
+def check_aws_pins(required: str, *, repin: bool, keep: bool) -> str:
+    """Preflight both regions before any mutation; return the preserved set."""
+    evidence = [aws_fargate_pins.serving_pin(*surface) for surface in AWS_FARGATE_PIN_SURFACES]
+    if len({(item["release"], item["digest"]) for item in evidence}) != 1:
+        raise ValueError("AWS control-plane regions serve different releases/images")
+    pins = aws_fargate_pins.pin_set(required)
+    if keep:
+        for item in evidence:
+            pins |= aws_fargate_pins.pin_set(item["pin"])
+    target = ",".join(sorted(pins))
+    for surface, item in zip(AWS_FARGATE_PIN_SURFACES, evidence):
+        if repin:
+            aws_fargate_pins.repin(*surface, target, expected=item)
+        state, message = monitor_pin_verdict(
+            target, aws_fargate_pins.serving_pin(*surface)["pin"] if repin else item["pin"], None
         )
-    except FileNotFoundError:
-        return None, "aws CLI not installed"
-    except subprocess.TimeoutExpired:
-        return None, "aws apprunner describe-service timed out"
-    if proc.returncode != 0:
-        return None, (proc.stderr or "describe-service failed").strip().splitlines()[0]
-    value = proc.stdout.strip()
-    # `--output text` spells JSON null as the literal string "None".
-    return (None if value in ("", "None") else value), None
-
-
-def repin_aws_monitor(new_pcr0: str) -> None:
-    """Point the monitor's pin at new_pcr0 via an in-place env patch.
-
-    Control-plane change only -- no enclave, no measurement, no attestation
-    surface. Reads the full SourceConfiguration, rewrites the ONE variable,
-    and submits it back; App Runner rolls the service in a few minutes and
-    the next probe cycle goes green.
-    """
-    describe = subprocess.run(
-        [
-            "aws", "apprunner", "describe-service",
-            "--region", AWS_MONITOR_REGION,
-            "--service-arn", AWS_MONITOR_SERVICE_ARN,
-            "--query", "Service.SourceConfiguration",
-            "--output", "json",
-        ],
-        capture_output=True, text=True, timeout=30, check=True,
-    )
-    config = json.loads(describe.stdout)
-    env = config["ImageRepository"]["ImageConfiguration"]["RuntimeEnvironmentVariables"]
-    env[AWS_MONITOR_PIN_ENV] = new_pcr0
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
-        json.dump(config, handle)
-        config_path = handle.name
-    os.chmod(config_path, 0o600)
-    try:
-        subprocess.run(
-            [
-                "aws", "apprunner", "update-service",
-                "--region", AWS_MONITOR_REGION,
-                "--service-arn", AWS_MONITOR_SERVICE_ARN,
-                "--source-configuration", f"file://{config_path}",
-            ],
-            capture_output=True, text=True, timeout=60, check=True,
-        )
-    finally:
-        os.unlink(config_path)
-    print(
-        f"  repinned AWS monitor to {new_pcr0[:16]}...; App Runner rolls the "
-        "service in ~2-4 min, probes go green on the next cycle"
-    )
-
-
-def _read_fargate_pin(region: str, cluster: str, service: str) -> tuple[str | None, str | None]:
-    """(pin_value, error) from the task definition the service is RUNNING.
-
-    The running service's task definition, not the family's latest revision:
-    a newer revision nobody deployed is not what judges the fleet.
-    """
-    try:
-        running_td = subprocess.run(
-            [
-                "aws", "ecs", "describe-services",
-                "--region", region, "--cluster", cluster, "--services", service,
-                "--query", "services[0].taskDefinition", "--output", "text",
-            ],
-            capture_output=True, text=True, timeout=30, check=False,
-        )
-        if running_td.returncode != 0 or running_td.stdout.strip() in ("", "None"):
-            return None, (running_td.stderr or f"no running service {service}").strip().splitlines()[0]
-        describe = subprocess.run(
-            [
-                "aws", "ecs", "describe-task-definition",
-                "--region", region, "--task-definition", running_td.stdout.strip(),
-                "--query",
-                "taskDefinition.containerDefinitions[0].environment"
-                f"[?name=='{AWS_MONITOR_PIN_ENV}'].value | [0]",
-                "--output", "text",
-            ],
-            capture_output=True, text=True, timeout=30, check=False,
-        )
-    except FileNotFoundError:
-        return None, "aws CLI not installed"
-    except subprocess.TimeoutExpired:
-        return None, f"ecs describe timed out in {region}"
-    if describe.returncode != 0:
-        return None, (describe.stderr or "describe-task-definition failed").strip().splitlines()[0]
-    value = describe.stdout.strip()
-    return (None if value in ("", "None") else value), None
-
-
-# Fields describe-task-definition returns that register-task-definition
-# refuses. Stripped, not allowlisted, so new writable fields keep flowing.
-_TD_READONLY_FIELDS = (
-    "taskDefinitionArn", "revision", "status", "requiresAttributes",
-    "compatibilities", "registeredAt", "registeredBy", "deregisteredAt",
-)
-
-
-def repin_fargate_surface(region: str, cluster: str, service: str, new_pcr0: str) -> None:
-    """Register a new task-def revision with the pin moved, roll the service."""
-    running_td = subprocess.run(
-        [
-            "aws", "ecs", "describe-services",
-            "--region", region, "--cluster", cluster, "--services", service,
-            "--query", "services[0].taskDefinition", "--output", "text",
-        ],
-        capture_output=True, text=True, timeout=30, check=True,
-    ).stdout.strip()
-    td = json.loads(subprocess.run(
-        [
-            "aws", "ecs", "describe-task-definition",
-            "--region", region, "--task-definition", running_td,
-            "--query", "taskDefinition", "--output", "json",
-        ],
-        capture_output=True, text=True, timeout=30, check=True,
-    ).stdout)
-    for field in _TD_READONLY_FIELDS:
-        td.pop(field, None)
-    patched = 0
-    for container in td.get("containerDefinitions", []):
-        for entry in container.get("environment", []):
-            if entry.get("name") == AWS_MONITOR_PIN_ENV:
-                entry["value"] = new_pcr0
-                patched += 1
-    if patched == 0:
-        print(f"  {service}: no {AWS_MONITOR_PIN_ENV} in its env; nothing to repin")
-        return
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
-        json.dump(td, handle)
-        td_path = handle.name
-    os.chmod(td_path, 0o600)
-    try:
-        new_arn = json.loads(subprocess.run(
-            [
-                "aws", "ecs", "register-task-definition",
-                "--region", region, "--cli-input-json", f"file://{td_path}",
-                "--query", "taskDefinition.taskDefinitionArn", "--output", "json",
-            ],
-            capture_output=True, text=True, timeout=60, check=True,
-        ).stdout)
-    finally:
-        os.unlink(td_path)
-    subprocess.run(
-        [
-            "aws", "ecs", "update-service",
-            "--region", region, "--cluster", cluster, "--service", service,
-            "--task-definition", new_arn,
-        ],
-        capture_output=True, text=True, timeout=60, check=True,
-    )
-    print(f"  repinned {service} ({region}) to {new_pcr0[:16]}... via {new_arn.rsplit('/', 1)[-1]}")
+        print(f"AWS   {surface[2]} {message}")
+        if state != "ok":
+            raise ValueError(f"{surface[2]} does not accept the required PCR0 set")
+    return target
 
 
 def _git(*args: str) -> str | None:
@@ -525,9 +331,13 @@ def _fetch_at_origin(url: str, origin_hostname: str) -> bytes:
         connection.close()
 
 
-def live_aws() -> dict[str, str]:
+def live_aws(*, forward_port: int | None = None) -> dict[str, str]:
     """PCR0 and module id from the running Nitro enclave. Fails closed."""
-    envelope = cbor2.loads(_fetch(AWS_ATTESTATION_URL))
+    raw = (
+        _fetch_at_origin(f"https://{AWS_API_HOSTNAME}:{forward_port}/attestation", "127.0.0.1")
+        if forward_port else _fetch(AWS_ATTESTATION_URL)
+    )
+    envelope = cbor2.loads(raw)
     if not isinstance(envelope, list) or len(envelope) != 4:
         raise ValueError("AWS attestation is not a 4-element COSE_Sign1 envelope")
     document = cbor2.loads(envelope[2])
@@ -872,6 +682,12 @@ def write_azure_files(record: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--plane", choices=("all", "aws"), default="all",
+                        help="limit AWS releases to AWS reads and writes")
+    parser.add_argument("--aws-forward-port", type=int,
+                        help="capture one AWS instance through a localhost SSM TCP forward; retains API TLS SNI")
+    parser.add_argument("--check-published", action="store_true",
+                        help="require live AWS PCR0 in the local published set, and that entire set on both Fargate services")
     parser.add_argument("--write", action="store_true", help="write the trust-page records")
     parser.add_argument(
         "--keep-accepted",
@@ -892,60 +708,67 @@ def main() -> int:
         "--repin-aws-monitor",
         action="store_true",
         help=(
-            "when the AWS control plane's synthetic monitor pins a PCR0 other than the one "
-            "the fleet serves, update its pin in the same run (App Runner env change; no "
-            "enclave, no measurement). Without this flag a stale pin is reported loudly but "
-            "left alone."
+            "update the two serving Fargate PCR0 pin sets sequentially, preserving all other "
+            "task settings and verifying serving health. Requires --plane aws. Use "
+            "--keep-accepted during a transition; omit only after every enclave is verified."
         ),
     )
     args = parser.parse_args()
+    if args.repin_aws_monitor and args.plane != "aws":
+        parser.error("--repin-aws-monitor requires --plane aws")
+    if args.aws_forward_port is not None and not 1 <= args.aws_forward_port <= 65535:
+        parser.error("--aws-forward-port must be between 1 and 65535")
+    if args.check_published and (args.write or args.repin_aws_monitor):
+        parser.error("--check-published is read-only")
     commit = resolve_source_commit(args.source_commit)
 
     failures = []
+    if args.plane == "all":
+        try:
+            gcp = live_gcp()
+            print(f"GCP   digest   {gcp['image_digest']}")
+            print(f"      image    {gcp['image_reference']}")
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"GCP: {exc}")
     try:
-        gcp = live_gcp()
-        print(f"GCP   digest   {gcp['image_digest']}")
-        print(f"      image    {gcp['image_reference']}")
-    except Exception as exc:  # noqa: BLE001
-        failures.append(f"GCP: {exc}")
-    try:
-        aws = live_aws()
+        aws = live_aws(forward_port=args.aws_forward_port) if args.aws_forward_port else live_aws()
         print(f"AWS   PCR0     {aws['pcr0']}")
         print(f"      module   {aws['module_id']}")
     except Exception as exc:  # noqa: BLE001
         failures.append(f"AWS: {exc}")
         aws = None
-    try:
-        azure = live_azure()
-        for region in azure:
-            print(f"Azure hostdata {region['hostdata']}")
-            print(f"      issuer   {region['issuer']}")
-    except Exception as exc:  # noqa: BLE001
-        failures.append(f"Azure: {exc}")
-        azure = None
+    azure = None
+    if args.plane == "all":
+        try:
+            azure = live_azure()
+            for region in azure:
+                print(f"Azure hostdata {region['hostdata']}")
+                print(f"      issuer   {region['issuer']}")
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"Azure: {exc}")
 
+    aws_record = None
     if aws:
-        # The roll checklist's forgotten consumers: every control-plane
-        # surface that PINS the expected PCR0. A mismatch is reported on
-        # EVERY capture but fails nothing here — an Azure roll's publish must
-        # not be hostage to an AWS env var. The AWS roll's own checklist
-        # (release-aws-enclave.sh) passes --repin-aws-monitor so every
-        # surface moves in the same command that publishes the measurement.
-        state, message = monitor_pin_verdict(aws["pcr0"], *_read_aws_monitor_pin())
-        print(f"AWS   monitor  {message}")
-        if state == "mismatch" and args.repin_aws_monitor:
-            repin_aws_monitor(aws["pcr0"])
-        for region, cluster, service in AWS_FARGATE_PIN_SURFACES:
-            state, message = monitor_pin_verdict(
-                aws["pcr0"], *_read_fargate_pin(region, cluster, service)
-            )
-            print(f"AWS   {service} {message}")
-            if state == "mismatch" and args.repin_aws_monitor:
-                repin_fargate_surface(region, cluster, service, aws["pcr0"])
+        try:
+            aws_record = build_aws_record(aws, keep=args.keep_accepted, source_commit=commit)
+            required = ",".join(aws_record["accepted_pcr0s"])
+            if args.check_published:
+                required = (TRUST_DIR / "accepted-pcr0s-aws.txt").read_text().strip()
+                if aws["pcr0"] not in aws_fargate_pins.pin_set(required):
+                    raise ValueError("live AWS PCR0 is not in the published accepted set")
+            accepted = check_aws_pins(required, repin=args.repin_aws_monitor, keep=args.keep_accepted)
+            aws_record["accepted_pcr0s"] = accepted.split(",")
+            aws_record["release_state"] = "current" if len(aws_record["accepted_pcr0s"]) == 1 else "rolling"
+        except (ValueError, KeyError, TypeError, OSError):
+            # Never echo AWS payloads/errors, which can contain secret values.
+            failures.append("AWS: serving pin verification failed; no AWS artifacts written")
+            aws_record = None
 
     for failure in failures:
         print(f"FAILED {failure}", file=sys.stderr)
     if failures and not (aws or azure):
+        return 1
+    if args.plane == "aws" and failures:
         return 1
 
     if not args.write:
@@ -965,8 +788,8 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    if aws:
-        record = build_aws_record(aws, keep=args.keep_accepted, source_commit=commit)
+    if aws_record:
+        record = aws_record
         write_aws_files(record)
         # trust-page/pcr0.txt is the legacy path, live at
         # https://trust.trustedrouter.com/pcr0.txt and on the S3 mirror. It is
