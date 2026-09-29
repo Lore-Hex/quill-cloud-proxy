@@ -1,6 +1,7 @@
 {
   "accepted_pcr0s": [
-    "2df863e0b35b34ea74c9a5e62b68abef0d87f42f20e1221ca38c1829f8514173cdd6d847cd0a6240cf43582e464a35a2"
+    "2df863e0b35b34ea74c9a5e62b68abef0d87f42f20e1221ca38c1829f8514173cdd6d847cd0a6240cf43582e464a35a2",
+    "7d6139b59339e070513d0cf314074aca5ce86fc9fa62ad1854aad05718f5d198ef352160941598aace80fba91eacb3b6"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -12,10 +13,21 @@
     "prompt_output_storage": false
   },
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0ca2894db26b3ee70-enc01a0da09733c70fd",
+  "observed_module_id": "i-0405d179a9030fd64-enc01a0db93f2fc6c6b",
   "pcr0": "2df863e0b35b34ea74c9a5e62b68abef0d87f42f20e1221ca38c1829f8514173cdd6d847cd0a6240cf43582e464a35a2",
   "platform": "aws-nitro-enclaves",
-  "release_state": "current",
+  "release_state": "rolling",
+  "pending_release": {
+    "source_commit": "31749ed594e85f1cf05f9b7f327961d5ca28213d",
+    "source_commit_provenance": "operator-asserted",
+    "image_digest": "sha256:ef6d7b121cd91b2711bbf0b5219f2bb3b45542be6091d9d405d254753842f869",
+    "pcr0": "7d6139b59339e070513d0cf314074aca5ce86fc9fa62ad1854aad05718f5d198ef352160941598aace80fba91eacb3b6",
+    "region": "eu-west-3",
+    "observed_module_id": "i-0859baf213353573f-enc01a0ee4dded28cf0",
+    "observed_at": "2026-09-29T18:08:13Z",
+    "measurement_provenance": "Nitro attestation verified through SSM to an isolated standalone candidate: AWS root chain, expected PCR0, certificate/SPKI binding, TLS exporter binding, and same-socket follow-up passed. Candidate is outside the serving ASG, target groups, and routing DNS.",
+    "rollout_state": "public-trust-staged-only; serving ASGs and Fargate runtime pins remain unchanged. Top-level PCR0, source commit, and module ID describe the old serving release, not this pending candidate."
+  },
   "reproduce": "tools/verify-pcr0.sh",
   "source_commit": "3c0cb55932768a4ee78ad512e6da71c380465f3e",
   "source_commit_provenance": "operator-asserted",
