@@ -3,7 +3,9 @@
     "f13cc6c31f16490bfafa043af80cdddeaefdd0a5f9e59b5c922c813c46437c6f",
     "42f4fec29575e9f351ff084725ffba02ae14f0bcf6c9b0fbdb16b6de062bf746",
     "3c4d4e329d7768ff8adfebd59536b825548998895170a59c2c0fe185a34df20a",
-    "681a33cc7573d46aa6f44bbe3e4ee25c8c0d6db6ef62fc143738c6446a472340"
+    "681a33cc7573d46aa6f44bbe3e4ee25c8c0d6db6ef62fc143738c6446a472340",
+    "16dca8bd5afd704c3d35bcc32a6f5e0d2a09ddfeabe3383cb996d9284463050d",
+    "d0e73fe840f6b0b6e66f2a021534dd8f486056ff7d44610c31ea4b9378089e1d"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
   "attestation_format": "microsoft-azure-attestation-jwt",
@@ -42,13 +44,13 @@
   ],
   "release_state": "rolling",
   "pending_release": {
-    "source_commit": "389a27d09567afe6d11566d02b9b0120251e8ead",
-    "image_digest": "sha256:890eb60f2f87a938cbd4fc0abd3f89c8228ecb9519a8db78b9444a286f2fe073",
+    "source_commit": "7d2b9468b7061b78c1f4e1d01fa70c3007f2036e",
+    "image_digest": "sha256:c89a54b562a325fe36943787e762bf427ea4d719303f2f3064c1ebaa72aebc6b",
     "bundle_version": "febfe4311a6b4f4ea2d8c147e1f8cb5c",
     "measurement_provenance": "sha256 of generated CCE policies; live regional evidence remains recorded above until replacement and verification",
     "hostdata_by_region": {
-      "uaenorth": "3c4d4e329d7768ff8adfebd59536b825548998895170a59c2c0fe185a34df20a",
-      "australiaeast": "681a33cc7573d46aa6f44bbe3e4ee25c8c0d6db6ef62fc143738c6446a472340"
+      "uaenorth": "16dca8bd5afd704c3d35bcc32a6f5e0d2a09ddfeabe3383cb996d9284463050d",
+      "australiaeast": "d0e73fe840f6b0b6e66f2a021534dd8f486056ff7d44610c31ea4b9378089e1d"
     }
   },
   "source_commit": "31749ed594e85f1cf05f9b7f327961d5ca28213d",
