@@ -118,6 +118,11 @@ class TestDeployNamesOnlyProvisionedSecrets(unittest.TestCase):
             self.demanded,
         )
 
+    def test_tencent_is_provisioned_in_the_pinned_bundle(self) -> None:
+        name = "trustedrouter-tencent-tokenhub-api-key"
+        self.assertEqual(self.demanded["QUILL_TENCENT_SECRET"], name)
+        self.assertIn(name, sealer.read_manifest_names(MANIFEST_PATH.read_text()))
+
 
 class TestDeployParseIsHonest(unittest.TestCase):
     """The parse must distinguish a named secret from a deliberately dark one."""

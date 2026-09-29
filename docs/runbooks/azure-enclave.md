@@ -140,6 +140,13 @@ RESOURCE_GROUP=TR-TEE-DUBAI ./tools/azure-sync-secrets.sh --apply
 It prints the new version. **Pin it** — the version is part of the container's
 env and therefore part of the measurement. Shred the values file afterwards.
 
+The Tencent rollout uses bundle version `febfe4311a6b4f4ea2d8c147e1f8cb5c`.
+It preserves all 67 previous entries and adds the Tencent TokenHub key. Keep
+`QUILL_PRIVATEMODE_SECRET=trustedrouter-privatemode-api-key` and
+`QUILL_TELLUVIAN_SECRET=trustedrouter-telluvian-api-key` set when resealing so
+these existing optional entries are preserved too. The generated
+`tools/azure-bundle.manifest` records the exact names and immutable version.
+
 ### 3.4 Deploy
 
 ```bash
