@@ -7,6 +7,7 @@ package bootstrap
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -343,5 +344,35 @@ func TestFirstSetEnvErrorNamesTheOffendingVariable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "QUILL_ADVISOR_PROMPT_SECRET") {
 		t.Errorf("error does not name the variable: %v", err)
+	}
+}
+
+func TestTencentAzureSecretAssembly(t *testing.T) {
+	for _, value := range []string{" test-key\n", "", " \t"} {
+		t.Run(fmt.Sprintf("length-%d", len(value)), func(t *testing.T) {
+			validSecretEnv(t)
+			t.Setenv("QUILL_TENCENT_SECRET", "trustedrouter-tencent-tokenhub-api-key")
+			cfg, err := resolveSecretConfig("bootstrap/azure")
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := assembleBootstrapData(t.Context(), cfg, "bootstrap/azure", func(_ context.Context, name string) ([]byte, error) {
+				switch name {
+				case "tr-device-keys":
+					return []byte(`[]`), nil
+				case "trustedrouter-tencent-tokenhub-api-key":
+					return []byte(value), nil
+				default:
+					return []byte("other-test-key"), nil
+				}
+			})
+			if strings.TrimSpace(value) == "" {
+				if err == nil || !strings.Contains(err.Error(), "Tencent TokenHub key") {
+					t.Fatalf("blank Tencent bundle entry must fail: %v", err)
+				}
+			} else if err != nil || data.ProviderAPIKeys["tencent"] != "test-key" {
+				t.Fatalf("Tencent bundle entry was not loaded: %v", err)
+			}
+		})
 	}
 }

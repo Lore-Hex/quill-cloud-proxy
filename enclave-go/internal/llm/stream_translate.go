@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -69,12 +70,14 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 		}
 
 		var chunk struct {
+			Error         *json.RawMessage              `json:"error"`
 			ServiceTier   string                        `json:"service_tier"`
 			Citations     []string                      `json:"citations"`
 			SearchResults []qtypes.ProviderSearchResult `json:"search_results"`
 			Choices       []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Error   *json.RawMessage `json:"error"`
+					Content string           `json:"content"`
 					// Several Chinese OpenAI-compatible providers (Z.AI/Zhipu,
 					// Moonshot in some configs) emit chain-of-thought tokens
 					// in `reasoning_content` and only fill `content` for the
@@ -106,7 +109,21 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			if provider == "privatemode" {
 				return fmt.Errorf("llm/privatemode: malformed encrypted response chunk")
 			}
+			if provider == "tencent" {
+				return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub returned a malformed stream chunk"}
+			}
 			continue
+		}
+		if provider == "tencent" {
+			// TokenHub reports post-200 failures inside SSE before [DONE]. Do
+			// not convert them to a successful stop or expose upstream text.
+			hasError := chunk.Error != nil
+			for _, choice := range chunk.Choices {
+				hasError = hasError || choice.Delta.Error != nil
+			}
+			if hasError {
+				return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub stream failed"}
+			}
 		}
 		if chunk.ServiceTier != "" {
 			serviceTier = chunk.ServiceTier
@@ -189,6 +206,9 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	}
 	if provider == "privatemode" && (!sawDone || !sawFinish || usage == nil || usage.PromptTokens <= 0 || usage.CompletionTokens < 0) {
 		return fmt.Errorf("llm/privatemode: incomplete encrypted stream or missing billable usage")
+	}
+	if provider == "tencent" && (!sawDone || !sawFinish || usage == nil || usage.PromptTokens <= 0 || usage.CompletionTokens < 0) {
+		return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub stream is incomplete or missing billable usage"}
 	}
 
 	for _, index := range toolOrder {

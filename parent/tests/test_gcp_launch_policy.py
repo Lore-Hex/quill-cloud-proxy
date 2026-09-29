@@ -172,6 +172,7 @@ def test_provider_wave_secrets_are_injected_only_after_existence_check() -> None
         "QUILL_REKA_SECRET": "trustedrouter-reka-api-key",
         "QUILL_SAIL_RESEARCH_SECRET": "trustedrouter-sail-research-api-key",
         "QUILL_MANCER_SECRET": "trustedrouter-mancer-api-key",
+        "QUILL_TENCENT_SECRET": "trustedrouter-tencent-tokenhub-api-key",
     }
     assert "configure_optional_provider_secret()" in deploy
     assert "${PROVIDER_WAVE_TEE_ENV}" in deploy

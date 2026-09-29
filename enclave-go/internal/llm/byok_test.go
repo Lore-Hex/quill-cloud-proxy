@@ -55,6 +55,7 @@ func TestOpenAICompatibleBYOKProvidersIncludeTogether(t *testing.T) {
 		"xiaomi",
 		"stepfun",
 		"relace",
+		"tencent",
 	} {
 		if !isOpenAICompatibleBYOKProvider(provider) {
 			t.Fatalf("%s should be an OpenAI-compatible BYOK provider", provider)

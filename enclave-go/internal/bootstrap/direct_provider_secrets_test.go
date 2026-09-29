@@ -30,11 +30,12 @@ func TestResolveDirectProviderSecretNames(t *testing.T) {
 		t.Setenv(spec.SecretEnv, "")
 	}
 	t.Setenv("QUILL_NEXTBIT_SECRET", " trustedrouter-nextbit-api-key ")
+	t.Setenv("QUILL_TENCENT_SECRET", " trustedrouter-tencent-tokenhub-api-key ")
 	names, err := resolveDirectProviderSecretNames("bootstrap/test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(names) != 1 || names["nextbit"] != "trustedrouter-nextbit-api-key" {
+	if len(names) != 2 || names["nextbit"] != "trustedrouter-nextbit-api-key" || names["tencent"] != "trustedrouter-tencent-tokenhub-api-key" {
 		t.Fatalf("resolved names = %#v", names)
 	}
 }
@@ -43,8 +44,12 @@ func TestResolveDirectProviderSecretNamesRejectsWhitespace(t *testing.T) {
 	for _, spec := range directproviders.All() {
 		t.Setenv(spec.SecretEnv, "")
 	}
-	t.Setenv("QUILL_NEXTBIT_SECRET", " \t ")
-	if _, err := resolveDirectProviderSecretNames("bootstrap/test"); err == nil {
-		t.Fatal("whitespace-only secret name was accepted")
+	for _, env := range []string{"QUILL_NEXTBIT_SECRET", "QUILL_TENCENT_SECRET"} {
+		t.Run(env, func(t *testing.T) {
+			t.Setenv(env, " \t ")
+			if _, err := resolveDirectProviderSecretNames("bootstrap/test"); err == nil {
+				t.Fatal("whitespace-only secret name was accepted")
+			}
+		})
 	}
 }
