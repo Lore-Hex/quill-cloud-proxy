@@ -122,6 +122,11 @@ func invokeProviderStream(
 	var winningBytes int
 	var winningTTFBms, winningTotalMs int64
 	for i, option := range options {
+		if err := ctx.Err(); err != nil {
+			selectedRoute.SignalReadyWithoutSelection()
+			_ = pw.CloseWithError(err)
+			return
+		}
 		if option.Model == "" {
 			option.Model = req.Model
 		}

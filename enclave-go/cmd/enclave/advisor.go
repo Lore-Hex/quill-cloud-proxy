@@ -66,6 +66,14 @@ const maxAdvisorWorkerTimeoutMS = 180000
 const defaultAdvisorTimeoutMS = 90000
 const maxAdvisorTimeoutMS = 180000
 
+// Plato requests exceeded clients' 60-minute read timeout in production on
+// 2026-09-28/29. Leave time to finalize billing and return an accountable error.
+const defaultAdvisorRequestTimeout = 50 * time.Minute
+const defaultFusionAdvisorTimeout = 30 * time.Minute
+
+var advisorRequestTimeout = defaultAdvisorRequestTimeout
+var fusionAdvisorTimeout = defaultFusionAdvisorTimeout
+
 var defaultAdvisorWorkerModels = []string{
 	"cerebras/gpt-oss-120b",
 }
@@ -402,6 +410,9 @@ func maybeServeAdvisor(
 		config.BuiltInAdvisorPrompt = fallbackAdvisorPrompt
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, advisorRequestTimeout)
+	defer cancel()
+
 	workerModelsLog := strings.Join(config.WorkerModels, ",")
 	advisorModelsLog := strings.Join(config.AdvisorModels, ",")
 	if config.HidePublicMetadata {
@@ -692,6 +703,13 @@ func advisorPromptsRequired() bool {
 		(os.Getenv("QUILL_GCP_PROJECT_ID") != "" && os.Getenv("TR_ALLOW_DEFAULT_ADVISOR_PROMPTS") != "1")
 }
 
+func advisorRequestError(ctx context.Context, err error) error {
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return &adapter.AdapterError{Status: 504, Message: "advisor request deadline exceeded", Context: "advisor"}
+	}
+	return err
+}
+
 func serveAdvisorNonStreaming(
 	ctx context.Context,
 	conn io.Writer,
@@ -715,10 +733,11 @@ func serveAdvisorNonStreaming(
 		requestID,
 	)
 	if err != nil {
-		writeFusionError(ctx, conn, trGateway, err)
+		writeFusionError(ctx, conn, trGateway, advisorRequestError(ctx, err))
 		return
 	}
 	final, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err := runAdvisor(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, nil, 0, nil)
+	err = advisorRequestError(ctx, err)
 	if err != nil {
 		refundPartnerTopLevel(
 			ctx,
@@ -728,11 +747,11 @@ func serveAdvisorNonStreaming(
 			requestStarted,
 			req.Metadata,
 		)
-		if config.HidePublicMetadata {
+		if config.HidePublicMetadata && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "model request failed"), "router", retryHeadersFromControlPlaneError(err))
 			return
 		}
-		writeFusionError(ctx, conn, trGateway, err)
+		writeFusionError(ctx, conn, trGateway, advisorRequestError(ctx, err))
 		return
 	}
 	partnerSettlement, err := settlePartnerTopLevel(
@@ -746,8 +765,9 @@ func serveAdvisorNonStreaming(
 		requestStarted,
 		originalInput,
 	)
+	err = advisorRequestError(ctx, err)
 	if err != nil {
-		writeFusionError(ctx, conn, trGateway, err)
+		writeFusionError(ctx, conn, trGateway, advisorRequestError(ctx, err))
 		return
 	}
 	totalIn, totalOut := advisorUsageTotals(workerAttempts, advisorAttempts)
@@ -814,7 +834,7 @@ func serveAdvisorStreaming(
 		requestID,
 	)
 	if err != nil {
-		writeFusionError(ctx, conn, trGateway, err)
+		writeFusionError(ctx, conn, trGateway, advisorRequestError(ctx, err))
 		return
 	}
 	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
@@ -865,6 +885,7 @@ func serveAdvisorStreaming(
 		}
 	}
 	final, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err := runAdvisor(ctx, br, req, config, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, streamW, created, observer)
+	err = advisorRequestError(ctx, err)
 	if err != nil {
 		refundPartnerTopLevel(
 			ctx,
@@ -875,9 +896,12 @@ func serveAdvisorStreaming(
 			req.Metadata,
 		)
 		if config.HidePublicMetadata {
-			_ = writeHiddenAdvisorStreamError(statsW, requestID, req.Model, created)
+			err = writeHiddenAdvisorStreamError(statsW, requestID, req.Model, created)
 		} else {
-			_ = writeAdvisorStreamError(statsW, requestID, req.Model, created, err, workerAttempts, advisorAttempts)
+			err = writeAdvisorStreamError(statsW, requestID, req.Model, created, err, workerAttempts, advisorAttempts)
+		}
+		if err == nil {
+			_ = chunkW.Complete()
 		}
 		return
 	}
@@ -892,11 +916,15 @@ func serveAdvisorStreaming(
 		requestStarted,
 		originalInput,
 	)
+	err = advisorRequestError(ctx, err)
 	if err != nil {
 		if config.HidePublicMetadata {
-			_ = writeHiddenAdvisorStreamError(statsW, requestID, req.Model, created)
+			err = writeHiddenAdvisorStreamError(statsW, requestID, req.Model, created)
 		} else {
-			_ = writeAdvisorStreamError(statsW, requestID, req.Model, created, err, workerAttempts, advisorAttempts)
+			err = writeAdvisorStreamError(statsW, requestID, req.Model, created, err, workerAttempts, advisorAttempts)
+		}
+		if err == nil {
+			_ = chunkW.Complete()
 		}
 		return
 	}
@@ -977,6 +1005,9 @@ func runAdvisor(
 	totalAdviceCalls := 0
 	anyBudgetExhausted := false
 	for i, workerModel := range config.WorkerModels {
+		if err := ctx.Err(); err != nil {
+			return fusionCallResult{}, allWorkerAttempts, allAdvisorAttempts, totalAdviceCalls, anyBudgetExhausted, err
+		}
 		final, workers, advisors, adviceCalls, budgetExhausted, err := runAdvisorWorkerLoop(ctx, br, req, config, workerModel, i, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, streamW, streamCreated, observerFactory)
 		allWorkerAttempts = append(allWorkerAttempts, workers...)
 		allAdvisorAttempts = append(allAdvisorAttempts, advisors...)
@@ -999,6 +1030,9 @@ func runAdvisor(
 				"error": err.Error(),
 			})
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fusionCallResult{}, allWorkerAttempts, allAdvisorAttempts, totalAdviceCalls, anyBudgetExhausted, err
 	}
 	if lastErr != nil {
 		final, advisors, err := runAdvisorFinal(ctx, br, req, config, req.Messages, trGateway, secretCache, bearer, requestID, requestLogID, originalInput, streamW, streamCreated, observerFactory)
@@ -1056,6 +1090,9 @@ func runAdvisorWorkerLoop(
 	}
 	allowAdviceTool := adviceCalls < config.MaxAdviceCalls
 	for turn := 0; turn < config.MaxAdviceCalls+3; turn++ {
+		if err := ctx.Err(); err != nil {
+			return fusionCallResult{}, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, err
+		}
 		if streamW != nil {
 			_ = writeAdvisorStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
 				"event": "worker.started",
@@ -1561,6 +1598,9 @@ func runAdvisorFinal(
 	attempts := make([]fusionCallResult, 0, len(config.AdvisorModels))
 	var lastErr error
 	for i, advisorModel := range config.AdvisorModels {
+		if err := ctx.Err(); err != nil {
+			return fusionCallResult{}, attempts, err
+		}
 		if streamW != nil {
 			_ = writeAdvisorStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
 				"event": "advisor_final.started",
@@ -1723,7 +1763,15 @@ func runFusionAdvisorRequest(
 	requestLogID string,
 	originalInput any,
 ) (fusionCallResult, error) {
-	return runAdvisorFusionOrchestrationRequest(ctx, br, advisorReq, config, advisorModel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput)
+	ctx, cancel := context.WithTimeout(ctx, fusionAdvisorTimeout)
+	defer cancel()
+	result, err := runAdvisorFusionOrchestrationRequest(ctx, br, advisorReq, config, advisorModel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput)
+	// A completed (and settled) advice run stands even if its settlement finished
+	// after the bound; only a failure is reported as the bound expiring.
+	if err != nil && ctx.Err() != nil {
+		return result, ctx.Err()
+	}
+	return result, err
 }
 
 func runAdvisorFusionWorkerRequest(
