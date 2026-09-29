@@ -44,10 +44,10 @@ func TestFusionCallDrainIsBoundedWhenAProviderIgnoresCancel(t *testing.T) {
 		// cannot race a later test that swaps os.Stderr.
 		close(release)
 		deadline := time.Now().Add(5 * time.Second)
-		for providersInFlight.Load() != 0 && time.Now().Before(deadline) {
+		for fusionProvidersInFlight.Load() != 0 && time.Now().Before(deadline) {
 			time.Sleep(time.Millisecond)
 		}
-		if n := providersInFlight.Load(); n != 0 {
+		if n := fusionProvidersInFlight.Load(); n != 0 {
 			t.Errorf("%d provider goroutines still running after release", n)
 		}
 	})

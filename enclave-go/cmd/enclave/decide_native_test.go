@@ -10,8 +10,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
-	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/decide"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
@@ -344,39 +344,43 @@ func TestNativeDecideOptionsReachTheModelAndAnyChatModelWorks(t *testing.T) {
 	}
 }
 
-// waitForProviderGoroutines joins provider goroutines left by earlier requests:
-// they log to os.Stderr after their response, which races a stderr swap.
-func waitForProviderGoroutines(t *testing.T) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for providersInFlight.Load() != 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if n := providersInFlight.Load(); n != 0 {
-		t.Fatalf("%d provider goroutines still running", n)
-	}
-}
-
-// captureStderr runs fn and returns everything it wrote to os.Stderr.
+// captureStderr runs fn and returns everything written to the stderr descriptor
+// meanwhile. It redirects file descriptor 2, never the shared os.Stderr pointer:
+// provider goroutines from earlier requests can still be logging after their
+// tests return, and swapping the pointer raced them (a DATA RACE on main CI).
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
-	waitForProviderGoroutines(t)
-	original := os.Stderr
-	reader, writer, err := os.Pipe()
+	file, err := os.CreateTemp(t.TempDir(), "stderr-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Stderr = writer
-	done := make(chan string)
-	go func() {
-		raw, _ := io.ReadAll(reader)
-		done <- string(raw)
-	}()
+	defer file.Close()
+	stderrFD := int(os.Stderr.Fd())
+	originalFD, err := syscall.Dup(stderrFD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(originalFD)
+	if err := syscall.Dup2(int(file.Fd()), stderrFD); err != nil {
+		t.Fatal(err)
+	}
+	restored := false
+	restore := func() {
+		if !restored {
+			if err := syscall.Dup2(originalFD, stderrFD); err != nil {
+				t.Errorf("restore stderr: %v", err)
+			}
+			restored = true
+		}
+	}
+	defer restore()
 	fn()
-	waitForProviderGoroutines(t) // fn's own provider goroutines log to the pipe
-	os.Stderr = original
-	_ = writer.Close()
-	return <-done
+	restore()
+	raw, err := os.ReadFile(file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 func TestDecideLogsNeverCarryRequestContent(t *testing.T) {
