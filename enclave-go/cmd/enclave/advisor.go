@@ -1766,7 +1766,9 @@ func runFusionAdvisorRequest(
 	ctx, cancel := context.WithTimeout(ctx, fusionAdvisorTimeout)
 	defer cancel()
 	result, err := runAdvisorFusionOrchestrationRequest(ctx, br, advisorReq, config, advisorModel, trGateway, secretCache, bearer, requestID, requestLogID, originalInput)
-	if ctx.Err() != nil {
+	// A completed (and settled) advice run stands even if its settlement finished
+	// after the bound; only a failure is reported as the bound expiring.
+	if err != nil && ctx.Err() != nil {
 		return result, ctx.Err()
 	}
 	return result, err

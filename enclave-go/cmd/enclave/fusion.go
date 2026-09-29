@@ -2072,7 +2072,11 @@ func runAuthorizedFusionCallAttempt(
 	// (their deadlines cancel mid-stream). Other routes on this path, e.g. native
 	// decide, deliberately refund a transport error.
 	partialBillable := strings.HasPrefix(routeType, "fusion.") || strings.HasPrefix(routeType, "advisor.")
-	if providerErr != nil && (!partialBillable || result.Usage == nil || (result.Usage.InputTokens <= 0 && result.Usage.OutputTokens <= 0)) {
+	// Anthropic's input_tokens excludes cached input, so cache reads/writes are
+	// metered work too.
+	meteredPartial := result.Usage != nil && (result.Usage.InputTokens > 0 || result.Usage.OutputTokens > 0 ||
+		result.Usage.CacheReadInputTokens > 0 || result.Usage.CacheCreationInputTokens > 0)
+	if providerErr != nil && (!partialBillable || !meteredPartial) {
 		refundFusionCall(ctx, trGateway, authz, 502, "provider_error", requestStarted, req.Metadata)
 		return fusionCallResult{}, fusionProviderErrorForOrchestrationFallback(providerErr, routeType, req, authz, selectedRoute, options)
 	}
