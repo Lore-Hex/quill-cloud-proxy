@@ -76,19 +76,25 @@ read-only gate without rebuilding or pushing:
 bash tools/release-aws-enclave.sh --verify-only
 ```
 
-### 2. Point the launch template at the new tag, then roll ONE instance
+### 2. Launch an isolated candidate without replacing serving capacity
 
-Update `quill-enclave-lt` user-data in **eu-west-3** only, then replace a single
-instance. One instance, in the region carrying less traffic, so a bad image
-costs one host rather than the fleet.
+Create a candidate launch-template version in **eu-west-3** first. Launch one
+standalone EC2 candidate from it, outside the serving ASG and its load balancer.
+Do not change the serving ASG's launch-template version or replace its instances
+yet. Existing healthy capacity must remain intact.
 
 Clone the existing launch-template version and change only the enclave image
 reference. Preserve compressed user data, parent/pump images, secrets, IAM,
-networking, and health/failover configuration. Maintain healthy capacity and
-pause the refresh after the first replacement until step 3 is verified.
+networking, and health/failover configuration. Override the standalone
+candidate's instance tags with distinct non-production `Project` and `Name`
+values so tag-based discovery cannot promote it. Confirm the bootstrap does
+not register targets or write routing DNS. Verify the candidate is absent from
+ASG membership, all serving target groups, and routing DNS before probing it.
 
-The new instance will report `pcr0_mismatch` until step 3 — that is expected,
-and it is why only one is rolled.
+An ASG refresh checkpoint is not candidate isolation: an ASG can register a
+replacement with the load balancer before pausing. A candidate with an
+unpublished PCR0 must never carry normal traffic, even briefly. Use SSM only
+until step 3 is complete; do not register or promote the standalone candidate.
 
 ### 3. Learn the new PCR0 and widen the pin
 
@@ -126,9 +132,19 @@ trust files or deploy router code as part of this pin-only update.
 
 ### 4. Roll the rest
 
-Refresh the remaining eu-west-3 instance, then eu-west-1. Verify between
-regions rather than at the end. For every replacement, use an SSM forward and
-verify the new PCR0/module ID; then recheck the canonical endpoint and status:
+Only after the candidate's PCR0 is accepted by both runtime pin consumers and
+the signed public trust set, refresh the eu-west-3 ASG using the reviewed
+candidate launch-template version. Maintain 100% healthy capacity, enable
+rollback with explicit numbered desired configuration, and gate subsequent
+replacements on per-instance attestation and health. The standalone candidate
+stays outside production and can be terminated after that region is verified.
+
+Finish and verify eu-west-3 before starting eu-west-1. Use an isolated candidate
+there too, because a different regional host image/build toolchain must not be
+assumed to produce the same PCR0. If its verified PCR0 differs, publish and
+verify the expanded accepted set before any eu-west-1 replacement. For every
+replacement, use an SSM forward and verify the expected PCR0/module ID; then
+recheck the canonical endpoint and status:
 
 ```bash
 python3 tools/verify-attestation.py --api-host api-aws.trustedrouter.com --attested-cert-only
