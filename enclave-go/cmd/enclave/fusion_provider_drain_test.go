@@ -39,7 +39,18 @@ func TestFusionCallDrainIsBoundedWhenAProviderIgnoresCancel(t *testing.T) {
 	fusionProviderDrainTimeout = 30 * time.Millisecond
 	t.Cleanup(func() { fusionProviderDrainTimeout = old })
 	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
+	t.Cleanup(func() {
+		// Join the whole abandoned invocation, including its final logging, so it
+		// cannot race a later test that swaps os.Stderr.
+		close(release)
+		deadline := time.Now().Add(5 * time.Second)
+		for fusionProvidersInFlight.Load() != 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if n := fusionProvidersInFlight.Load(); n != 0 {
+			t.Errorf("%d provider goroutines still running after release", n)
+		}
+	})
 	provider := advisorTimeoutLLM(func(ctx context.Context, req *types.OpenAIChatRequest, out io.Writer) error {
 		if err := writeAnthropicTextTestStream(out, req.Model, "answer"); err != nil {
 			return err

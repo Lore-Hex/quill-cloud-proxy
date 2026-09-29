@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
@@ -1981,6 +1982,10 @@ func runFusionCallValidatedObservedAttempt(
 // fusionProviderDrainTimeout bounds the wait for a canceled provider goroutine.
 var fusionProviderDrainTimeout = 5 * time.Second
 
+// fusionProvidersInFlight counts provider goroutines (including their final
+// logging) that have not finished; tests use it to join an abandoned one.
+var fusionProvidersInFlight atomic.Int64
+
 func runAuthorizedFusionCallAttempt(
 	ctx context.Context,
 	br llm.Client,
@@ -2043,7 +2048,9 @@ func runAuthorizedFusionCallAttempt(
 		collectObserver = guard.Observe
 	}
 	providerDone := make(chan struct{})
+	fusionProvidersInFlight.Add(1)
 	go func() {
+		defer fusionProvidersInFlight.Add(-1)
 		defer close(providerDone)
 		invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
 	}()
@@ -2056,8 +2063,9 @@ func runAuthorizedFusionCallAttempt(
 	}
 	_ = pr.CloseWithError(closeErr)
 	cancelInvoke()
-	// Let the provider goroutine finish (it honours the cancel) so no attempt
-	// outlives the call that owns it; bounded in case a provider ignores ctx.
+	// Let the provider goroutine finish (it honours the cancel) so its attempt
+	// does not outlive the call that owns it. Bounded: a provider that ignores
+	// ctx can still outlive the call after fusionProviderDrainTimeout.
 	select {
 	case <-providerDone:
 	case <-time.After(fusionProviderDrainTimeout):
