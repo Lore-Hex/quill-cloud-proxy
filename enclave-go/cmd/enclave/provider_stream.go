@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
@@ -31,6 +32,11 @@ type providerInvocation struct {
 	cancel        context.CancelFunc
 }
 
+// providersInFlight counts provider goroutines, through their final logging,
+// that have not finished. The streaming server does not join its provider
+// goroutine, so tests that swap os.Stderr wait for this to reach zero.
+var providersInFlight atomic.Int64
+
 func startProviderInvocation(
 	ctx context.Context,
 	br llm.Client,
@@ -46,7 +52,9 @@ func startProviderInvocation(
 	selectedRoute := newSelectedRouteTracker()
 	done := make(chan struct{})
 	providerReq := *req
+	providersInFlight.Add(1)
 	go func() {
+		defer providersInFlight.Add(-1)
 		defer close(done)
 		invokeProviderStream(providerCtx, br, &providerReq, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID, true, true)
 	}()

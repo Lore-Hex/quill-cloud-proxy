@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/decide"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
@@ -343,9 +344,23 @@ func TestNativeDecideOptionsReachTheModelAndAnyChatModelWorks(t *testing.T) {
 	}
 }
 
+// waitForProviderGoroutines joins provider goroutines left by earlier requests:
+// they log to os.Stderr after their response, which races a stderr swap.
+func waitForProviderGoroutines(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for providersInFlight.Load() != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if n := providersInFlight.Load(); n != 0 {
+		t.Fatalf("%d provider goroutines still running", n)
+	}
+}
+
 // captureStderr runs fn and returns everything it wrote to os.Stderr.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
+	waitForProviderGoroutines(t)
 	original := os.Stderr
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -358,6 +373,7 @@ func captureStderr(t *testing.T, fn func()) string {
 		done <- string(raw)
 	}()
 	fn()
+	waitForProviderGoroutines(t) // fn's own provider goroutines log to the pipe
 	os.Stderr = original
 	_ = writer.Close()
 	return <-done

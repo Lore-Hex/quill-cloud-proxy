@@ -11,7 +11,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
@@ -1982,10 +1981,6 @@ func runFusionCallValidatedObservedAttempt(
 // fusionProviderDrainTimeout bounds the wait for a canceled provider goroutine.
 var fusionProviderDrainTimeout = 5 * time.Second
 
-// fusionProvidersInFlight counts provider goroutines (including their final
-// logging) that have not finished; tests use it to join an abandoned one.
-var fusionProvidersInFlight atomic.Int64
-
 func runAuthorizedFusionCallAttempt(
 	ctx context.Context,
 	br llm.Client,
@@ -2048,9 +2043,9 @@ func runAuthorizedFusionCallAttempt(
 		collectObserver = guard.Observe
 	}
 	providerDone := make(chan struct{})
-	fusionProvidersInFlight.Add(1)
+	providersInFlight.Add(1)
 	go func() {
-		defer fusionProvidersInFlight.Add(-1)
+		defer providersInFlight.Add(-1)
 		defer close(providerDone)
 		invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
 	}()
