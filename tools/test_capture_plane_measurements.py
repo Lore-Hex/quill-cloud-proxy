@@ -53,8 +53,11 @@ about that gap beyond its existence.
 from __future__ import annotations
 
 import base64
+import contextlib
 import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -492,6 +495,15 @@ class TestMonitorPinVerdict(unittest.TestCase):
         state, _ = capture.monitor_pin_verdict(self.LIVE, self.LIVE, None)
         self.assertEqual(state, "ok")
 
+    def test_transition_set_accepts_both_measurements(self) -> None:
+        old = "23" * 48
+        self.assertEqual(capture.monitor_pin_verdict(self.LIVE, old + ", " + self.LIVE, None)[0], "ok")
+        self.assertEqual(capture.monitor_pin_verdict(old + "," + self.LIVE, self.LIVE, None)[0], "mismatch")
+
+    def test_malformed_nonempty_pin_is_unknown(self) -> None:
+        for value in ("not-configured", self.LIVE + ",", "fe" * 24):
+            self.assertEqual(capture.monitor_pin_verdict(self.LIVE, value, None)[0], "unknown")
+
     def test_case_and_whitespace_do_not_fabricate_a_mismatch(self) -> None:
         state, _ = capture.monitor_pin_verdict(self.LIVE, f"  {self.LIVE.upper()} ", None)
         self.assertEqual(state, "ok")
@@ -517,6 +529,94 @@ class TestMonitorPinVerdict(unittest.TestCase):
         state, message = capture.monitor_pin_verdict(self.LIVE, None, None)
         self.assertEqual(state, "unknown")
         self.assertIn("binding-only", message)
+
+
+class AWSReleaseGateTests(unittest.TestCase):
+    OLD, NEW = "23" * 48, "fe" * 48
+
+    def test_forward_capture_preserves_api_hostname_and_uses_localhost(self):
+        raw = capture.cbor2.dumps([b"", {}, capture.cbor2.dumps({
+            "digest": "SHA384", "pcrs": {0: bytes.fromhex(self.NEW)}, "module_id": "instance"
+        }), b""])
+        with mock.patch.object(capture, "_fetch_at_origin", return_value=raw) as fetch, \
+             mock.patch.object(capture, "_fetch") as public:
+            self.assertEqual(capture.live_aws(forward_port=18444)["pcr0"], self.NEW)
+        fetch.assert_called_once_with("https://api-aws.trustedrouter.com:18444/attestation", "127.0.0.1")
+        public.assert_not_called()
+
+    def test_all_surfaces_preflight_before_any_repin(self):
+        with mock.patch.object(capture.aws_fargate_pins, "serving_pin", side_effect=[
+            {"pin": self.OLD, "release": "1234567", "digest": "digest"}, ValueError("unknown")]), \
+             mock.patch.object(capture.aws_fargate_pins, "repin") as repin, \
+             self.assertRaises(ValueError):
+            capture.check_aws_pins(self.NEW, repin=True, keep=True)
+        repin.assert_not_called()
+
+    def test_keep_accepted_preserves_runtime_pins_not_yet_in_artifact(self):
+        evidence = {"pin": self.OLD, "release": "1234567", "digest": "digest"}
+        calls = []
+        def repin(*args, expected):
+            calls.append(args)
+            evidence["pin"] = args[-1]
+        with mock.patch.object(capture.aws_fargate_pins, "serving_pin", side_effect=lambda *args: dict(evidence)), \
+             mock.patch.object(capture.aws_fargate_pins, "repin", side_effect=repin):
+            result = capture.check_aws_pins(self.NEW, repin=True, keep=True)
+        self.assertEqual(set(result.split(",")), {self.OLD, self.NEW})
+        self.assertEqual([call[:3] for call in calls], list(capture.AWS_FARGATE_PIN_SURFACES))
+        self.assertTrue(all(set(call[-1].split(",")) == {self.OLD, self.NEW} for call in calls))
+
+    def test_mixed_regional_releases_fail_before_mutating(self):
+        with mock.patch.object(capture.aws_fargate_pins, "serving_pin", side_effect=[
+            {"pin": self.OLD, "release": "1234567", "digest": "one"},
+            {"pin": self.OLD, "release": "7654321", "digest": "two"}]), \
+             mock.patch.object(capture.aws_fargate_pins, "repin") as repin, \
+             self.assertRaisesRegex(ValueError, "different"):
+            capture.check_aws_pins(self.NEW, repin=True, keep=True)
+        repin.assert_not_called()
+
+    def test_aws_only_failure_has_no_other_cloud_reads_or_artifact_writes(self):
+        with mock.patch("sys.argv", [str(SCRIPT), "--plane", "aws", "--write"]), \
+             mock.patch.object(capture, "resolve_source_commit", return_value="1234567"), \
+             mock.patch.object(capture, "live_aws", return_value={"pcr0": self.NEW, "module_id": "instance"}), \
+             mock.patch.object(capture, "live_gcp") as gcp, \
+             mock.patch.object(capture, "live_azure") as azure, \
+             mock.patch.object(capture, "write_aws_files") as write, \
+             mock.patch.object(capture, "write_azure_files") as write_azure, \
+             mock.patch.object(capture, "check_aws_pins", side_effect=ValueError("SECRET")), \
+             contextlib.redirect_stderr(io.StringIO()) as stderr, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(capture.main(), 1)
+        for call in (gcp, azure, write, write_azure):
+            call.assert_not_called()
+        self.assertNotIn("SECRET", stderr.getvalue())
+
+    def test_unpublished_measurement_fails_without_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "accepted-pcr0s-aws.txt").write_text(self.OLD)
+            with mock.patch("sys.argv", [str(SCRIPT), "--plane", "aws", "--check-published"]), \
+                 mock.patch.object(capture, "TRUST_DIR", Path(directory)), \
+                 mock.patch.object(capture, "resolve_source_commit", return_value="1234567"), \
+                 mock.patch.object(capture, "live_aws", return_value={"pcr0": self.NEW, "module_id": "instance"}), \
+                 mock.patch.object(capture, "check_aws_pins") as check, \
+                 contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(capture.main(), 1)
+            check.assert_not_called()
+
+    def test_release_verify_only_propagates_failure_and_never_builds(self):
+        release = SCRIPT.with_name("release-aws-enclave.sh")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "calls"
+            for command in ("python3", "aws", "docker"):
+                stub = root / command
+                stub.write_text('#!/bin/sh\nprintf "%s %s\\n" "${0##*/}" "$*" >> "$CALL_LOG"\nexit "$STUB_EXIT"\n')
+                stub.chmod(0o700)
+            for code in (0, 1):
+                env = {**os.environ, "PATH": str(root) + ":" + os.environ["PATH"],
+                       "CALL_LOG": str(log), "STUB_EXIT": str(code)}
+                result = subprocess.run(["bash", str(release), "--verify-only"], env=env, capture_output=True)
+                self.assertEqual(result.returncode, code)
+            calls = log.read_text().splitlines()
+            self.assertEqual(calls, ["python3 tools/capture-plane-measurements.py --plane aws --check-published"] * 2)
 
 
 if __name__ == "__main__":
