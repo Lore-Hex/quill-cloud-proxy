@@ -149,6 +149,22 @@ these existing optional entries are preserved too. The generated
 
 ### 3.4 Deploy
 
+For an existing region, drain its Traffic Manager endpoint before replacing
+the container. First verify the other region's health and attestation. Disable
+only the target endpoint, leaving its peer enabled:
+
+```bash
+az network traffic-manager endpoint update --resource-group tr-azure --profile-name trquill-azure-gw --name <dubai-or-sydney> --type externalEndpoints --endpoint-status Disabled --output none
+```
+
+Wait for the Traffic Manager TTL and the origin address TTL to expire before
+deleting the container. The current values are 30 seconds and 300 seconds;
+allow at least 330 seconds and confirm the shared hostname reaches the healthy
+peer. A stable ACI hostname does not make replacement instantaneous: recursive
+resolvers can retain the deleted container's IP even when Traffic Manager's
+TCP monitor reports Online. The September 29 rollout observed this explicitly.
+The deploy script does not perform this drain automatically.
+
 ```bash
 LOCATION=<region> RESOURCE_GROUP=TR-TEE-<REGION> MAA_ENDPOINT=<attest host> API_HOST=<api host> QUILL_AZURE_BUNDLE_VERSION=<version> TR_CONTROL_PLANE_BASE_URL="https://trustedrouter.com" ./tools/deploy-azure-aci.sh --apply all
 ```
@@ -168,6 +184,15 @@ order is load-bearing:
 * **narrow** closes the window — and only runs after `verify` passes.
 
 Dry run is the default; only `--apply` touches Azure.
+
+After origin-specific verification and key-policy narrowing succeed, re-enable
+that endpoint and verify its health plus the shared hostname again. On failure,
+leave it drained and restore the saved container definition and previous key
+policy; never drain or replace the healthy peer until recovery is verified.
+
+```bash
+az network traffic-manager endpoint update --resource-group tr-azure --profile-name trquill-azure-gw --name <dubai-or-sydney> --type externalEndpoints --endpoint-status Enabled --output none
+```
 
 ### 3.5 Publish the region
 
@@ -277,7 +302,7 @@ python3 tools/test_deploy_azure_aci.py && python3 tools/test_bootstrap_azure_reg
   Add cloud-specific envelopes before enabling BYOK on Azure; do not restore a
   Google credential as a shortcut.
 * **Traffic Manager is availability routing, not attestation routing.** The
-  shared hostname fails between UAE North and Southeast Asia, but each backend
+  shared hostname fails over between UAE North and Australia East, but each backend
   still needs independent attestation probes before it remains eligible.
 * **Attestation is probed by nonce only.** The full binding — cert fingerprint
   in the MAA document, exporter channel binding, same-socket follow-up — is

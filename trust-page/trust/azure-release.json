@@ -1,7 +1,5 @@
 {
   "accepted_hostdata": [
-    "1b6d04c7b8bed4ccbf372c0803aa07710a529be9b9c815e20d88dcb9c51089be",
-    "f21ac89db6c13c78fc66e56f75ecfa37778714e9521150d57e1eb08325baa314",
     "f13cc6c31f16490bfafa043af80cdddeaefdd0a5f9e59b5c922c813c46437c6f",
     "42f4fec29575e9f351ff084725ffba02ae14f0bcf6c9b0fbdb16b6de062bf746"
   ],
@@ -19,7 +17,7 @@
     "prompt_output_storage": false
   },
   "evidence_note": "MAA re-attests the SEV-SNP report; verifiers see Microsoft's assertion, not the raw hardware report or the AMD certificate chain.",
-  "hostdata": "1b6d04c7b8bed4ccbf372c0803aa07710a529be9b9c815e20d88dcb9c51089be",
+  "hostdata": "f13cc6c31f16490bfafa043af80cdddeaefdd0a5f9e59b5c922c813c46437c6f",
   "measurement_type": "sev-snp-hostdata-sha256",
   "platform": "azure-confidential-containers-sev-snp",
   "regions": [
@@ -27,7 +25,7 @@
       "attestation_issuer": "https://trquilluaen.uaen.attest.azure.net",
       "attestation_url": "https://api-azure.trustedrouter.com/attestation",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "1b6d04c7b8bed4ccbf372c0803aa07710a529be9b9c815e20d88dcb9c51089be",
+      "hostdata": "f13cc6c31f16490bfafa043af80cdddeaefdd0a5f9e59b5c922c813c46437c6f",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866",
       "origin_hostname": "quill-enclave-uaenorth.uaenorth.azurecontainer.io"
     },
@@ -35,23 +33,13 @@
       "attestation_issuer": "https://trquillsyd.eau.attest.azure.net",
       "attestation_url": "https://api-azure-syd.trustedrouter.com/attestation",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "f21ac89db6c13c78fc66e56f75ecfa37778714e9521150d57e1eb08325baa314",
+      "hostdata": "42f4fec29575e9f351ff084725ffba02ae14f0bcf6c9b0fbdb16b6de062bf746",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866",
       "origin_hostname": "quill-enclave-australiaeast.australiaeast.azurecontainer.io"
     }
   ],
-  "release_state": "rolling",
-  "pending_release": {
-    "source_commit": "31749ed594e85f1cf05f9b7f327961d5ca28213d",
-    "image_digest": "sha256:ec1c035e372621cddb31a83d115b5a3efe911dded2ec9785678f83921920832f",
-    "bundle_version": "febfe4311a6b4f4ea2d8c147e1f8cb5c",
-    "measurement_provenance": "sha256 of generated CCE policies; live regional evidence remains recorded above until replacement and verification",
-    "hostdata_by_region": {
-      "uaenorth": "f13cc6c31f16490bfafa043af80cdddeaefdd0a5f9e59b5c922c813c46437c6f",
-      "australiaeast": "42f4fec29575e9f351ff084725ffba02ae14f0bcf6c9b0fbdb16b6de062bf746"
-    }
-  },
-  "source_commit": "3c0cb55932768a4ee78ad512e6da71c380465f3e",
+  "release_state": "multi-region",
+  "source_commit": "31749ed594e85f1cf05f9b7f327961d5ca28213d",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
