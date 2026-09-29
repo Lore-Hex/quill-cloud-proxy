@@ -800,10 +800,13 @@ class TestAzureCloudBoundaryPreflight(DeployHarness):
             "trustedrouter-unsealed-stepfun-key",
         )
 
-    def test_tencent_stays_dark_until_the_bundle_is_resealed(self) -> None:
-        result = self.run_script("print-env", QUILL_TENCENT_SECRET="")
+    def test_tencent_uses_the_sealed_key_and_rejects_unsealed_overrides(self) -> None:
+        result = self.run_script("print-env")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(json.loads(result.stdout).get("QUILL_TENCENT_SECRET"))
+        self.assertEqual(
+            json.loads(result.stdout).get("QUILL_TENCENT_SECRET"),
+            "trustedrouter-tencent-tokenhub-api-key",
+        )
         result = self.run_script(
             "--apply", "template",
             QUILL_TENCENT_SECRET="trustedrouter-unsealed-tencent-tokenhub-key",
