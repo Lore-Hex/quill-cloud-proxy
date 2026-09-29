@@ -2007,27 +2007,17 @@ func runAuthorizedFusionCallAttempt(
 		refundFusionCall(ctx, trGateway, authz, 400, "fusion_adapter_error", requestStarted, req.Metadata)
 		return fusionCallResult{}, err
 	}
-	invokeCtx := ctx
+	invokeCtx, cancelInvoke := context.WithCancel(ctx)
+	defer cancelInvoke()
 	if strings.HasPrefix(routeType, "fusion.") {
 		invokeCtx = streamhttp.WithFusionTimeout(invokeCtx)
 	}
-	cancelInvoke := func() {}
 	if invokeTimeout > 0 {
-		var cancel context.CancelFunc
-		invokeCtx, cancel = context.WithTimeout(invokeCtx, invokeTimeout)
-		cancelInvoke = cancel
+		var cancelTimeout context.CancelFunc
+		invokeCtx, cancelTimeout = context.WithTimeout(invokeCtx, invokeTimeout)
+		defer cancelTimeout()
 	}
 	overthinking := fusionOverthinkingConfig(req.Model, routeType, allowOverthinkingRescue, fusionIsSynthCodeSubrequest(req))
-	if overthinking.enabled {
-		var cancel context.CancelFunc
-		invokeCtx, cancel = context.WithCancel(invokeCtx)
-		previousCancel := cancelInvoke
-		cancelInvoke = func() {
-			cancel()
-			previousCancel()
-		}
-	}
-	defer cancelInvoke()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
 	// Preserve actual upstream attempts even on errors, so callers can aggregate
@@ -2051,6 +2041,14 @@ func runAuthorizedFusionCallAttempt(
 	}
 	go invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
 	result, err := adapter.CollectAnthropicTextWithObserver(pr, collectObserver)
+	// The collector can stop before the provider (including at message_stop).
+	// Release a blocked Write before canceling the remaining upstream work.
+	closeErr := err
+	if closeErr == nil {
+		closeErr = io.ErrClosedPipe
+	}
+	_ = pr.CloseWithError(closeErr)
+	cancelInvoke()
 	if guard != nil && guard.Tripped() {
 		refundFusionCall(ctx, trGateway, authz, 502, "fusion_overthinking_budget", requestStarted, req.Metadata)
 		if overthinking.allowRescue {
@@ -2703,6 +2701,9 @@ func authorizeFusionCall(
 	routeType string,
 	idempotencyKey string,
 ) (*trustedrouter.Authorization, []llm.InvokeOptions, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	if strings.HasPrefix(routeType, "fusion.") && routeType != "fusion.final" {
 		if req.MaxTokens == nil || *req.MaxTokens <= 0 {
 			req.MaxTokens = fusionInnerMaxTokens(0)
