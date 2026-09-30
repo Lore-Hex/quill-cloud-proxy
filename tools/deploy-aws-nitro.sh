@@ -830,6 +830,7 @@ allowlist:
   - {address: api.inference.wandb.ai,           port: 443}
   - {address: inference.api.nscale.com,         port: 443}
   - {address: api.regolo.ai,                   port: 443}
+  - {address: api.lyceum.technology,            port: 443}
   - {address: api.privatemode.ai,              port: 443}
   - {address: kdsintf.amd.com,                 port: 443}
   - {address: certificates.trustedservices.intel.com, port: 443}
@@ -980,6 +981,7 @@ write_vsock_unit 8071 integrate.api.nvidia.com
 write_vsock_unit 8072 api.inference.wandb.ai
 write_vsock_unit 8073 inference.api.nscale.com
 write_vsock_unit 8087 api.regolo.ai
+write_vsock_unit 8103 api.lyceum.technology
 write_vsock_unit 8100 api.privatemode.ai
 write_vsock_unit 8101 kdsintf.amd.com
 write_vsock_unit 8102 certificates.trustedservices.intel.com

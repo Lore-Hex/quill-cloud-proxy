@@ -114,6 +114,7 @@ NVIDIA_NIM_SECRET="${NVIDIA_NIM_SECRET:-trustedrouter-nvidia-nim-api-key}"
 WANDB_SECRET="${WANDB_SECRET:-trustedrouter-wandb-api-key}"
 NSCALE_SECRET="${NSCALE_SECRET:-trustedrouter-nscale-api-key}"
 REGOLO_SECRET="${REGOLO_SECRET:-trustedrouter-regolo-api-key}"
+LYCEUM_SECRET="${LYCEUM_SECRET:-trustedrouter-lyceum-api-key}"
 PRIVATEMODE_SECRET="${PRIVATEMODE_SECRET:-trustedrouter-privatemode-api-key}"
 CONFIDENTIAL_AI_SECRET="${CONFIDENTIAL_AI_SECRET:-trustedrouter-confidential-ai-api-key}"
 SCALEDOWN_SECRET="${SCALEDOWN_SECRET:-trustedrouter-scaledown-api-key}"
@@ -280,6 +281,7 @@ for secret in \
   "$WANDB_SECRET" \
   "$NSCALE_SECRET" \
   "$REGOLO_SECRET" \
+  "$LYCEUM_SECRET" \
   "$PRIVATEMODE_SECRET" \
   "$CONFIDENTIAL_AI_SECRET" \
   "$SCALEDOWN_SECRET" \
