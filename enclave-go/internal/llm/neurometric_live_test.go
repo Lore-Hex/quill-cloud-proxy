@@ -46,7 +46,7 @@ func TestLiveNeurometricDecisionMetadata(t *testing.T) {
 					result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage, 123, result.FinishReason, nil, nil, result.Decision)
 			}
 		}
-		if err != nil || result.Decision["answer"] != "billing" || result.Decision["confidence"] == nil || result.Decision["probabilities"] == nil || result.Usage == nil || result.Usage.InputTokens <= 0 {
+		if err != nil || result.Decision["answer"] != "billing" || result.Decision["confidence"] == nil || result.Decision["probabilities"] == nil || result.Usage == nil || result.Usage.InputTokens <= 0 || result.Usage.OutputTokens != 0 {
 			t.Fatalf("stream=%t decision/usage round-trip failed error_type=%T", stream, err)
 		}
 		if !strings.Contains(out.String(), `"decision"`) || !strings.Contains(out.String(), `"probabilities"`) {
