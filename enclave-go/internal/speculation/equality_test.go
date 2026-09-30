@@ -3,6 +3,7 @@ package speculation
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -82,6 +83,7 @@ func TestEqualValues(t *testing.T) {
 	sliceCycle[0] = sliceCycle
 	// Reusing the starting pointer with another length is a distinct slice view.
 	sharedMap := map[string]any{"x": int64(1)}
+	emptyMap, emptySlice := map[string]any{}, make([]any, 0, 1)
 	left := []any{int64(0), int64(1)}
 	right := []any{int64(0), int64(2)}
 	cases := []struct {
@@ -89,6 +91,16 @@ func TestEqualValues(t *testing.T) {
 		a, b any
 		want bool
 	}{
+		{"shared_map_left", []any{sharedMap, sharedMap}, []any{map[string]any{"x": int64(1)}, map[string]any{"x": int64(1)}}, false},
+		{"shared_map_right", []any{map[string]any{"x": int64(1)}, map[string]any{"x": int64(1)}}, []any{sharedMap, sharedMap}, false},
+		{"shared_slice_left", []any{left, left}, []any{[]any{int64(0), int64(1)}, []any{int64(0), int64(1)}}, false},
+		{"shared_slice_right", []any{[]any{int64(0), int64(1)}, []any{int64(0), int64(1)}}, []any{left, left}, false},
+		{"independent_views", []any{left[:1], left}, []any{[]any{int64(0)}, []any{int64(0), int64(1)}}, true},
+		{"empty_containers", []any{[]any{}, []any{}, map[string]any{}, map[string]any{}, map[string]any(nil), map[string]any(nil)}, []any{[]any{}, []any(nil), map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{}}, true},
+		{"shared_empty_map", []any{emptyMap, emptyMap}, []any{map[string]any{}, map[string]any{}}, false},
+		{"shared_empty_slice", []any{emptySlice, emptySlice}, []any{[]any{}, []any{}}, false},
+		{"shared_empty_slice_right", []any{[]any{}, []any{}}, []any{emptySlice, emptySlice}, false},
+		{"same_tree", []any{sharedMap, left}, []any{sharedMap, left}, true},
 		{"nil", nil, nil, true},
 		{"nil_type", nil, false, false},
 		{"bool", true, true, true},
@@ -120,25 +132,153 @@ func TestEqualValues(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := equal(c.a, c.b); got != c.want {
+			if got := equalWithin(t, c.a, c.b, time.Second); got != c.want {
 				t.Fatalf("want %v, got %v", c.want, got)
 			}
 		})
 	}
 }
 
+// The time bound also kills missing-identity mutations without hanging a run.
+func equalWithin(t *testing.T, a, b any, limit time.Duration) bool {
+	t.Helper()
+	type outcome struct {
+		value      bool
+		panicValue any
+	}
+	result := make(chan outcome, 1)
+	start := time.Now()
+	go func() {
+		var got outcome
+		defer func() { got.panicValue = recover(); result <- got }()
+		got.value = equal(a, b)
+	}()
+	select {
+	case got := <-result:
+		if got.panicValue != nil {
+			t.Fatalf("comparison panicked: %v", got.panicValue)
+		}
+		t.Logf("comparison: %s", time.Since(start))
+		return got.value
+	case <-time.After(limit):
+		t.Fatalf("comparison exceeded %s", limit)
+		return false
+	}
+}
+
 func TestEqualDeep(t *testing.T) {
+	for _, depth := range []int{10000, 100000} {
+		t.Run(fmt.Sprint(depth), func(t *testing.T) {
+			var a, b, different any = int64(0), int64(0), int64(1)
+			for i := 0; i < depth; i++ {
+				if i%2 == 0 {
+					a, b, different = []any{a}, []any{b}, []any{different}
+				} else {
+					a, b, different = map[string]any{"x": a}, map[string]any{"x": b}, map[string]any{"x": different}
+				}
+			}
+			if !equalWithin(t, a, b, 10*time.Second) || equalWithin(t, a, different, 10*time.Second) {
+				t.Fatal("deep equality")
+			}
+		})
+	}
+}
+
+func TestEqualWide(t *testing.T) {
+	for _, size := range []int{100000, 1000000} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			// Root plus size-1 scalar leaves: exactly size nodes per tree.
+			a, b := make([]any, size-1), make([]any, size-1)
+			for i := range a {
+				a[i], b[i] = i, i
+			}
+			if !equalWithin(t, a, b, 10*time.Second) {
+				t.Fatal("wide tree equality")
+			}
+			b[len(b)-1] = -1
+			if equalWithin(t, a, b, 10*time.Second) {
+				t.Fatal("wide tree mismatch")
+			}
+		})
+	}
+	// Also exercise wide objects and the identity sets, not just scalar leaves.
+	t.Run("object_containers_100000", func(t *testing.T) {
+		a, b := map[string]any{}, map[string]any{}
+		for i := 0; i < 100000; i++ {
+			k := fmt.Sprint(i)
+			a[k], b[k] = []any{i}, []any{i}
+		}
+		if !equalWithin(t, a, b, 10*time.Second) {
+			t.Fatal("wide object equality")
+		}
+	})
+}
+
+func TestEqualMemberOrder(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
-			t.Errorf("equality must not panic: %v", r)
+			t.Errorf("comparison panicked: %v", r)
 		}
 	}()
-	var a, b, different any = int64(0), int64(0), int64(1)
-	for i := 0; i < 10000; i++ {
-		a, b, different = []any{a}, []any{b}, []any{different}
+	a, b := map[string]any{}, map[string]any{}
+	for i := 0; i < 64; i++ {
+		a[fmt.Sprint(i)] = map[string]any{"a": i, "b": []any{i, true}}
+		j := 63 - i
+		b[fmt.Sprint(j)] = map[string]any{"b": []any{j, true}, "a": j}
 	}
-	if !equal(a, b) || equal(a, different) {
-		t.Fatal("deep equality")
+	for i := 0; i < 100; i++ {
+		if !equal(a, b) {
+			t.Fatal("member order changed equality")
+		}
+	}
+}
+
+func TestEqualRings(t *testing.T) {
+	ring := func(size int) []any {
+		nodes := make([][]any, size)
+		for i := range nodes {
+			nodes[i] = []any{nil}
+		}
+		for i := range nodes {
+			nodes[i][0] = nodes[(i+1)%size]
+		}
+		return nodes[0]
+	}
+	for _, size := range []int{800, 801} {
+		t.Run(fmt.Sprintf("800_vs_%d", size), func(t *testing.T) {
+			if equalWithin(t, ring(800), ring(size), time.Second) {
+				t.Fatal("rings are not JSON trees")
+			}
+		})
+	}
+}
+
+func TestEqualCross(t *testing.T) {
+	// Exact cross(10) graph from the combined review reproduction.
+	const k = 10
+	var tree, left func(int) any
+	tree = func(n int) any {
+		if n == 0 {
+			return 0
+		}
+		return []any{tree(n - 1), tree(n - 1)}
+	}
+	left = func(n int) any {
+		if n > 0 {
+			return []any{left(n - 1), left(n - 1)}
+		}
+		var x any = 0
+		for i := 0; i < k; i++ {
+			x = []any{x, x}
+		}
+		return x
+	}
+	a, b := left(k), tree(k)
+	for i := 0; i < k; i++ {
+		b = []any{b, b}
+	}
+	if equalWithin(t, a, b, time.Second) || equalWithin(t, b, a, time.Second) {
+		t.Fatal("cross-shared DAGs are not JSON trees")
 	}
 }
 
@@ -160,18 +300,18 @@ func TestEqualSharedDAG(t *testing.T) {
 			other[k] = v
 		}
 		other["extra"] = b
-		// A timeout makes loss of memoization fail promptly even at depth 30.
+		// A timeout bounds regressions that expand a shared graph into a tree.
 		result := make(chan bool, 1)
 		start := time.Now()
 		go func() {
 			same, err1 := VerifyAcceptance(map[string]any{"authorization": auth}, h.descriptor, auth)
 			independent, err2 := VerifyAcceptance(map[string]any{"authorization": other}, h.descriptor, auth)
-			result <- same == "ordinary" && independent == "ordinary" && err1 == nil && err2 == nil
+			result <- same == "" && independent == "" && err1 == ProtocolError("authorization") && err2 == ProtocolError("authorization")
 		}()
 		select {
 		case ok := <-result:
 			if !ok {
-				t.Fatal("shared subtree equality")
+				t.Fatal("shared subtrees must refuse authorization")
 			}
 			t.Logf("depth-30 DAG maps=%v: %s", maps, time.Since(start))
 		case <-time.After(time.Second):

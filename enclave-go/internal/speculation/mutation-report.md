@@ -253,19 +253,19 @@ Every mutant ran the full 442 protocol + 24 verdict corpus, fixture pins and equ
 | configured key error leaks base64 | red | true | TestLiterals/key_zero_public |
 | equality unsupported values | red | true | TestEqualValues/unsupported |
 | equality depth cutoff | red | true | TestLiterals/acceptance_depth_130_unmarked |
-| equality exit frames | red | true | TestEqualSharedDAG |
-| equality completed memo | red | true | TestEqualSharedDAG |
-| equality active cleanup | red | true | TestEqualSharedDAG |
-| equality active marking | red | true | TestEqualValues/map_cycle |
+| equality identity sets removed | red | true | TestEqualRings/800_vs_801 |
+| equality repeated containers accepted | red | true | TestEqualSharedDAG |
+| equality left map identity ignored | red | true | TestEqualValues/shared_map_left |
+| equality right map identity ignored | red | true | TestEqualValues/shared_map_right |
 | equality empty traversal | red | true | TestLiterals/response_nested_order |
 | equality successful completion | red | true | TestLiterals/acceptance_depth_130_unmarked |
-| equality map pair identity | red | true | TestEqualValues/map_right_identity |
-| equality map cycle guard | red | true | TestEqualValues/map_cycle |
-| equality slice pair identity | red | true | TestEqualValues/slice_right_identity |
-| equality slice cycle guard | red | true | TestEqualValues/slice_cycle |
-| equality slice view length | red | true | TestEqualValues/slice_views |
-| equality map exit frame | red | true | TestEqualSharedDAG |
-| equality slice exit frame | red | true | TestEqualSharedDAG |
+| equality input identity sets merged | red | true | TestEqualValues/same_tree |
+| equality left slice identity ignored | red | true | TestEqualValues/shared_slice_left |
+| equality right slice identity ignored | red | true | TestEqualValues/shared_slice_right |
+| equality slice view length | red | true | TestEqualValues/independent_views |
+| equality member order dependent | red | true | TestEqualMemberOrder |
+| equality empty map identity ignored | red | true | TestEqualValues/shared_empty_map |
 | equality map children | red | true | TestLiterals/response_nested_bool_int |
+| equality empty slice identity ignored | red | true | TestEqualValues/shared_empty_slice |
 
 Red: 252; survived: 11; build-broken: 0; selected literal not red: 11.

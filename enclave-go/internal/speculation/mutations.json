@@ -2791,54 +2791,56 @@
       "name": "equality depth cutoff",
       "file": "json.go",
       "function": "equal",
-      "before": "var p pair",
-      "after": "require(len(active) <= 128, \"input\"); var p pair",
+      "before": "switch x := f.a.(type) {",
+      "after": "require(len(leftSeen) <= 128, \"input\"); switch x := f.a.(type) {",
       "literal": "TestLiterals/acceptance_depth_130_unmarked",
       "router_rules": []
     },
     {
-      "name": "equality exit frames",
+      "name": "equality identity sets removed",
       "file": "json.go",
       "function": "equal",
-      "before": "if f.exiting {",
-      "after": "if f.exiting && false {",
-      "literal": "TestEqualSharedDAG",
-      "router_rules": [
-        190
-      ]
-    },
-    {
-      "name": "equality completed memo",
-      "file": "json.go",
-      "function": "equal",
-      "before": "completed[f.pair] = true",
-      "after": "completed[f.pair] = false",
-      "literal": "TestEqualSharedDAG",
+      "before": "seen[id] = true",
+      "after": "// seen[id] = true",
+      "literal": "TestEqualRings/800_vs_801",
       "router_rules": [
         189,
-        196
+        196,
+        198
       ]
     },
     {
-      "name": "equality active cleanup",
+      "name": "equality repeated containers accepted",
       "file": "json.go",
       "function": "equal",
-      "before": "delete(active, f.pair)",
-      "after": "// delete(active, f.pair)",
+      "before": "if seen[id] {\n\t\t\treturn false",
+      "after": "if seen[id] {\n\t\t\treturn true",
       "literal": "TestEqualSharedDAG",
       "router_rules": [
+        190,
         197
       ]
     },
     {
-      "name": "equality active marking",
+      "name": "equality left map identity ignored",
       "file": "json.go",
       "function": "equal",
-      "before": "active[p] = true",
-      "after": "completed[p] = true",
-      "literal": "TestEqualValues/map_cycle",
+      "before": "!visit(leftSeen, identity{pointer: reflect.ValueOf(x).UnsafePointer()})",
+      "after": "false",
+      "literal": "TestEqualValues/shared_map_left",
       "router_rules": [
-        198
+        195
+      ]
+    },
+    {
+      "name": "equality right map identity ignored",
+      "file": "json.go",
+      "function": "equal",
+      "before": "!visit(rightSeen, identity{pointer: reflect.ValueOf(y).UnsafePointer()})",
+      "after": "false",
+      "literal": "TestEqualValues/shared_map_right",
+      "router_rules": [
+        195
       ]
     },
     {
@@ -2864,45 +2866,34 @@
       ]
     },
     {
-      "name": "equality map pair identity",
+      "name": "equality input identity sets merged",
       "file": "json.go",
       "function": "equal",
-      "before": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer()}",
-      "after": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(x).UnsafePointer()}",
-      "literal": "TestEqualValues/map_right_identity",
+      "before": "leftSeen, rightSeen := map[identity]bool{}, map[identity]bool{}",
+      "after": "leftSeen := map[identity]bool{}; rightSeen := leftSeen",
+      "literal": "TestEqualValues/same_tree",
       "router_rules": [
-        195
+        199
       ]
     },
     {
-      "name": "equality map cycle guard",
+      "name": "equality left slice identity ignored",
       "file": "json.go",
       "function": "equal",
-      "before": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer()}\n\t\t\tif active[p] {\n\t\t\t\treturn false",
-      "after": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer()}\n\t\t\tif active[p] {\n\t\t\t\treturn true",
-      "literal": "TestEqualValues/map_cycle",
+      "before": "cap(x) > 0 && !visit",
+      "after": "false && cap(x) > 0 && !visit",
+      "literal": "TestEqualValues/shared_slice_left",
       "router_rules": [
         191
       ]
     },
     {
-      "name": "equality slice pair identity",
+      "name": "equality right slice identity ignored",
       "file": "json.go",
       "function": "equal",
-      "before": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer(), length: len(x), array: true}",
-      "after": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(x).UnsafePointer(), length: len(x), array: true}",
-      "literal": "TestEqualValues/slice_right_identity",
-      "router_rules": [
-        195
-      ]
-    },
-    {
-      "name": "equality slice cycle guard",
-      "file": "json.go",
-      "function": "equal",
-      "before": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer(), length: len(x), array: true}\n\t\t\tif active[p] {\n\t\t\t\treturn false",
-      "after": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer(), length: len(x), array: true}\n\t\t\tif active[p] {\n\t\t\t\treturn true",
-      "literal": "TestEqualValues/slice_cycle",
+      "before": "cap(y) > 0 && !visit",
+      "after": "false && cap(y) > 0 && !visit",
+      "literal": "TestEqualValues/shared_slice_right",
       "router_rules": [
         191
       ]
@@ -2913,27 +2904,28 @@
       "function": "equal",
       "before": "length: len(x), array: true",
       "after": "array: true",
-      "literal": "TestEqualValues/slice_views",
+      "literal": "TestEqualValues/independent_views",
       "router_rules": []
     },
     {
-      "name": "equality map exit frame",
+      "name": "equality member order dependent",
       "file": "json.go",
       "function": "equal",
-      "before": "sort.Strings(keys)\n\t\t\tstack = append(stack, frame{exiting: true, pair: p})",
-      "after": "sort.Strings(keys)",
-      "literal": "TestEqualSharedDAG",
+      "before": "for k := range x {\n\t\t\t\tif _, ok := y[k]; !ok {\n\t\t\t\t\treturn false\n\t\t\t\t}\n\t\t\t\tstack = append(stack, frame{a: x[k], b: y[k]})\n\t\t\t}",
+      "after": "rightKeys := make([]string, 0, len(y)); for k := range y { rightKeys = append(rightKeys, k) }; index := 0\n\t\t\tfor k := range x { stack = append(stack, frame{a: x[k], b: y[rightKeys[index]]}); index++ }",
+      "literal": "TestEqualMemberOrder",
       "router_rules": [
-        199
+        192,
+        200
       ]
     },
     {
-      "name": "equality slice exit frame",
+      "name": "equality empty map identity ignored",
       "file": "json.go",
       "function": "equal",
-      "before": "stack = append(stack, frame{exiting: true, pair: p})\n\t\t\tfor i := len(x)",
-      "after": "for i := len(x)",
-      "literal": "TestEqualSharedDAG",
+      "before": "if id.pointer == nil {",
+      "after": "if id.pointer == nil || !id.array {",
+      "literal": "TestEqualValues/shared_empty_map",
       "router_rules": [
         199
       ]
@@ -2949,6 +2941,15 @@
         192,
         200
       ]
+    },
+    {
+      "name": "equality empty slice identity ignored",
+      "file": "json.go",
+      "function": "equal",
+      "before": "cap(x) > 0 && !visit",
+      "after": "len(x) > 0 && !visit",
+      "literal": "TestEqualValues/shared_empty_slice",
+      "router_rules": []
     }
   ]
 }

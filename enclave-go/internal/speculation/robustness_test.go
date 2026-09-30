@@ -141,9 +141,20 @@ func TestMutationInventory(t *testing.T) {
 	if err = json.Unmarshal(raw, &inventory); err != nil {
 		t.Fatal(err)
 	}
-	cases := map[string]bool{"TestFixturePins": true, "TestEqualSharedDAG": true}
-	for _, name := range []string{"unsupported", "map_cycle", "slice_cycle", "slice_views", "map_right_identity", "slice_right_identity"} {
-		cases["TestEqualValues/"+name] = true
+	cases := map[string]bool{
+		"TestEqualMemberOrder":               true,
+		"TestEqualRings/800_vs_801":          true,
+		"TestEqualSharedDAG":                 true,
+		"TestEqualValues/independent_views":  true,
+		"TestEqualValues/same_tree":          true,
+		"TestEqualValues/shared_empty_slice": true,
+		"TestEqualValues/shared_empty_map":   true,
+		"TestEqualValues/shared_map_left":    true,
+		"TestEqualValues/shared_map_right":   true,
+		"TestEqualValues/shared_slice_left":  true,
+		"TestEqualValues/shared_slice_right": true,
+		"TestEqualValues/unsupported":        true,
+		"TestFixturePins":                    true,
 	}
 	for _, v := range loadFixture(t, "protocol-vectors.json")["cases"].([]any) {
 		cases["TestLiterals/"+s(m(v)["name"])] = true

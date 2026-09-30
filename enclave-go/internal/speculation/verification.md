@@ -1,76 +1,86 @@
-# PR 2a round 2 verification record
+# Linear-time caller-value equality verification
 
 Changes are confined to `internal/speculation/`; the package remains pure and
-unwired. No git writes were performed. HEAD remains `207d9856`; round 2 changes
-are uncommitted.
+unwired. Changes are uncommitted; no git writes were performed. This record
+covers the Go port in `spec-e2`. The separate Python checkout is outside this
+session's writable roots and was not edited. Its normative document was
+re-read after the parallel reference update: the JSON-tree sentence matches
+the Go README exactly.
 
-## Fixture and reference parity
+## Comparator and domain
 
-All six fixture JSON files were re-copied from
-`/Users/jperla/josh/repos/tr/wt/spec-r1/tests/fixtures/speculation_v1/` and verified
-with `cmp`. The hard-coded manifest SHA-256 is:
+`json.go:245` implements a single iterative lockstep walk with one container
+identity set per input. Repetition in either input returns false, rejecting
+cycles and shared DAGs. Map membership/lookup makes equality independent of
+member order without sorting. Each container's outgoing edges are traversed
+at most once before termination: O(size of both inputs) time and space. There
+is no recursion, depth limit, or comparison-specific error. Integers, floats
+and booleans remain distinct (`int` and `int64` represent JSON integers).
 
-`ef6cca49eecdea14f47e4419bc1e1543409a22cf715c6cbe1555c8a82701f603`
+The README mirrors the normative JSON-tree restriction verbatim. Go maps have
+pointer identity; slices use backing pointer plus length, preserving distinct
+views. `unsafe.Pointer` retains referenced storage. Go cannot distinguish
+independent zero-capacity slices by backing pointer (including decoded empty
+arrays), or give nil maps unique identity. These represent empty values;
+allocated empty maps and slices with backing storage are checked for sharing.
 
-| Category | Matched |
-|---|---:|
-| grant | 269 |
-| descriptor | 37 |
-| marker | 52 |
-| renewal | 23 |
-| replay | 2 |
-| cost | 11 |
-| allowance | 7 |
-| input | 1 |
-| verdict_extra | 40 |
-| Protocol subtotal | 442 |
-| verdict-vectors.json | 24 |
-| Total | 466 |
+## Frozen literals and tests
 
-All 466 literals passed in Go and in the updated Python reference, with zero
-exclusions or changed expectations. The previous 434 protocol cases are unchanged;
-the 24 verdict vectors also remain byte-identical. All manifest-listed hashes
-and fixture trailing-newline checks pass.
+All **442 protocol cases + 24 verdict vectors = 466 frozen literals** pass.
+All six fixture JSON files remain byte-identical to the Python reference.
+Manifest SHA-256:
+`ef6cca49eecdea14f47e4419bc1e1543409a22cf715c6cbe1555c8a82701f603`.
+No wire, fixture, or frozen expectation changes were made.
 
-## Equality regressions
+Graph tests use in-memory values. Initial isolated comparison timings (excluding
+construction; equality tests completed in 0.668 s):
 
-Caller comparison is an iterative boolean operation with no depth cutoff or
-refusal of its own. Map key sets are checked before sorted values. Active
-container pairs reject cycles; completed pairs are memoized by identity. Slice
-identities include length so distinct views of a backing array cannot alias in
-the memo. `unsafe.Pointer` identities retain the referenced containers; no pointer
-arithmetic or dereferencing is used. Scalar comparisons preserve the documented
-JSON types (`int` and `int64` both represent a JSON integer).
+| Case | Result | Comparison time |
+|---|---|---:|
+| Ring 800 vs 800 | false | 0.108 ms |
+| Ring 800 vs 801 | false | 0.284 ms |
+| Review cross(10), both directions | false | 0.012 / 0.007 ms |
+| Depth-30 shared slices/maps through acceptance | authorization | 0.032 / 0.029 ms |
+| 10,000-deep mixed tree, equal/unequal | true/false | 1.84 / 2.34 ms |
+| 100,000-deep mixed tree, equal/unequal | true/false | 25.45 / 26.07 ms |
+| 100,000-node wide tree, equal/unequal | true/false | 1.42 / 6.65 ms |
+| 1,000,000-node wide tree, equal/unequal | true/false | 68.02 / 63.70 ms |
+| Wide object with 100,000 container children | true | 40.98 ms |
 
-The original review files `acceptance-depth-128.json` and `divergences.jsonl`
-are copied byte-for-byte into `testdata/review/`, separately from frozen fixtures.
-Python independently verified all 17 supplied cases and all 17 variants with a
-combined authorization-ID mismatch. `TestReviewAcceptance` checks each outcome
-1,000 times: 34,000 acceptance comparisons, with no nondeterministic outcomes.
-Cycles now produce the caller's `authorization` refusal rather than `input`.
+The wide array counts its root plus scalar leaves as nodes. The wide-object test
+also exercises the identity sets at scale. The deep test alternates objects and
+arrays. Timings include scheduler and GC variation; the algorithm's work bound
+comes from visiting each input container once, not a timing-ratio assertion.
 
-`TestEqualDeep` checks equal and unequal independently allocated values at depth
-10,000. `TestEqualValues` covers types, unsupported values, cycles, distinct slice
-views, and completed-pair identity. `TestEqualSharedDAG` checks depth-30 maps and
-slices, both shared between arguments and independently allocated. Measured
-combined acceptance checks were **0.090 ms for slices and 0.071 ms for maps**;
-the test has a one-second timeout to fail exponential regressions promptly.
+Tests also cover equal trees built in opposite member order (100 repeats),
+left-only/right-only sharing, sharing across the two separate inputs, allocated
+empty-container sharing, decoded-style empty values, slice views, and scalar
+type mismatches. Rings, cross and shared DAGs have one-second bounds; large trees
+have ten-second bounds. The 17 original review inputs plus combined mismatches
+still run 1,000 times each with deterministic public refusal codes.
 
-## Mutation inventory
+## Mutations on temporary copies
+
+The executable inventory was re-anchored to the new comparator. Obsolete
+active/completed-pair edits were replaced by per-input identity-set, sharing,
+empty-container and member-order edits. The inventory still covers all 259 frozen router rules. The runner executes all equality regression groups and imposes a
+45-second process test timeout in addition to comparison-level bounds.
 
 [Full 263-row report](mutation-report.md): **252 red, 11 survived, 0 build-broken**.
-All 252 reds fail their inventory-selected test. The 16 new equality mutations
-are all red. The original five equality mutations were re-anchored to the new
-implementation. Router-rule references were remapped to the updated frozen
-inventory, covering all 259 entries.
+All reds killed their selected test. An audit of the JSON event logs confirms
+that every mutant ran all 466 literal subtests, fixture pins, and every equality
+regression group. The survivor names match the prior report exactly.
 
-The JSON event logs were audited: every one of the 263 mutants ran all 466
-literal subtests plus fixture-pin and equality regression tests. The runner's
-exit status is intentionally 1 because it reports surviving equivalents.
-Detailed output is retained at `$TMPDIR/speculation-mutation-results.json`;
-console output is `/tmp/speculation-r2-mutations.log`.
+The three requested mutations were red:
 
-The survivors are exactly the same 11 confirmed equivalents from review:
+- Identity-set insertion removed: `TestEqualRings/800_vs_801` failed its
+  one-second comparison bound (the 800/800 ring failed too).
+- Member-order-dependent comparison: `TestEqualMemberOrder` failed immediately.
+- Boolean/integer confusion: `TestLiterals/response_nested_bool_int` incorrectly
+  returned `accepted` instead of `authorization` and failed.
+
+The runner intentionally exits 1 for surviving equivalents. No survivor was
+removed, reclassified as a kill, or hidden. The 11 equivalents remain:
 
 | Surviving edit | Remaining protection |
 |---|---|
@@ -86,30 +96,34 @@ The survivors are exactly the same 11 confirmed equivalents from review:
 | Context binding presence | Missing nil cannot equal validated signed binding |
 | Schema object-root predicate | Nil map fails required field count |
 
-## Fuzz, race and coverage
+Mutation console log: `/tmp/speculation-linear-mutations.log`.
+Detailed output: `/tmp/speculation-linear-mutation-results.json`.
+Independent audit: `/tmp/speculation-linear-mutation-audit.log`.
+
+## Environment, coverage, race and fuzz
 
 All Go commands used `GOTOOLCHAIN=go1.24.13`, `GOFLAGS=-mod=mod`, and PATH starting
-with `/Users/jperla/josh/repos/tr/quill-router/.venv/bin`. Writable caches were
-`GOCACHE=/tmp/speculation-go-cache` and
+with `/Users/jperla/josh/repos/tr/quill-router/.venv/bin`.
+Writable caches: `GOCACHE=/tmp/speculation-go-cache` and
 `GOLANGCI_LINT_CACHE=/tmp/speculation-r2-lint-cache`.
 
 ```text
+go test -count=1 -coverprofile=/tmp/speculation-linear-cover.out ./internal/speculation
+PASS: 7.794 seconds; 99.3% statements (required >=95%); equal/equalScalar 100%.
+
+go test -race -count=1 ./internal/speculation/
+PASS: 23.957 seconds on the final test helper; initial concurrent run 53.367 s.
+
 go test -run='^$' -fuzz=FuzzTokens -fuzztime=60s -parallel=4 ./internal/speculation/
-PASS: 61.349 seconds; 35,285 executions; 4 new interesting inputs; total corpus 946
-
-go test -race ./internal/speculation/
-PASS: 22.538 seconds
-
-go test -count=1 -coverprofile=/tmp/speculation-r2-cover.out ./internal/speculation/
-PASS: 99.3% statement coverage (required >=95%)
+PASS: 61.529 seconds; 37,779 executions; 4 new interesting inputs; corpus 950.
 ```
 
-Logs: `/tmp/speculation-r2-fuzz.log`, `/tmp/speculation-r2-race.log`, and
-`/tmp/speculation-r2-coverage.log`.
+Logs: `/tmp/speculation-linear-coverage.log`, `/tmp/speculation-linear-race-final.log`,
+and `/tmp/speculation-linear-fuzz.log`.
 
 ## CI-exact gates
 
-For each of the five shipped tag sets:
+For all five shipped tag sets, with the environment above:
 
 ```sh
 go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8 run --allow-serial-runners --build-tags "$tags"
@@ -117,26 +131,43 @@ go vet -tags "$tags" ./...
 go test -count=1 -tags "$tags" ./...
 ```
 
-Final gate lines (logs in `/tmp/speculation-r2-gates/`):
+Final gate lines (logs in `/tmp/speculation-linear-gates/`):
 
 ```text
-cloud_aws,llm_bedrock lint: exit 0 (2.1s)
-cloud_aws,llm_bedrock vet: exit 0 (1.2s)
-cloud_aws,llm_bedrock test: exit 0 (21.6s)
-cloud_aws,llm_multi lint: exit 0 (18.0s)
-cloud_aws,llm_multi vet: exit 0 (1.4s)
-cloud_aws,llm_multi test: exit 0 (21.5s)
-cloud_gcp,llm_vertex lint: exit 0 (4.1s)
-cloud_gcp,llm_vertex vet: exit 0 (0.6s)
-cloud_gcp,llm_vertex test: exit 0 (22.5s)
-cloud_gcp,llm_multi lint: exit 0 (8.8s)
-cloud_gcp,llm_multi vet: exit 0 (0.6s)
-cloud_gcp,llm_multi test: exit 0 (21.6s)
-cloud_azure,llm_multi lint: exit 0 (10.7s)
-cloud_azure,llm_multi vet: exit 0 (1.1s)
-cloud_azure,llm_multi test: exit 0 (23.2s)
+cloud_aws,llm_bedrock lint: exit 0 (6.3s)
+cloud_aws,llm_bedrock vet: exit 0 (2.1s)
+cloud_aws,llm_bedrock test: exit 0 (29.2s)
+cloud_aws,llm_multi lint: exit 0 (2.5s)
+cloud_aws,llm_multi vet: exit 0 (1.5s)
+cloud_aws,llm_multi test: exit 0 (23.8s)
+cloud_gcp,llm_vertex lint: exit 0 (2.1s)
+cloud_gcp,llm_vertex vet: exit 0 (0.9s)
+cloud_gcp,llm_vertex test: exit 0 (23.1s)
+cloud_gcp,llm_multi lint: exit 0 (1.7s)
+cloud_gcp,llm_multi vet: exit 0 (1.0s)
+cloud_gcp,llm_multi test: exit 0 (24.6s)
+cloud_azure,llm_multi lint: exit 0 (2.2s)
+cloud_azure,llm_multi vet: exit 0 (1.0s)
+cloud_azure,llm_multi test: exit 0 (23.4s)
+```
+
+The actual workflow's build and race-test steps also passed for all five tags:
+`go build -tags "$tags" ./...` and
+`go test -race -count=1 -tags "$tags" ./...`.
+
+```text
+cloud_aws,llm_bedrock build: exit 0 (1.6s)
+cloud_aws,llm_bedrock race-test: exit 0 (118.7s)
+cloud_aws,llm_multi build: exit 0 (1.1s)
+cloud_aws,llm_multi race-test: exit 0 (86.4s)
+cloud_gcp,llm_vertex build: exit 0 (1.1s)
+cloud_gcp,llm_vertex race-test: exit 0 (40.1s)
+cloud_gcp,llm_multi build: exit 0 (1.2s)
+cloud_gcp,llm_multi race-test: exit 0 (46.1s)
+cloud_azure,llm_multi build: exit 0 (1.2s)
+cloud_azure,llm_multi race-test: exit 0 (75.4s)
 ```
 
 `gofmt -l internal/speculation`: clean. `git diff --check`: clean.
-`TestNoProductionImports`: PASS. No production callers or operational behavior
-were introduced.
+`TestNoProductionImports`: PASS in the complete package tests. No production
+callers or operational behavior were introduced.

@@ -7,7 +7,6 @@ import (
 	"io"
 	"math"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -236,59 +235,51 @@ func b64decode(value any) []byte {
 	return b
 }
 
-// equal compares caller JSON values without coercing booleans, integers or floats.
-// It is pure boolean: mismatches, unsupported values and cycles return false.
-// Exit frames memoize only completed container pairs; active pairs detect cycles.
-// Pointer identities retain the containers. Slice length is part of identity:
-// two views sharing a backing array need not describe the same JSON value.
+// equal compares caller JSON trees without coercing booleans, integers or floats.
+// Each input has its own identity set: sharing or a cycle in either is unequal.
+// A single iterative walk with map key lookup takes O(size(a) + size(b)) time
+// and space, without a depth limit or a comparison-specific error.
+// Pointer identities retain containers. Slice length distinguishes views of the
+// same backing array. Nil maps and zero-capacity slices have no unique Go
+// identity and represent empty JSON containers; allocated empty maps/slices do.
 func equal(a, b any) bool {
-	type pair struct {
-		left, right unsafe.Pointer
-		length      int
-		array       bool
+	type identity struct {
+		pointer unsafe.Pointer
+		length  int
+		array   bool
 	}
-	type frame struct {
-		a, b    any
-		exiting bool
-		pair    pair
-	}
+	type frame struct{ a, b any }
 	stack := []frame{{a: a, b: b}}
-	active := map[pair]bool{}
-	completed := map[pair]bool{}
+	leftSeen, rightSeen := map[identity]bool{}, map[identity]bool{}
+	visit := func(seen map[identity]bool, id identity) bool {
+		if id.pointer == nil {
+			return true
+		}
+		if seen[id] {
+			return false
+		}
+		seen[id] = true
+		return true
+	}
 	for len(stack) > 0 {
 		f := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if f.exiting {
-			delete(active, f.pair)
-			completed[f.pair] = true
-			continue
-		}
-		var p pair
 		switch x := f.a.(type) {
 		case map[string]any:
 			y, ok := f.b.(map[string]any)
 			if !ok || len(x) != len(y) {
 				return false
 			}
-			p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer()}
-			if active[p] {
+			if !visit(leftSeen, identity{pointer: reflect.ValueOf(x).UnsafePointer()}) ||
+				!visit(rightSeen, identity{pointer: reflect.ValueOf(y).UnsafePointer()}) {
 				return false
 			}
-			if completed[p] {
-				continue
-			}
-			// Check the complete key set before any values, then visit sorted keys.
-			keys := make([]string, 0, len(x))
+			// Equal lengths and membership establish the complete key set.
+			// Matching by key avoids sorting and ignores map iteration order.
 			for k := range x {
 				if _, ok := y[k]; !ok {
 					return false
 				}
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			stack = append(stack, frame{exiting: true, pair: p})
-			for i := len(keys) - 1; i >= 0; i-- {
-				k := keys[i]
 				stack = append(stack, frame{a: x[k], b: y[k]})
 			}
 		case []any:
@@ -296,14 +287,12 @@ func equal(a, b any) bool {
 			if !ok || len(x) != len(y) {
 				return false
 			}
-			p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer(), length: len(x), array: true}
-			if active[p] {
+			if cap(x) > 0 && !visit(leftSeen, identity{pointer: reflect.ValueOf(x).UnsafePointer(), length: len(x), array: true}) {
 				return false
 			}
-			if completed[p] {
-				continue
+			if cap(y) > 0 && !visit(rightSeen, identity{pointer: reflect.ValueOf(y).UnsafePointer(), length: len(y), array: true}) {
+				return false
 			}
-			stack = append(stack, frame{exiting: true, pair: p})
 			for i := len(x) - 1; i >= 0; i-- {
 				stack = append(stack, frame{a: x[i], b: y[i]})
 			}
@@ -311,9 +300,7 @@ func equal(a, b any) bool {
 			if !equalScalar(f.a, f.b) {
 				return false
 			}
-			continue
 		}
-		active[p] = true
 	}
 	return true
 }

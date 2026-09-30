@@ -18,12 +18,22 @@ struct/string parameters prevent invalid caller shapes statically. Verified
 objects have private immutable payloads; `Claims()` returns an independent copy.
 A zero-valued verified object confers no authority.
 
+Caller-supplied values (bindings, route, authorization) are JSON trees.
+A caller value in which any container (object or array) is reachable more than once, whether by sharing or by a cycle, is not a JSON tree and never compares equal.
+
 Caller-value comparisons are pure boolean, type-sensitive, depth-unbounded and
-independent of member order; they never produce their own error code. An explicit
-stack checks map key sets before sorted values, detects active container cycles
-and memoizes completed container pairs by identity. Cycles and unsupported values
-compare unequal; callers retain their existing refusal codes. Shared acyclic
-subtrees are visited once per pair, including independently allocated graphs.
+independent of member order; they never produce their own error code. One
+iterative lockstep walk keeps a separate container identity set for each input
+and rejects the first repetition in either. Object key lookup avoids sorting.
+Worst-case traversal takes O(size of the two inputs) time and space. Unsupported
+values compare unequal; callers retain their existing refusal codes.
+
+In Go, map identity is its runtime pointer; slice identity is its backing pointer
+and length (distinct views may share storage). Nil maps and zero-capacity slices
+have no unique identity in Go and represent empty JSON containers. In particular,
+independently decoded empty arrays may have the same runtime backing pointer.
+Allocated empty maps and slices with backing storage retain identities and are
+checked for sharing like other containers.
 
 Wire JSON first enforces printable ASCII without backslashes and a maximum
 container depth of 16. A `json.Decoder.Token` / `UseNumber` pass records duplicate

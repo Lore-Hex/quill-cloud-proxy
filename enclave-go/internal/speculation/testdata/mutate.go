@@ -95,7 +95,7 @@ func apply(dir string, m mutation) {
 	must(os.WriteFile(path, []byte(source), 0600))
 }
 func run(dir string, m mutation) result {
-	cmd := exec.Command("go", "test", "-json", "-count=1", "-run", "^Test(FixturePins|Literals|Verdicts|EqualValues|EqualDeep|EqualSharedDAG)$", ".")
+	cmd := exec.Command("go", "test", "-json", "-count=1", "-timeout=45s", "-run", "^Test(FixturePins|Literals|Verdicts|EqualValues|EqualDeep|EqualWide|EqualMemberOrder|EqualRings|EqualCross|EqualSharedDAG)$", ".")
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	r := result{Mutation: m, Status: "survived", Output: string(output)}
