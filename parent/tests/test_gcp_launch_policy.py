@@ -238,5 +238,5 @@ def test_billing_402_backoff_override_is_optional_for_rollback_safety() -> None:
     deploy = (REPO_ROOT / "tools" / "deploy-gcp-mig.sh").read_text()
     assert 'BILLING_402_BACKOFF_TEE_ENV=""' in deploy
     assert 'if [ -n "${QUILL_BILLING_402_BACKOFF_MS:-}" ]; then' in deploy
-    assert '${BILLING_402_BACKOFF_TEE_ENV}|tee-env-QUILL_KEEPALIVE=' in deploy
+    assert "${BILLING_402_BACKOFF_TEE_ENV}|tee-env-QUILL_KEEPALIVE=" in deploy
     assert "|tee-env-QUILL_BILLING_402_BACKOFF_MS=${QUILL_BILLING_402_BACKOFF_MS}|" not in deploy
