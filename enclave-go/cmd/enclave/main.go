@@ -640,6 +640,7 @@ func serveOneRequest(
 	requestIdentity := requestAuditIdentity{attribution: "anonymous"}
 	billingSuppressed := false
 	billingRemembered := false
+	var billingKey trustedrouter.BillingBackoffKey
 	acceptLogged := false
 	logAccept := func() {
 		if !acceptLogged {
@@ -658,7 +659,7 @@ func serveOneRequest(
 		status, responseBytes := statsConn.Snapshot()
 		requestIdentity.resolveFailure(ctx, trGateway, requestBearer, requestRoute, status)
 		if billingRemembered {
-			trGateway.BillingBackoff().SetCredentialID(requestIdentity.credentialFingerprint, requestLogID, requestIdentity.credentialID)
+			trGateway.BillingBackoff().SetCredentialID(billingKey, requestLogID, requestIdentity.credentialID)
 		}
 		writeRequestEndLog(
 			os.Stderr,
@@ -717,13 +718,6 @@ func serveOneRequest(
 		statsConn.SetResponseKeepAlive(true)
 		ctx = withStrictStreamFraming(ctx)
 	}
-	clientContext, droppedClientContext := parseClientContext(attribution.ClientContext)
-	for _, reason := range droppedClientContext {
-		fmt.Fprintf(os.Stderr, "enclave.client_context_dropped request_log_id=%q reason=%q\n", requestLogID, reason)
-	}
-	if clientContext != nil {
-		ctx = trustedrouter.WithClientContext(ctx, clientContext)
-	}
 	requestBodyBytes = len(body)
 	receiptRequest := types.InferenceReceiptRequest{}
 	if inferenceReceiptsEnabled() && attribution.InferenceReceipt != "" {
@@ -741,25 +735,39 @@ func serveOneRequest(
 		writeError(conn, 400, err.Error())
 		return
 	}
-	// The credential is now a one-way lookup digest. Check before all request_*
-	// audit lines and before any authorization or failure-identity lookup.
+	// Reuse only identical requests that previously passed validation and reached
+	// authorize. The credential guard wins, with ordinary audit logs on rejection.
 	confidential := apihosts.Confidential(attribution.Host) || apihosts.Confidential(enclavetls.SelectedServerName(conn))
+	var credentialErr error
+	credentialChecked := false
 	if trGateway.Enabled() && bearer != "" && billingBackoffRoute(method, routePath) &&
 		(!confidential || validateConfidentialHostRequest(method, routePath, body, trGateway) == nil) {
-		idempotent := billingBackoffIdempotent(idempotencyKey, body)
-		cache := trGateway.BillingBackoff()
-		if rejection, hit := cache.Get(requestIdentity.credentialFingerprint, idempotent, time.Now()); hit {
-			billingSuppressed = true
-			// Preserve the original response IDs as well as its body and headers.
-			statsConn.mu.Lock()
-			statsConn.requestID = rejection.RequestID
-			statsConn.mu.Unlock()
-			writeBillingBackoff(conn, routePath, rejection)
-			return
+		credentialErr = trGateway.CheckCredential(ctx, bearer)
+		credentialChecked = true
+		if credentialErr == nil {
+			billingKey = trustedrouter.NewBillingBackoffKey(requestIdentity.credentialFingerprint, method, routePath, body)
+			idempotent := billingBackoffIdempotent(idempotencyKey, body)
+			cache := trGateway.BillingBackoff()
+			if rejection, hit := cache.Get(billingKey, idempotent, time.Now()); hit {
+				billingSuppressed = true
+				// Preserve the original response IDs as well as its body and headers.
+				statsConn.mu.Lock()
+				statsConn.requestID = rejection.RequestID
+				statsConn.mu.Unlock()
+				writeBillingBackoff(conn, routePath, rejection)
+				return
+			}
+			statsConn.billingDenial = func(err error) {
+				billingRemembered = cache.Remember(billingKey, requestIdentity.credentialID, requestLogID, idempotent, err, time.Now())
+			}
 		}
-		statsConn.billingDenial = func(err error) {
-			billingRemembered = cache.Remember(requestIdentity.credentialFingerprint, requestIdentity.credentialID, requestLogID, idempotent, err, time.Now())
-		}
+	}
+	clientContext, droppedClientContext := parseClientContext(attribution.ClientContext)
+	for _, reason := range droppedClientContext {
+		fmt.Fprintf(os.Stderr, "enclave.client_context_dropped request_log_id=%q reason=%q\n", requestLogID, reason)
+	}
+	if clientContext != nil {
+		ctx = trustedrouter.WithClientContext(ctx, clientContext)
 	}
 	logAccept()
 	phases.Start()
@@ -868,8 +876,11 @@ func serveOneRequest(
 
 	trEnabled := trGateway != nil && trGateway.Enabled()
 	if trEnabled {
-		if err := trGateway.CheckCredential(ctx, bearer); err != nil {
-			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
+		if !credentialChecked {
+			credentialErr = trGateway.CheckCredential(ctx, bearer)
+		}
+		if credentialErr != nil {
+			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(credentialErr), messageFromControlPlaneError(credentialErr, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(credentialErr))
 			return
 		}
 	}

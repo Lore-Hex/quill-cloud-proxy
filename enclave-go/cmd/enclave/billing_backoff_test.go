@@ -172,7 +172,7 @@ func TestBillingBackoffResponseRenderers(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/keepalive=%v", route, keepAlive), func(t *testing.T) {
 				denial := &trustedrouter.ControlPlaneError{Path: "/internal/gateway/authorize", StatusCode: 402, Type: "insufficient_credits", Message: "top up", RetryAfter: "12"}
 				cache := trustedrouter.NewBillingBackoff(5*time.Second, 2)
-				key := trustedrouter.LookupHash("renderer-key")
+				key := trustedrouter.NewBillingBackoffKey(trustedrouter.LookupHash("renderer-key"), "POST", route, nil)
 				first := newScriptedConn("", nil)
 				stats := &responseStatsConn{Conn: first}
 				stats.BeginRequest(testRequestLogID)

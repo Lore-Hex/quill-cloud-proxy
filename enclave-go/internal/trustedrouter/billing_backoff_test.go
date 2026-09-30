@@ -1,6 +1,7 @@
 package trustedrouter
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -17,7 +18,7 @@ func billingTestError() *ControlPlaneError {
 func TestBillingBackoffTTL(t *testing.T) {
 	c := NewBillingBackoff(5*time.Second, 2)
 	now := time.Unix(100, 0)
-	key := LookupHash("key-one")
+	key := billingTestKey("key-one")
 	if !c.Remember(key, "credential", "request", false, billingTestError(), now) {
 		t.Fatal("denial not stored")
 	}
@@ -54,24 +55,24 @@ func TestBillingBackoffScope(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := NewBillingBackoff(5*time.Second, 2)
-			if got := c.Remember(LookupHash("key"), "id", "request", tc.idempotent, tc.err, now); got != tc.want {
+			if got := c.Remember(billingTestKey("key"), "id", "request", tc.idempotent, tc.err, now); got != tc.want {
 				t.Fatalf("Remember = %v, want %v", got, tc.want)
 			}
 		})
 	}
 	c := NewBillingBackoff(5*time.Second, 2)
-	c.Remember(LookupHash("key"), "id", "request", false, billingTestError(), now)
-	if _, hit := c.Get(LookupHash("key"), true, now); hit {
+	c.Remember(billingTestKey("key"), "id", "request", false, billingTestError(), now)
+	if _, hit := c.Get(billingTestKey("key"), true, now); hit {
 		t.Fatal("idempotent request hit cache")
 	}
-	if _, hit := c.Get(LookupHash("other"), false, now); hit {
+	if _, hit := c.Get(billingTestKey("other"), false, now); hit {
 		t.Fatal("entry shared across credentials")
 	}
-	if c.Remember("raw-secret-key", "id", "request", false, billingTestError(), now) {
+	if c.Remember(BillingBackoffKey{lookupHash: "raw-secret-key"}, "id", "request", false, billingTestError(), now) {
 		t.Fatal("stored raw key")
 	}
 	disabled := NewBillingBackoff(0, 2)
-	if disabled.Remember(LookupHash("key"), "id", "request", false, billingTestError(), now) {
+	if disabled.Remember(billingTestKey("key"), "id", "request", false, billingTestError(), now) {
 		t.Fatal("disabled cache stored entry")
 	}
 }
@@ -79,7 +80,7 @@ func TestBillingBackoffScope(t *testing.T) {
 func TestBillingBackoffCapExpiryFirst(t *testing.T) {
 	c := NewBillingBackoff(5*time.Second, 2)
 	now := time.Unix(100, 0)
-	a, b, d := LookupHash("a"), LookupHash("b"), LookupHash("d")
+	a, b, d := billingTestKey("a"), billingTestKey("b"), billingTestKey("d")
 	c.Remember(a, "a", "a", false, billingTestError(), now)
 	c.Remember(b, "b", "b", false, billingTestError(), now.Add(time.Second))
 	c.Get(a, false, now.Add(4*time.Second)) // hits do not change eviction order
@@ -96,7 +97,7 @@ func TestBillingBackoffCapExpiryFirst(t *testing.T) {
 func TestBillingBackoffConcurrent(t *testing.T) {
 	c := NewBillingBackoff(5*time.Second, 2)
 	now := time.Now()
-	key := LookupHash("key")
+	key := billingTestKey("key")
 	c.Remember(key, "id", "request", false, billingTestError(), now)
 	var wg sync.WaitGroup
 	for range 50 {
@@ -131,7 +132,7 @@ func TestBillingBackoffEnv(t *testing.T) {
 func TestBillingBackoffOutOfOrderVerdicts(t *testing.T) {
 	c := NewBillingBackoff(5*time.Second, 2)
 	now := time.Unix(100, 0)
-	newer, older := LookupHash("newer"), LookupHash("older")
+	newer, older := billingTestKey("newer"), billingTestKey("older")
 	// Model goroutines taking timestamps in one order and the mutex in another.
 	c.Remember(newer, "newer", "newer", false, billingTestError(), now.Add(time.Second))
 	c.Remember(older, "older", "older", false, billingTestError(), now)
@@ -168,7 +169,7 @@ func captureBillingStderr(t *testing.T, fn func()) string {
 func TestBillingBackoffSummaryOnlyForSuppressedWindows(t *testing.T) {
 	c := NewBillingBackoff(5*time.Second, 4)
 	now := time.Unix(100, 0)
-	key := LookupHash("key-quiet")
+	key := billingTestKey("key-quiet")
 	if !c.Remember(key, "credential", "request", false, billingTestError(), now) {
 		t.Fatal("denial not stored")
 	}
@@ -193,5 +194,65 @@ func TestBillingBackoffSummaryOnlyForSuppressedWindows(t *testing.T) {
 	})
 	if strings.Count(logs, "enclave.billing_402_backoff") != 1 || !strings.Contains(logs, " suppressed=1 window_ms=5000") {
 		t.Fatalf("suppressed window summary = %q", logs)
+	}
+}
+
+func billingTestKey(credential string) BillingBackoffKey {
+	return NewBillingBackoffKey(LookupHash(credential), "POST", "/v1/chat/completions", []byte(`{"model":"test"}`))
+}
+
+func TestBillingBackoffRequestDigest(t *testing.T) {
+	key := NewBillingBackoffKey(LookupHash("key"), "POST", "/route", []byte(`{"x":1}`))
+	for _, other := range []BillingBackoffKey{
+		NewBillingBackoffKey(LookupHash("key"), "POST", "/route", []byte(`{"x":2}`)),
+		NewBillingBackoffKey(LookupHash("key"), "POST", "/route", []byte(`{ "x":1}`)),
+		NewBillingBackoffKey(LookupHash("key"), "GET", "/route", []byte(`{"x":1}`)),
+		NewBillingBackoffKey(LookupHash("key"), "POST", "/other", []byte(`{"x":1}`)),
+	} {
+		if key == other {
+			t.Fatal("different request inputs share a key")
+		}
+	}
+	a := NewBillingBackoffKey(LookupHash("key"), "ab", "c", []byte("d"))
+	b := NewBillingBackoffKey(LookupHash("key"), "a", "bc", []byte("d"))
+	c := NewBillingBackoffKey(LookupHash("key"), "a", "b", []byte("cd"))
+	if a == b || b == c || a == c {
+		t.Fatal("request digest fields are not framed")
+	}
+}
+
+func TestBillingBackoffCredentialRejectionInvalidates(t *testing.T) {
+	client := New("https://trustedrouter.com", "internal", nil)
+	client.billingBackoff = NewBillingBackoff(5*time.Second, 4)
+	cache := client.BillingBackoff()
+	now := time.Now()
+	a := billingTestKey("rejected")
+	b := NewBillingBackoffKey(a.lookupHash, "POST", "/other", []byte("different"))
+	other := billingTestKey("other")
+	for _, key := range []BillingBackoffKey{a, b, other} {
+		cache.Remember(key, "id", "request", false, billingTestError(), now)
+	}
+	cache.Get(a, false, now)
+	logs := captureBillingStderr(t, func() {
+		client.ObserveCredentialResult(context.Background(), "rejected", &ControlPlaneError{StatusCode: 401, Type: "invalid_api_key"})
+	})
+	for _, key := range []BillingBackoffKey{a, b} {
+		if _, hit := cache.Get(key, false, now); hit {
+			t.Fatal("credential rejection retained billing entry")
+		}
+	}
+	if _, hit := cache.Get(other, false, now); !hit {
+		t.Fatal("invalidation removed another credential")
+	}
+	if len(cache.byCredential) != 1 || len(cache.entries) != 1 || cache.order.Len() != 1 {
+		t.Fatal("credential index leaked entries")
+	}
+	if strings.Count(logs, "enclave.billing_402_backoff") != 1 || !strings.Contains(logs, "suppressed=1") {
+		t.Fatalf("invalidation summaries = %q", logs)
+	}
+	// Expiry also removes the remaining credential index bucket.
+	cache.Get(other, false, now.Add(5*time.Second))
+	if len(cache.byCredential) != 0 {
+		t.Fatal("expired credential index retained")
 	}
 }

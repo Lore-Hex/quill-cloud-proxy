@@ -2,6 +2,8 @@ package trustedrouter
 
 import (
 	"container/list"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -15,15 +17,35 @@ import (
 const DefaultBillingBackoffTTL = 5 * time.Second
 const DefaultBillingBackoffMaxEntries = 4096
 
-// BillingBackoff is separate from credential authentication. It holds only a
-// lookup digest, audit identifiers and the router error needed to reproduce a
-// response. Expiry order bounds memory and evicts expired entries first.
+// BillingBackoff holds only credential/request digests, audit identifiers and
+// the router error needed to reproduce a response. Expiry order bounds memory and evicts expired entries first.
 type BillingBackoff struct {
-	mu         sync.Mutex
-	ttl        time.Duration
-	maxEntries int
-	entries    map[string]*list.Element
-	order      *list.List
+	mu           sync.Mutex
+	ttl          time.Duration
+	maxEntries   int
+	entries      map[BillingBackoffKey]*list.Element
+	byCredential map[string]map[BillingBackoffKey]struct{}
+	order        *list.List
+}
+
+// BillingBackoffKey identifies one exact request on one credential. The body is
+// hashed synchronously and never retained. Length framing separates all fields.
+type BillingBackoffKey struct {
+	lookupHash    string
+	requestDigest [sha256.Size]byte
+}
+
+func NewBillingBackoffKey(lookupHash, method, route string, body []byte) BillingBackoffKey {
+	h := sha256.New()
+	var size [8]byte
+	for _, field := range [][]byte{[]byte(method), []byte(route), body} {
+		binary.BigEndian.PutUint64(size[:], uint64(len(field)))
+		_, _ = h.Write(size[:])
+		_, _ = h.Write(field)
+	}
+	key := BillingBackoffKey{lookupHash: lookupHash}
+	copy(key.requestDigest[:], h.Sum(nil))
+	return key
 }
 
 type BillingRejection struct {
@@ -32,7 +54,7 @@ type BillingRejection struct {
 }
 
 type billingEntry struct {
-	lookupHash   string
+	key          BillingBackoffKey
 	credentialID string
 	rejection    BillingRejection
 	expiresAt    time.Time
@@ -53,7 +75,7 @@ func NewBillingBackoff(ttl time.Duration, maxEntries int) *BillingBackoff {
 	if maxEntries <= 0 {
 		maxEntries = DefaultBillingBackoffMaxEntries
 	}
-	return &BillingBackoff{ttl: ttl, maxEntries: maxEntries, entries: make(map[string]*list.Element), order: list.New()}
+	return &BillingBackoff{ttl: ttl, maxEntries: maxEntries, entries: make(map[BillingBackoffKey]*list.Element), byCredential: make(map[string]map[BillingBackoffKey]struct{}), order: list.New()}
 }
 
 func (c *Client) BillingBackoff() *BillingBackoff {
@@ -70,7 +92,7 @@ func IsInsufficientCredits(err error) bool {
 }
 
 // Get never extends expiry. Idempotent requests bypass both reads and writes.
-func (c *BillingBackoff) Get(lookupHash string, idempotent bool, now time.Time) (BillingRejection, bool) {
+func (c *BillingBackoff) Get(key BillingBackoffKey, idempotent bool, now time.Time) (BillingRejection, bool) {
 	if c == nil || c.ttl <= 0 {
 		return BillingRejection{}, false
 	}
@@ -79,7 +101,7 @@ func (c *BillingBackoff) Get(lookupHash string, idempotent bool, now time.Time) 
 	var rejection BillingRejection
 	hit := false
 	if !idempotent {
-		if element := c.entries[lookupHash]; element != nil {
+		if element := c.entries[key]; element != nil {
 			item := element.Value.(*billingEntry)
 			item.suppressed++
 			rejection, hit = item.rejection, true
@@ -90,12 +112,12 @@ func (c *BillingBackoff) Get(lookupHash string, idempotent bool, now time.Time) 
 	return rejection, hit
 }
 
-func (c *BillingBackoff) Remember(lookupHash, credentialID, requestID string, idempotent bool, err error, now time.Time) bool {
+func (c *BillingBackoff) Remember(key BillingBackoffKey, credentialID, requestID string, idempotent bool, err error, now time.Time) bool {
 	if c == nil || c.ttl <= 0 || idempotent || !IsInsufficientCredits(err) {
 		return false
 	}
-	digest, decodeErr := hex.DecodeString(lookupHash)
-	if decodeErr != nil || len(digest) != 32 || lookupHash != strings.ToLower(lookupHash) {
+	digest, decodeErr := hex.DecodeString(key.lookupHash)
+	if decodeErr != nil || len(digest) != 32 || key.lookupHash != strings.ToLower(key.lookupHash) {
 		return false
 	}
 	var e *ControlPlaneError
@@ -109,26 +131,30 @@ func (c *BillingBackoff) Remember(lookupHash, credentialID, requestID string, id
 		writeBillingSummaries(summaries)
 	}()
 	// Concurrent denials must not reset an already-open window either.
-	if c.entries[lookupHash] != nil {
+	if c.entries[key] != nil {
 		return false
 	}
 	for len(c.entries) >= c.maxEntries {
 		summaries = c.remove(c.order.Front(), summaries)
 	}
-	item := &billingEntry{lookupHash: lookupHash, credentialID: credentialID, expiresAt: now.Add(c.ttl), rejection: BillingRejection{
+	item := &billingEntry{key: key, credentialID: credentialID, expiresAt: now.Add(c.ttl), rejection: BillingRejection{
 		// Never retain the raw router body: only fields used by the public renderer.
 		Error: ControlPlaneError{Path: e.Path, StatusCode: e.StatusCode, Type: e.Type, Message: e.Message, RetryAfter: e.RetryAfter}, RequestID: requestID,
 	}}
+	if c.byCredential[key.lookupHash] == nil {
+		c.byCredential[key.lookupHash] = make(map[BillingBackoffKey]struct{})
+	}
+	c.byCredential[key.lookupHash][key] = struct{}{}
 	// Callers timestamp the verdict before taking this lock. Concurrent callers
 	// can acquire the lock in a different order; keep expiry order exact so an
 	// older entry can never hide behind a newer, still-live one.
 	for element := c.order.Back(); element != nil; element = element.Prev() {
 		if !item.expiresAt.Before(element.Value.(*billingEntry).expiresAt) {
-			c.entries[lookupHash] = c.order.InsertAfter(item, element)
+			c.entries[key] = c.order.InsertAfter(item, element)
 			return true
 		}
 	}
-	c.entries[lookupHash] = c.order.PushFront(item)
+	c.entries[key] = c.order.PushFront(item)
 	return true
 }
 
@@ -148,9 +174,13 @@ func (c *BillingBackoff) expire(now time.Time, summaries []string) []string {
 func (c *BillingBackoff) remove(element *list.Element, summaries []string) []string {
 	item := element.Value.(*billingEntry)
 	if item.suppressed > 0 {
-		summaries = append(summaries, fmt.Sprintf("enclave.billing_402_backoff credential_id=%q credential_fingerprint=%q suppressed=%d window_ms=%d\n", item.credentialID, item.lookupHash, item.suppressed, c.ttl.Milliseconds()))
+		summaries = append(summaries, fmt.Sprintf("enclave.billing_402_backoff credential_id=%q credential_fingerprint=%q suppressed=%d window_ms=%d\n", item.credentialID, item.key.lookupHash, item.suppressed, c.ttl.Milliseconds()))
 	}
-	delete(c.entries, item.lookupHash)
+	delete(c.entries, item.key)
+	delete(c.byCredential[item.key.lookupHash], item.key)
+	if len(c.byCredential[item.key.lookupHash]) == 0 {
+		delete(c.byCredential, item.key.lookupHash)
+	}
 	c.order.Remove(element)
 	return summaries
 }
@@ -163,16 +193,31 @@ func writeBillingSummaries(summaries []string) {
 
 // SetCredentialID attaches the identity resolved by the ordinary audit path.
 // RequestID prevents a late lookup from modifying a subsequent window.
-func (c *BillingBackoff) SetCredentialID(lookupHash, requestID, credentialID string) {
+func (c *BillingBackoff) SetCredentialID(key BillingBackoffKey, requestID, credentialID string) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if element := c.entries[lookupHash]; element != nil {
+	if element := c.entries[key]; element != nil {
 		item := element.Value.(*billingEntry)
 		if item.rejection.RequestID == requestID {
 			item.credentialID = credentialID
 		}
 	}
+}
+
+// ForgetCredential drops only this credential's indexed entries, without a scan.
+// As with expiry/eviction, summaries are emitted only after releasing the lock.
+func (c *BillingBackoff) ForgetCredential(lookupHash string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	var summaries []string
+	for key := range c.byCredential[lookupHash] {
+		summaries = c.remove(c.entries[key], summaries)
+	}
+	c.mu.Unlock()
+	writeBillingSummaries(summaries)
 }

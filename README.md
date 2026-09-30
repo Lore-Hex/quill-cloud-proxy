@@ -244,29 +244,42 @@ an enclave's environment).
 
 A synchronous inference request denied by `/internal/gateway/authorize` with
 HTTP 402 and `error.type=insufficient_credits` opens a fixed window for its
-credential lookup digest. Further inference requests reuse the ordinary error
-renderer, including the original request-ID headers and Retry-After. Connection
-headers still follow the current connection's keep-alive policy. Header or body
+credential lookup digest and a SHA-256 digest of the method, route and exact
+request body bytes, each length-prefixed. Only identical requests reuse the
+ordinary error renderer, including the original request-ID headers and
+Retry-After. Connection headers still follow the current connection's keep-alive
+policy. Header or body
 `idempotency_key` requests bypass reads and writes; other billing errors, auth
-errors, metadata/discovery routes and job polling are unchanged. This cache is
-independent of the negative credential cache, holds at most 4,096 entries, and
-retains only digest/audit identifiers and public error fields, never prompts or
-raw API keys. Hits and concurrent denials cannot extend the window. Expired
+errors, metadata/discovery routes and job polling retain their ordinary handling.
+The credential guard runs before billing reuse: a known credential rejection
+wins and keeps its ordinary audit lines. Definitive credential rejections drop
+that credential's billing entries through a per-credential index. An unobserved
+revocation can remain stale for at most one fixed backoff window; balance top-ups
+have the same delay for an identical request. Different bodies, models or routes
+can still reach authorize during that window. The cache holds at most 4,096
+entries and retains only digest/audit identifiers and public error fields, never
+prompts or raw API keys. Hits and concurrent denials cannot extend the window. Expired
 entries are evicted before live entries; capacity pressure closes the oldest
 window early.
 
 Suppressed requests skip authorize, audit identity lookup, and all three
-`enclave.request_accept/start/end` lines. Connection request counts, response byte
+`enclave.request_accept/start/end` lines, as well as client-context diagnostics
+and other per-request stderr output. Connection request counts, response byte
 counts and keep-alive limits still advance normally. Log-derived request totals
 must add the `suppressed` counts in the summary below to ordinary request-end
 counts. Authorize-attempt counts correctly exclude suppressed requests. A summary
 is emitted once when an expired window is next encountered (including by another
-credential), or when capacity pressure closes it; inactive windows need no timer:
+credential), or when capacity pressure or credential invalidation closes it.
+Summaries are written after unlocking and only for windows that suppressed
+something; inactive windows need no timer:
 
 ```
 enclave.billing_402_backoff credential_id="<existing audit ID>" credential_fingerprint="<lookup digest>" suppressed=49 window_ms=5000
 ```
 
 The fingerprint remains available if the ordinary audit identity lookup fails.
+Summaries are lazy and may be lost at process termination. Their counts cannot
+fully reconstruct route/workspace breakdowns, latency distributions, byte totals
+or abuse metrics.
 Merging to main deploys this enclave-only change to the fleet; no control-plane
 changes or new control-plane state are required.
