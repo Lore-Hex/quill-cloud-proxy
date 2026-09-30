@@ -1,0 +1,2780 @@
+{
+  "description": "Go guard edits mapped to the frozen router inventory. Indices are zero-based rules.json entries. Each mutation runs the entire literal corpus on a temporary copy.",
+  "mutations": [
+    {
+      "name": "integer:guard:0:integer",
+      "file": "json.go",
+      "function": "integer",
+      "before": "require(n >= 0, \"integer\")",
+      "after": "require((n >= 0) || true, \"integer\")",
+      "literal": "TestLiterals/money_negative",
+      "router_rules": [
+        0,
+        65,
+        66,
+        219
+      ]
+    },
+    {
+      "name": "stringValue:guard:0:string",
+      "file": "json.go",
+      "function": "stringValue",
+      "before": "require(ok && len(s) > 0, \"string\")",
+      "after": "require((ok && len(s) > 0) || true, \"string\")",
+      "literal": "TestLiterals/string_empty",
+      "router_rules": [
+        1,
+        69
+      ]
+    },
+    {
+      "name": "stringValue:guard:1:string",
+      "file": "json.go",
+      "function": "stringValue",
+      "before": "require(s[i] >= 0x20 && s[i] <= 0x7e && !strings.ContainsRune(\"\\\\\\\"<>&\", rune(s[i])), \"string\")",
+      "after": "require((s[i] >= 0x20 && s[i] <= 0x7e && !strings.ContainsRune(\"\\\\\\\"<>&\", rune(s[i]))) || true, \"string\")",
+      "literal": "TestLiterals/string_less",
+      "router_rules": [
+        1,
+        69,
+        72
+      ]
+    },
+    {
+      "name": "hashValue:guard:0:hash",
+      "file": "json.go",
+      "function": "hashValue",
+      "before": "require(ok && len(s) == 64, \"hash\")",
+      "after": "require((ok && len(s) == 64) || true, \"hash\")",
+      "literal": "TestLiterals/hash_type",
+      "router_rules": [
+        2,
+        73
+      ]
+    },
+    {
+      "name": "hashValue:guard:1:hash",
+      "file": "json.go",
+      "function": "hashValue",
+      "before": "require(c >= '0' && c <= '9' || c >= 'a' && c <= 'f', \"hash\")",
+      "after": "require((c >= '0' && c <= '9' || c >= 'a' && c <= 'f') || true, \"hash\")",
+      "literal": "TestLiterals/invalid_hash",
+      "router_rules": [
+        2
+      ]
+    },
+    {
+      "name": "object:guard:1:fields",
+      "file": "json.go",
+      "function": "object",
+      "before": "require(len(m) == len(fields), \"fields\")",
+      "after": "require((len(m) == len(fields)) || true, \"fields\")",
+      "literal": "TestLiterals/unknown_field",
+      "router_rules": [
+        3
+      ]
+    },
+    {
+      "name": "byteRule:guard:0:json",
+      "file": "json.go",
+      "function": "byteRule",
+      "before": "require(b >= 0x20 && b <= 0x7e && b != 0x5c, \"json\")",
+      "after": "require((b >= 0x20 && b <= 0x7e && b != 0x5c) || true, \"json\")",
+      "literal": "TestLiterals/payload_escaped_ascii",
+      "router_rules": [
+        64,
+        79
+      ]
+    },
+    {
+      "name": "depthCheck:guard:0:json",
+      "file": "json.go",
+      "function": "depthCheck",
+      "before": "require(depth <= 16, \"json\")",
+      "after": "require((depth <= 16) || true, \"json\")",
+      "literal": "TestLiterals/depth17",
+      "router_rules": [
+        6,
+        80,
+        194
+      ]
+    },
+    {
+      "name": "parseJSON:guard:1:duplicate_key",
+      "file": "json.go",
+      "function": "parseJSON",
+      "before": "require(!p.duplicates, \"duplicate_key\")",
+      "after": "require((!p.duplicates) || true, \"duplicate_key\")",
+      "literal": "TestLiterals/payload_duplicate",
+      "router_rules": [
+        4,
+        246
+      ]
+    },
+    {
+      "name": "rawInteger:guard:0:integer",
+      "file": "json.go",
+      "function": "rawInteger",
+      "before": "require(len(digits) <= 19 && !strings.ContainsAny(s, \".eE\") && digits != \"\", \"integer\")",
+      "after": "require((len(digits) <= 19 && !strings.ContainsAny(s, \".eE\") && digits != \"\") || true, \"integer\")",
+      "literal": "TestLiterals/payload_number_huge",
+      "router_rules": [
+        5
+      ]
+    },
+    {
+      "name": "rawInteger:guard:1:integer",
+      "file": "json.go",
+      "function": "rawInteger",
+      "before": "require(e == nil && v >= 0, \"integer\")",
+      "after": "require((e == nil && v >= 0) || true, \"integer\")",
+      "literal": "TestLiterals/header_number_negative",
+      "router_rules": [
+        5,
+        67,
+        76
+      ]
+    },
+    {
+      "name": "verify:guard:0:compact",
+      "file": "protocol.go",
+      "function": "verify",
+      "before": "require(ok && utf8.RuneCountInString(s) <= 65536 && strings.Count(s, \".\") == 2, \"compact\")",
+      "after": "require((ok && utf8.RuneCountInString(s) <= 65536 && strings.Count(s, \".\") == 2) || true, \"compact\")",
+      "literal": "TestLiterals/compact_extra",
+      "router_rules": [
+        9,
+        85
+      ]
+    },
+    {
+      "name": "verify:guard:1:canonical_header",
+      "file": "protocol.go",
+      "function": "verify",
+      "before": "require(bytes.Equal(hb, canonical(h)), \"canonical_header\")",
+      "after": "require((bytes.Equal(hb, canonical(h))) || true, \"canonical_header\")",
+      "literal": "TestLiterals/header_whitespace",
+      "router_rules": [
+        10
+      ]
+    },
+    {
+      "name": "verify:guard:2:algorithm",
+      "file": "protocol.go",
+      "function": "verify",
+      "before": "require(h[\"alg\"] == \"EdDSA\", \"algorithm\")",
+      "after": "require((h[\"alg\"] == \"EdDSA\") || true, \"algorithm\")",
+      "literal": "TestLiterals/algorithm_none",
+      "router_rules": [
+        11
+      ]
+    },
+    {
+      "name": "verify:guard:3:type",
+      "file": "protocol.go",
+      "function": "verify",
+      "before": "require(h[\"typ\"] == typ, \"type\")",
+      "after": "require((h[\"typ\"] == typ) || true, \"type\")",
+      "literal": "TestLiterals/unknown_type",
+      "router_rules": [
+        12
+      ]
+    },
+    {
+      "name": "verify:guard:4:key",
+      "file": "protocol.go",
+      "function": "verify",
+      "before": "require(len(matches) == 1, \"key\")",
+      "after": "require((len(matches) == 1) || true, \"key\")",
+      "literal": "TestLiterals/key_ambiguous",
+      "router_rules": [
+        13
+      ]
+    },
+    {
+      "name": "verify:guard:5:purpose",
+      "file": "protocol.go",
+      "function": "verify",
+      "before": "require(key.Purpose == purpose, \"purpose\")",
+      "after": "require((key.Purpose == purpose) || true, \"purpose\")",
+      "literal": "TestLiterals/real_type_shadow_key",
+      "router_rules": [
+        14
+      ]
+    },
+    {
+      "name": "verify:guard:6:fields",
+      "file": "protocol.go",
+      "function": "verify",
+      "before": "require(ok, \"fields\")",
+      "after": "require((ok) || true, \"fields\")",
+      "literal": "TestLiterals/depth16",
+      "router_rules": [
+        15
+      ]
+    },
+    {
+      "name": "routeSchema:guard:0:stage_d",
+      "file": "protocol.go",
+      "function": "routeSchema",
+      "before": "require(ok, \"stage_d\")",
+      "after": "require((ok) || true, \"stage_d\")",
+      "literal": "TestLiterals/precedence_stage_schema_version",
+      "router_rules": [
+        17
+      ]
+    },
+    {
+      "name": "grantSchema:guard:0:permits",
+      "file": "protocol.go",
+      "function": "grantSchema",
+      "before": "require(ok && len(p) > 0, \"permits\")",
+      "after": "require((ok && len(p) > 0) || true, \"permits\")",
+      "literal": "TestLiterals/empty_permits",
+      "router_rules": [
+        18,
+        90
+      ]
+    },
+    {
+      "name": "CostCeiling:guard:0:overflow",
+      "file": "cost.go",
+      "function": "CostCeiling",
+      "before": "require(rate == 0 || count <= math.MaxInt64/rate, \"overflow\")",
+      "after": "require((rate == 0 || count <= math.MaxInt64/rate) || true, \"overflow\")",
+      "literal": "TestLiterals/money_product_overflow",
+      "router_rules": [
+        19
+      ]
+    },
+    {
+      "name": "CostCeiling:guard:1:overflow",
+      "file": "cost.go",
+      "function": "CostCeiling",
+      "before": "require(total <= math.MaxInt64-rounded, \"overflow\")",
+      "after": "require((total <= math.MaxInt64-rounded) || true, \"overflow\")",
+      "literal": "TestLiterals/money_sum_overflow",
+      "router_rules": [
+        19,
+        20
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:0:version",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(c[\"v\"] == int64(1), \"version\")",
+      "after": "require((c[\"v\"] == int64(1)) || true, \"version\")",
+      "literal": "TestLiterals/unknown_version",
+      "router_rules": [
+        21
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:1:identity",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(equal(c[pin.name], pin.value), \"identity\")",
+      "after": "require((equal(c[pin.name], pin.value)) || true, \"identity\")",
+      "literal": "TestLiterals/identity_iss",
+      "router_rules": [
+        22,
+        155
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:2:binding",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(ok && equal(c[f], v), \"binding\")",
+      "after": "require((ok && equal(c[f], v)) || true, \"binding\")",
+      "literal": "TestLiterals/binding_key_id",
+      "router_rules": [
+        23,
+        160
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:3:stage_d",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(route[\"stage_d\"] == true, \"stage_d\")",
+      "after": "require((route[\"stage_d\"] == true) || true, \"stage_d\")",
+      "literal": "TestLiterals/stage_d_false",
+      "router_rules": [
+        24
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:4:route",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(equal(route, context[\"route\"]), \"route\")",
+      "after": "require((equal(route, context[\"route\"])) || true, \"route\")",
+      "literal": "TestLiterals/route_endpoint_id",
+      "router_rules": [
+        25
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:5:route",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(equal(route[\"region\"], c[\"region\"]), \"route\")",
+      "after": "require((equal(route[\"region\"], c[\"region\"])) || true, \"route\")",
+      "literal": "TestLiterals/route_region_disagrees",
+      "router_rules": [
+        25,
+        26
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:6:token_bound",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(number(route, \"input_bound\") > 0 && number(route, \"input_bound\") <= 8192 && number(route, \"output_limit\") > 0 && number(route, \"output_limit\") <= 512, \"token_bound\")",
+      "after": "require((number(route, \"input_bound\") > 0 && number(route, \"input_bound\") <= 8192 && number(route, \"output_limit\") > 0 && number(route, \"output_limit\") <= 512) || true, \"token_bound\")",
+      "literal": "TestLiterals/output_bound_over",
+      "router_rules": [
+        27,
+        101
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:7:adapter",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(number(route, \"adapter_capability_version\") > 0, \"adapter\")",
+      "after": "require((number(route, \"adapter_capability_version\") > 0) || true, \"adapter\")",
+      "literal": "TestLiterals/adapter_zero",
+      "router_rules": [
+        28
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:8:tier",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(c[\"tier\"] == int64(2) || c[\"tier\"] == int64(3), \"tier\")",
+      "after": "require((c[\"tier\"] == int64(2) || c[\"tier\"] == int64(3)) || true, \"tier\")",
+      "literal": "TestLiterals/tier_one",
+      "router_rules": [
+        29
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:9:paid_headroom",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(number(c, \"paid_headroom_micro\") >= 5000000, \"paid_headroom\")",
+      "after": "require((number(c, \"paid_headroom_micro\") >= 5000000) || true, \"paid_headroom\")",
+      "literal": "TestLiterals/unpaid",
+      "router_rules": [
+        30
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:10:history_count",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(number(history, \"count\") >= 20 && number(history, \"sequence\") >= number(history, \"count\"), \"history_count\")",
+      "after": "require((number(history, \"count\") >= 20 && number(history, \"sequence\") >= number(history, \"count\")) || true, \"history_count\")",
+      "literal": "TestLiterals/history_19",
+      "router_rules": [
+        31,
+        103
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:11:history_time",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(issued-600 <= window && window <= last && last <= issued && last >= issued-30 && clean <= issued-900, \"history_time\")",
+      "after": "require((issued-600 <= window && window <= last && last <= issued && last >= issued-30 && clean <= issued-900) || true, \"history_time\")",
+      "literal": "TestLiterals/stale_last_success",
+      "router_rules": [
+        32,
+        108
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:12:lifetime",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(number(c, \"exp\")-issued > 0 && number(c, \"exp\")-issued <= 30 && issued < number(c, \"start_before\"), \"lifetime\")",
+      "after": "require((number(c, \"exp\")-issued > 0 && number(c, \"exp\")-issued <= 30 && issued < number(c, \"start_before\")) || true, \"lifetime\")",
+      "literal": "TestLiterals/ttl_too_long",
+      "router_rules": [
+        33,
+        111
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:13:start_window",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(issued <= clock && clock < deadline, \"start_window\")",
+      "after": "require((issued <= clock && clock < deadline) || true, \"start_window\")",
+      "literal": "TestLiterals/start_plus_28",
+      "router_rules": [
+        34,
+        119
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:14:ceiling",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(ceiling > 0 && ceiling <= 10000, \"ceiling\")",
+      "after": "require((ceiling > 0 && ceiling <= 10000) || true, \"ceiling\")",
+      "literal": "TestLiterals/over_cap_money",
+      "router_rules": [
+        35,
+        121
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:15:cost",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(b > 0 && b <= ceiling, \"cost\")",
+      "after": "require((b > 0 && b <= ceiling) || true, \"cost\")",
+      "literal": "TestLiterals/cost_10001",
+      "router_rules": [
+        36,
+        123
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:16:ordinal",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(!seen[ordinal], \"ordinal\")",
+      "after": "require((!seen[ordinal]) || true, \"ordinal\")",
+      "literal": "TestLiterals/duplicate_ordinal",
+      "router_rules": [
+        37
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:17:permit_cost",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(b <= amount && amount <= ceiling, \"permit_cost\")",
+      "after": "require((b <= amount && amount <= ceiling) || true, \"permit_cost\")",
+      "literal": "TestLiterals/underfunded_permit",
+      "router_rules": [
+        38,
+        124
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:18:tier_ceiling",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(ok, \"tier_ceiling\")",
+      "after": "require((ok) || true, \"tier_ceiling\")",
+      "literal": "TestLiterals/missing_tier_ceiling",
+      "router_rules": [
+        39
+      ]
+    },
+    {
+      "name": "VerifyGrant:guard:19:allowance",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(total <= allowance, \"allowance\")",
+      "after": "require((total <= allowance) || true, \"allowance\")",
+      "literal": "TestLiterals/allowance_sum_not_max",
+      "router_rules": [
+        40,
+        126
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:guard:0:dry_run_cannot_dispatch",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "require(!grant.shadow, \"dry_run_cannot_dispatch\")",
+      "after": "require((!grant.shadow) || true, \"dry_run_cannot_dispatch\")",
+      "literal": "TestLiterals/dry_run_cannot_dispatch",
+      "router_rules": [
+        41
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:guard:1:version",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "require(c[\"v\"] == int64(1), \"version\")",
+      "after": "require((c[\"v\"] == int64(1)) || true, \"version\")",
+      "literal": "TestLiterals/descriptor_version",
+      "router_rules": [
+        42
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:guard:2:descriptor_boot",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "require(equal(key.Kid, g[\"boot_id\"]), \"descriptor_boot\")",
+      "after": "require((equal(key.Kid, g[\"boot_id\"])) || true, \"descriptor_boot\")",
+      "literal": "TestLiterals/descriptor_wrong_boot_signer",
+      "router_rules": [
+        43
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:guard:3:descriptor_binding",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "require(equal(c[f], g[f]), \"descriptor_binding\")",
+      "after": "require((equal(c[f], g[f])) || true, \"descriptor_binding\")",
+      "literal": "TestLiterals/descriptor_key_id",
+      "router_rules": [
+        44,
+        171
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:guard:4:grant_hash",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "require(c[\"grant_sha256\"] == digest([]byte(grant.compact)), \"grant_hash\")",
+      "after": "require((c[\"grant_sha256\"] == digest([]byte(grant.compact))) || true, \"grant_hash\")",
+      "literal": "TestLiterals/descriptor_shadow_hash",
+      "router_rules": [
+        45
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:guard:5:request_hash",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "require(c[\"request_sha256\"] == digest(requestBytes), \"request_hash\")",
+      "after": "require((c[\"request_sha256\"] == digest(requestBytes)) || true, \"request_hash\")",
+      "literal": "TestLiterals/descriptor_wire_lf",
+      "router_rules": [
+        46
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:guard:6:invocation",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "require(equal(c[\"execution_id\"], executionID) && equal(c[\"invocation_nonce\"], invocationNonce), \"invocation\")",
+      "after": "require((equal(c[\"execution_id\"], executionID) && equal(c[\"invocation_nonce\"], invocationNonce)) || true, \"invocation\")",
+      "literal": "TestLiterals/descriptor_nonce",
+      "router_rules": [
+        47,
+        128
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:guard:8:descriptor_route",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "require(equal(c[f], route[f]), \"descriptor_route\")",
+      "after": "require((equal(c[f], route[f])) || true, \"descriptor_route\")",
+      "literal": "TestLiterals/descriptor_endpoint",
+      "router_rules": [
+        48,
+        227
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:guard:11:descriptor_permit",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "require(found, \"descriptor_permit\")",
+      "after": "require((found) || true, \"descriptor_permit\")",
+      "literal": "TestLiterals/descriptor_ordinal",
+      "router_rules": [
+        49,
+        129
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:guard:0:authorization",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "require(equal(response[\"authorization\"], authorization), \"authorization\")",
+      "after": "require((equal(response[\"authorization\"], authorization)) || true, \"authorization\")",
+      "literal": "TestLiterals/response_stage_d_integer",
+      "router_rules": [
+        50
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:guard:1:authorization",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "require(equal(authorization[f], d[f]), \"authorization\")",
+      "after": "require((equal(authorization[f], d[f])) || true, \"authorization\")",
+      "literal": "TestLiterals/marker_unmarked_key",
+      "router_rules": [
+        50,
+        51
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:guard:2:authorization",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "require(authorization[\"billing_mode\"] == \"ordinary\", \"authorization\")",
+      "after": "require((authorization[\"billing_mode\"] == \"ordinary\") || true, \"authorization\")",
+      "literal": "TestLiterals/unmarked_spend_lease",
+      "router_rules": [
+        50,
+        52,
+        241
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:guard:3:version",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "require(marker[\"v\"] == int64(1) || equal(marker[\"v\"], int64(1)), \"version\")",
+      "after": "require((marker[\"v\"] == int64(1) || equal(marker[\"v\"], int64(1))) || true, \"version\")",
+      "literal": "TestLiterals/marker_version",
+      "router_rules": [
+        53
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:guard:4:descriptor_hash",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "require(marker[\"descriptor_sha256\"] == digest([]byte(descriptor.compact)), \"descriptor_hash\")",
+      "after": "require((marker[\"descriptor_sha256\"] == digest([]byte(descriptor.compact))) || true, \"descriptor_hash\")",
+      "literal": "TestLiterals/marker_hash",
+      "router_rules": [
+        54
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:guard:5:marker_binding",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "require(equal(marker[f], d[f]), \"marker_binding\")",
+      "after": "require((equal(marker[f], d[f])) || true, \"marker_binding\")",
+      "literal": "TestLiterals/marker_invocation_nonce",
+      "router_rules": [
+        55,
+        232
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:guard:6:authorization",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "require(equal(authorization[f], expected), \"authorization\")",
+      "after": "require((equal(authorization[f], expected)) || true, \"authorization\")",
+      "literal": "TestLiterals/marker_authorization_id",
+      "router_rules": [
+        50,
+        56
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:guard:7:authorization",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "require(authorization[\"billing_mode\"] == \"ordinary\" && authorization[\"stage_d\"] == true, \"authorization\")",
+      "after": "require((authorization[\"billing_mode\"] == \"ordinary\" && authorization[\"stage_d\"] == true) || true, \"authorization\")",
+      "literal": "TestLiterals/authorization_stage_d",
+      "router_rules": [
+        50,
+        57,
+        132
+      ]
+    },
+    {
+      "name": "RenewalVerdict:guard:0:renewal",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "require(previous.shadow == candidate.shadow, \"renewal\")",
+      "after": "require((previous.shadow == candidate.shadow) || true, \"renewal\")",
+      "literal": "TestLiterals/renewal_domain_isolated",
+      "router_rules": [
+        58
+      ]
+    },
+    {
+      "name": "RenewalVerdict:guard:1:renewal",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "require(equal(old[f], newClaims[f]), \"renewal\")",
+      "after": "require((equal(old[f], newClaims[f])) || true, \"renewal\")",
+      "literal": "TestLiterals/renewal_boot_changed",
+      "router_rules": [
+        58
+      ]
+    },
+    {
+      "name": "RenewalVerdict:guard:2:renewal",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "require(!equal(newClaims[\"grant_id\"], old[\"grant_id\"]) && number(newClaims, \"generation\") > number(old, \"generation\") && number(newClaims, \"iat\") >= number(old, \"iat\") && number(newClaims, \"workspace_epoch\") >= number(old, \"workspace_epoch\") && number(newClaims, \"key_epoch\") >= number(old, \"key_epoch\"), \"renewal\")",
+      "after": "require((!equal(newClaims[\"grant_id\"], old[\"grant_id\"]) && number(newClaims, \"generation\") > number(old, \"generation\") && number(newClaims, \"iat\") >= number(old, \"iat\") && number(newClaims, \"workspace_epoch\") >= number(old, \"workspace_epoch\") && number(newClaims, \"key_epoch\") >= number(old, \"key_epoch\")) || true, \"renewal\")",
+      "literal": "TestLiterals/renewal_same_generation",
+      "router_rules": [
+        58,
+        60,
+        135
+      ]
+    },
+    {
+      "name": "RenewalVerdict:guard:5:renewal",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "require(number(nh, \"sequence\") >= number(oh, \"sequence\"), \"renewal\")",
+      "after": "require((number(nh, \"sequence\") >= number(oh, \"sequence\")) || true, \"renewal\")",
+      "literal": "TestLiterals/renewal_old_history_sequence",
+      "router_rules": [
+        58,
+        139
+      ]
+    },
+    {
+      "name": "DescriptorReplay:guard:0:replay_conflict",
+      "file": "protocol.go",
+      "function": "DescriptorReplay",
+      "before": "require(previous.compact == candidate.compact, \"replay_conflict\")",
+      "after": "require((previous.compact == candidate.compact) || true, \"replay_conflict\")",
+      "literal": "TestLiterals/descriptor_permit_reuse",
+      "router_rules": [
+        61
+      ]
+    },
+    {
+      "name": "ClassifyVerdict:guard:0:verdict_source",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "require(in.Source == \"authenticated_router\", \"verdict_source\")",
+      "after": "require((in.Source == \"authenticated_router\") || true, \"verdict_source\")",
+      "literal": "TestLiterals/provider_source",
+      "router_rules": [
+        62
+      ]
+    },
+    {
+      "name": "ClassifyVerdict:guard:1:verdict_status",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "require(status >= 400 && status <= 599, \"verdict_status\")",
+      "after": "require((status >= 400 && status <= 599) || true, \"verdict_status\")",
+      "literal": "TestLiterals/success_status",
+      "router_rules": [
+        63,
+        140
+      ]
+    },
+    {
+      "name": "dry-run accepted as real",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "require(!grant.shadow, \"dry_run_cannot_dispatch\")",
+      "after": "require(true, \"dry_run_cannot_dispatch\")",
+      "literal": "TestLiterals/dry_run_cannot_dispatch",
+      "router_rules": [
+        41
+      ]
+    },
+    {
+      "name": "ignore binding workspace_id",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, f := range strings.Fields(bindings) {",
+      "after": "for _, f := range strings.Fields(bindings) { if f == \"workspace_id\" { continue }",
+      "literal": "TestLiterals/binding_workspace_id",
+      "router_rules": [
+        159
+      ]
+    },
+    {
+      "name": "ignore binding key_id",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, f := range strings.Fields(bindings) {",
+      "after": "for _, f := range strings.Fields(bindings) { if f == \"key_id\" { continue }",
+      "literal": "TestLiterals/binding_key_id",
+      "router_rules": [
+        23,
+        160
+      ]
+    },
+    {
+      "name": "ignore binding lookup_digest",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, f := range strings.Fields(bindings) {",
+      "after": "for _, f := range strings.Fields(bindings) { if f == \"lookup_digest\" { continue }",
+      "literal": "TestLiterals/binding_lookup_digest",
+      "router_rules": [
+        161
+      ]
+    },
+    {
+      "name": "ignore binding boot_id",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, f := range strings.Fields(bindings) {",
+      "after": "for _, f := range strings.Fields(bindings) { if f == \"boot_id\" { continue }",
+      "literal": "TestLiterals/binding_boot_id",
+      "router_rules": [
+        162
+      ]
+    },
+    {
+      "name": "ignore binding stable_slot_id",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, f := range strings.Fields(bindings) {",
+      "after": "for _, f := range strings.Fields(bindings) { if f == \"stable_slot_id\" { continue }",
+      "literal": "TestLiterals/binding_stable_slot_id",
+      "router_rules": [
+        163
+      ]
+    },
+    {
+      "name": "ignore binding region",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, f := range strings.Fields(bindings) {",
+      "after": "for _, f := range strings.Fields(bindings) { if f == \"region\" { continue }",
+      "literal": "TestLiterals/binding_region",
+      "router_rules": [
+        164
+      ]
+    },
+    {
+      "name": "ignore binding generation",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, f := range strings.Fields(bindings) {",
+      "after": "for _, f := range strings.Fields(bindings) { if f == \"generation\" { continue }",
+      "literal": "TestLiterals/binding_generation",
+      "router_rules": [
+        165
+      ]
+    },
+    {
+      "name": "ignore binding workspace_epoch",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, f := range strings.Fields(bindings) {",
+      "after": "for _, f := range strings.Fields(bindings) { if f == \"workspace_epoch\" { continue }",
+      "literal": "TestLiterals/binding_workspace_epoch",
+      "router_rules": [
+        166
+      ]
+    },
+    {
+      "name": "ignore binding key_epoch",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, f := range strings.Fields(bindings) {",
+      "after": "for _, f := range strings.Fields(bindings) { if f == \"key_epoch\" { continue }",
+      "literal": "TestLiterals/binding_key_epoch",
+      "router_rules": [
+        167
+      ]
+    },
+    {
+      "name": "ignore binding image_policy_version",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, f := range strings.Fields(bindings) {",
+      "after": "for _, f := range strings.Fields(bindings) { if f == \"image_policy_version\" { continue }",
+      "literal": "TestLiterals/binding_image_policy_version",
+      "router_rules": [
+        168
+      ]
+    },
+    {
+      "name": "ignore route binding",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(equal(route, context[\"route\"]), \"route\")",
+      "after": "require(true, \"route\")",
+      "literal": "TestLiterals/route_endpoint_id",
+      "router_rules": [
+        25
+      ]
+    },
+    {
+      "name": "all 402 to workspace",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "if member(in.Reason, keyReasons) && in.WorkspaceID != \"\" && in.KeyID != \"\" {",
+      "after": "if status == 402 { scope = \"workspace\" } else if member(in.Reason, keyReasons) && in.WorkspaceID != \"\" && in.KeyID != \"\" {",
+      "literal": "TestVerdicts/lifetime_limit",
+      "router_rules": [
+        142
+      ]
+    },
+    {
+      "name": "all 429 to key",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "if member(in.Reason, keyReasons) && in.WorkspaceID != \"\" && in.KeyID != \"\" {",
+      "after": "if status == 429 { scope = \"key\" } else if member(in.Reason, keyReasons) && in.WorkspaceID != \"\" && in.KeyID != \"\" {",
+      "literal": "TestVerdicts/rate_workspace",
+      "router_rules": []
+    },
+    {
+      "name": "round B down",
+      "file": "cost.go",
+      "function": "CostCeiling",
+      "before": "rounded++",
+      "after": "rounded += 0",
+      "literal": "TestLiterals/money_fractional",
+      "router_rules": [
+        91
+      ]
+    },
+    {
+      "name": "shadow-purpose key for real grant",
+      "file": "protocol.go",
+      "function": "verify",
+      "before": "require(key.Purpose == purpose, \"purpose\")",
+      "after": "require(key.Purpose == purpose || purpose == \"grant\", \"purpose\")",
+      "literal": "TestLiterals/real_type_shadow_key",
+      "router_rules": [
+        14
+      ]
+    },
+    {
+      "name": "skip canonical payload",
+      "file": "json.go",
+      "function": "checkCanonical",
+      "before": "require(bytes.Equal(raw, canonical(v)), \"canonical_payload\")",
+      "after": "require(bytes.Equal(raw, canonical(v)) || true, \"canonical_payload\")",
+      "literal": "TestLiterals/payload_whitespace",
+      "router_rules": [
+        16
+      ]
+    },
+    {
+      "name": "accept padded base64",
+      "file": "json.go",
+      "function": "b64decode",
+      "before": "s, ok := value.(string)",
+      "after": "s, ok := value.(string); s = strings.TrimRight(s, \"=\")",
+      "literal": "TestLiterals/signature_padded",
+      "router_rules": []
+    },
+    {
+      "name": "accept CR LF in base64",
+      "file": "json.go",
+      "function": "b64decode",
+      "before": "s, ok := value.(string)",
+      "after": "s, ok := value.(string); s = strings.ReplaceAll(strings.ReplaceAll(s, \"\\r\", \"\"), \"\\n\", \"\")",
+      "literal": "TestLiterals/base64_cr",
+      "router_rules": []
+    },
+    {
+      "name": "skip byte rule",
+      "file": "json.go",
+      "function": "byteRule",
+      "before": "b >= 0x20 && b <= 0x7e && b != 0x5c",
+      "after": "true || b >= 0x20 && b <= 0x7e && b != 0x5c",
+      "literal": "TestLiterals/trailing_newline",
+      "router_rules": [
+        242
+      ]
+    },
+    {
+      "name": "semantic check before syntax",
+      "file": "json.go",
+      "function": "value",
+      "before": "p.numbers = append(p.numbers, n)",
+      "after": "rawInteger(n); p.numbers = append(p.numbers, n)",
+      "literal": "TestLiterals/payload_number_later_syntax",
+      "router_rules": []
+    },
+    {
+      "name": "duplicate detection disabled",
+      "file": "json.go",
+      "function": "value",
+      "before": "p.duplicates = true",
+      "after": "p.duplicates = false",
+      "literal": "TestLiterals/payload_duplicate",
+      "router_rules": [
+        4,
+        246
+      ]
+    },
+    {
+      "name": "float accepted as integer",
+      "file": "json.go",
+      "function": "integer",
+      "before": "case int64:",
+      "after": "case float64: n = int64(x)\n case int64:",
+      "literal": "TestLiterals/context_coercion_input_rate_micro_per_m",
+      "router_rules": []
+    },
+    {
+      "name": "Ed25519 wrong-length key panics",
+      "file": "protocol.go",
+      "function": "verifySignature",
+      "before": "require(len(public) == ed25519.PublicKeySize && len(signature) == ed25519.SignatureSize, \"signature\")",
+      "after": "require(len(signature) == ed25519.SignatureSize, \"signature\")",
+      "literal": "TestLiterals/key_short_public",
+      "router_rules": []
+    },
+    {
+      "name": "fixture byte changed",
+      "file": "testdata/speculation_v1/provider-wire.json",
+      "function": "",
+      "before": "\"content\":\"fixture\"",
+      "after": "\"content\":\"fixturf\"",
+      "literal": "TestFixturePins",
+      "router_rules": [
+        218
+      ]
+    },
+    {
+      "name": "VerifyGrant:skip identity_iss",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, pin := range []struct{ name, value string }{{\"iss\", key.Iss}, {\"aud\", key.Aud}, {\"environment\", key.Environment}, {\"plane\", key.Plane}} {",
+      "after": "for _, pin := range []struct{ name, value string }{{\"iss\", key.Iss}, {\"aud\", key.Aud}, {\"environment\", key.Environment}, {\"plane\", key.Plane}} { if pin.name == \"iss\" { continue }",
+      "literal": "TestLiterals/identity_iss",
+      "router_rules": [
+        22,
+        155
+      ]
+    },
+    {
+      "name": "VerifyGrant:skip identity_aud",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, pin := range []struct{ name, value string }{{\"iss\", key.Iss}, {\"aud\", key.Aud}, {\"environment\", key.Environment}, {\"plane\", key.Plane}} {",
+      "after": "for _, pin := range []struct{ name, value string }{{\"iss\", key.Iss}, {\"aud\", key.Aud}, {\"environment\", key.Environment}, {\"plane\", key.Plane}} { if pin.name == \"aud\" { continue }",
+      "literal": "TestLiterals/identity_aud",
+      "router_rules": [
+        156
+      ]
+    },
+    {
+      "name": "VerifyGrant:skip identity_environment",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, pin := range []struct{ name, value string }{{\"iss\", key.Iss}, {\"aud\", key.Aud}, {\"environment\", key.Environment}, {\"plane\", key.Plane}} {",
+      "after": "for _, pin := range []struct{ name, value string }{{\"iss\", key.Iss}, {\"aud\", key.Aud}, {\"environment\", key.Environment}, {\"plane\", key.Plane}} { if pin.name == \"environment\" { continue }",
+      "literal": "TestLiterals/identity_environment",
+      "router_rules": [
+        157
+      ]
+    },
+    {
+      "name": "VerifyGrant:skip identity_plane",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, pin := range []struct{ name, value string }{{\"iss\", key.Iss}, {\"aud\", key.Aud}, {\"environment\", key.Environment}, {\"plane\", key.Plane}} {",
+      "after": "for _, pin := range []struct{ name, value string }{{\"iss\", key.Iss}, {\"aud\", key.Aud}, {\"environment\", key.Environment}, {\"plane\", key.Plane}} { if pin.name == \"plane\" { continue }",
+      "literal": "TestLiterals/identity_plane",
+      "router_rules": [
+        158
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:skip descriptor_grant_id",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "for _, f := range strings.Fields(\"grant_id workspace_id key_id boot_id workspace_epoch key_epoch\") {",
+      "after": "for _, f := range strings.Fields(\"grant_id workspace_id key_id boot_id workspace_epoch key_epoch\") { if f == \"grant_id\" { continue }",
+      "literal": "TestLiterals/descriptor_grant_id",
+      "router_rules": [
+        169
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:skip descriptor_workspace_id",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "for _, f := range strings.Fields(\"grant_id workspace_id key_id boot_id workspace_epoch key_epoch\") {",
+      "after": "for _, f := range strings.Fields(\"grant_id workspace_id key_id boot_id workspace_epoch key_epoch\") { if f == \"workspace_id\" { continue }",
+      "literal": "TestLiterals/descriptor_workspace_id",
+      "router_rules": [
+        170
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:skip descriptor_key_id",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "for _, f := range strings.Fields(\"grant_id workspace_id key_id boot_id workspace_epoch key_epoch\") {",
+      "after": "for _, f := range strings.Fields(\"grant_id workspace_id key_id boot_id workspace_epoch key_epoch\") { if f == \"key_id\" { continue }",
+      "literal": "TestLiterals/descriptor_key_id",
+      "router_rules": [
+        44,
+        171
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:skip descriptor_boot_id",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "for _, f := range strings.Fields(\"grant_id workspace_id key_id boot_id workspace_epoch key_epoch\") {",
+      "after": "for _, f := range strings.Fields(\"grant_id workspace_id key_id boot_id workspace_epoch key_epoch\") { if f == \"boot_id\" { continue }",
+      "literal": "TestLiterals/descriptor_boot_id",
+      "router_rules": [
+        172
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:skip descriptor_workspace_epoch",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "for _, f := range strings.Fields(\"grant_id workspace_id key_id boot_id workspace_epoch key_epoch\") {",
+      "after": "for _, f := range strings.Fields(\"grant_id workspace_id key_id boot_id workspace_epoch key_epoch\") { if f == \"workspace_epoch\" { continue }",
+      "literal": "TestLiterals/descriptor_workspace_epoch",
+      "router_rules": [
+        173
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:skip descriptor_key_epoch",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "for _, f := range strings.Fields(\"grant_id workspace_id key_id boot_id workspace_epoch key_epoch\") {",
+      "after": "for _, f := range strings.Fields(\"grant_id workspace_id key_id boot_id workspace_epoch key_epoch\") { if f == \"key_epoch\" { continue }",
+      "literal": "TestLiterals/descriptor_key_epoch",
+      "router_rules": [
+        174
+      ]
+    },
+    {
+      "name": "RenewalVerdict:skip renewal_identity_workspace_id",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") {",
+      "after": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") { if f == \"workspace_id\" { continue }",
+      "literal": "TestLiterals/renewal_identity_workspace_id",
+      "router_rules": [
+        59,
+        175
+      ]
+    },
+    {
+      "name": "RenewalVerdict:skip renewal_identity_key_id",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") {",
+      "after": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") { if f == \"key_id\" { continue }",
+      "literal": "TestLiterals/renewal_identity_key_id",
+      "router_rules": [
+        176
+      ]
+    },
+    {
+      "name": "RenewalVerdict:skip renewal_identity_lookup_digest",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") {",
+      "after": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") { if f == \"lookup_digest\" { continue }",
+      "literal": "TestLiterals/renewal_identity_lookup_digest",
+      "router_rules": [
+        177
+      ]
+    },
+    {
+      "name": "RenewalVerdict:skip renewal_identity_boot_id",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") {",
+      "after": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") { if f == \"boot_id\" { continue }",
+      "literal": "TestLiterals/renewal_identity_boot_id",
+      "router_rules": [
+        178
+      ]
+    },
+    {
+      "name": "RenewalVerdict:skip renewal_identity_stable_slot_id",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") {",
+      "after": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") { if f == \"stable_slot_id\" { continue }",
+      "literal": "TestLiterals/renewal_identity_stable_slot_id",
+      "router_rules": [
+        179
+      ]
+    },
+    {
+      "name": "RenewalVerdict:skip renewal_identity_iss",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") {",
+      "after": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") { if f == \"iss\" { continue }",
+      "literal": "TestLiterals/renewal_identity_iss",
+      "router_rules": [
+        180
+      ]
+    },
+    {
+      "name": "RenewalVerdict:skip renewal_identity_aud",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") {",
+      "after": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") { if f == \"aud\" { continue }",
+      "literal": "TestLiterals/renewal_identity_aud",
+      "router_rules": [
+        181
+      ]
+    },
+    {
+      "name": "RenewalVerdict:skip renewal_identity_environment",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") {",
+      "after": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") { if f == \"environment\" { continue }",
+      "literal": "TestLiterals/renewal_identity_environment",
+      "router_rules": [
+        182
+      ]
+    },
+    {
+      "name": "RenewalVerdict:skip renewal_identity_plane",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") {",
+      "after": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") { if f == \"plane\" { continue }",
+      "literal": "TestLiterals/renewal_identity_plane",
+      "router_rules": [
+        183
+      ]
+    },
+    {
+      "name": "RenewalVerdict:skip renewal_identity_region",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") {",
+      "after": "for _, f := range strings.Fields(\"workspace_id key_id lookup_digest boot_id stable_slot_id iss aud environment plane region\") { if f == \"region\" { continue }",
+      "literal": "TestLiterals/renewal_identity_region",
+      "router_rules": [
+        184
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:skip unmarked_invocation_nonce",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "for _, f := range []string{\"invocation_nonce\", \"workspace_id\", \"key_id\"} {",
+      "after": "for _, f := range []string{\"invocation_nonce\", \"workspace_id\", \"key_id\"} { if f == \"invocation_nonce\" { continue }",
+      "literal": "TestLiterals/unmarked_invocation_nonce",
+      "router_rules": [
+        229
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:skip unmarked_workspace_id",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "for _, f := range []string{\"invocation_nonce\", \"workspace_id\", \"key_id\"} {",
+      "after": "for _, f := range []string{\"invocation_nonce\", \"workspace_id\", \"key_id\"} { if f == \"workspace_id\" { continue }",
+      "literal": "TestLiterals/unmarked_workspace_id",
+      "router_rules": [
+        230
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:skip unmarked_key_id",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "for _, f := range []string{\"invocation_nonce\", \"workspace_id\", \"key_id\"} {",
+      "after": "for _, f := range []string{\"invocation_nonce\", \"workspace_id\", \"key_id\"} { if f == \"key_id\" { continue }",
+      "literal": "TestLiterals/unmarked_key_id",
+      "router_rules": [
+        231
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:skip marker_invocation_nonce",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "for _, f := range []string{\"invocation_nonce\", \"endpoint_id\", \"routing_policy_hash\"} {",
+      "after": "for _, f := range []string{\"invocation_nonce\", \"endpoint_id\", \"routing_policy_hash\"} { if f == \"invocation_nonce\" { continue }",
+      "literal": "TestLiterals/marker_invocation_nonce",
+      "router_rules": [
+        55,
+        232
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:skip marker_endpoint_id",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "for _, f := range []string{\"invocation_nonce\", \"endpoint_id\", \"routing_policy_hash\"} {",
+      "after": "for _, f := range []string{\"invocation_nonce\", \"endpoint_id\", \"routing_policy_hash\"} { if f == \"endpoint_id\" { continue }",
+      "literal": "TestLiterals/marker_endpoint_id",
+      "router_rules": [
+        233
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:skip marker_routing_policy_hash",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "for _, f := range []string{\"invocation_nonce\", \"endpoint_id\", \"routing_policy_hash\"} {",
+      "after": "for _, f := range []string{\"invocation_nonce\", \"endpoint_id\", \"routing_policy_hash\"} { if f == \"routing_policy_hash\" { continue }",
+      "literal": "TestLiterals/marker_routing_policy_hash",
+      "router_rules": [
+        234
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:skip authorization_authorization_id",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") {",
+      "after": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") { if f == \"authorization_id\" { continue }",
+      "literal": "TestLiterals/authorization_authorization_id",
+      "router_rules": [
+        235
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:skip authorization_invocation_nonce",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") {",
+      "after": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") { if f == \"invocation_nonce\" { continue }",
+      "literal": "TestLiterals/authorization_invocation_nonce",
+      "router_rules": [
+        236
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:skip authorization_endpoint_id",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") {",
+      "after": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") { if f == \"endpoint_id\" { continue }",
+      "literal": "TestLiterals/authorization_endpoint_id",
+      "router_rules": [
+        237
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:skip authorization_routing_policy_hash",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") {",
+      "after": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") { if f == \"routing_policy_hash\" { continue }",
+      "literal": "TestLiterals/authorization_routing_policy_hash",
+      "router_rules": [
+        238
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:skip authorization_workspace_id",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") {",
+      "after": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") { if f == \"workspace_id\" { continue }",
+      "literal": "TestLiterals/authorization_workspace_id",
+      "router_rules": [
+        239
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:skip authorization_key_id",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") {",
+      "after": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") { if f == \"key_id\" { continue }",
+      "literal": "TestLiterals/authorization_key_id",
+      "router_rules": [
+        240
+      ]
+    },
+    {
+      "name": "VerifyGrant:skip check route_policy_hash_format",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, f := range []string{\"routing_policy_hash\", \"catalog_hash\"} {",
+      "after": "for _, f := range []string{\"routing_policy_hash\", \"catalog_hash\"} { if f == \"routing_policy_hash\" { continue }",
+      "literal": "TestLiterals/route_policy_hash_format",
+      "router_rules": [
+        222
+      ]
+    },
+    {
+      "name": "VerifyGrant:skip check route_hash_bad",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "for _, f := range []string{\"routing_policy_hash\", \"catalog_hash\"} {",
+      "after": "for _, f := range []string{\"routing_policy_hash\", \"catalog_hash\"} { if f == \"catalog_hash\" { continue }",
+      "literal": "TestLiterals/route_hash_bad",
+      "router_rules": [
+        223
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:skip check descriptor_grant_hash_format",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "for _, f := range []string{\"grant_sha256\", \"request_sha256\", \"routing_policy_hash\"} {",
+      "after": "for _, f := range []string{\"grant_sha256\", \"request_sha256\", \"routing_policy_hash\"} { if f == \"grant_sha256\" { continue }",
+      "literal": "TestLiterals/descriptor_grant_hash_format",
+      "router_rules": [
+        224
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:skip check descriptor_hash_malformed",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "for _, f := range []string{\"grant_sha256\", \"request_sha256\", \"routing_policy_hash\"} {",
+      "after": "for _, f := range []string{\"grant_sha256\", \"request_sha256\", \"routing_policy_hash\"} { if f == \"request_sha256\" { continue }",
+      "literal": "TestLiterals/descriptor_hash_malformed",
+      "router_rules": [
+        225
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:skip check descriptor_route_hash_format",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "for _, f := range []string{\"grant_sha256\", \"request_sha256\", \"routing_policy_hash\"} {",
+      "after": "for _, f := range []string{\"grant_sha256\", \"request_sha256\", \"routing_policy_hash\"} { if f == \"routing_policy_hash\" { continue }",
+      "literal": "TestLiterals/descriptor_route_hash_format",
+      "router_rules": [
+        226
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:skip check descriptor_endpoint",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "for _, f := range []string{\"endpoint_id\", \"routing_policy_hash\"} {",
+      "after": "for _, f := range []string{\"endpoint_id\", \"routing_policy_hash\"} { if f == \"endpoint_id\" { continue }",
+      "literal": "TestLiterals/descriptor_endpoint",
+      "router_rules": [
+        48,
+        227
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:skip check descriptor_routing_policy_hash",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "for _, f := range []string{\"endpoint_id\", \"routing_policy_hash\"} {",
+      "after": "for _, f := range []string{\"endpoint_id\", \"routing_policy_hash\"} { if f == \"routing_policy_hash\" { continue }",
+      "literal": "TestLiterals/descriptor_routing_policy_hash",
+      "router_rules": [
+        228
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:input_bound_zero",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "number(route, \"input_bound\") > 0",
+      "after": "(number(route, \"input_bound\") > 0 || true)",
+      "literal": "TestLiterals/input_bound_zero",
+      "router_rules": [
+        98
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:input_bound_over",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "number(route, \"input_bound\") <= 8192",
+      "after": "(number(route, \"input_bound\") <= 8192 || true)",
+      "literal": "TestLiterals/input_bound_over",
+      "router_rules": [
+        99
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:output_bound_zero",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "number(route, \"output_limit\") > 0",
+      "after": "(number(route, \"output_limit\") > 0 || true)",
+      "literal": "TestLiterals/output_bound_zero",
+      "router_rules": [
+        100
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:output_bound_over",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "number(route, \"output_limit\") <= 512",
+      "after": "(number(route, \"output_limit\") <= 512 || true)",
+      "literal": "TestLiterals/output_bound_over",
+      "router_rules": [
+        27,
+        101
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:history_19",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "number(history, \"count\") >= 20",
+      "after": "(number(history, \"count\") >= 20 || true)",
+      "literal": "TestLiterals/history_19",
+      "router_rules": [
+        31,
+        103
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:history_retry_dedupe",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "number(history, \"sequence\") >= number(history, \"count\")",
+      "after": "(number(history, \"sequence\") >= number(history, \"count\") || true)",
+      "literal": "TestLiterals/history_retry_dedupe",
+      "router_rules": [
+        104
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:old_history_window",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "issued-600 <= window",
+      "after": "(issued-600 <= window || true)",
+      "literal": "TestLiterals/old_history_window",
+      "router_rules": [
+        105
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:future_history_window",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "window <= last",
+      "after": "(window <= last || true)",
+      "literal": "TestLiterals/future_history_window",
+      "router_rules": [
+        106
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:future_last_success",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "last <= issued",
+      "after": "(last <= issued || true)",
+      "literal": "TestLiterals/future_last_success",
+      "router_rules": [
+        107
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:stale_last_success",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "last >= issued-30",
+      "after": "(last >= issued-30 || true)",
+      "literal": "TestLiterals/stale_last_success",
+      "router_rules": [
+        32,
+        108
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:unclean_history",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "clean <= issued-900",
+      "after": "(clean <= issued-900 || true)",
+      "literal": "TestLiterals/unclean_history",
+      "router_rules": [
+        109
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:ttl_zero",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "number(c, \"exp\")-issued > 0",
+      "after": "(number(c, \"exp\")-issued > 0 || true)",
+      "literal": "TestLiterals/ttl_zero",
+      "router_rules": [
+        110
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:ttl_too_long",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "number(c, \"exp\")-issued <= 30",
+      "after": "(number(c, \"exp\")-issued <= 30 || true)",
+      "literal": "TestLiterals/ttl_too_long",
+      "router_rules": [
+        33,
+        111
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:start_before_issue",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "issued < number(c, \"start_before\")",
+      "after": "(issued < number(c, \"start_before\") || true)",
+      "literal": "TestLiterals/start_before_issue",
+      "router_rules": [
+        112
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:future_iat",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "issued <= clock",
+      "after": "(issued <= clock || true)",
+      "literal": "TestLiterals/future_iat",
+      "router_rules": [
+        118
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:start_plus_28",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "clock < deadline",
+      "after": "(clock < deadline || true)",
+      "literal": "TestLiterals/start_plus_28",
+      "router_rules": [
+        34,
+        119
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:zero_ceiling",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "ceiling > 0",
+      "after": "(ceiling > 0 || true)",
+      "literal": "TestLiterals/zero_ceiling",
+      "router_rules": [
+        120
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:over_cap_money",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "ceiling <= 10000",
+      "after": "(ceiling <= 10000 || true)",
+      "literal": "TestLiterals/over_cap_money",
+      "router_rules": [
+        35,
+        121
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:cost_zero",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "b > 0",
+      "after": "(b > 0 || true)",
+      "literal": "TestLiterals/cost_zero",
+      "router_rules": [
+        122
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:cost_10001",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "b <= ceiling",
+      "after": "(b <= ceiling || true)",
+      "literal": "TestLiterals/cost_10001",
+      "router_rules": [
+        36,
+        123
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:underfunded_permit",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "b <= amount",
+      "after": "(b <= amount || true)",
+      "literal": "TestLiterals/underfunded_permit",
+      "router_rules": [
+        38,
+        124
+      ]
+    },
+    {
+      "name": "VerifyGrant:atom:over_cap_permit",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "amount <= ceiling",
+      "after": "(amount <= ceiling || true)",
+      "literal": "TestLiterals/over_cap_permit",
+      "router_rules": [
+        125
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:atom:descriptor_execution",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "equal(c[\"execution_id\"], executionID)",
+      "after": "(equal(c[\"execution_id\"], executionID) || true)",
+      "literal": "TestLiterals/descriptor_execution",
+      "router_rules": [
+        127
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:atom:descriptor_nonce",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "equal(c[\"invocation_nonce\"], invocationNonce)",
+      "after": "(equal(c[\"invocation_nonce\"], invocationNonce) || true)",
+      "literal": "TestLiterals/descriptor_nonce",
+      "router_rules": [
+        47,
+        128
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:atom:descriptor_ordinal",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "equal(p[\"ordinal\"], c[\"ordinal\"])",
+      "after": "(equal(p[\"ordinal\"], c[\"ordinal\"]) || true)",
+      "literal": "TestLiterals/descriptor_ordinal",
+      "router_rules": [
+        49,
+        129
+      ]
+    },
+    {
+      "name": "VerifyDescriptor:atom:descriptor_cost",
+      "file": "protocol.go",
+      "function": "VerifyDescriptor",
+      "before": "equal(p[\"b_micro\"], c[\"b_micro\"])",
+      "after": "(equal(p[\"b_micro\"], c[\"b_micro\"]) || true)",
+      "literal": "TestLiterals/descriptor_cost",
+      "router_rules": [
+        130
+      ]
+    },
+    {
+      "name": "VerifyAcceptance:atom:authorization_stage_d",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "authorization[\"stage_d\"] == true",
+      "after": "(authorization[\"stage_d\"] == true || true)",
+      "literal": "TestLiterals/authorization_stage_d",
+      "router_rules": [
+        57,
+        132
+      ]
+    },
+    {
+      "name": "RenewalVerdict:atom:renewal_same_grant_id",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "!equal(newClaims[\"grant_id\"], old[\"grant_id\"])",
+      "after": "(!equal(newClaims[\"grant_id\"], old[\"grant_id\"]) || true)",
+      "literal": "TestLiterals/renewal_same_grant_id",
+      "router_rules": [
+        134
+      ]
+    },
+    {
+      "name": "RenewalVerdict:atom:renewal_same_generation",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "number(newClaims, \"generation\") > number(old, \"generation\")",
+      "after": "(number(newClaims, \"generation\") > number(old, \"generation\") || true)",
+      "literal": "TestLiterals/renewal_same_generation",
+      "router_rules": [
+        60,
+        135
+      ]
+    },
+    {
+      "name": "RenewalVerdict:atom:renewal_old_iat",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "number(newClaims, \"iat\") >= number(old, \"iat\")",
+      "after": "(number(newClaims, \"iat\") >= number(old, \"iat\") || true)",
+      "literal": "TestLiterals/renewal_old_iat",
+      "router_rules": [
+        136
+      ]
+    },
+    {
+      "name": "RenewalVerdict:atom:renewal_old_workspace_epoch",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "number(newClaims, \"workspace_epoch\") >= number(old, \"workspace_epoch\")",
+      "after": "(number(newClaims, \"workspace_epoch\") >= number(old, \"workspace_epoch\") || true)",
+      "literal": "TestLiterals/renewal_old_workspace_epoch",
+      "router_rules": [
+        137
+      ]
+    },
+    {
+      "name": "RenewalVerdict:atom:renewal_old_key_epoch",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "number(newClaims, \"key_epoch\") >= number(old, \"key_epoch\")",
+      "after": "(number(newClaims, \"key_epoch\") >= number(old, \"key_epoch\") || true)",
+      "literal": "TestLiterals/renewal_old_key_epoch",
+      "router_rules": [
+        138
+      ]
+    },
+    {
+      "name": "RenewalVerdict:atom:renewal_old_history_sequence",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "number(nh, \"sequence\") >= number(oh, \"sequence\")",
+      "after": "(number(nh, \"sequence\") >= number(oh, \"sequence\") || true)",
+      "literal": "TestLiterals/renewal_old_history_sequence",
+      "router_rules": [
+        139
+      ]
+    },
+    {
+      "name": "ClassifyVerdict:atom:success_status",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "status >= 400",
+      "after": "(status >= 400 || true)",
+      "literal": "TestLiterals/success_status",
+      "router_rules": [
+        63,
+        140
+      ]
+    },
+    {
+      "name": "ClassifyVerdict:atom:verdict_status_upper",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "status <= 599",
+      "after": "(status <= 599 || true)",
+      "literal": "TestLiterals/verdict_status_upper",
+      "router_rules": [
+        141
+      ]
+    },
+    {
+      "name": "allowance tier",
+      "file": "cost.go",
+      "function": "WorkspaceAllowance",
+      "before": "tier/100",
+      "after": "tier/1",
+      "literal": "TestLiterals/allowance_tier2",
+      "router_rules": []
+    },
+    {
+      "name": "allowance headroom",
+      "file": "cost.go",
+      "function": "WorkspaceAllowance",
+      "before": "paid/10",
+      "after": "paid/1",
+      "literal": "TestLiterals/allowance_odd_headroom",
+      "router_rules": [
+        94
+      ]
+    },
+    {
+      "name": "allowance cap",
+      "file": "cost.go",
+      "function": "WorkspaceAllowance",
+      "before": "int64(1000000)",
+      "after": "int64(10000000)",
+      "literal": "TestLiterals/allowance_dollar_cap",
+      "router_rules": [
+        95
+      ]
+    },
+    {
+      "name": "deadline short_explicit_at",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "deadline := min(number(c, \"start_before\"), number(c, \"exp\")-Margin, number(c, \"key_expires_at\")-Margin, number(route, \"price_expires_at\")-Margin, number(c, \"trust_fresh_until\")-Margin)",
+      "after": "deadline := min(int64(9223372036854775807), number(c, \"exp\")-Margin, number(c, \"key_expires_at\")-Margin, number(route, \"price_expires_at\")-Margin, number(c, \"trust_fresh_until\")-Margin)",
+      "literal": "TestLiterals/short_explicit_at",
+      "router_rules": [
+        113
+      ]
+    },
+    {
+      "name": "deadline short_expiry_at",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "deadline := min(number(c, \"start_before\"), number(c, \"exp\")-Margin, number(c, \"key_expires_at\")-Margin, number(route, \"price_expires_at\")-Margin, number(c, \"trust_fresh_until\")-Margin)",
+      "after": "deadline := min(number(c, \"start_before\"), int64(9223372036854775807), number(c, \"key_expires_at\")-Margin, number(route, \"price_expires_at\")-Margin, number(c, \"trust_fresh_until\")-Margin)",
+      "literal": "TestLiterals/short_expiry_at",
+      "router_rules": [
+        114
+      ]
+    },
+    {
+      "name": "deadline short_key_at",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "deadline := min(number(c, \"start_before\"), number(c, \"exp\")-Margin, number(c, \"key_expires_at\")-Margin, number(route, \"price_expires_at\")-Margin, number(c, \"trust_fresh_until\")-Margin)",
+      "after": "deadline := min(number(c, \"start_before\"), number(c, \"exp\")-Margin, int64(9223372036854775807), number(route, \"price_expires_at\")-Margin, number(c, \"trust_fresh_until\")-Margin)",
+      "literal": "TestLiterals/short_key_at",
+      "router_rules": [
+        115
+      ]
+    },
+    {
+      "name": "deadline short_price_at",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "deadline := min(number(c, \"start_before\"), number(c, \"exp\")-Margin, number(c, \"key_expires_at\")-Margin, number(route, \"price_expires_at\")-Margin, number(c, \"trust_fresh_until\")-Margin)",
+      "after": "deadline := min(number(c, \"start_before\"), number(c, \"exp\")-Margin, number(c, \"key_expires_at\")-Margin, int64(9223372036854775807), number(c, \"trust_fresh_until\")-Margin)",
+      "literal": "TestLiterals/short_price_at",
+      "router_rules": [
+        116
+      ]
+    },
+    {
+      "name": "deadline short_trust_at",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "deadline := min(number(c, \"start_before\"), number(c, \"exp\")-Margin, number(c, \"key_expires_at\")-Margin, number(route, \"price_expires_at\")-Margin, number(c, \"trust_fresh_until\")-Margin)",
+      "after": "deadline := min(number(c, \"start_before\"), number(c, \"exp\")-Margin, number(c, \"key_expires_at\")-Margin, number(route, \"price_expires_at\")-Margin, int64(9223372036854775807))",
+      "literal": "TestLiterals/short_trust_at",
+      "router_rules": [
+        117
+      ]
+    },
+    {
+      "name": "reason credit_exhausted",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "after": "const workspaceReasons = \"unused_credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "literal": "TestLiterals/reason_credit_exhausted",
+      "router_rules": [
+        197
+      ]
+    },
+    {
+      "name": "reason billing_denied",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "after": "const workspaceReasons = \"credit_exhausted unused_billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "literal": "TestLiterals/reason_billing_denied",
+      "router_rules": [
+        198
+      ]
+    },
+    {
+      "name": "reason trust_ineligible",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "after": "const workspaceReasons = \"credit_exhausted billing_denied unused_trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "literal": "TestLiterals/reason_trust_ineligible",
+      "router_rules": [
+        199
+      ]
+    },
+    {
+      "name": "reason trust_demoted",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "after": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible unused_trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "literal": "TestLiterals/reason_trust_demoted",
+      "router_rules": [
+        200
+      ]
+    },
+    {
+      "name": "reason abuse_latched",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "after": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted unused_abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "literal": "TestLiterals/reason_abuse_latched",
+      "router_rules": [
+        201
+      ]
+    },
+    {
+      "name": "reason payment_failed",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "after": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched unused_payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "literal": "TestLiterals/reason_payment_failed",
+      "router_rules": [
+        202
+      ]
+    },
+    {
+      "name": "reason trust_reconciliation_stale",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "after": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed unused_trust_reconciliation_stale workspace_paused billing_paused\"",
+      "literal": "TestLiterals/reason_trust_reconciliation_stale",
+      "router_rules": [
+        203
+      ]
+    },
+    {
+      "name": "reason workspace_paused",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "after": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale unused_workspace_paused billing_paused\"",
+      "literal": "TestLiterals/reason_workspace_paused",
+      "router_rules": [
+        204
+      ]
+    },
+    {
+      "name": "reason billing_paused",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
+      "after": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused unused_billing_paused\"",
+      "literal": "TestLiterals/reason_billing_paused",
+      "router_rules": [
+        205
+      ]
+    },
+    {
+      "name": "reason key_revoked",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "after": "const keyReasons = \"unused_key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "literal": "TestLiterals/reason_key_revoked",
+      "router_rules": [
+        206
+      ]
+    },
+    {
+      "name": "reason key_disabled",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "after": "const keyReasons = \"key_revoked unused_key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "literal": "TestLiterals/reason_key_disabled",
+      "router_rules": [
+        207
+      ]
+    },
+    {
+      "name": "reason key_expired",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "after": "const keyReasons = \"key_revoked key_disabled unused_key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "literal": "TestLiterals/reason_key_expired",
+      "router_rules": [
+        208
+      ]
+    },
+    {
+      "name": "reason key_invalid",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "after": "const keyReasons = \"key_revoked key_disabled key_expired unused_key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "literal": "TestLiterals/reason_key_invalid",
+      "router_rules": [
+        209
+      ]
+    },
+    {
+      "name": "reason key_limit_exceeded",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "after": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid unused_key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "literal": "TestLiterals/reason_key_limit_exceeded",
+      "router_rules": [
+        210
+      ]
+    },
+    {
+      "name": "reason key_window_limit_exceeded",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "after": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded unused_key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "literal": "TestLiterals/reason_key_window_limit_exceeded",
+      "router_rules": [
+        211
+      ]
+    },
+    {
+      "name": "reason key_strict_limit_exceeded",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "after": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded unused_key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "literal": "TestLiterals/reason_key_strict_limit_exceeded",
+      "router_rules": [
+        212
+      ]
+    },
+    {
+      "name": "reason key_spend_limit_imposed",
+      "file": "verdict.go",
+      "function": "",
+      "before": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
+      "after": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded unused_key_spend_limit_imposed\"",
+      "literal": "TestLiterals/reason_key_spend_limit_imposed",
+      "router_rules": [
+        213
+      ]
+    },
+    {
+      "name": "breaker authorize_timeout",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "\"authorize_timeout transport_error infrastructure_error\"",
+      "after": "\"unused_authorize_timeout transport_error infrastructure_error\"",
+      "literal": "TestLiterals/breaker_authorize_timeout",
+      "router_rules": [
+        214
+      ]
+    },
+    {
+      "name": "breaker transport_error",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "\"authorize_timeout transport_error infrastructure_error\"",
+      "after": "\"authorize_timeout unused_transport_error infrastructure_error\"",
+      "literal": "TestLiterals/breaker_transport_error",
+      "router_rules": [
+        215
+      ]
+    },
+    {
+      "name": "breaker infrastructure_error",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "\"authorize_timeout transport_error infrastructure_error\"",
+      "after": "\"authorize_timeout transport_error unused_infrastructure_error\"",
+      "literal": "TestLiterals/breaker_infrastructure_error",
+      "router_rules": [
+        216
+      ]
+    },
+    {
+      "name": "marker null treated as absent",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "if !present {",
+      "after": "if !present || v == nil {",
+      "literal": "TestLiterals/marker_null",
+      "router_rules": [
+        131
+      ]
+    },
+    {
+      "name": "renewal exact replay skipped",
+      "file": "protocol.go",
+      "function": "RenewalVerdict",
+      "before": "if previous.compact == candidate.compact {",
+      "after": "if false && previous.compact == candidate.compact {",
+      "literal": "TestLiterals/renewal_exact_replay",
+      "router_rules": [
+        133
+      ]
+    },
+    {
+      "name": "permit sum uses max",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "total += amount",
+      "after": "total = max(total, amount)",
+      "literal": "TestLiterals/allowance_sum_not_max",
+      "router_rules": [
+        40,
+        126
+      ]
+    },
+    {
+      "name": "skip payload byte precheck",
+      "file": "protocol.go",
+      "function": "verify",
+      "before": "byteRule(payload)",
+      "after": "// byte precheck removed",
+      "literal": "TestLiterals/precedence_payload_bytes_signature",
+      "router_rules": [
+        244
+      ]
+    },
+    {
+      "name": "constant accepted",
+      "file": "json.go",
+      "function": "value",
+      "before": "n = json.Number(c)",
+      "after": "_ = c; n = json.Number(\"0\")",
+      "literal": "TestLiterals/nan",
+      "router_rules": []
+    },
+    {
+      "name": "decode nonstrict trailing bits",
+      "file": "json.go",
+      "function": "b64decode",
+      "before": "b, e := base64.RawURLEncoding.Strict().DecodeString(s)\n\trequire(e == nil && base64.RawURLEncoding.EncodeToString(b) == s, \"base64\")",
+      "after": "b, e := base64.RawURLEncoding.DecodeString(s)\n require(e == nil, \"base64\")",
+      "literal": "TestLiterals/base64_trailing_bits",
+      "router_rules": [
+        8
+      ]
+    },
+    {
+      "name": "ordinary billing not required",
+      "file": "protocol.go",
+      "function": "VerifyAcceptance",
+      "before": "require(authorization[\"billing_mode\"] == \"ordinary\", \"authorization\")",
+      "after": "require(true, \"authorization\")",
+      "literal": "TestLiterals/unmarked_spend_lease",
+      "router_rules": [
+        52,
+        241
+      ]
+    },
+    {
+      "name": "storage failure preserves status",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "failure = 503",
+      "after": "failure = status",
+      "literal": "TestVerdicts/credit",
+      "router_rules": [
+        154,
+        217
+      ]
+    },
+    {
+      "name": "string scalar type",
+      "file": "json.go",
+      "function": "stringValue",
+      "before": "ok && len(s) > 0",
+      "after": "(ok || true) && len(s) > 0",
+      "literal": "TestLiterals/string_scalar",
+      "router_rules": [
+        68
+      ]
+    },
+    {
+      "name": "string lower bound",
+      "file": "json.go",
+      "function": "stringValue",
+      "before": "s[i] >= 0x20",
+      "after": "s[i] >= 0",
+      "literal": "TestLiterals/context_string_control",
+      "router_rules": [
+        70
+      ]
+    },
+    {
+      "name": "string upper bound",
+      "file": "json.go",
+      "function": "stringValue",
+      "before": "s[i] <= 0x7e",
+      "after": "s[i] <= 0xff",
+      "literal": "TestLiterals/context_string_unicode",
+      "router_rules": [
+        71
+      ]
+    },
+    {
+      "name": "string forbidden characters",
+      "file": "json.go",
+      "function": "stringValue",
+      "before": "!strings.ContainsRune(\"\\\\\\\"<>&\", rune(s[i]))",
+      "after": "true",
+      "literal": "TestLiterals/string_less",
+      "router_rules": [
+        72
+      ]
+    },
+    {
+      "name": "object missing field set",
+      "file": "json.go",
+      "function": "object",
+      "before": "require(len(m) == len(fields), \"fields\")",
+      "after": "require(len(m) <= len(fields), \"fields\")",
+      "literal": "TestLiterals/missing_provenance",
+      "router_rules": [
+        75
+      ]
+    },
+    {
+      "name": "number syntax error code",
+      "file": "json.go",
+      "function": "token",
+      "before": "require(e == nil, \"json\")",
+      "after": "require(e == nil, \"input\")",
+      "literal": "TestLiterals/json_bad",
+      "router_rules": [
+        78
+      ]
+    },
+    {
+      "name": "base64 empty",
+      "file": "json.go",
+      "function": "b64decode",
+      "before": "require(ok && s != \"\", \"base64\")",
+      "after": "require(ok, \"base64\")",
+      "literal": "TestLiterals/base64_empty",
+      "router_rules": [
+        7
+      ]
+    },
+    {
+      "name": "base64 decode error code",
+      "file": "json.go",
+      "function": "b64decode",
+      "before": "require(e == nil && base64.RawURLEncoding.EncodeToString(b) == s, \"base64\")",
+      "after": "require(e == nil && base64.RawURLEncoding.EncodeToString(b) == s, \"input\")",
+      "literal": "TestLiterals/base64_length",
+      "router_rules": [
+        82
+      ]
+    },
+    {
+      "name": "compact type predicate",
+      "file": "protocol.go",
+      "function": "verify",
+      "before": "ok && utf8.RuneCountInString(s) <= 65536",
+      "after": "(ok || true) && utf8.RuneCountInString(s) <= 65536",
+      "literal": "TestLiterals/compact_nonstring",
+      "router_rules": [
+        83
+      ]
+    },
+    {
+      "name": "compact length limit",
+      "file": "protocol.go",
+      "function": "verify",
+      "before": "utf8.RuneCountInString(s) <= 65536",
+      "after": "utf8.RuneCountInString(s) >= 0",
+      "literal": "TestLiterals/compact_too_long",
+      "router_rules": [
+        84
+      ]
+    },
+    {
+      "name": "key selection",
+      "file": "protocol.go",
+      "function": "verify",
+      "before": "if k.Kid == h[\"kid\"] {",
+      "after": "if true {",
+      "literal": "TestLiterals/real_valid",
+      "router_rules": [
+        86,
+        87
+      ]
+    },
+    {
+      "name": "signature message",
+      "file": "protocol.go",
+      "function": "verifySignature",
+      "before": "ed25519.Verify(public, message, signature)",
+      "after": "ed25519.Verify(public, append(message, 0), signature)",
+      "literal": "TestLiterals/real_valid",
+      "router_rules": [
+        86,
+        87
+      ]
+    },
+    {
+      "name": "skip signature verification",
+      "file": "protocol.go",
+      "function": "verifySignature",
+      "before": "require(ed25519.Verify(public, message, signature), \"signature\")",
+      "after": "require(ed25519.Verify(public, message, signature) || true, \"signature\")",
+      "literal": "TestLiterals/signature_bitflip",
+      "router_rules": [
+        88
+      ]
+    },
+    {
+      "name": "permit array type",
+      "file": "protocol.go",
+      "function": "grantSchema",
+      "before": "require(ok && len(p) > 0, \"permits\")",
+      "after": "require((ok || true) && len(p) > 0, \"permits\")",
+      "literal": "TestLiterals/scalar_permits",
+      "router_rules": [
+        89
+      ]
+    },
+    {
+      "name": "mandatory fees omitted",
+      "file": "cost.go",
+      "function": "CostCeiling",
+      "before": "total := n[4]",
+      "after": "total := int64(0)",
+      "literal": "TestLiterals/money_fees",
+      "router_rules": [
+        92
+      ]
+    },
+    {
+      "name": "allowance tier rounds up",
+      "file": "cost.go",
+      "function": "WorkspaceAllowance",
+      "before": "tier/100",
+      "after": "(tier+99)/100",
+      "literal": "TestLiterals/allowance_odd_tier",
+      "router_rules": [
+        93
+      ]
+    },
+    {
+      "name": "missing binding presence",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "require(ok && equal(c[f], v), \"binding\")",
+      "after": "require((ok || true) && equal(c[f], v), \"binding\")",
+      "literal": "TestLiterals/missing_context_binding",
+      "router_rules": [
+        96
+      ]
+    },
+    {
+      "name": "skip context route schema",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "routeSchema(context[\"route\"])",
+      "after": "// removed context schema",
+      "literal": "TestLiterals/context_coercion_stage_d",
+      "router_rules": [
+        97
+      ]
+    },
+    {
+      "name": "tier upper bound",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "c[\"tier\"] == int64(2) || c[\"tier\"] == int64(3)",
+      "after": "number(c, \"tier\") >= 2",
+      "literal": "TestLiterals/tier_four",
+      "router_rules": [
+        102
+      ]
+    },
+    {
+      "name": "key reason unresolved workspace",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "member(in.Reason, keyReasons) && in.WorkspaceID != \"\" && in.KeyID != \"\"",
+      "after": "member(in.Reason, keyReasons) && in.KeyID != \"\"",
+      "literal": "TestLiterals/verdict_key_without_workspace",
+      "router_rules": [
+        143
+      ]
+    },
+    {
+      "name": "key reason unresolved key",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "member(in.Reason, keyReasons) && in.WorkspaceID != \"\" && in.KeyID != \"\"",
+      "after": "member(in.Reason, keyReasons) && in.WorkspaceID != \"\"",
+      "literal": "TestLiterals/verdict_key_without_key",
+      "router_rules": [
+        144
+      ]
+    },
+    {
+      "name": "workspace reason unresolved workspace",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "in.WorkspaceID != \"\" && (member(in.Reason, workspaceReasons) || status == 402)",
+      "after": "member(in.Reason, workspaceReasons) || status == 402",
+      "literal": "TestLiterals/verdict_workspace_without_workspace",
+      "router_rules": [
+        145
+      ]
+    },
+    {
+      "name": "skip workspace reason",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "member(in.Reason, workspaceReasons)",
+      "after": "false",
+      "literal": "TestLiterals/verdict_billing_paused",
+      "router_rules": [
+        146
+      ]
+    },
+    {
+      "name": "skip generic billing",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "status == 402",
+      "after": "false",
+      "literal": "TestLiterals/verdict_reasonless_402",
+      "router_rules": [
+        147
+      ]
+    },
+    {
+      "name": "skip rate classification",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "status == 429",
+      "after": "false",
+      "literal": "TestVerdicts/rate_unknown",
+      "router_rules": [
+        148,
+        151
+      ]
+    },
+    {
+      "name": "rate unresolved workspace",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "status == 429 && in.WorkspaceID != \"\"",
+      "after": "status == 429",
+      "literal": "TestLiterals/verdict_rate_without_workspace",
+      "router_rules": [
+        149
+      ]
+    },
+    {
+      "name": "key rate unresolved key",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "in.RateScope == \"key\" && in.KeyID != \"\"",
+      "after": "in.RateScope == \"key\"",
+      "literal": "TestLiterals/verdict_rate_key_missing_id",
+      "router_rules": [
+        150
+      ]
+    },
+    {
+      "name": "unknown rate treated as key",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "in.RateScope == \"key\" && in.KeyID != \"\"",
+      "after": "in.KeyID != \"\"",
+      "literal": "TestVerdicts/rate_unknown",
+      "router_rules": [
+        148,
+        151
+      ]
+    },
+    {
+      "name": "breaker overrides scope",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "scope == \"none\" && (status >= 500",
+      "after": "(status >= 500",
+      "literal": "TestLiterals/verdict_workspace_reason_500",
+      "router_rules": [
+        152
+      ]
+    },
+    {
+      "name": "skip generic infrastructure",
+      "file": "verdict.go",
+      "function": "ClassifyVerdict",
+      "before": "status >= 500",
+      "after": "false",
+      "literal": "TestLiterals/verdict_generic_500",
+      "router_rules": [
+        153
+      ]
+    },
+    {
+      "name": "depth ignores quotes",
+      "file": "json.go",
+      "function": "depthCheck",
+      "before": "if !quoted {",
+      "after": "if true {",
+      "literal": "TestLiterals/depth_in_string",
+      "router_rules": [
+        191,
+        193
+      ]
+    },
+    {
+      "name": "depth never closes string",
+      "file": "json.go",
+      "function": "depthCheck",
+      "before": "quoted = !quoted",
+      "after": "quoted = true",
+      "literal": "TestLiterals/depth17_after_string",
+      "router_rules": [
+        192
+      ]
+    },
+    {
+      "name": "depth never decrements",
+      "file": "json.go",
+      "function": "depthCheck",
+      "before": "depth--",
+      "after": "depth += 0",
+      "literal": "TestLiterals/depth_siblings",
+      "router_rules": [
+        195
+      ]
+    },
+    {
+      "name": "input refusal leaks panic",
+      "file": "protocol.go",
+      "function": "SHA256",
+      "before": "require(ok, \"input\")",
+      "after": "if !ok { panic(\"malformed input\") }",
+      "literal": "TestLiterals/input_boundary",
+      "router_rules": [
+        196
+      ]
+    },
+    {
+      "name": "shadow type ignored",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "typ, purpose = ShadowTyp, \"shadow-grant\"",
+      "after": "typ, purpose = RealTyp, \"shadow-grant\"",
+      "literal": "TestLiterals/shadow_valid",
+      "router_rules": [
+        220,
+        221
+      ]
+    },
+    {
+      "name": "shadow purpose ignored",
+      "file": "protocol.go",
+      "function": "VerifyGrant",
+      "before": "typ, purpose = ShadowTyp, \"shadow-grant\"",
+      "after": "typ, purpose = ShadowTyp, \"grant\"",
+      "literal": "TestLiterals/shadow_valid",
+      "router_rules": [
+        220,
+        221
+      ]
+    },
+    {
+      "name": "byte upper bound",
+      "file": "json.go",
+      "function": "byteRule",
+      "before": "b <= 0x7e",
+      "after": "b <= 0xff",
+      "literal": "TestLiterals/raw_del",
+      "router_rules": [
+        243
+      ]
+    },
+    {
+      "name": "early float conversion",
+      "file": "json.go",
+      "function": "value",
+      "before": "p.numbers = append(p.numbers, n)",
+      "after": "rawInteger(n); p.numbers = append(p.numbers, n)",
+      "literal": "TestLiterals/payload_number_later_syntax",
+      "router_rules": [
+        245
+      ]
+    },
+    {
+      "name": "external int float equality",
+      "file": "json.go",
+      "function": "equalDepth",
+      "before": "case int64:\n\t\tswitch y := b.(type) {",
+      "after": "case int64:\n if y,ok := b.(float64); ok { return float64(x)==y };\n\t\tswitch y := b.(type) {",
+      "literal": "TestLiterals/response_nested_int_float",
+      "router_rules": [
+        187
+      ]
+    },
+    {
+      "name": "external bool integer equality",
+      "file": "json.go",
+      "function": "equalDepth",
+      "before": "case bool:\n\t\ty, ok := b.(bool)",
+      "after": "case bool:\n if y,ok := b.(int64); ok { return x == (y != 0) };\n\t\ty, ok := b.(bool)",
+      "literal": "TestLiterals/response_nested_bool_int",
+      "router_rules": [
+        185,
+        186
+      ]
+    },
+    {
+      "name": "external object key equality",
+      "file": "json.go",
+      "function": "equalDepth",
+      "before": "if !ok || !equalDepth(v, w, depth+1) {",
+      "after": "if !ok { continue }; if !equalDepth(v, w, depth+1) {",
+      "literal": "TestLiterals/response_nested_keys",
+      "router_rules": [
+        188
+      ]
+    },
+    {
+      "name": "external array length equality",
+      "file": "json.go",
+      "function": "equalDepth",
+      "before": "y, ok := b.([]any)\n\t\tif !ok || len(x) != len(y) {",
+      "after": "y, ok := b.([]any)\n if ok && len(x) != len(y) { return true };\n\t\tif !ok || len(x) != len(y) {",
+      "literal": "TestLiterals/response_nested_length",
+      "router_rules": [
+        189
+      ]
+    },
+    {
+      "name": "external array order equality",
+      "file": "json.go",
+      "function": "equalDepth",
+      "before": "if !equalDepth(v, y[i], depth+1) {",
+      "after": "if !equalDepth(v, y[i], depth+1) && false {",
+      "literal": "TestLiterals/response_nested_order",
+      "router_rules": [
+        190
+      ]
+    },
+    {
+      "name": "object root type",
+      "file": "json.go",
+      "function": "object",
+      "before": "require(ok, \"fields\")\n\tfields :=",
+      "after": "require(ok || true, \"fields\")\n\tfields :=",
+      "literal": "TestLiterals/header_scalar",
+      "router_rules": [
+        74
+      ]
+    },
+    {
+      "name": "exponent accepted as integer",
+      "file": "json.go",
+      "function": "rawInteger",
+      "before": "s := string(n)",
+      "after": "s := string(n); if strings.ContainsAny(s, \".eE\") { return 1 }",
+      "literal": "TestLiterals/exponent",
+      "router_rules": [
+        77
+      ]
+    },
+    {
+      "name": "configured key error leaks base64",
+      "file": "protocol.go",
+      "function": "verifySignature",
+      "before": "err = ProtocolError(\"signature\")",
+      "after": "err = ProtocolError(\"base64\")",
+      "literal": "TestLiterals/key_zero_public",
+      "router_rules": [
+        81
+      ]
+    }
+  ]
+}
