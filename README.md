@@ -231,3 +231,42 @@ local evaluation) is free. Production use requires a commercial license from
 Lore Hex Corp: licensing@trustedrouter.com. Each version converts to the
 Apache License 2.0 four years after publication. Code published before
 July 3, 2026 remains Apache-2.0.
+
+### Enclave insufficient-credit backoff
+
+`QUILL_BILLING_402_BACKOFF_MS` defaults to `5000`; `0` disables it. Invalid,
+negative or overflowing values use the default. The shared Go control-plane
+client reads this setting in every cloud. GCP deployments pass it through
+Confidential Space's environment allowlist; Azure ACI passes it as a container
+environment variable. On AWS Nitro, set the Docker build argument of the same
+name before building the measured EIF (runtime parent environment cannot change
+an enclave's environment).
+
+A synchronous inference request denied by `/internal/gateway/authorize` with
+HTTP 402 and `error.type=insufficient_credits` opens a fixed window for its
+credential lookup digest. Further inference requests reuse the ordinary error
+renderer, including the original request-ID headers and Retry-After. Connection
+headers still follow the current connection's keep-alive policy. Header or body
+`idempotency_key` requests bypass reads and writes; other billing errors, auth
+errors, metadata/discovery routes and job polling are unchanged. This cache is
+independent of the negative credential cache, holds at most 4,096 entries, and
+retains only digest/audit identifiers and public error fields, never prompts or
+raw API keys. Hits and concurrent denials cannot extend the window. Expired
+entries are evicted before live entries; capacity pressure closes the oldest
+window early.
+
+Suppressed requests skip authorize, audit identity lookup, and all three
+`enclave.request_accept/start/end` lines. Connection request counts, response byte
+counts and keep-alive limits still advance normally. Log-derived request totals
+must add the `suppressed` counts in the summary below to ordinary request-end
+counts. Authorize-attempt counts correctly exclude suppressed requests. A summary
+is emitted once when an expired window is next encountered (including by another
+credential), or when capacity pressure closes it; inactive windows need no timer:
+
+```
+enclave.billing_402_backoff credential_id="<existing audit ID>" credential_fingerprint="<lookup digest>" suppressed=49 window_ms=5000
+```
+
+The fingerprint remains available if the ordinary audit identity lookup fails.
+Merging to main deploys this enclave-only change to the fleet; no control-plane
+changes or new control-plane state are required.

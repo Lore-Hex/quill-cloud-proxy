@@ -227,3 +227,16 @@ def test_aws_azure_route_mirrors_key_and_both_protocol_tunnels() -> None:
     for port, host in expected.items():
         assert f"write_vsock_unit {port} {host}" in deploy_script
         assert f'Host: "{host}", CID: 3, Port: {port}' in tunnel_source
+
+
+def test_billing_402_backoff_override_is_optional_for_rollback_safety() -> None:
+    """The image defaults the backoff; the deploy script injects the override only when set.
+
+    Confidential Space refuses to launch an image whose launch policy does not allow a
+    supplied tee-env, so an unconditional override would break redeploying an older image.
+    """
+    deploy = (REPO_ROOT / "tools" / "deploy-gcp-mig.sh").read_text()
+    assert 'BILLING_402_BACKOFF_TEE_ENV=""' in deploy
+    assert 'if [ -n "${QUILL_BILLING_402_BACKOFF_MS:-}" ]; then' in deploy
+    assert '${BILLING_402_BACKOFF_TEE_ENV}|tee-env-QUILL_KEEPALIVE=' in deploy
+    assert "|tee-env-QUILL_BILLING_402_BACKOFF_MS=${QUILL_BILLING_402_BACKOFF_MS}|" not in deploy

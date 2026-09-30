@@ -638,10 +638,28 @@ func serveOneRequest(
 	requestBodyBytes := 0
 	requestBearer := ""
 	requestIdentity := requestAuditIdentity{attribution: "anonymous"}
-	fmt.Fprintf(os.Stderr, "enclave.request_accept request_log_id=%q\n", requestLogID)
+	billingSuppressed := false
+	billingRemembered := false
+	acceptLogged := false
+	logAccept := func() {
+		if !acceptLogged {
+			fmt.Fprintf(os.Stderr, "enclave.request_accept request_log_id=%q\n", requestLogID)
+			acceptLogged = true
+		}
+	}
 	defer func() {
+		if keepAlive && !statsConn.ResponseReusable() {
+			keepAlive = false
+		}
+		if billingSuppressed {
+			return
+		}
+		logAccept()
 		status, responseBytes := statsConn.Snapshot()
 		requestIdentity.resolveFailure(ctx, trGateway, requestBearer, requestRoute, status)
+		if billingRemembered {
+			trGateway.BillingBackoff().SetCredentialID(requestIdentity.credentialFingerprint, requestLogID, requestIdentity.credentialID)
+		}
 		writeRequestEndLog(
 			os.Stderr,
 			requestLogID,
@@ -655,9 +673,6 @@ func serveOneRequest(
 			abuse.Outcome(ctx),
 			phases.Snapshot(),
 		)
-		if keepAlive && !statsConn.ResponseReusable() {
-			keepAlive = false
-		}
 	}()
 
 	method, path, bearer, idempotencyKey, attribution, body, err := readRequestWithHeadersRead(
@@ -726,6 +741,27 @@ func serveOneRequest(
 		writeError(conn, 400, err.Error())
 		return
 	}
+	// The credential is now a one-way lookup digest. Check before all request_*
+	// audit lines and before any authorization or failure-identity lookup.
+	confidential := apihosts.Confidential(attribution.Host) || apihosts.Confidential(enclavetls.SelectedServerName(conn))
+	if trGateway.Enabled() && bearer != "" && billingBackoffRoute(method, routePath) &&
+		(!confidential || validateConfidentialHostRequest(method, routePath, body, trGateway) == nil) {
+		idempotent := billingBackoffIdempotent(idempotencyKey, body)
+		cache := trGateway.BillingBackoff()
+		if rejection, hit := cache.Get(requestIdentity.credentialFingerprint, idempotent, time.Now()); hit {
+			billingSuppressed = true
+			// Preserve the original response IDs as well as its body and headers.
+			statsConn.mu.Lock()
+			statsConn.requestID = rejection.RequestID
+			statsConn.mu.Unlock()
+			writeBillingBackoff(conn, routePath, rejection)
+			return
+		}
+		statsConn.billingDenial = func(err error) {
+			billingRemembered = cache.Remember(requestIdentity.credentialFingerprint, requestIdentity.credentialID, requestLogID, idempotent, err, time.Now())
+		}
+	}
+	logAccept()
 	phases.Start()
 	writeRequestStartLog(
 		os.Stderr,

@@ -52,6 +52,8 @@ var (
 )
 
 type responseStatsConn struct {
+	// Set only for a synchronous inference request; the callback enforces bypass.
+	billingDenial func(error)
 	net.Conn
 	writeMu       sync.Mutex
 	mu            sync.Mutex
@@ -139,6 +141,7 @@ func (c *responseStatsConn) ResetSnapshot() {
 func (c *responseStatsConn) BeginRequest(requestID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.billingDenial = nil
 	c.status = 0
 	c.responseBytes = 0
 	c.requestID = requestID
@@ -809,6 +812,7 @@ func idempotencyReplayError(err error) (*trustedrouter.ControlPlaneError, bool) 
 }
 
 func writeGatewayAuthorizationError(w io.Writer, err error) {
+	observeBillingAuthorizationError(w, err, messageFromControlPlaneError(err, "gateway authorization failed"))
 	if controlErr, ok := idempotencyReplayError(err); ok {
 		writeOpenAIError(
 			w, http.StatusConflict, controlErr.Message,
@@ -826,6 +830,7 @@ func writeGatewayAuthorizationError(w io.Writer, err error) {
 }
 
 func writeAnthropicGatewayAuthorizationError(w io.Writer, err error) {
+	observeBillingAuthorizationError(w, err, messageFromControlPlaneError(err, "gateway authorization failed"))
 	if controlErr, ok := idempotencyReplayError(err); ok {
 		body, _ := json.Marshal(map[string]any{
 			"type": "error",

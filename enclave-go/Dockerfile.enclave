@@ -122,6 +122,8 @@ ENV QUILL_ENCLAVE_TLS=true
 #     dependency, so /attestation serves the moment the enclave is up.
 #
 # Defaults preserve the previous ACME behaviour so nothing else changes.
+ARG QUILL_BILLING_402_BACKOFF_MS=5000
+ENV QUILL_BILLING_402_BACKOFF_MS=${QUILL_BILLING_402_BACKOFF_MS}
 ARG QUILL_TLS_MODE=acme
 ARG QUILL_API_HOST=api.quillrouter.com
 # These defaults deliberately keep DNS-01 off for generic builds. When set,

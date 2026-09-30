@@ -97,6 +97,7 @@ type Client struct {
 	region             string
 	authorizeRetry     retryPolicy
 	credentialGuard    CredentialGuard
+	billingBackoff     *BillingBackoff
 	modelsMu           sync.Mutex
 	modelsBody         []byte
 	modelsFetched      time.Time
@@ -196,6 +197,7 @@ func NewFromEnv() *Client {
 		region:             os.Getenv("TR_REGION"),
 		httpc:              newControlPlaneHTTPClient(),
 		authorizeRetry:     defaultAuthorizeRetryPolicy(),
+		billingBackoff:     billingBackoffFromEnv(),
 	}
 }
 
@@ -219,6 +221,7 @@ func NewFromBootstrap(boot *qtypes.BootstrapData) *Client {
 		region:             region,
 		httpc:              newControlPlaneHTTPClient(),
 		authorizeRetry:     defaultAuthorizeRetryPolicy(),
+		billingBackoff:     billingBackoffFromEnv(),
 	}
 }
 
@@ -233,6 +236,7 @@ func New(baseURL, internalToken string, httpc *http.Client) *Client {
 		internalToken:      internalToken,
 		httpc:              httpc,
 		authorizeRetry:     defaultAuthorizeRetryPolicy(),
+		billingBackoff:     billingBackoffFromEnv(),
 	}
 }
 

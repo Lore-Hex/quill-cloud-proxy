@@ -190,6 +190,9 @@ func nativeFailureStatus(err error) int {
 // for a per-key window carries the seconds until it resets, and an agent that
 // is not told backs off blindly. spent adds x-should-retry: false.
 func writeDecideFailure(conn io.Writer, status int, message string, err error, spent bool) {
+	if !spent {
+		observeBillingAuthorizationError(conn, err, message)
+	}
 	headers := retryHeadersFromControlPlaneError(err)
 	if spent {
 		if headers == nil {
