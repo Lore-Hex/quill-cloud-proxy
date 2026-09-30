@@ -240,8 +240,9 @@ func b64decode(value any) []byte {
 // A single iterative walk with map key lookup takes O(size(a) + size(b)) time
 // and space, without a depth limit or a comparison-specific error.
 // Pointer identities retain containers. Slice length distinguishes views of the
-// same backing array. Nil maps and zero-capacity slices have no unique Go
-// identity and represent empty JSON containers; allocated empty maps/slices do.
+// same backing array. Empty containers carry no identity (normative, matching the
+// Python reference): they have no children, and Go's decoder gives every empty
+// array one shared address, so a shared empty object or array compares by value.
 func equal(a, b any) bool {
 	type identity struct {
 		pointer unsafe.Pointer
@@ -270,8 +271,8 @@ func equal(a, b any) bool {
 			if !ok || len(x) != len(y) {
 				return false
 			}
-			if !visit(leftSeen, identity{pointer: reflect.ValueOf(x).UnsafePointer()}) ||
-				!visit(rightSeen, identity{pointer: reflect.ValueOf(y).UnsafePointer()}) {
+			if len(x) > 0 && (!visit(leftSeen, identity{pointer: reflect.ValueOf(x).UnsafePointer()}) ||
+				!visit(rightSeen, identity{pointer: reflect.ValueOf(y).UnsafePointer()})) {
 				return false
 			}
 			// Equal lengths and membership establish the complete key set.
@@ -287,10 +288,10 @@ func equal(a, b any) bool {
 			if !ok || len(x) != len(y) {
 				return false
 			}
-			if cap(x) > 0 && !visit(leftSeen, identity{pointer: reflect.ValueOf(x).UnsafePointer(), length: len(x), array: true}) {
+			if len(x) > 0 && !visit(leftSeen, identity{pointer: reflect.ValueOf(x).UnsafePointer(), length: len(x), array: true}) {
 				return false
 			}
-			if cap(y) > 0 && !visit(rightSeen, identity{pointer: reflect.ValueOf(y).UnsafePointer(), length: len(y), array: true}) {
+			if len(y) > 0 && !visit(rightSeen, identity{pointer: reflect.ValueOf(y).UnsafePointer(), length: len(y), array: true}) {
 				return false
 			}
 			for i := len(x) - 1; i >= 0; i-- {

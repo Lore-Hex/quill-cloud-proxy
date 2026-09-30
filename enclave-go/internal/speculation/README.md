@@ -29,11 +29,10 @@ Worst-case traversal takes O(size of the two inputs) time and space. Unsupported
 values compare unequal; callers retain their existing refusal codes.
 
 In Go, map identity is its runtime pointer; slice identity is its backing pointer
-and length (distinct views may share storage). Nil maps and zero-capacity slices
-have no unique identity in Go and represent empty JSON containers. In particular,
-independently decoded empty arrays may have the same runtime backing pointer.
-Allocated empty maps and slices with backing storage retain identities and are
-checked for sharing like other containers.
+and length (distinct views may share storage). Empty containers (length 0,
+including nil maps and slices) carry no identity, as the normative protocol
+requires: they have no children, and independently decoded empty arrays may share
+one runtime backing pointer, so a shared empty object or array compares by value.
 
 Wire JSON first enforces printable ASCII without backslashes and a maximum
 container depth of 16. A `json.Decoder.Token` / `UseNumber` pass records duplicate
