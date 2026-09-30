@@ -1,7 +1,6 @@
 {
   "accepted_pcr0s": [
-    "6821f7e40aa52296fb7d8e5bc643ecac8fe581f8a05f3b9925c4b64a43d18c319e1f034f1b32d83b1341948962921fec",
-    "7d6139b59339e070513d0cf314074aca5ce86fc9fa62ad1854aad05718f5d198ef352160941598aace80fba91eacb3b6"
+    "6821f7e40aa52296fb7d8e5bc643ecac8fe581f8a05f3b9925c4b64a43d18c319e1f034f1b32d83b1341948962921fec"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -12,24 +11,15 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
+  "image_digest": "sha256:e5bfbf2bc1ece611f722c1c91c93938892c910d642fa70ed66b937d743a47d65",
+  "measurement_provenance": "All four serving instances were independently verified against the expected PCR0 using production Nitro certificate-chain validation, fresh nonces, exact module IDs, system CA and hostname validation, certificate/SPKI binding, TLS exporter binding and same-socket follow-up. Paris modules: i-02b5f7a9bff10af38-enc01a0f1c24989191e and i-01044418c6f9f9e47-enc01a0f21055ef0194. Dublin modules: i-0228e0d07cca25f80-enc01a0f21b5fe349a3 and i-06274d6132b51ad2c-enc01a0f2265608b529. Both regional instance refreshes completed successfully; every serving instance passed a minimal Neurometric inference and native AWS billing probe. Source-to-image provenance remains operator-asserted, not a reproduced-build claim.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0214dffc7057f6a91-enc01a0eea88f804ad5",
-  "pcr0": "7d6139b59339e070513d0cf314074aca5ce86fc9fa62ad1854aad05718f5d198ef352160941598aace80fba91eacb3b6",
+  "observed_module_id": "i-06274d6132b51ad2c-enc01a0f2265608b529",
+  "pcr0": "6821f7e40aa52296fb7d8e5bc643ecac8fe581f8a05f3b9925c4b64a43d18c319e1f034f1b32d83b1341948962921fec",
   "platform": "aws-nitro-enclaves",
-  "release_state": "rolling",
-  "pending_release": {
-    "source_commit": "c24834b57a88e90fa5f29eb8425a0a208a8abb16",
-    "source_commit_provenance": "operator-asserted",
-    "image_digest": "sha256:e5bfbf2bc1ece611f722c1c91c93938892c910d642fa70ed66b937d743a47d65",
-    "pcr0": "6821f7e40aa52296fb7d8e5bc643ecac8fe581f8a05f3b9925c4b64a43d18c319e1f034f1b32d83b1341948962921fec",
-    "region": "eu-west-3",
-    "observed_module_id": "i-0b6494b562cfc3fc2-enc01a0efcd42ea57f5",
-    "observed_at": "2026-09-30T00:55:11Z",
-    "measurement_provenance": "Nitro attestation independently verified through SSM to isolated standalone candidates in both regions: eu-west-3 module i-0b6494b562cfc3fc2-enc01a0efcd42ea57f5 at 2026-09-30T00:55:11Z and eu-west-1 module i-09badd67ef489ed9b-enc01a0efcd4e124639 at 2026-09-30T00:55:46Z reported the same PCR0. System CA and hostname validation, AWS root chain, expected PCR0, exact candidate module ID, certificate/SPKI binding, TLS exporter binding, and same-socket follow-up passed. Both candidates are outside serving ASGs, target groups, and routing DNS.",
-    "rollout_state": "public-trust-staged-only; serving ASGs and Fargate runtime pins remain unchanged. Top-level PCR0, source commit, and module ID describe the old serving release, not these pending candidates. Replaces superseded unserved source 7d2b9468b7061b78c1f4e1d01fa70c3007f2036e; its isolated candidate was terminated after isolation checks. No inference has been performed on this pending release."
-  },
+  "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "31749ed594e85f1cf05f9b7f327961d5ca28213d",
+  "source_commit": "c24834b57a88e90fa5f29eb8425a0a208a8abb16",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
