@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -1460,6 +1461,153 @@ esac
         self.assertIn("compgen -A variable", deploy)
         self.assertIn("QUILL_*_SECRET|ACME_FALLBACK_EAB_SECRET", deploy)
         self.assertIn('--service-account "${WORKLOAD_SA}"', deploy)
+
+    def _spend_lease_deploy_preflight(
+        self, *, issuer_policy: str = "allowed", **overrides: str,
+    ) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
+        deploy = (ROOT / "tools/deploy-gcp-mig.sh").read_text()
+        # Execute every real default and the real IAM verifier, stopping before
+        # template creation. Only gcloud is stubbed, and unknown calls fail.
+        prefix = deploy[:deploy.index("# Pick the next template suffix")]
+        metadata = next(
+            line.strip().removesuffix(" \\")
+            for line in deploy.splitlines() if line.startswith('  --metadata="')
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            script = path / "deploy-gcp-mig.sh"
+            script.write_text(prefix + '\nprintf "%s\\n" ' + metadata + "\n")
+            for helper in (
+                "validate-control-plane-endpoints.py", "verify-gcp-runtime-secret-access.py",
+            ):
+                shutil.copyfile(ROOT / "tools" / helper, path / helper)
+            (path / "python3").symlink_to(sys.executable)
+            stub = path / "gcloud"
+            stub.write_text(f"#!{sys.executable}\n" + '''
+import json, os, sys
+args = sys.argv[1:]
+fd = os.open(os.environ["CALLS"], os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+os.write(fd, (json.dumps(args) + "\\n").encode())
+os.close(fd)
+if args == ["--project", "test-project", "secrets", "list", "--format=value(name)"]:
+    # Even an undeleted retired secret must not implicitly reactivate the pilot.
+    print("trustedrouter-spend-lease-issuer-config")
+elif args == ["projects", "get-iam-policy", "test-project", "--format=json"]:
+    print("{}")
+elif args[:2] == ["secrets", "get-iam-policy"]:
+    if args[2] == "explicit-issuer" and os.environ["ISSUER_POLICY"] == "ungranted":
+        print("{}")
+        sys.exit(0)
+    if args[2] == "explicit-issuer" and os.environ["ISSUER_POLICY"] != "allowed":
+        print(os.environ["ISSUER_POLICY"], file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps({"bindings": [{"role": "roles/secretmanager.secretAccessor",
+        "members": ["serviceAccount:test-workload@test-project.iam.gserviceaccount.com"]}]}))
+else:
+    sys.exit("unexpected gcloud command: " + repr(args))
+''')
+            stub.chmod(0o755)
+            calls = path / "calls.jsonl"
+            completed = subprocess.run(
+                ["bash", str(script), "europe-west4"],
+                env={
+                    "PATH": f"{path}:/usr/bin:/bin", "HOME": directory,
+                    "PROJECT_ID": "test-project", "IMAGE_REF": "example.invalid/image@sha256:test",
+                    "API_HOST": "api.trustedrouter.com", "CALLS": str(calls),
+                    "ISSUER_POLICY": issuer_policy,
+                    "WORKLOAD_SA": "test-workload@test-project.iam.gserviceaccount.com",
+                    "QUILL_USAGE_HEARTBEAT": "on", "QUILL_TERMINATE_AT_CAP": "on",
+                    **overrides,
+                },
+                capture_output=True, text=True, timeout=20,
+            )
+            recorded = [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
+            return completed, recorded
+
+    def test_retired_spend_lease_defaults_do_not_reference_issuer(self) -> None:
+        completed, calls = self._spend_lease_deploy_preflight()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("tee-env-QUILL_SPEND_LEASE_SHADOW=off", completed.stdout)
+        self.assertNotIn("SPEND_LEASE_ISSUER_CONFIG_SECRET", completed.stdout)
+        self.assertNotIn("trustedrouter-spend-lease-issuer-config", json.dumps(calls))
+        self.assertNotIn("tee-env-SPEND_LEASE_LOCAL_ADMISSION", completed.stdout)
+        for flag in ("QUILL_USAGE_HEARTBEAT", "QUILL_TERMINATE_AT_CAP"):
+            self.assertIn(f"tee-env-{flag}=on", completed.stdout)
+
+    def test_explicit_spend_lease_modes_require_issuer_before_any_cloud_call(self) -> None:
+        for flag in ("QUILL_SPEND_LEASE_SHADOW", "SPEND_LEASE_LOCAL_ADMISSION"):
+            for value in ("on", " ON "):
+                for issuer in (
+                    {}, {"QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET": ""},
+                    {"QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET": " \t"},
+                ):
+                    with self.subTest(flag=flag, value=value, issuer=issuer):
+                        completed, calls = self._spend_lease_deploy_preflight(**{flag: value, **issuer})
+                        self.assertNotEqual(completed.returncode, 0)
+                        self.assertIn("QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET is required", completed.stderr)
+                        self.assertEqual(calls, [])
+
+    def test_explicit_spend_lease_issuer_keeps_fail_closed_iam_preflight(self) -> None:
+        for mode in (
+            {}, {"QUILL_SPEND_LEASE_SHADOW": "on"}, {"SPEND_LEASE_LOCAL_ADMISSION": "on"},
+        ):
+            for policy in ("allowed", "NOT_FOUND", "PERMISSION_DENIED", "ungranted"):
+                with self.subTest(mode=mode, policy=policy):
+                    completed, calls = self._spend_lease_deploy_preflight(
+                        issuer_policy=policy,
+                        QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET="explicit-issuer", **mode,
+                    )
+                    self.assertEqual(sum(
+                        call[:3] == ["secrets", "get-iam-policy", "explicit-issuer"]
+                        for call in calls
+                    ), 1)
+                    if policy == "allowed":
+                        self.assertEqual(completed.returncode, 0, completed.stderr)
+                        self.assertIn("tee-env-QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET=explicit-issuer", completed.stdout)
+                        for flag in ("QUILL_USAGE_HEARTBEAT", "QUILL_TERMINATE_AT_CAP"):
+                            self.assertIn(f"tee-env-{flag}=on", completed.stdout)
+                    else:
+                        self.assertNotEqual(completed.returncode, 0)
+                        expected = (
+                            "explicit-issuer does not grant" if policy == "ungranted"
+                            else "could not verify explicit-issuer"
+                        )
+                        self.assertIn(expected, completed.stderr)
+                        self.assertNotIn("--metadata=", completed.stdout)
+
+    def test_bootstrap_grants_spend_lease_issuer_only_when_explicit(self) -> None:
+        source = (ROOT / "tools/deploy-gcp-bootstrap.sh").read_text()
+        defaults = source[:source.index("PROJECT_NUMBER=$(gc projects describe")]
+        grants = source[source.index("# 4. IAM bindings"):source.index("cat <<EOF")]
+        for issuer in (None, "", "explicit-issuer"):
+            with self.subTest(issuer=issuer), tempfile.TemporaryDirectory() as directory:
+                calls = Path(directory) / "calls"
+                completed = subprocess.run(
+                    ["bash", "-c", defaults + '\ngc() { printf "%s\\n" "$*" >> "$CALLS"; }\nlog() { :; }\n' + grants],
+                    env={
+                        "PATH": "/usr/bin:/bin", "HOME": directory, "CALLS": str(calls),
+                        **({"SPEND_LEASE_ISSUER_CONFIG_SECRET": issuer} if issuer is not None else {}),
+                    },
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                recorded = calls.read_text()
+                self.assertNotIn("trustedrouter-spend-lease-issuer-config", recorded)
+                self.assertEqual("secrets add-iam-policy-binding explicit-issuer" in recorded, issuer == "explicit-issuer")
+
+    def test_aws_default_sync_excludes_retired_issuer(self) -> None:
+        source = (ROOT / "tools/sync-secrets-to-aws.sh").read_text()
+        defaults = source[:source.index("DRY_RUN=1")]
+        completed = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", defaults + '\nprintf "%s\\n" "${SECRETS[@]}"'],
+            env={"PATH": "/usr/bin:/bin"},
+            capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        names = completed.stdout.splitlines()
+        self.assertNotIn("trustedrouter-spend-lease-issuer-config", names)
+        self.assertIn("trustedrouter-internal-gateway-token", names)
+        self.assertIn("trustedrouter-neurometric-api-key", names)
 
     def test_optional_secrets_use_one_fail_closed_inventory_read(self) -> None:
         deploy = (ROOT / "tools" / "deploy-gcp-mig.sh").read_text(encoding="utf-8")

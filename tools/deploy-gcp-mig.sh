@@ -219,10 +219,9 @@ if [ -n "${QUILL_XIAOMI_SECRET}" ]; then
 fi
 QUILL_DEVICE_KEYS_SECRET="${QUILL_DEVICE_KEYS_SECRET:-quill-device-keys}"
 QUILL_TRUSTEDROUTER_INTERNAL_SECRET="${QUILL_TRUSTEDROUTER_INTERNAL_SECRET:-trustedrouter-internal-gateway-token}"
-# FLIPPED 2026-08-29: activate Stage A shadow — verify/echo/estimator only;
-# leases are authoritative=false and admission behavior is unchanged on every
-# request. To revert, set QUILL_SPEND_LEASE_SHADOW=off and redeploy.
-QUILL_SPEND_LEASE_SHADOW="${QUILL_SPEND_LEASE_SHADOW:-on}"
+# Stages A-C retired with quill-router #1418. Never implicitly reactivate the
+# pilot or require its deleted issuer secret; Stage D remains independent.
+QUILL_SPEND_LEASE_SHADOW="${QUILL_SPEND_LEASE_SHADOW:-off}"
 # Stage C is opt-in per deploy and intentionally absent from workflows. Omit
 # the tee env entirely while off, matching the existing Stage D flag pattern.
 SPEND_LEASE_LOCAL_ADMISSION="${SPEND_LEASE_LOCAL_ADMISSION:-off}"
@@ -243,8 +242,14 @@ if [ "${QUILL_TERMINATE_AT_CAP}" = "on" ]; then
   TERMINATE_AT_CAP_TEE_ENV="|tee-env-QUILL_TERMINATE_AT_CAP=${QUILL_TERMINATE_AT_CAP}"
 fi
 # This value is a Secret Manager NAME, not the issuer manifest itself.
-# Bootstrap only resolves it when QUILL_SPEND_LEASE_SHADOW is enabled.
-QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET="${QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET:-trustedrouter-spend-lease-issuer-config}"
+# Explicit pilot activation still requires configuration and the IAM preflight.
+QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET="${QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET:-}"
+if { [[ "${QUILL_SPEND_LEASE_SHADOW}" =~ ^[[:space:]]*[Oo][Nn][[:space:]]*$ ]] ||
+     [[ "${SPEND_LEASE_LOCAL_ADMISSION}" =~ ^[[:space:]]*[Oo][Nn][[:space:]]*$ ]]; } &&
+   [[ "${QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET}" =~ ^[[:space:]]*$ ]]; then
+  echo "QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET is required for explicit spend-lease activation" >&2
+  exit 1
+fi
 SPEND_LEASE_ISSUER_CONFIG_TEE_ENV=""
 if [ -n "${QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET}" ]; then
   SPEND_LEASE_ISSUER_CONFIG_TEE_ENV="|tee-env-QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET=${QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET}"
