@@ -131,19 +131,13 @@ def test_gcp_bootstrap_grants_workload_access_to_engy_secret() -> None:
     assert 'ENGY_TEE_ENV="|tee-env-QUILL_ENGY_SECRET=${QUILL_ENGY_SECRET}"' in deploy
 
 
-def test_spend_lease_issuer_config_secret_name_is_granted_and_injected() -> None:
+def test_spend_lease_issuer_config_is_explicit_not_a_retired_default() -> None:
     bootstrap = (REPO_ROOT / "tools" / "deploy-gcp-bootstrap.sh").read_text()
     deploy = (REPO_ROOT / "tools" / "deploy-gcp-mig.sh").read_text()
-    secret_name = "trustedrouter-spend-lease-issuer-config"
-
-    assert (
-        f'SPEND_LEASE_ISSUER_CONFIG_SECRET="${{SPEND_LEASE_ISSUER_CONFIG_SECRET:-{secret_name}}}"'
-    ) in bootstrap
+    assert ('SPEND_LEASE_ISSUER_CONFIG_SECRET="${SPEND_LEASE_ISSUER_CONFIG_SECRET:-}"') in bootstrap
     assert '"$SPEND_LEASE_ISSUER_CONFIG_SECRET" \\' in bootstrap
     assert (
-        'QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET="'
-        "${QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET:-"
-        f'{secret_name}}}"'
+        'QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET="${QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET:-}"'
     ) in deploy
     assert (
         'SPEND_LEASE_ISSUER_CONFIG_TEE_ENV="'
