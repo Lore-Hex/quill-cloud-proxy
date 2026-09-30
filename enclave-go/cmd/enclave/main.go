@@ -638,10 +638,29 @@ func serveOneRequest(
 	requestBodyBytes := 0
 	requestBearer := ""
 	requestIdentity := requestAuditIdentity{attribution: "anonymous"}
-	fmt.Fprintf(os.Stderr, "enclave.request_accept request_log_id=%q\n", requestLogID)
+	billingSuppressed := false
+	billingRemembered := false
+	var billingKey trustedrouter.BillingBackoffKey
+	acceptLogged := false
+	logAccept := func() {
+		if !acceptLogged {
+			fmt.Fprintf(os.Stderr, "enclave.request_accept request_log_id=%q\n", requestLogID)
+			acceptLogged = true
+		}
+	}
 	defer func() {
+		if keepAlive && !statsConn.ResponseReusable() {
+			keepAlive = false
+		}
+		if billingSuppressed {
+			return
+		}
+		logAccept()
 		status, responseBytes := statsConn.Snapshot()
 		requestIdentity.resolveFailure(ctx, trGateway, requestBearer, requestRoute, status)
+		if billingRemembered {
+			trGateway.BillingBackoff().SetCredentialID(billingKey, requestLogID, requestIdentity.credentialID)
+		}
 		writeRequestEndLog(
 			os.Stderr,
 			requestLogID,
@@ -655,9 +674,6 @@ func serveOneRequest(
 			abuse.Outcome(ctx),
 			phases.Snapshot(),
 		)
-		if keepAlive && !statsConn.ResponseReusable() {
-			keepAlive = false
-		}
 	}()
 
 	method, path, bearer, idempotencyKey, attribution, body, err := readRequestWithHeadersRead(
@@ -702,13 +718,6 @@ func serveOneRequest(
 		statsConn.SetResponseKeepAlive(true)
 		ctx = withStrictStreamFraming(ctx)
 	}
-	clientContext, droppedClientContext := parseClientContext(attribution.ClientContext)
-	for _, reason := range droppedClientContext {
-		fmt.Fprintf(os.Stderr, "enclave.client_context_dropped request_log_id=%q reason=%q\n", requestLogID, reason)
-	}
-	if clientContext != nil {
-		ctx = trustedrouter.WithClientContext(ctx, clientContext)
-	}
 	requestBodyBytes = len(body)
 	receiptRequest := types.InferenceReceiptRequest{}
 	if inferenceReceiptsEnabled() && attribution.InferenceReceipt != "" {
@@ -720,12 +729,51 @@ func serveOneRequest(
 	}
 	requestBearer = bearer
 	requestIdentity.bindBearer(bearer)
+	// Parse/attach silently before target validation and the credential guard so
+	// even failed-target audit lookups retain their ordinary client context.
+	clientContext, droppedClientContext := parseClientContext(attribution.ClientContext)
+	if clientContext != nil {
+		ctx = trustedrouter.WithClientContext(ctx, clientContext)
+	}
 	routePath, nonce, err := parseRequestTarget(path)
 	requestRoute = routePath
 	if err != nil {
 		writeError(conn, 400, err.Error())
 		return
 	}
+	// Reuse only identical requests that previously passed validation and reached
+	// authorize. The credential guard wins, with ordinary audit logs on rejection.
+	confidential := apihosts.Confidential(attribution.Host) || apihosts.Confidential(enclavetls.SelectedServerName(conn))
+	var credentialErr error
+	credentialChecked := false
+	if trGateway.Enabled() && bearer != "" && billingBackoffRoute(method, routePath) &&
+		(!confidential || validateConfidentialHostRequest(method, routePath, body, trGateway) == nil) {
+		credentialErr = trGateway.CheckCredential(ctx, bearer)
+		credentialChecked = true
+		if credentialErr == nil {
+			// billingBackoffHeaderGroups documents every extracted validation /
+			// authorize input and the transport/random exclusions from this key.
+			billingKey = trustedrouter.NewBillingBackoffKey(requestIdentity.credentialFingerprint, method, routePath, body, billingBackoffHeaderGroups(attribution, confidential)...)
+			idempotent := billingBackoffIdempotent(idempotencyKey, body)
+			cache := trGateway.BillingBackoff()
+			if rejection, hit := cache.Get(billingKey, idempotent, time.Now()); hit {
+				billingSuppressed = true
+				// Preserve the original response IDs as well as its body and headers.
+				statsConn.mu.Lock()
+				statsConn.requestID = rejection.RequestID
+				statsConn.mu.Unlock()
+				writeBillingBackoff(conn, routePath, rejection)
+				return
+			}
+			statsConn.billingDenial = func(err error) {
+				billingRemembered = cache.Remember(billingKey, requestIdentity.credentialID, requestLogID, idempotent, err, time.Now())
+			}
+		}
+	}
+	for _, reason := range droppedClientContext {
+		fmt.Fprintf(os.Stderr, "enclave.client_context_dropped request_log_id=%q reason=%q\n", requestLogID, reason)
+	}
+	logAccept()
 	phases.Start()
 	writeRequestStartLog(
 		os.Stderr,
@@ -832,8 +880,11 @@ func serveOneRequest(
 
 	trEnabled := trGateway != nil && trGateway.Enabled()
 	if trEnabled {
-		if err := trGateway.CheckCredential(ctx, bearer); err != nil {
-			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
+		if !credentialChecked {
+			credentialErr = trGateway.CheckCredential(ctx, bearer)
+		}
+		if credentialErr != nil {
+			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(credentialErr), messageFromControlPlaneError(credentialErr, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(credentialErr))
 			return
 		}
 	}

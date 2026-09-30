@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -97,6 +98,7 @@ type Client struct {
 	region             string
 	authorizeRetry     retryPolicy
 	credentialGuard    CredentialGuard
+	billingBackoff     *BillingBackoff
 	modelsMu           sync.Mutex
 	modelsBody         []byte
 	modelsFetched      time.Time
@@ -178,10 +180,19 @@ func (c *Client) beforeCredentialCheck(ctx context.Context, bearer string) (stri
 	if c == nil || c.credentialGuard == nil {
 		return lookupHash, nil
 	}
-	return lookupHash, c.credentialGuard.BeforeCredentialCheck(ctx, lookupHash)
+	err := c.credentialGuard.BeforeCredentialCheck(ctx, lookupHash)
+	// A negative-cache hit is already a definitive credential rejection.
+	var controlErr *ControlPlaneError
+	if IsDefinitiveInvalidCredential(err) || (errors.As(err, &controlErr) && controlErr.StatusCode == http.StatusUnauthorized && controlErr.Type == "auth_cached_reject") {
+		c.billingBackoff.ForgetCredential(lookupHash)
+	}
+	return lookupHash, err
 }
 
 func (c *Client) afterCredentialCheck(ctx context.Context, lookupHash string, err error) {
+	if c != nil && IsDefinitiveInvalidCredential(err) {
+		c.billingBackoff.ForgetCredential(lookupHash)
+	}
 	if c != nil && c.credentialGuard != nil {
 		c.credentialGuard.AfterCredentialCheck(ctx, lookupHash, err)
 	}
@@ -196,6 +207,7 @@ func NewFromEnv() *Client {
 		region:             os.Getenv("TR_REGION"),
 		httpc:              newControlPlaneHTTPClient(),
 		authorizeRetry:     defaultAuthorizeRetryPolicy(),
+		billingBackoff:     billingBackoffFromEnv(),
 	}
 }
 
@@ -219,6 +231,7 @@ func NewFromBootstrap(boot *qtypes.BootstrapData) *Client {
 		region:             region,
 		httpc:              newControlPlaneHTTPClient(),
 		authorizeRetry:     defaultAuthorizeRetryPolicy(),
+		billingBackoff:     billingBackoffFromEnv(),
 	}
 }
 
@@ -233,6 +246,7 @@ func New(baseURL, internalToken string, httpc *http.Client) *Client {
 		internalToken:      internalToken,
 		httpc:              httpc,
 		authorizeRetry:     defaultAuthorizeRetryPolicy(),
+		billingBackoff:     billingBackoffFromEnv(),
 	}
 }
 
@@ -1562,4 +1576,35 @@ func publicCatalogURL(base, path string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
 	trimmed = strings.TrimSuffix(trimmed, "/v1")
 	return trimmed + "/" + strings.TrimLeft(path, "/")
+}
+
+// IsDefinitiveInvalidCredential is intentionally narrow. Only control-plane
+// verdicts that explicitly name an invalid, unknown, or revoked API key are
+// safe to remember. A status alone is insufficient: a bare 401 can mean a
+// broken enclave-to-control-plane credential, while quota, billing, timeouts,
+// cancellation, network errors, 429s, and 5xx can all affect a valid customer.
+func IsDefinitiveInvalidCredential(err error) bool {
+	var controlErr *ControlPlaneError
+	if !errors.As(err, &controlErr) {
+		return false
+	}
+	if controlErr.StatusCode != http.StatusUnauthorized && controlErr.StatusCode != http.StatusForbidden {
+		return false
+	}
+	// EXACTLY the control plane's ErrorType.INVALID_API_KEY and nothing else.
+	// This string is a WIRE CONTRACT: quill-router emits it at every
+	// bad-customer-key site in the internal gateway and pins it with
+	// tests/test_gateway_error_taxonomy.py; the test below pins this side.
+	// The earlier draft allowlisted five plausible spellings -- none of which
+	// the control plane has ever emitted, so the cache would have been
+	// "configured, healthy, and empty": never firing, never noticed. A generic
+	// "unauthorized" 401 stays UNCACHED on purpose -- the plane also says that
+	// when the ENCLAVE'S OWN internal credential is broken, and caching it
+	// would turn one auth misconfiguration into every customer locked out.
+	switch strings.ToLower(strings.TrimSpace(controlErr.Type)) {
+	case "invalid_api_key":
+		return true
+	default:
+		return false
+	}
 }
