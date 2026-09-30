@@ -1,6 +1,6 @@
 {
   "accepted_pcr0s": [
-    "50786c2cd050beec7bae6e28693098a41c91da405b4d673a3db59daa524a1dc982d7b368d44fd462a2eec7b035eb04a2",
+    "6821f7e40aa52296fb7d8e5bc643ecac8fe581f8a05f3b9925c4b64a43d18c319e1f034f1b32d83b1341948962921fec",
     "7d6139b59339e070513d0cf314074aca5ce86fc9fa62ad1854aad05718f5d198ef352160941598aace80fba91eacb3b6"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
@@ -18,15 +18,15 @@
   "platform": "aws-nitro-enclaves",
   "release_state": "rolling",
   "pending_release": {
-    "source_commit": "7d2b9468b7061b78c1f4e1d01fa70c3007f2036e",
+    "source_commit": "c24834b57a88e90fa5f29eb8425a0a208a8abb16",
     "source_commit_provenance": "operator-asserted",
-    "image_digest": "sha256:eb24ce6a972b1334906c842181087518d3dda8be531850c3c42d8d31767dc85d",
-    "pcr0": "50786c2cd050beec7bae6e28693098a41c91da405b4d673a3db59daa524a1dc982d7b368d44fd462a2eec7b035eb04a2",
+    "image_digest": "sha256:e5bfbf2bc1ece611f722c1c91c93938892c910d642fa70ed66b937d743a47d65",
+    "pcr0": "6821f7e40aa52296fb7d8e5bc643ecac8fe581f8a05f3b9925c4b64a43d18c319e1f034f1b32d83b1341948962921fec",
     "region": "eu-west-3",
-    "observed_module_id": "i-0e4c83e48aa2dab87-enc01a0ef9e63844829",
-    "observed_at": "2026-09-30T00:06:26Z",
-    "measurement_provenance": "Nitro attestation verified through SSM to an isolated standalone candidate: system CA and hostname validation, AWS root chain, expected PCR0, exact candidate module ID, certificate/SPKI binding, TLS exporter binding, and same-socket follow-up passed. Candidate is outside the serving ASG, target groups, and routing DNS.",
-    "rollout_state": "public-trust-staged-only; serving ASGs and Fargate runtime pins remain unchanged. Top-level PCR0, source commit, and module ID describe the old serving release, not this pending candidate."
+    "observed_module_id": "i-0b6494b562cfc3fc2-enc01a0efcd42ea57f5",
+    "observed_at": "2026-09-30T00:55:11Z",
+    "measurement_provenance": "Nitro attestation independently verified through SSM to isolated standalone candidates in both regions: eu-west-3 module i-0b6494b562cfc3fc2-enc01a0efcd42ea57f5 at 2026-09-30T00:55:11Z and eu-west-1 module i-09badd67ef489ed9b-enc01a0efcd4e124639 at 2026-09-30T00:55:46Z reported the same PCR0. System CA and hostname validation, AWS root chain, expected PCR0, exact candidate module ID, certificate/SPKI binding, TLS exporter binding, and same-socket follow-up passed. Both candidates are outside serving ASGs, target groups, and routing DNS.",
+    "rollout_state": "public-trust-staged-only; serving ASGs and Fargate runtime pins remain unchanged. Top-level PCR0, source commit, and module ID describe the old serving release, not these pending candidates. Replaces superseded unserved source 7d2b9468b7061b78c1f4e1d01fa70c3007f2036e; its isolated candidate was terminated after isolation checks. No inference has been performed on this pending release."
   },
   "reproduce": "tools/verify-pcr0.sh",
   "source_commit": "31749ed594e85f1cf05f9b7f327961d5ca28213d",
