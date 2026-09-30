@@ -61,7 +61,12 @@ const maxAdvisorAdviceCalls = 3
 const minAdvisorMaxTokens = 64
 const defaultAdvisorMaxTokens = 4096
 const maxAdvisorMaxTokens = 8192
-const defaultAdvisorWorkerTimeoutMS = 60000
+
+// Production 2026-09-23..30, trustedrouter/plato-4.0: MiMo 2.6 Pro hit the
+// 60s deadline in 136/445 successes (31%) and all 34 exhausted-fallback failures;
+// DeepSeek V4.1 Flash and GLM 5.3 also timed out at 60s in those failures.
+// Streaming HTTP allows 10m; 3 x 180s plus advice and final fits the 50m request budget.
+const defaultAdvisorWorkerTimeoutMS = 180000
 const maxAdvisorWorkerTimeoutMS = 180000
 const defaultAdvisorTimeoutMS = 90000
 const maxAdvisorTimeoutMS = 180000

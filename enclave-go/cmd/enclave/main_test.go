@@ -5435,6 +5435,59 @@ func TestAdvisorComboPresetsConfigureWorkerAndAdvisorModels(t *testing.T) {
 	}
 }
 
+func TestAdvisorPresetWorkerTimeout(t *testing.T) {
+	for _, model := range []string{trustedRouterPlato40Model, trustedRouterSocrates30Model} {
+		t.Run(model, func(t *testing.T) {
+			for _, tt := range []struct {
+				name      string
+				override  int
+				wantMS    int
+				wantError bool
+			}{
+				{name: "default", wantMS: 180000},
+				{name: "explicit_60s", override: 60000, wantMS: 60000},
+				{name: "above_maximum", override: 180001, wantError: true},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					req := &types.OpenAIChatRequest{Model: model}
+					if tt.override != 0 {
+						req.Tools = []any{map[string]any{
+							"type": trustedRouterAdvisorTool,
+							"parameters": map[string]any{
+								"worker_timeout_ms": tt.override,
+							},
+						}}
+					}
+					config, requested, err := advisorConfigForRequest(req)
+					if err != nil {
+						t.Fatalf("advisorConfigForRequest: %v", err)
+					}
+					if !requested {
+						t.Fatal("expected advisor orchestration")
+					}
+					err = normalizeAdvisorConfig(&config, req)
+					if tt.wantError {
+						var adapterErr *adapter.AdapterError
+						if !asAdapterErr(err, &adapterErr) || adapterErr.Status != 400 || adapterErr.Context != "worker_timeout_ms" {
+							t.Fatalf("error = %#v, want 400 worker_timeout_ms", err)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatalf("normalizeAdvisorConfig: %v", err)
+					}
+					if config.WorkerTimeoutMS != tt.wantMS {
+						t.Fatalf("WorkerTimeoutMS = %d, want %d", config.WorkerTimeoutMS, tt.wantMS)
+					}
+					if got, want := advisorWorkerAttemptTimeout(config), time.Duration(tt.wantMS)*time.Millisecond; got != want {
+						t.Fatalf("advisorWorkerAttemptTimeout = %s, want %s", got, want)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestGenericAdvisorRequiresExplicitWorkerAndAdvisorModels(t *testing.T) {
 	req := &types.OpenAIChatRequest{Model: trustedRouterAdvisorModel}
 	config, requested, err := advisorConfigForRequest(req)
