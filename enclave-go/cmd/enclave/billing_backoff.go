@@ -65,23 +65,23 @@ func writeBillingBackoff(w io.Writer, route string, rejection trustedrouter.Bill
 
 // billingBackoffHeaderGroups audits readRequestWithHeadersRead,
 // applyAttributionHeaders, chatAuthorizeBody, AuthorizeWithRoute and
-// parseClientContext (client telemetry is also used by settlement):
+// parseClientContext for validation and authorization inputs:
 //   - Attribution: HTTP-Referer, X-OpenRouter-Title / X-Title (parsed precedence),
 //     X-OpenRouter-Categories (parsed ordered list), X-Session-ID, and
 //     X-OpenRouter-Metadata / X-OpenRouter-Experimental-Metadata (parsed flag).
 //     User, trace and body session_id are body-only inputs, already body-hashed.
-//   - Client context: User-Agent, X-TR-Client, X-Stainless-Lang, -Runtime,
-//     -Runtime-Version, -OS, -Arch, -Retry-Count, -Timeout and -Read-Timeout.
-//     Include captured values, presence flags and oversize counters, BEFORE
-//     lossy normalization, so dropped-field validation/diagnostics cannot alias
-//     absent inputs. The reader intentionally discards oversize values; their
-//     counters preserve all downstream effects without retaining their text.
 //   - Receipts: X-Inference-Receipt is the sole extracted receipt header; its
 //     parsed value includes opt-in and nonce. Disabled support ignores it.
 //   - Host plus effective confidential mode (Host OR TLS SNI) affect validation
 //     and authorize routing. SNI must not alias an ordinary-host request.
 //
-// Exclusions: Authorization / X-API-Key are covered by the credential digest;
+// Exclusions: Client telemetry (User-Agent, X-TR-Client, and all X-Stainless
+// fields, presence flags and oversize counters) is observational only: forwarded
+// to settle/refund, never to authorize, and never validated to rejection. It is
+// parsed before lookup; malformed telemetry is dropped and diagnosed on misses,
+// while hits stay silent. Attempt-varying telemetry must not split a window.
+// HTTP syntax/size validation still runs before lookup for these headers too.
+// Authorization / X-API-Key are covered by the credential digest;
 // Idempotency-Key bypasses caching entirely. Content-Length / Transfer-Encoding
 // and header syntax/size limits are checked by the reader BEFORE lookup; exact
 // body bytes are hashed. Connection / HTTP version only select transport reuse.
@@ -100,20 +100,8 @@ func billingBackoffHeaderGroups(a requestAttributionHeaders, confidential bool) 
 	attribution := billingBackoffFrame(append([]string{
 		a.SessionID, a.HTTPReferer, a.App, strconv.FormatBool(a.OpenRouterMetadata),
 	}, a.AppCategories...)...)
-	c := a.ClientContext
-	client := billingBackoffFrame(
-		c.userAgent, c.stainlessLang, c.stainlessRuntime, c.stainlessRuntimeVersion,
-		c.stainlessOS, c.stainlessArch, c.stainlessRetryCount, c.stainlessTimeout,
-		c.stainlessReadTimeout, c.trClient,
-		strconv.FormatBool(c.userAgentSet), strconv.FormatBool(c.stainlessLangSet),
-		strconv.FormatBool(c.stainlessRuntimeSet), strconv.FormatBool(c.stainlessRuntimeVersionSet),
-		strconv.FormatBool(c.stainlessOSSet), strconv.FormatBool(c.stainlessArchSet),
-		strconv.FormatBool(c.stainlessRetryCountSet), strconv.FormatBool(c.stainlessTimeoutSet),
-		strconv.FormatBool(c.stainlessReadTimeoutSet), strconv.FormatBool(c.trClientSet),
-		strconv.Itoa(c.userAgentTooLong), strconv.Itoa(c.stainlessValuesTooLong), strconv.Itoa(c.trClientTooLong),
-	)
 	receipt := billingBackoffFrame(a.InferenceReceipt)
-	return [][]byte{attribution, client, receipt, billingBackoffFrame(a.Host, strconv.FormatBool(confidential))}
+	return [][]byte{attribution, receipt, billingBackoffFrame(a.Host, strconv.FormatBool(confidential))}
 }
 
 func billingBackoffFrame(fields ...string) []byte {

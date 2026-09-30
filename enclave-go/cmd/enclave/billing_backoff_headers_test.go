@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -25,7 +27,7 @@ func billingHeaderGateway(t *testing.T) (*trustedrouter.Client, *int) {
 	return gateway, calls
 }
 
-// Each extracted header must miss on a different value, then silently reuse
+// Each validation/authorization header must miss on a different value, then silently reuse
 // its own window. Counters prove a new 402 is an authorize miss, not a cache hit.
 func checkBillingHeaderVariants(t *testing.T, variants ...string) {
 	t.Helper()
@@ -76,40 +78,113 @@ func TestBillingHeaderAttribution(t *testing.T) {
 	}
 }
 
+// Include every captured telemetry field, plus values dropped by the parser.
+var billingTelemetryHeaders = []struct{ name, first, second string }{
+	{"User-Agent", "trusted-router-py/1.2.3", "trusted-router-go/1.2.3"},
+	{"X-TR-Client", "v=1;a=1", "v=1;a=2"},
+	{"X-Stainless-Lang", "python", "go"},
+	{"X-Stainless-Runtime", "python", "node"},
+	{"X-Stainless-Runtime-Version", "3.12.0", "3.13.0"},
+	{"X-Stainless-OS", "linux", "windows"},
+	{"X-Stainless-Arch", "x64", "arm64"},
+	{"X-Stainless-Retry-Count", "1", "2"},
+	{"X-Stainless-Timeout", "1", "2"},
+	{"X-Stainless-Read-Timeout", "1", "2"},
+}
+
+var billingDroppedTelemetryHeaders = []string{
+	"X-TR-Client: malformed\r\n", "X-Stainless-Retry-Count: nope\r\n",
+	"X-Stainless-Timeout: NaN\r\n", "X-Stainless-Read-Timeout: NaN\r\n",
+	"User-Agent: " + strings.Repeat("x", 257) + "\r\n",
+	"X-Stainless-OS: " + strings.Repeat("x", 65) + "\r\n",
+	"X-TR-Client: " + strings.Repeat("x", 161) + "\r\n",
+}
+
 func TestBillingHeaderClientContext(t *testing.T) {
-	for _, tc := range []struct{ name, first, second string }{
-		{"User-Agent", "trusted-router-py/1.2.3", "trusted-router-go/1.2.3"},
-		{"X-TR-Client", "v=1;a=1", "v=1;a=2"},
-		{"X-Stainless-Lang", "python", "go"},
-		{"X-Stainless-Runtime", "python", "node"},
-		{"X-Stainless-Runtime-Version", "3.12.0", "3.13.0"},
-		{"X-Stainless-OS", "linux", "windows"},
-		{"X-Stainless-Arch", "x64", "arm64"},
-		{"X-Stainless-Retry-Count", "1", "2"},
-		{"X-Stainless-Timeout", "1", "2"},
-		{"X-Stainless-Read-Timeout", "1", "2"},
-	} {
+	for _, tc := range billingTelemetryHeaders {
 		t.Run(tc.name, func(t *testing.T) {
-			checkBillingHeaderVariants(t, tc.name+": "+tc.first+"\r\n", tc.name+": "+tc.second+"\r\n")
-			// Client telemetry has no semantic 400: malformed HTTP values still do.
+			gateway, calls := billingHeaderGateway(t)
+			first, _ := astraRequest(t, gateway, "/v1/chat/completions", astraChat, "")
+			for _, value := range []string{tc.first, tc.second, ""} {
+				response, logs := astraRequest(t, gateway, "/v1/chat/completions", astraChat, tc.name+": "+value+"\r\n")
+				if parseHTTPStatus(first) != 402 || !bytes.Equal(first, response) || *calls != 1 || logs != "" {
+					t.Fatalf("telemetry split billing window: calls=%d response=%s logs=%q", *calls, response, logs)
+				}
+			}
+			// HTTP syntax errors still reject before lookup.
 			checkBillingHeaderInvalid(t, tc.name+": bad\x01value\r\n")
 		})
 	}
-	for _, headers := range []string{
-		"X-TR-Client: malformed\r\n", "X-Stainless-Retry-Count: nope\r\n",
-		"X-Stainless-Timeout: NaN\r\n", "User-Agent: " + strings.Repeat("x", 257) + "\r\n",
-		"X-Stainless-OS: " + strings.Repeat("x", 65) + "\r\n", "X-TR-Client: " + strings.Repeat("x", 161) + "\r\n",
-	} {
+	for _, headers := range billingDroppedTelemetryHeaders {
 		t.Run(headers[:strings.IndexByte(headers, ':')]+" dropped", func(t *testing.T) {
-			gateway, calls := billingHeaderGateway(t)
-			astraRequest(t, gateway, "/v1/chat/completions", astraChat, "")
-			response, logs := astraRequest(t, gateway, "/v1/chat/completions", astraChat, headers)
-			if parseHTTPStatus(response) != 402 || *calls != 2 || !strings.Contains(logs, "enclave.client_context_dropped") {
-				t.Fatalf("dropped client field aliased absent headers: calls=%d response=%s logs=%s", *calls, response, logs)
+			for _, seed := range []string{"", headers} {
+				gateway, calls := billingHeaderGateway(t)
+				first, logs := astraRequest(t, gateway, "/v1/chat/completions", astraChat, seed)
+				if parseHTTPStatus(first) != 402 || *calls != 1 || (seed != "" && !strings.Contains(logs, "enclave.client_context_dropped")) {
+					t.Fatalf("miss lost drop-and-diagnose behavior: calls=%d response=%s logs=%s", *calls, first, logs)
+				}
+				for _, hit := range []string{headers, "", "User-Agent: trusted-router-py/1.2.3\r\n"} {
+					response, logs := astraRequest(t, gateway, "/v1/chat/completions", astraChat, hit)
+					if !bytes.Equal(first, response) || *calls != 1 || logs != "" {
+						t.Fatalf("dropped telemetry did not hit silently: calls=%d response=%s logs=%s", *calls, response, logs)
+					}
+				}
 			}
-			_, logs = astraRequest(t, gateway, "/v1/chat/completions", astraChat, headers)
-			if *calls != 2 || logs != "" {
-				t.Fatalf("identical dropped client header did not hit: calls=%d logs=%s", *calls, logs)
+		})
+	}
+}
+
+// Telemetry may be excluded from the key only while it cannot change authorize
+// or reject inference. Disable backoff so cache hits cannot hide such a change.
+// Compare the actual wire payload, excluding only generated invocation IDs.
+func TestBillingTelemetryAuthorizeEquivalence(t *testing.T) {
+	t.Setenv("QUILL_BILLING_402_BACKOFF_MS", "0")
+	t.Setenv("TR_REQUEST_METADATA_ENFORCEMENT", "enforce")
+	headers := []string{""}
+	for _, tc := range billingTelemetryHeaders {
+		for _, value := range []string{tc.first, tc.second, "", strings.Repeat("x", 257)} {
+			headers = append(headers, tc.name+": "+value+"\r\n")
+		}
+	}
+	headers = append(headers, billingDroppedTelemetryHeaders...)
+	for route, body := range map[string]string{
+		"/v1/chat/completions": astraChat,
+		"/v1/responses":        `{"model":"test-model","input":"hi"}`,
+		"/v1/messages":         `{"model":"test-model","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`,
+		"/v1/embeddings":       `{"model":"test-model","input":"hi"}`,
+		"/v1/images":           `{"model":"google/gemini-3.1-flash-image","prompt":"cat"}`,
+		"/api/alpha/decide":    decideBody,
+	} {
+		t.Run(route, func(t *testing.T) {
+			var baseline, captured map[string]any
+			calls := 0
+			gateway := trustedrouter.New("https://trustedrouter.com", "internal", &http.Client{Transport: astraTransport(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/internal/gateway/authorize" {
+					calls++
+					if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+						t.Fatal(err)
+					}
+					return astraResponse(402, `{"error":{"type":"insufficient_credits","message":"top up"}}`), nil
+				}
+				return astraResponse(200, `{"data":{"workspace_id":"ws","api_key_hash":"credential"}}`), nil
+			})})
+			for i, telemetry := range headers {
+				captured = nil
+				response, _ := astraRequest(t, gateway, route, body, telemetry)
+				if parseHTTPStatus(response) != 402 || calls != i+1 || captured == nil {
+					t.Fatalf("telemetry rejected or skipped authorize: headers=%q calls=%d response=%s", telemetry, calls, response)
+				}
+				for _, field := range []string{"idempotency_key", "invocation_nonce"} {
+					if value, ok := captured[field].(string); !ok || value == "" {
+						t.Fatalf("missing generated %s: %v", field, captured)
+					}
+					delete(captured, field)
+				}
+				if i == 0 {
+					baseline = captured
+				} else if !reflect.DeepEqual(baseline, captured) {
+					t.Fatalf("telemetry changed authorize while excluded from key: headers=%q\nwithout=%v\nwith=%v", telemetry, baseline, captured)
+				}
 			}
 		})
 	}
