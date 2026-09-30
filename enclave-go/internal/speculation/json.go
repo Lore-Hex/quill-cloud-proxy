@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"io"
 	"math"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
+	"unsafe"
 )
 
 // ProtocolError is a stable v1 refusal code.
@@ -233,11 +236,89 @@ func b64decode(value any) []byte {
 	return b
 }
 
-// equal compares JSON values without coercing booleans, integers or floats.
-// The depth bound also refuses cyclic caller data without recursive exhaustion.
-func equal(a, b any) bool { return equalDepth(a, b, 0) }
-func equalDepth(a, b any, depth int) bool {
-	require(depth <= 128, "input")
+// equal compares caller JSON values without coercing booleans, integers or floats.
+// It is pure boolean: mismatches, unsupported values and cycles return false.
+// Exit frames memoize only completed container pairs; active pairs detect cycles.
+// Pointer identities retain the containers. Slice length is part of identity:
+// two views sharing a backing array need not describe the same JSON value.
+func equal(a, b any) bool {
+	type pair struct {
+		left, right unsafe.Pointer
+		length      int
+		array       bool
+	}
+	type frame struct {
+		a, b    any
+		exiting bool
+		pair    pair
+	}
+	stack := []frame{{a: a, b: b}}
+	active := map[pair]bool{}
+	completed := map[pair]bool{}
+	for len(stack) > 0 {
+		f := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if f.exiting {
+			delete(active, f.pair)
+			completed[f.pair] = true
+			continue
+		}
+		var p pair
+		switch x := f.a.(type) {
+		case map[string]any:
+			y, ok := f.b.(map[string]any)
+			if !ok || len(x) != len(y) {
+				return false
+			}
+			p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer()}
+			if active[p] {
+				return false
+			}
+			if completed[p] {
+				continue
+			}
+			// Check the complete key set before any values, then visit sorted keys.
+			keys := make([]string, 0, len(x))
+			for k := range x {
+				if _, ok := y[k]; !ok {
+					return false
+				}
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			stack = append(stack, frame{exiting: true, pair: p})
+			for i := len(keys) - 1; i >= 0; i-- {
+				k := keys[i]
+				stack = append(stack, frame{a: x[k], b: y[k]})
+			}
+		case []any:
+			y, ok := f.b.([]any)
+			if !ok || len(x) != len(y) {
+				return false
+			}
+			p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer(), length: len(x), array: true}
+			if active[p] {
+				return false
+			}
+			if completed[p] {
+				continue
+			}
+			stack = append(stack, frame{exiting: true, pair: p})
+			for i := len(x) - 1; i >= 0; i-- {
+				stack = append(stack, frame{a: x[i], b: y[i]})
+			}
+		default:
+			if !equalScalar(f.a, f.b) {
+				return false
+			}
+			continue
+		}
+		active[p] = true
+	}
+	return true
+}
+
+func equalScalar(a, b any) bool {
 	switch x := a.(type) {
 	case nil:
 		return b == nil
@@ -248,7 +329,8 @@ func equalDepth(a, b any, depth int) bool {
 		y, ok := b.(string)
 		return ok && x == y
 	case int:
-		return equalDepth(int64(x), b, depth)
+		// int and int64 are the two supported representations of a JSON integer.
+		return equalScalar(int64(x), b)
 	case int64:
 		switch y := b.(type) {
 		case int:
@@ -260,30 +342,7 @@ func equalDepth(a, b any, depth int) bool {
 	case float64:
 		y, ok := b.(float64)
 		return ok && x == y && !math.IsNaN(x)
-	case map[string]any:
-		y, ok := b.(map[string]any)
-		if !ok || len(x) != len(y) {
-			return false
-		}
-		for k, v := range x {
-			w, ok := y[k]
-			if !ok || !equalDepth(v, w, depth+1) {
-				return false
-			}
-		}
-		return true
-	case []any:
-		y, ok := b.([]any)
-		if !ok || len(x) != len(y) {
-			return false
-		}
-		for i, v := range x {
-			if !equalDepth(v, y[i], depth+1) {
-				return false
-			}
-		}
-		return true
 	default:
-		panic(ProtocolError("input"))
+		return false
 	}
 }

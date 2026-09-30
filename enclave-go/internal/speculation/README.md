@@ -18,6 +18,13 @@ struct/string parameters prevent invalid caller shapes statically. Verified
 objects have private immutable payloads; `Claims()` returns an independent copy.
 A zero-valued verified object confers no authority.
 
+Caller-value comparisons are pure boolean, type-sensitive, depth-unbounded and
+independent of member order; they never produce their own error code. An explicit
+stack checks map key sets before sorted values, detects active container cycles
+and memoizes completed container pairs by identity. Cycles and unsupported values
+compare unequal; callers retain their existing refusal codes. Shared acyclic
+subtrees are visited once per pair, including independently allocated graphs.
+
 Wire JSON first enforces printable ASCII without backslashes and a maximum
 container depth of 16. A `json.Decoder.Token` / `UseNumber` pass records duplicate
 names and raw numbers without semantic refusal until the whole syntax is valid.
@@ -37,9 +44,8 @@ boundaries. Unexpected implementation panics are not hidden from tests/fuzzing.
 
 The six JSON files in `testdata/speculation_v1` were copied byte for byte, never
 regenerated. `TestFixturePins` pins the manifest SHA-256 and checks every listed
-file hash. The actual pinned bundle contains **434 protocol cases + 24 verdict
-vectors = 458 total**, despite the request describing 458 protocol cases plus
-verdict vectors. Every case runs, with no exclusions or changed expectations.
+file hash. The actual pinned bundle contains **442 protocol cases + 24 verdict
+vectors = 466 total**. Every case runs, with no exclusions or changed expectations.
 
 Run from `enclave-go`:
 
@@ -65,8 +71,8 @@ go run ./testdata/mutate.go
 `mutations.json` maps executable Go edits to zero-based entries in the frozen
 router `rules.json`. The Go runner first checks a clean baseline, then copies
 source and fixtures to independent temporary modules. Every mutant runs every
-protocol literal, every verdict vector, and the fixture-pin test. No git operation
-is used. It writes `mutation-report.md`; detailed stdout is retained in
+protocol literal, every verdict vector, the fixture-pin test, and equality
+regressions. No git operation is used. It writes `mutation-report.md`; detailed stdout is retained in
 `$TMPDIR/speculation-mutation-results.json`. Compile failures are `build-broken`,
 never red. The report distinguishes corpus failures from the selected literal's
 failure. Any survival, build failure, or un-killed selected literal makes the

@@ -95,7 +95,7 @@ func apply(dir string, m mutation) {
 	must(os.WriteFile(path, []byte(source), 0600))
 }
 func run(dir string, m mutation) result {
-	cmd := exec.Command("go", "test", "-json", "-count=1", "-run", "^Test(FixturePins|Literals|Verdicts)$", ".")
+	cmd := exec.Command("go", "test", "-json", "-count=1", "-run", "^Test(FixturePins|Literals|Verdicts|EqualValues|EqualDeep|EqualSharedDAG)$", ".")
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	r := result{Mutation: m, Status: "survived", Output: string(output)}
@@ -163,7 +163,7 @@ func main() {
 	close(jobs)
 	wg.Wait()
 	var report strings.Builder
-	report.WriteString("# Go speculation mutation results\n\nEvery mutant ran the full 434 protocol + 24 verdict corpus and fixture pins in a temporary copy. Baseline passed. No git commands were used. `Selected` indicates whether the inventory's named literal failed.\n\n| Mutation | Result | Selected | Failing test |\n|---|---|---|---|\n")
+	report.WriteString("# Go speculation mutation results\n\nEvery mutant ran the full 442 protocol + 24 verdict corpus, fixture pins and equality regressions in a temporary copy. Baseline passed. No git commands were used. `Selected` indicates whether the inventory's named literal failed.\n\n| Mutation | Result | Selected | Failing test |\n|---|---|---|---|\n")
 	counts := map[string]int{}
 	missing := 0
 	for _, r := range results {

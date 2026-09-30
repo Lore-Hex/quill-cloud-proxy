@@ -67,7 +67,7 @@ func TestCallerValues(t *testing.T) {
 	cycle := map[string]any{}
 	cycle["cycle"] = cycle
 	auth := map[string]any{"extra": cycle}
-	if _, err := VerifyAcceptance(map[string]any{"authorization": auth}, h.descriptor, auth); err != ProtocolError("input") {
+	if _, err := VerifyAcceptance(map[string]any{"authorization": auth}, h.descriptor, auth); err != ProtocolError("authorization") {
 		t.Fatal("cyclic caller data", err)
 	}
 	if _, err := VerifyGrant(h.real.Compact(), h.keys, nil, 1700000000, false); err != ProtocolError("binding") {
@@ -141,7 +141,10 @@ func TestMutationInventory(t *testing.T) {
 	if err = json.Unmarshal(raw, &inventory); err != nil {
 		t.Fatal(err)
 	}
-	cases := map[string]bool{"TestFixturePins": true}
+	cases := map[string]bool{"TestFixturePins": true, "TestEqualSharedDAG": true}
+	for _, name := range []string{"unsupported", "map_cycle", "slice_cycle", "slice_views", "map_right_identity", "slice_right_identity"} {
+		cases["TestEqualValues/"+name] = true
+	}
 	for _, v := range loadFixture(t, "protocol-vectors.json")["cases"].([]any) {
 		cases["TestLiterals/"+s(m(v)["name"])] = true
 	}

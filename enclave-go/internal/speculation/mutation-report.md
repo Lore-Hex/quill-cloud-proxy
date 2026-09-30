@@ -1,6 +1,6 @@
 # Go speculation mutation results
 
-Every mutant ran the full 434 protocol + 24 verdict corpus and fixture pins in a temporary copy. Baseline passed. No git commands were used. `Selected` indicates whether the inventory's named literal failed.
+Every mutant ran the full 442 protocol + 24 verdict corpus, fixture pins and equality regressions in a temporary copy. Baseline passed. No git commands were used. `Selected` indicates whether the inventory's named literal failed.
 
 | Mutation | Result | Selected | Failing test |
 |---|---|---|---|
@@ -251,5 +251,21 @@ Every mutant ran the full 434 protocol + 24 verdict corpus and fixture pins in a
 | object root type | survived | false | — |
 | exponent accepted as integer | red | true | TestLiterals/exponent |
 | configured key error leaks base64 | red | true | TestLiterals/key_zero_public |
+| equality unsupported values | red | true | TestEqualValues/unsupported |
+| equality depth cutoff | red | true | TestLiterals/acceptance_depth_130_unmarked |
+| equality exit frames | red | true | TestEqualSharedDAG |
+| equality completed memo | red | true | TestEqualSharedDAG |
+| equality active cleanup | red | true | TestEqualSharedDAG |
+| equality active marking | red | true | TestEqualValues/map_cycle |
+| equality empty traversal | red | true | TestLiterals/response_nested_order |
+| equality successful completion | red | true | TestLiterals/acceptance_depth_130_unmarked |
+| equality map pair identity | red | true | TestEqualValues/map_right_identity |
+| equality map cycle guard | red | true | TestEqualValues/map_cycle |
+| equality slice pair identity | red | true | TestEqualValues/slice_right_identity |
+| equality slice cycle guard | red | true | TestEqualValues/slice_cycle |
+| equality slice view length | red | true | TestEqualValues/slice_views |
+| equality map exit frame | red | true | TestEqualSharedDAG |
+| equality slice exit frame | red | true | TestEqualSharedDAG |
+| equality map children | red | true | TestLiterals/response_nested_bool_int |
 
-Red: 236; survived: 11; build-broken: 0; selected literal not red: 11.
+Red: 252; survived: 11; build-broken: 0; selected literal not red: 11.

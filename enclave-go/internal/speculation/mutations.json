@@ -12,7 +12,7 @@
         0,
         65,
         66,
-        219
+        231
       ]
     },
     {
@@ -96,7 +96,7 @@
       "router_rules": [
         6,
         80,
-        194
+        206
       ]
     },
     {
@@ -108,7 +108,7 @@
       "literal": "TestLiterals/payload_duplicate",
       "router_rules": [
         4,
-        246
+        258
       ]
     },
     {
@@ -579,7 +579,7 @@
       "literal": "TestLiterals/descriptor_endpoint",
       "router_rules": [
         48,
-        227
+        239
       ]
     },
     {
@@ -627,7 +627,7 @@
       "router_rules": [
         50,
         52,
-        241
+        253
       ]
     },
     {
@@ -661,7 +661,7 @@
       "literal": "TestLiterals/marker_invocation_nonce",
       "router_rules": [
         55,
-        232
+        244
       ]
     },
     {
@@ -982,7 +982,7 @@
       "after": "true || b >= 0x20 && b <= 0x7e && b != 0x5c",
       "literal": "TestLiterals/trailing_newline",
       "router_rules": [
-        242
+        254
       ]
     },
     {
@@ -1003,7 +1003,7 @@
       "literal": "TestLiterals/payload_duplicate",
       "router_rules": [
         4,
-        246
+        258
       ]
     },
     {
@@ -1032,7 +1032,7 @@
       "after": "\"content\":\"fixturf\"",
       "literal": "TestFixturePins",
       "router_rules": [
-        218
+        230
       ]
     },
     {
@@ -1266,7 +1266,7 @@
       "after": "for _, f := range []string{\"invocation_nonce\", \"workspace_id\", \"key_id\"} { if f == \"invocation_nonce\" { continue }",
       "literal": "TestLiterals/unmarked_invocation_nonce",
       "router_rules": [
-        229
+        241
       ]
     },
     {
@@ -1277,7 +1277,7 @@
       "after": "for _, f := range []string{\"invocation_nonce\", \"workspace_id\", \"key_id\"} { if f == \"workspace_id\" { continue }",
       "literal": "TestLiterals/unmarked_workspace_id",
       "router_rules": [
-        230
+        242
       ]
     },
     {
@@ -1288,7 +1288,7 @@
       "after": "for _, f := range []string{\"invocation_nonce\", \"workspace_id\", \"key_id\"} { if f == \"key_id\" { continue }",
       "literal": "TestLiterals/unmarked_key_id",
       "router_rules": [
-        231
+        243
       ]
     },
     {
@@ -1300,7 +1300,7 @@
       "literal": "TestLiterals/marker_invocation_nonce",
       "router_rules": [
         55,
-        232
+        244
       ]
     },
     {
@@ -1311,7 +1311,7 @@
       "after": "for _, f := range []string{\"invocation_nonce\", \"endpoint_id\", \"routing_policy_hash\"} { if f == \"endpoint_id\" { continue }",
       "literal": "TestLiterals/marker_endpoint_id",
       "router_rules": [
-        233
+        245
       ]
     },
     {
@@ -1322,7 +1322,7 @@
       "after": "for _, f := range []string{\"invocation_nonce\", \"endpoint_id\", \"routing_policy_hash\"} { if f == \"routing_policy_hash\" { continue }",
       "literal": "TestLiterals/marker_routing_policy_hash",
       "router_rules": [
-        234
+        246
       ]
     },
     {
@@ -1333,7 +1333,7 @@
       "after": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") { if f == \"authorization_id\" { continue }",
       "literal": "TestLiterals/authorization_authorization_id",
       "router_rules": [
-        235
+        247
       ]
     },
     {
@@ -1344,7 +1344,7 @@
       "after": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") { if f == \"invocation_nonce\" { continue }",
       "literal": "TestLiterals/authorization_invocation_nonce",
       "router_rules": [
-        236
+        248
       ]
     },
     {
@@ -1355,7 +1355,7 @@
       "after": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") { if f == \"endpoint_id\" { continue }",
       "literal": "TestLiterals/authorization_endpoint_id",
       "router_rules": [
-        237
+        249
       ]
     },
     {
@@ -1366,7 +1366,7 @@
       "after": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") { if f == \"routing_policy_hash\" { continue }",
       "literal": "TestLiterals/authorization_routing_policy_hash",
       "router_rules": [
-        238
+        250
       ]
     },
     {
@@ -1377,7 +1377,7 @@
       "after": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") { if f == \"workspace_id\" { continue }",
       "literal": "TestLiterals/authorization_workspace_id",
       "router_rules": [
-        239
+        251
       ]
     },
     {
@@ -1388,7 +1388,7 @@
       "after": "for _, f := range strings.Fields(\"authorization_id invocation_nonce endpoint_id routing_policy_hash workspace_id key_id\") { if f == \"key_id\" { continue }",
       "literal": "TestLiterals/authorization_key_id",
       "router_rules": [
-        240
+        252
       ]
     },
     {
@@ -1399,7 +1399,7 @@
       "after": "for _, f := range []string{\"routing_policy_hash\", \"catalog_hash\"} { if f == \"routing_policy_hash\" { continue }",
       "literal": "TestLiterals/route_policy_hash_format",
       "router_rules": [
-        222
+        234
       ]
     },
     {
@@ -1410,7 +1410,7 @@
       "after": "for _, f := range []string{\"routing_policy_hash\", \"catalog_hash\"} { if f == \"catalog_hash\" { continue }",
       "literal": "TestLiterals/route_hash_bad",
       "router_rules": [
-        223
+        235
       ]
     },
     {
@@ -1421,7 +1421,7 @@
       "after": "for _, f := range []string{\"grant_sha256\", \"request_sha256\", \"routing_policy_hash\"} { if f == \"grant_sha256\" { continue }",
       "literal": "TestLiterals/descriptor_grant_hash_format",
       "router_rules": [
-        224
+        236
       ]
     },
     {
@@ -1432,7 +1432,7 @@
       "after": "for _, f := range []string{\"grant_sha256\", \"request_sha256\", \"routing_policy_hash\"} { if f == \"request_sha256\" { continue }",
       "literal": "TestLiterals/descriptor_hash_malformed",
       "router_rules": [
-        225
+        237
       ]
     },
     {
@@ -1443,7 +1443,7 @@
       "after": "for _, f := range []string{\"grant_sha256\", \"request_sha256\", \"routing_policy_hash\"} { if f == \"routing_policy_hash\" { continue }",
       "literal": "TestLiterals/descriptor_route_hash_format",
       "router_rules": [
-        226
+        238
       ]
     },
     {
@@ -1455,7 +1455,7 @@
       "literal": "TestLiterals/descriptor_endpoint",
       "router_rules": [
         48,
-        227
+        239
       ]
     },
     {
@@ -1466,7 +1466,7 @@
       "after": "for _, f := range []string{\"endpoint_id\", \"routing_policy_hash\"} { if f == \"routing_policy_hash\" { continue }",
       "literal": "TestLiterals/descriptor_routing_policy_hash",
       "router_rules": [
-        228
+        240
       ]
     },
     {
@@ -1961,7 +1961,7 @@
       "after": "const workspaceReasons = \"unused_credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
       "literal": "TestLiterals/reason_credit_exhausted",
       "router_rules": [
-        197
+        209
       ]
     },
     {
@@ -1972,7 +1972,7 @@
       "after": "const workspaceReasons = \"credit_exhausted unused_billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
       "literal": "TestLiterals/reason_billing_denied",
       "router_rules": [
-        198
+        210
       ]
     },
     {
@@ -1983,7 +1983,7 @@
       "after": "const workspaceReasons = \"credit_exhausted billing_denied unused_trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
       "literal": "TestLiterals/reason_trust_ineligible",
       "router_rules": [
-        199
+        211
       ]
     },
     {
@@ -1994,7 +1994,7 @@
       "after": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible unused_trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
       "literal": "TestLiterals/reason_trust_demoted",
       "router_rules": [
-        200
+        212
       ]
     },
     {
@@ -2005,7 +2005,7 @@
       "after": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted unused_abuse_latched payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
       "literal": "TestLiterals/reason_abuse_latched",
       "router_rules": [
-        201
+        213
       ]
     },
     {
@@ -2016,7 +2016,7 @@
       "after": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched unused_payment_failed trust_reconciliation_stale workspace_paused billing_paused\"",
       "literal": "TestLiterals/reason_payment_failed",
       "router_rules": [
-        202
+        214
       ]
     },
     {
@@ -2027,7 +2027,7 @@
       "after": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed unused_trust_reconciliation_stale workspace_paused billing_paused\"",
       "literal": "TestLiterals/reason_trust_reconciliation_stale",
       "router_rules": [
-        203
+        215
       ]
     },
     {
@@ -2038,7 +2038,7 @@
       "after": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale unused_workspace_paused billing_paused\"",
       "literal": "TestLiterals/reason_workspace_paused",
       "router_rules": [
-        204
+        216
       ]
     },
     {
@@ -2049,7 +2049,7 @@
       "after": "const workspaceReasons = \"credit_exhausted billing_denied trust_ineligible trust_demoted abuse_latched payment_failed trust_reconciliation_stale workspace_paused unused_billing_paused\"",
       "literal": "TestLiterals/reason_billing_paused",
       "router_rules": [
-        205
+        217
       ]
     },
     {
@@ -2060,7 +2060,7 @@
       "after": "const keyReasons = \"unused_key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
       "literal": "TestLiterals/reason_key_revoked",
       "router_rules": [
-        206
+        218
       ]
     },
     {
@@ -2071,7 +2071,7 @@
       "after": "const keyReasons = \"key_revoked unused_key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
       "literal": "TestLiterals/reason_key_disabled",
       "router_rules": [
-        207
+        219
       ]
     },
     {
@@ -2082,7 +2082,7 @@
       "after": "const keyReasons = \"key_revoked key_disabled unused_key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
       "literal": "TestLiterals/reason_key_expired",
       "router_rules": [
-        208
+        220
       ]
     },
     {
@@ -2093,7 +2093,7 @@
       "after": "const keyReasons = \"key_revoked key_disabled key_expired unused_key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
       "literal": "TestLiterals/reason_key_invalid",
       "router_rules": [
-        209
+        221
       ]
     },
     {
@@ -2104,7 +2104,7 @@
       "after": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid unused_key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
       "literal": "TestLiterals/reason_key_limit_exceeded",
       "router_rules": [
-        210
+        222
       ]
     },
     {
@@ -2115,7 +2115,7 @@
       "after": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded unused_key_window_limit_exceeded key_strict_limit_exceeded key_spend_limit_imposed\"",
       "literal": "TestLiterals/reason_key_window_limit_exceeded",
       "router_rules": [
-        211
+        223
       ]
     },
     {
@@ -2126,7 +2126,7 @@
       "after": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded unused_key_strict_limit_exceeded key_spend_limit_imposed\"",
       "literal": "TestLiterals/reason_key_strict_limit_exceeded",
       "router_rules": [
-        212
+        224
       ]
     },
     {
@@ -2137,7 +2137,7 @@
       "after": "const keyReasons = \"key_revoked key_disabled key_expired key_invalid key_limit_exceeded key_window_limit_exceeded key_strict_limit_exceeded unused_key_spend_limit_imposed\"",
       "literal": "TestLiterals/reason_key_spend_limit_imposed",
       "router_rules": [
-        213
+        225
       ]
     },
     {
@@ -2148,7 +2148,7 @@
       "after": "\"unused_authorize_timeout transport_error infrastructure_error\"",
       "literal": "TestLiterals/breaker_authorize_timeout",
       "router_rules": [
-        214
+        226
       ]
     },
     {
@@ -2159,7 +2159,7 @@
       "after": "\"authorize_timeout unused_transport_error infrastructure_error\"",
       "literal": "TestLiterals/breaker_transport_error",
       "router_rules": [
-        215
+        227
       ]
     },
     {
@@ -2170,7 +2170,7 @@
       "after": "\"authorize_timeout transport_error unused_infrastructure_error\"",
       "literal": "TestLiterals/breaker_infrastructure_error",
       "router_rules": [
-        216
+        228
       ]
     },
     {
@@ -2215,7 +2215,7 @@
       "after": "// byte precheck removed",
       "literal": "TestLiterals/precedence_payload_bytes_signature",
       "router_rules": [
-        244
+        256
       ]
     },
     {
@@ -2247,7 +2247,7 @@
       "literal": "TestLiterals/unmarked_spend_lease",
       "router_rules": [
         52,
-        241
+        253
       ]
     },
     {
@@ -2259,7 +2259,7 @@
       "literal": "TestVerdicts/credit",
       "router_rules": [
         154,
-        217
+        229
       ]
     },
     {
@@ -2604,8 +2604,8 @@
       "after": "if true {",
       "literal": "TestLiterals/depth_in_string",
       "router_rules": [
-        191,
-        193
+        203,
+        205
       ]
     },
     {
@@ -2616,7 +2616,7 @@
       "after": "quoted = true",
       "literal": "TestLiterals/depth17_after_string",
       "router_rules": [
-        192
+        204
       ]
     },
     {
@@ -2627,7 +2627,7 @@
       "after": "depth += 0",
       "literal": "TestLiterals/depth_siblings",
       "router_rules": [
-        195
+        207
       ]
     },
     {
@@ -2638,7 +2638,7 @@
       "after": "if !ok { panic(\"malformed input\") }",
       "literal": "TestLiterals/input_boundary",
       "router_rules": [
-        196
+        208
       ]
     },
     {
@@ -2649,8 +2649,8 @@
       "after": "typ, purpose = RealTyp, \"shadow-grant\"",
       "literal": "TestLiterals/shadow_valid",
       "router_rules": [
-        220,
-        221
+        232,
+        233
       ]
     },
     {
@@ -2661,8 +2661,8 @@
       "after": "typ, purpose = ShadowTyp, \"grant\"",
       "literal": "TestLiterals/shadow_valid",
       "router_rules": [
-        220,
-        221
+        232,
+        233
       ]
     },
     {
@@ -2673,7 +2673,7 @@
       "after": "b <= 0xff",
       "literal": "TestLiterals/raw_del",
       "router_rules": [
-        243
+        255
       ]
     },
     {
@@ -2684,24 +2684,24 @@
       "after": "rawInteger(n); p.numbers = append(p.numbers, n)",
       "literal": "TestLiterals/payload_number_later_syntax",
       "router_rules": [
-        245
+        257
       ]
     },
     {
       "name": "external int float equality",
       "file": "json.go",
-      "function": "equalDepth",
+      "function": "equalScalar",
       "before": "case int64:\n\t\tswitch y := b.(type) {",
       "after": "case int64:\n if y,ok := b.(float64); ok { return float64(x)==y };\n\t\tswitch y := b.(type) {",
       "literal": "TestLiterals/response_nested_int_float",
       "router_rules": [
-        187
+        185
       ]
     },
     {
       "name": "external bool integer equality",
       "file": "json.go",
-      "function": "equalDepth",
+      "function": "equalScalar",
       "before": "case bool:\n\t\ty, ok := b.(bool)",
       "after": "case bool:\n if y,ok := b.(int64); ok { return x == (y != 0) };\n\t\ty, ok := b.(bool)",
       "literal": "TestLiterals/response_nested_bool_int",
@@ -2713,34 +2713,34 @@
     {
       "name": "external object key equality",
       "file": "json.go",
-      "function": "equalDepth",
-      "before": "if !ok || !equalDepth(v, w, depth+1) {",
-      "after": "if !ok { continue }; if !equalDepth(v, w, depth+1) {",
+      "function": "equal",
+      "before": "if _, ok := y[k]; !ok {\n\t\t\t\t\treturn false\n\t\t\t\t}",
+      "after": "if _, ok := y[k]; !ok {\n\t\t\t\t\tcontinue\n\t\t\t\t}",
       "literal": "TestLiterals/response_nested_keys",
       "router_rules": [
-        188
+        193
       ]
     },
     {
       "name": "external array length equality",
       "file": "json.go",
-      "function": "equalDepth",
-      "before": "y, ok := b.([]any)\n\t\tif !ok || len(x) != len(y) {",
-      "after": "y, ok := b.([]any)\n if ok && len(x) != len(y) { return true };\n\t\tif !ok || len(x) != len(y) {",
+      "function": "equal",
+      "before": "y, ok := f.b.([]any)\n\t\t\tif !ok || len(x) != len(y) {",
+      "after": "y, ok := f.b.([]any)\n if ok && len(x) != len(y) { return true };\n\t\t\tif !ok || len(x) != len(y) {",
       "literal": "TestLiterals/response_nested_length",
       "router_rules": [
-        189
+        194
       ]
     },
     {
       "name": "external array order equality",
       "file": "json.go",
-      "function": "equalDepth",
-      "before": "if !equalDepth(v, y[i], depth+1) {",
-      "after": "if !equalDepth(v, y[i], depth+1) && false {",
+      "function": "equal",
+      "before": "stack = append(stack, frame{a: x[i], b: y[i]})",
+      "after": "stack = append(stack, frame{a: x[i], b: x[i]})",
       "literal": "TestLiterals/response_nested_order",
       "router_rules": [
-        190
+        188
       ]
     },
     {
@@ -2774,6 +2774,180 @@
       "literal": "TestLiterals/key_zero_public",
       "router_rules": [
         81
+      ]
+    },
+    {
+      "name": "equality unsupported values",
+      "file": "json.go",
+      "function": "equalScalar",
+      "before": "default:\n\t\treturn false",
+      "after": "default:\n\t\treturn true",
+      "literal": "TestEqualValues/unsupported",
+      "router_rules": [
+        187
+      ]
+    },
+    {
+      "name": "equality depth cutoff",
+      "file": "json.go",
+      "function": "equal",
+      "before": "var p pair",
+      "after": "require(len(active) <= 128, \"input\"); var p pair",
+      "literal": "TestLiterals/acceptance_depth_130_unmarked",
+      "router_rules": []
+    },
+    {
+      "name": "equality exit frames",
+      "file": "json.go",
+      "function": "equal",
+      "before": "if f.exiting {",
+      "after": "if f.exiting && false {",
+      "literal": "TestEqualSharedDAG",
+      "router_rules": [
+        190
+      ]
+    },
+    {
+      "name": "equality completed memo",
+      "file": "json.go",
+      "function": "equal",
+      "before": "completed[f.pair] = true",
+      "after": "completed[f.pair] = false",
+      "literal": "TestEqualSharedDAG",
+      "router_rules": [
+        189,
+        196
+      ]
+    },
+    {
+      "name": "equality active cleanup",
+      "file": "json.go",
+      "function": "equal",
+      "before": "delete(active, f.pair)",
+      "after": "// delete(active, f.pair)",
+      "literal": "TestEqualSharedDAG",
+      "router_rules": [
+        197
+      ]
+    },
+    {
+      "name": "equality active marking",
+      "file": "json.go",
+      "function": "equal",
+      "before": "active[p] = true",
+      "after": "completed[p] = true",
+      "literal": "TestEqualValues/map_cycle",
+      "router_rules": [
+        198
+      ]
+    },
+    {
+      "name": "equality empty traversal",
+      "file": "json.go",
+      "function": "equal",
+      "before": "for len(stack) > 0 {",
+      "after": "for len(stack) > 0 && false {",
+      "literal": "TestLiterals/response_nested_order",
+      "router_rules": [
+        201
+      ]
+    },
+    {
+      "name": "equality successful completion",
+      "file": "json.go",
+      "function": "equal",
+      "before": "return true\n}",
+      "after": "return false\n}",
+      "literal": "TestLiterals/acceptance_depth_130_unmarked",
+      "router_rules": [
+        202
+      ]
+    },
+    {
+      "name": "equality map pair identity",
+      "file": "json.go",
+      "function": "equal",
+      "before": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer()}",
+      "after": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(x).UnsafePointer()}",
+      "literal": "TestEqualValues/map_right_identity",
+      "router_rules": [
+        195
+      ]
+    },
+    {
+      "name": "equality map cycle guard",
+      "file": "json.go",
+      "function": "equal",
+      "before": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer()}\n\t\t\tif active[p] {\n\t\t\t\treturn false",
+      "after": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer()}\n\t\t\tif active[p] {\n\t\t\t\treturn true",
+      "literal": "TestEqualValues/map_cycle",
+      "router_rules": [
+        191
+      ]
+    },
+    {
+      "name": "equality slice pair identity",
+      "file": "json.go",
+      "function": "equal",
+      "before": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer(), length: len(x), array: true}",
+      "after": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(x).UnsafePointer(), length: len(x), array: true}",
+      "literal": "TestEqualValues/slice_right_identity",
+      "router_rules": [
+        195
+      ]
+    },
+    {
+      "name": "equality slice cycle guard",
+      "file": "json.go",
+      "function": "equal",
+      "before": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer(), length: len(x), array: true}\n\t\t\tif active[p] {\n\t\t\t\treturn false",
+      "after": "p = pair{left: reflect.ValueOf(x).UnsafePointer(), right: reflect.ValueOf(y).UnsafePointer(), length: len(x), array: true}\n\t\t\tif active[p] {\n\t\t\t\treturn true",
+      "literal": "TestEqualValues/slice_cycle",
+      "router_rules": [
+        191
+      ]
+    },
+    {
+      "name": "equality slice view length",
+      "file": "json.go",
+      "function": "equal",
+      "before": "length: len(x), array: true",
+      "after": "array: true",
+      "literal": "TestEqualValues/slice_views",
+      "router_rules": []
+    },
+    {
+      "name": "equality map exit frame",
+      "file": "json.go",
+      "function": "equal",
+      "before": "sort.Strings(keys)\n\t\t\tstack = append(stack, frame{exiting: true, pair: p})",
+      "after": "sort.Strings(keys)",
+      "literal": "TestEqualSharedDAG",
+      "router_rules": [
+        199
+      ]
+    },
+    {
+      "name": "equality slice exit frame",
+      "file": "json.go",
+      "function": "equal",
+      "before": "stack = append(stack, frame{exiting: true, pair: p})\n\t\t\tfor i := len(x)",
+      "after": "for i := len(x)",
+      "literal": "TestEqualSharedDAG",
+      "router_rules": [
+        199
+      ]
+    },
+    {
+      "name": "equality map children",
+      "file": "json.go",
+      "function": "equal",
+      "before": "stack = append(stack, frame{a: x[k], b: y[k]})",
+      "after": "stack = append(stack, frame{a: x[k], b: x[k]})",
+      "literal": "TestLiterals/response_nested_bool_int",
+      "router_rules": [
+        192,
+        200
       ]
     }
   ]

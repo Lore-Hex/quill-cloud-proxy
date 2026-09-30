@@ -15,7 +15,7 @@ import (
 )
 
 const fixtureDir = "testdata/speculation_v1"
-const manifestSHA256 = "efcf82227d5edb22f90482e414ad6c54dba293166a9febd1a976e6a3c234769e"
+const manifestSHA256 = "ef6cca49eecdea14f47e4419bc1e1543409a22cf715c6cbe1555c8a82701f603"
 
 // Fixture loading retains number types independently of the production parser.
 // Out-of-range integers remain json.Number so public APIs refuse them as integer.
@@ -233,7 +233,7 @@ func TestFixturePins(t *testing.T) {
 func TestLiterals(t *testing.T) {
 	h := rawHarness(t)
 	cases := loadFixture(t, "protocol-vectors.json")["cases"].([]any)
-	if len(cases) != 434 {
+	if len(cases) != 442 {
 		t.Fatalf("literal count %d", len(cases))
 	}
 	counts := map[string]int{}
