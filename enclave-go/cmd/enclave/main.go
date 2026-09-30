@@ -729,6 +729,12 @@ func serveOneRequest(
 	}
 	requestBearer = bearer
 	requestIdentity.bindBearer(bearer)
+	// Parse/attach silently before target validation and the credential guard so
+	// even failed-target audit lookups retain their ordinary client context.
+	clientContext, droppedClientContext := parseClientContext(attribution.ClientContext)
+	if clientContext != nil {
+		ctx = trustedrouter.WithClientContext(ctx, clientContext)
+	}
 	routePath, nonce, err := parseRequestTarget(path)
 	requestRoute = routePath
 	if err != nil {
@@ -745,7 +751,9 @@ func serveOneRequest(
 		credentialErr = trGateway.CheckCredential(ctx, bearer)
 		credentialChecked = true
 		if credentialErr == nil {
-			billingKey = trustedrouter.NewBillingBackoffKey(requestIdentity.credentialFingerprint, method, routePath, body)
+			// billingBackoffHeaderGroups documents every extracted validation /
+			// authorize input and the transport/random exclusions from this key.
+			billingKey = trustedrouter.NewBillingBackoffKey(requestIdentity.credentialFingerprint, method, routePath, body, billingBackoffHeaderGroups(attribution, confidential)...)
 			idempotent := billingBackoffIdempotent(idempotencyKey, body)
 			cache := trGateway.BillingBackoff()
 			if rejection, hit := cache.Get(billingKey, idempotent, time.Now()); hit {
@@ -762,12 +770,8 @@ func serveOneRequest(
 			}
 		}
 	}
-	clientContext, droppedClientContext := parseClientContext(attribution.ClientContext)
 	for _, reason := range droppedClientContext {
 		fmt.Fprintf(os.Stderr, "enclave.client_context_dropped request_log_id=%q reason=%q\n", requestLogID, reason)
-	}
-	if clientContext != nil {
-		ctx = trustedrouter.WithClientContext(ctx, clientContext)
 	}
 	logAccept()
 	phases.Start()

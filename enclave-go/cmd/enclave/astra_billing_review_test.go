@@ -93,7 +93,7 @@ func TestAstraBillingHonorsKnownRevocation(t *testing.T) {
 			t.Fatalf("known rejection missing %s: %s", event, logs)
 		}
 	}
-	key := trustedrouter.NewBillingBackoffKey(trustedrouter.LookupHash("review-key"), "POST", "/v1/chat/completions", []byte(astraChat))
+	key := trustedrouter.NewBillingBackoffKey(trustedrouter.LookupHash("review-key"), "POST", "/v1/chat/completions", []byte(astraChat), billingBackoffHeaderGroups(requestAttributionHeaders{}, false)...)
 	if _, hit := gateway.BillingBackoff().Get(key, false, time.Now()); hit {
 		t.Fatal("known rejection retained billing entry")
 	}
@@ -109,8 +109,9 @@ func TestAstraBillingHonorsKnownRevocation(t *testing.T) {
 
 func TestAstraBillingSuppressesAllPerRequestLogs(t *testing.T) {
 	gateway := astraGateway(t)
-	astraRequest(t, gateway, "/v1/chat/completions", astraChat, "")
-	_, logs := astraRequest(t, gateway, "/v1/chat/completions", astraChat, "User-Agent: "+strings.Repeat("x", 257)+"\r\n")
+	headers := "User-Agent: " + strings.Repeat("x", 257) + "\r\n"
+	astraRequest(t, gateway, "/v1/chat/completions", astraChat, headers)
+	_, logs := astraRequest(t, gateway, "/v1/chat/completions", astraChat, headers)
 	if logs != "" {
 		t.Fatalf("suppressed request logged: %s", logs)
 	}

@@ -28,17 +28,18 @@ type BillingBackoff struct {
 	order        *list.List
 }
 
-// BillingBackoffKey identifies one exact request on one credential. The body is
-// hashed synchronously and never retained. Length framing separates all fields.
+// BillingBackoffKey identifies one exact request on one credential. The body
+// and header inputs are hashed synchronously and never retained. Length framing
+// separates all fields; callers supply canonical header groups in a fixed order.
 type BillingBackoffKey struct {
 	lookupHash    string
 	requestDigest [sha256.Size]byte
 }
 
-func NewBillingBackoffKey(lookupHash, method, route string, body []byte) BillingBackoffKey {
+func NewBillingBackoffKey(lookupHash, method, route string, body []byte, headerGroups ...[]byte) BillingBackoffKey {
 	h := sha256.New()
 	var size [8]byte
-	for _, field := range [][]byte{[]byte(method), []byte(route), body} {
+	for _, field := range append([][]byte{[]byte(method), []byte(route), body}, headerGroups...) {
 		binary.BigEndian.PutUint64(size[:], uint64(len(field)))
 		_, _ = h.Write(size[:])
 		_, _ = h.Write(field)

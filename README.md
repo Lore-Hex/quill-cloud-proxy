@@ -245,7 +245,9 @@ an enclave's environment).
 A synchronous inference request denied by `/internal/gateway/authorize` with
 HTTP 402 and `error.type=insufficient_credits` opens a fixed window for its
 credential lookup digest and a SHA-256 digest of the method, route and exact
-request body bytes, each length-prefixed. Only identical requests reuse the
+request body bytes plus canonical parsed header inputs, each length-prefixed.
+These cover attribution, client context, receipt opt-in, Host and effective
+confidential routing. Only identical requests reuse the
 ordinary error renderer, including the original request-ID headers and
 Retry-After. Connection headers still follow the current connection's keep-alive
 policy. Header or body
@@ -255,7 +257,7 @@ The credential guard runs before billing reuse: a known credential rejection
 wins and keeps its ordinary audit lines. Definitive credential rejections drop
 that credential's billing entries through a per-credential index. An unobserved
 revocation can remain stale for at most one fixed backoff window; balance top-ups
-have the same delay for an identical request. Different bodies, models or routes
+have the same delay for an identical request. Different bodies, models, routes or header inputs
 can still reach authorize during that window. The cache holds at most 4,096
 entries and retains only digest/audit identifiers and public error fields, never
 prompts or raw API keys. Hits and concurrent denials cannot extend the window. Expired
