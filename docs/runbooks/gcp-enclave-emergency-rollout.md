@@ -170,12 +170,15 @@ To roll back:
 
 ```bash
 export PREV_TEMPLATE=quill-enclave-tpl-us-123
+bash tools/gcp-mig-autoscaler.sh suspend us-central1 quill-enclave-mig-us
 gcloud compute instance-groups managed set-instance-template quill-enclave-mig-us \
   --region=us-central1 --project=quill-cloud-proxy \
   --template="${PREV_TEMPLATE}" --quiet
 gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-us \
   --region=us-central1 --project=quill-cloud-proxy \
   --max-unavailable=0 --max-surge=3 --quiet
+# Once every VM attests again:
+bash tools/gcp-mig-autoscaler.sh resume us-central1 quill-enclave-mig-us
 ```
 
 ## Timing Observed
