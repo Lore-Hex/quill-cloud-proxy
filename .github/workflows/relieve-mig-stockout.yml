@@ -30,9 +30,10 @@
 # (a dead runner) is cleared by the next run of this workflow or the next
 # deploy, and meanwhile the other regions serve, as they do during every deploy.
 #
-# AUTOSCALER. The tool resizes the group and deletes VMs by name, which an
-# attached autoscaler would undo, so the run first detaches it (the group keeps
-# its size) and attaches it again only after every step succeeded. A failed or
+# AUTOSCALER. The tool resizes the group and deletes VMs by name. An attached
+# autoscaler, even one that only scales out, can re-add a deleted VM in its
+# zone, so the run first detaches it (the group keeps its size) and attaches
+# it again only after every step succeeded. A failed or
 # refused run leaves the group detached at its size, which is what resuming
 # needs; the next completed run or the region's next rollout attaches it.
 name: Relieve enclave MIG zone stockout

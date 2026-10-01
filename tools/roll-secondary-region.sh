@@ -139,7 +139,7 @@ export MACHINE_TYPE="${machine_type}"
 export CONF_COMPUTE_TYPE="${confidential_type}"
 
 echo "::group::secondary rollout ${region}"
-# Autoscaler decision: suspend (mode OFF) before the drain, which the autoscaler would read as lost load; a first deployment has no group to suspend.
+# Autoscaler decision: suspend (mode OFF) before the drain, so the group's size stays fixed through the rollout and its every-VM gates; a first deployment has no group to suspend.
 if [ -n "${previous_template}" ]; then
   rollout_step bash tools/gcp-mig-autoscaler.sh suspend "${region}" "${mig}"
 fi

@@ -102,7 +102,7 @@ while IFS=$'\t' read -r region origin extra; do
     report_uncleared "${region}" "${origin}"
     continue
   fi
-  # Autoscaler decision: a region whose rollout drain is cleared serves again, so resume (mode ON) what its rollout suspended; never create one or change its policy here.
+  # Autoscaler decision: a region whose rollout drain is cleared serves again, so resume (scale-out only) what its rollout suspended; never create one or change its policy here.
   if ! PROJECT_ID="${project}" bash tools/gcp-mig-autoscaler.sh resume "${region}" "${mig}"; then
     echo "::error::${region}: drain cleared, but the autoscaler of ${mig} stays off: run \`bash tools/gcp-mig-autoscaler.sh resume ${region} ${mig}\`"
     cleanup_failed=1

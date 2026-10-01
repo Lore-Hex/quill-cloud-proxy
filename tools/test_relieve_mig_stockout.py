@@ -315,7 +315,7 @@ class RelieveMigStockoutTests(unittest.TestCase):
         self.assertEqual(fake.calls, [])
 
     def test_an_autoscaled_group_is_refused_in_both_modes_with_the_detach_command(self) -> None:
-        # An attached autoscaler would undo the resize and re-add a deleted VM.
+        # Even scaling out only, an attached autoscaler can re-add a deleted VM.
         # The workflow detaches it first; run by hand, the tool says how.
         for label, call in {
             "relieve": lambda fake: self.relieve(fake),

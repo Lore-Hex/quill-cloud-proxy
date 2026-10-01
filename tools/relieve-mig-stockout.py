@@ -201,7 +201,7 @@ def relieve(
     size = int(described["targetSize"])
     if zone not in _zones(described):
         raise Refused(f"{zone} is not one of the group's zones {_zones(described)}")
-    # Autoscaler decision: refuse; an attached autoscaler would undo the resize and re-add deleted VMs.
+    # Autoscaler decision: refuse; even scaling out only, an attached autoscaler can re-add the VMs this deletes, in their zone.
     if _autoscaled(described):
         raise Refused(AUTOSCALED)
     dead = sorted(i["name"] for i in vms if i["zone"] == zone)

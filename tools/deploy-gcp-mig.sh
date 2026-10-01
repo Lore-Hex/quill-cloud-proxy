@@ -9,7 +9,8 @@
 #   - quill-enclave-mig-${REGION}          regional MIG, NO autohealing,
 #                                          created at size 2 (HA across zones)
 #
-# The MIG's CPU autoscaler (2-8 VMs) belongs to tools/gcp-mig-autoscaler.sh.
+# The MIG's scale-out-only CPU autoscaler (2-8 VMs) belongs to
+# tools/gcp-mig-autoscaler.sh.
 # This script only suspends it (mode OFF) before it changes the template; the
 # caller applies it again once the region's rollout gates have passed.
 #
@@ -585,7 +586,7 @@ gc compute instance-templates create "$TEMPLATE" \
 # 2. Create or update the MIG.
 size_summary="$TARGET_SIZE"
 if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/dev/null 2>&1; then
-  # Autoscaler decision: suspend it (mode OFF) before the group changes, so no scale-in or scale-out races this rollout; the caller applies it after the gates.
+  # Autoscaler decision: suspend it (mode OFF) before the group changes, so no scale-out races this rollout and its every-VM gates; the caller applies it after the gates.
   PROJECT_ID="$PROJECT_ID" bash "${SCRIPT_DIR}/gcp-mig-autoscaler.sh" suspend "$REGION" "$MIG_NAME"
   mig_json="$(gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" --format=json)"
   mig_facts="$(python3 -c 'import json, sys; g = json.load(sys.stdin); zones = (g.get("distributionPolicy") or {}).get("zones") or []; autoscaled = g.get("autoscaler") or (g.get("status") or {}).get("autoscaler"); print(int(g["targetSize"]), len(zones), 1 if autoscaled else 0)' <<<"$mig_json")"

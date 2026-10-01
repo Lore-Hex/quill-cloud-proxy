@@ -185,7 +185,12 @@ chmod +x "${tmp}/fake/gcloud"
 state="${tmp}/state.json"
 gcloud_log="${tmp}/gcloud.log"
 export GCLOUD_STATE="${state}" GCLOUD_LOG="${gcloud_log}"
-policy_on='{"name": "quill-enclave-mig-uswest1-x7k2", "policy": {"mode": "ON", "minNumReplicas": 2, "maxNumReplicas": 8, "coolDownPeriodSec": 120, "cpuUtilization": {"utilizationTarget": 0.6, "predictiveMethod": "NONE"}, "scaleInControl": {"maxScaledInReplicas": {"fixed": 1, "calculated": 1}, "timeWindowSec": 600}}}'
+# An autoscaler that already matches the policy: scale-out only, no scale-in control.
+policy_current='{"name": "quill-enclave-mig-uswest1-x7k2", "policy": {"mode": "ONLY_SCALE_OUT", "minNumReplicas": 2, "maxNumReplicas": 8, "coolDownPeriodSec": 480, "cpuUtilization": {"utilizationTarget": 0.6, "predictiveMethod": "NONE"}}}'
+# The same, but in mode ON, which could scale in.
+policy_mode_on='{"name": "quill-enclave-mig-uswest1-x7k2", "policy": {"mode": "ON", "minNumReplicas": 2, "maxNumReplicas": 8, "coolDownPeriodSec": 480, "cpuUtilization": {"utilizationTarget": 0.6, "predictiveMethod": "NONE"}}}'
+# The matching policy with a scale-in control left over on it.
+policy_leftover_scale_in='{"name": "quill-enclave-mig-uswest1-x7k2", "policy": {"mode": "ONLY_SCALE_OUT", "minNumReplicas": 2, "maxNumReplicas": 8, "coolDownPeriodSec": 480, "cpuUtilization": {"utilizationTarget": 0.6, "predictiveMethod": "NONE"}, "scaleInControl": {"maxScaledInReplicas": {"fixed": 1}, "timeWindowSec": 600}}}'
 
 # set_state <size> <zones> <autoscaler JSON|null|absent> [faults JSON]
 set_state() {
@@ -265,21 +270,21 @@ done
 grep -Fq 'nothing to detach' "${tmp}/err" || fail "detach did not say there was nothing to detach"
 expect_state 'mig["autoscaler"]' null
 
-# apply creates the autoscaler with exactly the policy, in the group's region.
+# apply creates the autoscaler with exactly the policy, in the group's region:
+# scale-out only, so no scale-in control, and a 480 s initialization period.
 set_state 2 us-west1-a,us-west1-b null
 run_autoscaler apply
 expect_status 0 "apply (create)"
 expect_mutations 1 "apply (create)"
-grep -Fxq 'gcloud --project quill-cloud-proxy compute instance-groups managed set-autoscaling quill-enclave-mig-uswest1 --region=us-west1 --mode=on --min-num-replicas=2 --max-num-replicas=8 --target-cpu-utilization=0.60 --cool-down-period=120s --scale-in-control=max-scaled-in-replicas=1,time-window=600 --quiet' \
+grep -Fxq 'gcloud --project quill-cloud-proxy compute instance-groups managed set-autoscaling quill-enclave-mig-uswest1 --region=us-west1 --mode=only-scale-out --min-num-replicas=2 --max-num-replicas=8 --target-cpu-utilization=0.60 --cool-down-period=480s --quiet' \
   "${gcloud_log}" || fail "apply did not create the autoscaler with the policy's flags: $(mutations)"
 grep -Fq 'creating the autoscaler' "${tmp}/err" || fail "apply did not say it created the autoscaler"
-expect_state 'mig["autoscaler"]["policy"]["mode"]' ON
+expect_state 'mig["autoscaler"]["policy"]["mode"]' ONLY_SCALE_OUT
 expect_state 'mig["autoscaler"]["policy"]["minNumReplicas"]' 2
 expect_state 'mig["autoscaler"]["policy"]["maxNumReplicas"]' 8
 expect_state 'mig["autoscaler"]["policy"]["cpuUtilization"]["utilizationTarget"]' 0.6
-expect_state 'mig["autoscaler"]["policy"]["coolDownPeriodSec"]' 120
-expect_state 'mig["autoscaler"]["policy"]["scaleInControl"]["maxScaledInReplicas"]["fixed"]' 1
-expect_state 'mig["autoscaler"]["policy"]["scaleInControl"]["timeWindowSec"]' 600
+expect_state 'mig["autoscaler"]["policy"]["coolDownPeriodSec"]' 480
+expect_state '"scaleInControl" in mig["autoscaler"]["policy"]' false
 expect_state 'mig["targetSize"]' 2
 
 # A second apply converges without a call.
@@ -287,7 +292,7 @@ expect_state 'mig["targetSize"]' 2
 run_autoscaler apply
 expect_status 0 "apply (second run)"
 expect_mutations 0 "apply (second run)"
-grep -Fq 'already reads mode ON, 2-8 VMs, CPU target 0.60, cool-down 120s, scale-in at most 1 VM per 600s; nothing to change' \
+grep -Fq 'already reads mode ONLY_SCALE_OUT, 2-8 VMs, CPU target 0.60, initialization 480s; nothing to change' \
   "${tmp}/err" || fail "the second apply did not report convergence: $(cat "${tmp}/err")"
 
 # suspend freezes the size (mode OFF); a second suspend is a no-op.
@@ -309,35 +314,64 @@ run_autoscaler mode
 run_autoscaler apply
 expect_status 0 "apply (suspended)"
 expect_mutations 1 "apply (suspended)"
-expect_state 'mig["autoscaler"]["policy"]["mode"]' ON
+expect_state 'mig["autoscaler"]["policy"]["mode"]' ONLY_SCALE_OUT
 : >"${gcloud_log}"
 run_autoscaler apply
 expect_mutations 0 "apply after lifting a suspend"
 
-# resume turns a suspended autoscaler on without touching its policy.
+# resume turns a suspended autoscaler back to scale-out only, without touching
+# the rest of its policy.
 run_autoscaler suspend
 : >"${gcloud_log}"
 run_autoscaler resume
 expect_status 0 "resume"
 expect_mutations 1 "resume"
-grep -Fxq 'gcloud --project quill-cloud-proxy compute instance-groups managed update-autoscaling quill-enclave-mig-uswest1 --region=us-west1 --mode=on --quiet' \
-  "${gcloud_log}" || fail "resume did not turn the autoscaler on: $(mutations)"
-expect_state 'mig["autoscaler"]["policy"]["mode"]' ON
+grep -Fxq 'gcloud --project quill-cloud-proxy compute instance-groups managed update-autoscaling quill-enclave-mig-uswest1 --region=us-west1 --mode=only-scale-out --quiet' \
+  "${gcloud_log}" || fail "resume did not set the autoscaler to scale out only: $(mutations)"
+expect_state 'mig["autoscaler"]["policy"]["mode"]' ONLY_SCALE_OUT
 : >"${gcloud_log}"
 run_autoscaler resume
 expect_mutations 0 "resume (second run)"
+run_autoscaler mode
+[ "$(cat "${tmp}/out")" = ONLY_SCALE_OUT ] || fail "mode printed '$(cat "${tmp}/out")', want ONLY_SCALE_OUT"
+
+# A mode of ON, which could scale in, is never left in place: resume and apply
+# both set scale-out only.
+set_state 2 us-west1-a,us-west1-b "${policy_mode_on}"
+run_autoscaler resume
+expect_status 0 "resume (mode ON)"
+expect_mutations 1 "resume (mode ON)"
+expect_state 'mig["autoscaler"]["policy"]["mode"]' ONLY_SCALE_OUT
+set_state 2 us-west1-a,us-west1-b "${policy_mode_on}"
+run_autoscaler apply
+expect_status 0 "apply (mode ON)"
+expect_mutations 1 "apply (mode ON)"
+grep -Fq "  mode: 'ON', policy wants 'ONLY_SCALE_OUT'" "${tmp}/err" || fail "apply did not report mode ON as drift: $(cat "${tmp}/err")"
+expect_state 'mig["autoscaler"]["policy"]["mode"]' ONLY_SCALE_OUT
+
+# A scale-in control left on an autoscaler is not part of the policy: it does
+# nothing while the autoscaler only scales out, so apply leaves it alone.
+set_state 2 us-west1-a,us-west1-b "${policy_leftover_scale_in}"
+expect_state '"scaleInControl" in mig["autoscaler"]["policy"]' true
+run_autoscaler apply
+expect_status 0 "apply (leftover scale-in control)"
+expect_mutations 0 "apply (leftover scale-in control)"
 
 # Drift in any field, including an extra signal, converges in one call.
-set_state 4 us-west1-a,us-west1-b '{"name": "quill-enclave-mig-uswest1-x7k2", "policy": {"mode": "ONLY_SCALE_OUT", "minNumReplicas": 3, "maxNumReplicas": 12, "coolDownPeriodSec": 60, "cpuUtilization": {"utilizationTarget": 0.8}, "customMetricUtilizations": [{"metric": "example"}]}}'
+set_state 4 us-west1-a,us-west1-b '{"name": "quill-enclave-mig-uswest1-x7k2", "policy": {"mode": "ON", "minNumReplicas": 3, "maxNumReplicas": 12, "coolDownPeriodSec": 60, "cpuUtilization": {"utilizationTarget": 0.8}, "scaleInControl": {"maxScaledInReplicas": {"fixed": 3}, "timeWindowSec": 60}, "customMetricUtilizations": [{"metric": "example"}]}}'
 run_autoscaler apply
 expect_status 0 "apply (drift)"
 expect_mutations 1 "apply (drift)"
 for field in mode minNumReplicas maxNumReplicas coolDownPeriodSec cpuUtilization.utilizationTarget \
-    scaleInControl.maxScaledInReplicas.fixed scaleInControl.timeWindowSec 'other signals'; do
+    'other signals'; do
   grep -Fq "  ${field}: " "${tmp}/err" || fail "apply did not report drift in ${field}: $(cat "${tmp}/err")"
 done
 expect_state 'mig["autoscaler"]["policy"]["maxNumReplicas"]' 8
+expect_state 'mig["autoscaler"]["policy"]["mode"]' ONLY_SCALE_OUT
+expect_state 'mig["autoscaler"]["policy"]["coolDownPeriodSec"]' 480
 expect_state '"customMetricUtilizations" in mig["autoscaler"]["policy"]' false
+# The whole policy is replaced, so the old scale-in control is gone too.
+expect_state '"scaleInControl" in mig["autoscaler"]["policy"]' false
 expect_state 'mig["autoscaler"]["name"]' quill-enclave-mig-uswest1-x7k2
 expect_state 'mig["targetSize"]' 4
 
@@ -361,7 +395,7 @@ expect_state 'mig["autoscaler"]' null
 expect_state 'mig["targetSize"]' 4
 
 # A change that does not read back fails: configured is not working.
-set_state 2 us-west1-a,us-west1-b "${policy_on}" '{"mode_updates_are_lost": true}'
+set_state 2 us-west1-a,us-west1-b "${policy_current}" '{"mode_updates_are_lost": true}'
 run_autoscaler suspend AUTOSCALER_READBACK_ATTEMPTS=2
 expect_status 1 "suspend whose change is lost"
 grep -Fq 'does not read back as off' "${tmp}/err" || fail "a lost suspend was not reported: $(cat "${tmp}/err")"
@@ -373,8 +407,7 @@ grep -Fq 'the autoscaler does not read back as' "${tmp}/err" || fail "a lost app
 # A bad policy or argument is refused before any gcloud call.
 for override in AUTOSCALER_MIN_REPLICAS=1 AUTOSCALER_MIN_REPLICAS=9 AUTOSCALER_MAX_REPLICAS=x \
     AUTOSCALER_TARGET_CPU=0 AUTOSCALER_TARGET_CPU=0.0 AUTOSCALER_TARGET_CPU=1.5 \
-    AUTOSCALER_TARGET_CPU=60 AUTOSCALER_COOL_DOWN_SECONDS=2m AUTOSCALER_SCALE_IN_MAX_REPLICAS=0 \
-    AUTOSCALER_SCALE_IN_WINDOW_SECONDS=-600; do
+    AUTOSCALER_TARGET_CPU=60 AUTOSCALER_COOL_DOWN_SECONDS=2m AUTOSCALER_COOL_DOWN_SECONDS=0; do
   set_state 2 us-west1-a,us-west1-b null
   run_autoscaler apply "${override}"
   expect_status 2 "apply with ${override}"
@@ -453,7 +486,7 @@ expect_order() {
 
 # An autoscaled group: suspended before the rollout begins, never resized, and
 # no autoscaler created or changed here (the caller applies it after the gates).
-set_state 5 us-west1-a,us-west1-b "${policy_on}"
+set_state 5 us-west1-a,us-west1-b "${policy_current}"
 run_deploy_block
 expect_status 0 "deploy of an autoscaled group"
 expect_order "${gcloud_log}" \
@@ -469,7 +502,7 @@ grep -Fq 'size: 5, autoscaler suspended until: bash tools/gcp-mig-autoscaler.sh 
   "${tmp}/out" || fail "the deploy summary does not say how the autoscaler is re-enabled: $(cat "${tmp}/out")"
 
 # An autoscaled group of eight in three zones surges four per zone.
-set_state 8 us-west1-a,us-west1-b,us-west1-c "${policy_on}"
+set_state 8 us-west1-a,us-west1-b,us-west1-c "${policy_current}"
 run_deploy_block
 expect_status 0 "deploy of an 8-VM autoscaled group"
 expect_state 'mig["maxSurge"]' 12

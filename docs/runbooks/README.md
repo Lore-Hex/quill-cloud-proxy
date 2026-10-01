@@ -45,9 +45,12 @@ is no LB.**
 - **4 GCP regions:** `quill-enclave-mig-us` (us-central1),
   `quill-enclave-mig-useast4` (us-east4), `quill-enclave-mig-eu`
   (europe-west4), and `quill-enclave-mig-uswest1` (us-west1), all Intel TDX on
-  `c3-standard-8`. Each MIG has a CPU autoscaler (2-8 VMs, 60% target,
-  scale-in at most 1 VM per 10 minutes) owned by `tools/gcp-mig-autoscaler.sh`:
-  a rollout suspends it (mode OFF) before the region is drained and applies it
+  `c3-standard-8`. Each MIG has a scale-out-only CPU autoscaler (2-8 VMs,
+  60% target, 480 s initialization period) owned by
+  `tools/gcp-mig-autoscaler.sh`: it adds VMs under load and never deletes one,
+  because there is no load balancer to drain a VM out of DNS first, so a group
+  grown by a spike stays at its size until a DNS-draining scale-in job exists.
+  A rollout suspends it (mode OFF) before the region is drained and applies it
   again after the region's gates pass; there is no TDX reservation behind it.
   us-west1 is the newest: while it is listed in
   `tools/gcp-enclave-migs-pending.txt` rather than `tools/gcp-enclave-migs.txt`

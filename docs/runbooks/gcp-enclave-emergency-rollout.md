@@ -65,7 +65,7 @@ Run [enclave-deploy-monitoring-checklist.md](./enclave-deploy-monitoring-checkli
    ```
 
    `deploy-gcp-mig.sh` suspends the group's autoscaler (mode OFF) for the
-   roll. Once the region attests (step 7), turn it back on:
+   roll. Once the region attests (step 7), turn it back on (scale-out only):
    `bash tools/gcp-mig-autoscaler.sh apply us-central1 quill-enclave-mig-us`
    (the same for each region below, with its own MIG).
 

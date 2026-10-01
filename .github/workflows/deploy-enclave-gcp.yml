@@ -713,9 +713,10 @@ jobs:
       # keeps serving from the other warm regions. This avoids relying on spare
       # Confidential VM capacity for a blue/green primary-region deploy.
 
-      # Autoscaler decision: suspend it (mode OFF) before the drain, which it
-      # would read as lost load. "Apply us-central1 autoscaling" below turns it
-      # back on only after the region's gates pass and its drain is restored.
+      # Autoscaler decision: suspend it (mode OFF) before the drain, so the
+      # group's size stays fixed through the rollout and its every-VM gates.
+      # "Apply us-central1 autoscaling" below turns it back on (scale-out only)
+      # after the region's gates pass and its drain is restored.
       - name: Suspend us-central1 autoscaling for its rollout
         run: bash tools/gcp-mig-autoscaler.sh suspend us-central1 quill-enclave-mig-us
 

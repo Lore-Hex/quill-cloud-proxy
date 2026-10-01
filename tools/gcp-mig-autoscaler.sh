@@ -2,33 +2,39 @@
 # Regional CPU autoscaler for one attested gateway MIG, and the holds that keep
 # it from acting while the group is drained, rolled, recovered, or relieved.
 #
+# It scales OUT only (mode ONLY_SCALE_OUT). Traffic reaches a gateway VM only
+# through DNS, with no load balancer to drain it, so an autoscaler scale-in
+# would delete a VM that DNS still points at. Scale-in is left to a separate
+# job that removes a VM from DNS before deleting it (a follow-up, not built
+# yet); until then a group grown by a spike stays at its size.
+#
 # Nothing reserves capacity behind the fleet: Compute Engine does not offer
 # reservations for Confidential VMs with Intel TDX. Warm capacity is the
 # autoscaler's minimum, spread over the group's zones.
 #
 # Usage: gcp-mig-autoscaler.sh <command> <region> <mig>
 #
-#   apply    Create or update the autoscaler to the policy below with mode ON,
-#            then read it back. An autoscaler that already matches is left
-#            untouched, so a second run changes nothing. Callers run it only
-#            after the region's rollout completed: its gates passed and its
-#            canonical drain state was restored.
+#   apply    Create or update the autoscaler to the policy below with mode
+#            ONLY_SCALE_OUT, then read it back. An autoscaler that already
+#            matches is left untouched, so a second run changes nothing.
+#            Callers run it only after the region's rollout completed: its
+#            gates passed and its canonical drain state was restored.
 #   suspend  Mode OFF, which freezes the group's size. Callers run it before the
-#            region is drained or its template changes: a drained region reads
-#            as idle load, and every VM in the region must pass the rollout's
-#            attestation gate, including one added mid-rollout. A group with no
-#            autoscaler is left alone.
-#   resume   Mode ON for an autoscaler that exists. It never creates one and
-#            never changes the policy, so a verified recovery undoes its
-#            rollout's suspend without applying the failed commit's policy.
+#            region is drained or its template changes: every VM in the region
+#            must pass the rollout's attestation gate, including one added
+#            mid-rollout, and the rollout's time budget is sized for the group
+#            it starts with. A group with no autoscaler is left alone.
+#   resume   Mode ONLY_SCALE_OUT for an autoscaler that exists. It never creates
+#            one and never changes the rest of the policy, so a verified
+#            recovery undoes its rollout's suspend without applying the failed
+#            commit's policy.
 #   detach   Delete the autoscaler and keep the group's current size, for
 #            tools/relieve-mig-stockout.py, which resizes the group and deletes
 #            VMs by name. `apply` attaches it again.
-#   mode     Print the autoscaler's mode (ON, OFF, ONLY_SCALE_OUT) or "none".
+#   mode     Print the autoscaler's mode (ONLY_SCALE_OUT, OFF, ON) or "none".
 #
-# AUTOSCALER_MIN_REPLICAS, AUTOSCALER_MAX_REPLICAS, AUTOSCALER_TARGET_CPU,
-# AUTOSCALER_COOL_DOWN_SECONDS, AUTOSCALER_SCALE_IN_MAX_REPLICAS and
-# AUTOSCALER_SCALE_IN_WINDOW_SECONDS override the policy for one run; the next
+# AUTOSCALER_MIN_REPLICAS, AUTOSCALER_MAX_REPLICAS, AUTOSCALER_TARGET_CPU and
+# AUTOSCALER_COOL_DOWN_SECONDS override the policy for one run; the next
 # `apply` without them converges the group back to the defaults below.
 set -euo pipefail
 
@@ -58,12 +64,9 @@ PROJECT_ID="${PROJECT_ID:-quill-cloud-proxy}"
 MIN_REPLICAS="${AUTOSCALER_MIN_REPLICAS:-2}"
 MAX_REPLICAS="${AUTOSCALER_MAX_REPLICAS:-8}"
 TARGET_CPU="${AUTOSCALER_TARGET_CPU:-0.60}"
-# Seconds the autoscaler ignores a new VM's CPU while it initializes.
-COOL_DOWN_SECONDS="${AUTOSCALER_COOL_DOWN_SECONDS:-120}"
-# Scale-in removes at most this many VMs per window. No load balancer drains a
-# VM before deletion; it leaves DNS at the reconciler's next run.
-SCALE_IN_MAX_REPLICAS="${AUTOSCALER_SCALE_IN_MAX_REPLICAS:-1}"
-SCALE_IN_WINDOW_SECONDS="${AUTOSCALER_SCALE_IN_WINDOW_SECONDS:-600}"
+# The initialization period: seconds the autoscaler ignores a new VM. A
+# Confidential Space VM attests and enters DNS about 5-8 minutes after boot.
+COOL_DOWN_SECONDS="${AUTOSCALER_COOL_DOWN_SECONDS:-480}"
 READBACK_ATTEMPTS="${AUTOSCALER_READBACK_ATTEMPTS:-6}"
 READBACK_SLEEP_SECONDS="${AUTOSCALER_READBACK_SLEEP_SECONDS:-5}"
 if ! [[ "${READBACK_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]] || ! [[ "${READBACK_SLEEP_SECONDS}" =~ ^[0-9]+$ ]]; then
@@ -79,7 +82,7 @@ fail() {
 
 validate_policy() {
   local variable
-  for variable in MIN_REPLICAS MAX_REPLICAS COOL_DOWN_SECONDS SCALE_IN_MAX_REPLICAS SCALE_IN_WINDOW_SECONDS; do
+  for variable in MIN_REPLICAS MAX_REPLICAS COOL_DOWN_SECONDS; do
     if ! [[ "${!variable}" =~ ^[1-9][0-9]{0,5}$ ]]; then
       echo "AUTOSCALER_${variable}='${!variable}' must be a positive integer" >&2
       exit 2
@@ -102,15 +105,16 @@ validate_policy() {
 # autoscaler under "autoscaler" (the group's own status names it too). Prints
 # "<attached> <policy> <mode> <name>":
 #   attached  present | none
-#   policy    match (every field below, and mode ON) | drift | -
+#   policy    match (every field below, and mode ONLY_SCALE_OUT) | drift | -
 #   mode      the autoscaler's mode | -     (the API's default mode is ON)
 #   name      the autoscaler's name | -
-# With "explain" as the 7th argument, each field that differs goes to stderr.
+# scaleInControl is not compared: this autoscaler never scales in.
+# With "explain" as the 5th argument, each field that differs goes to stderr.
 STATE_PY="$(cat <<'PY'
 import json
 import sys
 
-want_min, want_max, want_cpu, want_cool, want_in, want_window, explain = sys.argv[1:8]
+want_min, want_max, want_cpu, want_cool, explain = sys.argv[1:6]
 group = json.loads(sys.stdin.read())
 autoscaler = group.get("autoscaler")
 url = (group.get("status") or {}).get("autoscaler") or ""
@@ -125,7 +129,6 @@ if not isinstance(autoscaler, dict):
 policy = autoscaler.get("autoscalingPolicy") or {}
 mode = policy.get("mode") or "ON"
 cpu = policy.get("cpuUtilization") or {}
-scale_in = policy.get("scaleInControl") or {}
 have = {
     "mode": mode,
     "minNumReplicas": policy.get("minNumReplicas"),
@@ -133,22 +136,18 @@ have = {
     "cpuUtilization.utilizationTarget": cpu.get("utilizationTarget"),
     "cpuUtilization.predictiveMethod": cpu.get("predictiveMethod") or "NONE",
     "coolDownPeriodSec": policy.get("coolDownPeriodSec"),
-    "scaleInControl.maxScaledInReplicas.fixed": (scale_in.get("maxScaledInReplicas") or {}).get("fixed"),
-    "scaleInControl.timeWindowSec": scale_in.get("timeWindowSec"),
     "other signals": sorted(
         key for key in ("customMetricUtilizations", "loadBalancingUtilization", "scalingSchedules")
         if policy.get(key)
     ),
 }
 want = {
-    "mode": "ON",
+    "mode": "ONLY_SCALE_OUT",
     "minNumReplicas": int(want_min),
     "maxNumReplicas": int(want_max),
     "cpuUtilization.utilizationTarget": float(want_cpu),
     "cpuUtilization.predictiveMethod": "NONE",
     "coolDownPeriodSec": int(want_cool),
-    "scaleInControl.maxScaledInReplicas.fixed": int(want_in),
-    "scaleInControl.timeWindowSec": int(want_window),
     "other signals": [],
 }
 
@@ -181,8 +180,7 @@ load_state() {
   described="$(gcloud --project "${PROJECT_ID}" compute instance-groups managed describe "${mig}" \
     --region="${region}" --format=json)"
   state_line="$(python3 -c "${STATE_PY}" "${MIN_REPLICAS}" "${MAX_REPLICAS}" "${TARGET_CPU}" \
-    "${COOL_DOWN_SECONDS}" "${SCALE_IN_MAX_REPLICAS}" "${SCALE_IN_WINDOW_SECONDS}" "${1:-quiet}" \
-    <<<"${described}")"
+    "${COOL_DOWN_SECONDS}" "${1:-quiet}" <<<"${described}")"
   read -r attached policy mode name <<<"${state_line}"
 }
 
@@ -208,7 +206,7 @@ read_back() {
 cmd_apply() {
   local summary
   validate_policy
-  summary="mode ON, ${MIN_REPLICAS}-${MAX_REPLICAS} VMs, CPU target ${TARGET_CPU}, cool-down ${COOL_DOWN_SECONDS}s, scale-in at most ${SCALE_IN_MAX_REPLICAS} VM per ${SCALE_IN_WINDOW_SECONDS}s"
+  summary="mode ONLY_SCALE_OUT, ${MIN_REPLICAS}-${MAX_REPLICAS} VMs, CPU target ${TARGET_CPU}, initialization ${COOL_DOWN_SECONDS}s"
   load_state explain
   if [ "${policy}" = match ]; then
     log "autoscaler ${name} already reads ${summary}; nothing to change"
@@ -219,17 +217,17 @@ cmd_apply() {
   else
     log "updating autoscaler ${name} (mode ${mode}) to: ${summary}"
   fi
-  # set-autoscaling replaces the whole policy, so every field is passed.
+  # set-autoscaling replaces the whole policy, so every field is passed. No
+  # scale-in control: in this mode the autoscaler never removes a VM.
   gcloud --project "${PROJECT_ID}" compute instance-groups managed set-autoscaling "${mig}" \
     --region="${region}" \
-    --mode=on \
+    --mode=only-scale-out \
     --min-num-replicas="${MIN_REPLICAS}" \
     --max-num-replicas="${MAX_REPLICAS}" \
     --target-cpu-utilization="${TARGET_CPU}" \
     --cool-down-period="${COOL_DOWN_SECONDS}s" \
-    --scale-in-control="max-scaled-in-replicas=${SCALE_IN_MAX_REPLICAS},time-window=${SCALE_IN_WINDOW_SECONDS}" \
     --quiet >/dev/null
-  read_back present match ON || fail "the autoscaler does not read back as: ${summary}"
+  read_back present match ONLY_SCALE_OUT || fail "the autoscaler does not read back as: ${summary}"
   log "autoscaler ${name} reads back as: ${summary}"
 }
 
@@ -255,14 +253,14 @@ cmd_resume() {
     log "no autoscaler is attached; nothing to resume (only apply creates one)"
     return 0
   fi
-  if [ "${mode}" = ON ]; then
-    log "autoscaler ${name} is already on"
+  if [ "${mode}" = ONLY_SCALE_OUT ]; then
+    log "autoscaler ${name} already scales out only"
     return 0
   fi
-  log "turning autoscaler ${name} on (was ${mode})"
+  log "setting autoscaler ${name} to scale out only (was ${mode})"
   gcloud --project "${PROJECT_ID}" compute instance-groups managed update-autoscaling "${mig}" \
-    --region="${region}" --mode=on --quiet >/dev/null
-  read_back present any ON || fail "autoscaler ${name} does not read back as on"
+    --region="${region}" --mode=only-scale-out --quiet >/dev/null
+  read_back present any ONLY_SCALE_OUT || fail "autoscaler ${name} does not read back as scaling out only"
 }
 
 cmd_detach() {

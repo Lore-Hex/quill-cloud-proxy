@@ -154,7 +154,7 @@ fi
 reconcile_gcp_dns
 sync_backup_dns
 recovery_complete=1
-# Autoscaler decision: resume (mode ON) only after the verified rollback and drain restore, never creating one or applying the failed commit's policy.
+# Autoscaler decision: resume (scale-out only) after the verified rollback and drain restore, never creating one or applying the failed commit's policy.
 if ! PROJECT_ID="${project}" bash tools/gcp-mig-autoscaler.sh resume "${region}" "${mig}"; then
   echo "::error::${region}: rollback verified, but the autoscaler of ${mig} stays off: run bash tools/gcp-mig-autoscaler.sh resume ${region} ${mig}" >&2
 fi
