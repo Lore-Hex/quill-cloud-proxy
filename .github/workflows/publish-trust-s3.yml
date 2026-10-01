@@ -28,7 +28,7 @@ jobs:
           # workflow_run otherwise checks out the triggering run's head. Trust
           # artifacts are committed by several workflows, so main is canonical.
           ref: main
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_TRUST_PUBLISH_ROLE_ARN }}
           aws-region: us-east-1
