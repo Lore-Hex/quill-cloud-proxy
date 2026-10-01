@@ -2440,6 +2440,13 @@ acquire_workdir_lock
 
 for phase in "${PHASES[@]}"; do
   case "$phase" in
+    all|bind|deploy|narrow|narrow-live|rollback)
+      if [ "$APPLY" = "1" ]; then
+        source "$(dirname "${BASH_SOURCE[0]}")/cloud-rollout-guard.sh"
+        require_cloud_rollout azure
+      fi ;;
+  esac
+  case "$phase" in
     all)      phase_preflight; phase_build; phase_template; phase_policy; phase_bind; phase_deploy; phase_verify; phase_narrow ;;
     preflight) phase_preflight ;;
     build)    phase_build ;;

@@ -29,6 +29,9 @@ on:
       - "enclave-go/**"
       - "tools/release-gcp.sh"
       - "tools/deploy-gcp-mig.sh"
+      - "tools/cloud-rollout.py"
+      - "tools/cloud-rollout-source.json"
+      - "tools/cloud-rollout-guard.sh"
       - "tools/gcp-enclave-migs.txt"
       - "tools/gcp-enclave-migs-pending.txt"
       - "tools/gcp_enclave_inventory.py"
@@ -551,14 +554,43 @@ jobs:
           IMAGE_DIGEST: ${{ needs.build-and-release.outputs.image_digest }}
         run: bash tools/reconcile-gcp-batch-image-access.sh grant "${IMAGE_DIGEST}"
 
-  rollout:
+  admit-cloud:
     needs: [build-and-release, grant-batch-image-access, verify-transition-trust-page]
+    if: github.repository == 'Lore-Hex/quill-cloud-proxy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    outputs:
+      operation: ${{ steps.admit.outputs.TR_DEPLOY_MUTEX_OPERATION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Reserve GCP across both repositories
+        id: admit
+        env:
+          GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+          TR_DEPLOY_MUTEX_OWNER: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TR_DEPLOY_MUTEX_TTL_SECONDS: "43200"
+          TR_DEPLOY_WAIT_SECONDS: "3600"
+        run: |
+          set -euo pipefail
+          fence="$(python3 tools/cloud-rollout.py acquire --cloud gcp)"
+          printf '%s\n' "$fence" >> "$GITHUB_OUTPUT"
+
+  rollout:
+    needs: [build-and-release, grant-batch-image-access, verify-transition-trust-page, admit-cloud]
     if: ${{ needs.grant-batch-image-access.result == 'success' && needs.verify-transition-trust-page.result == 'success' }}
     runs-on: ubuntu-latest
     # Dedicated heartbeat-capable, local-typed key. Provision the GitHub
     # secret STAGE_D_PROBE_API_KEY in the Stage D pilot workspace; it must not
     # belong to the regional-quota workspace. This workflow never creates it.
     env:
+      TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
+      TR_DEPLOY_MUTEX_CLOUD: gcp
+      GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
       STAGE_D_PROBE_API_KEY: ${{ secrets.STAGE_D_PROBE_API_KEY }}
     steps:
       - uses: actions/checkout@v4
@@ -581,6 +613,8 @@ jobs:
           install_components: beta
       - uses: astral-sh/setup-uv@v5
 
+      - name: Verify shared cloud reservation before mutations
+        run: python3 tools/cloud-rollout.py assert --cloud gcp
       - name: Authenticate to AWS for backup-domain DNS
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -1129,3 +1163,32 @@ jobs:
           EXPECTED_DIGESTS: ${{ needs.build-and-release.outputs.image_digest }}
           EXPECTED_REFERENCES: ${{ needs.build-and-release.outputs.image_ref }}
         run: tools/wait-trust-page-set.sh "${EXPECTED_DIGESTS}" "${EXPECTED_REFERENCES}"
+
+  finalize-cloud:
+    needs: [admit-cloud, rollout, finalize-trust-artifacts, verify-final-trust-page]
+    if: ${{ always() && github.repository == 'Lore-Hex/quill-cloud-proxy' && needs.admit-cloud.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/44325983244/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tr-deploy@quill-cloud-proxy.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Release only after attestation and regional completion
+        env:
+          GH_TOKEN: ${{ secrets.TRUST_PUSH_TOKEN }}
+          TR_DEPLOY_MUTEX_OPERATION: ${{ needs.admit-cloud.outputs.operation }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          export TR_DEPLOY_OUTCOME=failure
+          if jq -e 'all(.[]; .result == "success")' <<< "$RESULTS" >/dev/null; then
+            TR_DEPLOY_OUTCOME=success
+          fi
+          python3 tools/cloud-rollout.py release --cloud gcp
+          if [ "$TR_DEPLOY_OUTCOME" != success ]; then
+            echo '::error::GCP reservation retained pending verified recovery.'
+            exit 1
+          fi

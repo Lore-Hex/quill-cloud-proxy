@@ -30,6 +30,21 @@ envelope from authorization and stale cache entries expire by TTL.
 
 Plus operator tools (`tools/`) and a static trust page (`trust-page/`).
 
+## Production release coordination
+
+Gateway and control-plane deployments share a two-cloud limit: at most two
+clouds may change while a third stays healthy and unchanged. One cloud cannot
+run two independent deployments. GCP's workflow owns its reservation through
+regional verification and final trust publication. Manual AWS/Azure tools
+require an outer reservation across all deploy and attestation phases; they do
+not automatically release between phases or on failure.
+
+`tools/cloud-rollout.py` loads the control-plane coordinator from the immutable
+commit and SHA256 in `tools/cloud-rollout-source.json`. See the
+[activation and recovery runbook](https://github.com/Lore-Hex/quill-router/blob/main/docs/design/two-cloud-rollouts.md)
+before a production rollout. Never delete or expire the shared journal to
+bypass an interrupted deployment.
+
 ## Trust property
 
 On AWS, the KMS keys needed to decrypt the device-key list are released only to

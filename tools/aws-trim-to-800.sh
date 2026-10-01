@@ -18,6 +18,10 @@
 set -euo pipefail
 PHASE="${1:-status}"
 DRY_RUN="${DRY_RUN:-0}"
+if [ "$DRY_RUN" != 1 ] && [ "$PHASE" != status ]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/cloud-rollout-guard.sh"
+  require_cloud_rollout aws
+fi
 ACCT=330422590279
 run() { if [ "$DRY_RUN" = 1 ]; then echo "DRY: $*"; else echo "+ $*"; "$@"; fi; }
 log() { printf '\n=== %s\n' "$*"; }

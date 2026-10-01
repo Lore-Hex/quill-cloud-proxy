@@ -870,6 +870,7 @@ printf '%s\\n' "${GCLOUD_JSON}"
                     "TMPDIR": tempfile.gettempdir(),
                     "COMMAND_LOG": str(command_log),
                     "GITHUB_RUN_ID": "33807667585",
+                    "TR_DEPLOY_MUTEX_OPERATION": "a" * 32,
                     "IMAGE_REF": "registry.example/enclave:new",
                     "IMAGE_DIGEST": "sha256:" + "a" * 64,
                     "MIG_ZONES": "us-west1-a,us-west1-b",
@@ -1477,6 +1478,7 @@ esac
             path = Path(directory)
             script = path / "deploy-gcp-mig.sh"
             script.write_text(prefix + '\nprintf "%s\\n" ' + metadata + "\n")
+            (path / "cloud-rollout-guard.sh").write_text("require_cloud_rollout() { :; }\n")
             for helper in (
                 "validate-control-plane-endpoints.py", "verify-gcp-runtime-secret-access.py",
             ):

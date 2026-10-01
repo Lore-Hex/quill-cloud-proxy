@@ -28,6 +28,8 @@ restore_drain_operation="$(rollout_restore_drain_operation \
 : "${IMAGE_REF:?IMAGE_REF is required}"
 : "${IMAGE_DIGEST:?IMAGE_DIGEST is required}"
 : "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
+source "$(dirname "${BASH_SOURCE[0]}")/cloud-rollout-guard.sh"
+require_cloud_rollout gcp
 
 lock_dir="$(mktemp -d "${TMPDIR:-/tmp}/tr-secondary-rollout-XXXXXX")"
 drain_started=0
