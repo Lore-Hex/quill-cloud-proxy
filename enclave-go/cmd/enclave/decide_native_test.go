@@ -555,7 +555,7 @@ func TestEveryNamedDecisionModelIsDrivenOnItsOwnHostAndAnswersUnderItsName(t *te
 		decide.DevModelID: {"wafer,deepinfra,wandb", "deepseek/deepseek-v4.1-flash", "deepinfra", "deepseek-ai/DeepSeek-V4.1-Flash"},
 		decide.OevModelID: {"deepinfra", "openai/gpt-oss-20b", "deepinfra", "openai/gpt-oss-20b"},
 		// And nextbit here: its native id for the same model looks nothing alike.
-		decide.GemmevModelID: {"nextbit,wandb,io-net,deepinfra", "google/gemma-4-26b-a4b-it", "nextbit", "gemma4:26b-a4b"},
+		decide.GemmevModelID: {"nextbit,wandb,io-net", "google/gemma-4-26b-a4b-it", "nextbit", "gemma4:26b-a4b"},
 		decide.MevModelID:    {"inception", "inception/mercury-2", "inception", "mercury-2"},
 		decide.ZevModelID:    {"fireworks,baseten", "z-ai/glm-5.2-fast", "fireworks", "accounts/fireworks/routers/glm-5p2-fast"},
 		decide.LevModelID:    {"sambanova,parasail,together", "meta-llama/llama-3.3-70b-instruct", "sambanova", "Meta-Llama-3.3-70B-Instruct"},
