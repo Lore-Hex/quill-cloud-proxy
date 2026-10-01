@@ -207,6 +207,7 @@ type decideRequest struct {
 	Model     string                     `json:"model"`
 	State     json.RawMessage            `json:"state"`
 	Questions map[string]decide.Question `json:"questions"`
+	Images    []string                   `json:"images,omitempty"`
 	Stream    bool                       `json:"stream,omitempty"`
 	// Native models only. Reasoning turns thinking ON for a harder decision;
 	// the output contract is unchanged. Provider replaces the tuned host pin.
@@ -328,7 +329,11 @@ func serveDecide(
 		writeOpenAIError(conn, 400, err.Error(), "invalid_request_error", "invalid_request_metadata", "")
 		return
 	}
-	if decide.HostedModels[req.Model] {
+	if message, param := validateSystem1Decision(&req); message != "" {
+		writeOpenAIError(conn, 400, message, "invalid_request_error", "bad_request", param)
+		return
+	}
+	if decide.IsHostedModel(req.Model) {
 		// A hosted decision model has no thinking to turn on and no token
 		// budget, and its hosts are the vendor and its relay in that order.
 		// Saying so beats silently ignoring the parameter. "Set" means a value
@@ -389,6 +394,11 @@ func serveHostedDecide(
 	publicModel := req.Model
 	questionBytes, _ := json.Marshal(req.Questions)
 	inputTokens := types.EstimateEmbeddingInputTokens([]string{string(req.State), string(questionBytes)})
+	imageAllowance := 0
+	if len(req.Images) > 0 {
+		imageAllowance = hostedTemplateTokenAllowance
+		inputTokens += imageAllowance
+	}
 
 	var authorization *trustedrouter.Authorization
 	var invokeOptions []llm.InvokeOptions
@@ -439,7 +449,7 @@ func serveHostedDecide(
 	if len(candidates) == 0 {
 		candidates = []llm.InvokeOptions{{}}
 	}
-	wire := &llm.DecideRequest{Model: req.Model, State: req.State, Questions: req.Questions}
+	wire := &llm.DecideRequest{Model: req.Model, State: req.State, Questions: req.Questions, Images: req.Images}
 	var upstream *llm.DecideResponse
 	var served llm.InvokeOptions
 	var err error
@@ -511,7 +521,7 @@ func serveHostedDecide(
 	// one byte of input, plus the vendor's own fixed template. A response
 	// claiming more (a bug, or 9223372036854775807) is billed at the ceiling
 	// and says so in the log.
-	if ceiling := len(req.State) + len(questionBytes) + hostedTemplateTokenAllowance; billedInput > ceiling {
+	if ceiling := len(req.State) + len(questionBytes) + hostedTemplateTokenAllowance + imageAllowance; billedInput > ceiling {
 		fmt.Fprintf(os.Stderr, "enclave.decide_usage_clamped model=%q provider=%q reported_input_tokens=%d ceiling=%d\n",
 			publicModel, served.Provider, billedInput, ceiling)
 		billedInput = ceiling

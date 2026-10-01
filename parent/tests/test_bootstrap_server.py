@@ -338,6 +338,8 @@ def test_build_payload_iterates_all_known_providers() -> None:
     )
 
     expected_direct = {
+        "system1models",
+        "system1models-eu",
         "regolo",
         "lyceum",
         "privatemode",
