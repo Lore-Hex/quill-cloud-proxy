@@ -90,6 +90,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [ "$DRY_RUN" -eq 0 ]; then
+  source "${SCRIPT_DIR}/cloud-rollout-guard.sh"
+  require_cloud_rollout aws
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
   echo "FATAL: python3 is required to encode EC2 user data" >&2
   exit 1
