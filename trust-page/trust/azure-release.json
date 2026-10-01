@@ -1,7 +1,8 @@
 {
   "accepted_hostdata": [
-    "22cec32efa6d634f7e7a096863aaf8a6d867eb6fd3cadd6b10042012731fa14e",
-    "97591d525f84ae7a1b54e46014eee2525c95141a9505bf7a345e42a02b195cbd"
+    "67312370b04b381255881990dde28ef72e4f6c979fda2908def6f23bba7045c1",
+    "97591d525f84ae7a1b54e46014eee2525c95141a9505bf7a345e42a02b195cbd",
+    "22cec32efa6d634f7e7a096863aaf8a6d867eb6fd3cadd6b10042012731fa14e"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
   "attestation_format": "microsoft-azure-attestation-jwt",
@@ -10,7 +11,6 @@
     "https://trquillsyd.eau.attest.azure.net"
   ],
   "attestation_type": "sevsnpvm",
-  "bundle_version": "febfe4311a6b4f4ea2d8c147e1f8cb5c",
   "data_policy": {
     "client_telemetry_content_free": true,
     "client_telemetry_disclosure": "https://trustedrouter.com/docs/telemetry",
@@ -18,9 +18,8 @@
     "prompt_output_storage": false
   },
   "evidence_note": "MAA re-attests the SEV-SNP report; verifiers see Microsoft's assertion, not the raw hardware report or the AMD certificate chain.",
-  "hostdata": "22cec32efa6d634f7e7a096863aaf8a6d867eb6fd3cadd6b10042012731fa14e",
-  "image_digest": "sha256:965c9c94d3a513a1e1f3aa9ebfb46d78ac072fd80c424474f82cc4b5cd1895a9",
-  "measurement_provenance": "Live regional MAA measurements match the deployed immutable image and generated CCE policies. Independent verification checked fresh nonces, certificate and TLS-exporter binding, issuer, production claims, and exact HOST_DATA in both regions. Source-to-image association is operator-asserted, not a reproducible-build proof.",
+  "hostdata": "67312370b04b381255881990dde28ef72e4f6c979fda2908def6f23bba7045c1",
+  "measurement_provenance": "Both regional measurements were verified against exact CCE policies, MAA issuers, fresh nonces, certificates, and TLS channel bindings. The fleet is rolling between the per-region builds below; no single source commit describes both. Source-to-image associations are operator-asserted, not reproducible-build proofs.",
   "measurement_type": "sev-snp-hostdata-sha256",
   "platform": "azure-confidential-containers-sev-snp",
   "regions": [
@@ -28,9 +27,12 @@
       "attestation_issuer": "https://trquilluaen.uaen.attest.azure.net",
       "attestation_url": "https://api-azure.trustedrouter.com/attestation",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "22cec32efa6d634f7e7a096863aaf8a6d867eb6fd3cadd6b10042012731fa14e",
+      "hostdata": "67312370b04b381255881990dde28ef72e4f6c979fda2908def6f23bba7045c1",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866",
-      "origin_hostname": "quill-enclave-uaenorth.uaenorth.azurecontainer.io"
+      "origin_hostname": "quill-enclave-uaenorth.uaenorth.azurecontainer.io",
+      "source_commit": "6f34b70e76f71b48d124555a4af3fa06572b7d52",
+      "image_digest": "sha256:d587015ca66377488d0709148bf7f2d2600dc1643e5329853a8d01644e5e3470",
+      "bundle_version": "067afecf200f4272afa3a96418df32ba"
     },
     {
       "attestation_issuer": "https://trquillsyd.eau.attest.azure.net",
@@ -38,12 +40,15 @@
       "compliance_status": "azure-compliant-uvm",
       "hostdata": "97591d525f84ae7a1b54e46014eee2525c95141a9505bf7a345e42a02b195cbd",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866",
-      "origin_hostname": "quill-enclave-australiaeast.australiaeast.azurecontainer.io"
+      "origin_hostname": "quill-enclave-australiaeast.australiaeast.azurecontainer.io",
+      "source_commit": "d4d0a3f4e13d817f105169b0bdeceb2ab84b5777",
+      "image_digest": "sha256:965c9c94d3a513a1e1f3aa9ebfb46d78ac072fd80c424474f82cc4b5cd1895a9",
+      "bundle_version": "febfe4311a6b4f4ea2d8c147e1f8cb5c"
     }
   ],
-  "release_state": "multi-region",
-  "source_commit": "d4d0a3f4e13d817f105169b0bdeceb2ab84b5777",
-  "source_commit_provenance": "operator-asserted",
+  "release_state": "rolling",
+  "source_commit": "not-configured",
+  "source_commit_provenance": "none",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
     "hostname": "api-azure.trustedrouter.com",
