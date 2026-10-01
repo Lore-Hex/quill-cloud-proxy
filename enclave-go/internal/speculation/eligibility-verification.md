@@ -1,8 +1,11 @@
 # PR 2b: pure eligibility and payload preparation
 
-All additions are under `internal/speculation/`. There are no production
-imports, flags, request-path edits, writes to git, or changes to the v1 protocol,
-Stage C, or any frozen fixture. The pre-existing `VerifyGrant`, `CostCeiling`,
+Round 2 extracts `internal/llm/chat_preparation.go:PrepareChatRequest` for both
+ordinary dispatch and this seam. The only ordinary-path change is calling that
+shared preparation (with random Privatemode cache isolation resolved outside it).
+There are no production imports of eligibility, flags, git writes, or changes to
+the v1 protocol, Stage C, or any frozen fixture. Round-2 evidence supersedes the
+historical round-1 verification below; see [eligibility-round2.md](eligibility-round2.md). The pre-existing `VerifyGrant`, `CostCeiling`,
 `RenewalVerdict`, and authenticated `ClassifyVerdict` remain authoritative for
 those respective contracts.
 
@@ -34,13 +37,22 @@ those respective contracts.
    win over renewal and epoch equality is exact. The shadow decision uses the
    same predicates, but `shadow_dispatch_allowed` is always false.
 5. `PreparePayload` has no I/O, callbacks, clock access, cache, or input mutation.
-   It constructs sorted compact JSON for a narrow text-only Chat adapter with an
-   explicit integer `max_tokens` of 1..512, additionally bounded by the signed
-   cap. Missing caps and alternate/unknown fields are misses, never defaults or
-   silently dropped behavior. Common sampling fields are preserved. The only
-   omitted public object is control-plane provider policy, bound separately by
-   the independently computed policy hash. E12 must send the returned bytes
-   without another serializer or adapter rewrite.
+   Before copying or marshaling request data, one bounded traversal checks escaped
+   UTF-8 size, container counts, nested parameters, system additions and the trusted
+   provider cache scope against the signed input budget minus framing (at most
+   8,192). Raw lengths reject oversized strings in constant time. A depth limit
+   rejects cyclic/overdeep non-JSON inputs. The precheck is conservative: even
+   provider controls omitted from the wire consume traversal budget.
+   Only then does the seam parse the bounded data into ordinary request types,
+   apply ordinary `adapter.ToAnthropic` normalization, and call the shared
+   `llm.PrepareChatRequest`. This preserves the adapter's byte order, default
+   tier, usage hint, output-cap translation and provider transformations. Explicit
+   system additions participate in the same system-message merging. The trusted
+   `ProviderCacheScope` must equal the ordinary invocation's resolved scope.
+   Privatemode, which requires random cache isolation, is excluded from this seam.
+   The exact final bytes are checked again against the signed bound and used for
+   SHA-256 and B. E12 must send those bytes without rewriting them. Explicit
+   integer `max_tokens` remains mandatory (1..512, within the signed cap).
 
 Exactly one independently supplied `AdapterCertificate` must match the entire
 signed route. Certification includes hard output-cap behavior, single physical
@@ -56,9 +68,10 @@ independent local certification. It cannot select an arbitrary estimator. `chars
 Both the signed input maximum and 8,192-token pilot maximum apply. B uses the
 existing upward-rounded cost ceiling with the final bound and explicit cap,
 including mandatory fees. It must be positive and within both the grant ceiling
-and 10,000 microdollars. The fixture's prepared hash equals its descriptor's
-`request_sha256`; the actual prepared bound can be smaller than the signed route
-maximum/permit ceiling.
+and 10,000 microdollars. The frozen `provider-wire.json` is a synthetic protocol literal, not an adapter
+oracle. Its protocol/hash tests stay frozen. Production-adapter parity has separate
+byte-equality tests; the actual prepared bound may be smaller than the signed
+route maximum/permit ceiling.
 
 This is an eligibility snapshot, not an atomic physical-send gate. Permit
 consumption, risk/money reservation, concurrency/buffer/reporting capacity,
@@ -76,6 +89,9 @@ start_deadline
 binding_mismatch
 owner_boot
 local_trust
+not_pilot_workspace
+paid_provenance_missing
+key_ineligible
 policy_stale
 stage_d_unavailable
 health_missing
@@ -111,6 +127,18 @@ unsupported_token_bound
 input_bound
 cost_ceiling
 ```
+
+The reviewer noted that `local_trust` conflated distinct §2 inputs. Pilot
+allowlisting, paid provenance and key eligibility now return
+`not_pilot_workspace`, `paid_provenance_missing`, and `key_ineligible`, respectively.
+`local_trust` is retained solely for failed boot verification. The taxonomy above
+is closed; key subconditions remain the trusted `KeyEligible` attestation.
+
+## Historical round-1 evidence
+
+The tables and commands below describe the committed round-1 baseline. The
+current runner copies the full module (the seam now depends on the ordinary
+adapter) and runs 18 mutations. Current results are in `eligibility-round2.md`.
 
 ## Mutations on temporary copies
 

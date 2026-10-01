@@ -11,21 +11,22 @@ import (
 	"testing/quick"
 )
 
-func TestPreparedFixtureWire(t *testing.T) {
+func TestPreparedOrdinaryWire(t *testing.T) {
 	c := eligibleCase(t)
-	h := newHarness(t)
 	got, r := PreparePayload(c.grant.grant, c.local.Certificates, c.req)
-	descriptor, _ := h.descriptor.Claims()
-	if r != ReasonEligible || !bytes.Equal(got.Bytes, h.wire) || got.SHA256 != descriptor["request_sha256"] {
-		t.Fatalf("fixture wire %s %s %+v", got.Bytes, r, got)
+	// Production-adapter oracle, deliberately independent of provider-wire.json.
+	want := []byte(`{"model":"fixture-text","messages":[{"role":"user","content":"fixture"}],"stream":true,"max_tokens":512,"stream_options":{"include_usage":true}}`)
+	if r != ReasonEligible || !bytes.Equal(got.Bytes, want) || got.SHA256 != digest(want) || got.InputBound != int64(len(want))+32 {
+		t.Fatalf("%s %s %+v", got.Bytes, r, got)
 	}
-	if got.InputBound != int64(len(h.wire))+32 || got.BMicro != 580 {
-		t.Fatal(got)
+	route := c.local.Certificates[0].Route
+	cost, err := CostCeiling(got.InputBound, route["input_rate_micro_per_m"], int64(512), route["output_rate_micro_per_m"], route["maximum_request_fees_micro"])
+	if err != nil || cost != got.BMicro {
+		t.Fatal(got, cost, err)
 	}
-	// Returned bytes have no input alias and do not live in a package cache.
 	got.Bytes[0] = 'x'
 	again, r := PreparePayload(c.grant.grant, c.local.Certificates, c.req)
-	if r != ReasonEligible || !bytes.Equal(again.Bytes, h.wire) {
+	if r != ReasonEligible || !bytes.Equal(again.Bytes, want) {
 		t.Fatal("mutable output alias")
 	}
 }
@@ -84,7 +85,7 @@ func TestPayloadFramingSystemAndExactBounds(t *testing.T) {
 	c.local.Certificates[0].SystemPrefix = []string{"system addition"}
 	c.req.Body["max_tokens"] = 512
 	p, r := PreparePayload(c.grant.grant, c.local.Certificates, c.req)
-	if r != ReasonEligible || !bytes.Contains(p.Bytes, []byte("system addition")) || p.InputBound != int64(len(p.Bytes))+32 {
+	if r != ReasonEligible || !bytes.Contains(p.Bytes, []byte(`{"role":"system","content":"system addition"}`)) || p.InputBound != int64(len(p.Bytes))+32 {
 		t.Fatal(p, r)
 	}
 	c.local.Certificates[0].FramingTokens = 8192 - int64(len(p.Bytes))
@@ -147,7 +148,7 @@ func TestPayloadSignedBounds(t *testing.T) {
 func TestSerializerRejectsInternalAlias(t *testing.T) {
 	for _, v := range []any{"trustedrouter/auto", "", 42} {
 		body := map[string]any{"model": v}
-		if _, r := serializeChat(body, nil, 512); r != ReasonCustomModel {
+		if _, r := serializeChat(body, nil, "fixture-provider", ""); r != ReasonCustomModel {
 			t.Fatal(r)
 		}
 	}
@@ -155,6 +156,7 @@ func TestSerializerRejectsInternalAlias(t *testing.T) {
 func TestSerializerDeterminismProperty(t *testing.T) {
 	c := eligibleCase(t)
 	property := func(text string, seed int64) bool {
+		text = "x" + text
 		// quick generates valid Unicode; JSON escaping and multibyte input are
 		// covered independently of ASCII-only protocol claims.
 		body := map[string]any{"model": "fixture-text", "stream": true, "max_tokens": int64(512), "messages": []any{map[string]any{"role": "user", "content": text}}, "provider": map[string]any{"usage": "Credits"}, "temperature": 0.25, "logit_bias": map[string]any{"2": -1, "1": 1}}
@@ -180,5 +182,50 @@ func TestSerializerDeterminismProperty(t *testing.T) {
 	random := rand.New(rand.NewSource(73)) // #nosec G404 -- reproducible property-test seed.
 	if err := quick.Check(property, &quick.Config{MaxCount: 500, Rand: random}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPayloadAdapterFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		edit     func(map[string]any)
+		provider string
+	}{
+		{"marshal", func(b map[string]any) { b["stop"] = make(chan int) }, "fixture-provider"},
+		{"typed_parameter", func(b map[string]any) { b["temperature"] = "wrong" }, "fixture-provider"},
+		{"empty_only", func(b map[string]any) { m(b["messages"].([]any)[0])["content"] = "" }, "fixture-provider"},
+		{"developer", func(b map[string]any) { m(b["messages"].([]any)[0])["role"] = "developer" }, "fixture-provider"},
+		{"private_cache", func(map[string]any) {}, "privatemode"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := eligibleCase(t)
+			tc.edit(c.req.Body)
+			if _, r := serializeChat(c.req.Body, nil, tc.provider, ""); r != ReasonPayload {
+				t.Fatal(r)
+			}
+		})
+	}
+	for _, private := range []bool{false, true} {
+		c := eligibleCase(t)
+		h := newHarness(t)
+		claims, _ := h.real.Claims()
+		route := m(claims["route"])
+		want := ReasonInputBound
+		if private {
+			route["provider"] = "privatemode"
+			want = ReasonRoute
+		} else {
+			route["input_bound"] = int64(175)
+		}
+		context := m(h.bundle["context"])
+		context["route"] = route
+		grant, err := VerifyGrant(signedEligibilityToken(t, h, claims, RealTyp), h.keys, context, 1700000000, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.local.Certificates[0].Route = route
+		if _, r := PreparePayload(grant, c.local.Certificates, c.req); r != want {
+			t.Fatal(r, want)
+		}
 	}
 }

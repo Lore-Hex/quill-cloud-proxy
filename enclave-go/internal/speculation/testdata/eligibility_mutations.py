@@ -44,15 +44,29 @@ MUTATIONS = [
      'false ||', "TestMissingHealthAndScopedEpochs/workspace_missing"),
     ("confidential_host", "eligibility.go", 'if req.ConfidentialOnly {',
      'if false {', "TestEligibilityExclusions/confidential"),
+    ("seam_one_byte", "payload.go", 'return prepared.Bytes, ReasonEligible',
+     "return append(prepared.Bytes, ' '), ReasonEligible", "TestSeamAdapterParity"),
+    ("ordinary_one_byte", "../llm/byok.go", '\n\t\tbytes.NewReader(bodyBytes),\n',
+     "\n\t\tbytes.NewReader(append(bodyBytes, ' ')),\n", "TestChatPreparationDifferential/fixture-provider/fixture-text/stream=false/cap=false/implicit"),
+    ("remove_precheck", "payload.go",
+     '\tif r := precheckChat(req.Body, cert.SystemPrefix, cert.ProviderCacheScope, int(budget)); r != ReasonEligible {\n\t\treturn PreparedPayload{}, r\n\t}\n',
+     '', "TestOversizedPayloadAllocations/text"),
+    ("drop_stop", "payload.go", 'var req qtypes.OpenAIChatRequest',
+     'delete(body, "stop")\n encoded, _ = json.Marshal(body)\n var req qtypes.OpenAIChatRequest', "TestSeamAdapterParity"),
+    ("prefix_role", "payload.go", 'Role: "system", Content: text',
+     'Role: "user", Content: text', "TestPayloadFramingSystemAndExactBounds"),
+    ("older_workspace_epoch", "health.go", 'h.Workspace.Epoch != number(c, "workspace_epoch")',
+     'h.Workspace.Epoch > number(c, "workspace_epoch")', "TestMissingHealthAndScopedEpochs/workspace_epoch_older"),
+    ("older_key_epoch", "health.go", 'h.Key.Epoch != number(c, "key_epoch")',
+     'h.Key.Epoch > number(c, "key_epoch")', "TestMissingHealthAndScopedEpochs/key_epoch_older"),
 ]
 
 def run(root, test):
-    return subprocess.run(["go", "test", "-count=1", "-v", "-run", "/".join("^" + re.escape(part) + "$" for part in test.split("/")), "./internal/speculation"],
+    return subprocess.run(["go", "test", "-count=1", "-v", "-run", "/".join("^" + re.escape(part) + "$" for part in test.split("/")), "./internal/llm" if test.startswith("TestChat") else "./internal/speculation"],
                           cwd=root, env=ENV, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
 baseline = DEST / "baseline"
-shutil.copytree(SOURCE, baseline / "internal/speculation")
-(baseline / "go.mod").write_text("module speculation-mutation\n\ngo 1.24\n")
+shutil.copytree(SOURCE.parents[1], baseline)
 check = subprocess.run(["go", "test", "-count=1", "./internal/speculation"], cwd=baseline,
                        env=ENV, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 (DEST / "baseline.log").write_text(check.stdout)

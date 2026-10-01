@@ -14,7 +14,10 @@ const (
 	ReasonDeadline       Reason = "start_deadline"
 	ReasonBinding        Reason = "binding_mismatch"
 	ReasonOwner          Reason = "owner_boot"
-	ReasonTrust          Reason = "local_trust"
+	ReasonTrust          Reason = "local_trust" // Verified boot trust only; §2 inputs have separate reasons below.
+	ReasonPilot          Reason = "not_pilot_workspace"
+	ReasonPaid           Reason = "paid_provenance_missing"
+	ReasonKeyEligible    Reason = "key_ineligible"
 	ReasonPolicy         Reason = "policy_stale"
 	ReasonStageD         Reason = "stage_d_unavailable"
 	ReasonHealthMissing  Reason = "health_missing"
@@ -142,7 +145,16 @@ func eligibilityReason(g ReceivedGrant, local LocalContext, req ParsedRequest, h
 	if local.OwnerBootCount != 1 || local.OwnerBootID != c["boot_id"] {
 		return ReasonOwner
 	}
-	if !local.PilotAllowed || !local.PaidProvenance || !local.KeyEligible || !local.BootVerified {
+	if !local.PilotAllowed {
+		return ReasonPilot
+	}
+	if !local.PaidProvenance {
+		return ReasonPaid
+	}
+	if !local.KeyEligible {
+		return ReasonKeyEligible
+	}
+	if !local.BootVerified {
 		return ReasonTrust
 	}
 	if !local.PolicyFresh || local.RequestPolicyHash != c["route"].(map[string]any)["routing_policy_hash"] {

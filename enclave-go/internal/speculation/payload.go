@@ -3,7 +3,10 @@ package speculation
 import (
 	"encoding/json"
 	"strings"
-	"unicode/utf8"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
+	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
 // ConservativeUTF8Bytes is implemented locally: one token per serialized UTF-8
@@ -20,11 +23,14 @@ const ConservativeUTF8Bytes = "conservative-utf8-bytes-v1"
 // VendorPricesBounded certifies all reachable price tiers, no cache discount,
 // and no unrepresented fees. SingleAttempt includes transport/SDK retries.
 type AdapterCertificate struct {
-	Route               map[string]any
-	BoundAlgorithm      string
-	FramingKnown        bool
-	FramingTokens       int64
-	SystemPrefix        []string
+	Route          map[string]any
+	BoundAlgorithm string
+	FramingKnown   bool
+	FramingTokens  int64
+	SystemPrefix   []string
+	// ProviderCacheScope is the same trusted, workspace-scoped cache identity
+	// supplied to ordinary dispatch. No credentials are resolved here.
+	ProviderCacheScope  string
 	HardOutputCap       bool
 	SingleAttempt       bool
 	NoHiddenTools       bool
@@ -48,9 +54,6 @@ func PreparePayload(g VerifiedGrant, certificates []AdapterCertificate, req Pars
 	if err != nil {
 		return PreparedPayload{}, ReasonGrant
 	}
-	if r := requestReason(req); r != ReasonEligible {
-		return PreparedPayload{}, r
-	}
 	route := c["route"].(map[string]any)
 	if len(certificates) != 1 || !equal(certificates[0].Route, route) || req.Body["model"] != route["upstream_model"] {
 		return PreparedPayload{}, ReasonRoute
@@ -62,11 +65,27 @@ func PreparePayload(g VerifiedGrant, certificates []AdapterCertificate, req Pars
 	if cert.BoundAlgorithm != ConservativeUTF8Bytes || !supportedBoundMethod(route["input_bound_method"]) || !cert.FramingKnown || cert.FramingTokens < 0 {
 		return PreparedPayload{}, ReasonBoundMethod
 	}
+	budget := min(int64(8192), number(route, "input_bound")) - cert.FramingTokens
+	if budget < 0 {
+		return PreparedPayload{}, ReasonInputBound
+	}
+	// Reject before copying, normalization, or marshaling caller data. This
+	// single traversal stops as soon as the encoded-size budget is exhausted.
+	if r := precheckChat(req.Body, cert.SystemPrefix, cert.ProviderCacheScope, int(budget)); r != ReasonEligible {
+		return PreparedPayload{}, r
+	}
+	if r := requestReason(req); r != ReasonEligible {
+		return PreparedPayload{}, r
+	}
+	// This route needs randomly resolved cache isolation, outside the pure seam.
+	if route["provider"] == "privatemode" {
+		return PreparedPayload{}, ReasonRoute
+	}
 	cap, ok := explicitCap(req.Body["max_tokens"])
 	if !ok || cap > number(route, "output_limit") {
 		return PreparedPayload{}, ReasonOutputCap
 	}
-	wire, r := serializeChat(req.Body, cert.SystemPrefix, cap)
+	wire, r := serializeChat(req.Body, cert.SystemPrefix, s(route["provider"]), cert.ProviderCacheScope)
 	if r != ReasonEligible {
 		return PreparedPayload{}, r
 	}
@@ -98,14 +117,10 @@ func explicitCap(v any) (int64, bool) {
 	return n, n > 0 && n <= 512
 }
 
-func serializeChat(body map[string]any, prefix []string, cap int64) ([]byte, Reason) {
-	wire := make(map[string]any, len(body))
-	for k, v := range body {
+func serializeChat(body map[string]any, prefix []string, provider, cacheScope string) ([]byte, Reason) {
+	for k := range body {
 		switch k {
-		case "provider": // Control-plane policy, bound separately by its hash.
-		case "model", "stream", "service_tier", "temperature", "top_p", "stop", "seed", "frequency_penalty", "presence_penalty", "logit_bias", "logprobs", "top_logprobs", "stream_options":
-			wire[k] = v
-		case "messages", "max_tokens": // Constructed below, never defaulted.
+		case "provider", "model", "stream", "service_tier", "temperature", "top_p", "stop", "seed", "frequency_penalty", "presence_penalty", "logit_bias", "logprobs", "top_logprobs", "stream_options", "messages", "max_tokens":
 		default:
 			return nil, ReasonField
 		}
@@ -118,13 +133,6 @@ func serializeChat(body map[string]any, prefix []string, cap int64) ([]byte, Rea
 	if !ok || len(messages) == 0 {
 		return nil, ReasonPayload
 	}
-	out := make([]any, 0, len(messages)+len(prefix))
-	for _, text := range prefix {
-		if !utf8.ValidString(text) {
-			return nil, ReasonPayload
-		}
-		out = append(out, map[string]any{"role": "system", "content": text})
-	}
 	for _, value := range messages {
 		msg, ok := value.(map[string]any)
 		if !ok {
@@ -136,25 +144,48 @@ func serializeChat(body map[string]any, prefix []string, cap int64) ([]byte, Rea
 		if hasAny(msg, "reasoning reasoning_content") {
 			return nil, ReasonReasoning
 		}
-		content, ok := msg["content"].(string)
-		if !ok {
+		if _, ok := msg["content"].(string); !ok {
 			return nil, ReasonMedia
 		}
 		role, ok := msg["role"].(string)
-		if !ok || !member(role, "system user assistant developer") || !utf8.ValidString(content) {
+		if !ok || !member(role, "system user assistant developer") {
 			return nil, ReasonPayload
 		}
 		if len(msg) != 2 {
 			return nil, ReasonField
 		}
-		out = append(out, map[string]any{"role": role, "content": content})
 	}
-	wire["messages"], wire["max_tokens"] = out, cap
-	b, err := json.Marshal(wire)
+	// The precheck bounded this marshal and the typed conversion. Use the same
+	// public parsing and Anthropic normalization as the ordinary Chat adapter.
+	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, ReasonPayload
 	}
-	return b, ReasonEligible
+	var req qtypes.OpenAIChatRequest
+	if err := json.Unmarshal(encoded, &req); err != nil {
+		return nil, ReasonPayload
+	}
+	additions := make([]qtypes.OpenAIChatMessage, 0, len(prefix)+len(req.Messages))
+	for _, text := range prefix {
+		additions = append(additions, qtypes.OpenAIChatMessage{Role: "system", Content: text})
+	}
+	req.Messages = append(additions, req.Messages...)
+	normalized, err := adapter.ToAnthropic(&req, model)
+	if err != nil {
+		return nil, ReasonPayload
+	}
+	msgs := make([]llm.ChatMessage, 0, len(normalized.Messages)+1)
+	if normalized.System != "" {
+		msgs = append(msgs, llm.ChatMessage{Role: "system", Content: normalized.System})
+	}
+	for _, msg := range normalized.Messages {
+		msgs = append(msgs, llm.ChatMessage{Role: msg.Role, Content: msg.Content})
+	}
+	prepared, err := llm.PrepareChatRequest(provider, model, &req, normalized, msgs, llm.ChatPreparationOptions{ProviderCacheScope: cacheScope})
+	if err != nil {
+		return nil, ReasonPayload
+	}
+	return prepared.Bytes, ReasonEligible
 }
 
 // The frozen fixture method is an explicit alias for this conservative bound,
