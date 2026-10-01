@@ -314,6 +314,20 @@ class RelieveMigStockoutTests(unittest.TestCase):
         self.assertEqual(self.relieve(fake, zone="us-central1-f"), "nothing")
         self.assertEqual(fake.calls, [])
 
+    def test_an_autoscaled_group_is_refused_in_both_modes_with_the_detach_command(self) -> None:
+        # An attached autoscaler would undo the resize and re-add a deleted VM.
+        # The workflow detaches it first; run by hand, the tool says how.
+        for label, call in {
+            "relieve": lambda fake: self.relieve(fake),
+            "remove-vm": lambda fake: relieve.remove_vm(self.group(fake), "mig-us-cccc", 2, probe=fake.probe),
+        }.items():
+            with self.subTest(label):
+                fake = FakeGroup(autoscaled=True)
+                with self.assertRaises(relieve.Refused) as refused:
+                    call(fake)
+                self.assertIn("bash tools/gcp-mig-autoscaler.sh detach", str(refused.exception))
+                self.assertEqual(fake.calls, [])
+
     def test_every_way_the_replacement_can_fail_deletes_nothing(self) -> None:
         cases = {
             "the group places it in the dead zone again": FakeGroup(places_in=DEAD),

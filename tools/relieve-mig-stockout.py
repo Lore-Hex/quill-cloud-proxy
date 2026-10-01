@@ -48,7 +48,9 @@ safe -- it serves from more VMs than it needs -- and the run says what to do:
              failed run added. Never a bare resize: Compute would choose.
 
 It must run with no rollout in flight; the workflow that calls it shares the
-deploy's concurrency group.
+deploy's concurrency group. It also needs a group with no autoscaler: the
+workflow detaches it first (tools/gcp-mig-autoscaler.sh detach) and applies it
+again only after a relief that completed.
 """
 
 from __future__ import annotations
@@ -66,6 +68,10 @@ PROJECT = "quill-cloud-proxy"
 ATTEST_HOST = "api.trustedrouter.com"
 STOCKOUT = "ZONE_RESOURCE_POOL_EXHAUSTED"
 TOLERANT_SHAPES = {"BALANCED", "ANY", "ANY_SINGLE_ZONE"}
+AUTOSCALED = (
+    "the group is autoscaled and this tool assumes a fixed size: detach the autoscaler first "
+    "(bash tools/gcp-mig-autoscaler.sh detach <region> <mig>; the workflow does) and apply it again after"
+)
 
 Runner = Callable[[list[str]], str]
 Probe = Callable[[str], bool]
@@ -166,6 +172,10 @@ class Group:
         self.run([*self._managed("wait-until"), "--stable", f"--timeout={seconds}"])
 
 
+def _autoscaled(group: dict[str, Any]) -> bool:
+    return bool(group.get("autoscaler") or (group.get("status") or {}).get("autoscaler"))
+
+
 def _zones(group: dict[str, Any]) -> list[str]:
     return [z["zone"].rsplit("/", 1)[-1] for z in group.get("distributionPolicy", {}).get("zones", [])]
 
@@ -191,8 +201,9 @@ def relieve(
     size = int(described["targetSize"])
     if zone not in _zones(described):
         raise Refused(f"{zone} is not one of the group's zones {_zones(described)}")
-    if described.get("autoscaler") or (described.get("status") or {}).get("autoscaler"):
-        raise Refused("the group is autoscaled; a fixed size is assumed")
+    # Autoscaler decision: refuse; an attached autoscaler would undo the resize and re-add deleted VMs.
+    if _autoscaled(described):
+        raise Refused(AUTOSCALED)
     dead = sorted(i["name"] for i in vms if i["zone"] == zone)
     if not dead:
         if size == target:
@@ -319,7 +330,11 @@ def _await_one_pass_in_which_all_attest(
 
 def remove_vm(group: Group, name: str, target: int, *, probe: Probe = attests, stable_seconds: int = 900) -> str:
     """Delete ONE operator-named VM from an enlarged group, if `target` others attest right now."""
-    vms, size = group.instances(), int(group.describe()["targetSize"])
+    vms, described = group.instances(), group.describe()
+    size = int(described["targetSize"])
+    # Autoscaler decision: refuse, as relieve does; an attached autoscaler would re-add the VM this deletes.
+    if _autoscaled(described):
+        raise Refused(AUTOSCALED)
     named = [i for i in vms if i["name"] == name]
     if not named:
         raise Refused(f"{name} is not a VM of this group: {sorted(i['name'] for i in vms)}")

@@ -64,6 +64,11 @@ Run [enclave-deploy-monitoring-checklist.md](./enclave-deploy-monitoring-checkli
      --region=us-central1 --project=quill-cloud-proxy --stable
    ```
 
+   `deploy-gcp-mig.sh` suspends the group's autoscaler (mode OFF) for the
+   roll. Once the region attests (step 7), turn it back on:
+   `bash tools/gcp-mig-autoscaler.sh apply us-central1 quill-enclave-mig-us`
+   (the same for each region below, with its own MIG).
+
 6. Run a short canary, not the full global gate.
 
    ```bash
@@ -110,7 +115,7 @@ see enclave-deploy-debugging.md #5). `REGION_SHORT` must be `eu`/`useast4`/`uswe
 (not the dashes-stripped `europewest4`).
 
 ```bash
-# europe-west4 (n2d / SEV-SNP — the deploy-gcp-mig.sh defaults)
+# europe-west4 (c3-standard-8 / TDX — the deploy-gcp-mig.sh defaults)
 export PROJECT_ID=quill-cloud-proxy
 export IMAGE_REF="us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi@$(cat trust-page/image-digest-gcp.txt)"
 export REGION_SHORT=eu
@@ -123,7 +128,7 @@ python3 tools/watchdog.py --regions europe-west4 --duration-min 1 --rollback-aft
 
 # us-east4 (c3 / TDX — capacity is chronically scarce here)
 export REGION_SHORT=useast4
-export MACHINE_TYPE=c3-standard-4 CONF_COMPUTE_TYPE=TDX
+export MACHINE_TYPE=c3-standard-8 CONF_COMPUTE_TYPE=TDX
 export API_HOST="api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com"
 bash tools/deploy-gcp-mig.sh us-east4
 gcloud compute instance-groups managed wait-until quill-enclave-mig-useast4 \
@@ -134,7 +139,7 @@ gcloud compute instance-groups managed wait-until quill-enclave-mig-useast4 \
 # region"), which verifies every VM before its hostname points anywhere. For an
 # existing MIG, MIG_ZONES is not needed: it is read only on creation.
 export REGION_SHORT=uswest1
-export MACHINE_TYPE=c3-standard-4 CONF_COMPUTE_TYPE=TDX
+export MACHINE_TYPE=c3-standard-8 CONF_COMPUTE_TYPE=TDX
 export API_HOST="api.quillrouter.com,api-us-west1.quillrouter.com,api.trustedrouter.com"
 bash tools/deploy-gcp-mig.sh us-west1
 gcloud compute instance-groups managed wait-until quill-enclave-mig-uswest1 \

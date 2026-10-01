@@ -29,6 +29,12 @@
 # group is stable and whose VMs all attest. So a drain this run could not clear
 # (a dead runner) is cleared by the next run of this workflow or the next
 # deploy, and meanwhile the other regions serve, as they do during every deploy.
+#
+# AUTOSCALER. The tool resizes the group and deletes VMs by name, which an
+# attached autoscaler would undo, so the run first detaches it (the group keeps
+# its size) and attaches it again only after every step succeeded. A failed or
+# refused run leaves the group detached at its size, which is what resuming
+# needs; the next completed run or the region's next rollout attaches it.
 name: Relieve enclave MIG zone stockout
 
 on:
@@ -44,7 +50,7 @@ on:
         required: true
         type: string
       target_size:
-        description: The size the group is meant to have (TARGET_SIZE in tools/deploy-gcp-mig.sh)
+        description: The group's size before relief (its targetSize; with an autoscaler, the size it had chosen, not its minimum)
         required: true
         default: "2"
         type: string
@@ -122,6 +128,13 @@ jobs:
             echo "mode remove-vm needs the vm input" >&2
             exit 2
           fi
+
+      - name: Detach the autoscaler
+        id: detach
+        env:
+          MIG: ${{ steps.group.outputs.mig }}
+        # Autoscaler decision: detach it (the group keeps its size) so the tool's resize and deletions stick; only a fully successful run attaches it again.
+        run: bash tools/gcp-mig-autoscaler.sh detach "${REGION}" "${MIG}"
 
       - name: Add the replacement and wait until it attests
         id: prepare
@@ -201,6 +214,20 @@ jobs:
           python3 tools/sync-route53-api-aliases.py --apply || status=$?
           exit "${status}"
 
+      - name: Attach the autoscaler again
+        # After the drain is cleared, so it reads the region's real load.
+        if: ${{ success() }}
+        env:
+          MIG: ${{ steps.group.outputs.mig }}
+        run: bash tools/gcp-mig-autoscaler.sh apply "${REGION}" "${MIG}"
+
+      - name: Say why the autoscaler stays detached
+        if: ${{ failure() && steps.detach.outcome == 'success' }}
+        env:
+          MIG: ${{ steps.group.outputs.mig }}
+        run: |
+          echo "::warning::${MIG} stays without an autoscaler at its current size, as resuming this run needs. A run that completes attaches it again, and so does the region's next rollout; by hand: bash tools/gcp-mig-autoscaler.sh apply ${REGION} ${MIG}"
+
       - name: Show the result
         if: ${{ always() && steps.group.outcome == 'success' }}
         run: |
@@ -210,3 +237,4 @@ jobs:
           gcloud compute instance-groups managed describe "${{ steps.group.outputs.mig }}" \
             --region="${REGION}" --project=quill-cloud-proxy \
             --format='value(targetSize,status.isStable,distributionPolicy.targetShape)'
+          echo "autoscaler: $(bash tools/gcp-mig-autoscaler.sh mode "${REGION}" "${{ steps.group.outputs.mig }}" || echo unreadable)"
