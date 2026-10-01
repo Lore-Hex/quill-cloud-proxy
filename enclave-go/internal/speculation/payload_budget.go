@@ -70,9 +70,13 @@ func (b *encodedBudget) value(v any, depth int) Reason {
 		if math.IsNaN(v) || math.IsInf(v, 0) {
 			return ReasonPayload
 		}
-		// A conservative fixed bound avoids float formatting allocations.
-		return b.spend(24)
+		// encoding/json uses 'f' formatting for exponents in [-6, 21): the longest
+		// finite encoding is 25 bytes, e.g. -0.0000012345678901234567.
+		return b.spend(25)
 	case []any:
+		if v == nil {
+			return b.spend(4) // encodes as null
+		}
 		if len(v) > b.remaining/2 {
 			return ReasonInputBound
 		}
@@ -85,6 +89,9 @@ func (b *encodedBudget) value(v any, depth int) Reason {
 			}
 		}
 	case map[string]any:
+		if v == nil {
+			return b.spend(4) // encodes as null
+		}
 		if len(v) > b.remaining/4 {
 			return ReasonInputBound
 		}

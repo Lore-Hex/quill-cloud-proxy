@@ -9,7 +9,10 @@ import (
 )
 
 func TestEncodedBudget(t *testing.T) {
-	values := []any{nil, true, false, int(123), int64(-9223372036854775808), 0.25, "", "雪🙂\u2028\u2029<>&\x00\n\r\t\b\f\"\\", []any{}, map[string]any{}, []any{true, nil, "x"}, map[string]any{"nested": []any{int64(4), "<"}}}
+	// -0.0000012345678901234567 is the longest finite float64 encoding (25 bytes:
+	// encoding/json formats exponents in [-6, 21) without an exponent); typed nil
+	// containers encode as null. Both were under-counted once (review round 2).
+	values := []any{nil, true, false, int(123), int64(-9223372036854775808), 0.25, -0.0000012345678901234567, -1.7976931348623157e+308, []any(nil), map[string]any(nil), "", "雪🙂\u2028\u2029<>&\x00\n\r\t\b\f\"\\", []any{}, map[string]any{}, []any{true, nil, "x"}, map[string]any{"nested": []any{int64(4), "<"}}}
 	for _, value := range values {
 		raw, err := json.Marshal(value)
 		if err != nil {

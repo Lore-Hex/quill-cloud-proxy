@@ -85,7 +85,7 @@ func PreparePayload(g VerifiedGrant, certificates []AdapterCertificate, req Pars
 	if !ok || cap > number(route, "output_limit") {
 		return PreparedPayload{}, ReasonOutputCap
 	}
-	wire, r := serializeChat(req.Body, cert.SystemPrefix, s(route["provider"]), cert.ProviderCacheScope)
+	wire, r := serializeChat(req.Body, cert.SystemPrefix, stringValue(route["provider"]), cert.ProviderCacheScope)
 	if r != ReasonEligible {
 		return PreparedPayload{}, r
 	}
