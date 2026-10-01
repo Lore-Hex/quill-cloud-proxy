@@ -197,6 +197,8 @@ BINDINGS: tuple[Binding, ...] = (
     # SpendLeaseShadow until its attestation verifier reaches GCP parity.
     Binding(("QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET",), "spend lease issuer config", False),
     Binding(("QUILL_ACME_FALLBACK_EAB_SECRET",), "acme fallback eab", False),
+    Binding(("QUILL_SYSTEM1MODELS_GLOBAL_SECRET",), "System1 Global key", True),
+    Binding(("QUILL_SYSTEM1MODELS_EU_SECRET",), "System1 EU key", True),
     Binding(("QUILL_PRIVATEMODE_SECRET",), "Privatemode key", True),
     Binding(("QUILL_TELLUVIAN_SECRET",), "Telluvian selector key", True),
     Binding(("QUILL_NEXTBIT_SECRET",), "nextbit key", True),
