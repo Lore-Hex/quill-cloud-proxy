@@ -259,15 +259,15 @@ func invokeSystemOne(ctx context.Context, httpc *http.Client, provider, baseURL,
 			Probabilities map[string]float64 `json:"probabilities"`
 		} `json:"answers"`
 		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-			Decisions    int `json:"decisions"`
+			InputTokens  int  `json:"input_tokens"`
+			OutputTokens *int `json:"output_tokens"`
+			Decisions    int  `json:"decisions"`
 		} `json:"usage"`
 	}
 	if err := decodeDecideBody(provider, raw, &parsed); err != nil {
 		return nil, err
 	}
-	if tier := system1Tier(provider); tier != "" && (parsed.Tier != tier || parsed.Model != model || parsed.Usage.InputTokens <= 0 || parsed.Usage.OutputTokens != 0 || parsed.Usage.Decisions != 1) {
+	if tier := system1Tier(provider); tier != "" && (parsed.Tier != tier || parsed.Model != model || parsed.Usage.InputTokens <= 0 || parsed.Usage.OutputTokens == nil || *parsed.Usage.OutputTokens != 0 || parsed.Usage.Decisions != 1) {
 		return nil, &DecideError{Provider: provider, Class: DecideErrDecode}
 	}
 	// Translate NAMES only, and carry every answer field across. Whether the
@@ -284,5 +284,9 @@ func invokeSystemOne(ctx context.Context, httpc *http.Client, provider, baseURL,
 		}
 		answers[name] = translated
 	}
-	return &DecideResponse{Answers: answers, InputTokens: parsed.Usage.InputTokens, OutputTokens: parsed.Usage.OutputTokens}, nil
+	outputTokens := 0
+	if parsed.Usage.OutputTokens != nil {
+		outputTokens = *parsed.Usage.OutputTokens
+	}
+	return &DecideResponse{Answers: answers, InputTokens: parsed.Usage.InputTokens, OutputTokens: outputTokens}, nil
 }

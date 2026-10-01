@@ -51,7 +51,7 @@ func TestSystem1TierKeyWireAndUsage(t *testing.T) {
 }
 
 func TestSystem1RejectsAmbiguousUsageAndTier(t *testing.T) {
-	for _, change := range []string{"header", "tier", "model", "input_tokens", "output_tokens", "decisions", "missing_usage"} {
+	for _, change := range []string{"header", "tier", "model", "input_tokens", "output_tokens", "decisions", "missing_usage", "missing_output"} {
 		t.Run(change, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("S1-Region", "eu")
@@ -72,6 +72,8 @@ func TestSystem1RejectsAmbiguousUsageAndTier(t *testing.T) {
 					usage[change] = 2
 				case "missing_usage":
 					delete(body, "usage")
+				case "missing_output":
+					delete(usage, "output_tokens")
 				}
 				_ = json.NewEncoder(w).Encode(body)
 			}))
