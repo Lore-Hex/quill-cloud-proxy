@@ -1,5 +1,6 @@
 {
   "accepted_pcr0s": [
+    "1d8282c34d33045918d051067f7eab1d80d1284c807bd463101ef52b85e3aafd5fac82896efe280301acd5db5e047ea9",
     "6821f7e40aa52296fb7d8e5bc643ecac8fe581f8a05f3b9925c4b64a43d18c319e1f034f1b32d83b1341948962921fec"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
@@ -11,15 +12,16 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "image_digest": "sha256:e5bfbf2bc1ece611f722c1c91c93938892c910d642fa70ed66b937d743a47d65",
-  "measurement_provenance": "All four serving instances were independently verified against the expected PCR0 using production Nitro certificate-chain validation, fresh nonces, exact module IDs, system CA and hostname validation, certificate/SPKI binding, TLS exporter binding and same-socket follow-up. Paris modules: i-02b5f7a9bff10af38-enc01a0f1c24989191e and i-01044418c6f9f9e47-enc01a0f21055ef0194. Dublin modules: i-0228e0d07cca25f80-enc01a0f21b5fe349a3 and i-06274d6132b51ad2c-enc01a0f2265608b529. Both regional instance refreshes completed successfully; every serving instance passed a minimal Neurometric inference and native AWS billing probe. Source-to-image provenance remains operator-asserted, not a reproduced-build claim.",
+  "image_digest": "sha256:548c1c3f9eeaa15ce81e046b9a0843fa170bf0cdef69fca478dfc6656ea2f2d5",
+  "measurement_provenance": "Transitional release: the new PCR0 was cryptographically verified on isolated Paris candidate i-017f9668ca8f2dfa4, outside every serving ASG, target group and routing DNS record. Verification covered the production Nitro root chain, fresh nonce, exact module ID, system CA and hostname, certificate/SPKI binding, TLS exporter and same-socket follow-up; a minimal inference probe also passed. Both regional Fargate consumers accept the old and new PCR0. Serving instances still use the outgoing measurement until the signed transitional trust set is published. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
+  "parent_image_digest": "sha256:d09fa4e0ceeb185cca6588aa4becd27d62b05dad7c9615ba462eb375e251c114",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-06274d6132b51ad2c-enc01a0f2265608b529",
-  "pcr0": "6821f7e40aa52296fb7d8e5bc643ecac8fe581f8a05f3b9925c4b64a43d18c319e1f034f1b32d83b1341948962921fec",
+  "observed_module_id": "i-017f9668ca8f2dfa4-enc01a0f898e8f6cfab",
+  "pcr0": "1d8282c34d33045918d051067f7eab1d80d1284c807bd463101ef52b85e3aafd5fac82896efe280301acd5db5e047ea9",
   "platform": "aws-nitro-enclaves",
-  "release_state": "current",
+  "release_state": "rolling",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "c24834b57a88e90fa5f29eb8425a0a208a8abb16",
+  "source_commit": "d849f6f146a3b426635173c4595cd1773be93e63",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {
