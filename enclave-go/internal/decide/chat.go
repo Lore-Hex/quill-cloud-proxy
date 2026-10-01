@@ -343,6 +343,7 @@ func NativeChatRequest(model string, state json.RawMessage, specs []Spec, native
 			Order:          types.StringList(append([]string(nil), native.Providers...)),
 			AllowFallbacks: &fallbacks,
 		}
+		req.InternalDecisionHosts = append([]string(nil), native.Providers...)
 	}
 	switch {
 	case effort != "":

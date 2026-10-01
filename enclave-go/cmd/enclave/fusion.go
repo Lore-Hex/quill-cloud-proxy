@@ -2777,6 +2777,11 @@ func authorizeFusionCall(
 		refundFusionCallAfter(ctx, trGateway, authz, 502, "combo_route_integrity_error", 0.001, req.Metadata)
 		return authz, nil, err
 	}
+	options, err = constrainDecisionOptions(&subReq, options)
+	if err != nil {
+		refundFusionCallAfter(ctx, trGateway, authz, 502, "decide_host_pin_violation", 0.001, req.Metadata)
+		return authz, nil, err
+	}
 	return authz, options, nil
 }
 

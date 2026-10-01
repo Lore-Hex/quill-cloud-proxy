@@ -70,8 +70,8 @@ func (f *faultyControlPlane) serve(t *testing.T) *trustedrouter.Client {
 			if candidates == "" {
 				candidates = "[]"
 			}
-			_, _ = fmt.Fprintf(w, `{"data":{"authorization_id":"auth_%d","workspace_id":"ws_1","api_key_hash":"key_1","model":%q,"endpoint_id":"e@p/prepaid","provider":"cerebras","upstream_model":"gpt-oss-120b","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":%s}}`,
-				len(f.log.authorize), body["model"], candidates)
+			_, _ = fmt.Fprintf(w, `{"data":{"authorization_id":"auth_%d","workspace_id":"ws_1","api_key_hash":"key_1","model":%q,"endpoint_id":"e@p/prepaid","provider":%q,"upstream_model":"gpt-oss-120b","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":%s}}`,
+				len(f.log.authorize), body["model"], fakeAuthorizedHost(body, "cerebras"), candidates)
 		case "/internal/gateway/settle":
 			f.log.settle = append(f.log.settle, body)
 			if f.settleStatus != nil && fail(f.settleStatus(len(f.log.settle))) {

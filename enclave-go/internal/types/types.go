@@ -334,6 +334,10 @@ type OpenAIChatRequest struct {
 	InternalBillingProfile     string   `json:"-"`
 	// Inherited by nested calls; only named, enclave-owned 1M presets enable it.
 	InternalLongContextCombo bool `json:"-"`
+	// InternalDecisionHosts is a tuned decision model's pinned chain, set only
+	// when the gateway, not the caller, chose the request's hosts. The gateway
+	// dispatches it only to authorized candidates the chain names.
+	InternalDecisionHosts []string `json:"-"`
 
 	// InternalOutputTokenLimit marks a funded orchestration allowance that
 	// includes reasoning. Adapters must fit derived thinking budgets inside it.

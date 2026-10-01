@@ -655,6 +655,44 @@ func serveNativeDecide(
 	writeSpentError(conn, 502, "decision model returned an invalid answer")
 }
 
+// decisionHostPinViolation is an authorization that left a tuned decision
+// model no candidate on its pinned chain.
+var decisionHostPinViolation = errors.New("authorization named no host of the decision model's pinned chain")
+
+// constrainDecisionOptions keeps a tuned decision model on its pinned chain
+// (InternalDecisionHosts, canonical host slugs). The control plane enforces
+// the same chain at authorize; the gateway holds an authorization to it too,
+// dispatching only to candidates the chain names, in the authorization's
+// order, and to none when it names none. A caller's own provider list is the
+// control plane's to resolve (it accepts aliases such as ai-studio), and an
+// untuned model has no chain, so neither is constrained here.
+func constrainDecisionOptions(req *types.OpenAIChatRequest, options []llm.InvokeOptions) ([]llm.InvokeOptions, error) {
+	if len(req.InternalDecisionHosts) == 0 {
+		return options, nil
+	}
+	kept := make([]llm.InvokeOptions, 0, len(options))
+	for _, option := range options {
+		for _, host := range req.InternalDecisionHosts {
+			if strings.EqualFold(host, option.Provider) {
+				kept = append(kept, option)
+				break
+			}
+		}
+	}
+	if len(kept) < len(options) {
+		authorized := make([]string, 0, len(options))
+		for _, option := range options {
+			authorized = append(authorized, option.Provider)
+		}
+		fmt.Fprintf(os.Stderr, "enclave.decide_host_pin_violation model=%q chain=%q authorized=%q kept=%d\n",
+			req.Model, strings.Join(req.InternalDecisionHosts, ","), strings.Join(authorized, ","), len(kept))
+	}
+	if len(kept) == 0 {
+		return nil, decisionHostPinViolation
+	}
+	return kept, nil
+}
+
 func nativeDecideChatRequest(req *decideRequest, specs []decide.Spec, native decide.NativeModel, attribution *types.OpenAIChatRequest) (*types.OpenAIChatRequest, error) {
 	chatReq, err := decide.NativeChatRequest(req.Model, req.State, specs, native, decide.NativeOptions{
 		Reasoning: req.Reasoning, ReasoningEffort: req.ReasoningEffort, MaxTokens: req.MaxTokens, Provider: req.Provider,
