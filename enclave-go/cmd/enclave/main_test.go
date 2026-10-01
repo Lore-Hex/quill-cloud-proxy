@@ -6473,7 +6473,7 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 func TestPrometheusOneMillionPanelIsTheControlPlanesMillionTokenMembers(t *testing.T) {
 	// The control plane's SYNTH_QUALITY_1M_MODEL_ORDER, from which a member
 	// whose window falls below 1M is removed; change both together.
-	want := []string{"xiaomi/mimo-v2.5-pro", "z-ai/glm-5.2", deepSeekV4Pro0423Model}
+	want := []string{"minimax/minimax-m3", "xiaomi/mimo-v2.5-pro", "z-ai/glm-5.2", deepSeekV4Pro0423Model}
 	if !reflect.DeepEqual(fusionQuality1MPanel, want) {
 		t.Fatalf("Prometheus 1.0 1M panel = %#v, want %#v", fusionQuality1MPanel, want)
 	}
@@ -6481,13 +6481,13 @@ func TestPrometheusOneMillionPanelIsTheControlPlanesMillionTokenMembers(t *testi
 
 func TestPrometheusOneMillionJudgesAndFinalsServeOneMillion(t *testing.T) {
 	// Every stage reads the whole request, so every stage serves 1M: Kimi K3
-	// and DeepSeek V4 Pro 0423 judge, GLM 5.2 then DeepSeek V4 Pro 0423 write.
+	// then MiniMax M3 judge, GLM 5.2 then MiniMax M3 write.
 	judges, ok := fusionPresetJudgeModelsForModel(trustedRouterPrometheus101MModel)
-	if !ok || !reflect.DeepEqual(judges, []string{"moonshotai/kimi-k3", "deepseek/deepseek-v4-pro-0423"}) {
+	if !ok || !reflect.DeepEqual(judges, []string{"moonshotai/kimi-k3", "minimax/minimax-m3"}) {
 		t.Fatalf("Prometheus 1.0 1M judges = %#v", judges)
 	}
 	finals, ok := fusionPresetFinalModelsForModel(trustedRouterPrometheus101MModel)
-	if !ok || !reflect.DeepEqual(finals, []string{"z-ai/glm-5.2", "deepseek/deepseek-v4-pro-0423"}) {
+	if !ok || !reflect.DeepEqual(finals, []string{"z-ai/glm-5.2", "minimax/minimax-m3"}) {
 		t.Fatalf("Prometheus 1.0 1M finals = %#v", finals)
 	}
 	// The presets it used to share these stages with stay frozen.

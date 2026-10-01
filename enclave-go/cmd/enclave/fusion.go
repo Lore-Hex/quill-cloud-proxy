@@ -133,19 +133,20 @@ var fusionPrometheus10Panel = []string{
 // Prometheus 1.0 1M is the one exception to the freeze above: every stage
 // serves a 1M window (Joseph, 2026-10-01). A panel member whose window falls
 // below 1M is removed, as the control plane's SYNTH_QUALITY_1M_MODEL_ORDER
-// removes it; MiniMax M3 (524,288 in the catalog) left it on 2026-08-30
-// (#966). Its judges and finals are 1M models too, where Prometheus 1.0's are
-// Kimi K2.7 Code (262,144) and MiniMax M3: the judge and the final stage both
-// read the whole request.
+// removes it. Its judges and finals are 1M models too: Prometheus 1.0's, with
+// Kimi K3 in place of Kimi K2.7 Code (262,144), because the judge and the
+// final stage both read the whole request. MiniMax M3 serves 1,000,000 by
+// MiniMax's own model feed.
 var fusionQuality1MPanel = []string{
+	"minimax/minimax-m3",
 	"xiaomi/mimo-v2.5-pro",
 	"z-ai/glm-5.2",
 	deepSeekV4Pro0423Model,
 }
 
-var fusionQuality1MJudgeModels = []string{fusionKimiK3, deepSeekV4Pro0423Model}
+var fusionQuality1MJudgeModels = []string{fusionKimiK3, "minimax/minimax-m3"}
 
-var fusionQuality1MFinalModels = []string{"z-ai/glm-5.2", deepSeekV4Pro0423Model}
+var fusionQuality1MFinalModels = []string{"z-ai/glm-5.2", "minimax/minimax-m3"}
 
 var fusionPrometheus20Panel = []string{
 	"minimax/minimax-m3",
