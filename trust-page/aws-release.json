@@ -1,7 +1,6 @@
 {
   "accepted_pcr0s": [
-    "1d8282c34d33045918d051067f7eab1d80d1284c807bd463101ef52b85e3aafd5fac82896efe280301acd5db5e047ea9",
-    "6821f7e40aa52296fb7d8e5bc643ecac8fe581f8a05f3b9925c4b64a43d18c319e1f034f1b32d83b1341948962921fec"
+    "1d8282c34d33045918d051067f7eab1d80d1284c807bd463101ef52b85e3aafd5fac82896efe280301acd5db5e047ea9"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -13,13 +12,13 @@
     "prompt_output_storage": false
   },
   "image_digest": "sha256:548c1c3f9eeaa15ce81e046b9a0843fa170bf0cdef69fca478dfc6656ea2f2d5",
-  "measurement_provenance": "Transitional release: the new PCR0 was cryptographically verified on isolated Paris candidate i-017f9668ca8f2dfa4, outside every serving ASG, target group and routing DNS record. Verification covered the production Nitro root chain, fresh nonce, exact module ID, system CA and hostname, certificate/SPKI binding, TLS exporter and same-socket follow-up; a minimal inference probe also passed. Both regional Fargate consumers accept the old and new PCR0. Serving instances still use the outgoing measurement until the signed transitional trust set is published. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
+  "measurement_provenance": "All four serving instances were independently verified against this PCR0 using the production Nitro certificate chain, fresh nonces, exact module IDs, system CA and hostname validation, certificate/SPKI binding, TLS exporter binding and same-socket follow-up. Paris modules: i-001472b556e2df639-enc01a0f8b6e75f699c and i-05c43c91c485515de-enc01a0f8c74734a28b. Dublin modules: i-0954a927f93324e94-enc01a0f8ebdb3e489e and i-09f2b6946a22b4600-enc01a0f8f746f0fce3. Both regional refreshes completed successfully; each replacement passed a minimal inference probe through the existing authorization and settlement path. Both regional Fargate consumers accept only this PCR0. System1 catalog publication is verified separately from this gateway release. Source-to-image provenance remains operator-asserted, not a reproduced-build claim.",
   "parent_image_digest": "sha256:d09fa4e0ceeb185cca6588aa4becd27d62b05dad7c9615ba462eb375e251c114",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-017f9668ca8f2dfa4-enc01a0f898e8f6cfab",
+  "observed_module_id": "i-05c43c91c485515de-enc01a0f8c74734a28b",
   "pcr0": "1d8282c34d33045918d051067f7eab1d80d1284c807bd463101ef52b85e3aafd5fac82896efe280301acd5db5e047ea9",
   "platform": "aws-nitro-enclaves",
-  "release_state": "rolling",
+  "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
   "source_commit": "d849f6f146a3b426635173c4595cd1773be93e63",
   "source_commit_provenance": "operator-asserted",
