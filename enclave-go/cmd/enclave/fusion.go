@@ -130,8 +130,11 @@ var fusionPrometheus10Panel = []string{
 	deepSeekV4Pro0423Model,
 }
 
+// Prometheus 1.0 1M's panel is the one exception to the freeze above: a
+// member whose window falls below 1M is removed (Joseph, 2026-10-01), as the
+// control plane's SYNTH_QUALITY_1M_MODEL_ORDER removes it. MiniMax M3 serves
+// 524,288 tokens; the control plane dropped it on 2026-08-30 (#966).
 var fusionQuality1MPanel = []string{
-	"minimax/minimax-m3",
 	"xiaomi/mimo-v2.5-pro",
 	"z-ai/glm-5.2",
 	deepSeekV4Pro0423Model,

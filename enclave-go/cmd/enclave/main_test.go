@@ -6468,6 +6468,15 @@ func TestFusionNamedPresetModelsResolvePanels(t *testing.T) {
 	}
 }
 
+func TestPrometheusOneMillionPanelIsTheControlPlanesMillionTokenMembers(t *testing.T) {
+	// The control plane's SYNTH_QUALITY_1M_MODEL_ORDER, from which a member
+	// whose window falls below 1M is removed; change both together.
+	want := []string{"xiaomi/mimo-v2.5-pro", "z-ai/glm-5.2", deepSeekV4Pro0423Model}
+	if !reflect.DeepEqual(fusionQuality1MPanel, want) {
+		t.Fatalf("Prometheus 1.0 1M panel = %#v, want %#v", fusionQuality1MPanel, want)
+	}
+}
+
 func TestLibertyOneMillionAndItsComponentsKeepMillionTokenAdvisorContext(t *testing.T) {
 	for _, model := range []string{
 		trustedRouterLiberty101MModel,
