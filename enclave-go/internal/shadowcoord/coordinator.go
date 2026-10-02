@@ -49,8 +49,11 @@ type cached struct {
 }
 type permit struct{ ordinal, amount int64 }
 type grantReceipt struct {
-	wall time.Time
-	mono speculation.Monotonic
+	wall          time.Time
+	mono          speculation.Monotonic
+	event         uint64
+	issuedAt      int64
+	startDeadline time.Duration
 }
 type lookupEntry struct {
 	identity  Identity
@@ -66,6 +69,8 @@ const InvocationMemory = 128 << 10
 type state struct {
 	confirmed        uint64
 	receipts         map[[32]byte]grantReceipt
+	receiptWatermark int64
+	receiptsRetired  bool
 	evidence         Evidence
 	evidenceDeadline time.Time
 	cached           cached
@@ -334,7 +339,6 @@ func (c *Coordinator) refreshResultSent(r Result, sent uint64) {
 	receivedEvent := c.event
 	saved := *original
 	receipt, seen := original.receipts[fingerprint]
-	receiptCount := len(original.receipts)
 	c.mu.Unlock()
 	s := &saved
 	if r.Miss != nil {
@@ -355,11 +359,7 @@ func (c *Coordinator) refreshResultSent(r Result, sent uint64) {
 		return
 	}
 	if !seen {
-		if receiptCount >= 256 {
-			c.setMiss(r.Identity, miss(200, "grant-journal-capacity"))
-			return
-		}
-		receipt = grantReceipt{now, speculation.Monotonic(now.Sub(c.origin))}
+		receipt = grantReceipt{wall: now, mono: speculation.Monotonic(now.Sub(c.origin)), event: receivedEvent}
 	}
 	received, reason := speculation.ReceiveGrant(g, receipt.wall, receipt.mono, c.config.ClockUncertainty)
 	if reason != speculation.ReasonEligible {
@@ -380,6 +380,8 @@ func (c *Coordinator) refreshResultSent(r Result, sent uint64) {
 		return
 	}
 	next := cached{historyDeadline: receipt.wall.Add(time.Unix(lastSuccess+30, 0).Sub(receipt.wall.Add(c.config.ClockUncertainty))), startDeadline: time.Duration(receipt.mono) + time.Unix(g.StartDeadline(), 0).Sub(receipt.wall.Add(c.config.ClockUncertainty)), verified: g, received: received, grantID: grantID}
+	receipt.issuedAt, _ = claimInteger(claims["iat"])
+	receipt.startDeadline = next.startDeadline
 	for _, p := range permits {
 		v, ok := p.(map[string]any)
 		ordinal, okO := claimInteger(v["ordinal"])
@@ -395,15 +397,44 @@ func (c *Coordinator) refreshResultSent(r Result, sent uint64) {
 		c.mu.Unlock()
 		return
 	}
+	original.retireReceipts(c.Mono())
 	if !seen {
+		if original.receiptsRetired && receipt.issuedAt <= original.receiptWatermark {
+			c.mu.Unlock()
+			c.setMiss(r.Identity, miss(200, "grant-replay"))
+			return
+		}
+		if len(original.receipts) >= 256 {
+			c.mu.Unlock()
+			c.setMiss(r.Identity, miss(200, "grant-journal-capacity"))
+			return
+		}
 		original.receipts[fingerprint] = receipt
 	}
 	c.revision++
 	original.cached = next
 	original.lastMiss = nil
-	c.recoverGrant(r.Identity, original, claims, sent, receivedEvent)
+	c.recoverGrant(r.Identity, original, claims, sent, receipt.event)
 	c.mu.Unlock()
 }
+
+// Expired receipts collapse into an inclusive issuance watermark. Unseen grants
+// at or below it must be rejected, even if a wall-clock rollback makes their JWS
+// valid again. Still-live fingerprints retain their original deadlines/events.
+// Called under mu, only on the refresh worker, with at most 256 records to scan.
+func (s *state) retireReceipts(now time.Duration) {
+	for fingerprint, receipt := range s.receipts {
+		if now < receipt.startDeadline {
+			continue
+		}
+		if !s.receiptsRetired || receipt.issuedAt > s.receiptWatermark {
+			s.receiptWatermark = receipt.issuedAt
+		}
+		s.receiptsRetired = true
+		delete(s.receipts, fingerprint)
+	}
+}
+
 func (c *Coordinator) setMiss(id Identity, m *Miss) {
 	c.mu.Lock()
 	s := c.entries[id]

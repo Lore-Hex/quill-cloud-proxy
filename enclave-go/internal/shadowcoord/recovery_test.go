@@ -276,7 +276,7 @@ func TestRecoveryRequiresFreshEvidenceAndSpanningSuccesses(t *testing.T) {
 	for range 3 {
 		c.ObserveAuthorized(id)
 	}
-	c.RefreshOnce(t.Context(), r)
+	c.RefreshOnce(t.Context(), repairedGrant(t, c, f, 0, 0))
 	clock.add(30 * time.Second)
 	// A late grant cannot turn three simultaneous successes into a 30s span.
 	c.mu.Lock()
@@ -338,7 +338,7 @@ func TestInfrastructureCapacityBootRecovery(t *testing.T) {
 		t.Fatal("infrastructure capacity")
 	}
 	c.ObserveAuthorized(f.Items[0])
-	c.RefreshOnce(t.Context(), r)
+	c.RefreshOnce(t.Context(), repairedGrant(t, c, f, 0, 0))
 	clock.add(15 * time.Second)
 	c.ObserveAuthorized(f.Items[0])
 	clock.add(15 * time.Second)
@@ -372,7 +372,7 @@ func TestBootRecoveryCountsUncachedOrdinarySuccess(t *testing.T) {
 		s.evidenceDeadline = clock.Now().Add(time.Hour)
 	}
 	c.ObserveVerdict("", 503, "infrastructure_error", "")
-	c.RefreshOnce(t.Context(), r)
+	c.RefreshOnce(t.Context(), repairedGrant(t, c, f, 0, 0))
 	uncached := Identity{WorkspaceID: "uncached", KeyID: "k", LookupDigest: strings.Repeat("f", 64)}
 	c.ObserveAuthorized(uncached)
 	clock.add(15 * time.Second)

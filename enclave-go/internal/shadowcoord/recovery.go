@@ -53,6 +53,9 @@ func (c *Coordinator) latch(id Identity, lookup, scope string) {
 }
 func (c *Coordinator) failInfrastructure(lookup string) {
 	b := breaker{failed: c.clock.Now(), event: c.event}
+	if c.bootClosed {
+		c.bootBreaker = b
+	}
 	if lookup == "" || !c.infrastructureClosed[lookup] && len(c.infrastructureClosed) >= MaxIdentities {
 		c.bootClosed = true
 		c.bootBreaker = b

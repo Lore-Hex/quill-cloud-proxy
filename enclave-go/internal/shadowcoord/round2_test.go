@@ -150,7 +150,7 @@ func TestGrantReceiptJournalBound(t *testing.T) {
 	c, _, req, r, f := setup(t)
 	s := c.entries[f.Items[0]]
 	for i := range 256 {
-		s.receipts[sha256.Sum256([]byte{byte(i)})] = grantReceipt{}
+		s.receipts[sha256.Sum256([]byte{byte(i)})] = grantReceipt{startDeadline: time.Minute}
 	}
 	warm(c, f, r)
 	if d := c.Predecision(f.Items[0].LookupDigest, req).Decision(); d.Reason != "grant-journal-capacity" {

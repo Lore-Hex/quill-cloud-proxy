@@ -119,10 +119,10 @@ advance monotonically; a lower-epoch replay cannot regain eligibility.
 
 | Scope | What closes it | What reopens it | What never reopens it |
 |---|---|---|---|
-| Workspace | Resolved credit, trust, abuse, payment, pause or workspace/ambiguous rate denial | Verified grant received after the latch with strictly higher workspace epoch | Time, volume, success callback, expiry, eviction, same epoch, key-only repair |
-| Key | Resolved invalid/revoked/expired key, key budget or explicit key-rate denial | Verified grant received after the latch with strictly higher key epoch | Time/window reset, volume, old success, expiry, same epoch, workspace-only repair |
-| Key infrastructure | Retryable 5xx/timeout/transport failure | Three clean ordinary successes for this key whose first/last span ≥30s after the latest failure, plus a verified grant received after failure | Another key's successes, old callbacks, time alone, pre-failure grant |
-| Boot infrastructure | Unscoped infrastructure failure or bounded key-breaker overflow | Same three-success/30s rule on this boot plus a post-failure verified grant | Time alone, old callbacks, pre-failure grant |
+| Workspace | Resolved credit, trust, abuse, payment, pause or workspace/ambiguous rate denial | Verified grant first received after the latch with strictly higher workspace epoch | Time, volume, success callback, expiry, eviction, same epoch, key-only repair |
+| Key | Resolved invalid/revoked/expired key, key budget or explicit key-rate denial | Verified grant first received after the latch with strictly higher key epoch | Time/window reset, volume, old success, expiry, same epoch, workspace-only repair |
+| Key infrastructure | Retryable 5xx/timeout/transport failure | Three clean ordinary successes for this key whose first/last span ≥30s after the latest failure, plus a verified grant first received after failure | Another key's successes, old callbacks, time alone, pre-failure grant |
+| Boot infrastructure | Unscoped infrastructure failure or bounded key-breaker overflow; every further infrastructure failure restarts it while active | Same three-success/30s rule on this boot after the latest failure plus a grant first received after it | Time alone, old callbacks, pre-failure grant replays or probe evidence |
 | Uncertain coverage | Unbound authenticated business denial, conflicting binding, or scope capacity overflow | Each identity's verified grant from a refresh **sent after** the denial | An already-in-flight refresh, ordinary success, time alone |
 | No health change | Unresolvable invalid credential; request-only other 4xx | No recovery needed | These responses cannot latch an unrelated workspace |
 
@@ -190,8 +190,24 @@ evidence.
   `simulated-concurrency`, `simulated-retained-budget`,
   `simulated-journal-capacity`, `simulated-permits-exhausted`,
   `simulated-enclave-concurrency`, `simulated-memory`, `snapshot-changed`,
-  `observer-failed`, `grant-shape`, `grant-journal-capacity`, `input_bound`,
+  `observer-failed`, `grant-shape`, `grant-journal-capacity`, `grant-replay`, `input_bound`,
   `coverage-unconfirmed`.
+
+Receipt journals retain at most 256 live fingerprints per identity. Each record
+keeps its first receipt event and original monotonic deadline, even across misses
+and replays. Refresh processing retires expired records into a constant-size,
+inclusive signed `iat` watermark. An unseen fingerprint at or below that watermark
+is a `grant-replay` miss, including after wall-clock rollback; it cannot acquire a
+new deadline or recovery order. This conservatively rejects previously unseen
+out-of-order grants in the retired issuance range. Still-retained fingerprints
+keep their original deadlines/events. A full live journal returns
+`grant-journal-capacity`; newer grants resume admission once old records expire.
+The watermark lasts for the identity's policy lifetime; identity eviction already
+requires expired policy and no retained liability or active owner.
+
+Every infrastructure failure while the boot breaker is active restarts its failure
+time, clean-probe count/span and fresh-grant requirement, including a failure on an
+already-tracked key. A replay never supplies new post-failure grant evidence.
 
 The frozen refresh fixture SHA-256 is
 `ad8d4161013cdf442aa4f221abf06c418ee15353d646487ac95ac8419d8aef39`.
@@ -215,3 +231,5 @@ The timing-only authorize error fixture SHA-256 is
 checking status, authenticated type/classification, Retry-After, typed timing and
 absent scope. Round-3 recovery, mutations, split cost measurements and full gates
 are recorded in [round3-verification.md](round3-verification.md).
+
+Round-4 fixes, regression/mutation evidence and gates: [round4-verification.md](round4-verification.md).
