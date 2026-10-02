@@ -9,10 +9,12 @@ import (
 type contractRejectionContextKey struct{}
 
 type contractRejection struct {
-	Status        int    `json:"status"`
-	Parameter     string `json:"parameter"`
-	RequestID     string `json:"request_id"`
-	ParameterPath string `json:"parameter_path,omitempty"`
+	Status         int    `json:"status"`
+	Parameter      string `json:"parameter"`
+	RequestID      string `json:"request_id"`
+	ParameterPath  string `json:"parameter_path,omitempty"`
+	ValuePreview   string `json:"value_preview,omitempty"`
+	ValueTruncated bool   `json:"value_truncated,omitempty"`
 }
 
 // These are public diagnostic categories, not a request acceptance allowlist.
@@ -97,9 +99,10 @@ var contractParameterCategories = map[string]struct{}{
 }
 
 // WithContractRejection annotates the existing post-response identity lookup.
-// It exports no body, field value, or error message. Field paths are bounded and
+// It exports no body or error message. Only sanitized configuration previews
+// are exported. Field paths are bounded and
 // validated separately, never used as an unbounded Sentry fingerprint.
-func WithContractRejection(ctx context.Context, status int, parameter string) context.Context {
+func WithContractRejection(ctx context.Context, status int, parameter, preview string, truncated bool) context.Context {
 	if status != 400 && status != 422 && status != 501 {
 		return ctx
 	}
@@ -107,9 +110,11 @@ func WithContractRejection(ctx context.Context, status int, parameter string) co
 	if requestID == "" {
 		return ctx
 	}
+	preview, trimmed := SanitizeContractParameterValue(parameter, preview)
 	return context.WithValue(ctx, contractRejectionContextKey{}, contractRejection{
 		Status: status, Parameter: ContractParameterCategory(parameter), RequestID: requestID,
 		ParameterPath: ContractParameterPath(parameter),
+		ValuePreview:  preview, ValueTruncated: preview != "" && (truncated || trimmed),
 	})
 }
 

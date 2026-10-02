@@ -35,6 +35,12 @@ func TestServeLegacyUsageAndCacheRetention(t *testing.T) {
 				{"prompt_cache_retention", `"24h"`, "prompt_cache_retention", 501},
 			} {
 				t.Run(fmt.Sprintf("%s/%t/%s/%s", route, stream, tc.field, tc.value), func(t *testing.T) {
+					wantPreview := `"[redacted:string]"`
+					if tc.parameter == "prompt_cache_retention" {
+						wantPreview = tc.value
+					} else if tc.parameter == "" {
+						wantPreview = ""
+					}
 					var authorize, settle, validate, unexpected atomic.Int32
 					control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						body, _ := io.ReadAll(r.Body)
@@ -58,6 +64,7 @@ func TestServeLegacyUsageAndCacheRetention(t *testing.T) {
 							var payload struct {
 								Rejection struct {
 									ParameterPath string `json:"parameter_path"`
+									ValuePreview  string `json:"value_preview"`
 								} `json:"contract_rejection"`
 							}
 							if err := json.Unmarshal(body, &payload); err != nil {
@@ -65,6 +72,9 @@ func TestServeLegacyUsageAndCacheRetention(t *testing.T) {
 							}
 							if payload.Rejection.ParameterPath != tc.parameter {
 								t.Errorf("lost rejected field: %s", body)
+							}
+							if payload.Rejection.ValuePreview != wantPreview {
+								t.Errorf("wrong safe value preview: got %q want %q", payload.Rejection.ValuePreview, wantPreview)
 							}
 							_, _ = io.WriteString(w, `{"data":{"workspace_id":"ws_1","api_key_hash":"key_1"}}`)
 						default:
@@ -104,6 +114,9 @@ func TestServeLegacyUsageAndCacheRetention(t *testing.T) {
 						}
 						if !strings.Contains(logs, `parameter_path="`+tc.parameter+`"`) {
 							t.Fatal("rejected field missing from durable log")
+						}
+						if !strings.Contains(logs, fmt.Sprintf("value_preview=%q", wantPreview)) {
+							t.Fatal("missing safe preview in durable log")
 						}
 						return
 					}

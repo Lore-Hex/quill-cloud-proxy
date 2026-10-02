@@ -25,7 +25,7 @@ func TestRejectedParameterPathsRetainedWithoutValues(t *testing.T) {
 	} {
 		t.Run(tc.input, func(t *testing.T) {
 			ctx := WithRequestLogID(t.Context(), "rlog_"+strings.Repeat("a", 32))
-			ctx = WithContractRejection(ctx, 400, tc.input)
+			ctx = WithContractRejection(ctx, 400, tc.input, "", false)
 			body := map[string]any{}
 			addContractRejection(ctx, body, "/v1/chat/completions")
 			encoded, err := json.Marshal(body)
@@ -72,7 +72,7 @@ func TestContractRejectionSanitizesAtEnclaveBoundary(t *testing.T) {
 	} {
 		t.Run(tc.input, func(t *testing.T) {
 			ctx := WithRequestLogID(t.Context(), "rlog_"+strings.Repeat("a", 32))
-			ctx = WithContractRejection(ctx, 400, tc.input)
+			ctx = WithContractRejection(ctx, 400, tc.input, "", false)
 			body := map[string]any{}
 			addContractRejection(ctx, body, "/v1/chat/completions")
 			got, ok := body["contract_rejection"].(contractRejection)
@@ -105,7 +105,7 @@ func TestContractRejectionRequiresTrustedRouteStatusAndRequestID(t *testing.T) {
 		{"rlog_" + strings.Repeat("a", 32), "/v1/chat/completions", 200, false},
 	} {
 		ctx := WithRequestLogID(t.Context(), tc.id)
-		ctx = WithContractRejection(ctx, tc.status, "store")
+		ctx = WithContractRejection(ctx, tc.status, "store", "", false)
 		body := map[string]any{}
 		addContractRejection(ctx, body, tc.route)
 		if _, exists := body["contract_rejection"]; exists != tc.report {
