@@ -57,6 +57,7 @@ type Record struct {
 	CapacityEvidence     string         `json:"capacity_evidence"`
 }
 type Execution struct {
+	Boundary
 	mu                             sync.Mutex
 	c                              Host
 	id                             string
@@ -102,6 +103,14 @@ func FromContext(ctx context.Context) *Execution {
 	x, _ := ctx.Value(executionKey{}).(*Execution)
 	return x
 }
+func (x *Execution) recoverObservation() {
+	if recover() != nil {
+		x.Fault()
+		if host, ok := x.c.(interface{ Fault() }); ok {
+			Protect(&x.Boundary, host.Fault)
+		}
+	}
+}
 func (x *Execution) Decision() Decision {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -116,6 +125,7 @@ func (x *Execution) StartAuthorize(nonce, denialID string) {
 	if x == nil {
 		return
 	}
+	defer x.recoverObservation()
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	x.nonce = nonce
@@ -127,26 +137,29 @@ func (x *Execution) EndAuthorize(id string, status int) {
 	if x == nil {
 		return
 	}
+	defer x.recoverObservation()
+	defer x.c.Release(x.identity, x.id)
 	x.mu.Lock()
+	defer x.mu.Unlock()
 	if x.authorize != nil {
 		x.authorize.End = x.c.Mono()
 	}
 	x.authorization = id
 	x.status = status
 	x.authorized = status == 200
-	x.mu.Unlock()
-	x.c.Release(x.identity, x.id)
 }
 func (x *Execution) Now() time.Duration {
 	if x == nil {
 		return 0
 	}
+	defer x.recoverObservation()
 	return x.c.Mono()
 }
 func (x *Execution) ObserveAttempt(start time.Duration, status int, timing *RouterTiming) {
 	if x == nil {
 		return
 	}
+	defer x.recoverObservation()
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if len(x.attempts) < 16 {
@@ -157,6 +170,7 @@ func (x *Execution) ProviderStart(route Route, first bool) {
 	if x == nil {
 		return
 	}
+	defer x.recoverObservation()
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	x.providerSucceeded = false
@@ -173,6 +187,7 @@ func (x *Execution) ProviderEnd(success bool) {
 	if x == nil {
 		return
 	}
+	defer x.recoverObservation()
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	x.providerSucceeded = success
@@ -185,6 +200,7 @@ func (x *Execution) Content(client bool) {
 	if x == nil {
 		return
 	}
+	defer x.recoverObservation()
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if !x.matching || x.provider == nil {
@@ -203,12 +219,14 @@ func (x *Execution) Finish() {
 	if x == nil {
 		return
 	}
+	defer x.recoverObservation()
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if x.finished {
 		return
 	}
 	x.finished = true
+	x.c.Release(x.identity, x.id)
 	d := x.decision
 	r := Record{Kind: "execution", Status: x.status, DenialID: x.denialID, ObservationID: NewID(), ExecutionID: x.id, InvocationNonce: x.nonce, AuthorizationID: x.authorization, Decision: &d, Attempts: append([]Attempt(nil), x.attempts...), Authorize: x.authorize, Provider: x.provider, FirstContent: x.firstContent, ClientFirstContent: x.clientContent, Applicability: "not-applicable", CapacityEvidence: "simulation", PredictionProvenance: "unknown"}
 	if x.authorized && x.matching && x.providerSucceeded && x.provider != nil && x.firstContent != nil && x.authorize != nil {

@@ -50,7 +50,10 @@ func TestShadowBootOnlyFrozenWire(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(f.Response)), Header: make(http.Header)}, nil
 	})})
-	c.stageDBootSigner = shadowSeedSigner(ed25519.NewKeyFromSeed(seed))
+	c.ConfigureShadowBoot(shadowSeedSigner(ed25519.NewKeyFromSeed(seed)))
+	if c.stageDBootSigner != nil {
+		t.Fatal("refresh setup installed ordinary signer")
+	}
 	results, m := c.RefreshShadow(t.Context(), f.Items)
 	if m != nil || len(results) != 1 || results[0].Grant == "" || c.spendLease != nil {
 		t.Fatal(results, m)
@@ -78,11 +81,15 @@ func TestShadowRetryTimingAndByteParity(t *testing.T) {
 		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
 	})
 	c.authorizeRetry = retryPolicy{attempts: 2, sleep: func(context.Context, time.Duration) error { return nil }}
-	c.shadow = newTestShadowObserver()
+	healthObserver := &reviewVerdictObserver{testShadowObserver: newTestShadowObserver()}
+	c.shadow = healthObserver
 	ctx := WithRequestLogID(WithAuthorizationInvocation(t.Context()), "rlog_"+strings.Repeat("a", 32))
 	req := &qtypes.OpenAIChatRequest{Model: "fixture-text"}
 	if _, err := c.AuthorizeWithRoute(ctx, "key", req, "chat.completions"); err != nil {
 		t.Fatal(err)
+	}
+	if len(healthObserver.statuses) != 1 || healthObserver.statuses[0] != 503 {
+		t.Fatal("retry did not close health", healthObserver.statuses)
 	}
 	if attempt != 2 {
 		t.Fatal(attempt)

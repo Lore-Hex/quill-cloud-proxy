@@ -2,7 +2,6 @@ package shadowobserve
 
 import (
 	"encoding/json"
-	"regexp"
 )
 
 const RefreshPath = "/internal/speculation/shadow/refresh"
@@ -17,11 +16,39 @@ type Identity struct {
 	WorkspaceID  string `json:"workspace_id"`
 }
 
-var identifier = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
-var lookupDigest = regexp.MustCompile(`^[a-f0-9]{64}$`)
-
+// Byte validators have no package-init work and never scan unbounded input.
+func validIdentifier(s string) bool {
+	if len(s) == 0 || len(s) > 128 {
+		return false
+	}
+	for i := range s {
+		b := s[i]
+		if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '.' || b == ':' || b == '-') {
+			return false
+		}
+	}
+	return true
+}
+func validDigest(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := range s {
+		b := s[i]
+		if !(b >= 'a' && b <= 'f' || b >= '0' && b <= '9') {
+			return false
+		}
+	}
+	return true
+}
 func (i Identity) Valid() bool {
-	return identifier.MatchString(i.KeyID) && identifier.MatchString(i.WorkspaceID) && lookupDigest.MatchString(i.LookupDigest)
+	return validIdentifier(i.KeyID) && validIdentifier(i.WorkspaceID) && validDigest(i.LookupDigest)
+}
+
+// ResolvedWorkspace validates optional authenticated denial metadata; a missing
+// key or lookup is not invented or installed in the hot-set identity index.
+func (i Identity) ResolvedWorkspace() bool {
+	return validIdentifier(i.WorkspaceID) && (i.KeyID == "" || validIdentifier(i.KeyID)) && (i.LookupDigest == "" || validDigest(i.LookupDigest))
 }
 
 // Miss is deliberately open: unknown bounded codes remain misses, never ordinary errors.
@@ -31,7 +58,7 @@ type Miss struct {
 }
 
 func NewMiss(status int, code string) *Miss {
-	if !identifier.MatchString(code) {
+	if !validIdentifier(code) {
 		code = "malformed-response"
 	}
 	return &Miss{status, code}

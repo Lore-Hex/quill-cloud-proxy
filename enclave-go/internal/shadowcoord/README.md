@@ -35,14 +35,17 @@ Only ordinary successful authorizations add resolved identities to the bounded
 plus the returned workspace and stored key ID. The request path never refreshes.
 One worker sends at most 64 items after 10 seconds plus [0,1 second) jitter, with
 a five-second call deadline. Failure retries on a later tick, never inside the
-router's per-boot ten-second limit. The Stage D boot signer and existing internal
-gateway token authenticate exact canonical request bytes.
+router's per-boot ten-second limit. A refresh-only boot signer and the existing internal
+gateway token authenticate exact canonical request bytes. Enabling shadow does not
+install an ordinary authorize signer when Stage A/D are disabled.
 
 Grants are verified with `VerifyGrant(..., shadow=true)` using independent local
 context. Original grant/key/trust/price deadlines are converted once using
 `ReceiveGrant`, retaining the final two-second margin. A repeated JWS does not
 renew a deadline, grant allowance or ordinal. History freshness has its own
-original, monotonic deadline. Misses invalidate cached capability without touching
+original, monotonic deadline. A bounded, independent SHA-256 receipt journal retains
+the first conversion across cache invalidations (256 fingerprints per identity;
+saturation fails closed). Misses invalidate cached capability without touching
 ordinary traffic or credential state.
 
 ## Decision and evidence
@@ -62,8 +65,16 @@ proved, hidden system-prefix differences, expired independent policy/allocation
 facts and history older than thirty seconds at decision time. The evaluator's
 wire contract and all frozen fixtures are unchanged.
 
+Lookup digests have an O(1) identity index. The coordinator snapshots state under
+its mutex, runs refresh verification and request payload work outside it, then revalidates the revision,
+health and deadlines before depletion. A concurrent change yields a typed miss.
+Raw input above the shared 8,192-byte certified maximum misses before JSON decoding.
+
 Simulation atomically consumes a grant ordinal, one unresolved workspace slot,
-and retained workspace/stable-slot/fleet budget under the coordinator lock. The
+one of 32 enclave slots, 128 KiB of the 8 MiB simulated memory budget (64 KiB spool
+and 64 KiB parser/frame state), and retained workspace/stable-slot/fleet budget
+under the coordinator lock. Every execution exit idempotently releases ownership
+and simulated memory/concurrency; the hypothetical money remains retained. The
 limits are W from `WorkspaceAllowance` (never above $0.25 for tier 2), $1 per slot, $10 per fleet, and the signed
 per-request bound. A refresh does not refill permits. Unknown liability stays
 retained; this implementation does not infer a refund, recovery or newly free
@@ -78,7 +89,18 @@ image-fetch dependency. Every physical retry contributes bounded typed router
 phase timing (or UNKNOWN) and closes local infrastructure health immediately when
 retryable, even when its logical call succeeds. Real error types
 `invalid_api_key`, `key_limit_exceeded` and `key_window_limit_exceeded` are normalized
-to PR 2b reasons; human messages never classify health.
+to PR 2b reasons; human messages never classify health. Caller cancellation/deadline
+errors retain their original ordinary error and contribute no infrastructure
+verdict. Internal retry-budget/transport timeouts with a live caller still close
+infrastructure health. Optional authenticated error `data.workspace_id`, `key_id`,
+`lookup_digest` and `rate_scope` resolve denial scope without learning an identity.
+Health maps cap authenticated scopes at 256 entries and close coverage on saturation.
+Missing/invalid scope conservatively closes uncertain shadow coverage. Malformed
+optional metadata cannot affect ordinary error decoding.
+
+Narrow callback/worker recovery boundaries count observation faults, permanently
+fail shadow eligibility closed, and preserve ordinary results, errors and context
+cancellation. Runtime exits are not recovered; panic values are never logged.
 
 A backoff hit emits `billing_backoff_suppressed` with a new observation ID and the
 original denial's audit identity, without another predecision, permit or authorize.
@@ -97,7 +119,13 @@ enclave timestamps.
 The telemetry type is a closed content-free allowlist. Prepared bytes, prompts,
 raw bodies/errors, headers, BYOK and credentials cannot enter the observation
 queue. Its 512 records and 16 attempt samples per execution are bounded. Queue
-loss is counted monotonically and included in later records. Capacity evidence is
+loss is counted monotonically and included in later records. A shared admission
+cap allows 100 records per one-second monotonic window (at most 200 across a window
+boundary), including refresh misses. An ordinary observed request proposes two
+records: predecision and execution, with retries embedded in that execution. A
+backoff-suppressed request proposes one record; refresh proposes up to 64 misses
+per tick, at least ten seconds apart. Rate/queue/fault loss appears in subsequent
+`dropped_observations` values. Capacity evidence is
 labelled `simulation`; it is not a measurement of a speculative spool or remote
 backpressure. Missing joins or dropped observations disqualify complete release
 evidence.
@@ -113,7 +141,9 @@ evidence.
 * Local simulation: `identity-ambiguous`, `request-route-uncertain`,
   `payload-context-uncertain`, `policy_stale`, `allocation-unknown`,
   `simulated-concurrency`, `simulated-retained-budget`,
-  `simulated-journal-capacity`, `simulated-permits-exhausted`.
+  `simulated-journal-capacity`, `simulated-permits-exhausted`,
+  `simulated-enclave-concurrency`, `simulated-memory`, `snapshot-changed`,
+  `observer-failed`, `grant-shape`, `grant-journal-capacity`, `input_bound`.
 
 The frozen refresh fixture SHA-256 is
 `ad8d4161013cdf442aa4f221abf06c418ee15353d646487ac95ac8419d8aef39`.
@@ -127,3 +157,6 @@ module or repository root using the corresponding path. It copies the module to
 a temporary directory, checks each named baseline, injects one fault, requires a
 named test failure (not a build failure), restores the bytes, and requires green.
 It never writes git or mutates the working source tree.
+
+Round-2 findings, mutation kills, startup traces, performance and the complete
+five-tag gate results are recorded in [round2-verification.md](round2-verification.md).

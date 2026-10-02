@@ -1,4 +1,7 @@
-# PR 4 verification and handoff
+# PR 4 round-1 verification and handoff
+
+Historical round-1 results. See [round2-verification.md](round2-verification.md) for
+the request-changes fixes and current verification.
 
 Worktree: `/Users/jperla/josh/repos/tr/wt/spec-e4`.
 Base HEAD: `06e6ffef`. Changes are uncommitted; no git write command was used.

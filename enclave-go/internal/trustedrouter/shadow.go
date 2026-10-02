@@ -17,7 +17,7 @@ func (c *Client) ConfigureSpeculation(ctx context.Context, observer shadowobserv
 		return
 	}
 	c.shadow = observer
-	go c.shadow.Run(ctx, c.RefreshShadow)
+	go c.shadowCall(func() { c.shadow.Run(ctx, c.RefreshShadow) })
 }
 func (c *Client) Speculation() shadowobserve.Observer {
 	if c == nil {
@@ -33,7 +33,10 @@ func (c *Client) RefreshShadow(ctx context.Context, items []shadowobserve.Identi
 	if m != nil {
 		return nil, m
 	}
-	signer := c.stageDBootDigestSigner()
+	signer := c.shadowSigner
+	if signer == nil {
+		signer = c.stageDBootDigestSigner()
+	}
 	if signer == nil {
 		return nil, &shadowobserve.Miss{Status: 0, Code: "boot-unavailable"}
 	}
@@ -54,6 +57,7 @@ func (c *Client) RefreshShadow(ctx context.Context, items []shadowobserve.Identi
 }
 
 type shadowLookupKey struct{}
+type shadowCallerKey struct{}
 
 func (c *Client) observeShadowAuthorize(ctx context.Context, lookup string) (context.Context, func(*Authorization, error)) {
 	if c.shadow == nil {
@@ -64,25 +68,36 @@ func (c *Client) observeShadowAuthorize(ctx context.Context, lookup string) (con
 	}
 	x := shadowobserve.FromContext(ctx)
 	if x == nil {
-		x = c.shadow.Excluded(lookup)
+		c.shadowCall(func() { x = c.shadow.Excluded(lookup) })
 		ctx = shadowobserve.WithExecution(ctx, x)
 	}
+	ctx = context.WithValue(ctx, shadowCallerKey{}, ctx)
 	ctx = context.WithValue(ctx, shadowLookupKey{}, lookup)
 	nonce, _ := authorizationInvocationFromContext(ctx).invocationNonce()
 	x.StartAuthorize(nonce, requestLogIDFromContext(ctx))
 	return ctx, func(a *Authorization, err error) {
+		status, reason := shadowErrorForCaller(ctx, err)
 		id := ""
 		if err == nil && a != nil {
 			id = a.AuthorizationID
-			c.shadow.ObserveAuthorized(shadowobserve.Identity{KeyID: a.APIKeyHash, LookupDigest: lookup, WorkspaceID: a.WorkspaceID})
-		} else {
-			status, reason := shadowError(err)
-			c.shadow.ObserveVerdict(lookup, status, reason, "")
+			c.shadowCall(func() {
+				c.shadow.ObserveAuthorized(shadowobserve.Identity{KeyID: a.APIKeyHash, LookupDigest: lookup, WorkspaceID: a.WorkspaceID})
+			})
+		} else if status != 0 {
+			c.shadowCall(func() {
+				var e *ControlPlaneError
+				if resolved, ok := c.shadow.(interface {
+					ObserveResolvedVerdict(string, int, string, string, shadowobserve.Identity)
+				}); ok && errors.As(err, &e) {
+					resolved.ObserveResolvedVerdict(lookup, status, reason, e.RateScope, e.ShadowScope)
+				} else {
+					c.shadow.ObserveVerdict(lookup, status, reason, "")
+				}
+			})
 		}
-		status, _ := shadowError(err)
 		x.EndAuthorize(id, status)
 		// Excluded authorize entry points have no outer execution owner.
-		if !x.Decision().Eligible {
+		if x != nil && !x.Decision().Eligible {
 			x.Finish()
 		}
 	}
@@ -127,11 +142,11 @@ func (c *Client) beginShadowAttempt(ctx context.Context, path string) (context.C
 	start := x.Now()
 	sample := &shadowAttempt{}
 	return context.WithValue(ctx, shadowAttemptKey{}, sample), func(err error, retryable bool) {
-		status, _ := shadowError(err)
+		status, _ := shadowErrorForCaller(ctx, err)
 		x.ObserveAttempt(start, status, sample.timing)
-		if err != nil && retryable {
+		if err != nil && retryable && status >= 500 {
 			lookup, _ := ctx.Value(shadowLookupKey{}).(string)
-			c.shadow.ObserveVerdict(lookup, 503, "infrastructure_error", "")
+			c.shadowCall(func() { c.shadow.ObserveVerdict(lookup, 503, "infrastructure_error", "") })
 		}
 	}
 }
@@ -163,4 +178,41 @@ func (b *shadowTimingBody) Close() error {
 	}
 	b.raw = nil
 	return b.ReadCloser.Close()
+}
+
+// ConfigureShadowBoot signs refresh only, preserving ordinary authorize headers.
+func (c *Client) ConfigureShadowBoot(signer spendlease.DigestSigner) {
+	if c != nil {
+		c.shadowSigner = signer
+	}
+}
+func (c *Client) Fault() {
+	c.shadowBoundary.Fault()
+	if host, ok := c.shadow.(interface{ Fault() }); ok {
+		shadowobserve.Protect(&c.shadowBoundary, host.Fault)
+	}
+}
+func (c *Client) shadowCall(callback func()) {
+	if c.shadowBoundary.Failures() == 0 {
+		shadowobserve.Protect(c, callback)
+	}
+}
+func (c *Client) ShadowFailures() uint64 { return c.shadowBoundary.Failures() }
+func (c *Client) ObserveShadowSuppressed(id string) {
+	if c != nil && c.shadow != nil {
+		c.shadowCall(func() { c.shadow.Suppressed(id) })
+	}
+}
+
+// The caller is captured before the retry loop creates its own budget context.
+// A retry-budget/transport timeout with a live caller is infrastructure evidence.
+func shadowErrorForCaller(ctx context.Context, err error) (int, string) {
+	caller, _ := ctx.Value(shadowCallerKey{}).(context.Context)
+	if caller == nil {
+		caller = ctx
+	}
+	if caller.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		return 0, "caller-canceled"
+	}
+	return shadowError(err)
 }

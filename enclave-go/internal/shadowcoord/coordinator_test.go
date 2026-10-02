@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"os"
 	"reflect"
 	"strconv"
@@ -15,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/speculation"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
 )
@@ -39,7 +39,7 @@ type wireFixture struct {
 	} `json:"misses"`
 }
 
-func fixture(t *testing.T) wireFixture {
+func fixture(t testing.TB) wireFixture {
 	t.Helper()
 	b, err := os.ReadFile("../speculation/testdata/speculation_v1/shadow-refresh-wire.json")
 	if err != nil {
@@ -125,7 +125,7 @@ type fakeClock struct {
 
 func (f *fakeClock) Now() time.Time      { f.mu.Lock(); defer f.mu.Unlock(); return f.now }
 func (f *fakeClock) add(d time.Duration) { f.mu.Lock(); defer f.mu.Unlock(); f.now = f.now.Add(d) }
-func setup(t *testing.T) (*Coordinator, *fakeClock, speculation.ParsedRequest, Refresh, wireFixture) {
+func setup(t testing.TB) (*Coordinator, *fakeClock, speculation.ParsedRequest, Refresh, wireFixture) {
 	f := fixture(t)
 	route := f.Context["route"].(map[string]any)
 	cert := speculation.AdapterCertificate{Route: route, BoundAlgorithm: speculation.ConservativeUTF8Bytes, FramingKnown: true, HardOutputCap: true, SingleAttempt: true, NoHiddenTools: true, NoHiddenReasoning: true, VendorPricesBounded: true}
@@ -318,7 +318,7 @@ func TestBoundedHotSetAndWorkerLoss(t *testing.T) {
 	for range 600 {
 		c.Suppressed("original")
 	}
-	if c.Dropped() == 0 || len(c.Records()) != 512 {
+	if c.Dropped() == 0 || len(c.Records()) != 100 {
 		t.Fatal("loss not bounded")
 	}
 	if ParseRequest([]byte("bad")) != nil || ParseRequest([]byte(strings.Repeat("x", (1<<20)+1))) != nil {
@@ -391,6 +391,7 @@ func TestAdmissionUncertaintyAndBounds(t *testing.T) {
 				id := f.Items[0]
 				id.KeyID = "other"
 				c.entries[id] = &state{}
+				c.index(id)
 			case "preferences":
 				req.Body["provider"].(map[string]any)["only"] = []any{"different"}
 			case "prefix":

@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"io"
 	"net"
 	"net/http"
@@ -46,6 +45,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/privatemode"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"golang.org/x/crypto/acme/autocert"
@@ -492,11 +492,17 @@ func main() {
 	if speculationMode != shadowobserve.Shadow {
 		initializeSpendLeaseShadow(ctx, trGateway, boot)
 	}
-	if (speculationMode == shadowobserve.Shadow || (stageDConfig.usageHeartbeat && !boot.SpendLeaseShadow && !boot.SpendLeaseLocalAdmission)) && trGateway != nil && receiptSigner != nil {
+	if stageDConfig.usageHeartbeat && (speculationMode == shadowobserve.Shadow || (!boot.SpendLeaseShadow && !boot.SpendLeaseLocalAdmission)) && trGateway != nil && receiptSigner != nil {
 		trGateway.ConfigureStageDBoot(receiptSigner)
 		trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence())
 	}
 
+	if speculationMode == shadowobserve.Shadow && trGateway != nil && receiptSigner != nil {
+		trGateway.ConfigureShadowBoot(receiptSigner)
+		if !stageDConfig.usageHeartbeat {
+			trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence())
+		}
+	}
 	if err := initializeSpeculation(ctx, trGateway, speculationMode); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -772,7 +778,7 @@ func serveOneRequest(
 			if rejection, hit := cache.Get(billingKey, idempotent, time.Now()); hit {
 				billingSuppressed = true
 				if shadow := trGateway.Speculation(); shadow != nil {
-					shadow.Suppressed(rejection.RequestID)
+					trGateway.ObserveShadowSuppressed(rejection.RequestID)
 				}
 				// Preserve the original response IDs as well as its body and headers.
 				statsConn.mu.Lock()

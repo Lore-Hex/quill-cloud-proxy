@@ -44,6 +44,11 @@ func initializeSpeculation(ctx context.Context, c *trustedrouter.Client, mode sh
 	c.ConfigureSpeculation(ctx, shadowcoord.New(mode, cfg, nil))
 	if observer := c.Speculation(); observer != nil {
 		go func() {
+			defer func() {
+				if recover() != nil {
+					c.Fault()
+				}
+			}()
 			for {
 				select {
 				case <-ctx.Done():
@@ -72,6 +77,9 @@ func predecideSpeculation(ctx context.Context, c *trustedrouter.Client, bearer s
 	observer, ok := c.Speculation().(*shadowcoord.Coordinator)
 	if !ok {
 		return ctx
+	}
+	if speculation.CheckInputLength(len(raw)) != speculation.ReasonEligible {
+		return shadowobserve.WithExecution(ctx, observer.InputMiss())
 	}
 	return shadowobserve.WithExecution(ctx, observer.Predecision(c.ShadowLookup(ctx, bearer), speculation.ParsedRequest{Body: body, RouteType: route, CallerIdempotency: provenance, ConfidentialOnly: confidential, InferenceReceipts: req.InferenceReceipt.Requested, CustomModel: custom, ExtraReservationCost: int64(req.AdditionalCostReservationMicrodollars), ResponseModel: req.ResponseModel}))
 }

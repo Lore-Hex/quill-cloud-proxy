@@ -17,7 +17,7 @@ MUTANTS = [
      'ctx = predecideSpeculation(ctx,trGateway,bearer,body,attribution.IdempotencyPresent,"chat.completions",confidential,&types.OpenAIChatRequest{},false); credentialChecked := false',
      "./cmd/enclave", "TestShadowCredentialBackoffOrderingCounters"),
     ("five-second-cache-expiry-reopens-health", "internal/shadowcoord/coordinator.go",
-     "health := s.evidence.Health", "if c.Mono()>5*time.Second {delete(c.workspaceClosed,x.identity.WorkspaceID)}; health := s.evidence.Health",
+     "health = saved.evidence.Health", "if c.Mono()>5*time.Second {delete(c.workspaceClosed,x.identity.WorkspaceID)}; health = saved.evidence.Health",
      "./internal/shadowcoord", "TestConcurrentRenewalDenyAndNoTimerRecovery"),
     ("extra-provider-call", "cmd/enclave/provider_stream.go",
      "err = br.InvokeStreaming(attemptCtx, req, anthropicReq, candidateWriter, option)",
@@ -42,6 +42,222 @@ MUTANTS = [
      'if envelope.Miss=="future-code" {return nil,NewMiss(status,"malformed-response")}; return nil, NewMiss(status, envelope.Miss)',
      "./internal/shadowcoord", "TestUnknownMissTyping"),
 ]
+
+MUTANTS += [('observer-panic-escapes',
+  'internal/shadowobserve/boundary.go',
+  'defer func() {\n\t\tif recover() != nil {\n\t\t\towner.Fault()\n\t\t}\n\t}()',
+  '',
+  './internal/trustedrouter',
+  'TestReviewObserverPanicPreservesOrdinarySuccess'),
+ ('refresh-worker-panic-escapes',
+  'internal/shadowcoord/coordinator.go',
+  'func (c *Coordinator) RefreshOnce(ctx context.Context, refresh Refresh) {\n\tdefer c.Recover()',
+  'func (c *Coordinator) RefreshOnce(ctx context.Context, refresh Refresh) {',
+  './internal/shadowcoord',
+  'TestRefreshPanicFailsClosedAndCountsLoss'),
+ ('forget-original-grant-receipt',
+  'internal/shadowcoord/coordinator.go',
+  'receipt, seen := original.receipts[fingerprint]',
+  'receipt, seen := original.receipts[fingerprint]; seen = false',
+  './internal/shadowcoord',
+  'TestReviewReplayAfterMissCannotRenewMonotonicDeadline'),
+ ('unbounded-enclave-concurrency',
+  'internal/shadowcoord/coordinator.go',
+  'c.unresolved >= MaxUnresolved',
+  'false',
+  './internal/shadowcoord',
+  'TestReviewEnclaveUnresolvedCapacity'),
+ ('unbounded-simulated-memory',
+  'internal/shadowcoord/coordinator.go',
+  'c.memory > MaxSimulatedMemory-InvocationMemory',
+  'false',
+  './internal/shadowcoord',
+  'TestSimulatedMemoryAndRelease'),
+ ('finish-leaks-ownership',
+  'internal/shadowobserve/execution.go',
+  'x.finished = true\n\tx.c.Release(x.identity, x.id)',
+  'x.finished = true',
+  './cmd/enclave',
+  'TestReviewHandlerEarlyCredentialReturnLeaksSlot'),
+ ('unresolved-denial-ignored',
+  'internal/shadowcoord/coordinator.go',
+  'status == 402 || status == 429 || status == 401 || status == 403',
+  'false',
+  './internal/shadowcoord',
+  'TestReviewUnresolvedWorkspaceDenialInvalidatesCoverage'),
+ ('resolved-scope-discarded',
+  'internal/trustedrouter/client.go',
+  'controlErr.ShadowScope = shadowobserve.Identity{WorkspaceID: envelope.Data.WorkspaceID, KeyID: '
+  'envelope.Data.KeyID, LookupDigest: envelope.Data.LookupDigest}',
+  'controlErr.ShadowScope = shadowobserve.Identity{}',
+  './internal/trustedrouter',
+  'TestAuthenticatedErrorScopeCarriedToObserver'),
+ ('caller-cancellation-poisons-health',
+  'internal/trustedrouter/shadow.go',
+  '} else if status != 0 {',
+  '} else {',
+  './internal/trustedrouter',
+  'TestReviewCancellationNotInfrastructureFailure'),
+ ('eager-off-mode-regexp',
+  'internal/shadowobserve/wire.go',
+  'import (\n\t"encoding/json"\n)',
+  'import ("encoding/json";"regexp")\nvar eager = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)',
+  './internal/shadowcoord',
+  'TestOffModePackageInitAllocations'),
+ ('duplicate-response-identity',
+  'internal/shadowobserve/wire.go',
+  'delete(allowed, i.Identity)',
+  '',
+  './internal/shadowcoord',
+  'TestReviewWireAdditionalBounds'),
+ ('suppress-retry-health',
+  'internal/trustedrouter/shadow.go',
+  'c.shadowCall(func() { c.shadow.ObserveVerdict(lookup, 503, "infrastructure_error", "") })',
+  '_ = lookup',
+  './internal/trustedrouter',
+  'TestShadowRetryTimingAndByteParity'),
+ ('fallback-measured-as-first-route',
+  'internal/shadowobserve/execution.go',
+  'x.authorized && first && x.decision.Eligible',
+  'x.authorized && x.decision.Eligible',
+  './internal/shadowcoord',
+  'TestFallbackIsNotProposedRoute'),
+ ('decoder-size-guard-removed',
+  'internal/shadowobserve/wire.go',
+  'len(body) > MaxResponseBytes',
+  'false',
+  './internal/shadowcoord',
+  'TestReviewWireAdditionalBounds'),
+ ('refresh-signer-signs-ordinary',
+  'internal/trustedrouter/shadow.go',
+  'c.shadowSigner = signer',
+  'c.shadowSigner = signer; c.stageDBootSigner = signer',
+  './internal/trustedrouter',
+  'TestShadowBootOnlyHeaderParity'),
+ ('evaluate-under-coordinator-lock',
+  'internal/shadowcoord/coordinator.go',
+  'snapshot := speculation.EvaluateEligibility(s.cached.received, s.evidence.Local, req, health, '
+  'speculation.Monotonic(c.Mono()))',
+  'c.mu.Lock(); snapshot := speculation.EvaluateEligibility(s.cached.received, s.evidence.Local, '
+  'req, health, speculation.Monotonic(c.Mono())); c.mu.Unlock()',
+  './internal/shadowcoord',
+  'Test64PredecisionsDoNotHoldLockDuringEvaluation'),
+ ('unchecked-route-claim',
+  'internal/shadowcoord/coordinator.go',
+  'r, ok := claims["route"].(map[string]any)',
+  'r := claims["route"].(map[string]any); ok := true',
+  './internal/shadowcoord',
+  'TestVerifiedTierCeilingAndClaimShapes'),
+ ('skip-tier2-ceiling',
+  'internal/shadowcoord/coordinator.go',
+  'if tier == 2 {',
+  'if tier == 200 {',
+  './internal/shadowcoord',
+  'TestVerifiedTierCeilingAndClaimShapes'),
+ ('decode-before-input-length-check',
+  'internal/shadowcoord/coordinator.go',
+  'if speculation.CheckInputLength(len(body)) != speculation.ReasonEligible {',
+  'if false {',
+  './internal/shadowcoord',
+  'TestInputLengthRejectsBeforeDecode'),
+ ('uncapped-record-rate',
+  'internal/shadowcoord/coordinator.go',
+  'c.emitCount >= 100',
+  'false',
+  './internal/shadowcoord',
+  'TestRecordRateAndVisibleLoss'),
+ ('mixed-module-imports',
+  'cmd/enclave/main.go',
+  '\n'
+  '\t"bufio"\n'
+  '\t"bytes"\n'
+  '\t"context"\n'
+  '\t"crypto/sha256"\n'
+  '\t"encoding/json"\n'
+  '\t"errors"\n'
+  '\t"fmt"\n'
+  '\t"io"\n'
+  '\t"net"\n'
+  '\t"net/http"\n'
+  '\t"os"\n'
+  '\t"os/exec"\n'
+  '\t"os/signal"\n'
+  '\t"strconv"\n'
+  '\t"strings"\n'
+  '\t"sync"\n'
+  '\t"syscall"\n'
+  '\t"time"\n'
+  '\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/abuse"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/apihosts"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"\n'
+  '\tbatchapi "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/batch"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bootstrap"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/entropy"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/imagegen"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/privatemode"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"\n'
+  '\t"golang.org/x/crypto/acme/autocert"',
+  '\n'
+  '\t"bufio"\n'
+  '\t"bytes"\n'
+  '\t"context"\n'
+  '\t"crypto/sha256"\n'
+  '\t"encoding/json"\n'
+  '\t"errors"\n'
+  '\t"fmt"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"\n'
+  '\t"io"\n'
+  '\t"net"\n'
+  '\t"net/http"\n'
+  '\t"os"\n'
+  '\t"os/exec"\n'
+  '\t"os/signal"\n'
+  '\t"strconv"\n'
+  '\t"strings"\n'
+  '\t"sync"\n'
+  '\t"syscall"\n'
+  '\t"time"\n'
+  '\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/abuse"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/apihosts"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"\n'
+  '\tbatchapi "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/batch"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bootstrap"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/entropy"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/imagegen"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/privatemode"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"\n'
+  '\t"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"\n'
+  '\t"golang.org/x/crypto/acme/autocert"',
+  './cmd/enclave',
+  'TestShadowModuleImportGroups')]
+
+MUTANTS += [("identity-index-change-not-revalidated", "internal/shadowcoord/coordinator.go",
+             "func (c *Coordinator) index(id Identity) {\n\tc.revision++",
+             "func (c *Coordinator) index(id Identity) {", "./internal/shadowcoord",
+             "TestSnapshotRevalidatesNewLookupAmbiguity")]
+
+MUTANTS += [("unbounded-authenticated-denial-scopes", "internal/shadowcoord/coordinator.go",
+             "!c.workspaceClosed[id.WorkspaceID] && len(c.workspaceClosed) >= MaxIdentities",
+             "false", "./internal/shadowcoord", "TestAuthenticatedDenialScopeMemoryBound")]
+
+MUTANTS += [("internal-timeout-as-caller-cancellation", "internal/trustedrouter/shadow.go",
+             "caller.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))",
+             "(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))",
+             "./internal/trustedrouter", "TestShadowInternalDeadlineClosesHealth")]
 
 def main():
     env = dict(os.environ, GOTOOLCHAIN="go1.24.13", GOFLAGS="-mod=mod",

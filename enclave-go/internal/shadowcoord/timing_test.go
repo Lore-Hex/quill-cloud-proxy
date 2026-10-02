@@ -67,6 +67,7 @@ func TestFallbackIsNotProposedRoute(t *testing.T) {
 	x.EndAuthorize("auth", 200)
 	x.ProviderStart(Route{Endpoint: "ep1", Provider: "fixture-provider", Model: "fixture-text"}, false)
 	x.Content(false)
+	x.ProviderEnd(true)
 	x.Finish()
 	var rec Record
 	for len(c.records) > 0 {

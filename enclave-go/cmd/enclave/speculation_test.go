@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/speculation"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +20,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowcoord"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/speculation"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -239,4 +239,34 @@ func literalShadowCoordinator(t *testing.T) *shadowcoord.Coordinator {
 		return []shadowcoord.Result{{Identity: f.Items[0], Grant: f.Grant}}, nil
 	})
 	return c
+}
+
+func TestShadowModuleImportGroups(t *testing.T) {
+	for _, path := range []string{"main.go", "http_io.go", "provider_stream.go", "speculation_test.go", "../../internal/shadowcoord/coordinator_test.go"} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := strings.Index(string(raw), "import (")
+		if start < 0 {
+			t.Fatal(path)
+		}
+		block := strings.SplitN(string(raw)[start+len("import ("):], ")", 2)[0]
+		standard, module := false, false
+		for _, line := range strings.Split(block, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				standard, module = false, false
+				continue
+			}
+			if strings.Contains(line, "github.com/") || strings.Contains(line, "golang.org/") {
+				module = true
+			} else {
+				standard = true
+			}
+			if standard && module {
+				t.Fatal("module import in standard-library group", path, line)
+			}
+		}
+	}
 }
