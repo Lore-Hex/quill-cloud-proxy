@@ -1027,7 +1027,7 @@ func serveOneRequest(
 			}
 			var aerr *adapter.AdapterError
 			if asAdapterErr(err, &aerr) {
-				requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context)
+				requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context, body)
 				writeAdapterOpenAIError(conn, aerr)
 				return
 			}
@@ -1038,7 +1038,7 @@ func serveOneRequest(
 		if err != nil {
 			var aerr *adapter.AdapterError
 			if asAdapterErr(err, &aerr) {
-				requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context)
+				requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context, body)
 				writeAdapterOpenAIError(conn, aerr)
 				return
 			}
@@ -1062,7 +1062,7 @@ func serveOneRequest(
 			}
 			var aerr *adapter.AdapterError
 			if asAdapterErr(err, &aerr) {
-				requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context)
+				requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context, body)
 				writeAdapterOpenAIError(conn, aerr)
 				return
 			}
@@ -1431,6 +1431,12 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 		return nil, err
 	}
 	req.RequestedParameters = validation.RequestedParameters
+	if validation.IncludeUsage {
+		if req.StreamOptions == nil {
+			req.StreamOptions = &types.ChatStreamOptions{}
+		}
+		req.StreamOptions.IncludeUsage = true
+	}
 	return &req, nil
 }
 
