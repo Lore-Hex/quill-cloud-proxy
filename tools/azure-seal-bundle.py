@@ -211,6 +211,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_REKA_SECRET",), "reka key", True),
     Binding(("QUILL_SAIL_RESEARCH_SECRET",), "sail research key", True),
     Binding(("QUILL_MANCER_SECRET",), "mancer key", True),
+    Binding(("QUILL_ABLITERATE_SECRET",), "Abliterate key", True),
     Binding(("QUILL_IO_NET_SECRET",), "io intelligence key", True),
     Binding(("QUILL_SCALEWAY_SECRET",), "scaleway key", True),
     Binding(("QUILL_FEATHERLESS_SECRET",), "featherless key", True),

@@ -13,14 +13,27 @@ func TestSpecsAreValidAndImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := All()
-	if len(all) != 38 {
-		t.Fatalf("provider specs = %d, want 38", len(all))
+	if len(all) != 39 {
+		t.Fatalf("provider specs = %d, want 39", len(all))
 	}
 	original := all[0]
 	all[0].Provider = "mutated"
 	got, ok := Lookup(original.Provider)
 	if !ok || got != original {
 		t.Fatalf("All exposed mutable package state: got %#v, ok=%v", got, ok)
+	}
+}
+
+func TestAbliterateUsesItsOwnAPIAndSecret(t *testing.T) {
+	spec, ok := Lookup("abliterate")
+	if !ok || spec.BaseURL != "https://abliterate.ai/api/v1" || spec.ChatPath() != "/chat/completions" {
+		t.Fatalf("Abliterate API contract = %#v", spec)
+	}
+	if spec.SecretEnv != "QUILL_ABLITERATE_SECRET" || spec.SecretName != "trustedrouter-abliterate-api-key" || spec.MediaOnly {
+		t.Fatalf("Abliterate secret contract = %#v", spec)
+	}
+	if _, ok := Lookup("abliteration"); ok {
+		t.Fatal("unrelated provider must not alias Abliterate")
 	}
 }
 

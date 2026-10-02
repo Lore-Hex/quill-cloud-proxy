@@ -160,6 +160,7 @@ SECRETS=(
   trustedrouter-reka-api-key
   trustedrouter-sail-research-api-key
   trustedrouter-mancer-api-key
+  trustedrouter-abliterate-api-key
   trustedrouter-io-net-api-key
   trustedrouter-scaleway-api-key
   trustedrouter-featherless-api-key
