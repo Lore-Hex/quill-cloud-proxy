@@ -93,6 +93,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "api.reka.ai", CID: 3, Port: 8062},
 	{Host: "api.sailresearch.com", CID: 3, Port: 8063},
 	{Host: "mancer.tech", CID: 3, Port: 8064},
+	{Host: "abliterate.ai", CID: 3, Port: 8105},
 	{Host: "api.intelligence.io.solutions", CID: 3, Port: 8065},
 	{Host: "api.scaleway.ai", CID: 3, Port: 8066},
 	{Host: "api.featherless.ai", CID: 3, Port: 8067},

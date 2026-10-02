@@ -101,6 +101,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "REKA_API_KEY": "trustedrouter-reka-api-key",
     "SAIL_RESEARCH_API_KEY": "trustedrouter-sail-research-api-key",
     "MANCER_API_KEY": "trustedrouter-mancer-api-key",
+    "ABLITERATE_API_KEY": "trustedrouter-abliterate-api-key",
     "IONET_API_KEY": "trustedrouter-io-net-api-key",
     "IO_NET_API_KEY": "trustedrouter-io-net-api-key",
     "SCALEWAY_SECRET_KEY": "trustedrouter-scaleway-api-key",
