@@ -25,6 +25,8 @@ type Spec struct {
 }
 
 var specs = [...]Spec{
+	{Provider: "system1models", BaseURL: "https://api.system1models.ai/v1", SecretEnv: "QUILL_SYSTEM1MODELS_GLOBAL_SECRET", SecretName: "trustedrouter-system1models-global-api-key", SecretLabel: "System1 Global key"},
+	{Provider: "system1models-eu", BaseURL: "https://api.system1models.ai/v1", SecretEnv: "QUILL_SYSTEM1MODELS_EU_SECRET", SecretName: "trustedrouter-system1models-eu-api-key", SecretLabel: "System1 EU key"},
 	// Secret registry only: inference is intercepted by the pinned E2EE adapter.
 	{Provider: "privatemode", BaseURL: "https://api.privatemode.ai/v1", SecretEnv: "QUILL_PRIVATEMODE_SECRET", SecretName: "trustedrouter-privatemode-api-key", SecretLabel: "Privatemode key"},
 	// Polyphemus uses /modelSelect only, never a Telluvian generation route.

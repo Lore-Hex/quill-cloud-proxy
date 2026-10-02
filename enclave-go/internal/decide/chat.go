@@ -43,6 +43,17 @@ var HostedModels = map[string]bool{
 	"typesafe-ai/jev": true,
 }
 
+// System1 models are discovered from a priced, canaried catalog. Recognizing
+// their namespace does not authorize them: the control plane must still issue
+// an exact model/provider endpoint before any paid inference can happen.
+func IsSystem1Model(model string) bool {
+	return strings.HasPrefix(model, "system1models/s1-") || strings.HasPrefix(model, "system1models-eu/s1-")
+}
+
+func IsHostedModel(model string) bool {
+	return HostedModels[model] || IsSystem1Model(model)
+}
+
 // TrustedRouter's named decision models: one short, stable name per tuned
 // configuration, so a caller picks "the fast one" or "the cheap one" without
 // tracking which open model and host currently wins. They rhyme with Jev, the
@@ -343,6 +354,7 @@ func NativeChatRequest(model string, state json.RawMessage, specs []Spec, native
 			Order:          types.StringList(append([]string(nil), native.Providers...)),
 			AllowFallbacks: &fallbacks,
 		}
+		req.InternalDecisionHosts = append([]string(nil), native.Providers...)
 	}
 	switch {
 	case effort != "":
