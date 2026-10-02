@@ -300,7 +300,7 @@ func TestSnapshotRevalidatesNewLookupAmbiguity(t *testing.T) {
 }
 
 // A valid ordinary Chat shape can carry an unknown, deeply nested JSON field.
-// Shadow must include that field in the bounded second parse before excluding it.
+// Shadow must reject its depth before the second decode or payload preparation.
 func BenchmarkShadowDeepRequestAddedWork(b *testing.B) {
 	c, _, _, r, f := setup(b)
 	warm(c, f, r)
@@ -312,7 +312,12 @@ func BenchmarkShadowDeepRequestAddedWork(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		body := ParseRequest(raw)
-		x := c.Predecision(f.Items[0].LookupDigest, speculation.ParsedRequest{Body: body, RouteType: "chat.completions", CallerIdempotency: speculation.CaptureCallerIdempotency(false, body)})
+		var x *Execution
+		if body == nil {
+			x = c.InputMiss()
+		} else {
+			x = c.Predecision(f.Items[0].LookupDigest, speculation.ParsedRequest{Body: body, RouteType: "chat.completions", CallerIdempotency: speculation.CaptureCallerIdempotency(false, body)})
+		}
 		x.StartAuthorize("nonce", "denial")
 		x.EndAuthorize("auth", 200)
 		x.Finish()
@@ -326,7 +331,7 @@ func TestAuthenticatedDenialScopeMemoryBound(t *testing.T) {
 			digest := fmt.Sprintf("%064x", i)
 			c.ObserveResolvedVerdict(digest, 402, reason, "", Identity{WorkspaceID: strconv.Itoa(i), KeyID: strconv.Itoa(i), LookupDigest: digest})
 		}
-		if len(c.workspaceClosed) > MaxIdentities || len(c.keyClosed) > MaxIdentities || !c.bootClosed || len(c.entries) != 0 {
+		if len(c.workspaceClosed) > MaxIdentities || len(c.keyClosed) > MaxIdentities || c.reconfirm == 0 || len(c.entries) != 0 {
 			t.Fatal("unbounded denial scope or invented assignment")
 		}
 	}

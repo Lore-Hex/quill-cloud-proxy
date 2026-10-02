@@ -14,7 +14,7 @@ merged.write_text("mode: set\n" + "".join(f"{loc} {n} {int(count > 0)}\n" for (l
 files = defaultdict(lambda: [0, 0])
 for (location, statements), count in blocks.items():
     filename = location.split(":")[0].split("/enclave-go/")[-1]
-    if filename.startswith(("internal/shadowcoord/", "internal/shadowobserve/")) or filename in ("cmd/enclave/speculation.go", "internal/trustedrouter/shadow.go"):
+    if filename.startswith(("internal/shadowcoord/", "internal/shadowobserve/")) or filename in ("cmd/enclave/speculation.go", "internal/trustedrouter/shadow.go", "internal/speculation/shadow_refresh.go"):
         files[filename][0] += statements
         files[filename][1] += statements * (count > 0)
 for filename, (total, covered) in sorted(files.items()):

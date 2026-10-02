@@ -244,7 +244,7 @@ func TestShadowAuthenticatedReasonNormalization(t *testing.T) {
 	for _, tc := range []struct {
 		status     int
 		kind, want string
-	}{{401, "invalid_api_key", "key_invalid"}, {402, "key_limit_exceeded", "key_limit_exceeded"}, {429, "key_window_limit_exceeded", "key_window_limit_exceeded"}, {403, "forbidden", ""}, {401, "unknown_api_key", ""}} {
+	}{{401, "invalid_api_key", "key_invalid"}, {402, "key_limit_exceeded", "key_limit_exceeded"}, {429, "key_window_limit_exceeded", "key_window_limit_exceeded"}, {403, "forbidden", "billing_paused"}, {401, "unknown_api_key", ""}} {
 		status, reason := shadowError(&ControlPlaneError{StatusCode: tc.status, Type: tc.kind, Message: "billing_paused"})
 		if status != tc.status || reason != tc.want {
 			t.Fatal(tc, status, reason)

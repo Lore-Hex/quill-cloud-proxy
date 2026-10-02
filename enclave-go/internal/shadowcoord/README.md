@@ -68,7 +68,9 @@ wire contract and all frozen fixtures are unchanged.
 Lookup digests have an O(1) identity index. The coordinator snapshots state under
 its mutex, runs refresh verification and request payload work outside it, then revalidates the revision,
 health and deadlines before depletion. A concurrent change yields a typed miss.
-Raw input above the shared 8,192-byte certified maximum misses before JSON decoding.
+Raw input above the shared 8,192-byte certified maximum or container nesting
+deeper than 32 misses with `input_bound` before JSON decoding. A bounded byte scan
+tracks quoted strings and escapes; unknown fields cannot hide deep recursion.
 
 Simulation atomically consumes a grant ordinal, one unresolved workspace slot,
 one of 32 enclave slots, 128 KiB of the 8 MiB simulated memory budget (64 KiB spool
@@ -79,24 +81,69 @@ limits are W from `WorkspaceAllowance` (never above $0.25 for tier 2), $1 per sl
 per-request bound. A refresh does not refill permits. Unknown liability stays
 retained; this implementation does not infer a refund, recovery or newly free
 capacity from an ordinary success, cache expiry, grant renewal or elapsed day.
-Sticky workspace/key denial state and key/boot infrastructure suppression cannot
-be cleared by a late success. Restart requires independent new-boot/stable-slot
+Workspace/key denial state survives time, volume, grant expiry, eviction, and
+ordinary successes. Recovery rules appear below. Restart requires independent new-boot/stable-slot
 allocation evidence, rather than reusing the previous boot's local counters.
 
 `shadowobserve` contains the dependency-free wire, execution and telemetry types.
 This keeps `trustedrouter` independent of `speculation`/`llm`, including the AWS
 image-fetch dependency. Every physical retry contributes bounded typed router
 phase timing (or UNKNOWN) and closes local infrastructure health immediately when
-retryable, even when its logical call succeeds. Real error types
-`invalid_api_key`, `key_limit_exceeded` and `key_window_limit_exceeded` are normalized
-to PR 2b reasons; human messages never classify health. Caller cancellation/deadline
-errors retain their original ordinary error and contribute no infrastructure
-verdict. Internal retry-budget/transport timeouts with a live caller still close
-infrastructure health. Optional authenticated error `data.workspace_id`, `key_id`,
-`lookup_digest` and `rate_scope` resolve denial scope without learning an identity.
-Health maps cap authenticated scopes at 256 entries and close coverage on saturation.
-Missing/invalid scope conservatively closes uncertain shadow coverage. Malformed
-optional metadata cannot affect ordinary error decoding.
+retryable, even when its logical call succeeds. Authenticated error types `invalid_api_key`, `insufficient_credits`,
+`key_limit_exceeded`, `key_window_limit_exceeded`, and `service_unavailable`
+normalize to scoped or infrastructure reasons. The router's exact
+`forbidden` / message `billing_paused` pair also denotes workspace state; arbitrary
+human messages do not classify health. Caller cancellation/deadline errors retain
+their original ordinary error and contribute no infrastructure verdict. A real
+router denial remains observable even if the caller concurrently cancels. Internal
+retry-budget/transport timeouts with a live caller still close infrastructure health.
+
+Optional authenticated error `data.workspace_id`, `key_id`, `lookup_digest`, and
+`rate_scope` are **proposed; not emitted by the router today**. This is a
+forward-compatible parse, never a required contract. The router change and a shared
+literal fixture must land before anything relies on these fields. The pinned
+`authorize-error-envelopes.json` has timing-only `data` in all five cases; absent
+scope is the normal production path. Independently known lookup bindings resolve
+normal denials. Matching partial workspace metadata preserves the known key;
+conflicting metadata produces coverage uncertainty without inventing an assignment.
+Malformed optional metadata cannot affect ordinary error decoding.
+
+## Recovery and capacity
+
+All state below is simulation. Signed shadow grants attest the issuer's repair
+checks (including durable health, limiter reset/clearance and history); the enclave
+does not synthesize those facts from elapsed time. `VerifyShadowRefreshGrant` keeps
+all deployment/route bindings fixed, permits only authenticated signed health epochs
+to change, and retains the unchanged exact-binding `VerifyGrant` API. Epoch snapshots
+advance monotonically; a lower-epoch replay cannot regain eligibility.
+
+| Scope | What closes it | What reopens it | What never reopens it |
+|---|---|---|---|
+| Workspace | Resolved credit, trust, abuse, payment, pause or workspace/ambiguous rate denial | Verified grant received after the latch with strictly higher workspace epoch | Time, volume, success callback, expiry, eviction, same epoch, key-only repair |
+| Key | Resolved invalid/revoked/expired key, key budget or explicit key-rate denial | Verified grant received after the latch with strictly higher key epoch | Time/window reset, volume, old success, expiry, same epoch, workspace-only repair |
+| Key infrastructure | Retryable 5xx/timeout/transport failure | Three clean ordinary successes for this key whose first/last span ≥30s after the latest failure, plus a verified grant received after failure | Another key's successes, old callbacks, time alone, pre-failure grant |
+| Boot infrastructure | Unscoped infrastructure failure or bounded key-breaker overflow | Same three-success/30s rule on this boot plus a post-failure verified grant | Time alone, old callbacks, pre-failure grant |
+| Uncertain coverage | Unbound authenticated business denial, conflicting binding, or scope capacity overflow | Each identity's verified grant from a refresh **sent after** the denial | An already-in-flight refresh, ordinary success, time alone |
+| No health change | Unresolvable invalid credential; request-only other 4xx | No recovery needed | These responses cannot latch an unrelated workspace |
+
+Refresh sends, receipts, denial observations and ordinary request starts have a
+mutex-ordered event sequence. Receipt ordering is independent of the original grant
+monotonic-deadline journal. Ordinary calls started before a failure cannot count as
+clean recovery probes; a successful retry does not erase the observed failure.
+Reopening any health scope never releases retained hypothetical liability.
+
+Identity and scope maps cap at 256 entries. Identity admission first evicts an entry
+whose policy and grant have expired, with no active owner and no retained liability;
+it removes the hot-set/index entry too. Unknown retained loss has no local expiry and
+is never evicted as if refunded. If every entry is live or retains liability, the new
+identity is skipped with a bounded `capacity` record (`identity-capacity`). Eviction
+also emits `identity-evicted`. Scoped-map overflow emits `health-capacity` and applies
+re-confirmation instead of permanent boot closure. Infrastructure-map overflow emits
+`infrastructure-capacity` and uses the recoverable boot breaker. Recovered scope
+entries are removed. All capacity/invalidation records share the existing rate and
+queue bounds, with dropped-record counts visible in subsequent records. An unbound
+denial uses one global generation plus one confirmation scalar per identity, rather
+than an unbounded unknown-credential map.
 
 Narrow callback/worker recovery boundaries count observation faults, permanently
 fail shadow eligibility closed, and preserve ordinary results, errors and context
@@ -143,7 +190,8 @@ evidence.
   `simulated-concurrency`, `simulated-retained-budget`,
   `simulated-journal-capacity`, `simulated-permits-exhausted`,
   `simulated-enclave-concurrency`, `simulated-memory`, `snapshot-changed`,
-  `observer-failed`, `grant-shape`, `grant-journal-capacity`, `input_bound`.
+  `observer-failed`, `grant-shape`, `grant-journal-capacity`, `input_bound`,
+  `coverage-unconfirmed`.
 
 The frozen refresh fixture SHA-256 is
 `ad8d4161013cdf442aa4f221abf06c418ee15353d646487ac95ac8419d8aef39`.
@@ -160,3 +208,10 @@ It never writes git or mutates the working source tree.
 
 Round-2 findings, mutation kills, startup traces, performance and the complete
 five-tag gate results are recorded in [round2-verification.md](round2-verification.md).
+
+The timing-only authorize error fixture SHA-256 is
+`a2f388da8afd619793fedfb78013dcdf61843ae0a9b5dca936647ca8582746d4`.
+`TestLiteralAuthorizeErrorEnvelopes` decodes every case through the HTTP client,
+checking status, authenticated type/classification, Retry-After, typed timing and
+absent scope. Round-3 recovery, mutations, split cost measurements and full gates
+are recorded in [round3-verification.md](round3-verification.md).

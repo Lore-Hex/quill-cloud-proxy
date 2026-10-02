@@ -66,6 +66,12 @@ func (c *Client) observeShadowAuthorize(ctx context.Context, lookup string) (con
 	if explicitAuthorizationInvocation(ctx) == nil {
 		ctx = WithAuthorizationInvocation(ctx)
 	}
+	var started uint64
+	c.shadowCall(func() {
+		if o, ok := c.shadow.(interface{ ObservationVersion() uint64 }); ok {
+			started = o.ObservationVersion()
+		}
+	})
 	x := shadowobserve.FromContext(ctx)
 	if x == nil {
 		c.shadowCall(func() { x = c.shadow.Excluded(lookup) })
@@ -81,7 +87,14 @@ func (c *Client) observeShadowAuthorize(ctx context.Context, lookup string) (con
 		if err == nil && a != nil {
 			id = a.AuthorizationID
 			c.shadowCall(func() {
-				c.shadow.ObserveAuthorized(shadowobserve.Identity{KeyID: a.APIKeyHash, LookupDigest: lookup, WorkspaceID: a.WorkspaceID})
+				identity := shadowobserve.Identity{KeyID: a.APIKeyHash, LookupDigest: lookup, WorkspaceID: a.WorkspaceID}
+				if o, ok := c.shadow.(interface {
+					ObserveAuthorizedSince(shadowobserve.Identity, uint64)
+				}); ok {
+					o.ObserveAuthorizedSince(identity, started)
+				} else {
+					c.shadow.ObserveAuthorized(identity)
+				}
 			})
 		} else if status != 0 {
 			c.shadowCall(func() {
@@ -111,11 +124,17 @@ func shadowError(err error) (int, string) {
 		reason := e.Reason
 		if reason == "" {
 			switch {
-			case e.StatusCode == 401 && e.Type == "invalid_api_key":
+			case e.Type == "invalid_api_key":
 				reason = "key_invalid"
-			case e.StatusCode == 402 && e.Type == "key_limit_exceeded":
+			case e.Type == "service_unavailable":
+				reason = "infrastructure_error"
+			case e.Type == "insufficient_credits":
+				reason = "credit_exhausted"
+			case e.Type == "forbidden" && e.Message == "billing_paused":
+				reason = "billing_paused"
+			case e.Type == "key_limit_exceeded":
 				reason = "key_limit_exceeded"
-			case e.StatusCode == 429 && e.Type == "key_window_limit_exceeded":
+			case e.Type == "key_window_limit_exceeded":
 				reason = "key_window_limit_exceeded"
 			}
 		}

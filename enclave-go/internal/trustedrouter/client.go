@@ -1401,7 +1401,8 @@ func (c *Client) postJSONBytesWithBootAuthAtEndpoint(
 			controlErr.Type = strings.TrimSpace(envelope.Error.Type)
 			controlErr.Reason = strings.TrimSpace(envelope.Error.Reason)
 		}
-		// Decode optional observation metadata separately: malformed shadow fields
+		// Proposed; not emitted by the router today. Decode optional observation
+		// metadata separately: malformed shadow fields
 		// must never change ordinary error decoding, including when shadow is off.
 		if c.shadow != nil {
 			c.shadowCall(func() {

@@ -78,7 +78,7 @@ func predecideSpeculation(ctx context.Context, c *trustedrouter.Client, bearer s
 	if !ok {
 		return ctx
 	}
-	if speculation.CheckInputLength(len(raw)) != speculation.ReasonEligible {
+	if speculation.CheckInputLength(len(raw)) != speculation.ReasonEligible || !shadowcoord.InputDepthOK(raw) {
 		return shadowobserve.WithExecution(ctx, observer.InputMiss())
 	}
 	return shadowobserve.WithExecution(ctx, observer.Predecision(c.ShadowLookup(ctx, bearer), speculation.ParsedRequest{Body: body, RouteType: route, CallerIdempotency: provenance, ConfidentialOnly: confidential, InferenceReceipts: req.InferenceReceipt.Requested, CustomModel: custom, ExtraReservationCost: int64(req.AdditionalCostReservationMicrodollars), ResponseModel: req.ResponseModel}))

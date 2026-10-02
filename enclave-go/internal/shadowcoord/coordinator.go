@@ -64,6 +64,7 @@ const MaxSimulatedMemory = 8 << 20
 const InvocationMemory = 128 << 10
 
 type state struct {
+	confirmed        uint64
 	receipts         map[[32]byte]grantReceipt
 	evidence         Evidence
 	evidenceDeadline time.Time
@@ -96,6 +97,12 @@ type Coordinator struct {
 	keyClosed                   map[string]bool
 	infrastructureClosed        map[string]bool
 	bootClosed                  bool
+	event                       uint64
+	reconfirm                   uint64
+	workspaceLatch              map[string]epochLatch
+	keyLatch                    map[string]epochLatch
+	breakers                    map[string]breaker
+	bootBreaker                 breaker
 	workspaceBusy               map[string]string
 	workspaceRetained           map[string]int64
 	slotRetained, fleetRetained int64
@@ -131,9 +138,10 @@ func New(mode Mode, config Config, clock Clock) *Coordinator {
 			e.Local.Certificates[j].Route = normalize(e.Local.Certificates[j].Route).(map[string]any)
 		}
 	}
-	c := &Coordinator{config: config, clock: clock, origin: clock.Now(), entries: make(map[Identity]*state), byLookup: make(map[string]lookupEntry), workspaceClosed: make(map[string]bool), keyClosed: make(map[string]bool), infrastructureClosed: make(map[string]bool), workspaceBusy: make(map[string]string), workspaceRetained: make(map[string]int64), records: make(chan Record, 512)}
+	c := &Coordinator{workspaceLatch: make(map[string]epochLatch), keyLatch: make(map[string]epochLatch), breakers: make(map[string]breaker), config: config, clock: clock, origin: clock.Now(), entries: make(map[Identity]*state), byLookup: make(map[string]lookupEntry), workspaceClosed: make(map[string]bool), keyClosed: make(map[string]bool), infrastructureClosed: make(map[string]bool), workspaceBusy: make(map[string]string), workspaceRetained: make(map[string]int64), records: make(chan Record, 512)}
 	for _, e := range config.Evidence {
 		if len(c.entries) >= MaxIdentities {
+			c.capacity("identity-capacity")
 			break
 		}
 		if !e.Identity.Valid() {
@@ -175,7 +183,7 @@ func (c *Coordinator) index(id Identity) {
 	c.byLookup[id.LookupDigest] = lookupEntry{id, old.ambiguous || exists && old.identity != id}
 }
 func ParseRequest(body []byte) map[string]any {
-	if speculation.CheckInputLength(len(body)) != speculation.ReasonEligible {
+	if speculation.CheckInputLength(len(body)) != speculation.ReasonEligible || !InputDepthOK(body) {
 		return nil
 	}
 	var b map[string]any
@@ -220,14 +228,28 @@ func (c *Coordinator) Emit(r Record) {
 
 // ObserveAuthorized only learns identities from successful ordinary calls. No I/O.
 func (c *Coordinator) ObserveAuthorized(id Identity) {
+	c.ObserveAuthorizedSince(id, c.ObservationVersion())
+}
+
+func (c *Coordinator) ObservationVersion() uint64 {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.event
+}
+func (c *Coordinator) ObserveAuthorizedSince(id Identity, started uint64) {
 	if c == nil || !id.Valid() {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.ordinarySuccess(id, started)
 	s := c.entries[id]
 	if s == nil {
-		if len(c.entries) >= MaxIdentities {
+		if len(c.entries) >= MaxIdentities && !c.evictExpired() {
+			c.capacity("identity-capacity")
 			return
 		}
 		s = &state{consumed: make(map[string]bool), receipts: make(map[[32]byte]grantReceipt)}
@@ -276,6 +298,10 @@ func (c *Coordinator) RefreshOnce(ctx context.Context, refresh Refresh) {
 	}
 	call, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	c.mu.Lock()
+	c.event++
+	sent := c.event
+	c.mu.Unlock()
 	results, batchMiss := refresh(call, items)
 	if batchMiss != nil {
 		for _, id := range items {
@@ -286,10 +312,17 @@ func (c *Coordinator) RefreshOnce(ctx context.Context, refresh Refresh) {
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
 	for _, r := range results {
-		c.refreshResult(r)
+		c.refreshResultSent(r, sent)
 	}
 }
 func (c *Coordinator) refreshResult(r Result) {
+	c.mu.Lock()
+	c.event++
+	sent := c.event
+	c.mu.Unlock()
+	c.refreshResultSent(r, sent)
+}
+func (c *Coordinator) refreshResultSent(r Result, sent uint64) {
 	fingerprint := sha256.Sum256([]byte(r.Grant))
 	c.mu.Lock()
 	original := c.entries[r.Identity]
@@ -297,6 +330,8 @@ func (c *Coordinator) refreshResult(r Result) {
 		c.mu.Unlock()
 		return
 	}
+	c.event++
+	receivedEvent := c.event
 	saved := *original
 	receipt, seen := original.receipts[fingerprint]
 	receiptCount := len(original.receipts)
@@ -306,15 +341,15 @@ func (c *Coordinator) refreshResult(r Result) {
 		c.setMiss(r.Identity, r.Miss)
 		return
 	}
-	if r.Grant == s.cached.verified.Compact() {
+	now := c.clock.Now()
+	if r.Grant == s.cached.verified.Compact() && c.Mono() >= s.cached.startDeadline {
 		return
 	}
-	now := c.clock.Now()
 	if !now.Before(s.evidenceDeadline) {
 		c.setMiss(r.Identity, miss(200, "policy-stale"))
 		return
 	}
-	g, err := speculation.VerifyGrant(r.Grant, c.config.Keys, s.evidence.Local.Bindings, now.Unix(), true)
+	g, err := speculation.VerifyShadowRefreshGrant(r.Grant, c.config.Keys, s.evidence.Local.Bindings, now.Unix())
 	if err != nil {
 		c.setMiss(r.Identity, miss(200, "grant-invalid"))
 		return
@@ -356,12 +391,17 @@ func (c *Coordinator) refreshResult(r Result) {
 		next.permits = append(next.permits, permit{ordinal, amount})
 	}
 	c.mu.Lock()
+	if c.entries[r.Identity] != original {
+		c.mu.Unlock()
+		return
+	}
 	if !seen {
 		original.receipts[fingerprint] = receipt
 	}
 	c.revision++
 	original.cached = next
 	original.lastMiss = nil
+	c.recoverGrant(r.Identity, original, claims, sent, receivedEvent)
 	c.mu.Unlock()
 }
 func (c *Coordinator) setMiss(id Identity, m *Miss) {
@@ -442,6 +482,11 @@ func (c *Coordinator) decide(lookup string, req speculation.ParsedRequest) *cand
 	x.identity = entry.identity
 	saved = *c.entries[x.identity]
 	revision = c.revision
+	if saved.confirmed < c.reconfirm {
+		c.mu.Unlock()
+		x.decision.Reason = "coverage-unconfirmed"
+		return x
+	}
 	health = saved.evidence.Health
 	if c.workspaceClosed[x.identity.WorkspaceID] {
 		health.Workspace.Latched = true
@@ -572,46 +617,44 @@ func (c *Coordinator) ObserveResolvedVerdict(lookup string, status int, reason, 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.revision++
-	if status >= 500 {
-		if lookup == "" || len(c.infrastructureClosed) >= MaxIdentities {
-			c.bootClosed = true
-		} else {
-			c.infrastructureClosed[lookup] = true
-		}
-	}
+	c.event++
 	entry, known := c.byLookup[lookup]
-	if resolved.ResolvedWorkspace() && (resolved.LookupDigest == "" || resolved.LookupDigest == lookup) {
-		entry = lookupEntry{identity: resolved}
-		known = true
-	}
-	if !known || entry.ambiguous {
-		// An unresolved authenticated business denial may concern any cached workspace.
-		// This closes coverage only; it creates no durable assignment or denial.
-		if status == 402 || status == 429 || status == 401 || status == 403 {
-			c.bootClosed = true
+	conflict := entry.ambiguous
+	if resolved.ResolvedWorkspace() {
+		conflict = conflict || resolved.LookupDigest != "" && resolved.LookupDigest != lookup || known && (entry.identity.WorkspaceID != resolved.WorkspaceID || resolved.KeyID != "" && entry.identity.KeyID != resolved.KeyID)
+		if !conflict {
+			if known && resolved.KeyID == "" {
+				resolved.KeyID = entry.identity.KeyID // Independently known binding survives partial metadata.
+			}
+			entry = lookupEntry{identity: resolved}
+			known = true
 		}
+	}
+	// Classify before invalidating coverage. Placeholder scopes determine only the
+	// kind of verdict, never a stored identity or durable assignment.
+	kind, _ := speculation.ClassifyVerdict(speculation.VerdictInput{Source: "authenticated_router", Status: status, Reason: reason, RateScope: rateScope, WorkspaceID: "scope", KeyID: "scope"})
+	if kind.LocalInfrastructureBreaker != "none" {
+		c.failInfrastructure(lookup)
 		return
 	}
-	for _, id := range []Identity{entry.identity} {
-		v, err := speculation.ClassifyVerdict(speculation.VerdictInput{Source: "authenticated_router", Status: status, Reason: reason, RateScope: rateScope, WorkspaceID: id.WorkspaceID, KeyID: id.KeyID})
-		if err != nil {
-			continue
-		}
-		if v.DurableScope == "workspace" {
-			if !c.workspaceClosed[id.WorkspaceID] && len(c.workspaceClosed) >= MaxIdentities {
-				c.bootClosed = true
-				return
-			}
-			c.workspaceClosed[id.WorkspaceID] = true
-		}
-		if v.DurableScope == "key" {
-			if !c.keyClosed[lookup] && len(c.keyClosed) >= MaxIdentities {
-				c.bootClosed = true
-				return
-			}
-			c.keyClosed[lookup] = true
-		}
+	if kind.DurableScope == "none" {
+		return
 	}
+	if !known || conflict {
+		// An unknown invalid credential has no rights. A conflicting known
+		// binding is uncertainty, and must still fence the observed denial.
+		if !known && reason == "key_invalid" && !conflict {
+			return
+		}
+		c.invalidateCoverage("unresolved-denial")
+		return
+	}
+	id := entry.identity
+	if kind.DurableScope == "key" && id.KeyID == "" {
+		c.invalidateCoverage("unresolved-denial")
+		return
+	}
+	c.latch(id, lookup, kind.DurableScope)
 }
 func (c *Coordinator) Suppressed(original string) {
 	if c == nil {
