@@ -422,6 +422,18 @@ MUTANTS += [
      "entry.evidence.Health.Workspace.Epoch = max(entry.evidence.Health.Workspace.Epoch, workspaceEpoch)",
      "entry.evidence.Health.Workspace.Epoch = workspaceEpoch",
      "./internal/shadowcoord", "TestLowerGrantCannotRegressWorkspaceEpoch"),
+    # Review 4 boundary variants (reviewer's tests in review_r4_test.go).
+    ("watermark-rejects-retained-receipt", "internal/shadowcoord/coordinator.go",
+     "original.retireReceipts(c.Mono())\n\tif !seen {",
+     "original.retireReceipts(c.Mono())\n\tif original.receiptsRetired && receipt.issuedAt <= original.receiptWatermark {\n\t\tc.mu.Unlock()\n\t\tc.setMiss(r.Identity, miss(200, \"grant-replay\"))\n\t\treturn\n\t}\n\tif !seen {",
+     "./internal/shadowcoord", "TestReviewR4LiveReceiptBelowWatermark"),
+    ("retire-receipts-one-second-early", "internal/shadowcoord/coordinator.go",
+     "if now < receipt.startDeadline {", "if now < receipt.startDeadline-time.Second {",
+     "./internal/shadowcoord", "TestReviewR4StillLiveNearRetirement"),
+    ("boot-reset-keeps-old-event", "internal/shadowcoord/recovery.go",
+     "if c.bootClosed {\n\t\tc.bootBreaker = b\n\t}",
+     "if c.bootClosed {\n\t\told := c.bootBreaker.event\n\t\tc.bootBreaker = b\n\t\tc.bootBreaker.event = old\n\t}",
+     "./internal/shadowcoord", "TestReviewR4BootResetRejectsOldSuccess"),
 ]
 
 def main():
