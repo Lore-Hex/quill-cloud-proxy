@@ -78,7 +78,10 @@ func (identity *requestAuditIdentity) recordContractRejection(
 	w io.Writer, requestLogID string, route string, status int, parameter string,
 ) {
 	identity.rejectionStatus = status
-	identity.rejectionParameter = trustedrouter.ContractParameterCategory(parameter)
+	identity.rejectionParameter = trustedrouter.ContractParameterPath(parameter)
+	if identity.rejectionParameter == "" {
+		identity.rejectionParameter = trustedrouter.ContractParameterCategory(parameter)
+	}
 	writeRequestContractRejection(w, requestLogID, route, status, parameter)
 }
 
@@ -172,13 +175,15 @@ func writeRequestContractRejection(
 	status int,
 	parameter string,
 ) {
+	parameterPath := trustedrouter.ContractParameterPath(parameter)
 	parameter = trustedrouter.ContractParameterCategory(parameter)
 	fmt.Fprintf(
 		w,
-		"enclave.request_contract_rejected request_log_id=%q route=%q status=%d parameter=%q\n",
+		"enclave.request_contract_rejected request_log_id=%q route=%q status=%d parameter=%q parameter_path=%q\n",
 		requestLogID,
 		route,
 		status,
 		parameter,
+		parameterPath,
 	)
 }

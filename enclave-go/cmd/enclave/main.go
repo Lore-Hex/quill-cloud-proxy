@@ -1431,6 +1431,12 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 		return nil, err
 	}
 	req.RequestedParameters = validation.RequestedParameters
+	if validation.IncludeUsage {
+		if req.StreamOptions == nil {
+			req.StreamOptions = &types.ChatStreamOptions{}
+		}
+		req.StreamOptions.IncludeUsage = true
+	}
 	return &req, nil
 }
 
