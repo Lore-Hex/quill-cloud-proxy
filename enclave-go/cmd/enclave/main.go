@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"io"
 	"net"
 	"net/http"
@@ -158,6 +159,11 @@ var responseWriteTimeout = 30 * time.Second
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
+	speculationMode, modeErr := shadowobserve.ParseMode(os.Getenv("QUILL_SPECULATIVE_PROVIDER_MODE"))
+	if modeErr != nil {
+		fmt.Fprintln(os.Stderr, modeErr)
+		os.Exit(1)
+	}
 	if privatemode.ProxyEntrypoint() {
 		return
 	}
@@ -479,14 +485,21 @@ func main() {
 	fmt.Fprintf(os.Stderr, "spend_lease.local_admission_flag enabled=%t\n", boot.SpendLeaseLocalAdmission)
 	fmt.Fprintf(os.Stderr, "enclave.stage_d_flags usage_heartbeat=%t terminate_at_cap=%t heartbeat_budget_ms=%d settle_before_terminal_ms=%d\n",
 		stageDConfig.usageHeartbeat, stageDConfig.terminateAtCap, stageDConfig.heartbeatBudget.Milliseconds(), stageDConfig.settleBeforeTerminal.Milliseconds())
-	if err := initializeReceiptSignerWithSpendLease(ctx, tlsServer, deviceBlob, boot.SpendLeaseShadow || boot.SpendLeaseLocalAdmission || stageDConfig.usageHeartbeat, spendLeaseIssuerConfigNonce(boot), apiHost); err != nil {
+	if err := initializeReceiptSignerWithSpendLease(ctx, tlsServer, deviceBlob, boot.SpendLeaseShadow || boot.SpendLeaseLocalAdmission || stageDConfig.usageHeartbeat || speculationMode == shadowobserve.Shadow, spendLeaseIssuerConfigNonce(boot), apiHost); err != nil {
 		fmt.Fprintf(os.Stderr, "receipt signer initialization failed: %v\n", err)
 		os.Exit(1)
 	}
-	initializeSpendLeaseShadow(ctx, trGateway, boot)
-	if stageDConfig.usageHeartbeat && !boot.SpendLeaseShadow && !boot.SpendLeaseLocalAdmission && trGateway != nil && receiptSigner != nil {
+	if speculationMode != shadowobserve.Shadow {
+		initializeSpendLeaseShadow(ctx, trGateway, boot)
+	}
+	if (speculationMode == shadowobserve.Shadow || (stageDConfig.usageHeartbeat && !boot.SpendLeaseShadow && !boot.SpendLeaseLocalAdmission)) && trGateway != nil && receiptSigner != nil {
 		trGateway.ConfigureStageDBoot(receiptSigner)
 		trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence())
+	}
+
+	if err := initializeSpeculation(ctx, trGateway, speculationMode); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	// LB health endpoint. The serving port (:443) terminates TLS inside the
@@ -758,6 +771,9 @@ func serveOneRequest(
 			cache := trGateway.BillingBackoff()
 			if rejection, hit := cache.Get(billingKey, idempotent, time.Now()); hit {
 				billingSuppressed = true
+				if shadow := trGateway.Speculation(); shadow != nil {
+					shadow.Suppressed(rejection.RequestID)
+				}
 				// Preserve the original response IDs as well as its body and headers.
 				statsConn.mu.Lock()
 				statsConn.requestID = rejection.RequestID
@@ -1227,6 +1243,14 @@ func serveOneRequest(
 			spendLeaseReserveRequest = &reserveRequest
 			authorization = spendLeasePlan.Local
 		} else {
+			ctx = predecideSpeculation(ctx, trGateway, bearer, body, attribution.IdempotencyPresent, routeType, confidential, &req, resolvedCustomModel != nil)
+			if execution := shadowobserve.FromContext(ctx); execution != nil {
+				defer execution.Finish()
+				statsConn.mu.Lock()
+				statsConn.shadow = execution
+				statsConn.shadowContent = &shadowobserve.ContentStream{}
+				statsConn.mu.Unlock()
+			}
 			authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, &req, routeType)
 			if err != nil {
 				writeGatewayAuthorizationError(conn, err)

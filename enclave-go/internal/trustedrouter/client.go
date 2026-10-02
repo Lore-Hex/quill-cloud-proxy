@@ -22,6 +22,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -87,6 +88,7 @@ func ClientContextFromContext(ctx context.Context) *qtypes.ClientContext {
 }
 
 type Client struct {
+	shadow shadowobserve.Observer
 	// baseURLs is ordered: index 0 is the configured billing authority, and
 	// later entries are fallbacks used only when an earlier one cannot be
 	// dialled. Observer/status services are never valid entries. See
@@ -1367,6 +1369,9 @@ func (c *Client) postJSONBytesWithBootAuthAtEndpoint(
 	resp, selectedEndpoint, err := c.postToControlPlaneWithBootAuth(ctx, path, body, pinnedEndpoint, bootAuthHeader)
 	if err != nil {
 		return selectedEndpoint, err
+	}
+	if sample := shadowAttemptFromContext(ctx); sample != nil {
+		resp.Body = &shadowTimingBody{ReadCloser: resp.Body, sample: sample}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
