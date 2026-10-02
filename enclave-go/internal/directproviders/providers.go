@@ -25,7 +25,6 @@ type Spec struct {
 }
 
 var specs = [...]Spec{
-	{Provider: "abliterate", BaseURL: "https://abliterate.ai/api/v1", SecretEnv: "QUILL_ABLITERATE_SECRET", SecretName: "trustedrouter-abliterate-api-key", SecretLabel: "Abliterate key"},
 	{Provider: "system1models", BaseURL: "https://api.system1models.ai/v1", SecretEnv: "QUILL_SYSTEM1MODELS_GLOBAL_SECRET", SecretName: "trustedrouter-system1models-global-api-key", SecretLabel: "System1 Global key"},
 	{Provider: "system1models-eu", BaseURL: "https://api.system1models.ai/v1", SecretEnv: "QUILL_SYSTEM1MODELS_EU_SECRET", SecretName: "trustedrouter-system1models-eu-api-key", SecretLabel: "System1 EU key"},
 	// Secret registry only: inference is intercepted by the pinned E2EE adapter.
@@ -42,6 +41,7 @@ var specs = [...]Spec{
 	{Provider: "reka", BaseURL: "https://api.reka.ai/v1", SecretEnv: "QUILL_REKA_SECRET", SecretName: "trustedrouter-reka-api-key", SecretLabel: "reka key"},
 	{Provider: "sail-research", BaseURL: "https://api.sailresearch.com/v1", SecretEnv: "QUILL_SAIL_RESEARCH_SECRET", SecretName: "trustedrouter-sail-research-api-key", SecretLabel: "sail research key"},
 	{Provider: "mancer", BaseURL: "https://mancer.tech/oai/v1", SecretEnv: "QUILL_MANCER_SECRET", SecretName: "trustedrouter-mancer-api-key", SecretLabel: "mancer key"},
+	{Provider: "abliterate", BaseURL: "https://abliterate.ai/api/v1", SecretEnv: "QUILL_ABLITERATE_SECRET", SecretName: "trustedrouter-abliterate-api-key", SecretLabel: "Abliterate key"},
 	{Provider: "io-net", BaseURL: "https://api.intelligence.io.solutions/api/v1", SecretEnv: "QUILL_IO_NET_SECRET", SecretName: "trustedrouter-io-net-api-key", SecretLabel: "io intelligence key"},
 	{Provider: "scaleway", BaseURL: "https://api.scaleway.ai/v1", SecretEnv: "QUILL_SCALEWAY_SECRET", SecretName: "trustedrouter-scaleway-api-key", SecretLabel: "scaleway key"},
 	{Provider: "featherless", BaseURL: "https://api.featherless.ai/v1", SecretEnv: "QUILL_FEATHERLESS_SECRET", SecretName: "trustedrouter-featherless-api-key", SecretLabel: "featherless key"},
