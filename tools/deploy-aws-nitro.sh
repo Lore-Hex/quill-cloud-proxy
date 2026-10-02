@@ -826,6 +826,7 @@ allowlist:
   - {address: api.reka.ai,                    port: 443}
   - {address: api.sailresearch.com,           port: 443}
   - {address: mancer.tech,                    port: 443}
+  - {address: abliterate.ai,                  port: 443}
   - {address: api.intelligence.io.solutions,  port: 443}
   - {address: api.scaleway.ai,                 port: 443}
   - {address: api.featherless.ai,              port: 443}
@@ -978,6 +979,7 @@ write_vsock_unit 8061 api.upstage.ai
 write_vsock_unit 8062 api.reka.ai
 write_vsock_unit 8063 api.sailresearch.com
 write_vsock_unit 8064 mancer.tech
+write_vsock_unit 8105 abliterate.ai
 write_vsock_unit 8065 api.intelligence.io.solutions
 write_vsock_unit 8066 api.scaleway.ai
 write_vsock_unit 8067 api.featherless.ai
