@@ -2,14 +2,17 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
+	"github.com/google/uuid"
 )
 
 // Derived offline from the reviewed OS files and VM configuration, never from
@@ -82,12 +85,22 @@ func replayNearAIRuntimeEvents(events []nearAIRuntimeEvent, compose, osImage str
 		if event.IMR != 3 {
 			continue // Boot registers are checked against independently calculated pins.
 		}
-		if ready || event.EventType != 0x08000001 || event.Event == "" {
+		if event.EventType != 0x08000001 || event.Event == "" {
 			return nil, errors.New("NEAR AI runtime event sequence is invalid")
 		}
 		payload, err := hex.DecodeString(event.EventPayload)
 		if err != nil {
 			return nil, errors.New("NEAR AI runtime event payload is not hex")
+		}
+		// The reviewed proxy records a new public telemetry signing key on
+		// restart. Replay it rather than dropping it or allowing arbitrary
+		// post-boot events; both quotes must bind the resulting full RTMR3.
+		if ready {
+			if event.Event != "nearai-replica-report-key-v1" || !validNearAIReplicaKeyEvent(payload) {
+				return nil, errors.New("NEAR AI runtime event sequence is invalid")
+			}
+		} else if event.Event == "nearai-replica-report-key-v1" {
+			return nil, errors.New("NEAR AI replica key event precedes completed boot")
 		}
 		switch event.Event {
 		case "compose-hash", "os-image-hash", "system-ready":
@@ -115,4 +128,25 @@ func replayNearAIRuntimeEvents(events []nearAIRuntimeEvent, compose, osImage str
 		return nil, errors.New("NEAR AI runtime identity events are incomplete")
 	}
 	return register, nil
+}
+
+func validNearAIReplicaKeyEvent(payload []byte) bool {
+	if len(payload) == 0 || len(payload) > 1024 {
+		return false
+	}
+	var fields map[string]string
+	if err := json.Unmarshal(payload, &fields); err != nil || len(fields) != 4 {
+		return false
+	}
+	key, err := strictHex32(fields["public_key_hex"], "NEAR AI replica key")
+	if err != nil || fields["host_id"] == "" || len(fields["host_id"]) > 128 {
+		return false
+	}
+	bootID := fields["boot_id"]
+	boot, err := uuid.Parse(bootID)
+	if err != nil || boot.String() != bootID || boot.Version() != 4 || boot.Variant() != uuid.RFC4122 {
+		return false
+	}
+	digest := sha256.Sum256(key)
+	return fields["key_id"] == hex.EncodeToString(digest[:8])
 }
