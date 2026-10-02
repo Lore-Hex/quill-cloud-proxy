@@ -17,6 +17,7 @@ type contractRejection struct {
 
 // These are public diagnostic categories, not a request acceptance allowlist.
 // Categories bound alert cardinality; separately retained paths contain names only.
+// Mirror changes in quill-router/services/gateway_contract_warnings.py first.
 var contractParameterCategories = map[string]struct{}{
 	"store": {}, "model": {}, "models": {}, "messages": {}, "input": {},
 	"instructions": {}, "tools": {}, "tool_choice": {}, "parallel_tool_calls": {},

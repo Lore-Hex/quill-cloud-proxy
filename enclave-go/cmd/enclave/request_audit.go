@@ -78,10 +78,9 @@ func (identity *requestAuditIdentity) recordContractRejection(
 	w io.Writer, requestLogID string, route string, status int, parameter string,
 ) {
 	identity.rejectionStatus = status
-	identity.rejectionParameter = trustedrouter.ContractParameterPath(parameter)
-	if identity.rejectionParameter == "" {
-		identity.rejectionParameter = trustedrouter.ContractParameterCategory(parameter)
-	}
+	// Keep the field context inside the enclave until the log/RPC boundaries
+	// independently derive a safe path and category. Categorizing here loses it.
+	identity.rejectionParameter = parameter
 	writeRequestContractRejection(w, requestLogID, route, status, parameter)
 }
 
