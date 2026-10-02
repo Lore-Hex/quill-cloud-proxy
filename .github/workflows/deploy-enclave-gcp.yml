@@ -616,7 +616,7 @@ jobs:
       - name: Verify shared cloud reservation before mutations
         run: python3 tools/cloud-rollout.py assert --cloud gcp
       - name: Authenticate to AWS for backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -838,7 +838,7 @@ jobs:
       # close to that, and the restore below writes Route 53.
       - name: Refresh AWS credentials before restoring us-central1
         if: ${{ steps.canary_us.outcome == 'success' }}
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -870,7 +870,7 @@ jobs:
 
       - name: Refresh AWS credentials for primary recovery
         if: ${{ always() && (failure() || steps.canary_us.outcome == 'failure') }}
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -897,7 +897,7 @@ jobs:
       # immediately before every region instead of reusing the session created
       # near the start of this long-running job.
       - name: Refresh AWS credentials for Europe backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -926,7 +926,7 @@ jobs:
             "${PREV_DRAIN_ORIGIN}"
 
       - name: Refresh AWS credentials for US East backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
@@ -955,7 +955,7 @@ jobs:
             "${PREV_DRAIN_ORIGIN}"
 
       - name: Refresh AWS credentials for US West backup-domain DNS
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
