@@ -160,7 +160,10 @@ func requiresMaxCompletionTokens(provider, modelID string) bool {
 	return false
 }
 
-type chatMessage struct {
+type chatMessage = ChatMessage
+
+// ChatMessage is an already normalized upstream message. Preparation never fetches media.
+type ChatMessage struct {
 	Role       string           `json:"role"`
 	Content    any              `json:"content"`
 	ToolCalls  []map[string]any `json:"tool_calls,omitempty"`
@@ -298,50 +301,22 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	if strings.TrimSpace(upstreamID) == "" {
 		return fmt.Errorf("llm/%s: missing authorized upstream model", provider)
 	}
-	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
-	// Wharf omits decision confidence/probabilities from SSE. Fetch this small
-	// task result once as JSON, then use the same response pipeline for both
-	// caller modes. Other Neurometric models keep incremental upstream streams.
-	decisionCompletion := normalizeDirectProvider(provider) == "neurometric" && upstreamID == "neurometric/structured-decisions"
-	if decisionCompletion {
-		reqBody.Stream = false
-		reqBody.StreamOptions = nil
-	}
-	if normalizeDirectProvider(provider) == "tencent" {
-		if err := validateTencentThinking(reqBody); err != nil {
-			return err
-		}
-	}
-	if explicitHybridThinkingConflict(provider, req, reqBody) {
-		return &upstreamHTTPError{status: http.StatusBadRequest, body: "reasoning on is not supported with tools on this provider route"}
-	}
-	if normalizeDirectProvider(provider) == "tinfoil" {
-		reqBody.UserCacheSecret = strings.TrimSpace(options.providerCacheScope)
-	}
+	// Privatemode resolves its random cache salt outside pure preparation.
+	var privateWire *openAICompatibleRequest
 	if normalizeDirectProvider(provider) == "privatemode" {
-		if err := preparePrivatemodeWire(req, body, &reqBody, options.providerCacheScope); err != nil {
+		privateWire = &openAICompatibleRequest{Model: upstreamID}
+		if err := preparePrivatemodeWire(req, body, privateWire, options.providerCacheScope); err != nil {
 			return err
 		}
 	}
-	var payload any = reqBody
-	path := directChatCompletionsPath(provider)
-	nativeResponses := useOpenAIResponses(provider, reqBody)
-	if nativeResponses {
-		// Chat normalization retains effort only. Responses also understands
-		// summary preferences; validate the original object in its wire builder.
-		if req != nil {
-			reqBody.Reasoning = req.Reasoning
-		}
-		payload, err = buildOpenAIResponsesRequest(reqBody)
-		if err != nil {
-			return err
-		}
-		path = "/responses"
-	}
-	bodyBytes, err := json.Marshal(payload)
+	prepared, err := PrepareChatRequest(provider, upstreamModel, req, body, msgs, ChatPreparationOptions{
+		ProviderCacheScope: options.providerCacheScope, privateWire: privateWire,
+	})
 	if err != nil {
-		return fmt.Errorf("llm/%s: marshal body: %w", provider, err)
+		return err
 	}
+	bodyBytes, path := prepared.Bytes, prepared.Path
+	decisionCompletion, nativeResponses := prepared.DecisionCompletion, prepared.NativeResponses
 	httpReq, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
