@@ -15,7 +15,13 @@ func TestRejectedParameterPathsRetainedWithoutValues(t *testing.T) {
 		{"store=true", "store"},
 		{"alice@example.com", ""}, {"sk-tr-v1-secret", ""},
 		{"private customer text", ""}, {"sk_private_secret", ""},
+		{strings.Repeat("a", 100), strings.Repeat("a", 100)},
+		{"usage." + strings.Repeat("a", 94), "usage." + strings.Repeat("a", 94)},
+		{strings.Repeat("a", 101), ""},
+		{"usage." + strings.Repeat("a", 95), ""},
+		{strings.Repeat("a", 128), ""},
 		{strings.Repeat("a", 129), ""}, {"x\nsecret", ""},
+		{strings.Repeat("private_prompt_", 100), ""},
 	} {
 		t.Run(tc.input, func(t *testing.T) {
 			ctx := WithRequestLogID(t.Context(), "rlog_"+strings.Repeat("a", 32))
@@ -33,6 +39,9 @@ func TestRejectedParameterPathsRetainedWithoutValues(t *testing.T) {
 			got, _ := payload["contract_rejection"]["parameter_path"].(string)
 			if got != tc.want {
 				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			if len(got) > 100 || payload["contract_rejection"]["request_id"] != "rlog_"+strings.Repeat("a", 32) || payload["contract_rejection"]["status"] != float64(400) {
+				t.Fatalf("lost safe context or exceeded path limit: %s", encoded)
 			}
 		})
 	}

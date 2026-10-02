@@ -28,6 +28,8 @@ func TestServeLegacyUsageAndCacheRetention(t *testing.T) {
 				{"usage", `{"include":"private-value"}`, "usage.include", 400},
 				{"usage", `{"future_option":"private-value"}`, "usage.future_option", 400},
 				{"future_option", `"private-value"`, "future_option", 400},
+				{strings.Repeat("q", 100), `"private-value"`, strings.Repeat("q", 100), 400},
+				{strings.Repeat("q", 101), `"private-value"`, "", 400},
 				{"prompt_cache_retention", `null`, "", 200},
 				{"prompt_cache_retention", `"in_memory"`, "prompt_cache_retention", 501},
 				{"prompt_cache_retention", `"24h"`, "prompt_cache_retention", 501},
@@ -40,6 +42,9 @@ func TestServeLegacyUsageAndCacheRetention(t *testing.T) {
 							if strings.Contains(string(body), private) {
 								t.Error("private value reached control plane")
 							}
+						}
+						if len(tc.field) > 100 && strings.Contains(string(body), tc.field[:100]) {
+							t.Error("oversized field or its prefix reached control plane")
 						}
 						switch r.URL.Path {
 						case "/internal/gateway/authorize":
@@ -89,6 +94,9 @@ func TestServeLegacyUsageAndCacheRetention(t *testing.T) {
 					}
 					if strings.Contains(logs, "private-content") || strings.Contains(logs, "private-value") {
 						t.Fatal("logged request value")
+					}
+					if len(tc.field) > 100 && strings.Contains(logs, tc.field[:100]) {
+						t.Fatal("logged oversized field or its prefix")
 					}
 					if tc.status != 200 {
 						if authorize.Load() != 0 || settle.Load() != 0 || provider.request != nil || validate.Load() != 1 {

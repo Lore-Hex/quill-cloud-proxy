@@ -116,14 +116,18 @@ func WithContractRejection(ctx context.Context, status int, parameter string) co
 var contractParameterPathPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\[[0-9]{1,6}\])?(\.[A-Za-z_][A-Za-z0-9_]*(\[[0-9]{1,6}\])?){0,7}$`)
 
 // ContractParameterPath retains conventional unknown JSON field paths for
-// diagnosis. Free-form names, credential-like strings and values are excluded.
+// diagnosis. Names over 100 bytes are dropped, never truncated. Free-form
+// names, credential-like strings and values are excluded.
 func ContractParameterPath(parameter string) string {
 	parameter = strings.TrimSpace(parameter)
 	parameter, _, _ = strings.Cut(parameter, "=")
+	if len(parameter) > 100 {
+		return ""
+	}
 	if _, known := contractParameterCategories[parameter]; known {
 		return parameter
 	}
-	if len(parameter) > 128 || !contractParameterPathPattern.MatchString(parameter) {
+	if !contractParameterPathPattern.MatchString(parameter) {
 		return ""
 	}
 	for _, segment := range strings.Split(strings.ToLower(parameter), ".") {
