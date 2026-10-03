@@ -102,8 +102,9 @@ func writeRequestStartLog(
 
 // request_end timing fields follow requesttiming's phase-sum contract:
 // accept_to_start + authorize + route + upstream + retry_wait + settle + receipt
-// equals elapsed before truncation when Start/invoke occur, authorization is
-// serial and between Start and first invoke, retry waits are complete and
+// equals request_ms before truncation when Start precedes the first invocation,
+// authorization is serial and between Start and first invoke, retry waits are
+// complete and
 // disjoint from each other and other phases, settlement is outside pre-invoke
 // phases/retry waits, and retry waits/settlements cover all gaps between
 // invocations. Upstream is a
@@ -112,7 +113,7 @@ func writeRequestStartLog(
 // its elapsed part runs through End and receipt is zero. Otherwise receipt is
 // the post-invocation tail minus settlement in that tail. Rejections, concurrent
 // authorization/retry work, unfinished waits and unmeasured orchestration gaps
-// need not sum to elapsed. Logged millisecond truncation can also lower the sum.
+// need not sum to request_ms. Logged millisecond truncation can also lower the sum.
 func writeRequestEndLog(
 	w io.Writer,
 	requestLogID string,
@@ -133,7 +134,7 @@ func writeRequestEndLog(
 		phases.SettleOutcome = "skipped"
 	}
 	fmt.Fprintf(w,
-		"enclave.request_end request_log_id=%q method=%q route=%q status=%d outcome=%q body_bytes=%d response_bytes=%d elapsed_ms=%d workspace_id=%q credential_id=%q credential_fingerprint=%q attribution=%q accept_to_start_ms=%d authorize_ms=%d authorize_attempts=%d route_ms=%d upstream_ms=%d upstream_partial=%d ttfb_ms=%d retry_wait_ms=%d settle_ms=%d settle_outcome=%q receipt_ms=%d cp_endpoint=%q\n",
+		"enclave.request_end request_log_id=%q method=%q route=%q status=%d outcome=%q body_bytes=%d response_bytes=%d elapsed_ms=%d workspace_id=%q credential_id=%q credential_fingerprint=%q attribution=%q idle_wait_ms=%d request_ms=%d accept_to_start_ms=%d authorize_ms=%d authorize_attempts=%d route_ms=%d upstream_ms=%d upstream_partial=%d ttfb_ms=%d retry_wait_ms=%d settle_ms=%d settle_outcome=%q receipt_ms=%d cp_endpoint=%q\n",
 		requestLogID,
 		method,
 		route,
@@ -146,6 +147,8 @@ func writeRequestEndLog(
 		identity.credentialID,
 		identity.credentialFingerprint,
 		identity.attribution,
+		phases.IdleWaitMS,
+		phases.RequestMS,
 		phases.AcceptToStartMS,
 		phases.AuthorizeMS,
 		phases.AuthorizeAttempts,
