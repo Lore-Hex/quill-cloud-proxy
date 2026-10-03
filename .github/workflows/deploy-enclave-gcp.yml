@@ -58,6 +58,8 @@ on:
       - "tools/recover-gcp-region.sh"
       - "tools/enclave-rollout-drain-lib.sh"
       - "tools/cleanup-enclave-rollout-drains.sh"
+      - "tools/gcp-mig-autoscaler.sh"
+      - "tools/tests/test-gcp-mig-autoscaler.sh"
       - "tools/verify-gcp-runtime-secret-access.py"
       - ".github/workflows/deploy-enclave-gcp.yml"
       # Note: trust-page/** is intentionally NOT in this list. Trust
@@ -156,6 +158,9 @@ jobs:
         run: |
           python3 tools/test_reconcile_enclave_dns.py PersistentDrainTests
           tools/tests/test-enclave-rollout-drains.sh
+      - name: Test the MIG autoscaler and its rollout holds (offline)
+        working-directory: .
+        run: tools/tests/test-gcp-mig-autoscaler.sh
       - run: go test -tags 'cloud_gcp,llm_multi' ./...
 
   build-and-release:
@@ -708,6 +713,13 @@ jobs:
       # keeps serving from the other warm regions. This avoids relying on spare
       # Confidential VM capacity for a blue/green primary-region deploy.
 
+      # Autoscaler decision: suspend it (mode OFF) before the drain, so the
+      # group's size stays fixed through the rollout and its every-VM gates.
+      # "Apply us-central1 autoscaling" below turns it back on (scale-out only)
+      # after the region's gates pass and its drain is restored.
+      - name: Suspend us-central1 autoscaling for its rollout
+        run: bash tools/gcp-mig-autoscaler.sh suspend us-central1 quill-enclave-mig-us
+
       - name: Drain us-central1 from canonical API DNS
         env:
           QUILL_RECONCILE_APPLY: "1"
@@ -892,6 +904,13 @@ jobs:
             "${PREV_DRAIN_ORIGIN}"
           exit 1
 
+      # Autoscaler decision: create or update it only after the canary passed
+      # and the drain state was restored. It sits after the recovery step, so
+      # its failure stops the deploy but never rolls back a verified region.
+      - name: Apply us-central1 autoscaling after its rollout
+        if: ${{ success() && steps.canary_us.outcome == 'success' }}
+        run: bash tools/gcp-mig-autoscaler.sh apply us-central1 quill-enclave-mig-us
+
       # AWS OIDC credentials are temporary and cannot refresh in place. Each
       # secondary rollout can legitimately take 30+ minutes, so authenticate
       # immediately before every region instead of reusing the session created
@@ -920,7 +939,7 @@ jobs:
             eu \
             api.quillrouter.com,api-europe-west4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_TEMPLATE}" \
-            c3-standard-4 \
+            c3-standard-8 \
             TDX \
             "${PREV_DRAIN_STATE}" \
             "${PREV_DRAIN_ORIGIN}"
@@ -949,7 +968,7 @@ jobs:
             useast4 \
             api.quillrouter.com,api-us-east4.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_TEMPLATE}" \
-            c3-standard-4 \
+            c3-standard-8 \
             TDX \
             "${PREV_DRAIN_STATE}" \
             "${PREV_DRAIN_ORIGIN}"
@@ -988,7 +1007,7 @@ jobs:
             uswest1 \
             api.quillrouter.com,api-us-west1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \
             "${PREV_TEMPLATE}" \
-            c3-standard-4 \
+            c3-standard-8 \
             TDX \
             "${PREV_DRAIN_STATE}" \
             "${PREV_DRAIN_ORIGIN}"

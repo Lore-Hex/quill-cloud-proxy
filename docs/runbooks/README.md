@@ -45,7 +45,14 @@ is no LB.**
 - **4 GCP regions:** `quill-enclave-mig-us` (us-central1),
   `quill-enclave-mig-useast4` (us-east4), `quill-enclave-mig-eu`
   (europe-west4), and `quill-enclave-mig-uswest1` (us-west1), all Intel TDX on
-  `c3-standard-4`. us-west1 is the newest: while it is listed in
+  `c3-standard-8`. Each MIG has a scale-out-only CPU autoscaler (2-8 VMs,
+  60% target, 480 s initialization period) owned by
+  `tools/gcp-mig-autoscaler.sh`: it adds VMs under load and never deletes one,
+  because there is no load balancer to drain a VM out of DNS first, so a group
+  grown by a spike stays at its size until a DNS-draining scale-in job exists.
+  A rollout suspends it (mode OFF) before the region is drained and applies it
+  again after the region's gates pass; there is no TDX reservation behind it.
+  us-west1 is the newest: while it is listed in
   `tools/gcp-enclave-migs-pending.txt` rather than `tools/gcp-enclave-migs.txt`
   it is being bootstrapped, and the reconciler publishes
   `api-us-west1.quillrouter.com` but never adds the region to the canonical
@@ -99,7 +106,7 @@ each one fails the first rollout late if it is wrong:
      --name=api-<region>.quillrouter.com.
    ```
 2. Every zone you will pass in `MIG_ZONES` supports Intel TDX for the machine
-   type (`c3-standard-4`); see Google's "Confidential VM supported
+   type (`c3-standard-8`); see Google's "Confidential VM supported
    configurations". On 2026-09-21 that was us-central1-a/b/c, us-west1-a/b,
    us-east4-a/b/c and europe-west4-a/b/c. A regional MIG created without
    `--zones` gets three zones chosen by Google, which is how us-central1 came
@@ -107,8 +114,9 @@ each one fails the first rollout late if it is wrong:
    then blocked every deploy for 22 hours. A group's zones cannot be changed
    after it is created, so `tools/deploy-gcp-mig.sh` reads `MIG_ZONES` only
    when it creates the MIG (and creates it BALANCED with redistribution off).
-3. The region has C3 quota for a full surge: the 2 serving VMs plus their 2
-   replacements, 16 vCPUs of `c3-standard-4`.
+3. The region has C3 quota for the autoscaler's ceiling plus a rollout's
+   surge: 8 VMs and up to 8 replacements, 128 vCPUs of `c3-standard-8` (each
+   live region's C3_CPUS limit read 300 on 2026-10-01).
    ```bash
    gcloud compute regions describe <region> --project=quill-cloud-proxy --format=json \
      | jq '.quotas[] | select(.metric == "C3_CPUS")'

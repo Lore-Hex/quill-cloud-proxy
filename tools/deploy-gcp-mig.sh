@@ -7,7 +7,12 @@
 #                                          production image, metadata wired to
 #                                          the multi-provider workload)
 #   - quill-enclave-mig-${REGION}          regional MIG, NO autohealing,
-#                                          target size 2 (HA across zones)
+#                                          created at size 2 (HA across zones)
+#
+# The MIG's scale-out-only CPU autoscaler (2-8 VMs) belongs to
+# tools/gcp-mig-autoscaler.sh.
+# This script only suspends it (mode OFF) before it changes the template; the
+# caller applies it again once the region's rollout gates have passed.
 #
 # There is NO GCP load balancer. A GCP health check cannot usefully validate a
 # Confidential Space enclave: an HTTP/L7 probe needs the in-VM TLS cert it can't
@@ -75,7 +80,15 @@ MIG_NAME="${MIG_NAME:-quill-enclave-mig-${REGION_SHORT}}"
 # default 8081) for manual/internal checks only — nothing health-checks it (there
 # is no LB). Fleet health is the reconciler's attestation, not a GCP HC.
 HEALTH_PORT="${HEALTH_PORT:-8081}"
+# The size of a NEW group, and of an existing group with no autoscaler. An
+# autoscaled group's size is the autoscaler's, with its minimum as the floor;
+# this script never resizes one.
 TARGET_SIZE="${TARGET_SIZE:-2}"
+# tools/verify-region-before-dns.sh fails a region with fewer than two running VMs.
+if ! [[ "${TARGET_SIZE}" =~ ^[1-9][0-9]*$ ]] || [ "${TARGET_SIZE}" -lt 2 ]; then
+  echo "TARGET_SIZE='${TARGET_SIZE}' must be an integer of at least 2" >&2
+  exit 1
+fi
 MAX_SURGE="${MAX_SURGE:-3}"
 MAX_UNAVAILABLE="${MAX_UNAVAILABLE:-0}"
 # A Confidential Space VM reaches RUNNING well before the enclave has fetched
@@ -133,8 +146,8 @@ QUILL_OPENROUTER_SECRET="${QUILL_OPENROUTER_SECRET:-quill-openrouter-key}"
 # per-provider `if [ -n ... ]` fetch blocks are copy-paste; they could collapse
 # into one data-driven loop (a name->secret table) with a single empty-skip
 # guard. Intentionally NOT done yet — won't refactor a just-stabilized
-# production deploy script without a dedicated test-deploy. Bundle the DRY +
-# the resize guard (below) into the next real edit to this script.
+# production deploy script without a dedicated test-deploy. (The resize guard
+# deferred with it now sits where TARGET_SIZE is defined.)
 QUILL_OPENAI_SECRET="${QUILL_OPENAI_SECRET:-trustedrouter-openai-api-key}"
 QUILL_OPENAI_VIDEO_SECRET="${QUILL_OPENAI_VIDEO_SECRET:-}"
 OPENAI_VIDEO_TEE_ENV=""
@@ -308,13 +321,20 @@ WORKLOAD_SA="${WORKLOAD_SA:-quill-workload@${PROJECT_ID}.iam.gserviceaccount.com
 # Confidential flavor defaults to Intel TDX on c3. Google Cloud Attestation now
 # supports BOTH Intel TDX and AMD SEV for Confidential Space, but it still does
 # not support SEV-SNP for this workload. São Paulo has no TDX machine family, so
-# its release profile is n2d-standard-4 + SEV on AMD Milan. The other live GCP
-# regions remain c3-standard-4 + TDX.
+# its release profile is n2d-standard-4 + SEV on AMD Milan. The other GCP
+# regions run c3-standard-8 + TDX (8 vCPU, 32 GB).
+#
+# The machine type is outside every measurement this repository pins. Verifiers
+# accept a Confidential Space token by its container image_digest, Google
+# issuer, quill-cloud audience, nonce bindings and dbgstat
+# (tools/verify-attestation.py verify_gcp_jwt); nothing pins vCPU count, memory
+# size, MRTD or RTMR. Google supports Intel TDX on every c3-standard-* size in
+# the zones these MIGs use.
 #
 # SEV and SEV-SNP are different Compute API values. Never set
 # CONF_COMPUTE_TYPE=SEV_SNP: GCA rejects it with
 # UNSUPPORTED_CC_TECHNOLOGY and the workload cannot mint an attestation token.
-default_machine_type="c3-standard-4"
+default_machine_type="c3-standard-8"
 default_conf_compute_type="TDX"
 MACHINE_TYPE="${MACHINE_TYPE:-$default_machine_type}"
 CONF_COMPUTE_TYPE="${CONF_COMPUTE_TYPE:-$default_conf_compute_type}"
@@ -565,8 +585,27 @@ gc compute instance-templates create "$TEMPLATE" \
   >/dev/null
 
 # 2. Create or update the MIG.
+size_summary="$TARGET_SIZE"
 if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/dev/null 2>&1; then
-  log "updating MIG $MIG_NAME -> template $TEMPLATE (target size $TARGET_SIZE)"
+  # Autoscaler decision: suspend it (mode OFF) before the group changes, so no scale-out races this rollout and its every-VM gates; the caller applies it after the gates.
+  PROJECT_ID="$PROJECT_ID" bash "${SCRIPT_DIR}/gcp-mig-autoscaler.sh" suspend "$REGION" "$MIG_NAME"
+  mig_json="$(gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" --format=json)"
+  mig_facts="$(python3 -c 'import json, sys; g = json.load(sys.stdin); zones = (g.get("distributionPolicy") or {}).get("zones") or []; autoscaled = g.get("autoscaler") or (g.get("status") or {}).get("autoscaler"); print(int(g["targetSize"]), len(zones), 1 if autoscaled else 0)' <<<"$mig_json")"
+  read -r current_size mig_zone_count mig_autoscaled <<<"$mig_facts"
+  if ! [[ "$current_size" =~ ^[0-9]+$ && "$mig_zone_count" =~ ^[1-9][0-9]*$ && "$mig_autoscaled" =~ ^[01]$ ]]; then
+    echo "could not read the size, zones and autoscaler of $MIG_NAME: '$mig_facts'" >&2
+    exit 1
+  fi
+  # Compute divides a fixed maxSurge evenly among the group's zones. Every zone
+  # may surge half the group, so a group the autoscaler grew still rolls in at
+  # most two readiness holds per zone: the budget of the workflow's stable waits
+  # and of tools/recover-gcp-region.sh. A 2-VM group keeps MAX_SURGE.
+  rollout_surge="$MAX_SURGE"
+  if [[ "$MAX_SURGE" =~ ^[1-9][0-9]*$ ]] &&
+      [ $((mig_zone_count * ((current_size + 1) / 2))) -gt "$MAX_SURGE" ]; then
+    rollout_surge=$((mig_zone_count * ((current_size + 1) / 2)))
+  fi
+  log "updating MIG $MIG_NAME -> template $TEMPLATE (size $current_size in $mig_zone_count zones, max surge $rollout_surge)"
   # NO MIG autohealing. The GCP passthrough-NLB health check cannot pass
   # against the Confidential Space enclave (TLS terminates in-VM; both the
   # :443 and the dedicated :8081 probes read UNHEALTHY on serving instances —
@@ -582,7 +621,7 @@ if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/
     --clear-autohealing \
     --description="quill enclave gateway in $REGION (DNS via attestation reconciler; $MIN_READY rollout readiness hold; no MIG autohealing)." \
     --update-policy-type=proactive \
-    --update-policy-max-surge="$MAX_SURGE" \
+    --update-policy-max-surge="$rollout_surge" \
     --update-policy-max-unavailable="$MAX_UNAVAILABLE" \
     --update-policy-min-ready="$MIN_READY" \
     --update-policy-minimal-action=replace \
@@ -591,17 +630,15 @@ if gc compute instance-groups managed describe "$MIG_NAME" --region="$REGION" >/
   # one surge rollout.
   gc compute instance-groups managed set-instance-template "$MIG_NAME" \
     --region="$REGION" --template="$TEMPLATE" >/dev/null
-  # Reconcile size on every deploy — lets us raise TARGET_SIZE for a
-  # region (e.g. eu went 2→3 to absorb the 2026-05-11 watchdog-flap
-  # pattern) without a one-shot operator step.
-  current_size=$(gc compute instance-groups managed describe "$MIG_NAME" \
-    --region="$REGION" --format='value(targetSize)' 2>/dev/null || echo "")
-  # DEFERRED (review 2026-06-21): add a resize guard — refuse to apply when
-  # TARGET_SIZE is empty/unset or would drop the MIG below a safe floor (a bad
-  # or empty TARGET_SIZE reaching here could scale a region to 0). Deferred with
-  # the provider-loop DRY above; land both in the next deploy-script test-deploy.
-  if [ "$current_size" != "$TARGET_SIZE" ]; then
-    log "resizing MIG $MIG_NAME: ${current_size:-?} -> $TARGET_SIZE"
+  if [ "$mig_autoscaled" = 1 ]; then
+    # Resize decision: never resize an autoscaled group; its size is the autoscaler's, and AUTOSCALER_MIN_REPLICAS (not TARGET_SIZE) raises its floor.
+    log "MIG $MIG_NAME is autoscaled: it keeps its size of $current_size; TARGET_SIZE applies only to a group with no autoscaler"
+    size_summary="$current_size, autoscaler suspended until: bash tools/gcp-mig-autoscaler.sh apply $REGION $MIG_NAME"
+  elif [ "$current_size" != "$TARGET_SIZE" ]; then
+    # Reconcile size on every deploy — lets us raise TARGET_SIZE for a
+    # region (e.g. eu went 2→3 to absorb the 2026-05-11 watchdog-flap
+    # pattern) without a one-shot operator step.
+    log "resizing MIG $MIG_NAME: $current_size -> $TARGET_SIZE"
     gc compute instance-groups managed resize "$MIG_NAME" \
       --region="$REGION" --size="$TARGET_SIZE" >/dev/null
   fi
@@ -616,6 +653,7 @@ else
   fi
   # No --health-check / autohealing on create — see the update branch above.
   # Health is owned by the attesting DNS reconciler, not the MIG.
+  # Autoscaler decision: none at creation; the caller applies it once this first rollout passes its gates.
   #
   # BALANCED with redistribution off is the capacity-tolerant pair, the same
   # one tools/relieve-mig-stockout.py sets: when the group creates or adds a VM
@@ -649,6 +687,6 @@ quill-enclave gateway in $REGION is provisioned (no LB; DNS via reconciler).
   hostname (SNI):   $API_HOST
   template:         $TEMPLATE
   image:            $IMAGE_REF
-  MIG size:         $TARGET_SIZE
+  MIG size:         $size_summary
 
 EOF
