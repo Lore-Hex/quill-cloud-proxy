@@ -6,6 +6,18 @@ import (
 	"unicode/utf8"
 )
 
+// MaxInputBytes is the maximum certified Chat input budget, before framing.
+const MaxInputBytes = 8192
+
+// CheckInputLength rejects raw requests before a second JSON decode. Conservative
+// rejection of whitespace-heavy public input is intentional for the shadow cohort.
+func CheckInputLength(n int) Reason {
+	if n > MaxInputBytes {
+		return ReasonInputBound
+	}
+	return ReasonEligible
+}
+
 // encodedBudget counts encoding/json's escaped UTF-8 representation without
 // allocating or invoking caller code. The input is the parsed JSON domain, not
 // arbitrary marshalers. Container counts, raw string lengths and depth cap work

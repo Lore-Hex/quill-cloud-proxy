@@ -65,7 +65,7 @@ func PreparePayload(g VerifiedGrant, certificates []AdapterCertificate, req Pars
 	if cert.BoundAlgorithm != ConservativeUTF8Bytes || !supportedBoundMethod(route["input_bound_method"]) || !cert.FramingKnown || cert.FramingTokens < 0 {
 		return PreparedPayload{}, ReasonBoundMethod
 	}
-	budget := min(int64(8192), number(route, "input_bound")) - cert.FramingTokens
+	budget := min(int64(MaxInputBytes), number(route, "input_bound")) - cert.FramingTokens
 	if budget < 0 {
 		return PreparedPayload{}, ReasonInputBound
 	}
@@ -90,7 +90,7 @@ func PreparePayload(g VerifiedGrant, certificates []AdapterCertificate, req Pars
 		return PreparedPayload{}, r
 	}
 	// Bound before addition, so even a corrupt local certificate cannot wrap.
-	if cert.FramingTokens > 8192 || len(wire) > 8192-int(cert.FramingTokens) {
+	if cert.FramingTokens > MaxInputBytes || len(wire) > MaxInputBytes-int(cert.FramingTokens) {
 		return PreparedPayload{}, ReasonInputBound
 	}
 	bound := int64(len(wire)) + cert.FramingTokens

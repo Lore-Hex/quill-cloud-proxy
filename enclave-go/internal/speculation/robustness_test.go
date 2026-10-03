@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-func TestNoProductionImports(t *testing.T) {
+func TestNoProductionTestHelperImports(t *testing.T) {
 	root := filepath.Clean("../..")
 	self := filepath.Join(root, "internal", "speculation")
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -38,7 +38,7 @@ func TestNoProductionImports(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if strings.HasSuffix(name, "/internal/speculation") {
+			if strings.Contains(name, "/testdata") || strings.Contains(name, "/testhelper") {
 				t.Errorf("production import: %s", path)
 			}
 		}

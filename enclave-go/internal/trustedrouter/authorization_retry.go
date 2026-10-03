@@ -194,9 +194,13 @@ func (c *Client) postJSONBytesWithRetryFromEndpoint(
 	// body and bootAuthHeader were produced together before the loop and are
 	// reused verbatim for every attempt.
 	for attempt := 1; attempt <= policy.attempts; attempt++ {
+		attemptCtx, completeShadowAttempt := c.beginShadowAttempt(retryCtx, path)
 		selectedEndpoint, err := c.postJSONBytesWithBootAuthAtEndpoint(
-			retryCtx, path, body, out, pinnedEndpoint, bootAuthHeader,
+			attemptCtx, path, body, out, pinnedEndpoint, bootAuthHeader,
 		)
+		if completeShadowAttempt != nil {
+			completeShadowAttempt(err, err != nil && shouldRetry(err))
+		}
 		if selectedEndpoint >= 0 {
 			pinnedEndpoint = selectedEndpoint
 		}

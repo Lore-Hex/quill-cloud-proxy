@@ -22,6 +22,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -87,6 +88,9 @@ func ClientContextFromContext(ctx context.Context) *qtypes.ClientContext {
 }
 
 type Client struct {
+	shadow         shadowobserve.Observer
+	shadowBoundary shadowobserve.Boundary
+	shadowSigner   spendlease.DigestSigner
 	// baseURLs is ordered: index 0 is the configured billing authority, and
 	// later entries are fallbacks used only when an earlier one cannot be
 	// dialled. Observer/status services are never valid entries. See
@@ -592,12 +596,14 @@ type BroadcastDestination struct {
 }
 
 type ControlPlaneError struct {
-	Path       string
-	StatusCode int
-	Message    string
-	Type       string
-	Reason     string
-	Body       string
+	ShadowScope shadowobserve.Identity
+	RateScope   string
+	Path        string
+	StatusCode  int
+	Message     string
+	Type        string
+	Reason      string
+	Body        string
 	// Retry-After from the control plane (e.g. a per-key window spend limit
 	// 429 carries seconds-until-the-window-resets). Relayed to the client so
 	// agents can back off precisely instead of guessing.
@@ -1368,6 +1374,9 @@ func (c *Client) postJSONBytesWithBootAuthAtEndpoint(
 	if err != nil {
 		return selectedEndpoint, err
 	}
+	if sample := shadowAttemptFromContext(ctx); sample != nil {
+		resp.Body = &shadowTimingBody{ReadCloser: resp.Body, sample: sample}
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -1392,6 +1401,26 @@ func (c *Client) postJSONBytesWithBootAuthAtEndpoint(
 			controlErr.Type = strings.TrimSpace(envelope.Error.Type)
 			controlErr.Reason = strings.TrimSpace(envelope.Error.Reason)
 		}
+		// Proposed; not emitted by the router today. Decode optional observation
+		// metadata separately: malformed shadow fields
+		// must never change ordinary error decoding, including when shadow is off.
+		if c.shadow != nil {
+			c.shadowCall(func() {
+				var envelope struct {
+					Data struct {
+						WorkspaceID  string `json:"workspace_id"`
+						KeyID        string `json:"key_id"`
+						LookupDigest string `json:"lookup_digest"`
+						RateScope    string `json:"rate_scope"`
+					} `json:"data"`
+				}
+				if json.Unmarshal(errBody, &envelope) == nil {
+					controlErr.ShadowScope = shadowobserve.Identity{WorkspaceID: envelope.Data.WorkspaceID, KeyID: envelope.Data.KeyID, LookupDigest: envelope.Data.LookupDigest}
+					controlErr.RateScope = envelope.Data.RateScope
+				}
+			})
+		}
+
 		return selectedEndpoint, controlErr
 	}
 	if out == nil {
