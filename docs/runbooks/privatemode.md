@@ -25,14 +25,14 @@ revocation, an absent proxy, or an unreviewed native model fails closed. There
 is no plaintext or BYOK fallback. Only chat inference is enabled; embeddings
 and decision APIs explicitly reject this provider before network access.
 
-Pins reviewed on 2026-09-25:
+Pins reviewed on 2026-10-03:
 
-- Public source: `edgelesssys/privatemode-public` tag `v1.57.0`, commit
-  `9995223e02461fef93742fe9921dc03f7cc4f1a7`.
+- Public source: `edgelesssys/privatemode-public` tag `v1.58.0`, commit
+  `753fa3fe1f2321c71743dda54f2ebbb160f89e14`.
 - Proxy OCI index:
-  `sha256:77e8f378d5151d6abf36e02c7b8622996dcc4ded09b4ef4860b538a5dcc557c6`.
+  `sha256:5e8f549169c4288c24c902eadc4c6ebfaaf05c06e5605449c34469257929b143`.
 - Embedded manifest SHA-256:
-  `928724d7a536442715aed927d9fb9fc8718c1d67a77ce888dca8f0ea9078bb39`.
+  `384a2137e534357d74392bf3940373ff49d309d91551376b5a7f828e372af42b`.
 - Contrast verifier: `v1.24.1`; Linux CLI SHA-256
   `257601578d45622889eabf8963dc5983e607671ce22b5fc7749a81dcd66c96dd`.
 - Native models: `gpt-oss-120b`, `glm-5.3`, `glm-5.3-flash` only.
@@ -40,7 +40,7 @@ Pins reviewed on 2026-09-25:
 Pins are not themselves proof that a deployment passed: preserve independent
 policy reproduction results and regional inference results with the release.
 
-Independent reproduction passed for all nine policy hashes in Cloud Build
+Historical v1.57 reproduction passed for all nine policy hashes in Cloud Build
 `f291e343-c4a0-4580-b90c-6ea549ba5046` (2026-09-25, us-central1). The public
 generated manifest is retained at
 `gs://44325983244.cloudbuild-logs.googleusercontent.com/privatemode-policy-audit/f291e343-c4a0-4580-b90c-6ea549ba5046/generated-manifest.json`.
@@ -55,6 +55,19 @@ hash, exit code, and restart delay, not prompt, response, thinking, or keys.
 Do not forward raw vendor errors: they may incorporate untrusted upstream
 response bodies. Request-stage HTTP failures preserve the status for fallback
 and retry but replace the body with a fixed provider error.
+
+The vendor proxy maps secret-setup failures to HTTP 401 even when credentials
+are valid. The adapter preserves that status but distinguishes fixed reasons
+`attestation_manifest_mismatch` and `attestation_verification` in boot probes
+and redacted request errors. Unrecognized, malformed, oversized, or unreadable
+errors remain generic. These labels are diagnostics, never authorization to
+accept measurements. No raw error text is logged or returned.
+
+`Verify Privatemode manifest` checks the public manifest hourly without
+credentials or inference. A difference fails the workflow and requires a
+reviewed pin update. It never downloads trust configuration at runtime or
+modifies the catalog. A matching repository pin does not prove all serving
+clouds have deployed it; fresh encrypted regional probes remain required.
 
 `privatemode.proxy_listening` is local readiness, not an attestation-success
 claim. Upstream attestation happens lazily when a request supplies credentials;

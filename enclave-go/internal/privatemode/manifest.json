@@ -1,78 +1,70 @@
 {
   "Policies": {
-    "050b62c13b1fcfffcceea20cd3e5919168f8120b0c277e0f5e5611557ca90e9f": {
-      "SANs": [
-        "continuum-etcd-client",
-        "workload-gpt-oss-120b",
-        "*"
-      ],
-      "WorkloadSecretID": "apps/v1/Deployment/continuum-d7fecb/workload-gpt-oss-120b"
-    },
-    "235d9c02749a4571c4da5571ef4fb5cb5d263cf1d53a1063e8ce362f1b6af573": {
-      "SANs": [
-        "continuum-etcd-client",
-        "unstructured-api",
-        "*"
-      ],
-      "WorkloadSecretID": "apps/v1/Deployment/continuum-d7fecb/unstructured-api"
-    },
-    "490970ca782cf78d0822a539408f5273cc8f9c9e2aa6354202fddb6ec3d77629": {
-      "SANs": [
-        "coordinator",
-        "*"
-      ],
-      "WorkloadSecretID": "apps/v1/StatefulSet/continuum-d7fecb/coordinator",
-      "Role": "coordinator"
-    },
-    "59f7dffa384a0c3e72f5481853bd3c6cebc9c48581d55ec923d2ed8e5f83be91": {
-      "SANs": [
-        "continuum-etcd-client",
-        "workload-glm-5-3",
-        "*"
-      ],
-      "WorkloadSecretID": "apps/v1/Deployment/continuum-d7fecb/workload-glm-5-3"
-    },
-    "72d1ae77e8e7d5709be968663d3875b1ba01a634edbb71241774d7095647d964": {
-      "SANs": [
-        "continuum-etcd-client",
-        "workload-glm-5-3-flash",
-        "*"
-      ],
-      "WorkloadSecretID": "apps/v1/Deployment/continuum-d7fecb/workload-glm-5-3-flash"
-    },
-    "8e793af1637533c4966f99b95e525cba9e340aa5f6a08b14d852aa53410b2738": {
-      "SANs": [
-        "root",
-        "secret-service",
-        "*",
-        "secret-service-internal.continuum-d7fecb.svc.cluster.local",
-        "*.secret-service-headless.continuum-d7fecb.svc.cluster.local"
-      ],
-      "WorkloadSecretID": "apps/v1/StatefulSet/continuum-d7fecb/secret-service"
-    },
-    "9ea4e0091fbc6f42d18bd1d6ea329a842434f0e6ee974e6de95e648a1e31e357": {
-      "SANs": [
-        "continuum-etcd-client",
-        "workload-kimi-k2-6",
-        "*"
-      ],
-      "WorkloadSecretID": "apps/v1/Deployment/continuum-d7fecb/workload-kimi-k2-6"
-    },
-    "a2d04d0d7197a8a16d44f91373ac03bdad841e0c5df1a88cb0803ccc78f47e0b": {
+    "0452ba56dd2db05eff0869487fa874a459d1251a950667667df6afdc9f0dae5d": {
       "SANs": [
         "continuum-etcd-client",
         "workload-whisper-qwen3-voxtral",
         "*"
       ],
-      "WorkloadSecretID": "apps/v1/Deployment/continuum-d7fecb/workload-whisper-qwen3-voxtral"
+      "WorkloadSecretID": "apps/v1/Deployment/continuum-0a7a47/workload-whisper-qwen3-voxtral"
     },
-    "f10b2427a2b645fc229ca634765bfa1d8c6287fc374137807caab34cad793e72": {
+    "0a5f7f9949f37547b7cdda3a85ddd6f23e3c5e5247e989fba33a93b778032dae": {
+      "SANs": [
+        "coordinator",
+        "*"
+      ],
+      "WorkloadSecretID": "apps/v1/StatefulSet/continuum-0a7a47/coordinator",
+      "Role": "coordinator"
+    },
+    "75f381be828415c31b1e988285fccd70059264251d994349a431162d5e8aa6fe": {
+      "SANs": [
+        "continuum-etcd-client",
+        "workload-glm-5-3",
+        "*"
+      ],
+      "WorkloadSecretID": "apps/v1/Deployment/continuum-0a7a47/workload-glm-5-3"
+    },
+    "85f7deba7bc722b700ce24123885c585b273588c9b5999a428ad61b221ce5b05": {
       "SANs": [
         "continuum-etcd-client",
         "workload-deepseek-ocr-2",
         "*"
       ],
-      "WorkloadSecretID": "apps/v1/Deployment/continuum-d7fecb/workload-deepseek-ocr-2"
+      "WorkloadSecretID": "apps/v1/Deployment/continuum-0a7a47/workload-deepseek-ocr-2"
+    },
+    "a9341da0b79bb993f040b635c7fa46010466b7620ae84009f10dc60a4aa95762": {
+      "SANs": [
+        "continuum-etcd-client",
+        "workload-gpt-oss-120b",
+        "*"
+      ],
+      "WorkloadSecretID": "apps/v1/Deployment/continuum-0a7a47/workload-gpt-oss-120b"
+    },
+    "a97844c73036689b733fa0fbb6bb1a9b29697e0d983dbe927a45570a4ff50020": {
+      "SANs": [
+        "root",
+        "secret-service",
+        "*",
+        "secret-service-internal.continuum-0a7a47.svc.cluster.local",
+        "*.secret-service-headless.continuum-0a7a47.svc.cluster.local"
+      ],
+      "WorkloadSecretID": "apps/v1/StatefulSet/continuum-0a7a47/secret-service"
+    },
+    "b9bb506bbc0fa5718ab18309015d143a9a0d7697315387e0feab58878eb00d01": {
+      "SANs": [
+        "continuum-etcd-client",
+        "workload-glm-5-3-flash",
+        "*"
+      ],
+      "WorkloadSecretID": "apps/v1/Deployment/continuum-0a7a47/workload-glm-5-3-flash"
+    },
+    "e07a8452537b4ce7355cf3bcf2fddb968a5b3e089e01e74fd4d2da78b0b9217e": {
+      "SANs": [
+        "continuum-etcd-client",
+        "unstructured-api",
+        "*"
+      ],
+      "WorkloadSecretID": "apps/v1/Deployment/continuum-0a7a47/unstructured-api"
     }
   },
   "ReferenceValues": {
@@ -140,6 +132,6 @@
     ]
   },
   "SeedshareOwnerPubKeys": [
-    "3082020a0282020100a0a9a8e5eafe2fbb1b92411f3d5e34c9774bde994b6c11b4ff83a3cf0b1c6716880cb40076777edbb2f02d0b8e98d6cce7c88eb28e729447d49b3e7060f334446764d3f269178c1cdb3e6ac1d643752044c0dc015282f88ed352010122b5013edb02d3d7fa03a11e6c76b75b76e73ea40c8bc43cde54f6f371d9f3790527ce54b32f5b00850ed702c8a14a9fddb807d233568e6d94c0cc941087c33cf2bc26ddae730ddc1352a205579dc4ec98fc63e443477fcdd289ac1639c7105054df482cd3087cfd2bc5d7c53b29afe586c5d7f6b8937e4296092312b9b89a67c98c13396edeef0b925f7ffc7540ab3b7de6715d3eaf43e556c2b249dfc1d67bffc08ca379d5e75eca8e01e38a5fee3e32b9a40a28131ad379f0b73839f4b21d8681e74600594038a490bc34262f4001dd21a73f58212322927a50c8db0baaba5abac6811576934e0e03f50d3e9aa70095c885c38d3453d844ca2b17a18e97c09f4977b7e881ceebff4daf5701645fe90e83a20f53e49bc8ec3b3021ab7dac672649747bc2d550657f1998f29b91acf366b8792898cfd0a27bd8082451e54f1da5f83a6c255c78e6522a65f4751b5b14f705375bc327c7096ebef38083419cfc24f6f73e50284a54c294f4c0ee933efde2d4efc875edb04c3618c1321bce8268cf763fa469d4680d3533bde815bfbfc66ff961eddaf72f50c79450c8168494b60e06e02d0203010001"
+    "3082020a0282020100fa8b43cfe880a759e9a06bea22e5d53e8ad049d7050121997bd1c64a256754ec3951c870f53ad6f567cf4361abb0fb33bca2eff1be149495d4ada6e2684a9db00b88955fb5cc5ad1ccb22a0047dfd4136c7562c8d364245ae6ccf8c212573e1c003c9544d408076a7baba91fe34a811d2197f1cc207c8970b53b961c184fd0d3ab3237433b37af0feb12fa290083bddd0c96ed7c2114f8c1b470b2d1de6bf9ec7ccb44c9807c639693721f2316af718795bc7ed08942f198ba8872f498cb2e96294767e1cd48b44a88807e194b28fe98c496c49f53a9feb43a7da0d53ccf1efb20994e1b17585d0acd38c30a560b1de206dcad56e6d0a2c52f93c74677ce7e48e8e8ff2f38d642b6d32d444ce4e9d4892ec24320071e6a5c01569cd5b69d1b1334aae40e73a97ec235b144cc39ac75005eff49507929338febd07bf917cf412e9f72c596ba5609f04c3bcf3f6fb0a73b593abefc9b3f70cd101fc28ec6d59fbad353124e9160acd50d9b2a534d015694cc0b6946f19cc1c286461acdbeef7fee1553e1e5a6eb6aaf8461715fa977df4031a98177988c1b4b333b520e95de61376421907bdb97691d491f04d485f69cf00138bbc460a7a57bdfe9d8a02e27b95517be85aca59909b2a3e38049c93769b9ff1d3a8c8444bcc2c69ba52880d578f79a7c36c6962e29df4a7845aed4255a4aacabec56720f79fab4585237a31d9eff0203010001"
   ]
 }
