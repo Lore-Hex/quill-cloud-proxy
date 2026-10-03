@@ -6,9 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 )
+
+// Match family boundaries so future variants/snapshots work without admitting
+// unrelated versions such as gpt-5.60 or gpt-60.
+var openAIResponsesModelFamily = regexp.MustCompile(`^gpt-(5\.[56]|6(\.[0-9]+)?)(-|$)`)
 
 // These first-party models require Responses for reasoning with tools. Do not
 // apply this contract to other providers merely hosting an OpenAI model ID.
@@ -17,9 +22,12 @@ func useOpenAIResponses(provider string, req openAICompatibleRequest) bool {
 		return false
 	}
 	model := strings.TrimPrefix(strings.ToLower(req.Model), "openai/")
-	switch model {
-	case "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra":
-	default:
+	if !openAIResponsesModelFamily.MatchString(model) {
+		return false
+	}
+	// GPT-5.5 Pro does not support streaming; ordinary dispatch and the
+	// Responses translator require an upstream SSE stream, even for JSON callers.
+	if model == "gpt-5.5-pro" || strings.HasPrefix(model, "gpt-5.5-pro-") {
 		return false
 	}
 	if len(req.Tools) > 0 {

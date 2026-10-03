@@ -805,6 +805,12 @@ func serveOneRequest(
 		len(body),
 		requestIdentity,
 	)
+	// Discovery must work before authentication and confidential-origin policy.
+	// Return an ordinary error, never a cross-host credential-bearing redirect.
+	if message := controlPlaneRouteMessage(routePath); message != "" {
+		writeError(conn, http.StatusNotFound, message)
+		return
+	}
 	if apihosts.Confidential(attribution.Host) || apihosts.Confidential(enclavetls.SelectedServerName(conn)) {
 		ctx = trustedrouter.WithConfidentialOnly(ctx)
 		if err := validateConfidentialHostRequest(method, routePath, body, trGateway); err != nil {
