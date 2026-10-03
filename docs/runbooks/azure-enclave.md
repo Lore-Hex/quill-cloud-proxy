@@ -140,11 +140,17 @@ RESOURCE_GROUP=TR-TEE-DUBAI ./tools/azure-sync-secrets.sh --apply
 It prints the new version. **Pin it** — the version is part of the container's
 env and therefore part of the measurement. Shred the values file afterwards.
 
-The Tencent rollout uses bundle version `febfe4311a6b4f4ea2d8c147e1f8cb5c`.
-It preserves all 67 previous entries and adds the Tencent TokenHub key. Keep
+The BytePlus rollout bundle is `d51b399193294a1aaa6cfa1b34890e31`, sealed on
+October 3, 2026. It preserves all 70 prior logical entries from
+`067afecf200f4272afa3a96418df32ba` and adds the direct BytePlus ModelArk key.
+Pin `QUILL_AZURE_BUNDLE_VERSION=d51b399193294a1aaa6cfa1b34890e31` for this
+rollout; uploading a bundle alone does not change any serving container. Keep
 `QUILL_PRIVATEMODE_SECRET=trustedrouter-privatemode-api-key` and
-`QUILL_TELLUVIAN_SECRET=trustedrouter-telluvian-api-key` set when resealing so
-these existing optional entries are preserved too. The generated
+`QUILL_TELLUVIAN_SECRET=trustedrouter-telluvian-api-key`, together with
+`QUILL_SYSTEM1MODELS_GLOBAL_SECRET=trustedrouter-system1models-global-api-key`
+and `QUILL_SYSTEM1MODELS_EU_SECRET=trustedrouter-system1models-eu-api-key`, set
+when resealing and deploying so these existing optional providers are preserved.
+The generated
 `tools/azure-bundle.manifest` records the exact names and immutable version.
 
 ### 3.4 Deploy
