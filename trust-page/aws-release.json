@@ -12,6 +12,9 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
+  "image_digest": "sha256:90573baac5349493b13f805d8360a14e65335f33d421676541ca638927bcf798",
+  "measurement_provenance": "Transition measurement verified on isolated eu-west-3 candidate i-056b79f0e6030b44d through an SSM forward: production Nitro certificate chain, fresh nonce, exact PCR0, certificate/SPKI binding, TLS exporter and same-socket follow-up passed. Candidate is outside serving ASG, targets and DNS. Existing instances still serve the outgoing measurement. Both regional Fargate consumers accept the outgoing and candidate PCR0s. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
+  "parent_image_digest": "sha256:d09fa4e0ceeb185cca6588aa4becd27d62b05dad7c9615ba462eb375e251c114",
   "measurement_type": "nitro-pcr0-sha384",
   "observed_module_id": "i-056b79f0e6030b44d-enc01a103d0ac0ad300",
   "pcr0": "2ab7845040feab8ebbd61219222e026633bd84e525bedd5957dcb33cf04f28626bd4241f2e732bb6b7ec5e61aeb558d8",
