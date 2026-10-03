@@ -1,8 +1,7 @@
 {
   "accepted_hostdata": [
     "dd0d3f1f7966eb9cfb731507f8a3a7d74111952b9e061c5f52257ae1f09b13b8",
-    "0554555cc8197116c2e2c0e179e93e3f70daefb5a67512fbc2c2b98555b460c1",
-    "55331d86643935baa1888882adbc73060af8abfd5561aff7b989747e5daecc86"
+    "a68297c060548f8f2d1765338245bbcbb95f7dbfbcc621e80c047789f23098fa"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
   "attestation_format": "microsoft-azure-attestation-jwt",
@@ -21,6 +20,7 @@
   "evidence_note": "MAA re-attests the SEV-SNP report; verifiers see Microsoft's assertion, not the raw hardware report or the AMD certificate chain.",
   "hostdata": "dd0d3f1f7966eb9cfb731507f8a3a7d74111952b9e061c5f52257ae1f09b13b8",
   "image_build_commit": "54de928904faf0473e666b1fd0bbca83c399119a",
+  "image_digest": "sha256:927e6a4def85cfaab590d8e72b780829c2386d9a55625e6d5a51ea20b90b9157",
   "measurement_provenance": "Each regional MAA measurement was independently verified against its generated CCE policy, fresh nonce, exact issuer, TLS certificate/exporter binding, and non-debug claims. Image/source associations are operator-asserted, not reproducible-build proofs. The incoming image was built from 54de928904faf0473e666b1fd0bbca83c399119a, whose complete tree is byte-identical to its squash merge 718acb7f0bc6f5ff2a050b4e7d30812df7889c5f. During rollout, read each region source_commit for the serving build.",
   "measurement_type": "sev-snp-hostdata-sha256",
   "platform": "azure-confidential-containers-sev-snp",
@@ -40,14 +40,15 @@
       "attestation_issuer": "https://trquillsyd.eau.attest.azure.net",
       "attestation_url": "https://api-azure-syd.trustedrouter.com/attestation",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "0554555cc8197116c2e2c0e179e93e3f70daefb5a67512fbc2c2b98555b460c1",
-      "image_digest": "sha256:d71fe4a20367055fc23bc5c3b99edbc428a92b91d5eb05717ed7333895771d88",
+      "hostdata": "a68297c060548f8f2d1765338245bbcbb95f7dbfbcc621e80c047789f23098fa",
+      "image_build_commit": "54de928904faf0473e666b1fd0bbca83c399119a",
+      "image_digest": "sha256:927e6a4def85cfaab590d8e72b780829c2386d9a55625e6d5a51ea20b90b9157",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866",
       "origin_hostname": "quill-enclave-australiaeast.australiaeast.azurecontainer.io",
-      "source_commit": "1c9c26f4476f1da2f8ed5cd146a9b61a9dc83b5a"
+      "source_commit": "718acb7f0bc6f5ff2a050b4e7d30812df7889c5f"
     }
   ],
-  "release_state": "rolling",
+  "release_state": "multi-region",
   "source_commit": "718acb7f0bc6f5ff2a050b4e7d30812df7889c5f",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
