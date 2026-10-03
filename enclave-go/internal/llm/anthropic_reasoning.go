@@ -3,6 +3,8 @@ package llm
 import (
 	"strings"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
+
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -18,9 +20,6 @@ func anthropicChatReasoningBody(model string, req *qtypes.OpenAIChatRequest, bod
 			effort = "none"
 		}
 	}
-	if effort == "" {
-		return body
-	}
 	model = strings.ReplaceAll(strings.ToLower(model), ".", "-")
 	manual := strings.Contains(model, "claude-opus-4-5")
 	adaptive := false
@@ -29,6 +28,15 @@ func anthropicChatReasoningBody(model string, req *qtypes.OpenAIChatRequest, bod
 			adaptive = true
 			break
 		}
+	}
+	if effort == "" {
+		// A body whose thinking is already configured keeps its own limit.
+		if adaptive && body.Thinking == nil && anthropicThinkingDefaultCapApplies(req, body) {
+			result := *body
+			result.AnthropicMaxTokens = AnthropicThinkingDefaultMaxTokens
+			return &result
+		}
+		return body
 	}
 	if !manual && !adaptive {
 		return body
@@ -56,8 +64,29 @@ func anthropicChatReasoningBody(model string, req *qtypes.OpenAIChatRequest, bod
 	if adaptive {
 		result.Thinking = map[string]any{"type": "adaptive"}
 		result.AnthropicMaxTokens = 0
+		if anthropicThinkingDefaultCapApplies(req, body) {
+			result.AnthropicMaxTokens = AnthropicThinkingDefaultMaxTokens
+		}
 		result.Temperature = nil
 		result.TopP = nil
 	}
 	return &result
+}
+
+// AnthropicThinkingDefaultMaxTokens is the output ceiling sent to a model that
+// thinks adaptively when the caller set none. adapter.DefaultMaxTokens (4096)
+// is a wire requirement, not a choice, and it counts thinking: a high-effort
+// Opus 5.5 turn spent all 4096 thinking and was cut off (AnyEval Terminal-Bench
+// 4.0, 2026-10-02). OpenAI-compatible upstreams already omit the cap entirely.
+// 32000 is within every listed model's output maximum; upstream calls stream.
+// Authorization is unchanged: an uncapped request is still estimated at 512.
+const AnthropicThinkingDefaultMaxTokens = 32000
+
+// anthropicThinkingDefaultCapApplies is true only for a caller that set no cap
+// and no funded orchestration allowance, on a body still at the wire default.
+// An adapter-derived AnthropicMaxTokens (budget + default) is not a caller cap:
+// adaptive dispatch discards it, and an explicit caller budget returns earlier.
+func anthropicThinkingDefaultCapApplies(req *qtypes.OpenAIChatRequest, body *qtypes.AnthropicMessagesRequest) bool {
+	return !body.MaxTokensExplicit && req.InternalOutputTokenLimit <= 0 &&
+		body.MaxTokens == adapter.DefaultMaxTokens
 }
