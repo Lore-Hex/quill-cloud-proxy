@@ -207,6 +207,7 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		return
 	}
 	reservationMicrodollars := maximumVideoQuote(quotes)
+	outputTokenLimit := maximumVideoTokenLimit(quotes)
 	auth, err := s.control.AuthorizeVideo(
 		ctx,
 		bearer,
@@ -215,6 +216,7 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		videoRequestFingerprint(bearer, &req),
 		req.Provider,
 		reservationMicrodollars,
+		outputTokenLimit,
 	)
 	if err != nil {
 		writeGatewayAuthorizationError(conn, err)
@@ -227,12 +229,19 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		return
 	}
 	selected := routes[0]
+	// Older control planes can authorize only fixed-price providers. Do not
+	// send the new job field unless a token-billed route was actually admitted.
+	outputTokenLimit = 0
+	for _, route := range routes {
+		outputTokenLimit = max(outputTokenLimit, quotes[route.Provider].OutputTokenLimit)
+	}
 	job := &trustedrouter.VideoJob{
 		ID: videoJobID(auth.AuthorizationID), AuthorizationID: auth.AuthorizationID,
 		WorkspaceID: auth.WorkspaceID, KeyHash: auth.APIKeyHash,
 		Model: resolved.Model.ID, Provider: selected.Provider, EndpointID: selected.EndpointID,
 		ProviderModel:      resolved.Model.ID,
 		QuotedMicrodollars: selected.QuotedMicrodollars,
+		OutputTokenLimit:   outputTokenLimit,
 		InputMode:          resolved.InputMode, DurationSeconds: resolved.DurationSeconds,
 		Resolution: resolved.Resolution, AspectRatio: resolved.AspectRatio,
 		GenerateAudio: resolved.GenerateAudio, Region: auth.Region,
@@ -277,12 +286,17 @@ type authorizedVideoRoute struct {
 	QuotedMicrodollars int
 }
 
+type videoQuote struct {
+	Microdollars     int
+	OutputTokenLimit int
+}
+
 func quoteVideoProviders(
 	ctx context.Context,
 	providers []video.Provider,
 	request *video.ResolvedRequest,
-) (map[string]int, error) {
-	quotes := make(map[string]int, len(providers))
+) (map[string]videoQuote, error) {
+	quotes := make(map[string]videoQuote, len(providers))
 	var lastErr error
 	for _, provider := range providers {
 		quoted, err := provider.QuoteResolved(ctx, request)
@@ -290,28 +304,44 @@ func quoteVideoProviders(
 			lastErr = err
 			continue
 		}
-		if quoted <= 0 {
+		limit := 0
+		if tokenProvider, ok := provider.(video.TokenBilledProvider); ok {
+			limit, err = tokenProvider.OutputTokenLimit(request)
+			if err != nil || limit <= 0 || limit > 2_000_000 || quoted != 0 {
+				lastErr = fmt.Errorf("%s returned an invalid token reservation", provider.ID())
+				continue
+			}
+		}
+		if quoted < 0 || quoted == 0 && limit == 0 {
 			lastErr = fmt.Errorf("%s returned an invalid video quote", provider.ID())
 			continue
 		}
-		quotes[provider.ID()] = quoted
+		quotes[provider.ID()] = videoQuote{Microdollars: quoted, OutputTokenLimit: limit}
 	}
 	return quotes, lastErr
 }
 
-func maximumVideoQuote(quotes map[string]int) int {
+func maximumVideoQuote(quotes map[string]videoQuote) int {
 	maximum := 0
 	for _, quote := range quotes {
-		if quote > maximum {
-			maximum = quote
+		if quote.Microdollars > maximum {
+			maximum = quote.Microdollars
 		}
+	}
+	return maximum
+}
+
+func maximumVideoTokenLimit(quotes map[string]videoQuote) int {
+	maximum := 0
+	for _, quote := range quotes {
+		maximum = max(maximum, quote.OutputTokenLimit)
 	}
 	return maximum
 }
 
 func authorizedVideoRoutes(
 	auth *trustedrouter.Authorization,
-	quotes map[string]int,
+	quotes map[string]videoQuote,
 ) []authorizedVideoRoute {
 	if auth == nil {
 		return nil
@@ -328,7 +358,7 @@ func authorizedVideoRoutes(
 		}
 		seen[endpointID] = struct{}{}
 		routes = append(routes, authorizedVideoRoute{
-			Provider: provider, EndpointID: endpointID, QuotedMicrodollars: quote,
+			Provider: provider, EndpointID: endpointID, QuotedMicrodollars: quote.Microdollars,
 		})
 	}
 	appendRoute(auth.Provider, auth.EndpointID)
@@ -536,11 +566,20 @@ func (s *videoService) pollAndFinalize(ctx context.Context, job *trustedrouter.V
 		return updated, nil
 	case video.PollCompleted:
 		auth := authorizationForVideoJob(job)
+		outputTokens, fixedCost := 0, job.QuotedMicrodollars
+		if _, tokenBilled := provider.(video.TokenBilledProvider); tokenBilled {
+			if fixedCost != 0 || job.OutputTokenLimit <= 0 || result.OutputTokens <= 0 || result.OutputTokens > job.OutputTokenLimit {
+				return job, fmt.Errorf("video provider returned usage outside the authorized token bound")
+			}
+			outputTokens = result.OutputTokens
+		} else if fixedCost <= 0 {
+			return job, fmt.Errorf("fixed-price video job has no authorized quote")
+		}
 		settled, err := s.control.Settle(ctx, auth, trustedrouter.Usage{
-			RequestID: "video-" + job.ID, InputTokens: 0, OutputTokens: 0,
+			RequestID: "video-" + job.ID, InputTokens: 0, OutputTokens: outputTokens,
 			ElapsedSeconds: videoElapsed(job.CreatedAt), FinishReason: "completed",
 			RouteType: "videos", SelectedModel: job.Model, SelectedEndpoint: job.EndpointID,
-			AdditionalCostMicrodollars: job.QuotedMicrodollars,
+			AdditionalCostMicrodollars: fixedCost,
 			VideoInputMode:             job.InputMode, VideoDurationSeconds: job.DurationSeconds,
 			VideoResolution: job.Resolution, VideoAspectRatio: job.AspectRatio,
 			VideoGenerateAudio: job.GenerateAudio,
@@ -624,11 +663,18 @@ func writeVideoJobResponse(conn io.Writer, status int, job *trustedrouter.VideoJ
 		}
 	}
 	if publicStatus == "completed" {
-		payload["usage"] = map[string]any{
-			"cost":              microdollarsJSONNumber(job.QuotedMicrodollars),
-			"cost_microdollars": job.QuotedMicrodollars,
-			"is_byok":           false,
+		usage := map[string]any{"is_byok": false}
+		cost := job.SettledMicrodollars
+		if cost == nil && job.QuotedMicrodollars > 0 {
+			cost = &job.QuotedMicrodollars
 		}
+		if cost != nil {
+			usage["cost"], usage["cost_microdollars"] = microdollarsJSONNumber(*cost), *cost
+		}
+		if job.OutputTokens != nil {
+			usage["completion_tokens"], usage["total_tokens"] = *job.OutputTokens, *job.OutputTokens
+		}
+		payload["usage"] = usage
 	}
 	if publicStatus == "failed" {
 		payload["error"] = "video generation failed"

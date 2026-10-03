@@ -22,6 +22,9 @@ type VideoJob struct {
 	EndpointID              string `json:"endpoint_id"`
 	ProviderModel           string `json:"provider_model"`
 	QuotedMicrodollars      int    `json:"quoted_microdollars"`
+	OutputTokenLimit        int    `json:"output_token_limit,omitempty"`
+	SettledMicrodollars     *int   `json:"settled_microdollars,omitempty"`
+	OutputTokens            *int   `json:"output_tokens,omitempty"`
 	InputMode               string `json:"input_mode"`
 	DurationSeconds         int    `json:"duration_seconds"`
 	Resolution              string `json:"resolution"`
@@ -80,11 +83,19 @@ func (c *Client) AuthorizeVideo(
 	bearer, model, idempotencyKey, requestFingerprint string,
 	provider map[string]any,
 	quotedMicrodollars int,
+	tokenLimits ...int,
 ) (*Authorization, error) {
-	if quotedMicrodollars <= 0 {
-		return nil, fmt.Errorf("trustedrouter: video quote must be positive")
+	limit := 0
+	if len(tokenLimits) > 1 {
+		return nil, fmt.Errorf("trustedrouter: invalid video token limit")
 	}
-	one := 1
+	if len(tokenLimits) == 1 {
+		limit = tokenLimits[0]
+	}
+	if quotedMicrodollars < 0 || limit < 0 || limit > 2_000_000 || quotedMicrodollars == 0 && limit == 0 {
+		return nil, fmt.Errorf("trustedrouter: video requires a positive quote or token limit")
+	}
+	maxTokens := max(1, limit)
 	var routing *qtypes.ProviderRouting
 	if len(provider) > 0 {
 		raw, err := json.Marshal(provider)
@@ -99,7 +110,7 @@ func (c *Client) AuthorizeVideo(
 	}
 	req := &qtypes.OpenAIChatRequest{
 		Model:                                 model,
-		MaxTokens:                             &one,
+		MaxTokens:                             &maxTokens,
 		IdempotencyKey:                        idempotencyKey,
 		RequestFingerprint:                    requestFingerprint,
 		Provider:                              routing,
@@ -121,6 +132,9 @@ func (c *Client) PrepareVideoJob(ctx context.Context, job *VideoJob) (*VideoJob,
 		"input_mode":          job.InputMode, "duration_seconds": job.DurationSeconds,
 		"resolution": job.Resolution, "aspect_ratio": job.AspectRatio,
 		"generate_audio": job.GenerateAudio, "region": job.Region,
+	}
+	if job.OutputTokenLimit > 0 {
+		body["output_token_limit"] = job.OutputTokenLimit
 	}
 	var decoded struct {
 		Data VideoJob `json:"data"`
