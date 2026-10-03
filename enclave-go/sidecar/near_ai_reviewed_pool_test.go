@@ -13,7 +13,7 @@ import (
 	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
 )
 
-// Public deployment histories captured with fresh nonces on 2026-10-02.
+// Public deployment histories captured with fresh nonces on 2026-10-03.
 // These tests exercise policy binding; cryptographic validation is covered by
 // TestLiveNearAIEvidence, not by the quote/GPU doubles used here.
 func reviewedNearAIPoolCase(t *testing.T, compose string) *nearAITestCase {
@@ -45,7 +45,7 @@ func reviewedNearAIPoolCase(t *testing.T, compose string) *nearAITestCase {
 	c.report.Info.AppName = policy.AppName
 	c.report.Info.OSImageHash = policy.OSImageHash
 	c.report.Info.ComposeHash = compose
-	eventBytes, err := os.ReadFile(filepath.Join("testdata", "near-ai-2026-10-02", compose[:8]+"-events.json"))
+	eventBytes, err := os.ReadFile(filepath.Join("testdata", "near-ai-2026-10-03", compose[:8]+"-events.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func reviewedNearAIPoolCase(t *testing.T, compose string) *nearAITestCase {
 		body.Rtmrs[2], _ = hex.DecodeString(policy.BootMeasurements.RTMR2)
 		body.Rtmrs[3] = append([]byte{}, rtmr3...)
 	}
-	actions, err := os.ReadFile(filepath.Join("testdata", "near-ai-2026-10-02", compose[:8]+"-actions.json"))
+	actions, err := os.ReadFile(filepath.Join("testdata", "near-ai-2026-10-03", compose[:8]+"-actions.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,6 +115,16 @@ func TestNearAIReviewedOctoberPoolHistories(t *testing.T) {
 			bindNearAITestActions(t, c, other.report.ComposeManager.Actions)
 			if _, err := c.verifier.verify(context.Background(), c.request); err == nil || !strings.Contains(err.Error(), "deployment history") {
 				t.Fatalf("cross-host history must fail closed, got %v", err)
+			}
+
+			c = reviewedNearAIPoolCase(t, compose)
+			oldActions, err := os.ReadFile(filepath.Join("testdata", "near-ai-2026-10-02", compose[:8]+"-actions.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			bindNearAITestActions(t, c, oldActions)
+			if _, err := c.verifier.verify(context.Background(), c.request); err == nil {
+				t.Fatal("accepted superseded deployment history")
 			}
 
 			c = reviewedNearAIPoolCase(t, compose)
