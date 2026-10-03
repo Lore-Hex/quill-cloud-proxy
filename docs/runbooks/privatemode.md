@@ -141,6 +141,32 @@ plaintext provider to work around a failed verification or unavailable cloud.
 
 ## Pin Updates
 
+### 2026-10-03 v1.58 Deployment Drift
+
+The upstream v1.58 rollout changed the immutable manifest from namespace
+`continuum-d7fecb` to `continuum-0a7a47`, rotated the seed-share owner key,
+and removed the retired Kimi K2.6 workload. All eight remaining workload
+policy hashes, roles, and workload secret IDs were independently reproduced
+from public source `753fa3fe1f2321c71743dda54f2ebbb160f89e14` using the pinned
+Contrast 1.24.1 CLI in Cloud Build
+`618331bb-9777-4a48-a964-1fc1479d7cc5`. Evidence:
+`gs://44325983244.cloudbuild-logs.googleusercontent.com/privatemode-policy-audit/618331bb-9777-4a48-a964-1fc1479d7cc5/generated-manifest.json`.
+
+The SNP/TDX reference values and immutable-update restrictions are unchanged.
+Model verity roots remain pinned. The reviewed workload patch adds Python
+stack traces on engine RPC timeouts, not local variable or prompt dumps; its
+new source hash remains checked before execution. GPU attestation and strict
+OCSP settings remain required. The client and all three cloud Dockerfiles
+now pin the matching v1.58 proxy by OCI digest.
+
+A fresh v1.57 local encrypted request reproduced a manifest mismatch despite
+successful catalog authentication. The vendor maps this secret-initialization
+error to HTTP 401; it was not evidence that the API key had expired. The new
+manifest and proxy passed local encrypted PONG/usage probes for all three
+allowed models. Removing the coordinator policy still rejected inference.
+These local results do not assert production rollout or replace per-region
+smoke verification.
+
 ### 2026-09-25 AWS And Azure Rollout Evidence
 
 Enclave source `3c0cb55932768a4ee78ad512e6da71c380465f3e` was deployed
