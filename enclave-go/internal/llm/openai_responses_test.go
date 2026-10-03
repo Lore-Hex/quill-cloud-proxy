@@ -29,29 +29,72 @@ func responsesTestSSE(events ...string) string {
 const responsesTestTerminal = `{"type":"response.completed","response":{"service_tier":"default","usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":60},"output_tokens":30,"output_tokens_details":{"reasoning_tokens":20},"total_tokens":130}}}`
 
 func TestOpenAIResponsesRoutingIsScoped(t *testing.T) {
-	for _, model := range []string{"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "openai/gpt-6-sol"} {
-		for _, effort := range []string{"", "none", "low", "high", "max"} {
-			req := openAICompatibleRequest{Model: model, Tools: responsesTestTool(), ReasoningEffort: effort}
-			if !useOpenAIResponses("openai", req) {
-				t.Fatalf("missing native Responses route: %s/%s", model, effort)
-			}
-			for _, provider := range []string{"azure", "deepinfra", "user-model"} {
-				if useOpenAIResponses(provider, req) {
-					t.Fatalf("changed unverified provider %s", provider)
+	for _, tc := range []struct {
+		model string
+		want  bool
+	}{
+		{"gpt-5.5", true},
+		{"gpt-5.5-2026-04-23", true},
+		{"gpt-5.6", true},
+		{"gpt-5.6-sol", true},
+		{"gpt-5.6-luna", true},
+		{"gpt-5.6-terra", true},
+		{"gpt-5.6-future-2026-10-01", true},
+		{"gpt-6", true},
+		{"gpt-6-sol", true},
+		{"gpt-6-luna", true},
+		{"gpt-6-astra", true},
+		{"gpt-6-sol-pro", true},
+		{"gpt-6.1-sol", true},
+		{"gpt-6.2", true},
+		{"gpt-6.12-future", true},
+		{"openai/gpt-5.5", true},
+		{"openai/gpt-6.1-sol", true},
+		{"OPENAI/GPT-6-ASTRA", true},
+		// Pro requires non-streaming upstream support, which this adapter lacks.
+		{"gpt-5.5-pro", false},
+		{"openai/gpt-5.5-pro-2026-04-23", false},
+		{"gpt-4o", false},
+		{"gpt-5", false},
+		{"gpt-5.4", false},
+		{"gpt-5.4-mini", false},
+		{"gpt-5.7", false},
+		{"gpt-5.50", false},
+		{"gpt-5.60-sol", false},
+		{"gpt-60-sol", false},
+		{"gpt-6x", false},
+		{"gpt-6.preview", false},
+		{"gpt-6.1x-sol", false},
+		{"gpt-7", false},
+		{"gpt-oss-120b", false},
+		{"o3", false},
+		{"other/gpt-6-sol", false},
+		{"", false},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			for _, effort := range []string{"", "none", "low", "high", "max"} {
+				for _, input := range []struct {
+					name     string
+					tools    []any
+					messages []chatMessage
+				}{
+					{"tools", responsesTestTool(), nil},
+					{"tool result", nil, []chatMessage{{Role: "tool"}}},
+					{"tool call", nil, []chatMessage{{Role: "assistant", ToolCalls: []map[string]any{{"id": "call"}}}}},
+				} {
+					req := openAICompatibleRequest{Model: tc.model, Tools: input.tools, Messages: input.messages, ReasoningEffort: effort}
+					for _, provider := range []string{"openai", " OpenAI ", "azure", "openrouter", "deepinfra", "user-model"} {
+						want := tc.want && (provider == "openai" || provider == " OpenAI ")
+						if got := useOpenAIResponses(provider, req); got != want {
+							t.Errorf("provider=%q effort=%q input=%s: got %t, want %t", provider, effort, input.name, got, want)
+						}
+					}
+				}
+				if useOpenAIResponses("openai", openAICompatibleRequest{Model: tc.model, ReasoningEffort: effort, Messages: []chatMessage{{Role: "user", Content: "hello"}}}) {
+					t.Fatal("plain chat changed")
 				}
 			}
-		}
-		if useOpenAIResponses("openai", openAICompatibleRequest{Model: model}) {
-			t.Fatal("plain chat changed")
-		}
-		if !useOpenAIResponses("openai", openAICompatibleRequest{Model: model, Messages: []chatMessage{{Role: "tool"}}}) {
-			t.Fatal("tool history without new tools must remain on Responses")
-		}
-	}
-	for _, model := range []string{"gpt-5.5", "gpt-6-sol-pro", "gpt-7", "gpt-oss-120b"} {
-		if useOpenAIResponses("openai", openAICompatibleRequest{Model: model, Tools: responsesTestTool()}) {
-			t.Fatalf("changed unverified model %s", model)
-		}
+		})
 	}
 }
 
@@ -109,7 +152,7 @@ func TestOpenAIResponsesRequestAndToolContinuation(t *testing.T) {
 }
 
 func TestOpenAIResponsesWireForChatAndResponses(t *testing.T) {
-	for _, model := range []string{"openai/gpt-6-sol", "openai/gpt-6-luna"} {
+	for _, model := range []string{"openai/gpt-5.5", "openai/gpt-5.5-2026-04-23", "openai/gpt-5.6-future", "openai/gpt-6-sol", "openai/gpt-6-luna", "openai/gpt-6.1-sol"} {
 		for _, publicResponses := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/responses=%t", model, publicResponses), func(t *testing.T) {
 				limit := 256
@@ -139,11 +182,29 @@ func TestOpenAIResponsesWireForChatAndResponses(t *testing.T) {
 					if wire["reasoning"].(map[string]any)["summary"] != "detailed" {
 						t.Fatal("explicit reasoning summary dropped")
 					}
-					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(responsesTestSSE(responsesTestTerminal)))}, nil
+					wireResponse := responsesTestSSE(
+						`{"type":"response.reasoning_summary_text.delta","delta":"Checking weather"}`,
+						`{"type":"response.output_text.delta","delta":"Let me check."}`,
+						`{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","call_id":"call_weather","name":"weather"}}`,
+						`{"type":"response.function_call_arguments.delta","output_index":2,"delta":"{\"city\":\"Paris\"}"}`,
+						`{"type":"response.output_item.done","output_index":2,"item":{"type":"function_call"}}`,
+						responsesTestTerminal,
+					)
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(wireResponse))}, nil
 				})}
 				var out bytes.Buffer
 				if err := invokeOpenAICompatibleStreamingWithClient(context.Background(), client, "openai", "https://api.openai.test/v1", "test-key", req, body, &out, strings.TrimPrefix(model, "openai/")); err != nil {
 					t.Fatal(err)
+				}
+				result, err := adapter.CollectAnthropicText(strings.NewReader(out.String()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.Text != "Let me check." || adapter.JoinThinking(result.Thinking) != "Checking weather" || len(result.ToolCalls) != 1 || result.ToolCalls[0].ID != "call_weather" || result.ToolCalls[0].Arguments != `{"city":"Paris"}` {
+					t.Fatalf("response translation lost content: %#v", result)
+				}
+				if result.Usage == nil || result.Usage.InputTokens != 100 || result.Usage.OutputTokens != 30 || result.Usage.CacheReadInputTokens != 60 || result.Usage.ReasoningTokens != 20 {
+					t.Fatalf("response translation lost usage: %#v", result.Usage)
 				}
 			})
 		}
@@ -268,6 +329,34 @@ func TestOpenAIResponsesRejectsUnsupportedOptionsWithoutDroppingThem(t *testing.
 	req.Tools = []any{map[string]any{"type": "web_search"}}
 	if _, err := buildOpenAIResponsesRequest(req); err == nil {
 		t.Fatal("leaked unbudgeted hosted tool")
+	}
+}
+
+func TestOpenAIResponsesNewFamiliesRejectUnsupportedFieldsBeforeDispatch(t *testing.T) {
+	for _, model := range []string{"gpt-5.5", "gpt-5.6-future", "gpt-6.1-sol"} {
+		for _, field := range []string{"stop", "reasoning"} {
+			t.Run(model+"/"+field, func(t *testing.T) {
+				req := &qtypes.OpenAIChatRequest{Model: model, Tools: responsesTestTool(), Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "weather"}}}
+				if field == "stop" {
+					req.Stop = "PRIVATE"
+				} else {
+					req.Reasoning = map[string]any{"unknown": "PRIVATE"}
+				}
+				body, err := adapter.ToAnthropic(req, model)
+				if err != nil {
+					t.Fatal(err)
+				}
+				client := &http.Client{Transport: byokRoundTripFunc(func(*http.Request) (*http.Response, error) {
+					t.Fatal("unsupported field reached upstream")
+					return nil, nil
+				})}
+				err = invokeOpenAICompatibleStreamingWithClient(t.Context(), client, "openai", "https://api.openai.test/v1", "key", req, body, io.Discard, model)
+				var upstream *upstreamHTTPError
+				if !errors.As(err, &upstream) || upstream.status != http.StatusBadRequest || !strings.Contains(upstream.body, field) || strings.Contains(upstream.body, "PRIVATE") {
+					t.Fatalf("expected field-specific 400 without value: %v", err)
+				}
+			})
+		}
 	}
 }
 
