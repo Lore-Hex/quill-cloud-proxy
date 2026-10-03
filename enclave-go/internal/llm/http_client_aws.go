@@ -120,6 +120,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "api.telluvian.ai", CID: 3, Port: 8099},
 	{Host: "fal.run", CID: 3, Port: 8080},
 	{Host: "ark.ap-southeast.bytepluses.com", CID: 3, Port: 8081},
+	{Host: "ark-acg-ap-southeast-1.tos-ap-southeast-1.volces.com", CID: 3, Port: 8106},
 	{Host: "tokenhub-intl.tencentcloudmaas.com", CID: 3, Port: 8083},
 	{Host: "queue.fal.run", CID: 3, Port: 8084},
 	// Chutes discovery and encrypted inference relay. Prompt bytes remain
