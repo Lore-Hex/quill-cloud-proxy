@@ -2,8 +2,6 @@ package upstreamerror
 
 import (
 	"context"
-	"errors"
-	"strconv"
 	"strings"
 	"sync"
 )
@@ -24,19 +22,9 @@ func WithCredentialRedaction(ctx context.Context, values ...string) (context.Con
 		if err == nil {
 			return nil
 		}
-		var response interface{ UpstreamResponse() (int, string) }
-		var status int
-		var body string
-		if errors.As(err, &response) {
-			status, body = response.UpstreamResponse()
-		} else {
-			s := err.Error()
-			match := httpPattern.FindStringSubmatchIndex(s)
-			if match == nil {
-				return err
-			}
-			status, _ = strconv.Atoi(s[match[2]:match[3]])
-			body = s[match[1]:]
+		status, body, ok := responseBody(err)
+		if !ok {
+			return err
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()

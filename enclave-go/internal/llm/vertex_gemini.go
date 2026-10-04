@@ -616,16 +616,18 @@ func translateGeminiStreamToAnthropicMode(r io.Reader, w io.Writer, strict bool)
 	toolIndex := 1 // index 0 is reserved for the text content block
 	sawTool := false
 	sawTerminal := false
+	var errorTail string
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
+			errorTail = ""
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "" || payload == "[DONE]" {
 			continue
 		}
-		if err := upstreamerror.CheckEvent("", payload); err != nil {
+		if err := upstreamerror.CheckLine(payload, &errorTail); err != nil {
 			return err
 		}
 		delta, calls, reason, chunkUsage, err := geminiChunkDelta(payload)

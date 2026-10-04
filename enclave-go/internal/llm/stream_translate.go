@@ -63,9 +63,13 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	var citations []string
 	var searchResults []qtypes.ProviderSearchResult
 	var decision map[string]any
+	var errorTail string
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
+			if line != "data:" { // An empty data line can separate JSON tokens.
+				errorTail = ""
+			}
 			continue
 		}
 		payload := line[len("data: "):]
@@ -111,7 +115,7 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			// the last content chunk; both shapes land here.
 			Usage *openAIStreamUsage `json:"usage"`
 		}
-		if err := upstreamerror.CheckEvent("", payload); err != nil {
+		if err := upstreamerror.CheckLine(payload, &errorTail); err != nil {
 			if provider == "tencent" {
 				return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub stream failed"}
 			}

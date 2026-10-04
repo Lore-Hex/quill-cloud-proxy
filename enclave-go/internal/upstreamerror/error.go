@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/aws/smithy-go"
 )
 
 type Error struct {
@@ -52,7 +54,8 @@ func sanitize(s string, secrets ...string) string {
 	var value any
 	decoder := json.NewDecoder(strings.NewReader(s))
 	decoder.UseNumber()
-	if decoder.Decode(&value) == nil {
+	var trailing any
+	if decoder.Decode(&value) == nil && decoder.Decode(&trailing) == io.EOF {
 		changed := false
 		var scrub func(any) any
 		scrub = func(value any) any {
@@ -88,12 +91,28 @@ func sanitize(s string, secrets ...string) string {
 			return value
 		}
 		value = scrub(value)
-		if changed {
-			encoded, _ := json.Marshal(value)
-			return string(encoded)
+		// The raw text can hold what decoding discards (a duplicate key keeps
+		// only its last value), so it is returned only when a text pass over it
+		// finds nothing either; otherwise emit the scrubbed decoded value.
+		if normalized := normalizeJSONEscapes(s); !changed && sanitizeText(normalized, secrets...) == normalized {
+			return s
 		}
+		encoded, _ := json.Marshal(value)
+		return string(encoded)
 	}
-	return sanitizeText(s, secrets...)
+	return sanitizeText(normalizeJSONEscapes(s), secrets...)
+}
+
+// Decode escapes even when a truncated/malformed body cannot be parsed. Match
+// surrogate pairs together so they normalize to the same rune as credentials.
+var jsonEscapePattern = regexp.MustCompile(`\\u[dD][89aAbB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}|\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])`)
+
+func normalizeJSONEscapes(s string) string {
+	return jsonEscapePattern.ReplaceAllStringFunc(s, func(escape string) string {
+		var decoded string
+		_ = json.Unmarshal([]byte(`"`+escape+`"`), &decoded)
+		return decoded
+	})
 }
 
 func sanitizeText(s string, secrets ...string) string {
@@ -122,24 +141,45 @@ func bounded(s string) string {
 	return s
 }
 
+// responseBody is shared with credential redaction so SDK errors are scrubbed
+// before fallback tracking retains them, just like HTTP provider bodies.
+func responseBody(err error) (int, string, bool) {
+	var response interface{ UpstreamResponse() (int, string) }
+	if errors.As(err, &response) {
+		status, body := response.UpstreamResponse()
+		return status, body, true
+	}
+	var httpStatus interface{ HTTPStatusCode() int }
+	if errors.As(err, &httpStatus) {
+		body := err.Error()
+		var apiError smithy.APIError
+		if errors.As(err, &apiError) {
+			encoded, _ := json.Marshal(map[string]any{"error": map[string]string{
+				"code": apiError.ErrorCode(), "message": apiError.ErrorMessage(),
+			}})
+			body = string(encoded)
+		}
+		return httpStatus.HTTPStatusCode(), body, true
+	}
+	s := err.Error()
+	match := httpPattern.FindStringSubmatchIndex(s)
+	if match == nil {
+		return 0, "", false
+	}
+	status, _ := strconv.Atoi(s[match[2]:match[3]])
+	return status, s[match[1]:], true
+}
+
 func Parse(err error) Detail {
 	d := Detail{Status: 502, Message: "provider error", Type: "provider_error"}
 	if err == nil {
 		return d
 	}
-	var response interface{ UpstreamResponse() (int, string) }
-	var body string
-	if errors.As(err, &response) {
-		d.Status, body = response.UpstreamResponse()
-	} else {
-		s := err.Error()
-		match := httpPattern.FindStringSubmatchIndex(s)
-		if match == nil {
-			return d
-		}
-		d.Status, _ = strconv.Atoi(s[match[2]:match[3]])
-		body = s[match[1]:]
+	status, body, ok := responseBody(err)
+	if !ok {
+		return d
 	}
+	d.Status = status
 	if d.Status < 400 || d.Status >= 600 {
 		return Detail{Status: 502, Message: "provider error", Type: "provider_error"}
 	}
@@ -305,5 +345,27 @@ func CheckEvent(name, data string) error {
 	if name == "error" || name == "response.failed" {
 		return &Error{Status: 502, Body: data}
 	}
+	return nil
+}
+
+// CheckLine preserves per-line decoding while recognizing error tokens split
+// across consecutive undecodable payloads. Readers clear tail on non-data lines.
+// Only the new payload and at most 64 preceding bytes are inspected each time.
+func CheckLine(payload string, tail *string) error {
+	if err := CheckEvent("", payload); err != nil {
+		return err
+	}
+	if json.Valid([]byte(payload)) {
+		*tail = ""
+		return nil
+	}
+	if strings.TrimSpace(payload) == "" {
+		return nil
+	}
+	joined := *tail + "\n" + payload
+	if *tail != "" && looksLikeError(joined) {
+		return &Error{Status: 502, Body: joined}
+	}
+	*tail = strings.Clone(joined[max(0, len(joined)-64):])
 	return nil
 }
