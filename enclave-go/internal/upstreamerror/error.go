@@ -149,11 +149,11 @@ func Parse(err error) Detail {
 	decoder := json.NewDecoder(strings.NewReader(body))
 	decoder.UseNumber()
 	if decoder.Decode(&obj) == nil && obj != nil {
-		fields := obj
 		if response, ok := obj["response"].(map[string]any); ok {
 			obj = response
-			fields = obj
 		}
+		obj = errorObject(obj)
+		fields := obj
 		if nested, ok := obj["error"].(map[string]any); ok {
 			fields = nested
 		}
@@ -236,6 +236,8 @@ func FromEvent(payload string) error {
 	if response, ok := obj["response"].(map[string]any); ok && obj["type"] == "response.failed" {
 		obj = response
 	}
+	root := obj
+	obj = errorObject(obj)
 	value, ok := obj["error"]
 	if !ok && obj["type"] == "error" {
 		value, ok = obj, true
@@ -245,7 +247,7 @@ func FromEvent(payload string) error {
 	}
 	fields, _ := value.(map[string]any)
 	status := 502
-	for _, source := range []map[string]any{obj, fields} {
+	for _, source := range []map[string]any{root, obj, fields} {
 		for _, key := range []string{"status", "code"} {
 			if number, ok := source[key].(json.Number); ok {
 				if n, err := number.Float64(); err == nil && n >= 400 && n < 600 && n == float64(int(n)) {
@@ -269,4 +271,24 @@ func FromEvent(payload string) error {
 		}
 	}
 	return &Error{Status: status, Body: payload}
+}
+
+// Inspect errors before provider-specific typed decoding can reject unrelated
+// fields (for example an overflowing token count). Null errors are ordinary data.
+func errorObject(obj map[string]any) map[string]any {
+	if obj["error"] != nil {
+		return obj
+	}
+	choices, _ := obj["choices"].([]any)
+	for _, value := range choices {
+		choice, _ := value.(map[string]any)
+		if choice["error"] != nil {
+			return choice
+		}
+		delta, _ := choice["delta"].(map[string]any)
+		if delta["error"] != nil {
+			return delta
+		}
+	}
+	return obj
 }

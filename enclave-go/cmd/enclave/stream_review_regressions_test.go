@@ -19,9 +19,9 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
-type round2Provider func(context.Context, io.Writer, llm.InvokeOptions) error
+type streamingProviderFunc func(context.Context, io.Writer, llm.InvokeOptions) error
 
-func (f round2Provider) InvokeStreaming(ctx context.Context, _ *types.OpenAIChatRequest, _ *types.AnthropicMessagesRequest, w io.Writer, opts ...llm.InvokeOptions) error {
+func (f streamingProviderFunc) InvokeStreaming(ctx context.Context, _ *types.OpenAIChatRequest, _ *types.AnthropicMessagesRequest, w io.Writer, opts ...llm.InvokeOptions) error {
 	return f(ctx, w, opts[0])
 }
 
@@ -30,7 +30,7 @@ func TestGatewayClosesAbandonedProviderReader(t *testing.T) {
 	for _, route := range []string{"chat.completions", "responses"} {
 		for _, stream := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/%t", route, stream), func(t *testing.T) {
-				provider := round2Provider(func(_ context.Context, w io.Writer, _ llm.InvokeOptions) error {
+				provider := streamingProviderFunc(func(_ context.Context, w io.Writer, _ llm.InvokeOptions) error {
 					if _, err := io.WriteString(w, providerStreamTestResponse); err != nil {
 						return err
 					}
@@ -59,7 +59,7 @@ func TestGatewayRedactsProviderCredentials(t *testing.T) {
 	for _, header := range []string{"x-api-key", "x-goog-api-key", "api-key", "authorization"} {
 		for _, status := range []int{200, 400} {
 			t.Run(fmt.Sprintf("%s/%d", header, status), func(t *testing.T) {
-				provider := round2Provider(func(ctx context.Context, w io.Writer, _ llm.InvokeOptions) error {
+				provider := streamingProviderFunc(func(ctx context.Context, w io.Writer, _ llm.InvokeOptions) error {
 					req, _ := http.NewRequestWithContext(ctx, "POST", "https://provider.invalid/chat", nil)
 					req.Header.Set(header, key)
 					body := `{"error":{"message":"rejected ` + key + `","type":"` + key + `","code":"` + key + `","param":"` + key + `"},"headers":{"` + header + `":"header-owned-secret"}}`
@@ -141,7 +141,7 @@ func TestStageDTerminalFailureNeverRefundsSettlementAttempt(t *testing.T) {
 				_, err := io.WriteString(w, providerStreamTestResponse)
 				return err
 			}}
-			serveStreaming(t.Context(), failAfterSettleWriter{&attempted}, provider, &types.OpenAIChatRequest{Model: "model", Stream: true}, &types.AnthropicMessagesRequest{}, []llm.InvokeOptions{{Model: "model", EndpointID: "anthropic/test"}}, gateway, stageDStreamingAuthorization(), nil, time.Now(), nil, "chat.completions", "round2", "model")
+			serveStreaming(t.Context(), failAfterSettleWriter{&attempted}, provider, &types.OpenAIChatRequest{Model: "model", Stream: true}, &types.AnthropicMessagesRequest{}, []llm.InvokeOptions{{Model: "model", EndpointID: "anthropic/test"}}, gateway, stageDStreamingAuthorization(), nil, time.Now(), nil, "chat.completions", "review-regression", "model")
 			queued := len(settlementRetries.jobs)
 			if timeout && queued != 1 {
 				t.Fatalf("queued retries=%d", queued)
@@ -201,7 +201,7 @@ func TestDeferredSettlementLogsReportedCostMismatch(t *testing.T) {
 	})})
 	auth := costReportingAuthorization()
 	usage := trustedrouter.Usage{InputTokens: 2, OutputTokens: 2, SelectedEndpoint: "served", SelectedModel: "test-model", RouteType: "chat.completions"}
-	reported, err := settleForUsageResponse(t.Context(), gateway, auth, nil, usage, &types.OpenAIChatRequest{}, nil, "answer", "round2")
+	reported, err := settleForUsageResponse(t.Context(), gateway, auth, nil, usage, &types.OpenAIChatRequest{}, nil, "answer", "review-regression")
 	if err != nil || !reported.HasCost() || reported.CostMicrodollars != 15 {
 		t.Fatalf("reported=%+v err=%v", reported, err)
 	}

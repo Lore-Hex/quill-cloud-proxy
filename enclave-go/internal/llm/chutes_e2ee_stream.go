@@ -30,7 +30,7 @@ func decryptChutesStream(
 	w io.Writer,
 	responseSK *mlkem.DecapsulationKey768,
 ) error {
-	scanner := sse.NewReader(r, chutesMaxEncryptedSSELine)
+	scanner := sse.NewLineReader(r, chutesMaxEncryptedSSELine)
 	var streamKey []byte
 	initSeen := false
 	chunkSeen := false
@@ -139,31 +139,24 @@ func decryptChutesStream(
 func frameChutesDecryptedChunk(plaintext []byte) ([]byte, bool, error) {
 	plaintext = bytes.TrimSpace(plaintext)
 	if bytes.HasPrefix(plaintext, []byte("data:")) {
-		events := sse.NewReader(bytes.NewReader(plaintext), chutesMaxEncryptedSSELine)
-		var framed bytes.Buffer
-		terminal := false
-		for events.Next() {
-			payload := strings.TrimSpace(events.Event().Data)
-			if payload == "" {
-				continue
-			}
-			if terminal {
-				return nil, false, fmt.Errorf("chutes e2ee: encrypted content arrived after terminal marker")
-			}
-			if payload == "[DONE]" {
-				terminal = true
-				continue
-			}
-			if !json.Valid([]byte(payload)) {
-				return nil, false, fmt.Errorf("chutes e2ee: decrypted SSE chunk has invalid JSON")
-			}
-			framed.WriteString(strings.TrimRight(events.Event().Raw, "\n"))
-			framed.WriteString("\n\n")
-		}
-		if err := events.Err(); err != nil {
+		// Each authenticated chunk keeps main's single-payload framing.
+		payload := bytes.TrimSpace(bytes.TrimPrefix(plaintext, []byte("data:")))
+		if err := sse.CheckError("", string(payload)); err != nil {
 			return nil, false, err
 		}
-		return framed.Bytes(), terminal, nil
+		if len(payload) == 0 {
+			return nil, false, nil
+		}
+		if bytes.Equal(payload, []byte("[DONE]")) {
+			return nil, true, nil
+		}
+		if !json.Valid(payload) {
+			return nil, false, fmt.Errorf("chutes e2ee: decrypted SSE chunk has invalid JSON")
+		}
+		return append(append([]byte(nil), plaintext...), '\n', '\n'), false, nil
+	}
+	if err := sse.CheckError("", string(plaintext)); err != nil {
+		return nil, false, err
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(plaintext, &object); err != nil || len(object) == 0 {

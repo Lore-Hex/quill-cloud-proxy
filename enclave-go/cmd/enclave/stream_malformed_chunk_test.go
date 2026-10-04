@@ -45,7 +45,7 @@ func TestGatewayMalformedContentChunkSettles(t *testing.T) {
 		return llm.InvokeOpenAICompatibleStreaming(t.Context(), "openai", provider.URL, "test-key",
 			&types.OpenAIChatRequest{Model: "model-a", Stream: true}, &types.AnthropicMessagesRequest{}, w, "model-a")
 	}}
-	auth := &trustedrouter.Authorization{AuthorizationID: "round5", Model: "model-a", Provider: "openai", EndpointID: "first", UsageType: "Credits"}
+	auth := &trustedrouter.Authorization{AuthorizationID: "malformed-chunk", Model: "model-a", Provider: "openai", EndpointID: "first", UsageType: "Credits"}
 	var out bytes.Buffer
 	serveErrorTestRoute(t.Context(), "chat.completions", true, &out, client, gateway, auth, []llm.InvokeOptions{{Model: "model-a", Provider: "openai", EndpointID: "first"}})
 	response, err := http.ReadResponse(bufio.NewReader(&out), nil)

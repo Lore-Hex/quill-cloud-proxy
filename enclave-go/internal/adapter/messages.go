@@ -417,6 +417,18 @@ func RelayAnthropicStreamWithTerminalHook(r io.Reader, w io.Writer, messageID, m
 			"index": textIndex,
 		})
 	}
+	var terminalDelta map[string]any
+	var terminalRaw string
+	flushTerminal := func() error {
+		if terminalDelta == nil {
+			return nil
+		}
+		if passthrough && beforeTerminal == nil {
+			_, err := io.WriteString(w, terminalRaw+"\n\n")
+			return err
+		}
+		return writeEvent("message_delta", terminalDelta)
+	}
 
 	for scanner.Scan() {
 		sawUpstreamBytes = true
@@ -465,6 +477,29 @@ func RelayAnthropicStreamWithTerminalHook(r io.Reader, w io.Writer, messageID, m
 				}
 			}
 			mergeUsage(&usage, getMap(dataJSON, "usage"))
+		}
+
+		if eventName == "message_delta" && getString(getMap(dataJSON, "delta"), "stop_reason") != "" {
+			// A stop_reason is not upstream success: an error may still follow.
+			// Hold terminal usage (and its settlement hook) until message_stop
+			// or clean EOF, just as the Chat and Responses adapters do.
+			if !passthrough {
+				if err := ensureStarted(); err != nil {
+					return StreamResult{}, err
+				}
+				if err := closeTextBlock(); err != nil {
+					return StreamResult{}, err
+				}
+				delta := getMap(dataJSON, "delta")
+				delta["stop_reason"] = normalizeAnthropicSSEStopReason(getString(delta, "stop_reason"))
+			}
+			terminalDelta, terminalRaw = dataJSON, string(raw)
+			continue
+		}
+		if eventName == "message_stop" {
+			if err := flushTerminal(); err != nil {
+				return StreamResult{}, err
+			}
 		}
 
 		if passthrough {
@@ -568,6 +603,14 @@ func RelayAnthropicStreamWithTerminalHook(r io.Reader, w io.Writer, messageID, m
 	}
 	if !sawUpstreamBytes {
 		return StreamResult{}, errEmptyUpstreamResponse
+	}
+	if terminalDelta != nil {
+		if err := flushTerminal(); err != nil {
+			return StreamResult{}, err
+		}
+		if err := writeEvent("message_stop", map[string]any{"type": "message_stop"}); err != nil {
+			return StreamResult{}, err
+		}
 	}
 	return relayResult(captured.String(), finishReason, usage, toolCallsByIndex, toolOrder), nil
 }

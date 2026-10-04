@@ -39,7 +39,12 @@ func TestProviderStreamsRejectMultilineErrors(t *testing.T) {
 				var out bytes.Buffer
 				err := tc.translate(strings.NewReader(wire), &out)
 				d := upstreamerror.Parse(err)
-				if err == nil || d.Status != 403 || d.Message != "multiline refusal" || !strings.Contains(out.String(), "partial") || strings.Contains(out.String(), "message_stop") {
+				wantStatus, wantMessage := 403, "multiline refusal"
+				if tc.name == "openai" || tc.name == "gemini" || tc.name == "vertex-strict" || tc.name == "chutes" {
+					// Line readers fail closed on the first error-looking fragment.
+					wantStatus, wantMessage = 502, `{"type":"error",`
+				}
+				if err == nil || d.Status != wantStatus || d.Message != wantMessage || !strings.Contains(out.String(), "partial") || strings.Contains(out.String(), "message_stop") {
 					t.Fatalf("multiline failure lost: err=%v detail=%+v output=%s", err, d, out.String())
 				}
 			})
@@ -91,29 +96,4 @@ func relayBedrockTestEvents(r io.Reader, w io.Writer) error {
 		}
 	}
 	return nil
-}
-
-func TestChutesMultilineEncryptedAndDecryptedEvents(t *testing.T) {
-	key, err := mlkem.GenerateKey768()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, failure := range []bool{false, true} {
-		payload := "data: {\"choices\":[{\"delta\":\ndata: {\"content\":\"partial\"}}]}\n\n"
-		if failure {
-			payload += "data: {\"error\":\ndata: {\"message\":\"encrypted refusal\"}}"
-		}
-		wire := chutesTestEncryptedStream(t, base64.StdEncoding.EncodeToString(key.EncapsulationKey().Bytes()), payload)
-		// Split the encrypted envelope too; its base64 scalar remains intact.
-		wire = strings.ReplaceAll(wire, `data: {"e2e":`, "data: {\ndata: \"e2e\":")
-		var out bytes.Buffer
-		err := translateChutesEncryptedStream(strings.NewReader(wire), &out, key)
-		if failure {
-			if err == nil || upstreamerror.Parse(err).Message != "encrypted refusal" || strings.Contains(out.String(), "message_stop") {
-				t.Fatalf("failure lost: %v %s", err, out.String())
-			}
-		} else if err != nil || !strings.Contains(out.String(), "partial") || !strings.Contains(out.String(), "message_stop") {
-			t.Fatalf("multiline content lost: %v %s", err, out.String())
-		}
-	}
 }

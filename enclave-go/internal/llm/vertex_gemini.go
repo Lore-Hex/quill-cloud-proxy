@@ -608,7 +608,7 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 }
 
 func translateGeminiStreamToAnthropicMode(r io.Reader, w io.Writer, strict bool) error {
-	scanner := sse.NewReader(r, 64<<20)
+	scanner := sse.NewLineReader(r, 64<<20)
 
 	stopReason := "end_turn"
 	var usage *openAIStreamUsage

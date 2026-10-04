@@ -3,7 +3,6 @@ package sse
 
 import (
 	"bufio"
-	"encoding/json"
 	"io"
 	"strings"
 
@@ -16,61 +15,47 @@ type Event struct {
 }
 
 type Reader struct {
-	scanner      *bufio.Scanner
-	maxBytes     int
-	event        Event
-	pendingLine  string
-	pendingEvent Event
-	err          error
+	scanner  *bufio.Scanner
+	maxBytes int
+	event    Event
+	err      error
+	byLine   bool
+	name     string
 }
 
+// NewReader uses spec framing: only a blank line or EOF ends an event.
+// Raw is LF-normalized by bufio.Scanner, including CRLF upstream streams.
 func NewReader(r io.Reader, maxBytes int) *Reader {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, min(64*1024, maxBytes)), maxBytes)
 	return &Reader{scanner: scanner, maxBytes: maxBytes}
 }
 
-var dataComplete = func(data string) bool {
-	return strings.TrimSpace(data) == "[DONE]" || json.Valid([]byte(data))
+// NewLineReader delivers each data line immediately, matching the original
+// OpenAI-compatible, Gemini and encrypted Chutes readers. maxBytes bounds a
+// line, rather than a whole event. Blank lines reset the event name.
+// A split error report fails closed on the first error-looking fragment:
+// these paths refund with a generic 502, without parsing the provider status.
+// Spec-framed paths use NewReader and parse the joined report instead.
+func NewLineReader(r io.Reader, maxBytes int) *Reader {
+	reader := NewReader(r, maxBytes)
+	reader.byLine = true
+	return reader
 }
 
-// Next collects data through a blank line or EOF. A single data line holding a
-// complete JSON value or [DONE] also ends at the next data field or named-event
-// boundary, tolerating providers that omit blank lines. Multiline data stays
-// joined. Comments and other fields never split an event. Raw retains native
-// framing except for these legacy split events.
 func (r *Reader) Next() bool {
 	if r.err != nil {
 		return false
 	}
+	if r.byLine {
+		return r.nextLine()
+	}
 	var raw, data strings.Builder
-	event := r.pendingEvent
-	r.pendingEvent = Event{}
-	inheritedMetadata := event != (Event{})
+	var event Event
 	dataLines := 0
-	singleDataComplete := false
 	complete := false
-	for {
-		line := r.pendingLine
-		r.pendingLine = ""
-		if line == "" {
-			if !r.scanner.Scan() {
-				break
-			}
-			line = r.scanner.Text()
-		}
-		field, value, _ := strings.Cut(line, ":")
-		value = strings.TrimPrefix(value, " ")
-		if dataLines == 1 && singleDataComplete && (field == "data" || field == "event" && event.Name != "") {
-			r.pendingLine = line
-			if field == "data" {
-				// Keep metadata shared by legacy data lines until a new event
-				// name or a blank line, as in the original tolerant split.
-				r.pendingEvent = Event{Name: event.Name, UnexpectedField: event.UnexpectedField}
-			}
-			event.Data = data.String()
-			return r.emit(event)
-		}
+	for r.scanner.Scan() {
+		line := r.scanner.Text()
 		if raw.Len()+len(line)+1 > r.maxBytes {
 			r.err = io.ErrShortBuffer
 			return false
@@ -81,6 +66,8 @@ func (r *Reader) Next() bool {
 			complete = true
 			break
 		}
+		field, value, _ := strings.Cut(line, ":")
+		value = strings.TrimPrefix(value, " ")
 		switch field {
 		case "data":
 			if dataLines > 0 {
@@ -88,11 +75,6 @@ func (r *Reader) Next() bool {
 			}
 			data.WriteString(value)
 			dataLines++
-			if dataLines == 1 {
-				// Only single-line events qualify for legacy splitting. Cache
-				// completeness so repeated event fields cannot rescan this line.
-				singleDataComplete = dataComplete(value)
-			}
 		case "event":
 			event.Name = value
 		case "": // comment
@@ -108,10 +90,32 @@ func (r *Reader) Next() bool {
 		return false
 	}
 	event.Data, event.Raw = data.String(), raw.String()
-	if inheritedMetadata {
-		event.Raw = "" // Include inherited metadata in the last legacy part too.
-	}
 	return r.emit(event)
+}
+
+func (r *Reader) nextLine() bool {
+	for r.scanner.Scan() {
+		line := r.scanner.Text()
+		if line == "" {
+			r.name = ""
+			continue
+		}
+		field, value, _ := strings.Cut(line, ":")
+		value = strings.TrimPrefix(value, " ")
+		switch field {
+		case "event":
+			r.name = value
+		case "data":
+			return r.emit(Event{Name: r.name, Data: value})
+		case "": // comment
+		default:
+			// An empty event lets strict callers (encrypted Chutes) reject
+			// unknown fields as main did; other readers skip empty data.
+			return r.emit(Event{UnexpectedField: true})
+		}
+	}
+	r.err = r.scanner.Err()
+	return false
 }
 
 func (r *Reader) emit(event Event) bool {

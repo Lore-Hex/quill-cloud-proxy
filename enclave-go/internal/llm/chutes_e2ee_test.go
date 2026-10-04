@@ -208,6 +208,35 @@ func TestDecryptChutesStreamRejectsEmptyAndTamperedStreams(t *testing.T) {
 	})
 }
 
+// Main rejected any encrypted-stream field other than data, event and
+// comments; the shared line reader must keep that strictness for Chutes.
+func TestDecryptChutesStreamRejectsUnexpectedFields(t *testing.T) {
+	responseSK, err := mlkem.GenerateKey768()
+	if err != nil {
+		t.Fatal(err)
+	}
+	responsePK := base64.StdEncoding.EncodeToString(responseSK.EncapsulationKey().Bytes())
+	stream := chutesTestEncryptedStream(t, responsePK, `data: {"choices":[{"delta":{"content":"PONG"}}]}`)
+	if err := decryptChutesStream(strings.NewReader(stream), io.Discard, responseSK); err != nil {
+		t.Fatalf("unmodified stream failed: %v", err)
+	}
+	for _, field := range []string{"id: 7\n", "retry: 10\n", "data\n"} {
+		injected := field + stream
+		if field == "data\n" {
+			// A bare data line is a data field with an empty value, not an
+			// unexpected field; it must keep decrypting like main.
+			if err := decryptChutesStream(strings.NewReader(injected), io.Discard, responseSK); err != nil {
+				t.Fatalf("bare data line rejected: %v", err)
+			}
+			continue
+		}
+		if err := decryptChutesStream(strings.NewReader(injected), io.Discard, responseSK); err == nil ||
+			!strings.Contains(err.Error(), "unexpected encrypted SSE field") {
+			t.Fatalf("field %q accepted: err=%v", field, err)
+		}
+	}
+}
+
 func TestDecryptChutesStreamFramesRawOpenAIJSONAndAcceptsPreframedSSE(t *testing.T) {
 	responseSK, err := mlkem.GenerateKey768()
 	if err != nil {

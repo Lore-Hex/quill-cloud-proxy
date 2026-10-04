@@ -36,7 +36,7 @@ func TestReaderSupportsBothEventFramings(t *testing.T) {
 			for _, newline := range []struct{ name, wire string }{{"lf", "\n"}, {"crlf", "\r\n"}} {
 				t.Run(framing.name+"/"+ending.name+"/"+newline.name, func(t *testing.T) {
 					wire := "data: " + strings.Join(want, framing.separator+"data: ") + ending.wire
-					r := NewReader(strings.NewReader(strings.ReplaceAll(wire, "\n", newline.wire)), 1024)
+					r := NewLineReader(strings.NewReader(strings.ReplaceAll(wire, "\n", newline.wire)), 1024)
 					for i, data := range want {
 						if !r.Next() || r.Event().Data != data {
 							t.Fatalf("event %d: got=%+v want=%q err=%v", i, r.Event(), data, r.Err())
@@ -60,7 +60,7 @@ func TestReaderChecksEachQueuedEvent(t *testing.T) {
 	const content = `{"text":"partial"}`
 	const failure = `{"error":{"code":403,"message":"refusal"}}`
 	for _, ending := range []string{"\n\n", "\n", ""} {
-		r := NewReader(strings.NewReader("data: "+content+"\ndata: "+failure+"\ndata: [DONE]"+ending), 1024)
+		r := NewLineReader(strings.NewReader("data: "+content+"\ndata: "+failure+"\ndata: [DONE]"+ending), 1024)
 		if !r.Next() || r.Event().Data != content || strings.Contains(r.Event().Raw, "refusal") || r.Err() != nil {
 			t.Fatalf("content lost or error relayed: %+v err=%v", r.Event(), r.Err())
 		}
@@ -103,7 +103,7 @@ func TestReaderDoneFraming(t *testing.T) {
 		"data: {}\ndata: [DONE]\n\n",
 		"data: {}\n\ndata: [DONE]\n\n",
 	} {
-		r := NewReader(strings.NewReader(wire), 1024)
+		r := NewLineReader(strings.NewReader(wire), 1024)
 		if strings.Contains(wire, "{}") {
 			if !r.Next() || r.Event().Data != "{}" {
 				t.Fatalf("lost content before [DONE]: %q err=%v", wire, r.Err())
@@ -119,25 +119,10 @@ func TestReaderDoneFraming(t *testing.T) {
 }
 
 func TestReaderDrainsQueueBeforeReadingNextEvent(t *testing.T) {
-	r := NewReader(strings.NewReader("data: 1\ndata: 2\n\ndata: 3\ndata: 4\n\n"), 1024)
+	r := NewLineReader(strings.NewReader("data: 1\ndata: 2\n\ndata: 3\ndata: 4\n\n"), 1024)
 	for _, want := range []string{"1", "2", "3", "4"} {
 		if !r.Next() || r.Event().Data != want {
 			t.Fatalf("event=%+v want=%q err=%v", r.Event(), want, r.Err())
-		}
-	}
-	if r.Next() || r.Err() != nil {
-		t.Fatalf("extra event or error: %v", r.Err())
-	}
-}
-
-func TestReaderPreservesSplitEventMetadata(t *testing.T) {
-	r := NewReader(strings.NewReader("event: chunk\nid: 7\ndata: {}\n: keepalive\ndata: []\n\n"), 1024)
-	for _, data := range []string{"{}", "[]"} {
-		if !r.Next() || r.Event().Name != "chunk" || r.Event().Data != data || !r.Event().UnexpectedField {
-			t.Fatalf("metadata lost: %+v err=%v", r.Event(), r.Err())
-		}
-		if r.Event().Raw != "event: chunk\ndata: "+data+"\n\n" {
-			t.Fatalf("incorrect relay framing: %q", r.Event().Raw)
 		}
 	}
 	if r.Next() || r.Err() != nil {
@@ -160,7 +145,7 @@ func TestReaderKeepsOtherMultilineDataJoined(t *testing.T) {
 
 func TestReaderSplitsCompleteDataBeforeMalformedData(t *testing.T) {
 	for _, data := range []string{"[DONE]\nnot JSON", "1\n", "{}\nnot JSON"} {
-		r := NewReader(strings.NewReader("data: "+strings.ReplaceAll(data, "\n", "\ndata: ")+"\n\n"), 1024)
+		r := NewLineReader(strings.NewReader("data: "+strings.ReplaceAll(data, "\n", "\ndata: ")+"\n\n"), 1024)
 		for _, want := range strings.Split(data, "\n") {
 			if !r.Next() || r.Event().Data != want {
 				t.Fatalf("event=%+v want=%q err=%v", r.Event(), want, r.Err())
@@ -185,6 +170,7 @@ func TestReaderFailsClosed(t *testing.T) {
 	} {
 		r := NewReader(strings.NewReader(wire), 1024)
 		if strings.HasPrefix(wire, "data: {}\n") {
+			r = NewLineReader(strings.NewReader(wire), 1024)
 			if !r.Next() || r.Event().Data != "{}" {
 				t.Fatalf("content before failure lost: %+v err=%v", r.Event(), r.Err())
 			}

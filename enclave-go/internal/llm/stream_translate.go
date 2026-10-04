@@ -11,7 +11,6 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/sse"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 type upstreamHTTPError struct {
@@ -50,7 +49,7 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 }
 
 func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provider string) error {
-	scanner := sse.NewReader(r, 1<<20)
+	scanner := sse.NewLineReader(r, 1<<20)
 
 	stopReason := "end_turn"
 	toolCalls := map[int]*openAIToolCallAccumulator{}
@@ -73,15 +72,13 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 		}
 
 		var chunk struct {
-			Error         *json.RawMessage              `json:"error"`
 			ServiceTier   string                        `json:"service_tier"`
 			Citations     []string                      `json:"citations"`
 			SearchResults []qtypes.ProviderSearchResult `json:"search_results"`
 			Decision      json.RawMessage               `json:"decision"`
 			Choices       []struct {
 				Delta struct {
-					Error   *json.RawMessage `json:"error"`
-					Content string           `json:"content"`
+					Content string `json:"content"`
 					// Several Chinese OpenAI-compatible providers (Z.AI/Zhipu,
 					// Moonshot in some configs) emit chain-of-thought tokens
 					// in `reasoning_content` and only fill `content` for the
@@ -117,13 +114,6 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 				return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub returned a malformed stream chunk"}
 			}
 			continue
-		}
-		for _, choice := range chunk.Choices {
-			if choice.Delta.Error != nil {
-				if err := upstreamerror.FromEvent(`{"error":` + string(*choice.Delta.Error) + `}`); err != nil {
-					return err
-				}
-			}
 		}
 
 		if chunk.ServiceTier != "" {
