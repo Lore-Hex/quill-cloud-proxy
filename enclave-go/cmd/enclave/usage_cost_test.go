@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -35,13 +36,13 @@ func TestUsageCostAcrossResponseFormats(t *testing.T) {
 	t.Cleanup(func() { settlementRetries = originalQueue })
 	for _, route := range []string{"chat.completions", "responses", "messages"} {
 		for _, stream := range []bool{false, true} {
-			for _, scenario := range []string{"settled", "zero", "late", "error", "rejected", "durable", "missing", "ineligible-missing", "ineligible-late", "snapshot-not-authoritative"} {
+			for _, scenario := range []string{"settled", "mismatch", "zero", "late", "error", "no-promise-error", "rejected", "durable", "missing", "ineligible-missing", "ineligible-late", "snapshot-not-authoritative"} {
 				t.Run(fmt.Sprintf("%s/stream=%t/%s", route, stream, scenario), func(t *testing.T) {
 					auth := costReportingAuthorization()
 					if strings.HasPrefix(scenario, "ineligible") {
 						auth.StageD.Eligible = false
 					}
-					if scenario == "snapshot-not-authoritative" {
+					if scenario == "snapshot-not-authoritative" || scenario == "no-promise-error" {
 						auth.CandidateCostReporting = false
 					}
 					var out bytes.Buffer
@@ -70,7 +71,7 @@ func TestUsageCostAcrossResponseFormats(t *testing.T) {
 								t.Fatalf("terminal/answer ordering before settle: %s", out.String())
 							}
 							if strings.HasSuffix(scenario, "late") {
-								if stream {
+								if stream || scenario == "late" {
 									deadline, ok := r.Context().Deadline()
 									if !ok || time.Until(deadline) > 5*time.Millisecond {
 										t.Fatal("terminal settlement has no bounded wait")
@@ -80,11 +81,13 @@ func TestUsageCostAcrossResponseFormats(t *testing.T) {
 								}
 								time.Sleep(10 * time.Millisecond)
 							}
-							body = `{"data":{"cost_microdollars":97,"disposition":"finalized"}}`
+							body = `{"data":{"cost_microdollars":15,"disposition":"finalized"}}`
 							switch scenario {
+							case "mismatch":
+								body = `{"data":{"cost_microdollars":97,"disposition":"finalized"}}`
 							case "zero":
 								body = `{"data":{"cost_microdollars":0}}`
-							case "error":
+							case "error", "no-promise-error":
 								status = 503
 								body = `{"error":{"message":"fixture settlement error"}}`
 							case "rejected":
@@ -116,6 +119,20 @@ func TestUsageCostAcrossResponseFormats(t *testing.T) {
 					if settles != 1 || billed.InputTokens != 2 || billed.OutputTokens != 2 || billed.SelectedEndpoint != "served" || billed.RouteType != route {
 						t.Fatalf("settlement changed: count=%d usage=%+v", settles, billed)
 					}
+					wantRetries := 0
+					if scenario == "error" || scenario == "late" ||
+						(stream && (scenario == "no-promise-error" || scenario == "ineligible-late" || scenario == "rejected")) {
+						wantRetries = 1
+					}
+					if len(settlementRetries.jobs) != wantRetries {
+						t.Fatalf("retries = %d, want %d", len(settlementRetries.jobs), wantRetries)
+					}
+					if wantRetries == 1 {
+						job := <-settlementRetries.jobs
+						if job.usage.InputTokens != 2 || job.usage.OutputTokens != 2 || job.usage.SelectedEndpoint != "served" || job.usage.RouteType != route || job.requestLogID != "cost-reporting" {
+							t.Fatalf("retry changed usage or request attribution: %+v", job)
+						}
+					}
 					response, err := http.ReadResponse(bufio.NewReader(&out), nil)
 					if err != nil {
 						t.Fatal(err)
@@ -125,7 +142,7 @@ func TestUsageCostAcrossResponseFormats(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if (scenario == "error" || scenario == "rejected") && !stream {
+					if (scenario == "no-promise-error" || scenario == "rejected") && !stream {
 						if response.StatusCode != 502 || bytes.Contains(body, []byte("cost_microdollars")) {
 							t.Fatalf("error response = %d %s", response.StatusCode, body)
 						}
@@ -135,8 +152,10 @@ func TestUsageCostAcrossResponseFormats(t *testing.T) {
 						t.Fatalf("status = %d: %s", response.StatusCode, body)
 					}
 					usage := finalCostUsage(t, body, route, stream)
-					var want any = float64(97)
+					var want any = float64(15)
 					switch scenario {
+					case "mismatch":
+						want = float64(97)
 					case "zero":
 						want = float64(0)
 					case "durable":
@@ -147,7 +166,7 @@ func TestUsageCostAcrossResponseFormats(t *testing.T) {
 						if stream {
 							want = float64(15)
 						}
-					case "missing", "ineligible-missing", "rejected", "snapshot-not-authoritative":
+					case "missing", "ineligible-missing", "rejected", "snapshot-not-authoritative", "no-promise-error":
 						want = nil
 					case "ineligible-late":
 						if stream {
@@ -283,9 +302,6 @@ func TestReportedSettlementOmitsUnprovableCost(t *testing.T) {
 		}},
 		{"additional-cost", func(_ **trustedrouter.Authorization, u *trustedrouter.Usage, _ **trustedrouter.SettleResult) {
 			u.AdditionalCostMicrodollars = 10
-		}},
-		{"priority", func(_ **trustedrouter.Authorization, u *trustedrouter.Usage, _ **trustedrouter.SettleResult) {
-			u.ServiceTier = "priority"
 		}},
 		{"negative-input", func(a **trustedrouter.Authorization, u *trustedrouter.Usage, _ **trustedrouter.SettleResult) {
 			(*a).Provider = "openai"
@@ -531,5 +547,126 @@ func TestMessagesWriteFailureHasOneBillingOutcome(t *testing.T) {
 				t.Fatalf("unknown cost in failed write: %s", out.failed)
 			}
 		})
+	}
+}
+
+func TestCostMismatchLogsBothPricesAndKeepsSettlement(t *testing.T) {
+	for _, promise := range []bool{false, true} {
+		for _, settled := range []int{15, 97} {
+			t.Run(fmt.Sprintf("promise=%t/cost=%d", promise, settled), func(t *testing.T) {
+				auth := costReportingAuthorization()
+				auth.CandidateCostReporting = promise
+				usage := trustedrouter.Usage{RouteType: "responses", SelectedEndpoint: "served", SelectedModel: "test-model", InputTokens: 2, OutputTokens: 2}
+				settlement := &trustedrouter.SettleResult{CostMicrodollars: settled, CostMicrodollarsKnown: true}
+				logFile, err := os.CreateTemp(t.TempDir(), "cost-log")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer logFile.Close()
+				original := os.Stderr
+				os.Stderr = logFile
+				defer func() { os.Stderr = original }()
+				got := reportedSettlement(settlement, auth, usage, nil)
+				if got != settlement || got.CostMicrodollars != settled {
+					t.Fatalf("settlement changed: %+v", got)
+				}
+				log, err := os.ReadFile(logFile.Name())
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := ""
+				if promise && settled == 97 {
+					want = "enclave.usage_cost_mismatch level=error authorization_id=\"cost-auth\" endpoint_id=\"served\" local_cost_microdollars=15 settled_cost_microdollars=97\n"
+				}
+				if string(log) != want {
+					t.Fatalf("log = %q, want %q", log, want)
+				}
+			})
+		}
+	}
+}
+
+func TestSnapshotPromiseIgnoresReportedServiceTier(t *testing.T) {
+	auth := costReportingAuthorization()
+	usage := trustedrouter.Usage{RouteType: "responses", SelectedEndpoint: "served", SelectedModel: "test-model", InputTokens: 2, OutputTokens: 2, ServiceTier: "priority"}
+	got := reportedSettlement(nil, auth, usage, nil)
+	if !got.HasCost() || got.CostMicrodollars != 15 {
+		t.Fatalf("snapshot price = %+v", got)
+	}
+}
+
+func TestOldControlPlaneOmitsPricePromise(t *testing.T) {
+	encoded, err := json.Marshal(costReportingAuthorization())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	delete(fields, "candidate_cost_reporting")
+	encoded, _ = json.Marshal(fields)
+	var auth trustedrouter.Authorization
+	if err := json.Unmarshal(encoded, &auth); err != nil {
+		t.Fatal(err)
+	}
+	usage := trustedrouter.Usage{RouteType: "responses", SelectedEndpoint: "served", SelectedModel: "test-model", InputTokens: 2, OutputTokens: 2}
+	got := reportedSettlement(nil, &auth, usage, context.DeadlineExceeded)
+	if got.HasCost() || auth.CandidateCostReporting {
+		t.Fatalf("old control plane promised price: %+v", got)
+	}
+}
+
+func TestPromisedCostDoesNotAddOptedOutChatUsage(t *testing.T) {
+	t.Setenv("QUILL_USAGE_HEARTBEAT", "off")
+	var out bytes.Buffer
+	settles := 0
+	gateway := stageDStreamingGateway(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/internal/gateway/settle" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		settles++
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"data":{"cost_microdollars":15}}`)), Request: r}, nil
+	})
+	serveStreaming(t.Context(), &out, &fakeStreamingLLM{}, &types.OpenAIChatRequest{Model: "test-model", Stream: true, StreamOptions: &types.ChatStreamOptions{IncludeUsage: false}}, &types.AnthropicMessagesRequest{}, []llm.InvokeOptions{{Model: "test-model", Provider: "anthropic", EndpointID: "served"}}, gateway, costReportingAuthorization(), nil, time.Now(), nil, "chat.completions", "opt-out", "test-model")
+	if settles != 1 {
+		t.Fatalf("settles = %d", settles)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(&out), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		if !strings.HasPrefix(line, "data: {") {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["usage"] != nil {
+			t.Fatalf("unrequested usage: %s", line)
+		}
+	}
+	if strings.Count(string(body), "data: [DONE]") != 1 {
+		t.Fatalf("bad terminal count: %s", body)
+	}
+}
+
+func TestReportedCostMatchesRouterCatalogRefreshCharge(t *testing.T) {
+	// Same authorization and final usage as test_snapshot_billing.py: live
+	// catalog would charge 63, but the frozen authorization charges 49.
+	auth := costReportingAuthorization()
+	auth.CandidatePrices[0].RequestFeeMicro = 0
+	auth.CandidatePrices[0].Rates.OutputMicroPerMillion = 5_000_000
+	usage := trustedrouter.Usage{RouteType: "chat.completions", SelectedEndpoint: "served", SelectedModel: "test-model", InputTokens: 14, OutputTokens: 7}
+	got := reportedSettlement(nil, auth, usage, context.DeadlineExceeded)
+	if !got.HasCost() || got.CostMicrodollars != 49 {
+		t.Fatalf("snapshot cost = %+v", got)
 	}
 }

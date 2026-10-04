@@ -1676,13 +1676,13 @@ func serveResponsesNonStreaming(
 	}
 	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
-	settlement, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, outputForUsage)
+	settlement, err := settleForUsageResponse(ctx, trGateway, authorization, secretCache, usage, req, originalInput, outputForUsage, requestLogID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_settle_failed model=%q err=%v\n", req.Model, err)
 		writeSpentError(conn, 502, "settlement failed")
 		return
 	}
-	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, reportedSettlement(settlement, authorization, usage, err), selectedRoute, invokeOptions, result, req.OpenRouterMetadata)
+	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result, req.OpenRouterMetadata)
 	if err == nil {
 		annotatedBody, err = annotatePolyphemusResponse(ctx, annotatedBody)
 	}
@@ -1785,13 +1785,13 @@ func serveChatNonStreaming(
 	}
 	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
-	settlement, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text)
+	settlement, err := settleForUsageResponse(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text, requestLogID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_settle_failed model=%q err=%v\n", req.Model, err)
 		writeSpentError(conn, 502, "settlement failed")
 		return
 	}
-	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, reportedSettlement(settlement, authorization, usage, err), selectedRoute, invokeOptions, result, req.OpenRouterMetadata)
+	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result, req.OpenRouterMetadata)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_metadata_failed model=%q err=%v\n", req.Model, err)
 		writeSpentError(conn, 500, "chat completion encoding error")
@@ -2332,13 +2332,13 @@ func serveMessages(
 		}
 		applyUsageAttribution(&usage, req)
 		applyCacheUsage(&usage, result)
-		settlement, err := settleAndBroadcast(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text)
+		settlement, err := settleForUsageResponse(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text, requestLogID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.messages_settle_failed model=%q err=%v\n", req.Model, err)
 			writeAnthropicError(conn, 502, "settlement failed")
 			return
 		}
-		responseBody, err := annotateSettlementOnlyUsage(envelope.Bytes(), reportedSettlement(settlement, authorization, usage, err), authorization)
+		responseBody, err := annotateSettlementOnlyUsage(envelope.Bytes(), settlement, authorization)
 		if err != nil {
 			writeAnthropicError(conn, 500, "messages encoding error")
 			return

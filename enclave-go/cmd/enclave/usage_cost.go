@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
@@ -10,12 +12,20 @@ import (
 // reportedSettlement fills only reporting metadata. The original settlement
 // and the usage sent to billing are never changed. CandidateCostReporting is
 // an affirmative control-plane assertion that settlement uses these prices
-// without further adjustments. It is false while normal settlement reprices
-// from the live catalog, and absent on older control planes.
+// without further adjustments. Eligible requests bill the authorization-time
+// snapshot; older control planes omit this promise.
 func reportedSettlement(settlement *trustedrouter.SettleResult, auth *trustedrouter.Authorization, usage trustedrouter.Usage, settleErr error) *trustedrouter.SettleResult {
 	if settlement.HasCost() {
+		local := candidateSettlement(nil, auth, usage, nil)
+		if local.HasCost() && local.CostMicrodollars != settlement.CostMicrodollars {
+			fmt.Fprintf(os.Stderr, "enclave.usage_cost_mismatch level=error authorization_id=%q endpoint_id=%q local_cost_microdollars=%d settled_cost_microdollars=%d\n", auth.AuthorizationID, usage.SelectedEndpoint, local.CostMicrodollars, settlement.CostMicrodollars)
+		}
 		return settlement
 	}
+	return candidateSettlement(settlement, auth, usage, settleErr)
+}
+
+func candidateSettlement(settlement *trustedrouter.SettleResult, auth *trustedrouter.Authorization, usage trustedrouter.Usage, settleErr error) *trustedrouter.SettleResult {
 	var rejected *trustedrouter.ControlPlaneError
 	if errors.As(settleErr, &rejected) && rejected.StatusCode >= 400 && rejected.StatusCode < 500 && rejected.StatusCode != 408 && rejected.StatusCode != 429 {
 		return settlement
@@ -36,8 +46,7 @@ func reportedSettlement(settlement *trustedrouter.SettleResult, auth *trustedrou
 		(settlement.FinalizationOutcome != "" && settlement.FinalizationOutcome != "pending")) {
 		return settlement
 	}
-	if usage.FinishReason == "heartbeat_lost" || usage.AdditionalCostMicrodollars != 0 ||
-		(usage.ServiceTier != "" && usage.ServiceTier != "default") {
+	if usage.FinishReason == "heartbeat_lost" || usage.AdditionalCostMicrodollars != 0 {
 		return settlement
 	}
 	switch usage.RouteType {
