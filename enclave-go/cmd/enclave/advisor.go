@@ -1135,6 +1135,11 @@ func runAdvisorWorkerLoop(
 		}
 		adviceCall, hasAdvice := advisorAdviceToolCall(worker.Result.ToolCalls)
 		if !hasAdvice {
+			for _, call := range worker.Result.ToolCalls {
+				if strings.TrimSpace(call.Name) == "" {
+					return fusionCallResult{}, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, &adapter.AdapterError{Status: 502, Message: "trustedrouter/advisor worker returned a tool call without a name", Context: "advisor.worker"}
+				}
+			}
 			if strings.TrimSpace(worker.Result.Text) == "" && len(worker.Result.ToolCalls) == 0 {
 				return fusionCallResult{}, workerAttempts, advisorAttempts, adviceCalls, budgetExhausted, &adapter.AdapterError{Status: 502, Message: "trustedrouter/advisor worker returned an empty response", Context: "advisor.worker"}
 			}

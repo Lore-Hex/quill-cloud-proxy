@@ -648,3 +648,13 @@ func userModelTestAAD(workspaceID, purpose string) []byte {
 	}
 	return out
 }
+
+func TestTranslateUserModelBufferedRejectsCustomToolCall(t *testing.T) {
+	owner := `{"object":"chat.completion","choices":[{"message":{"role":"assistant","tool_calls":[{"type":"custom","custom":{"name":"f","input":"x"}}]},"finish_reason":"tool_calls"}]}`
+	var output bytes.Buffer
+	err := translateUserModelBuffered(strings.NewReader(owner), &output, "trustedrouter/user-demo", "msg_test")
+	var malformed *malformedUserModelResponse
+	if !errors.As(err, &malformed) || malformed.reason != "invalid owner tool call" {
+		t.Fatalf("error = %v, want invalid owner tool call", err)
+	}
+}

@@ -2,9 +2,11 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -100,5 +102,42 @@ func TestOpenAICompatibleMessagesLeaveNonToolContentAlone(t *testing.T) {
 		if len(m.ToolCalls) != 0 || m.ToolCallID != "" {
 			t.Errorf("non-tool message gained tool fields: %+v", m)
 		}
+	}
+}
+
+func TestOpenAICompatibleCustomToolHistoryRoundTrip(t *testing.T) {
+	var req qtypes.OpenAIChatRequest
+	if err := json.Unmarshal([]byte(`{"model":"test","messages":[{"role":"user","content":"Weather?"},{"role":"assistant","tool_calls":[{"id":"call_1","type":"custom","custom":{"name":"get_weather","input":"Paris"}}]},{"role":"tool","tool_call_id":"call_1","content":"sunny"}]}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	body, err := adapter.ToAnthropic(&req, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream, err := BuildOpenAICompatibleRequestShape(t.Context(), &req, body, "test", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(upstream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Messages []struct {
+			ToolCalls []struct {
+				ID, Type string
+				Function struct{ Name, Arguments string }
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages) != 3 || len(got.Messages[1].ToolCalls) != 1 {
+		t.Fatalf("upstream = %s", encoded)
+	}
+	call := got.Messages[1].ToolCalls[0]
+	if call.ID != "call_1" || call.Type != "function" || call.Function.Name != "get_weather" || call.Function.Arguments != `{"input":"Paris"}` {
+		t.Fatalf("upstream tool call = %#v; body=%s", call, encoded)
 	}
 }
