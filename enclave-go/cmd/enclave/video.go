@@ -208,7 +208,7 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 	}
 	reservationMicrodollars := maximumVideoQuote(quotes)
 	outputTokenLimit := maximumVideoTokenLimit(quotes)
-	auth, err := s.control.AuthorizeVideo(
+	auth, existing, err := s.control.AuthorizeVideo(
 		ctx,
 		bearer,
 		resolved.Model.ID,
@@ -220,6 +220,10 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 	)
 	if err != nil {
 		writeGatewayAuthorizationError(conn, err)
+		return
+	}
+	if existing != nil {
+		writeVideoJobResponse(conn, http.StatusAccepted, existing)
 		return
 	}
 	routes := authorizedVideoRoutes(auth, quotes)
@@ -236,7 +240,7 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		outputTokenLimit = max(outputTokenLimit, quotes[route.Provider].OutputTokenLimit)
 	}
 	job := &trustedrouter.VideoJob{
-		ID: videoJobID(auth.AuthorizationID), AuthorizationID: auth.AuthorizationID,
+		ID: trustedrouter.VideoJobID(auth.AuthorizationID), AuthorizationID: auth.AuthorizationID,
 		WorkspaceID: auth.WorkspaceID, KeyHash: auth.APIKeyHash,
 		Model: resolved.Model.ID, Provider: selected.Provider, EndpointID: selected.EndpointID,
 		ProviderModel:      resolved.Model.ID,
@@ -622,11 +626,6 @@ func parseVideoJobPath(path string) (string, bool, bool) {
 		return "", false, false
 	}
 	return rest, content, true
-}
-
-func videoJobID(authorizationID string) string {
-	digest := sha256.Sum256([]byte("trustedrouter-video:" + authorizationID))
-	return "job-" + hex.EncodeToString(digest[:16])
 }
 
 func videoRequestFingerprint(bearer string, req *video.CreateRequest) string {
