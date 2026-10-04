@@ -713,13 +713,14 @@ func serveOneRequest(
 		)
 	}()
 
-	method, path, bearer, idempotencyKey, attribution, body, err := readRequestWithHeadersRead(
+	method, path, bearer, idempotencyKey, attribution, body, err := readRequestWithTiming(
 		requestReader,
 		func() {
 			// Header slowloris protection must not become a blanket request-body
 			// timeout: authenticated clients may upload large prompt payloads.
 			_ = conn.SetReadDeadline(time.Time{})
 		},
+		phases,
 	)
 	processingStartedAt := time.Now()
 	// Also clear after header-read failures so an error response is not coupled

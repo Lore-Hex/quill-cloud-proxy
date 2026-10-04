@@ -35,6 +35,13 @@
 // Authorize and retry_wait are cumulative durations, not unions. Each duration
 // is truncated for reporting, so logged phase sums can be below request_ms
 // by less than one millisecond per summed field.
+//
+// BodyRead is the client-upload-bound sub-interval from the request origin
+// (after idle) through the unauthenticated body read's return, including errors.
+// It includes header reading (and first-request TLS), is zero when unmarked,
+// and is clamped to accept_to_start, including zero before Start. It does not
+// change the phase sum. Consumers may subtract body_read_ms from
+// request_ms - upstream_ms to measure control-plane-only overhead.
 package requesttiming
 
 import (
@@ -50,7 +57,7 @@ type contextKey struct{}
 // Fields is an immutable snapshot. Durations are truncated to milliseconds
 // after accumulation, rather than rounding each control-plane attempt.
 type Fields struct {
-	IdleWaitMS, RequestMS                                                int64
+	IdleWaitMS, RequestMS, BodyReadMS                                    int64
 	AcceptToStartMS, AuthorizeMS, RouteMS, UpstreamMS, TTFBMS            int64
 	RetryWaitMS, SettleMS, ReceiptMS, AuthorizeAttempts, UpstreamPartial int64
 	SettleOutcome, CPEndpoint                                            string
@@ -60,21 +67,21 @@ type Fields struct {
 // speculative authorization can run on different goroutines. Snapshot never
 // advances a phase; End freezes the request before detached work can change it.
 type Timer struct {
-	mu                                                  sync.Mutex
-	now                                                 func() time.Time
-	active                                              map[*Invocation]struct{}
-	hasFirstByte                                        bool
-	invocations                                         []interval
-	settlements                                         []interval
-	upstream                                            time.Duration
-	upstreamPartial                                     int64
-	accepted, requestByte, started, completed           time.Time
-	acceptToStart, authorize, route, retryWait, receipt time.Duration
-	ttfbMS, attempts                                    int64
-	endpoint, outcome                                   string
-	invoked, ended                                      bool
-	elapsed, idleWait, request                          time.Duration
-	waitingForByte                                      bool
+	mu                                                    sync.Mutex
+	now                                                   func() time.Time
+	active                                                map[*Invocation]struct{}
+	hasFirstByte                                          bool
+	invocations                                           []interval
+	settlements                                           []interval
+	upstream                                              time.Duration
+	upstreamPartial                                       int64
+	accepted, requestByte, bodyReadAt, started, completed time.Time
+	acceptToStart, authorize, route, retryWait, receipt   time.Duration
+	ttfbMS, attempts                                      int64
+	endpoint, outcome                                     string
+	invoked, ended                                        bool
+	elapsed, idleWait, request                            time.Duration
+	waitingForByte                                        bool
 }
 
 // Invocation is an opaque, request-local token. Each concurrent provider
@@ -179,6 +186,20 @@ func (t *Timer) RequestFirstByte() {
 	t.requestByte = t.Now()
 	t.idleWait = t.requestByte.Sub(t.accepted)
 	t.waitingForByte = false
+}
+
+// MarkBodyRead records when the unauthenticated body read returns, successfully
+// or otherwise. The first mark wins; nil and frozen timers ignore marks.
+// Snapshot clamps the interval to accept_to_start regardless of Start ordering.
+func (t *Timer) MarkBodyRead(now time.Time) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.ended && t.bodyReadAt.IsZero() {
+		t.bodyReadAt = now
+	}
 }
 
 func (t *Timer) Start() {
@@ -349,7 +370,12 @@ func (t *Timer) Snapshot() Fields {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	var bodyRead time.Duration
+	if !t.bodyReadAt.IsZero() {
+		bodyRead = max(0, min(t.bodyReadAt.Sub(t.requestByte), t.acceptToStart))
+	}
 	return Fields{
+		BodyReadMS:        bodyRead.Milliseconds(),
 		IdleWaitMS:        t.idleWait.Milliseconds(),
 		RequestMS:         t.request.Milliseconds(),
 		AcceptToStartMS:   t.acceptToStart.Milliseconds(),

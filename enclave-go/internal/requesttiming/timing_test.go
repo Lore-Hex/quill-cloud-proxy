@@ -462,3 +462,75 @@ func TestPhaseTimerEndClearsActiveInvocations(t *testing.T) {
 		t.Fatalf("late completion changed frozen fields: %+v -> %+v", before, after)
 	}
 }
+
+func TestPhaseTimerBodyReadOrdering(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		markAt, startAt, want int64
+		startFirst            bool
+	}{
+		{"before_start", 20, 30, 20, false},
+		{"after_start", 20, 30, 20, true},
+		{"clamped", 40, 30, 30, true},
+		{"future_mark", 40, 30, 30, false},
+		{"negative", -10, 30, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			timer, c := newFakeTimer()
+			timer.WaitForRequestByte()
+			c.advance(1000)
+			timer.RequestFirstByte()
+			mark := c.Now().Add(time.Duration(tc.markAt) * time.Millisecond)
+			if !tc.startFirst {
+				timer.MarkBodyRead(mark)
+				if got := timer.Snapshot().BodyReadMS; got != 0 {
+					t.Fatalf("before Start: body_read_ms=%d, want 0", got)
+				}
+			}
+			c.advance(tc.startAt)
+			timer.Start()
+			if tc.startFirst {
+				timer.MarkBodyRead(mark)
+			}
+			timer.MarkBodyRead(c.Now().Add(time.Hour)) // first mark wins
+			invocation := timer.InvokeStart()
+			c.advance(10)
+			timer.InvokeComplete(invocation)
+			elapsed := timer.End()
+			f := timer.Snapshot()
+			if f.BodyReadMS != tc.want || f.AcceptToStartMS != tc.startAt || f.IdleWaitMS != 1000 {
+				t.Fatalf("body read ordering: %+v, want body=%d start=%d", f, tc.want, tc.startAt)
+			}
+			assertPhaseSum(t, timer, elapsed)
+			c.advance(100)
+			timer.MarkBodyRead(c.Now())
+			if timer.Snapshot() != f {
+				t.Fatal("late body read changed frozen snapshot")
+			}
+		})
+	}
+}
+
+func TestPhaseTimerBodyReadMissing(t *testing.T) {
+	var absent *Timer
+	absent.MarkBodyRead(time.Now())
+	for _, started := range []bool{false, true} {
+		timer, c := newFakeTimer()
+		c.advance(30)
+		if started {
+			timer.Start()
+		}
+		timer.End()
+		timer.MarkBodyRead(c.Now())
+		if got := timer.Snapshot().BodyReadMS; got != 0 {
+			t.Fatalf("unmarked/frozen body_read_ms=%d", got)
+		}
+	}
+	timer, c := newFakeTimer()
+	c.advance(30)
+	timer.MarkBodyRead(c.Now()) // failed read, no Start
+	timer.End()
+	if got := timer.Snapshot(); got.BodyReadMS != 0 || got.AcceptToStartMS != 0 {
+		t.Fatalf("read without Start: %+v", got)
+	}
+}
