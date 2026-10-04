@@ -120,6 +120,7 @@ type requestDeadlineConn struct {
 	mu                    sync.Mutex
 	headerTimeout         time.Duration
 	waitingForRequestByte bool
+	requestTiming         *requesttiming.Timer
 }
 
 func (c *requestDeadlineConn) ArmIdle(idleTimeout, headerTimeout time.Duration) {
@@ -137,14 +138,25 @@ func (c *requestDeadlineConn) ArmHeader(headerTimeout time.Duration) {
 	_ = c.Conn.SetReadDeadline(time.Now().Add(headerTimeout))
 }
 
+// TrackRequestByte observes the existing read without adding an I/O operation
+// or changing the idle/header deadline transition. Buffered requests need no hook.
+func (c *requestDeadlineConn) TrackRequestByte(timer *requesttiming.Timer) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.requestTiming = timer
+}
+
 func (c *requestDeadlineConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
 	if n > 0 {
 		c.mu.Lock()
+		timer := c.requestTiming
+		c.requestTiming = nil
 		waiting := c.waitingForRequestByte
 		c.waitingForRequestByte = false
 		headerTimeout := c.headerTimeout
 		c.mu.Unlock()
+		timer.RequestFirstByte()
 		if waiting {
 			_ = c.Conn.SetReadDeadline(time.Now().Add(headerTimeout))
 		}
@@ -600,7 +612,7 @@ func serveOne(
 			break
 		}
 		armRequestReadDeadline(deadlineConn, requestReader, requestCount, config)
-		if !serveOneRequest(ctx, conn, statsConn, requestReader, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount, &healthRequestCount, &requestCount, config) {
+		if !serveOneRequest(ctx, conn, statsConn, requestReader, deadlineConn, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount, &healthRequestCount, &requestCount, config) {
 			break
 		}
 		// Pipelined bytes are legal, but bound the amount carried across a
@@ -629,6 +641,7 @@ func serveOneRequest(
 	conn net.Conn,
 	statsConn *responseStatsConn,
 	requestReader *bufio.Reader,
+	deadlineConn *requestDeadlineConn,
 	reg *auth.Registry,
 	br llm.Client,
 	deviceBlob []byte,
@@ -651,6 +664,11 @@ func serveOneRequest(
 	if phases == nil {
 		phases = requesttiming.New(requestStartedAt, nil)
 		ctx = requesttiming.WithTimer(ctx, phases)
+	}
+	if *requestCount > 0 && requestReader.Buffered() == 0 {
+		phases.WaitForRequestByte()
+		deadlineConn.TrackRequestByte(phases)
+		defer deadlineConn.TrackRequestByte(nil)
 	}
 	requestMethod := "unknown"
 	requestRoute := "unknown"
