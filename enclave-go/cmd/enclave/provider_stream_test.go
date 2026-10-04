@@ -597,9 +597,7 @@ func TestServeStreamingEmptyProviderDoesNotDeadlockBeforeHead(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("serveStreaming deadlocked before reading the provider failure")
 	}
-	if got := out.String(); !strings.Contains(got, "HTTP/1.1 200 OK") || !strings.Contains(got, "empty upstream response") {
-		t.Fatalf("failed stream = %q, want legacy SSE provider failure", got)
-	}
+	assertJSONFailure(t, out.String(), 502, map[string]any{"error": map[string]any{"message": "provider error", "type": "provider_error", "code": nil, "param": nil, "source": "provider", "status": 502}})
 }
 
 func TestInvokeProviderStreamRetryPhaseTimings(t *testing.T) {

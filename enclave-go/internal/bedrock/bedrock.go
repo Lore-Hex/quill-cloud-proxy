@@ -18,6 +18,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/vsockhttp"
 )
 
@@ -139,6 +140,7 @@ func (c *Client) InvokeStreaming(
 		return fmt.Errorf("bedrock: invoke: %w", err)
 	}
 	defer func() { _ = resp.GetStream().Close() }()
+	upstreamerror.Open(out)
 
 	for event := range resp.GetStream().Events() {
 		chunk, ok := event.(*types.ResponseStreamMemberChunk)

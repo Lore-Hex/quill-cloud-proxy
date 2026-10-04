@@ -1,0 +1,145 @@
+[
+  {
+    "data": {
+      "response": {
+        "completed_at": null,
+        "created_at": 0,
+        "error": null,
+        "id": "ID",
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": null,
+        "model": "model-a",
+        "object": "response",
+        "output": [],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": null,
+          "summary": null
+        },
+        "status": "in_progress",
+        "store": false,
+        "temperature": 1,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1,
+        "truncation": "disabled",
+        "usage": null
+      },
+      "sequence_number": 1,
+      "type": "response.created"
+    },
+    "event": "response.created"
+  },
+  {
+    "data": {
+      "response": {
+        "completed_at": null,
+        "created_at": 0,
+        "error": null,
+        "id": "ID",
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": null,
+        "model": "model-a",
+        "object": "response",
+        "output": [],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": null,
+          "summary": null
+        },
+        "status": "in_progress",
+        "store": false,
+        "temperature": 1,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1,
+        "truncation": "disabled",
+        "usage": null
+      },
+      "sequence_number": 2,
+      "type": "response.in_progress"
+    },
+    "event": "response.in_progress"
+  },
+  {
+    "data": {
+      "item": {
+        "content": [],
+        "id": "ID",
+        "role": "assistant",
+        "status": "in_progress",
+        "type": "message"
+      },
+      "output_index": 0,
+      "sequence_number": 3,
+      "type": "response.output_item.added"
+    },
+    "event": "response.output_item.added"
+  },
+  {
+    "data": {
+      "content_index": 0,
+      "item_id": "ID",
+      "output_index": 0,
+      "part": {
+        "annotations": [],
+        "text": "",
+        "type": "output_text"
+      },
+      "sequence_number": 4,
+      "type": "response.content_part.added"
+    },
+    "event": "response.content_part.added"
+  },
+  {
+    "data": {
+      "content_index": 0,
+      "delta": "partial",
+      "item_id": "ID",
+      "output_index": 0,
+      "sequence_number": 5,
+      "type": "response.output_text.delta"
+    },
+    "event": "response.output_text.delta"
+  },
+  {
+    "data": {
+      "response": {
+        "created_at": 0,
+        "error": {
+          "code": "content_filter",
+          "message": "Request refused by policy",
+          "metadata": {
+            "provider_name": "anthropic",
+            "raw": "{\"error\":{\"message\":\"Request refused by policy\",\"type\":\"content_policy_error\",\"code\":\"content_filter\",\"param\":\"messages\"}}"
+          },
+          "param": "messages",
+          "source": "provider",
+          "status": 400,
+          "type": "content_policy_error"
+        },
+        "id": "ID",
+        "model": "model-a",
+        "object": "response",
+        "status": "failed"
+      },
+      "type": "response.failed"
+    },
+    "event": "response.failed"
+  },
+  "[DONE]"
+]

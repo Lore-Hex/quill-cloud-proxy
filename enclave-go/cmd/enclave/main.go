@@ -735,7 +735,6 @@ func serveOneRequest(
 	if keepAliveConfig.mode == keepAliveOn && requestAllowsPersistence && *requestCount < keepAliveConfig.maxRequests {
 		keepAlive = true
 		statsConn.SetResponseKeepAlive(true)
-		ctx = withStrictStreamFraming(ctx)
 	}
 	requestBodyBytes = len(body)
 	receiptRequest := types.InferenceReceiptRequest{}
@@ -1602,14 +1601,13 @@ func serveResponsesNonStreaming(
 	}
 	result, err := adapter.CollectAnthropicText(pr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "enclave.responses_collect_failed model=%q err=%v\n", req.Model, err)
+		fmt.Fprintf(os.Stderr, "enclave.responses_collect_failed model=%q err=%v\n", req.Model, errorClass(err))
 		// Surface the real upstream status+message instead of an opaque 502.
-		status, message := upstreamErrorResponse(err)
-		message = publicProviderErrorMessage(message, err, authorization)
+		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
-		writeClassifiedOpenAIError(conn, status, message, err)
+		writeUpstreamError(conn, "responses", err, authorization)
 		return
 	}
 	if len(result.ToolCalls) == 0 {
@@ -1732,16 +1730,15 @@ func serveChatNonStreaming(
 	}
 	result, err := adapter.CollectAnthropicText(pr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "enclave.chat_collect_failed model=%q err=%v\n", req.Model, err)
+		fmt.Fprintf(os.Stderr, "enclave.chat_collect_failed model=%q err=%v\n", req.Model, errorClass(err))
 		// Surface the real upstream status+message (e.g. a 400 "max_tokens is too
 		// large for this model") instead of an opaque 502, matching the streaming
 		// path. upstreamErrorResponse falls back to 502 if it can't classify.
-		status, message := upstreamErrorResponse(err)
-		message = publicProviderErrorMessage(message, err, authorization)
+		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
-		writeClassifiedOpenAIError(conn, status, message, err)
+		writeUpstreamError(conn, "chat.completions", err, authorization)
 		return
 	}
 	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
@@ -1858,13 +1855,23 @@ func serveStreaming(
 	pr := invocation.reader
 	selectedRoute := invocation.selectedRoute
 	providerDone := invocation.done
-	// Do not send the streaming 200/SSE head until either a provider has
-	// produced its first byte or every pre-output retry/fallback has failed.
-	// Once the head is client-visible, invokeProviderStream must stay on the
-	// selected attempt; retrying after that boundary could splice responses.
+	// Acceptance releases the head without waiting for a reasoning token.
+	// Legacy providers without an open signal select on their first write.
 	select {
 	case <-selectedRoute.Ready():
 	case <-providerDone:
+	}
+	failBeforeHead := func(err error) {
+		_ = pr.Close()
+		status, _ := upstreamErrorResponse(err)
+		if trGateway != nil && trGateway.Enabled() {
+			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
+		}
+		writeUpstreamError(conn, routeType, err, authorization)
+	}
+	if err := selectedRoute.Failure(); err != nil {
+		failBeforeHead(err)
+		return
 	}
 	streamModel := selectedRoute.Model(req.Model, authorization)
 	if streamModel != "" {
@@ -1908,7 +1915,12 @@ func serveStreaming(
 			req.Response.OpenRouterMetadata = routerMetadata
 		}
 	}
-	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
+	providerErr, headErr := selectedRoute.WriteStreamHead(conn)
+	if providerErr != nil {
+		failBeforeHead(providerErr)
+		return
+	}
+	if headErr != nil {
 		_ = pr.Close()
 		return
 	}
@@ -2123,7 +2135,7 @@ func serveStreaming(
 		}
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
+		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, errorClass(err))
 		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() && !settledBeforeTerminal {
 			if stageDController != nil && statsW.BytesWritten() > 0 {
@@ -2149,13 +2161,11 @@ func serveStreaming(
 				_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 			}
 		}
-		if routeType == "responses" || statsW.BytesWritten() == 0 {
-			if writeErr := writeStreamingProviderError(statsW, routeType, requestID, responseModel, err, hidesPublicRouteMetadata(authorization)); writeErr == nil {
-				// An explicit terminal SSE failure is a complete HTTP message,
-				// not a truncated successful stream. Preserve chunk framing only
-				// when the error and terminal event were both delivered.
-				_ = chunkW.Complete()
-			}
+		if writeErr := writeStreamingProviderError(statsW, routeType, requestID, responseModel, err, hidesPublicRouteMetadata(authorization)); writeErr == nil {
+			// An explicit terminal SSE failure is a complete HTTP message,
+			// not a truncated successful stream. Preserve chunk framing only
+			// when the error and terminal event were both delivered.
+			_ = chunkW.Complete()
 		}
 		return
 	}
@@ -2284,20 +2294,18 @@ func serveMessages(
 	applyCustomModelPromptToMessages(req, anthropicReq, authorization)
 
 	messageID := newMessageID()
-	pr, pw := io.Pipe()
-	selectedRoute := newSelectedRouteTracker()
-
 	if !native.Stream {
+		pr, pw := io.Pipe()
+		selectedRoute := newSelectedRouteTracker()
 		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID, true, true)
 		result, err := adapter.CollectAnthropicText(pr)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "enclave.messages_collect_failed model=%q err=%v\n", req.Model, err)
-			status, message := upstreamErrorResponse(err)
-			message = publicProviderErrorMessage(message, err, authorization)
+			fmt.Fprintf(os.Stderr, "enclave.messages_collect_failed model=%q err=%v\n", req.Model, errorClass(err))
+			status, _ := upstreamErrorResponse(err)
 			if trEnabled {
 				_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 			}
-			writeClassifiedAnthropicError(conn, status, message, err)
+			writeUpstreamError(conn, "messages", err, authorization)
 			return
 		}
 		inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
@@ -2347,14 +2355,14 @@ func serveMessages(
 		return
 	}
 
-	providerDone := make(chan struct{})
-	providerReq := *req
-	go func() {
-		defer close(providerDone)
-		invokeProviderStream(ctx, br, &providerReq, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID, true, true)
-	}()
-	// Keep the HTTP success head behind the same first-provider-byte boundary
-	// as the OpenAI-compatible streaming path above.
+	invocation := providerInvocationFromContext(ctx)
+	if invocation == nil {
+		invocation = startProviderInvocation(ctx, br, req, anthropicReq, invokeOptions, trEnabled, authorization, requestLogID)
+	}
+	defer invocation.cancel()
+	pr, selectedRoute := invocation.reader, invocation.selectedRoute
+	providerDone := invocation.done
+	// Wait for upstream acceptance or a terminal pre-open failure.
 	select {
 	case <-selectedRoute.Ready():
 	case <-providerDone:
@@ -2363,7 +2371,17 @@ func serveMessages(
 		req.Model = streamModel
 	}
 	responseModel := authorizationResponseModel(req.Model, authorization)
-	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
+	providerErr, headErr := selectedRoute.WriteStreamHead(conn)
+	if providerErr != nil {
+		_ = pr.Close()
+		status, _ := upstreamErrorResponse(providerErr)
+		if trEnabled {
+			_ = trGateway.Refund(ctx, authorization, status, failureReason(providerErr), time.Since(requestStarted).Seconds(), req.Metadata)
+		}
+		writeUpstreamError(conn, "messages", providerErr, authorization)
+		return
+	}
+	if headErr != nil {
 		_ = pr.Close()
 		return
 	}
@@ -2417,15 +2435,13 @@ func serveMessages(
 	}
 	result, err := adapter.RelayAnthropicStreamWithTerminalHook(pr, statsW, messageID, responseModel, beforeTerminal)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "enclave.messages_relay_failed model=%q err=%v\n", req.Model, err)
+		fmt.Fprintf(os.Stderr, "enclave.messages_relay_failed model=%q err=%v\n", req.Model, errorClass(err))
 		status, _ := upstreamErrorResponse(err)
 		if trEnabled && !settledBeforeTerminal {
 			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
-		if statsW.BytesWritten() == 0 {
-			_, message := upstreamErrorResponse(err)
-			message = publicProviderErrorMessage(message, err, authorization)
-			_ = writeAnthropicStreamError(statsW, message)
+		if writeErr := writeStreamingProviderError(statsW, "messages", messageID, responseModel, err, hidesPublicRouteMetadata(authorization)); writeErr == nil {
+			_ = chunkW.Complete()
 		}
 		return
 	}

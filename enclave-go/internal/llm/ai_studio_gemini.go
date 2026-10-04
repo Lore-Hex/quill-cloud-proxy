@@ -14,6 +14,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 const googleAIStudioNativeBaseURL = "https://generativelanguage.googleapis.com/v1beta"
@@ -92,13 +93,14 @@ func (c *aiStudioGeminiClient) InvokeStreaming(
 		return fmt.Errorf("llm/google-ai-studio: invoke: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
 			return fmt.Errorf("llm/google-ai-studio: read error body: %w", readErr)
 		}
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
+	upstreamerror.Open(out)
 	return translateGeminiStreamToAnthropicMode(resp.Body, out, req.ImageGeneration)
 }
 

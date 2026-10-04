@@ -82,7 +82,7 @@ func TestKeepAliveChunkedStreamThenJSONOverPipe(t *testing.T) {
 	}
 }
 
-func TestKeepAliveTruncatedStreamOverPipeIsNotTerminated(t *testing.T) {
+func TestKeepAliveProviderFailureOverPipeCompletesWithError(t *testing.T) {
 	t.Setenv("QUILL_KEEPALIVE", "on")
 	bearer := "keepalive-pipe-truncated"
 	server, pipeClient := net.Pipe()
@@ -96,14 +96,21 @@ func TestKeepAliveTruncatedStreamOverPipeIsNotTerminated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read stream response: %v", err)
 	}
-	_, readErr := io.ReadAll(response.Body)
+	decoded, readErr := io.ReadAll(response.Body)
 	response.Body.Close()
-	if !errors.Is(readErr, io.ErrUnexpectedEOF) {
-		t.Fatalf("stream read error=%v, want unexpected EOF", readErr)
+	if readErr != nil || response.StatusCode != 200 || response.Header.Get("Content-Type") != "text/event-stream" || response.Close {
+		t.Fatalf("status=%d headers=%v err=%v", response.StatusCode, response.Header, readErr)
 	}
-	if wire := conn.ReadBytes(); bytes.HasSuffix(wire, []byte("0\r\n\r\n")) {
-		t.Fatalf("truncated stream ended with a terminal chunk: %q", wire)
+	assertErrorStreamFixture(t, "chat.completions-disconnect.json", string(decoded))
+	if wire := conn.ReadBytes(); !bytes.HasSuffix(wire, []byte("0\r\n\r\n")) {
+		t.Fatalf("missing terminal chunk: %q", wire)
 	}
+	writeAuthorizedGET(t, conn, bearer, "/not-found")
+	next, _ := readHTTPResponseBody(t, reader)
+	if next.StatusCode != 404 || next.Close {
+		t.Fatalf("next status=%d close=%t", next.StatusCode, next.Close)
+	}
+
 }
 
 func TestKeepAliveStreamThenJSONUsesNetHTTPChunkDecoderAndSameConnection(t *testing.T) {
@@ -161,7 +168,7 @@ func TestKeepAliveStreamThenJSONUsesNetHTTPChunkDecoderAndSameConnection(t *test
 	}
 }
 
-func TestKeepAliveTruncatedUpstreamClosesWithoutTerminalChunk(t *testing.T) {
+func TestKeepAliveProviderFailureCompletesWithError(t *testing.T) {
 	t.Setenv("QUILL_KEEPALIVE", "on")
 	bearer := "keepalive-truncated"
 	network, addr, tlsConfig := startTLSServeOneLoopback(t, registryForBearer(bearer), keepAliveTruncatedLLM{})
@@ -184,15 +191,19 @@ func TestKeepAliveTruncatedUpstreamClosesWithoutTerminalChunk(t *testing.T) {
 	}
 	decoded, readErr := io.ReadAll(response.Body)
 	response.Body.Close()
-	if readErr == nil {
-		t.Fatalf("truncated stream decoded without error: %s", decoded)
+	if readErr != nil || response.StatusCode != 200 || response.Header.Get("Content-Type") != "text/event-stream" || response.Close {
+		t.Fatalf("status=%d headers=%v err=%v", response.StatusCode, response.Header, readErr)
 	}
-	if !errors.Is(readErr, io.ErrUnexpectedEOF) {
-		t.Fatalf("stream read error=%v, want unexpected EOF", readErr)
+	assertErrorStreamFixture(t, "chat.completions-disconnect.json", string(decoded))
+	if wire := conn.ReadBytes(); !bytes.HasSuffix(wire, []byte("0\r\n\r\n")) {
+		t.Fatalf("missing terminal chunk: %q", wire)
 	}
-	if wire := conn.ReadBytes(); bytes.HasSuffix(wire, []byte("0\r\n\r\n")) {
-		t.Fatalf("truncated stream ended with a terminal chunk: %q", wire)
+	writeAuthorizedGET(t, conn, bearer, "/not-found")
+	next, _ := readHTTPResponseBody(t, reader)
+	if next.StatusCode != 404 || next.Close {
+		t.Fatalf("next status=%d close=%t", next.StatusCode, next.Close)
 	}
+
 }
 
 func TestKeepAliveRejectsContentLengthWithTransferEncoding(t *testing.T) {

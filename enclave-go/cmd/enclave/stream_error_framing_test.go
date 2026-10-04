@@ -74,11 +74,9 @@ func TestExplicitProviderFailureCompletesHTTPFraming(t *testing.T) {
 					t.Fatalf("explicit SSE failure has broken HTTP framing: %v; body=%s", readErr, decoded)
 				}
 				payload := string(decoded)
-				if !strings.Contains(payload, `"type":"provider_error"`) || strings.Count(payload, "data: [DONE]") != 1 {
-					t.Fatalf("expected one explicit terminal failure: %s", payload)
-				}
-				if route == "responses" && !strings.Contains(payload, "event: response.failed") {
-					t.Fatalf("missing Responses failure event: %s", payload)
+				const want = `{"error":{"code":null,"message":"provider error","param":null,"source":"provider","status":502,"type":"provider_error"}}`
+				if response.StatusCode != 502 || response.Header.Get("Content-Type") != "application/json" || payload != want {
+					t.Fatalf("status=%d headers=%v body=%s", response.StatusCode, response.Header, payload)
 				}
 				if strings.Contains(payload, "private input") || refunds.Load() != 1 || settlements.Load() != 0 {
 					t.Fatalf("failure privacy/billing invariant violated: refunds=%d settlements=%d", refunds.Load(), settlements.Load())

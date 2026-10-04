@@ -9508,13 +9508,9 @@ func TestServeOneTrustedRouterProviderErrorDoesNotReturnEmptyStream(t *testing.T
 		t.Fatalf("read body: %v", err)
 	}
 	body := string(bodyBytes)
-	if resp.StatusCode != 200 {
-		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
-	}
-	if !strings.Contains(body, `"type":"provider_error"`) ||
-		!strings.Contains(body, `"source":"provider"`) ||
-		!strings.Contains(body, "data: [DONE]\n\n") {
-		t.Fatalf("stream did not expose stable provider error: %s", body)
+	const wantFailure = `{"error":{"code":null,"message":"provider error","param":null,"source":"provider","status":502,"type":"provider_error"}}`
+	if resp.StatusCode != 502 || resp.Header.Get("Content-Type") != "application/json" || body != wantFailure {
+		t.Fatalf("status=%d headers=%v body=%s", resp.StatusCode, resp.Header, body)
 	}
 	if strings.Contains(body, "private prompt") {
 		t.Fatalf("stream leaked prompt: %s", body)
@@ -9534,7 +9530,7 @@ func TestServeOneTrustedRouterProviderErrorDoesNotReturnEmptyStream(t *testing.T
 	}
 }
 
-func TestServeOneResponsesProviderErrorClosesPartialStream(t *testing.T) {
+func TestServeOneResponsesProviderErrorReturnsHTTPFailure(t *testing.T) {
 	bearer := "test-user-bearer"
 	var refundBody string
 	var settleCalled bool
@@ -9585,14 +9581,9 @@ func TestServeOneResponsesProviderErrorClosesPartialStream(t *testing.T) {
 		t.Fatalf("read body: %v", err)
 	}
 	body := string(bodyBytes)
-	if resp.StatusCode != 200 {
-		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
-	}
-	if !strings.Contains(body, "event: response.failed") ||
-		!strings.Contains(body, `"type":"provider_error"`) ||
-		!strings.Contains(body, `"source":"provider"`) ||
-		!strings.Contains(body, "data: [DONE]\n\n") {
-		t.Fatalf("responses stream did not close with stable failure: %s", body)
+	const wantFailure = `{"error":{"code":null,"message":"provider error","param":null,"source":"provider","status":502,"type":"provider_error"}}`
+	if resp.StatusCode != 502 || resp.Header.Get("Content-Type") != "application/json" || body != wantFailure {
+		t.Fatalf("status=%d headers=%v body=%s", resp.StatusCode, resp.Header, body)
 	}
 	if strings.Contains(body, "private response input") {
 		t.Fatalf("stream leaked input: %s", body)

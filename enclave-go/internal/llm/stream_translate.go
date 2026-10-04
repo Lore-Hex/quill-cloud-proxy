@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 type upstreamHTTPError struct {
@@ -22,6 +23,8 @@ func (e *upstreamHTTPError) Error() string {
 	return fmt.Sprintf("llm/upstream: http %d: %s", e.status, e.body)
 }
 
+func (e *upstreamHTTPError) UpstreamResponse() (int, string) { return e.status, e.body }
+
 // HTTPStatusFromError returns the upstream HTTP status code carried by err when
 // it originated as a non-2xx upstream response, and ok=false otherwise (e.g.
 // transport, timeout, or cancellation errors that never reached an HTTP
@@ -32,9 +35,10 @@ func HTTPStatusFromError(err error) (status int, ok bool) {
 	if errors.As(err, &inputLimit) {
 		return 400, true
 	}
-	var httpErr *upstreamHTTPError
+	var httpErr interface{ UpstreamResponse() (int, string) }
 	if errors.As(err, &httpErr) {
-		return httpErr.status, true
+		status, _ := httpErr.UpstreamResponse()
+		return status, true
 	}
 	return 0, false
 }
@@ -61,10 +65,10 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	var decision map[string]any
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
-		payload := line[len("data: "):]
+		payload := strings.TrimSpace(line[len("data:"):])
 		if payload == "[DONE]" {
 			sawDone = true
 			break
@@ -116,17 +120,17 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			}
 			continue
 		}
-		if provider == "tencent" {
-			// TokenHub reports post-200 failures inside SSE before [DONE]. Do
-			// not convert them to a successful stop or expose upstream text.
-			hasError := chunk.Error != nil
-			for _, choice := range chunk.Choices {
-				hasError = hasError || choice.Delta.Error != nil
-			}
-			if hasError {
-				return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub stream failed"}
+		if err := upstreamerror.FromEvent(payload); err != nil {
+			return err
+		}
+		for _, choice := range chunk.Choices {
+			if choice.Delta.Error != nil {
+				if err := upstreamerror.FromEvent(`{"error":` + string(*choice.Delta.Error) + `}`); err != nil {
+					return err
+				}
 			}
 		}
+
 		if chunk.ServiceTier != "" {
 			serviceTier = chunk.ServiceTier
 		}

@@ -20,6 +20,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -168,7 +169,7 @@ func (c *chutesE2EEClient) InvokeStreaming(
 		if err == nil {
 			return nil
 		}
-		if counted.bytes > 0 || !chutesRetryableError(err) {
+		if counted.opened || counted.bytes > 0 || !chutesRetryableError(err) {
 			return err
 		}
 		lastErr = err
@@ -193,8 +194,14 @@ func (c *chutesE2EEClient) InvokeStreaming(
 }
 
 type byteCountingWriter struct {
+	opened bool
 	writer io.Writer
 	bytes  int64
+}
+
+func (w *byteCountingWriter) UpstreamOpened() bool {
+	w.opened = upstreamerror.Open(w.writer)
+	return w.opened
 }
 
 func (w *byteCountingWriter) Write(p []byte) (int, error) {
@@ -471,10 +478,11 @@ func (c *chutesE2EEClient) invokeEncryptedStream(
 		return fmt.Errorf("llm/chutes: encrypted invoke: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return &upstreamHTTPError{status: resp.StatusCode, body: "chutes encrypted invoke failed"}
 	}
+	upstreamerror.Open(out)
 	return translateChutesEncryptedStream(resp.Body, out, encrypted.responseSK)
 }
 

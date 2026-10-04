@@ -1,0 +1,61 @@
+[
+  {
+    "data": {
+      "message": {
+        "content": [],
+        "id": "ID",
+        "model": "model-a",
+        "role": "assistant",
+        "stop_reason": null,
+        "stop_sequence": null,
+        "type": "message",
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0
+        }
+      },
+      "type": "message_start"
+    },
+    "event": "message_start"
+  },
+  {
+    "data": {
+      "content_block": {
+        "text": "",
+        "type": "text"
+      },
+      "index": 0,
+      "type": "content_block_start"
+    },
+    "event": "content_block_start"
+  },
+  {
+    "data": {
+      "delta": {
+        "text": "partial",
+        "type": "text_delta"
+      },
+      "index": 0,
+      "type": "content_block_delta"
+    },
+    "event": "content_block_delta"
+  },
+  {
+    "data": {
+      "error": {
+        "code": "content_filter",
+        "message": "Request refused by policy",
+        "metadata": {
+          "provider_name": "anthropic",
+          "raw": "{\"error\":{\"message\":\"Request refused by policy\",\"type\":\"content_policy_error\",\"code\":\"content_filter\",\"param\":\"messages\"}}"
+        },
+        "param": "messages",
+        "source": "provider",
+        "status": 400,
+        "type": "content_policy_error"
+      },
+      "type": "error"
+    },
+    "event": "error"
+  }
+]

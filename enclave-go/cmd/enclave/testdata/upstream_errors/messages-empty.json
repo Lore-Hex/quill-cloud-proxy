@@ -1,0 +1,20 @@
+[
+  {
+    "data": {
+      "error": {
+        "code": "content_filter",
+        "message": "Request refused by policy",
+        "metadata": {
+          "provider_name": "anthropic",
+          "raw": "{\"error\":{\"message\":\"Request refused by policy\",\"type\":\"content_policy_error\",\"code\":\"content_filter\",\"param\":\"messages\"}}"
+        },
+        "param": "messages",
+        "source": "provider",
+        "status": 400,
+        "type": "content_policy_error"
+      },
+      "type": "error"
+    },
+    "event": "error"
+  }
+]

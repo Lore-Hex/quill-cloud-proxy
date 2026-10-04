@@ -15,6 +15,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/directproviders"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 var claude5Generation = regexp.MustCompile(`claude-[a-z][a-z0-9]*-5([.-]|$)`)
@@ -350,7 +351,7 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 		return fmt.Errorf("llm/%s: invoke: %w", provider, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if normalizeDirectProvider(provider) == "privatemode" {
 			return privatemodeResponseError(resp)
 		}
@@ -360,6 +361,7 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 		}
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
+	upstreamerror.Open(out)
 	if nativeResponses {
 		return translateOpenAIResponsesStream(resp.Body, out)
 	}
@@ -814,15 +816,15 @@ func invokeAnthropicCompatibleStreamingWithClient(
 		return fmt.Errorf("llm/%s: anthropic invoke: %w", provider, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
 			return fmt.Errorf("llm/%s: read anthropic error body: %w", provider, readErr)
 		}
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
-	_, err = io.Copy(out, resp.Body)
-	return err
+	upstreamerror.Open(out)
+	return relayAnthropicStream(resp.Body, out)
 }
 
 func anthropicTemperature(modelID string, temperature *float64) *float64 {

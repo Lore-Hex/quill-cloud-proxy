@@ -24,6 +24,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 var getAttestation = attestation.Get
@@ -46,11 +47,6 @@ var errMalformedRequestHeaders = errors.New("malformed request headers")
 var errMalformedRequestLine = errors.New("malformed request line")
 
 var inferenceReceiptNoncePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,88}$`)
-
-var (
-	upstreamAPIKeyPattern = regexp.MustCompile(`(?i)\b(sk|rk)-[A-Za-z0-9_\-*]{4,}`)
-	upstreamBearerPattern = regexp.MustCompile(`(?i)bearer\s+\S+`)
-)
 
 type responseStatsConn struct {
 	shadow        *shadowobserve.Execution
@@ -1063,16 +1059,9 @@ func newMessageID() string {
 	return "msg_" + hex.EncodeToString(buf[:])
 }
 
-// upstreamErrorResponse maps a provider/upstream error to the status + message
-// to return to the client. Provider clients wrap upstream HTTP failures as
-// "...http <status>: <body>" (see internal/llm/*.go); when we recognize that
-// shape we surface the upstream status and scrubbed, truncated body so callers
-// get the real reason — e.g. an Anthropic 400 validation error — instead of an
-// opaque "provider error". Anything we can't classify stays a generic 502.
+// upstreamErrorResponse retains the local input-error classification before
+// parsing provider failures shared by JSON and streaming responses.
 func upstreamErrorResponse(err error) (int, string) {
-	if err == nil {
-		return 502, "provider error"
-	}
 	var aerr *adapter.AdapterError
 	if asAdapterErr(err, &aerr) {
 		return aerr.Status, aerr.Message
@@ -1080,24 +1069,46 @@ func upstreamErrorResponse(err error) (int, string) {
 	if message, ok := clientInputErrorMessage(err); ok {
 		return 400, message
 	}
-	s := err.Error()
-	if i := strings.LastIndex(s, "http "); i >= 0 {
-		rest := s[i+len("http "):]
-		if c := strings.IndexByte(rest, ':'); c > 0 {
-			if code, e := strconv.Atoi(strings.TrimSpace(rest[:c])); e == nil && code >= 400 && code < 600 {
-				body := strings.TrimSpace(rest[c+1:])
-				body = upstreamAPIKeyPattern.ReplaceAllString(body, "sk-***")
-				body = upstreamBearerPattern.ReplaceAllString(body, "Bearer ***")
-				if len(body) > 1200 {
-					body = body[:1200]
-				}
-				if body != "" {
-					return code, fmt.Sprintf("upstream http %d: %s", code, body)
-				}
-			}
+	d := upstreamerror.Parse(err)
+	return d.Status, d.Message
+}
+
+func providerErrorBody(err error, authorization *trustedrouter.Authorization) (int, map[string]any) {
+	d := upstreamerror.Parse(err)
+	d.Status, d.Message = upstreamErrorResponse(err)
+	source := "provider"
+	if isClientInputError(err) {
+		source, d.Type = "router", "invalid_request_error"
+	}
+	hidden := hidesPublicRouteMetadata(authorization) && !isClientInputError(err)
+	if hidden {
+		d.Message, d.Type, d.Code, d.Param = "upstream provider error", "provider_error", nil, nil
+	}
+	body := map[string]any{"message": d.Message, "type": d.Type, "code": d.Code, "param": d.Param, "source": source, "status": d.Status}
+	if !hidden && d.Raw != "" {
+		provider := ""
+		if option, ok := invokeAttemptOption(err); ok {
+			provider = option.Provider
+		}
+		if provider == "" && authorization != nil {
+			provider = authorization.Provider
+		}
+		body["metadata"] = map[string]any{"provider_name": provider, "raw": d.Raw}
+	}
+	return d.Status, body
+}
+
+func writeUpstreamError(w io.Writer, route string, err error, authorization *trustedrouter.Authorization) {
+	status, detail := providerErrorBody(err, authorization)
+	body := map[string]any{"error": detail}
+	if route == "messages" {
+		body["type"] = "error"
+		if detail["type"] == "provider_error" {
+			detail["type"] = anthropicErrorType(status)
 		}
 	}
-	return 502, "provider error"
+	encoded, _ := json.Marshal(body)
+	writeJSONResponse(w, status, encoded)
 }
 
 func publicProviderErrorMessage(
