@@ -10,6 +10,13 @@ func TestContractRejectionSanitizesAtEnclaveBoundary(t *testing.T) {
 	for _, tc := range []struct{ input, want string }{
 		{"store", "store"},
 		{"store=true", "store"},
+		{"truncation=auto", "truncation"},
+		{"service_tier", "service_tier"},
+		{"top_logprobs", "top_logprobs"},
+		{"prompt_cache_key", "prompt_cache_key"},
+		{"file", "file"},
+		{"input_image.file_id", "input_image"},
+		{"content", "content"},
 		{"tools.private-customer-value", "tools"},
 		{"input[123].private-customer-value", "input"},
 		{"private-customer-value", "other"},

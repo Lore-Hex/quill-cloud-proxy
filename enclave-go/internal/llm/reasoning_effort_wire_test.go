@@ -37,8 +37,10 @@ func TestChatEffortReachesAnthropicNativeWire(t *testing.T) {
 					if thinking["type"] != "adaptive" || thinking["budget_tokens"] != nil {
 						t.Fatalf("thinking = %#v", thinking)
 					}
-					if wire["max_tokens"] != float64(adapter.DefaultMaxTokens) {
-						t.Fatalf("effort inflated max_tokens: %#v", wire["max_tokens"])
+					// Effort adds no thinking budget on top of the cap; an uncapped
+					// request to an adaptive model gets the thinking-model default.
+					if wire["max_tokens"] != float64(AnthropicThinkingDefaultMaxTokens) {
+						t.Fatalf("max_tokens = %#v, want the thinking default", wire["max_tokens"])
 					}
 					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")), Header: make(http.Header)}, nil
 				})}

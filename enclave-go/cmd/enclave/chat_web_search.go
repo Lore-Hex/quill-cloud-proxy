@@ -104,7 +104,7 @@ func serveChatWebSearchJSON(
 	citations, searchResults := chatWebSearchProvenance(outcome)
 	usage := aggregateWebSearchStreamUsage(outcome)
 	var body bytes.Buffer
-	if err := adapter.WriteChatCompletionResponseWithProvenance(
+	if err := adapter.WriteChatCompletionResponseWithProviderMetadata(
 		&body,
 		requestID,
 		model,
@@ -118,6 +118,7 @@ func serveChatWebSearchJSON(
 		outcome.Final.Result.FinishReason,
 		citations,
 		searchResults,
+		nil,
 	); err != nil {
 		writeOpenAIError(conn, 500, "chat completion encoding error", "server_error", "internal_error", "")
 		return

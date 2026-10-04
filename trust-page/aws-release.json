@@ -1,6 +1,6 @@
 {
   "accepted_pcr0s": [
-    "2df863e0b35b34ea74c9a5e62b68abef0d87f42f20e1221ca38c1829f8514173cdd6d847cd0a6240cf43582e464a35a2"
+    "daa67a81749906c5383a1abd124a967f42c86901d350b7f2e9e4d1f3c95abbe1f7a099391bbe86438ef2bc5bcc96d971"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -11,13 +11,16 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
+  "image_digest": "sha256:c7ea59e2e9c82f1b884dffdf399d9707eb658c12ca9968e537e823f762d43219",
+  "measurement_provenance": "All four serving instances in eu-west-3 and eu-west-1 were independently verified through SSM forwards against the production Nitro root, exact PCR0, fresh nonce, signed module identity, certificate/SPKI binding, TLS exporter and same-socket follow-up. CA-verified HTTPS health passed. Both guarded ASG refreshes completed with 100% minimum healthy capacity. Verified instances: i-08a4168c8bdfff492, i-0ccbd9b80de60af4f, i-01cf5d588c90f2143, i-05134863a83a9f51a. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0ca2894db26b3ee70-enc01a0da09733c70fd",
-  "pcr0": "2df863e0b35b34ea74c9a5e62b68abef0d87f42f20e1221ca38c1829f8514173cdd6d847cd0a6240cf43582e464a35a2",
+  "observed_module_id": "i-01cf5d588c90f2143-enc01a105a11472ffd3",
+  "parent_image_digest": "sha256:d09fa4e0ceeb185cca6588aa4becd27d62b05dad7c9615ba462eb375e251c114",
+  "pcr0": "daa67a81749906c5383a1abd124a967f42c86901d350b7f2e9e4d1f3c95abbe1f7a099391bbe86438ef2bc5bcc96d971",
   "platform": "aws-nitro-enclaves",
   "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "3c0cb55932768a4ee78ad512e6da71c380465f3e",
+  "source_commit": "bbcccb456f23c2e516f0fc61ca76f53d7c6a1aae",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {

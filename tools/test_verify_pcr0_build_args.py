@@ -39,6 +39,18 @@ def _assignments(script: Path) -> dict[str, str]:
 
 
 class VerifyPcr0BuildArgs(unittest.TestCase):
+    def test_native_builder_cross_compiles_for_target_architecture(self) -> None:
+        dockerfile = (REPO_ROOT / "enclave-go/Dockerfile.enclave").read_text()
+        self.assertRegex(dockerfile, r"(?m)^FROM --platform=\$BUILDPLATFORM golang:[^\s]+ AS builder$")
+        self.assertIn("ARG TARGETARCH=amd64", dockerfile)
+        self.assertIn("ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH}", dockerfile)
+        # Only the build stage is host-native; vendored executables and the
+        # final runtime must retain Docker's requested target architecture.
+        stages = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
+        self.assertEqual(len(stages), 3)
+        self.assertNotIn("--platform", stages[1])
+        self.assertEqual(stages[2], "FROM scratch")
+
     def test_measured_build_args_match_the_release_script(self) -> None:
         release = _assignments(RELEASE)
         verify = _assignments(VERIFY)

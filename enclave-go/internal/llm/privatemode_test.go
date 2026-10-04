@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -101,6 +102,32 @@ func TestPrivatemodeDoesNotEchoUntrustedErrors(t *testing.T) {
 		got, ok := HTTPStatusFromError(err)
 		if !ok || got != status || strings.Contains(err.Error(), "sensitive-untrusted") {
 			t.Fatalf("error status lost or body leaked: %v", err)
+		}
+	}
+}
+
+func TestPrivatemodeResponseErrorIsBoundedAndRedacted(t *testing.T) {
+	for _, tc := range []struct{ body, reason string }{
+		{`{"error":{"message":"active manifest does not match expected manifest sensitive-canary"}}`, "attestation_manifest_mismatch"},
+		{`{"error":{"message":"validating attestation: sensitive-canary"}}`, "attestation_verification"},
+		{`{"error":{"message":"invalid API key: sensitive-canary"}}`, "http"},
+		{`{"error":{"message":"active manifest does not match expected manifest`, "http"},
+		{strings.Repeat("sensitive-canary", 4096), "http"},
+	} {
+		r := strings.NewReader(tc.body)
+		err := privatemodeResponseError(&http.Response{StatusCode: 401, Body: io.NopCloser(r)})
+		var typed *privatemodeHTTPError
+		if !errors.As(err, &typed) || typed.reason != tc.reason {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if code, ok := HTTPStatusFromError(err); !ok || code != 401 {
+			t.Fatal("HTTP status lost")
+		}
+		if strings.Contains(err.Error(), "sensitive-canary") {
+			t.Fatal("error leaked untrusted body")
+		}
+		if len(tc.body)-r.Len() > 4097 {
+			t.Fatal("unbounded error read")
 		}
 	}
 }

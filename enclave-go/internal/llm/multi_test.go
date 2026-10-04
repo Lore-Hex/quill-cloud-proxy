@@ -340,6 +340,7 @@ func TestGoogleProviderNormalizationKeepsProductsDistinct(t *testing.T) {
 
 func TestBootstrapDirectProviderClientsAreBoundedToCompiledHosts(t *testing.T) {
 	wantBaseURLs := map[string]string{
+		"abliterate":      "https://abliterate.ai/api/v1",
 		"nextbit":         "https://api.nextbit256.com/v1",
 		"aion-labs":       "https://api.aionlabs.ai/v1",
 		"sambanova":       "https://api.sambanova.ai/v1",
@@ -356,6 +357,7 @@ func TestBootstrapDirectProviderClientsAreBoundedToCompiledHosts(t *testing.T) {
 		"perplexity":      "https://api.perplexity.ai/v1",
 	}
 	keys := map[string]string{
+		"abliterate":      "key-abliterate",
 		"nextbit":         " key-nextbit ",
 		"aion-labs":       "key-aion",
 		"sambanova":       "key-sambanova",

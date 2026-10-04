@@ -22,7 +22,7 @@ func TestLiveManifestMismatchFailsClosed(t *testing.T) {
 	if err := json.Unmarshal(manifest, &expected); err != nil {
 		t.Fatal(err)
 	}
-	const coordinatorPolicy = "490970ca782cf78d0822a539408f5273cc8f9c9e2aa6354202fddb6ec3d77629"
+	const coordinatorPolicy = "0a5f7f9949f37547b7cdda3a85ddd6f23e3c5e5247e989fba33a93b778032dae"
 	policies := expected["Policies"].(map[string]any)
 	if _, exists := policies[coordinatorPolicy]; !exists {
 		t.Fatal("negative control coordinator policy no longer matches pinned release")

@@ -22,6 +22,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/attestation"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
 
@@ -52,6 +53,10 @@ var (
 )
 
 type responseStatsConn struct {
+	shadow        *shadowobserve.Execution
+	shadowContent *shadowobserve.ContentStream
+	// Set only for a synchronous inference request; the callback enforces bypass.
+	billingDenial func(error)
 	net.Conn
 	writeMu       sync.Mutex
 	mu            sync.Mutex
@@ -100,6 +105,9 @@ func (c *responseStatsConn) Write(p []byte) (int, error) {
 		c.status = parseHTTPStatus(p)
 	}
 	c.responseBytes += n
+	if c.shadow != nil && c.shadowContent.Feed(wireBytes[:n]) {
+		c.shadow.Content(true)
+	}
 	if err != nil {
 		c.keepAlive = false
 		c.reusable = false
@@ -139,6 +147,9 @@ func (c *responseStatsConn) ResetSnapshot() {
 func (c *responseStatsConn) BeginRequest(requestID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.billingDenial = nil
+	c.shadow = nil
+	c.shadowContent = nil
 	c.status = 0
 	c.responseBytes = 0
 	c.requestID = requestID
@@ -271,6 +282,7 @@ func maxDurationSeconds(duration time.Duration, floor float64) float64 {
 }
 
 type requestAttributionHeaders struct {
+	IdempotencyPresent bool
 	Host               string
 	SessionID          string
 	HTTPReferer        string
@@ -361,6 +373,7 @@ func readRequestWithHeadersRead(
 				bearer = strings.TrimSpace(v)
 			}
 		case "idempotency-key":
+			attribution.IdempotencyPresent = true
 			idempotencyKey = strings.TrimSpace(v)
 		case "x-session-id":
 			attribution.SessionID = v
@@ -809,6 +822,7 @@ func idempotencyReplayError(err error) (*trustedrouter.ControlPlaneError, bool) 
 }
 
 func writeGatewayAuthorizationError(w io.Writer, err error) {
+	observeBillingAuthorizationError(w, err, messageFromControlPlaneError(err, "gateway authorization failed"))
 	if controlErr, ok := idempotencyReplayError(err); ok {
 		writeOpenAIError(
 			w, http.StatusConflict, controlErr.Message,
@@ -826,6 +840,7 @@ func writeGatewayAuthorizationError(w io.Writer, err error) {
 }
 
 func writeAnthropicGatewayAuthorizationError(w io.Writer, err error) {
+	observeBillingAuthorizationError(w, err, messageFromControlPlaneError(err, "gateway authorization failed"))
 	if controlErr, ok := idempotencyReplayError(err); ok {
 		body, _ := json.Marshal(map[string]any{
 			"type": "error",

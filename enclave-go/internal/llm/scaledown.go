@@ -20,6 +20,11 @@ var scaleDownPaths = map[string]string{
 // InputOnlyModel identifies native task contracts whose zero output count is
 // authoritative. Callers must pass the selected route model, not user metadata.
 func InputOnlyModel(model string) bool {
+	// Classification returns a label and scores, not generated tokens. Keep
+	// its explicit zero instead of estimating tokens from the answer JSON.
+	if model == "neurometric/structured-decisions" {
+		return true
+	}
 	if !strings.HasPrefix(model, "scaledown/") {
 		return false
 	}
@@ -222,5 +227,5 @@ func (c *openAICompatibleClient) invokeScaleDown(ctx context.Context, req *qtype
 	}
 	// Input-only metering is intentional, including summarization. These are
 	// upstream-reported billable tokens, not a local estimate of the JSON output.
-	return writeAnthropicStop(out, "end_turn", &openAIStreamUsage{PromptTokens: *result.InputTokens, TotalTokens: *result.InputTokens}, nil, nil)
+	return writeAnthropicStop(out, "end_turn", &openAIStreamUsage{PromptTokens: *result.InputTokens, TotalTokens: *result.InputTokens}, nil, nil, nil)
 }

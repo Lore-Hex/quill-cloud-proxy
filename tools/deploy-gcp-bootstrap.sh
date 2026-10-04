@@ -105,6 +105,7 @@ UPSTAGE_SECRET="${UPSTAGE_SECRET:-trustedrouter-upstage-api-key}"
 REKA_SECRET="${REKA_SECRET:-trustedrouter-reka-api-key}"
 SAIL_RESEARCH_SECRET="${SAIL_RESEARCH_SECRET:-trustedrouter-sail-research-api-key}"
 MANCER_SECRET="${MANCER_SECRET:-trustedrouter-mancer-api-key}"
+ABLITERATE_SECRET="${ABLITERATE_SECRET:-trustedrouter-abliterate-api-key}"
 IO_NET_SECRET="${IO_NET_SECRET:-trustedrouter-io-net-api-key}"
 SCALEWAY_SECRET="${SCALEWAY_SECRET:-trustedrouter-scaleway-api-key}"
 FEATHERLESS_SECRET="${FEATHERLESS_SECRET:-trustedrouter-featherless-api-key}"
@@ -114,6 +115,9 @@ NVIDIA_NIM_SECRET="${NVIDIA_NIM_SECRET:-trustedrouter-nvidia-nim-api-key}"
 WANDB_SECRET="${WANDB_SECRET:-trustedrouter-wandb-api-key}"
 NSCALE_SECRET="${NSCALE_SECRET:-trustedrouter-nscale-api-key}"
 REGOLO_SECRET="${REGOLO_SECRET:-trustedrouter-regolo-api-key}"
+LYCEUM_SECRET="${LYCEUM_SECRET:-trustedrouter-lyceum-api-key}"
+SYSTEM1MODELS_GLOBAL_SECRET="${SYSTEM1MODELS_GLOBAL_SECRET:-trustedrouter-system1models-global-api-key}"
+SYSTEM1MODELS_EU_SECRET="${SYSTEM1MODELS_EU_SECRET:-trustedrouter-system1models-eu-api-key}"
 PRIVATEMODE_SECRET="${PRIVATEMODE_SECRET:-trustedrouter-privatemode-api-key}"
 CONFIDENTIAL_AI_SECRET="${CONFIDENTIAL_AI_SECRET:-trustedrouter-confidential-ai-api-key}"
 SCALEDOWN_SECRET="${SCALEDOWN_SECRET:-trustedrouter-scaledown-api-key}"
@@ -146,7 +150,8 @@ SYNTH_CODE_SYNTHESIS_PROMPT_SECRET="${SYNTH_CODE_SYNTHESIS_PROMPT_SECRET:-truste
 ADVISOR_WORKER_PROMPT_SECRET="${ADVISOR_WORKER_PROMPT_SECRET:-trustedrouter-advisor-worker-prompt-v1}"
 ADVISOR_PROMPT_SECRET="${ADVISOR_PROMPT_SECRET:-trustedrouter-advisor-prompt-v1}"
 INTERNAL_GATEWAY_SECRET="${INTERNAL_GATEWAY_SECRET:-trustedrouter-internal-gateway-token}"
-SPEND_LEASE_ISSUER_CONFIG_SECRET="${SPEND_LEASE_ISSUER_CONFIG_SECRET:-trustedrouter-spend-lease-issuer-config}"
+# Retired Stage A-C pilot: grant issuer access only when explicitly configured.
+SPEND_LEASE_ISSUER_CONFIG_SECRET="${SPEND_LEASE_ISSUER_CONFIG_SECRET:-}"
 DEVICE_KEYS_SECRET="${DEVICE_KEYS_SECRET:-quill-device-keys}"
 
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
@@ -270,6 +275,7 @@ for secret in \
   "$REKA_SECRET" \
   "$SAIL_RESEARCH_SECRET" \
   "$MANCER_SECRET" \
+  "$ABLITERATE_SECRET" \
   "$IO_NET_SECRET" \
   "$SCALEWAY_SECRET" \
   "$FEATHERLESS_SECRET" \
@@ -279,6 +285,9 @@ for secret in \
   "$WANDB_SECRET" \
   "$NSCALE_SECRET" \
   "$REGOLO_SECRET" \
+  "$LYCEUM_SECRET" \
+  "$SYSTEM1MODELS_GLOBAL_SECRET" \
+  "$SYSTEM1MODELS_EU_SECRET" \
   "$PRIVATEMODE_SECRET" \
   "$CONFIDENTIAL_AI_SECRET" \
   "$SCALEDOWN_SECRET" \

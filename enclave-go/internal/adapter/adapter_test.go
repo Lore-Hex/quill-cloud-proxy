@@ -1102,7 +1102,7 @@ func TestWriteChatCompletionResponseIncludesReasoningFromThinking(t *testing.T) 
 
 func TestWriteChatCompletionResponsePreservesProviderProvenance(t *testing.T) {
 	var out bytes.Buffer
-	if err := WriteChatCompletionResponseWithProvenance(
+	if err := WriteChatCompletionResponseWithProviderMetadata(
 		&out,
 		"chatcmpl_cited",
 		"perplexity/sonar",
@@ -1118,8 +1118,9 @@ func TestWriteChatCompletionResponsePreservesProviderProvenance(t *testing.T) {
 		[]types.ProviderSearchResult{{
 			Title: "Official current page", URL: "https://gov.example/current", Snippet: "Current official information.",
 		}},
+		nil,
 	); err != nil {
-		t.Fatalf("WriteChatCompletionResponseWithProvenance: %v", err)
+		t.Fatalf("WriteChatCompletionResponseWithProviderMetadata: %v", err)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {

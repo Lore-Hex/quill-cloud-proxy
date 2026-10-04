@@ -45,6 +45,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/privatemode"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"golang.org/x/crypto/acme/autocert"
@@ -170,6 +171,11 @@ var responseWriteTimeout = 30 * time.Second
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
+	speculationMode, modeErr := shadowobserve.ParseMode(os.Getenv("QUILL_SPECULATIVE_PROVIDER_MODE"))
+	if modeErr != nil {
+		fmt.Fprintln(os.Stderr, modeErr)
+		os.Exit(1)
+	}
 	if privatemode.ProxyEntrypoint() {
 		return
 	}
@@ -491,14 +497,27 @@ func main() {
 	fmt.Fprintf(os.Stderr, "spend_lease.local_admission_flag enabled=%t\n", boot.SpendLeaseLocalAdmission)
 	fmt.Fprintf(os.Stderr, "enclave.stage_d_flags usage_heartbeat=%t terminate_at_cap=%t heartbeat_budget_ms=%d settle_before_terminal_ms=%d\n",
 		stageDConfig.usageHeartbeat, stageDConfig.terminateAtCap, stageDConfig.heartbeatBudget.Milliseconds(), stageDConfig.settleBeforeTerminal.Milliseconds())
-	if err := initializeReceiptSignerWithSpendLease(ctx, tlsServer, deviceBlob, boot.SpendLeaseShadow || boot.SpendLeaseLocalAdmission || stageDConfig.usageHeartbeat, spendLeaseIssuerConfigNonce(boot), apiHost); err != nil {
+	if err := initializeReceiptSignerWithSpendLease(ctx, tlsServer, deviceBlob, boot.SpendLeaseShadow || boot.SpendLeaseLocalAdmission || stageDConfig.usageHeartbeat || speculationMode == shadowobserve.Shadow, spendLeaseIssuerConfigNonce(boot), apiHost); err != nil {
 		fmt.Fprintf(os.Stderr, "receipt signer initialization failed: %v\n", err)
 		os.Exit(1)
 	}
-	initializeSpendLeaseShadow(ctx, trGateway, boot)
-	if stageDConfig.usageHeartbeat && !boot.SpendLeaseShadow && !boot.SpendLeaseLocalAdmission && trGateway != nil && receiptSigner != nil {
+	if speculationMode != shadowobserve.Shadow {
+		initializeSpendLeaseShadow(ctx, trGateway, boot)
+	}
+	if stageDConfig.usageHeartbeat && (speculationMode == shadowobserve.Shadow || (!boot.SpendLeaseShadow && !boot.SpendLeaseLocalAdmission)) && trGateway != nil && receiptSigner != nil {
 		trGateway.ConfigureStageDBoot(receiptSigner)
 		trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence())
+	}
+
+	if speculationMode == shadowobserve.Shadow && trGateway != nil && receiptSigner != nil {
+		trGateway.ConfigureShadowBoot(receiptSigner)
+		if !stageDConfig.usageHeartbeat {
+			trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence())
+		}
+	}
+	if err := initializeSpeculation(ctx, trGateway, speculationMode); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	// LB health endpoint. The serving port (:443) terminates TLS inside the
@@ -656,10 +675,29 @@ func serveOneRequest(
 	requestBodyBytes := 0
 	requestBearer := ""
 	requestIdentity := requestAuditIdentity{attribution: "anonymous"}
-	fmt.Fprintf(os.Stderr, "enclave.request_accept request_log_id=%q\n", requestLogID)
+	billingSuppressed := false
+	billingRemembered := false
+	var billingKey trustedrouter.BillingBackoffKey
+	acceptLogged := false
+	logAccept := func() {
+		if !acceptLogged {
+			fmt.Fprintf(os.Stderr, "enclave.request_accept request_log_id=%q\n", requestLogID)
+			acceptLogged = true
+		}
+	}
 	defer func() {
+		if keepAlive && !statsConn.ResponseReusable() {
+			keepAlive = false
+		}
+		if billingSuppressed {
+			return
+		}
+		logAccept()
 		status, responseBytes := statsConn.Snapshot()
 		requestIdentity.resolveFailure(ctx, trGateway, requestBearer, requestRoute, status)
+		if billingRemembered {
+			trGateway.BillingBackoff().SetCredentialID(billingKey, requestLogID, requestIdentity.credentialID)
+		}
 		writeRequestEndLog(
 			os.Stderr,
 			requestLogID,
@@ -673,9 +711,6 @@ func serveOneRequest(
 			abuse.Outcome(ctx),
 			phases.Snapshot(),
 		)
-		if keepAlive && !statsConn.ResponseReusable() {
-			keepAlive = false
-		}
 	}()
 
 	method, path, bearer, idempotencyKey, attribution, body, err := readRequestWithHeadersRead(
@@ -720,13 +755,6 @@ func serveOneRequest(
 		statsConn.SetResponseKeepAlive(true)
 		ctx = withStrictStreamFraming(ctx)
 	}
-	clientContext, droppedClientContext := parseClientContext(attribution.ClientContext)
-	for _, reason := range droppedClientContext {
-		fmt.Fprintf(os.Stderr, "enclave.client_context_dropped request_log_id=%q reason=%q\n", requestLogID, reason)
-	}
-	if clientContext != nil {
-		ctx = trustedrouter.WithClientContext(ctx, clientContext)
-	}
 	requestBodyBytes = len(body)
 	receiptRequest := types.InferenceReceiptRequest{}
 	if inferenceReceiptsEnabled() && attribution.InferenceReceipt != "" {
@@ -738,12 +766,54 @@ func serveOneRequest(
 	}
 	requestBearer = bearer
 	requestIdentity.bindBearer(bearer)
+	// Parse/attach silently before target validation and the credential guard so
+	// even failed-target audit lookups retain their ordinary client context.
+	clientContext, droppedClientContext := parseClientContext(attribution.ClientContext)
+	if clientContext != nil {
+		ctx = trustedrouter.WithClientContext(ctx, clientContext)
+	}
 	routePath, nonce, err := parseRequestTarget(path)
 	requestRoute = routePath
 	if err != nil {
 		writeError(conn, 400, err.Error())
 		return
 	}
+	// Reuse only identical requests that previously passed validation and reached
+	// authorize. The credential guard wins, with ordinary audit logs on rejection.
+	confidential := apihosts.Confidential(attribution.Host) || apihosts.Confidential(enclavetls.SelectedServerName(conn))
+	var credentialErr error
+	credentialChecked := false
+	if trGateway.Enabled() && bearer != "" && billingBackoffRoute(method, routePath) &&
+		(!confidential || validateConfidentialHostRequest(method, routePath, body, trGateway) == nil) {
+		credentialErr = trGateway.CheckCredential(ctx, bearer)
+		credentialChecked = true
+		if credentialErr == nil {
+			// billingBackoffHeaderGroups documents every extracted validation /
+			// authorize input and the transport/random exclusions from this key.
+			billingKey = trustedrouter.NewBillingBackoffKey(requestIdentity.credentialFingerprint, method, routePath, body, billingBackoffHeaderGroups(attribution, confidential)...)
+			idempotent := billingBackoffIdempotent(idempotencyKey, body)
+			cache := trGateway.BillingBackoff()
+			if rejection, hit := cache.Get(billingKey, idempotent, time.Now()); hit {
+				billingSuppressed = true
+				if shadow := trGateway.Speculation(); shadow != nil {
+					trGateway.ObserveShadowSuppressed(rejection.RequestID)
+				}
+				// Preserve the original response IDs as well as its body and headers.
+				statsConn.mu.Lock()
+				statsConn.requestID = rejection.RequestID
+				statsConn.mu.Unlock()
+				writeBillingBackoff(conn, routePath, rejection)
+				return
+			}
+			statsConn.billingDenial = func(err error) {
+				billingRemembered = cache.Remember(billingKey, requestIdentity.credentialID, requestLogID, idempotent, err, time.Now())
+			}
+		}
+	}
+	for _, reason := range droppedClientContext {
+		fmt.Fprintf(os.Stderr, "enclave.client_context_dropped request_log_id=%q reason=%q\n", requestLogID, reason)
+	}
+	logAccept()
 	phases.Start()
 	writeRequestStartLog(
 		os.Stderr,
@@ -753,6 +823,12 @@ func serveOneRequest(
 		len(body),
 		requestIdentity,
 	)
+	// Discovery must work before authentication and confidential-origin policy.
+	// Return an ordinary error, never a cross-host credential-bearing redirect.
+	if message := controlPlaneRouteMessage(routePath); message != "" {
+		writeError(conn, http.StatusNotFound, message)
+		return
+	}
 	if apihosts.Confidential(attribution.Host) || apihosts.Confidential(enclavetls.SelectedServerName(conn)) {
 		ctx = trustedrouter.WithConfidentialOnly(ctx)
 		if err := validateConfidentialHostRequest(method, routePath, body, trGateway); err != nil {
@@ -850,8 +926,11 @@ func serveOneRequest(
 
 	trEnabled := trGateway != nil && trGateway.Enabled()
 	if trEnabled {
-		if err := trGateway.CheckCredential(ctx, bearer); err != nil {
-			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
+		if !credentialChecked {
+			credentialErr = trGateway.CheckCredential(ctx, bearer)
+		}
+		if credentialErr != nil {
+			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(credentialErr), messageFromControlPlaneError(credentialErr, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(credentialErr))
 			return
 		}
 	}
@@ -1194,6 +1273,14 @@ func serveOneRequest(
 			spendLeaseReserveRequest = &reserveRequest
 			authorization = spendLeasePlan.Local
 		} else {
+			ctx = predecideSpeculation(ctx, trGateway, bearer, body, attribution.IdempotencyPresent, routeType, confidential, &req, resolvedCustomModel != nil)
+			if execution := shadowobserve.FromContext(ctx); execution != nil {
+				defer execution.Finish()
+				statsConn.mu.Lock()
+				statsConn.shadow = execution
+				statsConn.shadowContent = &shadowobserve.ContentStream{}
+				statsConn.mu.Unlock()
+			}
 			authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, &req, routeType)
 			if err != nil {
 				writeGatewayAuthorizationError(conn, err)
@@ -1394,6 +1481,7 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
+	types.RecoverToolCallNames(req.Messages)
 	if err := adapter.ConfigureChatWebSearch(&req); err != nil {
 		return nil, err
 	}
@@ -1688,10 +1776,10 @@ func serveChatNonStreaming(
 	}
 	responseModel := authorizationResponseModel(req.Model, authorization)
 	var body bytes.Buffer
-	if err := adapter.WriteChatCompletionResponseWithProvenance(
+	if err := adapter.WriteChatCompletionResponseWithProviderMetadata(
 		&body, requestID, responseModel, result.Text, adapter.JoinThinking(result.Thinking),
 		result.ToolCalls, inputTokens, outputTokens, result.Usage, time.Now().Unix(),
-		result.FinishReason, result.Citations, result.SearchResults,
+		result.FinishReason, result.Citations, result.SearchResults, result.Decision,
 	); err != nil {
 		writeSpentError(conn, 500, "chat completion encoding error")
 		return

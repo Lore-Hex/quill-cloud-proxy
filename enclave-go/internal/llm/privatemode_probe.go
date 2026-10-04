@@ -61,9 +61,12 @@ func probePrivatemodeModel(ctx context.Context, key, model string) PrivatemodePr
 	if err != nil {
 		result.HTTPStatus, _ = HTTPStatusFromError(err)
 		var networkError net.Error
+		var privateError *privatemodeHTTPError
 		switch {
 		case ctx.Err() != nil:
 			result.Reason = "timeout_or_cancel"
+		case errors.As(err, &privateError):
+			result.Reason = privateError.reason
 		case result.HTTPStatus != 0:
 			result.Reason = "http"
 		case errors.As(err, &networkError):

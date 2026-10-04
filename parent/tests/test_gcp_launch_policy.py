@@ -131,19 +131,13 @@ def test_gcp_bootstrap_grants_workload_access_to_engy_secret() -> None:
     assert 'ENGY_TEE_ENV="|tee-env-QUILL_ENGY_SECRET=${QUILL_ENGY_SECRET}"' in deploy
 
 
-def test_spend_lease_issuer_config_secret_name_is_granted_and_injected() -> None:
+def test_spend_lease_issuer_config_is_explicit_not_a_retired_default() -> None:
     bootstrap = (REPO_ROOT / "tools" / "deploy-gcp-bootstrap.sh").read_text()
     deploy = (REPO_ROOT / "tools" / "deploy-gcp-mig.sh").read_text()
-    secret_name = "trustedrouter-spend-lease-issuer-config"
-
-    assert (
-        f'SPEND_LEASE_ISSUER_CONFIG_SECRET="${{SPEND_LEASE_ISSUER_CONFIG_SECRET:-{secret_name}}}"'
-    ) in bootstrap
+    assert ('SPEND_LEASE_ISSUER_CONFIG_SECRET="${SPEND_LEASE_ISSUER_CONFIG_SECRET:-}"') in bootstrap
     assert '"$SPEND_LEASE_ISSUER_CONFIG_SECRET" \\' in bootstrap
     assert (
-        'QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET="'
-        "${QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET:-"
-        f'{secret_name}}}"'
+        'QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET="${QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET:-}"'
     ) in deploy
     assert (
         'SPEND_LEASE_ISSUER_CONFIG_TEE_ENV="'
@@ -172,6 +166,7 @@ def test_provider_wave_secrets_are_injected_only_after_existence_check() -> None
         "QUILL_REKA_SECRET": "trustedrouter-reka-api-key",
         "QUILL_SAIL_RESEARCH_SECRET": "trustedrouter-sail-research-api-key",
         "QUILL_MANCER_SECRET": "trustedrouter-mancer-api-key",
+        "QUILL_TENCENT_SECRET": "trustedrouter-tencent-tokenhub-api-key",
     }
     assert "configure_optional_provider_secret()" in deploy
     assert "${PROVIDER_WAVE_TEE_ENV}" in deploy
@@ -232,3 +227,16 @@ def test_aws_azure_route_mirrors_key_and_both_protocol_tunnels() -> None:
     for port, host in expected.items():
         assert f"write_vsock_unit {port} {host}" in deploy_script
         assert f'Host: "{host}", CID: 3, Port: {port}' in tunnel_source
+
+
+def test_billing_402_backoff_override_is_optional_for_rollback_safety() -> None:
+    """The image defaults the backoff; the deploy script injects the override only when set.
+
+    Confidential Space refuses to launch an image whose launch policy does not allow a
+    supplied tee-env, so an unconditional override would break redeploying an older image.
+    """
+    deploy = (REPO_ROOT / "tools" / "deploy-gcp-mig.sh").read_text()
+    assert 'BILLING_402_BACKOFF_TEE_ENV=""' in deploy
+    assert 'if [ -n "${QUILL_BILLING_402_BACKOFF_MS:-}" ]; then' in deploy
+    assert "${BILLING_402_BACKOFF_TEE_ENV}|tee-env-QUILL_KEEPALIVE=" in deploy
+    assert "|tee-env-QUILL_BILLING_402_BACKOFF_MS=${QUILL_BILLING_402_BACKOFF_MS}|" not in deploy

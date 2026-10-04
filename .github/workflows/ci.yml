@@ -128,6 +128,7 @@ jobs:
           python3 tools/test_vsock_port_map.py
           python3 tools/test_write_trust_artifacts.py
           python3 tools/test_capture_plane_measurements.py
+          python3 tools/test_aws_fargate_pins.py
           python3 tools/test_check_trust_copies.py
           python3 tools/test_check_trust_signatures.py
           python3 tools/test_wait_stage_d_policy.py
@@ -135,6 +136,7 @@ jobs:
           python3 tools/test_sync_route53_api_aliases.py
           python3 tools/test_dns_reconciler_scheduler.py
           python3 tools/test_rollout_safety.py
+          python3 tools/test_cloud_rollout.py
           python3 tools/test_gcp_enclave_inventory.py
           python3 tools/test_verify_gcp_runtime_secret_access.py
           python3 tools/test_verify_pcr0_build_args.py

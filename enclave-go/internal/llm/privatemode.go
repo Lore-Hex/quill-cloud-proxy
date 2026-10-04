@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -16,6 +17,40 @@ import (
 )
 
 var privateModeHTTPClient atomic.Pointer[http.Client]
+
+type privatemodeHTTPError struct {
+	*upstreamHTTPError
+	reason string
+}
+
+func (e *privatemodeHTTPError) Unwrap() error { return e.upstreamHTTPError }
+
+// The pinned proxy reports all secret-setup failures as 401, even manifest
+// drift. Classify only fixed diagnostics; never retain or echo untrusted text.
+// This is observability only, never evidence for accepting an attestation.
+func privatemodeResponseError(resp *http.Response) error {
+	reason := "http"
+	message := "Privatemode encrypted upstream request failed"
+	const limit = 4096
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	var wire struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err == nil && len(body) <= limit && json.Unmarshal(body, &wire) == nil {
+		if strings.Contains(wire.Error.Message, "active manifest does not match expected manifest") {
+			reason = "attestation_manifest_mismatch"
+			message = "Privatemode attestation manifest changed; encrypted inference refused pending review"
+		} else if strings.Contains(wire.Error.Message, "validating attestation") {
+			reason = "attestation_verification"
+			message = "Privatemode attestation verification failed; encrypted inference refused"
+		}
+	}
+	// Do not carry response bodies into errors, probes, settlement, or logs.
+	clear(body)
+	return &privatemodeHTTPError{upstreamHTTPError: &upstreamHTTPError{status: resp.StatusCode, body: message}, reason: reason}
+}
 
 // ConfigurePrivatemode only accepts the client returned by the in-enclave
 // supervisor. A missing/dead proxy disables this provider, never encryption.

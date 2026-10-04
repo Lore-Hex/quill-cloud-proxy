@@ -29,6 +29,13 @@ type PollResult struct {
 	Body           io.ReadCloser
 	ContentType    string
 	DownloadURL    string
+	OutputTokens   int
+}
+
+// TokenBilledProvider reserves a token bound and settles reported usage through
+// the existing control-plane token ledger, never a duration-based approximation.
+type TokenBilledProvider interface {
+	OutputTokenLimit(*ResolvedRequest) (int, error)
 }
 
 type Provider interface {
@@ -61,6 +68,7 @@ func QueueTimeout(provider Provider) time.Duration {
 }
 
 type ProviderKeys struct {
+	BytePlus   string
 	Venice     string
 	FAL        string
 	Google     string
@@ -81,6 +89,7 @@ type Registry struct {
 
 func NewRegistry(keys ProviderKeys, httpc *http.Client) *Registry {
 	return NewRegistryWithProviders(
+		NewBytePlusClient(keys.BytePlus, httpc),
 		NewFALVideoClient(keys.FAL, httpc),
 		NewGoogleVeoClient(keys.Google, httpc),
 		NewMiniMaxClient(keys.MiniMax, httpc),
@@ -155,6 +164,8 @@ func providerRank(modelID, provider string) int {
 
 func directProviderForModel(modelID string) string {
 	switch modelID {
+	case "bytedance/seedance-2.5", "bytedance/seedance-2.0", "bytedance/seedance-2.0-fast":
+		return "byteplus"
 	case "google/veo-3.1", "google/veo-3.1-fast":
 		return "google-ai-studio"
 	case "minimax/hailuo-3":

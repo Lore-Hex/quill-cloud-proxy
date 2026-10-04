@@ -39,6 +39,20 @@ tag combination in production is how that ambiguity arose.
   `check_pcr0_pin`, quill-router `_pcr0_pin_matches`. Without this, step 3 is
   impossible: writing `old,new` against an equality check matches **neither**,
   because neither value equals the literal joined string.
+* The current control-plane consumers are Fargate `tr-cp-euw1` (eu-west-1)
+  and `tr-cp-euw3` (eu-west-3), both in cluster `tr-cp`. They serve the API
+  and synthetic monitor behind the regional NLBs/Global Accelerator.
+  App Runner `tr-eu` is retired; do not recreate it or treat its absence as
+  permission to skip verification. See quill-router's
+  `docs/storage-portability/HANDOFF.md` and `scripts/deploy/aws_ecs_control_plane.sh`.
+* Start from a clean checkout of merged main. Release-tool fixes require normal
+  PR/CI/merge before changing the fleet. Record the actual enclave build commit,
+  immutable regional image digests, current launch-template versions, healthy
+  instance census, and current public/runtime accepted PCR0 sets for rollback.
+* Both Fargate regions must be stable, serve the same release/image digest,
+  and have healthy targets. Keep 100% minimum healthy capacity, at least 200%
+  maximum capacity, and the deployment circuit breaker with rollback enabled.
+  An unknown, mixed, or incomplete deployment blocks the release.
 * Record the current PCR0 so you can roll back and so step 3 has an "old":
 
 ```bash
@@ -54,33 +68,83 @@ bash tools/release-aws-enclave.sh --apply
 Refuses to run against a dirty `enclave-go`, because an image that matches no
 commit has an unreproducible PCR0.
 
-### 2. Point the launch template at the new tag, then roll ONE instance
+If the reviewed image is already published in both regions, verify its digest
+and reuse it. Tool-only fixes do not require rebuilding the enclave. Run the
+read-only gate without rebuilding or pushing:
 
-Update `quill-enclave-lt` user-data in **eu-west-3** only, then replace a single
-instance. One instance, in the region carrying less traffic, so a bad image
-costs one host rather than the fleet.
+```bash
+bash tools/release-aws-enclave.sh --verify-only
+```
 
-The new instance will report `pcr0_mismatch` until step 3 — that is expected,
-and it is why only one is rolled.
+### 2. Launch an isolated candidate without replacing serving capacity
+
+Create a candidate launch-template version in **eu-west-3** first. Launch one
+standalone EC2 candidate from it, outside the serving ASG and its load balancer.
+Do not change the serving ASG's launch-template version or replace its instances
+yet. Existing healthy capacity must remain intact.
+
+Clone the existing launch-template version and change only the enclave image
+reference. Preserve compressed user data, parent/pump images, secrets, IAM,
+networking, and health/failover configuration. Override the standalone
+candidate's instance tags with distinct non-production `Project` and `Name`
+values so tag-based discovery cannot promote it. Confirm the bootstrap does
+not register targets or write routing DNS. Verify the candidate is absent from
+ASG membership, all serving target groups, and routing DNS before probing it.
+
+An ASG refresh checkpoint is not candidate isolation: an ASG can register a
+replacement with the load balancer before pausing. A candidate with an
+unpublished PCR0 must never carry normal traffic, even briefly. Use SSM only
+until step 3 is complete; do not register or promote the standalone candidate.
 
 ### 3. Learn the new PCR0 and widen the pin
 
 PCR0 does not exist until `nitro-cli build-enclave` has run on an instance, so
 it can only be read after step 2:
 
+Use the official AWS Session Manager plugin and an SSM TCP forward to each
+instance's enclave listener (8444). The public NLB's port 443 is not the
+per-instance port; do not open security groups or add a TLS terminator.
+
 ```bash
+# Keep this session open in a separate terminal; use the instance's region.
+aws ssm start-session --region eu-west-3 --target <instance-id> \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters '{"portNumber":["8444"],"localPortNumber":["18444"]}'
+
 python3 tools/verify-attestation.py \
-  --api-host api-aws.trustedrouter.com --connect-ip <new-instance-ip> \
+  --api-host api-aws.trustedrouter.com --connect-ip 127.0.0.1 --port 18444 \
   --attested-cert-only
 ```
 
-Then publish **both** measurements — old first, new second — everywhere PCR0 is
+This authenticates the Nitro root chain, certificate and channel bindings
+while keeping the public API SNI. Confirm the module ID belongs to the intended
+instance. Once learned, pass `--expected-pcr0 <new-PCR0>` on subsequent probes.
+Stop each SSM session after verification. Capture alone parses a measurement;
+it does not replace this cryptographic verification.
+
+Then publish **both** measurements (set order is immaterial) everywhere PCR0 is
 pinned. Widen before rolling further; never narrow before the roll completes.
+Use the exact verified candidate's forward in the capture command below, not a
+load-balanced endpoint that could still return the outgoing enclave. Wait for
+both Fargate pin updates, AWS trust signing, public trust publication, and
+attestation/status health before proceeding. Do not modify another cloud's
+trust files or deploy router code as part of this pin-only update.
 
 ### 4. Roll the rest
 
-Refresh the remaining eu-west-3 instance, then eu-west-1. Verify between
-regions rather than at the end:
+Only after the candidate's PCR0 is accepted by both runtime pin consumers and
+the signed public trust set, refresh the eu-west-3 ASG using the reviewed
+candidate launch-template version. Maintain 100% healthy capacity, enable
+rollback with explicit numbered desired configuration, and gate subsequent
+replacements on per-instance attestation and health. The standalone candidate
+stays outside production and can be terminated after that region is verified.
+
+Finish and verify eu-west-3 before starting eu-west-1. Use an isolated candidate
+there too, because a different regional host image/build toolchain must not be
+assumed to produce the same PCR0. If its verified PCR0 differs, publish and
+verify the expanded accepted set before any eu-west-1 replacement. For every
+replacement, use an SSM forward and verify the expected PCR0/module ID; then
+recheck the canonical endpoint and status:
 
 ```bash
 python3 tools/verify-attestation.py --api-host api-aws.trustedrouter.com --attested-cert-only
@@ -142,28 +206,36 @@ attestation rather than computed at build time:
 
 ```bash
 # during the roll, while old instances are still serving
-python3 tools/capture-plane-measurements.py --write --keep-accepted \
-    --source-commit "$(git rev-parse --short HEAD)"
+python3 tools/capture-plane-measurements.py --plane aws --write --keep-accepted \
+    --repin-aws-monitor --aws-forward-port 18444 --source-commit <enclave-build-sha>
 
 # after the last instance is refreshed and verified, narrow the pin
-python3 tools/capture-plane-measurements.py --write \
-    --source-commit "$(git rev-parse --short HEAD)"
+python3 tools/capture-plane-measurements.py --plane aws --write \
+    --repin-aws-monitor --aws-forward-port 18444 --source-commit <enclave-build-sha>
 ```
 
 `--source-commit` is the commit that BUILT the enclave now running, and it has
-no default. Here — immediately after a release, from the same checkout the
-release was built from — HEAD is that commit, which is why the recipe above
-spells it out rather than relying on a default that would also fire in every
-other flow. Anywhere else (re-publishing later, answering a drift alert), pass
-the sha of the release instead; if nobody can name it, omit the flag and the
+no default. A release-tool fix may have moved HEAD since the image was built;
+always pass the image's source commit, not the current tooling commit.
+If nobody can name it, omit the flag and the
 record records `not-configured`, which makes quill-router's envelope-format
 ordering gate refuse control-plane deploys against this cloud until a real
 commit is published. A commit that is in this repository but is not the one
 that built the running enclave is the one error nothing downstream can detect:
 it makes the gate read a real file at the wrong commit.
 
-Commit `trust-page/`. That fires `publish-trust-aws.yml`, which signs the record
-under the AWS-only identity a verifier pins.
+Review and commit only the AWS files produced under `trust-page/`, then merge
+through the normal PR/CI procedure. That fires `publish-trust-aws.yml`, which
+signs the record under the AWS-only identity a verifier pins. Wait for signing
+and publication, and verify the public accepted set before rolling further.
+
+`--repin-aws-monitor` now updates only the two current Fargate services. It
+preflights both before mutation, clones each task definition (including tags),
+changes only `TR_ATTESTATION_EXPECTED_PCR0`, waits for stability and actual
+healthy serving tasks/targets, and restores/verifies the previous task
+definition on failure. With `--keep-accepted`, existing runtime pins are retained
+alongside the published pins and newly captured PCR0. A failed region stops the
+sequence; do not advance the enclave fleet while it is unresolved.
 
 `--keep-accepted` is not optional during a roll. Without it you publish a set
 that excludes the instances that have not rolled yet, and anyone verifying

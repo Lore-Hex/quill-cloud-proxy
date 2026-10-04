@@ -52,7 +52,7 @@ func isOpenAICompatibleBYOKProvider(provider string) bool {
 	case "openai", "cerebras", "deepseek", "mistral", "kimi", "gemini", "google-ai-studio", "zai", "together",
 		"fireworks", "grok", "novita", "phala", "siliconflow", "tinfoil", "venice",
 		"parasail", "lightning", "gmi", "deepinfra", "friendli", "baseten", "telnyx", "thinkingmachines", "wafer",
-		"crusoe", "makora", "nebius", "minimax", "xiaomi", "digitalocean", "stepfun", "relace":
+		"crusoe", "makora", "nebius", "minimax", "xiaomi", "digitalocean", "stepfun", "relace", "tencent":
 		return true
 	default:
 		return false
@@ -126,6 +126,11 @@ type openAICompatibleStreamOptions struct {
 // parameter spelling, though it is normally reached through Responses.
 func requiresMaxCompletionTokens(provider, modelID string) bool {
 	normalizedProvider := normalizeDirectProvider(provider)
+	if normalizedProvider == "tencent" {
+		// Tencent's Kimi guide documents this spelling for K3. This does not
+		// assert that TokenHub rejects the legacy max_tokens alias.
+		return modelID == "kimi-k3"
+	}
 	if normalizedProvider != "openai" && normalizedProvider != "azure" && normalizedProvider != "lightning" {
 		return false
 	}
@@ -155,7 +160,10 @@ func requiresMaxCompletionTokens(provider, modelID string) bool {
 	return false
 }
 
-type chatMessage struct {
+type chatMessage = ChatMessage
+
+// ChatMessage is an already normalized upstream message. Preparation never fetches media.
+type ChatMessage struct {
 	Role       string           `json:"role"`
 	Content    any              `json:"content"`
 	ToolCalls  []map[string]any `json:"tool_calls,omitempty"`
@@ -170,9 +178,21 @@ func invokeOpenAICompatibleBYOKStreaming(
 	out io.Writer,
 	options InvokeOptions,
 ) error {
+	return invokeOpenAICompatibleBYOKStreamingWithClient(ctx, defaultHTTPClient(), provider, req, body, out, options)
+}
+
+func invokeOpenAICompatibleBYOKStreamingWithClient(
+	ctx context.Context,
+	httpc *http.Client,
+	provider string,
+	req *qtypes.OpenAIChatRequest,
+	body *qtypes.AnthropicMessagesRequest,
+	out io.Writer,
+	options InvokeOptions,
+) error {
 	return invokeOpenAICompatibleStreamingWithClientOptions(
 		ctx,
-		defaultHTTPClient(),
+		httpc,
 		provider,
 		directBaseURL(provider),
 		options.ProviderAPIKey,
@@ -281,37 +301,22 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	if strings.TrimSpace(upstreamID) == "" {
 		return fmt.Errorf("llm/%s: missing authorized upstream model", provider)
 	}
-	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
-	if explicitHybridThinkingConflict(provider, req, reqBody) {
-		return &upstreamHTTPError{status: http.StatusBadRequest, body: "reasoning on is not supported with tools on this provider route"}
-	}
-	if normalizeDirectProvider(provider) == "tinfoil" {
-		reqBody.UserCacheSecret = strings.TrimSpace(options.providerCacheScope)
-	}
+	// Privatemode resolves its random cache salt outside pure preparation.
+	var privateWire *openAICompatibleRequest
 	if normalizeDirectProvider(provider) == "privatemode" {
-		if err := preparePrivatemodeWire(req, body, &reqBody, options.providerCacheScope); err != nil {
+		privateWire = &openAICompatibleRequest{Model: upstreamID}
+		if err := preparePrivatemodeWire(req, body, privateWire, options.providerCacheScope); err != nil {
 			return err
 		}
 	}
-	var payload any = reqBody
-	path := directChatCompletionsPath(provider)
-	nativeResponses := useOpenAIResponses(provider, reqBody)
-	if nativeResponses {
-		// Chat normalization retains effort only. Responses also understands
-		// summary preferences; validate the original object in its wire builder.
-		if req != nil {
-			reqBody.Reasoning = req.Reasoning
-		}
-		payload, err = buildOpenAIResponsesRequest(reqBody)
-		if err != nil {
-			return err
-		}
-		path = "/responses"
-	}
-	bodyBytes, err := json.Marshal(payload)
+	prepared, err := PrepareChatRequest(provider, upstreamModel, req, body, msgs, ChatPreparationOptions{
+		ProviderCacheScope: options.providerCacheScope, privateWire: privateWire,
+	})
 	if err != nil {
-		return fmt.Errorf("llm/%s: marshal body: %w", provider, err)
+		return err
 	}
+	bodyBytes, path := prepared.Bytes, prepared.Path
+	decisionCompletion, nativeResponses := prepared.DecisionCompletion, prepared.NativeResponses
 	httpReq, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
@@ -328,6 +333,9 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	if decisionCompletion {
+		httpReq.Header.Set("Accept", "application/json")
+	}
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
 	if normalizeDirectProvider(provider) == "wafer" &&
 		(options.waferZDRRequired || legacyWaferModelSupportsZDR(upstreamID)) {
@@ -344,9 +352,7 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		if normalizeDirectProvider(provider) == "privatemode" {
-			// The untrusted edge can return plaintext errors. Preserve status
-			// for fallback/retry policy, but never trust or echo its body.
-			return &upstreamHTTPError{status: resp.StatusCode, body: "Privatemode encrypted upstream request failed"}
+			return privatemodeResponseError(resp)
 		}
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
@@ -356,6 +362,9 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	}
 	if nativeResponses {
 		return translateOpenAIResponsesStream(resp.Body, out)
+	}
+	if decisionCompletion {
+		return translateOpenAICompletionToAnthropic(resp.Body, out, normalizeDirectProvider(provider))
 	}
 	return translateOpenAIStreamToAnthropicForProvider(resp.Body, out, normalizeDirectProvider(provider))
 }
@@ -609,6 +618,12 @@ func openAICompatibleTemperature(provider, modelID string, temperature *float64)
 
 func kimiUsesFixedSampling(provider, modelID string) bool {
 	model := strings.ToLower(strings.TrimSpace(modelID))
+	if normalizeDirectProvider(provider) == "tencent" {
+		switch modelID {
+		case "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.8-preview":
+			return true
+		}
+	}
 	// Azure Foundry exposes the same Moonshot checkpoints under deployment
 	// names that replace the version dots with dashes. Keep this exact to the
 	// three authorized Azure deployment ids: substring matching here would
@@ -1233,6 +1248,11 @@ func bootstrapDirectProviderAllowed(provider string) bool {
 }
 
 func directModelID(provider, model, upstreamModel string) string {
+	if provider == "tencent" {
+		// TokenHub's /models IDs (including namespaced/custom endpoints) are
+		// opaque. Only use the authorized endpoint_model_id, never an alias.
+		return strings.TrimSpace(upstreamModel)
+	}
 	model = stripOpenRouterModelVariant(model)
 	upstreamModel = stripOpenRouterModelVariant(strings.TrimSpace(upstreamModel))
 	if _, exactCatalogIDRequired := directproviders.Lookup(provider); exactCatalogIDRequired && upstreamModel == "" {

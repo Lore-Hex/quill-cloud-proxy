@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -86,6 +88,9 @@ func ClientContextFromContext(ctx context.Context) *qtypes.ClientContext {
 }
 
 type Client struct {
+	shadow         shadowobserve.Observer
+	shadowBoundary shadowobserve.Boundary
+	shadowSigner   spendlease.DigestSigner
 	// baseURLs is ordered: index 0 is the configured billing authority, and
 	// later entries are fallbacks used only when an earlier one cannot be
 	// dialled. Observer/status services are never valid entries. See
@@ -97,6 +102,7 @@ type Client struct {
 	region             string
 	authorizeRetry     retryPolicy
 	credentialGuard    CredentialGuard
+	billingBackoff     *BillingBackoff
 	modelsMu           sync.Mutex
 	modelsBody         []byte
 	modelsFetched      time.Time
@@ -178,10 +184,19 @@ func (c *Client) beforeCredentialCheck(ctx context.Context, bearer string) (stri
 	if c == nil || c.credentialGuard == nil {
 		return lookupHash, nil
 	}
-	return lookupHash, c.credentialGuard.BeforeCredentialCheck(ctx, lookupHash)
+	err := c.credentialGuard.BeforeCredentialCheck(ctx, lookupHash)
+	// A negative-cache hit is already a definitive credential rejection.
+	var controlErr *ControlPlaneError
+	if IsDefinitiveInvalidCredential(err) || (errors.As(err, &controlErr) && controlErr.StatusCode == http.StatusUnauthorized && controlErr.Type == "auth_cached_reject") {
+		c.billingBackoff.ForgetCredential(lookupHash)
+	}
+	return lookupHash, err
 }
 
 func (c *Client) afterCredentialCheck(ctx context.Context, lookupHash string, err error) {
+	if c != nil && IsDefinitiveInvalidCredential(err) {
+		c.billingBackoff.ForgetCredential(lookupHash)
+	}
 	if c != nil && c.credentialGuard != nil {
 		c.credentialGuard.AfterCredentialCheck(ctx, lookupHash, err)
 	}
@@ -196,6 +211,7 @@ func NewFromEnv() *Client {
 		region:             os.Getenv("TR_REGION"),
 		httpc:              newControlPlaneHTTPClient(),
 		authorizeRetry:     defaultAuthorizeRetryPolicy(),
+		billingBackoff:     billingBackoffFromEnv(),
 	}
 }
 
@@ -219,6 +235,7 @@ func NewFromBootstrap(boot *qtypes.BootstrapData) *Client {
 		region:             region,
 		httpc:              newControlPlaneHTTPClient(),
 		authorizeRetry:     defaultAuthorizeRetryPolicy(),
+		billingBackoff:     billingBackoffFromEnv(),
 	}
 }
 
@@ -233,6 +250,7 @@ func New(baseURL, internalToken string, httpc *http.Client) *Client {
 		internalToken:      internalToken,
 		httpc:              httpc,
 		authorizeRetry:     defaultAuthorizeRetryPolicy(),
+		billingBackoff:     billingBackoffFromEnv(),
 	}
 }
 
@@ -473,6 +491,8 @@ type Authorization struct {
 	Tags                                  qtypes.TagMap                      `json:"tags"`
 	RequestMetadataVersion                int                                `json:"request_metadata_version"`
 	AdditionalCostReservationMicrodollars int                                `json:"additional_cost_reservation_microdollars"`
+	VideoTokenBilling                     bool                               `json:"video_token_billing"`
+	EstimatedCostMicrodollars             int                                `json:"estimated_cost_microdollars"`
 	ReceiptFeeBasisPoints                 int                                `json:"receipt_fee_basis_points"`
 	NativeBatchEligible                   bool                               `json:"native_batch_eligible"`
 	SpendLease                            *spendlease.Response               `json:"spend_lease,omitempty"`
@@ -578,12 +598,14 @@ type BroadcastDestination struct {
 }
 
 type ControlPlaneError struct {
-	Path       string
-	StatusCode int
-	Message    string
-	Type       string
-	Reason     string
-	Body       string
+	ShadowScope shadowobserve.Identity
+	RateScope   string
+	Path        string
+	StatusCode  int
+	Message     string
+	Type        string
+	Reason      string
+	Body        string
 	// Retry-After from the control plane (e.g. a per-key window spend limit
 	// 429 carries seconds-until-the-window-resets). Relayed to the client so
 	// agents can back off precisely instead of guessing.
@@ -826,7 +848,8 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 			Message:    "hosted-tool billing is not available on the active control plane",
 		}
 	}
-	if routeType == "videos" && decoded.AdditionalCostReservationMicrodollars <= 0 {
+	if routeType == "videos" && decoded.AdditionalCostReservationMicrodollars <= 0 &&
+		!(decoded.VideoTokenBilling && decoded.EstimatedCostMicrodollars > 0 && req.MaxTokens != nil && *req.MaxTokens > 1) {
 		_ = c.Refund(ctx, decoded, 503, "video_billing_unavailable", 0.001, nil)
 		return nil, &ControlPlaneError{
 			Path:       "/internal/gateway/authorize",
@@ -1354,6 +1377,9 @@ func (c *Client) postJSONBytesWithBootAuthAtEndpoint(
 	if err != nil {
 		return selectedEndpoint, err
 	}
+	if sample := shadowAttemptFromContext(ctx); sample != nil {
+		resp.Body = &shadowTimingBody{ReadCloser: resp.Body, sample: sample}
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -1378,6 +1404,26 @@ func (c *Client) postJSONBytesWithBootAuthAtEndpoint(
 			controlErr.Type = strings.TrimSpace(envelope.Error.Type)
 			controlErr.Reason = strings.TrimSpace(envelope.Error.Reason)
 		}
+		// Proposed; not emitted by the router today. Decode optional observation
+		// metadata separately: malformed shadow fields
+		// must never change ordinary error decoding, including when shadow is off.
+		if c.shadow != nil {
+			c.shadowCall(func() {
+				var envelope struct {
+					Data struct {
+						WorkspaceID  string `json:"workspace_id"`
+						KeyID        string `json:"key_id"`
+						LookupDigest string `json:"lookup_digest"`
+						RateScope    string `json:"rate_scope"`
+					} `json:"data"`
+				}
+				if json.Unmarshal(errBody, &envelope) == nil {
+					controlErr.ShadowScope = shadowobserve.Identity{WorkspaceID: envelope.Data.WorkspaceID, KeyID: envelope.Data.KeyID, LookupDigest: envelope.Data.LookupDigest}
+					controlErr.RateScope = envelope.Data.RateScope
+				}
+			})
+		}
+
 		return selectedEndpoint, controlErr
 	}
 	if out == nil {
@@ -1562,4 +1608,35 @@ func publicCatalogURL(base, path string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
 	trimmed = strings.TrimSuffix(trimmed, "/v1")
 	return trimmed + "/" + strings.TrimLeft(path, "/")
+}
+
+// IsDefinitiveInvalidCredential is intentionally narrow. Only control-plane
+// verdicts that explicitly name an invalid, unknown, or revoked API key are
+// safe to remember. A status alone is insufficient: a bare 401 can mean a
+// broken enclave-to-control-plane credential, while quota, billing, timeouts,
+// cancellation, network errors, 429s, and 5xx can all affect a valid customer.
+func IsDefinitiveInvalidCredential(err error) bool {
+	var controlErr *ControlPlaneError
+	if !errors.As(err, &controlErr) {
+		return false
+	}
+	if controlErr.StatusCode != http.StatusUnauthorized && controlErr.StatusCode != http.StatusForbidden {
+		return false
+	}
+	// EXACTLY the control plane's ErrorType.INVALID_API_KEY and nothing else.
+	// This string is a WIRE CONTRACT: quill-router emits it at every
+	// bad-customer-key site in the internal gateway and pins it with
+	// tests/test_gateway_error_taxonomy.py; the test below pins this side.
+	// The earlier draft allowlisted five plausible spellings -- none of which
+	// the control plane has ever emitted, so the cache would have been
+	// "configured, healthy, and empty": never firing, never noticed. A generic
+	// "unauthorized" 401 stays UNCACHED on purpose -- the plane also says that
+	// when the ENCLAVE'S OWN internal credential is broken, and caching it
+	// would turn one auth misconfiguration into every customer locked out.
+	switch strings.ToLower(strings.TrimSpace(controlErr.Type)) {
+	case "invalid_api_key":
+		return true
+	default:
+		return false
+	}
 }
