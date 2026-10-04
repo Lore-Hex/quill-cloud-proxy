@@ -1463,6 +1463,7 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
+	types.RecoverToolCallNames(req.Messages)
 	if err := adapter.ConfigureChatWebSearch(&req); err != nil {
 		return nil, err
 	}

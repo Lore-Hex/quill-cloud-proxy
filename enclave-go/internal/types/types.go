@@ -235,6 +235,93 @@ type OpenAIToolFunction struct {
 	Arguments string `json:"arguments"`
 }
 
+// UnmarshalJSON normalizes alternate tool-call shapes without changing the
+// standard function shape used when marshaling requests to upstream providers.
+func (c *OpenAIToolCall) UnmarshalJSON(data []byte) error {
+	type toolCall OpenAIToolCall
+	decoded := toolCall(*c)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	// Recovery is best-effort: fields ignored by the standard decoder must
+	// never make an otherwise valid call fail to decode.
+	*c = OpenAIToolCall(decoded)
+	var alternate struct {
+		Name      json.RawMessage `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+		Function  json.RawMessage `json:"function"`
+		Custom    json.RawMessage `json:"custom"`
+	}
+	if err := json.Unmarshal(data, &alternate); err != nil {
+		return nil
+	}
+	readString := func(raw json.RawMessage) string {
+		var value string
+		_ = json.Unmarshal(raw, &value)
+		return value
+	}
+	var custom map[string]json.RawMessage
+	_ = json.Unmarshal(alternate.Custom, &custom)
+	customName := readString(custom["name"])
+	input, hasInput := custom["input"]
+	usableCustom := strings.TrimSpace(customName) != "" || hasInput
+	if usableCustom && (decoded.Type == "custom" || strings.TrimSpace(decoded.Function.Name) == "") {
+		arguments, err := json.Marshal(struct {
+			Input json.RawMessage `json:"input"`
+		}{Input: input})
+		if err != nil {
+			return nil
+		}
+		if strings.TrimSpace(customName) != "" {
+			decoded.Function.Name = customName
+		}
+		decoded.Function.Arguments = string(arguments)
+		decoded.Type = "function"
+	} else {
+		var function map[string]json.RawMessage
+		_ = json.Unmarshal(alternate.Function, &function)
+		if arguments := function["arguments"]; len(arguments) == 0 || bytes.Equal(bytes.TrimSpace(arguments), []byte("null")) {
+			var arguments string
+			if err := json.Unmarshal(alternate.Arguments, &arguments); err == nil && !bytes.Equal(bytes.TrimSpace(alternate.Arguments), []byte("null")) {
+				decoded.Function.Arguments = arguments
+			}
+		}
+	}
+	if strings.TrimSpace(decoded.Function.Name) == "" {
+		if name := readString(alternate.Name); strings.TrimSpace(name) != "" {
+			decoded.Function.Name = name
+		}
+	}
+	if decoded.Type == "custom" && strings.TrimSpace(decoded.Function.Name) != "" {
+		decoded.Type = "function"
+	}
+	*c = OpenAIToolCall(decoded)
+	return nil
+}
+
+// RecoverToolCallNames fills missing assistant tool-call names from the tool
+// results immediately following that assistant. Unmatched calls stay unchanged.
+func RecoverToolCallNames(messages []OpenAIChatMessage) {
+	for i := range messages {
+		if messages[i].Role != "assistant" {
+			continue
+		}
+		names := make(map[string]string)
+		for j := i + 1; j < len(messages) && messages[j].Role == "tool"; j++ {
+			message := messages[j]
+			if message.ToolCallID != "" && strings.TrimSpace(message.Name) != "" {
+				names[message.ToolCallID] = message.Name
+			}
+		}
+		for j := range messages[i].ToolCalls {
+			call := &messages[i].ToolCalls[j]
+			if name, ok := names[call.ID]; ok && strings.TrimSpace(call.Function.Name) == "" {
+				call.Function.Name = name
+			}
+		}
+	}
+}
+
 // ChatStreamOptions mirrors OpenAI's chat-completions stream_options
 // object. include_usage=true asks for a final usage-bearing chunk
 // (choices: []) right before `data: [DONE]`.

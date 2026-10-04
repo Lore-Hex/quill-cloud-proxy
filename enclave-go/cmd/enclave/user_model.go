@@ -626,9 +626,16 @@ func translateUserModelBuffered(r io.Reader, w io.Writer, responseModel, request
 		Object  string `json:"object"`
 		Choices []struct {
 			Message struct {
-				Role      string                 `json:"role"`
-				Content   any                    `json:"content"`
-				ToolCalls []types.OpenAIToolCall `json:"tool_calls"`
+				Role      string `json:"role"`
+				Content   any    `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
