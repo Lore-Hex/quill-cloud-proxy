@@ -2,6 +2,8 @@ package trustedrouter
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,33 +80,66 @@ func (c *Client) videoJobControlPlaneEndpoint(job *VideoJob) (int, error) {
 	return -1, fmt.Errorf("trustedrouter: video job has no pinned control-plane authority")
 }
 
+// videoReplayLookup carries identity only, never an authorization to dispatch.
+// All callers except AuthorizeVideo still see the ordinary replay conflict.
+type videoReplayLookup struct {
+	conflict error
+	job      VideoJob
+}
+
+func (e *videoReplayLookup) Error() string { return e.conflict.Error() }
+func (e *videoReplayLookup) Unwrap() error { return e.conflict }
+
+func videoReplayConflict(body map[string]any, auth *Authorization, endpoint int) error {
+	conflict := idempotencyReplayConflict()
+	key, _ := body["idempotency_key"].(string)
+	fingerprint, _ := body["request_fingerprint"].(string)
+	if body["route_type"] != "videos" || key == "" || len(fingerprint) != 64 || endpoint < 0 ||
+		auth.AuthorizationID == "" || auth.APIKeyHash == "" || auth.WorkspaceID == "" || auth.Model == "" {
+		return conflict
+	}
+	return &videoReplayLookup{conflict: conflict, job: VideoJob{
+		ID: VideoJobID(auth.AuthorizationID), AuthorizationID: auth.AuthorizationID,
+		WorkspaceID: auth.WorkspaceID, KeyHash: auth.APIKeyHash, Model: auth.Model,
+		ControlPlaneEndpoint: endpoint, ControlPlaneEndpointSet: true,
+	}}
+}
+
+// VideoJobID is stable across regions and retries of the same authorization.
+func VideoJobID(authorizationID string) string {
+	digest := sha256.Sum256([]byte("trustedrouter-video:" + authorizationID))
+	return "job-" + hex.EncodeToString(digest[:16])
+}
+
+// AuthorizeVideo returns either fresh dispatch authority or an existing job.
+// A cross-invocation replay can only read; it cannot recreate a missing job.
 func (c *Client) AuthorizeVideo(
 	ctx context.Context,
 	bearer, model, idempotencyKey, requestFingerprint string,
 	provider map[string]any,
 	quotedMicrodollars int,
 	tokenLimits ...int,
-) (*Authorization, error) {
+) (*Authorization, *VideoJob, error) {
 	limit := 0
 	if len(tokenLimits) > 1 {
-		return nil, fmt.Errorf("trustedrouter: invalid video token limit")
+		return nil, nil, fmt.Errorf("trustedrouter: invalid video token limit")
 	}
 	if len(tokenLimits) == 1 {
 		limit = tokenLimits[0]
 	}
 	if quotedMicrodollars < 0 || limit < 0 || limit > 2_000_000 || quotedMicrodollars == 0 && limit == 0 {
-		return nil, fmt.Errorf("trustedrouter: video requires a positive quote or token limit")
+		return nil, nil, fmt.Errorf("trustedrouter: video requires a positive quote or token limit")
 	}
 	maxTokens := max(1, limit)
 	var routing *qtypes.ProviderRouting
 	if len(provider) > 0 {
 		raw, err := json.Marshal(provider)
 		if err != nil {
-			return nil, fmt.Errorf("trustedrouter: invalid video provider routing")
+			return nil, nil, fmt.Errorf("trustedrouter: invalid video provider routing")
 		}
 		var parsed qtypes.ProviderRouting
 		if err := json.Unmarshal(raw, &parsed); err != nil {
-			return nil, fmt.Errorf("trustedrouter: invalid video provider routing")
+			return nil, nil, fmt.Errorf("trustedrouter: invalid video provider routing")
 		}
 		routing = &parsed
 	}
@@ -116,7 +151,34 @@ func (c *Client) AuthorizeVideo(
 		Provider:                              routing,
 		AdditionalCostReservationMicrodollars: quotedMicrodollars,
 	}
-	return c.AuthorizeWithRoute(ctx, bearer, req, "videos")
+	auth, err := c.AuthorizeWithRoute(ctx, bearer, req, "videos")
+	var replay *videoReplayLookup
+	if !errors.As(err, &replay) {
+		return auth, nil, err
+	}
+	if replay.job.Model != model {
+		return nil, nil, replay.conflict
+	}
+	lookupHash, err := c.beforeCredentialCheck(ctx, bearer)
+	if err != nil {
+		return nil, nil, err
+	}
+	job, err := c.lookupVideoJobAtEndpoint(ctx, lookupHash, replay.job.ID, replay.job.ControlPlaneEndpoint)
+	c.afterCredentialCheck(ctx, lookupHash, err)
+	var controlErr *ControlPlaneError
+	if errors.As(err, &controlErr) && controlErr.StatusCode == http.StatusNotFound {
+		// The original invocation may still be preparing its job. Never take over.
+		return nil, nil, replay.conflict
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if job.ID != replay.job.ID || job.AuthorizationID != replay.job.AuthorizationID ||
+		job.KeyHash != replay.job.KeyHash || job.WorkspaceID != replay.job.WorkspaceID || job.Model != model {
+		return nil, nil, replay.conflict
+	}
+	job.Created = false
+	return nil, job, nil
 }
 
 func (c *Client) PrepareVideoJob(ctx context.Context, job *VideoJob) (*VideoJob, error) {
@@ -192,18 +254,12 @@ func (c *Client) LookupVideoJob(ctx context.Context, bearer, jobID string) (*Vid
 	if err != nil {
 		return nil, err
 	}
-	body := map[string]any{"api_key_lookup_hash": lookupHash}
-	path := "/internal/gateway/video/jobs/" + strings.TrimSpace(jobID) + "/lookup"
 	var lastErr error
 	for endpoint := range c.baseURLs {
-		var decoded struct {
-			Data VideoJob `json:"data"`
-		}
-		_, err := c.postJSONAtEndpoint(ctx, path, body, &decoded, endpoint)
+		job, err := c.lookupVideoJobAtEndpoint(ctx, lookupHash, jobID, endpoint)
 		if err == nil {
 			c.afterCredentialCheck(ctx, lookupHash, nil)
-			decoded.Data.pinControlPlaneEndpoint(endpoint)
-			return &decoded.Data, nil
+			return job, nil
 		}
 		lastErr = err
 		var controlErr *ControlPlaneError
@@ -221,6 +277,19 @@ func (c *Client) LookupVideoJob(ctx context.Context, bearer, jobID string) (*Vid
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("trustedrouter: no control-plane endpoint configured")
+}
+
+func (c *Client) lookupVideoJobAtEndpoint(ctx context.Context, lookupHash, jobID string, endpoint int) (*VideoJob, error) {
+	body := map[string]any{"api_key_lookup_hash": lookupHash}
+	path := "/internal/gateway/video/jobs/" + strings.TrimSpace(jobID) + "/lookup"
+	var decoded struct {
+		Data VideoJob `json:"data"`
+	}
+	if _, err := c.postJSONAtEndpoint(ctx, path, body, &decoded, endpoint); err != nil {
+		return nil, err
+	}
+	decoded.Data.pinControlPlaneEndpoint(endpoint)
+	return &decoded.Data, nil
 }
 
 func (c *Client) ClaimVideoJobs(

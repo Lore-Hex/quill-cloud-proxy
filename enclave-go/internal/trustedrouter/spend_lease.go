@@ -258,7 +258,7 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 		idempotencyKey = plan.key
 	}
 	if !marked && decoded.Data.IdempotentReplay && decoded.Data.InvocationNonce != invocationNonce {
-		return nil, controlPlaneEndpoint, idempotencyReplayConflict()
+		return nil, controlPlaneEndpoint, videoReplayConflict(body, &decoded.Data, controlPlaneEndpoint)
 	}
 	// Transport retries precede this single claim; validation failures cannot
 	// acquire dispatch rights. Ordinary calls cannot steal a prepared plan.
