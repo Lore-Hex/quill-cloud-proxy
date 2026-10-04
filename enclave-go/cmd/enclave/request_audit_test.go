@@ -474,7 +474,7 @@ func TestRequestEndPhaseTimings(t *testing.T) {
 			}
 			end := parseAuditEventForRequest(t, logs, "enclave.request_end", requestLogID)
 			nums := map[string]int64{}
-			for _, key := range []string{"idle_wait_ms", "request_ms", "accept_to_start_ms", "authorize_ms", "authorize_attempts", "route_ms", "upstream_ms", "upstream_partial", "ttfb_ms", "retry_wait_ms", "settle_ms", "receipt_ms", "elapsed_ms"} {
+			for _, key := range []string{"idle_wait_ms", "request_ms", "body_read_ms", "accept_to_start_ms", "authorize_ms", "authorize_attempts", "route_ms", "upstream_ms", "upstream_partial", "ttfb_ms", "retry_wait_ms", "settle_ms", "receipt_ms", "elapsed_ms"} {
 				value, exists := end[key]
 				if !exists {
 					t.Fatalf("missing %s: %v", key, end)
@@ -490,7 +490,7 @@ func TestRequestEndPhaseTimings(t *testing.T) {
 					t.Fatalf("missing %s", key)
 				}
 			}
-			if nums["accept_to_start_ms"] != 8 || nums["upstream_ms"] != 12 || nums["upstream_partial"] != 0 || nums["receipt_ms"] < 8 {
+			if nums["body_read_ms"] != 8 || nums["accept_to_start_ms"] != 8 || nums["upstream_ms"] != 12 || nums["upstream_partial"] != 0 || nums["receipt_ms"] < 8 {
 				t.Fatalf("phase assignment missing: %v", end)
 			}
 			if end["settle_outcome"] != tc.settle {
@@ -574,7 +574,7 @@ func TestRequestEndPhaseTimingsRejectedBeforeInvoke(t *testing.T) {
 			if end["status"] != strconv.Itoa(tc.wantStatus) {
 				t.Fatalf("request_end status=%q want %d", end["status"], tc.wantStatus)
 			}
-			for _, key := range []string{"authorize_ms", "authorize_attempts", "idle_wait_ms", "request_ms", "accept_to_start_ms", "route_ms", "upstream_ms", "upstream_partial", "ttfb_ms", "retry_wait_ms", "settle_ms", "receipt_ms"} {
+			for _, key := range []string{"authorize_ms", "authorize_attempts", "idle_wait_ms", "request_ms", "body_read_ms", "accept_to_start_ms", "route_ms", "upstream_ms", "upstream_partial", "ttfb_ms", "retry_wait_ms", "settle_ms", "receipt_ms"} {
 				if end[key] != "0" {
 					t.Fatalf("missing phase %s=%q", key, end[key])
 				}
@@ -671,14 +671,14 @@ func TestStreamingPhaseEndBeforeProviderComplete(t *testing.T) {
 
 // The request_end line is append-only: readers that index fields by position on
 // the pre-idle-split layout must keep working, so idle_wait_ms and request_ms
-// come after cp_endpoint, and nothing before cp_endpoint may move.
+// come after cp_endpoint, followed by body_read_ms; no existing field may move.
 func TestRequestEndLogAppendsIdleSplitAfterLegacyLayout(t *testing.T) {
 	var out strings.Builder
 	writeRequestEndLog(&out, "rid", "POST", "/v1/chat/completions", 200, 10, 20, 1280*time.Millisecond,
 		requestAuditIdentity{workspaceID: "ws", credentialID: "cred", credentialFingerprint: "fp", attribution: "authorization"},
 		"ok",
 		requesttiming.Fields{
-			IdleWaitMS: 1179, RequestMS: 101, AcceptToStartMS: 7, AuthorizeMS: 8, AuthorizeAttempts: 1,
+			IdleWaitMS: 1179, RequestMS: 101, BodyReadMS: 5, AcceptToStartMS: 7, AuthorizeMS: 8, AuthorizeAttempts: 1,
 			RouteMS: 3, UpstreamMS: 28, TTFBMS: 5, RetryWaitMS: 13, SettleMS: 19, SettleOutcome: "ok",
 			ReceiptMS: 23, CPEndpoint: "trustedrouter.com",
 		})
@@ -693,6 +693,7 @@ func TestRequestEndLogAppendsIdleSplitAfterLegacyLayout(t *testing.T) {
 		"authorize_ms", "authorize_attempts", "route_ms", "upstream_ms", "upstream_partial", "ttfb_ms",
 		"retry_wait_ms", "settle_ms", "settle_outcome", "receipt_ms", "cp_endpoint",
 		"idle_wait_ms", "request_ms", // appended by the idle split; never earlier
+		"body_read_ms", // appended after the idle split
 	}
 	got := make([]string, 0, len(tokens)-1)
 	for _, kv := range tokens[1:] {
@@ -706,7 +707,7 @@ func TestRequestEndLogAppendsIdleSplitAfterLegacyLayout(t *testing.T) {
 			t.Fatalf("field %d is %q, want %q: %q", i, got[i], want[i], line)
 		}
 	}
-	if !strings.HasSuffix(line, ` cp_endpoint="trustedrouter.com" idle_wait_ms=1179 request_ms=101`) {
-		t.Fatalf("idle split must be the trailing pair: %q", line)
+	if !strings.HasSuffix(line, ` cp_endpoint="trustedrouter.com" idle_wait_ms=1179 request_ms=101 body_read_ms=5`) {
+		t.Fatalf("body_read_ms must follow the idle split: %q", line)
 	}
 }

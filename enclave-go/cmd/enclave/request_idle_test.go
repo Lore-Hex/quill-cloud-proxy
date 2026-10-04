@@ -84,11 +84,11 @@ func TestRequestEndIdleSplit(t *testing.T) {
 						t.Fatal("health response missing x-request-id")
 					}
 					end := parseAuditEventForRequest(t, logs, "enclave.request_end", requestLogID)
-					want := map[string]string{"idle_wait_ms": "0", "accept_to_start_ms": "35", "request_ms": "57", "elapsed_ms": "57"}
+					want := map[string]string{"idle_wait_ms": "0", "accept_to_start_ms": "35", "body_read_ms": "35", "request_ms": "57", "elapsed_ms": "57"}
 					if i == 1 {
-						want = map[string]string{"idle_wait_ms": "1179", "accept_to_start_ms": "12", "request_ms": "34", "elapsed_ms": "1213"}
+						want = map[string]string{"idle_wait_ms": "1179", "accept_to_start_ms": "12", "body_read_ms": "12", "request_ms": "34", "elapsed_ms": "1213"}
 						if pipelined {
-							want = map[string]string{"idle_wait_ms": "0", "accept_to_start_ms": "5", "request_ms": "27", "elapsed_ms": "27"}
+							want = map[string]string{"idle_wait_ms": "0", "accept_to_start_ms": "5", "body_read_ms": "5", "request_ms": "27", "elapsed_ms": "27"}
 						}
 					}
 					for key, value := range want {
