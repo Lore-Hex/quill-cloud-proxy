@@ -10,6 +10,7 @@ func TestMalformedContentKeepsProviderPolicy(t *testing.T) {
 	for _, provider := range []string{"openai", "privatemode", "tencent"} {
 		for _, malformed := range []struct{ name, data string }{
 			{"malformed", `{"choices":[broken`},
+			{"null_error", `{"error":null,"choices":[broken`},
 			{"concatenated", `{"choices":[]} {"choices":[]}`},
 		} {
 			t.Run(provider+"/"+malformed.name, func(t *testing.T) {

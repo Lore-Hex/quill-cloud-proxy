@@ -40,9 +40,14 @@ func TestProviderStreamsRejectMultilineErrors(t *testing.T) {
 				err := tc.translate(strings.NewReader(wire), &out)
 				d := upstreamerror.Parse(err)
 				wantStatus, wantMessage := 403, "multiline refusal"
-				if tc.name == "openai" || tc.name == "gemini" || tc.name == "vertex-strict" || tc.name == "chutes" {
+				if tc.name == "openai" || tc.name == "gemini" || tc.name == "vertex-strict" {
 					// Line readers fail closed on the first error-looking fragment.
 					wantStatus, wantMessage = 502, `{"type":"error",`
+				}
+				if tc.name == "chutes" || (tc.name == "responses" && end.name == "eof") {
+					// Chutes rejects the malformed encrypted envelope. Responses
+					// does not dispatch an event without a terminating blank line.
+					wantStatus, wantMessage = 502, "provider error"
 				}
 				if err == nil || d.Status != wantStatus || d.Message != wantMessage || !strings.Contains(out.String(), "partial") || strings.Contains(out.String(), "message_stop") {
 					t.Fatalf("multiline failure lost: err=%v detail=%+v output=%s", err, d, out.String())

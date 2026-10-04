@@ -194,7 +194,9 @@ func scalar(v any) any {
 	}
 }
 
-var errorEventPattern = regexp.MustCompile(`"error"\s*:|"type"\s*:\s*"(?:error|response\.failed)"`)
+// An error key with any value except null, or with its value cut off at the
+// end of the payload (an error object split across data lines), is a report.
+var errorEventPattern = regexp.MustCompile(`"error"\s*:\s*(?:$|[^\sn])|"type"\s*:\s*"(?:error|response\.failed)"`)
 var jsonStringPattern = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
 
 func looksLikeError(payload string) bool {
@@ -291,4 +293,17 @@ func errorObject(obj map[string]any) map[string]any {
 		}
 	}
 	return obj
+}
+
+// CheckEvent checks a provider payload and failures declared by the SSE name.
+// Line readers pass an empty name and keep their own framing and malformed-data
+// policy. Complete-event readers can join data lines before checking.
+func CheckEvent(name, data string) error {
+	if err := FromEvent(data); err != nil {
+		return err
+	}
+	if name == "error" || name == "response.failed" {
+		return &Error{Status: 502, Body: data}
+	}
+	return nil
 }

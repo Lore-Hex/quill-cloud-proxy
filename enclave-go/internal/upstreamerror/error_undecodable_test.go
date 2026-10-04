@@ -17,7 +17,8 @@ func TestFromEventUndecodableChunks(t *testing.T) {
 		{"trailing error", `{"choices":[]} {"error":{"message":"refused"}}`, true},
 		{"malformed error type", `{"type" : "error",`, true},
 		{"malformed response failed", `{"type" : "response.failed",`, true},
-		{"non-object error", `broken "error":`, true},
+		{"error value cut off at the end", `broken "error":`, true},
+		{"error value cut off before whitespace", "{\"error\": \t", true},
 		{"non-object error type", `broken "type":"error"`, true},
 		{"unrelated type", `{"type":"response.failed.other",`, false},
 	} {
@@ -34,5 +35,20 @@ func TestFromEventUndecodableChunks(t *testing.T) {
 				t.Fatalf("error report lost: %#v", err)
 			}
 		})
+	}
+}
+
+func TestFromEventMalformedNullError(t *testing.T) {
+	for _, tc := range []struct {
+		payload string
+		failure bool
+	}{
+		{`{"error":null,"choices":[broken`, false},
+		{`{"error": null,"choices":[broken`, false},
+		{`{"error":{"message":"x"},"choices":[broken`, true},
+	} {
+		if err := FromEvent(tc.payload); (err != nil) != tc.failure {
+			t.Errorf("payload=%s err=%v want failure=%t", tc.payload, err, tc.failure)
+		}
 	}
 }

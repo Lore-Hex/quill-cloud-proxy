@@ -4,7 +4,6 @@ import (
 	"io"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
@@ -22,15 +21,10 @@ func TestNativeTerminalDoesNotBlockAtEOF(t *testing.T) {
 	if _, err := adapter.CollectAnthropicText(pr); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(200 * time.Millisecond):
-		_ = pr.Close()
-		<-done
-		t.Fatal("provider blocked writing empty EOF event after terminal")
+	// Closing the reader makes an unwanted extra write fail deterministically.
+	_ = pr.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

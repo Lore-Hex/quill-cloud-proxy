@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/mlkem"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
@@ -24,7 +26,7 @@ func TestProviderStreamErrorEvents(t *testing.T) {
 		name, prefix, event string
 		translate           func(io.Reader, io.Writer) error
 	}{
-		{"openai", "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n", "data:" + failure + "\n\n", translateOpenAIStreamToAnthropic},
+		{"openai", "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n", "data: " + failure + "\n\n", translateOpenAIStreamToAnthropic},
 		{"tencent", "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n", "data: " + failure + "\n\n", func(r io.Reader, w io.Writer) error {
 			return translateOpenAIStreamToAnthropicForProvider(r, w, "tencent")
 		}},
@@ -45,10 +47,14 @@ func TestProviderStreamErrorEvents(t *testing.T) {
 					t.Fatal("error event was ignored")
 				}
 				got := upstreamerror.Parse(err)
-				if got.Status != 400 || got.Message != "Policy refusal" || got.Type != "content_policy_error" || out.String() != want {
+				wantStatus, wantMessage, wantType := 400, "Policy refusal", "content_policy_error"
+				if tc.name == "tencent" {
+					wantStatus, wantMessage, wantType = 502, "Tencent TokenHub stream failed", "provider_error"
+				}
+				if got.Status != wantStatus || got.Message != wantMessage || got.Type != wantType || out.String() != want {
 					t.Fatalf("error=%#v body=%q want=%q", got, out.String(), want)
 				}
-				if status, ok := HTTPStatusFromError(err); !ok || status != 400 {
+				if status, ok := HTTPStatusFromError(err); !ok || status != wantStatus {
 					t.Fatalf("status=%d ok=%t", status, ok)
 				}
 			})
@@ -126,8 +132,8 @@ func TestUpstreamOpenPrecedesBodyRead(t *testing.T) {
 
 func TestNativeStreamEventSizeBound(t *testing.T) {
 	var out bytes.Buffer
-	err := relayAnthropicStream(strings.NewReader(strings.Repeat(": comment\n", (1<<20)/10+1)), &out)
-	if err != io.ErrShortBuffer || out.Len() != 0 {
+	err := relayAnthropicStream(strings.NewReader(strings.Repeat(": comment\n", adapter.MaxSSEBlockBytes/10+1)), &out)
+	if err != bufio.ErrTooLong || out.Len() != 0 {
 		t.Fatalf("err=%v bytes=%d", err, out.Len())
 	}
 }

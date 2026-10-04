@@ -6,24 +6,26 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/sse"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 // RelayEvent validates one complete AWS event-stream payload before emitting
 // native Anthropic SSE. AWS supplies record boundaries rather than SSE lines.
 func RelayEvent(payload []byte, out io.Writer) error {
-	if err := sse.CheckError("", string(payload)); err != nil {
+	if err := upstreamerror.CheckEvent("", string(payload)); err != nil {
 		return err
 	}
 	var event struct {
 		Type string `json:"type"`
 	}
 	if err := json.Unmarshal(payload, &event); err != nil {
-		return err
+		return nil
 	}
 	if event.Type == "" {
 		return nil
 	}
+	// The downstream adapter decodes JSON per data line; preserve pretty-printed
+	// AWS records as one data line so their content is not silently dropped.
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, payload); err != nil {
 		return err

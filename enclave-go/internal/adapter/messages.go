@@ -348,8 +348,8 @@ func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (St
 // native message fields are preserved.
 func RelayAnthropicStreamWithTerminalHook(r io.Reader, w io.Writer, messageID, model string, beforeTerminal func(StreamTerminal) error) (StreamResult, error) {
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
-	scanner.Split(splitDoubleNewline)
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxSSEBlockBytes)
+	scanner.Split(SplitDoubleNewline)
 
 	passthrough := false
 	first := true

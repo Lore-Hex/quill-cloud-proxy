@@ -11,11 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/bedrock"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/sse"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 func TestSettlementWaitsForUpstreamSuccess(t *testing.T) {
@@ -53,9 +54,15 @@ func TestSettlementWaitsForUpstreamSuccess(t *testing.T) {
 					if ending == "stop" {
 						wire += "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 					}
-					reader := sse.NewReader(strings.NewReader(wire), 1<<20)
-					for reader.Next() {
-						if _, err := io.WriteString(w, reader.Event().Raw); err != nil {
+					reader := bufio.NewScanner(strings.NewReader(wire))
+					reader.Buffer(make([]byte, 0, 64*1024), adapter.MaxSSEBlockBytes)
+					reader.Split(adapter.SplitDoubleNewline)
+					for reader.Scan() {
+						name, data := adapter.ParseSSEBlock(reader.Bytes())
+						if err := upstreamerror.CheckEvent(name, strings.Join(data, "\n")); err != nil {
+							return err
+						}
+						if _, err := io.WriteString(w, reader.Text()+"\n\n"); err != nil {
 							return err
 						}
 					}
@@ -127,17 +134,10 @@ func TestSplitErrorBilling(t *testing.T) {
 					if framing == "bedrock" {
 						return bedrock.RelayEvent([]byte("{\"error\":\n{\"code\":403,\"message\":\"refused\"}}"), w)
 					}
-					wire := "data: {\"error\":\ndata: {\"code\":403,\"message\":\"refused\"}}\n\n"
-					r := sse.NewReader(strings.NewReader(wire), 1024)
 					if framing == "line" {
-						r = sse.NewLineReader(strings.NewReader(wire), 1024)
+						return upstreamerror.CheckEvent("", `{"error":{`)
 					}
-					for r.Next() {
-						if _, err := io.WriteString(w, r.Event().Raw); err != nil {
-							return err
-						}
-					}
-					return r.Err()
+					return upstreamerror.CheckEvent("", "{\"error\":{\n\"code\":403,\"message\":\"refused\"}}")
 				}}
 				var out bytes.Buffer
 				serveErrorTestRoute(t.Context(), route, true, &out, provider, gateway, auth, nil)

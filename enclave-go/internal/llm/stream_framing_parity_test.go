@@ -74,7 +74,13 @@ func TestProviderDeliveryBeforeNextLine(t *testing.T) {
 			}()
 			var out bytes.Buffer
 			err := tc.translate(&deliveryBarrier{Reader: pr, output: &out}, &out)
-			if !strings.Contains(out.String(), "partial") || upstreamerror.Parse(err).Status != 403 {
+			wantStatus := 403
+			if tc.name == "chutes" {
+				// The unauthenticated envelope is rejected by decryption, not
+				// interpreted as a provider error report.
+				wantStatus = 502
+			}
+			if err == nil || !strings.Contains(out.String(), "partial") || upstreamerror.Parse(err).Status != wantStatus {
 				t.Fatalf("content buffered: err=%v out=%s", err, out.String())
 			}
 		})
@@ -82,19 +88,26 @@ func TestProviderDeliveryBeforeNextLine(t *testing.T) {
 }
 
 func TestProviderSplitErrorAfterContent(t *testing.T) {
-	for _, tc := range framingProviders(t) {
-		t.Run(tc.name, func(t *testing.T) {
-			var out bytes.Buffer
-			wire := tc.content + "\nevent: error\ndata: {\"error\":\ndata: {\"code\":403,\"message\":\"refused\"}}\n\n"
-			err := tc.translate(strings.NewReader(wire), &out)
-			want := 403
-			if tc.line {
-				want = 502
-			}
-			if err == nil || upstreamerror.Parse(err).Status != want || !strings.Contains(out.String(), "partial") || strings.Contains(out.String(), "message_stop") {
-				t.Fatalf("split failure lost: err=%v out=%s", err, out.String())
-			}
-		})
+	// Split right after the colon (the error value is cut off) and inside the
+	// error object; per-line paths must catch both at the first fragment.
+	for split, failure := range map[string]string{
+		"after colon": "data: {\"error\":\ndata: {\"code\":403,\"message\":\"refused\"}}",
+		"in object":   "data: {\"error\":{\ndata: \"code\":403,\"message\":\"refused\"}}",
+	} {
+		for _, tc := range framingProviders(t) {
+			t.Run(split+"/"+tc.name, func(t *testing.T) {
+				var out bytes.Buffer
+				wire := tc.content + "\nevent: error\n" + failure + "\n\n"
+				err := tc.translate(strings.NewReader(wire), &out)
+				want := 403
+				if tc.line {
+					want = 502
+				}
+				if err == nil || upstreamerror.Parse(err).Status != want || !strings.Contains(out.String(), "partial") || strings.Contains(out.String(), "message_stop") {
+					t.Fatalf("split failure lost: err=%v out=%s", err, out.String())
+				}
+			})
+		}
 	}
 }
 
@@ -137,6 +150,27 @@ func TestChutesDecryptedFramingMatchesMain(t *testing.T) {
 	for _, wire := range []string{"data: {}\ndata: []", "data: {\ndata: \"choices\":[]}"} {
 		if _, _, err := frameChutesDecryptedChunk([]byte(wire)); err == nil {
 			t.Fatalf("accepted multiple data lines in one decrypted chunk: %s", wire)
+		}
+	}
+}
+
+func TestGeminiReaderFieldsAndMalformedNull(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		wire := "event: error\nid: 7\nretry: 42\n: comment\ndata: \ndata: [DONE] \n" +
+			"data:{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\r\n" +
+			"data: {\"error\":null,\"candidates\":[broken\n" +
+			"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"later\"}]},\"finishReason\":\"STOP\"}]}\n"
+		var out bytes.Buffer
+		err := translateGeminiStreamToAnthropicMode(strings.NewReader(wire), &out, strict)
+		if !strings.Contains(out.String(), "partial") {
+			t.Fatalf("fields changed: strict=%t err=%v out=%s", strict, err, &out)
+		}
+		if strict {
+			if err == nil || !strings.Contains(err.Error(), "malformed event") || strings.Contains(out.String(), "message_stop") {
+				t.Fatalf("strict policy: err=%v out=%s", err, &out)
+			}
+		} else if err != nil || !strings.Contains(out.String(), "later") || !strings.Contains(out.String(), "message_stop") {
+			t.Fatalf("non-strict policy: err=%v out=%s", err, &out)
 		}
 	}
 }

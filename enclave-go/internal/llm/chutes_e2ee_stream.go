@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/mlkem"
 	"encoding/json"
@@ -8,8 +9,6 @@ import (
 	"io"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/sse"
 )
 
 const chutesMaxEncryptedSSELine = 16 << 20
@@ -30,18 +29,23 @@ func decryptChutesStream(
 	w io.Writer,
 	responseSK *mlkem.DecapsulationKey768,
 ) error {
-	scanner := sse.NewLineReader(r, chutesMaxEncryptedSSELine)
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), chutesMaxEncryptedSSELine)
 	var streamKey []byte
 	initSeen := false
 	chunkSeen := false
 	innerDoneSeen := false
 	doneSeen := false
 
-	for scanner.Next() {
-		if scanner.Event().UnexpectedField {
+	for scanner.Scan() {
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
 			return fmt.Errorf("chutes e2ee: unexpected encrypted SSE field")
 		}
-		raw := strings.TrimSpace(scanner.Event().Data)
+		raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if raw == "[DONE]" {
 			if !initSeen || !chunkSeen || !innerDoneSeen {
 				return fmt.Errorf("chutes e2ee: stream ended before authenticated terminal marker")
@@ -139,11 +143,7 @@ func decryptChutesStream(
 func frameChutesDecryptedChunk(plaintext []byte) ([]byte, bool, error) {
 	plaintext = bytes.TrimSpace(plaintext)
 	if bytes.HasPrefix(plaintext, []byte("data:")) {
-		// Each authenticated chunk keeps main's single-payload framing.
 		payload := bytes.TrimSpace(bytes.TrimPrefix(plaintext, []byte("data:")))
-		if err := sse.CheckError("", string(payload)); err != nil {
-			return nil, false, err
-		}
 		if len(payload) == 0 {
 			return nil, false, nil
 		}
@@ -154,9 +154,6 @@ func frameChutesDecryptedChunk(plaintext []byte) ([]byte, bool, error) {
 			return nil, false, fmt.Errorf("chutes e2ee: decrypted SSE chunk has invalid JSON")
 		}
 		return append(append([]byte(nil), plaintext...), '\n', '\n'), false, nil
-	}
-	if err := sse.CheckError("", string(plaintext)); err != nil {
-		return nil, false, err
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(plaintext, &object); err != nil || len(object) == 0 {

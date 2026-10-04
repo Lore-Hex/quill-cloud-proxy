@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,8 +10,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/sse"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 type upstreamHTTPError struct {
@@ -49,7 +50,8 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 }
 
 func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provider string) error {
-	scanner := sse.NewLineReader(r, 1<<20)
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 
 	stopReason := "end_turn"
 	toolCalls := map[int]*openAIToolCallAccumulator{}
@@ -61,24 +63,27 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	var citations []string
 	var searchResults []qtypes.ProviderSearchResult
 	var decision map[string]any
-	for scanner.Next() {
-		payload := strings.TrimSpace(scanner.Event().Data)
-		if payload == "" {
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
+		payload := line[len("data: "):]
 		if payload == "[DONE]" {
 			sawDone = true
 			break
 		}
 
 		var chunk struct {
+			Error         *json.RawMessage              `json:"error"`
 			ServiceTier   string                        `json:"service_tier"`
 			Citations     []string                      `json:"citations"`
 			SearchResults []qtypes.ProviderSearchResult `json:"search_results"`
 			Decision      json.RawMessage               `json:"decision"`
 			Choices       []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Error   *json.RawMessage `json:"error"`
+					Content string           `json:"content"`
 					// Several Chinese OpenAI-compatible providers (Z.AI/Zhipu,
 					// Moonshot in some configs) emit chain-of-thought tokens
 					// in `reasoning_content` and only fill `content` for the
@@ -106,6 +111,12 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			// the last content chunk; both shapes land here.
 			Usage *openAIStreamUsage `json:"usage"`
 		}
+		if err := upstreamerror.CheckEvent("", payload); err != nil {
+			if provider == "tencent" {
+				return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub stream failed"}
+			}
+			return err
+		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			if provider == "privatemode" {
 				return fmt.Errorf("llm/privatemode: malformed encrypted response chunk")
@@ -115,7 +126,17 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			}
 			continue
 		}
-
+		if provider == "tencent" {
+			// TokenHub reports post-200 failures inside SSE before [DONE]. Do
+			// not convert them to a successful stop or expose upstream text.
+			hasError := chunk.Error != nil
+			for _, choice := range chunk.Choices {
+				hasError = hasError || choice.Delta.Error != nil
+			}
+			if hasError {
+				return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub stream failed"}
+			}
+		}
 		if chunk.ServiceTier != "" {
 			serviceTier = chunk.ServiceTier
 		}

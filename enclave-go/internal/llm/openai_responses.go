@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,7 +10,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/sse"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
@@ -258,18 +258,32 @@ type responsesStreamEvent struct {
 // Emit the same internal events as every other provider. Settlement, refunds,
 // public Chat/Responses/Messages output, and cache accounting remain shared.
 func translateOpenAIResponsesStream(r io.Reader, w io.Writer) error {
-	scanner := sse.NewReader(r, 1<<20)
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	tools := make(map[int]bool)
 	thinkingStarted := false
-	for scanner.Next() {
-		payload := scanner.Event().Data
-		if strings.TrimSpace(payload) == "" {
+	var data strings.Builder
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data:") {
+			data.WriteString(strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+			data.WriteByte('\n')
+			if data.Len() > 1<<20 {
+				return fmt.Errorf("llm/openai-responses: oversized event")
+			}
+			continue
+		}
+		if line != "" || data.Len() == 0 {
 			continue
 		}
 		var event responsesStreamEvent
-		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		if err := upstreamerror.CheckEvent("", data.String()); err != nil {
+			return err
+		}
+		if err := json.Unmarshal([]byte(data.String()), &event); err != nil {
 			return fmt.Errorf("llm/openai-responses: malformed event")
 		}
+		data.Reset()
 		var err error
 		switch event.Type {
 		case "response.output_text.delta", "response.refusal.delta":
@@ -304,9 +318,7 @@ func translateOpenAIResponsesStream(r io.Reader, w io.Writer) error {
 				err = writeAnthropicToolStop(w, event.OutputIndex+1)
 			}
 		case "error", "response.failed":
-			if err := upstreamerror.FromEvent(payload); err != nil {
-				return err
-			}
+			// Provider messages can echo prompts; never include event payloads.
 			return &upstreamHTTPError{status: http.StatusBadGateway, body: "OpenAI Responses stream failed"}
 		case "response.completed", "response.incomplete":
 			usage := event.Response.Usage

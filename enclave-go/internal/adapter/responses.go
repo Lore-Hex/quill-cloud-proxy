@@ -763,8 +763,8 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal,
 	var thinkingOrder []int
 	sawUpstreamBytes := false
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
-	scanner.Split(splitDoubleNewline)
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxSSEBlockBytes)
+	scanner.Split(SplitDoubleNewline)
 	for scanner.Scan() {
 		sawUpstreamBytes = true
 		eventName, dataJSON := parseSSEBlock(scanner.Bytes())
@@ -1250,8 +1250,8 @@ func TransformResponsesStreamControlled(
 	}
 
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
-	scanner.Split(splitDoubleNewline)
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxSSEBlockBytes)
+	scanner.Split(SplitDoubleNewline)
 	for scanner.Scan() {
 		if control != nil && control.Termination != nil {
 			if termination := control.Termination(); termination != nil {
