@@ -668,3 +668,45 @@ func TestStreamingPhaseEndBeforeProviderComplete(t *testing.T) {
 		})
 	}
 }
+
+// The request_end line is append-only: readers that index fields by position on
+// the pre-idle-split layout must keep working, so idle_wait_ms and request_ms
+// come after cp_endpoint, and nothing before cp_endpoint may move.
+func TestRequestEndLogAppendsIdleSplitAfterLegacyLayout(t *testing.T) {
+	var out strings.Builder
+	writeRequestEndLog(&out, "rid", "POST", "/v1/chat/completions", 200, 10, 20, 1280*time.Millisecond,
+		requestAuditIdentity{workspaceID: "ws", credentialID: "cred", credentialFingerprint: "fp", attribution: "authorization"},
+		"ok",
+		requesttiming.Fields{
+			IdleWaitMS: 1179, RequestMS: 101, AcceptToStartMS: 7, AuthorizeMS: 8, AuthorizeAttempts: 1,
+			RouteMS: 3, UpstreamMS: 28, TTFBMS: 5, RetryWaitMS: 13, SettleMS: 19, SettleOutcome: "ok",
+			ReceiptMS: 23, CPEndpoint: "trustedrouter.com",
+		})
+	line := strings.TrimSuffix(out.String(), "\n")
+	tokens := strings.Fields(line)
+	if tokens[0] != "enclave.request_end" {
+		t.Fatalf("unexpected event: %q", line)
+	}
+	want := []string{
+		"request_log_id", "method", "route", "status", "outcome", "body_bytes", "response_bytes", "elapsed_ms",
+		"workspace_id", "credential_id", "credential_fingerprint", "attribution", "accept_to_start_ms",
+		"authorize_ms", "authorize_attempts", "route_ms", "upstream_ms", "upstream_partial", "ttfb_ms",
+		"retry_wait_ms", "settle_ms", "settle_outcome", "receipt_ms", "cp_endpoint",
+		"idle_wait_ms", "request_ms", // appended by the idle split; never earlier
+	}
+	got := make([]string, 0, len(tokens)-1)
+	for _, kv := range tokens[1:] {
+		got = append(got, strings.SplitN(kv, "=", 2)[0])
+	}
+	if len(got) != len(want) {
+		t.Fatalf("field count %d, want %d: %q", len(got), len(want), line)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("field %d is %q, want %q: %q", i, got[i], want[i], line)
+		}
+	}
+	if !strings.HasSuffix(line, ` cp_endpoint="trustedrouter.com" idle_wait_ms=1179 request_ms=101`) {
+		t.Fatalf("idle split must be the trailing pair: %q", line)
+	}
+}
