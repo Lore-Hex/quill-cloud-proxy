@@ -1,8 +1,7 @@
 {
   "accepted_hostdata": [
     "0ee2957422d7554b99b12f00d8d53b919c3475453d7b2cd82dffdad45c9ce6dc",
-    "a68297c060548f8f2d1765338245bbcbb95f7dbfbcc621e80c047789f23098fa",
-    "dd0d3f1f7966eb9cfb731507f8a3a7d74111952b9e061c5f52257ae1f09b13b8"
+    "5aae710929c5ccc8fb0c4c3d3344f1ef4c5927c7c06ebcd72c7f522e03cc49e5"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
   "attestation_format": "microsoft-azure-attestation-jwt",
@@ -21,6 +20,7 @@
   "evidence_note": "MAA re-attests the SEV-SNP report; verifiers see Microsoft's assertion, not the raw hardware report or the AMD certificate chain.",
   "hostdata": "0ee2957422d7554b99b12f00d8d53b919c3475453d7b2cd82dffdad45c9ce6dc",
   "image_build_commit": "bbcccb456f23c2e516f0fc61ca76f53d7c6a1aae",
+  "image_digest": "sha256:751299de2f000e2ad79f8ab737c265eaa6db724bc12fc92429424b49ba87b7cd",
   "measurement_provenance": "Each updated regional MAA measurement was independently verified against its generated CCE policy, fresh nonce, exact issuer, TLS certificate/exporter binding, and non-debug claims. Image/source associations are operator-asserted, not reproducible-build proofs. During rollout, read each region source_commit for the serving build.",
   "measurement_type": "sev-snp-hostdata-sha256",
   "platform": "azure-confidential-containers-sev-snp",
@@ -40,15 +40,15 @@
       "attestation_issuer": "https://trquillsyd.eau.attest.azure.net",
       "attestation_url": "https://api-azure-syd.trustedrouter.com/attestation",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "a68297c060548f8f2d1765338245bbcbb95f7dbfbcc621e80c047789f23098fa",
-      "image_build_commit": "54de928904faf0473e666b1fd0bbca83c399119a",
-      "image_digest": "sha256:927e6a4def85cfaab590d8e72b780829c2386d9a55625e6d5a51ea20b90b9157",
+      "hostdata": "5aae710929c5ccc8fb0c4c3d3344f1ef4c5927c7c06ebcd72c7f522e03cc49e5",
+      "image_build_commit": "bbcccb456f23c2e516f0fc61ca76f53d7c6a1aae",
+      "image_digest": "sha256:751299de2f000e2ad79f8ab737c265eaa6db724bc12fc92429424b49ba87b7cd",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866",
       "origin_hostname": "quill-enclave-australiaeast.australiaeast.azurecontainer.io",
-      "source_commit": "718acb7f0bc6f5ff2a050b4e7d30812df7889c5f"
+      "source_commit": "bbcccb456f23c2e516f0fc61ca76f53d7c6a1aae"
     }
   ],
-  "release_state": "rolling",
+  "release_state": "multi-region",
   "source_commit": "bbcccb456f23c2e516f0fc61ca76f53d7c6a1aae",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
