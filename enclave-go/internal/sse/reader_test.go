@@ -146,11 +146,25 @@ func TestReaderPreservesSplitEventMetadata(t *testing.T) {
 }
 
 func TestReaderKeepsOtherMultilineDataJoined(t *testing.T) {
-	for _, data := range []string{"plain\ntext", "[DONE]\nnot JSON", "1\n", "[\n1,\n2\n]"} {
+	for _, data := range []string{"plain\ntext", "[\n1,\n2\n]"} {
 		wire := "data: " + strings.ReplaceAll(data, "\n", "\ndata: ") + "\n\n"
 		r := NewReader(strings.NewReader(wire), 1024)
 		if !r.Next() || r.Event().Data != data || r.Event().Raw != wire {
 			t.Fatalf("event changed: got=%+v want=%q err=%v", r.Event(), data, r.Err())
+		}
+		if r.Next() || r.Err() != nil {
+			t.Fatalf("extra event or error: %v", r.Err())
+		}
+	}
+}
+
+func TestReaderSplitsCompleteDataBeforeMalformedData(t *testing.T) {
+	for _, data := range []string{"[DONE]\nnot JSON", "1\n", "{}\nnot JSON"} {
+		r := NewReader(strings.NewReader("data: "+strings.ReplaceAll(data, "\n", "\ndata: ")+"\n\n"), 1024)
+		for _, want := range strings.Split(data, "\n") {
+			if !r.Next() || r.Event().Data != want {
+				t.Fatalf("event=%+v want=%q err=%v", r.Event(), want, r.Err())
+			}
 		}
 		if r.Next() || r.Err() != nil {
 			t.Fatalf("extra event or error: %v", r.Err())
@@ -166,11 +180,15 @@ func TestReaderFailsClosed(t *testing.T) {
 		"data: {\"error\":",
 		"data: {}\ndata: {\"error\":\n\n",
 		"data: {\"error\":\ndata: {}\ndata: [DONE]\n\n",
-		"data: {}\ndata: not JSON\n\n",
 		"event: error\ndata: {}\ndata: {}\n\n",
 		"event: response.failed\ndata: {}\ndata: {}\n\n",
 	} {
 		r := NewReader(strings.NewReader(wire), 1024)
+		if strings.HasPrefix(wire, "data: {}\n") {
+			if !r.Next() || r.Event().Data != "{}" {
+				t.Fatalf("content before failure lost: %+v err=%v", r.Event(), r.Err())
+			}
+		}
 		if r.Next() || r.Err() == nil || upstreamerror.Parse(r.Err()).Status != 502 {
 			t.Fatalf("failure lost: %q err=%v", wire, r.Err())
 		}
@@ -178,8 +196,11 @@ func TestReaderFailsClosed(t *testing.T) {
 }
 
 func TestReaderBoundsWholeEvent(t *testing.T) {
-	for _, data := range []string{"x", "{}"} {
-		r := NewReader(strings.NewReader(strings.Repeat("data: "+data+"\n", 50)+"\n"), 128)
+	for _, wire := range []string{
+		strings.Repeat("data: x\n", 50) + "\n",
+		"data: {}\n" + strings.Repeat(": keepalive\n", 50) + "\n",
+	} {
+		r := NewReader(strings.NewReader(wire), 128)
 		if r.Next() || !errors.Is(r.Err(), io.ErrShortBuffer) {
 			t.Fatalf("oversized event accepted: %v", r.Err())
 		}

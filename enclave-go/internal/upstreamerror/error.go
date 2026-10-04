@@ -194,21 +194,43 @@ func scalar(v any) any {
 	}
 }
 
+var errorEventPattern = regexp.MustCompile(`"error"\s*:|"type"\s*:\s*"(?:error|response\.failed)"`)
+var jsonStringPattern = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+
+func looksLikeError(payload string) bool {
+	// Preserve detection of escaped error keys/type values even when the rest
+	// of the report is malformed and cannot be decoded as an object.
+	if strings.Contains(payload, `\u`) {
+		payload = jsonStringPattern.ReplaceAllStringFunc(payload, func(token string) string {
+			var value string
+			if json.Unmarshal([]byte(token), &value) == nil {
+				encoded, _ := json.Marshal(value)
+				return string(encoded)
+			}
+			return token
+		})
+	}
+	return errorEventPattern.MatchString(payload)
+}
+
 // FromEvent recognizes structured SSE failures; status-less events use 502.
 func FromEvent(payload string) error {
 	var obj map[string]any
 	decoder := json.NewDecoder(strings.NewReader(payload))
 	decoder.UseNumber()
 	if err := decoder.Decode(&obj); err != nil {
-		// Undecodable JSON objects cannot safely be treated as successful chunks.
-		if strings.HasPrefix(strings.TrimSpace(payload), "{") {
+		// Leave malformed content to the provider's existing skip/fail policy.
+		if looksLikeError(payload) {
 			return &Error{Status: 502, Body: payload}
 		}
 		return nil
 	}
 	var trailing any
 	if decoder.Decode(&trailing) != io.EOF {
-		return &Error{Status: 502, Body: payload}
+		if looksLikeError(payload) {
+			return &Error{Status: 502, Body: payload}
+		}
+		return nil
 	}
 	failed := obj["type"] == "error" || obj["type"] == "response.failed"
 	if response, ok := obj["response"].(map[string]any); ok && obj["type"] == "response.failed" {

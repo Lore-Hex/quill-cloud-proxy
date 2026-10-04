@@ -16,11 +16,12 @@ type Event struct {
 }
 
 type Reader struct {
-	scanner  *bufio.Scanner
-	maxBytes int
-	event    Event
-	pending  []Event
-	err      error
+	scanner      *bufio.Scanner
+	maxBytes     int
+	event        Event
+	pendingLine  string
+	pendingEvent Event
+	err          error
 }
 
 func NewReader(r io.Reader, maxBytes int) *Reader {
@@ -29,26 +30,47 @@ func NewReader(r io.Reader, maxBytes int) *Reader {
 	return &Reader{scanner: scanner, maxBytes: maxBytes}
 }
 
-// Next collects all data fields through the blank line (or EOF). Comments and
-// other fields never split an event. Providers that omit blank lines are also
-// accepted when every data line is a complete JSON value or [DONE]. Raw retains
-// native framing except when splitting such lines into separate relay events.
+var dataComplete = func(data string) bool {
+	return strings.TrimSpace(data) == "[DONE]" || json.Valid([]byte(data))
+}
+
+// Next collects data through a blank line or EOF. A single data line holding a
+// complete JSON value or [DONE] also ends at the next data field or named-event
+// boundary, tolerating providers that omit blank lines. Multiline data stays
+// joined. Comments and other fields never split an event. Raw retains native
+// framing except for these legacy split events.
 func (r *Reader) Next() bool {
 	if r.err != nil {
 		return false
 	}
-	if len(r.pending) > 0 {
-		event := r.pending[0]
-		r.pending[0] = Event{}
-		r.pending = r.pending[1:]
-		return r.emit(event)
-	}
 	var raw, data strings.Builder
-	event := Event{}
-	hasData := false
+	event := r.pendingEvent
+	r.pendingEvent = Event{}
+	inheritedMetadata := event != (Event{})
+	dataLines := 0
+	singleDataComplete := false
 	complete := false
-	for r.scanner.Scan() {
-		line := r.scanner.Text()
+	for {
+		line := r.pendingLine
+		r.pendingLine = ""
+		if line == "" {
+			if !r.scanner.Scan() {
+				break
+			}
+			line = r.scanner.Text()
+		}
+		field, value, _ := strings.Cut(line, ":")
+		value = strings.TrimPrefix(value, " ")
+		if dataLines == 1 && singleDataComplete && (field == "data" || field == "event" && event.Name != "") {
+			r.pendingLine = line
+			if field == "data" {
+				// Keep metadata shared by legacy data lines until a new event
+				// name or a blank line, as in the original tolerant split.
+				r.pendingEvent = Event{Name: event.Name, UnexpectedField: event.UnexpectedField}
+			}
+			event.Data = data.String()
+			return r.emit(event)
+		}
 		if raw.Len()+len(line)+1 > r.maxBytes {
 			r.err = io.ErrShortBuffer
 			return false
@@ -59,15 +81,18 @@ func (r *Reader) Next() bool {
 			complete = true
 			break
 		}
-		field, value, _ := strings.Cut(line, ":")
-		value = strings.TrimPrefix(value, " ")
 		switch field {
 		case "data":
-			if hasData {
+			if dataLines > 0 {
 				data.WriteByte('\n')
 			}
 			data.WriteString(value)
-			hasData = true
+			dataLines++
+			if dataLines == 1 {
+				// Only single-line events qualify for legacy splitting. Cache
+				// completeness so repeated event fields cannot rescan this line.
+				singleDataComplete = dataComplete(value)
+			}
 		case "event":
 			event.Name = value
 		case "": // comment
@@ -83,35 +108,14 @@ func (r *Reader) Next() bool {
 		return false
 	}
 	event.Data, event.Raw = data.String(), raw.String()
-	if lines := separateDataLines(event.Data); len(lines) > 0 {
-		for _, line := range lines {
-			part := event
-			part.Data = line
-			part.Raw = "" // Frame on delivery, without copying the name per queued line.
-			r.pending = append(r.pending, part)
-		}
-		return r.Next()
+	if inheritedMetadata {
+		event.Raw = "" // Include inherited metadata in the last legacy part too.
 	}
 	return r.emit(event)
 }
 
-// Prefer the assembled JSON payload. Only unambiguously complete individual
-// lines qualify for the legacy framing fallback; malformed data stays joined.
-func separateDataLines(data string) []string {
-	if !strings.Contains(data, "\n") || json.Valid([]byte(data)) {
-		return nil
-	}
-	lines := strings.Split(data, "\n")
-	for _, line := range lines {
-		if strings.TrimSpace(line) != "[DONE]" && !json.Valid([]byte(line)) {
-			return nil
-		}
-	}
-	return lines
-}
-
 func (r *Reader) emit(event Event) bool {
-	// Check on delivery so earlier content is visible before a queued failure.
+	// Check on delivery so earlier content is visible before a later failure.
 	if err := CheckError(event.Name, event.Data); err != nil {
 		r.err = err
 		return false
