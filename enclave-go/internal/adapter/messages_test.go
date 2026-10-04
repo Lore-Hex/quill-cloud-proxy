@@ -3,6 +3,8 @@ package adapter
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -472,4 +474,64 @@ func emittedMessageDeltaStopReason(t *testing.T, stream string) string {
 	}
 	t.Fatalf("message_delta not emitted: %s", stream)
 	return ""
+}
+
+func TestMessagesTerminalHookPreservesEventsAndOptionalUsage(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		for _, includeUsage := range []bool{false, true} {
+			t.Run(fmt.Sprintf("native=%t/usage=%t", native, includeUsage), func(t *testing.T) {
+				wire := ""
+				if native {
+					wire = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_provider\",\"usage\":{\"input_tokens\":2,\"output_tokens\":0}}}\n\n"
+				}
+				wire += "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n"
+				usageJSON := ""
+				if includeUsage {
+					usageJSON = `,"usage":{"output_tokens":3}`
+				}
+				wire += "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null}" + usageJSON + "}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+				var original, annotated bytes.Buffer
+				if _, err := RelayAnthropicStream(strings.NewReader(wire), &original, "msg_gateway", "model"); err != nil {
+					t.Fatal(err)
+				}
+				calls := 0
+				result, err := RelayAnthropicStreamWithTerminalHook(strings.NewReader(wire), &annotated, "msg_gateway", "model", func(terminal StreamTerminal) error {
+					calls++
+					if terminal.Result.Text != "Hello" || terminal.FinishReason != "stop" || (terminal.UsageFields != nil) != includeUsage {
+						t.Fatalf("terminal = %+v", terminal)
+					}
+					if includeUsage {
+						if terminal.Result.Usage.OutputTokens != 3 {
+							t.Fatalf("usage = %+v", terminal.Result.Usage)
+						}
+						terminal.UsageFields["cost_microdollars"] = 83
+						terminal.UsageFields["total_cost_microdollars"] = 83
+					}
+					return terminal.Emit()
+				})
+				if err != nil || calls != 1 || result.Text != "Hello" {
+					t.Fatalf("result=%+v err=%v calls=%d", result, err, calls)
+				}
+				oldBlocks, newBlocks := strings.Split(original.String(), "\n\n"), strings.Split(annotated.String(), "\n\n")
+				if len(oldBlocks) != len(newBlocks) {
+					t.Fatal("event count changed")
+				}
+				for index, block := range oldBlocks {
+					oldName, oldBody := parseSSEBlock([]byte(block))
+					newName, newBody := parseSSEBlock([]byte(newBlocks[index]))
+					if newName == "message_delta" && includeUsage {
+						usage := getMap(newBody, "usage")
+						if usage["cost_microdollars"] != float64(83) || usage["total_cost_microdollars"] != float64(83) {
+							t.Fatalf("usage = %+v", usage)
+						}
+						delete(usage, "cost_microdollars")
+						delete(usage, "total_cost_microdollars")
+					}
+					if oldName != newName || !reflect.DeepEqual(oldBody, newBody) {
+						t.Fatalf("event %d changed: %s => %s", index, block, newBlocks[index])
+					}
+				}
+			})
+		}
+	}
 }

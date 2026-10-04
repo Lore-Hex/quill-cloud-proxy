@@ -340,6 +340,13 @@ func WriteMessagesResponse(
 // content_block_start/stop) and remaps block indexes so a text block and
 // the first tool block don't collide on index 0.
 func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (StreamResult, error) {
+	return RelayAnthropicStreamWithTerminalHook(r, w, messageID, model, nil)
+}
+
+// RelayAnthropicStreamWithTerminalHook lets the gateway annotate the existing
+// terminal message_delta usage before encoding it. All event ordering and
+// native message fields are preserved.
+func RelayAnthropicStreamWithTerminalHook(r io.Reader, w io.Writer, messageID, model string, beforeTerminal func(StreamTerminal) error) (StreamResult, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
 	scanner.Split(splitDoubleNewline)
@@ -360,12 +367,21 @@ func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (St
 	sawUpstreamBytes := false
 
 	writeEvent := func(name string, payload map[string]any) error {
-		body, err := json.Marshal(payload)
-		if err != nil {
+		emit := func() error {
+			body, err := json.Marshal(payload)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, body)
 			return err
 		}
-		_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, body)
-		return err
+		if name == "message_delta" && beforeTerminal != nil && getString(getMap(payload, "delta"), "stop_reason") != "" {
+			return beforeTerminal(StreamTerminal{
+				Result:      relayResult(captured.String(), finishReason, usage, toolCallsByIndex, toolOrder),
+				UsageFields: getMap(payload, "usage"), FinishReason: finishReason, Emit: emit,
+			})
+		}
+		return emit()
 	}
 	ensureStarted := func() error {
 		if passthrough || started {
@@ -447,6 +463,12 @@ func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (St
 		}
 
 		if passthrough {
+			if eventName == "message_delta" && beforeTerminal != nil {
+				if err := writeEvent(eventName, dataJSON); err != nil {
+					return StreamResult{}, err
+				}
+				continue
+			}
 			if _, err := w.Write(raw); err != nil {
 				return StreamResult{}, err
 			}

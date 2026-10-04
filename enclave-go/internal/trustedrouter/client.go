@@ -497,6 +497,7 @@ type Authorization struct {
 	SpendLeaseAdmission                   *spendlease.AdmissionMarker        `json:"spend_lease_admission,omitempty"`
 	SpendLeaseRemainingMicro              *int64                             `json:"spend_lease_remaining_micro,omitempty"`
 	StageD                                StageDEligibility                  `json:"stage_d"`
+	CandidateCostReporting                bool                               `json:"candidate_cost_reporting"`
 	CandidatePrices                       []CandidatePrice                   `json:"candidate_prices"`
 	CapMicro                              int64                              `json:"cap_micro"`
 	RouteType                             string                             `json:"-"`
@@ -971,21 +972,24 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 }
 
 type SettleResult struct {
-	GenerationID         string  `json:"generation_id"`
-	CostMicrodollars     int     `json:"cost_microdollars"`
-	Cost                 float64 `json:"cost"`
-	InputTokens          int     `json:"input_tokens"`
-	OutputTokens         int     `json:"output_tokens"`
-	ReasoningTokens      int     `json:"reasoning_tokens"`
-	CacheReadInputTokens int     `json:"cache_read_input_tokens"`
-	UsageType            string  `json:"usage_type"`
-	Model                string  `json:"model"`
-	Provider             string  `json:"provider"`
-	Region               string  `json:"region"`
-	Settled              bool    `json:"settled"`
-	AlreadySettled       bool    `json:"already_settled"`
-	FinalizationOutcome  string  `json:"finalization_outcome"`
-	Disposition          string  `json:"disposition"`
+	// CostMicrodollarsKnown preserves a real zero across JSON decoding. A
+	// missing/null cost must never become a reported free request.
+	CostMicrodollarsKnown bool    `json:"-"`
+	GenerationID          string  `json:"generation_id"`
+	CostMicrodollars      int     `json:"cost_microdollars"`
+	Cost                  float64 `json:"cost"`
+	InputTokens           int     `json:"input_tokens"`
+	OutputTokens          int     `json:"output_tokens"`
+	ReasoningTokens       int     `json:"reasoning_tokens"`
+	CacheReadInputTokens  int     `json:"cache_read_input_tokens"`
+	UsageType             string  `json:"usage_type"`
+	Model                 string  `json:"model"`
+	Provider              string  `json:"provider"`
+	Region                string  `json:"region"`
+	Settled               bool    `json:"settled"`
+	AlreadySettled        bool    `json:"already_settled"`
+	FinalizationOutcome   string  `json:"finalization_outcome"`
+	Disposition           string  `json:"disposition"`
 }
 
 func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (result *SettleResult, err error) {
