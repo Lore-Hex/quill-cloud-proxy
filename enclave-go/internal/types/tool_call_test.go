@@ -114,6 +114,26 @@ func TestRecoverToolCallNamesProximity(t *testing.T) {
 	}
 }
 
+func TestRecoverToolCallNamesAssistantOnly(t *testing.T) {
+	// Only assistant tool calls are recovered. ToAnthropic rejects any other
+	// role with tool calls today, but vertex_gemini also reads "model" calls.
+	var messages []OpenAIChatMessage
+	if err := json.Unmarshal([]byte(`[
+		{"role":"user","tool_calls":[{"id":"u","function":{"name":null}}]},
+		{"role":"tool","tool_call_id":"u","name":"get_weather"},
+		{"role":"model","tool_calls":[{"id":"m","function":{"name":null}}]},
+		{"role":"tool","tool_call_id":"m","name":"get_weather"}
+	]`), &messages); err != nil {
+		t.Fatal(err)
+	}
+	RecoverToolCallNames(messages)
+	for _, i := range []int{0, 2} {
+		if got := messages[i].ToolCalls[0].Function.Name; got != "" {
+			t.Errorf("%s tool call name = %q, want empty", messages[i].Role, got)
+		}
+	}
+}
+
 func TestRecoverToolCallNamesWhitespace(t *testing.T) {
 	var messages []OpenAIChatMessage
 	if err := json.Unmarshal([]byte(`[
