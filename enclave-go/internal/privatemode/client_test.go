@@ -13,7 +13,7 @@ import (
 
 func TestManifestIsPinnedAndImmutable(t *testing.T) {
 	sum := sha256.Sum256(manifest)
-	if hex.EncodeToString(sum[:]) != "928724d7a536442715aed927d9fb9fc8718c1d67a77ce888dca8f0ea9078bb39" {
+	if hex.EncodeToString(sum[:]) != "384a2137e534357d74392bf3940373ff49d309d91551376b5a7f828e372af42b" {
 		t.Fatal("manifest changed without a reviewed deployment pin")
 	}
 	var mf struct {
@@ -23,7 +23,7 @@ func TestManifestIsPinnedAndImmutable(t *testing.T) {
 	if err := json.Unmarshal(manifest, &mf); err != nil {
 		t.Fatal(err)
 	}
-	if len(mf.Policies) != 9 || len(mf.WorkloadOwnerKeyDigests) != 0 {
+	if len(mf.Policies) != 8 || len(mf.WorkloadOwnerKeyDigests) != 0 {
 		t.Fatal("unexpected deployment mutation policy")
 	}
 	coordinators := 0

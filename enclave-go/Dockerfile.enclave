@@ -14,7 +14,9 @@
 # attest-sidecar module (enclave-go/sidecar/go.mod) requires go 1.25.5, so a
 # 1.24 base fails that build step outright. Bumping the base CHANGES PCR0 —
 # expected, and the reason this file pins by digest.
-FROM golang:1.25-bookworm@sha256:61170847dd0e20c3c1e374aea35c7057c42e1d638d775c360afcd548531c05ab AS builder
+# Build Go natively, then cross-compile via TARGETARCH below. The final image
+# and pinned proxy still use the requested target platform, without emulation.
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm@sha256:61170847dd0e20c3c1e374aea35c7057c42e1d638d775c360afcd548531c05ab AS builder
 
 # ca-certificates: Go's crypto/tls reads /etc/ssl/certs/ca-certificates.crt at
 # runtime to verify TLS peers (Bedrock in our case). The scratch base has no
@@ -67,7 +69,7 @@ RUN cd sidecar && go mod download \
 RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 
 # Vendor-distributed proxy, pinned for both supply chain and verifier behavior.
-FROM ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.57.0@sha256:77e8f378d5151d6abf36e02c7b8622996dcc4ded09b4ef4860b538a5dcc557c6 AS privatemode
+FROM ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.58.0@sha256:5e8f549169c4288c24c902eadc4c6ebfaaf05c06e5605449c34469257929b143 AS privatemode
 
 FROM scratch
 COPY --from=privatemode /bin/privatemode-proxy /privatemode-proxy

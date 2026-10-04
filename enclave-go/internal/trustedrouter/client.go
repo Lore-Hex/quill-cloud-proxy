@@ -491,6 +491,8 @@ type Authorization struct {
 	Tags                                  qtypes.TagMap                      `json:"tags"`
 	RequestMetadataVersion                int                                `json:"request_metadata_version"`
 	AdditionalCostReservationMicrodollars int                                `json:"additional_cost_reservation_microdollars"`
+	VideoTokenBilling                     bool                               `json:"video_token_billing"`
+	EstimatedCostMicrodollars             int                                `json:"estimated_cost_microdollars"`
 	ReceiptFeeBasisPoints                 int                                `json:"receipt_fee_basis_points"`
 	NativeBatchEligible                   bool                               `json:"native_batch_eligible"`
 	SpendLease                            *spendlease.Response               `json:"spend_lease,omitempty"`
@@ -847,7 +849,8 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 			Message:    "hosted-tool billing is not available on the active control plane",
 		}
 	}
-	if routeType == "videos" && decoded.AdditionalCostReservationMicrodollars <= 0 {
+	if routeType == "videos" && decoded.AdditionalCostReservationMicrodollars <= 0 &&
+		!(decoded.VideoTokenBilling && decoded.EstimatedCostMicrodollars > 0 && req.MaxTokens != nil && *req.MaxTokens > 1) {
 		_ = c.Refund(ctx, decoded, 503, "video_billing_unavailable", 0.001, nil)
 		return nil, &ControlPlaneError{
 			Path:       "/internal/gateway/authorize",

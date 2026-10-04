@@ -24,6 +24,15 @@ var contractParameterCategories = map[string]struct{}{
 	"max_output_tokens": {}, "max_completion_tokens": {}, "max_tool_calls": {},
 	"previous_response_id": {}, "conversation": {}, "background": {}, "include": {},
 	"modalities": {}, "prompt_cache_retention": {}, "usage": {}, "other": {},
+	"allow_fallbacks": {}, "cache_control": {}, "debug": {}, "depth": {},
+	"frequency_penalty": {}, "image_config": {}, "logit_bias": {}, "logprobs": {},
+	"min_p": {}, "n": {}, "plugins": {}, "polyphemus": {}, "prediction": {},
+	"presence_penalty": {}, "prompt": {}, "prompt_cache_key": {}, "prompt_cache_options": {},
+	"repetition_penalty": {}, "route": {}, "safety_identifier": {}, "seed": {},
+	"service_tier": {}, "session_id": {}, "stop": {}, "stop_server_tools_when": {},
+	"top_a": {}, "top_k": {}, "top_logprobs": {}, "trace": {}, "truncation": {},
+	"user": {}, "web_search_options": {}, "file": {}, "audio": {}, "video": {},
+	"content": {}, "input_image": {}, "input_audio": {}, "input_file": {},
 }
 
 // WithContractRejection annotates the existing post-response identity lookup.
