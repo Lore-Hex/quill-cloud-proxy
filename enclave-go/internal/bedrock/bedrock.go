@@ -147,20 +147,7 @@ func (c *Client) InvokeStreaming(
 		if !ok {
 			continue
 		}
-		// chunk.Value.Bytes is JSON like:
-		//   {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}
-		// Re-emit it as a native Anthropic SSE event so adapter.TransformStream
-		// can read it with its existing parser.
-		var evt struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(chunk.Value.Bytes, &evt); err != nil {
-			continue
-		}
-		if evt.Type == "" {
-			continue
-		}
-		if _, err := fmt.Fprintf(out, "event: %s\ndata: %s\n\n", evt.Type, chunk.Value.Bytes); err != nil {
+		if err := RelayEvent(chunk.Value.Bytes, out); err != nil {
 			return err
 		}
 	}

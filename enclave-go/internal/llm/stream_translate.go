@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/sse"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
@@ -50,8 +50,7 @@ func translateOpenAIStreamToAnthropic(r io.Reader, w io.Writer) error {
 }
 
 func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provider string) error {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	scanner := sse.NewReader(r, 1<<20)
 
 	stopReason := "end_turn"
 	toolCalls := map[int]*openAIToolCallAccumulator{}
@@ -63,12 +62,11 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	var citations []string
 	var searchResults []qtypes.ProviderSearchResult
 	var decision map[string]any
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
+	for scanner.Next() {
+		payload := strings.TrimSpace(scanner.Event().Data)
+		if payload == "" {
 			continue
 		}
-		payload := strings.TrimSpace(line[len("data:"):])
 		if payload == "[DONE]" {
 			sawDone = true
 			break
@@ -119,9 +117,6 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 				return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub returned a malformed stream chunk"}
 			}
 			continue
-		}
-		if err := upstreamerror.FromEvent(payload); err != nil {
-			return err
 		}
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Error != nil {

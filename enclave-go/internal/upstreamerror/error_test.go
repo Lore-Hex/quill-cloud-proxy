@@ -100,3 +100,33 @@ func TestNumericErrorScalarsAreBounded(t *testing.T) {
 		}
 	}
 }
+
+func TestFromEventFailsClosed(t *testing.T) {
+	for name, payload := range map[string]string{
+		"huge integer":    `{"error":{"message":"refused","code":` + strings.Repeat("9", 1500) + `}}`,
+		"huge exponent":   `{"error":{"message":"refused","param":1e` + strings.Repeat("9", 1500) + `}}`,
+		"invalid number":  `{"error":{"code":NaN}}`,
+		"truncated":       `{"error":{"message":"refused"`,
+		"escaped key":     `{"\u0065rror":{"code":NaN}}`,
+		"typed null":      `{"type":"error","error":null}`,
+		"response failed": `{"type":"response.failed","response":null}`,
+		"trailing junk":   `{"error":null} {"type":"error"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := FromEvent(payload)
+			if err == nil {
+				t.Fatal("error-like event became success")
+			}
+			d := Parse(err)
+			if d.Status != 502 {
+				t.Fatalf("status=%d", d.Status)
+			}
+			for _, scalar := range []any{d.Code, d.Param} {
+				b, err := json.Marshal(scalar)
+				if err != nil || len(b) > 1200 {
+					t.Fatalf("unbounded scalar: len=%d err=%v", len(b), err)
+				}
+			}
+		})
+	}
+}

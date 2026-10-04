@@ -3,7 +3,6 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -14,6 +13,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/sse"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
@@ -608,25 +608,17 @@ func translateGeminiStreamToAnthropic(r io.Reader, w io.Writer) error {
 }
 
 func translateGeminiStreamToAnthropicMode(r io.Reader, w io.Writer, strict bool) error {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 64<<20)
+	scanner := sse.NewReader(r, 64<<20)
 
 	stopReason := "end_turn"
 	var usage *openAIStreamUsage
 	toolIndex := 1 // index 0 is reserved for the text content block
 	sawTool := false
 	sawTerminal := false
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	for scanner.Next() {
+		payload := strings.TrimSpace(scanner.Event().Data)
 		if payload == "" || payload == "[DONE]" {
 			continue
-		}
-		if err := upstreamerror.FromEvent(payload); err != nil {
-			return err
 		}
 		delta, calls, reason, chunkUsage, err := geminiChunkDelta(payload)
 		if err != nil {

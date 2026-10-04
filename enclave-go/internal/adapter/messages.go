@@ -376,6 +376,11 @@ func RelayAnthropicStreamWithTerminalHook(r io.Reader, w io.Writer, messageID, m
 			return err
 		}
 		if name == "message_delta" && beforeTerminal != nil && getString(getMap(payload, "delta"), "stop_reason") != "" {
+			// Translated and native providers may omit usage. Attach the map
+			// before the hook so settled cost is encoded by emit as well.
+			if getMap(payload, "usage") == nil {
+				payload["usage"] = map[string]any{}
+			}
 			return beforeTerminal(StreamTerminal{
 				Result:      relayResult(captured.String(), finishReason, usage, toolCallsByIndex, toolOrder),
 				UsageFields: getMap(payload, "usage"), FinishReason: finishReason, Emit: emit,

@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/mlkem"
 	"encoding/json"
@@ -9,6 +8,8 @@ import (
 	"io"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/sse"
 )
 
 const chutesMaxEncryptedSSELine = 16 << 20
@@ -29,23 +30,18 @@ func decryptChutesStream(
 	w io.Writer,
 	responseSK *mlkem.DecapsulationKey768,
 ) error {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), chutesMaxEncryptedSSELine)
+	scanner := sse.NewReader(r, chutesMaxEncryptedSSELine)
 	var streamKey []byte
 	initSeen := false
 	chunkSeen := false
 	innerDoneSeen := false
 	doneSeen := false
 
-	for scanner.Scan() {
-		line := strings.TrimSuffix(scanner.Text(), "\r")
-		if line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
-			continue
-		}
-		if !strings.HasPrefix(line, "data:") {
+	for scanner.Next() {
+		if scanner.Event().UnexpectedField {
 			return fmt.Errorf("chutes e2ee: unexpected encrypted SSE field")
 		}
-		raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		raw := strings.TrimSpace(scanner.Event().Data)
 		if raw == "[DONE]" {
 			if !initSeen || !chunkSeen || !innerDoneSeen {
 				return fmt.Errorf("chutes e2ee: stream ended before authenticated terminal marker")
@@ -143,17 +139,31 @@ func decryptChutesStream(
 func frameChutesDecryptedChunk(plaintext []byte) ([]byte, bool, error) {
 	plaintext = bytes.TrimSpace(plaintext)
 	if bytes.HasPrefix(plaintext, []byte("data:")) {
-		payload := bytes.TrimSpace(bytes.TrimPrefix(plaintext, []byte("data:")))
-		if len(payload) == 0 {
-			return nil, false, nil
+		events := sse.NewReader(bytes.NewReader(plaintext), chutesMaxEncryptedSSELine)
+		var framed bytes.Buffer
+		terminal := false
+		for events.Next() {
+			payload := strings.TrimSpace(events.Event().Data)
+			if payload == "" {
+				continue
+			}
+			if terminal {
+				return nil, false, fmt.Errorf("chutes e2ee: encrypted content arrived after terminal marker")
+			}
+			if payload == "[DONE]" {
+				terminal = true
+				continue
+			}
+			if !json.Valid([]byte(payload)) {
+				return nil, false, fmt.Errorf("chutes e2ee: decrypted SSE chunk has invalid JSON")
+			}
+			framed.WriteString(strings.TrimRight(events.Event().Raw, "\n"))
+			framed.WriteString("\n\n")
 		}
-		if bytes.Equal(payload, []byte("[DONE]")) {
-			return nil, true, nil
+		if err := events.Err(); err != nil {
+			return nil, false, err
 		}
-		if !json.Valid(payload) {
-			return nil, false, fmt.Errorf("chutes e2ee: decrypted SSE chunk has invalid JSON")
-		}
-		return append(append([]byte(nil), plaintext...), '\n', '\n'), false, nil
+		return framed.Bytes(), terminal, nil
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(plaintext, &object); err != nil || len(object) == 0 {
@@ -201,6 +211,7 @@ func translateChutesEncryptedStream(
 	responseSK *mlkem.DecapsulationKey768,
 ) error {
 	reader, writer := io.Pipe()
+	defer reader.Close()
 	go func() {
 		err := decryptChutesStream(r, writer, responseSK)
 		_ = writer.CloseWithError(err)

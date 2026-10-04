@@ -197,9 +197,20 @@ func scalar(v any) any {
 // FromEvent recognizes structured SSE failures; status-less events use 502.
 func FromEvent(payload string) error {
 	var obj map[string]any
-	if json.Unmarshal([]byte(payload), &obj) != nil {
+	decoder := json.NewDecoder(strings.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&obj); err != nil {
+		// Undecodable JSON objects cannot safely be treated as successful chunks.
+		if strings.HasPrefix(strings.TrimSpace(payload), "{") {
+			return &Error{Status: 502, Body: payload}
+		}
 		return nil
 	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return &Error{Status: 502, Body: payload}
+	}
+	failed := obj["type"] == "error" || obj["type"] == "response.failed"
 	if response, ok := obj["response"].(map[string]any); ok && obj["type"] == "response.failed" {
 		obj = response
 	}
@@ -207,15 +218,17 @@ func FromEvent(payload string) error {
 	if !ok && obj["type"] == "error" {
 		value, ok = obj, true
 	}
-	if !ok || value == nil {
+	if (!ok || value == nil) && !failed {
 		return nil
 	}
 	fields, _ := value.(map[string]any)
 	status := 502
 	for _, source := range []map[string]any{obj, fields} {
 		for _, key := range []string{"status", "code"} {
-			if n, ok := source[key].(float64); ok && n >= 400 && n < 600 && n == float64(int(n)) {
-				status = int(n)
+			if number, ok := source[key].(json.Number); ok {
+				if n, err := number.Float64(); err == nil && n >= 400 && n < 600 && n == float64(int(n)) {
+					status = int(n)
+				}
 			}
 		}
 	}

@@ -497,16 +497,16 @@ func TestMessagesTerminalHookPreservesEventsAndOptionalUsage(t *testing.T) {
 				calls := 0
 				result, err := RelayAnthropicStreamWithTerminalHook(strings.NewReader(wire), &annotated, "msg_gateway", "model", func(terminal StreamTerminal) error {
 					calls++
-					if terminal.Result.Text != "Hello" || terminal.FinishReason != "stop" || (terminal.UsageFields != nil) != includeUsage {
+					if terminal.Result.Text != "Hello" || terminal.FinishReason != "stop" || terminal.UsageFields == nil {
 						t.Fatalf("terminal = %+v", terminal)
 					}
 					if includeUsage {
 						if terminal.Result.Usage.OutputTokens != 3 {
 							t.Fatalf("usage = %+v", terminal.Result.Usage)
 						}
-						terminal.UsageFields["cost_microdollars"] = 83
-						terminal.UsageFields["total_cost_microdollars"] = 83
 					}
+					terminal.UsageFields["cost_microdollars"] = 83
+					terminal.UsageFields["total_cost_microdollars"] = 83
 					return terminal.Emit()
 				})
 				if err != nil || calls != 1 || result.Text != "Hello" {
@@ -519,13 +519,16 @@ func TestMessagesTerminalHookPreservesEventsAndOptionalUsage(t *testing.T) {
 				for index, block := range oldBlocks {
 					oldName, oldBody := parseSSEBlock([]byte(block))
 					newName, newBody := parseSSEBlock([]byte(newBlocks[index]))
-					if newName == "message_delta" && includeUsage {
+					if newName == "message_delta" {
 						usage := getMap(newBody, "usage")
 						if usage["cost_microdollars"] != float64(83) || usage["total_cost_microdollars"] != float64(83) {
 							t.Fatalf("usage = %+v", usage)
 						}
 						delete(usage, "cost_microdollars")
 						delete(usage, "total_cost_microdollars")
+						if !includeUsage {
+							delete(newBody, "usage")
+						}
 					}
 					if oldName != newName || !reflect.DeepEqual(oldBody, newBody) {
 						t.Fatalf("event %d changed: %s => %s", index, block, newBlocks[index])
