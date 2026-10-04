@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 type fusionTimeoutKey struct{}
@@ -15,7 +19,7 @@ type timeouts struct{ idle, total time.Duration }
 
 // WithFusionTimeout opts a fusion inference call into a progress deadline.
 // Panel/judge calls stream upstream even when their collected response does not.
-// Direct calls, authorization, OAuth and attestation keep their own deadlines.
+// Direct calls keep their total deadlines and also receive an idle deadline.
 func WithFusionTimeout(ctx context.Context) context.Context {
 	// Match the existing five-minute last-candidate first-byte allowance so
 	// a reasoning model that is initially silent does not get a shorter budget.
@@ -30,9 +34,19 @@ func (c Client) Do(req *http.Request) (*http.Response, error) { return Do(c.Base
 // Do preserves the client's transport (including attestation/vsock), redirects
 // and cookie policy. Only opted-in requests replace its total timeout.
 func Do(client *http.Client, req *http.Request) (*http.Response, error) {
+	for name, values := range req.Header {
+		if upstreamerror.IsCredentialName(name) {
+			for _, value := range values {
+				upstreamerror.RecordCredential(req.Context(), value)
+			}
+		}
+	}
 	limits, ok := req.Context().Value(fusionTimeoutKey{}).(timeouts)
 	if !ok {
-		return client.Do(req)
+		limits = timeouts{5 * time.Minute, client.Timeout}
+		if ms, err := strconv.Atoi(os.Getenv("QUILL_STREAM_IDLE_TIMEOUT_MS")); err == nil && ms > 0 {
+			limits.idle = time.Duration(ms) * time.Millisecond
+		}
 	}
 	ctx, cancel := context.WithCancelCause(req.Context())
 	watch := &progressWatch{cancel: cancel, idle: limits.idle, last: time.Now()}
@@ -78,7 +92,7 @@ func (w *progressWatch) expire() {
 		return
 	}
 	w.stopped = true
-	w.cancel(fmt.Errorf("fusion upstream idle timeout after %s: %w", w.idle, context.DeadlineExceeded))
+	w.cancel(fmt.Errorf("upstream idle timeout after %s: %w", w.idle, context.DeadlineExceeded))
 }
 
 func (w *progressWatch) progress() {

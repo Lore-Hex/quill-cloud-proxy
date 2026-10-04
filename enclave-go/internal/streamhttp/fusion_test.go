@@ -138,3 +138,45 @@ func TestFusionTimeoutCancellationAndClose(t *testing.T) {
 		})
 	}
 }
+
+// A zero-timeout client models NEAR's pinned connection. No sockets are used.
+func TestDirectStreamIdleDeadline(t *testing.T) {
+	t.Setenv("QUILL_STREAM_IDLE_TIMEOUT_MS", "100")
+	for _, progress := range []bool{false, true} {
+		t.Run(map[bool]string{false: "silent_200", true: "stalls_after_progress"}[progress], func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				pr, pw := io.Pipe()
+				go func() {
+					stop := context.AfterFunc(r.Context(), func() { _ = pw.CloseWithError(r.Context().Err()) })
+					defer stop()
+					defer pw.Close()
+					if progress {
+						for i := 0; i < 12; i++ {
+							if _, err := pw.Write([]byte(": thinking\n\n")); err != nil {
+								return
+							}
+							time.Sleep(20 * time.Millisecond)
+						}
+					}
+					<-r.Context().Done()
+				}()
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: pr}, nil
+			})}
+			req, _ := http.NewRequestWithContext(ctx, "POST", "https://provider.invalid/chat", nil)
+			resp, err := Do(client, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			got, err := io.ReadAll(resp.Body)
+			if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "idle timeout") {
+				t.Fatalf("silent accepted stream not bounded by idle deadline: %v", err)
+			}
+			if progress && len(got) != 12*len(": thinking\n\n") {
+				t.Fatalf("raw keepalives failed to reset idle deadline: %q", got)
+			}
+		})
+	}
+}

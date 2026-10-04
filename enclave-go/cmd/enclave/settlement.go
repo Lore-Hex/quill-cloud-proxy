@@ -44,6 +44,7 @@ func settleForUsageResponse(
 		fmt.Fprintf(os.Stderr, "enclave.response_settle_failed authorization_id=%q route_type=%q err=%v\n", authorization.AuthorizationID, usage.RouteType, err)
 		settlementRetries.Enqueue(settlementRetryJob{
 			trGateway: trGateway, authorization: authorization, usage: usage,
+			reportedCost: costForRetry(reported),
 			requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
 		return reported, nil

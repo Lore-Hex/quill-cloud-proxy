@@ -18,7 +18,7 @@ func reportedSettlement(settlement *trustedrouter.SettleResult, auth *trustedrou
 	if settlement.HasCost() {
 		local := candidateSettlement(nil, auth, usage, nil)
 		if local.HasCost() && local.CostMicrodollars != settlement.CostMicrodollars {
-			fmt.Fprintf(os.Stderr, "enclave.usage_cost_mismatch level=error authorization_id=%q endpoint_id=%q local_cost_microdollars=%d settled_cost_microdollars=%d\n", auth.AuthorizationID, usage.SelectedEndpoint, local.CostMicrodollars, settlement.CostMicrodollars)
+			logUsageCostMismatch(auth, usage, local.CostMicrodollars, settlement.CostMicrodollars)
 		}
 		return settlement
 	}
@@ -112,4 +112,17 @@ func annotateUsageCost(usage map[string]any, settlement *trustedrouter.SettleRes
 	}
 	usage["cost_microdollars"] = settlement.CostMicrodollars
 	usage["total_cost_microdollars"] = settlement.CostMicrodollars
+}
+
+// Copy only the reported scalar into the retry job; never retain pricing or secrets.
+func costForRetry(reported *trustedrouter.SettleResult) *int {
+	if !reported.HasCost() {
+		return nil
+	}
+	cost := reported.CostMicrodollars
+	return &cost
+}
+
+func logUsageCostMismatch(auth *trustedrouter.Authorization, usage trustedrouter.Usage, reported, settled int) {
+	fmt.Fprintf(os.Stderr, "enclave.usage_cost_mismatch level=error authorization_id=%q endpoint_id=%q local_cost_microdollars=%d settled_cost_microdollars=%d\n", authorizationID(auth), usage.SelectedEndpoint, reported, settled)
 }

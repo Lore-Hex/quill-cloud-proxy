@@ -88,3 +88,15 @@ func TestParseRedactsEscapedCredentials(t *testing.T) {
 		t.Fatalf("got %#v; want %#v", got, want)
 	}
 }
+
+func TestNumericErrorScalarsAreBounded(t *testing.T) {
+	for _, value := range []string{strings.Repeat("9", 15000), "1e" + strings.Repeat("9", 15000)} {
+		d := Parse(&Error{Status: 400, Body: `{"error":{"message":"bad request","code":` + value + `,"param":` + value + `}}`})
+		for name, field := range map[string]any{"code": d.Code, "param": d.Param} {
+			encoded, err := json.Marshal(field)
+			if err != nil || len(encoded) > 1200 {
+				t.Errorf("%s exceeds bound: bytes=%d err=%v", name, len(encoded), err)
+			}
+		}
+	}
+}

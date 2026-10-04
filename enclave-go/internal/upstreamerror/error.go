@@ -43,32 +43,45 @@ type Detail struct {
 
 var httpPattern = regexp.MustCompile(`\bhttp ([45][0-9]{2}):\s*`)
 var keyPattern = regexp.MustCompile(`(?i)\b(sk|rk)-[A-Za-z0-9_\-*]{4,}`)
+var providerTokenPattern = regexp.MustCompile(`\b(?:AIza[A-Za-z0-9_-]{35}|ya29\.[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)`)
+var headerCredentialPattern = regexp.MustCompile(`(?i)(\b(?:x-api-key|x-goog-api-key|api-key|authorization|x-auth-token|x-access-token)\s*[:=]\s*)[^\s"'\\,;}]+`)
 var bearerPattern = regexp.MustCompile(`(?i)\bBearer\s+[^\s"'\\,}]+`)
-var credentialPattern = regexp.MustCompile(`(?i)("(?:api[_-]?key|access[_-]?token|token|authorization|password|secret)"\s*:\s*")[^"\r\n]*(")`)
+var credentialPattern = regexp.MustCompile(`(?i)("(?:(?:x[_-]?(?:goog[_-]?)?)?api[_-]?key|(?:x[_-]?)?access[_-]?token|x[_-]?auth[_-]?token|token|(?:proxy[_-]?)?authorization|password|secret|x[_-]?amz[_-]?security[_-]?token)"\s*:\s*")[^"\r\n]*(")`)
 
-func sanitize(s string) string {
+func sanitize(s string, secrets ...string) string {
 	var value any
-	if json.Unmarshal([]byte(s), &value) == nil {
+	decoder := json.NewDecoder(strings.NewReader(s))
+	decoder.UseNumber()
+	if decoder.Decode(&value) == nil {
 		changed := false
 		var scrub func(any) any
 		scrub = func(value any) any {
 			switch value := value.(type) {
 			case map[string]any:
+				clean := make(map[string]any, len(value))
 				for key, child := range value {
-					switch strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(key)) {
-					case "apikey", "accesstoken", "token", "authorization", "password", "secret":
-						value[key] = "***"
+					cleanKey := sanitizeText(key, secrets...)
+					changed = changed || cleanKey != key
+					if IsCredentialName(key) {
+						clean[cleanKey] = "***"
 						changed = true
-					default:
-						value[key] = scrub(child)
+					} else {
+						clean[cleanKey] = scrub(child)
 					}
+				}
+				return clean
+			case json.Number:
+				clean := sanitizeText(string(value), secrets...)
+				if clean != string(value) {
+					changed = true
+					return clean
 				}
 			case []any:
 				for i, child := range value {
 					value[i] = scrub(child)
 				}
 			case string:
-				clean := sanitizeText(value)
+				clean := sanitizeText(value, secrets...)
 				changed = changed || clean != value
 				return clean
 			}
@@ -80,13 +93,23 @@ func sanitize(s string) string {
 			return string(encoded)
 		}
 	}
-	return sanitizeText(s)
+	return sanitizeText(s, secrets...)
 }
 
-func sanitizeText(s string) string {
+func sanitizeText(s string, secrets ...string) string {
+	for _, secret := range secrets {
+		if secret != "" {
+			s = strings.ReplaceAll(s, secret, "***")
+			encoded, _ := json.Marshal(secret)
+			s = strings.ReplaceAll(s, string(encoded[1:len(encoded)-1]), "***")
+		}
+	}
 	s = credentialPattern.ReplaceAllString(s, `${1}***${2}`)
+	s = bearerPattern.ReplaceAllString(s, "Bearer ***")
+	s = headerCredentialPattern.ReplaceAllString(s, `${1}***`)
 	s = keyPattern.ReplaceAllString(s, "sk-***")
-	return bearerPattern.ReplaceAllString(s, "Bearer ***")
+	s = providerTokenPattern.ReplaceAllString(s, "***")
+	return s
 }
 
 func bounded(s string) string {
@@ -162,6 +185,9 @@ func scalar(v any) any {
 	case string:
 		return bounded(sanitize(v))
 	case json.Number:
+		if len(v) > 1200 {
+			return nil
+		}
 		return v
 	default:
 		return nil

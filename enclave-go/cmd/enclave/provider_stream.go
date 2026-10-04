@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
@@ -143,9 +144,9 @@ func invokeProviderStream(
 			// later plain-TLS fallback that actually serves the response.
 			ctx = llm.WithUpstreamVerification(ctx, "", time.Time{}, time.Time{})
 			attemptCtx, cancelAttempt := context.WithCancel(ctx)
-			var ttfbFired bool
+			var ttfbFired atomic.Bool
 			ttfbTimer := time.AfterFunc(budget, func() {
-				ttfbFired = true
+				ttfbFired.Store(true)
 				cancelAttempt()
 			})
 			attemptStart := time.Now()
@@ -173,7 +174,8 @@ func invokeProviderStream(
 				candidateWriter.content = &shadowobserve.ContentStream{}
 			}
 			candidateWriter.invocation = phases.InvokeStart()
-			err = br.InvokeStreaming(attemptCtx, req, anthropicReq, candidateWriter, option)
+			redactedCtx, redactError := upstreamerror.WithCredentialRedaction(attemptCtx, option.ProviderAPIKey)
+			err = redactError(br.InvokeStreaming(redactedCtx, req, anthropicReq, candidateWriter, option))
 			phases.InvokeComplete(candidateWriter.invocation)
 			if candidateWriter.shadow != nil {
 				candidateWriter.shadow.ProviderEnd(err == nil)
@@ -188,7 +190,7 @@ func invokeProviderStream(
 			attemptDuration = time.Since(attemptStart)
 			ttfbTimer.Stop()
 			cancelAttempt()
-			if ttfbFired && err != nil {
+			if ttfbFired.Load() && err != nil {
 				err = fmt.Errorf("llm/upstream: time-to-first-byte exceeded %s: %w", budget, err)
 			}
 
@@ -686,8 +688,8 @@ type routeSelectingWriter struct {
 }
 
 func (w *routeSelectingWriter) selectRoute() {
-	// Headers are upstream first bytes too: acceptance ends the fallback budget
-	// so a selected reasoning model can remain silent until its normal timeout.
+	// Acceptance ends the fallback budget. streamhttp independently bounds
+	// silence before and between raw body bytes for the selected provider.
 	w.phases.FirstByte(w.invocation)
 	w.committed = true
 	if w.onFirstByte != nil {

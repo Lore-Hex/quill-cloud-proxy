@@ -1600,6 +1600,7 @@ func serveResponsesNonStreaming(
 		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
 	}
 	result, err := adapter.CollectAnthropicText(pr)
+	_ = pr.Close()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_collect_failed model=%q err=%v\n", req.Model, errorClass(err))
 		// Surface the real upstream status+message instead of an opaque 502.
@@ -1729,6 +1730,7 @@ func serveChatNonStreaming(
 		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
 	}
 	result, err := adapter.CollectAnthropicText(pr)
+	_ = pr.Close()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_collect_failed model=%q err=%v\n", req.Model, errorClass(err))
 		// Surface the real upstream status+message (e.g. a 400 "max_tokens is too
@@ -1853,6 +1855,7 @@ func serveStreaming(
 	cancelProvider := invocation.cancel
 	defer cancelProvider()
 	pr := invocation.reader
+	defer pr.Close()
 	selectedRoute := invocation.selectedRoute
 	providerDone := invocation.done
 	// Acceptance releases the head without waiting for a reasoning token.
@@ -1991,8 +1994,13 @@ func serveStreaming(
 		settlement, settleErr := settleAndBroadcast(settleCtx, trGateway, authorization, secretCache, usage, req, originalInput, adapter.ResponsesOutputForUsage(result))
 		if settleErr != nil {
 			fmt.Fprintf(os.Stderr, "enclave.stream_settle_failed request_log_id=%q request_id=%q model=%q route_type=%q err=%v\n", requestLogID, requestID, req.Model, routeType, settleErr)
+			var reportedCost *int
+			if settledBeforeTerminal {
+				reportedCost = costForRetry(reportedSettlement(settlement, authorization, usage, settleErr))
+			}
 			settlementRetries.Enqueue(settlementRetryJob{
 				trGateway: trGateway, authorization: authorization, usage: usage,
+				reportedCost: reportedCost,
 				requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
 			})
 			return nil, usage, settleErr
@@ -2017,6 +2025,9 @@ func serveStreaming(
 			ObserveUsage: stageDController.observeUsage,
 			Termination:  stageDController.termination,
 			BeforeTerminal: func(terminal adapter.StreamTerminal) error {
+				// An ambiguous settle may already have charged or queued a retry.
+				// Never refund after attempting settlement, even if Emit fails.
+				settledBeforeTerminal = true
 				stageDController.stopCadence()
 				usage := stageDController.terminalUsage(
 					terminal, requestID, routeType,
@@ -2048,6 +2059,7 @@ func serveStreaming(
 					fmt.Fprintf(os.Stderr, "enclave.stream_settle_failed request_log_id=%q request_id=%q model=%q route_type=%q err=%v\n", requestLogID, requestID, req.Model, routeType, settleErr)
 					settlementRetries.Enqueue(settlementRetryJob{
 						trGateway: trGateway, authorization: authorization, usage: usage,
+						reportedCost: costForRetry(reportedSettlement(settlement, authorization, usage, settleErr)),
 						requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
 					})
 				}
@@ -2299,6 +2311,7 @@ func serveMessages(
 		selectedRoute := newSelectedRouteTracker()
 		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID, true, true)
 		result, err := adapter.CollectAnthropicText(pr)
+		_ = pr.Close()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.messages_collect_failed model=%q err=%v\n", req.Model, errorClass(err))
 			status, _ := upstreamErrorResponse(err)
@@ -2361,6 +2374,7 @@ func serveMessages(
 	}
 	defer invocation.cancel()
 	pr, selectedRoute := invocation.reader, invocation.selectedRoute
+	defer pr.Close()
 	providerDone := invocation.done
 	// Wait for upstream acceptance or a terminal pre-open failure.
 	select {
@@ -2417,6 +2431,7 @@ func serveMessages(
 			fmt.Fprintf(os.Stderr, "enclave.messages_stream_settle_failed request_log_id=%q request_id=%q model=%q err=%v\n", requestLogID, messageID, req.Model, err)
 			settlementRetries.Enqueue(settlementRetryJob{
 				trGateway: trGateway, authorization: authorization, usage: usage,
+				reportedCost: costForRetry(reportedSettlement(settlement, authorization, usage, err)),
 				requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
 			})
 		}
