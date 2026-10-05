@@ -21,6 +21,23 @@ func TestSplitErrorStatePreservesScalarFragmentsAndSignificantTail(t *testing.T)
 	if err := CheckLine(`:{"message":"refused"}}`, &tail); err == nil {
 		t.Fatal("whitespace erased split error key")
 	}
+	// Leading padding in a later fragment must not evict the key either.
+	for name, fragments := range map[string][]string{
+		"padded colon after type key":   {`{"type"`, strings.Repeat(" ", 80) + `:`, `"error","message":"refused"}`},
+		"padded colon after error key":  {`{"error"`, strings.Repeat(" ", 80) + `:`, `{"message":"refused"}}`},
+		"padded value after type colon": {`{"type":`, strings.Repeat("\t", 80), strings.Repeat(" ", 80) + `"error"}`},
+	} {
+		tail = ""
+		var err error
+		for _, fragment := range fragments {
+			if err = CheckLine(fragment, &tail); err != nil {
+				break
+			}
+		}
+		if err == nil {
+			t.Fatalf("%s: split error report missed", name)
+		}
+	}
 	for _, chunk := range []string{`{}`, `[]`} {
 		tail = `{"error"`
 		if err := CheckLine(chunk, &tail); err != nil || tail != "" {

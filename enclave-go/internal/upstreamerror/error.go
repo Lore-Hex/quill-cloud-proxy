@@ -389,7 +389,10 @@ func CheckLine(payload string, tail *string) error {
 	if *tail != "" && looksLikeError(joined) {
 		return &Error{Status: 502, Body: joined}
 	}
-	joined = strings.TrimRightFunc(joined, unicode.IsSpace)
+	// Whitespace between JSON tokens is insignificant and the pattern allows
+	// any amount, so collapse each run before keeping the tail: padding (before
+	// or after a colon) can then never push a key out of the window.
+	joined = strings.Join(strings.FieldsFunc(joined, unicode.IsSpace), " ")
 	*tail = strings.Clone(joined[max(0, len(joined)-64):])
 	return nil
 }
