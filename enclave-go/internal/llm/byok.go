@@ -852,6 +852,11 @@ func openAICompatibleMessagesWithFetchedImages(
 		msgs = append(msgs, chatMessage{Role: "system", Content: body.System})
 	}
 	for _, message := range body.Messages {
+		var emptied bool
+		message.Content, emptied = withoutProviderHistory(message.Content)
+		if emptied {
+			continue
+		}
 		if converted, ok := openAICompatibleToolMessages(message); ok {
 			msgs = append(msgs, converted...)
 			continue
@@ -1005,6 +1010,14 @@ func anthropicToolResultText(content any) string {
 }
 
 func openAICompatibleContentWithFetchedImages(ctx context.Context, content any) (any, error) {
+	content, _ = withoutProviderHistory(content)
+	if blocks, ok := content.([]map[string]any); ok {
+		items := make([]any, len(blocks))
+		for i, block := range blocks {
+			items[i] = block
+		}
+		content = items
+	}
 	switch value := content.(type) {
 	case string:
 		return value, nil
@@ -1031,6 +1044,9 @@ func openAICompatiblePartsWithFetchedImages(
 ) ([]map[string]any, error) {
 	out := make([]map[string]any, 0, len(parts))
 	for _, part := range parts {
+		if isProviderHistoryBlock(part.Type) {
+			continue
+		}
 		switch part.Type {
 		case "", "text", "input_text":
 			if strings.TrimSpace(part.Text) != "" {
@@ -1053,7 +1069,7 @@ func openAICompatiblePartsWithFetchedImages(
 				"image_url": imageURL,
 			})
 		default:
-			return nil, fmt.Errorf("llm/image: unsupported content part %q", part.Type)
+			return nil, &contentInputError{kind: part.Type}
 		}
 	}
 	return out, nil

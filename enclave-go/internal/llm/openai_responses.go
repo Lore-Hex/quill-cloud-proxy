@@ -183,6 +183,11 @@ func responsesReasoning(req openAICompatibleRequest) (map[string]any, error) {
 }
 
 func responsesMessageContent(role string, content any) (any, error) {
+	var emptied bool
+	content, emptied = withoutProviderHistory(content)
+	if emptied {
+		return nil, nil
+	}
 	if content == nil {
 		return nil, nil
 	}
@@ -223,7 +228,7 @@ func responsesMessageContent(role string, content any) (any, error) {
 			}
 			parts = append(parts, part)
 		default:
-			return nil, responsesInputError("content type")
+			return nil, &contentInputError{kind: stringValue(block["type"])}
 		}
 	}
 	return parts, nil

@@ -105,10 +105,43 @@ func vertexGeminiPayload(
 	body *qtypes.AnthropicMessagesRequest,
 	modelID string,
 ) (map[string]any, error) {
+	if body != nil && body.NativeContent {
+		// The Messages shim retains Anthropic client tool blocks. Reuse the
+		// client-tool projection while keeping Gemini's image handling intact.
+		copy := *req
+		copy.Messages = make([]qtypes.OpenAIChatMessage, 0, len(req.Messages))
+		for _, message := range req.Messages {
+			converted, ok := openAICompatibleToolMessages(qtypes.AnthropicMessage{Role: message.Role, Content: message.Content})
+			if !ok {
+				copy.Messages = append(copy.Messages, message)
+				continue
+			}
+			for _, chat := range converted {
+				projected := qtypes.OpenAIChatMessage{Role: chat.Role, Content: chat.Content, ToolCallID: chat.ToolCallID}
+				for _, call := range chat.ToolCalls {
+					function, ok := call["function"].(map[string]any)
+					if !ok {
+						continue
+					}
+					projected.ToolCalls = append(projected.ToolCalls, qtypes.OpenAIToolCall{
+						ID: stringValue(call["id"]), Type: "function",
+						Function: qtypes.OpenAIToolFunction{Name: stringValue(function["name"]), Arguments: stringValue(function["arguments"])},
+					})
+				}
+				copy.Messages = append(copy.Messages, projected)
+			}
+		}
+		req = &copy
+	}
 	contents := make([]map[string]any, 0, len(req.Messages))
 	systemParts := make([]map[string]any, 0, 1)
 	toolNameByID := map[string]string{}
 	for _, message := range req.Messages {
+		var emptied bool
+		message.Content, emptied = withoutProviderHistory(message.Content)
+		if emptied && len(message.ToolCalls) == 0 {
+			continue
+		}
 		role := strings.TrimSpace(strings.ToLower(message.Role))
 		switch role {
 		case "system", "developer":
@@ -358,6 +391,13 @@ func geminiToolArgs(arguments string) map[string]any {
 }
 
 func vertexGeminiParts(ctx context.Context, content any) ([]map[string]any, error) {
+	if blocks, ok := content.([]map[string]any); ok {
+		items := make([]any, len(blocks))
+		for i, block := range blocks {
+			items[i] = block
+		}
+		content = items
+	}
 	switch value := content.(type) {
 	case nil:
 		return []map[string]any{{"text": ""}}, nil
@@ -398,7 +438,7 @@ func vertexGeminiTypedParts(ctx context.Context, parts []qtypes.ChatContentPart)
 			}
 			out = append(out, map[string]any{"inlineData": inline})
 		default:
-			return nil, fmt.Errorf("llm/vertex-gemini: unsupported content part %q", part.Type)
+			return nil, &contentInputError{kind: part.Type}
 		}
 	}
 	if len(out) == 0 {
