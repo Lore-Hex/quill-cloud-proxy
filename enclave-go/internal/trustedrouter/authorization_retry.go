@@ -263,7 +263,9 @@ func retryableAuthorizationError(err error) bool {
 		return false
 	}
 	switch controlErr.StatusCode {
-	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		// An unstructured 500 is ambiguous, just like the other retryable 5xx.
+		// Replays keep the exact body/idempotency key and the first authority.
 		return true
 	default:
 		return false
