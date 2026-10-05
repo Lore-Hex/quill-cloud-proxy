@@ -12,17 +12,19 @@ import (
 
 const errorIdentityLookupTimeout = 750 * time.Millisecond
 
-// requestAuditIdentity contains only content-free identifiers. The credential
+// requestAuditIdentity contains identifiers and sanitized configuration previews. The credential
 // fingerprint is the same one-way lookup digest already sent to the control
 // plane; credentialID is the salted stored-key digest returned by that plane.
 // Neither value can be used as an API credential.
 type requestAuditIdentity struct {
-	credentialFingerprint string
-	workspaceID           string
-	credentialID          string
-	attribution           string
-	rejectionStatus       int
-	rejectionParameter    string
+	credentialFingerprint   string
+	workspaceID             string
+	credentialID            string
+	attribution             string
+	rejectionStatus         int
+	rejectionParameter      string
+	rejectionValuePreview   string
+	rejectionValueTruncated bool
 }
 
 func (identity *requestAuditIdentity) bindBearer(bearer string) {
@@ -63,7 +65,7 @@ func (identity *requestAuditIdentity) resolveFailure(
 	}
 	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), errorIdentityLookupTimeout)
 	defer cancel()
-	lookupCtx = trustedrouter.WithContractRejection(lookupCtx, identity.rejectionStatus, identity.rejectionParameter)
+	lookupCtx = trustedrouter.WithContractRejection(lookupCtx, identity.rejectionStatus, identity.rejectionParameter, identity.rejectionValuePreview, identity.rejectionValueTruncated)
 	verified, err := gateway.ValidateKeyInfo(lookupCtx, bearer, route)
 	if err != nil || verified == nil || verified.WorkspaceID == "" {
 		identity.attribution = "unresolved"
@@ -75,11 +77,14 @@ func (identity *requestAuditIdentity) resolveFailure(
 }
 
 func (identity *requestAuditIdentity) recordContractRejection(
-	w io.Writer, requestLogID string, route string, status int, parameter string,
+	w io.Writer, requestLogID string, route string, status int, parameter string, body []byte,
 ) {
 	identity.rejectionStatus = status
-	identity.rejectionParameter = trustedrouter.ContractParameterCategory(parameter)
-	writeRequestContractRejection(w, requestLogID, route, status, parameter)
+	// Keep the field context inside the enclave until the log/RPC boundaries
+	// independently derive a safe path and category. Categorizing here loses it.
+	identity.rejectionParameter = parameter
+	identity.rejectionValuePreview, identity.rejectionValueTruncated = trustedrouter.ContractParameterValue(body, parameter)
+	writeRequestContractRejection(w, requestLogID, route, status, parameter, identity.rejectionValuePreview, identity.rejectionValueTruncated)
 }
 
 func writeRequestStartLog(
@@ -174,8 +179,8 @@ func writeRequestEndLog(
 	)
 }
 
-// writeRequestContractRejection records only the bounded option name and
-// status. It deliberately excludes the request body and field value. The
+// writeRequestContractRejection records the bounded option name, sanitized
+// configuration preview and status. It excludes content and credentials. The
 // enclave has no Sentry SDK. recordContractRejection also attaches a sanitized
 // category to the existing post-response lookup for a control-plane warning.
 func writeRequestContractRejection(
@@ -184,14 +189,21 @@ func writeRequestContractRejection(
 	route string,
 	status int,
 	parameter string,
+	preview string,
+	truncated bool,
 ) {
+	parameterPath := trustedrouter.ContractParameterPath(parameter)
+	preview, trimmed := trustedrouter.SanitizeContractParameterValue(parameter, preview)
 	parameter = trustedrouter.ContractParameterCategory(parameter)
 	fmt.Fprintf(
 		w,
-		"enclave.request_contract_rejected request_log_id=%q route=%q status=%d parameter=%q\n",
+		"enclave.request_contract_rejected request_log_id=%q route=%q status=%d parameter=%q parameter_path=%q value_preview=%q value_truncated=%t\n",
 		requestLogID,
 		route,
 		status,
 		parameter,
+		parameterPath,
+		preview,
+		preview != "" && (truncated || trimmed),
 	)
 }

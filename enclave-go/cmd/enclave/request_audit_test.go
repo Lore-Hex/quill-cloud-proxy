@@ -51,6 +51,7 @@ func TestRequestContractRejectionLogIsMetadataOnlyAndBounded(t *testing.T) {
 		"/v1/chat/completions",
 		http.StatusBadRequest,
 		parameter,
+		"", false,
 	)
 	logged := logLine.String()
 	for _, want := range []string{
@@ -80,7 +81,7 @@ func TestRequestContractRejectionLogUsesPublicCategoriesOnly(t *testing.T) {
 	} {
 		t.Run(tc.parameter, func(t *testing.T) {
 			var logLine bytes.Buffer
-			writeRequestContractRejection(&logLine, "rlog-contract", "/v1/responses", 501, tc.parameter)
+			writeRequestContractRejection(&logLine, "rlog-contract", "/v1/responses", 501, tc.parameter, "", false)
 			logged := logLine.String()
 			if !strings.Contains(logged, `parameter="`+tc.category+`"`) {
 				t.Fatalf("missing safe category %q: %s", tc.category, logged)
