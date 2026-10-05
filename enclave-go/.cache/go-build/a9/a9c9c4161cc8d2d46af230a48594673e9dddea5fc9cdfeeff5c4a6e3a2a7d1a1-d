@@ -1,8 +1,0 @@
-./cache.go
-./decode.go
-./doc.go
-./encode.go
-./stream.go
-./structfields.go
-./tag.go
-./valid.go
