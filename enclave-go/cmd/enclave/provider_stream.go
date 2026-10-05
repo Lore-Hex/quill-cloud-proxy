@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
@@ -18,9 +19,9 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
-type strictStreamFramingContextKey struct{}
 type providerInvocationContextKey struct{}
 
 var errEmptyUpstreamResponse = errors.New("empty upstream response")
@@ -77,26 +78,6 @@ func providerInvocationFromContext(ctx context.Context) *providerInvocation {
 	return invocation
 }
 
-func withStrictStreamFraming(ctx context.Context) context.Context {
-	return context.WithValue(ctx, strictStreamFramingContextKey{}, true)
-}
-
-func strictStreamFraming(ctx context.Context) bool {
-	enabled, _ := ctx.Value(strictStreamFramingContextKey{}).(bool)
-	return enabled
-}
-
-func finishProviderPipeWithError(ctx context.Context, pw *io.PipeWriter, err error) {
-	if strictStreamFraming(ctx) {
-		_ = pw.CloseWithError(err)
-		return
-	}
-	// Legacy close-delimited responses surface an SSE error event and then a
-	// clean pipe EOF. Preserve that behavior unless persistent framing is on.
-	emitErrorAsAnthropicSSE(pw, err)
-	_ = pw.Close()
-}
-
 func invokeProviderStream(
 	ctx context.Context,
 	br llm.Client,
@@ -119,13 +100,16 @@ func invokeProviderStream(
 	phases := requesttiming.FromContext(ctx)
 	requestID := authorizationRequestID(authorization)
 	var lastErr error
+	finishFailure := func(err error) {
+		selectedRoute.SetFailure(err)
+		_ = pw.CloseWithError(err)
+	}
 	var winningProvider, winningModel, winningEndpoint string
 	var winningBytes int
 	var winningTTFBms, winningTotalMs int64
 	for i, option := range options {
 		if err := ctx.Err(); err != nil {
-			selectedRoute.SignalReadyWithoutSelection()
-			_ = pw.CloseWithError(err)
+			finishFailure(err)
 			return
 		}
 		if option.Model == "" {
@@ -139,12 +123,7 @@ func invokeProviderStream(
 				"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
 				requestLogID, requestID, i+1, i, time.Since(overallStart).Milliseconds(), errorClass(err),
 			)
-			selectedRoute.SignalReadyWithoutSelection()
-			if trEnabled {
-				_ = pw.CloseWithError(lastErr)
-				return
-			}
-			finishProviderPipeWithError(ctx, pw, lastErr)
+			finishFailure(lastErr)
 			return
 		}
 		// The TTFB budget exists to fall over to the next candidate fast; the LAST
@@ -165,19 +144,20 @@ func invokeProviderStream(
 			// later plain-TLS fallback that actually serves the response.
 			ctx = llm.WithUpstreamVerification(ctx, "", time.Time{}, time.Time{})
 			attemptCtx, cancelAttempt := context.WithCancel(ctx)
-			var ttfbFired bool
+			var ttfbFired atomic.Bool
 			ttfbTimer := time.AfterFunc(budget, func() {
-				ttfbFired = true
+				ttfbFired.Store(true)
 				cancelAttempt()
 			})
 			attemptStart := time.Now()
 			var ttfb time.Duration
 			var ttfbCaptured bool
 			candidateWriter = &routeSelectingWriter{
-				w:       pw,
-				tracker: selectedRoute,
-				option:  option,
-				phases:  phases,
+				w:         pw,
+				streaming: req.Stream,
+				tracker:   selectedRoute,
+				option:    option,
+				phases:    phases,
 				onFirstByte: func() {
 					ttfb = time.Since(attemptStart)
 					ttfbCaptured = true
@@ -194,7 +174,8 @@ func invokeProviderStream(
 				candidateWriter.content = &shadowobserve.ContentStream{}
 			}
 			candidateWriter.invocation = phases.InvokeStart()
-			err = br.InvokeStreaming(attemptCtx, req, anthropicReq, candidateWriter, option)
+			redactedCtx, redactError := upstreamerror.WithCredentialRedaction(attemptCtx, option.ProviderAPIKey)
+			err = redactError(br.InvokeStreaming(redactedCtx, req, anthropicReq, candidateWriter, option))
 			phases.InvokeComplete(candidateWriter.invocation)
 			if candidateWriter.shadow != nil {
 				candidateWriter.shadow.ProviderEnd(err == nil)
@@ -209,7 +190,7 @@ func invokeProviderStream(
 			attemptDuration = time.Since(attemptStart)
 			ttfbTimer.Stop()
 			cancelAttempt()
-			if ttfbFired && err != nil {
+			if ttfbFired.Load() && err != nil {
 				err = fmt.Errorf("llm/upstream: time-to-first-byte exceeded %s: %w", budget, err)
 			}
 
@@ -270,18 +251,18 @@ func invokeProviderStream(
 			_ = pw.Close()
 			return
 		}
-		lastErr = withInvokeAttemptError(err, option)
+		attemptErr := withInvokeAttemptError(err, option)
+		lastErr = preferredProviderError(lastErr, attemptErr)
 		if !trEnabled || candidateWriter.ResponseCommitted() || i == len(options)-1 || !retryableInvokeError(err) {
 			fmt.Fprintf(os.Stderr,
 				"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
 				requestLogID, requestID, i+1, i, time.Since(overallStart).Milliseconds(), errorClass(err),
 			)
-			selectedRoute.SignalReadyWithoutSelection()
-			if trEnabled {
-				_ = pw.CloseWithError(lastErr)
-				return
+			// Once accepted, a failure belongs to the selected stream, not an earlier route.
+			if candidateWriter.ResponseCommitted() {
+				lastErr = attemptErr
 			}
-			finishProviderPipeWithError(ctx, pw, lastErr)
+			finishFailure(lastErr)
 			return
 		}
 	}
@@ -290,12 +271,23 @@ func invokeProviderStream(
 			"enclave.invoke_complete request_log_id=%q request_id=%q outcome=fail attempts=%d fallbacks=%d total_ms=%d last_err=%q\n",
 			requestLogID, requestID, len(options), len(options)-1, time.Since(overallStart).Milliseconds(), errorClass(lastErr),
 		)
-		selectedRoute.SignalReadyWithoutSelection()
-		_ = pw.CloseWithError(lastErr)
+		finishFailure(lastErr)
 		return
 	}
 	selectedRoute.SignalReadyWithoutSelection()
 	_ = pw.Close()
+}
+
+// Prefer the first parsed client error (4xx except 408/429); otherwise retain the last error.
+func preferredProviderError(previous, current error) error {
+	informative := func(err error) bool {
+		d := upstreamerror.Parse(err)
+		return d.Status >= 400 && d.Status < 500 && d.Status != 408 && d.Status != 429 && d.Parsed
+	}
+	if informative(previous) {
+		return previous
+	}
+	return current
 }
 
 type invokeAttemptError struct {
@@ -421,6 +413,7 @@ func errorTypeChain(err error) string {
 }
 
 type selectedRouteTracker struct {
+	failure  error
 	mu       sync.Mutex
 	once     sync.Once
 	ready    chan struct{}
@@ -461,6 +454,29 @@ func (t *selectedRouteTracker) Select(option llm.InvokeOptions) {
 	t.once.Do(func() {
 		close(t.ready)
 	})
+}
+
+func (t *selectedRouteTracker) Failure() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.failure
+}
+
+func (t *selectedRouteTracker) SetFailure(err error) {
+	t.mu.Lock()
+	t.failure = err
+	t.mu.Unlock()
+	t.SignalReadyWithoutSelection()
+}
+
+// Serialize the success head with a provider failure already available before it.
+func (t *selectedRouteTracker) WriteStreamHead(w io.Writer) (error, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.failure != nil {
+		return t.failure, nil
+	}
+	return nil, writeResponseHead(w, 200, "text/event-stream")
 }
 
 func (t *selectedRouteTracker) HasSelection() bool {
@@ -657,6 +673,7 @@ func isTransientUpstreamError(err error) bool {
 }
 
 type routeSelectingWriter struct {
+	streaming   bool
 	shadow      *shadowobserve.Execution
 	content     *shadowobserve.ContentStream
 	w           io.Writer
@@ -670,18 +687,30 @@ type routeSelectingWriter struct {
 	firstByte   sync.Once
 }
 
+func (w *routeSelectingWriter) selectRoute() {
+	// Acceptance ends the fallback budget. streamhttp independently bounds
+	// silence before and between raw body bytes for the selected provider.
+	w.phases.FirstByte(w.invocation)
+	w.committed = true
+	if w.onFirstByte != nil {
+		w.firstByte.Do(w.onFirstByte)
+	}
+	w.tracker.Select(w.option)
+}
+
+func (w *routeSelectingWriter) UpstreamOpened() bool {
+	if w.streaming {
+		w.selectRoute()
+	}
+	return w.streaming
+}
+
 func (w *routeSelectingWriter) Write(p []byte) (int, error) {
 	if w.shadow != nil && w.content.Feed(p) {
 		w.shadow.Content(false)
 	}
 	if len(p) > 0 {
-		// Publish timing before selection wakes a handler that can disconnect.
-		w.phases.FirstByte(w.invocation)
-		w.committed = true
-		w.tracker.Select(w.option)
-		if w.onFirstByte != nil {
-			w.firstByte.Do(w.onFirstByte)
-		}
+		w.selectRoute()
 	}
 	n, err := w.w.Write(p)
 	w.bytes += n
@@ -701,7 +730,7 @@ func (w *routeSelectingWriter) BytesWritten() int {
 
 // retryableInvokeError reports whether a failed provider attempt should fall
 // over to the next authorized candidate. invokeProviderStream consults it ONLY
-// before the first output byte is written, so trying the next provider never
+// before upstream acceptance (or the first write for buffered calls), so fallback never
 // duplicates output or double-bills (a rejected attempt streams nothing and
 // bills nothing).
 //
@@ -715,7 +744,7 @@ func (w *routeSelectingWriter) BytesWritten() int {
 // malformed request is that it's tried across candidates before returning its
 // error — rare, and 4xx responses are cheap. (Output already streamed, client
 // cancellation, and TTFB-budget cancellation are handled by the caller's
-// bytes-written / context checks, not here.)
+// response-commitment / context checks, not here.)
 func retryableInvokeError(err error) bool {
 	var aerr *adapter.AdapterError
 	if asAdapterErr(err, &aerr) {
@@ -728,23 +757,17 @@ func retryableInvokeError(err error) bool {
 }
 
 func writeStreamingProviderError(w io.Writer, routeType, requestID, model string, err error, hideDetails bool) error {
-	status, message := upstreamErrorResponse(err)
-	if hideDetails && !isClientInputError(err) {
-		message = "upstream provider error"
-	}
-	source := "provider"
-	errType := "provider_error"
-	if isClientInputError(err) {
-		source = "router"
-		errType = "invalid_request_error"
-	}
-	errBody := map[string]any{
-		"message": message,
-		"type":    errType,
-		"source":  source,
-	}
-	if err != nil {
-		errBody["status"] = status
+	_, errBody := providerErrorBody(err, &trustedrouter.Authorization{HidePublicMetadata: hideDetails})
+	if routeType == "messages" {
+		if errBody["type"] == "provider_error" {
+			errBody["type"] = "api_error"
+		}
+		encoded, marshalErr := json.Marshal(map[string]any{"type": "error", "error": errBody})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		_, writeErr := fmt.Fprintf(w, "event: error\ndata: %s\n\n", encoded)
+		return writeErr
 	}
 	if routeType == "responses" {
 		payload := map[string]any{
@@ -768,7 +791,11 @@ func writeStreamingProviderError(w io.Writer, routeType, requestID, model string
 		_, writeErr := io.WriteString(w, "data: [DONE]\n\n")
 		return writeErr
 	}
-	payload := map[string]any{"error": errBody}
+	payload := map[string]any{
+		"id": requestID, "object": "chat.completion.chunk", "model": model, "created": time.Now().Unix(),
+		"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "error"}},
+		"error":   errBody,
+	}
 	encoded, marshalErr := json.Marshal(payload)
 	if marshalErr != nil {
 		return marshalErr
@@ -778,27 +805,6 @@ func writeStreamingProviderError(w io.Writer, routeType, requestID, model string
 	}
 	_, writeErr := io.WriteString(w, "data: [DONE]\n\n")
 	return writeErr
-}
-
-func emitErrorAsAnthropicSSE(w io.Writer, err error) {
-	code, msg := classifyUpstreamError(err)
-	text := fmt.Sprintf("[upstream: %s: %s]", code, msg)
-
-	delta := map[string]any{
-		"type":  "content_block_delta",
-		"index": 0,
-		"delta": map[string]any{"type": "text_delta", "text": text},
-	}
-	deltaJSON, _ := json.Marshal(delta)
-	fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", deltaJSON)
-
-	stopDelta := map[string]any{
-		"type":  "message_delta",
-		"delta": map[string]any{"stop_reason": "end_turn"},
-	}
-	stopJSON, _ := json.Marshal(stopDelta)
-	fmt.Fprintf(w, "event: message_delta\ndata: %s\n\n", stopJSON)
-	fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 }
 
 func asAdapterErr(err error, target **adapter.AdapterError) bool {

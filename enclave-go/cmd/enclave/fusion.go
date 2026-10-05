@@ -1622,7 +1622,7 @@ func runFusionPanelObserved(
 				errs[i] = err
 				fmt.Fprintf(os.Stderr,
 					"enclave.fusion_panel_failed request_log_id=%q request_id=%q model=%q error=%q\n",
-					requestLogID, requestID, model, err.Error(),
+					requestLogID, requestID, model, errorClass(err),
 				)
 				panel[i] = fusionCallResult{
 					Result: adapter.StreamResult{
@@ -1730,7 +1730,7 @@ func runFusionJudgeObserved(
 			lastErr = err
 			fmt.Fprintf(os.Stderr,
 				"enclave.fusion_judge_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
-				requestLogID, requestID, judgeModel, i+1, err.Error(),
+				requestLogID, requestID, judgeModel, i+1, errorClass(err),
 			)
 			if streamW != nil {
 				_ = writeFusionStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
@@ -1820,7 +1820,7 @@ func runFusionFinal(
 			lastErr = err
 			fmt.Fprintf(os.Stderr,
 				"enclave.fusion_final_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
-				requestLogID, requestID, finalModel, i+1, err.Error(),
+				requestLogID, requestID, finalModel, i+1, errorClass(err),
 			)
 			if !fusionCanTryNextModel(err) {
 				return fusionCallResult{}, attempts, err
@@ -2250,7 +2250,7 @@ func serveFusionFinalStreaming(
 			lastErr = err
 			fmt.Fprintf(os.Stderr,
 				"enclave.fusion_final_stream_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
-				requestLogID, requestID, finalModel, i+1, err.Error(),
+				requestLogID, requestID, finalModel, i+1, errorClass(err),
 			)
 			return err
 		}
@@ -2466,7 +2466,7 @@ func serveFusionFinalStreamingAttempt(
 	reader := io.MultiReader(bytes.NewReader(first[:n]), pr)
 	result, err := adapter.TransformStreamCaptureWithOptions(reader, statsW, responseID, req.Model, chatIncludeUsage(req))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
+		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, errorClass(err))
 		refundFusionCallAfter(ctx, trGateway, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		if statsW.BytesWritten() == 0 {
 			_ = writeStreamingProviderError(statsW, "chat.completions", responseID, req.Model, err, false)

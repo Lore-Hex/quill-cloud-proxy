@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 // Match family boundaries so future variants/snapshots work without admitting
@@ -280,6 +282,9 @@ func translateOpenAIResponsesStream(r io.Reader, w io.Writer) error {
 			continue
 		}
 		var event responsesStreamEvent
+		if err := upstreamerror.CheckEvent("", data.String()); err != nil {
+			return err
+		}
 		if err := json.Unmarshal([]byte(data.String()), &event); err != nil {
 			return fmt.Errorf("llm/openai-responses: malformed event")
 		}

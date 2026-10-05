@@ -1,0 +1,68 @@
+[
+  {
+    "data": {
+      "choices": [
+        {
+          "delta": {
+            "content": "",
+            "role": "assistant"
+          },
+          "finish_reason": null,
+          "index": 0
+        }
+      ],
+      "created": 0,
+      "id": "ID",
+      "model": "model-a",
+      "object": "chat.completion.chunk"
+    },
+    "event": ""
+  },
+  {
+    "data": {
+      "choices": [
+        {
+          "delta": {
+            "content": "partial"
+          },
+          "finish_reason": null,
+          "index": 0
+        }
+      ],
+      "created": 0,
+      "id": "ID",
+      "model": "model-a",
+      "object": "chat.completion.chunk"
+    },
+    "event": ""
+  },
+  {
+    "data": {
+      "choices": [
+        {
+          "delta": {},
+          "finish_reason": "error",
+          "index": 0
+        }
+      ],
+      "created": 0,
+      "error": {
+        "code": "content_filter",
+        "message": "Request refused by policy",
+        "metadata": {
+          "provider_name": "anthropic",
+          "raw": "{\"error\":{\"message\":\"Request refused by policy\",\"type\":\"content_policy_error\",\"code\":\"content_filter\",\"param\":\"messages\"}}"
+        },
+        "param": "messages",
+        "source": "provider",
+        "status": 400,
+        "type": "content_policy_error"
+      },
+      "id": "ID",
+      "model": "model-a",
+      "object": "chat.completion.chunk"
+    },
+    "event": ""
+  },
+  "[DONE]"
+]

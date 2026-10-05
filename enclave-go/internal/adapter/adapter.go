@@ -25,7 +25,8 @@ import (
 // max_tokens, so we always provide a value.
 const DefaultMaxTokens = 4096
 
-const maxSSEBlockBytes = 64 << 20
+// MaxSSEBlockBytes bounds each internal Anthropic SSE block.
+const MaxSSEBlockBytes = 64 << 20
 
 // AdapterError signals a 4xx-class translation failure.
 type AdapterError struct {
@@ -887,8 +888,8 @@ func TransformStreamCaptureControlled(
 	sawUpstreamBytes := false
 
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
-	scanner.Split(splitDoubleNewline)
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxSSEBlockBytes)
+	scanner.Split(SplitDoubleNewline)
 
 	// OpenAI streams open with a role chunk before any delta — text or
 	// tool_calls alike.
@@ -1578,8 +1579,8 @@ func writeUsageChunk(w io.Writer, id, model string, created int64, usage *Stream
 	return err
 }
 
-// splitDoubleNewline is a bufio.Scanner SplitFunc that emits each "\n\n"-terminated block.
-func splitDoubleNewline(data []byte, atEOF bool) (int, []byte, error) {
+// SplitDoubleNewline is a bufio.Scanner SplitFunc that emits each "\n\n"-terminated block.
+func SplitDoubleNewline(data []byte, atEOF bool) (int, []byte, error) {
 	for i := 0; i+1 < len(data); i++ {
 		if data[i] == '\n' && data[i+1] == '\n' {
 			return i + 2, data[:i], nil
@@ -1591,17 +1592,27 @@ func splitDoubleNewline(data []byte, atEOF bool) (int, []byte, error) {
 	return 0, nil, nil
 }
 
-func parseSSEBlock(block []byte) (eventName string, dataJSON map[string]any) {
+// ParseSSEBlock extracts the last event name and data lines using the relay's
+// exact field rules. Callers validating an error report can join the data lines.
+func ParseSSEBlock(block []byte) (eventName string, dataLines []string) {
 	for _, raw := range strings.Split(string(block), "\n") {
 		line := strings.TrimRight(raw, "\r")
 		switch {
 		case strings.HasPrefix(line, "event: "):
 			eventName = line[len("event: "):]
 		case strings.HasPrefix(line, "data: "):
-			var parsed map[string]any
-			if err := json.Unmarshal([]byte(line[len("data: "):]), &parsed); err == nil {
-				dataJSON = parsed
-			}
+			dataLines = append(dataLines, line[len("data: "):])
+		}
+	}
+	return
+}
+
+func parseSSEBlock(block []byte) (eventName string, dataJSON map[string]any) {
+	eventName, dataLines := ParseSSEBlock(block)
+	for _, data := range dataLines {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(data), &parsed); err == nil {
+			dataJSON = parsed
 		}
 	}
 	return

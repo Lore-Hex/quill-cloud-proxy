@@ -16,6 +16,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 // vertexGeminiClient serves TrustedRouter google-vertex traffic through
@@ -83,13 +84,14 @@ func (c *vertexGeminiClient) InvokeStreaming(
 		return fmt.Errorf("llm/vertex-gemini: invoke: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
 			return fmt.Errorf("llm/vertex-gemini: read error body: %w", readErr)
 		}
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
+	upstreamerror.Open(out)
 	return translateGeminiStreamToAnthropic(resp.Body, out)
 }
 
@@ -654,14 +656,21 @@ func translateGeminiStreamToAnthropicMode(r io.Reader, w io.Writer, strict bool)
 	toolIndex := 1 // index 0 is reserved for the text content block
 	sawTool := false
 	sawTerminal := false
+	var errorTail string
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
+			if line == "" {
+				errorTail = ""
+			}
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "" || payload == "[DONE]" {
 			continue
+		}
+		if err := upstreamerror.CheckLine(payload, &errorTail); err != nil {
+			return err
 		}
 		delta, calls, reason, chunkUsage, err := geminiChunkDelta(payload)
 		if err != nil {

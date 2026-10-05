@@ -1,0 +1,64 @@
+[
+  {
+    "data": {
+      "choices": [
+        {
+          "delta": {
+            "content": "",
+            "role": "assistant"
+          },
+          "finish_reason": null,
+          "index": 0
+        }
+      ],
+      "created": 0,
+      "id": "ID",
+      "model": "test-model",
+      "object": "chat.completion.chunk"
+    },
+    "event": ""
+  },
+  {
+    "data": {
+      "choices": [
+        {
+          "delta": {
+            "content": "partial"
+          },
+          "finish_reason": null,
+          "index": 0
+        }
+      ],
+      "created": 0,
+      "id": "ID",
+      "model": "test-model",
+      "object": "chat.completion.chunk"
+    },
+    "event": ""
+  },
+  {
+    "data": {
+      "choices": [
+        {
+          "delta": {},
+          "finish_reason": "error",
+          "index": 0
+        }
+      ],
+      "created": 0,
+      "error": {
+        "code": null,
+        "message": "provider error",
+        "param": null,
+        "source": "provider",
+        "status": 502,
+        "type": "provider_error"
+      },
+      "id": "ID",
+      "model": "test-model",
+      "object": "chat.completion.chunk"
+    },
+    "event": ""
+  },
+  "[DONE]"
+]

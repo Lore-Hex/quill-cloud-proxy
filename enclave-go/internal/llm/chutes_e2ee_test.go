@@ -250,6 +250,28 @@ func TestDecryptChutesStreamRejectsEmptyAndTamperedStreams(t *testing.T) {
 	})
 }
 
+// Main accepts only data: and event: fields, blank lines and comments.
+func TestDecryptChutesStreamRejectsUnexpectedFields(t *testing.T) {
+	responseSK, err := mlkem.GenerateKey768()
+	if err != nil {
+		t.Fatal(err)
+	}
+	responsePK := base64.StdEncoding.EncodeToString(responseSK.EncapsulationKey().Bytes())
+	stream := chutesTestEncryptedStream(t, responsePK, `data: {"choices":[{"delta":{"content":"PONG"}}]}`)
+	if err := decryptChutesStream(strings.NewReader(stream), io.Discard, responseSK); err != nil {
+		t.Fatalf("unmodified stream failed: %v", err)
+	}
+	for _, field := range []string{"id: 7\n", "retry: 10\n", "data\n", "event\n"} {
+		t.Run(strings.TrimSpace(field), func(t *testing.T) {
+			injected := field + stream
+			if err := decryptChutesStream(strings.NewReader(injected), io.Discard, responseSK); err == nil ||
+				!strings.Contains(err.Error(), "unexpected encrypted SSE field") {
+				t.Fatalf("field %q accepted: err=%v", field, err)
+			}
+		})
+	}
+}
+
 func TestDecryptChutesStreamFramesRawOpenAIJSONAndAcceptsPreframedSSE(t *testing.T) {
 	responseSK, err := mlkem.GenerateKey768()
 	if err != nil {

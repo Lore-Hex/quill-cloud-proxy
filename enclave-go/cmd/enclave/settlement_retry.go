@@ -22,6 +22,7 @@ const (
 var settlementRetries = newSettlementRetryQueueFromEnv()
 
 type settlementRetryJob struct {
+	reportedCost   *int
 	trGateway      *trustedrouter.Client
 	authorization  *trustedrouter.Authorization
 	usage          trustedrouter.Usage
@@ -221,6 +222,9 @@ func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJ
 		result, err = job.trGateway.Settle(retryContext, job.authorization, job.usage)
 	}
 	if err == nil {
+		if job.kind != "refund" && job.reportedCost != nil && result.HasCost() && *job.reportedCost != result.CostMicrodollars {
+			logUsageCostMismatch(job.authorization, job.usage, *job.reportedCost, result.CostMicrodollars)
+		}
 		if job.kind == "refund" && stageDDispositionLost(result) {
 			fmt.Fprintf(os.Stderr, "enclave.stage_d_refund_lost request_log_id=%q auth_id=%q disposition=%q\n", job.requestLogID, authorizationID(job.authorization), result.Disposition)
 			return
@@ -267,6 +271,10 @@ func (q *settlementRetryQueue) process(ctx context.Context, job settlementRetryJ
 // usage while dropping prompt-adjacent data and provider secrets. A control-
 // plane outage may fill this queue, so a count bound alone is not sufficient.
 func compactSettlementRetryJob(job settlementRetryJob) settlementRetryJob {
+	if job.reportedCost != nil {
+		cost := *job.reportedCost
+		job.reportedCost = &cost
+	}
 	if job.clientContext != nil {
 		// Detach from the request's value so the queued job never aliases
 		// memory the request goroutine may still touch.

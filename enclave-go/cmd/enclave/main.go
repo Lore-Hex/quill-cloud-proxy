@@ -754,7 +754,6 @@ func serveOneRequest(
 	if keepAliveConfig.mode == keepAliveOn && requestAllowsPersistence && *requestCount < keepAliveConfig.maxRequests {
 		keepAlive = true
 		statsConn.SetResponseKeepAlive(true)
-		ctx = withStrictStreamFraming(ctx)
 	}
 	requestBodyBytes = len(body)
 	receiptRequest := types.InferenceReceiptRequest{}
@@ -1627,15 +1626,15 @@ func serveResponsesNonStreaming(
 		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
 	}
 	result, err := adapter.CollectAnthropicText(pr)
+	_ = pr.Close()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "enclave.responses_collect_failed model=%q err=%v\n", req.Model, err)
+		fmt.Fprintf(os.Stderr, "enclave.responses_collect_failed model=%q err=%v\n", req.Model, errorClass(err))
 		// Surface the real upstream status+message instead of an opaque 502.
-		status, message := upstreamErrorResponse(err)
-		message = publicProviderErrorMessage(message, err, authorization)
+		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
-		writeClassifiedOpenAIError(conn, status, message, err)
+		writeUpstreamError(conn, "responses", err, authorization)
 		return
 	}
 	if len(result.ToolCalls) == 0 {
@@ -1702,7 +1701,7 @@ func serveResponsesNonStreaming(
 	}
 	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
-	settlement, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, outputForUsage)
+	settlement, err := settleForUsageResponse(ctx, trGateway, authorization, secretCache, usage, req, originalInput, outputForUsage, requestLogID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_settle_failed model=%q err=%v\n", req.Model, err)
 		writeSpentError(conn, 502, "settlement failed")
@@ -1757,17 +1756,17 @@ func serveChatNonStreaming(
 		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
 	}
 	result, err := adapter.CollectAnthropicText(pr)
+	_ = pr.Close()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "enclave.chat_collect_failed model=%q err=%v\n", req.Model, err)
+		fmt.Fprintf(os.Stderr, "enclave.chat_collect_failed model=%q err=%v\n", req.Model, errorClass(err))
 		// Surface the real upstream status+message (e.g. a 400 "max_tokens is too
 		// large for this model") instead of an opaque 502, matching the streaming
 		// path. upstreamErrorResponse falls back to 502 if it can't classify.
-		status, message := upstreamErrorResponse(err)
-		message = publicProviderErrorMessage(message, err, authorization)
+		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() {
 			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
-		writeClassifiedOpenAIError(conn, status, message, err)
+		writeUpstreamError(conn, "chat.completions", err, authorization)
 		return
 	}
 	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
@@ -1811,7 +1810,7 @@ func serveChatNonStreaming(
 	}
 	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
-	settlement, err := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text)
+	settlement, err := settleForUsageResponse(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text, requestLogID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_settle_failed model=%q err=%v\n", req.Model, err)
 		writeSpentError(conn, 502, "settlement failed")
@@ -1882,15 +1881,26 @@ func serveStreaming(
 	cancelProvider := invocation.cancel
 	defer cancelProvider()
 	pr := invocation.reader
+	defer pr.Close()
 	selectedRoute := invocation.selectedRoute
 	providerDone := invocation.done
-	// Do not send the streaming 200/SSE head until either a provider has
-	// produced its first byte or every pre-output retry/fallback has failed.
-	// Once the head is client-visible, invokeProviderStream must stay on the
-	// selected attempt; retrying after that boundary could splice responses.
+	// Acceptance releases the head without waiting for a reasoning token.
+	// Legacy providers without an open signal select on their first write.
 	select {
 	case <-selectedRoute.Ready():
 	case <-providerDone:
+	}
+	failBeforeHead := func(err error) {
+		_ = pr.Close()
+		status, _ := upstreamErrorResponse(err)
+		if trGateway != nil && trGateway.Enabled() {
+			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
+		}
+		writeUpstreamError(conn, routeType, err, authorization)
+	}
+	if err := selectedRoute.Failure(); err != nil {
+		failBeforeHead(err)
+		return
 	}
 	streamModel := selectedRoute.Model(req.Model, authorization)
 	if streamModel != "" {
@@ -1934,7 +1944,12 @@ func serveStreaming(
 			req.Response.OpenRouterMetadata = routerMetadata
 		}
 	}
-	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
+	providerErr, headErr := selectedRoute.WriteStreamHead(conn)
+	if providerErr != nil {
+		failBeforeHead(providerErr)
+		return
+	}
+	if headErr != nil {
 		_ = pr.Close()
 		return
 	}
@@ -1983,7 +1998,7 @@ func serveStreaming(
 	var result adapter.StreamResult
 	var err error
 	settledBeforeTerminal := false
-	settleStream := func(result adapter.StreamResult) (*trustedrouter.SettleResult, trustedrouter.Usage) {
+	settleStream := func(settleCtx context.Context, result adapter.StreamResult) (*trustedrouter.SettleResult, trustedrouter.Usage, error) {
 		inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
 			result, trustedrouter.EstimateInputTokens(req),
 			trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
@@ -2002,16 +2017,21 @@ func serveStreaming(
 		}
 		applyUsageAttribution(&usage, req)
 		applyCacheUsage(&usage, result)
-		settlement, settleErr := settleAndBroadcast(ctx, trGateway, authorization, secretCache, usage, req, originalInput, adapter.ResponsesOutputForUsage(result))
+		settlement, settleErr := settleAndBroadcast(settleCtx, trGateway, authorization, secretCache, usage, req, originalInput, adapter.ResponsesOutputForUsage(result))
 		if settleErr != nil {
 			fmt.Fprintf(os.Stderr, "enclave.stream_settle_failed request_log_id=%q request_id=%q model=%q route_type=%q err=%v\n", requestLogID, requestID, req.Model, routeType, settleErr)
+			var reportedCost *int
+			if settledBeforeTerminal {
+				reportedCost = costForRetry(reportedSettlement(settlement, authorization, usage, settleErr))
+			}
 			settlementRetries.Enqueue(settlementRetryJob{
 				trGateway: trGateway, authorization: authorization, usage: usage,
+				reportedCost: reportedCost,
 				requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
 			})
-			return nil, usage
+			return nil, usage, settleErr
 		}
-		return settlement, usage
+		return settlement, usage, nil
 	}
 	var stageDControl *adapter.StreamControl
 	if stageDController != nil {
@@ -2031,6 +2051,9 @@ func serveStreaming(
 			ObserveUsage: stageDController.observeUsage,
 			Termination:  stageDController.termination,
 			BeforeTerminal: func(terminal adapter.StreamTerminal) error {
+				// An ambiguous settle may already have charged or queued a retry.
+				// Never refund after attempting settlement, even if Emit fails.
+				settledBeforeTerminal = true
 				stageDController.stopCadence()
 				usage := stageDController.terminalUsage(
 					terminal, requestID, routeType,
@@ -2055,34 +2078,33 @@ func serveStreaming(
 						disposition, lookupErr := trGateway.Disposition(lookupCtx, authorization)
 						lookupCancel()
 						if lookupErr == nil && disposition != nil && disposition.Disposition == trustedrouter.DispositionReapedSnapshot {
-							logStageDSettleLost(authorization, &trustedrouter.SettleResult{Disposition: disposition.Disposition}, "disposition_lookup")
+							settlement = &trustedrouter.SettleResult{Disposition: disposition.Disposition}
+							logStageDSettleLost(authorization, settlement, "disposition_lookup")
 						}
 					}
 					fmt.Fprintf(os.Stderr, "enclave.stream_settle_failed request_log_id=%q request_id=%q model=%q route_type=%q err=%v\n", requestLogID, requestID, req.Model, routeType, settleErr)
 					settlementRetries.Enqueue(settlementRetryJob{
 						trGateway: trGateway, authorization: authorization, usage: usage,
+						reportedCost: costForRetry(reportedSettlement(settlement, authorization, usage, settleErr)),
 						requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
 					})
 				}
-				if settleErr == nil {
-					if routeType == "responses" {
-						if settlement != nil && terminal.UsageFields != nil {
-							terminal.UsageFields["cost_microdollars"] = settlement.CostMicrodollars
-							if terminal.TRFinishReason != "" {
-								terminal.UsageFields["input_tokens"] = usage.InputTokens
-								terminal.UsageFields["output_tokens"] = usage.OutputTokens
-								terminal.UsageFields["total_tokens"] = usage.InputTokens + usage.OutputTokens
-							}
-						}
-					} else {
-						annotateChatTerminalUsage(terminal, settlement, usage)
+				settlement = reportedSettlement(settlement, authorization, usage, settleErr)
+				if routeType == "responses" {
+					annotateUsageCost(terminal.UsageFields, settlement)
+					if terminal.TRFinishReason != "" && terminal.UsageFields != nil && settlement.HasCost() {
+						terminal.UsageFields["input_tokens"] = usage.InputTokens
+						terminal.UsageFields["output_tokens"] = usage.OutputTokens
+						terminal.UsageFields["total_tokens"] = usage.InputTokens + usage.OutputTokens
 					}
+				} else {
+					annotateChatTerminalUsage(terminal, settlement, usage)
 				}
 				return terminal.Emit()
 			},
 		}
 	}
-	if stageDControl == nil && routeType == "chat.completions" && chatIncludeUsage(req) && trGateway != nil && trGateway.Enabled() {
+	if stageDControl == nil && (routeType == "responses" || chatIncludeUsage(req)) && trGateway != nil && trGateway.Enabled() {
 		stageDControl = &adapter.StreamControl{BeforeTerminal: func(terminal adapter.StreamTerminal) error {
 			// Only the final usage waits for settlement; answer/thinking deltas
 			// have already streamed. A failed write must not refund a settled call.
@@ -2092,8 +2114,15 @@ func serveStreaming(
 				}
 			}
 			settledBeforeTerminal = true
-			settlement, usage := settleStream(terminal.Result)
-			annotateChatTerminalUsage(terminal, settlement, usage)
+			settleCtx, cancel := context.WithTimeout(ctx, stageDConfig.settleBeforeTerminal)
+			defer cancel()
+			settlement, usage, settleErr := settleStream(settleCtx, terminal.Result)
+			settlement = reportedSettlement(settlement, authorization, usage, settleErr)
+			if routeType == "responses" {
+				annotateUsageCost(terminal.UsageFields, settlement)
+			} else {
+				annotateChatTerminalUsage(terminal, settlement, usage)
+			}
 			return terminal.Emit()
 		}}
 	}
@@ -2101,10 +2130,10 @@ func serveStreaming(
 		if stageDControl == nil {
 			stageDControl = &adapter.StreamControl{BeforeTerminal: func(terminal adapter.StreamTerminal) error {
 				settledBeforeTerminal = true
-				settlement, _ := settleStream(terminal.Result)
-				if settlement != nil {
-					terminal.UsageFields["cost_microdollars"] = settlement.CostMicrodollars
-				}
+				settleCtx, cancel := context.WithTimeout(ctx, stageDConfig.settleBeforeTerminal)
+				defer cancel()
+				settlement, usage, settleErr := settleStream(settleCtx, terminal.Result)
+				annotateUsageCost(terminal.UsageFields, reportedSettlement(settlement, authorization, usage, settleErr))
 				annotatePolyphemusUsage(ctx, terminal.UsageFields)
 				return terminal.Emit()
 			}}
@@ -2119,7 +2148,7 @@ func serveStreaming(
 	}
 	stageDControl = withInferenceLocation(stageDControl, authorization, selectedRoute)
 	if routeType == "responses" {
-		if stageDControl != nil && polyphemusReceiptFromContext(ctx) != nil {
+		if stageDControl != nil {
 			stageDControl.ExposeResponsesUsage = true
 		}
 		if stageDControl != nil {
@@ -2144,7 +2173,7 @@ func serveStreaming(
 		}
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
+		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, errorClass(err))
 		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() && !settledBeforeTerminal {
 			if stageDController != nil && statsW.BytesWritten() > 0 {
@@ -2170,13 +2199,11 @@ func serveStreaming(
 				_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 			}
 		}
-		if routeType == "responses" || statsW.BytesWritten() == 0 {
-			if writeErr := writeStreamingProviderError(statsW, routeType, requestID, responseModel, err, hidesPublicRouteMetadata(authorization)); writeErr == nil {
-				// An explicit terminal SSE failure is a complete HTTP message,
-				// not a truncated successful stream. Preserve chunk framing only
-				// when the error and terminal event were both delivered.
-				_ = chunkW.Complete()
-			}
+		if writeErr := writeStreamingProviderError(statsW, routeType, requestID, responseModel, err, hidesPublicRouteMetadata(authorization)); writeErr == nil {
+			// An explicit terminal SSE failure is a complete HTTP message,
+			// not a truncated successful stream. Preserve chunk framing only
+			// when the error and terminal event were both delivered.
+			_ = chunkW.Complete()
 		}
 		return
 	}
@@ -2184,7 +2211,7 @@ func serveStreaming(
 		_ = chunkW.Complete()
 		return
 	}
-	_, _ = settleStream(result)
+	_, _, _ = settleStream(ctx, result)
 	_ = chunkW.Complete()
 }
 
@@ -2305,20 +2332,19 @@ func serveMessages(
 	applyCustomModelPromptToMessages(req, anthropicReq, authorization)
 
 	messageID := newMessageID()
-	pr, pw := io.Pipe()
-	selectedRoute := newSelectedRouteTracker()
-
 	if !native.Stream {
+		pr, pw := io.Pipe()
+		selectedRoute := newSelectedRouteTracker()
 		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID, true, true)
 		result, err := adapter.CollectAnthropicText(pr)
+		_ = pr.Close()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "enclave.messages_collect_failed model=%q err=%v\n", req.Model, err)
-			status, message := upstreamErrorResponse(err)
-			message = publicProviderErrorMessage(message, err, authorization)
+			fmt.Fprintf(os.Stderr, "enclave.messages_collect_failed model=%q err=%v\n", req.Model, errorClass(err))
+			status, _ := upstreamErrorResponse(err)
 			if trEnabled {
 				_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 			}
-			writeClassifiedAnthropicError(conn, status, message, err)
+			writeUpstreamError(conn, "messages", err, authorization)
 			return
 		}
 		inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
@@ -2353,13 +2379,13 @@ func serveMessages(
 		}
 		applyUsageAttribution(&usage, req)
 		applyCacheUsage(&usage, result)
-		settlement, err := settleAndBroadcast(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text)
+		settlement, err := settleForUsageResponse(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text, requestLogID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.messages_settle_failed model=%q err=%v\n", req.Model, err)
 			writeAnthropicError(conn, 502, "settlement failed")
 			return
 		}
-		responseBody, err := annotateBatchSettlementOnlyUsage(ctx, envelope.Bytes(), settlement, authorization)
+		responseBody, err := annotateSettlementOnlyUsage(envelope.Bytes(), settlement, authorization)
 		if err != nil {
 			writeAnthropicError(conn, 500, "messages encoding error")
 			return
@@ -2368,14 +2394,15 @@ func serveMessages(
 		return
 	}
 
-	providerDone := make(chan struct{})
-	providerReq := *req
-	go func() {
-		defer close(providerDone)
-		invokeProviderStream(ctx, br, &providerReq, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID, true, true)
-	}()
-	// Keep the HTTP success head behind the same first-provider-byte boundary
-	// as the OpenAI-compatible streaming path above.
+	invocation := providerInvocationFromContext(ctx)
+	if invocation == nil {
+		invocation = startProviderInvocation(ctx, br, req, anthropicReq, invokeOptions, trEnabled, authorization, requestLogID)
+	}
+	defer invocation.cancel()
+	pr, selectedRoute := invocation.reader, invocation.selectedRoute
+	defer pr.Close()
+	providerDone := invocation.done
+	// Wait for upstream acceptance or a terminal pre-open failure.
 	select {
 	case <-selectedRoute.Ready():
 	case <-providerDone:
@@ -2384,7 +2411,17 @@ func serveMessages(
 		req.Model = streamModel
 	}
 	responseModel := authorizationResponseModel(req.Model, authorization)
-	if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
+	providerErr, headErr := selectedRoute.WriteStreamHead(conn)
+	if providerErr != nil {
+		_ = pr.Close()
+		status, _ := upstreamErrorResponse(providerErr)
+		if trEnabled {
+			_ = trGateway.Refund(ctx, authorization, status, failureReason(providerErr), time.Since(requestStarted).Seconds(), req.Metadata)
+		}
+		writeUpstreamError(conn, "messages", providerErr, authorization)
+		return
+	}
+	if headErr != nil {
 		_ = pr.Close()
 		return
 	}
@@ -2392,54 +2429,65 @@ func serveMessages(
 	defer chunkW.Close()
 	statsW := newStreamStatsWriter(chunkW)
 
-	result, err := adapter.RelayAnthropicStream(pr, statsW, messageID, responseModel)
+	settleStream := func(settleCtx context.Context, result adapter.StreamResult) *trustedrouter.SettleResult {
+		inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+			result,
+			trustedrouter.EstimateInputTokens(req),
+			trustedrouter.EstimateOutputTokens(result.Text),
+			selectedRoute.Model(req.Model, authorization),
+		)
+		usage := trustedrouter.Usage{
+			RequestID:         messageID,
+			InputTokens:       inputTokens,
+			OutputTokens:      outputTokens,
+			ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
+			FirstTokenSeconds: statsW.FirstWriteSeconds(requestStarted),
+			UsageEstimated:    usageEstimated,
+			FinishReason:      result.FinishReason,
+			Streamed:          true,
+			RouteType:         "messages",
+			SelectedModel:     selectedRoute.Model(req.Model, authorization),
+			SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
+			Metadata:          req.Metadata,
+		}
+		applyUsageAttribution(&usage, req)
+		applyCacheUsage(&usage, result)
+		settlement, err := settleAndBroadcast(settleCtx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "enclave.messages_stream_settle_failed request_log_id=%q request_id=%q model=%q err=%v\n", requestLogID, messageID, req.Model, err)
+			settlementRetries.Enqueue(settlementRetryJob{
+				trGateway: trGateway, authorization: authorization, usage: usage,
+				reportedCost: costForRetry(reportedSettlement(settlement, authorization, usage, err)),
+				requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
+			})
+		}
+		return reportedSettlement(settlement, authorization, usage, err)
+	}
+	settledBeforeTerminal := false
+	var beforeTerminal func(adapter.StreamTerminal) error
+	if trEnabled {
+		beforeTerminal = func(terminal adapter.StreamTerminal) error {
+			settledBeforeTerminal = true
+			settleCtx, cancel := context.WithTimeout(ctx, stageDConfigFromEnv().settleBeforeTerminal)
+			defer cancel()
+			annotateUsageCost(terminal.UsageFields, settleStream(settleCtx, terminal.Result))
+			return terminal.Emit()
+		}
+	}
+	result, err := adapter.RelayAnthropicStreamWithTerminalHook(pr, statsW, messageID, responseModel, beforeTerminal)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "enclave.messages_relay_failed model=%q err=%v\n", req.Model, err)
+		fmt.Fprintf(os.Stderr, "enclave.messages_relay_failed model=%q err=%v\n", req.Model, errorClass(err))
 		status, _ := upstreamErrorResponse(err)
-		if trEnabled {
+		if trEnabled && !settledBeforeTerminal {
 			_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 		}
-		if statsW.BytesWritten() == 0 {
-			_, message := upstreamErrorResponse(err)
-			message = publicProviderErrorMessage(message, err, authorization)
-			_ = writeAnthropicStreamError(statsW, message)
+		if writeErr := writeStreamingProviderError(statsW, "messages", messageID, responseModel, err, hidesPublicRouteMetadata(authorization)); writeErr == nil {
+			_ = chunkW.Complete()
 		}
 		return
 	}
-	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
-		result,
-		trustedrouter.EstimateInputTokens(req),
-		trustedrouter.EstimateOutputTokens(result.Text),
-		selectedRoute.Model(req.Model, authorization),
-	)
-	usage := trustedrouter.Usage{
-		RequestID:         messageID,
-		InputTokens:       inputTokens,
-		OutputTokens:      outputTokens,
-		ElapsedSeconds:    maxDurationSeconds(time.Since(requestStarted), 0.001),
-		FirstTokenSeconds: statsW.FirstWriteSeconds(requestStarted),
-		UsageEstimated:    usageEstimated,
-		FinishReason:      result.FinishReason,
-		Streamed:          true,
-		RouteType:         "messages",
-		SelectedModel:     selectedRoute.Model(req.Model, authorization),
-		SelectedEndpoint:  selectedRoute.Endpoint("", authorization),
-		Metadata:          req.Metadata,
-	}
-	applyUsageAttribution(&usage, req)
-	applyCacheUsage(&usage, result)
-	if _, err := settleAndBroadcast(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text); err != nil {
-		fmt.Fprintf(os.Stderr,
-			"enclave.messages_stream_settle_failed request_log_id=%q request_id=%q model=%q err=%v\n",
-			requestLogID, messageID, req.Model, err,
-		)
-		settlementRetries.Enqueue(settlementRetryJob{
-			trGateway:     trGateway,
-			authorization: authorization,
-			usage:         usage,
-			requestLogID:  requestLogID,
-			clientContext: trustedrouter.ClientContextFromContext(ctx),
-		})
+	if !settledBeforeTerminal {
+		settleStream(ctx, result)
 	}
 	_ = chunkW.Complete()
 }

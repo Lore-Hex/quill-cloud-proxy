@@ -34,6 +34,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 const (
@@ -200,7 +201,7 @@ func (c *gcpClient) InvokeStreaming(
 		return fmt.Errorf("llm/gcp: invoke: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
 			return fmt.Errorf("llm/gcp: read vertex error body: %w", readErr)
@@ -209,8 +210,8 @@ func (c *gcpClient) InvokeStreaming(
 	}
 	// The response is already Anthropic-native SSE bytes. Just pump them
 	// through to the adapter — no re-emission needed.
-	_, err = io.Copy(out, resp.Body)
-	return err
+	upstreamerror.Open(out)
+	return relayAnthropicStream(resp.Body, out)
 }
 
 // newVertex constructs the Vertex-direct client. Used as THE Client in

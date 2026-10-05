@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 type upstreamHTTPError struct {
@@ -22,6 +23,8 @@ func (e *upstreamHTTPError) Error() string {
 	return fmt.Sprintf("llm/upstream: http %d: %s", e.status, e.body)
 }
 
+func (e *upstreamHTTPError) UpstreamResponse() (int, string) { return e.status, e.body }
+
 // HTTPStatusFromError returns the upstream HTTP status code carried by err when
 // it originated as a non-2xx upstream response, and ok=false otherwise (e.g.
 // transport, timeout, or cancellation errors that never reached an HTTP
@@ -32,9 +35,10 @@ func HTTPStatusFromError(err error) (status int, ok bool) {
 	if errors.As(err, &inputLimit) {
 		return 400, true
 	}
-	var httpErr *upstreamHTTPError
+	var httpErr interface{ UpstreamResponse() (int, string) }
 	if errors.As(err, &httpErr) {
-		return httpErr.status, true
+		status, _ := httpErr.UpstreamResponse()
+		return status, true
 	}
 	return 0, false
 }
@@ -59,9 +63,13 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	var citations []string
 	var searchResults []qtypes.ProviderSearchResult
 	var decision map[string]any
+	var errorTail string
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
+			if line == "" { // Only a blank line ends the SSE event.
+				errorTail = ""
+			}
 			continue
 		}
 		payload := line[len("data: "):]
@@ -106,6 +114,12 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			// compatible upstream. Some providers instead attach usage to
 			// the last content chunk; both shapes land here.
 			Usage *openAIStreamUsage `json:"usage"`
+		}
+		if err := upstreamerror.CheckLine(payload, &errorTail); err != nil {
+			if provider == "tencent" {
+				return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub stream failed"}
+			}
+			return err
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			if provider == "privatemode" {
