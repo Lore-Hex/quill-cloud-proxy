@@ -22,6 +22,12 @@ func TestLineReadersDetectSplitErrorTokens(t *testing.T) {
 			name, wire string
 			failure    bool
 		}{
+			{"scalar error key", "data: {\ndata: \"error\"\ndata: :{\"code\":403,\"message\":\"refused\"}}\n", true},
+			{"scalar key with comment", "data: {\ndata: \"error\"\n: keepalive\ndata: :{\"code\":403,\"message\":\"refused\"}}\n", true},
+			{"scalar key with field", "data: {\ndata: \"error\"\nid: 42\ndata: :{\"code\":403,\"message\":\"refused\"}}\n", true},
+			{"padded error key", "data: {\ndata: \"error\"" + strings.Repeat(" ", 100) + "\ndata: :{\"code\":403,\"message\":\"refused\"}}\n", true},
+			{"scalar type key", "data: {\ndata: \"type\"\ndata: :\"error\"}\n", true},
+			{"scalar null error", "data: {\ndata: \"error\"\ndata: : null}\n", false},
 			{"before colon", "data: {\"error\"\ndata: :{\"code\":403,\"message\":\"denied\"}}\n", true},
 			{"empty data", "data: {\"error\"\ndata: \ndata: :{\"code\":403,\"message\":\"denied\"}}\n", true},
 			{"bare empty data", "data: {\"error\"\ndata:\ndata: :{\"code\":403,\"message\":\"denied\"}}\n", true},
@@ -31,7 +37,7 @@ func TestLineReadersDetectSplitErrorTokens(t *testing.T) {
 			{"error before value", "data: {\"error\":\ndata: {\"code\":403,\"message\":\"denied\"}}\n", true},
 			{"split null", "data: {\"error\"\ndata: : null,\"choices\":[]}\n", false},
 			{"good resets tail", "data: {\"error\"\n" + good + "data: :{\"message\":\"denied\"}}\n", false},
-			{"comment resets tail", "data: {\"error\"\n: keepalive\ndata: :{\"message\":\"denied\"}}\n", false},
+			{"comment preserves tail", "data: {\"error\"\n: keepalive\ndata: :{\"message\":\"denied\"}}\n", true},
 			{"blank resets tail", "data: {\"error\"\n\ndata: :{\"message\":\"denied\"}}\n", false},
 			{"malformed content", "data: {broken\n" + good + "data: [broken\n", false},
 		} {

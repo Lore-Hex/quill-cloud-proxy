@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/aws/smithy-go"
@@ -150,16 +151,37 @@ func responseBody(err error) (int, string, bool) {
 		return status, body, true
 	}
 	var httpStatus interface{ HTTPStatusCode() int }
-	if errors.As(err, &httpStatus) {
-		body := err.Error()
-		var apiError smithy.APIError
-		if errors.As(err, &apiError) {
-			encoded, _ := json.Marshal(map[string]any{"error": map[string]string{
-				"code": apiError.ErrorCode(), "message": apiError.ErrorMessage(),
-			}})
-			body = string(encoded)
+	hasHTTPStatus := errors.As(err, &httpStatus)
+	var apiError smithy.APIError
+	if errors.As(err, &apiError) {
+		// ModelStreamErrorException, ModelErrorException and unknown codes use 502.
+		status := 502
+		switch apiError.ErrorCode() {
+		case "ValidationException":
+			status = 400
+		case "AccessDeniedException":
+			status = 403
+		case "ResourceNotFoundException":
+			status = 404
+		case "ModelTimeoutException":
+			status = 408
+		case "ThrottlingException", "ServiceQuotaExceededException":
+			status = 429
+		case "InternalServerException":
+			status = 500
+		case "ServiceUnavailableException", "ModelNotReadyException":
+			status = 503
 		}
-		return httpStatus.HTTPStatusCode(), body, true
+		if hasHTTPStatus {
+			status = httpStatus.HTTPStatusCode()
+		}
+		encoded, _ := json.Marshal(map[string]any{"error": map[string]string{
+			"code": apiError.ErrorCode(), "message": apiError.ErrorMessage(),
+		}})
+		return status, string(encoded), true
+	}
+	if hasHTTPStatus {
+		return httpStatus.HTTPStatusCode(), err.Error(), true
 	}
 	s := err.Error()
 	match := httpPattern.FindStringSubmatchIndex(s)
@@ -349,23 +371,25 @@ func CheckEvent(name, data string) error {
 }
 
 // CheckLine preserves per-line decoding while recognizing error tokens split
-// across consecutive undecodable payloads. Readers clear tail on non-data lines.
-// Only the new payload and at most 64 preceding bytes are inspected each time.
+// across scalar or undecodable payloads. Readers clear tail at event boundaries.
+// Only the new payload and at most 64 preceding significant bytes are inspected.
 func CheckLine(payload string, tail *string) error {
 	if err := CheckEvent("", payload); err != nil {
 		return err
 	}
-	if json.Valid([]byte(payload)) {
-		*tail = ""
+	trimmed := strings.TrimSpace(payload)
+	if trimmed == "" {
 		return nil
 	}
-	if strings.TrimSpace(payload) == "" {
+	if (trimmed[0] == '{' || trimmed[0] == '[') && json.Valid([]byte(payload)) {
+		*tail = ""
 		return nil
 	}
 	joined := *tail + "\n" + payload
 	if *tail != "" && looksLikeError(joined) {
 		return &Error{Status: 502, Body: joined}
 	}
+	joined = strings.TrimRightFunc(joined, unicode.IsSpace)
 	*tail = strings.Clone(joined[max(0, len(joined)-64):])
 	return nil
 }

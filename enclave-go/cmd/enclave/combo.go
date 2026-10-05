@@ -223,7 +223,7 @@ func runSelectorDecision(
 			lastErr = err
 			fmt.Fprintf(os.Stderr,
 				"enclave.selector_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
-				requestLogID, requestID, model, i+1, err.Error(),
+				requestLogID, requestID, model, i+1, errorClass(err),
 			)
 			if fusionCanTryNextModel(err) {
 				continue

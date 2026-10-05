@@ -239,14 +239,14 @@ func serveImages(
 			return
 		}
 		refundImageGeneration(ctx, trGateway, authorization, status, failureReason(collectErr), started, req.Metadata)
-		fmt.Fprintf(os.Stderr, "enclave.images_failed model=%q err=%v\n", req.Model, collectErr)
+		fmt.Fprintf(os.Stderr, "enclave.images_failed model=%q err=%v\n", req.Model, errorClass(collectErr))
 		writeClassifiedOpenAIError(conn, status, message, collectErr)
 		return
 	}
 	imageResult, err := parseGeneratedImage(result.Text)
 	if err != nil {
 		refundImageGeneration(ctx, trGateway, authorization, 502, "invalid_image_output", started, req.Metadata)
-		fmt.Fprintf(os.Stderr, "enclave.images_invalid_output model=%q err=%v\n", req.Model, err)
+		fmt.Fprintf(os.Stderr, "enclave.images_invalid_output model=%q err=%v\n", req.Model, errorClass(err))
 		writeProviderError(conn, 502, "image generation failed")
 		return
 	}

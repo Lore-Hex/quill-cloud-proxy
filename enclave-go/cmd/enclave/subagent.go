@@ -532,7 +532,7 @@ func runSubagent(
 		if err != nil {
 			fmt.Fprintf(os.Stderr,
 				"subagent.worker_failed request_log_id=%q request_id=%q worker_model=%q call_index=%d error=%q\n",
-				requestLogID, requestID, config.WorkerModel, subagentCalls, err.Error(),
+				requestLogID, requestID, config.WorkerModel, subagentCalls, errorClass(err),
 			)
 			messages = append(messages, subagentAssistantToolMessage(call), types.OpenAIChatMessage{
 				Role:       "tool",

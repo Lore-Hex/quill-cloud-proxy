@@ -67,7 +67,7 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
-			if line != "data:" { // An empty data line can separate JSON tokens.
+			if line == "" { // Only a blank line ends the SSE event.
 				errorTail = ""
 			}
 			continue

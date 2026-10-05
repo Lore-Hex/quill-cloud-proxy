@@ -1024,7 +1024,7 @@ func runAdvisor(
 		lastErr = err
 		fmt.Fprintf(os.Stderr,
 			"advisor.worker_attempt request_log_id=%q request_id=%q model=%q attempt=%d outcome=%q error=%q\n",
-			requestLogID, requestID, workerModel, i+1, "error", err.Error(),
+			requestLogID, requestID, workerModel, i+1, "error", errorClass(err),
 		)
 		if streamW != nil {
 			_ = writeAdvisorStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
@@ -1238,7 +1238,7 @@ func runAdvisorAdvice(
 			if err != nil {
 				fmt.Fprintf(os.Stderr,
 					"advisor.advisor_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
-					requestLogID, requestID, advisorModel, i+1, err.Error(),
+					requestLogID, requestID, advisorModel, i+1, errorClass(err),
 				)
 				emitter.Event(map[string]any{
 					"event": "advisor.failed",
@@ -1278,7 +1278,7 @@ func runAdvisorAdvice(
 	if lastErr != nil {
 		fmt.Fprintf(os.Stderr,
 			"advisor.advisor_unavailable request_log_id=%q request_id=%q error=%q\n",
-			requestLogID, requestID, lastErr.Error(),
+			requestLogID, requestID, errorClass(lastErr),
 		)
 	}
 	return advisorPanelText(texts), attempts
@@ -1449,7 +1449,7 @@ func advisorMaybeCompactMessages(
 	if err != nil {
 		fmt.Fprintf(os.Stderr,
 			"advisor.context_summary_failed request_log_id=%q request_id=%q summary_model=%q advisor_model=%q error=%q\n",
-			requestLogID, requestID, summaryModel, advisorModel, err.Error(),
+			requestLogID, requestID, summaryModel, advisorModel, errorClass(err),
 		)
 		return messages, nil
 	}
@@ -1640,7 +1640,7 @@ func runAdvisorFinal(
 			lastErr = err
 			fmt.Fprintf(os.Stderr,
 				"advisor.advisor_final_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
-				requestLogID, requestID, advisorModel, i+1, err.Error(),
+				requestLogID, requestID, advisorModel, i+1, errorClass(err),
 			)
 			continue
 		}

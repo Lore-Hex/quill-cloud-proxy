@@ -620,7 +620,9 @@ func translateGeminiStreamToAnthropicMode(r io.Reader, w io.Writer, strict bool)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
-			errorTail = ""
+			if line == "" {
+				errorTail = ""
+			}
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
