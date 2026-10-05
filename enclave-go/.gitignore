@@ -1,1 +1,8 @@
 /receipt-fixtures
+
+# Local Go build output: the build cache from a GOCACHE pointed inside the
+# module, and the binary that `go build` in enclave-go/ writes. Images build
+# from source (see the Dockerfiles), so neither belongs in git.
+/.cache/
+/.gocache/
+/enclave
