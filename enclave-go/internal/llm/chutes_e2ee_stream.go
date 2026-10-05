@@ -157,7 +157,7 @@ func frameChutesDecryptedChunk(plaintext []byte) ([]byte, bool, error) {
 			return nil, false, fmt.Errorf("chutes e2ee: decrypted SSE chunk has invalid JSON")
 		}
 	}
-	if json.Valid(plaintext) {
+	if bytes.HasPrefix(plaintext, []byte("{")) && json.Valid(plaintext) {
 		// Only structured plaintext is an error report. Authenticated token
 		// text below must never be inspected with the malformed-error pattern.
 		if err := upstreamerror.CheckEvent("", string(plaintext)); err != nil {

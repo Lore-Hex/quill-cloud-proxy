@@ -49,7 +49,7 @@ var keyPattern = regexp.MustCompile(`(?i)\b(sk|rk)-[A-Za-z0-9_\-*]{4,}`)
 var providerTokenPattern = regexp.MustCompile(`\b(?:AIza[A-Za-z0-9_-]{35}|ya29\.[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)`)
 var headerCredentialPattern = regexp.MustCompile(`(?i)(\b(?:x-api-key|x-goog-api-key|api-key|authorization|x-auth-token|x-access-token)\s*[:=]\s*)[^\s"'\\,;}]+`)
 var bearerPattern = regexp.MustCompile(`(?i)\bBearer\s+[^\s"'\\,}]+`)
-var credentialPattern = regexp.MustCompile(`(?i)("(?:(?:x[_-]?(?:goog[_-]?)?)?api[_-]?key|(?:x[_-]?)?access[_-]?token|x[_-]?auth[_-]?token|token|(?:proxy[_-]?)?authorization|password|secret|x[_-]?amz[_-]?security[_-]?token)"\s*:\s*")[^"\r\n]*(")`)
+var credentialPattern = regexp.MustCompile(`(?i)("(?:(?:x[_-]?(?:goog[_-]?)?)?api[_-]?key|(?:x[_-]?)?access[_-]?token|x[_-]?auth[_-]?token|token|(?:proxy[_-]?)?authorization|password|secret|x[_-]?amz[_-]?security[_-]?token)"\s*:\s*")[^"]*("|$)`)
 
 func sanitize(s string, secrets ...string) string {
 	var value any
@@ -123,6 +123,20 @@ func sanitizeText(s string, secrets ...string) string {
 			encoded, _ := json.Marshal(secret)
 			s = strings.ReplaceAll(s, string(encoded[1:len(encoded)-1]), "***")
 		}
+	}
+	// A body limit can cut through a credential. Full values (including short
+	// ones) are replaced above; require eight characters for a trailing prefix.
+	trailing := 0
+	for _, secret := range secrets {
+		for n := min(len(s), len(secret)-1); n >= max(8, trailing+1); n-- {
+			if strings.HasSuffix(s, secret[:n]) && utf8.RuneCountInString(secret[:n]) >= 8 {
+				trailing = n
+				break
+			}
+		}
+	}
+	if trailing > 0 {
+		s = s[:len(s)-trailing] + "***"
 	}
 	s = credentialPattern.ReplaceAllString(s, `${1}***${2}`)
 	s = bearerPattern.ReplaceAllString(s, "Bearer ***")

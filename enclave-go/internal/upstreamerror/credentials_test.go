@@ -30,3 +30,49 @@ func TestCredentialRedactionByValueAndName(t *testing.T) {
 		}
 	}
 }
+
+func TestCredentialRedactionRemovesUnterminatedFields(t *testing.T) {
+	for _, body := range []string{
+		`{"x-api-key":"unknown-credential`,
+		`{"x-\u0061pi-key":"unknown-\u0063redential`,
+		`{"password":"unknown\ncredential`,
+	} {
+		// No registered value: credential field names must suffice on their own.
+		_, redact := WithCredentialRedaction(t.Context())
+		got := redact(&Error{Status: 400, Body: body}).(*Error).Body
+		want := `{"x-api-key":"***`
+		if strings.Contains(body, "password") {
+			want = `{"password":"***`
+		}
+		if got != want {
+			t.Errorf("unterminated field: got %q, want %q", got, want)
+		}
+	}
+}
+
+func TestCredentialRedactionRemovesTrailingSecretPrefixes(t *testing.T) {
+	const secret = "provider-owned-secret"
+	for _, tc := range []struct{ name, secret, body, want string }{
+		{"cut by one character", secret, `{"message":"rejected provider-owned-secre`, `{"message":"rejected ***`},
+		{"cut mid value", secret, `{"message":"rejected provider-own`, `{"message":"rejected ***`},
+		{"eight characters", secret, `{"message":"rejected provider`, `{"message":"rejected ***`},
+		{"escaped prefix", secret, `{"message":"rejected pro\u0076ider-\u006fwn`, `{"message":"rejected ***`},
+		{"exact then truncated", secret, `{"message":"provider-owned-secret then provider-own`, `{"message":"*** then ***`},
+		{"escaped special characters", "provider/\"\\secret", `{"message":"rejected provider\/\"\\sec`, `{"message":"rejected ***`},
+		{"ordinary short prefix", secret, `ordinary text about provide`, `ordinary text about provide`},
+		{"non trailing prefix", secret, `ordinary provider-owned text`, `ordinary provider-owned text`},
+		{"whole short secret", "abc", `{"message":"rejected abc`, `{"message":"rejected ***`},
+		{"partial short secret", "abc", `ordinary ab`, `ordinary ab`},
+		{"unicode eight characters", "🔐abcdefg-secret", `{"message":"rejected \ud83d\udd10abcdefg`, `{"message":"rejected ***`},
+		{"unicode short prefix", "🔐abcdefg-secret", `ordinary 🔐abcd`, `ordinary 🔐abcd`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, redact := WithCredentialRedaction(t.Context())
+			RecordCredential(ctx, tc.secret)
+			got := redact(&Error{Status: 400, Body: tc.body}).(*Error).Body
+			if got != tc.want {
+				t.Fatalf("trailing credential prefix: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

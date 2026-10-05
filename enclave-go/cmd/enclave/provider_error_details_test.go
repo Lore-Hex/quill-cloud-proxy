@@ -62,6 +62,49 @@ func TestGatewayRedactsTruncatedEscapedCredentialsAcrossAPIs(t *testing.T) {
 	}
 }
 
+func TestGatewayRedactsCredentialPrefixesAtTruncatedBodyEnd(t *testing.T) {
+	t.Setenv("QUILL_USAGE_HEARTBEAT", "off")
+	const key = "provider-owned-secret"
+	for _, route := range []string{"messages", "chat.completions", "responses"} {
+		for _, stream := range []bool{false, true} {
+			for _, tc := range []struct{ name, body, want string }{
+				{"credential cut by one character", `{"x-api-key":"provider-owned-secre`, `{"x-api-key":"***`},
+				{"message cut mid credential", `{"error":{"message":"rejected provider-own`, `{"error":{"message":"rejected ***`},
+				{"escaped credential field", `{"x-\u0061pi-key":"pro\u0076ider-owned-secre`, `{"x-api-key":"***`},
+				{"escaped message prefix", `{"error":{"message":"rejected pro\u0076ider-\u006fwn`, `{"error":{"message":"rejected ***`},
+				{"ordinary short prefix", `ordinary text about provide`, `ordinary text about provide`},
+			} {
+				t.Run(fmt.Sprintf("%s/stream=%t/%s", route, stream, tc.name), func(t *testing.T) {
+					gateway, auth, options, refunds := errorTestGateway(t, false, false)
+					provider := streamingProviderFunc(func(ctx context.Context, _ io.Writer, _ llm.InvokeOptions) error {
+						upstreamerror.RecordCredential(ctx, key)
+						return &upstreamerror.Error{Status: 400, Body: tc.body}
+					})
+					var out bytes.Buffer
+					serveErrorTestRoute(t.Context(), route, stream, &out, provider, gateway, auth, options)
+					response, err := http.ReadResponse(bufio.NewReader(&out), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer response.Body.Close()
+					var body struct {
+						Error struct {
+							Message  string
+							Metadata struct{ Raw string }
+						}
+					}
+					if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+						t.Fatal(err)
+					}
+					if response.StatusCode != 400 || *refunds != 1 || body.Error.Message != tc.want || body.Error.Metadata.Raw != tc.want {
+						t.Fatalf("truncated credential reached client: status=%d refunds=%d body=%+v want=%q", response.StatusCode, *refunds, body, tc.want)
+					}
+				})
+			}
+		}
+	}
+}
+
 type bedrockStatusError struct{ code, message string }
 
 func (e *bedrockStatusError) Error() string                 { return "Bedrock request failed" }
