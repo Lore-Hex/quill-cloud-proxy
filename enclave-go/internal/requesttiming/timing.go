@@ -11,8 +11,20 @@
 // delivered stream), those invocations extend through End, and receipt is zero.
 // End freezes every field; detached completions cannot revise the snapshot.
 //
+// Idle wait runs from timer creation to the first request byte on a reused,
+// unbuffered connection. First requests and already-buffered requests use timer
+// creation as their request origin (zero idle wait). Thus lazy TLS handshakes
+// on first requests remain in accept_to_start and request. Request runs from
+// that origin through End; elapsed retains timer creation through End. If a
+// reused connection ends before any byte arrives and without Start, all elapsed
+// time is idle and request is zero. If Start occurs while still waiting for a
+// byte, the request origin falls back to timer creation and idle wait is zero;
+// request and accept_to_start are both measured from creation in that case.
+// Latency dashboards should use request_ms, not elapsed_ms.
+//
 // Before millisecond truncation, accept_to_start + authorize + route + upstream
-// + retry_wait + settle + receipt = elapsed when Start and an invocation occur,
+// + retry_wait + settle + receipt = request when Start and an invocation occur,
+// Start precedes the first invocation,
 // authorization is non-overlapping and wholly between Start and first invoke,
 // completed retry waits do not overlap each other or another measured phase,
 // settlements do not overlap pre-invocation phases or retry waits, and every gap
@@ -21,8 +33,15 @@
 // invariant for rejected requests, concurrent authorization/retry work, waits
 // still in progress at End, or uninstrumented gaps between orchestration calls.
 // Authorize and retry_wait are cumulative durations, not unions. Each duration
-// is truncated for reporting, so logged phase sums can be below elapsed_ms
+// is truncated for reporting, so logged phase sums can be below request_ms
 // by less than one millisecond per summed field.
+//
+// BodyRead is the client-upload-bound sub-interval from the request origin
+// (after idle) through the unauthenticated body read's return, including errors.
+// It includes header reading (and first-request TLS), is zero when unmarked,
+// and is clamped to accept_to_start, including zero before Start. It does not
+// change the phase sum. Consumers may subtract body_read_ms from
+// request_ms - upstream_ms to measure control-plane-only overhead.
 package requesttiming
 
 import (
@@ -38,6 +57,7 @@ type contextKey struct{}
 // Fields is an immutable snapshot. Durations are truncated to milliseconds
 // after accumulation, rather than rounding each control-plane attempt.
 type Fields struct {
+	IdleWaitMS, RequestMS, BodyReadMS                                    int64
 	AcceptToStartMS, AuthorizeMS, RouteMS, UpstreamMS, TTFBMS            int64
 	RetryWaitMS, SettleMS, ReceiptMS, AuthorizeAttempts, UpstreamPartial int64
 	SettleOutcome, CPEndpoint                                            string
@@ -47,20 +67,21 @@ type Fields struct {
 // speculative authorization can run on different goroutines. Snapshot never
 // advances a phase; End freezes the request before detached work can change it.
 type Timer struct {
-	mu                                                  sync.Mutex
-	now                                                 func() time.Time
-	active                                              map[*Invocation]struct{}
-	hasFirstByte                                        bool
-	invocations                                         []interval
-	settlements                                         []interval
-	upstream                                            time.Duration
-	upstreamPartial                                     int64
-	accepted, started, completed                        time.Time
-	acceptToStart, authorize, route, retryWait, receipt time.Duration
-	ttfbMS, attempts                                    int64
-	endpoint, outcome                                   string
-	invoked, ended                                      bool
-	elapsed                                             time.Duration
+	mu                                                    sync.Mutex
+	now                                                   func() time.Time
+	active                                                map[*Invocation]struct{}
+	hasFirstByte                                          bool
+	invocations                                           []interval
+	settlements                                           []interval
+	upstream                                              time.Duration
+	upstreamPartial                                       int64
+	accepted, requestByte, bodyReadAt, started, completed time.Time
+	acceptToStart, authorize, route, retryWait, receipt   time.Duration
+	ttfbMS, attempts                                      int64
+	endpoint, outcome                                     string
+	invoked, ended                                        bool
+	elapsed, idleWait, request                            time.Duration
+	waitingForByte                                        bool
 }
 
 // Invocation is an opaque, request-local token. Each concurrent provider
@@ -117,7 +138,7 @@ func New(accepted time.Time, now func() time.Time) *Timer {
 	if now == nil {
 		now = time.Now
 	}
-	return &Timer{accepted: accepted, now: now, outcome: "skipped", active: make(map[*Invocation]struct{})}
+	return &Timer{accepted: accepted, requestByte: accepted, now: now, outcome: "skipped", active: make(map[*Invocation]struct{})}
 }
 
 // Now samples the timing clock; a missing context timer uses the default clock.
@@ -137,6 +158,50 @@ func FromContext(ctx context.Context) *Timer {
 	return timer
 }
 
+// WaitForRequestByte separates idle time only for reused, unbuffered connections.
+// Call before reading; the existing read path must call RequestFirstByte as
+// soon as it returns data, without waiting for a complete request line.
+func (t *Timer) WaitForRequestByte() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.ended && t.started.IsZero() {
+		t.waitingForByte = true
+	}
+}
+
+// RequestFirstByte marks the request input boundary, distinct from a provider's
+// FirstByte. Repeated marks and marks after Start or End are ignored.
+func (t *Timer) RequestFirstByte() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ended || !t.started.IsZero() || !t.waitingForByte {
+		return
+	}
+	t.requestByte = t.Now()
+	t.idleWait = t.requestByte.Sub(t.accepted)
+	t.waitingForByte = false
+}
+
+// MarkBodyRead records when the unauthenticated body read returns, successfully
+// or otherwise. The first mark wins; nil and frozen timers ignore marks.
+// Snapshot clamps the interval to accept_to_start regardless of Start ordering.
+func (t *Timer) MarkBodyRead(now time.Time) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.ended && t.bodyReadAt.IsZero() {
+		t.bodyReadAt = now
+	}
+}
+
 func (t *Timer) Start() {
 	if t == nil {
 		return
@@ -146,8 +211,13 @@ func (t *Timer) Start() {
 	if t.ended || !t.started.IsZero() {
 		return
 	}
+	if t.waitingForByte {
+		t.waitingForByte = false
+		t.requestByte = t.accepted
+		t.idleWait = 0
+	}
 	t.started = t.Now()
-	t.acceptToStart = t.started.Sub(t.accepted)
+	t.acceptToStart = t.started.Sub(t.requestByte)
 }
 
 func (t *Timer) AuthorizeDone(start time.Time) {
@@ -273,10 +343,16 @@ func (t *Timer) End() time.Duration {
 	if !t.ended {
 		end := t.Now()
 		t.elapsed = end.Sub(t.accepted)
+		if t.waitingForByte {
+			t.idleWait = t.elapsed
+		} else {
+			t.request = end.Sub(t.requestByte)
+		}
 		if len(t.active) > 0 {
 			for invocation := range t.active {
 				t.invocations = addInterval(t.invocations, interval{invocation.start, end})
 			}
+			clear(t.active)
 			t.upstream = duration(t.invocations)
 			t.upstreamPartial = 1
 		} else if !t.completed.IsZero() {
@@ -294,7 +370,14 @@ func (t *Timer) Snapshot() Fields {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	var bodyRead time.Duration
+	if !t.bodyReadAt.IsZero() {
+		bodyRead = max(0, min(t.bodyReadAt.Sub(t.requestByte), t.acceptToStart))
+	}
 	return Fields{
+		BodyReadMS:        bodyRead.Milliseconds(),
+		IdleWaitMS:        t.idleWait.Milliseconds(),
+		RequestMS:         t.request.Milliseconds(),
 		AcceptToStartMS:   t.acceptToStart.Milliseconds(),
 		AuthorizeMS:       t.authorize.Milliseconds(),
 		AuthorizeAttempts: t.attempts,

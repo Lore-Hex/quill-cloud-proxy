@@ -22,6 +22,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/attestation"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
@@ -302,6 +303,14 @@ func readRequestWithHeadersRead(
 	br *bufio.Reader,
 	headersRead func(),
 ) (method, path, bearer, idempotencyKey string, attribution requestAttributionHeaders, body []byte, err error) {
+	return readRequestWithTiming(br, headersRead, nil)
+}
+
+func readRequestWithTiming(
+	br *bufio.Reader,
+	headersRead func(),
+	phases *requesttiming.Timer,
+) (method, path, bearer, idempotencyKey string, attribution requestAttributionHeaders, body []byte, err error) {
 	statusLineBytes, err := readBoundedHTTPLine(br)
 	if err != nil {
 		return "", "", "", "", attribution, nil, err
@@ -473,6 +482,7 @@ func readRequestWithHeadersRead(
 		)
 		defer requestBody.Close()
 		body, err = io.ReadAll(requestBody)
+		phases.MarkBodyRead(phases.Now())
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			return "", "", "", "", attribution, nil, errBodyTooLarge
@@ -483,6 +493,9 @@ func readRequestWithHeadersRead(
 		if len(body) != contentLength {
 			return "", "", "", "", attribution, nil, io.ErrUnexpectedEOF
 		}
+	}
+	if contentLength == 0 {
+		phases.MarkBodyRead(phases.Now())
 	}
 	return method, path, bearer, idempotencyKey, attribution, body, nil
 }

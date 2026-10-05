@@ -120,6 +120,7 @@ type requestDeadlineConn struct {
 	mu                    sync.Mutex
 	headerTimeout         time.Duration
 	waitingForRequestByte bool
+	requestTiming         *requesttiming.Timer
 }
 
 func (c *requestDeadlineConn) ArmIdle(idleTimeout, headerTimeout time.Duration) {
@@ -137,14 +138,25 @@ func (c *requestDeadlineConn) ArmHeader(headerTimeout time.Duration) {
 	_ = c.Conn.SetReadDeadline(time.Now().Add(headerTimeout))
 }
 
+// TrackRequestByte observes the existing read without adding an I/O operation
+// or changing the idle/header deadline transition. Buffered requests need no hook.
+func (c *requestDeadlineConn) TrackRequestByte(timer *requesttiming.Timer) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.requestTiming = timer
+}
+
 func (c *requestDeadlineConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
 	if n > 0 {
 		c.mu.Lock()
+		timer := c.requestTiming
+		c.requestTiming = nil
 		waiting := c.waitingForRequestByte
 		c.waitingForRequestByte = false
 		headerTimeout := c.headerTimeout
 		c.mu.Unlock()
+		timer.RequestFirstByte()
 		if waiting {
 			_ = c.Conn.SetReadDeadline(time.Now().Add(headerTimeout))
 		}
@@ -600,7 +612,7 @@ func serveOne(
 			break
 		}
 		armRequestReadDeadline(deadlineConn, requestReader, requestCount, config)
-		if !serveOneRequest(ctx, conn, statsConn, requestReader, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount, &healthRequestCount, &requestCount, config) {
+		if !serveOneRequest(ctx, conn, statsConn, requestReader, deadlineConn, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount, &healthRequestCount, &requestCount, config) {
 			break
 		}
 		// Pipelined bytes are legal, but bound the amount carried across a
@@ -629,6 +641,7 @@ func serveOneRequest(
 	conn net.Conn,
 	statsConn *responseStatsConn,
 	requestReader *bufio.Reader,
+	deadlineConn *requestDeadlineConn,
 	reg *auth.Registry,
 	br llm.Client,
 	deviceBlob []byte,
@@ -651,6 +664,11 @@ func serveOneRequest(
 	if phases == nil {
 		phases = requesttiming.New(requestStartedAt, nil)
 		ctx = requesttiming.WithTimer(ctx, phases)
+	}
+	if *requestCount > 0 && requestReader.Buffered() == 0 {
+		phases.WaitForRequestByte()
+		deadlineConn.TrackRequestByte(phases)
+		defer deadlineConn.TrackRequestByte(nil)
 	}
 	requestMethod := "unknown"
 	requestRoute := "unknown"
@@ -695,13 +713,14 @@ func serveOneRequest(
 		)
 	}()
 
-	method, path, bearer, idempotencyKey, attribution, body, err := readRequestWithHeadersRead(
+	method, path, bearer, idempotencyKey, attribution, body, err := readRequestWithTiming(
 		requestReader,
 		func() {
 			// Header slowloris protection must not become a blanket request-body
 			// timeout: authenticated clients may upload large prompt payloads.
 			_ = conn.SetReadDeadline(time.Time{})
 		},
+		phases,
 	)
 	processingStartedAt := time.Now()
 	// Also clear after header-read failures so an error response is not coupled
@@ -1054,7 +1073,7 @@ func serveOneRequest(
 			}
 			var aerr *adapter.AdapterError
 			if asAdapterErr(err, &aerr) {
-				requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context)
+				requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context, body)
 				writeAdapterOpenAIError(conn, aerr)
 				return
 			}
@@ -1065,7 +1084,7 @@ func serveOneRequest(
 		if err != nil {
 			var aerr *adapter.AdapterError
 			if asAdapterErr(err, &aerr) {
-				requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context)
+				requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context, body)
 				writeAdapterOpenAIError(conn, aerr)
 				return
 			}
@@ -1089,7 +1108,7 @@ func serveOneRequest(
 			}
 			var aerr *adapter.AdapterError
 			if asAdapterErr(err, &aerr) {
-				requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context)
+				requestIdentity.recordContractRejection(os.Stderr, requestLogID, routePath, aerr.Status, aerr.Context, body)
 				writeAdapterOpenAIError(conn, aerr)
 				return
 			}
@@ -1467,6 +1486,12 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 		return nil, err
 	}
 	req.RequestedParameters = validation.RequestedParameters
+	if validation.IncludeUsage {
+		if req.StreamOptions == nil {
+			req.StreamOptions = &types.ChatStreamOptions{}
+		}
+		req.StreamOptions.IncludeUsage = true
+	}
 	return &req, nil
 }
 

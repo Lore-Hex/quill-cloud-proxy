@@ -68,6 +68,48 @@ func decryptChutesTestRequest(t *testing.T, blob []byte, instanceSK *mlkem.Decap
 	return payload
 }
 
+func TestChutesPreservesVerificationFailureWhenDiscoveryExhausts(t *testing.T) {
+	const chuteID = "7725a31d-28df-5bb7-9d29-c23b49df5472"
+	instanceSK, err := mlkem.GenerateKey768()
+	if err != nil {
+		t.Fatal(err)
+	}
+	verificationErr := errors.New("chutes: TDX measurements not in pinned allowlist")
+	var invokes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/e2e/instances/" + chuteID:
+			_ = json.NewEncoder(w).Encode(chutesDiscoveryResponse{
+				NonceExpiresIn: 60,
+				Instances:      []chutesInstance{{InstanceID: "untrusted-instance", E2EPubkey: base64.StdEncoding.EncodeToString(instanceSK.EncapsulationKey().Bytes()), Nonces: []string{"fresh-nonce"}}},
+			})
+		case "/instances/untrusted-instance/evidence":
+			_, _ = io.WriteString(w, `{}`)
+		case "/e2e/invoke":
+			invokes.Add(1)
+			http.Error(w, "must not invoke", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := newChutesE2EE("operator-key")
+	client.apiBase = server.URL
+	client.httpc = server.Client()
+	client.verifyEvidence = func(context.Context, *chutesEvidenceEnvelope) (*chutesVerificationResult, error) {
+		return nil, verificationErr
+	}
+	var out bytes.Buffer
+	err = client.InvokeStreaming(t.Context(), &qtypes.OpenAIChatRequest{Model: chuteID},
+		&qtypes.AnthropicMessagesRequest{Messages: []qtypes.AnthropicMessage{{Role: "user", Content: "private prompt"}}}, &out)
+	if !errors.Is(err, verificationErr) {
+		t.Fatalf("error = %v, want original verification failure", err)
+	}
+	if invokes.Load() != 0 || out.Len() != 0 {
+		t.Fatal("unverified instance must never receive ciphertext or produce output")
+	}
+}
+
 func chutesTestEncryptedStream(t *testing.T, responsePK string, plaintextEvents ...string) string {
 	return chutesTestEncryptedStreamWithTerminal(t, responsePK, true, plaintextEvents...)
 }

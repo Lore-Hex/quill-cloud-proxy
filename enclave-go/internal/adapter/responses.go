@@ -134,8 +134,8 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 	if boolField(raw, "background") {
 		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "background=true"}
 	}
-	if value, ok := raw["prompt_cache_retention"]; ok && presentNonNull(value) {
-		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "prompt_cache_retention"}
+	if err := rejectPromptCacheRetention(raw["prompt_cache_retention"]); err != nil {
+		return err
 	}
 	if value, ok := raw["reasoning"]; ok {
 		if err := validateReasoningConfig(value); err != nil {
@@ -204,22 +204,8 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 			return &AdapterError{Status: 400, Message: "stream_options must be an object", Context: "stream_options"}
 		}
 	}
-	if value, ok := raw["usage"]; ok && presentNonNull(value) {
-		// OpenRouter's legacy usage.include request option is deprecated and
-		// has no effect because usage is always returned. Accept it as a no-op
-		// so clients can switch base URLs without a Responses-only failure.
-		var options map[string]json.RawMessage
-		if err := json.Unmarshal(value, &options); err != nil {
-			return &AdapterError{Status: 400, Message: "usage must be an object", Context: "usage"}
-		}
-		if include, ok := options["include"]; ok && presentNonNull(include) {
-			var enabled bool
-			if err := json.Unmarshal(include, &enabled); err != nil {
-				return &AdapterError{Status: 400, Message: "usage.include must be a boolean", Context: "usage.include"}
-			}
-		}
-	}
-	return nil
+	_, err := validateLegacyUsage(raw["usage"])
+	return err
 }
 
 func rejectResponsesWebPlugin(value json.RawMessage) error {

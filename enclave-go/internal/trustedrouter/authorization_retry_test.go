@@ -16,124 +16,144 @@ import (
 )
 
 func TestAuthorizeRetryStaysOnAuthorityThatReceivedFirstAttempt(t *testing.T) {
-	const (
-		primaryHost  = "127.0.0.1:18081"
-		fallbackHost = "127.0.0.1:18082"
-	)
-	primaryAttempts, fallbackAttempts, fallbackAuthorizeAttempts := 0, 0, 0
-	response := func(request *http.Request, status int, body string) *http.Response {
-		return &http.Response{
-			StatusCode: status,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Request:    request,
-		}
-	}
-	client := New(
-		"http://"+primaryHost+",http://"+fallbackHost,
-		"internal",
-		&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-			switch request.URL.Host {
-			case primaryHost:
-				primaryAttempts++
-				if primaryAttempts == 1 {
-					return nil, &dialFailure{err: errors.New("primary unavailable")}
+	for _, status := range []int{http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			const (
+				primaryHost  = "127.0.0.1:18081"
+				fallbackHost = "127.0.0.1:18082"
+			)
+			primaryAttempts, fallbackAttempts, fallbackAuthorizeAttempts := 0, 0, 0
+			response := func(request *http.Request, status int, body string) *http.Response {
+				return &http.Response{
+					StatusCode: status,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Request:    request,
 				}
-				return response(request, http.StatusOK, `{"data":{"authorization_id":"auth_wrong_authority"}}`), nil
-			case fallbackHost:
-				fallbackAttempts++
-				switch request.URL.Path {
-				case "/internal/gateway/authorize":
-					fallbackAuthorizeAttempts++
-					if fallbackAuthorizeAttempts == 1 {
-						return response(request, http.StatusServiceUnavailable, `{"error":{"message":"retry here","type":"service_unavailable"}}`), nil
-					}
-					return response(request, http.StatusOK, `{"data":{"authorization_id":"auth_fallback"}}`), nil
-				case "/internal/gateway/settle":
-					return response(request, http.StatusOK, `{"data":{"generation_id":"gen_fallback","settled":true}}`), nil
-				case "/internal/gateway/refund":
-					return response(request, http.StatusOK, `{"data":{"settled":true}}`), nil
-				default:
-					t.Fatalf("unexpected fallback path %q", request.URL.Path)
-					return nil, errors.New("unexpected fallback path")
-				}
-			default:
-				t.Fatalf("unexpected host %q", request.URL.Host)
-				return nil, errors.New("unexpected host")
 			}
-		})},
-	)
-	client.authorizeRetry = retryPolicy{
-		attempts: 3,
-		sleep:    func(context.Context, time.Duration) error { return nil },
-	}
+			client := New(
+				"http://"+primaryHost+",http://"+fallbackHost,
+				"internal",
+				&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					switch request.URL.Host {
+					case primaryHost:
+						primaryAttempts++
+						if primaryAttempts == 1 {
+							return nil, &dialFailure{err: errors.New("primary unavailable")}
+						}
+						return response(request, http.StatusOK, `{"data":{"authorization_id":"auth_wrong_authority"}}`), nil
+					case fallbackHost:
+						fallbackAttempts++
+						switch request.URL.Path {
+						case "/internal/gateway/authorize":
+							fallbackAuthorizeAttempts++
+							if fallbackAuthorizeAttempts == 1 {
+								return response(request, status, `{"error":{"message":"retry here","type":"service_unavailable"}}`), nil
+							}
+							return response(request, http.StatusOK, `{"data":{"authorization_id":"auth_fallback"}}`), nil
+						case "/internal/gateway/settle":
+							return response(request, http.StatusOK, `{"data":{"generation_id":"gen_fallback","settled":true}}`), nil
+						case "/internal/gateway/refund":
+							return response(request, http.StatusOK, `{"data":{"settled":true}}`), nil
+						default:
+							t.Fatalf("unexpected fallback path %q", request.URL.Path)
+							return nil, errors.New("unexpected fallback path")
+						}
+					default:
+						t.Fatalf("unexpected host %q", request.URL.Host)
+						return nil, errors.New("unexpected host")
+					}
+				})},
+			)
+			client.authorizeRetry = retryPolicy{
+				attempts: 3,
+				sleep:    func(context.Context, time.Duration) error { return nil },
+			}
 
-	authorization, err := client.Authorize(
-		t.Context(),
-		"sk-test",
-		&qtypes.OpenAIChatRequest{Model: "trustedrouter/cheap"},
-	)
-	if err != nil {
-		t.Fatalf("Authorize: %v", err)
-	}
-	if authorization.AuthorizationID != "auth_fallback" {
-		t.Fatalf("authorization id = %q, want fallback authority result", authorization.AuthorizationID)
-	}
-	settled, err := client.Settle(t.Context(), authorization, Usage{InputTokens: 1, OutputTokens: 1})
-	if err != nil {
-		t.Fatalf("Settle: %v", err)
-	}
-	if settled.GenerationID != "gen_fallback" {
-		t.Fatalf("generation id = %q, want fallback authority result", settled.GenerationID)
-	}
-	if err := client.Refund(t.Context(), authorization, 502, "provider_error", 0.01, nil); err != nil {
-		t.Fatalf("Refund: %v", err)
-	}
-	if primaryAttempts != 1 {
-		t.Fatalf("primary attempts = %d, want 1; retry/finalization must not move after fallback responded", primaryAttempts)
-	}
-	if fallbackAuthorizeAttempts != 2 || fallbackAttempts != 4 {
-		t.Fatalf("fallback attempts = %d (%d authorize), want 4 (2 authorize)", fallbackAttempts, fallbackAuthorizeAttempts)
+			authorization, err := client.Authorize(
+				t.Context(),
+				"sk-test",
+				&qtypes.OpenAIChatRequest{Model: "trustedrouter/cheap"},
+			)
+			if err != nil {
+				t.Fatalf("Authorize: %v", err)
+			}
+			if authorization.AuthorizationID != "auth_fallback" {
+				t.Fatalf("authorization id = %q, want fallback authority result", authorization.AuthorizationID)
+			}
+			settled, err := client.Settle(t.Context(), authorization, Usage{InputTokens: 1, OutputTokens: 1})
+			if err != nil {
+				t.Fatalf("Settle: %v", err)
+			}
+			if settled.GenerationID != "gen_fallback" {
+				t.Fatalf("generation id = %q, want fallback authority result", settled.GenerationID)
+			}
+			if err := client.Refund(t.Context(), authorization, 502, "provider_error", 0.01, nil); err != nil {
+				t.Fatalf("Refund: %v", err)
+			}
+			if primaryAttempts != 1 {
+				t.Fatalf("primary attempts = %d, want 1; retry/finalization must not move after fallback responded", primaryAttempts)
+			}
+			if fallbackAuthorizeAttempts != 2 || fallbackAttempts != 4 {
+				t.Fatalf("fallback attempts = %d (%d authorize), want 4 (2 authorize)", fallbackAttempts, fallbackAuthorizeAttempts)
+			}
+		})
 	}
 }
 
 func TestAuthorizeRetriesTransientControlPlaneFailureWithStableIdempotencyKey(t *testing.T) {
-	var attempts int
-	var idempotencyKeys []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
-		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		idempotencyKeys = append(idempotencyKeys, fmt.Sprint(payload["idempotency_key"]))
-		if attempts == 1 {
-			w.Header().Set("Retry-After", "1")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = io.WriteString(w, `{"error":{"message":"transient database contention","type":"service_unavailable"}}`)
-			return
-		}
-		_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_retry","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"endpoint_1","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
-	}))
-	defer server.Close()
+	for _, status := range []int{500, 502, 503, 504} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			var attempts int
+			var idempotencyKeys []string
+			var requestBodies []string
+			holds := make(map[string]bool)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts++
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read body: %v", err)
+				}
+				requestBodies = append(requestBodies, string(body))
+				var payload map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				idempotencyKeys = append(idempotencyKeys, fmt.Sprint(payload["idempotency_key"]))
+				// Model a committed hold whose acknowledgement was lost at the proxy.
+				holds[fmt.Sprint(payload["idempotency_key"])] = true
+				if attempts == 1 {
+					w.Header().Set("Retry-After", "1")
+					w.WriteHeader(status)
+					_, _ = io.WriteString(w, `<html><body>Internal Server Error</body></html>`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"data":{"authorization_id":"auth_retry","workspace_id":"ws_1","api_key_hash":"key_1","model":"openai/gpt-4o-mini","endpoint_id":"endpoint_1","provider":"openai","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`)
+			}))
+			defer server.Close()
 
-	client := New(server.URL, "internal", server.Client())
-	client.authorizeRetry = retryPolicy{
-		attempts: 3,
-		sleep:    func(context.Context, time.Duration) error { return nil },
-	}
-	auth, err := client.Authorize(t.Context(), "sk-test", &qtypes.OpenAIChatRequest{
-		Model:    "openai/gpt-4o-mini",
-		Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "private input"}},
-	})
-	if err != nil {
-		t.Fatalf("Authorize: %v", err)
-	}
-	if auth.AuthorizationID != "auth_retry" || attempts != 2 {
-		t.Fatalf("authorization = %#v, attempts = %d", auth, attempts)
-	}
-	if len(idempotencyKeys) != 2 || idempotencyKeys[0] == "" || idempotencyKeys[0] != idempotencyKeys[1] {
-		t.Fatalf("idempotency keys = %#v, want one stable non-empty key", idempotencyKeys)
+			client := New(server.URL, "internal", server.Client())
+			client.authorizeRetry = retryPolicy{
+				attempts: 3,
+				sleep:    func(context.Context, time.Duration) error { return nil },
+			}
+			auth, err := client.Authorize(t.Context(), "sk-test", &qtypes.OpenAIChatRequest{
+				Model:    "openai/gpt-4o-mini",
+				Messages: []qtypes.OpenAIChatMessage{{Role: "user", Content: "private input"}},
+			})
+			if err != nil {
+				t.Fatalf("Authorize: %v", err)
+			}
+			if auth.AuthorizationID != "auth_retry" || attempts != 2 {
+				t.Fatalf("authorization = %#v, attempts = %d", auth, attempts)
+			}
+			if len(idempotencyKeys) != 2 || idempotencyKeys[0] == "" || idempotencyKeys[0] != idempotencyKeys[1] {
+				t.Fatalf("idempotency keys = %#v, want one stable non-empty key", idempotencyKeys)
+			}
+			if len(holds) != 1 || len(requestBodies) != 2 || requestBodies[0] != requestBodies[1] {
+				t.Fatalf("retry changed billing intent: holds=%d, request bodies identical=%t", len(holds), len(requestBodies) == 2 && requestBodies[0] == requestBodies[1])
+			}
+		})
 	}
 }
 
@@ -163,26 +183,30 @@ func TestAuthorizeDoesNotRetryRateLimit(t *testing.T) {
 }
 
 func TestAuthorizeTransientRetryIsBounded(t *testing.T) {
-	attempts := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = io.WriteString(w, `{"error":{"message":"still contended","type":"service_unavailable"}}`)
-	}))
-	defer server.Close()
+	for _, status := range []int{http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			attempts := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts++
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, `{"error":{"message":"still contended","type":"service_unavailable"}}`)
+			}))
+			defer server.Close()
 
-	client := New(server.URL, "internal", server.Client())
-	client.authorizeRetry = retryPolicy{
-		attempts: 3,
-		sleep:    func(context.Context, time.Duration) error { return nil },
-	}
-	_, err := client.Authorize(t.Context(), "sk-test", &qtypes.OpenAIChatRequest{Model: "trustedrouter/cheap"})
-	var controlErr *ControlPlaneError
-	if !errors.As(err, &controlErr) || controlErr.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("err = %#v, want final 503 ControlPlaneError", err)
-	}
-	if attempts != 3 {
-		t.Fatalf("attempts = %d, want 3", attempts)
+			client := New(server.URL, "internal", server.Client())
+			client.authorizeRetry = retryPolicy{
+				attempts: 3,
+				sleep:    func(context.Context, time.Duration) error { return nil },
+			}
+			_, err := client.Authorize(t.Context(), "sk-test", &qtypes.OpenAIChatRequest{Model: "trustedrouter/cheap"})
+			var controlErr *ControlPlaneError
+			if !errors.As(err, &controlErr) || controlErr.StatusCode != status {
+				t.Fatalf("err = %#v, want final %d ControlPlaneError", err, status)
+			}
+			if attempts != 3 {
+				t.Fatalf("attempts = %d, want 3", attempts)
+			}
+		})
 	}
 }
 

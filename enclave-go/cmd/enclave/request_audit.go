@@ -12,17 +12,19 @@ import (
 
 const errorIdentityLookupTimeout = 750 * time.Millisecond
 
-// requestAuditIdentity contains only content-free identifiers. The credential
+// requestAuditIdentity contains identifiers and sanitized configuration previews. The credential
 // fingerprint is the same one-way lookup digest already sent to the control
 // plane; credentialID is the salted stored-key digest returned by that plane.
 // Neither value can be used as an API credential.
 type requestAuditIdentity struct {
-	credentialFingerprint string
-	workspaceID           string
-	credentialID          string
-	attribution           string
-	rejectionStatus       int
-	rejectionParameter    string
+	credentialFingerprint   string
+	workspaceID             string
+	credentialID            string
+	attribution             string
+	rejectionStatus         int
+	rejectionParameter      string
+	rejectionValuePreview   string
+	rejectionValueTruncated bool
 }
 
 func (identity *requestAuditIdentity) bindBearer(bearer string) {
@@ -63,7 +65,7 @@ func (identity *requestAuditIdentity) resolveFailure(
 	}
 	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), errorIdentityLookupTimeout)
 	defer cancel()
-	lookupCtx = trustedrouter.WithContractRejection(lookupCtx, identity.rejectionStatus, identity.rejectionParameter)
+	lookupCtx = trustedrouter.WithContractRejection(lookupCtx, identity.rejectionStatus, identity.rejectionParameter, identity.rejectionValuePreview, identity.rejectionValueTruncated)
 	verified, err := gateway.ValidateKeyInfo(lookupCtx, bearer, route)
 	if err != nil || verified == nil || verified.WorkspaceID == "" {
 		identity.attribution = "unresolved"
@@ -75,11 +77,14 @@ func (identity *requestAuditIdentity) resolveFailure(
 }
 
 func (identity *requestAuditIdentity) recordContractRejection(
-	w io.Writer, requestLogID string, route string, status int, parameter string,
+	w io.Writer, requestLogID string, route string, status int, parameter string, body []byte,
 ) {
 	identity.rejectionStatus = status
-	identity.rejectionParameter = trustedrouter.ContractParameterCategory(parameter)
-	writeRequestContractRejection(w, requestLogID, route, status, parameter)
+	// Keep the field context inside the enclave until the log/RPC boundaries
+	// independently derive a safe path and category. Categorizing here loses it.
+	identity.rejectionParameter = parameter
+	identity.rejectionValuePreview, identity.rejectionValueTruncated = trustedrouter.ContractParameterValue(body, parameter)
+	writeRequestContractRejection(w, requestLogID, route, status, parameter, identity.rejectionValuePreview, identity.rejectionValueTruncated)
 }
 
 func writeRequestStartLog(
@@ -102,8 +107,9 @@ func writeRequestStartLog(
 
 // request_end timing fields follow requesttiming's phase-sum contract:
 // accept_to_start + authorize + route + upstream + retry_wait + settle + receipt
-// equals elapsed before truncation when Start/invoke occur, authorization is
-// serial and between Start and first invoke, retry waits are complete and
+// equals request_ms before truncation when Start precedes the first invocation,
+// authorization is serial and between Start and first invoke, retry waits are
+// complete and
 // disjoint from each other and other phases, settlement is outside pre-invoke
 // phases/retry waits, and retry waits/settlements cover all gaps between
 // invocations. Upstream is a
@@ -112,7 +118,13 @@ func writeRequestStartLog(
 // its elapsed part runs through End and receipt is zero. Otherwise receipt is
 // the post-invocation tail minus settlement in that tail. Rejections, concurrent
 // authorization/retry work, unfinished waits and unmeasured orchestration gaps
-// need not sum to elapsed. Logged millisecond truncation can also lower the sum.
+// need not sum to request_ms. Logged millisecond truncation can also lower the sum.
+// body_read_ms is a client-upload-bound sub-interval of accept_to_start_ms,
+// from the end of idle through the unauthenticated body read's return (including
+// errors), clamped to accept_to_start_ms and zero when unmarked or before Start.
+// It includes headers and first-request TLS. Consumers may subtract it from
+// request_ms - upstream_ms for control-plane-only overhead; the phase sum and
+// accept_to_start_ms are unchanged.
 func writeRequestEndLog(
 	w io.Writer,
 	requestLogID string,
@@ -133,7 +145,10 @@ func writeRequestEndLog(
 		phases.SettleOutcome = "skipped"
 	}
 	fmt.Fprintf(w,
-		"enclave.request_end request_log_id=%q method=%q route=%q status=%d outcome=%q body_bytes=%d response_bytes=%d elapsed_ms=%d workspace_id=%q credential_id=%q credential_fingerprint=%q attribution=%q accept_to_start_ms=%d authorize_ms=%d authorize_attempts=%d route_ms=%d upstream_ms=%d upstream_partial=%d ttfb_ms=%d retry_wait_ms=%d settle_ms=%d settle_outcome=%q receipt_ms=%d cp_endpoint=%q\n",
+		// Append-only layout: every field up to cp_endpoint keeps its historical
+		// position; idle_wait_ms and request_ms retain their appended positions.
+		// body_read_ms follows request_ms so positional readers keep working.
+		"enclave.request_end request_log_id=%q method=%q route=%q status=%d outcome=%q body_bytes=%d response_bytes=%d elapsed_ms=%d workspace_id=%q credential_id=%q credential_fingerprint=%q attribution=%q accept_to_start_ms=%d authorize_ms=%d authorize_attempts=%d route_ms=%d upstream_ms=%d upstream_partial=%d ttfb_ms=%d retry_wait_ms=%d settle_ms=%d settle_outcome=%q receipt_ms=%d cp_endpoint=%q idle_wait_ms=%d request_ms=%d body_read_ms=%d\n",
 		requestLogID,
 		method,
 		route,
@@ -158,11 +173,14 @@ func writeRequestEndLog(
 		phases.SettleOutcome,
 		phases.ReceiptMS,
 		phases.CPEndpoint,
+		phases.IdleWaitMS,
+		phases.RequestMS,
+		phases.BodyReadMS,
 	)
 }
 
-// writeRequestContractRejection records only the bounded option name and
-// status. It deliberately excludes the request body and field value. The
+// writeRequestContractRejection records the bounded option name, sanitized
+// configuration preview and status. It excludes content and credentials. The
 // enclave has no Sentry SDK. recordContractRejection also attaches a sanitized
 // category to the existing post-response lookup for a control-plane warning.
 func writeRequestContractRejection(
@@ -171,14 +189,21 @@ func writeRequestContractRejection(
 	route string,
 	status int,
 	parameter string,
+	preview string,
+	truncated bool,
 ) {
+	parameterPath := trustedrouter.ContractParameterPath(parameter)
+	preview, trimmed := trustedrouter.SanitizeContractParameterValue(parameter, preview)
 	parameter = trustedrouter.ContractParameterCategory(parameter)
 	fmt.Fprintf(
 		w,
-		"enclave.request_contract_rejected request_log_id=%q route=%q status=%d parameter=%q\n",
+		"enclave.request_contract_rejected request_log_id=%q route=%q status=%d parameter=%q parameter_path=%q value_preview=%q value_truncated=%t\n",
 		requestLogID,
 		route,
 		status,
 		parameter,
+		parameterPath,
+		preview,
+		preview != "" && (truncated || trimmed),
 	)
 }
