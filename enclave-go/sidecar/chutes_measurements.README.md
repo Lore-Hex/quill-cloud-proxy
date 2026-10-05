@@ -1,15 +1,38 @@
 # Chutes TEE measurement snapshot
 
 `chutes_measurements.json` contains the release-pinned snapshot fetched from
-`https://api.chutes.ai/servers/tee/measurements` on 2026-08-15, plus the single
-live-verified 1.4.1 profile described below.
+`https://api.chutes.ai/servers/tee/measurements` on 2026-08-15, plus the two
+live-verified 1.4.1 profiles described below.
 
-SHA-256: `d7cf642a0e6f544adc3905740ef40a7434df4bf431b2696199526e4dbee17449`
+SHA-256: `334cc957961640451042c89c36b242ce8335e454d16bbd126e54ee3a5b27a0e3`
 
 The verifier accepts only an exact MRTD and runtime RTMR0 through RTMR3 match
 from this file. A Chutes measurement change therefore fails closed until the
 new public snapshot is reviewed, tested, committed, and deployed in a newly
 attested TrustedRouter image.
+
+## October 5, 2026 Mistral Nemo investigation
+
+Fresh evidence for `unsloth/Mistral-Nemo-Instruct-2407-TEE` identified another
+1.4.1 profile missing from the August snapshot:
+`8xpro_6000 [10.2.1, numa-124c-768g] (58443435b208)`.
+The candidate passed the real Intel and NVIDIA verification, including
+nonce/key binding. Only that exact profile was added. A regression test
+failed before the addition and rejects mutation of each measured register.
+The reference-manifest JSON captured for this review has SHA-256
+`1ee0b619fefef03eaea89acdc9e714eb260a05651036fb9205376662bfad314c`.
+Release provenance is the same immutable 1.4.1 source reviewed below.
+
+The full `TestLiveChutesE2EEAttestedPong` passed in 11.65 seconds with the
+release-pinned verifier, fresh nonce, verified CPU/GPU evidence, encrypted
+invocation, and authenticated response decryption. No candidate override was
+used for this canary.
+
+The provider also intermittently returned 502 while fetching evidence.
+That remains an upstream availability failure, not permission to bypass
+verification. Qwen3 235B Thinking's three advertised instances instead
+returned 400 requiring `chutes_version >= 0.6.0`; updating workload pins
+cannot repair their missing evidence capability.
 
 ## October 4, 2026 GLM-5.2 investigation
 
