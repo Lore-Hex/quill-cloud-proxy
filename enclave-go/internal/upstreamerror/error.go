@@ -101,8 +101,17 @@ func sanitize(s string, secrets ...string) string {
 		encoded, _ := json.Marshal(value)
 		return string(encoded)
 	}
+	// A body limit may cut an escape (including a surrogate pair). Remove it
+	// before normalization so a trailing credential prefix remains recognizable.
+	if tail := incompleteJSONEscapePattern.FindStringSubmatchIndex(s); tail != nil {
+		s = s[:tail[2]]
+	}
 	return sanitizeText(normalizeJSONEscapes(s), secrets...)
 }
+
+// Consume complete backslash pairs before capturing the dangling escape, so
+// an escaped backslash at the end of a truncated body is preserved.
+var incompleteJSONEscapePattern = regexp.MustCompile(`(?:^|[^\\])(?:\\\\)*(\\u[dD][89aAbB][0-9a-fA-F]{2}(?:\\(?:u[0-9a-fA-F]{0,3})?)?|\\(?:u[0-9a-fA-F]{0,3})?)$`)
 
 // Decode escapes even when a truncated/malformed body cannot be parsed. Match
 // surrogate pairs together so they normalize to the same rune as credentials.

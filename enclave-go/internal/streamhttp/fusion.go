@@ -103,11 +103,15 @@ func (w *progressWatch) progress() {
 	}
 }
 
-func (w *progressWatch) stop() {
+func (w *progressWatch) stopTimer() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.stopped = true
 	w.timer.Stop()
+}
+
+func (w *progressWatch) stop() {
+	w.stopTimer()
 	w.cancel(context.Canceled)
 }
 
@@ -115,16 +119,27 @@ type progressBody struct {
 	io.ReadCloser
 	watch *progressWatch
 	ctx   context.Context
+	eof   bool
 }
 
 func (b *progressBody) Read(p []byte) (int, error) {
+	if b.eof {
+		return 0, io.EOF
+	}
 	n, err := b.ReadCloser.Read(p)
 	if n > 0 {
 		b.watch.progress()
 	}
 	if err != nil {
 		cause := context.Cause(b.ctx)
-		b.watch.stop()
+		if err == io.EOF {
+			// SDKs may consume bytes returned with EOF, then read again.
+			// Keep EOF sticky and leave context cleanup to Close.
+			b.eof = true
+			b.watch.stopTimer()
+		} else {
+			b.watch.stop()
+		}
 		if cause != nil {
 			return n, cause
 		}

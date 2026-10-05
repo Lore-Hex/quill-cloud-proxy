@@ -76,3 +76,33 @@ func TestCredentialRedactionRemovesTrailingSecretPrefixes(t *testing.T) {
 		})
 	}
 }
+
+func TestCredentialRedactionDropsIncompleteEscapes(t *testing.T) {
+	for _, tc := range []struct{ name, secret, prefix, escape string }{
+		{"unicode escape", "provider-owned-secret", "provider-owned-secre", `\u0074`},
+		{"surrogate pair", "provider-owned-🔐secret", "provider-owned-", `\ud83d\udd10`},
+	} {
+		for cut := 1; cut < len(tc.escape); cut++ {
+			t.Run(fmt.Sprintf("%s/cut=%d", tc.name, cut), func(t *testing.T) {
+				_, redact := WithCredentialRedaction(t.Context(), tc.secret)
+				body := `{"error":{"message":"rejected ` + tc.prefix + tc.escape[:cut]
+				got := redact(&Error{Status: 400, Body: body}).(*Error).Body
+				want := `{"error":{"message":"rejected ***`
+				if got != want {
+					t.Fatalf("truncated escape: got %q, want %q", got, want)
+				}
+			})
+		}
+	}
+	// Complete escapes must survive, even at the end of an invalid JSON body.
+	for _, tc := range []struct{ body, want string }{
+		{`{"message":"ordinary\u0021`, `{"message":"ordinary!`},
+		{`{"message":"ordinary\\`, `{"message":"ordinary\`},
+		{`{"message":"ordinary\ud83d\udd10`, `{"message":"ordinary🔐`},
+		{`{"message":"ordinary\\u007`, `{"message":"ordinary\u007`},
+	} {
+		if got := sanitize(tc.body); got != tc.want {
+			t.Errorf("complete escape changed: got %q, want %q", got, tc.want)
+		}
+	}
+}

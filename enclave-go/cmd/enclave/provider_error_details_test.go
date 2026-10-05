@@ -73,11 +73,24 @@ func TestGatewayRedactsCredentialPrefixesAtTruncatedBodyEnd(t *testing.T) {
 				{"escaped credential field", `{"x-\u0061pi-key":"pro\u0076ider-owned-secre`, `{"x-api-key":"***`},
 				{"escaped message prefix", `{"error":{"message":"rejected pro\u0076ider-\u006fwn`, `{"error":{"message":"rejected ***`},
 				{"ordinary short prefix", `ordinary text about provide`, `ordinary text about provide`},
+				{"dangling backslash", `{"error":{"message":"rejected provider-owned-secre\`, `{"error":{"message":"rejected ***`},
+				{"unicode escape without digits", `{"error":{"message":"rejected provider-owned-secre\u`, `{"error":{"message":"rejected ***`},
+				{"unicode escape with one digit", `{"error":{"message":"rejected provider-owned-secre\u0`, `{"error":{"message":"rejected ***`},
+				{"unicode escape with two digits", `{"error":{"message":"rejected provider-owned-secre\u00`, `{"error":{"message":"rejected ***`},
+				{"unicode escape with three digits", `{"error":{"message":"rejected provider-owned-secre\u007`, `{"error":{"message":"rejected ***`},
+				{"unpaired high surrogate", `{"error":{"message":"rejected provider-owned-\ud83d`, `{"error":{"message":"rejected ***`},
+				{"low surrogate dangling backslash", `{"error":{"message":"rejected provider-owned-\ud83d\`, `{"error":{"message":"rejected ***`},
+				{"low surrogate without digits", `{"error":{"message":"rejected provider-owned-\ud83d\u`, `{"error":{"message":"rejected ***`},
+				{"low surrogate with one digit", `{"error":{"message":"rejected provider-owned-\ud83d\ud`, `{"error":{"message":"rejected ***`},
+				{"low surrogate with two digits", `{"error":{"message":"rejected provider-owned-\ud83d\udd`, `{"error":{"message":"rejected ***`},
+				{"low surrogate with three digits", `{"error":{"message":"rejected provider-owned-\ud83d\udd1`, `{"error":{"message":"rejected ***`},
+				{"complete trailing escape", `{"error":{"message":"ordinary\u0021`, `{"error":{"message":"ordinary!`},
 			} {
 				t.Run(fmt.Sprintf("%s/stream=%t/%s", route, stream, tc.name), func(t *testing.T) {
 					gateway, auth, options, refunds := errorTestGateway(t, false, false)
 					provider := streamingProviderFunc(func(ctx context.Context, _ io.Writer, _ llm.InvokeOptions) error {
 						upstreamerror.RecordCredential(ctx, key)
+						upstreamerror.RecordCredential(ctx, "provider-owned-🔐secret")
 						return &upstreamerror.Error{Status: 400, Body: tc.body}
 					})
 					var out bytes.Buffer
