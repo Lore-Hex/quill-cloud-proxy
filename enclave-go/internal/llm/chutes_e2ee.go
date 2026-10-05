@@ -141,6 +141,7 @@ func (c *chutesE2EEClient) InvokeStreaming(
 	var failures []string
 	var lastErr error
 	var lastInvokeErr error
+	var lastVerificationErr error
 	refreshed := false
 	for len(excluded) < chutesMaxInstanceTries {
 		invocation, takeErr := c.takeInvocation(ctx, apiKey, chuteID, poolKey, excluded, refreshed)
@@ -159,6 +160,7 @@ func (c *chutesE2EEClient) InvokeStreaming(
 		verification, err := c.verifyInvocation(ctx, apiKey, chuteID, invocation)
 		if err != nil {
 			lastErr = err
+			lastVerificationErr = err
 			failures = append(failures, "attestation")
 			continue
 		}
@@ -179,6 +181,11 @@ func (c *chutesE2EEClient) InvokeStreaming(
 		failures = append(failures, "no_instances")
 	}
 	terminalErr := lastInvokeErr
+	if terminalErr == nil {
+		// Exhausting an excluded pool is a consequence, not the reason its
+		// instances failed. Preserve the attestation error for diagnostics.
+		terminalErr = lastVerificationErr
+	}
 	if terminalErr == nil {
 		terminalErr = lastErr
 	}

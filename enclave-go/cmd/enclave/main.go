@@ -45,6 +45,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/privatemode"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"golang.org/x/crypto/acme/autocert"
@@ -119,6 +120,7 @@ type requestDeadlineConn struct {
 	mu                    sync.Mutex
 	headerTimeout         time.Duration
 	waitingForRequestByte bool
+	requestTiming         *requesttiming.Timer
 }
 
 func (c *requestDeadlineConn) ArmIdle(idleTimeout, headerTimeout time.Duration) {
@@ -136,14 +138,25 @@ func (c *requestDeadlineConn) ArmHeader(headerTimeout time.Duration) {
 	_ = c.Conn.SetReadDeadline(time.Now().Add(headerTimeout))
 }
 
+// TrackRequestByte observes the existing read without adding an I/O operation
+// or changing the idle/header deadline transition. Buffered requests need no hook.
+func (c *requestDeadlineConn) TrackRequestByte(timer *requesttiming.Timer) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.requestTiming = timer
+}
+
 func (c *requestDeadlineConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
 	if n > 0 {
 		c.mu.Lock()
+		timer := c.requestTiming
+		c.requestTiming = nil
 		waiting := c.waitingForRequestByte
 		c.waitingForRequestByte = false
 		headerTimeout := c.headerTimeout
 		c.mu.Unlock()
+		timer.RequestFirstByte()
 		if waiting {
 			_ = c.Conn.SetReadDeadline(time.Now().Add(headerTimeout))
 		}
@@ -158,6 +171,11 @@ var responseWriteTimeout = 30 * time.Second
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
+	speculationMode, modeErr := shadowobserve.ParseMode(os.Getenv("QUILL_SPECULATIVE_PROVIDER_MODE"))
+	if modeErr != nil {
+		fmt.Fprintln(os.Stderr, modeErr)
+		os.Exit(1)
+	}
 	if privatemode.ProxyEntrypoint() {
 		return
 	}
@@ -479,14 +497,27 @@ func main() {
 	fmt.Fprintf(os.Stderr, "spend_lease.local_admission_flag enabled=%t\n", boot.SpendLeaseLocalAdmission)
 	fmt.Fprintf(os.Stderr, "enclave.stage_d_flags usage_heartbeat=%t terminate_at_cap=%t heartbeat_budget_ms=%d settle_before_terminal_ms=%d\n",
 		stageDConfig.usageHeartbeat, stageDConfig.terminateAtCap, stageDConfig.heartbeatBudget.Milliseconds(), stageDConfig.settleBeforeTerminal.Milliseconds())
-	if err := initializeReceiptSignerWithSpendLease(ctx, tlsServer, deviceBlob, boot.SpendLeaseShadow || boot.SpendLeaseLocalAdmission || stageDConfig.usageHeartbeat, spendLeaseIssuerConfigNonce(boot), apiHost); err != nil {
+	if err := initializeReceiptSignerWithSpendLease(ctx, tlsServer, deviceBlob, boot.SpendLeaseShadow || boot.SpendLeaseLocalAdmission || stageDConfig.usageHeartbeat || speculationMode == shadowobserve.Shadow, spendLeaseIssuerConfigNonce(boot), apiHost); err != nil {
 		fmt.Fprintf(os.Stderr, "receipt signer initialization failed: %v\n", err)
 		os.Exit(1)
 	}
-	initializeSpendLeaseShadow(ctx, trGateway, boot)
-	if stageDConfig.usageHeartbeat && !boot.SpendLeaseShadow && !boot.SpendLeaseLocalAdmission && trGateway != nil && receiptSigner != nil {
+	if speculationMode != shadowobserve.Shadow {
+		initializeSpendLeaseShadow(ctx, trGateway, boot)
+	}
+	if stageDConfig.usageHeartbeat && (speculationMode == shadowobserve.Shadow || (!boot.SpendLeaseShadow && !boot.SpendLeaseLocalAdmission)) && trGateway != nil && receiptSigner != nil {
 		trGateway.ConfigureStageDBoot(receiptSigner)
 		trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence())
+	}
+
+	if speculationMode == shadowobserve.Shadow && trGateway != nil && receiptSigner != nil {
+		trGateway.ConfigureShadowBoot(receiptSigner)
+		if !stageDConfig.usageHeartbeat {
+			trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence())
+		}
+	}
+	if err := initializeSpeculation(ctx, trGateway, speculationMode); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	// LB health endpoint. The serving port (:443) terminates TLS inside the
@@ -581,7 +612,7 @@ func serveOne(
 			break
 		}
 		armRequestReadDeadline(deadlineConn, requestReader, requestCount, config)
-		if !serveOneRequest(ctx, conn, statsConn, requestReader, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount, &healthRequestCount, &requestCount, config) {
+		if !serveOneRequest(ctx, conn, statsConn, requestReader, deadlineConn, reg, br, deviceBlob, trGateway, byokSecrets, &attestationCount, &healthRequestCount, &requestCount, config) {
 			break
 		}
 		// Pipelined bytes are legal, but bound the amount carried across a
@@ -610,6 +641,7 @@ func serveOneRequest(
 	conn net.Conn,
 	statsConn *responseStatsConn,
 	requestReader *bufio.Reader,
+	deadlineConn *requestDeadlineConn,
 	reg *auth.Registry,
 	br llm.Client,
 	deviceBlob []byte,
@@ -632,6 +664,11 @@ func serveOneRequest(
 	if phases == nil {
 		phases = requesttiming.New(requestStartedAt, nil)
 		ctx = requesttiming.WithTimer(ctx, phases)
+	}
+	if *requestCount > 0 && requestReader.Buffered() == 0 {
+		phases.WaitForRequestByte()
+		deadlineConn.TrackRequestByte(phases)
+		defer deadlineConn.TrackRequestByte(nil)
 	}
 	requestMethod := "unknown"
 	requestRoute := "unknown"
@@ -676,13 +713,14 @@ func serveOneRequest(
 		)
 	}()
 
-	method, path, bearer, idempotencyKey, attribution, body, err := readRequestWithHeadersRead(
+	method, path, bearer, idempotencyKey, attribution, body, err := readRequestWithTiming(
 		requestReader,
 		func() {
 			// Header slowloris protection must not become a blanket request-body
 			// timeout: authenticated clients may upload large prompt payloads.
 			_ = conn.SetReadDeadline(time.Time{})
 		},
+		phases,
 	)
 	processingStartedAt := time.Now()
 	// Also clear after header-read failures so an error response is not coupled
@@ -758,6 +796,9 @@ func serveOneRequest(
 			cache := trGateway.BillingBackoff()
 			if rejection, hit := cache.Get(billingKey, idempotent, time.Now()); hit {
 				billingSuppressed = true
+				if shadow := trGateway.Speculation(); shadow != nil {
+					trGateway.ObserveShadowSuppressed(rejection.RequestID)
+				}
 				// Preserve the original response IDs as well as its body and headers.
 				statsConn.mu.Lock()
 				statsConn.requestID = rejection.RequestID
@@ -783,6 +824,12 @@ func serveOneRequest(
 		len(body),
 		requestIdentity,
 	)
+	// Discovery must work before authentication and confidential-origin policy.
+	// Return an ordinary error, never a cross-host credential-bearing redirect.
+	if message := controlPlaneRouteMessage(routePath); message != "" {
+		writeError(conn, http.StatusNotFound, message)
+		return
+	}
 	if apihosts.Confidential(attribution.Host) || apihosts.Confidential(enclavetls.SelectedServerName(conn)) {
 		ctx = trustedrouter.WithConfidentialOnly(ctx)
 		if err := validateConfidentialHostRequest(method, routePath, body, trGateway); err != nil {
@@ -1227,6 +1274,14 @@ func serveOneRequest(
 			spendLeaseReserveRequest = &reserveRequest
 			authorization = spendLeasePlan.Local
 		} else {
+			ctx = predecideSpeculation(ctx, trGateway, bearer, body, attribution.IdempotencyPresent, routeType, confidential, &req, resolvedCustomModel != nil)
+			if execution := shadowobserve.FromContext(ctx); execution != nil {
+				defer execution.Finish()
+				statsConn.mu.Lock()
+				statsConn.shadow = execution
+				statsConn.shadowContent = &shadowobserve.ContentStream{}
+				statsConn.mu.Unlock()
+			}
 			authorization, err = trGateway.AuthorizeWithRoute(ctx, bearer, &req, routeType)
 			if err != nil {
 				writeGatewayAuthorizationError(conn, err)
@@ -1427,6 +1482,7 @@ func parseChatRequest(body []byte) (*types.OpenAIChatRequest, error) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
+	types.RecoverToolCallNames(req.Messages)
 	if err := adapter.ConfigureChatWebSearch(&req); err != nil {
 		return nil, err
 	}

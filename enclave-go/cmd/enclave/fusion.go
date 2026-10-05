@@ -130,15 +130,23 @@ var fusionPrometheus10Panel = []string{
 	deepSeekV4Pro0423Model,
 }
 
-// Prometheus 1.0 1M's panel is the one exception to the freeze above: a
-// member whose window falls below 1M is removed (Joseph, 2026-10-01), as the
-// control plane's SYNTH_QUALITY_1M_MODEL_ORDER removes it. MiniMax M3 serves
-// 524,288 tokens; the control plane dropped it on 2026-08-30 (#966).
+// Prometheus 1.0 1M is the one exception to the freeze above: every stage
+// serves a 1M window (Joseph, 2026-10-01). A panel member whose window falls
+// below 1M is removed, as the control plane's SYNTH_QUALITY_1M_MODEL_ORDER
+// removes it. Its judges and finals are 1M models too: Prometheus 1.0's, with
+// Kimi K3 in place of Kimi K2.7 Code (262,144), because the judge and the
+// final stage both read the whole request. MiniMax M3 serves 1,000,000 by
+// MiniMax's own model feed.
 var fusionQuality1MPanel = []string{
+	"minimax/minimax-m3",
 	"xiaomi/mimo-v2.5-pro",
 	"z-ai/glm-5.2",
 	deepSeekV4Pro0423Model,
 }
+
+var fusionQuality1MJudgeModels = []string{fusionKimiK3, "minimax/minimax-m3"}
+
+var fusionQuality1MFinalModels = []string{"z-ai/glm-5.2", "minimax/minimax-m3"}
 
 var fusionPrometheus20Panel = []string{
 	"minimax/minimax-m3",
@@ -420,9 +428,10 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 	case trustedRouterPrometheus20Model:
 		return []string{fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
 	case trustedRouterPrometheus10Model,
-		trustedRouterPrometheus101MModel,
 		trustedRouterPrometheusCode10Model:
 		return []string{"z-ai/glm-5.2", "minimax/minimax-m3"}, true
+	case trustedRouterPrometheus101MModel:
+		return append([]string(nil), fusionQuality1MFinalModels...), true
 	case trustedRouterIrisModel,
 		trustedRouterIris30Model:
 		return []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
@@ -460,9 +469,10 @@ func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 	case trustedRouterPrometheus20Model:
 		return []string{"minimax/minimax-m3", fusionKimiK3}, true
 	case trustedRouterPrometheus10Model,
-		trustedRouterPrometheus101MModel,
 		trustedRouterPrometheusCode10Model:
 		return []string{fusionCodeKimi, "minimax/minimax-m3"}, true
+	case trustedRouterPrometheus101MModel:
+		return append([]string(nil), fusionQuality1MJudgeModels...), true
 	case trustedRouterIrisModel,
 		trustedRouterIris30Model:
 		return []string{deepSeekV4Pro0813Model, fusionKimiK3, "minimax/minimax-m3"}, true

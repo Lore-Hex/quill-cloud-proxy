@@ -826,6 +826,7 @@ allowlist:
   - {address: api.reka.ai,                    port: 443}
   - {address: api.sailresearch.com,           port: 443}
   - {address: mancer.tech,                    port: 443}
+  - {address: abliterate.ai,                  port: 443}
   - {address: api.intelligence.io.solutions,  port: 443}
   - {address: api.scaleway.ai,                 port: 443}
   - {address: api.featherless.ai,              port: 443}
@@ -855,6 +856,7 @@ allowlist:
   - {address: design-api.sourceful.com,         port: 443}
   - {address: fal.run,                          port: 443}
   - {address: ark.ap-southeast.bytepluses.com,  port: 443}
+  - {address: ark-acg-ap-southeast-1.tos-ap-southeast-1.volces.com, port: 443}
   - {address: tokenhub-intl.tencentcloudmaas.com, port: 443}
   - {address: queue.fal.run,                    port: 443}
   # GCP cross-cloud APIs — auth + Spanner + Bigtable + GCS (ACME cache)
@@ -978,6 +980,7 @@ write_vsock_unit 8061 api.upstage.ai
 write_vsock_unit 8062 api.reka.ai
 write_vsock_unit 8063 api.sailresearch.com
 write_vsock_unit 8064 mancer.tech
+write_vsock_unit 8105 abliterate.ai
 write_vsock_unit 8065 api.intelligence.io.solutions
 write_vsock_unit 8066 api.scaleway.ai
 write_vsock_unit 8067 api.featherless.ai
@@ -1002,6 +1005,7 @@ write_vsock_unit 8078 qianfan.baidubce.com
 write_vsock_unit 8079 design-api.sourceful.com
 write_vsock_unit 8080 fal.run
 write_vsock_unit 8081 ark.ap-southeast.bytepluses.com
+write_vsock_unit 8106 ark-acg-ap-southeast-1.tos-ap-southeast-1.volces.com
 write_vsock_unit 8083 tokenhub-intl.tencentcloudmaas.com
 write_vsock_unit 8084 queue.fal.run
 write_vsock_unit 8082 router.huggingface.co

@@ -96,6 +96,8 @@ var contractParameterCategories = map[string]struct{}{
 	"plugins.pareto-router":             {},
 	"plugins.response-healing":          {},
 	"plugins.web-fetch":                 {},
+	"file":                              {}, "audio": {}, "video": {},
+	"content": {}, "input_image": {}, "input_audio": {}, "input_file": {},
 }
 
 // WithContractRejection annotates the existing post-response identity lookup.

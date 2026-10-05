@@ -85,6 +85,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"io"
 	"net/http"
 	"os"
@@ -105,6 +106,10 @@ const (
 // (so a misconfigured deploy fails loudly instead of silently running
 // with no devices).
 func Fetch(ctx context.Context) (*types.BootstrapData, error) {
+	speculationMode, err := shadowobserve.ParseMode(os.Getenv("QUILL_SPECULATIVE_PROVIDER_MODE"))
+	if err != nil {
+		return nil, err
+	}
 	project := os.Getenv("QUILL_GCP_PROJECT_ID")
 	if project == "" {
 		return nil, fmt.Errorf("bootstrap/gcp: QUILL_GCP_PROJECT_ID not set")
@@ -116,6 +121,10 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 	spendLeaseShadow := strings.EqualFold(strings.TrimSpace(os.Getenv("QUILL_SPEND_LEASE_SHADOW")), "on")
 	spendLeaseLocalAdmission := strings.EqualFold(strings.TrimSpace(os.Getenv("SPEND_LEASE_LOCAL_ADMISSION")), "on")
 	spendLeaseConfigSecret := ""
+	if speculationMode == shadowobserve.Shadow {
+		spendLeaseShadow = false
+		spendLeaseLocalAdmission = false
+	}
 	if spendLeaseShadow || spendLeaseLocalAdmission {
 		spendLeaseConfigSecret = strings.TrimSpace(os.Getenv("QUILL_SPEND_LEASE_ISSUER_CONFIG_SECRET"))
 	}

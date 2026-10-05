@@ -10,5 +10,5 @@ import (
 func videoProviderKeys(boot *types.BootstrapData) video.ProviderKeys {
 	// Nitro exposes only fixed, audited TLS tunnel hosts. fal H3 Max is safe on
 	// this path because sync_mode returns the MP4 inline through queue.fal.run.
-	return video.ProviderKeys{Venice: boot.VeniceAPIKey, FAL: boot.ProviderAPIKeys["fal"]}
+	return video.ProviderKeys{Venice: boot.VeniceAPIKey, FAL: boot.ProviderAPIKeys["fal"], BytePlus: boot.ProviderAPIKeys["byteplus"]}
 }

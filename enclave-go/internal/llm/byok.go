@@ -160,7 +160,10 @@ func requiresMaxCompletionTokens(provider, modelID string) bool {
 	return false
 }
 
-type chatMessage struct {
+type chatMessage = ChatMessage
+
+// ChatMessage is an already normalized upstream message. Preparation never fetches media.
+type ChatMessage struct {
 	Role       string           `json:"role"`
 	Content    any              `json:"content"`
 	ToolCalls  []map[string]any `json:"tool_calls,omitempty"`
@@ -298,50 +301,22 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	if strings.TrimSpace(upstreamID) == "" {
 		return fmt.Errorf("llm/%s: missing authorized upstream model", provider)
 	}
-	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
-	// Wharf omits decision confidence/probabilities from SSE. Fetch this small
-	// task result once as JSON, then use the same response pipeline for both
-	// caller modes. Other Neurometric models keep incremental upstream streams.
-	decisionCompletion := normalizeDirectProvider(provider) == "neurometric" && upstreamID == "neurometric/structured-decisions"
-	if decisionCompletion {
-		reqBody.Stream = false
-		reqBody.StreamOptions = nil
-	}
-	if normalizeDirectProvider(provider) == "tencent" {
-		if err := validateTencentThinking(reqBody); err != nil {
-			return err
-		}
-	}
-	if explicitHybridThinkingConflict(provider, req, reqBody) {
-		return &upstreamHTTPError{status: http.StatusBadRequest, body: "reasoning on is not supported with tools on this provider route"}
-	}
-	if normalizeDirectProvider(provider) == "tinfoil" {
-		reqBody.UserCacheSecret = strings.TrimSpace(options.providerCacheScope)
-	}
+	// Privatemode resolves its random cache salt outside pure preparation.
+	var privateWire *openAICompatibleRequest
 	if normalizeDirectProvider(provider) == "privatemode" {
-		if err := preparePrivatemodeWire(req, body, &reqBody, options.providerCacheScope); err != nil {
+		privateWire = &openAICompatibleRequest{Model: upstreamID}
+		if err := preparePrivatemodeWire(req, body, privateWire, options.providerCacheScope); err != nil {
 			return err
 		}
 	}
-	var payload any = reqBody
-	path := directChatCompletionsPath(provider)
-	nativeResponses := useOpenAIResponses(provider, reqBody)
-	if nativeResponses {
-		// Chat normalization retains effort only. Responses also understands
-		// summary preferences; validate the original object in its wire builder.
-		if req != nil {
-			reqBody.Reasoning = req.Reasoning
-		}
-		payload, err = buildOpenAIResponsesRequest(reqBody)
-		if err != nil {
-			return err
-		}
-		path = "/responses"
-	}
-	bodyBytes, err := json.Marshal(payload)
+	prepared, err := PrepareChatRequest(provider, upstreamModel, req, body, msgs, ChatPreparationOptions{
+		ProviderCacheScope: options.providerCacheScope, privateWire: privateWire,
+	})
 	if err != nil {
-		return fmt.Errorf("llm/%s: marshal body: %w", provider, err)
+		return err
 	}
+	bodyBytes, path := prepared.Bytes, prepared.Path
+	decisionCompletion, nativeResponses := prepared.DecisionCompletion, prepared.NativeResponses
 	httpReq, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
@@ -377,9 +352,7 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		if normalizeDirectProvider(provider) == "privatemode" {
-			// The untrusted edge can return plaintext errors. Preserve status
-			// for fallback/retry policy, but never trust or echo its body.
-			return &upstreamHTTPError{status: resp.StatusCode, body: "Privatemode encrypted upstream request failed"}
+			return privatemodeResponseError(resp)
 		}
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
@@ -879,6 +852,11 @@ func openAICompatibleMessagesWithFetchedImages(
 		msgs = append(msgs, chatMessage{Role: "system", Content: body.System})
 	}
 	for _, message := range body.Messages {
+		var emptied bool
+		message.Content, emptied = withoutProviderHistory(message.Content)
+		if emptied {
+			continue
+		}
 		if converted, ok := openAICompatibleToolMessages(message); ok {
 			msgs = append(msgs, converted...)
 			continue
@@ -1032,6 +1010,14 @@ func anthropicToolResultText(content any) string {
 }
 
 func openAICompatibleContentWithFetchedImages(ctx context.Context, content any) (any, error) {
+	content, _ = withoutProviderHistory(content)
+	if blocks, ok := content.([]map[string]any); ok {
+		items := make([]any, len(blocks))
+		for i, block := range blocks {
+			items[i] = block
+		}
+		content = items
+	}
 	switch value := content.(type) {
 	case string:
 		return value, nil
@@ -1058,6 +1044,9 @@ func openAICompatiblePartsWithFetchedImages(
 ) ([]map[string]any, error) {
 	out := make([]map[string]any, 0, len(parts))
 	for _, part := range parts {
+		if isProviderHistoryBlock(part.Type) {
+			continue
+		}
 		switch part.Type {
 		case "", "text", "input_text":
 			if strings.TrimSpace(part.Text) != "" {
@@ -1080,7 +1069,7 @@ func openAICompatiblePartsWithFetchedImages(
 				"image_url": imageURL,
 			})
 		default:
-			return nil, fmt.Errorf("llm/image: unsupported content part %q", part.Type)
+			return nil, &contentInputError{kind: part.Type}
 		}
 	}
 	return out, nil

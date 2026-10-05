@@ -168,15 +168,19 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 	body map[string]any,
 	estimateRequest spendlease.EstimateRequest,
 	plan *SpendLeaseAdmissionPlan,
-) (*Authorization, int, error) {
+) (result *Authorization, endpoint int, resultErr error) {
 	authorizeStarted := requesttiming.FromContext(ctx).Now()
 	defer requesttiming.FromContext(ctx).AuthorizeDone(authorizeStarted)
+	ctx, finishShadow := c.observeShadowAuthorize(ctx, lookupHash)
+	if finishShadow != nil {
+		defer func() { finishShadow(result, resultErr) }()
+	}
 	invocation := authorizationInvocationFromContext(ctx)
 	invocationNonce, err := invocation.invocationNonce()
 	if err != nil {
 		return nil, -1, err
 	}
-	if plan == nil && c.spendLease != nil {
+	if plan == nil && c.spendLease != nil && c.shadow == nil {
 		// Always overwrite this field at the last ordinary-authorize seam. No
 		// caller-controlled request field can select or influence the nonce.
 		body["invocation_nonce"] = invocationNonce
@@ -254,14 +258,14 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 		idempotencyKey = plan.key
 	}
 	if !marked && decoded.Data.IdempotentReplay && decoded.Data.InvocationNonce != invocationNonce {
-		return nil, controlPlaneEndpoint, idempotencyReplayConflict()
+		return nil, controlPlaneEndpoint, videoReplayConflict(body, &decoded.Data, controlPlaneEndpoint)
 	}
 	// Transport retries precede this single claim; validation failures cannot
 	// acquire dispatch rights. Ordinary calls cannot steal a prepared plan.
 	if !invocation.claimPlan(idempotencyKey, plan) {
 		return nil, controlPlaneEndpoint, idempotencyReplayConflict()
 	}
-	if c.spendLease != nil && decoded.Data.SpendLease != nil {
+	if c.spendLease != nil && c.shadow == nil && decoded.Data.SpendLease != nil {
 		var leaseErr error
 		if c.spendLease.state.LocalAdmissionEnabled() {
 			leaseErr = c.spendLease.state.HandleAdmissionResponse(lookupHash, decoded.Data.APIKeyHash, decoded.Data.WorkspaceID, decoded.Data.SpendLease, c.spendLease.now())

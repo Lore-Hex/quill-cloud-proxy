@@ -22,6 +22,8 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/attestation"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
 
@@ -52,6 +54,8 @@ var (
 )
 
 type responseStatsConn struct {
+	shadow        *shadowobserve.Execution
+	shadowContent *shadowobserve.ContentStream
 	// Set only for a synchronous inference request; the callback enforces bypass.
 	billingDenial func(error)
 	net.Conn
@@ -102,6 +106,9 @@ func (c *responseStatsConn) Write(p []byte) (int, error) {
 		c.status = parseHTTPStatus(p)
 	}
 	c.responseBytes += n
+	if c.shadow != nil && c.shadowContent.Feed(wireBytes[:n]) {
+		c.shadow.Content(true)
+	}
 	if err != nil {
 		c.keepAlive = false
 		c.reusable = false
@@ -142,6 +149,8 @@ func (c *responseStatsConn) BeginRequest(requestID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.billingDenial = nil
+	c.shadow = nil
+	c.shadowContent = nil
 	c.status = 0
 	c.responseBytes = 0
 	c.requestID = requestID
@@ -274,6 +283,7 @@ func maxDurationSeconds(duration time.Duration, floor float64) float64 {
 }
 
 type requestAttributionHeaders struct {
+	IdempotencyPresent bool
 	Host               string
 	SessionID          string
 	HTTPReferer        string
@@ -296,6 +306,14 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 func readRequestWithHeadersRead(
 	br *bufio.Reader,
 	headersRead func(),
+) (method, path, bearer, idempotencyKey string, attribution requestAttributionHeaders, body []byte, err error) {
+	return readRequestWithTiming(br, headersRead, nil)
+}
+
+func readRequestWithTiming(
+	br *bufio.Reader,
+	headersRead func(),
+	phases *requesttiming.Timer,
 ) (method, path, bearer, idempotencyKey string, attribution requestAttributionHeaders, body []byte, err error) {
 	statusLineBytes, err := readBoundedHTTPLine(br)
 	if err != nil {
@@ -364,6 +382,7 @@ func readRequestWithHeadersRead(
 				bearer = strings.TrimSpace(v)
 			}
 		case "idempotency-key":
+			attribution.IdempotencyPresent = true
 			idempotencyKey = strings.TrimSpace(v)
 		case "x-session-id":
 			attribution.SessionID = v
@@ -467,6 +486,7 @@ func readRequestWithHeadersRead(
 		)
 		defer requestBody.Close()
 		body, err = io.ReadAll(requestBody)
+		phases.MarkBodyRead(phases.Now())
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			return "", "", "", "", attribution, nil, errBodyTooLarge
@@ -477,6 +497,9 @@ func readRequestWithHeadersRead(
 		if len(body) != contentLength {
 			return "", "", "", "", attribution, nil, io.ErrUnexpectedEOF
 		}
+	}
+	if contentLength == 0 {
+		phases.MarkBodyRead(phases.Now())
 	}
 	return method, path, bearer, idempotencyKey, attribution, body, nil
 }

@@ -194,9 +194,13 @@ func (c *Client) postJSONBytesWithRetryFromEndpoint(
 	// body and bootAuthHeader were produced together before the loop and are
 	// reused verbatim for every attempt.
 	for attempt := 1; attempt <= policy.attempts; attempt++ {
+		attemptCtx, completeShadowAttempt := c.beginShadowAttempt(retryCtx, path)
 		selectedEndpoint, err := c.postJSONBytesWithBootAuthAtEndpoint(
-			retryCtx, path, body, out, pinnedEndpoint, bootAuthHeader,
+			attemptCtx, path, body, out, pinnedEndpoint, bootAuthHeader,
 		)
+		if completeShadowAttempt != nil {
+			completeShadowAttempt(err, err != nil && shouldRetry(err))
+		}
 		if selectedEndpoint >= 0 {
 			pinnedEndpoint = selectedEndpoint
 		}
@@ -259,7 +263,9 @@ func retryableAuthorizationError(err error) bool {
 		return false
 	}
 	switch controlErr.StatusCode {
-	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		// An unstructured 500 is ambiguous, just like the other retryable 5xx.
+		// Replays keep the exact body/idempotency key and the first authority.
 		return true
 	default:
 		return false

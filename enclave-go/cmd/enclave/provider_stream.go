@@ -15,6 +15,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -183,9 +184,21 @@ func invokeProviderStream(
 					ttfbTimer.Stop()
 				},
 			}
+			if x := shadowobserve.FromContext(ctx); x != nil {
+				model := option.UpstreamModel
+				if model == "" {
+					model = option.Model
+				}
+				x.ProviderStart(shadowobserve.Route{Endpoint: option.EndpointID, Provider: option.Provider, Model: model}, i == 0 && tryN == 0)
+				candidateWriter.shadow = x
+				candidateWriter.content = &shadowobserve.ContentStream{}
+			}
 			candidateWriter.invocation = phases.InvokeStart()
 			err = br.InvokeStreaming(attemptCtx, req, anthropicReq, candidateWriter, option)
 			phases.InvokeComplete(candidateWriter.invocation)
+			if candidateWriter.shadow != nil {
+				candidateWriter.shadow.ProviderEnd(err == nil)
+			}
 			if err == nil && candidateWriter.BytesWritten() == 0 {
 				// A write attempt selects the route (and lets the caller commit the
 				// response head) before the underlying writer reports its byte count.
@@ -644,6 +657,8 @@ func isTransientUpstreamError(err error) bool {
 }
 
 type routeSelectingWriter struct {
+	shadow      *shadowobserve.Execution
+	content     *shadowobserve.ContentStream
 	w           io.Writer
 	tracker     *selectedRouteTracker
 	option      llm.InvokeOptions
@@ -656,6 +671,9 @@ type routeSelectingWriter struct {
 }
 
 func (w *routeSelectingWriter) Write(p []byte) (int, error) {
+	if w.shadow != nil && w.content.Feed(p) {
+		w.shadow.Content(false)
+	}
 	if len(p) > 0 {
 		// Publish timing before selection wakes a handler that can disconnect.
 		w.phases.FirstByte(w.invocation)

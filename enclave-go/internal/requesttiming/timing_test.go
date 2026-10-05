@@ -19,7 +19,7 @@ func assertPhaseSum(t *testing.T, timer *Timer, elapsed time.Duration) {
 	t.Helper()
 	f := timer.Snapshot()
 	sum := f.AcceptToStartMS + f.AuthorizeMS + f.RouteMS + f.UpstreamMS + f.RetryWaitMS + f.SettleMS + f.ReceiptMS
-	if sum != elapsed.Milliseconds() {
+	if sum != f.RequestMS || f.RequestMS+f.IdleWaitMS != elapsed.Milliseconds() {
 		t.Fatalf("phase sum=%d elapsed=%d: %+v", sum, elapsed.Milliseconds(), f)
 	}
 }
@@ -36,6 +36,8 @@ func TestPhaseTimerMissingAndFrozen(t *testing.T) {
 	}
 	timer.End()
 	c.advance(10)
+	timer.WaitForRequestByte()
+	timer.RequestFirstByte()
 	timer.Start()
 	timer.AuthorizeDone(c.Now().Add(-time.Second))
 	timer.AuthorizeAttempt("https://ignored.example")
@@ -72,7 +74,7 @@ func TestPhaseTimerExactAndReadOrder(t *testing.T) {
 	timer.SettleDone(start, "ok")
 	c.advance(12)
 	elapsed := timer.End()
-	want := Fields{AcceptToStartMS: 12, AuthorizeMS: 8, AuthorizeAttempts: 2, RouteMS: 20, UpstreamMS: 17, TTFBMS: 9, SettleMS: 3, ReceiptMS: 12, SettleOutcome: "ok", CPEndpoint: "cp.example"}
+	want := Fields{RequestMS: 72, AcceptToStartMS: 12, AuthorizeMS: 8, AuthorizeAttempts: 2, RouteMS: 20, UpstreamMS: 17, TTFBMS: 9, SettleMS: 3, ReceiptMS: 12, SettleOutcome: "ok", CPEndpoint: "cp.example"}
 	if got := timer.Snapshot(); got != want {
 		t.Fatalf("fields=%+v want=%+v", got, want)
 	}
@@ -97,7 +99,7 @@ func TestPhaseTimerRealClockSmoke(t *testing.T) {
 	timer.InvokeComplete(invocation)
 	elapsed := timer.End()
 	f := timer.Snapshot()
-	for _, n := range []int64{elapsed.Nanoseconds(), f.AcceptToStartMS, f.AuthorizeMS, f.RouteMS, f.UpstreamMS, f.TTFBMS, f.RetryWaitMS, f.SettleMS, f.ReceiptMS} {
+	for _, n := range []int64{elapsed.Nanoseconds(), f.IdleWaitMS, f.RequestMS, f.AcceptToStartMS, f.AuthorizeMS, f.RouteMS, f.UpstreamMS, f.TTFBMS, f.RetryWaitMS, f.SettleMS, f.ReceiptMS} {
 		if n < 0 {
 			t.Fatalf("negative duration: %+v", f)
 		}
@@ -115,7 +117,7 @@ func TestPhaseTimerMissingInvokeAndEndpointBounds(t *testing.T) {
 	c.advance(2)
 	timer.AuthorizeDone(start)
 	timer.End()
-	want := Fields{AuthorizeMS: 2, AuthorizeAttempts: 1, SettleOutcome: "skipped"}
+	want := Fields{RequestMS: 2, AuthorizeMS: 2, AuthorizeAttempts: 1, SettleOutcome: "skipped"}
 	if got := timer.Snapshot(); got != want {
 		t.Fatalf("missing invoke=%+v", got)
 	}
@@ -343,4 +345,192 @@ func TestPhaseTimerRetryWaitAccumulatesActualDuration(t *testing.T) {
 		t.Fatalf("retry waits=%+v elapsed=%s", f, elapsed)
 	}
 	assertPhaseSum(t, timer, elapsed)
+}
+
+func TestPhaseTimerIdleWait(t *testing.T) {
+	timer, c := newFakeTimer()
+	timer.WaitForRequestByte()
+	c.advance(1179)
+	timer.RequestFirstByte()
+	c.advance(7)
+	timer.RequestFirstByte() // repeated input observations cannot move the origin
+	timer.Start()
+	c.advance(3)
+	invocation := timer.InvokeStart()
+	c.advance(11)
+	timer.InvokeComplete(invocation)
+	c.advance(5)
+	elapsed := timer.End()
+	before := timer.Snapshot()
+	if before.IdleWaitMS != 1179 || before.AcceptToStartMS != 7 || before.RequestMS != 26 || elapsed != 1205*time.Millisecond {
+		t.Fatalf("idle split: elapsed=%s fields=%+v", elapsed, before)
+	}
+	assertPhaseSum(t, timer, elapsed)
+	c.advance(100)
+	timer.WaitForRequestByte()
+	timer.RequestFirstByte()
+	if after := timer.Snapshot(); after != before || timer.End() != elapsed {
+		t.Fatalf("late input changed frozen fields: %+v -> %+v", before, after)
+	}
+}
+
+func TestPhaseTimerStartWithoutRequestByte(t *testing.T) {
+	timer, c := newFakeTimer()
+	timer.WaitForRequestByte()
+	c.advance(10)
+	timer.Start()
+	invocation := timer.InvokeStart()
+	c.advance(20)
+	timer.InvokeComplete(invocation)
+	elapsed := timer.End()
+	f := timer.Snapshot()
+	if elapsed != 30*time.Millisecond || f.IdleWaitMS != 0 || f.RequestMS != 30 || f.AcceptToStartMS != 10 || f.UpstreamMS != 20 {
+		t.Fatalf("unobserved input: elapsed=%s fields=%+v", elapsed, f)
+	}
+	if timer.waitingForByte || timer.requestByte != timer.accepted {
+		t.Fatal("Start did not restore the timer creation origin")
+	}
+	assertPhaseSum(t, timer, elapsed)
+}
+
+func TestPhaseTimerRequestFirstByteAfterStart(t *testing.T) {
+	timer, c := newFakeTimer()
+	timer.WaitForRequestByte()
+	c.advance(10)
+	timer.Start()
+	before := timer.Snapshot()
+	c.advance(20)
+	timer.RequestFirstByte()
+	if after := timer.Snapshot(); after != before {
+		t.Fatalf("post-Start input changed fields: %+v -> %+v", before, after)
+	}
+	// Start clears the wait. Re-arm it directly to isolate the started guard
+	// from the independent waitingForByte guard; End has not occurred.
+	timer.waitingForByte = true
+	c.advance(30)
+	timer.RequestFirstByte()
+	if after := timer.Snapshot(); after != before {
+		t.Fatalf("post-Start guard changed fields: %+v -> %+v", before, after)
+	}
+}
+
+func TestPhaseTimerRequestFirstByteAfterEnd(t *testing.T) {
+	timer, c := newFakeTimer()
+	timer.WaitForRequestByte()
+	c.advance(10)
+	elapsed := timer.End()
+	before := timer.Snapshot()
+	c.advance(20)
+	timer.RequestFirstByte()
+	if after := timer.Snapshot(); after != before || timer.End() != elapsed {
+		t.Fatalf("post-End input changed frozen fields: %+v -> %+v", before, after)
+	}
+}
+
+func TestPhaseTimerIdleEndsWithoutRequestByte(t *testing.T) {
+	timer, c := newFakeTimer()
+	timer.WaitForRequestByte()
+	c.advance(60000)
+	elapsed := timer.End()
+	f := timer.Snapshot()
+	if elapsed != time.Minute || f.IdleWaitMS != 60000 || f.RequestMS != 0 || f.AcceptToStartMS != 0 {
+		t.Fatalf("idle timeout: elapsed=%s fields=%+v", elapsed, f)
+	}
+}
+
+func TestPhaseTimerEndClearsActiveInvocations(t *testing.T) {
+	timer, c := newFakeTimer()
+	timer.Start()
+	a := timer.InvokeStart()
+	c.advance(10)
+	b := timer.InvokeStart()
+	c.advance(10)
+	elapsed := timer.End()
+	before := timer.Snapshot()
+	if len(timer.active) != 0 {
+		t.Fatalf("End retained %d active invocations", len(timer.active))
+	}
+	if before.UpstreamMS != 20 || before.UpstreamPartial != 1 || before.ReceiptMS != 0 {
+		t.Fatalf("partial union changed: %+v", before)
+	}
+	assertPhaseSum(t, timer, elapsed)
+	c.advance(100)
+	timer.FirstByte(a)
+	timer.InvokeComplete(a)
+	timer.InvokeComplete(b)
+	if after := timer.Snapshot(); after != before || timer.End() != elapsed {
+		t.Fatalf("late completion changed frozen fields: %+v -> %+v", before, after)
+	}
+}
+
+func TestPhaseTimerBodyReadOrdering(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		markAt, startAt, want int64
+		startFirst            bool
+	}{
+		{"before_start", 20, 30, 20, false},
+		{"after_start", 20, 30, 20, true},
+		{"clamped", 40, 30, 30, true},
+		{"future_mark", 40, 30, 30, false},
+		{"negative", -10, 30, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			timer, c := newFakeTimer()
+			timer.WaitForRequestByte()
+			c.advance(1000)
+			timer.RequestFirstByte()
+			mark := c.Now().Add(time.Duration(tc.markAt) * time.Millisecond)
+			if !tc.startFirst {
+				timer.MarkBodyRead(mark)
+				if got := timer.Snapshot().BodyReadMS; got != 0 {
+					t.Fatalf("before Start: body_read_ms=%d, want 0", got)
+				}
+			}
+			c.advance(tc.startAt)
+			timer.Start()
+			if tc.startFirst {
+				timer.MarkBodyRead(mark)
+			}
+			timer.MarkBodyRead(c.Now().Add(time.Hour)) // first mark wins
+			invocation := timer.InvokeStart()
+			c.advance(10)
+			timer.InvokeComplete(invocation)
+			elapsed := timer.End()
+			f := timer.Snapshot()
+			if f.BodyReadMS != tc.want || f.AcceptToStartMS != tc.startAt || f.IdleWaitMS != 1000 {
+				t.Fatalf("body read ordering: %+v, want body=%d start=%d", f, tc.want, tc.startAt)
+			}
+			assertPhaseSum(t, timer, elapsed)
+			c.advance(100)
+			timer.MarkBodyRead(c.Now())
+			if timer.Snapshot() != f {
+				t.Fatal("late body read changed frozen snapshot")
+			}
+		})
+	}
+}
+
+func TestPhaseTimerBodyReadMissing(t *testing.T) {
+	var absent *Timer
+	absent.MarkBodyRead(time.Now())
+	for _, started := range []bool{false, true} {
+		timer, c := newFakeTimer()
+		c.advance(30)
+		if started {
+			timer.Start()
+		}
+		timer.End()
+		timer.MarkBodyRead(c.Now())
+		if got := timer.Snapshot().BodyReadMS; got != 0 {
+			t.Fatalf("unmarked/frozen body_read_ms=%d", got)
+		}
+	}
+	timer, c := newFakeTimer()
+	c.advance(30)
+	timer.MarkBodyRead(c.Now()) // failed read, no Start
+	timer.End()
+	if got := timer.Snapshot(); got.BodyReadMS != 0 || got.AcceptToStartMS != 0 {
+		t.Fatalf("read without Start: %+v", got)
+	}
 }
