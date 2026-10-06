@@ -354,6 +354,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "sail-research",
         "mancer",
         "abliterate",
+        "meta",
         "io-net",
         "scaleway",
         "featherless",

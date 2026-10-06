@@ -398,8 +398,8 @@ func buildOpenAICompatibleRequest(
 		}
 		reqBody.TopK = body.TopK
 		// Most direct providers that expose reasoning use their native
-		// `thinking` extension. Meta's Muse endpoint is reached through
-		// OpenRouter and accepts OpenRouter's `reasoning` fields instead.
+		// `thinking` extension. Meta's native chat endpoint instead accepts
+		// reasoning_effort, never an Anthropic thinking budget.
 		if provider != "meta" {
 			reqBody.Thinking = body.Thinking
 		}
@@ -1112,10 +1112,6 @@ func directBaseURL(provider string) string {
 	switch provider {
 	case "openai":
 		return "https://api.openai.com/v1"
-	case "meta":
-		// Meta Muse Spark is currently served through OpenRouter. The
-		// control-plane provider label is deliberately "Meta via OpenRouter".
-		return "https://openrouter.ai/api/v1"
 	case "openrouter", "openrouter-exclusive":
 		// Narrow credits-only adapter for explicitly allowlisted models with no
 		// provider-direct API; never use this as general aggregator discovery.
@@ -1322,6 +1318,14 @@ func directModelID(provider, model, upstreamModel string) string {
 			return ""
 		}
 	}
+	if provider == "meta" {
+		// Also handle in-flight authorizations minted before the direct switch.
+		// Never send the old aggregator's author-prefixed ID to Meta.
+		if upstreamModel != "" {
+			return strings.TrimPrefix(upstreamModel, "meta/")
+		}
+		return strings.TrimPrefix(model, "meta/")
+	}
 	if providerUsesAuthorizedUpstreamModel(provider) && upstreamModel != "" {
 		return upstreamModel
 	}
@@ -1395,7 +1399,7 @@ func providerUsesAuthorizedUpstreamModel(provider string) bool {
 
 func providerPreservesAuthorModelID(provider string) bool {
 	switch provider {
-	case "meta", "openrouter", "openrouter-exclusive", "novita", "nebius", "fireworks", "chutes", "near-ai", "digitalocean", "cloudflare-workers-ai", "inceptron", "atlas-cloud", "relace":
+	case "openrouter", "openrouter-exclusive", "novita", "nebius", "fireworks", "chutes", "near-ai", "digitalocean", "cloudflare-workers-ai", "inceptron", "atlas-cloud", "relace":
 		return true
 	default:
 		return false

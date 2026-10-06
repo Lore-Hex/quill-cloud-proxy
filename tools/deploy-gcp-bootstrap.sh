@@ -106,6 +106,7 @@ REKA_SECRET="${REKA_SECRET:-trustedrouter-reka-api-key}"
 SAIL_RESEARCH_SECRET="${SAIL_RESEARCH_SECRET:-trustedrouter-sail-research-api-key}"
 MANCER_SECRET="${MANCER_SECRET:-trustedrouter-mancer-api-key}"
 ABLITERATE_SECRET="${ABLITERATE_SECRET:-trustedrouter-abliterate-api-key}"
+META_SECRET="${META_SECRET:-trustedrouter-meta-api-key}"
 IO_NET_SECRET="${IO_NET_SECRET:-trustedrouter-io-net-api-key}"
 SCALEWAY_SECRET="${SCALEWAY_SECRET:-trustedrouter-scaleway-api-key}"
 FEATHERLESS_SECRET="${FEATHERLESS_SECRET:-trustedrouter-featherless-api-key}"
@@ -276,6 +277,7 @@ for secret in \
   "$SAIL_RESEARCH_SECRET" \
   "$MANCER_SECRET" \
   "$ABLITERATE_SECRET" \
+  "$META_SECRET" \
   "$IO_NET_SECRET" \
   "$SCALEWAY_SECRET" \
   "$FEATHERLESS_SECRET" \

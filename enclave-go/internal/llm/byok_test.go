@@ -391,34 +391,33 @@ func TestBuildMetaOpenRouterRequestCarriesReasoningWithoutThinkingAlias(t *testi
 	if payload["reasoning_effort"] != "minimal" {
 		t.Fatalf("reasoning_effort = %#v, want minimal", payload["reasoning_effort"])
 	}
-	gotReasoning, ok := payload["reasoning"].(map[string]any)
-	if !ok || gotReasoning["effort"] != "minimal" {
-		t.Fatalf("reasoning = %#v, want minimal effort", payload["reasoning"])
+	if _, ok := payload["reasoning"]; ok {
+		t.Fatalf("Meta native chat must use reasoning_effort, not reasoning: %s", encoded)
 	}
 	if _, ok := payload["thinking"]; ok {
-		t.Fatalf("Meta via OpenRouter must receive reasoning, not thinking: %s", encoded)
+		t.Fatalf("Meta must receive reasoning_effort, not thinking: %s", encoded)
 	}
-	if got := directBaseURL("meta"); got != "https://openrouter.ai/api/v1" {
+	if got := directBaseURL("meta"); got != "https://api.meta.ai/v1" {
 		t.Fatalf("directBaseURL(meta) = %q", got)
 	}
-	if got := directModelID("meta", "meta/muse-spark-1.1", "meta/muse-spark-1.1"); got != "meta/muse-spark-1.1" {
+	if got := directModelID("meta", "meta/muse-spark-1.1", "meta/muse-spark-1.1"); got != "muse-spark-1.1" {
 		t.Fatalf("directModelID(meta) = %q", got)
 	}
 }
 
-func TestInvokeMetaUsesOpenRouterInferenceKeyAndExactMuseID(t *testing.T) {
+func TestInvokeMetaUsesDirectKeyAndExactMuseID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Path; got != "/chat/completions" {
 			t.Errorf("path = %q", got)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer sk-or-test" {
+		if got := r.Header.Get("Authorization"); got != "Bearer meta-test" {
 			t.Errorf("authorization = %q", got)
 		}
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
-		if payload["model"] != "meta/muse-spark-1.1" {
+		if payload["model"] != "muse-spark-1.1" {
 			t.Errorf("model = %#v", payload["model"])
 		}
 		if payload["reasoning_effort"] != "minimal" {
@@ -447,7 +446,7 @@ func TestInvokeMetaUsesOpenRouterInferenceKeyAndExactMuseID(t *testing.T) {
 		server.Client(),
 		"meta",
 		server.URL,
-		"sk-or-test",
+		"meta-test",
 		req,
 		body,
 		&out,

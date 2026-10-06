@@ -32,7 +32,7 @@ func applyChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, bo
 		}
 	}
 	switch normalizeDirectProvider(provider) {
-	case "openai", "gemini", "google-ai-studio", "deepseek", "zai", "kimi", "mistral", "alibaba", "tencent":
+	case "meta", "openai", "gemini", "google-ai-studio", "deepseek", "zai", "kimi", "mistral", "alibaba", "tencent":
 		wire.ReasoningEffort = effort
 		wire.Reasoning = nil
 	}

@@ -11,22 +11,31 @@ import (
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
-func TestMultiClientWiresMetaThroughOpenRouterKey(t *testing.T) {
-	client, ok := New(&qtypes.BootstrapData{OpenRouterAPIKey: "sk-or-test"}).(*multiClient)
+func TestMultiClientWiresMetaDirectWithoutOpenRouterKey(t *testing.T) {
+	client, ok := New(&qtypes.BootstrapData{OpenRouterAPIKey: "must-not-use", ProviderAPIKeys: map[string]string{"meta": "meta-test-key"}}).(*multiClient)
 	if !ok {
 		t.Fatal("New did not return multiClient")
 	}
-	if client.meta == nil {
+	meta := client.direct["meta"]
+	if meta == nil {
 		t.Fatal("Meta client is nil")
 	}
-	if client.meta.provider != "meta" {
-		t.Fatalf("provider = %q, want meta", client.meta.provider)
+	if meta.provider != "meta" {
+		t.Fatalf("provider = %q, want meta", meta.provider)
 	}
-	if client.meta.baseURL != "https://openrouter.ai/api/v1" {
-		t.Fatalf("baseURL = %q", client.meta.baseURL)
+	if meta.baseURL != "https://api.meta.ai/v1" {
+		t.Fatalf("baseURL = %q", meta.baseURL)
 	}
-	if client.meta.apiKey != "sk-or-test" {
-		t.Fatal("Meta client did not receive the OpenRouter inference key")
+	if meta.apiKey != "meta-test-key" {
+		t.Fatal("Meta client did not receive the direct Meta key")
+	}
+}
+
+func TestMetaMissingKeyNeverFallsBackToOpenRouter(t *testing.T) {
+	client := New(&qtypes.BootstrapData{OpenRouterAPIKey: "must-not-use"}).(*multiClient)
+	err := client.InvokeStreaming(t.Context(), &qtypes.OpenAIChatRequest{Model: "meta/muse-spark-1.3"}, &qtypes.AnthropicMessagesRequest{}, &bytes.Buffer{}, InvokeOptions{Provider: "meta", UpstreamModel: "muse-spark-1.3"})
+	if err == nil {
+		t.Fatal("Meta without its own key must fail closed")
 	}
 }
 
