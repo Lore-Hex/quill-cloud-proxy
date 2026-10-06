@@ -1613,18 +1613,11 @@ func serveResponsesNonStreaming(
 	}
 	requestID := newResponseID()
 	invocation := providerInvocationFromContext(ctx)
-	var pr *io.PipeReader
-	var selectedRoute *selectedRouteTracker
-	if invocation != nil {
-		defer invocation.cancel()
-		pr = invocation.reader
-		selectedRoute = invocation.selectedRoute
-	} else {
-		var pw *io.PipeWriter
-		pr, pw = io.Pipe()
-		selectedRoute = newSelectedRouteTracker()
-		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
+	if invocation == nil {
+		invocation = startProviderInvocation(ctx, br, req, anthropicReq, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, requestLogID)
 	}
+	defer invocation.abort(io.ErrClosedPipe)
+	pr, selectedRoute := invocation.reader, invocation.selectedRoute
 	result, err := adapter.CollectAnthropicText(pr)
 	_ = pr.Close()
 	if err != nil {
@@ -1743,18 +1736,11 @@ func serveChatNonStreaming(
 	}
 	requestID := newRequestID()
 	invocation := providerInvocationFromContext(ctx)
-	var pr *io.PipeReader
-	var selectedRoute *selectedRouteTracker
-	if invocation != nil {
-		defer invocation.cancel()
-		pr = invocation.reader
-		selectedRoute = invocation.selectedRoute
-	} else {
-		var pw *io.PipeWriter
-		pr, pw = io.Pipe()
-		selectedRoute = newSelectedRouteTracker()
-		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, selectedRoute, requestLogID, true, true)
+	if invocation == nil {
+		invocation = startProviderInvocation(ctx, br, req, anthropicReq, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, requestLogID)
 	}
+	defer invocation.abort(io.ErrClosedPipe)
+	pr, selectedRoute := invocation.reader, invocation.selectedRoute
 	result, err := adapter.CollectAnthropicText(pr)
 	_ = pr.Close()
 	if err != nil {
@@ -1879,9 +1865,8 @@ func serveStreaming(
 		invocation = startProviderInvocation(ctx, br, req, anthropicReq, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, requestLogID)
 	}
 	cancelProvider := invocation.cancel
-	defer cancelProvider()
+	defer invocation.abort(io.ErrClosedPipe)
 	pr := invocation.reader
-	defer pr.Close()
 	selectedRoute := invocation.selectedRoute
 	providerDone := invocation.done
 	// Acceptance releases the head without waiting for a reasoning token.
@@ -2333,9 +2318,9 @@ func serveMessages(
 
 	messageID := newMessageID()
 	if !native.Stream {
-		pr, pw := io.Pipe()
-		selectedRoute := newSelectedRouteTracker()
-		go invokeProviderStream(ctx, br, req, anthropicReq, pw, invokeOptions, trEnabled, authorization, selectedRoute, requestLogID, true, true)
+		invocation := startProviderInvocation(ctx, br, req, anthropicReq, invokeOptions, trEnabled, authorization, requestLogID)
+		defer invocation.abort(io.ErrClosedPipe)
+		pr, selectedRoute := invocation.reader, invocation.selectedRoute
 		result, err := adapter.CollectAnthropicText(pr)
 		_ = pr.Close()
 		if err != nil {
@@ -2398,9 +2383,8 @@ func serveMessages(
 	if invocation == nil {
 		invocation = startProviderInvocation(ctx, br, req, anthropicReq, invokeOptions, trEnabled, authorization, requestLogID)
 	}
-	defer invocation.cancel()
+	defer invocation.abort(io.ErrClosedPipe)
 	pr, selectedRoute := invocation.reader, invocation.selectedRoute
-	defer pr.Close()
 	providerDone := invocation.done
 	// Wait for upstream acceptance or a terminal pre-open failure.
 	select {

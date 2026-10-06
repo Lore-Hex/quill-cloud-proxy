@@ -387,10 +387,14 @@ func TestInvokeProviderStreamSwallowedZeroByteWriteFailsWithoutFallback(t *testi
 	}
 }
 
+var stderrCaptureMu sync.Mutex
+
 // fn must start any provider invocation inside the capture scope and return it
 // after serving the stream. Return nil only for synchronous provider calls.
 func captureProviderStreamStderr(t *testing.T, fn func() *providerInvocation) string {
 	t.Helper()
+	stderrCaptureMu.Lock()
+	defer stderrCaptureMu.Unlock()
 	file, err := os.CreateTemp(t.TempDir(), "stderr-")
 	if err != nil {
 		t.Fatalf("capture stderr: %v", err)
@@ -419,8 +423,7 @@ func captureProviderStreamStderr(t *testing.T, fn func() *providerInvocation) st
 	}
 
 	if invocation := fn(); invocation != nil {
-		// serveStreaming cancels the provider on return, but its final stderr
-		// writes can still be in flight. Join it before restoring stderr.
+		// Also support captures that invoke providers without a handler.
 		select {
 		case <-invocation.done:
 		case <-time.After(5 * time.Second):
@@ -453,17 +456,16 @@ func TestCaptureProviderStreamStderrKeepsProcessPointerStable(t *testing.T) {
 }
 
 func TestCaptureProviderStreamStderrWaitsForProviderCompletion(t *testing.T) {
-	streamReturned := make(chan struct{})
-	const lateLog = "provider log after serveStreaming returned\n"
+	release := make(chan struct{})
+	const lateLog = "provider log after pipe closed\n"
 	client := &scriptedProviderStreamClient{invoke: func(_ llm.InvokeOptions, out io.Writer) error {
 		_, err := io.WriteString(out, providerStreamTestResponse)
-		// Hold the invocation open until serveStreaming has returned, then log
-		// from that goroutine to exercise the capture helper's completion wait.
-		<-streamReturned
+		// Hold the invocation open until the pipe closes, then log from that
+		// goroutine to exercise the capture helper's completion wait.
+		<-release
 		_, _ = io.WriteString(os.Stderr, lateLog)
 		return err
 	}}
-	var out bytes.Buffer
 	logs := captureProviderStreamStderr(t, func() *providerInvocation {
 		ctx := t.Context()
 		req := &types.OpenAIChatRequest{Model: "model-a", Stream: true}
@@ -479,14 +481,12 @@ func TestCaptureProviderStreamStderrWaitsForProviderCompletion(t *testing.T) {
 				t.Error("provider invocation did not finish during cleanup")
 			}
 		})
-		serveStreaming(withProviderInvocation(ctx, invocation), &out, client,
-			req, anthropicReq, options, nil, nil, nil, time.Now(), nil,
-			"chat.completions", "capture-wait-test", "model-a")
-		close(streamReturned)
+		_ = invocation.reader.Close()
+		close(release)
 		return invocation
 	})
 	if !strings.Contains(logs, lateLog) || !strings.Contains(logs, "enclave.invoke_complete") {
-		t.Fatalf("logs = %q, want provider logs emitted after serveStreaming returned", logs)
+		t.Fatalf("logs = %q, want provider logs emitted after pipe closed", logs)
 	}
 }
 
@@ -727,5 +727,78 @@ func TestInvokeProviderStreamOverlappingPhaseTimings(t *testing.T) {
 	}
 	if after := phases.Snapshot(); after != before || phases.End() != elapsed {
 		t.Fatalf("late completion changed snapshot: %+v -> %+v", before, after)
+	}
+}
+
+type cleanupProviderClient struct {
+	cancelled chan struct{}
+	release   chan struct{}
+}
+
+func (c *cleanupProviderClient) InvokeStreaming(ctx context.Context, _ *types.OpenAIChatRequest, _ *types.AnthropicMessagesRequest, out io.Writer, _ ...llm.InvokeOptions) error {
+	_, _ = io.WriteString(out, providerStreamTestResponse)
+	<-ctx.Done()
+	close(c.cancelled)
+	<-c.release
+	return ctx.Err()
+}
+
+func TestHandlersWaitForProviderCleanup(t *testing.T) {
+	t.Setenv("QUILL_USAGE_HEARTBEAT", "off")
+	for _, route := range []string{"messages", "chat.completions", "responses"} {
+		for _, scenario := range []string{"head-failure", "body-failure", "terminal", "non-streaming"} {
+			t.Run(route+"/"+scenario, func(t *testing.T) {
+				client := &cleanupProviderClient{cancelled: make(chan struct{}), release: make(chan struct{})}
+				var releaseOnce sync.Once
+				release := func() { releaseOnce.Do(func() { close(client.release) }) }
+				defer release()
+				out := &costUsageFailWriter{failAt: "never written"}
+				switch scenario {
+				case "head-failure":
+					out.failAt = "HTTP/1.1"
+				case "body-failure":
+					out.failAt = "data:"
+				}
+				returned := make(chan struct{})
+				go func() {
+					defer close(returned)
+					ctx := t.Context()
+					req := &types.OpenAIChatRequest{Model: "model-a", Stream: scenario != "non-streaming"}
+					switch {
+					case route == "messages":
+						body := []byte(`{"model":"model-a","max_tokens":32,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+						if !req.Stream {
+							body = bytes.Replace(body, []byte(`"stream":true`), []byte(`"stream":false`), 1)
+						}
+						serveMessages(ctx, out, client, body, nil, nil, "", "", "cleanup-test", requestAttributionHeaders{})
+					case req.Stream:
+						serveStreaming(ctx, out, client, req, &types.AnthropicMessagesRequest{}, nil, nil, nil, nil, time.Now(), nil, route, "cleanup-test", req.Model)
+					case route == "responses":
+						serveResponsesNonStreaming(ctx, out, client, req, &types.AnthropicMessagesRequest{}, nil, nil, nil, nil, time.Now(), nil, "cleanup-test", req.Model)
+					default:
+						serveChatNonStreaming(ctx, out, client, req, &types.AnthropicMessagesRequest{}, nil, nil, nil, nil, time.Now(), nil, "cleanup-test", req.Model)
+					}
+				}()
+				select {
+				case <-client.cancelled:
+				case <-time.After(2 * time.Second):
+					t.Fatal("handler did not cancel provider")
+				}
+				select {
+				case <-returned:
+					t.Fatal("handler returned before provider cleanup finished")
+				case <-time.After(20 * time.Millisecond):
+				}
+				release()
+				select {
+				case <-returned:
+				case <-time.After(2 * time.Second):
+					t.Fatal("handler did not return after provider cleanup")
+				}
+				if strings.HasSuffix(scenario, "failure") && len(out.failed) == 0 {
+					t.Fatal("client write did not fail")
+				}
+			})
+		}
 	}
 }

@@ -61,6 +61,16 @@ func (i *providerInvocation) abort(err error) {
 	}
 	i.cancel()
 	_ = i.reader.CloseWithError(err)
+	// Cancellation interrupts context-aware upstream reads; closing the pipe
+	// releases blocked writes. Join final provider logging before returning.
+	// A Client can ignore cancellation (including in an upstream read), so cap
+	// cleanup rather than hanging the handler forever on a broken provider.
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-i.done:
+	case <-timer.C:
+	}
 }
 
 func withProviderInvocation(ctx context.Context, invocation *providerInvocation) context.Context {
