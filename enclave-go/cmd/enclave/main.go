@@ -1362,6 +1362,10 @@ func serveOneRequest(
 		speculative := startProviderInvocation(
 			ctx, br, &req, anthropicReq, invokeOptions, true, authorization, requestLogID,
 		)
+		// Rejections cancel immediately; cleanup must not delay the response,
+		// refund, or replacement invocation. Accepted invocations also join in
+		// the serving handler; join's once guard shares the same cleanup cap.
+		defer speculative.join()
 		reserved, marked, reserveErr := trGateway.ReserveSpendLeaseAdmission(ctx, spendLeasePlan, spendLeaseReserveRequest)
 		if reserveErr != nil {
 			speculative.abort(reserveErr)
@@ -1616,6 +1620,7 @@ func serveResponsesNonStreaming(
 	if invocation == nil {
 		invocation = startProviderInvocation(ctx, br, req, anthropicReq, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, requestLogID)
 	}
+	defer invocation.join()
 	defer invocation.abort(io.ErrClosedPipe)
 	pr, selectedRoute := invocation.reader, invocation.selectedRoute
 	result, err := adapter.CollectAnthropicText(pr)
@@ -1739,6 +1744,7 @@ func serveChatNonStreaming(
 	if invocation == nil {
 		invocation = startProviderInvocation(ctx, br, req, anthropicReq, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, requestLogID)
 	}
+	defer invocation.join()
 	defer invocation.abort(io.ErrClosedPipe)
 	pr, selectedRoute := invocation.reader, invocation.selectedRoute
 	result, err := adapter.CollectAnthropicText(pr)
@@ -1865,6 +1871,7 @@ func serveStreaming(
 		invocation = startProviderInvocation(ctx, br, req, anthropicReq, invokeOptions, trGateway != nil && trGateway.Enabled(), authorization, requestLogID)
 	}
 	cancelProvider := invocation.cancel
+	defer invocation.join()
 	defer invocation.abort(io.ErrClosedPipe)
 	pr := invocation.reader
 	selectedRoute := invocation.selectedRoute
@@ -2319,6 +2326,7 @@ func serveMessages(
 	messageID := newMessageID()
 	if !native.Stream {
 		invocation := startProviderInvocation(ctx, br, req, anthropicReq, invokeOptions, trEnabled, authorization, requestLogID)
+		defer invocation.join()
 		defer invocation.abort(io.ErrClosedPipe)
 		pr, selectedRoute := invocation.reader, invocation.selectedRoute
 		result, err := adapter.CollectAnthropicText(pr)
@@ -2383,6 +2391,7 @@ func serveMessages(
 	if invocation == nil {
 		invocation = startProviderInvocation(ctx, br, req, anthropicReq, invokeOptions, trEnabled, authorization, requestLogID)
 	}
+	defer invocation.join()
 	defer invocation.abort(io.ErrClosedPipe)
 	pr, selectedRoute := invocation.reader, invocation.selectedRoute
 	providerDone := invocation.done

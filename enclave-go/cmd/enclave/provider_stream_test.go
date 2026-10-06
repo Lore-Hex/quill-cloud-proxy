@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -14,6 +17,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -264,7 +268,7 @@ func TestInvokeProviderStreamEmptySuccessRespectsTransientRetryCap(t *testing.T)
 		return nil
 	}}
 	oldSleep := sleepBeforeTransientRetry
-	sleepBeforeTransientRetry = func(time.Duration) {}
+	sleepBeforeTransientRetry = func(context.Context, time.Duration) error { return nil }
 	t.Cleanup(func() { sleepBeforeTransientRetry = oldSleep })
 
 	pr, pw := io.Pipe()
@@ -615,12 +619,13 @@ func TestInvokeProviderStreamRetryPhaseTimings(t *testing.T) {
 		return err
 	}}
 	oldSleep := sleepBeforeTransientRetry
-	sleepBeforeTransientRetry = func(wait time.Duration) {
+	sleepBeforeTransientRetry = func(_ context.Context, wait time.Duration) error {
 		sleeps++
 		if wait != time.Second {
 			t.Errorf("retry wait=%s, want 1s", wait)
 		}
 		clock.advance(1000)
+		return nil
 	}
 	t.Cleanup(func() { sleepBeforeTransientRetry = oldSleep })
 	pr, pw := io.Pipe()
@@ -799,6 +804,155 @@ func TestHandlersWaitForProviderCleanup(t *testing.T) {
 					t.Fatal("client write did not fail")
 				}
 			})
+		}
+	}
+}
+
+func TestProviderInvocationAbortDuringBackoff(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	oldSleep := sleepBeforeTransientRetry
+	sleepBeforeTransientRetry = func(ctx context.Context, wait time.Duration) error {
+		close(entered)
+		err := oldSleep(ctx, wait)
+		// Hold the cleanup tail so prompt cancellation cannot mask an abort
+		// that incorrectly waits for provider completion.
+		<-release
+		return err
+	}
+	defer func() { sleepBeforeTransientRetry = oldSleep }()
+	client := &scriptedProviderStreamClient{invoke: func(llm.InvokeOptions, io.Writer) error {
+		return io.ErrUnexpectedEOF
+	}}
+	invocation := startProviderInvocation(t.Context(), client,
+		&types.OpenAIChatRequest{Model: "model-a"}, &types.AnthropicMessagesRequest{},
+		nil, false, nil, "rejected-backoff")
+	// Model rejection work followed by handler-exit cleanup.
+	func() {
+		defer invocation.join()
+		defer unblock()
+		defer invocation.abort(io.ErrClosedPipe)
+		<-entered
+		start := time.Now()
+		invocation.abort(errors.New("admission_rejected"))
+		elapsed := time.Since(start)
+		t.Logf("abort during backoff: %s", elapsed)
+		if elapsed >= 50*time.Millisecond {
+			t.Errorf("abort blocked for %s", elapsed)
+		}
+		select {
+		case <-invocation.done:
+			t.Error("provider finished before rejection work could proceed")
+		default:
+		}
+	}()
+	select {
+	case <-invocation.done:
+	default:
+		t.Fatal("handler-exit join did not observe provider completion")
+	}
+	if got := len(client.endpoints()); got != 1 {
+		t.Fatalf("provider attempts = %d, want 1", got)
+	}
+}
+
+func TestProviderInvocationJoinWaitsAtMostOnce(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	invocation := &providerInvocation{reader: pr, cancel: cancel, done: make(chan struct{})}
+	defer close(invocation.done)
+	start := time.Now()
+	invocation.abort(io.ErrClosedPipe)
+	invocation.join()
+	first := time.Since(start)
+	if ctx.Err() != context.Canceled || first < 5*time.Second || first > 6*time.Second {
+		t.Fatalf("first abort/join = %s, context error = %v", first, ctx.Err())
+	}
+	start = time.Now()
+	invocation.abort(io.ErrClosedPipe)
+	invocation.join()
+	second := time.Since(start)
+	t.Logf("first abort/join: %s; second abort/join: %s", first, second)
+	if second >= 50*time.Millisecond {
+		t.Fatalf("repeated abort/join waited again: %s", second)
+	}
+}
+
+func TestProviderBackoffCancellationKeepsOutcome(t *testing.T) {
+	t.Setenv("QUILL_USAGE_HEARTBEAT", "off")
+	for _, route := range []string{"messages", "chat.completions", "responses"} {
+		for _, stream := range []bool{false, true} {
+			for _, backoff := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/stream=%t/backoff=%t", route, stream, backoff), func(t *testing.T) {
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					oldSleep := sleepBeforeTransientRetry
+					sleeps := 0
+					sleepBeforeTransientRetry = func(ctx context.Context, wait time.Duration) error {
+						sleeps++
+						if wait != time.Second {
+							t.Errorf("backoff = %s, want 1s", wait)
+						}
+						// Cancel during the real one-second timer, not before entering it.
+						timer := time.AfterFunc(10*time.Millisecond, cancel)
+						defer timer.Stop()
+						start := time.Now()
+						err := oldSleep(ctx, wait)
+						if elapsed := time.Since(start); elapsed >= 100*time.Millisecond {
+							t.Errorf("cancelled backoff took %s", elapsed)
+						}
+						return err
+					}
+					defer func() { sleepBeforeTransientRetry = oldSleep }()
+					attempts := 0
+					provider := streamingProviderFunc(func(ctx context.Context, _ io.Writer, _ llm.InvokeOptions) error {
+						attempts++
+						if backoff && attempts == 1 {
+							return io.ErrUnexpectedEOF
+						}
+						cancel()
+						return ctx.Err()
+					})
+					auth := &trustedrouter.Authorization{AuthorizationID: "cancel-auth", Model: "model-a", Provider: "anthropic", EndpointID: "first", UsageType: "Credits"}
+					refunds := 0
+					gateway := trustedrouter.New("https://trustedrouter.com", "test", &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+						switch r.URL.Path {
+						case "/internal/gateway/authorize":
+							return stageCMarkerlessHTTPResponse(r, map[string]any{"data": auth})
+						case "/internal/gateway/refund":
+							refunds++
+							var body map[string]any
+							if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+								t.Error(err)
+							}
+							if body["error_status"] != float64(502) || body["error_type"] != "provider_error" || r.Context().Err() != nil {
+								t.Errorf("cancellation refund = %v, context error = %v", body, r.Context().Err())
+							}
+						default:
+							t.Errorf("unexpected billing call: %s", r.URL.Path)
+						}
+						return replayHTTPResponse(r, http.StatusOK, `{"data":{"refunded":true}}`), nil
+					})})
+					var out bytes.Buffer
+					logs := captureProviderStreamStderr(t, func() *providerInvocation {
+						serveErrorTestRoute(ctx, route, stream, &out, provider, gateway, auth, []llm.InvokeOptions{{Model: "model-a"}})
+						return nil // The handler has joined the invocation.
+					})
+					if attempts != 1 || refunds != 1 || (backoff && sleeps != 1) || (!backoff && sleeps != 0) {
+						t.Fatalf("attempts=%d refunds=%d sleeps=%d", attempts, refunds, sleeps)
+					}
+					complete := parseAuditEvent(t, logs, "enclave.invoke_complete")
+					if complete["outcome"] != "fail" || complete["last_err"] != "ctx_canceled" {
+						t.Fatalf("cancellation outcome = %v", complete)
+					}
+					if !strings.Contains(out.String(), "HTTP/1.1 502") {
+						t.Fatalf("cancellation response = %s", out.String())
+					}
+				})
+			}
 		}
 	}
 }

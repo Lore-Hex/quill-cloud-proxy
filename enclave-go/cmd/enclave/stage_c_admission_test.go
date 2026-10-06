@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/auth"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/receipt"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
@@ -114,7 +115,43 @@ func TestServeOneStageCUnmarkedReserveCancelsBeforeRedispatch(t *testing.T) {
 		stageCMarkerlessBearer, len(stageCMarkerlessRequestBody), stageCMarkerlessRequestBody,
 	)
 	conn := newScriptedConn(rawRequest, nil)
-	serveOne(context.Background(), conn, auth.New(nil), provider, nil, nil, gateway, nil)
+	cleanupRelease, replacementStarted, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(cleanupRelease) }) }
+	defer release()
+	client := streamingProviderFunc(func(ctx context.Context, out io.Writer, option llm.InvokeOptions) error {
+		if option.EndpointID == stageCReservedEndpoint {
+			close(replacementStarted)
+		}
+		err := provider.InvokeStreaming(ctx, nil, nil, out, option)
+		if option.EndpointID == stageCLocalEndpoint {
+			// Keep the rejected provider's cleanup pending after cancellation.
+			<-cleanupRelease
+		}
+		return err
+	})
+	go func() {
+		defer close(returned)
+		serveOne(context.Background(), conn, auth.New(nil), client, nil, nil, gateway, nil)
+	}()
+	select {
+	case <-replacementStarted:
+	case <-time.After(time.Second):
+		release()
+		<-returned
+		t.Fatal("rejected provider cleanup blocked replacement invocation")
+	}
+	select {
+	case <-returned:
+		t.Fatal("handler returned before rejected provider cleanup")
+	case <-time.After(20 * time.Millisecond):
+	}
+	release()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not return after rejected provider cleanup")
+	}
 
 	response, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(conn.writes.Bytes())), nil)
 	if err != nil {
