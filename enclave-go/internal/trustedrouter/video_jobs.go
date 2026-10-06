@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -111,6 +112,35 @@ func VideoJobID(authorizationID string) string {
 	return "job-" + hex.EncodeToString(digest[:16])
 }
 
+// videoAllowedProvidersKey carries enclave-derived routing constraints outside
+// the logical request body, which older routers include in their fingerprint.
+type videoAllowedProvidersKey struct{}
+
+// WithVideoAllowedProviders restricts fresh video authorization to these provider
+// IDs. The router must enforce the internal header before selecting new routes;
+// until it does, AuthorizeVideo refunds incompatible fresh authorizations and
+// grants no dispatch rights. Replays retain the original job and never dispatch.
+func WithVideoAllowedProviders(ctx context.Context, providers []string) context.Context {
+	return context.WithValue(ctx, videoAllowedProvidersKey{}, slices.Clone(providers))
+}
+
+func videoAllowedProviders(ctx context.Context) []string {
+	providers, _ := ctx.Value(videoAllowedProvidersKey{}).([]string)
+	return providers
+}
+
+func videoAuthorizationAllowed(auth *Authorization, providers []string) bool {
+	if !slices.Contains(providers, auth.Provider) {
+		return false
+	}
+	for _, candidate := range auth.RouteCandidates {
+		if !slices.Contains(providers, candidate.Provider) {
+			return false
+		}
+	}
+	return true
+}
+
 // AuthorizeVideo returns either fresh dispatch authority or an existing job.
 // A cross-invocation replay can only read; it cannot recreate a missing job.
 func (c *Client) AuthorizeVideo(
@@ -154,6 +184,14 @@ func (c *Client) AuthorizeVideo(
 	auth, err := c.AuthorizeWithRoute(ctx, bearer, req, "videos")
 	var replay *videoReplayLookup
 	if !errors.As(err, &replay) {
+		if allowed := videoAllowedProviders(ctx); err == nil && auth != nil && allowed != nil && !videoAuthorizationAllowed(auth, allowed) {
+			_ = c.Refund(ctx, auth, 503, "video_routing_unavailable", 0.001, nil)
+			return nil, nil, &ControlPlaneError{
+				Path: "/internal/gateway/authorize", StatusCode: 503,
+				Type:    "video_routing_unavailable",
+				Message: "control plane returned a video route outside the required provider constraints",
+			}
+		}
 		return auth, nil, err
 	}
 	if replay.job.Model != model {

@@ -85,3 +85,101 @@ func TestVideoCreateReplayOnlyLooksUpTheOriginalJob(t *testing.T) {
 		})
 	}
 }
+
+// The test router retains the pre-rollout fingerprint rules: headers do not
+// participate; the entire body does (except nonce, credentials and live quote).
+// Authorize through the old path, then retry through seeded serveCreate.
+func TestVideoSeedReplayAcrossRoutingConstraintRollout(t *testing.T) {
+	for _, policy := range []string{"", `,"provider":{"order":["fal"],"allow_fallbacks":false}`} {
+		t.Run(policy, func(t *testing.T) {
+			const model = "minimax/h3-max"
+			request := []byte(`{"model":"minimax/h3-max","prompt":"original","seed":1101}`)
+			request = []byte(strings.TrimSuffix(string(request), "}") + policy + "}")
+			var req video.CreateRequest
+			if err := json.Unmarshal(request, &req); err != nil {
+				t.Fatal(err)
+			}
+			var originalBody []byte
+			authorizes, lookups, mutations := 0, 0, 0
+			jobID := trustedrouter.VideoJobID("before-rollout")
+			control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/internal/gateway/authorize":
+					authorizes++
+					var body map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					for _, key := range []string{"invocation_nonce", "api_key_lookup_hash", "idempotency_key", "additional_cost_reservation_microdollars"} {
+						delete(body, key)
+					}
+					material, err := json.Marshal(body)
+					if err != nil {
+						t.Error(err)
+					}
+					replay := originalBody != nil
+					if !replay {
+						if r.Header.Get("X-Quill-Video-Allowed-Providers") != "" {
+							t.Error("pre-rollout authorization had derived routing")
+						}
+						originalBody = material
+					} else if !bytes.Equal(originalBody, material) {
+						http.Error(w, `{"error":{"message":"Idempotency key was already used for a different gateway request"}}`, 409)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+						"authorization_id": "before-rollout", "workspace_id": "ws", "api_key_hash": "hash", "model": model,
+						"provider": "fal", "endpoint_id": model + "@fal/prepaid", "idempotent_replay": replay,
+						"additional_cost_reservation_microdollars": 500000,
+					}})
+				case "/internal/gateway/video/jobs/" + jobID + "/lookup":
+					lookups++
+					if r.Header.Get("X-Quill-Video-Allowed-Providers") != "" {
+						t.Error("derived routing leaked into job lookup")
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+						"id": jobID, "authorization_id": "before-rollout", "workspace_id": "ws", "key_hash": "hash",
+						"model": model, "provider": "fal", "status": "completed",
+					}})
+				default:
+					mutations++
+					http.Error(w, "unexpected mutation", 500)
+				}
+			}))
+			defer control.Close()
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("replay dispatched provider work")
+				w.WriteHeader(500)
+			}))
+			defer provider.Close()
+			client := trustedrouter.New(control.URL, "test", control.Client())
+			auth, job, err := client.AuthorizeVideo(t.Context(), "test", model, "original-key", videoRequestFingerprint("test", &req), req.Provider, 500000, 0)
+			if err != nil || auth == nil || job != nil {
+				t.Fatalf("pre-rollout authorize: auth=%+v job=%+v err=%v", auth, job, err)
+			}
+			s := &videoService{control: client, providers: video.NewRegistryWithProviders(video.NewFALVideoClientAt("test", provider.URL, provider.Client()))}
+			for _, tc := range []struct {
+				body   []byte
+				status string
+			}{
+				{request, "202"},
+				{bytes.Replace(request, []byte(`"original"`), []byte(`"changed"`), 1), "409"},
+				{bytes.Replace(request, []byte(`1101`), []byte(`1102`), 1), "409"},
+				{[]byte(`{"model":"minimax/h3-max","prompt":"original","seed":1101,"provider":{"only":["fal"]}}`), "409"},
+				{request, "202"},
+			} {
+				var out bytes.Buffer
+				s.serveCreate(t.Context(), &out, tc.body, "test", "original-key")
+				if !strings.HasPrefix(out.String(), "HTTP/1.1 "+tc.status) {
+					t.Fatalf("replay response=%s, want %s", out.String(), tc.status)
+				}
+				if tc.status == "202" && videoHTTPBody(t, out.String())["id"] != jobID {
+					t.Fatalf("wrong recovered job: %s", out.String())
+				}
+			}
+			if authorizes != 6 || lookups != 2 || mutations != 0 {
+				t.Fatalf("authorize=%d lookups=%d mutations=%d", authorizes, lookups, mutations)
+			}
+		})
+	}
+}

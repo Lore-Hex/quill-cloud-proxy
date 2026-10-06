@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -196,27 +197,22 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		return
 	}
 	providers := s.providers.Supporting(resolved)
-	providerPolicy := req.Provider
+	authorizeCtx := ctx
 	if req.Seed != nil {
-		var preferences struct {
-			Only   types.StringList `json:"only"`
-			Ignore types.StringList `json:"ignore"`
-		}
+		var preferences types.ProviderRouting
 		policy, _ := json.Marshal(req.Provider)
 		if err := json.Unmarshal(policy, &preferences); err != nil {
 			writeOpenAIError(conn, 400, "invalid video provider preferences", "invalid_request_error", "bad_request", "provider")
 			return
 		}
+		only := types.NormalizeProviderFilters(preferences.Only)
+		ignore := types.NormalizeProviderFilters(preferences.Ignore)
+		order := types.NormalizeProviderFilters(preferences.Order)
 		allowed := func(id string) bool {
-			contains := func(values []string) bool {
-				for _, value := range values {
-					if strings.EqualFold(strings.TrimSpace(value), id) {
-						return true
-					}
-				}
-				return false
-			}
-			return (len(preferences.Only) == 0 || contains(preferences.Only)) && !contains(preferences.Ignore)
+			return (len(only) == 0 || slices.Contains(only, id)) &&
+				!slices.Contains(ignore, id) &&
+				(preferences.AllowFallbacks == nil || *preferences.AllowFallbacks ||
+					len(order) == 0 || slices.Contains(order, id))
 		}
 		eligible := make([]video.Provider, 0, len(providers))
 		for _, provider := range providers {
@@ -242,17 +238,13 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 			writeOpenAIError(conn, 400, message, "invalid_request_error", "unsupported_parameter", "seed")
 			return
 		}
-		// Constrain authorization too, so the control plane cannot select a
-		// seed-incompatible route, even when provider fallbacks are disabled.
-		providerPolicy = make(map[string]any, len(req.Provider)+1)
-		for key, value := range req.Provider {
-			providerPolicy[key] = value
-		}
-		only := make([]string, 0, len(providers))
+		// Derived constraints travel outside the fingerprinted authorization body.
+		// Keep caller preferences intact so pre-rollout jobs remain replayable.
+		capable := make([]string, 0, len(providers))
 		for _, provider := range providers {
-			only = append(only, provider.ID())
+			capable = append(capable, provider.ID())
 		}
-		providerPolicy["only"] = only
+		authorizeCtx = trustedrouter.WithVideoAllowedProviders(ctx, capable)
 	}
 	if len(providers) == 0 {
 		writeOpenAIError(conn, 503, "no configured video provider supports this request", "server_error", "video_provider_unavailable", "")
@@ -268,12 +260,12 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 	reservationMicrodollars := maximumVideoQuote(quotes)
 	outputTokenLimit := maximumVideoTokenLimit(quotes)
 	auth, existing, err := s.control.AuthorizeVideo(
-		ctx,
+		authorizeCtx,
 		bearer,
 		resolved.Model.ID,
 		idempotencyKey,
 		videoRequestFingerprint(bearer, &req),
-		providerPolicy,
+		req.Provider,
 		reservationMicrodollars,
 		outputTokenLimit,
 	)

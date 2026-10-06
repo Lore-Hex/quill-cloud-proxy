@@ -94,7 +94,7 @@ func TestAuthorizeVideoReplayFailsClosedAndPinsOriginalAuthority(t *testing.T) {
 				mutations++
 				return nil, fmt.Errorf("unexpected mutation %s", r.URL.Path)
 			})})
-			gotAuth, gotJob, err := client.AuthorizeVideo(t.Context(), "caller-key", model, "original-key", fingerprint, nil, 0, 80_000)
+			gotAuth, gotJob, err := client.AuthorizeVideo(WithVideoAllowedProviders(t.Context(), []string{"byteplus"}), "caller-key", model, "original-key", fingerprint, nil, 0, 80_000)
 			if gotAuth != nil {
 				t.Fatal("replay returned dispatch authority")
 			}
@@ -127,5 +127,64 @@ func TestOrdinaryAuthorizeStillRejectsVideoReplay(t *testing.T) {
 		if auth != nil || !errors.As(err, &cp) || cp.StatusCode != 409 || cp.Type != "idempotency_replay" {
 			t.Fatalf("%s acquired dispatch rights: auth=%+v err=%v", route, auth, err)
 		}
+	}
+}
+
+func TestAuthorizeVideoConstraintsFailClosedOnLegacyRouter(t *testing.T) {
+	for _, tc := range []struct {
+		name, provider, fallback string
+		allowed                  bool
+	}{
+		{"compatible", "fal", "fal", true},
+		{"incompatible_primary", "venice", "fal", false},
+		{"incompatible_fallback", "fal", "venice", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authorizes, refunds := 0, 0
+			client := New("http://127.0.0.1:18081,http://127.0.0.1:18082", "internal", &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				respond := func(body string) (*http.Response, error) {
+					return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+				}
+				switch r.URL.Path {
+				case "/internal/gateway/authorize":
+					if r.Header.Get("X-Quill-Video-Allowed-Providers") != "fal" {
+						t.Error("missing routing constraint on authorization attempt")
+					}
+					if r.URL.Host == "127.0.0.1:18081" {
+						return nil, &dialFailure{err: errors.New("unavailable")}
+					}
+					authorizes++
+					var body map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["provider"] != nil {
+						t.Errorf("changed caller's authorization body: %#v, %v", body, err)
+					}
+					return respond(fmt.Sprintf(`{"data":{"authorization_id":"auth","workspace_id":"ws","api_key_hash":"hash","model":"minimax/h3-max","provider":%q,"endpoint_id":"primary","additional_cost_reservation_microdollars":500000,"route_candidates":[{"provider":%q,"endpoint_id":"fallback"}]}}`, tc.provider, tc.fallback))
+				case "/internal/gateway/refund":
+					refunds++
+					if r.URL.Host != "127.0.0.1:18082" || r.Header.Get("X-Quill-Video-Allowed-Providers") != "" {
+						t.Error("refund did not preserve authority or leaked routing header")
+					}
+					return respond(`{"data":{"refunded":true}}`)
+				default:
+					t.Errorf("unexpected call %s", r.URL.Path)
+					return respond(`{}`)
+				}
+			})})
+			ctx := WithVideoAllowedProviders(t.Context(), []string{"fal"})
+			auth, job, err := client.AuthorizeVideo(ctx, "test", "minimax/h3-max", "key", strings.Repeat("a", 64), nil, 500000)
+			if job != nil || authorizes != 1 {
+				t.Fatalf("job=%+v authorizes=%d", job, authorizes)
+			}
+			if tc.allowed {
+				if auth == nil || err != nil || refunds != 0 {
+					t.Fatalf("compatible authorization rejected: auth=%+v err=%v refunds=%d", auth, err, refunds)
+				}
+			} else {
+				var cp *ControlPlaneError
+				if auth != nil || !errors.As(err, &cp) || cp.StatusCode != 503 || cp.Type != "video_routing_unavailable" || refunds != 1 {
+					t.Fatalf("incompatible dispatch allowed: auth=%+v err=%v refunds=%d", auth, err, refunds)
+				}
+			}
+		})
 	}
 }

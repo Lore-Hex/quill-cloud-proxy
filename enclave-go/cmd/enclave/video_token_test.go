@@ -44,11 +44,16 @@ func TestBytePlusVideoSubmissionReservesTokensBeforePaidQueue(t *testing.T) {
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/authorize"):
 					events = append(events, "authorize")
+					policy, _ := body["provider"].(map[string]any)
+					if fmt.Sprint(policy["only"]) != "[venice byteplus]" || policy["allow_fallbacks"] != false {
+						t.Errorf("authorization changed caller policy: %#v", policy)
+					}
+					wantConstraint := ""
 					if seeded {
-						policy, _ := body["provider"].(map[string]any)
-						if fmt.Sprint(policy["only"]) != "[byteplus]" || policy["allow_fallbacks"] != false {
-							t.Errorf("authorization admitted incompatible providers: %#v", policy)
-						}
+						wantConstraint = "byteplus"
+					}
+					if got := r.Header.Get("X-Quill-Video-Allowed-Providers"); got != wantConstraint {
+						t.Errorf("authorization constraint = %q, want %q", got, wantConstraint)
 					}
 					if body["max_output_tokens"] != float64(80000) || body["additional_cost_reservation_microdollars"] != nil && body["additional_cost_reservation_microdollars"] != float64(0) {
 						t.Fatalf("invalid hold %#v", body)
