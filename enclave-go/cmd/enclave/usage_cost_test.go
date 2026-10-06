@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -558,27 +557,17 @@ func TestCostMismatchLogsBothPricesAndKeepsSettlement(t *testing.T) {
 				auth.CandidateCostReporting = promise
 				usage := trustedrouter.Usage{RouteType: "responses", SelectedEndpoint: "served", SelectedModel: "test-model", InputTokens: 2, OutputTokens: 2}
 				settlement := &trustedrouter.SettleResult{CostMicrodollars: settled, CostMicrodollarsKnown: true}
-				logFile, err := os.CreateTemp(t.TempDir(), "cost-log")
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer logFile.Close()
-				original := os.Stderr
-				os.Stderr = logFile
-				defer func() { os.Stderr = original }()
-				got := reportedSettlement(settlement, auth, usage, nil)
-				if got != settlement || got.CostMicrodollars != settled {
-					t.Fatalf("settlement changed: %+v", got)
-				}
-				log, err := os.ReadFile(logFile.Name())
-				if err != nil {
-					t.Fatal(err)
-				}
+				log := captureStderr(t, func() {
+					got := reportedSettlement(settlement, auth, usage, nil)
+					if got != settlement || got.CostMicrodollars != settled {
+						t.Fatalf("settlement changed: %+v", got)
+					}
+				})
 				want := ""
 				if promise && settled == 97 {
 					want = "enclave.usage_cost_mismatch level=error authorization_id=\"cost-auth\" endpoint_id=\"served\" local_cost_microdollars=15 settled_cost_microdollars=97\n"
 				}
-				if string(log) != want {
+				if log != want {
 					t.Fatalf("log = %q, want %q", log, want)
 				}
 			})
