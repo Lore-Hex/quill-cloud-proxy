@@ -67,8 +67,13 @@ during an outage the row remains claimable after each lease until refund succeed
 Recovery time extends with the outage; the durable obligation remains.
 
 Before refunding, the enclave prepares the deterministic job ID for that
-authorization using the authorization's primary provider and endpoint. The job
-is `submitting`, has no provider job ID, and is never queued. An existing row is
+authorization using the first authorized route that can carry a valid row:
+primary first, then candidates in order. Only listed provider/endpoint pairs with
+a registered enclave provider are considered. Token-billed providers use zero
+fixed quote and the output-token limit sent in authorization
+(`max(1, maximumVideoTokenLimit(quotes))`); fixed-price providers use the authorized
+additional-cost reservation only when positive. The job is `submitting`, has no
+provider job ID, and is never queued, whichever route it names. An existing row is
 returned unchanged with 202. For a newly created row, the enclave refunds at the
 pinned authority with `video_routing_unavailable`; only after success does it
 mark the row failed with `routing_unavailable`. The response is HTTP 503 with
@@ -79,10 +84,16 @@ already refunded or settled authorization are harmless no-ops. Caller retries
 recover the stored job without a new authorization or hold. No enclave memory
 queue is involved, and worker refunds run only for claimed rows.
 
-If the job store is unavailable at prepare time, refund is best effort and the
-response is 503 `video_job_store_unavailable`. Closing that shared gap is a
-non-goal: main's other post-authorization failures (`video_provider_unavailable`,
-`video_job_store_unavailable`, and `video_provider_error`) also use best-effort
+If prepare fails with a 5xx or transport error, refund is best effort and the
+response is 503 `video_job_store_unavailable`. Durable recovery when no authorized
+route can carry a valid row (for example, fixed-price-only authorization with a
+zero additional-cost reservation), or prepare is rejected with a 4xx, is also a
+non-goal. These cases use best-effort refund and retain the rejection's own 503
+`video_routing_unavailable` (or `video_tariff_unavailable`) code. The durable
+guarantee begins only once the row is stored. Closing the shared prepare-outage
+gap remains a non-goal: main's other post-authorization failures
+(`video_provider_unavailable`, `video_job_store_unavailable`, and
+`video_provider_error`) also use best-effort
 refunds. This includes ordinary Postgres authorizations that never expire. Hold
 expiry or a reaper does not cover this case and is not part of this guarantee.
 Eliminating incompatible selections and their temporary holds still requires

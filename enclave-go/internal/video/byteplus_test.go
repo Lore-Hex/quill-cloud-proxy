@@ -187,3 +187,63 @@ func TestBytePlusDownloadNoCredentialsAndRedirectAllowlist(t *testing.T) {
 		}
 	}
 }
+
+// Independent 1080p dimensions from the BytePlus table cited in review:
+// https://docs.byteplus.com/fr/docs/modelark/video-generation-tutorial
+// Billing: duration * width * height * 24 / 1024 output tokens:
+// https://docs.byteplus.com/docs/ModelArk/1099320
+func TestBytePlus1080pReservationBoundsPublishedDimensions(t *testing.T) {
+	dimensions := []struct {
+		ratio         string
+		width, height int
+	}{
+		{"16:9", 1920, 1080}, {"4:3", 1664, 1248}, {"1:1", 1440, 1440},
+		{"3:4", 1248, 1664}, {"9:16", 1080, 1920}, {"21:9", 2206, 946},
+		// The generic 2.0 resolver also accepts 3:2 and 2:3. The BytePlus
+		// table has no exact dimensions for these: use its largest published
+		// 1080p pixel footprint as a conservative envelope, not invented sizes.
+		{"3:2", 2206, 946}, {"2:3", 2206, 946},
+	}
+	c := NewBytePlusClient("test", nil)
+	for _, model := range []string{"bytedance/seedance-2.5", "bytedance/seedance-2.0"} {
+		for _, d := range dimensions {
+			if model == "bytedance/seedance-2.5" && (d.ratio == "3:2" || d.ratio == "2:3") {
+				continue
+			}
+			for duration := 4; duration <= 15; duration++ {
+				for _, input := range []string{"text", "first-frame", "adaptive-first-frame"} {
+					t.Run(fmt.Sprintf("%s/%s/%ds/%s", model, d.ratio, duration, input), func(t *testing.T) {
+						req := &CreateRequest{Model: model, Prompt: "cube", Resolution: "1080p", Duration: duration, AspectRatio: d.ratio}
+						if input != "text" {
+							req.FrameImages = []FrameImage{{FrameType: "first", ImageURL: "https://example.com/frame.png"}}
+						}
+						if input == "adaptive-first-frame" {
+							req.AspectRatio = ""
+						}
+						resolved, err := ResolveRequest(req)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if input == "adaptive-first-frame" {
+							if model == "bytedance/seedance-2.5" && resolved.AspectRatio != "source" {
+								t.Fatalf("first frame did not resolve adaptively: %q", resolved.AspectRatio)
+							}
+							// Exercise the adapter’s adaptive mode against every source shape,
+							// including models whose public resolver currently defaults to 16:9.
+							resolved.AspectRatio = "source"
+						}
+						if resolved.FirstFrame == "" && input != "text" {
+							t.Fatal("first-frame input lost")
+						}
+						limit, err := c.OutputTokenLimit(resolved)
+						// Round up independently; require at least twice the published usage.
+						usage := (duration*d.width*d.height*24 + 1023) / 1024
+						if err != nil || limit < 2*usage || limit > 2_000_000 {
+							t.Fatalf("reservation=%d err=%v, published usage=%d (%dx%d)", limit, err, usage, d.width, d.height)
+						}
+					})
+				}
+			}
+		}
+	}
+}

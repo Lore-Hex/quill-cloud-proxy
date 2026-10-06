@@ -292,18 +292,13 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		return
 	}
 	routes := authorizedVideoRoutes(auth, quotes, resolved.Resolution)
-	if len(routes) == 0 && req.Seed == nil {
-		if _, hasBytePlus := quotes["byteplus"]; hasBytePlus && resolved.Resolution == "1080p" && auth.VideoTariffResolution != "1080p" {
-			_ = s.control.Refund(ctx, auth, 503, "video_tariff_unavailable", 0.001, nil)
-			writeOpenAIError(conn, 503, "BytePlus 1080p billing requires a matching resolution tariff acknowledgment from the control plane", "server_error", "video_tariff_unavailable", "")
-			return
-		}
+	_, hasBytePlus := quotes["byteplus"]
+	tariffUnavailable := hasBytePlus && resolved.Resolution == "1080p" && auth.VideoTariffResolution != "1080p"
+	if len(routes) == 0 && req.Seed == nil && !tariffUnavailable {
 		_ = s.control.Refund(ctx, auth, 503, "video_provider_unavailable", 0.001, nil)
 		writeOpenAIError(conn, 503, "no authorized video provider supports this request", "server_error", "video_provider_unavailable", "")
 		return
 	}
-	// A rejected seeded authorization still needs a durable job at its billing
-	// authority. Main's submitting-job recovery refunds it across restarts.
 	routingUnavailable := len(routes) == 0
 	selected := authorizedVideoRoute{
 		Provider: auth.Provider, EndpointID: auth.EndpointID,
@@ -312,8 +307,8 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 	if !routingUnavailable {
 		selected = routes[0]
 	}
-	// Older control planes can authorize only fixed-price providers. Do not
-	// send the new job field unless a token-billed route was actually admitted.
+	// For dispatch, only admitted token-billed routes need a token limit.
+	// Fixed-price routes retain the older control planes' job shape.
 	outputTokenLimit = 0
 	for _, route := range routes {
 		outputTokenLimit = max(outputTokenLimit, quotes[route.Provider].OutputTokenLimit)
@@ -332,6 +327,13 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		ControlPlaneEndpoint:    auth.ControlPlaneEndpoint,
 		ControlPlaneEndpointSet: auth.ControlPlaneEndpointSet,
 	}
+	if routingUnavailable {
+		// AuthorizeVideo sends max(1, maximumVideoTokenLimit(quotes)).
+		// Preserve that bound even when no route is eligible for dispatch.
+		job.OutputTokenLimit = max(1, maximumVideoTokenLimit(quotes))
+		s.rejectVideoAuthorization(ctx, conn, auth, job, tariffUnavailable)
+		return
+	}
 	stored, err := s.control.PrepareVideoJob(ctx, job)
 	if err != nil {
 		_ = s.control.Refund(ctx, auth, 503, "video_job_store_unavailable", 0.001, nil)
@@ -340,15 +342,6 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 	}
 	if !stored.Created {
 		writeVideoJobResponse(conn, http.StatusAccepted, stored)
-		return
-	}
-	if routingUnavailable {
-		// Never make the row terminal before the hold is released. If either
-		// call fails, the worker retries using the pinned submitting row.
-		if err := s.control.Refund(ctx, auth, 503, "video_routing_unavailable", 0.001, nil); err == nil {
-			_, _ = s.control.UpdateVideoJob(ctx, stored, "failed", "", "FAILED", "", "routing_unavailable", 5)
-		}
-		writeGatewayAuthorizationError(conn, trustedrouter.VideoRoutingUnavailable())
 		return
 	}
 	selected, queued, err := s.queueVideoJob(ctx, resolved, routes)
@@ -370,6 +363,76 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		return
 	}
 	writeVideoJobResponse(conn, http.StatusAccepted, stored)
+}
+
+// rejectVideoAuthorization persists the refund obligation before attempting it.
+// A submitting row without a provider job is recovered by the existing worker.
+// job.OutputTokenLimit carries the token bound sent in this authorization.
+func (s *videoService) rejectVideoAuthorization(ctx context.Context, conn io.Writer, auth *trustedrouter.Authorization, job *trustedrouter.VideoJob, tariffUnavailable bool) {
+	reason := "routing_unavailable"
+	if tariffUnavailable {
+		reason = "tariff_unavailable"
+	}
+	writeRejection := func() {
+		if tariffUnavailable {
+			writeOpenAIError(conn, 503, "BytePlus 1080p billing requires a matching resolution tariff acknowledgment from the control plane", "server_error", "video_tariff_unavailable", "")
+			return
+		}
+		writeGatewayAuthorizationError(conn, trustedrouter.VideoRoutingUnavailable())
+	}
+	// This row never dispatches. Use the first authorized provider/endpoint
+	// whose billing contract can record the refund obligation, even if it
+	// cannot serve the request. The token bound is exactly what we authorized.
+	authorizedTokenLimit := job.OutputTokenLimit
+	selectRoute := func(providerID, endpointID string) bool {
+		provider, ok := s.providers.Provider(providerID)
+		if !ok || endpointID == "" {
+			return false
+		}
+		quoted, tokenLimit := auth.AdditionalCostReservationMicrodollars, 0
+		if _, tokenBilled := provider.(video.TokenBilledProvider); tokenBilled {
+			quoted, tokenLimit = 0, authorizedTokenLimit
+		} else if quoted <= 0 {
+			return false
+		}
+		job.Provider, job.EndpointID = providerID, endpointID
+		job.QuotedMicrodollars, job.OutputTokenLimit = quoted, tokenLimit
+		return true
+	}
+	selected := selectRoute(auth.Provider, auth.EndpointID)
+	for _, candidate := range auth.RouteCandidates {
+		if selected {
+			break
+		}
+		selected = selectRoute(candidate.Provider, candidate.EndpointID)
+	}
+	if !selected {
+		_ = s.control.Refund(ctx, auth, 503, "video_"+reason, 0.001, nil)
+		writeRejection()
+		return
+	}
+	stored, err := s.control.PrepareVideoJob(ctx, job)
+	if err != nil {
+		var controlErr *trustedrouter.ControlPlaneError
+		if errors.As(err, &controlErr) && controlErr.StatusCode >= 400 && controlErr.StatusCode < 500 {
+			_ = s.control.Refund(ctx, auth, 503, "video_"+reason, 0.001, nil)
+			writeRejection()
+			return
+		}
+		_ = s.control.Refund(ctx, auth, 503, "video_job_store_unavailable", 0.001, nil)
+		writeOpenAIError(conn, 503, "video job storage is unavailable", "server_error", "video_job_store_unavailable", "")
+		return
+	}
+	if !stored.Created {
+		writeVideoJobResponse(conn, http.StatusAccepted, stored)
+		return
+	}
+	// Never make the row terminal before the hold is released. If either call
+	// fails, the worker retries using the row at the pinned billing authority.
+	if err := s.control.Refund(ctx, auth, 503, "video_"+reason, 0.001, nil); err == nil {
+		_, _ = s.control.UpdateVideoJob(ctx, stored, "failed", "", "FAILED", "", reason, 5)
+	}
+	writeRejection()
 }
 
 type authorizedVideoRoute struct {

@@ -116,14 +116,19 @@ func TestVideoResolutionTariffDispatchAndSettlement(t *testing.T) {
 					respond(data)
 				case strings.HasSuffix(r.URL.Path, "/prepare"):
 					prepares++
+					if body["provider"] == "byteplus" && (body["quoted_microdollars"] != float64(0) || body["output_token_limit"] != float64(limit)) {
+						t.Errorf("invalid token-billed prepare: %v", body)
+						w.WriteHeader(400)
+						return
+					}
 					raw, _ := json.Marshal(body)
 					if err := json.Unmarshal(raw, &stored); err != nil {
 						t.Error(err)
 					}
 					stored.ID, stored.AuthorizationID, stored.KeyHash, stored.WorkspaceID = "job-resolution", "auth-resolution", "hash", "ws"
 					stored.Created, stored.Status = true, "submitting"
-					if tc.echo != "1080p" && tc.resolution == "1080p" && stored.Provider == "byteplus" {
-						t.Error("unsafe BytePlus job stored")
+					if stored.ProviderJobID != "" {
+						t.Error("prepared row already dispatched")
 					}
 					if tc.wantProvider == "venice" && stored.OutputTokenLimit != 0 {
 						t.Error("BytePlus token reservation persisted for Venice")
@@ -140,7 +145,11 @@ func TestVideoResolutionTariffDispatchAndSettlement(t *testing.T) {
 				case strings.HasSuffix(r.URL.Path, "/refund"):
 					refunds++
 					held = false
-					if body["authorization_id"] != "auth-resolution" {
+					wantError := "video_tariff_unavailable"
+					if tc.primary == "venice" {
+						wantError = "video_provider_error"
+					}
+					if body["authorization_id"] != "auth-resolution" || body["error_type"] != wantError {
 						t.Error("refunded wrong hold")
 					}
 					respond(map[string]any{"settled": true})
@@ -193,8 +202,8 @@ func TestVideoResolutionTariffDispatchAndSettlement(t *testing.T) {
 				if strings.Contains(out.String(), "202 Accepted") || byteplusQueues != 0 || refunds != 1 || settles != 0 || charged != 0 || held {
 					t.Fatalf("unsafe rejection: response=%s queues=%d refunds=%d settles=%d charged=%d held=%t", out.String(), byteplusQueues, refunds, settles, charged, held)
 				}
-				if tc.primary == "byteplus" && (prepares != 0 || !strings.Contains(out.String(), "video_tariff_unavailable")) {
-					t.Fatalf("missing tariff not rejected before storage: %s", out.String())
+				if tc.primary == "byteplus" && (prepares != 1 || stored.ProviderJobID != "" || stored.Status != "failed" || !strings.Contains(out.String(), "video_tariff_unavailable")) {
+					t.Fatalf("missing durable tariff rejection: job=%+v response=%s", stored, out.String())
 				}
 				return
 			}
