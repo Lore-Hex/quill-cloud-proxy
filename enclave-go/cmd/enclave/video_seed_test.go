@@ -143,23 +143,11 @@ func TestVideoSeedProviderAliasesReachAuthorization(t *testing.T) {
 }
 
 func TestVideoRoutingUnavailablePublicHTTPError(t *testing.T) {
-	refunds := 0
-	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/internal/gateway/authorize":
-			_, _ = w.Write([]byte(`{"data":{"authorization_id":"auth","workspace_id":"ws","api_key_hash":"hash","model":"minimax/h3-max","provider":"venice","endpoint_id":"primary","additional_cost_reservation_microdollars":500000}}`))
-		case "/internal/gateway/refund":
-			refunds++
-			_, _ = w.Write([]byte(`{"data":{"refunded":true}}`))
-		default:
-			t.Errorf("unexpected dispatch/mutation: %s", r.URL.Path)
-			w.WriteHeader(500)
-		}
-	}))
-	defer control.Close()
-	s := &videoService{control: trustedrouter.New(control.URL, "internal", control.Client()), providers: video.NewRegistryWithProviders(video.NewFALVideoClientAt("test", control.URL, control.Client()))}
-	var out bytes.Buffer
-	s.serveCreate(t.Context(), &out, []byte(`{"model":"minimax/h3-max","prompt":"cube","seed":1101}`), "test", "idem")
+	a := newRefundAuthority(t)
+	s, _, _ := a.service()
+	response := refundCreate(t, s, "http-error", true)
+	out := bytes.NewBufferString(response)
+	refunds := len(a.refunds)
 	failure := videoHTTPBody(t, out.String())["error"].(map[string]any)
 	if !strings.HasPrefix(out.String(), "HTTP/1.1 503 ") || failure["code"] != "video_routing_unavailable" || failure["type"] != "server_error" || failure["source"] != "router" || refunds != 1 {
 		t.Fatalf("response=%s refunds=%d", out.String(), refunds)

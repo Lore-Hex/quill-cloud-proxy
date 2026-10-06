@@ -101,8 +101,6 @@ func (s *videoService) Start(ctx context.Context) {
 }
 
 func (s *videoService) drain(ctx context.Context) (int, error) {
-	// Refunds are independent of job claims: a rejected route has no job row.
-	refundErr := s.control.RetryVideoRoutingRefunds(ctx)
 	claimCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	jobs, err := s.control.ClaimVideoJobs(claimCtx, s.workerID, 8, 60)
 	cancel()
@@ -115,7 +113,7 @@ func (s *videoService) drain(ctx context.Context) (int, error) {
 		_, _ = s.pollAndFinalize(jobCtx, &job, s.workerID)
 		jobCancel()
 	}
-	return len(jobs), refundErr
+	return len(jobs), nil
 }
 
 func maybeServeVideoRoute(
@@ -293,12 +291,21 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		return
 	}
 	routes := authorizedVideoRoutes(auth, quotes)
-	if len(routes) == 0 {
+	if len(routes) == 0 && req.Seed == nil {
 		_ = s.control.Refund(ctx, auth, 503, "video_provider_unavailable", 0.001, nil)
 		writeOpenAIError(conn, 503, "no authorized video provider supports this request", "server_error", "video_provider_unavailable", "")
 		return
 	}
-	selected := routes[0]
+	// A rejected seeded authorization still needs a durable job at its billing
+	// authority. Main's submitting-job recovery refunds it across restarts.
+	routingUnavailable := len(routes) == 0
+	selected := authorizedVideoRoute{
+		Provider: auth.Provider, EndpointID: auth.EndpointID,
+		QuotedMicrodollars: auth.AdditionalCostReservationMicrodollars,
+	}
+	if !routingUnavailable {
+		selected = routes[0]
+	}
 	// Older control planes can authorize only fixed-price providers. Do not
 	// send the new job field unless a token-billed route was actually admitted.
 	outputTokenLimit = 0
@@ -327,6 +334,15 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 	}
 	if !stored.Created {
 		writeVideoJobResponse(conn, http.StatusAccepted, stored)
+		return
+	}
+	if routingUnavailable {
+		// Never make the row terminal before the hold is released. If either
+		// call fails, the worker retries using the pinned submitting row.
+		if err := s.control.Refund(ctx, auth, 503, "video_routing_unavailable", 0.001, nil); err == nil {
+			_, _ = s.control.UpdateVideoJob(ctx, stored, "failed", "", "FAILED", "", "routing_unavailable", 5)
+		}
+		writeGatewayAuthorizationError(conn, trustedrouter.VideoRoutingUnavailable())
 		return
 	}
 	selected, queued, err := s.queueVideoJob(ctx, resolved, routes)

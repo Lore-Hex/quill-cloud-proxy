@@ -52,24 +52,41 @@ authority-pinned lookup and validation of job ID, authorization, workspace,
 key, and model. A replay grants no dispatch authority and cannot recreate a
 missing job; ordinary content conflicts remain 409 without a new authorization.
 
-For a fresh response, the enclave checks the selected provider **and every
-fallback candidate** against the derived set. If any is incompatible, it
-records a compact refund obligation before attempting a refund at the same
-billing authority, and returns HTTP 503 with public type `server_error` and code
-`video_routing_unavailable` without preparing or dispatching a job. A failed
-refund stays registered: an identical caller retry attempts that refund before
-any authorization/replay lookup, and the video worker also drains obligations
-independently of job claims. Only a successful refund removes an obligation.
-Concurrent drain attempts serialize per authorization and retain the pinned
-endpoint even after control-plane failover. This queue is enclave memory, like
-other enclave billing retries; process loss still relies on the control plane's
-existing hold expiry/reaper. It is not a durable cross-process outbox. It does not
-try another authorization. A compatible response can proceed even from an old
-router. Thus an old router can still select an incompatible route and create a
-temporary hold, but the enclave cannot dispatch it. Eliminating those selections
-and holds requires the router change above; this enclave patch alone cannot
-promise successful seeded creation on every legacy router.
+For a fresh seeded response, the enclave intersects the authorized primary and
+fallback routes with the policy-eligible, seed-capable providers that returned
+quotes. It dispatches only those routes, rechecking `Supports` before queueing.
+An older router may return an incompatible primary and a compatible fallback;
+the fallback proceeds with seed and no refund.
 
+If no authorized route survives, the incompatible seeded authorization is never
+dispatched. Its hold is released through a video job row at the pinned billing
+authority, either inline or by the existing worker across enclave restarts.
+The worker first becomes eligible after about 300 seconds, plus up to a
+60-second lease and polling cadence. Release requires a healthy refund service;
+during an outage the row remains claimable after each lease until refund succeeds.
+Recovery time extends with the outage; the durable obligation remains.
+
+Before refunding, the enclave prepares the deterministic job ID for that
+authorization using the authorization's primary provider and endpoint. The job
+is `submitting`, has no provider job ID, and is never queued. An existing row is
+returned unchanged with 202. For a newly created row, the enclave refunds at the
+pinned authority with `video_routing_unavailable`; only after success does it
+mark the row failed with `routing_unavailable`. The response is HTTP 503 with
+public type `server_error` and code `video_routing_unavailable`. If refund or
+status update fails, main's worker claims the due submitting row, refunds with
+`video_submission_interrupted`, then marks it failed. Repeat refunds of an
+already refunded or settled authorization are harmless no-ops. Caller retries
+recover the stored job without a new authorization or hold. No enclave memory
+queue is involved, and worker refunds run only for claimed rows.
+
+If the job store is unavailable at prepare time, refund is best effort and the
+response is 503 `video_job_store_unavailable`. Closing that shared gap is a
+non-goal: main's other post-authorization failures (`video_provider_unavailable`,
+`video_job_store_unavailable`, and `video_provider_error`) also use best-effort
+refunds. This includes ordinary Postgres authorizations that never expire. Hold
+expiry or a reaper does not cover this case and is not part of this guarantee.
+Eliminating incompatible selections and their temporary holds still requires
+the router follow-up above.
 
 ## Read-only recovery before a new capability rejection
 
@@ -140,15 +157,28 @@ normalization together when the router alias contract changes.
 - `TestVideoSeedReplayAcrossRoutingConstraintRollout`: authorize H3 Max through
   the pre-rollout path, then retry through seeded creation against the original
   body-fingerprint contract; changed prompt, seed and provider remain conflicts.
-- `TestAuthorizeVideoConstraintsFailClosedOnLegacyRouter`: compatible response,
-  incompatible primary/fallback, header survival across endpoint failover, and
-  refund at the original billing authority without header leakage.
+- `TestAuthorizeVideoConstraintsPreserveLegacyRoutes`: original authorization
+  routes and derived header survive endpoint failover; authorization itself
+  performs no refund.
+- `TestVideoSeedLegacyCompatibleFallback`: incompatible primary is skipped,
+  compatible fallback receives seed, and no refund occurs.
 - `TestBytePlusVideoSubmissionReservesTokensBeforePaidQueue`: original policy
   retained, derived header present only for seed, and seed delivered upstream.
 
-- `TestVideoRoutingRefundRetriedAfterFailover`: a failed refund after endpoint
-  failover is retried by the caller or worker, releases the hold exactly once,
-  and never authorizes, prepares, looks up or dispatches a replacement job.
+- `TestVideoRoutingRefundRestart`: fresh service/client against the same store
+  recovers after inline refund or status update failure, at the pinned authority.
+- `TestVideoRoutingRefundCallerRetry`: stored-job replay across a client restart,
+  with no new authorization, hold, prepare, or refund attempt.
+- `TestVideoRoutingRefundNoEnclaveObligations`: repeated failures create one row
+  per authorization and retain no enclave refund queue.
+- `TestVideoRoutingRefundPollingDuringOutage` and
+  `TestVideoRoutingRefundClaimTimeoutAndLeaseRetry`: no pre-claim refund drain;
+  unrelated work completes, claimed refunds time out, and failed rows retry
+  after the lease expires.
+- `TestVideoRoutingRejectionPrepareOutcomes`: prepare failure, existing row,
+  and successful inline refund followed by terminal update.
+- `TestVideoUnseededNoRouteMainParity`: exact response bytes, best-effort refund,
+  and no job row, matching main.
 - `TestVideoUnsupportedSeedReadOnlyReplayAcrossRollout`: pre-rollout Hailuo and
   Venice jobs recover without quotes or new authorization; changed prompt,
   seed and policy conflict; definitive misses get the seed-specific 400.
