@@ -17,6 +17,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/video"
 )
 
@@ -138,7 +139,7 @@ func maybeServeVideoRoute(
 			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
 			return true
 		}
-		out, err := video.ModelsJSON()
+		out, err := video.ModelsJSON(videoGateway.providers)
 		if err != nil {
 			writeOpenAIError(conn, 500, "could not serialize video models", "server_error", "internal_error", "")
 			return true
@@ -195,6 +196,64 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		return
 	}
 	providers := s.providers.Supporting(resolved)
+	providerPolicy := req.Provider
+	if req.Seed != nil {
+		var preferences struct {
+			Only   types.StringList `json:"only"`
+			Ignore types.StringList `json:"ignore"`
+		}
+		policy, _ := json.Marshal(req.Provider)
+		if err := json.Unmarshal(policy, &preferences); err != nil {
+			writeOpenAIError(conn, 400, "invalid video provider preferences", "invalid_request_error", "bad_request", "provider")
+			return
+		}
+		allowed := func(id string) bool {
+			contains := func(values []string) bool {
+				for _, value := range values {
+					if strings.EqualFold(strings.TrimSpace(value), id) {
+						return true
+					}
+				}
+				return false
+			}
+			return (len(preferences.Only) == 0 || contains(preferences.Only)) && !contains(preferences.Ignore)
+		}
+		eligible := make([]video.Provider, 0, len(providers))
+		for _, provider := range providers {
+			if allowed(provider.ID()) {
+				eligible = append(eligible, provider)
+			}
+		}
+		providers = eligible
+		if len(providers) == 0 {
+			withoutSeed := *resolved
+			withoutSeed.Seed = nil
+			var routes []string
+			for _, provider := range s.providers.Supporting(&withoutSeed) {
+				if allowed(provider.ID()) {
+					routes = append(routes, provider.ID())
+				}
+			}
+			routeNames := strings.Join(routes, ", ")
+			if routeNames == "" {
+				routeNames = "none enabled"
+			}
+			message := fmt.Sprintf("seed is not supported for model %q on the allowed video routes (%s)", resolved.Model.ID, routeNames)
+			writeOpenAIError(conn, 400, message, "invalid_request_error", "unsupported_parameter", "seed")
+			return
+		}
+		// Constrain authorization too, so the control plane cannot select a
+		// seed-incompatible route, even when provider fallbacks are disabled.
+		providerPolicy = make(map[string]any, len(req.Provider)+1)
+		for key, value := range req.Provider {
+			providerPolicy[key] = value
+		}
+		only := make([]string, 0, len(providers))
+		for _, provider := range providers {
+			only = append(only, provider.ID())
+		}
+		providerPolicy["only"] = only
+	}
 	if len(providers) == 0 {
 		writeOpenAIError(conn, 503, "no configured video provider supports this request", "server_error", "video_provider_unavailable", "")
 		return
@@ -214,7 +273,7 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		resolved.Model.ID,
 		idempotencyKey,
 		videoRequestFingerprint(bearer, &req),
-		req.Provider,
+		providerPolicy,
 		reservationMicrodollars,
 		outputTokenLimit,
 	)

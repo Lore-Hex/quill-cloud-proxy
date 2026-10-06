@@ -292,7 +292,7 @@ func TestResolveRejectsUnsupportedAndUnsafeInputs(t *testing.T) {
 func boolPointer(value bool) *bool { return &value }
 
 func TestModelsJSONIsTruthfulAboutProviderPrivacy(t *testing.T) {
-	body, err := ModelsJSON()
+	body, err := ModelsJSON(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

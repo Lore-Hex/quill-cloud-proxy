@@ -33,7 +33,7 @@ func (c *XAIClient) ID() string    { return "grok" }
 func (c *XAIClient) Enabled() bool { return c != nil && c.apiKey != "" }
 
 func (c *XAIClient) Supports(request *ResolvedRequest) bool {
-	if request == nil || request.Model.ID != "x-ai/grok-imagine-video" {
+	if request == nil || request.Seed != nil || request.Model.ID != "x-ai/grok-imagine-video" {
 		return false
 	}
 	if request.LastFrame != "" || request.AudioReference != "" || request.VideoReference != "" {

@@ -35,7 +35,7 @@ func (c *VeniceClient) Enabled() bool { return c != nil && c.apiKey != "" }
 func (c *VeniceClient) ID() string { return "venice" }
 
 func (c *VeniceClient) Supports(request *ResolvedRequest) bool {
-	return request != nil && !request.Model.DirectOnly && request.VeniceModel != ""
+	return request != nil && request.Seed == nil && !request.Model.DirectOnly && request.VeniceModel != ""
 }
 
 func (c *VeniceClient) QuoteResolved(ctx context.Context, request *ResolvedRequest) (int, error) {
@@ -81,6 +81,9 @@ func (c *VeniceClient) Quote(ctx context.Context, payload map[string]any) (int, 
 }
 
 func (c *VeniceClient) Queue(ctx context.Context, payload map[string]any) (*QueueResult, error) {
+	if _, ok := payload["seed"]; ok {
+		return nil, &UnsupportedError{Field: "seed"}
+	}
 	resp, err := c.post(ctx, "/queue", payload)
 	if err != nil {
 		return nil, err

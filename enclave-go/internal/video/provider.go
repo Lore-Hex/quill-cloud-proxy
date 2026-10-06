@@ -162,6 +162,18 @@ func providerRank(modelID, provider string) int {
 	return 50
 }
 
+// supportsSeed probes a valid default input mode using the same capability
+// checks as routing. Only enabled routes contribute to advertised parameters.
+func (r *Registry) supportsSeed(model Model) bool {
+	seed := int64(0)
+	req := &CreateRequest{Model: model.ID, Prompt: "capability probe", Seed: &seed, Duration: model.DefaultDuration}
+	if model.RequiresVideoReference {
+		req.InputReferences = []InputReference{{Type: "video", URL: "https://example.com/video.mp4"}}
+	}
+	resolved, err := ResolveRequest(req)
+	return err == nil && len(r.Supporting(resolved)) > 0
+}
+
 func directProviderForModel(modelID string) string {
 	switch modelID {
 	case "bytedance/seedance-2.5", "bytedance/seedance-2.0", "bytedance/seedance-2.0-fast":
