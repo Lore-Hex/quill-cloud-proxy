@@ -133,10 +133,13 @@ func TestFusionReasoningBudgetEndToEnd(t *testing.T) {
 type fusionBudgetTransport func(*http.Request) (*http.Response, error)
 
 func (f fusionBudgetTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-func newFusionBudgetGateway(t *testing.T) (*trustedrouter.Client, *fusionGatewayRecorder) {
+func newFusionBudgetGateway(t *testing.T, inspect ...func(*http.Request)) (*trustedrouter.Client, *fusionGatewayRecorder) {
 	t.Helper()
 	recorder := &fusionGatewayRecorder{}
 	client := &http.Client{Transport: fusionBudgetTransport(func(r *http.Request) (*http.Response, error) {
+		for _, check := range inspect {
+			check(r)
+		}
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			return nil, err
@@ -148,7 +151,13 @@ func newFusionBudgetGateway(t *testing.T) (*trustedrouter.Client, *fusionGateway
 		case "/internal/gateway/authorize":
 			recorder.authorize = append(recorder.authorize, payload)
 			model := payload["model"].(string)
-			data = map[string]any{"authorization_id": fmt.Sprintf("auth_%d", len(recorder.authorize)), "workspace_id": "ws_1", "api_key_hash": "key_1", "model": model, "endpoint_id": model + "@test/prepaid", "provider": "test", "usage_type": "Credits", "limit_usage_type": "Credits", "route_candidates": []any{}}
+			provider := "test"
+			if policy, ok := payload["provider"].(map[string]any); ok {
+				if only, ok := policy["only"].([]any); ok && len(only) > 0 {
+					provider, _ = only[0].(string)
+				}
+			}
+			data = map[string]any{"authorization_id": fmt.Sprintf("auth_%d", len(recorder.authorize)), "workspace_id": "ws_1", "api_key_hash": "key_1", "model": model, "endpoint_id": model + "@" + provider + "/prepaid", "provider": provider, "usage_type": "Credits", "limit_usage_type": "Credits", "route_candidates": []any{}}
 		case "/internal/gateway/settle":
 			recorder.settle = append(recorder.settle, payload)
 			data = map[string]any{"settled": true, "generation_id": fmt.Sprintf("gen_%d", len(recorder.settle)), "cost_microdollars": 1, "model": payload["selected_model"], "provider": "test"}

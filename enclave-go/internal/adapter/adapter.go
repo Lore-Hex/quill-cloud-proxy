@@ -25,7 +25,8 @@ import (
 // max_tokens, so we always provide a value.
 const DefaultMaxTokens = 4096
 
-const maxSSEBlockBytes = 64 << 20
+// MaxSSEBlockBytes bounds each internal Anthropic SSE block.
+const MaxSSEBlockBytes = 64 << 20
 
 // AdapterError signals a 4xx-class translation failure.
 type AdapterError struct {
@@ -526,6 +527,9 @@ type StreamResult struct {
 	// enclave's normalized stream. They are returned to the caller only.
 	Citations     []string
 	SearchResults []types.ProviderSearchResult
+	// Decision is provider answer data, not telemetry. Never put it in Usage,
+	// settlement, routing metadata or logs: labels may contain customer data.
+	Decision map[string]any
 	// Thinking holds extended-thinking blocks (in order, before any text /
 	// tool_use), reassembled from the upstream SSE. opus-4.7+ emits these
 	// when output_config.effort is set; Anthropic requires them replayed
@@ -656,11 +660,11 @@ func WriteChatCompletionResponse(
 	return err
 }
 
-// WriteChatCompletionResponseWithProvenance preserves search-native provider
-// metadata while also emitting OpenRouter's standardized message.annotations
+// WriteChatCompletionResponseWithProviderMetadata preserves provider response
+// extensions while also emitting OpenRouter's standardized message.annotations
 // shape. The original writer remains the common response builder for ordinary
 // completions so existing callers cannot diverge on usage or tool-call fields.
-func WriteChatCompletionResponseWithProvenance(
+func WriteChatCompletionResponseWithProviderMetadata(
 	w io.Writer,
 	requestID string,
 	model string,
@@ -674,6 +678,7 @@ func WriteChatCompletionResponseWithProvenance(
 	finishReason string,
 	citations []string,
 	searchResults []types.ProviderSearchResult,
+	decision map[string]any,
 ) error {
 	var base bytes.Buffer
 	if err := WriteChatCompletionResponse(
@@ -682,7 +687,7 @@ func WriteChatCompletionResponseWithProvenance(
 	); err != nil {
 		return err
 	}
-	if len(citations) == 0 && len(searchResults) == 0 {
+	if len(citations) == 0 && len(searchResults) == 0 && decision == nil {
 		_, err := w.Write(base.Bytes())
 		return err
 	}
@@ -696,6 +701,9 @@ func WriteChatCompletionResponseWithProvenance(
 	}
 	if len(cleanResults) > 0 {
 		payload["search_results"] = cleanResults
+	}
+	if decision != nil {
+		payload["decision"] = decision
 	}
 	choices, _ := payload["choices"].([]any)
 	if len(choices) > 0 {
@@ -876,11 +884,12 @@ func TransformStreamCaptureControlled(
 	var thinkingOrder []int
 	var citations []string
 	var searchResults []types.ProviderSearchResult
+	var decision map[string]any
 	sawUpstreamBytes := false
 
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
-	scanner.Split(splitDoubleNewline)
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxSSEBlockBytes)
+	scanner.Split(SplitDoubleNewline)
 
 	// OpenAI streams open with a role chunk before any delta — text or
 	// tool_calls alike.
@@ -905,6 +914,7 @@ func TransformStreamCaptureControlled(
 		}
 		result := StreamResult{
 			Text: captured.String(), FinishReason: finishReason, Usage: usage,
+			Decision:  decision,
 			Thinking:  orderedThinking(thinkingByIndex, thinkingOrder),
 			Citations: append([]string(nil), citations...), SearchResults: append([]types.ProviderSearchResult(nil), searchResults...),
 		}
@@ -926,6 +936,11 @@ func TransformStreamCaptureControlled(
 		}
 		usageFields := map[string]any{}
 		emit := func() error {
+			if decision != nil {
+				if err := writeDecisionChunk(w, requestID, model, created, decision); err != nil {
+					return err
+				}
+			}
 			var err error
 			if trFinishReason == "" {
 				err = writeChunk(w, requestID, model, created, map[string]any{}, terminalFinishReason)
@@ -1144,6 +1159,9 @@ func TransformStreamCaptureControlled(
 				control.ObserveUsage(usage)
 			}
 			citations, searchResults = providerProvenanceFromInternalEvent(dataJSON, citations, searchResults)
+			if value := getMap(dataJSON, "trustedrouter_decision"); value != nil {
+				decision = value
+			}
 		case "message_stop":
 			return finish(true, nil)
 		}
@@ -1304,6 +1322,20 @@ func ChatCitationAnnotations(
 		}
 	}
 	return annotations
+}
+
+func writeDecisionChunk(w io.Writer, id, model string, created int64, decision map[string]any) error {
+	payload := map[string]any{
+		"id": id, "object": "chat.completion.chunk", "created": created, "model": model,
+		"choices":  []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": nil}},
+		"decision": decision,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "data: %s\n\n", body)
+	return err
 }
 
 func writeProviderProvenanceChunk(
@@ -1547,8 +1579,8 @@ func writeUsageChunk(w io.Writer, id, model string, created int64, usage *Stream
 	return err
 }
 
-// splitDoubleNewline is a bufio.Scanner SplitFunc that emits each "\n\n"-terminated block.
-func splitDoubleNewline(data []byte, atEOF bool) (int, []byte, error) {
+// SplitDoubleNewline is a bufio.Scanner SplitFunc that emits each "\n\n"-terminated block.
+func SplitDoubleNewline(data []byte, atEOF bool) (int, []byte, error) {
 	for i := 0; i+1 < len(data); i++ {
 		if data[i] == '\n' && data[i+1] == '\n' {
 			return i + 2, data[:i], nil
@@ -1560,17 +1592,27 @@ func splitDoubleNewline(data []byte, atEOF bool) (int, []byte, error) {
 	return 0, nil, nil
 }
 
-func parseSSEBlock(block []byte) (eventName string, dataJSON map[string]any) {
+// ParseSSEBlock extracts the last event name and data lines using the relay's
+// exact field rules. Callers validating an error report can join the data lines.
+func ParseSSEBlock(block []byte) (eventName string, dataLines []string) {
 	for _, raw := range strings.Split(string(block), "\n") {
 		line := strings.TrimRight(raw, "\r")
 		switch {
 		case strings.HasPrefix(line, "event: "):
 			eventName = line[len("event: "):]
 		case strings.HasPrefix(line, "data: "):
-			var parsed map[string]any
-			if err := json.Unmarshal([]byte(line[len("data: "):]), &parsed); err == nil {
-				dataJSON = parsed
-			}
+			dataLines = append(dataLines, line[len("data: "):])
+		}
+	}
+	return
+}
+
+func parseSSEBlock(block []byte) (eventName string, dataJSON map[string]any) {
+	eventName, dataLines := ParseSSEBlock(block)
+	for _, data := range dataLines {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(data), &parsed); err == nil {
+			dataJSON = parsed
 		}
 	}
 	return

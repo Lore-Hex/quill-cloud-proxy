@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 )
@@ -139,7 +140,7 @@ func TestWriteStreamingClientInputErrorUsesRouterSource(t *testing.T) {
 }
 
 func TestUpstreamErrorResponseScrubsAndTruncatesUpstreamBody(t *testing.T) {
-	prefix := "upstream http 404: "
+	prefix := "Bearer *** sk-*** "
 	body := `{"error":"Bearer SECRET_TOKEN sk-AbCd_1234 ` + strings.Repeat("x", 1300) + `"}`
 	code, message := upstreamErrorResponse(fmt.Errorf("llm/upstream: http 404: %s", body))
 
@@ -149,8 +150,8 @@ func TestUpstreamErrorResponseScrubsAndTruncatesUpstreamBody(t *testing.T) {
 	if !strings.HasPrefix(message, prefix) {
 		t.Fatalf("message = %q, want prefix %q", message, prefix)
 	}
-	if len(message) != len(prefix)+1200 {
-		t.Fatalf("message length = %d, want %d", len(message), len(prefix)+1200)
+	if len(message) != 1200 {
+		t.Fatalf("message length = %d, want %d", len(message), 1200)
 	}
 	if strings.Contains(message, "SECRET_TOKEN") || strings.Contains(message, "sk-AbCd_1234") {
 		t.Fatalf("message leaked secret: %q", message)
@@ -180,7 +181,7 @@ func TestWriteStreamingProviderErrorEnrichesChatCompletionsFrame(t *testing.T) {
 	if unmarshalErr := json.Unmarshal([]byte(data), &payload); unmarshalErr != nil {
 		t.Fatalf("decode frame: %v; frame=%q", unmarshalErr, frame)
 	}
-	if payload.Error.Message != `upstream http 404: {"error":"model not found"}` {
+	if payload.Error.Message != `model not found` {
 		t.Fatalf("message = %q", payload.Error.Message)
 	}
 	if payload.Error.UpstreamStatus != 404 {
@@ -191,14 +192,26 @@ func TestWriteStreamingProviderErrorEnrichesChatCompletionsFrame(t *testing.T) {
 	}
 }
 
-func TestWriteStreamingProviderErrorNilMatchesLegacyGenericFrame(t *testing.T) {
+func TestWriteStreamingProviderErrorNilEmitsTerminalErrorChunk(t *testing.T) {
+	before := time.Now().Unix()
 	var buf bytes.Buffer
 	if err := writeStreamingProviderError(&buf, "chat.completions", "chatcmpl-test", "model", nil, false); err != nil {
 		t.Fatalf("write error: %v", err)
 	}
-	const legacy = "data: {\"error\":{\"message\":\"provider error\",\"source\":\"provider\",\"type\":\"provider_error\"}}\n\ndata: [DONE]\n\n"
-	if got := buf.String(); got != legacy {
-		t.Fatalf("generic frame changed:\n got: %q\nwant: %q", got, legacy)
+	const legacy = "data: " + `{"choices":[{"delta":{},"finish_reason":"error","index":0}],"error":{"code":null,"message":"provider error","param":null,"source":"provider","status":502,"type":"provider_error"},"id":"chatcmpl-test","model":"model","object":"chat.completion.chunk"}` + "\n\ndata: [DONE]\n\n"
+	frame := strings.SplitN(buf.String(), "\n\n", 2)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(frame[0], "data: ")), &payload); err != nil {
+		t.Fatal(err)
+	}
+	created, ok := payload["created"].(float64)
+	if !ok || int64(created) < before || int64(created) > time.Now().Unix() {
+		t.Fatalf("created=%v", payload["created"])
+	}
+	delete(payload, "created")
+	normalized, _ := json.Marshal(payload)
+	if got := "data: " + string(normalized) + "\n\n" + frame[1]; got != legacy {
+		t.Fatalf("generic frame changed: got %q want %q", got, legacy)
 	}
 }
 
@@ -219,7 +232,7 @@ func TestWriteAnthropicStreamErrorUsesEnrichedUpstreamMessage(t *testing.T) {
 	if err := json.Unmarshal([]byte(data), &payload); err != nil {
 		t.Fatalf("decode frame: %v; frame=%q", err, frame)
 	}
-	if payload.Error.Message != "upstream http 403: account disabled" {
+	if payload.Error.Message != "account disabled" {
 		t.Fatalf("message = %q", payload.Error.Message)
 	}
 }

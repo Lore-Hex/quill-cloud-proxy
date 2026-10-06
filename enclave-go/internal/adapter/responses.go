@@ -134,8 +134,8 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 	if boolField(raw, "background") {
 		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "background=true"}
 	}
-	if value, ok := raw["prompt_cache_retention"]; ok && presentNonNull(value) {
-		return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "prompt_cache_retention"}
+	if err := rejectPromptCacheRetention(raw["prompt_cache_retention"]); err != nil {
+		return err
 	}
 	if value, ok := raw["reasoning"]; ok {
 		if err := validateReasoningConfig(value); err != nil {
@@ -204,22 +204,8 @@ func validateResponsesFields(raw map[string]json.RawMessage, allowed map[string]
 			return &AdapterError{Status: 400, Message: "stream_options must be an object", Context: "stream_options"}
 		}
 	}
-	if value, ok := raw["usage"]; ok && presentNonNull(value) {
-		// OpenRouter's legacy usage.include request option is deprecated and
-		// has no effect because usage is always returned. Accept it as a no-op
-		// so clients can switch base URLs without a Responses-only failure.
-		var options map[string]json.RawMessage
-		if err := json.Unmarshal(value, &options); err != nil {
-			return &AdapterError{Status: 400, Message: "usage must be an object", Context: "usage"}
-		}
-		if include, ok := options["include"]; ok && presentNonNull(include) {
-			var enabled bool
-			if err := json.Unmarshal(include, &enabled); err != nil {
-				return &AdapterError{Status: 400, Message: "usage.include must be a boolean", Context: "usage.include"}
-			}
-		}
-	}
-	return nil
+	_, err := validateLegacyUsage(raw["usage"])
+	return err
 }
 
 func rejectResponsesWebPlugin(value json.RawMessage) error {
@@ -398,17 +384,32 @@ func responseInputMessages(input any) ([]types.OpenAIChatMessage, error) {
 	case []any:
 		out := make([]types.OpenAIChatMessage, 0, len(value))
 		for index, item := range value {
-			message, err := responseInputMessage(item, index)
+			message, drop, err := responseInputMessage(item, index)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, message)
+			if drop {
+				continue
+			}
+			if m, ok := item.(map[string]any); ok && (m["type"] == "function_call" || m["type"] == "custom_tool_call") && len(out) > 0 && out[len(out)-1].Role == "assistant" {
+				// Calls belong to the preceding assistant turn; later text still
+				// starts a separate message so input order is preserved.
+				out[len(out)-1].ToolCalls = append(out[len(out)-1].ToolCalls, message.ToolCalls...)
+			} else {
+				out = append(out, message)
+			}
+		}
+		if len(value) > 0 && len(out) == 0 {
+			return nil, &AdapterError{Status: 400, Message: "input must contain text"}
 		}
 		return out, nil
 	case map[string]any:
-		message, err := responseInputMessage(value, 0)
+		message, drop, err := responseInputMessage(value, 0)
 		if err != nil {
 			return nil, err
+		}
+		if drop {
+			return nil, &AdapterError{Status: 400, Message: "input must contain text"}
 		}
 		return []types.OpenAIChatMessage{message}, nil
 	default:
@@ -416,23 +417,44 @@ func responseInputMessages(input any) ([]types.OpenAIChatMessage, error) {
 	}
 }
 
-func responseInputMessage(item any, index int) (types.OpenAIChatMessage, error) {
+// responseInputMessage explicitly marks replay-only items for dropping.
+func responseInputMessage(item any, index int) (message types.OpenAIChatMessage, drop bool, err error) {
 	if text, ok := item.(string); ok {
-		return types.OpenAIChatMessage{Role: "user", Content: text}, nil
+		return types.OpenAIChatMessage{Role: "user", Content: text}, false, nil
 	}
 	m, ok := item.(map[string]any)
 	if !ok {
-		return types.OpenAIChatMessage{}, &AdapterError{
+		return types.OpenAIChatMessage{}, false, &AdapterError{
 			Status:  400,
 			Message: "input item must be text or object",
 			Context: fmt.Sprintf("input[%d]", index),
 		}
 	}
-	switch stringValue(m["type"]) {
+	switch itemType := stringValue(m["type"]); itemType {
+	case "reasoning":
+		// Reasoning is provider-internal state and cannot be re-fed to another
+		// provider. The conversation itself is carried by the message items.
+		return types.OpenAIChatMessage{}, true, nil
+	case "web_search_call":
+		// Hosted search records are internal state; their results are already
+		// carried by the following message.
+		return types.OpenAIChatMessage{}, true, nil
 	case "function_call":
-		return responseFunctionCallMessage(m, index)
-	case "function_call_output":
-		return responseFunctionCallOutputMessage(m, index)
+		message, err := responseFunctionCallMessage(m, index)
+		return message, false, err
+	case "custom_tool_call":
+		message, err := responseCustomToolCallMessage(m, index)
+		return message, false, err
+	case "function_call_output", "custom_tool_call_output":
+		message, err := responseToolCallOutputMessage(m, index, itemType)
+		return message, false, err
+	case "item_reference", "local_shell_call", "local_shell_call_output",
+		"computer_call", "computer_call_output", "file_search_call", "image_generation_call",
+		"code_interpreter_call", "mcp_call", "mcp_list_tools", "mcp_approval_request",
+		"mcp_approval_response", "shell_call", "shell_call_output", "apply_patch_call", "apply_patch_call_output":
+		return types.OpenAIChatMessage{}, false, &AdapterError{
+			Status: 501, Message: "not_supported_in_alpha", Context: fmt.Sprintf("input[%d].%s", index, itemType),
+		}
 	}
 	role := stringValue(m["role"])
 	if role == "" {
@@ -442,16 +464,42 @@ func responseInputMessage(item any, index int) (types.OpenAIChatMessage, error) 
 		role = "system"
 	}
 	if role != "system" && role != "user" && role != "assistant" {
-		return types.OpenAIChatMessage{}, &AdapterError{Status: 400, Message: "unsupported input role"}
+		return types.OpenAIChatMessage{}, false, &AdapterError{Status: 400, Message: "unsupported input role"}
 	}
 	content, err := responseContent(m)
 	if err != nil {
-		return types.OpenAIChatMessage{}, err
+		return types.OpenAIChatMessage{}, false, err
 	}
 	if types.ContentEmpty(content) {
-		return types.OpenAIChatMessage{}, &AdapterError{Status: 400, Message: "input item must contain text or image"}
+		if role == "assistant" && responseEmptyTextParts(m["content"]) {
+			return types.OpenAIChatMessage{}, true, nil
+		}
+		return types.OpenAIChatMessage{}, false, &AdapterError{Status: 400, Message: "input item must contain text or image"}
 	}
-	return types.OpenAIChatMessage{Role: role, Content: content}, nil
+	return types.OpenAIChatMessage{Role: role, Content: content}, false, nil
+}
+
+// responseEmptyTextParts recognizes the empty text message emitted by responsesObject.
+func responseEmptyTextParts(content any) bool {
+	parts, ok := content.([]any)
+	if !ok || len(parts) == 0 {
+		return false
+	}
+	for _, item := range parts {
+		part, ok := item.(map[string]any)
+		if !ok {
+			return false
+		}
+		switch stringValue(part["type"]) {
+		case "", "text", "input_text", "output_text":
+			if text, ok := part["text"].(string); !ok || text != "" {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func responseFunctionCallMessage(m map[string]any, index int) (types.OpenAIChatMessage, error) {
@@ -495,27 +543,57 @@ func responseFunctionCallMessage(m map[string]any, index int) (types.OpenAIChatM
 	}, nil
 }
 
-func responseFunctionCallOutputMessage(m map[string]any, index int) (types.OpenAIChatMessage, error) {
+func responseCustomToolCallMessage(m map[string]any, index int) (types.OpenAIChatMessage, error) {
 	callID := strings.TrimSpace(stringValue(m["call_id"]))
 	if callID == "" {
 		return types.OpenAIChatMessage{}, &AdapterError{
-			Status: 400, Message: "function_call_output call_id is required", Context: fmt.Sprintf("input[%d].call_id", index),
+			Status: 400, Message: "custom_tool_call call_id is required", Context: fmt.Sprintf("input[%d].call_id", index),
+		}
+	}
+	name := strings.TrimSpace(stringValue(m["name"]))
+	if name == "" {
+		return types.OpenAIChatMessage{}, &AdapterError{
+			Status: 400, Message: "custom_tool_call name is required", Context: fmt.Sprintf("input[%d].name", index),
+		}
+	}
+	// Match chat completions' custom tool history: wrap input without turning
+	// strings into JSON or stringifying other JSON values. Missing input is null.
+	arguments, _ := json.Marshal(map[string]any{"input": m["input"]}) // Decoded JSON values always marshal.
+	return types.OpenAIChatMessage{
+		Role:    "assistant",
+		Content: "",
+		ToolCalls: []types.OpenAIToolCall{{
+			ID:   callID,
+			Type: "function",
+			Function: types.OpenAIToolFunction{
+				Name:      name,
+				Arguments: string(arguments),
+			},
+		}},
+	}, nil
+}
+
+func responseToolCallOutputMessage(m map[string]any, index int, itemType string) (types.OpenAIChatMessage, error) {
+	callID := strings.TrimSpace(stringValue(m["call_id"]))
+	if callID == "" {
+		return types.OpenAIChatMessage{}, &AdapterError{
+			Status: 400, Message: itemType + " call_id is required", Context: fmt.Sprintf("input[%d].call_id", index),
 		}
 	}
 	outputValue, ok := m["output"]
 	if !ok {
 		return types.OpenAIChatMessage{}, &AdapterError{
-			Status: 400, Message: "function_call_output output is required", Context: fmt.Sprintf("input[%d].output", index),
+			Status: 400, Message: itemType + " output is required", Context: fmt.Sprintf("input[%d].output", index),
 		}
 	}
-	output, err := responseFunctionCallOutput(outputValue, index)
+	output, err := responseToolCallOutput(outputValue, index, itemType)
 	if err != nil {
 		return types.OpenAIChatMessage{}, err
 	}
 	return types.OpenAIChatMessage{Role: "tool", Content: output, ToolCallID: callID}, nil
 }
 
-func responseFunctionCallOutput(value any, index int) (any, error) {
+func responseToolCallOutput(value any, index int, itemType string) (any, error) {
 	switch output := value.(type) {
 	case nil:
 		return "", nil
@@ -529,7 +607,7 @@ func responseFunctionCallOutput(value any, index int) (any, error) {
 		return content, nil
 	default:
 		return nil, &AdapterError{
-			Status: 400, Message: "function_call_output output must be text or content parts", Context: fmt.Sprintf("input[%d].output", index),
+			Status: 400, Message: itemType + " output must be text or content parts", Context: fmt.Sprintf("input[%d].output", index),
 		}
 	}
 }
@@ -551,8 +629,12 @@ func responseContent(m map[string]any) (any, error) {
 			}
 			partType := stringValue(part["type"])
 			switch partType {
-			case "", "text", "input_text":
+			case "", "text", "input_text", "output_text":
 				if text := stringValue(part["text"]); text != "" {
+					parts = append(parts, types.ChatContentPart{Type: "text", Text: text})
+				}
+			case "refusal":
+				if text := stringValue(part["refusal"]); text != "" {
 					parts = append(parts, types.ChatContentPart{Type: "text", Text: text})
 				}
 			case "input_image", "image_url":
@@ -637,29 +719,38 @@ func CollectAnthropicText(r io.Reader) (StreamResult, error) {
 }
 
 func CollectAnthropicTextWithObserver(r io.Reader, observer StreamObserver) (StreamResult, error) {
-	return collectAnthropicText(r, observer, false)
+	return collectAnthropicText(r, observer, false, false)
+}
+
+// CollectAnthropicTextRetainingUsage is CollectAnthropicTextWithObserver for a
+// caller that bills interrupted generations: on a transport error it returns the
+// usage the provider already reported (with no text), so metered work can be
+// settled. Other callers (e.g. native decide) deliberately refund on that error.
+func CollectAnthropicTextRetainingUsage(r io.Reader, observer StreamObserver) (StreamResult, error) {
+	return collectAnthropicText(r, observer, false, true)
 }
 
 // CollectAnthropicTextStrict is for transactional media routes: a clean EOF
 // without message_stop is a failed generation, never a billable partial image.
 func CollectAnthropicTextStrict(r io.Reader) (StreamResult, error) {
-	return collectAnthropicText(r, nil, true)
+	return collectAnthropicText(r, nil, true, false)
 }
 
-func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal bool) (StreamResult, error) {
+func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal, retainUsageOnError bool) (StreamResult, error) {
 	finishReason := "stop"
 	var captured strings.Builder
 	var usage *StreamUsage
 	var citations []string
 	var searchResults []types.ProviderSearchResult
+	var decision map[string]any
 	toolCallsByIndex := map[int]*types.ToolCall{}
 	var toolOrder []int
 	thinkingByIndex := map[int]*ThinkingBlock{}
 	var thinkingOrder []int
 	sawUpstreamBytes := false
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
-	scanner.Split(splitDoubleNewline)
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxSSEBlockBytes)
+	scanner.Split(SplitDoubleNewline)
 	for scanner.Scan() {
 		sawUpstreamBytes = true
 		eventName, dataJSON := parseSSEBlock(scanner.Bytes())
@@ -737,11 +828,18 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal 
 			}
 			mergeUsage(&usage, getMap(dataJSON, "usage"))
 			citations, searchResults = providerProvenanceFromInternalEvent(dataJSON, citations, searchResults)
+			if value := getMap(dataJSON, "trustedrouter_decision"); value != nil {
+				decision = value
+			}
 		case "message_stop":
-			return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage, Citations: citations, SearchResults: searchResults}, nil
+			return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage, Citations: citations, SearchResults: searchResults, Decision: decision}, nil
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		if retainUsageOnError {
+			// Metered usage for partial billing, never an interrupted answer.
+			return StreamResult{Usage: usage}, err
+		}
 		return StreamResult{}, err
 	}
 	if !sawUpstreamBytes {
@@ -750,7 +848,7 @@ func collectAnthropicText(r io.Reader, observer StreamObserver, requireTerminal 
 	if requireTerminal {
 		return StreamResult{}, fmt.Errorf("adapter: truncated SSE before message_stop")
 	}
-	return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage, Citations: citations, SearchResults: searchResults}, nil
+	return StreamResult{Text: captured.String(), FinishReason: finishReason, ToolCalls: orderedToolCalls(toolCallsByIndex, toolOrder), Thinking: orderedThinking(thinkingByIndex, thinkingOrder), Usage: usage, Citations: citations, SearchResults: searchResults, Decision: decision}, nil
 }
 
 func WriteResponsesResponse(
@@ -1138,8 +1236,8 @@ func TransformResponsesStreamControlled(
 	}
 
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
-	scanner.Split(splitDoubleNewline)
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxSSEBlockBytes)
+	scanner.Split(SplitDoubleNewline)
 	for scanner.Scan() {
 		if control != nil && control.Termination != nil {
 			if termination := control.Termination(); termination != nil {

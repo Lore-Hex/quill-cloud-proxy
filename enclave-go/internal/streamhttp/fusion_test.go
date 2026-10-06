@@ -14,6 +14,57 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+type finalEOFBody struct{ *strings.Reader }
+
+func (b finalEOFBody) Read(p []byte) (int, error) {
+	n, err := b.Reader.Read(p)
+	if b.Len() == 0 {
+		err = io.EOF
+	}
+	return n, err
+}
+
+func (b finalEOFBody) Close() error { return nil }
+
+func TestProgressBodyPreservesEOF(t *testing.T) {
+	for _, payload := range []string{"final checksum", ""} {
+		t.Run(map[bool]string{true: "bytes with EOF", false: "empty EOF"}[payload != ""], func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: finalEOFBody{strings.NewReader(payload)}}, nil
+			})}
+			req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://provider.invalid/chat", nil)
+			resp, err := Do(client, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			p := make([]byte, 64)
+			if n, err := resp.Body.Read(p); n != len(payload) || err != io.EOF || string(p[:n]) != payload {
+				t.Fatalf("final read = (%q, %v), want (%q, EOF)", p[:n], err, payload)
+			}
+			for i := 0; i < 2; i++ {
+				if n, err := resp.Body.Read(p); n != 0 || err != io.EOF {
+					t.Errorf("read after EOF = (%d, %v), want (0, EOF)", n, err)
+				}
+			}
+			body := resp.Body.(*progressBody)
+			if cause := context.Cause(body.ctx); cause != nil {
+				t.Errorf("clean EOF canceled upstream context: %v", cause)
+			}
+			body.watch.mu.Lock()
+			stopped := body.watch.stopped
+			body.watch.mu.Unlock()
+			if !stopped {
+				t.Error("EOF left idle timer running")
+			}
+			_ = resp.Body.Close()
+			if n, err := resp.Body.Read(p); n != 0 || err != io.EOF {
+				t.Errorf("read after EOF and close = (%d, %v), want (0, EOF)", n, err)
+			}
+		})
+	}
+}
+
 type tickingBody struct {
 	ctx       context.Context
 	ticker    *time.Ticker
@@ -134,6 +185,48 @@ func TestFusionTimeoutCancellationAndClose(t *testing.T) {
 			body.watch.mu.Unlock()
 			if !stopped {
 				t.Fatal("idle timer not stopped")
+			}
+		})
+	}
+}
+
+// A zero-timeout client models NEAR's pinned connection. No sockets are used.
+func TestDirectStreamIdleDeadline(t *testing.T) {
+	t.Setenv("QUILL_STREAM_IDLE_TIMEOUT_MS", "100")
+	for _, progress := range []bool{false, true} {
+		t.Run(map[bool]string{false: "silent_200", true: "stalls_after_progress"}[progress], func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				pr, pw := io.Pipe()
+				go func() {
+					stop := context.AfterFunc(r.Context(), func() { _ = pw.CloseWithError(r.Context().Err()) })
+					defer stop()
+					defer pw.Close()
+					if progress {
+						for i := 0; i < 12; i++ {
+							if _, err := pw.Write([]byte(": thinking\n\n")); err != nil {
+								return
+							}
+							time.Sleep(20 * time.Millisecond)
+						}
+					}
+					<-r.Context().Done()
+				}()
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: pr}, nil
+			})}
+			req, _ := http.NewRequestWithContext(ctx, "POST", "https://provider.invalid/chat", nil)
+			resp, err := Do(client, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			got, err := io.ReadAll(resp.Body)
+			if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "idle timeout") {
+				t.Fatalf("silent accepted stream not bounded by idle deadline: %v", err)
+			}
+			if progress && len(got) != 12*len(": thinking\n\n") {
+				t.Fatalf("raw keepalives failed to reset idle deadline: %q", got)
 			}
 		})
 	}

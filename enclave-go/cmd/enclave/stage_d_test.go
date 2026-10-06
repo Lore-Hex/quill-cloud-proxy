@@ -24,6 +24,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/receipt"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 const stageDTerminalGoldenCreated = "1767225600"
@@ -531,6 +532,7 @@ func TestServeStreamingStageDPreHeaderRejectionHasNoSuccessOrProviderBytes(t *te
 	t.Setenv("QUILL_USAGE_HEARTBEAT", "on")
 	t.Setenv("QUILL_TERMINATE_AT_CAP", "off")
 	provider := &scriptedProviderStreamClient{invoke: func(_ llm.InvokeOptions, out io.Writer) error {
+		upstreamerror.Open(out)
 		_, err := io.WriteString(out, providerStreamTestResponse)
 		return err
 	}}
@@ -542,10 +544,7 @@ func TestServeStreamingStageDPreHeaderRejectionHasNoSuccessOrProviderBytes(t *te
 		&types.OpenAIChatRequest{Model: "model", Stream: true}, &types.AnthropicMessagesRequest{},
 		[]llm.InvokeOptions{{Model: "model", EndpointID: "anthropic/test"}}, gateway, stageDStreamingAuthorization(), nil,
 		time.Now(), nil, "chat.completions", "stage-d-reject", "model")
-	body := out.String()
-	if strings.Contains(body, "HTTP/1.1 200") || strings.Contains(body, `"content":"ok"`) || !strings.Contains(body, "503") {
-		t.Fatalf("preheader rejection body=%s", body)
-	}
+	assertJSONFailure(t, out.String(), 503, map[string]any{"error": map[string]any{"message": "usage heartbeat unavailable", "type": "server_error", "code": "heartbeat_unavailable", "param": nil, "source": "router"}})
 }
 
 func TestServeStreamingStageDSettlesBeforeTerminalForEveryDisposition(t *testing.T) {

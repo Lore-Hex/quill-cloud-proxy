@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 type upstreamHTTPError struct {
@@ -21,6 +23,8 @@ func (e *upstreamHTTPError) Error() string {
 	return fmt.Sprintf("llm/upstream: http %d: %s", e.status, e.body)
 }
 
+func (e *upstreamHTTPError) UpstreamResponse() (int, string) { return e.status, e.body }
+
 // HTTPStatusFromError returns the upstream HTTP status code carried by err when
 // it originated as a non-2xx upstream response, and ok=false otherwise (e.g.
 // transport, timeout, or cancellation errors that never reached an HTTP
@@ -31,9 +35,10 @@ func HTTPStatusFromError(err error) (status int, ok bool) {
 	if errors.As(err, &inputLimit) {
 		return 400, true
 	}
-	var httpErr *upstreamHTTPError
+	var httpErr interface{ UpstreamResponse() (int, string) }
 	if errors.As(err, &httpErr) {
-		return httpErr.status, true
+		status, _ := httpErr.UpstreamResponse()
+		return status, true
 	}
 	return 0, false
 }
@@ -57,9 +62,14 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	sawDone, sawFinish := false, false
 	var citations []string
 	var searchResults []qtypes.ProviderSearchResult
+	var decision map[string]any
+	var errorTail string
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
+			if line == "" { // Only a blank line ends the SSE event.
+				errorTail = ""
+			}
 			continue
 		}
 		payload := line[len("data: "):]
@@ -69,12 +79,15 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 		}
 
 		var chunk struct {
+			Error         *json.RawMessage              `json:"error"`
 			ServiceTier   string                        `json:"service_tier"`
 			Citations     []string                      `json:"citations"`
 			SearchResults []qtypes.ProviderSearchResult `json:"search_results"`
+			Decision      json.RawMessage               `json:"decision"`
 			Choices       []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Error   *json.RawMessage `json:"error"`
+					Content string           `json:"content"`
 					// Several Chinese OpenAI-compatible providers (Z.AI/Zhipu,
 					// Moonshot in some configs) emit chain-of-thought tokens
 					// in `reasoning_content` and only fill `content` for the
@@ -102,17 +115,43 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			// the last content chunk; both shapes land here.
 			Usage *openAIStreamUsage `json:"usage"`
 		}
+		if err := upstreamerror.CheckLine(payload, &errorTail); err != nil {
+			if provider == "tencent" {
+				return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub stream failed"}
+			}
+			return err
+		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			if provider == "privatemode" {
 				return fmt.Errorf("llm/privatemode: malformed encrypted response chunk")
 			}
+			if provider == "tencent" {
+				return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub returned a malformed stream chunk"}
+			}
 			continue
+		}
+		if provider == "tencent" {
+			// TokenHub reports post-200 failures inside SSE before [DONE]. Do
+			// not convert them to a successful stop or expose upstream text.
+			hasError := chunk.Error != nil
+			for _, choice := range chunk.Choices {
+				hasError = hasError || choice.Delta.Error != nil
+			}
+			if hasError {
+				return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub stream failed"}
+			}
 		}
 		if chunk.ServiceTier != "" {
 			serviceTier = chunk.ServiceTier
 		}
 		citations = mergeProviderCitations(citations, chunk.Citations)
 		searchResults = mergeProviderSearchResults(searchResults, chunk.SearchResults)
+		if provider == "neurometric" && len(chunk.Decision) > 0 && len(chunk.Decision) <= 64*1024 {
+			var value map[string]any
+			if json.Unmarshal(chunk.Decision, &value) == nil && value != nil {
+				decision = value
+			}
+		}
 		if chunk.Usage != nil {
 			usage = chunk.Usage
 			// Regolo's SSE totals exclude separately reported reasoning, unlike
@@ -190,13 +229,16 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	if provider == "privatemode" && (!sawDone || !sawFinish || usage == nil || usage.PromptTokens <= 0 || usage.CompletionTokens < 0) {
 		return fmt.Errorf("llm/privatemode: incomplete encrypted stream or missing billable usage")
 	}
+	if provider == "tencent" && (!sawDone || !sawFinish || usage == nil || usage.PromptTokens <= 0 || usage.CompletionTokens < 0) {
+		return &upstreamHTTPError{status: http.StatusBadGateway, body: "Tencent TokenHub stream is incomplete or missing billable usage"}
+	}
 
 	for _, index := range toolOrder {
 		if err := writeAnthropicToolStop(w, index); err != nil {
 			return err
 		}
 	}
-	return writeAnthropicStop(w, stopReason, usage, citations, searchResults)
+	return writeAnthropicStop(w, stopReason, usage, citations, searchResults, decision)
 }
 
 type openAIToolCallAccumulator struct {
@@ -403,6 +445,7 @@ func writeAnthropicStop(
 	usage *openAIStreamUsage,
 	citations []string,
 	searchResults []qtypes.ProviderSearchResult,
+	decision map[string]any,
 ) error {
 	mDelta := map[string]any{
 		"type":  "message_delta",
@@ -413,6 +456,9 @@ func writeAnthropicStop(
 	}
 	if len(searchResults) > 0 {
 		mDelta["trustedrouter_search_results"] = searchResults
+	}
+	if decision != nil {
+		mDelta["trustedrouter_decision"] = decision
 	}
 	if usage != nil {
 		// Relay the upstream-reported usage on the synthetic message_delta.

@@ -141,8 +141,10 @@ func settlePartnerTopLevel(
 	if strings.TrimSpace(final.Result.Text) != "" {
 		output = final.Result.Text
 	}
+	settleCtx, cancelSettle := finalizeContext(ctx)
+	defer cancelSettle()
 	result, err := settleAndBroadcast(
-		ctx,
+		settleCtx,
 		trGateway,
 		auth,
 		secretCache,

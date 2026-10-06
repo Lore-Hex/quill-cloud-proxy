@@ -69,6 +69,28 @@ func TestPrivatemodeProbeBoundsMemory(t *testing.T) {
 	}
 }
 
+func TestPrivatemodeManifestDriftIsNotReportedAsBadCredentials(t *testing.T) {
+	t.Cleanup(func() { ConfigurePrivatemode(nil) })
+	for _, tc := range []struct{ message, want string }{
+		{"trying API key: setting secrets: updating mesh CA: active manifest does not match expected manifest", "attestation_manifest_mismatch"},
+		{"trying API key: updating mesh CA: validating attestation: synthetic-secret", "attestation_verification"},
+		{"invalid API key: synthetic-secret", "http"},
+	} {
+		ConfigurePrivatemode(&http.Client{Transport: byokRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			body, _ := json.Marshal(map[string]any{"error": map[string]string{"message": tc.message}})
+			return &http.Response{StatusCode: 401, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+		})})
+		got := probePrivatemodeModel(t.Context(), "synthetic-key", "glm-5.3")
+		if got.Success || got.Reason != tc.want || got.HTTPStatus != 401 {
+			t.Fatalf("incorrect safe failure classification: %+v", got)
+		}
+		encoded, _ := json.Marshal(got)
+		if strings.Contains(string(encoded), "synthetic") {
+			t.Fatal("probe leaked content")
+		}
+	}
+}
+
 func TestPrivatemodeProbeFailureCategories(t *testing.T) {
 	t.Cleanup(func() { ConfigurePrivatemode(nil) })
 	ConfigurePrivatemode(nil)

@@ -55,6 +55,9 @@ func (c *Client) PrepareSpendLeaseAdmission(
 	routeType string,
 	now time.Time,
 ) (*SpendLeaseAdmissionPlan, error) {
+	if c != nil && c.shadow != nil {
+		return nil, nil
+	}
 	// Confidential requests require the synchronous endpoint privacy filter,
 	// even if a future local routing snapshot supports more provider options.
 	if ConfidentialOnly(ctx) {

@@ -28,7 +28,7 @@ func TestLiveChutesE2EEAttestedPong(t *testing.T) {
 	if model == "" {
 		model = "moonshotai/Kimi-K2.6-TEE"
 	}
-	maxTokens := 8
+	maxTokens := 64
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -36,7 +36,7 @@ func TestLiveChutesE2EEAttestedPong(t *testing.T) {
 	var output bytes.Buffer
 	err := client.InvokeStreaming(
 		ctx,
-		&qtypes.OpenAIChatRequest{Model: model, MaxTokens: &maxTokens},
+		&qtypes.OpenAIChatRequest{Model: model, MaxTokens: &maxTokens, Reasoning: map[string]any{"enabled": false}},
 		&qtypes.AnthropicMessagesRequest{
 			Messages:  []qtypes.AnthropicMessage{{Role: "user", Content: "Reply with exactly PONG."}},
 			MaxTokens: maxTokens,

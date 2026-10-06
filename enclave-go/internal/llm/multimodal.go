@@ -72,6 +72,11 @@ func anthropicMessagesWithFetchedImages(
 	if body == nil {
 		return nil, nil
 	}
+	// Native Claude history (including reasoning and hosted tools) is already
+	// in the upstream format on direct, Vertex, and Bedrock routes.
+	if body.NativeContent {
+		return body.Messages, nil
+	}
 	messages := make([]qtypes.AnthropicMessage, 0, len(body.Messages))
 	for _, message := range body.Messages {
 		content, err := anthropicContentWithFetchedImages(ctx, message.Content)
@@ -132,7 +137,7 @@ func anthropicPartsWithFetchedImages(
 			withCacheControl(block, part.CacheControl)
 			out = append(out, block)
 		default:
-			return nil, fmt.Errorf("llm/image: unsupported content part %q", part.Type)
+			return nil, &contentInputError{kind: part.Type}
 		}
 	}
 	return out, nil
@@ -153,7 +158,7 @@ func withCacheControl(block map[string]any, cacheControl any) {
 func chatPartFromAny(item any) (qtypes.ChatContentPart, error) {
 	m, ok := item.(map[string]any)
 	if !ok {
-		return qtypes.ChatContentPart{}, fmt.Errorf("llm/image: content part must be object")
+		return qtypes.ChatContentPart{}, &contentInputError{message: "content block must be an object"}
 	}
 	partType := stringValue(m["type"])
 	// cache_control rides along on the part it annotates so the anthropic
@@ -176,7 +181,7 @@ func chatPartFromAny(item any) (qtypes.ChatContentPart, error) {
 			CacheControl: cacheControl,
 		}, nil
 	default:
-		return qtypes.ChatContentPart{}, fmt.Errorf("llm/image: unsupported content part %q", partType)
+		return qtypes.ChatContentPart{}, &contentInputError{kind: partType}
 	}
 }
 

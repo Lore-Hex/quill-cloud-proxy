@@ -22,7 +22,10 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/adapter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/attestation"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/enclavetls"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 var getAttestation = attestation.Get
@@ -46,12 +49,11 @@ var errMalformedRequestLine = errors.New("malformed request line")
 
 var inferenceReceiptNoncePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,88}$`)
 
-var (
-	upstreamAPIKeyPattern = regexp.MustCompile(`(?i)\b(sk|rk)-[A-Za-z0-9_\-*]{4,}`)
-	upstreamBearerPattern = regexp.MustCompile(`(?i)bearer\s+\S+`)
-)
-
 type responseStatsConn struct {
+	shadow        *shadowobserve.Execution
+	shadowContent *shadowobserve.ContentStream
+	// Set only for a synchronous inference request; the callback enforces bypass.
+	billingDenial func(error)
 	net.Conn
 	writeMu       sync.Mutex
 	mu            sync.Mutex
@@ -100,6 +102,9 @@ func (c *responseStatsConn) Write(p []byte) (int, error) {
 		c.status = parseHTTPStatus(p)
 	}
 	c.responseBytes += n
+	if c.shadow != nil && c.shadowContent.Feed(wireBytes[:n]) {
+		c.shadow.Content(true)
+	}
 	if err != nil {
 		c.keepAlive = false
 		c.reusable = false
@@ -139,6 +144,9 @@ func (c *responseStatsConn) ResetSnapshot() {
 func (c *responseStatsConn) BeginRequest(requestID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.billingDenial = nil
+	c.shadow = nil
+	c.shadowContent = nil
 	c.status = 0
 	c.responseBytes = 0
 	c.requestID = requestID
@@ -271,6 +279,7 @@ func maxDurationSeconds(duration time.Duration, floor float64) float64 {
 }
 
 type requestAttributionHeaders struct {
+	IdempotencyPresent bool
 	Host               string
 	SessionID          string
 	HTTPReferer        string
@@ -293,6 +302,14 @@ func readRequest(br *bufio.Reader) (method, path, bearer, idempotencyKey string,
 func readRequestWithHeadersRead(
 	br *bufio.Reader,
 	headersRead func(),
+) (method, path, bearer, idempotencyKey string, attribution requestAttributionHeaders, body []byte, err error) {
+	return readRequestWithTiming(br, headersRead, nil)
+}
+
+func readRequestWithTiming(
+	br *bufio.Reader,
+	headersRead func(),
+	phases *requesttiming.Timer,
 ) (method, path, bearer, idempotencyKey string, attribution requestAttributionHeaders, body []byte, err error) {
 	statusLineBytes, err := readBoundedHTTPLine(br)
 	if err != nil {
@@ -361,6 +378,7 @@ func readRequestWithHeadersRead(
 				bearer = strings.TrimSpace(v)
 			}
 		case "idempotency-key":
+			attribution.IdempotencyPresent = true
 			idempotencyKey = strings.TrimSpace(v)
 		case "x-session-id":
 			attribution.SessionID = v
@@ -464,6 +482,7 @@ func readRequestWithHeadersRead(
 		)
 		defer requestBody.Close()
 		body, err = io.ReadAll(requestBody)
+		phases.MarkBodyRead(phases.Now())
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			return "", "", "", "", attribution, nil, errBodyTooLarge
@@ -474,6 +493,9 @@ func readRequestWithHeadersRead(
 		if len(body) != contentLength {
 			return "", "", "", "", attribution, nil, io.ErrUnexpectedEOF
 		}
+	}
+	if contentLength == 0 {
+		phases.MarkBodyRead(phases.Now())
 	}
 	return method, path, bearer, idempotencyKey, attribution, body, nil
 }
@@ -809,6 +831,7 @@ func idempotencyReplayError(err error) (*trustedrouter.ControlPlaneError, bool) 
 }
 
 func writeGatewayAuthorizationError(w io.Writer, err error) {
+	observeBillingAuthorizationError(w, err, messageFromControlPlaneError(err, "gateway authorization failed"))
 	if controlErr, ok := idempotencyReplayError(err); ok {
 		writeOpenAIError(
 			w, http.StatusConflict, controlErr.Message,
@@ -826,6 +849,7 @@ func writeGatewayAuthorizationError(w io.Writer, err error) {
 }
 
 func writeAnthropicGatewayAuthorizationError(w io.Writer, err error) {
+	observeBillingAuthorizationError(w, err, messageFromControlPlaneError(err, "gateway authorization failed"))
 	if controlErr, ok := idempotencyReplayError(err); ok {
 		body, _ := json.Marshal(map[string]any{
 			"type": "error",
@@ -1048,16 +1072,9 @@ func newMessageID() string {
 	return "msg_" + hex.EncodeToString(buf[:])
 }
 
-// upstreamErrorResponse maps a provider/upstream error to the status + message
-// to return to the client. Provider clients wrap upstream HTTP failures as
-// "...http <status>: <body>" (see internal/llm/*.go); when we recognize that
-// shape we surface the upstream status and scrubbed, truncated body so callers
-// get the real reason — e.g. an Anthropic 400 validation error — instead of an
-// opaque "provider error". Anything we can't classify stays a generic 502.
+// upstreamErrorResponse retains the local input-error classification before
+// parsing provider failures shared by JSON and streaming responses.
 func upstreamErrorResponse(err error) (int, string) {
-	if err == nil {
-		return 502, "provider error"
-	}
 	var aerr *adapter.AdapterError
 	if asAdapterErr(err, &aerr) {
 		return aerr.Status, aerr.Message
@@ -1065,24 +1082,46 @@ func upstreamErrorResponse(err error) (int, string) {
 	if message, ok := clientInputErrorMessage(err); ok {
 		return 400, message
 	}
-	s := err.Error()
-	if i := strings.LastIndex(s, "http "); i >= 0 {
-		rest := s[i+len("http "):]
-		if c := strings.IndexByte(rest, ':'); c > 0 {
-			if code, e := strconv.Atoi(strings.TrimSpace(rest[:c])); e == nil && code >= 400 && code < 600 {
-				body := strings.TrimSpace(rest[c+1:])
-				body = upstreamAPIKeyPattern.ReplaceAllString(body, "sk-***")
-				body = upstreamBearerPattern.ReplaceAllString(body, "Bearer ***")
-				if len(body) > 1200 {
-					body = body[:1200]
-				}
-				if body != "" {
-					return code, fmt.Sprintf("upstream http %d: %s", code, body)
-				}
-			}
+	d := upstreamerror.Parse(err)
+	return d.Status, d.Message
+}
+
+func providerErrorBody(err error, authorization *trustedrouter.Authorization) (int, map[string]any) {
+	d := upstreamerror.Parse(err)
+	d.Status, d.Message = upstreamErrorResponse(err)
+	source := "provider"
+	if isClientInputError(err) {
+		source, d.Type = "router", "invalid_request_error"
+	}
+	hidden := hidesPublicRouteMetadata(authorization) && !isClientInputError(err)
+	if hidden {
+		d.Message, d.Type, d.Code, d.Param = "upstream provider error", "provider_error", nil, nil
+	}
+	body := map[string]any{"message": d.Message, "type": d.Type, "code": d.Code, "param": d.Param, "source": source, "status": d.Status}
+	if !hidden && d.Raw != "" {
+		provider := ""
+		if option, ok := invokeAttemptOption(err); ok {
+			provider = option.Provider
+		}
+		if provider == "" && authorization != nil {
+			provider = authorization.Provider
+		}
+		body["metadata"] = map[string]any{"provider_name": provider, "raw": d.Raw}
+	}
+	return d.Status, body
+}
+
+func writeUpstreamError(w io.Writer, route string, err error, authorization *trustedrouter.Authorization) {
+	status, detail := providerErrorBody(err, authorization)
+	body := map[string]any{"error": detail}
+	if route == "messages" {
+		body["type"] = "error"
+		if detail["type"] == "provider_error" {
+			detail["type"] = anthropicErrorType(status)
 		}
 	}
-	return 502, "provider error"
+	encoded, _ := json.Marshal(body)
+	writeJSONResponse(w, status, encoded)
 }
 
 func publicProviderErrorMessage(

@@ -6,10 +6,69 @@ import (
 	"testing"
 )
 
+func TestRejectedParameterPathsRetainedWithoutValues(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"future_option", "future_option"},
+		{"usage.future_option", "usage.future_option"},
+		{"input[12].future_option", "input[12].future_option"},
+		{"plugins.web-fetch", "plugins.web-fetch"},
+		{"store=true", "store"},
+		{"alice@example.com", ""}, {"sk-tr-v1-secret", ""},
+		{"private customer text", ""}, {"sk_private_secret", ""},
+		{strings.Repeat("a", 100), strings.Repeat("a", 100)},
+		{"usage." + strings.Repeat("a", 94), "usage." + strings.Repeat("a", 94)},
+		{strings.Repeat("a", 101), ""},
+		{"usage." + strings.Repeat("a", 95), ""},
+		{strings.Repeat("a", 128), ""},
+		{strings.Repeat("a", 129), ""}, {"x\nsecret", ""},
+		{strings.Repeat("private_prompt_", 100), ""},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			ctx := WithRequestLogID(t.Context(), "rlog_"+strings.Repeat("a", 32))
+			ctx = WithContractRejection(ctx, 400, tc.input, "", false)
+			body := map[string]any{}
+			addContractRejection(ctx, body, "/v1/chat/completions")
+			encoded, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]map[string]any
+			if err := json.Unmarshal(encoded, &payload); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := payload["contract_rejection"]["parameter_path"].(string)
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			if len(got) > 100 || payload["contract_rejection"]["request_id"] != "rlog_"+strings.Repeat("a", 32) || payload["contract_rejection"]["status"] != float64(400) {
+				t.Fatalf("lost safe context or exceeded path limit: %s", encoded)
+			}
+		})
+	}
+}
+
 func TestContractRejectionSanitizesAtEnclaveBoundary(t *testing.T) {
 	for _, tc := range []struct{ input, want string }{
 		{"store", "store"},
 		{"store=true", "store"},
+		{"plugins", "plugins"},
+		{"truncation", "truncation"},
+		{"prompt_cache_key", "prompt_cache_key"},
+		{"prompt_cache_options", "prompt_cache_options"},
+		{"usage.include", "usage.include"},
+		{"stream_options.include_usage", "stream_options.include_usage"},
+		{"provider.quantizations", "provider.quantizations"},
+		{"provider.max_price.image", "provider.max_price.image"},
+		{"plugins.web-fetch", "plugins.web-fetch"},
+		{"plugins.private-customer-value", "plugins"},
+		{"usage.include=private-customer-value", "usage"},
+		{"usage.include.private-customer-value", "usage"},
+		{"truncation=auto", "truncation"},
+		{"service_tier", "service_tier"},
+		{"top_logprobs", "top_logprobs"},
+		{"file", "file"},
+		{"input_image.file_id", "input_image"},
+		{"content", "content"},
 		{"tools.private-customer-value", "tools"},
 		{"input[123].private-customer-value", "input"},
 		{"private-customer-value", "other"},
@@ -19,7 +78,7 @@ func TestContractRejectionSanitizesAtEnclaveBoundary(t *testing.T) {
 	} {
 		t.Run(tc.input, func(t *testing.T) {
 			ctx := WithRequestLogID(t.Context(), "rlog_"+strings.Repeat("a", 32))
-			ctx = WithContractRejection(ctx, 400, tc.input)
+			ctx = WithContractRejection(ctx, 400, tc.input, "", false)
 			body := map[string]any{}
 			addContractRejection(ctx, body, "/v1/chat/completions")
 			got, ok := body["contract_rejection"].(contractRejection)
@@ -52,7 +111,7 @@ func TestContractRejectionRequiresTrustedRouteStatusAndRequestID(t *testing.T) {
 		{"rlog_" + strings.Repeat("a", 32), "/v1/chat/completions", 200, false},
 	} {
 		ctx := WithRequestLogID(t.Context(), tc.id)
-		ctx = WithContractRejection(ctx, tc.status, "store")
+		ctx = WithContractRejection(ctx, tc.status, "store", "", false)
 		body := map[string]any{}
 		addContractRejection(ctx, body, tc.route)
 		if _, exists := body["contract_rejection"]; exists != tc.report {

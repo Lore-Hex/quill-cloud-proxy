@@ -11,6 +11,7 @@ import (
 // exact request shape. It is not serialized to an upstream model provider.
 type ChatRequestValidation struct {
 	RequestedParameters []string
+	IncludeUsage        bool
 }
 
 var chatRequestFields = map[string]struct{}{
@@ -19,14 +20,14 @@ var chatRequestFields = map[string]struct{}{
 	"logit_bias": {}, "logprobs": {}, "max_completion_tokens": {}, "max_tokens": {},
 	"max_tool_calls": {}, "messages": {}, "metadata": {}, "min_p": {}, "modalities": {}, "model": {},
 	"models": {}, "parallel_tool_calls": {}, "plugins": {}, "prediction": {},
-	"presence_penalty": {}, "prompt_cache_key": {}, "prompt_cache_options": {},
+	"presence_penalty": {}, "prompt_cache_key": {}, "prompt_cache_options": {}, "prompt_cache_retention": {},
 	"provider": {}, "reasoning": {}, "reasoning_effort": {}, "repetition_penalty": {},
 	"response_format": {}, "route": {}, "seed": {}, "service_tier": {}, "session_id": {},
 	"stop": {}, "stop_server_tools_when": {}, "stream": {}, "stream_options": {},
 	"temperature": {}, "tool_choice": {}, "tools": {}, "top_a": {}, "top_k": {},
 	"top_logprobs": {}, "top_p": {}, "trace": {}, "user": {}, "web_search_options": {},
 	// TrustedRouter compatibility/extensions already supported by the gateway.
-	"allow_fallbacks": {}, "depth": {}, "max_output_tokens": {}, "n": {}, "store": {}, "tags": {},
+	"allow_fallbacks": {}, "depth": {}, "max_output_tokens": {}, "n": {}, "store": {}, "tags": {}, "usage": {},
 }
 
 var unsupportedChatFields = map[string]struct{}{
@@ -92,6 +93,9 @@ var endpointCapabilityFields = map[string]string{
 // explicit. Unknown fields are 400s; known fields that this release cannot
 // honor are stable 501s. Nothing accepted here may silently disappear.
 func ValidateChatRequestFields(raw map[string]json.RawMessage) (ChatRequestValidation, error) {
+	if err := rejectPromptCacheRetention(raw["prompt_cache_retention"]); err != nil {
+		return ChatRequestValidation{}, err
+	}
 	requested := make(map[string]struct{})
 	for key, value := range raw {
 		if _, ok := chatRequestFields[key]; !ok {
@@ -118,6 +122,10 @@ func ValidateChatRequestFields(raw map[string]json.RawMessage) (ChatRequestValid
 			return ChatRequestValidation{}, unsupportedRequestParameter("store")
 		}
 	}
+	includeUsage, err := validateLegacyUsage(raw["usage"])
+	if err != nil {
+		return ChatRequestValidation{}, err
+	}
 	if value, ok := raw["modalities"]; ok {
 		if err := validateTextModalities(value); err != nil {
 			return ChatRequestValidation{}, err
@@ -143,7 +151,7 @@ func ValidateChatRequestFields(raw map[string]json.RawMessage) (ChatRequestValid
 		parameters = append(parameters, parameter)
 	}
 	sort.Strings(parameters)
-	return ChatRequestValidation{RequestedParameters: parameters}, nil
+	return ChatRequestValidation{RequestedParameters: parameters, IncludeUsage: includeUsage}, nil
 }
 
 func validateChatStreamOptions(value json.RawMessage) error {

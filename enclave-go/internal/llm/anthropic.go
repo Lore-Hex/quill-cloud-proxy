@@ -43,6 +43,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 const (
@@ -166,7 +167,7 @@ func (c *anthropicClient) InvokeStreaming(
 		return fmt.Errorf("llm/%s: invoke: %w", c.provider, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
 			return fmt.Errorf("llm/%s: read error body: %w", c.provider, readErr)
@@ -176,8 +177,8 @@ func (c *anthropicClient) InvokeStreaming(
 
 	// Response is native Anthropic SSE bytes. Pump them through to the
 	// adapter — no re-emission needed.
-	_, err = io.Copy(out, resp.Body)
-	return err
+	upstreamerror.Open(out)
+	return relayAnthropicStream(resp.Body, out)
 }
 
 func mapModelID(quillModel string) string {

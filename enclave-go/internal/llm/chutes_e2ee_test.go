@@ -68,6 +68,48 @@ func decryptChutesTestRequest(t *testing.T, blob []byte, instanceSK *mlkem.Decap
 	return payload
 }
 
+func TestChutesPreservesVerificationFailureWhenDiscoveryExhausts(t *testing.T) {
+	const chuteID = "7725a31d-28df-5bb7-9d29-c23b49df5472"
+	instanceSK, err := mlkem.GenerateKey768()
+	if err != nil {
+		t.Fatal(err)
+	}
+	verificationErr := errors.New("chutes: TDX measurements not in pinned allowlist")
+	var invokes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/e2e/instances/" + chuteID:
+			_ = json.NewEncoder(w).Encode(chutesDiscoveryResponse{
+				NonceExpiresIn: 60,
+				Instances:      []chutesInstance{{InstanceID: "untrusted-instance", E2EPubkey: base64.StdEncoding.EncodeToString(instanceSK.EncapsulationKey().Bytes()), Nonces: []string{"fresh-nonce"}}},
+			})
+		case "/instances/untrusted-instance/evidence":
+			_, _ = io.WriteString(w, `{}`)
+		case "/e2e/invoke":
+			invokes.Add(1)
+			http.Error(w, "must not invoke", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := newChutesE2EE("operator-key")
+	client.apiBase = server.URL
+	client.httpc = server.Client()
+	client.verifyEvidence = func(context.Context, *chutesEvidenceEnvelope) (*chutesVerificationResult, error) {
+		return nil, verificationErr
+	}
+	var out bytes.Buffer
+	err = client.InvokeStreaming(t.Context(), &qtypes.OpenAIChatRequest{Model: chuteID},
+		&qtypes.AnthropicMessagesRequest{Messages: []qtypes.AnthropicMessage{{Role: "user", Content: "private prompt"}}}, &out)
+	if !errors.Is(err, verificationErr) {
+		t.Fatalf("error = %v, want original verification failure", err)
+	}
+	if invokes.Load() != 0 || out.Len() != 0 {
+		t.Fatal("unverified instance must never receive ciphertext or produce output")
+	}
+}
+
 func chutesTestEncryptedStream(t *testing.T, responsePK string, plaintextEvents ...string) string {
 	return chutesTestEncryptedStreamWithTerminal(t, responsePK, true, plaintextEvents...)
 }
@@ -206,6 +248,28 @@ func TestDecryptChutesStreamRejectsEmptyAndTamperedStreams(t *testing.T) {
 			t.Fatalf("tampered stream error = %v", err)
 		}
 	})
+}
+
+// Main accepts only data: and event: fields, blank lines and comments.
+func TestDecryptChutesStreamRejectsUnexpectedFields(t *testing.T) {
+	responseSK, err := mlkem.GenerateKey768()
+	if err != nil {
+		t.Fatal(err)
+	}
+	responsePK := base64.StdEncoding.EncodeToString(responseSK.EncapsulationKey().Bytes())
+	stream := chutesTestEncryptedStream(t, responsePK, `data: {"choices":[{"delta":{"content":"PONG"}}]}`)
+	if err := decryptChutesStream(strings.NewReader(stream), io.Discard, responseSK); err != nil {
+		t.Fatalf("unmodified stream failed: %v", err)
+	}
+	for _, field := range []string{"id: 7\n", "retry: 10\n", "data\n", "event\n"} {
+		t.Run(strings.TrimSpace(field), func(t *testing.T) {
+			injected := field + stream
+			if err := decryptChutesStream(strings.NewReader(injected), io.Discard, responseSK); err == nil ||
+				!strings.Contains(err.Error(), "unexpected encrypted SSE field") {
+				t.Fatalf("field %q accepted: err=%v", field, err)
+			}
+		})
+	}
 }
 
 func TestDecryptChutesStreamFramesRawOpenAIJSONAndAcceptsPreframedSSE(t *testing.T) {

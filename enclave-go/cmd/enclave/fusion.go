@@ -130,12 +130,23 @@ var fusionPrometheus10Panel = []string{
 	deepSeekV4Pro0423Model,
 }
 
+// Prometheus 1.0 1M is the one exception to the freeze above: every stage
+// serves a 1M window (Joseph, 2026-10-01). A panel member whose window falls
+// below 1M is removed, as the control plane's SYNTH_QUALITY_1M_MODEL_ORDER
+// removes it. Its judges and finals are 1M models too: Prometheus 1.0's, with
+// Kimi K3 in place of Kimi K2.7 Code (262,144), because the judge and the
+// final stage both read the whole request. MiniMax M3 serves 1,000,000 by
+// MiniMax's own model feed.
 var fusionQuality1MPanel = []string{
 	"minimax/minimax-m3",
 	"xiaomi/mimo-v2.5-pro",
 	"z-ai/glm-5.2",
 	deepSeekV4Pro0423Model,
 }
+
+var fusionQuality1MJudgeModels = []string{fusionKimiK3, "minimax/minimax-m3"}
+
+var fusionQuality1MFinalModels = []string{"z-ai/glm-5.2", "minimax/minimax-m3"}
 
 var fusionPrometheus20Panel = []string{
 	"minimax/minimax-m3",
@@ -417,9 +428,10 @@ func fusionPresetFinalModelsForModel(model string) ([]string, bool) {
 	case trustedRouterPrometheus20Model:
 		return []string{fusionKimiK3, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
 	case trustedRouterPrometheus10Model,
-		trustedRouterPrometheus101MModel,
 		trustedRouterPrometheusCode10Model:
 		return []string{"z-ai/glm-5.2", "minimax/minimax-m3"}, true
+	case trustedRouterPrometheus101MModel:
+		return append([]string(nil), fusionQuality1MFinalModels...), true
 	case trustedRouterIrisModel,
 		trustedRouterIris30Model:
 		return []string{deepSeekV4Pro0813Model, "z-ai/glm-5.2", "minimax/minimax-m3"}, true
@@ -457,9 +469,10 @@ func fusionPresetJudgeModelsForModel(model string) ([]string, bool) {
 	case trustedRouterPrometheus20Model:
 		return []string{"minimax/minimax-m3", fusionKimiK3}, true
 	case trustedRouterPrometheus10Model,
-		trustedRouterPrometheus101MModel,
 		trustedRouterPrometheusCode10Model:
 		return []string{fusionCodeKimi, "minimax/minimax-m3"}, true
+	case trustedRouterPrometheus101MModel:
+		return append([]string(nil), fusionQuality1MJudgeModels...), true
 	case trustedRouterIrisModel,
 		trustedRouterIris30Model:
 		return []string{deepSeekV4Pro0813Model, fusionKimiK3, "minimax/minimax-m3"}, true
@@ -1609,7 +1622,7 @@ func runFusionPanelObserved(
 				errs[i] = err
 				fmt.Fprintf(os.Stderr,
 					"enclave.fusion_panel_failed request_log_id=%q request_id=%q model=%q error=%q\n",
-					requestLogID, requestID, model, err.Error(),
+					requestLogID, requestID, model, errorClass(err),
 				)
 				panel[i] = fusionCallResult{
 					Result: adapter.StreamResult{
@@ -1717,7 +1730,7 @@ func runFusionJudgeObserved(
 			lastErr = err
 			fmt.Fprintf(os.Stderr,
 				"enclave.fusion_judge_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
-				requestLogID, requestID, judgeModel, i+1, err.Error(),
+				requestLogID, requestID, judgeModel, i+1, errorClass(err),
 			)
 			if streamW != nil {
 				_ = writeFusionStreamEvent(streamW, requestID, req.Model, streamCreated, map[string]any{
@@ -1807,7 +1820,7 @@ func runFusionFinal(
 			lastErr = err
 			fmt.Fprintf(os.Stderr,
 				"enclave.fusion_final_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
-				requestLogID, requestID, finalModel, i+1, err.Error(),
+				requestLogID, requestID, finalModel, i+1, errorClass(err),
 			)
 			if !fusionCanTryNextModel(err) {
 				return fusionCallResult{}, attempts, err
@@ -2007,27 +2020,17 @@ func runAuthorizedFusionCallAttempt(
 		refundFusionCall(ctx, trGateway, authz, 400, "fusion_adapter_error", requestStarted, req.Metadata)
 		return fusionCallResult{}, err
 	}
-	invokeCtx := ctx
+	invokeCtx, cancelInvoke := context.WithCancel(ctx)
+	defer cancelInvoke()
 	if strings.HasPrefix(routeType, "fusion.") {
 		invokeCtx = streamhttp.WithFusionTimeout(invokeCtx)
 	}
-	cancelInvoke := func() {}
 	if invokeTimeout > 0 {
-		var cancel context.CancelFunc
-		invokeCtx, cancel = context.WithTimeout(invokeCtx, invokeTimeout)
-		cancelInvoke = cancel
+		var cancelTimeout context.CancelFunc
+		invokeCtx, cancelTimeout = context.WithTimeout(invokeCtx, invokeTimeout)
+		defer cancelTimeout()
 	}
 	overthinking := fusionOverthinkingConfig(req.Model, routeType, allowOverthinkingRescue, fusionIsSynthCodeSubrequest(req))
-	if overthinking.enabled {
-		var cancel context.CancelFunc
-		invokeCtx, cancel = context.WithCancel(invokeCtx)
-		previousCancel := cancelInvoke
-		cancelInvoke = func() {
-			cancel()
-			previousCancel()
-		}
-	}
-	defer cancelInvoke()
 	pr, pw := io.Pipe()
 	selectedRoute := newSelectedRouteTracker()
 	// Preserve actual upstream attempts even on errors, so callers can aggregate
@@ -2049,8 +2052,23 @@ func runAuthorizedFusionCallAttempt(
 		})
 		collectObserver = guard.Observe
 	}
-	go invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
-	result, err := adapter.CollectAnthropicTextWithObserver(pr, collectObserver)
+	providerDone := make(chan struct{})
+	go func() {
+		defer close(providerDone)
+		invokeProviderStream(invokeCtx, br, req, anthropicReq, pw, options, true, authz, selectedRoute, requestLogID, useLongLastCandidateBudget, false)
+	}()
+	result, err := adapter.CollectAnthropicTextRetainingUsage(pr, collectObserver)
+	// The collector can stop before the provider (including at message_stop).
+	// Release a blocked Write before canceling the remaining upstream work.
+	closeErr := err
+	if closeErr == nil {
+		closeErr = io.ErrClosedPipe
+	}
+	_ = pr.CloseWithError(closeErr)
+	cancelInvoke()
+	// Cancellation is only a signal. Join after unblocking the writer so all
+	// attempt accounting and logs finish before validation, rescue, or return.
+	<-providerDone
 	if guard != nil && guard.Tripped() {
 		refundFusionCall(ctx, trGateway, authz, 502, "fusion_overthinking_budget", requestStarted, req.Metadata)
 		if overthinking.allowRescue {
@@ -2069,30 +2087,48 @@ func runAuthorizedFusionCallAttempt(
 		}
 		return fusionCallResult{}, &fusionModelFallbackError{err: &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth model exceeded unproductive thinking budget", Context: routeType}}
 	}
-	if err != nil {
+	providerErr := err
+	// Only orchestration inner calls bill an interrupted generation's metered usage
+	// (their deadlines cancel mid-stream). Other routes on this path, e.g. native
+	// decide, deliberately refund a transport error.
+	partialBillable := strings.HasPrefix(routeType, "fusion.") || strings.HasPrefix(routeType, "advisor.")
+	// Anthropic's input_tokens excludes cached input, so cache reads/writes are
+	// metered work too.
+	meteredPartial := result.Usage != nil && (result.Usage.InputTokens > 0 || result.Usage.OutputTokens > 0 ||
+		result.Usage.CacheReadInputTokens > 0 || result.Usage.CacheCreationInputTokens > 0)
+	if providerErr != nil && (!partialBillable || !meteredPartial) {
 		refundFusionCall(ctx, trGateway, authz, 502, "provider_error", requestStarted, req.Metadata)
-		return fusionCallResult{}, fusionProviderErrorForOrchestrationFallback(err, routeType, req, authz, selectedRoute, options)
+		return fusionCallResult{}, fusionProviderErrorForOrchestrationFallback(providerErr, routeType, req, authz, selectedRoute, options)
 	}
 	rawText := result.Text
-	if strings.HasPrefix(routeType, "fusion.") {
+	if providerErr == nil && strings.HasPrefix(routeType, "fusion.") {
 		result.Text = fusionVisibleAnswer(result.Text)
 		if routeType == "fusion.final" && strings.TrimSpace(result.Text) == "" && len(result.ToolCalls) == 0 {
 			refundFusionCall(ctx, trGateway, authz, 502, "empty_output", requestStarted, req.Metadata)
 			return fusionCallResult{}, &fusionModelFallbackError{err: &adapter.AdapterError{Status: 502, Message: "trustedrouter/synth final model returned an empty visible answer", Context: "fusion.final"}}
 		}
 	}
-	if validateBeforeSettle != nil {
+	if providerErr == nil && validateBeforeSettle != nil {
 		if err := validateBeforeSettle(result); err != nil {
 			refundFusionCall(ctx, trGateway, authz, statusFromControlPlaneError(err), "fusion_validation_error", requestStarted, req.Metadata)
 			return fusionCallResult{}, err
 		}
 	}
-	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
-		result,
-		trustedrouter.EstimateInputTokens(req),
-		trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
-		selectedRoute.Model(req.Model, authz),
-	)
+	var inputTokens, outputTokens int
+	var usageEstimated bool
+	if providerErr != nil {
+		// An interrupted stream is still billable when the provider reported
+		// usage. Preserve those counts and mark the settlement as partial.
+		inputTokens, outputTokens = result.Usage.InputTokens, result.Usage.OutputTokens
+		usageEstimated = true
+	} else {
+		inputTokens, outputTokens, usageEstimated = realOrEstimatedTokens(
+			result,
+			trustedrouter.EstimateInputTokens(req),
+			trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
+			selectedRoute.Model(req.Model, authz),
+		)
+	}
 	selectedModel := selectedRoute.Model(req.Model, authz)
 	selectedEndpoint := selectedRoute.Endpoint("", authz)
 	usage := trustedrouter.Usage{
@@ -2116,11 +2152,11 @@ func runAuthorizedFusionCallAttempt(
 	applyCacheUsage(&usage, result)
 	var inputForBroadcast any
 	var outputForBroadcast string
-	if broadcastContent {
+	if providerErr == nil && broadcastContent {
 		inputForBroadcast = originalInput
 		outputForBroadcast = result.Text
 	}
-	// Generation has completed and must be billed even if the caller disconnects.
+	// Completed or partially metered work must be billed even if the caller disconnects.
 	settleCtx, cancelSettle := finalizeContext(ctx)
 	settleResult, err := settleAndBroadcast(settleCtx, trGateway, authz, secretCache, usage, req, inputForBroadcast, outputForBroadcast)
 	cancelSettle()
@@ -2132,7 +2168,13 @@ func runAuthorizedFusionCallAttempt(
 			requestLogID:  requestLogID,
 			clientContext: trustedrouter.ClientContextFromContext(ctx),
 		})
+		if providerErr != nil {
+			err = errors.Join(providerErr, err)
+		}
 		return fusionCallResult{}, &settlementAttemptedError{err}
+	}
+	if providerErr != nil {
+		return fusionCallResult{}, fusionProviderErrorForOrchestrationFallback(providerErr, routeType, req, authz, selectedRoute, options)
 	}
 	elapsedMS := time.Since(requestStarted).Milliseconds()
 	if selectedModel == "" && authz != nil {
@@ -2208,7 +2250,7 @@ func serveFusionFinalStreaming(
 			lastErr = err
 			fmt.Fprintf(os.Stderr,
 				"enclave.fusion_final_stream_failed request_log_id=%q request_id=%q model=%q attempt=%d error=%q\n",
-				requestLogID, requestID, finalModel, i+1, err.Error(),
+				requestLogID, requestID, finalModel, i+1, errorClass(err),
 			)
 			return err
 		}
@@ -2424,7 +2466,7 @@ func serveFusionFinalStreamingAttempt(
 	reader := io.MultiReader(bytes.NewReader(first[:n]), pr)
 	result, err := adapter.TransformStreamCaptureWithOptions(reader, statsW, responseID, req.Model, chatIncludeUsage(req))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, err)
+		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, errorClass(err))
 		refundFusionCallAfter(ctx, trGateway, authorization, 502, "provider_error", time.Since(requestStarted).Seconds(), req.Metadata)
 		if statsW.BytesWritten() == 0 {
 			_ = writeStreamingProviderError(statsW, "chat.completions", responseID, req.Model, err, false)
@@ -2703,6 +2745,9 @@ func authorizeFusionCall(
 	routeType string,
 	idempotencyKey string,
 ) (*trustedrouter.Authorization, []llm.InvokeOptions, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	if strings.HasPrefix(routeType, "fusion.") && routeType != "fusion.final" {
 		if req.MaxTokens == nil || *req.MaxTokens <= 0 {
 			req.MaxTokens = fusionInnerMaxTokens(0)
@@ -2740,6 +2785,11 @@ func authorizeFusionCall(
 	}
 	if err := validateLongContextComboOptions(&subReq, options); err != nil {
 		refundFusionCallAfter(ctx, trGateway, authz, 502, "combo_route_integrity_error", 0.001, req.Metadata)
+		return authz, nil, err
+	}
+	options, err = constrainDecisionOptions(&subReq, options)
+	if err != nil {
+		refundFusionCallAfter(ctx, trGateway, authz, 502, "decide_host_pin_violation", 0.001, req.Metadata)
 		return authz, nil, err
 	}
 	return authz, options, nil

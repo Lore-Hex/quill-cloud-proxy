@@ -597,9 +597,7 @@ func TestServeStreamingEmptyProviderDoesNotDeadlockBeforeHead(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("serveStreaming deadlocked before reading the provider failure")
 	}
-	if got := out.String(); !strings.Contains(got, "HTTP/1.1 200 OK") || !strings.Contains(got, "empty upstream response") {
-		t.Fatalf("failed stream = %q, want legacy SSE provider failure", got)
-	}
+	assertJSONFailure(t, out.String(), 502, map[string]any{"error": map[string]any{"message": "provider error", "type": "provider_error", "code": nil, "param": nil, "source": "provider", "status": 502}})
 }
 
 func TestInvokeProviderStreamRetryPhaseTimings(t *testing.T) {
@@ -646,8 +644,8 @@ func TestInvokeProviderStreamRetryPhaseTimings(t *testing.T) {
 		t.Fatalf("retry phases=%+v elapsed=%s", f, elapsed)
 	}
 	sum := f.AcceptToStartMS + f.AuthorizeMS + f.RouteMS + f.UpstreamMS + f.RetryWaitMS + f.SettleMS + f.ReceiptMS
-	if sum != elapsed.Milliseconds() {
-		t.Fatalf("phase sum=%d elapsed=%s", sum, elapsed)
+	if sum != f.RequestMS {
+		t.Fatalf("phase sum=%d request=%d", sum, f.RequestMS)
 	}
 	var log bytes.Buffer
 	writeRequestEndLog(&log, "retry-timing-test", "POST", "/v1/chat/completions", 200, 0, len(body), elapsed, requestAuditIdentity{}, "ok", f)

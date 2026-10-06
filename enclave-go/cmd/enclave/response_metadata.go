@@ -107,10 +107,8 @@ func annotateSettledResponseMetadata(
 		routeUsage["output_tokens"] = outputTokens
 	}
 	if settlement != nil {
-		usage["cost_microdollars"] = settlement.CostMicrodollars
-		usage["total_cost_microdollars"] = settlement.CostMicrodollars
-		routeUsage["cost_microdollars"] = settlement.CostMicrodollars
-		routeUsage["total_cost_microdollars"] = settlement.CostMicrodollars
+		annotateUsageCost(usage, settlement)
+		annotateUsageCost(routeUsage, settlement)
 		if settlement.GenerationID != "" {
 			routeUsage["generation_id"] = settlement.GenerationID
 		}
@@ -160,8 +158,7 @@ func annotateSettlementOnlyUsage(
 		usage = map[string]any{}
 		payload["usage"] = usage
 	}
-	usage["cost_microdollars"] = settlement.CostMicrodollars
-	usage["total_cost_microdollars"] = settlement.CostMicrodollars
+	annotateUsageCost(usage, settlement)
 	providerUsage, _ := usage["provider_usage"].(map[string]any)
 	if providerUsage == nil {
 		providerUsage = map[string]any{}

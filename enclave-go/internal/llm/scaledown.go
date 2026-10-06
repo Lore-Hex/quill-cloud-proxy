@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,11 @@ var scaleDownPaths = map[string]string{
 // InputOnlyModel identifies native task contracts whose zero output count is
 // authoritative. Callers must pass the selected route model, not user metadata.
 func InputOnlyModel(model string) bool {
+	// Classification returns a label and scores, not generated tokens. Keep
+	// its explicit zero instead of estimating tokens from the answer JSON.
+	if model == "neurometric/structured-decisions" {
+		return true
+	}
 	if !strings.HasPrefix(model, "scaledown/") {
 		return false
 	}
@@ -38,9 +44,13 @@ func scaleDownPayload(req *qtypes.OpenAIChatRequest, operation string) ([]byte, 
 	var instructions []string
 	users := 0
 	for _, message := range req.Messages {
-		content, ok := message.Content.(string)
-		if !ok {
-			return nil, fmt.Errorf("llm/scaledown: only text content is supported")
+		filtered, emptied := withoutProviderHistory(message.Content)
+		if emptied {
+			continue
+		}
+		content, err := textOnlyContent(filtered)
+		if err != nil {
+			return nil, err
 		}
 		switch message.Role {
 		case "system", "developer":
@@ -159,6 +169,10 @@ func (c *openAICompatibleClient) invokeScaleDown(ctx context.Context, req *qtype
 	}
 	payload, err := scaleDownPayload(req, operation)
 	if err != nil {
+		var contentErr *contentInputError
+		if errors.As(err, &contentErr) {
+			return err
+		}
 		return &upstreamHTTPError{status: http.StatusBadRequest, body: err.Error()}
 	}
 	if c.apiKey == "" {
@@ -222,5 +236,5 @@ func (c *openAICompatibleClient) invokeScaleDown(ctx context.Context, req *qtype
 	}
 	// Input-only metering is intentional, including summarization. These are
 	// upstream-reported billable tokens, not a local estimate of the JSON output.
-	return writeAnthropicStop(out, "end_turn", &openAIStreamUsage{PromptTokens: *result.InputTokens, TotalTokens: *result.InputTokens}, nil, nil)
+	return writeAnthropicStop(out, "end_turn", &openAIStreamUsage{PromptTokens: *result.InputTokens, TotalTokens: *result.InputTokens}, nil, nil, nil)
 }

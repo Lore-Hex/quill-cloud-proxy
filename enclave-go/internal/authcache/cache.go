@@ -6,8 +6,6 @@ package authcache
 import (
 	"container/list"
 	"encoding/hex"
-	"errors"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -126,33 +124,7 @@ func (c *Cache) remove(element *list.Element) {
 	c.lru.Remove(element)
 }
 
-// IsDefinitiveInvalidCredential is intentionally narrow. Only control-plane
-// verdicts that explicitly name an invalid, unknown, or revoked API key are
-// safe to remember. A status alone is insufficient: a bare 401 can mean a
-// broken enclave-to-control-plane credential, while quota, billing, timeouts,
-// cancellation, network errors, 429s, and 5xx can all affect a valid customer.
+// IsDefinitiveInvalidCredential shares the control-plane credential taxonomy.
 func IsDefinitiveInvalidCredential(err error) bool {
-	var controlErr *trustedrouter.ControlPlaneError
-	if !errors.As(err, &controlErr) {
-		return false
-	}
-	if controlErr.StatusCode != http.StatusUnauthorized && controlErr.StatusCode != http.StatusForbidden {
-		return false
-	}
-	// EXACTLY the control plane's ErrorType.INVALID_API_KEY and nothing else.
-	// This string is a WIRE CONTRACT: quill-router emits it at every
-	// bad-customer-key site in the internal gateway and pins it with
-	// tests/test_gateway_error_taxonomy.py; the test below pins this side.
-	// The earlier draft allowlisted five plausible spellings -- none of which
-	// the control plane has ever emitted, so the cache would have been
-	// "configured, healthy, and empty": never firing, never noticed. A generic
-	// "unauthorized" 401 stays UNCACHED on purpose -- the plane also says that
-	// when the ENCLAVE'S OWN internal credential is broken, and caching it
-	// would turn one auth misconfiguration into every customer locked out.
-	switch strings.ToLower(strings.TrimSpace(controlErr.Type)) {
-	case "invalid_api_key":
-		return true
-	default:
-		return false
-	}
+	return trustedrouter.IsDefinitiveInvalidCredential(err)
 }

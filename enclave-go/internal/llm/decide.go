@@ -28,6 +28,7 @@ type DecideRequest struct {
 	Model     string                     `json:"model"`
 	State     json.RawMessage            `json:"state"`
 	Questions map[string]decide.Question `json:"questions"`
+	Images    []string                   `json:"images,omitempty"`
 }
 
 // DecideResponse is the upstream result BEFORE verification. The caller must
@@ -150,8 +151,8 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 	// Two hosts serve the same decision model with different wire shapes. The
 	// caller sees neither: both are translated to decide.Answer and then held
 	// to the same decide.Verify.
-	if provider == typeSafeProvider {
-		return invokeTypeSafeSystemOne(ctx, httpc, c.baseURL, c.apiKey, model, req)
+	if provider == typeSafeProvider || system1Tier(provider) != "" {
+		return invokeSystemOne(ctx, httpc, provider, c.baseURL, c.apiKey, model, req)
 	}
 	wire := *req
 	wire.Model = model
@@ -184,6 +185,11 @@ func postDecideJSON(ctx context.Context, httpc *http.Client, provider, url, apiK
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
+	// A fixed provider identity selects both the key and tariff. Caller headers
+	// never choose a tier, and an EU request has no Global fallback candidate.
+	if tier := system1Tier(provider); tier != "" {
+		httpReq.Header.Set("S1-Region", tier)
+	}
 	if httpc == nil {
 		httpc = defaultHTTPClient()
 	}
@@ -197,6 +203,9 @@ func postDecideJSON(ctx context.Context, httpc *http.Client, provider, url, apiK
 		// 4xx quotes the request it rejected, so the status is all we keep.
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return nil, &DecideError{Provider: provider, Class: DecideErrHTTP, Status: resp.StatusCode}
+	}
+	if tier := system1Tier(provider); tier != "" && resp.Header.Get("S1-Region") != tier {
+		return nil, &DecideError{Provider: provider, Class: DecideErrDecode}
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxDecideResponseBytes+1))
 	if err != nil {
@@ -216,7 +225,17 @@ const typeSafeProvider = "typesafe"
 // field of the same name. Everything else lines up with the public contract.
 const typeSafeBoolean = "noul"
 
-func invokeTypeSafeSystemOne(ctx context.Context, httpc *http.Client, baseURL, apiKey, model string, req *DecideRequest) (*DecideResponse, error) {
+func system1Tier(provider string) string {
+	switch provider {
+	case "system1models":
+		return "global"
+	case "system1models-eu":
+		return "eu"
+	}
+	return ""
+}
+
+func invokeSystemOne(ctx context.Context, httpc *http.Client, provider, baseURL, apiKey, model string, req *DecideRequest) (*DecideResponse, error) {
 	questions := make(map[string]decide.Question, len(req.Questions))
 	for name, question := range req.Questions {
 		if question.Type == decide.TypeBoolean {
@@ -224,12 +243,14 @@ func invokeTypeSafeSystemOne(ctx context.Context, httpc *http.Client, baseURL, a
 		}
 		questions[name] = question
 	}
-	wire := DecideRequest{Model: model, State: req.State, Questions: questions}
-	raw, err := postDecideJSON(ctx, httpc, typeSafeProvider, baseURL+"/systemone", apiKey, wire)
+	wire := DecideRequest{Model: model, State: req.State, Questions: questions, Images: req.Images}
+	raw, err := postDecideJSON(ctx, httpc, provider, baseURL+"/systemone", apiKey, wire)
 	if err != nil {
 		return nil, err
 	}
 	var parsed struct {
+		Model   string `json:"model"`
+		Tier    string `json:"tier"`
 		Answers map[string]struct {
 			Type          string             `json:"type"`
 			Noul          *float64           `json:"noul"`
@@ -238,12 +259,16 @@ func invokeTypeSafeSystemOne(ctx context.Context, httpc *http.Client, baseURL, a
 			Probabilities map[string]float64 `json:"probabilities"`
 		} `json:"answers"`
 		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			InputTokens  int  `json:"input_tokens"`
+			OutputTokens *int `json:"output_tokens"`
+			Decisions    int  `json:"decisions"`
 		} `json:"usage"`
 	}
-	if err := decodeDecideBody(typeSafeProvider, raw, &parsed); err != nil {
+	if err := decodeDecideBody(provider, raw, &parsed); err != nil {
 		return nil, err
+	}
+	if tier := system1Tier(provider); tier != "" && (parsed.Tier != tier || parsed.Model != model || parsed.Usage.InputTokens <= 0 || parsed.Usage.OutputTokens == nil || *parsed.Usage.OutputTokens != 0 || parsed.Usage.Decisions != 1) {
+		return nil, &DecideError{Provider: provider, Class: DecideErrDecode}
 	}
 	// Translate NAMES only, and carry every answer field across. Whether the
 	// result honours the contract is for decide.Verify to say, exactly as it
@@ -259,5 +284,9 @@ func invokeTypeSafeSystemOne(ctx context.Context, httpc *http.Client, baseURL, a
 		}
 		answers[name] = translated
 	}
-	return &DecideResponse{Answers: answers, InputTokens: parsed.Usage.InputTokens, OutputTokens: parsed.Usage.OutputTokens}, nil
+	outputTokens := 0
+	if parsed.Usage.OutputTokens != nil {
+		outputTokens = *parsed.Usage.OutputTokens
+	}
+	return &DecideResponse{Answers: answers, InputTokens: parsed.Usage.InputTokens, OutputTokens: outputTokens}, nil
 }

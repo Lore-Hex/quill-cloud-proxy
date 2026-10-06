@@ -90,6 +90,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [ "$DRY_RUN" -eq 0 ]; then
+  source "${SCRIPT_DIR}/cloud-rollout-guard.sh"
+  require_cloud_rollout aws
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
   echo "FATAL: python3 is required to encode EC2 user data" >&2
   exit 1
@@ -821,6 +826,7 @@ allowlist:
   - {address: api.reka.ai,                    port: 443}
   - {address: api.sailresearch.com,           port: 443}
   - {address: mancer.tech,                    port: 443}
+  - {address: abliterate.ai,                  port: 443}
   - {address: api.intelligence.io.solutions,  port: 443}
   - {address: api.scaleway.ai,                 port: 443}
   - {address: api.featherless.ai,              port: 443}
@@ -830,6 +836,8 @@ allowlist:
   - {address: api.inference.wandb.ai,           port: 443}
   - {address: inference.api.nscale.com,         port: 443}
   - {address: api.regolo.ai,                   port: 443}
+  - {address: api.lyceum.technology,            port: 443}
+  - {address: api.system1models.ai,              port: 443}
   - {address: api.privatemode.ai,              port: 443}
   - {address: kdsintf.amd.com,                 port: 443}
   - {address: certificates.trustedservices.intel.com, port: 443}
@@ -841,12 +849,14 @@ allowlist:
   - {address: router.huggingface.co,             port: 443}
   - {address: ai-gateway.vercel.sh,              port: 443}
   - {address: api.typesafe.ai,                   port: 443}
+  - {address: wharf.neurometric.ai,               port: 443}
   - {address: api.telluvian.ai,                  port: 443}
   - {address: api.darkbloom.dev,                port: 443}
   - {address: qianfan.baidubce.com,             port: 443}
   - {address: design-api.sourceful.com,         port: 443}
   - {address: fal.run,                          port: 443}
   - {address: ark.ap-southeast.bytepluses.com,  port: 443}
+  - {address: ark-acg-ap-southeast-1.tos-ap-southeast-1.volces.com, port: 443}
   - {address: tokenhub-intl.tencentcloudmaas.com, port: 443}
   - {address: queue.fal.run,                    port: 443}
   # GCP cross-cloud APIs — auth + Spanner + Bigtable + GCS (ACME cache)
@@ -970,6 +980,7 @@ write_vsock_unit 8061 api.upstage.ai
 write_vsock_unit 8062 api.reka.ai
 write_vsock_unit 8063 api.sailresearch.com
 write_vsock_unit 8064 mancer.tech
+write_vsock_unit 8105 abliterate.ai
 write_vsock_unit 8065 api.intelligence.io.solutions
 write_vsock_unit 8066 api.scaleway.ai
 write_vsock_unit 8067 api.featherless.ai
@@ -979,6 +990,8 @@ write_vsock_unit 8071 integrate.api.nvidia.com
 write_vsock_unit 8072 api.inference.wandb.ai
 write_vsock_unit 8073 inference.api.nscale.com
 write_vsock_unit 8087 api.regolo.ai
+write_vsock_unit 8103 api.lyceum.technology
+write_vsock_unit 8104 api.system1models.ai
 write_vsock_unit 8100 api.privatemode.ai
 write_vsock_unit 8101 kdsintf.amd.com
 write_vsock_unit 8102 certificates.trustedservices.intel.com
@@ -992,11 +1005,13 @@ write_vsock_unit 8078 qianfan.baidubce.com
 write_vsock_unit 8079 design-api.sourceful.com
 write_vsock_unit 8080 fal.run
 write_vsock_unit 8081 ark.ap-southeast.bytepluses.com
+write_vsock_unit 8106 ark-acg-ap-southeast-1.tos-ap-southeast-1.volces.com
 write_vsock_unit 8083 tokenhub-intl.tencentcloudmaas.com
 write_vsock_unit 8084 queue.fal.run
 write_vsock_unit 8082 router.huggingface.co
 write_vsock_unit 8088 ai-gateway.vercel.sh
 write_vsock_unit 8089 api.typesafe.ai
+write_vsock_unit 8090 wharf.neurometric.ai
 write_vsock_unit 8099 api.telluvian.ai
 write_vsock_unit 8049 llm.chutes.ai
 write_vsock_unit 8050 api.chutes.ai

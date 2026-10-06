@@ -9,6 +9,8 @@ import (
 	"io"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 const chutesMaxEncryptedSSELine = 16 << 20
@@ -142,18 +144,31 @@ func decryptChutesStream(
 
 func frameChutesDecryptedChunk(plaintext []byte) ([]byte, bool, error) {
 	plaintext = bytes.TrimSpace(plaintext)
-	if bytes.HasPrefix(plaintext, []byte("data:")) {
-		payload := bytes.TrimSpace(bytes.TrimPrefix(plaintext, []byte("data:")))
-		if len(payload) == 0 {
+	prefixed := bytes.HasPrefix(plaintext, []byte("data:"))
+	if prefixed {
+		plaintext = bytes.TrimSpace(bytes.TrimPrefix(plaintext, []byte("data:")))
+		if len(plaintext) == 0 {
 			return nil, false, nil
 		}
-		if bytes.Equal(payload, []byte("[DONE]")) {
+		if bytes.Equal(plaintext, []byte("[DONE]")) {
 			return nil, true, nil
 		}
-		if !json.Valid(payload) {
+		if !json.Valid(plaintext) {
 			return nil, false, fmt.Errorf("chutes e2ee: decrypted SSE chunk has invalid JSON")
 		}
-		return append(append([]byte(nil), plaintext...), '\n', '\n'), false, nil
+	}
+	if bytes.HasPrefix(plaintext, []byte("{")) && json.Valid(plaintext) {
+		// Only structured plaintext is an error report. Authenticated token
+		// text below must never be inspected with the malformed-error pattern.
+		if err := upstreamerror.CheckEvent("", string(plaintext)); err != nil {
+			return nil, false, err
+		}
+		var compact bytes.Buffer
+		_ = json.Compact(&compact, plaintext)
+		plaintext = compact.Bytes()
+	}
+	if prefixed {
+		return append(append([]byte("data: "), plaintext...), '\n', '\n'), false, nil
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(plaintext, &object); err != nil || len(object) == 0 {
@@ -201,6 +216,7 @@ func translateChutesEncryptedStream(
 	responseSK *mlkem.DecapsulationKey768,
 ) error {
 	reader, writer := io.Pipe()
+	defer reader.Close()
 	go func() {
 		err := decryptChutesStream(r, writer, responseSK)
 		_ = writer.CloseWithError(err)

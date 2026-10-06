@@ -533,6 +533,86 @@ func TestPinnedChutesMeasurementsAreWellFormed(t *testing.T) {
 	}
 }
 
+func TestPinnedChutesGLM52ProfileRequiresAllRegisters(t *testing.T) {
+	verifier, err := newChutesVerifier()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decode := func(value string) []byte {
+		t.Helper()
+		decoded, err := hex.DecodeString(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return decoded
+	}
+	body := &tdxpb.TDQuoteBody{
+		MrTd: decode("261CE538B435E2D0E85FC97E254BC99154C507B7A8E13D59B69F8532384F1D0BFAADFDDF3FCCC6E0A411203840BBEE8D"),
+		Rtmrs: [][]byte{
+			decode("44EFEEA3A647090C2969CCA7F29963DDE696D99542C28536A20AD3586A639EF7E230D8D4E325C55F3597DC7B58B30903"),
+			decode("D3A862FF47357F374FC72C7F02A480A13790D1805E24AAA8DE1F03994256625CE0F593AE35EA8F0C24D09F7DF36CB0ED"),
+			decode("DA23F73E0FDDEB8128F706ECFBECBCF8CEE34AF7E4907D8FBC85E9B216ACEE27BF6CC3655EAF4D33CAB76ADEA79FA153"),
+			decode("D9DC4C6079FB12A21AD2AA8E329D8BFA61AAA13D3FFD10A93A2C4E82F0E35EFBF28F5CF3BED0C0C1B517A7C327A25226"),
+		},
+	}
+	measurement, err := verifier.matchMeasurement(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if measurement.Version != "1.4.1" || measurement.Name != "8xb200 [10.2.1, flat-272c-1536g]" ||
+		measurement.GPUCount != 8 || len(measurement.ExpectedGPUs) != 1 || measurement.ExpectedGPUs[0] != "b200" {
+		t.Fatalf("unexpected GLM-5.2 profile: %+v", measurement)
+	}
+	for index, register := range append([][]byte{body.MrTd}, body.Rtmrs...) {
+		register[0] ^= 0xff
+		_, err := verifier.matchMeasurement(body)
+		register[0] ^= 0xff
+		if err == nil {
+			t.Fatalf("tampered register %d was accepted", index)
+		}
+	}
+}
+
+func TestPinnedChutesNemoProfileRequiresAllRegisters(t *testing.T) {
+	verifier, err := newChutesVerifier()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decode := func(value string) []byte {
+		t.Helper()
+		decoded, err := hex.DecodeString(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return decoded
+	}
+	body := &tdxpb.TDQuoteBody{
+		MrTd: decode("261CE538B435E2D0E85FC97E254BC99154C507B7A8E13D59B69F8532384F1D0BFAADFDDF3FCCC6E0A411203840BBEE8D"),
+		Rtmrs: [][]byte{
+			decode("BACB4ABF7B19ABA4A8307EBC7244706745DE4FA627E669E7F06FD35C3303EEA1903F58DC143D27B557DA1A986E0E95F6"),
+			decode("D3A862FF47357F374FC72C7F02A480A13790D1805E24AAA8DE1F03994256625CE0F593AE35EA8F0C24D09F7DF36CB0ED"),
+			decode("DA23F73E0FDDEB8128F706ECFBECBCF8CEE34AF7E4907D8FBC85E9B216ACEE27BF6CC3655EAF4D33CAB76ADEA79FA153"),
+			decode("D9DC4C6079FB12A21AD2AA8E329D8BFA61AAA13D3FFD10A93A2C4E82F0E35EFBF28F5CF3BED0C0C1B517A7C327A25226"),
+		},
+	}
+	measurement, err := verifier.matchMeasurement(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if measurement.Version != "1.4.1" || measurement.Name != "8xpro_6000 [10.2.1, numa-124c-768g] (58443435b208)" ||
+		measurement.GPUCount != 8 || len(measurement.ExpectedGPUs) != 1 || measurement.ExpectedGPUs[0] != "pro_6000" {
+		t.Fatalf("unexpected Nemo profile: %+v", measurement)
+	}
+	for index, register := range append([][]byte{body.MrTd}, body.Rtmrs...) {
+		register[0] ^= 0xff
+		_, err := verifier.matchMeasurement(body)
+		register[0] ^= 0xff
+		if err == nil {
+			t.Fatalf("tampered register %d was accepted", index)
+		}
+	}
+}
+
 func TestMatchesExpectedGPUPreservesExplicitSKUToDieMappings(t *testing.T) {
 	for name, test := range map[string]struct {
 		actual   string

@@ -30,6 +30,21 @@ envelope from authorization and stale cache entries expire by TTL.
 
 Plus operator tools (`tools/`) and a static trust page (`trust-page/`).
 
+## Production release coordination
+
+Gateway and control-plane deployments share a two-cloud limit: at most two
+clouds may change while a third stays healthy and unchanged. One cloud cannot
+run two independent deployments. GCP's workflow owns its reservation through
+regional verification and final trust publication. Manual AWS/Azure tools
+require an outer reservation across all deploy and attestation phases; they do
+not automatically release between phases or on failure.
+
+`tools/cloud-rollout.py` loads the control-plane coordinator from the immutable
+commit and SHA256 in `tools/cloud-rollout-source.json`. See the
+[activation and recovery runbook](https://github.com/Lore-Hex/quill-router/blob/main/docs/design/two-cloud-rollouts.md)
+before a production rollout. Never delete or expire the shared journal to
+bypass an interrupted deployment.
+
 ## Trust property
 
 On AWS, the KMS keys needed to decrypt the device-key list are released only to
@@ -231,3 +246,59 @@ local evaluation) is free. Production use requires a commercial license from
 Lore Hex Corp: licensing@trustedrouter.com. Each version converts to the
 Apache License 2.0 four years after publication. Code published before
 July 3, 2026 remains Apache-2.0.
+
+### Enclave insufficient-credit backoff
+
+`QUILL_BILLING_402_BACKOFF_MS` defaults to `5000`; `0` disables it. Invalid,
+negative or overflowing values use the default. The shared Go control-plane
+client reads this setting in every cloud. GCP deployments pass it through
+Confidential Space's environment allowlist; Azure ACI passes it as a container
+environment variable. On AWS Nitro, set the Docker build argument of the same
+name before building the measured EIF (runtime parent environment cannot change
+an enclave's environment).
+
+A synchronous inference request denied by `/internal/gateway/authorize` with
+HTTP 402 and `error.type=insufficient_credits` opens a fixed window for its
+credential lookup digest and a SHA-256 digest of the method, route and exact
+request body bytes plus canonical parsed header inputs, each length-prefixed.
+These cover attribution, receipt opt-in and nonce, Host and effective
+confidential routing. Observational client telemetry is excluded: it is forwarded
+only to settle/refund, and malformed telemetry is dropped rather than rejecting
+inference. Requests equivalent on these billing and validation inputs reuse the
+ordinary error renderer, including the original request-ID headers and
+Retry-After. Connection headers still follow the current connection's keep-alive
+policy. Header or body
+`idempotency_key` requests bypass reads and writes; other billing errors, auth
+errors, metadata/discovery routes and job polling retain their ordinary handling.
+The credential guard runs before billing reuse: a known credential rejection
+wins and keeps its ordinary audit lines. Definitive credential rejections drop
+that credential's billing entries through a per-credential index. An unobserved
+revocation can remain stale for at most one fixed backoff window; balance top-ups
+have the same delay for an identical request. Different bodies, models, routes or keyed header inputs
+can still reach authorize during that window. The cache holds at most 4,096
+entries and retains only digest/audit identifiers and public error fields, never
+prompts or raw API keys. Hits and concurrent denials cannot extend the window. Expired
+entries are evicted before live entries; capacity pressure closes the oldest
+window early.
+
+Suppressed requests skip authorize, audit identity lookup, and all three
+`enclave.request_accept/start/end` lines, as well as client-context diagnostics
+and other per-request stderr output. Connection request counts, response byte
+counts and keep-alive limits still advance normally. Log-derived request totals
+must add the `suppressed` counts in the summary below to ordinary request-end
+counts. Authorize-attempt counts correctly exclude suppressed requests. A summary
+is emitted once when an expired window is next encountered (including by another
+credential), or when capacity pressure or credential invalidation closes it.
+Summaries are written after unlocking and only for windows that suppressed
+something; inactive windows need no timer:
+
+```
+enclave.billing_402_backoff credential_id="<existing audit ID>" credential_fingerprint="<lookup digest>" suppressed=49 window_ms=5000
+```
+
+The fingerprint remains available if the ordinary audit identity lookup fails.
+Summaries are lazy and may be lost at process termination. Their counts cannot
+fully reconstruct route/workspace breakdowns, latency distributions, byte totals
+or abuse metrics.
+Merging to main deploys this enclave-only change to the fleet; no control-plane
+changes or new control-plane state are required.

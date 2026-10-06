@@ -50,8 +50,8 @@ func TestParseVideoJobPath(t *testing.T) {
 }
 
 func TestVideoJobIDIsDeterministicAndAuthorizationScoped(t *testing.T) {
-	a := videoJobID("auth-1")
-	if a != videoJobID("auth-1") || a == videoJobID("auth-2") || !strings.HasPrefix(a, "job-") {
+	a := trustedrouter.VideoJobID("auth-1")
+	if a != trustedrouter.VideoJobID("auth-1") || a == trustedrouter.VideoJobID("auth-2") || !strings.HasPrefix(a, "job-") {
 		t.Fatalf("bad deterministic IDs: %q", a)
 	}
 }

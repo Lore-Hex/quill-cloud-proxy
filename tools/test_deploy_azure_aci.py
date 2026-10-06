@@ -437,6 +437,15 @@ class DeployHarness(unittest.TestCase):
             "exit 0\n"
         )
         uv.chmod(0o755)
+        # Coordinator behavior has its own tests. This suite exercises Azure's
+        # production script with an already-admitted outer reservation.
+        python = self.bin / "python3"
+        python.write_text(
+            '#!/bin/bash\n'
+            'case "$1" in */cloud-rollout.py) exit 0 ;; esac\n'
+            f'exec "{sys.executable}" "$@"\n'
+        )
+        python.chmod(0o755)
 
         self.state = root / "state"
         self.state.mkdir()
@@ -600,6 +609,7 @@ class DeployHarness(unittest.TestCase):
             PATH=f"{self.bin}{os.pathsep}{env['PATH']}",
             HOME=str(self.home),
             STUB_STATE=str(self.state),
+            TR_DEPLOY_MUTEX_OPERATION="a" * 32,
             WORKDIR=str(self.work),
             # Per-test config stores: no stored login to pick up, and gcloud's
             # own logs/ under CLOUDSDK_CONFIG becomes a tell that it ran.
@@ -799,6 +809,21 @@ class TestAzureCloudBoundaryPreflight(DeployHarness):
             json.loads(result.stdout)["QUILL_STEPFUN_SECRET"],
             "trustedrouter-unsealed-stepfun-key",
         )
+
+    def test_tencent_uses_the_sealed_key_and_rejects_unsealed_overrides(self) -> None:
+        result = self.run_script("print-env")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout).get("QUILL_TENCENT_SECRET"),
+            "trustedrouter-tencent-tokenhub-api-key",
+        )
+        result = self.run_script(
+            "--apply", "template",
+            QUILL_TENCENT_SECRET="trustedrouter-unsealed-tencent-tokenhub-key",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing bundle names: trustedrouter-unsealed-tencent-tokenhub-key", result.stderr)
+        self.assertEqual(self.mutations(), [])
 
     def test_apply_refuses_a_silent_manifest_override(self) -> None:
         manifest = self.state / "override.manifest"

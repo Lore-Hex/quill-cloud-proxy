@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -86,7 +87,7 @@ func fakeDecideControlPlane(t *testing.T, log *controlPlaneLog, provider string)
 				return
 			}
 			_, _ = fmt.Fprintf(w, `{"data":{"authorization_id":"auth_%d","workspace_id":"ws_1","api_key_hash":"key_1","model":%q,"endpoint_id":"e@p/prepaid","provider":%q,"upstream_model":"gpt-oss-120b","usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`,
-				len(log.authorize), body["model"], provider)
+				len(log.authorize), body["model"], fakeAuthorizedHost(body, provider))
 		case "/internal/gateway/settle":
 			log.settle = append(log.settle, body)
 			if len(log.settlementResponses) > 0 {
@@ -103,6 +104,19 @@ func fakeDecideControlPlane(t *testing.T, log *controlPlaneLog, provider string)
 	}))
 	t.Cleanup(server.Close)
 	return server
+}
+
+// fakeAuthorizedHost answers as the control plane does, within the request's
+// provider.only: the head of its order, else of its only, else host.
+func fakeAuthorizedHost(body map[string]any, host string) string {
+	if routing, _ := body["provider"].(map[string]any); routing != nil {
+		for _, key := range []string{"order", "only"} {
+			if hosts, _ := routing[key].([]any); len(hosts) > 0 {
+				return fmt.Sprint(hosts[0])
+			}
+		}
+	}
+	return host
 }
 
 func runNativeDecide(t *testing.T, model string, extra string, backend *scriptedLLM, log *controlPlaneLog) (int, map[string]any) {
@@ -200,7 +214,7 @@ func TestNativeDecideRetriesOnceWhenTheSecondPassRejectsTheAnswer(t *testing.T) 
 		authorizationResponses: []string{nativeRouteAuthorization("first", false, false), nativeRouteAuthorization("second", false, false)},
 		settlementResponses:    []string{nativeRouteSettlement("first", "billed-first"), nativeRouteSettlement("second", "billed-second")},
 	}
-	status, payload := runNativeDecide(t, "openai/gpt-oss-20b", "", backend, log)
+	status, payload := runNativeDecide(t, decide.TrevModelID, "", backend, log)
 	if status != 200 {
 		t.Fatalf("status %d: %v", status, payload)
 	}
@@ -240,7 +254,7 @@ func TestNativeDecideCountsUpstreamAttemptsAndKeepsTheServedProvider(t *testing.
 				// provider, including when it differs from the authorization's first route.
 				settlementResponses: []string{`{"data":{"settled":true}}`, `{"data":{"settled":true}}`},
 			}
-			status, payload := runNativeDecide(t, "openai/gpt-oss-20b", "", backend, log)
+			status, payload := runNativeDecide(t, decide.TrevModelID, "", backend, log)
 			if status != 200 {
 				t.Fatalf("status %d: %v", status, payload)
 			}
@@ -261,23 +275,114 @@ func TestNativeDecideCountsOnlyCandidatesWithAvailableKeys(t *testing.T) {
 	backend := &scriptedLLM{replies: []string{goodNative}}
 	log := &controlPlaneLog{
 		authorizationResponses: []string{`{"data":{"authorization_id":"auth_filtered","workspace_id":"ws_1","api_key_hash":"key_1",
-			"model":"openai/gpt-oss-20b","provider":"cerebras","endpoint_id":"first@cerebras/byok","usage_type":"BYOK","limit_usage_type":"Credits",
+			"model":"openai/gpt-oss-120b","provider":"cerebras","endpoint_id":"first@cerebras/byok","usage_type":"BYOK","limit_usage_type":"Credits",
 			"route_candidates":[
-				{"model":"openai/gpt-oss-20b","provider":"cerebras","endpoint_id":"first@cerebras/byok","usage_type":"BYOK","byok_secret_ref":"env://DECIDE_TEST_UNAVAILABLE_BYOK_KEY"},
-				{"model":"openai/gpt-oss-20b","provider":"sambanova","endpoint_id":"second@sambanova/prepaid","usage_type":"Credits"}]}}`},
+				{"model":"openai/gpt-oss-120b","provider":"cerebras","endpoint_id":"first@cerebras/byok","usage_type":"BYOK","byok_secret_ref":"env://DECIDE_TEST_UNAVAILABLE_BYOK_KEY"},
+				{"model":"openai/gpt-oss-120b","provider":"sambanova","endpoint_id":"second@sambanova/prepaid","usage_type":"Credits"}]}}`},
 		settlementResponses: []string{`{"data":{"settled":true}}`},
 	}
 	// The first candidate's secret is unavailable, so only the credits route runs.
-	status, payload := runNativeDecide(t, "openai/gpt-oss-20b", "", backend, log)
+	status, payload := runNativeDecide(t, decide.TrevModelID, "", backend, log)
 	if status != 200 {
 		t.Fatalf("status %d: %v", status, payload)
 	}
-	assertDecideRouting(t, payload, `{"selected_model":"openai/gpt-oss-20b","selected_provider":"sambanova","selected_endpoint":"second@sambanova/prepaid","fallback_candidate_count":1,"upstream_attempt_count":1,"fallback_attempt_count":0}`)
+	assertDecideRouting(t, payload, `{"selected_model":"openai/gpt-oss-120b","selected_provider":"sambanova","selected_endpoint":"second@sambanova/prepaid","fallback_candidate_count":1,"upstream_attempt_count":1,"fallback_attempt_count":0}`)
 	if len(backend.options) != 1 || len(backend.options[0]) != 1 || backend.options[0][0].EndpointID != "second@sambanova/prepaid" {
 		t.Fatalf("invoke options = %v; only the credits candidate should be called", backend.options)
 	}
 	if len(log.authorize) != 1 || len(log.settle) != 1 || log.refund != 0 {
 		t.Fatalf("authorize=%d settle=%d refund=%d", len(log.authorize), len(log.settle), log.refund)
+	}
+}
+
+// hostAuthorization authorizes model on hosts, in that order.
+func hostAuthorization(id, model string, hosts ...string) string {
+	candidates := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		candidates = append(candidates, fmt.Sprintf(`{"model":%q,"provider":%q,"endpoint_id":%q,"upstream_model":%q,"usage_type":"Credits"}`,
+			model, host, model+"@"+host+"/prepaid", model))
+	}
+	return fmt.Sprintf(`{"data":{"authorization_id":%q,"workspace_id":"ws_1","api_key_hash":"key_1","model":%q,"provider":%q,"endpoint_id":%q,"upstream_model":%q,"usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[%s]}}`,
+		id, model, hosts[0], model+"@"+hosts[0]+"/prepaid", model, strings.Join(candidates, ","))
+}
+
+func TestNativeDecideDispatchesOnlyToTheHostsItsRequestNamed(t *testing.T) {
+	// Gemma 4 26B A4B is pinned to nextbit, wandb and io-net; cerebras is not
+	// one of them. The control plane enforces the pin too; these
+	// authorizations break it, and the gateway must not follow them.
+	gemma := "google/gemma-4-26b-a4b-it"
+	down := fmt.Errorf("llm/upstream: http 503: unavailable")
+	for _, tc := range []struct {
+		name       string
+		model      string
+		extra      string
+		auths      []string
+		replies    []string
+		errors     []error
+		status     int
+		dispatched []string // the hosts offered on each provider call
+		refunds    int
+	}{
+		{"an outside primary is skipped", gemma, "",
+			[]string{hostAuthorization("a1", gemma, "cerebras", "wandb")}, []string{goodNative}, nil, 200, []string{"wandb"}, 0},
+		// nextbit fails; the attempt may not fail over to cerebras, so it is
+		// refunded and the retry runs on nextbit again.
+		{"an outside fallback is dropped", gemma, "",
+			[]string{hostAuthorization("a1", gemma, "nextbit", "cerebras"), hostAuthorization("a2", gemma, "nextbit", "cerebras")},
+			[]string{"", goodNative}, []error{down, nil}, 200, []string{"nextbit", "nextbit"}, 1},
+		{"no allowed host fails closed on both attempts", gemma, "",
+			[]string{hostAuthorization("a1", gemma, "cerebras"), hostAuthorization("a2", gemma, "cerebras")}, nil, nil, 502, nil, 2},
+		{"a retry's re-authorization is held to the pin too", gemma, "",
+			[]string{hostAuthorization("a1", gemma, "nextbit"), hostAuthorization("a2", gemma, "cerebras")}, []string{""}, []error{down}, 502, []string{"nextbit"}, 2},
+		// A caller's own list is the control plane's to resolve: it accepts
+		// aliases, so "ai-studio" authorizes google-ai-studio.
+		{"a caller's alias list is left to the control plane", decide.GevModelID, `"provider":{"only":["ai-studio"]},`,
+			[]string{hostAuthorization("a1", "google/gemini-3.1-flash-lite", "google-ai-studio")}, []string{goodNative}, nil, 200, []string{"google-ai-studio"}, 0},
+		// The positive control: the same outside host serves a request that
+		// names no provider.only (an untuned model with no caller list).
+		{"no provider.only, no constraint", "anthropic/claude-opus-5", "",
+			[]string{hostAuthorization("a1", "anthropic/claude-opus-5", "cerebras")}, []string{goodNative}, nil, 200, []string{"cerebras"}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &scriptedLLM{replies: tc.replies, errors: tc.errors}
+			log := &controlPlaneLog{authorizationResponses: tc.auths}
+			status, payload := runNativeDecide(t, tc.model, tc.extra, backend, log)
+			if status != tc.status {
+				t.Fatalf("status %d, want %d: %v", status, tc.status, payload)
+			}
+			var dispatched []string
+			for _, options := range backend.options {
+				hosts := make([]string, 0, len(options))
+				for _, option := range options {
+					hosts = append(hosts, option.Provider)
+				}
+				dispatched = append(dispatched, strings.Join(hosts, ","))
+			}
+			if strings.Join(dispatched, "|") != strings.Join(tc.dispatched, "|") {
+				t.Fatalf("hosts offered per provider call = %q, want %q", dispatched, tc.dispatched)
+			}
+			if log.refund != tc.refunds {
+				t.Fatalf("refunds = %d, want %d", log.refund, tc.refunds)
+			}
+		})
+	}
+}
+
+func TestConstrainDecisionOptionsKeepsTheAuthorizationsOrderWithinThePin(t *testing.T) {
+	options := []llm.InvokeOptions{{Provider: "wandb"}, {Provider: "cerebras"}, {Provider: "NextBit"}}
+	pinned := &types.OpenAIChatRequest{InternalDecisionHosts: []string{"nextbit", "wandb"}}
+	kept, err := constrainDecisionOptions(pinned, options)
+	if err != nil || len(kept) != 2 || kept[0].Provider != "wandb" || kept[1].Provider != "NextBit" {
+		t.Fatalf("kept %+v, err %v; want wandb then NextBit, the authorization's order", kept, err)
+	}
+	// A caller's provider.only alone is not a pin: the control plane resolves it.
+	caller := &types.OpenAIChatRequest{Provider: &types.ProviderRouting{Only: types.StringList{"io-net"}}}
+	if kept, err := constrainDecisionOptions(caller, options); err != nil || len(kept) != 3 {
+		t.Fatalf("a request without a pinned chain must keep every option: %+v, %v", kept, err)
+	}
+	none := &types.OpenAIChatRequest{InternalDecisionHosts: []string{"io-net"}}
+	if kept, err := constrainDecisionOptions(none, options); !errors.Is(err, decisionHostPinViolation) || kept != nil {
+		t.Fatalf("no allowed host must fail closed: %+v, %v", kept, err)
 	}
 }
 
@@ -289,7 +394,7 @@ func TestNativeDecidePrivacyUsesTheAnsweringAttemptsAuthorization(t *testing.T) 
 				authorizationResponses: []string{nativeRouteAuthorization("first", !hideSecond, false), nativeRouteAuthorization("second", hideSecond, false)},
 				settlementResponses:    []string{nativeRouteSettlement("first", "billed-first"), nativeRouteSettlement("second", "billed-second")},
 			}
-			status, payload := runNativeDecide(t, "openai/gpt-oss-20b", "", backend, log)
+			status, payload := runNativeDecide(t, decide.TrevModelID, "", backend, log)
 			if status != 200 {
 				t.Fatalf("status %d: %v", status, payload)
 			}
@@ -343,24 +448,26 @@ func TestNativeDecideOptionsReachTheModelAndAnyChatModelWorks(t *testing.T) {
 	}
 }
 
-// captureStderr runs fn and returns everything it wrote to os.Stderr.
+// captureStderr is for calls that finish their provider invocations before returning.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
+	return captureProviderStreamStderr(t, func() *providerInvocation {
+		fn()
+		return nil
+	})
+}
+
+func TestCaptureStderrKeepsProcessPointerStable(t *testing.T) {
 	original := os.Stderr
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
+	logs := captureStderr(t, func() {
+		if os.Stderr != original {
+			t.Error("capture replaced os.Stderr while other providers may still be logging")
+		}
+		_, _ = io.WriteString(os.Stderr, "stable stderr pointer\n")
+	})
+	if os.Stderr != original || !strings.Contains(logs, "stable stderr pointer\n") {
+		t.Fatalf("stderr capture/restore failed: %q", logs)
 	}
-	os.Stderr = writer
-	done := make(chan string)
-	go func() {
-		raw, _ := io.ReadAll(reader)
-		done <- string(raw)
-	}()
-	fn()
-	os.Stderr = original
-	_ = writer.Close()
-	return <-done
 }
 
 func TestDecideLogsNeverCarryRequestContent(t *testing.T) {
@@ -377,6 +484,15 @@ func TestDecideLogsNeverCarryRequestContent(t *testing.T) {
 	})
 	if status != 502 {
 		t.Fatalf("status %d, want 502", status)
+	}
+	// Include each invocation's final logs in the privacy check, not just the
+	// synchronous verification logs. No attempt may outlive the capture.
+	for _, id := range []string{"auth_1", "auth_2"} {
+		for _, event := range []string{"enclave.invoke_attempt", "enclave.invoke_complete"} {
+			if want := fmt.Sprintf(`%s request_log_id="log-1" request_id=%q`, event, id); strings.Count(stderr, want) != 1 {
+				t.Errorf("stderr must contain exactly one %s", want)
+			}
+		}
 	}
 	for _, leaked := range []string{"PRIVATE-STATE", "SECRET-MODEL-WORDS", "SECRET-INVENTED-OPTION", "Is a refund requested", "billing", "charges"} {
 		if strings.Contains(stderr, leaked) {
@@ -544,7 +660,7 @@ func TestEveryNamedDecisionModelIsDrivenOnItsOwnHostAndAnswersUnderItsName(t *te
 		decide.DevModelID: {"wafer,deepinfra,wandb", "deepseek/deepseek-v4.1-flash", "deepinfra", "deepseek-ai/DeepSeek-V4.1-Flash"},
 		decide.OevModelID: {"deepinfra", "openai/gpt-oss-20b", "deepinfra", "openai/gpt-oss-20b"},
 		// And nextbit here: its native id for the same model looks nothing alike.
-		decide.GemmevModelID: {"wandb,nextbit,io-net,deepinfra", "google/gemma-4-26b-a4b-it", "nextbit", "gemma4:26b-a4b"},
+		decide.GemmevModelID: {"nextbit,wandb,io-net", "google/gemma-4-26b-a4b-it", "nextbit", "gemma4:26b-a4b"},
 		decide.MevModelID:    {"inception", "inception/mercury-2", "inception", "mercury-2"},
 		decide.ZevModelID:    {"fireworks,baseten", "z-ai/glm-5.2-fast", "fireworks", "accounts/fireworks/routers/glm-5p2-fast"},
 		decide.LevModelID:    {"sambanova,parasail,together", "meta-llama/llama-3.3-70b-instruct", "sambanova", "Meta-Llama-3.3-70B-Instruct"},

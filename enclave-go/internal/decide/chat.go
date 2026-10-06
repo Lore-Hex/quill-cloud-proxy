@@ -43,6 +43,17 @@ var HostedModels = map[string]bool{
 	"typesafe-ai/jev": true,
 }
 
+// System1 models are discovered from a priced, canaried catalog. Recognizing
+// their namespace does not authorize them: the control plane must still issue
+// an exact model/provider endpoint before any paid inference can happen.
+func IsSystem1Model(model string) bool {
+	return strings.HasPrefix(model, "system1models/s1-") || strings.HasPrefix(model, "system1models-eu/s1-")
+}
+
+func IsHostedModel(model string) bool {
+	return HostedModels[model] || IsSystem1Model(model)
+}
+
 // TrustedRouter's named decision models: one short, stable name per tuned
 // configuration, so a caller picks "the fast one" or "the cheap one" without
 // tracking which open model and host currently wins. They rhyme with Jev, the
@@ -103,10 +114,11 @@ var DevProviders = []string{
 //     (766 vs 476 tokens) and was slower.
 //   - Gemma 4 26B A4B (gemmev-1.0 since 2026-09-28, when DeepInfra, the only
 //     host of Gemma 4 E4B, dropped it) is prompt-only, as E4B was, and scores
-//     29/29 that way: W&B 1387 ms median, nextbit 1587 ms, io.net 1738 ms, each
-//     24/24 valid over three passes. SiliconFlow passed at 2034 ms but would
-//     raise the advertised price 40%; Makora, Scaleway and Cloudflare think by
-//     default (about 1,000 output tokens a decision) and were left out.
+//     29/29 that way on every host, tuned and untuned. Over three runs, 72
+//     calls a host: nextbit 1760 ms median (p90 2260), W&B 1940 (2936), io.net
+//     1964 (2701). SiliconFlow passed at 2034 ms but would raise the advertised
+//     price 40%; Makora, Scaleway and Cloudflare think by default (about 1,000
+//     output tokens a decision) and were left out.
 //
 // Every pinned host must offer a CREDITS route in the control plane's catalog.
 // openai/gpt-5.4-nano passed the eval (27/29, ~1 s) and was still left out: its
@@ -142,8 +154,7 @@ var DevProviders = []string{
 // A NAME and the chat model behind it are driven identically: the name is a
 // convenience, and the control plane resolves it to the concrete model and
 // enforces its host. One definition serves both, so they cannot drift apart.
-// (NativeChatRequest copies the host list for every request it builds.) The
-// one exception is gemmev-1.0's extra host while it moves, below.
+// (NativeChatRequest copies the host list for every request it builds.)
 //
 // The ids here must match NATIVE_DECISION_MODEL_PROVIDERS in the control
 // plane's catalog_data.py, which is what /v1/models advertises.
@@ -151,18 +162,10 @@ var (
 	geminiFlashLite = NativeModel{Providers: []string{"google-ai-studio"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatSchema}
 	deepSeekFlash   = NativeModel{Providers: DevProviders, Temperature: &zeroTemperature, Format: FormatPrompt}
 	gptOSS20B       = NativeModel{Providers: []string{"deepinfra"}, ReasoningEffort: "low", Temperature: &zeroTemperature, Format: FormatSchema}
-	gemma426BA4B    = NativeModel{Providers: []string{"wandb", "nextbit", "io-net"}, Temperature: &zeroTemperature, Format: FormatPrompt}
-	// gemmev-1.0 is driven as gemma426BA4B, plus DeepInfra for the move only.
-	// Until a cloud's control plane moves the name too, its chain there is
-	// DeepInfra alone, still serving Gemma 4 E4B (deprecated there on
-	// 2026-10-01), and this list must overlap it. Authorize keeps only the
-	// name's own chain, in its own order, so DeepInfra never widens the new one.
-	// The bare model does not get it: nothing but this table limits ITS hosts.
-	// Remove once every cloud's control plane has catalog_data.py's chain.
-	gemmevDuringMove = NativeModel{Providers: []string{"wandb", "nextbit", "io-net", "deepinfra"}, Temperature: gemma426BA4B.Temperature, Format: gemma426BA4B.Format}
-	mercury2         = NativeModel{Providers: []string{"inception"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
-	glm52Fast        = NativeModel{Providers: []string{"fireworks", "baseten"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
-	llama33          = NativeModel{Providers: []string{"sambanova", "parasail", "together"}, Temperature: &zeroTemperature, Format: FormatPrompt}
+	gemma426BA4B    = NativeModel{Providers: []string{"nextbit", "wandb", "io-net"}, Temperature: &zeroTemperature, Format: FormatPrompt}
+	mercury2        = NativeModel{Providers: []string{"inception"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
+	glm52Fast       = NativeModel{Providers: []string{"fireworks", "baseten"}, ReasoningEffort: "none", Temperature: &zeroTemperature, Format: FormatPrompt}
+	llama33         = NativeModel{Providers: []string{"sambanova", "parasail", "together"}, Temperature: &zeroTemperature, Format: FormatPrompt}
 )
 
 var NativeModels = map[string]NativeModel{
@@ -170,7 +173,7 @@ var NativeModels = map[string]NativeModel{
 	GevModelID:  geminiFlashLite, "google/gemini-3.1-flash-lite": geminiFlashLite,
 	DevModelID: deepSeekFlash, "deepseek/deepseek-v4.1-flash": deepSeekFlash,
 	OevModelID: gptOSS20B, "openai/gpt-oss-20b": gptOSS20B,
-	GemmevModelID: gemmevDuringMove, "google/gemma-4-26b-a4b-it": gemma426BA4B,
+	GemmevModelID: gemma426BA4B, "google/gemma-4-26b-a4b-it": gemma426BA4B,
 	MevModelID: mercury2, "inception/mercury-2": mercury2,
 	ZevModelID: glm52Fast, "z-ai/glm-5.2-fast": glm52Fast,
 	LevModelID: llama33, "meta-llama/llama-3.3-70b-instruct": llama33,
@@ -351,6 +354,7 @@ func NativeChatRequest(model string, state json.RawMessage, specs []Spec, native
 			Order:          types.StringList(append([]string(nil), native.Providers...)),
 			AllowFallbacks: &fallbacks,
 		}
+		req.InternalDecisionHosts = append([]string(nil), native.Providers...)
 	}
 	switch {
 	case effort != "":

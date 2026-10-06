@@ -340,9 +340,16 @@ func WriteMessagesResponse(
 // content_block_start/stop) and remaps block indexes so a text block and
 // the first tool block don't collide on index 0.
 func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (StreamResult, error) {
+	return RelayAnthropicStreamWithTerminalHook(r, w, messageID, model, nil)
+}
+
+// RelayAnthropicStreamWithTerminalHook lets the gateway annotate the existing
+// terminal message_delta usage before encoding it. All event ordering and
+// native message fields are preserved.
+func RelayAnthropicStreamWithTerminalHook(r io.Reader, w io.Writer, messageID, model string, beforeTerminal func(StreamTerminal) error) (StreamResult, error) {
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxSSEBlockBytes)
-	scanner.Split(splitDoubleNewline)
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxSSEBlockBytes)
+	scanner.Split(SplitDoubleNewline)
 
 	passthrough := false
 	first := true
@@ -360,12 +367,26 @@ func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (St
 	sawUpstreamBytes := false
 
 	writeEvent := func(name string, payload map[string]any) error {
-		body, err := json.Marshal(payload)
-		if err != nil {
+		emit := func() error {
+			body, err := json.Marshal(payload)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, body)
 			return err
 		}
-		_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, body)
-		return err
+		if name == "message_delta" && beforeTerminal != nil && getString(getMap(payload, "delta"), "stop_reason") != "" {
+			// Translated and native providers may omit usage. Attach the map
+			// before the hook so settled cost is encoded by emit as well.
+			if getMap(payload, "usage") == nil {
+				payload["usage"] = map[string]any{}
+			}
+			return beforeTerminal(StreamTerminal{
+				Result:      relayResult(captured.String(), finishReason, usage, toolCallsByIndex, toolOrder),
+				UsageFields: getMap(payload, "usage"), FinishReason: finishReason, Emit: emit,
+			})
+		}
+		return emit()
 	}
 	ensureStarted := func() error {
 		if passthrough || started {
@@ -395,6 +416,18 @@ func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (St
 			"type":  "content_block_stop",
 			"index": textIndex,
 		})
+	}
+	var terminalDelta map[string]any
+	var terminalRaw string
+	flushTerminal := func() error {
+		if terminalDelta == nil {
+			return nil
+		}
+		if passthrough && beforeTerminal == nil {
+			_, err := io.WriteString(w, terminalRaw+"\n\n")
+			return err
+		}
+		return writeEvent("message_delta", terminalDelta)
 	}
 
 	for scanner.Scan() {
@@ -446,7 +479,36 @@ func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (St
 			mergeUsage(&usage, getMap(dataJSON, "usage"))
 		}
 
+		if eventName == "message_delta" && getString(getMap(dataJSON, "delta"), "stop_reason") != "" {
+			// A stop_reason is not upstream success: an error may still follow.
+			// Hold terminal usage (and its settlement hook) until message_stop
+			// or clean EOF, just as the Chat and Responses adapters do.
+			if !passthrough {
+				if err := ensureStarted(); err != nil {
+					return StreamResult{}, err
+				}
+				if err := closeTextBlock(); err != nil {
+					return StreamResult{}, err
+				}
+				delta := getMap(dataJSON, "delta")
+				delta["stop_reason"] = normalizeAnthropicSSEStopReason(getString(delta, "stop_reason"))
+			}
+			terminalDelta, terminalRaw = dataJSON, string(raw)
+			continue
+		}
+		if eventName == "message_stop" {
+			if err := flushTerminal(); err != nil {
+				return StreamResult{}, err
+			}
+		}
+
 		if passthrough {
+			if eventName == "message_delta" && beforeTerminal != nil {
+				if err := writeEvent(eventName, dataJSON); err != nil {
+					return StreamResult{}, err
+				}
+				continue
+			}
 			if _, err := w.Write(raw); err != nil {
 				return StreamResult{}, err
 			}
@@ -541,6 +603,14 @@ func RelayAnthropicStream(r io.Reader, w io.Writer, messageID, model string) (St
 	}
 	if !sawUpstreamBytes {
 		return StreamResult{}, errEmptyUpstreamResponse
+	}
+	if terminalDelta != nil {
+		if err := flushTerminal(); err != nil {
+			return StreamResult{}, err
+		}
+		if err := writeEvent("message_stop", map[string]any{"type": "message_stop"}); err != nil {
+			return StreamResult{}, err
+		}
 	}
 	return relayResult(captured.String(), finishReason, usage, toolCallsByIndex, toolOrder), nil
 }

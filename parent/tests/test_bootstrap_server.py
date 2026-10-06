@@ -133,6 +133,25 @@ def test_build_payload_strips_whitespace_from_provider_keys() -> None:
     assert payload["openai_api_key"] == "sk-FAKE-OPENAI"
 
 
+def test_tencent_uses_the_cloud_local_tokenhub_secret() -> None:
+    secret_name = "quill/trustedrouter-tencent-tokenhub-api-key"
+    sm = _StubSecretsManager({secret_name: " tencent-test-key\n"})
+    payload = _build_payload(sm=sm, kms=_StubKMS({}))
+    assert payload["provider_api_keys"] == {"tencent": "tencent-test-key"}
+    assert secret_name in sm.calls
+    assert "gcp_service_account_key_json" not in payload
+
+
+def test_neurometric_uses_the_cloud_local_legacy_bootstrap_field() -> None:
+    secret_name = "quill/trustedrouter-neurometric-api-key"
+    sm = _StubSecretsManager({secret_name: " test-neurometric-key\n"})
+    payload = _build_payload(sm=sm, kms=_StubKMS({}), region="eu-west-3")
+    assert payload["neurometric_api_key"] == "test-neurometric-key"
+    assert "neurometric" not in payload.get("provider_api_keys", {})
+    assert sm.calls.count(secret_name) == 1
+    assert "gcp_service_account_key_json" not in payload
+
+
 def test_build_payload_loads_prompt_bundle() -> None:
     sm = _StubSecretsManager(
         {
@@ -319,7 +338,10 @@ def test_build_payload_iterates_all_known_providers() -> None:
     )
 
     expected_direct = {
+        "system1models",
+        "system1models-eu",
         "regolo",
+        "lyceum",
         "privatemode",
         "nextbit",
         "aion-labs",
@@ -331,6 +353,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "reka",
         "sail-research",
         "mancer",
+        "abliterate",
         "io-net",
         "scaleway",
         "featherless",

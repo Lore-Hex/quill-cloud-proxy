@@ -20,6 +20,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -141,6 +142,7 @@ func (c *chutesE2EEClient) InvokeStreaming(
 	var failures []string
 	var lastErr error
 	var lastInvokeErr error
+	var lastVerificationErr error
 	refreshed := false
 	for len(excluded) < chutesMaxInstanceTries {
 		invocation, takeErr := c.takeInvocation(ctx, apiKey, chuteID, poolKey, excluded, refreshed)
@@ -159,6 +161,7 @@ func (c *chutesE2EEClient) InvokeStreaming(
 		verification, err := c.verifyInvocation(ctx, apiKey, chuteID, invocation)
 		if err != nil {
 			lastErr = err
+			lastVerificationErr = err
 			failures = append(failures, "attestation")
 			continue
 		}
@@ -168,7 +171,7 @@ func (c *chutesE2EEClient) InvokeStreaming(
 		if err == nil {
 			return nil
 		}
-		if counted.bytes > 0 || !chutesRetryableError(err) {
+		if counted.opened || counted.bytes > 0 || !chutesRetryableError(err) {
 			return err
 		}
 		lastErr = err
@@ -179,6 +182,11 @@ func (c *chutesE2EEClient) InvokeStreaming(
 		failures = append(failures, "no_instances")
 	}
 	terminalErr := lastInvokeErr
+	if terminalErr == nil {
+		// Exhausting an excluded pool is a consequence, not the reason its
+		// instances failed. Preserve the attestation error for diagnostics.
+		terminalErr = lastVerificationErr
+	}
 	if terminalErr == nil {
 		terminalErr = lastErr
 	}
@@ -193,8 +201,14 @@ func (c *chutesE2EEClient) InvokeStreaming(
 }
 
 type byteCountingWriter struct {
+	opened bool
 	writer io.Writer
 	bytes  int64
+}
+
+func (w *byteCountingWriter) UpstreamOpened() bool {
+	w.opened = upstreamerror.Open(w.writer)
+	return w.opened
 }
 
 func (w *byteCountingWriter) Write(p []byte) (int, error) {
@@ -471,10 +485,11 @@ func (c *chutesE2EEClient) invokeEncryptedStream(
 		return fmt.Errorf("llm/chutes: encrypted invoke: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return &upstreamHTTPError{status: resp.StatusCode, body: "chutes encrypted invoke failed"}
 	}
+	upstreamerror.Open(out)
 	return translateChutesEncryptedStream(resp.Body, out, encrypted.responseSK)
 }
 

@@ -25,6 +25,8 @@ type Spec struct {
 }
 
 var specs = [...]Spec{
+	{Provider: "system1models", BaseURL: "https://api.system1models.ai/v1", SecretEnv: "QUILL_SYSTEM1MODELS_GLOBAL_SECRET", SecretName: "trustedrouter-system1models-global-api-key", SecretLabel: "System1 Global key"},
+	{Provider: "system1models-eu", BaseURL: "https://api.system1models.ai/v1", SecretEnv: "QUILL_SYSTEM1MODELS_EU_SECRET", SecretName: "trustedrouter-system1models-eu-api-key", SecretLabel: "System1 EU key"},
 	// Secret registry only: inference is intercepted by the pinned E2EE adapter.
 	{Provider: "privatemode", BaseURL: "https://api.privatemode.ai/v1", SecretEnv: "QUILL_PRIVATEMODE_SECRET", SecretName: "trustedrouter-privatemode-api-key", SecretLabel: "Privatemode key"},
 	// Polyphemus uses /modelSelect only, never a Telluvian generation route.
@@ -39,6 +41,7 @@ var specs = [...]Spec{
 	{Provider: "reka", BaseURL: "https://api.reka.ai/v1", SecretEnv: "QUILL_REKA_SECRET", SecretName: "trustedrouter-reka-api-key", SecretLabel: "reka key"},
 	{Provider: "sail-research", BaseURL: "https://api.sailresearch.com/v1", SecretEnv: "QUILL_SAIL_RESEARCH_SECRET", SecretName: "trustedrouter-sail-research-api-key", SecretLabel: "sail research key"},
 	{Provider: "mancer", BaseURL: "https://mancer.tech/oai/v1", SecretEnv: "QUILL_MANCER_SECRET", SecretName: "trustedrouter-mancer-api-key", SecretLabel: "mancer key"},
+	{Provider: "abliterate", BaseURL: "https://abliterate.ai/api/v1", SecretEnv: "QUILL_ABLITERATE_SECRET", SecretName: "trustedrouter-abliterate-api-key", SecretLabel: "Abliterate key"},
 	{Provider: "io-net", BaseURL: "https://api.intelligence.io.solutions/api/v1", SecretEnv: "QUILL_IO_NET_SECRET", SecretName: "trustedrouter-io-net-api-key", SecretLabel: "io intelligence key"},
 	{Provider: "scaleway", BaseURL: "https://api.scaleway.ai/v1", SecretEnv: "QUILL_SCALEWAY_SECRET", SecretName: "trustedrouter-scaleway-api-key", SecretLabel: "scaleway key"},
 	{Provider: "featherless", BaseURL: "https://api.featherless.ai/v1", SecretEnv: "QUILL_FEATHERLESS_SECRET", SecretName: "trustedrouter-featherless-api-key", SecretLabel: "featherless key"},
@@ -48,12 +51,15 @@ var specs = [...]Spec{
 	{Provider: "wandb", BaseURL: "https://api.inference.wandb.ai/v1", SecretEnv: "QUILL_WANDB_SECRET", SecretName: "trustedrouter-wandb-api-key", SecretLabel: "W&B Inference key"},
 	{Provider: "nscale", BaseURL: "https://inference.api.nscale.com/v1", SecretEnv: "QUILL_NSCALE_SECRET", SecretName: "trustedrouter-nscale-api-key", SecretLabel: "Nscale service token"},
 	{Provider: "regolo", BaseURL: "https://api.regolo.ai/v1", SecretEnv: "QUILL_REGOLO_SECRET", SecretName: "trustedrouter-regolo-api-key", SecretLabel: "Regolo key"},
+	{Provider: "lyceum", BaseURL: "https://api.lyceum.technology/openai/v1", SecretEnv: "QUILL_LYCEUM_SECRET", SecretName: "trustedrouter-lyceum-api-key", SecretLabel: "Lyceum key"},
 	{Provider: "confidential-ai", BaseURL: "https://api.confidential.ai/v1", SecretEnv: "QUILL_CONFIDENTIAL_AI_SECRET", SecretName: "trustedrouter-confidential-ai-api-key", SecretLabel: "Confidential AI service token"},
 	{Provider: "scaledown", BaseURL: "https://api.scaledown.xyz", SecretEnv: "QUILL_SCALEDOWN_SECRET", SecretName: "trustedrouter-scaledown-api-key", SecretLabel: "ScaleDown inference key"},
 	{Provider: "perplexity", BaseURL: "https://api.perplexity.ai/v1", ChatCompletionsPath: "/sonar", SecretEnv: "QUILL_PERPLEXITY_SECRET", SecretName: "trustedrouter-perplexity-api-key", SecretLabel: "Perplexity key"},
 	{Provider: "krea", BaseURL: "https://api.krea.ai", MediaOnly: true, SecretEnv: "QUILL_KREA_SECRET", SecretName: "trustedrouter-krea-api-key", SecretLabel: "Krea key"},
 	{Provider: "fal", BaseURL: "https://fal.run", MediaOnly: true, SecretEnv: "QUILL_FAL_SECRET", SecretName: "trustedrouter-fal-api-key", SecretLabel: "FAL key"},
 	{Provider: "byteplus", BaseURL: "https://ark.ap-southeast.bytepluses.com/api/v3", SecretEnv: "QUILL_BYTEPLUS_SECRET", SecretName: "trustedrouter-byteplus-api-key", SecretLabel: "BytePlus ModelArk key"},
+	// Singapore/global TokenHub, not the separate Token Plan subscription API.
+	// https://www.tencentcloud.com/document/product/1300/78941
 	{Provider: "tencent", BaseURL: "https://tokenhub-intl.tencentcloudmaas.com/v1", SecretEnv: "QUILL_TENCENT_SECRET", SecretName: "trustedrouter-tencent-tokenhub-api-key", SecretLabel: "Tencent TokenHub key"},
 	{Provider: "vultr", BaseURL: "https://api.vultrinference.com/v1", SecretEnv: "QUILL_VULTR_SECRET", SecretName: "trustedrouter-vultr-api-key", SecretLabel: "Vultr inference key"},
 	{Provider: "huggingface", BaseURL: "https://router.huggingface.co/v1", SecretEnv: "QUILL_HUGGING_FACE_SECRET", SecretName: "trustedrouter-huggingface-api-key", SecretLabel: "Hugging Face key"},

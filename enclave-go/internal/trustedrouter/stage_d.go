@@ -33,6 +33,7 @@ type StageDEligibility struct {
 // CandidatePrice is one endpoint program from the router's immutable pricing
 // document. All rates are integer micro-dollars per million tokens.
 type CandidatePrice struct {
+	incompleteSnapshot  bool
 	EndpointID          string      `json:"endpoint_id"`
 	PriceHistoryVersion int         `json:"price_history_version"`
 	Rates               PriceRates  `json:"rates"`

@@ -18,6 +18,40 @@ import (
 
 var contentBroadcasts = broadcast.NewQueueFromEnv()
 
+// A promised candidate price lets bodies finish after the same bounded settle
+// wait as terminal stream usage. Retry the original billing usage on failure.
+// Without that promise the existing synchronous/error behavior is unchanged.
+func settleForUsageResponse(
+	ctx context.Context,
+	trGateway *trustedrouter.Client,
+	authorization *trustedrouter.Authorization,
+	secretCache *byokcache.Cache,
+	usage trustedrouter.Usage,
+	req *types.OpenAIChatRequest,
+	originalInput any,
+	output string,
+	requestLogID string,
+) (*trustedrouter.SettleResult, error) {
+	settleCtx := ctx
+	if candidateSettlement(nil, authorization, usage, nil).HasCost() {
+		var cancel context.CancelFunc
+		settleCtx, cancel = context.WithTimeout(ctx, stageDConfigFromEnv().settleBeforeTerminal)
+		defer cancel()
+	}
+	settlement, err := settleAndBroadcast(settleCtx, trGateway, authorization, secretCache, usage, req, originalInput, output)
+	reported := reportedSettlement(settlement, authorization, usage, err)
+	if err != nil && reported.HasCost() {
+		fmt.Fprintf(os.Stderr, "enclave.response_settle_failed authorization_id=%q route_type=%q err=%v\n", authorization.AuthorizationID, usage.RouteType, err)
+		settlementRetries.Enqueue(settlementRetryJob{
+			trGateway: trGateway, authorization: authorization, usage: usage,
+			reportedCost: costForRetry(reported),
+			requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
+		})
+		return reported, nil
+	}
+	return reported, err
+}
+
 func settleAndBroadcast(
 	ctx context.Context,
 	trGateway *trustedrouter.Client,

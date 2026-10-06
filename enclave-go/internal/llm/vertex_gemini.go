@@ -16,6 +16,7 @@ import (
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/streamhttp"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
 // vertexGeminiClient serves TrustedRouter google-vertex traffic through
@@ -83,13 +84,14 @@ func (c *vertexGeminiClient) InvokeStreaming(
 		return fmt.Errorf("llm/vertex-gemini: invoke: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
 			return fmt.Errorf("llm/vertex-gemini: read error body: %w", readErr)
 		}
 		return &upstreamHTTPError{status: resp.StatusCode, body: string(errBody)}
 	}
+	upstreamerror.Open(out)
 	return translateGeminiStreamToAnthropic(resp.Body, out)
 }
 
@@ -105,10 +107,43 @@ func vertexGeminiPayload(
 	body *qtypes.AnthropicMessagesRequest,
 	modelID string,
 ) (map[string]any, error) {
+	if body != nil && body.NativeContent {
+		// The Messages shim retains Anthropic client tool blocks. Reuse the
+		// client-tool projection while keeping Gemini's image handling intact.
+		copy := *req
+		copy.Messages = make([]qtypes.OpenAIChatMessage, 0, len(req.Messages))
+		for _, message := range req.Messages {
+			converted, ok := openAICompatibleToolMessages(qtypes.AnthropicMessage{Role: message.Role, Content: message.Content})
+			if !ok {
+				copy.Messages = append(copy.Messages, message)
+				continue
+			}
+			for _, chat := range converted {
+				projected := qtypes.OpenAIChatMessage{Role: chat.Role, Content: chat.Content, ToolCallID: chat.ToolCallID}
+				for _, call := range chat.ToolCalls {
+					function, ok := call["function"].(map[string]any)
+					if !ok {
+						continue
+					}
+					projected.ToolCalls = append(projected.ToolCalls, qtypes.OpenAIToolCall{
+						ID: stringValue(call["id"]), Type: "function",
+						Function: qtypes.OpenAIToolFunction{Name: stringValue(function["name"]), Arguments: stringValue(function["arguments"])},
+					})
+				}
+				copy.Messages = append(copy.Messages, projected)
+			}
+		}
+		req = &copy
+	}
 	contents := make([]map[string]any, 0, len(req.Messages))
 	systemParts := make([]map[string]any, 0, 1)
 	toolNameByID := map[string]string{}
 	for _, message := range req.Messages {
+		var emptied bool
+		message.Content, emptied = withoutProviderHistory(message.Content)
+		if emptied && len(message.ToolCalls) == 0 {
+			continue
+		}
 		role := strings.TrimSpace(strings.ToLower(message.Role))
 		switch role {
 		case "system", "developer":
@@ -358,6 +393,13 @@ func geminiToolArgs(arguments string) map[string]any {
 }
 
 func vertexGeminiParts(ctx context.Context, content any) ([]map[string]any, error) {
+	if blocks, ok := content.([]map[string]any); ok {
+		items := make([]any, len(blocks))
+		for i, block := range blocks {
+			items[i] = block
+		}
+		content = items
+	}
 	switch value := content.(type) {
 	case nil:
 		return []map[string]any{{"text": ""}}, nil
@@ -398,7 +440,7 @@ func vertexGeminiTypedParts(ctx context.Context, parts []qtypes.ChatContentPart)
 			}
 			out = append(out, map[string]any{"inlineData": inline})
 		default:
-			return nil, fmt.Errorf("llm/vertex-gemini: unsupported content part %q", part.Type)
+			return nil, &contentInputError{kind: part.Type}
 		}
 	}
 	if len(out) == 0 {
@@ -614,14 +656,21 @@ func translateGeminiStreamToAnthropicMode(r io.Reader, w io.Writer, strict bool)
 	toolIndex := 1 // index 0 is reserved for the text content block
 	sawTool := false
 	sawTerminal := false
+	var errorTail string
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
+			if line == "" {
+				errorTail = ""
+			}
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "" || payload == "[DONE]" {
 			continue
+		}
+		if err := upstreamerror.CheckLine(payload, &errorTail); err != nil {
+			return err
 		}
 		delta, calls, reason, chunkUsage, err := geminiChunkDelta(payload)
 		if err != nil {
@@ -673,7 +722,7 @@ func translateGeminiStreamToAnthropicMode(r io.Reader, w io.Writer, strict bool)
 	if sawTool {
 		stopReason = "tool_use"
 	}
-	return writeAnthropicStop(w, stopReason, usage, nil, nil)
+	return writeAnthropicStop(w, stopReason, usage, nil, nil, nil)
 }
 
 // geminiSignatureDelimiter stashes a Gemini-3 functionCall thought_signature
