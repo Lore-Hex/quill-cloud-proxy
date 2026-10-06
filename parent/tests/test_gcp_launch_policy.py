@@ -159,6 +159,7 @@ def test_provider_wave_secrets_are_injected_only_after_existence_check() -> None
         "QUILL_NEXTBIT_SECRET": "trustedrouter-nextbit-api-key",
         "QUILL_AION_LABS_SECRET": "trustedrouter-aion-labs-api-key",
         "QUILL_SAMBANOVA_SECRET": "trustedrouter-sambanova-api-key",
+        "QUILL_META_SECRET": "trustedrouter-meta-api-key",
         "QUILL_INCEPTION_SECRET": "trustedrouter-inception-api-key",
         "QUILL_AKASHML_SECRET": "trustedrouter-akashml-api-key",
         "QUILL_ARCEE_SECRET": "trustedrouter-arcee-api-key",
