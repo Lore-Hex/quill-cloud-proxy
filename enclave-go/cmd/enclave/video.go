@@ -101,6 +101,8 @@ func (s *videoService) Start(ctx context.Context) {
 }
 
 func (s *videoService) drain(ctx context.Context) (int, error) {
+	// Refunds are independent of job claims: a rejected route has no job row.
+	refundErr := s.control.RetryVideoRoutingRefunds(ctx)
 	claimCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	jobs, err := s.control.ClaimVideoJobs(claimCtx, s.workerID, 8, 60)
 	cancel()
@@ -113,7 +115,7 @@ func (s *videoService) drain(ctx context.Context) (int, error) {
 		_, _ = s.pollAndFinalize(jobCtx, &job, s.workerID)
 		jobCancel()
 	}
-	return len(jobs), nil
+	return len(jobs), refundErr
 }
 
 func maybeServeVideoRoute(
@@ -222,6 +224,19 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		}
 		providers = eligible
 		if len(providers) == 0 {
+			// Before the policy filter, quoting could include BytePlus even when
+			// the caller selected a fixed-price route. Its bound is computed
+			// locally, independent of today's enabled credentials; no quote runs.
+			historicalTokenLimit, _ := video.NewBytePlusClient("", nil).OutputTokenLimit(resolved)
+			existing, err := s.control.LookupVideoReplay(ctx, bearer, resolved.Model.ID, idempotencyKey, videoRequestFingerprint(bearer, &req), req.Provider, historicalTokenLimit)
+			if err != nil {
+				writeGatewayAuthorizationError(conn, err)
+				return
+			}
+			if existing != nil {
+				writeVideoJobResponse(conn, http.StatusAccepted, existing)
+				return
+			}
 			withoutSeed := *resolved
 			withoutSeed.Seed = nil
 			var routes []string

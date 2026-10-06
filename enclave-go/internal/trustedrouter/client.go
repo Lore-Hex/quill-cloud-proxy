@@ -111,6 +111,8 @@ type Client struct {
 	imageModelsFetched time.Time
 	spendLease         *spendLeaseProtocol
 	stageDBootSigner   spendlease.DigestSigner
+	videoRefundsMu     sync.Mutex
+	videoRefunds       map[videoRefundID]*videoRoutingRefund
 }
 
 // CachedModelOutputLimit returns a known output cap from the public catalog

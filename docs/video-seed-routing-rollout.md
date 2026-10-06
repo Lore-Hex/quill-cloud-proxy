@@ -50,17 +50,84 @@ Old routers ignore the header but receive the original authorization body, so
 pre-rollout jobs still replay. `AuthorizeVideo` retains its existing scoped,
 authority-pinned lookup and validation of job ID, authorization, workspace,
 key, and model. A replay grants no dispatch authority and cannot recreate a
-missing job; ordinary content conflicts remain 409 without a retry.
+missing job; ordinary content conflicts remain 409 without a new authorization.
 
 For a fresh response, the enclave checks the selected provider **and every
 fallback candidate** against the derived set. If any is incompatible, it
-requests a refund at the same billing authority and returns 503
-`video_routing_unavailable` without preparing or dispatching a job. It does not
+records a compact refund obligation before attempting a refund at the same
+billing authority, and returns HTTP 503 with public type `server_error` and code
+`video_routing_unavailable` without preparing or dispatching a job. A failed
+refund stays registered: an identical caller retry attempts that refund before
+any authorization/replay lookup, and the video worker also drains obligations
+independently of job claims. Only a successful refund removes an obligation.
+Concurrent drain attempts serialize per authorization and retain the pinned
+endpoint even after control-plane failover. This queue is enclave memory, like
+other enclave billing retries; process loss still relies on the control plane's
+existing hold expiry/reaper. It is not a durable cross-process outbox. It does not
 try another authorization. A compatible response can proceed even from an old
 router. Thus an old router can still select an incompatible route and create a
 temporary hold, but the enclave cannot dispatch it. Eliminating those selections
 and holds requires the router change above; this enclave patch alone cannot
 promise successful seeded creation on every legacy router.
+
+
+## Read-only recovery before a new capability rejection
+
+A seeded request with no eligible provider and an idempotency key first calls
+`POST /internal/gateway/video/replay-lookup`. That read-only endpoint ships in
+the router follow-up on quill-router branch `video-derived-routing`, together
+with the routing-header enforcement above; deploy it before rolling out this
+enclave behavior.
+
+The lookup body uses the original video authorization identity: caller lookup
+hash, model, idempotency key, keyed request fingerprint, original provider
+policy and the existing estimate/region fields. It carries no reservation or
+invocation nonce. The server authenticates the key, resolves workspace/key scope,
+reads the stored authorization by scoped idempotency key, and verifies the
+original logical fingerprint (including the existing cross-region comparison).
+It never calls authorize, quote, reserve, prepare, queue or refund. The response
+contract is explicit:
+
+- No authorization: `200 {"data":{"found":false}}`.
+- Same request: `200 {"data":{"found":true,"authorization":{...}}}`, with
+  `authorization_id`, `workspace_id`, `api_key_hash`, `model`, and
+  `idempotent_replay:true`. No routes, credentials, pricing or dispatch nonce.
+- Different request using the same scoped key: 409.
+- Invalid/revoked/expired credentials or scope: the ordinary 401/403.
+
+Before the seed filter, quoting could include BytePlus even if the caller chose
+Venice. Lookup therefore checks the historical fixed-price token bound of one
+and, where applicable, the locally computed BytePlus bound. Only read-only
+fingerprint comparisons are repeated; prompt, seed, provider policy and their
+keyed fingerprint never change. Neither shape can grant dispatch rights.
+
+The enclave then uses the existing caller-scoped job lookup at exactly the
+returned authority, checking job ID, authorization, workspace, key and model.
+A missing job returns 409 and cannot be recreated. It returns the existing job
+with 202 even if that provider no longer supports seed. Only a request without
+an idempotency key, or an explicit miss from every configured authority, gets
+400 `unsupported_parameter`. A 404/405 for the new endpoint, an outage, or a dial
+failure is not proof of a new request: it yields 503 if another authority cannot
+recover the job. There is no fallback to `/authorize`.
+
+The router follow-up's tests for this endpoint live in
+`tests/test_video_read_only_replay.py` in quill-router.
+
+## Provider alias fixture
+
+`enclave-go/internal/types/testdata/provider_aliases.json` is generated directly
+from the router's `_PROVIDER_ALIASES` and `_PROVIDER_GROUP_ALIASES` AST literals;
+the Go test compares normalization against it. From this repository root:
+
+```sh
+python3 tools/sync_provider_alias_contract.py /path/to/router
+python3 tools/sync_provider_alias_contract.py /path/to/router --check
+```
+
+Run the `--check` command against the router revision being deployed to detect
+a router-only change; the standalone Go suite checks the committed fixture and
+does not require a sibling checkout. Regenerate the fixture and update Go
+normalization together when the router alias contract changes.
 
 ## Regression coverage
 
@@ -78,3 +145,16 @@ promise successful seeded creation on every legacy router.
   refund at the original billing authority without header leakage.
 - `TestBytePlusVideoSubmissionReservesTokensBeforePaidQueue`: original policy
   retained, derived header present only for seed, and seed delivered upstream.
+
+- `TestVideoRoutingRefundRetriedAfterFailover`: a failed refund after endpoint
+  failover is retried by the caller or worker, releases the hold exactly once,
+  and never authorizes, prepares, looks up or dispatches a replacement job.
+- `TestVideoUnsupportedSeedReadOnlyReplayAcrossRollout`: pre-rollout Hailuo and
+  Venice jobs recover without quotes or new authorization; changed prompt,
+  seed and policy conflict; definitive misses get the seed-specific 400.
+- `TestLookupVideoReplayReadOnlyAndAuthorityScoped`: endpoint rollout skew,
+  failover/misses, scope and identity validation, no fresh authority, missing
+  jobs and unavailable storage.
+- `TestVideoRoutingUnavailablePublicHTTPError` and
+  `TestVideoUnseededAuthorizationErrorBytesUnchanged`: public 503/code/type,
+  plus exact unseeded HTTP response parity even for the same router error type.

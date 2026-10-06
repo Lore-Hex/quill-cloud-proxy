@@ -53,6 +53,10 @@ func TestVideoSeedRejectedBeforeQuoteOrAuthorization(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/seed=%d", tc.name, seed), func(t *testing.T) {
 				var calls atomic.Int32
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/internal/gateway/video/replay-lookup" {
+						_, _ = w.Write([]byte(`{"data":{"found":false}}`))
+						return
+					}
 					calls.Add(1)
 					t.Errorf("unexpected provider or control-plane call: %s", r.URL.Path)
 					http.Error(w, "unexpected request", 500)
@@ -134,6 +138,54 @@ func TestVideoSeedProviderAliasesReachAuthorization(t *testing.T) {
 			if !strings.HasPrefix(out.String(), "HTTP/1.1 403 ") || calls.Load() != 1 || google.quotes.Load() != 1 || venice.quotes.Load() != 0 {
 				t.Fatalf("response=%s calls=%d google quotes=%d venice quotes=%d", out.String(), calls.Load(), google.quotes.Load(), venice.quotes.Load())
 			}
+		})
+	}
+}
+
+func TestVideoRoutingUnavailablePublicHTTPError(t *testing.T) {
+	refunds := 0
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			_, _ = w.Write([]byte(`{"data":{"authorization_id":"auth","workspace_id":"ws","api_key_hash":"hash","model":"minimax/h3-max","provider":"venice","endpoint_id":"primary","additional_cost_reservation_microdollars":500000}}`))
+		case "/internal/gateway/refund":
+			refunds++
+			_, _ = w.Write([]byte(`{"data":{"refunded":true}}`))
+		default:
+			t.Errorf("unexpected dispatch/mutation: %s", r.URL.Path)
+			w.WriteHeader(500)
+		}
+	}))
+	defer control.Close()
+	s := &videoService{control: trustedrouter.New(control.URL, "internal", control.Client()), providers: video.NewRegistryWithProviders(video.NewFALVideoClientAt("test", control.URL, control.Client()))}
+	var out bytes.Buffer
+	s.serveCreate(t.Context(), &out, []byte(`{"model":"minimax/h3-max","prompt":"cube","seed":1101}`), "test", "idem")
+	failure := videoHTTPBody(t, out.String())["error"].(map[string]any)
+	if !strings.HasPrefix(out.String(), "HTTP/1.1 503 ") || failure["code"] != "video_routing_unavailable" || failure["type"] != "server_error" || failure["source"] != "router" || refunds != 1 {
+		t.Fatalf("response=%s refunds=%d", out.String(), refunds)
+	}
+}
+
+func TestVideoUnseededAuthorizationErrorBytesUnchanged(t *testing.T) {
+	for _, errorType := range []string{"legacy_type", "video_routing_unavailable"} {
+		t.Run(errorType, func(t *testing.T) {
+			control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/internal/gateway/authorize" || r.Header.Get("X-Quill-Video-Allowed-Providers") != "" {
+					t.Errorf("unexpected call: %s %v", r.URL.Path, r.Header)
+				}
+				w.Header().Set("Retry-After", "1")
+				w.WriteHeader(503)
+				_, _ = fmt.Fprintf(w, `{"error":{"message":"legacy unavailable","type":%q,"code":"legacy_code"}}`, errorType)
+			}))
+			defer control.Close()
+			s := &videoService{control: trustedrouter.New(control.URL, "internal", control.Client()), providers: video.NewRegistryWithProviders(video.NewFALVideoClientAt("test", control.URL, control.Client()))}
+			var got, want bytes.Buffer
+			s.serveCreate(t.Context(), &got, []byte(`{"model":"minimax/h3-max","prompt":"cube"}`), "test", "idem")
+			writeErrorWithSourceHeaders(&want, 503, "legacy unavailable", "router", map[string]string{"Retry-After": "1"})
+			if got.String() != want.String() {
+				t.Fatalf("unseeded HTTP bytes changed:\ngot %q\nwant %q", got.String(), want.String())
+			}
+
 		})
 	}
 }

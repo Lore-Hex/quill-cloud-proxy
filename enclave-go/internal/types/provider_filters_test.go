@@ -1,36 +1,32 @@
 package types
 
 import (
+	"encoding/json"
+	"os"
 	"slices"
 	"testing"
 )
 
 func TestProviderFilterAliasesMatchRouter(t *testing.T) {
-	// Pin the complete routing.py _PROVIDER_ALIASES and
-	// _PROVIDER_GROUP_ALIASES contract (not the LLM dispatch aliases).
+	// Generated from router routing.py, not a second hand-maintained alias table.
+	// Regenerate/check with tools/sync_provider_alias_contract.py (see rollout doc).
+	raw, err := os.ReadFile("testdata/provider_aliases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var aliases map[string][]string
+	if err := json.Unmarshal(raw, &aliases); err != nil {
+		t.Fatal(err)
+	}
+	for alias, want := range aliases {
+		if got := NormalizeProviderFilters([]string{alias}); !slices.Equal(got, want) {
+			t.Errorf("router alias %q: got %v, want %v", alias, got, want)
+		}
+	}
 	for _, tc := range []struct {
 		input string
 		want  []string
 	}{
-		{"google-ai", []string{"google-ai-studio"}},
-		{"ai-studio", []string{"google-ai-studio"}},
-		{"google-vertex-ai", []string{"google-vertex"}},
-		{"vertex", []string{"google-vertex"}},
-		{"vertex-ai", []string{"google-vertex"}},
-		{"chatgpt", []string{"openai"}},
-		{"chat-gpt", []string{"openai"}},
-		{"mistralai", []string{"mistral"}},
-		{"mistral-ai", []string{"mistral"}},
-		{"moonshot", []string{"kimi"}},
-		{"moonshot-ai", []string{"kimi"}},
-		{"kimi", []string{"kimi"}},
-		{"z-ai", []string{"zai"}},
-		{"zhipu", []string{"zai"}},
-		{"zhipuai", []string{"zai"}},
-		{"together-ai", []string{"together"}},
-		{"togetherai", []string{"together"}},
-		{"gemini", []string{"google-vertex", "google-ai-studio"}},
-		{"google", []string{"google-vertex", "google-ai-studio"}},
 		{"  GOOGLE_AI Studio\t", []string{"google-ai-studio"}},
 		{" Google  AI ", []string{"google--ai"}},
 		{"BytePlus", []string{"byteplus"}},

@@ -188,3 +188,72 @@ func TestAuthorizeVideoConstraintsFailClosedOnLegacyRouter(t *testing.T) {
 		})
 	}
 }
+
+func TestVideoRoutingRefundRetriedAfterFailover(t *testing.T) {
+	for _, retry := range []string{"caller", "worker"} {
+		t.Run(retry, func(t *testing.T) {
+			authorizes, refunds, lookups := 0, 0, 0
+			held := false
+			client := New("http://127.0.0.1:18081,http://127.0.0.1:18082", "internal", &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				reply := func(status int, body string) (*http.Response, error) {
+					return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+				}
+				switch r.URL.Path {
+				case "/internal/gateway/authorize":
+					if r.URL.Host == "127.0.0.1:18081" {
+						return nil, &dialFailure{err: errors.New("unavailable")}
+					}
+					authorizes++
+					if authorizes == 1 {
+						held = true
+					}
+					return reply(200, fmt.Sprintf(`{"data":{"authorization_id":"auth","workspace_id":"ws","api_key_hash":"hash","model":"minimax/h3-max","provider":"venice","endpoint_id":"primary","additional_cost_reservation_microdollars":500000,"idempotent_replay":%t}}`, authorizes > 1))
+				case "/internal/gateway/refund":
+					refunds++
+					if r.URL.Host != "127.0.0.1:18082" || r.Header.Get("X-Quill-Video-Allowed-Providers") != "" {
+						t.Error("refund changed billing authority or leaked constraints")
+					}
+					var body map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["authorization_id"] != "auth" || body["error_type"] != "video_routing_unavailable" {
+						t.Errorf("wrong refund: %v %v", body, err)
+					}
+					if refunds == 1 {
+						return reply(503, `{"error":{"message":"temporary outage"}}`)
+					}
+					held = false
+					return reply(200, `{"data":{"refunded":true}}`)
+				default:
+					if strings.HasSuffix(r.URL.Path, "/lookup") {
+						lookups++
+						return reply(404, `{"error":{"message":"no job"}}`)
+					}
+					t.Errorf("unexpected dispatch/mutation %s", r.URL.Path)
+					return reply(500, `{}`)
+				}
+			})})
+			for attempt := range 2 {
+				if attempt == 1 && retry == "worker" {
+					if err := client.RetryVideoRoutingRefunds(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					continue
+				}
+				ctx := WithVideoAllowedProviders(t.Context(), []string{"fal"})
+				auth, job, err := client.AuthorizeVideo(ctx, "key", "minimax/h3-max", "idem", strings.Repeat("a", 64), nil, 500000)
+				if auth != nil || job != nil || err == nil {
+					t.Fatalf("unexpected dispatch: auth=%v job=%v err=%v", auth, job, err)
+				}
+			}
+			if held || refunds != 2 {
+				t.Fatalf("hold stranded: held=%t authorizes=%d refunds=%d lookups=%d", held, authorizes, refunds, lookups)
+			}
+
+			if err := client.RetryVideoRoutingRefunds(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if authorizes != 1 || refunds != 2 || lookups != 0 {
+				t.Fatalf("unexpected recovery calls: auth=%d refund=%d lookup=%d", authorizes, refunds, lookups)
+			}
+		})
+	}
+}

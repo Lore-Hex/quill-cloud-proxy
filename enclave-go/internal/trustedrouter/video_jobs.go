@@ -161,62 +161,53 @@ func (c *Client) AuthorizeVideo(
 		return nil, nil, fmt.Errorf("trustedrouter: video requires a positive quote or token limit")
 	}
 	maxTokens := max(1, limit)
-	var routing *qtypes.ProviderRouting
-	if len(provider) > 0 {
-		raw, err := json.Marshal(provider)
-		if err != nil {
-			return nil, nil, fmt.Errorf("trustedrouter: invalid video provider routing")
-		}
-		var parsed qtypes.ProviderRouting
-		if err := json.Unmarshal(raw, &parsed); err != nil {
-			return nil, nil, fmt.Errorf("trustedrouter: invalid video provider routing")
-		}
-		routing = &parsed
+	req, err := videoAuthorizationRequest(model, idempotencyKey, requestFingerprint, provider, maxTokens, quotedMicrodollars)
+	if err != nil {
+		return nil, nil, err
 	}
-	req := &qtypes.OpenAIChatRequest{
-		Model:                                 model,
-		MaxTokens:                             &maxTokens,
-		IdempotencyKey:                        idempotencyKey,
-		RequestFingerprint:                    requestFingerprint,
-		Provider:                              routing,
-		AdditionalCostReservationMicrodollars: quotedMicrodollars,
+	refundRequest := videoRefundRequest(ctx, bearer, model, idempotencyKey, requestFingerprint)
+	if pending := c.pendingVideoRefund(refundRequest); pending != nil {
+		_ = c.retryVideoRefund(ctx, pending)
+		return nil, nil, videoRoutingUnavailable()
 	}
 	auth, err := c.AuthorizeWithRoute(ctx, bearer, req, "videos")
 	var replay *videoReplayLookup
 	if !errors.As(err, &replay) {
 		if allowed := videoAllowedProviders(ctx); err == nil && auth != nil && allowed != nil && !videoAuthorizationAllowed(auth, allowed) {
-			_ = c.Refund(ctx, auth, 503, "video_routing_unavailable", 0.001, nil)
-			return nil, nil, &ControlPlaneError{
-				Path: "/internal/gateway/authorize", StatusCode: 503,
-				Type:    "video_routing_unavailable",
-				Message: "control plane returned a video route outside the required provider constraints",
-			}
+			pending := c.rememberVideoRefund(auth, refundRequest)
+			_ = c.retryVideoRefund(ctx, pending)
+			return nil, nil, videoRoutingUnavailable()
 		}
 		return auth, nil, err
 	}
+	job, err := c.recoverVideoReplay(ctx, bearer, model, replay)
+	return nil, job, err
+}
+
+func (c *Client) recoverVideoReplay(ctx context.Context, bearer, model string, replay *videoReplayLookup) (*VideoJob, error) {
 	if replay.job.Model != model {
-		return nil, nil, replay.conflict
+		return nil, replay.conflict
 	}
 	lookupHash, err := c.beforeCredentialCheck(ctx, bearer)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	job, err := c.lookupVideoJobAtEndpoint(ctx, lookupHash, replay.job.ID, replay.job.ControlPlaneEndpoint)
 	c.afterCredentialCheck(ctx, lookupHash, err)
 	var controlErr *ControlPlaneError
 	if errors.As(err, &controlErr) && controlErr.StatusCode == http.StatusNotFound {
 		// The original invocation may still be preparing its job. Never take over.
-		return nil, nil, replay.conflict
+		return nil, replay.conflict
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if job.ID != replay.job.ID || job.AuthorizationID != replay.job.AuthorizationID ||
 		job.KeyHash != replay.job.KeyHash || job.WorkspaceID != replay.job.WorkspaceID || job.Model != model {
-		return nil, nil, replay.conflict
+		return nil, replay.conflict
 	}
 	job.Created = false
-	return nil, job, nil
+	return job, nil
 }
 
 func (c *Client) PrepareVideoJob(ctx context.Context, job *VideoJob) (*VideoJob, error) {
@@ -426,4 +417,27 @@ func (c *Client) MarkVideoJobCleaned(ctx context.Context, job *VideoJob) error {
 		ctx, path, map[string]any{}, &decoded, pinnedEndpoint,
 	)
 	return err
+}
+
+func videoAuthorizationRequest(model, idempotencyKey, requestFingerprint string, provider map[string]any, maxTokens, quotedMicrodollars int) (*qtypes.OpenAIChatRequest, error) {
+	var routing *qtypes.ProviderRouting
+	if len(provider) > 0 {
+		raw, err := json.Marshal(provider)
+		if err != nil {
+			return nil, fmt.Errorf("trustedrouter: invalid video provider routing")
+		}
+		var parsed qtypes.ProviderRouting
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			return nil, fmt.Errorf("trustedrouter: invalid video provider routing")
+		}
+		routing = &parsed
+	}
+	return &qtypes.OpenAIChatRequest{
+		Model:                                 model,
+		MaxTokens:                             &maxTokens,
+		IdempotencyKey:                        idempotencyKey,
+		RequestFingerprint:                    requestFingerprint,
+		Provider:                              routing,
+		AdditionalCostReservationMicrodollars: quotedMicrodollars,
+	}, nil
 }
