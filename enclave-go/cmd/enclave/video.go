@@ -385,7 +385,7 @@ func (s *videoService) rejectVideoAuthorization(ctx context.Context, conn io.Wri
 	// cannot serve the request. The token bound is exactly what we authorized.
 	authorizedTokenLimit := job.OutputTokenLimit
 	selectRoute := func(providerID, endpointID string) bool {
-		provider, ok := s.providers.Provider(providerID)
+		provider, ok := s.providers.RegisteredProvider(providerID)
 		if !ok || endpointID == "" {
 			return false
 		}

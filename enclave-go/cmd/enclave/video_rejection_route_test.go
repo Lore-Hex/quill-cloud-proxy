@@ -23,6 +23,8 @@ func TestVideoRejectionAuthorizedRow(t *testing.T) {
 		wantProvider, wantEndpoint string
 		wantQuote, wantLimit       int
 	}{
+		{name: "unknown_primary_and_candidate", primary: "unknown-primary", cost: 123456, limit: 400000,
+			candidates: []map[string]any{{"provider": "unknown-candidate", "endpoint_id": "unknown"}}},
 		{name: "routing_zero_fixed_quote_uses_token_candidate", primary: "venice", limit: 400000,
 			candidates:   []map[string]any{{"provider": "venice", "endpoint_id": "fixed-candidate"}, {"provider": "byteplus", "endpoint_id": "token-candidate"}, {"provider": "byteplus", "endpoint_id": "later-token"}},
 			wantProvider: "byteplus", wantEndpoint: "token-candidate", wantLimit: 400000},
