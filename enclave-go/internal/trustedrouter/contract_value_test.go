@@ -17,6 +17,12 @@ func TestContractValuePreviewPrivacy(t *testing.T) {
 		{"usage", `{"usage":{"include":true,"secret":"private-content"}}`, `{"_redacted":true,"include":true}`},
 		{"prompt_cache_retention", `{"prompt_cache_retention":"24h"}`, `"24h"`},
 		{"reasoning.effort", `{"reasoning":{"effort":"high"}}`, `"high"`},
+		{"include", `{"include":["reasoning.encrypted_content"]}`, `["reasoning.encrypted_content"]`},
+		{"include", `{"include":["message.output_text.logprobs","web_search_call.action.sources"]}`, `["message.output_text.logprobs","web_search_call.action.sources"]`},
+		{"modalities", `{"modalities":["text","audio"]}`, `["text","audio"]`},
+		{"include", `{"include":[]}`, `[]`},
+		{"include", `{"include":["reasoning.encrypted_content","private-content","sk-private-key"]}`, `["reasoning.encrypted_content","[redacted:string]","[redacted:string]"]`},
+		{"include", `{"include":[{"content":"private-content"},["private-content"],null]}`, `["[redacted:object]","[redacted:array]",null]`},
 		{"stream", `{"stream":null}`, `null`},
 		{"temperature", `{"temperature":1e200}`, `"[redacted:number]"`},
 		{"temperature", `{"temperature":"private-content"}`, `"[redacted:string]"`},
@@ -46,6 +52,36 @@ func TestContractValuePreviewPrivacy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestContractArrayPreviewBudget(t *testing.T) {
+	for _, count := range []int{3, 4, 101, 10000} {
+		values := make([]string, count)
+		for i := range values {
+			values[i] = "reasoning.encrypted_content"
+		}
+		body, _ := json.Marshal(map[string]any{"include": values, "input": "private-content"})
+		preview, truncated := ContractParameterValue(body, "include")
+		want := `["reasoning.encrypted_content","reasoning.encrypted_content","reasoning.encrypted_content"]`
+		if preview != want || truncated != (count > 3) || len(preview) > 100 || !json.Valid([]byte(preview)) {
+			t.Fatalf("count=%d preview=%q truncated=%t", count, preview, truncated)
+		}
+		ctx := WithRequestLogID(t.Context(), "rlog_"+strings.Repeat("a", 32))
+		ctx = WithContractRejection(ctx, 501, "include", preview, truncated)
+		wire := map[string]any{}
+		addContractRejection(ctx, wire, "/v1/responses")
+		got := wire["contract_rejection"].(contractRejection)
+		if got.ValuePreview != preview || got.ValueTruncated != truncated {
+			t.Fatalf("preview lost at export boundary: %#v", got)
+		}
+	}
+	for _, private := range []string{strings.Repeat("private-content", 10000), "private\ncontent", "秘密内容"} {
+		body, _ := json.Marshal(map[string]any{"include": []string{private, "reasoning.encrypted_content"}})
+		preview, truncated := ContractParameterValue(body, "include")
+		if preview != `["[redacted:string]","reasoning.encrypted_content"]` || truncated {
+			t.Fatalf("raw string escaped: %q", preview)
+		}
 	}
 }
 
