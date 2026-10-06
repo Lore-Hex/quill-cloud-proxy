@@ -180,7 +180,16 @@ func serveEmbeddings(
 		}
 	}
 
-	out, err := json.Marshal(resp)
+	responseUsage := map[string]any{
+		"prompt_tokens": resp.Usage.PromptTokens,
+		"total_tokens":  resp.Usage.TotalTokens,
+	}
+	annotateUsageCost(responseUsage, settlement)
+	// Overlay usage without decoding the raw embedding vectors.
+	out, err := json.Marshal(struct {
+		*types.EmbeddingResponse
+		Usage map[string]any `json:"usage"`
+	}{resp, responseUsage})
 	if err != nil {
 		writeSpentError(conn, 500, "embeddings encoding error")
 		return

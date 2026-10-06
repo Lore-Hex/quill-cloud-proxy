@@ -1,4 +1,0 @@
-./cert.go
-./dns01.go
-./gcscache.go
-./gcscache_http_gcp.go
