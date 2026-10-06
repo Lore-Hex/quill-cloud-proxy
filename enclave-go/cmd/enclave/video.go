@@ -276,6 +276,7 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		authorizeCtx,
 		bearer,
 		resolved.Model.ID,
+		resolved.Resolution,
 		idempotencyKey,
 		videoRequestFingerprint(bearer, &req),
 		req.Provider,
@@ -290,8 +291,13 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		writeVideoJobResponse(conn, http.StatusAccepted, existing)
 		return
 	}
-	routes := authorizedVideoRoutes(auth, quotes)
+	routes := authorizedVideoRoutes(auth, quotes, resolved.Resolution)
 	if len(routes) == 0 && req.Seed == nil {
+		if _, hasBytePlus := quotes["byteplus"]; hasBytePlus && resolved.Resolution == "1080p" && auth.VideoTariffResolution != "1080p" {
+			_ = s.control.Refund(ctx, auth, 503, "video_tariff_unavailable", 0.001, nil)
+			writeOpenAIError(conn, 503, "BytePlus 1080p billing requires a matching resolution tariff acknowledgment from the control plane", "server_error", "video_tariff_unavailable", "")
+			return
+		}
 		_ = s.control.Refund(ctx, auth, 503, "video_provider_unavailable", 0.001, nil)
 		writeOpenAIError(conn, 503, "no authorized video provider supports this request", "server_error", "video_provider_unavailable", "")
 		return
@@ -428,6 +434,7 @@ func maximumVideoTokenLimit(quotes map[string]videoQuote) int {
 func authorizedVideoRoutes(
 	auth *trustedrouter.Authorization,
 	quotes map[string]videoQuote,
+	resolution string,
 ) []authorizedVideoRoute {
 	if auth == nil {
 		return nil
@@ -435,6 +442,13 @@ func authorizedVideoRoutes(
 	routes := make([]authorizedVideoRoute, 0, len(auth.RouteCandidates)+1)
 	seen := make(map[string]struct{}, len(auth.RouteCandidates)+1)
 	appendRoute := func(provider, endpointID string) {
+		// Check after authorization (the echo is only known now), but before
+		// preparing a job or paid queueing. Filter primary AND fallback routes.
+		// Other authorized candidates can use the shared hold and settle their
+		// own endpoint; if none remain, serveCreate refunds the entire hold.
+		if provider == "byteplus" && resolution == "1080p" && auth.VideoTariffResolution != "1080p" {
+			return
+		}
 		quote, ok := quotes[provider]
 		if !ok || endpointID == "" {
 			return

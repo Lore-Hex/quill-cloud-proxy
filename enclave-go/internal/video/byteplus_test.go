@@ -80,20 +80,60 @@ func TestBytePlusNativeLifecycleAndUsage(t *testing.T) {
 func TestBytePlusRejectsWrongTariffBeforeSending(t *testing.T) {
 	c := NewBytePlusClient("test-only", nil)
 	for _, change := range []func(*ResolvedRequest){
-		func(r *ResolvedRequest) { r.Resolution = "1080p" },
+		func(r *ResolvedRequest) { r.Resolution = "4k" },
+		func(r *ResolvedRequest) { r.DurationSeconds = 3 },
 		func(r *ResolvedRequest) { r.DurationSeconds = 30 },
 		func(r *ResolvedRequest) { r.VideoReference = "https://example.com/a.mp4" },
 		func(r *ResolvedRequest) { r.AudioReference = "https://example.com/a.mp3" },
 		func(r *ResolvedRequest) { r.NegativePrompt = "extra" },
 		func(r *ResolvedRequest) { r.LastFrame = "https://example.com/a.png" },
+		func(r *ResolvedRequest) { r.ReferenceImages = []string{"https://example.com/a.png"} },
 	} {
-		r := bytePlusRequest(t, "bytedance/seedance-2.5")
-		change(r)
-		if c.Supports(r) {
-			t.Fatal("unsupported tariff accepted")
+		for _, resolution := range []string{"480p", "720p", "1080p"} {
+			r := bytePlusRequest(t, "bytedance/seedance-2.5")
+			r.Resolution = resolution
+			change(r)
+			if c.Supports(r) {
+				t.Fatal("unsupported tariff accepted")
+			}
+			if _, err := c.QueueResolved(context.Background(), r); err == nil {
+				t.Fatal("queued unsupported mode")
+			}
 		}
-		if _, err := c.QueueResolved(context.Background(), r); err == nil {
-			t.Fatal("queued unsupported mode")
+	}
+}
+
+func TestBytePlusResolutionTokenLimits(t *testing.T) {
+	c := NewBytePlusClient("test-only", nil)
+	for model := range bytePlusVideoModels {
+		for resolution, perSecond := range map[string]int{"480p": 20_000, "720p": 40_000, "1080p": 100_000} {
+			for _, duration := range []int{4, 15} {
+				t.Run(fmt.Sprintf("%s/%s/%d", model, resolution, duration), func(t *testing.T) {
+					r := bytePlusRequest(t, model)
+					r.Resolution, r.DurationSeconds = resolution, duration
+					wantSupported := resolution != "1080p" || model != "bytedance/seedance-2.0-fast"
+					if c.Supports(r) != wantSupported {
+						t.Fatalf("Supports = %t, want %t", c.Supports(r), wantSupported)
+					}
+					limit, err := c.OutputTokenLimit(r)
+					if !wantSupported {
+						if err == nil || limit != 0 {
+							t.Fatalf("unsupported bound = %d, %v", limit, err)
+						}
+						return
+					}
+					if err != nil || limit != perSecond*duration || limit > 2_000_000 {
+						t.Fatalf("bound = %d, %v", limit, err)
+					}
+					if resolution == "1080p" && limit < 2*48_600*duration {
+						t.Fatal("1080p reservation lacks headroom")
+					}
+					r.FirstFrame = "https://example.com/a.png"
+					if !c.Supports(r) {
+						t.Fatal("first frame rejected")
+					}
+				})
+			}
 		}
 	}
 }

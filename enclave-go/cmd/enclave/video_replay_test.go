@@ -154,7 +154,7 @@ func TestVideoSeedReplayAcrossRoutingConstraintRollout(t *testing.T) {
 			}))
 			defer provider.Close()
 			client := trustedrouter.New(control.URL, "test", control.Client())
-			auth, job, err := client.AuthorizeVideo(t.Context(), "test", model, "original-key", videoRequestFingerprint("test", &req), req.Provider, 500000, 0)
+			auth, job, err := client.AuthorizeVideo(t.Context(), "test", model, "", "original-key", videoRequestFingerprint("test", &req), req.Provider, 500000, 0)
 			if err != nil || auth == nil || job != nil {
 				t.Fatalf("pre-rollout authorize: auth=%+v job=%+v err=%v", auth, job, err)
 			}
@@ -257,7 +257,7 @@ func TestVideoUnsupportedSeedReadOnlyReplayAcrossRollout(t *testing.T) {
 			}))
 			defer control.Close()
 			client := trustedrouter.New(control.URL, "internal", control.Client())
-			auth, job, err := client.AuthorizeVideo(t.Context(), "test", model, "old-key", videoRequestFingerprint("test", &req), req.Provider, 500000, tc.tokenLimit)
+			auth, job, err := client.AuthorizeVideo(t.Context(), "test", model, "", "old-key", videoRequestFingerprint("test", &req), req.Provider, 500000, tc.tokenLimit)
 			if err != nil || auth == nil || job != nil {
 				t.Fatalf("legacy authorization: %v %v %v", auth, job, err)
 			}
