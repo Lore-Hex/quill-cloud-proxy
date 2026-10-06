@@ -35,6 +35,15 @@ var contractValueEnums = map[string]string{
 	"text.format.type":         "text json_object json_schema",
 }
 
+// These are diagnostic option names, not an API capability allowlist. Never
+// treat arbitrary strings or nested payloads as safe just because they fit.
+var contractValueArrayEnums = map[string]string{
+	"include": `code_interpreter_call.outputs computer_call_output.output.image_url
+		file_search_call.results message.input_image.image_url message.output_text.logprobs
+		reasoning.encrypted_content web_search_call.action.sources web_search_call.results`,
+	"modalities": "text audio image video",
+}
+
 // ContractParameterValue extracts only the rejected option, not the surrounding
 // request. Redaction precedes the 100-byte budget. Oversized collections lose
 // trailing entries but remain valid JSON so the sink can validate them again.
@@ -92,6 +101,9 @@ func contractValuePolicy(path string) (bool, []string) {
 		}
 	}
 	if values, ok := contractValueEnums[path]; ok {
+		return true, strings.Fields(values)
+	}
+	if values, ok := contractValueArrayEnums[path]; ok {
 		return true, strings.Fields(values)
 	}
 	return false, nil
@@ -161,8 +173,22 @@ func safeContractValue(path string, value any) any {
 			out["_redacted"] = true
 		}
 		return out
+	case []any:
+		if _, ok := contractValueArrayEnums[path]; !ok {
+			return "[redacted:array]"
+		}
+		// Even the smallest JSON elements cannot fit 101 entries in 100 bytes.
+		// Bound sanitizer work; the budget pass will mark this prefix truncated.
+		out := make([]any, 0, min(len(value), 101))
+		for _, item := range value[:min(len(value), 101)] {
+			if _, nested := item.([]any); nested {
+				out = append(out, "[redacted:array]")
+			} else {
+				out = append(out, safeContractValue(path, item))
+			}
+		}
+		return out
 	default:
-		// Arrays are not scalar settings. Do not copy arbitrary nested payloads.
 		return "[redacted:array]"
 	}
 }
@@ -176,6 +202,11 @@ func boundedContractValue(value any) (string, bool) {
 		}
 		if len(encoded) <= 100 {
 			return string(encoded), truncated
+		}
+		if array, ok := value.([]any); ok && len(array) > 0 {
+			value = array[:len(array)-1]
+			truncated = true
+			continue
 		}
 		object, ok := value.(map[string]any)
 		if !ok || len(object) == 0 {

@@ -338,6 +338,14 @@ func invokeOpenAICompatibleStreamingWithClientOptions(
 		httpReq.Header.Set("Accept", "application/json")
 	}
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
+	if normalizeDirectProvider(provider) == "cloudflare-workers-ai" {
+		// Select the operator's Unified Billing/ZDR gateway. Its logging and
+		// caching defaults must never cause customer content to be retained.
+		httpReq.Header.Set("cf-aig-gateway-id", "default")
+		httpReq.Header.Set("cf-aig-collect-log", "false")
+		httpReq.Header.Set("cf-aig-collect-log-payload", "false")
+		httpReq.Header.Set("cf-aig-skip-cache", "true")
+	}
 	if normalizeDirectProvider(provider) == "wafer" &&
 		(options.waferZDRRequired || legacyWaferModelSupportsZDR(upstreamID)) {
 		httpReq.Header.Set("Wafer-ZDR", "required")
