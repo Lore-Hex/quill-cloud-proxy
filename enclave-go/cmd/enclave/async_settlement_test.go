@@ -51,10 +51,15 @@ func (p *asyncCleanupProvider) InvokeStreaming(ctx context.Context, req *types.O
 func TestAsyncStreamFinalFrameJoinAndPendingMetadata(t *testing.T) {
 	t.Setenv("QUILL_USAGE_HEARTBEAT", "off")
 	t.Setenv("TR_ASYNC_SETTLE_NEGOTIATE", "on")
-	for _, scenario := range []string{"chat.completions", "responses", "chat.completions-stage-d", "responses-stage-d"} {
+	public := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, 32)).Public().(ed25519.PublicKey)
+	t.Setenv("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS", `{"test":"`+base64.RawURLEncoding.EncodeToString(public)+`"}`)
+	for _, scenario := range []string{"chat.completions", "responses", "chat.completions-stage-d", "responses-stage-d", "chat.completions-cleanup-timeout", "responses-cleanup-timeout", "chat.completions-stage-d-cleanup-timeout", "responses-stage-d-cleanup-timeout", "chat.completions-cancelled", "responses-cancelled", "responses-stage-d-cancelled"} {
 		t.Run(scenario, func(t *testing.T) {
-			route := strings.TrimSuffix(scenario, "-stage-d")
-			stageD := route != scenario
+			slow := strings.HasSuffix(scenario, "-cleanup-timeout")
+			cancelled := strings.HasSuffix(scenario, "-cancelled")
+			route := strings.TrimSuffix(strings.TrimSuffix(scenario, "-cleanup-timeout"), "-cancelled")
+			stageD := strings.HasSuffix(route, "-stage-d")
+			route = strings.TrimSuffix(route, "-stage-d")
 			t.Setenv("QUILL_TERMINATE_AT_CAP", "off")
 			if stageD {
 				t.Setenv("QUILL_USAGE_HEARTBEAT", "on")
@@ -75,7 +80,7 @@ func TestAsyncStreamFinalFrameJoinAndPendingMetadata(t *testing.T) {
 			f.Claims["streamed"], f.Claims["route_type"] = true, route
 			f.Claims["iat"], f.Claims["exp"] = time.Now().Unix()-1, time.Now().Unix()+300
 			claims, _ := json.Marshal(f.Claims)
-			header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"EdDSA","typ":"tr-async-settle-v1","kid":"test"}`))
+			header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"EdDSA","kid":"test","typ":"tr-async-settle-v1"}`))
 			signed := header + "." + base64.RawURLEncoding.EncodeToString(claims)
 			signature := ed25519.Sign(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, 32)), []byte(signed))
 			f.Response.Data["settlement_ticket"] = signed + "." + base64.RawURLEncoding.EncodeToString(signature)
@@ -107,12 +112,14 @@ func TestAsyncStreamFinalFrameJoinAndPendingMetadata(t *testing.T) {
 				select {
 				case <-provider.stopped:
 				default:
-					t.Error("settle before provider completion")
+					if !slow && !cancelled {
+						t.Error("settle before provider completion")
+					}
 				}
 				before := out.String()
 				needle := `"finish_reason":"stop"`
 				if route == "responses" {
-					needle = "response.completed"
+					needle = "response.output_item.done"
 				}
 				if !strings.Contains(before, needle) || strings.Contains(before, "[DONE]") {
 					t.Errorf("settle order: %s", before)
@@ -154,13 +161,15 @@ func TestAsyncStreamFinalFrameJoinAndPendingMetadata(t *testing.T) {
 				t.Fatal("not negotiated")
 			}
 			done := make(chan struct{})
+			streamCtx, cancelStream := context.WithCancel(t.Context())
+			defer cancelStream()
 			go func() {
 				defer close(done)
-				serveStreaming(t.Context(), &out, provider, req, &types.AnthropicMessagesRequest{}, []llm.InvokeOptions{{Model: auth.Model, Provider: auth.Provider, EndpointID: auth.EndpointID}}, gateway, auth, nil, time.Now(), nil, route, "async-stream", auth.Model)
+				serveStreaming(streamCtx, &out, provider, req, &types.AnthropicMessagesRequest{}, []llm.InvokeOptions{{Model: auth.Model, Provider: auth.Provider, EndpointID: auth.EndpointID}}, gateway, auth, nil, time.Now(), nil, route, "async-stream", auth.Model)
 			}()
 			needle := `"finish_reason":"stop"`
 			if route == "responses" {
-				needle = "response.completed"
+				needle = "response.output_item.done"
 			}
 			deadline := time.After(3 * time.Second)
 			for !strings.Contains(out.String(), needle) {
@@ -175,13 +184,28 @@ func TestAsyncStreamFinalFrameJoinAndPendingMetadata(t *testing.T) {
 				t.Fatal("settled before provider joined")
 			default:
 			}
-			release.Do(func() { close(provider.release) })
+			if cancelled {
+				cancelStream()
+			}
+			if slow || cancelled {
+				go func() { time.Sleep(6 * time.Second); release.Do(func() { close(provider.release) }) }()
+			} else {
+				release.Do(func() { close(provider.release) })
+			}
 			select {
 			case <-done:
-			case <-time.After(5 * time.Second):
+			case <-time.After(9 * time.Second):
 				t.Fatal("stream did not finish")
 			}
+			select {
+			case <-settled:
+			default:
+				t.Error("settlement was not attempted")
+			}
 			text := out.String()
+			if strings.Contains(text, "response.failed") {
+				t.Fatal("delivered output failed")
+			}
 			if route == "chat.completions" {
 				for _, line := range strings.Split(text, "\n") {
 					if !strings.HasPrefix(line, "data: ") || !strings.Contains(line, `"trusted_router_settlement"`) {
@@ -199,6 +223,12 @@ func TestAsyncStreamFinalFrameJoinAndPendingMetadata(t *testing.T) {
 			}
 			pending := strings.Index(text, `"trusted_router_settlement"`)
 			end := strings.Index(text, "[DONE]")
+			if route == "responses" {
+				completed := strings.Index(text, "event: response.completed")
+				if pending < 0 || completed < pending || end < completed {
+					t.Fatalf("metadata must precede completion: %s", text)
+				}
+			}
 			if pending < 0 || end < pending || strings.Index(text, needle) > pending {
 				t.Fatalf("metadata ordering: %s", text)
 			}

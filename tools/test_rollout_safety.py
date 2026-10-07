@@ -16,6 +16,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RolloutSafetyTests(unittest.TestCase):
+    def test_async_settlement_rollout_pins_and_keyring_allowlist(self) -> None:
+        aws = (ROOT / "enclave-go/Dockerfile.enclave").read_text()
+        self.assertIn("ENV TR_ASYNC_SETTLE_NEGOTIATE=off", aws)
+        self.assertIn('ENV TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS=""', aws)
+        gcp = (ROOT / "tools/deploy-gcp-mig.sh").read_text()
+        self.assertIn("tee-env-TR_ASYNC_SETTLE_NEGOTIATE=off|tee-env-TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS=|", gcp)
+        azure = (ROOT / "tools/deploy-azure-aci.sh").read_text()
+        self.assertIn('"TR_ASYNC_SETTLE_NEGOTIATE": "off"', azure)
+        self.assertIn('"TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS": ""', azure)
+        for suffix in ("gcp", "gcp.multi", "gcp.anthropic"):
+            docker = (ROOT / ("enclave-go/Dockerfile.enclave." + suffix)).read_text()
+            policy = next(line for line in docker.splitlines() if "tee.launch_policy.allow_env_override" in line)
+            self.assertIn("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS", policy)
+
     def test_shared_deploy_lock_queues_without_evicting_pending_releases(self) -> None:
         import yaml
 

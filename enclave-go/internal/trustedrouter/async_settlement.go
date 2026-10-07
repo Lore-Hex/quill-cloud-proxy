@@ -2,6 +2,7 @@ package trustedrouter
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/billingv1"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/receipt"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -23,15 +25,20 @@ const asyncTicketMargin = 30 * time.Second // covers the existing 28 second retr
 
 type asyncModeKey struct{}
 type asyncAuthorization struct {
-	attemptMu sync.Mutex
-	attempted bool
-	accepted  *SettleResult
-	snapshot  billingv1.Snapshot
-	raw       json.RawMessage
-	ticket    string
-	terminal  billingv1.TerminalEnvelope
-	expires   int64
-	requested billingv1.Eligibility
+	attemptMu  sync.Mutex
+	attempted  bool
+	accepted   *SettleResult
+	frozen     []byte
+	hash       string
+	charge     int64
+	legacy     bool
+	ineligible bool
+	snapshot   billingv1.Snapshot
+	raw        json.RawMessage
+	ticket     string
+	terminal   billingv1.TerminalEnvelope
+	expires    int64
+	requested  billingv1.Eligibility
 }
 
 // PendingSettlement acknowledges durable responsibility, not ledger finalization.
@@ -88,32 +95,10 @@ func (c *Client) bindAsyncAuthorization(a *Authorization, req *qtypes.OpenAIChat
 	if err != nil || hash != string(a.BillingSnapshotHash) {
 		return
 	}
-	parts := strings.Split(a.SettlementTicket, ".")
-	if len(parts) != 3 {
-		return
-	}
-	header, err := base64.RawURLEncoding.DecodeString(parts[0])
+	raw, err := receipt.VerifyCompactJWS(a.SettlementTicket, c.asyncTicketKeys, "tr-async-settle-v1")
 	if err != nil {
 		return
 	}
-	var protected struct {
-		Alg string `json:"alg"`
-		Typ string `json:"typ"`
-		Kid string `json:"kid"`
-	}
-	if json.Unmarshal(header, &protected) != nil || protected.Alg != "EdDSA" || protected.Typ != "tr-async-settle-v1" || protected.Kid == "" {
-		return
-	}
-	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil || len(sig) != 64 {
-		return
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return
-	}
-	// This is shape/binding verification only. The router authenticates the
-	// signature against its keyring; no router verification key is provisioned here.
 	var claims struct {
 		billingv1.TerminalEnvelope
 		Exp         int64  `json:"exp"`
@@ -196,61 +181,159 @@ func asyncLog(event, reason string) {
 	fmt.Fprintf(os.Stderr, "enclave.async_settle event=%q reason=%q\n", event, reason)
 }
 
-// tryAsyncSettlement returns nil to enter the original synchronous body builder.
-// It freezes bytes once, retains the original authority, and never changes an
-// accepted amount. Refunds do not enter this function.
-func (c *Client) tryAsyncSettlement(ctx context.Context, auth *Authorization, usage Usage) (accepted *SettleResult) {
+// tryAsyncSettlement keeps every recovery on the frozen body and authority.
+// nil, nil means the legacy path is permitted (unbound/ineligible or hard failure).
+func (c *Client) tryAsyncSettlement(ctx context.Context, auth *Authorization, usage Usage) (*SettleResult, error) {
 	if !c.AsyncSettlementNegotiated(auth) {
-		return nil
+		return nil, nil
 	}
-	auth.async.attemptMu.Lock()
-	defer auth.async.attemptMu.Unlock()
-	if auth.async.attempted {
-		return auth.async.accepted
+	a := auth.async
+	a.attemptMu.Lock()
+	defer a.attemptMu.Unlock()
+	if a.ineligible {
+		return nil, nil
 	}
-	auth.async.attempted = true
-	defer func() { auth.async.accepted = accepted }()
-	if time.Unix(auth.async.expires, 0).Sub(c.asyncNow()) < asyncTicketMargin {
-		asyncLog("fallback", "ticket_expiry_margin")
-		return nil
+	if a.accepted != nil {
+		return a.accepted, nil
 	}
-	body, err := buildAsyncSettlement(auth.async, usage)
-	if err != nil {
-		asyncLog("fallback", "ineligible_usage")
-		return nil
+	if a.legacy {
+		asyncLog("legacy_fallback", "snapshot_sync_hard_failure")
+		return nil, nil
 	}
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return nil
-	}
-	hash, err := billingv1.CanonicalHash(body.Terminal)
-	if err != nil {
-		return nil
+	first := !a.attempted
+	if first {
+		body, err := buildAsyncSettlement(a, usage)
+		if err != nil {
+			a.ineligible = true
+			asyncLog("fallback", "ineligible_usage")
+			return nil, nil
+		}
+		a.frozen, err = json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		a.hash, err = billingv1.CanonicalHash(body.Terminal)
+		if err != nil {
+			return nil, err
+		}
+		a.charge = body.Terminal.ChargeMicro
+		a.attempted = true
 	}
 	endpoint := auth.pinnedControlPlaneEndpoint()
 	if endpoint < 0 {
-		asyncLog("fallback", "unpinned_authority")
-		return nil
+		return nil, errors.New("async settlement: unpinned authority")
 	}
-	retryCtx, cancel := context.WithTimeout(context.WithValue(ctx, asyncModeKey{}, true), settlementRetryBudget)
+	raw, hash := a.frozen, a.hash
+	retryCtx, cancel := context.WithTimeout(context.WithValue(ctx, asyncModeKey{}, "async-v1"), settlementRetryBudget)
 	defer cancel()
 	policy := normalizeRetryPolicy(retryPolicy{attempts: 3, baseDelay: 250 * time.Millisecond, maxDelay: time.Second})
-	for attempt := 1; attempt <= policy.attempts; attempt++ {
-		result, retry, reason := c.asyncSettlementAttempt(retryCtx, endpoint, raw, hash, body.Terminal.ChargeMicro, auth)
-		if result != nil {
-			return result
-		}
-		if !retry || attempt == policy.attempts || retryCtx.Err() != nil {
-			asyncLog("fallback", reason)
-			return nil
-		}
-		asyncLog("retry", reason)
-		if policy.sleep(retryCtx, authorizationRetryDelay(attempt, policy, 0)) != nil {
-			break
+	reason := "ticket_expiry_margin"
+	if first && time.Unix(a.expires, 0).Sub(c.asyncNow()) >= asyncTicketMargin {
+		for attempt := 1; attempt <= policy.attempts; attempt++ {
+			result, retry, why := c.asyncSettlementAttempt(retryCtx, endpoint, raw, hash, a.charge, auth)
+			reason = why
+			if result != nil {
+				a.accepted = result
+				return result, nil
+			}
+			if !retry || attempt == policy.attempts || retryCtx.Err() != nil {
+				break
+			}
+			asyncLog("retry", reason)
+			if policy.sleep(retryCtx, authorizationRetryDelay(attempt, policy, 0)) != nil {
+				break
+			}
 		}
 	}
-	asyncLog("fallback", "retry_exhausted")
-	return nil
+	asyncLog("fallback", reason)
+	result, hard, err := c.snapshotSyncSettlement(retryCtx, endpoint, raw, hash, a.charge, auth)
+	if hard {
+		a.legacy = true
+		asyncLog("legacy_fallback", "snapshot_sync_"+err.Error())
+		return nil, nil
+	}
+	if err == nil {
+		a.accepted = result
+	}
+	return result, err
+}
+
+func (c *Client) snapshotSyncSettlement(ctx context.Context, endpoint int, raw []byte, hash string, charge int64, auth *Authorization) (*SettleResult, bool, error) {
+	ctx = context.WithValue(ctx, asyncModeKey{}, "sync")
+	policy := normalizeRetryPolicy(retryPolicy{attempts: 3, baseDelay: 250 * time.Millisecond, maxDelay: time.Second})
+	for attempt := 1; attempt <= policy.attempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, false, ctx.Err()
+		}
+		result, hard, err := c.snapshotSyncAttempt(ctx, endpoint, raw, hash, charge, auth)
+		if !hard || attempt == policy.attempts {
+			return result, hard, err
+		}
+		if policy.sleep(ctx, authorizationRetryDelay(attempt, policy, 0)) != nil {
+			return nil, false, ctx.Err()
+		}
+	}
+	return nil, false, errors.New("snapshot sync retry exhausted")
+}
+
+func (c *Client) snapshotSyncAttempt(ctx context.Context, endpoint int, raw []byte, hash string, charge int64, auth *Authorization) (*SettleResult, bool, error) {
+	resp, _, err := c.postToControlPlane(ctx, "/internal/gateway/settle", raw, endpoint)
+	if err != nil {
+		return nil, ctx.Err() == nil, errors.New("network")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 500 {
+		return nil, true, errors.New("server_error")
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 65537))
+	if err != nil {
+		return nil, true, errors.New("network")
+	}
+	if resp.StatusCode != http.StatusOK || len(data) > 65536 {
+		return nil, false, errors.New("snapshot sync rejected")
+	}
+	// Decode the ordinary settle shape separately: SettleResult's UnmarshalJSON
+	// must not swallow the adjacent acceptance/finalization fields.
+	var standard struct {
+		Data SettleResult `json:"data"`
+	}
+	if json.Unmarshal(data, &standard) != nil {
+		return nil, false, errors.New("snapshot sync invalid result")
+	}
+	var final struct {
+		Data struct {
+			Acceptance billingv1.AcceptanceOutcome `json:"acceptance"`
+			Final      *struct {
+				V      int    `json:"v"`
+				ID     string `json:"settlement_id"`
+				Status string `json:"settlement_status"`
+				Cost   *int64 `json:"cost_microdollars"`
+				URL    string `json:"status_url"`
+			} `json:"trusted_router_settlement"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(data, &final) != nil {
+		return nil, false, errors.New("snapshot sync invalid result")
+	}
+	result := &standard.Data
+	if f := final.Data.Final; f != nil {
+		a := final.Data.Acceptance
+		if f.V != 1 || f.ID != auth.AuthorizationID+".settle" || f.URL != auth.SettlementStatusURL || f.Cost == nil || (f.Status != "settled" && f.Status != "refunded") || a.Status != "duplicate" || a.PayloadHash == nil || *a.PayloadHash != hash || a.SettlementStatus == nil || *a.SettlementStatus != f.Status {
+			return nil, false, errors.New("snapshot sync invalid finalization")
+		}
+		result = &SettleResult{Settled: f.Status == "settled", AlreadySettled: true, FinalizationOutcome: f.Status, CostMicrodollars: int(*f.Cost), CostMicrodollarsKnown: true}
+	}
+	if (!result.Settled && !result.AlreadySettled) || !result.HasCost() {
+		return nil, false, errors.New("snapshot sync incomplete result")
+	}
+	logAsyncAmount(charge, result)
+	return result, false, nil
+}
+
+func logAsyncAmount(expected int64, result *SettleResult) {
+	if result != nil && result.HasCost() && int64(result.CostMicrodollars) != expected {
+		fmt.Fprintf(os.Stderr, "enclave.async_settle event=amount_mismatch expected_cost_microdollars=%d claimed_cost_microdollars=%d\n", expected, result.CostMicrodollars)
+	}
 }
 
 func (c *Client) asyncSettlementAttempt(ctx context.Context, endpoint int, raw []byte, hash string, charge int64, auth *Authorization) (*SettleResult, bool, string) {
@@ -344,4 +427,26 @@ func (p *PendingSettlement) UnmarshalJSON(raw []byte) error {
 		p.CostMicrodollars, p.PollAfterMS, p.wireComplete = *wire.Cost, *wire.Poll, true
 	}
 	return nil
+}
+
+// Configuration is a JSON object mapping exact kids to unpadded base64url keys.
+// An absent, empty, or malformed keyring fails closed.
+func asyncPublicKeys(boot *qtypes.BootstrapData) map[string]ed25519.PublicKey {
+	raw, exists := os.LookupEnv("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS")
+	if !exists && boot != nil {
+		raw = boot.AsyncSettleTicketPublicKeys
+	}
+	var configured map[string]string
+	if json.Unmarshal([]byte(raw), &configured) != nil {
+		return nil
+	}
+	keys := make(map[string]ed25519.PublicKey, len(configured))
+	for kid, encoded := range configured {
+		key, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+		if kid == "" || err != nil || len(key) != ed25519.PublicKeySize || base64.RawURLEncoding.EncodeToString(key) != encoded {
+			return nil
+		}
+		keys[kid] = ed25519.PublicKey(key)
+	}
+	return keys
 }

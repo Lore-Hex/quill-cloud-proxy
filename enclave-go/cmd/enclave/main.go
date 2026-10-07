@@ -1990,6 +1990,8 @@ func serveStreaming(
 	var result adapter.StreamResult
 	var err error
 	settledBeforeTerminal := false
+	deliveredOutput := false
+	settlementContext := ctx
 	settleStream := func(settleCtx context.Context, result adapter.StreamResult) (*trustedrouter.SettleResult, trustedrouter.Usage, error) {
 		inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
 			result, trustedrouter.EstimateInputTokens(req),
@@ -2054,7 +2056,7 @@ func serveStreaming(
 					selectedRoute.Model(req.Model, authorization), req,
 					statsW.FirstWriteSeconds(requestStarted),
 				)
-				settleCtx, settleCancel := context.WithTimeout(ctx, stageDConfig.settleBeforeTerminal)
+				settleCtx, settleCancel := context.WithTimeout(settlementContext, stageDConfig.settleBeforeTerminal)
 				settlement, settleErr := settleAndBroadcast(
 					settleCtx, trGateway, authorization, secretCache, usage, req,
 					originalInput, adapter.ResponsesOutputForUsage(terminal.Result),
@@ -2068,7 +2070,7 @@ func serveStreaming(
 				}
 				if settleErr != nil {
 					if stageDTimeout(settleErr) {
-						lookupCtx, lookupCancel := context.WithTimeout(ctx, stageDConfig.settleBeforeTerminal)
+						lookupCtx, lookupCancel := context.WithTimeout(settlementContext, stageDConfig.settleBeforeTerminal)
 						disposition, lookupErr := trGateway.Disposition(lookupCtx, authorization)
 						lookupCancel()
 						if lookupErr == nil && disposition != nil && disposition.Disposition == trustedrouter.DispositionReapedSnapshot {
@@ -2149,22 +2151,25 @@ func serveStreaming(
 		}
 		stageDControl.AfterTerminal = func(final adapter.StreamResult) (map[string]any, error) {
 			// Deliver the terminal provider frame before waiting for provider cleanup or
-			// durable acceptance. Keep #471's single deferred join and immediate abort.
+			// durable acceptance. Cleanup is bounded, never a settlement precondition.
+			// Keep #471's single deferred join and immediate abort.
 			if batchW != nil {
 				if err := batchW.Flush(); err != nil {
 					return nil, err
 				}
 			}
+			deliveredOutput = true
+			settledBeforeTerminal = true
+			settlementContext = context.WithoutCancel(ctx)
 			invocation.abort(io.EOF)
 			select {
 			case <-providerDone:
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				// Delivery owns settlement even when the client disconnects.
 			case <-time.After(5 * time.Second):
-				return nil, fmt.Errorf("async settlement: provider completion timeout")
+				fmt.Fprintln(os.Stderr, "enclave.async_settle event=cleanup_timeout")
 			}
-			settledBeforeTerminal = true
-			settleCtx, cancel := context.WithTimeout(ctx, stageDConfig.settleBeforeTerminal)
+			settleCtx, cancel := context.WithTimeout(settlementContext, stageDConfig.settleBeforeTerminal)
 			defer cancel()
 			var settlement *trustedrouter.SettleResult
 			var usage trustedrouter.Usage
@@ -2179,7 +2184,8 @@ func serveStreaming(
 				var err error
 				settlement, usage, err = settleStream(settleCtx, final)
 				if err != nil {
-					return nil, err
+					// settleStream already queued recovery. Delivered output is final.
+					return nil, nil
 				}
 				settlement = reportedSettlement(settlement, authorization, usage, err)
 			}
@@ -2255,6 +2261,9 @@ func serveStreaming(
 		}
 	}
 	if err != nil {
+		if deliveredOutput {
+			return
+		}
 		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, errorClass(err))
 		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() && !settledBeforeTerminal {

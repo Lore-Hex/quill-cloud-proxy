@@ -51,8 +51,11 @@ func fixtureAuthorization(t *testing.T, builder bool) *Authorization {
 func fixtureUsage() Usage {
 	return Usage{InputTokens: 1, OutputTokens: 1, RouteType: "chat.completions", SelectedEndpoint: "openai/billing-v1@openai/prepaid", SelectedModel: "openai/billing-v1", FinishReason: "stop"}
 }
+
+const fixtureKeyring = `{"async-v1-fixture":"iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w"}`
+
 func fixtureClient() *Client {
-	return &Client{asyncNegotiate: true, asyncClock: func() time.Time { return time.Unix(1791244801, 0) }}
+	return &Client{asyncTicketKeys: asyncPublicKeys(&qtypes.BootstrapData{AsyncSettleTicketPublicKeys: fixtureKeyring}), asyncNegotiate: true, asyncClock: func() time.Time { return time.Unix(1791244801, 0) }}
 }
 func bindFixture(t *testing.T, a *Authorization) *Client {
 	t.Helper()
@@ -130,6 +133,7 @@ func TestAsyncBuilderLiteralAndSignature(t *testing.T) {
 }
 
 func TestAsyncAuthorizeNegotiationGuards(t *testing.T) {
+	t.Setenv("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS", fixtureKeyring)
 	for _, flag := range []bool{false, true} {
 		for _, route := range []string{"chat.completions", "responses", "messages", "embeddings", "images", "videos", "decide"} {
 			t.Run(fmt.Sprintf("%t/%s", flag, route), func(t *testing.T) {
@@ -203,6 +207,10 @@ func TestAsyncResponseDecisionsAndRetryIdentity(t *testing.T) {
 				raw, _ := io.ReadAll(r.Body)
 				bodies = append(bodies, raw)
 				modes = append(modes, r.Header.Get(asyncSettlementHeader))
+				if r.Header.Get(asyncSettlementHeader) == "sync" {
+					_, _ = w.Write(asyncFixture(t, "snapshot_sync_v1"))
+					return
+				}
 				if r.Header.Get(asyncSettlementHeader) == "" {
 					_, _ = io.WriteString(w, `{"data":{"cost_microdollars":19,"settled":true}}`)
 					return
@@ -268,8 +276,8 @@ func TestAsyncResponseDecisionsAndRetryIdentity(t *testing.T) {
 					t.Fatalf("not pending: %+v requests=%d", result, len(bodies))
 				}
 			} else {
-				if result.TrustedRouterSettlement != nil || result.CostMicrodollars != 19 || modes[len(modes)-1] != "" {
-					t.Fatalf("did not use unchanged sync fallback: %+v %v", result, modes)
+				if result.TrustedRouterSettlement != nil || result.CostMicrodollars != 2 || !result.Settled || modes[len(modes)-1] != "sync" {
+					t.Fatalf("did not use snapshot sync recovery: %+v %v", result, modes)
 				}
 				retry := name == "network" || name == "server_error" || name == "unknown" || name == "bad_hash"
 				want := 2
@@ -279,16 +287,12 @@ func TestAsyncResponseDecisionsAndRetryIdentity(t *testing.T) {
 				if len(bodies) != want {
 					t.Fatalf("requests=%d want %d", len(bodies), want)
 				}
-				for i := 1; i < len(bodies)-1; i++ {
+				for i := 1; i < len(bodies); i++ {
 					if !bytes.Equal(bodies[0], bodies[i]) {
 						t.Fatal("async retry changed payload")
 					}
 				}
-				var legacy map[string]any
-				_ = json.Unmarshal(bodies[len(bodies)-1], &legacy)
-				if legacy["authorization_id"] != a.AuthorizationID || legacy["actual_input_tokens"] != float64(1) || legacy["actual_output_tokens"] != float64(1) {
-					t.Fatal("sync identity/usage changed")
-				}
+
 			}
 		})
 	}
@@ -337,9 +341,16 @@ func TestAsyncExpiryAndUsageFallback(t *testing.T) {
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
-				async := r.Header.Get(asyncSettlementHeader) != ""
+				async := r.Header.Get(asyncSettlementHeader) == "async-v1"
 				if async != wantAsync {
 					t.Errorf("async=%t want %t", async, wantAsync)
+				}
+				if name == "expired" || name == "margin" {
+					if r.Header.Get(asyncSettlementHeader) != "sync" {
+						t.Error("expiry lost snapshot")
+					}
+					_, _ = w.Write(asyncFixture(t, "snapshot_sync_v1"))
+					return
 				}
 				if async {
 					w.WriteHeader(202)
@@ -474,9 +485,13 @@ func TestAsyncAllSyncRequiredReasons(t *testing.T) {
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
-				if r.Header.Get(asyncSettlementHeader) != "" {
+				switch r.Header.Get(asyncSettlementHeader) {
+				case "async-v1":
 					_, _ = w.Write(reply)
-				} else {
+				case "sync":
+					_, _ = w.Write(asyncFixture(t, "snapshot_sync_v1"))
+				default:
+					t.Error("legacy bypassed snapshot sync")
 					_, _ = io.WriteString(w, `{"data":{"cost_microdollars":23}}`)
 				}
 			}))
@@ -490,7 +505,7 @@ func TestAsyncAllSyncRequiredReasons(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.TrustedRouterSettlement != nil || result.CostMicrodollars != 23 || calls != 2 {
+			if result.TrustedRouterSettlement != nil || result.CostMicrodollars != 2 || !result.Settled || calls != 2 {
 				t.Fatalf("sync_required treated as accepted: %+v %d", result, calls)
 			}
 		})
@@ -501,7 +516,7 @@ func TestAsyncFallbackNeverReentersWithChangedPayload(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if r.Header.Get(asyncSettlementHeader) != "" {
+		if r.Header.Get(asyncSettlementHeader) == "async-v1" {
 			if calls > 1 {
 				t.Error("async restarted after conflict")
 			}
@@ -509,7 +524,10 @@ func TestAsyncFallbackNeverReentersWithChangedPayload(t *testing.T) {
 			_, _ = w.Write(asyncFixture(t, "conflict_v1"))
 			return
 		}
-		_, _ = io.WriteString(w, `{"data":{"cost_microdollars":7}}`)
+		if r.Header.Get(asyncSettlementHeader) != "sync" {
+			t.Error("expected snapshot sync")
+		}
+		_, _ = w.Write(asyncFixture(t, "snapshot_sync_v1"))
 	}))
 	defer server.Close()
 	a := fixtureAuthorization(t, true)
