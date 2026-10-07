@@ -943,6 +943,13 @@ func TransformStreamCaptureControlled(
 					return err
 				}
 			}
+			// Controlled Stage D termination has a terminal finish chunk. Its
+			// settlement outcome must be visible before that chunk.
+			if trFinishReason != "" {
+				if err := writeSettlementMetadata(w, control, result, false); err != nil {
+					return err
+				}
+			}
 			var err error
 			if trFinishReason == "" {
 				err = writeChunk(w, requestID, model, created, map[string]any{}, terminalFinishReason)
@@ -967,8 +974,10 @@ func TransformStreamCaptureControlled(
 					return err
 				}
 			}
-			if err := writeSettlementMetadata(w, control, result, false); err != nil {
-				return err
+			if trFinishReason == "" {
+				if err := writeSettlementMetadata(w, control, result, false); err != nil {
+					return err
+				}
 			}
 			_, err = w.Write([]byte("data: [DONE]\n\n"))
 			return err

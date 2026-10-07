@@ -471,6 +471,7 @@ func (c *Client) primaryBaseURL() string {
 }
 
 type Authorization struct {
+	CreditReservationID string `json:"credit_reservation_id,omitempty"`
 	// Wire metadata alone cannot activate async behavior. async is bound only
 	// after enclave opt-in; preserve raw snapshot bytes for canonical hashing.
 	async                                 *asyncAuthorization

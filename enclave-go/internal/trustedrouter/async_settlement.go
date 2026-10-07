@@ -99,29 +99,14 @@ func (c *Client) bindAsyncAuthorization(a *Authorization, req *qtypes.OpenAIChat
 	if err != nil {
 		return
 	}
-	var claims struct {
-		billingv1.TerminalEnvelope
-		Exp         int64  `json:"exp"`
-		Iat         int64  `json:"iat"`
-		Eligible    bool   `json:"async_eligible"`
-		Iss         string `json:"iss"`
-		Aud         string `json:"aud"`
-		Origin      string `json:"settle_origin"`
-		Reservation string `json:"reservation_id"`
-	}
-	if json.Unmarshal(raw, &claims) != nil || !claims.Eligible || claims.Iss == "" || claims.Aud != "router-settlement" || claims.Origin != "typed" || claims.Reservation == "" || claims.Iat > c.asyncNow().Unix() || claims.Exp <= claims.Iat {
+	claims, valid := parseAsyncTicketClaims(raw, c.asyncNow().Unix())
+	if !valid || !claims.Eligible || claims.Aud != "router-settlement" {
 		return
 	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil {
+	if claims.Reservation != a.CreditReservationID {
 		return
 	}
-	for _, field := range []string{"async_eligible", "authorization_id", "generation_id", "workspace_id", "key_id", "invocation_nonce", "billing_authority", "journal_region", "epoch", "snapshot_version", "snapshot_hash", "route_type", "streamed", "iat", "exp"} {
-		if len(fields[field]) == 0 || string(fields[field]) == "null" {
-			return
-		}
-	}
-	t := claims.TerminalEnvelope
+	t := claims.terminal()
 	if t.AuthorizationID != a.AuthorizationID || t.GenerationID != a.GenerationID || t.WorkspaceID != a.WorkspaceID || t.KeyID != a.APIKeyHash || t.InvocationNonce != a.InvocationNonce || t.SnapshotHash != hash || t.RouteType != route || t.Streamed != req.Stream {
 		return
 	}
@@ -292,13 +277,18 @@ func (c *Client) snapshotSyncAttempt(ctx context.Context, endpoint int, raw []by
 	if resp.StatusCode != http.StatusOK || len(data) > 65536 {
 		return nil, false, errors.New("snapshot sync rejected")
 	}
+	result, err := decodeFinalSettlement(data, hash, charge, auth)
+	return result, false, err
+}
+
+func decodeFinalSettlement(data []byte, hash string, charge int64, auth *Authorization) (*SettleResult, error) {
 	// Decode the ordinary settle shape separately: SettleResult's UnmarshalJSON
 	// must not swallow the adjacent acceptance/finalization fields.
 	var standard struct {
 		Data SettleResult `json:"data"`
 	}
 	if json.Unmarshal(data, &standard) != nil {
-		return nil, false, errors.New("snapshot sync invalid result")
+		return nil, errors.New("snapshot sync invalid result")
 	}
 	var final struct {
 		Data struct {
@@ -313,21 +303,21 @@ func (c *Client) snapshotSyncAttempt(ctx context.Context, endpoint int, raw []by
 		} `json:"data"`
 	}
 	if json.Unmarshal(data, &final) != nil {
-		return nil, false, errors.New("snapshot sync invalid result")
+		return nil, errors.New("snapshot sync invalid result")
 	}
 	result := &standard.Data
 	if f := final.Data.Final; f != nil {
 		a := final.Data.Acceptance
 		if f.V != 1 || f.ID != auth.AuthorizationID+".settle" || f.URL != auth.SettlementStatusURL || f.Cost == nil || (f.Status != "settled" && f.Status != "refunded") || a.Status != "duplicate" || a.PayloadHash == nil || *a.PayloadHash != hash || a.SettlementStatus == nil || *a.SettlementStatus != f.Status {
-			return nil, false, errors.New("snapshot sync invalid finalization")
+			return nil, errors.New("snapshot sync invalid finalization")
 		}
 		result = &SettleResult{Settled: f.Status == "settled", AlreadySettled: true, FinalizationOutcome: f.Status, CostMicrodollars: int(*f.Cost), CostMicrodollarsKnown: true}
 	}
 	if (!result.Settled && !result.AlreadySettled) || !result.HasCost() {
-		return nil, false, errors.New("snapshot sync incomplete result")
+		return nil, errors.New("snapshot sync incomplete result")
 	}
 	logAsyncAmount(charge, result)
-	return result, false, nil
+	return result, nil
 }
 
 func logAsyncAmount(expected int64, result *SettleResult) {
@@ -369,6 +359,13 @@ func (c *Client) asyncSettlementAttempt(ctx context.Context, endpoint int, raw [
 		return nil, false, "conflict"
 	}
 	a, p := reply.Data.Acceptance, reply.Data.Pending
+	if resp.StatusCode == http.StatusOK && a.Status == "duplicate" {
+		result, err := decodeFinalSettlement(data, hash, charge, auth)
+		if err == nil {
+			return result, false, ""
+		}
+		return nil, false, "invalid_finalization"
+	}
 	if resp.StatusCode == http.StatusOK && a.Status == "sync_required" {
 		asyncLog("sync_required", asyncReason(reply.Data.Reason))
 		return nil, false, "sync_required"

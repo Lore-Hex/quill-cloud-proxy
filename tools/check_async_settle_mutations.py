@@ -55,6 +55,24 @@ mutations = [
      'if err := writeResponseEventSeq(w, seq, terminalEvent.name, terminalEvent.body); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif err := writeSettlementMetadata(w, control, result, true); err != nil {\n\t\t\treturn err\n\t\t}',
      "TestAsyncStreamFinalFrameJoinAndPendingMetadata/(responses|responses-stage-d)$"),
 
+    ("drop-ticket-lifetime", "internal/trustedrouter/async_ticket_claims.go",
+     " || c.Exp-c.Iat > 300", "",
+     "TestAsyncTicketClaimRules/lifetime_301"),
+    ("skip-canonical-payload", "internal/trustedrouter/async_ticket_claims.go",
+     "!bytes.Equal(canonical, raw)", "(!bytes.Equal(canonical, raw) && false)",
+     "TestAsyncTicketClaimRules/payload_whitespace"),
+    ("accept-extra-claim", "internal/trustedrouter/async_ticket_claims.go",
+     "len(fields) != len(names)", "len(fields) < len(names)",
+     "TestAsyncTicketClaimRules/extra_claim"),
+    ("metadata-after-incomplete", "internal/adapter/responses.go",
+     'if err := writeSettlementMetadata(w, control, result, true); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tif err := writeResponseEventSeq(w, &seq, "response.incomplete", map[string]any{"type": "response.incomplete", "response": response}); err != nil {\n\t\t\t\treturn err\n\t\t\t}',
+     'if err := writeResponseEventSeq(w, &seq, "response.incomplete", map[string]any{"type": "response.incomplete", "response": response}); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tif err := writeSettlementMetadata(w, control, result, true); err != nil {\n\t\t\t\treturn err\n\t\t\t}',
+     "TestAsyncStageDTerminalOrder/responses"),
+    ("retry-finalized-duplicate", source,
+     'if resp.StatusCode == http.StatusOK && a.Status == "duplicate" {',
+     'if resp.StatusCode == http.StatusOK && a.Status == "duplicate" && false {',
+     "TestAsyncFinalizedDuplicate"),
+
 ]
 
 def run(test, package="./internal/trustedrouter"):
@@ -64,7 +82,7 @@ def run(test, package="./internal/trustedrouter"):
                           cwd=module, env=env, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT)
 
-baseline = run("TestAsync", "./internal/trustedrouter ./cmd/enclave")
+baseline = run("TestAsync", "./internal/trustedrouter ./internal/adapter ./cmd/enclave")
 (work / "baseline.log").write_text(baseline.stdout)
 if baseline.returncode:
     raise SystemExit("Disposable baseline failed: " + str(work))
@@ -75,7 +93,7 @@ for name, file, old, new, test in mutations:
     assert original.count(old) == 1, (name, original.count(old))
     path.write_text(original.replace(old, new, 1))
     try:
-        result = run(test, "./cmd/enclave" if name in ("refund-on-cleanup-timeout", "metadata-after-completed") else "./internal/trustedrouter")
+        result = run(test, "./cmd/enclave" if name in ("refund-on-cleanup-timeout", "metadata-after-completed") else "./internal/adapter" if name == "metadata-after-incomplete" else "./internal/trustedrouter")
         (work / (name + ".log")).write_text(result.stdout)
         failed = re.findall(r"--- FAIL: ([^\s]+)", result.stdout)
         if result.returncode == 0 or not failed or "[build failed]" in result.stdout:

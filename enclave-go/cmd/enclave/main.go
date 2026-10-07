@@ -2276,6 +2276,7 @@ func serveStreaming(
 					refundAuthorization = &selected
 				}
 				refundResult, refundErr := trGateway.RefundDetailed(ctx, refundAuthorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
+				terminalSettlement = refundResult
 				if stageDDispositionLost(refundResult) {
 					fmt.Fprintf(os.Stderr, "enclave.stage_d_refund_lost request_log_id=%q auth_id=%q disposition=%q\n", requestLogID, authorizationID(refundAuthorization), refundResult.Disposition)
 				}
@@ -2286,11 +2287,16 @@ func serveStreaming(
 						refundStatus: status, refundType: failureReason(err), refundElapsed: time.Since(requestStarted).Seconds(), refundMetadata: req.Metadata,
 					})
 				}
+			} else if trGateway.AsyncSettlementNegotiated(authorization) {
+				terminalSettlement, _ = trGateway.RefundDetailed(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 			} else {
 				_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 			}
 		}
-		if writeErr := writeStreamingProviderError(statsW, routeType, requestID, responseModel, err, hidesPublicRouteMetadata(authorization)); writeErr == nil {
+		if !trGateway.AsyncSettlementNegotiated(authorization) {
+			terminalSettlement = nil
+		}
+		if writeErr := writeStreamingProviderErrorWithSettlement(statsW, routeType, requestID, responseModel, err, hidesPublicRouteMetadata(authorization), terminalSettlement); writeErr == nil {
 			// An explicit terminal SSE failure is a complete HTTP message,
 			// not a truncated successful stream. Preserve chunk framing only
 			// when the error and terminal event were both delivered.

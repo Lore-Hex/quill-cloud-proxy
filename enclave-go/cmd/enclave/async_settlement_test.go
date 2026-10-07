@@ -78,13 +78,13 @@ func TestAsyncStreamFinalFrameJoinAndPendingMetadata(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.Claims["streamed"], f.Claims["route_type"] = true, route
-			f.Claims["iat"], f.Claims["exp"] = time.Now().Unix()-1, time.Now().Unix()+300
+			f.Claims["iat"], f.Claims["exp"] = time.Now().Unix()-1, time.Now().Unix()+299
 			claims, _ := json.Marshal(f.Claims)
 			header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"EdDSA","kid":"test","typ":"tr-async-settle-v1"}`))
 			signed := header + "." + base64.RawURLEncoding.EncodeToString(claims)
 			signature := ed25519.Sign(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, 32)), []byte(signed))
 			f.Response.Data["settlement_ticket"] = signed + "." + base64.RawURLEncoding.EncodeToString(signature)
-			for k, v := range map[string]any{"workspace_id": "ws-v1", "api_key_hash": "key-v1", "invocation_nonce": "nonce-v1", "usage_type": "Credits", "model": "openai/billing-v1", "provider": "openai", "endpoint_id": "openai/billing-v1@openai/prepaid"} {
+			for k, v := range map[string]any{"credit_reservation_id": "res-v1", "workspace_id": "ws-v1", "api_key_hash": "key-v1", "invocation_nonce": "nonce-v1", "usage_type": "Credits", "model": "openai/billing-v1", "provider": "openai", "endpoint_id": "openai/billing-v1@openai/prepaid"} {
 				f.Response.Data[k] = v
 			}
 			if stageD {
@@ -256,5 +256,75 @@ func TestAsyncPendingResponseMetadata(t *testing.T) {
 	}
 	if result.Settled || result.GenerationID != "" {
 		t.Fatal("pending masquerades as booked")
+	}
+}
+
+func TestAsyncFailureTerminalOrder(t *testing.T) {
+	for _, route := range []string{"responses", "chat.completions"} {
+		for _, outcome := range []string{"settled", "refunded", "pending", "none"} {
+			t.Run(route+"/"+outcome, func(t *testing.T) {
+				var out bytes.Buffer
+				var settlement *trustedrouter.SettleResult
+				if outcome != "none" {
+					settlement = &trustedrouter.SettleResult{CostMicrodollars: 2, CostMicrodollarsKnown: true, FinalizationOutcome: outcome}
+				}
+				if outcome == "pending" {
+					settlement.TrustedRouterSettlement = &trustedrouter.PendingSettlement{V: 1, SettlementStatus: "pending"}
+				}
+				if err := writeStreamingProviderErrorWithSettlement(&out, route, "id", "model", fmt.Errorf("provider failure"), false, settlement); err != nil {
+					t.Fatal(err)
+				}
+				wire := out.String()
+				terminal := `"finish_reason":"error"`
+				metadata := `"usage"`
+				if route == "responses" {
+					terminal = "event: response.failed"
+					metadata = "event: trusted_router.settlement"
+				}
+				end := strings.Index(wire, terminal)
+				meta := strings.Index(wire, metadata)
+				if end < 0 || strings.Count(wire, "data: [DONE]") != 1 || !strings.HasSuffix(wire, "data: [DONE]\n\n") {
+					t.Fatalf("terminal: %s", wire)
+				}
+				if outcome != "none" && (meta < 0 || meta > end) {
+					t.Fatalf("metadata after failure: %s", wire)
+				}
+				if outcome == "none" && meta >= 0 {
+					t.Fatalf("invented settlement: %s", wire)
+				}
+			})
+		}
+	}
+}
+
+func TestAsyncResponsesOtherFailureTerminals(t *testing.T) {
+	for _, path := range []string{"custom_model", "hosted_search"} {
+		t.Run(path, func(t *testing.T) {
+			var out bytes.Buffer
+			var err error
+			if path == "custom_model" {
+				err = writeUserModelStreamingError(&out, "responses", "id", "model", &userModelDispatchError{callerStatus: 502, message: "failed", refundType: "provider_error"})
+			} else {
+				emitter := newResponsesWebSearchEmitter(&out, "id", "model", &types.OpenAIChatRequest{})
+				err = emitter.Fail(fmt.Errorf("failed"))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire := out.String()
+			if path == "custom_model" {
+				// Legacy custom-model failures end on response.failed without a
+				// [DONE] sentinel. This PR leaves that flag-off path byte-identical;
+				// the missing sentinel is tracked as a separate follow-up.
+				if strings.Count(wire, "event: response.failed\n") != 1 || strings.Contains(wire, "[DONE]") || !strings.HasSuffix(wire, "\n\n") {
+					t.Fatalf("legacy failure terminator changed: %s", wire)
+				}
+			} else if strings.Count(wire, "event: response.failed\n") != 1 || strings.Count(wire, "data: [DONE]") != 1 || !strings.HasSuffix(wire, "data: [DONE]\n\n") {
+				t.Fatalf("failure terminator: %s", wire)
+			}
+			if strings.Contains(wire, "trusted_router.settlement") {
+				t.Fatalf("invented async outcome: %s", wire)
+			}
+		})
 	}
 }

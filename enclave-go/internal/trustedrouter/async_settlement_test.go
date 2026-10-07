@@ -44,6 +44,7 @@ func fixtureAuthorization(t *testing.T, builder bool) *Authorization {
 		t.Fatal(err)
 	}
 	a := &f.Response.Data
+	a.CreditReservationID = "res-v1"
 	a.WorkspaceID, a.InvocationNonce, a.UsageType, a.APIKeyHash = "ws-v1", "nonce-v1", "Credits", "key-v1"
 	a.EndpointID, a.Model, a.Provider = "openai/billing-v1@openai/prepaid", "openai/billing-v1", "openai"
 	return a
