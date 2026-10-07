@@ -8,6 +8,7 @@ import (
 // Add only aggregate billing metadata, never private route configuration or
 // content. Missing settlement is unreported, not a fabricated zero charge.
 func annotateChatTerminalUsage(terminal adapter.StreamTerminal, settlement *trustedrouter.SettleResult, usage trustedrouter.Usage) {
+	annotateEstimatedTokenUsage(terminal.UsageFields, usage)
 	if !settlement.HasCost() || terminal.UsageFields == nil {
 		return
 	}

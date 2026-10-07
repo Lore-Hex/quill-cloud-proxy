@@ -1656,11 +1656,12 @@ func serveResponsesNonStreaming(
 		}
 	}
 	outputForUsage := adapter.ResponsesOutputForUsage(result)
-	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+	inputTokens, outputTokens, usageEstimated := tokensForSettlement(
 		result,
 		trustedrouter.EstimateInputTokens(req),
 		trustedrouter.EstimateOutputTokens(outputForUsage),
 		selectedRoute.Model(req.Model, authorization),
+		req, authorization, selectedRoute.Endpoint("", authorization),
 	)
 	selectedModel := selectedRoute.Model(req.Model, authorization)
 	selectedEndpoint := selectedRoute.Endpoint("", authorization)
@@ -1705,7 +1706,7 @@ func serveResponsesNonStreaming(
 		writeSpentError(conn, 502, "settlement failed")
 		return
 	}
-	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result, req.OpenRouterMetadata)
+	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result, req.OpenRouterMetadata, usage)
 	if err == nil {
 		annotatedBody, err = annotatePolyphemusResponse(ctx, annotatedBody)
 	}
@@ -1761,11 +1762,12 @@ func serveChatNonStreaming(
 		writeUpstreamError(conn, "chat.completions", err, authorization)
 		return
 	}
-	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+	inputTokens, outputTokens, usageEstimated := tokensForSettlement(
 		result,
 		trustedrouter.EstimateInputTokens(req),
 		trustedrouter.EstimateOutputTokens(result.Text),
 		selectedRoute.Model(req.Model, authorization),
+		req, authorization, selectedRoute.Endpoint("", authorization),
 	)
 	selectedModel := selectedRoute.Model(req.Model, authorization)
 	selectedEndpoint := selectedRoute.Endpoint("", authorization)
@@ -1808,7 +1810,7 @@ func serveChatNonStreaming(
 		writeSpentError(conn, 502, "settlement failed")
 		return
 	}
-	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result, req.OpenRouterMetadata)
+	annotatedBody, err := annotateSettledResponseMetadata(body.Bytes(), authorization, settlement, selectedRoute, invokeOptions, result, req.OpenRouterMetadata, usage)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_metadata_failed model=%q err=%v\n", req.Model, err)
 		writeSpentError(conn, 500, "chat completion encoding error")
@@ -1991,10 +1993,11 @@ func serveStreaming(
 	var err error
 	settledBeforeTerminal := false
 	settleStream := func(settleCtx context.Context, result adapter.StreamResult) (*trustedrouter.SettleResult, trustedrouter.Usage, error) {
-		inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+		inputTokens, outputTokens, usageEstimated := tokensForSettlement(
 			result, trustedrouter.EstimateInputTokens(req),
 			trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
 			selectedRoute.Model(req.Model, authorization),
+			req, authorization, selectedRoute.Endpoint("", authorization),
 		)
 		usage := trustedrouter.Usage{
 			RequestID: requestID, InputTokens: inputTokens, OutputTokens: outputTokens,
@@ -2084,6 +2087,7 @@ func serveStreaming(
 				settlement = reportedSettlement(settlement, authorization, usage, settleErr)
 				if routeType == "responses" {
 					annotateUsageCost(terminal.UsageFields, settlement)
+					annotateEstimatedTokenUsage(terminal.UsageFields, usage)
 					if terminal.TRFinishReason != "" && terminal.UsageFields != nil && settlement.HasCost() {
 						terminal.UsageFields["input_tokens"] = usage.InputTokens
 						terminal.UsageFields["output_tokens"] = usage.OutputTokens
@@ -2112,6 +2116,7 @@ func serveStreaming(
 			settlement = reportedSettlement(settlement, authorization, usage, settleErr)
 			if routeType == "responses" {
 				annotateUsageCost(terminal.UsageFields, settlement)
+				annotateEstimatedTokenUsage(terminal.UsageFields, usage)
 			} else {
 				annotateChatTerminalUsage(terminal, settlement, usage)
 			}
@@ -2126,6 +2131,7 @@ func serveStreaming(
 				defer cancel()
 				settlement, usage, settleErr := settleStream(settleCtx, terminal.Result)
 				annotateUsageCost(terminal.UsageFields, reportedSettlement(settlement, authorization, usage, settleErr))
+				annotateEstimatedTokenUsage(terminal.UsageFields, usage)
 				annotatePolyphemusUsage(ctx, terminal.UsageFields)
 				return terminal.Emit()
 			}}
@@ -2340,11 +2346,12 @@ func serveMessages(
 			writeUpstreamError(conn, "messages", err, authorization)
 			return
 		}
-		inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+		inputTokens, outputTokens, usageEstimated := tokensForSettlement(
 			result,
 			trustedrouter.EstimateInputTokens(req),
 			trustedrouter.EstimateOutputTokens(result.Text),
 			selectedRoute.Model(req.Model, authorization),
+			req, authorization, selectedRoute.Endpoint("", authorization),
 		)
 		selectedModel := selectedRoute.Model(req.Model, authorization)
 		selectedEndpoint := selectedRoute.Endpoint("", authorization)
@@ -2378,7 +2385,7 @@ func serveMessages(
 			writeAnthropicError(conn, 502, "settlement failed")
 			return
 		}
-		responseBody, err := annotateSettlementOnlyUsage(envelope.Bytes(), settlement, authorization)
+		responseBody, err := annotateSettlementOnlyUsage(envelope.Bytes(), settlement, authorization, usage)
 		if err != nil {
 			writeAnthropicError(conn, 500, "messages encoding error")
 			return
@@ -2422,12 +2429,13 @@ func serveMessages(
 	defer chunkW.Close()
 	statsW := newStreamStatsWriter(chunkW)
 
-	settleStream := func(settleCtx context.Context, result adapter.StreamResult) *trustedrouter.SettleResult {
-		inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+	settleStream := func(settleCtx context.Context, result adapter.StreamResult) (*trustedrouter.SettleResult, trustedrouter.Usage) {
+		inputTokens, outputTokens, usageEstimated := tokensForSettlement(
 			result,
 			trustedrouter.EstimateInputTokens(req),
 			trustedrouter.EstimateOutputTokens(result.Text),
 			selectedRoute.Model(req.Model, authorization),
+			req, authorization, selectedRoute.Endpoint("", authorization),
 		)
 		usage := trustedrouter.Usage{
 			RequestID:         messageID,
@@ -2454,7 +2462,7 @@ func serveMessages(
 				requestLogID: requestLogID, clientContext: trustedrouter.ClientContextFromContext(ctx),
 			})
 		}
-		return reportedSettlement(settlement, authorization, usage, err)
+		return reportedSettlement(settlement, authorization, usage, err), usage
 	}
 	settledBeforeTerminal := false
 	var beforeTerminal func(adapter.StreamTerminal) error
@@ -2463,7 +2471,9 @@ func serveMessages(
 			settledBeforeTerminal = true
 			settleCtx, cancel := context.WithTimeout(ctx, stageDConfigFromEnv().settleBeforeTerminal)
 			defer cancel()
-			annotateUsageCost(terminal.UsageFields, settleStream(settleCtx, terminal.Result))
+			settlement, usage := settleStream(settleCtx, terminal.Result)
+			annotateUsageCost(terminal.UsageFields, settlement)
+			annotateEstimatedTokenUsage(terminal.UsageFields, usage)
 			return terminal.Emit()
 		}
 	}
