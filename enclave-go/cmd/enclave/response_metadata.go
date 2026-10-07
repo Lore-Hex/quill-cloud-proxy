@@ -107,6 +107,9 @@ func annotateSettledResponseMetadata(
 		routeUsage["output_tokens"] = outputTokens
 	}
 	if settlement != nil {
+		if settlement.TrustedRouterSettlement != nil {
+			payload["trusted_router_settlement"] = settlement.TrustedRouterSettlement
+		}
 		annotateUsageCost(usage, settlement)
 		annotateUsageCost(routeUsage, settlement)
 		if settlement.GenerationID != "" {

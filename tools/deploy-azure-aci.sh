@@ -561,6 +561,7 @@ mi_client_id = sys.argv[1]
 # either a coordinate or the NAME of a bundle entry. The values live in the
 # encrypted bundle and reach the enclave only under attestation.
 env = {
+    "TR_ASYNC_SETTLE_NEGOTIATE": "off",
     # --- Azure boot path (bootstrap_azure.go) -----------------------------
     "QUILL_AZURE_MAA_ENDPOINT":  os.environ["MAA_ENDPOINT"],
     "QUILL_AZURE_AKV_ENDPOINT":  os.environ["VAULT"] + ".vault.azure.net",

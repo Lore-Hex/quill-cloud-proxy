@@ -39,6 +39,6 @@ ENV QUILL_ENCLAVE_TLS=true
 ENV QUILL_HEALTH_PORT=8081
 EXPOSE 8081
 
-LABEL "tee.launch_policy.allow_env_override"="QUILL_BILLING_402_BACKOFF_MS"
+LABEL "tee.launch_policy.allow_env_override"="TR_ASYNC_SETTLE_NEGOTIATE,QUILL_BILLING_402_BACKOFF_MS"
 
 ENTRYPOINT ["/quill-enclave"]

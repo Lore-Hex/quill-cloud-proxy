@@ -2026,6 +2026,8 @@ func serveStreaming(
 		return settlement, usage, nil
 	}
 	var stageDControl *adapter.StreamControl
+	var terminalSettlement *trustedrouter.SettleResult
+	var terminalBillingUsage trustedrouter.Usage
 	if stageDController != nil {
 		stageDControl = &adapter.StreamControl{
 			BeforeSlice: stageDController.beforeSlice,
@@ -2082,6 +2084,8 @@ func serveStreaming(
 					})
 				}
 				settlement = reportedSettlement(settlement, authorization, usage, settleErr)
+				terminalSettlement = settlement
+				terminalBillingUsage = usage
 				if routeType == "responses" {
 					annotateUsageCost(terminal.UsageFields, settlement)
 					if terminal.TRFinishReason != "" && terminal.UsageFields != nil && settlement.HasCost() {
@@ -2118,6 +2122,92 @@ func serveStreaming(
 			return terminal.Emit()
 		}}
 	}
+	if trGateway.AsyncSettlementNegotiated(authorization) {
+		var metadataCreated int64
+		var settleStageD func() (*trustedrouter.SettleResult, error)
+		if stageDController != nil {
+			// Retain Stage D metering, cap enforcement, winner reconciliation,
+			// and retry ownership. Move only its terminal settlement after Emit.
+			before := stageDControl.BeforeTerminal
+			var saved adapter.StreamTerminal
+			stageDControl.BeforeTerminal = func(terminal adapter.StreamTerminal) error {
+				stageDController.stopCadence()
+				metadataCreated = terminal.Created
+				saved = terminal
+				return terminal.Emit()
+			}
+			settleStageD = func() (*trustedrouter.SettleResult, error) {
+				saved.Emit = func() error { return nil }
+				err := before(saved)
+				return terminalSettlement, err
+			}
+		} else {
+			stageDControl = &adapter.StreamControl{BeforeTerminal: func(terminal adapter.StreamTerminal) error {
+				metadataCreated = terminal.Created
+				return terminal.Emit()
+			}}
+		}
+		stageDControl.AfterTerminal = func(final adapter.StreamResult) (map[string]any, error) {
+			// Deliver the terminal provider frame before waiting for provider cleanup or
+			// durable acceptance. Keep #471's single deferred join and immediate abort.
+			if batchW != nil {
+				if err := batchW.Flush(); err != nil {
+					return nil, err
+				}
+			}
+			invocation.abort(io.EOF)
+			select {
+			case <-providerDone:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(5 * time.Second):
+				return nil, fmt.Errorf("async settlement: provider completion timeout")
+			}
+			settledBeforeTerminal = true
+			settleCtx, cancel := context.WithTimeout(ctx, stageDConfig.settleBeforeTerminal)
+			defer cancel()
+			var settlement *trustedrouter.SettleResult
+			var usage trustedrouter.Usage
+			if settleStageD != nil {
+				var err error
+				settlement, err = settleStageD()
+				usage = terminalBillingUsage
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				var err error
+				settlement, usage, err = settleStream(settleCtx, final)
+				if err != nil {
+					return nil, err
+				}
+				settlement = reportedSettlement(settlement, authorization, usage, err)
+			}
+			metadata := map[string]any{}
+			if settlement.HasCost() && (routeType == "responses" || chatIncludeUsage(req)) {
+				fields := map[string]any{}
+				if routeType == "responses" {
+					annotateUsageCost(fields, settlement)
+				} else {
+					annotateChatTerminalUsage(adapter.StreamTerminal{UsageFields: fields}, settlement, usage)
+				}
+				metadata["usage"] = fields
+			}
+			if settlement != nil && settlement.TrustedRouterSettlement != nil {
+				metadata["trusted_router_settlement"] = settlement.TrustedRouterSettlement
+			}
+			if len(metadata) == 0 {
+				return nil, nil
+			}
+			if routeType == "responses" {
+				metadata["type"] = "trusted_router.settlement"
+			} else {
+				metadata["id"], metadata["object"], metadata["model"], metadata["choices"], metadata["created"] = requestID, "chat.completion.chunk", responseModel, []any{}, metadataCreated
+			}
+			return metadata, nil
+		}
+	}
+
 	if routeType == "responses" && polyphemusReceiptFromContext(ctx) != nil {
 		if stageDControl == nil {
 			stageDControl = &adapter.StreamControl{BeforeTerminal: func(terminal adapter.StreamTerminal) error {

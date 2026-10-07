@@ -768,6 +768,8 @@ const MaxMeterChunkTokens = MAX_METER_CHUNK_TOKENS
 // BeforeTerminal owns the final protocol event and may synchronously settle
 // before calling Emit.
 type StreamControl struct {
+	// AfterTerminal emits optional settlement metadata after the final provider frame.
+	AfterTerminal func(StreamResult) (map[string]any, error)
 	// Opt-in: existing Responses callers retain their original usage payload.
 	ExposeResponsesUsage bool
 	BeforeSlice          func(StreamDelta) error
@@ -964,6 +966,9 @@ func TransformStreamCaptureControlled(
 				if err := finishHook(created); err != nil {
 					return err
 				}
+			}
+			if err := writeSettlementMetadata(w, control, result, false); err != nil {
+				return err
 			}
 			_, err = w.Write([]byte("data: [DONE]\n\n"))
 			return err
@@ -1717,4 +1722,25 @@ func orNil(s string) any {
 		return nil
 	}
 	return s
+}
+
+// writeSettlementMetadata is dormant unless the caller negotiated async-v1.
+func writeSettlementMetadata(w io.Writer, control *StreamControl, result StreamResult, responses bool) error {
+	if control == nil || control.AfterTerminal == nil {
+		return nil
+	}
+	metadata, err := control.AfterTerminal(result)
+	if err != nil || len(metadata) == 0 {
+		return err
+	}
+	body, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	prefix := ""
+	if responses {
+		prefix = "event: trusted_router.settlement\n"
+	}
+	_, err = fmt.Fprintf(w, "%sdata: %s\n\n", prefix, body)
+	return err
 }

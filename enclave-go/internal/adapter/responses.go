@@ -1225,6 +1225,9 @@ func TransformResponsesStreamControlled(
 					return err
 				}
 			}
+			if err := writeSettlementMetadata(w, control, result, true); err != nil {
+				return err
+			}
 			_, err := w.Write([]byte("data: [DONE]\n\n"))
 			return err
 		}
@@ -1615,6 +1618,9 @@ func finishResponsesStream(
 			if err := finishHook(created); err != nil {
 				return err
 			}
+		}
+		if err := writeSettlementMetadata(w, control, result, true); err != nil {
+			return err
 		}
 		_, err := w.Write([]byte("data: [DONE]\n\n"))
 		return err
