@@ -549,6 +549,7 @@ next_template_name() {
 TEMPLATE=$(next_template_name)
 log "creating instance template $TEMPLATE"
 log "confidential profile: region=${REGION} machine=${MACHINE_TYPE} technology=${CONF_COMPUTE_TYPE}"
+# TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
 gc compute instance-templates create "$TEMPLATE" \
   --machine-type="$MACHINE_TYPE" \
   "${CPU_PLATFORM_ARGS[@]}" \

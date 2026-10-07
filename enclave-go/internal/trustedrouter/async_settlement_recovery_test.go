@@ -31,7 +31,7 @@ func TestAsyncTicketSignatureVerification(t *testing.T) {
 				c.asyncTicketKeys["other"] = c.asyncTicketKeys["async-v1-fixture"]
 				delete(c.asyncTicketKeys, "async-v1-fixture")
 			case "wrong_key":
-				c.asyncTicketKeys["async-v1-fixture"] = make([]byte, 32)
+				c.asyncTicketKeys["async-v1-fixture"] = asyncTicketKey{public: make([]byte, 32), issuer: "router-fixture"}
 			case "padded_signature":
 				parts[2] += "=="
 			}
@@ -72,7 +72,7 @@ func TestAsyncTicketStrictJWS(t *testing.T) {
 	for _, name := range []string{"valid", "header_whitespace", "extra_header", "wrong_alg", "wrong_type", "duplicate_claim", "array_claims", "escaped_claim", "float_claim", "noncanonical_base64"} {
 		t.Run(name, func(t *testing.T) {
 			c, a := fixtureClient(), fixtureAuthorization(t, true)
-			c.asyncTicketKeys = map[string]ed25519.PublicKey{"test": public}
+			c.asyncTicketKeys = map[string]asyncTicketKey{"test": {public: public, issuer: "router-fixture"}}
 			parts := strings.Split(a.SettlementTicket, ".")
 			claims, _ := base64.RawURLEncoding.DecodeString(parts[1])
 			header := `{"alg":"EdDSA","kid":"test","typ":"tr-async-settle-v1"}`

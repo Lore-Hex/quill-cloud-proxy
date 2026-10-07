@@ -53,7 +53,7 @@ func fixtureUsage() Usage {
 	return Usage{InputTokens: 1, OutputTokens: 1, RouteType: "chat.completions", SelectedEndpoint: "openai/billing-v1@openai/prepaid", SelectedModel: "openai/billing-v1", FinishReason: "stop"}
 }
 
-const fixtureKeyring = `{"async-v1-fixture":"iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w"}`
+const fixtureKeyring = `{"async-v1-fixture":"router-fixture~iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w"}`
 
 func fixtureClient() *Client {
 	return &Client{asyncTicketKeys: asyncPublicKeys(&qtypes.BootstrapData{AsyncSettleTicketPublicKeys: fixtureKeyring}), asyncNegotiate: true, asyncClock: func() time.Time { return time.Unix(1791244801, 0) }}

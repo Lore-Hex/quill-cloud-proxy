@@ -95,12 +95,16 @@ func (c *Client) bindAsyncAuthorization(a *Authorization, req *qtypes.OpenAIChat
 	if err != nil || hash != string(a.BillingSnapshotHash) {
 		return
 	}
-	raw, err := receipt.VerifyCompactJWS(a.SettlementTicket, c.asyncTicketKeys, "tr-async-settle-v1")
+	publicKeys := make(map[string]ed25519.PublicKey, len(c.asyncTicketKeys))
+	for kid, key := range c.asyncTicketKeys {
+		publicKeys[kid] = key.public
+	}
+	raw, kid, err := receipt.VerifyCompactJWSWithKey(a.SettlementTicket, publicKeys, "tr-async-settle-v1")
 	if err != nil {
 		return
 	}
 	claims, valid := parseAsyncTicketClaims(raw, c.asyncNow().Unix())
-	if !valid || !claims.Eligible || claims.Aud != "router-settlement" {
+	if !valid || !claims.Eligible || claims.Iss != c.asyncTicketKeys[kid].issuer || claims.Aud != "router-settlement" {
 		return
 	}
 	if claims.Reservation != a.CreditReservationID {
@@ -292,7 +296,7 @@ func decodeFinalSettlement(data []byte, hash string, charge int64, auth *Authori
 	}
 	var final struct {
 		Data struct {
-			Acceptance billingv1.AcceptanceOutcome `json:"acceptance"`
+			Acceptance json.RawMessage `json:"acceptance"`
 			Final      *struct {
 				V      int    `json:"v"`
 				ID     string `json:"settlement_id"`
@@ -306,8 +310,14 @@ func decodeFinalSettlement(data []byte, hash string, charge int64, auth *Authori
 		return nil, errors.New("snapshot sync invalid result")
 	}
 	result := &standard.Data
+	if len(final.Data.Acceptance) != 0 && final.Data.Final == nil {
+		return nil, errors.New("snapshot sync missing finalization")
+	}
 	if f := final.Data.Final; f != nil {
-		a := final.Data.Acceptance
+		var a billingv1.AcceptanceOutcome
+		if json.Unmarshal(final.Data.Acceptance, &a) != nil {
+			return nil, errors.New("snapshot sync invalid acceptance")
+		}
 		if f.V != 1 || f.ID != auth.AuthorizationID+".settle" || f.URL != auth.SettlementStatusURL || f.Cost == nil || (f.Status != "settled" && f.Status != "refunded") || a.Status != "duplicate" || a.PayloadHash == nil || *a.PayloadHash != hash || a.SettlementStatus == nil || *a.SettlementStatus != f.Status {
 			return nil, errors.New("snapshot sync invalid finalization")
 		}
@@ -364,7 +374,7 @@ func (c *Client) asyncSettlementAttempt(ctx context.Context, endpoint int, raw [
 		if err == nil {
 			return result, false, ""
 		}
-		return nil, false, "invalid_finalization"
+		return nil, true, "unknown"
 	}
 	if resp.StatusCode == http.StatusOK && a.Status == "sync_required" {
 		asyncLog("sync_required", asyncReason(reply.Data.Reason))
@@ -426,24 +436,71 @@ func (p *PendingSettlement) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-// Configuration is a JSON object mapping exact kids to unpadded base64url keys.
-// An absent, empty, or malformed keyring fails closed.
-func asyncPublicKeys(boot *qtypes.BootstrapData) map[string]ed25519.PublicKey {
+type asyncTicketKey struct {
+	public ed25519.PublicKey
+	issuer string
+}
+
+var asyncKeyringLogOnce sync.Once
+
+// Configuration is a JSON object: {"kid":"issuer~base64url_key"}.
+// '~' belongs to neither the identity nor base64url alphabet. No trimming is
+// allowed. Empty defaults disable negotiation; any malformed entry invalidates
+// the entire ring and is logged once per process, without configuration bytes.
+func asyncPublicKeys(boot *qtypes.BootstrapData) map[string]asyncTicketKey {
 	raw, exists := os.LookupEnv("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS")
 	if !exists && boot != nil {
 		raw = boot.AsyncSettleTicketPublicKeys
 	}
-	var configured map[string]string
-	if json.Unmarshal([]byte(raw), &configured) != nil {
+	if raw == "" {
 		return nil
 	}
-	keys := make(map[string]ed25519.PublicKey, len(configured))
-	for kid, encoded := range configured {
-		key, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
-		if kid == "" || err != nil || len(key) != ed25519.PublicKeySize || base64.RawURLEncoding.EncodeToString(key) != encoded {
-			return nil
-		}
-		keys[kid] = ed25519.PublicKey(key)
+	keys, err := parseAsyncPublicKeys(raw)
+	if err != nil {
+		asyncKeyringLogOnce.Do(func() { asyncLog("keyring_disabled", "invalid_configuration") })
+		return nil
 	}
 	return keys
+}
+
+func parseAsyncPublicKeys(raw string) (map[string]asyncTicketKey, error) {
+	d := json.NewDecoder(strings.NewReader(raw))
+	start, err := d.Token()
+	if err != nil || start != json.Delim('{') {
+		return nil, errors.New("keyring object required")
+	}
+	keys := make(map[string]asyncTicketKey)
+	for d.More() {
+		token, err := d.Token()
+		if err != nil {
+			return nil, err
+		}
+		kid, ok := token.(string)
+		if !ok || len(kid) > 512 || !ticketIdentity.MatchString(kid) {
+			return nil, errors.New("invalid kid")
+		}
+		if _, exists := keys[kid]; exists {
+			return nil, errors.New("duplicate kid")
+		}
+		var entry string
+		if err := d.Decode(&entry); err != nil {
+			return nil, err
+		}
+		issuer, encoded, found := strings.Cut(entry, "~")
+		if !found || len(issuer) > 512 || !ticketIdentity.MatchString(issuer) {
+			return nil, errors.New("invalid issuer")
+		}
+		key, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+		if err != nil || len(key) != ed25519.PublicKeySize || base64.RawURLEncoding.EncodeToString(key) != encoded {
+			return nil, errors.New("invalid public key")
+		}
+		keys[kid] = asyncTicketKey{public: ed25519.PublicKey(key), issuer: issuer}
+	}
+	if end, err := d.Token(); err != nil || end != json.Delim('}') {
+		return nil, errors.New("invalid keyring end")
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return nil, errors.New("trailing keyring data")
+	}
+	return keys, nil
 }

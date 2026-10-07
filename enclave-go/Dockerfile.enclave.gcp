@@ -39,6 +39,7 @@ ENV QUILL_ENCLAVE_TLS=true
 ENV QUILL_HEALTH_PORT=8081
 EXPOSE 8081
 
+# TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
 LABEL "tee.launch_policy.allow_env_override"="TR_ASYNC_SETTLE_NEGOTIATE,TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS,QUILL_BILLING_402_BACKOFF_MS"
 
 ENTRYPOINT ["/quill-enclave"]

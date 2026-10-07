@@ -51,6 +51,7 @@ type BootstrapData struct {
 	// the issuer config inertly until their attestation verifiers reach parity.
 	// GCP fetch/parse failures are carried as dormant-feature diagnostics and
 	// must never turn an additive shadow feature into a boot failure.
+	// TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
 	AsyncSettleTicketPublicKeys string          `json:"async_settle_ticket_public_keys,omitempty"`
 	AsyncSettleNegotiate        bool            `json:"async_settle_negotiate,omitempty"`
 	SpendLeaseShadow            bool            `json:"spend_lease_shadow,omitempty"`

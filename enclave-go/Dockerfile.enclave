@@ -73,6 +73,7 @@ FROM ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.58.0@sha256:5e8f549169
 
 FROM scratch
 ENV TR_ASYNC_SETTLE_NEGOTIATE=off
+# TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
 ENV TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS=""
 COPY --from=privatemode /bin/privatemode-proxy /privatemode-proxy
 COPY --from=builder /out/rootfs/ /

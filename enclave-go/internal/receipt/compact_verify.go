@@ -15,39 +15,46 @@ import (
 // embedded key. Its restricted JSON/base64 wire rules match detached_jws.py;
 // callers own claim bindings and the purpose-specific type/keyring.
 func VerifyCompactJWS(token string, keys map[string]ed25519.PublicKey, typ string) ([]byte, error) {
+	payload, _, err := VerifyCompactJWSWithKey(token, keys, typ)
+	return payload, err
+}
+
+// VerifyCompactJWSWithKey also returns the authenticated key ID so callers can
+// bind claims to that key's configured issuer. Errors return no payload or ID.
+func VerifyCompactJWSWithKey(token string, keys map[string]ed25519.PublicKey, typ string) ([]byte, string, error) {
 	if len(token) > 65536 || strings.Count(token, ".") != 2 {
-		return nil, errors.New("compact")
+		return nil, "", errors.New("compact")
 	}
 	for _, part := range strings.Split(token, ".") {
 		raw, err := base64.RawURLEncoding.Strict().DecodeString(part)
 		if err != nil || part == "" || base64.RawURLEncoding.EncodeToString(raw) != part {
-			return nil, errors.New("base64")
+			return nil, "", errors.New("base64")
 		}
 	}
 	parts, err := ParseJWS([]byte(token))
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	header, err := strictJWSObject(parts.ProtectedJSON)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	canonical, err := json.Marshal(header)
 	if err != nil || !bytes.Equal(canonical, parts.ProtectedJSON) {
-		return nil, errors.New("canonical_header")
+		return nil, "", errors.New("canonical_header")
 	}
 	kid, ok := header["kid"].(string)
 	if len(header) != 3 || header["alg"] != "EdDSA" || header["typ"] != typ || !ok || kid == "" || strings.ContainsAny(kid, `<>&`) {
-		return nil, errors.New("header")
+		return nil, "", errors.New("header")
 	}
 	key := keys[kid]
 	if len(key) != ed25519.PublicKeySize || len(parts.Signature) != ed25519.SignatureSize || !ed25519.Verify(key, parts.SigningInput, parts.Signature) {
-		return nil, errors.New("signature")
+		return nil, "", errors.New("signature")
 	}
 	if _, err := strictJWSObject(parts.PayloadJSON); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return parts.PayloadJSON, nil
+	return parts.PayloadJSON, kid, nil
 }
 
 // Reject duplicate members, escapes/non-ASCII, floats, out-of-domain integers,

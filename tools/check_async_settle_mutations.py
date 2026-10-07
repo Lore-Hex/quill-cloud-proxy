@@ -73,6 +73,18 @@ mutations = [
      'if resp.StatusCode == http.StatusOK && a.Status == "duplicate" && false {',
      "TestAsyncFinalizedDuplicate"),
 
+    ("accept-duplicate-without-envelope", source,
+     'len(final.Data.Acceptance) != 0 && final.Data.Final == nil',
+     'len(final.Data.Acceptance) != 0 && final.Data.Final == nil && false',
+     "TestAsyncDuplicateEnvelopeRecovery/(async-v1|sync)/(missing_envelope|null_envelope)"),
+    ("skip-issuer-equality", source,
+     ' || claims.Iss != c.asyncTicketKeys[kid].issuer',
+     ' || (claims.Iss != c.asyncTicketKeys[kid].issuer && false)',
+     "TestAsyncTicketIssuerBinding"),
+    ("keyring-entry-without-issuer-accepted", source,
+     'issuer, encoded, found := strings.Cut(entry, "~")',
+     'issuer, encoded, found := strings.Cut(entry, "~"); if !found { issuer, encoded, found = "router-fixture", entry, true }',
+     "TestAsyncKeyringMalformedEntries/without_issuer"),
 ]
 
 def run(test, package="./internal/trustedrouter"):

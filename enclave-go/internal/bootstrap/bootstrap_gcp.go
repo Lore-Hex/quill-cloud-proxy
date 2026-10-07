@@ -788,6 +788,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		acmeFallbackEAB = string(value)
 	}
 
+	// TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
 	data := &types.BootstrapData{
 		Devices:                      devices,
 		Region:                       os.Getenv("QUILL_GCP_REGION"),

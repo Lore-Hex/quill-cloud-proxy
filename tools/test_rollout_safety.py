@@ -25,8 +25,15 @@ class RolloutSafetyTests(unittest.TestCase):
         azure = (ROOT / "tools/deploy-azure-aci.sh").read_text()
         self.assertIn('"TR_ASYNC_SETTLE_NEGOTIATE": "off"', azure)
         self.assertIn('"TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS": ""', azure)
+        # Keep issuer-bound configuration documented beside unchanged empty pins.
+        keyring_format = '{"kid":"issuer~base64url_key"}'
+        for source in (aws, gcp, azure,
+                       (ROOT / "enclave-go/internal/types/types.go").read_text(),
+                       (ROOT / "enclave-go/internal/bootstrap/bootstrap_gcp.go").read_text()):
+            self.assertIn(keyring_format, source)
         for suffix in ("gcp", "gcp.multi", "gcp.anthropic"):
             docker = (ROOT / ("enclave-go/Dockerfile.enclave." + suffix)).read_text()
+            self.assertIn(keyring_format, docker)
             policy = next(line for line in docker.splitlines() if "tee.launch_policy.allow_env_override" in line)
             self.assertIn("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS", policy)
 

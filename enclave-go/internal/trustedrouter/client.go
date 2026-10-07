@@ -6,7 +6,6 @@ package trustedrouter
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -90,7 +89,7 @@ func ClientContextFromContext(ctx context.Context) *qtypes.ClientContext {
 
 type Client struct {
 	asyncNegotiate  bool
-	asyncTicketKeys map[string]ed25519.PublicKey
+	asyncTicketKeys map[string]asyncTicketKey
 	asyncClock      func() time.Time
 	shadow          shadowobserve.Observer
 	shadowBoundary  shadowobserve.Boundary

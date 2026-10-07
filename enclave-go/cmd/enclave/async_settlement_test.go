@@ -52,7 +52,7 @@ func TestAsyncStreamFinalFrameJoinAndPendingMetadata(t *testing.T) {
 	t.Setenv("QUILL_USAGE_HEARTBEAT", "off")
 	t.Setenv("TR_ASYNC_SETTLE_NEGOTIATE", "on")
 	public := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{1}, 32)).Public().(ed25519.PublicKey)
-	t.Setenv("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS", `{"test":"`+base64.RawURLEncoding.EncodeToString(public)+`"}`)
+	t.Setenv("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS", `{"test":"router-fixture~`+base64.RawURLEncoding.EncodeToString(public)+`"}`)
 	for _, scenario := range []string{"chat.completions", "responses", "chat.completions-stage-d", "responses-stage-d", "chat.completions-cleanup-timeout", "responses-cleanup-timeout", "chat.completions-stage-d-cleanup-timeout", "responses-stage-d-cleanup-timeout", "chat.completions-cancelled", "responses-cancelled", "responses-stage-d-cancelled"} {
 		t.Run(scenario, func(t *testing.T) {
 			slow := strings.HasSuffix(scenario, "-cleanup-timeout")

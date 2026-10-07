@@ -77,7 +77,7 @@ func TestAsyncTicketClaimRules(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
 			c, a := fixtureClient(), fixtureAuthorization(t, true)
-			c.asyncTicketKeys = map[string]ed25519.PublicKey{"test": private.Public().(ed25519.PublicKey)}
+			c.asyncTicketKeys = map[string]asyncTicketKey{"test": {public: private.Public().(ed25519.PublicKey), issuer: "router-fixture"}}
 			payload, _ := base64.RawURLEncoding.DecodeString(strings.Split(a.SettlementTicket, ".")[1])
 			var fields map[string]json.RawMessage
 			if err := json.Unmarshal(payload, &fields); err != nil {
