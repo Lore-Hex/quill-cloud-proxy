@@ -143,6 +143,7 @@ for region in $REGIONS; do
   run docker buildx build \
     --platform "$PLATFORM" \
     --file enclave-go/Dockerfile.enclave \
+    --build-arg "SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)" \
     --build-arg "BUILD_TAGS=${BUILD_TAGS}" \
     --build-arg "QUILL_TLS_MODE=${QUILL_TLS_MODE}" \
     --build-arg "QUILL_ACME_DNS_GCP_PROJECT=${QUILL_ACME_DNS_GCP_PROJECT}" \

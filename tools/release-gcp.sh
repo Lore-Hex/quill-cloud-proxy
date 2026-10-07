@@ -44,6 +44,7 @@ else
     docker buildx build \
       --platform linux/amd64 \
       --file "$DOCKERFILE" \
+    --build-arg "SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)" \
       --tag "$IMAGE_REF" \
       --push \
       .

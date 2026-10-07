@@ -37,6 +37,7 @@ cd "$REPO_ROOT"
 docker buildx build --no-cache \
   --platform "$PLATFORM" \
   --file enclave-go/Dockerfile.enclave \
+    --build-arg "SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)" \
   --build-arg "BUILD_TAGS=${BUILD_TAGS}" \
   --build-arg "QUILL_TLS_MODE=${QUILL_TLS_MODE}" \
   --build-arg "QUILL_API_HOST=${QUILL_API_HOST}" \

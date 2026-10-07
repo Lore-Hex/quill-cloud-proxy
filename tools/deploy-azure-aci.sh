@@ -562,6 +562,7 @@ mi_client_id = sys.argv[1]
 # encrypted bundle and reach the enclave only under attestation.
 # TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
 env = {
+    "TR_ASYNC_SETTLE_SHADOW": "off",
     "TR_ASYNC_SETTLE_NEGOTIATE": "off",
     "TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS": "",
     # --- Azure boot path (bootstrap_azure.go) -----------------------------
@@ -1113,6 +1114,7 @@ phase_build() {
     --platform linux/amd64 \
     --image "${IMAGE_REPO}:${IMAGE_TAG}" \
     --file enclave-go/Dockerfile.enclave.azure.multi \
+    --build-arg "SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)" \
     "$REPO_ROOT/enclave-go"
 
   local digest=""

@@ -19,10 +19,13 @@ class RolloutSafetyTests(unittest.TestCase):
     def test_async_settlement_rollout_pins_and_keyring_allowlist(self) -> None:
         aws = (ROOT / "enclave-go/Dockerfile.enclave").read_text()
         self.assertIn("ENV TR_ASYNC_SETTLE_NEGOTIATE=off", aws)
+        self.assertIn("ENV TR_ASYNC_SETTLE_SHADOW=off", aws)
         self.assertIn('ENV TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS=""', aws)
         gcp = (ROOT / "tools/deploy-gcp-mig.sh").read_text()
         self.assertIn("tee-env-TR_ASYNC_SETTLE_NEGOTIATE=off|tee-env-TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS=|", gcp)
+        self.assertIn("tee-env-TR_ASYNC_SETTLE_SHADOW=off|", gcp)
         azure = (ROOT / "tools/deploy-azure-aci.sh").read_text()
+        self.assertIn('"TR_ASYNC_SETTLE_SHADOW": "off"', azure)
         self.assertIn('"TR_ASYNC_SETTLE_NEGOTIATE": "off"', azure)
         self.assertIn('"TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS": ""', azure)
         # Keep issuer-bound configuration documented beside unchanged empty pins.
@@ -36,6 +39,20 @@ class RolloutSafetyTests(unittest.TestCase):
             self.assertIn(keyring_format, docker)
             policy = next(line for line in docker.splitlines() if "tee.launch_policy.allow_env_override" in line)
             self.assertIn("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS", policy)
+            self.assertIn("TR_ASYNC_SETTLE_SHADOW", policy)
+
+    def test_shadow_build_revision_is_measured_and_supplied(self) -> None:
+        for suffix in ("", ".gcp", ".gcp.multi", ".gcp.anthropic", ".azure.multi"):
+            docker = (ROOT / ("enclave-go/Dockerfile.enclave" + suffix)).read_text()
+            self.assertIn("ARG SOURCE_REVISION", docker)
+            self.assertIn("trustedrouter.ShadowBuildRevision=${SOURCE_REVISION}", docker)
+        for name in ("release-aws-enclave.sh", "release-gcp.sh", "deploy-azure-aci.sh",
+                     "verify-pcr0.sh", "verify-build.sh"):
+            self.assertIn('SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)',
+                          (ROOT / "tools" / name).read_text())
+        workflow = (ROOT / ".github/workflows/deploy-enclave-gcp.yml").read_text()
+        self.assertIn("--build-arg SOURCE_REVISION=${_SOURCE_REVISION}", workflow)
+        self.assertIn("_SOURCE_REVISION=${GITHUB_SHA}", workflow)
 
     def test_shared_deploy_lock_queues_without_evicting_pending_releases(self) -> None:
         import yaml

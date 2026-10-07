@@ -1,0 +1,32 @@
+HTTP/1.1 200 OK
+Transfer-Encoding: chunked
+Content-Type: text/event-stream
+Cache-Control: no-cache
+X-Accel-Buffering: no
+Connection: close
+
+e3
+data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null,"index":0}],"created":0,"id":"chatcmpl-00000000000000000000000000000000","model":"openai/billing-v1","object":"chat.completion.chunk"}
+
+
+db
+data: {"choices":[{"delta":{"content":"Hello world"},"finish_reason":null,"index":0}],"created":0,"id":"chatcmpl-00000000000000000000000000000000","model":"openai/billing-v1","object":"chat.completion.chunk"}
+
+
+c6
+data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],"created":0,"id":"chatcmpl-00000000000000000000000000000000","model":"openai/billing-v1","object":"chat.completion.chunk"}
+
+
+125
+data: {"choices":[],"created":0,"id":"chatcmpl-00000000000000000000000000000000","model":"openai/billing-v1","object":"chat.completion.chunk","usage":{"completion_tokens":2,"cost_microdollars":4,"prompt_tokens":1,"total_cost_microdollars":4,"total_tokens":3,"usage_estimated":true}}
+
+
+e
+data: [DONE]
+
+
+0
+
+
+LEGACY SETTLE
+{"actual_input_tokens":1,"actual_output_tokens":2,"app":"attested-gateway","authorization_id":"auth-v1","elapsed_seconds":0,"finish_reason":"stop","first_token_seconds":0,"request_id":"chatcmpl-00000000000000000000000000000000","route_type":"chat.completions","selected_endpoint":"openai/billing-v1@openai/prepaid","selected_model":"openai/billing-v1","service_tier":"priority","status":"success","streamed":true,"usage_estimated":true}

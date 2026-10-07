@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PR E regression mutations on a disposable copy; no git writes."""
+"""PR E and F2c regression mutations on a disposable copy; no git writes."""
 import os
 from pathlib import Path
 import re
@@ -15,7 +15,15 @@ env = dict(os.environ, GOTOOLCHAIN="go1.24.13", GOFLAGS="-mod=mod",
            GOCACHE="/tmp/pr-e-go-build")
 source = "internal/trustedrouter/async_settlement.go"
 client = "internal/trustedrouter/client.go"
+shadow = "internal/trustedrouter/async_settle_shadow.go"
 mutations = [
+    ("shadow-on-binds-async", source, "if c.asyncShadow || !c.asyncNegotiate", "if !c.asyncNegotiate", "TestShadowLiteralPins"),
+    ("envelope-on-mode-header", client, "req.Header.Set(shadowSettlementHeader, header)", "req.Header.Set(asyncSettlementHeader, header)", "TestShadowHeaderOnlyRetriesRefund"),
+    ("trimmed-candidates", shadow, 'delete(body, "billing_snapshot")', 'var snapshot map[string]any; _ = json.Unmarshal(body["billing_snapshot"].(json.RawMessage), &snapshot); snapshot["candidates"] = snapshot["candidates"].([]any)[:1]; body["billing_snapshot"] = snapshot', "TestShadowTransportSizes/43"),
+    ("legacy-body-changed", client, '"actual_input_tokens":  usage.InputTokens,', '"actual_input_tokens":  usage.InputTokens + 1,', "TestAsyncOffFrozenMainTranscripts"),
+    ("header-differs-across-retries", shadow, "ok && frozen.key == string(key)", "ok && frozen.key == string(key) && false", "TestShadowHeaderOnlyRetriesRefund|TestShadowTransportSizes"),
+    ("sanitized-tier-used", "cmd/enclave/main.go", "providerTier = result.Usage.ServiceTier", "providerTier = usage.ServiceTier", "TestShadowProviderStreamPaths"),
+    ("refund-charge-nonzero", shadow, "terminal.ChargeMicro = 0", "terminal.ChargeMicro = result.ChargeMicro", "TestShadowFailuresAndRefund"),
     ("A_drop_flag", client, "if c.asyncNegotiate && asyncCohort(routeType)",
      "if asyncCohort(routeType)", "TestAsyncAuthorizeNegotiationGuards/false/chat.completions"),
     ("B_non_cohort", client, "if c.asyncNegotiate && asyncCohort(routeType)",
@@ -94,7 +102,7 @@ def run(test, package="./internal/trustedrouter"):
                           cwd=module, env=env, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT)
 
-baseline = run("TestAsync", "./internal/trustedrouter ./internal/adapter ./cmd/enclave")
+baseline = run("TestAsync|TestShadow", "./internal/trustedrouter ./internal/adapter ./cmd/enclave")
 (work / "baseline.log").write_text(baseline.stdout)
 if baseline.returncode:
     raise SystemExit("Disposable baseline failed: " + str(work))
@@ -105,7 +113,7 @@ for name, file, old, new, test in mutations:
     assert original.count(old) == 1, (name, original.count(old))
     path.write_text(original.replace(old, new, 1))
     try:
-        result = run(test, "./cmd/enclave" if name in ("refund-on-cleanup-timeout", "metadata-after-completed") else "./internal/adapter" if name == "metadata-after-incomplete" else "./internal/trustedrouter")
+        result = run(test, "./cmd/enclave" if name in ("refund-on-cleanup-timeout", "metadata-after-completed", "sanitized-tier-used") else "./internal/adapter" if name == "metadata-after-incomplete" else "./internal/trustedrouter")
         (work / (name + ".log")).write_text(result.stdout)
         failed = re.findall(r"--- FAIL: ([^\s]+)", result.stdout)
         if result.returncode == 0 or not failed or "[build failed]" in result.stdout:
