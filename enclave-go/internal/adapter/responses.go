@@ -1217,6 +1217,9 @@ func TransformResponsesStreamControlled(
 			response["output"] = compactItems
 			response["incomplete_details"] = map[string]any{"reason": map[bool]string{true: "max_output_tokens", false: "server_error"}[termination.TRFinishReason == "cap_reached"]}
 			response["tr_finish_reason"] = termination.TRFinishReason
+			if err := writeSettlementMetadata(w, control, result, true); err != nil {
+				return err
+			}
 			if err := writeResponseEventSeq(w, &seq, "response.incomplete", map[string]any{"type": "response.incomplete", "response": response}); err != nil {
 				return err
 			}
@@ -1608,6 +1611,10 @@ func finishResponsesStream(
 		usageFields, _ = response["usage"].(map[string]any)
 	}
 	emit := func() error {
+		if err := writeSettlementMetadata(w, control, result, true); err != nil {
+			return err
+		}
+
 		if err := writeResponseEventSeq(w, seq, terminalEvent.name, terminalEvent.body); err != nil {
 			return err
 		}

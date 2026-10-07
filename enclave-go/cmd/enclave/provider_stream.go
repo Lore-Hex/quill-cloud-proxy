@@ -794,6 +794,39 @@ func retryableInvokeError(err error) bool {
 }
 
 func writeStreamingProviderError(w io.Writer, routeType, requestID, model string, err error, hideDetails bool) error {
+	return writeStreamingProviderErrorWithSettlement(w, routeType, requestID, model, err, hideDetails, nil)
+}
+
+// A known settlement/refund outcome belongs before the failure sentinel too.
+// The caller supplies it only for a negotiated authorization.
+func writeStreamingProviderErrorWithSettlement(w io.Writer, routeType, requestID, model string, err error, hideDetails bool, settlement *trustedrouter.SettleResult) error {
+	if settlement != nil && (routeType == "responses" || routeType == "chat.completions") {
+		metadata := map[string]any{}
+		if settlement.HasCost() {
+			usage := map[string]any{}
+			annotateUsageCost(usage, settlement)
+			metadata["usage"] = usage
+		}
+		if settlement.TrustedRouterSettlement != nil {
+			metadata["trusted_router_settlement"] = settlement.TrustedRouterSettlement
+		}
+		if len(metadata) > 0 {
+			prefix := ""
+			if routeType == "responses" {
+				metadata["type"] = "trusted_router.settlement"
+				prefix = "event: trusted_router.settlement\n"
+			} else {
+				metadata["id"], metadata["object"], metadata["model"], metadata["choices"], metadata["created"] = requestID, "chat.completion.chunk", model, []any{}, time.Now().Unix()
+			}
+			encoded, marshalErr := json.Marshal(metadata)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			if _, writeErr := fmt.Fprintf(w, "%sdata: %s\n\n", prefix, encoded); writeErr != nil {
+				return writeErr
+			}
+		}
+	}
 	_, errBody := providerErrorBody(err, &trustedrouter.Authorization{HidePublicMetadata: hideDetails})
 	if routeType == "messages" {
 		if errBody["type"] == "provider_error" {

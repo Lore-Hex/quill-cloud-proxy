@@ -560,7 +560,10 @@ mi_client_id = sys.argv[1]
 # Names only. Not one secret VALUE appears in this env: every value below is
 # either a coordinate or the NAME of a bundle entry. The values live in the
 # encrypted bundle and reach the enclave only under attestation.
+# TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
 env = {
+    "TR_ASYNC_SETTLE_NEGOTIATE": "off",
+    "TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS": "",
     # --- Azure boot path (bootstrap_azure.go) -----------------------------
     "QUILL_AZURE_MAA_ENDPOINT":  os.environ["MAA_ENDPOINT"],
     "QUILL_AZURE_AKV_ENDPOINT":  os.environ["VAULT"] + ".vault.azure.net",

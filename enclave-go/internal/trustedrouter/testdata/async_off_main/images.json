@@ -1,0 +1,103 @@
+[
+  {
+    "body": "{\"api_key_lookup_hash\":\"62af8704764faf8ea82fc61ce9c4c3908b6cb97d463a634e9e587d7c885db0ef\",\"estimated_input_tokens\":1,\"idempotency_key\":\"oracle-idempotency\",\"invocation_nonce\":\"nonce-oracle\",\"max_output_tokens\":512,\"max_tokens\":null,\"model\":\"test-model\",\"region\":\"\",\"route_type\":\"images\",\"stream\":false}",
+    "headers": {
+      "Accept-Encoding": [
+        "gzip"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "User-Agent": [
+        "Go-http-client/1.1"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "oracle-token"
+      ]
+    },
+    "path": "/internal/gateway/authorize",
+    "response": "{\"data\":{\"authorization_id\":\"auth-oracle\",\"generation_id\":\"generation-oracle\",\"invocation_nonce\":\"nonce-oracle\",\"workspace_id\":\"workspace-oracle\",\"model\":\"test-model\",\"provider\":\"openai\",\"endpoint_id\":\"endpoint-oracle\",\"usage_type\":\"Credits\",\"additional_cost_reservation_microdollars\":1,\"settlement_mode\":\"async\",\"billing_snapshot\":{\"future\":true},\"settlement_ticket\":\"opaque\",\"async_eligible\":true}}"
+  },
+  {
+    "body": "{\"actual_input_tokens\":3,\"actual_output_tokens\":2,\"app\":\"attested-gateway\",\"authorization_id\":\"auth-oracle\",\"cache_read_input_tokens\":1,\"elapsed_seconds\":1,\"finish_reason\":\"stop\",\"request_id\":\"request-oracle\",\"route_type\":\"images\",\"selected_endpoint\":\"endpoint-oracle\",\"selected_model\":\"test-model\",\"status\":\"success\",\"streamed\":false,\"usage_estimated\":false}",
+    "headers": {
+      "Accept-Encoding": [
+        "gzip"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "User-Agent": [
+        "Go-http-client/1.1"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "oracle-token"
+      ]
+    },
+    "path": "/internal/gateway/settle",
+    "response": "{\"data\":{\"generation_id\":\"generation-oracle\",\"cost_microdollars\":17,\"cost\":0.000017,\"trusted_router_settlement\":{\"v\":1,\"settlement_status\":\"pending\",\"cost_microdollars\":99},\"settled\":true,\"input_tokens\":3,\"output_tokens\":2}}"
+  },
+  {
+    "settle_result": "{\"generation_id\":\"generation-oracle\",\"cost\":0.000017,\"input_tokens\":3,\"output_tokens\":2,\"reasoning_tokens\":0,\"cache_read_input_tokens\":0,\"usage_type\":\"\",\"model\":\"\",\"provider\":\"\",\"region\":\"\",\"settled\":true,\"already_settled\":false,\"finalization_outcome\":\"\",\"disposition\":\"\",\"cost_microdollars\":17}"
+  },
+  {
+    "body": "{\"app\":\"attested-gateway\",\"authorization_id\":\"auth-oracle\",\"elapsed_seconds\":1,\"error_status\":502,\"error_type\":\"upstream_error\",\"route_type\":\"images\",\"selected_endpoint\":\"endpoint-oracle\",\"selected_model\":\"test-model\",\"streamed\":true}",
+    "headers": {
+      "Accept-Encoding": [
+        "gzip"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "User-Agent": [
+        "Go-http-client/1.1"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "oracle-token"
+      ]
+    },
+    "path": "/internal/gateway/refund",
+    "response": "{\"data\":{\"generation_id\":\"generation-oracle\",\"cost_microdollars\":17,\"cost\":0.000017,\"trusted_router_settlement\":{\"v\":1,\"settlement_status\":\"pending\",\"cost_microdollars\":99},\"settled\":true,\"input_tokens\":3,\"output_tokens\":2}}"
+  },
+  {
+    "body": "{\"app\":\"attested-gateway\",\"authorization_id\":\"auth-oracle\",\"elapsed_seconds\":1,\"error_status\":502,\"error_type\":\"upstream_error\",\"route_type\":\"images\",\"selected_endpoint\":\"endpoint-oracle\",\"selected_model\":\"test-model\",\"streamed\":true}",
+    "headers": {
+      "Accept-Encoding": [
+        "gzip"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "User-Agent": [
+        "Go-http-client/1.1"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "oracle-token"
+      ]
+    },
+    "path": "/internal/gateway/refund",
+    "response": "{\"data\":{\"generation_id\":\"generation-oracle\",\"cost_microdollars\":17,\"cost\":0.000017,\"trusted_router_settlement\":{\"v\":1,\"settlement_status\":\"pending\",\"cost_microdollars\":99},\"settled\":true,\"input_tokens\":3,\"output_tokens\":2}}"
+  },
+  {
+    "refund_result": "{\"generation_id\":\"generation-oracle\",\"cost\":0.000017,\"input_tokens\":3,\"output_tokens\":2,\"reasoning_tokens\":0,\"cache_read_input_tokens\":0,\"usage_type\":\"\",\"model\":\"\",\"provider\":\"\",\"region\":\"\",\"settled\":true,\"already_settled\":false,\"finalization_outcome\":\"\",\"disposition\":\"\",\"cost_microdollars\":17}"
+  },
+  {
+    "body": "{\"app\":\"attested-gateway\",\"authorization_id\":\"auth-oracle\",\"elapsed_seconds\":1,\"error_status\":502,\"error_type\":\"upstream_error\",\"route_type\":\"images\",\"selected_endpoint\":\"endpoint-oracle\",\"selected_model\":\"test-model\",\"session_id\":\"oracle-session\",\"streamed\":true,\"user\":\"oracle-user\"}",
+    "headers": {
+      "Accept-Encoding": [
+        "gzip"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "User-Agent": [
+        "Go-http-client/1.1"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "oracle-token"
+      ]
+    },
+    "path": "/internal/gateway/refund",
+    "response": "{\"data\":{\"generation_id\":\"generation-oracle\",\"cost_microdollars\":17,\"cost\":0.000017,\"trusted_router_settlement\":{\"v\":1,\"settlement_status\":\"pending\",\"cost_microdollars\":99},\"settled\":true,\"input_tokens\":3,\"output_tokens\":2}}"
+  }
+]

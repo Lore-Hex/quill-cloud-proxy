@@ -1992,6 +1992,8 @@ func serveStreaming(
 	var result adapter.StreamResult
 	var err error
 	settledBeforeTerminal := false
+	deliveredOutput := false
+	settlementContext := ctx
 	settleStream := func(settleCtx context.Context, result adapter.StreamResult) (*trustedrouter.SettleResult, trustedrouter.Usage, error) {
 		inputTokens, outputTokens, usageEstimated := tokensForSettlement(
 			result, trustedrouter.EstimateInputTokens(req),
@@ -2029,6 +2031,8 @@ func serveStreaming(
 		return settlement, usage, nil
 	}
 	var stageDControl *adapter.StreamControl
+	var terminalSettlement *trustedrouter.SettleResult
+	var terminalBillingUsage trustedrouter.Usage
 	if stageDController != nil {
 		stageDControl = &adapter.StreamControl{
 			BeforeSlice: stageDController.beforeSlice,
@@ -2055,7 +2059,7 @@ func serveStreaming(
 					selectedRoute.Model(req.Model, authorization), req,
 					statsW.FirstWriteSeconds(requestStarted),
 				)
-				settleCtx, settleCancel := context.WithTimeout(ctx, stageDConfig.settleBeforeTerminal)
+				settleCtx, settleCancel := context.WithTimeout(settlementContext, stageDConfig.settleBeforeTerminal)
 				settlement, settleErr := settleAndBroadcast(
 					settleCtx, trGateway, authorization, secretCache, usage, req,
 					originalInput, adapter.ResponsesOutputForUsage(terminal.Result),
@@ -2069,7 +2073,7 @@ func serveStreaming(
 				}
 				if settleErr != nil {
 					if stageDTimeout(settleErr) {
-						lookupCtx, lookupCancel := context.WithTimeout(ctx, stageDConfig.settleBeforeTerminal)
+						lookupCtx, lookupCancel := context.WithTimeout(settlementContext, stageDConfig.settleBeforeTerminal)
 						disposition, lookupErr := trGateway.Disposition(lookupCtx, authorization)
 						lookupCancel()
 						if lookupErr == nil && disposition != nil && disposition.Disposition == trustedrouter.DispositionReapedSnapshot {
@@ -2085,6 +2089,8 @@ func serveStreaming(
 					})
 				}
 				settlement = reportedSettlement(settlement, authorization, usage, settleErr)
+				terminalSettlement = settlement
+				terminalBillingUsage = usage
 				if routeType == "responses" {
 					annotateUsageCost(terminal.UsageFields, settlement)
 					annotateEstimatedTokenUsage(terminal.UsageFields, usage)
@@ -2123,6 +2129,96 @@ func serveStreaming(
 			return terminal.Emit()
 		}}
 	}
+	if trGateway.AsyncSettlementNegotiated(authorization) {
+		var metadataCreated int64
+		var settleStageD func() (*trustedrouter.SettleResult, error)
+		if stageDController != nil {
+			// Retain Stage D metering, cap enforcement, winner reconciliation,
+			// and retry ownership. Move only its terminal settlement after Emit.
+			before := stageDControl.BeforeTerminal
+			var saved adapter.StreamTerminal
+			stageDControl.BeforeTerminal = func(terminal adapter.StreamTerminal) error {
+				stageDController.stopCadence()
+				metadataCreated = terminal.Created
+				saved = terminal
+				return terminal.Emit()
+			}
+			settleStageD = func() (*trustedrouter.SettleResult, error) {
+				saved.Emit = func() error { return nil }
+				err := before(saved)
+				return terminalSettlement, err
+			}
+		} else {
+			stageDControl = &adapter.StreamControl{BeforeTerminal: func(terminal adapter.StreamTerminal) error {
+				metadataCreated = terminal.Created
+				return terminal.Emit()
+			}}
+		}
+		stageDControl.AfterTerminal = func(final adapter.StreamResult) (map[string]any, error) {
+			// Deliver the terminal provider frame before waiting for provider cleanup or
+			// durable acceptance. Cleanup is bounded, never a settlement precondition.
+			// Keep #471's single deferred join and immediate abort.
+			if batchW != nil {
+				if err := batchW.Flush(); err != nil {
+					return nil, err
+				}
+			}
+			deliveredOutput = true
+			settledBeforeTerminal = true
+			settlementContext = context.WithoutCancel(ctx)
+			invocation.abort(io.EOF)
+			select {
+			case <-providerDone:
+			case <-ctx.Done():
+				// Delivery owns settlement even when the client disconnects.
+			case <-time.After(5 * time.Second):
+				fmt.Fprintln(os.Stderr, "enclave.async_settle event=cleanup_timeout")
+			}
+			settleCtx, cancel := context.WithTimeout(settlementContext, stageDConfig.settleBeforeTerminal)
+			defer cancel()
+			var settlement *trustedrouter.SettleResult
+			var usage trustedrouter.Usage
+			if settleStageD != nil {
+				var err error
+				settlement, err = settleStageD()
+				usage = terminalBillingUsage
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				var err error
+				settlement, usage, err = settleStream(settleCtx, final)
+				if err != nil {
+					// settleStream already queued recovery. Delivered output is final.
+					return nil, nil
+				}
+				settlement = reportedSettlement(settlement, authorization, usage, err)
+			}
+			metadata := map[string]any{}
+			if settlement.HasCost() && (routeType == "responses" || chatIncludeUsage(req)) {
+				fields := map[string]any{}
+				if routeType == "responses" {
+					annotateUsageCost(fields, settlement)
+				} else {
+					annotateChatTerminalUsage(adapter.StreamTerminal{UsageFields: fields}, settlement, usage)
+				}
+				metadata["usage"] = fields
+			}
+			if settlement != nil && settlement.TrustedRouterSettlement != nil {
+				metadata["trusted_router_settlement"] = settlement.TrustedRouterSettlement
+			}
+			if len(metadata) == 0 {
+				return nil, nil
+			}
+			if routeType == "responses" {
+				metadata["type"] = "trusted_router.settlement"
+			} else {
+				metadata["id"], metadata["object"], metadata["model"], metadata["choices"], metadata["created"] = requestID, "chat.completion.chunk", responseModel, []any{}, metadataCreated
+			}
+			return metadata, nil
+		}
+	}
+
 	if routeType == "responses" && polyphemusReceiptFromContext(ctx) != nil {
 		if stageDControl == nil {
 			stageDControl = &adapter.StreamControl{BeforeTerminal: func(terminal adapter.StreamTerminal) error {
@@ -2171,6 +2267,9 @@ func serveStreaming(
 		}
 	}
 	if err != nil {
+		if deliveredOutput {
+			return
+		}
 		fmt.Fprintf(os.Stderr, "enclave.transform_stream_failed model=%q err=%v\n", req.Model, errorClass(err))
 		status, _ := upstreamErrorResponse(err)
 		if trGateway != nil && trGateway.Enabled() && !settledBeforeTerminal {
@@ -2183,6 +2282,7 @@ func serveStreaming(
 					refundAuthorization = &selected
 				}
 				refundResult, refundErr := trGateway.RefundDetailed(ctx, refundAuthorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
+				terminalSettlement = refundResult
 				if stageDDispositionLost(refundResult) {
 					fmt.Fprintf(os.Stderr, "enclave.stage_d_refund_lost request_log_id=%q auth_id=%q disposition=%q\n", requestLogID, authorizationID(refundAuthorization), refundResult.Disposition)
 				}
@@ -2193,11 +2293,16 @@ func serveStreaming(
 						refundStatus: status, refundType: failureReason(err), refundElapsed: time.Since(requestStarted).Seconds(), refundMetadata: req.Metadata,
 					})
 				}
+			} else if trGateway.AsyncSettlementNegotiated(authorization) {
+				terminalSettlement, _ = trGateway.RefundDetailed(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 			} else {
 				_ = trGateway.Refund(ctx, authorization, status, failureReason(err), time.Since(requestStarted).Seconds(), req.Metadata)
 			}
 		}
-		if writeErr := writeStreamingProviderError(statsW, routeType, requestID, responseModel, err, hidesPublicRouteMetadata(authorization)); writeErr == nil {
+		if !trGateway.AsyncSettlementNegotiated(authorization) {
+			terminalSettlement = nil
+		}
+		if writeErr := writeStreamingProviderErrorWithSettlement(statsW, routeType, requestID, responseModel, err, hidesPublicRouteMetadata(authorization), terminalSettlement); writeErr == nil {
 			// An explicit terminal SSE failure is a complete HTTP message,
 			// not a truncated successful stream. Preserve chunk framing only
 			// when the error and terminal event were both delivered.

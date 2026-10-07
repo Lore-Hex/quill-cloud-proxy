@@ -788,6 +788,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		acmeFallbackEAB = string(value)
 	}
 
+	// TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
 	data := &types.BootstrapData{
 		Devices:                      devices,
 		Region:                       os.Getenv("QUILL_GCP_REGION"),
@@ -854,6 +855,8 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		ExaAPIKey:                    strings.TrimSpace(string(exaKey)),
 		TrustedRouterBaseURL:         os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken:   strings.TrimSpace(internalGatewayToken),
+		AsyncSettleTicketPublicKeys:  os.Getenv("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS"),
+		AsyncSettleNegotiate:         strings.EqualFold(strings.TrimSpace(os.Getenv("TR_ASYNC_SETTLE_NEGOTIATE")), "on"),
 		SpendLeaseShadow:             spendLeaseShadow,
 		SpendLeaseLocalAdmission:     spendLeaseLocalAdmission,
 		SpendLeaseIssuerConfig:       append(json.RawMessage(nil), spendLeaseIssuerConfig...),

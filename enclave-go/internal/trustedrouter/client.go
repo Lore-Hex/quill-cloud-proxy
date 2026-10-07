@@ -88,9 +88,12 @@ func ClientContextFromContext(ctx context.Context) *qtypes.ClientContext {
 }
 
 type Client struct {
-	shadow         shadowobserve.Observer
-	shadowBoundary shadowobserve.Boundary
-	shadowSigner   spendlease.DigestSigner
+	asyncNegotiate  bool
+	asyncTicketKeys map[string]asyncTicketKey
+	asyncClock      func() time.Time
+	shadow          shadowobserve.Observer
+	shadowBoundary  shadowobserve.Boundary
+	shadowSigner    spendlease.DigestSigner
 	// baseURLs is ordered: index 0 is the configured billing authority, and
 	// later entries are fallbacks used only when an earlier one cannot be
 	// dialled. Observer/status services are never valid entries. See
@@ -205,6 +208,8 @@ func (c *Client) afterCredentialCheck(ctx context.Context, lookupHash string, er
 func NewFromEnv() *Client {
 	baseURLs, configurationError := parseControlPlaneEndpoints(os.Getenv("TR_CONTROL_PLANE_BASE_URL"))
 	return &Client{
+		asyncNegotiate:     asyncFlag(nil),
+		asyncTicketKeys:    asyncPublicKeys(nil),
 		baseURLs:           baseURLs,
 		configurationError: configurationError,
 		internalToken:      os.Getenv("TR_INTERNAL_GATEWAY_TOKEN"),
@@ -229,6 +234,8 @@ func NewFromBootstrap(boot *qtypes.BootstrapData) *Client {
 		region = boot.Region
 	}
 	return &Client{
+		asyncNegotiate:     asyncFlag(boot),
+		asyncTicketKeys:    asyncPublicKeys(boot),
 		baseURLs:           baseURLs,
 		configurationError: configurationError,
 		internalToken:      strings.TrimSpace(internalToken),
@@ -245,6 +252,8 @@ func New(baseURL, internalToken string, httpc *http.Client) *Client {
 	}
 	baseURLs, configurationError := parseControlPlaneEndpoints(baseURL)
 	return &Client{
+		asyncNegotiate:     asyncFlag(nil),
+		asyncTicketKeys:    asyncPublicKeys(nil),
 		baseURLs:           baseURLs,
 		configurationError: configurationError,
 		internalToken:      internalToken,
@@ -461,14 +470,17 @@ func (c *Client) primaryBaseURL() string {
 }
 
 type Authorization struct {
-	// Optional settlement metadata is parsed only. No capability, including
-	// "async", activates a new request path in this PR. Preserve future snapshots
-	// as raw JSON so an unknown contract cannot break synchronous authorization.
-	GenerationID                          string          `json:"generation_id,omitempty"`
-	SettlementMode                        string          `json:"settlement_mode,omitempty"`
-	BillingSnapshot                       json.RawMessage `json:"billing_snapshot,omitempty"`
-	SettlementTicket                      string          `json:"settlement_ticket,omitempty"`
-	SettlementStatusURL                   string          `json:"settlement_status_url,omitempty"`
+	CreditReservationID string `json:"credit_reservation_id,omitempty"`
+	// Wire metadata alone cannot activate async behavior. async is bound only
+	// after enclave opt-in; preserve raw snapshot bytes for canonical hashing.
+	async                                 *asyncAuthorization
+	BillingSnapshotHash                   BillingSnapshotDigest `json:"billing_snapshot_hash,omitempty"`
+	AsyncEligible                         AsyncEligibility      `json:"async_eligible,omitempty"`
+	GenerationID                          string                `json:"generation_id,omitempty"`
+	SettlementMode                        string                `json:"settlement_mode,omitempty"`
+	BillingSnapshot                       json.RawMessage       `json:"billing_snapshot,omitempty"`
+	SettlementTicket                      string                `json:"settlement_ticket,omitempty"`
+	SettlementStatusURL                   string                `json:"settlement_status_url,omitempty"`
 	cacheAffinityKey                      string
 	cacheAffinityExplicit                 bool
 	InferenceLocation                     *InferenceLocationMetadata         `json:"inference_location,omitempty"`
@@ -825,6 +837,9 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 		return nil, err
 	}
 	body := chatAuthorizeBody(c, lookupHash, idempotencyKey, req, routeType)
+	if c.asyncNegotiate && asyncCohort(routeType) && len(c.asyncTicketKeys) > 0 {
+		ctx = context.WithValue(ctx, asyncModeKey{}, "async-v1")
+	}
 	decoded, controlPlaneEndpoint, err := c.authorizeAtDecodeSeam(ctx, lookupHash, body, spendLeaseRequestForChat(c.region, routeType, req))
 	if err != nil {
 		c.afterCredentialCheck(ctx, lookupHash, err)
@@ -834,6 +849,7 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.cacheAffinityKey, decoded.cacheAffinityExplicit = cacheAffinity(lookupHash, req, routeType)
 	decoded.RouteType = routeType
+	c.bindAsyncAuthorization(decoded, req, routeType)
 	if err := validateConfidentialAuthorization(ctx, decoded); err != nil {
 		_ = c.Refund(ctx, decoded, err.StatusCode, err.Type, 0.001, nil)
 		return nil, err
@@ -983,6 +999,8 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 }
 
 type SettleResult struct {
+	// Set only by verified async acceptance; legacy decoding ignores this extension.
+	TrustedRouterSettlement *PendingSettlement `json:"-"`
 	// CostMicrodollarsKnown preserves a real zero across JSON decoding. A
 	// missing/null cost must never become a reported free request.
 	CostMicrodollarsKnown bool    `json:"-"`
@@ -1018,6 +1036,24 @@ func (c *Client) Settle(ctx context.Context, auth *Authorization, usage Usage) (
 	}()
 	if auth == nil {
 		return nil, fmt.Errorf("trustedrouter: nil authorization")
+	}
+	if c.AsyncSettlementNegotiated(auth) {
+		// Async, snapshot sync and any final legacy recovery share one budget.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, settlementRetryBudget)
+		defer cancel()
+	}
+	if pending, asyncErr := c.tryAsyncSettlement(ctx, auth, usage); pending != nil || asyncErr != nil {
+		return pending, asyncErr
+	}
+	if c.AsyncSettlementNegotiated(auth) {
+		defer func() {
+			auth.async.attemptMu.Lock()
+			defer auth.async.attemptMu.Unlock()
+			if auth.async.attempted {
+				logAsyncAmount(auth.async.charge, result)
+			}
+		}()
 	}
 	finishReason := usage.FinishReason
 	if finishReason == "" {
@@ -1311,6 +1347,9 @@ func (c *Client) postToControlPlaneWithBootAuth(
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(internalTokenHeader, c.internalToken)
+		if mode, _ := ctx.Value(asyncModeKey{}).(string); (mode == "async-v1" || mode == "sync") && (path == "/internal/gateway/authorize" || path == "/internal/gateway/settle") {
+			req.Header.Set(asyncSettlementHeader, mode)
+		}
 		if bootAuthHeader != "" {
 			req.Header.Set(spendlease.BootAuthHeader, bootAuthHeader)
 		}
