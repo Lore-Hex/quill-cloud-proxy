@@ -3,9 +3,11 @@ package trustedrouter
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"regexp"
 	"runtime/debug"
@@ -23,6 +25,7 @@ const shadowInlineBytes = 6144
 const shadowJSONBytes = 8192
 const shadowHeaderBytes = 12288
 const shadowLocalBytes = 65536
+const shadowRetryEntries = 32
 
 // ShadowBuildRevision is injected by the image build, never by request data.
 // Local VCS builds can use Go's embedded revision. An unknown revision refuses
@@ -33,7 +36,7 @@ var shadowConfigurationConflicts atomic.Uint64
 var shadowRejections atomic.Uint64
 var shadowDiagnosticCounters = map[string]*atomic.Uint64{
 	"proof_signature": {}, "identity": {}, "snapshot_size": {}, "hash": {},
-	"json_shape": {}, "revision": {}, "header_size": {},
+	"json_shape": {}, "revision": {}, "header_size": {}, "retry_capacity": {},
 }
 
 func shadowReject(reason string) {
@@ -51,10 +54,22 @@ type shadowAuthorization struct {
 	proof     string
 	terminal  billingv1.TerminalEnvelope
 	requested billingv1.Eligibility
-	mu        sync.Mutex
-	frozen    map[string]shadowFrozen
+	full      bool // Immutable success-shaped transport decision, fixed at authorize.
 }
-type shadowFrozen struct{ key, header string }
+
+// Retry state belongs to the provider observation carried by a request's Usage,
+// never to the authorization that may be shared by independent requests.
+// Copies of Usage share immutable entries keyed by the complete retry identity.
+type shadowRetryIdentity struct {
+	authorization *shadowAuthorization
+	envelopeHash  [sha256.Size]byte
+	kind          string
+}
+
+type shadowRetries struct {
+	mu     sync.Mutex
+	frozen map[shadowRetryIdentity]string
+}
 
 // ShadowObservation contains bounded provider facts captured before legacy
 // normalization. The timestamp follows Usage through background retries.
@@ -63,13 +78,14 @@ type ShadowObservation struct {
 	Present     bool
 	ServiceTier string
 	AvailableAt time.Time
+	retries     *shadowRetries
 }
 
 func ObserveShadowUsage(present bool, tier string) ShadowObservation {
 	if tier != "" && tier != "default" {
 		tier = "unsupported"
 	}
-	return ShadowObservation{Present: present, ServiceTier: tier, AvailableAt: time.Now()}
+	return ShadowObservation{Present: present, ServiceTier: tier, AvailableAt: time.Now(), retries: &shadowRetries{}}
 }
 
 func shadowFlag(boot *qtypes.BootstrapData) bool {
@@ -222,7 +238,41 @@ func (c *Client) retainShadowAuthorization(a *Authorization, req *qtypes.OpenAIC
 		tier := ObserveShadowUsage(true, req.ServiceTier).ServiceTier
 		requested.ServiceTier = &tier
 	}
-	a.shadowSettlement = &shadowAuthorization{snapshot: snapshot, raw: raw, proof: string(a.BillingShadowBinding), terminal: claims.terminal(), requested: requested, frozen: make(map[string]shadowFrozen)}
+	shadow := &shadowAuthorization{snapshot: snapshot, raw: raw, proof: string(a.BillingShadowBinding), terminal: claims.terminal(), requested: requested}
+	shadow.full = shadowSuccessFits(shadow)
+	a.shadowSettlement = shadow
+}
+
+// Decide once, even if the provider never supplies a terminal. The placeholder
+// bounds every successful settle/refund: fixed authorization identities, longest
+// candidate endpoint, int64 maxima for counts/charge/timing and a 40-byte revision.
+// The longest bounded observed tier also covers failure observations. This is a
+// size bound only, not a synthetic evaluation or a terminal sent to the router.
+func shadowSuccessFits(a *shadowAuthorization) bool {
+	if len(a.raw) > shadowInlineBytes {
+		return false
+	}
+	terminal := a.terminal
+	terminal.V, terminal.TerminalKind, terminal.ChargeMicro = 1, "settle", math.MaxInt64
+	for _, candidate := range a.snapshot.Candidates() {
+		if len(candidate.EndpointID) > len(terminal.SelectedEndpoint) {
+			terminal.SelectedEndpoint = candidate.EndpointID
+		}
+	}
+	terminal.Usage = billingv1.NormalizedUsage{
+		UncachedInputTokens: math.MaxInt64, TotalPromptTokens: math.MaxInt64,
+		OutputTokens: math.MaxInt64, CacheReadTokens: math.MaxInt64,
+		CacheCreationTokens: math.MaxInt64, ReasoningTokens: math.MaxInt64,
+	}
+	body := buildShadowEnvelope(a, Usage{ShadowObservation: ShadowObservation{ServiceTier: "unsupported"}}, "settle", strings.Repeat("0", 40))
+	body["go_error"] = nil
+	body["terminal"], body["payload_hash"] = terminal, strings.Repeat("0", 64)
+	body["raw_usage"] = billingv1.RawUsage{
+		InputTokens: math.MaxInt64, OutputTokens: math.MaxInt64,
+		CacheReadTokens: math.MaxInt64, CacheCreationTokens: math.MaxInt64, ReasoningTokens: math.MaxInt64,
+	}
+	body["handoff_prepare_us"] = int64(math.MaxInt64)
+	return shadowFullFits(body, len(a.raw))
 }
 
 // buildShadowEnvelope never edits usage, authorization, or a legacy request.
@@ -299,15 +349,17 @@ func canonicalShadow(value any) ([]byte, error) {
 	return json.Marshal(object)
 }
 
-func encodeShadow(body map[string]any, snapshotBytes int) (string, error) {
+func shadowFullFits(body map[string]any, snapshotBytes int) bool {
 	raw, err := canonicalShadow(body)
-	if err != nil {
-		return "", err
-	}
-	if snapshotBytes > shadowInlineBytes || len(raw) > shadowJSONBytes || base64.RawURLEncoding.EncodedLen(len(raw)) > shadowHeaderBytes {
+	return err == nil && snapshotBytes <= shadowInlineBytes && len(raw) <= shadowJSONBytes && base64.RawURLEncoding.EncodedLen(len(raw)) <= shadowHeaderBytes
+}
+
+// Encoding enforces the retained mode; it never chooses a new mode for a failure.
+func encodeShadow(body map[string]any, full bool) (string, error) {
+	if !full {
 		delete(body, "billing_snapshot") // Never trim candidates; only omit this key.
-		raw, err = canonicalShadow(body)
 	}
+	raw, err := canonicalShadow(body)
 	if err != nil {
 		return "", err
 	}
@@ -332,25 +384,42 @@ func (c *Client) withShadowHeader(ctx context.Context, a *Authorization, usage U
 		shadowReject("revision")
 		return ctx
 	}
-	shadow.mu.Lock()
-	defer shadow.mu.Unlock()
 	body := buildShadowEnvelope(shadow, usage, kind, revision)
 	key, err := canonicalShadow(body)
 	if err != nil {
 		shadowReject("json_shape")
 		return ctx
 	}
-	if frozen, ok := shadow.frozen[kind]; ok && frozen.key == string(key) {
-		return context.WithValue(ctx, shadowHeaderKey{}, frozen.header)
+	identity := shadowRetryIdentity{authorization: shadow, envelopeHash: sha256.Sum256(key), kind: kind}
+	retries := usage.ShadowObservation.retries
+	if retries != nil {
+		retries.mu.Lock()
+		defer retries.mu.Unlock()
+		if header, ok := retries.frozen[identity]; ok {
+			return context.WithValue(ctx, shadowHeaderKey{}, header)
+		}
+		// Never evict an earlier retry's frozen bytes. Excess variants lose only
+		// diagnostics; the legacy send and retry policy remain unchanged.
+		if len(retries.frozen) >= shadowRetryEntries {
+			shadowReject("retry_capacity")
+			return ctx
+		}
 	}
-	if !usage.ShadowObservation.AvailableAt.IsZero() {
+	// A zero observation (including the no-usage refund path) has no timing
+	// state. Its zero timing makes the header deterministic without a cache.
+	if retries != nil && !usage.ShadowObservation.AvailableAt.IsZero() {
 		body["handoff_prepare_us"] = max(int64(0), time.Since(usage.ShadowObservation.AvailableAt).Microseconds())
 	}
-	header, err := encodeShadow(body, len(shadow.raw))
+	header, err := encodeShadow(body, shadow.full)
 	if err != nil {
 		shadowReject("header_size")
 		return ctx
 	}
-	shadow.frozen[kind] = shadowFrozen{string(key), header}
+	if retries != nil {
+		if retries.frozen == nil {
+			retries.frozen = make(map[shadowRetryIdentity]string)
+		}
+		retries.frozen[identity] = header
+	}
 	return context.WithValue(ctx, shadowHeaderKey{}, header)
 }

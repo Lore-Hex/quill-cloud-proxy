@@ -21,9 +21,32 @@ mutations = [
     ("envelope-on-mode-header", client, "req.Header.Set(shadowSettlementHeader, header)", "req.Header.Set(asyncSettlementHeader, header)", "TestShadowHeaderOnlyRetriesRefund"),
     ("trimmed-candidates", shadow, 'delete(body, "billing_snapshot")', 'var snapshot map[string]any; _ = json.Unmarshal(body["billing_snapshot"].(json.RawMessage), &snapshot); snapshot["candidates"] = snapshot["candidates"].([]any)[:1]; body["billing_snapshot"] = snapshot', "TestShadowTransportSizes/43"),
     ("legacy-body-changed", client, '"actual_input_tokens":  usage.InputTokens,', '"actual_input_tokens":  usage.InputTokens + 1,', "TestAsyncOffFrozenMainTranscripts"),
-    ("header-differs-across-retries", shadow, "ok && frozen.key == string(key)", "ok && frozen.key == string(key) && false", "TestShadowHeaderOnlyRetriesRefund|TestShadowTransportSizes"),
+    ("header-differs-across-retries", shadow, "retries.frozen[identity]; ok", "retries.frozen[identity]; ok && false", "TestShadowHeaderOnlyRetriesRefund|TestShadowTransportSizes"),
     ("sanitized-tier-used", "cmd/enclave/main.go", "providerTier = result.Usage.ServiceTier", "providerTier = usage.ServiceTier", "TestShadowProviderStreamPaths"),
     ("refund-charge-nonzero", shadow, "terminal.ChargeMicro = 0", "terminal.ChargeMicro = result.ChargeMicro", "TestShadowFailuresAndRefund"),
+    ("failure-variant-recomputes-mode", shadow,
+     "encodeShadow(body, shadow.full)", "encodeShadow(body, shadowFullFits(body, len(shadow.raw)))",
+     "TestReviewFailureKeepsMode|TestShadowCanonicalSnapshotBoundaries"),
+    ("retry-header-keyed-by-authorization-only", shadow,
+     "envelopeHash: sha256.Sum256(key), kind: kind", "envelopeHash: sha256.Sum256(key[:0]), kind: \"\"",
+     "TestReviewHTTPRetryInterleaving|TestShadowRetryIdentityAndCapacity"),
+    # Retain the four additional independent round-1 review mutations in the
+    # checked-in driver (25 author rows + 4 review rows + 2 round-2 rows = 31).
+    ("off-refund-header", client,
+     'req.Header.Set("Content-Type", "application/json")',
+     'req.Header.Set("Content-Type", "application/json"); if path == "/internal/gateway/refund" {req.Header.Set(shadowSettlementHeader,"illegal-off-header")}',
+     "TestAsyncOffFrozenMainTranscripts"),
+    ("sanitized-observation", "cmd/enclave/main.go",
+     'usage.ShadowObservation = trustedrouter.ObserveShadowUsage(result.Usage != nil, providerTier)',
+     'usage.ShadowObservation = trustedrouter.ObserveShadowUsage(result.Usage != nil, providerTier); if tier,ok:=canonicalServiceTier(providerTier);ok{usage.ShadowObservation = trustedrouter.ObserveShadowUsage(result.Usage != nil,tier)}',
+     "TestShadowProviderStreamPaths"),
+    ("no-retry-freeze", shadow,
+     "retries.frozen[identity] = header", "_ = header",
+     "TestShadowHeaderOnlyRetriesRefund|TestShadowTransportSizes"),
+    ("trim-retained-hash-only", shadow,
+     "requested := billingv1.DefaultEligibility()",
+     'if len(raw)>shadowInlineBytes {var trimmed map[string]any;_ = json.Unmarshal(raw,&trimmed);trimmed["candidates"]=trimmed["candidates"].([]any)[:1];b,_:=json.Marshal(trimmed);snapshot,_=billingv1.ParseSnapshot(b)}; requested := billingv1.DefaultEligibility()',
+     "TestReviewRetainAllCandidates"),
     ("A_drop_flag", client, "if c.asyncNegotiate && asyncCohort(routeType)",
      "if asyncCohort(routeType)", "TestAsyncAuthorizeNegotiationGuards/false/chat.completions"),
     ("B_non_cohort", client, "if c.asyncNegotiate && asyncCohort(routeType)",
@@ -102,7 +125,7 @@ def run(test, package="./internal/trustedrouter"):
                           cwd=module, env=env, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT)
 
-baseline = run("TestAsync|TestShadow", "./internal/trustedrouter ./internal/adapter ./cmd/enclave")
+baseline = run("TestAsync|TestShadow|TestReview", "./internal/trustedrouter ./internal/adapter ./cmd/enclave")
 (work / "baseline.log").write_text(baseline.stdout)
 if baseline.returncode:
     raise SystemExit("Disposable baseline failed: " + str(work))
@@ -113,7 +136,7 @@ for name, file, old, new, test in mutations:
     assert original.count(old) == 1, (name, original.count(old))
     path.write_text(original.replace(old, new, 1))
     try:
-        result = run(test, "./cmd/enclave" if name in ("refund-on-cleanup-timeout", "metadata-after-completed", "sanitized-tier-used") else "./internal/adapter" if name == "metadata-after-incomplete" else "./internal/trustedrouter")
+        result = run(test, "./cmd/enclave" if name in ("refund-on-cleanup-timeout", "metadata-after-completed", "sanitized-tier-used", "sanitized-observation") else "./internal/adapter" if name == "metadata-after-incomplete" else "./internal/trustedrouter")
         (work / (name + ".log")).write_text(result.stdout)
         failed = re.findall(r"--- FAIL: ([^\s]+)", result.stdout)
         if result.returncode == 0 or not failed or "[build failed]" in result.stdout:
@@ -121,3 +144,5 @@ for name, file, old, new, test in mutations:
         print(name + " KILLED by " + ", ".join(failed[:3]), flush=True)
     finally:
         path.write_text(original)
+
+print(f"PASS: {len(mutations)} mutations compiled and were killed by assertions", flush=True)

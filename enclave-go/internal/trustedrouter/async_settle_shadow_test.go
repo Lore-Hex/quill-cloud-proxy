@@ -125,7 +125,7 @@ func TestShadowLiteralPins(t *testing.T) {
 	}
 	// The literal intentionally omits eligibility defaults and pins its timing.
 	body["observed"], body["handoff_prepare_us"] = map[string]any{}, 1000
-	encoded, err := encodeShadow(body, len(a.shadowSettlement.raw))
+	encoded, err := encodeShadow(body, shadowFullFits(body, len(a.shadowSettlement.raw)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +296,7 @@ func TestShadowFailuresAndRefund(t *testing.T) {
 				t.Fatal(body)
 			}
 			for _, size := range []int{645, 6144, 6145} {
-				header, err := encodeShadow(body, size)
+				header, err := encodeShadow(body, shadowFullFits(body, size))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -404,7 +404,7 @@ func TestShadowTransportSizes(t *testing.T) {
 			u.SelectedEndpoint = sh.terminal.SelectedEndpoint
 			body := buildShadowEnvelope(sh, u, "settle", shadowFixtureRevision)
 			body["observed"], body["handoff_prepare_us"] = map[string]any{}, 1000
-			header, err := encodeShadow(body, len(snapshot))
+			header, err := encodeShadow(body, shadowFullFits(body, len(snapshot)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -417,6 +417,7 @@ func TestShadowTransportSizes(t *testing.T) {
 			if len(sh.snapshot.Candidates()) != tc.Candidates {
 				t.Fatal("trimmed candidates")
 			}
+			sh.full = shadowSuccessFits(sh)
 			// Failure preserves full/hash-only mode, and retries freeze both modes.
 			setShadowRevision(t)
 			c := &Client{asyncShadow: true}
@@ -444,19 +445,20 @@ func TestShadowOuterBoundsAndIsolation(t *testing.T) {
 	// Full overflow below the inline cap must omit only billing_snapshot.
 	body := buildShadowEnvelope(a.shadowSettlement, u, "settle", shadowFixtureRevision)
 	body["go_revision"] = strings.Repeat("a", 7000)
-	header, err := encodeShadow(body, 645)
+	header, err := encodeShadow(body, shadowFullFits(body, 645))
 	if err == nil {
 		if _, full := decodeShadow(t, header)["billing_snapshot"]; full {
 			t.Fatal("full outer overflow")
 		}
 	}
 	body["go_revision"] = strings.Repeat("a", 9000)
-	if _, err = encodeShadow(body, 645); err == nil {
+	if _, err = encodeShadow(body, shadowFullFits(body, 645)); err == nil {
 		t.Fatal("remaining overflow")
 	}
 	before := *a
+	beforeShadow := *a.shadowSettlement
 	_ = c.withShadowHeader(t.Context(), a, u, "settle")
-	if !reflect.DeepEqual(before, *a) || a.async != nil {
+	if !reflect.DeepEqual(before, *a) || !reflect.DeepEqual(beforeShadow, *a.shadowSettlement) || a.async != nil {
 		t.Fatal("authorization changed")
 	}
 	for _, proof := range []string{strings.Repeat("a", 2049), "a.b.c", string(a.BillingShadowBinding) + "=", ""} {
@@ -483,7 +485,7 @@ func TestShadowSeparateLiteralPins(t *testing.T) {
 	_, a := shadowAuth(t)
 	body := buildShadowEnvelope(a.shadowSettlement, Usage{}, "settle", shadowFixtureRevision)
 	body["observed"], body["handoff_prepare_us"] = map[string]any{}, 1000
-	header, err := encodeShadow(body, len(a.shadowSettlement.raw))
+	header, err := encodeShadow(body, shadowFullFits(body, len(a.shadowSettlement.raw)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +582,7 @@ func TestShadowPositiveRefundLiteral(t *testing.T) {
 	_, a := shadowAuth(t)
 	body := buildShadowEnvelope(a.shadowSettlement, shadowUsage(), "refund", shadowFixtureRevision)
 	body["observed"], body["handoff_prepare_us"] = map[string]any{}, 1000
-	header, err := encodeShadow(body, len(a.shadowSettlement.raw))
+	header, err := encodeShadow(body, shadowFullFits(body, len(a.shadowSettlement.raw)))
 	if err != nil {
 		t.Fatal(err)
 	}
