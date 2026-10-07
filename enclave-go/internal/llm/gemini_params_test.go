@@ -136,3 +136,26 @@ func TestGeminiContractLeavesOtherProvidersAndOlderGeminiAlone(t *testing.T) {
 		t.Fatalf("Gemini 2.5 budget removed: %#v", older.Reasoning)
 	}
 }
+
+func TestGeminiMajorOnlyModelIDsAreTranslated(t *testing.T) {
+	for _, model := range []string{"gemini-3-flash-preview", "gemini-3-pro-preview"} {
+		wire := geminiParamsWire(t, model,
+			&qtypes.OpenAIChatRequest{Reasoning: map[string]any{"max_tokens": float64(8192)}},
+			&qtypes.AnthropicMessagesRequest{NativeContent: true, Thinking: map[string]any{"type": "enabled", "budget_tokens": 8192}})
+		if wire["reasoning_effort"] != "high" {
+			t.Fatalf("%s: reasoning_effort = %#v, want high", model, wire["reasoning_effort"])
+		}
+		if _, ok := wire["thinking"]; ok {
+			t.Fatalf("%s: thinking forwarded", model)
+		}
+		if _, ok := wire["reasoning"]; ok {
+			t.Fatalf("%s: reasoning budget forwarded: %#v", model, wire["reasoning"])
+		}
+	}
+	if !geminiVersionAtLeast("gemini-3-flash-preview", 3, 0) || geminiVersionAtLeast("gemini-3-flash-preview", 3, 6) {
+		t.Fatal("major-only Gemini 3 must parse as 3.0")
+	}
+	if geminiVersionAtLeast("gemma-4-31b-it", 3, 0) {
+		t.Fatal("Gemma must not parse as Gemini")
+	}
+}
