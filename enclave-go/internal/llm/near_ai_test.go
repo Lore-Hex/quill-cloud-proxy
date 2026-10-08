@@ -49,7 +49,7 @@ func nearAITestClient(t *testing.T, verifyError error, dials int32) (*nearAIClie
 	connection := &nearAITestConnection{fingerprint: fingerprint, dials: dials}
 	httpc := &http.Client{Transport: nearAIRoundTripper(func(request *http.Request) (*http.Response, error) {
 		call := requests.Add(1)
-		if call == 1 {
+		if request.Method == http.MethodGet {
 			if request.Method != http.MethodGet || request.URL.Host != domain ||
 				request.URL.Query().Get("nonce") != nonce ||
 				request.URL.Query().Get("include_tls_fingerprint") != "true" ||
@@ -88,14 +88,14 @@ func nearAITestClient(t *testing.T, verifyError error, dials int32) (*nearAIClie
 	})}
 	client := newNearAI("operator-key")
 	client.newNonce = func() (string, error) { return nonce, nil }
-	client.openConnection = func(gotDomain string) (nearAIConnection, *http.Client, error) {
+	client.openConnection = func(gotDomain string, _ int) (nearAIConnection, *http.Client, error) {
 		if gotDomain != domain {
 			t.Errorf("direct domain = %q", gotDomain)
 		}
 		return connection, httpc, nil
 	}
 	client.verifyEvidence = func(_ context.Context, envelope *nearAIEvidenceEnvelope) (*nearAIVerificationResult, error) {
-		if requests.Load() != 1 {
+		if verifyError == nil && requests.Load() != 1 {
 			t.Errorf("verification ran after %d upstream calls, want attestation only", requests.Load())
 		}
 		if envelope.Model != "z-ai/glm-5.2" || envelope.Domain != domain || envelope.Nonce != nonce ||
@@ -144,7 +144,7 @@ func TestNearAIClientNeverSendsPromptWhenAttestationFails(t *testing.T) {
 	if err := invokeNearAITestClient(client, io.Discard); err == nil || !strings.Contains(err.Error(), "attestation rejected") {
 		t.Fatalf("attestation error = %v", err)
 	}
-	if requests.Load() != 1 {
+	if requests.Load() != nearAIAttestationAttempts {
 		t.Fatalf("upstream requests = %d, prompt was sent after failed attestation", requests.Load())
 	}
 }

@@ -13,7 +13,7 @@ import (
 	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
 )
 
-// Public deployment histories captured with fresh nonces on 2026-10-03.
+// Public histories captured with fresh nonces on October 3 and 8, 2026.
 // These tests exercise policy binding; cryptographic validation is covered by
 // TestLiveNearAIEvidence, not by the quote/GPU doubles used here.
 func reviewedNearAIPoolCase(t *testing.T, compose string) *nearAITestCase {
@@ -45,7 +45,11 @@ func reviewedNearAIPoolCase(t *testing.T, compose string) *nearAITestCase {
 	c.report.Info.AppName = policy.AppName
 	c.report.Info.OSImageHash = policy.OSImageHash
 	c.report.Info.ComposeHash = compose
-	eventBytes, err := os.ReadFile(filepath.Join("testdata", "near-ai-2026-10-03", compose[:8]+"-events.json"))
+	fixtureDate := "near-ai-2026-10-03"
+	if compose == "55db164f4f8c6a837c2217c601c21bba4758f908536a6cd5b2978550205a9179" {
+		fixtureDate = "near-ai-2026-10-08"
+	}
+	eventBytes, err := os.ReadFile(filepath.Join("testdata", fixtureDate, compose[:8]+"-events.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +68,7 @@ func reviewedNearAIPoolCase(t *testing.T, compose string) *nearAITestCase {
 		body.Rtmrs[2], _ = hex.DecodeString(policy.BootMeasurements.RTMR2)
 		body.Rtmrs[3] = append([]byte{}, rtmr3...)
 	}
-	actions, err := os.ReadFile(filepath.Join("testdata", "near-ai-2026-10-03", compose[:8]+"-actions.json"))
+	actions, err := os.ReadFile(filepath.Join("testdata", fixtureDate, compose[:8]+"-actions.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +138,7 @@ func TestNearAIReviewedOctoberPoolHistories(t *testing.T) {
 			}
 			// Even a correctly re-quoted telemetry-only update requires review.
 			actions = append(actions, map[string]any{
-				"action": "compose_up", "timestamp": "2026-10-03T00:00:00Z",
+				"action": "compose_up", "timestamp": "2026-10-09T00:00:00Z",
 				"file": c.policy.DeploymentFile, "commit": c.policy.DeploymentCommit,
 				"file_sha256": c.policy.DeploymentSHA256, "services": []string{"otelcol-contrib"},
 			})
