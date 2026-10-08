@@ -1,10 +1,13 @@
 package video
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -73,13 +76,13 @@ func TestVertexVeoQueuePollAndInlineVideo(t *testing.T) {
 		t.Fatalf("bad instance: %#v", instance)
 	}
 	params := queued["parameters"].(map[string]any)
-	if params["durationSeconds"] != float64(8) || params["aspectRatio"] != nil || params["resolution"] != "1080p" ||
+	if params["durationSeconds"] != float64(8) || params["aspectRatio"] != "16:9" || params["resolution"] != "1080p" ||
 		params["generateAudio"] != true || params["negativePrompt"] != "blur" || params["seed"] != float64(42) ||
 		params["sampleCount"] != float64(1) {
 		t.Fatalf("bad parameters: %#v", params)
 	}
 	if request.AspectRatio != "source" {
-		t.Fatalf("image request aspect=%q, want source (omitted upstream)", request.AspectRatio)
+		t.Fatalf("image request aspect=%q, want source (derived from the frame upstream)", request.AspectRatio)
 	}
 	if _, present := params["storageUri"]; present {
 		t.Fatal("storageUri must not be sent; video is returned inline")
@@ -93,6 +96,7 @@ func TestVertexVeoQueuePollAndInlineVideo(t *testing.T) {
 		t.Fatalf("poll=%#v err=%v", poll, err)
 	}
 	got, _ := io.ReadAll(poll.Body)
+	_ = poll.Body.Close()
 	if string(got) != string(video) {
 		t.Fatalf("video=%q", got)
 	}
@@ -201,5 +205,70 @@ func TestVertexVeoSupportAndRegistryDispatch(t *testing.T) {
 	}
 	if !strings.HasPrefix(vertexHost("us-central1"), "us-central1-aiplatform") || vertexHost("global") != "aiplatform.googleapis.com" {
 		t.Fatal("vertex host mapping drifted from internal/llm")
+	}
+}
+
+func pngDataURL(t *testing.T, width, height int) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewGray(image.Rect(0, 0, width, height))); err != nil {
+		t.Fatal(err)
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+func TestVertexVeoDerivesAspectFromPortraitFirstFrame(t *testing.T) {
+	request := resolvedVideoRequest(t, CreateRequest{
+		Model: "google/veo-3.1", Prompt: "p", Duration: 8, Resolution: "720p",
+		FrameImages: []FrameImage{{FrameType: "first_frame", ImageURL: pngDataURL(t, 9, 16)}},
+	})
+	var payload map[string]any
+	client := NewVertexVeoClientAt("proj", "us-central1", "https://vertex.test", staticToken, &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		_ = json.NewDecoder(req.Body).Decode(&payload)
+		return response(200, "application/json", `{"name":"projects/proj/locations/us-central1/publishers/google/models/veo-3.1-generate-001/operations/o"}`), nil
+	})})
+	if _, err := client.QueueResolved(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if got := payload["parameters"].(map[string]any)["aspectRatio"]; got != "9:16" {
+		t.Fatalf("portrait first frame aspectRatio=%v, want 9:16", got)
+	}
+	if sourceAspectRatio(pngDataURL(t, 16, 9)) != "16:9" || sourceAspectRatio("data:image/png;base64,bm9wZQ==") != "16:9" {
+		t.Fatal("landscape/undecodable frames must use 16:9")
+	}
+}
+
+func TestVertexVeoOversizedResultIsPermanentAndReleasesSlot(t *testing.T) {
+	previous := maxVertexVeoBytes
+	maxVertexVeoBytes = 16
+	defer func() { maxVertexVeoBytes = previous }()
+	huge := base64.StdEncoding.EncodeToString(make([]byte, 4*1024*1024))
+	client := NewVertexVeoClientAt("proj", "us-central1", "https://vertex.test", staticToken, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(200, "application/json", `{"done":true,"response":{"videos":[{"bytesBase64Encoded":"`+huge+`"}]}}`), nil
+	})})
+	for i := 0; i < cap(vertexVeoInlineSlots)+1; i++ {
+		_, err := client.Retrieve(context.Background(), "", vertexTestOperation)
+		var httpErr *HTTPError
+		if !errors.As(err, &httpErr) || httpErr.Retryable {
+			t.Fatalf("oversized result err=%v, want permanent provider error", err)
+		}
+	}
+	if len(vertexVeoInlineSlots) != 0 {
+		t.Fatal("failed retrieval leaked an inline slot")
+	}
+}
+
+func TestVertexVeoInlineBodyHoldsSlotUntilClosed(t *testing.T) {
+	client := NewVertexVeoClientAt("proj", "us-central1", "https://vertex.test", staticToken, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(200, "application/json", `{"done":true,"response":{"videos":[{"bytesBase64Encoded":"bXA0","mimeType":"video/mp4"}]}}`), nil
+	})})
+	poll, err := client.Retrieve(context.Background(), "", vertexTestOperation)
+	if err != nil || len(vertexVeoInlineSlots) != 1 {
+		t.Fatalf("err=%v slots=%d", err, len(vertexVeoInlineSlots))
+	}
+	_ = poll.Body.Close()
+	_ = poll.Body.Close()
+	if len(vertexVeoInlineSlots) != 0 {
+		t.Fatal("closing the body must release exactly one slot")
 	}
 }

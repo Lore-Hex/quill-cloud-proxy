@@ -6,11 +6,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/jpeg" // decode first-frame dimensions
+	_ "image/png"  // decode first-frame dimensions
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	_ "golang.org/x/image/webp" // decode first-frame dimensions
 )
 
 // VertexVeoProviderID is the control-plane provider slug for Veo served from
@@ -23,7 +28,26 @@ const gcpMetadataTokenURL = "http://metadata.google.internal/computeMetadata/v1/
 
 // maxVertexVeoBytes bounds the decoded MP4 returned inline as
 // bytesBase64Encoded (no storageUri is sent, so no bucket is involved).
-const maxVertexVeoBytes = 160 * 1024 * 1024
+var maxVertexVeoBytes = 96 * 1024 * 1024
+
+// vertexVeoInlineSlots bounds how many inline results are held in memory at
+// once (decoded JSON + base64 string). A slot is held until the returned
+// body is closed.
+var vertexVeoInlineSlots = make(chan struct{}, 2)
+
+func vertexVeoPermanentResultError() error {
+	return &HTTPError{Provider: VertexVeoProviderID, Status: http.StatusBadGateway, Retryable: false}
+}
+
+type slotReleasingBody struct {
+	io.Reader
+	once sync.Once
+}
+
+func (b *slotReleasingBody) Close() error {
+	b.once.Do(func() { <-vertexVeoInlineSlots })
+	return nil
+}
 
 // vertexVeoUpstreamModels is the only set of Vertex publisher model ids this
 // adapter will put into a URL, keyed by TrustedRouter model id. The control
@@ -191,10 +215,13 @@ func (c *VertexVeoClient) QueueResolved(ctx context.Context, request *ResolvedRe
 		"generateAudio":   request.GenerateAudio,
 		"sampleCount":     1,
 	}
-	// Image requests resolve to "source" aspect; Vertex has no such value, so
-	// omit it and let Vertex follow its documented default for the image.
-	if request.AspectRatio != "" && request.AspectRatio != "source" {
+	// Image requests resolve to "source" aspect. Vertex has no such value and
+	// defaults to 16:9, so derive the supported ratio from the first frame.
+	switch {
+	case request.AspectRatio != "" && request.AspectRatio != "source":
 		parameters["aspectRatio"] = request.AspectRatio
+	case request.FirstFrame != "":
+		parameters["aspectRatio"] = sourceAspectRatio(request.FirstFrame)
 	}
 	if request.NegativePrompt != "" {
 		parameters["negativePrompt"] = request.NegativePrompt
@@ -244,6 +271,17 @@ func (c *VertexVeoClient) operationModel(name string) (string, bool) {
 	return "", false
 }
 
+// sourceAspectRatio maps the first frame's orientation to the closest Veo
+// ratio; undecodable images fall back to Vertex's 16:9 default.
+func sourceAspectRatio(dataURL string) string {
+	_, encoded, _ := strings.Cut(dataURL, ",")
+	config, _, err := image.DecodeConfig(base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded)))
+	if err == nil && config.Height > config.Width {
+		return "9:16"
+	}
+	return "16:9"
+}
+
 func vertexInlineImage(raw string) (map[string]any, error) {
 	image, err := googleInlineData(raw)
 	if err != nil {
@@ -259,6 +297,19 @@ func (c *VertexVeoClient) Retrieve(ctx context.Context, _ string, queueID string
 	if !ok {
 		return nil, fmt.Errorf("vertex veo retrieve: invalid operation name")
 	}
+	select {
+	case vertexVeoInlineSlots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	result, err := c.retrieve(ctx, model, name)
+	if result == nil || result.Body == nil {
+		<-vertexVeoInlineSlots
+	}
+	return result, err
+}
+
+func (c *VertexVeoClient) retrieve(ctx context.Context, model, name string) (*PollResult, error) {
 	resp, err := c.request(ctx, c.modelPath(model)+":fetchPredictOperation", map[string]any{"operationName": name})
 	if err != nil {
 		return nil, err
@@ -281,8 +332,13 @@ func (c *VertexVeoClient) Retrieve(ctx context.Context, _ string, queueID string
 			} `json:"videos"`
 		} `json:"response"`
 	}
-	const maxJSONBytes = maxVertexVeoBytes*4/3 + 1024*1024
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxJSONBytes+1)).Decode(&body); err != nil {
+	maxJSONBytes := int64(maxVertexVeoBytes)*4/3 + 1024*1024
+	limited := &io.LimitedReader{R: resp.Body, N: maxJSONBytes + 1}
+	if err := json.NewDecoder(limited).Decode(&body); err != nil {
+		if limited.N <= 0 {
+			// The completed result can never fit; stop polling it.
+			return nil, vertexVeoPermanentResultError()
+		}
 		return nil, fmt.Errorf("vertex veo retrieve: invalid response")
 	}
 	if !body.Done {
@@ -295,15 +351,15 @@ func (c *VertexVeoClient) Retrieve(ctx context.Context, _ string, queueID string
 		if body.Response.RAIMediaFilteredCount > 0 {
 			return &PollResult{State: PollFailed, ProviderStatus: "FILTERED"}, nil
 		}
-		return nil, fmt.Errorf("vertex veo retrieve: missing generated video")
+		return nil, vertexVeoPermanentResultError()
 	}
 	video := body.Response.Videos[0]
 	encoded := strings.TrimSpace(video.BytesBase64Encoded)
 	if encoded == "" || len(encoded) > base64.StdEncoding.EncodedLen(maxVertexVeoBytes) {
-		return nil, fmt.Errorf("vertex veo retrieve: missing inline video")
+		return nil, vertexVeoPermanentResultError()
 	}
 	if _, err := io.Copy(io.Discard, base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))); err != nil {
-		return nil, fmt.Errorf("vertex veo retrieve: invalid inline video")
+		return nil, vertexVeoPermanentResultError()
 	}
 	contentType := strings.TrimSpace(video.MimeType)
 	if !strings.HasPrefix(strings.ToLower(contentType), "video/") {
@@ -311,7 +367,8 @@ func (c *VertexVeoClient) Retrieve(ctx context.Context, _ string, queueID string
 	}
 	return &PollResult{
 		State: PollCompleted, ProviderStatus: "SUCCEEDED",
-		Body: io.NopCloser(base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))), ContentType: contentType,
+		Body:        &slotReleasingBody{Reader: base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))},
+		ContentType: contentType,
 	}, nil
 }
 
