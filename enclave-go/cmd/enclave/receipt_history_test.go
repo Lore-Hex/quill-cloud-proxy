@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 )
 
@@ -11,7 +12,7 @@ func TestIdenticalRemintsDoNotEvictHistory(t *testing.T) {
 	orig := getAttestation
 	defer func() { getAttestation = orig }()
 	docs := [][]byte{[]byte("DOC-A")}
-	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) { return docs[len(docs)-1], nil }
+	getAttestation = func(_ context.Context, _, _, _, _, _ []byte) ([]byte, error) { return docs[len(docs)-1], nil }
 	if err := remintReceiptAttestationBound(nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}

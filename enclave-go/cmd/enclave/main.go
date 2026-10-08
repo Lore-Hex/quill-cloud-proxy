@@ -877,7 +877,7 @@ func serveOneRequest(
 		// response and then closed. Preserve that quirk while unset; enabled mode
 		// truthfully advertises close at either configured bound.
 		statsConn.SetResponseKeepAlive(responseKeepAlive)
-		if !serveAttestation(conn, leafDER, deviceBlob, nonce, exporter) {
+		if !serveAttestationContext(ctx, conn, leafDER, deviceBlob, nonce, exporter) {
 			return
 		}
 		(*attestationCount)++

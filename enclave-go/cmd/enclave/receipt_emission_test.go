@@ -70,7 +70,7 @@ func TestCompactReceiptAttestationRemainsResolvableAfterRemint(t *testing.T) {
 
 	oldGetAttestation := getAttestation
 	defer func() { getAttestation = oldGetAttestation }()
-	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_ context.Context, _, _, _, _, _ []byte) ([]byte, error) {
 		return []byte("replacement-key-binding-attestation"), nil
 	}
 	if err := remintReceiptAttestation(nil, nil, bytes.Repeat([]byte{1}, sha256.Size)); err != nil {

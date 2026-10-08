@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -28,7 +29,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/upstreamerror"
 )
 
-var getAttestation = attestation.Get
+var getAttestation = attestation.GetContext
 
 const (
 	maxHTTPHeaderLineBytes = 16*1024 - 1
@@ -662,14 +663,22 @@ func isUnsupportedResponsesEndpoint(method, routePath string) bool {
 // nonce: ?nonce=<hex> in the query string. Optional but recommended —
 // a client-supplied freshness token so the doc is provably not a replay.
 func serveAttestation(conn io.Writer, leafDER, deviceBlob, nonce, channelBinding []byte) bool {
+	return serveAttestationContext(context.Background(), conn, leafDER, deviceBlob, nonce, channelBinding)
+}
+
+func serveAttestationContext(ctx context.Context, conn io.Writer, leafDER, deviceBlob, nonce, channelBinding []byte) bool {
 	if leafDER == nil {
 		disableResponseReuse(conn)
 		writeError(conn, 503, "TLS not enabled in this enclave; attestation requires a bound cert")
 		return false
 	}
-	doc, err := getAttestation(leafDER, deviceBlob, nonce, channelBinding, nil)
+	doc, err := getAttestation(ctx, leafDER, deviceBlob, nonce, channelBinding, nil)
 	if err != nil {
 		disableResponseReuse(conn)
+		if errors.Is(err, attestation.ErrIssuerUnavailable) {
+			writeError(conn, 503, "Attestation issuer temporarily unavailable; retry with a fresh nonce")
+			return false
+		}
 		writeError(conn, 500, "attestation: "+err.Error())
 		return false
 	}

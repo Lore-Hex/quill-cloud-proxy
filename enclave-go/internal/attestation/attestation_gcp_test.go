@@ -4,10 +4,12 @@ package attestation
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -15,6 +17,38 @@ import (
 	"testing"
 	"time"
 )
+
+func TestCanceledWorkloadIdentityWaiterDoesNotMint(t *testing.T) {
+	old := requestToken
+	defer func() { requestToken = old }()
+	started, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	requestToken = func(_ context.Context, _ []byte) ([]byte, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return []byte("jwt"), nil
+	}
+	first := make(chan error, 1)
+	go func() { _, err := Get(nil, nil, []byte("first"), nil, nil); first <- err }()
+	<-started
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	second := make(chan error, 1)
+	go func() { _, err := MintOIDCToken(ctx, "https://sts.googleapis.com"); second <- err }()
+	<-ctx.Done()
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("canceled queued caller minted: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("issuer calls = %d, want 1", got)
+	}
+}
 
 func TestGetIncludesChannelBindingNonce(t *testing.T) {
 	leafDER := []byte("leaf")
@@ -122,7 +156,7 @@ func TestGetSerializesLauncherTokenRequests(t *testing.T) {
 	var calls atomic.Int32
 	started := make(chan struct{}, 2)
 	release := make(chan struct{}, 2)
-	requestToken = func([]byte) ([]byte, error) {
+	requestToken = func(_ context.Context, _ []byte) ([]byte, error) {
 		if got := active.Add(1); got != 1 {
 			t.Errorf("concurrent launcher token requests = %d, want 1", got)
 		}
@@ -172,7 +206,7 @@ func TestMintOIDCTokenUsesSTSAudienceWithoutCallerContent(t *testing.T) {
 	oldRequestToken := requestToken
 	defer func() { requestToken = oldRequestToken }()
 
-	requestToken = func(body []byte) ([]byte, error) {
+	requestToken = func(_ context.Context, body []byte) ([]byte, error) {
 		var request tokenRequest
 		if err := json.Unmarshal(body, &request); err != nil {
 			t.Fatalf("unmarshal request: %v", err)
@@ -196,7 +230,7 @@ func getWithCapturedNonces(t *testing.T, leafDER, deviceBlob, nonce, channelBind
 	oldRequestToken := requestToken
 	defer func() { requestToken = oldRequestToken }()
 
-	requestToken = func(body []byte) ([]byte, error) {
+	requestToken = func(_ context.Context, body []byte) ([]byte, error) {
 		var req tokenRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			t.Fatalf("unmarshal token request: %v", err)
