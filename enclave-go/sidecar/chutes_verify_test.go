@@ -613,6 +613,59 @@ func TestPinnedChutesNemoProfileRequiresAllRegisters(t *testing.T) {
 	}
 }
 
+func TestPinnedChutesQwenAndKimiProfilesRequireAllRegisters(t *testing.T) {
+	verifier, err := newChutesVerifier()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, rtmr0, gpu string
+	}{
+		{"8xh200 [10.2.1, numa-124c-1128g-nvsw-node1]", "5B509103A3BF3C10DBF27A7DA030A3D7BA93A81C0C8844DE20E5DFEE77611644A39CC7236313E9D0A99A8A8A703BBFC9", "h200"},
+		{"8xb300 [10.2.1, flat-252c-1944g]", "FC71A5A8EDCB1F6D307D59E62CE257365DF0F233AE2334691F99D2136832D911F8BE975B92F88036DB8A4906574519C4", "b300"},
+		{"8xh200 [10.2.1, numa-188c-1128g-nvsw-node1]", "BA81DBF034D968FD4BE0975C031CBE6451295D63CB509CD857372FC915DADA1B24FC4E1B0486DB4A276A9EFB49D415E6", "h200"},
+		{"8xh200 [10.2.1, numa-236c-1128g-nvsw-node1]", "A9CAC743D296A96C7A0D6348F03BE1E1A407F18EC215F0039E3DC1EA4C132EB1E4A5FE3783022FF3D252D4B30F1DBF9F", "h200"},
+		{"8xpro_6000 [10.2.1, numa-124c-768g] (f2ab1d61fa64)", "5E939A6213A6751F162617C6E9A50461786B3F9A6A679EBF7706FA705E7934180825B2FAE43A60877EA9117A1E4D4F60", "pro_6000"},
+		{"8xb300 [10.2.1, numa-flatpci-252c-2304g]", "E861504D4A05BA1E949618EF759D6FBF0C69E4774B667E9FB876B664CB1BB70E3094D2CDDC9AC6C52D4B5D352BA2E1D3", "b300"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			decode := func(value string) []byte {
+				t.Helper()
+				decoded, err := hex.DecodeString(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return decoded
+			}
+			body := &tdxpb.TDQuoteBody{
+				MrTd: decode("261CE538B435E2D0E85FC97E254BC99154C507B7A8E13D59B69F8532384F1D0BFAADFDDF3FCCC6E0A411203840BBEE8D"),
+				Rtmrs: [][]byte{
+					decode(test.rtmr0),
+					decode("D3A862FF47357F374FC72C7F02A480A13790D1805E24AAA8DE1F03994256625CE0F593AE35EA8F0C24D09F7DF36CB0ED"),
+					decode("DA23F73E0FDDEB8128F706ECFBECBCF8CEE34AF7E4907D8FBC85E9B216ACEE27BF6CC3655EAF4D33CAB76ADEA79FA153"),
+					decode("D9DC4C6079FB12A21AD2AA8E329D8BFA61AAA13D3FFD10A93A2C4E82F0E35EFBF28F5CF3BED0C0C1B517A7C327A25226"),
+				},
+			}
+			measurement, err := verifier.matchMeasurement(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if measurement.Version != "1.4.1" || measurement.Name != test.name ||
+				measurement.GPUCount != 8 || len(measurement.ExpectedGPUs) != 1 || measurement.ExpectedGPUs[0] != test.gpu {
+				t.Fatalf("unexpected profile: %+v", measurement)
+			}
+			for index, register := range append([][]byte{body.MrTd}, body.Rtmrs...) {
+				register[0] ^= 0xff
+				_, err := verifier.matchMeasurement(body)
+				register[0] ^= 0xff
+				if err == nil {
+					t.Fatalf("tampered register %d was accepted", index)
+				}
+			}
+		})
+	}
+}
+
 func TestMatchesExpectedGPUPreservesExplicitSKUToDieMappings(t *testing.T) {
 	for name, test := range map[string]struct {
 		actual   string
@@ -627,6 +680,11 @@ func TestMatchesExpectedGPUPreservesExplicitSKUToDieMappings(t *testing.T) {
 		"GB20X suffix is rejected":     {actual: "GB20X unknown", expected: "pro_6000", want: false},
 		"GB20X cannot satisfy H200":    {actual: "GB20X", expected: "h200", want: false},
 		"B300 uses GB300 die":          {actual: "GB300", expected: "b300", want: true},
+		"B300 NRAS hwmodel":            {actual: "GB110", expected: "b300", want: true},
+		"GB110 suffix is rejected":     {actual: "GB110 unknown", expected: "b300", want: false},
+		"GB110 is not a wildcard":      {actual: "GB112", expected: "b300", want: false},
+		"GB110 cannot satisfy B200":    {actual: "GB110", expected: "b200", want: false},
+		"GB110 cannot satisfy H200":    {actual: "GB110", expected: "h200", want: false},
 		"other Hopper SKU is rejected": {actual: "GH100", expected: "b200", want: false},
 		"unlisted die is rejected":     {actual: "GB10B", expected: "pro_6000", want: false},
 	} {

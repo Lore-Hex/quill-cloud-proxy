@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,7 @@ import (
 const (
 	nearAIAttestationMaxBytes = 8 << 20
 	nearAIAttestationTimeout  = 3 * time.Minute
+	nearAIAttestationAttempts = 3
 )
 
 var nearAIDirectDomains = map[string]string{
@@ -57,7 +59,7 @@ var nearAIModelMap = map[string]string{
 type nearAIClient struct {
 	apiKey         string
 	verifyEvidence func(context.Context, *nearAIEvidenceEnvelope) (*nearAIVerificationResult, error)
-	openConnection func(string) (nearAIConnection, *http.Client, error)
+	openConnection func(string, int) (nearAIConnection, *http.Client, error)
 	newNonce       func() (string, error)
 }
 
@@ -71,8 +73,12 @@ func newNearAI(apiKey string) *nearAIClient {
 	return &nearAIClient{
 		apiKey:         strings.TrimSpace(apiKey),
 		verifyEvidence: verifyNearAIEvidenceWithSidecar,
-		openConnection: func(domain string) (nearAIConnection, *http.Client, error) {
-			return newNearAISingleConnection(domain)
+		openConnection: func(domain string, attempt int) (nearAIConnection, *http.Client, error) {
+			connection, client, err := newNearAISingleConnection(domain)
+			if err == nil {
+				connection.attempt = attempt
+			}
+			return connection, client, err
 		},
 		newNonce: nearAINonce,
 	}
@@ -98,37 +104,13 @@ func (c *nearAIClient) InvokeStreaming(
 		return errors.New("llm/near-ai: authorized model has no pinned direct attested endpoint")
 	}
 
-	transport, httpc, err := c.openConnection(domain)
+	transport, httpc, err := c.openVerifiedConnection(ctx, upstreamModel, domain)
 	if err != nil {
 		return err
 	}
 	defer transport.CloseIdleConnections()
-	attestCtx, cancel := context.WithTimeout(ctx, nearAIAttestationTimeout)
-	defer cancel()
-	nonce, err := c.newNonce()
-	if err != nil {
-		return err
-	}
-	evidence, err := fetchNearAIAttestation(attestCtx, httpc, c.apiKey, domain, nonce)
-	if err != nil {
-		return err
-	}
-	fingerprint, err := transport.Fingerprint()
-	if err != nil {
-		return err
-	}
-	if _, err := c.verifyEvidence(attestCtx, &nearAIEvidenceEnvelope{
-		Model:          upstreamModel,
-		Domain:         domain,
-		Nonce:          nonce,
-		TLSFingerprint: fingerprint,
-		Evidence:       evidence,
-	}); err != nil {
-		return err
-	}
-	if transport.Dials() != 1 {
-		return errors.New("llm/near-ai: attested TLS connection changed before inference")
-	}
+	// Once inference starts, never retry: the upstream may have consumed the
+	// prompt or emitted output even if its response subsequently fails.
 	return invokeOpenAICompatibleStreamingWithClient(
 		ctx,
 		httpc,
@@ -141,6 +123,61 @@ func (c *nearAIClient) InvokeStreaming(
 		upstreamModel,
 		option.ProviderCacheScope,
 	)
+}
+
+func (c *nearAIClient) openVerifiedConnection(ctx context.Context, upstreamModel, domain string) (nearAIConnection, *http.Client, error) {
+	attestCtx, cancel := context.WithTimeout(ctx, nearAIAttestationTimeout)
+	defer cancel()
+	var lastErr error
+	for attempt := 0; attempt < nearAIAttestationAttempts; attempt++ {
+		if err := attestCtx.Err(); err != nil {
+			return nil, nil, err
+		}
+		nonce, err := c.newNonce()
+		if err != nil {
+			return nil, nil, err
+		}
+		transport, httpc, err := c.openConnection(domain, attempt)
+		if err != nil {
+			return nil, nil, err
+		}
+		evidence, err := fetchNearAIAttestation(attestCtx, httpc, c.apiKey, domain, nonce)
+		if err != nil {
+			transport.CloseIdleConnections()
+			var transportError net.Error
+			if errors.As(err, &transportError) && attestCtx.Err() == nil {
+				lastErr = err
+				continue
+			}
+			return nil, nil, err
+		}
+		fingerprint, err := transport.Fingerprint()
+		if err != nil {
+			transport.CloseIdleConnections()
+			return nil, nil, err
+		}
+		if _, err := c.verifyEvidence(attestCtx, &nearAIEvidenceEnvelope{
+			Model: upstreamModel, Domain: domain, Nonce: nonce,
+			TLSFingerprint: fingerprint, Evidence: evidence,
+		}); err != nil {
+			// Mixed deployment pools can contain an unreviewed member.
+			// Discard its connection; the next one needs a fresh nonce and
+			// complete verification before it can receive any prompt.
+			transport.CloseIdleConnections()
+			lastErr = err
+			continue
+		}
+		if transport.Dials() != 1 {
+			transport.CloseIdleConnections()
+			return nil, nil, errors.New("llm/near-ai: attested TLS connection changed before inference")
+		}
+		if err := attestCtx.Err(); err != nil {
+			transport.CloseIdleConnections()
+			return nil, nil, err
+		}
+		return transport, httpc, nil
+	}
+	return nil, nil, fmt.Errorf("llm/near-ai: no verified connection after %d attempts: %w", nearAIAttestationAttempts, lastErr)
 }
 
 func nearAINonce() (string, error) {
@@ -194,6 +231,7 @@ func fetchNearAIAttestation(
 type nearAISingleConnection struct {
 	transport   *http.Transport
 	expected    string
+	attempt     int
 	dials       atomic.Int32
 	fingerprint chan string
 	once        sync.Once
@@ -237,7 +275,23 @@ func (c *nearAISingleConnection) dialTLS(ctx context.Context, network, address s
 		return nil, errors.New("llm/near-ai: attested connection closed; refusing unverified redial")
 	}
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-	raw, err := dialer.DialContext(ctx, network, address)
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	addresses, err := net.DefaultResolver.LookupHost(lookupCtx, host)
+	cancel()
+	if err != nil {
+		return nil, fmt.Errorf("llm/near-ai: resolve direct endpoint: %w", err)
+	}
+	selected, err := nearAIAddressForAttempt(addresses, c.attempt)
+	if err != nil {
+		return nil, err
+	}
+	// Rotate only DNS-advertised IPs. TLS still authenticates the pinned
+	// domain, and every new connection requires its own bound attestation.
+	raw, err := dialer.DialContext(ctx, network, net.JoinHostPort(selected, port))
 	if err != nil {
 		return nil, err
 	}
@@ -258,6 +312,24 @@ func (c *nearAISingleConnection) dialTLS(ctx context.Context, network, address s
 	digest := sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
 	c.once.Do(func() { c.fingerprint <- hex.EncodeToString(digest[:]) })
 	return tlsConn, nil
+}
+
+func nearAIAddressForAttempt(addresses []string, attempt int) (string, error) {
+	unique := make(map[string]struct{}, len(addresses))
+	for _, address := range addresses {
+		if ip := net.ParseIP(address); ip != nil {
+			unique[ip.String()] = struct{}{}
+		}
+	}
+	ordered := make([]string, 0, len(unique))
+	for address := range unique {
+		ordered = append(ordered, address)
+	}
+	sort.Strings(ordered)
+	if len(ordered) == 0 || attempt < 0 {
+		return "", errors.New("llm/near-ai: no valid direct endpoint address")
+	}
+	return ordered[attempt%len(ordered)], nil
 }
 
 func (c *nearAISingleConnection) Fingerprint() (string, error) {

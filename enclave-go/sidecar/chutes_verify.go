@@ -668,6 +668,11 @@ func matchesExpectedGPU(actual string, expected []string) bool {
 			}
 			aliases = append(aliases, "gb202")
 		case "b300":
+			// The B300 pool reports the literal GB110 in signed NRAS
+			// claims. Do not accept arbitrary GB11* dies or suffixes.
+			if normalizedActual == "gb110" {
+				return true
+			}
 			aliases = append(aliases, "gb300")
 		}
 		for _, alias := range aliases {

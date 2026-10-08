@@ -13,9 +13,9 @@
     "domain": "glm-5-3-flash.completions.near.ai",
     "compose_hash": "55db164f4f8c6a837c2217c601c21bba4758f908536a6cd5b2978550205a9179",
     "deployment_file": "prod/GLM-5.3-Flash-SGL-TP2x4-W4AFP8.yaml",
-    "deployment_commit": "93aa1121f736406acd10730fa9f8caf2fe045aa3",
-    "deployment_sha256": "e3c487c72189010f5afadc486c8c04ffb3a49a4d485827844e7c8fd105729359",
-    "deployment_actions_sha256": "a6cfc9a3f78e6010023ef835ec7850f888da08e8a374d54344eb08108608268d",
+    "deployment_commit": "1121ee56851dcec7dc89e60099d7be28fc51a73e",
+    "deployment_sha256": "b0077025ac5f099ca6b30dd21a2605e3ba600b01be38e1605b5ec93f69a125da",
+    "deployment_actions_sha256": "cca6a43ace213e309dc9483adf895f98cde49551c7dd7eaeefcb40afde0ce980",
     "app_name": "dstack-nvidia-0.5.11",
     "os_image_hash": "a6eafc5f007f642d8ea90c7fa8881f1e6715720ccb531941a28218f4f26d7b02",
     "boot_measurements": {
