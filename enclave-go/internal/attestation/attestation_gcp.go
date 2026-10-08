@@ -99,6 +99,10 @@ func (q *tokenQueue) mint(ctx context.Context, body []byte) ([]byte, error) {
 		return nil, errors.Join(ErrIssuerUnavailable, waitCtx.Err())
 	}
 	// Cancellation and an available slot can become ready simultaneously.
+	// Parent Done can close before cancellation propagates to waitCtx.
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(ErrIssuerUnavailable, err)
+	}
 	if err := waitCtx.Err(); err != nil {
 		return nil, errors.Join(ErrIssuerUnavailable, err)
 	}
@@ -106,6 +110,9 @@ func (q *tokenQueue) mint(ctx context.Context, body []byte) ([]byte, error) {
 	queueMS := time.Since(started).Milliseconds()
 	mintCtx, cancelMint := context.WithTimeout(ctx, q.mintTimeout)
 	defer cancelMint()
+	if err := mintCtx.Err(); err != nil {
+		return nil, errors.Join(ErrIssuerUnavailable, err)
+	}
 	issuerStarted := time.Now()
 	token, err := requestToken(mintCtx, body)
 	if err == nil {
