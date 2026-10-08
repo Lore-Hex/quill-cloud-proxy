@@ -12,9 +12,6 @@ import (
 // is only wired on GCP builds.
 func vertexVideoProject() string { return strings.TrimSpace(os.Getenv("QUILL_GCP_PROJECT_ID")) }
 
-func vertexVideoLocation() string {
-	if location := strings.TrimSpace(os.Getenv("QUILL_VEO_VERTEX_REGION")); location != "" {
-		return location
-	}
-	return "us-central1"
-}
+// vertexVideoLocation is fixed: Veo is served from us-central1 on Vertex, and
+// a new env knob would also need a Confidential Space launch-policy entry.
+func vertexVideoLocation() string { return "us-central1" }
