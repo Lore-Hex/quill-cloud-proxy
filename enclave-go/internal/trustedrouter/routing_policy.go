@@ -26,6 +26,11 @@ func normalizedRoutingInputs(req *qtypes.OpenAIChatRequest, routeType, region st
 	if EstimateInputTokens(req) > priorityEligibilityMaxInputTokens {
 		return nil, false
 	}
+	// Frozen local leases do not carry endpoint modality declarations. An
+	// image request must use synchronous authorization's capability filter.
+	if len(qtypes.RequestInputModalities(req)) != 0 {
+		return nil, false
+	}
 	provider := req.Provider
 	if provider == nil || provider.Sort != nil || len(provider.Options) != 0 || len(provider.Quantizations) != 0 ||
 		provider.PreferredMaxLatency != nil || provider.PreferredMinThroughput != nil ||
