@@ -81,6 +81,10 @@ type ProviderKeys struct {
 	OpenAI     string
 	Kling      string
 	Decart     string
+	// VertexProject/VertexLocation enable Veo on Vertex AI using the
+	// workload's GCP metadata-server identity. Set only on GCP builds.
+	VertexProject  string
+	VertexLocation string
 }
 
 type Registry struct {
@@ -92,6 +96,7 @@ func NewRegistry(keys ProviderKeys, httpc *http.Client) *Registry {
 		NewBytePlusClient(keys.BytePlus, httpc),
 		NewFALVideoClient(keys.FAL, httpc),
 		NewGoogleVeoClient(keys.Google, httpc),
+		NewVertexVeoClient(keys.VertexProject, keys.VertexLocation, httpc),
 		NewMiniMaxClient(keys.MiniMax, httpc),
 		NewAtlasCloudVideoClient(keys.AtlasCloud, httpc),
 		NewXAIClient(keys.XAI, httpc),
