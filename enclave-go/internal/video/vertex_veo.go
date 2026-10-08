@@ -14,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	_ "golang.org/x/image/webp" // decode first-frame dimensions
 )
 
 // VertexVeoProviderID is the control-plane provider slug for Veo served from
@@ -153,10 +151,11 @@ func (c *VertexVeoClient) Supports(request *ResolvedRequest) bool {
 	if len(request.ReferenceImages) > 0 || request.AudioReference != "" || request.VideoReference != "" {
 		return false
 	}
-	if request.FirstFrame != "" && !strings.HasPrefix(request.FirstFrame, "data:") {
+	// Vertex accepts JPEG/PNG frames only, and lastFrame requires image.
+	if request.FirstFrame != "" && !vertexFrameSupported(request.FirstFrame) {
 		return false
 	}
-	if request.LastFrame != "" && !strings.HasPrefix(request.LastFrame, "data:") {
+	if request.LastFrame != "" && (request.FirstFrame == "" || !vertexFrameSupported(request.LastFrame)) {
 		return false
 	}
 	// The quote below is the with-audio price; never run a request whose
@@ -269,6 +268,11 @@ func (c *VertexVeoClient) operationModel(name string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func vertexFrameSupported(dataURL string) bool {
+	prefix := strings.ToLower(strings.SplitN(dataURL, ",", 2)[0])
+	return prefix == "data:image/png;base64" || prefix == "data:image/jpeg;base64"
 }
 
 // sourceAspectRatio maps the first frame's orientation to the closest Veo

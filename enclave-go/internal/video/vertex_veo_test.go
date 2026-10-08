@@ -203,6 +203,13 @@ func TestVertexVeoSupportAndRegistryDispatch(t *testing.T) {
 	if provider.Supports(&reference) {
 		t.Fatal("reference images are not mapped")
 	}
+	webp := *request
+	webp.FirstFrame = "data:image/webp;base64,AAAA"
+	lastOnly := *request
+	lastOnly.LastFrame = "data:image/png;base64,AAAA"
+	if provider.Supports(&webp) || provider.Supports(&lastOnly) {
+		t.Fatal("webp frames and lastFrame without image must be rejected before quoting")
+	}
 	if !strings.HasPrefix(vertexHost("us-central1"), "us-central1-aiplatform") || vertexHost("global") != "aiplatform.googleapis.com" {
 		t.Fatal("vertex host mapping drifted from internal/llm")
 	}
