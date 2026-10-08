@@ -1,11 +1,27 @@
 package llm
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
+
+// Moonshot accepts unknown efforts but silently uses a default. Enforce its
+// reviewed K3 contract locally rather than treating HTTP 200 as validation.
+func validateKimiReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, model string) error {
+	if normalizeDirectProvider(provider) != "kimi" || model != "kimi-k3" {
+		return nil
+	}
+	effort := chatReasoningEffort(req)
+	switch effort {
+	case "", "low", "high", "max":
+		return nil
+	default:
+		return &upstreamHTTPError{status: http.StatusBadRequest, body: fmt.Sprintf("Kimi K3 reasoning_effort must be low, high, or max; got %q", effort)}
+	}
+}
 
 func chatReasoningEffort(req *qtypes.OpenAIChatRequest) string {
 	if req == nil {
@@ -32,7 +48,10 @@ func applyChatReasoningEffort(provider string, req *qtypes.OpenAIChatRequest, bo
 		}
 	}
 	switch normalizeDirectProvider(provider) {
-	case "meta", "openai", "gemini", "google-ai-studio", "deepseek", "zai", "kimi", "mistral", "alibaba", "tencent":
+	case "meta", "openai", "gemini", "google-ai-studio", "deepseek", "zai", "kimi", "mistral", "alibaba", "tencent", "tinfoil", "grok", "baseten", "crusoe":
+		// These chat endpoints consume top-level reasoning_effort. Responses
+		// arrives here with nested reasoning.effort; passing that object through
+		// silently used upstream defaults (including when effort was "none").
 		wire.ReasoningEffort = effort
 		wire.Reasoning = nil
 	}

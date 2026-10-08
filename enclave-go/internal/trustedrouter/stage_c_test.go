@@ -287,6 +287,16 @@ func TestStageCPolicyEligibilityFailsClosed(t *testing.T) {
 		func(req *qtypes.OpenAIChatRequest) { req.Model = "trustedrouter/auto" },
 		func(req *qtypes.OpenAIChatRequest) { req.ResponseModel = "trustedrouter/custom-wrapper" },
 		func(req *qtypes.OpenAIChatRequest) { req.AdditionalCostReservationMicrodollars = 1 },
+		func(req *qtypes.OpenAIChatRequest) {
+			req.Messages = []qtypes.OpenAIChatMessage{{Role: "user", Content: []qtypes.ChatContentPart{
+				{Type: "image_url", ImageURL: &qtypes.ChatImageURL{URL: "https://example.com/image.png"}},
+			}}}
+		},
+		func(req *qtypes.OpenAIChatRequest) {
+			req.Messages = []qtypes.OpenAIChatMessage{{Role: "user", Content: []any{
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/image.png"}},
+			}}}
+		},
 	} {
 		req := stageCFixtureRequest()
 		mutate(req)
