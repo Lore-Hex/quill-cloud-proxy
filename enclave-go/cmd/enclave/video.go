@@ -287,6 +287,7 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 type authorizedVideoRoute struct {
 	Provider           string
 	EndpointID         string
+	UpstreamModel      string
 	QuotedMicrodollars int
 }
 
@@ -352,7 +353,7 @@ func authorizedVideoRoutes(
 	}
 	routes := make([]authorizedVideoRoute, 0, len(auth.RouteCandidates)+1)
 	seen := make(map[string]struct{}, len(auth.RouteCandidates)+1)
-	appendRoute := func(provider, endpointID string) {
+	appendRoute := func(provider, endpointID, upstreamModel string) {
 		quote, ok := quotes[provider]
 		if !ok || endpointID == "" {
 			return
@@ -362,12 +363,13 @@ func authorizedVideoRoutes(
 		}
 		seen[endpointID] = struct{}{}
 		routes = append(routes, authorizedVideoRoute{
-			Provider: provider, EndpointID: endpointID, QuotedMicrodollars: quote.Microdollars,
+			Provider: provider, EndpointID: endpointID, UpstreamModel: upstreamModel,
+			QuotedMicrodollars: quote.Microdollars,
 		})
 	}
-	appendRoute(auth.Provider, auth.EndpointID)
+	appendRoute(auth.Provider, auth.EndpointID, auth.UpstreamModel)
 	for _, candidate := range auth.RouteCandidates {
-		appendRoute(candidate.Provider, candidate.EndpointID)
+		appendRoute(candidate.Provider, candidate.EndpointID, candidate.UpstreamModel)
 	}
 	return routes
 }
@@ -383,8 +385,10 @@ func (s *videoService) queueVideoJob(
 		if !ok || !provider.Supports(request) {
 			continue
 		}
+		routed := *request
+		routed.UpstreamModel = route.UpstreamModel
 		queueCtx, cancel := context.WithTimeout(ctx, video.QueueTimeout(provider))
-		queued, err := provider.QueueResolved(queueCtx, request)
+		queued, err := provider.QueueResolved(queueCtx, &routed)
 		cancel()
 		if err == nil {
 			return route, queued, nil

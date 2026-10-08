@@ -15,6 +15,7 @@ func videoProviderKeys(boot *types.BootstrapData) video.ProviderKeys {
 		AtlasCloud: boot.AtlasCloudAPIKey,
 		LTX:        boot.LTXAPIKey, Runway: boot.RunwayAPIKey,
 		OpenAI: boot.OpenAIVideoAPIKey, Kling: boot.KlingAPIKey,
-		Decart: boot.DecartAPIKey,
+		Decart:        boot.DecartAPIKey,
+		VertexProject: vertexVideoProject(), VertexLocation: vertexVideoLocation(),
 	}
 }

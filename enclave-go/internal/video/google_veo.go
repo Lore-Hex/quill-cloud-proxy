@@ -56,6 +56,12 @@ func (c *GoogleVeoClient) QuoteResolved(_ context.Context, request *ResolvedRequ
 	if !c.Supports(request) {
 		return 0, fmt.Errorf("google veo provider does not support this request")
 	}
+	return veoCustomerQuote(request)
+}
+
+// veoCustomerQuote is shared by the AI Studio and Vertex adapters: Veo 3.1
+// with-audio list prices are identical on both.
+func veoCustomerQuote(request *ResolvedRequest) (int, error) {
 	rate := 400_000
 	if request.Model.ID == "google/veo-3.1-fast" {
 		switch strings.ToLower(request.Resolution) {
