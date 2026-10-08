@@ -1,1 +1,1 @@
-us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-e059034c,us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-13c48446,us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-9fe1c274
+us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-9fe1c274
