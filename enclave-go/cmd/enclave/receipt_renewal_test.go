@@ -38,7 +38,7 @@ func TestReceiptRenewalCancellationStopsPendingRetry(t *testing.T) {
 	resetReceiptTestState(t)
 	oldGet := getAttestation
 	defer func() { getAttestation = oldGet }()
-	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_ context.Context, _, _, _, _, _ []byte) ([]byte, error) {
 		t.Error("cancelled renewal must not mint")
 		return nil, errors.New("unexpected mint")
 	}
@@ -57,7 +57,7 @@ func TestReceiptRenewalRetriesFailedMintBeforeNormalCadence(t *testing.T) {
 	receiptAttestationCache.Store(lastGood)
 	receiptAttestationRemintInterval = time.Millisecond
 	var calls atomic.Int32
-	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_ context.Context, _, _, _, _, _ []byte) ([]byte, error) {
 		if calls.Add(1) == 1 {
 			receiptAttestationRemintInterval = time.Hour
 			return nil, errors.New("issuer temporarily unavailable")
@@ -93,7 +93,7 @@ func TestReceiptRenewalRetriesMissingInitialEvidence(t *testing.T) {
 	}()
 	receiptAttestationCache.Store(nil)
 	receiptAttestationRemintInterval = time.Hour
-	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_ context.Context, _, _, _, _, _ []byte) ([]byte, error) {
 		return []byte("first-good"), nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())

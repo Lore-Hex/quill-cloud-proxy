@@ -37,12 +37,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -61,7 +62,76 @@ const attestationTokenURL = "http://teeserver/v1/token" // #nosec G101 -- URL, n
 const Kind = "gcp-cs-jwt"
 
 var requestToken = requestTokenFromLauncher
-var launcherTokenMu sync.Mutex
+var launcherTokens = newTokenQueue(4, 2*time.Second, 30*time.Second)
+
+// The launcher serializes issuance and can finish after a caller times out.
+// Bound both waiting callers and queue time; never retry or share nonce-bound tokens.
+type tokenQueue struct {
+	admitted    chan struct{}
+	active      chan struct{}
+	waitTimeout time.Duration
+	mintTimeout time.Duration
+}
+
+func newTokenQueue(waiters int, waitTimeout, mintTimeout time.Duration) *tokenQueue {
+	return &tokenQueue{make(chan struct{}, waiters+1), make(chan struct{}, 1), waitTimeout, mintTimeout}
+}
+
+func (q *tokenQueue) mint(ctx context.Context, body []byte) ([]byte, error) {
+	started := time.Now()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case q.admitted <- struct{}{}:
+		defer func() { <-q.admitted }()
+	default:
+		log.Printf("attestation.gcp_issuer outcome=queue_full")
+		return nil, fmt.Errorf("%w: queue full", ErrIssuerUnavailable)
+	}
+	waitCtx, cancelWait := context.WithTimeout(ctx, q.waitTimeout)
+	defer cancelWait()
+	select {
+	case q.active <- struct{}{}:
+		defer func() { <-q.active }()
+	case <-waitCtx.Done():
+		log.Printf("attestation.gcp_issuer outcome=queue_timeout queue_ms=%d", time.Since(started).Milliseconds())
+		return nil, errors.Join(ErrIssuerUnavailable, waitCtx.Err())
+	}
+	// Cancellation and an available slot can become ready simultaneously.
+	// Parent Done can close before cancellation propagates to waitCtx.
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(ErrIssuerUnavailable, err)
+	}
+	if err := waitCtx.Err(); err != nil {
+		return nil, errors.Join(ErrIssuerUnavailable, err)
+	}
+	cancelWait()
+	queueMS := time.Since(started).Milliseconds()
+	mintCtx, cancelMint := context.WithTimeout(ctx, q.mintTimeout)
+	defer cancelMint()
+	if err := mintCtx.Err(); err != nil {
+		return nil, errors.Join(ErrIssuerUnavailable, err)
+	}
+	issuerStarted := time.Now()
+	token, err := requestToken(mintCtx, body)
+	if err == nil {
+		err = mintCtx.Err()
+	}
+	if err != nil {
+		outcome := "issuer_error"
+		if errors.Is(err, context.DeadlineExceeded) {
+			outcome = "issuer_timeout"
+		}
+		if errors.Is(err, context.Canceled) {
+			outcome = "canceled"
+		}
+		log.Printf("attestation.gcp_issuer outcome=%s queue_ms=%d issuer_ms=%d", outcome, queueMS, time.Since(issuerStarted).Milliseconds())
+		return nil, errors.Join(ErrIssuerUnavailable, err)
+	}
+	log.Printf("attestation.gcp_issuer outcome=ok queue_ms=%d issuer_ms=%d", queueMS, time.Since(issuerStarted).Milliseconds())
+	return token, nil
+}
 
 // Get returns the raw JWT bytes for the cmd/enclave handler to forward
 // as Content-Type: application/jwt. Signature matches the AWS variant
@@ -70,20 +140,17 @@ var launcherTokenMu sync.Mutex
 // nonce is optional client freshness. deviceBlob is hashed in to prove
 // the device-key list bound at boot (parallels AWS UserData[:32]).
 func Get(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte, receiptKeyFP []byte) ([]byte, error) {
+	return GetContext(context.Background(), leafDER, deviceBlob, nonce, channelBinding, receiptKeyFP)
+}
+
+func GetContext(ctx context.Context, leafDER, deviceBlob, nonce, channelBinding, receiptKeyFP []byte) ([]byte, error) {
 	reqBody := buildTokenRequest(leafDER, deviceBlob, nonce, channelBinding, receiptKeyFP)
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("attestation/gcp: marshal: %w", err)
 	}
-	// Confidential Space's local launcher accepts only one token mint at a
-	// time. Concurrent POSTs can leave one request hanging until its five
-	// second timeout. Serialize the launcher operation, but build and mint a
-	// distinct token for every caller so nonce and TLS-session bindings are
-	// never cached or shared.
-	launcherTokenMu.Lock()
-	defer launcherTokenMu.Unlock()
-	return requestToken(body)
+	return launcherTokens.mint(ctx, body)
 }
 
 // MintOIDCToken asks the Confidential Space launcher for a fresh attestation
@@ -100,9 +167,7 @@ func MintOIDCToken(ctx context.Context, audience string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("attestation/gcp: marshal workload identity token: %w", err)
 	}
-	launcherTokenMu.Lock()
-	defer launcherTokenMu.Unlock()
-	return requestToken(body)
+	return launcherTokens.mint(ctx, body)
 }
 
 func buildTokenRequest(leafDER []byte, deviceBlob []byte, nonce []byte, channelBinding []byte, receiptKeyFP []byte) tokenRequest {
@@ -129,40 +194,42 @@ func buildTokenRequest(leafDER []byte, deviceBlob []byte, nonce []byte, channelB
 	return reqBody
 }
 
-func requestTokenFromLauncher(body []byte) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+var launcherHTTP = &http.Client{
+	Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", teeserverSocketPath)
+		},
+		MaxConnsPerHost: 1,
+		MaxIdleConns:    1,
+		IdleConnTimeout: 90 * time.Second,
+	},
+	CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+const maxTokenBytes = 64 << 10
+
+func requestTokenFromLauncher(ctx context.Context, body []byte) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", attestationTokenURL, strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// Custom transport: always dial the launcher's Unix socket.
-	httpc := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", teeserverSocketPath)
-			},
-		},
-	}
-	resp, err := httpc.Do(req)
+	resp, err := launcherHTTP.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("attestation/gcp: token: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		errBody, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			return nil, fmt.Errorf("attestation/gcp: read error body: %w", readErr)
-		}
-		return nil, fmt.Errorf("attestation/gcp: token http %d: %s", resp.StatusCode, errBody)
+		return nil, fmt.Errorf("attestation/gcp: token http %d", resp.StatusCode)
 	}
-	jwt, err := io.ReadAll(resp.Body)
+	jwt, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(jwt) == 0 || len(jwt) > maxTokenBytes {
+		return nil, errors.New("attestation/gcp: invalid token size")
 	}
 	return jwt, nil
 }

@@ -144,7 +144,7 @@ func remintReceiptAttestation(leafDER, deviceBlob, receiptKeyFP []byte) error {
 }
 
 func remintReceiptAttestationBound(leafDER, deviceBlob, receiptKeyFP, launchConfigNonce []byte) error {
-	document, err := getAttestation(leafDER, deviceBlob, launchConfigNonce, nil, receiptKeyFP)
+	document, err := getAttestation(context.Background(), leafDER, deviceBlob, launchConfigNonce, nil, receiptKeyFP)
 	if err != nil {
 		return err
 	}
