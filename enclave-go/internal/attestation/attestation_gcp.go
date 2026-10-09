@@ -62,7 +62,7 @@ const attestationTokenURL = "http://teeserver/v1/token" // #nosec G101 -- URL, n
 const Kind = "gcp-cs-jwt"
 
 var requestToken = requestTokenFromLauncher
-var launcherTokens = newTokenQueue(4, 2*time.Second, 30*time.Second)
+var launcherTokens = newTokenQueue(4, 5*time.Second, 30*time.Second)
 
 // The launcher serializes issuance and can finish after a caller times out.
 // Bound both waiting callers and queue time; never retry or share nonce-bound tokens.
