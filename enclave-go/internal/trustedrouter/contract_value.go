@@ -3,7 +3,9 @@ package trustedrouter
 import (
 	"encoding/json"
 	"math"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -33,7 +35,14 @@ var contractValueEnums = map[string]string{
 	"provider.billing":         "byok prepaid credits",
 	"response_format.type":     "text json_object json_schema",
 	"text.format.type":         "text json_object json_schema",
+	"tools[].type": `function custom namespace tool_search web_search web_search_preview
+		file_search code_interpreter computer computer_use_preview image_generation mcp
+		local_shell shell apply_patch openrouter:web_search openrouter:datetime
+		openrouter:web_fetch openrouter:image_generation openrouter:apply_patch
+		trustedrouter:advisor trustedrouter:synth`,
 }
+
+var contractToolTypePath = regexp.MustCompile(`^tools\[[0-9]{1,6}\]\.type$`)
 
 // These are diagnostic option names, not an API capability allowlist. Never
 // treat arbitrary strings or nested payloads as safe just because they fit.
@@ -63,14 +72,23 @@ func ContractParameterValue(body []byte, parameter string) (string, bool) {
 		raw = exact
 	} else {
 		for _, part := range strings.Split(path, ".") {
+			field, indexText, indexed := strings.Cut(part, "[")
 			var fields map[string]json.RawMessage
 			if json.Unmarshal(raw, &fields) != nil {
 				return "", false
 			}
 			var ok bool
-			raw, ok = fields[part]
+			raw, ok = fields[field]
 			if !ok {
 				return "", false
+			}
+			if indexed {
+				index, err := strconv.Atoi(strings.TrimSuffix(indexText, "]"))
+				var items []json.RawMessage
+				if err != nil || index < 0 || json.Unmarshal(raw, &items) != nil || index >= len(items) {
+					return "", false
+				}
+				raw = items[index]
 			}
 		}
 	}
@@ -95,6 +113,9 @@ func SanitizeContractParameterValue(parameter, preview string) (string, bool) {
 }
 
 func contractValuePolicy(path string) (bool, []string) {
+	if contractToolTypePath.MatchString(path) {
+		path = "tools[].type"
+	}
 	for _, option := range contractValueOptions {
 		if option == path {
 			return true, strings.Fields("true false yes no on off enabled disabled auto none")

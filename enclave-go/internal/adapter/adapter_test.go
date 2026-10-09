@@ -578,7 +578,13 @@ func TestRejectUnsupportedResponsesFieldsUsesAllowlist(t *testing.T) {
 		{
 			name:        "unsupported hosted tool remains explicit",
 			body:        `{"model":"m","input":"hi","tools":[{"type":"file_search"}]}`,
-			wantContext: "tools",
+			wantContext: "tools[0].type",
+			wantStatus:  501,
+		},
+		{
+			name:        "unsupported tool after valid function has exact index",
+			body:        `{"model":"m","input":"hi","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}},{"type":"mcp"}]}`,
+			wantContext: "tools[1].type",
 			wantStatus:  501,
 		},
 	} {

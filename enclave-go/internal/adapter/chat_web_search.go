@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
@@ -9,7 +10,7 @@ import (
 
 const maxChatWebSearchCalls = 30
 
-// ConfigureChatWebSearch turns OpenRouter's hosted web-search surface into the
+// ConfigureChatWebSearch turns hosted web-search tools into the
 // enclave's private function-tool contract. Providers see only the generated
 // function call and its result; the Exa credential never leaves the enclave.
 func ConfigureChatWebSearch(req *types.OpenAIChatRequest) error {
@@ -49,6 +50,19 @@ func ConfigureChatWebSearch(req *types.OpenAIChatRequest) error {
 			normalizedTools = append(normalizedTools, trustedRouterWebSearchFunctionTool(map[string]any{
 				"user_location": webSearchUserLocation(parsed),
 			}))
+		case "web_search", "web_search_preview":
+			if config != nil {
+				return &AdapterError{Status: 400, Message: "only one hosted web search tool is allowed", Context: "tools"}
+			}
+			tool = maps.Clone(tool)
+			tool["type"] = toolType
+			parsed, err := ResponsesWebSearchConfig([]any{tool}, req.MaxToolCalls, nil)
+			if err != nil {
+				return err
+			}
+			parsed.RouteType = "chat.completions.web_search"
+			config = parsed
+			normalizedTools = append(normalizedTools, trustedRouterWebSearchFunctionTool(tool))
 		default:
 			return &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: fmt.Sprintf("tools[%d].type", index)}
 		}
@@ -87,10 +101,12 @@ func ConfigureChatWebSearch(req *types.OpenAIChatRequest) error {
 		req.ToolChoice = map[string]any{
 			"type": "function", "function": map[string]any{"name": TrustedRouterWebSearchFunction},
 		}
-	} else if choice, ok := req.ToolChoice.(map[string]any); ok &&
-		strings.TrimSpace(stringValue(choice["type"])) == "openrouter:web_search" {
-		req.ToolChoice = map[string]any{
-			"type": "function", "function": map[string]any{"name": TrustedRouterWebSearchFunction},
+	} else if choice, ok := req.ToolChoice.(map[string]any); ok {
+		switch strings.TrimSpace(stringValue(choice["type"])) {
+		case "openrouter:web_search", "web_search", "web_search_preview":
+			req.ToolChoice = map[string]any{
+				"type": "function", "function": map[string]any{"name": TrustedRouterWebSearchFunction},
+			}
 		}
 	}
 	req.Tools = normalizedTools
