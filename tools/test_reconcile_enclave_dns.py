@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -92,6 +93,48 @@ class GcloudReadTests(unittest.TestCase):
 
 
 class ConfidentialDNSPolicyTests(unittest.TestCase):
+    def test_hostnames_are_serial_per_gateway_but_gateways_are_parallel(self) -> None:
+        fleet = [{"ip": "34.1.1.1"}, {"ip": "34.2.2.2"}, {"ip": "34.1.1.1"}]
+        lock = threading.Lock()
+        active: set[str] = set()
+        seen: set[tuple[str, str]] = set()
+        overlap: list[str] = []
+        first_hosts = threading.Barrier(len({item["ip"] for item in fleet}), timeout=5)
+
+        def attest(ip, digest, *, api_host, confidential_host):
+            self.assertEqual(digest, "sha256:release")
+            self.assertEqual(api_host, confidential_host)
+            with lock:
+                seen.add((ip, api_host))
+                if ip in active:
+                    overlap.append(ip)
+                    return False
+                active.add(ip)
+            try:
+                # A global serial loop deadlocks here; independent gateways
+                # must reach their first verification together.
+                if api_host == reconciler.CONFIDENTIAL_HOSTS[0]:
+                    first_hosts.wait()
+                return True
+            finally:
+                with lock:
+                    active.remove(ip)
+
+        with (
+            mock.patch.object(reconciler, "API_HOST", "api.trustedrouter.com"),
+            mock.patch.object(reconciler, "attest", side_effect=attest),
+            mock.patch.object(reconciler, "reconcile_dns_record") as publish,
+            mock.patch.object(reconciler, "current_dns_ips", return_value=[]),
+        ):
+            reconciler.reconcile_confidential(fleet, "sha256:release", apply=True)
+
+        self.assertEqual(overlap, [])
+        self.assertEqual(seen, {(item["ip"], host) for item in fleet
+                                for host in reconciler.CONFIDENTIAL_HOSTS})
+        self.assertEqual(publish.call_count, 2)
+        for call in publish.call_args_list:
+            self.assertEqual(call.args[2], sorted({item["ip"] for item in fleet}))
+
     def test_only_policy_qualified_instances_published(self) -> None:
         fleet = [{"ip": "34.1.1.1"}, {"ip": "34.2.2.2"}]
         with (

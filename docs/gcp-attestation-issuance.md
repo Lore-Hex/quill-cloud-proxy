@@ -21,6 +21,13 @@ when each mint takes 700 milliseconds. The five-second queue budget accommodates
 that burst without increasing concurrency or waiter capacity. A regression test
 exercises all five admitted callers and distinct nonce-bound responses.
 
+The DNS reconciler verifies confidential hostnames sequentially on each gateway,
+while checking different gateways in parallel. Previously its four simultaneous
+hostname checks consumed most of a gateway's queue and competed with live
+callers. Every hostname still receives an independent fresh proof and policy
+check. Any failed hostname excludes that gateway from confidential DNS; pacing
+does not cache evidence or relax the all-hostnames requirement.
+
 Temporary issuance failures return 503. The caller must obtain fresh, verified
 evidence before sending a prompt; it must not bypass verification or reuse a
 token with different nonce or channel binding. No nonce-bound evidence is cached.
