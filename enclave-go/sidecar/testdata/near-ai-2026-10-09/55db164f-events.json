@@ -1,0 +1,240 @@
+[
+  {
+    "digest": "60a36090e82db2aa82a7abb76029b9ace69e9f0811b7029ff25a26a2e8b91c182696df92674ab571c42093383e1fcc71",
+    "event": "",
+    "event_payload": "",
+    "event_type": 2147483659,
+    "imr": 0
+  },
+  {
+    "digest": "344bc51c980ba621aaa00da3ed7436f7d6e549197dfe699515dfa2c6583d95e6412af21c097d473155875ffd561d6790",
+    "event": "",
+    "event_payload": "",
+    "event_type": 2147483658,
+    "imr": 0
+  },
+  {
+    "digest": "9dc3a1f80bcec915391dcda5ffbb15e7419f77eab462bbf72b42166fb70d50325e37b36f93537a863769bcf9bedae6fb",
+    "event": "",
+    "event_payload": "",
+    "event_type": 2147483649,
+    "imr": 0
+  },
+  {
+    "digest": "6f2e3cbc14f9def86980f5f66fd85e99d63e69a73014ed8a5633ce56eca5b64b692108c56110e22acadcef58c3250f1b",
+    "event": "",
+    "event_payload": "",
+    "event_type": 2147483649,
+    "imr": 0
+  },
+  {
+    "digest": "d607c0efb41c0d757d69bca0615c3a9ac0b1db06c557d992e906c6b7dee40e0e031640c7bfd7bcd35844ef9edeadc6f9",
+    "event": "",
+    "event_payload": "",
+    "event_type": 2147483649,
+    "imr": 0
+  },
+  {
+    "digest": "08a74f8963b337acb6c93682f934496373679dd26af1089cb4eaf0c30cf260a12e814856385ab8843e56a9acea19e127",
+    "event": "",
+    "event_payload": "",
+    "event_type": 2147483649,
+    "imr": 0
+  },
+  {
+    "digest": "18cc6e01f0c6ea99aa23f8a280423e94ad81d96d0aeb5180504fc0f7a40cb3619dd39bd6a95ec1680a86ed6ab0f9828d",
+    "event": "",
+    "event_payload": "",
+    "event_type": 2147483649,
+    "imr": 0
+  },
+  {
+    "digest": "394341b7182cd227c5c6b07ef8000cdfd86136c4292b8e576573ad7ed9ae41019f5818b4b971c9effc60e1ad9f1289f0",
+    "event": "",
+    "event_payload": "",
+    "event_type": 4,
+    "imr": 0
+  },
+  {
+    "digest": "067dbea869d662401cfc128612472b688899b95fe801cec9e473388f2ce8d00c56b85a4511051a8d3eea3a345aa3d943",
+    "event": "",
+    "event_payload": "",
+    "event_type": 10,
+    "imr": 0
+  },
+  {
+    "digest": "e618ef92fa90877695c4be4ce94e99f8cac644f92d40900a6141154f19ee8fefde460f8c75acac5dec3f4b1545259bcf",
+    "event": "",
+    "event_payload": "",
+    "event_type": 10,
+    "imr": 0
+  },
+  {
+    "digest": "36ab67305a05ca84327abeb3ac4c3fff28dd40e23c4a2549d8c56914dafc6afac28b4687810e1ad91871a95de224c601",
+    "event": "",
+    "event_payload": "",
+    "event_type": 10,
+    "imr": 0
+  },
+  {
+    "digest": "b88e9811c668ecce40a8913d420e209cd13df6c2044ad92ed10037ade3bff71ea6937dbb763884b79ae4c9727623833b",
+    "event": "",
+    "event_payload": "",
+    "event_type": 2147483651,
+    "imr": 1
+  },
+  {
+    "digest": "1dd6f7b457ad880d840d41c961283bab688e94e4b59359ea45686581e90feccea3c624b1226113f824f315eb60ae0a7c",
+    "event": "",
+    "event_payload": "",
+    "event_type": 2147483650,
+    "imr": 0
+  },
+  {
+    "digest": "23ada07f5261f12f34a0bd8e46760962d6b4d576a416f1fea1c64bc656b1d28eacf7047ae6e967c58fd2a98bfa74c298",
+    "event": "",
+    "event_payload": "",
+    "event_type": 2147483650,
+    "imr": 0
+  },
+  {
+    "digest": "77a0dab2312b4e1e57a84d865a21e5b2ee8d677a21012ada819d0a98988078d3d740f6346bfe0abaa938ca20439a8d71",
+    "event": "",
+    "event_payload": "",
+    "event_type": 2147483655,
+    "imr": 1
+  },
+  {
+    "digest": "394341b7182cd227c5c6b07ef8000cdfd86136c4292b8e576573ad7ed9ae41019f5818b4b971c9effc60e1ad9f1289f0",
+    "event": "",
+    "event_payload": "",
+    "event_type": 4,
+    "imr": 1
+  },
+  {
+    "digest": "62aca325dc15f48ad3bb5cba03deac141dadd8297917a3f376f2437134822b05127f172528e7902212fba13d333492ba",
+    "event": "",
+    "event_payload": "",
+    "event_type": 6,
+    "imr": 2
+  },
+  {
+    "digest": "6de529e22372fbf37fc3e3dba79f6a1cc6defb4f7df7103ff2adcdb2f8e220d3e107a7f0f127dd8ede406fe91a9a79c0",
+    "event": "",
+    "event_payload": "",
+    "event_type": 6,
+    "imr": 2
+  },
+  {
+    "digest": "214b0bef1379756011344877743fdc2a5382bac6e70362d624ccf3f654407c1b4badf7d8f9295dd3dabdef65b27677e0",
+    "event": "",
+    "event_payload": "",
+    "event_type": 2147483655,
+    "imr": 1
+  },
+  {
+    "digest": "0a2e01c85deae718a530ad8c6d20a84009babe6c8989269e950d8cf440c6e997695e64d455c4174a652cd080f6230b74",
+    "event": "",
+    "event_payload": "",
+    "event_type": 2147483655,
+    "imr": 1
+  },
+  {
+    "digest": "",
+    "event": "system-preparing",
+    "event_payload": "",
+    "event_type": 134217729,
+    "imr": 3
+  },
+  {
+    "digest": "",
+    "event": "app-id",
+    "event_payload": "2c0a0c96cb6dbd659bf1446e2f3fce58172ff91b",
+    "event_type": 134217729,
+    "imr": 3
+  },
+  {
+    "digest": "",
+    "event": "compose-hash",
+    "event_payload": "55db164f4f8c6a837c2217c601c21bba4758f908536a6cd5b2978550205a9179",
+    "event_type": 134217729,
+    "imr": 3
+  },
+  {
+    "digest": "",
+    "event": "instance-id",
+    "event_payload": "19aea1693533dc2d529db03e3f725f20bde8d66d",
+    "event_type": 134217729,
+    "imr": 3
+  },
+  {
+    "digest": "",
+    "event": "boot-mr-done",
+    "event_payload": "",
+    "event_type": 134217729,
+    "imr": 3
+  },
+  {
+    "digest": "",
+    "event": "mr-kms",
+    "event_payload": "a1fc13604b253a3f664897dd486fd6dd0803242f92ff8e4f1c5cc12d1fb7e641",
+    "event_type": 134217729,
+    "imr": 3
+  },
+  {
+    "digest": "",
+    "event": "os-image-hash",
+    "event_payload": "a6eafc5f007f642d8ea90c7fa8881f1e6715720ccb531941a28218f4f26d7b02",
+    "event_type": 134217729,
+    "imr": 3
+  },
+  {
+    "digest": "",
+    "event": "key-provider",
+    "event_payload": "7b226e616d65223a226b6d73222c226964223a223330353933303133303630373261383634386365336430323031303630383261383634386365336430333031303730333432303030343339346161656432633734356536613435376362383335663766343734323366353766663365616437316239326162666636626463313464393035623331396632653133393631623432633530373430646165343439386439633531646437613265323237363630633965356335303430383363646130366236633131363832227d",
+    "event_type": 134217729,
+    "imr": 3
+  },
+  {
+    "digest": "",
+    "event": "storage-fs",
+    "event_payload": "7a6673",
+    "event_type": 134217729,
+    "imr": 3
+  },
+  {
+    "digest": "",
+    "event": "system-ready",
+    "event_payload": "",
+    "event_type": 134217729,
+    "imr": 3
+  },
+  {
+    "digest": "",
+    "event": "nearai-replica-report-key-v1",
+    "event_payload": "7b22626f6f745f6964223a2261313665333938342d366266642d343833332d393836342d613962373466643332313265222c22686f73745f6964223a226770753033222c226b65795f6964223a2266666331623134653336353734363634222c227075626c69635f6b65795f686578223a2266656335356132373361323861356634666539636561313161633563326430633539653636333236323164666235326639363061643630306161303631663538227d",
+    "event_type": 134217729,
+    "imr": 3
+  },
+  {
+    "digest": "",
+    "event": "nearai-replica-report-key-v1",
+    "event_payload": "7b22626f6f745f6964223a2264616238373831342d356136642d343839642d386535622d346337636335646436623635222c22686f73745f6964223a226770753033222c226b65795f6964223a2262376233653465313038666439303434222c227075626c69635f6b65795f686578223a2231396536636532343865643835356339646264646534386562383432646465656466383335303962633462303034663165616632616133346631316166346138227d",
+    "event_type": 134217729,
+    "imr": 3
+  },
+  {
+    "digest": "",
+    "event": "nearai-replica-report-key-v1",
+    "event_payload": "7b22626f6f745f6964223a2235336562353231342d643265332d343630632d613265612d303632306465376564336434222c22686f73745f6964223a226770753033222c226b65795f6964223a2266656237656366323166303930643162222c227075626c69635f6b65795f686578223a2237643665663233376432313264613862666663616462343733383135313732333136623137353539653866336262333761623033386461353330303262643762227d",
+    "event_type": 134217729,
+    "imr": 3
+  },
+  {
+    "digest": "",
+    "event": "nearai-replica-report-key-v1",
+    "event_payload": "7b22626f6f745f6964223a2265373662333864382d306230612d343666322d396264612d663862643263356437633461222c22686f73745f6964223a226770753033222c226b65795f6964223a2266633735356536663063663937333832222c227075626c69635f6b65795f686578223a2235373464363266643465396331316434616364313334323130396461643035623262633866636233616538386662393731656536653339336263636235326630227d",
+    "event_type": 134217729,
+    "imr": 3
+  }
+]

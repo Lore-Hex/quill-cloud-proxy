@@ -13,7 +13,7 @@ import (
 	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
 )
 
-// Public histories captured with fresh nonces on October 3 and 8, 2026.
+// Public histories captured with fresh nonces on October 3 and 9, 2026.
 // These tests exercise policy binding; cryptographic validation is covered by
 // TestLiveNearAIEvidence, not by the quote/GPU doubles used here.
 func reviewedNearAIPoolCase(t *testing.T, compose string) *nearAITestCase {
@@ -47,7 +47,7 @@ func reviewedNearAIPoolCase(t *testing.T, compose string) *nearAITestCase {
 	c.report.Info.ComposeHash = compose
 	fixtureDate := "near-ai-2026-10-03"
 	if compose == "55db164f4f8c6a837c2217c601c21bba4758f908536a6cd5b2978550205a9179" {
-		fixtureDate = "near-ai-2026-10-08"
+		fixtureDate = "near-ai-2026-10-09"
 	}
 	eventBytes, err := os.ReadFile(filepath.Join("testdata", fixtureDate, compose[:8]+"-events.json"))
 	if err != nil {
