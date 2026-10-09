@@ -74,7 +74,7 @@ RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 FROM ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.58.0@sha256:5e8f549169c4288c24c902eadc4c6ebfaaf05c06e5605449c34469257929b143 AS privatemode
 
 FROM scratch
-ENV TR_ASYNC_SETTLE_SHADOW=off
+ENV TR_ASYNC_SETTLE_SHADOW=on
 ENV TR_ASYNC_SETTLE_NEGOTIATE=off
 # TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
 ENV TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS='{"tr-async-settle-2026-10a":"https://api.trustedrouter.com~7zJCBn9dfwXC1cTBqLYY0rGzvuESaM-JxHBQ66oRzzQ"}'
