@@ -33,6 +33,8 @@ RUN go mod download
 
 COPY . .
 
+ARG SOURCE_REVISION
+
 # GOARCH=amd64 is not a default, it is a hardware requirement: AMD SEV-SNP is
 # x86-64 only, and Azure confidential containers run nowhere else. It is also
 # what keeps the image SINGLE-ARCH, which `az confcom acipolicygen` requires —
@@ -40,7 +42,7 @@ COPY . .
 # manifest and confcom refuses to generate a policy for it.
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 RUN go build -trimpath -tags 'cloud_azure,llm_multi' \
-      -ldflags='-s -w -extldflags=-static' \
+      -ldflags="-s -w -extldflags=-static -X github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter.ShadowBuildRevision=${SOURCE_REVISION}" \
       -o /out/quill-enclave ./cmd/enclave
 
 # ─── attest-sidecar binary ──────────────────────────────────────────────────

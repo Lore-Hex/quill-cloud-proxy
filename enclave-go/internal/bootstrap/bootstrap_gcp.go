@@ -856,6 +856,7 @@ func Fetch(ctx context.Context) (*types.BootstrapData, error) {
 		TrustedRouterBaseURL:         os.Getenv("TR_CONTROL_PLANE_BASE_URL"),
 		TrustedRouterInternalToken:   strings.TrimSpace(internalGatewayToken),
 		AsyncSettleTicketPublicKeys:  os.Getenv("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS"),
+		AsyncSettleShadow:            os.Getenv("TR_ASYNC_SETTLE_SHADOW") == "on",
 		AsyncSettleNegotiate:         strings.EqualFold(strings.TrimSpace(os.Getenv("TR_ASYNC_SETTLE_NEGOTIATE")), "on"),
 		SpendLeaseShadow:             spendLeaseShadow,
 		SpendLeaseLocalAdmission:     spendLeaseLocalAdmission,

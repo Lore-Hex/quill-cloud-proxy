@@ -1,0 +1,2335 @@
+[
+  {
+    "candidates": 1,
+    "envelope": {
+      "v": 1,
+      "billing_shadow_binding": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYWRvdy12MS1maXh0dXJlIiwidHlwIjoidHItYXN5bmMtc2V0dGxlLXNoYWRvdy12MSJ9.eyJhc3luY19lbGlnaWJsZSI6ZmFsc2UsImF1ZCI6InJvdXRlci1zaGFkb3ciLCJhdXRob3JpemF0aW9uX2lkIjoiYXV0aC12MSIsImJpbGxpbmdfYXV0aG9yaXR5IjoibG9jYWwiLCJlcG9jaCI6MSwiZXhwIjoxNzkxNDE3NjAwLCJnZW5lcmF0aW9uX2lkIjoiZ2VuLWM3YTczNDk4ZGQ4YTVkNTlhNzA1ZjQ4MjA3MGM5ZTU2IiwiaWF0IjoxNzkxMjQ0ODAwLCJpbnZvY2F0aW9uX25vbmNlIjoibm9uY2UtdjEiLCJpc3MiOiJyb3V0ZXItZml4dHVyZSIsImpvdXJuYWxfcmVnaW9uIjoidXMtY2VudHJhbDEiLCJrZXlfaWQiOiJrZXktdjEiLCJyZXNlcnZhdGlvbl9pZCI6InJlcy12MSIsInJvdXRlX3R5cGUiOiJjaGF0LmNvbXBsZXRpb25zIiwic2V0dGxlX29yaWdpbiI6InR5cGVkIiwic25hcHNob3RfaGFzaCI6IjQ5NzQ1NzMzNTY3ZTRhZDkwNDNkM2Q1ZDBhYWVlODY4NzcyNjM3NjYyYzAxOWU1NzMyMjU3ZGFlNGZjYzcyMDciLCJzbmFwc2hvdF92ZXJzaW9uIjoxLCJzdHJlYW1lZCI6ZmFsc2UsIndvcmtzcGFjZV9pZCI6IndzLXYxIn0.6pvBtJFIJASQXM33zgu1BasDgG0WoU_0GIxcXBtxLiopaGVm3ymwiNv5WhwCjkDSp2vtxDExd1E_NXLobo9kBw",
+      "billing_snapshot": {
+        "v": 1,
+        "kind": "credits_endpoint",
+        "candidates": [
+          {
+            "endpoint_id": "openai/gpt-6-astra@openai/prepaid",
+            "provider": "openai",
+            "model_id": "openai/gpt-6-astra",
+            "usage_type": "Credits",
+            "price_history_version": 1,
+            "rates": {
+              "input_micro_per_million": 10550000,
+              "cached_input_micro_per_million": 5275000,
+              "cache_creation_micro_per_million": 13187500,
+              "output_micro_per_million": 52750000
+            },
+            "tiers": [
+              {
+                "max_prompt_tokens": 272000,
+                "rates": {
+                  "input_micro_per_million": 10550000,
+                  "cached_input_micro_per_million": 1055000,
+                  "cache_creation_micro_per_million": 13187500,
+                  "output_micro_per_million": 52750000
+                }
+              },
+              {
+                "max_prompt_tokens": null,
+                "rates": {
+                  "input_micro_per_million": 21100000,
+                  "cached_input_micro_per_million": 2110000,
+                  "cache_creation_micro_per_million": 26375000,
+                  "output_micro_per_million": 79125000
+                }
+              }
+            ],
+            "request_fee_micro": 0,
+            "rounding": "half_up_per_million",
+            "prompt_convention": "includes_cache",
+            "output_convention": "includes_reasoning"
+          }
+        ],
+        "minimum_charge": "one_micro_if_positive",
+        "charge_cap": null,
+        "tier_basis": "total_prompt",
+        "tier_boundary": "inclusive",
+        "tier_fallback": "last_tier"
+      },
+      "raw_usage": {
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 0
+      },
+      "observed": {},
+      "terminal": {
+        "authorization_id": "auth-v1",
+        "generation_id": "gen-c7a73498dd8a5d59a705f482070c9e56",
+        "workspace_id": "ws-v1",
+        "key_id": "key-v1",
+        "invocation_nonce": "nonce-v1",
+        "billing_authority": "local",
+        "journal_region": "us-central1",
+        "epoch": 1,
+        "snapshot_version": 1,
+        "snapshot_hash": "49745733567e4ad9043d3d5d0aaee868772637662c019e5732257dae4fcc7207",
+        "route_type": "chat.completions",
+        "streamed": false,
+        "v": 1,
+        "terminal_kind": "settle",
+        "selected_endpoint": "openai/gpt-6-astra@openai/prepaid",
+        "usage": {
+          "uncached_input_tokens": 1,
+          "total_prompt_tokens": 1,
+          "output_tokens": 1,
+          "cache_read_tokens": 0,
+          "cache_creation_tokens": 0,
+          "reasoning_tokens": 0
+        },
+        "charge_micro": 64
+      },
+      "payload_hash": "929cff18269cf9ea8437b1f8c0ab5272eb0d05d6038a853fb5171d6f0a54b8ae",
+      "go_error": null,
+      "go_evaluator": "billing-v1",
+      "go_revision": "cf82c77b02a8c07191f71e954196ab90d35294d3",
+      "handoff_prepare_us": 1000
+    },
+    "snapshot": {
+      "v": 1,
+      "kind": "credits_endpoint",
+      "candidates": [
+        {
+          "endpoint_id": "openai/gpt-6-astra@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-6-astra",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 10550000,
+            "cached_input_micro_per_million": 5275000,
+            "cache_creation_micro_per_million": 13187500,
+            "output_micro_per_million": 52750000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 10550000,
+                "cached_input_micro_per_million": 1055000,
+                "cache_creation_micro_per_million": 13187500,
+                "output_micro_per_million": 52750000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 21100000,
+                "cached_input_micro_per_million": 2110000,
+                "cache_creation_micro_per_million": 26375000,
+                "output_micro_per_million": 79125000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        }
+      ],
+      "minimum_charge": "one_micro_if_positive",
+      "charge_cap": null,
+      "tier_basis": "total_prompt",
+      "tier_boundary": "inclusive",
+      "tier_fallback": "last_tier"
+    },
+    "sizes": {
+      "snapshot": 1041,
+      "decoded": 2974,
+      "encoded": 3966,
+      "transmitted_decoded": 2974,
+      "transmitted_encoded": 3966
+    }
+  },
+  {
+    "candidates": 2,
+    "envelope": {
+      "v": 1,
+      "billing_shadow_binding": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYWRvdy12MS1maXh0dXJlIiwidHlwIjoidHItYXN5bmMtc2V0dGxlLXNoYWRvdy12MSJ9.eyJhc3luY19lbGlnaWJsZSI6ZmFsc2UsImF1ZCI6InJvdXRlci1zaGFkb3ciLCJhdXRob3JpemF0aW9uX2lkIjoiYXV0aC12MSIsImJpbGxpbmdfYXV0aG9yaXR5IjoibG9jYWwiLCJlcG9jaCI6MSwiZXhwIjoxNzkxNDE3NjAwLCJnZW5lcmF0aW9uX2lkIjoiZ2VuLWM3YTczNDk4ZGQ4YTVkNTlhNzA1ZjQ4MjA3MGM5ZTU2IiwiaWF0IjoxNzkxMjQ0ODAwLCJpbnZvY2F0aW9uX25vbmNlIjoibm9uY2UtdjEiLCJpc3MiOiJyb3V0ZXItZml4dHVyZSIsImpvdXJuYWxfcmVnaW9uIjoidXMtY2VudHJhbDEiLCJrZXlfaWQiOiJrZXktdjEiLCJyZXNlcnZhdGlvbl9pZCI6InJlcy12MSIsInJvdXRlX3R5cGUiOiJjaGF0LmNvbXBsZXRpb25zIiwic2V0dGxlX29yaWdpbiI6InR5cGVkIiwic25hcHNob3RfaGFzaCI6ImVkZmU4ZGZkZGMwMGY1ZGJlNmRhNzVmZDJjODJjNTcwYjM5M2QyNjM3NWQyMGJjZDRlMjk5NTE5NGI1ZjZiMzEiLCJzbmFwc2hvdF92ZXJzaW9uIjoxLCJzdHJlYW1lZCI6ZmFsc2UsIndvcmtzcGFjZV9pZCI6IndzLXYxIn0.mtjNDpQAhzVvvyLhdPnvPflaRDcHwdo9pVliEJrTaP1mtUtqMFF9mlf4loibgDJKBhOrJJO0qjgMpy5iZaM1Dw",
+      "billing_snapshot": {
+        "v": 1,
+        "kind": "credits_endpoint",
+        "candidates": [
+          {
+            "endpoint_id": "openai/gpt-5.6-sol@openai/prepaid",
+            "provider": "openai",
+            "model_id": "openai/gpt-5.6-sol",
+            "usage_type": "Credits",
+            "price_history_version": 1,
+            "rates": {
+              "input_micro_per_million": 4220000,
+              "cached_input_micro_per_million": 2110000,
+              "cache_creation_micro_per_million": 5275000,
+              "output_micro_per_million": 21100000
+            },
+            "tiers": [
+              {
+                "max_prompt_tokens": 272000,
+                "rates": {
+                  "input_micro_per_million": 4220000,
+                  "cached_input_micro_per_million": 422000,
+                  "cache_creation_micro_per_million": 5275000,
+                  "output_micro_per_million": 21100000
+                }
+              },
+              {
+                "max_prompt_tokens": null,
+                "rates": {
+                  "input_micro_per_million": 8440000,
+                  "cached_input_micro_per_million": 844000,
+                  "cache_creation_micro_per_million": 10550000,
+                  "output_micro_per_million": 31650000
+                }
+              }
+            ],
+            "request_fee_micro": 0,
+            "rounding": "half_up_per_million",
+            "prompt_convention": "includes_cache",
+            "output_convention": "includes_reasoning"
+          },
+          {
+            "endpoint_id": "openai/gpt-6-astra@openai/prepaid",
+            "provider": "openai",
+            "model_id": "openai/gpt-6-astra",
+            "usage_type": "Credits",
+            "price_history_version": 1,
+            "rates": {
+              "input_micro_per_million": 10550000,
+              "cached_input_micro_per_million": 5275000,
+              "cache_creation_micro_per_million": 13187500,
+              "output_micro_per_million": 52750000
+            },
+            "tiers": [
+              {
+                "max_prompt_tokens": 272000,
+                "rates": {
+                  "input_micro_per_million": 10550000,
+                  "cached_input_micro_per_million": 1055000,
+                  "cache_creation_micro_per_million": 13187500,
+                  "output_micro_per_million": 52750000
+                }
+              },
+              {
+                "max_prompt_tokens": null,
+                "rates": {
+                  "input_micro_per_million": 21100000,
+                  "cached_input_micro_per_million": 2110000,
+                  "cache_creation_micro_per_million": 26375000,
+                  "output_micro_per_million": 79125000
+                }
+              }
+            ],
+            "request_fee_micro": 0,
+            "rounding": "half_up_per_million",
+            "prompt_convention": "includes_cache",
+            "output_convention": "includes_reasoning"
+          }
+        ],
+        "minimum_charge": "one_micro_if_positive",
+        "charge_cap": null,
+        "tier_basis": "total_prompt",
+        "tier_boundary": "inclusive",
+        "tier_fallback": "last_tier"
+      },
+      "raw_usage": {
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 0
+      },
+      "observed": {},
+      "terminal": {
+        "authorization_id": "auth-v1",
+        "generation_id": "gen-c7a73498dd8a5d59a705f482070c9e56",
+        "workspace_id": "ws-v1",
+        "key_id": "key-v1",
+        "invocation_nonce": "nonce-v1",
+        "billing_authority": "local",
+        "journal_region": "us-central1",
+        "epoch": 1,
+        "snapshot_version": 1,
+        "snapshot_hash": "edfe8dfddc00f5dbe6da75fd2c82c570b393d26375d20bcd4e2995194b5f6b31",
+        "route_type": "chat.completions",
+        "streamed": false,
+        "v": 1,
+        "terminal_kind": "settle",
+        "selected_endpoint": "openai/gpt-5.6-sol@openai/prepaid",
+        "usage": {
+          "uncached_input_tokens": 1,
+          "total_prompt_tokens": 1,
+          "output_tokens": 1,
+          "cache_read_tokens": 0,
+          "cache_creation_tokens": 0,
+          "reasoning_tokens": 0
+        },
+        "charge_micro": 25
+      },
+      "payload_hash": "62e79e3d1fb2f87caa784d90767953552b9b3f88404003b5e4f6abe7f374f536",
+      "go_error": null,
+      "go_evaluator": "billing-v1",
+      "go_revision": "cf82c77b02a8c07191f71e954196ab90d35294d3",
+      "handoff_prepare_us": 1000
+    },
+    "snapshot": {
+      "v": 1,
+      "kind": "credits_endpoint",
+      "candidates": [
+        {
+          "endpoint_id": "openai/gpt-5.6-sol@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5.6-sol",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 4220000,
+            "cached_input_micro_per_million": 2110000,
+            "cache_creation_micro_per_million": 5275000,
+            "output_micro_per_million": 21100000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 4220000,
+                "cached_input_micro_per_million": 422000,
+                "cache_creation_micro_per_million": 5275000,
+                "output_micro_per_million": 21100000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 8440000,
+                "cached_input_micro_per_million": 844000,
+                "cache_creation_micro_per_million": 10550000,
+                "output_micro_per_million": 31650000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-6-astra@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-6-astra",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 10550000,
+            "cached_input_micro_per_million": 5275000,
+            "cache_creation_micro_per_million": 13187500,
+            "output_micro_per_million": 52750000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 10550000,
+                "cached_input_micro_per_million": 1055000,
+                "cache_creation_micro_per_million": 13187500,
+                "output_micro_per_million": 52750000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 21100000,
+                "cached_input_micro_per_million": 2110000,
+                "cache_creation_micro_per_million": 26375000,
+                "output_micro_per_million": 79125000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        }
+      ],
+      "minimum_charge": "one_micro_if_positive",
+      "charge_cap": null,
+      "tier_basis": "total_prompt",
+      "tier_boundary": "inclusive",
+      "tier_fallback": "last_tier"
+    },
+    "sizes": {
+      "snapshot": 1884,
+      "decoded": 3817,
+      "encoded": 5090,
+      "transmitted_decoded": 3817,
+      "transmitted_encoded": 5090
+    }
+  },
+  {
+    "candidates": 3,
+    "envelope": {
+      "v": 1,
+      "billing_shadow_binding": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYWRvdy12MS1maXh0dXJlIiwidHlwIjoidHItYXN5bmMtc2V0dGxlLXNoYWRvdy12MSJ9.eyJhc3luY19lbGlnaWJsZSI6ZmFsc2UsImF1ZCI6InJvdXRlci1zaGFkb3ciLCJhdXRob3JpemF0aW9uX2lkIjoiYXV0aC12MSIsImJpbGxpbmdfYXV0aG9yaXR5IjoibG9jYWwiLCJlcG9jaCI6MSwiZXhwIjoxNzkxNDE3NjAwLCJnZW5lcmF0aW9uX2lkIjoiZ2VuLWM3YTczNDk4ZGQ4YTVkNTlhNzA1ZjQ4MjA3MGM5ZTU2IiwiaWF0IjoxNzkxMjQ0ODAwLCJpbnZvY2F0aW9uX25vbmNlIjoibm9uY2UtdjEiLCJpc3MiOiJyb3V0ZXItZml4dHVyZSIsImpvdXJuYWxfcmVnaW9uIjoidXMtY2VudHJhbDEiLCJrZXlfaWQiOiJrZXktdjEiLCJyZXNlcnZhdGlvbl9pZCI6InJlcy12MSIsInJvdXRlX3R5cGUiOiJjaGF0LmNvbXBsZXRpb25zIiwic2V0dGxlX29yaWdpbiI6InR5cGVkIiwic25hcHNob3RfaGFzaCI6ImE4N2MyMmVhYzUyYmQ0OWZkYWRhZjJhNDlhYjNhZGI3NWU5M2FhMmQ5YjFiNmRlY2YzZTZkMDlmNDY4NGIxNzMiLCJzbmFwc2hvdF92ZXJzaW9uIjoxLCJzdHJlYW1lZCI6ZmFsc2UsIndvcmtzcGFjZV9pZCI6IndzLXYxIn0.b6lCwMzhMXvB9P3c54K25dsTJUybgLRtyuRb-XndkkVNs7-LZkjd7E0wzG9zs_vPFZOSwaDP5yCizeunZN2FCQ",
+      "billing_snapshot": {
+        "v": 1,
+        "kind": "credits_endpoint",
+        "candidates": [
+          {
+            "endpoint_id": "openai/gpt-5.6-sol@openai/prepaid",
+            "provider": "openai",
+            "model_id": "openai/gpt-5.6-sol",
+            "usage_type": "Credits",
+            "price_history_version": 1,
+            "rates": {
+              "input_micro_per_million": 4220000,
+              "cached_input_micro_per_million": 2110000,
+              "cache_creation_micro_per_million": 5275000,
+              "output_micro_per_million": 21100000
+            },
+            "tiers": [
+              {
+                "max_prompt_tokens": 272000,
+                "rates": {
+                  "input_micro_per_million": 4220000,
+                  "cached_input_micro_per_million": 422000,
+                  "cache_creation_micro_per_million": 5275000,
+                  "output_micro_per_million": 21100000
+                }
+              },
+              {
+                "max_prompt_tokens": null,
+                "rates": {
+                  "input_micro_per_million": 8440000,
+                  "cached_input_micro_per_million": 844000,
+                  "cache_creation_micro_per_million": 10550000,
+                  "output_micro_per_million": 31650000
+                }
+              }
+            ],
+            "request_fee_micro": 0,
+            "rounding": "half_up_per_million",
+            "prompt_convention": "includes_cache",
+            "output_convention": "includes_reasoning"
+          },
+          {
+            "endpoint_id": "openai/gpt-6-astra@openai/prepaid",
+            "provider": "openai",
+            "model_id": "openai/gpt-6-astra",
+            "usage_type": "Credits",
+            "price_history_version": 1,
+            "rates": {
+              "input_micro_per_million": 10550000,
+              "cached_input_micro_per_million": 5275000,
+              "cache_creation_micro_per_million": 13187500,
+              "output_micro_per_million": 52750000
+            },
+            "tiers": [
+              {
+                "max_prompt_tokens": 272000,
+                "rates": {
+                  "input_micro_per_million": 10550000,
+                  "cached_input_micro_per_million": 1055000,
+                  "cache_creation_micro_per_million": 13187500,
+                  "output_micro_per_million": 52750000
+                }
+              },
+              {
+                "max_prompt_tokens": null,
+                "rates": {
+                  "input_micro_per_million": 21100000,
+                  "cached_input_micro_per_million": 2110000,
+                  "cache_creation_micro_per_million": 26375000,
+                  "output_micro_per_million": 79125000
+                }
+              }
+            ],
+            "request_fee_micro": 0,
+            "rounding": "half_up_per_million",
+            "prompt_convention": "includes_cache",
+            "output_convention": "includes_reasoning"
+          },
+          {
+            "endpoint_id": "openai/gpt-6.1-sol@openai/prepaid",
+            "provider": "openai",
+            "model_id": "openai/gpt-6.1-sol",
+            "usage_type": "Credits",
+            "price_history_version": 1,
+            "rates": {
+              "input_micro_per_million": 2110000,
+              "cached_input_micro_per_million": 1055000,
+              "cache_creation_micro_per_million": 2637500,
+              "output_micro_per_million": 10550000
+            },
+            "tiers": [
+              {
+                "max_prompt_tokens": 272000,
+                "rates": {
+                  "input_micro_per_million": 2110000,
+                  "cached_input_micro_per_million": 105500,
+                  "cache_creation_micro_per_million": 2637500,
+                  "output_micro_per_million": 10550000
+                }
+              },
+              {
+                "max_prompt_tokens": null,
+                "rates": {
+                  "input_micro_per_million": 4220000,
+                  "cached_input_micro_per_million": 211000,
+                  "cache_creation_micro_per_million": 5275000,
+                  "output_micro_per_million": 15825000
+                }
+              }
+            ],
+            "request_fee_micro": 0,
+            "rounding": "half_up_per_million",
+            "prompt_convention": "includes_cache",
+            "output_convention": "includes_reasoning"
+          }
+        ],
+        "minimum_charge": "one_micro_if_positive",
+        "charge_cap": null,
+        "tier_basis": "total_prompt",
+        "tier_boundary": "inclusive",
+        "tier_fallback": "last_tier"
+      },
+      "raw_usage": {
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 0
+      },
+      "observed": {},
+      "terminal": {
+        "authorization_id": "auth-v1",
+        "generation_id": "gen-c7a73498dd8a5d59a705f482070c9e56",
+        "workspace_id": "ws-v1",
+        "key_id": "key-v1",
+        "invocation_nonce": "nonce-v1",
+        "billing_authority": "local",
+        "journal_region": "us-central1",
+        "epoch": 1,
+        "snapshot_version": 1,
+        "snapshot_hash": "a87c22eac52bd49fdadaf2a49ab3adb75e93aa2d9b1b6decf3e6d09f4684b173",
+        "route_type": "chat.completions",
+        "streamed": false,
+        "v": 1,
+        "terminal_kind": "settle",
+        "selected_endpoint": "openai/gpt-5.6-sol@openai/prepaid",
+        "usage": {
+          "uncached_input_tokens": 1,
+          "total_prompt_tokens": 1,
+          "output_tokens": 1,
+          "cache_read_tokens": 0,
+          "cache_creation_tokens": 0,
+          "reasoning_tokens": 0
+        },
+        "charge_micro": 25
+      },
+      "payload_hash": "0572e0b873af316e306979f3cf8801b0216053c20c84f423b8f8ffc4168270bd",
+      "go_error": null,
+      "go_evaluator": "billing-v1",
+      "go_revision": "cf82c77b02a8c07191f71e954196ab90d35294d3",
+      "handoff_prepare_us": 1000
+    },
+    "snapshot": {
+      "v": 1,
+      "kind": "credits_endpoint",
+      "candidates": [
+        {
+          "endpoint_id": "openai/gpt-5.6-sol@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5.6-sol",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 4220000,
+            "cached_input_micro_per_million": 2110000,
+            "cache_creation_micro_per_million": 5275000,
+            "output_micro_per_million": 21100000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 4220000,
+                "cached_input_micro_per_million": 422000,
+                "cache_creation_micro_per_million": 5275000,
+                "output_micro_per_million": 21100000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 8440000,
+                "cached_input_micro_per_million": 844000,
+                "cache_creation_micro_per_million": 10550000,
+                "output_micro_per_million": 31650000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-6-astra@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-6-astra",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 10550000,
+            "cached_input_micro_per_million": 5275000,
+            "cache_creation_micro_per_million": 13187500,
+            "output_micro_per_million": 52750000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 10550000,
+                "cached_input_micro_per_million": 1055000,
+                "cache_creation_micro_per_million": 13187500,
+                "output_micro_per_million": 52750000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 21100000,
+                "cached_input_micro_per_million": 2110000,
+                "cache_creation_micro_per_million": 26375000,
+                "output_micro_per_million": 79125000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-6.1-sol@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-6.1-sol",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 2110000,
+            "cached_input_micro_per_million": 1055000,
+            "cache_creation_micro_per_million": 2637500,
+            "output_micro_per_million": 10550000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 2110000,
+                "cached_input_micro_per_million": 105500,
+                "cache_creation_micro_per_million": 2637500,
+                "output_micro_per_million": 10550000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 4220000,
+                "cached_input_micro_per_million": 211000,
+                "cache_creation_micro_per_million": 5275000,
+                "output_micro_per_million": 15825000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        }
+      ],
+      "minimum_charge": "one_micro_if_positive",
+      "charge_cap": null,
+      "tier_basis": "total_prompt",
+      "tier_boundary": "inclusive",
+      "tier_fallback": "last_tier"
+    },
+    "sizes": {
+      "snapshot": 2726,
+      "decoded": 4659,
+      "encoded": 6212,
+      "transmitted_decoded": 4659,
+      "transmitted_encoded": 6212
+    }
+  },
+  {
+    "candidates": 4,
+    "envelope": {
+      "v": 1,
+      "billing_shadow_binding": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYWRvdy12MS1maXh0dXJlIiwidHlwIjoidHItYXN5bmMtc2V0dGxlLXNoYWRvdy12MSJ9.eyJhc3luY19lbGlnaWJsZSI6ZmFsc2UsImF1ZCI6InJvdXRlci1zaGFkb3ciLCJhdXRob3JpemF0aW9uX2lkIjoiYXV0aC12MSIsImJpbGxpbmdfYXV0aG9yaXR5IjoibG9jYWwiLCJlcG9jaCI6MSwiZXhwIjoxNzkxNDE3NjAwLCJnZW5lcmF0aW9uX2lkIjoiZ2VuLWM3YTczNDk4ZGQ4YTVkNTlhNzA1ZjQ4MjA3MGM5ZTU2IiwiaWF0IjoxNzkxMjQ0ODAwLCJpbnZvY2F0aW9uX25vbmNlIjoibm9uY2UtdjEiLCJpc3MiOiJyb3V0ZXItZml4dHVyZSIsImpvdXJuYWxfcmVnaW9uIjoidXMtY2VudHJhbDEiLCJrZXlfaWQiOiJrZXktdjEiLCJyZXNlcnZhdGlvbl9pZCI6InJlcy12MSIsInJvdXRlX3R5cGUiOiJjaGF0LmNvbXBsZXRpb25zIiwic2V0dGxlX29yaWdpbiI6InR5cGVkIiwic25hcHNob3RfaGFzaCI6IjBiOTkzNTcwZTUxMDM0MDA4MzRkNWU0NzQ2YmRiZDJkZWFiNzBlNjdkOTg5MTA5Yzc3ZDljNjEzNjdkYWM5MGYiLCJzbmFwc2hvdF92ZXJzaW9uIjoxLCJzdHJlYW1lZCI6ZmFsc2UsIndvcmtzcGFjZV9pZCI6IndzLXYxIn0.pq3SHb8Og8oa7J4aDfPhFqCgldA7AOhlr_DZLI8H4nauLoMTagyoDwzEGwvlS8wMfoQgmuG2hj69V-ywJChwBA",
+      "billing_snapshot": {
+        "v": 1,
+        "kind": "credits_endpoint",
+        "candidates": [
+          {
+            "endpoint_id": "openai/gpt-5.5@openai/prepaid",
+            "provider": "openai",
+            "model_id": "openai/gpt-5.5",
+            "usage_type": "Credits",
+            "price_history_version": 1,
+            "rates": {
+              "input_micro_per_million": 5275000,
+              "cached_input_micro_per_million": 2637500,
+              "cache_creation_micro_per_million": 6593750,
+              "output_micro_per_million": 31650000
+            },
+            "tiers": [
+              {
+                "max_prompt_tokens": 272000,
+                "rates": {
+                  "input_micro_per_million": 5275000,
+                  "cached_input_micro_per_million": 527500,
+                  "cache_creation_micro_per_million": 6593750,
+                  "output_micro_per_million": 31650000
+                }
+              },
+              {
+                "max_prompt_tokens": null,
+                "rates": {
+                  "input_micro_per_million": 10550000,
+                  "cached_input_micro_per_million": 1055000,
+                  "cache_creation_micro_per_million": 13187500,
+                  "output_micro_per_million": 47475000
+                }
+              }
+            ],
+            "request_fee_micro": 0,
+            "rounding": "half_up_per_million",
+            "prompt_convention": "includes_cache",
+            "output_convention": "includes_reasoning"
+          },
+          {
+            "endpoint_id": "openai/gpt-5.6-sol@openai/prepaid",
+            "provider": "openai",
+            "model_id": "openai/gpt-5.6-sol",
+            "usage_type": "Credits",
+            "price_history_version": 1,
+            "rates": {
+              "input_micro_per_million": 4220000,
+              "cached_input_micro_per_million": 2110000,
+              "cache_creation_micro_per_million": 5275000,
+              "output_micro_per_million": 21100000
+            },
+            "tiers": [
+              {
+                "max_prompt_tokens": 272000,
+                "rates": {
+                  "input_micro_per_million": 4220000,
+                  "cached_input_micro_per_million": 422000,
+                  "cache_creation_micro_per_million": 5275000,
+                  "output_micro_per_million": 21100000
+                }
+              },
+              {
+                "max_prompt_tokens": null,
+                "rates": {
+                  "input_micro_per_million": 8440000,
+                  "cached_input_micro_per_million": 844000,
+                  "cache_creation_micro_per_million": 10550000,
+                  "output_micro_per_million": 31650000
+                }
+              }
+            ],
+            "request_fee_micro": 0,
+            "rounding": "half_up_per_million",
+            "prompt_convention": "includes_cache",
+            "output_convention": "includes_reasoning"
+          },
+          {
+            "endpoint_id": "openai/gpt-6-astra@openai/prepaid",
+            "provider": "openai",
+            "model_id": "openai/gpt-6-astra",
+            "usage_type": "Credits",
+            "price_history_version": 1,
+            "rates": {
+              "input_micro_per_million": 10550000,
+              "cached_input_micro_per_million": 5275000,
+              "cache_creation_micro_per_million": 13187500,
+              "output_micro_per_million": 52750000
+            },
+            "tiers": [
+              {
+                "max_prompt_tokens": 272000,
+                "rates": {
+                  "input_micro_per_million": 10550000,
+                  "cached_input_micro_per_million": 1055000,
+                  "cache_creation_micro_per_million": 13187500,
+                  "output_micro_per_million": 52750000
+                }
+              },
+              {
+                "max_prompt_tokens": null,
+                "rates": {
+                  "input_micro_per_million": 21100000,
+                  "cached_input_micro_per_million": 2110000,
+                  "cache_creation_micro_per_million": 26375000,
+                  "output_micro_per_million": 79125000
+                }
+              }
+            ],
+            "request_fee_micro": 0,
+            "rounding": "half_up_per_million",
+            "prompt_convention": "includes_cache",
+            "output_convention": "includes_reasoning"
+          },
+          {
+            "endpoint_id": "openai/gpt-6.1-sol@openai/prepaid",
+            "provider": "openai",
+            "model_id": "openai/gpt-6.1-sol",
+            "usage_type": "Credits",
+            "price_history_version": 1,
+            "rates": {
+              "input_micro_per_million": 2110000,
+              "cached_input_micro_per_million": 1055000,
+              "cache_creation_micro_per_million": 2637500,
+              "output_micro_per_million": 10550000
+            },
+            "tiers": [
+              {
+                "max_prompt_tokens": 272000,
+                "rates": {
+                  "input_micro_per_million": 2110000,
+                  "cached_input_micro_per_million": 105500,
+                  "cache_creation_micro_per_million": 2637500,
+                  "output_micro_per_million": 10550000
+                }
+              },
+              {
+                "max_prompt_tokens": null,
+                "rates": {
+                  "input_micro_per_million": 4220000,
+                  "cached_input_micro_per_million": 211000,
+                  "cache_creation_micro_per_million": 5275000,
+                  "output_micro_per_million": 15825000
+                }
+              }
+            ],
+            "request_fee_micro": 0,
+            "rounding": "half_up_per_million",
+            "prompt_convention": "includes_cache",
+            "output_convention": "includes_reasoning"
+          }
+        ],
+        "minimum_charge": "one_micro_if_positive",
+        "charge_cap": null,
+        "tier_basis": "total_prompt",
+        "tier_boundary": "inclusive",
+        "tier_fallback": "last_tier"
+      },
+      "raw_usage": {
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 0
+      },
+      "observed": {},
+      "terminal": {
+        "authorization_id": "auth-v1",
+        "generation_id": "gen-c7a73498dd8a5d59a705f482070c9e56",
+        "workspace_id": "ws-v1",
+        "key_id": "key-v1",
+        "invocation_nonce": "nonce-v1",
+        "billing_authority": "local",
+        "journal_region": "us-central1",
+        "epoch": 1,
+        "snapshot_version": 1,
+        "snapshot_hash": "0b993570e5103400834d5e4746bdbd2deab70e67d989109c77d9c61367dac90f",
+        "route_type": "chat.completions",
+        "streamed": false,
+        "v": 1,
+        "terminal_kind": "settle",
+        "selected_endpoint": "openai/gpt-5.5@openai/prepaid",
+        "usage": {
+          "uncached_input_tokens": 1,
+          "total_prompt_tokens": 1,
+          "output_tokens": 1,
+          "cache_read_tokens": 0,
+          "cache_creation_tokens": 0,
+          "reasoning_tokens": 0
+        },
+        "charge_micro": 37
+      },
+      "payload_hash": "95a9c9b3cc61d0c4f994c188288415f46a8907f3afb9c259e506b17b08507f74",
+      "go_error": null,
+      "go_evaluator": "billing-v1",
+      "go_revision": "cf82c77b02a8c07191f71e954196ab90d35294d3",
+      "handoff_prepare_us": 1000
+    },
+    "snapshot": {
+      "v": 1,
+      "kind": "credits_endpoint",
+      "candidates": [
+        {
+          "endpoint_id": "openai/gpt-5.5@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5.5",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 5275000,
+            "cached_input_micro_per_million": 2637500,
+            "cache_creation_micro_per_million": 6593750,
+            "output_micro_per_million": 31650000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 5275000,
+                "cached_input_micro_per_million": 527500,
+                "cache_creation_micro_per_million": 6593750,
+                "output_micro_per_million": 31650000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 10550000,
+                "cached_input_micro_per_million": 1055000,
+                "cache_creation_micro_per_million": 13187500,
+                "output_micro_per_million": 47475000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-5.6-sol@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5.6-sol",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 4220000,
+            "cached_input_micro_per_million": 2110000,
+            "cache_creation_micro_per_million": 5275000,
+            "output_micro_per_million": 21100000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 4220000,
+                "cached_input_micro_per_million": 422000,
+                "cache_creation_micro_per_million": 5275000,
+                "output_micro_per_million": 21100000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 8440000,
+                "cached_input_micro_per_million": 844000,
+                "cache_creation_micro_per_million": 10550000,
+                "output_micro_per_million": 31650000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-6-astra@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-6-astra",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 10550000,
+            "cached_input_micro_per_million": 5275000,
+            "cache_creation_micro_per_million": 13187500,
+            "output_micro_per_million": 52750000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 10550000,
+                "cached_input_micro_per_million": 1055000,
+                "cache_creation_micro_per_million": 13187500,
+                "output_micro_per_million": 52750000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 21100000,
+                "cached_input_micro_per_million": 2110000,
+                "cache_creation_micro_per_million": 26375000,
+                "output_micro_per_million": 79125000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-6.1-sol@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-6.1-sol",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 2110000,
+            "cached_input_micro_per_million": 1055000,
+            "cache_creation_micro_per_million": 2637500,
+            "output_micro_per_million": 10550000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 2110000,
+                "cached_input_micro_per_million": 105500,
+                "cache_creation_micro_per_million": 2637500,
+                "output_micro_per_million": 10550000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 4220000,
+                "cached_input_micro_per_million": 211000,
+                "cache_creation_micro_per_million": 5275000,
+                "output_micro_per_million": 15825000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        }
+      ],
+      "minimum_charge": "one_micro_if_positive",
+      "charge_cap": null,
+      "tier_basis": "total_prompt",
+      "tier_boundary": "inclusive",
+      "tier_fallback": "last_tier"
+    },
+    "sizes": {
+      "snapshot": 3563,
+      "decoded": 5492,
+      "encoded": 7323,
+      "transmitted_decoded": 5492,
+      "transmitted_encoded": 7323
+    }
+  },
+  {
+    "candidates": 43,
+    "envelope": {
+      "v": 1,
+      "billing_shadow_binding": "eyJhbGciOiJFZERTQSIsImtpZCI6InNoYWRvdy12MS1maXh0dXJlIiwidHlwIjoidHItYXN5bmMtc2V0dGxlLXNoYWRvdy12MSJ9.eyJhc3luY19lbGlnaWJsZSI6ZmFsc2UsImF1ZCI6InJvdXRlci1zaGFkb3ciLCJhdXRob3JpemF0aW9uX2lkIjoiYXV0aC12MSIsImJpbGxpbmdfYXV0aG9yaXR5IjoibG9jYWwiLCJlcG9jaCI6MSwiZXhwIjoxNzkxNDE3NjAwLCJnZW5lcmF0aW9uX2lkIjoiZ2VuLWM3YTczNDk4ZGQ4YTVkNTlhNzA1ZjQ4MjA3MGM5ZTU2IiwiaWF0IjoxNzkxMjQ0ODAwLCJpbnZvY2F0aW9uX25vbmNlIjoibm9uY2UtdjEiLCJpc3MiOiJyb3V0ZXItZml4dHVyZSIsImpvdXJuYWxfcmVnaW9uIjoidXMtY2VudHJhbDEiLCJrZXlfaWQiOiJrZXktdjEiLCJyZXNlcnZhdGlvbl9pZCI6InJlcy12MSIsInJvdXRlX3R5cGUiOiJjaGF0LmNvbXBsZXRpb25zIiwic2V0dGxlX29yaWdpbiI6InR5cGVkIiwic25hcHNob3RfaGFzaCI6IjkzMDYzN2U1ZDRiMjljNDViMTIzZjViZTkzNjk5YzJlNjEzNmJhMDdhOGE0MGIyMmEyOGIyZGI5YTM1YjZlNjEiLCJzbmFwc2hvdF92ZXJzaW9uIjoxLCJzdHJlYW1lZCI6ZmFsc2UsIndvcmtzcGFjZV9pZCI6IndzLXYxIn0.EtnvdDg_zvG9rQ31uopmBxC07S7kGCtKJ2fXfO33ZVdpqY6AKP9S5C054-m6xYRKWm203efpNjeGvXAdY9y2Ag",
+      "raw_usage": {
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 0
+      },
+      "observed": {},
+      "terminal": {
+        "authorization_id": "auth-v1",
+        "generation_id": "gen-c7a73498dd8a5d59a705f482070c9e56",
+        "workspace_id": "ws-v1",
+        "key_id": "key-v1",
+        "invocation_nonce": "nonce-v1",
+        "billing_authority": "local",
+        "journal_region": "us-central1",
+        "epoch": 1,
+        "snapshot_version": 1,
+        "snapshot_hash": "930637e5d4b29c45b123f5be93699c2e6136ba07a8a40b22a28b2db9a35b6e61",
+        "route_type": "chat.completions",
+        "streamed": false,
+        "v": 1,
+        "terminal_kind": "settle",
+        "selected_endpoint": "anthropic/claude-fable-5.1@anthropic/prepaid",
+        "usage": {
+          "uncached_input_tokens": 1,
+          "total_prompt_tokens": 1,
+          "output_tokens": 1,
+          "cache_read_tokens": 0,
+          "cache_creation_tokens": 0,
+          "reasoning_tokens": 0
+        },
+        "charge_micro": 64
+      },
+      "payload_hash": "efd249e80f6d5a85caea5cd2710ec068a654e7b6d4953309340d2e41682eb29c",
+      "go_error": null,
+      "go_evaluator": "billing-v1",
+      "go_revision": "cf82c77b02a8c07191f71e954196ab90d35294d3",
+      "handoff_prepare_us": 1000
+    },
+    "snapshot": {
+      "v": 1,
+      "kind": "credits_endpoint",
+      "candidates": [
+        {
+          "endpoint_id": "anthropic/claude-fable-5.1@anthropic/prepaid",
+          "provider": "anthropic",
+          "model_id": "anthropic/claude-fable-5.1",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 10550000,
+            "cached_input_micro_per_million": 1055000,
+            "cache_creation_micro_per_million": 13187500,
+            "output_micro_per_million": 52750000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 10550000,
+                "cached_input_micro_per_million": 263750,
+                "cache_creation_micro_per_million": 13187500,
+                "output_micro_per_million": 52750000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "excludes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "anthropic/claude-fable-5@anthropic/prepaid",
+          "provider": "anthropic",
+          "model_id": "anthropic/claude-fable-5",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 10550000,
+            "cached_input_micro_per_million": 1055000,
+            "cache_creation_micro_per_million": 13187500,
+            "output_micro_per_million": 52750000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 10550000,
+                "cached_input_micro_per_million": 1055000,
+                "cache_creation_micro_per_million": 13187500,
+                "output_micro_per_million": 52750000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "excludes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "anthropic/claude-haiku-4.5@anthropic/prepaid",
+          "provider": "anthropic",
+          "model_id": "anthropic/claude-haiku-4.5",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 1055000,
+            "cached_input_micro_per_million": 105500,
+            "cache_creation_micro_per_million": 1318750,
+            "output_micro_per_million": 5275000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 1055000,
+                "cached_input_micro_per_million": 105500,
+                "cache_creation_micro_per_million": 1318750,
+                "output_micro_per_million": 5275000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "excludes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "anthropic/claude-opus-4.5@anthropic/prepaid",
+          "provider": "anthropic",
+          "model_id": "anthropic/claude-opus-4.5",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 5275000,
+            "cached_input_micro_per_million": 527500,
+            "cache_creation_micro_per_million": 6593750,
+            "output_micro_per_million": 26375000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 5275000,
+                "cached_input_micro_per_million": 527500,
+                "cache_creation_micro_per_million": 6593750,
+                "output_micro_per_million": 26375000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "excludes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "anthropic/claude-opus-4.6@anthropic/prepaid",
+          "provider": "anthropic",
+          "model_id": "anthropic/claude-opus-4.6",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 5275000,
+            "cached_input_micro_per_million": 527500,
+            "cache_creation_micro_per_million": 6593750,
+            "output_micro_per_million": 26375000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 5275000,
+                "cached_input_micro_per_million": 527500,
+                "cache_creation_micro_per_million": 6593750,
+                "output_micro_per_million": 26375000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "excludes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "anthropic/claude-opus-4.7@anthropic/prepaid",
+          "provider": "anthropic",
+          "model_id": "anthropic/claude-opus-4.7",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 5275000,
+            "cached_input_micro_per_million": 527500,
+            "cache_creation_micro_per_million": 6593750,
+            "output_micro_per_million": 26375000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 5275000,
+                "cached_input_micro_per_million": 527500,
+                "cache_creation_micro_per_million": 6593750,
+                "output_micro_per_million": 26375000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "excludes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "anthropic/claude-opus-4.8@anthropic/prepaid",
+          "provider": "anthropic",
+          "model_id": "anthropic/claude-opus-4.8",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 5275000,
+            "cached_input_micro_per_million": 527500,
+            "cache_creation_micro_per_million": 6593750,
+            "output_micro_per_million": 26375000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 5275000,
+                "cached_input_micro_per_million": 527500,
+                "cache_creation_micro_per_million": 6593750,
+                "output_micro_per_million": 26375000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "excludes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "anthropic/claude-opus-5.5@anthropic/prepaid",
+          "provider": "anthropic",
+          "model_id": "anthropic/claude-opus-5.5",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 4220000,
+            "cached_input_micro_per_million": 422000,
+            "cache_creation_micro_per_million": 5275000,
+            "output_micro_per_million": 21100000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 4220000,
+                "cached_input_micro_per_million": 211000,
+                "cache_creation_micro_per_million": 5275000,
+                "output_micro_per_million": 21100000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "excludes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "anthropic/claude-opus-5@anthropic/prepaid",
+          "provider": "anthropic",
+          "model_id": "anthropic/claude-opus-5",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 5275000,
+            "cached_input_micro_per_million": 527500,
+            "cache_creation_micro_per_million": 6593750,
+            "output_micro_per_million": 26375000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 5275000,
+                "cached_input_micro_per_million": 527500,
+                "cache_creation_micro_per_million": 6593750,
+                "output_micro_per_million": 26375000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "excludes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "anthropic/claude-sonnet-4.5@anthropic/prepaid",
+          "provider": "anthropic",
+          "model_id": "anthropic/claude-sonnet-4.5",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 3165000,
+            "cached_input_micro_per_million": 316500,
+            "cache_creation_micro_per_million": 3956250,
+            "output_micro_per_million": 15825000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 3165000,
+                "cached_input_micro_per_million": 316500,
+                "cache_creation_micro_per_million": 3956250,
+                "output_micro_per_million": 15825000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "excludes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "anthropic/claude-sonnet-4.6@anthropic/prepaid",
+          "provider": "anthropic",
+          "model_id": "anthropic/claude-sonnet-4.6",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 3165000,
+            "cached_input_micro_per_million": 316500,
+            "cache_creation_micro_per_million": 3956250,
+            "output_micro_per_million": 15825000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 3165000,
+                "cached_input_micro_per_million": 316500,
+                "cache_creation_micro_per_million": 3956250,
+                "output_micro_per_million": 15825000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "excludes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "anthropic/claude-sonnet-5.5@anthropic/prepaid",
+          "provider": "anthropic",
+          "model_id": "anthropic/claude-sonnet-5.5",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 2110000,
+            "cached_input_micro_per_million": 211000,
+            "cache_creation_micro_per_million": 2637500,
+            "output_micro_per_million": 10550000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 2110000,
+                "cached_input_micro_per_million": 211000,
+                "cache_creation_micro_per_million": 2637500,
+                "output_micro_per_million": 10550000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "excludes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "anthropic/claude-sonnet-5@anthropic/prepaid",
+          "provider": "anthropic",
+          "model_id": "anthropic/claude-sonnet-5",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 2110000,
+            "cached_input_micro_per_million": 211000,
+            "cache_creation_micro_per_million": 2637500,
+            "output_micro_per_million": 10550000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 2110000,
+                "cached_input_micro_per_million": 211000,
+                "cache_creation_micro_per_million": 2637500,
+                "output_micro_per_million": 10550000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "excludes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/chat-latest@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/chat-latest",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 5275000,
+            "cached_input_micro_per_million": 2637500,
+            "cache_creation_micro_per_million": 6593750,
+            "output_micro_per_million": 31650000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 5275000,
+                "cached_input_micro_per_million": 527500,
+                "cache_creation_micro_per_million": 6593750,
+                "output_micro_per_million": 31650000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-3.5-turbo-0125@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-3.5-turbo-0125",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 527500,
+            "cached_input_micro_per_million": 263750,
+            "cache_creation_micro_per_million": 659375,
+            "output_micro_per_million": 1582500
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 527500,
+                "cached_input_micro_per_million": 263750,
+                "cache_creation_micro_per_million": 659375,
+                "output_micro_per_million": 1582500
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-3.5-turbo@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-3.5-turbo",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 527500,
+            "cached_input_micro_per_million": 263750,
+            "cache_creation_micro_per_million": 659375,
+            "output_micro_per_million": 1582500
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 527500,
+                "cached_input_micro_per_million": 263750,
+                "cache_creation_micro_per_million": 659375,
+                "output_micro_per_million": 1582500
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-4-0613@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-4-0613",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 31650000,
+            "cached_input_micro_per_million": 15825000,
+            "cache_creation_micro_per_million": 39562500,
+            "output_micro_per_million": 63300000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 31650000,
+                "cached_input_micro_per_million": 15825000,
+                "cache_creation_micro_per_million": 39562500,
+                "output_micro_per_million": 63300000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-4-turbo@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-4-turbo",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 10550000,
+            "cached_input_micro_per_million": 5275000,
+            "cache_creation_micro_per_million": 13187500,
+            "output_micro_per_million": 31650000
+          },
+          "tiers": [],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-4.1-mini@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-4.1-mini",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 422000,
+            "cached_input_micro_per_million": 211000,
+            "cache_creation_micro_per_million": 527500,
+            "output_micro_per_million": 1688000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 422000,
+                "cached_input_micro_per_million": 105500,
+                "cache_creation_micro_per_million": 527500,
+                "output_micro_per_million": 1688000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-4.1-nano@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-4.1-nano",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 105500,
+            "cached_input_micro_per_million": 52750,
+            "cache_creation_micro_per_million": 131875,
+            "output_micro_per_million": 422000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 105500,
+                "cached_input_micro_per_million": 26375,
+                "cache_creation_micro_per_million": 131875,
+                "output_micro_per_million": 422000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-4.1@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-4.1",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 2110000,
+            "cached_input_micro_per_million": 1055000,
+            "cache_creation_micro_per_million": 2637500,
+            "output_micro_per_million": 8440000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 2110000,
+                "cached_input_micro_per_million": 527500,
+                "cache_creation_micro_per_million": 2637500,
+                "output_micro_per_million": 8440000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-4@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-4",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 31650000,
+            "cached_input_micro_per_million": 15825000,
+            "cache_creation_micro_per_million": 39562500,
+            "output_micro_per_million": 63300000
+          },
+          "tiers": [],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-4o-2024-05-13@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-4o-2024-05-13",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 5275000,
+            "cached_input_micro_per_million": 2637500,
+            "cache_creation_micro_per_million": 6593750,
+            "output_micro_per_million": 15825000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 5275000,
+                "cached_input_micro_per_million": 2637500,
+                "cache_creation_micro_per_million": 6593750,
+                "output_micro_per_million": 15825000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-4o-mini@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-4o-mini",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 158250,
+            "cached_input_micro_per_million": 79125,
+            "cache_creation_micro_per_million": 197812,
+            "output_micro_per_million": 633000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 158250,
+                "cached_input_micro_per_million": 79125,
+                "cache_creation_micro_per_million": 197812,
+                "output_micro_per_million": 633000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-4o@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-4o",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 2637500,
+            "cached_input_micro_per_million": 1318750,
+            "cache_creation_micro_per_million": 3296875,
+            "output_micro_per_million": 10550000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 2637500,
+                "cached_input_micro_per_million": 1318750,
+                "cache_creation_micro_per_million": 3296875,
+                "output_micro_per_million": 10550000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-5-mini@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5-mini",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 263750,
+            "cached_input_micro_per_million": 131875,
+            "cache_creation_micro_per_million": 329688,
+            "output_micro_per_million": 2110000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 263750,
+                "cached_input_micro_per_million": 26375,
+                "cache_creation_micro_per_million": 329688,
+                "output_micro_per_million": 2110000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-5-nano@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5-nano",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 52750,
+            "cached_input_micro_per_million": 26375,
+            "cache_creation_micro_per_million": 65938,
+            "output_micro_per_million": 422000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 52750,
+                "cached_input_micro_per_million": 10000,
+                "cache_creation_micro_per_million": 65938,
+                "output_micro_per_million": 422000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-5.1@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5.1",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 1318750,
+            "cached_input_micro_per_million": 659375,
+            "cache_creation_micro_per_million": 1648438,
+            "output_micro_per_million": 10550000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 1318750,
+                "cached_input_micro_per_million": 131875,
+                "cache_creation_micro_per_million": 1648438,
+                "output_micro_per_million": 10550000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-5.2@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5.2",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 1846250,
+            "cached_input_micro_per_million": 923125,
+            "cache_creation_micro_per_million": 2307812,
+            "output_micro_per_million": 14770000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 1846250,
+                "cached_input_micro_per_million": 184625,
+                "cache_creation_micro_per_million": 2307812,
+                "output_micro_per_million": 14770000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-5.4-mini@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5.4-mini",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 791250,
+            "cached_input_micro_per_million": 395625,
+            "cache_creation_micro_per_million": 989062,
+            "output_micro_per_million": 4747500
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 791250,
+                "cached_input_micro_per_million": 79125,
+                "cache_creation_micro_per_million": 989062,
+                "output_micro_per_million": 4747500
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-5.5@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5.5",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 5275000,
+            "cached_input_micro_per_million": 2637500,
+            "cache_creation_micro_per_million": 6593750,
+            "output_micro_per_million": 31650000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 5275000,
+                "cached_input_micro_per_million": 527500,
+                "cache_creation_micro_per_million": 6593750,
+                "output_micro_per_million": 31650000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 10550000,
+                "cached_input_micro_per_million": 1055000,
+                "cache_creation_micro_per_million": 13187500,
+                "output_micro_per_million": 47475000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-5.6-luna@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5.6-luna",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 211000,
+            "cached_input_micro_per_million": 105500,
+            "cache_creation_micro_per_million": 263750,
+            "output_micro_per_million": 1266000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 211000,
+                "cached_input_micro_per_million": 21100,
+                "cache_creation_micro_per_million": 263750,
+                "output_micro_per_million": 1266000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-5.6-sol@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5.6-sol",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 4220000,
+            "cached_input_micro_per_million": 2110000,
+            "cache_creation_micro_per_million": 5275000,
+            "output_micro_per_million": 21100000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 4220000,
+                "cached_input_micro_per_million": 422000,
+                "cache_creation_micro_per_million": 5275000,
+                "output_micro_per_million": 21100000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 8440000,
+                "cached_input_micro_per_million": 844000,
+                "cache_creation_micro_per_million": 10550000,
+                "output_micro_per_million": 31650000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-5.6-terra@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5.6-terra",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 2110000,
+            "cached_input_micro_per_million": 1055000,
+            "cache_creation_micro_per_million": 2637500,
+            "output_micro_per_million": 12660000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 2110000,
+                "cached_input_micro_per_million": 211000,
+                "cache_creation_micro_per_million": 2637500,
+                "output_micro_per_million": 12660000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-5@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-5",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 1318750,
+            "cached_input_micro_per_million": 659375,
+            "cache_creation_micro_per_million": 1648438,
+            "output_micro_per_million": 10550000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 1318750,
+                "cached_input_micro_per_million": 131875,
+                "cache_creation_micro_per_million": 1648438,
+                "output_micro_per_million": 10550000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-6-astra@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-6-astra",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 10550000,
+            "cached_input_micro_per_million": 5275000,
+            "cache_creation_micro_per_million": 13187500,
+            "output_micro_per_million": 52750000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 10550000,
+                "cached_input_micro_per_million": 1055000,
+                "cache_creation_micro_per_million": 13187500,
+                "output_micro_per_million": 52750000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 21100000,
+                "cached_input_micro_per_million": 2110000,
+                "cache_creation_micro_per_million": 26375000,
+                "output_micro_per_million": 79125000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-6-luna@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-6-luna",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 105500,
+            "cached_input_micro_per_million": 52750,
+            "cache_creation_micro_per_million": 131875,
+            "output_micro_per_million": 527500
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 105500,
+                "cached_input_micro_per_million": 10550,
+                "cache_creation_micro_per_million": 131875,
+                "output_micro_per_million": 527500
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 211000,
+                "cached_input_micro_per_million": 21100,
+                "cache_creation_micro_per_million": 263750,
+                "output_micro_per_million": 791250
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-6-sol@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-6-sol",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 2110000,
+            "cached_input_micro_per_million": 1055000,
+            "cache_creation_micro_per_million": 2637500,
+            "output_micro_per_million": 10550000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 2110000,
+                "cached_input_micro_per_million": 211000,
+                "cache_creation_micro_per_million": 2637500,
+                "output_micro_per_million": 10550000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/gpt-6.1-sol@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/gpt-6.1-sol",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 2110000,
+            "cached_input_micro_per_million": 1055000,
+            "cache_creation_micro_per_million": 2637500,
+            "output_micro_per_million": 10550000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": 272000,
+              "rates": {
+                "input_micro_per_million": 2110000,
+                "cached_input_micro_per_million": 105500,
+                "cache_creation_micro_per_million": 2637500,
+                "output_micro_per_million": 10550000
+              }
+            },
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 4220000,
+                "cached_input_micro_per_million": 211000,
+                "cache_creation_micro_per_million": 5275000,
+                "output_micro_per_million": 15825000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/o1@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/o1",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 15825000,
+            "cached_input_micro_per_million": 7912500,
+            "cache_creation_micro_per_million": 19781250,
+            "output_micro_per_million": 63300000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 15825000,
+                "cached_input_micro_per_million": 7912500,
+                "cache_creation_micro_per_million": 19781250,
+                "output_micro_per_million": 63300000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/o3-mini@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/o3-mini",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 1160500,
+            "cached_input_micro_per_million": 580250,
+            "cache_creation_micro_per_million": 1450625,
+            "output_micro_per_million": 4642000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 1160500,
+                "cached_input_micro_per_million": 580250,
+                "cache_creation_micro_per_million": 1450625,
+                "output_micro_per_million": 4642000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/o3@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/o3",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 2110000,
+            "cached_input_micro_per_million": 1055000,
+            "cache_creation_micro_per_million": 2637500,
+            "output_micro_per_million": 8440000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 2110000,
+                "cached_input_micro_per_million": 527500,
+                "cache_creation_micro_per_million": 2637500,
+                "output_micro_per_million": 8440000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        },
+        {
+          "endpoint_id": "openai/o4-mini@openai/prepaid",
+          "provider": "openai",
+          "model_id": "openai/o4-mini",
+          "usage_type": "Credits",
+          "price_history_version": 1,
+          "rates": {
+            "input_micro_per_million": 1160500,
+            "cached_input_micro_per_million": 580250,
+            "cache_creation_micro_per_million": 1450625,
+            "output_micro_per_million": 4642000
+          },
+          "tiers": [
+            {
+              "max_prompt_tokens": null,
+              "rates": {
+                "input_micro_per_million": 1160500,
+                "cached_input_micro_per_million": 290125,
+                "cache_creation_micro_per_million": 1450625,
+                "output_micro_per_million": 4642000
+              }
+            }
+          ],
+          "request_fee_micro": 0,
+          "rounding": "half_up_per_million",
+          "prompt_convention": "includes_cache",
+          "output_convention": "includes_reasoning"
+        }
+      ],
+      "minimum_charge": "one_micro_if_positive",
+      "charge_cap": null,
+      "tier_basis": "total_prompt",
+      "tier_boundary": "inclusive",
+      "tier_fallback": "last_tier"
+    },
+    "sizes": {
+      "snapshot": 28821,
+      "decoded": 30765,
+      "encoded": 41020,
+      "transmitted_decoded": 1924,
+      "transmitted_encoded": 2566
+    }
+  }
+]

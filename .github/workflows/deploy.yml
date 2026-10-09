@@ -53,6 +53,7 @@ jobs:
           docker buildx build \
             --platform linux/arm64 \
             --file enclave-go/Dockerfile.enclave \
+            --build-arg "SOURCE_REVISION=${GITHUB_SHA}" \
             --tag "$ECR:enclave-aws-latest" \
             --tag "$ECR:enclave-latest" \
             --push \

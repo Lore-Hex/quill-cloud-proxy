@@ -77,11 +77,11 @@ func (c *Client) asyncNow() time.Time {
 // AsyncSettlementNegotiated is enclave-local provenance; parsed wire fields
 // alone cannot activate settlement or change streaming behavior.
 func (c *Client) AsyncSettlementNegotiated(a *Authorization) bool {
-	return c != nil && c.asyncNegotiate && a != nil && a.async != nil
+	return c != nil && !c.asyncShadow && c.asyncNegotiate && a != nil && a.async != nil
 }
 
 func (c *Client) bindAsyncAuthorization(a *Authorization, req *qtypes.OpenAIChatRequest, route string) {
-	if !c.asyncNegotiate || !asyncCohort(route) || !bool(a.AsyncEligible) {
+	if c.asyncShadow || !c.asyncNegotiate || !asyncCohort(route) || !bool(a.AsyncEligible) {
 		return
 	}
 	if a.SettlementStatusURL != "/v1/settlements/"+url.PathEscape(a.AuthorizationID+".settle") {

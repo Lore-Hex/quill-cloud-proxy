@@ -1656,6 +1656,7 @@ func serveResponsesNonStreaming(
 		}
 	}
 	outputForUsage := adapter.ResponsesOutputForUsage(result)
+	usageAvailableAt := time.Now()
 	inputTokens, outputTokens, usageEstimated := tokensForSettlement(
 		result,
 		trustedrouter.EstimateInputTokens(req),
@@ -1700,6 +1701,7 @@ func serveResponsesNonStreaming(
 	}
 	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
+	usage.ShadowObservation.AvailableAt = usageAvailableAt
 	settlement, err := settleForUsageResponse(ctx, trGateway, authorization, secretCache, usage, req, originalInput, outputForUsage, requestLogID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.responses_settle_failed model=%q err=%v\n", req.Model, err)
@@ -1762,6 +1764,7 @@ func serveChatNonStreaming(
 		writeUpstreamError(conn, "chat.completions", err, authorization)
 		return
 	}
+	usageAvailableAt := time.Now()
 	inputTokens, outputTokens, usageEstimated := tokensForSettlement(
 		result,
 		trustedrouter.EstimateInputTokens(req),
@@ -1804,6 +1807,7 @@ func serveChatNonStreaming(
 	}
 	applyUsageAttribution(&usage, req)
 	applyCacheUsage(&usage, result)
+	usage.ShadowObservation.AvailableAt = usageAvailableAt
 	settlement, err := settleForUsageResponse(ctx, trGateway, authorization, secretCache, usage, req, originalInput, result.Text, requestLogID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave.chat_settle_failed model=%q err=%v\n", req.Model, err)
@@ -1995,6 +1999,7 @@ func serveStreaming(
 	deliveredOutput := false
 	settlementContext := ctx
 	settleStream := func(settleCtx context.Context, result adapter.StreamResult) (*trustedrouter.SettleResult, trustedrouter.Usage, error) {
+		usageAvailableAt := time.Now()
 		inputTokens, outputTokens, usageEstimated := tokensForSettlement(
 			result, trustedrouter.EstimateInputTokens(req),
 			trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
@@ -2014,6 +2019,7 @@ func serveStreaming(
 		}
 		applyUsageAttribution(&usage, req)
 		applyCacheUsage(&usage, result)
+		usage.ShadowObservation.AvailableAt = usageAvailableAt
 		settlement, settleErr := settleAndBroadcast(settleCtx, trGateway, authorization, secretCache, usage, req, originalInput, adapter.ResponsesOutputForUsage(result))
 		if settleErr != nil {
 			fmt.Fprintf(os.Stderr, "enclave.stream_settle_failed request_log_id=%q request_id=%q model=%q route_type=%q err=%v\n", requestLogID, requestID, req.Model, routeType, settleErr)
@@ -2451,6 +2457,7 @@ func serveMessages(
 			writeUpstreamError(conn, "messages", err, authorization)
 			return
 		}
+		usageAvailableAt := time.Now()
 		inputTokens, outputTokens, usageEstimated := tokensForSettlement(
 			result,
 			trustedrouter.EstimateInputTokens(req),
@@ -2484,6 +2491,7 @@ func serveMessages(
 		}
 		applyUsageAttribution(&usage, req)
 		applyCacheUsage(&usage, result)
+		usage.ShadowObservation.AvailableAt = usageAvailableAt
 		settlement, err := settleForUsageResponse(ctx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text, requestLogID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.messages_settle_failed model=%q err=%v\n", req.Model, err)
@@ -2535,6 +2543,7 @@ func serveMessages(
 	statsW := newStreamStatsWriter(chunkW)
 
 	settleStream := func(settleCtx context.Context, result adapter.StreamResult) (*trustedrouter.SettleResult, trustedrouter.Usage) {
+		usageAvailableAt := time.Now()
 		inputTokens, outputTokens, usageEstimated := tokensForSettlement(
 			result,
 			trustedrouter.EstimateInputTokens(req),
@@ -2558,6 +2567,7 @@ func serveMessages(
 		}
 		applyUsageAttribution(&usage, req)
 		applyCacheUsage(&usage, result)
+		usage.ShadowObservation.AvailableAt = usageAvailableAt
 		settlement, err := settleAndBroadcast(settleCtx, trGateway, authorization, byokSecrets, usage, req, native.Messages, result.Text)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "enclave.messages_stream_settle_failed request_log_id=%q request_id=%q model=%q err=%v\n", requestLogID, messageID, req.Model, err)
@@ -2639,6 +2649,11 @@ func resolvedModelForRequest(req *types.OpenAIChatRequest, options []llm.InvokeO
 // fields are visibility metadata; PriceTierInputTokens is a private billing
 // basis that the control plane admits only for a pinned provider contract.
 func applyCacheUsage(usage *trustedrouter.Usage, result adapter.StreamResult) {
+	providerTier := ""
+	if result.Usage != nil {
+		providerTier = result.Usage.ServiceTier
+	}
+	usage.ShadowObservation = trustedrouter.ObserveShadowUsage(result.Usage != nil, providerTier)
 	if result.Usage == nil {
 		return
 	}

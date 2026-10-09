@@ -32,6 +32,8 @@ RUN go mod download
 
 COPY . .
 
+ARG SOURCE_REVISION
+
 # `--platform=linux/<arch>` from `docker buildx build` populates
 # TARGETARCH automatically. Default `amd64` so a plain `docker build`
 # (no buildx, no --platform) still works for local dev.
@@ -45,7 +47,7 @@ ARG TARGETARCH=amd64
 ARG BUILD_TAGS=cloud_aws,llm_bedrock
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH}
 RUN go build -trimpath -tags "${BUILD_TAGS}" \
-      -ldflags='-s -w -extldflags=-static' \
+      -ldflags="-s -w -extldflags=-static -X github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter.ShadowBuildRevision=${SOURCE_REVISION}" \
       -o /out/quill-enclave ./cmd/enclave
 
 # scratch keeps the EIF tiny and the PCR0 surface minimal.
@@ -72,6 +74,7 @@ RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 FROM ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.58.0@sha256:5e8f549169c4288c24c902eadc4c6ebfaaf05c06e5605449c34469257929b143 AS privatemode
 
 FROM scratch
+ENV TR_ASYNC_SETTLE_SHADOW=off
 ENV TR_ASYNC_SETTLE_NEGOTIATE=off
 # TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
 ENV TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS=""
