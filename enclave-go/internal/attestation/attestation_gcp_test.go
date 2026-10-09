@@ -18,6 +18,62 @@ import (
 	"time"
 )
 
+func TestDefaultQueueServesAdmittedHealthyBurst(t *testing.T) {
+	q := newTokenQueue(cap(launcherTokens.admitted)-1, launcherTokens.waitTimeout, launcherTokens.mintTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	start := make(chan struct{})
+	old := requestToken
+	var wg sync.WaitGroup
+	defer func() {
+		cancel()
+		wg.Wait()
+		requestToken = old
+	}()
+	requestToken = func(ctx context.Context, body []byte) ([]byte, error) {
+		select {
+		case <-start:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		// Production issuer calls take about 700ms. Four healthy waiters
+		// therefore need about 2.8s even though each mint is fast.
+		timer := time.NewTimer(700 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return bytes.Clone(body), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	results := make(chan error, 5)
+	for i := range 5 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body := []byte{byte(i)}
+			token, err := q.mint(ctx, body)
+			if err == nil && !bytes.Equal(token, body) {
+				t.Error("nonce-bound response was shared with another caller")
+			}
+			results <- err
+		}()
+	}
+	for len(q.admitted) != 5 {
+		select {
+		case <-ctx.Done():
+			t.Fatal("burst was not admitted")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	close(start)
+	for range 5 {
+		if err := <-results; err != nil {
+			t.Errorf("healthy admitted caller rejected: %v", err)
+		}
+	}
+}
+
 func TestCanceledWorkloadIdentityWaiterDoesNotMint(t *testing.T) {
 	old := requestToken
 	defer func() { requestToken = old }()
