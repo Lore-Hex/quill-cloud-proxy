@@ -342,6 +342,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "system1models-eu",
         "regolo",
         "lyceum",
+        "greenference",
         "privatemode",
         "nextbit",
         "aion-labs",
