@@ -2144,9 +2144,12 @@ func ChatToolsFromResponsesTools(tools []any) ([]any, error) {
 		return nil, nil
 	}
 	out := make([]any, 0, len(tools))
-	for _, tool := range tools {
+	for index, tool := range tools {
 		normalized, err := chatToolFromResponsesTool(tool)
 		if err != nil {
+			if adapterErr, ok := err.(*AdapterError); ok && adapterErr.Context == "tools.type" {
+				adapterErr.Context = fmt.Sprintf("tools[%d].type", index)
+			}
 			return nil, err
 		}
 		out = append(out, normalized)
@@ -2371,7 +2374,7 @@ func chatToolFromResponsesTool(tool any) (map[string]any, error) {
 		return trustedRouterWebSearchFunctionTool(m), nil
 	case "function":
 	default:
-		return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools"}
+		return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools.type"}
 	}
 	if fn, ok := m["function"].(map[string]any); ok {
 		return normalizeChatFunctionTool(fn)

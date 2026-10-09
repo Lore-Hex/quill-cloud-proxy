@@ -107,6 +107,65 @@ func TestConfigureChatWebSearchDefaultsToOpenRouterToolCallBudget(t *testing.T) 
 	}
 }
 
+func TestConfigureChatWebSearchSupportsResponsesToolAliases(t *testing.T) {
+	for _, toolType := range []string{"web_search", "web_search_preview"} {
+		t.Run(toolType, func(t *testing.T) {
+			tool := map[string]any{
+				"type": " " + toolType + " ", "search_context_size": "high",
+				"user_location": map[string]any{"type": "approximate", "country": "DE", "city": "Berlin"},
+			}
+			if toolType == "web_search" {
+				tool["filters"] = map[string]any{"allowed_domains": []any{"example.com"}}
+			}
+			req := &types.OpenAIChatRequest{
+				Tools: []any{tool}, ToolChoice: map[string]any{"type": toolType},
+			}
+			if err := ConfigureChatWebSearch(req); err != nil {
+				t.Fatal(err)
+			}
+			config := req.Response.WebSearch
+			if config.ToolType != toolType || config.RouteType != "chat.completions.web_search" ||
+				config.Engine != "exa" || config.MaxCalls != 3 || config.SearchContextSize != "high" ||
+				config.UserCountry != "DE" || config.UserCity != "Berlin" {
+				t.Fatalf("config = %#v", config)
+			}
+			if toolType == "web_search" && (len(config.AllowedDomains) != 1 || config.AllowedDomains[0] != "example.com") {
+				t.Fatalf("filters = %#v", config.AllowedDomains)
+			}
+			fn := req.Tools[0].(map[string]any)["function"].(map[string]any)
+			choice := req.ToolChoice.(map[string]any)
+			if fn["name"] != TrustedRouterWebSearchFunction || choice["function"].(map[string]any)["name"] != fn["name"] {
+				t.Fatalf("normalized tool=%#v choice=%#v", req.Tools, req.ToolChoice)
+			}
+		})
+	}
+}
+
+func TestConfigureChatWebSearchAliasesFailClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		body      string
+		status    int
+		parameter string
+	}{
+		{"duplicates", `{"tools":[{"type":"openrouter:web_search"},{"type":"web_search"}]}`, 400, "tools"},
+		{"mixed plugin", `{"tools":[{"type":"web_search"}],"plugins":[{"id":"web"}]}`, 400, "plugins.web"},
+		{"budget", `{"tools":[{"type":"web_search"}],"max_tool_calls":4}`, 400, "max_tool_calls"},
+		{"offline", `{"tools":[{"type":"web_search","external_web_access":false}]}`, 501, "tools.external_web_access"},
+		{"preview filters", `{"tools":[{"type":"web_search_preview","filters":{"allowed_domains":["example.com"]}}]}`, 501, "tools.filters"},
+		{"unknown option", `{"tools":[{"type":"web_search","future_option":true}]}`, 501, "tools.future_option"},
+		{"unsupported hosted tool", `{"tools":[{"type":"file_search"}]}`, 501, "tools[0].type"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var req types.OpenAIChatRequest
+			if err := json.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatal(err)
+			}
+			assertRequestFieldError(t, ConfigureChatWebSearch(&req), tc.status, tc.parameter)
+		})
+	}
+}
+
 func TestConfigureChatWebSearchSupportsLegacyWebPluginAndOptions(t *testing.T) {
 	req := &types.OpenAIChatRequest{
 		Plugins: []any{map[string]any{
