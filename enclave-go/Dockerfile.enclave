@@ -77,7 +77,7 @@ FROM scratch
 ENV TR_ASYNC_SETTLE_SHADOW=off
 ENV TR_ASYNC_SETTLE_NEGOTIATE=off
 # TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
-ENV TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS=""
+ENV TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS='{"tr-async-settle-2026-10a":"https://api.trustedrouter.com~7zJCBn9dfwXC1cTBqLYY0rGzvuESaM-JxHBQ66oRzzQ"}'
 COPY --from=privatemode /bin/privatemode-proxy /privatemode-proxy
 COPY --from=builder /out/rootfs/ /
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt

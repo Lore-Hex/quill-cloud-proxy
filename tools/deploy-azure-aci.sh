@@ -566,7 +566,7 @@ mi_client_id = sys.argv[1]
 env = {
     "TR_ASYNC_SETTLE_SHADOW": "off",
     "TR_ASYNC_SETTLE_NEGOTIATE": "off",
-    "TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS": "",
+    "TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS": '{"tr-async-settle-2026-10a":"https://api.trustedrouter.com~7zJCBn9dfwXC1cTBqLYY0rGzvuESaM-JxHBQ66oRzzQ"}',
     # --- Azure boot path (bootstrap_azure.go) -----------------------------
     "QUILL_AZURE_MAA_ENDPOINT":  os.environ["MAA_ENDPOINT"],
     "QUILL_AZURE_AKV_ENDPOINT":  os.environ["VAULT"] + ".vault.azure.net",
