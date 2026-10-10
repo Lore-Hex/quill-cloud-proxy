@@ -28,14 +28,14 @@ class RolloutSafetyTests(unittest.TestCase):
         keyring = ASYNC_SETTLE_KEYRING
         aws = (ROOT / "enclave-go/Dockerfile.enclave").read_text()
         self.assertIn("ENV TR_ASYNC_SETTLE_NEGOTIATE=off", aws)
-        self.assertIn("ENV TR_ASYNC_SETTLE_SHADOW=off", aws)
+        self.assertIn("ENV TR_ASYNC_SETTLE_SHADOW=on", aws)
         self.assertIn("ENV TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS='" + keyring + "'\n", aws)
         gcp = (ROOT / "tools/deploy-gcp-mig.sh").read_text()
         self.assertIn("tee-env-TR_ASYNC_SETTLE_NEGOTIATE=off|tee-env-TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS="
                       + keyring.replace('"', '\\"') + "|", gcp)
-        self.assertIn("tee-env-TR_ASYNC_SETTLE_SHADOW=off|", gcp)
+        self.assertIn("tee-env-TR_ASYNC_SETTLE_SHADOW=on|", gcp)
         azure = (ROOT / "tools/deploy-azure-aci.sh").read_text()
-        self.assertIn('"TR_ASYNC_SETTLE_SHADOW": "off"', azure)
+        self.assertIn('"TR_ASYNC_SETTLE_SHADOW": "on"', azure)
         self.assertIn('"TR_ASYNC_SETTLE_NEGOTIATE": "off"', azure)
         self.assertIn('"TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS": ' + repr(keyring) + ",", azure)
         for source in (aws, gcp, azure):
