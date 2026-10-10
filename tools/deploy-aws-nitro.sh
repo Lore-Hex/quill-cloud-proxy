@@ -1394,7 +1394,7 @@ phase_cross_cloud_key() {
   #
   # This phase is responsible for:
   #   1. GCP service account: tr-aws-cross-cloud@quill-cloud-proxy.iam.gserviceaccount.com
-  #   2. Minimum IAM bindings (datastore.user for Spanner+Bigtable,
+  #   2. Minimum IAM bindings (datastore.user for Spanner,
   #      cloudkms.cryptoKeyDecrypter on byok-envelope, secretmanager.secretAccessor
   #      on the trustedrouter-* secrets).
   #   3. Mint a fresh JSON key.
@@ -1458,9 +1458,11 @@ phase_cross_cloud_key() {
   # 2. IAM bindings. Each call is idempotent — gcloud add-iam-policy-binding
   #    no-ops if the binding already exists.
   log "  granting IAM bindings to $sa_email"
+  # Bigtable was retired 2026-10-01 and its binding removed from this SA;
+  # re-granting it here would silently restore a privilege on every key
+  # rotation. Rotation must never widen access.
   for role in \
       roles/spanner.databaseUser \
-      roles/bigtable.user \
       roles/secretmanager.secretAccessor; do
     if [ $DRY_RUN -eq 0 ]; then
       gcloud projects add-iam-policy-binding "$gcp_project" \
