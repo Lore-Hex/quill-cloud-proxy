@@ -480,9 +480,8 @@ func Resolve(req *CreateRequest) (Model, map[string]any, map[string]any, error) 
 		// the content-free quote and persisted metadata describe the same job.
 		queue["audio"] = true
 	}
-	if req.Seed != nil {
-		queue["seed"] = *req.Seed
-	}
+	// Venice has no seed parameter. ResolveRequest preserves it separately
+	// for providers that support it; routing must reject unsupported requests.
 
 	first, last, references, audioRef, videoRef, err := mediaInputs(req)
 	if err != nil {
@@ -750,7 +749,7 @@ func gcd(a, b int) int {
 	return a
 }
 
-func ModelsJSON() ([]byte, error) {
+func ModelsJSON(registry *Registry) ([]byte, error) {
 	data := make([]map[string]any, 0, len(models))
 	for _, model := range Models() {
 		inputModalities := []string{"text"}
@@ -763,7 +762,10 @@ func ModelsJSON() ([]byte, error) {
 		if model.SupportsVideoReference {
 			inputModalities = append(inputModalities, "video")
 		}
-		parameters := []string{"prompt", "duration", "resolution", "aspect_ratio", "size", "seed"}
+		parameters := []string{"prompt", "duration", "resolution", "aspect_ratio", "size"}
+		if registry.supportsSeed(model) {
+			parameters = append(parameters, "seed")
+		}
 		if model.SupportsAudio || model.AudioAlwaysOn {
 			parameters = append(parameters, "generate_audio")
 		}

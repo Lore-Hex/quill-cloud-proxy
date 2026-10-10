@@ -840,6 +840,10 @@ func idempotencyReplayError(err error) (*trustedrouter.ControlPlaneError, bool) 
 }
 
 func writeGatewayAuthorizationError(w io.Writer, err error) {
+	if trustedrouter.IsVideoRoutingUnavailable(err) {
+		writeOpenAIError(w, http.StatusServiceUnavailable, messageFromControlPlaneError(err, "video routing unavailable"), "server_error", "video_routing_unavailable", "")
+		return
+	}
 	observeBillingAuthorizationError(w, err, messageFromControlPlaneError(err, "gateway authorization failed"))
 	if controlErr, ok := idempotencyReplayError(err); ok {
 		writeOpenAIError(

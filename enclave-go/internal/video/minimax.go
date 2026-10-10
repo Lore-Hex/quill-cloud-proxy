@@ -33,7 +33,7 @@ func (c *MiniMaxClient) ID() string    { return "minimax" }
 func (c *MiniMaxClient) Enabled() bool { return c != nil && c.apiKey != "" }
 
 func (c *MiniMaxClient) Supports(request *ResolvedRequest) bool {
-	return request != nil && request.Model.ID == "minimax/hailuo-3"
+	return request != nil && request.Seed == nil && request.Model.ID == "minimax/hailuo-3"
 }
 
 func (c *MiniMaxClient) QuoteResolved(_ context.Context, request *ResolvedRequest) (int, error) {

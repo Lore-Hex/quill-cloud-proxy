@@ -12,11 +12,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/llm"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/video"
 )
 
@@ -138,7 +140,7 @@ func maybeServeVideoRoute(
 			writeErrorWithSourceHeaders(conn, statusFromControlPlaneError(err), messageFromControlPlaneError(err, "gateway authorization failed"), "router", retryHeadersFromControlPlaneError(err))
 			return true
 		}
-		out, err := video.ModelsJSON()
+		out, err := video.ModelsJSON(videoGateway.providers)
 		if err != nil {
 			writeOpenAIError(conn, 500, "could not serialize video models", "server_error", "internal_error", "")
 			return true
@@ -195,6 +197,68 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		return
 	}
 	providers := s.providers.Supporting(resolved)
+	authorizeCtx := ctx
+	if req.Seed != nil {
+		var preferences types.ProviderRouting
+		policy, _ := json.Marshal(req.Provider)
+		if err := json.Unmarshal(policy, &preferences); err != nil {
+			writeOpenAIError(conn, 400, "invalid video provider preferences", "invalid_request_error", "bad_request", "provider")
+			return
+		}
+		only := types.NormalizeProviderFilters(preferences.Only)
+		ignore := types.NormalizeProviderFilters(preferences.Ignore)
+		order := types.NormalizeProviderFilters(preferences.Order)
+		allowed := func(id string) bool {
+			return (len(only) == 0 || slices.Contains(only, id)) &&
+				!slices.Contains(ignore, id) &&
+				(preferences.AllowFallbacks == nil || *preferences.AllowFallbacks ||
+					len(order) == 0 || slices.Contains(order, id))
+		}
+		eligible := make([]video.Provider, 0, len(providers))
+		for _, provider := range providers {
+			if allowed(provider.ID()) {
+				eligible = append(eligible, provider)
+			}
+		}
+		providers = eligible
+		if len(providers) == 0 {
+			// Before the policy filter, quoting could include BytePlus even when
+			// the caller selected a fixed-price route. Its bound is computed
+			// locally, independent of today's enabled credentials; no quote runs.
+			historicalTokenLimit, _ := video.NewBytePlusClient("", nil).OutputTokenLimit(resolved)
+			existing, err := s.control.LookupVideoReplay(ctx, bearer, resolved.Model.ID, idempotencyKey, videoRequestFingerprint(bearer, &req), req.Provider, historicalTokenLimit)
+			if err != nil {
+				writeGatewayAuthorizationError(conn, err)
+				return
+			}
+			if existing != nil {
+				writeVideoJobResponse(conn, http.StatusAccepted, existing)
+				return
+			}
+			withoutSeed := *resolved
+			withoutSeed.Seed = nil
+			var routes []string
+			for _, provider := range s.providers.Supporting(&withoutSeed) {
+				if allowed(provider.ID()) {
+					routes = append(routes, provider.ID())
+				}
+			}
+			routeNames := strings.Join(routes, ", ")
+			if routeNames == "" {
+				routeNames = "none enabled"
+			}
+			message := fmt.Sprintf("seed is not supported for model %q on the allowed video routes (%s)", resolved.Model.ID, routeNames)
+			writeOpenAIError(conn, 400, message, "invalid_request_error", "unsupported_parameter", "seed")
+			return
+		}
+		// Derived constraints travel outside the fingerprinted authorization body.
+		// Keep caller preferences intact so pre-rollout jobs remain replayable.
+		capable := make([]string, 0, len(providers))
+		for _, provider := range providers {
+			capable = append(capable, provider.ID())
+		}
+		authorizeCtx = trustedrouter.WithVideoAllowedProviders(ctx, capable)
+	}
 	if len(providers) == 0 {
 		writeOpenAIError(conn, 503, "no configured video provider supports this request", "server_error", "video_provider_unavailable", "")
 		return
@@ -209,7 +273,7 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 	reservationMicrodollars := maximumVideoQuote(quotes)
 	outputTokenLimit := maximumVideoTokenLimit(quotes)
 	auth, existing, err := s.control.AuthorizeVideo(
-		ctx,
+		authorizeCtx,
 		bearer,
 		resolved.Model.ID,
 		idempotencyKey,
@@ -227,12 +291,21 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		return
 	}
 	routes := authorizedVideoRoutes(auth, quotes)
-	if len(routes) == 0 {
+	if len(routes) == 0 && req.Seed == nil {
 		_ = s.control.Refund(ctx, auth, 503, "video_provider_unavailable", 0.001, nil)
 		writeOpenAIError(conn, 503, "no authorized video provider supports this request", "server_error", "video_provider_unavailable", "")
 		return
 	}
-	selected := routes[0]
+	// A rejected seeded authorization still needs a durable job at its billing
+	// authority. Main's submitting-job recovery refunds it across restarts.
+	routingUnavailable := len(routes) == 0
+	selected := authorizedVideoRoute{
+		Provider: auth.Provider, EndpointID: auth.EndpointID,
+		QuotedMicrodollars: auth.AdditionalCostReservationMicrodollars,
+	}
+	if !routingUnavailable {
+		selected = routes[0]
+	}
 	// Older control planes can authorize only fixed-price providers. Do not
 	// send the new job field unless a token-billed route was actually admitted.
 	outputTokenLimit = 0
@@ -261,6 +334,15 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 	}
 	if !stored.Created {
 		writeVideoJobResponse(conn, http.StatusAccepted, stored)
+		return
+	}
+	if routingUnavailable {
+		// Never make the row terminal before the hold is released. If either
+		// call fails, the worker retries using the pinned submitting row.
+		if err := s.control.Refund(ctx, auth, 503, "video_routing_unavailable", 0.001, nil); err == nil {
+			_, _ = s.control.UpdateVideoJob(ctx, stored, "failed", "", "FAILED", "", "routing_unavailable", 5)
+		}
+		writeGatewayAuthorizationError(conn, trustedrouter.VideoRoutingUnavailable())
 		return
 	}
 	selected, queued, err := s.queueVideoJob(ctx, resolved, routes)

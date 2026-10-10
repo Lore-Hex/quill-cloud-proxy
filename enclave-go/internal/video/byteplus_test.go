@@ -36,6 +36,9 @@ func TestBytePlusNativeLifecycleAndUsage(t *testing.T) {
 					if r.URL.Path != "/contents/generations/tasks" || body["model"] != native || body["duration"] != float64(4) {
 						t.Errorf("bad queue: %#v", body)
 					}
+					if body["seed"] != float64(1101) {
+						t.Errorf("seed not forwarded: %#v", body)
+					}
 					fmt.Fprint(w, `{"id":"cgt-test"}`)
 				case http.MethodGet:
 					fmt.Fprintf(w, `{"id":"cgt-test","model":%q,"status":"succeeded","usage":{"completion_tokens":38830},"content":{"video_url":"https://%s/test.mp4"}}`, native, bytePlusVideoCDN)
@@ -48,6 +51,8 @@ func TestBytePlusNativeLifecycleAndUsage(t *testing.T) {
 			defer server.Close()
 			client := NewBytePlusClientAt("test-only", server.URL, server.Client())
 			r := bytePlusRequest(t, public)
+			seed := int64(1101)
+			r.Seed = &seed
 			if quote, err := client.QuoteResolved(context.Background(), r); err != nil || quote != 0 {
 				t.Fatalf("quote %d %v", quote, err)
 			}

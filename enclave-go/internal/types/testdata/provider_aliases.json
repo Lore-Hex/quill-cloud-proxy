@@ -1,0 +1,61 @@
+{
+  "ai-studio": [
+    "google-ai-studio"
+  ],
+  "chat-gpt": [
+    "openai"
+  ],
+  "chatgpt": [
+    "openai"
+  ],
+  "gemini": [
+    "google-vertex",
+    "google-ai-studio"
+  ],
+  "google": [
+    "google-vertex",
+    "google-ai-studio"
+  ],
+  "google-ai": [
+    "google-ai-studio"
+  ],
+  "google-vertex-ai": [
+    "google-vertex"
+  ],
+  "kimi": [
+    "kimi"
+  ],
+  "mistral-ai": [
+    "mistral"
+  ],
+  "mistralai": [
+    "mistral"
+  ],
+  "moonshot": [
+    "kimi"
+  ],
+  "moonshot-ai": [
+    "kimi"
+  ],
+  "together-ai": [
+    "together"
+  ],
+  "togetherai": [
+    "together"
+  ],
+  "vertex": [
+    "google-vertex"
+  ],
+  "vertex-ai": [
+    "google-vertex"
+  ],
+  "z-ai": [
+    "zai"
+  ],
+  "zhipu": [
+    "zai"
+  ],
+  "zhipuai": [
+    "zai"
+  ]
+}

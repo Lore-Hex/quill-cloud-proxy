@@ -1372,6 +1372,9 @@ func (c *Client) postToControlPlaneWithBootAuth(
 		}
 
 		if path == "/internal/gateway/authorize" {
+			if allowed := videoAllowedProviders(ctx); allowed != nil {
+				req.Header.Set("X-Quill-Video-Allowed-Providers", strings.Join(allowed, ","))
+			}
 			requesttiming.FromContext(ctx).AuthorizeAttempt(req.URL.String())
 		}
 		resp, err := c.httpc.Do(req)

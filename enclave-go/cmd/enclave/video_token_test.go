@@ -16,54 +16,89 @@ import (
 )
 
 func TestBytePlusVideoSubmissionReservesTokensBeforePaidQueue(t *testing.T) {
-	events := []string{}
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		events = append(events, "queue")
-		if r.URL.Path != "/contents/generations/tasks" {
-			t.Fatal(r.URL.Path)
-		}
-		io.WriteString(w, `{"id":"cgt-test"}`)
-	}))
-	defer provider.Close()
-	var job map[string]any
-	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/authorize"):
-			events = append(events, "authorize")
-			if body["max_output_tokens"] != float64(80000) || body["additional_cost_reservation_microdollars"] != nil && body["additional_cost_reservation_microdollars"] != float64(0) {
-				t.Fatalf("invalid hold %#v", body)
+	for _, seeded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("seeded=%t", seeded), func(t *testing.T) {
+			events := []string{}
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				events = append(events, "queue")
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Error(err)
+				}
+				if seeded && payload["seed"] != float64(1101) {
+					t.Errorf("seed not forwarded: %#v", payload)
+				}
+				if !seeded && payload["seed"] != nil {
+					t.Errorf("unexpected seed: %#v", payload)
+				}
+				if r.URL.Path != "/contents/generations/tasks" {
+					t.Fatal(r.URL.Path)
+				}
+				io.WriteString(w, `{"id":"cgt-test"}`)
+			}))
+			defer provider.Close()
+			var job map[string]any
+			control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				json.NewDecoder(r.Body).Decode(&body)
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/authorize"):
+					events = append(events, "authorize")
+					policy, _ := body["provider"].(map[string]any)
+					if fmt.Sprint(policy["only"]) != "[venice byteplus]" || policy["allow_fallbacks"] != false {
+						t.Errorf("authorization changed caller policy: %#v", policy)
+					}
+					wantConstraint := ""
+					if seeded {
+						wantConstraint = "byteplus"
+					}
+					if got := r.Header.Get("X-Quill-Video-Allowed-Providers"); got != wantConstraint {
+						t.Errorf("authorization constraint = %q, want %q", got, wantConstraint)
+					}
+					if body["max_output_tokens"] != float64(80000) || body["additional_cost_reservation_microdollars"] != nil && body["additional_cost_reservation_microdollars"] != float64(0) {
+						t.Fatalf("invalid hold %#v", body)
+					}
+					if strings.Contains(fmt.Sprint(body), "private prompt") {
+						t.Fatal("prompt leaked to billing")
+					}
+					io.WriteString(w, `{"data":{"authorization_id":"auth-native","workspace_id":"ws","api_key_hash":"hash","model":"bytedance/seedance-2.5","endpoint_id":"bytedance/seedance-2.5@byteplus/prepaid","provider":"byteplus","usage_type":"Credits","video_token_billing":true,"estimated_cost_microdollars":856000}}`)
+				case strings.HasSuffix(r.URL.Path, "/prepare"):
+					events = append(events, "prepare")
+					if body["quoted_microdollars"] != float64(0) || body["output_token_limit"] != float64(80000) {
+						t.Fatalf("invalid job %#v", body)
+					}
+					job = body
+					job["id"], job["created"], job["status"] = "job-native", true, "submitting"
+					json.NewEncoder(w).Encode(map[string]any{"data": job})
+				case strings.HasSuffix(r.URL.Path, "/queued"):
+					events = append(events, "queued")
+					if body["provider"] != "byteplus" || body["provider_model"] != "dreamina-seedance-2-5-260628" || body["quoted_microdollars"] != float64(0) {
+						t.Fatalf("non-native route %#v", body)
+					}
+					job["status"] = "pending"
+					json.NewEncoder(w).Encode(map[string]any{"data": job})
+				default:
+					t.Fatalf("unexpected request %s", r.URL.Path)
+				}
+			}))
+			defer control.Close()
+			s := &videoService{providers: video.NewRegistryWithProviders(video.NewBytePlusClientAt("test", provider.URL, provider.Client())), control: trustedrouter.New(control.URL, "test", control.Client())}
+			if seeded {
+				s.providers = video.NewRegistryWithProviders(
+					video.NewBytePlusClientAt("test", provider.URL, provider.Client()),
+					video.NewVeniceClientAt("test", provider.URL, provider.Client()),
+				)
 			}
-			if strings.Contains(fmt.Sprint(body), "private prompt") {
-				t.Fatal("prompt leaked to billing")
+			var out bytes.Buffer
+			request := `{"model":"bytedance/seedance-2.5","prompt":"private prompt","duration":4,"resolution":"480p","provider":{"only":["venice","byteplus"],"allow_fallbacks":false}}`
+			if seeded {
+				request = strings.TrimSuffix(request, "}") + `,"seed":1101}`
 			}
-			io.WriteString(w, `{"data":{"authorization_id":"auth-native","workspace_id":"ws","api_key_hash":"hash","model":"bytedance/seedance-2.5","endpoint_id":"bytedance/seedance-2.5@byteplus/prepaid","provider":"byteplus","usage_type":"Credits","video_token_billing":true,"estimated_cost_microdollars":856000}}`)
-		case strings.HasSuffix(r.URL.Path, "/prepare"):
-			events = append(events, "prepare")
-			if body["quoted_microdollars"] != float64(0) || body["output_token_limit"] != float64(80000) {
-				t.Fatalf("invalid job %#v", body)
+			s.serveCreate(context.Background(), &out, []byte(request), "test", "idem")
+			if !strings.Contains(out.String(), "202") || strings.Join(events, ",") != "authorize,prepare,queue,queued" {
+				t.Fatalf("events=%v response=%s", events, out.String())
 			}
-			job = body
-			job["id"], job["created"], job["status"] = "job-native", true, "submitting"
-			json.NewEncoder(w).Encode(map[string]any{"data": job})
-		case strings.HasSuffix(r.URL.Path, "/queued"):
-			events = append(events, "queued")
-			if body["provider"] != "byteplus" || body["provider_model"] != "dreamina-seedance-2-5-260628" || body["quoted_microdollars"] != float64(0) {
-				t.Fatalf("non-native route %#v", body)
-			}
-			job["status"] = "pending"
-			json.NewEncoder(w).Encode(map[string]any{"data": job})
-		default:
-			t.Fatalf("unexpected request %s", r.URL.Path)
-		}
-	}))
-	defer control.Close()
-	s := &videoService{providers: video.NewRegistryWithProviders(video.NewBytePlusClientAt("test", provider.URL, provider.Client())), control: trustedrouter.New(control.URL, "test", control.Client())}
-	var out bytes.Buffer
-	s.serveCreate(context.Background(), &out, []byte(`{"model":"bytedance/seedance-2.5","prompt":"private prompt","duration":4,"resolution":"480p","provider":{"only":["byteplus"]}}`), "test", "idem")
-	if !strings.Contains(out.String(), "202") || strings.Join(events, ",") != "authorize,prepare,queue,queued" {
-		t.Fatalf("events=%v response=%s", events, out.String())
+		})
 	}
 }
 
