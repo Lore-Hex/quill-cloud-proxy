@@ -2342,7 +2342,7 @@ class TestControlPlaneBoundary(DeployHarness):
                 self.assertNotIn("observer-only service", result.stderr)
 
 
-class TestAzureFoundryStaysDarkUntilItsKeyExists(DeployHarness):
+class TestAzureFoundryRequiresSealedKey(DeployHarness):
     """bd5146a added the Azure Foundry provider to the enclave and gave GCP a
     probe (deploy-gcp-mig.sh: "Azure Foundry stays dark until its account key
     exists") but gave THIS script an unconditional default. So every Azure
@@ -2358,8 +2358,9 @@ class TestAzureFoundryStaysDarkUntilItsKeyExists(DeployHarness):
     Azure cannot copy GCP's probe. GCP reads Secret Manager per secret, so
     existence is one API call; Azure reads ONE sealed bundle whose names are
     inside AES-GCM ciphertext, and trquillkv holds no per-provider secrets to
-    ask about. So the name defaults to empty and the operator opts in after
-    sealing a bundle that contains the key.
+    ask about. The October 10 speech bundle contains this key, so the default
+    can name it, but only the manifest/version gate proves that it is present.
+    An explicit empty name must still keep the provider disabled.
     """
 
     def _azure_secret(self, **env) -> str:
@@ -2377,10 +2378,21 @@ class TestAzureFoundryStaysDarkUntilItsKeyExists(DeployHarness):
         # never mentions a secret this deploy cannot supply.
         return rendered.get("QUILL_AZURE_SECRET", "")
 
-    def test_the_provider_is_unnamed_by_default(self) -> None:
-        """The default must not name a secret whose presence in the bundle this
-        script has no way to check."""
-        self.assertEqual(self._azure_secret(), "")
+    def test_default_provider_has_a_sealed_key(self) -> None:
+        self.assertIn("trustedrouter-azure-api-key", AZURE_BUNDLE_MANIFEST.read_text().splitlines())
+        self.assertEqual(self._azure_secret(), "trustedrouter-azure-api-key")
+
+    def test_default_is_rejected_when_manifest_lacks_the_key(self) -> None:
+        manifest = self.state / "bundle-without-foundry.manifest"
+        manifest.write_text("\n".join(
+            row for row in AZURE_BUNDLE_MANIFEST.read_text().splitlines()
+            if row != "trustedrouter-azure-api-key"
+        ) + "\n")
+        result = self.run_script("--apply", "template", AZURE_BUNDLE_MANIFEST=str(manifest),
+                                 ALLOW_AZURE_BUNDLE_MANIFEST_OVERRIDE="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("trustedrouter-azure-api-key", result.stderr)
+        self.assertEqual(self.mutations(), [])
 
     def test_an_operator_can_opt_in_once_the_bundle_has_the_key(self) -> None:
         """Opting in must actually reach the measured env, or Foundry would

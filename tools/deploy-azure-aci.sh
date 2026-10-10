@@ -243,11 +243,10 @@ QUILL_ALIBABA_SECRET="${QUILL_ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
 #          ciphertext and trquillkv holds no per-provider secrets at all
 #          (it holds exactly tr-bootstrap-bundle)
 #
-# So there is nothing to ask. Default empty and let the operator opt in once
-# they have sealed a bundle that actually contains the key, which is the only
-# moment anyone can know. An empty name is how secrets.go spells "not
-# configured": the binding is skipped and render_env_json omits the variable, so
-# the measured env never names a secret this deploy cannot supply.
+# The October 10 speech bundle now includes this key. The checked-in manifest
+# and immutable version gate prove its presence before deployment. An explicit
+# empty name still disables it: the binding is skipped and render_env_json
+# omits the variable. Do not replace the unset-only default with `:-`.
 #
 # Nothing is silently lost by waiting: azure-seal-bundle.py is given --deploy-env
 # alongside --values, so if this IS set and the values file lacks the key, the
@@ -260,7 +259,7 @@ QUILL_ALIBABA_SECRET="${QUILL_ALIBABA_SECRET:-trustedrouter-alibaba-api-key}"
 # trquillkv proves nothing about the bundle, so the probe would report the
 # provider as configured while the enclave still cannot find it -- which is
 # exactly the crash this guard exists to prevent, wearing a green light.
-QUILL_AZURE_SECRET="${QUILL_AZURE_SECRET:-trustedrouter-azure-api-key}"
+QUILL_AZURE_SECRET="${QUILL_AZURE_SECRET-trustedrouter-azure-api-key}"
 QUILL_ATLAS_CLOUD_SECRET="${QUILL_ATLAS_CLOUD_SECRET:-trustedrouter-atlas-cloud-api-key}"
 QUILL_CHUTES_SECRET="${QUILL_CHUTES_SECRET:-trustedrouter-chutes-api-key}"
 QUILL_CLOUDFLARE_WORKERS_AI_SECRET="${QUILL_CLOUDFLARE_WORKERS_AI_SECRET:-trustedrouter-cloudflare-workers-ai-api-token}"
@@ -299,7 +298,7 @@ QUILL_WANDB_SECRET="${QUILL_WANDB_SECRET:-}"
 QUILL_NSCALE_SECRET="${QUILL_NSCALE_SECRET:-}"
 QUILL_REGOLO_SECRET="${QUILL_REGOLO_SECRET:-}"
 QUILL_LYCEUM_SECRET="${QUILL_LYCEUM_SECRET:-}"
-QUILL_ELEVENLABS_SECRET="${QUILL_ELEVENLABS_SECRET:-trustedrouter-elevenlabs-api-key}"
+QUILL_ELEVENLABS_SECRET="${QUILL_ELEVENLABS_SECRET-trustedrouter-elevenlabs-api-key}"
 # Opt in only after the cloud-local bundle has been sealed with this key.
 QUILL_GREENFERENCE_SECRET="${QUILL_GREENFERENCE_SECRET:-}"
 QUILL_SYSTEM1MODELS_GLOBAL_SECRET="${QUILL_SYSTEM1MODELS_GLOBAL_SECRET:-}"
