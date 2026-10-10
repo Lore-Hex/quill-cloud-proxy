@@ -1,7 +1,6 @@
 {
   "accepted_pcr0s": [
-    "0eeac707372b26a824ee05794b4ceed4976675f1ca8e4f0bb0b622abdd192a8766cf2a28097d8e2772162a820227e73a",
-    "daa67a81749906c5383a1abd124a967f42c86901d350b7f2e9e4d1f3c95abbe1f7a099391bbe86438ef2bc5bcc96d971"
+    "0eeac707372b26a824ee05794b4ceed4976675f1ca8e4f0bb0b622abdd192a8766cf2a28097d8e2772162a820227e73a"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -13,13 +12,13 @@
     "prompt_output_storage": false
   },
   "image_digest": "sha256:16f78c265448dda1e7f189f5898a4d964c719bd35d5806ebd6d07c496c7a1cf0",
-  "measurement_provenance": "Isolated eu-west-3 candidate i-029aa6e9258cc70c5 was independently verified through an SSM forward against the production Nitro root, exact PCR0, signed module identity, certificate/SPKI binding, TLS exporter and same-socket follow-up. A deliberately incorrect PCR0 was rejected. The candidate is outside ASG membership, serving target groups and routing DNS. The four outgoing serving instances remain on the retained old measurement until runtime and signed public pins accept this candidate. Both Fargate pin consumers are healthy and accept both measurements. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
+  "measurement_provenance": "All four serving Nitro instances in eu-west-1 and eu-west-3 were independently verified through per-instance SSM forwards against the production Nitro root, exact PCR0, signed module identity, certificate/SPKI binding, TLS exporter and same-socket follow-up. Both guarded regional refreshes completed successfully with healthy targets. Both Fargate runtime pin consumers were narrowed to this measurement and their actual serving tasks and targets verified healthy. The isolated regional candidates were not promoted to serving capacity. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-029aa6e9258cc70c5-enc01a1271a13d51f4d",
+  "observed_module_id": "i-0e22d789b6d44afba-enc01a1275beabd7b12",
   "parent_image_digest": "sha256:dbe3a0251666fb207f10a8fe2fee1442621fa2662277f40a4fdc497be9db0db9",
   "pcr0": "0eeac707372b26a824ee05794b4ceed4976675f1ca8e4f0bb0b622abdd192a8766cf2a28097d8e2772162a820227e73a",
   "platform": "aws-nitro-enclaves",
-  "release_state": "rolling",
+  "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
   "source_commit": "a24a4b6d349a922c539b8c22e75da467f5daf9eb",
   "source_commit_provenance": "operator-asserted",
