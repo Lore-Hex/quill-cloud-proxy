@@ -271,6 +271,8 @@ func main() {
 	imageProviderGateway = imagegen.NewRegistry(imageProviderKeys(boot), llm.NewProviderHTTPClient())
 	speechProviderGateway = speech.New(llm.NewProviderHTTPClient(), map[string]string{
 		"grok": boot.GrokAPIKey, "mistral": boot.MistralAPIKey,
+		"google-ai-studio": boot.GeminiAPIKey,
+		"azure":            boot.AzureAPIKey, "elevenlabs": boot.ProviderAPIKeys["elevenlabs"],
 	})
 	trGateway := trustedrouter.NewFromBootstrap(boot)
 	if configurationErr := trGateway.ProductionConfigurationError(); configurationErr != nil {

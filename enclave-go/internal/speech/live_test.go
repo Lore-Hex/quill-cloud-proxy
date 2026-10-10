@@ -14,7 +14,7 @@ func TestSpeechLive(t *testing.T) {
 	if os.Getenv("TR_SPEECH_LIVE_TEST") != "1" {
 		t.Skip("set TR_SPEECH_LIVE_TEST=1 with provider keys to run paid smoke")
 	}
-	client := New(http.DefaultClient, map[string]string{"grok": os.Getenv("GROK_API_KEY"), "mistral": os.Getenv("MISTRAL_API_KEY")})
+	client := New(http.DefaultClient, map[string]string{"grok": os.Getenv("GROK_API_KEY"), "mistral": os.Getenv("MISTRAL_API_KEY"), "google-ai-studio": os.Getenv("GEMINI_API_KEY"), "azure": os.Getenv("AZURE_FOUNDRY_API_KEY"), "elevenlabs": os.Getenv("ELEVEN_LABS_API_KEY")})
 	for id, spec := range Models {
 		for _, format := range spec.Formats {
 			t.Run(id+"/"+format, func(t *testing.T) {

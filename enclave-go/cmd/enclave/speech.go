@@ -45,6 +45,10 @@ func serveSpeech(ctx context.Context, conn io.Writer, raw []byte, gateway *trust
 		return
 	}
 	maxTokens := 1
+	spec := speech.Models[req.Model]
+	if spec.TokenBilled() {
+		maxTokens = speech.GeminiOutputLimit
+	}
 	meta := &types.OpenAIChatRequest{
 		Model: req.Model, Provider: req.Provider, MaxTokens: &maxTokens,
 		User: req.User, SessionID: req.SessionID, Metadata: req.Metadata, Tags: req.Tags,
@@ -78,7 +82,6 @@ func serveSpeech(ctx context.Context, conn io.Writer, raw []byte, gateway *trust
 		defer cancel()
 		_ = gateway.Refund(refundCtx, authorization, status, reason, time.Since(started).Seconds(), nil)
 	}
-	spec := speech.Models[req.Model]
 	if authorization.Model != req.Model || authorization.Provider != spec.Provider || authorization.UsageType != "Credits" || authorization.UpstreamModel != spec.Upstream {
 		refund(502, "speech_catalog_mismatch")
 		writeError(conn, 502, "speech route configuration mismatch")
@@ -106,6 +109,7 @@ func serveSpeech(ctx context.Context, conn io.Writer, raw []byte, gateway *trust
 		return
 	}
 	usage := trustedrouter.Usage{
+		InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
 		RequestID: newRequestID(), ElapsedSeconds: maxDurationSeconds(time.Since(started), 0.001),
 		RouteType: "audio.speech", FinishReason: "stop",
 		AdditionalCostMicrodollars: authorization.AdditionalCostReservationMicrodollars,

@@ -117,6 +117,7 @@ WANDB_SECRET="${WANDB_SECRET:-trustedrouter-wandb-api-key}"
 NSCALE_SECRET="${NSCALE_SECRET:-trustedrouter-nscale-api-key}"
 REGOLO_SECRET="${REGOLO_SECRET:-trustedrouter-regolo-api-key}"
 LYCEUM_SECRET="${LYCEUM_SECRET:-trustedrouter-lyceum-api-key}"
+ELEVENLABS_SECRET="${ELEVENLABS_SECRET:-trustedrouter-elevenlabs-api-key}"
 GREENFERENCE_SECRET="${GREENFERENCE_SECRET:-trustedrouter-greenference-api-key}"
 SYSTEM1MODELS_GLOBAL_SECRET="${SYSTEM1MODELS_GLOBAL_SECRET:-trustedrouter-system1models-global-api-key}"
 SYSTEM1MODELS_EU_SECRET="${SYSTEM1MODELS_EU_SECRET:-trustedrouter-system1models-eu-api-key}"
@@ -289,6 +290,7 @@ for secret in \
   "$NSCALE_SECRET" \
   "$REGOLO_SECRET" \
   "$LYCEUM_SECRET" \
+  "$ELEVENLABS_SECRET" \
   "$GREENFERENCE_SECRET" \
   "$SYSTEM1MODELS_GLOBAL_SECRET" \
   "$SYSTEM1MODELS_EU_SECRET" \
