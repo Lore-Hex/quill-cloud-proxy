@@ -36,15 +36,26 @@ const GeminiOutputLimit = 16384
 
 var geminiVoices = strings.Fields("Zephyr Puck Charon Kore Fenrir Leda Orus Aoede Callirrhoe Autonoe Enceladus Iapetus Umbriel Algieba Despina Erinome Algenib Rasalgethi Laomedeia Achernar Alnilam Schedar Gacrux Pulcherrima Achird Zubenelgenubi Vindemiatrix Sadachbia Sadaltager Sulafat")
 
+var elevenLabsVoices = []string{
+	"JBFqnCBsd6RMkjVDRZzb", // George
+	"EXAVITQu4vr4xnSDxMaL", // Sarah
+	"Xb7hH8MSUJpSbSDYk0k2", // Alice
+	"XrExE9yKIg1WjnnlVkGX", // Matilda
+	"hpp4J3VqNfWAUOO0d1Us", // Bella
+	"cgSgspJ2msm6clMCkdW9", // Jessica
+	"FGY2WhTYpPnrIDTdsKH5", // Laura
+	"pFZP5JQG7iQjIQuC4Bku", // Lily
+}
+
 var Models = map[string]Spec{
 	"x-ai/grok-voice-tts-1.0":           {"grok", "grok-voice-tts-1.0", []string{"eve", "ara", "rex", "sal", "leo"}, []string{"mp3", "pcm"}, 60000, 0.7, 1.5},
 	"mistralai/voxtral-mini-tts-2603":   {"mistral", "voxtral-mini-tts-2603", []string{"en_paul_neutral"}, []string{"mp3"}, 10000, 1, 1},
 	"google/gemini-3.8-flash-tts":       {"google-ai-studio", "gemini-3.8-flash-tts", geminiVoices, []string{"pcm", "wav"}, 8192, 1, 1},
 	"google/gemini-3.8-flash-lite-tts":  {"google-ai-studio", "gemini-3.8-flash-lite-tts", geminiVoices, []string{"pcm", "wav"}, 8192, 1, 1},
-	"elevenlabs/eleven-v3":              {"elevenlabs", "eleven_v3", []string{"JBFqnCBsd6RMkjVDRZzb"}, []string{"pcm", "mp3"}, 5000, 1, 1},
-	"elevenlabs/eleven-multilingual-v2": {"elevenlabs", "eleven_multilingual_v2", []string{"JBFqnCBsd6RMkjVDRZzb"}, []string{"pcm", "mp3"}, 10000, 1, 1},
-	"elevenlabs/eleven-flash-v2.5":      {"elevenlabs", "eleven_flash_v2_5", []string{"JBFqnCBsd6RMkjVDRZzb"}, []string{"pcm", "mp3"}, 40000, 1, 1},
-	"elevenlabs/eleven-turbo-v2.5":      {"elevenlabs", "eleven_turbo_v2_5", []string{"JBFqnCBsd6RMkjVDRZzb"}, []string{"pcm", "mp3"}, 40000, 1, 1},
+	"elevenlabs/eleven-v3":              {"elevenlabs", "eleven_v3", elevenLabsVoices, []string{"pcm", "mp3"}, 5000, 1, 1},
+	"elevenlabs/eleven-multilingual-v2": {"elevenlabs", "eleven_multilingual_v2", elevenLabsVoices, []string{"pcm", "mp3"}, 10000, 1, 1},
+	"elevenlabs/eleven-flash-v2.5":      {"elevenlabs", "eleven_flash_v2_5", elevenLabsVoices, []string{"pcm", "mp3"}, 40000, 1, 1},
+	"elevenlabs/eleven-turbo-v2.5":      {"elevenlabs", "eleven_turbo_v2_5", elevenLabsVoices, []string{"pcm", "mp3"}, 40000, 1, 1},
 	"microsoft/mai-voice-2.1":           {"azure", "MAI-Voice-2.1", []string{"en-US-Harper", "en-US-Grant"}, []string{"pcm", "mp3"}, 5000, 1, 1},
 	"microsoft/mai-voice-2.1-flash":     {"azure", "MAI-Voice-2.1-Flash", []string{"en-US-Harper", "en-US-Grant"}, []string{"pcm", "mp3"}, 5000, 1, 1},
 }
