@@ -171,4 +171,13 @@ func TestGeminiSpeechRejectsUnbillableOrMalformedResponses(t *testing.T) {
 			t.Fatalf("accepted malformed WAV at %d", offset)
 		}
 	}
+	for _, offset := range []int{16, 40} {
+		for _, size := range []uint32{MaxAudioBytes + 1, 1 << 31, ^uint32(0)} {
+			bad := append([]byte(nil), b...)
+			binary.LittleEndian.PutUint32(bad[offset:offset+4], size)
+			if validWAV(bad) {
+				t.Fatalf("accepted oversized WAV chunk at %d: %d", offset, size)
+			}
+		}
+	}
 }
