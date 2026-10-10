@@ -8301,6 +8301,9 @@ func TestServeOneMessagesRejectsOrchestrationBeforeTrustedRouterAuthorization(t 
 		trustedRouterSubagentModel,
 		trustedRouterSocratesModel,
 	}
+	for _, model := range append([]string(nil), models...) {
+		models = append(models, strings.Replace(model, "trustedrouter/", "nyte/", 1))
+	}
 	for _, model := range models {
 		t.Run(model, func(t *testing.T) {
 			validated := make(chan struct{}, 1)
