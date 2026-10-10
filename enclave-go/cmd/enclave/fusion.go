@@ -2122,11 +2122,12 @@ func runAuthorizedFusionCallAttempt(
 		inputTokens, outputTokens = result.Usage.InputTokens, result.Usage.OutputTokens
 		usageEstimated = true
 	} else {
-		inputTokens, outputTokens, usageEstimated = realOrEstimatedTokens(
+		inputTokens, outputTokens, usageEstimated = tokensForSettlement(
 			result,
 			trustedrouter.EstimateInputTokens(req),
 			trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
 			selectedRoute.Model(req.Model, authz),
+			req, authz, selectedRoute.Endpoint("", authz),
 		)
 	}
 	selectedModel := selectedRoute.Model(req.Model, authz)
@@ -2473,11 +2474,12 @@ func serveFusionFinalStreamingAttempt(
 		}
 		return true, err
 	}
-	inputTokens, outputTokens, usageEstimated := realOrEstimatedTokens(
+	inputTokens, outputTokens, usageEstimated := tokensForSettlement(
 		result,
 		trustedrouter.EstimateInputTokens(req),
 		trustedrouter.EstimateOutputTokens(adapter.ResponsesOutputForUsage(result)),
 		selectedRoute.Model(req.Model, authorization),
+		req, authorization, selectedRoute.Endpoint("", authorization),
 	)
 	usage := trustedrouter.Usage{
 		RequestID:         responseID,

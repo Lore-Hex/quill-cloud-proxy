@@ -19,6 +19,7 @@ func annotateSettledResponseMetadata(
 	invokeOptions []llm.InvokeOptions,
 	result adapter.StreamResult,
 	includeOpenRouterMetadata bool,
+	billedUsage ...trustedrouter.Usage,
 ) ([]byte, error) {
 	if len(body) == 0 {
 		return body, nil
@@ -31,6 +32,9 @@ func annotateSettledResponseMetadata(
 	if usage == nil {
 		usage = map[string]any{}
 		payload["usage"] = usage
+	}
+	if len(billedUsage) > 0 {
+		annotateEstimatedTokenUsage(usage, billedUsage[0])
 	}
 
 	selectedModel := ""
@@ -107,6 +111,9 @@ func annotateSettledResponseMetadata(
 		routeUsage["output_tokens"] = outputTokens
 	}
 	if settlement != nil {
+		if settlement.TrustedRouterSettlement != nil {
+			payload["trusted_router_settlement"] = settlement.TrustedRouterSettlement
+		}
 		annotateUsageCost(usage, settlement)
 		annotateUsageCost(routeUsage, settlement)
 		if settlement.GenerationID != "" {
@@ -145,6 +152,7 @@ func annotateSettlementOnlyUsage(
 	body []byte,
 	settlement *trustedrouter.SettleResult,
 	authorization *trustedrouter.Authorization,
+	billedUsage ...trustedrouter.Usage,
 ) ([]byte, error) {
 	if settlement == nil || len(body) == 0 {
 		return body, nil
@@ -159,6 +167,9 @@ func annotateSettlementOnlyUsage(
 		payload["usage"] = usage
 	}
 	annotateUsageCost(usage, settlement)
+	if len(billedUsage) > 0 {
+		annotateEstimatedTokenUsage(usage, billedUsage[0])
+	}
 	providerUsage, _ := usage["provider_usage"].(map[string]any)
 	if providerUsage == nil {
 		providerUsage = map[string]any{}

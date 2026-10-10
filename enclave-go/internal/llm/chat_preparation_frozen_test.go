@@ -100,6 +100,7 @@ func frozenBuildOpenAICompatibleRequest(
 	if isAzureKimiDeployment(provider, upstreamID) {
 		reqBody.Thinking = nil
 	}
+	applyGeminiParameterContract(provider, upstreamID, &reqBody)
 	if effort := googleAIStudioDefaultReasoningEffort(provider, upstreamID, req, body); effort != "" {
 		reqBody.ReasoningEffort = effort
 	}

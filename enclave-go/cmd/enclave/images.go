@@ -306,6 +306,7 @@ func serveImages(
 		"prompt_tokens": inputTokens, "completion_tokens": providerOutputTokens,
 		"total_tokens": inputTokens + providerOutputTokens, "cost": settlement.Cost,
 	}
+	annotateUsageCost(responseUsage, settlement)
 	if resolved.request.Stream {
 		if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {
 			return
@@ -425,6 +426,7 @@ func serveNativeImageAuthorized(
 		"total_tokens":      result.Usage.TotalTokens,
 		"cost":              settlement.Cost,
 	}
+	annotateUsageCost(responseUsage, settlement)
 	responseUsage["prompt_tokens_details"] = map[string]any{"cached_tokens": result.Usage.CachedInputTokens}
 	if nativeRequest.Request.Stream {
 		if err := writeResponseHead(conn, 200, "text/event-stream"); err != nil {

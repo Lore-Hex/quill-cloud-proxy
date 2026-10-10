@@ -161,6 +161,7 @@ SECRETS=(
   trustedrouter-sail-research-api-key
   trustedrouter-mancer-api-key
   trustedrouter-abliterate-api-key
+  trustedrouter-meta-api-key
   trustedrouter-io-net-api-key
   trustedrouter-scaleway-api-key
   trustedrouter-featherless-api-key
@@ -171,6 +172,7 @@ SECRETS=(
   trustedrouter-nscale-api-key
   trustedrouter-regolo-api-key
   trustedrouter-lyceum-api-key
+  trustedrouter-greenference-api-key
   trustedrouter-system1models-global-api-key
   trustedrouter-system1models-eu-api-key
   trustedrouter-privatemode-api-key

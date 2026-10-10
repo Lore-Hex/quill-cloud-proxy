@@ -181,7 +181,7 @@ func TestReceiptAttestationHistoryRetainsNewestFirstAndCapsMemory(t *testing.T) 
 	initial := bytes.Repeat([]byte{0}, documentSize)
 	receiptAttestationCache.Store(newCachedReceiptAttestation(initial, attestation.Kind))
 	remint := 0
-	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_ context.Context, _, _, _, _, _ []byte) ([]byte, error) {
 		remint++
 		document := bytes.Repeat([]byte{byte(remint)}, documentSize)
 		return document, nil
@@ -232,7 +232,7 @@ func TestReceiptAttestationRouteServesCurrentAndHistoryBySHA256(t *testing.T) {
 	oldGetAttestation := getAttestation
 	defer func() { getAttestation = oldGetAttestation }()
 	next := 1
-	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_ context.Context, _, _, _, _, _ []byte) ([]byte, error) {
 		document := documents[next]
 		next++
 		return document, nil
@@ -297,7 +297,7 @@ func TestReceiptKeyRouteIncludesNewestHistoricalAttestationsUpToTheCap(t *testin
 	oldGetAttestation := getAttestation
 	defer func() { getAttestation = oldGetAttestation }()
 	next := 1
-	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_ context.Context, _, _, _, _, _ []byte) ([]byte, error) {
 		document := []byte(fmt.Sprintf("attestation-%d", next))
 		next++
 		return document, nil
@@ -365,7 +365,7 @@ func TestReceiptsOffReturns404AndKeepsLiveAttestationLegacyShaped(t *testing.T) 
 	t.Setenv("QUILL_RECEIPTS", "off")
 	oldGetAttestation := getAttestation
 	defer func() { getAttestation = oldGetAttestation }()
-	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_ context.Context, _, _, _, _, _ []byte) ([]byte, error) {
 		t.Fatal("disabled receipt initialization must not mint an attestation")
 		return nil, nil
 	}
@@ -385,7 +385,7 @@ func TestReceiptsOffReturns404AndKeepsLiveAttestationLegacyShaped(t *testing.T) 
 		}
 	}
 
-	getAttestation = func(_, _, _, channelBinding, receiptKeyFP []byte) ([]byte, error) {
+	getAttestation = func(_ context.Context, _, _, _, channelBinding, receiptKeyFP []byte) ([]byte, error) {
 		if receiptKeyFP != nil {
 			t.Fatalf("live /attestation receiptKeyFP = %x, want nil", receiptKeyFP)
 		}
@@ -410,7 +410,7 @@ func TestSpendLeaseBootKeyDoesNotReenablePublicReceipts(t *testing.T) {
 	t.Setenv("QUILL_RECEIPTS", "off")
 	oldGetAttestation := getAttestation
 	defer func() { getAttestation = oldGetAttestation }()
-	getAttestation = func(_, _, _, _, receiptKeyFP []byte) ([]byte, error) {
+	getAttestation = func(_ context.Context, _, _, _, _, receiptKeyFP []byte) ([]byte, error) {
 		if len(receiptKeyFP) != sha256.Size {
 			t.Fatalf("receipt key fingerprint length = %d", len(receiptKeyFP))
 		}
@@ -457,7 +457,7 @@ func TestReceiptAttestationReminterSwapsAtomicPointer(t *testing.T) {
 	initial := newCachedReceiptAttestation([]byte("old"), attestation.Kind)
 	receiptAttestationCache.Store(initial)
 	var calls atomic.Int32
-	getAttestation = func(_, _, nonce, channelBinding, receiptKeyFP []byte) ([]byte, error) {
+	getAttestation = func(_ context.Context, _, _, nonce, channelBinding, receiptKeyFP []byte) ([]byte, error) {
 		if nonce != nil || channelBinding != nil {
 			t.Fatalf("key-binding remint included nonce=%x exporter=%x", nonce, channelBinding)
 		}
@@ -496,7 +496,7 @@ func TestReceiptAttestationMintFailureKeepsLastGood(t *testing.T) {
 	defer func() { getAttestation = oldGetAttestation }()
 	lastGood := newCachedReceiptAttestation([]byte("last-good"), attestation.Kind)
 	receiptAttestationCache.Store(lastGood)
-	getAttestation = func(_, _, _, _, _ []byte) ([]byte, error) {
+	getAttestation = func(_ context.Context, _, _, _, _, _ []byte) ([]byte, error) {
 		return nil, errors.New("issuer unavailable")
 	}
 	if err := remintReceiptAttestation(nil, []byte("devices"), bytes.Repeat([]byte{1}, 32)); err == nil {
@@ -518,7 +518,7 @@ func TestSpendLeaseIssuerConfigIsBoundIntoBootReceiptAttestation(t *testing.T) {
 	if !bytes.Equal(nonce, want[:]) {
 		t.Fatalf("config nonce = %x, want %x", nonce, want)
 	}
-	getAttestation = func(_, _, gotNonce, channelBinding, receiptKeyFP []byte) ([]byte, error) {
+	getAttestation = func(_ context.Context, _, _, gotNonce, channelBinding, receiptKeyFP []byte) ([]byte, error) {
 		if !bytes.Equal(gotNonce, want[:]) {
 			t.Fatalf("attestation nonce = %x, want issuer config commitment %x", gotNonce, want)
 		}

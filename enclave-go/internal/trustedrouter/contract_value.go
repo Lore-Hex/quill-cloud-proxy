@@ -3,7 +3,9 @@ package trustedrouter
 import (
 	"encoding/json"
 	"math"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -33,6 +35,22 @@ var contractValueEnums = map[string]string{
 	"provider.billing":         "byok prepaid credits",
 	"response_format.type":     "text json_object json_schema",
 	"text.format.type":         "text json_object json_schema",
+	"tools[].type": `function custom namespace tool_search web_search web_search_preview
+		file_search code_interpreter computer computer_use_preview image_generation mcp
+		local_shell shell apply_patch openrouter:web_search openrouter:datetime
+		openrouter:web_fetch openrouter:image_generation openrouter:apply_patch
+		trustedrouter:advisor trustedrouter:synth`,
+}
+
+var contractToolTypePath = regexp.MustCompile(`^tools\[[0-9]{1,6}\]\.type$`)
+
+// These are diagnostic option names, not an API capability allowlist. Never
+// treat arbitrary strings or nested payloads as safe just because they fit.
+var contractValueArrayEnums = map[string]string{
+	"include": `code_interpreter_call.outputs computer_call_output.output.image_url
+		file_search_call.results message.input_image.image_url message.output_text.logprobs
+		reasoning.encrypted_content web_search_call.action.sources web_search_call.results`,
+	"modalities": "text audio image video",
 }
 
 // ContractParameterValue extracts only the rejected option, not the surrounding
@@ -54,14 +72,23 @@ func ContractParameterValue(body []byte, parameter string) (string, bool) {
 		raw = exact
 	} else {
 		for _, part := range strings.Split(path, ".") {
+			field, indexText, indexed := strings.Cut(part, "[")
 			var fields map[string]json.RawMessage
 			if json.Unmarshal(raw, &fields) != nil {
 				return "", false
 			}
 			var ok bool
-			raw, ok = fields[part]
+			raw, ok = fields[field]
 			if !ok {
 				return "", false
+			}
+			if indexed {
+				index, err := strconv.Atoi(strings.TrimSuffix(indexText, "]"))
+				var items []json.RawMessage
+				if err != nil || index < 0 || json.Unmarshal(raw, &items) != nil || index >= len(items) {
+					return "", false
+				}
+				raw = items[index]
 			}
 		}
 	}
@@ -86,12 +113,18 @@ func SanitizeContractParameterValue(parameter, preview string) (string, bool) {
 }
 
 func contractValuePolicy(path string) (bool, []string) {
+	if contractToolTypePath.MatchString(path) {
+		path = "tools[].type"
+	}
 	for _, option := range contractValueOptions {
 		if option == path {
 			return true, strings.Fields("true false yes no on off enabled disabled auto none")
 		}
 	}
 	if values, ok := contractValueEnums[path]; ok {
+		return true, strings.Fields(values)
+	}
+	if values, ok := contractValueArrayEnums[path]; ok {
 		return true, strings.Fields(values)
 	}
 	return false, nil
@@ -161,8 +194,22 @@ func safeContractValue(path string, value any) any {
 			out["_redacted"] = true
 		}
 		return out
+	case []any:
+		if _, ok := contractValueArrayEnums[path]; !ok {
+			return "[redacted:array]"
+		}
+		// Even the smallest JSON elements cannot fit 101 entries in 100 bytes.
+		// Bound sanitizer work; the budget pass will mark this prefix truncated.
+		out := make([]any, 0, min(len(value), 101))
+		for _, item := range value[:min(len(value), 101)] {
+			if _, nested := item.([]any); nested {
+				out = append(out, "[redacted:array]")
+			} else {
+				out = append(out, safeContractValue(path, item))
+			}
+		}
+		return out
 	default:
-		// Arrays are not scalar settings. Do not copy arbitrary nested payloads.
 		return "[redacted:array]"
 	}
 }
@@ -176,6 +223,11 @@ func boundedContractValue(value any) (string, bool) {
 		}
 		if len(encoded) <= 100 {
 			return string(encoded), truncated
+		}
+		if array, ok := value.([]any); ok && len(array) > 0 {
+			value = array[:len(array)-1]
+			truncated = true
+			continue
 		}
 		object, ok := value.(map[string]any)
 		if !ok || len(object) == 0 {

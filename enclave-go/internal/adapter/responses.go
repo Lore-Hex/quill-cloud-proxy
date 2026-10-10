@@ -1217,6 +1217,9 @@ func TransformResponsesStreamControlled(
 			response["output"] = compactItems
 			response["incomplete_details"] = map[string]any{"reason": map[bool]string{true: "max_output_tokens", false: "server_error"}[termination.TRFinishReason == "cap_reached"]}
 			response["tr_finish_reason"] = termination.TRFinishReason
+			if err := writeSettlementMetadata(w, control, result, true); err != nil {
+				return err
+			}
 			if err := writeResponseEventSeq(w, &seq, "response.incomplete", map[string]any{"type": "response.incomplete", "response": response}); err != nil {
 				return err
 			}
@@ -1608,6 +1611,10 @@ func finishResponsesStream(
 		usageFields, _ = response["usage"].(map[string]any)
 	}
 	emit := func() error {
+		if err := writeSettlementMetadata(w, control, result, true); err != nil {
+			return err
+		}
+
 		if err := writeResponseEventSeq(w, seq, terminalEvent.name, terminalEvent.body); err != nil {
 			return err
 		}
@@ -2137,9 +2144,12 @@ func ChatToolsFromResponsesTools(tools []any) ([]any, error) {
 		return nil, nil
 	}
 	out := make([]any, 0, len(tools))
-	for _, tool := range tools {
+	for index, tool := range tools {
 		normalized, err := chatToolFromResponsesTool(tool)
 		if err != nil {
+			if adapterErr, ok := err.(*AdapterError); ok && adapterErr.Context == "tools.type" {
+				adapterErr.Context = fmt.Sprintf("tools[%d].type", index)
+			}
 			return nil, err
 		}
 		out = append(out, normalized)
@@ -2364,7 +2374,7 @@ func chatToolFromResponsesTool(tool any) (map[string]any, error) {
 		return trustedRouterWebSearchFunctionTool(m), nil
 	case "function":
 	default:
-		return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools"}
+		return nil, &AdapterError{Status: 501, Message: "not_supported_in_alpha", Context: "tools.type"}
 	}
 	if fn, ok := m["function"].(map[string]any); ok {
 		return normalizeChatFunctionTool(fn)

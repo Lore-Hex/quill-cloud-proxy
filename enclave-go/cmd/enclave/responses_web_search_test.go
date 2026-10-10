@@ -532,6 +532,21 @@ func TestServeOneResponsesWebSearchEndToEnd(t *testing.T) {
 }
 
 func TestServeOneChatWebSearchEndToEnd(t *testing.T) {
+	for _, tool := range []struct{ name, definition string }{
+		{"openrouter", `{"type":"openrouter:web_search","parameters":{"engine":"exa","max_results":3,"max_uses":1}}`},
+		{"web_search", `{"type":"web_search","filters":{"allowed_domains":["example.com"]}}`},
+		{"web_search_preview", `{"type":"web_search_preview"}`},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tool.name, stream), func(t *testing.T) {
+				testServeOneChatWebSearch(t, tool.definition, stream)
+			})
+		}
+	}
+}
+
+func testServeOneChatWebSearch(t *testing.T, tool string, stream bool) {
+	t.Helper()
 	previousSearcher := enclaveWebSearchClient
 	enclaveWebSearchClient = &fakeResponsesWebSearcher{results: []websearch.Result{{
 		CostMicrodollars: 7,
@@ -547,11 +562,12 @@ func TestServeOneChatWebSearchEndToEnd(t *testing.T) {
 	defer client.Close()
 	go serveOne(context.Background(), server, auth.New(nil), webSearchScriptedLLM{}, nil, nil, trGateway, nil)
 
-	requestBody := []byte(`{
+	requestBody := []byte(fmt.Sprintf(`{
 		"model":"test/model",
 		"messages":[{"role":"user","content":"What changed?"}],
-		"tools":[{"type":"openrouter:web_search","parameters":{"engine":"exa","max_results":3,"max_uses":1}}]
-	}`)
+		"tools":[%s], "max_tool_calls":1, "stream":%t,
+		"stream_options":{"include_usage":true}
+	}`, tool, stream))
 	if _, err := fmt.Fprintf(
 		client,
 		"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer test-key\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
@@ -577,10 +593,28 @@ func TestServeOneChatWebSearchEndToEnd(t *testing.T) {
 		}
 	}
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if stream {
+		if strings.Count(string(body), "data: [DONE]") != 1 {
+			t.Fatalf("stream must complete exactly once: %s", body)
+		}
+		for _, line := range strings.Split(string(body), "\n") {
+			if data, ok := strings.CutPrefix(line, "data: "); ok && data != "[DONE]" {
+				var chunk map[string]any
+				if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+					t.Fatal(err)
+				}
+				if chunk["usage"] != nil {
+					payload = chunk
+				}
+			}
+		}
+	} else if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	usage := payload["usage"].(map[string]any)
+	usage, ok := payload["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing usage: %s", body)
+	}
 	providerUsage := usage["provider_usage"].(map[string]any)
 	if usage["total_cost_microdollars"] != float64(9) || providerUsage["web_search_cost_microdollars"] != float64(7) {
 		t.Fatalf("usage = %#v", usage)

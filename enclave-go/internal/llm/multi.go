@@ -35,7 +35,6 @@ func New(boot *qtypes.BootstrapData) Client {
 		anthropic: newAnthropic(boot),
 		vertex:    newVertex(boot),
 		openai:    newOpenAICompatible("openai", boot.OpenAIAPIKey),
-		meta:      newOpenAICompatible("meta", boot.OpenRouterAPIKey),
 		openRouterExclusive: newOpenAICompatible(
 			"openrouter-exclusive",
 			boot.OpenRouterAPIKey,
@@ -111,7 +110,6 @@ type multiClient struct {
 	anthropic           *anthropicClient
 	vertex              *gcpClient
 	openai              *openAICompatibleClient
-	meta                *openAICompatibleClient
 	openRouterExclusive *openAICompatibleClient
 	googleVertex        *vertexGeminiClient
 	googleAIStudio      *openAICompatibleClient
@@ -207,8 +205,6 @@ func (m *multiClient) InvokeStreaming(
 		return m.vertex.InvokeStreaming(ctx, req, body, out, options...)
 	case "openai":
 		return m.openai.InvokeStreaming(ctx, req, body, out, options...)
-	case "meta":
-		return m.meta.InvokeStreaming(ctx, req, body, out, options...)
 	case "openrouter", "openrouter-exclusive":
 		// The public catalog uses openrouter; older authorizations used the
 		// exclusive slug. Both share the same explicitly restricted adapter.

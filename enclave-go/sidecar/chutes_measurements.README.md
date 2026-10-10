@@ -1,15 +1,49 @@
 # Chutes TEE measurement snapshot
 
 `chutes_measurements.json` contains the release-pinned snapshot fetched from
-`https://api.chutes.ai/servers/tee/measurements` on 2026-08-15, plus the two
+`https://api.chutes.ai/servers/tee/measurements` on 2026-08-15, plus the eight
 live-verified 1.4.1 profiles described below.
 
-SHA-256: `334cc957961640451042c89c36b242ce8335e454d16bbd126e54ee3a5b27a0e3`
+SHA-256: `56b56d62fb942da670160de52d79e8854b98109f5bfb4abf85d8bbb4ec3c20ac`
 
 The verifier accepts only an exact MRTD and runtime RTMR0 through RTMR3 match
 from this file. A Chutes measurement change therefore fails closed until the
 new public snapshot is reviewed, tested, committed, and deployed in a newly
 attested TrustedRouter image.
+
+## October 8, 2026 pool-wide investigation
+
+Fresh nonce-bound evidence from the live TEE catalog found six additional
+1.4.1 profiles in active pools. Every profile below passed real Intel TDX,
+nonce/key binding, and NVIDIA verification before being pinned:
+
+- `8xh200 [10.2.1, numa-124c-1128g-nvsw-node1]`
+- `8xh200 [10.2.1, numa-188c-1128g-nvsw-node1]`
+- `8xh200 [10.2.1, numa-236c-1128g-nvsw-node1]`
+- `8xb300 [10.2.1, flat-252c-1944g]`
+- `8xb300 [10.2.1, numa-flatpci-252c-2304g]`
+- `8xpro_6000 [10.2.1, numa-124c-768g] (f2ab1d61fa64)`
+
+These use the immutable 1.4.1 source linked below. The downloaded reference
+manifest SHA-256 was
+`2ef4fa820fd2339b7da647d77d1f0738714a677c5b88f6c07cc7970e081dc0ef`.
+Only these live-verified additions are trusted; this is not automatic acceptance
+of the provider's entire manifest or an independent guest-image rebuild.
+Tests mutate MRTD and each runtime register separately for all six profiles.
+
+The B300 pool's signed NRAS hardware claim is the exact literal `GB110`.
+The verifier now recognizes that label only for B300 profiles, rejects
+`GB112` and `GB110 unknown`, and still requires every signed security claim
+and the pinned CPU workload measurements. This does not independently certify
+a retail GPU SKU. NVIDIA's public architecture list identifies GB110 as
+[Blackwell](https://github.com/NVIDIA/open-gpu-doc/blob/master/classes/3d/README.txt).
+
+With the release-pinned verifier, encrypted PONG canaries passed for both
+Qwen3.5 397B and Kimi K3, which previously failed before inference.
+Qwen3 235B Thinking still cannot supply evidence (`chutes_version >= 0.6.0`
+required) and is held out of routing. Unreviewed older and newer profiles
+remain rejected, including an observed 1.4.0 pool member; callers may retry
+another independently verified instance before sending any prompt.
 
 ## October 5, 2026 Mistral Nemo investigation
 

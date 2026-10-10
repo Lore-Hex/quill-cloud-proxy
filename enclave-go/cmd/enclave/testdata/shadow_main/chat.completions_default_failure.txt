@@ -1,0 +1,8 @@
+HTTP/1.1 502 Bad Gateway
+Content-Type: application/json
+Content-Length: 120
+Connection: close
+
+{"error":{"code":null,"message":"provider error","param":null,"source":"provider","status":502,"type":"provider_error"}}
+LEGACY SETTLE
+{"app":"attested-gateway","authorization_id":"auth-v1","elapsed_seconds":0,"error_status":502,"error_type":"provider_error","route_type":"chat.completions","selected_endpoint":"openai/billing-v1@openai/prepaid","selected_model":"openai/billing-v1","streamed":true}

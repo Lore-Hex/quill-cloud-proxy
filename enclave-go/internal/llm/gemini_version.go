@@ -17,8 +17,9 @@ func geminiFlashDefaultThinkingLevel(modelID string) string {
 func geminiVersionAtLeast(modelID string, wantMajor, wantMinor int) bool {
 	modelID = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(modelID)), "google/")
 	modelID = strings.TrimPrefix(modelID, "gemini-")
+	// Major-only IDs such as gemini-3-flash-preview mean minor version 0.
 	var major, minor int
-	if _, err := fmt.Sscanf(modelID, "%d.%d", &major, &minor); err != nil {
+	if n, _ := fmt.Sscanf(modelID, "%d.%d", &major, &minor); n == 0 {
 		return false
 	}
 	return major > wantMajor || major == wantMajor && minor >= wantMinor

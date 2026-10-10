@@ -22,8 +22,10 @@ RUN go mod download
 
 COPY . .
 
+ARG SOURCE_REVISION
+
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
-RUN go build -trimpath -tags 'cloud_gcp,llm_vertex' -ldflags='-s -w -extldflags=-static' \
+RUN go build -trimpath -tags 'cloud_gcp,llm_vertex' -ldflags="-s -w -extldflags=-static -X github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter.ShadowBuildRevision=${SOURCE_REVISION}" \
       -o /out/quill-enclave ./cmd/enclave
 
 FROM scratch
@@ -39,6 +41,7 @@ ENV QUILL_ENCLAVE_TLS=true
 ENV QUILL_HEALTH_PORT=8081
 EXPOSE 8081
 
-LABEL "tee.launch_policy.allow_env_override"="QUILL_BILLING_402_BACKOFF_MS"
+# TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
+LABEL "tee.launch_policy.allow_env_override"="TR_ASYNC_SETTLE_SHADOW,TR_ASYNC_SETTLE_NEGOTIATE,TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS,QUILL_BILLING_402_BACKOFF_MS"
 
 ENTRYPOINT ["/quill-enclave"]

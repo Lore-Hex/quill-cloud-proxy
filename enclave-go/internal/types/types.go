@@ -51,17 +51,21 @@ type BootstrapData struct {
 	// the issuer config inertly until their attestation verifiers reach parity.
 	// GCP fetch/parse failures are carried as dormant-feature diagnostics and
 	// must never turn an additive shadow feature into a boot failure.
-	SpendLeaseShadow         bool            `json:"spend_lease_shadow,omitempty"`
-	SpendLeaseLocalAdmission bool            `json:"spend_lease_local_admission,omitempty"`
-	SpendLeaseIssuerConfig   json.RawMessage `json:"spend_lease_issuer_config,omitempty"`
-	SpendLeaseConfigError    string          `json:"spend_lease_config_error,omitempty"`
-	SynthPanelPrompt         string          `json:"synth_panel_prompt,omitempty"`
-	SynthSynthesisPrompt     string          `json:"synth_synthesis_prompt,omitempty"`
-	SynthCodePanelPrompt     string          `json:"synth_code_panel_prompt,omitempty"`
-	SynthCodeSynthesisPrompt string          `json:"synth_code_synthesis_prompt,omitempty"`
-	AdvisorWorkerPrompt      string          `json:"advisor_worker_prompt,omitempty"`
-	AdvisorPrompt            string          `json:"advisor_prompt,omitempty"`
-	ExaAPIKey                string          `json:"exa_api_key,omitempty"`
+	// TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS: JSON {"kid":"issuer~base64url_key"}; empty disables negotiation.
+	AsyncSettleTicketPublicKeys string          `json:"async_settle_ticket_public_keys,omitempty"`
+	AsyncSettleShadow           bool            `json:"async_settle_shadow,omitempty"`
+	AsyncSettleNegotiate        bool            `json:"async_settle_negotiate,omitempty"`
+	SpendLeaseShadow            bool            `json:"spend_lease_shadow,omitempty"`
+	SpendLeaseLocalAdmission    bool            `json:"spend_lease_local_admission,omitempty"`
+	SpendLeaseIssuerConfig      json.RawMessage `json:"spend_lease_issuer_config,omitempty"`
+	SpendLeaseConfigError       string          `json:"spend_lease_config_error,omitempty"`
+	SynthPanelPrompt            string          `json:"synth_panel_prompt,omitempty"`
+	SynthSynthesisPrompt        string          `json:"synth_synthesis_prompt,omitempty"`
+	SynthCodePanelPrompt        string          `json:"synth_code_panel_prompt,omitempty"`
+	SynthCodeSynthesisPrompt    string          `json:"synth_code_synthesis_prompt,omitempty"`
+	AdvisorWorkerPrompt         string          `json:"advisor_worker_prompt,omitempty"`
+	AdvisorPrompt               string          `json:"advisor_prompt,omitempty"`
+	ExaAPIKey                   string          `json:"exa_api_key,omitempty"`
 
 	// Anthropic direct (only populated for the llm_anthropic build target).
 	// Same trust posture as the OpenRouter key — pulled from Secret Manager

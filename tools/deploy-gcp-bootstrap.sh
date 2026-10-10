@@ -106,6 +106,7 @@ REKA_SECRET="${REKA_SECRET:-trustedrouter-reka-api-key}"
 SAIL_RESEARCH_SECRET="${SAIL_RESEARCH_SECRET:-trustedrouter-sail-research-api-key}"
 MANCER_SECRET="${MANCER_SECRET:-trustedrouter-mancer-api-key}"
 ABLITERATE_SECRET="${ABLITERATE_SECRET:-trustedrouter-abliterate-api-key}"
+META_SECRET="${META_SECRET:-trustedrouter-meta-api-key}"
 IO_NET_SECRET="${IO_NET_SECRET:-trustedrouter-io-net-api-key}"
 SCALEWAY_SECRET="${SCALEWAY_SECRET:-trustedrouter-scaleway-api-key}"
 FEATHERLESS_SECRET="${FEATHERLESS_SECRET:-trustedrouter-featherless-api-key}"
@@ -116,6 +117,7 @@ WANDB_SECRET="${WANDB_SECRET:-trustedrouter-wandb-api-key}"
 NSCALE_SECRET="${NSCALE_SECRET:-trustedrouter-nscale-api-key}"
 REGOLO_SECRET="${REGOLO_SECRET:-trustedrouter-regolo-api-key}"
 LYCEUM_SECRET="${LYCEUM_SECRET:-trustedrouter-lyceum-api-key}"
+GREENFERENCE_SECRET="${GREENFERENCE_SECRET:-trustedrouter-greenference-api-key}"
 SYSTEM1MODELS_GLOBAL_SECRET="${SYSTEM1MODELS_GLOBAL_SECRET:-trustedrouter-system1models-global-api-key}"
 SYSTEM1MODELS_EU_SECRET="${SYSTEM1MODELS_EU_SECRET:-trustedrouter-system1models-eu-api-key}"
 PRIVATEMODE_SECRET="${PRIVATEMODE_SECRET:-trustedrouter-privatemode-api-key}"
@@ -276,6 +278,7 @@ for secret in \
   "$SAIL_RESEARCH_SECRET" \
   "$MANCER_SECRET" \
   "$ABLITERATE_SECRET" \
+  "$META_SECRET" \
   "$IO_NET_SECRET" \
   "$SCALEWAY_SECRET" \
   "$FEATHERLESS_SECRET" \
@@ -286,6 +289,7 @@ for secret in \
   "$NSCALE_SECRET" \
   "$REGOLO_SECRET" \
   "$LYCEUM_SECRET" \
+  "$GREENFERENCE_SECRET" \
   "$SYSTEM1MODELS_GLOBAL_SECRET" \
   "$SYSTEM1MODELS_EU_SECRET" \
   "$PRIVATEMODE_SECRET" \

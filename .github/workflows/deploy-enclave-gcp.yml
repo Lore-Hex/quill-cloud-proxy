@@ -258,6 +258,7 @@ jobs:
                   docker buildx inspect --bootstrap
                   docker buildx build --platform=linux/amd64 \
                     --file=${_DOCKERFILE} \
+                    --build-arg SOURCE_REVISION=${_SOURCE_REVISION} \
                     --tag=${_IMAGE} \
                     --push \
                     .
@@ -266,7 +267,7 @@ jobs:
           EOF
           BUILD_ID=$(gcloud builds submit \
             --config=/tmp/cloudbuild-enclave.yaml \
-            --substitutions="_IMAGE=${IMAGE_REF},_DOCKERFILE=${DOCKERFILE}" \
+            --substitutions="_IMAGE=${IMAGE_REF},_DOCKERFILE=${DOCKERFILE},_SOURCE_REVISION=${GITHUB_SHA}" \
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
             --async \

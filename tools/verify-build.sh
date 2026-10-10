@@ -79,6 +79,7 @@ say "rebuilding the enclave image locally (linux/amd64; first run can take sever
   docker buildx build \
     --platform linux/amd64 \
     --file Dockerfile.enclave.gcp.multi \
+    --build-arg "SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)" \
     --tag "$LOCAL_TAG" \
     --load \
     . >&2

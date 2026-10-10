@@ -31,6 +31,7 @@ type providerInvocation struct {
 	selectedRoute *selectedRouteTracker
 	done          chan struct{}
 	cancel        context.CancelFunc
+	joinOnce      sync.Once
 }
 
 func startProviderInvocation(
@@ -61,6 +62,27 @@ func (i *providerInvocation) abort(err error) {
 	}
 	i.cancel()
 	_ = i.reader.CloseWithError(err)
+}
+
+// join waits for the provider's final timing/shadow updates, logging, and pipe
+// close, which can follow the final response frame. On success this can delay
+// handler return and connection reuse, but not delivery of the response.
+// Call abort before join to interrupt context-aware reads and blocked writes.
+func (i *providerInvocation) join() {
+	if i == nil {
+		return
+	}
+	i.joinOnce.Do(func() {
+		// A Client can ignore cancellation (including in an upstream read), so cap
+		// cleanup rather than hanging the handler forever on a broken provider.
+		// The cap applies once per invocation, including repeated cleanup calls.
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-i.done:
+		case <-timer.C:
+		}
+	})
 }
 
 func withProviderInvocation(ctx context.Context, invocation *providerInvocation) context.Context {
@@ -225,8 +247,14 @@ func invokeProviderStream(
 				break
 			}
 			retryStart := phases.Now()
-			sleepBeforeTransientRetry(transientUpstreamBackoff(tryN))
+			retryErr := sleepBeforeTransientRetry(ctx, transientUpstreamBackoff(tryN))
 			phases.RetryWaitDone(retryStart)
+			if retryErr != nil {
+				// Use the same failure/logging/billing path as an invocation that
+				// returns context cancellation, without starting another attempt.
+				err = retryErr
+				break
+			}
 		}
 
 		if err == nil {
@@ -641,7 +669,16 @@ var finalCandidateFirstByteBudget = func() time.Duration {
 // the first output byte, so it never duplicates output or double-bills.
 const maxTransientUpstreamRetries = 2
 
-var sleepBeforeTransientRetry = time.Sleep
+var sleepBeforeTransientRetry = func(ctx context.Context, wait time.Duration) error {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
+	}
+}
 
 func transientUpstreamBackoff(tryN int) time.Duration {
 	switch {
@@ -757,6 +794,39 @@ func retryableInvokeError(err error) bool {
 }
 
 func writeStreamingProviderError(w io.Writer, routeType, requestID, model string, err error, hideDetails bool) error {
+	return writeStreamingProviderErrorWithSettlement(w, routeType, requestID, model, err, hideDetails, nil)
+}
+
+// A known settlement/refund outcome belongs before the failure sentinel too.
+// The caller supplies it only for a negotiated authorization.
+func writeStreamingProviderErrorWithSettlement(w io.Writer, routeType, requestID, model string, err error, hideDetails bool, settlement *trustedrouter.SettleResult) error {
+	if settlement != nil && (routeType == "responses" || routeType == "chat.completions") {
+		metadata := map[string]any{}
+		if settlement.HasCost() {
+			usage := map[string]any{}
+			annotateUsageCost(usage, settlement)
+			metadata["usage"] = usage
+		}
+		if settlement.TrustedRouterSettlement != nil {
+			metadata["trusted_router_settlement"] = settlement.TrustedRouterSettlement
+		}
+		if len(metadata) > 0 {
+			prefix := ""
+			if routeType == "responses" {
+				metadata["type"] = "trusted_router.settlement"
+				prefix = "event: trusted_router.settlement\n"
+			} else {
+				metadata["id"], metadata["object"], metadata["model"], metadata["choices"], metadata["created"] = requestID, "chat.completion.chunk", model, []any{}, time.Now().Unix()
+			}
+			encoded, marshalErr := json.Marshal(metadata)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			if _, writeErr := fmt.Fprintf(w, "%sdata: %s\n\n", prefix, encoded); writeErr != nil {
+				return writeErr
+			}
+		}
+	}
 	_, errBody := providerErrorBody(err, &trustedrouter.Authorization{HidePublicMetadata: hideDetails})
 	if routeType == "messages" {
 		if errBody["type"] == "provider_error" {

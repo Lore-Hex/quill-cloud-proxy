@@ -235,10 +235,13 @@ func vertexGeminiPayload(
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
 		generationConfig["maxOutputTokens"] = *req.MaxTokens
 	}
-	if req.Temperature != nil {
+	// Gemini 3.6+ fixes sampling and upcoming models reject custom values;
+	// see applyGeminiParameterContract.
+	fixedSampling := geminiDropsSamplingParameters(modelID)
+	if req.Temperature != nil && !fixedSampling {
 		generationConfig["temperature"] = *req.Temperature
 	}
-	if req.TopP != nil {
+	if req.TopP != nil && !fixedSampling {
 		generationConfig["topP"] = *req.TopP
 	}
 	if stops := req.StopSequences(); len(stops) > 0 {
@@ -255,7 +258,7 @@ func vertexGeminiPayload(
 	if req.Seed != nil {
 		generationConfig["seed"] = *req.Seed
 	}
-	if body != nil && body.TopK != nil {
+	if body != nil && body.TopK != nil && !fixedSampling {
 		generationConfig["topK"] = *body.TopK
 	}
 	if req.ImageGeneration {
@@ -543,22 +546,6 @@ func vertexGeminiThinkingBudget(req *qtypes.OpenAIChatRequest) (int, bool) {
 			if n, ok := vertexGeminiToInt(raw); ok {
 				return n, true
 			}
-		}
-	}
-	return 0, false
-}
-
-func vertexGeminiToInt(v any) (int, bool) {
-	switch n := v.(type) {
-	case float64:
-		return int(n), true
-	case int:
-		return n, true
-	case int64:
-		return int(n), true
-	case json.Number:
-		if i, err := n.Int64(); err == nil {
-			return int(i), true
 		}
 	}
 	return 0, false

@@ -38,6 +38,9 @@ func PrepareChatRequest(provider, upstreamModel string, req *qtypes.OpenAIChatRe
 	if strings.TrimSpace(upstreamID) == "" {
 		return PreparedChatRequest{}, fmt.Errorf("llm/%s: missing authorized upstream model", provider)
 	}
+	if err := validateKimiReasoningEffort(provider, req, upstreamID); err != nil {
+		return PreparedChatRequest{}, err
+	}
 	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
 	// Wharf omits decision confidence/probabilities from SSE. Fetch this small
 	// task result once as JSON, then use the same response pipeline for both

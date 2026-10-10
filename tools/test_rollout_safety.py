@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -13,9 +14,67 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
+# The router's async-settle purpose key (kid tr-async-settle-2026-10a, issuer
+# https://api.trustedrouter.com), provisioned 2026-10-09. One canonical Ed25519
+# public key in the {"kid":"issuer~base64url_key"} keyring form the enclave parses.
+ASYNC_SETTLE_KEYRING = ('{"tr-async-settle-2026-10a":'
+                        '"https://api.trustedrouter.com~7zJCBn9dfwXC1cTBqLYY0rGzvuESaM-JxHBQ66oRzzQ"}')
 
 
 class RolloutSafetyTests(unittest.TestCase):
+    def test_async_settlement_rollout_pins_and_keyring_allowlist(self) -> None:
+        # Public verification material only (runbook step 2). Installing it does not
+        # enable negotiation: TR_ASYNC_SETTLE_NEGOTIATE stays off until step 8.
+        keyring = ASYNC_SETTLE_KEYRING
+        aws = (ROOT / "enclave-go/Dockerfile.enclave").read_text()
+        self.assertIn("ENV TR_ASYNC_SETTLE_NEGOTIATE=off", aws)
+        self.assertIn("ENV TR_ASYNC_SETTLE_SHADOW=on", aws)
+        self.assertIn("ENV TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS='" + keyring + "'\n", aws)
+        gcp = (ROOT / "tools/deploy-gcp-mig.sh").read_text()
+        self.assertIn("tee-env-TR_ASYNC_SETTLE_NEGOTIATE=off|tee-env-TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS="
+                      + keyring.replace('"', '\\"') + "|", gcp)
+        self.assertIn("tee-env-TR_ASYNC_SETTLE_SHADOW=on|", gcp)
+        azure = (ROOT / "tools/deploy-azure-aci.sh").read_text()
+        self.assertIn('"TR_ASYNC_SETTLE_SHADOW": "on"', azure)
+        self.assertIn('"TR_ASYNC_SETTLE_NEGOTIATE": "off"', azure)
+        self.assertIn('"TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS": ' + repr(keyring) + ",", azure)
+        for source in (aws, gcp, azure):
+            self.assertEqual(source.count("tr-async-settle-2026-10a"), 1)
+        # Keep issuer-bound configuration documented beside unchanged empty pins.
+        keyring_format = '{"kid":"issuer~base64url_key"}'
+        for source in (aws, gcp, azure,
+                       (ROOT / "enclave-go/internal/types/types.go").read_text(),
+                       (ROOT / "enclave-go/internal/bootstrap/bootstrap_gcp.go").read_text()):
+            self.assertIn(keyring_format, source)
+        for suffix in ("gcp", "gcp.multi", "gcp.anthropic"):
+            docker = (ROOT / ("enclave-go/Dockerfile.enclave." + suffix)).read_text()
+            self.assertIn(keyring_format, docker)
+            policy = next(line for line in docker.splitlines() if "tee.launch_policy.allow_env_override" in line)
+            self.assertIn("TR_ASYNC_SETTLE_TICKET_PUBLIC_KEYS", policy)
+            self.assertIn("TR_ASYNC_SETTLE_SHADOW", policy)
+
+    def test_async_settlement_keyring_is_one_canonical_ed25519_key(self) -> None:
+        parsed = json.loads(ASYNC_SETTLE_KEYRING)
+        self.assertEqual(list(parsed), ["tr-async-settle-2026-10a"])
+        issuer, separator, encoded = parsed["tr-async-settle-2026-10a"].partition("~")
+        self.assertEqual((issuer, separator), ("https://api.trustedrouter.com", "~"))
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        self.assertEqual(len(raw), 32)
+        self.assertEqual(base64.urlsafe_b64encode(raw).rstrip(b"=").decode(), encoded)
+
+    def test_shadow_build_revision_is_measured_and_supplied(self) -> None:
+        for suffix in ("", ".gcp", ".gcp.multi", ".gcp.anthropic", ".azure.multi"):
+            docker = (ROOT / ("enclave-go/Dockerfile.enclave" + suffix)).read_text()
+            self.assertIn("ARG SOURCE_REVISION", docker)
+            self.assertIn("trustedrouter.ShadowBuildRevision=${SOURCE_REVISION}", docker)
+        for name in ("release-aws-enclave.sh", "release-gcp.sh", "deploy-azure-aci.sh",
+                     "verify-pcr0.sh", "verify-build.sh"):
+            self.assertIn('SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)',
+                          (ROOT / "tools" / name).read_text())
+        workflow = (ROOT / ".github/workflows/deploy-enclave-gcp.yml").read_text()
+        self.assertIn("--build-arg SOURCE_REVISION=${_SOURCE_REVISION}", workflow)
+        self.assertIn("_SOURCE_REVISION=${GITHUB_SHA}", workflow)
+
     def test_shared_deploy_lock_queues_without_evicting_pending_releases(self) -> None:
         import yaml
 

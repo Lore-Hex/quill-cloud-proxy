@@ -22,8 +22,11 @@ type ResolvedRequest struct {
 	AudioReference  string
 	VideoReference  string
 	VeniceModel     string
-	veniceQueue     map[string]any
-	veniceQuote     map[string]any
+	// UpstreamModel is the control plane's authorized upstream id for the
+	// route being queued; set per route by the gateway, empty when unknown.
+	UpstreamModel string
+	veniceQueue   map[string]any
+	veniceQuote   map[string]any
 }
 
 func ResolveRequest(req *CreateRequest) (*ResolvedRequest, error) {

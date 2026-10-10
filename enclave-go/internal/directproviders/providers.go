@@ -25,6 +25,7 @@ type Spec struct {
 }
 
 var specs = [...]Spec{
+	{Provider: "meta", BaseURL: "https://api.meta.ai/v1", SecretEnv: "QUILL_META_SECRET", SecretName: "trustedrouter-meta-api-key", SecretLabel: "Meta key"},
 	{Provider: "system1models", BaseURL: "https://api.system1models.ai/v1", SecretEnv: "QUILL_SYSTEM1MODELS_GLOBAL_SECRET", SecretName: "trustedrouter-system1models-global-api-key", SecretLabel: "System1 Global key"},
 	{Provider: "system1models-eu", BaseURL: "https://api.system1models.ai/v1", SecretEnv: "QUILL_SYSTEM1MODELS_EU_SECRET", SecretName: "trustedrouter-system1models-eu-api-key", SecretLabel: "System1 EU key"},
 	// Secret registry only: inference is intercepted by the pinned E2EE adapter.
@@ -52,6 +53,7 @@ var specs = [...]Spec{
 	{Provider: "nscale", BaseURL: "https://inference.api.nscale.com/v1", SecretEnv: "QUILL_NSCALE_SECRET", SecretName: "trustedrouter-nscale-api-key", SecretLabel: "Nscale service token"},
 	{Provider: "regolo", BaseURL: "https://api.regolo.ai/v1", SecretEnv: "QUILL_REGOLO_SECRET", SecretName: "trustedrouter-regolo-api-key", SecretLabel: "Regolo key"},
 	{Provider: "lyceum", BaseURL: "https://api.lyceum.technology/openai/v1", SecretEnv: "QUILL_LYCEUM_SECRET", SecretName: "trustedrouter-lyceum-api-key", SecretLabel: "Lyceum key"},
+	{Provider: "greenference", BaseURL: "https://llm.eu.greenference.com/trustedrouter/v1", SecretEnv: "QUILL_GREENFERENCE_SECRET", SecretName: "trustedrouter-greenference-api-key", SecretLabel: "Greenference key"},
 	{Provider: "confidential-ai", BaseURL: "https://api.confidential.ai/v1", SecretEnv: "QUILL_CONFIDENTIAL_AI_SECRET", SecretName: "trustedrouter-confidential-ai-api-key", SecretLabel: "Confidential AI service token"},
 	{Provider: "scaledown", BaseURL: "https://api.scaledown.xyz", SecretEnv: "QUILL_SCALEDOWN_SECRET", SecretName: "trustedrouter-scaledown-api-key", SecretLabel: "ScaleDown inference key"},
 	{Provider: "perplexity", BaseURL: "https://api.perplexity.ai/v1", ChatCompletionsPath: "/sonar", SecretEnv: "QUILL_PERPLEXITY_SECRET", SecretName: "trustedrouter-perplexity-api-key", SecretLabel: "Perplexity key"},

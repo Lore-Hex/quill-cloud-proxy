@@ -173,6 +173,7 @@ _PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
 _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("regolo", "trustedrouter-regolo-api-key"),
     ("lyceum", "trustedrouter-lyceum-api-key"),
+    ("greenference", "trustedrouter-greenference-api-key"),
     ("system1models", "trustedrouter-system1models-global-api-key"),
     ("system1models-eu", "trustedrouter-system1models-eu-api-key"),
     ("privatemode", "trustedrouter-privatemode-api-key"),
@@ -187,6 +188,7 @@ _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("sail-research", "trustedrouter-sail-research-api-key"),
     ("mancer", "trustedrouter-mancer-api-key"),
     ("abliterate", "trustedrouter-abliterate-api-key"),
+    ("meta", "trustedrouter-meta-api-key"),
     ("io-net", "trustedrouter-io-net-api-key"),
     ("scaleway", "trustedrouter-scaleway-api-key"),
     ("featherless", "trustedrouter-featherless-api-key"),

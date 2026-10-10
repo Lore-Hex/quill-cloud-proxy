@@ -1224,12 +1224,17 @@ def reconcile_confidential(healthy: list[dict], digest: str, *, apply: bool) -> 
     if API_HOST not in {"api.trustedrouter.com", "api.quillrouter.com"}:
         return
     host = CONFIDENTIAL_HOSTS[0]
-    checks = [(instance["ip"], name) for instance in healthy for name in CONFIDENTIAL_HOSTS]
+
+    def check_instance(ip: str) -> list[tuple[str, bool]]:
+        # One launcher serializes issuance for every SNI on this gateway.
+        # Keep fresh, independent proofs without flooding its bounded queue.
+        return [(ip, attest(ip, digest, api_host=name, confidential_host=name))
+                for name in CONFIDENTIAL_HOSTS]
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
-        eligible = list(executor.map(
-            lambda check: (check[0], attest(check[0], digest, api_host=check[1], confidential_host=check[1])),
-            checks,
-        ))
+        eligible = [result for results in executor.map(
+            check_instance, dict.fromkeys(instance["ip"] for instance in healthy),
+        ) for result in results]
     failed = {ip for ip, ok in eligible if not ok}
     ips = sorted({ip for ip, ok in eligible if ok} - failed)
     log(f"reconcile: confidential readiness qualified={len(ips)}/{len(healthy)}")

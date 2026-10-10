@@ -364,6 +364,7 @@ func halfUpPerMillion(tokens int, rate int64) int64 {
 func (c *stageDController) terminalUsage(terminal adapter.StreamTerminal, requestID, routeType, selectedModel string, req *types.OpenAIChatRequest, firstTokenSeconds float64) trustedrouter.Usage {
 	c.mu.Lock()
 	meteredInput, meteredOutput, meteredReasoning := c.meter.promptTokens, c.meter.outputTokens(), c.meter.reasoningTokens()
+	heartbeatLost := c.heartbeatLost
 	c.mu.Unlock()
 	input, output, estimated := meteredInput, meteredOutput, true
 	providerExact := terminal.Result.Usage != nil && terminal.Result.Usage.OutputTokens > 0
@@ -376,6 +377,9 @@ func (c *stageDController) terminalUsage(terminal adapter.StreamTerminal, reques
 	finishReason := terminal.FinishReason
 	if terminal.TRFinishReason != "" {
 		finishReason = terminal.TRFinishReason
+	}
+	if terminal.TRFinishReason == "" && !heartbeatLost {
+		input, output = bufferedMissingUsage(terminal.Result, input, output, selectedModel, req, c.auth, c.endpointID)
 	}
 	usage := trustedrouter.Usage{
 		RequestID: requestID, InputTokens: input, OutputTokens: output,
