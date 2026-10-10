@@ -518,6 +518,7 @@ type Authorization struct {
 	RequestMetadataVersion                int                                `json:"request_metadata_version"`
 	AdditionalCostReservationMicrodollars int                                `json:"additional_cost_reservation_microdollars"`
 	VideoTokenBilling                     bool                               `json:"video_token_billing"`
+	VideoTariffResolution                 string                             `json:"video_tariff_resolution,omitempty"`
 	EstimatedCostMicrodollars             int                                `json:"estimated_cost_microdollars"`
 	ReceiptFeeBasisPoints                 int                                `json:"receipt_fee_basis_points"`
 	NativeBatchEligible                   bool                               `json:"native_batch_eligible"`
@@ -715,6 +716,9 @@ func chatAuthorizeBody(c *Client, lookupHash, idempotencyKey string, req *qtypes
 	}
 	if req.RequestFingerprint != "" {
 		body["request_fingerprint"] = req.RequestFingerprint
+	}
+	if routeType == "videos" && req.VideoResolution != "" {
+		body["video_resolution"] = req.VideoResolution
 	}
 	if key, explicit := cacheAffinity(lookupHash, req, routeType); key != "" {
 		body["cache_affinity_key"] = key

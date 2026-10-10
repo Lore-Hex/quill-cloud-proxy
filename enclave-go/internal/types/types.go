@@ -414,6 +414,9 @@ type OpenAIChatRequest struct {
 	ImageGeneration  bool   `json:"-"`
 	ImageResolution  string `json:"-"`
 	ImageAspectRatio string `json:"-"`
+	// VideoResolution requests a frozen output-resolution tariff. Only video
+	// orchestration sets it, and authorization forwards it only for videos.
+	VideoResolution string `json:"video_resolution,omitempty"`
 	// Internal hosted-tool billing fields. They are never decoded from or
 	// encoded into the caller's JSON request; only enclave-owned orchestration
 	// sets them before authorize/settle.

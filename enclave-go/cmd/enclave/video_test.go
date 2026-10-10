@@ -205,6 +205,9 @@ func TestVideoCreateQuotesThenAuthorizesBeforeSendingPromptToProvider(t *testing
 	if authorizeBody["additional_cost_reservation_microdollars"] != float64(480_000) {
 		t.Fatalf("video fee not applied to authorization: %#v", authorizeBody)
 	}
+	if authorizeBody["video_resolution"] != "1080p" {
+		t.Fatalf("resolved default resolution not authorized: %#v", authorizeBody)
+	}
 	encodedPrepare, _ := json.Marshal(prepareBody)
 	if strings.Contains(string(encodedPrepare), "private launch prompt") ||
 		prepareBody["duration_seconds"] != float64(6) ||

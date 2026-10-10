@@ -141,6 +141,16 @@ func (r *Registry) Provider(id string) (Provider, bool) {
 	return provider, ok && provider.Enabled()
 }
 
+// RegisteredProvider returns adapter metadata even when credentials are absent.
+// Use only for rejection-row billing identity; provider operations require Provider.
+func (r *Registry) RegisteredProvider(id string) (Provider, bool) {
+	if r == nil {
+		return nil, false
+	}
+	provider, ok := r.providers[strings.TrimSpace(id)]
+	return provider, ok
+}
+
 func (r *Registry) Supporting(request *ResolvedRequest) []Provider {
 	if r == nil || request == nil {
 		return nil
