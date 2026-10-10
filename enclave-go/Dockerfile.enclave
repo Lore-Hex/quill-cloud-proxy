@@ -71,7 +71,7 @@ RUN cd sidecar && go mod download \
 RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 
 # Vendor-distributed proxy, pinned for both supply chain and verifier behavior.
-FROM ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.58.0@sha256:5e8f549169c4288c24c902eadc4c6ebfaaf05c06e5605449c34469257929b143 AS privatemode
+FROM ghcr.io/edgelesssys/privatemode/privatemode-proxy:v13.37.0@sha256:da7620eec097977e5ee204b8d43123abb7e24585e804ff8f55edceb84d5e885c AS privatemode
 
 FROM scratch
 ENV TR_ASYNC_SETTLE_SHADOW=on
