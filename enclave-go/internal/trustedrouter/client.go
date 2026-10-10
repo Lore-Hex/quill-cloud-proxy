@@ -23,6 +23,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/byokcache"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/speech"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
@@ -716,6 +717,13 @@ func chatAuthorizeBody(c *Client, lookupHash, idempotencyKey string, req *qtypes
 	if req.RequestFingerprint != "" {
 		body["request_fingerprint"] = req.RequestFingerprint
 	}
+	if routeType == "audio.speech" {
+		body["speech_input_characters"] = req.SpeechInputCharacters
+		body["estimated_input_tokens"] = 0
+		if speech.Models[req.Model].TokenBilled() {
+			body["estimated_input_tokens"] = speech.GeminiInputLimit
+		}
+	}
 	if key, explicit := cacheAffinity(lookupHash, req, routeType); key != "" {
 		body["cache_affinity_key"] = key
 		body["cache_affinity_explicit"] = explicit
@@ -883,6 +891,10 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 			Type:       "hosted_tool_billing_unavailable",
 			Message:    "hosted-tool billing is not available on the active control plane",
 		}
+	}
+	if routeType == "audio.speech" && ((!speech.Models[req.Model].TokenBilled() && decoded.AdditionalCostReservationMicrodollars <= 0) || (speech.Models[req.Model].TokenBilled() && (decoded.EstimatedCostMicrodollars <= 0 || decoded.AdditionalCostReservationMicrodollars != 0))) {
+		_ = c.Refund(ctx, decoded, 502, "speech_quote_missing", 0, nil)
+		return nil, errors.New("speech authorization did not reserve its billing basis")
 	}
 	if routeType == "videos" && decoded.AdditionalCostReservationMicrodollars <= 0 &&
 		!(decoded.VideoTokenBilling && decoded.EstimatedCostMicrodollars > 0 && req.MaxTokens != nil && *req.MaxTokens > 1) {

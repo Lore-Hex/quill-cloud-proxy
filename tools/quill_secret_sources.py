@@ -114,6 +114,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "NSCALE_API_KEY": "trustedrouter-nscale-api-key",
     "REGOLO_API_KEY": "trustedrouter-regolo-api-key",
     "LYCEUM_API_KEY": "trustedrouter-lyceum-api-key",
+    "ELEVEN_LABS_API_KEY": "trustedrouter-elevenlabs-api-key",
     "GREENFERENCE_API_KEY": "trustedrouter-greenference-api-key",
     "SYSTEM1MODELS_GLOBAL_API_KEY": "trustedrouter-system1models-global-api-key",
     "SYSTEM1MODELS_EU_API_KEY": "trustedrouter-system1models-eu-api-key",

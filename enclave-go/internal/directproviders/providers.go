@@ -25,6 +25,7 @@ type Spec struct {
 }
 
 var specs = [...]Spec{
+	{Provider: "elevenlabs", BaseURL: "https://api.elevenlabs.io/v1", MediaOnly: true, SecretEnv: "QUILL_ELEVENLABS_SECRET", SecretName: "trustedrouter-elevenlabs-api-key", SecretLabel: "ElevenLabs key"},
 	{Provider: "meta", BaseURL: "https://api.meta.ai/v1", SecretEnv: "QUILL_META_SECRET", SecretName: "trustedrouter-meta-api-key", SecretLabel: "Meta key"},
 	{Provider: "system1models", BaseURL: "https://api.system1models.ai/v1", SecretEnv: "QUILL_SYSTEM1MODELS_GLOBAL_SECRET", SecretName: "trustedrouter-system1models-global-api-key", SecretLabel: "System1 Global key"},
 	{Provider: "system1models-eu", BaseURL: "https://api.system1models.ai/v1", SecretEnv: "QUILL_SYSTEM1MODELS_EU_SECRET", SecretName: "trustedrouter-system1models-eu-api-key", SecretLabel: "System1 EU key"},
