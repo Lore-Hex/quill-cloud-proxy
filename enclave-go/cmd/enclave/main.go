@@ -46,6 +46,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/privatemode"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/speech"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"golang.org/x/crypto/acme/autocert"
@@ -268,6 +269,9 @@ func main() {
 	}
 	br := llm.New(boot) // build-tag-gated: AWS Bedrock by default, GCP Vertex with -tags gcp
 	imageProviderGateway = imagegen.NewRegistry(imageProviderKeys(boot), llm.NewProviderHTTPClient())
+	speechProviderGateway = speech.New(llm.NewProviderHTTPClient(), map[string]string{
+		"grok": boot.GrokAPIKey, "mistral": boot.MistralAPIKey,
+	})
 	trGateway := trustedrouter.NewFromBootstrap(boot)
 	if configurationErr := trGateway.ProductionConfigurationError(); configurationErr != nil {
 		fmt.Fprintf(os.Stderr, "enclave.control_plane_configuration_rejected err=%q\n", configurationErr.Error())
@@ -968,6 +972,14 @@ func serveOneRequest(
 			return
 		}
 		serveEmbeddings(ctx, conn, br, body, trGateway, trEnabled, bearer, byokSecrets, idempotencyKey, attribution, requestLogID)
+		return
+	}
+	if routePath == "/v1/audio/speech" {
+		if method != "POST" {
+			writeError(conn, 405, "method not allowed")
+			return
+		}
+		serveSpeech(ctx, conn, body, trGateway, bearer, idempotencyKey, attribution, requestLogID)
 		return
 	}
 

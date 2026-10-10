@@ -418,6 +418,7 @@ type OpenAIChatRequest struct {
 	// encoded into the caller's JSON request; only enclave-owned orchestration
 	// sets them before authorize/settle.
 	AdditionalCostReservationMicrodollars int `json:"-"`
+	SpeechInputCharacters                 int `json:"-"`
 	AdditionalCostMicrodollars            int `json:"-"`
 	// Internal partner-route controls are set only by enclave-owned presets.
 	// They never cross the public request JSON boundary.
