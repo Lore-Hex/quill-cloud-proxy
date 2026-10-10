@@ -1123,6 +1123,7 @@ func serveOneRequest(
 		writeError(conn, 404, "route not found")
 		return
 	}
+	req.NormalizeRouterModelAliases()
 	requestedModel := req.Model
 	if err := req.NormalizeFallbackRouting(); err != nil {
 		writeOpenAIError(conn, 400, err.Error(), "invalid_request_error", "bad_request", "allow_fallbacks")
@@ -2345,6 +2346,7 @@ func serveMessages(
 		writeAnthropicError(conn, 400, "invalid JSON")
 		return
 	}
+	native.Model = types.CanonicalRouterModelID(native.Model)
 	req := adapter.MessagesToChatShim(&native)
 	req.IdempotencyKey = idempotencyKey
 	applyAttributionHeaders(req, attribution)
