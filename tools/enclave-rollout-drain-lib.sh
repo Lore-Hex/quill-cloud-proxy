@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Shared policy for restoring a region's pre-rollout canonical drain state.
+# Autoscaler decision: none here; drain state is DNS-only, and the rollout and recovery scripts that use this suspend and re-enable the autoscaler.
 
 rollout_restore_drain_operation() {
   local region="${1-}"

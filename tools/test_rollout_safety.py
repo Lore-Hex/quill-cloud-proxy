@@ -799,7 +799,7 @@ printf '%s\\n' "${GCLOUD_JSON}"
             "            quill-enclave-mig-uswest1- \\",
             "            uswest1 \\",
             "            api.quillrouter.com,api-us-west1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \\",
-            "            c3-standard-4 \\",
+            "            c3-standard-8 \\",
             "            TDX \\",
         ):
             self.assertIn(expected, "\n".join(west))
@@ -958,6 +958,13 @@ printf '%s\\n' "${GCLOUD_JSON}"
             commands.index("verify-region-before-dns.sh us-west1 quill-enclave-mig-uswest1-"),
             commands.index("--clear-drain-region us-west1"),
         )
+        # No group existed to suspend; the autoscaler is created only after the
+        # gates passed and the drain was cleared.
+        self.assertNotIn("gcp-mig-autoscaler.sh suspend", commands)
+        self.assertGreater(
+            commands.index("bash tools/gcp-mig-autoscaler.sh apply us-west1 quill-enclave-mig-uswest1 "),
+            commands.rindex("--clear-drain-region us-west1"),
+        )
 
     def test_pending_region_with_a_previous_template_still_needs_a_synthetic_target(self) -> None:
         # Once the pending MIG exists, the capture step reports its template and
@@ -973,6 +980,13 @@ printf '%s\\n' "${GCLOUD_JSON}"
         )
         self.assertNotIn("first deployment has no synthetic target yet", completed.stdout)
         self.assertNotIn("--clear-drain-region us-west1", commands)
+        # The existing group was suspended before its drain, and a failed
+        # rollout never applies the autoscaler (recovery resumes it instead).
+        self.assertLess(
+            commands.index("bash tools/gcp-mig-autoscaler.sh suspend us-west1 quill-enclave-mig-uswest1 "),
+            commands.index("--set-drain-region us-west1"),
+        )
+        self.assertNotIn("gcp-mig-autoscaler.sh apply", commands)
         self.assertIn(
             "bash tools/recover-gcp-region.sh us-west1 quill-enclave-mig-uswest1 "
             "quill-enclave-mig-uswest1- api.quillrouter.com,api-us-west1.quillrouter.com "
@@ -1324,6 +1338,8 @@ esac
             "rollout_step bash tools/verify-region-before-dns.sh",
             "rollout_step bash tools/wait-region-synthetic-up.sh",
             'rollout_step update_drain clear "${region}"',
+            'rollout_step bash tools/gcp-mig-autoscaler.sh suspend "${region}" "${mig}"',
+            'rollout_step bash tools/gcp-mig-autoscaler.sh apply "${region}" "${mig}"',
         ):
             self.assertIn(command, function)
 

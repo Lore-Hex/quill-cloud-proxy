@@ -2,6 +2,7 @@
 # Wait until the authoritative canonical API DNS record no longer includes any
 # public IPs from the region about to be rolled, then wait one DNS TTL so normal
 # recursive resolvers age out the prior answer.
+# Autoscaler decision: none here; this only reads DNS and instance IPs, and every caller suspends the region's autoscaler before it drains.
 set -euo pipefail
 
 REGION="${1:-}"
