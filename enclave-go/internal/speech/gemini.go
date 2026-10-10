@@ -77,7 +77,7 @@ func decodeGeminiAudio(raw []byte, spec Spec, format string) (*Result, error) {
 
 // Validate chunk boundaries and PCM layout before charging for buffered audio.
 func validWAV(b []byte) bool {
-	if len(b) < 44 || !bytes.Equal(b[:4], []byte("RIFF")) || !bytes.Equal(b[8:12], []byte("WAVE")) || uint64(binary.LittleEndian.Uint32(b[4:8]))+8 != uint64(len(b)) {
+	if len(b) < 44 || len(b) > MaxAudioBytes || !bytes.Equal(b[:4], []byte("RIFF")) || !bytes.Equal(b[8:12], []byte("WAVE")) || uint64(binary.LittleEndian.Uint32(b[4:8]))+8 != uint64(len(b)) {
 		return false
 	}
 	fmtOK, dataOK := false, false
@@ -85,9 +85,15 @@ func validWAV(b []byte) bool {
 		if len(b)-offset < 8 {
 			return false
 		}
-		size := uint64(binary.LittleEndian.Uint32(b[offset+4 : offset+8]))
-		end := uint64(offset) + 8 + size
-		if end > uint64(len(b)) {
+		size := binary.LittleEndian.Uint32(b[offset+4 : offset+8])
+		if size > MaxAudioBytes {
+			return false
+		}
+		// Both offsets and chunk sizes are bounded by 64 MiB, including on
+		// 32-bit builds; do not convert an unchecked provider-sized integer.
+		chunkSize := int(size)
+		end := offset + 8 + chunkSize
+		if end > len(b) {
 			return false
 		}
 		switch string(b[offset : offset+4]) {
@@ -95,7 +101,7 @@ func validWAV(b []byte) bool {
 			if fmtOK || size < 16 {
 				return false
 			}
-			p := b[offset+8 : int(end)]
+			p := b[offset+8 : end]
 			fmtOK = binary.LittleEndian.Uint16(p[:2]) == 1 && binary.LittleEndian.Uint16(p[2:4]) == 1 && binary.LittleEndian.Uint32(p[4:8]) == 24000 && binary.LittleEndian.Uint32(p[8:12]) == 48000 && binary.LittleEndian.Uint16(p[12:14]) == 2 && binary.LittleEndian.Uint16(p[14:16]) == 16
 			if !fmtOK {
 				return false
@@ -106,7 +112,7 @@ func validWAV(b []byte) bool {
 			}
 			dataOK = true
 		}
-		offset = int(end + size%2)
+		offset = end + chunkSize%2
 		if offset > len(b) {
 			return false
 		}
