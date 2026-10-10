@@ -21,6 +21,29 @@ Provider privacy filters still apply. Routing through the enclave does not
 make any ordinary upstream speech endpoint confidential. BYOK, custom
 voices, input arrays and unpriced provider options are rejected explicitly.
 
+## ElevenLabs Voices
+
+All four models (`elevenlabs/eleven-v3`, `elevenlabs/eleven-multilingual-v2`,
+`elevenlabs/eleven-flash-v2.5`, and `elevenlabs/eleven-turbo-v2.5`) accept the
+same premade voices. Set `voice` to an exact ID below; there is no default voice.
+All other IDs, including custom voices, and voice names are rejected.
+
+| Voice | Gender | Accent | `voice` ID |
+| --- | --- | --- | --- |
+| George | Male | — | `JBFqnCBsd6RMkjVDRZzb` |
+| Sarah | Female | American | `EXAVITQu4vr4xnSDxMaL` |
+| Alice | Female | British | `Xb7hH8MSUJpSbSDYk0k2` |
+| Matilda | Female | American | `XrExE9yKIg1WjnnlVkGX` |
+| Bella | Female | American | `hpp4J3VqNfWAUOO0d1Us` |
+| Jessica | Female | American | `cgSgspJ2msm6clMCkdW9` |
+| Laura | Female | American | `FGY2WhTYpPnrIDTdsKH5` |
+| Lily | Female | British | `pFZP5JQG7iQjIQuC4Bku` |
+
+The female IDs and accents were read from ElevenLabs `GET /v1/voices` on
+2026-10-10, with category `premade`. George remains the first voice used by the
+optional live smoke test. ElevenLabs billing uses the input Unicode character
+count and the model's character rate, independent of the chosen voice.
+
 ## Release Order
 
 Deploy this gateway first, then the companion quill-router speech catalog and
@@ -28,6 +51,14 @@ authorization changes. An old control plane rejects the unknown speech model;
 the gateway also fails closed without a positive applicable reservation. Do not
 publish the speech catalog until the serving gateway pool supports this route.
 Keep normal multi-cloud release coordination and measured-image gates intact.
+
+`GET /v1/models` relays the control-plane catalog; it does not derive
+`supported_voices` from the enclave allowlist. The read-only quill-router
+`origin/main` inspected for this change (`20ed38c2`, 2026-10-10) has no ElevenLabs
+speech catalog or character-billing authorization support, and still registers
+`/audio/speech` as an unsupported stub. Its companion speech implementation must
+publish the eight IDs above in each ElevenLabs model's `supported_voices` when
+it lands. There is no existing George-only list on that ref to update.
 
 The Azure bundle for this release is
 `5baf19644b84457289ad6254e9969dbc` (October 10, 2026). It preserves all
