@@ -140,6 +140,11 @@ func requiresMaxCompletionTokens(provider, modelID string) bool {
 	if i := strings.Index(m, "/"); i >= 0 {
 		m = m[i+1:]
 	}
+	// OpenAI's unversioned chat alias follows the modern completion contract
+	// too. It cannot be recognized by parsing a GPT generation number.
+	if normalizedProvider == "openai" && m == "chat-latest" {
+		return true
+	}
 	if strings.HasPrefix(m, "gpt-") {
 		version := strings.TrimPrefix(m, "gpt-")
 		end := 0
