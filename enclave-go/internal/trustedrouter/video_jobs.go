@@ -133,7 +133,7 @@ func videoAllowedProviders(ctx context.Context) []string {
 // A cross-invocation replay can only read; it cannot recreate a missing job.
 func (c *Client) AuthorizeVideo(
 	ctx context.Context,
-	bearer, model, idempotencyKey, requestFingerprint string,
+	bearer, model, resolution, idempotencyKey, requestFingerprint string,
 	provider map[string]any,
 	quotedMicrodollars int,
 	tokenLimits ...int,
@@ -152,6 +152,12 @@ func (c *Client) AuthorizeVideo(
 	req, err := videoAuthorizationRequest(model, idempotencyKey, requestFingerprint, provider, maxTokens, quotedMicrodollars)
 	if err != nil {
 		return nil, nil, err
+	}
+	// The resolution tariff contract covers these three values only. Other
+	// existing fixed-quote video resolutions (e.g. 2K/4K) keep legacy behavior.
+	switch resolution {
+	case "480p", "720p", "1080p":
+		req.VideoResolution = resolution
 	}
 	auth, err := c.AuthorizeWithRoute(ctx, bearer, req, "videos")
 	var replay *videoReplayLookup

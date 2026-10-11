@@ -154,7 +154,7 @@ func TestVideoSeedReplayAcrossRoutingConstraintRollout(t *testing.T) {
 			}))
 			defer provider.Close()
 			client := trustedrouter.New(control.URL, "test", control.Client())
-			auth, job, err := client.AuthorizeVideo(t.Context(), "test", model, "original-key", videoRequestFingerprint("test", &req), req.Provider, 500000, 0)
+			auth, job, err := client.AuthorizeVideo(t.Context(), "test", model, "", "original-key", videoRequestFingerprint("test", &req), req.Provider, 500000, 0)
 			if err != nil || auth == nil || job != nil {
 				t.Fatalf("pre-rollout authorize: auth=%+v job=%+v err=%v", auth, job, err)
 			}
@@ -257,7 +257,7 @@ func TestVideoUnsupportedSeedReadOnlyReplayAcrossRollout(t *testing.T) {
 			}))
 			defer control.Close()
 			client := trustedrouter.New(control.URL, "internal", control.Client())
-			auth, job, err := client.AuthorizeVideo(t.Context(), "test", model, "old-key", videoRequestFingerprint("test", &req), req.Provider, 500000, tc.tokenLimit)
+			auth, job, err := client.AuthorizeVideo(t.Context(), "test", model, "", "old-key", videoRequestFingerprint("test", &req), req.Provider, 500000, tc.tokenLimit)
 			if err != nil || auth == nil || job != nil {
 				t.Fatalf("legacy authorization: %v %v %v", auth, job, err)
 			}
@@ -299,5 +299,94 @@ func TestVideoUnsupportedSeedReadOnlyReplayAcrossRollout(t *testing.T) {
 			}
 
 		})
+	}
+}
+
+// Router #1555 replays logical video identity across derived resolution/token
+// changes, including legacy stored fingerprints. This fake implements that
+// boundary; the router repository separately tests its persisted hash migration.
+func TestVideo1080pReplayAcrossTariffRollout(t *testing.T) {
+	const model = "bytedance/seedance-2.5"
+	request := []byte(`{"model":"bytedance/seedance-2.5","prompt":"original","duration":4,"resolution":"1080p","provider":{"order":["byteplus","venice"],"only":["byteplus","venice"],"ignore":["fal"],"allow_fallbacks":true}}`)
+	var req video.CreateRequest
+	if err := json.Unmarshal(request, &req); err != nil {
+		t.Fatal(err)
+	}
+	var original map[string]any
+	holds, authorizes, lookups, mutations, queues := 0, 0, 0, 0, 0
+	jobID := trustedrouter.VideoJobID("pre-1080p")
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		respond := func(data any) { _ = json.NewEncoder(w).Encode(map[string]any{"data": data}) }
+		switch r.URL.Path {
+		case "/internal/gateway/authorize":
+			authorizes++
+			replay := original != nil
+			if !replay {
+				if body["video_resolution"] != nil || body["max_tokens"] != float64(1) || body["max_output_tokens"] != float64(1) {
+					t.Errorf("invalid pre-change shape: %v", body)
+				}
+				original = body
+				holds++
+			} else {
+				if body["video_resolution"] != "1080p" || body["max_tokens"] != float64(400000) || body["max_output_tokens"] != float64(400000) {
+					t.Errorf("invalid post-change shape: %v", body)
+				}
+				// Preserve the caller policy and identity while ignoring execution fields.
+				for _, key := range []string{"request_fingerprint", "idempotency_key", "provider", "model", "api_key_lookup_hash"} {
+					got, _ := json.Marshal(body[key])
+					want, _ := json.Marshal(original[key])
+					if !bytes.Equal(got, want) {
+						http.Error(w, `{"error":{"message":"logical request changed"}}`, http.StatusConflict)
+						return
+					}
+				}
+			}
+			respond(map[string]any{"authorization_id": "pre-1080p", "workspace_id": "ws", "api_key_hash": "hash", "model": model, "provider": "venice", "endpoint_id": "venice-endpoint", "additional_cost_reservation_microdollars": 480000, "idempotent_replay": replay})
+		case "/internal/gateway/video/jobs/" + jobID + "/lookup":
+			lookups++
+			if body["api_key_lookup_hash"] != trustedrouter.LookupHash("test") {
+				t.Error("unscoped replay")
+			}
+			respond(map[string]any{"id": jobID, "authorization_id": "pre-1080p", "workspace_id": "ws", "key_hash": "hash", "model": model, "provider": "venice", "provider_job_id": "original-provider-job", "status": "pending", "resolution": "1080p"})
+		default:
+			mutations++
+			w.WriteHeader(500)
+		}
+	}))
+	defer control.Close()
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { queues++; w.WriteHeader(500) }))
+	defer provider.Close()
+	client := trustedrouter.New(control.URL, "internal", control.Client())
+	auth, job, err := client.AuthorizeVideo(t.Context(), "test", model, "", "original-key", videoRequestFingerprint("test", &req), req.Provider, 480000, 0)
+	if err != nil || auth == nil || job != nil {
+		t.Fatalf("pre-change authorization: %+v %+v %v", auth, job, err)
+	}
+	s := &videoService{control: client, providers: video.NewRegistryWithProviders(video.NewBytePlusClientAt("test", provider.URL, provider.Client()))}
+	for _, tc := range []struct {
+		name   string
+		body   []byte
+		status string
+	}{
+		{"same", request, "202"},
+		{"prompt conflict", bytes.Replace(request, []byte(`"original"`), []byte(`"changed"`), 1), "409"},
+		{"policy conflict", bytes.Replace(request, []byte(`"allow_fallbacks":true`), []byte(`"allow_fallbacks":false`), 1), "409"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			s.serveCreate(t.Context(), &out, tc.body, "test", "original-key")
+			if !strings.HasPrefix(out.String(), "HTTP/1.1 "+tc.status+" ") {
+				t.Fatal(out.String())
+			}
+			if tc.status == "202" && videoHTTPBody(t, out.String())["id"] != jobID {
+				t.Fatal("did not return original job")
+			}
+		})
+	}
+	if holds != 1 || authorizes != 4 || lookups != 1 || mutations != 0 || queues != 0 {
+		t.Fatalf("holds=%d authorizes=%d lookups=%d mutations=%d queues=%d", holds, authorizes, lookups, mutations, queues)
 	}
 }

@@ -31,10 +31,16 @@ type refundAuthority struct {
 	newHolds, releases, prepares, lookups, settlements                                   int
 	failRefund, hangRefund, failPrepare, failUpdate, existingPrepare, compatibleFallback bool
 	refundBudget                                                                         time.Duration
+	tariff                                                                               bool
+	authorizationRows                                                                    map[string]map[string]any
+	authorizedLimits                                                                     map[string]int
+	customizeAuth                                                                        func(map[string]any)
+	prepareStatus                                                                        int
+	prepareTransportFailure                                                              bool
 }
 
 func newRefundAuthority(t *testing.T) *refundAuthority {
-	return &refundAuthority{t: t, now: time.Now(), jobs: map[string]trustedrouter.VideoJob{}, due: map[string]time.Time{}, lease: map[string]time.Time{}, authorizations: map[string]string{}, held: map[string]bool{}}
+	return &refundAuthority{t: t, now: time.Now(), jobs: map[string]trustedrouter.VideoJob{}, due: map[string]time.Time{}, lease: map[string]time.Time{}, authorizations: map[string]string{}, authorizationRows: map[string]map[string]any{}, authorizedLimits: map[string]int{}, held: map[string]bool{}}
 }
 
 func (a *refundAuthority) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -70,13 +76,35 @@ func (a *refundAuthority) RoundTrip(r *http.Request) (*http.Response, error) {
 			a.held[id] = true
 			a.newHolds++
 		}
-		auth := map[string]any{"authorization_id": id, "workspace_id": "ws", "api_key_hash": "hash", "model": "minimax/h3-max", "provider": "venice", "endpoint_id": "primary", "additional_cost_reservation_microdollars": 500000, "idempotent_replay": replay}
+		auth := map[string]any{"authorization_id": id, "workspace_id": "ws", "api_key_hash": "hash", "model": body["model"], "provider": "venice", "endpoint_id": "primary", "additional_cost_reservation_microdollars": 500000, "idempotent_replay": replay}
+		if a.tariff {
+			auth["model"], auth["provider"] = body["model"], "byteplus"
+			auth["video_token_billing"] = true
+		}
 		if a.compatibleFallback {
 			auth["route_candidates"] = []map[string]any{{"provider": "fal", "endpoint_id": "fallback"}}
+		}
+		if a.customizeAuth != nil {
+			a.customizeAuth(auth)
+		}
+		a.authorizationRows[id] = auth
+		a.authorizedLimits[id] = int(body["max_output_tokens"].(float64))
+		if body["max_tokens"] != body["max_output_tokens"] {
+			a.t.Error("authorization token limits disagree")
 		}
 		return reply(200, auth)
 	case "/internal/gateway/video/jobs/prepare":
 		a.prepares++
+		// Apply the router's endpoint, model and billing checks to every prepare.
+		if !a.validPrepare(body) {
+			return reply(400, nil)
+		}
+		if a.prepareTransportFailure {
+			return nil, fmt.Errorf("prepare transport failure")
+		}
+		if a.prepareStatus != 0 {
+			return reply(a.prepareStatus, nil)
+		}
 		if a.failPrepare {
 			return reply(503, nil)
 		}
@@ -176,6 +204,34 @@ func (a *refundAuthority) RoundTrip(r *http.Request) (*http.Response, error) {
 		return reply(500, nil)
 	}
 	return reply(200, job)
+}
+
+func (a *refundAuthority) validPrepare(body map[string]any) bool {
+	auth := a.authorizationRows[body["authorization_id"].(string)]
+	if auth == nil || body["model"] != auth["model"] {
+		return false
+	}
+	matches := func(route map[string]any) bool {
+		return body["endpoint_id"] == route["endpoint_id"] && body["provider"] == route["provider"] &&
+			(route["model"] == nil || route["model"] == body["model"])
+	}
+	allowed := matches(auth)
+	candidates, _ := auth["route_candidates"].([]map[string]any)
+	for _, candidate := range candidates {
+		allowed = allowed || matches(candidate)
+	}
+	if !allowed {
+		return false
+	}
+	quoted := int(body["quoted_microdollars"].(float64))
+	if quoted > auth["additional_cost_reservation_microdollars"].(int) {
+		return false
+	}
+	if body["provider"] == "byteplus" {
+		limit, _ := body["output_token_limit"].(float64)
+		return quoted == 0 && limit > 0 && limit <= float64(a.authorizedLimits[auth["authorization_id"].(string)])
+	}
+	return quoted > 0
 }
 
 type refundTestProvider struct {

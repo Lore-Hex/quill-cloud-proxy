@@ -94,7 +94,7 @@ func TestAuthorizeVideoReplayFailsClosedAndPinsOriginalAuthority(t *testing.T) {
 				mutations++
 				return nil, fmt.Errorf("unexpected mutation %s", r.URL.Path)
 			})})
-			gotAuth, gotJob, err := client.AuthorizeVideo(WithVideoAllowedProviders(t.Context(), []string{"byteplus"}), "caller-key", model, "original-key", fingerprint, nil, 0, 80_000)
+			gotAuth, gotJob, err := client.AuthorizeVideo(WithVideoAllowedProviders(t.Context(), []string{"byteplus"}), "caller-key", model, "480p", "original-key", fingerprint, nil, 0, 80_000)
 			if gotAuth != nil {
 				t.Fatal("replay returned dispatch authority")
 			}
@@ -170,7 +170,7 @@ func TestAuthorizeVideoConstraintsPreserveLegacyRoutes(t *testing.T) {
 				}
 			})})
 			ctx := WithVideoAllowedProviders(t.Context(), []string{"fal"})
-			auth, job, err := client.AuthorizeVideo(ctx, "test", "minimax/h3-max", "key", strings.Repeat("a", 64), nil, 500000)
+			auth, job, err := client.AuthorizeVideo(ctx, "test", "minimax/h3-max", "", "key", strings.Repeat("a", 64), nil, 500000)
 			if job != nil || authorizes != 1 {
 				t.Fatalf("job=%+v authorizes=%d", job, authorizes)
 			}

@@ -47,7 +47,7 @@ func TestVideoSeedRejectedBeforeQuoteOrAuthorization(t *testing.T) {
 		{"byteplus_ignored", "bytedance/seedance-2.5", `"provider":{"ignore":["byteplus"]},`, "", "venice", true},
 		{"byteplus_disabled", "bytedance/seedance-2.5", "", "", "venice", false},
 		{"venice_model", "google/gemini-omni-flash", "", "", "venice", true},
-		{"byteplus_incompatible_resolution", "bytedance/seedance-2.5", "", `"resolution":"1080p",`, "venice", true},
+		{"byteplus_incompatible_resolution", "bytedance/seedance-2.0-fast", "", `"resolution":"1080p",`, "venice", true},
 	} {
 		for _, seed := range []int64{0, 1101} {
 			t.Run(fmt.Sprintf("%s/seed=%d", tc.name, seed), func(t *testing.T) {

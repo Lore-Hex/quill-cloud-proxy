@@ -47,9 +47,11 @@ func (c *BytePlusClient) Supports(r *ResolvedRequest) bool {
 	if r == nil || bytePlusVideoModels[r.Model.ID] == "" {
 		return false
 	}
-	// These modes share one exact output-token tariff. Video input and higher
-	// resolutions have different prices and must not inherit this tariff.
-	return (r.Resolution == "480p" || r.Resolution == "720p") &&
+	// Text and first-frame inputs use the output-resolution tariff frozen by
+	// authorization. Fast has no 1080p tariff; video input remains unsupported.
+	resolutionSupported := r.Resolution == "480p" || r.Resolution == "720p" ||
+		(r.Resolution == "1080p" && (r.Model.ID == "bytedance/seedance-2.5" || r.Model.ID == "bytedance/seedance-2.0"))
+	return resolutionSupported &&
 		r.DurationSeconds >= 4 && r.DurationSeconds <= 15 &&
 		r.VideoReference == "" && r.AudioReference == "" && r.NegativePrompt == "" &&
 		r.LastFrame == "" && len(r.ReferenceImages) == 0
@@ -64,6 +66,10 @@ func (c *BytePlusClient) OutputTokenLimit(r *ResolvedRequest) (int, error) {
 	perSecond := 20_000
 	if r.Resolution == "720p" {
 		perSecond = 40_000
+	} else if r.Resolution == "1080p" {
+		// About 48,600 actual tokens/second, with comparable headroom to 720p.
+		// At 15 seconds this stays below the 2,000,000-token authorization cap.
+		perSecond = 100_000
 	}
 	return perSecond * r.DurationSeconds, nil
 }
