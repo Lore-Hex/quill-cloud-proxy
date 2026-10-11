@@ -3694,7 +3694,7 @@ func writeFusionError(ctx context.Context, conn io.Writer, trGateway *trustedrou
 }
 
 func resolveFusionModelID(model string) string {
-	model = strings.TrimSpace(model)
+	model = types.CanonicalRouterModelID(strings.TrimSpace(model))
 	if mapped, ok := fusionModelAliases[strings.ToLower(model)]; ok {
 		return mapped
 	}

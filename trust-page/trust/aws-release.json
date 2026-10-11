@@ -1,6 +1,6 @@
 {
   "accepted_pcr0s": [
-    "daa67a81749906c5383a1abd124a967f42c86901d350b7f2e9e4d1f3c95abbe1f7a099391bbe86438ef2bc5bcc96d971"
+    "590718a7858b7d737040f80e95f6777bfde60ee4dda9965d67ed17885cf617a942f6a5dd39229bccbb06c929fe1955f2"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
   "attestation_format": "cose-sign1-nitro-attestation-document",
@@ -11,16 +11,16 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "image_digest": "sha256:c7ea59e2e9c82f1b884dffdf399d9707eb658c12ca9968e537e823f762d43219",
-  "measurement_provenance": "All four serving instances in eu-west-3 and eu-west-1 were independently verified through SSM forwards against the production Nitro root, exact PCR0, fresh nonce, signed module identity, certificate/SPKI binding, TLS exporter and same-socket follow-up. CA-verified HTTPS health passed. Both guarded ASG refreshes completed with 100% minimum healthy capacity. Verified instances: i-08a4168c8bdfff492, i-0ccbd9b80de60af4f, i-01cf5d588c90f2143, i-05134863a83a9f51a. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
+  "image_digest": "sha256:7a8ceb5fc805c5b456c8545151b8da96e44e40743c28cfa8413b4183b56c6dbc",
+  "measurement_provenance": "All four serving instances across eu-west-1 and eu-west-3 were independently verified through SSM against the production Nitro root, exact PCR0, signed module identity, certificate/SPKI binding, TLS exporter and same-socket follow-up. Both guarded regional refreshes completed successfully with only verified replacements in the serving target groups. Both Fargate runtime pin consumers were narrowed to this measurement and actual serving tasks and targets verified healthy. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-01cf5d588c90f2143-enc01a105a11472ffd3",
-  "parent_image_digest": "sha256:d09fa4e0ceeb185cca6588aa4becd27d62b05dad7c9615ba462eb375e251c114",
-  "pcr0": "daa67a81749906c5383a1abd124a967f42c86901d350b7f2e9e4d1f3c95abbe1f7a099391bbe86438ef2bc5bcc96d971",
+  "observed_module_id": "i-01acd615dbbe7c7d4-enc01a128b419ec98cc",
+  "pcr0": "590718a7858b7d737040f80e95f6777bfde60ee4dda9965d67ed17885cf617a942f6a5dd39229bccbb06c929fe1955f2",
+  "parent_image_digest": "sha256:71e4e750ab3879cd9fe237118c97c3a83ecdcbba6206b50308bb8a2762fb8fa9",
   "platform": "aws-nitro-enclaves",
   "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
-  "source_commit": "bbcccb456f23c2e516f0fc61ca76f53d7c6a1aae",
+  "source_commit": "8e49c505068073f08e248022959da4575ab73494",
   "source_commit_provenance": "operator-asserted",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "tls": {

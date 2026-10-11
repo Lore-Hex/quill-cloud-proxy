@@ -172,7 +172,10 @@ SECRETS=(
   trustedrouter-nscale-api-key
   trustedrouter-regolo-api-key
   trustedrouter-lyceum-api-key
+  trustedrouter-elevenlabs-api-key
   trustedrouter-greenference-api-key
+  trustedrouter-boundless-api-key
+  trustedrouter-zro-api-key
   trustedrouter-system1models-global-api-key
   trustedrouter-system1models-eu-api-key
   trustedrouter-privatemode-api-key

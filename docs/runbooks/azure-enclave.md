@@ -159,6 +159,15 @@ For an existing region, drain its Traffic Manager endpoint before replacing
 the container. First verify the other region's health and attestation. Disable
 only the target endpoint, leaving its peer enabled:
 
+Before draining, also verify the healthy peer with the **shared**
+`api-azure.trustedrouter.com` SNI, using `verify-attestation.py --connect-ip`
+to select that peer's current origin IP and its independently derived expected
+HOST_DATA and MAA issuer. A successful regional-hostname check alone is not
+proof of failover: TCP health can remain green while the shared SNI is absent
+from the enclave's TLS allowlist. Sydney's generated environment now always
+includes the shared hostname; deployment rejects stale Sydney templates that
+omit it. Keep `API_HOST` singular so regional DNS reconciliation is unchanged.
+
 ```bash
 az network traffic-manager endpoint update --resource-group tr-azure --profile-name trquill-azure-gw --name <dubai-or-sydney> --type externalEndpoints --endpoint-status Disabled --output none
 ```

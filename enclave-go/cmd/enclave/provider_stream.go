@@ -161,13 +161,23 @@ func invokeProviderStream(
 		var candidateWriter *routeSelectingWriter
 		var attemptDuration time.Duration
 		var ttfbMs int64
+		candidateDeadline := time.Now().Add(budget)
 		for tryN := 0; ; tryN++ {
+			attemptBudget := budget
+			if tryN > 0 {
+				// Backoff and earlier failures share the same pre-acceptance
+				// budget. Never renew a five-minute wait after a slow 5xx.
+				attemptBudget = time.Until(candidateDeadline)
+				if attemptBudget <= 0 {
+					break
+				}
+			}
 			// A failed attested candidate must not lend its verification tier to a
 			// later plain-TLS fallback that actually serves the response.
 			ctx = llm.WithUpstreamVerification(ctx, "", time.Time{}, time.Time{})
 			attemptCtx, cancelAttempt := context.WithCancel(ctx)
 			var ttfbFired atomic.Bool
-			ttfbTimer := time.AfterFunc(budget, func() {
+			ttfbTimer := time.AfterFunc(attemptBudget, func() {
 				ttfbFired.Store(true)
 				cancelAttempt()
 			})
@@ -246,8 +256,12 @@ func invokeProviderStream(
 				tryN >= maxTransientUpstreamRetries || !isTransientUpstreamError(err) {
 				break
 			}
+			backoff := transientUpstreamBackoff(tryN)
+			if time.Until(candidateDeadline) <= backoff {
+				break
+			}
 			retryStart := phases.Now()
-			retryErr := sleepBeforeTransientRetry(ctx, transientUpstreamBackoff(tryN))
+			retryErr := sleepBeforeTransientRetry(ctx, backoff)
 			phases.RetryWaitDone(retryStart)
 			if retryErr != nil {
 				// Use the same failure/logging/billing path as an invocation that
@@ -643,7 +657,8 @@ func parseFirstByteBudget(raw string) time.Duration {
 }
 
 // finalCandidateFirstByteBudget is the time-to-first-byte budget for the LAST/only
-// candidate. The standard 20s budget exists to fall over to another candidate fast;
+// candidate, shared by its pre-acceptance attempts and retry backoffs. The standard
+// 20s budget exists to fall over to another candidate fast;
 // on the last candidate there is NOTHING to fall over to, so this is not a
 // fallover trigger but a HANG DETECTOR — it should sit on a "the upstream is
 // genuinely dead" timescale (minutes), not a "switch providers" one (seconds).

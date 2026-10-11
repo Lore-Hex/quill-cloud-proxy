@@ -2167,6 +2167,39 @@ class TestSharedHostnameForFailover(DeployHarness):
             "api-azure.trustedrouter.com",
         )
 
+    def test_sydney_cannot_lose_shared_hostname_when_extras_are_omitted(self) -> None:
+        self.assertEqual(
+            self._api_host(API_HOST="api-azure-syd.trustedrouter.com", EXTRA_API_HOSTS=""),
+            "api-azure-syd.trustedrouter.com,api-azure.trustedrouter.com",
+        )
+
+    def test_sydney_preserves_additional_names_and_does_not_duplicate_shared(self) -> None:
+        self.assertEqual(
+            self._api_host(
+                API_HOST="api-azure-syd.trustedrouter.com",
+                EXTRA_API_HOSTS=" other.example.com , api-azure.trustedrouter.com ",
+            ),
+            "api-azure-syd.trustedrouter.com,other.example.com,api-azure.trustedrouter.com",
+        )
+
+    def test_deploy_rejects_stale_sydney_template_without_shared_hostname(self) -> None:
+        self.healthy_deploy(API_HOST="api-azure-syd.trustedrouter.com")
+        live_policy_before = self.read_state("deployed-policy")
+        path = self.work / "template.json"
+        template = json.loads(path.read_text())
+        for container in template["resources"][0]["properties"]["containers"]:
+            if container["name"] == "quill-enclave":
+                for item in container["properties"]["environmentVariables"]:
+                    if item["name"] == "QUILL_API_HOST":
+                        item["value"] = "api-azure-syd.trustedrouter.com"
+        path.write_text(json.dumps(template))
+        self.clear_mutations()
+        result = self.run_script("--apply", "deploy", API_HOST="api-azure-syd.trustedrouter.com")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Sydney is missing the shared Azure SNI", result.stderr)
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual(self.read_state("deployed-policy"), live_policy_before)
+
     def test_blank_and_spaced_entries_are_dropped(self) -> None:
         """A trailing comma in an env var must not whitelist an empty SNI, which
         autocert would reject at handshake time rather than at deploy time."""
@@ -2342,7 +2375,7 @@ class TestControlPlaneBoundary(DeployHarness):
                 self.assertNotIn("observer-only service", result.stderr)
 
 
-class TestAzureFoundryStaysDarkUntilItsKeyExists(DeployHarness):
+class TestAzureFoundryRequiresSealedKey(DeployHarness):
     """bd5146a added the Azure Foundry provider to the enclave and gave GCP a
     probe (deploy-gcp-mig.sh: "Azure Foundry stays dark until its account key
     exists") but gave THIS script an unconditional default. So every Azure
@@ -2358,8 +2391,9 @@ class TestAzureFoundryStaysDarkUntilItsKeyExists(DeployHarness):
     Azure cannot copy GCP's probe. GCP reads Secret Manager per secret, so
     existence is one API call; Azure reads ONE sealed bundle whose names are
     inside AES-GCM ciphertext, and trquillkv holds no per-provider secrets to
-    ask about. So the name defaults to empty and the operator opts in after
-    sealing a bundle that contains the key.
+    ask about. The October 10 speech bundle contains this key, so the default
+    can name it, but only the manifest/version gate proves that it is present.
+    An explicit empty name must still keep the provider disabled.
     """
 
     def _azure_secret(self, **env) -> str:
@@ -2377,10 +2411,21 @@ class TestAzureFoundryStaysDarkUntilItsKeyExists(DeployHarness):
         # never mentions a secret this deploy cannot supply.
         return rendered.get("QUILL_AZURE_SECRET", "")
 
-    def test_the_provider_is_unnamed_by_default(self) -> None:
-        """The default must not name a secret whose presence in the bundle this
-        script has no way to check."""
-        self.assertEqual(self._azure_secret(), "")
+    def test_default_provider_has_a_sealed_key(self) -> None:
+        self.assertIn("trustedrouter-azure-api-key", AZURE_BUNDLE_MANIFEST.read_text().splitlines())
+        self.assertEqual(self._azure_secret(), "trustedrouter-azure-api-key")
+
+    def test_default_is_rejected_when_manifest_lacks_the_key(self) -> None:
+        manifest = self.state / "bundle-without-foundry.manifest"
+        manifest.write_text("\n".join(
+            row for row in AZURE_BUNDLE_MANIFEST.read_text().splitlines()
+            if row != "trustedrouter-azure-api-key"
+        ) + "\n")
+        result = self.run_script("--apply", "template", AZURE_BUNDLE_MANIFEST=str(manifest),
+                                 ALLOW_AZURE_BUNDLE_MANIFEST_OVERRIDE="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("trustedrouter-azure-api-key", result.stderr)
+        self.assertEqual(self.mutations(), [])
 
     def test_an_operator_can_opt_in_once_the_bundle_has_the_key(self) -> None:
         """Opting in must actually reach the measured env, or Foundry would

@@ -18,7 +18,7 @@ func billingBackoffRoute(method, route string) bool {
 		return false
 	}
 	switch route {
-	case "/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/embeddings", "/v1/images":
+	case "/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/embeddings", "/v1/images", "/v1/audio/speech":
 		return true
 	default:
 		return isDecidePath(route)
