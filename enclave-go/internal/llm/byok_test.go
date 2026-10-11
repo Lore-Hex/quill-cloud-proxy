@@ -1000,6 +1000,8 @@ func TestOpenAIGPTGenerationsUseModernCompletionTokenField(t *testing.T) {
 		model    string
 	}{
 		{name: "astra direct", provider: "openai", model: "gpt-6-astra"},
+		{name: "unversioned chat alias", provider: "openai", model: "chat-latest"},
+		{name: "canonical chat alias", provider: "openai", model: "openai/chat-latest"},
 		{name: "astra canonical id", provider: "openai", model: "openai/gpt-6-astra"},
 		{name: "future generation", provider: "openai", model: "gpt-10"},
 		{name: "azure astra deployment", provider: "azure", model: "gpt-6-astra"},
@@ -1039,6 +1041,8 @@ func TestOpenAIGPTGenerationsUseModernCompletionTokenField(t *testing.T) {
 		model    string
 	}{
 		{provider: "openai", model: "gpt-4o-mini"},
+		{provider: "openai", model: "chat-latest-preview"},
+		{provider: "novita", model: "chat-latest"},
 		{provider: "openai", model: "gpt-oss-120b"},
 		{provider: "deepinfra", model: "openai/gpt-6-astra"},
 		{provider: "lightning", model: "openai/gpt-4"},
