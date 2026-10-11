@@ -2167,6 +2167,39 @@ class TestSharedHostnameForFailover(DeployHarness):
             "api-azure.trustedrouter.com",
         )
 
+    def test_sydney_cannot_lose_shared_hostname_when_extras_are_omitted(self) -> None:
+        self.assertEqual(
+            self._api_host(API_HOST="api-azure-syd.trustedrouter.com", EXTRA_API_HOSTS=""),
+            "api-azure-syd.trustedrouter.com,api-azure.trustedrouter.com",
+        )
+
+    def test_sydney_preserves_additional_names_and_does_not_duplicate_shared(self) -> None:
+        self.assertEqual(
+            self._api_host(
+                API_HOST="api-azure-syd.trustedrouter.com",
+                EXTRA_API_HOSTS=" other.example.com , api-azure.trustedrouter.com ",
+            ),
+            "api-azure-syd.trustedrouter.com,other.example.com,api-azure.trustedrouter.com",
+        )
+
+    def test_deploy_rejects_stale_sydney_template_without_shared_hostname(self) -> None:
+        self.healthy_deploy(API_HOST="api-azure-syd.trustedrouter.com")
+        live_policy_before = self.read_state("deployed-policy")
+        path = self.work / "template.json"
+        template = json.loads(path.read_text())
+        for container in template["resources"][0]["properties"]["containers"]:
+            if container["name"] == "quill-enclave":
+                for item in container["properties"]["environmentVariables"]:
+                    if item["name"] == "QUILL_API_HOST":
+                        item["value"] = "api-azure-syd.trustedrouter.com"
+        path.write_text(json.dumps(template))
+        self.clear_mutations()
+        result = self.run_script("--apply", "deploy", API_HOST="api-azure-syd.trustedrouter.com")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Sydney is missing the shared Azure SNI", result.stderr)
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual(self.read_state("deployed-policy"), live_policy_before)
+
     def test_blank_and_spaced_entries_are_dropped(self) -> None:
         """A trailing comma in an env var must not whitelist an empty SNI, which
         autocert would reject at handshake time rather than at deploy time."""

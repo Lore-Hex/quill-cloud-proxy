@@ -560,6 +560,13 @@ render_env_json() {
 import json, os, sys
 
 mi_client_id = sys.argv[1]
+api_hosts = [os.environ["API_HOST"]] + [
+    h.strip() for h in os.environ.get("EXTRA_API_HOSTS", "").split(",") if h.strip()
+]
+# Traffic Manager's Sydney peer must serve the shared SNI even when an
+# operator reconstructs its environment without the optional extras variable.
+if api_hosts[0] == "api-azure-syd.trustedrouter.com" and "api-azure.trustedrouter.com" not in api_hosts:
+    api_hosts.append("api-azure.trustedrouter.com")
 
 # Names only. Not one secret VALUE appears in this env: every value below is
 # either a coordinate or the NAME of a bundle entry. The values live in the
@@ -586,10 +593,7 @@ env = {
     # --- serving ----------------------------------------------------------
     # The enclave splits this on commas and whitelists every name; the deploy
     # keeps API_HOST single for DNS and verification.
-    "QUILL_API_HOST": ",".join(
-        [os.environ["API_HOST"]]
-        + [h.strip() for h in os.environ.get("EXTRA_API_HOSTS", "").split(",") if h.strip()]
-    ),
+    "QUILL_API_HOST": ",".join(api_hosts),
     "QUILL_ACME_EMAIL":                 os.environ["QUILL_ACME_EMAIL"],
     "QUILL_HEALTH_PORT":                os.environ["QUILL_HEALTH_PORT"],
     "QUILL_FIRST_BYTE_TIMEOUT_SECONDS": os.environ["QUILL_FIRST_BYTE_TIMEOUT_SECONDS"],
@@ -1934,6 +1938,20 @@ if raw:
 # phase: deploy
 # ---------------------------------------------------------------------------
 phase_deploy() {
+  # Check the submitted artifact, not only today's environment generator.
+  python3 - "$WORKDIR/template.json" <<'PY' || die "REFUSING TO DEPLOY: regenerate the template and policy with the shared Azure hostname."
+import json, sys
+with open(sys.argv[1]) as handle:
+    template = json.load(handle)
+for resource in template.get("resources", []):
+    for container in resource.get("properties", {}).get("containers", []):
+        if container.get("name") != "quill-enclave":
+            continue
+        env = {item["name"]: item.get("value", "") for item in container["properties"].get("environmentVariables", [])}
+        hosts = {host.strip() for host in env.get("QUILL_API_HOST", "").split(",")}
+        if "api-azure-syd.trustedrouter.com" in hosts and "api-azure.trustedrouter.com" not in hosts:
+            raise SystemExit("Sydney is missing the shared Azure SNI hostname; failover would fail TLS.")
+PY
   [ -f "$WORKDIR/template.json" ] || die "run the template phase first"
   if [ -n "$QUILL_AZURE_BUNDLE_VERSION" ]; then
     validate_template_bundle_manifest
