@@ -116,6 +116,8 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
     "LYCEUM_API_KEY": "trustedrouter-lyceum-api-key",
     "ELEVEN_LABS_API_KEY": "trustedrouter-elevenlabs-api-key",
     "GREENFERENCE_API_KEY": "trustedrouter-greenference-api-key",
+    "BOUNDLESS_API_KEY": "trustedrouter-boundless-api-key",
+    "ZRO_API_KEY": "trustedrouter-zro-api-key",
     "SYSTEM1MODELS_GLOBAL_API_KEY": "trustedrouter-system1models-global-api-key",
     "SYSTEM1MODELS_EU_API_KEY": "trustedrouter-system1models-eu-api-key",
     "PRIVATEMODE_API_KEY": "trustedrouter-privatemode-api-key",
