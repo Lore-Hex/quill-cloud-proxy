@@ -119,6 +119,8 @@ REGOLO_SECRET="${REGOLO_SECRET:-trustedrouter-regolo-api-key}"
 LYCEUM_SECRET="${LYCEUM_SECRET:-trustedrouter-lyceum-api-key}"
 ELEVENLABS_SECRET="${ELEVENLABS_SECRET:-trustedrouter-elevenlabs-api-key}"
 GREENFERENCE_SECRET="${GREENFERENCE_SECRET:-trustedrouter-greenference-api-key}"
+BOUNDLESS_SECRET="${BOUNDLESS_SECRET:-trustedrouter-boundless-api-key}"
+ZRO_SECRET="${ZRO_SECRET:-trustedrouter-zro-api-key}"
 SYSTEM1MODELS_GLOBAL_SECRET="${SYSTEM1MODELS_GLOBAL_SECRET:-trustedrouter-system1models-global-api-key}"
 SYSTEM1MODELS_EU_SECRET="${SYSTEM1MODELS_EU_SECRET:-trustedrouter-system1models-eu-api-key}"
 PRIVATEMODE_SECRET="${PRIVATEMODE_SECRET:-trustedrouter-privatemode-api-key}"
@@ -292,6 +294,8 @@ for secret in \
   "$LYCEUM_SECRET" \
   "$ELEVENLABS_SECRET" \
   "$GREENFERENCE_SECRET" \
+  "$BOUNDLESS_SECRET" \
+  "$ZRO_SECRET" \
   "$SYSTEM1MODELS_GLOBAL_SECRET" \
   "$SYSTEM1MODELS_EU_SECRET" \
   "$PRIVATEMODE_SECRET" \

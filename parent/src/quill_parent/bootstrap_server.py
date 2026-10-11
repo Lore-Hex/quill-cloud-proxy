@@ -175,6 +175,8 @@ _DIRECT_PROVIDER_KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("lyceum", "trustedrouter-lyceum-api-key"),
     ("elevenlabs", "trustedrouter-elevenlabs-api-key"),
     ("greenference", "trustedrouter-greenference-api-key"),
+    ("boundless", "trustedrouter-boundless-api-key"),
+    ("zro", "trustedrouter-zro-api-key"),
     ("system1models", "trustedrouter-system1models-global-api-key"),
     ("system1models-eu", "trustedrouter-system1models-eu-api-key"),
     ("privatemode", "trustedrouter-privatemode-api-key"),

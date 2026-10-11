@@ -55,6 +55,8 @@ var specs = [...]Spec{
 	{Provider: "regolo", BaseURL: "https://api.regolo.ai/v1", SecretEnv: "QUILL_REGOLO_SECRET", SecretName: "trustedrouter-regolo-api-key", SecretLabel: "Regolo key"},
 	{Provider: "lyceum", BaseURL: "https://api.lyceum.technology/openai/v1", SecretEnv: "QUILL_LYCEUM_SECRET", SecretName: "trustedrouter-lyceum-api-key", SecretLabel: "Lyceum key"},
 	{Provider: "greenference", BaseURL: "https://llm.eu.greenference.com/trustedrouter/v1", SecretEnv: "QUILL_GREENFERENCE_SECRET", SecretName: "trustedrouter-greenference-api-key", SecretLabel: "Greenference key"},
+	{Provider: "boundless", BaseURL: "https://api.inference.boundless.network/v1", SecretEnv: "QUILL_BOUNDLESS_SECRET", SecretName: "trustedrouter-boundless-api-key", SecretLabel: "Boundless key"},
+	{Provider: "zro", BaseURL: "https://zro.moonmath.ai/v1", SecretEnv: "QUILL_ZRO_SECRET", SecretName: "trustedrouter-zro-api-key", SecretLabel: "Zro key"},
 	{Provider: "confidential-ai", BaseURL: "https://api.confidential.ai/v1", SecretEnv: "QUILL_CONFIDENTIAL_AI_SECRET", SecretName: "trustedrouter-confidential-ai-api-key", SecretLabel: "Confidential AI service token"},
 	{Provider: "scaledown", BaseURL: "https://api.scaledown.xyz", SecretEnv: "QUILL_SCALEDOWN_SECRET", SecretName: "trustedrouter-scaledown-api-key", SecretLabel: "ScaleDown inference key"},
 	{Provider: "perplexity", BaseURL: "https://api.perplexity.ai/v1", ChatCompletionsPath: "/sonar", SecretEnv: "QUILL_PERPLEXITY_SECRET", SecretName: "trustedrouter-perplexity-api-key", SecretLabel: "Perplexity key"},
