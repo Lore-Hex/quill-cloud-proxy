@@ -1,6 +1,5 @@
 {
   "accepted_pcr0s": [
-    "0eeac707372b26a824ee05794b4ceed4976675f1ca8e4f0bb0b622abdd192a8766cf2a28097d8e2772162a820227e73a",
     "590718a7858b7d737040f80e95f6777bfde60ee4dda9965d67ed17885cf617a942f6a5dd39229bccbb06c929fe1955f2"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
@@ -13,13 +12,13 @@
     "prompt_output_storage": false
   },
   "image_digest": "sha256:7a8ceb5fc805c5b456c8545151b8da96e44e40743c28cfa8413b4183b56c6dbc",
-  "measurement_provenance": "The isolated eu-west-3 candidate was independently verified through SSM against the production Nitro root, exact PCR0, signed module identity, certificate/SPKI binding, TLS exporter and same-socket follow-up. Both Fargate runtime pin consumers accept the old and candidate measurements, with actual serving tasks and targets verified healthy. Existing serving enclaves are unchanged; signed transitional publication precedes their guarded replacement. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
+  "measurement_provenance": "All four serving instances across eu-west-1 and eu-west-3 were independently verified through SSM against the production Nitro root, exact PCR0, signed module identity, certificate/SPKI binding, TLS exporter and same-socket follow-up. Both guarded regional refreshes completed successfully with only verified replacements in the serving target groups. Both Fargate runtime pin consumers were narrowed to this measurement and actual serving tasks and targets verified healthy. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-07e00deda4401c210-enc01a128732780e629",
+  "observed_module_id": "i-01acd615dbbe7c7d4-enc01a128b419ec98cc",
   "pcr0": "590718a7858b7d737040f80e95f6777bfde60ee4dda9965d67ed17885cf617a942f6a5dd39229bccbb06c929fe1955f2",
   "parent_image_digest": "sha256:71e4e750ab3879cd9fe237118c97c3a83ecdcbba6206b50308bb8a2762fb8fa9",
   "platform": "aws-nitro-enclaves",
-  "release_state": "rolling",
+  "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
   "source_commit": "8e49c505068073f08e248022959da4575ab73494",
   "source_commit_provenance": "operator-asserted",
