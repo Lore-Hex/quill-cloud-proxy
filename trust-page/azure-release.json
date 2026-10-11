@@ -1,8 +1,7 @@
 {
   "accepted_hostdata": [
-    "019109d7928342cac207281da0b5f22f0bac84f37008cb034efa79d32acc5f7f",
-    "aed431f795a1a9fef6f3097f948eb22c6a503c818b63aec818cbf2d0c781f7fa",
-    "1950e326b6ee841120c0bd6aaa4d9c882691a4ed153ba1c4d1cef65cf24d04a3"
+    "3d90210c8b69d5069bb479d3f21684834d940fb898687c662ecc382742f518a3",
+    "aed431f795a1a9fef6f3097f948eb22c6a503c818b63aec818cbf2d0c781f7fa"
   ],
   "api_base_url": "https://api-azure.trustedrouter.com/v1",
   "attestation_format": "microsoft-azure-attestation-jwt",
@@ -18,21 +17,21 @@
     "prompt_output_storage": false
   },
   "evidence_note": "MAA re-attests the SEV-SNP report; verifiers see Microsoft's assertion, not the raw hardware report or the AMD certificate chain.",
-  "hostdata": "019109d7928342cac207281da0b5f22f0bac84f37008cb034efa79d32acc5f7f",
+  "hostdata": "3d90210c8b69d5069bb479d3f21684834d940fb898687c662ecc382742f518a3",
   "measurement_type": "sev-snp-hostdata-sha256",
   "platform": "azure-confidential-containers-sev-snp",
   "regions": [
     {
       "attestation_issuer": "https://trquilluaen.uaen.attest.azure.net",
       "attestation_url": "https://api-azure.trustedrouter.com/attestation",
-      "bundle_version": "5baf19644b84457289ad6254e9969dbc",
+      "bundle_version": "b7a5952260aa4d39b2c5a239d45680aa",
       "compliance_status": "azure-compliant-uvm",
-      "hostdata": "019109d7928342cac207281da0b5f22f0bac84f37008cb034efa79d32acc5f7f",
-      "image_build_commit": "a24a4b6d349a922c539b8c22e75da467f5daf9eb",
-      "image_digest": "sha256:79060eb664f7381d656ded06aa2c4d19c2f375af172075b7670dd2509725b6b4",
+      "hostdata": "3d90210c8b69d5069bb479d3f21684834d940fb898687c662ecc382742f518a3",
+      "image_build_commit": "8e49c505068073f08e248022959da4575ab73494",
+      "image_digest": "sha256:f7db9176b9a1afe1a9474a207882a0ff579b64ec5bc880a89b6db837362090ee",
       "launch_measurement": "dc3f5a934489232a9b1818f12a0a88d2324ced00f8ab370f40451a76b7880bc3e211849a0739642d3d6c3b2b4bfb9866",
       "origin_hostname": "quill-enclave-uaenorth.uaenorth.azurecontainer.io",
-      "source_commit": "a24a4b6d349a922c539b8c22e75da467f5daf9eb"
+      "source_commit": "8e49c505068073f08e248022959da4575ab73494"
     },
     {
       "attestation_issuer": "https://trquillsyd.eau.attest.azure.net",
