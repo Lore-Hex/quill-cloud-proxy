@@ -87,7 +87,7 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			Choices       []struct {
 				Delta struct {
 					Error   *json.RawMessage `json:"error"`
-					Content string           `json:"content"`
+					Content json.RawMessage  `json:"content"`
 					// Several Chinese OpenAI-compatible providers (Z.AI/Zhipu,
 					// Moonshot in some configs) emit chain-of-thought tokens
 					// in `reasoning_content` and only fill `content` for the
@@ -171,12 +171,19 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 			continue
 		}
 		choice := chunk.Choices[0]
+		content, contentReasoning, err := openAIStreamContent(choice.Delta.Content)
+		if err != nil {
+			return err
+		}
 
 		// Parasail and Cerebras use reasoning; other providers use
 		// reasoning_content. Prefer the latter if both aliases are populated.
 		reasoning := choice.Delta.ReasoningContent
 		if reasoning == "" {
 			reasoning = choice.Delta.Reasoning
+		}
+		if reasoning == "" {
+			reasoning = contentReasoning
 		}
 		if reasoning != "" {
 			if !thinkingStarted {
@@ -189,8 +196,8 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 				return err
 			}
 		}
-		if choice.Delta.Content != "" {
-			if err := writeAnthropicTextDelta(w, choice.Delta.Content); err != nil {
+		if content != "" {
+			if err := writeAnthropicTextDelta(w, content); err != nil {
 				return err
 			}
 		}
@@ -239,6 +246,49 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 		}
 	}
 	return writeAnthropicStop(w, stopReason, usage, citations, searchResults, decision)
+}
+
+// Mistral emits content as text/thinking blocks, sometimes together at the
+// transition to an answer. Decode without dropping the entire chunk (and its
+// finish reason, usage, or tool calls) or leaking thinking into visible text.
+func openAIStreamContent(raw json.RawMessage) (string, string, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", "", nil
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text, "", nil
+	}
+	type textBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	var blocks []struct {
+		Type     string      `json:"type"`
+		Text     string      `json:"text"`
+		Thinking []textBlock `json:"thinking"`
+	}
+	invalid := errors.New("llm/openai-stream: unsupported content block format")
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return "", "", invalid
+	}
+	var visible, reasoning strings.Builder
+	for _, block := range blocks {
+		switch block.Type {
+		case "text":
+			visible.WriteString(block.Text)
+		case "thinking":
+			for _, inner := range block.Thinking {
+				if inner.Type != "text" {
+					return "", "", invalid
+				}
+				reasoning.WriteString(inner.Text)
+			}
+		default:
+			return "", "", invalid
+		}
+	}
+	return visible.String(), reasoning.String(), nil
 }
 
 type openAIToolCallAccumulator struct {
