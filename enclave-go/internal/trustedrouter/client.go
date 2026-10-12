@@ -480,6 +480,9 @@ type Authorization struct {
 	// after enclave opt-in; preserve raw snapshot bytes for canonical hashing.
 	async                                 *asyncAuthorization
 	shadowSettlement                      *shadowAuthorization
+	shadowBindingPresent                  bool
+	BillingShadowPolicy                   json.RawMessage       `json:"billing_shadow_policy,omitempty"`
+	BillingShadowExclusion                json.RawMessage       `json:"billing_shadow_exclusion,omitempty"`
 	BillingShadowBinding                  BillingSnapshotDigest `json:"billing_shadow_binding,omitempty"`
 	BillingSnapshotHash                   BillingSnapshotDigest `json:"billing_snapshot_hash,omitempty"`
 	AsyncEligible                         AsyncEligibility      `json:"async_eligible,omitempty"`
@@ -1010,6 +1013,7 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	c.afterCredentialCheck(ctx, lookupHash, nil)
 	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.RouteType = routeType
+	c.retainShadowAuthorization(decoded, &qtypes.OpenAIChatRequest{}, routeType)
 	if req.Tags != nil && decoded.RequestMetadataVersion < 1 {
 		_ = c.Refund(ctx, decoded, 503, "request_metadata_unavailable", 0.001, nil)
 		return nil, &ControlPlaneError{
@@ -1376,6 +1380,9 @@ func (c *Client) postToControlPlaneWithBootAuth(
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(internalTokenHeader, c.internalToken)
+		if c.asyncShadow && path == "/internal/gateway/authorize" {
+			req.Header.Set(shadowPolicyHeader, shadowPolicyV2)
+		}
 		if mode, _ := ctx.Value(asyncModeKey{}).(string); (mode == "async-v1" || mode == "sync") && (path == "/internal/gateway/authorize" || path == "/internal/gateway/settle") {
 			req.Header.Set(asyncSettlementHeader, mode)
 		}

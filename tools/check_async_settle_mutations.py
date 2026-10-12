@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """PR E and F2c regression mutations on a disposable copy; no git writes."""
+import argparse
 import os
 from pathlib import Path
 import re
@@ -7,12 +8,15 @@ import shutil
 import subprocess
 import tempfile
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--shadow-v2-only", action="store_true")
+args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
-work = Path(tempfile.mkdtemp(prefix="pr-e-mutations-", dir="/tmp"))
+work = Path(tempfile.mkdtemp(prefix="pr-e-mutations-", dir=os.environ.get("TMPDIR", "/tmp")))
 module = work / "enclave-go"
 shutil.copytree(root / "enclave-go", module)
 env = dict(os.environ, GOTOOLCHAIN="go1.24.13", GOFLAGS="-mod=mod",
-           GOCACHE="/tmp/pr-e-go-build")
+           GOCACHE=os.environ.get("GOCACHE", "/tmp/pr-e-go-build"))
 source = "internal/trustedrouter/async_settlement.go"
 client = "internal/trustedrouter/client.go"
 shadow = "internal/trustedrouter/async_settle_shadow.go"
@@ -118,6 +122,22 @@ mutations = [
      "TestAsyncKeyringMalformedEntries/without_issuer"),
 ]
 
+shadow_v2 = "internal/trustedrouter/async_settle_shadow_v2.go"
+v2_mutations = [
+    ("v2-certificate-attached-to-async", shadow_v2, "a.shadowSettlement = &shadowAuthorization{v2: true, exclusion:", "a.async = &asyncAuthorization{ticket: proof}; a.shadowSettlement = &shadowAuthorization{v2: true, exclusion:", "TestShadowV2SendEchoAndMoney"),
+    ("v2-settle-body-edited", client, '"actual_input_tokens":  usage.InputTokens,', '"actual_input_tokens":  usage.InputTokens + 1,', "TestShadowV2LegacyBodyLiteral"),
+    ("v2-shadow-panic-escapes", shadow, 'result = ctx\n\t\t}', 'result = ctx; panic("mutant escaped diagnostic")\n\t\t}', "TestShadowV2FailureDoesNotEscapeSend"),
+    ("v2-retry-header-changes", shadow, "retries.frozen[identity]; ok", "retries.frozen[identity]; ok && false", "TestShadowV2SendEchoAndMoney"),
+    ("v2-certificate-reencoded", shadow_v2, '"certificate": e.certificate', '"certificate": base64.RawURLEncoding.EncodeToString([]byte(e.certificate))', "TestShadowV2SendEchoAndMoney"),
+    ("v2-snapshot-before-certificate", shadow, 'v2, stop := retainShadowV2(a, req, route)', '_, _ = parseShadowSnapshot(a.BillingSnapshot); v2, stop := retainShadowV2(a, req, route)', "TestShadowV2RetentionOrderGateAndIsolation"),
+    ("v2-without-policy", shadow_v2, 'return false, false', 'a.BillingShadowPolicy = json.RawMessage(`"shadow-v2"`)', "TestShadowV2RetentionOrderGateAndIsolation|TestShadowV2OldRouterOracle"),
+    ("v2-marker-while-off", client, 'if c.asyncShadow && path == "/internal/gateway/authorize"', 'if path == "/internal/gateway/authorize"', "TestShadowV2MarkerRoutesAndLegacyErrors"),
+    ("v2-certificate-synthesized", shadow_v2, 'certificate: proof,', 'certificate: proof + "A",', "TestShadowV2SendEchoAndMoney"),
+    ("v2-excluded-carries-usage", shadow_v2, '"variant": "excluded",', '"variant": "excluded", "raw_usage": nil,', "TestShadowV2SendEchoAndMoney"),
+    ("v2-certificate-limit-raised", shadow_v2, 'const shadowCertificateBytes = 2048', 'const shadowCertificateBytes = 2049', "TestShadowV2CertificateLimitBeforeDecode"),
+]
+mutations = v2_mutations if args.shadow_v2_only else mutations + v2_mutations
+
 def run(test, package="./internal/trustedrouter"):
     packages = package.split()
     return subprocess.run(["go", "test", "-count=1", "-timeout=60s", "-tags",
@@ -125,7 +145,7 @@ def run(test, package="./internal/trustedrouter"):
                           cwd=module, env=env, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT)
 
-baseline = run("TestAsync|TestShadow|TestReview", "./internal/trustedrouter ./internal/adapter ./cmd/enclave")
+baseline = run("^TestShadowV2" if args.shadow_v2_only else "TestAsync|TestShadow|TestReview", "./internal/trustedrouter ./internal/adapter ./cmd/enclave")
 (work / "baseline.log").write_text(baseline.stdout)
 if baseline.returncode:
     raise SystemExit("Disposable baseline failed: " + str(work))

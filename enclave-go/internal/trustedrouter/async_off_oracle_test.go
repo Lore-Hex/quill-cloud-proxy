@@ -20,7 +20,7 @@ import (
 func TestAsyncOffFrozenMainTranscripts(t *testing.T) {
 	t.Setenv("TR_ASYNC_SETTLE_NEGOTIATE", "off")
 	t.Setenv("TR_ASYNC_SETTLE_SHADOW", "off")
-	for _, optional := range []string{`null`, `"opaque"`, `{"unknown":[1,true]}`, `123`} {
+	for _, optional := range []string{`null`, `"shadow-v2"`, `"opaque"`, `{"unknown":[1,true]}`, `123`} {
 		for _, route := range []string{"chat.completions", "responses", "messages", "embeddings", "images", "videos", "decide"} {
 			t.Run(route+"/"+optional, func(t *testing.T) {
 				var transcript []map[string]any
@@ -37,7 +37,7 @@ func TestAsyncOffFrozenMainTranscripts(t *testing.T) {
 					// metadata actually delivered to the new decoder.
 					wireReply := reply
 					if r.URL.Path == "/internal/gateway/authorize" {
-						wireReply = strings.Replace(reply, `"async_eligible":true`, `"async_eligible":true,"billing_shadow_binding":`+optional, 1)
+						wireReply = strings.Replace(reply, `"async_eligible":true`, `"async_eligible":true,"billing_shadow_policy":`+optional+`,"billing_shadow_exclusion":`+optional+`,"billing_shadow_binding":`+optional, 1)
 					}
 					_, _ = io.WriteString(w, wireReply)
 				}))

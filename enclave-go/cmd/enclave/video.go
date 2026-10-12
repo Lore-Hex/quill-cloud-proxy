@@ -344,7 +344,7 @@ func (s *videoService) serveCreate(ctx context.Context, conn io.Writer, body []b
 		writeVideoJobResponse(conn, http.StatusAccepted, stored)
 		return
 	}
-	selected, queued, err := s.queueVideoJob(ctx, resolved, routes)
+	selected, queued, err := s.queueVideoJob(ctx, resolved, routes, auth)
 	if err != nil {
 		_ = s.control.Refund(ctx, auth, videoErrorStatus(err), "video_provider_error", 0.001, nil)
 		_, _ = s.control.UpdateVideoJob(ctx, stored, "failed", "", "FAILED", "", "provider_error", 5)
@@ -537,6 +537,7 @@ func (s *videoService) queueVideoJob(
 	ctx context.Context,
 	request *video.ResolvedRequest,
 	routes []authorizedVideoRoute,
+	shadowAuth ...*trustedrouter.Authorization,
 ) (authorizedVideoRoute, *video.QueueResult, error) {
 	var lastErr error
 	for _, route := range routes {
@@ -547,6 +548,9 @@ func (s *videoService) queueVideoJob(
 		routed := *request
 		routed.UpstreamModel = route.UpstreamModel
 		queueCtx, cancel := context.WithTimeout(ctx, video.QueueTimeout(provider))
+		for _, auth := range shadowAuth {
+			auth.RecordShadowInvocation(route.EndpointID, route.Provider)
+		}
 		queued, err := provider.QueueResolved(queueCtx, &routed)
 		cancel()
 		if err == nil {

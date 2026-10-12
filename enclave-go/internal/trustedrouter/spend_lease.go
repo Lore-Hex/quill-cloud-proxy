@@ -214,6 +214,13 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 		Data Authorization `json:"data"`
 	}
 	var out any = &decoded
+	var shadowReply struct {
+		Data shadowAuthorizeWire `json:"data"`
+	}
+	if c.asyncShadow {
+		shadowReply.Data.Authorization = &decoded.Data
+		out = &shadowReply
+	}
 	policy := c.authorizeRetry
 	if plan != nil {
 		out = &wire
@@ -225,6 +232,9 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 	if err != nil {
 		return nil, controlPlaneEndpoint, err
 	}
+	if c.asyncShadow && plan == nil {
+		shadowReply.Data.finish()
+	}
 	if plan != nil {
 		// Decode the marker separately: null, scalars and bad member types are
 		// malformed acceptance, never a markerless version-skew response.
@@ -234,6 +244,16 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 		}
 		data.Authorization = &decoded.Data
 		err = json.Unmarshal(wire.Data, &data)
+		if c.asyncShadow {
+			var binding struct {
+				Binding json.RawMessage `json:"billing_shadow_binding"`
+			}
+			if err == nil {
+				err = json.Unmarshal(wire.Data, &binding)
+			}
+			shadow := shadowAuthorizeWire{Authorization: &decoded.Data, Binding: binding.Binding}
+			shadow.finish()
+		}
 		if data.Marker != nil {
 			if err != nil || json.Unmarshal(data.Marker, &decoded.Data.SpendLeaseAdmission) != nil || decoded.Data.SpendLeaseAdmission == nil {
 				return nil, controlPlaneEndpoint, invalidAdmissionResponse()

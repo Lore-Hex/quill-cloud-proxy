@@ -207,6 +207,7 @@ func invokeProviderStream(
 			}
 			candidateWriter.invocation = phases.InvokeStart()
 			redactedCtx, redactError := upstreamerror.WithCredentialRedaction(attemptCtx, option.ProviderAPIKey)
+			authorization.RecordShadowInvocation(option.EndpointID, option.Provider)
 			err = redactError(br.InvokeStreaming(redactedCtx, req, anthropicReq, candidateWriter, option))
 			phases.InvokeComplete(candidateWriter.invocation)
 			if candidateWriter.shadow != nil {

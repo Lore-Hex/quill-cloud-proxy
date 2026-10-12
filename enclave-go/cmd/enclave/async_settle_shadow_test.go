@@ -111,6 +111,13 @@ func TestShadowProviderStreamPaths(t *testing.T) {
 							flag = "on"
 						}
 						t.Setenv("TR_ASYNC_SETTLE_SHADOW", flag)
+						if !enabled {
+							response["billing_shadow_policy"] = map[string]any{"unknown": true}
+							response["billing_shadow_exclusion"] = []any{123, nil, true}
+						} else {
+							delete(response, "billing_shadow_policy")
+							delete(response, "billing_shadow_exclusion")
+						}
 						var settleBody string
 						settles := 0
 						server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

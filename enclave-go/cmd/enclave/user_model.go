@@ -222,6 +222,7 @@ func dispatchUserModel(
 	model *trustedrouter.CustomModel,
 	secretCache *byokcache.Cache,
 	out io.Writer,
+	shadowAuth ...*trustedrouter.Authorization,
 ) error {
 	if state == nil {
 		state = newUserModelDispatchState()
@@ -290,7 +291,7 @@ func dispatchUserModel(
 	invocation := phases.InvokeStart()
 	defer phases.InvokeComplete(invocation)
 	response, err := doUserModelRequestBefore(
-		totalCtx, cancelTotal, httpClient, httpReq, state.startedAt.Add(firstByteTimeout),
+		totalCtx, cancelTotal, httpClient, httpReq, state.startedAt.Add(firstByteTimeout), shadowAuth...,
 	)
 	if err != nil {
 		var guardErr *llm.EgressGuardError
@@ -398,6 +399,7 @@ func doUserModelRequestBefore(
 	client *http.Client,
 	req *http.Request,
 	deadline time.Time,
+	shadowAuth ...*trustedrouter.Authorization,
 ) (*http.Response, error) {
 	remaining := deadline.Sub(userModelNow())
 	if remaining <= 0 {
@@ -405,6 +407,11 @@ func doUserModelRequestBefore(
 	}
 	result := make(chan userModelHTTPResult, 1)
 	go func() {
+		for _, auth := range shadowAuth {
+			if auth != nil {
+				auth.RecordShadowInvocation(auth.EndpointID, auth.Provider)
+			}
+		}
 		response, err := client.Do(req)
 		result <- userModelHTTPResult{response: response, err: err}
 	}()
@@ -920,7 +927,7 @@ func serveUserModelBuffered(
 	done := make(chan error, 1)
 	go func() {
 		err := dispatchUserModel(
-			dispatchCtx, state, req, rawCallerBody, anthropicReq, authorization.CustomModel, secretCache, pw,
+			dispatchCtx, state, req, rawCallerBody, anthropicReq, authorization.CustomModel, secretCache, pw, authorization,
 		)
 		_ = pw.CloseWithError(err)
 		done <- err
@@ -1068,7 +1075,7 @@ func serveUserModelStreaming(
 	dispatchDone := make(chan struct{})
 	go func() {
 		dispatchErr = dispatchUserModel(
-			dispatchCtx, state, req, rawCallerBody, anthropicReq, authorization.CustomModel, secretCache, pw,
+			dispatchCtx, state, req, rawCallerBody, anthropicReq, authorization.CustomModel, secretCache, pw, authorization,
 		)
 		_ = pw.CloseWithError(dispatchErr)
 		close(dispatchDone)

@@ -54,6 +54,8 @@ type shadowAuthorization struct {
 	proof     string
 	terminal  billingv1.TerminalEnvelope
 	requested billingv1.Eligibility
+	v2        bool
+	exclusion *shadowExclusion
 	full      bool // Immutable success-shaped transport decision, fixed at authorize.
 }
 
@@ -183,7 +185,17 @@ func shadowClaims(proof string) (asyncTicketClaims, bool) {
 }
 
 func (c *Client) retainShadowAuthorization(a *Authorization, req *qtypes.OpenAIChatRequest, route string) {
-	if !c.asyncShadow || !asyncCohort(route) {
+	if !c.asyncShadow {
+		return
+	}
+	defer func() {
+		if recover() != nil {
+			a.shadowSettlement = nil
+			shadowReject("json_shape")
+		}
+	}()
+	v2, stop := retainShadowV2(a, req, route)
+	if stop || !asyncCohort(route) {
 		return
 	}
 	claims, ok := shadowClaims(string(a.BillingShadowBinding))
@@ -200,17 +212,17 @@ func (c *Client) retainShadowAuthorization(a *Authorization, req *qtypes.OpenAIC
 		shadowReject("json_shape")
 		return
 	}
-	if compact.Len() > shadowLocalBytes {
+	if !shadowLocalFits(compact.Len(), 0) {
 		shadowReject("snapshot_size")
 		return
 	}
-	snapshot, err := billingv1.ParseSnapshot(a.BillingSnapshot)
+	snapshot, err := parseShadowSnapshot(a.BillingSnapshot)
 	if err != nil {
 		shadowReject("json_shape")
 		return
 	}
 	raw, err := billingv1.CanonicalBytes(snapshot)
-	if err != nil || len(raw) > shadowLocalBytes || len(snapshot.Candidates()) > 128 {
+	if err != nil || !shadowLocalFits(len(raw), len(snapshot.Candidates())) {
 		shadowReject("snapshot_size")
 		return
 	}
@@ -238,7 +250,7 @@ func (c *Client) retainShadowAuthorization(a *Authorization, req *qtypes.OpenAIC
 		tier := ObserveShadowUsage(true, req.ServiceTier).ServiceTier
 		requested.ServiceTier = &tier
 	}
-	shadow := &shadowAuthorization{snapshot: snapshot, raw: raw, proof: string(a.BillingShadowBinding), terminal: claims.terminal(), requested: requested}
+	shadow := &shadowAuthorization{v2: v2, snapshot: snapshot, raw: raw, proof: string(a.BillingShadowBinding), terminal: claims.terminal(), requested: requested}
 	shadow.full = shadowSuccessFits(shadow)
 	a.shadowSettlement = shadow
 }
@@ -249,9 +261,6 @@ func (c *Client) retainShadowAuthorization(a *Authorization, req *qtypes.OpenAIC
 // The longest bounded observed tier also covers failure observations. This is a
 // size bound only, not a synthetic evaluation or a terminal sent to the router.
 func shadowSuccessFits(a *shadowAuthorization) bool {
-	if len(a.raw) > shadowInlineBytes {
-		return false
-	}
 	terminal := a.terminal
 	terminal.V, terminal.TerminalKind, terminal.ChargeMicro = 1, "settle", math.MaxInt64
 	for _, candidate := range a.snapshot.Candidates() {
@@ -286,6 +295,9 @@ func buildShadowEnvelope(a *shadowAuthorization, usage Usage, kind, revision str
 		observed.ServiceTier = &tier
 	}
 	body := map[string]any{"v": 1, "billing_shadow_binding": a.proof, "billing_snapshot": a.raw, "raw_usage": nil, "observed": observed, "terminal": nil, "payload_hash": nil, "go_error": nil, "go_evaluator": "billing-v1", "go_revision": revision, "handoff_prepare_us": int64(0)}
+	if a.v2 {
+		body["v"], body["policy_version"], body["variant"] = 2, shadowPolicyV2, "compared"
+	}
 	fail := func(reason string) map[string]any { body["go_error"] = reason; return body }
 	if !usage.ShadowObservation.Present {
 		return fail("usage_missing")
@@ -346,12 +358,18 @@ func canonicalShadow(value any) ([]byte, error) {
 	if err = decoder.Decode(&object); err != nil {
 		return nil, err
 	}
-	return json.Marshal(object)
+	canonical, err := json.Marshal(object)
+	if err == nil {
+		if fields, ok := object.(map[string]any); ok && fields["policy_version"] == shadowPolicyV2 {
+			canonical = shadowASCII(canonical)
+		}
+	}
+	return canonical, err
 }
 
 func shadowFullFits(body map[string]any, snapshotBytes int) bool {
 	raw, err := canonicalShadow(body)
-	return err == nil && snapshotBytes <= shadowInlineBytes && len(raw) <= shadowJSONBytes && base64.RawURLEncoding.EncodedLen(len(raw)) <= shadowHeaderBytes
+	return err == nil && snapshotBytes <= shadowInlineBytes && shadowWireFits(raw, false)
 }
 
 // Encoding enforces the retained mode; it never chooses a new mode for a failure.
@@ -363,18 +381,27 @@ func encodeShadow(body map[string]any, full bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(raw) > shadowJSONBytes || base64.RawURLEncoding.EncodedLen(len(raw)) > shadowHeaderBytes {
+	if !shadowWireFits(raw, body["variant"] == "excluded") {
 		return "", errors.New("header_size")
 	}
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func (c *Client) withShadowHeader(ctx context.Context, a *Authorization, usage Usage, kind string) context.Context {
+func (c *Client) withShadowHeader(ctx context.Context, a *Authorization, usage Usage, kind string) (result context.Context) {
+	result = ctx
 	if !c.asyncShadow {
 		return ctx
 	}
+	defer func() {
+		if recover() != nil {
+			shadowReject("json_shape")
+			result = ctx
+		}
+	}()
 	// Clear any inherited authorize context even when diagnostics are unavailable.
 	ctx = context.WithValue(ctx, asyncModeKey{}, "")
+	ctx = context.WithValue(ctx, shadowHeaderKey{}, "")
+	result = ctx
 	if a.shadowSettlement == nil {
 		return ctx
 	}
@@ -384,7 +411,17 @@ func (c *Client) withShadowHeader(ctx context.Context, a *Authorization, usage U
 		shadowReject("revision")
 		return ctx
 	}
-	body := buildShadowEnvelope(shadow, usage, kind, revision)
+	var body map[string]any
+	if shadow.exclusion != nil {
+		var ok bool
+		body, ok = buildShadowExcluded(shadow.exclusion, usage, kind, revision)
+		if !ok {
+			shadowReject("identity")
+			return ctx
+		}
+	} else {
+		body = buildShadowTerminal(shadow, usage, kind, revision)
+	}
 	key, err := canonicalShadow(body)
 	if err != nil {
 		shadowReject("json_shape")
@@ -407,7 +444,7 @@ func (c *Client) withShadowHeader(ctx context.Context, a *Authorization, usage U
 	}
 	// A zero observation (including the no-usage refund path) has no timing
 	// state. Its zero timing makes the header deterministic without a cache.
-	if retries != nil && !usage.ShadowObservation.AvailableAt.IsZero() {
+	if shadow.exclusion == nil && retries != nil && !usage.ShadowObservation.AvailableAt.IsZero() {
 		body["handoff_prepare_us"] = max(int64(0), time.Since(usage.ShadowObservation.AvailableAt).Microseconds())
 	}
 	header, err := encodeShadow(body, shadow.full)
