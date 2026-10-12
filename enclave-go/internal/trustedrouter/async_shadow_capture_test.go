@@ -52,6 +52,9 @@ func TestShadowV2BoundedCapture(t *testing.T) {
 						} else if got != "" || string(a.BillingShadowExclusion) != "null" {
 							t.Fatal("oversize value retained")
 						}
+						if cap(s.policy) != 56 || cap(s.exclusion) != 12290 {
+							t.Fatalf("raw backing capacity policy=%d exclusion=%d", cap(s.policy), cap(s.exclusion))
+						}
 						if s.field != "" || len(a.BillingShadowExclusion) > 6*shadowCertificateBytes+2 {
 							t.Fatal("unbounded retained metadata")
 						}
@@ -75,7 +78,7 @@ func TestShadowV2BoundedCapture(t *testing.T) {
 			t.Fatal("no-policy capture", raw)
 		}
 	}
-	raw := []byte(`{"DATA":{"billing_shadow_\u0070olicy":"wrong","BILLING_SHADOW_POLICY":"shadow-v2","billing_shadow_exclusion":"A","billing_shadow_binding":null},"data":null}`)
+	raw := []byte(`{"DATA":{"billing_shadow_\u0070olicy":"shadow-v2","billing_shadow_exclusion":"A","billing_shadow_binding":null},"data":null}`)
 	var s shadowCapture
 	_, _ = s.Write(raw)
 	var a Authorization
@@ -128,6 +131,54 @@ func TestShadowV2InvocationFact(t *testing.T) {
 	for _, auth := range []*Authorization{nil, {}, {shadowSettlement: &shadowAuthorization{}}} {
 		if n := testing.AllocsPerRun(100, func() { auth.RecordShadowInvocation("endpoint", "openai") }); n != 0 {
 			t.Fatal("dormant recorder allocates", n)
+		}
+	}
+}
+
+// Exact backing capacities catch cap+1 even when overflow clears the length.
+// Escaped boundaries independently pin the decoded limits at 9 and 2048.
+func TestShadowV2CaptureExactCaps(t *testing.T) {
+	for _, field := range []struct {
+		name         string
+		decoded, raw int
+	}{
+		{"billing_shadow_policy", 9, 56}, {"billing_shadow_exclusion", 2048, 12290},
+	} {
+		for _, n := range []int{field.decoded, field.decoded + 1, 100000} {
+			for _, escaped := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%d/escaped=%t", field.name, n, escaped), func(t *testing.T) {
+					value := strings.Repeat("A", n)
+					if escaped {
+						value = strings.Repeat(`\u0041`, n)
+					}
+					prefix := `{"data":{`
+					if field.name != "billing_shadow_policy" {
+						prefix += `"billing_shadow_policy":"shadow-v2",`
+					}
+					var s shadowCapture
+					_, _ = s.Write([]byte(prefix + `"` + field.name + `":"` + value + `"}}`))
+					var a Authorization
+					s.finish(&a)
+					raw, capacity := a.BillingShadowPolicy, cap(s.policy)
+					if field.name == "billing_shadow_exclusion" {
+						raw, capacity = a.BillingShadowExclusion, cap(s.exclusion)
+					}
+					if capacity != field.raw {
+						t.Fatalf("backing capacity %d != %d", capacity, field.raw)
+					}
+					var decoded string
+					if err := json.Unmarshal(raw, &decoded); err != nil {
+						t.Fatal(err)
+					}
+					if n == field.decoded {
+						if decoded != strings.Repeat("A", n) {
+							t.Fatal("exact decoded cap rejected")
+						}
+					} else if string(raw) != "null" {
+						t.Fatal("decoded cap exceeded")
+					}
+				})
+			}
 		}
 	}
 }

@@ -25,3 +25,22 @@ main's retention allocation count in every cell and checks head stays in the
 same 16-allocation bucket (runtime map-overflow variation), or 256 under race
 (random pool discards), preserving exact zero; retention state and decoded authorizations are exact JSON, errors include
 exact text, concrete type, and UnmarshalTypeError.Field.
+
+Round 3 duplicate matrix: duplicates.json was captured from a fresh read-only
+archive of the SAME main commit in /tmp/v2-p2-author-3/main/enclave-go.
+All 331 production Go sources match the independently reviewed main copy.
+Copy async_live_duplicates_test.go as well as the existing oracle source and
+race selectors into the archived module. Copy the unchanged shadow_v2 fixture
+directory (input projections only, never head expectations). Run there:
+  GENERATE_FROZEN_MAIN_ORACLE=1 go test -count=1 -tags cloud_gcp,llm_multi \
+  ./internal/trustedrouter -run '^TestAsyncLiveDuplicateFrozenMain$'
+Use the toolchain, GOFLAGS and scratch-cache settings above. The 384 cells
+cross 96 inputs with both shadow modes and both decoder targets. Every cell
+freezes main's decoded authorization, exact error string/type/value, endpoint,
+retention state, and real Settle/Refund body and error results. Main retention
+is independently replayed from legacy decoded fields for ALL cells on head;
+policy-bearing cells additionally assert intentional v2 suppression or positive
+fixture emission. No-policy cells compare actual retention exactly to main.
+No allocation counts are frozen in this added matrix; the existing normal/race
+allocation matrices and exact bounds remain unchanged. Both race modes use the
+same duplicate expectations. The two original matrix files were not regenerated.

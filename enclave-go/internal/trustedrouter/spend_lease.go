@@ -217,7 +217,9 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 	var capture *shadowCapture
 	if c.asyncShadow {
 		capture = &shadowCapture{}
-		ctx = context.WithValue(ctx, shadowCaptureKey{}, capture)
+		if plan == nil {
+			ctx = context.WithValue(ctx, shadowCaptureKey{}, capture)
+		}
 	}
 	policy := c.authorizeRetry
 	if plan != nil {
@@ -250,6 +252,13 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 		return nil, controlPlaneEndpoint, err
 	}
 	if capture != nil {
+		if plan != nil {
+			// RawMessage selects only the last data occurrence. Observe that
+			// selected value, never metadata from discarded envelope members.
+			_, _ = capture.Write([]byte(`{"data":`))
+			_, _ = capture.Write(wire.Data)
+			_, _ = capture.Write([]byte(`}`))
+		}
 		capture.finish(&decoded.Data)
 	}
 	if plan != nil && decoded.Data.SpendLease != nil && decoded.Data.SpendLeaseRemainingMicro == nil {

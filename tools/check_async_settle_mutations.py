@@ -155,6 +155,32 @@ live_mutations = [
      'var out any = &decoded; type shadowAuthorizeWire struct { *Authorization }; if c.asyncShadow { out = &struct { Data shadowAuthorizeWire `json:"data"` }{Data: shadowAuthorizeWire{&decoded.Data}} }',
      "TestAsyncLiveFrozenMain/F4"),
 ]
+capture = "internal/trustedrouter/async_shadow_capture.go"
+duplicate_test = "TestAsyncLiveDuplicateFrozenMain"
+live_mutations += [
+    ("live-capture-discarded-plan-data", "internal/trustedrouter/spend_lease.go",
+     "if plan == nil {\n\t\t\tctx = context.WithValue(ctx, shadowCaptureKey{}, capture)",
+     "if true {\n\t\t\tctx = context.WithValue(ctx, shadowCaptureKey{}, capture)",
+     duplicate_test + "/data"),
+    ("live-duplicate-policy-last-wins", capture, "if s.seen&bit != 0 {",
+     'if s.seen&bit != 0 && name != "billing_shadow_policy" {', duplicate_test + "/members"),
+    ("live-duplicate-exclusion-first-wins", capture, "if s.seen&bit != 0 {",
+     'if s.seen&bit != 0 && name == "billing_shadow_exclusion" { break }; if s.seen&bit != 0 {',
+     duplicate_test + "/members/excluded/billing_shadow_exclusion"),
+    ("live-duplicate-exclusion-last-wins", capture, "if s.seen&bit != 0 {",
+     'if s.seen&bit != 0 && name != "billing_shadow_exclusion" {',
+     duplicate_test + "/members/excluded/billing_shadow_exclusion"),
+    ("live-duplicate-binding-ignored", capture, "if s.seen&bit != 0 {",
+     'if s.seen&bit != 0 && name != "billing_shadow_binding" {',
+     duplicate_test + "/members/compared/billing_shadow_binding"),
+    ("live-policy-raw-cap-plus-one", capture, "b, 6*len(shadowPolicyV2)+2)",
+     "b, 6*len(shadowPolicyV2)+3)", "TestShadowV2CaptureExactCaps/billing_shadow_policy"),
+    ("live-exclusion-raw-cap-plus-one", capture, "b, 6*shadowCertificateBytes+2)",
+     "b, 6*shadowCertificateBytes+3)", "TestShadowV2CaptureExactCaps/billing_shadow_exclusion"),
+    ("live-escaped-duplicate-distinct", capture, "if bytes.ContainsRune(key, '\\\\') {",
+     "if false && bytes.ContainsRune(key, '\\\\') {", duplicate_test + "/members"),
+]
+
 for site, option, auth, test in [
     ("embeddings", "invokeOptions[0]", "authorization", "Embeddings"),
     ("decide", "candidate", "authorization", "Decide"),

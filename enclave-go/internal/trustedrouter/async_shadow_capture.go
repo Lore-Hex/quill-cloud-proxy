@@ -10,7 +10,8 @@ type shadowCaptureKey struct{}
 // shadowCapture observes the original decoder's reads. It never buffers the
 // response or an unknown value. Depth and string state suffice because the
 // original decoder alone validates JSON. Limits include worst-case JSON escapes.
-// Duplicate data objects merge, as they do in the legacy Authorization target.
+// Ordinary data objects merge, as in the legacy struct target. The plan seam
+// instead supplies only its already-selected RawMessage data value.
 type shadowCapture struct {
 	done                                              bool
 	depth                                             int
@@ -21,6 +22,8 @@ type shadowCapture struct {
 	policy, exclusion                                 json.RawMessage
 	policySeen, policyOverflow, exclusionOverflow     bool
 	binding                                           bool
+	seen                                              uint8
+	ambiguous                                         bool
 }
 
 func (s *shadowCapture) Write(p []byte) (int, error) {
@@ -93,8 +96,15 @@ func (s *shadowCapture) byte(b byte) {
 			if s.depth == 1 {
 				s.dataObject = bytes.EqualFold(key, []byte(`"data"`))
 			} else {
-				for _, name := range []string{"billing_shadow_policy", "billing_shadow_exclusion", "billing_shadow_binding"} {
+				for index, name := range []string{"billing_shadow_policy", "billing_shadow_exclusion", "billing_shadow_binding"} {
 					if len(key) == len(name)+2 && bytes.EqualFold(key[1:len(key)-1], []byte(name)) {
+						// Compare decoded, folded names once for both recognition and
+						// duplicate detection. No duplicate is evidence, even if equal.
+						bit := uint8(1 << index)
+						if s.seen&bit != 0 {
+							s.ambiguous = true
+						}
+						s.seen |= bit
 						s.field = name
 						switch name {
 						case "billing_shadow_policy":
@@ -166,6 +176,13 @@ func boundedShadowString(raw []byte, overflow bool, limit int) json.RawMessage {
 func (s *shadowCapture) finish(a *Authorization) {
 	// No policy means main's v1 path, including no new retained metadata.
 	if !s.policySeen {
+		return
+	}
+	if s.ambiguous {
+		// Preserve policy presence without choosing either duplicate. The
+		// existing malformed-policy gate suppresses all v2 diagnostics.
+		// With no policy, the return above preserves main's v1 behavior.
+		a.BillingShadowPolicy = json.RawMessage(`null`)
 		return
 	}
 	a.BillingShadowPolicy = boundedShadowString(s.policy, s.policyOverflow, len(shadowPolicyV2))
