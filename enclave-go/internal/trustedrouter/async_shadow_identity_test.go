@@ -163,6 +163,12 @@ func TestShadowV2IdentityDecoderDifferential(t *testing.T) {
 // instead of quietly testing less.
 var shadowIdentityMatched = [3]int{42, 58, 44}
 
+// shadowIdentityBoundedPairs pins the size of the bounded selection per member
+// (plain-name pairings in both orders plus the anchor cross-product). The
+// expectation is a literal, not derived from the selector, so dropping the
+// anchor pairs or any pairing fails instead of shrinking quietly.
+var shadowIdentityBoundedPairs = [3]int{99, 140, 103}
+
 // shadowIdentityPairs selects the ordered duplicate pairs the sender test
 // drives. With shadowIdentityExhaustive (the cloud_gcp,llm_multi tag set, one
 // mandatory CI job) it is every ordered pair of decoder-matched spellings.
@@ -268,6 +274,22 @@ func TestShadowV2IdentityDuplicateSenders(t *testing.T) {
 		}
 		if shadowIdentityExhaustive && len(pairs) != len(keys)*len(keys) {
 			t.Fatalf("%s: %d pairs, want every ordered pair (%d)", name, len(pairs), len(keys)*len(keys))
+		}
+		selected := map[[2]string]bool{}
+		for _, pair := range pairs {
+			if selected[pair] {
+				t.Fatalf("%s: pair %q repeated", name, pair)
+			}
+			selected[pair] = true
+		}
+		plainName := `"` + name + `"`
+		for _, key := range keys {
+			if !selected[[2]string{key, plainName}] || !selected[[2]string{plainName, key}] {
+				t.Fatalf("%s: %q is not paired with the plain name in both orders", name, key)
+			}
+		}
+		if !shadowIdentityExhaustive && len(pairs) != shadowIdentityBoundedPairs[member] {
+			t.Fatalf("%s: bounded selection has %d pairs, want %d", name, len(pairs), shadowIdentityBoundedPairs[member])
 		}
 		configurations := 12 // policy selected or not, two seams, three value orders
 		if member == 0 {
@@ -385,6 +407,9 @@ func TestShadowV2IdentityDuplicateSenders(t *testing.T) {
 	}
 	if shadowIdentityExhaustive && total != 74184 {
 		t.Fatalf("exhaustive mode ran %d scenarios, want 74184", total)
+	}
+	if !shadowIdentityExhaustive && total != 3510 {
+		t.Fatalf("bounded mode ran %d scenarios, want 3510", total)
 	}
 	t.Logf("exhaustive=%t: %d ordered duplicate/seam/value/policy scenarios; %d real terminal sends", shadowIdentityExhaustive, total, 2*total)
 }
