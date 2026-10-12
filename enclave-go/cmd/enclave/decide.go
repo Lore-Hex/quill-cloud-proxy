@@ -461,6 +461,7 @@ func serveHostedDecide(
 	attemptCount := 0
 	for index, candidate := range candidates {
 		attemptCount++
+		authorization.RecordShadowInvocation(candidate.EndpointID, candidate.Provider)
 		upstream, err = decider.InvokeDecide(ctx, wire, candidate)
 		if err == nil {
 			served = candidate

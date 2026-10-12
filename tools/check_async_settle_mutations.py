@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """PR E and F2c regression mutations on a disposable copy; no git writes."""
+import argparse
 import os
 from pathlib import Path
 import re
@@ -7,12 +8,16 @@ import shutil
 import subprocess
 import tempfile
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--shadow-v2-only", action="store_true")
+parser.add_argument("--live-path-only", action="store_true")
+args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
-work = Path(tempfile.mkdtemp(prefix="pr-e-mutations-", dir="/tmp"))
+work = Path(tempfile.mkdtemp(prefix="pr-e-mutations-", dir=os.environ.get("TMPDIR", "/tmp")))
 module = work / "enclave-go"
 shutil.copytree(root / "enclave-go", module)
 env = dict(os.environ, GOTOOLCHAIN="go1.24.13", GOFLAGS="-mod=mod",
-           GOCACHE="/tmp/pr-e-go-build")
+           GOCACHE=os.environ.get("GOCACHE", "/tmp/pr-e-go-build"))
 source = "internal/trustedrouter/async_settlement.go"
 client = "internal/trustedrouter/client.go"
 shadow = "internal/trustedrouter/async_settle_shadow.go"
@@ -118,6 +123,115 @@ mutations = [
      "TestAsyncKeyringMalformedEntries/without_issuer"),
 ]
 
+shadow_v2 = "internal/trustedrouter/async_settle_shadow_v2.go"
+v2_mutations = [
+    ("v2-certificate-attached-to-async", shadow_v2, "a.shadowSettlement = &shadowAuthorization{v2: true, exclusion:", "a.async = &asyncAuthorization{ticket: proof}; a.shadowSettlement = &shadowAuthorization{v2: true, exclusion:", "TestShadowV2SendEchoAndMoney"),
+    ("v2-settle-body-edited", client, '"actual_input_tokens":  usage.InputTokens,', '"actual_input_tokens":  usage.InputTokens + 1,', "TestShadowV2LegacyBodyLiteral"),
+    ("v2-shadow-panic-escapes", shadow, 'result = ctx\n\t\t}', 'result = ctx; panic("mutant escaped diagnostic")\n\t\t}', "TestShadowV2FailureDoesNotEscapeSend"),
+    ("v2-retry-header-changes", shadow, "retries.frozen[identity]; ok", "retries.frozen[identity]; ok && false", "TestShadowV2SendEchoAndMoney"),
+    ("v2-certificate-reencoded", shadow_v2, '"certificate": e.certificate', '"certificate": base64.RawURLEncoding.EncodeToString([]byte(e.certificate))', "TestShadowV2SendEchoAndMoney"),
+    ("v2-snapshot-before-certificate", shadow, 'v2, stop := retainShadowV2(a, req, route)', '_, _ = parseShadowSnapshot(a.BillingSnapshot); v2, stop := retainShadowV2(a, req, route)', "TestShadowV2RetentionOrderGateAndIsolation"),
+    ("v2-without-policy", shadow_v2, 'return false, false', 'a.BillingShadowPolicy = json.RawMessage(`"shadow-v2"`)', "TestShadowV2RetentionOrderGateAndIsolation|TestShadowV2OldRouterOracle"),
+    ("v2-marker-while-off", client, 'if c.asyncShadow && path == "/internal/gateway/authorize"', 'if path == "/internal/gateway/authorize"', "TestShadowV2MarkerRoutesAndLegacyErrors"),
+    ("v2-certificate-synthesized", shadow_v2, 'certificate: proof,', 'certificate: proof + "A",', "TestShadowV2SendEchoAndMoney"),
+    ("v2-excluded-carries-usage", shadow_v2, '"variant": "excluded",', '"variant": "excluded", "raw_usage": nil,', "TestShadowV2SendEchoAndMoney"),
+    ("v2-certificate-limit-raised", shadow_v2, 'const shadowCertificateBytes = 2048', 'const shadowCertificateBytes = 2049', "TestShadowV2CertificateLimitBeforeDecode"),
+]
+
+live_mutations = [
+    ("live-off-v2-decode-field", client,
+     'BillingShadowPolicy                   json.RawMessage       `json:"-"`',
+     'BillingShadowPolicy                   json.RawMessage       `json:"billing_shadow_policy,omitempty"`',
+     "TestAsyncLiveMainAllocationClass|TestAsyncLiveFrozenMain/F2-off-huge-v2-fields"),
+    ("live-off-v2-exclusion-decode-field", client,
+     'BillingShadowExclusion                json.RawMessage       `json:"-"`',
+     'BillingShadowExclusion                json.RawMessage       `json:"billing_shadow_exclusion,omitempty"`',
+     "TestAsyncLiveMainAllocationClass|TestAsyncLiveFrozenMain/F2-off-huge-v2-fields"),
+    ("live-inline-short-circuit-removed", shadow,
+     "if len(a.raw) > shadowInlineBytes {\n\t\treturn false\n\t}", "",
+     "TestAsyncLiveMainAllocationClass"),
+    ("live-wrapper-no-policy", "internal/trustedrouter/spend_lease.go",
+     "var out any = &decoded",
+     'var out any = &decoded; type shadowAuthorizeWire struct { *Authorization }; if c.asyncShadow { out = &struct { Data shadowAuthorizeWire `json:"data"` }{Data: shadowAuthorizeWire{&decoded.Data}} }',
+     "TestAsyncLiveFrozenMain/F4"),
+]
+capture = "internal/trustedrouter/async_shadow_capture.go"
+duplicate_test = "TestAsyncLiveDuplicateFrozenMain"
+live_mutations += [
+    ("live-capture-discarded-plan-data", "internal/trustedrouter/spend_lease.go",
+     "if plan == nil {\n\t\t\tctx = context.WithValue(ctx, shadowCaptureKey{}, capture)",
+     "if true {\n\t\t\tctx = context.WithValue(ctx, shadowCaptureKey{}, capture)",
+     duplicate_test + "/data"),
+    ("live-duplicate-policy-last-wins", capture, "if s.seen&bit != 0 {",
+     'if s.seen&bit != 0 && name != "billing_shadow_policy" {', duplicate_test + "/members"),
+    ("live-duplicate-exclusion-first-wins", capture, "if s.seen&bit != 0 {",
+     'if s.seen&bit != 0 && name == "billing_shadow_exclusion" { break }; if s.seen&bit != 0 {',
+     duplicate_test + "/members/excluded/billing_shadow_exclusion"),
+    ("live-duplicate-exclusion-last-wins", capture, "if s.seen&bit != 0 {",
+     'if s.seen&bit != 0 && name != "billing_shadow_exclusion" {',
+     duplicate_test + "/members/excluded/billing_shadow_exclusion"),
+    ("live-duplicate-binding-ignored", capture, "if s.seen&bit != 0 {",
+     'if s.seen&bit != 0 && name != "billing_shadow_binding" {',
+     duplicate_test + "/members/compared/billing_shadow_binding"),
+    ("live-policy-raw-cap-plus-one", capture, "b, 6*len(shadowPolicyV2)+2)",
+     "b, 6*len(shadowPolicyV2)+3)", "TestShadowV2CaptureExactCaps/billing_shadow_policy"),
+    ("live-exclusion-raw-cap-plus-one", capture, "b, 6*shadowCertificateBytes+2)",
+     "b, 6*shadowCertificateBytes+3)", "TestShadowV2CaptureExactCaps/billing_shadow_exclusion"),
+    ("live-escaped-duplicate-distinct", capture, "key = decodedShadowKey(key)",
+     "if len(key) >= 2 { key = key[1:len(key)-1] }", duplicate_test + "/members"),
+]
+
+
+# Decoder identity regressions. Each row is non-equivalent and names a committed
+# assertion; the seam divergence needs coordinated edits only in the scratch copy.
+identity_test = "TestShadowV2IdentityDecoderDifferential"
+identity_senders = "TestShadowV2IdentityDuplicateSenders"
+live_mutations += [
+    ("live-identity-byte-length-guard", capture,
+     "return bytes.EqualFold(key, []byte(name))",
+     "return len(key) == len(name) && bytes.EqualFold(key, []byte(name))", identity_test),
+    ("live-identity-exact-only", capture,
+     "return bytes.EqualFold(key, []byte(name))",
+     "return bytes.Equal(key, []byte(name))", identity_test),
+    ("live-identity-ascii-only", capture,
+     "return bytes.EqualFold(key, []byte(name))",
+     "for _, b := range key { if b >= 128 { return false } }; return bytes.EqualFold(key, []byte(name))", identity_test),
+    ("live-recognition-folds-duplicates-exact", capture,
+     "if s.seen&bit != 0 {",
+     "if s.seen&bit != 0 && bytes.Equal(key, []byte(name)) {", identity_senders),
+    ("live-duplicate-history-reset-per-data", capture,
+     "s.depth++", "if s.depth == 1 && b == '{' { s.seen = 0 }; s.depth++",
+     duplicate_test + "/merged"),
+    ("live-identity-differs-between-seams", [
+        (capture, "type shadowCapture struct {", "type shadowCapture struct { exactOnly bool"),
+        (capture, "if shadowMemberEqual(key, name) {",
+         "if shadowMemberEqual(key, name) && (!s.exactOnly || bytes.Equal(key, []byte(name))) {"),
+        ("internal/trustedrouter/spend_lease.go", "_, _ = capture.Write(wire.Data)",
+         "capture.exactOnly = true; _, _ = capture.Write(wire.Data)"),
+     ], None, None, identity_senders),
+]
+
+for site, option, auth, test in [
+    ("embeddings", "invokeOptions[0]", "authorization", "Embeddings"),
+    ("decide", "candidate", "authorization", "Decide"),
+    ("images", "option", "authorization", "Images"),
+    ("provider_stream", "option", "authorization", "Stream"),
+    ("video", "route", "auth", "Video"),
+]:
+    live_mutations.append(("live-recorder-authorized-" + site, "cmd/enclave/" + site + ".go",
+        f"{auth}.RecordShadowInvocation({option}.EndpointID, {option}.Provider)",
+        f"{auth}.RecordShadowInvocation({auth}.EndpointID, {auth}.Provider)",
+        "TestShadowV2Invocation" + test))
+# These two sites have no candidate walk. Replacing the source with the
+# authorized primary is an equivalent mutation (already the production source),
+# so do not misreport a no-op as killed. Prove recording and single-route entry.
+for site, auth, test in [("speech", "authorization", "Speech"), ("user_model", "auth", "UserModel")]:
+    live_mutations.append(("live-recorder-omitted-" + site, "cmd/enclave/" + site + ".go",
+        f"{auth}.RecordShadowInvocation({auth}.EndpointID, {auth}.Provider)", "",
+        "TestShadowV2Invocation" + test))
+
+mutations = live_mutations if args.live_path_only else v2_mutations + live_mutations if args.shadow_v2_only else mutations + v2_mutations + live_mutations
+
 def run(test, package="./internal/trustedrouter"):
     packages = package.split()
     return subprocess.run(["go", "test", "-count=1", "-timeout=60s", "-tags",
@@ -125,24 +239,30 @@ def run(test, package="./internal/trustedrouter"):
                           cwd=module, env=env, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT)
 
-baseline = run("TestAsync|TestShadow|TestReview", "./internal/trustedrouter ./internal/adapter ./cmd/enclave")
+baseline = run("^Test(ShadowV2|AsyncLive)" if args.shadow_v2_only or args.live_path_only else "TestAsync|TestShadow|TestReview", "./internal/trustedrouter ./internal/adapter ./cmd/enclave")
 (work / "baseline.log").write_text(baseline.stdout)
 if baseline.returncode:
     raise SystemExit("Disposable baseline failed: " + str(work))
 print("Baseline PASS; evidence: " + str(work), flush=True)
 for name, file, old, new, test in mutations:
-    path = module / file
-    original = path.read_text()
-    assert original.count(old) == 1, (name, original.count(old))
-    path.write_text(original.replace(old, new, 1))
+    changes = [(file, old, new)] if isinstance(file, str) else file
+    originals = {}
+    primary_file = changes[0][0]
     try:
-        result = run(test, "./cmd/enclave" if name in ("refund-on-cleanup-timeout", "metadata-after-completed", "sanitized-tier-used", "sanitized-observation") else "./internal/adapter" if name == "metadata-after-incomplete" else "./internal/trustedrouter")
+        for changed_file, before, after in changes:
+            path = module / changed_file
+            original = path.read_text()
+            originals.setdefault(path, original)
+            assert original.count(before) == 1, (name, changed_file, original.count(before))
+            path.write_text(original.replace(before, after, 1))
+        result = run(test, "./cmd/enclave" if primary_file.startswith("cmd/enclave/") or name in ("refund-on-cleanup-timeout", "metadata-after-completed", "sanitized-tier-used", "sanitized-observation") else "./internal/adapter" if name == "metadata-after-incomplete" else "./internal/trustedrouter")
         (work / (name + ".log")).write_text(result.stdout)
         failed = re.findall(r"--- FAIL: ([^\s]+)", result.stdout)
         if result.returncode == 0 or not failed or "[build failed]" in result.stdout:
             raise SystemExit(name + " SURVIVED or failed to compile; see " + str(work))
         print(name + " KILLED by " + ", ".join(failed[:3]), flush=True)
     finally:
-        path.write_text(original)
+        for path, original in originals.items():
+            path.write_text(original)
 
 print(f"PASS: {len(mutations)} mutations compiled and were killed by assertions", flush=True)

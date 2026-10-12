@@ -214,6 +214,13 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 		Data Authorization `json:"data"`
 	}
 	var out any = &decoded
+	var capture *shadowCapture
+	if c.asyncShadow {
+		capture = &shadowCapture{}
+		if plan == nil {
+			ctx = context.WithValue(ctx, shadowCaptureKey{}, capture)
+		}
+	}
 	policy := c.authorizeRetry
 	if plan != nil {
 		out = &wire
@@ -234,6 +241,7 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 		}
 		data.Authorization = &decoded.Data
 		err = json.Unmarshal(wire.Data, &data)
+
 		if data.Marker != nil {
 			if err != nil || json.Unmarshal(data.Marker, &decoded.Data.SpendLeaseAdmission) != nil || decoded.Data.SpendLeaseAdmission == nil {
 				return nil, controlPlaneEndpoint, invalidAdmissionResponse()
@@ -242,6 +250,16 @@ func (c *Client) authorizeAtDecodeSeamWithAdmission(
 	}
 	if err != nil {
 		return nil, controlPlaneEndpoint, err
+	}
+	if capture != nil {
+		if plan != nil {
+			// RawMessage selects only the last data occurrence. Observe that
+			// selected value, never metadata from discarded envelope members.
+			_, _ = capture.Write([]byte(`{"data":`))
+			_, _ = capture.Write(wire.Data)
+			_, _ = capture.Write([]byte(`}`))
+		}
+		capture.finish(&decoded.Data)
 	}
 	if plan != nil && decoded.Data.SpendLease != nil && decoded.Data.SpendLeaseRemainingMicro == nil {
 		decoded.Data.SpendLeaseRemainingMicro = decoded.Data.SpendLease.RemainingMicro

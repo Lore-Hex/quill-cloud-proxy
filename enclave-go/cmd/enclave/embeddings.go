@@ -121,6 +121,9 @@ func serveEmbeddings(
 
 	phases := requesttiming.FromContext(ctx)
 	invocation := phases.InvokeStart()
+	if len(invokeOptions) > 0 {
+		authorization.RecordShadowInvocation(invokeOptions[0].EndpointID, invokeOptions[0].Provider)
+	}
 	resp, err := embedder.InvokeEmbedding(ctx, &req, invokeOptions...)
 	// The embedding interface exposes no first-byte timestamp.
 	phases.InvokeComplete(invocation)

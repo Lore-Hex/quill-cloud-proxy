@@ -1,0 +1,55 @@
+Frozen live authorize results captured from MAIN commit
+35e913683ec91cfd6b662830c3ded83af7a8e5ab, Go 1.24.13, 2026-10-12.
+Capture ran in /tmp/v2-p2-author-2/main using the reviewer's reconstructed main
+(reverse of enclave.diff); all 331 production Go source files compared byte-identical to a fresh
+git archive of 35e91368. No head output generated
+these expectations. Both ordinary and markerless spend-lease-plan seams are
+crossed with shadow off/on, HTTP 200/400, and the named input inventory in
+async_live_oracle_test.go. No listening sockets are used.
+
+Regenerate ONLY in a disposable copy of main 35e91368:
+  git archive 35e91368 enclave-go | tar -x -C /tmp/main-oracle
+Copy async_live_oracle_test.go, async_live_race_test.go, and
+async_live_norace_test.go into that copy's internal/trustedrouter/.
+From /tmp/main-oracle/enclave-go run:
+  GOTOOLCHAIN=go1.24.13 GOFLAGS=-mod=mod GOCACHE=/tmp/main-oracle/cache \
+  GENERATE_FROZEN_MAIN_ORACLE=1 go test -tags cloud_gcp,llm_multi \
+  ./internal/trustedrouter -run '^TestAsyncLive'
+Repeat the capture command with -race for matrix-race.json (race uses 160 bytes
+for the off decoder and randomly drops pooled objects). Review and copy both
+matrices back. Never regenerate on
+head. The test also enforces main's measured off decoder ceiling (152 bytes,
+2 allocations per operation at 0/1024/1000000 optional string bytes) and zero
+allocations for over-inline fit at 6145/65536/65537 bytes. The matrix stores
+main's retention allocation count in every cell and checks head stays in the
+same 16-allocation bucket (runtime map-overflow variation), or 256 under race
+(random pool discards), preserving exact zero; retention state and decoded authorizations are exact JSON, errors include
+exact text, concrete type, and UnmarshalTypeError.Field.
+
+Round 3 duplicate matrix: duplicates.json was captured from a fresh read-only
+archive of the SAME main commit in /tmp/v2-p2-author-3/main/enclave-go.
+All 331 production Go sources match the independently reviewed main copy.
+Copy async_live_duplicates_test.go as well as the existing oracle source and
+race selectors into the archived module. Copy the unchanged shadow_v2 fixture
+directory (input projections only, never head expectations). Run there:
+  GENERATE_FROZEN_MAIN_ORACLE=1 go test -count=1 -tags cloud_gcp,llm_multi \
+  ./internal/trustedrouter -run '^TestAsyncLiveDuplicateFrozenMain$'
+Use the toolchain, GOFLAGS and scratch-cache settings above. The 384 cells
+cross 96 inputs with both shadow modes and both decoder targets. Every cell
+freezes main's decoded authorization, exact error string/type/value, endpoint,
+retention state, and real Settle/Refund body and error results. Main retention
+is independently replayed from legacy decoded fields for ALL cells on head;
+policy-bearing cells additionally assert intentional v2 suppression or positive
+fixture emission. No-policy cells compare actual retention exactly to main.
+No allocation counts are frozen in this added matrix; the existing normal/race
+allocation matrices and exact bounds remain unchanged. Both race modes use the
+same duplicate expectations. The two original matrix files were not regenerated.
+
+Round 4 extends duplicates.json with 80 cells (464 total), captured with the
+same generator in a fresh read-only archive of main 35e91368 under
+/tmp/v2-p2-author-4/main/enclave-go. All 331 production Go files match the
+independently reviewed main. All 384 prior cells are unchanged. New inputs
+repeat policy, exclusion and binding across two or three ordinary data objects,
+check plan last-selection positives and no-policy controls, and preserve positive
+ordinary evidence split across objects. Both real terminal senders run per cell.
+The original normal/race matrices and all input fixtures remain byte-identical.
