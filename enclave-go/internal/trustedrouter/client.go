@@ -481,8 +481,8 @@ type Authorization struct {
 	async                                 *asyncAuthorization
 	shadowSettlement                      *shadowAuthorization
 	shadowBindingPresent                  bool
-	BillingShadowPolicy                   json.RawMessage       `json:"billing_shadow_policy,omitempty"`
-	BillingShadowExclusion                json.RawMessage       `json:"billing_shadow_exclusion,omitempty"`
+	BillingShadowPolicy                   json.RawMessage       `json:"-"`
+	BillingShadowExclusion                json.RawMessage       `json:"-"`
 	BillingShadowBinding                  BillingSnapshotDigest `json:"billing_shadow_binding,omitempty"`
 	BillingSnapshotHash                   BillingSnapshotDigest `json:"billing_snapshot_hash,omitempty"`
 	AsyncEligible                         AsyncEligibility      `json:"async_eligible,omitempty"`
@@ -1522,6 +1522,13 @@ func (c *Client) postJSONBytesWithBootAuthAtEndpoint(
 	}
 	if out == nil {
 		return selectedEndpoint, nil
+	}
+	// The legacy target and decoder own all results and errors. Optional
+	// shadow metadata observes bytes only; it cannot affect decoding.
+	if capture, ok := ctx.Value(shadowCaptureKey{}).(*shadowCapture); ok {
+		*capture = shadowCapture{}
+		err := json.NewDecoder(io.TeeReader(resp.Body, capture)).Decode(out)
+		return selectedEndpoint, err
 	}
 	return selectedEndpoint, json.NewDecoder(resp.Body).Decode(out)
 }

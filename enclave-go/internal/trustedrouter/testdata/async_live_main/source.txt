@@ -1,0 +1,27 @@
+Frozen live authorize results captured from MAIN commit
+35e913683ec91cfd6b662830c3ded83af7a8e5ab, Go 1.24.13, 2026-10-12.
+Capture ran in /tmp/v2-p2-author-2/main using the reviewer's reconstructed main
+(reverse of enclave.diff); all 331 production Go source files compared byte-identical to a fresh
+git archive of 35e91368. No head output generated
+these expectations. Both ordinary and markerless spend-lease-plan seams are
+crossed with shadow off/on, HTTP 200/400, and the named input inventory in
+async_live_oracle_test.go. No listening sockets are used.
+
+Regenerate ONLY in a disposable copy of main 35e91368:
+  git archive 35e91368 enclave-go | tar -x -C /tmp/main-oracle
+Copy async_live_oracle_test.go, async_live_race_test.go, and
+async_live_norace_test.go into that copy's internal/trustedrouter/.
+From /tmp/main-oracle/enclave-go run:
+  GOTOOLCHAIN=go1.24.13 GOFLAGS=-mod=mod GOCACHE=/tmp/main-oracle/cache \
+  GENERATE_FROZEN_MAIN_ORACLE=1 go test -tags cloud_gcp,llm_multi \
+  ./internal/trustedrouter -run '^TestAsyncLive'
+Repeat the capture command with -race for matrix-race.json (race uses 160 bytes
+for the off decoder and randomly drops pooled objects). Review and copy both
+matrices back. Never regenerate on
+head. The test also enforces main's measured off decoder ceiling (152 bytes,
+2 allocations per operation at 0/1024/1000000 optional string bytes) and zero
+allocations for over-inline fit at 6145/65536/65537 bytes. The matrix stores
+main's retention allocation count in every cell and checks head stays in the
+same 16-allocation bucket (runtime map-overflow variation), or 256 under race
+(random pool discards), preserving exact zero; retention state and decoded authorizations are exact JSON, errors include
+exact text, concrete type, and UnmarshalTypeError.Field.

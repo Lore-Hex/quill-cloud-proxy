@@ -225,6 +225,9 @@ func buildShadowExcluded(e *shadowExclusion, usage Usage, kind, revision string)
 		if e.endpoint == "" || e.adapter == "" {
 			return nil, false
 		}
+		if kind == "refund" && usage.SelectedEndpoint != "" && usage.SelectedEndpoint != e.endpoint {
+			return nil, false
+		}
 		if kind == "settle" && (usage.SelectedEndpoint != e.endpoint || usage.RouteType != e.route || usage.Streamed != e.streamed) {
 			return nil, false
 		}
@@ -263,17 +266,4 @@ func shadowASCII(raw []byte) []byte {
 
 func shadowLocalFits(size, candidates int) bool {
 	return size <= shadowLocalBytes && candidates <= 128
-}
-
-// Preserve optional-field presence on shadow authorizes without changing the
-// legacy tolerant string value. In particular null/objects cannot disguise a
-// contradictory exclusion+binding projection as a missing binding.
-type shadowAuthorizeWire struct {
-	*Authorization
-	Binding json.RawMessage `json:"billing_shadow_binding"`
-}
-
-func (w *shadowAuthorizeWire) finish() {
-	w.shadowBindingPresent = len(w.Binding) != 0
-	_ = json.Unmarshal(w.Binding, &w.BillingShadowBinding)
 }

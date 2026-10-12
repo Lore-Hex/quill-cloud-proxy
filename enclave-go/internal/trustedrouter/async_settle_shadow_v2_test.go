@@ -83,6 +83,7 @@ func v2Authorization(t *testing.T, v map[string]json.RawMessage) *Authorization 
 	if err := json.Unmarshal(v["object"], a); err != nil {
 		t.Fatal(err)
 	}
+	captureShadowProjection(a, v["object"])
 	return a
 }
 func TestShadowV2FixturePins(t *testing.T) {
@@ -244,7 +245,7 @@ func TestShadowV2SendEchoAndMoney(t *testing.T) {
 				expected := shadowV2Variants(t, terminalFile)[0]
 				obj := v2Object(t, expected["object"])
 				ShadowBuildRevision = v2String(t, obj["go_revision"])
-				response, _ := json.Marshal(map[string]any{"data": a})
+				response, _ := json.Marshal(map[string]any{"data": v2WireAuthorization(a)})
 				var bodies []string
 				var headers []string
 				var markers []string
@@ -609,7 +610,7 @@ func TestShadowV2MarkerRoutesAndLegacyErrors(t *testing.T) {
 				projection := shadowV2Variants(t, "authorize_excluded")[0]
 				a := v2Authorization(t, projection)
 				a.AdditionalCostReservationMicrodollars = 1
-				response, _ := json.Marshal(map[string]any{"data": a})
+				response, _ := json.Marshal(map[string]any{"data": v2WireAuthorization(a)})
 				calls := 0
 				c := New("https://trustedrouter.com", "test", &http.Client{Transport: shadowV2Transport(func(r *http.Request) (*http.Response, error) {
 					calls++
@@ -831,7 +832,7 @@ func TestShadowV2OutOfCohortEcho(t *testing.T) {
 			proof = strings.Join(parts, ".")
 			a.BillingShadowExclusion, _ = json.Marshal(proof)
 			a.AdditionalCostReservationMicrodollars = 1
-			reply, _ := json.Marshal(map[string]any{"data": a})
+			reply, _ := json.Marshal(map[string]any{"data": v2WireAuthorization(a)})
 			var headers []string
 			c := New("https://trustedrouter.com", "test", &http.Client{Transport: shadowV2Transport(func(r *http.Request) (*http.Response, error) {
 				if r.URL.Path == "/internal/gateway/authorize" {
@@ -902,7 +903,7 @@ func TestShadowV2MalformedBindingPresence(t *testing.T) {
 	for _, binding := range []json.RawMessage{json.RawMessage(`null`), json.RawMessage(`{}`), json.RawMessage(`123`), json.RawMessage(`""`)} {
 		t.Run(string(binding), func(t *testing.T) {
 			a := v2Authorization(t, shadowV2Variants(t, "authorize_excluded")[0])
-			raw, _ := json.Marshal(a)
+			raw, _ := json.Marshal(v2WireAuthorization(a))
 			response := v2Object(t, raw)
 			response["billing_shadow_binding"] = binding
 			raw, _ = json.Marshal(map[string]any{"data": response})
@@ -978,4 +979,19 @@ func TestShadowV2TransportRetry(t *testing.T) {
 			})
 		}
 	}
+}
+
+// Test-only wire projection: production Authorization deliberately ignores v2
+// fields during JSON decoding. Keep the original test response bytes/meaning.
+func v2WireAuthorization(a *Authorization) map[string]json.RawMessage {
+	raw, _ := json.Marshal(a)
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &fields)
+	if len(a.BillingShadowPolicy) > 0 {
+		fields["billing_shadow_policy"] = a.BillingShadowPolicy
+	}
+	if len(a.BillingShadowExclusion) > 0 {
+		fields["billing_shadow_exclusion"] = a.BillingShadowExclusion
+	}
+	return fields
 }

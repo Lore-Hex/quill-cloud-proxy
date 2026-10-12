@@ -261,6 +261,9 @@ func (c *Client) retainShadowAuthorization(a *Authorization, req *qtypes.OpenAIC
 // The longest bounded observed tier also covers failure observations. This is a
 // size bound only, not a synthetic evaluation or a terminal sent to the router.
 func shadowSuccessFits(a *shadowAuthorization) bool {
+	if len(a.raw) > shadowInlineBytes {
+		return false
+	}
 	terminal := a.terminal
 	terminal.V, terminal.TerminalKind, terminal.ChargeMicro = 1, "settle", math.MaxInt64
 	for _, candidate := range a.snapshot.Candidates() {
@@ -413,6 +416,11 @@ func (c *Client) withShadowHeader(ctx context.Context, a *Authorization, usage U
 	}
 	var body map[string]any
 	if shadow.exclusion != nil {
+		// The legacy refund body names the authorized primary. Never echo a
+		// different invocation as if it agreed with that unchanged terminal.
+		if kind == "refund" {
+			usage.SelectedEndpoint = a.EndpointID
+		}
 		var ok bool
 		body, ok = buildShadowExcluded(shadow.exclusion, usage, kind, revision)
 		if !ok {

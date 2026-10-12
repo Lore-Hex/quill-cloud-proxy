@@ -10,6 +10,7 @@ import tempfile
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--shadow-v2-only", action="store_true")
+parser.add_argument("--live-path-only", action="store_true")
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 work = Path(tempfile.mkdtemp(prefix="pr-e-mutations-", dir=os.environ.get("TMPDIR", "/tmp")))
@@ -136,7 +137,44 @@ v2_mutations = [
     ("v2-excluded-carries-usage", shadow_v2, '"variant": "excluded",', '"variant": "excluded", "raw_usage": nil,', "TestShadowV2SendEchoAndMoney"),
     ("v2-certificate-limit-raised", shadow_v2, 'const shadowCertificateBytes = 2048', 'const shadowCertificateBytes = 2049', "TestShadowV2CertificateLimitBeforeDecode"),
 ]
-mutations = v2_mutations if args.shadow_v2_only else mutations + v2_mutations
+
+live_mutations = [
+    ("live-off-v2-decode-field", client,
+     'BillingShadowPolicy                   json.RawMessage       `json:"-"`',
+     'BillingShadowPolicy                   json.RawMessage       `json:"billing_shadow_policy,omitempty"`',
+     "TestAsyncLiveMainAllocationClass|TestAsyncLiveFrozenMain/F2-off-huge-v2-fields"),
+    ("live-off-v2-exclusion-decode-field", client,
+     'BillingShadowExclusion                json.RawMessage       `json:"-"`',
+     'BillingShadowExclusion                json.RawMessage       `json:"billing_shadow_exclusion,omitempty"`',
+     "TestAsyncLiveMainAllocationClass|TestAsyncLiveFrozenMain/F2-off-huge-v2-fields"),
+    ("live-inline-short-circuit-removed", shadow,
+     "if len(a.raw) > shadowInlineBytes {\n\t\treturn false\n\t}", "",
+     "TestAsyncLiveMainAllocationClass"),
+    ("live-wrapper-no-policy", "internal/trustedrouter/spend_lease.go",
+     "var out any = &decoded",
+     'var out any = &decoded; type shadowAuthorizeWire struct { *Authorization }; if c.asyncShadow { out = &struct { Data shadowAuthorizeWire `json:"data"` }{Data: shadowAuthorizeWire{&decoded.Data}} }',
+     "TestAsyncLiveFrozenMain/F4"),
+]
+for site, option, auth, test in [
+    ("embeddings", "invokeOptions[0]", "authorization", "Embeddings"),
+    ("decide", "candidate", "authorization", "Decide"),
+    ("images", "option", "authorization", "Images"),
+    ("provider_stream", "option", "authorization", "Stream"),
+    ("video", "route", "auth", "Video"),
+]:
+    live_mutations.append(("live-recorder-authorized-" + site, "cmd/enclave/" + site + ".go",
+        f"{auth}.RecordShadowInvocation({option}.EndpointID, {option}.Provider)",
+        f"{auth}.RecordShadowInvocation({auth}.EndpointID, {auth}.Provider)",
+        "TestShadowV2Invocation" + test))
+# These two sites have no candidate walk. Replacing the source with the
+# authorized primary is an equivalent mutation (already the production source),
+# so do not misreport a no-op as killed. Prove recording and single-route entry.
+for site, auth, test in [("speech", "authorization", "Speech"), ("user_model", "auth", "UserModel")]:
+    live_mutations.append(("live-recorder-omitted-" + site, "cmd/enclave/" + site + ".go",
+        f"{auth}.RecordShadowInvocation({auth}.EndpointID, {auth}.Provider)", "",
+        "TestShadowV2Invocation" + test))
+
+mutations = live_mutations if args.live_path_only else v2_mutations + live_mutations if args.shadow_v2_only else mutations + v2_mutations + live_mutations
 
 def run(test, package="./internal/trustedrouter"):
     packages = package.split()
@@ -145,7 +183,7 @@ def run(test, package="./internal/trustedrouter"):
                           cwd=module, env=env, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT)
 
-baseline = run("^TestShadowV2" if args.shadow_v2_only else "TestAsync|TestShadow|TestReview", "./internal/trustedrouter ./internal/adapter ./cmd/enclave")
+baseline = run("^Test(ShadowV2|AsyncLive)" if args.shadow_v2_only or args.live_path_only else "TestAsync|TestShadow|TestReview", "./internal/trustedrouter ./internal/adapter ./cmd/enclave")
 (work / "baseline.log").write_text(baseline.stdout)
 if baseline.returncode:
     raise SystemExit("Disposable baseline failed: " + str(work))
@@ -156,7 +194,7 @@ for name, file, old, new, test in mutations:
     assert original.count(old) == 1, (name, original.count(old))
     path.write_text(original.replace(old, new, 1))
     try:
-        result = run(test, "./cmd/enclave" if name in ("refund-on-cleanup-timeout", "metadata-after-completed", "sanitized-tier-used", "sanitized-observation") else "./internal/adapter" if name == "metadata-after-incomplete" else "./internal/trustedrouter")
+        result = run(test, "./cmd/enclave" if file.startswith("cmd/enclave/") or name in ("refund-on-cleanup-timeout", "metadata-after-completed", "sanitized-tier-used", "sanitized-observation") else "./internal/adapter" if name == "metadata-after-incomplete" else "./internal/trustedrouter")
         (work / (name + ".log")).write_text(result.stdout)
         failed = re.findall(r"--- FAIL: ([^\s]+)", result.stdout)
         if result.returncode == 0 or not failed or "[build failed]" in result.stdout:
