@@ -42,6 +42,7 @@ func TestAzureDecideDispatchAndWire(t *testing.T) {
 	defer server.Close()
 	client := newAzure("test-key")
 	client.decision.baseURL = server.URL + "/providers/microsoft/v1"
+	client.decision.httpc = azurePinnedHTTPClient(server.Client())
 	multi := &multiClient{azure: client}
 	response, err := multi.InvokeDecide(context.Background(), req, InvokeOptions{Provider: "azure", UpstreamModel: "tr-decision-1"})
 	if err != nil {
@@ -84,6 +85,7 @@ func TestAzureDecideRejectsRedirectAndUnsupportedRoute(t *testing.T) {
 	defer server.Close()
 	client := newAzure("test-key")
 	client.decision.baseURL = server.URL
+	client.decision.httpc = azurePinnedHTTPClient(server.Client())
 	req, _ := hostedRequest(t)
 	req.Model = "microsoft/microsoft-decision-1"
 	option := InvokeOptions{Provider: "azure", UpstreamModel: "tr-decision-1"}
