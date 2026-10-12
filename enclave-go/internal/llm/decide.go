@@ -151,7 +151,7 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 	// Two hosts serve the same decision model with different wire shapes. The
 	// caller sees neither: both are translated to decide.Answer and then held
 	// to the same decide.Verify.
-	if provider == typeSafeProvider || system1Tier(provider) != "" {
+	if provider == typeSafeProvider || system1Tier(provider) != "" || provider == "azure" {
 		return invokeSystemOne(ctx, httpc, provider, c.baseURL, c.apiKey, model, req)
 	}
 	wire := *req
@@ -182,7 +182,11 @@ func postDecideJSON(ctx context.Context, httpc *http.Client, provider, url, apiK
 	if err != nil {
 		return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	if provider == "azure" {
+		httpReq.Header.Set("api-key", apiKey)
+	} else {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("User-Agent", "TrustedRouter/1.0")
 	// A fixed provider identity selects both the key and tariff. Caller headers
@@ -268,6 +272,11 @@ func invokeSystemOne(ctx context.Context, httpc *http.Client, provider, baseURL,
 		return nil, err
 	}
 	if tier := system1Tier(provider); tier != "" && (parsed.Tier != tier || parsed.Model != model || parsed.Usage.InputTokens <= 0 || parsed.Usage.OutputTokens == nil || *parsed.Usage.OutputTokens != 0 || parsed.Usage.Decisions != 1) {
+		return nil, &DecideError{Provider: provider, Class: DecideErrDecode}
+	}
+	// Azure returns the underlying model identity rather than its deployment
+	// name. Output tokens are counted, but the published tariff is input-only.
+	if provider == "azure" && (parsed.Model != "microsoft-decision-1" || parsed.Usage.InputTokens <= 0 || parsed.Usage.OutputTokens == nil || *parsed.Usage.OutputTokens < 0) {
 		return nil, &DecideError{Provider: provider, Class: DecideErrDecode}
 	}
 	// Translate NAMES only, and carry every answer field across. Whether the

@@ -11,6 +11,9 @@ import "context"
 // config failure, which the route answers by moving to the next host.
 func (m *multiClient) InvokeDecide(ctx context.Context, req *DecideRequest, options ...InvokeOptions) (*DecideResponse, error) {
 	provider := normalizeDirectProvider(firstOptions(options).Provider)
+	if provider == "azure" {
+		return m.azure.InvokeDecide(ctx, req, options...)
+	}
 	if client := m.direct[provider]; client != nil {
 		return client.InvokeDecide(ctx, req, options...)
 	}

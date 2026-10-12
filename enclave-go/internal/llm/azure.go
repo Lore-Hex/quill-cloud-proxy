@@ -12,14 +12,16 @@ import (
 )
 
 const azureAnthropicMessagesURL = "https://trustedrouter-foundry-eastus2.services.ai.azure.com/anthropic/v1/messages"
+const azureDecisionBaseURL = "https://trustedrouter-foundry-eastus2.services.ai.azure.com/providers/microsoft/v1"
 
-// Azure Foundry exposes one account key across two fixed, account-scoped
+// Azure Foundry exposes one account key across fixed, account-scoped
 // surfaces: OpenAI-compatible models use /openai/v1 with api-key auth, while
 // Azure-hosted Claude deployments use the native Anthropic Messages protocol.
 // The endpoint and protocol choice are enclave-owned; neither is caller input.
 type azureClient struct {
 	openAI    *openAICompatibleClient
 	anthropic *anthropicClient
+	decision  *openAICompatibleClient
 }
 
 func newAzure(apiKey string) *azureClient {
@@ -32,7 +34,22 @@ func newAzure(apiKey string) *azureClient {
 	)
 	openAI.httpc = azurePinnedHTTPClient(openAI.httpc)
 	anthropic.httpc = azurePinnedHTTPClient(anthropic.httpc)
-	return &azureClient{openAI: openAI, anthropic: anthropic}
+	decision := newOpenAICompatible("azure", apiKey)
+	decision.baseURL = azureDecisionBaseURL
+	decision.httpc = azurePinnedHTTPClient(decision.httpc)
+	return &azureClient{openAI: openAI, anthropic: anthropic, decision: decision}
+}
+
+func (c *azureClient) InvokeDecide(ctx context.Context, req *DecideRequest, options ...InvokeOptions) (*DecideResponse, error) {
+	if c == nil || c.decision == nil || req == nil || req.Model != "microsoft/microsoft-decision-1" || len(req.Images) != 0 {
+		return nil, &DecideError{Provider: "azure", Class: DecideErrConfig}
+	}
+	option := firstOptions(options)
+	if option.UpstreamModel != "tr-decision-1" {
+		return nil, &DecideError{Provider: "azure", Class: DecideErrConfig}
+	}
+	option.Provider = "azure"
+	return c.decision.InvokeDecide(ctx, req, option)
 }
 
 // azurePinnedHTTPClient preserves the cloud-specific transport and streaming
