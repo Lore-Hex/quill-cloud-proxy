@@ -44,3 +44,12 @@ fixture emission. No-policy cells compare actual retention exactly to main.
 No allocation counts are frozen in this added matrix; the existing normal/race
 allocation matrices and exact bounds remain unchanged. Both race modes use the
 same duplicate expectations. The two original matrix files were not regenerated.
+
+Round 4 extends duplicates.json with 80 cells (464 total), captured with the
+same generator in a fresh read-only archive of main 35e91368 under
+/tmp/v2-p2-author-4/main/enclave-go. All 331 production Go files match the
+independently reviewed main. All 384 prior cells are unchanged. New inputs
+repeat policy, exclusion and binding across two or three ordinary data objects,
+check plan last-selection positives and no-policy controls, and preserve positive
+ordinary evidence split across objects. Both real terminal senders run per cell.
+The original normal/race matrices and all input fixtures remain byte-identical.

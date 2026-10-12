@@ -177,8 +177,38 @@ live_mutations += [
      "b, 6*len(shadowPolicyV2)+3)", "TestShadowV2CaptureExactCaps/billing_shadow_policy"),
     ("live-exclusion-raw-cap-plus-one", capture, "b, 6*shadowCertificateBytes+2)",
      "b, 6*shadowCertificateBytes+3)", "TestShadowV2CaptureExactCaps/billing_shadow_exclusion"),
-    ("live-escaped-duplicate-distinct", capture, "if bytes.ContainsRune(key, '\\\\') {",
-     "if false && bytes.ContainsRune(key, '\\\\') {", duplicate_test + "/members"),
+    ("live-escaped-duplicate-distinct", capture, "key = decodedShadowKey(key)",
+     "if len(key) >= 2 { key = key[1:len(key)-1] }", duplicate_test + "/members"),
+]
+
+
+# Decoder identity regressions. Each row is non-equivalent and names a committed
+# assertion; the seam divergence needs coordinated edits only in the scratch copy.
+identity_test = "TestShadowV2IdentityDecoderDifferential"
+identity_senders = "TestShadowV2IdentityDuplicateSenders"
+live_mutations += [
+    ("live-identity-byte-length-guard", capture,
+     "return bytes.EqualFold(key, []byte(name))",
+     "return len(key) == len(name) && bytes.EqualFold(key, []byte(name))", identity_test),
+    ("live-identity-exact-only", capture,
+     "return bytes.EqualFold(key, []byte(name))",
+     "return bytes.Equal(key, []byte(name))", identity_test),
+    ("live-identity-ascii-only", capture,
+     "return bytes.EqualFold(key, []byte(name))",
+     "for _, b := range key { if b >= 128 { return false } }; return bytes.EqualFold(key, []byte(name))", identity_test),
+    ("live-recognition-folds-duplicates-exact", capture,
+     "if s.seen&bit != 0 {",
+     "if s.seen&bit != 0 && bytes.Equal(key, []byte(name)) {", identity_senders),
+    ("live-duplicate-history-reset-per-data", capture,
+     "s.depth++", "if s.depth == 1 && b == '{' { s.seen = 0 }; s.depth++",
+     duplicate_test + "/merged"),
+    ("live-identity-differs-between-seams", [
+        (capture, "type shadowCapture struct {", "type shadowCapture struct { exactOnly bool"),
+        (capture, "if shadowMemberEqual(key, name) {",
+         "if shadowMemberEqual(key, name) && (!s.exactOnly || bytes.Equal(key, []byte(name))) {"),
+        ("internal/trustedrouter/spend_lease.go", "_, _ = capture.Write(wire.Data)",
+         "capture.exactOnly = true; _, _ = capture.Write(wire.Data)"),
+     ], None, None, identity_senders),
 ]
 
 for site, option, auth, test in [
@@ -215,18 +245,24 @@ if baseline.returncode:
     raise SystemExit("Disposable baseline failed: " + str(work))
 print("Baseline PASS; evidence: " + str(work), flush=True)
 for name, file, old, new, test in mutations:
-    path = module / file
-    original = path.read_text()
-    assert original.count(old) == 1, (name, original.count(old))
-    path.write_text(original.replace(old, new, 1))
+    changes = [(file, old, new)] if isinstance(file, str) else file
+    originals = {}
+    primary_file = changes[0][0]
     try:
-        result = run(test, "./cmd/enclave" if file.startswith("cmd/enclave/") or name in ("refund-on-cleanup-timeout", "metadata-after-completed", "sanitized-tier-used", "sanitized-observation") else "./internal/adapter" if name == "metadata-after-incomplete" else "./internal/trustedrouter")
+        for changed_file, before, after in changes:
+            path = module / changed_file
+            original = path.read_text()
+            originals.setdefault(path, original)
+            assert original.count(before) == 1, (name, changed_file, original.count(before))
+            path.write_text(original.replace(before, after, 1))
+        result = run(test, "./cmd/enclave" if primary_file.startswith("cmd/enclave/") or name in ("refund-on-cleanup-timeout", "metadata-after-completed", "sanitized-tier-used", "sanitized-observation") else "./internal/adapter" if name == "metadata-after-incomplete" else "./internal/trustedrouter")
         (work / (name + ".log")).write_text(result.stdout)
         failed = re.findall(r"--- FAIL: ([^\s]+)", result.stdout)
         if result.returncode == 0 or not failed or "[build failed]" in result.stdout:
             raise SystemExit(name + " SURVIVED or failed to compile; see " + str(work))
         print(name + " KILLED by " + ", ".join(failed[:3]), flush=True)
     finally:
-        path.write_text(original)
+        for path, original in originals.items():
+            path.write_text(original)
 
 print(f"PASS: {len(mutations)} mutations compiled and were killed by assertions", flush=True)

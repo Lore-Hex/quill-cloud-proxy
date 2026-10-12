@@ -84,10 +84,53 @@ func duplicateOracleCases(t *testing.T) map[string]duplicateOracleCase {
 		}
 		positive, _ := json.Marshal(fields)
 		cases["positive/"+kind] = duplicateOracleCase{`{"data":` + string(positive) + `}`, kind, kind}
+		// Different members split across ordinary objects are still positive.
+		for _, policyFirst := range []bool{false, true} {
+			for _, middle := range []string{"", `"data":{},`} {
+				withoutPolicy := map[string]json.RawMessage{}
+				for k, v := range fields {
+					if k != "billing_shadow_policy" {
+						withoutPolicy[k] = v
+					}
+				}
+				evidence, _ := json.Marshal(withoutPolicy)
+				first, last := `{"billing_shadow_policy":"shadow-v2"}`, string(evidence)
+				planMode := "v1"
+				if !policyFirst {
+					first, last = last, first
+					planMode = "suppressed"
+				}
+				name := fmt.Sprintf("split/%s/policy-first=%t/three=%t", kind, policyFirst, middle != "")
+				cases[name] = duplicateOracleCase{`{"data":` + first + `,` + middle + `"data":` + last + `}`, kind, planMode}
+			}
+		}
+
 		for _, field := range []string{"billing_shadow_policy", "billing_shadow_exclusion", "billing_shadow_binding"} {
 			valid, exists := projection[field]
 			if !exists {
 				continue
+			}
+			// Ordinary struct decoding merges all data objects; plan RawMessage
+			// decoding selects the last one. Freeze main for both interpretations.
+			for _, count := range []int{2, 3} {
+				for _, noPolicy := range []bool{false, true} {
+					if noPolicy && field == "billing_shadow_policy" {
+						continue
+					}
+					lastFields := map[string]json.RawMessage{}
+					for k, v := range fields {
+						lastFields[k] = v
+					}
+					ordinary, planMode := "ambiguous", kind
+					if noPolicy {
+						delete(lastFields, "billing_shadow_policy")
+						ordinary, planMode = "v1", "v1"
+					}
+					last, _ := json.Marshal(lastFields)
+					prefix := strings.Repeat(`"data":{"`+field+`":`+string(valid)+`},`, count-1)
+					name := fmt.Sprintf("merged/%s/%s/objects=%d/no-policy=%t", kind, field, count, noPolicy)
+					cases[name] = duplicateOracleCase{`{` + prefix + `"data":` + string(last) + `}`, ordinary, planMode}
+				}
 			}
 			for _, noPolicy := range []bool{false, true} {
 				if noPolicy && field == "billing_shadow_policy" {

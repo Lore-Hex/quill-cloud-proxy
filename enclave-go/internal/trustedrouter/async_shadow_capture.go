@@ -3,6 +3,7 @@ package trustedrouter
 import (
 	"bytes"
 	"encoding/json"
+	"unicode/utf8"
 )
 
 type shadowCaptureKey struct{}
@@ -87,17 +88,12 @@ func (s *shadowCapture) byte(b byte) {
 		if s.depth == 1 || (s.depth == 2 && s.dataObject) {
 			key := s.key[:s.keyLen]
 			s.keyLen = 0
-			if bytes.ContainsRune(key, '\\') {
-				var decoded string
-				if json.Unmarshal(key, &decoded) == nil {
-					key = []byte(`"` + decoded + `"`)
-				}
-			}
+			key = decodedShadowKey(key)
 			if s.depth == 1 {
-				s.dataObject = bytes.EqualFold(key, []byte(`"data"`))
+				s.dataObject = shadowMemberEqual(key, "data")
 			} else {
 				for index, name := range []string{"billing_shadow_policy", "billing_shadow_exclusion", "billing_shadow_binding"} {
-					if len(key) == len(name)+2 && bytes.EqualFold(key[1:len(key)-1], []byte(name)) {
+					if shadowMemberEqual(key, name) {
 						// Compare decoded, folded names once for both recognition and
 						// duplicate detection. No duplicate is evidence, even if equal.
 						bit := uint8(1 << index)
@@ -190,4 +186,32 @@ func (s *shadowCapture) finish(a *Authorization) {
 		a.BillingShadowExclusion = boundedShadowString(s.exclusion, s.exclusionOverflow, shadowCertificateBytes)
 	}
 	a.shadowBindingPresent = s.binding
+}
+
+// decodedShadowKey uses encoding/json for escapes and malformed UTF-8, including
+// its replacement of invalid UTF-8 and unpaired surrogates. The ordinary valid
+// UTF-8 path is already decoded and needs no allocation. All input is bounded by
+// key's 160 bytes; every spelling of a recognized member fits (at most 146 bytes).
+func decodedShadowKey(key []byte) []byte {
+	if len(key) < 2 || key[0] != '"' || key[len(key)-1] != '"' {
+		return nil
+	}
+	if bytes.ContainsRune(key, '\\') || !utf8.Valid(key) {
+		var decoded string
+		if json.Unmarshal(key, &decoded) != nil {
+			return nil
+		}
+		return []byte(decoded)
+	}
+	return key[1 : len(key)-1]
+}
+
+// shadowMemberEqual is the sole member identity relation on both seams. The
+// selected identity also supplies the duplicate bit, so recognition and duplicate
+// tracking cannot disagree. Go 1.24.13 encoding/json/decode.go:676,695-698 unquotes
+// keys, tries exact names, then folded names. encoding/json/fold.go:12-14 specifies
+// that folded-name equality is bytes.EqualFold; :20-47 uses Unicode SimpleFold.
+// EqualFold includes exact equality and does not require equal byte lengths.
+func shadowMemberEqual(key []byte, name string) bool {
+	return bytes.EqualFold(key, []byte(name))
 }
