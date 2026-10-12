@@ -158,9 +158,78 @@ func TestShadowV2IdentityDecoderDifferential(t *testing.T) {
 	t.Logf("%d decoder-oracle keys, %d matched spellings", total, matched)
 }
 
-// All ordered pairs of decoder-matched corpus spellings, with equal values and
-// both different-value orders, on both real seams and both terminal senders.
-// No-policy results compare with the corresponding frozen-main plain-key cell.
+// shadowIdentityMatched pins how many corpus spellings the decoder matches to
+// each member (policy, exclusion, binding). A corpus that shrinks fails here
+// instead of quietly testing less.
+var shadowIdentityMatched = [3]int{42, 58, 44}
+
+// shadowIdentityPairs selects the ordered duplicate pairs the sender test
+// drives. With shadowIdentityExhaustive (the cloud_gcp,llm_multi tag set, one
+// mandatory CI job) it is every ordered pair of decoder-matched spellings.
+// Member identity does not depend on build tags, so the other tag sets run a
+// bounded deterministic selection: every spelling against the plain name in
+// both orders, and every ordered pair among a few anchors (plain, the first
+// raw non-ASCII fold alias, the longest fully escaped spelling, and the first,
+// middle and last corpus spellings).
+func shadowIdentityPairs(name string, keys []string) [][2]string {
+	pairs := [][2]string{}
+	if shadowIdentityExhaustive {
+		for _, first := range keys {
+			for _, last := range keys {
+				pairs = append(pairs, [2]string{first, last})
+			}
+		}
+		return pairs
+	}
+	plain := `"` + name + `"`
+	anchors := []string{plain}
+	add := func(key string) {
+		for _, have := range anchors {
+			if have == key {
+				return
+			}
+		}
+		anchors = append(anchors, key)
+	}
+	longest := ""
+	nonASCII := ""
+	for _, key := range keys {
+		if len(key) > len(longest) {
+			longest = key
+		}
+		if nonASCII == "" && strings.IndexFunc(key, func(r rune) bool { return r >= 0x80 }) >= 0 {
+			nonASCII = key
+		}
+	}
+	for _, key := range []string{nonASCII, longest, keys[0], keys[len(keys)/2], keys[len(keys)-1]} {
+		if key != "" {
+			add(key)
+		}
+	}
+	seen := map[[2]string]bool{}
+	put := func(first, last string) {
+		pair := [2]string{first, last}
+		if !seen[pair] {
+			seen[pair] = true
+			pairs = append(pairs, pair)
+		}
+	}
+	for _, key := range keys {
+		put(key, plain)
+		put(plain, key)
+	}
+	for _, first := range anchors {
+		for _, last := range anchors {
+			put(first, last)
+		}
+	}
+	return pairs
+}
+
+// Ordered pairs of decoder-matched corpus spellings (see shadowIdentityPairs),
+// with equal values and both different-value orders, on both real seams and
+// both terminal senders. No-policy results compare with the corresponding
+// frozen-main plain-key cell.
 func TestShadowV2IdentityDuplicateSenders(t *testing.T) {
 	t.Setenv("TR_ASYNC_SETTLE_NEGOTIATE", "off")
 	setShadowRevision(t)
@@ -173,7 +242,7 @@ func TestShadowV2IdentityDuplicateSenders(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := duplicateOracleCases(t)
-	total := 0
+	total, want := 0, 0
 	for member, name := range shadowIdentityNames {
 		kind := "excluded"
 		if member == 2 {
@@ -186,6 +255,25 @@ func TestShadowV2IdentityDuplicateSenders(t *testing.T) {
 				keys = append(keys, key)
 			}
 		}
+		if len(keys) != shadowIdentityMatched[member] {
+			t.Fatalf("%s: decoder matched %d corpus spellings, want %d", name, len(keys), shadowIdentityMatched[member])
+		}
+		pairs := shadowIdentityPairs(name, keys)
+		covered := map[string]bool{}
+		for _, pair := range pairs {
+			covered[pair[0]], covered[pair[1]] = true, true
+		}
+		if len(covered) != len(keys) {
+			t.Fatalf("%s: pairs cover %d of %d spellings", name, len(covered), len(keys))
+		}
+		if shadowIdentityExhaustive && len(pairs) != len(keys)*len(keys) {
+			t.Fatalf("%s: %d pairs, want every ordered pair (%d)", name, len(pairs), len(keys)*len(keys))
+		}
+		configurations := 12 // policy selected or not, two seams, three value orders
+		if member == 0 {
+			configurations = 6
+		}
+		want += configurations * len(pairs)
 		for _, noPolicy := range []bool{false, true} {
 			if member == 0 && noPolicy {
 				continue
@@ -233,8 +321,9 @@ func TestShadowV2IdentityDuplicateSenders(t *testing.T) {
 							return v2Reply(`{"data":{"settled":true,"cost_microdollars":2}}`), nil
 						})})
 						c.asyncShadow = true
-						for _, first := range keys {
-							for _, last := range keys {
+						for _, pair := range pairs {
+							{
+								first, last := pair[0], pair[1]
 								reply = `{"data":{` + first + `:` + value1 + `,` + last + `:` + value2 + `,` + tail
 								headers, bodies = nil, nil
 								inv := &authorizationInvocation{nonce: "fixed"}
@@ -291,5 +380,11 @@ func TestShadowV2IdentityDuplicateSenders(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("%d ordered duplicate/seam/value/policy scenarios; %d real terminal sends", total, 2*total)
+	if total != want {
+		t.Fatalf("ran %d scenarios, want %d", total, want)
+	}
+	if shadowIdentityExhaustive && total != 74184 {
+		t.Fatalf("exhaustive mode ran %d scenarios, want 74184", total)
+	}
+	t.Logf("exhaustive=%t: %d ordered duplicate/seam/value/policy scenarios; %d real terminal sends", shadowIdentityExhaustive, total, 2*total)
 }
