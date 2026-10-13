@@ -835,6 +835,12 @@ func serveOneRequest(
 		writeError(conn, http.StatusNotFound, message)
 		return
 	}
+	// A browser's CORS preflight for an anonymous GET route carries no body
+	// and no credential. Answer it before the confidential-origin allowlist,
+	// which admits these routes for GET only, and before the bearer gate.
+	if maybeServePublicPreflight(conn, method, routePath) {
+		return
+	}
 	if apihosts.Confidential(attribution.Host) || apihosts.Confidential(enclavetls.SelectedServerName(conn)) {
 		ctx = trustedrouter.WithConfidentialOnly(ctx)
 		if err := validateConfidentialHostRequest(method, routePath, body, trGateway); err != nil {
@@ -871,7 +877,7 @@ func serveOneRequest(
 			// G6 fail-closed: the RFC 9266 exporter is the mitigation. A TLS
 			// attestation without that same-session binding is a genuine but
 			// relayable token, so do not emit one.
-			writeError(conn, 503, "attestation: exporter channel binding unavailable")
+			writePublicError(conn, 503, "attestation: exporter channel binding unavailable")
 			return
 		}
 		responseKeepAlive := keepAliveConfig.mode != keepAliveOff &&
@@ -926,7 +932,7 @@ func serveOneRequest(
 	// Public SDK discovery belongs on the documented API origin. The enclave
 	// relays only catalog metadata; prompt-bearing routes remain behind the
 	// authentication gate below.
-	if maybeServePublicModels(ctx, conn, method, routePath, path, trGateway) {
+	if maybeServePublicModels(ctx, conn, method, routePath, path, acceptsGzip(attribution.acceptEncoding), trGateway) {
 		return
 	}
 

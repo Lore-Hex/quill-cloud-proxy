@@ -291,6 +291,10 @@ type requestAttributionHeaders struct {
 	InferenceReceipt   string
 	httpVersion        string
 	connectionClose    bool
+	// acceptEncoding is the combined Accept-Encoding field. Only the public
+	// catalog routes read it, to choose a gzip response; it is never
+	// forwarded to the control plane or a provider.
+	acceptEncoding string
 }
 
 // readRequest reads a minimal HTTP/1.1 request: status line + headers + body.
@@ -370,6 +374,13 @@ func readRequestWithTiming(
 					attribution.connectionClose = true
 				}
 			}
+		case "accept-encoding":
+			// Repeated fields combine as one comma-separated list (RFC 9110
+			// section 5.3); the header byte limit above bounds the total.
+			if attribution.acceptEncoding != "" {
+				attribution.acceptEncoding += ", "
+			}
+			attribution.acceptEncoding += v
 		case "authorization":
 			if strings.HasPrefix(v, "Bearer ") {
 				bearer = v[len("Bearer "):]
@@ -666,24 +677,27 @@ func serveAttestation(conn io.Writer, leafDER, deviceBlob, nonce, channelBinding
 	return serveAttestationContext(context.Background(), conn, leafDER, deviceBlob, nonce, channelBinding)
 }
 
+// The document is public (anyone can fetch it) and readable from any web
+// origin; see publicCORSOriginHeader. Its errors carry the same header so a
+// browser client can read why attestation failed.
 func serveAttestationContext(ctx context.Context, conn io.Writer, leafDER, deviceBlob, nonce, channelBinding []byte) bool {
 	if leafDER == nil {
 		disableResponseReuse(conn)
-		writeError(conn, 503, "TLS not enabled in this enclave; attestation requires a bound cert")
+		writePublicError(conn, 503, "TLS not enabled in this enclave; attestation requires a bound cert")
 		return false
 	}
 	doc, err := getAttestation(ctx, leafDER, deviceBlob, nonce, channelBinding, nil)
 	if err != nil {
 		disableResponseReuse(conn)
 		if errors.Is(err, attestation.ErrIssuerUnavailable) {
-			writeError(conn, 503, "Attestation issuer temporarily unavailable; retry with a fresh nonce")
+			writePublicError(conn, 503, "Attestation issuer temporarily unavailable; retry with a fresh nonce")
 			return false
 		}
-		writeError(conn, 500, "attestation: "+err.Error())
+		writePublicError(conn, 500, "attestation: "+err.Error())
 		return false
 	}
 	fmt.Fprintf(conn,
-		"HTTP/1.1 200 OK\r\nContent-Type: application/cbor\r\nContent-Length: %d\r\nCache-Control: no-store\r\nConnection: %s\r\n\r\n",
+		"HTTP/1.1 200 OK\r\nContent-Type: application/cbor\r\nContent-Length: %d\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: %s\r\n\r\n",
 		len(doc), responseConnection(conn))
 	conn.Write(doc)
 	return true

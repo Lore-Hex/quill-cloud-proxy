@@ -40,6 +40,19 @@ const (
 	publicModelsFreshTTL = 5 * time.Minute
 	publicModelsStaleTTL = 30 * time.Minute
 	publicModelsMaxBytes = 8 << 20
+
+	// Per-model endpoint manifests are small (the largest, 50 routes, is
+	// about 94 KB) but keyed by caller-chosen IDs, so the anonymous cache is
+	// bounded by count and bytes and an oversized manifest is served
+	// without being retained.
+	publicModelEndpointsCacheEntries  = 2048
+	publicModelEndpointsCacheBytes    = 16 << 20
+	publicModelEndpointsEntryMaxBytes = 1 << 20
+	// Approximate per-entry bookkeeping charged against the byte budget, so
+	// many tiny `{"data":[]}` manifests cannot hide behind their body size.
+	publicModelEndpointsEntryOverhead = 128
+	// Longest accepted author/slug model ID. Real IDs are under 100 bytes.
+	publicModelIDMaxBytes = 256
 )
 
 var imageDataURLPattern = regexp.MustCompile(`data:image/[^;"\s]+;base64,[A-Za-z0-9+/=_-]+`)
@@ -111,11 +124,18 @@ type Client struct {
 	modelsMu           sync.Mutex
 	modelsBody         []byte
 	modelsFetched      time.Time
+	fullModelsMu       sync.Mutex
+	fullModelsBody     []byte
+	fullModelsFetched  time.Time
 	imageModelsMu      sync.Mutex
 	imageModelsBody    []byte
 	imageModelsFetched time.Time
-	spendLease         *spendLeaseProtocol
-	stageDBootSigner   spendlease.DigestSigner
+	// Anonymous per-model endpoint manifests, keyed by validated model ID.
+	modelEndpointsMu    sync.Mutex
+	modelEndpoints      map[string]publicCatalogEntry
+	modelEndpointsBytes int
+	spendLease          *spendLeaseProtocol
+	stageDBootSigner    spendlease.DigestSigner
 }
 
 // CachedModelOutputLimit returns a known output cap from the public catalog
@@ -312,84 +332,190 @@ func (c *Client) ProductionConfigurationError() error {
 // while a bounded stale copy keeps SDK discovery available during a brief
 // control-plane interruption.
 func (c *Client) PublicModels(ctx context.Context) ([]byte, error) {
-	if c != nil && c.configurationError != nil {
-		return nil, c.configurationError
+	if err := c.publicCatalogConfigured(); err != nil {
+		return nil, err
 	}
-	if c == nil || len(c.baseURLs) == 0 {
-		return nil, fmt.Errorf("trustedrouter: no control-plane endpoint configured")
-	}
-
 	c.modelsMu.Lock()
 	defer c.modelsMu.Unlock()
-
-	now := time.Now()
-	if len(c.modelsBody) > 0 && now.Sub(c.modelsFetched) <= publicModelsFreshTTL {
-		return append([]byte(nil), c.modelsBody...), nil
-	}
-
-	body, err := c.fetchPublicModels(ctx)
-	if err == nil {
-		c.modelsBody = append(c.modelsBody[:0], body...)
-		c.modelsFetched = now
-		return append([]byte(nil), c.modelsBody...), nil
-	}
-	if len(c.modelsBody) > 0 && now.Sub(c.modelsFetched) <= publicModelsStaleTTL {
-		fmt.Fprintf(os.Stderr, "enclave.models_stale_fallback err=%q\n", err.Error())
-		return append([]byte(nil), c.modelsBody...), nil
-	}
-	return nil, err
+	return cachedPublicCatalog(&c.modelsBody, &c.modelsFetched, "enclave.models_stale_fallback", func() ([]byte, error) {
+		return c.fetchPublicCatalog(ctx, "/v1/models", "/models", validPublicCatalogList)
+	})
 }
 
-func (c *Client) fetchPublicModels(ctx context.Context) ([]byte, error) {
-	return c.fetchPublicCatalog(ctx, "/v1/models", "/models", func(body []byte) bool {
-		var envelope struct {
-			Data []json.RawMessage `json:"data"`
-		}
-		return json.Unmarshal(body, &envelope) == nil && len(envelope.Data) > 0
+// PublicModelsWithEndpoints returns the complete public catalog, including
+// each row's trustedrouter.endpoints, as served by the control plane for
+// GET /v1/models?include=endpoints. It is a second copy with the same
+// anonymous, bounded, stale-if-error semantics as PublicModels. A control
+// plane that predates the slim default list ignores the parameter and returns
+// the complete list, so either deploy order is correct.
+func (c *Client) PublicModelsWithEndpoints(ctx context.Context) ([]byte, error) {
+	if err := c.publicCatalogConfigured(); err != nil {
+		return nil, err
+	}
+	c.fullModelsMu.Lock()
+	defer c.fullModelsMu.Unlock()
+	return cachedPublicCatalog(&c.fullModelsBody, &c.fullModelsFetched, "enclave.full_models_stale_fallback", func() ([]byte, error) {
+		return c.fetchPublicCatalog(ctx, "/v1/models?include=endpoints", "/models?include=endpoints", validPublicCatalogList)
 	})
 }
 
 // PublicImageModels returns the image-only capability catalog with the same
 // anonymous, bounded, stale-if-error semantics as PublicModels.
 func (c *Client) PublicImageModels(ctx context.Context) ([]byte, error) {
-	if c != nil && c.configurationError != nil {
-		return nil, c.configurationError
-	}
-	if c == nil || len(c.baseURLs) == 0 {
-		return nil, fmt.Errorf("trustedrouter: no control-plane endpoint configured")
+	if err := c.publicCatalogConfigured(); err != nil {
+		return nil, err
 	}
 	c.imageModelsMu.Lock()
 	defer c.imageModelsMu.Unlock()
-	now := time.Now()
-	if len(c.imageModelsBody) > 0 && now.Sub(c.imageModelsFetched) <= publicModelsFreshTTL {
-		return append([]byte(nil), c.imageModelsBody...), nil
-	}
-	body, err := c.fetchPublicCatalog(ctx, "/v1/images/models", "/images/models", func(body []byte) bool {
-		var envelope struct {
-			Data []json.RawMessage `json:"data"`
-		}
-		return json.Unmarshal(body, &envelope) == nil && len(envelope.Data) > 0
+	return cachedPublicCatalog(&c.imageModelsBody, &c.imageModelsFetched, "enclave.image_models_stale_fallback", func() ([]byte, error) {
+		return c.fetchPublicCatalog(ctx, "/v1/images/models", "/images/models", validPublicCatalogList)
 	})
-	if err == nil {
-		c.imageModelsBody = append(c.imageModelsBody[:0], body...)
-		c.imageModelsFetched = now
-		return append([]byte(nil), c.imageModelsBody...), nil
+}
+
+func (c *Client) publicCatalogConfigured() error {
+	if c != nil && c.configurationError != nil {
+		return c.configurationError
 	}
-	if len(c.imageModelsBody) > 0 && now.Sub(c.imageModelsFetched) <= publicModelsStaleTTL {
-		fmt.Fprintf(os.Stderr, "enclave.image_models_stale_fallback err=%q\n", err.Error())
-		return append([]byte(nil), c.imageModelsBody...), nil
+	if c == nil || len(c.baseURLs) == 0 {
+		return fmt.Errorf("trustedrouter: no control-plane endpoint configured")
+	}
+	return nil
+}
+
+// cachedPublicCatalog serves one cached catalog copy: fresh for
+// publicModelsFreshTTL, then refetched, with the last good body served for up
+// to publicModelsStaleTTL when a refresh fails. The caller holds the copy's
+// mutex, which also collapses concurrent refreshes into one control-plane call.
+// Callers always receive their own copy of the body.
+func cachedPublicCatalog(body *[]byte, fetched *time.Time, staleEvent string, fetch func() ([]byte, error)) ([]byte, error) {
+	now := time.Now()
+	if len(*body) > 0 && now.Sub(*fetched) <= publicModelsFreshTTL {
+		return append([]byte(nil), *body...), nil
+	}
+	fresh, err := fetch()
+	if err == nil {
+		*body = append((*body)[:0], fresh...)
+		*fetched = now
+		return append([]byte(nil), *body...), nil
+	}
+	if len(*body) > 0 && now.Sub(*fetched) <= publicModelsStaleTTL {
+		fmt.Fprintf(os.Stderr, "%s err=%q\n", staleEvent, err.Error())
+		return append([]byte(nil), *body...), nil
 	}
 	return nil, err
 }
 
+func validPublicCatalogList(body []byte) bool {
+	var envelope struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	return json.Unmarshal(body, &envelope) == nil && len(envelope.Data) > 0
+}
+
 var publicImageModelIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$`)
+
+// ValidPublicModelID accepts exactly one author/slug pair. Model IDs are path
+// data, never a free-form URL: the pattern excludes '/', '?', '#', '%' and
+// whitespace, and dot segments are refused so a decoded "../.." cannot be
+// resolved into a different control-plane path.
+func ValidPublicModelID(modelID string) bool {
+	if len(modelID) > publicModelIDMaxBytes || !publicImageModelIDPattern.MatchString(modelID) {
+		return false
+	}
+	for _, segment := range strings.Split(modelID, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// PublicModelEndpoints relays the public per-route manifest for one model,
+// GET /v1/models/{author}/{slug}/endpoints. The control plane serves it with
+// no principal; this request carries neither a user bearer nor the internal
+// gateway token. Unknown IDs are answered by the control plane with an empty
+// list, so an empty "data" array is valid. Manifests are cached per model ID
+// with the catalog's fresh/stale TTLs, under a bounded count and byte budget.
+func (c *Client) PublicModelEndpoints(ctx context.Context, modelID string) ([]byte, error) {
+	modelID = strings.TrimSpace(modelID)
+	if !ValidPublicModelID(modelID) {
+		return nil, fmt.Errorf("trustedrouter: invalid model id")
+	}
+	if err := c.publicCatalogConfigured(); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	c.modelEndpointsMu.Lock()
+	cached, ok := c.modelEndpoints[modelID]
+	c.modelEndpointsMu.Unlock()
+	if ok && now.Sub(cached.fetched) <= publicModelsFreshTTL {
+		return append([]byte(nil), cached.body...), nil
+	}
+	body, err := c.fetchPublicCatalog(ctx, "/v1/models/"+modelID+"/endpoints", "/models/{model}/endpoints", func(body []byte) bool {
+		var envelope struct {
+			Data *[]json.RawMessage `json:"data"`
+		}
+		return json.Unmarshal(body, &envelope) == nil && envelope.Data != nil
+	})
+	if err == nil {
+		c.storePublicModelEndpoints(modelID, body, now)
+		return body, nil
+	}
+	if ok && now.Sub(cached.fetched) <= publicModelsStaleTTL {
+		fmt.Fprintf(os.Stderr, "enclave.model_endpoints_stale_fallback err=%q\n", err.Error())
+		return append([]byte(nil), cached.body...), nil
+	}
+	return nil, err
+}
+
+type publicCatalogEntry struct {
+	body    []byte
+	fetched time.Time
+}
+
+func publicModelEndpointsCost(modelID string, body []byte) int {
+	return len(modelID) + len(body) + publicModelEndpointsEntryOverhead
+}
+
+// storePublicModelEndpoints retains a manifest, evicting the oldest entries
+// until both the count and byte budgets hold. An oversized manifest is served
+// by the caller but never retained.
+func (c *Client) storePublicModelEndpoints(modelID string, body []byte, fetched time.Time) {
+	if len(body) > publicModelEndpointsEntryMaxBytes {
+		return
+	}
+	cost := publicModelEndpointsCost(modelID, body)
+	c.modelEndpointsMu.Lock()
+	defer c.modelEndpointsMu.Unlock()
+	if c.modelEndpoints == nil {
+		c.modelEndpoints = make(map[string]publicCatalogEntry)
+	}
+	if previous, ok := c.modelEndpoints[modelID]; ok {
+		c.modelEndpointsBytes -= publicModelEndpointsCost(modelID, previous.body)
+		delete(c.modelEndpoints, modelID)
+	}
+	for len(c.modelEndpoints) > 0 &&
+		(len(c.modelEndpoints) >= publicModelEndpointsCacheEntries || c.modelEndpointsBytes+cost > publicModelEndpointsCacheBytes) {
+		oldestID := ""
+		var oldest time.Time
+		for id, entry := range c.modelEndpoints {
+			if oldestID == "" || entry.fetched.Before(oldest) {
+				oldestID, oldest = id, entry.fetched
+			}
+		}
+		c.modelEndpointsBytes -= publicModelEndpointsCost(oldestID, c.modelEndpoints[oldestID].body)
+		delete(c.modelEndpoints, oldestID)
+	}
+	c.modelEndpoints[modelID] = publicCatalogEntry{body: append([]byte(nil), body...), fetched: fetched}
+	c.modelEndpointsBytes += cost
+}
 
 // PublicImageModelEndpoints relays one public endpoint manifest. Model IDs are
 // path data, never a free-form URL; reject traversal and query injection before
 // building the control-plane request.
 func (c *Client) PublicImageModelEndpoints(ctx context.Context, modelID string) ([]byte, error) {
 	modelID = strings.TrimSpace(modelID)
-	if !publicImageModelIDPattern.MatchString(modelID) {
+	if !ValidPublicModelID(modelID) {
 		return nil, fmt.Errorf("trustedrouter: invalid image model id")
 	}
 	path := "/v1/images/models/" + modelID + "/endpoints"
