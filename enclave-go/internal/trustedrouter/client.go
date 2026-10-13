@@ -412,14 +412,14 @@ func validPublicCatalogList(body []byte) bool {
 	return json.Unmarshal(body, &envelope) == nil && len(envelope.Data) > 0
 }
 
-var publicImageModelIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$`)
+var publicModelIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._:-]+$`)
 
 // ValidPublicModelID accepts exactly one author/slug pair. Model IDs are path
-// data, never a free-form URL: the pattern excludes '/', '?', '#', '%' and
-// whitespace, and dot segments are refused so a decoded "../.." cannot be
-// resolved into a different control-plane path.
+// data, never a free-form URL: the pattern admits exactly one '/' and no '?',
+// '#', '%' or whitespace, and dot segments are refused so a decoded "../.."
+// cannot be resolved into a different control-plane path.
 func ValidPublicModelID(modelID string) bool {
-	if len(modelID) > publicModelIDMaxBytes || !publicImageModelIDPattern.MatchString(modelID) {
+	if len(modelID) > publicModelIDMaxBytes || !publicModelIDPattern.MatchString(modelID) {
 		return false
 	}
 	for _, segment := range strings.Split(modelID, "/") {
