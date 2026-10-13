@@ -1,0 +1,159 @@
+{
+  "attempt_results": [
+    "accepted",
+    "failed",
+    "rejected",
+    "timeout"
+  ],
+  "channels": {
+    "readiness": [
+      "a3_boot_check",
+      "a3_traffic_ready",
+      "a3_opted_attempt"
+    ],
+    "shutdown": [
+      "a3_shutdown_span"
+    ],
+    "startup": [
+      "a3_startup_correlation"
+    ]
+  },
+  "checks": {
+    "boot_transport": [
+      "local_dependencies",
+      "regional_hops"
+    ],
+    "marker_keys": [
+      "deployed_pins",
+      "public_epoch",
+      "separation_negatives"
+    ],
+    "observer_freshness": [
+      "role_warm_path",
+      "slot_freshness"
+    ],
+    "regional_load": [
+      "cpu_reads",
+      "envelope",
+      "publisher_export_shutdown"
+    ],
+    "size": [
+      "event_snapshot",
+      "headers_fragments",
+      "native_memory",
+      "transactions"
+    ],
+    "transport": [
+      "actual_hops",
+      "both_routes_variants",
+      "compared_outcome"
+    ]
+  },
+  "emitted_coordinate_fields": "kind sha256 bytes",
+  "emitted_coordinate_types": {
+    "bytes": "positive_integer_to_max_bytes",
+    "kind": "field_kind",
+    "sha256": "lower_hex_64"
+  },
+  "emitted_coordinates": {
+    "attested_image": {
+      "kind": "image_record",
+      "max_bytes": 16384,
+      "producer": "image_record_loader"
+    },
+    "claim": {
+      "kind": "health_claim",
+      "max_bytes": 1024,
+      "producer": "health_publisher"
+    },
+    "clock_basis.original": {
+      "kind": "boot_clock",
+      "max_bytes": 262144,
+      "producer": "boot_clock_recorder"
+    },
+    "health_basis": {
+      "kind": "health_basis",
+      "max_bytes": 6144,
+      "producer": "health_reader"
+    },
+    "originals.close_result": {
+      "kind": "close_result",
+      "max_bytes": 4096,
+      "producer": "close_result_writer"
+    },
+    "originals.original_close": {
+      "kind": "closure",
+      "max_bytes": 4096,
+      "producer": "daily_close_writer"
+    },
+    "public_descriptors": {
+      "kind": "public_descriptors",
+      "max_bytes": 16384,
+      "producer": "release_loader"
+    },
+    "publication": {
+      "kind": "health",
+      "max_bytes": 4096,
+      "producer": "health_publisher"
+    },
+    "receipt.original": {
+      "kind": "receipt_page",
+      "max_bytes": 65536,
+      "producer": "receipt_page_writer"
+    }
+  },
+  "fields": {
+    "a3_boot_check": "kind boot role revision region boot_at_us criterion completed_at_us checks config_sha256 inputs",
+    "a3_opted_attempt": "kind boot at_us result receipt",
+    "a3_shutdown_span": "kind boot instance launch revision region day interval_end_us complete clock clock_origin spans outcome",
+    "a3_startup_correlation": "kind instance launch boot role revision region process_start_us recorded_at_us",
+    "a3_traffic_ready": "kind boot at_us"
+  },
+  "launch_coordinate_fields": {
+    "cloud_run_instance": "project location service revision_name instance_id",
+    "launcher_start": "project zone instance_id vm_boot_id start_insert_id",
+    "supervisor_start": "project location instance_id supervisor_boot_id child_start_sequence"
+  },
+  "launch_descriptor_fields": "instance launch role revision region",
+  "limits": {
+    "a3_boot_check": 16384,
+    "a3_opted_attempt": 2048,
+    "a3_shutdown_span": 4096,
+    "a3_startup_correlation": 2048,
+    "a3_traffic_ready": 1024
+  },
+  "role_fields": {
+    "boot_transport": {
+      "enclave": "dependencies clock_basis",
+      "router": "dependencies clock_basis"
+    },
+    "marker_keys": {
+      "enclave": "effective_pins source_revision authority_epoch public_descriptors policy_sha256 fixture_sha256 attested_image attested_revision",
+      "router": "effective_pins source_revision authority_epoch public_descriptors policy_sha256 fixture_sha256"
+    },
+    "observer_freshness": {
+      "enclave": "router_path configured_router_region local_transport_ready echo_ready clock_basis",
+      "router": "health_basis install_elapsed_us contender installed_at_ns clock_basis"
+    }
+  },
+  "sources": {
+    "boot_transport": [
+      "regional_trial"
+    ],
+    "marker_keys": [
+      "ci"
+    ],
+    "observer_freshness": [],
+    "regional_load": [
+      "budget_trial"
+    ],
+    "size": [
+      "ci",
+      "sizing_trial"
+    ],
+    "transport": [
+      "ci",
+      "regional_trial"
+    ]
+  }
+}
