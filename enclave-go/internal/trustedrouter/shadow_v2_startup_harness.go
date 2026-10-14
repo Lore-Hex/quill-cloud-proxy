@@ -241,7 +241,8 @@ func StartShadowV2Startup(ctx context.Context, start time.Time, fd *os.File, pre
 	return h
 }
 
-// CaptureShadowV2LaunchDescriptor must run before opening serving listeners.
+// CaptureShadowV2LaunchDescriptor accepts only an explicitly inherited launch
+// descriptor and must run before opening serving listeners.
 func CaptureShadowV2LaunchDescriptor() (*os.File, bool) { return inheritedStartupDescriptor() }
 
 // configureStartupInputs is a package-local input seam. Production keeps the

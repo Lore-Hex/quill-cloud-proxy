@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestStartupDescriptor(t *testing.T) {
@@ -127,9 +129,74 @@ func TestStartupFD3(t *testing.T) {
 			}
 			command := exec.Command(os.Args[0], "-test.run=^TestStartupFD3$") // #nosec G204 -- Re-exec this test binary with a fixed selector.
 			command.ExtraFiles = []*os.File{r}
-			command.Env = append(os.Environ(), "SHADOW_STARTUP_FD3_TEST="+mode)
+			command.Env = append(os.Environ(), "SHADOW_STARTUP_FD3_TEST="+mode, "TR_SHADOW_V2_LAUNCH_FD=3")
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("fd 3 child: %v %s", err, output)
+			}
+		})
+	}
+}
+
+func TestStartupDescriptorOwnership(t *testing.T) {
+	if mode := os.Getenv("SHADOW_STARTUP_OWNERSHIP_TEST"); mode != "" {
+		if mode == "unannounced" {
+			_ = os.Unsetenv("TR_SHADOW_V2_LAUNCH_FD")
+		}
+		if mode == "close-on-exec" {
+			if _, err := unix.FcntlInt(3, unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
+				t.Fatal(err)
+			}
+		}
+		before, err := unix.FcntlInt(3, unix.F_GETFL, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fd, present := inheritedStartupDescriptor()
+		if fd != nil || present != (mode != "unannounced") {
+			t.Fatalf("unowned fd claimed: file=%v present=%v", fd != nil, present)
+		}
+		after, err := unix.FcntlInt(3, unix.F_GETFL, 0)
+		if err != nil || after != before {
+			t.Fatalf("unowned fd closed or modified: before=%d after=%d err=%v", before, after, err)
+		}
+		if present {
+			if _, err := acquireStartupLaunch(context.Background(), fd, present, strings.Repeat("a", 40), "us-central1"); err == nil {
+				t.Fatal("invalid descriptor declaration must fail closed")
+			}
+		}
+		return
+	}
+	for _, mode := range []string{"unannounced", "invalid-number", "empty", "close-on-exec", "wrong-type", "write-only"} {
+		t.Run(mode, func(t *testing.T) {
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			defer w.Close()
+			input := r
+			if mode == "wrong-type" {
+				input, err = os.Open(os.DevNull)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer input.Close()
+			} else if mode == "write-only" {
+				input = w
+			}
+			declared := "3"
+			if mode == "invalid-number" {
+				declared = "4"
+			} else if mode == "empty" {
+				declared = ""
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStartupDescriptorOwnership$") // #nosec G204 -- Re-exec this test binary with a fixed selector.
+			command.ExtraFiles = []*os.File{input}
+			command.Env = append(os.Environ(), "SHADOW_STARTUP_OWNERSHIP_TEST="+mode, "TR_SHADOW_V2_LAUNCH_FD="+declared)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("descriptor ownership child: %v %s", err, output)
 			}
 		})
 	}
