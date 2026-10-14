@@ -86,13 +86,18 @@ func TestStartupInventory(t *testing.T) {
 			t.Fatalf("criterion %s", k)
 		}
 	}
-	if strings.Join(inv.AttemptResults, " ") != "accepted failed rejected timeout" || startupFieldNames(startupCoordinate{}) != sortedStartupFields(inv.EmittedCoordinateFields) || startupFieldNames(startupLaunchDescriptor{}) != sortedStartupFields(inv.LaunchDescriptorFields) {
+	if strings.Join(inv.AttemptResults, " ") != strings.Join(startupResultNames(), " ") || startupFieldNames(startupCoordinate{}) != sortedStartupFields(inv.EmittedCoordinateFields) || startupFieldNames(startupLaunchDescriptor{}) != sortedStartupFields(inv.LaunchDescriptorFields) {
 		t.Fatal("closed fields mismatch")
 	}
+	kinds := map[string]int{}
 	for _, c := range inv.EmittedCoordinates {
+		kinds[c.Kind] = c.MaxBytes
 		if startupCoordinateKinds[c.Kind] != c.MaxBytes {
 			t.Fatal("coordinate mismatch")
 		}
+	}
+	if !reflect.DeepEqual(kinds, startupCoordinateKinds) {
+		t.Fatal("complete coordinate kind map differs")
 	}
 }
 func TestStartupByteLimits(t *testing.T) {
@@ -187,7 +192,7 @@ func TestStartupNoRequestContent(t *testing.T) {
 	a := v2Authorization(t, shadowV2Variants(t, "authorize_compared")[0])
 	a.AuthorizationID = "request-header-value"
 	retainShadowV2(a, nil, "chat.completions")
-	if len(w.records(t)) != 0 || len(h.attempts) != 1 || h.attempts[0].result != "rejected" {
+	if len(w.records(t)) != 0 || len(h.attempts) != 0 {
 		t.Fatal("request reached records")
 	}
 }
@@ -242,4 +247,13 @@ func TestStartupBoundedEmitter(t *testing.T) {
 	if time.Since(start) > time.Second {
 		t.Fatal("unbounded emitter")
 	}
+}
+
+func startupResultNames() []string {
+	var names []string
+	for name := range startupAttemptResults {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

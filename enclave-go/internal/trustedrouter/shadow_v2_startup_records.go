@@ -3,6 +3,7 @@ package trustedrouter
 import (
 	"bytes"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -225,7 +226,7 @@ func startupRecordValid(record any) bool {
 	case startupReady:
 		return r.Kind == "a3_traffic_ready" && startupID.MatchString(r.Boot) && r.AtUS >= 0
 	case startupAttempt:
-		return r.Kind == "a3_opted_attempt" && startupID.MatchString(r.Boot) && r.AtUS >= 0 && (r.Result == "accepted" || r.Result == "failed" || r.Result == "rejected" || r.Result == "timeout") && r.Receipt.Boot == r.Boot && startupDay(r.Receipt.Day) && r.Receipt.Sequence > 0 && r.Receipt.Original.valid("receipt_page")
+		return r.Kind == "a3_opted_attempt" && startupID.MatchString(r.Boot) && r.AtUS >= 0 && startupAttemptResults[r.Result] && r.Receipt.Boot == r.Boot && startupDay(r.Receipt.Day) && r.Receipt.Sequence > 0 && r.Receipt.Original.valid("receipt_page")
 	case startupShutdown:
 		if r.Kind != "a3_shutdown_span" || !startupCommon(r.Boot, "enclave", r.Revision, r.Region) || !startupID.MatchString(r.Instance) || !startupID.MatchString(r.Launch) || !startupDay(r.Day) || r.IntervalEndUS < 0 || r.Clock != "monotonic_us" || r.ClockOrigin.Boot != r.Boot || r.ClockOrigin.MonotonicAtBootUS < 0 || (r.Outcome != "graceful" && r.Outcome != "hard_kill") || len(r.Spans) != 5 {
 			return false
@@ -281,9 +282,14 @@ type startupEmitter struct {
 func newStartupEmitter(w io.Writer) *startupEmitter {
 	e := &startupEmitter{queue: make(chan startupLine, 32)}
 	go func() {
+		defer func() {
+			if recover() != nil {
+				e.dropped.Add(1)
+			}
+		}()
 		for item := range e.queue {
 			line := append(bytes.Clone(item.raw), '\n')
-			n, err := w.Write(line)
+			n, err := startupWrite(w, line)
 			if err != nil || n != len(line) {
 				e.dropped.Add(1)
 			}
@@ -314,3 +320,32 @@ func (e *startupEmitter) emit(record any) ([]byte, bool) {
 	}
 }
 func (e *startupEmitter) close() { e.once.Do(func() { close(e.queue) }) }
+
+// Each output call is isolated just like the other startup inputs.
+func startupWrite(w io.Writer, line []byte) (n int, err error) {
+	defer func() {
+		if recover() != nil {
+			n = 0
+			err = errStartupRecord
+		}
+	}()
+	return w.Write(line)
+}
+
+// The result vocabulary comes from the shared literal, whose bytes are pinned
+// independently by TestStartupInventory.
+//
+//go:embed testdata/shadow_v2_runtime_records_inventory.json
+var startupInventoryOriginal []byte
+var startupAttemptResults = func() map[string]bool {
+	var inventory struct {
+		Results []string `json:"attempt_results"`
+	}
+	results := map[string]bool{}
+	if json.Unmarshal(startupInventoryOriginal, &inventory) == nil {
+		for _, result := range inventory.Results {
+			results[result] = true
+		}
+	}
+	return results
+}()

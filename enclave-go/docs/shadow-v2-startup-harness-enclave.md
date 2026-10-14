@@ -12,8 +12,9 @@ is parsed and before either retention variant. The existing caller invokes this
 only when its shadow flag is on. Only chat.completions and responses are gated.
 Before readiness, the hook takes the existing `(false, true)` non-retention
 outcome. After readiness, existing v2 processing continues. The decision is one
-atomic pointer read; recording the attempt additionally samples a clock and
-appends to a bounded local buffer. There is no added request error or wire field.
+atomic pointer read. The request entry records the attempt before calling
+retention. Its preallocated 256-entry buffer uses TryLock; a busy or full buffer
+drops and counts immediately. No clock, lock or append runs inside the hook. There is no added request error or wire field.
 With shadow off the existing caller returns before this hook.
 
 The coordinator also runs with shadow off. A completed marker record uses the
@@ -35,30 +36,30 @@ The exact top-level fields are:
 | --- | --- |
 | revision | Full lowercase 40-character released SHA; must equal the baked `ShadowBuildRevision` or embedded Go VCS revision and launch descriptor |
 | region | Descriptor's enclave region |
-| config_sha256 | SHA-256 of canonical `config` below |
+| config_sha256 | SHA-256 of the exact UTF-8 bytes in `config_original` |
 | policy_sha256, fixture_sha256 | Reviewed release digests, 64 lowercase hex characters |
-| config | Released startup configuration below, used by the selected trials as their config input |
+| config_original | JSON string carrying the complete shared release original, preserving formatting, trailing newline and shared fields |
 | public_descriptors | Exact `{authority_epoch,config_sha256,source_revision,descriptor_ids}` original; epoch positive and the other values equal this release |
 | artifacts | Object indexed by criterion then source role, containing selected artifact records |
 
-`config` has exactly `dependencies,router_path,descriptor_ids,
-enclave_image_sha256,effective_pins`.
+`config_original` carries the same shared original that the collector retains.
+The runtime hashes and retains its exact decoded string bytes, then reads only
+its local projection. It does not reencode that projection to obtain the digest.
+The shared original includes `dependencies.router` and `dependencies.enclave`,
+`router_path`, `descriptor_ids`, `enclave_image_sha256`, and `effective_pins`.
+Other shared release fields remain in the original and therefore in its digest.
 
-- `dependencies` is this enclave's finite target list, 2..16 entries. Each has
-  exactly `operation,resource,region,deadline_us`. Both `transport` and `read`
-  must occur, with no duplicate operation/resource pair. Resource is the
-  configured router hostname (optional port), region is its reviewed region,
-  and deadline is a positive integer no greater than 10000000 microseconds.
-  This manifest list is the enclave adapter's selected release configuration;
-  release packaging must join it to `dependencies.enclave` in the router's
-  independently retained configuration. The deadline is the adapter's local
-  call bound, not an extra field on that independent target triple.
+- `dependencies.enclave` is the finite local target list, 2..16 entries. Each
+  target has `operation,resource,region`; both `transport` and `read` must occur,
+  without duplicate operation/resource pairs. `dependencies.router` remains
+  part of the exact shared original and is not probed by this process. Each local
+  call has a ten-second deadline supplied by the adapter, outside the digest.
 - `router_path` is exactly `{resource,region}` and agrees with every local
   target. Hostnames come from release configuration and must equal the first
   existing control-plane endpoint. The configured region is never inferred
   from the enclave hostname. The manifest's artifact region is the enclave's
   region; dependency/router-path region is the configured router's region.
-- `descriptor_ids` is an ordered list of 1..128 bounded IDs.
+- `descriptor_ids` is an ordered list of 1..16 distinct bounded IDs.
 - `enclave_image_sha256` is the reviewed image digest.
 - `effective_pins` is exactly `TR_ASYNC_SETTLE_NEGOTIATE` and
   `TR_ASYNC_SETTLE_SHADOW`, with normalized `on`/`off` values. Actual values use
@@ -180,10 +181,10 @@ bytes and acknowledgement for at least 30 days. Current missing local criteria
 prevent reaching this local-only ready path in a live boot.
 
 `ReceiptPageRetention` remains missing. The enclave does not retain the v2 PAGE
-that owns the native start event. At admission start the hook samples `at_us`
-and records accepted/rejected locally; acceptance means passing this admission
-gate, not settlement success. There are 256 local slots and a separate overflow
-count. No request fields enter those observations. The closed receipt field is
+that owns the native start event. At admission start the request-entry recorder samples `at_us`
+and records its current accepted/rejected state locally; acceptance means passing this admission
+gate, not settlement success. There are 256 preallocated local slots and a separate atomic drop
+count for a busy or full recorder. No request fields enter those observations. The closed receipt field is
 mandatory, so no `a3_opted_attempt` line is emitted until an existing PAGE writer
 can provide a joined retained page. No page, sequence or coordinate is invented.
 The local observations and overflow count do not establish a complete attempt
@@ -211,8 +212,57 @@ explicitly update this fixture, the Go schemas/validators, and this test's pin
 in a reviewed enclave change. Do not regenerate or silently fetch it during
 build or test. No a1/a2 fixture is changed.
 
-The supplied main design file ends at §14.2; its requested §15 was not available
-in this worktree. The complete runtime interface and supplied literal inventory
-are the concrete record contract used for this round. Unit tests use fake ports
-and local files only; native launch, clock and retention procedures remain
-separate work.
+Round 2 uses the supplied section 15.3 table. Tests use in-memory ports and
+local files. The producer-to-collector check runs the sibling read-only collector
+with the literal `shadow_v2_shared_release_config.json`, six actual Go-produced
+adoptions, their originals, and explicit fake trial inputs. It produces six
+collector checks and one ledger with the same exact config digest. It does not
+stand in for native trials or original delivery from a deployed process.
+
+
+## Startup failures and round 2 checks
+
+Every launched startup input worker recovers a panic. The coordinator also
+recovers, leaves the interrupted criterion missing, and leaves admission
+unavailable. Output writes recover and count a drop. Ordinary serving continues.
+A context deadline bounds the coordinator's wait; it cannot stop a callback that
+ignores cancellation. Each such input can leave at most its one worker waiting.
+
+`TestStartupPanickingPorts` starts a child process for each input and exercises
+ordinary requests before and after the failed startup. `TestStartupProductionHandoff`
+invokes `StartShadowV2Startup` with each input stalled and completes an ordinary
+request. `TestStartupRealServingHandoff` uses the production handoff and serving
+loop with an in-memory listener and a descriptor pipe without EOF.
+
+The incoming-value test exercises both readiness states, both marked variants,
+both cohort routes, all production record constructors, and the two currently
+uninstalled attempt/shutdown constructors. It inspects the complete emitted
+stream and retained originals for distinct incoming values that also fit the ID
+shape. The base transcript test compares full request/response bytes with a
+literal captured from 21292b56; v1 retained state and the existing frozen main
+outcomes are checked again in both readiness states.
+
+All valid record shapes have stricter field/count bounds than their outer byte
+ceilings. The emission test calculates an upper bound for each shape, then sets
+the existing ceiling table to the actual serialized length and one byte below
+it. It exercises serialization, queued output, exact bytes and counted drops;
+removing the production ceiling call is detected. The complete coordinate map
+must equal the fixture-derived map, and the attempt result lookup is derived
+from the embedded literal. Outside kinds and results cannot enter output.
+
+## Section 15.3 enclave rows and named input seams
+
+| Row | Records and checks | Remaining input seam and reason |
+| --- | --- | --- |
+| transport | This boot adopts the exact selected ci/regional_trial IDs, region, config digest and original times; failed checks remain failed. | `ReleasedTransportOriginals`: real both-route/full/hash-only authorize/echo/settle/refund trial originals and both released revisions must come from release packaging. The local manifest has one revision and is not that whole original. |
+| size | ci/sizing_trial adoption checks event_snapshot, headers_fragments, native_memory and transactions for this config. | `NativeSizingOriginals`: no native maximum event/snapshot, header/fragment, four-page/counter/closure transaction, separate-result, encoding/RSS/queue measurements are supplied here. |
+| regional_load | budget_trial must match true region/config and last no more than one hour; the complete shared release limits stay in the original. | `RegionalEnvelopeBinding`: the current selected-artifact projection does not independently establish measured CPU/read/publisher/export/shutdown values or that this boot fits N=1/K/cap/surge. The reviewed native original is still required. |
+| boot_transport | One bounded transport/read call per configured enclave target on this process, with measured elapsed time, marker match and clock original; regional_trial is adopted separately. | `RouterMarkerObservation`: the existing ready response lacks the marker fields, so the live check stays missing. `CrossRegionDependencyJoin`: the collector requires dependency region equal boot region; a differing configured router region needs a reviewed input resolution and must never be relabeled. |
+| observer_freshness | Only enclave router_path, configured_router_region, local_transport_ready, echo_ready and clock_basis are emitted. | `RouterBootExposure` and `ExistingSettleEcho`: existing ready output supplies no router boot or independent local echo-ready observation. Available status remains local; no borrowed router warm result is used. |
+| marker_keys | Actual flags, this revision, released policy/fixture/config digests, public descriptor/epoch and cached image mapping are recorded. Dormant off remains off. | `ReleaseStagePins`: release packaging must check activation shadow-on/negotiation-off, both-release CI originals and deployed revision. `EnclaveImageRecord`: only the existing GCP cached format has an image mapping. Other formats remain missing. |
+
+Common remaining seams are `LauncherLaunchDescriptor`, `BootClockQualification`,
+`EnclaveOriginalRetention`, `EnclaveReadyRetention`, `ReceiptPageRetention` and
+`EnclaveShutdownStages`, as described above. None is filled by a passed unit test.
+The installed live adapters still lack required inputs and leave opted readiness
+unavailable. This package does not create native observations or complete a rollout.

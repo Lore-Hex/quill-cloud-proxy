@@ -60,10 +60,10 @@ func startupFixture(t *testing.T) (*ShadowV2StartupHarness, startupLaunchDescrip
 	h.now = tick.now
 	h.pins = map[string]string{"TR_ASYNC_SETTLE_NEGOTIATE": "off", "TR_ASYNC_SETTLE_SHADOW": "on"}
 	d := startupLaunchDescriptor{"instance:one", "launch:one", "enclave", ShadowBuildRevision, "us-central1"}
-	cfg := startupConfig{[]startupTarget{{"transport", "router.example", "us-central1", 10000000}, {"read", "router.example", "us-central1", 10000000}}, startupReleasedPath{"router.example", "us-central1"}, []string{"descriptor-one"}, strings.Repeat("b", 64), map[string]string{"TR_ASYNC_SETTLE_NEGOTIATE": "off", "TR_ASYNC_SETTLE_SHADOW": "on"}}
+	cfg := startupConfig{startupDependencies{Router: []startupTarget{}, Enclave: []startupTarget{{"transport", "router.example", "us-central1", 0}, {"read", "router.example", "us-central1", 0}}}, startupReleasedPath{"router.example", "us-central1"}, []string{"descriptor-one"}, strings.Repeat("b", 64), map[string]string{"TR_ASYNC_SETTLE_NEGOTIATE": "off", "TR_ASYNC_SETTLE_SHADOW": "on"}}
 	raw, _ := canonicalShadow(cfg)
 	sum := sha256.Sum256(raw)
-	m := startupManifest{d.Revision, d.Region, hex.EncodeToString(sum[:]), strings.Repeat("c", 64), strings.Repeat("d", 64), cfg, startupPublicDescriptors{1, hex.EncodeToString(sum[:]), d.Revision, cfg.DescriptorIDs}, map[string]map[string]startupArtifact{}}
+	m := startupManifest{d.Revision, d.Region, hex.EncodeToString(sum[:]), strings.Repeat("c", 64), strings.Repeat("d", 64), cfg, string(raw), startupPublicDescriptors{1, hex.EncodeToString(sum[:]), d.Revision, cfg.DescriptorIDs}, map[string]map[string]startupArtifact{}}
 	for _, criterion := range startupCriteria {
 		m.Artifacts[criterion] = map[string]startupArtifact{}
 		for _, source := range strings.Fields(startupSources[criterion]) {
@@ -235,6 +235,7 @@ func TestStartupDormantPins(t *testing.T) {
 func startupRehash(m *startupManifest) {
 	raw, _ := canonicalShadow(m.Config)
 	sum := sha256.Sum256(raw)
+	m.ConfigOriginal = string(raw)
 	m.ConfigSHA256 = hex.EncodeToString(sum[:])
 	m.PublicDescriptors.ConfigSHA256 = m.ConfigSHA256
 	for _, sources := range m.Artifacts {
@@ -251,6 +252,7 @@ func TestStartupAdmission(t *testing.T) {
 			enclaveOptedAdmission.Store(&startupAdmission{ready, h})
 			c := &Client{asyncShadow: on}
 			a := v2Authorization(t, shadowV2Variants(t, "authorize_compared")[0])
+			c.recordStartupAdmissionStart(a, "chat.completions")
 			c.retainShadowAuthorization(a, &qtypes.OpenAIChatRequest{}, "chat.completions")
 			if (a.shadowSettlement != nil) != (on && ready) {
 				t.Fatalf("on=%v ready=%v retained=%v", on, ready, a.shadowSettlement != nil)
@@ -287,13 +289,14 @@ func TestStartupRace(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
 				EnclaveOptedAdmission()
+				recordStartupAdmissionStart()
 				h.RecordShutdownWait(h.start.Add(time.Second), h.start.Add(2*time.Second))
 			}
 		}()
 	}
 	runStartupFixture(h, d, m)
 	wg.Wait()
-	if len(h.attempts) != 256 || h.attemptOverflow != 344 {
+	if uint64(len(h.attempts))+h.attemptOverflow.Load() != 600 || len(h.attempts) > 256 {
 		t.Fatal("bounded attempts lost counts")
 	}
 }
@@ -395,7 +398,7 @@ func TestStartupManifestRoundTrip(t *testing.T) {
 	}
 	var got startupManifest
 	retained, err := readStartupJSON(path, 262144, &got)
-	if err != nil || !bytes.Equal(retained, raw) || !reflect.DeepEqual(m, got) {
+	if err != nil || !bytes.Equal(retained, raw) || !got.valid(startupLaunchDescriptor{"instance:one", "launch:one", "enclave", m.Revision, m.Region}) || !reflect.DeepEqual(m, got) {
 		t.Fatal("manifest changed")
 	}
 }

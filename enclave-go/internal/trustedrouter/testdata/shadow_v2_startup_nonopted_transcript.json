@@ -1,0 +1,434 @@
+[
+  {
+    "body": "{\"api_key_lookup_hash\":\"092b6c5fe457a50538f12defa6a27bbe9b2a686550495cb71787f7fae241e669\",\"estimated_input_tokens\":1,\"idempotency_key\":\"fixture-id\",\"invocation_nonce\":\"nonce-v1\",\"max_output_tokens\":512,\"max_tokens\":null,\"model\":\"fixture\",\"region\":\"\",\"route_type\":\"chat.completions\",\"stream\":false}",
+    "headers": {
+      "Content-Type": [
+        "application/json"
+      ],
+      "X-Tr-Settlement-Mode": [
+        "async-v1"
+      ],
+      "X-Tr-Settlement-Shadow-Policy": [
+        "shadow-v2"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "test"
+      ]
+    },
+    "method": "POST",
+    "response": "{\n    \"data\": {\n      \"authorization_id\": \"auth-v1\",\n      \"generation_id\": \"gen-c7a73498dd8a5d59a705f482070c9e56\",\n      \"billing_snapshot\": {\n        \"v\": 1,\n        \"kind\": \"credits_endpoint\",\n        \"candidates\": [\n          {\n            \"endpoint_id\": \"openai/billing-v1@openai/prepaid\",\n            \"model_id\": \"openai/billing-v1\",\n            \"provider\": \"openai\",\n            \"usage_type\": \"Credits\",\n            \"price_history_version\": 1,\n            \"rates\": {\n              \"input_micro_per_million\": 500000,\n              \"output_micro_per_million\": 500000,\n              \"cached_input_micro_per_million\": 0,\n              \"cache_creation_micro_per_million\": 0\n            },\n            \"tiers\": [],\n            \"request_fee_micro\": 0,\n            \"rounding\": \"half_up_per_million\",\n            \"prompt_convention\": \"includes_cache\",\n            \"output_convention\": \"includes_reasoning\"\n          }\n        ],\n        \"minimum_charge\": \"one_micro_if_positive\",\n        \"charge_cap\": null,\n        \"tier_basis\": \"total_prompt\",\n        \"tier_boundary\": \"inclusive\",\n        \"tier_fallback\": \"last_tier\"\n      },\n      \"billing_snapshot_hash\": \"39526c7fde5f32d133358b9e61ef0fff17e006f6c7f87fc5ec6dd211206c50ee\",\n      \"settlement_ticket\": \"eyJhbGciOiJFZERTQSIsImtpZCI6ImFzeW5jLXYxLWZpeHR1cmUiLCJ0eXAiOiJ0ci1hc3luYy1zZXR0bGUtdjEifQ.eyJhc3luY19lbGlnaWJsZSI6dHJ1ZSwiYXVkIjoicm91dGVyLXNldHRsZW1lbnQiLCJhdXRob3JpemF0aW9uX2lkIjoiYXV0aC12MSIsImJpbGxpbmdfYXV0aG9yaXR5IjoibG9jYWwiLCJlcG9jaCI6MSwiZXhwIjoxNzkxMjQ1MTAwLCJnZW5lcmF0aW9uX2lkIjoiZ2VuLWM3YTczNDk4ZGQ4YTVkNTlhNzA1ZjQ4MjA3MGM5ZTU2IiwiaWF0IjoxNzkxMjQ0ODAwLCJpbnZvY2F0aW9uX25vbmNlIjoibm9uY2UtdjEiLCJpc3MiOiJyb3V0ZXItZml4dHVyZSIsImpvdXJuYWxfcmVnaW9uIjoidXMtY2VudHJhbDEiLCJrZXlfaWQiOiJrZXktdjEiLCJyZXNlcnZhdGlvbl9pZCI6InJlcy12MSIsInJvdXRlX3R5cGUiOiJjaGF0LmNvbXBsZXRpb25zIiwic2V0dGxlX29yaWdpbiI6InR5cGVkIiwic25hcHNob3RfaGFzaCI6IjM5NTI2YzdmZGU1ZjMyZDEzMzM1OGI5ZTYxZWYwZmZmMTdlMDA2ZjZjN2Y4N2ZjNWVjNmRkMjExMjA2YzUwZWUiLCJzbmFwc2hvdF92ZXJzaW9uIjoxLCJzdHJlYW1lZCI6ZmFsc2UsIndvcmtzcGFjZV9pZCI6IndzLXYxIn0.ghFdyi8nXmEDGVemPaaExEoR7zKg01E7Nw0MCtOZgSKDD3k3tdDYR9E-sFAtA2vH19pkfUPm3ws05k9HDbuLCA\",\n      \"async_eligible\": true,\n      \"settlement_status_url\": \"/v1/settlements/auth-v1.settle\"\n    }\n  }",
+    "url": "https://trustedrouter.com/internal/gateway/authorize"
+  },
+  {
+    "async_retained": false,
+    "authorization": {
+      "billing_snapshot_hash": "39526c7fde5f32d133358b9e61ef0fff17e006f6c7f87fc5ec6dd211206c50ee",
+      "async_eligible": true,
+      "generation_id": "gen-c7a73498dd8a5d59a705f482070c9e56",
+      "billing_snapshot": {
+        "v": 1,
+        "kind": "credits_endpoint",
+        "candidates": [
+          {
+            "endpoint_id": "openai/billing-v1@openai/prepaid",
+            "model_id": "openai/billing-v1",
+            "provider": "openai",
+            "usage_type": "Credits",
+            "price_history_version": 1,
+            "rates": {
+              "input_micro_per_million": 500000,
+              "output_micro_per_million": 500000,
+              "cached_input_micro_per_million": 0,
+              "cache_creation_micro_per_million": 0
+            },
+            "tiers": [],
+            "request_fee_micro": 0,
+            "rounding": "half_up_per_million",
+            "prompt_convention": "includes_cache",
+            "output_convention": "includes_reasoning"
+          }
+        ],
+        "minimum_charge": "one_micro_if_positive",
+        "charge_cap": null,
+        "tier_basis": "total_prompt",
+        "tier_boundary": "inclusive",
+        "tier_fallback": "last_tier"
+      },
+      "settlement_ticket": "eyJhbGciOiJFZERTQSIsImtpZCI6ImFzeW5jLXYxLWZpeHR1cmUiLCJ0eXAiOiJ0ci1hc3luYy1zZXR0bGUtdjEifQ.eyJhc3luY19lbGlnaWJsZSI6dHJ1ZSwiYXVkIjoicm91dGVyLXNldHRsZW1lbnQiLCJhdXRob3JpemF0aW9uX2lkIjoiYXV0aC12MSIsImJpbGxpbmdfYXV0aG9yaXR5IjoibG9jYWwiLCJlcG9jaCI6MSwiZXhwIjoxNzkxMjQ1MTAwLCJnZW5lcmF0aW9uX2lkIjoiZ2VuLWM3YTczNDk4ZGQ4YTVkNTlhNzA1ZjQ4MjA3MGM5ZTU2IiwiaWF0IjoxNzkxMjQ0ODAwLCJpbnZvY2F0aW9uX25vbmNlIjoibm9uY2UtdjEiLCJpc3MiOiJyb3V0ZXItZml4dHVyZSIsImpvdXJuYWxfcmVnaW9uIjoidXMtY2VudHJhbDEiLCJrZXlfaWQiOiJrZXktdjEiLCJyZXNlcnZhdGlvbl9pZCI6InJlcy12MSIsInJvdXRlX3R5cGUiOiJjaGF0LmNvbXBsZXRpb25zIiwic2V0dGxlX29yaWdpbiI6InR5cGVkIiwic25hcHNob3RfaGFzaCI6IjM5NTI2YzdmZGU1ZjMyZDEzMzM1OGI5ZTYxZWYwZmZmMTdlMDA2ZjZjN2Y4N2ZjNWVjNmRkMjExMjA2YzUwZWUiLCJzbmFwc2hvdF92ZXJzaW9uIjoxLCJzdHJlYW1lZCI6ZmFsc2UsIndvcmtzcGFjZV9pZCI6IndzLXYxIn0.ghFdyi8nXmEDGVemPaaExEoR7zKg01E7Nw0MCtOZgSKDD3k3tdDYR9E-sFAtA2vH19pkfUPm3ws05k9HDbuLCA",
+      "settlement_status_url": "/v1/settlements/auth-v1.settle",
+      "authorization_id": "auth-v1",
+      "idempotent_replay": false,
+      "invocation_nonce": "",
+      "workspace_id": "",
+      "api_key_hash": "",
+      "model": "",
+      "upstream_model": "",
+      "endpoint_id": "",
+      "provider": "",
+      "provider_name": "",
+      "wafer_zdr_required": false,
+      "requested_model": "",
+      "response_model": "",
+      "hide_public_metadata": false,
+      "region": "",
+      "usage_type": "",
+      "limit_usage_type": "",
+      "byok_secret_ref": "",
+      "byok_encrypted_secret": null,
+      "byok_cache_key": "",
+      "byok_provider": "",
+      "route_candidates": null,
+      "broadcast_destinations": null,
+      "custom_model": null,
+      "tags": null,
+      "request_metadata_version": 0,
+      "additional_cost_reservation_microdollars": 0,
+      "video_token_billing": false,
+      "estimated_cost_microdollars": 0,
+      "receipt_fee_basis_points": 0,
+      "native_batch_eligible": false,
+      "stage_d": {
+        "eligible": false,
+        "reason": ""
+      },
+      "candidate_cost_reporting": false,
+      "candidate_prices": null,
+      "cap_micro": 0
+    },
+    "shadow_retained": false
+  },
+  {
+    "body": "{\"actual_input_tokens\":3,\"actual_output_tokens\":2,\"app\":\"attested-gateway\",\"authorization_id\":\"auth-v1\",\"elapsed_seconds\":1,\"finish_reason\":\"stop\",\"request_id\":\"\",\"route_type\":\"chat.completions\",\"selected_endpoint\":\"\",\"selected_model\":\"\",\"status\":\"success\",\"streamed\":false,\"usage_estimated\":false}",
+    "headers": {
+      "Content-Type": [
+        "application/json"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "test"
+      ]
+    },
+    "method": "POST",
+    "response": "{\"data\":{\"settled\":true,\"cost_microdollars\":2}}",
+    "url": "https://trustedrouter.com/internal/gateway/settle"
+  },
+  {
+    "settle_result": {
+      "generation_id": "",
+      "cost": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "usage_type": "",
+      "model": "",
+      "provider": "",
+      "region": "",
+      "settled": true,
+      "already_settled": false,
+      "finalization_outcome": "",
+      "disposition": "",
+      "cost_microdollars": 2
+    }
+  },
+  {
+    "body": "{\"app\":\"attested-gateway\",\"authorization_id\":\"auth-v1\",\"elapsed_seconds\":1,\"error_status\":502,\"error_type\":\"upstream_error\",\"route_type\":\"chat.completions\",\"selected_endpoint\":\"\",\"selected_model\":\"\",\"streamed\":true}",
+    "headers": {
+      "Content-Type": [
+        "application/json"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "test"
+      ]
+    },
+    "method": "POST",
+    "response": "{\"data\":{\"settled\":true,\"cost_microdollars\":2}}",
+    "url": "https://trustedrouter.com/internal/gateway/refund"
+  },
+  {
+    "body": "{\"api_key_lookup_hash\":\"092b6c5fe457a50538f12defa6a27bbe9b2a686550495cb71787f7fae241e669\",\"estimated_input_tokens\":1,\"idempotency_key\":\"fixture-id\",\"invocation_nonce\":\"nonce-v1\",\"max_output_tokens\":512,\"max_tokens\":null,\"model\":\"fixture\",\"region\":\"\",\"route_type\":\"responses\",\"stream\":false}",
+    "headers": {
+      "Content-Type": [
+        "application/json"
+      ],
+      "X-Tr-Settlement-Mode": [
+        "async-v1"
+      ],
+      "X-Tr-Settlement-Shadow-Policy": [
+        "shadow-v2"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "test"
+      ]
+    },
+    "method": "POST",
+    "response": "{\n    \"data\": {\n      \"authorization_id\": \"auth-v1\",\n      \"generation_id\": \"gen-c7a73498dd8a5d59a705f482070c9e56\",\n      \"billing_snapshot\": {\n        \"v\": 1,\n        \"kind\": \"credits_endpoint\",\n        \"candidates\": [\n          {\n            \"endpoint_id\": \"openai/billing-v1@openai/prepaid\",\n            \"model_id\": \"openai/billing-v1\",\n            \"provider\": \"openai\",\n            \"usage_type\": \"Credits\",\n            \"price_history_version\": 1,\n            \"rates\": {\n              \"input_micro_per_million\": 500000,\n              \"output_micro_per_million\": 500000,\n              \"cached_input_micro_per_million\": 0,\n              \"cache_creation_micro_per_million\": 0\n            },\n            \"tiers\": [],\n            \"request_fee_micro\": 0,\n            \"rounding\": \"half_up_per_million\",\n            \"prompt_convention\": \"includes_cache\",\n            \"output_convention\": \"includes_reasoning\"\n          }\n        ],\n        \"minimum_charge\": \"one_micro_if_positive\",\n        \"charge_cap\": null,\n        \"tier_basis\": \"total_prompt\",\n        \"tier_boundary\": \"inclusive\",\n        \"tier_fallback\": \"last_tier\"\n      },\n      \"billing_snapshot_hash\": \"39526c7fde5f32d133358b9e61ef0fff17e006f6c7f87fc5ec6dd211206c50ee\",\n      \"settlement_ticket\": \"eyJhbGciOiJFZERTQSIsImtpZCI6ImFzeW5jLXYxLWZpeHR1cmUiLCJ0eXAiOiJ0ci1hc3luYy1zZXR0bGUtdjEifQ.eyJhc3luY19lbGlnaWJsZSI6dHJ1ZSwiYXVkIjoicm91dGVyLXNldHRsZW1lbnQiLCJhdXRob3JpemF0aW9uX2lkIjoiYXV0aC12MSIsImJpbGxpbmdfYXV0aG9yaXR5IjoibG9jYWwiLCJlcG9jaCI6MSwiZXhwIjoxNzkxMjQ1MTAwLCJnZW5lcmF0aW9uX2lkIjoiZ2VuLWM3YTczNDk4ZGQ4YTVkNTlhNzA1ZjQ4MjA3MGM5ZTU2IiwiaWF0IjoxNzkxMjQ0ODAwLCJpbnZvY2F0aW9uX25vbmNlIjoibm9uY2UtdjEiLCJpc3MiOiJyb3V0ZXItZml4dHVyZSIsImpvdXJuYWxfcmVnaW9uIjoidXMtY2VudHJhbDEiLCJrZXlfaWQiOiJrZXktdjEiLCJyZXNlcnZhdGlvbl9pZCI6InJlcy12MSIsInJvdXRlX3R5cGUiOiJjaGF0LmNvbXBsZXRpb25zIiwic2V0dGxlX29yaWdpbiI6InR5cGVkIiwic25hcHNob3RfaGFzaCI6IjM5NTI2YzdmZGU1ZjMyZDEzMzM1OGI5ZTYxZWYwZmZmMTdlMDA2ZjZjN2Y4N2ZjNWVjNmRkMjExMjA2YzUwZWUiLCJzbmFwc2hvdF92ZXJzaW9uIjoxLCJzdHJlYW1lZCI6ZmFsc2UsIndvcmtzcGFjZV9pZCI6IndzLXYxIn0.ghFdyi8nXmEDGVemPaaExEoR7zKg01E7Nw0MCtOZgSKDD3k3tdDYR9E-sFAtA2vH19pkfUPm3ws05k9HDbuLCA\",\n      \"async_eligible\": true,\n      \"settlement_status_url\": \"/v1/settlements/auth-v1.settle\"\n    }\n  }",
+    "url": "https://trustedrouter.com/internal/gateway/authorize"
+  },
+  {
+    "async_retained": false,
+    "authorization": {
+      "billing_snapshot_hash": "39526c7fde5f32d133358b9e61ef0fff17e006f6c7f87fc5ec6dd211206c50ee",
+      "async_eligible": true,
+      "generation_id": "gen-c7a73498dd8a5d59a705f482070c9e56",
+      "billing_snapshot": {
+        "v": 1,
+        "kind": "credits_endpoint",
+        "candidates": [
+          {
+            "endpoint_id": "openai/billing-v1@openai/prepaid",
+            "model_id": "openai/billing-v1",
+            "provider": "openai",
+            "usage_type": "Credits",
+            "price_history_version": 1,
+            "rates": {
+              "input_micro_per_million": 500000,
+              "output_micro_per_million": 500000,
+              "cached_input_micro_per_million": 0,
+              "cache_creation_micro_per_million": 0
+            },
+            "tiers": [],
+            "request_fee_micro": 0,
+            "rounding": "half_up_per_million",
+            "prompt_convention": "includes_cache",
+            "output_convention": "includes_reasoning"
+          }
+        ],
+        "minimum_charge": "one_micro_if_positive",
+        "charge_cap": null,
+        "tier_basis": "total_prompt",
+        "tier_boundary": "inclusive",
+        "tier_fallback": "last_tier"
+      },
+      "settlement_ticket": "eyJhbGciOiJFZERTQSIsImtpZCI6ImFzeW5jLXYxLWZpeHR1cmUiLCJ0eXAiOiJ0ci1hc3luYy1zZXR0bGUtdjEifQ.eyJhc3luY19lbGlnaWJsZSI6dHJ1ZSwiYXVkIjoicm91dGVyLXNldHRsZW1lbnQiLCJhdXRob3JpemF0aW9uX2lkIjoiYXV0aC12MSIsImJpbGxpbmdfYXV0aG9yaXR5IjoibG9jYWwiLCJlcG9jaCI6MSwiZXhwIjoxNzkxMjQ1MTAwLCJnZW5lcmF0aW9uX2lkIjoiZ2VuLWM3YTczNDk4ZGQ4YTVkNTlhNzA1ZjQ4MjA3MGM5ZTU2IiwiaWF0IjoxNzkxMjQ0ODAwLCJpbnZvY2F0aW9uX25vbmNlIjoibm9uY2UtdjEiLCJpc3MiOiJyb3V0ZXItZml4dHVyZSIsImpvdXJuYWxfcmVnaW9uIjoidXMtY2VudHJhbDEiLCJrZXlfaWQiOiJrZXktdjEiLCJyZXNlcnZhdGlvbl9pZCI6InJlcy12MSIsInJvdXRlX3R5cGUiOiJjaGF0LmNvbXBsZXRpb25zIiwic2V0dGxlX29yaWdpbiI6InR5cGVkIiwic25hcHNob3RfaGFzaCI6IjM5NTI2YzdmZGU1ZjMyZDEzMzM1OGI5ZTYxZWYwZmZmMTdlMDA2ZjZjN2Y4N2ZjNWVjNmRkMjExMjA2YzUwZWUiLCJzbmFwc2hvdF92ZXJzaW9uIjoxLCJzdHJlYW1lZCI6ZmFsc2UsIndvcmtzcGFjZV9pZCI6IndzLXYxIn0.ghFdyi8nXmEDGVemPaaExEoR7zKg01E7Nw0MCtOZgSKDD3k3tdDYR9E-sFAtA2vH19pkfUPm3ws05k9HDbuLCA",
+      "settlement_status_url": "/v1/settlements/auth-v1.settle",
+      "authorization_id": "auth-v1",
+      "idempotent_replay": false,
+      "invocation_nonce": "",
+      "workspace_id": "",
+      "api_key_hash": "",
+      "model": "",
+      "upstream_model": "",
+      "endpoint_id": "",
+      "provider": "",
+      "provider_name": "",
+      "wafer_zdr_required": false,
+      "requested_model": "",
+      "response_model": "",
+      "hide_public_metadata": false,
+      "region": "",
+      "usage_type": "",
+      "limit_usage_type": "",
+      "byok_secret_ref": "",
+      "byok_encrypted_secret": null,
+      "byok_cache_key": "",
+      "byok_provider": "",
+      "route_candidates": null,
+      "broadcast_destinations": null,
+      "custom_model": null,
+      "tags": null,
+      "request_metadata_version": 0,
+      "additional_cost_reservation_microdollars": 0,
+      "video_token_billing": false,
+      "estimated_cost_microdollars": 0,
+      "receipt_fee_basis_points": 0,
+      "native_batch_eligible": false,
+      "stage_d": {
+        "eligible": false,
+        "reason": ""
+      },
+      "candidate_cost_reporting": false,
+      "candidate_prices": null,
+      "cap_micro": 0
+    },
+    "shadow_retained": false
+  },
+  {
+    "body": "{\"actual_input_tokens\":3,\"actual_output_tokens\":2,\"app\":\"attested-gateway\",\"authorization_id\":\"auth-v1\",\"elapsed_seconds\":1,\"finish_reason\":\"stop\",\"request_id\":\"\",\"route_type\":\"responses\",\"selected_endpoint\":\"\",\"selected_model\":\"\",\"status\":\"success\",\"streamed\":false,\"usage_estimated\":false}",
+    "headers": {
+      "Content-Type": [
+        "application/json"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "test"
+      ]
+    },
+    "method": "POST",
+    "response": "{\"data\":{\"settled\":true,\"cost_microdollars\":2}}",
+    "url": "https://trustedrouter.com/internal/gateway/settle"
+  },
+  {
+    "settle_result": {
+      "generation_id": "",
+      "cost": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "usage_type": "",
+      "model": "",
+      "provider": "",
+      "region": "",
+      "settled": true,
+      "already_settled": false,
+      "finalization_outcome": "",
+      "disposition": "",
+      "cost_microdollars": 2
+    }
+  },
+  {
+    "body": "{\"app\":\"attested-gateway\",\"authorization_id\":\"auth-v1\",\"elapsed_seconds\":1,\"error_status\":502,\"error_type\":\"upstream_error\",\"route_type\":\"responses\",\"selected_endpoint\":\"\",\"selected_model\":\"\",\"streamed\":true}",
+    "headers": {
+      "Content-Type": [
+        "application/json"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "test"
+      ]
+    },
+    "method": "POST",
+    "response": "{\"data\":{\"settled\":true,\"cost_microdollars\":2}}",
+    "url": "https://trustedrouter.com/internal/gateway/refund"
+  },
+  {
+    "body": "{\"api_key_lookup_hash\":\"092b6c5fe457a50538f12defa6a27bbe9b2a686550495cb71787f7fae241e669\",\"estimated_input_tokens\":1,\"idempotency_key\":\"fixture-id\",\"invocation_nonce\":\"nonce-v1\",\"max_output_tokens\":512,\"max_tokens\":null,\"model\":\"fixture\",\"region\":\"\",\"route_type\":\"messages\",\"stream\":false}",
+    "headers": {
+      "Content-Type": [
+        "application/json"
+      ],
+      "X-Tr-Settlement-Shadow-Policy": [
+        "shadow-v2"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "test"
+      ]
+    },
+    "method": "POST",
+    "response": "{\n    \"data\": {\n      \"authorization_id\": \"auth-v1\",\n      \"generation_id\": \"gen-c7a73498dd8a5d59a705f482070c9e56\",\n      \"billing_snapshot\": {\n        \"v\": 1,\n        \"kind\": \"credits_endpoint\",\n        \"candidates\": [\n          {\n            \"endpoint_id\": \"openai/billing-v1@openai/prepaid\",\n            \"model_id\": \"openai/billing-v1\",\n            \"provider\": \"openai\",\n            \"usage_type\": \"Credits\",\n            \"price_history_version\": 1,\n            \"rates\": {\n              \"input_micro_per_million\": 500000,\n              \"output_micro_per_million\": 500000,\n              \"cached_input_micro_per_million\": 0,\n              \"cache_creation_micro_per_million\": 0\n            },\n            \"tiers\": [],\n            \"request_fee_micro\": 0,\n            \"rounding\": \"half_up_per_million\",\n            \"prompt_convention\": \"includes_cache\",\n            \"output_convention\": \"includes_reasoning\"\n          }\n        ],\n        \"minimum_charge\": \"one_micro_if_positive\",\n        \"charge_cap\": null,\n        \"tier_basis\": \"total_prompt\",\n        \"tier_boundary\": \"inclusive\",\n        \"tier_fallback\": \"last_tier\"\n      },\n      \"billing_snapshot_hash\": \"39526c7fde5f32d133358b9e61ef0fff17e006f6c7f87fc5ec6dd211206c50ee\",\n      \"settlement_ticket\": \"eyJhbGciOiJFZERTQSIsImtpZCI6ImFzeW5jLXYxLWZpeHR1cmUiLCJ0eXAiOiJ0ci1hc3luYy1zZXR0bGUtdjEifQ.eyJhc3luY19lbGlnaWJsZSI6dHJ1ZSwiYXVkIjoicm91dGVyLXNldHRsZW1lbnQiLCJhdXRob3JpemF0aW9uX2lkIjoiYXV0aC12MSIsImJpbGxpbmdfYXV0aG9yaXR5IjoibG9jYWwiLCJlcG9jaCI6MSwiZXhwIjoxNzkxMjQ1MTAwLCJnZW5lcmF0aW9uX2lkIjoiZ2VuLWM3YTczNDk4ZGQ4YTVkNTlhNzA1ZjQ4MjA3MGM5ZTU2IiwiaWF0IjoxNzkxMjQ0ODAwLCJpbnZvY2F0aW9uX25vbmNlIjoibm9uY2UtdjEiLCJpc3MiOiJyb3V0ZXItZml4dHVyZSIsImpvdXJuYWxfcmVnaW9uIjoidXMtY2VudHJhbDEiLCJrZXlfaWQiOiJrZXktdjEiLCJyZXNlcnZhdGlvbl9pZCI6InJlcy12MSIsInJvdXRlX3R5cGUiOiJjaGF0LmNvbXBsZXRpb25zIiwic2V0dGxlX29yaWdpbiI6InR5cGVkIiwic25hcHNob3RfaGFzaCI6IjM5NTI2YzdmZGU1ZjMyZDEzMzM1OGI5ZTYxZWYwZmZmMTdlMDA2ZjZjN2Y4N2ZjNWVjNmRkMjExMjA2YzUwZWUiLCJzbmFwc2hvdF92ZXJzaW9uIjoxLCJzdHJlYW1lZCI6ZmFsc2UsIndvcmtzcGFjZV9pZCI6IndzLXYxIn0.ghFdyi8nXmEDGVemPaaExEoR7zKg01E7Nw0MCtOZgSKDD3k3tdDYR9E-sFAtA2vH19pkfUPm3ws05k9HDbuLCA\",\n      \"async_eligible\": true,\n      \"settlement_status_url\": \"/v1/settlements/auth-v1.settle\"\n    }\n  }",
+    "url": "https://trustedrouter.com/internal/gateway/authorize"
+  },
+  {
+    "async_retained": false,
+    "authorization": {
+      "billing_snapshot_hash": "39526c7fde5f32d133358b9e61ef0fff17e006f6c7f87fc5ec6dd211206c50ee",
+      "async_eligible": true,
+      "generation_id": "gen-c7a73498dd8a5d59a705f482070c9e56",
+      "billing_snapshot": {
+        "v": 1,
+        "kind": "credits_endpoint",
+        "candidates": [
+          {
+            "endpoint_id": "openai/billing-v1@openai/prepaid",
+            "model_id": "openai/billing-v1",
+            "provider": "openai",
+            "usage_type": "Credits",
+            "price_history_version": 1,
+            "rates": {
+              "input_micro_per_million": 500000,
+              "output_micro_per_million": 500000,
+              "cached_input_micro_per_million": 0,
+              "cache_creation_micro_per_million": 0
+            },
+            "tiers": [],
+            "request_fee_micro": 0,
+            "rounding": "half_up_per_million",
+            "prompt_convention": "includes_cache",
+            "output_convention": "includes_reasoning"
+          }
+        ],
+        "minimum_charge": "one_micro_if_positive",
+        "charge_cap": null,
+        "tier_basis": "total_prompt",
+        "tier_boundary": "inclusive",
+        "tier_fallback": "last_tier"
+      },
+      "settlement_ticket": "eyJhbGciOiJFZERTQSIsImtpZCI6ImFzeW5jLXYxLWZpeHR1cmUiLCJ0eXAiOiJ0ci1hc3luYy1zZXR0bGUtdjEifQ.eyJhc3luY19lbGlnaWJsZSI6dHJ1ZSwiYXVkIjoicm91dGVyLXNldHRsZW1lbnQiLCJhdXRob3JpemF0aW9uX2lkIjoiYXV0aC12MSIsImJpbGxpbmdfYXV0aG9yaXR5IjoibG9jYWwiLCJlcG9jaCI6MSwiZXhwIjoxNzkxMjQ1MTAwLCJnZW5lcmF0aW9uX2lkIjoiZ2VuLWM3YTczNDk4ZGQ4YTVkNTlhNzA1ZjQ4MjA3MGM5ZTU2IiwiaWF0IjoxNzkxMjQ0ODAwLCJpbnZvY2F0aW9uX25vbmNlIjoibm9uY2UtdjEiLCJpc3MiOiJyb3V0ZXItZml4dHVyZSIsImpvdXJuYWxfcmVnaW9uIjoidXMtY2VudHJhbDEiLCJrZXlfaWQiOiJrZXktdjEiLCJyZXNlcnZhdGlvbl9pZCI6InJlcy12MSIsInJvdXRlX3R5cGUiOiJjaGF0LmNvbXBsZXRpb25zIiwic2V0dGxlX29yaWdpbiI6InR5cGVkIiwic25hcHNob3RfaGFzaCI6IjM5NTI2YzdmZGU1ZjMyZDEzMzM1OGI5ZTYxZWYwZmZmMTdlMDA2ZjZjN2Y4N2ZjNWVjNmRkMjExMjA2YzUwZWUiLCJzbmFwc2hvdF92ZXJzaW9uIjoxLCJzdHJlYW1lZCI6ZmFsc2UsIndvcmtzcGFjZV9pZCI6IndzLXYxIn0.ghFdyi8nXmEDGVemPaaExEoR7zKg01E7Nw0MCtOZgSKDD3k3tdDYR9E-sFAtA2vH19pkfUPm3ws05k9HDbuLCA",
+      "settlement_status_url": "/v1/settlements/auth-v1.settle",
+      "authorization_id": "auth-v1",
+      "idempotent_replay": false,
+      "invocation_nonce": "",
+      "workspace_id": "",
+      "api_key_hash": "",
+      "model": "",
+      "upstream_model": "",
+      "endpoint_id": "",
+      "provider": "",
+      "provider_name": "",
+      "wafer_zdr_required": false,
+      "requested_model": "",
+      "response_model": "",
+      "hide_public_metadata": false,
+      "region": "",
+      "usage_type": "",
+      "limit_usage_type": "",
+      "byok_secret_ref": "",
+      "byok_encrypted_secret": null,
+      "byok_cache_key": "",
+      "byok_provider": "",
+      "route_candidates": null,
+      "broadcast_destinations": null,
+      "custom_model": null,
+      "tags": null,
+      "request_metadata_version": 0,
+      "additional_cost_reservation_microdollars": 0,
+      "video_token_billing": false,
+      "estimated_cost_microdollars": 0,
+      "receipt_fee_basis_points": 0,
+      "native_batch_eligible": false,
+      "stage_d": {
+        "eligible": false,
+        "reason": ""
+      },
+      "candidate_cost_reporting": false,
+      "candidate_prices": null,
+      "cap_micro": 0
+    },
+    "shadow_retained": false
+  },
+  {
+    "body": "{\"actual_input_tokens\":3,\"actual_output_tokens\":2,\"app\":\"attested-gateway\",\"authorization_id\":\"auth-v1\",\"elapsed_seconds\":1,\"finish_reason\":\"stop\",\"request_id\":\"\",\"route_type\":\"messages\",\"selected_endpoint\":\"\",\"selected_model\":\"\",\"status\":\"success\",\"streamed\":false,\"usage_estimated\":false}",
+    "headers": {
+      "Content-Type": [
+        "application/json"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "test"
+      ]
+    },
+    "method": "POST",
+    "response": "{\"data\":{\"settled\":true,\"cost_microdollars\":2}}",
+    "url": "https://trustedrouter.com/internal/gateway/settle"
+  },
+  {
+    "settle_result": {
+      "generation_id": "",
+      "cost": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "usage_type": "",
+      "model": "",
+      "provider": "",
+      "region": "",
+      "settled": true,
+      "already_settled": false,
+      "finalization_outcome": "",
+      "disposition": "",
+      "cost_microdollars": 2
+    }
+  },
+  {
+    "body": "{\"app\":\"attested-gateway\",\"authorization_id\":\"auth-v1\",\"elapsed_seconds\":1,\"error_status\":502,\"error_type\":\"upstream_error\",\"route_type\":\"messages\",\"selected_endpoint\":\"\",\"selected_model\":\"\",\"streamed\":true}",
+    "headers": {
+      "Content-Type": [
+        "application/json"
+      ],
+      "X-Trustedrouter-Internal-Token": [
+        "test"
+      ]
+    },
+    "method": "POST",
+    "response": "{\"data\":{\"settled\":true,\"cost_microdollars\":2}}",
+    "url": "https://trustedrouter.com/internal/gateway/refund"
+  }
+]

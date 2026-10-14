@@ -27,14 +27,19 @@ type startupTarget struct {
 	Operation  string `json:"operation"`
 	Resource   string `json:"resource"`
 	Region     string `json:"region"`
-	DeadlineUS int64  `json:"deadline_us"`
+	DeadlineUS int64  `json:"-"`
 }
 type startupReleasedPath struct {
 	Resource string `json:"resource"`
 	Region   string `json:"region"`
 }
+type startupDependencies struct {
+	Router  []startupTarget `json:"router"`
+	Enclave []startupTarget `json:"enclave"`
+}
+
 type startupConfig struct {
-	Dependencies       []startupTarget     `json:"dependencies"`
+	Dependencies       startupDependencies `json:"dependencies"`
 	RouterPath         startupReleasedPath `json:"router_path"`
 	DescriptorIDs      []string            `json:"descriptor_ids"`
 	EnclaveImageSHA256 string              `json:"enclave_image_sha256"`
@@ -67,30 +72,42 @@ type startupManifest struct {
 	ConfigSHA256      string                                `json:"config_sha256"`
 	PolicySHA256      string                                `json:"policy_sha256"`
 	FixtureSHA256     string                                `json:"fixture_sha256"`
-	Config            startupConfig                         `json:"config"`
+	Config            startupConfig                         `json:"-"`
+	ConfigOriginal    string                                `json:"config_original"`
 	PublicDescriptors startupPublicDescriptors              `json:"public_descriptors"`
 	Artifacts         map[string]map[string]startupArtifact `json:"artifacts"`
 }
 
-func (m startupManifest) valid(d startupLaunchDescriptor) bool {
-	raw, _ := canonicalShadow(m.Config)
+func (m *startupManifest) valid(d startupLaunchDescriptor) bool {
+	raw := []byte(m.ConfigOriginal)
+	if len(raw) == 0 || len(raw) > 262144 || json.Unmarshal(raw, &m.Config) != nil {
+		return false
+	}
+	var dependencies struct {
+		Dependencies map[string]json.RawMessage `json:"dependencies"`
+	}
+	if json.Unmarshal(raw, &dependencies) != nil || dependencies.Dependencies["router"] == nil || dependencies.Dependencies["enclave"] == nil || m.Config.Dependencies.Router == nil {
+		return false
+	}
 	sum := sha256.Sum256(raw)
 	if m.Revision != d.Revision || m.Region != d.Region || m.ConfigSHA256 != hex.EncodeToString(sum[:]) || !startupDigest.MatchString(m.PolicySHA256) || !startupDigest.MatchString(m.FixtureSHA256) || !startupDigest.MatchString(m.Config.EnclaveImageSHA256) {
 		return false
 	}
-	if !startupID.MatchString(m.Config.RouterPath.Resource) || !startupID.MatchString(m.Config.RouterPath.Region) || len(m.Config.Dependencies) < 2 || len(m.Config.Dependencies) > 16 || len(m.Config.DescriptorIDs) == 0 || len(m.Config.DescriptorIDs) > 128 {
+	if !startupID.MatchString(m.Config.RouterPath.Resource) || !startupID.MatchString(m.Config.RouterPath.Region) || len(m.Config.Dependencies.Enclave) < 2 || len(m.Config.Dependencies.Enclave) > 16 || len(m.Config.DescriptorIDs) == 0 || len(m.Config.DescriptorIDs) > 16 {
 		return false
 	}
+	descriptorIDs := map[string]bool{}
 	for _, id := range m.Config.DescriptorIDs {
-		if !startupID.MatchString(id) {
+		if !startupID.MatchString(id) || descriptorIDs[id] {
 			return false
 		}
+		descriptorIDs[id] = true
 	}
 	ops := map[string]bool{}
 	seen := map[string]bool{}
-	for _, d := range m.Config.Dependencies {
+	for _, d := range m.Config.Dependencies.Enclave {
 		key := d.Operation + "/" + d.Resource
-		if seen[key] || d.Resource != m.Config.RouterPath.Resource || d.Region != m.Config.RouterPath.Region || (d.Operation != "transport" && d.Operation != "read") || d.DeadlineUS <= 0 || d.DeadlineUS > 10000000 {
+		if seen[key] || d.Resource != m.Config.RouterPath.Resource || d.Region != m.Config.RouterPath.Region || (d.Operation != "transport" && d.Operation != "read") {
 			return false
 		}
 		seen[key] = true
@@ -127,7 +144,11 @@ type ShadowV2StartupHarness struct {
 	manifestOriginal     []byte
 	completions          map[string]int64
 	attempts             []startupLocalAttempt
-	attemptOverflow      uint64
+	attemptMu            sync.Mutex
+	configOriginal       []byte
+	load                 func() (startupManifest, []byte, error)
+	acquire              func(context.Context) (startupLaunchAcquisition, error)
+	attemptOverflow      atomic.Uint64
 	observedDependencies []startupDependency
 	observedRouterPath   startupRouterPath
 	shutdown             map[string][2]int64
@@ -151,7 +172,7 @@ func newStartupHarness(start time.Time, emitter *startupEmitter) *ShadowV2Startu
 	if err == nil {
 		boot = hex.EncodeToString(id[:])
 	}
-	return &ShadowV2StartupHarness{start: start, boot: boot, emitter: emitter, completions: map[string]int64{}, shutdown: map[string][2]int64{}, now: time.Now, done: make(chan struct{})}
+	return &ShadowV2StartupHarness{start: start, boot: boot, emitter: emitter, completions: map[string]int64{}, shutdown: map[string][2]int64{}, attempts: make([]startupLocalAttempt, 0, 256), now: time.Now, done: make(chan struct{})}
 }
 func startupPin(on bool) string {
 	if on {
@@ -189,38 +210,62 @@ func StartShadowV2Startup(ctx context.Context, start time.Time, fd *os.File, pre
 	h.probe = func(ctx context.Context, target startupTarget) startupProbeResult {
 		return startupReadRouter(ctx, c, target)
 	}
+	h.acquire = func(ctx context.Context) (startupLaunchAcquisition, error) {
+		region := ""
+		if c != nil {
+			region = c.region
+		}
+		return acquireStartupLaunch(ctx, fd, present, shadowRevision(), region)
+	}
+	h.load = func() (startupManifest, []byte, error) {
+		var m startupManifest
+		raw, err := readStartupJSON(os.Getenv("TR_SHADOW_V2_STARTUP_MANIFEST"), 262144, &m)
+		return m, raw, err
+	}
+	configureStartupInputs(h)
 	h.launch(func() {
 		defer close(h.done)
 		runCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
 		descriptorCtx, stop := context.WithTimeout(runCtx, 3*time.Second)
-		region := ""
-		if c != nil {
-			region = c.region
-		}
-		acquisition, err := acquireStartupLaunch(descriptorCtx, fd, present, shadowRevision(), region)
+		acquisition, measured := startupBounded(descriptorCtx, func() startupAcquired { value, err := h.acquire(descriptorCtx); return startupAcquired{value, err} })
 		stop()
-		if err != nil {
+		if !measured || acquisition.err != nil {
 			return
 		}
 		h.mu.Lock()
-		h.acquisition = acquisition
+		h.acquisition = acquisition.value
 		h.mu.Unlock()
-		h.run(runCtx, acquisition.descriptor, func() (startupManifest, []byte, error) {
-			var m startupManifest
-			raw, e := readStartupJSON(os.Getenv("TR_SHADOW_V2_STARTUP_MANIFEST"), 262144, &m)
-			return m, raw, e
-		})
+		h.run(runCtx, acquisition.value.descriptor, h.load)
 	})
 	return h
 }
 
 // CaptureShadowV2LaunchDescriptor must run before opening serving listeners.
 func CaptureShadowV2LaunchDescriptor() (*os.File, bool) { return inheritedStartupDescriptor() }
-func (h *ShadowV2StartupHarness) launch(run func())     { go run() }
+
+// configureStartupInputs is a package-local input seam. Production keeps the
+// installed local adapters; tests replace inputs before the coordinator starts.
+var configureStartupInputs = func(*ShadowV2StartupHarness) {}
+
+type startupAcquired struct {
+	value startupLaunchAcquisition
+	err   error
+}
+
+func (h *ShadowV2StartupHarness) launch(run func()) {
+	go func() { defer h.recoverStartup(); run() }()
+}
+func (h *ShadowV2StartupHarness) recoverStartup() {
+	if recover() != nil {
+		if state := enclaveOptedAdmission.Load(); state != nil && state.harness == h {
+			enclaveOptedAdmission.CompareAndSwap(state, &startupAdmission{harness: h})
+		}
+	}
+}
 
 func (h *ShadowV2StartupHarness) run(ctx context.Context, d startupLaunchDescriptor, load func() (startupManifest, []byte, error)) {
-	h.runOnce.Do(func() { h.runBoot(ctx, d, load) })
+	h.runOnce.Do(func() { defer h.recoverStartup(); h.runBoot(ctx, d, load) })
 }
 func (h *ShadowV2StartupHarness) runBoot(ctx context.Context, d startupLaunchDescriptor, load func() (startupManifest, []byte, error)) {
 	if !d.valid() || !startupID.MatchString(h.boot) || d.Revision != shadowRevision() {
@@ -247,6 +292,7 @@ func (h *ShadowV2StartupHarness) runBoot(ctx context.Context, d startupLaunchDes
 		return
 	}
 	h.manifestOriginal = bytes.Clone(raw)
+	h.configOriginal = []byte(m.ConfigOriginal)
 	for _, criterion := range startupCriteria {
 		if ctx.Err() != nil {
 			return
@@ -261,9 +307,10 @@ func (h *ShadowV2StartupHarness) runBoot(ctx context.Context, d startupLaunchDes
 			if h.probe == nil {
 				continue
 			}
-			deps := make([]startupDependency, 0, len(m.Config.Dependencies))
+			deps := make([]startupDependency, 0, len(m.Config.Dependencies.Enclave))
 			complete := true
-			for _, target := range m.Config.Dependencies {
+			for _, target := range m.Config.Dependencies.Enclave {
+				target.DeadlineUS = 10000000
 				begin := h.now()
 				stepCtx, cancel := context.WithTimeout(ctx, time.Duration(target.DeadlineUS)*time.Microsecond)
 				result, measured := startupBounded(stepCtx, func() startupProbeResult { return h.probe(stepCtx, target) })
@@ -419,21 +466,68 @@ func EnclaveOptedAdmission() bool {
 	if state == nil {
 		return true
 	}
-	at := state.harness.now().UnixMicro()
+	return state.ready
+}
+
+// Called by the request entry before retention, after the response identifies
+// the cohort. The off, non-cohort and absent-policy paths allocate nothing.
+func (c *Client) recordStartupAdmissionStart(a *Authorization, route string) {
+	if !c.asyncShadow || !asyncCohort(route) || !startupOptedPolicy(a.BillingShadowPolicy) {
+		return
+	}
+	recordStartupAdmissionStart()
+}
+
+// Compare the one ASCII marker without allocating a decoded string. Its only
+// alternate JSON spelling is a sequence of ASCII unicode escapes. The existing
+// retention parser still owns the request decision.
+func startupOptedPolicy(raw []byte) bool {
+	raw = bytes.Trim(raw, " \t\r\n")
+	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' {
+		return false
+	}
+	const digits = "0123456789abcdef"
+	at, end := 1, len(raw)-1
+	for i := 0; i < len(shadowPolicyV2); i++ {
+		want := shadowPolicyV2[i]
+		if at >= end {
+			return false
+		}
+		if raw[at] == want {
+			at++
+			continue
+		}
+		if at+6 > end || raw[at] != '\\' || raw[at+1] != 'u' || raw[at+2] != '0' || raw[at+3] != '0' || raw[at+4]|0x20 != digits[want>>4] || raw[at+5]|0x20 != digits[want&15] {
+			return false
+		}
+		at += 6
+	}
+	return at == end
+}
+
+// recordStartupAdmissionStart is outside the retention decision. A busy or full
+// recorder drops and counts immediately. It never grows the preallocated buffer.
+func recordStartupAdmissionStart() {
+	state := enclaveOptedAdmission.Load()
+	if state == nil {
+		return
+	}
+	h := state.harness
+	at := time.Now().UnixMicro()
 	result := "rejected"
 	if state.ready {
 		result = "accepted"
 	}
-	state.harness.mu.Lock()
-	if len(state.harness.attempts) < 256 {
-		state.harness.attempts = append(state.harness.attempts, startupLocalAttempt{at, result})
-	} else {
-		state.harness.attemptOverflow++
+	if !h.attemptMu.TryLock() {
+		h.attemptOverflow.Add(1)
+		return
 	}
-	state.harness.mu.Unlock()
-	// ReceiptPageRetention: this enclave has no PAGE writer. Keep the local
-	// attempt without emitting an incomplete a3_opted_attempt.
-	return state.ready
+	defer h.attemptMu.Unlock()
+	if len(h.attempts) == cap(h.attempts) {
+		h.attemptOverflow.Add(1)
+		return
+	}
+	h.attempts = append(h.attempts, startupLocalAttempt{at, result})
 }
 
 func startupReadRouter(ctx context.Context, c *Client, target startupTarget) startupProbeResult {
@@ -544,10 +638,17 @@ type startupReadyAck struct {
 // the coordinator stops waiting at the declared deadline.
 func startupBounded[T any](ctx context.Context, fn func() T) (T, bool) {
 	done := make(chan T, 1)
-	go func() { done <- fn() }()
+	go func() {
+		defer func() {
+			if recover() != nil {
+				close(done)
+			}
+		}()
+		done <- fn()
+	}()
 	select {
-	case result := <-done:
-		return result, ctx.Err() == nil
+	case result, ok := <-done:
+		return result, ok && ctx.Err() == nil
 	case <-ctx.Done():
 		var zero T
 		return zero, false

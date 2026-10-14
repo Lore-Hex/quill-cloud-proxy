@@ -540,15 +540,15 @@ func main() {
 		startHealthListener(ctx, hp)
 	}
 
-	startupHarness := trustedrouter.StartShadowV2Startup(ctx, startupAt, launchFD, launchFDPresent, boot, trGateway, func() (string, []byte) {
+	startupHarness, servingErr := serveWithShadowV2Startup(ctx, listener, startupAt, launchFD, launchFDPresent, boot, trGateway, func() (string, []byte) {
 		if cached := receiptAttestationCache.Load(); cached != nil {
 			return cached.kind, cached.document
 		}
 		return "", nil
-	})
-	err = serveUntilCanceled(ctx, listener, func(requestContext context.Context, conn net.Conn) {
+	}, func(requestContext context.Context, conn net.Conn) {
 		serveOne(requestContext, conn, registry, br, tlsServer, deviceBlob, trGateway, byokSecrets)
 	})
+	err = servingErr
 	if trGateway.Enabled() {
 		flushStarted := time.Now()
 		flushContext, stopFlush := context.WithTimeout(context.Background(), 3*time.Second)

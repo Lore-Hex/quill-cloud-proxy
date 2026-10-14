@@ -34,7 +34,15 @@ func readStartupDescriptor(ctx context.Context, r io.ReadCloser) (startupLaunchD
 		err error
 	}
 	done := make(chan result, 1)
-	go func() { raw, err := io.ReadAll(io.LimitReader(r, 2049)); done <- result{raw, err} }()
+	go func() {
+		defer func() {
+			if recover() != nil {
+				done <- result{err: errStartupRecord}
+			}
+		}()
+		raw, err := io.ReadAll(io.LimitReader(r, 2049))
+		done <- result{raw, err}
+	}()
 	defer r.Close()
 	var d startupLaunchDescriptor
 	select {

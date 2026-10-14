@@ -1,0 +1,46 @@
+{
+  "dependencies": {
+    "router": [
+      {
+        "operation": "transport",
+        "resource": "database.example",
+        "region": "us-central1"
+      },
+      {
+        "operation": "read",
+        "resource": "database.example",
+        "region": "us-central1"
+      }
+    ],
+    "enclave": [
+      {
+        "operation": "transport",
+        "resource": "router.example",
+        "region": "us-central1"
+      },
+      {
+        "operation": "read",
+        "resource": "router.example",
+        "region": "us-central1"
+      }
+    ]
+  },
+  "router_path": {
+    "resource": "router.example",
+    "region": "us-central1"
+  },
+  "descriptor_ids": [
+    "descriptor-one"
+  ],
+  "enclave_image_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "effective_pins": {
+    "TR_ASYNC_SETTLE_NEGOTIATE": "off",
+    "TR_ASYNC_SETTLE_SHADOW": "on"
+  },
+  "released_limits": {
+    "workspace_count": 1,
+    "K": 1,
+    "cap": 1,
+    "surge": 0
+  }
+}
