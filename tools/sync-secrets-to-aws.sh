@@ -174,6 +174,7 @@ SECRETS=(
   trustedrouter-lyceum-api-key
   trustedrouter-elevenlabs-api-key
   trustedrouter-greenference-api-key
+  trustedrouter-fortanix-api-key
   trustedrouter-boundless-api-key
   trustedrouter-zro-api-key
   trustedrouter-system1models-global-api-key
