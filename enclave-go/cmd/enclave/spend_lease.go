@@ -30,7 +30,7 @@ func initializeSpendLeaseShadow(ctx context.Context, gateway *trustedrouter.Clie
 	// never accidentally become authority.
 	gateway.ConfigureSpendLeaseShadow(receiptSigner, verifier)
 	gateway.ConfigureSpendLeaseLocalAdmission(boot.SpendLeaseLocalAdmission)
-	gateway.StartSpendLeaseBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence())
+	gateway.StartSpendLeaseBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence)
 }
 
 func spendLeaseIssuerConfigNonce(boot *types.BootstrapData) []byte {

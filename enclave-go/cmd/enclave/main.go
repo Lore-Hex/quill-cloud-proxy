@@ -514,13 +514,13 @@ func main() {
 	}
 	if stageDConfig.usageHeartbeat && (speculationMode == shadowobserve.Shadow || (!boot.SpendLeaseShadow && !boot.SpendLeaseLocalAdmission)) && trGateway != nil && receiptSigner != nil {
 		trGateway.ConfigureStageDBoot(receiptSigner)
-		trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence())
+		trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence)
 	}
 
 	if speculationMode == shadowobserve.Shadow && trGateway != nil && receiptSigner != nil {
 		trGateway.ConfigureShadowBoot(receiptSigner)
 		if !stageDConfig.usageHeartbeat {
-			trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence())
+			trGateway.StartStageDBootRegistration(ctx, receiptSigner, currentSpendLeaseEvidence)
 		}
 	}
 	if err := initializeSpeculation(ctx, trGateway, speculationMode); err != nil {
