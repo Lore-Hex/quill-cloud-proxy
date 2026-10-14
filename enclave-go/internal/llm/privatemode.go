@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -33,12 +34,28 @@ func privatemodeResponseError(resp *http.Response) error {
 	message := "Privatemode encrypted upstream request failed"
 	const limit = 4096
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	payload := body
+	// The vendor uses SSE framing even for a non-2xx reply when Accept asks
+	// for a stream. Only inspect one bounded JSON data line, never raw text.
+	if err == nil && len(body) <= limit && !json.Valid(body) {
+		payload = nil
+		for _, line := range bytes.Split(body, []byte("\n")) {
+			if !bytes.HasPrefix(line, []byte("data:")) {
+				continue
+			}
+			if payload != nil {
+				payload = nil
+				break
+			}
+			payload = bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		}
+	}
 	var wire struct {
 		Error struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err == nil && len(body) <= limit && json.Unmarshal(body, &wire) == nil {
+	if err == nil && len(body) <= limit && json.Unmarshal(payload, &wire) == nil {
 		if strings.Contains(wire.Error.Message, "active manifest does not match expected manifest") {
 			reason = "attestation_manifest_mismatch"
 			message = "Privatemode attestation manifest changed; encrypted inference refused pending review"
