@@ -110,6 +110,10 @@ func TestPrivatemodeResponseErrorIsBoundedAndRedacted(t *testing.T) {
 	for _, tc := range []struct{ body, reason string }{
 		{`{"error":{"message":"active manifest does not match expected manifest sensitive-canary"}}`, "attestation_manifest_mismatch"},
 		{`{"error":{"message":"validating attestation: sensitive-canary"}}`, "attestation_verification"},
+		{"event: error\n\ndata: {\"error\":{\"message\":\"active manifest does not match expected manifest sensitive-canary\"}}\n\n", "attestation_manifest_mismatch"},
+		{"event: error\r\n\r\ndata: {\"error\":{\"message\":\"validating attestation: sensitive-canary\"}}\r\n\r\n", "attestation_verification"},
+		{"event: error\n\ndata: {\"error\":{\"message\":\"invalid API key: sensitive-canary\"}}\n\n", "http"},
+		{"data: {\"error\":{\"message\":\"validating attestation: sensitive-canary\"}}\ndata: malformed\n", "http"},
 		{`{"error":{"message":"invalid API key: sensitive-canary"}}`, "http"},
 		{`{"error":{"message":"active manifest does not match expected manifest`, "http"},
 		{strings.Repeat("sensitive-canary", 4096), "http"},

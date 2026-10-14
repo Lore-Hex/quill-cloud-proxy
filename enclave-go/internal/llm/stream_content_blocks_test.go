@@ -12,6 +12,7 @@ func TestOpenAIStreamContentFormats(t *testing.T) {
 		{``, "", ""}, {`null`, "", ""}, {`"PONG"`, "PONG", ""}, {`[]`, "", ""},
 		{`[{"type":"text","text":"PO"},{"type":"text","text":"NG"}]`, "PONG", ""},
 		{`[{"type":"thinking","thinking":[{"type":"text","text":"private thought"}],"closed":true},{"type":"text","text":"PONG"}]`, "PONG", "private thought"},
+		{`[{"type":"reasoning","summary":[{"type":"summary_text","text":"private thought"}]},{"type":"text","text":"PONG"}]`, "PONG", "private thought"},
 	} {
 		text, thinking, err := openAIStreamContent(json.RawMessage(tc.raw))
 		if err != nil || text != tc.text || thinking != tc.thinking {
@@ -22,6 +23,43 @@ func TestOpenAIStreamContentFormats(t *testing.T) {
 		text, thinking, err := openAIStreamContent(json.RawMessage(raw))
 		if err == nil || text != "" || thinking != "" || strings.Contains(err.Error(), "secret") {
 			t.Fatalf("malformed content was not rejected safely: %q, %v", raw, err)
+		}
+	}
+}
+
+func TestTranslateDatabricksReasoningBlocksPreservesAnswerToolsAndUsage(t *testing.T) {
+	upstream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":[{"type":"reasoning","summary":[{"type":"summary_text","text":"private thought"}]}]}}]}`,
+		`data: {"choices":[{"delta":{"content":[{"type":"reasoning","summary":[{"type":"summary_text","text":" ending"}]},{"type":"text","text":"PONG"}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_test","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+		`data: {"choices":[],"usage":{"prompt_tokens":15,"completion_tokens":181,"total_tokens":196,"prompt_tokens_details":{"cached_tokens":8}}}`,
+		`data: [DONE]`, "",
+	}, "\n\n")
+	var out bytes.Buffer
+	if err := translateOpenAIStreamToAnthropicForProvider(strings.NewReader(upstream), &out, "databricks"); err != nil {
+		t.Fatal(err)
+	}
+	body := out.String()
+	for _, want := range []string{`"thinking":"private thought"`, `"thinking":" ending"`, `"text":"PONG"`, `"name":"lookup"`, `"stop_reason":"tool_use"`, `"input_tokens":15`, `"output_tokens":181`, `"cache_read_input_tokens":8`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("lost %s: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `"text":"private thought"`) {
+		t.Fatal("reasoning leaked into visible answer")
+	}
+}
+
+func TestDatabricksReasoningBlocksRejectMalformedSummaries(t *testing.T) {
+	for _, raw := range []string{
+		`[{"type":"reasoning","summary":[{"type":"image","text":"secret"}]}]`,
+		`[{"type":"reasoning","summary":[{"type":"summary_text","text":42}]}]`,
+		`[{"type":"reasoning","summary":[null]}]`,
+		`[{"type":"reasoning","summary":"secret"}]`,
+	} {
+		text, thinking, err := openAIStreamContent(json.RawMessage(raw))
+		if err == nil || text != "" || thinking != "" || strings.Contains(err.Error(), "secret") {
+			t.Fatalf("malformed summary was not rejected safely: %q, %v", raw, err)
 		}
 	}
 }

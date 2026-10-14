@@ -248,9 +248,9 @@ func translateOpenAIStreamToAnthropicForProvider(r io.Reader, w io.Writer, provi
 	return writeAnthropicStop(w, stopReason, usage, citations, searchResults, decision)
 }
 
-// Mistral emits content as text/thinking blocks, sometimes together at the
-// transition to an answer. Decode without dropping the entire chunk (and its
-// finish reason, usage, or tool calls) or leaking thinking into visible text.
+// Mistral uses thinking blocks; Databricks uses reasoning/summary blocks.
+// Preserve both without mixing reasoning into the visible answer or losing
+// the chunk's finish reason, usage, and tool calls.
 func openAIStreamContent(raw json.RawMessage) (string, string, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return "", "", nil
@@ -267,6 +267,7 @@ func openAIStreamContent(raw json.RawMessage) (string, string, error) {
 		Type     string      `json:"type"`
 		Text     string      `json:"text"`
 		Thinking []textBlock `json:"thinking"`
+		Summary  []textBlock `json:"summary"`
 	}
 	invalid := errors.New("llm/openai-stream: unsupported content block format")
 	if err := json.Unmarshal(raw, &blocks); err != nil {
@@ -280,6 +281,13 @@ func openAIStreamContent(raw json.RawMessage) (string, string, error) {
 		case "thinking":
 			for _, inner := range block.Thinking {
 				if inner.Type != "text" {
+					return "", "", invalid
+				}
+				reasoning.WriteString(inner.Text)
+			}
+		case "reasoning":
+			for _, inner := range block.Summary {
+				if inner.Type != "summary_text" {
 					return "", "", invalid
 				}
 				reasoning.WriteString(inner.Text)
