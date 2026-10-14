@@ -172,6 +172,7 @@ var responseWriteTimeout = 30 * time.Second
 var errBodyTooLarge = errors.New("request body too large")
 
 func main() {
+	startupAt := time.Now()
 	speculationMode, modeErr := shadowobserve.ParseMode(os.Getenv("QUILL_SPECULATIVE_PROVIDER_MODE"))
 	if modeErr != nil {
 		fmt.Fprintln(os.Stderr, modeErr)
@@ -180,6 +181,7 @@ func main() {
 	if privatemode.ProxyEntrypoint() {
 		return
 	}
+	launchFD, launchFDPresent := trustedrouter.CaptureShadowV2LaunchDescriptor()
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -538,15 +540,23 @@ func main() {
 		startHealthListener(ctx, hp)
 	}
 
-	err = serveUntilCanceled(ctx, listener, func(requestContext context.Context, conn net.Conn) {
+	startupHarness, servingErr := serveWithShadowV2Startup(ctx, listener, startupAt, launchFD, launchFDPresent, boot, trGateway, func() (string, []byte) {
+		if cached := receiptAttestationCache.Load(); cached != nil {
+			return cached.kind, cached.document
+		}
+		return "", nil
+	}, func(requestContext context.Context, conn net.Conn) {
 		serveOne(requestContext, conn, registry, br, tlsServer, deviceBlob, trGateway, byokSecrets)
 	})
+	err = servingErr
 	if trGateway.Enabled() {
+		flushStarted := time.Now()
 		flushContext, stopFlush := context.WithTimeout(context.Background(), 3*time.Second)
 		if flushErr := settlementRetries.WaitForIdle(flushContext); flushErr != nil {
 			fmt.Fprintf(os.Stderr, "enclave.shutdown_settlement_pending queued=%d err=%q\n", len(settlementRetries.jobs), flushErr.Error())
 		}
 		stopFlush()
+		startupHarness.RecordShutdownWait(flushStarted, time.Now())
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enclave listener stopped unexpectedly: %v\n", err)

@@ -168,6 +168,9 @@ func retainShadowV2(a *Authorization, req *qtypes.OpenAIChatRequest, route strin
 		shadowReject("json_shape")
 		return false, true
 	}
+	if asyncCohort(route) && !EnclaveOptedAdmission() {
+		return false, true
+	}
 	if len(a.BillingShadowExclusion) == 0 {
 		if a.BillingShadowBinding == "" || len(a.BillingSnapshot) == 0 {
 			shadowReject("json_shape")
