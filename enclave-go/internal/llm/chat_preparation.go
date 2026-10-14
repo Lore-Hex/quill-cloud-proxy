@@ -41,6 +41,9 @@ func PrepareChatRequest(provider, upstreamModel string, req *qtypes.OpenAIChatRe
 	if err := validateKimiReasoningEffort(provider, req, upstreamID); err != nil {
 		return PreparedChatRequest{}, err
 	}
+	if normalizeDirectProvider(provider) == "coralbricks" && req != nil && len(req.PromptCacheOptions) != 0 {
+		return PreparedChatRequest{}, &upstreamHTTPError{status: http.StatusBadRequest, body: "CoralBricks paid cache retention options are not supported"}
+	}
 	reqBody := buildOpenAICompatibleRequest(provider, upstreamID, req, body, msgs)
 	// Wharf omits decision confidence/probabilities from SSE. Fetch this small
 	// task result once as JSON, then use the same response pipeline for both
