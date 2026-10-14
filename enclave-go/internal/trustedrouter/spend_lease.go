@@ -85,30 +85,12 @@ func (c *Client) stageDBootDigestSigner() spendlease.DigestSigner {
 
 // StartStageDBootRegistration registers the same attested boot key used by
 // Stage A, but does not activate any lease echo or local lease state.
-func (c *Client) StartStageDBootRegistration(ctx context.Context, signer *receipt.Signer, evidence BootRegistrationEvidence) {
-	if c == nil || signer == nil {
+func (c *Client) StartStageDBootRegistration(ctx context.Context, signer *receipt.Signer, evidence func() BootRegistrationEvidence) {
+	if c == nil || signer == nil || evidence == nil {
 		return
 	}
 	go func() {
-		if evidence.Attestation == "" || evidence.AttestationKind == "" {
-			fmt.Fprintln(os.Stderr, "stage_d.boot_registration_failed reason=attestation_unavailable")
-			return
-		}
-		payload := bootRegistrationRequest{
-			KID: signer.Kid(), ReceiptPublicKey: signer.JWK(),
-			AttestationEvidence: evidence.Attestation, AttestationKind: evidence.AttestationKind,
-		}
-		var decoded struct {
-			Data struct {
-				Verified bool `json:"verified"`
-			} `json:"data"`
-		}
-		if err := c.postJSONWithRetry(ctx, spendlease.RegisterPath, payload, &decoded, c.authorizeRetry); err != nil {
-			fmt.Fprintf(os.Stderr, "stage_d.boot_registration_failed err=%q\n", err.Error())
-			return
-		}
-		if !decoded.Data.Verified {
-			fmt.Fprintln(os.Stderr, "stage_d.boot_registration_failed reason=boot_not_verified")
+		if !c.registerAttestedBoot(ctx, signer, evidence, "stage_d", bootRegistrationRetryPolicy()) {
 			return
 		}
 		fmt.Fprintf(os.Stderr, "stage_d.boot_registered kid=%q\n", signer.Kid())
@@ -116,37 +98,66 @@ func (c *Client) StartStageDBootRegistration(ctx context.Context, signer *receip
 }
 
 // StartSpendLeaseBootRegistration is intentionally asynchronous and
-// non-fatal. The existing retry policy supplies bounded exponential backoff;
-// any final failure leaves ShadowState's registration gate closed.
-func (c *Client) StartSpendLeaseBootRegistration(ctx context.Context, signer *receipt.Signer, evidence BootRegistrationEvidence) {
-	if c == nil || c.spendLease == nil || signer == nil {
+// non-fatal. Missing evidence and rejected registrations retry with capped
+// backoff until shutdown; ShadowState remains closed until verification succeeds.
+func (c *Client) StartSpendLeaseBootRegistration(ctx context.Context, signer *receipt.Signer, evidence func() BootRegistrationEvidence) {
+	if c == nil || c.spendLease == nil || signer == nil || evidence == nil {
 		return
 	}
 	go func() {
-		if evidence.Attestation == "" || evidence.AttestationKind == "" {
-			fmt.Fprintln(os.Stderr, "spendlease.boot_registration_failed reason=attestation_unavailable")
+		if !c.registerAttestedBoot(ctx, signer, evidence, "spendlease", bootRegistrationRetryPolicy()) {
 			return
 		}
-		payload := bootRegistrationRequest{
-			KID: signer.Kid(), ReceiptPublicKey: signer.JWK(),
-			AttestationEvidence: evidence.Attestation, AttestationKind: evidence.AttestationKind,
-		}
-		var decoded struct {
-			Data struct {
-				Verified bool `json:"verified"`
-			} `json:"data"`
-		}
-		if err := c.postJSONWithRetry(ctx, spendlease.RegisterPath, payload, &decoded, c.authorizeRetry); err != nil {
-			fmt.Fprintf(os.Stderr, "spendlease.boot_registration_failed err=%q\n", err.Error())
-			return
-		}
-		if !decoded.Data.Verified || c.spendLease.state == nil || !c.spendLease.verifierReady {
+		if c.spendLease.state == nil || !c.spendLease.verifierReady {
 			fmt.Fprintln(os.Stderr, "spendlease.boot_registration_failed reason=boot_not_verified")
 			return
 		}
 		c.spendLease.state.SetRegistered(true)
 		fmt.Fprintf(os.Stderr, "spendlease.boot_registered kid=%q\n", signer.Kid())
 	}()
+}
+
+func bootRegistrationRetryPolicy() retryPolicy {
+	return normalizeRetryPolicy(retryPolicy{baseDelay: 5 * time.Second, maxDelay: time.Minute})
+}
+
+// Evidence is loaded anew on every round: an initial mint failure must not
+// permanently disable registration after the attestation reminter recovers.
+func (c *Client) registerAttestedBoot(ctx context.Context, signer *receipt.Signer, source func() BootRegistrationEvidence, label string, policy retryPolicy) bool {
+	for attempt := 1; ctx.Err() == nil; attempt = min(attempt+1, 16) {
+		evidence := source()
+		reason := "attestation_unavailable"
+		var retryAfter time.Duration
+		if evidence.Attestation != "" && evidence.AttestationKind != "" {
+			payload := bootRegistrationRequest{
+				KID: signer.Kid(), ReceiptPublicKey: signer.JWK(),
+				AttestationEvidence: evidence.Attestation, AttestationKind: evidence.AttestationKind,
+			}
+			var decoded struct {
+				Data struct {
+					Verified bool `json:"verified"`
+				} `json:"data"`
+			}
+			err := c.postJSONWithRetry(ctx, spendlease.RegisterPath, payload, &decoded, c.authorizeRetry)
+			if ctx.Err() != nil {
+				return false
+			}
+			if err == nil && decoded.Data.Verified {
+				return true
+			}
+			reason = "boot_not_verified"
+			if err != nil {
+				reason = "control_plane_unavailable"
+				retryAfter = retryAfterDuration(err)
+			}
+		}
+		delay := max(time.Second, authorizationRetryDelay(attempt, policy, retryAfter))
+		fmt.Fprintf(os.Stderr, "%s.boot_registration_retry reason=%s attempt=%d delay_ms=%d\n", label, reason, attempt, delay.Milliseconds())
+		if policy.sleep(ctx, delay) != nil {
+			return false
+		}
+	}
+	return false
 }
 
 // authorizeAtDecodeSeam is the only authorize POST/decode seam. All public

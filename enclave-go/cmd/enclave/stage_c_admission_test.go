@@ -100,8 +100,8 @@ func TestServeOneStageCUnmarkedReserveCancelsBeforeRedispatch(t *testing.T) {
 	})
 	gateway.ConfigureSpendLeaseShadow(signer, verifier)
 	gateway.ConfigureSpendLeaseLocalAdmission(true)
-	gateway.StartSpendLeaseBootRegistration(context.Background(), signer, trustedrouter.BootRegistrationEvidence{
-		Attestation: "test-attestation", AttestationKind: "test",
+	gateway.StartSpendLeaseBootRegistration(t.Context(), signer, func() trustedrouter.BootRegistrationEvidence {
+		return trustedrouter.BootRegistrationEvidence{Attestation: "test-attestation", AttestationKind: "test"}
 	})
 	select {
 	case <-registerSeen:
@@ -449,7 +449,9 @@ func TestServeOneStageCLostAckReplayExecutesAndFinalizesOnce(t *testing.T) {
 			})})
 			gateway.ConfigureSpendLeaseShadow(signer, verifier)
 			gateway.ConfigureSpendLeaseLocalAdmission(true)
-			gateway.StartSpendLeaseBootRegistration(context.Background(), signer, trustedrouter.BootRegistrationEvidence{Attestation: "test", AttestationKind: "test"})
+			gateway.StartSpendLeaseBootRegistration(t.Context(), signer, func() trustedrouter.BootRegistrationEvidence {
+				return trustedrouter.BootRegistrationEvidence{Attestation: "test", AttestationKind: "test"}
+			})
 			stageCPrimeMarkerlessLease(t, gateway)
 			raw := fmt.Sprintf("POST /v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer %s\r\nIdempotency-Key: lost-ack-public\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", stageCMarkerlessBearer, len(stageCMarkerlessRequestBody), stageCMarkerlessRequestBody)
 			conn := newScriptedConn(raw, nil)
@@ -548,7 +550,9 @@ func TestServeOneStageCLocalMissMatrixAuthorizesBeforeProvider(t *testing.T) {
 				})})
 				gateway.ConfigureSpendLeaseShadow(signer, verifier)
 				gateway.ConfigureSpendLeaseLocalAdmission(true)
-				gateway.StartSpendLeaseBootRegistration(context.Background(), signer, trustedrouter.BootRegistrationEvidence{Attestation: "test", AttestationKind: "test"})
+				gateway.StartSpendLeaseBootRegistration(t.Context(), signer, func() trustedrouter.BootRegistrationEvidence {
+					return trustedrouter.BootRegistrationEvidence{Attestation: "test", AttestationKind: "test"}
+				})
 				stageCPrimeLeaseForRouteAndTier(t, gateway, route, grantTier, tc.field == "service_tier")
 				ready.Store(true)
 				body := stageCMarkerlessRequestBody

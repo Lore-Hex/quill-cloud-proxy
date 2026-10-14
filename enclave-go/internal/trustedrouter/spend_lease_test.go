@@ -220,7 +220,9 @@ func TestBootRegistrationRetriesIdenticalPayloadAndRequiresVerifiedResponse(t *t
 	})})
 	client.authorizeRetry = retryPolicy{attempts: 2, sleep: func(_ context.Context, _ time.Duration) error { return nil }}
 	client.ConfigureSpendLeaseShadow(signer, verifier)
-	client.StartSpendLeaseBootRegistration(t.Context(), signer, BootRegistrationEvidence{Attestation: "evidence", AttestationKind: "gcp-cs-jwt"})
+	client.StartSpendLeaseBootRegistration(t.Context(), signer, func() BootRegistrationEvidence {
+		return BootRegistrationEvidence{Attestation: "evidence", AttestationKind: "gcp-cs-jwt"}
+	})
 	var registrationBodies [][]byte
 	for len(registrationBodies) < 2 {
 		select {
