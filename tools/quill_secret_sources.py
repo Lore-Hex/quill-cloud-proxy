@@ -179,6 +179,7 @@ PROVIDER_KEY_ALIASES: dict[str, str] = {
 # enclave keeps separate fields so either can be rotated independently later.
 COPIED_KEY_ALIASES: dict[str, tuple[str, ...]] = {
     "CHATGPT_API_KEY": ("trustedrouter-openai-video-key",),
+    "NEXTBIT_API_KEY": ("trustedrouter-nextbit-eu-api-key",),
 }
 
 DEFAULT_KEYS_FILE = Path.home() / ".quill_cloud_keys.private"

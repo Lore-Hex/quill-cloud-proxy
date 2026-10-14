@@ -151,6 +151,7 @@ SECRETS=(
   trustedrouter-databricks-token
   trustedrouter-databricks-host
   trustedrouter-nextbit-api-key
+  trustedrouter-nextbit-eu-api-key
   trustedrouter-aion-labs-api-key
   trustedrouter-sambanova-api-key
   trustedrouter-inception-api-key

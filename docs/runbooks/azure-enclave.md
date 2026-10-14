@@ -140,10 +140,10 @@ RESOURCE_GROUP=TR-TEE-DUBAI ./tools/azure-sync-secrets.sh --apply
 It prints the new version. **Pin it** — the version is part of the container's
 env and therefore part of the measurement. Shred the values file afterwards.
 
-The BytePlus rollout bundle is `d51b399193294a1aaa6cfa1b34890e31`, sealed on
-October 3, 2026. It preserves all 70 prior logical entries from
-`067afecf200f4272afa3a96418df32ba` and adds the direct BytePlus ModelArk key.
-Pin `QUILL_AZURE_BUNDLE_VERSION=d51b399193294a1aaa6cfa1b34890e31` for this
+The NextBit EU rollout bundle is `71b52c822f1e417cb032e6513a1902a4`, sealed on
+October 14, 2026. It preserves all 75 prior logical entries from
+`dc8d8615cf8642c7a8cbf86b80c22006` and adds the separate NextBit EU key.
+Pin `QUILL_AZURE_BUNDLE_VERSION=71b52c822f1e417cb032e6513a1902a4` for this
 rollout; uploading a bundle alone does not change any serving container. Keep
 `QUILL_PRIVATEMODE_SECRET=trustedrouter-privatemode-api-key` and
 `QUILL_TELLUVIAN_SECRET=trustedrouter-telluvian-api-key`, together with

@@ -17,7 +17,7 @@
 # a new bundle (which regenerates this file and prints a new version), pin the
 # new QUILL_AZURE_BUNDLE_VERSION, and commit this file in the same change.
 #
-# bundle-version: dc8d8615cf8642c7a8cbf86b80c22006
+# bundle-version: 71b52c822f1e417cb032e6513a1902a4
 quill-device-keys
 quill-openrouter-key
 tr-azure-acme-cache-key
@@ -63,6 +63,7 @@ trustedrouter-morph-api-key
 trustedrouter-near-ai-api-key
 trustedrouter-nebius-api-key
 trustedrouter-neurometric-api-key
+trustedrouter-nextbit-eu-api-key
 trustedrouter-novita-api-key
 trustedrouter-openai-api-key
 trustedrouter-openai-video-key

@@ -13,8 +13,8 @@ func TestSpecsAreValidAndImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := All()
-	if len(all) != 45 {
-		t.Fatalf("provider specs = %d, want 45", len(all))
+	if len(all) != 46 {
+		t.Fatalf("provider specs = %d, want 46", len(all))
 	}
 	original := all[0]
 	all[0].Provider = "mutated"

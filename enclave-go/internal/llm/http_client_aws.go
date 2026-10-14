@@ -85,6 +85,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "trustedrouter-foundry-eastus2.openai.azure.com", CID: 3, Port: 8053},
 	{Host: "trustedrouter-foundry-eastus2.services.ai.azure.com", CID: 3, Port: 8054},
 	{Host: "api.nextbit256.com", CID: 3, Port: 8055},
+	{Host: "eu.api.nextbit256.com", CID: 3, Port: 8114},
 	{Host: "api.aionlabs.ai", CID: 3, Port: 8056},
 	{Host: "api.sambanova.ai", CID: 3, Port: 8057},
 	{Host: "api.inceptionlabs.ai", CID: 3, Port: 8058},
