@@ -17,7 +17,7 @@
 # a new bundle (which regenerates this file and prints a new version), pin the
 # new QUILL_AZURE_BUNDLE_VERSION, and commit this file in the same change.
 #
-# bundle-version: b7a5952260aa4d39b2c5a239d45680aa
+# bundle-version: dc8d8615cf8642c7a8cbf86b80c22006
 quill-device-keys
 quill-openrouter-key
 tr-azure-acme-cache-key
