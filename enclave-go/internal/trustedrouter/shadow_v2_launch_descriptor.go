@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // LauncherLaunchDescriptor owns delivery; the workload never invents a start insertId.
@@ -56,12 +58,31 @@ func readStartupDescriptor(ctx context.Context, r io.ReadCloser) (startupLaunchD
 	}
 }
 
-// Capture fd 3 before listeners can reuse that number. Absence permits the
-// instance-as-launch fallback; a present but malformed descriptor does not.
+// The launcher must explicitly transfer fd 3. Existence alone is not ownership:
+// Go may already use that number for its network poller before main runs.
+// Invalid declarations fail closed without touching the unrelated descriptor.
 func inheritedStartupDescriptor() (*os.File, bool) {
+	declared, present := os.LookupEnv("TR_SHADOW_V2_LAUNCH_FD")
+	if !present {
+		return nil, false
+	}
+	if declared != "3" {
+		return nil, true
+	}
 	var stat syscall.Stat_t
 	if syscall.Fstat(3, &stat) != nil {
-		return nil, false
+		return nil, true
+	}
+	if kind := stat.Mode & syscall.S_IFMT; kind != syscall.S_IFREG && kind != syscall.S_IFIFO {
+		return nil, true
+	}
+	flags, err := unix.FcntlInt(3, unix.F_GETFD, 0)
+	if err != nil || flags&unix.FD_CLOEXEC != 0 {
+		return nil, true
+	}
+	access, err := unix.FcntlInt(3, unix.F_GETFL, 0)
+	if err != nil || access&unix.O_ACCMODE == unix.O_WRONLY {
+		return nil, true
 	}
 	// Make inherited pipes cancellable through os.File's poller.
 	if syscall.SetNonblock(3, true) != nil {

@@ -92,14 +92,20 @@ failed adoption if the rest of that criterion's closed fields are available.
 
 ## Descriptor, boot clock, and records
 
-`main` captures inherited fd 3 before opening listeners. A present descriptor
+The launcher must explicitly set `TR_SHADOW_V2_LAUNCH_FD=3` and pass a readable
+pipe or regular file as fd 3 across exec (without `FD_CLOEXEC`). `main` captures
+only that declared descriptor before opening listeners. Without the declaration,
+fd 3 is never inspected, made nonblocking, read or closed: the Go runtime may
+already own it for network polling. An empty/invalid declaration, missing fd,
+wrong descriptor type, close-on-exec fd or write-only fd fails closed without
+taking ownership; it never selects the metadata fallback. A present descriptor
 is read once with a three-second outer deadline, at most 2048 bytes, and EOF.
 It must be a canonical object with exactly
 `instance,launch,role,revision,region`, role `enclave`, bounded ASCII identities,
 and the released SHA. A malformed present descriptor is never replaced by the
 fallback. Descriptor failure leaves readiness unavailable.
 
-If fd 3 is absent, the metadata adapter reads project, zone and numeric instance
+If the launch-descriptor declaration is absent, the metadata adapter reads project, zone and numeric instance
 ID using the existing metadata-server pattern, then reads
 `/proc/sys/kernel/random/boot_id`. `LauncherLaunchDescriptor` remains the bridge
 for the independent launcher start. Instance encoding is `instance:` plus
