@@ -106,7 +106,7 @@ var awsProviderTunnels = []vsockhttp.Tunnel{
 	{Host: "api.regolo.ai", CID: 3, Port: 8087},
 	{Host: "api.lyceum.technology", CID: 3, Port: 8103},
 	{Host: "llm.eu.greenference.com", CID: 3, Port: 8108},
-	{Host: "poc1.armet.ai", CID: 3, Port: 8113},
+	{Host: "ctf.armet.ai", CID: 3, Port: 8113},
 	{Host: "api.elevenlabs.io", CID: 3, Port: 8109},
 	{Host: "eastus2.tts.speech.microsoft.com", CID: 3, Port: 8110},
 	{Host: "api.inference.boundless.network", CID: 3, Port: 8111},

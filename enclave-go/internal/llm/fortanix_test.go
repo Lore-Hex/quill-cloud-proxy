@@ -20,7 +20,7 @@ func TestFortanixInternalStreamingNativeModelAndUsage(t *testing.T) {
 		t.Fatal("missing Fortanix client")
 	}
 	client.httpc = &http.Client{Transport: byokRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.String() != "https://poc1.armet.ai/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer test-key" {
+		if r.URL.String() != "https://ctf.armet.ai/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer test-key" {
 			t.Fatal("wrong Fortanix endpoint or credential")
 		}
 		var wire openAICompatibleRequest
