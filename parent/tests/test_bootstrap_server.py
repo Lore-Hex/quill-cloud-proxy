@@ -344,6 +344,7 @@ def test_build_payload_iterates_all_known_providers() -> None:
         "lyceum",
         "elevenlabs",
         "greenference",
+        "coralbricks",
         "fortanix",
         "boundless",
         "zro",

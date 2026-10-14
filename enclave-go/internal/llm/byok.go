@@ -75,33 +75,34 @@ type openAICompatibleRequest struct {
 	// openai-compatible providers (zai, kimi, novita, etc.) only
 	// know `max_tokens`. So this client emits ONE or the OTHER per
 	// request — see buildOpenAICompatibleRequest below.
-	MaxTokens           int                 `json:"max_tokens,omitempty"`
-	MaxCompletionTokens int                 `json:"max_completion_tokens,omitempty"`
-	Temperature         *float64            `json:"temperature,omitempty"`
-	TopP                *float64            `json:"top_p,omitempty"`
-	TopK                *int                `json:"top_k,omitempty"`
-	TopA                *float64            `json:"top_a,omitempty"`
-	MinP                *float64            `json:"min_p,omitempty"`
-	RepetitionPenalty   *float64            `json:"repetition_penalty,omitempty"`
-	Seed                *int                `json:"seed,omitempty"`
-	FrequencyPenalty    *float64            `json:"frequency_penalty,omitempty"`
-	PresencePenalty     *float64            `json:"presence_penalty,omitempty"`
-	LogitBias           map[string]float64  `json:"logit_bias,omitempty"`
-	Logprobs            *bool               `json:"logprobs,omitempty"`
-	TopLogprobs         *int                `json:"top_logprobs,omitempty"`
-	Stop                any                 `json:"stop,omitempty"`
-	Prediction          any                 `json:"prediction,omitempty"`
-	PromptCacheKey      string              `json:"prompt_cache_key,omitempty"`
-	PromptCacheOptions  map[string]any      `json:"prompt_cache_options,omitempty"`
-	ResponseFormat      any                 `json:"response_format,omitempty"`
-	Tools               []any               `json:"tools,omitempty"`
-	ToolChoice          any                 `json:"tool_choice,omitempty"`
-	ParallelToolCalls   *bool               `json:"parallel_tool_calls,omitempty"`
-	Thinking            any                 `json:"thinking,omitempty"`
-	Reasoning           any                 `json:"reasoning,omitempty"`
-	ReasoningEffort     string              `json:"reasoning_effort,omitempty"`
-	ServiceTier         string              `json:"service_tier,omitempty"`
-	ChatTemplateKwargs  *chatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
+	MaxTokens            int                 `json:"max_tokens,omitempty"`
+	MaxCompletionTokens  int                 `json:"max_completion_tokens,omitempty"`
+	Temperature          *float64            `json:"temperature,omitempty"`
+	TopP                 *float64            `json:"top_p,omitempty"`
+	TopK                 *int                `json:"top_k,omitempty"`
+	TopA                 *float64            `json:"top_a,omitempty"`
+	MinP                 *float64            `json:"min_p,omitempty"`
+	RepetitionPenalty    *float64            `json:"repetition_penalty,omitempty"`
+	Seed                 *int                `json:"seed,omitempty"`
+	FrequencyPenalty     *float64            `json:"frequency_penalty,omitempty"`
+	PresencePenalty      *float64            `json:"presence_penalty,omitempty"`
+	LogitBias            map[string]float64  `json:"logit_bias,omitempty"`
+	Logprobs             *bool               `json:"logprobs,omitempty"`
+	TopLogprobs          *int                `json:"top_logprobs,omitempty"`
+	Stop                 any                 `json:"stop,omitempty"`
+	Prediction           any                 `json:"prediction,omitempty"`
+	PromptCacheKey       string              `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string              `json:"prompt_cache_retention,omitempty"`
+	PromptCacheOptions   map[string]any      `json:"prompt_cache_options,omitempty"`
+	ResponseFormat       any                 `json:"response_format,omitempty"`
+	Tools                []any               `json:"tools,omitempty"`
+	ToolChoice           any                 `json:"tool_choice,omitempty"`
+	ParallelToolCalls    *bool               `json:"parallel_tool_calls,omitempty"`
+	Thinking             any                 `json:"thinking,omitempty"`
+	Reasoning            any                 `json:"reasoning,omitempty"`
+	ReasoningEffort      string              `json:"reasoning_effort,omitempty"`
+	ServiceTier          string              `json:"service_tier,omitempty"`
+	ChatTemplateKwargs   *chatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
 	// StreamOptions asks the upstream for the final usage-bearing chunk
 	// (stream_options.include_usage). Always sent: real token counts feed
 	// settlement (replacing chars/4 estimates that miscounted reasoning
@@ -500,6 +501,11 @@ func buildOpenAICompatibleRequest(
 		// control plane reserves the exact low-context fee, so the enclave must
 		// pin that same tier instead of accepting an account or API default.
 		reqBody.SearchContextSize = "low"
+	}
+	if normalizeDirectProvider(provider) == "coralbricks" {
+		// Coral's optional retained-cache writes cost extra. The catalog uses
+		// its opt-out tariff; ordinary engine caching and free reads remain on.
+		reqBody.PromptCacheRetention = "off"
 	}
 	return reqBody
 }
