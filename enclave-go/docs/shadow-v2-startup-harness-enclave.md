@@ -12,8 +12,9 @@ is parsed and before either retention variant. The existing caller invokes this
 only when its shadow flag is on. Only chat.completions and responses are gated.
 Before readiness, the hook takes the existing `(false, true)` non-retention
 outcome. After readiness, existing v2 processing continues. The decision is one
-atomic pointer read. The request entry records the attempt before calling
-retention. Its preallocated 256-entry buffer uses TryLock; a busy or full buffer
+atomic pointer read. The request entry samples the time before calling retention
+and records the result from the completed retention decision. Its preallocated
+256-entry buffer uses TryLock; a busy or full buffer
 drops and counts immediately. No clock, lock or append runs inside the hook. There is no added request error or wire field.
 With shadow off the existing caller returns before this hook.
 
@@ -182,8 +183,8 @@ prevent reaching this local-only ready path in a live boot.
 
 `ReceiptPageRetention` remains missing. The enclave does not retain the v2 PAGE
 that owns the native start event. At admission start the request-entry recorder samples `at_us`
-and records its current accepted/rejected state locally; acceptance means passing this admission
-gate, not settlement success. There are 256 preallocated local slots and a separate atomic drop
+and records accepted/rejected after retention returns; accepted means the request
+was retained at entry. It does not describe a later settlement result. There are 256 preallocated local slots and a separate atomic drop
 count for a busy or full recorder. No request fields enter those observations. The closed receipt field is
 mandatory, so no `a3_opted_attempt` line is emitted until an existing PAGE writer
 can provide a joined retained page. No page, sequence or coordinate is invented.
@@ -238,7 +239,12 @@ The incoming-value test exercises both readiness states, both marked variants,
 both cohort routes, all production record constructors, and the two currently
 uninstalled attempt/shutdown constructors. It inspects the complete emitted
 stream and retained originals for distinct incoming values that also fit the ID
-shape. The base transcript test compares full request/response bytes with a
+shape. The round-3 entry test also calls both production request methods with
+distinct identifiers, a digest, header values, model and metadata in both states.
+It captures every output line and retained original; the direct retention test
+remains in place. The transition test changes readiness between entry and
+retention and checks the completed result and original entry timestamp.
+The base transcript test compares full request/response bytes with a
 literal captured from 21292b56; v1 retained state and the existing frozen main
 outcomes are checked again in both readiness states.
 

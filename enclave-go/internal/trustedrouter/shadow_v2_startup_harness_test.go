@@ -252,8 +252,9 @@ func TestStartupAdmission(t *testing.T) {
 			enclaveOptedAdmission.Store(&startupAdmission{ready, h})
 			c := &Client{asyncShadow: on}
 			a := v2Authorization(t, shadowV2Variants(t, "authorize_compared")[0])
-			c.recordStartupAdmissionStart(a, "chat.completions")
+			start := c.recordStartupAdmissionStart(a, "chat.completions")
 			c.retainShadowAuthorization(a, &qtypes.OpenAIChatRequest{}, "chat.completions")
+			start.record(a.shadowSettlement != nil)
 			if (a.shadowSettlement != nil) != (on && ready) {
 				t.Fatalf("on=%v ready=%v retained=%v", on, ready, a.shadowSettlement != nil)
 			}
@@ -289,7 +290,7 @@ func TestStartupRace(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
 				EnclaveOptedAdmission()
-				recordStartupAdmissionStart()
+				recordStartupAdmissionStart().record(EnclaveOptedAdmission())
 				h.RecordShutdownWait(h.start.Add(time.Second), h.start.Add(2*time.Second))
 			}
 		}()

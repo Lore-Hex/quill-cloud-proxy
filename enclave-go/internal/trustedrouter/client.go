@@ -875,8 +875,9 @@ func (c *Client) AuthorizeWithRoute(ctx context.Context, bearer string, req *qty
 	decoded.cacheAffinityKey, decoded.cacheAffinityExplicit = cacheAffinity(lookupHash, req, routeType)
 	decoded.RouteType = routeType
 	c.bindAsyncAuthorization(decoded, req, routeType)
-	c.recordStartupAdmissionStart(decoded, routeType)
+	startupStart := c.recordStartupAdmissionStart(decoded, routeType)
 	c.retainShadowAuthorization(decoded, req, routeType)
+	startupStart.record(decoded.shadowSettlement != nil)
 	if err := validateConfidentialAuthorization(ctx, decoded); err != nil {
 		_ = c.Refund(ctx, decoded, err.StatusCode, err.Type, 0.001, nil)
 		return nil, err
@@ -1014,8 +1015,9 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	c.afterCredentialCheck(ctx, lookupHash, nil)
 	decoded.pinControlPlaneEndpoint(controlPlaneEndpoint)
 	decoded.RouteType = routeType
-	c.recordStartupAdmissionStart(decoded, routeType)
+	startupStart := c.recordStartupAdmissionStart(decoded, routeType)
 	c.retainShadowAuthorization(decoded, &qtypes.OpenAIChatRequest{}, routeType)
+	startupStart.record(decoded.shadowSettlement != nil)
 	if req.Tags != nil && decoded.RequestMetadataVersion < 1 {
 		_ = c.Refund(ctx, decoded, 503, "request_metadata_unavailable", 0.001, nil)
 		return nil, &ControlPlaneError{

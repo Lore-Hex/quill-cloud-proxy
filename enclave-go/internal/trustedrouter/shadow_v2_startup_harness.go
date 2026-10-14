@@ -471,11 +471,11 @@ func EnclaveOptedAdmission() bool {
 
 // Called by the request entry before retention, after the response identifies
 // the cohort. The off, non-cohort and absent-policy paths allocate nothing.
-func (c *Client) recordStartupAdmissionStart(a *Authorization, route string) {
+func (c *Client) recordStartupAdmissionStart(a *Authorization, route string) startupAdmissionStart {
 	if !c.asyncShadow || !asyncCohort(route) || !startupOptedPolicy(a.BillingShadowPolicy) {
-		return
+		return startupAdmissionStart{}
 	}
-	recordStartupAdmissionStart()
+	return recordStartupAdmissionStart()
 }
 
 // Compare the one ASCII marker without allocating a decoded string. Its only
@@ -505,17 +505,30 @@ func startupOptedPolicy(raw []byte) bool {
 	return at == end
 }
 
-// recordStartupAdmissionStart is outside the retention decision. A busy or full
-// recorder drops and counts immediately. It never grows the preallocated buffer.
-func recordStartupAdmissionStart() {
+// The entry observation carries only the clock and destination for the result.
+// Readiness is observed by retention; the entry snapshot does not choose a result.
+type startupAdmissionStart struct {
+	harness *ShadowV2StartupHarness
+	atUS    int64
+}
+
+func recordStartupAdmissionStart() startupAdmissionStart {
 	state := enclaveOptedAdmission.Load()
 	if state == nil {
+		return startupAdmissionStart{}
+	}
+	return startupAdmissionStart{state.harness, time.Now().UnixMicro()}
+}
+
+// record uses the completed retention decision and preserves the entry time.
+// A busy or full recorder drops and counts immediately without growing its buffer.
+func (start startupAdmissionStart) record(retained bool) {
+	h := start.harness
+	if h == nil {
 		return
 	}
-	h := state.harness
-	at := time.Now().UnixMicro()
 	result := "rejected"
-	if state.ready {
+	if retained {
 		result = "accepted"
 	}
 	if !h.attemptMu.TryLock() {
@@ -527,7 +540,7 @@ func recordStartupAdmissionStart() {
 		h.attemptOverflow.Add(1)
 		return
 	}
-	h.attempts = append(h.attempts, startupLocalAttempt{at, result})
+	h.attempts = append(h.attempts, startupLocalAttempt{start.atUS, result})
 }
 
 func startupReadRouter(ctx context.Context, c *Client, target startupTarget) startupProbeResult {
