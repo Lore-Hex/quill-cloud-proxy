@@ -204,6 +204,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("QUILL_PRIVATEMODE_SECRET",), "Privatemode key", True),
     Binding(("QUILL_TELLUVIAN_SECRET",), "Telluvian selector key", True),
     Binding(("QUILL_NEXTBIT_SECRET",), "nextbit key", True),
+    Binding(("QUILL_NEXTBIT_EU_SECRET",), "NextBit EU key", True),
     Binding(("QUILL_AION_LABS_SECRET",), "aion labs key", True),
     Binding(("QUILL_SAMBANOVA_SECRET",), "sambanova key", True),
     Binding(("QUILL_INCEPTION_SECRET",), "inception key", True),

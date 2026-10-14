@@ -96,6 +96,7 @@ DECART_SECRET="${DECART_SECRET:-trustedrouter-decart-api-key}"
 RECRAFT_SECRET="${RECRAFT_SECRET:-trustedrouter-recraft-api-key}"
 BFL_SECRET="${BFL_SECRET:-trustedrouter-bfl-api-key}"
 NEXTBIT_SECRET="${NEXTBIT_SECRET:-trustedrouter-nextbit-api-key}"
+NEXTBIT_EU_SECRET="${NEXTBIT_EU_SECRET:-trustedrouter-nextbit-eu-api-key}"
 AION_LABS_SECRET="${AION_LABS_SECRET:-trustedrouter-aion-labs-api-key}"
 SAMBANOVA_SECRET="${SAMBANOVA_SECRET:-trustedrouter-sambanova-api-key}"
 INCEPTION_SECRET="${INCEPTION_SECRET:-trustedrouter-inception-api-key}"
@@ -272,6 +273,7 @@ for secret in \
   "$RECRAFT_SECRET" \
   "$BFL_SECRET" \
   "$NEXTBIT_SECRET" \
+  "$NEXTBIT_EU_SECRET" \
   "$AION_LABS_SECRET" \
   "$SAMBANOVA_SECRET" \
   "$INCEPTION_SECRET" \

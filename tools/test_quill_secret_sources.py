@@ -74,6 +74,18 @@ class QuillSecretSourcesTests(unittest.TestCase):
             self.assertEqual(missing, [])
             self.assertEqual(values, {name: "openai-value" for name in names})
 
+    def test_nextbit_key_is_copied_to_separate_global_and_eu_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            keys = root / "keys"
+            secrets = root / "secrets"
+            secrets.mkdir()
+            keys.write_text("NEXTBIT_API_KEY=nextbit-value\n")
+            names = ["trustedrouter-nextbit-api-key", "trustedrouter-nextbit-eu-api-key"]
+            values, missing, _ = MODULE.resolve(names, keys_file=keys, secrets_dir=secrets)
+            self.assertEqual(missing, [])
+            self.assertEqual(values, {name: "nextbit-value" for name in names})
+
 
 if __name__ == "__main__":
     unittest.main()

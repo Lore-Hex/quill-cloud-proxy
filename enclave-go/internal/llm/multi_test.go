@@ -342,6 +342,7 @@ func TestBootstrapDirectProviderClientsAreBoundedToCompiledHosts(t *testing.T) {
 	wantBaseURLs := map[string]string{
 		"abliterate":      "https://abliterate.ai/api/v1",
 		"nextbit":         "https://api.nextbit256.com/v1",
+		"nextbit-eu":      "https://eu.api.nextbit256.com/v1",
 		"aion-labs":       "https://api.aionlabs.ai/v1",
 		"sambanova":       "https://api.sambanova.ai/v1",
 		"inception":       "https://api.inceptionlabs.ai/v1",
@@ -359,6 +360,7 @@ func TestBootstrapDirectProviderClientsAreBoundedToCompiledHosts(t *testing.T) {
 	keys := map[string]string{
 		"abliterate":      "key-abliterate",
 		"nextbit":         " key-nextbit ",
+		"nextbit-eu":      "key-nextbit-eu",
 		"aion-labs":       "key-aion",
 		"sambanova":       "key-sambanova",
 		"inception":       "key-inception",
@@ -404,6 +406,23 @@ func TestBootstrapDirectProviderClientsAreBoundedToCompiledHosts(t *testing.T) {
 	}
 	if clients["krea"] != nil {
 		t.Fatal("media-only Krea acquired a chat client")
+	}
+}
+
+func TestNextBitEUDoesNotBorrowGlobalClientOrKey(t *testing.T) {
+	global := newBootstrapDirectClients(map[string]string{"nextbit": "global-key"})
+	if global["nextbit"] == nil || global["nextbit-eu"] != nil {
+		t.Fatal("global credential must not implicitly enable EU")
+	}
+	eu := newBootstrapDirectClients(map[string]string{"nextbit-eu": "eu-key"})
+	if eu["nextbit"] != nil || eu["nextbit-eu"] == nil {
+		t.Fatal("EU credential must not implicitly enable global")
+	}
+	if eu["nextbit-eu"].baseURL != "https://eu.api.nextbit256.com/v1" || eu["nextbit-eu"].apiKey != "eu-key" {
+		t.Fatal("EU requests must use the compiled EU host and its own credential")
+	}
+	if isOpenAICompatibleBYOKProvider("nextbit-eu") {
+		t.Fatal("NextBit EU is credits-only")
 	}
 }
 

@@ -34,6 +34,7 @@ var specs = [...]Spec{
 	// Polyphemus uses /modelSelect only, never a Telluvian generation route.
 	{Provider: "telluvian", BaseURL: "https://api.telluvian.ai/v1", SecretEnv: "QUILL_TELLUVIAN_SECRET", SecretName: "trustedrouter-telluvian-api-key", SecretLabel: "Telluvian selector key"},
 	{Provider: "nextbit", BaseURL: "https://api.nextbit256.com/v1", SecretEnv: "QUILL_NEXTBIT_SECRET", SecretName: "trustedrouter-nextbit-api-key", SecretLabel: "nextbit key"},
+	{Provider: "nextbit-eu", BaseURL: "https://eu.api.nextbit256.com/v1", SecretEnv: "QUILL_NEXTBIT_EU_SECRET", SecretName: "trustedrouter-nextbit-eu-api-key", SecretLabel: "NextBit EU key"},
 	{Provider: "aion-labs", BaseURL: "https://api.aionlabs.ai/v1", SecretEnv: "QUILL_AION_LABS_SECRET", SecretName: "trustedrouter-aion-labs-api-key", SecretLabel: "aion labs key"},
 	{Provider: "sambanova", BaseURL: "https://api.sambanova.ai/v1", SecretEnv: "QUILL_SAMBANOVA_SECRET", SecretName: "trustedrouter-sambanova-api-key", SecretLabel: "sambanova key"},
 	{Provider: "inception", BaseURL: "https://api.inceptionlabs.ai/v1", SecretEnv: "QUILL_INCEPTION_SECRET", SecretName: "trustedrouter-inception-api-key", SecretLabel: "inception key"},

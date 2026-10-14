@@ -817,6 +817,7 @@ allowlist:
   # /chat/completions APIs on 2026-08-22. tools/test_vsock_port_map.py derives
   # the required hosts from internal/directproviders and enforces lockstep.
   - {address: api.nextbit256.com,             port: 443}
+  - {address: eu.api.nextbit256.com,          port: 443}
   - {address: api.aionlabs.ai,                port: 443}
   - {address: api.sambanova.ai,               port: 443}
   - {address: api.inceptionlabs.ai,           port: 443}
@@ -978,6 +979,7 @@ write_vsock_unit 8047 ws-el6e4bpnggpx7g88.eu-central-1.maas.aliyuncs.com
 write_vsock_unit 8053 trustedrouter-foundry-eastus2.openai.azure.com
 write_vsock_unit 8054 trustedrouter-foundry-eastus2.services.ai.azure.com
 write_vsock_unit 8055 api.nextbit256.com
+write_vsock_unit 8114 eu.api.nextbit256.com
 write_vsock_unit 8056 api.aionlabs.ai
 write_vsock_unit 8057 api.sambanova.ai
 write_vsock_unit 8058 api.inceptionlabs.ai
