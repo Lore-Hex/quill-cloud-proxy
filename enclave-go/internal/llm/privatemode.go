@@ -93,8 +93,23 @@ func (c *openAICompatibleClient) invokePrivatemode(ctx context.Context, req *qty
 }
 
 // Never substitute an expensive default for an unsupported explicit effort.
-// The pinned models all reason; none supports disabling reasoning entirely.
+// Reasoning chat models cannot disable reasoning; OCR does not reason.
 func preparePrivatemodeWire(req *qtypes.OpenAIChatRequest, body *qtypes.AnthropicMessagesRequest, wire *openAICompatibleRequest, scope string) error {
+	if wire.Model == "deepseek-ocr-2" {
+		if effort := chatReasoningEffort(req); effort != "" && effort != "none" {
+			return &upstreamHTTPError{status: http.StatusBadRequest, body: "Privatemode OCR does not support reasoning"}
+		}
+		if req != nil {
+			if reasoning, ok := req.Reasoning.(map[string]any); ok && (reasoning["enabled"] == true || reasoning["max_tokens"] != nil) {
+				return &upstreamHTTPError{status: http.StatusBadRequest, body: "Privatemode OCR does not support reasoning"}
+			}
+		}
+		if body != nil && body.NativeContent && body.Thinking != nil {
+			return &upstreamHTTPError{status: http.StatusBadRequest, body: "Privatemode OCR does not support reasoning"}
+		}
+		wire.Thinking, wire.Reasoning, wire.ReasoningEffort = nil, nil, ""
+		return isolatePrivatemodeCache(wire, scope)
+	}
 	invalid := func() error {
 		return &upstreamHTTPError{status: http.StatusBadRequest, body: "unsupported Privatemode reasoning setting; GLM supports low/high/max, GPT OSS supports low/medium/high; reasoning cannot be disabled"}
 	}
@@ -120,6 +135,10 @@ func preparePrivatemodeWire(req *qtypes.OpenAIChatRequest, body *qtypes.Anthropi
 	}
 	wire.Thinking, wire.Reasoning = nil, nil
 	wire.ReasoningEffort = effort
+	return isolatePrivatemodeCache(wire, scope)
+}
+
+func isolatePrivatemodeCache(wire *openAICompatibleRequest, scope string) error {
 	// Scope is generated from the authorized workspace, never client input.
 	// Without a scope, use an independent salt so no two requests share a cache.
 	if scope = strings.TrimSpace(scope); scope != "" {

@@ -34,11 +34,13 @@ var manifest []byte
 // AllowedModel deliberately excludes rolling and deprecated upstream aliases.
 func AllowedModel(model string) bool {
 	switch model {
-	case "glm-5.3", "glm-5.3-flash", "gpt-oss-120b":
+	case "glm-5.3", "glm-5.3-flash", "gpt-oss-120b", "deepseek-ocr-2":
 		return true
 	}
 	return false
 }
+
+func AllowedEmbeddingModel(model string) bool { return model == "qwen3-embedding-4b" }
 
 func localIdentity(now time.Time) (certPEM, keyPEM []byte, cert *x509.Certificate, err error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -97,9 +99,9 @@ type restrictedTransport struct{ base *http.Transport }
 
 func (t restrictedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if r.URL.Scheme != "https" || r.URL.Host != proxyAuthority || r.URL.User != nil || r.URL.RawQuery != "" ||
-		!((r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions") ||
+		!((r.Method == http.MethodPost && (r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/embeddings")) ||
 			(r.Method == http.MethodGet && r.URL.Path == "/readyz")) {
-		return nil, errors.New("privatemode: request outside encrypted chat interface")
+		return nil, errors.New("privatemode: request outside encrypted inference interface")
 	}
 	return t.base.RoundTrip(r)
 }

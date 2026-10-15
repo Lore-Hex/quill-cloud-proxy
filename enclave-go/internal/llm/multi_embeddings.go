@@ -24,6 +24,11 @@ func (m *multiClient) InvokeEmbedding(
 		return client.InvokeEmbedding(ctx, req, options...)
 	}
 	switch provider {
+	case "tinfoil":
+		if m.tinfoil == nil {
+			return nil, fmt.Errorf("llm/tinfoil: attested embedding client unavailable")
+		}
+		return m.tinfoil.InvokeEmbedding(ctx, req, options...)
 	case "openai":
 		return m.openai.InvokeEmbedding(ctx, req, options...)
 	case "together":
