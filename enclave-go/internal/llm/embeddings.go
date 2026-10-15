@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/privatemode"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -50,7 +51,20 @@ func (c *openAICompatibleClient) InvokeEmbedding(
 		provider = normalizeDirectProvider(option.Provider)
 	}
 	if c.provider == "privatemode" || provider == "privatemode" {
-		return nil, fmt.Errorf("llm/privatemode: only attested chat inference is supported")
+		if c.provider != "privatemode" || provider != "privatemode" || option.ProviderAPIKey != "" {
+			return nil, fmt.Errorf("llm/privatemode: provider override or BYOK is unsupported")
+		}
+		if !privatemode.AllowedEmbeddingModel(option.UpstreamModel) {
+			return nil, fmt.Errorf("llm/privatemode: embedding model is not release-pinned")
+		}
+		if req == nil || (req.Dimensions != nil && *req.Dimensions != 1024 && *req.Dimensions != 2560) {
+			return nil, &upstreamHTTPError{status: http.StatusBadRequest, body: "Privatemode embedding dimensions must be 1024 or 2560"}
+		}
+		client := privateModeHTTPClient.Load()
+		if client == nil {
+			return nil, fmt.Errorf("llm/privatemode: attested proxy unavailable")
+		}
+		return invokeOpenAICompatibleEmbeddings(ctx, client, provider, privatemode.BaseURL, c.apiKey, req, option.UpstreamModel)
 	}
 	apiKey := c.apiKey
 	baseURL := c.baseURL
@@ -63,6 +77,10 @@ func (c *openAICompatibleClient) InvokeEmbedding(
 	httpc, err := c.resolveHTTPClient()
 	if err != nil {
 		return nil, fmt.Errorf("llm/%s: http client unavailable: %w", provider, err)
+	}
+	if (c.provider == "tinfoil" || provider == "tinfoil") &&
+		(c.provider != "tinfoil" || provider != "tinfoil" || c.httpcGetter == nil || httpc == nil) {
+		return nil, fmt.Errorf("llm/tinfoil: verified embedding transport unavailable")
 	}
 	return invokeOpenAICompatibleEmbeddings(ctx, httpc, provider, baseURL, apiKey, req, option.UpstreamModel)
 }
@@ -104,6 +122,9 @@ func invokeOpenAICompatibleEmbeddings(
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if provider == "privatemode" {
+			return nil, privatemodeResponseError(resp)
+		}
 		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if readErr != nil {
 			return nil, fmt.Errorf("llm/%s: read error body: %w", provider, readErr)

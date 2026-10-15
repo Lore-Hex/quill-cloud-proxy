@@ -38,15 +38,18 @@ func TestManifestIsPinnedAndImmutable(t *testing.T) {
 }
 
 func TestOnlyPinnedModels(t *testing.T) {
-	for _, model := range []string{"glm-5.3", "glm-5.3-flash", "gpt-oss-120b"} {
+	for _, model := range []string{"glm-5.3", "glm-5.3-flash", "gpt-oss-120b", "deepseek-ocr-2"} {
 		if !AllowedModel(model) {
 			t.Errorf("missing %s", model)
 		}
 	}
-	for _, model := range []string{"glm-5.2", "glm-latest", "kimi-k2.6", "openai/gpt-oss-120b", "", "../models"} {
+	for _, model := range []string{"glm-5.2", "glm-latest", "kimi-k2.6", "openai/gpt-oss-120b", "qwen3-embedding-4b", "", "../models"} {
 		if AllowedModel(model) {
 			t.Errorf("unpinned %s", model)
 		}
+	}
+	if !AllowedEmbeddingModel("qwen3-embedding-4b") || AllowedEmbeddingModel("gpt-oss-120b") {
+		t.Fatal("embedding/chat model allowlists overlap")
 	}
 }
 
