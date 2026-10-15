@@ -93,6 +93,10 @@ run() {
 }
 
 cd "$(dirname "$0")/.."
+# SOURCE_REVISION below reads the commit through REPO_ROOT, as release-gcp.sh,
+# deploy-azure-aci.sh and verify-pcr0.sh do; it is linked into the binary and
+# therefore measured.
+REPO_ROOT="$(pwd)"
 
 verify_aws() {
   say "Checking live AWS measurement and both healthy serving Fargate pin sets..."

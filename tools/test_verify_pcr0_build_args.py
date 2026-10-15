@@ -65,6 +65,21 @@ class VerifyPcr0BuildArgs(unittest.TestCase):
                 "which reads as tampering to whoever runs it.",
             )
 
+    def test_source_revision_reads_an_assigned_repo_root(self) -> None:
+        # SOURCE_REVISION is linked into the binary (ShadowBuildRevision), so it
+        # is measured. release-aws-enclave.sh once read "$REPO_ROOT" without
+        # assigning it: under set -u the command substitution failed inside the
+        # argument and the image built with SOURCE_REVISION empty.
+        for script in (RELEASE, VERIFY):
+            text = script.read_text()
+            self.assertIn(
+                '--build-arg "SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)"',
+                text,
+                script.name,
+            )
+            assigned = re.search(r'(?m)^REPO_ROOT="', text) is not None
+            self.assertTrue(assigned, f"{script.name} reads $REPO_ROOT without assigning it")
+
     def test_verify_script_builds_from_paths_that_exist(self) -> None:
         text = VERIFY.read_text()
         dockerfile = re.search(r"--file (\S+)", text)
