@@ -48,6 +48,8 @@ var elevenLabsVoices = []string{
 }
 
 var Models = map[string]Spec{
+	"qwen/qwen3-tts":                    {"tinfoil", "qwen3-tts", strings.Fields("aiden dylan eric ono_anna ryan serena sohee uncle_fu vivian"), []string{"wav"}, 4096, 1, 1},
+	"mistralai/voxtral-4b-tts-2603":     {"tinfoil", "voxtral-tts", strings.Fields("neutral_female neutral_male casual_female casual_male cheerful_female ar_male de_female de_male es_female es_male fr_female fr_male hi_female hi_male it_female it_male nl_female nl_male pt_female pt_male"), []string{"wav"}, 4096, 1, 1},
 	"x-ai/grok-voice-tts-1.0":           {"grok", "grok-voice-tts-1.0", []string{"eve", "ara", "rex", "sal", "leo"}, []string{"mp3", "pcm"}, 60000, 0.7, 1.5},
 	"mistralai/voxtral-mini-tts-2603":   {"mistral", "voxtral-mini-tts-2603", []string{"en_paul_neutral"}, []string{"mp3"}, 10000, 1, 1},
 	"google/gemini-3.8-flash-tts":       {"google-ai-studio", "gemini-3.8-flash-tts", geminiVoices, []string{"pcm", "wav"}, 8192, 1, 1},
@@ -102,6 +104,9 @@ func Parse(raw []byte) (*Request, error) {
 	}
 	if req.Format == "" {
 		req.Format = "pcm"
+		if spec.Provider == "tinfoil" {
+			req.Format = "wav"
+		}
 	}
 	if !slices.Contains(spec.Formats, req.Format) {
 		return nil, &RequestError{"response_format", "unsupported response_format; see the model's response_formats"}
@@ -130,8 +135,16 @@ type ProviderError struct{ Status int }
 func (e *ProviderError) Error() string { return "speech provider failed" }
 
 type Client struct {
-	http *http.Client
-	keys map[string]string
+	http              *http.Client
+	keys              map[string]string
+	tinfoilHTTPClient func() (*http.Client, error)
+}
+
+// WithTinfoilAttestation configures the verified transport at startup. There is
+// deliberately no ordinary HTTPS fallback when verification is unavailable.
+func (c *Client) WithTinfoilAttestation(getter func() (*http.Client, error)) *Client {
+	c.tinfoilHTTPClient = getter
+	return c
 }
 
 func New(client *http.Client, keys map[string]string) *Client {
@@ -158,6 +171,10 @@ func (c *Client) Generate(ctx context.Context, req *Request) (*Result, error) {
 	if spec.Provider == "mistral" {
 		url = "https://api.mistral.ai/v1/audio/speech"
 		body = map[string]any{"model": spec.Upstream, "input": req.Input, "voice_id": req.Voice, "response_format": req.Format}
+	}
+	if spec.Provider == "tinfoil" {
+		url = "https://inference.tinfoil.sh/v1/audio/speech"
+		body = map[string]any{"model": spec.Upstream, "input": req.Input, "voice": req.Voice}
 	}
 	if spec.Provider == "elevenlabs" {
 		format := "pcm_24000"
@@ -214,7 +231,21 @@ func (c *Client) Generate(ctx context.Context, req *Request) (*Result, error) {
 	} else {
 		httpReq.Header.Set("Authorization", "Bearer "+key)
 	}
-	resp, err := c.http.Do(httpReq)
+	client := c.http
+	if spec.Provider == "tinfoil" {
+		if c.tinfoilHTTPClient == nil || ctx.Err() != nil {
+			return nil, errors.New("speech attestation unavailable")
+		}
+		verified, err := c.tinfoilHTTPClient()
+		if err != nil || verified == nil || verified.Transport == nil {
+			return nil, errors.New("speech attestation unavailable")
+		}
+		copyClient := *verified
+		copyClient.Timeout = 3 * time.Minute
+		copyClient.CheckRedirect = c.http.CheckRedirect
+		client = &copyClient
+	}
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, errors.New("speech provider unavailable")
 	}
@@ -241,6 +272,12 @@ func (c *Client) Generate(ctx context.Context, req *Request) (*Result, error) {
 			return nil, errors.New("invalid speech response type")
 		}
 		return decodeGeminiAudio(data, spec, req.Format)
+	}
+	if spec.Provider == "tinfoil" {
+		if (mediaType != "audio/wav" && mediaType != "audio/x-wav") || !validWAV(data) {
+			return nil, errors.New("invalid speech WAV response")
+		}
+		return &Result{Audio: data, ContentType: "audio/wav"}, nil
 	}
 	if spec.Provider == "mistral" {
 		if mediaType != "application/json" {
