@@ -40,6 +40,10 @@ func serveTranscription(ctx context.Context, conn io.Writer, raw []byte, gateway
 		writeError(conn, 503, "transcription capacity temporarily exhausted")
 		return
 	}
+	if err := gateway.ValidateKey(ctx, bearer, "audio.transcriptions"); err != nil {
+		writeGatewayAuthorizationError(conn, err)
+		return
+	}
 	req, err := transcription.Parse(raw, attribution.ContentType)
 	if err == nil {
 		err = transcription.Measure(ctx, req)
@@ -129,7 +133,7 @@ func serveTranscription(ctx context.Context, conn io.Writer, raw []byte, gateway
 		writeSpentError(conn, 502, "transcription settlement failed")
 		return
 	}
-	result["usage"] = map[string]any{"cost": settled.Cost, "seconds": float64(req.DurationMS) / 1000}
+	result["usage"] = map[string]any{"type": "duration", "cost": settled.Cost, "seconds": float64(req.DurationMS) / 1000}
 	body, _ := json.Marshal(result)
 	_, err = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nCache-Control: no-store\r\nX-Generation-Id: %s\r\nX-Request-Id: %s\r\nConnection: %s\r\n\r\n", len(body), settled.GenerationID, requestLogID, responseConnection(conn))
 	if err == nil {
