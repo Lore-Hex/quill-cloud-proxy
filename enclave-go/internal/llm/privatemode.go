@@ -73,6 +73,15 @@ func privatemodeResponseError(resp *http.Response) error {
 // supervisor. A missing/dead proxy disables this provider, never encryption.
 func ConfigurePrivatemode(client *http.Client) { privateModeHTTPClient.Store(client) }
 
+// PrivatemodeAttestedHTTPClient never falls back to a public HTTPS transport.
+func PrivatemodeAttestedHTTPClient() (*http.Client, error) {
+	client := privateModeHTTPClient.Load()
+	if client == nil {
+		return nil, errors.New("privatemode: attested proxy unavailable")
+	}
+	return client, nil
+}
+
 func (c *openAICompatibleClient) invokePrivatemode(ctx context.Context, req *qtypes.OpenAIChatRequest,
 	body *qtypes.AnthropicMessagesRequest, out io.Writer, option InvokeOptions) error {
 	if strings.TrimSpace(option.ProviderAPIKey) != "" {

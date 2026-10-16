@@ -22,20 +22,23 @@ remain encrypted; do not claim traffic unlinkability or hidden token lengths.
 The embedded manifest is immutable (`WorkloadOwnerKeyDigests=[]`). No runtime
 CDN refresh is permitted. Invalid attestation, changed measurements, certificate
 revocation, an absent proxy, or an unreviewed native model fails closed. There
-is no plaintext or BYOK fallback. Only chat inference is enabled; embeddings
-and decision APIs explicitly reject this provider before network access.
+is no plaintext or BYOK fallback. Reviewed chat, OCR, embeddings and recorded
+audio transcription use the same verified connection. Decision and realtime
+APIs remain unsupported.
 
-Pins reviewed on 2026-10-03:
+Pins reviewed and approved on 2026-10-16:
 
-- Public source: `edgelesssys/privatemode-public` tag `v1.58.0`, commit
-  `753fa3fe1f2321c71743dda54f2ebbb160f89e14`.
+- Public source: `edgelesssys/privatemode-public` tag `v1.59.0`, commit
+  `17ad265a79a39f30596ae2f12ec64ccbd9127275`.
 - Proxy OCI index:
-  `sha256:5e8f549169c4288c24c902eadc4c6ebfaaf05c06e5605449c34469257929b143`.
+  `sha256:3cd4da0ee6ceee91ca84dde4e3e3f0e94e8b354d7c1d46987e4331a5c2f8bcff`.
 - Embedded manifest SHA-256:
-  `384a2137e534357d74392bf3940373ff49d309d91551376b5a7f828e372af42b`.
+  `9f5ac6bf38431fb073c2185bd9b344140e776b4f7c32eee595716e9456bdec2a`.
 - Contrast verifier: `v1.24.1`; Linux CLI SHA-256
   `257601578d45622889eabf8963dc5983e607671ce22b5fc7749a81dcd66c96dd`.
-- Native models: `gpt-oss-120b`, `glm-5.3`, `glm-5.3-flash` only.
+- Native models: `gpt-oss-120b`, `glm-5.3`, `glm-5.3-flash`,
+  `deepseek-ocr-2`, `qwen3-embedding-4b`, `voxtral-mini-3b`,
+  `whisper-large-v3`.
 
 Pins are not themselves proof that a deployment passed: preserve independent
 policy reproduction results and regional inference results with the release.
@@ -140,6 +143,31 @@ The catalog is deliberately dark until step 6. Do not make it an ordinary
 plaintext provider to work around a failed verification or unavailable cloud.
 
 ## Pin Updates
+
+### 2026-10-16 v1.59 Media Integration
+
+Independent policy reproduction produced manifest SHA-256
+`7366656041c20fa043dca6f4b44657bd1051e173fc60f9a4052c34859249f379`.
+All eight workload policies and the reference values match the published
+manifest. Seed-share ownership is deployment-specific, so those public keys
+are not expected to match a locally generated deployment. The operator
+explicitly approved the new published manifest, including its changed
+measurements and recovery-owner key, before it was embedded. Immutable update
+restrictions, strict GPU OCSP checks, sealed configuration, pinned loopback
+TLS and unprivileged proxy isolation are unchanged.
+
+Packaged Linux canaries using synthetic content passed OCR, embeddings at
+1,024 and 2,560 dimensions, Whisper JSON and segment timestamps, and Voxtral
+Mini JSON. The negative manifest test returned 401 before inference. Voxtral
+Mini rejects verbose JSON upstream, so the public parser rejects timestamps
+and verbose JSON before billing authorization. These are local release
+qualification results, not evidence that production has deployed the pins.
+
+Embeddings now carry provider restrictions into metadata-only authorization;
+the confidential hostname enforces the same privacy floor as chat. Audio and
+transcript contents stay in enclave memory. Privatemode transcription uses
+reviewed per-minute prices converted from EUR, with the existing FX reserve.
+Realtime, audio translation and audio question answering are not enabled.
 
 ### 2026-10-03 v1.58 Deployment Drift
 

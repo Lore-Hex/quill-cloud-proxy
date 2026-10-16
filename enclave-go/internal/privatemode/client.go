@@ -99,7 +99,7 @@ type restrictedTransport struct{ base *http.Transport }
 
 func (t restrictedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if r.URL.Scheme != "https" || r.URL.Host != proxyAuthority || r.URL.User != nil || r.URL.RawQuery != "" ||
-		!((r.Method == http.MethodPost && (r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/embeddings")) ||
+		!((r.Method == http.MethodPost && (r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/embeddings" || r.URL.Path == "/v1/audio/transcriptions")) ||
 			(r.Method == http.MethodGet && r.URL.Path == "/readyz")) {
 		return nil, errors.New("privatemode: request outside encrypted inference interface")
 	}

@@ -17,13 +17,26 @@ import (
 
 const MaxAudioBytes = 7 << 20 // Base64 plus metadata fits the gateway's 10 MiB body cap.
 const MaxDurationMS = 600_000
+const MaxInputTokens = 28672
+const MaxOutputTokens = 4096
 
 type Spec struct{ Provider, Upstream, URL string }
 
 var Models = map[string]Spec{
-	"openai/whisper-large-v3-turbo": {"tinfoil", "whisper-large-v3-turbo", "https://inference.tinfoil.sh/v1/audio/transcriptions"},
-	"openai/whisper-1":              {"openai", "whisper-1", "https://api.openai.com/v1/audio/transcriptions"},
-	"mistralai/voxtral-mini-2602":   {"mistral", "voxtral-mini-2602", "https://api.mistral.ai/v1/audio/transcriptions"},
+	"mistralai/voxtral-small-24b":    {"tinfoil", "voxtral-small-24b", "https://inference.tinfoil.sh/v1/chat/completions"},
+	"openai/whisper-large-v3-turbo":  {"tinfoil", "whisper-large-v3-turbo", "https://inference.tinfoil.sh/v1/audio/transcriptions"},
+	"openai/whisper-1":               {"openai", "whisper-1", "https://api.openai.com/v1/audio/transcriptions"},
+	"mistralai/voxtral-mini-2602":    {"mistral", "voxtral-mini-2602", "https://api.mistral.ai/v1/audio/transcriptions"},
+	"mistralai/voxtral-mini-3b-2507": {"privatemode", "voxtral-mini-3b", "https://privatemode.internal:18489/v1/audio/transcriptions"},
+	"openai/whisper-large-v3":        {"privatemode", "whisper-large-v3", "https://privatemode.internal:18489/v1/audio/transcriptions"},
+}
+
+func (s Spec) Confidential() bool { return s.Provider == "tinfoil" || s.Provider == "privatemode" }
+
+func (s Spec) TokenBilled() bool { return s.Provider == "tinfoil" && s.Upstream == "voxtral-small-24b" }
+
+func (s Spec) JSONOnly() bool {
+	return s.TokenBilled() || (s.Provider == "privatemode" && s.Upstream == "voxtral-mini-3b")
 }
 
 type Request struct {
@@ -198,6 +211,9 @@ func Parse(raw []byte, contentType string) (*Request, error) {
 		}
 	}
 	spec := Models[req.Model]
+	if spec.JSONOnly() && (req.Format != "json" || len(req.Timestamps) > 0) {
+		return nil, invalid("response_format", "This model supports json without timestamps")
+	}
 	if spec.Provider == "mistral" {
 		if len(req.Timestamps) > 1 {
 			return nil, invalid("timestamp_granularities", "Mistral supports one timestamp granularity per request")
