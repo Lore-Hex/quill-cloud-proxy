@@ -25,6 +25,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/speech"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/spendlease"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/transcription"
 	qtypes "github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 )
 
@@ -860,6 +861,9 @@ func chatAuthorizeBody(c *Client, lookupHash, idempotencyKey string, req *qtypes
 	if routeType == "audio.transcriptions" {
 		body["transcription_duration_ms"] = req.TranscriptionDurationMS
 		body["estimated_input_tokens"] = 0
+		if transcription.Models[req.Model].TokenBilled() {
+			body["estimated_input_tokens"] = transcription.MaxInputTokens
+		}
 	}
 	if key, explicit := cacheAffinity(lookupHash, req, routeType); key != "" {
 		body["cache_affinity_key"] = key
@@ -1086,6 +1090,11 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	inputTokens int,
 	routeType string,
 ) (*Authorization, error) {
+	if ConfidentialOnly(ctx) {
+		if err := ValidateConfidentialRouting(req.Provider); err != nil {
+			return nil, err
+		}
+	}
 	if inputTokens < 1 {
 		inputTokens = 1
 	}
@@ -1108,6 +1117,9 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 		"region":                 c.region,
 		"route_type":             routeType,
 		"idempotency_key":        idempotencyKey,
+	}
+	if req.Provider != nil {
+		body["provider"] = req.Provider
 	}
 	if req.User != "" {
 		body["user"] = req.User
@@ -1134,10 +1146,12 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 		body["app_categories"] = req.AppCategories
 	}
 	maxTokens := int64(1)
-	decoded, controlPlaneEndpoint, err := c.authorizeAtDecodeSeam(ctx, lookupHash, body, spendlease.EstimateRequest{
-		Model: req.Model, RouteType: routeType, Region: c.region,
-		EstimatedInputTokens: int64(inputTokens), MaxTokens: &maxTokens,
+	estimate := spendLeaseRequestForChat(c.region, routeType, &qtypes.OpenAIChatRequest{
+		Model: req.Model, Provider: req.Provider,
 	})
+	estimate.EstimatedInputTokens = int64(inputTokens)
+	estimate.MaxTokens = &maxTokens
+	decoded, controlPlaneEndpoint, err := c.authorizeAtDecodeSeam(ctx, lookupHash, body, estimate)
 	if err != nil {
 		c.afterCredentialCheck(ctx, lookupHash, err)
 		return nil, err
@@ -1148,6 +1162,10 @@ func (c *Client) AuthorizeEmbeddingsWithRoute(
 	startupStart := c.recordStartupAdmissionStart(decoded, routeType)
 	c.retainShadowAuthorization(decoded, &qtypes.OpenAIChatRequest{}, routeType)
 	startupStart.record(decoded.shadowSettlement != nil)
+	if err := validateConfidentialAuthorization(ctx, decoded); err != nil {
+		_ = c.Refund(ctx, decoded, err.StatusCode, err.Type, 0.001, nil)
+		return nil, err
+	}
 	if req.Tags != nil && decoded.RequestMetadataVersion < 1 {
 		_ = c.Refund(ctx, decoded, 503, "request_metadata_unavailable", 0.001, nil)
 		return nil, &ControlPlaneError{

@@ -67,12 +67,15 @@ func serveTranscription(ctx context.Context, conn io.Writer, raw []byte, gateway
 			return
 		}
 	}
-	if req.Provider != nil && req.Provider.MinPrivacy == "confidential" && transcription.Models[req.Model].Provider != "tinfoil" {
+	if req.Provider != nil && req.Provider.MinPrivacy == "confidential" && !transcription.Models[req.Model].Confidential() {
 		writeOpenAIError(conn, 400, "This transcription model has no verified confidential route", "invalid_request_error", "no_matching_provider", "provider.min_privacy")
 		return
 	}
 	maxTokens := 1
 	meta := &types.OpenAIChatRequest{Model: req.Model, Provider: req.Provider, MaxTokens: &maxTokens, User: req.User, SessionID: req.SessionID, Trace: req.Trace, IdempotencyKey: idempotencyKey, TranscriptionDurationMS: req.DurationMS}
+	if transcription.Models[req.Model].TokenBilled() {
+		maxTokens = transcription.MaxOutputTokens
+	}
 	applyAttributionHeaders(meta, attribution)
 	if validateOrObserveRequestMetadata(meta, requestLogID) != nil {
 		writeError(conn, 400, "invalid request metadata")
@@ -100,7 +103,7 @@ func serveTranscription(ctx context.Context, conn io.Writer, raw []byte, gateway
 		_ = gateway.Refund(refundCtx, auth, status, reason, time.Since(started).Seconds(), nil)
 	}
 	spec := transcription.Models[req.Model]
-	if auth.Model != req.Model || auth.Provider != spec.Provider || auth.UpstreamModel != spec.Upstream || auth.UsageType != "Credits" || auth.AdditionalCostReservationMicrodollars <= 0 {
+	if auth.Model != req.Model || auth.Provider != spec.Provider || auth.UpstreamModel != spec.Upstream || auth.UsageType != "Credits" || (!spec.TokenBilled() && auth.AdditionalCostReservationMicrodollars <= 0) || (spec.TokenBilled() && (auth.AdditionalCostReservationMicrodollars != 0 || auth.EstimatedCostMicrodollars <= 0)) {
 		refund(502, "transcription_catalog_mismatch")
 		writeError(conn, 502, "transcription route configuration mismatch")
 		return
@@ -125,6 +128,15 @@ func serveTranscription(ctx context.Context, conn io.Writer, raw []byte, gateway
 		return
 	}
 	usage := trustedrouter.Usage{RequestID: newRequestID(), ElapsedSeconds: maxDurationSeconds(time.Since(started), 0.001), RouteType: "audio.transcriptions", FinishReason: "stop", AdditionalCostMicrodollars: auth.AdditionalCostReservationMicrodollars, SelectedModel: req.Model, SelectedEndpoint: auth.EndpointID, User: meta.User, SessionID: meta.SessionID}
+	if spec.TokenBilled() {
+		tokens, err := transcription.TakeTokenUsage(result)
+		if err != nil {
+			refund(502, "transcription_usage_invalid")
+			writeProviderError(conn, 502, "transcription usage unavailable")
+			return
+		}
+		usage.InputTokens, usage.OutputTokens = tokens.Input, tokens.Output
+	}
 	applyUsageAttribution(&usage, meta)
 	settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer settleCancel()
@@ -134,6 +146,9 @@ func serveTranscription(ctx context.Context, conn io.Writer, raw []byte, gateway
 		return
 	}
 	result["usage"] = map[string]any{"type": "duration", "cost": settled.Cost, "seconds": float64(req.DurationMS) / 1000}
+	if spec.TokenBilled() {
+		result["usage"] = map[string]any{"type": "tokens", "cost": settled.Cost, "input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens, "total_tokens": usage.InputTokens + usage.OutputTokens}
+	}
 	body, _ := json.Marshal(result)
 	_, err = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nCache-Control: no-store\r\nX-Generation-Id: %s\r\nX-Request-Id: %s\r\nConnection: %s\r\n\r\n", len(body), settled.GenerationID, requestLogID, responseConnection(conn))
 	if err == nil {

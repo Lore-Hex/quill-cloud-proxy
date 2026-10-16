@@ -55,7 +55,7 @@ func TestConfidentialHostRejectsBeforeAuthorization(t *testing.T) {
 func TestConfidentialHostRequestValidation(t *testing.T) {
 	gateway := trustedrouter.New("https://control.invalid", "internal", nil)
 	valid := []byte(`{"provider":{"min_privacy":"confidential","only":["tinfoil"],"zdr":true}}`)
-	for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/responses/input_tokens"} {
+	for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/responses/input_tokens", "/v1/embeddings"} {
 		if err := validateConfidentialHostRequest("POST", path, valid, gateway); err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +63,7 @@ func TestConfidentialHostRequestValidation(t *testing.T) {
 			t.Fatalf("unguarded local gateway: %v", err)
 		}
 	}
-	for _, path := range []string{"/v1/embeddings", "/v1/images/generations", "/v1/videos", "/v1/files", "/v1/batches", "/new-api"} {
+	for _, path := range []string{"/v1/images/generations", "/v1/videos", "/v1/files", "/v1/batches", "/new-api"} {
 		if err := validateConfidentialHostRequest("POST", path, valid, gateway); err == nil || err.Type != "confidential_route_unsupported" {
 			t.Fatalf("unsupported route accepted: %s", path)
 		}

@@ -13,13 +13,19 @@ import (
 )
 
 type Client struct {
-	http    *http.Client
-	keys    map[string]string
-	tinfoil func() (*http.Client, error)
+	http        *http.Client
+	keys        map[string]string
+	tinfoil     func() (*http.Client, error)
+	privatemode func() (*http.Client, error)
 }
 
 func New(client *http.Client, keys map[string]string, tinfoil func() (*http.Client, error)) *Client {
-	return &Client{client, keys, tinfoil}
+	return &Client{http: client, keys: keys, tinfoil: tinfoil}
+}
+
+func (c *Client) WithPrivatemodeAttestation(get func() (*http.Client, error)) *Client {
+	c.privatemode = get
+	return c
 }
 
 type ProviderError struct{ Status int }
@@ -32,11 +38,15 @@ func (c *Client) Transcribe(ctx context.Context, req *Request) (map[string]any, 
 		return nil, errors.New("transcription credentials unavailable")
 	}
 	client := c.http
-	if spec.Provider == "tinfoil" {
-		if c.tinfoil == nil {
+	if spec.Confidential() {
+		get := c.tinfoil
+		if spec.Provider == "privatemode" {
+			get = c.privatemode
+		}
+		if get == nil {
 			return nil, errors.New("transcription attestation unavailable")
 		}
-		verified, err := c.tinfoil()
+		verified, err := get()
 		if err != nil || verified == nil {
 			return nil, errors.New("transcription attestation failed")
 		}
@@ -48,6 +58,9 @@ func (c *Client) Transcribe(ctx context.Context, req *Request) (map[string]any, 
 	bounded := *client
 	bounded.Timeout = 3 * time.Minute
 	bounded.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	if spec.TokenBilled() {
+		return transcribeTokenBilled(ctx, &bounded, c.keys[spec.Provider], req, spec)
+	}
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
 	_ = w.WriteField("model", spec.Upstream)

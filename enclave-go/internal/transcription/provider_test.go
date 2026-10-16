@@ -15,8 +15,15 @@ func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 
 func TestProviderContracts(t *testing.T) {
 	for model, spec := range Models {
+		if spec.TokenBilled() {
+			continue // Covered by the token-billed audio-chat contract tests.
+		}
 		t.Run(model, func(t *testing.T) {
 			calls, attestations := 0, 0
+			format, timestamps := "verbose_json", []string{"segment"}
+			if spec.JSONOnly() {
+				format, timestamps = "json", nil
+			}
 			client := &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
 				calls++
 				if r.URL.String() != spec.URL || r.Header.Get("Authorization") != "Bearer private-key" {
@@ -48,17 +55,22 @@ func TestProviderContracts(t *testing.T) {
 					if fields["timestamp_granularities"] != "segment" || fields["response_format"] != "" {
 						t.Fatal(fields)
 					}
+				} else if spec.JSONOnly() {
+					if fields["timestamp_granularities[]"] != "" || fields["response_format"] != "json" {
+						t.Fatal(fields)
+					}
 				} else if fields["timestamp_granularities[]"] != "segment" || fields["response_format"] != "verbose_json" {
 					t.Fatal(fields)
 				}
 				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"text":"Paris","segments":[],"private_echo":"secret"}`)), Header: http.Header{}}, nil
 			})}
-			c := New(client, map[string]string{spec.Provider: "private-key"}, func() (*http.Client, error) { attestations++; return client, nil })
-			result, err := c.Transcribe(context.Background(), &Request{Model: model, Audio: []byte("audio-bytes"), AudioFormat: "wav", DurationMS: 1000, Format: "verbose_json", Timestamps: []string{"segment"}, User: "private-user"})
+			verified := func() (*http.Client, error) { attestations++; return client, nil }
+			c := New(client, map[string]string{spec.Provider: "private-key"}, verified).WithPrivatemodeAttestation(verified)
+			result, err := c.Transcribe(context.Background(), &Request{Model: model, Audio: []byte("audio-bytes"), AudioFormat: "wav", DurationMS: 1000, Format: format, Timestamps: timestamps, User: "private-user"})
 			if err != nil || result["text"] != "Paris" || result["private_echo"] != nil || calls != 1 {
 				t.Fatalf("result=%v err=%v calls=%d", result, err, calls)
 			}
-			if (spec.Provider == "tinfoil") != (attestations == 1) {
+			if spec.Confidential() != (attestations == 1) {
 				t.Fatal("attestation bypass")
 			}
 		})

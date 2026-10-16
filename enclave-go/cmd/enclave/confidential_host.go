@@ -29,7 +29,7 @@ func validateConfidentialHostRequest(method, path string, body []byte, gateway *
 		}
 		return nil
 	}
-	if method != "POST" || (path != "/v1/chat/completions" && path != "/v1/responses" && path != "/v1/messages" && path != "/v1/responses/input_tokens") {
+	if method != "POST" || (path != "/v1/chat/completions" && path != "/v1/responses" && path != "/v1/messages" && path != "/v1/responses/input_tokens" && path != "/v1/embeddings") {
 		return &trustedrouter.ControlPlaneError{StatusCode: 400, Type: "confidential_route_unsupported", Message: "This API route is not available on the confidential-only hostname."}
 	}
 	var request struct {

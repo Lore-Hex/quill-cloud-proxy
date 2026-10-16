@@ -280,7 +280,8 @@ func main() {
 	}).WithTinfoilAttestation(llm.TinfoilAttestedHTTPClient)
 	transcriptionProviderGateway = transcription.New(llm.NewProviderHTTPClient(), map[string]string{
 		"openai": boot.OpenAIAPIKey, "mistral": boot.MistralAPIKey, "tinfoil": boot.TinfoilAPIKey,
-	}, llm.TinfoilAttestedHTTPClient)
+		"privatemode": boot.ProviderAPIKeys["privatemode"],
+	}, llm.TinfoilAttestedHTTPClient).WithPrivatemodeAttestation(llm.PrivatemodeAttestedHTTPClient)
 	trGateway := trustedrouter.NewFromBootstrap(boot)
 	if configurationErr := trGateway.ProductionConfigurationError(); configurationErr != nil {
 		fmt.Fprintf(os.Stderr, "enclave.control_plane_configuration_rejected err=%q\n", configurationErr.Error())

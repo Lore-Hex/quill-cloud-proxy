@@ -21,6 +21,7 @@ import (
 type fakeTranscription struct {
 	calls   int
 	failure bool
+	tokens  *transcription.TokenUsage
 }
 
 func (f *fakeTranscription) Transcribe(_ context.Context, _ *transcription.Request) (map[string]any, error) {
@@ -28,7 +29,11 @@ func (f *fakeTranscription) Transcribe(_ context.Context, _ *transcription.Reque
 	if f.failure {
 		return nil, errors.New("private upstream transcript")
 	}
-	return map[string]any{"text": "private transcript"}, nil
+	result := map[string]any{"text": "private transcript"}
+	if f.tokens != nil {
+		result["_token_usage"] = *f.tokens
+	}
+	return result, nil
 }
 
 func transcriptionBody(model string, provider map[string]any) []byte {
