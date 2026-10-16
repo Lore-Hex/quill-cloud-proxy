@@ -1,14 +1,18 @@
 {
   "accepted_image_digests": [
-    "sha256:04e7baea3655f1027df3c4d81c3cad2cd6740e55518daa2a9ee89276dfd19459"
+    "sha256:5c219742bd0f6b486580bf08d6d4c8108c8dc43b62ac153729709b725169f1f5",
+    "sha256:04e7baea3655f1027df3c4d81c3cad2cd6740e55518daa2a9ee89276dfd19459",
+    "sha256:0bf786ccce0a786848092eb2826b884265c8a0f1b3cb937dda3edd057f43dd54"
   ],
   "accepted_image_references": [
-    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-71e2dbdb"
+    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-1a90355c",
+    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-71e2dbdb",
+    "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-4ba4f235"
   ],
   "api_base_url": "https://api.trustedrouter.com/v1",
   "attestation_audience": "quill-cloud",
   "attestation_issuer": "https://confidentialcomputing.googleapis.com",
-  "commit": "71e2dbdb",
+  "commit": "4ba4f235",
   "compliance": {
     "hipaa_readiness": "https://trustedrouter.com/legal/hipaa-readiness",
     "hipaa_status": "readiness_documentation_prepared_baa_required_for_phi",
@@ -24,8 +28,8 @@
     "control_plane_prompt_access": false,
     "prompt_output_storage": false
   },
-  "image_digest": "sha256:04e7baea3655f1027df3c4d81c3cad2cd6740e55518daa2a9ee89276dfd19459",
-  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-71e2dbdb",
+  "image_digest": "sha256:0bf786ccce0a786848092eb2826b884265c8a0f1b3cb937dda3edd057f43dd54",
+  "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-4ba4f235",
   "platform": "gcp-confidential-space",
   "receipts": {
     "accepted_specs": [
@@ -43,9 +47,9 @@
     "key_log": "https://trustedrouter.com/.well-known/inference-receipt-keys",
     "spec": "inference-receipt/1"
   },
-  "release_state": "current",
+  "release_state": "rolling",
   "released_by": "github-actions:deploy-enclave-gcp",
-  "source_commit": "71e2dbdb",
+  "source_commit": "4ba4f235",
   "source_repo": "https://github.com/Lore-Hex/quill-cloud-proxy",
   "source_repositories": {
     "attested_gateway": "https://github.com/Lore-Hex/quill-cloud-proxy",
