@@ -10,7 +10,7 @@ import (
 )
 
 func TestTokenAudioContract(t *testing.T) {
-	for _, scenario := range []string{"success", "missing-usage", "over-input", "over-output", "zero-output", "length", "null-text", "fractional-usage", "redirect", "private-error"} {
+	for _, scenario := range []string{"success", "silence", "missing-usage", "missing-output", "over-input", "over-output", "zero-output", "length", "null-text", "fractional-usage", "redirect", "private-error"} {
 		t.Run(scenario, func(t *testing.T) {
 			calls := 0
 			verified := &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
@@ -34,8 +34,12 @@ func TestTokenAudioContract(t *testing.T) {
 				body := `{"choices":[{"message":{"content":"Paris"},"finish_reason":"stop"}],"usage":{"prompt_tokens":391,"completion_tokens":13}}`
 				status := 200
 				switch scenario {
+				case "silence":
+					body = strings.ReplaceAll(strings.Replace(body, `"Paris"`, `""`, 1), ":13", ":0")
 				case "missing-usage":
 					body = strings.Replace(body, `"usage"`, `"ignored"`, 1)
+				case "missing-output":
+					body = strings.Replace(body, `,"completion_tokens":13`, "", 1)
 				case "over-input":
 					body = strings.Replace(body, "391", "28673", 1)
 				case "over-output":
@@ -62,7 +66,7 @@ func TestTokenAudioContract(t *testing.T) {
 			if calls != 1 {
 				t.Fatal("unexpected retries")
 			}
-			if scenario != "success" {
+			if scenario != "success" && scenario != "silence" {
 				if err == nil || strings.Contains(err.Error(), "private-user-content") {
 					t.Fatal("invalid response accepted or leaked")
 				}
@@ -72,7 +76,11 @@ func TestTokenAudioContract(t *testing.T) {
 				t.Fatal(err)
 			}
 			usage, err := TakeTokenUsage(result)
-			if err != nil || usage.Input != 391 || usage.Output != 13 || result["_token_usage"] != nil || result["text"] != "Paris" {
+			expectedOutput, expectedText := 13, "Paris"
+			if scenario == "silence" {
+				expectedOutput, expectedText = 0, ""
+			}
+			if err != nil || usage.Input != 391 || usage.Output != expectedOutput || result["_token_usage"] != nil || result["text"] != expectedText {
 				t.Fatal("usage extraction failed")
 			}
 		})

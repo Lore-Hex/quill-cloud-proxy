@@ -72,10 +72,10 @@ func serveTranscription(ctx context.Context, conn io.Writer, raw []byte, gateway
 		return
 	}
 	maxTokens := 1
-	meta := &types.OpenAIChatRequest{Model: req.Model, Provider: req.Provider, MaxTokens: &maxTokens, User: req.User, SessionID: req.SessionID, Trace: req.Trace, IdempotencyKey: idempotencyKey, TranscriptionDurationMS: req.DurationMS}
 	if transcription.Models[req.Model].TokenBilled() {
 		maxTokens = transcription.MaxOutputTokens
 	}
+	meta := &types.OpenAIChatRequest{Model: req.Model, Provider: req.Provider, MaxTokens: &maxTokens, User: req.User, SessionID: req.SessionID, Trace: req.Trace, IdempotencyKey: idempotencyKey, TranscriptionDurationMS: req.DurationMS}
 	applyAttributionHeaders(meta, attribution)
 	if validateOrObserveRequestMetadata(meta, requestLogID) != nil {
 		writeError(conn, 400, "invalid request metadata")

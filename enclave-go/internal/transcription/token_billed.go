@@ -15,7 +15,7 @@ type TokenUsage struct{ Input, Output int }
 func TakeTokenUsage(result map[string]any) (TokenUsage, error) {
 	usage, ok := result["_token_usage"].(TokenUsage)
 	delete(result, "_token_usage")
-	if !ok || usage.Input <= 0 || usage.Input > MaxInputTokens || usage.Output <= 0 || usage.Output > MaxOutputTokens {
+	if !ok || usage.Input <= 0 || usage.Input > MaxInputTokens || usage.Output < 0 || usage.Output > MaxOutputTokens || (usage.Output == 0 && result["text"] != "") {
 		return TokenUsage{}, errors.New("invalid transcription token usage")
 	}
 	return usage, nil
@@ -72,17 +72,21 @@ func transcribeTokenBilled(ctx context.Context, client *http.Client, key string,
 			FinishReason string `json:"finish_reason"`
 		}
 		Usage struct {
-			Input  int `json:"prompt_tokens"`
-			Output int `json:"completion_tokens"`
+			Input  *int `json:"prompt_tokens"`
+			Output *int `json:"completion_tokens"`
 		}
 	}
 	if json.Unmarshal(b, &wire) != nil || len(wire.Choices) != 1 || wire.Choices[0].Message.Content == nil || wire.Choices[0].FinishReason != "stop" {
 		return nil, errors.New("incomplete transcription response")
 	}
-	result := map[string]any{"text": *wire.Choices[0].Message.Content, "_token_usage": TokenUsage{wire.Usage.Input, wire.Usage.Output}}
+	if wire.Usage.Input == nil || wire.Usage.Output == nil {
+		return nil, errors.New("missing transcription token usage")
+	}
+	usage := TokenUsage{*wire.Usage.Input, *wire.Usage.Output}
+	result := map[string]any{"text": *wire.Choices[0].Message.Content, "_token_usage": usage}
 	if _, err := TakeTokenUsage(result); err != nil {
 		return nil, err
 	}
-	result["_token_usage"] = TokenUsage{wire.Usage.Input, wire.Usage.Output}
+	result["_token_usage"] = usage
 	return result, nil
 }
