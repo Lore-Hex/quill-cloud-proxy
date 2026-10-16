@@ -21,6 +21,14 @@ func validateConfidentialHostRequest(method, path string, body []byte, gateway *
 	}
 	// Explicit allowlist: new APIs must prove their privacy plumbing before
 	// accepting prompts on the confidential origin (including files/batches).
+	if method == "POST" && path == "/v1/audio/transcriptions" {
+		// Multipart routing settings are parsed inside the transcription handler.
+		// AuthorizeWithRoute enforces the context's confidential floor before egress.
+		if gateway == nil || !gateway.Enabled() {
+			return &trustedrouter.ControlPlaneError{StatusCode: 503, Type: "confidential_routing_unavailable", Message: "Confidential route authorization is unavailable."}
+		}
+		return nil
+	}
 	if method != "POST" || (path != "/v1/chat/completions" && path != "/v1/responses" && path != "/v1/messages" && path != "/v1/responses/input_tokens") {
 		return &trustedrouter.ControlPlaneError{StatusCode: 400, Type: "confidential_route_unsupported", Message: "This API route is not available on the confidential-only hostname."}
 	}

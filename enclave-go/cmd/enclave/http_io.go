@@ -280,6 +280,7 @@ func maxDurationSeconds(duration time.Duration, floor float64) float64 {
 }
 
 type requestAttributionHeaders struct {
+	ContentType        string
 	IdempotencyPresent bool
 	Host               string
 	SessionID          string
@@ -447,6 +448,11 @@ func readRequestWithTiming(
 				maxTRClientHeaderBytes,
 				&attribution.ClientContext.trClientTooLong,
 			)
+		case "content-type":
+			if attribution.ContentType != "" {
+				return "", "", "", "", attribution, nil, errAmbiguousRequestFraming
+			}
+			attribution.ContentType = v
 		case "content-length":
 			// Multiple Content-Length fields are refused even when their values
 			// agree. Accepting duplicates creates parser-differential ambiguity

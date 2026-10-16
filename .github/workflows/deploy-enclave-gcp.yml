@@ -281,7 +281,10 @@ jobs:
             echo "  status: ${STATUS}"
             case "${STATUS}" in
               SUCCESS) break ;;
-              FAILURE|TIMEOUT|CANCELLED|EXPIRED) echo "build ${STATUS}"; exit 1 ;;
+              FAILURE|TIMEOUT|CANCELLED|EXPIRED)
+                echo "build ${STATUS}"
+                gcloud builds log "${BUILD_ID}" --project="${PROJECT_ID}" --region="${REGION}" || true
+                exit 1 ;;
             esac
             sleep 8
           done
