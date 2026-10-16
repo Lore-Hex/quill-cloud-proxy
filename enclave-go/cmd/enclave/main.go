@@ -47,6 +47,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/requesttiming"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/shadowobserve"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/speech"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/transcription"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
 	"golang.org/x/crypto/acme/autocert"
@@ -277,6 +278,9 @@ func main() {
 		"azure":            boot.AzureAPIKey, "elevenlabs": boot.ProviderAPIKeys["elevenlabs"],
 		"tinfoil": boot.TinfoilAPIKey,
 	}).WithTinfoilAttestation(llm.TinfoilAttestedHTTPClient)
+	transcriptionProviderGateway = transcription.New(llm.NewProviderHTTPClient(), map[string]string{
+		"openai": boot.OpenAIAPIKey, "mistral": boot.MistralAPIKey, "tinfoil": boot.TinfoilAPIKey,
+	}, llm.TinfoilAttestedHTTPClient)
 	trGateway := trustedrouter.NewFromBootstrap(boot)
 	if configurationErr := trGateway.ProductionConfigurationError(); configurationErr != nil {
 		fmt.Fprintf(os.Stderr, "enclave.control_plane_configuration_rejected err=%q\n", configurationErr.Error())
@@ -999,6 +1003,14 @@ func serveOneRequest(
 			return
 		}
 		serveSpeech(ctx, conn, body, trGateway, bearer, idempotencyKey, attribution, requestLogID)
+		return
+	}
+	if routePath == "/v1/audio/transcriptions" {
+		if method != "POST" {
+			writeError(conn, 405, "method not allowed")
+			return
+		}
+		serveTranscription(ctx, conn, body, trGateway, bearer, idempotencyKey, attribution, requestLogID)
 		return
 	}
 

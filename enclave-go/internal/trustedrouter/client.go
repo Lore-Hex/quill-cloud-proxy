@@ -857,6 +857,10 @@ func chatAuthorizeBody(c *Client, lookupHash, idempotencyKey string, req *qtypes
 			body["estimated_input_tokens"] = speech.GeminiInputLimit
 		}
 	}
+	if routeType == "audio.transcriptions" {
+		body["transcription_duration_ms"] = req.TranscriptionDurationMS
+		body["estimated_input_tokens"] = 0
+	}
 	if key, explicit := cacheAffinity(lookupHash, req, routeType); key != "" {
 		body["cache_affinity_key"] = key
 		body["cache_affinity_explicit"] = explicit

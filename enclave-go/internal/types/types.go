@@ -422,6 +422,7 @@ type OpenAIChatRequest struct {
 	// sets them before authorize/settle.
 	AdditionalCostReservationMicrodollars int `json:"-"`
 	SpeechInputCharacters                 int `json:"-"`
+	TranscriptionDurationMS               int `json:"-"`
 	AdditionalCostMicrodollars            int `json:"-"`
 	// Internal partner-route controls are set only by enclave-owned presets.
 	// They never cross the public request JSON boundary.
