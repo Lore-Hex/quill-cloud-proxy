@@ -70,6 +70,8 @@ func TestTranscriptionLifecycle(t *testing.T) {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
+				case "/internal/gateway/validate":
+					io.WriteString(w, `{"data":{"workspace_id":"ws_audio","api_key_hash":"key_audio"}}`)
 				case "/internal/gateway/authorize":
 					authBody = body
 					if scenario == "denied" {
@@ -118,8 +120,19 @@ func TestTranscriptionLifecycle(t *testing.T) {
 				if !strings.HasPrefix(out.String(), "HTTP/1.1 200") || !strings.Contains(out.String(), "private transcript") || settleBody["additional_cost_microdollars"] != float64(100) || settleBody["actual_input_tokens"] != float64(0) {
 					t.Fatal(out.String(), settleBody)
 				}
-				if len(events) != 2 {
+				if len(events) != 3 {
 					t.Fatal("duplicate billing")
+				}
+				var response struct {
+					Usage struct {
+						Type    string  `json:"type"`
+						Seconds float64 `json:"seconds"`
+						Cost    float64 `json:"cost"`
+					} `json:"usage"`
+				}
+				_, body, _ := strings.Cut(out.String(), "\r\n\r\n")
+				if json.Unmarshal([]byte(body), &response) != nil || response.Usage.Type != "duration" || response.Usage.Seconds != 1 || response.Usage.Cost != 0.0001 {
+					t.Fatal("invalid OpenAI-compatible duration usage", body)
 				}
 			} else if strings.Contains(out.String(), "private transcript") || strings.HasPrefix(out.String(), "HTTP/1.1 200") {
 				t.Fatal("returned unbilled or failed transcript")
@@ -129,7 +142,7 @@ func TestTranscriptionLifecycle(t *testing.T) {
 					t.Fatal("hold not refunded")
 				}
 			}
-			if scenario == "replay" && (provider.calls != 0 || len(events) != 1) {
+			if scenario == "replay" && (provider.calls != 0 || len(events) != 2) {
 				t.Fatal("replay regenerated or changed hold")
 			}
 		})
@@ -137,15 +150,44 @@ func TestTranscriptionLifecycle(t *testing.T) {
 }
 
 func TestTranscriptionConfidentialFloor(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/gateway/validate" {
+			t.Error("privacy rejection created a billing hold")
+		}
+		io.WriteString(w, `{"data":{"workspace_id":"ws_audio","api_key_hash":"key_audio"}}`)
+	}))
+	defer server.Close()
 	for _, provider := range []map[string]any{nil, {"min_privacy": "standard"}, {"min_privacy": "confidential"}} {
 		fake := &fakeTranscription{}
 		old := transcriptionProviderGateway
 		transcriptionProviderGateway = fake
 		var out bytes.Buffer
-		serveTranscription(trustedrouter.WithConfidentialOnly(context.Background()), &out, transcriptionBody("openai/whisper-1", provider), trustedrouter.New("https://must-not-call.invalid", "internal", &http.Client{}), "key", "", requestAttributionHeaders{ContentType: "application/json"}, "rlog_test")
+		serveTranscription(trustedrouter.WithConfidentialOnly(context.Background()), &out, transcriptionBody("openai/whisper-1", provider), trustedrouter.New(server.URL, "internal", server.Client()), "key", "", requestAttributionHeaders{ContentType: "application/json"}, "rlog_test")
 		transcriptionProviderGateway = old
 		if !strings.HasPrefix(out.String(), "HTTP/1.1 400") || fake.calls != 0 {
 			t.Fatal("confidential floor weakened", out.String())
 		}
+	}
+}
+
+func TestTranscriptionAuthenticatesBeforeParsingAudio(t *testing.T) {
+	provider := &fakeTranscription{}
+	old := transcriptionProviderGateway
+	transcriptionProviderGateway = provider
+	t.Cleanup(func() { transcriptionProviderGateway = old })
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/internal/gateway/validate" {
+			t.Error("invalid credential reached billing authorization")
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"error":{"message":"Invalid API key","type":"invalid_api_key"}}`)
+	}))
+	defer server.Close()
+	var out bytes.Buffer
+	serveTranscription(context.Background(), &out, []byte("invalid audio body"), trustedrouter.New(server.URL, "internal", server.Client()), "invalid-key", "", requestAttributionHeaders{ContentType: "application/json"}, "rlog_invalid")
+	if !strings.HasPrefix(out.String(), "HTTP/1.1 401") || calls != 1 || provider.calls != 0 {
+		t.Fatal("audio parsing happened before authentication", out.String(), calls)
 	}
 }
