@@ -32,10 +32,23 @@ func TestMP3Duration(t *testing.T) {
 	}
 }
 
+func TestSignedPCM16(t *testing.T) {
+	for _, test := range []struct {
+		encoded uint16
+		want    int32
+	}{{0, 0}, {32767, 32767}, {32768, -32768}, {65535, -1}} {
+		var sample [2]byte
+		binary.LittleEndian.PutUint16(sample[:], test.encoded)
+		if got := signedPCM16(sample[:]); got != test.want {
+			t.Fatalf("sample %d: got %d, want %d", test.encoded, got, test.want)
+		}
+	}
+}
+
 func wavFixture() []byte {
 	b := make([]byte, 44+16000*2)
 	copy(b, "RIFF")
-	binary.LittleEndian.PutUint32(b[4:8], uint32(len(b)-8))
+	binary.LittleEndian.PutUint32(b[4:8], 36+16000*2)
 	copy(b[8:], "WAVEfmt ")
 	binary.LittleEndian.PutUint32(b[16:20], 16)
 	binary.LittleEndian.PutUint16(b[20:22], 1)
@@ -45,7 +58,7 @@ func wavFixture() []byte {
 	binary.LittleEndian.PutUint16(b[32:34], 2)
 	binary.LittleEndian.PutUint16(b[34:36], 16)
 	copy(b[36:], "data")
-	binary.LittleEndian.PutUint32(b[40:44], uint32(len(b)-44))
+	binary.LittleEndian.PutUint32(b[40:44], 16000*2)
 	return b
 }
 

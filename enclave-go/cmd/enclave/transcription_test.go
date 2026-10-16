@@ -34,7 +34,7 @@ func (f *fakeTranscription) Transcribe(_ context.Context, _ *transcription.Reque
 func transcriptionBody(model string, provider map[string]any) []byte {
 	wav := make([]byte, 44+32000)
 	copy(wav, "RIFF")
-	binary.LittleEndian.PutUint32(wav[4:], uint32(len(wav)-8))
+	binary.LittleEndian.PutUint32(wav[4:], 36+32000)
 	copy(wav[8:], "WAVEfmt ")
 	binary.LittleEndian.PutUint32(wav[16:], 16)
 	binary.LittleEndian.PutUint16(wav[20:], 1)

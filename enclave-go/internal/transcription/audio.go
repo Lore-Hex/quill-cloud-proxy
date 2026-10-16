@@ -48,7 +48,7 @@ func Measure(ctx context.Context, req *Request) error {
 			}
 			size = size<<7 | uint32(value)
 		}
-		if uint64(size) > uint64(len(req.Audio)-10) {
+		if int64(size) > int64(len(req.Audio))-10 {
 			return invalid("file", "Truncated ID3 tag")
 		}
 	}
@@ -56,8 +56,13 @@ func Measure(ctx context.Context, req *Request) error {
 	if err != nil {
 		return invalid("file", "Invalid MP3 or unsupported audio format")
 	}
+	sampleRate := decoder.SampleRate()
+	if sampleRate < 8000 || sampleRate > 48000 {
+		return invalid("file", "Unsupported MP3 sample rate")
+	}
+	rate := uint32(sampleRate)
 	deadline := time.Now().Add(15 * time.Second)
-	limit := int64(decoder.SampleRate()) * 4 * MaxDurationMS / 1000
+	limit := int64(sampleRate) * 4 * MaxDurationMS / 1000
 	var total int64
 	var pcm bytes.Buffer
 	buffer := make([]byte, 16384)
@@ -79,11 +84,11 @@ func Measure(ctx context.Context, req *Request) error {
 			return invalid("file", "Invalid MP3 sample alignment")
 		}
 		for i := 0; i < n; i += 4 {
-			left := int32(int16(binary.LittleEndian.Uint16(buffer[i : i+2])))
-			right := int32(int16(binary.LittleEndian.Uint16(buffer[i+2 : i+4])))
-			sample := uint16(int16((left + right) / 2))
-			_ = pcm.WriteByte(byte(sample))
-			_ = pcm.WriteByte(byte(sample >> 8))
+			left := signedPCM16(buffer[i : i+2])
+			right := signedPCM16(buffer[i+2 : i+4])
+			sample := (left + right) / 2
+			_ = pcm.WriteByte(byte(sample & 0xff))
+			_ = pcm.WriteByte(byte((sample >> 8) & 0xff))
 		}
 		if pcm.Len() > 24_000_000 {
 			return invalid("file", "Decoded audio exceeds 24 MB; use a shorter clip or lower sample rate")
@@ -98,23 +103,35 @@ func Measure(ctx context.Context, req *Request) error {
 	if total == 0 {
 		return invalid("file", "Audio is empty")
 	}
-	req.DurationMS = int((total*1000 + int64(decoder.SampleRate())*4 - 1) / (int64(decoder.SampleRate()) * 4))
-	data := make([]byte, 44+pcm.Len())
+	req.DurationMS = int((total*1000 + int64(sampleRate)*4 - 1) / (int64(sampleRate) * 4))
+	pcmSize := pcm.Len()
+	if pcmSize <= 0 || pcmSize > 24_000_000 {
+		return invalid("file", "Decoded audio exceeds 24 MB")
+	}
+	data := make([]byte, 44+pcmSize)
 	copy(data, "RIFF")
-	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
+	binary.LittleEndian.PutUint32(data[4:8], uint32(pcmSize)+36)
 	copy(data[8:], "WAVEfmt ")
 	binary.LittleEndian.PutUint32(data[16:20], 16)
 	binary.LittleEndian.PutUint16(data[20:22], 1)
 	binary.LittleEndian.PutUint16(data[22:24], 1)
-	binary.LittleEndian.PutUint32(data[24:28], uint32(decoder.SampleRate()))
-	binary.LittleEndian.PutUint32(data[28:32], uint32(decoder.SampleRate()*2))
+	binary.LittleEndian.PutUint32(data[24:28], rate)
+	binary.LittleEndian.PutUint32(data[28:32], rate*2)
 	binary.LittleEndian.PutUint16(data[32:34], 2)
 	binary.LittleEndian.PutUint16(data[34:36], 16)
 	copy(data[36:], "data")
-	binary.LittleEndian.PutUint32(data[40:44], uint32(pcm.Len()))
+	binary.LittleEndian.PutUint32(data[40:44], uint32(pcmSize))
 	copy(data[44:], pcm.Bytes())
 	req.Audio, req.AudioFormat = data, "wav"
 	return nil
+}
+
+func signedPCM16(data []byte) int32 {
+	value := int32(binary.LittleEndian.Uint16(data))
+	if value >= 32768 {
+		value -= 65536
+	}
+	return value
 }
 
 func wavDuration(data []byte) (int, error) {
@@ -124,12 +141,12 @@ func wavDuration(data []byte) (int, error) {
 	}
 	var rate, align, size uint64
 	fmtSeen, dataSeen := false, false
-	for offset := 12; offset < len(data); {
-		if len(data)-offset < 8 {
+	for offset := uint64(12); offset < uint64(len(data)); {
+		if uint64(len(data))-offset < 8 {
 			return bad()
 		}
 		n := uint64(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
-		start := uint64(offset + 8)
+		start := offset + 8
 		end := start + n
 		if end > uint64(len(data)) {
 			return bad()
@@ -152,8 +169,8 @@ func wavDuration(data []byte) (int, error) {
 			}
 			dataSeen, size = true, n
 		}
-		offset = int(end + n%2)
-		if offset > len(data) {
+		offset = end + n%2
+		if offset > uint64(len(data)) {
 			return bad()
 		}
 	}
