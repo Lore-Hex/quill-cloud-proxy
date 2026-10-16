@@ -68,7 +68,7 @@ RUN mkdir -p /out/rootfs/tmp && chmod 1777 /out/rootfs/tmp
 
 # ─── Scratch runtime, both binaries ─────────────────────────────────────────
 # Vendor-distributed proxy, pinned for both supply chain and verifier behavior.
-FROM ghcr.io/edgelesssys/privatemode/privatemode-proxy:v1.59.0@sha256:3cd4da0ee6ceee91ca84dde4e3e3f0e94e8b354d7c1d46987e4331a5c2f8bcff AS privatemode
+FROM ghcr.io/edgelesssys/privatemode/privatemode-proxy:v13.37.0@sha256:da7620eec097977e5ee204b8d43123abb7e24585e804ff8f55edceb84d5e885c AS privatemode
 
 FROM scratch
 COPY --from=privatemode /bin/privatemode-proxy /privatemode-proxy
