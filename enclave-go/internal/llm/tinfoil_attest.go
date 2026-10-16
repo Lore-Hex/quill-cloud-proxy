@@ -741,6 +741,12 @@ func refuseTinfoilRedirect(*http.Request, []*http.Request) error {
 	return errors.New("tinfoil: redirects are not allowed")
 }
 
+// TinfoilAttestedHTTPClient shares the verified, pinned transport with speech.
+// Callers must never substitute an unverified client if this returns an error.
+func TinfoilAttestedHTTPClient() (*http.Client, error) {
+	return tinfoilAttestedHTTPClient(defaultStreamingHTTPTimeout)
+}
+
 func tinfoilAttestedHTTPClient(timeout time.Duration) (*http.Client, error) {
 	tinfoilCacheMu.Lock()
 	defer tinfoilCacheMu.Unlock()

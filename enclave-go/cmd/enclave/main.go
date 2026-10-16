@@ -275,7 +275,8 @@ func main() {
 		"grok": boot.GrokAPIKey, "mistral": boot.MistralAPIKey,
 		"google-ai-studio": boot.GeminiAPIKey,
 		"azure":            boot.AzureAPIKey, "elevenlabs": boot.ProviderAPIKeys["elevenlabs"],
-	})
+		"tinfoil": boot.TinfoilAPIKey,
+	}).WithTinfoilAttestation(llm.TinfoilAttestedHTTPClient)
 	trGateway := trustedrouter.NewFromBootstrap(boot)
 	if configurationErr := trGateway.ProductionConfigurationError(); configurationErr != nil {
 		fmt.Fprintf(os.Stderr, "enclave.control_plane_configuration_rejected err=%q\n", configurationErr.Error())

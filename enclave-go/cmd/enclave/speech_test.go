@@ -106,6 +106,13 @@ func TestSpeechTokenBillingLifecycle(t *testing.T) {
 }
 
 func TestSpeechLifecycle(t *testing.T) {
+	for _, model := range []string{"x-ai/grok-voice-tts-1.0", "qwen/qwen3-tts", "mistralai/voxtral-4b-tts-2603"} {
+		t.Run(model, func(t *testing.T) { testSpeechLifecycle(t, model) })
+	}
+}
+
+func testSpeechLifecycle(t *testing.T, model string) {
+	spec := speech.Models[model]
 	for _, scenario := range []string{"success", "failure", "replay", "quote-missing", "route-mismatch", "denied"} {
 		t.Run(scenario, func(t *testing.T) {
 			var mu sync.Mutex
@@ -132,14 +139,14 @@ func TestSpeechLifecycle(t *testing.T) {
 					if scenario == "quote-missing" {
 						quote = 0
 					}
-					provider := "grok"
+					provider := spec.Provider
 					if scenario == "route-mismatch" {
 						provider = "openai"
 					}
 					json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-						"authorization_id": "auth_speech", "model": "x-ai/grok-voice-tts-1.0",
-						"provider": provider, "upstream_model": "grok-voice-tts-1.0", "usage_type": "Credits",
-						"endpoint_id": "x-ai/grok-voice-tts-1.0@grok/prepaid", "additional_cost_reservation_microdollars": quote,
+						"authorization_id": "auth_speech", "model": model,
+						"provider": provider, "upstream_model": spec.Upstream, "usage_type": "Credits",
+						"endpoint_id": model + "@" + provider + "/prepaid", "additional_cost_reservation_microdollars": quote,
 						"idempotent_replay": scenario == "replay",
 					}})
 				case "/internal/gateway/settle":
@@ -159,7 +166,8 @@ func TestSpeechLifecycle(t *testing.T) {
 			t.Cleanup(func() { speechProviderGateway = old })
 			gateway := trustedrouter.New(server.URL, "internal", server.Client())
 			var out bytes.Buffer
-			serveSpeech(context.Background(), &out, []byte(`{"model":"x-ai/grok-voice-tts-1.0","input":"秘密é","voice":"eve","response_format":"mp3"}`), gateway, "tr-test-key", "speech-id", requestAttributionHeaders{}, "rlog_123")
+			request, _ := json.Marshal(map[string]any{"model": model, "input": "秘密é", "voice": spec.Voices[0], "response_format": spec.Formats[0]})
+			serveSpeech(context.Background(), &out, request, gateway, "tr-test-key", "speech-id", requestAttributionHeaders{}, "rlog_123")
 			mu.Lock()
 			defer mu.Unlock()
 			serialized, _ := json.Marshal(authBody)
