@@ -139,6 +139,10 @@ export MACHINE_TYPE="${machine_type}"
 export CONF_COMPUTE_TYPE="${confidential_type}"
 
 echo "::group::secondary rollout ${region}"
+# Autoscaler decision: suspend (mode OFF) before the drain, so the group's size stays fixed through the rollout and its every-VM gates; a first deployment has no group to suspend.
+if [ -n "${previous_template}" ]; then
+  rollout_step bash tools/gcp-mig-autoscaler.sh suspend "${region}" "${mig}"
+fi
 echo "draining ${region} from canonical API DNS"
 drain_started=1
 rollout_step update_drain set "${region}" rollout
@@ -186,5 +190,7 @@ else
 fi
 rollout_step reconcile_dns
 rollout_complete=1
+# Autoscaler decision: create or update it only now, after the gates and the drain restore; a failure here fails the step but never rolls back the verified region.
+rollout_step bash tools/gcp-mig-autoscaler.sh apply "${region}" "${mig}"
 echo "${region} rollout healthy"
 echo "::endgroup::"
