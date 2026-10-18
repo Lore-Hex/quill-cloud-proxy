@@ -800,6 +800,9 @@ func serveOneRequest(
 		writeError(conn, 400, err.Error())
 		return
 	}
+	// Set before credential checks and cached billing denials so browser callers
+	// can read failures as well as successful JSON and streaming responses.
+	statsConn.SetBrowserCORS(isBearerCORSRoute(routePath))
 	// Reuse only identical requests that previously passed validation and reached
 	// authorize. The credential guard wins, with ordinary audit logs on rejection.
 	confidential := apihosts.Confidential(attribution.Host) || apihosts.Confidential(enclavetls.SelectedServerName(conn))
@@ -855,6 +858,9 @@ func serveOneRequest(
 	// and no credential. Answer it before the confidential-origin allowlist,
 	// which admits these routes for GET only, and before the bearer gate.
 	if maybeServePublicPreflight(conn, method, routePath) {
+		return
+	}
+	if maybeServeBearerPreflight(conn, method, routePath) {
 		return
 	}
 	if apihosts.Confidential(attribution.Host) || apihosts.Confidential(enclavetls.SelectedServerName(conn)) {

@@ -215,8 +215,8 @@ func writePublicModelsResponse(w io.Writer, body []byte, acceptGzip bool) {
 // Public catalog and attestation responses are readable from any web origin.
 // They are anonymous and identical for every caller, the enclave sets no
 // cookies, and Access-Control-Allow-Credentials is never sent, so a browser
-// never attaches ambient credentials to these requests. Prompt-bearing routes
-// carry no CORS headers at all and are unchanged.
+// cannot read these responses with credentials: "include". Bearer-authenticated
+// inference routes have a separate policy in bearer_cors.go.
 const publicCORSOriginHeader = "Access-Control-Allow-Origin"
 
 // writePublicRetryableError is writeRetryableError for the anonymous public
@@ -253,8 +253,8 @@ func isPublicCORSRoute(routePath string) bool {
 // "*" covers every other request header (SDK telemetry such as x-stainless-*
 // varies by client). These routes ignore every request header except
 // Accept-Encoding and never check the bearer, so allowing headers grants no
-// capability; only GET is allowed. Other routes, including inference, still
-// answer OPTIONS through the authentication gate.
+// capability; only GET is allowed. Inference preflights use their separate
+// bearer-token policy.
 func maybeServePublicPreflight(w io.Writer, method, routePath string) bool {
 	if method != "OPTIONS" || !isPublicCORSRoute(routePath) {
 		return false
