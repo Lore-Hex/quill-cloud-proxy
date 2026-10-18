@@ -39,10 +39,15 @@ async function main() {
         }
         return { status: response.status, id: response.headers.get('x-request-id'), body };
       }
-      const invalid = await call('/v1/chat/completions', 'cors-smoke-invalid-key', {});
+      const authPayload = {
+        model: fixture ? 'test-model' : 'trustedrouter/monitor',
+        messages: [{ role: 'user', content: 'reply exactly PONG' }],
+        max_tokens: 8,
+      };
+      const invalid = await call('/v1/chat/completions', 'cors-smoke-invalid-key', authPayload);
       let credentialedBlocked = false;
       try {
-        await call('/v1/chat/completions', 'cors-smoke-invalid-key', {}, 'include');
+        await call('/v1/chat/completions', 'cors-smoke-invalid-key', authPayload, 'include');
       } catch (error) {
         credentialedBlocked = error instanceof TypeError;
       }
