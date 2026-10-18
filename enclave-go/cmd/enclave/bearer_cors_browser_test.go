@@ -43,6 +43,7 @@ func TestBearerCORSRealBrowser(t *testing.T) {
 		<-acceptDone
 		connections.Wait()
 	}()
+	// #nosec G204 -- Fixed test script; the address comes from our loopback listener, not request input.
 	command := exec.CommandContext(ctx, "node", "../../../tools/browser-cors-smoke.cjs", "http://"+listener.Addr().String(), "--fixture")
 	output, err := command.CombinedOutput()
 	if err != nil {
