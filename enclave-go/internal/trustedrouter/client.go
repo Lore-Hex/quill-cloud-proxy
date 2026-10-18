@@ -848,6 +848,9 @@ func chatAuthorizeBody(c *Client, lookupHash, idempotencyKey string, req *qtypes
 	if req.RequestFingerprint != "" {
 		body["request_fingerprint"] = req.RequestFingerprint
 	}
+	if routeType == "tools.fetch" {
+		body["estimated_input_tokens"] = 0
+	}
 	if routeType == "videos" && req.VideoResolution != "" {
 		body["video_resolution"] = req.VideoResolution
 	}
