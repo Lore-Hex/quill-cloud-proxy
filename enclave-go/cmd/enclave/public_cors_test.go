@@ -73,16 +73,12 @@ func TestServeOnePublicPreflightAnswersBrowsers(t *testing.T) {
 	}
 }
 
-// The preflight policy is only for anonymous GET routes. Inference and every
-// non-public shape still go through the authentication gate with no CORS
-// headers, exactly as before.
+// Non-API and malformed route shapes remain outside both CORS policies.
 func TestServeOnePreflightLeavesOtherRoutesUnchanged(t *testing.T) {
 	gateway := untouchedControlPlane(t)
 	for _, target := range []string{
-		"/v1/chat/completions",
-		"/v1/responses",
-		"/v1/messages",
-		"/v1/key",
+		"/v1/unknown",
+		"/internal/gateway/authorize",
 		"/v1/models/openai/gpt-4o/extra/endpoints",
 		"/v1/models/../x/endpoints",
 		"/receipt-key",

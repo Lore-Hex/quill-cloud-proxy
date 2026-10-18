@@ -61,6 +61,7 @@ type responseStatsConn struct {
 	status        int
 	responseBytes int
 	requestID     string
+	browserCORS   bool
 	keepAlive     bool
 	reusable      bool
 }
@@ -79,12 +80,20 @@ func (c *responseStatsConn) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	if c.status == 0 {
 		requestID := c.requestID
+		browserCORS := c.browserCORS
 		// The injection opportunity exists only on the first write. Clearing the
 		// ID here keeps a partial or non-HTTP first write from being modified later.
 		c.requestID = ""
-		if statusLineEnd := bytes.Index(p, []byte("\r\n")); requestID != "" && bytes.HasPrefix(p, []byte("HTTP/")) && statusLineEnd >= 0 {
+		c.browserCORS = false
+		if statusLineEnd := bytes.Index(p, []byte("\r\n")); (requestID != "" || browserCORS) && bytes.HasPrefix(p, []byte("HTTP/")) && statusLineEnd >= 0 {
 			statusLineEnd += len("\r\n")
-			headers := []byte("x-request-id: " + requestID + "\r\nrequest-id: " + requestID + "\r\n")
+			var headers []byte
+			if requestID != "" {
+				headers = append(headers, "x-request-id: "+requestID+"\r\nrequest-id: "+requestID+"\r\n"...)
+			}
+			if browserCORS {
+				headers = append(headers, bearerCORSResponseHeaders...)
+			}
 			wireBytes = make([]byte, 0, len(p)+len(headers))
 			wireBytes = append(wireBytes, p[:statusLineEnd]...)
 			wireBytes = append(wireBytes, headers...)
@@ -151,8 +160,15 @@ func (c *responseStatsConn) BeginRequest(requestID string) {
 	c.status = 0
 	c.responseBytes = 0
 	c.requestID = requestID
+	c.browserCORS = false
 	c.keepAlive = false
 	c.reusable = false
+}
+
+func (c *responseStatsConn) SetBrowserCORS(enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.browserCORS = enabled
 }
 
 func (c *responseStatsConn) SetResponseKeepAlive(keepAlive bool) {

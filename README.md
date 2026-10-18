@@ -153,6 +153,13 @@ AWS and Azure records are produced separately by
 `tools/capture-plane-measurements.py` from live attestations, and signed by
 `publish-trust-{aws,azure}.yml` under their own identities.
 
+## Browser clients
+
+Browser apps can call the attested API directly with an explicit user or
+delegated API key. Inference preflights are answered before authentication,
+and JSON, streaming, and error responses include CORS headers. Cookie
+credentials remain disabled. See [browser API usage](docs/browser-api.md).
+
 ## Routing
 
 The GCP OpenRouter workload accepts OpenAI-compatible `model`, `models`, and
