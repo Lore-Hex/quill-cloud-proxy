@@ -50,6 +50,7 @@ import (
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/transcription"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/trustedrouter"
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/types"
+	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/webfetch"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -272,6 +273,7 @@ func main() {
 	}
 	br := llm.New(boot) // build-tag-gated: AWS Bedrock by default, GCP Vertex with -tags gcp
 	imageProviderGateway = imagegen.NewRegistry(imageProviderKeys(boot), llm.NewProviderHTTPClient())
+	webFetchProviderGateway = webfetch.New(llm.NewProviderHTTPClient(), boot.DeepSeekAPIKey)
 	speechProviderGateway = speech.New(llm.NewProviderHTTPClient(), map[string]string{
 		"grok": boot.GrokAPIKey, "mistral": boot.MistralAPIKey,
 		"google-ai-studio": boot.GeminiAPIKey,
@@ -996,6 +998,14 @@ func serveOneRequest(
 			return
 		}
 		serveEmbeddings(ctx, conn, br, body, trGateway, trEnabled, bearer, byokSecrets, idempotencyKey, attribution, requestLogID)
+		return
+	}
+	if routePath == webfetch.Path {
+		if method != "POST" {
+			writeError(conn, 405, "method not allowed")
+			return
+		}
+		serveWebFetch(ctx, conn, body, trGateway, bearer, idempotencyKey, attribution, requestLogID)
 		return
 	}
 	if routePath == "/v1/audio/speech" {

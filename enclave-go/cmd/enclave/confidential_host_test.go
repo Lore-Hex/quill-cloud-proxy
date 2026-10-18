@@ -63,7 +63,7 @@ func TestConfidentialHostRequestValidation(t *testing.T) {
 			t.Fatalf("unguarded local gateway: %v", err)
 		}
 	}
-	for _, path := range []string{"/v1/images/generations", "/v1/videos", "/v1/files", "/v1/batches", "/new-api"} {
+	for _, path := range []string{"/v1/images/generations", "/v1/videos", "/v1/files", "/v1/batches", "/v1/tools/fetch", "/new-api"} {
 		if err := validateConfidentialHostRequest("POST", path, valid, gateway); err == nil || err.Type != "confidential_route_unsupported" {
 			t.Fatalf("unsupported route accepted: %s", path)
 		}
