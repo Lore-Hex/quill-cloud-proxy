@@ -216,8 +216,8 @@ func TestSecretBindingsAssignDistinctFields(t *testing.T) {
 // TestSealerBindingTableMatchesSecretBindings enforce the other two corners of
 // that triangle.
 func TestSecretBindingsTableIsWellFormed(t *testing.T) {
-	if len(secretBindings) != 115 {
-		t.Errorf("secretBindings has %d entries, want 115", len(secretBindings))
+	if len(secretBindings) != 116 {
+		t.Errorf("secretBindings has %d entries, want 116", len(secretBindings))
 	}
 	providers := 0
 	envs := map[string]string{}
@@ -235,8 +235,11 @@ func TestSecretBindingsTableIsWellFormed(t *testing.T) {
 			envs[env] = binding.label
 		}
 	}
-	if providers != 105 {
-		t.Errorf("%d provider bindings, want 105 — the 'at least one provider' guard counts these", providers)
+	if providers != 106 {
+		t.Errorf("%d provider bindings, want 106 — the 'at least one provider' guard counts these", providers)
+	}
+	if envs["QUILL_BEDROCK_SECRET"] != "Bedrock key" {
+		t.Error("Bedrock secret binding is missing or mislabeled")
 	}
 	if err := directproviders.Validate(); err != nil {
 		t.Errorf("direct provider secret specs: %v", err)

@@ -17,7 +17,7 @@
 # a new bundle (which regenerates this file and prints a new version), pin the
 # new QUILL_AZURE_BUNDLE_VERSION, and commit this file in the same change.
 #
-# bundle-version: 66d45903b2b94c7eb71e87be6c51a3ee
+# bundle-version: f2d126c744894b7fa48f2f2d89c9a655
 quill-device-keys
 quill-openrouter-key
 tr-azure-acme-cache-key
@@ -29,6 +29,7 @@ trustedrouter-anthropic-api-key
 trustedrouter-atlas-cloud-api-key
 trustedrouter-azure-api-key
 trustedrouter-baseten-api-key
+trustedrouter-bedrock-api-key
 trustedrouter-boundless-api-key
 trustedrouter-byteplus-api-key
 trustedrouter-cerebras-api-key
