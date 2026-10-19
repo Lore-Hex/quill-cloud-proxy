@@ -220,8 +220,11 @@ plane's probe targets — see §5.
 `--apply all` stops after `verify`, before `narrow`, whenever the region attests
 a hostdata that is not yet in `trust-page/trust/accepted-hostdata-azure.txt`.
 That is the design: a verified deploy nobody outside can check is not done. The
-gate prints the exact command; it is Azure-only and names this region's build
-from the files the build phase wrote (`build-commit.txt`, `image-digest.txt`):
+gate prints the exact command; it is Azure-only and names the build the
+verified template deploys — image digest and bundle version read from
+`template.json` itself, build commit from `template-build-commit.txt`, which
+the template phase pinned — never HEAD and never a later build that was not
+deployed. Only `--source-commit` is left for you to fill in:
 
 ```bash
 python3 tools/capture-plane-measurements.py --plane azure --write --keep-accepted \

@@ -862,6 +862,25 @@ class AzureRegionProvenanceTests(unittest.TestCase):
             uaen = record["regions"][0]
             self.assertEqual((uaen["image_build_commit"], uaen["source_commit"]), (old, old))
 
+    def test_both_commit_fields_of_a_carried_block_constrain_the_record_commit(self) -> None:
+        # A published block whose two commit fields disagree (which the tool
+        # never writes, but a hand-edited record can carry) constrains the
+        # record's commit through BOTH: the older one is what the lagging
+        # region can read. Checking image_build_commit alone would let the
+        # newer top-level commit through here.
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as page:
+            root, old, new = _two_commit_repo(directory)
+            published = {"regions": [{
+                "origin_hostname": AZURE_LIVE[0]["origin_hostname"], "hostdata": HOSTDATA_UAEN,
+                "bundle_version": BUNDLE_B, "image_build_commit": new, "source_commit": old, "image_digest": DIGEST_B,
+            }]}
+            (Path(page) / "azure-release.json").write_text(json.dumps(published))
+            sydney = self._parse(root, [f"quill-enclave-australiaeast={BUNDLE_A},{new},{DIGEST_A}"])
+            with self.assertRaisesRegex(ValueError, "OLDEST build still serving"):
+                self._build(root, Path(page), source_commit=new, provenance=sydney)
+            record, _ = self._build(root, Path(page), source_commit=old, provenance=sydney)
+            self.assertEqual(record["source_commit"], old)
+
     def test_an_unchanged_region_keeps_its_published_provenance(self) -> None:
         # Sydney's hostdata did not move, so its build did not either; only
         # Dubai, with a new hostdata, has to be named.
