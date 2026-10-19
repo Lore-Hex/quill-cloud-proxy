@@ -268,14 +268,21 @@ def _region_provenance(
         # dropping the commit because the digest is missing would let a newer
         # top-level commit through check_oldest_build unopposed.
         carried: dict[str, str] = {}
+
+        def known(value: Any) -> bool:
+            # The sentinel is "not known", not a value to carry: a block that
+            # says not-configured for one commit field but names the other
+            # still constrains the record's commit through the one it names.
+            return isinstance(value, str) and bool(value) and value != SOURCE_COMMIT_UNSET
+
         for field in AZURE_PROVENANCE_FIELDS:
             value = previous.get(field)
-            if not (isinstance(value, str) and value):
+            if not known(value):
                 # A region's source_commit IS its build commit; either stands in
                 # for the other when only one was published.
                 twin = {"source_commit": "image_build_commit", "image_build_commit": "source_commit"}.get(field)
                 value = previous.get(twin) if twin else None
-            carried[field] = value if isinstance(value, str) and value else SOURCE_COMMIT_UNSET
+            carried[field] = value if known(value) else SOURCE_COMMIT_UNSET
         missing = [field for field, value in carried.items() if value == SOURCE_COMMIT_UNSET]
         if missing:
             print(
@@ -791,7 +798,13 @@ def build_azure_record(
             "--azure-region names a region this capture did not observe: " + ", ".join(unknown)
         )
     builds = [_region_provenance(region, explicit, published) for region in regions]
-    check_oldest_build(source_commit, [build["image_build_commit"] for build in builds])
+    # Both commit fields of every block constrain the record's commit: they are
+    # the same commit by construction, and a block that knows only one of them
+    # still knows the build.
+    check_oldest_build(
+        source_commit,
+        [build[field] for build in builds for field in ("image_build_commit", "source_commit")],
+    )
 
     accepted = list(dict.fromkeys(observed_hostdata + (existing_hostdata if keep else [])))
     # This is the active serving-region census, not an append-only trust history.
