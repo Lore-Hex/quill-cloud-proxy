@@ -137,7 +137,15 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 	if c.provider == "privatemode" || provider == "privatemode" {
 		return nil, &DecideError{Provider: "privatemode", Class: DecideErrConfig}
 	}
-	if strings.TrimSpace(c.apiKey) == "" || strings.TrimSpace(c.baseURL) == "" {
+	apiKey, baseURL := c.apiKey, c.baseURL
+	if option.ProviderAPIKey != "" || strings.EqualFold(option.UsageType, "BYOK") {
+		if provider != normalizeDirectProvider(c.provider) {
+			return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
+		}
+		apiKey = strings.TrimSpace(option.ProviderAPIKey)
+		baseURL = directBaseURL(provider)
+	}
+	if strings.TrimSpace(apiKey) == "" || strings.TrimSpace(baseURL) == "" {
 		return nil, &DecideError{Provider: provider, Class: DecideErrConfig}
 	}
 	httpc, err := c.resolveHTTPClient()
@@ -151,11 +159,11 @@ func (c *openAICompatibleClient) InvokeDecide(ctx context.Context, req *DecideRe
 	// Hosts expose different decision wire shapes. Translate both protocols
 	// to decide.Answer, then enforce the same decide.Verify contract.
 	if provider == typeSafeProvider || system1Tier(provider) != "" || provider == "azure" || provider == "regolo" {
-		return invokeSystemOne(ctx, httpc, provider, c.baseURL, c.apiKey, model, req)
+		return invokeSystemOne(ctx, httpc, provider, baseURL, apiKey, model, req)
 	}
 	wire := *req
 	wire.Model = model
-	raw, err := postDecideJSON(ctx, httpc, provider, c.baseURL+"/evaluate", c.apiKey, wire)
+	raw, err := postDecideJSON(ctx, httpc, provider, baseURL+"/evaluate", apiKey, wire)
 	if err != nil {
 		return nil, err
 	}

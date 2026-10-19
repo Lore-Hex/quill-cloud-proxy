@@ -22,6 +22,11 @@ func TestLiveRegoloDecision(t *testing.T) {
 		t.Skip("set REGOLO_API_KEY and TR_LIVE_REGOLO_DECIDE=1 for paid smoke")
 	}
 	client := &openAICompatibleClient{provider: "regolo", baseURL: directBaseURL("regolo"), apiKey: key, httpc: &http.Client{Timeout: 30 * time.Second}}
+	runLiveRegoloDecision(t, client, InvokeOptions{Provider: "regolo", UpstreamModel: "clef-flash"})
+}
+
+func runLiveRegoloDecision(t *testing.T, client DecideClient, option InvokeOptions) {
+	t.Helper()
 	req := &DecideRequest{Model: "cloudflare/clef-flash", State: json.RawMessage(`"Mia owns a red bicycle."`), Questions: map[string]decide.Question{
 		"red":   {Type: decide.TypeBoolean, Instructions: "Is the bicycle red?"},
 		"color": {Type: decide.TypeChoice, Instructions: "What color is the bicycle?", Criteria: json.RawMessage(`{"red":null,"blue":null}`)},
@@ -29,7 +34,7 @@ func TestLiveRegoloDecision(t *testing.T) {
 	}}
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
-	response, err := client.InvokeDecide(ctx, req, InvokeOptions{Provider: "regolo", UpstreamModel: "clef-flash"})
+	response, err := client.InvokeDecide(ctx, req, option)
 	if err != nil {
 		t.Fatal(err)
 	}
