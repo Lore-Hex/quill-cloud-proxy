@@ -1169,16 +1169,19 @@ phase_build() {
   # Resolved ONCE and used for both the image's SOURCE_REVISION and
   # build-commit.txt (which phase_template pins to its template, and the
   # publish hint reads from that pin), so the two cannot disagree when HEAD
-  # moves during a long build.
-  local source_revision
-  source_revision="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  # moves during a long build. A build whose source cannot be named does not
+  # happen: under `set -e` a failed rev-parse stops here, before any mutation.
+  # (tools/test_rollout_safety.py pins this exact assignment in every build
+  # script, so the shadow build revision is always supplied from git.)
+  local SOURCE_REVISION
+  SOURCE_REVISION=$(git -C "$REPO_ROOT" rev-parse HEAD)
   log "phase build: $ACR/$IMAGE_REPO:$IMAGE_TAG (linux/amd64, single-arch)"
   az_rw acr build \
     --registry "$ACR" \
     --platform linux/amd64 \
     --image "${IMAGE_REPO}:${IMAGE_TAG}" \
     --file enclave-go/Dockerfile.enclave.azure.multi \
-    --build-arg "SOURCE_REVISION=$source_revision" \
+    --build-arg "SOURCE_REVISION=$SOURCE_REVISION" \
     "$REPO_ROOT/enclave-go"
 
   local digest=""
@@ -1195,7 +1198,7 @@ phase_build() {
   # The commit this image was built from, beside its digest. phase_template
   # pins it to the template it renders, and the publish hint reads that pin —
   # never HEAD, which may have moved, and never a later build's file.
-  printf '%s' "$source_revision" > "$WORKDIR/build-commit.txt"
+  printf '%s' "$SOURCE_REVISION" > "$WORKDIR/build-commit.txt"
   log "image digest: $digest"
   if [ -n "$previous_digest" ] && [ "$previous_digest" != "$digest" ]; then
     log "image digest CHANGED since the last run in this workdir"
