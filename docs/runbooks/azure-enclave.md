@@ -215,6 +215,40 @@ Add the API host to Cloud DNS pointing at the container group's IP (the deploy
 does this and then waits for propagation), and add the region to the control
 plane's probe targets — see §5.
 
+### 3.6 Publish the measurement
+
+`--apply all` stops after `verify`, before `narrow`, whenever the region attests
+a hostdata that is not yet in `trust-page/trust/accepted-hostdata-azure.txt`.
+That is the design: a verified deploy nobody outside can check is not done. The
+gate prints the exact command; it is Azure-only and names the build the
+verified template deploys — image digest and bundle version read from
+`template.json` itself, build commit from `template-build-commit.txt`, which
+the template phase pinned — never HEAD and never a later build that was not
+deployed. Only `--source-commit` is left for you to fill in:
+
+```bash
+python3 tools/capture-plane-measurements.py --plane azure --write --keep-accepted \
+    --source-commit <oldest build still serving in any region> \
+    --azure-region quill-enclave-<location>=<bundle version>,<build commit>,<image digest>
+# commit trust-page/ (fires publish-trust-azure.yml), wait for the page, then,
+# with the SAME region environment the deploy ran under (§3.4: LOCATION,
+# RESOURCE_GROUP, MAA_ENDPOINT, API_HOST, and WORKDIR if you set one — the
+# workdir holds this region's verified template):
+LOCATION=<location> RESOURCE_GROUP=<rg> MAA_ENDPOINT=<attest host> API_HOST=<api host> \
+  ./tools/deploy-azure-aci.sh --apply narrow
+```
+
+- `--plane azure` reads and writes only the Azure files. Never publish an Azure
+  release with the default `--plane all`: it rewrites the AWS record with the
+  same commit and, with `--keep-accepted`, can widen the AWS accepted set.
+- Each region's block names its own build. A region whose hostdata did not
+  change keeps its published provenance; only the region just deployed needs
+  `--azure-region`.
+- While the regions run different builds, `--source-commit` is the OLDER build
+  (the capture refuses a newer one): quill-router's format-ordering gate reads
+  it as what every enclave can read. After the second region, capture again
+  without `--keep-accepted` and with the new build as `--source-commit`.
+
 ---
 
 ## 4. Routine operations

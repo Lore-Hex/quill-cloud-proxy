@@ -183,6 +183,9 @@ if argv[:3] == ["role", "assignment", "list"]:
 
 if argv[:2] == ["acr", "build"]:
     log("mutations.log", "MUTATE-ACR-BUILD")
+    # What the image was told about its own source, so a test can hold the
+    # build-commit.txt the script writes next to it to the same value.
+    write("acr-build-arg", arg("--build-arg") or "")
     sys.exit(0)
 
 if argv[:2] == ["acr", "login"]:
@@ -1133,6 +1136,27 @@ class TestWorkdirIsLocked(DeployHarness):
         self.assertFalse(lock.exists(), "the lock must be released when the run ends")
 
 
+def install_moving_head(bin_dir: Path, first: str, later: str) -> None:
+    """Make `git rev-parse HEAD` answer `first` once, then `later` forever.
+
+    That is HEAD advancing while a long `az acr build` runs. The script has
+    exactly one legitimate reason to ask git anything, so every other git
+    invocation is passed to the real binary.
+    """
+    stub = bin_dir / "git"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = -C ] && [ "$3" = rev-parse ] && [ "$4" = HEAD ]; then\n'
+        '  n=$(cat "$STUB_STATE/git-rev-parse-calls" 2>/dev/null || echo 0); n=$((n + 1))\n'
+        '  echo "$n" > "$STUB_STATE/git-rev-parse-calls"\n'
+        f'  if [ "$n" -eq 1 ]; then echo "{first}"; else echo "{later}"; fi\n'
+        "  exit 0\n"
+        "fi\n"
+        'exec /usr/bin/git "$@"\n'
+    )
+    stub.chmod(0o755)
+
+
 class TestBuildSurfacesDigestChurn(DeployHarness):
     """A moving image digest silently recreates production.
 
@@ -1163,6 +1187,88 @@ class TestBuildSurfacesDigestChurn(DeployHarness):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.mutations(), [], "REUSE_IMAGE must not rebuild")
+
+    def test_build_commit_is_the_image_source_revision_and_survives_reuse(self) -> None:
+        # build-commit.txt is what phase_template pins to its template and the
+        # publish hint later names. It must be the very value the image was
+        # given as SOURCE_REVISION — resolved ONCE, so a HEAD that advances
+        # during the build cannot split the two — and REUSE_IMAGE must keep it
+        # with the digest it belongs to.
+        first, later = "a" * 40, "b" * 40
+        install_moving_head(self.bin, first, later)
+        result = self.run_script("--apply", "build")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read_state("acr-build-arg"), f"SOURCE_REVISION={first}")
+        self.assertEqual((self.work / "build-commit.txt").read_text(), first)
+        self.assertEqual(self.read_state("git-rev-parse-calls"), "1", "HEAD must be resolved exactly once per build")
+
+        (self.work / "build-commit.txt").write_text("0" * 40)
+        reused = self.run_script("--apply", "build", REUSE_IMAGE="1")
+        self.assertEqual(reused.returncode, 0, reused.stderr)
+        self.assertEqual((self.work / "build-commit.txt").read_text(), "0" * 40)
+
+
+class TestPublishHintNamesTheVerifiedBuild(DeployHarness):
+    """The MEASUREMENT NOT PUBLISHED hint must describe the template verify checked.
+
+    image-digest.txt and build-commit.txt describe the LATEST build. A `build`
+    run after the deploy, never templated or deployed, replaces them; a verify
+    then still checks the deployed template, and a hint that read the latest
+    files would tell the operator to publish a digest nothing is running.
+    """
+
+    def _enclave(self, template: dict) -> dict:
+        for container in template["resources"][0]["properties"]["containers"]:
+            if container["name"] == "quill-enclave":
+                return container["properties"]
+        raise AssertionError("no quill-enclave container in the template")
+
+    def test_hint_names_the_templates_digest_bundle_and_pinned_commit(self) -> None:
+        self.healthy_deploy()
+        template = json.loads((self.work / "template.json").read_text())
+        enclave = self._enclave(template)
+        deployed_digest = enclave["image"].split("@", 1)[1]
+        deployed_bundle = next(
+            item["value"] for item in enclave["environmentVariables"] if item["name"] == "QUILL_AZURE_BUNDLE_VERSION"
+        )
+        pinned_commit = (self.work / "template-build-commit.txt").read_text()
+        self.assertRegex(pinned_commit, r"^[0-9a-f]{40}$")
+        self.assertEqual(deployed_bundle, BUNDLE_VERSION)
+
+        # A later build that was never templated or deployed, from a HEAD that
+        # has moved on: every "latest" file now disagrees with the template.
+        later_commit = "c" * 40
+        install_moving_head(self.bin, later_commit, later_commit)
+        self.state_file("image-digest").write_text("sha256:" + "f" * 64)
+        rebuilt = self.run_script("--apply", "build")
+        self.assertEqual(rebuilt.returncode, 0, rebuilt.stderr)
+        self.assertEqual((self.work / "image-digest.txt").read_text(), "sha256:" + "f" * 64)
+        self.assertEqual((self.work / "build-commit.txt").read_text(), later_commit)
+        self.assertEqual((self.work / "template-build-commit.txt").read_text(), pinned_commit)
+
+        # And a shell whose bundle pin differs from the one the template measured.
+        shell_bundle = "e" * 32
+        self.assertNotEqual(shell_bundle, deployed_bundle)
+        self.allow_gcloud()
+        self.allow_curl()
+        verifier = self.bin / "stub-verify-ok"
+        verifier.write_text("#!/usr/bin/env bash\nexit 0\n")
+        verifier.chmod(0o755)
+        result = self.run_script(
+            "--apply", "verify", VERIFY_ATTESTATION_CMD=str(verifier), QUILL_AZURE_BUNDLE_VERSION=shell_bundle
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("MEASUREMENT NOT PUBLISHED", result.stderr)
+        hints = [line for line in result.stderr.splitlines() if "--azure-region " in line]
+        self.assertEqual(len(hints), 1, result.stderr)
+        spec = hints[0].split("--azure-region ", 1)[1].strip()
+        group, _, values = spec.partition("=")
+        self.assertEqual(group, "quill-enclave-" + self.script_env().get("LOCATION", "uaenorth"))
+        self.assertEqual(values, f"{deployed_bundle},{pinned_commit},{deployed_digest}")
+        for leaked in ("f" * 64, later_commit, shell_bundle):
+            self.assertNotIn(leaked, hints[0])
+        self.assertIn("--plane azure", result.stderr)
 
 
 class TestCredentialStoreIsNotWritable(DeployHarness):
