@@ -6,9 +6,9 @@
 # being literally one binary is what makes the PCR0 small + auditable.
 #
 # REPRODUCIBILITY: the base image is pinned by sha256 digest, not just by
-# tag. `golang:1.24-bookworm` is mutable (Docker reuses the tag every
+# tag. `golang:1.26-bookworm` is mutable (Docker reuses the tag every
 # minor release); the digest pin makes PCR0 stable across rebuilds. To
-# update: `docker manifest inspect golang:1.24-bookworm` for the new
+# update: `docker manifest inspect golang:1.26-bookworm` for the new
 # arm64 digest, replace below, expect PCR0 to change, re-publish.
 # golang 1.25, matching Dockerfile.enclave.gcp.multi. NOT cosmetic: the
 # attest-sidecar module (enclave-go/sidecar/go.mod) requires go 1.25.5, so a
@@ -16,7 +16,7 @@
 # expected, and the reason this file pins by digest.
 # Build Go natively, then cross-compile via TARGETARCH below. The final image
 # and pinned proxy still use the requested target platform, without emulation.
-FROM --platform=$BUILDPLATFORM golang:1.25-bookworm@sha256:61170847dd0e20c3c1e374aea35c7057c42e1d638d775c360afcd548531c05ab AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS builder
 
 # ca-certificates: Go's crypto/tls reads /etc/ssl/certs/ca-certificates.crt at
 # runtime to verify TLS peers (Bedrock in our case). The scratch base has no

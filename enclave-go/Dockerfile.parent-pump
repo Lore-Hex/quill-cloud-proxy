@@ -17,7 +17,7 @@
 #
 # Multi-stage build → scratch runtime: ~3.5 MB image, single static
 # binary, no shell, no libc.
-FROM golang:1.24-bookworm@sha256:ca0741815eee3625da09eddf15cc8ff678efa16520fcbcdbeb2ae0b0c519c82c AS builder
+FROM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS builder
 
 WORKDIR /src
 COPY go.mod go.sum ./
