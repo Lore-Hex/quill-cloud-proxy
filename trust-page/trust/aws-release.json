@@ -1,6 +1,5 @@
 {
   "accepted_pcr0s": [
-    "590718a7858b7d737040f80e95f6777bfde60ee4dda9965d67ed17885cf617a942f6a5dd39229bccbb06c929fe1955f2",
     "5e9c7ee394e94e9f3e151141f5a6eb889e7d6dc20187d507b0ba0feb991338e92be2ab20ccf8db5e1b8d0ccbf77907a3"
   ],
   "api_base_url": "https://api-aws.trustedrouter.com/v1",
@@ -13,13 +12,13 @@
     "prompt_output_storage": false
   },
   "image_digest": "sha256:28900dcb754e1fc8238eaff200d6efa36952ca9e252cb96435c18cc909945ea6",
-  "measurement_provenance": "Rolling: the standalone eu-west-3 candidate i-0e67b4afdd7e022cb (outside the serving ASG, target groups and routing DNS) was verified through SSM against the production Nitro root, exact PCR0, signed module identity, certificate/SPKI binding, TLS exporter and same-socket follow-up. Both Fargate runtime pin consumers accept the outgoing and incoming measurements; the serving fleet has not been replaced yet. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
+  "measurement_provenance": "All four serving instances across eu-west-1 (i-08baac01fe880cddf, i-0924098112ec67fc7) and eu-west-3 (i-0949d5033257f6c25, i-04b29085d63724a8f) were independently verified through SSM against the production Nitro root, exact PCR0, signed module identity, certificate/SPKI binding, TLS exporter and same-socket follow-up. Both guarded regional refreshes (launch-template v32 in eu-west-1, v23 in eu-west-3) completed successfully with only verified replacements in the serving target groups. Both Fargate runtime pin consumers were narrowed to this measurement and actual serving tasks and targets verified healthy. Source-to-image provenance is operator-asserted, not a reproduced-build claim.",
   "measurement_type": "nitro-pcr0-sha384",
-  "observed_module_id": "i-0e67b4afdd7e022cb-enc01a14469ce07562b",
+  "observed_module_id": "i-0924098112ec67fc7-enc01a1557b7eb676e8",
   "parent_image_digest": "sha256:6fd369c3e2b59686fe58a3afbb5e5f401fa09e693417583bbbb45b2dea1cf4f9",
   "pcr0": "5e9c7ee394e94e9f3e151141f5a6eb889e7d6dc20187d507b0ba0feb991338e92be2ab20ccf8db5e1b8d0ccbf77907a3",
   "platform": "aws-nitro-enclaves",
-  "release_state": "rolling",
+  "release_state": "current",
   "reproduce": "tools/verify-pcr0.sh",
   "source_commit": "dd297eb484689ca789f63be36b5aeea921ea9422",
   "source_commit_provenance": "operator-asserted",
