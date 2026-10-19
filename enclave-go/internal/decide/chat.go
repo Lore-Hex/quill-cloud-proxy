@@ -40,6 +40,7 @@ var zeroTemperature = 0.0
 // decision endpoint. Everything else named on /v1/decide is a chat model and
 // takes the native path.
 var HostedModels = map[string]bool{
+	"cloudflare/clef-flash":          true,
 	"microsoft/microsoft-decision-1": true,
 	"typesafe-ai/jev":                true,
 }
