@@ -19,7 +19,7 @@ Credential mapping: `HIXTUBE_API_KEY` -> `trustedrouter-hixtube-api-key` ->
 2. Deploy cloud-local copies of the provider key through the normal secret tools.
    Azure must have the sealed bundle before opting into `QUILL_HIXTUBE_SECRET`.
 3. Use the existing reviewed rollout workflows. AWS's explicit TLS-passthrough
-   tunnel is port 8116 and permits only `api.hixtube.com:443`.
+   tunnel is port 8117 and permits only `api.hixtube.com:443`.
 4. Publish the corresponding control-plane catalog only after the gateways and
    real provider canary are ready. Do not let fallback hide missing credentials.
 5. Smoke forced-provider chat and streaming, verify usage/settlement, and verify
