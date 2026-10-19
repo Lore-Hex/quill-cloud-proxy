@@ -45,9 +45,13 @@ one that built the running enclave — nothing here can, because PCR0 and hostda
 carry no commit, and a commit that is genuinely in this history but belongs to
 the wrong build passes every check in this file. That is why the record now
 publishes `source_commit_provenance: operator-asserted` rather than implying
-more. It also does not prove the Azure regions run the same build: the record
-describes two regions and carries one commit, and this file asserts nothing
-about that gap beyond its existence.
+more. Nor does it prove the Azure regions run the same build; what it does prove
+(AzureRegionProvenanceTests, WriteOrderingTests) is that each region's block
+names its own build when the operator supplies it or the published record
+already carries it, that an unknown build is published as the sentinel rather
+than invented, and that while the regions differ the record's one commit is
+the OLDEST build still serving — refused otherwise, with nothing written on
+any plane.
 """
 
 from __future__ import annotations
@@ -866,20 +870,24 @@ class AzureRegionProvenanceTests(unittest.TestCase):
         # A published block whose two commit fields disagree (which the tool
         # never writes, but a hand-edited record can carry) constrains the
         # record's commit through BOTH: the older one is what the lagging
-        # region can read. Checking image_build_commit alone would let the
-        # newer top-level commit through here.
-        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as page:
+        # region can read. Each ordering catches a checker that reads only
+        # the other field.
+        with tempfile.TemporaryDirectory() as directory:
             root, old, new = _two_commit_repo(directory)
-            published = {"regions": [{
-                "origin_hostname": AZURE_LIVE[0]["origin_hostname"], "hostdata": HOSTDATA_UAEN,
-                "bundle_version": BUNDLE_B, "image_build_commit": new, "source_commit": old, "image_digest": DIGEST_B,
-            }]}
-            (Path(page) / "azure-release.json").write_text(json.dumps(published))
-            sydney = self._parse(root, [f"quill-enclave-australiaeast={BUNDLE_A},{new},{DIGEST_A}"])
-            with self.assertRaisesRegex(ValueError, "OLDEST build still serving"):
-                self._build(root, Path(page), source_commit=new, provenance=sydney)
-            record, _ = self._build(root, Path(page), source_commit=old, provenance=sydney)
-            self.assertEqual(record["source_commit"], old)
+            for build_commit, source_commit in ((new, old), (old, new)):
+                with self.subTest(image_build_commit=build_commit[:7], source_commit=source_commit[:7]), \
+                     tempfile.TemporaryDirectory() as page:
+                    published = {"regions": [{
+                        "origin_hostname": AZURE_LIVE[0]["origin_hostname"], "hostdata": HOSTDATA_UAEN,
+                        "bundle_version": BUNDLE_B, "image_build_commit": build_commit,
+                        "source_commit": source_commit, "image_digest": DIGEST_B,
+                    }]}
+                    (Path(page) / "azure-release.json").write_text(json.dumps(published))
+                    sydney = self._parse(root, [f"quill-enclave-australiaeast={BUNDLE_A},{new},{DIGEST_A}"])
+                    with self.assertRaisesRegex(ValueError, "OLDEST build still serving"):
+                        self._build(root, Path(page), source_commit=new, provenance=sydney)
+                    record, _ = self._build(root, Path(page), source_commit=old, provenance=sydney)
+                    self.assertEqual(record["source_commit"], old)
 
     def test_an_unchanged_region_keeps_its_published_provenance(self) -> None:
         # Sydney's hostdata did not move, so its build did not either; only

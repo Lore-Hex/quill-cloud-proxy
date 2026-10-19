@@ -1189,10 +1189,11 @@ class TestBuildSurfacesDigestChurn(DeployHarness):
         self.assertEqual(self.mutations(), [], "REUSE_IMAGE must not rebuild")
 
     def test_build_commit_is_the_image_source_revision_and_survives_reuse(self) -> None:
-        # The publish hint names the build from build-commit.txt. It must be the
-        # very value the image was given as SOURCE_REVISION — resolved ONCE, so
-        # a HEAD that advances during the build cannot split the two — and
-        # REUSE_IMAGE must keep it with the digest it belongs to.
+        # build-commit.txt is what phase_template pins to its template and the
+        # publish hint later names. It must be the very value the image was
+        # given as SOURCE_REVISION — resolved ONCE, so a HEAD that advances
+        # during the build cannot split the two — and REUSE_IMAGE must keep it
+        # with the digest it belongs to.
         first, later = "a" * 40, "b" * 40
         install_moving_head(self.bin, first, later)
         result = self.run_script("--apply", "build")

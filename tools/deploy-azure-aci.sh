@@ -1166,9 +1166,10 @@ phase_build() {
     return 0
   fi
 
-  # Resolved ONCE and used for both the image's SOURCE_REVISION and the
-  # build-commit.txt the publish hint reads, so the two cannot disagree when
-  # HEAD moves during a long build.
+  # Resolved ONCE and used for both the image's SOURCE_REVISION and
+  # build-commit.txt (which phase_template pins to its template, and the
+  # publish hint reads from that pin), so the two cannot disagree when HEAD
+  # moves during a long build.
   local source_revision
   source_revision="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
   log "phase build: $ACR/$IMAGE_REPO:$IMAGE_TAG (linux/amd64, single-arch)"
