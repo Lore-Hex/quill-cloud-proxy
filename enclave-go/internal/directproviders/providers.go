@@ -56,6 +56,7 @@ var specs = [...]Spec{
 	{Provider: "regolo", BaseURL: "https://api.regolo.ai/v1", SecretEnv: "QUILL_REGOLO_SECRET", SecretName: "trustedrouter-regolo-api-key", SecretLabel: "Regolo key"},
 	{Provider: "lyceum", BaseURL: "https://api.lyceum.technology/openai/v1", SecretEnv: "QUILL_LYCEUM_SECRET", SecretName: "trustedrouter-lyceum-api-key", SecretLabel: "Lyceum key"},
 	{Provider: "greenference", BaseURL: "https://llm.eu.greenference.com/trustedrouter/v1", SecretEnv: "QUILL_GREENFERENCE_SECRET", SecretName: "trustedrouter-greenference-api-key", SecretLabel: "Greenference key"},
+	{Provider: "hixtube", BaseURL: "https://api.hixtube.com/v1", SecretEnv: "QUILL_HIXTUBE_SECRET", SecretName: "trustedrouter-hixtube-api-key", SecretLabel: "Hixtube pilot key"},
 	{Provider: "coralbricks", BaseURL: "https://inference.coralbricks.ai/v1", SecretEnv: "QUILL_CORALBRICKS_SECRET", SecretName: "trustedrouter-coralbricks-api-key", SecretLabel: "CoralBricks key"},
 	{Provider: "fortanix", BaseURL: "https://ctf.armet.ai/v1", SecretEnv: "QUILL_FORTANIX_SECRET", SecretName: "trustedrouter-fortanix-api-key", SecretLabel: "Fortanix test key"},
 	{Provider: "boundless", BaseURL: "https://api.inference.boundless.network/v1", SecretEnv: "QUILL_BOUNDLESS_SECRET", SecretName: "trustedrouter-boundless-api-key", SecretLabel: "Boundless key"},

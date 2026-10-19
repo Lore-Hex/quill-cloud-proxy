@@ -842,6 +842,7 @@ allowlist:
   - {address: api.elevenlabs.io,                port: 443}
   - {address: eastus2.tts.speech.microsoft.com,  port: 443}
   - {address: llm.eu.greenference.com,          port: 443}
+  - {address: api.hixtube.com,                  port: 443}
   - {address: inference.coralbricks.ai,        port: 443}
   - {address: ctf.armet.ai,                    port: 443}
   - {address: api.inference.boundless.network, port: 443}
@@ -1003,6 +1004,7 @@ write_vsock_unit 8073 inference.api.nscale.com
 write_vsock_unit 8087 api.regolo.ai
 write_vsock_unit 8103 api.lyceum.technology
 write_vsock_unit 8108 llm.eu.greenference.com
+write_vsock_unit 8116 api.hixtube.com
 write_vsock_unit 8115 inference.coralbricks.ai
 write_vsock_unit 8113 ctf.armet.ai
 write_vsock_unit 8109 api.elevenlabs.io
