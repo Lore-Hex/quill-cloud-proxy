@@ -49,9 +49,11 @@ more. Nor does it prove the Azure regions run the same build; what it does prove
 (AzureRegionProvenanceTests, WriteOrderingTests) is that each region's block
 names its own build when the operator supplies it or the published record
 already carries it, that an unknown build is published as the sentinel rather
-than invented, and that while the regions differ the record's one commit is
-the OLDEST build still serving — refused otherwise, with nothing written on
-any plane.
+than invented, and that the record's one commit is an ancestor of (or equal
+to) every commit any block names — refused otherwise, with nothing written on
+any plane. That is the checkable form of the operator rule "the OLDEST build
+still serving": an even older commit also passes, which is safe, merely
+over-conservative.
 """
 
 from __future__ import annotations
@@ -867,8 +869,9 @@ class AzureRegionProvenanceTests(unittest.TestCase):
             self.assertEqual((uaen["image_build_commit"], uaen["source_commit"]), (old, old))
 
     def test_both_commit_fields_of_a_carried_block_constrain_the_record_commit(self) -> None:
-        # A published block whose two commit fields disagree (which the tool
-        # never writes, but a hand-edited record can carry) constrains the
+        # A published block whose two commit fields disagree (explicit
+        # --azure-region input never creates one, but a hand-edited record can
+        # carry one and field-wise carry-forward preserves it) constrains the
         # record's commit through BOTH: the older one is what the lagging
         # region can read. Each ordering catches a checker that reads only
         # the other field.

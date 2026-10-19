@@ -230,8 +230,12 @@ deployed. Only `--source-commit` is left for you to fill in:
 python3 tools/capture-plane-measurements.py --plane azure --write --keep-accepted \
     --source-commit <oldest build still serving in any region> \
     --azure-region quill-enclave-<location>=<bundle version>,<build commit>,<image digest>
-# commit trust-page/ (fires publish-trust-azure.yml), wait for the page, then:
-./tools/deploy-azure-aci.sh --apply narrow
+# commit trust-page/ (fires publish-trust-azure.yml), wait for the page, then,
+# with the SAME region environment the deploy ran under (§3.4: LOCATION,
+# RESOURCE_GROUP, MAA_ENDPOINT, API_HOST, and WORKDIR if you set one — the
+# workdir holds this region's verified template):
+LOCATION=<location> RESOURCE_GROUP=<rg> MAA_ENDPOINT=<attest host> API_HOST=<api host> \
+  ./tools/deploy-azure-aci.sh --apply narrow
 ```
 
 - `--plane azure` reads and writes only the Azure files. Never publish an Azure
