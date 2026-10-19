@@ -23,6 +23,30 @@ disagree.
     python3 tools/capture-plane-measurements.py --write --keep-accepted \
         --source-commit 1a2b3c4
 
+    # an Azure-only release: read and write ONLY the Azure files, and name the
+    # build each region now runs (Key Vault bundle version, build commit, digest)
+    python3 tools/capture-plane-measurements.py --plane azure --write --keep-accepted \
+        --source-commit 1a2b3c4 \
+        --azure-region quill-enclave-uaenorth=<bundle-version>,<build-commit>,<image-digest>
+
+--plane scopes BOTH reads and writes. `--plane azure` never reads or rewrites the
+AWS files and `--plane aws` never touches Azure's; `--plane all` (the default,
+which the freshness check relies on to report every plane) writes both records
+and stamps the same --source-commit on both, so write with it only when both
+planes were released from one commit. An Azure release that ran with `all`
+re-asserted the AWS record's commit and, under --keep-accepted, widened the AWS
+accepted set with a stale monitor pin — neither of which that release touched.
+
+The Azure record carries per-region provenance (bundle_version,
+image_build_commit, image_digest, source_commit) because the regions do not
+necessarily run one build: a roll upgrades one region at a time. A region whose
+hostdata is unchanged keeps the provenance already published; a region with a
+new hostdata needs --azure-region, or its fields record not-configured. While
+the regions' builds differ, the top-level source_commit must be the OLDEST build
+still serving — quill-router's check_format_ordering.py reads it as the
+capability every enclave has, and a newer value would let the control plane
+assume a format the lagging region cannot read. That is checked, not advised.
+
 Both records now carry source_commit, which they did not before: aws-release.json
 and azure-release.json had no such key at all, so their running measurements were
 unmappable to source. gcp-release.json has always carried one because its producer
@@ -128,6 +152,145 @@ PROVENANCE_NONE = "none"
 
 def _provenance(source_commit: str) -> str:
     return PROVENANCE_NONE if source_commit == SOURCE_COMMIT_UNSET else PROVENANCE_ASSERTED
+
+
+# Per-region provenance for the Azure record. The regions run their own builds
+# during a roll, so these are stated per region. Like source_commit they are
+# OPERATOR ASSERTIONS checked against this repository, never measurements:
+# hostdata carries no commit, no digest and no bundle version.
+AZURE_PROVENANCE_FIELDS = ("bundle_version", "image_build_commit", "image_digest", "source_commit")
+_BUNDLE_VERSION_RE = re.compile(r"^[0-9a-f]{32}$")
+_IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _repo_commit(candidate: str, label: str) -> str:
+    """The full object id of a commit that exists here and is reachable from HEAD."""
+    if not _COMMIT_RE.fullmatch(candidate):
+        raise ValueError(f"{label} {candidate!r} is not a git object id")
+    full = _git("rev-parse", "--verify", f"{candidate}^{{commit}}")
+    if full is None:
+        raise ValueError(
+            f"{label} {candidate!r} is not a commit in this repository. A sha that resolves "
+            "nowhere here names a build nobody can reproduce from this source."
+        )
+    if _git("merge-base", "--is-ancestor", full, "HEAD") is None:
+        raise ValueError(
+            f"{label} {candidate!r} is not reachable from HEAD. An enclave release is built from "
+            "this history, so a commit outside it is the wrong sha or a tree that never merged."
+        )
+    return full
+
+
+def parse_azure_region_provenance(specs: list[str]) -> dict[str, dict[str, str]]:
+    """--azure-region GROUP=BUNDLE_VERSION,BUILD_COMMIT,IMAGE_DIGEST, keyed by GROUP.
+
+    GROUP is the container group, i.e. the first label of the region's origin
+    hostname (quill-enclave-uaenorth, quill-enclave-australiaeast). Every value
+    is validated here, before any plane is read, so a typo fails before a write.
+    """
+    provenance: dict[str, dict[str, str]] = {}
+    for spec in specs:
+        group, separator, rest = spec.partition("=")
+        parts = [part.strip() for part in rest.split(",")]
+        if not separator or not group or len(parts) != 3:
+            raise ValueError(
+                f"--azure-region {spec!r}: expected GROUP=BUNDLE_VERSION,BUILD_COMMIT,IMAGE_DIGEST"
+            )
+        bundle, commit, digest = parts
+        if not _BUNDLE_VERSION_RE.fullmatch(bundle):
+            raise ValueError(
+                f"--azure-region {group}: bundle version {bundle!r} is not a 32-hex Key Vault version"
+            )
+        if not _IMAGE_DIGEST_RE.fullmatch(digest):
+            raise ValueError(f"--azure-region {group}: image digest {digest!r} is not sha256:<64 hex>")
+        full = _repo_commit(commit, f"--azure-region {group}: build commit")
+        if group in provenance:
+            raise ValueError(f"--azure-region {group} given twice")
+        provenance[group] = {
+            "bundle_version": bundle,
+            "image_build_commit": full,
+            "image_digest": digest,
+            "source_commit": full,
+        }
+    return provenance
+
+
+def _region_group(region: dict[str, str]) -> str:
+    return region["origin_hostname"].split(".")[0]
+
+
+def _published_regions(path: Path) -> dict[str, dict[str, Any]]:
+    """The published record's per-region blocks, keyed by origin hostname."""
+    if not path.is_file():
+        return {}
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    regions = record.get("regions", []) if isinstance(record, dict) else []
+    if not isinstance(regions, list):
+        return {}
+    return {
+        region["origin_hostname"]: region
+        for region in regions
+        if isinstance(region, dict) and isinstance(region.get("origin_hostname"), str)
+    }
+
+
+def _region_provenance(
+    region: dict[str, str],
+    explicit: dict[str, dict[str, str]],
+    published: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    """What this region's block says about its build.
+
+    Explicit wins. Otherwise a region whose hostdata is unchanged since the
+    published record keeps what was published: the measurement did not move,
+    so the build behind it did not either. A region with a NEW hostdata and no
+    --azure-region records the sentinel, loudly — the same choice source_commit
+    makes: a true measurement with weak provenance beats an invented value, and
+    the party that must not proceed on it fails closed on its own.
+    """
+    group = _region_group(region)
+    if group in explicit:
+        return dict(explicit[group])
+    previous = published.get(region["origin_hostname"])
+    if (
+        previous is not None
+        and previous.get("hostdata") == region["hostdata"]
+        and all(isinstance(previous.get(field), str) and previous[field] for field in AZURE_PROVENANCE_FIELDS)
+    ):
+        return {field: previous[field] for field in AZURE_PROVENANCE_FIELDS}
+    print(
+        f"      WARNING {group} attests hostdata {region['hostdata'][:12]}… that the published "
+        f"record carries no provenance for, and no --azure-region {group}=<bundle>,<commit>,<digest> "
+        "was given; recording not-configured for its build.",
+        file=sys.stderr,
+    )
+    return {field: SOURCE_COMMIT_UNSET for field in AZURE_PROVENANCE_FIELDS}
+
+
+def check_oldest_build(source_commit: str, region_commits: list[str]) -> None:
+    """While the regions run different builds, the record's one commit is the oldest.
+
+    quill-router's check_format_ordering.py reads the top-level source_commit
+    as the capability EVERY enclave behind this record has. During a roll that
+    is the build the lagging region still runs, never the one just deployed: a
+    newer value would let the control plane assume a format the old region
+    cannot read. Refused rather than warned, because the reader is a machine
+    that cannot tell.
+    """
+    known = [commit for commit in region_commits if commit != SOURCE_COMMIT_UNSET]
+    if source_commit == SOURCE_COMMIT_UNSET or not known:
+        return
+    top = _repo_commit(source_commit, "--source-commit")
+    for commit in known:
+        if top != commit and _git("merge-base", "--is-ancestor", top, commit) is None:
+            raise ValueError(
+                f"--source-commit {source_commit!r} is newer than, or unrelated to, a region's build "
+                f"{commit[:12]}. While the regions run different builds the record's source_commit "
+                "must be the OLDEST build still serving: an ancestor of every region's build commit."
+            )
 
 
 # The serving monitor and API pin consumers are the two Fargate services.
@@ -573,7 +736,11 @@ def build_aws_record(
 
 
 def build_azure_record(
-    regions: list[dict[str, str]], *, keep: bool, source_commit: str = SOURCE_COMMIT_UNSET
+    regions: list[dict[str, str]],
+    *,
+    keep: bool,
+    source_commit: str = SOURCE_COMMIT_UNSET,
+    provenance: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Azure record covering EVERY region, because each runs its own CCE policy.
 
@@ -582,11 +749,25 @@ def build_azure_record(
     are correct simultaneously and permanently. Publishing one region's value
     alone tells a verifier routed to the other that the enclave does not match
     its measurement — an accusation of tampering caused entirely by us.
+
+    `provenance` is parse_azure_region_provenance's output: the build each
+    region now runs, by container group. Regions it does not name keep their
+    published provenance while their hostdata is unchanged (see
+    _region_provenance); naming a region that was not captured is refused.
     """
     existing_hostdata = _existing(TRUST_DIR / "azure-release.json", "accepted_hostdata")
+    published = _published_regions(TRUST_DIR / "azure-release.json")
 
     observed_hostdata = [region["hostdata"] for region in regions]
     observed_issuers = [region["issuer"] for region in regions]
+    explicit = provenance or {}
+    unknown = sorted(set(explicit) - {_region_group(region) for region in regions})
+    if unknown:
+        raise ValueError(
+            "--azure-region names a region this capture did not observe: " + ", ".join(unknown)
+        )
+    builds = [_region_provenance(region, explicit, published) for region in regions]
+    check_oldest_build(source_commit, [build["image_build_commit"] for build in builds])
 
     accepted = list(dict.fromkeys(observed_hostdata + (existing_hostdata if keep else [])))
     # This is the active serving-region census, not an append-only trust history.
@@ -598,13 +779,12 @@ def build_azure_record(
     return {
         "platform": "azure-confidential-containers-sev-snp",
         "source_repo": ATTESTED_GATEWAY_REPO,
-        # ONE commit for a record that describes TWO regions. That is honest
-        # only while both regions run the same build, which is the steady
-        # state but not the state during a roll. A consumer that needs
-        # per-region provenance must read a per-region source_commit, and
-        # there is none to read — this capture has a single HEAD and cannot
-        # attribute one build per region. Stated rather than papered over;
-        # quill-router's ordering gate records the same limit.
+        # ONE commit for a record that describes TWO regions. Honest while both
+        # run the same build, which is the steady state but not the state
+        # during a roll; then it is the OLDEST build still serving, which
+        # check_oldest_build enforces, and each region's own build is in its
+        # block below. quill-router's ordering gate reads this one value as what
+        # every enclave behind the record can read.
         "source_commit": source_commit,
         # See build_aws_record: an assertion checked against this repository,
         # not a value reproduced from the measurement.
@@ -623,8 +803,13 @@ def build_azure_record(
                 "attestation_issuer": region["issuer"],
                 "launch_measurement": region["launch_measurement"],
                 "compliance_status": region["compliance"],
+                # The build THIS region runs: Key Vault bundle version, the
+                # commit the image was built from, the image digest the CCE
+                # policy measured, and that commit again as this region's
+                # source_commit. Operator-asserted, like the top-level one.
+                **build,
             }
-            for region in regions
+            for region, build in zip(regions, builds)
         ],
         "attestation_format": "microsoft-azure-attestation-jwt",
         "attestation_type": "sevsnpvm",
@@ -682,12 +867,34 @@ def write_azure_files(record: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--plane", choices=("all", "aws"), default="all",
-                        help="limit AWS releases to AWS reads and writes")
+    parser.add_argument(
+        "--plane",
+        choices=("all", "aws", "azure"),
+        default="all",
+        help=(
+            "which plane to read AND write: aws or azure touches only that plane's files; all "
+            "(the default) reports every plane and writes both records with one --source-commit"
+        ),
+    )
     parser.add_argument("--aws-forward-port", type=int,
                         help="capture one AWS instance through a localhost SSM TCP forward; retains API TLS SNI")
     parser.add_argument("--check-published", action="store_true",
-                        help="require live AWS PCR0 in the local published set, and that entire set on both Fargate services")
+                        help=(
+                            "read-only: require the live AWS PCR0 in the local published set and that entire "
+                            "set on both Fargate services; for Azure, every live region's hostdata in the "
+                            "local published set"
+                        ))
+    parser.add_argument(
+        "--azure-region",
+        action="append",
+        default=[],
+        metavar="GROUP=BUNDLE_VERSION,BUILD_COMMIT,IMAGE_DIGEST",
+        help=(
+            "the build an Azure region now runs, by container group (quill-enclave-uaenorth, "
+            "quill-enclave-australiaeast); repeatable. A region not named keeps its published "
+            "provenance while its hostdata is unchanged, else records not-configured."
+        ),
+    )
     parser.add_argument("--write", action="store_true", help="write the trust-page records")
     parser.add_argument(
         "--keep-accepted",
@@ -714,13 +921,26 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    reads_aws = args.plane in ("all", "aws")
+    reads_azure = args.plane in ("all", "azure")
     if args.repin_aws_monitor and args.plane != "aws":
         parser.error("--repin-aws-monitor requires --plane aws")
+    if args.aws_forward_port is not None and not reads_aws:
+        parser.error("--aws-forward-port reads the AWS plane; use --plane aws or all")
     if args.aws_forward_port is not None and not 1 <= args.aws_forward_port <= 65535:
         parser.error("--aws-forward-port must be between 1 and 65535")
+    if args.azure_region and not reads_azure:
+        parser.error("--azure-region describes the Azure record; use --plane azure or all")
     if args.check_published and (args.write or args.repin_aws_monitor):
         parser.error("--check-published is read-only")
-    commit = resolve_source_commit(args.source_commit)
+    try:
+        commit = resolve_source_commit(args.source_commit)
+        # Validated before any plane is read: a typo here must not cost a
+        # capture, and must never reach a write.
+        provenance = parse_azure_region_provenance(args.azure_region)
+    except ValueError as exc:
+        print(f"REFUSING: {exc}", file=sys.stderr)
+        return 1
 
     failures = []
     if args.plane == "all":
@@ -730,15 +950,17 @@ def main() -> int:
             print(f"      image    {gcp['image_reference']}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"GCP: {exc}")
-    try:
-        aws = live_aws(forward_port=args.aws_forward_port) if args.aws_forward_port else live_aws()
-        print(f"AWS   PCR0     {aws['pcr0']}")
-        print(f"      module   {aws['module_id']}")
-    except Exception as exc:  # noqa: BLE001
-        failures.append(f"AWS: {exc}")
-        aws = None
+    aws = None
+    if reads_aws:
+        try:
+            aws = live_aws(forward_port=args.aws_forward_port) if args.aws_forward_port else live_aws()
+            print(f"AWS   PCR0     {aws['pcr0']}")
+            print(f"      module   {aws['module_id']}")
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"AWS: {exc}")
+            aws = None
     azure = None
-    if args.plane == "all":
+    if reads_azure:
         try:
             azure = live_azure()
             for region in azure:
@@ -746,6 +968,19 @@ def main() -> int:
                 print(f"      issuer   {region['issuer']}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"Azure: {exc}")
+    if azure and args.check_published:
+        # The Azure counterpart of the AWS pin check below: what is RUNNING in
+        # every region must already be in what is PUBLISHED locally.
+        try:
+            published = (TRUST_DIR / "accepted-hostdata-azure.txt").read_text().strip().split(",")
+        except OSError:
+            published = []
+        missing = [region for region in azure if region["hostdata"] not in published]
+        if missing:
+            failures.append(
+                "Azure: live hostdata not in the published accepted set: "
+                + ", ".join(f"{_region_group(region)} {region['hostdata'][:12]}" for region in missing)
+            )
 
     aws_record = None
     if aws:
@@ -768,7 +1003,9 @@ def main() -> int:
         print(f"FAILED {failure}", file=sys.stderr)
     if failures and not (aws or azure):
         return 1
-    if args.plane == "aws" and failures:
+    if args.plane != "all" and failures:
+        # A single-plane run has nothing else to fall back on: any failure is
+        # the release's failure, and nothing is written.
         return 1
 
     if not args.write:
@@ -788,15 +1025,7 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    if aws_record:
-        record = aws_record
-        write_aws_files(record)
-        # trust-page/pcr0.txt is the legacy path, live at
-        # https://trust.trustedrouter.com/pcr0.txt and on the S3 mirror. It is
-        # the file that served a wrong value for months. Writing it from the
-        # same source as the canonical record is the point: two paths that can
-        # drift apart is how this broke the first time.
-        _write(REPO_ROOT / "trust-page" / "pcr0.txt", record["pcr0"] + "\n")
+    azure_record = None
     if azure:
         if len(azure) < len(AZURE_ATTESTATION_URLS) and not args.keep_accepted:
             # Writing now would drop the unreachable region's hostdata from the
@@ -809,8 +1038,33 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
-        record = build_azure_record(azure, keep=args.keep_accepted, source_commit=commit)
-        write_azure_files(record)
+        # Built before anything is written so a refused record (a region named
+        # that was not captured, a source_commit newer than a region's build)
+        # leaves every file, AWS's included, exactly as it was.
+        try:
+            azure_record = build_azure_record(
+                azure, keep=args.keep_accepted, source_commit=commit, provenance=provenance
+            )
+        except ValueError as exc:
+            print(f"REFUSING to write: {exc}", file=sys.stderr)
+            return 1
+
+    if aws_record:
+        record = aws_record
+        write_aws_files(record)
+        # trust-page/pcr0.txt is the legacy path, live at
+        # https://trust.trustedrouter.com/pcr0.txt and on the S3 mirror. It is
+        # the file that served a wrong value for months. Writing it from the
+        # same source as the canonical record is the point: two paths that can
+        # drift apart is how this broke the first time.
+        _write(REPO_ROOT / "trust-page" / "pcr0.txt", record["pcr0"] + "\n")
+    if azure_record:
+        write_azure_files(azure_record)
+        for region in azure_record["regions"]:
+            print(
+                f"      {_region_group(region)}: build {region['image_build_commit'][:12]} "
+                f"bundle {region['bundle_version'][:12]} image {region['image_digest'][:19]}"
+            )
     return 1 if failures else 0
 
 

@@ -619,5 +619,279 @@ class AWSReleaseGateTests(unittest.TestCase):
             self.assertEqual(calls, ["python3 tools/capture-plane-measurements.py --plane aws --check-published"] * 2)
 
 
+BUNDLE_A, BUNDLE_B = "1" * 32, "2" * 32
+DIGEST_A, DIGEST_B = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+
+
+def _two_commit_repo(directory: str) -> tuple[Path, str, str]:
+    """A repository with an OLD commit and a NEW commit at HEAD, as full object ids."""
+    root = Path(directory)
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "t"], check=True)
+    shas = []
+    for name in ("old", "new"):
+        (root / f"{name}.txt").write_text(name + "\n")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(root), "commit", "-qm", name], check=True)
+        shas.append(
+            subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+            ).stdout.strip()
+        )
+    return root, shas[0], shas[1]
+
+
+class PlaneScopingTests(unittest.TestCase):
+    """--plane scopes reads AND writes: an Azure release never rewrites the AWS files.
+
+    The 2026-10-19 Azure release ran with the default plane, and the tool
+    re-asserted the AWS record's source_commit as the Azure build's and, under
+    --keep-accepted, widened accepted-pcr0s-aws.txt with a stale monitor pin.
+    Neither file had anything to do with that release.
+    """
+
+    def _page(self, directory: str) -> Path:
+        trust = Path(directory) / "trust-page" / "trust"
+        trust.mkdir(parents=True)
+        aws = json.dumps({"pcr0": PCR0, "accepted_pcr0s": [PCR0], "source_commit": "8e49c505"}) + "\n"
+        for name, content in (
+            ("aws-release.json", aws),
+            ("pcr0-aws.txt", PCR0 + "\n"),
+            ("accepted-pcr0s-aws.txt", PCR0 + "\n"),
+        ):
+            (trust / name).write_text(content)
+            (trust.parent / name).write_text(content)
+        (trust.parent / "pcr0.txt").write_text(PCR0 + "\n")
+        return trust
+
+    def test_azure_plane_reads_and_writes_only_azure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trust = self._page(directory)
+            before = {path: path.read_bytes() for path in Path(directory).rglob("*") if path.is_file()}
+            with mock.patch("sys.argv", [str(SCRIPT), "--plane", "azure", "--write", "--keep-accepted"]), \
+                 mock.patch.object(capture, "REPO_ROOT", Path(directory)), \
+                 mock.patch.object(capture, "TRUST_DIR", trust), \
+                 mock.patch.object(capture, "resolve_source_commit", return_value="1234567"), \
+                 mock.patch.object(capture, "live_azure", return_value=AZURE_LIVE), \
+                 mock.patch.object(capture, "live_aws") as aws, \
+                 mock.patch.object(capture, "live_gcp") as gcp, \
+                 mock.patch.object(capture, "check_aws_pins") as pins, \
+                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(capture.main(), 0)
+            for untouched in (aws, gcp, pins):
+                untouched.assert_not_called()
+            for path, content in before.items():
+                self.assertEqual(path.read_bytes(), content, f"{path.name} was rewritten by an Azure-only capture")
+            record = json.loads((trust / "azure-release.json").read_text())
+            self.assertEqual(record["accepted_hostdata"], [HOSTDATA_UAEN, HOSTDATA_SYD])
+            for name in ("azure-release.json", "hostdata-azure.txt", "accepted-hostdata-azure.txt"):
+                self.assertEqual((trust / name).read_bytes(), (trust.parent / name).read_bytes(), name)
+
+    def test_aws_plane_never_reads_or_writes_azure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trust = self._page(directory)
+            with mock.patch("sys.argv", [str(SCRIPT), "--plane", "aws", "--write"]), \
+                 mock.patch.object(capture, "REPO_ROOT", Path(directory)), \
+                 mock.patch.object(capture, "TRUST_DIR", trust), \
+                 mock.patch.object(capture, "resolve_source_commit", return_value="1234567"), \
+                 mock.patch.object(capture, "live_aws", return_value=AWS_LIVE), \
+                 mock.patch.object(capture, "check_aws_pins", return_value=PCR0), \
+                 mock.patch.object(capture, "live_azure") as azure, \
+                 mock.patch.object(capture, "live_gcp") as gcp, \
+                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(capture.main(), 0)
+            azure.assert_not_called()
+            gcp.assert_not_called()
+            self.assertFalse((trust / "azure-release.json").exists())
+            self.assertEqual(json.loads((trust / "aws-release.json").read_text())["source_commit"], "1234567")
+
+    def test_options_that_belong_to_the_other_plane_are_refused_by_the_parser(self) -> None:
+        spec = f"quill-enclave-uaenorth={BUNDLE_A},abc1234,{DIGEST_A}"
+        for argv in (
+            ["--plane", "azure", "--aws-forward-port", "18444"],
+            ["--plane", "azure", "--repin-aws-monitor"],
+            ["--plane", "aws", "--azure-region", spec],
+        ):
+            with self.subTest(argv=argv), mock.patch("sys.argv", [str(SCRIPT), *argv]), \
+                 mock.patch.object(capture, "live_aws") as aws, mock.patch.object(capture, "live_azure") as azure, \
+                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stop:
+                capture.main()
+            self.assertEqual(stop.exception.code, 2)
+            aws.assert_not_called()
+            azure.assert_not_called()
+
+    def test_azure_check_published_compares_every_live_region_with_the_local_set(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trust = Path(directory) / "trust"
+            trust.mkdir()
+            (trust / "accepted-hostdata-azure.txt").write_text(f"{HOSTDATA_UAEN},{HOSTDATA_SYD}\n")
+
+            def run() -> int:
+                with mock.patch("sys.argv", [str(SCRIPT), "--plane", "azure", "--check-published"]), \
+                     mock.patch.object(capture, "TRUST_DIR", trust), \
+                     mock.patch.object(capture, "resolve_source_commit", return_value="1234567"), \
+                     mock.patch.object(capture, "live_azure", return_value=AZURE_LIVE), \
+                     mock.patch.object(capture, "live_aws") as aws, \
+                     mock.patch.object(capture, "write_azure_files") as write, \
+                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    code = capture.main()
+                aws.assert_not_called()
+                write.assert_not_called()
+                return code
+
+            self.assertEqual(run(), 0)
+            (trust / "accepted-hostdata-azure.txt").write_text(HOSTDATA_UAEN + "\n")
+            self.assertEqual(run(), 1)
+
+
+class AzureRegionProvenanceTests(unittest.TestCase):
+    """Each Azure region names the build it runs; the record's one commit is the oldest of them.
+
+    Every Azure record published since 2026-10-10 carried bundle_version,
+    image_build_commit, image_digest and source_commit per region, added by
+    hand after each capture because the tool emitted none. A roll upgrades one
+    region at a time, so for an hour or a day the regions run different builds
+    and the per-region block is the only place that truth can live.
+    """
+
+    def _build(self, root: Path, trust: Path, **kwargs):
+        with mock.patch.object(capture, "REPO_ROOT", root), mock.patch.object(capture, "TRUST_DIR", trust), \
+             contextlib.redirect_stderr(io.StringIO()) as stderr:
+            record = capture.build_azure_record(AZURE_LIVE, keep=False, **kwargs)
+        return record, stderr.getvalue()
+
+    def _parse(self, root: Path, specs: list[str]):
+        with mock.patch.object(capture, "REPO_ROOT", root):
+            return capture.parse_azure_region_provenance(specs)
+
+    def test_explicit_provenance_is_published_per_region(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as page:
+            root, old, new = _two_commit_repo(directory)
+            provenance = self._parse(root, [
+                f"quill-enclave-uaenorth={BUNDLE_A},{new[:9]},{DIGEST_A}",
+                f"quill-enclave-australiaeast={BUNDLE_B},{old},{DIGEST_B}",
+            ])
+            record, _ = self._build(root, Path(page), source_commit=old, provenance=provenance)
+            uaen, syd = record["regions"]
+            self.assertEqual(
+                {field: uaen[field] for field in capture.AZURE_PROVENANCE_FIELDS},
+                {"bundle_version": BUNDLE_A, "image_build_commit": new, "image_digest": DIGEST_A, "source_commit": new},
+            )
+            self.assertEqual((syd["bundle_version"], syd["image_build_commit"]), (BUNDLE_B, old))
+            self.assertEqual(record["source_commit"], old)
+
+    def test_malformed_provenance_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, old, _ = _two_commit_repo(directory)
+            for bad, reason in (
+                (f"quill-enclave-uaenorth={BUNDLE_A},{old}", "expected GROUP="),
+                (f"quill-enclave-uaenorth,{BUNDLE_A},{old},{DIGEST_A}", "expected GROUP="),
+                (f"quill-enclave-uaenorth=xyz,{old},{DIGEST_A}", "32-hex"),
+                (f"quill-enclave-uaenorth={BUNDLE_A},{old},{'a' * 64}", "sha256:"),
+                (f"quill-enclave-uaenorth={BUNDLE_A},main,{DIGEST_A}", "not a git object id"),
+                (
+                    f"quill-enclave-uaenorth={BUNDLE_A},0123456789abcdef0123456789abcdef01234567,{DIGEST_A}",
+                    "not a commit in this repository",
+                ),
+            ):
+                with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, reason):
+                    self._parse(root, [bad])
+            with self.assertRaisesRegex(ValueError, "given twice"):
+                self._parse(root, [f"quill-enclave-uaenorth={BUNDLE_A},{old},{DIGEST_A}"] * 2)
+
+    def test_provenance_for_a_region_that_was_not_captured_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as page:
+            root, old, _ = _two_commit_repo(directory)
+            provenance = self._parse(root, [f"quill-enclave-mars={BUNDLE_A},{old},{DIGEST_A}"])
+            with self.assertRaisesRegex(ValueError, "did not observe: quill-enclave-mars"):
+                self._build(root, Path(page), source_commit=old, provenance=provenance)
+
+    def test_an_unchanged_region_keeps_its_published_provenance(self) -> None:
+        # Sydney's hostdata did not move, so its build did not either; only
+        # Dubai, with a new hostdata, has to be named.
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as page:
+            root, old, new = _two_commit_repo(directory)
+            carried = {"bundle_version": BUNDLE_B, "image_build_commit": old, "image_digest": DIGEST_B, "source_commit": old}
+            published = {"regions": [
+                {"origin_hostname": AZURE_LIVE[0]["origin_hostname"], "hostdata": "00" * 32, **carried},
+                {"origin_hostname": AZURE_LIVE[1]["origin_hostname"], "hostdata": HOSTDATA_SYD, **carried},
+            ]}
+            (Path(page) / "azure-release.json").write_text(json.dumps(published))
+            provenance = self._parse(root, [f"quill-enclave-uaenorth={BUNDLE_A},{new},{DIGEST_A}"])
+            record, stderr = self._build(root, Path(page), source_commit=old, provenance=provenance)
+            uaen, syd = record["regions"]
+            self.assertEqual((uaen["bundle_version"], uaen["image_build_commit"], uaen["image_digest"]), (BUNDLE_A, new, DIGEST_A))
+            self.assertEqual({field: syd[field] for field in capture.AZURE_PROVENANCE_FIELDS}, carried)
+            self.assertNotIn("WARNING", stderr)
+
+    def test_a_new_hostdata_without_provenance_records_the_sentinel_and_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as page:
+            root, old, _ = _two_commit_repo(directory)
+            published = {"regions": [{
+                "origin_hostname": AZURE_LIVE[0]["origin_hostname"], "hostdata": "00" * 32,
+                "bundle_version": BUNDLE_B, "image_build_commit": old, "image_digest": DIGEST_B, "source_commit": old,
+            }]}
+            (Path(page) / "azure-release.json").write_text(json.dumps(published))
+            record, stderr = self._build(root, Path(page), source_commit=old)
+            for region in record["regions"]:
+                for field in capture.AZURE_PROVENANCE_FIELDS:
+                    self.assertEqual(region[field], capture.SOURCE_COMMIT_UNSET, field)
+            self.assertIn("--azure-region quill-enclave-uaenorth=", stderr)
+            self.assertIn("--azure-region quill-enclave-australiaeast=", stderr)
+
+    def test_the_record_commit_must_be_the_oldest_build_still_serving(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as page:
+            root, old, new = _two_commit_repo(directory)
+            mixed = self._parse(root, [
+                f"quill-enclave-uaenorth={BUNDLE_A},{new},{DIGEST_A}",
+                f"quill-enclave-australiaeast={BUNDLE_B},{old},{DIGEST_B}",
+            ])
+            with self.assertRaisesRegex(ValueError, "OLDEST build still serving"):
+                self._build(root, Path(page), source_commit=new, provenance=mixed)
+            record, _ = self._build(root, Path(page), source_commit=old, provenance=mixed)
+            self.assertEqual(record["source_commit"], old)
+            # Both regions on one build: that build is the record's commit.
+            same = self._parse(root, [
+                f"quill-enclave-uaenorth={BUNDLE_A},{new},{DIGEST_A}",
+                f"quill-enclave-australiaeast={BUNDLE_A},{new},{DIGEST_A}",
+            ])
+            record, _ = self._build(root, Path(page), source_commit=new, provenance=same)
+            self.assertEqual(record["source_commit"], new)
+            # No commit at all checks nothing: the sentinel is the honest answer.
+            record, _ = self._build(root, Path(page), source_commit=capture.SOURCE_COMMIT_UNSET, provenance=mixed)
+            self.assertEqual(record["source_commit"], capture.SOURCE_COMMIT_UNSET)
+
+    def test_main_refuses_bad_provenance_before_reading_any_plane(self) -> None:
+        argv = [str(SCRIPT), "--plane", "azure", "--write", "--azure-region", "quill-enclave-uaenorth=nope"]
+        with mock.patch("sys.argv", argv), \
+             mock.patch.object(capture, "resolve_source_commit", return_value="1234567"), \
+             mock.patch.object(capture, "live_azure") as azure, \
+             mock.patch.object(capture, "write_azure_files") as write, \
+             contextlib.redirect_stderr(io.StringIO()) as stderr, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(capture.main(), 1)
+        azure.assert_not_called()
+        write.assert_not_called()
+        self.assertIn("REFUSING", stderr.getvalue())
+
+    def test_main_refuses_a_record_commit_newer_than_a_region_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as page:
+            root, old, new = _two_commit_repo(directory)
+            trust = Path(page) / "trust-page" / "trust"
+            trust.mkdir(parents=True)
+            argv = [
+                str(SCRIPT), "--plane", "azure", "--write", "--source-commit", new,
+                "--azure-region", f"quill-enclave-uaenorth={BUNDLE_A},{new},{DIGEST_A}",
+                "--azure-region", f"quill-enclave-australiaeast={BUNDLE_B},{old},{DIGEST_B}",
+            ]
+            with mock.patch("sys.argv", argv), mock.patch.object(capture, "REPO_ROOT", root), \
+                 mock.patch.object(capture, "TRUST_DIR", trust), \
+                 mock.patch.object(capture, "live_azure", return_value=AZURE_LIVE), \
+                 contextlib.redirect_stderr(io.StringIO()) as stderr, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(capture.main(), 1)
+            self.assertIn("OLDEST build still serving", stderr.getvalue())
+            self.assertFalse((trust / "azure-release.json").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

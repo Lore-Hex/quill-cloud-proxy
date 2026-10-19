@@ -1151,6 +1151,12 @@ phase_build() {
     digest="sha256:DRYRUN0000000000000000000000000000000000000000000000000000000000"
   fi
   printf '%s' "$digest" > "$WORKDIR/image-digest.txt"
+  # The commit this image was built from, kept next to its digest: the publish
+  # hint at the end of verify names the build from these two files rather than
+  # from HEAD, which may have moved by then (and REUSE_IMAGE=1 deploys an image
+  # built on an earlier run).
+  git -C "$REPO_ROOT" rev-parse HEAD > "$WORKDIR/build-commit.txt" 2>/dev/null \
+    || printf '%s' "" > "$WORKDIR/build-commit.txt"
   log "image digest: $digest"
   if [ -n "$previous_digest" ] && [ "$previous_digest" != "$digest" ]; then
     log "image digest CHANGED since the last run in this workdir"
@@ -2431,11 +2437,22 @@ EOF
     log "which is not in the published set"
     log "  ${published:-<nothing published>}"
     log ""
-    log "Publish it before calling the deploy done:"
-    log "  python3 tools/capture-plane-measurements.py --write --keep-accepted"
+    # Name THIS region's build in the hint, from the files the build phase
+    # wrote, so the operator does not reach for HEAD (which may have moved) or
+    # retype a digest by hand.
+    local build_commit="<build-commit>" image_digest="<image-digest>"
+    [ -s "$WORKDIR/build-commit.txt" ] && build_commit="$(cat "$WORKDIR/build-commit.txt")"
+    [ -s "$WORKDIR/image-digest.txt" ] && image_digest="$(cat "$WORKDIR/image-digest.txt")"
+    log "Publish it before calling the deploy done — Azure files only, naming this region's build:"
+    log "  python3 tools/capture-plane-measurements.py --plane azure --write --keep-accepted \\"
+    log "      --source-commit <oldest build still serving in any region> \\"
+    log "      --azure-region ${CONTAINER_GROUP}=${QUILL_AZURE_BUNDLE_VERSION:-<bundle-version>},${build_commit},${image_digest}"
     log "  # then commit trust-page/ — that fires publish-trust-azure.yml"
     log ""
-    log "Use --keep-accepted while any region is still serving the old policy."
+    log "Use --keep-accepted while any region is still serving the old policy, and keep"
+    log "--source-commit at the OLDER build until every region runs the new one (the"
+    log "capture refuses a newer one). A region whose hostdata did not change keeps its"
+    log "published provenance; only the region(s) just deployed need --azure-region."
     return 1
   fi
 }
