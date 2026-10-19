@@ -3,12 +3,49 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Lore-Hex/quill-cloud-proxy/enclave-go/internal/decide"
 )
+
+type regoloDecisionTransport func(*http.Request) (*http.Response, error)
+
+func (f regoloDecisionTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestRegoloDecisionBYOKNeverUsesOperatorKey(t *testing.T) {
+	for _, operatorKey := range []string{"operator-key", ""} {
+		for _, customerKey := range []string{"customer-key", ""} {
+			t.Run(operatorKey+"/"+customerKey, func(t *testing.T) {
+				calls := 0
+				client := &openAICompatibleClient{provider: "regolo", baseURL: directBaseURL("regolo"), apiKey: operatorKey,
+					httpc: &http.Client{Transport: regoloDecisionTransport(func(r *http.Request) (*http.Response, error) {
+						calls++
+						if r.URL.String() != "https://api.regolo.ai/v1/systemone" || r.Header.Get("Authorization") != "Bearer customer-key" {
+							t.Error("BYOK used the wrong provider endpoint or credential")
+						}
+						return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"model":"clef-flash","usage":{"input_tokens":62,"output_tokens":0},"answers":{}}`))}, nil
+					})}}
+				_, err := client.InvokeDecide(context.Background(), &DecideRequest{Model: "cloudflare/clef-flash"}, InvokeOptions{
+					Provider: "regolo", UpstreamModel: "clef-flash", UsageType: "BYOK", ProviderAPIKey: customerKey,
+				})
+				if customerKey == "" {
+					if DecideErrorClass(err) != DecideErrConfig || calls != 0 {
+						t.Fatalf("missing BYOK must fail before inference: class=%s calls=%d", DecideErrorClass(err), calls)
+					}
+				} else if err != nil || calls != 1 {
+					t.Fatalf("BYOK failed: class=%s calls=%d", DecideErrorClass(err), calls)
+				}
+				if client.apiKey != operatorKey {
+					t.Error("BYOK mutated the shared prepaid client")
+				}
+			})
+		}
+	}
+}
 
 func TestRegoloDecisionWireAndUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
