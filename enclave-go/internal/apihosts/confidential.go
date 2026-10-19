@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-var publicDomains = [...]string{"trustedrouter.com", "quillrouter.com", "allyrouter.com", "uptimerouter.com"}
+var publicDomains = [...]string{"trustedrouter.com", "quillrouter.com", "allyrouter.com", "uptimerouter.com", "nytokenexchange.com"}
 
 func hostname(authority string) string {
 	if host, _, err := net.SplitHostPort(authority); err == nil {
@@ -31,6 +31,9 @@ func Confidential(authority string) bool {
 func ChallengeRecord(name, managedZone string) string {
 	if managedZone != "trustedrouter-com" {
 		return ""
+	}
+	if hostname(name) == "api.nytokenexchange.com" {
+		return "_acme-challenge.api-nytokenexchange.trustedrouter.com"
 	}
 	for _, domain := range publicDomains[1:] {
 		if hostname(name) == "api.confidential."+domain {

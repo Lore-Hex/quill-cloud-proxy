@@ -30,6 +30,7 @@ def setUpModule() -> None:
         return real_run(command, *args, **kwargs)
 
     for patch in (mock.patch.object(reconciler, "CANONICAL_GEO", False),
+                  mock.patch.object(reconciler, "NYTE_API_ALIASES_ENABLED", False),
                   mock.patch.object(subprocess, "run", side_effect=offline_run),
                   mock.patch.object(socket.socket, "connect", side_effect=AssertionError("unmocked network"))):
         patch.start()
@@ -2250,6 +2251,66 @@ source tools/wait-canonical-drained.sh us-east4
                             for line in docker.splitlines()))
         self.assertIn("dns_geo_health.py", docker)
         self.assertIn("QUILL_GEO_HEALTH_CHECK=${QUILL_GEO_HEALTH_CHECK}", deploy)
+
+
+class NyteDNSPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(mock.patch.object(reconciler, "NYTE_API_ALIASES_ENABLED", True))
+        self.enterContext(mock.patch.object(reconciler, "API_HOST", "api.trustedrouter.com"))
+
+    def test_delegation_leaves_website_certificate_and_records_alone(self):
+        with mock.patch.object(reconciler, "current_dns_record", return_value=None), \
+             mock.patch.object(reconciler.subprocess, "run") as run:
+            reconciler.provision_nyte_challenge_delegation(apply=True)
+        self.assertEqual(run.call_count, 2)
+        for host, call in zip(reconciler.NYTE_API_HOSTS, run.call_args_list, strict=True):
+            command = call.args[0]
+            self.assertIn(f"_acme-challenge.{host}.", command)
+            self.assertNotIn("_acme-challenge.nytokenexchange.com.", command)
+            self.assertIn("CNAME", command)
+            self.assertIn(reconciler.NYTE_API_ZONE, command)
+
+    def test_conflicting_delegation_is_not_overwritten(self):
+        with mock.patch.object(reconciler, "current_dns_record", return_value={"rrdatas": ["elsewhere."]}), \
+             mock.patch.object(reconciler.subprocess, "run") as run, \
+             self.assertRaisesRegex(RuntimeError, "refusing to overwrite"):
+            reconciler.provision_nyte_challenge_delegation(apply=True)
+        run.assert_not_called()
+
+    def test_each_host_requires_its_own_proof(self):
+        def attest(ip, digest, *, api_host, confidential_host=None):
+            self.assertEqual(digest, "sha256:release")
+            if api_host == reconciler.NYTE_API_HOSTS[1]:
+                self.assertEqual(confidential_host, api_host)
+                return ip == "34.2.2.2"
+            self.assertIsNone(confidential_host)
+            return True
+        with mock.patch.object(reconciler, "attest", side_effect=attest), \
+             mock.patch.object(reconciler, "reconcile_dns_record") as publish:
+            reconciler.reconcile_nyte([{"ip": "34.1.1.1"}, {"ip": "34.2.2.2"}], "sha256:release", apply=True)
+        self.assertEqual(publish.call_count, 2)
+        self.assertEqual(publish.call_args_list[0].args, (reconciler.NYTE_API_ZONE, "api.nytokenexchange.com.", ["34.1.1.1", "34.2.2.2"]))
+        self.assertEqual(publish.call_args_list[1].args, (reconciler.NYTE_API_ZONE, "api.confidential.nytokenexchange.com.", ["34.2.2.2"]))
+
+    def test_old_release_does_not_publish_new_hosts(self):
+        with mock.patch.object(reconciler, "attest", return_value=False), \
+             mock.patch.object(reconciler, "current_dns_ips", return_value=[]), \
+             mock.patch.object(reconciler, "reconcile_dns_record") as publish, \
+             mock.patch.object(reconciler.subprocess, "run") as run:
+            reconciler.reconcile_nyte([{"ip": "34.1.1.1"}], "sha256:old", apply=True)
+        publish.assert_not_called()
+        run.assert_not_called()
+
+    def test_unqualified_records_are_removed_and_drains_rechecked(self):
+        with mock.patch.object(reconciler, "current_dns_ips", return_value=["34.1.1.1"]), \
+             mock.patch.object(reconciler, "_check_pinned_drains") as drains, \
+             mock.patch.object(reconciler.subprocess, "run") as run:
+            reconciler.reconcile_nyte([], "sha256:release", apply=True)
+        self.assertEqual(drains.call_count, 2)
+        self.assertEqual(run.call_count, 2)
+        for call in run.call_args_list:
+            self.assertIn("delete", call.args[0])
+            self.assertNotIn("nytokenexchange.com.", call.args[0])
 
 
 if __name__ == "__main__":

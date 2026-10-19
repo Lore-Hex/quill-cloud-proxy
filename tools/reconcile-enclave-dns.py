@@ -1193,6 +1193,68 @@ CONFIDENTIAL_HOSTS = tuple(
     for domain in ("trustedrouter", "quillrouter", "allyrouter", "uptimerouter")
 )
 
+NYTE_API_ZONE = "exchange-nytokenexchange-com"
+NYTE_API_HOSTS = ("api.nytokenexchange.com", "api.confidential.nytokenexchange.com")
+NYTE_API_ALIASES_ENABLED = os.environ.get("QUILL_NYTE_API_ALIASES_ENABLED", "1") == "1"
+
+
+def provision_nyte_challenge_delegation(*, apply: bool) -> None:
+    if not NYTE_API_ALIASES_ENABLED or API_HOST not in {"api.trustedrouter.com", "api.quillrouter.com"}:
+        return
+    for host in NYTE_API_HOSTS:
+        record = f"_acme-challenge.{host}."
+        target = f"_acme-challenge.{host.removesuffix('.com').replace('.', '-')}.trustedrouter.com."
+        current = current_dns_record(NYTE_API_ZONE, record, "CNAME")
+        if current and current.get("rrdatas") == [target]:
+            continue
+        if current:
+            raise RuntimeError(f"refusing to overwrite unrelated certificate delegation: {record}")
+        log(f"reconcile: NYTE certificate delegation {record} -> {target}")
+        if apply:
+            subprocess.run(
+                ["gcloud", "dns", "record-sets", "create", record, "--zone", NYTE_API_ZONE,
+                 "--project", PROJECT, "--type", "CNAME", "--ttl", str(TTL), "--rrdatas", target],
+                check=True, capture_output=True, text=True, timeout=GCLOUD_TIMEOUT_SECONDS,
+            )
+
+
+def reconcile_nyte(healthy: list[dict], digest: str, *, apply: bool) -> None:
+    """Qualify NYTE independently so its rollout cannot remove existing TR hosts.
+
+    Each alias needs its own public certificate and channel-bound attestation;
+    the confidential alias additionally proves fail-closed privacy enforcement.
+    The input already excludes drained/pending regions. Every DNS write uses
+    the enclosing pinned-drain snapshot just like the canonical records.
+    """
+    if not NYTE_API_ALIASES_ENABLED or API_HOST not in {"api.trustedrouter.com", "api.quillrouter.com"}:
+        return
+
+    def check_instance(ip: str) -> list[tuple[str, str, bool]]:
+        return [(host, ip, attest(ip, digest, api_host=host, **(
+            {"confidential_host": host} if host == NYTE_API_HOSTS[1] else {}
+        ))) for host in NYTE_API_HOSTS]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+        results = [item for batch in executor.map(
+            check_instance, dict.fromkeys(instance["ip"] for instance in healthy),
+        ) for item in batch]
+    for host in NYTE_API_HOSTS:
+        ips = sorted({ip for name, ip, ok in results if name == host and ok})
+        record = host + "."
+        if ips:
+            reconcile_dns_record(NYTE_API_ZONE, record, ips, apply=apply, label="NYTE API")
+        elif current_dns_ips(NYTE_API_ZONE, record):
+            log(f"reconcile: NYTE {record} has no qualified instances; removing A record")
+            if apply:
+                _check_pinned_drains()
+                subprocess.run(
+                    ["gcloud", "dns", "record-sets", "delete", record, "--zone", NYTE_API_ZONE,
+                     "--project", PROJECT, "--type", "A", "--quiet"],
+                    check=True, capture_output=True, text=True, timeout=GCLOUD_TIMEOUT_SECONDS,
+                )
+        else:
+            log(f"reconcile: NYTE {record} awaiting certificate and attestation; not published")
+
 
 def provision_confidential_challenge_delegation(*, apply: bool) -> None:
     # Bootstrap certificates via DNS-01 BEFORE publishing any API A record.
@@ -1458,6 +1520,11 @@ def _main_unlocked() -> int:
     # minutes during steady state.
     confidential_failed = False
     try:
+        provision_nyte_challenge_delegation(apply=args.apply)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        confidential_failed = True
+        log(f"reconcile: NYTE certificate delegation failed: {exc}")
+    try:
         provision_confidential_challenge_delegation(apply=args.apply)
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         confidential_failed = True
@@ -1516,6 +1583,11 @@ def _main_unlocked() -> int:
 
     try:
         with pinned_drains(persistent):
+            try:
+                reconcile_nyte(canonical_healthy, digest, apply=args.apply)
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+                confidential_failed = True
+                log(f"reconcile: NYTE membership update failed: {exc}")
             try:
                 reconcile_confidential(canonical_healthy, digest, apply=args.apply)
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:

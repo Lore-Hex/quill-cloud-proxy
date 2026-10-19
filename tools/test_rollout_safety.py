@@ -798,7 +798,7 @@ printf '%s\\n' "${GCLOUD_JSON}"
             "            quill-enclave-mig-uswest1 \\",
             "            quill-enclave-mig-uswest1- \\",
             "            uswest1 \\",
-            "            api.quillrouter.com,api-us-west1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com \\",
+            "            api.quillrouter.com,api-us-west1.quillrouter.com,api.trustedrouter.com,api.allyrouter.com,api.uptimerouter.com,api.nytokenexchange.com \\",
             "            c3-standard-4 \\",
             "            TDX \\",
         ):
