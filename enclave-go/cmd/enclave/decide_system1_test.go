@@ -66,10 +66,12 @@ func TestHostedSettlementUsesReportedInputExactlyOnce(t *testing.T) {
 		for _, fail := range []bool{false, true} {
 			model := slug + "/s1-vision"
 			upstream := "s1-vision"
+			reportedInput := 4444
 			images := `,"images":["` + imageURL + `"]`
 			if slug == "regolo" {
 				model = "cloudflare/clef-flash"
 				upstream = "clef-flash"
+				reportedInput = 140
 				images = ""
 			}
 			endpoint := model + "@" + slug + "/prepaid"
@@ -87,7 +89,7 @@ func TestHostedSettlementUsesReportedInputExactlyOnce(t *testing.T) {
 					_, _ = fmt.Fprintf(w, `{"data":{"authorization_id":"a","workspace_id":"w","api_key_hash":"k","model":%q,"endpoint_id":%q,"provider":%q,"upstream_model":%q,"usage_type":"Credits","limit_usage_type":"Credits","route_candidates":[]}}`, model, endpoint, slug, upstream)
 				case "/internal/gateway/settle":
 					settlements++
-					if body["actual_input_tokens"] != float64(4444) || body["actual_output_tokens"] != float64(0) || body["selected_endpoint"] != endpoint {
+					if body["actual_input_tokens"] != float64(reportedInput) || body["actual_output_tokens"] != float64(0) || body["selected_endpoint"] != endpoint {
 						t.Errorf("incorrect settlement: %#v", body)
 					}
 					_, _ = fmt.Fprint(w, `{"data":{"settled":true,"generation_id":"g","cost_microdollars":20}}`)
@@ -99,7 +101,7 @@ func TestHostedSettlementUsesReportedInputExactlyOnce(t *testing.T) {
 				}
 			}))
 			probability := 0.9
-			backend := &cancellingDecider{tokens: 4444, answers: map[string]decide.Answer{"q": {Type: decide.TypeBoolean, Probability: &probability}}}
+			backend := &cancellingDecider{tokens: reportedInput, answers: map[string]decide.Answer{"q": {Type: decide.TypeBoolean, Probability: &probability}}}
 			if fail {
 				backend.answers = nil
 			}
