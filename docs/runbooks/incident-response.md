@@ -59,11 +59,14 @@ gcloud compute instance-groups managed describe quill-enclave-mig-us \
   --format="value(versions[0].instanceTemplate)"
 gcloud compute instance-templates list --project=quill-cloud-proxy \
   --filter="name~quill-enclave-tpl-us" --sort-by="~creationTimestamp" --limit=5
-# Pick the previous tpl, then:
+# Pick the previous tpl, then (the autoscaler stays off until the region attests):
+bash tools/gcp-mig-autoscaler.sh suspend us-central1 quill-enclave-mig-us
 gcloud compute instance-groups managed set-instance-template quill-enclave-mig-us \
   --region=us-central1 --project=quill-cloud-proxy --template=<prev>
 gcloud compute instance-groups managed rolling-action replace quill-enclave-mig-us \
   --region=us-central1 --project=quill-cloud-proxy --max-unavailable=0 --max-surge=3
+# Once every VM attests again:
+bash tools/gcp-mig-autoscaler.sh resume us-central1 quill-enclave-mig-us
 
 # Control plane: roll Cloud Run traffic back to a prior revision
 gcloud run revisions list --service=trusted-router --region=us-central1 \

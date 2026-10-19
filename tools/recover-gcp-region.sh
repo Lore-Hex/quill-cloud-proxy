@@ -93,6 +93,11 @@ trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# Autoscaler decision: suspend it (mode OFF) before the drain and keep it off through the rollback and its gates; failing to suspend must not block the rollback.
+if ! PROJECT_ID="${project}" bash tools/gcp-mig-autoscaler.sh suspend "${region}" "${mig}"; then
+  echo "::warning::${region}: could not suspend the autoscaler of ${mig}; rolling back anyway" >&2
+fi
+
 echo "${region}: enforcing canonical drain before rollback"
 update_drain set rollout
 reconcile_gcp_dns
@@ -149,4 +154,8 @@ fi
 reconcile_gcp_dns
 sync_backup_dns
 recovery_complete=1
+# Autoscaler decision: resume (scale-out only) after the verified rollback and drain restore, never creating one or applying the failed commit's policy.
+if ! PROJECT_ID="${project}" bash tools/gcp-mig-autoscaler.sh resume "${region}" "${mig}"; then
+  echo "::error::${region}: rollback verified, but the autoscaler of ${mig} stays off: run bash tools/gcp-mig-autoscaler.sh resume ${region} ${mig}" >&2
+fi
 echo "${region}: previous template restored, attested, and drain state restored to ${final_drain_state}/${final_drain_origin}"
